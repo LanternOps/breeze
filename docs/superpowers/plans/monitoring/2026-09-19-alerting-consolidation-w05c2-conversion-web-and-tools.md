@@ -12,13 +12,14 @@ branch: (set by feature-lifecycle after registration)
 
 **Architecture:** Everything in this wave consumes W05c1's `/monitor-definitions/conversion/*` routes and the `PolicyConversionPreview` / `ConversionPreviewItem` shapes with binding D2/D3/D10 refinements; the one place their paths appear on the web is a single client module (`apps/web/src/components/monitoring/conversion/conversionApi.ts`), so a W05c1 path rename is a one-file change. The policy Monitors tab gains three additive blocks (Needs-conversion panel, inheritance switch, Check-interval field) and nothing is removed from the legacy tabs — `featureTypeParity.test.ts` still holds until W05d. Two small API additions belong to this wave because no contract covers them: a device-scoped `GET /devices/:id/monitors` (effective monitors joined to `monitor_device_state` and the open `monitor_episodes` row) for the device tab, and a platform-admin `/admin/monitor-conversion/*` wrapper over `convertPartnerLegacy` for the hosted sweep. Fleet Designer and the AI tools stop writing `alert_rule` / `monitoring` links and go through `createMonitorDefinition` + the `monitors` feature-link attachment path instead.
 
-**Tech Stack:** React 19 + react-i18next (8 locales), Astro pages (`Astro.redirect` 301s), `runAction` for every mutation, Vitest + jsdom (`apps/web`), Hono + Drizzle + zod (`apps/api`, `packages/shared`), Vitest with Drizzle mocks (unit) and the integration setup (`apps/api/src/__tests__/integration/setup`) for the one live-DB proof, Astro Starlight docs (`apps/docs`).
+**Tech Stack:** React 19 + react-i18next (8 locales), Astro pages (`Astro.redirect` 301s), `runAction` for every mutation, Vitest + jsdom (`apps/web`), Hono + Drizzle + zod (`apps/api`, `packages/shared`), Vitest with Drizzle mocks (unit) and the integration setup (`apps/api/src/__tests__/integration/setup`) for the live-DB proofs, Astro Starlight docs (`apps/docs`).
 
 **Spec:** docs/superpowers/specs/monitoring/2026-09-19-alerting-consolidation-design.md (§End state "Monitors (library)", "Config policy editor", "Jobs", "Device page", "Removed screens and routes"; §Conversion "Who runs it" and "Other writers of legacy rows"; §AI / MCP tools rows marked W05c; §Docs and release notes; §Waves W05c row; §Risks "Fleet Designer and AI tools keep writing legacy features", "`inheritance: replace` surprises a tech")
 
 ## Ordering assumptions (read first)
 
 - **W05a, W05b and W05c1 have shipped on `main`.** This plan does not re-plan any of them. W05a already added **Create monitor**, the **Recommended** strip, the duplicate-condition warning and the creation freeze to the policy tabs; this wave adds the Needs-conversion panel, persistent history, the inheritance switch and Check-interval write-through to `MonitorsTab.tsx`; Tasks 12–13 supply the editor controls and separate library Recommended strip. W05b already shipped the Delivery page and the `/alerts/channels` 301, which Task 11 copies as the redirect pattern.
+- **Network adoption remains W05e work (D20).** Before that wave, #6352 and #6353 must be merged; #6353 includes once-per-managed-check evaluation independent of the alert device’s online status, with legacy alert-device selection, and exports `NETWORK_CHECK_DEVICE_INDEPENDENT_EVALUATION = true as const` from `apps/api/src/services/alertConditions/handlers/networkCheck.ts`. W05e gates its whole network preview with `blockedBy: 'prerequisite_missing'` when that capability is absent/false; representable checks are convertible when present. A missing capability creates no refusal/retirement candidates. This wave retains the shared blocked-preview and ledger contracts; W05e owns the network runtime and offline integration proof.
 - **W05c1 routes are fixed by D2/D3/D10.** Task 1 mirrors the exact conversion subrouter contracts; do not invent alternate leaf paths. C1 produces `routes/monitorDefinitions.conversion.ts` (new prerequisite file, absent on this base).
 - **Async previews ship in PR1 (D10).** W05c1 returns 200 `{ data: PolicyConversionPreview }` or 202 `{ data: { status: 'running', progress: { checked, total } } }`; poll the same GET. Tasks 1 and 5 implement polling, cancellation, blocked-empty handling and disabling confirmation during refresh.
 - **Persistent ledger is required in PR1 (D2/D4).** Consume `GET /monitor-definitions/conversion/ledger?orgId&policyId&cursor&limit`; history remains accessible after the conversion panel disappears. `revertable` controls Undo; W05d returns `409 conversion_revert_unavailable` before mutation for removed runtimes.
@@ -38,7 +39,7 @@ branch: (set by feature-lifecycle after registration)
 - **Fleet Designer writes monitors on the same axis as the policy** (org-owned policy → org monitor; partner-wide → partner monitor), through `createMonitorDefinition` and the `monitors` feature-link attachment path — never a direct insert into `monitor_definitions` / `config_policy_monitors`, and never an `alert_rule` or `monitoring` link. Partner-wide writes stay gated on `canManagePartnerWidePolicies(auth)` exactly where the legacy branch gated them.
 - **The device endpoint is read-only and device-scoped.** `GET /devices/:id/monitors` runs under the request's `withDbAccessContext` and the existing device-access check of the devices router; the reset action reuses the W03 episode reset route (Task 10 names it after verifying) — no new writer, no new RLS shape, no registration-list change.
 - Every task: **red test first**, then typecheck (`cd apps/web && npx tsc --noEmit -p .` / `cd apps/api && npx tsc --noEmit -p .` / `cd packages/shared && npx tsc --noEmit -p .`), then the task's targeted tests with `npx vitest run <path>` — never `pnpm --filter … test -- --run <path>` (the `--` is swallowed and the whole suite runs in watch mode), never a trailing-slash path filter (substring match silently skips dotted siblings).
-- `pnpm test` does **not** run the integration suites. Task 10's live proof and Task 18 need `pnpm test-stack up` … `pnpm test-stack down` — nothing reaps it for you.
+- `pnpm test` does **not** run the integration suites. Tasks 7, 10, 16 and 18 need `pnpm test-stack up` … `pnpm test-stack down` — nothing reaps it for you.
 - Do not commit from a subagent; the orchestrator commits. Each task's Step 5 gives the commit message.
 
 ## File Structure (what changes where)
@@ -51,17 +52,17 @@ branch: (set by feature-lifecycle after registration)
 | `apps/web/src/components/monitoring/RecommendedMonitors.*` | Library built-in deployment detection and policy picker, Task 13 |
 | `apps/web/src/components/configurationPolicies/{ConfigPolicyDetailPage,featureTabs/types,featureTabs/MonitorsTab,featureTabs/useFeatureLink}.*` | Policy tab props, interval, inheritance, conversion mount, Tasks 2–5 |
 | `apps/web/src/components/monitoring/{LegacyRulesPage,LegacyRulesTable,MonitorsListPage}.*` | Needs-conversion view and shared legacy table, Task 6 |
-| `apps/api/src/services/monitors/conversion/partnerBacklog.*`, `apps/api/src/routes/admin/{monitorConversion.*,index.ts}` | Hosted conversion backlog/wrapper, Task 7 |
+| `apps/api/src/services/monitors/conversion/partnerBacklog.*`, `apps/api/src/routes/admin/{monitorConversion.*,index.ts}`, `apps/api/src/__tests__/integration/monitorConversionRoundtrip.integration.test.ts` | Hosted conversion backlog/wrapper and nullable system-actor proof, Task 7 |
 | `apps/web/src/components/admin/MonitorConversionAdmin.*`, `apps/web/src/pages/admin/monitor-conversion.astro` | Hosted admin UI, Task 7 |
 | `apps/web/src/components/automations/{alertWorkflowFilter,AutomationForm,AutomationEditPage}.*`, `AutomationsPage.tabs.test.tsx`, `apps/api/src/jobs/automationWorker.test.ts` | Typed workflow filter and runtime contract, Task 9 |
 | `apps/api/src/routes/devices/{monitors.ts,index.ts}`, `apps/api/src/__tests__/integration/deviceMonitors.integration.test.ts`, `apps/web/src/components/devices/DeviceMonitoringTab.*` | Effective device monitoring and isolation, Task 10 |
 | `apps/web/src/pages/settings/alert-templates/*.astro`, `apps/web/src/components/alerts/AlertTemplate*` | Redirect stubs and deleted editors/tests, Task 11 |
-| `apps/web/src/lib/{routeScope.*,runActionAllowlist.ts}`, `apps/web/src/lib/__tests__/{settingsPageRegistry,alertTemplatesRetired,no-silent-mutations}.test.ts`, `Sidebar.nav.test.tsx` | Registry, navigation, deletion and mutation coverage, Tasks 1, 7–10 |
+| `apps/web/src/lib/{routeScope.*,runActionAllowlist.ts}`, `apps/web/src/lib/__tests__/{settingsPageRegistry,alertTemplatesRetired,no-silent-mutations}.test.ts`, `Sidebar.nav.test.tsx` | Registry, navigation, deletion and mutation coverage, Tasks 1, 7–11 |
 | `apps/web/src/locales/*/{policies,monitoring,pages,scripts,alerts}.json` | Real translations or removal of retired keys, Tasks 3–13 |
 | `apps/api/src/services/{aiToolsConfigPolicy.*,aiToolsFleet.ts,aiAgentSdkTools.ts,aiAgentSdkTools.mcpCoverage.test.ts,aiAgentSystemPrompt.ts,aiGuardrails.ts}`, `monitors/listServiceMonitors.*` | Canonical monitor AI behavior and schemas, Task 14 |
 | `packages/shared/src/{types/fleetDesign.ts,validators/fleetDesign.*}`, `apps/api/src/services/aiAgents/{outcomeTools.*,runLoop.design.test.ts,fleetDesignReport.test.ts}`, `FleetDesignViewer.test.tsx` | Monitor-shaped model proposals, Task 15 |
 | `apps/api/src/services/fleetDesign/{monitorProposalCompatibility.*,preview.ts,monitorAttachments.*,apply.*,drift.*,rollback.*}` | Historical report guard, apply, drift, rollback, Tasks 15–16 |
-| `apps/api/src/services/monitors/{monitorService.*,monitorCompiler.ts}`, `packages/shared/src/types/fleetDesignApply.ts`, `apps/api/src/__tests__/integration/fleetDesignApply.integration.test.ts` | Savepoint-aware monitor service, ledger provenance and live proof, Task 16 |
+| `apps/api/src/services/monitors/monitorService.*`, `packages/shared/src/types/fleetDesignApply.ts`, `apps/api/src/__tests__/integration/fleetDesignApply.integration.test.ts` | Savepoint-aware monitor service, ledger provenance and live proof, Task 16 |
 | `apps/docs/src/content/docs/features/{alerts,monitors,notifications,configuration-policies,alert-templates,service-monitoring}.mdx`, `apps/docs/astro.config.mjs` | Domain docs, removals and redirects, Task 17 |
 | `apps/docs/src/content/docs/migration/{overview,ninjaone,syncro,other-rmms,atera,datto-rmm,n-central,kaseya-vsa,connectwise-automate,scripts-from-datto}.mdx`, `docs/release-notes/next-release-draft.md` | All ten affected guides and release checklist, Task 17 |
 | `apps/web/src/lib/__tests__/{alertingDocs,alertingVerification}.test.ts`, `scripts/verify-alerting-consolidation-w05c2.sh` | Documentation contract and complete final verification, Tasks 17–18 |
@@ -1570,12 +1571,13 @@ const activePreview = useRef<AbortController | null>(null);
 - Create: `apps/api/src/services/monitors/conversion/partnerBacklog.ts`, `partnerBacklog.test.ts`
 - Create: `apps/api/src/routes/admin/monitorConversion.ts`, `monitorConversion.test.ts`
 - Modify: `apps/api/src/routes/admin/index.ts` (mount after `/sending-domains`)
+- Modify: `apps/api/src/__tests__/integration/monitorConversionRoundtrip.integration.test.ts` (C1 Task 18 prerequisite output; exercise the admin auth helper in the existing nullable-system-actor case).
 - Create: `apps/web/src/components/admin/MonitorConversionAdmin.tsx`, `MonitorConversionAdmin.test.tsx`, `apps/web/src/pages/admin/monitor-conversion.astro`
 - Modify: `apps/web/src/locales/*/pages.json` (`titles.adminMonitorConversion`, 8 locales)
 
 **Interfaces:**
 - Consumes (W05c1): `previewPartnerConversion(partnerId, auth): Promise<PartnerConversionPreview>` and `convertPartnerLegacy(partnerId, previewHash, auth): Promise<{ policies; converted; unconvertible }>` from `apps/api/src/services/monitors/conversion/`; the `retired_at` columns on the six source tables. Also `platformAdminMiddleware` (applied once by `routes/admin/index.ts:16` — never re-applied in the sub-router, `sendingDomains.ts:12-19`), `requireMfa()` on the mutating verb, `writeRouteAudit`, `runOutsideDbContext` + `withSystemDbAccessContext` (`db/index.ts`), `createSystemAuthContext` (`services/featureConfigResolver.ts:52`).
-- Produces: `GET /api/v1/admin/monitor-conversion/partners` → `{ data: Array<{ partnerId; partnerName; pendingRows; pendingPolicies }> }` (every partner, pending-first); `POST /api/v1/admin/monitor-conversion/partners/:partnerId/convert` (MFA) → `{ data: { policies, converted, unconvertible } }`. The admin preview POST `/partners/:partnerId/preview` returns `PartnerConversionPreview`; confirm POST `/partners/:partnerId/convert` requires `{ previewHash }`. The converter runs under a **system-scope** auth that carries the platform admin's real `user` (so `converted_by` / `created_by` reference a real `users` row — `createSystemAuthContext`'s zero UUID is not one, memory `monitors_w02_defects…`) and the target `partnerId`; `canManagePartnerWidePolicies` passes on `scope: 'system'`. Web: `/admin/monitor-conversion` — unlisted (reached by URL, the `SendingDomainsAdmin` precedent), one row per partner with the counts and a **Convert** button; results printed inline so the release checklist can record them.
+- Produces: `GET /api/v1/admin/monitor-conversion/partners` → `{ data: Array<{ partnerId; partnerName; pendingRows; pendingPolicies }> }` (every partner, pending-first); `POST /api/v1/admin/monitor-conversion/partners/:partnerId/convert` (MFA) → `{ data: { policies, converted, unconvertible } }`. The admin preview POST `/partners/:partnerId/preview` returns `PartnerConversionPreview`; confirm POST `/partners/:partnerId/convert` requires `{ previewHash }`. The converter runs under a **system-scope** auth that carries the platform admin's real `user` and the target `partnerId`; `canManagePartnerWidePolicies` passes on `scope: 'system'`. C1 persists **null** in `converted_by` / `created_by` for every system-scope call, including this admin-triggered sweep (D7). Administrator attribution stays in `writeRouteAudit` using the original request context; neither the carried admin user nor the synthetic zero UUID is persisted in those conversion actor fields. Web: `/admin/monitor-conversion` — unlisted (reached by URL, the `SendingDomainsAdmin` precedent), one row per partner with the counts and a **Convert** button; results printed inline so the release checklist can record them.
 
 - [ ] **Step 0: Verify the converter's entry points.** `ls apps/api/src/services/monitors/conversion/ && grep -n "export async function convertPartnerLegacy" -A 3 apps/api/src/services/monitors/conversion/*.ts`. Import `convertPartnerLegacy` from the file that exports it (the plan assumes an `index.ts` barrel; use the real path).
 - [ ] **Step 1: Write the failing tests.**
@@ -1656,7 +1658,7 @@ const activePreview = useRef<AbortController | null>(null);
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual({ data: [{ partnerId: PARTNER, partnerName: 'Acme', pendingRows: 3, pendingPolicies: 1 }] });
     });
-    it('POST /partners/:id/convert runs the converter as system scope carrying the admin user and the partner, then audits', async () => {
+    it('POST converts as system (null persisted actors) and audits the initiating administrator', async () => {
       mocks.convertPartnerLegacy.mockResolvedValue({ policies: 1, converted: 3, unconvertible: 0 });
       const res = await buildApp().request(`/admin/monitor-conversion/partners/${PARTNER}/convert`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ previewHash: 'partner-h' }) });
       expect(res.status).toBe(200);
@@ -1666,6 +1668,11 @@ const activePreview = useRef<AbortController | null>(null);
       expect(partnerId).toBe(PARTNER);
       expect(auth).toEqual(expect.objectContaining({ scope: 'system', partnerId: PARTNER, partnerOrgAccess: 'all', user: expect.objectContaining({ id: ADMIN }) }));
       expect(mocks.audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: 'monitor_conversion.admin_partner_convert', resourceId: PARTNER }));
+      // writeRouteAudit derives attribution from the original request, not the converter's system principal.
+      const [auditContext] = mocks.audit.mock.calls[0]!;
+      expect(auditContext.get('auth').user.id).toBe(ADMIN);
+      expect(auditContext.get('auth').partnerId).toBeNull();
+      // Actual null FK persistence is asserted by the live case below, not this mocked converter.
     });
     it('previews the whole partner and rejects conversion without its hash', async () => {
       mocks.previewPartnerConversion.mockResolvedValue({ partnerId: PARTNER, previewHash: 'h1', policies: 2, rows: 4, convertible: 4, unconvertible: [] });
@@ -1689,6 +1696,14 @@ const activePreview = useRef<AbortController | null>(null);
     });
   });
   ```
+  In C1 Task 18's existing `monitorConversionRoundtrip.integration.test.ts`, import `adminAuthForPartner` from `../../routes/admin/monitorConversion`. In `preserves post-conversion history and writes nullable system actors`, replace only the `systemAuth` declaration with:
+  ```ts
+  const systemAuth = adminAuthForPartner(f.auth, f.partnerId);
+  expect(systemAuth.scope).toBe('system');
+  expect(systemAuth.user.id).toBe(f.userId);
+  ```
+  Keep the real `previewPolicyConversion` / `convertPolicy` calls and database assertions `expect(monitor!.createdBy).toBeNull(); expect(ledger!.convertedBy).toBeNull();`. Together with the route audit-context assertion, this proves real administrator attribution belongs to the audit while the converter writes null system actors. Reuse C1's existing `conversionFixture` / `orgContext`; do not invent a second fixture or assert persistence from the route's mock.
+
   `MonitorConversionAdmin.test.tsx`:
   ```tsx
   import { fireEvent, render, screen, waitFor } from '@testing-library/react';
@@ -1822,10 +1837,10 @@ const activePreview = useRef<AbortController | null>(null);
   const partnerParam = z.object({ partnerId: z.string().uuid() });
 
   /**
-   * The converter needs a partner-scoped capability and a real actor. System
-   * scope passes canManagePartnerWidePolicies; the platform admin's own user
-   * row is what converted_by / created_by reference (the synthetic system
-   * user id is not a users row).
+   * System scope supplies the partner-wide capability. C1 persists null in
+   * converted_by / created_by for system scope even when auth.user is real.
+   * Carry the admin user for request context; writeRouteAudit on the original
+   * context records that administrator. Never persist the synthetic user id.
    */
   export function adminAuthForPartner(auth: AuthContext, partnerId: string): AuthContext {
     return {
@@ -1864,12 +1879,12 @@ const activePreview = useRef<AbortController | null>(null);
     return c.json({ data: result });
   });
   ```
-  Keep the system principal from `createSystemAuthContext`; the admin user remains the real audited actor. D7 uses null for unattended system writes, never the synthetic zero UUID. `routes/admin/index.ts`, after the sending-domains mount:
+  Keep the system principal from `createSystemAuthContext`; the admin user remains the real audited actor. D7 uses null for all system-scope conversion writes, including this admin-triggered run, never the synthetic zero UUID. `routes/admin/index.ts`, after the sending-domains mount:
   ```ts
   import { adminMonitorConversionRoutes } from './monitorConversion';
   // Alerting consolidation W05c2: the hosted post-deploy conversion sweep.
   // Reads every partner (system scope) and runs W05c1's partner converter per
-  // partner with the admin as the actor; MFA on the POST.
+  // partner with null conversion actors and the admin in the route audit; MFA on the POST.
   adminRoutes.route('/monitor-conversion', adminMonitorConversionRoutes);
   ```
   `MonitorConversionAdmin.tsx`:
@@ -1954,8 +1969,10 @@ const activePreview = useRef<AbortController | null>(null);
     src/__tests__/partner-wide-write-coverage.test.ts src/__tests__/site-ceiling-write-coverage.test.ts
   cd ../web && npx tsc --noEmit -p . && npx vitest run src/components/admin/MonitorConversionAdmin.test.tsx src/lib/i18n src/lib/__tests__/settingsPageRegistry.test.ts src/lib/__tests__/no-silent-mutations.test.ts
   ```
+  Also run the amended C1 live actor case at implementation time with the test stack and EXIT teardown: `(cd apps/api && npx vitest run -c vitest.integration.config.ts src/__tests__/integration/monitorConversionRoundtrip.integration.test.ts)`. Task 18 repeats this existing suite in aggregate verification.
+
   (`partner-wide-write-coverage` and `site-ceiling-write-coverage` scan files that mutate dual-axis tables; neither new API file writes one directly — if a scanner still flags `monitorConversion.ts`, add the allowlist entry with the reason "delegates to W05c1's converter under system scope; platform-admin + MFA gated".)
-- [ ] **Step 5: Commit.** `git add apps/api/src/services/monitors/conversion/partnerBacklog.ts apps/api/src/services/monitors/conversion/partnerBacklog.test.ts apps/api/src/routes/admin/monitorConversion.ts apps/api/src/routes/admin/monitorConversion.test.ts apps/api/src/routes/admin/index.ts apps/web/src/components/admin/MonitorConversionAdmin.tsx apps/web/src/components/admin/MonitorConversionAdmin.test.tsx apps/web/src/pages/admin/monitor-conversion.astro apps/web/src/locales/*/pages.json && git commit -m "feat(admin): legacy alert conversion page — per-partner backlog and Convert (hosted sweep)"`
+- [ ] **Step 5: Commit.** `git add apps/api/src/__tests__/integration/monitorConversionRoundtrip.integration.test.ts apps/api/src/services/monitors/conversion/partnerBacklog.ts apps/api/src/services/monitors/conversion/partnerBacklog.test.ts apps/api/src/routes/admin/monitorConversion.ts apps/api/src/routes/admin/monitorConversion.test.ts apps/api/src/routes/admin/index.ts apps/web/src/components/admin/MonitorConversionAdmin.tsx apps/web/src/components/admin/MonitorConversionAdmin.test.tsx apps/web/src/pages/admin/monitor-conversion.astro apps/web/src/locales/*/pages.json && git commit -m "feat(admin): legacy alert conversion page — per-partner backlog and Convert (hosted sweep)"`
 
 ---
 
@@ -1967,8 +1984,8 @@ const activePreview = useRef<AbortController | null>(null);
 - Modify: `apps/web/src/locales/*/monitoring.json` (all eight locales), `apps/web/src/lib/__tests__/no-silent-mutations.test.ts:35–59`.
 
 **Interfaces:**
-- Consumes D2 `GET /monitor-definitions/conversion/ledger?orgId&policyId&cursor&limit` → `{ items: ConversionLedgerEntry[]; nextCursor: string | null }`, scoped and authorized by C1 Task 14. Uses Task 1 mirrors and `conversionPaths.ledger/revert`. API query parameters are server-side filters/pagination, not transient UI state.
-- Produces `ConversionLedger({ orgId?, policyId?, revision?, onChanged? })`, mounted independently of `hasLegacyRows` or pending counts; pagination and retry; every entry lists source, actor (null = system), date and outputs; zero-output manual retirement entries remain visible. D4 `revertable` disables Undo; HTTP 409 invalidates the stale ledger and displays the error via `runAction`.
+- Consumes D2 `GET /monitor-definitions/conversion/ledger?orgId&policyId&cursor&limit` → `{ items: ConversionLedgerEntry[]; nextCursor: string | null }`, scoped and authorized by C1 Task 16. Uses Task 1 mirrors and `conversionPaths.ledger/revert`. API query parameters are server-side filters/pagination, not transient UI state.
+- Produces `ConversionLedger({ orgId?, policyId?, revision?, onChanged? })`, mounted independently of `hasLegacyRows` or pending counts; pagination and retry; every entry lists source, actor (null = system), date and outputs; zero-output manual retirement entries remain visible. D4 `revertable` includes lifecycle, authorization and live target-conversion dependencies from C1; it disables Undo; HTTP 409 invalidates the stale ledger and displays the error via `runAction`.
 
 - [ ] **Step 1: Write the failing tests.** `ConversionLedger.test.tsx`:
   ```tsx
@@ -2004,6 +2021,15 @@ const activePreview = useRef<AbortController | null>(null);
     fireEvent.click(screen.getByTestId('ledger-more'));
     expect(await screen.findByTestId('ledger-undo-c2')).toBeEnabled();
     expect(String(request.mock.calls[1]![0])).toContain('cursor=next');
+  });
+  it('disables response-only Undo while its target conversion is live', async () => {
+    request.mockResolvedValueOnce(json({ items: [{ ...entry, sourceTable: 'automations', revertable: false,
+      outputs: [{ monitorId: 'm1', role: 'response', reused: true }] }], nextCursor: null }));
+    render(<ConversionLedger />);
+    const undo = await screen.findByTestId('ledger-undo-c1');
+    expect(undo).toBeDisabled();
+    fireEvent.click(undo);
+    expect(request.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
   });
   it('refreshes lifecycle state after a 409 and never reports successful Undo', async () => {
     request.mockResolvedValueOnce(json({ items: [entry], nextCursor: null }))
@@ -2093,7 +2119,7 @@ const activePreview = useRef<AbortController | null>(null);
   | deadline | Undo is unavailable after W05d removes the source runtime. | Rückgängig ist nach Entfernung der Quelllaufzeit durch W05d nicht verfügbar. | Deshacer no está disponible cuando W05d elimina el evaluador de origen. | L'annulation est indisponible après la suppression du moteur source par W05d. | Annullamento non disponibile dopo la rimozione del motore di origine in W05d. | Desfazer fica indisponível após W05d remover o avaliador de origem. | W05d kaynak değerlendiriciyi kaldırdıktan sonra geri alma kullanılamaz. |
 
 - [ ] **Step 4: Run, expect PASS.** `cd apps/web && npx vitest run src/components/monitoring/conversion src/components/configurationPolicies/featureTabs/MonitorsTab.test.tsx src/lib/i18n src/lib/__tests__/no-silent-mutations.test.ts && npx tsc --noEmit -p .`.
-- [ ] **Step 5: Commit.** `git add apps/web/src/components/monitoring/conversion apps/web/src/components/monitoring/MonitorsListPage.tsx apps/web/src/components/configurationPolicies/featureTabs/MonitorsTab.tsx apps/web/src/locales/*/monitoring.json apps/web/src/lib/__tests__/no-silent-mutations.test.ts && git commit -m "feat(alerts): persist conversion history and lifecycle-aware Undo"`
+- [ ] **Step 5: Commit.** `git add apps/web/src/components/monitoring/conversion apps/web/src/components/monitoring/LegacyRulesTable.tsx apps/web/src/components/monitoring/MonitorsListPage.tsx apps/web/src/components/configurationPolicies/featureTabs/MonitorsTab.tsx apps/web/src/locales/*/monitoring.json apps/web/src/lib/__tests__/no-silent-mutations.test.ts && git commit -m "feat(alerts): persist conversion history and lifecycle-aware Undo"`
 
 ---
 
@@ -3323,14 +3349,15 @@ const activePreview = useRef<AbortController | null>(null);
 **Files:**
 - Create: `apps/api/src/services/fleetDesign/monitorAttachments.ts`, `monitorAttachments.test.ts`.
 - Modify: `apps/api/src/services/fleetDesign/apply.ts:316–460,535–580`, `apply.test.ts:210–220` and monitoring cases; `drift.ts:237–269`, `drift.test.ts`; `rollback.ts:201–204`, `rollback.test.ts`.
-- Modify: `apps/api/src/services/monitors/monitorService.ts:119–153,226–378`, `monitorService.test.ts`; `apps/api/src/services/monitors/monitorCompiler.ts:287–341` (CompileOptions); `packages/shared/src/types/fleetDesignApply.ts:135–150`.
+- Modify: `apps/api/src/services/monitors/monitorService.ts` (C1-extracted `createValidatedMonitorInTx` options forwarding; remaining update path at base lines 293–378), `monitorService.test.ts`; `packages/shared/src/types/fleetDesignApply.ts:135–150`.
+- Read/verify: `apps/api/src/services/monitors/monitorCompiler.ts` (C1-owned `DbExecutor`, `CompileOptions` and compiler signature).
 - Modify: `apps/api/src/__tests__/integration/fleetDesignApply.integration.test.ts:212–245,425–478` and tests for idempotency, step rollback and script provenance.
 - Read/reuse: `configurationPolicy.ts:1655–1720,1752–1800,1901` executor arguments; `fleetDesign/preview.ts:348–358` partner-wide retirement gate; W05c1 watch mapping contract (`command: ''` denotes agent-local restart).
 
 **Interfaces:**
 - Consumes: Task 15 monitor-shaped `FleetDesignRule`; `createMonitorDefinition`, `updateMonitorDefinition`, `addFeatureLink`, `updateFeatureLink`, `listFeatureLinks`; Fleet Design's step savepoint `ApplyTransaction`.
 - Produces: `attachFleetMonitors(policyId, proposals, auth, tx): Promise<Record<itemRef, monitorId>>`, `snapshotFleetMonitors(ids, executor = db)`; same-axis monitor definitions and one cumulative `monitors` link, preserving existing attachments and inheritance. An existing `replace` setting is preserved. No new `alert_rule` or watch-bearing `monitoring` link is written.
-- Monitor service adds an optional executor: `getMonitorDefinition(id, auth, executor = db)`, `updateMonitorDefinition(id, input, auth, executor = db)`, `createMonitorDefinition(input, auth, options = {}, executor = db)`. Argument 3 is `options: CompileOptions = {}` and argument 4 is `executor?: DbExecutor` (default `db`). Export `CompileOptions` from `monitorCompiler.ts` now as `Record<string, never>`; W05e extends that same type with adoption options and preserves all executor-aware operations. Do not invent a competing compiler.
+- Retain C1 Task 7's `createMonitorDefinition(input, auth, options: CompileOptions = {}, executor: DbExecutor = db)` and executor-aware `assertEscalationPolicyCompatible`, plus C1 Task 15's `getMonitorDefinition(id, auth, executor = db)` and delete path. C1 Task 7 exports both `DbExecutor` and the single `CompileOptions` from `monitorCompiler.ts`; `monitorService.ts` imports them via `import { compileMonitorInTx, type CompileOptions, type DbExecutor } from './monitorCompiler';`. This task adds only `updateMonitorDefinition(id, input, auth, executor: DbExecutor = db)` and forwards options through C1's extracted `createValidatedMonitorInTx`. W05e extends that same compiler-owned type for adoption. Do not redeclare types, duplicate executor parameters or replace C1's create transaction boundary.
 - Ledger JSON `FleetDesignCreatedRefs` gains `monitorId?`, `monitorIdsByItemRef?`, `monitorSnapshots?`, `monitorLinkId?`; `linksSnapshot.monitors?`. Existing JSON column classification stays `excludedOpen`; no migration or new table. Re-applying skips existing itemRefs; failure rolls back monitor definitions, compiled children, attachments and ledger rows in that step together.
 
 - [ ] **Step 1: Write the failing tests.** New `monitorAttachments.test.ts`:
@@ -3384,6 +3411,54 @@ const activePreview = useRef<AbortController | null>(null);
     });
   });
   ```
+  In `monitorService.test.ts`, import `* as compiler` from `./monitorCompiler` and reuse its existing `input`, `auth`, `existingRow`, `dbMock`, `ORG` and `PARTNER` fixtures:
+  ```ts
+  it('forwards the exact compile options through C1’s extracted create helper', async () => {
+    const row = existingRow();
+    const values = vi.fn(() => ({ returning: async () => [row] }));
+    const tx = { insert: vi.fn(() => ({ values })) };
+    const executor = { transaction: vi.fn(async (work: (value: typeof tx) => Promise<unknown>) => work(tx)) };
+    const options: compiler.CompileOptions = {};
+    const compile = vi.spyOn(compiler, 'compileMonitorInTx').mockResolvedValue({
+      alertTemplateId: 'template', alertRuleId: 'rule', automationId: 'automation', hash: 'hash',
+    });
+    try {
+      await createMonitorDefinition(input(), auth(), options,
+        executor as unknown as Parameters<typeof createMonitorDefinition>[3]);
+      expect(executor.transaction).toHaveBeenCalledOnce();
+      expect(compile).toHaveBeenCalledWith(tx, row, options);
+      expect(compile.mock.calls[0]![2]).toBe(options);
+      expect(dbMock.select).not.toHaveBeenCalled();
+      expect(dbMock.transaction).not.toHaveBeenCalled();
+    } finally { compile.mockRestore(); }
+  });
+  it('uses the supplied executor for update reads, reference validation and compilation', async () => {
+    const row = existingRow({ escalationPolicyId: ESCALATION_POLICY });
+    const query = (result: unknown[]) => ({ from: () => ({ where: () => ({ limit: async () => result }) }) });
+    const select = vi.fn().mockReturnValueOnce(query([row]))
+      .mockReturnValueOnce(query([{ orgId: null, partnerId: PARTNER }]))
+      .mockReturnValueOnce(query([{ partnerId: PARTNER }]));
+    const updated = { ...row, description: 'Fleet provenance' };
+    const set = vi.fn(() => ({ where: () => ({ returning: async () => [updated] }) }));
+    const tx = { update: vi.fn(() => ({ set })) };
+    const executor = { select, transaction: vi.fn(async (work: (value: typeof tx) => Promise<unknown>) => work(tx)) };
+    const compile = vi.spyOn(compiler, 'compileMonitorInTx').mockResolvedValue({
+      alertTemplateId: 'template', alertRuleId: 'rule', automationId: 'automation', hash: 'updated-hash',
+    });
+    try {
+      await expect(updateMonitorDefinition(row.id, { description: 'Fleet provenance' }, auth(),
+        executor as unknown as Parameters<typeof updateMonitorDefinition>[3]))
+        .resolves.toMatchObject({ description: 'Fleet provenance', compiledHash: 'updated-hash' });
+      expect(select).toHaveBeenCalledTimes(3);
+      expect(executor.transaction).toHaveBeenCalledOnce();
+      expect(compile).toHaveBeenCalledWith(tx, updated);
+      expect(dbMock.select).not.toHaveBeenCalled();
+      expect(dbMock.transaction).not.toHaveBeenCalled();
+    } finally { compile.mockRestore(); }
+  });
+  ```
+  These exercise the real service functions with isolated executors; the live savepoint proof below verifies rollback against PostgreSQL.
+
   Append to existing `apply.test.ts` (which already imports `snapshotLinks`):
   ```ts
   it('includes monitor attachments in the rollback snapshot without changing old snapshots', () => {
@@ -3448,36 +3523,25 @@ const activePreview = useRef<AbortController | null>(null);
   });
   ```
 
-- [ ] **Step 2: Run it, expect FAIL.** `cd apps/api && npx vitest run src/services/fleetDesign/monitorAttachments.test.ts src/services/fleetDesign/apply.test.ts` → missing helper and `monitors` snapshot field. Live suite, under `pnpm test-stack up` and EXIT teardown: `cd apps/api && npx vitest run -c vitest.integration.config.ts src/__tests__/integration/fleetDesignApply.integration.test.ts` → newly created feature types are `monitoring, alert_rule`, not `monitors`.
+- [ ] **Step 2: Run it, expect FAIL.** `cd apps/api && npx vitest run src/services/fleetDesign/monitorAttachments.test.ts src/services/fleetDesign/apply.test.ts src/services/monitors/monitorService.test.ts` → missing helper, `monitors` snapshot field, missing forwarded compile options and update reads escaping the supplied executor. Live suite, under `pnpm test-stack up` and EXIT teardown: `cd apps/api && npx vitest run -c vitest.integration.config.ts src/__tests__/integration/fleetDesignApply.integration.test.ts` → newly created feature types are `monitoring, alert_rule`, not `monitors`.
 
-- [ ] **Step 3a: Implement transaction-aware service calls.** Apply these exact edits to `monitorService.ts` using this script from root. Each replacement asserts the inspected source anchor, preserves the full existing validation/insert/update/compile body, and changes only the executor plumbing:
+- [ ] **Step 3a: Complete transaction-aware service calls on top of C1.** C1 Task 7 already imports the compiler-owned `DbExecutor` and `CompileOptions` into the service, threads `executor` through creation/reference validation and extracts `createValidatedMonitorInTx`; C1 Task 15 threads it through get/delete. Retain those signatures and the compiler's existing optional third argument. Do not patch creation against the obsolete `input.escalationPolicyId ?? null, owner)` or `return db.transaction(` anchors, and do not add another type declaration. Apply only these remaining edits in `monitorService.ts`:
   ```python
   from pathlib import Path
   p = Path('apps/api/src/services/monitors/monitorService.ts')
   s = p.read_text()
-  alias = "type DbExecutor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];\n\n"
-  s = s.replace('export async function getMonitorDefinition(', alias + 'export async function getMonitorDefinition(', 1)
   def patch_block(start, end, replacements):
       global s
       a = s.index(start)
       b = s.index(end, a + len(start))
       block = s[a:b]
       for old, new in replacements:
-          assert old in block, (start, old)
-          block = block.replace(old, new)
+          assert block.count(old) == 1, (start, old)
+          block = block.replace(old, new, 1)
       s = s[:a] + block + s[b:]
-  patch_block('async function assertEscalationPolicyCompatible(', '/**', [
-      ('owner: MonitorOwner,\n', 'owner: MonitorOwner,\n  executor: DbExecutor = db,\n'),
-      ('await db\n', 'await executor\n'),
-  ])
-  patch_block('export async function getMonitorDefinition(', 'export async function createMonitorDefinition(', [
-      ('auth: AuthContext,\n', 'auth: AuthContext,\n  executor: DbExecutor = db,\n'),
-      ('await db\n', 'await executor\n'),
-  ])
-  patch_block('export async function createMonitorDefinition(', 'export async function updateMonitorDefinition(', [
-      ('auth: AuthContext,\n', 'auth: AuthContext,\n  options: CompileOptions = {},\n  executor: DbExecutor = db,\n'),
-      ('input.escalationPolicyId ?? null, owner)', 'input.escalationPolicyId ?? null, owner, executor)'),
-      ('return db.transaction(', 'return executor.transaction('),
+  patch_block('async function createValidatedMonitorInTx(', 'export async function updateMonitorDefinition(', [
+      ('_options: CompileOptions, executor: DbExecutor', 'options: CompileOptions, executor: DbExecutor'),
+      ('compileMonitorInTx(tx, created)', 'compileMonitorInTx(tx, created, options)'),
   ])
   patch_block('export async function updateMonitorDefinition(', 'export async function deleteMonitorDefinition(', [
       ('auth: AuthContext,\n', 'auth: AuthContext,\n  executor: DbExecutor = db,\n'),
@@ -3487,16 +3551,7 @@ const activePreview = useRef<AbortController | null>(null);
   ])
   p.write_text(s)
   ```
-  In `monitorCompiler.ts:35,287`, export the options type and update the signature, retaining the compiler body:
-  ```ts
-  export type CompileOptions = Record<string, never>;
-  export async function compileMonitorInTx(tx: DbTx, def: MonitorDefinitionRow, options: CompileOptions = {}): Promise<CompiledRefs> {
-  ```
-  In `monitorService.ts`, import `type CompileOptions` from `./monitorCompiler` and replace the create path's compile call with:
-  ```ts
-  const refs = await compileMonitorInTx(tx, created, options);
-  ```
- Both escalation-policy reads now use the supplied executor. Existing two-argument callers still compile. When W05e extends this contract, keep its `CompileOptions` third argument and `compileMonitorInTx(tx, created, options)` call while applying the same executor edits; never replace its adoption option with the pre-W05e empty options type.
+  The create helper must now call `compileMonitorInTx(tx, created, options)` inside its existing `executor.transaction`. Both update reference reads and the update/compile transaction use the supplied executor. Keep `createdBy: auth.scope === 'system' ? null : auth.user.id`. Existing two-argument create callers and three-argument update callers remain valid. If W05e has already extended `CompileOptions`, retain its fields and the compiler's adoption logic; no compiler type/signature replacement is needed here.
 
 - [ ] **Step 3b: Implement attachment and snapshot helpers.** `monitorAttachments.ts`:
   ```ts
@@ -3681,7 +3736,7 @@ const activePreview = useRef<AbortController | null>(null);
   (cd apps/api && npx vitest run -c vitest.integration.config.ts src/__tests__/integration/fleetDesignApply.integration.test.ts src/__tests__/integration/tenantCascade.integration.test.ts src/__tests__/integration/tenant-export-policy.integration.test.ts)
   ```
   PASS requires no unmanaged alert-rule inserts from new Fleet proposals, no legacy feature links on the new policy, stable ledger IDs on repeat apply, and zero orphan definitions after the forced savepoint rollback.
-- [ ] **Step 5: Commit.** `git add apps/api/src/services/fleetDesign apps/api/src/services/monitors/monitorService.ts apps/api/src/services/monitors/monitorService.test.ts apps/api/src/services/monitors/monitorCompiler.ts packages/shared/src/types/fleetDesignApply.ts apps/api/src/__tests__/integration/fleetDesignApply.integration.test.ts && git commit -m "feat(fleet-design): apply monitor attachments within step transactions"`
+- [ ] **Step 5: Commit.** `git add apps/api/src/services/fleetDesign apps/api/src/services/monitors/monitorService.ts apps/api/src/services/monitors/monitorService.test.ts packages/shared/src/types/fleetDesignApply.ts apps/api/src/__tests__/integration/fleetDesignApply.integration.test.ts && git commit -m "feat(fleet-design): apply monitor attachments within step transactions"`
 
 ---
 
@@ -4046,7 +4101,7 @@ const activePreview = useRef<AbortController | null>(null);
 - Verify all Files entries in Tasks 1–17, including shared validators, API routes/tools/services, eight locale directories, web route registries, docs redirects and release notes. No migration is introduced by W05c2.
 
 **Interfaces:**
-- Consumes exact W05c1 leaf contracts from its Task 14: GET `/monitor-definitions/conversion/policies/:policyId/preview` returns 200 `{ data: PolicyConversionPreview }` or 202 `{ data: PolicyConversionPreviewPending }`; poll the same GET. W05c1 `PolicyConversionPreviewPending` contains `status: 'running'`, `progress: { checked, total }`. Tasks 1 and 5 already implement this in PR1; this task verifies the merged behavior.
+- Consumes exact W05c1 leaf contracts from its Task 16: GET `/monitor-definitions/conversion/policies/:policyId/preview` returns 200 `{ data: PolicyConversionPreview }` or 202 `{ data: PolicyConversionPreviewPending }`; poll the same GET. W05c1 `PolicyConversionPreviewPending` contains `status: 'running'`, `progress: { checked, total }`. Tasks 1 and 5 already implement this in PR1; this task verifies the merged behavior.
 - Produces: one reproducible verification command covering PR1 completed previews, polling progress, cancellation on unmount/policy change, and stale-preview confirmation disabled during refresh. Verification is local on the final integration of all three PRs, not evidence borrowed from a green sibling branch.
 
 - [ ] **Step 1: Write the failing test.** Create `alertingVerification.test.ts`:
@@ -4124,4 +4179,4 @@ const activePreview = useRef<AbortController | null>(null);
 
 ## Open questions
 
-None. D1–D19 settle the reviewed questions; their applicable resolutions are incorporated in the tasks.
+None. D1–D20 settle the reviewed questions; their applicable resolutions are incorporated in the tasks.

@@ -8,7 +8,7 @@ diagrams: docs/superpowers/specs/monitoring/2026-09-19-alerting-consolidation-di
 
 One domain (Alerts) with three facets (Monitors · Inbox · Delivery); every legacy alert-authoring
 surface converted into monitors and removed; one delivery precedence with a visible default; one
-sweep. Five waves, six plan files. Each plan is self-contained; read the spec first, then the plan.
+sweep. Five waves, six plan files, 90 tasks. Each plan is self-contained; read the spec first, then the plan.
 
 | Wave | Plan | PRs | Depends on | Ships |
 |---|---|---|---|---|
@@ -17,13 +17,13 @@ sweep. Five waves, six plan files. Each plan is self-contained; read the spec fi
 | W05c1 — conversion (API) | `2026-09-19-alerting-consolidation-w05c1-conversion-api.md` | 3 | W05a, W05b, **#6342, #6343, #6344 merged** | `composite` kind; restart params; `consecutiveFailures` 100; `inheritance` link setting; retirement columns; `monitor_conversions` + outputs; converter + preview + equivalence check + open-alert carry-over; routes; payload `monitorId`/`kind`; onboarding writes attachments |
 | W05c2 — conversion (web, tools, docs) | `2026-09-19-alerting-consolidation-w05c2-conversion-web-and-tools.md` | 3 | W05c1 | Needs-conversion panel + Convert everything; library banner; Alert workflows filter; device Monitoring tab; Alert Templates pages deleted; Fleet Designer + AI tools on monitors; docs + release notes |
 | W05d — retirement | `2026-09-19-alerting-consolidation-w05d-retirement.md` | 2 | W05c shipped **in a prior release** | system sweep of leftovers; settings re-key; policy Alerts / S&P tabs, `/alerts/rules`, legacy write routers (410), `evaluateDeviceAlertsFromPolicy`, migrate script deleted; `RETIRED_CONFIG_FEATURE_TYPES`; startup count check |
-| W05e — network checks | `2026-09-19-alerting-consolidation-w05e-network-checks.md` | 3 | W05d, **#6352, #6353 merged** | `network_monitors` converted to `network_check` monitors; Network page loses check authoring; nav → Network; AI network tools refuse creation |
+| W05e — network checks | `2026-09-19-alerting-consolidation-w05e-network-checks.md` | 3 | W05d, **#6352, #6353 merged** (#6353 incl. device-independent check evaluation) | `network_monitors` converted to `network_check` monitors; Network page loses check authoring; nav → Network; AI network tools refuse creation |
 
 ## Program-wide constraints (every plan restates the ones that bind it)
 
 - Migration names must sort after the newest committed file on `origin/main`
-  (`2026-10-21-100200-billing-profiles-permissions.sql` at planning time). Assigned:
-  W05b `2026-10-23-100000-…`, W05c1 `2026-10-23-110000-…` / `2026-10-23-120000-…`,
+  (`2026-10-21-110100-filesystem-cleanup-run-status-running.sql` at planning time). Assigned:
+  W05b `2026-10-23-100000-…`, W05c1 `2026-10-23-103000-…` (composite enum) / `2026-10-23-110000-…` / `2026-10-23-120000-…`,
   W05d `2026-10-24-100000-…`, W05e `2026-10-24-110000-…`. Re-check before pushing.
 - No source row is ever deleted by this program: `retired_at` + `converted_to_monitor_id`.
 - Nothing stops firing silently: every unconvertible row is listed with a reason.

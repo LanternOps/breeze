@@ -19,10 +19,11 @@ branch: (set by feature-lifecycle after registration)
 ## Ordering assumptions (read first)
 
 - **W05a, W05b, W05c1 and W05c2 have shipped in a prior release.** W05d must not ship in the same release as W05c: the hosted "Convert everything" pass and the self-hosted banner need one full release cycle before anything is deleted (spec §Waves: "W05d depends on W05c having shipped in a prior release"). Both W05d PRs ship in the *same* release, PR2 after PR1 is merged.
-- **W05c1 contracts are prerequisites, not files created by W05d.** `services/monitors/conversion/index.ts` re-exports `previewPolicyConversion`, `previewPartnerConversion(partnerId, auth)`, `convertPartnerLegacy(partnerId, previewHash, auth)`, `revertConversion`, and `retireSource(...): Promise<{ conversionId: string }>`; `loadSources.ts` owns `countPendingConversions`. Routes live in `apps/api/src/routes/monitorDefinitions.conversion.ts`, mounted by `monitorDefinitions.ts`, with `GET /monitor-definitions/conversion/pending?orgId → { data: { policies, rows } }`. W05d consumes the binding D1–D19 contract even if another wave's plan is still being edited. `legacyBaseline.ts` exports `resolveLegacyBaseline(deviceId: string, executor: DbExecutor)` and stays private and executor-aware after public readers are removed. `lifecycle.ts` exports `isRevertAvailable(sourceTable: ConversionSourceTable): boolean`; Task 6 closes Revert for the five retired source tables. The nullable-system-actor writes, full partner preview/hash, template-group ledger, provenance restoration and coverage-preserving workflow rehoming must ship in C1. The retirement columns come from `2026-10-23-120000-legacy-source-retirement-columns.sql`.
+- **W05c1 contracts are prerequisites, not files created by W05d.** `services/monitors/conversion/index.ts` re-exports `previewPolicyConversion`, `previewPartnerConversion(partnerId, auth)`, `convertPartnerLegacy(partnerId, previewHash, auth)`, `revertConversion`, and `retireSource(...): Promise<{ conversionId: string }>`; `loadSources.ts` owns `countPendingConversions`. Routes live in `apps/api/src/routes/monitorDefinitions.conversion.ts`, mounted by `monitorDefinitions.ts`, with `GET /monitor-definitions/conversion/pending?orgId → { data: { policies, rows } }`. W05d consumes the binding D1–D20 contract even if another wave's plan is still being edited. `legacyBaseline.ts` exports `resolveLegacyBaseline(deviceId: string, executor: DbExecutor)` and stays private and executor-aware after public readers are removed. `lifecycle.ts` exports `isRevertAvailable(sourceTable: ConversionSourceTable): boolean`; Task 6 closes Revert for the five retired source tables. The nullable-system-actor writes, full partner preview/hash, template-group ledger, provenance restoration and coverage-preserving workflow rehoming must ship in C1. The retirement columns come from `2026-10-23-120000-legacy-source-retirement-columns.sql`.
 - **W05c2 names come from its plan** (`2026-09-19-alerting-consolidation-w05c2-conversion-web-and-tools.md`): the banner is `apps/web/src/components/monitoring/conversion/ConversionPendingBanner.tsx`, every conversion path is centralised in `components/monitoring/conversion/conversionApi.ts` (`conversionPaths.pending(orgId)`), and W05c2 Task 3 put the *Check interval* field on the Monitors tab (test id `monitors-tab-check-interval`) writing through `useFeatureLink.save(…, { featureType: 'monitoring', … })` — spec §Data model: keyed by the `monitoring` link **until W05d**. Task 2 repoints that write at the `monitors` link and rewrites W05c2's three test cases for it. W05a already deleted the `hub.*` keys in `monitoring.json` and the `pages/monitoring/*.astro` redirect stubs, and `AlertRuleEditPage`/`AlertRuleEditor`; `apps/web/src/components/alerts/AlertRuleForm.tsx` (+ `AlertRuleForm.retiredCondition.test.tsx`, `index.ts` export) survives W05a with no page importing it and goes in Task 11.
 - **Sweep = TypeScript after `serve()`, migration = SQL before it.** `initializeDatabaseForStartup({ autoMigrateEnabled })` (`apps/api/src/index.ts:1679-1682`) runs every migration before the listener; `ensureBuiltInMonitorsForAllPartners()` (`index.ts:1855-1871`, body at `services/monitors/builtInMonitors.ts:226-264`) is the precedent for per-partner work that must not delay `/health`. The W05d sweep is wired exactly the same way, immediately after it. Between `serve()` and the sweep finishing, unconverted inline rules do not fire — that window is the reason the release notes (Task 14) tell self-hosters to run *Convert everything* on the W05c release first.
 - **The startup check counts two tables, not one.** The spec names `config_policy_alert_rules WHERE retired_at IS NULL`; after Task 3 the agent config builder no longer delivers `config_policy_monitoring_watches` either, so an unretired watch is exactly as silent as an unretired rule. Both counts must be zero.
+- **Network checks retain their runtime and are outside automatic retirement.** Task 4's refusal allowlist and Task 6's Revert guard cover the same five legacy source tables, excluding `network_monitors`. W05e PR1 requires **#6352 and #6353 merged**, with #6353's extended scope evaluating each managed check independently of the alert device's online status, using legacy alert-device selection (linked asset device, preferred site, else most-recently-seen org device; offline devices eligible). It exports `NETWORK_CHECK_DEVICE_INDEPENDENT_EVALUATION = true as const` from `apps/api/src/services/alertConditions/handlers/networkCheck.ts`. That export is absent in this checkout; `apps/api/src/jobs/monitorWorker.ts:294-345` confirms the legacy selection. W05e Task 7 owns D20's capability gate: absent/false means the whole network preview is `blockedBy: 'prerequisite_missing'` with no conversion/refusal candidates; partner preview propagates `ConversionPrerequisiteMissingError`, never synthesizing network retirement reasons. Task 4 records a failed partner sweep without conversion, retirement or a completion marker when that preview throws. With the capability present, representable checks may convert through W05e; its Task 9 proves an offline alert device plus a failing check raises exactly one monitor alert. W05d never auto-retires refused network checks, including on subsequent boots after W05e ships.
 - **Equivalence refusals in the sweep become `unconvertible:equivalence_delta`.** The per-policy panel refuses a conversion whose before/after device sets differ and waits for a human (spec §Equivalence check). The sweep has no human, and after Task 9 the legacy evaluator is gone, so an unretired-but-unconverted row would be *silently* dead. The sweep therefore retires such rows with that reason so they are listed in the banner (spec §Conversion "Who runs it": "Nothing stops firing without being listed"). This is binding decision D19: refuse conversion on equivalence delta; retire and list the source. The comparison uses the retained normalized legacy baseline (D6), including resolved delivery, never the removed public feature readers.
 - **Open alerts of a retired-unconvertible source stay open for a human.** `checkAutoResolveFromConfigPolicy` (`services/alertService.ts:1386`, called from `jobs/alertWorker.ts:324`) is part of the legacy path and is deleted in Task 9; converted sources already had their non-terminal alerts moved to the compiled rule by W05c1 (spec §Open alerts), so only unconvertible sources are affected. Release notes say so.
 - **Code facts the spec/brief did not list, all verified and all in scope here:** `evaluateDeviceAlertsFromPolicy` has a *second* caller, `jobs/offlineDetector.ts:505` (`triggerConfigPolicyOfflineAlerts`, lines 476-520); the acknowledge-cooldown branch is duplicated in `routes/mobile.ts:1252-1256` and `services/alertService.ts:746-756` (`resolveAlert`); `getApplicableRulesFromPolicy` is also read by `services/offlineAlertEffects.ts:49` (the #6342 fix adds monitor resolution "alongside" it — the legacy half goes here); `PARTNER_LINKABLE_FEATURE_TYPES` (`services/configurationPolicy.ts:2654`) and `validateFeaturePolicyExists` (`:2804`, `:2826`, `:2890`) still name `alert_rule`/`monitoring`; the shared `addFeatureLinkSchema` hand-lists every feature type (`packages/shared/src/validators/index.ts:568`) instead of deriving from `CONFIG_FEATURE_TYPES`, as does the AI tool's JSON schema (`services/aiToolsConfigPolicy.ts:908-916`); `manage_alert_rules` `create_rule`/`update_rule`/`delete_rule` are *already* refused (`services/aiToolsFleet.ts:2579-2583`) but every pointer says `manage_policy_feature_link` + `alert_rule`; `routes/agents/helpers.partnerWidePolicies.test.ts` pins the `monitoring`-link query sequence that Task 3 changes.
@@ -61,16 +62,17 @@ branch: (set by feature-lifecycle after registration)
 | `apps/api/src/services/monitors/conversion/loadSources.ts` (W05c1) | Modify (PR1): `previewPartnerConversion` then hash-bound `convertPartnerLegacy` are consumed unchanged; the sweep retires reported refusals through the shared ledger writer; `readRetirementReport` shares pending scope; watch loading and the private baseline accept settings rows under either link type. |
 | `apps/api/src/services/monitors/conversion/legacyBaseline.ts`, `legacyBaseline.test.ts` | Retain C1's private normalized baseline when public readers are deleted; widen watch-link reads after re-key (PR1). |
 | `apps/api/src/services/monitors/conversion/lifecycle.ts`, `lifecycle.test.ts`, `convert.ts` | Modify/verify (PR1, Task 6): pre-mutation Revert guard; ledger eligibility. |
+| `apps/api/src/services/monitors/conversion/ledger.ts`, `ledger.test.ts` | Verify (PR1, Task 6): retain C1 Task 16's full eligibility projection, including live target-conversion dependencies from `source_state`, and its regression tests. |
 | `apps/api/src/routes/monitorDefinitions.conversion.test.ts`, `apps/web/src/components/monitoring/conversion/ConversionLedger.test.tsx` | Modify (PR1, Task 6): HTTP conflict and disabled Undo. |
 | `apps/api/src/services/monitors/conversion/legacyDeliveryBaseline.ts`, `legacyDeliveryBaseline.test.ts`, `equivalence.ts` | Create private historical-delivery helper/tests and update C1's before comparison (PR2, Task 10). |
-| `apps/api/src/services/delivery/describeDelivery.ts`, `describeDelivery.test.ts`, `apps/web/src/components/monitoring/DeliveryPreview.tsx` | Modify (PR2, Task 10): remove live legacy source descriptions/types; preserve eligible/skipped channel metadata. |
+| `apps/api/src/services/delivery/describeDelivery.ts`, `describeDelivery.test.ts`, `apps/web/src/components/alerts/delivery/DeliveryPreview.tsx` | Modify (PR2, Task 10): remove live legacy source descriptions/types; preserve eligible/skipped channel metadata. |
 | `apps/api/src/services/monitors/conversion/retirementSweep.ts` | **Create (PR1).** `runLegacyAlertingRetirement()`, `sweepPartnerLegacyAlerting(partnerId)`, `checkLegacyAlertingRetired()`, `LegacyAlertingUnretiredError`, marker read/write. |
-| `apps/api/src/services/monitors/conversion/retirementSweep.test.ts` | **Create (PR1).** |
+| `apps/api/src/services/monitors/conversion/retirementSweep.test.ts` | **Create (PR1).** Sweep/count behavior, mixed-source refusal allowlist (network checks excluded), blocked-preview no-write regression. |
 | `apps/api/src/__tests__/integration/legacyAlertingRetirementSweep.integration.test.ts` | **Create (PR1).** Real-Postgres proof: convertible row converted, unconvertible row retired with reason, marker written, count check zero/non-zero. |
 | `apps/api/src/index.ts` | Modify (PR1, after line 1871): detached `runLegacyAlertingRetirement()` chain. |
 | `apps/api/src/routes/monitorDefinitions.conversion.ts` (W05c1 conversion subrouter) | Modify (PR1): `GET /conversion/pending` response gains `unconvertible` and `sweep`. |
 | `apps/api/src/routes/monitorDefinitions.conversion.pending.test.ts` | **Create (PR1).** |
-| `apps/web/src/components/monitoring/conversion/ConversionPendingBanner.tsx` (W05c2 name may differ) | Modify (PR1): post-sweep "could not be converted — review" list with per-viewer dismiss. |
+| `apps/web/src/components/monitoring/conversion/ConversionPendingBanner.tsx` (W05c2 Task 6) | Modify (PR1): post-sweep "could not be converted — review" list with per-viewer dismiss. |
 | `apps/web/src/components/monitoring/conversion/ConversionPendingBanner.test.tsx`, `conversionApi.ts`, `conversionApi.test.ts` | Modify (PR1): report shape, locale reasons and per-viewer dismissal. |
 | `apps/web/src/locales/*/monitoring.json` | Modify (PR1): `conversion.retirement.*` keys. |
 | `packages/shared/src/constants/configFeatureTypes.ts` | Modify (PR2, lines 22-30): remove `alert_rule`, `monitoring`; add `RETIRED_CONFIG_FEATURE_TYPES`, `RetiredConfigFeatureType`, `isRetiredConfigFeatureType`. |
@@ -406,7 +408,7 @@ git commit -m "feat(api): W05d migration re-keys monitoring settings to the moni
 - Modify: `apps/api/src/services/configurationPolicy.ts` (`decomposeInlineSettings` `case 'monitors'` line 1117-1130; `deleteNormalizedRows` `case 'monitors'` line 1245; `assembleInlineSettings` `case 'monitors'` line 1498-1512; `removeFeatureLink` lines 1887-1899)
 - Modify: `apps/api/src/services/configurationPolicy.monitors.test.ts`
 - Modify: Task 1's `apps/api/src/__tests__/integration/legacyAlertingRetirementMigration.integration.test.ts` (last-detachment history regression)
-- Modify: `apps/web/src/components/configurationPolicies/featureTabs/MonitorsTab.tsx` (`handleSave` line 168-183, `handleOverride` line 197-204; the W05c2 *Check interval* field)
+- Modify: `apps/web/src/components/configurationPolicies/featureTabs/MonitorsTab.tsx` (W05c2 Task 3's `saveAttachments(): Promise<boolean>`, `saveCheckInterval`, `handleSave`, and Task 4's inheritance payloads; `handleOverride` and the *Check interval* field)
 - Modify: `apps/web/src/components/configurationPolicies/featureTabs/MonitorsTab.test.tsx`
 
 **Interfaces:**
@@ -527,9 +529,30 @@ it('saves the check interval on the monitors link', async () => {
   await waitFor(() => expect(saveMock).toHaveBeenCalledWith(null, expect.objectContaining({
     featureType: 'monitors', inlineSettings: expect.objectContaining({ checkIntervalSeconds: 120 }),
   })));
+  expect(saveMock).toHaveBeenCalledTimes(1);
+  expect(removeMock).not.toHaveBeenCalled();
+});
+it.each(['cumulative', 'replace'] as const)('Save preserves an already-empty %s link and its settings', async inheritance => {
+  render(<MonitorsTab {...baseProps} existingLink={{ id: 'link-1', featureType: 'monitors',
+    featurePolicyId: null, inlineSettings: { items: [], inheritance, checkIntervalSeconds: 60 } }} />);
+  await screen.findByTestId('monitors-tab-check-interval');
+  clickSave();
+  await waitFor(() => expect(saveMock).toHaveBeenCalledWith('link-1', {
+    featureType: 'monitors', featurePolicyId: null,
+    inlineSettings: { items: [], inheritance, checkIntervalSeconds: 60 },
+  }));
+  expect(saveMock).toHaveBeenCalledTimes(1);
+  expect(removeMock).not.toHaveBeenCalled();
+});
+it('does not create an absent empty cumulative link at the default interval', async () => {
+  render(<MonitorsTab {...baseProps} />);
+  await screen.findByTestId('monitors-tab-check-interval');
+  clickSave();
+  expect(saveMock).not.toHaveBeenCalled();
   expect(removeMock).not.toHaveBeenCalled();
 });
 ```
+Retain C2 Task 3's invalid-interval regression (no writes outside 10–3600), updating its fixtures to the `monitors` link. The changed-interval case above must call `saveMock` exactly once; no second `monitoring`-link save remains.
 
 - [ ] **Step 2: Run them, expect FAIL.**
 ```bash
@@ -623,34 +646,49 @@ The settings FK (`configurationPolicies.ts:386`) and watch FK (`:408`) both casc
 ```
 (W05c1 stores `inheritance` on the link's JSONB and merges it in its own arm — keep whatever it added; only the `checkIntervalSeconds` read is new.)
 
-`apps/web/src/components/configurationPolicies/featureTabs/MonitorsTab.tsx`: W05c2 added a *Check interval* input that wrote to the `monitoring` link. Replace that write path: hold the value in component state seeded from `existingLink?.inlineSettings.checkIntervalSeconds ?? parentLink?.inlineSettings.checkIntervalSeconds ?? 60`, and include it in every `save(...)` payload:
+`apps/web/src/components/configurationPolicies/featureTabs/MonitorsTab.tsx`: W05c2 Task 3 added `saveAttachments(): Promise<boolean>` and a separate `saveCheckInterval`; Task 4 added inheritance to the attachment payload. Replace those exact functions, not the pre-C2 `handleSave` empty branch. Keep C2's string-valued input, validation, translated error, and reset effect; replace `readCheckInterval` and seed `savedCheckInterval` from the `monitors` links:
 ```tsx
-const [checkIntervalSeconds, setCheckIntervalSeconds] = useState<number>(
-  readCheckInterval(existingLink) ?? readCheckInterval(parentLink) ?? 60,
-);
 function readCheckInterval(link: { inlineSettings?: unknown } | null | undefined): number | undefined {
   const v = (link?.inlineSettings as { checkIntervalSeconds?: unknown } | null | undefined)?.checkIntervalSeconds;
-  return typeof v === 'number' ? v : undefined;
+  return typeof v === 'number' && Number.isFinite(v) ? v : undefined;
 }
-// in handleSave / handleOverride:
-inlineSettings: { items: buildPayloadItems(), inheritance, checkIntervalSeconds },
+const savedCheckInterval = readCheckInterval(existingLink) ?? readCheckInterval(parentLink) ?? CHECK_INTERVAL_DEFAULT;
+const [checkInterval, setCheckInterval] = useState<string>(String(savedCheckInterval));
+useEffect(() => { setCheckInterval(String(savedCheckInterval)); }, [savedCheckInterval]);
 ```
-`handleSave` no longer calls `remove` for existing links. Even default intervals can own historical watches; the client does not know which do. Replace its empty branch with:
+Replace `saveAttachments` in full. Even an existing empty link with a default interval can own historical watches; Save must retain it. The sole no-op is an absent link with empty cumulative attachments and the default interval, and it returns **`true`** to preserve C2's boolean contract:
 ```tsx
-if (!existingLink && items.length === 0 && checkIntervalSeconds === 60 && inheritance === 'cumulative') return;
+const saveAttachments = async (): Promise<boolean> => {
+  const checkIntervalSeconds = Number(checkInterval);
+  if (!existingLink && items.length === 0 && checkIntervalSeconds === CHECK_INTERVAL_DEFAULT && inheritance === 'cumulative') return true;
+  const result = await save(existingLink?.id ?? null, {
+    featureType: 'monitors', featurePolicyId: null,
+    inlineSettings: { items: buildPayloadItems(), inheritance, checkIntervalSeconds },
+  });
+  if (result) onLinkChanged(result, 'monitors');
+  return !!result;
+};
+
+const handleSave = async () => {
+  clearError();
+  if (!validateCheckInterval()) return;
+  if (!(await saveAttachments())) return;
+};
 ```
-The remaining `save` payload is `{ items: buildPayloadItems(), inheritance, checkIntervalSeconds }`. Replace `handleRemove` with an empty save as well, retaining the settings and the selected inheritance mode:
+Delete `saveCheckInterval` entirely: one Save now persists attachments, inheritance, and interval together. In `handleOverride`, keep `clearError()`, add `if (!validateCheckInterval()) return;`, and use `inlineSettings: { items: buildPayloadItems(), inheritance, checkIntervalSeconds: Number(checkInterval) }`. Replace `handleRemove` with an empty save as well, retaining the settings and the selected inheritance mode:
 ```tsx
 const handleRemove = async () => {
   if (!existingLink) return;
+  clearError();
+  if (!validateCheckInterval()) return;
   const result = await save(existingLink.id, {
     featureType: 'monitors', featurePolicyId: null,
-    inlineSettings: { items: [], inheritance, checkIntervalSeconds },
+    inlineSettings: { items: [], inheritance, checkIntervalSeconds: Number(checkInterval) },
   });
   if (result) { onLinkChanged(result, 'monitors'); setItems([]); }
 };
 ```
-Both handlers use the existing `useFeatureLink.save` / `runAction` path. Delete the obsolete sibling `monitoring` fetch/PATCH and W05c2 sibling-link plumbing; the interval input retains its existing translated key.
+All writes use the existing `useFeatureLink.save` / `runAction` path. Delete `monitoringLink`, `readWatches`, and this tab's unused `siblingLinks` destructuring; retain the shared prop for other consumers. The interval input and validation retain C2's existing translated keys.
 
 Replace `removeFeatureLink` (`configurationPolicy.ts:1887-1899`) with this service backstop. It locks the link before checking settings; mutations retain the existing transaction/context. A link owning settings is never deleted (D11). A zero-item replace link also stays an authoritative empty replacement.
 ```ts
@@ -800,6 +838,7 @@ git commit -m "feat(agents): monitoring_settings check interval reads the monito
 
 **Interfaces:**
 - Consumes: `previewPartnerConversion(partnerId, auth): Promise<PartnerConversionPreview>`, `convertPartnerLegacy(partnerId, previewHash, auth)`, `retireSource(sourceTable, sourceId, reason, auth): Promise<{ conversionId: string }>` and `ConversionError` (W05c1); `createSystemAuthContext()` (`services/featureConfigResolver.ts:52`); `runOutsideDbContext`, `withSystemDbAccessContext` (`db/index.ts`); `captureException(err, c?, tags?)` (`services/sentry.ts:687`); `partners.settings` jsonb (`db/schema/orgs.ts:39`).
+- Retirement scope: `retirePreviewRefusals` accepts only `config_policy_alert_rules`, `config_policy_monitoring_watches`, `alert_templates`, `automations`, and `config_policy_automations`. These are Task 6's five retired-runtime source tables; `network_monitors` is excluded even when a later W05e partner preview contains network refusals. Broad workflows remain excluded (D12).
 - Produces:
   ```ts
   // services/monitors/conversion/retirementSweep.ts — W05d-local report type.
@@ -890,6 +929,17 @@ describe('runLegacyAlertingRetirement (W05d)', () => {
     expect(out).toMatchObject({ partners: 1, failed: 1, converted: 1 });
     expect(h.captureException).toHaveBeenCalledWith(expect.any(Error), undefined, expect.objectContaining({ area: 'legacy_alerting_sweep', partnerId: 'p1' }));
   });
+  it('a blocked partner preview cannot convert, retire or record a completed sweep', async () => {
+    h.executeRows = [{ partner_id: 'p1' }];
+    const error = new Error('CONVERSION_PREREQUISITE_MISSING');
+    h.previewPartnerConversion.mockRejectedValueOnce(error);
+    const out = await runLegacyAlertingRetirement();
+    expect(out).toMatchObject({ partners: 0, converted: 0, retired: 0, failed: 1 });
+    expect(h.convertPartnerLegacy).not.toHaveBeenCalled();
+    expect(h.retireSource).not.toHaveBeenCalled();
+    expect(h.updateSet).not.toHaveBeenCalled();
+    expect(h.captureException).toHaveBeenCalledWith(error, undefined, expect.objectContaining({ partnerId: 'p1' }));
+  });
   it('BREEZE_LEGACY_ALERTING_SWEEP=false skips conversion but still counts', async () => {
     process.env.BREEZE_LEGACY_ALERTING_SWEEP = 'false';
     h.executeRows = [{ partner_id: 'p1' }];
@@ -924,6 +974,20 @@ describe('retirePreviewRefusals', () => {
       reason: 'unconvertible:alert_workflow_kept' }] };
     expect(await retirePreviewRefusals(stale, { scope: 'system' } as never)).toEqual([]);
     expect(h.retireSource).not.toHaveBeenCalled();
+  });
+  it('retires only the five removed-runtime sources in a mixed legacy/network preview', async () => {
+    const legacyTables = ['config_policy_alert_rules', 'config_policy_monitoring_watches',
+      'alert_templates', 'automations', 'config_policy_automations'] as const;
+    const legacy = legacyTables.map((sourceTable, index) => ({ ...item, sourceTable, sourceId: `legacy-${index}` }));
+    const network = { ...item, sourceTable: 'network_monitors' as const, sourceId: 'network-1',
+      reason: 'unconvertible:multiple_network_rules' };
+    const mixed: PartnerConversionPreview = { ...preview, rows: legacy.length + 1,
+      unconvertible: [network, ...legacy] };
+    const retired = await retirePreviewRefusals(mixed, { scope: 'system' } as never);
+    expect(retired.map(row => row.sourceTable)).toEqual([...legacyTables]);
+    expect(h.retireSource.mock.calls.map(([table, id, reason]) => ({ table, id, reason })))
+      .toEqual(legacy.map(row => ({ table: row.sourceTable, id: row.sourceId, reason: row.reason })));
+    expect(h.retireSource).not.toHaveBeenCalledWith('network_monitors', expect.anything(), expect.anything(), expect.anything());
   });
 });
 
@@ -1040,7 +1104,7 @@ Expected: `Failed to resolve import "./retirementSweep"`.
 
 - [ ] **Step 3: Implement.**
 
-Keep C1's partner preview and conversion signatures unchanged (D3). The sweep first obtains the full, system-scoped partner preview and confirms its hash; C1 refuses any equivalence delta using the normalized baseline, preserves disabled state and rehomes broad workflows before returning. The sweep then retires only the preview's refused sources. No per-rule ledger writes: standalone sources are the template-group `alert_templates` entries (D13). No retirement of the preserved workflow outcome (D12), no alert resolution (D15/D19), and no `retireUnconvertible` option on the public conversion endpoint.
+Keep C1's partner preview and conversion signatures unchanged (D3). The sweep first obtains the full, system-scoped partner preview and confirms its hash; C1 refuses any equivalence delta using the normalized baseline, preserves disabled state and rehomes broad workflows before returning. The sweep then retires only the preview's refused sources in the five-table allowlist below. Later W05e network refusals never enter W05d's retirement writes, counts or marker; their worker/rules still run. D20's missing network capability is a blocked preview, not a retirement reason. No per-rule ledger writes: standalone sources are the template-group `alert_templates` entries (D13). No retirement of the preserved workflow outcome (D12), no alert resolution (D15/D19), and no `retireUnconvertible` option on the public conversion endpoint.
 
 **Watch source after re-key:** in **both** C1 `loadSources.ts` and the private `legacyBaseline.ts`, the join to settings accepts the old and new links:
 ```ts
@@ -1079,6 +1143,11 @@ export interface RetiredSource { sourceTable: ConversionSourceTable; sourceId: s
 
 export const LEGACY_ALERTING_RETIREMENT_VERSION = 1;
 const MARKER_UNCONVERTIBLE_CAP = 200;
+// Match Task 6's removed runtimes. Never sweep network checks or future sources.
+const RETIRED_RUNTIME_SOURCE_TABLES: ReadonlySet<ConversionSourceTable> = new Set([
+  'config_policy_alert_rules', 'config_policy_monitoring_watches', 'alert_templates',
+  'automations', 'config_policy_automations',
+]);
 
 export interface LegacyAlertingRemaining { configPolicyAlertRules: number; configPolicyMonitoringWatches: number }
 export interface RetirementRunResult { partners: number; converted: number; retired: number; failed: number; remaining: LegacyAlertingRemaining }
@@ -1149,6 +1218,7 @@ export async function listPartnersWithUnretiredLegacyAlerting(): Promise<string[
 export async function retirePreviewRefusals(preview: PartnerConversionPreview, auth: AuthContext): Promise<RetiredSource[]> {
   const retired: RetiredSource[] = [];
   for (const item of preview.unconvertible) {
+    if (!RETIRED_RUNTIME_SOURCE_TABLES.has(item.sourceTable)) continue;
     // C1 rehomes these workflows and does not return them as refusals.
     // Defensive compatibility with a stale pre-D12 preview; never disable one.
     if (item.reason === 'unconvertible:alert_workflow_kept') continue;
@@ -1570,14 +1640,14 @@ git commit -m "feat(monitors): pending endpoint lists unconvertible legacy rows 
 
 **Files:**
 - Modify: `apps/api/src/services/monitors/conversion/lifecycle.ts`, `lifecycle.test.ts` (C1 prerequisite-created; D4).
-- Verify/modify: `apps/api/src/services/monitors/conversion/convert.ts` (C1 `revertConversion`, pre-mutation lifecycle guard); verify `conversion/ledger.ts` retains its authorized `revertable` projection.
+- Verify/modify: `apps/api/src/services/monitors/conversion/convert.ts` (C1 Task 15's `revertConversion`, pre-mutation lifecycle guard); verify `conversion/ledger.ts` and `ledger.test.ts` retain C1 Task 16's authorized, dependency-aware `revertable` projection and tests.
 - Modify: `apps/api/src/routes/monitorDefinitions.conversion.test.ts` (C1 route harness `m.revert`, `request`, `SOURCE`).
 - Modify: `apps/api/src/__tests__/integration/legacyAlertingRetirementSweep.integration.test.ts` (Task 4 fixture; no-write regression).
 - Modify: `apps/web/src/components/monitoring/conversion/ConversionLedger.test.tsx` (C2 prerequisite-created); verify `ConversionLedger.tsx` already honors `revertable` and refreshes on 409.
 - Modify: `apps/docs/src/content/docs/features/monitors.mdx`, `docs/release-notes/next-release-draft.md` (deadline; detailed retirement docs remain Task 14).
 
 **Interfaces:**
-- Consumes D4 `isRevertAvailable(sourceTable: ConversionSourceTable): boolean`; D2 `ConversionLedgerEntry.revertable`; `revertConversion(conversionId, auth)`; C2 `ConversionLedger` uses `runAction` for Undo.
+- Consumes D4 `isRevertAvailable(sourceTable: ConversionSourceTable): boolean`; D2 `ConversionLedgerEntry.revertable` from C1 Task 16's `listConversionLedger` (lifecycle, governance, ownership, and live target-conversion dependencies in `source_state`); C1 Task 15's `revertConversion(conversionId, auth)`; C2 Task 8's `ConversionLedger` uses `runAction` for Undo.
 - Produces: false for `config_policy_alert_rules`, `config_policy_monitoring_watches`, `alert_templates`, `automations`, `config_policy_automations`; true for `network_monitors` (W05e owns that runtime's later lifecycle). Authorized requests for an unavailable source return `409 { error: 'conversion_revert_unavailable' }` before any source, monitor, attachment, alert, cooldown or ledger mutation. Do not remove broad rehomed workflows; this guard only prevents restoring retired source semantics.
 
 - [ ] **Step 1: Write the failing tests.** Replace C1's always-available lifecycle test:
@@ -1630,7 +1700,7 @@ it.each(['config_policy_alert_rules', 'config_policy_monitoring_watches', 'alert
 
 - [ ] **Step 2: Run it, expect FAIL.**
 ```bash
-cd apps/api && npx vitest run src/services/monitors/conversion/lifecycle.test.ts src/routes/monitorDefinitions.conversion.test.ts
+cd apps/api && npx vitest run src/services/monitors/conversion/lifecycle.test.ts src/services/monitors/conversion/ledger.test.ts src/routes/monitorDefinitions.conversion.test.ts
 cd apps/api && npx vitest run -c vitest.integration.config.ts src/__tests__/integration/legacyAlertingRetirementSweep.integration.test.ts
 cd apps/web && npx vitest run src/components/monitoring/conversion/ConversionLedger.test.tsx
 ```
@@ -1649,7 +1719,7 @@ if (!isRevertAvailable(ledger.sourceTable)) {
   throw new ConversionError('conversion_revert_unavailable', 'This conversion cannot be reverted after its legacy runtime has been retired.');
 }
 ```
-In C1's `ledger.ts`, keep the full projection: `revertable: !r.revertedAt && isRevertAvailable(r.sourceTable) && canMutateOrgWideGovernance(auth) && (r.orgId ? auth.canAccessOrg(r.orgId) : canManagePartnerWidePolicies(auth))`. The ownership and governance gates remain intact. C1 already includes the error code in `ConversionError` and maps it to 409; retain that branch. C2 already renders `disabled={!row.revertable}` and catches 409 through `runAction`, then reloads the ledger. Do not introduce a second client-side source list or bypass the server guard. The browser keeps its existing translated unavailable message; no new locale key is needed here.
+In C1 Task 16's `ledger.ts`, retain `listConversionLedger`'s **full** `revertable` projection: the row is unreverted, `isRevertAvailable(r.sourceTable)` is true, `canMutateOrgWideGovernance(auth)` is true, the existing org/partner ownership gate passes, **and no target conversion referenced by the response's `source_state` remains live**. Retain C1's dependency lookup as well as the final predicate; the four lifecycle/governance/ownership checks alone are incomplete. Keep its `ledger.test.ts` regressions for a live target (false), a reverted target (subject to all remaining gates), and a target outside the current ledger page; dependency lookup must not be limited to the returned page. W05d changes only lifecycle availability, so an automation entry stays non-revertable after its target is restored because its runtime is retired here. C1 already includes the error code in `ConversionError` and maps it to 409; retain that branch. C2 Task 8 already renders `disabled={!row.revertable}` and catches 409 through `runAction`, then reloads the ledger. Do not introduce a second client-side source list or bypass the server guard. The browser keeps its existing translated unavailable message; no new locale key is needed here.
 
 Add this exact documentation paragraph to `monitors.mdx` and the upgrade notes:
 ```md
@@ -2091,7 +2161,7 @@ git commit -m "refactor(api): delete evaluateDeviceAlertsFromPolicy and the conf
 - Modify: `apps/api/src/services/delivery/describeDelivery.ts`, `describeDelivery.test.ts` (W05b prerequisite-created description map).
 - Create: `apps/api/src/services/monitors/conversion/legacyDeliveryBaseline.ts`, `legacyDeliveryBaseline.test.ts`.
 - Modify: `apps/api/src/services/monitors/conversion/equivalence.ts` (C1 prerequisite; private before-delivery call).
-- Modify: `apps/web/src/components/monitoring/DeliveryPreview.tsx` (W05b prerequisite-created type mirror).
+- Modify: `apps/web/src/components/alerts/delivery/DeliveryPreview.tsx` (W05b prerequisite-created type mirror).
 - Modify: `apps/api/src/services/notificationDispatcher.ts` (W05b's `legacyOverride` construction — the `alert.ruleId` unmanaged branch and the `alert.configPolicyId` branch — and the `legacyOverride` argument to `resolveDelivery`)
 - Modify: `apps/api/src/services/notificationDispatcher.test.ts` (+ `notificationDispatcher.*.test.ts` siblings that seed `configPolicyAlertRules` or `overrideSettings.notificationChannelIds`)
 - Modify: `apps/api/src/routes/alerts/delivery.ts` (W05b preview endpoint) only if it accepted a `legacyOverride`-shaped query (it should not; verify with grep).
@@ -2161,7 +2231,7 @@ escalationPolicyId: monitorEscalation ?? defaultRow.escalationPolicyId ?? null,
 // No-row return:
 return finish({ channelIds: [], escalationPolicyId: monitorEscalation ?? null, source: 'none' });
 ```
-Remove `'legacy_override'` from `DeliverySource`, from `services/delivery/describeDelivery.ts`'s description map and its legacy-specific tests, and from W05b's mirrored `ResolvedDelivery` type in `apps/web/src/components/monitoring/DeliveryPreview.tsx`. Keep both eligible destinations and skipped-channel metadata in the mirror. Delete active dispatcher construction of legacy overrides and both normalized/standalone legacy lookups; retain its compiled-monitor identification. No live dispatcher path reads `configPolicyAlertRules` or unmanaged `overrideSettings` for delivery.
+Remove `'legacy_override'` from `DeliverySource`, from `services/delivery/describeDelivery.ts`'s description map and its legacy-specific tests, and from W05b Task 14's `Answer.source` union in `apps/web/src/components/alerts/delivery/DeliveryPreview.tsx`. Keep both eligible destinations and skipped-channel metadata in the mirror. Delete active dispatcher construction of legacy overrides and both normalized/standalone legacy lookups; retain its compiled-monitor identification. No live dispatcher path reads `configPolicyAlertRules` or unmanaged `overrideSettings` for delivery.
 
 Create `services/monitors/conversion/legacyDeliveryBaseline.ts`. It is private to conversion and replaces C1's **before** comparison's call that passed `legacyOverride` to `resolveDelivery`; the proposed-monitor **after** comparison still calls the public resolver. This preserves a truthful comparison after deleting the active branch, and retains kind-less legacy routing semantics:
 ```ts
@@ -2227,12 +2297,12 @@ pnpm --filter @breeze/api exec tsc --noEmit
 pnpm --filter @breeze/web exec tsc --noEmit
 cd apps/api && npx vitest run src/services/monitors/conversion/legacyDeliveryBaseline.test.ts src/services/monitors/conversion/legacyBaseline.test.ts
 cd apps/api && npx vitest run src/services/delivery src/services/notificationDispatcher src/routes/alerts/delivery
-cd apps/api && npx vitest run -c vitest.integration.config.ts src/__tests__/integration/deliveryResolution.integration.test.ts   # W05b's dispatch-vs-preview parity suite; name per W05b plan
+cd apps/api && npx vitest run -c vitest.integration.config.ts src/__tests__/integration/deliveryResolution.integration.test.ts   # W05b Task 7 creates this suite; Task 13 adds endpoint parity
 ```
 
 - [ ] **Step 5: Commit.**
 ```bash
-git add apps/api/src/services/delivery/resolveDelivery.ts apps/api/src/services/delivery/resolveDelivery.test.ts apps/api/src/services/delivery/describeDelivery.ts apps/api/src/services/delivery/describeDelivery.test.ts apps/api/src/services/monitors/conversion/legacyDeliveryBaseline.ts apps/api/src/services/monitors/conversion/legacyDeliveryBaseline.test.ts apps/api/src/services/monitors/conversion/equivalence.ts apps/web/src/components/monitoring/DeliveryPreview.tsx apps/api/src/services/notificationDispatcher.ts apps/api/src/services/notificationDispatcher.test.ts
+git add apps/api/src/services/delivery/resolveDelivery.ts apps/api/src/services/delivery/resolveDelivery.test.ts apps/api/src/services/delivery/describeDelivery.ts apps/api/src/services/delivery/describeDelivery.test.ts apps/api/src/services/monitors/conversion/legacyDeliveryBaseline.ts apps/api/src/services/monitors/conversion/legacyDeliveryBaseline.test.ts apps/api/src/services/monitors/conversion/equivalence.ts apps/web/src/components/alerts/delivery/DeliveryPreview.tsx apps/api/src/services/notificationDispatcher.ts apps/api/src/services/notificationDispatcher.test.ts
 git commit -m "refactor(delivery): remove the transitional legacy override from resolveDelivery and the dispatcher"
 ```
 
@@ -2686,7 +2756,7 @@ rg -n 'isRevertAvailable' apps/api/src/services/monitors/conversion
 Then each obsolete-production-symbol check must print nothing (negative regression tests may still name removed symbols):
 ```bash
 rg -n "evaluateDeviceAlertsFromPolicy|getApplicableRulesFromPolicy|checkAutoResolveFromConfigPolicy|isConfigPolicyRuleCooling|markConfigPolicyRuleCooldown|resolveAlertRulesForDevice|resolveGoverningAlertRulePolicyForDevice" apps/api/src --glob '!*.test.ts'
-rg -n "legacyOverride|legacy_override|legacyEscalation" apps/api/src/services/delivery apps/api/src/services/notificationDispatcher.ts apps/web/src/components/monitoring/DeliveryPreview.tsx --glob '!*.test.ts'
+rg -n "legacyOverride|legacy_override|legacyEscalation" apps/api/src/services/delivery apps/api/src/services/notificationDispatcher.ts apps/web/src/components/alerts/delivery/DeliveryPreview.tsx --glob '!*.test.ts'
 grep -rn "AlertRuleTab\|MonitoringTab\|LegacyRulesPage\|AlertRuleForm\|AlertRuleTestModal" apps/web/src
 grep -rn "'alert_rule'\|'monitoring'" apps/api/src/services/configurationPolicy.ts apps/api/src/routes/configurationPolicies apps/api/src/routes/agents/helpers.ts apps/api/src/services/aiToolsConfigPolicy.ts apps/api/src/services/aiToolsFleet.ts | grep -v "RETIRED\|retired"
 grep -rn "list_templates\|migrateToConfigPolicies" apps/api/src packages/shared/src

@@ -49,13 +49,13 @@ branch: (set by feature-lifecycle after registration)
 | `apps/api/src/services/delivery/railOwnership.ts` | **Create.** `partnerIdForOrg`, `railOwnershipCondition` moved out of the dispatcher. |
 | `apps/api/src/services/delivery/resolveDelivery.ts` (+ `.test.ts`) | **Create.** Eligible channel IDs plus skipped reasons; cross-wave resolver for dispatch, preview and conversion equivalence. |
 | `apps/api/src/services/delivery/routingRuleWrites.ts` (+ `.test.ts`) | **Create.** Default-row constants, `assertDefaultRowPatch`, `upsertDefaultRow`, `escalationPolicyCompatible`. Shared by the route and the AI tool. |
-| `apps/api/src/routes/alerts/routing.ts` | Modify: schema (drop `conditionTypes`/`deviceTags`, add `monitorKinds`, `escalationPolicyId`), default-row rules on PATCH/DELETE, `PUT /routing-rules/default`. |
+| `apps/api/src/routes/alerts/routing.ts` | Modify: schema (drop `conditionTypes`/`deviceTags`, add `monitorKinds`, `escalationPolicyId`), default-row rules on PATCH/DELETE, `PUT /routing-rules/default`; export site-access helpers in Task 8 (PR 1). |
 | `apps/api/src/routes/alerts/routing.defaultRow.test.ts` | **Create.** |
 | `apps/api/src/routes/alerts/routing.writes.test.ts` | Modify: ordinary POST explicitly inserts `isDefault: false`. |
 | `apps/api/src/routes/alerts/policies.steps.test.ts` | Create: user/channel targets and bounded repeat schema regressions. |
 | `apps/api/src/services/delivery/escalationExecution.ts` (+ `.test.ts`) | Create: bounded occurrences, scoped user targets, durable in-app execution. |
 | `apps/api/src/routes/alerts/policies.ts:157-165,210-229,244-273` | Modify: user target validation and governance guards. |
-| `apps/api/src/routes/alerts/deliveryRails.ts` (+ `.test.ts`) | Create: authorized inherited routing/escalation, safe channel metadata, target user reads. |
+| `apps/api/src/routes/alerts/deliveryRails.ts` (+ `.test.ts`) | Create: site-filtered inherited routing, inherited escalation, safe channel metadata, target user reads. |
 | `apps/api/src/routes/alerts/schemas.ts:180-191` | Modify: typed `steps` on create/update policy schemas. |
 | `apps/api/src/routes/alerts/policies.authz.test.ts:175,187` | Modify: fixtures use a valid step. |
 | `apps/api/src/services/notificationDispatcher.ts:264-376, 441-446, 1250-1300, 126-160` | Modify: resolver wiring; delete fallback and `resolveRoutingRules`; import rail helpers; schedule/cancel user targets and repeat occurrences. |
@@ -81,7 +81,7 @@ branch: (set by feature-lifecycle after registration)
 | `apps/web/src/locales/*/alerts.json`, `pages.json`, `monitoring.json` (8 locales) | New keys (Tasks 9, 11, 12, 14). |
 | `apps/api/src/routes/alerts/delivery.ts` (+ `.test.ts`), `routes/alerts/index.ts` | **Create** `GET /alerts/delivery/resolve`; mount before `alertsRoutes`. |
 | `apps/api/src/services/delivery/describeDelivery.ts` (+ `.test.ts`) | **Create.** Names + display string for the preview. |
-| `apps/web/src/components/monitoring/MonitorEditor.tsx:777-812` (+ `.test.tsx`) | Modify: Notify card shows the resolved answer. |
+| `apps/web/src/components/monitoring/MonitorEditor.tsx:179-352,777-888` (+ `.test.tsx`) | Modify: load inherited delivery choices from rails, preserve saved overrides, and show the resolved Notify answer. |
 | `apps/api/src/services/aiToolsDelivery.ts` (+ `.test.ts`), `aiTools.ts:68,318`, `aiAgentSdkTools.ts:163,279,2507`, `aiToolSchemas.ts:1580`, `aiGuardrails.ts:142,1263,1613`, `aiAgents/agentToolCatalog.ts:84`, `aiAgentSdkTools.registryParity.contract.test.ts:88`, `aiAgentSystemPrompt.ts:108` | **Create** `manage_delivery` and register it on every pinned surface. |
 | `apps/docs/src/content/docs/features/notifications.mdx:352-406,611-616`, `features/alerts.mdx:192,212` | Modify. |
 
@@ -951,7 +951,7 @@ git commit -m "feat(api): resolveDelivery — one precedence for alert delivery 
   export async function escalationPolicyCompatible(policyId: string, owner: RoutingOwner, executor?: DbExecutor): Promise<boolean>;
   export async function upsertDefaultRow(owner: RoutingOwner, data: { channelIds: string[]; escalationPolicyId: string | null }, auth: Pick<AuthContext, 'scope' | 'allowedSiteIds' | 'allowedDeviceIds'> & Partial<Pick<AuthContext, 'partnerId' | 'partnerOrgAccess' | 'canAccessOrg'>>, executor?: DbExecutor): Promise<typeof notificationRoutingRules.$inferSelect>;
   ```
-- Produces (HTTP): `POST /alerts/routing-rules` accepts `conditions: { severities?, monitorKinds?, siteIds? }` (strict — `conditionTypes`/`deviceTags` → 400) and `escalationPolicyId?: uuid | null`; `PATCH /alerts/routing-rules/:id` on an `isDefault` row accepts only `channelIds` (may be `[]`) and `escalationPolicyId`; `DELETE` of an `isDefault` row on either axis → 409; `PUT /alerts/routing-rules/default` `{ ownerScope?: 'organization' | 'partner', channelIds: uuid[], escalationPolicyId?: uuid | null }` (+ `?orgId=` for partner/system callers) upserts the axis's row → 200 `{ data: row }`.
+- Produces (HTTP): `POST /alerts/routing-rules` accepts `conditions: { severities?, monitorKinds?, siteIds? }` (strict — `conditionTypes`/`deviceTags` → 400) and `escalationPolicyId?: uuid | null`; `PATCH /alerts/routing-rules/:id` on an `isDefault` row requires `canMutateOrgWideGovernance(auth)` and accepts only `channelIds` (may be `[]`) and `escalationPolicyId`; `DELETE` of an `isDefault` row on either axis → 409; `PUT /alerts/routing-rules/default` `{ ownerScope?: 'organization' | 'partner', channelIds: uuid[], escalationPolicyId?: uuid | null }` (+ `?orgId=` for partner/system callers) upserts the axis's row → 200 `{ data: row }`.
 - Consumes: `monitorKindSchema` (`@breeze/shared`), `canManagePartnerWidePolicies` / `PARTNER_WIDE_WRITE_DENIED_MESSAGE` (`services/partnerWideAccess.ts`), `resolveWriteOrgId`, `ensureOrgAccess` (`routes/alerts/helpers.ts:52,77`), `partnerIdForOrg` (Task 2).
 
 - [ ] **Step 1: Write the failing tests**
@@ -1138,6 +1138,13 @@ describe('Everything else row rules', () => {
       expect(res.status).toBe(400);
     }
   });
+  it.each([{ allowedSiteIds: [] }, { allowedSiteIds: ['33333333-3333-4333-8333-333333333333'] }, { allowedDeviceIds: [] }])(
+    'PATCH on a default row rejects governance ceiling %j, including an empty-channel write', async ceiling => {
+      authRef.current = { ...orgAuth(), ...ceiling };
+      existingRowRef.current = { id: RULE_ID, orgId: 'org-a', partnerId: null, isDefault: true, conditions: {} };
+      expect((await app().request(`/alerts/routing-rules/${RULE_ID}`, jsonReq('PATCH', { channelIds: [] }))).status).toBe(403);
+    },
+  );
   it('PATCH on a NON-default row rejects an empty channel list', async () => {
     existingRowRef.current = { id: RULE_ID, orgId: 'org-a', partnerId: null, name: 'Crit', isDefault: false, conditions: {} };
     const res = await app().request(`/alerts/routing-rules/${RULE_ID}`, jsonReq('PATCH', { channelIds: [] }));
@@ -1361,6 +1368,7 @@ and include both `escalationPolicyId: data.escalationPolicyId ?? null` and `isDe
 PATCH handler: after the partner-wide capability check and before the site checks, add
 ```ts
       if (existing.isDefault) {
+        if (!canMutateOrgWideGovernance(auth)) return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
         try {
           assertDefaultRowPatch(updates);
         } catch (err) {
@@ -2397,11 +2405,13 @@ After Task 8 and Task 17 verification, open PR 1. PR 1 body: `Closes` nothing ye
 **Files:**
 - Create: `apps/api/src/routes/alerts/deliveryRails.ts`, `deliveryRails.test.ts`
 - Modify: `apps/api/src/routes/alerts/index.ts:8-21` (mount before catch-all)
+- Modify: `apps/api/src/routes/alerts/routing.ts:58-93` (export `routingSiteIds` and `canAccessRoutingSites`, bodies unchanged; PR 1 owns these exports)
 - Read: `apps/api/src/routes/alerts/channels.ts:59-68,92-97`, `policies.ts:35-39`, `routing.ts:135-139`, `helpers.ts:52-113,435-447`, `services/notificationChannelSecrets.ts` (`redactNotificationChannelConfig`). Existing administrative list/by-ID endpoints keep their write-access restrictions.
 
 **Interfaces:**
 - Produces `GET /alerts/delivery/rails?rail=channels|routing|escalation|users&orgId=<uuid>&ownerScope=partner|organization` -> `{ data: T[], inherited?: Array<{ id; name; type }> }`.
 - Org callers are pinned to their org. Partner/system callers with orgId get that org plus its actual parent partner, never a caller-supplied partner ID. Without orgId, partner scope reads its partner-owned rails only. `ownerScope=partner` is accepted only for users and partner/system principals with a partner ID; it feeds the user picker as its owner changes.
+- Routing filters every candidate through `canAccessRoutingSites(auth, { orgId: row.orgId, partnerId: row.partnerId }, routingSiteIds(row.conditions), false)` using that row’s actual owner, including inherited partner rows. Empty/foreign-site allowlists fail closed, exactly as the existing routing reader does. PR 1 exports both helpers; Task 15 consumes them.
 - Routing and escalation include inherited rows with their existing owner IDs; UI uses those to render read-only. Channels return org-editable redacted rows in `data`, and inherited partner channels in `inherited` with **id, name, type only**. No credentials/config/test history/enabled metadata on inherited channel rows. Partner view receives its own editable channels in `data`.
 - This is a dedicated read surface under the existing request RLS context; no change to `canReadPartnerWideRows`, by-ID mutation authorization, or channel test permissions. HTTP validation/authentication/permission guards precede database access.
 
@@ -2412,7 +2422,9 @@ After Task 8 and Task 17 verification, open PR 1. PR 1 body: `Closes` nothing ye
 import { Hono } from 'hono';
 import { beforeEach, expect, it, vi } from 'vitest';
 const state = vi.hoisted(() => ({ rows: [] as unknown[][], authenticated: true, read: true, auth: {} as any }));
-vi.mock('../../middleware/auth', () => ({
+vi.mock('../../middleware/auth', async importOriginal => ({
+  ...await importOriginal<typeof import('../../middleware/auth')>(),
+  requireMfa: () => async (_c: any, next: any) => next(),
   requireScope: () => async (c: any, next: any) => {
     if (!state.authenticated) return c.json({ error: 'Not authenticated' }, 401);
     c.set('auth', state.auth); await next();
@@ -2436,6 +2448,32 @@ it.each(['routing', 'escalation'])('org view includes inherited %s', async rail 
   state.rows.push([{ partnerId: PARTNER }], [{ id: 'r', orgId: null, partnerId: PARTNER, name: 'Inherited' }]);
   const res = await app.request(`/alerts/delivery/rails?rail=${rail}`);
   expect(res.status).toBe(200); expect((await res.json()).data[0].orgId).toBeNull();
+});
+const SITE = '30000000-0000-4000-8000-000000000001';
+const FOREIGN_SITE = '30000000-0000-4000-8000-000000000002';
+it.each([
+  { allowedSiteIds: [], visible: false },
+  { allowedSiteIds: [FOREIGN_SITE], visible: false },
+  { allowedSiteIds: [SITE], visible: true },
+])('filters org and inherited routing rows for site allowlist $allowedSiteIds', async ({ allowedSiteIds, visible }) => {
+  state.auth.allowedSiteIds = allowedSiteIds;
+  const rows = [
+    { id: 'org', orgId: ORG, partnerId: null, conditions: { siteIds: [SITE] } },
+    { id: 'partner', orgId: null, partnerId: PARTNER, conditions: { siteIds: [SITE] } },
+    { id: 'default', orgId: ORG, partnerId: null, conditions: {}, isDefault: true },
+  ];
+  // Real site helper, with one ownership query for each scoped row.
+  state.rows.push([{ partnerId: PARTNER }], rows, [{ id: SITE }], [{ id: SITE }]);
+  const res = await app.request('/alerts/delivery/rails?rail=routing');
+  expect(res.status).toBe(200);
+  expect((await res.json()).data).toEqual(visible ? rows.slice(0, 2) : []);
+});
+it('hides routing rows whose site ownership lookup fails even if the ID is allowed', async () => {
+  state.auth.allowedSiteIds = [FOREIGN_SITE];
+  state.rows.push([{ partnerId: PARTNER }], [
+    { id: 'foreign-site', orgId: ORG, partnerId: null, conditions: { siteIds: [FOREIGN_SITE] } },
+  ], []);
+  expect(await (await app.request('/alerts/delivery/rails?rail=routing')).json()).toEqual({ data: [] });
 });
 it('returns only safe inherited channel metadata', async () => {
   state.rows.push([{ partnerId: PARTNER }], [{ id: 'ch', orgId: null, partnerId: PARTNER, name: 'NOC', type: 'slack',
@@ -2469,6 +2507,8 @@ Expected: missing `./deliveryRails` module.
 
 - [ ] **Step 3: Implement**
 
+In `routing.ts`, add `export` to the existing `routingSiteIds` and `canAccessRoutingSites` declarations; keep their signatures and bodies unchanged. The unit harness above retains the real `siteAccessCheck` and supplies `requireMfa` because importing this module registers its existing routes.
+
 ```ts
 // routes/alerts/deliveryRails.ts
 import { Hono } from 'hono';
@@ -2483,6 +2523,7 @@ import { partnerIdForOrg, railOwnershipCondition } from '../../services/delivery
 import { listEscalationUsers } from '../../services/delivery/escalationExecution';
 import { redactNotificationChannelConfig } from '../../services/notificationChannelSecrets';
 import { resolveWriteOrgId } from './helpers';
+import { canAccessRoutingSites, routingSiteIds } from './routing';
 const querySchema = z.object({ rail: z.enum(['channels','routing','escalation','users']),
   orgId: z.string().guid().optional(), ownerScope: z.enum(['organization','partner']).optional() }).strict();
 export const deliveryRailsRoutes = new Hono();
@@ -2504,8 +2545,14 @@ deliveryRailsRoutes.get('/delivery/rails', requireScope('organization','partner'
         ? railOwnershipCondition(table.orgId, table.partnerId, orgId, partnerId ?? null)
         : and(isNull(table.orgId), eq(table.partnerId, partnerId!));
       if (query.rail === 'users') return c.json({ data: await listEscalationUsers(owner) });
-      if (query.rail === 'routing') return c.json({ data: await db.select().from(notificationRoutingRules)
-        .where(axis(notificationRoutingRules)).orderBy(asc(notificationRoutingRules.isDefault), asc(notificationRoutingRules.priority)) });
+      if (query.rail === 'routing') {
+        const rows = await db.select().from(notificationRoutingRules)
+          .where(axis(notificationRoutingRules)).orderBy(asc(notificationRoutingRules.isDefault), asc(notificationRoutingRules.priority));
+        const visible = await Promise.all(rows.map(async row =>
+          await canAccessRoutingSites(auth, { orgId: row.orgId, partnerId: row.partnerId }, routingSiteIds(row.conditions), false)
+            ? row : null));
+        return c.json({ data: visible.filter(row => row !== null) });
+      }
       if (query.rail === 'escalation') return c.json({ data: await db.select().from(escalationPolicies)
         .where(axis(escalationPolicies)).orderBy(asc(escalationPolicies.name)) });
       const rows = await db.select().from(notificationChannels).where(axis(notificationChannels)).orderBy(asc(notificationChannels.name));
@@ -2574,7 +2621,7 @@ vi.mock('../../middleware/auth', async importOriginal => {
 - [ ] **Step 5: Commit**
 
 ```bash
-git add apps/api/src/routes/alerts/deliveryRails.ts apps/api/src/routes/alerts/deliveryRails.test.ts apps/api/src/routes/alerts/index.ts apps/api/src/__tests__/integration/deliveryResolution.integration.test.ts
+git add apps/api/src/routes/alerts/routing.ts apps/api/src/routes/alerts/deliveryRails.ts apps/api/src/routes/alerts/deliveryRails.test.ts apps/api/src/routes/alerts/index.ts apps/api/src/__tests__/integration/deliveryResolution.integration.test.ts
 git commit -m "feat(alerts): expose inherited delivery rails as read-only metadata (W05b)"
 ```
 
@@ -4777,17 +4824,17 @@ git commit -m "feat(api): preview delivery with provenance and prove dispatcher 
 ### Task 14: Notify card shows resolved inheritance; Delivery offers the same read-only preview
 
 **Files:**
-- Modify: `apps/web/src/components/monitoring/MonitorEditor.tsx:205-210,776-815,871-888`; extend `MonitorEditor.test.tsx:1-70`'s fetch harness and append tests
+- Modify: `apps/web/src/components/monitoring/MonitorEditor.tsx:179-221,255-265,291-301,344-352,776-815,871-888`; extend `MonitorEditor.test.tsx:1-120,480-510`'s fetch harness and append tests
 - Create: `apps/web/src/components/alerts/delivery/DeliveryPreview.tsx`, `DeliveryPreview.test.tsx`, `DeliveryRuleSetPreview.tsx`
 - Modify: `apps/web/src/components/alerts/DeliveryPage.tsx` (Task 11 composition; add preview after Routing)
 - Modify: all eight `apps/web/src/locales/{en,de-DE,es-419,fr-CA,fr-FR,it-IT,pt-BR,tr-TR}/monitoring.json` (`editor.deliveryPreview`)
 - Consume: `apps/web/src/lib/useHashState.ts:1-84`, `apps/web/src/locales/README.md:15-54`, `apps/web/src/locales/en/monitoring.json:80-84,191-197` (existing delivery and severity labels). Opened locale directory contains exactly the eight locales listed above.
 
 **Interfaces:**
-- Consumes: Task 13's bare `DeliveryPreview` JSON; existing `fetchWithAuth`, `asList`, `useHashState`, `monitoring:severities.*`, `monitoring:kinds.*`, `monitoring:editor.deliveryModes.*`.
+- Consumes: Task 8's `/alerts/delivery/rails?rail=channels|escalation&orgId=<uuid>` and safe inherited channel metadata; Task 10's `useDeliveryResource`; Task 13's bare `DeliveryPreview` JSON; existing `fetchWithAuth`, `asList`, `useHashState`, `monitoring:severities.*`, `monitoring:kinds.*`, `monitoring:editor.deliveryModes.*`.
 - Produces: `DeliveryPreview({ orgId, severity, kind?, siteId?, monitorId?, escalationOverride? })`. New monitors and an editor currently choosing **Inherit** request the routing baseline **without `monitorId`**: otherwise a saved `channels`/`none` mode would incorrectly override an unsaved switch to Inherit. An explicit draft escalation selection is displayed independently of the routing baseline, using the already loaded policy name. The resolver still computes all inherited choices. No client reimplementation of routing precedence.
 - Produces: `DeliveryRuleSetPreview({ orgId })` on Delivery, with severity/kind/site inputs and a shared preview. No channel-send mutation. Selection is stored in `location.hash` (`#preview/<severity>/<kind-or-all>/<site-or-all>`). Monitor settings/activity hashes stay unchanged. API query strings carry request facts; they never store browser UI state.
-- Mode `none` retains the existing localized Inbox-only choice and hides the escalation-policy selector. Mode `channels` retains the existing channel picker. Move the existing policy selector from the recurrence card into Notify, below these choices, for modes other than `none`; preserve its field name, test ID, and owner-compatible choices. Empty escalation selection means inherit, consistent with independent escalation resolution.
+- Mode `none` retains the existing localized Inbox-only choice and hides the escalation-policy selector. Mode `channels` retains the existing channel picker, but loads its choices from the delivery rails endpoint, merging channel `data` with safe `inherited` metadata. Load escalation choices from the same endpoint with `rail=escalation`, then apply the existing `compatibleEscalationPolicies` owner filter; neither picker reads `/alerts/channels` or `/alerts/policies`. Move the existing policy selector from the recurrence card into Notify, below these choices, for modes other than `none`; preserve its field name, test ID, and owner-compatible choices. Empty escalation selection means inherit, consistent with independent escalation resolution.
 - Preview states: selected org required, loading, response, failure with Retry. A changed org/kind/severity/site immediately hides stale data. Never label a failed request “Inbox only”. Without a site the card explicitly explains that site-specific rows are excluded. Existing monitor saves stay on `runAction`; these new requests are GET only.
 
 - [ ] **Step 1: Write the failing tests**
@@ -4867,7 +4914,7 @@ describe('DeliveryPreview', () => {
 });
 ```
 
-In `MonitorEditor.test.tsx:31-39`, add the following branch before its fallback, then append inside its existing `describe` (its `beforeEach` remains):
+In `MonitorEditor.test.tsx`, replace the old channel/policy interceptors in `defaultFetchImpl` and the existing policy/channel tests with `/alerts/delivery/rails?rail=channels` and `/alerts/delivery/rails?rail=escalation` prefix checks (the query includes `orgId`). The default harness returns `{ data: [], inherited: [] }` for channels and `{ data: [] }` for escalation; existing tests keep their channel/policy fixtures under the new endpoint interceptors. In the saved-owner test, await the populated policy options with `waitFor` instead of relying on the monitor request finishing last. Retain the incompatible-owner regression. Add the following preview branch before the fallback, then append inside the existing `describe` (its `beforeEach` remains):
 
 ```ts
 if (input.startsWith('/alerts/delivery/resolve')) return json({ skippedChannelIds: [], channelIds: [],
@@ -4896,6 +4943,77 @@ if (input.startsWith('/alerts/delivery/resolve')) return json({ skippedChannelId
     expect(screen.queryByTestId('monitor-editor-escalation-policy')).toBeNull();
   });
 ```
+
+Append these editor regressions using the existing `json`, `defaultFetchImpl`, and `MONITOR_M1_FIXTURE` helpers. Only the rails response supplies the inherited choices; legacy administrative endpoints must never be called.
+
+```tsx
+it.each(['create', 'edit'] as const)('%s selects inherited channels and escalation and saves their IDs', async mode => {
+  const inheritedChannel = { id: 'partner-channel', name: 'Partner NOC', type: 'slack' };
+  const inheritedPolicy = { id: 'partner-policy', name: 'Partner escalation', orgId: null, partnerId: 'partner-1' };
+  const saved = { ...MONITOR_M1_FIXTURE, deliveryMode: 'channels',
+    deliveryChannelIds: [inheritedChannel.id], escalationPolicyId: inheritedPolicy.id };
+  fetchMock.mockImplementation(async (input: string, init?: RequestInit) => {
+    if (input.startsWith('/alerts/delivery/rails?rail=channels')) return json({
+      data: [{ id: 'org-channel', name: 'Org email', type: 'email', config: {} }], inherited: [inheritedChannel],
+    });
+    if (input.startsWith('/alerts/delivery/rails?rail=escalation')) return json({ data: [inheritedPolicy] });
+    if (input === '/monitor-definitions/m1') return json({ data: saved });
+    if (input === '/monitor-definitions' && init?.method === 'POST') return json({ data: { id: 'new-1' } }, true, 201);
+    return defaultFetchImpl(input);
+  });
+  render(<MonitorEditor monitorId={mode === 'edit' ? 'm1' : undefined} />);
+  await screen.findByTestId('monitor-editor-name');
+  if (mode === 'create') {
+    fireEvent.change(screen.getByTestId('monitor-editor-name'), { target: { value: 'Disk full' } });
+    fireEvent.click(screen.getByTestId('monitor-editor-delivery-channels'));
+  }
+  await screen.findByRole('option', { name: 'Partner NOC (slack)' });
+  await screen.findByRole('option', { name: 'Partner escalation' });
+  const channelPicker = screen.getByTestId('monitor-editor-channels') as HTMLSelectElement;
+  const policyPicker = screen.getByTestId('monitor-editor-escalation-policy');
+  expect(Array.from(channelPicker.options, option => option.value)).toEqual(['org-channel', 'partner-channel']);
+  if (mode === 'create') {
+    for (const option of channelPicker.options) option.selected = option.value === inheritedChannel.id;
+    fireEvent.change(channelPicker);
+    fireEvent.change(policyPicker, { target: { value: inheritedPolicy.id } });
+  }
+  expect(channelPicker).toHaveValue([inheritedChannel.id]);
+  expect(policyPicker).toHaveValue(inheritedPolicy.id);
+  fireEvent.click(screen.getByTestId('monitor-editor-save'));
+  const method = mode === 'edit' ? 'PATCH' : 'POST';
+  await waitFor(() => expect(fetchMock.mock.calls.some(([, init]) => init?.method === method)).toBe(true));
+  const [, init] = fetchMock.mock.calls.find(([, init]) => init?.method === method)!;
+  expect(JSON.parse(init!.body as string)).toMatchObject({ deliveryMode: 'channels',
+    deliveryChannelIds: [inheritedChannel.id], escalationPolicyId: inheritedPolicy.id });
+  const rails = fetchMock.mock.calls.filter(([url]) => url.startsWith('/alerts/delivery/rails'));
+  expect(rails.some(([url]) => url === '/alerts/delivery/rails?rail=channels&orgId=org-1')).toBe(true);
+  expect(rails.some(([url]) => url === '/alerts/delivery/rails?rail=escalation&orgId=org-1')).toBe(true);
+  expect(fetchMock.mock.calls.some(([url]) => url.startsWith('/alerts/channels') || url.startsWith('/alerts/policies'))).toBe(false);
+});
+it('late inherited choices do not refetch the monitor or overwrite unsaved edits', async () => {
+  let finishChannels!: (response: Response) => void;
+  fetchMock.mockImplementation(async (input: string) => {
+    if (input === '/monitor-definitions/m1') return json({ data: { ...MONITOR_M1_FIXTURE,
+      deliveryMode: 'channels', deliveryChannelIds: ['partner-channel'], escalationPolicyId: 'partner-policy' } });
+    if (input.startsWith('/alerts/delivery/rails?rail=channels')) return new Promise<Response>(resolve => { finishChannels = resolve; });
+    if (input.startsWith('/alerts/delivery/rails?rail=escalation')) return json({ data: [
+      { id: 'partner-policy', name: 'Partner escalation', orgId: null, partnerId: 'partner-1' },
+    ] });
+    return defaultFetchImpl(input);
+  });
+  render(<MonitorEditor monitorId="m1" />);
+  await screen.findByDisplayValue('Disk full');
+  fireEvent.change(screen.getByTestId('monitor-editor-name'), { target: { value: 'Draft name' } });
+  await act(async () => finishChannels(json({ data: [], inherited: [{ id: 'partner-channel', name: 'Partner NOC', type: 'slack' }] })));
+  expect(await screen.findByRole('option', { name: 'Partner NOC (slack)' })).toBeInTheDocument();
+  expect(screen.getByTestId('monitor-editor-channels')).toHaveValue(['partner-channel']);
+  expect(screen.getByTestId('monitor-editor-escalation-policy')).toHaveValue('partner-policy');
+  expect(screen.getByTestId('monitor-editor-name')).toHaveValue('Draft name');
+  expect(fetchMock.mock.calls.filter(([url]) => url === '/monitor-definitions/m1')).toHaveLength(1);
+});
+```
+
+Add `act` to this test file's existing Testing Library import. Keep the Task 10 hook’s stale-org and failure/retry tests as prerequisites; neither a pending read nor a failed read clears form IDs.
 
 - [ ] **Step 2: Run, expect FAIL**
 
@@ -5046,7 +5164,40 @@ export default function DeliveryRuleSetPreview({ orgId }: { orgId: string | null
 }
 ```
 
-`MonitorEditor.tsx` additions and exact JSX insertion at the end of Notify, before its closing `</section>`:
+`MonitorEditor.tsx`: replace the old `notificationChannels`/`escalationPolicies` state and both `fetchChannels`/`fetchEscalationPolicies` callbacks with Task 10's independent rails hook. Remove those callbacks from the initialization effect and its dependency list; keep `fetchMonitor` and the other loaders there. Rail URL changes must never trigger `fetchMonitor`/`reset`.
+
+Add this import, watch, and choice loading immediately after `ownerOrgId` and before the existing `compatibleEscalationPolicies` memo:
+
+```tsx
+import { useDeliveryResource } from '../alerts/delivery/useDeliveryResource';
+// Alongside the other watch calls:
+const watchDeliveryChannelIds = watch('deliveryChannelIds');
+
+// After ownerOrgId: saved org monitors use their persisted org, new monitors
+// use the selected org, and partner monitors use that org's inherited rails.
+const deliveryChoiceOrgId = ownerOrgId ?? currentOrgId;
+const deliveryChoiceSuffix = deliveryChoiceOrgId ? `&orgId=${encodeURIComponent(deliveryChoiceOrgId)}` : '';
+const channelRail = useDeliveryResource<NotificationChannel>(`/alerts/delivery/rails?rail=channels${deliveryChoiceSuffix}`);
+const escalationRail = useDeliveryResource<EscalationPolicy>(`/alerts/delivery/rails?rail=escalation${deliveryChoiceSuffix}`);
+const notificationChannels = useMemo(() => [...new Map([
+  ...channelRail.data.map(({ id, name, type }) => ({ id, name, type })),
+  ...channelRail.inherited,
+].map(channel => [channel.id, channel] as const)).values()], [channelRail.data, channelRail.inherited]);
+const escalationPolicies = escalationRail.data;
+```
+
+`NotificationChannel` from `components/automations/ActionsEditor.tsx:15` already is `{ id; name; type }`, so no synthetic config/enabled fields are needed. Keep the existing policy ownership memo and new-monitor owner-change validation. Do not intersect saved form IDs with a loading or failed result. On the existing channel multi-select add `value={watchDeliveryChannelIds}` and `disabled={channelRail.status !== 'success'}` while retaining `register('deliveryChannelIds')`; the controlled value restores saved selections when options arrive. The policy select below likewise uses the watched value. Use the merged safe choices for the existing action editors as well.
+
+Render independent read states inside Notify before the pickers, using Task 11's existing translated keys (no additional locale files):
+
+```tsx
+{[channelRail, escalationRail].map((rail, index) => rail.status === 'error'
+  ? <div key={index} role="alert">{t('alerts:deliveryPage.loadFailed')}
+      <button type="button" onClick={rail.reload}>{t('common:actions.retry')}</button></div>
+  : rail.status === 'loading' ? <p key={index} role="status">{t('alerts:deliveryPage.loading')}</p> : null)}
+```
+
+Additional imports/watch and exact JSX insertion at the end of Notify, before its closing `</section>`:
 
 ```tsx
 import DeliveryPreview from '../alerts/delivery/DeliveryPreview';
@@ -5068,7 +5219,8 @@ const watchSeverity = watch('severity');
       {t('monitoring:editor.fields.escalationPolicy')}
     </label>
     <select id="monitor-editor-escalation-policy" data-testid="monitor-editor-escalation-policy"
-      className="h-9 w-full rounded-md border bg-background px-3 text-sm" {...register('escalationPolicyId')}>
+      className="h-9 w-full rounded-md border bg-background px-3 text-sm" {...register('escalationPolicyId')}
+      value={watchEscalationPolicyId ?? ''} disabled={escalationRail.status !== 'success'}>
       <option value="">{t('monitoring:editor.deliveryModes.inherit')}</option>
       {compatibleEscalationPolicies.map(policy => <option key={policy.id} value={policy.id}>{policy.name}</option>)}
     </select>
@@ -5155,7 +5307,7 @@ git commit -m "feat(web): show resolved Notify inheritance and preview delivery 
 - Create: `apps/api/src/services/aiToolsDelivery.ts`, `aiToolsDelivery.test.ts`
 - Modify: `apps/api/src/services/aiTools.ts:68,318`, `aiToolSchemas.ts:100,1580`, `aiGuardrails.ts:142,1263,1613`, `aiAgents/agentToolCatalog.ts:84`, `aiAgentSystemPrompt.ts:108`
 - Modify: `apps/api/src/services/aiAgentSdkTools.ts:163,279,2507` (mandatory SDK registration surface)
-- Modify: `apps/api/src/routes/alerts/routing.ts:24-48,58-117` (export the schemas and access helpers already used by its routes)
+- Modify: `apps/api/src/routes/alerts/routing.ts:24-48,97-117` (export schemas and `getRoutingRuleWithAccess`; site helper exports already ship in Task 8/PR 1)
 - Extend: `apps/api/src/services/aiAgentSdkTools.registryParity.contract.test.ts:12-28,88`, `aiAgents/agentToolCatalog.contract.test.ts:48-54`
 - Verify unchanged: `apps/api/src/services/aiAgents/__snapshots__/agentToolCatalog.contract.test.ts.snap:50`; run `aiAgentSdkTools.mcpCoverage.test.ts:16-38` without updating snapshots
 - Consume: `apps/api/src/services/aiToolsConfigPolicy.ts:51-76`, `middleware/auth.ts:915-918`, `services/aiGuardrails.ts:1808-1815`, `routes/alerts/helpers.ts:435-447` (verified constraints on MFA, agent principals, tiers, and legacy binding validation).
@@ -5163,7 +5315,7 @@ git commit -m "feat(web): show resolved Notify inheritance and preview delivery 
 **Interfaces:**
 - Produces: `registerDeliveryTools(registry: Map<string, AiTool>): void`; tool name exactly **`manage_delivery`**; `deliveryToolShape`, `deliveryToolSchema` in `aiToolSchemas.ts`.
 - Actions: `resolve | list_routing | create_routing | update_routing | delete_routing | set_default | list_escalation | create_escalation | update_escalation | delete_escalation`. Top-level ownership (`orgId`, `ownerScope`) is create/list/default-only; `id` chooses update/delete targets and their immutable owner; `data` contains rule/policy fields. Resolve requires `orgId` and `severity`, with optional `kind`, `siteId`, `monitorId`.
-- Consumes: Task 13's **`previewDelivery` from `./delivery/describeDelivery`**, Task 3's `upsertDefaultRow`, `assertDefaultRowPatch`, `escalationPolicyCompatible`, `DeliveryWriteError`; Task 5's policy schemas. No alternate delivery resolver and no HTTP bridge: HTTP `requireScope` refuses `ai_agent` principals.
+- Consumes: Task 13's **`previewDelivery` from `./delivery/describeDelivery`**, Task 3's `upsertDefaultRow`, `assertDefaultRowPatch`, `escalationPolicyCompatible`, `DeliveryWriteError`; Task 5's policy schemas; Task 8's `routingSiteIds` and `canAccessRoutingSites` exports. No alternate delivery resolver and no HTTP bridge: HTTP `requireScope` refuses `ai_agent` principals.
 - Read actions: tier 1, `alerts:read`; writes: tier 2, `alerts:write`, existing mutation guardrails and audit path. Tier 2 does **not** mean approval-required in this repository (`aiGuardrails.ts:1808-1815`); do not falsely promise a confirmation dialog. Human writes additionally require MFA; authenticated agent writes use the existing agent guardrails instead. All writes reject site/device ceilings and enforce partner-wide capability.
 - `manage_notification_channels` retains channel CRUD/test. Routing, defaults, escalation CRUD, and resolution have one AI home: `manage_delivery`. Do not copy those actions into the channel tool. The old tool's frozen missing-tier entry and unreachable snapshot entry remain unchanged; `manage_delivery` must be present on every surface from its first commit.
 - Default deletion is already rejected on both axes by Task 3 and absent from Task 11's UI; keep the AI refusal identical.
@@ -5348,7 +5500,7 @@ export const deliveryToolSchema = z.object(deliveryToolShape).strict().superRefi
 // manage_delivery: deliveryToolSchema,
 ```
 
-Export the following existing declarations in `routes/alerts/routing.ts` (bodies unchanged from Task 3/current code): `createRoutingRuleSchema`, `updateRoutingRuleSchema`, `upsertDefaultRowSchema`, `routingSiteIds`, `canAccessRoutingSites`, `getRoutingRuleWithAccess`. The concrete edit is adding `export` before each `const`, `function`, or `async function` declaration. The AI module never invokes Hono middleware.
+Export the following existing declarations in `routes/alerts/routing.ts` (bodies unchanged from Task 3/current code): `createRoutingRuleSchema`, `updateRoutingRuleSchema`, `upsertDefaultRowSchema`, `getRoutingRuleWithAccess`. The concrete edit is adding `export` before each `const` or `async function` declaration. Consume `routingSiteIds` and `canAccessRoutingSites` already exported in Task 8/PR 1; do not defer those exports to this task. The AI module never invokes Hono middleware.
 
 `aiToolsDelivery.ts`:
 
