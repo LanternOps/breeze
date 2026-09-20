@@ -14,9 +14,27 @@ import {
 } from '../../services/partnerWideAccess';
 import { PERMISSIONS } from '../../services/permissions';
 
+import { monitorKindSchema } from '@breeze/shared';
+import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../../services/siteCeilingAccess';
+import {
+  DeliveryWriteError,
+  assertDefaultRowPatch,
+  escalationPolicyCompatible,
+  upsertDefaultRow,
+} from '../../services/delivery/routingRuleWrites';
+
 const listRoutingRulesSchema = z.object({
   orgId: z.string().guid().optional(),
 });
+
+// Evaluated keys only (spec §Data model "Routing"): `conditionTypes` and
+// `deviceTags` were accepted for two years and never read by the dispatcher;
+// `.strict()` turns a write of either into a 400 instead of a silent no-op.
+const routingConditionsSchema = z.object({
+  severities: z.array(z.enum(['critical', 'high', 'medium', 'low', 'info'])).optional(),
+  monitorKinds: z.array(monitorKindSchema).optional(),
+  siteIds: z.array(z.string().guid()).optional(),
+}).strict();
 
 const createRoutingRuleSchema = z.object({
   // 'partner' creates a partner-wide ("all orgs") routing rule: orgId NULL,
@@ -24,28 +42,30 @@ const createRoutingRuleSchema = z.object({
   ownerScope: z.enum(['organization', 'partner']).optional(),
   name: z.string().min(1).max(255),
   priority: z.number().int().min(0),
-  conditions: z.object({
-    severities: z.array(z.enum(['critical', 'high', 'medium', 'low', 'info'])).optional(),
-    conditionTypes: z.array(z.string()).optional(),
-    deviceTags: z.array(z.string()).optional(),
-    siteIds: z.array(z.string().guid()).optional(),
-  }),
+  conditions: routingConditionsSchema,
   channelIds: z.array(z.string().guid()).min(1),
+  escalationPolicyId: z.string().guid().nullable().optional(),
   enabled: z.boolean().optional().default(true),
 });
 
 const updateRoutingRuleSchema = z.object({
   name: z.string().min(1).max(255).optional(),
   priority: z.number().int().min(0).optional(),
-  conditions: z.object({
-    severities: z.array(z.enum(['critical', 'high', 'medium', 'low', 'info'])).optional(),
-    conditionTypes: z.array(z.string()).optional(),
-    deviceTags: z.array(z.string()).optional(),
-    siteIds: z.array(z.string().guid()).optional(),
-  }).optional(),
-  channelIds: z.array(z.string().guid()).min(1).optional(),
+  conditions: routingConditionsSchema.optional(),
+  // No .min(1): the Everything else row may be emptied (inbox only). Non-default
+  // rows are re-checked in the handler.
+  channelIds: z.array(z.string().guid()).optional(),
+  escalationPolicyId: z.string().guid().nullable().optional(),
   enabled: z.boolean().optional(),
 });
+
+const upsertDefaultRowSchema = z.object({
+  ownerScope: z.enum(['organization', 'partner']).optional(),
+  channelIds: z.array(z.string().guid()),
+  escalationPolicyId: z.string().guid().nullable().optional(),
+});
+
+const ESCALATION_POLICY_AXIS_MESSAGE = 'Escalation policy is not available to this rule owner';
 
 export const routingRoutes = new Hono();
 
@@ -237,6 +257,10 @@ routingRoutes.post(
         return c.json({ error: 'Routing rule sites are outside your permitted sites' }, 403);
       }
 
+      if (data.escalationPolicyId && !(await escalationPolicyCompatible(data.escalationPolicyId, owner))) {
+        return c.json({ error: ESCALATION_POLICY_AXIS_MESSAGE }, 400);
+      }
+
       const [rule] = await db
         .insert(notificationRoutingRules)
         .values({
@@ -247,6 +271,8 @@ routingRoutes.post(
           conditions: data.conditions,
           channelIds: data.channelIds,
           enabled: data.enabled,
+          escalationPolicyId: data.escalationPolicyId ?? null,
+          isDefault: false,
         })
         .returning();
 
@@ -263,6 +289,57 @@ routingRoutes.post(
     } catch (error) {
       console.error('[RoutingRules] Failed to create routing rule', error);
       return c.json({ error: 'Failed to create routing rule' }, 500);
+    }
+  }
+);
+
+// Import canMutateOrgWideGovernance and SITE_CEILING_WRITE_DENIED_MESSAGE
+// from '../../services/siteCeilingAccess'. The shared writer repeats this guard.
+// PUT /alerts/routing-rules/default — upsert the axis's "Everything else" row.
+// An org token writes its org row (which shadows the partner's for that org);
+// a partner-scoped caller writes the partner row with ownerScope 'partner' or
+// an org row with ?orgId=.
+routingRoutes.put(
+  '/routing-rules/default',
+  requireScope('organization', 'partner', 'system'),
+  requireAlertWrite,
+  requireMfa(),
+  zValidator('json', upsertDefaultRowSchema),
+  async (c) => {
+    try {
+      const auth = c.get('auth');
+      if (!canMutateOrgWideGovernance(auth)) return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+      const data = c.req.valid('json');
+      let owner: { orgId: string | null; partnerId: string | null };
+      if (data.ownerScope === 'partner') {
+        if (!canManagePartnerWidePolicies(auth) || !auth.partnerId) {
+          return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+        }
+        owner = { orgId: null, partnerId: auth.partnerId };
+      } else {
+        const resolved = resolveWriteOrgId(auth, c.req.query('orgId'));
+        if (resolved.error) {
+          return c.json({ error: resolved.error }, resolved.status ?? 400);
+        }
+        owner = { orgId: resolved.orgId!, partnerId: null };
+      }
+      if (data.escalationPolicyId && !(await escalationPolicyCompatible(data.escalationPolicyId, owner))) {
+        return c.json({ error: ESCALATION_POLICY_AXIS_MESSAGE }, 400);
+      }
+      const row = await upsertDefaultRow(owner, { channelIds: data.channelIds, escalationPolicyId: data.escalationPolicyId ?? null }, auth);
+      writeRouteAudit(c, {
+        orgId: owner.orgId,
+        action: 'notification_routing_rule.default_upsert',
+        resourceType: 'notification_routing_rule',
+        resourceId: row.id,
+        resourceName: row.name,
+        details: { channelCount: data.channelIds.length, inboxOnly: data.channelIds.length === 0 },
+      });
+      return c.json({ data: row });
+    } catch (error) {
+      if (error instanceof DeliveryWriteError) return c.json({ error: error.message }, error.status);
+      console.error('[RoutingRules] Failed to upsert default routing row', error);
+      return c.json({ error: 'Failed to save the Everything else row' }, 500);
     }
   }
 );
@@ -288,6 +365,21 @@ routingRoutes.patch(
       // partner-wide capability (#2130).
       if (existing.orgId === null && !canManagePartnerWidePolicies(auth)) {
         return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+      }
+
+      if (existing.isDefault) {
+        if (!canMutateOrgWideGovernance(auth)) return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+        try {
+          assertDefaultRowPatch(updates);
+        } catch (err) {
+          if (err instanceof DeliveryWriteError) return c.json({ error: err.message }, err.status);
+          throw err;
+        }
+      } else if (updates.channelIds !== undefined && updates.channelIds.length === 0) {
+        return c.json({ error: 'channelIds must contain at least one channel' }, 400);
+      }
+      if (updates.escalationPolicyId && !(await escalationPolicyCompatible(updates.escalationPolicyId, { orgId: existing.orgId, partnerId: existing.partnerId }))) {
+        return c.json({ error: ESCALATION_POLICY_AXIS_MESSAGE }, 400);
       }
 
       const owner = { orgId: existing.orgId, partnerId: existing.partnerId };
@@ -318,6 +410,7 @@ routingRoutes.patch(
       if (updates.conditions !== undefined) setValues.conditions = updates.conditions;
       if (updates.channelIds !== undefined) setValues.channelIds = updates.channelIds;
       if (updates.enabled !== undefined) setValues.enabled = updates.enabled;
+      if (updates.escalationPolicyId !== undefined) setValues.escalationPolicyId = updates.escalationPolicyId;
 
       const [updated] = await db
         .update(notificationRoutingRules)
@@ -361,6 +454,10 @@ routingRoutes.delete(
       // partner-wide capability (#2130).
       if (existing.orgId === null && !canManagePartnerWidePolicies(auth)) {
         return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+      }
+
+      if (existing.isDefault) {
+        return c.json({ error: 'The Everything else row cannot be deleted; empty its channels for inbox only' }, 409);
       }
 
       const canAccessExistingSites = await canAccessRoutingSites(
