@@ -363,11 +363,22 @@ describe('system-cleanup queue/start service seam', () => {
   });
 
   it('refuses an existing active claim after locking the device', async () => {
-    activeRuns = [{ id: SEAM_RUN_ID }];
+    activeRuns = [{ id: SEAM_RUN_ID, plan: { deadlineAt: new Date(Date.now() + 60_000).toISOString() } }];
     await expect(startSystemCleanupRun(seamArgs)).resolves.toMatchObject({ ok: false, status: 409, error: 'run_in_progress', cleanupRunId: SEAM_RUN_ID });
     expect(seam.lock).toHaveBeenCalledWith('update');
     expect(seam.insert).not.toHaveBeenCalled();
     expect(seam.queue).not.toHaveBeenCalled();
+  });
+
+  it('expires a stale claim and cancels its command inside the new claim transaction', async () => {
+    activeRuns = [{ id: SEAM_RUN_ID, plan: { deadlineAt: new Date(Date.now() - 1_000).toISOString() } }];
+    returnedUpdates = [[{ id: SEAM_RUN_ID, commandId: SEAM_COMMAND_ID }], [{ id: SEAM_COMMAND_ID }]];
+    await expect(startSystemCleanupRun(seamArgs)).resolves.toMatchObject({ ok: true });
+    expect(writes[0]?.values).toMatchObject({ status: 'failed', error: 'run_expired' });
+    expect(writes[1]?.values).toMatchObject({ status: 'cancelled' });
+    expect(writes[2]?.values).toMatchObject({ status: 'running', kind: 'system' });
+    expect(seam.transaction).toHaveBeenCalledTimes(1);
+    expect(seam.queue).toHaveBeenCalledTimes(1);
   });
 
   it.each(['returned', 'thrown'])('marks the committed claim failed on a %s queue error', async (mode) => {

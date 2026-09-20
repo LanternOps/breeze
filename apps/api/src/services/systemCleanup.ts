@@ -242,7 +242,7 @@ async function startSystemCleanupRunOutsideContext(
       if (!lockedDevice) return { runId: null } as const;
 
       const [inFlight] = await tx
-        .select({ id: deviceFilesystemCleanupRuns.id })
+        .select({ id: deviceFilesystemCleanupRuns.id, plan: deviceFilesystemCleanupRuns.plan })
         .from(deviceFilesystemCleanupRuns)
         .where(and(
           eq(deviceFilesystemCleanupRuns.deviceId, args.device.id),
@@ -250,7 +250,14 @@ async function startSystemCleanupRunOutsideContext(
           eq(deviceFilesystemCleanupRuns.status, 'running'),
         ))
         .limit(1);
-      if (inFlight) return { conflict: inFlight.id } as const;
+      if (inFlight) {
+        const plan = inFlight.plan as { deadlineAt?: string } | null;
+        const expired = plan?.deadlineAt && new Date(plan.deadlineAt).getTime() < Date.now();
+        if (!expired) return { conflict: inFlight.id } as const;
+        await failSystemCleanupRunInTransaction(tx, {
+          runId: inFlight.id, deviceId: args.device.id, orgId: args.device.orgId, error: 'run_expired',
+        });
+      }
 
       const [row] = await tx
         .insert(deviceFilesystemCleanupRuns)
@@ -335,54 +342,61 @@ async function startSystemCleanupRunOutsideContext(
  * Shared by the poll route's lazy timeout and by the org-move cancel branch
  * (Task 12b), so there is one implementation of "this run is over".
  */
-export async function failSystemCleanupRunAndCancelCommand(args: {
+type FailSystemCleanupArgs = {
   runId: string;
   deviceId: string;
   orgId: string;
   error: string;
-}): Promise<boolean> {
-  return withDbAccessContext(dbContextFor({ orgId: args.orgId }), async () =>
-    db.transaction(async (tx) => {
-      const [run] = await tx
-        .update(deviceFilesystemCleanupRuns)
-        .set({ status: 'failed', error: args.error, updatedAt: new Date() })
-        .where(and(
-          eq(deviceFilesystemCleanupRuns.id, args.runId),
-          eq(deviceFilesystemCleanupRuns.deviceId, args.deviceId),
-          eq(deviceFilesystemCleanupRuns.orgId, args.orgId),
-          eq(deviceFilesystemCleanupRuns.kind, 'system'),
-          // CAS: a real result that landed first must win.
-          eq(deviceFilesystemCleanupRuns.status, 'running'),
-        ))
-        .returning({ id: deviceFilesystemCleanupRuns.id, commandId: deviceFilesystemCleanupRuns.commandId });
-      if (!run) return false;
+};
 
-      {
-        const completedAt = new Date();
-        const [cancelled] = await tx
-          .update(deviceCommands)
-          .set({
-            status: 'cancelled',
-            completedAt,
-            result: { status: 'cancelled', reason: 'cleanup_run_finalised' },
-          })
-          .where(and(
-            run.commandId ? eq(deviceCommands.id, run.commandId) : and(
-              eq(deviceCommands.type, CommandTypes.SYSTEM_CLEANUP_RUN),
-              sql`${deviceCommands.payload}->>'runId' = ${args.runId}`,
-            ),
-            eq(deviceCommands.deviceId, args.deviceId),
-            eq(deviceCommands.status, 'pending'),
-          ))
-          .returning({ id: deviceCommands.id });
-        // Losing this CAS is fine and expected: the agent already claimed it,
-        // so a real result is on its way and the late-result branch in the
-        // handler records it without flipping the status back.
-        void cancelled;
-      }
-      return true;
-    }),
+export async function failSystemCleanupRunAndCancelCommand(args: FailSystemCleanupArgs): Promise<boolean> {
+  return withDbAccessContext(dbContextFor({ orgId: args.orgId }), () =>
+    db.transaction((tx) => failSystemCleanupRunInTransaction(tx, args)),
   );
+}
+
+async function failSystemCleanupRunInTransaction(
+  tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+  args: FailSystemCleanupArgs,
+): Promise<boolean> {
+  const [run] = await tx
+    .update(deviceFilesystemCleanupRuns)
+    .set({ status: 'failed', error: args.error, updatedAt: new Date() })
+    .where(and(
+      eq(deviceFilesystemCleanupRuns.id, args.runId),
+      eq(deviceFilesystemCleanupRuns.deviceId, args.deviceId),
+      eq(deviceFilesystemCleanupRuns.orgId, args.orgId),
+      eq(deviceFilesystemCleanupRuns.kind, 'system'),
+      // CAS: a real result that landed first must win.
+      eq(deviceFilesystemCleanupRuns.status, 'running'),
+    ))
+    .returning({ id: deviceFilesystemCleanupRuns.id, commandId: deviceFilesystemCleanupRuns.commandId });
+  if (!run) return false;
+
+  {
+    const completedAt = new Date();
+    const [cancelled] = await tx
+      .update(deviceCommands)
+      .set({
+        status: 'cancelled',
+        completedAt,
+        result: { status: 'cancelled', reason: 'cleanup_run_finalised' },
+      })
+      .where(and(
+        run.commandId ? eq(deviceCommands.id, run.commandId) : and(
+          eq(deviceCommands.type, CommandTypes.SYSTEM_CLEANUP_RUN),
+          sql`${deviceCommands.payload}->>'runId' = ${args.runId}`,
+        ),
+        eq(deviceCommands.deviceId, args.deviceId),
+        eq(deviceCommands.status, 'pending'),
+      ))
+      .returning({ id: deviceCommands.id });
+    // Losing this CAS is fine and expected: the agent already claimed it,
+    // so a real result is on its way and the late-result branch in the
+    // handler records it without flipping the status back.
+    void cancelled;
+  }
+  return true;
 }
 
 function dbContextFor(device: { orgId: string }): DbAccessContext {
