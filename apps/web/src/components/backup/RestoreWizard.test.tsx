@@ -7,6 +7,8 @@ import { fetchWithAuth } from '../../stores/auth';
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
 }));
+const showToastMock = vi.fn();
+vi.mock('../shared/Toast', () => ({ showToast: (input: unknown) => showToastMock(input) }));
 
 const fetchMock = vi.mocked(fetchWithAuth);
 
@@ -214,5 +216,72 @@ describe('RestoreWizard', () => {
     expect(screen.getAllByText('running').length).toBeGreaterThan(0);
     expect(screen.getByText(/Command: cmd-history-1/i)).toBeTruthy();
     expect(screen.getByText(/Target path: \/restore-target/i)).toBeTruthy();
+  });
+
+  it('blocks the restore until an alternate destination path is typed (#6349)', async () => {
+    // The wizard shipped with the demo path '/restore/nyc-db-14' pre-filled.
+    // It was unreachable so nobody saw it; mounted, that is a restore pointed
+    // at the wrong directory one click away.
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/backup/snapshots') {
+        return makeJsonResponse({ data: [{ id: 'snap-1', label: 'Server snapshot', status: 'Ready', size: '4 GB' }] });
+      }
+      if (url === '/backup/snapshots/snap-1/browse') return makeJsonResponse({ data: [] });
+      if (url === '/backup/restore?limit=6') return makeJsonResponse({ data: [] });
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<RestoreWizard />);
+    await screen.findByText('Restore Wizard');
+
+    for (let index = 0; index < 3; index += 1) {
+      fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
+    }
+
+    fireEvent.click(screen.getByRole('button', { name: /Alternate path/i }));
+
+    const input = screen.getByLabelText('Alternate path') as HTMLInputElement;
+    expect(input.value).toBe('');
+
+    fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
+    const start = screen.getByRole('button', { name: /Start restore/i }) as HTMLButtonElement;
+    expect(start.disabled).toBe(true);
+
+    fireEvent.click(screen.getByRole('button', { name: /Back/i }));
+    fireEvent.change(screen.getByLabelText('Alternate path'), { target: { value: '/var/restore' } });
+    fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
+
+    expect((screen.getByRole('button', { name: /Start restore/i }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('toasts a failed restore through runAction, not just the inline banner (#6349)', async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === '/backup/snapshots') {
+        return makeJsonResponse({ data: [{ id: 'snap-1', label: 'Server snapshot', status: 'Ready', size: '4 GB' }] });
+      }
+      if (url === '/backup/snapshots/snap-1/browse') return makeJsonResponse({ data: [] });
+      if (url === '/backup/restore?limit=6') return makeJsonResponse({ data: [] });
+      if (url === '/backup/restore' && method === 'POST') {
+        return makeJsonResponse({ error: 'Device is offline, cannot execute command' }, false, 409);
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<RestoreWizard />);
+    await screen.findByText('Restore Wizard');
+
+    for (let index = 0; index < 4; index += 1) {
+      fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
+    }
+    fireEvent.click(screen.getByRole('button', { name: /Start restore/i }));
+
+    await waitFor(() => {
+      expect(showToastMock).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'error', message: 'Device is offline, cannot execute command' }),
+      );
+    });
   });
 });

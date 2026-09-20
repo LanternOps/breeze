@@ -495,6 +495,8 @@
     "originalLocation": "Ubicación original",
     "restoreFilesInPlace": "Restaurar archivos en su lugar.",
     "alternatePath": "Camino alternativo",
+    "alternatePathPlaceholder": "p. ej. D:\\Restored o /var/restore",
+    "alternatePathRequired": "Ingrese una ruta de destino para continuar.",
     "restoreToANewFolder": "Restaurar en una nueva carpeta.",
     "reviewConfirm": "Revisar y confirmar",
     "confirmTheRestoreSummaryBeforeStarting": "Confirme el resumen de restauración antes de comenzar.",

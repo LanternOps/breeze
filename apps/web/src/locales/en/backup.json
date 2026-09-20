@@ -495,6 +495,8 @@
     "originalLocation": "Original location",
     "restoreFilesInPlace": "Restore files in place.",
     "alternatePath": "Alternate path",
+    "alternatePathPlaceholder": "e.g. D:\\Restored or /var/restore",
+    "alternatePathRequired": "Enter a destination path to continue.",
     "restoreToANewFolder": "Restore to a new folder.",
     "reviewConfirm": "Review & confirm",
     "confirmTheRestoreSummaryBeforeStarting": "Confirm the restore summary before starting.",

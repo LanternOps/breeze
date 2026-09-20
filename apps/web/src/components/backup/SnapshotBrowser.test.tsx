@@ -101,6 +101,15 @@ describe('SnapshotBrowser', () => {
     expect(screen.getByText(/Use the restore workflow to recover or export files from this snapshot/i)).toBeTruthy();
   });
 
+  it('points the restore-workflow copy at the Restore tab (#6349)', async () => {
+    render(<SnapshotBrowser />);
+
+    await screen.findByText(/Protection Controls/i);
+    const link = screen.getByTestId('snapshot-browser-restore-link');
+    expect(link.tagName).toBe('A');
+    expect(link.getAttribute('href')).toBe('#restore');
+  });
+
   it('applies legal hold for the selected snapshot', async () => {
     render(<SnapshotBrowser />);
 
