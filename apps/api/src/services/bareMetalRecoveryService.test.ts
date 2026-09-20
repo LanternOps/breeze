@@ -17,11 +17,12 @@ function chainMock(resolvedValue: unknown = []) {
   return Object.assign(Promise.resolve(resolvedValue), chain);
 }
 
-const { selectMock, insertMock, updateMock, createAuditLogAsyncMock } = vi.hoisted(() => ({
+const { selectMock, insertMock, updateMock, createAuditLogAsyncMock, enqueueSnapshotFileIndexHydrationMock } = vi.hoisted(() => ({
   selectMock: vi.fn<(...args: unknown[]) => any>(),
   insertMock: vi.fn<(...args: unknown[]) => any>(),
   updateMock: vi.fn<(...args: unknown[]) => any>(),
   createAuditLogAsyncMock: vi.fn<(entry: Record<string, unknown>) => Promise<void>>(async () => undefined),
+  enqueueSnapshotFileIndexHydrationMock: vi.fn<(...args: unknown[]) => Promise<string>>(async () => 'job-1'),
 }));
 
 vi.mock('../db', () => {
@@ -39,6 +40,9 @@ vi.mock('../db', () => {
 });
 vi.mock('./auditService', () => ({
   createAuditLogAsync: (entry: Record<string, unknown>) => createAuditLogAsyncMock(entry),
+}));
+vi.mock('../jobs/backupSnapshotFileIndexWorker', () => ({
+  enqueueSnapshotFileIndexHydration: enqueueSnapshotFileIndexHydrationMock,
 }));
 
 import {
@@ -79,33 +83,40 @@ async function expectRecoveryError(promise: Promise<unknown>, code: string, stat
 }
 
 describe('createBareMetalRecovery', () => {
-  // #6403 interim guard: an incremental snapshot's manifest references objects
-  // under an OLDER snapshot's prefix, and token-mode recovery is confined to
-  // one prefix — so the restore fails AFTER the target has been partitioned
-  // and formatted. Refuse at creation instead, before any disk is touched.
-  it('refuses a snapshot whose backup referenced objects from older snapshots (409), before any write', async () => {
-    selectMock.mockReturnValueOnce(chainMock([{ ...restorableSnapshot, referencedFiles: 98411 }]));
-    const err = await expectRecoveryError(
-      createBareMetalRecovery({ orgId: ORG_ID, snapshotId: SNAPSHOT_ID, identity: 'original', createdBy: USER_ID, source: 'dr' }),
-      'snapshot_has_external_references', 409,
-    );
-    expect(err.details).toMatchObject({ referencedFiles: 98411, snapshotId: SNAPSHOT_ID });
-    // The existing UI renders `reasons`; without it the operator sees only a code.
-    expect((err.details as { reasons: string[] }).reasons[0]).toContain('98,411');
-    expect(insertMock).not.toHaveBeenCalled();
-  });
+  describe('external-reference preflight (W09, replaces the #6469 hard refusal)', () => {
+    it('a referenced snapshot with a KNOWN storage identity is allowed and hydration is enqueued', async () => {
+      selectMock
+        .mockReturnValueOnce(chainMock([{ ...restorableSnapshot, referencedFiles: 98411, storageIdentity: 'local::/srv/backups' }]))
+        .mockReturnValueOnce(chainMock([]));
+      insertMock.mockReturnValueOnce(chainMock([recoveryRow()]));
+      const { row } = await createBareMetalRecovery({ orgId: ORG_ID, snapshotId: SNAPSHOT_ID, identity: 'original', createdBy: USER_ID, source: 'route' });
+      expect(row.id).toBe(RECOVERY_ID);
+      expect(enqueueSnapshotFileIndexHydrationMock).toHaveBeenCalledWith(SNAPSHOT_ID, 'recovery_create');
+    });
 
-  // referenced_files is NULL for every self-contained snapshot: the agent's
-  // `referencedFiles,omitempty` drops a zero, and the API only writes the
-  // column when the field is present. Refusing NULL would refuse every full
-  // backup, so NULL and 0 must both be allowed.
-  it.each([[null], [0]])('allows a self-contained snapshot (referencedFiles=%s)', async (referencedFiles) => {
-    selectMock.mockReturnValueOnce(chainMock([{ ...restorableSnapshot, referencedFiles }]));
-    selectMock.mockReturnValueOnce(chainMock([]));
-    insertMock.mockReturnValueOnce(chainMock([recoveryRow()]));
-    const { row } = await createBareMetalRecovery({ orgId: ORG_ID, snapshotId: SNAPSHOT_ID, identity: 'original', createdBy: USER_ID, source: 'route' });
-    expect(row.id).toBe(RECOVERY_ID);
-    expect(insertMock).toHaveBeenCalled();
+    it('a referenced snapshot with an UNKNOWN storage identity (NULL) is still refused at creation (409), before any write', async () => {
+      selectMock.mockReturnValueOnce(chainMock([{ ...restorableSnapshot, referencedFiles: 98411, storageIdentity: null }]));
+      const err = await expectRecoveryError(
+        createBareMetalRecovery({ orgId: ORG_ID, snapshotId: SNAPSHOT_ID, identity: 'original', createdBy: USER_ID, source: 'dr' }),
+        'snapshot_storage_identity_unknown', 409,
+      );
+      expect(err.details).toMatchObject({ snapshotId: SNAPSHOT_ID });
+      expect(insertMock).not.toHaveBeenCalled();
+    });
+
+    // referenced_files is NULL for every self-contained snapshot: the agent's
+    // `referencedFiles,omitempty` drops a zero, and the API only writes the
+    // column when the field is present. Refusing NULL would refuse every full
+    // backup, so NULL and 0 must both be allowed, and neither needs hydration.
+    it.each([[null], [0]])('a self-contained snapshot (referencedFiles=%s) is allowed and does NOT enqueue hydration', async (referencedFiles) => {
+      selectMock
+        .mockReturnValueOnce(chainMock([{ ...restorableSnapshot, referencedFiles }]))
+        .mockReturnValueOnce(chainMock([]));
+      insertMock.mockReturnValueOnce(chainMock([recoveryRow()]));
+      const { row } = await createBareMetalRecovery({ orgId: ORG_ID, snapshotId: SNAPSHOT_ID, identity: 'original', createdBy: USER_ID, source: 'route' });
+      expect(row.id).toBe(RECOVERY_ID);
+      expect(enqueueSnapshotFileIndexHydrationMock).not.toHaveBeenCalled();
+    });
   });
 
   it('refuses a snapshot the guard marked non-restorable (409) naming the reasons', async () => {

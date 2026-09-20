@@ -291,6 +291,7 @@ export const bmrCreateTokenSchema = z.object({
 
 export const bmrAuthenticateSchema = z.object({
   token: z.string().min(1),
+  capabilities: z.array(z.string().min(1).max(64)).max(16).optional(),
 });
 
 export const bmrRecoveryDownloadSchema = z.object({
@@ -320,6 +321,7 @@ export const bmrRecoveryListSchema = z.object({
 // case), so this schema only needs to keep the request body itself small.
 export const bmrExchangeSchema = z.object({
   code: z.string().min(1).max(32),
+  capabilities: z.array(z.string().min(1).max(64)).max(16).optional(),
 });
 
 export const bmrProgressSchema = z.object({

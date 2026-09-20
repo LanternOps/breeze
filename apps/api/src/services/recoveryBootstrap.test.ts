@@ -386,6 +386,26 @@ describe('buildRecoveryDownloadDescriptor', () => {
 
     expect(result.url).toBe('https://custom.example.com/api/v1/backup/bmr/recover/download');
   });
+
+  it('buildRecoveryDownloadDescriptor carries the granted capabilities list', () => {
+    const descriptor = buildRecoveryDownloadDescriptor({
+      providerSnapshotId: 'snap-1',
+      authenticatedAt: new Date(),
+      tokenExpiresAt: new Date(Date.now() + 60_000),
+      capabilities: ['snapshot-file-membership-v1'],
+    });
+    expect(descriptor.capabilities).toEqual(['snapshot-file-membership-v1']);
+  });
+
+  it('buildRecoveryDownloadDescriptor omits capabilities entirely when none were granted (legacy shape unchanged)', () => {
+    const descriptor = buildRecoveryDownloadDescriptor({
+      providerSnapshotId: 'snap-1',
+      authenticatedAt: new Date(),
+      tokenExpiresAt: new Date(Date.now() + 60_000),
+      capabilities: [],
+    });
+    expect(descriptor).not.toHaveProperty('capabilities');
+  });
 });
 
 // ── expireUnusedRecoveryTokens (D9) ─────────────────────────────────────────
