@@ -1329,9 +1329,10 @@ describe('monitoring routes', () => {
 
       expect(res.status).toBe(200);
       expect(enqueueSnmpPoll).toHaveBeenCalledTimes(1);
-      // Let the fire-and-forget rejection settle before the test ends, so an
-      // unswallowed rejection would surface as an unhandled rejection here
-      // rather than escaping into a later, unrelated test.
+      // The enqueue is awaited inside the handler now (#6337), so the
+      // rejection has already been swallowed by the time the response
+      // resolves; the tick is kept so an unswallowed rejection would still
+      // surface here rather than escaping into a later, unrelated test.
       await new Promise((resolve) => setImmediate(resolve));
       expect(captureException).toHaveBeenCalledWith(enqueueError);
     });
