@@ -83,7 +83,10 @@ describe('MoveDeviceOrgDialog (device move-org step-up D5)', () => {
     renderDialog();
     expect(screen.getByTestId('move-org-submit')).toBeDisabled();
     await userEvent.selectOptions(screen.getByTestId('move-org-target-org'), 'o2');
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/orgs/sites?organizationId=o2'));
+    // Without an explicit limit the route defaults to 50 (utils/pagination.ts),
+    // so an org with more sites than that has targets the tech cannot select at
+    // all. 100 is the route's max and matches OrgDevicesTab.
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/orgs/sites?organizationId=o2&limit=100'));
     expect(screen.getByTestId('move-org-submit')).toBeDisabled();
     await userEvent.selectOptions(await screen.findByTestId('move-org-target-site'), 's2');
     expect(screen.getByTestId('move-org-submit')).toBeEnabled();
