@@ -16,8 +16,9 @@ export const ORGANIZATIONS_MAX_PAGES = LIST_MAX_PAGES;
  */
 export async function fetchAllOrganizations<T = unknown>(
   fetchPage: (page: number, limit: number) => Promise<unknown>,
+  options: { strictShape?: boolean } = {},
 ): Promise<T[] | null> {
-  return fetchAllPages<T>(fetchPage, { aliasKeys: ['organizations'] });
+  return fetchAllPages<T>(fetchPage, { aliasKeys: ['organizations'], strictShape: options.strictShape });
 }
 
 /**
@@ -28,6 +29,7 @@ export async function fetchAllOrganizations<T = unknown>(
 export async function fetchAllOrganizationsFrom<T = any>(
   path: string,
   init?: FetchWithAuthOptions,
+  options: { strictShape?: boolean } = {},
 ): Promise<T[]> {
   const separator = path.includes('?') ? '&' : '?';
   const orgs = await fetchAllOrganizations<T>(async (page, limit) => {
@@ -36,7 +38,7 @@ export async function fetchAllOrganizationsFrom<T = any>(
       throw new ListFetchError(response.status, `Failed to fetch organizations (status ${response.status})`);
     }
     return response.json();
-  });
+  }, { strictShape: options.strictShape });
   // Only a null page body yields null, which the fetcher above cannot produce.
   return orgs ?? [];
 }

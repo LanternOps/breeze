@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Building2, MapPin, Loader2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
-import { fetchAllSites } from '@/lib/fetchAllSites';
+import { fetchAllSites, ListFetchError } from '@/lib/fetchAllSites';
 import { fetchAllOrganizationsFrom } from '@/lib/fetchAllOrganizations';
 import { extractApiError } from '@/lib/apiError';
 
@@ -54,19 +54,32 @@ export default function OrganizationSetupStep({ onNext }: OrganizationSetupStepP
       }
 
       // Fetch organizations
+      // `strictShape` keeps this screen's load-vs-parse distinction: without
+      // it an unreadable 200 body unwraps to `[]` and first-run setup silently
+      // shows "no organizations" with no warning at all.
       let organizations: OrgData['organizations'] = [];
       try {
-        organizations = await fetchAllOrganizationsFrom('/orgs/organizations');
-      } catch { warnings.push(t('setup.organization.warnings.loadOrganizationsFailed')); }
+        organizations = await fetchAllOrganizationsFrom('/orgs/organizations', undefined, { strictShape: true });
+      } catch (err) {
+        warnings.push(
+          err instanceof ListFetchError
+            ? t('setup.organization.warnings.loadOrganizationsFailed')
+            : t('setup.organization.warnings.parseOrganizationsFailed'),
+        );
+      }
 
-      // Fetch sites. `fetchAllSites` (#6412) pages to exhaustion and throws on
-      // a non-OK response (covered by the single warning below); a malformed
-      // 200 body now fails closed to `[]` inside its `asList` unwrap instead
-      // of surfacing as a separate parse warning.
+      // Fetch sites. `fetchAllSites` (#6412) pages to exhaustion; same
+      // strict-shape reasoning as the organizations read above.
       let sites: OrgData['sites'] = [];
       try {
-        sites = await fetchAllSites('/orgs/sites');
-      } catch { warnings.push(t('setup.organization.warnings.loadSitesFailed')); }
+        sites = await fetchAllSites('/orgs/sites', undefined, { strictShape: true });
+      } catch (err) {
+        warnings.push(
+          err instanceof ListFetchError
+            ? t('setup.organization.warnings.loadSitesFailed')
+            : t('setup.organization.warnings.parseSitesFailed'),
+        );
+      }
 
       if (warnings.length > 0) {
         setError(t('setup.organization.warnings.someDataUnavailable', { warnings: warnings.join('; ') }));

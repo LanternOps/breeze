@@ -91,8 +91,13 @@ export default function InboundReviewQueue({ onTotalChange }: InboundReviewQueue
   );
 
   const loadOrgs = useCallback(async () => {
-    const orgs = await fetchAllOrganizationsFrom<OrgOption>('/orgs/organizations');
-    setOrgs(orgs);
+    try {
+      setOrgs(await fetchAllOrganizationsFrom<OrgOption>('/orgs/organizations'));
+    } catch {
+      // The org picker is a filter convenience. Before #6412 a failed load was
+      // simply skipped (`if (res.ok)`); letting it throw into `loadAll`'s
+      // Promise.all would blank the whole queue over a cosmetic failure.
+    }
   }, []);
 
   const loadAll = useCallback(

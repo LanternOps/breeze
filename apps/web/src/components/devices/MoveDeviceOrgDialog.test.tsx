@@ -96,6 +96,41 @@ describe('MoveDeviceOrgDialog (device move-org step-up D5)', () => {
     expect(screen.getByTestId('move-org-submit')).toBeEnabled();
   });
 
+  it('offers a site from the SECOND page — the destination the old single-page fetch hid (#6412)', async () => {
+    // 105 sites: the pre-fix picker asked once and rendered whatever the route
+    // returned (50 by default, 100 at most), so `site-105` was a move target
+    // the technician could not reach by any route in the UI.
+    const page1 = Array.from({ length: 100 }, (_, i) => ({ id: `site-${i + 1}`, name: `Site ${i + 1}`, orgId: 'o2' }));
+    const page2 = Array.from({ length: 5 }, (_, i) => ({ id: `site-${i + 101}`, name: `Site ${i + 101}`, orgId: 'o2' }));
+    fetchMock.mockImplementation(async (path: string) => ({
+      ok: true,
+      json: async () => {
+        if (path === '/users/me') return { mfaMethod: 'totp' };
+        if (path === '/auth/passkeys') return { passkeys: [] };
+        if (path.startsWith('/orgs/sites?organizationId=o2')) {
+          const page = new URLSearchParams(path.split('?')[1]).get('page');
+          // Default to page 1 when the caller sends no `page` — that is what the
+          // server does, and it is what makes this test FAIL against the
+          // pre-fix single-request picker instead of passing vacuously.
+          return page === '2'
+            ? { data: page2, pagination: { total: 105 } }
+            : { data: page1, pagination: { total: 105 } };
+        }
+        return {};
+      },
+    }));
+
+    renderDialog();
+    await userEvent.selectOptions(screen.getByTestId('move-org-target-org'), 'o2');
+
+    const sitePicker = await screen.findByTestId('move-org-target-site');
+    await waitFor(() =>
+      expect(Array.from(sitePicker.querySelectorAll('option')).map((o) => o.getAttribute('value'))).toContain('site-105'),
+    );
+    await userEvent.selectOptions(sitePicker, 'site-105');
+    expect(screen.getByTestId('move-org-submit')).toBeEnabled();
+  });
+
   it('submits WITHOUT a grant first, then reveals the factor step on 403 STEP_UP_REQUIRED', async () => {
     moveMock.mockRejectedValueOnce(stepUpDenial);
     renderDialog();

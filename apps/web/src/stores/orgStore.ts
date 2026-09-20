@@ -328,8 +328,12 @@ export const useOrgStore = create<OrgState>()(
           // `fetchAllPages` only hands back the flattened site list.
           let rawEnrollmentDefaults: ResolvedEnrollmentDefaults | null | undefined;
           const sites = await fetchAllPages<Site>(async (page, limit) => {
+            // Only page 1 asks for the defaults: the flag costs a second
+            // pooled connection per request, and pages 2+ would pay it to have
+            // the answer discarded below.
+            const defaultsParam = page === 1 ? '&includeEnrollmentDefaults=1' : '';
             const response = await fetchWithAuth(
-              `/orgs/sites?organizationId=${currentOrgId}&includeEnrollmentDefaults=1&page=${page}&limit=${limit}`,
+              `/orgs/sites?organizationId=${currentOrgId}${defaultsParam}&page=${page}&limit=${limit}`,
             );
             if (!response.ok) {
               throw new Error('Failed to fetch sites');

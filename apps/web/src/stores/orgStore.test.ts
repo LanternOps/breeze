@@ -219,6 +219,34 @@ describe('org store', () => {
     expect(useOrgStore.getState().sites.map((s) => s.id)).toEqual(['site-1']);
   });
 
+  it('walks past the first page of sites and only page 1 pays for the enrollment-defaults join (#6412)', async () => {
+    useOrgStore.setState({ currentOrgId: 'org-1' });
+    const sitePage = (from: number, size: number) =>
+      Array.from({ length: size }, (_, i) => ({
+        id: `site-${from + i}`,
+        organizationId: 'org-1',
+        name: `Site ${from + i}`,
+        status: 'active',
+        deviceCount: 0,
+      }));
+
+    fetchWithAuthMock
+      .mockResolvedValueOnce(makeResponse({ data: sitePage(1, 100), pagination: { total: 103 } }))
+      .mockResolvedValueOnce(makeResponse({ data: sitePage(101, 3), pagination: { total: 103 } }));
+
+    await useOrgStore.getState().fetchSites();
+
+    expect(useOrgStore.getState().sites).toHaveLength(103);
+    // The site the single-page fetch used to hide.
+    expect(useOrgStore.getState().sites.map((s) => s.id)).toContain('site-103');
+    // `includeEnrollmentDefaults` costs a second pooled connection per request
+    // and only page 1's answer is read, so pages 2+ must not ask for it.
+    expect(fetchWithAuthMock).toHaveBeenNthCalledWith(
+      2,
+      '/orgs/sites?organizationId=org-1&page=2&limit=100',
+    );
+  });
+
   it('captures the enrollment defaults riding along on the sites response (#2776)', async () => {
     useOrgStore.setState({ currentOrgId: 'org-1' });
 
