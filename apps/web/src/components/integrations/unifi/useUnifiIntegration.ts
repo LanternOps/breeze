@@ -6,6 +6,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { fetchWithAuth } from "../../../stores/auth";
 import { fetchAllSites, ListFetchError } from "../../../lib/fetchAllSites";
+import { fetchAllOrganizationsFrom } from "../../../lib/fetchAllOrganizations";
 import { runAction, handleActionError, ActionError } from "../../../lib/runAction";
 import { navigateTo } from "@/lib/navigation";
 import { loginPathWithNext, getJwtClaims } from "../../../lib/authScope";
@@ -41,6 +42,22 @@ async function fetchAllSitesAsResponse(): Promise<Pick<Response, "status" | "ok"
   try {
     const sites = await fetchAllSites<BreezeSiteOption>("/orgs/sites");
     return { status: 200, ok: true, json: async () => ({ data: sites }) };
+  } catch (err) {
+    const status = err instanceof ListFetchError ? err.status : 500;
+    return { status, ok: false, json: async () => ({}) };
+  }
+}
+
+/**
+ * Loads EVERY organization (#6412) and wraps the result in the same
+ * Response-shaped object as {@link fetchAllSitesAsResponse}, so it drops
+ * straight into the existing `Promise.all([...fetchWithAuth(...)])` 401 /
+ * per-section-failure handling below without restructuring it.
+ */
+async function fetchAllOrganizationsAsResponse(): Promise<Pick<Response, "status" | "ok" | "json">> {
+  try {
+    const orgs = await fetchAllOrganizationsFrom<OrgOption>("/orgs/organizations");
+    return { status: 200, ok: true, json: async () => ({ data: orgs }) };
   } catch (err) {
     const status = err instanceof ListFetchError ? err.status : 500;
     return { status, ok: false, json: async () => ({}) };
@@ -238,7 +255,7 @@ export function useUnifiIntegration() {
         agentLoad,
       ] = await Promise.all([
         fetchAllSitesAsResponse(),
-        fetchWithAuth("/orgs/organizations?limit=500"),
+        fetchAllOrganizationsAsResponse(),
         fetchWithAuth("/unifi/mappings"),
         fetchWithAuth("/unifi/sync-runs"),
         fetchWithAuth("/unifi/collectors"),
@@ -349,7 +366,7 @@ export function useUnifiIntegration() {
         controllerSitesRes,
       ] = await Promise.all([
         fetchAllSitesAsResponse(),
-        fetchWithAuth("/orgs/organizations?limit=500"),
+        fetchAllOrganizationsAsResponse(),
         fetchWithAuth("/unifi/mappings"),
         fetchWithAuth("/unifi/collectors"),
         loadAgentDevices(),

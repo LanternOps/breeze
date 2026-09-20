@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { Dialog } from '../shared/Dialog';
 import { fetchWithAuth } from '../../stores/auth';
 import { fetchAllSites } from '../../lib/fetchAllSites';
+import { fetchAllOrganizationsFrom } from '../../lib/fetchAllOrganizations';
 import { runAction, ActionError } from '../../lib/runAction';
 import { navigateTo } from '@/lib/navigation';
 import { formatDateTime } from '@/lib/dateTimeFormat';
@@ -25,7 +26,6 @@ import {
   btnPrimaryClass,
   inputCompactClass as inputClass,
 } from './ui';
-import { asList } from '@/lib/asList';
 
 const DAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const;
 
@@ -214,15 +214,11 @@ export default function PamRuleModal({
   ];
 
   useEffect(() => {
-    fetchWithAuth('/orgs/organizations?limit=100')
-      .then(async (res) => {
-        if (res.ok) {
-          const data = await res.json();
-          const items = (asList(data, 'organizations')) as NamedOption[];
-          setOrgs(items.map((o) => ({ id: o.id, name: o.name })));
-          if (!isEdit && items.length > 1) {
-            setSelectedOrgId((prev) => prev || items[0]!.id);
-          }
+    fetchAllOrganizationsFrom<NamedOption>('/orgs/organizations')
+      .then((items) => {
+        setOrgs(items.map((o) => ({ id: o.id, name: o.name })));
+        if (!isEdit && items.length > 1) {
+          setSelectedOrgId((prev) => prev || items[0]!.id);
         }
       })
       .catch(() => {})

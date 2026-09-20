@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { fetchWithAuth } from '../../stores/auth';
+import { fetchAllOrganizationsFrom } from '../../lib/fetchAllOrganizations';
 import { runAction, handleActionError } from '../../lib/runAction';
 import { navigateTo } from '@/lib/navigation';
 import { loginPathWithNext } from '../../lib/authScope';
@@ -71,10 +72,11 @@ export default function InboundEmailCard() {
   }, []);
 
   const loadOrgs = useCallback(async () => {
-    const res = await fetchWithAuth('/orgs/organizations?limit=100');
-    if (res.ok) {
-      const body = (await res.json()) as { data?: OrgOption[] };
-      if (body.data) setOrgs(body.data);
+    try {
+      const list = await fetchAllOrganizationsFrom<OrgOption>('/orgs/organizations');
+      setOrgs(list);
+    } catch {
+      // Degrade silently — mirrors the previous non-ok behavior.
     }
   }, []);
 

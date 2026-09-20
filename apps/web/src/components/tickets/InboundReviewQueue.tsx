@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import '@/lib/i18n';
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
+import { fetchAllOrganizationsFrom } from '../../lib/fetchAllOrganizations';
 import { runAction, handleActionError } from '../../lib/runAction';
 import { navigateTo } from '@/lib/navigation';
 import { loginPathWithNext } from '../../lib/authScope';
@@ -90,11 +91,8 @@ export default function InboundReviewQueue({ onTotalChange }: InboundReviewQueue
   );
 
   const loadOrgs = useCallback(async () => {
-    const res = await fetchWithAuth('/orgs/organizations?limit=100');
-    if (res.ok) {
-      const body = (await res.json()) as { data?: OrgOption[] };
-      if (body.data) setOrgs(body.data);
-    }
+    const orgs = await fetchAllOrganizationsFrom<OrgOption>('/orgs/organizations');
+    setOrgs(orgs);
   }, []);
 
   const loadAll = useCallback(

@@ -148,7 +148,7 @@ function mockPartnerLoad(
       return makeResponse({ data: [] });
     if (url === "/huntress/organizations")
       return makeResponse({ data: mappings });
-    if (url === "/orgs/organizations")
+    if (url.startsWith("/orgs/organizations"))
       return makeResponse({ data: [breezeOrg] });
     return makeResponse({}, false, 404);
   });
@@ -189,7 +189,7 @@ describe("HuntressIntegration", () => {
       "/huntress/incidents?limit=5",
     );
     expect(fetchWithAuthMock).toHaveBeenCalledWith("/huntress/organizations");
-    expect(fetchWithAuthMock).toHaveBeenCalledWith("/orgs/organizations");
+    expect(fetchWithAuthMock).toHaveBeenCalledWith("/orgs/organizations?page=1&limit=100", undefined);
   });
 
   it("still renders the partner connection and mapping UI when a partner admin has an org selected", async () => {
@@ -208,7 +208,7 @@ describe("HuntressIntegration", () => {
     expect(screen.getByText("Organization mapping")).toBeInTheDocument();
     expect(screen.getByText("Acme Huntress")).toBeInTheDocument();
     expect(fetchWithAuthMock).toHaveBeenCalledWith("/huntress/organizations");
-    expect(fetchWithAuthMock).toHaveBeenCalledWith("/orgs/organizations");
+    expect(fetchWithAuthMock).toHaveBeenCalledWith("/orgs/organizations?page=1&limit=100", undefined);
     // The org-scope-only "not connected" empty state never shows for partners.
     expect(
       screen.queryByText("Huntress isn't connected yet"),
@@ -373,7 +373,7 @@ describe("HuntressIntegration", () => {
       if (url === "/huntress/incidents?limit=5")
         return makeResponse({ data: [] });
       if (url === "/huntress/organizations") return makeResponse({ data: [] });
-      if (url === "/orgs/organizations")
+      if (url.startsWith("/orgs/organizations"))
         return makeResponse({ data: [breezeOrg] });
       return makeResponse({}, false, 404);
     });
@@ -809,7 +809,7 @@ describe("HuntressIntegration", () => {
       if (url === "/huntress/incidents?limit=5")
         return makeResponse({ data: [] });
       if (url === "/huntress/organizations") return makeResponse({ data: [] });
-      if (url === "/orgs/organizations")
+      if (url.startsWith("/orgs/organizations"))
         return makeResponse({ data: [breezeOrg] });
       return makeResponse({}, false, 404);
     });
@@ -865,7 +865,7 @@ describe("HuntressIntegration", () => {
       if (url === "/huntress/incidents?limit=5")
         return makeResponse({ data: [] });
       if (url === "/huntress/organizations") return makeResponse({ data: [] });
-      if (url === "/orgs/organizations")
+      if (url.startsWith("/orgs/organizations"))
         return makeResponse({ data: [breezeOrg] });
       return makeResponse({}, false, 404);
     });
@@ -910,7 +910,7 @@ describe("HuntressIntegration", () => {
       if (url === "/huntress/incidents?limit=5")
         return makeResponse({ data: [] });
       if (url === "/huntress/organizations") return makeResponse({ data: [] });
-      if (url === "/orgs/organizations")
+      if (url.startsWith("/orgs/organizations"))
         return makeResponse({ data: [breezeOrg] });
       return makeResponse({}, false, 404);
     });
@@ -945,7 +945,7 @@ describe("HuntressIntegration", () => {
       if (url === "/huntress/incidents?limit=5")
         return makeResponse({ data: [] });
       if (url === "/huntress/organizations") return makeResponse({ data: [] });
-      if (url === "/orgs/organizations")
+      if (url.startsWith("/orgs/organizations"))
         return makeResponse({ data: [breezeOrg] });
       return makeResponse({}, false, 404);
     });

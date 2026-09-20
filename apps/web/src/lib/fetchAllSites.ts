@@ -1,5 +1,8 @@
 import { fetchWithAuth, type FetchWithAuthOptions } from '../stores/auth';
-import { fetchAllPages } from './fetchAllPages';
+import { fetchAllPages, ListFetchError } from './fetchAllPages';
+
+// Re-exported: most callers of this error import it alongside a fetchAll* helper.
+export { ListFetchError };
 
 /**
  * Loads EVERY site matching `path` (#6412).
@@ -16,13 +19,6 @@ import { fetchAllPages } from './fetchAllPages';
  * Throws on a non-OK response so callers keep their existing error branch —
  * this never converts a failed load into an empty list.
  */
-export class ListFetchError extends Error {
-  constructor(public readonly status: number, message: string) {
-    super(message);
-    this.name = 'ListFetchError';
-  }
-}
-
 export async function fetchAllSites<T = any>(
   path: string,
   init?: FetchWithAuthOptions,
@@ -32,8 +28,6 @@ export async function fetchAllSites<T = any>(
   const sites = await fetchAllPages<T>(async (page, limit) => {
     const response = await fetchWithAuth(`${path}${separator}page=${page}&limit=${limit}`, init);
     if (!response.ok) {
-      // Carries the status so a caller that had a dedicated 401 branch before
-      // (bail to the auth redirect rather than toast) can keep it.
       throw new ListFetchError(response.status, `Failed to fetch sites (status ${response.status})`);
     }
     return response.json();

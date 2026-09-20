@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
 import { fetchAllSites, ListFetchError } from '../../lib/fetchAllSites';
+import { fetchAllOrganizationsFrom } from '../../lib/fetchAllOrganizations';
 import { navigateTo } from '@/lib/navigation';
 import '@/lib/i18n';
 import { runAction, handleActionError } from '../../lib/runAction';
@@ -339,12 +340,12 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
   );
 
   const loadOrgs = useCallback(async () => {
-    const res = await fetchWithAuth('/orgs/organizations');
-    if (res.status === 401) return UNAUTHORIZED();
-    if (!res.ok) { handleActionError(new Error(res.statusText), t('contracts.contractEditor.errors.loadOrganizations')); return; }
-    const body = (await res.json().catch(() => null)) as { data?: Organization[]; organizations?: Organization[] } | null;
-    if (!body) return;
-    setOrgs(body.data ?? body.organizations ?? []);
+    try {
+      setOrgs(await fetchAllOrganizationsFrom<Organization>('/orgs/organizations'));
+    } catch (err) {
+      if (err instanceof ListFetchError && err.status === 401) return UNAUTHORIZED();
+      handleActionError(err, t('contracts.contractEditor.errors.loadOrganizations'));
+    }
   }, [t]);
 
   const loadCatalog = useCallback(async () => {

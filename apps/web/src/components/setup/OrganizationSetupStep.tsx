@@ -3,6 +3,7 @@ import { Building2, MapPin, Loader2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
 import { fetchAllSites } from '@/lib/fetchAllSites';
+import { fetchAllOrganizationsFrom } from '@/lib/fetchAllOrganizations';
 import { extractApiError } from '@/lib/apiError';
 
 interface OrgData {
@@ -53,16 +54,10 @@ export default function OrganizationSetupStep({ onNext }: OrganizationSetupStepP
       }
 
       // Fetch organizations
-      const orgsRes = await fetchWithAuth('/orgs/organizations');
       let organizations: OrgData['organizations'] = [];
-      if (orgsRes.ok) {
-        try {
-          const orgsData = await orgsRes.json();
-          organizations = orgsData.data || orgsData || [];
-        } catch { warnings.push(t('setup.organization.warnings.parseOrganizationsFailed')); }
-      } else {
-        warnings.push(t('setup.organization.warnings.loadOrganizationsFailed'));
-      }
+      try {
+        organizations = await fetchAllOrganizationsFrom('/orgs/organizations');
+      } catch { warnings.push(t('setup.organization.warnings.loadOrganizationsFailed')); }
 
       // Fetch sites. `fetchAllSites` (#6412) pages to exhaustion and throws on
       // a non-OK response (covered by the single warning below); a malformed

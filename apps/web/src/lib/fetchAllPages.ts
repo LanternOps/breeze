@@ -20,6 +20,18 @@ export const LIST_MAX_PAGES = 100;
  * `null` from `fetchPage` propagates as `null` so a caller can abort (401
  * redirect) rather than render a spuriously empty list.
  */
+/**
+ * A list route answered non-OK. Carries the status so a caller that had a
+ * dedicated 401 branch (bail to the auth redirect rather than toast over it)
+ * can keep it after moving to these helpers.
+ */
+export class ListFetchError extends Error {
+  constructor(public readonly status: number, message: string) {
+    super(message);
+    this.name = 'ListFetchError';
+  }
+}
+
 function isRecognizedListShape(body: unknown, aliasKeys: string[]): boolean {
   if (Array.isArray(body)) return true;
   if (body === null || typeof body !== 'object') return false;

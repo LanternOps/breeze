@@ -117,8 +117,12 @@ describe('DeviceGroupsPage list unwrapping', () => {
     render(<DeviceGroupsPage />);
 
     await waitFor(() => expect(mockFetch).toHaveBeenCalled());
-    await waitFor(() => expect(requestedPaths()).toContain('/orgs/sites'));
-    expect(requestedPaths()).not.toContain('/sites');
+    // `fetchAllSites` (#6412) appends page/limit, so match on the path rather
+    // than the whole URL — the guard is still "orgs router, not a bare /sites".
+    await waitFor(() =>
+      expect(requestedPaths().some((url) => url.split('?')[0] === '/orgs/sites')).toBe(true),
+    );
+    expect(requestedPaths().some((url) => url.split('?')[0] === '/sites')).toBe(false);
   });
 
   it('shows the empty state when the envelope carries no groups', async () => {

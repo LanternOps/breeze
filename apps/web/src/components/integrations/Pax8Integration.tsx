@@ -12,6 +12,7 @@ import {
   Unplug,
 } from "lucide-react";
 import { fetchWithAuth } from "../../stores/auth";
+import { fetchAllOrganizationsFrom } from "../../lib/fetchAllOrganizations";
 import { runAction, handleActionError, ActionError } from "../../lib/runAction";
 import { showToast } from "../shared/Toast";
 import { navigateTo } from "@/lib/navigation";
@@ -158,21 +159,21 @@ export default function Pax8Integration() {
   }, []);
 
   const fetchCompaniesAndSubs = useCallback(async () => {
-    const [companiesRes, subsRes, orgsRes] = await Promise.all([
+    const [companiesRes, subsRes] = await Promise.all([
       fetchWithAuth("/pax8/companies"),
       fetchWithAuth("/pax8/subscriptions?limit=100"),
-      fetchWithAuth("/orgs/organizations"),
     ]);
     const companiesJson = await companiesRes.json().catch(() => ({}));
     const subsJson = await subsRes.json().catch(() => ({}));
-    const orgsJson = await orgsRes.json().catch(() => ({}));
     if (companiesRes.ok)
       setCompanies((companiesJson as { data?: Pax8Company[] }).data ?? []);
     if (subsRes.ok)
       setSubscriptions((subsJson as { data?: Pax8Subscription[] }).data ?? []);
-    if (orgsRes.ok) {
-      const data = (orgsJson as { data?: OrgOption[] }).data;
-      setOrgOptions(Array.isArray(data) ? data : []);
+    try {
+      const orgs = await fetchAllOrganizationsFrom<OrgOption>("/orgs/organizations");
+      setOrgOptions(orgs);
+    } catch {
+      // Preserve prior behavior: a failed org fetch leaves orgOptions as-is.
     }
   }, []);
 

@@ -36,7 +36,7 @@ beforeEach(() => {
     if (url === '/ticket-forms' && (!init || !init.method)) return makeJsonResponse({ data: [FORM] });
     if (url === '/ticket-forms' && init?.method === 'POST')
       return makeJsonResponse({ data: { ...FORM, id: 'f-2', name: 'Offboarding' } });
-    if (url === '/orgs/organizations?limit=100') return makeJsonResponse({ data: [{ id: 'org-a', name: 'Org A' }] });
+    if (url === '/orgs/organizations?page=1&limit=100') return makeJsonResponse({ data: [{ id: 'org-a', name: 'Org A' }] });
     if (url === '/ticket-categories') return makeJsonResponse({ data: [{ id: 'cat-1', name: 'Hardware', isActive: true }] });
     return makeJsonResponse({ error: 'unexpected' }, false, 404);
   });
@@ -102,7 +102,7 @@ describe('TicketFormsCard', () => {
       const url = String(input);
       if (url === '/ticket-forms' && (!init || !init.method)) return makeJsonResponse({ data: [filledForm] });
       if (url === '/ticket-forms/f-1' && init?.method === 'PUT') return makeJsonResponse({ data: FORM });
-      if (url === '/orgs/organizations?limit=100') return makeJsonResponse({ data: [{ id: 'org-a', name: 'Org A' }] });
+      if (url === '/orgs/organizations?page=1&limit=100') return makeJsonResponse({ data: [{ id: 'org-a', name: 'Org A' }] });
       if (url === '/ticket-categories') return makeJsonResponse({ data: [{ id: 'cat-1', name: 'Hardware', isActive: true }] });
       return makeJsonResponse({ error: 'unexpected' }, false, 404);
     });
@@ -156,7 +156,7 @@ describe('TicketFormsCard', () => {
     fetchMock.mockImplementation(async (input) => {
       const url = String(input);
       if (url === '/ticket-forms') return makeJsonResponse({ error: 'boom' }, false, 500);
-      if (url === '/orgs/organizations?limit=100') return makeJsonResponse({ data: [] });
+      if (url === '/orgs/organizations?page=1&limit=100') return makeJsonResponse({ data: [] });
       if (url === '/ticket-categories') return makeJsonResponse({ data: [] });
       return makeJsonResponse({ error: 'unexpected' }, false, 404);
     });
@@ -166,7 +166,7 @@ describe('TicketFormsCard', () => {
     fetchMock.mockImplementation(async (input) => {
       const url = String(input);
       if (url === '/ticket-forms') return makeJsonResponse({ data: [FORM] });
-      if (url === '/orgs/organizations?limit=100') return makeJsonResponse({ data: [] });
+      if (url === '/orgs/organizations?page=1&limit=100') return makeJsonResponse({ data: [] });
       if (url === '/ticket-categories') return makeJsonResponse({ data: [] });
       return makeJsonResponse({ error: 'unexpected' }, false, 404);
     });
@@ -180,7 +180,7 @@ describe('TicketFormsCard', () => {
       const url = String(input);
       if (url === '/ticket-forms' && (!init || !init.method)) return makeJsonResponse({ data: [FORM] });
       if (url === '/ticket-categories') return makeJsonResponse({ data: [{ id: 'cat-1', name: 'Hardware', isActive: true }] });
-      if (url === '/orgs/organizations?limit=100') throw new Error('network down');
+      if (url === '/orgs/organizations?page=1&limit=100') throw new Error('network down');
       return makeJsonResponse({ error: 'unexpected' }, false, 404);
     });
     render(<TicketFormsCard />);
@@ -217,7 +217,7 @@ describe('TicketFormsCard', () => {
       if (url === '/ticket-forms' && (!init || !init.method)) return makeJsonResponse({ data: [FORM] });
       if (url === '/ticket-forms' && init?.method === 'POST')
         return makeJsonResponse({ data: { ...FORM, id: 'f-2' } });
-      if (url === '/orgs/organizations?limit=100')
+      if (url === '/orgs/organizations?page=1&limit=100')
         return makeJsonResponse({ data: [{ id: 'org-a', name: 'Org A' }, { id: 'org-b', name: 'Org B' }] });
       if (url === '/ticket-categories') return makeJsonResponse({ data: [] });
       return makeJsonResponse({ error: 'unexpected' }, false, 404);
@@ -244,7 +244,7 @@ describe('TicketFormsCard', () => {
     fetchMock.mockImplementation(async (input, init) => {
       const url = String(input);
       if (url === '/ticket-forms' && (!init || !init.method)) return makeJsonResponse({ data: [FORM] });
-      if (url === '/orgs/organizations?limit=100') return makeJsonResponse({ data: [{ id: 'org-a', name: 'Org A' }] });
+      if (url === '/orgs/organizations?page=1&limit=100') return makeJsonResponse({ data: [{ id: 'org-a', name: 'Org A' }] });
       if (url === '/ticket-categories') return makeJsonResponse({ data: [] });
       return makeJsonResponse({ error: 'unexpected' }, false, 404);
     });
@@ -265,7 +265,7 @@ describe('TicketFormsCard', () => {
       const url = String(input);
       if (url === '/ticket-forms' && (!init || !init.method)) return makeJsonResponse({ data: [limitedForm] });
       if (url === '/ticket-forms/f-1' && init?.method === 'PUT') return makeJsonResponse({ data: FORM });
-      if (url === '/orgs/organizations?limit=100')
+      if (url === '/orgs/organizations?page=1&limit=100')
         return makeJsonResponse({ data: [{ id: 'org-a', name: 'Org A' }, { id: 'org-b', name: 'Org B' }] });
       if (url === '/ticket-categories') return makeJsonResponse({ data: [] });
       return makeJsonResponse({ error: 'unexpected' }, false, 404);
@@ -293,7 +293,7 @@ describe('TicketFormsCard', () => {
       const url = String(input);
       if (url === '/ticket-forms' && (!init || !init.method))
         return makeJsonResponse({ data: [{ ...FORM, visibleOrgIds: ['org-a', 'org-b'] }] });
-      if (url === '/orgs/organizations?limit=100') return makeJsonResponse({ data: [] });
+      if (url === '/orgs/organizations?page=1&limit=100') return makeJsonResponse({ data: [] });
       if (url === '/ticket-categories') return makeJsonResponse({ data: [] });
       return makeJsonResponse({ error: 'unexpected' }, false, 404);
     });
@@ -309,7 +309,7 @@ describe('TicketFormsCard', () => {
       const url = String(input);
       if (url === '/ticket-forms' && (!init || !init.method)) return makeJsonResponse({ data: [orgForm] });
       if (url === '/ticket-forms/f-1' && init?.method === 'PUT') return makeJsonResponse({ data: orgForm });
-      if (url === '/orgs/organizations?limit=100') return makeJsonResponse({ data: [{ id: 'org-a', name: 'Org A' }] });
+      if (url === '/orgs/organizations?page=1&limit=100') return makeJsonResponse({ data: [{ id: 'org-a', name: 'Org A' }] });
       if (url === '/ticket-categories') return makeJsonResponse({ data: [] });
       return makeJsonResponse({ error: 'unexpected' }, false, 404);
     });
@@ -332,7 +332,7 @@ describe('TicketFormsCard', () => {
       const url = String(input);
       if (url === '/ticket-forms' && (!init || !init.method)) return makeJsonResponse({ data: [FORM] });
       if (url === '/ticket-forms/f-1' && init?.method === 'DELETE') return makeJsonResponse({ success: true });
-      if (url === '/orgs/organizations?limit=100') return makeJsonResponse({ data: [] });
+      if (url === '/orgs/organizations?page=1&limit=100') return makeJsonResponse({ data: [] });
       if (url === '/ticket-categories') return makeJsonResponse({ data: [] });
       return makeJsonResponse({ error: 'unexpected' }, false, 404);
     });

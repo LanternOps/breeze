@@ -1,5 +1,9 @@
 import { fetchWithAuth, type FetchWithAuthOptions } from '../stores/auth';
-import { fetchAllPages, LIST_MAX_PAGES, LIST_PAGE_SIZE } from './fetchAllPages';
+import { fetchAllPages, ListFetchError, LIST_MAX_PAGES, LIST_PAGE_SIZE } from './fetchAllPages';
+
+// Re-exported for callers that import it next to this helper.
+export { ListFetchError };
+
 
 export const ORGANIZATIONS_PAGE_SIZE = LIST_PAGE_SIZE;
 export const ORGANIZATIONS_MAX_PAGES = LIST_MAX_PAGES;
@@ -29,7 +33,7 @@ export async function fetchAllOrganizationsFrom<T = any>(
   const orgs = await fetchAllOrganizations<T>(async (page, limit) => {
     const response = await fetchWithAuth(`${path}${separator}page=${page}&limit=${limit}`, init);
     if (!response.ok) {
-      throw new Error(`Failed to fetch organizations (status ${response.status})`);
+      throw new ListFetchError(response.status, `Failed to fetch organizations (status ${response.status})`);
     }
     return response.json();
   });

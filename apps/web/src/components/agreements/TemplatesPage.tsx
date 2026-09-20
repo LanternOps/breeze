@@ -4,7 +4,7 @@ import { FileText, Plus } from 'lucide-react';
 import '@/lib/i18n';
 import { navigateTo } from '@/lib/navigation';
 import { getJwtClaims } from '@/lib/authScope';
-import { fetchWithAuth } from '../../stores/auth';
+import { fetchAllOrganizationsFrom } from '../../lib/fetchAllOrganizations';
 import { runAction, handleActionError } from '../../lib/runAction';
 import { StatusPill } from '../billing/shared/StatusPill';
 import {
@@ -78,12 +78,7 @@ export default function TemplatesPage({ openCreate = false }: { openCreate?: boo
   useEffect(() => {
     void (async () => {
       try {
-        const res = await fetchWithAuth('/orgs/organizations');
-        if (!res.ok) return;
-        const body = (await res.json().catch(() => null)) as
-          | { data?: Organization[]; organizations?: Organization[] }
-          | null;
-        const list = body?.data ?? body?.organizations ?? [];
+        const list = await fetchAllOrganizationsFrom<Organization>('/orgs/organizations');
         setOrgs(list);
         setOrgNames(Object.fromEntries(list.map((o) => [o.id, o.name])));
       } catch {
