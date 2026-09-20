@@ -100,6 +100,8 @@ When other users are eligible to approve, the inline button does not appear: som
 
 #### Who can approve
 
+Opening the assistant at all requires the **`ai_sessions:use`** permission, granted by default to Org Admin, Org Technician and Partner Technician (Partner Admin holds it through its full-access role). Roles without it do not see the assistant button. The permission opens the conversation only — each tool the assistant calls is checked against the same permission the equivalent page or API route requires.
+
 Approving or rejecting a **four-eyes** action requires the **`approvals:decide`** permission. It is granted by default to **Org Admin** (and to Partner Admin through its full-access role) and is deliberately **not** granted to Org Technician or Org Viewer. Approving a **supervised** action needs no extra permission — only the requester's own permission for the underlying action, which was already checked when the AI proposed it.
 
 To let another role approve four-eyes actions, add `approvals:decide` to it under **Settings → Users & Roles**. See [Users and Roles](/reference/users-and-roles/).

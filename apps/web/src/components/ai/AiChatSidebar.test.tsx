@@ -1,6 +1,13 @@
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
+const permState = vi.hoisted(() => ({ canUseAi: true }));
+// #6396: the sidebar is gated on ai_sessions:use; default to allowed so the
+// shell tests below exercise the open/collapsed states.
+vi.mock('@/lib/permissions', () => ({
+  usePermissions: () => ({ permissions: [], can: () => permState.canUseAi }),
+}));
+
 import AiChatSidebar from './AiChatSidebar';
 import { useAiStore } from '@/stores/aiStore';
 
@@ -44,5 +51,18 @@ describe('AiChatSidebar collapsed-shell interactivity', () => {
     const shell = screen.getByTestId('ai-chat-sidebar');
     expect(shell).not.toHaveAttribute('inert');
     expect(shell.className).not.toContain('pointer-events-none');
+  });
+});
+
+describe('AiChatSidebar permission gate (#6396)', () => {
+  it('renders nothing when the user lacks ai_sessions:use', () => {
+    permState.canUseAi = false;
+    try {
+      vi.mocked(useAiStore).mockReturnValue({ ...baseState, isOpen: true });
+      render(<AiChatSidebar />);
+      expect(screen.queryByTestId('ai-chat-sidebar')).toBeNull();
+    } finally {
+      permState.canUseAi = true;
+    }
   });
 });

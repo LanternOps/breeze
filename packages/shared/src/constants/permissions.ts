@@ -176,6 +176,13 @@ export const PERMISSION_GRANTS = {
   // organizations:read and only ever return the caller's OWN sessions, so the
   // cross-user admin/audit surface must NOT be gated on organizations:read.
   AI_SESSIONS_READ_ALL: { resource: 'ai_sessions', action: 'read_all' },
+  // Open and drive your OWN chat sessions (#6396). Was organizations:write,
+  // which no seeded org-scope role holds, so org users could never reach chat.
+  // Per-tool authorization inside a session is route-parity (aiGuardrails
+  // TOOL_PERMISSIONS), so this gate only opens the conversation — it does not
+  // widen what the role can do through it. Org budget settings stay on
+  // organizations:write.
+  AI_SESSIONS_USE: { resource: 'ai_sessions', action: 'use' },
 
   // AI agents (#3821) — authoring an agent policy is what will eventually
   // authorize autonomous action on customer machines, so it gets its own
