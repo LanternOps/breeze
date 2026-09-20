@@ -385,5 +385,60 @@
         "skippedNoResponse": "Ignoré (aucune réponse configurée)"
       }
     }
+  },
+  "conversion": {
+    "title": "Conversion requise",
+    "description": "Les règles d'alerte intégrées, les surveillances de services/processus et les automatisations déclenchées par alerte de cette politique n'ont pas encore été converties en moniteurs. La conversion retire la ligne source sur place ; rien n'est supprimé.",
+    "checking": "Vérification des appareils…",
+    "devicesChecked_one": "{{count}} appareil vérifié pour un comportement identique.",
+    "devicesChecked_other": "{{count}} appareils vérifiés pour un comportement identique.",
+    "blocked": {
+      "parent_unconverted": "Convertissez d'abord la politique parente : ses règles intégrées déterminent ce que cette politique hérite.",
+      "prerequisite_missing": "Un correctif prérequis n'est pas encore déployé sur ce serveur. La conversion est désactivée jusque-là."
+    },
+    "refusedTitle_one": "Conversion refusée : {{count}} appareil changerait de comportement.",
+    "refusedTitle_other": "Conversion refusée : {{count}} appareils changeraient de comportement.",
+    "convert": "Convertir",
+    "convertAll_one": "Convertir {{count}} convertible",
+    "convertAll_other": "Convertir les {{count}} convertibles",
+    "retire": "Retirer",
+    "converted": "{{rows}} lignes héritées converties en {{monitors}} moniteurs.",
+    "retired": "{{name}} retiré.",
+    "undone_one": "{{count}} conversion annulée.",
+    "undone_other": "{{count}} conversions annulées.",
+    "openAlerts_one": "{{count}} alerte ouverte passe au moniteur",
+    "openAlerts_other": "{{count}} alertes ouvertes passent au moniteur",
+    "sourceTables": {
+      "config_policy_alert_rules": "Règle d'alerte intégrée",
+      "config_policy_monitoring_watches": "Surveillance de service/processus",
+      "alert_templates": "Modèle d'alerte",
+      "automations": "Automatisation déclenchée par alerte",
+      "config_policy_automations": "Automatisation de politique",
+      "network_monitors": "Vérification réseau"
+    },
+    "outcomes": {
+      "convertible": "Conversion possible",
+      "unconvertible": "Non convertible"
+    },
+    "roles": {
+      "primary": "Moniteur",
+      "resource_cpu": "Moniteur CPU",
+      "resource_memory": "Moniteur mémoire",
+      "response": "Réponse"
+    },
+    "reasons": {
+      "unknown": "Non convertible ({{code}}).",
+      "nested_group": "La règle imbrique des groupes de conditions ; un moniteur composite est un seul groupe plat.",
+      "no_condition": "Le modèle n'a aucune condition évaluable et ne s'est jamais déclenché.",
+      "escalation_policy_axis": "La politique d'escalade appartient à une organisation alors que la politique est à l'échelle du partenaire.",
+      "custom": "Les conditions personnalisées n'ont pas de type de moniteur.",
+      "process_count": "Les conditions de nombre de processus n'ont pas de type de moniteur."
+    },
+    "errors": {
+      "preview": "Impossible de charger l'aperçu de conversion",
+      "convert": "Échec de la conversion",
+      "retire": "Échec du retrait",
+      "revert": "Impossible d'annuler la conversion"
+    }
   }
 }

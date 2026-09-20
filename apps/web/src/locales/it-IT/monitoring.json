@@ -385,5 +385,60 @@
         "skippedNoResponse": "Ignorato (nessuna risposta configurata)"
       }
     }
+  },
+  "conversion": {
+    "title": "Conversione necessaria",
+    "description": "Le regole di avviso inline, i controlli di servizi/processi e le automazioni attivate da avvisi di questa policy non sono ancora stati convertiti in monitor. La conversione ritira la riga di origine sul posto; nulla viene eliminato.",
+    "checking": "Verifica dei dispositivi…",
+    "devicesChecked_one": "{{count}} dispositivo verificato per un comportamento identico.",
+    "devicesChecked_other": "{{count}} dispositivi verificati per un comportamento identico.",
+    "blocked": {
+      "parent_unconverted": "Converti prima la policy superiore: le sue regole inline decidono cosa eredita questa policy.",
+      "prerequisite_missing": "Una correzione prerequisita non è ancora distribuita su questo server. La conversione è disabilitata fino ad allora."
+    },
+    "refusedTitle_one": "Conversione rifiutata: {{count}} dispositivo cambierebbe comportamento.",
+    "refusedTitle_other": "Conversione rifiutata: {{count}} dispositivi cambierebbero comportamento.",
+    "convert": "Converti",
+    "convertAll_one": "Converti {{count}} convertibile",
+    "convertAll_other": "Converti tutti i {{count}} convertibili",
+    "retire": "Ritira",
+    "converted": "Convertite {{rows}} righe legacy in {{monitors}} monitor.",
+    "retired": "{{name}} ritirato.",
+    "undone_one": "Annullata {{count}} conversione.",
+    "undone_other": "Annullate {{count}} conversioni.",
+    "openAlerts_one": "{{count}} avviso aperto passa al monitor",
+    "openAlerts_other": "{{count}} avvisi aperti passano al monitor",
+    "sourceTables": {
+      "config_policy_alert_rules": "Regola di avviso inline",
+      "config_policy_monitoring_watches": "Controllo servizio/processo",
+      "alert_templates": "Modello di avviso",
+      "automations": "Automazione attivata da avviso",
+      "config_policy_automations": "Automazione della policy",
+      "network_monitors": "Controllo di rete"
+    },
+    "outcomes": {
+      "convertible": "Convertibile",
+      "unconvertible": "Non convertibile"
+    },
+    "roles": {
+      "primary": "Monitor principale",
+      "resource_cpu": "Monitor CPU",
+      "resource_memory": "Monitor memoria",
+      "response": "Risposta"
+    },
+    "reasons": {
+      "unknown": "Non convertibile ({{code}}).",
+      "nested_group": "La regola annida gruppi di condizioni; un monitor composito è un unico gruppo piatto.",
+      "no_condition": "Il modello non ha una condizione valutabile e non si è mai attivato.",
+      "escalation_policy_axis": "La policy di escalation appartiene a un'organizzazione ma la policy è a livello di partner.",
+      "custom": "Le condizioni personalizzate non hanno un tipo di monitor.",
+      "process_count": "Le condizioni sul numero di processi non hanno un tipo di monitor."
+    },
+    "errors": {
+      "preview": "Impossibile caricare l'anteprima della conversione",
+      "convert": "Conversione non riuscita",
+      "retire": "Ritiro non riuscito",
+      "revert": "Impossibile annullare la conversione"
+    }
   }
 }

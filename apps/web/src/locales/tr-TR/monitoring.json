@@ -385,5 +385,60 @@
         "skippedNoResponse": "Atlandı (yanıt yapılandırılmadı)"
       }
     }
+  },
+  "conversion": {
+    "title": "Dönüştürme gerekiyor",
+    "description": "Bu ilkedeki satır içi uyarı kuralları, hizmet/süreç izlemeleri ve uyarıyla tetiklenen otomasyonlar henüz monitöre dönüştürülmedi. Dönüştürme, kaynak satırı yerinde emekliye ayırır; hiçbir şey silinmez.",
+    "checking": "Cihazlar kontrol ediliyor…",
+    "devicesChecked_one": "{{count}} cihaz aynı davranış için kontrol edildi.",
+    "devicesChecked_other": "{{count}} cihaz aynı davranış için kontrol edildi.",
+    "blocked": {
+      "parent_unconverted": "Önce üst ilkeyi dönüştürün — satır içi kuralları bu ilkenin neyi devralacağını belirler.",
+      "prerequisite_missing": "Ön koşul olan bir düzeltme bu sunucuda henüz dağıtılmadı. Dönüştürme o zamana kadar devre dışı."
+    },
+    "refusedTitle_one": "Dönüştürme reddedildi: {{count}} cihazın davranışı değişirdi.",
+    "refusedTitle_other": "Dönüştürme reddedildi: {{count}} cihazın davranışı değişirdi.",
+    "convert": "Dönüştür",
+    "convertAll_one": "{{count}} dönüştürülebiliri dönüştür",
+    "convertAll_other": "{{count}} dönüştürülebilirin tümünü dönüştür",
+    "retire": "Emekliye ayır",
+    "converted": "{{rows}} eski satır {{monitors}} monitöre dönüştürüldü.",
+    "retired": "{{name}} emekliye ayrıldı.",
+    "undone_one": "{{count}} dönüştürme geri alındı.",
+    "undone_other": "{{count}} dönüştürme geri alındı.",
+    "openAlerts_one": "{{count}} açık uyarı monitöre taşınıyor",
+    "openAlerts_other": "{{count}} açık uyarı monitöre taşınıyor",
+    "sourceTables": {
+      "config_policy_alert_rules": "Satır içi uyarı kuralı",
+      "config_policy_monitoring_watches": "Hizmet/süreç izleme",
+      "alert_templates": "Uyarı şablonu",
+      "automations": "Uyarıyla tetiklenen otomasyon",
+      "config_policy_automations": "İlke otomasyonu",
+      "network_monitors": "Ağ denetimi"
+    },
+    "outcomes": {
+      "convertible": "Dönüştürülebilir",
+      "unconvertible": "Dönüştürülemez"
+    },
+    "roles": {
+      "primary": "Monitör",
+      "resource_cpu": "CPU monitörü",
+      "resource_memory": "Bellek monitörü",
+      "response": "Yanıt"
+    },
+    "reasons": {
+      "unknown": "Dönüştürülemez ({{code}}).",
+      "nested_group": "Kural, koşul gruplarını iç içe kullanıyor; bileşik bir monitör tek bir düz gruptur.",
+      "no_condition": "Şablonun değerlendirilebilir bir koşulu yok ve hiç tetiklenmedi.",
+      "escalation_policy_axis": "Yükseltme ilkesi bir kuruluşa ait ancak ilke iş ortağı genelinde.",
+      "custom": "Özel koşulların monitör türü yok.",
+      "process_count": "Süreç sayısı koşullarının monitör türü yok."
+    },
+    "errors": {
+      "preview": "Dönüştürme ön izlemesi yüklenemedi",
+      "convert": "Dönüştürme başarısız",
+      "retire": "Emekliye ayırma başarısız",
+      "revert": "Dönüştürme geri alınamadı"
+    }
   }
 }

@@ -385,5 +385,60 @@
         "skippedNoResponse": "Übersprungen (keine Reaktion konfiguriert)"
       }
     }
+  },
+  "conversion": {
+    "title": "Konvertierung erforderlich",
+    "description": "Inline-Alarmregeln, Dienst-/Prozessüberwachungen und alarmausgelöste Automatisierungen dieser Richtlinie wurden noch nicht in Monitore konvertiert. Beim Konvertieren wird die Quellzeile an Ort und Stelle stillgelegt; nichts wird gelöscht.",
+    "checking": "Geräte werden geprüft…",
+    "devicesChecked_one": "{{count}} Gerät auf identisches Verhalten geprüft.",
+    "devicesChecked_other": "{{count}} Geräte auf identisches Verhalten geprüft.",
+    "blocked": {
+      "parent_unconverted": "Konvertieren Sie zuerst die übergeordnete Richtlinie — ihre Inline-Regeln bestimmen, was diese Richtlinie erbt.",
+      "prerequisite_missing": "Eine erforderliche Korrektur ist auf diesem Server noch nicht bereitgestellt. Die Konvertierung ist bis dahin deaktiviert."
+    },
+    "refusedTitle_one": "Konvertierung abgelehnt: {{count}} Gerät würde sein Verhalten ändern.",
+    "refusedTitle_other": "Konvertierung abgelehnt: {{count}} Geräte würden ihr Verhalten ändern.",
+    "convert": "Konvertieren",
+    "convertAll_one": "{{count}} konvertierbare konvertieren",
+    "convertAll_other": "Alle {{count}} konvertierbaren konvertieren",
+    "retire": "Stilllegen",
+    "converted": "{{rows}} Altzeilen in {{monitors}} Monitore konvertiert.",
+    "retired": "{{name}} stillgelegt.",
+    "undone_one": "{{count}} Konvertierung rückgängig gemacht.",
+    "undone_other": "{{count}} Konvertierungen rückgängig gemacht.",
+    "openAlerts_one": "{{count}} offener Alarm wechselt zum Monitor",
+    "openAlerts_other": "{{count}} offene Alarme wechseln zum Monitor",
+    "sourceTables": {
+      "config_policy_alert_rules": "Inline-Alarmregel",
+      "config_policy_monitoring_watches": "Dienst-/Prozessüberwachung",
+      "alert_templates": "Alarmvorlage",
+      "automations": "Alarmausgelöste Automatisierung",
+      "config_policy_automations": "Richtlinienautomatisierung",
+      "network_monitors": "Netzwerkprüfung"
+    },
+    "outcomes": {
+      "convertible": "Konvertierbar",
+      "unconvertible": "Nicht konvertierbar"
+    },
+    "roles": {
+      "primary": "Überwachungsmonitor",
+      "resource_cpu": "CPU-Monitor",
+      "resource_memory": "Speicher-Monitor",
+      "response": "Reaktion"
+    },
+    "reasons": {
+      "unknown": "Nicht konvertierbar ({{code}}).",
+      "nested_group": "Die Regel verschachtelt Bedingungsgruppen; ein zusammengesetzter Monitor ist eine flache Gruppe.",
+      "no_condition": "Die Vorlage hat keine auswertbare Bedingung und hat nie ausgelöst.",
+      "escalation_policy_axis": "Die Eskalationsrichtlinie gehört einer Organisation, die Richtlinie ist aber partnerweit.",
+      "custom": "Benutzerdefinierte Bedingungen haben keine Monitorart.",
+      "process_count": "Prozessanzahl-Bedingungen haben keine Monitorart."
+    },
+    "errors": {
+      "preview": "Konvertierungsvorschau konnte nicht geladen werden",
+      "convert": "Konvertierung fehlgeschlagen",
+      "retire": "Stilllegen fehlgeschlagen",
+      "revert": "Konvertierung konnte nicht rückgängig gemacht werden"
+    }
   }
 }

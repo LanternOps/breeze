@@ -385,5 +385,60 @@
         "skippedNoResponse": "Skipped (no response configured)"
       }
     }
+  },
+  "conversion": {
+    "title": "Needs conversion",
+    "description": "Inline alert rules, service/process watches and alert-triggered automations on this policy have not been converted to monitors yet. Converting retires the source row in place; nothing is deleted.",
+    "checking": "Checking devices…",
+    "devicesChecked_one": "{{count}} device checked for identical behavior.",
+    "devicesChecked_other": "{{count}} devices checked for identical behavior.",
+    "blocked": {
+      "parent_unconverted": "Convert the parent policy first — its inline rules decide what this policy inherits.",
+      "prerequisite_missing": "A prerequisite fix is not deployed on this server yet. Conversion is disabled until it is."
+    },
+    "refusedTitle_one": "Conversion refused: {{count}} device would change behavior.",
+    "refusedTitle_other": "Conversion refused: {{count}} devices would change behavior.",
+    "convert": "Convert",
+    "convertAll_one": "Convert {{count}} convertible",
+    "convertAll_other": "Convert all {{count}} convertible",
+    "retire": "Retire",
+    "converted": "Converted {{rows}} legacy rows into {{monitors}} monitors.",
+    "retired": "Retired {{name}}.",
+    "undone_one": "Reverted {{count}} conversion.",
+    "undone_other": "Reverted {{count}} conversions.",
+    "openAlerts_one": "{{count}} open alert moves to the monitor",
+    "openAlerts_other": "{{count}} open alerts move to the monitor",
+    "sourceTables": {
+      "config_policy_alert_rules": "Inline alert rule",
+      "config_policy_monitoring_watches": "Service/process watch",
+      "alert_templates": "Alert template",
+      "automations": "Alert-triggered automation",
+      "config_policy_automations": "Policy automation",
+      "network_monitors": "Network check"
+    },
+    "outcomes": {
+      "convertible": "Convertible",
+      "unconvertible": "Cannot convert"
+    },
+    "roles": {
+      "primary": "Monitor",
+      "resource_cpu": "CPU monitor",
+      "resource_memory": "Memory monitor",
+      "response": "Response"
+    },
+    "reasons": {
+      "unknown": "Cannot convert ({{code}}).",
+      "nested_group": "The rule nests condition groups; a composite monitor is one flat group.",
+      "no_condition": "The template has no evaluable condition and never fired.",
+      "escalation_policy_axis": "The escalation policy is org-owned but the policy is partner-wide.",
+      "custom": "Custom conditions have no monitor kind.",
+      "process_count": "Process-count conditions have no monitor kind."
+    },
+    "errors": {
+      "preview": "Failed to load the conversion preview",
+      "convert": "Failed to convert",
+      "retire": "Failed to retire",
+      "revert": "Failed to revert the conversion"
+    }
   }
 }

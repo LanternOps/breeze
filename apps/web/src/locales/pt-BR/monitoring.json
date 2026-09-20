@@ -385,5 +385,60 @@
         "skippedNoResponse": "Ignorado (nenhuma resposta configurada)"
       }
     }
+  },
+  "conversion": {
+    "title": "Precisa de conversão",
+    "description": "Regras de alerta embutidas, monitoramentos de serviços/processos e automações acionadas por alerta desta política ainda não foram convertidos em monitores. A conversão aposenta a linha de origem no lugar; nada é excluído.",
+    "checking": "Verificando dispositivos…",
+    "devicesChecked_one": "{{count}} dispositivo verificado para comportamento idêntico.",
+    "devicesChecked_other": "{{count}} dispositivos verificados para comportamento idêntico.",
+    "blocked": {
+      "parent_unconverted": "Converta primeiro a política superior — as regras embutidas dela decidem o que esta política herda.",
+      "prerequisite_missing": "Uma correção pré-requisito ainda não foi implantada neste servidor. A conversão fica desabilitada até lá."
+    },
+    "refusedTitle_one": "Conversão recusada: {{count}} dispositivo mudaria de comportamento.",
+    "refusedTitle_other": "Conversão recusada: {{count}} dispositivos mudariam de comportamento.",
+    "convert": "Converter",
+    "convertAll_one": "Converter {{count}} convertível",
+    "convertAll_other": "Converter todos os {{count}} convertíveis",
+    "retire": "Aposentar",
+    "converted": "{{rows}} linhas legadas convertidas em {{monitors}} monitores.",
+    "retired": "{{name}} aposentado.",
+    "undone_one": "{{count}} conversão revertida.",
+    "undone_other": "{{count}} conversões revertidas.",
+    "openAlerts_one": "{{count}} alerta aberto passa para o monitor",
+    "openAlerts_other": "{{count}} alertas abertos passam para o monitor",
+    "sourceTables": {
+      "config_policy_alert_rules": "Regra de alerta embutida",
+      "config_policy_monitoring_watches": "Monitoramento de serviço/processo",
+      "alert_templates": "Modelo de alerta",
+      "automations": "Automação acionada por alerta",
+      "config_policy_automations": "Automação da política",
+      "network_monitors": "Verificação de rede"
+    },
+    "outcomes": {
+      "convertible": "Convertível",
+      "unconvertible": "Não pode ser convertido"
+    },
+    "roles": {
+      "primary": "Monitor principal",
+      "resource_cpu": "Monitor de CPU",
+      "resource_memory": "Monitor de memória",
+      "response": "Resposta"
+    },
+    "reasons": {
+      "unknown": "Não pode ser convertido ({{code}}).",
+      "nested_group": "A regra aninha grupos de condições; um monitor composto é um único grupo plano.",
+      "no_condition": "O modelo não tem condição avaliável e nunca disparou.",
+      "escalation_policy_axis": "A política de escalonamento pertence a uma organização, mas a política é de todo o parceiro.",
+      "custom": "Condições personalizadas não têm tipo de monitor.",
+      "process_count": "Condições de contagem de processos não têm tipo de monitor."
+    },
+    "errors": {
+      "preview": "Falha ao carregar a prévia da conversão",
+      "convert": "Falha ao converter",
+      "retire": "Falha ao aposentar",
+      "revert": "Falha ao reverter a conversão"
+    }
   }
 }

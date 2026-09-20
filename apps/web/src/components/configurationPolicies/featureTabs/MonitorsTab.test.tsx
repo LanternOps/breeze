@@ -299,3 +299,22 @@ describe('MonitorsTab — inheritance switch (W05c2)', () => {
     expect(screen.queryByTestId('monitors-tab-ignored-inherited')).toBeNull();
   });
 });
+
+vi.mock('../../monitoring/conversion/NeedsConversionPanel', () => ({
+  default: (p: { hasLegacyRows: boolean }) => <div data-testid="needs-conversion-panel" data-legacy={String(p.hasLegacyRows)} />,
+}));
+describe('MonitorsTab — Needs-conversion mount gate (W05c2)', () => {
+  it('passes hasLegacyRows=true when the policy carries an alert_rule, a watch-bearing monitoring or an automation link', async () => {
+    render(<MonitorsTab {...baseProps} siblingLinks={[{ id: 'l1', featureType: 'alert_rule', featurePolicyId: null, inlineSettings: { items: [{ name: 'x' }] } }]} />);
+    expect((await screen.findByTestId('needs-conversion-panel')).getAttribute('data-legacy')).toBe('true');
+  });
+  it('includes an automation-only policy using the canonical singular feature type', async () => {
+    render(<MonitorsTab {...baseProps} siblingLinks={[{ id: 'workflow', featureType: 'automation', featurePolicyId: null,
+      inlineSettings: { items: [{ triggerType: 'event', eventType: 'alert.triggered' }] } }]} />);
+    expect(await screen.findByTestId('needs-conversion-panel')).toHaveAttribute('data-legacy', 'true');
+  });
+  it('passes hasLegacyRows=false for a monitoring link with no watches (the Check-interval carrier)', async () => {
+    render(<MonitorsTab {...baseProps} siblingLinks={[{ id: 'l1', featureType: 'monitoring', featurePolicyId: null, inlineSettings: { checkIntervalSeconds: 60, watches: [] } }]} />);
+    expect((await screen.findByTestId('needs-conversion-panel')).getAttribute('data-legacy')).toBe('false');
+  });
+});
