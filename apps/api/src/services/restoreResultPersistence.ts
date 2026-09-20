@@ -24,7 +24,8 @@ export function deriveRestoreStatus(
   payloadStatus?: unknown
 ): 'completed' | 'failed' | 'partial' {
   if (commandStatus !== 'completed') return 'failed';
-  if (payloadStatus === 'failed') return 'failed';
+  // 'refused' = the rebuild engine's preflight declined; nothing was restored.
+  if (payloadStatus === 'failed' || payloadStatus === 'refused') return 'failed';
   if (payloadStatus === 'partial' || payloadStatus === 'degraded') return 'partial';
   return 'completed';
 }
