@@ -419,6 +419,25 @@ ledger row un-retires the source, deletes the output monitors (attachments casca
 `alerts.rule_id`/`config_policy_id` for `moved_alert_ids`. The source row's
 `converted_to_monitor_id` holds the primary output.
 
+**Source visibility before the ledger write (D29).** The live-conversion unique index
+(`monitor_conversions_live_source_uidx` on `(source_table, source_id) WHERE reverted_at IS NULL`)
+is **global, not tenant-scoped**, and `source_id` carries no FK. Every writer of a ledger row
+(`convertPolicy`, `convertPartnerLegacy`, `retireSource`, W05e's network adoption) must first load
+the source row through the **caller's own RLS context** and refuse 404-shaped when it is not
+visible — never let the insert answer with 23505. Otherwise a caller could squat another
+tenant's source slot and probe which source ids exist.
+
+**Retired rows are never deleted (D11 generalised, D29).** The `config_policy_*` children are
+`ON DELETE CASCADE` from `config_policy_feature_links`, so a feature link that owns any row with
+`retired_at IS NOT NULL` (alert rules, automations, monitoring watches) is **kept**: removing the
+feature deletes the live rows, saves an empty item set, and the route/AI tool answer
+`{ success: true, kept: true, reason: 'retired_history' }`. `assembleInlineSettings` returns the
+authoritative empty set **only** for a link with at least one retired row; a link with mirror
+JSON and zero normalized rows and zero retired rows still falls back to the mirror (pre-backfill
+links). Until the converter's open-alert carry-over re-keys open alerts to the monitor in the
+conversion transaction (W05c1 PR 3), an alert queued before its source was retired resolves
+default delivery and loses that source's escalation — PR 3 closes the window.
+
 | Source | Becomes | Mapping notes | Unconvertible when |
 |---|---|---|---|
 | `config_policy_alert_rules` row, 1 condition | monitor of the matching kind | existing `convertAlertConditionToMonitor`; `escalation_policy_id` → monitor escalation; `notification_channel_ids` non-empty → `deliveryMode: channels`, empty/null → `inherit` (never `none`); `cooldown`, `autoResolve`, severity, name, rationale → description | metric `processCount`/`processes` (no kind); `custom` |
