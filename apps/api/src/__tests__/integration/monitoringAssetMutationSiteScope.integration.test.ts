@@ -13,12 +13,24 @@ import { randomUUID } from 'crypto';
 import { and, eq } from 'drizzle-orm';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../../middleware/auth', () => ({
+// #6337 — the SNMP mutation routes are self-managed for DB context: they open
+// their own short context via the REAL `withAuthDbAccessContext` and enqueue
+// the immediate poll after it closes. Only the middlewares are stubbed here;
+// everything else comes from the real module via `importOriginal`, so the
+// handler re-enters a genuine `breeze_app` RLS context (a bare object mock
+// would have thrown "No withAuthDbAccessContext export is defined").
+vi.mock('../../middleware/auth', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../middleware/auth')>()),
   authMiddleware: vi.fn((c: any, next: any) => {
     const orgId = c.req.header('x-org-id');
     const encodedSites = c.req.header('x-site-ceiling');
     c.set('auth', {
-      user: { id: 'synthetic-site-actor' },
+      // Null on purpose: the real `dbAccessContextFromAuth` maps this straight
+      // to `breeze.user_id`, and a non-UUID value would blow up
+      // `breeze_current_user_id()`'s ::uuid cast in any policy that reads it.
+      // Null also makes the handler's re-entered context identical to the
+      // `fixture.context` this suite opens around the request.
+      user: { id: null },
       scope: 'organization',
       partnerId: null,
       orgId,
