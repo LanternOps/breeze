@@ -1,3 +1,4 @@
+import { toolActionEnum } from './aiToolActions';
 import { TIER1_ACTIONS, TIER2_ACTIONS, TIER2_READONLY_ACTIONS, TIER3_ACTIONS, isReadOnlyResolution } from './aiGuardrails';
 
 export interface McpToolAnnotations { readOnlyHint: boolean; destructiveHint: boolean; idempotentHint: boolean; openWorldHint: boolean }
@@ -27,24 +28,20 @@ export function isActionReadOnly(toolName: string, action: string | undefined, b
   return isReadOnlyResolution(toolName, { tier: tier as 1 | 2 | 3 | 4, readOnly: readOnlyAction });
 }
 
-function actionEnum(inputSchema: unknown): string[] {
-  const values = (inputSchema as { properties?: { action?: { enum?: unknown[] } } } | undefined)?.properties?.action?.enum;
-  return Array.isArray(values) ? values.filter((v): v is string => typeof v === 'string') : [];
-}
-
 export function buildMcpToolPresentation(tool: { name: string; input_schema?: unknown }, baseTier: number | undefined, domain: string | undefined): McpToolPresentation {
   const title = mcpToolTitle(tool.name);
   const meta = { 'app.breeze/domain': domain ?? 'unknown' };
   if (baseTier === undefined) {
-    return { title, annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false }, _meta: meta };
+    return { title, annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true }, _meta: meta };
   }
-  const actions = actionEnum(tool.input_schema);
+  const actions = toolActionEnum(tool.name) ?? [];
   const targets: (string | undefined)[] = actions.length > 0 ? actions : [undefined];
   const readOnlyHint = targets.every((a) => isActionReadOnly(tool.name, a, baseTier));
-  const destructiveHint = targets.some((a) => resolveActionTier(tool.name, a, baseTier) >= 3);
+  // Only read-only tools can safely claim additive-only, closed-world behavior.
+  const destructiveHint = !readOnlyHint;
   return {
     title,
-    annotations: { readOnlyHint, destructiveHint, idempotentHint: readOnlyHint, openWorldHint: domain === 'integrations' },
+    annotations: { readOnlyHint, destructiveHint, idempotentHint: readOnlyHint, openWorldHint: !readOnlyHint || domain === 'integrations' },
     _meta: meta,
   };
 }
