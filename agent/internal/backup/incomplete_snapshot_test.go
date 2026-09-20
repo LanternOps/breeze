@@ -201,3 +201,47 @@ func TestRecordIncompleteFiles(t *testing.T) {
 		})
 	}
 }
+
+// A run that aborts mid-way (the source snapshot vanished) leaves files it
+// never even attempted. They are missing from the manifest exactly like the
+// ones that failed outright, so the count must be "everything not stored", not
+// just the explicit error list — otherwise the operator is told 5 files are
+// missing when 400 are (#6350 review finding).
+func TestRecordIncompleteFilesOfTotal_CountsUnattemptedFiles(t *testing.T) {
+	cases := []struct {
+		name       string
+		stored     int
+		failures   int
+		filesTotal int
+		wantCount  int
+	}{
+		{name: "abort leaves unattempted files", stored: 100, failures: 5, filesTotal: 500, wantCount: 400},
+		{name: "every file attempted falls back to the failure count", stored: 8, failures: 2, filesTotal: 10, wantCount: 2},
+		{name: "more failures than the gap keeps the failure count", stored: 8, failures: 4, filesTotal: 10, wantCount: 4},
+		{name: "complete run records nothing", stored: 10, failures: 0, filesTotal: 10, wantCount: 0},
+		// A caller that does not know the total (0) must never be worse than
+		// the plain failure count.
+		{name: "unknown total still counts failures", stored: 3, failures: 2, filesTotal: 0, wantCount: 2},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			snap := &Snapshot{ID: "s", Files: make([]SnapshotFile, tc.stored)}
+			failures := make([]error, 0, tc.failures)
+			sources := make([]string, 0, tc.failures)
+			for i := 0; i < tc.failures; i++ {
+				failures = append(failures, fmt.Errorf("failed to upload f%d", i))
+				sources = append(sources, fmt.Sprintf("/data/f%d", i))
+			}
+			recordIncompleteFilesOfTotal(snap, failures, sources, tc.filesTotal)
+			if snap.IncompleteFiles != tc.wantCount {
+				t.Errorf("IncompleteFiles = %d, want %d", snap.IncompleteFiles, tc.wantCount)
+			}
+			// Paths are only ever known for the explicit failures, so the list
+			// may legitimately be shorter than the count.
+			if len(snap.IncompleteFilePaths) > snap.IncompleteFiles {
+				t.Errorf("paths (%d) must not exceed the count (%d)", len(snap.IncompleteFilePaths), snap.IncompleteFiles)
+			}
+		})
+	}
+}
