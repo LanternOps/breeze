@@ -54,12 +54,14 @@ describe('renderToolIndexByDomain (A-W02)', () => {
     expect(labelsInOrder).toEqual(expected);
   });
 
-  it('names every chat-callable tool exactly once and nothing else', () => {
+  it('lists every chat-callable tool exactly once and mentions nothing unavailable', () => {
     const mentioned = text.match(/\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/g) ?? [];
     const set = new Set(names);
     const unknown = mentioned.filter((m) => !set.has(m) && !isActionToken(text, m));
     expect(unknown).toEqual([]);
-    for (const n of names) expect(mentioned.filter((token) => token === n).length, n).toBe(1);
+    const listed = text.split('\n').filter((line) => line.startsWith('- **')).join('\n')
+      .match(/\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/g) ?? [];
+    for (const n of names) expect(listed.filter((token) => token === n).length, n).toBe(1);
   });
 
   it('keeps the vulnerability tools findable with CVE vocabulary (#2605 pin moves here)', () => {
@@ -67,6 +69,35 @@ describe('renderToolIndexByDomain (A-W02)', () => {
     expect(text).toContain('get_device_vulnerabilities');
     expect(text).toContain('remediate_vulnerability');
     expect(text).toMatch(/CVE/);
+  });
+
+  it('carries the vulnerability/posture/patching disambiguation and the empty-report caveat (moved from the prompt tail, #2605)', () => {
+    expect(DOMAIN_NOTES.patching).toMatch(/get_security_posture returns control scores/);
+    expect(DOMAIN_NOTES.patching).toMatch(/manage_patches returns the patch\/KB inventory/);
+    expect(DOMAIN_NOTES.patching).toMatch(/never state that a device or the fleet has no vulnerabilities/);
+    expect(DOMAIN_NOTES.patching).toMatch(/no findings are currently correlated/);
+    expect(text).toContain(DOMAIN_NOTES.patching);
+  });
+
+  it.each([
+    ['get_vulnerability_report'],
+    ['manage_patches'],
+    ['get_vulnerability_report', 'manage_patches'],
+    ['get_vulnerability_report', 'get_security_posture'],
+  ])('only mentions available tools in restricted indexes: %j', (...subset) => {
+    const restricted = renderToolIndexByDomain(subset);
+    const registered = new Set(getAllRegisteredToolNames());
+    const mentioned = restricted.match(/\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/g) ?? [];
+    expect(mentioned.filter((token) => registered.has(token) && !subset.includes(token))).toEqual([]);
+    expect(restricted).toMatch(/never state that a device or the fleet has no vulnerabilities/);
+    expect(restricted).toMatch(/no findings are currently correlated/);
+  });
+
+  it('preserves configuration-policy patch workflow guidance', () => {
+    expect(text).toContain('Create an update ring before linking its ID as featurePolicyId');
+    expect(text).toContain('Configure schedules and auto-approval through that feature');
+    expect(text).toContain('Third-party auto-approval requires third-party patch sources');
+    expect(text).toContain('Approve patches before installing them');
   });
 
   it('skips names that have no domain instead of throwing', () => {
