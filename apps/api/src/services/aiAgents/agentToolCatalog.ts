@@ -128,6 +128,11 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   file_operations: 'files_disk',
   disk_cleanup: 'files_disk',
   analyze_disk_usage: 'files_disk',
+  // Deliberately NOT added to any AGENT_KIND_PRESETS default (spec §9.3 item
+  // 7): an operator turns this on per agent, on purpose. `triage` and
+  // `helpdesk` ship with `disk_cleanup:execute` because a previewed,
+  // path-pinned file delete is rule-equivalent; a native cleaner is not.
+  system_cleanup: 'files_disk',
 
   // ---- author_scripts ----
   propose_script: 'author_scripts',
