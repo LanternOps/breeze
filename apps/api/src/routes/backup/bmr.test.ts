@@ -20,7 +20,7 @@ vi.mock('../../services', () => ({}));
 
 function chainMock(resolvedValue: unknown = []) {
   const chain: Record<string, any> = {};
-  for (const method of ['from', 'where', 'limit', 'returning', 'values', 'set', 'onConflictDoNothing', 'orderBy', 'offset']) {
+  for (const method of ['from', 'where', 'limit', 'returning', 'values', 'set', 'onConflictDoNothing', 'orderBy', 'offset', 'leftJoin', 'innerJoin']) {
     chain[method] = vi.fn(() => Object.assign(Promise.resolve(resolvedValue), chain));
   }
   return Object.assign(Promise.resolve(resolvedValue), chain);
@@ -110,6 +110,7 @@ vi.mock('../../db/schema', () => ({
   backupJobs: {
     id: 'backup_jobs.id',
     configId: 'backup_jobs.config_id',
+    referencedFiles: 'backup_jobs.referenced_files',
   },
   backupConfigs: {
     id: 'backup_configs.id',
@@ -443,6 +444,42 @@ describe('bmr routes', () => {
 
     expect(res.status).toBe(200);
     expect((await res.json()).data).toHaveLength(2);
+  });
+
+  // #6403: this route mints a bare_metal token WITHOUT going through
+  // createBareMetalRecovery, so it needs the same refusal — otherwise the
+  // operator boots media against a snapshot whose files cannot be fetched and
+  // the disk is wiped before the restore fails.
+  it('refuses a bare_metal token for a snapshot that references older snapshots', async () => {
+    selectMock.mockReturnValueOnce(chainMock([{ id: SNAPSHOT_ID, orgId: ORG_ID, deviceId: DEVICE_ID, referencedFiles: 98411 }]));
+
+    const res = await app.request('/backup/bmr/tokens', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({ snapshotId: SNAPSHOT_ID, restoreType: 'bare_metal', expiresInHours: 24 }),
+    });
+
+    expect(res.status).toBe(409);
+    expect((await res.json()).error).toBe('snapshot_has_external_references');
+    expect(insertMock).not.toHaveBeenCalled();
+  });
+
+  // A file-level token is unaffected: the restore path it drives resolves
+  // objects through the provider directly, with no single-prefix confinement.
+  it('still issues a non-bare_metal token for a snapshot that references older snapshots', async () => {
+    selectMock.mockReturnValueOnce(chainMock([{ id: SNAPSHOT_ID, orgId: ORG_ID, deviceId: DEVICE_ID, referencedFiles: 98411 }]));
+    insertMock.mockReturnValueOnce(chainMock([{
+      id: TOKEN_ID, orgId: ORG_ID, deviceId: DEVICE_ID, snapshotId: SNAPSHOT_ID, restoreType: 'full',
+      expiresAt: new Date('2026-03-30T00:00:00.000Z'), createdAt: new Date('2026-03-29T00:00:00.000Z'),
+    }]));
+
+    const res = await app.request('/backup/bmr/tokens', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({ snapshotId: SNAPSHOT_ID, restoreType: 'full', expiresInHours: 24 }),
+    });
+
+    expect(res.status).toBe(201);
   });
 
   it('creates a recovery token', async () => {

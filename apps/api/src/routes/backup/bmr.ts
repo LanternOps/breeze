@@ -5,6 +5,7 @@ import { zValidator } from '../../lib/validation';
 import { and, desc, eq, inArray } from 'drizzle-orm';
 import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import {
+  backupJobs,
   backupSnapshots,
   bareMetalRecoveries,
   devices,
@@ -17,6 +18,7 @@ import { requireMfa, requirePermission, requireScope } from '../../middleware/au
 import { writeAuditEvent, writeRouteAudit } from '../../services/auditEvents';
 import { enqueueRecoveryMediaBuild } from '../../jobs/recoveryMediaWorker';
 import { PERMISSIONS } from '../../services/permissions';
+import { externalReferenceRefusal } from '../../services/bareMetalRecoveryService';
 import {
   getBinarySource,
   getGithubReleaseArtifactManifestUrl,
@@ -444,13 +446,29 @@ bmrRoutes.post(
     if (!authorization.ok) return authorization.response;
 
     const [snapshot] = await db
-      .select()
+      .select({
+        id: backupSnapshots.id,
+        deviceId: backupSnapshots.deviceId,
+        referencedFiles: backupJobs.referencedFiles,
+      })
       .from(backupSnapshots)
+      .leftJoin(backupJobs, eq(backupJobs.id, backupSnapshots.jobId))
       .where(and(eq(backupSnapshots.id, payload.snapshotId), eq(backupSnapshots.orgId, orgId)))
       .limit(1);
 
     if (!snapshot) {
       return c.json({ error: 'Snapshot not found' }, 404);
+    }
+
+    // #6403: this route mints a token directly, without going through
+    // createBareMetalRecovery, so it carries the same guard. Only bare-metal
+    // restores are confined to a single snapshot prefix — file-level restores
+    // resolve objects through the provider and are unaffected.
+    if (payload.restoreType === 'bare_metal') {
+      const refusal = externalReferenceRefusal(snapshot.referencedFiles, snapshot.id);
+      if (refusal) {
+        return c.json({ error: refusal.code, ...(refusal.details ?? {}) }, refusal.status);
+      }
     }
 
     const plainToken = generateRecoveryToken();
