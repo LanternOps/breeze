@@ -1,0 +1,430 @@
+---
+title: AI tools reference
+description: AI tool workflows, configuration policy inlineSettings shapes, patch approval, backup profiles, billing examples, and troubleshooting by domain.
+---
+
+Tool descriptions summarize purpose and inputs. This reference carries the longer workflows and examples. Tools available to a caller depend on their permissions and surface. Resolve the organization and target before writing, preview changes, and follow each tool's approval requirements. Replace example UUIDs with IDs returned by read tools.
+
+## Core
+
+Use `list_organizations` to resolve organization and site IDs before creating quotes, contracts, or invoices. Partner callers see accessible organizations; organization callers see their own. Use `query_devices` or `get_fleet_health` for fleet counts and status.
+
+For `analyze_fleet_metrics`, per-device average, peak p95, and maximum come from rollups. The fleet field `p95ApproxAvgOfDevicePeaks` averages each device's peak per-bucket p95; it is not a recomputed fleet-wide percentile.
+
+## Devices
+
+Read the target before sending `execute_command`. These are command **payloads**, not complete tool requests:
+
+| Command | Payload shape and limits |
+| --- | --- |
+| `list_processes` | `{"page":1,"limit":50,"search":"","sortBy":"name","sortDesc":false}`; maximum limit 500, larger values reset to 50. |
+| `event_logs_query` | `{"page":1,"limit":100,"logName":"System","level":"error","source":"Service Control Manager","eventId":7031}`; Windows only, page maximum 20, limit maximum 500. |
+| `file_list` | `{"path":"C:\\Logs","limit":100}`; maximum 5000, no paging. Narrow the path to see more. |
+| `start_service`, `stop_service`, `restart_service` | `{"serviceName":"wuauserv"}`; `name` is an alias. The agent receives `name`. |
+| `kill_process` | `{"processName":"notepad.exe","pid":1234}`. |
+| `file_read` | `{"path":"C:\\Logs\\app.log"}`. |
+
+If a response includes `stdoutTruncation` or `_chat`, page or narrow the filters instead of repeating the same call. Include the process name from a prior read when requesting a kill through `manage_processes`: PIDs can be reused. The name helps the reviewer verify intent but is not rechecked against the live process list at dispatch.
+
+Read-only command types `list_processes`, `file_list`, and `event_logs_list` skip durable approval in auto-execute modes but remain audited; per-step mode still confirms them. `list_services`, `event_logs_query`, mutations, and `file_read` require full approval.
+
+## Scripts & automation
+
+For `run_script`, supply exactly one of a saved `scriptId` or a reviewed `proposalId` from `propose_script`. A maintenance-suppressed result is deferred, not failed; do not retry it during the window.
+
+A `timeout` means the 60-second wait expired while execution may continue. Read the returned `executionId` with `get_script_execution` before deciding the script failed or changing it. Also use execution lookup for external runs, such as editor Test Run or IDs from `get_script_execution_history`. Other `run_script` outcomes are final and do not need another lookup.
+
+Run context `system` uses LocalSystem/root privileges. Context `user` uses the logged-in desktop session for profiles, mapped drives, and interactive desktop work. Omitting context uses the script's saved default. The context is shown to the approver and does not bypass approval.
+
+## Patching & software
+
+### Scan, approve, install
+
+1. Resolve the exact devices and organization, then scan with `manage_patches`.
+2. Read the patch inventory and per-device installation status. Present the selected patches and targets for confirmation.
+3. Approve selected patches in the intended ring or explicitly confirmed partner-wide scope.
+4. Install only the approved selection on the confirmed devices. Approval changes eligibility; it does not itself install patches.
+
+| `manage_patches` action | Required fields |
+| --- | --- |
+| `list`, `compliance` | None; use `deviceId` on list for per-device status. |
+| `scan` | `deviceIds` |
+| `approve`, `decline`, `defer` | `patchId` or `patchName` |
+| `bulk_approve` | `patchIds` |
+| `install` | Both `patchIds` and `deviceIds` |
+| `rollback` | Both `patchId` and `deviceIds` |
+
+`patchName` matches a title, KB, or external ID present in the organization's fleet. Ambiguous matches return candidates instead of guessing. `ringId` scopes approval, decline, or deferral to one ring; omission uses the partner-wide blanket. For decline only, `allRings` revokes approval in every ring and cannot be combined with `ringId`.
+
+### Configure auto-approval
+
+Create an update ring with `manage_update_rings`, then link its ID using `manage_policy_feature_link`, `featureType: "patch"`, and `featurePolicyId`. Put schedule and reboot settings on the configuration-policy feature. Example `autoApprove` value for an update ring:
+
+```json
+{
+  "enabled": true,
+  "severities": ["critical", "important"],
+  "deferralDays": 0,
+  "thirdPartyApps": false,
+  "thirdPartyDeferralDays": null
+}
+```
+
+OS severities are `critical`, `important`, `moderate`, and `low`. An enabled rule needs at least one severity or `thirdPartyApps: true`. Third-party approval also requires third-party sources on the linked configuration policy. On update, omitting `thirdPartyApps` or `thirdPartyDeferralDays` preserves the existing values; send explicit values to change them.
+
+### CVE findings and software policies
+
+Use `get_vulnerability_report` for fleet CVEs and `get_device_vulnerabilities` for one device. Posture scores describe controls; patch inventory describes KBs and approval state. Neither answers a CVE question. An empty report means no findings are currently correlated; coverage is incomplete, so never claim there are no vulnerabilities.
+
+`remediate_vulnerability` takes finding IDs from those reports and requires approval. Only partner-approved patches install; unavailable, unapproved, or out-of-site findings appear in `skipped`. Supplying `deviceId` pins the batch and rejects findings on other devices.
+
+Software policies default to organization ownership. Partner-owned templates require full partner organization access. Example `remediationOptions`:
+
+```json
+{"autoUninstall":false,"notifyUser":true,"gracePeriod":7,"cooldownMinutes":30,"maintenanceWindowOnly":false}
+```
+
+`autoInstall` cannot be armed through these AI tools; a human operator needs `devices.execute` and MFA.
+
+## Monitoring & alerts
+
+Create monitor definitions through `manage_monitor_definitions` before attaching their IDs to a configuration policy's `monitors` feature. A definition compiles into managed alert templates, rules, and automations; do not edit those compiled rows directly.
+
+On create, the full definition requires `name`, `kind`, a matching `condition`, `severity`, `enabled`, `cooldownMinutes`, `autoResolve`, `responses`, `deliveryMode`, `deliveryChannelIds`, `escalationPolicyId`, `recurrenceThreshold`, `recurrenceWindowHours`, `recurrenceActions`, `pauseResponsesOnEscalation`, and `aiAgentId`. Consult the tool schema for the supported kinds and matching conditions. `ownerScope` and `orgId` are optional; organization ownership is the default and partner ownership requires full partner access. Updates accept a subset; ownership cannot change after creation.
+
+Use `manage_delivery` to resolve delivery and manage routing/escalation. Set ownership with `orgId`/`ownerScope`, write fields in `data`, and identify update/delete targets with `id`. Its `set_default` action edits the “Everything else” fallback; empty `channelIds` means inbox only. Use `manage_notification_channels` for channel management. The feature reference below distinguishes agent service/process watches from server-evaluated alerts.
+
+## Network
+
+For discovered printers, switches, access points, cameras, and NAS devices, use `get_network_asset_reachability`. Always state evidence source and age: “responding via SNMP two minutes ago.” An `unverified` state means no recent check, not that the device is down.
+
+## Security & compliance
+
+### Configuration policy workflow
+
+1. Call `manage_policy_feature_link` with `action: "describe"` and `featureType`. This read-only reference lookup needs no existing policy ID.
+2. Create the configuration policy with `manage_configuration_policy`. Organization ownership is the default. A partner-owned policy is a reusable library item and applies to no organizations until assigned.
+3. Create any standalone prerequisite: update ring, backup profile, software policy, peripheral policy, or monitor definition. Link the returned ID as described below; link-only types do not accept inline settings.
+4. Add the feature with the configuration policy ID and the returned `inlineSettings` shape.
+5. Preview and confirm assignment scope, then use `apply_configuration_policy` with optional role/OS filters.
+
+Only partner-owned policies support partner-level assignment. Omit `targetId` at that level; the server derives the policy's partner. Organization, site, device-group, and device assignments require `targetId`. Partner ownership requires full partner organization access. Maintenance authoring suppresses monitoring and requires an interactive user session; API-key and OAuth-grant callers cannot author it.
+
+```json
+{"action":"describe","featureType":"backup"}
+```
+
+### Full inline settings reference
+
+Each row is a shape reference, not literal JSON: `?` marks optional fields, alternatives are separated by a vertical bar, and explanatory text describes validation and behavior. The model receives the same reference on demand through `describe`.
+
+| Feature type | Full shape and behavior |
+| --- | --- |
+| `patch` | `{ sources: ["os","third_party"], autoApprove: true, autoApproveSeverities: ["critical","important"], scheduleFrequency: "daily"\|"weekly"\|"monthly", scheduleTime: "02:00", scheduleDayOfWeek?: "tue", scheduleDayOfMonth?: 1, rebootPolicy: "never"\|"if_required"\|"always"\|"maintenance_window" } can also use featurePolicyId → existing update ring UUID (for approval deferral), combined with inlineSettings for schedule/reboot` |
+| `alert_rule` | `server-evaluated rules — CPU/RAM/disk thresholds, offline detection, and event log alerts. { items: [{ name, severity: "critical"\|"high"\|"medium"\|"low"\|"info" (default "medium"), conditions: 1-10 of [ { type: "metric" ("threshold" is accepted as an alias and canonicalized to "metric"), metric: "cpu"\|"ram"\|"disk"\|"processCount" (these four are canonical; the aliases "cpuPercent"->cpu, "ramPercent"/"memory"->ram, "diskPercent"->disk, "processes"->processCount are accepted but map onto them — prefer the canonical names), operator: "gt"\|"gte"\|"lt"\|"lte"\|"eq"\|"neq", value: number (a PERCENTAGE 0-100 for cpu/ram/disk; a plain count for processCount), durationMinutes?: number (1-10080; sustained window the samples are averaged over, default 1 minute) } \| { type: "offline", durationMinutes?: number } \| { type: "event_log", category: "security"\|"hardware"\|"application"\|"system", level: "warning"\|"error"\|"critical" (matches this level and above), sourcePattern?: string (case-insensitive substring match, NOT a regex), messagePattern?: string, countThreshold?: number (1-10000, default 1), windowMinutes?: number (1-1440, default 15) } ], cooldownMinutes?: number (default 5), autoResolve?: boolean (default false), autoResolveConditions?: same condition shapes or null, titleTemplate?: string, messageTemplate?: string, sortOrder?: number }] } — 'custom' conditions and the extended types (bandwidth_high, disk_io_high, network_errors, patch_compliance, cert_expiry) are rejected on write. When the same threshold is configured in policies at different levels (e.g. org and site), the CLOSEST level to the device wins.` |
+| `monitoring` | `agent-side service/process watches with auto-restart, delivered via heartbeat — not evaluated by the alert engine; watch failures are recorded and shown in the UI but do not currently raise alerts (alertOnStop/alertSeverity are stored but unused at runtime). { checkIntervalSeconds: 60, watches: [{ watchType: "service"\|"process", name: "wuauserv", displayName?: "Windows Update", enabled: true, alertOnStop: true, alertAfterConsecutiveFailures: 2, alertSeverity: "critical"\|"high"\|"medium"\|"low"\|"info", cpuThresholdPercent?: 90, memoryThresholdMb?: 500, thresholdDurationSeconds: 300, autoRestart: false, maxRestartAttempts: 3, restartCooldownSeconds: 300 }] } — inline settings carry ONLY checkIntervalSeconds/watches now; metric alert rules and event log alerts moved to the alert_rule feature. Sending a non-empty 'alertRules' or 'eventLogAlerts' array is rejected with an error directing you to the alert_rule feature type instead.` |
+| `maintenance` | `{ recurrence: "once"\|"daily"\|"weekly"\|"monthly", windowStart?: "naive ISO-8601 local datetime for once (e.g. 2026-03-15T02:00) \| HH:MM local time of day for daily/weekly/monthly (omit or null = 00:00). Never pass a Z-suffixed or offset-bearing instant for a recurring cadence — it is rejected and the window falls back to midnight.", durationHours: 1-72, timezone: "America/New_York", suppressAlerts: true, suppressPatching: true, suppressAutomations: false, suppressScripts: false, notifyBeforeMinutes?: 15, notifyOnStart: true, notifyOnEnd: true }` |
+| `automation` | `{ items: [{ name, enabled: true, triggerType: "schedule"\|"event"\|"manual", cronExpression?: "0 2 * * *", timezone?: "America/New_York", eventType?: "device.offline"\|"alert.triggered"\|"compliance.failed"\|"patch.available", actions: [{ type: "run_script"\|"send_notification"\|"create_alert"\|"execute_command", scriptId?\|channelId?\|severity?\|message?\|command? }], onFailure: "stop"\|"continue"\|"notify" }] }` |
+| `event_log` | `{ retentionDays: 30, maxEventsPerCycle: 100, collectCategories: ["security","hardware","application","system"], minimumLevel: "info"\|"warning"\|"error"\|"critical", collectionIntervalMinutes: 15, rateLimitPerHour: 12000 }` |
+| `compliance` | `{ items: [{ name, enforcementLevel: "monitor"\|"warn"\|"enforce", checkIntervalMinutes: 60, rules: [{ type: "required_software"\|"prohibited_software"\|"disk_space_minimum"\|"os_version"\|"registry_check"\|"config_file_check", name?\|minGb?\|osType?\|path?\|valueName?\|expectedValue?\|minVersion? }] }] }` |
+| `security` | `{ realTimeProtection: true, behavioralMonitoring: true, cloudLookup: true, scheduledScans: true, scanHour: "2", scanMinute: "0", scanDayOfWeek: "*", scanDayOfMonth: "*", autoQuarantine: true, notifyUser: true, blockUntrustedUsb: false, exclusions: [] }` |
+| `backup` | `{ schedule: { frequency: "daily"\|"weekly"\|"monthly", time: "02:00", dayOfWeek?: 2 (0=Sunday..6=Saturday), dayOfMonth?: 1 (1..28), timezone?: "UTC" }, retention: { preset: "standard"\|"extended"\|"compliance"\|"custom", retentionDays?: 30, maxVersions?: 5 }, paths: [], targets: { paths: [], excludes: [] }, backupMode: "file"\|"hyperv"\|"mssql"\|"system_image", destinationConfigId?: "UUID" }. featurePolicyId → backup PROFILE UUID (manage_backup_profiles — "what to protect"), combined with inlineSettings { schedule, retention, destinationConfigId? } (destination omitted = the device org's default destination). Legacy links with featurePolicyId → backup config UUID still work. Partner-wide policies may link partner-wide profiles; their destination always resolves per device org. Compression, encryption and notification flags are not persisted by configuration-policy backup settings.` |
+| `sensitive_data` | `{ detectionClasses: ["credential","pci","phi","pii","financial"], includePaths: [], excludePaths: [], fileTypes: [], maxFileSizeBytes: 104857600, workers: 4, timeoutSeconds: 300, scheduleType: "manual"\|"interval"\|"cron", intervalMinutes?: 60, cron?: "...", timezone: "UTC" }` |
+| `warranty` | `{ enabled: true, warnDays: 90, criticalDays: 30 }` |
+| `helper` | `{ enabled: true, showTrayIcon: true, showOpenPortal: true, showDeviceInfo: true, showRequestSupport: true, portalUrl?: "" } — showTrayIcon:false hides the system-tray icon while the helper keeps serving chat, remote-access consent and PAM dialogs.` |
+| `pam` | `inlineSettings {uacInterceptionEnabled: boolean} — Windows UAC elevation prompt capture (default false / opt-in: capture is OFF when no policy assigns this feature). PAM rules/approvals are managed separately in the /pam console, not via config policies.` |
+| `vulnerability` | `inlineSettings {enabled: boolean} — per-device CVE correlation / vulnerability scanning (default false / opt-in: devices with no policy are NOT scanned). Findings appear in the /vulnerabilities console; correlation runs daily.` |
+| `device_lifecycle` | `inlineSettings {purgeRemovedAfterDays: number\|null} — permanently delete removed devices N days after removal (1..3650); null/absent = keep forever. Purge is IRREVERSIBLE: it destroys the device record and all of its history. A daily job applies it; devices whose agent uninstall is still queued are skipped until it completes. Closest level wins, so an org-level link with null opts that org out of a partner-wide window.` |
+| `remote_access` | `{ webrtcDesktop: true, vncRelay: false, remoteTools: true, clipboardHostToViewer: true, clipboardViewerToHost: true, enableProxy: false, defaultAllowedPorts: [80,443], autoEnableProxy: false, maxConcurrentTunnels: 5, idleTimeoutMinutes: 5, maxSessionDurationHours: 8 (whole hours, 1..12 — remote desktop sessions are hard-capped at 12h and "unlimited"/0 is rejected), sessionPromptMode?: "off"\|"notify"\|"consent", consentUnavailableBehavior?: "proceed"\|"block", notifyOnSessionEnd?: true, showActiveIndicator?: true, technicianIdentityLevel?: "name_email"\|"name"\|"generic" } — all fields optional; updates MERGE over the currently stored settings, so send only the fields to change. Unknown keys are stripped, never applied — use exactly these key names.` |
+| `onedrive_helper` | `{ silentAccountConfig?, filesOnDemand?, kfmSilentOptIn?, kfmFolders? (Desktop/Documents/Pictures), kfmBlockOptOut?, tenantAssociationId?, restartOnChange?, libraries?: [{ libraryId, displayName, targetingMode (everyone\|graph_group\|local_ad_group), groupId?, groupName?, siteUrl? }] }` |
+| `software_policy` | `Link-only: featurePolicyId → existing software policy UUID; no inlineSettings.` |
+| `peripheral_control` | `Link-only: featurePolicyId → existing peripheral policy UUID; no inlineSettings.` |
+| `monitors` | `{ items: [{ monitorId: "existing monitor definition UUID", enabled: true, overrides?: {}, sortOrder?: 0 }], inheritance: "cumulative"\|"replace" (default "cumulative") }. Up to 200 attachments; create monitor definitions with manage_monitor_definitions before linking.` |
+
+## Backup & recovery
+
+Create storage with `manage_backup_configs` and a reusable “what to protect” profile with `manage_backup_profiles`. Link the profile to a configuration policy using `featureType: "backup"` and `featurePolicyId` equal to the **profile** ID. Put the destination configuration ID in `inlineSettings.destinationConfigId`, never in the new link's `featurePolicyId`.
+
+Example profile `selections` (at least one source must be enabled; file selection requires paths):
+
+```json
+{
+  "file": {"enabled":true,"paths":["C:\\Data"],"excludes":["*.tmp"]},
+  "system_image": {"enabled":false,"includeSystemState":true},
+  "mssql": {"enabled":false,"backupType":"full","excludeDatabases":[]},
+  "hyperv": {"enabled":false,"consistencyType":"application","excludeVms":[]}
+}
+```
+
+SQL backup types are `full`, `differential`, or `log`; Hyper-V consistency is `application` or `crash`. Profiles can be organization-owned or partner-wide. Example link request after the policy, profile, and destination have been created:
+
+```json
+{
+  "action":"add",
+  "configPolicyId":"11111111-1111-4111-8111-111111111111",
+  "featureType":"backup",
+  "featurePolicyId":"22222222-2222-4222-8222-222222222222",
+  "inlineSettings":{
+    "schedule":{"frequency":"daily","time":"02:00","timezone":"UTC"},
+    "retention":{"preset":"custom","retentionDays":30,"maxVersions":5},
+    "destinationConfigId":"33333333-3333-4333-8333-333333333333"
+  }
+}
+```
+
+Omitting the destination uses each device organization's default. Partner-wide policies can link partner-wide profiles, but destinations resolve per device organization. Schedule and retention must be nested objects. Compression, encryption, and notification flags are not persisted in configuration-policy backup settings.
+
+Use `query_backups` for existing jobs and `trigger_backup` for an approved on-demand backup. For `restore_as_vm`, `engine: "hyperv"` (default) creates a VM on a Windows target. `engine: "rebuild"` rebuilds a Linux whole-machine snapshot with a disk-layout manifest into a VHDX on a Linux rebuild host. It gives the image a new machine identity; attach the VHDX to a Hyper-V VM manually.
+
+## Tickets & time
+
+With `manage_tickets`, use `list` to search, `get` for details, `create` to open, `comment` for a reply/internal note, and `assign` to set ownership. `update_status` requires a `resolutionNote` when resolving. Send either a core `status` or a partner-configured `statusName` such as “Waiting on vendor,” never both. Use `draft` to store a proposed reply or resolution note for human review. `link_device` accepts an exact hostname or serial number.
+
+For completed work, `log_time_entry` requires both `startedAt` and `endedAt`. `start_timer` automatically stops any current timer; `stop_timer` stops the running one. `list_work_types` returns active names and IDs. A work type can be supplied by name or ID at log/start time; omission uses the ticket-category default. It cannot be changed at stop time: edit the time entry instead. Hourly rate overrides are in the ticket organization's currency and require `time_entries:manage_billing`.
+
+### Service deliverables
+
+Use `list_deliverables` to see cadence, due date, last delivery, and status (`on_track`, `due_soon`, `late`, `missed`, `inactive`). Set `occurrencesFor` to include one deliverable's recent occurrences. Example create `input` for `manage_deliverables`:
+
+```json
+{"name":"Monthly sign-in review","cadence":"monthly","anchorDueDate":"2026-10-01","effectiveFrom":"2026-10-01","leadDays":7,"graceDays":3,"artifactRequired":true,"portalVisible":false}
+```
+
+Cadences include `monthly`, `quarterly`, `semiannual`, `annual`, and `one_time`. Optional fields also include `contractId`, `completionMode`, `ownerUserId`, `ticketCategoryId`, and `autoEvidenceReportId`.
+
+Link a report run with `link_evidence` before delivering an occurrence that requires an artifact; otherwise delivery returns `EVIDENCE_REQUIRED`. Occurrences can be delivered, waived, reopened, or rescheduled. `apply_template` copies all template items into the organization, optionally tied to a contract, and arms future unattended ticket creation, so approval is required. Name collisions abort the whole operation and return the colliding names.
+
+A template's `autoEvidenceReportType` resolves to the organization's managed report definition, created on demand. Evidence runs are generated on the due day and become customer-visible only when the occurrence is delivered. `list_deliverable_templates` includes cadence, lead/grace days, artifact requirements, internal `instructions`, and `checklistTemplateId` for occurrence tickets. Never repeat those internal runbooks/checklists to customers.
+
+## Billing
+
+### Read documents and keep currencies separate
+
+Use `list_invoices`, `list_contracts`, or `list_quotes` to find accessible documents, newest first, optionally filtered by organization or status. The corresponding `get_invoice`, `get_contract`, and `get_quote` tools return full details: invoice headers and lines; contract headers, lines, and billing-period history; or quote headers, derived totals, deposits, category breakdowns, blocks, and lines. Invoice reads include `depositDue` and, when a deposit is configured, derived `depositPaid`.
+
+Every document carries a three-letter `currencyCode`. Subtotals, tax, totals, balances, line prices, payments, contract per-period totals, and generated invoices use their document's currency. Never sum documents with different currencies: group by `currencyCode` and report separate totals. Catalog prices are selected from that currency's price book, never converted.
+
+For a large quote, first request `includeBlockContent: false` to inspect block types and order without their content. Then page with `blocksOffset` and `blocksLimit`; `blocksPagination` reports `total`, `returned`, and `hasMore`.
+
+```json
+{
+  "quoteId": "11111111-1111-4111-8111-111111111111",
+  "blocksOffset": 0,
+  "blocksLimit": 10,
+  "includeBlockContent": false
+}
+```
+
+### Assemble and issue invoices
+
+`manage_invoices` supports `create_draft`, `add_manual_line`, `add_catalog_line`, `add_bundle_line`, `add_contract_line`, `update_line`, `remove_line`, `update_header`, `delete_draft`, `assemble_from_org`, `assemble_from_ticket`, `issue`, `void`, `record_payment`, `void_payment`, and `create_pay_link`. Build and inspect a draft before issuing it. Issue, void, and payment actions finalize financial state and require approval.
+
+Assembly defaults to the organization's currency. A `blockedByCurrency` response lists unbilled work in other currencies; assemble a separate draft with the appropriate `currencyCode` for each. Line `unitPrice` and payment `amount` are in the invoice currency.
+
+Catalog lines fail with `NO_PRICE_FOR_CURRENCY` (409) when the selected item lacks an invoice-currency price. Bundle lines return that error for a missing headline price, or `PRICE_BOOK_INCOMPLETE` (409) for a missing component price. Fill the price book or use `add_manual_line` with an explicit price. `add_contract_line` requires `invoiceId`, `contractId`, and `contractLineId`; it returns `line`, `pricedFrom`, and `overages`. A catalog line priced from `contract_snapshot` used the contract's stamped price because the price book had a gap. `overages` describes bill/flag allowance excesses and the sibling `invoiceLineId` when excess units were billed.
+
+Relay a `create_pay_link` warning with code `CURRENCY_DIFFERS_FROM_STRIPE_ACCOUNT` to the user. It means the invoice and partner Stripe-account currencies differ; it does not block the link.
+
+### Contract lines and allowances
+
+For `manage_contracts`, use `line` with `add_line`, header `patch` with `update`, and line `patch` with `update_line`. A new line requires `description` and `lineType`. Without `catalogItemId`, supply both `unitPrice` and `taxable`. Contract money and quantity inputs are decimal strings. With `catalogItemId`, the server resolves price and taxable status in the contract currency, ignoring supplied overrides. Missing prices cause `NO_PRICE_FOR_CURRENCY` (409); use a non-catalog line with an explicit price instead.
+
+| `lineType` | Counting and required fields |
+| --- | --- |
+| `flat` | Flat recurring charge. |
+| `per_device` | Organization's billable devices; optional `siteId`. |
+| `per_device_role` | Nonempty `deviceRoles`; optional `siteId`. Allowed roles: `workstation`, `server`, `printer`, `router`, `switch`, `firewall`, `access_point`, `phone`, `iot`, `camera`, `nas`. `unknown` devices are reported as uncovered, never billed as a role. |
+| `per_device_group` | `deviceGroupId` in the contract organization. Static groups use current members; dynamic groups evaluate their filter live at estimate/invoice time, except a filter's `groupId` condition reads the referenced group's cached membership. Do not supply `siteId`; the group's own site narrows membership. |
+| `per_seat` | Seat-based recurring charge. |
+| `manual` | Requires `manualQuantity`. |
+
+`per_device`, `per_device_role`, `per_device_group`, and `per_seat` may include an allowance: positive whole-number `includedQuantity` together with `overageMode`. The included quantity is billed every period even when the live count is lower. `bill` adds a second invoice line for excess units at the required `overageUnitPrice`, in the contract currency. `flag` charges no excess; the estimate, generation result, and billing log report it for human review. Supply `overageUnitPrice` only with `bill`.
+
+Example `manage_contracts` call, using an existing contract ID:
+
+```json
+{
+  "action": "add_line",
+  "contractId": "11111111-1111-4111-8111-111111111111",
+  "line": {
+    "lineType": "per_device_role",
+    "description": "Managed workstations",
+    "deviceRoles": ["workstation"],
+    "unitPrice": "25.00",
+    "taxable": false,
+    "includedQuantity": "20",
+    "overageMode": "bill",
+    "overageUnitPrice": "30.00"
+  }
+}
+```
+
+`update_line` retains the line ID and invoice lineage. Lines are editable only on draft or active contracts; changes affect future periods, not generated invoices. `lineType` cannot change: remove and re-add the line to change it. A `siteId` of `null` widens an eligible site-scoped line to the organization.
+
+For a catalog link, omitting `catalogItemId` retains both the current link and stamped price. A different item ID relinks and resolves price/taxable in the contract currency, ignoring supplied overrides. The same ID changes nothing; use `refreshCatalogPrice: true` to reprice the unchanged link. Sending `catalogItemId: null` unlinks it and requires both `unitPrice` and `taxable` in that patch.
+
+Patch validation applies to the merged line: omitted allowance fields remain unchanged, and `null` clears them. `includedQuantity` and `overageMode` must remain paired, with `overageUnitPrice` only for `bill`. To remove an allowance, clear all three:
+
+```json
+{
+  "action": "update_line",
+  "contractId": "11111111-1111-4111-8111-111111111111",
+  "lineId": "22222222-2222-4222-8222-222222222222",
+  "patch": {
+    "includedQuantity": null,
+    "overageMode": null,
+    "overageUnitPrice": null
+  }
+}
+```
+
+### Build a quote
+
+Use `manage_quotes` to create a draft, edit its header, add blocks and lines, inspect it with `get_quote`, then send it with approval. Accepted quotes support pay links. Required arguments are:
+
+| Action | Required arguments |
+| --- | --- |
+| `create_draft` | `input` |
+| `update` | `quoteId`, `patch` |
+| `delete_draft`, `send`, `decline`, `create_pay_link` | `quoteId` |
+| `add_block` | `quoteId`, `block` |
+| `update_block` | `quoteId`, `blockId`, `block` |
+| `delete_block` | `quoteId`, `blockId` |
+| `reorder_blocks` | `quoteId`, `blockIds` |
+| `add_manual_line` | `quoteId`, `line` |
+| `add_catalog_line` | `quoteId`, `catalogItemId`, positive `quantity`; optional `blockId` |
+| `update_line` | `quoteId`, `lineId`, `patch` |
+| `remove_line` | `quoteId`, `lineId` |
+| `move_line` | `quoteId`, `lineId`, target `line_items` `blockId` |
+| `reorder_lines` | `quoteId`, `blockId`, `lineIds` |
+
+The create `input` requires organization UUID `orgId`. Optional fields are `siteId`, `title`, three-letter `currencyCode` (defaults to organization currency), `expiryDate` (`YYYY-MM-DD`), `introNotes`, `terms`, and `termsAndConditions`. Resolve IDs from actual accessible records before using examples.
+
+```json
+{
+  "action": "create_draft",
+  "input": {
+    "orgId": "11111111-1111-4111-8111-111111111111",
+    "title": "Managed endpoint services",
+    "currencyCode": "USD"
+  }
+}
+```
+
+Header `patch` supports `depositType` (`none`, `percent`, `selected_lines`), and `depositPercent` strictly between 0 and 100 with two decimal places, used only for `percent`. Omit to preserve values; `depositPercent: null` clears it. `coverPage` is an object with required boolean `enabled` and optional `title`, `coverImageId`, `preparedForName`, and `showPreparedBy` (default true). Its image UUID must belong to this same quote; `coverImageId: null` clears the image. `coverPage: null` clears the cover, while omission preserves it. For line updates, `depositEligible` controls inclusion in a `selected_lines` deposit.
+
+### Quote blocks
+
+Both `add_block` and `update_block` take a `blockType` and matching `content` object. Updates must restate the existing type and cannot change it. Optional fields are marked with `?` below.
+
+| `blockType` | `content` shape |
+| --- | --- |
+| `heading` | `text`, optional `level` (1–3). |
+| `rich_text` | `html`. |
+| `image` | Quote-image UUID `imageId`, `caption?`, `width?`. |
+| `line_items` | `label?`. |
+| `contract` | `templateId`, `templateVersionId`, `variableValues?` (manual fill-ins keyed by variable name), `label?`. Version must be published, belong to that template, and be visible to the quote's organization/partner; otherwise `INVALID_CONTRACT_TEMPLATE`. |
+| `table` | `columns` (1–8 objects containing `label`, `align?`, `weight?`), `rows` (1–100 objects with string-array `cells` matching the column count), `caption?`, `zebra?`, `headerStyle?` (`accent` or `plain`). |
+| `callout` | `variant` (`info`, `accent`, `warn`), `title?`, `html`. |
+
+```json
+{
+  "action": "add_block",
+  "quoteId": "11111111-1111-4111-8111-111111111111",
+  "block": {
+    "blockType": "table",
+    "content": {
+      "columns": [{ "label": "Service" }, { "label": "Schedule" }],
+      "rows": [{ "cells": ["Endpoint review", "Monthly"] }],
+      "zebra": true,
+      "headerStyle": "plain"
+    }
+  }
+}
+```
+
+### Quote lines and recurring device sets
+
+For `add_manual_line`, supply `sourceType` (`manual`, `catalog`, or `bundle`; use `manual` for hand-entered lines), numeric `unitPrice` in quote currency, boolean `taxable`, and at least one of `name` or `description`. Ordinary lines require positive numeric `quantity`. Optional fields are `name`, `description`, `customerVisible` (default true), `recurrence` (`one_time`, `monthly`, `annual`; default `one_time`), `termMonths`, `billingFrequency` (`monthly` or `annual`), `unitCost`, `sku`, `partNumber`, `depositEligible` (default false), `blockId`, and `catalogItemId`.
+
+`add_catalog_line` looks up an item UUID, not a part number, and resolves the price in quote currency. A missing price causes `NO_PRICE_FOR_CURRENCY` (409); add a manual line instead.
+
+A recurring manual line may set `contractLineType` to `per_device`, `per_device_role`, `per_device_group`, or `per_seat` and omit `quantity`. The server counts devices/seats, then recounts every billing period after acceptance. `per_device_role` requires `deviceRoles`; `per_device_group` requires `deviceGroupId`; `per_device` and `per_device_role` may include `siteId`. Each of the four supports positive whole-number `includedQuantity` plus `overageMode`; `bill` requires `overageUnitPrice` in quote currency. The included quantity is charged each period even when the live count is lower. Quote quantities are labeled estimates on the customer document; the resulting contract bills actual counts subject to any allowance.
+
+```json
+{
+  "action": "add_manual_line",
+  "quoteId": "11111111-1111-4111-8111-111111111111",
+  "line": {
+    "sourceType": "manual",
+    "name": "Managed workstations",
+    "unitPrice": 25,
+    "taxable": false,
+    "recurrence": "monthly",
+    "contractLineType": "per_device_role",
+    "deviceRoles": ["workstation"],
+    "includedQuantity": 20,
+    "overageMode": "bill",
+    "overageUnitPrice": 30
+  }
+}
+```
+
+Device sets cannot be attached to one-time lines or bundle components. On existing recurring device-set lines, `deviceRoles`, `deviceGroupId`, `siteId`, `includedQuantity`, `overageMode`, and `overageUnitPrice` may be patched. `quantity` stays server-derived, and `contractLineType` cannot change; remove and re-add to change the type.
+
+### Catalog and distributor lookup
+
+`search_catalog` searches the partner catalog by item name, SKU, manufacturer part number, or SYNNEX SKU, with optional item-type, bundle, and currency filters. Results include per-currency `prices`; an item missing the document currency needs a manual line.
+
+For a product not yet in the catalog, use `lookup_distributor_product` before pricing a quote. It makes a partner-scoped, read-only outbound TD SYNNEX EC Express lookup for one distributor SKU or manufacturer part number, returning reseller cost, MSRP, currency, total stock, and per-warehouse availability. Use `search_catalog` for existing catalog items.
+
+When `manage_catalog` uses `set_bundle_components`, `allocationCurrency` is the ISO-4217 currency for component `revenueAllocation` amounts and is required if any component specifies an allocation. Allocations apply only in that currency and are never converted.
+
+## Accounts
+
+Use `manage_organizations` for intake. Partner-only `create_org` requires a name and creates a default “Main Office” site. `create_site` takes `orgId`, name, and optional address. `add_contact` requires `orgId` and at least one of name, email, phone, or mobile; optional fields include title, roles, siteId, and isPrimary.
+
+Organization/site/contact writes require approval. Suspending or churning an organization severs its agents. A status change (suspend, churn, reactivate) requires a second approver; a name edit or contact creation can be self-approved by the requester.
+
+Example `input` for `manage_key_dates` create:
+
+```json
+{"label":"Insurance renewal","date":"2026-12-01","kind":"insurance_renewal","recursAnnually":true,"remindDaysBefore":30,"portalVisible":false}
+```
+
+Kinds also include `vendor_contract_end`, `compliance_deadline`, `audit`, and `other`. Optional fields include `ownerUserId` and `notes`. Reminders open a ticket before the date; annual recurrence rolls the date forward.
+
+`manage_org_documents` works on files already in the organization's library. `update_metadata` changes title (1–200 characters), description (string or null), category from the advertised enum, or `portalVisible`. `set_portal_visibility` shows/hides the file on the portal. `supersede` marks `documentId` as the newer version of `supersedesDocumentId`; both must be current versions. Only a technician in the web app can upload or replace file content.
+
+## Integrations
+
+Use `manage_notification_channels` to manage channels and test connectivity before routing alerts to them. Channel-specific `config` examples:
+
+| Type | Config |
+| --- | --- |
+| `email` | `{"recipients":["operator@example.com"]}` |
+| `slack` | `{"webhookUrl":"https://your-domain.example.com/slack-webhook"}` |
+| `teams` | `{"webhookUrl":"https://your-domain.example.com/teams-webhook"}` |
+| `webhook` | `{"url":"https://your-domain.example.com/events","headers":{}}` |
+| `pagerduty` | `{"routingKey":"your-routing-key"}` |
+| `sms` | `{"phoneNumbers":["+12025550123"]}` |
+
+Replace the placeholders with the provider's actual configuration. Store secrets in channel configuration, not in ticket notes or customer-facing documents.
+
+## Administration
+
+`capture_agent_pprof` requires approval and captures heap/goroutine profiles to diagnose agent memory growth or goroutine leaks. The tool returns metadata (sizes, capture time, and runtime gauges such as goroutine count). Download raw profiles from the device command API and analyze them with `go tool pprof`.
+
+`trigger_agent_restart` targets the watchdog to recover an “Agent silent · watchdog OK” device even when the main agent is unresponsive. The watchdog acts while supervising/failing over the agent; a healthy agent is left untouched.
+
+`get_invite_funnel` measures deployment invites sent, clicked, enrolled, and currently online, with up to ten recent enrollments including device ID, hostname, OS, invited email, and enrollment time. Devices enrolled without invites can produce zero counts here. Use fleet tools for device counts; a zero invite funnel does not mean an empty fleet.
+
+`export_dataset` pages a dataset to completion without the ordinary 8,000-character response compaction. Use the returned artifact handle with `workspace_stage`. Supported datasets are `event_logs`, `agent_logs`, `device_inventory`, `software_inventory`, `metrics`, `vulnerabilities`, and `custom_fields`.
+
+`delete_tenant` only affects the tenant owning the API key. Its `confirmation_phrase` must exactly equal `delete <tenant_name> permanently` (lowercase and trimmed). Soft deletion retains devices, users, and data for 30 days; contact support to restore during that window. Data is permanently removed afterward.
+
+## AI agents
+
+`manage_ai_agents` action `authorize_supervised_key` grants a pre-authorized `opKey`, such as `manage_services:restart`, to the current organization's agent of the specified kind. The key must already fit the partner baseline ceiling and be earned through recent evidence. It requires a second approver and is unavailable to an AI agent itself.
+
+`orgId` must equal the authenticated current organization, not a different target. The approval pins that organization's authorized-key list; scope and state are checked again before release. Future runs may use the authorized key without raising another approval.
