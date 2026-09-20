@@ -81,6 +81,8 @@ export const automationActionSchema = z.discriminatedUnion('type', [
     // must never be inferred from a shell string that varies by OS, locale and
     // quoting. Additive and optional, so every existing action still parses.
     kind: z.literal('restart_service').optional(),
+    maxAttempts: z.number().int().min(0).max(50).optional(),
+    cooldownSeconds: z.number().int().min(30).max(86400).optional(),
     shell: z.enum(['bash', 'powershell', 'cmd']).optional(),
     // #5128 W4 — see the run_script arm above.
     whenOffline: z.enum(['queue', 'skip']).default('queue'),

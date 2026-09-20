@@ -1,6 +1,6 @@
 import { randomBytes } from 'crypto';
 import { and, eq, inArray, ne, sql } from 'drizzle-orm';
-import { scriptParametersSchema, alertTriggerKey, buildTriggerKey, type RemediationTrigger, type DeploymentTargetConfig } from '@breeze/shared';
+import { automationActionSchema, scriptParametersSchema, alertTriggerKey, buildTriggerKey, type RemediationTrigger, type DeploymentTargetConfig } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import {
   alertRules,
@@ -329,6 +329,9 @@ export type CreateAlertAction = {
 
 export type ExecuteCommandAction = {
   type: 'execute_command';
+  kind?: 'restart_service';
+  maxAttempts?: number;
+  cooldownSeconds?: number;
   command: string;
   shell?: 'bash' | 'powershell' | 'cmd';
   /** #5128 W4 — see RunScriptAction.whenOffline. */
@@ -674,12 +677,21 @@ export function normalizeAutomationActions(input: unknown): AutomationAction[] {
         throw new AutomationValidationError(`actions[${index}] execute_command requires command`);
       }
       const shell = asString(action.shell);
-      normalized.push({
+      const parsed = automationActionSchema.safeParse({
         type: 'execute_command',
         command,
         shell: shell === 'bash' || shell === 'powershell' || shell === 'cmd' ? shell : undefined,
         whenOffline: asWhenOffline(action.whenOffline),
+        kind: action.kind,
+        maxAttempts: action.maxAttempts,
+        cooldownSeconds: action.cooldownSeconds,
       });
+      if (!parsed.success) {
+        throw new AutomationValidationError(
+          `actions[${index}] execute_command has invalid restart options: ${parsed.error.issues[0]?.message}`,
+        );
+      }
+      if (parsed.data.type === 'execute_command') normalized.push(parsed.data);
       continue;
     }
 
