@@ -207,7 +207,8 @@ describe('restore result persistence', () => {
     );
 
     expect(applied).toBe(true);
-    const persisted = set.mock.calls[0][0] as { status: string; targetConfig: Record<string, unknown> };
+    expect(set).toHaveBeenCalledTimes(1);
+    const persisted = set.mock.calls[0]?.[0] as { status: string; targetConfig: Record<string, unknown> };
     expect(persisted.status).toBe('completed');
     expect(persisted.targetConfig).not.toHaveProperty('error');
     expect(persisted.targetConfig.existing).toBe(true);
@@ -233,7 +234,8 @@ describe('restore result persistence', () => {
       { status: 'completed', result: { status: 'failed', error: 'disk too small' } }
     );
 
-    const persisted = set.mock.calls[0][0] as { status: string; targetConfig: Record<string, unknown> };
+    expect(set).toHaveBeenCalledTimes(1);
+    const persisted = set.mock.calls[0]?.[0] as { status: string; targetConfig: Record<string, unknown> };
     expect(persisted.status).toBe('failed');
     // The sweep's guess is gone; the device's own reason is authoritative and
     // lives inside `result`, which every reader prefers.
