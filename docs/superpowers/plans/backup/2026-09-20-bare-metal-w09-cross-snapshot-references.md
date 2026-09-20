@@ -29,7 +29,7 @@ tracking_issue: LanternOps/breeze#5493
 - **Public-route DB context:** every new query in the public routes runs inside `runInRecoveryOrgContext(row.orgId)` (`apps/api/src/routes/backup/bmr.ts:307`); only the token/code hash lookup is system-scoped. Hydration runs in `withSystemDbAccessContext` and never inside a request transaction (storage I/O stays outside DB transactions; each 1,000-row batch is its own short transaction; completeness is published in one final transaction).
 - **Migrations** must sort after the newest committed file (`2026-10-24-210000-time-entries-billable-minutes.sql` on 2026-09-20 — re-check with `ls apps/api/migrations | tail -1` before creating): slots `2026-10-24-220000-backup-snapshot-file-index.sql` and `2026-10-24-220100-recovery-tokens-negotiated-capabilities.sql`. Idempotent, no inner `BEGIN/COMMIT`, RLS in the same migration that creates a table, `SELECT set_config('breeze.scope','system',true)` before any row mutation.
 - **Registries (contract tests, not judgement):** `backup_snapshot_origins` has no `org_id`/`device_id` → mirror `backup_snapshot_files`: RLS = `EXISTS (SELECT 1 FROM backup_snapshots s WHERE s.id = <table>.snapshot_db_id AND breeze_has_org_access(s.org_id))` for all four commands, FK `ON DELETE CASCADE`, and an entry `['backup_snapshot_origins', ['backup_snapshots']]` in `PARENT_FK_JOIN_POLICY_TABLES` (`apps/api/src/__tests__/integration/rls-coverage.integration.test.ts:898`). No org/device cascade entry, no export-policy entry (no `org_id`). New COLUMNS on `backup_snapshots` and `recovery_tokens` MUST be added to `CORE_TENANT_EXPORT_POLICY` (`apps/api/src/services/tenantExportPolicyRegistry.ts:151`, `:497`).
-- **Bounded reporting:** agent-side caps mirror the server schema — `warnings` ≤ 64 × 2000 chars, `reason` ≤ 2000 chars, `failedFilesSample` ≤ 50 entries, and the serialized progress body ≤ 768 KiB (server body limit is 1 MiB, `apps/api/src/middleware/bodyLimit.ts:184`). The agent's *internal* failed-file set is never truncated (`rebuild/validate.go:48` consumes it).
+- **Bounded reporting:** agent-side caps mirror the server schema — `warnings` ≤ 64 × 2000 chars, `reason` ≤ 2000 chars, `failedFilesSample` ≤ 50 entries, and the serialized progress body ≤ 768 KiB (server body limit is 1 MiB, `apps/api/src/middleware/bodyLimit.ts:184`). The agent's *internal* failed-file set is never truncated (`rebuild/validate.go:48` consumes it). The server's `bmrProgressSchema` bounds the serialized `result` to the same 768 KiB.
 - **Test commands:** API unit `cd apps/api && npx vitest run <path>`; API integration `cd apps/api && DATABASE_URL=… npx vitest run -c vitest.integration.config.ts <path>`; agent `cd agent && go test -race ./internal/backup/... ./cmd/breeze-backup/...`; agent lint `golangci-lint run --new-from-rev=origin/main ./...`; web `cd apps/web && npx vitest run <path>`. Red first, every task.
 - **No git in workers.** The controller commits after each task passes with the attribution line `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`.
 
@@ -1184,7 +1184,7 @@ export async function fetchBackupObjectBytes(input: {
 // See docs/superpowers/plans/backup/_w09-part0.md §3 for the full algorithm.
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
-import { and, eq, notEq, ne } from 'drizzle-orm';
+import { and, eq, ne } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import {
   backupSnapshotFiles,
@@ -1555,7 +1555,7 @@ export async function readSnapshotFileIndexState(snapshotDbId: string): Promise<
   };
 }
 ```
-Note: `loadReferencedFiles` does a dynamic `import('../db/schema')` for `backupJobs` to sidestep a circular-import risk between `backupSnapshotFileIndex.ts` and the schema barrel if one already exists for this module's other imports — check `grep -n "^import" apps/api/src/services/backupSnapshotFileIndex.ts` after writing; if `backupJobs` can be imported statically alongside the other schema symbols with no cycle (most services do this), replace the dynamic import with a static one in the top import block for consistency with the rest of the codebase. `notEq` in the `drizzle-orm` import list above is not a real export — use `ne` only (already listed); remove `notEq` from the import when implementing.
+Note: `loadReferencedFiles` does a dynamic `import('../db/schema')` for `backupJobs` to sidestep a circular-import risk between `backupSnapshotFileIndex.ts` and the schema barrel if one already exists for this module's other imports — check `grep -n "^import" apps/api/src/services/backupSnapshotFileIndex.ts` after writing; if `backupJobs` can be imported statically alongside the other schema symbols with no cycle (most services do this), replace the dynamic import with a static one in the top import block for consistency with the rest of the codebase.
 
 - [ ] **Step 5: Implement — `backupResultPersistence.ts` guard + enqueue**
 
@@ -2671,8 +2671,8 @@ it('progress: a 50-entry failedFilesSample is accepted and the failed status per
   expect(res.status).toBe(200);
 });
 
-it('progress: an oversized result payload (>512KB serialized) is rejected by the schema', async () => {
-  const huge = { blob: 'x'.repeat(600 * 1024) };
+it('progress: an oversized result payload (>768KB serialized) is rejected by the schema', async () => {
+  const huge = { blob: 'x'.repeat(800 * 1024) };
   const res = await app.request('/bmr/recover/progress', {
     method: 'POST',
     body: JSON.stringify({ token: TOKEN, status: 'restoring', result: huge }),
@@ -2691,22 +2691,34 @@ Expected: FAIL — the new `recoveryDownloadService.test.ts` cases fail because 
 Insert into `apps/api/src/services/recoveryDownloadService.ts`, after the existing helper functions and before `getAuthenticatedRecoveryDownloadTarget`:
 ```ts
 import { and, eq } from 'drizzle-orm';
-import { backupSnapshotFiles, backupSnapshotOrigins } from '../db/schema';
+import { backupSnapshotFiles, backupSnapshotOrigins, backupSnapshots } from '../db/schema';
 import { classifyBackupObjectKey, hasMembershipCapability } from './backupObjectKey';
 
 /**
  * W09 (#6464) Task 6 — the download-time half of the exact-membership
- * contract. Two indexed EXISTS checks: is this exact key a member of the
- * TOKEN snapshot's server-verified file index, and is its origin snapshot
- * verified against the SAME org/device/storage identity as the token. Both
- * queries run inside the caller's `runInRecoveryOrgContext` — RLS on both
- * tables (Task 2) additionally enforces the org boundary independent of the
- * explicit `orgId` equality checks here.
+ * contract. First confirms the TOKEN snapshot's file index is fully built
+ * (`file_index_status = 'complete'` — a `agent`/`failed` index is
+ * incomplete or untrustworthy and must never authorize an external
+ * reference), then runs two indexed EXISTS checks: is this exact key a
+ * member of the TOKEN snapshot's server-verified file index, and is its
+ * origin snapshot verified against the SAME org/device/storage identity as
+ * the token. All queries run inside the caller's `runInRecoveryOrgContext`
+ * — RLS on both tables (Task 2) additionally enforces the org boundary
+ * independent of the explicit `orgId` equality checks here.
  */
 export async function authorizeExternalReference(
   dbHandle: typeof import('../db').db,
   args: { snapshotDbId: string; key: string; originSnapshotId: string; orgId: string; deviceId: string; pinnedStorageIdentity: string },
 ): Promise<{ ok: true; originStoragePrefix: string | null } | { ok: false; reason: string }> {
+  const [tokenSnapshot] = await dbHandle
+    .select({ fileIndexStatus: backupSnapshots.fileIndexStatus })
+    .from(backupSnapshots)
+    .where(eq(backupSnapshots.id, args.snapshotDbId))
+    .limit(1);
+  if (!tokenSnapshot || tokenSnapshot.fileIndexStatus !== 'complete') {
+    return { ok: false, reason: 'file index not complete' };
+  }
+
   const [membership] = await dbHandle
     .select({ id: backupSnapshotFiles.id })
     .from(backupSnapshotFiles)
@@ -2786,7 +2798,25 @@ function deriveRemoteStorageKey(
 ```
 (`normalizeSnapshotPath` is now unused except by whatever legacy callers remain — check `grep -rn "normalizeSnapshotPath" apps/api/src` before deleting the function; if `recoveryDownloadService.test.ts`'s existing test at line 133 calls it directly rather than only through `getAuthenticatedRecoveryDownloadTarget`, keep the function and its own unit coverage, just stop calling it from the scope check above.)
 
-Thread `originStoragePrefix` into both the S3 and local branches' `deriveRemoteStorageKey(...)` calls (lines ~169 and — the local branch doesn't call `deriveRemoteStorageKey` today; it uses `normalizedRemotePath` directly against `rootPath`, so for the local provider the origin prefix must be joined into `filePath` construction the same way: `ensureContainedLocalPath(rootPath, originStoragePrefix ? \`${originStoragePrefix}/${normalizedRemotePath}\` : normalizedRemotePath)`).
+Thread `originStoragePrefix` into both the S3 and local branches (`apps/api/src/services/recoveryDownloadService.ts:190-206`):
+
+S3 branch (line ~159) — replace:
+```ts
+    const key = deriveRemoteStorageKey(normalizedRemotePath, providerConfig, snapshotMetadata);
+```
+with:
+```ts
+    const key = deriveRemoteStorageKey(normalizedRemotePath, providerConfig, snapshotMetadata, originStoragePrefix);
+```
+
+Local branch (line ~186) — the local branch doesn't call `deriveRemoteStorageKey` today; it uses `normalizedRemotePath` directly against `rootPath`, so the origin prefix must be joined into `filePath` construction the same way. Replace:
+```ts
+    const filePath = ensureContainedLocalPath(rootPath, normalizedRemotePath);
+```
+with:
+```ts
+    const filePath = ensureContainedLocalPath(rootPath, originStoragePrefix ? `${originStoragePrefix}/${normalizedRemotePath}` : normalizedRemotePath);
+```
 
 `bmr.ts` download route's system-scoped token lookup — add `negotiatedCapabilities: recoveryTokens.negotiatedCapabilities` to the `select({...})` column list (the block starting `const [row] = await withSystemDbAccessContext(...)` before the download route's `runInRecoveryOrgContext` call).
 
@@ -2797,8 +2827,8 @@ Thread `originStoragePrefix` into both the S3 and local branches' `deriveRemoteS
 const bmrProgressResultSchema = z
   .any()
   .superRefine((value, ctx) => {
-    if (JSON.stringify(value ?? null).length > 512 * 1024) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'result payload too large (max 512KB serialized)' });
+    if (JSON.stringify(value ?? null).length > 768 * 1024) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'result payload too large (max 768KB serialized)' });
     }
   })
   .refine(
@@ -2820,7 +2850,7 @@ export const bmrProgressSchema = z.object({
   warnings: z.array(z.string().max(2000)).max(64).optional(),
 });
 ```
-(The stub sketches `z.any().superRefine(v => JSON.stringify(v).length <= 512 * 1024)` — a bare `superRefine` predicate returning a boolean does nothing in zod; `superRefine` must call `ctx.addIssue(...)` to actually fail, which is what's implemented above. Similarly the `failedFilesSample` bound is expressed as a second `.refine`, not inline in the same `superRefine`, so each failure gets its own clear message.)
+(The stub sketches `z.any().superRefine(v => JSON.stringify(v).length <= 768 * 1024)` — a bare `superRefine` predicate returning a boolean does nothing in zod; `superRefine` must call `ctx.addIssue(...)` to actually fail, which is what's implemented above. Similarly the `failedFilesSample` bound is expressed as a second `.refine`, not inline in the same `superRefine`, so each failure gets its own clear message. The 768 KiB cap matches the agent's total-body bound (see Global Constraints → Bounded reporting) so a maximally-sized agent report is never rejected by the server.)
 
 - [ ] **Step 5: Run**
 
@@ -3136,9 +3166,10 @@ gh pr create --title "feat(bare-metal): server-side manifest index + exact-membe
 **Files:**
 - Create: `agent/internal/backup/bmr/capabilities.go`
 - Create: `agent/internal/backup/bmr/objectkey.go`
-- Create: `agent/internal/backup/bmr/testdata/object-key-vectors.json` (shared with the API's Vitest suite per Global Constraint 5 — if W09a already created this file at the same path, `git` unions a byte-identical file with no conflict; if it has not merged, this branch creates it)
+- Consume (no edit): `agent/internal/backup/bmr/testdata/object-key-vectors.json` — shared with the API's Vitest suite per Global Constraint 5, created by Task 1; `objectkey_test.go` loads this file rather than authoring a second copy. **If PR 1 has not merged when this branch starts, cherry-pick Task 1's commit (the vectors file + `backupObjectKey.ts`) onto this branch rather than re-authoring the JSON.**
 - Modify: `agent/internal/backup/bmr/types.go:36-47` (`AuthenticatedDownloadDescriptor` gains `Capabilities`), `:49-62` (`AuthenticatedSnapshot` gains `FileIndex`, new `FileIndexInfo` type)
 - Modify: `agent/internal/backup/bmr/session.go:144-149` (`ExchangeRecoveryCode` request body), `:247-252` (`authenticateRecoverySessionContext` request body)
+- Modify: `agent/internal/backup/bmr/session_test.go:24` — the pre-existing `TestAuthenticateRecoverySession` decodes the request body into `var body map[string]string`; adding a `"capabilities": [...]` array to the request makes `json.Decode` fail against that type, so this line changes to `var body map[string]json.RawMessage` (or a typed struct) before this task's changes can go green
 - Test: `agent/internal/backup/bmr/objectkey_test.go`, `agent/internal/backup/bmr/capabilities_test.go`, additions to `agent/internal/backup/bmr/session_test.go`
 
 **Deviation:** Part 0 §1 names the Go snapshot bootstrap type `BootstrapSnapshot`. The real type (verified `types.go:49-62`) is `AuthenticatedSnapshot`. `FileIndex` is added there, not to a nonexistent `BootstrapSnapshot`.
@@ -3170,36 +3201,7 @@ type FileIndexInfo struct {
 
 - [ ] **Step 1: Write the failing tests**
 
-`agent/internal/backup/bmr/testdata/object-key-vectors.json` (created as test fixture content, not a "test" per se, but it must exist before the test can pass — write it in this step so the red is "file doesn't exist / test compiles against undefined symbols", not "file missing" alone):
-```json
-[
-  {"key": "snapshots/snap-1/files/a.txt", "valid": true, "snapshotId": "snap-1", "rest": "files/a.txt"},
-  {"key": "snapshots/SNAP-Abc123/manifest.json", "valid": true, "snapshotId": "SNAP-Abc123", "rest": "manifest.json"},
-  {"key": "snapshots/a/x.gz.gz", "valid": true, "snapshotId": "a", "rest": "x.gz.gz"},
-  {"key": "snapshots/a/../b/manifest.json", "valid": false},
-  {"key": "snapshots//a/x", "valid": false},
-  {"key": "snapshots/a/", "valid": false},
-  {"key": "/snapshots/a/x", "valid": false},
-  {"key": "snapshots/a/files/dir with space/f.gz", "valid": true, "snapshotId": "a", "rest": "files/dir with space/f.gz"},
-  {"key": "snapshots/a/b", "valid": true, "snapshotId": "a", "rest": "b"},
-  {"key": "snapshots/a", "valid": false},
-  {"key": "snapshots/./a/x", "valid": false},
-  {"key": "snapshots/a.b_c-d/x", "valid": true, "snapshotId": "a.b_c-d", "rest": "x"},
-  {"key": "snapshots/a/b/c/d/e.gz", "valid": true, "snapshotId": "a", "rest": "b/c/d/e.gz"},
-  {"key": "snapshots/a/x\\y", "valid": false},
-  {"key": "snapshots/a/x\u0000y", "valid": false},
-  {"key": "snapshots/a/%2e%2e/x", "valid": true, "snapshotId": "a", "rest": "%2e%2e/x"},
-  {"key": "SNAPSHOTS/a/x", "valid": false},
-  {"key": "snapshots/a//b", "valid": false},
-  {"key": "snapshots/-abc/x", "valid": false},
-  {"key": "snapshots/a/b/", "valid": false},
-  {"key": "snapshots/a/manifest.json", "valid": true, "snapshotId": "a", "rest": "manifest.json"},
-  {"key": "snapshots/a b/x", "valid": false},
-  {"key": "snapshots/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/x", "valid": true, "snapshotId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "rest": "x"},
-  {"key": "snapshots/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/x", "valid": false}
-]
-```
-(24 vectors: 20th–21st entries are the 255-char and 256-char snapshot-id boundary — count the `a`s if you need to re-derive them: `python3 -c "print('a'*255)"` / `print('a'*256)`.)
+This task does not author `object-key-vectors.json` — see the Files note above: Task 1 creates it, and Task 8 only reads it via `objectkey_test.go`'s `loadObjectKeyVectors` helper below.
 
 `objectkey_test.go`:
 ```go
@@ -3531,10 +3533,21 @@ type authenticateRequest struct {
 ```
 change `json.Marshal(map[string]string{"token": token})` to `json.Marshal(authenticateRequest{Token: token, Capabilities: ClientCapabilities()})`.
 
+`session_test.go:24` — the pre-existing `TestAuthenticateRecoverySession` decodes the outgoing request body to assert on it; its target type cannot hold the new `capabilities` array:
+```go
+// before:
+var body map[string]string
+require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+// after:
+var body map[string]json.RawMessage
+require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+```
+(update whatever assertions the test makes against `body["token"]`/etc. accordingly — a `map[string]json.RawMessage` value is raw JSON bytes, e.g. `body["token"]` is now `[]byte(`"token-1"`)`, not `"token-1"`; unmarshal the specific fields the test actually asserts on rather than comparing raw bytes.)
+
 - [ ] **Step 4: Run tests**
 
 Run: `cd agent && go build ./... && GOOS=windows go build ./... && go test -race ./internal/backup/bmr/...`
-Expected: PASS (all of `objectkey_test.go`, `capabilities_test.go`, the new `session_test.go` cases, and every pre-existing `bmr` package test).
+Expected: PASS (all of `objectkey_test.go`, `capabilities_test.go`, the new `session_test.go` cases, and every pre-existing `bmr` package test — including the pre-existing `TestAuthenticateRecoverySession`, which requires the `session_test.go:24` decode-type fix above; without it, that test fails to compile/decode against the new `capabilities` field and is NOT green "as-is").
 
 - [ ] **Step 5: Commit**
 
@@ -3776,10 +3789,10 @@ func (p *recoveryDownloadProvider) Admits(key string) bool {
 }
 ```
 
-In `downloadOnce`, locate the existing hard prefix-refusal (`if !strings.HasPrefix(normalizedRemotePath, normalizedPrefix+"/") { ... }`, around line 454-457 per the stub / within 448-526 per verification) and replace it with an admission check that allows own-prefix OR an admitted external key:
+In `downloadOnce`, locate the existing hard prefix-refusal (the real code's exact-match branch: `if normalizedRemotePath != normalizedPrefix && !strings.HasPrefix(normalizedRemotePath, normalizedPrefix+"/") { ... }`, around line 454-457 per the stub / within 448-526 per verification) and replace it with an admission check that allows own-prefix (exact match OR prefix match) OR an admitted external key — preserving the pre-existing exact-match branch, not just the prefix branch:
 ```go
 	ownPrefix := normalizedPrefix + "/"
-	if !strings.HasPrefix(normalizedRemotePath, ownPrefix) {
+	if normalizedRemotePath != normalizedPrefix && !strings.HasPrefix(normalizedRemotePath, ownPrefix) {
 		if !p.Admits(remotePath) {
 			return fmt.Errorf("bmr: requested path %q is not an authorized object of snapshot %q", remotePath, normalizedPrefix)
 		}
@@ -3787,33 +3800,41 @@ In `downloadOnce`, locate the existing hard prefix-refusal (`if !strings.HasPref
 ```
 (Use `remotePath`, the original un-normalized argument passed to `downloadOnce`/`Download`, as the admission-check key — `ExtendAdmissible` is populated with the exact keys from the manifest's `BackupPath` entries in Task 10, which are the same string form `Admits` must match against; do not normalize/clean the key before checking `Admits`, only for the prefix-vs-own comparison, to avoid a byte-for-byte mismatch against what was widened.)
 
-In `download_session.go`, `authenticateAndSwap` (113-130) — after the existing descriptor swap, add the downgrade check before returning:
+In `download_session.go`, `authenticateAndSwap` (113-130) — keep the REAL function body unchanged (re-read it first with `sed -n '113,130p' agent/internal/backup/bmr/download_session.go`; it begins with the `bootstrap.Download == nil` guard, ends with the `p.lastAuthAt`/`p.authNotBefore` reset and `slog.Info` call, and must not be replaced wholesale) and insert only the two marked lines — the `newMembership` computation plus the downgrade guard immediately before the existing descriptor-swap block, and the `p.membership = newMembership` assignment next to `p.generation++`:
 ```go
 func (p *recoveryDownloadProvider) authenticateAndSwap() error {
-	// ... existing body up to and including the successful re-authenticate
-	// and descriptor construction (unchanged) ...
-	fresh, err := authenticateRecoverySessionContext(p.ctx, p.serverURL, p.token)
+	bootstrap, err := authenticateRecoverySessionContext(p.ctx, p.serverURL, p.token)
 	if err != nil {
 		return err
 	}
-	newDescriptor := rewriteDescriptorOrigin(p.serverURL, fresh.Download)
-	newMembership := newDescriptor != nil && HasCapability(newDescriptor.Capabilities, CapabilitySnapshotFileMembershipV1)
+	if bootstrap.Download == nil {
+		return errRefreshMissingDescriptor
+	}
+	descriptor := rewriteDescriptorOrigin(p.serverURL, bootstrap.Download)
+
+	// --- inserted (Task 9): compute the fresh capability and refuse the
+	// swap outright if it drops a capability the provider already relies
+	// on — keep the previous descriptor and generation, never shrink or
+	// drop the admissible set.
+	newMembership := descriptor != nil && HasCapability(descriptor.Capabilities, CapabilitySnapshotFileMembershipV1)
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.membership && !newMembership {
-		// Refuse the swap outright: keep the previous descriptor and
-		// generation, never shrink or drop the admissible set.
 		return ErrCapabilityDowngrade
 	}
-	p.descriptor = newDescriptor
-	p.membership = newMembership
+	// --- end inserted block ---
+
+	p.descriptor = descriptor
 	p.generation++
+	p.membership = newMembership // inserted (Task 9), alongside the existing generation bump
 	p.lastAuthAt = p.now()
+	p.authNotBefore = time.Time{}
+	slog.Info("bmr: recovery session refreshed", "generation", p.generation)
 	return nil
 }
 ```
-(This assumes the existing function signature/body already isolates "construct the fresh descriptor" from "swap it in" close together; if the real function interleaves other bookkeeping — e.g. `lostErr` reset, expiry recompute — keep that bookkeeping exactly where it is today and insert only the `if p.membership && !newMembership { return ErrCapabilityDowngrade }` guard immediately before the line that assigns `p.descriptor = ...`. Re-read the live function with `sed -n '100,135p' agent/internal/backup/bmr/download_session.go` before editing to confirm exact surrounding statements.)
+(The exact statement order of the pre-existing `p.lastAuthAt`/`p.authNotBefore`/`slog.Info` lines and any other bookkeeping the real function performs was not independently re-verified in this research pass since `download_session.go` does not exist yet in this worktree — **before implementing Task 9, re-read the live function once it exists and confirm this order; insert only the two marked lines above, do not reorder or drop anything else the real function does.**)
 
 - [ ] **Step 4: Run tests**
 
@@ -4270,12 +4291,14 @@ func downloadManifest(snapshotID string, provider providers.BackupProvider) (*sn
 ```
 (add `crypto/sha256` and `encoding/hex` to `bmr.go`'s import block if not already present — verify with `head -20 agent/internal/backup/bmr/bmr.go` first, since `bmr.go` may already import them for other reasons per the ground-truth const block).
 
-Update `downloadManifest`'s call site inside `RunRecoveryWithTokenContext` (the function that eventually calls `restoreFiles` — grep `downloadManifest(` in `bmr.go` for the exact call site, expected near where `RunRecoveryWithTokenContext` assembles its manifest before the restore loop) to:
+Update `downloadManifest`'s call site inside `RunRecoveryWithTokenContext` (`agent/internal/backup/bmr/bmr.go`, currently lines 66-70). The scope check MUST be inserted immediately after the `downloadManifest` / `err != nil` check and BEFORE the `// 2. Download and apply system state` block (the `applySystemState(ctx, cfg, provider)` call at line 81) — that block already performs a destructive target write, so the scope check must run before it, never after:
 ```go
 	manifest, manifestSHA256, err := downloadManifest(cfg.SnapshotID, provider)
 	if err != nil {
-		return nil, err
+		result.Error = fmt.Sprintf("failed to download manifest: %s", err.Error())
+		return result, err
 	}
+
 	paths := make([]string, 0, len(manifest.Files))
 	for _, f := range manifest.Files {
 		if f.BackupPath != "" {
@@ -4286,10 +4309,23 @@ Update `downloadManifest`'s call site inside `RunRecoveryWithTokenContext` (the 
 	if scopeErr := ApplyManifestScope(provider, cfg.SnapshotID, paths, manifestSHA256, bs.Snapshot.FileIndex); scopeErr != nil {
 		var refusal *ScopeRefusalError
 		if errors.As(scopeErr, &refusal) {
-			return &RecoveryResult{Status: "refused", Error: refusal.Reason}, nil
+			result.Status = "refused"
+			result.Error = refusal.Reason
+			return result, nil
 		}
-		return nil, scopeErr
+		return result, scopeErr
 	}
+
+	slog.Info("bmr: manifest downloaded",
+		"files", len(manifest.Files),
+		"snapshotSize", manifest.Size,
+	)
+
+	// 2. Download and apply system state.
+	if checkCancelled() {
+		return result, ctx.Err()
+	}
+	stateApplied, driversInjected, stateWarnings, stateErr := applySystemState(ctx, cfg, provider)
 ```
 (The exact local variable name for the in-scope `*BootstrapResponse` inside `RunRecoveryWithTokenContext` was not independently re-verified in this research pass — **grep `RunRecoveryWithTokenContext` in `bmr.go` (around line 30 per Part 0's ground truth) for whatever variable holds the `*BootstrapResponse` returned by its own authenticate call, and substitute that name for `currentBootstrap` above.**)
 
@@ -4376,9 +4412,11 @@ EOF
 **Files:**
 - Modify: `agent/internal/backup/rebuild/types.go` (`Result` gains `FilesFailed`, `FailedFilesSample`, `FailedFilesOmitted`)
 - Modify: `agent/internal/backup/rebuild/restore_tree.go` (bound the failure message to the first 50 of `r.failedFiles`)
-- Modify: `agent/internal/backup/rebuild/engine.go` (copy the sample into the result, not the full map)
+- Verify only (no edit): `agent/internal/backup/rebuild/engine.go` — `grep -n 'FailedFiles' agent/internal/backup/rebuild/engine.go` must return nothing; `r.result` is mutated in place by `restoreTree`, so the new fields ride along for free (see Step 3 note below)
 - Modify: `agent/internal/backup/bmr/progress.go:18-91` (`BoundProgressUpdate`, applied inside `PostRecoveryProgress`)
 - Test: `agent/internal/backup/rebuild/restore_tree_test.go`, additions to `agent/internal/backup/bmr/progress_test.go`
+
+**Hazard:** `rebuild.Result.FilesFailed` (json `filesFailed`) and the pre-existing `bmr.RecoveryResult.FailedFiles` (json `failedFiles`, `bmr/types.go:138`) are different fields on different wire payloads — do not conflate them when reading a progress body.
 
 **Deviation:** `r.failedFiles` is `map[string]bool` (verified `engine.go`/`restore_tree.go:85-88`), keyed by `SourcePath`, not a slice — "the first 50" needs a deterministic order, so the implementation below sorts the keys before truncating (map iteration order is randomized in Go; an unsorted sample would make `restore_tree_test.go` flaky and would make the "first N shown" message non-reproducible between runs).
 
@@ -4401,6 +4439,7 @@ package rebuild
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -4431,8 +4470,16 @@ func TestRestoreTree_98411FailedFilesBoundsMessageAndCounts(t *testing.T) {
 	require.Equal(t, failed-50, r.result.FailedFilesOmitted)
 	require.Len(t, r.failedFiles, failed, "the internal failedFiles map is never truncated — validate.go needs every entry")
 
-	last := r.result.Phases[len(r.result.Phases)-1]
-	require.Contains(t, last.Message, "98411 file(s) failed to restore (first 50 shown)")
+	// the engine never sets Phases[last].Message on success; the bounded
+	// message is appended via r.warn instead.
+	found := false
+	for _, w := range r.result.Warnings {
+		if strings.Contains(w, "98411 file(s) failed to restore (first 50 shown)") {
+			found = true
+			break
+		}
+	}
+	require.True(t, found, "expected a warning with the bounded failed-files message, got %v", r.result.Warnings)
 }
 ```
 (`SnapshotFileForTest`/`newRunForRestoreTreeTest` are placeholders for whatever fixture-building helper `restore_tree.go`'s existing tests already use — **before writing this test for real, run `grep -n 'func newRun\|func seed\|type.*Provider.*struct' agent/internal/backup/rebuild/*_test.go` and use the actual helper names**; do not introduce a second parallel fixture-building convention.)
@@ -4467,11 +4514,16 @@ func TestBoundProgressUpdate_TruncatesWarningsAndFailedFilesSample(t *testing.T)
 }
 
 func TestBoundProgressUpdate_ExtremeBodyFallsBackToTruncatedSummary(t *testing.T) {
-	hugeSample := make([]string, 200000)
-	for i := range hugeSample {
-		hugeSample[i] = fmt.Sprintf("/very/long/synthetic/source/path/to/pad/the/body/%08d", i)
+	// 50 entries of ~20 KiB each — the sample trim to 50 entries runs BEFORE
+	// the size check, so a naive huge-count sample never reaches the
+	// fallback branch. Making each of the (already-trimmed) 50 entries
+	// individually large is what pushes the serialized body over 768 KiB
+	// (50 × 20 KiB > 768 KiB) and forces the fallback to fire deterministically.
+	sample := make([]string, 50)
+	for i := range sample {
+		sample[i] = strings.Repeat("x", 20*1024)
 	}
-	u := ProgressUpdate{Status: "failed", Result: map[string]any{"failedFilesSample": hugeSample, "filesFailed": 200000}}
+	u := ProgressUpdate{Status: "failed", Result: map[string]any{"failedFilesSample": sample, "filesFailed": 200000}}
 	bounded := BoundProgressUpdate(u)
 	body, err := json.Marshal(bounded)
 	require.NoError(t, err)
@@ -4518,8 +4570,12 @@ Expected: compile errors (`FilesFailed`, `FailedFilesSample`, `FailedFilesOmitte
 	}
 
 	msg := fmt.Sprintf("%d file(s) failed to restore (first %d shown): %s", len(sample), len(r.result.FailedFilesSample), strings.Join(r.result.FailedFilesSample, ", "))
+	r.warn(msg)
+	if !cfg.AllowPartialRestore {
+		return errors.New(msg)
+	}
 ```
-(add `"sort"` to `restore_tree.go`'s imports if not already present; keep the existing `len(r.failedFiles) > 0` gating around this block unchanged — only the message construction and the two new `Result` fields are new).
+(This `msg` — built from the bounded, sorted `sample` (first 50) plus the omitted count — REPLACES the pre-existing unbounded construction `msg := fmt.Sprintf("%d file(s) failed to restore: %s", res.FilesFailed, strings.Join(res.FailedFiles, ", "))`, which joined the FULL unbounded `res.FailedFiles` slice. The same bounded `msg` is used for BOTH the `r.warn(msg)` call and the `errors.New(msg)` fail path when `!cfg.AllowPartialRestore` — do not construct the fail-path error from the unbounded slice while only bounding the warning, or vice versa. Add `"sort"` and `"errors"` to `restore_tree.go`'s imports if not already present; keep the existing `len(r.failedFiles) > 0` gating around this block unchanged — only the message construction and the two new `Result` fields are new).
 
 `engine.go` — no change needed beyond what's already true: `r.result` is the same struct `restoreTree` just populated, and `Run`'s existing "append this phase's `PhaseResult` to `r.result.Phases`" step already happens after `restoreTree` returns, so `FilesFailed`/`FailedFilesSample`/`FailedFilesOmitted` ride along on the final `*Result` for free. (If `engine.go` instead builds a fresh `Result` at the end from scratch rather than mutating `r.result` in place — confirm with `grep -n 'r.result' agent/internal/backup/rebuild/engine.go` — copy the three new fields explicitly at that assembly point.)
 
@@ -4532,6 +4588,25 @@ const (
 	maxProgressFailedSample  = 50
 	maxProgressBodyBytes     = 768 * 1024
 )
+
+// boundedFailures lets BoundProgressUpdate trim a typed Result without bmr
+// importing rebuild. Check for an import cycle first: `grep -rn '"…/bmr"'
+// agent/internal/backup/rebuild/*.go` must return nothing (rebuild must not
+// import bmr) — if it's clean, bmr may import rebuild directly and this
+// interface indirection is unnecessary; if a cycle exists, keep this
+// interface in bmr and have Task 11 implement it on *rebuild.Result:
+//
+//	func (r *rebuild.Result) FailedFilesLen() int { return len(r.FailedFilesSample) }
+//	func (r *rebuild.Result) CloneWithTrimmedFailedFiles(max int) any {
+//		clone := *r
+//		clone.FailedFilesOmitted += len(clone.FailedFilesSample) - max
+//		clone.FailedFilesSample = append([]string(nil), clone.FailedFilesSample[:max]...)
+//		return &clone
+//	}
+type boundedFailures interface {
+	FailedFilesLen() int
+	CloneWithTrimmedFailedFiles(max int) any
+}
 
 func truncateRunes(s string, max int) string {
 	r := []rune(s)
@@ -4561,11 +4636,20 @@ func BoundProgressUpdate(u ProgressUpdate) ProgressUpdate {
 		bounded.Warnings = warnings
 	}
 
-	if m, ok := u.Result.(map[string]any); ok {
-		if sample, ok := m["failedFilesSample"].([]string); ok && len(sample) > maxProgressFailedSample {
+	// Every real production call site (rebuild_cmd.go:304,314,316,322) passes
+	// a typed *rebuild.Result, never a map[string]any — the map branch below
+	// only covers the legacy path. Trim on a COPY, never the caller's pointer.
+	switch v := u.Result.(type) {
+	case boundedFailures:
+		if v.FailedFilesLen() > maxProgressFailedSample {
+			trimmedCopy := v.CloneWithTrimmedFailedFiles(maxProgressFailedSample)
+			bounded.Result = trimmedCopy
+		}
+	case map[string]any:
+		if sample, ok := v["failedFilesSample"].([]string); ok && len(sample) > maxProgressFailedSample {
 			trimmed := map[string]any{}
-			for k, v := range m {
-				trimmed[k] = v
+			for k, val := range v {
+				trimmed[k] = val
 			}
 			trimmed["failedFilesSample"] = sample[:maxProgressFailedSample]
 			bounded.Result = trimmed
@@ -4667,10 +4751,13 @@ func TestFakeServer_BootstrapEchoesGrantedCapabilities(t *testing.T) {
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	body := decodeJSON(t, resp)
-	download := body["bootstrap"].(map[string]any)["download"].(map[string]any)
+	// handleExchange nests the full bootstrapPayload under
+	// body["bootstrap"]["bootstrap"] (double envelope, per the handler's
+	// own comment) — not a single "bootstrap" hop.
+	download := body["bootstrap"].(map[string]any)["bootstrap"].(map[string]any)["download"].(map[string]any)
 	caps := download["capabilities"].([]any)
 	require.Contains(t, caps, "snapshot-file-membership-v1")
-	fileIndex := body["bootstrap"].(map[string]any)["snapshot"].(map[string]any)["fileIndex"].(map[string]any)
+	fileIndex := body["bootstrap"].(map[string]any)["bootstrap"].(map[string]any)["snapshot"].(map[string]any)["fileIndex"].(map[string]any)
 	require.Equal(t, "complete", fileIndex["status"])
 	require.ElementsMatch(t, []any{"gen-1", "gen-2"}, fileIndex["originSnapshotIds"])
 }
@@ -4705,8 +4792,20 @@ func TestFakeServer_DownloadDeniesUnreferencedObject(t *testing.T) {
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
-	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/download?path="+url.QueryEscape("snapshots/gen-1/files/not-referenced.gz"), nil)
-	req.Header.Set("Authorization", "Bearer test-token")
+	// Obtain a valid token via a real exchange first — handleDownload
+	// authenticates via a `token` query parameter checked against
+	// s.tokens, not an Authorization header.
+	exResp := postJSON(t, ts.URL+"/api/v1/backup/bmr/recover/exchange", map[string]any{
+		"code": "ABCDEFGHJ", "capabilities": []string{"snapshot-file-membership-v1"},
+	})
+	defer exResp.Body.Close()
+	require.Equal(t, http.StatusOK, exResp.StatusCode)
+	exBody := decodeJSON(t, exResp)
+	validToken, ok := exBody["token"].(string)
+	require.True(t, ok, "expected the exchange response to carry a top-level token")
+
+	key := "snapshots/gen-1/files/not-referenced.gz"
+	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/api/v1/backup/bmr/recover/download?path="+url.QueryEscape(key)+"&token="+url.QueryEscape(validToken), nil)
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	defer resp.Body.Close()
@@ -4808,8 +4907,11 @@ func (s *Server) computeFileIndex() (sha string, externalCount int, err error) {
 	return hex.EncodeToString(sum[:]), externalCount, nil
 }
 ```
+`bootstrapFor` currently takes no capability information — its real signature is `func (s *Server) bootstrapFor(tokenID string) bootstrapPayload`, so the `clientCapabilities` this step reads does not exist yet. Change the signature to `func (s *Server) bootstrapFor(tokenID string, clientCapabilities []string) bootstrapPayload` and update BOTH call sites: `handleExchange` (~line 226, pass the decoded exchange body's `Capabilities`) and `handleAuthenticate` (~line 299, pass the decoded authenticate body's `Capabilities`).
+
 In `bootstrapFor`, extend the `download` map with `capabilities` (echoing the intersection of what the client sent and `s.cfg.Capabilities`) and, when `len(s.cfg.ReferencedSnapshotIDs) > 0` and the client sent the membership capability, add `snapshot.fileIndex`:
 ```go
+// signature: func (s *Server) bootstrapFor(tokenID string, clientCapabilities []string) bootstrapPayload
 	granted := intersectCapabilities(clientCapabilities, s.cfg.Capabilities)
 	download := map[string]any{
 		// ... existing fields unchanged (type, method, url, pathQueryParam, pathPrefix, expiresAt) ...
@@ -4841,10 +4943,11 @@ In `handleAuthenticate` and `handleExchange`, add `Capabilities []string \`json:
 
 `handleDownload` — extend the existing own-prefix check (line ~332) with membership-based admission against the seeded reference set:
 ```go
-	key := r.URL.Query().Get(s.downloadPathParam())
+	key := r.URL.Query().Get("path")
 	ownPrefix := "snapshots/" + s.cfg.SnapshotID + "/"
 	if !strings.HasPrefix(key, ownPrefix) {
 		if !s.externalKeyReferenced(key) {
+			log.Printf("fakeserver: download refused (not_authorized): %s", key)
 			writeError(w, http.StatusConflict, "not_authorized")
 			return
 		}
@@ -4983,17 +5086,15 @@ func (c *Console) waitAndRetryPending(ctx context.Context, retryAfterSeconds int
 ```bash
 # e2e-2: one changed file (uploaded fresh under e2e-2), everything else
 # references e2e-1 verbatim (backupPath unchanged from e2e-1's manifest).
-snapshot-dir --root "$SRC_ROOT" --out "$OUT" --snapshot-id e2e-2 \
-  --exclude proc/sys/dev/run/tmp --only-changed etc/motd
-# snapshot-dir's --only-changed flag does not exist yet as of this plan —
-# if it is not present in agent/cmd/breeze-backup/snapshot_dir_cmd.go,
-# hand-write e2e-2/manifest.json instead (simpler and matches how
-# layout.json is already hand-written by this script): copy
-# e2e-1/manifest.json, change "id" to "e2e-2", and for exactly one file
-# entry (etc/motd) recompute its backupPath under
-# snapshots/e2e-2/files/<sha256 of sourcePath> and re-upload that one
-# file's bytes to that key; every other file entry's backupPath stays
-# "snapshots/e2e-1/files/...".
+# snapshot-dir has no diffing/"--only-changed" mode (it emits one full
+# manifest per invocation) — hand-write e2e-2/manifest.json instead
+# (simpler and matches how layout.json is already hand-written by this
+# script): copy e2e-1/manifest.json, change "id" to "e2e-2", and for
+# exactly one file entry (etc/debian_version — base-files guarantees this
+# file in an mmdebstrap minbase chroot, unlike /etc/motd) recompute its
+# backupPath under snapshots/e2e-2/files/<sha256 of sourcePath> and
+# re-upload that one file's bytes to that key; every other file entry's
+# backupPath stays "snapshots/e2e-1/files/...".
 python3 - "$OUT" <<'PYEOF'
 import json, hashlib, os, sys, shutil
 
@@ -5004,15 +5105,15 @@ with open(f"{out}/snapshots/e2e-1/manifest.json") as f:
 gen2 = json.loads(json.dumps(gen1))
 gen2["id"] = "e2e-2"
 for entry in gen2["files"]:
-    if entry.get("sourcePath") == "/etc/motd":
+    if entry.get("sourcePath") == "/etc/debian_version":
         key = "snapshots/e2e-2/files/" + hashlib.sha256(entry["sourcePath"].encode()).hexdigest()
         entry["backupPath"] = key
         os.makedirs(os.path.dirname(f"{out}/{key}"), exist_ok=True)
         with open(f"{out}/{key}", "wb") as fh:
-            fh.write(b"e2e-2 changed motd\n")
+            fh.write(b"e2e-2-changed-debian-version\n")
         break
 else:
-    raise SystemExit("expected /etc/motd in the e2e-1 manifest to mark as changed in e2e-2")
+    raise SystemExit("expected /etc/debian_version in the e2e-1 manifest to mark as changed in e2e-2")
 
 os.makedirs(f"{out}/snapshots/e2e-2", exist_ok=True)
 with open(f"{out}/snapshots/e2e-2/manifest.json", "w") as f:
@@ -5021,7 +5122,7 @@ shutil.copy(f"{out}/layout.json", f"{out}/snapshots/e2e-2/layout.json") if os.pa
 PYEOF
 
 # e2e-3: references into BOTH e2e-1 (unchanged files) and e2e-2 (the
-# changed /etc/motd), plus its own newly changed file (/etc/hostname).
+# changed /etc/debian_version), plus its own newly changed file (/etc/hostname).
 python3 - "$OUT" <<'PYEOF'
 import json, hashlib, os, sys
 
@@ -5037,7 +5138,7 @@ for entry in gen3["files"]:
         entry["backupPath"] = key
         os.makedirs(os.path.dirname(f"{out}/{key}"), exist_ok=True)
         with open(f"{out}/{key}", "wb") as fh:
-            fh.write(b"e2e-restored-src\n")
+            fh.write(b"e2e-3-changed-hostname\n")
         break
 else:
     raise SystemExit("expected /etc/hostname in the manifest to mark as changed in e2e-3")
@@ -5053,19 +5154,41 @@ PYEOF
 mkdir -p "$OUT/snapshots/e2e-1/files"
 echo "not part of any manifest" > "$OUT/snapshots/e2e-1/files/not-referenced.gz"
 ```
-(the `snapshot-dir` command's real flags may not include `--only-changed`; the fenced comment inside the script above documents the fallback the hand-written Python already implements, so **do not add a `--only-changed` flag to `snapshot_dir_cmd.go`** — the Python post-processing after the plain `e2e-1`-shaped run is the actual mechanism; remove the misleading `snapshot-dir --snapshot-id e2e-2 ... --only-changed` line above before landing this and start directly from the first `python3 - "$OUT" <<'PYEOF'` block, which only needs `e2e-1/manifest.json` and `layout.json` to already exist on disk from the unmodified `e2e-1` seeding step above it).
+(the `snapshot-dir` command's real flags do not include `--only-changed` — do **not** add one to `snapshot_dir_cmd.go`; the Python post-processing above, starting from the `python3 - "$OUT" <<'PYEOF'` block, is the actual mechanism and only needs `e2e-1/manifest.json` and `layout.json` to already exist on disk from the unmodified `e2e-1` seeding step above it).
 
-`agent/recovery-media/e2e/run-qemu.sh` — change `snapshot_id="e2e-1"` to `snapshot_id="e2e-3"`; after the existing `progress.json` assertion, add a post-check request against the fake server's log for the refused unrelated object (the fake server already writes structured logs per the ground truth "no-gzip note" at `fakeserver.go:309-315` — reuse that logging, don't add a new log format):
+`agent/recovery-media/e2e/run-qemu.sh` — change `snapshot_id="e2e-1"` to `snapshot_id="e2e-3"`. Locate the existing `breeze-recovery-fakeserver` invocation block (~lines 138-145) and add the two new flags Task 12 added to `main.go` so the fake server actually grants the membership capability and knows which snapshot IDs `e2e-3` references:
+```bash
+breeze-recovery-fakeserver \
+  --code "${recovery_code}" \
+  --snapshot-id "${snapshot_id}" \
+  --store-dir "${store_dir}" \
+  --progress-log "${progress_log}" \
+  --capabilities snapshot-file-membership-v1 \
+  --referenced-snapshot-ids e2e-1,e2e-2 \
+  ... # remaining pre-existing flags unchanged
+```
+(Substitute the actual pre-existing flag names/variables — `--code`/`--snapshot-id`/`--store-dir`/`--progress-log` above are placeholders for whatever `run-qemu.sh` already passes; only the two new `--capabilities`/`--referenced-snapshot-ids` flags are additions. Re-read the live invocation with `sed -n '135,150p' agent/recovery-media/e2e/run-qemu.sh` before editing.)
+
+After the existing `progress.json` assertion, add two post-checks: one against the fake server's log for the refused unrelated object (the fake server already writes structured logs per the ground truth "no-gzip note" at `fakeserver.go:309-315` — reuse that logging, don't add a new log format, and log the refusal per Task 12's `handleDownload` change above), and one asserting the restored `/etc/hostname` matches e2e-3's changed value:
 ```bash
 # Post-check: the fake server must have refused at least one download for
 # the unrelated, unreferenced object seeded above (not-referenced.gz),
 # proving R7/R8 fire for real over the wire, not just in unit tests.
-if ! grep -q "not-referenced.gz" "${fake_log}" 2>/dev/null; then
+if ! grep -q "not-referenced.gz" "${fakeserver_log}" 2>/dev/null; then
   echo "expected the fake server log to show a refused request for not-referenced.gz" >&2
   exit 1
 fi
+
+# Post-check: the restored /etc/hostname must equal e2e-3's changed value,
+# not e2e-1's or e2e-2's, proving the recovery actually pulled the
+# newest generation's own content rather than an ancestor's.
+restored_hostname="$(cat "${mount_point}/etc/hostname" 2>/dev/null || true)"
+if [ "${restored_hostname}" != "e2e-3-changed-hostname" ]; then
+  echo "expected restored /etc/hostname to be 'e2e-3-changed-hostname', got '${restored_hostname}'" >&2
+  exit 1
+fi
 ```
-(`fake_log` — substitute the actual variable name `run-qemu.sh` already uses for the fake server's stdout/stderr redirection; grep the script for `fakeserver` process launch to find it.)
+(`fakeserver_log` — the run-qemu.sh variable name for the fake server's stdout/stderr redirection, confirmed by grepping the script for the `fakeserver` process launch; `mount_point` — substitute whatever variable name `run-qemu.sh` already uses for the mounted restored filesystem root at the point of its post-restore assertions.)
 
 `.github/workflows/ci.yml` — update only the comment near the job (no structural change): replace "seeds one generation" with "seeds three generations (e2e-1, e2e-2, e2e-3) with cross-snapshot references, per W09".
 
@@ -5389,6 +5512,21 @@ Closes #6464
 - **`RunRecoveryWithTokenContext`'s in-scope `*BootstrapResponse` variable name** (Task 10, the `bmr.go` edit): the research pass confirmed the function signature and general shape but not the exact local variable holding its own authenticate result. I named it `currentBootstrap` as a placeholder and added an explicit grep instruction to find and substitute the real name before landing.
 - **`console.go`'s existing time/clock seam** (Task 12, `waitAndRetryPending`): I assumed no seam exists yet and added a new `c.sleep` field, but instructed grepping for an existing `time.After`/`clock` field first and reusing it if present, to avoid introducing a second parallel testability mechanism.
 - **`Console`'s `Deps.Exchange` field name and the `Answers`/constructor shapes** used in the new `console_test.go` cases (Task 12): only the top-level test-helper names (`fakeIO`, `fakeKey`, `fakeDeps`) were confirmed, not their internal fields — I instructed reading `console_test.go` in full before writing these tests for real, rather than guessing field names that would silently fail to compile-check against the actual struct.
-- **`snapshot-dir`'s exact flag set** (Task 12, `seed-snapshot.sh`): I assumed no `--only-changed`-style flag exists (consistent with the researched full-file read showing it emits one full manifest per invocation with no diffing mode) and used a Python post-processing step against the already-seeded `e2e-1` manifest instead; the script includes an explicit note to delete the speculative `--only-changed` invocation before landing.
-- **`e2e-2`/`e2e-3`'s exact "one changed file" choice** (`/etc/motd`, `/etc/hostname`): chosen because both are known-present, small, safely-rewritable files in the Debian rootfs `seed-snapshot.sh` already builds; not independently verified against the live `e2e-1` manifest's actual `sourcePath` set in this pass — confirm both paths appear in a real `e2e-1/manifest.json` before relying on the Python scripts' `else: raise SystemExit(...)` guards to fail loudly if they don't.
-- **`run-qemu.sh`'s fake-server log variable name** (Task 12): named `fake_log` as a placeholder with an explicit instruction to grep the real variable name from the script.
+- **`snapshot-dir`'s exact flag set** (Task 12, `seed-snapshot.sh`): confirmed no `--only-changed`-style flag exists (consistent with the researched full-file read showing it emits one full manifest per invocation with no diffing mode); a Python post-processing step against the already-seeded `e2e-1` manifest is used instead — no speculative CLI invocation is left in the script.
+- **`e2e-3`'s exact "one changed file" choice** (`/etc/hostname`): chosen because it is a known-present, small, safely-rewritable file in the Debian rootfs `seed-snapshot.sh` already builds; not independently verified against the live `e2e-1` manifest's actual `sourcePath` set in this pass — confirm the path appears in a real `e2e-1/manifest.json` before relying on the Python script's `else: raise SystemExit(...)` guard to fail loudly if it doesn't.
+- **`run-qemu.sh`'s fake-server log and mount-point variable names** (Task 12): named `fakeserver_log`/`mount_point` as placeholders with an explicit instruction to grep the real variable names from the script.
+
+
+## Self-review notes (plan author — controller, 2026-09-20)
+
+**Spec / design coverage.** Spec §4 data flow ("downloads bootstrap + manifests") → §1 wire contract (Task 5 server, Task 8 agent). §9 "Nothing is written before preflight passes" → R14–R17: `ApplyManifestScope`/`WidenScopeFromManifest` run before `runTokenModeRebuild`'s DryRun and before `applySystemState` in `bmr.go` (Task 10), and the engine's `ObjectAdmission` sweep sits in `preflight` ahead of `provision` (Task 10). §9 "tokens keep single-use semantics" → negotiation runs before `codeUsedAt`/token flip (Task 5, R2/R3). §10 CI integration → three-generation QEMU e2e (Task 12); lab → Task 14. §11 gains W09 and §8.5 is added (Task 13). Design points on #6464: (1) exact membership → Task 6 `authorizeExternalReference` (index `complete` + `backup_snapshot_files` + `backup_snapshot_origins`); (2) server-side verified-complete index → Tasks 3–4 (`file_index_status`, sha256 of the fetched manifest bytes); (3) provenance surviving retirement → Task 2 `backup_snapshot_origins` + Task 3 step 6 (live row OR retirement record, fail closed otherwise); (4) capability negotiation in both skew directions, refusal before destructive work → Tasks 5, 8, 9, 10 (R2, R5, R14, R15, R16); (5) one object-key contract, never rewrite `.gz` → Task 1 vectors file shared with Task 8. #6403 "also observed" 413 → Tasks 6 and 11 (R18); the console server-URL re-prompt is a deliberate non-goal (§5).
+
+**Placeholder scan.** `grep -n -i 'TBD\|TODO\|similar to Task\|add appropriate\|fill in'` returns only the Task 14 instruction not to commit placeholder lab numbers.
+
+**Type / name consistency (checked across parts).** TS: `BACKUP_SNAPSHOT_FILE_MEMBERSHIP_CAPABILITY`, `parseBackupObjectKey`, `classifyBackupObjectKey`, `hasMembershipCapability`, `hydrateSnapshotFileIndex`, `readSnapshotFileIndexState` (returns `originSnapshotIds` + `retryable`), `RETRYABLE_HYDRATION_FAILURES`, `hydrationFailureFromError`, `enqueueSnapshotFileIndexHydration(id, reason)`, `negotiateRecoveryCapabilities`, `RECOVERY_REFUSAL_MESSAGES`, `externalReferencePreflight`, `authorizeExternalReference`, `fetchBackupObjectBytes`, `backupSnapshotOrigins`. Go: `CapabilitySnapshotFileMembershipV1`, `ClientCapabilities`, `ParseObjectKey`, `IsExternalObjectKey`, `FileIndexInfo`, `AuthenticatedDownloadDescriptor.Capabilities`, `AuthenticatedSnapshot.FileIndex`, `Admits`/`ExtendAdmissible`/`MembershipNegotiated`, `ErrCapabilityDowngrade`, `ScopeRefusalError`, `ExternalObjectKeys`, `ApplyManifestScope`, `WidenScopeFromManifest`, `rebuild.ObjectAdmission`, `Result.FilesFailed`/`FailedFilesSample`/`FailedFilesOmitted`, `BoundProgressUpdate`. Wire: `capabilities` (request), `download.capabilities`, `snapshot.fileIndex.{status,manifestSha256,externalCount,originSnapshotIds}`, six 409 codes, `failedFilesSample`/`filesFailed`/`failedFilesOmitted`.
+
+**Deliberate deviations from the stubs (all recorded inline).** Hydration retryability is a pure function of the failure code (`origin_identity_pending` split out of `origin_unverifiable`) instead of a second column; the `backup_snapshot_files` delete rides in the first insert batch's transaction; the server's `bmrProgressSchema` result cap equals the agent's 768 KiB body bound; `'authenticate'` added to the hydration reason union; the Go type is `AuthenticatedSnapshot` (not `BootstrapSnapshot`); the console lives in `agent/internal/recoveryconsole/console.go`; the web change lands in `BareMetalRecoveryPanel.tsx`; locales live under `apps/web/src/locales/<tag>/backup.json`.
+
+**Review provenance.** Part 0 (contract, code maps, matrix) written by the controller from three parallel read-only code maps; Tasks 1–14 expanded by two Sonnet workers (Codex was at its usage limit until 2026-09-26); two independent Sonnet consistency reviews returned 8 + 25 findings, all applied — the consequential ones: `authorizeExternalReference` initially skipped the `file_index_status = 'complete'` gate; `loadSnapshotForHydration` omitted `jobId` (hydration would have been a permanent no-op); route glue hard-coded `retryable: true` (unbounded re-enqueue on terminal failures); the `bmr.go` scope check was placed after `applySystemState`; `BoundProgressUpdate` only trimmed `map[string]any` results; run-qemu.sh lacked the fakeserver capability flags; Task 8 re-authored the shared vectors file. The `/pr-review-toolkit:review-pr` round on each PR is still required (Tasks 7 and 14).
+
+**Next after this doc merges.** `start_wave` W09 with branch `feature/5493-bare-metal-boot-media/wave-6464`; implement W09a (Tasks 1–7) and W09b (Tasks 8–14) with Codex drivers once the usage limit resets (2026-09-26), Sonnet drivers before that; the W09b lab proof is the orchestrator's.
