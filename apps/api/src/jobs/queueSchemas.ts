@@ -13,7 +13,7 @@ export const queueActorMetaSchema = z.object({
   source: z.string().min(1),
 }).strict();
 
-const backupSnapshotFileSchema = z
+export const backupSnapshotFileSchema = z
   .object({
     sourcePath: z.string().min(1),
     // Stable pre-VSS path (D12): under a shadow copy sourcePath is the
@@ -37,7 +37,7 @@ const backupSnapshotFileSchema = z
     }
   });
 
-const backupSnapshotSummarySchema = z.object({
+export const backupSnapshotSummarySchema = z.object({
   id: z.string().min(1),
   timestamp: z.string().min(1).optional(),
   size: z.number().nonnegative().optional(),

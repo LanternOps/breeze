@@ -115,6 +115,9 @@ export interface ProcessResultsResult {
     size?: number;
     files?: Array<{
       sourcePath: string;
+      // D12 (#5413): the stable pre-VSS path. Declared here as well as on both
+      // zod schemas so a caller building this literal by hand cannot drop it.
+      originalPath?: string;
       backupPath: string;
       size?: number;
       modTime?: string;

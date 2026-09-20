@@ -18,7 +18,15 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import { backupProcessResultSchema } from '../jobs/queueSchemas';
+import {
+  backupProcessResultSchema,
+  backupSnapshotFileSchema,
+  backupSnapshotSummarySchema,
+} from '../jobs/queueSchemas';
+import {
+  backupSnapshotFileResultSchema,
+  backupSnapshotResultSchema,
+} from './backup/resultSchemas';
 
 const source = readFileSync(path.join(__dirname, 'agentWs.ts'), 'utf8');
 const handlerSource = readFileSync(
@@ -106,6 +114,66 @@ describe('agentWs backup enqueue payload completeness (#3027)', () => {
       `agentWs.ts's enqueueBackupResults literal is missing ${missing.join(', ')} — ` +
         'those fields are declared on the queue schema but never forwarded, so they are ' +
         'silently dropped on the primary path (#3027).'
+    ).toEqual([]);
+  });
+});
+
+/**
+ * Cross-layer schema parity (#5413, lesson (b)). The SAME agent payload shape is
+ * validated twice: once at HTTP/WS ingress by routes/backup/resultSchemas.ts,
+ * then again — by a separate, `.strict()` schema — at BullMQ enqueue time in
+ * jobs/queueSchemas.ts. A field added to the ingress schema but not swept to the
+ * queue schema passes ingress and is then rejected at the enqueue hop, which
+ * drops the terminal result and leaves the job `running` forever.
+ *
+ * That exact miss shipped twice: July 2026, and again with `originalPath` (D12 /
+ * #5413), where every VSS-backed Windows backup result was silently discarded.
+ * Per-field tests on either side cannot catch it — only a key-set comparison can.
+ *
+ * Direction is deliberate: ingress ⊆ queue. Ingress is the superset the agent
+ * actually sends; the queue schema must accept everything ingress accepts. The
+ * queue schema may declare EXTRA keys (server-added ones, e.g. `agentStatus`),
+ * so the reverse containment is not asserted.
+ */
+describe('backup result schema parity: route ingress ⊆ strict queue schema (#5413)', () => {
+  // zod wraps a `.superRefine()`ed object in ZodEffects; reach the object to
+  // read `.shape`. Returns [] rather than throwing so a zod API change shows up
+  // as an explicit sanity-check failure below, not a cryptic one.
+  const objectKeys = (schema: unknown): string[] => {
+    const candidates = [schema, (schema as { _def?: { schema?: unknown } })?._def?.schema];
+    for (const candidate of candidates) {
+      const shape = (candidate as { shape?: Record<string, unknown> })?.shape;
+      if (shape && typeof shape === 'object') return Object.keys(shape);
+    }
+    return [];
+  };
+
+  it('every snapshot-FILE key the route schema accepts is declared on the queue schema', () => {
+    const routeKeys = objectKeys(backupSnapshotFileResultSchema);
+    const queueKeys = objectKeys(backupSnapshotFileSchema);
+    // Sanity-check the introspection so this cannot pass vacuously.
+    expect(routeKeys).toContain('originalPath');
+    expect(queueKeys).toContain('sourcePath');
+
+    const missing = routeKeys.filter((key) => !queueKeys.includes(key));
+    expect(
+      missing,
+      `jobs/queueSchemas.ts's backupSnapshotFileSchema is missing ${missing.join(', ')} — ` +
+        'the strict queue schema will reject every result carrying those fields and the ' +
+        'backup job will hang in `running` forever (#5413).'
+    ).toEqual([]);
+  });
+
+  it('every SNAPSHOT-summary key the route schema accepts is declared on the queue schema', () => {
+    const routeKeys = objectKeys(backupSnapshotResultSchema);
+    const queueKeys = objectKeys(backupSnapshotSummarySchema);
+    expect(routeKeys).toContain('baseSnapshotId');
+    expect(queueKeys).toContain('files');
+
+    const missing = routeKeys.filter((key) => !queueKeys.includes(key));
+    expect(
+      missing,
+      `jobs/queueSchemas.ts's backupSnapshotSummarySchema is missing ${missing.join(', ')} (#5413).`
     ).toEqual([]);
   });
 });

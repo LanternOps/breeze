@@ -1784,6 +1784,37 @@ export async function processOrphanedCommandResult(
     } catch (err) {
       console.error(`[AgentWs] Failed to process backup results for ${agentId}:`, err);
       captureException(err);
+      if (err instanceof z.ZodError) {
+        // #5413 lesson (a): a schema rejection is DETERMINISTIC — the strict
+        // queue schema (jobs/queueSchemas.ts) refused a payload the route
+        // schema already accepted, and every retry of the identical result
+        // will be refused again. Re-recording the expectation here is what
+        // left three Windows file jobs `running` forever with the device
+        // online, no snapshot row and no reaper rule covering "result
+        // rejected". Fail the job loudly instead so the class fails fast.
+        const detail = describeZodIssues(err);
+        console.error(
+          `[AgentWs] Backup result for job ${backupJob.id} was REJECTED by the queue schema ` +
+            `(${detail}) — failing the job instead of dropping the result. This is a ` +
+            'server-side schema gap: a field accepted by routes/backup/resultSchemas.ts must ' +
+            'also be declared in jobs/queueSchemas.ts (#5413).'
+        );
+        try {
+          await applyBackupCommandResultToJob({
+            jobId: backupJob.id,
+            orgId: backupJob.orgId,
+            deviceId: backupJob.deviceId,
+            resultStatus: 'failed',
+            result: {
+              error: `Backup result rejected by the server queue-result schema: ${detail}`,
+            },
+          });
+        } catch (failErr) {
+          console.error(`[AgentWs] Failed to fail backup job ${backupJob.id} after a schema rejection:`, failErr);
+          captureException(failErr);
+        }
+        return;
+      }
       // We already consumed the dispatch expectation but persistence failed
       // (e.g. transient BullMQ/DB error). Re-record it so a legitimate agent
       // retry of this same result can be accepted instead of being permanently
