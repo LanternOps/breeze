@@ -1,3 +1,4 @@
+import { ActionError } from '../../../lib/runAction';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Mock heavy sub-components that load on module init (NotificationChannelForm
@@ -27,6 +28,8 @@ import {
   runRoutingRuleSave,
   runRoutingRuleDelete,
   runDefaultRowSave,
+  runEscalationPolicySave,
+  runEscalationPolicyDelete,
 } from './deliveryActions';
 
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
@@ -329,5 +332,27 @@ describe('runDefaultRowSave (W05b)', () => {
     fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: { id: 'r' } }));
     await runRoutingRuleSave({ name: 'x', priority: 1, conditions: { monitorKinds: ['cpu'] }, channelIds: ['ch-1'], escalationPolicyId: 'ep-1', enabled: true }, { onUnauthorized: ON_UNAUTHORIZED });
     expect(JSON.parse((fetchWithAuthMock.mock.calls[0]![1] as RequestInit).body as string)).toMatchObject({ escalationPolicyId: 'ep-1', conditions: { monitorKinds: ['cpu'] } });
+  });
+});
+
+describe('runEscalationPolicySave / runEscalationPolicyDelete (W05b)', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+  it('POSTs a new policy with ownerScope + orgId and toasts success', async () => {
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ id: 'ep-new' }));
+    await runEscalationPolicySave({ name: 'On-call', steps: [{ delayMinutes: 15, channelIds: ['ch-1'] }], ownerScope: 'organization', orgId: 'org-1' }, { onUnauthorized: ON_UNAUTHORIZED });
+    expect(fetchWithAuthMock).toHaveBeenCalledWith('/alerts/policies', expect.objectContaining({ method: 'POST' }));
+    expect(JSON.parse((fetchWithAuthMock.mock.calls[0]![1] as RequestInit).body as string)).toEqual({ name: 'On-call', steps: [{ delayMinutes: 15, channelIds: ['ch-1'] }], ownerScope: 'organization', orgId: 'org-1' });
+    expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+  });
+  it('PUTs an existing policy without ownerScope/orgId', async () => {
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ id: 'ep-1' }));
+    await runEscalationPolicySave({ id: 'ep-1', name: 'On-call', steps: [{ delayMinutes: 5, channelIds: ['ch-1'] }], ownerScope: 'partner' }, { onUnauthorized: ON_UNAUTHORIZED });
+    expect(fetchWithAuthMock).toHaveBeenCalledWith('/alerts/policies/ep-1', expect.objectContaining({ method: 'PUT' }));
+    expect(JSON.parse((fetchWithAuthMock.mock.calls[0]![1] as RequestInit).body as string)).toEqual({ name: 'On-call', steps: [{ delayMinutes: 5, channelIds: ['ch-1'] }] });
+  });
+  it('DELETE failure toasts an error', async () => {
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ error: 'nope' }, false, 500));
+    await expect(runEscalationPolicyDelete({ id: 'ep-1', name: 'On-call' }, { onUnauthorized: ON_UNAUTHORIZED })).rejects.toBeInstanceOf(ActionError);
+    expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
   });
 });

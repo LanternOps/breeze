@@ -658,6 +658,7 @@
       "deleteConfirm": "Supprimer la règle de routage « {{name}} » ?"
     },
     "escalation": {
+      "occurrenceLimit": "La politique d’escalade doit comporter au maximum 50 exécutions au total",
       "new": "Nouvelle politique d'escalade",
       "edit": "Modifier la politique d'escalade",
       "empty": "Aucune politique d'escalade pour l'instant. Une politique envoie des notifications de relance tant qu'une alerte reste non acquittée.",

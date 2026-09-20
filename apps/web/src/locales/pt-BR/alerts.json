@@ -658,6 +658,7 @@
       "deleteConfirm": "Excluir a regra de roteamento “{{name}}”?"
     },
     "escalation": {
+      "occurrenceLimit": "A política de escalonamento deve ter no máximo 50 execuções no total",
       "new": "Nova política de escalonamento",
       "edit": "Editar política de escalonamento",
       "empty": "Ainda não há políticas de escalonamento. Uma política envia notificações de acompanhamento enquanto um alerta continua sem confirmação.",

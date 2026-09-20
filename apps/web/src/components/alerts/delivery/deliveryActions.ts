@@ -133,3 +133,28 @@ export function orderRoutingRules<T extends RoutingRule>(rules: T[]): T[] {
     return Number(isPartnerRail(a)) - Number(isPartnerRail(b));
   });
 }
+
+export async function runEscalationPolicySave(
+  policy: { id?: string; name: string; steps: Array<{ delayMinutes: number; channelIds: string[]; userIds?: string[]; repeat?: { everyMinutes: number; maxTimes: number } }>; ownerScope?: 'organization' | 'partner'; orgId?: string | null },
+  deps: { onUnauthorized: () => void }
+): Promise<void> {
+  const isEdit = !!policy.id;
+  const body = isEdit
+    ? { name: policy.name, steps: policy.steps }
+    : { name: policy.name, steps: policy.steps, ...(policy.ownerScope ? { ownerScope: policy.ownerScope } : {}), ...(policy.ownerScope !== 'partner' && policy.orgId ? { orgId: policy.orgId } : {}) };
+  await runAction({
+    request: () => fetchWithAuth(isEdit ? `/alerts/policies/${policy.id}` : '/alerts/policies', { method: isEdit ? 'PUT' : 'POST', body: JSON.stringify(body) }),
+    successMessage: isEdit ? i18n.t('alerts:deliveryPage.escalation.saved') : i18n.t('alerts:deliveryPage.escalation.created'),
+    errorFallback: i18n.t('alerts:deliveryPage.escalation.failedToSave'),
+    onUnauthorized: deps.onUnauthorized,
+  });
+}
+
+export async function runEscalationPolicyDelete(policy: { id: string; name: string }, deps: { onUnauthorized: () => void }): Promise<void> {
+  await runAction({
+    request: () => fetchWithAuth(`/alerts/policies/${policy.id}`, { method: 'DELETE' }),
+    successMessage: i18n.t('alerts:deliveryPage.escalation.deleted'),
+    errorFallback: i18n.t('alerts:deliveryPage.escalation.failedToDelete'),
+    onUnauthorized: deps.onUnauthorized,
+  });
+}

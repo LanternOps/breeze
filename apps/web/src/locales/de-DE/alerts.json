@@ -658,6 +658,7 @@
       "deleteConfirm": "Weiterleitungsregel „{{name}}“ löschen?"
     },
     "escalation": {
+      "occurrenceLimit": "Die Eskalationsrichtlinie darf insgesamt höchstens 50 Ausführungen umfassen",
       "new": "Neue Eskalationsrichtlinie",
       "edit": "Eskalationsrichtlinie bearbeiten",
       "empty": "Noch keine Eskalationsrichtlinien. Eine Richtlinie sendet Folgebenachrichtigungen, solange eine Warnung unbestätigt bleibt.",

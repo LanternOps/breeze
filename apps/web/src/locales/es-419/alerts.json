@@ -658,6 +658,7 @@
       "deleteConfirm": "¿Eliminar la regla de enrutamiento «{{name}}»?"
     },
     "escalation": {
+      "occurrenceLimit": "La política de escalamiento debe tener como máximo 50 ejecuciones en total",
       "new": "Nueva política de escalamiento",
       "edit": "Editar política de escalamiento",
       "empty": "Aún no hay políticas de escalamiento. Una política envía notificaciones de seguimiento mientras una alerta siga sin confirmarse.",

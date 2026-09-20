@@ -658,6 +658,7 @@
       "deleteConfirm": "\"{{name}}\" yönlendirme kuralı silinsin mi?"
     },
     "escalation": {
+      "occurrenceLimit": "Üst kademeye bildirim politikası toplamda en fazla 50 kez çalıştırılabilir",
       "new": "Yeni yükseltme ilkesi",
       "edit": "Yükseltme ilkesini düzenle",
       "empty": "Henüz yükseltme ilkesi yok. Bir ilke, uyarı onaylanmadığı sürece takip bildirimleri gönderir.",

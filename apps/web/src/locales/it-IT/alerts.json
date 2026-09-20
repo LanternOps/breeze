@@ -658,6 +658,7 @@
       "deleteConfirm": "Eliminare la regola di instradamento «{{name}}»?"
     },
     "escalation": {
+      "occurrenceLimit": "La policy di escalation deve prevedere al massimo 50 esecuzioni totali",
       "new": "Nuovo criterio di escalation",
       "edit": "Modifica criterio di escalation",
       "empty": "Nessun criterio di escalation. Un criterio invia notifiche di follow-up finché un avviso resta non riconosciuto.",

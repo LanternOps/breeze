@@ -658,6 +658,7 @@
       "deleteConfirm": "Delete routing rule \"{{name}}\"?"
     },
     "escalation": {
+      "occurrenceLimit": "Escalation policy must have at most 50 total occurrences",
       "new": "New escalation policy",
       "edit": "Edit escalation policy",
       "empty": "No escalation policies yet. A policy sends follow-up notifications while an alert stays unacknowledged.",
