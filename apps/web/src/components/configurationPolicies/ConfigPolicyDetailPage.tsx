@@ -433,6 +433,7 @@ export default function ConfigPolicyDetailPage({
       onLinkChanged: handleLinkChanged,
       linkedPolicyId,
       parentLink: parentLinkFor(ft),
+      siblingLinks: featureLinks,
       orgId: policy?.orgId ?? null,
     };
     switch (ft) {

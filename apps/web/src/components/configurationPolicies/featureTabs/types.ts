@@ -48,6 +48,13 @@ export type FeatureTabProps = {
   /** Parent policy's feature link for this tab (for inheritance display) */
   parentLink?: FeatureLink | undefined;
   /**
+   * Every feature link on the policy, including this tab's own. Read-only:
+   * a tab that needs to WRITE a sibling link (MonitorsTab's Check interval
+   * writes the `monitoring` link) still goes through useFeatureLink and
+   * reports it with onLinkChanged(link, thatFeatureType). (W05c2)
+   */
+  siblingLinks?: FeatureLink[];
+  /**
    * Org this policy is scoped to (null for partner-wide policies — #1724).
    * Optional: only tabs that need to make an org-scoped fetch on behalf of
    * the policy (e.g. OneDriveHelperTab -> OneDriveLibraryPicker's M365/Graph
