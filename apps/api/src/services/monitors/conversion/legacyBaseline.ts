@@ -71,7 +71,7 @@ export async function resolveDeviceIdsForPolicy(policyId: string, executor: DbEx
       or(eq(configurationPolicies.orgId, devices.orgId), and(isNull(configurationPolicies.orgId), eq(configurationPolicies.partnerId, organizations.partnerId))),
       or(eq(configurationPolicies.id, policyId), eq(configPolicyEffectiveFeatureLinks.sourcePolicyId, policyId)),
       sql`(${configPolicyAssignments.roleFilter} IS NULL OR ${devices.deviceRole} = ANY(${configPolicyAssignments.roleFilter}))`,
-      sql`(${configPolicyAssignments.osFilter} IS NULL OR ${devices.osType} = ANY(${configPolicyAssignments.osFilter}))`))
+      sql`(${configPolicyAssignments.osFilter} IS NULL OR ${devices.osType}::text = ANY(${configPolicyAssignments.osFilter}))`))
     .orderBy(devices.id);
   return rows.map((r) => r.id);
 }
