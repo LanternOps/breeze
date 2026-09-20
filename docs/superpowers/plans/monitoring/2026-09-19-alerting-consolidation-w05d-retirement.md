@@ -2168,7 +2168,7 @@ git commit -m "refactor(api): delete evaluateDeviceAlertsFromPolicy and the conf
 
 **Interfaces:**
 - Consumes: W05b `resolveDelivery`.
-- Produces: `DeliverySource = 'monitor_none' | 'monitor_channels' | 'routing_rule' | 'default_row' | 'none'`; `ResolveDeliveryInput` has no `legacyOverride`; the dispatcher passes `{ orgId, severity, monitorId, kind, siteId }` only. An unmanaged, unretired `alert_rules` row (a standalone rule nobody converted) now routes through routing rows like every other non-monitor alert — this is the one behaviour change and it is in the release notes (Task 14).
+- Produces: `DeliverySource = 'monitor_none' | 'monitor_channels' | 'routing_rule' | 'default_row' | 'none'`; `ResolveDeliveryInput` has no `legacyOverride`; the dispatcher passes `{ orgId, severity, monitorId, kind, siteId }` only. Post-removal escalation order is `monitor → row → null` (monitor `deliveryMode = 'none'` still suppresses escalation). Removing this legacy arm is where a legacy rule's explicit escalation stops applying to active dispatch; every source must already be converted or retired by then. A queued legacy alert now uses routing without its old override; document that boundary in the release notes (Task 14).
 
 - [ ] **Step 1: Write the failing tests.** In W05b's `resolveDelivery.test.ts`, use its actual `selectQueue`, `row`, `ORG`, `PARTNER`, `CH_ORG`, `ESC_MON` fixtures. Remove active legacy-override precedence expectations and add:
 ```ts
@@ -2203,7 +2203,7 @@ import { resolveLegacyDeliveryBaseline } from './legacyDeliveryBaseline';
 import type { DbExecutor } from './legacyBaseline';
 it('preserves override precedence, eligibility and independent escalation in the private baseline', async () => {
   vi.mocked(resolveDelivery).mockResolvedValue({ channelIds: ['route-channel'], skippedChannelIds: [],
-    escalationPolicyId: null, source: 'default_row' });
+    escalationPolicyId: 'route-escalation', source: 'default_row' });
   const execute = vi.fn(async () => [{ id: 'old-channel', reason: 'disabled' }]);
   const executor = { execute } as unknown as DbExecutor;
   expect(await resolveLegacyDeliveryBaseline({ orgId: 'org', severity: 'high' },
@@ -2233,7 +2233,7 @@ return finish({ channelIds: [], escalationPolicyId: monitorEscalation ?? null, s
 ```
 Remove `'legacy_override'` from `DeliverySource`, from `services/delivery/describeDelivery.ts`'s description map and its legacy-specific tests, and from W05b Task 14's `Answer.source` union in `apps/web/src/components/alerts/delivery/DeliveryPreview.tsx`. Keep both eligible destinations and skipped-channel metadata in the mirror. Delete active dispatcher construction of legacy overrides and both normalized/standalone legacy lookups; retain its compiled-monitor identification. No live dispatcher path reads `configPolicyAlertRules` or unmanaged `overrideSettings` for delivery.
 
-Create `services/monitors/conversion/legacyDeliveryBaseline.ts`. It is private to conversion and replaces C1's **before** comparison's call that passed `legacyOverride` to `resolveDelivery`; the proposed-monitor **after** comparison still calls the public resolver. This preserves a truthful comparison after deleting the active branch, and retains kind-less legacy routing semantics:
+Create `services/monitors/conversion/legacyDeliveryBaseline.ts`. It is private to conversion and replaces C1's **before** comparison's call that passed `legacyOverride` to `resolveDelivery`; the proposed-monitor **after** comparison still calls the public resolver. This preserves a truthful comparison after deleting the active branch, and retains kind-less legacy routing semantics. Its historical escalation comparison keeps D22's explicit legacy policy ahead of the routing policy, including when legacy channels are inherited:
 ```ts
 import { sql } from 'drizzle-orm';
 import { db } from '../../../db';
@@ -2268,7 +2268,7 @@ export async function resolveLegacyDeliveryBaseline(input: ResolveDeliveryInput,
   }
   const resolved = await resolveDelivery({ ...input, kind: null, monitorId: null }, executor);
   return { channelIds: resolved.channelIds, skippedChannelIds: resolved.skippedChannelIds,
-    escalationPolicyId: resolved.escalationPolicyId ?? override?.escalationPolicyId ?? null };
+    escalationPolicyId: override?.escalationPolicyId ?? resolved.escalationPolicyId ?? null };
 }
 ```
 In C1's `equivalence.ts`, retain its existing signature hash and add an optional fourth argument to its actual `effectiveSignature` helper. Import `resolveLegacyDeliveryBaseline` from `./legacyDeliveryBaseline`:
@@ -2727,15 +2727,15 @@ pnpm --filter @breeze/web build
 cd apps/docs && pnpm build          # PR2 only
 ```
 
-- [ ] **Step 3: Unit suites for every touched area.**
+- [ ] **Step 3: Full API unit suite and touched shared/web suites (each PR).**
 ```bash
 cd packages/shared && npx vitest run src/constants src/validators
-cd apps/api && npx vitest run src/services/configurationPolicy src/services/policyBaselineDefaults.test.ts src/routes/configurationPolicies src/routes/agents/helpers src/routes/agents/heartbeat.test.ts src/services/monitors src/routes/monitorDefinitions src/services/alertService src/services/alertCooldown src/jobs/alertWorker src/jobs/alertQueue.test.ts src/jobs/offlineDetector src/services/offlineAlertEffects src/services/delivery src/services/notificationDispatcher src/routes/alerts src/routes/alertTemplates src/routes/mobile src/services/aiAgentSdkTools src/services/aiToolsConfigPolicy src/services/aiToolsFleet src/services/aiToolSchemas src/services/aiGuardrails src/services/featureLinkReaders.contract.test.ts src/services/featureConfigResolver.test.ts src/__tests__/partner-wide-write-coverage.test.ts src/__tests__/site-ceiling-write-coverage.test.ts src/__tests__/multi-tenant-isolation.test.ts
+cd apps/api && npx vitest run
 cd apps/web && npx vitest run src/components/configurationPolicies src/components/devices/DeviceEffectiveConfigTab src/components/alerts src/components/monitoring src/lib/__tests__ src/locales
 ```
 Check the reported file counts against the File Structure table — vitest's filter is a substring match; a typo silently runs zero files.
 
-- [ ] **Step 4: Integration suites (live stack).** Touches migrations, the agent config builder and system-context writes, so all of these run (including the scoped retirement report and last-detachment/revert regressions):
+- [ ] **Step 4: Integration suites (live stack).** Any integration test that seeds a notification channel and expects delivery must also seed a matching routing row or an Everything else row; there is no channel fallback (D27). Touches migrations, the agent config builder and system-context writes, so all of these run (including the scoped retirement report and last-detachment/revert regressions):
 ```bash
 pnpm test-stack up
 cd apps/api && npx vitest run -c vitest.integration.config.ts \

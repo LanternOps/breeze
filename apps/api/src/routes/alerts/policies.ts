@@ -11,6 +11,9 @@ import {
 } from '../../services/partnerWideAccess';
 import { listPoliciesSchema, createPolicySchema, updatePolicySchema } from './schemas';
 import { getPagination, ensureOrgAccess, getEscalationPolicyWithOrgCheck } from './helpers';
+import { validatePolicyUsers } from '../../services/delivery/railContracts';
+import { DeliveryWriteError } from '../../services/delivery/routingRuleWrites';
+import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../../services/siteCeilingAccess';
 import { PERMISSIONS } from '../../services/permissions';
 
 export const policiesRoutes = new Hono();
@@ -151,6 +154,14 @@ policiesRoutes.post(
       owner = { orgId: orgId!, partnerId: null };
     }
 
+    if (!canMutateOrgWideGovernance(auth)) return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    try {
+      if (data.steps) await validatePolicyUsers(data.steps, owner, auth);
+    } catch (error) {
+      if (error instanceof DeliveryWriteError) return c.json({ error: error.message }, error.status);
+      throw error;
+    }
+
     const [policy] = await db
       .insert(escalationPolicies)
       .values({
@@ -206,6 +217,15 @@ policiesRoutes.put(
       return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
     }
 
+    const owner = { orgId: policy.orgId, partnerId: policy.partnerId };
+    if (!canMutateOrgWideGovernance(auth)) return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    try {
+      if (data.steps) await validatePolicyUsers(data.steps, owner, auth, policy.steps);
+    } catch (error) {
+      if (error instanceof DeliveryWriteError) return c.json({ error: error.message }, error.status);
+      throw error;
+    }
+
     // Build updates object
     const updates: Record<string, unknown> = { updatedAt: new Date() };
 
@@ -256,6 +276,8 @@ policiesRoutes.delete(
     if (policy.orgId === null && !canManagePartnerWidePolicies(auth)) {
       return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
     }
+
+    if (!canMutateOrgWideGovernance(auth)) return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
 
     await db
       .delete(escalationPolicies)

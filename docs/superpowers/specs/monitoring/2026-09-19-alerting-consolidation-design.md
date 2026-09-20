@@ -127,6 +127,7 @@ Two invariants every wave must preserve:
 | C8 | Multi-condition rules | **New `composite` monitor kind** (`all: [{kind, condition}]`) compiling to an `{logic:'and'}` group. No OR (no write path produces one today). | — |
 | C9 | Agent-side watch settings | **Restart parameters move to the `restart_service` response action; the per-policy check interval stays a per-policy setting on the Monitors tab.** `alertOnStop` and `alertSeverity` on watches are dropped (stored, never read: `aiToolsConfigPolicy.ts:880`). | — |
 | C10 | Network checks | **Become monitors of kind `network_check` in the final wave.** The Network page keeps assets, SNMP templates and results. | — |
+| C11 | Delivery review, 2026-09-19 | **D22–D26 align delivery with PRs #6385/#6387:** legacy escalation precedes routing during transition; bounded steps; removable org default; caller-scoped user targets (product owner confirmation pending); dispatch observability. | Brief escalation order; D18 default-row permanence on the org axis |
 
 ## Prerequisite defects (must land before W05c)
 
@@ -196,14 +197,29 @@ Escalate to a human · Deployed to · Activity. Changes:
    Pushover), owner badge, test, throttle.
 2. **Routing** — an ordered list. Each row: *match* (severities; monitor kinds; sites), *send
    to* (channels), *escalate via* (escalation policy, optional). The list always ends with the
-   **Everything else** row, which cannot be deleted or reordered, and whose channels can be
-   emptied to mean *inbox only*. A partner sees the partner-wide list; an org sees its own rows
-   above the partner's, with the partner rows read-only and labelled, and its own optional
-   Everything-else row that, when present, shadows the partner's for that org. The page prints
+   partner's **Everything else** row, which cannot be deleted or reordered, and whose channels
+   can be emptied to stop channel delivery (escalation still applies). A partner sees the
+   partner-wide list; an org sees its own rows above the partner's, with the partner rows
+   read-only and labelled, and its own optional Everything-else row that, when present,
+   shadows the partner's for that org. **Use partner default** removes an editable org override
+   after confirming the partner channels and escalation it will inherit, or inbox only if
+   neither is configured. **Customize for this organization** explains that the override stops
+   following the partner default and can be removed later. The page prints
    the precedence in one line: *A monitor's own Notify setting wins; otherwise the first matching
    row from the top.*
-3. **Escalation policies** — CRUD over `escalation_policies` (steps: delay, notify channels or
-   users, repeat), owner badge. The escalation-cancel-on-acknowledge semantics are unchanged.
+3. **Escalation policies** — CRUD over `escalation_policies`, owner badge. At most 10 steps;
+   each delays at least 1 whole minute and targets at least one channel or user. Repeats run
+   every 1–1440 whole minutes, for 1–10 additional sends; the policy is limited to 50
+   occurrences in total, counting each step's initial send. Acknowledge or resolve cancels
+   escalation. Eligible user recipients are active members of the alert's org with no site or
+   device-group restriction, or active users of its partner with access to all orgs or
+   selected access including that org.
+   Validate targets on save and recheck against the alert's org when firing. An org-scope
+   caller can see and newly add only that org's eligible members; partner targets already
+   saved by a partner-scope caller survive its edits. Partner/system callers can also pick
+   eligible partner users; a partner-wide policy's picker lists every active partner user,
+   with org access checked at delivery. **Product owner confirmation pending**
+   (HO-20260919-alerting-consolidation Q1).
 
 ### Config policy editor
 
@@ -340,7 +356,7 @@ endpoint (`GET /alerts/delivery/resolve?orgId&severity&kind&siteId&monitorId`), 
 Delivery page's "test this rule set" affordance. Precedence, in order, first hit wins:
 
 1. Monitor `deliveryMode = 'none'` → inbox only, `source: monitor`.
-2. Monitor `deliveryMode = 'channels'` → its channels + its escalation policy.
+2. Monitor `deliveryMode = 'channels'` → its channels; escalation resolves independently below.
 3. Monitor `deliveryMode = 'inherit'` (and every non-monitor alert) → routing rows for the
    alert's org and its partner, ordered `priority ASC` with org rows before partner rows at
    equal priority, non-default rows first; match on severities, monitorKinds, siteIds (site
@@ -350,7 +366,10 @@ Delivery page's "test this rule set" affordance. Precedence, in order, first hit
 
 In-app notifications remain unconditional (step 0). **Escalation resolves independently of
 channels**: the monitor's own `escalationPolicyId` if set (today `inherit` + explicit escalation
-already works, `notificationDispatcher.ts:443`), else the winning routing row's, else none.
+already works, `notificationDispatcher.ts:443`), then an unretired legacy source's explicit
+policy during the transition, then the winning routing row's policy, then null (D22). Monitor
+`deliveryMode = 'none'` suppresses escalation too. Empty eligible channels alone do not suppress
+escalation. W05d removes the legacy arm, leaving `monitor → row → null`.
 The all-enabled-channels fallback is deleted.
 
 **`channelIds` means eligible destinations** (decided 2026-09-19 after the plan cross-check): the
@@ -360,14 +379,19 @@ foreign-tenant and not-visible alike, so a foreign channel id is indistinguishab
 nonexistent one (no cross-tenant existence oracle). Eligibility is ordinary RLS-scoped reads plus an
 explicit owner predicate applied identically in dispatch and preview; no `SECURITY DEFINER`
 function and no scope escalation (D21, quorum 2026-09-19; the partner-wide SELECT branches these
-tables need already shipped in `2026-10-10-120000`). The dispatcher sends
-to `channelIds` with no further filtering, so dispatch and preview can never disagree; the preview
-shows the skipped ones.
+tables need already shipped in `2026-10-10-120000`). Dispatch and preview use that same
+resolved destination set; the preview shows the skipped ones. Dispatch warns about skipped
+channels with the alert, org, source, rule and reasons, logs skipped user targets, and drops
+and logs a send if transport options cannot be loaded. An inbox-only channel result still
+schedules any resolved escalation.
 
-**Transitional (W05b → W05d):** steps 1–2 also honour a legacy source's own overrides —
-`alert_rules.overrideSettings.notificationChannelIds/escalationPolicyId` and
-`config_policy_alert_rules.notification_channel_ids/escalation_policy_id` — for unretired rows,
-so nothing changes for a rule until it is converted. That branch is deleted in W05d.
+**Transitional (W05b → W05d):** after monitor channel settings and before routing, honour an
+unretired legacy source's non-empty channel override —
+`alert_rules.overrideSettings.notificationChannelIds` or
+`config_policy_alert_rules.notification_channel_ids`. Its explicit escalation policy takes
+precedence over routing even when its channels are inherited, so nothing changes for a rule
+until it is converted. W05d deletes this legacy arm; that is where any remaining legacy
+explicit escalation stops applying, and its source must already be converted or retired.
 
 **Migration** (`2026-…-delivery-default-rows.sql`, system scope): for every partner with ≥1
 **enabled** partner-wide channel, insert a partner `is_default` row with those channels; for

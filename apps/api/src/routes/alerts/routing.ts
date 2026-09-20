@@ -1,120 +1,44 @@
+import {
+  createRoutingRuleSchema, updateRoutingRuleSchema, upsertDefaultRowSchema,
+  getRoutingRuleWithAccess, routingSiteIds, canAccessRoutingSites,
+} from '../../services/delivery/railContracts';
+export {
+  createRoutingRuleSchema, updateRoutingRuleSchema, upsertDefaultRowSchema,
+  getRoutingRuleWithAccess, routingSiteIds, canAccessRoutingSites,
+} from '../../services/delivery/railContracts';
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
 import { db } from '../../db';
-import { notificationRoutingRules, organizations, sites } from '../../db/schema';
-import { eq, and, asc, inArray, isNull, or, sql } from 'drizzle-orm';
-import { requireMfa, requirePermission, requireScope, siteAccessCheck } from '../../middleware/auth';
+import { notificationRoutingRules } from '../../db/schema';
+import { eq, and, asc, inArray, isNull, or } from 'drizzle-orm';
+import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { ensureOrgAccess, resolveWriteOrgId } from './helpers';
 import {
   canManagePartnerWidePolicies,
-  canReadPartnerWideRows,
   PARTNER_WIDE_WRITE_DENIED_MESSAGE,
 } from '../../services/partnerWideAccess';
 import { PERMISSIONS } from '../../services/permissions';
+
+import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../../services/siteCeilingAccess';
+import {
+  DeliveryWriteError,
+  assertDefaultRowPatch,
+  escalationPolicyCompatible,
+  upsertDefaultRow,
+} from '../../services/delivery/routingRuleWrites';
 
 const listRoutingRulesSchema = z.object({
   orgId: z.string().guid().optional(),
 });
 
-const createRoutingRuleSchema = z.object({
-  // 'partner' creates a partner-wide ("all orgs") routing rule: orgId NULL,
-  // partnerId = caller's partner (#2130). Create-only.
-  ownerScope: z.enum(['organization', 'partner']).optional(),
-  name: z.string().min(1).max(255),
-  priority: z.number().int().min(0),
-  conditions: z.object({
-    severities: z.array(z.enum(['critical', 'high', 'medium', 'low', 'info'])).optional(),
-    conditionTypes: z.array(z.string()).optional(),
-    deviceTags: z.array(z.string()).optional(),
-    siteIds: z.array(z.string().guid()).optional(),
-  }),
-  channelIds: z.array(z.string().guid()).min(1),
-  enabled: z.boolean().optional().default(true),
-});
-
-const updateRoutingRuleSchema = z.object({
-  name: z.string().min(1).max(255).optional(),
-  priority: z.number().int().min(0).optional(),
-  conditions: z.object({
-    severities: z.array(z.enum(['critical', 'high', 'medium', 'low', 'info'])).optional(),
-    conditionTypes: z.array(z.string()).optional(),
-    deviceTags: z.array(z.string()).optional(),
-    siteIds: z.array(z.string().guid()).optional(),
-  }).optional(),
-  channelIds: z.array(z.string().guid()).min(1).optional(),
-  enabled: z.boolean().optional(),
-});
+const ESCALATION_POLICY_AXIS_MESSAGE = 'Escalation policy is not available to this rule owner';
 
 export const routingRoutes = new Hono();
 
 const requireAlertRead = requirePermission(PERMISSIONS.ALERTS_READ.resource, PERMISSIONS.ALERTS_READ.action);
 const requireAlertWrite = requirePermission(PERMISSIONS.ALERTS_WRITE.resource, PERMISSIONS.ALERTS_WRITE.action);
-
-type RoutingSiteAuth = { allowedSiteIds?: string[] };
-type RoutingRuleOwner = { orgId: string | null; partnerId: string | null };
-
-function routingSiteIds(conditions: unknown): string[] {
-  if (!conditions || typeof conditions !== 'object' || Array.isArray(conditions)) return [];
-  const value = (conditions as Record<string, unknown>).siteIds;
-  return Array.isArray(value) ? value.filter((id): id is string => typeof id === 'string') : [];
-}
-
-async function canAccessRoutingSites(
-  auth: RoutingSiteAuth,
-  owner: RoutingRuleOwner,
-  siteIds: string[],
-  validateOwnership: boolean
-): Promise<boolean> {
-  const uniqueSiteIds = [...new Set(siteIds)];
-  if (uniqueSiteIds.length === 0) return auth.allowedSiteIds === undefined;
-  if (!validateOwnership && auth.allowedSiteIds === undefined) return true;
-
-  const ownershipCondition = owner.orgId !== null
-    ? eq(sites.orgId, owner.orgId)
-    : owner.partnerId
-      ? sql`${sites.orgId} IN (SELECT ${organizations.id} FROM ${organizations} WHERE ${organizations.partnerId} = ${owner.partnerId})`
-      : undefined;
-  if (!ownershipCondition) return false;
-
-  const rows = await db
-    .select({ id: sites.id })
-    .from(sites)
-    .where(and(inArray(sites.id, uniqueSiteIds), ownershipCondition));
-  if (rows.length !== uniqueSiteIds.length) return false;
-
-  const canAccessSite = siteAccessCheck(auth.allowedSiteIds);
-  return rows.every((row) => canAccessSite(row.id));
-}
-
-// Dual-axis by-id lookup (#2130): org-owned rules via org access; partner-wide
-// rules (orgId NULL) via the caller's own partner (or system scope). Writes are
-// additionally gated on canManagePartnerWidePolicies at the routes.
-async function getRoutingRuleWithAccess(
-  ruleId: string,
-  auth: { scope?: string; partnerId?: string | null; canAccessOrg: (orgId: string) => boolean }
-) {
-  const [rule] = await db
-    .select()
-    .from(notificationRoutingRules)
-    .where(eq(notificationRoutingRules.id, ruleId))
-    .limit(1);
-
-  if (!rule) {
-    return null;
-  }
-
-  // Dual-axis access (#2130): partner-wide rules (orgId NULL) via
-  // canReadPartnerWideRows (system scope, or the owning partner's own
-  // PARTNER-scoped token). Org tokens carry a partnerId too, so matching on
-  // partnerId alone (sweep 2026-09-08 G6-4) handed every partner-wide rule's
-  // existence to every org user under that partner.
-  const hasAccess = rule.orgId !== null
-    ? ensureOrgAccess(rule.orgId, auth)
-    : canReadPartnerWideRows({ scope: auth.scope ?? '', partnerId: auth.partnerId ?? null }, rule.partnerId);
-  return hasAccess ? rule : null;
-}
 
 routingRoutes.get(
   '/routing-rules',
@@ -237,6 +161,10 @@ routingRoutes.post(
         return c.json({ error: 'Routing rule sites are outside your permitted sites' }, 403);
       }
 
+      if (data.escalationPolicyId && !(await escalationPolicyCompatible(data.escalationPolicyId, owner))) {
+        return c.json({ error: ESCALATION_POLICY_AXIS_MESSAGE }, 400);
+      }
+
       const [rule] = await db
         .insert(notificationRoutingRules)
         .values({
@@ -247,6 +175,8 @@ routingRoutes.post(
           conditions: data.conditions,
           channelIds: data.channelIds,
           enabled: data.enabled,
+          escalationPolicyId: data.escalationPolicyId ?? null,
+          isDefault: false,
         })
         .returning();
 
@@ -263,6 +193,57 @@ routingRoutes.post(
     } catch (error) {
       console.error('[RoutingRules] Failed to create routing rule', error);
       return c.json({ error: 'Failed to create routing rule' }, 500);
+    }
+  }
+);
+
+// Import canMutateOrgWideGovernance and SITE_CEILING_WRITE_DENIED_MESSAGE
+// from '../../services/siteCeilingAccess'. The shared writer repeats this guard.
+// PUT /alerts/routing-rules/default — upsert the axis's "Everything else" row.
+// An org token writes its org row (which shadows the partner's for that org);
+// a partner-scoped caller writes the partner row with ownerScope 'partner' or
+// an org row with ?orgId=.
+routingRoutes.put(
+  '/routing-rules/default',
+  requireScope('organization', 'partner', 'system'),
+  requireAlertWrite,
+  requireMfa(),
+  zValidator('json', upsertDefaultRowSchema),
+  async (c) => {
+    try {
+      const auth = c.get('auth');
+      if (!canMutateOrgWideGovernance(auth)) return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+      const data = c.req.valid('json');
+      let owner: { orgId: string | null; partnerId: string | null };
+      if (data.ownerScope === 'partner') {
+        if (!canManagePartnerWidePolicies(auth) || !auth.partnerId) {
+          return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+        }
+        owner = { orgId: null, partnerId: auth.partnerId };
+      } else {
+        const resolved = resolveWriteOrgId(auth, c.req.query('orgId'));
+        if (resolved.error) {
+          return c.json({ error: resolved.error }, resolved.status ?? 400);
+        }
+        owner = { orgId: resolved.orgId!, partnerId: null };
+      }
+      if (data.escalationPolicyId && !(await escalationPolicyCompatible(data.escalationPolicyId, owner))) {
+        return c.json({ error: ESCALATION_POLICY_AXIS_MESSAGE }, 400);
+      }
+      const row = await upsertDefaultRow(owner, { channelIds: data.channelIds, escalationPolicyId: data.escalationPolicyId ?? null }, auth);
+      writeRouteAudit(c, {
+        orgId: owner.orgId,
+        action: 'notification_routing_rule.default_upsert',
+        resourceType: 'notification_routing_rule',
+        resourceId: row.id,
+        resourceName: row.name,
+        details: { channelCount: data.channelIds.length, inboxOnly: data.channelIds.length === 0 },
+      });
+      return c.json({ data: row });
+    } catch (error) {
+      if (error instanceof DeliveryWriteError) return c.json({ error: error.message }, error.status);
+      console.error('[RoutingRules] Failed to upsert default routing row', error);
+      return c.json({ error: 'Failed to save the Everything else row' }, 500);
     }
   }
 );
@@ -288,6 +269,21 @@ routingRoutes.patch(
       // partner-wide capability (#2130).
       if (existing.orgId === null && !canManagePartnerWidePolicies(auth)) {
         return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+      }
+
+      if (existing.isDefault) {
+        if (!canMutateOrgWideGovernance(auth)) return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+        try {
+          assertDefaultRowPatch(updates);
+        } catch (err) {
+          if (err instanceof DeliveryWriteError) return c.json({ error: err.message }, err.status);
+          throw err;
+        }
+      } else if (updates.channelIds !== undefined && updates.channelIds.length === 0) {
+        return c.json({ error: 'channelIds must contain at least one channel' }, 400);
+      }
+      if (updates.escalationPolicyId && !(await escalationPolicyCompatible(updates.escalationPolicyId, { orgId: existing.orgId, partnerId: existing.partnerId }))) {
+        return c.json({ error: ESCALATION_POLICY_AXIS_MESSAGE }, 400);
       }
 
       const owner = { orgId: existing.orgId, partnerId: existing.partnerId };
@@ -318,6 +314,7 @@ routingRoutes.patch(
       if (updates.conditions !== undefined) setValues.conditions = updates.conditions;
       if (updates.channelIds !== undefined) setValues.channelIds = updates.channelIds;
       if (updates.enabled !== undefined) setValues.enabled = updates.enabled;
+      if (updates.escalationPolicyId !== undefined) setValues.escalationPolicyId = updates.escalationPolicyId;
 
       const [updated] = await db
         .update(notificationRoutingRules)
@@ -361,6 +358,13 @@ routingRoutes.delete(
       // partner-wide capability (#2130).
       if (existing.orgId === null && !canManagePartnerWidePolicies(auth)) {
         return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+      }
+
+      if (existing.isDefault) {
+        if (existing.orgId === null) {
+          return c.json({ error: "The partner's Everything else row cannot be deleted; empty its channels for inbox only" }, 409);
+        }
+        if (!canMutateOrgWideGovernance(auth)) return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
       }
 
       const canAccessExistingSites = await canAccessRoutingSites(

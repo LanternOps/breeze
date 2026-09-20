@@ -55,6 +55,7 @@
       "activity": "Etkinlik"
     },
     "fields": {
+    "match": "Eşleşme",
       "name": "Ad",
       "description": "Açıklama",
       "kind": "Tür",
@@ -109,9 +110,39 @@
       "title": "Bir cihazda test et",
       "selectDevice": "Cihaz",
       "run": "Testi çalıştır"
+    },
+    "deliveryPreview": {
+      "selectOrg": "Teslimatı önizlemek için bir kuruluş seçin.",
+      "failed": "Teslimat önizlenemedi.",
+      "loading": "Teslimat çözümleniyor…",
+      "disabled": "{{name}} (devre dışı)",
+      "unavailable": "Kanal kullanılamıyor",
+      "destination": "{{severity}} için teslimat: {{channels}}",
+      "partnerRule": "İş ortağı kuralı: {{name}}",
+      "orgRule": "Kuruluş kuralı: {{name}}",
+      "partnerDefault": "İş ortağı varsayılanı: {{name}}",
+      "orgDefault": "Kuruluş varsayılanı: {{name}}",
+      "noRow": "Teslimat satırı yapılandırılmamış.",
+      "monitorOverride": "Monitöre özel ayar",
+      "escalation": "{{name}} üzerinden yükseltilir",
+      "withoutSite": "Site seçilmedi; siteye özel kurallar uygulanmaz.",
+      "testRules": "Bu kural kümesini test et",
+      "kind": "Monitör türü",
+      "noKind": "Monitör türü yok",
+      "site": "Konum",
+      "noSite": "Site yok",
+      "sitesFailed": "Siteler yüklenemedi.",
+      "manage": "Teslimatı yönet",
+      "draft": "Önizleme düzenleyicideki güncel değerleri kullanır.",
+      "skipped": "Atlandı {{id}}: {{reason}}",
+      "skipReasons": {
+        "disabled": "devre dışı",
+        "unavailable": "kullanılamıyor"
+      }
     }
   },
   "kinds": {
+    "composite": "Bileşik (birkaç koşulun tümü veya herhangi biri)",
     "cpu": "CPU Kullanımı",
     "memory": "Bellek Kullanımı",
     "disk": "Disk Kullanımı",

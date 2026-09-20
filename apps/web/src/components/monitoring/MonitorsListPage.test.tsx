@@ -51,7 +51,8 @@ describe('MonitorsListPage (#5289)', () => {
 
   it('fetches monitor definitions and renders each row', async () => {
     render(<MonitorsListPage />);
-    await waitFor(() => expect(screen.getByTestId('monitors-list-page')).toBeInTheDocument());
+    // Wait for a fetched row, not the page shell: rows render after the async fetch resolves.
+    await screen.findByTestId('monitors-list-row-m-org');
 
     expect(fetchMock.mock.calls[0]![0]).toMatch(/^\/monitor-definitions/);
     expect(screen.getByTestId('monitors-list-row-m-org')).toBeInTheDocument();
@@ -60,7 +61,8 @@ describe('MonitorsListPage (#5289)', () => {
 
   it('shows the partner-wide badge only on the partner-owned row', async () => {
     render(<MonitorsListPage />);
-    await waitFor(() => expect(screen.getByTestId('monitors-list-page')).toBeInTheDocument());
+    // Wait for a fetched row, not the page shell: rows render after the async fetch resolves.
+    await screen.findByTestId('monitors-list-row-m-partner');
 
     expect(
       within(screen.getByTestId('monitors-list-row-m-partner')).getByText('Partner-wide'),
@@ -84,7 +86,8 @@ describe('MonitorsListPage (#5289)', () => {
       return json({ data: [] });
     });
     render(<MonitorsListPage />);
-    await waitFor(() => expect(screen.getByTestId('monitors-list-page')).toBeInTheDocument());
+    // Wait for a fetched row, not the page shell: rows render after the async fetch resolves.
+    await screen.findByTestId('monitors-list-row-m-org');
 
     fireEvent.click(within(screen.getByTestId('monitors-list-row-m-org')).getByTestId('monitors-list-delete-m-org'));
     fireEvent.click(screen.getByTestId('monitors-list-delete-confirm'));
@@ -96,7 +99,8 @@ describe('MonitorsListPage (#5289)', () => {
 
   it('toggles a monitor enabled/disabled via PATCH', async () => {
     render(<MonitorsListPage />);
-    await waitFor(() => expect(screen.getByTestId('monitors-list-page')).toBeInTheDocument());
+    // Wait for a fetched row, not the page shell: rows render after the async fetch resolves.
+    await screen.findByTestId('monitors-list-row-m-org');
 
     fireEvent.click(within(screen.getByTestId('monitors-list-row-m-org')).getByTestId('monitors-list-enabled-m-org'));
 
@@ -110,7 +114,8 @@ describe('MonitorsListPage (#5289)', () => {
 
   it('exposes the enabled toggle as an accessible switch, not colour-only state (paper cut #12)', async () => {
     render(<MonitorsListPage />);
-    await waitFor(() => expect(screen.getByTestId('monitors-list-page')).toBeInTheDocument());
+    // Wait for a fetched row, not the page shell: rows render after the async fetch resolves.
+    await screen.findByTestId('monitors-list-row-m-org');
 
     const toggle = within(screen.getByTestId('monitors-list-row-m-org')).getByTestId(
       'monitors-list-enabled-m-org',

@@ -40,4 +40,4 @@ export { default as AlertsSummary, AlertsSummaryCompact } from './AlertsSummary'
 
 // Page Components
 export { default as AlertsPage } from './AlertsPage';
-export { default as NotificationChannelsPage } from './NotificationChannelsPage';
+export { default as DeliveryPage } from './DeliveryPage';

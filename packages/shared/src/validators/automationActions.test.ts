@@ -131,3 +131,13 @@ describe('automationActionSchema - restart_service', () => {
     expect(automationActionSchema.parse(response)).toMatchObject(response);
   });
 });
+
+describe('automationActionSchema - agent-local restart', () => {
+  it.each([undefined, '', '   '])('accepts restart_service with command %j', (command) => {
+    expect(automationActionSchema.safeParse({ type: 'execute_command', kind: 'restart_service', command }).success).toBe(true);
+  });
+
+  it.each([undefined, '', '   '])('rejects ordinary execute_command with command %j', (command) => {
+    expect(automationActionSchema.safeParse({ type: 'execute_command', command }).success).toBe(false);
+  });
+});

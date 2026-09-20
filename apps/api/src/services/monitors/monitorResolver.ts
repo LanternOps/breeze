@@ -1,3 +1,4 @@
+import { monitorsInheritanceSchema, type MonitorsInheritance } from '@breeze/shared';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { devices, deviceGroupMemberships } from '../../db/schema/devices';
@@ -13,7 +14,7 @@ import { buildRoleOsFilterConditions } from '../featureConfigResolver';
 /**
  * Monitor resolution for one device (#5287 W02).
  *
- * Deliberately CUMULATIVE, unlike `resolveEffectiveConfig`'s closest-wins
+ * CUMULATIVE by default, unlike `resolveEffectiveConfig`'s closest-wins
  * algorithm for every other feature type. A technician who attaches three
  * monitors at the org level and one more at a site expects the site device to
  * run all four — "closest wins" would silently drop the org's three the moment
@@ -23,6 +24,9 @@ import { buildRoleOsFilterConditions } from '../featureConfigResolver';
  *
  * A policy's PARENT contributes its attachments too (one level, #5080's
  * parent model), ranked below the child's own row for the same monitor.
+ * A link opting into REPLACE contributes only its own attachments when it is
+ * the closest replace assignment; more distant replace links are shadowed,
+ * including their parents. Cumulative links continue to contribute.
  */
 
 export type AssignmentLevel = 'partner' | 'organization' | 'site' | 'device_group' | 'device';
@@ -86,6 +90,82 @@ export function pickWinner(candidates: MonitorCandidate[]): MonitorCandidate {
   const [winner] = [...candidates].sort(compareCandidates);
   if (!winner) throw new Error('pickWinner called with no candidates');
   return winner;
+}
+
+/**
+ * Proof-of-presence for the converter's prerequisite check (spec §Risks, last
+ * row). `roleOsFilters` is true because this module applies assignment
+ * roleFilter/osFilter (#6344) — the grep in conversion/prerequisites.test.ts
+ * pins that the filter helper is referenced here. `inheritance` is W05c1.
+ */
+export const MONITOR_RESOLVER_CAPABILITIES = { roleOsFilters: true, inheritance: true } as const;
+
+type AssignmentRow = {
+  policyId: string;
+  parentPolicyId: string | null;
+  level: string;
+  priority: number;
+  createdAt: Date;
+};
+type AttachmentRow = {
+  configPolicyId: string;
+  monitorId: string;
+  enabled: boolean;
+  overrides: Record<string, unknown> | null;
+};
+
+function compareAssignments(a: AssignmentRow, b: AssignmentRow): number {
+  const levelDiff = LEVEL_PRIORITY[b.level as AssignmentLevel] - LEVEL_PRIORITY[a.level as AssignmentLevel];
+  if (levelDiff !== 0) return levelDiff;
+  const priorityDiff = a.priority - b.priority;
+  if (priorityDiff !== 0) return priorityDiff;
+  return a.createdAt.getTime() - b.createdAt.getTime();
+}
+
+/**
+ * Which attachment rows compete for this device (W05c1 §Inheritance correction).
+ *
+ * Walk assignments closest-first. A CUMULATIVE policy contributes its own rows
+ * and its parent's (today's behaviour). The FIRST REPLACE policy contributes
+ * its own rows only — its parent is not consulted — and every later REPLACE
+ * policy contributes nothing. Cumulative policies after it still add. This is
+ * exactly how the legacy `alert_rule` feature was selected (closest policy
+ * holding the feature wins, whole-feature), applied only to links that opted
+ * in, so partner-wide built-ins attached cumulatively keep reaching the device.
+ */
+export function selectContributingAttachments(args: {
+  assignments: AssignmentRow[];
+  byPolicy: Map<string, AttachmentRow[]>;
+  inheritanceByPolicy: Map<string, MonitorsInheritance>;
+}): MonitorCandidate[] {
+  const out: MonitorCandidate[] = [];
+  const add = (row: AttachmentRow, assignment: AssignmentRow, inheritedFromParent: boolean) => {
+    out.push({
+      monitorId: row.monitorId,
+      enabled: row.enabled,
+      overrides: row.overrides ?? null,
+      sourcePolicyId: row.configPolicyId,
+      sourceLevel: assignment.level as AssignmentLevel,
+      inheritedFromParent,
+      priority: assignment.priority,
+      assignedAt: assignment.createdAt.getTime(),
+    });
+  };
+  let replaceTaken = false;
+  for (const assignment of [...args.assignments].sort(compareAssignments)) {
+    const mode = args.inheritanceByPolicy.get(assignment.policyId) ?? 'cumulative';
+    if (mode === 'replace') {
+      if (replaceTaken) continue;
+      replaceTaken = true;
+      for (const row of args.byPolicy.get(assignment.policyId) ?? []) add(row, assignment, false);
+      continue;
+    }
+    for (const row of args.byPolicy.get(assignment.policyId) ?? []) add(row, assignment, false);
+    if (assignment.parentPolicyId) {
+      for (const row of args.byPolicy.get(assignment.parentPolicyId) ?? []) add(row, assignment, true);
+    }
+  }
+  return out;
 }
 
 /**
@@ -194,6 +274,7 @@ export async function resolveMonitorsForDevice(
       monitorId: configPolicyMonitors.monitorId,
       enabled: configPolicyMonitors.enabled,
       overrides: configPolicyMonitors.overrides,
+      inlineSettings: configPolicyFeatureLinks.inlineSettings,
     })
     .from(configPolicyFeatureLinks)
     .innerJoin(
@@ -207,42 +288,33 @@ export async function resolveMonitorsForDevice(
       ),
     );
 
-  const byPolicy = new Map<string, typeof attachmentRows>();
+  const byPolicy = new Map<string, AttachmentRow[]>();
+  const inheritanceByPolicy = new Map<string, MonitorsInheritance>();
   for (const row of attachmentRows) {
     const list = byPolicy.get(row.configPolicyId) ?? [];
-    list.push(row);
+    list.push({ configPolicyId: row.configPolicyId, monitorId: row.monitorId, enabled: row.enabled, overrides: row.overrides ?? null });
     byPolicy.set(row.configPolicyId, list);
+    if (!inheritanceByPolicy.has(row.configPolicyId)) {
+      const parsed = monitorsInheritanceSchema.safeParse((row.inlineSettings as { inheritance?: unknown } | null)?.inheritance);
+      inheritanceByPolicy.set(row.configPolicyId, parsed.success ? parsed.data : 'cumulative');
+    }
   }
 
-  const candidates = new Map<string, MonitorCandidate[]>();
-  const addCandidate = (
-    row: (typeof attachmentRows)[number],
-    assignment: (typeof assignments)[number],
-    inheritedFromParent: boolean,
-  ) => {
-    const list = candidates.get(row.monitorId) ?? [];
-    list.push({
-      monitorId: row.monitorId,
-      enabled: row.enabled,
-      overrides: row.overrides ?? null,
-      sourcePolicyId: row.configPolicyId,
-      sourceLevel: assignment.level as AssignmentLevel,
-      inheritedFromParent,
-      priority: assignment.priority,
-      assignedAt: assignment.createdAt.getTime(),
-    });
-    candidates.set(row.monitorId, list);
-  };
+  const replaceLinks = await executor
+    .select({ configPolicyId: configPolicyFeatureLinks.configPolicyId })
+    .from(configPolicyFeatureLinks)
+    .where(and(
+      inArray(configPolicyFeatureLinks.configPolicyId, [...policyIds]),
+      eq(configPolicyFeatureLinks.featureType, 'monitors'),
+      sql`${configPolicyFeatureLinks.inlineSettings} ->> 'inheritance' = 'replace'`,
+    ));
+  for (const r of replaceLinks) inheritanceByPolicy.set(r.configPolicyId, 'replace');
 
-  for (const assignment of assignments) {
-    for (const row of byPolicy.get(assignment.policyId) ?? []) {
-      addCandidate(row, assignment, false);
-    }
-    if (assignment.parentPolicyId) {
-      for (const row of byPolicy.get(assignment.parentPolicyId) ?? []) {
-        addCandidate(row, assignment, true);
-      }
-    }
+  const candidates = new Map<string, MonitorCandidate[]>();
+  for (const candidate of selectContributingAttachments({ assignments, byPolicy, inheritanceByPolicy })) {
+    const list = candidates.get(candidate.monitorId) ?? [];
+    list.push(candidate);
+    candidates.set(candidate.monitorId, list);
   }
 
   const monitors = [...candidates.values()].map((list) => {

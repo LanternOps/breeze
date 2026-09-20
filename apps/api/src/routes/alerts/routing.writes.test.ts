@@ -103,6 +103,7 @@ describe('routing-rule writes — partner org resolution (#1633)', () => {
     });
     expect(res.status).toBe(201);
     expect(insertedRef.current?.orgId).toBe('org-a');
+    expect(insertedRef.current?.isDefault).toBe(false);
   });
 
   it('POST: partner with multiple accessible orgs and no ?orgId= is 400 ambiguous (not 500/crash)', async () => {

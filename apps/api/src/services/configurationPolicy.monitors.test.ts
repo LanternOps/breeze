@@ -60,6 +60,14 @@ function selectOrderByRows(rows: unknown[]) {
   return chain;
 }
 
+function selectLimitRows(rows: unknown[]) {
+  const chain: any = {};
+  chain.from = vi.fn(() => chain);
+  chain.where = vi.fn(() => chain);
+  chain.limit = vi.fn(() => Promise.resolve(rows));
+  return chain;
+}
+
 describe("addFeatureLink — 'monitors' inlineSettings decompose", () => {
   it('inserts one config_policy_monitors row per item, mirroring alert_rule', async () => {
     let normalizedRowValues: any;
@@ -251,7 +259,8 @@ describe("assembleInlineSettings via listFeatureLinks — 'monitors'", () => {
           { id: 'row-2', featureLinkId: 'link-mon', monitorId: MONITOR_ID_2, enabled: true, overrides: null, sortOrder: 0 },
           { id: 'row-1', featureLinkId: 'link-mon', monitorId: MONITOR_ID_1, enabled: false, overrides: { value: 95 }, sortOrder: 1 },
         ]) as any
-      ); // config_policy_monitors — already returned in sortOrder order by the mocked orderBy
+      ) // config_policy_monitors — already returned in sortOrder order by the mocked orderBy
+      .mockReturnValueOnce(selectLimitRows([link]) as any);
 
     const result = await listFeatureLinks('policy-1');
     const settings = result[0]!.inlineSettings as { items: Array<Record<string, unknown>> };
@@ -273,7 +282,8 @@ describe("assembleInlineSettings via listFeatureLinks — 'monitors'", () => {
 
     vi.mocked(db.select)
       .mockReturnValueOnce(selectWhereRows([link]) as any)
-      .mockReturnValueOnce(selectOrderByRows([]) as any);
+      .mockReturnValueOnce(selectOrderByRows([]) as any)
+      .mockReturnValueOnce(selectLimitRows([link]) as any);
 
     const result = await listFeatureLinks('policy-1');
     // No normalized rows → assembleInlineSettings returns null → the link

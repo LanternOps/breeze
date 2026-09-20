@@ -266,7 +266,7 @@ Single-PR fixes and small features don't need this — it's for work with waves.
 ## Testing Standards
 
 ### Frameworks & Configuration
-- **API**: Vitest — `apps/api/vitest.config.ts` (unit), `vitest.config.rls.ts` (RLS), `vitest.integration.config.ts` (integration)
+- **API**: Vitest — `apps/api/vitest.config.ts` (unit), `vitest.config.rls.ts` (RLS session-context contract, `test:rls`), `vitest.config.rls-coverage.ts` (RLS coverage contract, `test:rls-coverage`), `vitest.integration.config.ts` (integration)
 - **Web**: Vitest + jsdom — `apps/web/vitest.config.ts`
 - **Agent**: Go standard `testing` package — `go test -race ./...`
 - **Shared**: Vitest — `packages/shared/vitest.config.ts`
@@ -302,11 +302,18 @@ pnpm --filter @breeze/api test --run src/routes/auth.test.ts
 cd apps/api && npx vitest run src/routes/auth.test.ts
 
 # NOTE: `pnpm test` does NOT run the RLS/integration contract suites
-# (separate vitest configs: vitest.config.rls.ts, vitest.integration.config.ts).
+# (separate vitest configs: vitest.config.rls.ts, vitest.config.rls-coverage.ts,
+# vitest.integration.config.ts).
 # Local green ≠ CI green — run those explicitly when touching tenancy/cascade code.
 # They need real Postgres+Redis. Per-worktree copy (safe alongside other sessions):
 pnpm test-stack up       # private pg+redis for this worktree (docker-compose.test.yml under -p)
 pnpm test-stack down     # tear it down when finished — nothing does this for you
+
+# The RLS COVERAGE contract (rls-coverage.integration.test.ts) has its OWN config and is
+# EXCLUDED from both of the others — pointing either at it prints "No test files found"
+# and exits 1, which reads like a failure but means it never ran. Run it the way CI does:
+DB_CONTEXTLESS_WRITE_STRICT=true pnpm --filter=@breeze/api test:rls-coverage
+# `test:rls` (vitest.config.rls.ts) is a different suite: the session-context contract.
 
 # Go agent (with race detection)
 cd agent && go test -race ./...

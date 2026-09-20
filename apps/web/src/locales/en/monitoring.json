@@ -55,6 +55,7 @@
       "activity": "Activity"
     },
     "fields": {
+    "match": "Match",
       "name": "Name",
       "description": "Description",
       "kind": "Kind",
@@ -109,9 +110,39 @@
       "title": "Test on a device",
       "selectDevice": "Device",
       "run": "Run test"
+    },
+    "deliveryPreview": {
+      "selectOrg": "Select an organization to preview delivery.",
+      "failed": "Could not preview delivery.",
+      "loading": "Resolving delivery…",
+      "disabled": "{{name}} (disabled)",
+      "unavailable": "Unavailable channel",
+      "destination": "{{severity}} → {{channels}}",
+      "partnerRule": "Partner rule: {{name}}",
+      "orgRule": "Organization rule: {{name}}",
+      "partnerDefault": "Partner default: {{name}}",
+      "orgDefault": "Organization default: {{name}}",
+      "noRow": "No delivery row is configured.",
+      "monitorOverride": "Monitor override",
+      "escalation": "Escalates via {{name}}",
+      "withoutSite": "No site selected; site-specific routing rows are excluded.",
+      "testRules": "Test this rule set",
+      "kind": "Monitor kind",
+      "noKind": "No monitor kind",
+      "site": "Site",
+      "noSite": "No site",
+      "sitesFailed": "Could not load sites.",
+      "manage": "Manage delivery",
+      "draft": "Preview uses the current editor values.",
+      "skipped": "Skipped {{id}}: {{reason}}",
+      "skipReasons": {
+        "disabled": "disabled",
+        "unavailable": "unavailable"
+      }
     }
   },
   "kinds": {
+    "composite": "Composite (all or any of several)",
     "cpu": "CPU usage",
     "memory": "Memory usage",
     "disk": "Disk usage",

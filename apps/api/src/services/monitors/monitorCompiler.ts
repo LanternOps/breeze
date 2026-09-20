@@ -12,7 +12,7 @@ import {
   resolveAutomationReferencesForOwner,
 } from '../automationRuntime';
 import type { AutomationAction } from '../automationRuntime';
-import type { AlertCondition } from '../alertConditions/types';
+import type { RootCondition } from '../alertConditions/types';
 
 /**
  * The monitor COMPILER (#5287 W02).
@@ -119,7 +119,7 @@ export function buildDiagnosticScriptReferences(
 }
 
 /** The condition the alertConditions registry will evaluate for this monitor. */
-export function buildCompiledCondition(def: MonitorDefinitionRow): AlertCondition {
+export function buildCompiledCondition(def: MonitorDefinitionRow): RootCondition {
   const spec = getMonitorKindSpec(def.kind);
   const condition = spec.conditionSchema.parse(def.condition);
   // W04: `script` and `network_check` read their evidence back through a row

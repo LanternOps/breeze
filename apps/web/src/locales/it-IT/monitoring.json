@@ -55,6 +55,7 @@
       "activity": "Attività"
     },
     "fields": {
+    "match": "Corrispondenza",
       "name": "Nome",
       "description": "Descrizione",
       "kind": "Tipo",
@@ -109,9 +110,39 @@
       "title": "Prova su un dispositivo",
       "selectDevice": "Dispositivo",
       "run": "Esegui prova"
+    },
+    "deliveryPreview": {
+      "selectOrg": "Seleziona un’organizzazione per visualizzare la consegna.",
+      "failed": "Impossibile visualizzare l’anteprima.",
+      "loading": "Risoluzione della consegna…",
+      "disabled": "{{name}} (disabilitato)",
+      "unavailable": "Canale non disponibile",
+      "destination": "Consegna per {{severity}}: {{channels}}",
+      "partnerRule": "Regola del partner: {{name}}",
+      "orgRule": "Regola dell’organizzazione: {{name}}",
+      "partnerDefault": "Impostazione predefinita del partner: {{name}}",
+      "orgDefault": "Impostazione predefinita dell’organizzazione: {{name}}",
+      "noRow": "Nessuna riga di consegna configurata.",
+      "monitorOverride": "Impostazione propria del monitor",
+      "escalation": "Escalation tramite {{name}}",
+      "withoutSite": "Nessuna sede selezionata; le regole specifiche della sede sono escluse.",
+      "testRules": "Prova questo insieme di regole",
+      "kind": "Tipo di monitor",
+      "noKind": "Nessun tipo di monitor",
+      "site": "Sede",
+      "noSite": "Nessuna sede",
+      "sitesFailed": "Impossibile caricare le sedi.",
+      "manage": "Gestisci la consegna",
+      "draft": "L’anteprima usa i valori attuali dell’editor.",
+      "skipped": "Ignorato {{id}}: {{reason}}",
+      "skipReasons": {
+        "disabled": "disabilitato",
+        "unavailable": "non disponibile"
+      }
     }
   },
   "kinds": {
+    "composite": "Composito (tutte o una di più condizioni)",
     "cpu": "Utilizzo CPU",
     "memory": "Utilizzo memoria",
     "disk": "Utilizzo disco",

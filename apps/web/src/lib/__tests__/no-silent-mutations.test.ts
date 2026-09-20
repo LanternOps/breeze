@@ -40,7 +40,7 @@ const TARGET_GLOBS = [
   // Network device "Check now" (#5988 W05): the probe reads liveness outside
   // W04's settings writer and must surface every mutation outcome.
   'src/components/devices/networkDevice/useAssetProbe.ts',
-  'src/components/alerts/NotificationChannelsPage.tsx',
+  'src/components/alerts/delivery/deliveryActions.ts',
   'src/components/alerts/AlertsPage.tsx',
   'src/components/alerts/AlertDetailPage.tsx',
   // Alert verdict feedback (P2-1 Task 15): submitVerdictFeedback is the one

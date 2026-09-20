@@ -55,6 +55,7 @@
       "activity": "Atividade"
     },
     "fields": {
+    "match": "Correspondência",
       "name": "Nome",
       "description": "Descrição",
       "kind": "Tipo",
@@ -109,9 +110,39 @@
       "title": "Testar em um dispositivo",
       "selectDevice": "Dispositivo",
       "run": "Executar teste"
+    },
+    "deliveryPreview": {
+      "selectOrg": "Selecione uma organização para visualizar a entrega.",
+      "failed": "Não foi possível visualizar a entrega.",
+      "loading": "Resolvendo a entrega…",
+      "disabled": "{{name}} (desativado)",
+      "unavailable": "Canal indisponível",
+      "destination": "Entrega para {{severity}}: {{channels}}",
+      "partnerRule": "Regra do parceiro: {{name}}",
+      "orgRule": "Regra da organização: {{name}}",
+      "partnerDefault": "Padrão do parceiro: {{name}}",
+      "orgDefault": "Padrão da organização: {{name}}",
+      "noRow": "Nenhuma linha de entrega configurada.",
+      "monitorOverride": "Configuração própria do monitor",
+      "escalation": "Escalona via {{name}}",
+      "withoutSite": "Nenhum local selecionado; regras específicas de local são excluídas.",
+      "testRules": "Testar este conjunto de regras",
+      "kind": "Tipo de monitor",
+      "noKind": "Sem tipo de monitor",
+      "site": "Local",
+      "noSite": "Sem local",
+      "sitesFailed": "Não foi possível carregar os locais.",
+      "manage": "Gerenciar entrega",
+      "draft": "A prévia usa os valores atuais do editor.",
+      "skipped": "Ignorado {{id}}: {{reason}}",
+      "skipReasons": {
+        "disabled": "desativado",
+        "unavailable": "indisponível"
+      }
     }
   },
   "kinds": {
+    "composite": "Composto (todas ou alguma de várias)",
     "cpu": "Uso de CPU",
     "memory": "Uso de memória",
     "disk": "Uso de disco",

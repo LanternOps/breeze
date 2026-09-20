@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('./aiTools', () => ({
   getToolTier: vi.fn((toolName: string) => {
     const tiers: Record<string, number> = {
+      manage_delivery: 1,
       manage_deployments: 1,
       manage_patches: 1,
       manage_groups: 1,
@@ -1408,5 +1409,17 @@ describe('checkToolPermission — revoke_elevation requires pam.approve (fix/pam
 
     expect(await checkToolPermission('request_elevation', {}, auth)).toBeNull();
     expect(await checkToolPermission('get_elevation_history', {}, auth)).toBeNull();
+  });
+});
+
+describe('manage_delivery approval boundary', () => {
+  it.each(['create_routing', 'update_routing', 'delete_routing', 'set_default',
+    'create_escalation', 'update_escalation', 'delete_escalation'])('%s requires supervised approval', action => {
+    expect(checkGuardrails('manage_delivery', { action, ownerScope: 'partner', data: { channelIds: [] } }))
+      .toMatchObject({ tier: 3, requiresApproval: true, approvalScope: 'supervised' });
+  });
+  it.each(['resolve', 'list_routing', 'list_escalation'])('%s remains read-only', action => {
+    expect(checkGuardrails('manage_delivery', { action }))
+      .toMatchObject({ tier: 1, requiresApproval: false });
   });
 });

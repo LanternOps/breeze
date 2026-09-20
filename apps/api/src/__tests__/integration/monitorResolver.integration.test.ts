@@ -121,11 +121,12 @@ async function insertPolicy(values: {
 async function attachMonitors(
   policyId: string,
   attachments: Array<{ monitorId: string; enabled?: boolean; overrides?: Record<string, unknown> | null }>,
+  inheritance: 'cumulative' | 'replace' = 'cumulative',
 ) {
   await withDbAccessContext(SYSTEM_CTX, async () => {
     const [link] = await db
       .insert(configPolicyFeatureLinks)
-      .values({ configPolicyId: policyId, featureType: 'monitors' })
+      .values({ configPolicyId: policyId, featureType: 'monitors', inlineSettings: { inheritance } })
       .returning({ id: configPolicyFeatureLinks.id });
     for (const a of attachments) {
       await db.insert(configPolicyMonitors).values({
@@ -138,7 +139,7 @@ async function attachMonitors(
   });
 }
 
-async function assign(policyId: string, level: 'organization' | 'site', targetId: string) {
+async function assign(policyId: string, level: 'partner' | 'organization' | 'site', targetId: string) {
   await withDbAccessContext(SYSTEM_CTX, () =>
     db.insert(configPolicyAssignments).values({ configPolicyId: policyId, level, targetId }),
   );
@@ -217,6 +218,43 @@ async function buildChain() {
 }
 
 describe('resolveMonitorsForDevice — cumulative resolution (#5289)', () => {
+  it('keeps cumulative built-ins and only the closest replace policy, excluding org and parent monitors', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const site = await createSite({ orgId: org.id });
+    createdPartnerIds.push(partner.id);
+    createdOrgIds.push(org.id);
+
+    const builtin = await insertAndCompile({ partnerId: partner.id, builtinKey: 'disk_full' });
+    const monitorA = await insertAndCompile({ orgId: org.id });
+    const monitorP = await insertAndCompile({ orgId: org.id });
+    const monitorB = await insertAndCompile({ orgId: org.id });
+
+    const partnerPolicy = await insertPolicy({ partnerId: partner.id });
+    await attachMonitors(partnerPolicy, [{ monitorId: builtin.id }]);
+    await assign(partnerPolicy, 'partner', partner.id);
+
+    const parentPolicyId = await insertPolicy({ orgId: org.id });
+    await attachMonitors(parentPolicyId, [{ monitorId: monitorP.id }]);
+    const orgPolicy = await insertPolicy({ orgId: org.id, parentPolicyId });
+    await attachMonitors(orgPolicy, [{ monitorId: monitorA.id }], 'replace');
+    await assign(orgPolicy, 'organization', org.id);
+
+    const sitePolicy = await insertPolicy({ orgId: org.id });
+    await attachMonitors(sitePolicy, [{ monitorId: monitorB.id }], 'replace');
+    await assign(sitePolicy, 'site', site.id);
+
+    const device = await insertDevice(org.id, site.id);
+    const resolution = await withDbAccessContext({
+      scope: 'organization', orgId: org.id, accessibleOrgIds: [org.id],
+      accessiblePartnerIds: [], currentPartnerId: partner.id, userId: null,
+    }, () => resolveMonitorsForDevice(device.id));
+    expect(resolution.kind).toBe('resolved');
+    if (resolution.kind !== 'resolved') throw new Error('unreachable');
+    expect(resolution.monitors.map((monitor) => monitor.monitorId).sort())
+      .toEqual([builtin.id, monitorB.id].sort());
+  });
+
   it('a device in the site with its own attachment gets the site override, plus the inherited/child monitors', async () => {
     const chain = await buildChain();
 

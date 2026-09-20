@@ -673,7 +673,7 @@ export function normalizeAutomationActions(input: unknown): AutomationAction[] {
 
     if (type === 'execute_command') {
       const command = asString(action.command);
-      if (!command) {
+      if (!command && action.kind !== 'restart_service') {
         throw new AutomationValidationError(`actions[${index}] execute_command requires command`);
       }
       const shell = asString(action.shell);
@@ -683,15 +683,15 @@ export function normalizeAutomationActions(input: unknown): AutomationAction[] {
         shell: shell === 'bash' || shell === 'powershell' || shell === 'cmd' ? shell : undefined,
         whenOffline: asWhenOffline(action.whenOffline),
         kind: action.kind,
-        maxAttempts: action.maxAttempts,
-        cooldownSeconds: action.cooldownSeconds,
+        ...(action.maxAttempts !== undefined ? { maxAttempts: action.maxAttempts } : {}),
+        ...(action.cooldownSeconds !== undefined ? { cooldownSeconds: action.cooldownSeconds } : {}),
       });
       if (!parsed.success) {
         throw new AutomationValidationError(
-          `actions[${index}] execute_command has invalid restart options: ${parsed.error.issues[0]?.message}`,
+          `actions[${index}] execute_command has invalid restart options: ${parsed.error.issues[0]?.path.join('.')} ${parsed.error.issues[0]?.message}`,
         );
       }
-      if (parsed.data.type === 'execute_command') normalized.push(parsed.data);
+      if (parsed.data.type === 'execute_command') normalized.push({ ...parsed.data, command: command ?? '' });
       continue;
     }
 
@@ -1612,6 +1612,14 @@ export async function executeCommandAction(
   actionIndex: number,
   context: ActionExecutionContext,
 ): Promise<ActionExecutionResult> {
+  if (action.kind === 'restart_service' && action.command.trim() === '') {
+    // The agent performs the restart locally through auto_restart on the
+    // delivered watch. Nothing to dispatch; record why.
+    return {
+      outcome: { status: 'succeeded' },
+      log: logEntry('restart_service handled by the agent watch; no server-side command', 'info', { actionIndex }),
+    };
+  }
   const shell = chooseShellForDevice(context.device.osType, action.shell);
 
   // No executionId / execution row: execute_command runs ad-hoc content with
