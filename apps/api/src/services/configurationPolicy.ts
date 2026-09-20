@@ -55,6 +55,7 @@ import {
   eventLogInlineSettingsSchema,
   monitoringInlineSettingsSchema,
   monitorsInlineSettingsSchema,
+  monitorsInheritanceSchema,
   onedriveHelperInlineSettingsSchema,
   remoteAccessInlineSettingsSchema as remoteAccessCapabilitySettingsSchema,
   warrantyInlineSettingsSchema,
@@ -1501,7 +1502,18 @@ async function assembleInlineSettings(
         .from(configPolicyMonitors)
         .where(eq(configPolicyMonitors.featureLinkId, linkId))
         .orderBy(asc(configPolicyMonitors.sortOrder));
-      if (rows.length === 0) return null;
+      // `inheritance` (W05c1) is not a per-attachment fact, so it has no
+      // normalized column: it lives on the link's JSON and is re-attached here
+      // so the read path never drops it once attachments exist.
+      const [link] = await executor
+        .select({ inlineSettings: configPolicyFeatureLinks.inlineSettings })
+        .from(configPolicyFeatureLinks)
+        .where(eq(configPolicyFeatureLinks.id, linkId))
+        .limit(1);
+      const inheritance = monitorsInheritanceSchema.catch('cumulative').parse(
+        (link?.inlineSettings as { inheritance?: unknown } | null)?.inheritance,
+      );
+      if (rows.length === 0 && inheritance === 'cumulative') return null;
       return {
         items: rows.map((r) => ({
           monitorId: r.monitorId,
@@ -1509,6 +1521,7 @@ async function assembleInlineSettings(
           overrides: r.overrides,
           sortOrder: r.sortOrder,
         })),
+        inheritance,
       };
     }
 
