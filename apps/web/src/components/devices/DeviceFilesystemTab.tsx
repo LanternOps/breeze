@@ -996,7 +996,7 @@ export default function DeviceFilesystemTab({
             </div>
             <div className="rounded-md border bg-muted/20 p-3">
               <p className="text-xs text-muted-foreground">
-                {t("deviceFilesystemTab.categories")}
+                {t("deviceFilesystemTab.categoriesLabel")}
               </p>
               <p className="mt-1 text-sm font-medium">
                 {cleanupPreview.categories.length}
