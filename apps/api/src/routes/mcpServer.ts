@@ -1241,6 +1241,32 @@ async function handleToolsList(
 // tools/call
 // ============================================
 
+/**
+ * #6408: core AI tools overwhelmingly signal failure by RETURNING
+ * `JSON.stringify({ error: '…' })` rather than throwing, so the thrown-error
+ * path below never sees them. Returns the error message when `safeText` is a
+ * PURE returned error — a top-level string `error` and no other key except the
+ * `_chat` compaction marker — and undefined otherwise.
+ *
+ * The predicate is deliberately narrow: plenty of tools return an `error`
+ * field ALONGSIDE real data (partial results, `error: null`), and those are
+ * successful calls. Only a payload whose entire content is the error is a
+ * tool-execution error.
+ */
+function pureReturnedToolError(safeText: string): string | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(safeText);
+  } catch {
+    return undefined;
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
+  const object = parsed as Record<string, unknown>;
+  if (typeof object.error !== 'string') return undefined;
+  if (!Object.keys(object).every((key) => key === 'error' || key === '_chat')) return undefined;
+  return object.error;
+}
+
 function structuredFromSafeText(safeText: string): Record<string, unknown> | undefined {
   try {
     const parsed: unknown = JSON.parse(safeText);
@@ -1248,7 +1274,7 @@ function structuredFromSafeText(safeText: string): Record<string, unknown> | und
     const object = parsed as Record<string, unknown>;
     // Digests and pure returned errors are text, not successful tool data.
     if (object.summarized === true) return undefined;
-    if (typeof object.error === 'string' && Object.keys(object).every((key) => key === 'error' || key === '_chat')) return undefined;
+    if (pureReturnedToolError(safeText) !== undefined) return undefined;
     return object;
   } catch {
     return undefined;
@@ -1462,6 +1488,22 @@ async function handleToolsCall(
       };
       const result = await executeTool(toolName, toolInput, toolAuth);
       const safeResult = compactToolResultForChat(toolName, result);
+
+      // #6408: a pure returned `{error}` is a tool-execution error, not a
+      // successful call. Mirror the tenant (BYO MCP) path — `isError: true` on
+      // the JSON-RPC result and `failure` on the ledger + audit — so clients
+      // that branch on `isError` (as MCP intends) and the execution reports
+      // both see the truth. The text block is unchanged: the client still
+      // reads the tool's own redacted message.
+      const returnedError = pureReturnedToolError(safeResult);
+      if (returnedError !== undefined) {
+        return {
+          status: 'failure',
+          error: new Error(returnedError),
+          response: jsonRpcResult(id, { content: [{ type: 'text', text: safeResult }], isError: true }),
+        };
+      }
+
       const structured = structuredFromSafeText(safeResult);
 
       // If result contains imageBase64, return it as an MCP image content block
