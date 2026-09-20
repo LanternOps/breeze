@@ -2280,7 +2280,6 @@
     "minimumSummary": "{{minutes}} min minimum",
     "roundingSummary": "Round to {{minutes}} min",
     "inherits": "Uses All other work",
-    "currencyHelp": "A default profile or a profile with rates cannot change currency. Blank rounding means no rounding.",
-    "partialSave": "Profile details were saved, but work type rates were not. Retry Save to finish."
+    "currencyHelp": "A default profile or a profile with rates cannot change currency. Blank rounding means no rounding."
   }
 }

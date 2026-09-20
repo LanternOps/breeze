@@ -279,7 +279,7 @@ describe('createTimeEntry', () => {
     dbMocks.selectResults.push([{ id: 't-1', orgId: 'o-1' }]); // ticket lock row (FOR UPDATE)
     dbMocks.insertResult = [{ id: 'te-1' }];
     await createTimeEntry(
-      { ticketId: 't-1', startedAt: new Date('2026-06-11T09:00:00Z'), endedAt: new Date('2026-06-11T09:30:00Z'), isBillable: false, hourlyRate: 80 },
+      { ticketId: 't-1', startedAt: new Date('2026-06-11T09:00:00Z'), endedAt: new Date('2026-06-11T09:30:00Z'), isBillable: false },
       BILLING_MANAGER
     );
     const vals = dbMocks.insertedValues[0]!;
@@ -430,9 +430,9 @@ describe('startTimer / stopTimer', () => {
     expect(vals.hourlyRate).toBe('150.00');
   });
 
-  it('stopTimer errors with NO_RUNNING_TIMER when nothing is running', async () => {
+  it.each([{}, { isBillable: true }])('stopTimer errors with NO_RUNNING_TIMER for %j when nothing is running', async input => {
     dbMocks.updateResult = []; // CAS update matched no rows
-    await expect(stopTimer({}, ACTOR)).rejects.toMatchObject({ code: 'NO_RUNNING_TIMER', status: 404 });
+    await expect(stopTimer(input, ACTOR)).rejects.toMatchObject({ code: 'NO_RUNNING_TIMER', status: 404 });
   });
 
   // #2189 regression block: the one-running-timer conflict must NEVER raise a
@@ -2044,10 +2044,11 @@ describe('billing profile stamps and service override gate', () => {
     await createTimeEntry({ ticketId: 't-1', ...span, hourlyRate: 230 }, manager);
     expect(dbMocks.insertedValues[0]).toMatchObject({ hourlyRate: '230.00', billingOverridden: true });
   });
-  it('isBillable remains technician editable', async () => {
+  it('isBillable overrides require billing permission on create', async () => {
     seedLink();
-    await createTimeEntry({ ticketId: 't-1', ...span, isBillable: false }, tech);
-    expect(dbMocks.insertedValues[0]).toMatchObject({ isBillable: false, billingOverridden: false });
+    await expect(createTimeEntry({ ticketId: 't-1', ...span, isBillable: false }, tech))
+      .rejects.toMatchObject({ status: 403, code: 'MANAGE_BILLING_REQUIRED' });
+    expect(dbMocks.insertedValues).toHaveLength(0);
   });
   it('changing work type re-prices an unbilled entry and clears approval', async () => {
     dbMocks.selectResults.push([entry]);
@@ -2100,6 +2101,55 @@ describe('billing profile stamps and service override gate', () => {
     await updateTimeEntry('te-1', { hourlyRate: 300 }, manager);
     expect(dbMocks.updateSetArgs[0]).toMatchObject({ hourlyRate: '300.00', billingStatus: 'not_billed',
       coverage: 'billable', billingOverridden: true });
+  });
+  it.each([null, '50.00', '75.00'])('persists an explicit standalone rate over %s and marks it billable', async hourlyRate => {
+    dbMocks.selectResults.push([{ ...entry, orgId: null, ticketId: null, billingProfileId: null,
+      coverage: 'non_billable', isBillable: false, hourlyRate }]);
+    await updateTimeEntry('te-1', { hourlyRate: 75 }, manager);
+    expect(dbMocks.updateSetArgs[0]).toMatchObject({ hourlyRate: '75.00', coverage: 'billable',
+      isBillable: true, billingStatus: 'not_billed', billingOverridden: true });
+    expect(dbMocks.updateSetArgs[0]).not.toHaveProperty('currencyCode');
+    expect(cardMocks.loadCardsForOrg).not.toHaveBeenCalled();
+  });
+  it('rejects explicit money together with non-billable instead of dropping the rate', async () => {
+    dbMocks.selectResults.push([{ ...entry, orgId: null, ticketId: null, isBillable: false, hourlyRate: null }]);
+    await expect(updateTimeEntry('te-1', { hourlyRate: 75, isBillable: false }, manager))
+      .rejects.toMatchObject({ status: 400, code: 'RATE_REQUIRES_BILLABLE' });
+    expect(dbMocks.updateSetArgs).toHaveLength(0);
+  });
+  it.each([
+    { mode: 'stop', isBillable: true }, { mode: 'stop', isBillable: false },
+    { mode: 'update', isBillable: true }, { mode: 'update', isBillable: false },
+  ])('$mode forbids a technician override from billable=$isBillable before writing', async ({ mode, isBillable }) => {
+    dbMocks.selectResults.push([{ ...entry, endedAt: null, isBillable,
+      coverage: isBillable ? 'billable' : 'non_billable' }]);
+    const operation = mode === 'stop' ? stopTimer({ isBillable: !isBillable }, tech)
+      : updateTimeEntry('te-1', { endedAt: span.endedAt, isBillable: !isBillable }, tech);
+    await expect(operation).rejects.toMatchObject({ status: 403, code: 'MANAGE_BILLING_REQUIRED' });
+    expect(dbMocks.updateSetArgs).toHaveLength(0);
+  });
+  it.each([
+    { coverage: 'billable', isBillable: true, hourlyRate: '100.00', next: false },
+    { coverage: 'included', isBillable: true, hourlyRate: null, next: false },
+    { coverage: 'non_billable', isBillable: false, hourlyRate: null, next: true },
+  ])('timer stop reconciles a manager override from $coverage', async row => {
+    dbMocks.selectResults.push([{ ...entry, ...row, endedAt: null,
+      billingStatus: row.coverage === 'included' ? 'contract' : 'not_billed' }]);
+    dbMocks.updateResult = [entry];
+    await stopTimer({ isBillable: row.next }, manager);
+    expect(dbMocks.updateSetArgs[0]).toMatchObject({ isBillable: row.next,
+      coverage: row.next ? 'billable' : 'non_billable', billingOverridden: true,
+      billingStatus: 'not_billed', hourlyRate: null, minimumMinutes: null,
+      endedAt: expect.any(Date) });
+    expect(cardMocks.loadCardsForOrg).not.toHaveBeenCalled();
+    expect(dbMocks.forUpdateCalls).toBe(1);
+  });
+  it('timer billable echo preserves included coverage without requiring permission or marking override', async () => {
+    dbMocks.selectResults.push([{ ...entry, coverage: 'included', hourlyRate: null, billingStatus: 'contract', endedAt: null }]);
+    dbMocks.updateResult = [entry];
+    await stopTimer({ isBillable: true }, tech);
+    expect(dbMocks.updateSetArgs[0]).toMatchObject({ coverage: 'included', isBillable: true,
+      billingStatus: 'contract', hourlyRate: null, billingOverridden: false });
   });
   it('timer stop and mobile endedAt replay preserve the start stamp', async () => {
     dbMocks.updateResult = [entry];

@@ -1,3 +1,4 @@
+import type { SaveProfileInput } from '@breeze/shared';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
@@ -22,8 +23,7 @@ const buttonClass = 'rounded-md border px-3 py-2 text-sm font-medium hover:bg-mu
 const unauthorized = () => void navigateTo(loginPathWithNext(), { replace: true });
 const metadata = (p: Profile) => ({ name: p.name.trim(), notes: p.notes, currencyCode: p.currencyCode, roundingIncrementMinutes: p.roundingIncrementMinutes, baseCoverage: p.baseCoverage, baseHourlyRate: p.baseHourlyRate, baseMinimumMinutes: p.baseMinimumMinutes });
 
-/** The profile drawer saves all work-type rules together. The API stores base pricing
- * and profile metadata separately; those changes need a PATCH before the rows PUT. */
+/** The profile drawer saves its metadata, base pricing and rules atomically. */
 export default function BillingRatesTab({ currencyCode = 'USD' }: { currencyCode?: string }) {
   const { t, i18n } = useTranslation('billing');
   const [profiles, setProfiles] = useState<Profile[]>([]);
@@ -34,7 +34,6 @@ export default function BillingRatesTab({ currencyCode = 'USD' }: { currencyCode
   const [draft, setDraft] = useState<Profile | null>(null);
   const [original, setOriginal] = useState<Profile | null>(null);
   const [cloneId, setCloneId] = useState<string | null>(null);
-  const [partialSave, setPartialSave] = useState(false);
   const workTypeManager = useRef<WorkTypesCardHandle>(null);
   const activeTypes = workTypes.filter(type => type.isActive);
   const load = useCallback(async () => {
@@ -52,15 +51,15 @@ export default function BillingRatesTab({ currencyCode = 'USD' }: { currencyCode
   const acceptWorkTypes = useCallback((types: WorkTypeOption[]) => setWorkTypes(types), []);
   const edit = (p: Profile, clone = false) => {
     setOriginal(p); setDraft({ ...p, name: clone ? '' : p.name, rules: p.rules.map(rule => ({ ...rule })) });
-    setCloneId(clone ? p.id : null); setPartialSave(false);
+    setCloneId(clone ? p.id : null);
   };
   const create = () => {
-    setOriginal(null); setCloneId(null); setPartialSave(false);
+    setOriginal(null); setCloneId(null);
     setDraft({ id: '', name: '', notes: null, currencyCode, isDefault: false, isActive: true, baseCoverage: 'billable', baseHourlyRate: null, baseMinimumMinutes: null, roundingIncrementMinutes: null, rules: [] });
   };
-  const request = (url: string, method: string, body?: unknown, success = true) => runAction<{ profile: Profile }>({
+  const request = (url: string, method: string, body?: unknown) => runAction<{ profile: Profile }>({
     request: () => fetchWithAuth(url, { method, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }),
-    errorFallback: t('rates.saveError'), successMessage: success ? t('rates.saved') : undefined, onUnauthorized: unauthorized,
+    errorFallback: t('rates.saveError'), successMessage: t('rates.saved'), onUnauthorized: unauthorized,
   });
   const catchAction = (err: unknown) => {
     if (err instanceof ActionError && err.status === 401) return;
@@ -69,29 +68,16 @@ export default function BillingRatesTab({ currencyCode = 'USD' }: { currencyCode
   async function save() {
     if (!draft || busy) return;
     setBusy(true);
-    let metadataSaved = false;
     try {
       if (cloneId) {
         await request(`/billing-profiles/${cloneId}/clone`, 'POST', { name: draft.name.trim() });
       } else {
-        let id = draft.id;
-        if (!id) {
-          const result = await request('/billing-profiles', 'POST', metadata(draft), false);
-          id = result.profile.id;
-          // Keep the server-created identity if the later rows save fails, so retry
-          // updates this profile instead of creating a duplicate.
-          const persisted = { ...draft, id };
-          setDraft(persisted); setOriginal({ ...persisted, rules: [] });
-          metadataSaved = true;
-        } else if (JSON.stringify(metadata(draft)) !== JSON.stringify(metadata(original!))) {
-          await request(`/billing-profiles/${id}`, 'PATCH', metadata(draft), false);
-          setOriginal({ ...draft, rules: original?.rules ?? [] }); metadataSaved = true;
-        }
-        await request(`/billing-profiles/${id}/rows`, 'PUT', { rows: draft.rules.map(({ workTypeId, coverage, hourlyRate, minimumMinutes, notes }) => ({ workTypeId, coverage, hourlyRate, minimumMinutes, ...(notes === undefined ? {} : { notes }) })) });
+        const body: SaveProfileInput = { ...metadata(draft), rows: draft.rules.map(({ workTypeId, coverage, hourlyRate, minimumMinutes, notes }) => ({ workTypeId, coverage, hourlyRate, minimumMinutes, ...(notes === undefined ? {} : { notes }) })) };
+        await request(draft.id ? `/billing-profiles/${draft.id}/save` : '/billing-profiles', draft.id ? 'PUT' : 'POST', body);
       }
-      setPartialSave(false); setDraft(null); await load();
+      setDraft(null); await load();
     } catch (err) {
-      setPartialSave(previous => previous || metadataSaved); catchAction(err);
+      catchAction(err);
     } finally { setBusy(false); }
   }
   async function rowAction(p: Profile, archive: boolean) {
@@ -178,7 +164,6 @@ export default function BillingRatesTab({ currencyCode = 'USD' }: { currencyCode
           <label className="block text-sm">{t('rates.notes')}<textarea className={inputClass} data-testid="billing-profile-notes" maxLength={4000} value={draft.notes ?? ''} onChange={event => setDraft({ ...draft, notes: event.target.value || null })} /></label>
           {ruleEditor('base', t('rates.allOtherWork'))}{activeTypes.map(type => ruleEditor(type.id, type.name))}</>}
         </fieldset>
-        {partialSave && <p role="alert" className="text-sm text-destructive">{t('rates.partialSave')}</p>}
         <div className="flex justify-end gap-2 border-t pt-4"><button type="button" className={buttonClass} data-testid="billing-profile-cancel" disabled={busy} onClick={() => setDraft(null)}>{t('common:actions.cancel')}</button><button type="submit" className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50" data-testid="billing-profile-save" disabled={busy || !draft.name.trim()}>{busy ? t('common:states.saving') : t('common:actions.save')}</button></div>
       </form>}
     </Drawer>

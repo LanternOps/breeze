@@ -9,9 +9,9 @@
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { writeRouteAudit } from '../services/auditEvents';
-import { createProfileSchema, updateProfileSchema, profileRowsSchema } from '../services/billingProfileValidation';
+import { createProfileSchema, updateProfileSchema, profileRowsSchema, saveProfileSchema } from '../services/billingProfileValidation';
 import {
-  listProfiles, getProfile, createProfile, updateProfile, replaceProfileRows, cloneProfile, BillingProfileServiceError,
+  listProfiles, getProfile, createProfile, updateProfile, saveProfile, replaceProfileRows, cloneProfile, BillingProfileServiceError,
 } from '../services/billingProfileService';
 import { authMiddleware, requireScope, requirePermission } from '../middleware/auth';
 import { PERMISSIONS } from '../services/permissions';
@@ -149,6 +149,24 @@ app.delete('/:id', writePerm, partnerWideWrite, async (c) => {
     const profile = await updateProfile(auth, id.data, auth.partnerId, { isActive: false });
     writeRouteAudit(c, {
       orgId: null, action: 'billing_profile.archive', resourceType: 'billing_profile', resourceId: profile.id,
+      details: { before, after: profile },
+    });
+    return c.json({ profile });
+  } catch (err) { return fail(c, err); }
+});
+
+app.put('/:id/save', writePerm, partnerWideWrite, async (c) => {
+  const auth = c.get('auth');
+  if (!auth.partnerId) return c.json({ error: 'Partner context required' }, 403);
+  const id = profileIdSchema.safeParse(c.req.param('id'));
+  if (!id.success) return c.json({ error: 'Invalid billing profile ID' }, 400);
+  const parsed = saveProfileSchema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) return c.json({ error: 'Invalid billing profile', issues: parsed.error.issues }, 400);
+  try {
+    const before = await getProfile(id.data, auth.partnerId);
+    const profile = await saveProfile(auth, id.data, auth.partnerId, parsed.data);
+    writeRouteAudit(c, {
+      orgId: null, action: 'billing_profile.save', resourceType: 'billing_profile', resourceId: profile.id,
       details: { before, after: profile },
     });
     return c.json({ profile });

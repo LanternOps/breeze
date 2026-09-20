@@ -2280,7 +2280,6 @@
     "minimumSummary": "En az {{minutes}} dk",
     "roundingSummary": "{{minutes}} dakikaya yuvarla",
     "inherits": "Diğer tüm işler kullanılır",
-    "currencyHelp": "Varsayılan veya ücret içeren bir profilin para birimi değiştirilemez. Yuvarlama alanı boşsa yuvarlama yapılmaz.",
-    "partialSave": "Profil ayrıntıları kaydedildi, ancak iş türü ücretleri kaydedilmedi. Tamamlamak için yeniden kaydedin."
+    "currencyHelp": "Varsayılan veya ücret içeren bir profilin para birimi değiştirilemez. Yuvarlama alanı boşsa yuvarlama yapılmaz."
   }
 }

@@ -49,6 +49,7 @@ export type TimeEntryServiceErrorCode =
   | 'ORG_DENIED'
   /** 400 — a caller-supplied work_type_id that is not an ACTIVE row of the acting partner. */
   | 'WORK_TYPE_NOT_FOUND'
+  | 'RATE_REQUIRES_BILLABLE'
   | 'MANAGE_BILLING_REQUIRED';
 
 export class TimeEntryServiceError extends Error {
@@ -213,6 +214,16 @@ async function getCategoryDefaults(categoryId: string): Promise<{ defaultWorkTyp
 
 type BillingStamp = Omit<BillingRule, 'fellBackToNoCard' | 'billingStatus'> & { billingStatus: BillingStatus };
 
+function billingStampFromEntry(entry: typeof timeEntries.$inferSelect): BillingStamp {
+  return {
+    billingProfileId: entry.billingProfileId,
+    coverage: entry.coverage ?? (entry.isBillable ? 'billable' : 'non_billable'),
+    hourlyRate: entry.hourlyRate, minimumMinutes: entry.minimumMinutes,
+    roundingIncrementMinutes: entry.roundingIncrementMinutes,
+    isBillable: entry.isBillable, billingStatus: entry.billingStatus,
+  };
+}
+
 async function resolveEntryBilling(
   orgId: string | null, partnerId: string, currencyCode: string | null, workTypeId: string | null,
 ): Promise<BillingStamp> {
@@ -244,13 +255,22 @@ function applyBillingInput(
   const rate = input.hourlyRate !== undefined ? toRate(input.hourlyRate) : base.hourlyRate;
   const rateDiffers = input.hourlyRate !== undefined && (rate === null || base.hourlyRate === null
     ? rate !== base.hourlyRate : Number(rate) !== Number(base.hourlyRate));
+  // Explicit money is a request to bill even previously unpriced standalone
+  // work. Never accept that request and then silently discard its rate.
+  const pricesNonBillable = input.hourlyRate != null && !base.isBillable;
+  const billableDiffers = (input.isBillable !== undefined && input.isBillable !== base.isBillable)
+    || pricesNonBillable;
   const deviates = rateDiffers || (input.billingStatus !== undefined && input.billingStatus !== base.billingStatus)
-    || (input.minimumMinutes !== undefined && input.minimumMinutes !== base.minimumMinutes);
+    || (input.minimumMinutes !== undefined && input.minimumMinutes !== base.minimumMinutes) || billableDiffers;
   if (deviates) assertManageBilling(actor);
+  if (input.hourlyRate != null && input.isBillable === false) {
+    throw new TimeEntryServiceError('An hourly rate requires a billable entry; omit the rate or mark it billable',
+      400, 'RATE_REQUIRES_BILLABLE');
+  }
   const stamp = { ...base, hourlyRate: rate,
     minimumMinutes: input.minimumMinutes !== undefined ? input.minimumMinutes : base.minimumMinutes,
     billingStatus: input.billingStatus ?? base.billingStatus,
-    isBillable: input.isBillable ?? base.isBillable,
+    isBillable: input.isBillable ?? (pricesNonBillable ? true : base.isBillable),
     billingOverridden: alreadyOverridden || deviates,
   };
   // A manager may price previously included work as out-of-scope labour.
@@ -260,9 +280,13 @@ function applyBillingInput(
     stamp.coverage = 'billable';
     stamp.billingStatus = input.billingStatus ?? 'not_billed';
   }
-  if (input.isBillable === true && stamp.coverage === 'non_billable') stamp.coverage = 'billable';
+  if (stamp.isBillable && stamp.coverage === 'non_billable') {
+    stamp.coverage = 'billable';
+    stamp.billingStatus = input.billingStatus ?? 'not_billed';
+  }
   if (!stamp.isBillable) {
     stamp.coverage = 'non_billable';
+    stamp.billingStatus = 'not_billed';
     stamp.hourlyRate = null;
     stamp.minimumMinutes = null;
   }
@@ -621,6 +645,19 @@ async function stopRunningEntry(
   overrides: { description?: string; isBillable?: boolean } = {}
 ) {
   const now = new Date();
+  let billingOverride: ReturnType<typeof applyBillingInput> | undefined;
+  let entryId: string | undefined;
+  if (overrides.isBillable !== undefined) {
+    // A billing edit needs the persisted stamp, not today's card. Serialize
+    // this branch with entry edits and pin the CAS to this timer so a concurrent
+    // start cannot receive the old timer's override. Plain stops stay one UPDATE.
+    const [entry] = await db.select().from(timeEntries)
+      .where(and(eq(timeEntries.userId, actor.userId), isNull(timeEntries.endedAt)))
+      .limit(1).for('update');
+    if (!entry) return null;
+    billingOverride = applyBillingInput(billingStampFromEntry(entry), overrides, actor, entry.billingOverridden);
+    entryId = entry.id;
+  }
   // CAS on ended_at IS NULL: two concurrent stops -> one winner, one no-op.
   // Duration computed in SQL from the row's own started_at (avoids a pre-select round-trip).
   const rows = await db
@@ -629,9 +666,10 @@ async function stopRunningEntry(
       endedAt: now,
       durationMinutes: sql`FLOOR(EXTRACT(EPOCH FROM (${now.toISOString()}::timestamp - ${timeEntries.startedAt})) / 60)::int`,
       ...(overrides.description !== undefined ? { description: overrides.description } : {}),
-      ...(overrides.isBillable !== undefined ? { isBillable: overrides.isBillable } : {})
+      ...(billingOverride ?? {})
     })
-    .where(and(eq(timeEntries.userId, actor.userId), isNull(timeEntries.endedAt)))
+    .where(and(eq(timeEntries.userId, actor.userId), isNull(timeEntries.endedAt),
+      entryId ? eq(timeEntries.id, entryId) : undefined))
     .returning();
   return rows[0] ?? null;
 }
@@ -853,12 +891,7 @@ export async function updateTimeEntry(id: string, input: UpdateTimeEntryInput, a
   const relinked = input.ticketId !== undefined && input.ticketId !== entry.ticketId;
   const workTypeChanged = input.workTypeId !== undefined && input.workTypeId !== entry.workTypeId;
   const reprice = input.resetBilling || (!entry.billingOverridden && (relinked || workTypeChanged));
-  let base: BillingStamp = {
-    billingProfileId: entry.billingProfileId, coverage: entry.coverage ?? (entry.isBillable ? 'billable' : 'non_billable'),
-    hourlyRate: entry.hourlyRate, minimumMinutes: entry.minimumMinutes,
-    roundingIncrementMinutes: entry.roundingIncrementMinutes, isBillable: entry.isBillable,
-    billingStatus: entry.billingStatus,
-  };
+  let base = billingStampFromEntry(entry);
   if (reprice) {
     const nextWorkType = input.workTypeId !== undefined ? input.workTypeId
       : relinked && link ? link.workTypeId : entry.workTypeId ?? null;

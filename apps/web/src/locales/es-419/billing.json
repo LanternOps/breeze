@@ -2280,7 +2280,6 @@
     "minimumSummary": "Mínimo de {{minutes}} min",
     "roundingSummary": "Redondear a {{minutes}} min",
     "inherits": "Usa Todos los demás trabajos",
-    "currencyHelp": "No se puede cambiar la moneda de un perfil predeterminado o con tarifas. Deja el redondeo vacío para no redondear.",
-    "partialSave": "Se guardaron los datos del perfil, pero no las tarifas por tipo de trabajo. Vuelve a guardar para terminar."
+    "currencyHelp": "No se puede cambiar la moneda de un perfil predeterminado o con tarifas. Deja el redondeo vacío para no redondear."
   }
 }

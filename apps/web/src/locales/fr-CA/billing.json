@@ -2280,7 +2280,6 @@
     "minimumSummary": "Minimum de {{minutes}} min",
     "roundingSummary": "Arrondir à {{minutes}} min",
     "inherits": "Utilise Tous les autres travaux",
-    "currencyHelp": "La devise d’un profil par défaut ou avec des tarifs ne peut pas être modifiée. Un arrondi vide signifie aucun arrondi.",
-    "partialSave": "Les détails du profil ont été enregistrés, mais pas les tarifs par type de travail. Réessayez d’enregistrer pour terminer."
+    "currencyHelp": "La devise d’un profil par défaut ou avec des tarifs ne peut pas être modifiée. Un arrondi vide signifie aucun arrondi."
   }
 }

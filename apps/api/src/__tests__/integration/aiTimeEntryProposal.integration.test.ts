@@ -73,6 +73,7 @@ const runDb = it.runIf(!!process.env.DATABASE_URL);
 interface Scenario {
   partnerId: string;
   orgId: string;
+  billingProfileId: string;
   agentId: string;
   runId: string;
   ticketId: string;
@@ -86,7 +87,7 @@ function uid(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-async function seedScenario(opts: { categoryMinutes?: number | null; coverage?: 'billable' | 'non_billable' } = {}): Promise<Scenario> {
+async function seedScenario(opts: { categoryMinutes?: number | null } = {}): Promise<Scenario> {
   const partner = await createPartner();
   const org = await createOrganization({ partnerId: partner.id });
 
@@ -114,10 +115,14 @@ async function seedScenario(opts: { categoryMinutes?: number | null; coverage?: 
   await assignUserToOrganization(tech.id, org.id, techRole.id);
 
   const adminDb = getTestDb() as any;
-  await adminDb.insert(billingProfiles).values({
+  // No org assignment or work-type rules: uncategorised tickets resolve the
+  // partner default's billable base (spec §3.6 declared difference 1), including
+  // the AI proposal and its eventual human-approved time entry.
+  const [billingProfile] = await adminDb.insert(billingProfiles).values({
     partnerId: partner.id, name: 'AI proposal rates', currencyCode: 'USD',
-    isDefault: true, baseCoverage: opts.coverage ?? 'non_billable',
-  });
+    isDefault: true, baseCoverage: 'billable', baseHourlyRate: null,
+    baseMinimumMinutes: null,
+  }).returning();
   let categoryId: string | null = null;
   if (opts.categoryMinutes !== undefined) {
     const [category] = await adminDb.insert(ticketCategories).values({
@@ -188,6 +193,7 @@ async function seedScenario(opts: { categoryMinutes?: number | null; coverage?: 
   return {
     partnerId: partner.id,
     orgId: org.id,
+    billingProfileId: billingProfile.id,
     agentId: agent.id,
     runId: run.id,
     ticketId: ticket.id,
@@ -336,7 +342,7 @@ describe('AI time-entry proposal lane (#4177, W04) — real Postgres', () => {
       action: 'log_time_entry',
       ticketId: s.ticketId,
       durationMinutes: AI_TIME_ENTRY_DEFAULT_MINUTES,
-      isBillable: false,
+      isBillable: true,
       proposedForUserId: s.tech.id,
     });
 
@@ -369,7 +375,12 @@ describe('AI time-entry proposal lane (#4177, W04) — real Postgres', () => {
       userId: s.approver.id,
       source: 'ai_suggested',
       durationMinutes: AI_TIME_ENTRY_DEFAULT_MINUTES,
-      isBillable: false,
+      isBillable: true,
+      coverage: 'billable',
+      billingProfileId: s.billingProfileId,
+      workTypeId: null,
+      hourlyRate: null,
+      billingOverridden: false,
       partnerId: s.partnerId,
       orgId: s.orgId,
     });
@@ -378,7 +389,7 @@ describe('AI time-entry proposal lane (#4177, W04) — real Postgres', () => {
   });
 
   runDb('resolving with an AI resolution note mints under its own trigger key and honours the category duration default', async () => {
-    const s = await seedScenario({ categoryMinutes: 25, coverage: 'billable' });
+    const s = await seedScenario({ categoryMinutes: 25 });
     const draftId = await seedDraft(s, 'resolution_note');
 
     await withDbAccessContext(s.orgContext, () =>

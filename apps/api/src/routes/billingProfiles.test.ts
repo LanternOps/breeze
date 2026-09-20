@@ -12,7 +12,7 @@ const { listWorkTypes, createWorkType, updateWorkType, archiveWorkType, authRef,
 
 const profileMocks = vi.hoisted(() => ({
   listProfiles: vi.fn(), getProfile: vi.fn(), createProfile: vi.fn(), updateProfile: vi.fn(),
-  replaceProfileRows: vi.fn(), cloneProfile: vi.fn(), writeRouteAudit: vi.fn(),
+  replaceProfileRows: vi.fn(), saveProfile: vi.fn(), cloneProfile: vi.fn(), writeRouteAudit: vi.fn(),
 }));
 vi.mock('../services/billingProfileService', () => ({
   ...profileMocks,
@@ -272,6 +272,7 @@ const profileEndpoints = [
   ['PATCH', `/${workTypeId}`, { name: 'Revised' }],
   ['DELETE', `/${workTypeId}`, undefined],
   ['PUT', `/${workTypeId}/rows`, { rows: [] }],
+  ['PUT', `/${workTypeId}/save`, { name: 'Standard', currencyCode: 'USD', baseCoverage: 'billable', rows: [] }],
   ['POST', `/${workTypeId}/clone`, { name: 'Copy' }],
 ] as const;
 
@@ -288,7 +289,7 @@ describe('billing profile routes', () => {
     permsRef.current = { permissions: [{ resource: 'billing_profiles', action: 'read' }, { resource: 'billing_profiles', action: 'write' }] };
     profileMocks.listProfiles.mockResolvedValue([]);
     profileMocks.getProfile.mockResolvedValue({ id: workTypeId, name: 'Before' });
-    for (const mock of [profileMocks.createProfile, profileMocks.updateProfile, profileMocks.replaceProfileRows, profileMocks.cloneProfile]) {
+    for (const mock of [profileMocks.createProfile, profileMocks.updateProfile, profileMocks.replaceProfileRows, profileMocks.saveProfile, profileMocks.cloneProfile]) {
       mock.mockResolvedValue({ id: workTypeId, name: 'After' });
     }
   });
@@ -322,6 +323,29 @@ describe('billing profile routes', () => {
     expect(profileMocks.replaceProfileRows).toHaveBeenCalledExactlyOnceWith(authRef.current, workTypeId, partnerId, rows);
   });
 
+  it('passes metadata, base pricing and rows to one atomic save service call', async () => {
+    const input = { name: 'Revised', notes: 'New terms', currencyCode: 'USD', baseCoverage: 'billable',
+      baseHourlyRate: '175.00', baseMinimumMinutes: 45, roundingIncrementMinutes: 30,
+      rows: [{ workTypeId, coverage: 'included', hourlyRate: null, minimumMinutes: null }] };
+    expect((await profileRequest('PUT', `/${workTypeId}/save`, input)).status).toBe(200);
+    expect(profileMocks.saveProfile).toHaveBeenCalledExactlyOnceWith(authRef.current, workTypeId, partnerId, input);
+    expect(profileMocks.updateProfile).not.toHaveBeenCalled(); expect(profileMocks.replaceProfileRows).not.toHaveBeenCalled();
+  });
+  it('passes creation rows to the atomic create service', async () => {
+    const input = { name: 'Silver', currencyCode: 'USD', baseCoverage: 'billable',
+      rows: [{ workTypeId, coverage: 'included', hourlyRate: null, minimumMinutes: null }] };
+    expect((await profileRequest('POST', '/', input)).status).toBe(201);
+    expect(profileMocks.createProfile).toHaveBeenCalledExactlyOnceWith(authRef.current, partnerId, input);
+  });
+  it('maps an atomic save failure without auditing success', async () => {
+    const { BillingProfileServiceError } = await import('../services/billingProfileService');
+    profileMocks.saveProfile.mockRejectedValue(new BillingProfileServiceError('Work type not found', 404, 'WORK_TYPE_NOT_FOUND'));
+    const res = await profileRequest('PUT', `/${workTypeId}/save`, { name: 'Revised', currencyCode: 'USD', baseCoverage: 'billable', rows: [] });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toMatchObject({ code: 'WORK_TYPE_NOT_FOUND' });
+    expect(profileMocks.writeRouteAudit).not.toHaveBeenCalled();
+  });
+
   it.each(profileEndpoints)('%s %s rejects org scope', async (method, path, body) => {
     authRef.current!.scope = 'organization';
     expect((await profileRequest(method, path, body)).status).toBe(403);
@@ -347,6 +371,8 @@ describe('billing profile routes', () => {
     ['PATCH', `/${workTypeId}`, {}], ['PATCH', '/bad-id', { name: 'Valid' }],
     ['DELETE', '/bad-id', undefined], ['PUT', `/${workTypeId}/rows`, { rows: [{ workTypeId: 'invalid' }] }],
     ['POST', `/${workTypeId}/clone`, { name: ' ' }],
+    ['PUT', `/${workTypeId}/save`, { name: 'Standard', currencyCode: 'USD', baseCoverage: 'billable' }],
+    ['PUT', '/bad-id/save', { name: 'Standard', currencyCode: 'USD', baseCoverage: 'billable', rows: [] }],
   ])('%s %s rejects invalid input', async (method, path, body) => {
     expect((await profileRequest(method as string, path as string, body)).status).toBe(400);
     expect(profileMocks.writeRouteAudit).not.toHaveBeenCalled();

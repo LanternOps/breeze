@@ -274,6 +274,13 @@ describe.runIf(RUN)('ticketing currency snapshot permanence (wave 4 #3776)', () 
     expect(await readEntry(rows.linkedEntryId)).toEqual({ hourlyRate: '250.00', currencyCode: 'USD' });
     await withDbAccessContext(partnerCtx(f), () => updateTimeEntry(rows.standaloneEntryId, { hourlyRate: 75 }, timeActor(f)));
     expect(await readEntry(rows.standaloneEntryId)).toEqual({ hourlyRate: '75.00', currencyCode: 'USD' });
+    // An explicit managed rate bills this formerly non-billable standalone
+    // entry. It must neither disappear nor leave contradictory coverage.
+    const [stamp] = await withSystemDbAccessContext(() => db.select({
+      isBillable: timeEntries.isBillable, coverage: timeEntries.coverage,
+      billingOverridden: timeEntries.billingOverridden, billingStatus: timeEntries.billingStatus,
+    }).from(timeEntries).where(eq(timeEntries.id, rows.standaloneEntryId)));
+    expect(stamp).toEqual({ isBillable: true, coverage: 'billable', billingOverridden: true, billingStatus: 'not_billed' });
   });
 
   it('(b) flipping organizations.currency_code leaves every existing entry, part and org-settings row untouched', async () => {

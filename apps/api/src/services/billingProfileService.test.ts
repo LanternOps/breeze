@@ -3,7 +3,7 @@ import { PgDialect } from 'drizzle-orm/pg-core';
 
 const state = vi.hoisted(() => ({
   reads: [] as unknown[][], writes: [] as Array<{ kind: string; value?: any; where?: any }>,
-  storedRules: [{ workTypeId: 'old' }] as any[], failInsert: false,
+  storedRules: [{ workTypeId: 'old' }] as any[], storedProfile: {} as any, failInsert: false, failRows: false,
   inserted: [] as any[], conflicts: [] as boolean[],
 }));
 vi.mock('../db', () => {
@@ -18,28 +18,35 @@ vi.mock('../db', () => {
       state.writes.push({ kind: 'insert', value });
       const result: any = { onConflictDoNothing: () => result, onConflictDoUpdate: () => result,
         returning: async () => {
-          if (state.failInsert) throw new Error('insert failed');
+          if (state.failInsert || (state.failRows && Array.isArray(value))) throw new Error('insert failed');
           if (state.conflicts.shift()) return [];
           const rows = (Array.isArray(value) ? value : [{ id: 'new', ...value }]);
-          state.inserted.push(...rows); return rows;
+          state.inserted.push(...rows);
+          if (Array.isArray(value)) state.storedRules = rows;
+          return rows;
         }, then: (resolve: any, reject: any) => result.returning().then(resolve, reject) };
       return result;
     } })),
     update: vi.fn(() => ({ set: (value: any) => ({ where: (where: unknown) => {
       state.writes.push({ kind: 'update', value, where });
+      state.storedProfile = { ...state.storedProfile, ...value };
       return { returning: async () => [{ ...profile, ...value }], then: (resolve: any) => Promise.resolve([]).then(resolve) };
     } }) })),
     delete: vi.fn(() => ({ where: () => { state.storedRules = []; return Promise.resolve([]); } })),
     transaction: vi.fn(async (fn: any) => {
       const before = [...state.storedRules];
-      try { return await fn(executor); } catch (error) { state.storedRules = before; throw error; }
+      const beforeProfile = { ...state.storedProfile };
+      const beforeInserted = [...state.inserted];
+      try { return await fn(executor); } catch (error) {
+        state.storedRules = before; state.storedProfile = beforeProfile; state.inserted = beforeInserted; throw error;
+      }
     }),
   };
   return { db: executor };
 });
 import { db } from '../db';
 import {
-  createProfile, updateProfile, replaceProfileRows, cloneProfile, setDefaultProfile,
+  createProfile, updateProfile, saveProfile, replaceProfileRows, cloneProfile, setDefaultProfile,
   assignProfileToOrg, loadCardsForOrg, ensureDefaultProfile, getOrgAssignment, clearOrgAssignment,
 } from './billingProfileService';
 const partner = '11111111-1111-4111-8111-111111111111';
@@ -53,7 +60,7 @@ const profile = { id, partnerId: partner, name: 'Standard', currencyCode: 'USD',
 const row = { workTypeId, coverage: 'billable' as const, hourlyRate: '200.00', minimumMinutes: 60 };
 const sqlText = (where: any) => new PgDialect().sqlToQuery(where);
 beforeEach(() => { vi.clearAllMocks(); state.reads = []; state.writes = []; state.inserted = [];
-  state.conflicts = []; state.storedRules = [{ workTypeId: 'old' }]; state.failInsert = false; });
+  state.conflicts = []; state.storedRules = [{ workTypeId: 'old' }]; state.failInsert = false; state.failRows = false; state.storedProfile = { ...profile }; });
 
 describe('profile mutations', () => {
   it('creates a partner-owned card', async () => {
@@ -129,6 +136,7 @@ describe('profile mutations', () => {
     expect(db.insert).not.toHaveBeenCalled();
   });
   it('rejects duplicate work types before deleting', async () => {
+    state.reads.push([profile]);
     await expect(replaceProfileRows(caller, id, partner, [row, row])).rejects.toMatchObject({ status: 400 });
     expect(db.delete).not.toHaveBeenCalled();
   });
@@ -136,6 +144,71 @@ describe('profile mutations', () => {
     state.reads.push([profile], []);
     await expect(replaceProfileRows(caller, id, partner, [row])).rejects.toMatchObject({ status: 404 });
     expect(db.delete).not.toHaveBeenCalled();
+  });
+  it('saves metadata, base pricing, rounding and all rows in one transaction', async () => {
+    state.reads.push([profile], [{ id: workTypeId }]);
+    const input = { name: 'Revised', currencyCode: 'USD', notes: 'Service terms', baseCoverage: 'billable' as const,
+      baseHourlyRate: '175.00', baseMinimumMinutes: 45, roundingIncrementMinutes: 30, rows: [row] };
+    await expect(saveProfile(caller, id, partner, input)).resolves.toMatchObject({ name: input.name, baseHourlyRate: input.baseHourlyRate, rules: [row] });
+    expect(db.transaction).toHaveBeenCalledTimes(1);
+    expect(state.storedProfile).toMatchObject({ name: 'Revised', baseHourlyRate: '175.00', baseMinimumMinutes: 45, roundingIncrementMinutes: 30 });
+    expect(state.storedRules).toEqual([expect.objectContaining({ ...row, partnerId: partner, billingProfileId: id })]);
+  });
+  it('rolls back metadata and base pricing together with rows when the last insert fails', async () => {
+    state.reads.push([profile], [{ id: workTypeId }]); state.failRows = true;
+    await expect(saveProfile(caller, id, partner, { name: 'Revised', currencyCode: 'USD', baseCoverage: 'included',
+      baseHourlyRate: null, baseMinimumMinutes: null, rows: [row] })).rejects.toThrow('insert failed');
+    expect(state.storedProfile).toEqual(profile);
+    expect(state.storedRules).toEqual([{ workTypeId: 'old' }]);
+    expect(db.transaction).toHaveBeenCalledTimes(1);
+  });
+  it('creates the base and rules atomically', async () => {
+    state.reads.push([{ code: 'USD' }], [{ id: workTypeId }]);
+    await createProfile(caller, partner, { name: 'Silver', currencyCode: 'USD', baseCoverage: 'billable', rows: [row] });
+    expect(state.inserted).toEqual([expect.objectContaining({ name: 'Silver' }), expect.objectContaining({ ...row, billingProfileId: 'new' })]);
+    expect(db.transaction).toHaveBeenCalledTimes(1);
+  });
+  it('rolls back a new profile when its rules fail to save', async () => {
+    state.reads.push([{ code: 'USD' }], [{ id: workTypeId }]); state.failRows = true;
+    await expect(createProfile(caller, partner, { name: 'Silver', currencyCode: 'USD', baseCoverage: 'billable', rows: [row] }))
+      .rejects.toThrow('insert failed');
+    expect(state.inserted).toEqual([]);
+    expect(db.transaction).toHaveBeenCalledTimes(1);
+  });
+  it.each(['billable', 'included', 'non_billable'] as const)('saves %s base coverage and clears all rules', async baseCoverage => {
+    state.reads.push([profile]);
+    await expect(saveProfile(caller, id, partner, { name: 'Standard', currencyCode: 'USD', baseCoverage,
+      baseHourlyRate: null, baseMinimumMinutes: null, rows: [] })).resolves.toMatchObject({ baseCoverage, baseHourlyRate: null, rules: [] });
+  });
+  it('rejects invalid base coverage pricing before writing either part of the card', async () => {
+    state.reads.push([profile]);
+    await expect(saveProfile(caller, id, partner, { name: 'Standard', currencyCode: 'USD', baseCoverage: 'included',
+      baseHourlyRate: '50.00', rows: [] })).rejects.toMatchObject({ status: 400 });
+    expect(db.update).not.toHaveBeenCalled(); expect(db.delete).not.toHaveBeenCalled();
+  });
+  it('rolls back base edits when a rule belongs to another partner', async () => {
+    state.reads.push([profile], []);
+    await expect(saveProfile(caller, id, partner, { name: 'Revised', currencyCode: 'USD', baseCoverage: 'billable',
+      baseHourlyRate: '175.00', rows: [row] })).rejects.toMatchObject({ status: 404, code: 'WORK_TYPE_NOT_FOUND' });
+    expect(state.storedProfile).toEqual(profile); expect(db.delete).not.toHaveBeenCalled();
+  });
+  it('rejects a cross-partner save before writing', async () => {
+    state.reads.push([]);
+    await expect(saveProfile(caller, id, partner, { name: 'Revised', currencyCode: 'USD', baseCoverage: 'billable', rows: [] }))
+      .rejects.toMatchObject({ status: 404, code: 'PROFILE_NOT_FOUND' });
+    expect(sqlText(state.writes[0]!.where).params).toContain(partner);
+    expect(db.update).not.toHaveBeenCalled(); expect(db.delete).not.toHaveBeenCalled();
+  });
+  it('rejects selected-org saves in the service before querying', async () => {
+    await expect(saveProfile({ scope: 'partner', partnerOrgAccess: 'selected' }, id, partner,
+      { name: 'Revised', currencyCode: 'USD', baseCoverage: 'billable', rows: [] })).rejects.toThrow('full partner org access');
+    expect(db.select).not.toHaveBeenCalled();
+  });
+  it('keeps the currency lock when saving base and work-type rows together', async () => {
+    state.reads.push([profile]);
+    await expect(saveProfile(caller, id, partner, { name: 'Revised', currencyCode: 'EUR', baseCoverage: 'billable',
+      baseHourlyRate: null, rows: [] })).rejects.toMatchObject({ status: 409, code: 'PROFILE_CURRENCY_LOCKED' });
+    expect(db.update).not.toHaveBeenCalled();
   });
   it('clones base columns and all rules but never default status', async () => {
     state.reads.push([{ ...profile, isDefault: true }], [row]);

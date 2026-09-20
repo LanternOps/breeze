@@ -10,9 +10,9 @@ import { canManagePartnerWidePolicies, PartnerWideWriteDeniedError } from './par
 import { readOrgStampingDefaults, OrgCurrencyServiceError, type DbExecutor } from './orgCurrencyCore';
 import type { WorkTypeCaller } from './workTypeService';
 import type { ResolvedCard } from './billingRuleResolver';
-import { createProfileSchema, updateProfileSchema, profileRowsSchema,
-  type CreateProfileInput, type UpdateProfileInput, type RowInput } from './billingProfileValidation';
-export type { CreateProfileInput, UpdateProfileInput, RowInput } from './billingProfileValidation';
+import { createProfileSchema, updateProfileSchema, profileRowsSchema, saveProfileSchema,
+  type CreateProfileInput, type UpdateProfileInput, type SaveProfileInput, type RowInput } from './billingProfileValidation';
+export type { CreateProfileInput, UpdateProfileInput, SaveProfileInput, RowInput } from './billingProfileValidation';
 
 type Profile = typeof billingProfiles.$inferSelect;
 type Assignment = typeof orgBillingProfileAssignments.$inferSelect;
@@ -84,10 +84,12 @@ export async function createProfile(caller: WorkTypeCaller, partnerId: string, i
   const data = parsed(createProfileSchema.safeParse(input));
   return db.transaction(async tx => {
     await assertCurrency(tx, data.currencyCode);
-    const values = { ...data, partnerId, baseHourlyRate: data.baseHourlyRate ?? null,
+    const { rows, ...fields } = data;
+    const values = { ...fields, partnerId, baseHourlyRate: data.baseHourlyRate ?? null,
       baseMinimumMinutes: data.baseMinimumMinutes ?? null, isDefault: false };
     validateBase(values);
     const profile = await insertProfile(tx, values);
+    if (rows !== undefined) await replaceRows(tx, profile, rows);
     return data.isDefault ? switchDefault(tx, profile) : profile;
   });
 }
@@ -95,52 +97,67 @@ export async function updateProfile(caller: WorkTypeCaller, id: string, partnerI
   assertWriter(caller);
   const data = parsed(updateProfileSchema.safeParse(input));
   return db.transaction(async tx => {
-    const profile = await profileById(tx, id, partnerId, true);
-    if (profile.isDefault && profile.isActive && (data.isActive === false || data.isDefault === false ||
-      (data.currencyCode !== undefined && data.currencyCode !== profile.currencyCode))) {
-      throw new BillingProfileServiceError('Set another default profile first', 409, 'DEFAULT_PROFILE_REQUIRED');
+    return updateProfileInTransaction(tx, id, partnerId, data);
+  }).catch(mapProfileWriteError);
+}
+function mapProfileWriteError(error: unknown): never {
+  // The driver has rolled the savepoint back before mapping a SQL error.
+  if (isPgUniqueViolation(error)) {
+    throw new BillingProfileServiceError('A profile with that name or default already exists', 409, 'PROFILE_NAME_TAKEN');
+  }
+  throw error;
+}
+async function updateProfileInTransaction(tx: DbExecutor, id: string, partnerId: string, data: UpdateProfileInput): Promise<Profile> {
+  const profile = await profileById(tx, id, partnerId, true);
+  if (profile.isDefault && profile.isActive && (data.isActive === false || data.isDefault === false ||
+    (data.currencyCode !== undefined && data.currencyCode !== profile.currencyCode))) {
+    throw new BillingProfileServiceError('Set another default profile first', 409, 'DEFAULT_PROFILE_REQUIRED');
+  }
+  if (data.currencyCode && data.currencyCode !== profile.currencyCode) {
+    if (profile.baseHourlyRate !== null || (await withRules(tx, profile)).rules.some(row => row.hourlyRate !== null)) {
+      throw new BillingProfileServiceError('A priced profile cannot change currency', 409, 'PROFILE_CURRENCY_LOCKED');
     }
-    if (data.currencyCode && data.currencyCode !== profile.currencyCode) {
-      if (profile.baseHourlyRate !== null || (await withRules(tx, profile)).rules.some(row => row.hourlyRate !== null)) {
-        throw new BillingProfileServiceError('A priced profile cannot change currency', 409, 'PROFILE_CURRENCY_LOCKED');
-      }
-      await assertCurrency(tx, data.currencyCode);
-    }
-    validateBase({ ...profile, ...data });
-    const { isDefault, ...changes } = data;
-    const [updated] = await tx.update(billingProfiles).set({ ...changes, updatedAt: new Date() })
-      .where(and(eq(billingProfiles.id, id), eq(billingProfiles.partnerId, partnerId))).returning();
-    if (!updated) throw missing();
-    return isDefault === true ? switchDefault(tx, updated) : updated;
-  }).catch(error => {
-    // The driver has rolled the savepoint back before mapping a SQL error.
-    if (isPgUniqueViolation(error)) {
-      throw new BillingProfileServiceError('A profile with that name or default already exists', 409, 'PROFILE_NAME_TAKEN');
-    }
-    throw error;
-  });
+    await assertCurrency(tx, data.currencyCode);
+  }
+  validateBase({ ...profile, ...data });
+  const { isDefault, ...changes } = data;
+  const [updated] = await tx.update(billingProfiles).set({ ...changes, updatedAt: new Date() })
+    .where(and(eq(billingProfiles.id, id), eq(billingProfiles.partnerId, partnerId))).returning();
+  if (!updated) throw missing();
+  return isDefault === true ? switchDefault(tx, updated) : updated;
+}
+/** Save the entire Rates drawer under the same profile lock and savepoint. */
+export async function saveProfile(caller: WorkTypeCaller, id: string, partnerId: string, input: SaveProfileInput): Promise<Card> {
+  assertWriter(caller);
+  const { rows, ...changes } = parsed(saveProfileSchema.safeParse(input));
+  return db.transaction(async tx => {
+    const profile = await updateProfileInTransaction(tx, id, partnerId, changes);
+    return replaceRows(tx, profile, rows);
+  }).catch(mapProfileWriteError);
 }
 /** One driver-owned transaction/savepoint; every operation uses its handle.
  * A failed insert rolls back the deletion before the route maps the error. */
 export async function replaceProfileRows(caller: WorkTypeCaller, id: string, partnerId: string, rows: RowInput[]): Promise<Card> {
   assertWriter(caller);
   const data = parsed(profileRowsSchema.safeParse({ rows })).rows;
-  if (new Set(data.map(row => row.workTypeId)).size !== data.length) {
+  return db.transaction(async tx => replaceRows(tx, await profileById(tx, id, partnerId, true), data));
+}
+async function replaceRows(tx: DbExecutor, profile: Profile, rows: RowInput[]): Promise<Card> {
+  const { id, partnerId } = profile;
+  if (new Set(rows.map(row => row.workTypeId)).size !== rows.length) {
     throw new BillingProfileServiceError('Duplicate work type', 400, 'DUPLICATE_WORK_TYPE');
   }
-  return db.transaction(async tx => {
-    const profile = await profileById(tx, id, partnerId, true);
-    if (data.length) {
-      const types = await tx.select({ id: workTypes.id }).from(workTypes).where(and(
-        eq(workTypes.partnerId, partnerId), inArray(workTypes.id, data.map(row => row.workTypeId))));
-      if (types.length !== data.length) throw new BillingProfileServiceError('Work type not found', 404, 'WORK_TYPE_NOT_FOUND');
-    }
-    data.forEach(row => validateRate(row.hourlyRate, profile.currencyCode));
-    await tx.delete(billingProfileRules).where(and(eq(billingProfileRules.billingProfileId, id), eq(billingProfileRules.partnerId, partnerId)));
-    if (data.length) await tx.insert(billingProfileRules).values(data.map(row => ({ ...row, billingProfileId: id, partnerId })));
-    return { ...profile, rules: data };
-  });
+  if (rows.length) {
+    const types = await tx.select({ id: workTypes.id }).from(workTypes).where(and(
+      eq(workTypes.partnerId, partnerId), inArray(workTypes.id, rows.map(row => row.workTypeId))));
+    if (types.length !== rows.length) throw new BillingProfileServiceError('Work type not found', 404, 'WORK_TYPE_NOT_FOUND');
+  }
+  rows.forEach(row => validateRate(row.hourlyRate, profile.currencyCode));
+  await tx.delete(billingProfileRules).where(and(eq(billingProfileRules.billingProfileId, id), eq(billingProfileRules.partnerId, partnerId)));
+  if (rows.length) await tx.insert(billingProfileRules).values(rows.map(row => ({ ...row, billingProfileId: id, partnerId })));
+  return { ...profile, rules: rows };
 }
+
 export async function cloneProfile(caller: WorkTypeCaller, id: string, partnerId: string, name: string): Promise<Profile> {
   assertWriter(caller);
   const cleanName = parsed(createProfileSchema.shape.name.safeParse(name));

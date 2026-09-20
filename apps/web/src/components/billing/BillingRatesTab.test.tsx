@@ -25,15 +25,22 @@ it('renders profile rows, work type columns, a base column and inherited cells',
   expect(within(row).getByTestId('billing-cell-p1-onsite')).toHaveTextContent(/uses All other work/i);
   expect(screen.getByTestId('work-types-card')).toBeInTheDocument();
 });
-it('edits a whole profile and saves all rules with exactly one PUT through runAction', async () => {
+it('saves metadata, base pricing and all rules with exactly one PUT through runAction', async () => {
   render(<BillingRatesTab />);
   fireEvent.click(await screen.findByTestId('billing-cell-p1-remote'));
   fireEvent.change(screen.getByTestId('billing-coverage-remote'), { target: { value: 'non_billable' } });
+  fireEvent.change(screen.getByTestId('billing-rate-base'), { target: { value: '175' } });
+  fireEvent.change(screen.getByTestId('billing-minimum-base'), { target: { value: '45' } });
+  fireEvent.change(screen.getByTestId('billing-profile-rounding'), { target: { value: '30' } });
+  fireEvent.change(screen.getByTestId('billing-profile-name'), { target: { value: 'Revised' } });
   fireEvent.click(screen.getByTestId('billing-profile-save'));
   await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' })));
   const mutations = vi.mocked(fetchWithAuth).mock.calls.filter(([, init]) => init?.method);
   expect(mutations).toHaveLength(1);
-  expect(mutations[0]).toEqual(['/billing-profiles/p1/rows', expect.objectContaining({ method: 'PUT', body: JSON.stringify({ rows: [{ workTypeId: 'remote', coverage: 'non_billable', hourlyRate: null, minimumMinutes: null }] }) })]);
+  expect(mutations[0]).toEqual(['/billing-profiles/p1/save', expect.objectContaining({ method: 'PUT' })]);
+  expect(JSON.parse(mutations[0][1]!.body as string)).toEqual({ name: 'Revised', notes: null, currencyCode: 'USD',
+    roundingIncrementMinutes: 30, baseCoverage: 'billable', baseHourlyRate: '175', baseMinimumMinutes: 45,
+    rows: [{ workTypeId: 'remote', coverage: 'non_billable', hourlyRate: null, minimumMinutes: null }] });
 });
 it('surfaces failed saves and keeps the drawer open', async () => {
   status = 500; render(<BillingRatesTab />);
@@ -51,7 +58,7 @@ it('places currency and rounding on the profile and offers clone, default and ar
   expect(screen.getByTestId('billing-profile-default-p1')).toBeDisabled();
   expect(screen.getByTestId('billing-profile-archive-p1')).toBeDisabled();
 });
-it('reports partial metadata save and retries only the remaining rules PUT', async () => {
+it('retains the whole draft on failure and retries one atomic save', async () => {
   vi.mocked(fetchWithAuth).mockImplementation(async (url, init) => {
     if (init?.method === 'PUT') return response({ error: 'Rows failed' }, status);
     if (init?.method) return response({ profile });
@@ -62,24 +69,29 @@ it('reports partial metadata save and retries only the remaining rules PUT', asy
   fireEvent.change(screen.getByTestId('billing-rate-base'), { target: { value: '175' } });
   status = 500;
   fireEvent.click(screen.getByTestId('billing-profile-save'));
-  await screen.findByText(/Profile details were saved, but work type rates were not/);
+  await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+  expect(screen.getByTestId('billing-rate-base')).toHaveValue(175);
+  expect(screen.queryByText(/Profile details were saved/)).not.toBeInTheDocument();
   status = 200;
   fireEvent.click(screen.getByTestId('billing-profile-save'));
   await waitFor(() => expect(screen.queryByTestId('billing-profile-save')).not.toBeInTheDocument());
   const methods = vi.mocked(fetchWithAuth).mock.calls.filter(([, init]) => init?.method).map(([, init]) => init?.method);
-  expect(methods).toEqual(['PATCH', 'PUT', 'PUT']);
+  expect(methods).toEqual(['PUT', 'PUT']);
+  const mutations = vi.mocked(fetchWithAuth).mock.calls.filter(([, init]) => init?.method);
+  expect(mutations[0][1]?.body).toEqual(mutations[1][1]?.body);
 });
-it('creates a profile then saves its full rule set', async () => {
+it('creates a profile with its full rule set in one request', async () => {
   render(<BillingRatesTab currencyCode="EUR" />);
   await screen.findByTestId('billing-profile-row-p1');
   fireEvent.click(screen.getByTestId('billing-profile-create'));
   fireEvent.change(screen.getByTestId('billing-profile-name'), { target: { value: 'Premium' } });
+  fireEvent.change(screen.getByTestId('billing-coverage-remote'), { target: { value: 'included' } });
   expect(screen.getByTestId('billing-profile-currency')).toHaveValue('EUR');
   fireEvent.click(screen.getByTestId('billing-profile-save'));
   await waitFor(() => expect(screen.queryByTestId('billing-profile-save')).not.toBeInTheDocument());
   const mutations = vi.mocked(fetchWithAuth).mock.calls.filter(([, init]) => init?.method);
-  expect(mutations.map(([url, init]) => [url, init?.method])).toEqual([['/billing-profiles', 'POST'], ['/billing-profiles/p1/rows', 'PUT']]);
-  expect(JSON.parse(mutations[0][1]!.body as string)).toMatchObject({ name: 'Premium', currencyCode: 'EUR', baseCoverage: 'billable' });
+  expect(mutations.map(([url, init]) => [url, init?.method])).toEqual([['/billing-profiles', 'POST']]);
+  expect(JSON.parse(mutations[0][1]!.body as string)).toMatchObject({ name: 'Premium', currencyCode: 'EUR', baseCoverage: 'billable', rows: [{ workTypeId: 'remote', coverage: 'included', hourlyRate: null, minimumMinutes: null }] });
 });
 it('clones by name without accidentally replacing copied rules', async () => {
   render(<BillingRatesTab />);
@@ -121,7 +133,7 @@ it('keeps persisted currency locked when draft pricing is cleared', async () => 
   fireEvent.change(screen.getByTestId('billing-rate-base'), { target: { value: '' } });
   expect(screen.getByTestId('billing-profile-currency')).toBeDisabled();
 });
-it('keeps partial-save warning when retrying rules fails again', async () => {
+it('retains the draft and reports failure on repeated atomic-save failures', async () => {
   vi.mocked(fetchWithAuth).mockImplementation(async (url, init) => {
     if (init?.method === 'PUT') return response({ error: 'Rows failed' }, 500);
     if (init?.method) return response({ profile });
@@ -131,9 +143,31 @@ it('keeps partial-save warning when retrying rules fails again', async () => {
   fireEvent.click(await screen.findByTestId('billing-cell-p1-base'));
   fireEvent.change(screen.getByTestId('billing-rate-base'), { target: { value: '175' } });
   fireEvent.click(screen.getByTestId('billing-profile-save'));
-  await screen.findByText(/Profile details were saved, but work type rates were not/);
+  await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+  expect(screen.getByTestId('billing-rate-base')).toHaveValue(175);
+  expect(screen.queryByText(/Profile details were saved/)).not.toBeInTheDocument();
   fireEvent.click(screen.getByTestId('billing-profile-save'));
   await waitFor(() => expect(vi.mocked(fetchWithAuth).mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(2));
   await waitFor(() => expect(screen.getByTestId('billing-profile-save')).not.toBeDisabled());
-  expect(screen.getByText(/Profile details were saved, but work type rates were not/)).toBeInTheDocument();
+  expect(screen.getByTestId('billing-rate-base')).toHaveValue(175);
+  expect(screen.queryByText(/Profile details were saved/)).not.toBeInTheDocument();
+  expect(showToast).toHaveBeenCalledTimes(2);
+});
+
+it('retries failed creation with one complete POST and no partial identity', async () => {
+  render(<BillingRatesTab />);
+  await screen.findByTestId('billing-profile-row-p1');
+  fireEvent.click(screen.getByTestId('billing-profile-create'));
+  fireEvent.change(screen.getByTestId('billing-profile-name'), { target: { value: 'Premium' } });
+  fireEvent.change(screen.getByTestId('billing-coverage-remote'), { target: { value: 'included' } });
+  status = 500;
+  fireEvent.click(screen.getByTestId('billing-profile-save'));
+  await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+  expect(screen.getByTestId('billing-profile-name')).toHaveValue('Premium');
+  status = 200;
+  fireEvent.click(screen.getByTestId('billing-profile-save'));
+  await waitFor(() => expect(screen.queryByTestId('billing-profile-save')).not.toBeInTheDocument());
+  const mutations = vi.mocked(fetchWithAuth).mock.calls.filter(([, init]) => init?.method);
+  expect(mutations.map(([url, init]) => [url, init?.method])).toEqual([['/billing-profiles', 'POST'], ['/billing-profiles', 'POST']]);
+  expect(mutations[0][1]?.body).toEqual(mutations[1][1]?.body);
 });

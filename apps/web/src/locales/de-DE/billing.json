@@ -2280,7 +2280,6 @@
     "minimumSummary": "Mindestens {{minutes}} Min.",
     "roundingSummary": "Auf {{minutes}} Min. runden",
     "inherits": "Verwendet Alle sonstigen Arbeiten",
-    "currencyHelp": "Die Währung eines Standardprofils oder eines Profils mit Tarifen kann nicht geändert werden. Leere Rundung bedeutet keine Rundung.",
-    "partialSave": "Profildetails wurden gespeichert, die Tarife der Arbeitsarten jedoch nicht. Klicken Sie erneut auf Speichern."
+    "currencyHelp": "Die Währung eines Standardprofils oder eines Profils mit Tarifen kann nicht geändert werden. Leere Rundung bedeutet keine Rundung."
   }
 }

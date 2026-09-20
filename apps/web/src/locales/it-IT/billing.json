@@ -2280,7 +2280,6 @@
     "minimumSummary": "Minimo {{minutes}} min",
     "roundingSummary": "Arrotonda a {{minutes}} min",
     "inherits": "Usa Tutti gli altri lavori",
-    "currencyHelp": "Non è possibile cambiare la valuta di un profilo predefinito o con tariffe. Un arrotondamento vuoto significa nessun arrotondamento.",
-    "partialSave": "I dettagli del profilo sono stati salvati, ma le tariffe per tipo di lavoro no. Salva di nuovo per completare."
+    "currencyHelp": "Non è possibile cambiare la valuta di un profilo predefinito o con tariffe. Un arrotondamento vuoto significa nessun arrotondamento."
   }
 }
