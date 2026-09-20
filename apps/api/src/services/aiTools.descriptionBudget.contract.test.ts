@@ -96,6 +96,19 @@ describe('AI tool description budget (A-W03)', () => {
   const names = [...new Set(descriptors.map(t => t.name))].sort();
   const offences = names.map(offenceFor).filter((o): o is Offence => o !== null);
 
+  it('advertises patch configuration through the supported policy tool', () => {
+    const d = aiTools.get('manage_patches')!.definition.description;
+    expect(d).not.toContain('setup_auto_approval');
+    expect(d).toContain('manage_policy_feature_link');
+    expect(d).toContain('featureType "patch"');
+  });
+
+  it('explains inbox-only delivery and where channel CRUD lives', () => {
+    const d = aiTools.get('manage_delivery')!.definition.description;
+    expect(d).toMatch(/channelIds: \[\] means inbox-only/);
+    expect(d).toContain('manage_notification_channels');
+  });
+
   it('has a populated registry', () => { expect(registry.length).toBeGreaterThan(150); });
 
   it('covers disabled and enabled factories, including the Delegant fallback', () => {

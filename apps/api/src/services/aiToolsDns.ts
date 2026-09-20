@@ -72,7 +72,7 @@ export function registerDnsTools(aiTools: Map<string, AiTool>): void {
     searchHint: 'DNS security statistics, blocked domains, threat categories and top offending devices',
     definition: {
       name: 'get_dns_security',
-      description: 'Get DNS security statistics including blocked domains, threat categories, and top offending devices. Actions: allowed, redirected.',
+      description: 'Get DNS security statistics including blocked domains, threat categories, and top offending devices. Actions: blocked, allowed, redirected.',
       input_schema: {
         type: 'object' as const,
         properties: {

@@ -184,7 +184,7 @@ export function registerDeliveryTools(registry: Map<string, AiTool>): void {
     searchHint: 'alert delivery: preview, routing rules, default destinations, escalation policies and recipients',
     definition: {
       name: 'manage_delivery',
-      description: 'Manage alert delivery. Writes require approval. Actions: resolve, list_routing, create_routing, update_routing, delete_routing, set_default, list_escalation, create_escalation, update_escalation, delete_escalation.',
+      description: 'Alert delivery; writes need approval. channelIds: [] means inbox-only. Channel CRUD: manage_notification_channels. Actions: resolve,list_routing,create_routing,update_routing,delete_routing,set_default,list_escalation,create_escalation,update_escalation,delete_escalation.',
       input_schema: z.toJSONSchema(deliveryToolSchema) as AiTool['definition']['input_schema'],
     },
     handler: async (raw, auth) => {

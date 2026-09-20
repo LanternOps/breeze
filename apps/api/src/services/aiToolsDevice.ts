@@ -450,7 +450,7 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceId'],
     definition: {
       name: 'manage_tags',
-      description: 'List all tags used across devices, or add/remove tags on a specific device. Actions: list.',
+      description: 'List all tags used across devices, or add/remove tags on a specific device. Actions: list, add, remove.',
       input_schema: {
         type: 'object' as const,
         properties: {

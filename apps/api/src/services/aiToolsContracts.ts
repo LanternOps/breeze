@@ -248,7 +248,7 @@ export function registerContractTools(aiTools: Map<string, AiTool>): void {
     definition: {
       name: 'manage_contracts',
       description:
-        "Manage recurring contracts for accessible orgs; prices and totals use the contract currencyCode. Actions: create_draft, update, delete_draft, add_line, remove_line, update_line; activate, pause, resume, cancel change lifecycle state and require approval.",
+        "Manage recurring contracts for accessible orgs; prices and totals use the contract currencyCode. Actions: create_draft, update, delete_draft, add_line, remove_line, update_line, activate, pause, resume, cancel. Lifecycle changes require approval.",
       input_schema: {
         type: 'object' as const,
         properties: {

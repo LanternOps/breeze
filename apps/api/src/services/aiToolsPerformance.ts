@@ -915,7 +915,7 @@ export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceId'],
     definition: {
       name: 'manage_startup_items',
-      description: 'Disable or enable startup items on a device. Device must be online. Item must exist in the most recent boot performance record. Requires user approval. Use analyze_boot_performance first to identify high-impact items. Actions: disable.',
+      description: 'Disable or enable startup items on a device. Device must be online. Item must exist in the most recent boot performance record. Requires user approval. Use analyze_boot_performance first to identify high-impact items. Actions: disable, enable.',
       input_schema: {
         type: 'object' as const,
         properties: {

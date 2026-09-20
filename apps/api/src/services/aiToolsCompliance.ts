@@ -186,7 +186,7 @@ registerTool({
   searchHint: 'software allowlist, blocklist and audit policies: create, update, disable, list, get',
   definition: {
     name: 'manage_software_policy',
-    description: 'Create, update, disable (soft-delete), list, or fetch software policies (allowlist/blocklist/audit). Actions: create, get.',
+    description: 'Create, update, disable (soft-delete), list, or fetch software policies (allowlist/blocklist/audit). Actions: create, update, delete, list, get.',
     input_schema: {
       type: 'object' as const,
       properties: {

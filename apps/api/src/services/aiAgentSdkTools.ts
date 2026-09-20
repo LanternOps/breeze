@@ -1943,7 +1943,7 @@ export function buildBreezeSdkTools(
       'manage_patches',
       registryDescription('manage_patches'),
       {
-        action: z.enum(['list', 'compliance', 'scan', 'approve', 'decline', 'defer', 'bulk_approve', 'install', 'rollback', 'setup_auto_approval']),
+        action: z.enum(['list', 'compliance', 'scan', 'approve', 'decline', 'defer', 'bulk_approve', 'install', 'rollback']),
         patchId: uuid.optional(),
         patchName: z.string().min(1).max(300).optional(),
         patchIds: z.array(uuid).max(50).optional(),

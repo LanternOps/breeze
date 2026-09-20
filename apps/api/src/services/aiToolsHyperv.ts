@@ -242,7 +242,7 @@ export function registerHypervTools(aiTools: Map<string, AiTool>): void {
     searchHint: 'Hyper-V virtual machine power: start, stop, force stop, pause, resume, save',
     definition: {
       name: 'manage_hyperv_vm',
-      description: 'Dispatch a Hyper-V VM state command such as start, stop, pause, or resume. Actions: force_stop, save.',
+      description: 'Dispatch a Hyper-V VM state command such as start, stop, pause, or resume. Actions: start, stop, force_stop, pause, resume, save.',
       input_schema: {
         type: 'object' as const,
         properties: {

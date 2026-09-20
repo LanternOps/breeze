@@ -330,7 +330,7 @@ export function registerBrowserTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceIds'],
     definition: {
       name: 'manage_browser_policy',
-      description: 'Create, update, list, and apply browser extension compliance policies. Actions: create.',
+      description: 'Create, update, list, and apply browser extension compliance policies. Actions: list, create, update, apply.',
       input_schema: {
         type: 'object' as const,
         properties: {

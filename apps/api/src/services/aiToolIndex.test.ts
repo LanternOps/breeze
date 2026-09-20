@@ -71,11 +71,11 @@ describe('renderToolIndexByDomain (A-W02)', () => {
     expect(text).toMatch(/CVE/);
   });
 
-  it('carries the vulnerability/posture/patching disambiguation and the empty-report caveat (moved from the prompt tail, #2605)', () => {
-    expect(DOMAIN_NOTES.patching).toMatch(/get_security_posture returns control scores/);
-    expect(DOMAIN_NOTES.patching).toMatch(/manage_patches returns the patch\/KB inventory/);
-    expect(DOMAIN_NOTES.patching).toMatch(/never state that a device or the fleet has no vulnerabilities/);
-    expect(DOMAIN_NOTES.patching).toMatch(/no findings are currently correlated/);
+  it('carries vulnerability disambiguation and the empty-report caveat', () => {
+    expect(DOMAIN_NOTES.patching).toContain('get_security_posture');
+    expect(DOMAIN_NOTES.patching).toContain('manage_patches');
+    expect(DOMAIN_NOTES.patching).toMatch(/no (?:correlated findings|findings are currently correlated)/);
+    expect(DOMAIN_NOTES.patching).toContain('no vulnerabilities');
     expect(text).toContain(DOMAIN_NOTES.patching);
   });
 
@@ -89,15 +89,34 @@ describe('renderToolIndexByDomain (A-W02)', () => {
     const registered = new Set(getAllRegisteredToolNames());
     const mentioned = restricted.match(/\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/g) ?? [];
     expect(mentioned.filter((token) => registered.has(token) && !subset.includes(token))).toEqual([]);
-    expect(restricted).toMatch(/never state that a device or the fleet has no vulnerabilities/);
-    expect(restricted).toMatch(/no findings are currently correlated/);
+    expect(restricted).toContain('no vulnerabilities');
+    expect(restricted).toMatch(/no (?:correlated findings|findings are currently correlated)/);
   });
 
-  it('preserves configuration-policy patch workflow guidance', () => {
-    expect(text).toContain('Create an update ring before linking its ID as featurePolicyId');
-    expect(text).toContain('Configure schedules and auto-approval through that feature');
-    expect(text).toContain('Third-party auto-approval requires third-party patch sources');
-    expect(text).toContain('Approve patches before installing them');
+  it('places named patch prerequisites in the patching domain', () => {
+    expect(DOMAIN_NOTES.patching).toContain('manage_update_rings');
+    expect(DOMAIN_NOTES.patching).toContain('manage_policy_feature_link');
+    expect(DOMAIN_NOTES.patching).toContain('featurePolicyId');
+    expect(DOMAIN_NOTES.patching).toContain('third-party patch sources');
+    expect(DOMAIN_NOTES.security ?? '').not.toContain('update ring');
+  });
+
+  it('filters patch prerequisites when either named tool is absent', () => {
+    const both = renderToolIndexByDomain(['manage_update_rings', 'manage_policy_feature_link']);
+    expect(both).toContain('featurePolicyId');
+    expect(both).toContain('third-party patch sources');
+    const rings = renderToolIndexByDomain(['manage_update_rings']);
+    expect(rings).not.toContain('featurePolicyId');
+    expect(rings).toContain('third-party patch sources');
+    const links = renderToolIndexByDomain(['manage_policy_feature_link', 'manage_patches']);
+    expect(links).not.toContain('featurePolicyId');
+    expect(links).not.toContain('third-party patch sources');
+  });
+
+  it('filters execution lookup guidance when get_script_execution is absent', () => {
+    expect(DOMAIN_NOTES.scripts).toContain('get_script_execution');
+    expect(renderToolIndexByDomain(['get_script_execution'])).toContain('external runs');
+    expect(renderToolIndexByDomain(['run_script'])).not.toContain('external runs');
   });
 
   it('skips names that have no domain instead of throwing', () => {

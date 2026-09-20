@@ -665,7 +665,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
     searchHint: 'software deployments: list, get, device status, create, start, pause, resume, cancel',
     definition: {
       name: 'manage_deployments',
-      description: 'Manage staged software deployments: list, get details, view per-device status, create, start, pause, resume, or cancel deployments. Actions: device_status.',
+      description: 'Manage staged software deployments: list, get details, view per-device status, create, start, pause, resume, or cancel deployments. Actions: list, get, device_status, create, start, pause, resume, cancel.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -1014,7 +1014,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceIds', 'deviceId'],
     definition: {
       name: 'manage_patches',
-      description: "Manage org patches; CVEs use get_vulnerability_report. Install requires BOTH patchIds and deviceIds. Approvals default partner-wide. Actions: list, compliance, scan, approve, decline, defer, bulk_approve, install, rollback, setup_auto_approval (disabled).",
+      description: 'CVEs: get_vulnerability_report. Install requires BOTH patchIds and deviceIds. Approvals default partner-wide. Schedules/auto-approval: manage_policy_feature_link featureType "patch". Actions: list, compliance, scan, approve, decline, defer, bulk_approve, install, rollback.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -1523,7 +1523,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceIds'],
     definition: {
       name: 'manage_groups',
-      description: 'Manage device groups: list groups, get details with members, preview dynamic filter results, view membership audit log, create/update/delete groups, add/remove devices. Actions: membership_log, add_devices, remove_devices.',
+      description: 'Manage device groups: list groups, get details with members, preview dynamic filter results, view membership audit log, create/update/delete groups, add/remove devices. Actions: list, get, preview, membership_log, create, update, delete, add_devices, remove_devices.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -1856,7 +1856,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceIds'],
     definition: {
       name: 'manage_maintenance_windows',
-      description: 'Read maintenance windows and occurrences. Actions: list, get, active_now. For create, update or delete, use manage_policy_feature_link with featureType "maintenance".',
+      description: 'Read maintenance windows and occurrences. Actions: list, get, active_now, create (disabled), update (disabled), delete (disabled). For writes, use manage_policy_feature_link with featureType "maintenance".',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -2469,7 +2469,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
     searchHint: 'alert rules: list templates, list rules, get rule, test rule, list channels, alert summary',
     definition: {
       name: 'manage_alert_rules',
-      description: 'Read alert rules, templates and channels. Actions: list_templates, list_rules, get_rule, test_rule, list_channels, alert_summary. For create_rule, update_rule or delete_rule, use manage_policy_feature_link with featureType "alert_rule".',
+      description: 'Read alert rules, templates and channels. Actions: list_templates, list_rules, get_rule, test_rule, list_channels, alert_summary, create_rule (disabled), update_rule (disabled), delete_rule (disabled). For writes, use manage_policy_feature_link with featureType "alert_rule".',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -3177,7 +3177,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
     searchHint: 'service and process monitoring watches: list',
     definition: {
       name: 'manage_service_monitors',
-      description: 'Query service and process monitoring watches (read-only). To add or remove monitoring watches, use manage_policy_feature_link with featureType "monitoring" and action "update" to configure watches on a configuration policy. Actions: list.',
+      description: 'Query service and process monitoring watches. Actions: list, add (disabled), remove (disabled). For writes, use manage_policy_feature_link with featureType "monitoring" and action "update".',
       input_schema: {
         type: 'object' as const,
         properties: {

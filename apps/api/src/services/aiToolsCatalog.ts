@@ -474,7 +474,7 @@ export function registerCatalogTools(aiTools: Map<string, AiTool>): void {
     definition: {
       name: 'manage_catalog',
       description:
-        'Create and manage partner catalog items, per-currency price-book entries (set_price / remove_price), organization price overrides (with currency), and bundle components. Actions: create_item, update_item, archive_item, set_org_price, remove_org_price, set_bundle_components.',
+        'Create and manage partner catalog items, per-currency price-book entries (set_price / remove_price), organization price overrides (with currency), and bundle components. Actions: create_item, update_item, archive_item, set_price, remove_price, set_org_price, remove_org_price, set_bundle_components.',
       input_schema: {
         type: 'object' as const,
         properties: {

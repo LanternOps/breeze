@@ -790,7 +790,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceId'],
     definition: {
       name: 'manage_services',
-      description: 'List, start, stop, or restart system services on a device. Actions: list.',
+      description: 'List, start, stop, or restart system services on a device. Actions: list, start, stop, restart.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -1429,7 +1429,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceId'],
     definition: {
       name: 'manage_scheduled_tasks',
-      description: 'List, run, enable, or disable Windows scheduled tasks on a device. Actions: list.',
+      description: 'List, run, enable, or disable Windows scheduled tasks on a device. Actions: list, run, disable, enable.',
       input_schema: {
         type: 'object' as const,
         properties: {

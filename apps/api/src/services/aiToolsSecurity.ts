@@ -62,7 +62,7 @@ export function registerSecurityTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceId'],
     definition: {
       name: 'security_scan',
-      description: 'Run security scans on a device, manage detected threats (quarantine, remove, restore), or query vulnerability data. Actions: status, vulnerabilities.',
+      description: 'Run security scans on a device, manage detected threats (quarantine, remove, restore), or query vulnerability data. Actions: scan, status, quarantine, remove, restore, vulnerabilities.',
       input_schema: {
         type: 'object' as const,
         properties: {
