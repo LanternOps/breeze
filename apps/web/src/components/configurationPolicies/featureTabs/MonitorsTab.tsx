@@ -1,3 +1,5 @@
+import { findDuplicateConditions } from "./duplicateConditions";
+import { DuplicateConditionNotice } from "./DuplicateConditionNotice";
 import { useState, useEffect } from "react";
 import { Radar, Trash2 } from "lucide-react";
 import type { FeatureTabProps } from "./types";
@@ -14,6 +16,8 @@ type MonitorCatalogEntry = {
   kind: string;
   severity: string;
   enabled: boolean;
+  builtinKey: string | null;
+  condition: Record<string, unknown> | null;
 };
 
 // The attachment list this tab edits — mirrors monitorAttachmentItemSchema
@@ -55,8 +59,13 @@ export default function MonitorsTab({
   onLinkChanged,
   linkedPolicyId,
   parentLink,
+  allLinks = [],
 }: FeatureTabProps) {
   useTranslation("policies");
+  const linkOf = (type: string) => allLinks.find((link) => link.featureType === type);
+  const inlineRules = (linkOf("alert_rule")?.inlineSettings as { items?: Array<{ name?: string; conditions?: Array<Record<string, unknown>> }> } | undefined)?.items ?? [];
+  const watches = (linkOf("monitoring")?.inlineSettings as { watches?: Array<{ watchType?: string; name?: string; enabled?: boolean }> } | undefined)?.watches ?? [];
+
   const { save, remove, saving, error, clearError } = useFeatureLink(policyId);
   const isInherited = !!parentLink && !existingLink;
 
@@ -98,6 +107,10 @@ export default function MonitorsTab({
             kind: String(r.kind ?? ""),
             severity: String(r.severity ?? ""),
             enabled: Boolean(r.enabled),
+            builtinKey: typeof r.builtinKey === "string" ? r.builtinKey : null,
+            condition: r.condition && typeof r.condition === "object" && !Array.isArray(r.condition)
+              ? r.condition as Record<string, unknown>
+              : null,
           })),
         );
       })
@@ -228,6 +241,7 @@ export default function MonitorsTab({
         !isInherited && !!linkedPolicyId && !!existingLink ? handleRevert : undefined
       }
     >
+      <DuplicateConditionNotice hits={findDuplicateConditions({ attached: items, catalog, inlineRules, watches })} />
       <div className="space-y-6">
         <div>
           <label className="text-sm font-medium" htmlFor="monitors-tab-attach-select">

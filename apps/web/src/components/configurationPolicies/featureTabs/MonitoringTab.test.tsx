@@ -110,7 +110,7 @@ describe('MonitoringTab alert-rule consolidation', () => {
     });
   });
 
-  it('renders no metric-rule or event-log-rule editor, only a pointer to the Alerts feature', () => {
+  it('renders no metric-rule or event-log-rule editor, only a pointer to the Monitors tab', () => {
     renderTab();
 
     expect(screen.queryByText('Metric & Status Alert Rules')).toBeNull();
@@ -120,7 +120,7 @@ describe('MonitoringTab alert-rule consolidation', () => {
     // The surviving agent-side section is untouched.
     expect(screen.getByText('Service & Process Watches')).toBeTruthy();
     expect(screen.getByTestId('monitoring-alerts-pointer').textContent).toContain(
-      'configured in the Alerts feature',
+      'Existing rules stay editable here and convert to monitors in the next release.',
     );
   });
 
@@ -180,7 +180,7 @@ describe('MonitoringTab alert-rule consolidation', () => {
     expect(screen.queryByTestId('monitoring-legacy-alert-rules-notice')).toBeNull();
   });
 
-  it('navigates to the Alerts tab from the legacy notice', () => {
+  it('navigates to the Monitors tab from the legacy notice', () => {
     render(
       <MonitoringTab
         policyId="policy-1"
@@ -192,7 +192,7 @@ describe('MonitoringTab alert-rule consolidation', () => {
 
     window.location.hash = '';
     fireEvent.click(screen.getByTestId('monitoring-legacy-alert-rules-link'));
-    expect(window.location.hash).toBe('#alert_rule');
+    expect(window.location.hash).toBe('#monitors');
   });
 });
 
@@ -249,21 +249,12 @@ describe('MonitoringTab disclosure keyboard toggle (issue #1932)', () => {
     expect(header.getAttribute('aria-expanded')).toBe('true');
   });
 
-  it('does not toggle when the keydown originates from a nested action button', () => {
+  it('keeps the disclosure usable with no Add Watch action', () => {
     renderTab();
-
+    expect(screen.queryByRole('button', { name: /^Add Watch$/i })).toBeNull();
     const header = sectionHeader('Service & Process Watches');
-    expect(header.getAttribute('aria-expanded')).toBe('false');
-
-    // The "Add Watch" button lives inside the header; a keydown on it has
-    // event.target !== event.currentTarget and must be ignored by the guard.
-    // Exact name avoids matching the header role="button", whose accessible
-    // name also contains the nested "Add Watch" button text.
-    const addButton = screen.getByRole('button', { name: 'Add Watch' });
-    fireEvent.keyDown(addButton, { key: 'Enter' });
-
-    expect(header.getAttribute('aria-expanded')).toBe('false');
-    expect(screen.queryByText(/No watches configured yet/i)).toBeNull();
+    fireEvent.keyDown(header, { key: 'Enter' });
+    expect(header).toHaveAttribute('aria-expanded', 'true');
   });
 
   it('ignores keys other than Enter and Space', () => {
@@ -280,16 +271,16 @@ describe('MonitoringTab disclosure keyboard toggle (issue #1932)', () => {
 });
 
 // The feature-tab strip in ConfigPolicyDetailPage is hash-driven (useHashTab),
-// so the pointer switches tabs by writing `#alert_rule` — exactly what the
+// so the pointer switches tabs by writing `#monitors` — exactly what the
 // strip's own buttons do.
-describe('MonitoringTab pointer to the Alerts feature', () => {
+describe('MonitoringTab pointer to the Monitors tab', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     fetchMock.mockResolvedValue(makeJsonResponse({ data: [] }));
     window.location.hash = '#monitoring';
   });
 
-  it('navigates to the alert_rule tab when the pointer link is clicked', () => {
+  it('navigates to the monitors tab when the pointer link is clicked', () => {
     renderTab();
 
     const link = screen.getByTestId('monitoring-alerts-pointer-link');
@@ -299,15 +290,15 @@ describe('MonitoringTab pointer to the Alerts feature', () => {
 
     fireEvent.click(link);
 
-    expect(window.location.hash).toBe('#alert_rule');
+    expect(window.location.hash).toBe('#monitors');
   });
 
   it('keeps the explanatory sentence alongside the link', () => {
     renderTab();
 
     const pointer = screen.getByTestId('monitoring-alerts-pointer');
-    expect(pointer.textContent).toContain('configured in the Alerts feature');
-    expect(pointer.textContent).toContain('Open Alerts');
+    expect(pointer.textContent).toContain('Existing rules stay editable here and convert to monitors in the next release.');
+    expect(pointer.textContent).toContain('Open the Monitors tab');
   });
 });
 
@@ -395,9 +386,12 @@ describe('MonitoringTab rationale (#5653)', () => {
   });
 
   it('says so when a watch carries no rationale', () => {
-    renderTab();
-    fireEvent.click(sectionHeader('Service & Process Watches'));
-    fireEvent.click(screen.getByRole('button', { name: 'Add Watch' }));
+    render(<MonitoringTab policyId="policy-1" linkedPolicyId={null} onLinkChanged={vi.fn()}
+      existingLink={{ ...linkWithRationale, inlineSettings: {
+        ...linkWithRationale.inlineSettings,
+        watches: linkWithRationale.inlineSettings.watches.map((watch) => ({ ...watch, rationale: null })),
+      } }} />);
+    fireEvent.click(screen.getByText('nginx'));
 
     expect(screen.getByTestId('watch-rationale-0').textContent).toContain('No rationale recorded.');
   });

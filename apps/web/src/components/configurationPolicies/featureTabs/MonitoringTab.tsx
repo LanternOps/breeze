@@ -1,3 +1,6 @@
+import { findDuplicateConditions, type DuplicateInput } from "./duplicateConditions";
+import { DuplicateConditionNotice } from "./DuplicateConditionNotice";
+import { LegacyFreezeNotice } from "./LegacyFreezeNotice";
 import {
   useState,
   useEffect,
@@ -8,7 +11,6 @@ import {
 } from "react";
 import {
   Activity,
-  Plus,
   Trash2,
   Server,
   Cpu,
@@ -87,10 +89,10 @@ const defaultWatch: WatchEntry = {
 // pointer below switches tabs by writing the hash — the same thing the strip's
 // own buttons do. Typed as FeatureType so a renamed feature key fails to
 // compile instead of silently producing a dead link.
-const ALERTS_TAB: FeatureType = "alert_rule";
-function goToAlertsTab() {
+const MONITORS_TAB: FeatureType = "monitors";
+function goToMonitorsTab() {
   if (typeof window === "undefined") return;
-  window.location.hash = ALERTS_TAB;
+  window.location.hash = MONITORS_TAB;
 }
 const createSeverityOptions = (): {
   value: AlertSeverity;
@@ -207,25 +209,23 @@ function SeverityButtonGroup({
     </div>
   );
 }
+type MonitoringSectionProps = {
+  icon: ReactNode;
+  title: string;
+  count: number;
+  description: string;
+  defaultOpen?: boolean;
+  children: ReactNode;
+};
+
 function MonitoringSection({
   icon,
   title,
   count,
   description,
   defaultOpen,
-  onAdd,
-  addLabel,
   children,
-}: {
-  icon: ReactNode;
-  title: string;
-  count: number;
-  description: string;
-  defaultOpen?: boolean;
-  onAdd: () => void;
-  addLabel: string;
-  children: ReactNode;
-}) {
+}: MonitoringSectionProps) {
   const [open, setOpen] = useState(defaultOpen ?? count > 0);
   const panelId = useId();
   return (
@@ -258,18 +258,6 @@ function MonitoringSection({
           </div>
           <p className="text-xs text-muted-foreground">{description}</p>
         </div>
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            if (!open) setOpen(true);
-            onAdd();
-          }}
-          className="inline-flex shrink-0 items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-medium text-primary transition hover:bg-primary/10"
-        >
-          <Plus className="h-3.5 w-3.5" />
-          {addLabel}
-        </button>
       </div>
 
       {open && (
@@ -309,8 +297,27 @@ export default function MonitoringTab({
   onLinkChanged,
   linkedPolicyId,
   parentLink,
+  allLinks = [],
 }: FeatureTabProps) {
   useTranslation("policies");
+  const linkOf = (type: string) => allLinks.find((link) => link.featureType === type);
+  const inlineRules = (linkOf("alert_rule")?.inlineSettings as { items?: Array<{ name?: string; conditions?: Array<Record<string, unknown>> }> } | undefined)?.items ?? [];
+  const attached = (linkOf("monitors")?.inlineSettings as { items?: Array<{ monitorId: string; enabled?: boolean }> } | undefined)?.items ?? [];
+
+  const [catalog, setCatalog] = useState<DuplicateInput['catalog']>([]);
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetchWithAuth('/monitor-definitions');
+        if (!res.ok) return;
+        const json = await res.json();
+        if (!cancelled) setCatalog(Array.isArray(json?.data) ? json.data : []);
+      } catch { /* The duplicate warning is advisory; monitoring keeps running. */ }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
   const { save, remove, saving, error, clearError } = useFeatureLink(policyId);
   const isInherited = !!parentLink && !existingLink;
   const effectiveLink = existingLink ?? parentLink;
@@ -361,13 +368,6 @@ export default function MonitoringTab({
         i === index ? { ...w, ...patch } : w,
       ),
     }));
-  };
-  const addWatch = (entry?: Partial<WatchEntry>) => {
-    setSettings((prev) => ({
-      ...prev,
-      watches: [...prev.watches, { ...defaultWatch, ...entry }],
-    }));
-    setExpandedKey(`watches:${settings.watches.length}`);
   };
   const removeWatch = (index: number) => {
     setSettings((prev) => ({
@@ -473,6 +473,9 @@ export default function MonitoringTab({
         </div>
       </div>
 
+      <LegacyFreezeNotice policyId={policyId} />
+      <DuplicateConditionNotice hits={findDuplicateConditions({ attached, catalog, inlineRules, watches: settings.watches })} />
+
       {/* ── Service & Process Watches ── */}
       <div className="mt-4">
         <MonitoringSection
@@ -484,10 +487,6 @@ export default function MonitoringTab({
           description={i18n.t(
             "policies:configurationPolicies.featureTabs.monitoringTab.monitorRunningServicesAndProcessesAlertOn",
           )}
-          onAdd={() => addWatch()}
-          addLabel={i18n.t(
-            "policies:configurationPolicies.featureTabs.monitoringTab.addWatch",
-          )}
         >
           {settings.watches.length === 0 ? (
             <EmptyState
@@ -496,7 +495,7 @@ export default function MonitoringTab({
                 "policies:configurationPolicies.featureTabs.monitoringTab.noWatchesConfiguredYet",
               )}
               hint={i18n.t(
-                "policies:configurationPolicies.featureTabs.monitoringTab.addAServiceOrProcessToStart",
+                "policies:configurationPolicies.featureTabs.legacyFreeze.body",
               )}
             />
           ) : (
@@ -536,11 +535,11 @@ export default function MonitoringTab({
             <button
               type="button"
               data-testid="monitoring-legacy-alert-rules-link"
-              onClick={goToAlertsTab}
+              onClick={goToMonitorsTab}
               className="font-medium underline underline-offset-2 hover:no-underline"
             >
               {i18n.t(
-                "policies:configurationPolicies.featureTabs.monitoringTab.openAlertsFeature",
+                "policies:configurationPolicies.featureTabs.legacyFreeze.link",
               )}{" "}
               →
             </button>
@@ -548,7 +547,7 @@ export default function MonitoringTab({
         </div>
       )}
 
-      {/* ── Pointer: server-evaluated alerting lives in the Alerts feature ── */}
+      {/* ── Pointer: new rules are created as monitors ── */}
       <div className="mt-4">
         <div
           data-testid="monitoring-alerts-pointer"
@@ -559,16 +558,16 @@ export default function MonitoringTab({
           </div>
           <p className="text-sm text-muted-foreground">
             {i18n.t(
-              "policies:configurationPolicies.featureTabs.monitoringTab.deviceThresholdsAndEventLogAlertsPointer",
+              "policies:configurationPolicies.featureTabs.legacyFreeze.body",
             )}{" "}
             <button
               type="button"
               data-testid="monitoring-alerts-pointer-link"
-              onClick={goToAlertsTab}
+              onClick={goToMonitorsTab}
               className="font-medium text-primary underline underline-offset-2 hover:no-underline"
             >
               {i18n.t(
-                "policies:configurationPolicies.featureTabs.monitoringTab.openAlertsFeature",
+                "policies:configurationPolicies.featureTabs.legacyFreeze.link",
               )}{" "}
               →
             </button>

@@ -1,3 +1,7 @@
+import { findDuplicateConditions, type DuplicateInput } from "./duplicateConditions";
+import { DuplicateConditionNotice } from "./DuplicateConditionNotice";
+import { LegacyFreezeNotice } from "./LegacyFreezeNotice";
+import { fetchWithAuth } from "../../../stores/auth";
 import { useState, useEffect, useRef, useId } from "react";
 import {
   Bell,
@@ -455,8 +459,27 @@ export default function AlertRuleTab({
   onLinkChanged,
   linkedPolicyId,
   parentLink,
+  allLinks = [],
 }: FeatureTabProps) {
   useTranslation("policies");
+  const linkOf = (type: string) => allLinks.find((link) => link.featureType === type);
+  const watches = (linkOf("monitoring")?.inlineSettings as { watches?: Array<{ watchType?: string; name?: string; enabled?: boolean }> } | undefined)?.watches ?? [];
+  const attached = (linkOf("monitors")?.inlineSettings as { items?: Array<{ monitorId: string; enabled?: boolean }> } | undefined)?.items ?? [];
+
+  const [catalog, setCatalog] = useState<DuplicateInput['catalog']>([]);
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetchWithAuth('/monitor-definitions');
+        if (!res.ok) return;
+        const json = await res.json();
+        if (!cancelled) setCatalog(Array.isArray(json?.data) ? json.data : []);
+      } catch { /* The duplicate warning is advisory; monitoring keeps running. */ }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
   const severityOptions = createSeverityOptions();
   const metricOptions = createMetricOptions();
   const operatorOptions = createOperatorOptions();
@@ -549,15 +572,6 @@ export default function AlertRuleTab({
       }),
     );
   };
-  const addItem = () => {
-    const newItem: AlertItem = {
-      ...defaultItem,
-      name: `Alert Rule ${items.length + 1}`,
-      conditions: [{ ...defaultItem.conditions[0] }],
-    };
-    setItems((prev) => [...prev, newItem]);
-    setExpandedIndex(items.length);
-  };
   const deleteItem = (index: number) => {
     setItems((prev) => prev.filter((_, i) => i !== index));
     if (expandedIndex === index) setExpandedIndex(null);
@@ -617,7 +631,7 @@ export default function AlertRuleTab({
           : undefined
       }
     >
-      {/* Header with count + Add button */}
+      {/* Header with count */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <h3 className="text-sm font-semibold">
@@ -631,16 +645,6 @@ export default function AlertRuleTab({
             </span>
           )}
         </div>
-        <button
-          type="button"
-          onClick={addItem}
-          className="inline-flex items-center gap-1 rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted"
-        >
-          <Plus className="h-4 w-4" />
-          {i18n.t(
-            "policies:configurationPolicies.featureTabs.alertRuleTab.addAlertRule",
-          )}
-        </button>
       </div>
 
       {/* Empty state */}
@@ -652,18 +656,11 @@ export default function AlertRuleTab({
               "policies:configurationPolicies.featureTabs.alertRuleTab.noAlertRulesConfiguredYet",
             )}
           </p>
-          <button
-            type="button"
-            onClick={addItem}
-            className="mt-3 inline-flex items-center gap-1 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:opacity-90"
-          >
-            <Plus className="h-4 w-4" />
-            {i18n.t(
-              "policies:configurationPolicies.featureTabs.alertRuleTab.addAlertRule2",
-            )}
-          </button>
         </div>
       )}
+
+      <LegacyFreezeNotice policyId={policyId} />
+      <DuplicateConditionNotice hits={findDuplicateConditions({ attached, catalog, inlineRules: items, watches })} />
 
       {/* Item cards */}
       <div className="mt-3 space-y-2">
