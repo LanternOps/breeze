@@ -174,7 +174,7 @@ function asPartnerEmailCustom(raw: unknown): PartnerEmailCustom | null {
 async function composeLaidOutRequesterMail(
   ticket: TicketRow,
   id: 'ticket_comment_notification' | 'ticket_resolved',
-): Promise<{ html: string; subject: string; replyTo: string | undefined }> {
+): Promise<{ html: string; subject: string; replyTo: string | undefined; fullMessageReply: boolean }> {
   let href = '';
   let hasPortalUser = false;
   try {
@@ -209,7 +209,12 @@ async function composeLaidOutRequesterMail(
     internalNumber: ticket.internalNumber,
     ticketSubject: ticket.subject,
   });
-  return { html: rendered.html, subject: rendered.subject, replyTo: partner.replyTo };
+  return {
+    html: rendered.html,
+    subject: rendered.subject,
+    replyTo: partner.replyTo,
+    fullMessageReply: partner.inbound?.fullMessageReply === true,
+  };
 }
 
 async function resolveCurrentTicketPartner(
@@ -371,7 +376,6 @@ async function collectRequesterEmail(
   // just-posted PUBLIC comment is included; internal notes never reach this path
   // (the worker gates on event.payload.isPublic before calling here).
   let html = composed.html;
-  const bits = await loadPartnerMailBits(ticket.partnerId);
   // Full message text is appended ONLY on the platform EmailService path (which
   // sends to the resolved requester address, `ticket.submitterEmail`). On the
   // connected-M365 path the reply is a Graph createReply against the latest
@@ -379,7 +383,9 @@ async function collectRequesterEmail(
   // not validate; putting the actual comment text there would widen a possible
   // mis-routed reply from a bare portal notice to real content. Until that
   // recipient set is validated, M365-mailbox partners keep the notification.
-  if (bits.inbound?.fullMessageReply && !graphMailbox) {
+  // (composed.fullMessageReply comes from the partner bits compose already loaded
+  // — no second partner read here.)
+  if (composed.fullMessageReply && !graphMailbox) {
     // Bound to THIS ticket (never another ticket's comment). deletedAt is SELECTED
     // (not filtered) so we can tell a soft-deleted comment (row present, deletedAt
     // set — terminal, skip the body) apart from a not-yet-committed one (no row —

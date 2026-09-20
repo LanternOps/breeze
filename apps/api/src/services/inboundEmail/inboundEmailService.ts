@@ -20,7 +20,7 @@ import type { M365MailboxGenerationContext } from '../inboundEmailQueue';
 import { TICKET_TOKEN_RE, findTicketInPartner, findClosedTicketInPartner, type SenderResolver } from './threadMatcher';
 import { claimMessageLink, findLinkByMessageId, normalizeMessageId } from '../ticketEmailLinks';
 import { ownOutboundReason, ticketCreationLoopReason } from './loopPrevention';
-import { evaluateInboundThrottle, resolveInboundCapLimits, type InboundCapLimits } from './inboundRateLimit';
+import { evaluateInboundThrottle, resolveInboundCapLimits } from './inboundRateLimit';
 import { getRedis } from '../redis';
 
 // Synthetic actor for the inbound pipeline. Only ever written to audit_logs.actor_id
@@ -429,6 +429,32 @@ export async function processInboundEmail(
       return;
     }
 
+    // FLOOD CAP — the single choke for NEW ticket creation. Placed HERE, after
+    // the R4 sender-auth gate, provider dedup, the claim-ledger consult, AND the
+    // live-thread append path above (which returned), and BEFORE every create
+    // path below (closed-continuation, portal user, mapped domain, triage). So:
+    //   - only authenticated, non-duplicate, unclaimed, non-append mail is metered
+    //     (a forged/unauthenticated flood can never charge a victim's budget);
+    //   - the charge sits ahead of the mapped-domain path's contact auto-creation,
+    //     so an over-cap message creates NEITHER a ticket NOR a contact;
+    //   - the charge is idempotent per provider-message-id, so an at-least-once
+    //     redelivery / transaction retry counts once, not N times.
+    // Over-cap ⇒ quarantine for review (recoverable), never dropped. The Redis
+    // round-trip runs in the held tx (warn-only #1105, as the autoresponder does)
+    // but only for genuine creation candidates. rateLimiter fails CLOSED on Redis
+    // error (→ quarantine); a fully-absent Redis fails OPEN in evaluateInboundThrottle.
+    const throttle = await evaluateInboundThrottle({
+      redis: getRedis(),
+      from: n.from,
+      partnerId,
+      limits: capLimits,
+      dedupeMember: n.providerMessageId,
+    });
+    if (throttle.throttled) {
+      await logInbound(n, partnerId, 'quarantined', null, `rate-limited: ${throttle.bucket ?? 'inbound'} cap exceeded`);
+      return;
+    }
+
     // No LIVE thread match. A reply to a CLOSED ticket is immutable -> create a NEW
     // linked ticket carrying the original thread key. This lookup is intentionally
     // SEPARATE from findTicketInPartner (which excludes closed) so the live-continuation
@@ -439,7 +465,7 @@ export async function processInboundEmail(
       await dependencies.afterTicketMatchLock?.(closedOriginal.id);
       // No requester and NO acknowledgement: a reply to a closed ticket spawns a
       // linked ticket, it is not a fresh submission (spec §5).
-      const t = await createFromEmail(n, partnerId, closedOriginal.orgId, closedOriginal.emailThreadKey, closedOriginal.internalNumber, null, false, capLimits);
+      const t = await createFromEmail(n, partnerId, closedOriginal.orgId, closedOriginal.emailThreadKey, closedOriginal.internalNumber, null, false);
       await logCreated(n, partnerId, t);
       return;
     }
@@ -451,7 +477,7 @@ export async function processInboundEmail(
     if (sender) {
       // A portal LOGIN. createTicket derives the person from its contact_id —
       // the inbound path must not resolve a second candidate by address.
-      const t = await createFromEmail(n, partnerId, sender.orgId, null, null, { kind: 'portal', portalUserId: sender.id }, true, capLimits);
+      const t = await createFromEmail(n, partnerId, sender.orgId, null, null, { kind: 'portal', portalUserId: sender.id }, true);
       // A login with no contact_id yields a ticket attributed to nobody. Not an
       // error (the ticket is right, the login's data is incomplete) — a note,
       // so the gap is visible instead of only showing up as a customer who
@@ -486,7 +512,7 @@ export async function processInboundEmail(
           requesterNote = unlinkedRequesterNote(resolved.reason, n.from);
         }
       }
-      const t = await createFromEmail(n, partnerId, domainMatch.orgId, null, null, requester, autoresponse, capLimits);
+      const t = await createFromEmail(n, partnerId, domainMatch.orgId, null, null, requester, autoresponse);
       await logCreated(n, partnerId, t, requesterNote);
       return;
     }
@@ -509,7 +535,7 @@ export async function processInboundEmail(
     if (policy.unknownSenderMode === 'triage' && policy.defaultTriageOrgId) {
       // Unknown sender: no requester and no acknowledgement (we would be
       // replying to an address the partner never vetted).
-      const t = await createFromEmail(n, partnerId, policy.defaultTriageOrgId, null, null, null, false, capLimits);
+      const t = await createFromEmail(n, partnerId, policy.defaultTriageOrgId, null, null, null, false);
       await logCreated(n, partnerId, t);
       return;
     }
@@ -561,15 +587,9 @@ function createSenderResolver(from: string, partnerId: string): SenderResolver {
 async function logCreated(
   n: NormalizedInboundEmail,
   partnerId: string,
-  result: { id: string | null; lostClaimTo: string | null; throttledBucket: string | null },
+  result: { id: string; lostClaimTo: string | null },
   note?: string
 ): Promise<void> {
-  // Over-cap: createFromEmail charged the window, found it exceeded, and created
-  // NOTHING. Quarantine for review (recoverable) rather than 'created'.
-  if (result.throttledBucket !== null) {
-    await logInbound(n, partnerId, 'quarantined', null, `rate-limited: ${result.throttledBucket} cap exceeded`);
-    return;
-  }
   const notes = [
     result.lostClaimTo ? `lost message-id claim to ticket ${result.lostClaimTo}` : null,
     note ?? null,
@@ -658,29 +678,8 @@ async function createFromEmail(
   carryThreadKey: string | null,
   priorNumber: string | null,
   requester: EmailTicketRequester,
-  autoresponse: boolean,
-  capLimits: InboundCapLimits,
-): Promise<{ id: string | null; lostClaimTo: string | null; throttledBucket: string | null }> {
-  // FLOOD CAP (charged HERE, at the creation choke point). Every path that would
-  // mint a ticket funnels through this function, and everything upstream that
-  // must NOT be charged has already returned: unverified senders (R4 gate),
-  // duplicates (provider dedup), already-claimed messages (ledger consult), and
-  // thread-append replies (appendInboundComment, a different path). So the only
-  // messages that reach here are authenticated, novel, and about to create a
-  // ticket — exactly the population the caps should meter. Charging pre-routing
-  // instead would let a forged/unauthenticated flood exhaust a victim's budget.
-  //
-  // The Redis round-trip runs inside the pipeline's held transaction — the same
-  // warn-only #1105 tolerance the autoresponder already relies on — but only for
-  // real creations, not every inbound message. rateLimiter fails CLOSED (deny) on
-  // a Redis outage, so the cap degrades to quarantine-for-review (recoverable),
-  // never to an unbounded ticket factory. Over-cap ⇒ return the sentinel; the
-  // caller (logCreated) quarantines instead of creating.
-  const verdict = await evaluateInboundThrottle({ redis: getRedis(), from: n.from, partnerId, limits: capLimits });
-  if (verdict.throttled) {
-    return { id: null, lostClaimTo: null, throttledBucket: verdict.bucket };
-  }
-
+  autoresponse: boolean
+) {
   // GUARD (spec §6 layer 2): the resolved org MUST belong to the resolved partner before create.
   const orgOk = await db
     .select({ id: organizations.id })
@@ -795,7 +794,7 @@ async function createFromEmail(
       subject: persisted[0]?.subject ?? '',
     });
   }
-  return { id: ticket.id, lostClaimTo, throttledBucket: null };
+  return { id: ticket.id, lostClaimTo };
 }
 
 /**

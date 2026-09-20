@@ -63,9 +63,11 @@ export function autoresponseSuppressionReason(
  * letting the mail become a ticket — correct for device/notification senders.
  */
 export function ticketCreationLoopReason(n: NormalizedInboundEmail): string | null {
-  // RFC 3834 allows optional parameters after the keyword (`auto-replied; foo=bar`),
-  // so match the keyword token, not the whole header value.
-  const autoSubmitted = n.autoSubmitted?.split(';')[0]?.trim().toLowerCase();
+  // RFC 3834 allows optional parameters (`auto-replied; foo=bar`) and RFC 5322
+  // comments (`auto-replied (vacation)`) after the keyword. Extract the leading
+  // keyword token only — the run of keyword characters at the start — so neither
+  // a parameter nor a parenthesized comment can hide it.
+  const autoSubmitted = n.autoSubmitted?.trim().toLowerCase().match(/^[a-z][a-z-]*/)?.[0];
   if (autoSubmitted === 'auto-replied') return 'auto-replied';
 
   // A true null return path is EXACTLY `<>` (optionally whitespace) — an empty

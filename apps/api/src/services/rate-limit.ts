@@ -102,6 +102,16 @@ export interface RateLimiterOptions {
    * request volume there is still bounded by the global per-IP limiter.
    */
   refundOnReject?: boolean;
+  /**
+   * Stable ZSET member for THIS logical event, making the charge idempotent: the
+   * same `dedupeMember` re-`zadd`ed only updates its score, so a retry or a
+   * concurrent duplicate of the same event occupies ONE slot instead of N. Use it
+   * where the "cost" is a distinct real-world event (e.g. one inbound email keyed
+   * by provider-message-id) and at-least-once delivery / transaction retries would
+   * otherwise over-charge a legitimate sender. Ignored unless set; when set, `cost`
+   * is treated as 1 (a single event occupies a single slot).
+   */
+  dedupeMember?: string;
 }
 
 export async function rateLimiter(
@@ -132,8 +142,16 @@ export async function rateLimiter(
   const windowStart = now - windowSeconds * 1000;
   const safeCost = Number.isFinite(cost) ? Math.max(1, Math.floor(cost)) : 1;
   const zaddArgs: Array<string | number> = [];
-  for (let i = 0; i < safeCost; i += 1) {
-    zaddArgs.push(now, `${now}-${i}-${Math.random().toString(36).slice(2, 10)}`);
+  if (options.dedupeMember) {
+    // Idempotent charge: one stable member for this event. A retry / concurrent
+    // duplicate re-`zadd`s the SAME member, which only refreshes its score — the
+    // ZSET cardinality (and thus the count) is unchanged, so the event is charged
+    // exactly once within the window. `cost` is treated as 1 here by design.
+    zaddArgs.push(now, options.dedupeMember);
+  } else {
+    for (let i = 0; i < safeCost; i += 1) {
+      zaddArgs.push(now, `${now}-${i}-${Math.random().toString(36).slice(2, 10)}`);
+    }
   }
 
   try {

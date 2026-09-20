@@ -128,8 +128,11 @@ describe('ticketCreationLoopReason', () => {
   it('suppresses Auto-Submitted: auto-replied (a loop reply), incl. RFC-3834 parameters', () => {
     expect(ticketCreationLoopReason(email({ autoSubmitted: 'auto-replied' }))).toBe('auto-replied');
     expect(ticketCreationLoopReason(email({ autoSubmitted: 'Auto-Replied' }))).toBe('auto-replied');
-    // Parameterized header must still match the keyword (finding 8).
+    // Parameterized header must still match the keyword (finding 8)...
     expect(ticketCreationLoopReason(email({ autoSubmitted: 'auto-replied; x-foo=bar' }))).toBe('auto-replied');
+    // ...as must an RFC 5322 comment after the keyword (finding 8, re-review).
+    expect(ticketCreationLoopReason(email({ autoSubmitted: 'auto-replied (vacation)' }))).toBe('auto-replied');
+    expect(ticketCreationLoopReason(email({ autoSubmitted: 'auto-replied (out of office); x=y' }))).toBe('auto-replied');
   });
 
   it('does NOT suppress Auto-Submitted: auto-generated (device/copier notifications are real tickets)', () => {

@@ -51,14 +51,14 @@ describe('evaluateInboundThrottle', () => {
 
   it('passes when every window allows', async () => {
     rateLimiterMock.mockResolvedValue(allow);
-    const v = await evaluateInboundThrottle({ redis: fakeRedis, from: 'jane@acme.com', partnerId: 'p1', limits });
+    const v = await evaluateInboundThrottle({ redis: fakeRedis, from: 'jane@acme.com', partnerId: 'p1', dedupeMember: 'msg-1', limits });
     expect(v).toEqual({ throttled: false, bucket: null });
     expect(rateLimiterMock).toHaveBeenCalledTimes(3);
   });
 
   it('reports the sender bucket first (tightest window) and short-circuits', async () => {
     rateLimiterMock.mockResolvedValueOnce(deny); // sender window denies
-    const v = await evaluateInboundThrottle({ redis: fakeRedis, from: 'jane@acme.com', partnerId: 'p1', limits });
+    const v = await evaluateInboundThrottle({ redis: fakeRedis, from: 'jane@acme.com', partnerId: 'p1', dedupeMember: 'msg-1', limits });
     expect(v).toEqual({ throttled: true, bucket: 'sender' });
     // Stops at the first tripped window — does not check domain/partner.
     expect(rateLimiterMock).toHaveBeenCalledTimes(1);
@@ -66,7 +66,7 @@ describe('evaluateInboundThrottle', () => {
 
   it('namespaces keys by partner and lowercases the sender', async () => {
     rateLimiterMock.mockResolvedValue(allow);
-    await evaluateInboundThrottle({ redis: fakeRedis, from: 'Jane@ACME.com', partnerId: 'p1', limits });
+    await evaluateInboundThrottle({ redis: fakeRedis, from: 'Jane@ACME.com', partnerId: 'p1', dedupeMember: 'msg-1', limits });
     const keys = rateLimiterMock.mock.calls.map((c) => c[1]);
     expect(keys).toEqual([
       'inbound:tix:sender:p1:jane@acme.com',
@@ -80,17 +80,17 @@ describe('evaluateInboundThrottle', () => {
     await evaluateInboundThrottle({
       redis: fakeRedis,
       from: 'jane@acme.com',
-      partnerId: 'p1',
+      partnerId: 'p1', dedupeMember: 'msg-1',
       limits: { perSenderPerHour: 0, perDomainPerHour: 0, perPartnerPerHour: 1000 },
     });
     // Only the partner window is checked.
     expect(rateLimiterMock).toHaveBeenCalledTimes(1);
-    expect(rateLimiterMock.mock.calls[0][1]).toBe('inbound:tix:partner:p1');
+    expect(rateLimiterMock.mock.calls[0]?.[1]).toBe('inbound:tix:partner:p1');
   });
 
   it('skips the domain window when the sender address has no parseable domain', async () => {
     rateLimiterMock.mockResolvedValue(allow);
-    await evaluateInboundThrottle({ redis: fakeRedis, from: 'not-an-address', partnerId: 'p1', limits });
+    await evaluateInboundThrottle({ redis: fakeRedis, from: 'not-an-address', partnerId: 'p1', dedupeMember: 'msg-1', limits });
     const keys = rateLimiterMock.mock.calls.map((c) => c[1]);
     expect(keys).toEqual([
       'inbound:tix:sender:p1:not-an-address',
@@ -98,16 +98,25 @@ describe('evaluateInboundThrottle', () => {
     ]);
   });
 
+  it('forwards the dedupeMember to rateLimiter so a redelivery charges once', async () => {
+    rateLimiterMock.mockResolvedValue(allow);
+    await evaluateInboundThrottle({ redis: fakeRedis, from: 'jane@acme.com', partnerId: 'p1', dedupeMember: 'pmid-42', limits });
+    for (const call of rateLimiterMock.mock.calls) {
+      // rateLimiter(redis, key, limit, windowSeconds, cost, options)
+      expect(call[5]).toEqual(expect.objectContaining({ dedupeMember: 'pmid-42' }));
+    }
+  });
+
   it('fails OPEN (does not throttle) when Redis is unavailable, without calling the limiter', async () => {
     rateLimiterMock.mockResolvedValue(deny);
-    const v = await evaluateInboundThrottle({ redis: null, from: 'jane@acme.com', partnerId: 'p1', limits });
+    const v = await evaluateInboundThrottle({ redis: null, from: 'jane@acme.com', partnerId: 'p1', dedupeMember: 'msg-1', limits });
     expect(v).toEqual({ throttled: false, bucket: null });
     expect(rateLimiterMock).not.toHaveBeenCalled();
   });
 
   it('reports partner bucket when only the partner window trips', async () => {
     rateLimiterMock.mockResolvedValueOnce(allow).mockResolvedValueOnce(allow).mockResolvedValueOnce(deny);
-    const v = await evaluateInboundThrottle({ redis: fakeRedis, from: 'jane@acme.com', partnerId: 'p1', limits });
+    const v = await evaluateInboundThrottle({ redis: fakeRedis, from: 'jane@acme.com', partnerId: 'p1', dedupeMember: 'msg-1', limits });
     expect(v).toEqual({ throttled: true, bucket: 'partner' });
   });
 });

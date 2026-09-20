@@ -74,6 +74,13 @@ export interface EvaluateInboundThrottleArgs {
   from: string;
   partnerId: string;
   limits: InboundCapLimits;
+  /**
+   * Stable per-message identity (the provider message id). Makes each window
+   * charge idempotent, so an at-least-once redelivery or a transaction-retry of
+   * the SAME message counts once, not N times — a legitimate sender is never
+   * quarantined for a duplicate the pipeline dedups anyway.
+   */
+  dedupeMember: string;
 }
 
 /**
@@ -89,15 +96,17 @@ export interface EvaluateInboundThrottleArgs {
 export async function evaluateInboundThrottle(
   args: EvaluateInboundThrottleArgs,
 ): Promise<InboundThrottleVerdict> {
-  const { redis, from, partnerId, limits } = args;
+  const { redis, from, partnerId, limits, dedupeMember } = args;
 
-  // Redis unavailable ⇒ do NOT throttle. This is a deliberate fail-OPEN, unlike
-  // rateLimiter's own fail-closed: the inbound worker only runs when BullMQ (also
-  // Redis-backed) is delivering jobs, so a truly absent Redis means the pipeline
-  // is not processing at all — quarantining every ticket on a Redis blip would be
-  // strictly worse than briefly not enforcing the per-sender cap, and the global
-  // BullMQ queue limiter still bounds total throughput. An attacker cannot force
-  // Redis to be null. (Redis present-but-erroring still fails closed via rateLimiter.)
+  // Redis unavailable ⇒ do NOT throttle. Deliberate fail-OPEN, unlike rateLimiter's
+  // own fail-closed. `getRedis()` returns null only after the general Redis client
+  // has hit a connection error; there is a narrow window where BullMQ's separate
+  // connection has recovered (so jobs resume) before that client does, and during
+  // it the per-sender/domain/partner caps are briefly not enforced. That is an
+  // accepted trade: quarantining every inbound ticket on a Redis blip is worse than
+  // briefly not metering, the window is bounded by client reconnect, the global
+  // BullMQ queue limiter still caps total throughput, and an attacker cannot force
+  // Redis null. (Redis present-but-erroring still fails CLOSED via rateLimiter.)
   if (!redis) return { throttled: false, bucket: null };
 
   const sender = from.trim().toLowerCase();
@@ -117,7 +126,9 @@ export async function evaluateInboundThrottle(
   }
 
   for (const c of checks) {
-    const res = await rateLimiter(redis, c.key, c.limit, WINDOW_SECONDS);
+    // cost 1, idempotent per message: a redelivery/retry of the same message
+    // refreshes its single slot rather than consuming another.
+    const res = await rateLimiter(redis, c.key, c.limit, WINDOW_SECONDS, 1, { dedupeMember });
     if (!res.allowed) return { throttled: true, bucket: c.bucket };
   }
   return { throttled: false, bucket: null };
