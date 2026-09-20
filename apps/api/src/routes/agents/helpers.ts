@@ -2414,6 +2414,7 @@ async function resolvePolicyMonitoringSettings(deviceId: string): Promise<Monito
     .where(and(
       eq(configPolicyMonitoringWatches.settingsId, winner.settingsId),
       eq(configPolicyMonitoringWatches.enabled, true),
+      isNull(configPolicyMonitoringWatches.retiredAt),
     ))
     .orderBy(configPolicyMonitoringWatches.sortOrder);
 

@@ -96,6 +96,7 @@ vi.mock('drizzle-orm', () => {
   return {
     and: (...conditions: unknown[]) => ({ op: 'and', conditions }),
     eq: (column: unknown, value: unknown) => ({ op: 'eq', column, value }),
+    isNull: (column: unknown) => ({ op: 'isNull', column }),
     inArray: (column: unknown, values: unknown[]) => ({ op: 'inArray', column, values }),
     asc: (value: unknown) => ({ op: 'asc', value }),
     sql,
