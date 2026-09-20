@@ -290,6 +290,7 @@ function applyBillingInput(
     stamp.hourlyRate = null;
     stamp.minimumMinutes = null;
   }
+  if (stamp.billingStatus === 'contract') stamp.coverage = 'included';
   if (stamp.coverage === 'included') {
     stamp.hourlyRate = null;
     stamp.minimumMinutes = null;

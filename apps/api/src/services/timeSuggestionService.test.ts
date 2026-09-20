@@ -356,6 +356,17 @@ describe('confirmTimeSuggestion', () => {
     expect(inserted[0]).toEqual([expect.objectContaining({ partnerId: 'p1', userId: 'u1', signalKind: 'remote_session', signalId: 's1', decision: 'confirmed', timeEntryId: 'e1' })]);
   });
 
+  it.each([undefined, false, true])('passes billability only when explicitly supplied (%s)', async isBillable => {
+    enabled();
+    execResults.push([], [sessionRow()], []);
+    orgLinkMock.mockResolvedValue({ orgId: 'o1', currencyCode: 'EUR' });
+    createEntryMock.mockResolvedValue({ id: 'e1', orgId: 'o1' });
+    await confirmTimeSuggestion({ ...confirmBody, ...(isBillable === undefined ? {} : { isBillable }) }, actor);
+    const input = createEntryMock.mock.calls[0]![0];
+    if (isBillable === undefined) expect(input).not.toHaveProperty('isBillable');
+    else expect(input).toHaveProperty('isBillable', isBillable);
+  });
+
   it('never lets the client choose org, currency or source', async () => {
     enabled();
     execResults.push([], [sessionRow()], []);

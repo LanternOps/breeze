@@ -59,7 +59,7 @@ export const createTicketFromChatSchema = z
     status: z.enum(['open', 'resolved']),
     resolutionNote: z.string().max(50_000).optional(),
     timeMinutes: z.number().int().min(0).max(24 * 60),
-    billable: z.boolean(),
+    billable: z.boolean().optional(),
     priority: ticketPrioritySchema.optional(),
   })
   .refine((v) => v.status !== 'resolved' || (v.resolutionNote?.trim().length ?? 0) > 0, {

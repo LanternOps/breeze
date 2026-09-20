@@ -40,12 +40,13 @@ BEGIN
   FOR p IN SELECT id, currency_code FROM partners
     WHERE labour_pricing_converted_at IS NULL ORDER BY id FOR UPDATE
   LOOP
-    SELECT array_agg(code ORDER BY code) INTO currencies FROM (
+    SELECT coalesce(array_agg(code ORDER BY code), ARRAY[]::text[]) INTO currencies FROM (
       SELECT p.currency_code::text AS code
       UNION SELECT o.currency_code::text FROM organizations o WHERE o.partner_id = p.id
       UNION SELECT c.rate_currency::text FROM ticket_categories c
         WHERE c.partner_id = p.id AND c.default_hourly_rate IS NOT NULL AND c.rate_currency IS NOT NULL
-    ) all_currencies;
+    ) all_currencies
+    WHERE EXISTS (SELECT 1 FROM supported_currencies sc WHERE sc.code = all_currencies.code);
 
     -- These are source populations, not numbers of generated rows. In
     -- particular, report matching-rate orgs even with ZERO recent entries,
@@ -199,6 +200,11 @@ BEGIN
       WHERE o.partner_id = p.id AND (s.default_billable IS NOT NULL OR s.default_hourly_rate IS NOT NULL)
       ORDER BY o.id
     LOOP
+      IF NOT EXISTS (SELECT 1 FROM supported_currencies sc WHERE sc.code = org.currency_code) THEN
+        RAISE WARNING 'partner % org %: off-list currency %; skipping override card (legacy settings unchanged)',
+          p.id, org.id, org.currency_code;
+        CONTINUE;
+      END IF;
       base_coverage := CASE WHEN org.default_billable = false THEN 'non_billable' ELSE 'billable' END;
       base_rate := CASE WHEN base_coverage = 'billable' AND org.rate_currency = org.currency_code
         THEN org.default_hourly_rate ELSE NULL END;

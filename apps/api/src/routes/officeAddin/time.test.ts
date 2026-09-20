@@ -318,7 +318,7 @@ describe('router surface', () => {
 
 
 describe('billing override actor plumbing', () => {
-  it.each([false, true])('passes manageBilling=%s while forged rates remain outside the add-in schema', async manageBilling => {
+  it.each([false, true])('refuses add-in billing overrides even with manage_billing=%s and strips forged rates', async manageBilling => {
     authRef.current.manageBilling = manageBilling;
     hoisted.createTimeEntry.mockResolvedValue({ id: ENTRY_ID, ticketId: TICKET_ID });
     const res = await makeApp().request('/time/log', {
@@ -328,6 +328,6 @@ describe('billing override actor plumbing', () => {
     });
     expect(res.status).toBe(201);
     expect(hoisted.createTimeEntry.mock.calls[0]?.[0]).not.toHaveProperty('hourlyRate');
-    expect(hoisted.createTimeEntry.mock.calls[0]?.[1]).toMatchObject({ manageBilling, manageAll: false });
+    expect(hoisted.createTimeEntry.mock.calls[0]?.[1]).toMatchObject({ manageBilling: false, manageAll: false });
   });
 });

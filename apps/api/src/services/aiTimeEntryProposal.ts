@@ -106,7 +106,7 @@ export async function resolveAiTimeEntryDefaults(ticketId: string): Promise<AiTi
   // inside a request transaction whose org context can see the ticket but
   // whose scope may not carry the partner-keyed category row's read branch.
   // Same discipline as timeEntryService's getCategoryDefaults.
-  const joined = await runOutsideDbContext(() =>
+  return runOutsideDbContext(() =>
     withSystemDbAccessContext(async () => {
       const [row] = await db
         .select({ defaultTimeEntryMinutes: ticketCategories.defaultTimeEntryMinutes })
@@ -114,15 +114,16 @@ export async function resolveAiTimeEntryDefaults(ticketId: string): Promise<AiTi
         .leftJoin(ticketCategories, eq(ticketCategories.id, tickets.categoryId))
         .where(eq(tickets.id, ticketId))
         .limit(1);
-      return row ?? null;
+      // Card resolution must share this context: event-bus callers have no
+      // ambient tenant scope and FORCE RLS would otherwise hide every card.
+      const defaults = await getTicketTimeEntryDefaults(ticketId, DEFAULTS_READ_ACTOR);
+      const categoryMinutes = row?.defaultTimeEntryMinutes ?? null;
+      return {
+        durationMinutes: categoryMinutes != null && categoryMinutes > 0 ? categoryMinutes : AI_TIME_ENTRY_DEFAULT_MINUTES,
+        isBillable: defaults.isBillable,
+      };
     }),
   );
-  const defaults = await getTicketTimeEntryDefaults(ticketId, DEFAULTS_READ_ACTOR);
-  const categoryMinutes = joined?.defaultTimeEntryMinutes ?? null;
-  return {
-    durationMinutes: categoryMinutes != null && categoryMinutes > 0 ? categoryMinutes : AI_TIME_ENTRY_DEFAULT_MINUTES,
-    isBillable: defaults.isBillable,
-  };
 }
 
 interface RunLineage {

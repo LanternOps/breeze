@@ -367,3 +367,17 @@ describe('ticket category default time entry minutes', () => {
     });
   });
 });
+
+describe('createTicketFromChatSchema billing defaults', () => {
+  const payload = { subject: 'Printer repair', status: 'open', timeMinutes: 15 };
+  it('omits billable so the card determines billing', () => {
+    const parsed = createTicketFromChatSchema.parse(payload);
+    expect(parsed).not.toHaveProperty('billable');
+  });
+  it.each([true, false])('preserves an explicit billable override of %s', (billable) => {
+    expect(createTicketFromChatSchema.parse({ ...payload, billable }).billable).toBe(billable);
+  });
+  it('rejects a non-boolean override', () => {
+    expect(createTicketFromChatSchema.safeParse({ ...payload, billable: 'true' }).success).toBe(false);
+  });
+});

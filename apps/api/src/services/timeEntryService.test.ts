@@ -2096,6 +2096,18 @@ describe('billing profile stamps and service override gate', () => {
     expect(dbMocks.updateSetArgs[0]).toMatchObject({ hourlyRate: '100.00', billingOverridden: false });
     expect(cardMocks.loadCardsForOrg).not.toHaveBeenCalled();
   });
+  it.each(['create', 'update'] as const)('%s normalizes a contract-only override to included with no money', async mode => {
+    if (mode === 'create') {
+      seedLink();
+      await createTimeEntry({ ticketId: 't-1', ...span, billingStatus: 'contract' }, manager);
+    } else {
+      dbMocks.selectResults.push([{ ...entry, minimumMinutes: 30 }]);
+      await updateTimeEntry('te-1', { billingStatus: 'contract' }, manager);
+    }
+    const stamp = mode === 'create' ? dbMocks.insertedValues[0] : dbMocks.updateSetArgs[0];
+    expect(stamp).toMatchObject({ coverage: 'included', billingStatus: 'contract',
+      hourlyRate: null, minimumMinutes: null, isBillable: true, billingOverridden: true });
+  });
   it('a manager bills formerly included work by marking it out of scope', async () => {
     dbMocks.selectResults.push([{ ...entry, coverage: 'included', hourlyRate: null, billingStatus: 'contract' }]);
     await updateTimeEntry('te-1', { hourlyRate: 300 }, manager);

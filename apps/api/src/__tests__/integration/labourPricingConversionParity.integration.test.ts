@@ -9,6 +9,8 @@
 import './setup';
 import { describe, expect, it, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import postgres from 'postgres';
 import { sql } from 'drizzle-orm';
 import { getTestDb } from './setup';
 import { replayMigration } from './replayMigration';
@@ -199,6 +201,75 @@ describe('labour pricing conversion — legacy parity gate', () => {
     expect(entries.length).toBeGreaterThan(0);
     for (const entry of entries) expect(entry).toEqual({ billing_profile_id: null, coverage: null,
       billing_overridden: false, minimum_minutes: null, rounding_increment_minutes: null });
+  });
+
+  it('new partners default to converted while explicitly NULL legacy partners remain eligible', async () => {
+    const legacy = await seedShape(LEGACY_SHAPES[0]!);
+    const db = getTestDb();
+    const id = randomUUID();
+    const [created] = await db.execute(sql`INSERT INTO partners (id, name, slug)
+      VALUES (${id}, 'Post-cutover partner', ${`post-cutover-${id}`})
+      RETURNING labour_pricing_converted_at`);
+    expect(created!.labour_pricing_converted_at).not.toBeNull();
+    const [existing] = await db.execute(sql`SELECT labour_pricing_converted_at FROM partners WHERE id = ${legacy.partner.id}`);
+    expect(existing!.labour_pricing_converted_at).toBeNull();
+    await replayMigration(MIGRATION);
+    expect(await loadCards(legacy.partner.id)).toHaveLength(1);
+    expect(await loadCards(id)).toHaveLength(0);
+  });
+
+  it('skips an off-list org currency and logs it while converting supported pricing', async () => {
+    const notices: string[] = [];
+    const client = postgres(process.env.DATABASE_URL || 'postgresql://breeze_test:breeze_test@localhost:5433/breeze_test', {
+      max: 1, onnotice: notice => { notices.push(notice.message ?? ''); },
+    });
+    const migration = await readFile(new URL(`../../../migrations/${MIGRATION}`, import.meta.url), 'utf8');
+    const partnerId = randomUUID();
+    const badOrgId = randomUUID();
+    const goodOrgId = randomUUID();
+    const rollback = new Error('rollback off-list fixture and DDL');
+    try {
+      await expect(client.begin(async tx => {
+        await tx`SELECT set_config('breeze.scope', 'system', true)`;
+        // Model historical rows admitted before the currency FKs existed.
+        // Restore NOT VALID guards before running conversion; rollback restores
+        // the original schema regardless of the assertion outcome.
+        await tx.unsafe('ALTER TABLE organizations DROP CONSTRAINT organizations_currency_code_fkey');
+        await tx`INSERT INTO partners (id, name, slug, currency_code, labour_pricing_converted_at)
+          VALUES (${partnerId}, 'Off-list partner', ${partnerId}, 'USD', NULL)`;
+        await tx`INSERT INTO organizations (id, partner_id, name, slug, currency_code) VALUES
+          (${badOrgId}, ${partnerId}, 'Off-list organization', ${badOrgId}, 'ZZZ'),
+          (${goodOrgId}, ${partnerId}, 'Supported organization', ${goodOrgId}, 'USD')`;
+        await tx`INSERT INTO org_ticket_settings (org_id, default_billable, default_hourly_rate, rate_currency) VALUES
+          (${badOrgId}, false, '99.00', 'USD'), (${goodOrgId}, true, '150.00', 'USD')`;
+        await tx`INSERT INTO ticket_categories (partner_id, name, default_billable, default_hourly_rate, rate_currency) VALUES
+          (${partnerId}, 'Supported category', true, '125.00', 'USD')`;
+        await tx.unsafe(`ALTER TABLE organizations ADD CONSTRAINT organizations_currency_code_fkey
+          FOREIGN KEY (currency_code) REFERENCES supported_currencies(code) NOT VALID;`);
+        const [legacyBefore] = await tx`SELECT to_jsonb(s) AS row FROM org_ticket_settings s WHERE org_id = ${badOrgId}`;
+        await tx.unsafe(migration);
+        const cards = await tx`SELECT currency_code, is_default, base_hourly_rate FROM billing_profiles WHERE partner_id = ${partnerId}`;
+        expect(cards).toHaveLength(2);
+        expect(cards.every(card => card.currency_code === 'USD')).toBe(true);
+        expect(cards).toContainEqual({ currency_code: 'USD', is_default: false, base_hourly_rate: '150.00' });
+        const assignments = await tx`SELECT org_id FROM org_billing_profile_assignments WHERE partner_id = ${partnerId}`;
+        expect(assignments).toEqual([{ org_id: goodOrgId }]);
+        const rules = await tx`SELECT hourly_rate FROM billing_profile_rules WHERE partner_id = ${partnerId}`;
+        expect(rules).toEqual([{ hourly_rate: '125.00' }]);
+        const [legacyAfter] = await tx`SELECT to_jsonb(s) AS row FROM org_ticket_settings s WHERE org_id = ${badOrgId}`;
+        expect(legacyAfter).toEqual(legacyBefore);
+        const [badOrg] = await tx`SELECT currency_code FROM organizations WHERE id = ${badOrgId}`;
+        expect(badOrg!.currency_code).toBe('ZZZ');
+        expect(resolveBillingRule({ orgCurrency: 'ZZZ', workTypeId: null, assignedCard: null, partnerDefaultCard: null }))
+          .toMatchObject({ fellBackToNoCard: true });
+        const [marker] = await tx`SELECT labour_pricing_converted_at FROM partners WHERE id = ${partnerId}`;
+        expect(marker!.labour_pricing_converted_at).not.toBeNull();
+        expect(notices).toContainEqual(expect.stringMatching(new RegExp(`org ${badOrgId}.*ZZZ.*skipp`, 'i')));
+        throw rollback;
+      })).rejects.toBe(rollback);
+    } finally {
+      await client.end({ timeout: 1 });
+    }
   });
 
   it('PARITY: all 17 legacy shapes, every org × category-or-none, with NO client workTypeId', async () => {

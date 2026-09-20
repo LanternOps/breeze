@@ -69,6 +69,8 @@ export interface ConfirmSuggestionInput {
   /** `null` clears the ticket link explicitly; `undefined` omits the key. */
   ticketId?: string | null;
   description?: string;
+  /** Explicit user override; omission resolves the billing profile on the server. */
+  isBillable?: boolean;
 }
 
 export interface ConfirmSuggestionResult {

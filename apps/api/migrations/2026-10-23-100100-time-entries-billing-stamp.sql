@@ -8,6 +8,8 @@ ALTER TABLE time_entries
   ADD COLUMN IF NOT EXISTS minimum_minutes integer,
   ADD COLUMN IF NOT EXISTS rounding_increment_minutes integer;
 ALTER TABLE partners ADD COLUMN IF NOT EXISTS labour_pricing_converted_at timestamptz;
+-- Existing rows must remain NULL for conversion; only future inserts skip it.
+ALTER TABLE partners ALTER COLUMN labour_pricing_converted_at SET DEFAULT now();
 
 -- NO ACTION preserves billing history. Partner erasure orders referrers first
 -- using FK edges. This references partner_id, not the org-merge axis.

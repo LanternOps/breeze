@@ -92,8 +92,8 @@ export interface SeededFixture {
 export async function seedShape(shape: Shape): Promise<SeededFixture> {
   const db = getTestDb();
   const partner = { id: randomUUID(), name: shape.name, currencyCode: shape.partnerCurrency ?? 'USD' };
-  await db.execute(sql`INSERT INTO partners (id, name, slug, currency_code)
-    VALUES (${partner.id}, ${partner.name}, ${`parity-${partner.id}`}, ${partner.currencyCode})`);
+  await db.execute(sql`INSERT INTO partners (id, name, slug, currency_code, labour_pricing_converted_at)
+    VALUES (${partner.id}, ${partner.name}, ${`parity-${partner.id}`}, ${partner.currencyCode}, NULL)`);
   const categoryIds = shape.categories.map(() => randomUUID());
   const categories: SeededFixture['categories'] = [];
   for (const [index, seed] of shape.categories.entries()) {
