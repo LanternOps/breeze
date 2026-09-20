@@ -9,6 +9,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const DEVICE_ID = '33333333-3333-3333-3333-333333333333';
 const ORG_ID = '11111111-1111-1111-1111-111111111111';
+const RUN_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const PREVIEWED_AT = new Date();
 const AGED = new Date(Date.now() - 72 * 3600_000).toISOString();
 
 const dbMockState = vi.hoisted(() => ({
@@ -22,7 +24,17 @@ const previewState = vi.hoisted(() => ({
 }));
 
 vi.mock('../db', () => ({
+  runOutsideDbContext: vi.fn((fn) => fn()),
+  withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   db: {
+    update: vi.fn(() => ({
+      set: vi.fn((values: Record<string, unknown>) => ({
+        where: vi.fn(() => {
+          Object.assign(dbMockState.insertedRuns[0]!, values);
+          return { returning: vi.fn(async () => dbMockState.insertedRuns) };
+        }),
+      })),
+    })),
     select: vi.fn(() => {
       const chain: Record<string, unknown> = {};
       chain.from = vi.fn((table: unknown) => {
@@ -66,6 +78,7 @@ vi.mock('./filesystemAnalysis', () => ({
   getLatestFilesystemCleanupSnapshot: vi.fn(async () => ({ id: 'snap-1', capturedAt: new Date('2026-09-19T12:00:00Z'), cleanupCandidates: [] })),
   parseFilesystemAnalysisStdout: vi.fn(() => ({})),
   saveFilesystemSnapshot: vi.fn(),
+  readPlanPreviewCandidates: vi.fn((plan) => plan.preview.candidates),
   safeCleanupCategories: ['temp_files', 'browser_cache', 'package_cache', 'trash'],
 }));
 
@@ -102,7 +115,10 @@ describe('disk_cleanup execute dispatches a permanent, guarded delete', () => {
     dbMockState.deviceRows = [{
       id: DEVICE_ID, orgId: ORG_ID, siteId: null, hostname: 'host-1', status: 'online', osType: 'linux', agentVersion: '0.115.0',
     }];
-    dbMockState.insertedRuns = [];
+    dbMockState.insertedRuns = [{
+      id: RUN_ID, status: 'previewed', requestedAt: PREVIEWED_AT, scanPath: '/',
+      plan: { preview: { get candidates() { return previewState.candidates; } } },
+    }];
     previewState.candidates = [
       { path: '/tmp/a.tmp', category: 'temp_files', sizeBytes: 4096, safe: true, modifiedAt: AGED },
     ];
@@ -114,7 +130,7 @@ describe('disk_cleanup execute dispatches a permanent, guarded delete', () => {
 
   it('sends permanent + cleanupGuard, not a trash-move', async () => {
     const raw = await getDiskCleanupTool().handler(
-      { deviceId: DEVICE_ID, action: 'execute', paths: ['/tmp/a.tmp'] },
+      { deviceId: DEVICE_ID, action: 'execute', cleanupRunId: RUN_ID, paths: ['/tmp/a.tmp'] },
       makeAuth(),
     );
     const result = JSON.parse(raw);
@@ -130,7 +146,8 @@ describe('disk_cleanup execute dispatches a permanent, guarded delete', () => {
         cleanupGuard: true,
         contentsOnly: false,
         volumeRoot: '/',
-        previewedAt: '2026-09-19T12:00:00.000Z',
+        previewedAt: PREVIEWED_AT.toISOString(),
+        cleanupRunId: RUN_ID,
       },
       expect.objectContaining({ userId: 'user-1' }),
     );
@@ -147,7 +164,7 @@ describe('disk_cleanup execute dispatches a permanent, guarded delete', () => {
     ];
 
     await getDiskCleanupTool().handler(
-      { deviceId: DEVICE_ID, action: 'execute', paths: ['/Users/alice/.Trash'] },
+      { deviceId: DEVICE_ID, action: 'execute', cleanupRunId: RUN_ID, paths: ['/Users/alice/.Trash'] },
       makeAuth(),
     );
 
@@ -167,7 +184,7 @@ describe('disk_cleanup execute dispatches a permanent, guarded delete', () => {
     previewState.candidates = [{ path: stale, category: 'browser_cache', sizeBytes: 2048, safe: true }];
 
     const raw = await getDiskCleanupTool().handler(
-      { deviceId: DEVICE_ID, action: 'execute', paths: [stale] },
+      { deviceId: DEVICE_ID, action: 'execute', cleanupRunId: RUN_ID, paths: [stale] },
       makeAuth(),
     );
     const result = JSON.parse(raw);
@@ -179,7 +196,7 @@ describe('disk_cleanup execute dispatches a permanent, guarded delete', () => {
 
   it('reports a path outside the preview set instead of dropping it silently', async () => {
     const raw = await getDiskCleanupTool().handler(
-      { deviceId: DEVICE_ID, action: 'execute', paths: ['/tmp/a.tmp', '/home/bob/taxes.pdf'] },
+      { deviceId: DEVICE_ID, action: 'execute', cleanupRunId: RUN_ID, paths: ['/tmp/a.tmp', '/home/bob/taxes.pdf'] },
       makeAuth(),
     );
     const result = JSON.parse(raw);
@@ -194,7 +211,7 @@ describe('disk_cleanup execute dispatches a permanent, guarded delete', () => {
 
   it('stores the executedActions envelope, matching the route', async () => {
     await getDiskCleanupTool().handler(
-      { deviceId: DEVICE_ID, action: 'execute', paths: ['/tmp/a.tmp'] },
+      { deviceId: DEVICE_ID, action: 'execute', cleanupRunId: RUN_ID, paths: ['/tmp/a.tmp'] },
       makeAuth(),
     );
     const run = dbMockState.insertedRuns[0] as { executedActions: { partial: boolean; budgetMs: number; actions: unknown[] } };
@@ -208,7 +225,7 @@ describe('disk_cleanup execute dispatches a permanent, guarded delete', () => {
       id: DEVICE_ID, orgId: ORG_ID, siteId: null, hostname: 'host-1', status: 'online', osType: 'linux', agentVersion: '0.114.0',
     }];
     const raw = await getDiskCleanupTool().handler(
-      { deviceId: DEVICE_ID, action: 'execute', paths: ['/tmp/a.tmp'] },
+      { deviceId: DEVICE_ID, action: 'execute', cleanupRunId: RUN_ID, paths: ['/tmp/a.tmp'] },
       makeAuth(),
     );
     const result = JSON.parse(raw);
@@ -228,7 +245,7 @@ describe('disk_cleanup execute dispatches a permanent, guarded delete', () => {
     });
 
     const raw = await getDiskCleanupTool().handler(
-      { deviceId: DEVICE_ID, action: 'execute', paths: ['/tmp/a.tmp'] },
+      { deviceId: DEVICE_ID, action: 'execute', cleanupRunId: RUN_ID, paths: ['/tmp/a.tmp'] },
       makeAuth(),
     );
     const result = JSON.parse(raw);
@@ -242,11 +259,11 @@ describe('disk_cleanup execute dispatches a permanent, guarded delete', () => {
     expect(dbMockState.insertedRuns[0]).toMatchObject({ status: 'failed' });
   });
 
-  it('accepts the W02 volume path without requiring cleanupRunId', () => {
+  it('exposes both the W02 volume path and W03 cleanupRunId', () => {
     const properties = getDiskCleanupTool().definition.input_schema.properties as Record<string, unknown>;
-    // W02 adds the volume path; cleanupRunId remains a later-wave change.
+    // Explicit run ids coexist with volume selection and the remembered preview.
     expect(properties).toHaveProperty('path', expect.objectContaining({ type: 'string' }));
-    expect(properties).not.toHaveProperty('cleanupRunId');
-    expect(Object.keys(properties).sort()).toEqual(['action', 'categories', 'deviceId', 'maxCandidates', 'path', 'paths']);
+    expect(properties).toHaveProperty('cleanupRunId', expect.objectContaining({ type: 'string', format: 'uuid' }));
+    expect(Object.keys(properties).sort()).toEqual(['action', 'categories', 'cleanupRunId', 'deviceId', 'maxCandidates', 'path', 'paths']);
   });
 });

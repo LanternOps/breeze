@@ -33,10 +33,28 @@ import {
   setFilesystemScanGeneration,
   clearFilesystemScanGeneration,
   safeCleanupCategories,
+  readPlanPreviewCandidates,
 } from './filesystemAnalysis';
 import { aiExecuteCommand } from './aiDispatch';
+import { CLEANUP_PREVIEW_TTL_HOURS } from '../routes/devices/filesystem';
 
 type AiToolTier = 1 | 2 | 3 | 4;
+
+/** Bounded hints keyed by user + device; the run row remains authoritative. */
+const MAX_PINNED_CLEANUP_RUNS = 500;
+const pinnedCleanupRuns = new Map<string, string>();
+
+export function rememberCleanupRun(sessionKey: string, runId: string): void {
+  if (pinnedCleanupRuns.size >= MAX_PINNED_CLEANUP_RUNS) {
+    const oldest = pinnedCleanupRuns.keys().next().value;
+    if (oldest !== undefined) pinnedCleanupRuns.delete(oldest);
+  }
+  pinnedCleanupRuns.set(sessionKey, runId);
+}
+
+export function pinnedCleanupRunFor(sessionKey: string): string | undefined {
+  return pinnedCleanupRuns.get(sessionKey);
+}
 
 async function verifyDeviceAccess(
   deviceId: string,
@@ -311,6 +329,7 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
           action: { type: 'string', enum: ['preview', 'execute'], description: 'preview (read-only) or execute (delete selected paths)' },
           path: { type: 'string', description: 'Volume to preview or clean (e.g. "C:\\\\", "D:\\\\", "/", "/data"). Defaults to the OS root.' },
           categories: { type: 'array', items: { type: 'string' }, description: 'Optional cleanup categories filter for preview' },
+          cleanupRunId: { type: 'string', format: 'uuid', description: 'Preview run to execute; defaults to the run remembered from this tool’s own preview' },
           paths: { type: 'array', items: { type: 'string' }, description: 'Selected paths to delete (required for execute)' },
           maxCandidates: { type: 'number', description: 'Max preview candidates returned in chat (1-200, default 100)' }
         },
@@ -324,43 +343,48 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
       const access = await verifyDeviceAccess(deviceId, auth, action === 'execute');
       if ('error' in access) return JSON.stringify({ error: access.error });
 
-      // Review fix (#3826 Task 5 follow-up): `device_filesystem_cleanup_runs
-      // .requested_by` FK-references users.id (db/schema/filesystem.ts:47),
-      // but an `ai_agent` principal's `auth.user.id` is the agent's
-      // `ai_agents.id`, not a users row (agentAuthContext.ts) — inserting it
-      // verbatim dies on 23503, which is exactly what made the shipped Disk
-      // Cleanup built-in's `preview` (and `execute`) act step unreachable
-      // under act mode. Same probe-degrade precedent as
-      // aiToolsPlaybooks.ts's `triggeredByUserId` and commandQueue.ts:855-889:
-      // one indexed PK lookup, and a non-resolving id degrades the FK column
-      // to NULL. Agent attribution already lives on the run/outcome, not on
-      // this column.
-      const [userRow] = await db.select({ id: users.id }).from(users).where(eq(users.id, auth.user.id)).limit(1);
-      const safeRequestedBy = userRow ? auth.user.id : null;
-
-      const osType = access.device.osType;
-      const scanPath = normalizeScanPath(
-        osType,
-        typeof input.path === 'string' && input.path.length > 0 ? input.path : osRootScanPath(osType),
-      );
-
-      const snapshot = await getLatestFilesystemCleanupSnapshot(deviceId, scanPath);
-      if (!snapshot) {
-        return JSON.stringify({
-          scanPath,
-          message: 'No filesystem analysis snapshot available for this volume. Run analyze_disk_usage with refresh=true first.',
-        });
-      }
-
-      const requestedCategories = Array.isArray(input.categories)
-        ? input.categories.filter((v): v is string => typeof v === 'string')
-        : undefined;
-      const preview = buildCleanupPreview(snapshot, requestedCategories);
+      const inCleanupContext = <T>(fn: () => Promise<T>) => runOutsideDbContext(() =>
+        withDbAccessContext({
+          scope: 'organization', orgId: access.device.orgId, accessibleOrgIds: [access.device.orgId],
+        }, fn));
 
       if (action === 'preview') {
+        // Review fix (#3826 Task 5 follow-up): `device_filesystem_cleanup_runs
+        // .requested_by` FK-references users.id (db/schema/filesystem.ts:47),
+        // but an `ai_agent` principal's `auth.user.id` is the agent's
+        // `ai_agents.id`, not a users row (agentAuthContext.ts) — inserting it
+        // verbatim dies on 23503, which is exactly what made the shipped Disk
+        // Cleanup built-in's `preview` (and `execute`) act step unreachable
+        // under act mode. Same probe-degrade precedent as
+        // aiToolsPlaybooks.ts's `triggeredByUserId` and commandQueue.ts:855-889:
+        // one indexed PK lookup, and a non-resolving id degrades the FK column
+        // to NULL. Agent attribution already lives on the run/outcome, not on
+        // this column.
+        const [userRow] = await db.select({ id: users.id }).from(users).where(eq(users.id, auth.user.id)).limit(1);
+        const safeRequestedBy = userRow ? auth.user.id : null;
+
+        const osType = access.device.osType;
+        const scanPath = normalizeScanPath(
+          osType,
+          typeof input.path === 'string' && input.path.length > 0 ? input.path : osRootScanPath(osType),
+        );
+
+        const snapshot = await getLatestFilesystemCleanupSnapshot(deviceId, scanPath);
+        if (!snapshot) {
+          return JSON.stringify({
+            scanPath,
+            message: 'No filesystem analysis snapshot available for this volume. Run analyze_disk_usage with refresh=true first.',
+          });
+        }
+
+        const requestedCategories = Array.isArray(input.categories)
+          ? input.categories.filter((v): v is string => typeof v === 'string')
+          : undefined;
+        const preview = buildCleanupPreview(snapshot, requestedCategories);
+
         const maxCandidates = Math.min(Math.max(1, Number(input.maxCandidates) || 100), 200);
         const returnedCandidates = preview.candidates.slice(0, maxCandidates);
-        const [cleanupRun] = await db
+        const [cleanupRun] = await inCleanupContext(async () => db
           .insert(deviceFilesystemCleanupRuns)
           .values({
             deviceId,
@@ -376,7 +400,9 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
             },
             status: 'previewed',
           })
-          .returning();
+          .returning());
+
+        if (cleanupRun?.id) rememberCleanupRun(`${auth.user.id}:${deviceId}`, cleanupRun.id);
 
         return JSON.stringify({
           cleanupRunId: cleanupRun?.id ?? null,
@@ -390,6 +416,13 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
           categories: preview.categories,
           candidates: returnedCandidates
         });
+      }
+
+      const runId = typeof input.cleanupRunId === 'string' && input.cleanupRunId
+        ? input.cleanupRunId
+        : pinnedCleanupRunFor(`${auth.user.id}:${deviceId}`);
+      if (!runId) {
+        return JSON.stringify({ error: 'cleanupRunId is required for execute — run disk_cleanup with action "preview" first' });
       }
 
       const requestedPaths = Array.isArray(input.paths)
@@ -414,23 +447,58 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
         });
       }
 
+      // Commit the claim independently of the surrounding AI transaction.
+      const runScope = and(
+        eq(deviceFilesystemCleanupRuns.id, runId),
+        eq(deviceFilesystemCleanupRuns.deviceId, deviceId),
+        eq(deviceFilesystemCleanupRuns.orgId, access.device.orgId),
+        eq(deviceFilesystemCleanupRuns.kind, 'files'),
+      );
+      const [claimed] = await inCleanupContext(async () => db
+        .update(deviceFilesystemCleanupRuns)
+        .set({ status: 'running', approvedAt: new Date(), updatedAt: new Date() })
+        .where(and(runScope, eq(deviceFilesystemCleanupRuns.status, 'previewed')))
+        .returning({
+          id: deviceFilesystemCleanupRuns.id,
+          plan: deviceFilesystemCleanupRuns.plan,
+          scanPath: deviceFilesystemCleanupRuns.scanPath,
+          requestedAt: deviceFilesystemCleanupRuns.requestedAt,
+        }));
+      if (!claimed) return JSON.stringify({ error: 'run_not_previewed', cleanupRunId: runId });
+
+      const releaseClaim = () => inCleanupContext(async () => {
+        await db.update(deviceFilesystemCleanupRuns)
+          .set({ status: 'previewed', approvedAt: null, updatedAt: new Date() })
+          .where(and(runScope, eq(deviceFilesystemCleanupRuns.status, 'running')));
+      });
+      const requestedAt = claimed.requestedAt instanceof Date
+        ? claimed.requestedAt
+        : new Date(claimed.requestedAt as unknown as string);
+      if (!Number.isFinite(requestedAt.getTime())
+        || Date.now() - requestedAt.getTime() > CLEANUP_PREVIEW_TTL_HOURS * 3_600_000) {
+        await releaseClaim();
+        return JSON.stringify({ error: 'preview_expired', cleanupRunId: runId, ttlHours: CLEANUP_PREVIEW_TTL_HOURS });
+      }
+      const pinnedCandidates = readPlanPreviewCandidates(claimed.plan);
+      const plan = claimed.plan && typeof claimed.plan === 'object' && !Array.isArray(claimed.plan)
+        ? claimed.plan as Record<string, unknown> : {};
+      const scanPath = claimed.scanPath ?? osRootScanPath(access.device.osType);
+
       const outcome = await runCleanupExecution({
         os: toCleanupOs(access.device.osType),
         requestedPaths,
-        candidates: preview.candidates,
-        // The AI lane re-derives its preview from the latest snapshot, so the
-        // snapshot's capture time is when the model "looked" (spec §13 row 2).
-        previewedAt: snapshot.capturedAt ?? new Date(0),
+        candidates: pinnedCandidates,
+        previewedAt: requestedAt,
         // The payload already carries the path; the first argument is only the
         // key the service iterates on.
-        dispatch: (_path, payload) => aiExecuteCommand(
+        dispatch: (_path, payload) => runOutsideDbContext(() => aiExecuteCommand(
           auth,
           'disk_cleanup',
           deviceId,
           'file_delete',
-          payload,
+          { ...payload, cleanupRunId: runId },
           { userId: auth.user.id, timeoutMs: 30_000 },
-        ),
+        )),
         budgetMs: CLEANUP_EXECUTE_BUDGET_MS,
       });
 
@@ -447,14 +515,15 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
         .map((action) => action.path);
 
       if (dispatchedPaths.length === 0) {
+        await releaseClaim();
         // NOTHING left the API. An agent-guard rejection means the command DID
-        // reach the device, so it falls through to the run insert below rather
+        // reach the device, so it falls through to finalisation below rather
         // than short-circuiting here.
         // Every requested path was refused. Say WHICH — the old handler
         // returned a bare "No valid cleanup candidates selected" with no list,
         // so the model could not tell a typo from a rule rejection.
         return JSON.stringify({
-          error: 'No valid cleanup candidates selected from the latest preview set',
+          error: 'No valid cleanup candidates selected from the pinned preview set',
           rejectedPaths: outcome.rejectedPaths,
           actions: outcome.actions,
         });
@@ -467,36 +536,26 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
           ? `${counts.failed} cleanup action(s) failed`
           : null;
 
-      const [cleanupRun] = await db
-        .insert(deviceFilesystemCleanupRuns)
-        .values({
-          deviceId,
-          orgId: access.device.orgId,
-          scanPath: snapshot.scanPath ?? scanPath,
-          requestedBy: safeRequestedBy,
-          approvedAt: new Date(),
-          plan: {
-            snapshotId: snapshot.id,
-            scanPath: snapshot.scanPath ?? scanPath,
-            requestedPaths,
-            selectedPaths: dispatchedPaths,
-            rejectedPaths: outcome.rejectedPaths,
-          },
-          executedActions: {
-            partial: outcome.partial,
-            budgetMs: outcome.budgetMs,
-            actions: outcome.actions,
-          },
-          bytesReclaimed: outcome.bytesReclaimed,
-          status: runStatus,
-          error: runError,
-        })
-        .returning();
+      await inCleanupContext(async () => {
+        await db.update(deviceFilesystemCleanupRuns)
+          .set({
+            executedActions: {
+              partial: outcome.partial,
+              budgetMs: outcome.budgetMs,
+              actions: outcome.actions,
+            },
+            bytesReclaimed: outcome.bytesReclaimed,
+            status: runStatus,
+            error: runError,
+            updatedAt: new Date(),
+          })
+          .where(and(runScope, eq(deviceFilesystemCleanupRuns.status, 'running')));
+      });
 
       return JSON.stringify({
-        cleanupRunId: cleanupRun?.id ?? null,
-        scanPath: snapshot.scanPath ?? scanPath,
-        snapshotId: snapshot.id,
+        cleanupRunId: runId,
+        scanPath,
+        snapshotId: plan.snapshotId,
         status: runStatus,
         bytesReclaimed: outcome.bytesReclaimed,
         selectedCount: dispatchedPaths.length,
