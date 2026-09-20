@@ -68,4 +68,22 @@ describe('aiTools registry parity', () => {
     expect(tierNames, `TOOL_TIERS names containing "__": ${tierNames.join(', ')}`).toEqual([]);
     expect(definitionNames, `getToolDefinitions() names containing "__": ${definitionNames.join(', ')}`).toEqual([]);
   });
+
+  // Disk Cleanup v2 W05 (spec §9.3 item 3). The two hand-maintained copies of
+  // system_cleanup's shape must agree KEY FOR KEY: `z.object()` STRIPS unknown
+  // keys rather than rejecting, so a key the model is told to send but Zod does
+  // not know vanishes silently and the tool still reports success. `actionIds`
+  // vanishing would turn a targeted run into an empty one.
+  it('system_cleanup advertises exactly the keys it validates, and keeps a shape-introspectable schema', () => {
+    const advertised = Object.keys(
+      aiTools.get('system_cleanup')!.definition.input_schema.properties as Record<string, unknown>,
+    ).sort();
+    const schema = toolInputSchemas.system_cleanup as { shape?: Record<string, unknown> } | undefined;
+    // Amendment B9: a `.refine()` would make this a ZodEffects with no
+    // `.shape`, which silently removes one of the two enum sources
+    // `toolActionEnum` unions for the approval-scope contract test.
+    expect(schema?.shape, 'system_cleanup must stay a plain z.object (no .refine)').toBeDefined();
+    expect(Object.keys(schema!.shape!).sort()).toEqual(advertised);
+    expect(advertised).toEqual(['action', 'actionIds', 'deviceId', 'params']);
+  });
 });

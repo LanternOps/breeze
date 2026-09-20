@@ -9,7 +9,14 @@
 import { z } from 'zod';
 import { isIP } from 'node:net';
 import { ACTOR_TYPES, AI_AGENT_KINDS, INVOICE_STATUSES, currencyCodeSchema, monitorKindSchema } from '@breeze/shared';
-import { backupProfileSelectionsSchema, proposeScriptInputSchema, ringAutoApproveSchema } from '@breeze/shared/validators';
+import {
+  backupProfileSelectionsSchema,
+  proposeScriptInputSchema,
+  ringAutoApproveSchema,
+  JOURNAL_VACUUM_MAX_BYTES,
+  JOURNAL_VACUUM_MIN_BYTES,
+  SYSTEM_CLEANUP_ACTION_IDS,
+} from '@breeze/shared/validators';
 import { aiRunContextInputShape } from './scriptRunRequest';
 import { fleetToolInputSchemas } from './aiToolSchemasFleet';
 import { backupToolSchemas } from './aiToolSchemasBackup';
@@ -1026,6 +1033,35 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     (data) => data.action === 'preview' || (data.action === 'execute' && Array.isArray(data.paths) && data.paths.length > 0),
     { message: 'paths are required for execute action' }
   ),
+
+  /**
+   * OS-native cleaners (Disk Cleanup v2 §5.3, §7.2). Client input that reaches
+   * an argv is exactly two things: a membership-checked action id and one
+   * bounded integer. Everything else about the command line is a constant in
+   * the agent's own catalog.
+   *
+   * Deliberately NOT `.refine()`d — see the registry-parity test: a ZodEffects
+   * has no `.shape`, and `toolActionEnum` reads the action enum out of it. The
+   * "actionIds required for run" rule lives in the handler, exactly where
+   * disk_cleanup's "paths required for execute" rule also lives.
+   */
+  system_cleanup: z.object({
+    deviceId: uuid,
+    action: z.enum(['list', 'run']),
+    actionIds: z
+      .array(z.enum(SYSTEM_CLEANUP_ACTION_IDS))
+      .min(1)
+      .max(SYSTEM_CLEANUP_ACTION_IDS.length)
+      .optional(),
+    params: z
+      .object({
+        // journalctl --vacuum-size, bounded 64 MiB … 4 GiB (§7.2) — the same
+        // constants the route body schema uses.
+        journalVacuumBytes: z.number().int().min(JOURNAL_VACUUM_MIN_BYTES).max(JOURNAL_VACUUM_MAX_BYTES).optional(),
+      })
+      .strict()
+      .optional(),
+  }),
 
   query_audit_log: z.object({
     action: z.string().max(100).optional(),
