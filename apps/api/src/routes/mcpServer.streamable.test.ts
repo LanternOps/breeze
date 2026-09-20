@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { Hono } from 'hono';
 
 const mocks = vi.hoisted(() => ({
@@ -6,7 +6,7 @@ const mocks = vi.hoisted(() => ({
   bearerTokenAuthMiddleware: vi.fn(),
   apiKeyAuthMiddleware: vi.fn(),
   executeTool: vi.fn(),
-  getToolDefinitions: vi.fn(() => []),
+  getToolDefinitions: vi.fn<typeof import('../services/aiTools').getToolDefinitions>(() => []),
   getToolTier: vi.fn((_: string): number | undefined => undefined),
   writeAuditEvent: vi.fn(),
   rateLimiter: vi.fn(),
@@ -105,9 +105,13 @@ vi.mock('../services/permissions', async (importOriginal) => {
     getUserPermissions: vi.fn(async () => ({
       permissions: [
         { resource: 'devices', action: 'read' },
+        { resource: 'devices', action: 'write' },
         { resource: 'alerts', action: 'read' },
+        { resource: 'alerts', action: 'write' },
         { resource: 'scripts', action: 'read' },
+        { resource: 'scripts', action: 'write' },
         { resource: 'automations', action: 'read' },
+        { resource: 'automations', action: 'write' },
       ],
       partnerId: null,
       orgId: 'org-1',
@@ -121,9 +125,11 @@ vi.mock('../services/aiTools', () => ({
   getToolDefinitions: mocks.getToolDefinitions,
   executeTool: mocks.executeTool,
   getToolTier: mocks.getToolTier,
+  getToolDomain: vi.fn(() => 'devices'),
 }));
 
-vi.mock('../services/aiGuardrails', () => ({
+vi.mock('../services/aiGuardrails', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../services/aiGuardrails')>(),
   checkGuardrails: () => ({ allowed: true, tier: 1 }),
   checkToolPermission: async () => null,
   checkToolRateLimit: async () => null,
@@ -639,5 +645,57 @@ describe('Streamable HTTP transport (POST /sse)', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body).toMatchObject({ jsonrpc: '2.0', id: 1 });
+  });
+
+  describe('tools/list presentation + ordering + pagination (B-W01)', () => {
+    const tools: ReturnType<typeof import('../services/aiTools').getToolDefinitions> = [
+      { name: 'query_devices', description: 'd', input_schema: { type: 'object', properties: {} } },
+      { name: 'manage_services', description: 'd', input_schema: { type: 'object', properties: { action: { type: 'string', enum: ['list', 'restart'] } } } },
+      { name: 'get_backup_status', description: 'd', input_schema: { type: 'object', properties: {} } },
+    ];
+    beforeEach(() => {
+      mocks.apiKeyAuthMiddleware.mockImplementation(async (c: any, next: any) => {
+        setApiKeyContext(c, ['ai:read', 'ai:write']);
+        return next();
+      });
+      vi.stubEnv('MCP_TOOLS_LIST_PAGE_SIZE', '0');
+      mocks.getToolDefinitions.mockReturnValue(tools);
+      mocks.getToolTier.mockImplementation((n: string) => (n === 'manage_services' ? 2 : 1));
+    });
+
+    afterEach(() => vi.unstubAllEnvs());
+
+    async function listWith(params?: Record<string, unknown>) {
+      const app = appWithMcpRoutes();
+      const init = await app.request('/mcp/sse', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-API-Key': 'k' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18' } }) });
+      const sid = init.headers.get('Mcp-Session-Id')!;
+      const res = await app.request('/mcp/sse', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-API-Key': 'k', 'Mcp-Session-Id': sid, 'MCP-Protocol-Version': '2025-06-18' }, body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list', params }) });
+      return (await res.json()).result as { tools: Array<Record<string, unknown>>; nextCursor?: string };
+    }
+
+    it('sorts by name and decorates every tool with title, annotations and _meta', async () => {
+      const { tools: listed, nextCursor } = await listWith();
+      expect(listed.map((t) => t.name)).toEqual(['get_backup_status', 'manage_services', 'query_devices']);
+      expect(nextCursor).toBeUndefined();
+      expect(listed[0]).toMatchObject({ title: 'Get backup status', annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }, _meta: { 'app.breeze/domain': expect.any(String) } });
+      expect(listed[1]!.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: true });
+      expect(listed[1]!.inputSchema).toBeDefined();
+    });
+
+    it('paginates when MCP_TOOLS_LIST_PAGE_SIZE is set and rejects a bad cursor', async () => {
+      vi.stubEnv('MCP_TOOLS_LIST_PAGE_SIZE', '2');
+      try {
+        const page1 = await listWith();
+        expect(page1.tools.map((t) => t.name)).toEqual(['get_backup_status', 'manage_services']);
+        expect(page1.nextCursor).toEqual(expect.any(String));
+        const page2 = await listWith({ cursor: page1.nextCursor });
+        expect(page2.tools.map((t) => t.name)).toEqual(['query_devices']);
+        expect(page2.nextCursor).toBeUndefined();
+        const app = appWithMcpRoutes();
+        const init = await app.request('/mcp/sse', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-API-Key': 'k' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize' }) });
+        const bad = await app.request('/mcp/sse', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-API-Key': 'k', 'Mcp-Session-Id': init.headers.get('Mcp-Session-Id')! }, body: JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'tools/list', params: { cursor: '!!' } }) });
+        expect((await bad.json()).error.code).toBe(-32602);
+      } finally { vi.unstubAllEnvs(); }
+    });
   });
 });

@@ -90,6 +90,7 @@ vi.mock('../middleware/apiKeyAuth', () => ({
 }));
 
 vi.mock('../services/aiTools', () => ({
+  getToolDomain: vi.fn(() => 'devices'),
   getToolDefinitions: (...args: any[]) => mocks.getToolDefinitions(...args),
   executeTool: (...args: any[]) => mocks.executeTool(...args),
   getToolTier: (...args: any[]) => mocks.getToolTier(...args),
