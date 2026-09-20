@@ -145,7 +145,7 @@ const diskCleanupExecute: ActOperation = {
       return { ok: false, reason: 'paths must be an array of non-empty strings' };
     }
     const cleanupRunId = readString(input, 'cleanupRunId');
-    if (!cleanupRunId) {
+    if (!cleanupRunId || /\{\{\w+\}\}/.test(cleanupRunId)) {
       // A later preview must never silently replace the authorized plan.
       return { ok: false, reason: 'cleanupRunId is required for an unattended disk_cleanup execute' };
     }
