@@ -75,7 +75,7 @@ vi.mock('../db', () => ({
 // DB context (see the describe block below).
 const cleanupExpiredSnapshotsMock = vi.fn(async () => {
   ctxState.events.push(`cleanupExpiredSnapshots@depth${ctxState.depth}`);
-  return { deleted: 0, skippedLegalHold: 0, skippedImmutable: 0, skippedPinned: 0, skippedUnresolved: 0, prunedByMaxVersions: 0, failed: 0 };
+  return { deleted: 0, skippedLegalHold: 0, skippedImmutable: 0, skippedPinned: 0, skippedUnresolved: 0, skippedChainBase: 0, prunedByMaxVersions: 0, failed: 0 };
 });
 const sweepUnreferencedBackupObjectsMock = vi.fn(async () => {
   ctxState.events.push(`sweepUnreferencedBackupObjects@depth${ctxState.depth}`);

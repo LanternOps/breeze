@@ -16,6 +16,7 @@ import {
   restoreJobs,
   sites,
 } from '../../db/schema';
+import { backupChains } from '../../db/schema/applicationBackup';
 import { cleanupExpiredSnapshots } from '../../jobs/backupRetention';
 import { processCleanupExpiredSnapshots, __testOnly } from '../../jobs/backupWorker';
 import { applyBackupCommandResultToJob } from '../../services/backupResultPersistence';
@@ -310,5 +311,71 @@ runDb('processCleanupExpiredSnapshots: an org with a failing row still commits e
     expect(okRows.length).toBe(0); // committed despite the throw happening after it
     const failRows = await db.select().from(backupSnapshots).where(eq(backupSnapshots.id, ctx.failSnapId));
     expect(failRows.length).toBe(1); // this one legitimately failed and is retried next run
+  });
+});
+
+// #5421 chain-base pin (live DB): D17 made backup_chains.full_snapshot_id
+// ON DELETE SET NULL, so without a pin the DELETE succeeds, Postgres nulls the
+// pointer, and the chain keeps reporting is_active/health='active' until the
+// next differential runs. These two cases prove the hold and its release
+// against real FK behaviour -- the unit suite's mock cannot.
+runDb("an ACTIVE MSSQL chain's full snapshot is held by retention and its pointer survives", async () => {
+  const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const ctx = await withSystemDbAccessContext(async () => {
+    const { orgId, deviceId, configId } = await seedOrgDeviceConfig(unique);
+    const [job] = await db.insert(backupJobs).values({ orgId, configId, deviceId, status: 'completed', startedAt: new Date(), completedAt: new Date() }).returning({ id: backupJobs.id });
+    const [snap] = await db.insert(backupSnapshots).values({
+      orgId, jobId: job!.id, deviceId, configId, snapshotId: `chain-full-${unique}`, backupType: 'application',
+      storageIdentity: `local::/tmp/gc-test-${unique}`, expiresAt: new Date(Date.now() - 60 * 60 * 1000),
+    }).returning({ id: backupSnapshots.id });
+    const [chain] = await db.insert(backupChains).values({
+      orgId, deviceId, configId, chainType: 'mssql', targetName: `db-${unique}`, targetId: `INSTANCE-${unique}`,
+      isActive: true, fullSnapshotId: snap!.id, chainMetadata: { health: 'active', continuity: 'ok' },
+    }).returning({ id: backupChains.id });
+    return { orgId, snapId: snap!.id, chainId: chain!.id };
+  });
+
+  const result = await cleanupExpiredSnapshots(ctx.orgId);
+  expect(result.skippedChainBase).toBeGreaterThanOrEqual(1);
+  expect(result.deleted).toBe(0);
+
+  await withSystemDbAccessContext(async () => {
+    const rows = await db.select().from(backupSnapshots).where(eq(backupSnapshots.id, ctx.snapId));
+    expect(rows.length).toBe(1);
+    const [chain] = await db.select().from(backupChains).where(eq(backupChains.id, ctx.chainId));
+    // The whole point: no silent SET NULL behind an "active" chain.
+    expect(chain!.fullSnapshotId).toBe(ctx.snapId);
+    expect(chain!.isActive).toBe(true);
+    const retirements = await db.select().from(backupSnapshotRetirements).where(eq(backupSnapshotRetirements.snapshotId, `chain-full-${unique}`));
+    expect(retirements.length).toBe(0);
+  });
+});
+
+runDb('an INACTIVE chain does not hold its full snapshot -- the hold releases', async () => {
+  const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const ctx = await withSystemDbAccessContext(async () => {
+    const { orgId, deviceId, configId } = await seedOrgDeviceConfig(unique);
+    const [job] = await db.insert(backupJobs).values({ orgId, configId, deviceId, status: 'completed', startedAt: new Date(), completedAt: new Date() }).returning({ id: backupJobs.id });
+    const [snap] = await db.insert(backupSnapshots).values({
+      orgId, jobId: job!.id, deviceId, configId, snapshotId: `dead-chain-full-${unique}`, backupType: 'application',
+      storageIdentity: `local::/tmp/gc-test-${unique}`, expiresAt: new Date(Date.now() - 60 * 60 * 1000),
+    }).returning({ id: backupSnapshots.id });
+    const [chain] = await db.insert(backupChains).values({
+      orgId, deviceId, configId, chainType: 'mssql', targetName: `db-${unique}`, targetId: `INSTANCE-${unique}`,
+      isActive: false, fullSnapshotId: snap!.id,
+      chainMetadata: { health: 'broken', continuity: 'missing_full_backup' },
+    }).returning({ id: backupChains.id });
+    return { orgId, snapId: snap!.id, chainId: chain!.id };
+  });
+
+  const result = await cleanupExpiredSnapshots(ctx.orgId);
+  expect(result.deleted).toBeGreaterThanOrEqual(1);
+  expect(result.skippedChainBase).toBe(0);
+
+  await withSystemDbAccessContext(async () => {
+    const rows = await db.select().from(backupSnapshots).where(eq(backupSnapshots.id, ctx.snapId));
+    expect(rows.length).toBe(0);
+    const [chain] = await db.select().from(backupChains).where(eq(backupChains.id, ctx.chainId));
+    expect(chain!.fullSnapshotId).toBeNull(); // ON DELETE SET NULL on a chain that is already broken
   });
 });
