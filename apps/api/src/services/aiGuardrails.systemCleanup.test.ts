@@ -12,6 +12,7 @@ import {
   TIER3_FOUR_EYES_ACTIONS,
   TIER3_SUPERVISED_ACTIONS,
   TOOL_PERMISSIONS,
+  TOOL_RATE_LIMITS,
   checkGuardrails,
 } from './aiGuardrails';
 
@@ -20,6 +21,8 @@ describe('system_cleanup guardrails', () => {
     expect(TIER3_ACTIONS.system_cleanup).toEqual(['run']);
     expect(checkGuardrails('system_cleanup', { action: 'run' }).tier).toBe(3);
     expect(checkGuardrails('system_cleanup', { action: 'list' }).tier).toBe(1);
+    expect(checkGuardrails('system_cleanup', { action: 'status' }).tier).toBe(1);
+    expect(checkGuardrails('system_cleanup', { action: 'status' }).requiresApproval).toBe(false);
   });
 
   it('classifies run as supervised, not four-eyes', () => {
@@ -33,10 +36,19 @@ describe('system_cleanup guardrails', () => {
     expect(checkGuardrails('system_cleanup', { action: 'run' }).approvalScope).toBe('supervised');
   });
 
-  it('maps RBAC per action: list reads devices, run executes on them', () => {
+  it('maps RBAC per action: list and status read devices, run executes on them', () => {
     expect(TOOL_PERMISSIONS.system_cleanup).toEqual({
       list: { resource: 'devices', action: 'read' },
       run: { resource: 'devices', action: 'execute' },
+      status: { resource: 'devices', action: 'read' },
     });
+  });
+
+  it('rate-limits per TOOL, so the limit must leave room for status polling', () => {
+    // checkToolRateLimit keys on the tool name only — there is no per-action
+    // limit. `run` returns immediately and the model polls `status` on the
+    // same counter, so 2/h would exhaust after the first poll. The safety on
+    // `run` is the Tier 3 supervised approval, not this number.
+    expect(TOOL_RATE_LIMITS.system_cleanup).toEqual({ limit: 30, windowSeconds: 3600 });
   });
 });

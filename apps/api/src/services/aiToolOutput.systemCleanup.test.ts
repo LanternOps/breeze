@@ -14,14 +14,13 @@ import { renderToolIndexByDomain } from './aiToolIndex';
  * model's context for what is a short answer.
  */
 describe('system_cleanup output compaction', () => {
-  it('gets the execution ceiling the W04 run budget is capped at', () => {
-    // §5.3 / §13 #14: the handler waits `systemCleanupRunBudgetMs(actionIds)`,
-    // which is capped at SYSTEM_CLEANUP_RUN_MAX_TIMEOUT_MS (3 h). The outer
-    // tool guard must sit at that ceiling, or it cancels a run the device is
-    // still executing. The default 60s would abandon every real run at the
-    // first action.
-    expect(getToolTimeout('system_cleanup')).toBe(SYSTEM_CLEANUP_RUN_MAX_TIMEOUT_MS);
-    expect(getToolTimeout('system_cleanup')).toBe(3 * 60 * 60 * 1000);
+  it('gets a short tool timeout: no action waits longer than the 60 s list cap', () => {
+    // W05 review F1: `run` returns immediately and `status` is a read, so the
+    // only wait left is `list`'s 60 s cap. The outer guard sits just above it
+    // (dispatch + device resolution) — never the 3 h run ceiling, which pinned
+    // the SDK's per-tool DB context for the length of a DISM run (#1105).
+    expect(getToolTimeout('system_cleanup')).toBe(90_000);
+    expect(getToolTimeout('system_cleanup')).toBeLessThan(SYSTEM_CLEANUP_RUN_MAX_TIMEOUT_MS);
   });
 
   it('appears in the generated system-prompt tool index under Devices', () => {
@@ -29,7 +28,7 @@ describe('system_cleanup output compaction', () => {
     // registry-generated index (#6341): a tool with a domain and a searchHint
     // is listed automatically, so this pins that system_cleanup carries both.
     const index = renderToolIndexByDomain(['system_cleanup']);
-    expect(index).toContain('- **Devices**: system_cleanup (list/run)');
+    expect(index).toContain('- **Devices**: system_cleanup (list/run/status)');
   });
 
   it('truncates a long action list and says how many it dropped', () => {
@@ -60,6 +59,32 @@ describe('system_cleanup output compaction', () => {
     // The numbers the answer is built from are never dropped.
     expect(compacted.freedBytes).toBe(1024);
     expect(compacted.actions[0].status).toBe('completed');
+  });
+
+  it('leaves the run handle and the pending-list shapes untouched', () => {
+    const handle = {
+      status: 'running', cleanupRunId: 'run-1', commandId: 'cmd-1', deviceId: 'dev-1',
+      actionIds: ['win_cleanmgr'], deadlineAt: '2026-09-19T10:20:00.000Z',
+      note: 'Poll with action "status" and this cleanupRunId.',
+    };
+    expect(JSON.parse(compactToolResultForChat('system_cleanup', JSON.stringify(handle)))).toEqual(handle);
+    const pending = { status: 'pending', commandId: 'cmd-1', note: 'Call list again with this commandId.' };
+    expect(JSON.parse(compactToolResultForChat('system_cleanup', JSON.stringify(pending)))).toEqual(pending);
+  });
+
+  it('compacts a status result the same way as the old inline run result', () => {
+    const compacted = JSON.parse(
+      compactToolResultForChat('system_cleanup', JSON.stringify({
+        cleanupRunId: 'run-1', status: 'executed', error: null, freedBytes: 4096, deadlineAt: null,
+        actions: [{ id: 'win_dism_component_cleanup', status: 'completed', outputTail: 'y'.repeat(5_000) }],
+        volumes: [{ mount: 'C:\\', freeBefore: 1, freeAfter: 4097 }],
+      })),
+    );
+    expect(compacted.status).toBe('executed');
+    expect(compacted.freedBytes).toBe(4096);
+    expect(compacted.actions[0].outputTail.length).toBeLessThanOrEqual(2_000);
+    expect(compacted.actions[0].outputTailTruncated).toBe(true);
+    expect(compacted.volumes).toHaveLength(1);
   });
 
   it('leaves a small result untouched', () => {

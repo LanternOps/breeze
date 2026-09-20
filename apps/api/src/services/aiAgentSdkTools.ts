@@ -1779,10 +1779,10 @@ export function buildBreezeSdkTools(
 
     tool(
       'system_cleanup',
-      'List or run OS-native maintenance cleaners on a device (Windows Disk Cleanup handlers and DISM component cleanup, macOS local snapshots and Homebrew, Linux package caches and journal). list is read-only. run executes the selected catalog actions and requires approval.',
+      'List, run or check OS-native maintenance cleaners on a device (Windows Disk Cleanup handlers and DISM component cleanup, macOS local snapshots and Homebrew, Linux package caches and journal). list is read-only (re-check a "pending" answer with its commandId). run requires approval, starts the selected catalog actions and returns a cleanupRunId immediately; poll status with it until executed or failed.',
       {
         deviceId: uuid,
-        action: z.enum(['list', 'run']),
+        action: z.enum(['list', 'run', 'status']),
         actionIds: z
           .array(z.enum(SYSTEM_CLEANUP_ACTION_IDS))
           .min(1)
@@ -1792,6 +1792,8 @@ export function buildBreezeSdkTools(
             journalVacuumBytes: z.number().int().min(JOURNAL_VACUUM_MIN_BYTES).max(JOURNAL_VACUUM_MAX_BYTES).optional(),
           })
           .optional(),
+        cleanupRunId: uuid.optional(),
+        commandId: uuid.optional(),
       },
       makeHandler('system_cleanup', getAuth, onPreToolUse, onPostToolUse)
     ),

@@ -914,6 +914,7 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   system_cleanup: {
     list: { resource: 'devices', action: 'read' },
     run: { resource: 'devices', action: 'execute' },
+    status: { resource: 'devices', action: 'read' },
   },
   file_operations: {
     // SR5-01: read/list require devices.execute (not devices.read). Reading an
@@ -1553,7 +1554,7 @@ export const TOOL_ACTION_EXTRA_PERMISSIONS: Record<
 };
 
 // Per-tool rate limits: { limit, windowSeconds }
-const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: number }> = {
+export const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: number }> = {
   execute_command: { limit: 10, windowSeconds: 300 },
   run_script: { limit: 5, windowSeconds: 300 },
   // Deliberately looser than run_script: a stop is the safe direction, and a
@@ -1568,11 +1569,14 @@ const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: number }>
   s1_threat_action: { limit: 5, windowSeconds: 600 },
   analyze_disk_usage: { limit: 10, windowSeconds: 300 },
   disk_cleanup: { limit: 3, windowSeconds: 600 },
-  // 2 per hour (spec §9.1). A single run can hold the device for 90 minutes
-  // (DISM) and the reclaimed space does not land until the flagged reboot, so
-  // a tighter window than disk_cleanup's is the honest limit: a second call
-  // inside the hour is almost always the model retrying a still-running job.
-  system_cleanup: { limit: 2, windowSeconds: 3600 },
+  // Per TOOL, not per action (checkToolRateLimit keys on the tool name), and
+  // `run` returns immediately while the model polls `status` on this same
+  // counter — spec §9.1's "2 per hour" would exhaust after the first poll and
+  // lock the model out of the run it just started. 30/h leaves room for a
+  // catalog, a run and a poll every few minutes. The safety on `run` is the
+  // Tier 3 supervised approval; the single-run-per-device claim in
+  // startSystemCleanupRun refuses a second run while one is in flight.
+  system_cleanup: { limit: 30, windowSeconds: 3600 },
   manage_startup_items: { limit: 5, windowSeconds: 600 },
   manage_scheduled_tasks: { limit: 10, windowSeconds: 300 },
   take_screenshot: { limit: 10, windowSeconds: 300 },

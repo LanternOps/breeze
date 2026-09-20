@@ -54,6 +54,8 @@ describe('§9.2 — the disk tools over MCP', () => {
   it('their read-only actions stay reachable over MCP', () => {
     expect(Math.max(getToolTier('disk_cleanup')!, checkGuardrails('disk_cleanup', { action: 'preview' }).tier)).toBe(1);
     expect(Math.max(getToolTier('system_cleanup')!, checkGuardrails('system_cleanup', { action: 'list' }).tier)).toBe(1);
+    // `status` is a read of the run row: Tier 1, listed and callable over MCP.
+    expect(Math.max(getToolTier('system_cleanup')!, checkGuardrails('system_cleanup', { action: 'status' }).tier)).toBe(1);
     expect(Math.max(getToolTier('analyze_disk_usage')!, checkGuardrails('analyze_disk_usage', {}).tier)).toBe(1);
   });
 
@@ -62,7 +64,7 @@ describe('§9.2 — the disk tools over MCP', () => {
     // advertised-but-dead pattern). These two must NOT be suppressed, or MCP
     // clients lose read-only disk diagnosis entirely.
     expect(advertisedActions('disk_cleanup')).toEqual(['preview', 'execute']);
-    expect(advertisedActions('system_cleanup')).toEqual(['list', 'run']);
+    expect(advertisedActions('system_cleanup')).toEqual(['list', 'run', 'status']);
     expect(whollyGatedOverMcp('disk_cleanup')).toBe(false);
     expect(whollyGatedOverMcp('system_cleanup')).toBe(false);
     // analyze_disk_usage is not action-multiplexed at all, so it is never

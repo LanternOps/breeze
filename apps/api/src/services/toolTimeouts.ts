@@ -4,8 +4,6 @@
  * importing the chat-session dependency graph. Single source of truth: the
  * inline chat path and the durable worker use the same timeouts.
  */
-import { SYSTEM_CLEANUP_RUN_MAX_TIMEOUT_MS } from './commandTimeouts';
-
 const TOOL_EXECUTION_TIMEOUT_MS = 60_000; // 60s default safety timeout
 
 /**
@@ -19,13 +17,13 @@ const TOOL_TIMEOUT_OVERRIDES: Record<string, number> = {
   // Disk operations — can scan large filesystems
   analyze_disk_usage: 90_000,
   disk_cleanup: 90_000,
-  // OS-native cleaners (Disk Cleanup v2 §5.3). cleanmgr is capped at 60 min and
-  // DISM /StartComponentCleanup at 90 min on the agent side, and they run
-  // sequentially, so the outer guard has to sit above the sum of the caps or it
-  // cancels a run the device is still executing — leaving a `running` row with
-  // no terminal result. The handler waits systemCleanupRunBudgetMs(actionIds),
-  // whose ceiling is this same constant, so the two clocks cannot disagree.
-  system_cleanup: SYSTEM_CLEANUP_RUN_MAX_TIMEOUT_MS,
+  // OS-native cleaners (Disk Cleanup v2 §5.3). `run` dispatches and returns
+  // immediately (the run row carries its own stored deadline; `status` applies
+  // it), and `list` waits at most 60 s before answering `pending` — so the
+  // outer guard sits just above that wait, like disk_cleanup's. It must NOT
+  // be the run ceiling: the SDK holds a per-tool DB context for the whole
+  // call (#1105).
+  system_cleanup: 90_000,
   // Security scans — multi-step agent operations
   security_scan: 120_000,
   apply_cis_remediation: 120_000,

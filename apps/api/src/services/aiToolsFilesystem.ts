@@ -9,8 +9,8 @@ import { randomUUID } from 'node:crypto';
  *   (SR5-01). list is recon-only and auto-executes with audit.
  * - analyze_disk_usage (Tier 1): Analyze filesystem usage for a device
  * - disk_cleanup (Tier 1 preview, Tier 3 execute): Preview or execute disk cleanup
- * - system_cleanup (Tier 1 list, Tier 3 run): OS-native maintenance cleaners
- *   (Disk Cleanup v2 §5.3). Thin handler over services/systemCleanup.ts.
+ * - system_cleanup (Tier 1 list/status, Tier 3 run): OS-native maintenance
+ *   cleaners (Disk Cleanup v2 §5.3). Thin handler over services/systemCleanup.ts.
  */
 
 import { normalizeScanPath, osRootScanPath, toCleanupOs } from '@breeze/shared';
@@ -41,15 +41,16 @@ import {
 } from './filesystemAnalysis';
 import { aiExecuteCommand, aiExecuteCommandWithSystemPrecheck, requireAiOrigin } from './aiDispatch';
 import {
+  AGENT_UPDATE_REQUIRED_ERROR,
   MIN_AGENT_VERSION_SYSTEM_CLEANUP,
   awaitSystemCleanupResult,
   parseAgentJson,
   queueSystemCleanupList,
+  resolveSystemCleanupRunStatus,
   startSystemCleanupRun,
   systemCleanupCatalogSchema,
-  systemCleanupRunResultSchema,
 } from './systemCleanup';
-import { systemCleanupRunBudgetMs } from '@breeze/shared/validators';
+import { CommandTypes } from './commandTypes';
 import { createAuditLogAsync } from './auditService';
 import { captureException } from './sentry';
 import { writeAuditEvent, requestLikeFromSnapshot } from './auditEvents';
@@ -58,11 +59,22 @@ import { CLEANUP_PREVIEW_TTL_HOURS } from '../routes/devices/filesystem';
 type AiToolTier = 1 | 2 | 3 | 4;
 
 /**
- * How long `system_cleanup list` waits for the catalog. The agent answers a
- * list in seconds (it only sizes handlers); the rest is queue latency on a
- * device that `verifyDeviceAccess` already confirmed online.
+ * How long `system_cleanup list` waits for the catalog before answering
+ * `pending`. The agent answers a list in seconds (it only sizes handlers); the
+ * rest is queue latency on a device `verifyDeviceAccess` already confirmed
+ * online. Capped at run_script's 60 s wait: the SDK runs every tool call
+ * inside a per-tool `withDbAccessContext`, so a longer wait pins a pooled
+ * connection (#1105). Past the cap the caller re-checks with the `commandId`.
  */
-const SYSTEM_CLEANUP_LIST_WAIT_MS = 180_000;
+const SYSTEM_CLEANUP_LIST_WAIT_MS = 60_000;
+
+/**
+ * F5: every `agent_update_required` answer from this tool carries the version
+ * that would fix it — ONE builder, so no branch can drop it.
+ */
+function systemCleanupAgentUpdateRequired(): { error: string; minAgentVersion: string } {
+  return { error: AGENT_UPDATE_REQUIRED_ERROR, minAgentVersion: MIN_AGENT_VERSION_SYSTEM_CLEANUP };
+}
 
 /** Bounded hints keyed by conversation + user + device; the run row remains authoritative. */
 const MAX_PINNED_CLEANUP_RUNS = 500;
@@ -663,34 +675,31 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceId'],
     definition: {
       name: 'system_cleanup',
-      description: 'List or run OS-native maintenance cleaners on a device: Windows Disk Cleanup handlers and DISM component cleanup, macOS local snapshots and Homebrew, Linux package caches and journal. These reclaim space the file scanner cannot see. list is read-only and returns the device catalog with per-action "up to" estimates. run executes the selected actions sequentially and requires approval.',
+      description: 'List, run or check OS-native maintenance cleaners on a device: Windows Disk Cleanup handlers and DISM component cleanup, macOS local snapshots and Homebrew, Linux package caches and journal. These reclaim space the file scanner cannot see. list is read-only and returns the device catalog with per-action "up to" estimates (waits up to 60 s; if it answers status "pending", call list again with the same commandId). run requires approval, starts the selected actions and returns immediately with a cleanupRunId — a run can take up to hours (DISM), so poll status with that cleanupRunId until it reports executed or failed; do not call run again. status is read-only.',
       input_schema: {
         type: 'object' as const,
         properties: {
           deviceId: { type: 'string', description: 'The device UUID' },
-          action: { type: 'string', enum: ['list', 'run'], description: 'list (read-only catalog) or run (execute selected actions)' },
+          action: { type: 'string', enum: ['list', 'run', 'status'], description: 'list (read-only catalog), run (start selected actions; returns a cleanupRunId), or status (read-only progress/result of a run)' },
           actionIds: { type: 'array', items: { type: 'string' }, description: 'Catalog action ids to run, from a prior list call (required for run)' },
           params: { type: 'object', description: 'Optional per-action parameters. journalVacuumBytes (67108864-4294967296) bounds journalctl --vacuum-size.' },
+          cleanupRunId: { type: 'string', description: 'The cleanupRunId returned by run (required for status)' },
+          commandId: { type: 'string', description: 'For list only: the commandId of a catalog request that answered "pending", to re-check it instead of starting a new one' },
         },
         required: ['deviceId', 'action'],
       },
     },
     handler: async (input, auth) => {
       const deviceId = input.deviceId as string;
-      const action = input.action as 'list' | 'run';
+      const action = input.action as 'list' | 'run' | 'status';
 
       // Throws (never returns) when the surface minted no origin — an
       // unattributed destructive device command is refused, not degraded.
       const aiOrigin = requireAiOrigin(auth, 'system_cleanup');
 
-      const access = await verifyDeviceAccess(deviceId, auth, true);
+      // `status` reads a run row; the device need not be online for that.
+      const access = await verifyDeviceAccess(deviceId, auth, action !== 'status');
       if ('error' in access) return JSON.stringify({ error: access.error });
-
-      // Same probe-degrade as disk_cleanup above: an `ai_agent` principal's
-      // auth.user.id is the agent's id, not a users row, and requested_by is an
-      // FK onto users.id.
-      const [userRow] = await db.select({ id: users.id }).from(users).where(eq(users.id, auth.user.id)).limit(1);
-      const requestedBy = userRow ? auth.user.id : null;
 
       const device = {
         id: access.device.id,
@@ -698,18 +707,66 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
         agentVersion: access.device.agentVersion,
         status: access.device.status,
       };
-      const agentUpdateRequired = { error: 'agent_update_required', minAgentVersion: MIN_AGENT_VERSION_SYSTEM_CLEANUP };
+
+      if (action === 'status') {
+        const cleanupRunId = typeof input.cleanupRunId === 'string' ? input.cleanupRunId : '';
+        if (!cleanupRunId) return JSON.stringify({ error: 'cleanupRunId is required for the status action' });
+        // The SAME resolver the human poll route uses (lookup scoped to the
+        // verified device, lazy stored-deadline timeout, persisted status):
+        // the result handler decided executed/failed, nothing is re-derived
+        // here, and no audit row is written for a read.
+        const resolved = await resolveSystemCleanupRunStatus({ device: { id: device.id, orgId: device.orgId }, cleanupRunId });
+        if (!resolved.ok) {
+          return JSON.stringify(resolved.status === 409 ? systemCleanupAgentUpdateRequired() : { error: 'Cleanup run not found' });
+        }
+        const { run } = resolved;
+        return JSON.stringify({
+          cleanupRunId: run.cleanupRunId,
+          commandId: run.commandId,
+          status: run.status,
+          freedBytes: run.freedBytes,
+          actions: run.actions,
+          volumes: run.volumes,
+          requestedAt: run.requestedAt,
+          deadlineAt: run.deadlineAt,
+          ...(run.error ? { error: run.error } : {}),
+        });
+      }
+
+      // Same probe-degrade as disk_cleanup above: an `ai_agent` principal's
+      // auth.user.id is the agent's id, not a users row, and requested_by is an
+      // FK onto users.id.
+      const [userRow] = await db.select({ id: users.id }).from(users).where(eq(users.id, auth.user.id)).limit(1);
+      const requestedBy = userRow ? auth.user.id : null;
 
       if (action === 'list') {
-        const queued = await queueSystemCleanupList({ device, requestedBy, aiOrigin });
-        if (!queued.ok) {
-          return JSON.stringify(queued.error === 'agent_update_required' ? agentUpdateRequired : { error: queued.error });
+        // A re-check of a catalog request that answered `pending` earlier:
+        // the same command, verified against THIS device and the list type
+        // (device_commands is RLS-free — the predicates are the isolation).
+        const priorCommandId = typeof input.commandId === 'string' && input.commandId ? input.commandId : null;
+        let commandId = priorCommandId;
+        if (!commandId) {
+          const queued = await queueSystemCleanupList({ device, requestedBy, aiOrigin });
+          if (!queued.ok) {
+            return JSON.stringify(queued.error === 'agent_update_required' ? systemCleanupAgentUpdateRequired() : { error: queued.error });
+          }
+          commandId = queued.commandId;
         }
-        const awaited = await awaitSystemCleanupResult(queued.commandId, device.orgId, SYSTEM_CLEANUP_LIST_WAIT_MS);
+        const awaited = await awaitSystemCleanupResult(
+          { commandId, deviceId: device.id, orgId: device.orgId, type: CommandTypes.SYSTEM_CLEANUP_LIST },
+          SYSTEM_CLEANUP_LIST_WAIT_MS,
+        );
+        if (awaited.status === 'timeout') {
+          return JSON.stringify({
+            status: 'pending',
+            commandId,
+            note: 'The device has not answered yet. Call list again with this commandId to re-check; do not start a new one.',
+          });
+        }
         if (awaited.status !== 'completed') {
           return JSON.stringify(
             awaited.error === 'agent_update_required'
-              ? agentUpdateRequired
+              ? systemCleanupAgentUpdateRequired()
               : { error: awaited.error ?? 'system cleanup catalog failed' },
           );
         }
@@ -717,7 +774,7 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
         // cleanup actions" is indistinguishable from the truth (spec defect 5).
         const catalog = parseAgentJson(systemCleanupCatalogSchema, JSON.stringify(awaited.result));
         if (!catalog) return JSON.stringify({ error: 'The agent returned an unreadable cleanup catalog' });
-        return JSON.stringify({ commandId: queued.commandId, catalog });
+        return JSON.stringify({ status: 'completed', commandId, catalog });
       }
 
       const actionIds = Array.isArray(input.actionIds)
@@ -730,28 +787,18 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
 
       const started = await startSystemCleanupRun({ device, requestedBy, actionIds, params, aiOrigin });
       if (!started.ok) {
-        if (started.error === 'agent_update_required') return JSON.stringify(agentUpdateRequired);
+        if (started.error === 'agent_update_required') return JSON.stringify(systemCleanupAgentUpdateRequired());
         if (started.status === 409 && started.error === 'run_in_progress') {
           return JSON.stringify({ error: 'run_in_progress', cleanupRunId: started.cleanupRunId });
         }
         return JSON.stringify({ error: started.error });
       }
 
-      // Wait for the SAME budget the service stored on the run row as its
-      // deadline (spec §13 #14): one number, derived once, for the route's
-      // lazy timeout and this wait alike.
-      const awaited = await awaitSystemCleanupResult(started.commandId, device.orgId, systemCleanupRunBudgetMs(actionIds));
-      const payload = awaited.status === 'completed'
-        ? parseAgentJson(systemCleanupRunResultSchema, JSON.stringify(awaited.result))
-        : null;
-      const status: 'completed' | 'failed' | 'timeout' = awaited.status === 'completed' && !payload ? 'failed' : awaited.status;
-      const error = awaited.status === 'completed' && !payload
-        ? 'The agent returned an unreadable cleanup result'
-        : awaited.error;
-
-      // Spec §10 item 9: the run is audited from this lane too. The agent
-      // result handler writes the measured device.filesystem.system_cleanup.run
-      // row for every path; this one records that an AI surface asked for it.
+      // Spec §10 item 9: the run is audited from this lane too — ONCE, at
+      // dispatch. This row records that an AI surface asked for it; the agent
+      // result handler owns completion (the measured
+      // device.filesystem.system_cleanup.run row with bytes and per-action
+      // status) for every path, AI or human.
       void createAuditLogAsync({
         orgId: device.orgId,
         actorType: requestedBy ? 'user' : 'ai_agent',
@@ -767,23 +814,27 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
           commandId: started.commandId,
           actionIds,
           surface: 'ai_tool',
-          status,
-          freedBytes: payload?.freedBytes ?? null,
+          status: 'running',
+          deadlineAt: started.deadlineAt,
         },
-        result: status === 'completed' ? 'success' : 'failure',
-        ...(error ? { errorMessage: error } : {}),
+        result: 'success',
       }).catch((auditError: unknown) => {
         console.error('[system_cleanup] audit write failed (non-fatal)', { deviceId: device.id, error: auditError });
       });
 
+      // Return IMMEDIATELY (W05 review F1). A run can take hours (DISM's cap
+      // alone is 90 min) and the SDK holds a per-tool DB context for the
+      // whole call, so waiting here pinned a pooled connection for the
+      // length of the run (#1105 class). The run row carries the stored
+      // deadline; `status` applies the shared lazy timeout to it.
       return JSON.stringify({
+        status: 'running',
         cleanupRunId: started.cleanupRunId,
         commandId: started.commandId,
-        status,
-        freedBytes: payload?.freedBytes ?? 0,
-        actions: payload?.actions ?? [],
-        volumes: payload?.volumes ?? [],
-        ...(error ? { error } : {}),
+        deviceId: device.id,
+        actionIds,
+        deadlineAt: started.deadlineAt,
+        note: 'Poll with action "status" and this cleanupRunId until it reports executed or failed. Do not call run again.',
       });
     },
   });

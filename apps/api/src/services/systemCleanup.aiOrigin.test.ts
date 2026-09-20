@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 /**
  * #5022 W01 contract, applied to the W04 system-cleanup seam (W05 amendment B11).
@@ -146,7 +146,10 @@ describe('systemCleanup service — AI origin passthrough', () => {
   });
 });
 
-describe('awaitSystemCleanupResult', () => {
+// Own timeout, well above the 10 s fake-timer poll budget below: under a
+// loaded full-suite run the default 5 s can expire mid-test, and a test that
+// dies with fake timers armed poisons every test after it.
+describe('awaitSystemCleanupResult', { timeout: 30_000 }, () => {
   const whereClauses: unknown[] = [];
   const LIST = { commandId: 'cmd-1', deviceId: DEVICE.id, orgId: DEVICE.orgId, type: 'system_cleanup_list' } as const;
 
@@ -156,10 +159,14 @@ describe('awaitSystemCleanupResult', () => {
     return [[record.left, record.right]];
   }
 
+  // Every piece of seam state is (re)installed here, never inherited from the
+  // describe above or from a previous test: mutable module-level state is what
+  // made an earlier version of this block flake under a loaded full-suite run.
   beforeEach(() => {
-    vi.clearAllMocks();
     vi.useRealTimers();
+    vi.clearAllMocks();
     seam.commandRows = [];
+    seam.queueCalls = [];
     whereClauses.length = 0;
     seam.context.mockImplementation(async (_context: unknown, callback: () => Promise<unknown>) => callback());
     seam.outside.mockImplementation(async (callback: () => Promise<unknown>) => callback());
@@ -180,6 +187,10 @@ describe('awaitSystemCleanupResult', () => {
         },
       }),
     }));
+  });
+  afterEach(() => {
+    // Always, even when an assertion above threw with fake timers armed.
+    vi.useRealTimers();
   });
 
   it('returns the parsed agent payload from a completed command row', async () => {
@@ -235,6 +246,5 @@ describe('awaitSystemCleanupResult', () => {
     await expect(pending).resolves.toEqual({ status: 'timeout', error: 'timed out' });
     expect(seam.select.mock.calls.length).toBeGreaterThanOrEqual(10);
     expect(seam.select.mock.calls.length).toBeLessThanOrEqual(11);
-    vi.useRealTimers();
   });
 });

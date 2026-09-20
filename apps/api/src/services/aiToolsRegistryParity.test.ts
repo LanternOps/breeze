@@ -84,6 +84,6 @@ describe('aiTools registry parity', () => {
     // `toolActionEnum` unions for the approval-scope contract test.
     expect(schema?.shape, 'system_cleanup must stay a plain z.object (no .refine)').toBeDefined();
     expect(Object.keys(schema!.shape!).sort()).toEqual(advertised);
-    expect(advertised).toEqual(['action', 'actionIds', 'deviceId', 'params']);
+    expect(advertised).toEqual(['action', 'actionIds', 'cleanupRunId', 'commandId', 'deviceId', 'params']);
   });
 });

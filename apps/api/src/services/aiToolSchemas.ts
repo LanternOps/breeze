@@ -1047,7 +1047,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
    */
   system_cleanup: z.object({
     deviceId: uuid,
-    action: z.enum(['list', 'run']),
+    action: z.enum(['list', 'run', 'status']),
     actionIds: z
       .array(z.enum(SYSTEM_CLEANUP_ACTION_IDS))
       .min(1)
@@ -1061,6 +1061,10 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
       })
       .strict()
       .optional(),
+    /** run's handle, for `status`. */
+    cleanupRunId: uuid.optional(),
+    /** A pending catalog request's id, for a `list` re-check. */
+    commandId: uuid.optional(),
   }),
 
   query_audit_log: z.object({
