@@ -7,6 +7,7 @@ import { formatDateTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
 import { useMlFeatureFlags } from '../../hooks/useMlFeatureFlags';
 import { useAiStore } from '../../stores/aiStore';
+import { usePermissions } from '../../lib/permissions';
 import HelpTooltip from '../shared/HelpTooltip';
 import { formatNumber, formatPercent } from '@/lib/i18n/format';
 
@@ -339,6 +340,9 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
   const scoredWeightTotal = scoredFactors.reduce((sum, driver) => sum + driver.weight, 0);
 
   const startDeviceTask = useAiStore((s) => s.startDeviceTask);
+  // #6396: the sidebar is unmounted without ai_sessions:use, so this button
+  // would be a dead click (and a background 403) for roles without it.
+  const canUseAi = usePermissions().can('ai_sessions', 'use');
 
   const askAi = useCallback(() => {
     if (!snapshot) return;
@@ -618,7 +622,7 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
         </div>
 
         <div className="flex flex-col items-start gap-2 xl:items-end">
-          <button
+          {canUseAi && <button
             type="button"
             data-testid="reliability-ask-ai"
             onClick={askAi}
@@ -626,7 +630,7 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
           >
             <Sparkles className="h-4 w-4" />
             {t('deviceReliabilityPanel.askAi')}
-          </button>
+          </button>}
           {/* Outcome-feedback UI removed for now: the labels only feed a
               precision evaluation endpoint no UI consumes, and there is no
               learning loop for them to train yet. The POST /reliability/:id/

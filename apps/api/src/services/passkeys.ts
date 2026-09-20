@@ -15,8 +15,31 @@ const DEFAULT_DEV_ORIGIN = 'http://localhost:4321';
 const CHALLENGE_TTL_SECONDS = 5 * 60;
 
 export type PasskeyPurpose = 'registration' | 'authentication';
-export type PasskeyTransport = 'ble' | 'cable' | 'hybrid' | 'internal' | 'nfc' | 'smart-card' | 'usb';
+/**
+ * WebAuthn `AuthenticatorTransport` values, widened to `string`. `@simplewebauthn/server`
+ * 14 already types every relevant input/output surface as plain `string[]`, not the
+ * old 7-value literal union: `generateRegistrationOptions`'s
+ * `excludeCredentials[].transports`, `generateAuthenticationOptions`'s
+ * `allowCredentials[].transports`, and `verifyRegistrationResponse`'s input
+ * `response.response.transports` (`AuthenticatorAttestationResponseJSON.transports` —
+ * the authentication/assertion counterpart, `AuthenticatorAssertionResponseJSON`, has
+ * no `transports` field at all in 14.0.2). Narrowing here bought nothing but data
+ * loss. The spec (WebAuthn §5.8.3) asks relying parties to round-trip transport
+ * values they don't recognize rather than discard them, and this jsonb-backed column
+ * (`db/schema/userPasskeys.ts`) has no reason to reject one.
+ */
+export type PasskeyTransport = string;
 export type PasskeyDeviceType = 'singleDevice' | 'multiDevice';
+
+/**
+ * Pass transports through unchanged — no allowlist filtering (see `PasskeyTransport`
+ * above). `undefined` (no transports reported) becomes `null` to match the stored
+ * field's `PasskeyTransport[] | null` type; an explicit `[]` stays `[]`, it is not
+ * normalized to `null`.
+ */
+function toPasskeyTransports(transports: string[] | undefined): PasskeyTransport[] | null {
+  return transports ?? null;
+}
 
 export type WebAuthnConfig = {
   rpID: string;
@@ -149,7 +172,7 @@ export function registrationInfoToPasskeyFields(
     counter: info.credential.counter,
     deviceType: info.credentialDeviceType,
     backedUp: info.credentialBackedUp,
-    transports: response?.response.transports ?? null,
+    transports: toPasskeyTransports(response?.response.transports),
     aaguid: info.aaguid || null
   };
 }

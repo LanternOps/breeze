@@ -36,6 +36,7 @@ import { emitAlertStateFeedback } from '../../services/mlFeedbackEmitters';
 import { latestVerdictsForAlerts, projectAlertAiVerdictSummary } from '../../services/aiAgents/alertVerdicts';
 import { listAlertsSchema, resolveAlertSchema, suppressAlertSchema, bulkAlertActionSchema, type AlertStatusValue } from './schemas';
 import { getPagination, ensureOrgAccess, getAlertWithOrgCheck, alertSiteScopeCondition } from './helpers';
+import { fillStoredAlertCopy } from './alertCopy';
 import { withAlertActorNames } from './actorNames';
 import { canAccessSite, getUserPermissions, hasPermission, PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import { createTicketFromAlert, TicketServiceError } from '../../services/ticketService';
@@ -367,6 +368,7 @@ alertsRoutes.get(
         suppressedUntil: alerts.suppressedUntil,
         createdAt: alerts.createdAt,
         deviceHostname: devices.hostname,
+        deviceDisplayName: devices.displayName,
         ruleName: alertRules.name,
         // Org name for the fleet (All-organizations) view, where the web list
         // shows an Organization column so cross-org rows stay legible.
@@ -438,15 +440,16 @@ alertsRoutes.get(
     const correlatedAlerts = attachAlertCorrelationSummaries(alertsWithActorNames, correlationRows);
     const data = correlatedAlerts.map((alert) => {
       const verdict = verdictMap.get(alert.id);
-      return {
-        ...alert,
+      const { deviceDisplayName, ...rest } = alert;
+      return fillStoredAlertCopy({
+        ...rest,
         aiVerdict: verdict
           ? {
             ...projectAlertAiVerdictSummary(verdict),
             feedbackByName: feedbackByNameByVerdictId.get(verdict.id) ?? null,
           }
           : null,
-      };
+      }, deviceDisplayName || rest.deviceHostname);
     });
 
     return c.json({
@@ -1357,7 +1360,9 @@ alertsRoutes.get(
         .orderBy(desc(alertNotifications.createdAt))
     ));
 
-    const [alertWithActorNames] = await withAlertActorNames([alert]);
+    // noUncheckedIndexedAccess: the single-row destructure is `T | undefined`;
+    // fall back to the bare alert so fillStoredAlertCopy sees a titled row.
+    const [alertWithActorNames = alert] = await withAlertActorNames([alert]);
 
     // Phase 2 wave P2-1 (alert verdicts), Task 14 — the alert's latest live
     // verdict, if any. A detail lookup is always single-org (`alert.orgId`,
@@ -1374,7 +1379,7 @@ alertsRoutes.get(
       ? await withAlertActorNames([{ id: verdict.id, feedbackBy: verdict.feedbackBy }])
       : [];
 
-    return c.json(withMlAlertContext({
+    return c.json(withMlAlertContext(fillStoredAlertCopy({
       ...alertWithActorNames,
       device: device ? {
         id: device.id,
@@ -1397,7 +1402,7 @@ alertsRoutes.get(
           feedbackByName: feedbackByNameRow?.feedbackByName ?? null,
         }
         : null,
-    }));
+    }, device?.displayName || device?.hostname)));
   }
 );
 

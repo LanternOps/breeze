@@ -29,7 +29,7 @@ import {
   normalizeMetricAnomalyContext,
   type MetricAnomalyAlertContext,
 } from './alertMlContext';
-import type { AlertAiVerdictSummaryDto } from '@breeze/shared';
+import { fillDevicePlaceholders, type AlertAiVerdictSummaryDto } from '@breeze/shared';
 import AlertVerdictBadge, { submitVerdictFeedback } from './AlertVerdictBadge';
 
 type Alert = {
@@ -120,10 +120,13 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
       }
 
       const data = await response.json();
+      const deviceName = data.device?.hostname || data.deviceName || t('alertDetailPage.unknownDevice');
       // Map API response to component structure
       setAlert({
         ...data,
-        deviceName: data.device?.hostname || data.deviceName || t('alertDetailPage.unknownDevice'),
+        title: typeof data.title === 'string' ? fillDevicePlaceholders(data.title, deviceName) : data.title,
+        message: typeof data.message === 'string' ? fillDevicePlaceholders(data.message, deviceName) : data.message,
+        deviceName,
         ruleName: data.rule?.name || data.ruleName,
         ruleId: data.rule?.id || data.ruleId,
         contextData: data.contextData ?? data.context,

@@ -18,6 +18,9 @@ func convert(ctx context.Context, r *run) error {
 		return nil
 	}
 	raw, out := r.opts.Target.RawPath(), r.opts.Target.Path
+	if r.releaseErr != nil {
+		return fmt.Errorf("staging image %s is still in use, refusing to convert a mounted filesystem: %w", raw, r.releaseErr)
+	}
 	r.progress(PhaseConvert, "converting "+raw+" to VHDX", 0, 1)
 	if b, err := r.sys.Run(ctx, "qemu-img", "convert", "-f", "raw", "-O", "vhdx", "-o", "subformat=dynamic", raw, out); err != nil {
 		if msg := strings.TrimSpace(string(b)); msg != "" {

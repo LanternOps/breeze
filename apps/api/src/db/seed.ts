@@ -253,6 +253,8 @@ export const DEFAULT_PERMISSIONS = [
   // AI session audit (SR5-09)
   { resource: 'ai_sessions', action: 'read_all',
     description: "View all users' AI session history (admin audit dashboard)" },
+  { resource: 'ai_sessions', action: 'use',
+    description: 'Open and drive your own AI chat sessions' },
 
   // AI agents (#3821)
   { resource: 'ai_agents', action: 'read',
@@ -345,6 +347,8 @@ export const SYSTEM_ROLES: readonly SystemRoleDefinition[] = [
       'sites:read',
       'topology:read',
       'organizations:read',
+      // AI chat (#6396): same reasoning as Org Technician.
+      'ai_sessions:use',
       // Tier 1 (read-only) external tools only (#5216).
       'external_tools:use',
       // Org document library (service deliverables W03).
@@ -413,6 +417,8 @@ export const SYSTEM_ROLES: readonly SystemRoleDefinition[] = [
       'audit:manage',
       'vulnerabilities:accept_risk',
       'ai_sessions:read_all',
+      // Own-session chat (#6396): dedicated capability, not organizations:write.
+      'ai_sessions:use',
       // An org admin may tighten their own org's agent policy. Creating a
       // PARTNER-WIDE baseline additionally requires partner scope with
       // org_access='all' (canManagePartnerWidePolicies), so this grant cannot
@@ -463,6 +469,9 @@ export const SYSTEM_ROLES: readonly SystemRoleDefinition[] = [
       'sites:read',
       'topology:read', 'topology:write',
       'remote:access',
+      // AI chat (#6396): a technician can run scripts and manage devices over
+      // HTTP; the per-tool map bounds chat to exactly the same permissions.
+      'ai_sessions:use',
       // Read-only: a technician writing a script needs to know which variable
       // keys exist, but not to create or rotate them.
       'variables:read',

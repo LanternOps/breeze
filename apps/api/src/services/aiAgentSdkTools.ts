@@ -1,3 +1,4 @@
+import { AI_AGENT_RUN_STATUSES } from '@breeze/shared';
 /**
  * AI Agent SDK Tool Definitions
  *
@@ -163,6 +164,10 @@ export type PostToolUseCallback = (
 // ============================================
 
 export const TOOL_TIERS = {
+  list_time_entries: 1,
+  get_running_timer: 1,
+  get_timesheet: 1,
+
   query_devices: 1,
   search_documentation: 1,
   get_device_details: 1,
@@ -288,6 +293,8 @@ export const TOOL_TIERS = {
   // KNOWN_MISSING_TOOL_TIERS: without a tier, createSessionPreToolUse rejects
   // it as "Unknown tool" and the chat tells the user the capability does not
   // exist.
+  list_network_assets: 1,
+  get_network_asset: 1,
   get_network_asset_reachability: 1,
   // Monitor definition activity/escalation tools (#5290 W03). list_monitors /
   // get_monitor / manage_monitor_definitions remain in the frozen
@@ -296,6 +303,14 @@ export const TOOL_TIERS = {
   get_monitor_activity: 2,
   reset_monitor_escalation: 2,
   // Org lifecycle tools (issue #2366) — new-customer intake (org → site → quote)
+  list_remediation_suggestions: 1,
+  list_incidents: 1,
+  list_ai_agents: 1,
+  list_ai_agent_runs: 1,
+  get_ai_agent_run: 1,
+  list_sites: 1,
+  get_site: 1,
+  list_org_contacts: 1,
   list_organizations: 1,
   manage_organizations: 2,      // create_org/update_org/create_site escalate to 3 in guardrails
   // AI agent governance (P2-5, #4192). Base tier 3 — there is no lower-tier
@@ -1340,6 +1355,36 @@ export function buildBreezeSdkTools(
   const uuid = z.string().guid();
 
   const tools = [
+    tool(
+      'list_time_entries',
+      registryDescription('list_time_entries'),
+      {
+        orgId: uuid.optional(),
+        ticketId: uuid.optional(),
+        userId: uuid.optional(),
+        from: z.string().optional(),
+        to: z.string().optional(),
+        running: z.boolean().optional(),
+        billingStatus: z.enum(['not_billed', 'billed', 'no_charge', 'contract']).optional(),
+        approved: z.boolean().optional(),
+        limit: z.number().int().min(1).max(200).optional(),
+        offset: z.number().int().min(0).optional(),
+      },
+      makeHandler('list_time_entries', getAuth, onPreToolUse, onPostToolUse)
+    ),
+    tool(
+      'get_running_timer',
+      registryDescription('get_running_timer'),
+      {},
+      makeHandler('get_running_timer', getAuth, onPreToolUse, onPostToolUse)
+    ),
+    tool(
+      'get_timesheet',
+      registryDescription('get_timesheet'),
+      { weekStart: z.string(), userId: uuid.optional() },
+      makeHandler('get_timesheet', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
     tool(
       'search_documentation',
       registryDescription('search_documentation'),
@@ -2517,6 +2562,27 @@ export function buildBreezeSdkTools(
       makeHandler('query_monitors', getAuth, onPreToolUse, onPostToolUse)
     ),
 
+    tool(
+      'list_network_assets',
+      registryDescription('list_network_assets'),
+      {
+        orgId: z.string().guid().optional(),
+        siteId: z.string().guid().optional(),
+        approvalStatus: z.enum(['pending', 'approved', 'dismissed']).optional(),
+        assetType: z.enum(['workstation', 'server', 'printer', 'router', 'switch', 'firewall', 'access_point', 'phone', 'iot', 'camera', 'nas', 'unknown', 'website', 'service']).optional(),
+        linkedDeviceId: z.string().guid().optional(),
+        limit: z.number().int().min(1).max(200).optional(),
+      },
+      makeHandler('list_network_assets', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_network_asset',
+      registryDescription('get_network_asset'),
+      { assetId: z.string().guid() },
+      makeHandler('get_network_asset', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
     // W01 (spec §4.4) — the only read that answers "is this printer/switch up"
     // with the SOURCE and AGE of the evidence. Declared here as well as in
     // TOOL_TIERS: a tier without a tool() declaration is allowlisted but
@@ -2587,6 +2653,88 @@ export function buildBreezeSdkTools(
     ),
 
     // Org lifecycle tools (issue #2366) — new-customer intake (org → site → quote)
+
+    tool(
+      'list_remediation_suggestions',
+      registryDescription('list_remediation_suggestions'),
+      {
+        orgId: z.string().guid().optional(),
+        sourceType: z.enum(['alert', 'anomaly', 'correlation', 'rca']).optional(),
+        sourceId: z.string().min(1).max(255).optional(),
+        deviceId: z.string().guid().optional(),
+        status: z.enum(['all', 'suggested', 'accepted', 'edited', 'rejected', 'executed', 'failed']).optional(),
+        limit: z.number().int().min(1).max(100).optional(),
+      },
+      makeHandler('list_remediation_suggestions', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'list_incidents',
+      registryDescription('list_incidents'),
+      {
+        orgId: z.string().guid().optional(),
+        status: z.enum(['detected', 'analyzing', 'contained', 'recovering', 'closed']).optional(),
+        severity: z.enum(['p1', 'p2', 'p3', 'p4']).optional(),
+        classification: z.string().max(40).optional(),
+        assignedTo: z.string().guid().optional(),
+        startDate: z.string().datetime({ offset: true }).optional(),
+        endDate: z.string().datetime({ offset: true }).optional(),
+        limit: z.number().int().min(1).max(100).optional(),
+        offset: z.number().int().min(0).optional(),
+      },
+      makeHandler('list_incidents', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'list_ai_agents', registryDescription('list_ai_agents'),
+      { includeDisabled: z.boolean().optional() },
+      makeHandler('list_ai_agents', getAuth, onPreToolUse, onPostToolUse)
+    ),
+    tool(
+      'list_ai_agent_runs', registryDescription('list_ai_agent_runs'),
+      {
+        agentId: z.string().guid().optional(), orgId: z.string().guid().optional(),
+        status: z.enum(AI_AGENT_RUN_STATUSES).optional(),
+        limit: z.number().int().min(1).max(50).optional(),
+      },
+      makeHandler('list_ai_agent_runs', getAuth, onPreToolUse, onPostToolUse)
+    ),
+    tool(
+      'get_ai_agent_run', registryDescription('get_ai_agent_run'),
+      { runId: z.string().guid() },
+      makeHandler('get_ai_agent_run', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'list_sites',
+      registryDescription('list_sites'),
+      {
+        orgId: z.string().guid().optional(),
+        search: z.string().max(255).optional(),
+        limit: z.number().int().min(1).max(100).optional(),
+        offset: z.number().int().min(0).optional(),
+      },
+      makeHandler('list_sites', getAuth, onPreToolUse, onPostToolUse)
+    ),
+    tool(
+      'get_site',
+      registryDescription('get_site'),
+      { siteId: z.string().guid() },
+      makeHandler('get_site', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'list_org_contacts',
+      registryDescription('list_org_contacts'),
+      {
+        orgId: z.string().guid(),
+        siteId: z.union([z.literal('none'), z.string().guid()]).optional(),
+        role: z.string().min(1).max(64).optional(),
+        limit: z.number().int().min(1).max(100).optional(),
+        offset: z.number().int().min(0).optional(),
+      },
+      makeHandler('list_org_contacts', getAuth, onPreToolUse, onPostToolUse)
+    ),
 
     tool(
       'list_organizations',

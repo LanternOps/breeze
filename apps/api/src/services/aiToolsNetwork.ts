@@ -11,6 +11,8 @@
  */
 
 import { isIP } from 'node:net';
+import { z } from 'zod';
+import { maskOidShapedModel, nicVendorFromMac } from './assetIdentity';
 import { db } from '../db';
 import {
   devices,
@@ -22,7 +24,7 @@ import {
   type NetworkBaselineScanSchedule,
 } from '../db/schema';
 import { loadReachability } from './assetReachabilityLoader';
-import { deviceScopeCondition, filterToDeviceScope } from './aiToolsSiteScope';
+import { deviceSiteDenied, siteScopeCondition, SITE_SCOPE_EMPTY_NOTE, deviceScopeCondition, filterToDeviceScope } from './aiToolsSiteScope';
 import { eq, and, desc, gte, inArray, lte, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
@@ -109,10 +111,139 @@ async function armScheduleAuthority(
   return buildBaselineAuthorityEnvelope(auth, effect);
 }
 
+function jsonError(error: string): string {
+  return JSON.stringify({ error });
+}
+
+function resolveAssetOrgId(auth: AuthContext, requested?: string): { orgId: string } | { error: string } {
+  if (auth.scope === 'organization') {
+    if (!auth.orgId) return { error: 'Organization context required' };
+    if (requested && requested !== auth.orgId) return { error: 'Access to this organization denied' };
+    return { orgId: auth.orgId };
+  }
+  if (auth.scope !== 'partner' && auth.scope !== 'system') return { error: 'Organization context required' };
+  if (requested) {
+    if (!auth.canAccessOrg(requested)
+      || (auth.scope === 'partner' && !(auth.accessibleOrgIds ?? []).includes(requested))) {
+      return { error: 'Access to this organization denied' };
+    }
+    return { orgId: requested };
+  }
+  if (auth.scope === 'partner') {
+    const orgs = auth.accessibleOrgIds ?? [];
+    if (orgs.length === 1) return { orgId: orgs[0]! };
+    return { error: 'orgId is required when partner has multiple organizations' };
+  }
+  return { error: 'orgId is required for system scope' };
+}
+
+// Named scalar columns only: never expose SNMP data, ports, or internal notes.
+// Built lazily to retain compatibility with older tests' partial schema mocks.
+function safeAssetProjection() {
+  return {
+    id: discoveredAssets.id, orgId: discoveredAssets.orgId, siteId: discoveredAssets.siteId,
+    assetType: discoveredAssets.assetType, approvalStatus: discoveredAssets.approvalStatus,
+    hostname: discoveredAssets.hostname, label: discoveredAssets.label,
+    ipAddress: discoveredAssets.ipAddress, macAddress: discoveredAssets.macAddress,
+    manufacturer: discoveredAssets.manufacturer, model: discoveredAssets.model,
+    linkedDeviceId: discoveredAssets.linkedDeviceId, detectedAssetType: discoveredAssets.detectedAssetType,
+    isOnline: discoveredAssets.isOnline, firstSeenAt: discoveredAssets.firstSeenAt, lastSeenAt: discoveredAssets.lastSeenAt,
+  };
+}
+
 export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
   function registerTool(tool: AiTool): void {
     aiTools.set(tool.definition.name, tool);
   }
+
+  registerTool({
+    tier: 1,
+    domain: 'network',
+    searchHint: 'discovered network devices, switches, printers, unmanaged assets on a customer LAN, MAC/IP/vendor',
+    deviceArgs: ['linkedDeviceId'],
+    definition: {
+      name: 'list_network_assets',
+      description: 'List discovered network assets with IP, MAC, model, linked device and last-seen time, filtered by organization, site, type or approval status.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          orgId: { type: 'string', description: 'Organization UUID' },
+          siteId: { type: 'string', description: 'Site UUID' },
+          approvalStatus: { type: 'string', enum: ['pending', 'approved', 'dismissed'], description: 'Approval status: pending, approved, dismissed' },
+          assetType: {
+            type: 'string',
+            enum: ['workstation', 'server', 'printer', 'router', 'switch', 'firewall', 'access_point', 'phone', 'iot', 'camera', 'nas', 'unknown', 'website', 'service'],
+            description: 'Type: workstation, server, printer, router, switch, firewall, access_point, phone, iot, camera, nas, unknown, website, service',
+          },
+          linkedDeviceId: { type: 'string', description: 'Linked managed device UUID' },
+          limit: { type: 'number', description: 'Maximum rows (default 50, maximum 200)' },
+        },
+      },
+    },
+    handler: async (input, auth) => {
+      const parsed = z.object({
+        orgId: z.string().guid().optional(), siteId: z.string().guid().optional(),
+        approvalStatus: z.enum(['pending', 'approved', 'dismissed']).optional(),
+        assetType: z.enum(['workstation', 'server', 'printer', 'router', 'switch', 'firewall', 'access_point', 'phone', 'iot', 'camera', 'nas', 'unknown', 'website', 'service']).optional(),
+        linkedDeviceId: z.string().guid().optional(), limit: z.number().finite().optional(),
+      }).safeParse(input);
+      if (!parsed.success) return jsonError('Invalid network asset filters');
+      const filters = parsed.data;
+      const resolved = resolveAssetOrgId(auth, filters.orgId);
+      if ('error' in resolved) return jsonError(resolved.error);
+      if (auth.allowedSiteIds?.length === 0) {
+        return JSON.stringify({ assets: [], showing: 0, note: SITE_SCOPE_EMPTY_NOTE });
+      }
+      if (filters.siteId && auth.allowedSiteIds && !auth.allowedSiteIds.includes(filters.siteId)) {
+        return jsonError('Access to this site denied');
+      }
+      if (auth.allowedDeviceIds?.length === 0) return JSON.stringify({ assets: [], showing: 0 });
+      const conditions: SQL[] = [eq(discoveredAssets.orgId, resolved.orgId)];
+      const siteCondition = filters.siteId ? eq(discoveredAssets.siteId, filters.siteId) : siteScopeCondition(auth, discoveredAssets.siteId);
+      if (siteCondition) conditions.push(siteCondition);
+      const deviceCondition = deviceScopeCondition(auth, discoveredAssets.linkedDeviceId);
+      if (deviceCondition) conditions.push(deviceCondition);
+      if (filters.approvalStatus) conditions.push(eq(discoveredAssets.approvalStatus, filters.approvalStatus));
+      if (filters.assetType) conditions.push(eq(discoveredAssets.assetType, filters.assetType));
+      if (filters.linkedDeviceId) conditions.push(eq(discoveredAssets.linkedDeviceId, filters.linkedDeviceId));
+      const limit = Math.min(200, Math.max(1, Math.trunc(filters.limit ?? 50)));
+      const rows = await db.select(safeAssetProjection()).from(discoveredAssets)
+        .where(and(...conditions)).orderBy(desc(discoveredAssets.lastSeenAt)).limit(limit);
+      const assets = rows.map((row) => ({ ...row, model: maskOidShapedModel(row.model), nicVendor: nicVendorFromMac(row.macAddress) }));
+      return JSON.stringify({ assets, showing: assets.length });
+    },
+  });
+
+  registerTool({
+    tier: 1,
+    domain: 'network',
+    searchHint: 'one discovered network asset by id: model, IP, MAC, linked device, last seen',
+    deviceArgs: [],
+    definition: {
+      name: 'get_network_asset',
+      description: 'Get a discovered network asset by UUID with its model, IP, MAC, linked device and last-seen time.',
+      input_schema: {
+        type: 'object', properties: { assetId: { type: 'string', description: 'Discovered asset UUID' } }, required: ['assetId'],
+      },
+    },
+    handler: async (input, auth) => {
+      const parsed = z.string().guid().safeParse(input.assetId);
+      if (!parsed.success) return jsonError('Asset not found');
+      if (!['organization', 'partner', 'system'].includes(auth.scope)
+        || (auth.scope === 'organization' && !auth.orgId)
+        || (auth.scope === 'partner' && !(auth.accessibleOrgIds ?? []).length)
+        || auth.allowedSiteIds?.length === 0 || auth.allowedDeviceIds?.length === 0) return jsonError('Asset not found');
+      const conditions: SQL[] = [eq(discoveredAssets.id, parsed.data)];
+      const orgCondition = auth.orgCondition(discoveredAssets.orgId);
+      if (orgCondition) conditions.push(orgCondition);
+      const [row] = await db.select(safeAssetProjection()).from(discoveredAssets).where(and(...conditions)).limit(1);
+      if (!row || (auth.scope !== 'system' && !auth.canAccessOrg(row.orgId))
+        || (auth.scope === 'organization' && row.orgId !== auth.orgId)
+        || (auth.scope === 'partner' && !(auth.accessibleOrgIds ?? []).includes(row.orgId))
+        || deviceSiteDenied(auth, row.siteId, row.linkedDeviceId)) return jsonError('Asset not found');
+      return JSON.stringify({ asset: { ...row, model: maskOidShapedModel(row.model), nicVendor: nicVendorFromMac(row.macAddress) } });
+    },
+  });
 
   // ============================================
   // 1. get_network_changes - Tier 1 (read-only)

@@ -165,7 +165,16 @@ async function releaseUnusedTurn(orgId: string, dispatch: AiTurnBudgetDispatch):
 
 export const aiRoutes = new Hono();
 const requireAiRead = requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action);
+// Org-level AI config (budget) and cross-owner moderation (flag/unflag) stay
+// organizations:write actions.
 const requireAiWrite = requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action);
+// #6396: opening and driving your OWN chat session is a dedicated capability
+// (ai_sessions:use) held by Org Admin, Org Technician and Partner Technician — NOT
+// organizations:write, which no seeded org-scope role holds. Tool calls inside
+// the session are re-checked against TOOL_PERMISSIONS (route parity), so this
+// gate opens the conversation without widening what the role can do. Own-session
+// READS use it too: seeded org roles hold neither organizations:read nor :write.
+const requireAiUse = requirePermission(PERMISSIONS.AI_SESSIONS_USE.resource, PERMISSIONS.AI_SESSIONS_USE.action);
 // SR5-09: reading OTHER users' AI sessions (the admin audit dashboard) is a
 // dedicated, higher-trust capability — NOT organizations:read, which every
 // technician/viewer holds and which for ordinary AI routes only ever returns the
@@ -186,7 +195,7 @@ aiRoutes.use('*', authMiddleware);
 aiRoutes.post(
   '/sessions',
   requireScope('organization', 'partner', 'system'),
-  requireAiWrite,
+  requireAiUse,
   requireMfa(),
   zValidator('json', createAiSessionSchema),
   async (c) => {
@@ -221,7 +230,7 @@ aiRoutes.post(
 aiRoutes.get(
   '/sessions',
   requireScope('organization', 'partner', 'system'),
-  requireAiRead,
+  requireAiUse,
   zValidator('query', aiSessionQuerySchema),
   async (c) => {
     const auth = c.get('auth');
@@ -242,7 +251,7 @@ aiRoutes.get(
 aiRoutes.get(
   '/m365-connections',
   requireScope('organization', 'partner', 'system'),
-  requireAiRead,
+  requireAiUse,
   async (c) => {
     const auth = c.get('auth');
     const rows = await listM365Connections(auth);
@@ -255,7 +264,7 @@ aiRoutes.get(
 aiRoutes.get(
   '/sessions/search',
   requireScope('organization', 'partner', 'system'),
-  requireAiRead,
+  requireAiUse,
   async (c) => {
     const auth = c.get('auth');
     const query = c.req.query('q');
@@ -274,7 +283,7 @@ aiRoutes.get(
 aiRoutes.get(
   '/sessions/:id',
   requireScope('organization', 'partner', 'system'),
-  requireAiRead,
+  requireAiUse,
   async (c) => {
     const auth = c.get('auth');
     const sessionId = c.req.param('id')!;
@@ -292,7 +301,7 @@ aiRoutes.get(
 aiRoutes.delete(
   '/sessions/:id',
   requireScope('organization', 'partner', 'system'),
-  requireAiWrite,
+  requireAiUse,
   requireMfa(),
   async (c) => {
     const auth = c.get('auth');
@@ -324,7 +333,7 @@ aiRoutes.delete(
 aiRoutes.patch(
   '/sessions/:id',
   requireScope('organization', 'partner', 'system'),
-  requireAiWrite,
+  requireAiUse,
   requireMfa(),
   zValidator('json', z.object({ title: z.string().min(1).max(255) })),
   async (c) => {
@@ -654,7 +663,7 @@ aiRoutes.post(
 aiRoutes.post(
   '/sessions/:id/messages',
   requireScope('organization', 'partner', 'system'),
-  requireAiWrite,
+  requireAiUse,
   requireMfa(),
   zValidator('json', sendAiMessageSchema),
   async (c) => {
@@ -953,7 +962,7 @@ aiRoutes.post(
 aiRoutes.post(
   '/sessions/:id/interrupt',
   requireScope('organization', 'partner', 'system'),
-  requireAiWrite,
+  requireAiUse,
   requireMfa(),
   async (c) => {
     const auth = c.get('auth');
@@ -1000,7 +1009,7 @@ aiRoutes.post(
 aiRoutes.post(
   '/sessions/:id/approve/:executionId',
   requireScope('organization', 'partner', 'system'),
-  requireAiWrite,
+  requireAiUse,
   requireMfa(),
   zValidator('json', approveToolSchema),
   async (c) => {
@@ -1054,7 +1063,7 @@ aiRoutes.post(
 aiRoutes.post(
   '/sessions/:id/pause',
   requireScope('organization', 'partner', 'system'),
-  requireAiWrite,
+  requireAiUse,
   requireMfa(),
   zValidator('json', pauseAiSchema),
   async (c) => {
@@ -1111,7 +1120,7 @@ aiRoutes.post(
 aiRoutes.post(
   '/sessions/:id/approve-plan',
   requireScope('organization', 'partner', 'system'),
-  requireAiWrite,
+  requireAiUse,
   requireMfa(),
   zValidator('json', approvePlanSchema),
   async (c) => {
@@ -1186,7 +1195,7 @@ aiRoutes.post(
 aiRoutes.post(
   '/sessions/:id/abort-plan',
   requireScope('organization', 'partner', 'system'),
-  requireAiWrite,
+  requireAiUse,
   requireMfa(),
   async (c) => {
     const auth = c.get('auth');
@@ -1238,7 +1247,7 @@ aiRoutes.post(
 aiRoutes.get(
   '/usage',
   requireScope('organization', 'partner', 'system'),
-  requireAiRead,
+  requireAiUse,
   async (c) => {
     const auth = c.get('auth');
     const orgId = c.req.query('orgId') || auth.orgId;

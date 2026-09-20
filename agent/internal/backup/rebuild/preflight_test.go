@@ -78,13 +78,37 @@ func TestPreflight_VhdxRefusesWhenFreeSpaceBelowOneAndHalfImage(t *testing.T) {
 	}
 }
 
-func TestPreflight_VhdxRefusesWithoutImageSize(t *testing.T) {
+func TestPreflight_VhdxDefaultsSizeToSourceSystemDisk(t *testing.T) {
+	// A DR rehearsal dispatches a vhdx target with no size (the step config
+	// has none), so an unsized vhdx/image target must default to the
+	// snapshot's system disk size instead of being refused.
 	dir := t.TempDir()
 	sys := newFakeSystem(dir, 100*GiB)
+	srcSize := testLayout().SystemDisk().SizeBytes
+	sys.freeSpace = srcSize // below the 1.5x rule, so the derived size is provable from the refusal
 	opts := vhdxOptions(t, dir, sys)
 	opts.Target.ImageSizeBytes = 0
 	res, err := Run(context.Background(), opts)
-	if err == nil || res == nil || res.Status != "refused" || !strings.Contains(res.Refusal, "vhdx target needs a size") {
-		t.Fatalf("res = %+v err=%v", res, err)
+	if err == nil || res == nil || res.Status != "refused" {
+		t.Fatalf("expected free-space refusal, got res=%+v err=%v", res, err)
+	}
+	if strings.Contains(res.Refusal, "needs a size") {
+		t.Fatalf("unsized vhdx target must default to the source disk size, got refusal %q", res.Refusal)
+	}
+	want := fmt.Sprintf("need %d, have %d", srcSize*3/2, srcSize)
+	if !strings.Contains(res.Refusal, want) {
+		t.Fatalf("refusal %q does not size the target from the source disk (%s)", res.Refusal, want)
+	}
+}
+
+func TestPreflight_ImageDefaultsSizeToSourceSystemDisk(t *testing.T) {
+	dir := t.TempDir()
+	sys := newFakeSystem(dir, 100*GiB)
+	opts := vhdxOptions(t, dir, sys)
+	opts.Target = Target{Kind: TargetImage, Path: filepath.Join(dir, "out.img")}
+	opts.DryRun = true
+	res, err := Run(context.Background(), opts)
+	if err != nil || res == nil || res.Status == "refused" {
+		t.Fatalf("unsized image target must not be refused: res=%+v err=%v", res, err)
 	}
 }
