@@ -107,6 +107,12 @@ export const PERMISSION_GRANTS = {
   TIME_ENTRIES_READ: { resource: 'time_entries', action: 'read' },
   TIME_ENTRIES_WRITE: { resource: 'time_entries', action: 'write' },
 
+  // Rate cards (#4628 / #4615, spec 2026-09-17 §6). One resource for work types
+  // AND billing profiles, because they are one screen (Settings → Billing →
+  // Rates) and one route file. `write` covers create/update/archive of both.
+  BILLING_PROFILES_READ: { resource: 'billing_profiles', action: 'read' },
+  BILLING_PROFILES_WRITE: { resource: 'billing_profiles', action: 'write' },
+
   // Users
   USERS_READ: { resource: 'users', action: 'read' },
   USERS_WRITE: { resource: 'users', action: 'write' },

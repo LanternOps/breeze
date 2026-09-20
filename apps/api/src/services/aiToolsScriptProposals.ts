@@ -65,6 +65,8 @@ export function registerScriptProposalTools(aiTools: Map<string, AiTool>): void 
 
   registerTool({
     tier: 1,
+    domain: 'scripts',
+    searchHint: 'AI-authored script proposals for review before execution',
     // deviceArgs gates every supplied id through the org+site verifyDeviceAccess
     // before the handler runs, so an author cannot propose against a device
     // they cannot see.
@@ -147,6 +149,8 @@ export function registerScriptProposalTools(aiTools: Map<string, AiTool>): void 
 
   registerTool({
     tier: 1,
+    domain: 'scripts',
+    searchHint: 'script proposal details, source and review status by ID',
     definition: {
       name: 'get_script_proposal',
       description:

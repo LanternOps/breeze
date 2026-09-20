@@ -180,6 +180,10 @@ const (
 	CmdVMRestoreFromBackup = "vm_restore_from_backup"
 	CmdVMRestoreEstimate   = "vm_restore_estimate"
 	CmdBMRRecover          = "bmr_recover"
+	// CmdBareMetalRebuild (W05a) runs the rebuild engine on a Linux host
+	// against a server-minted recovery token (payload: recoveryId, token,
+	// server, target{kind,path,imageSizeBytes}, identity).
+	CmdBareMetalRebuild = "bare_metal_rebuild"
 
 	// Log shipping
 	CmdSetLogLevel = "set_log_level"
@@ -602,6 +606,10 @@ type FilesystemAnalysisSummary struct {
 	BytesScanned          int64 `json:"bytesScanned"`
 	MaxDepthReached       int   `json:"maxDepthReached"`
 	PermissionDeniedCount int64 `json:"permissionDeniedCount"`
+	// Set when the duplicate-group map hit maxFSDuplicateGroups and stopped
+	// admitting new keys, so "no duplicates found" can be distinguished from
+	// "we stopped looking". omitempty keeps every existing payload byte-stable.
+	DuplicateTrackingTruncated bool `json:"duplicateTrackingTruncated,omitempty"`
 }
 
 // FilesystemAnalysisResponse captures the full analysis payload.

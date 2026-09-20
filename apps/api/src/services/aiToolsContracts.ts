@@ -160,6 +160,8 @@ export function registerContractTools(aiTools: Map<string, AiTool>): void {
   aiTools.set('list_contracts', {
     tier: 2 as AiToolTier,
     deviceArgs: [],
+    domain: 'billing',
+    searchHint: 'recurring contracts by organization and lifecycle status',
     definition: {
       name: 'list_contracts',
       description:
@@ -211,6 +213,8 @@ export function registerContractTools(aiTools: Map<string, AiTool>): void {
   aiTools.set('get_contract', {
     tier: 2 as AiToolTier,
     deviceArgs: [],
+    domain: 'billing',
+    searchHint: 'recurring contract details, line items, pricing and billing period history',
     definition: {
       name: 'get_contract',
       description:
@@ -241,6 +245,8 @@ export function registerContractTools(aiTools: Map<string, AiTool>): void {
   aiTools.set('manage_contracts', {
     tier: 2 as AiToolTier,
     deviceArgs: [],
+    domain: 'billing',
+    searchHint: 'recurring contracts: create, edit drafts and lines, activate, pause, resume, cancel',
     definition: {
       name: 'manage_contracts',
       description:

@@ -2,6 +2,21 @@ import { describe, expect, it } from 'vitest';
 import { PERMISSION_GRANTS } from '@breeze/shared';
 import { resolveBootstrapAdminConfig, DEFAULT_PERMISSIONS, SYSTEM_ROLES, DEV_SEED_DEFAULT_PARTNER_SETTINGS } from './seed';
 
+it('seeds the billing_profiles read/write permissions referenced by system roles', () => {
+  const seeded = new Set(DEFAULT_PERMISSIONS.map((p) => `${p.resource}:${p.action}`));
+  expect(seeded.has('billing_profiles:read')).toBe(true);
+  expect(seeded.has('billing_profiles:write')).toBe(true);
+});
+
+it('grants billing profile read to time-entry readers and leaves write to the role editor', () => {
+  for (const role of SYSTEM_ROLES) {
+    if (role.permissions.includes('time_entries:read')) {
+      expect(role.permissions).toContain('billing_profiles:read');
+    }
+    expect(role.permissions).not.toContain('billing_profiles:write');
+  }
+});
+
 describe('resolveBootstrapAdminConfig', () => {
   it('keeps the development convenience admin when no explicit bootstrap env is set', () => {
     expect(resolveBootstrapAdminConfig({ NODE_ENV: 'development' })).toEqual({

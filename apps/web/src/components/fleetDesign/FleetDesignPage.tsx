@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import "@/lib/i18n";
-import { Download, DraftingCompass, FileText, Play, Power, RotateCcw } from "lucide-react";
+import { Download, DraftingCompass, FileText, Loader2, Play, Power, RotateCcw } from "lucide-react";
 import { FLEET_DESIGNER_ENABLE_ERROR_CODES, type FleetDesignOutcome, type FleetDesignLedgerItem, type FleetDesignRollbackResult, type FleetDesignerSetup } from "@breeze/shared";
 import { useOrgStore } from "../../stores/orgStore";
 import { fetchWithAuth } from "../../stores/auth";
@@ -69,6 +69,16 @@ function parseRunIdHash(hash: string): string | undefined {
   return hash.length > 0 ? hash : undefined;
 }
 
+/** Statuses from `GET /ai/agents/runs/:runId` that mean the design run will
+ *  never change again — matches AiRunCard's terminal set for the subset of
+ *  statuses a designer run can reach. */
+const TERMINAL_DESIGN_RUN_STATUSES = new Set(["completed", "failed", "cancelled", "expired", "skipped"]);
+
+/** A Fleet Design run takes ~3 minutes end to end. The page has no other
+ *  progress signal once the 202 lands, so poll for completion rather than
+ *  leaving the click looking like it did nothing (paper cut 23). */
+const DESIGN_RUN_POLL_INTERVAL_MS = 5_000;
+
 export default function FleetDesignPage() {
   const { t } = useTranslation("fleetDesign");
   const organizations = useOrgStore((s) => s.organizations);
@@ -87,6 +97,9 @@ export default function FleetDesignPage() {
   const [siteId, setSiteId] = useState("");
   const [starting, setStarting] = useState(false);
   const [startSkipReason, setStartSkipReason] = useState<string>();
+  // The agent-run id a just-started design run is polling under. Set from the
+  // 202 body and cleared once the run reaches a terminal status.
+  const [runningRunId, setRunningRunId] = useState<string | null>(null);
   // #6214: whether a designer agent is there to run at all. Loaded up front
   // so the page says "Enable Fleet Designer" BEFORE the first click dead-ends
   // on a skip reason, and again after every enable / declined start.
@@ -147,6 +160,43 @@ export default function FleetDesignPage() {
   useEffect(() => {
     void loadSetup();
   }, [loadSetup]);
+
+  // Poll the just-started design run until it lands, so "Start a Fleet
+  // Design" doesn't look like a no-op for the ~3 minutes it actually takes
+  // (paper cut 23). Reuses the same agent-run status route the chat run card
+  // polls (`GET /ai/agents/runs/:runId`).
+  useEffect(() => {
+    if (!runningRunId) return;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    const tick = async () => {
+      if (stopped) return;
+      try {
+        const res = await fetchWithAuth(`/ai/agents/runs/${runningRunId}`);
+        if (res.ok) {
+          const body = (await res.json().catch(() => null)) as { data?: { status?: string } } | null;
+          const status = body?.data?.status;
+          if (status && TERMINAL_DESIGN_RUN_STATUSES.has(status)) {
+            if (!stopped) {
+              setRunningRunId(null);
+              void loadList();
+            }
+            return;
+          }
+        }
+      } catch {
+        // Transient — the next tick retries rather than freezing the row.
+      }
+      if (!stopped) timer = setTimeout(() => void tick(), DESIGN_RUN_POLL_INTERVAL_MS);
+    };
+
+    void tick();
+    return () => {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [runningRunId, loadList]);
 
   const handleEnable = async () => {
     if (!selectedOrgId) return;
@@ -237,12 +287,13 @@ export default function FleetDesignPage() {
     setStarting(true);
     setStartSkipReason(undefined);
     try {
-      await runAction<{ runId?: string }>({
+      const data = await runAction<{ runId?: string }>({
         request: () => startDesignRun(selectedOrgId, siteId || undefined),
         errorFallback: t("page.startError"),
         successMessage: t("page.startSuccess"),
         parseSuccess: (d) => d as { runId?: string },
       });
+      if (data.runId) setRunningRunId(data.runId);
       void loadList();
     } catch (err) {
       if (err instanceof ActionError && err.body && typeof err.body === "object" && "skipped" in err.body) {
@@ -390,6 +441,16 @@ export default function FleetDesignPage() {
         {startSkipReason && (
           <p className="w-full text-xs text-amber-700 dark:text-amber-400" data-testid="fleet-design-start-skip-reason">
             {startSkipLabel(t, startSkipReason)}
+          </p>
+        )}
+        {runningRunId && (
+          <p
+            className="flex w-full items-center gap-1.5 text-xs text-muted-foreground"
+            data-testid="fleet-design-running-row"
+            role="status"
+          >
+            <Loader2 className="h-3 w-3 animate-spin" />
+            {t("page.running")}
           </p>
         )}
       </div>

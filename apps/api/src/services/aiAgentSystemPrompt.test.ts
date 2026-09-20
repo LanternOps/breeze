@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { AI_SYSTEM_PROMPT_BASE, BREEZE_AI_GUARDRAILS_CORE } from './aiAgentSystemPrompt';
+import { AI_SYSTEM_PROMPT_BASE, AI_SYSTEM_PROMPT_TAIL, BREEZE_AI_GUARDRAILS_CORE } from './aiAgentSystemPrompt';
 
 describe('BREEZE_AI_GUARDRAILS_CORE', () => {
   it('is a non-empty safety block', () => {
@@ -17,21 +17,15 @@ describe('BREEZE_AI_GUARDRAILS_CORE', () => {
 // The prompt now names the vulnerability tools and disambiguates the three
 // neighbouring domains. This pins the wording; it does not prove the model's
 // tool choice improved (that needs a manual chat check).
-describe('AI_SYSTEM_PROMPT_BASE vulnerability tool routing (#2605)', () => {
-  it('lists the vulnerability tools in the tool-domain catalogue', () => {
-    expect(AI_SYSTEM_PROMPT_BASE).toContain('get_vulnerability_report');
-    expect(AI_SYSTEM_PROMPT_BASE).toContain('get_device_vulnerabilities');
-    expect(AI_SYSTEM_PROMPT_BASE).toContain('remediate_vulnerability');
-  });
-
+describe('AI_SYSTEM_PROMPT_TAIL vulnerability tool routing (#2605)', () => {
   it('spells out CVE vocabulary so the domain is findable', () => {
-    expect(AI_SYSTEM_PROMPT_BASE).toMatch(/CVE/);
-    expect(AI_SYSTEM_PROMPT_BASE).toMatch(/vulnerabilit/i);
+    expect(AI_SYSTEM_PROMPT_TAIL).toMatch(/CVE/);
+    expect(AI_SYSTEM_PROMPT_TAIL).toMatch(/vulnerabilit/i);
   });
 
   it('disambiguates vulnerabilities from posture scores and patch inventory', () => {
-    expect(AI_SYSTEM_PROMPT_BASE).toMatch(/get_security_posture returns \*\*control scores\*\*/);
-    expect(AI_SYSTEM_PROMPT_BASE).toMatch(/manage_patches returns the \*\*patch\/KB inventory/);
+    expect(AI_SYSTEM_PROMPT_TAIL).toMatch(/get_security_posture returns \*\*control scores\*\*/);
+    expect(AI_SYSTEM_PROMPT_TAIL).toMatch(/manage_patches returns the \*\*patch\/KB inventory/);
   });
 
   // Correlation coverage is incomplete (e.g. #2291 — no Windows OS-level CVE
@@ -39,8 +33,8 @@ describe('AI_SYSTEM_PROMPT_BASE vulnerability tool routing (#2605)', () => {
   // vulnerabilities". Without this the "THE tool"/"ONLY tools" framing above
   // turns a coverage gap into a confident all-clear.
   it('forbids reading an empty vulnerability report as an all-clear', () => {
-    expect(AI_SYSTEM_PROMPT_BASE).toMatch(/never state that a device or the fleet has no vulnerabilities/);
-    expect(AI_SYSTEM_PROMPT_BASE).toMatch(/no findings are currently correlated/);
+    expect(AI_SYSTEM_PROMPT_TAIL).toMatch(/never state that a device or the fleet has no vulnerabilities/);
+    expect(AI_SYSTEM_PROMPT_TAIL).toMatch(/no findings are currently correlated/);
   });
 });
 
@@ -104,4 +98,13 @@ describe('AI_SYSTEM_PROMPT_BASE in-product-only rules', () => {
     expect(AI_SYSTEM_PROMPT_BASE).toMatch(/format .* clearly/i);
     expect(AI_SYSTEM_PROMPT_BASE).toMatch(/ask specific questions/i);
   });
+});
+
+it('carries no hand-typed tool index any more', () => {
+  expect(AI_SYSTEM_PROMPT_BASE).not.toContain('## Available Tools by Domain');
+  expect(AI_SYSTEM_PROMPT_BASE).not.toMatch(/\bquery_devices\b/);
+  expect(AI_SYSTEM_PROMPT_TAIL).not.toContain('## Available Tools by Domain');
+});
+it('BASE + TAIL stay under 7 KB together', () => {
+  expect(Buffer.byteLength(AI_SYSTEM_PROMPT_BASE + AI_SYSTEM_PROMPT_TAIL, 'utf8')).toBeLessThan(7 * 1024);
 });

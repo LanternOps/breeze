@@ -8,7 +8,14 @@ import {
 } from 'lucide-react';
 import { Dialog } from '../shared/Dialog';
 import { fetchWithAuth } from '../../stores/auth';
-import DRPlanGroupCard, { type DRGroupForm } from './DRPlanGroupCard';
+import DRPlanGroupCard, {
+  DEFAULT_REBUILD_OUTPUT_DIR,
+  DEFAULT_REBUILD_WAIT_TIMEOUT_MINUTES,
+  REBUILD_WAIT_TIMEOUT_MAX,
+  REBUILD_WAIT_TIMEOUT_MIN,
+  isDRStepType,
+  type DRGroupForm,
+} from './DRPlanGroupCard';
 import { useTranslation } from 'react-i18next';
 import '../../lib/i18n';
 
@@ -26,8 +33,70 @@ type DRPlanDetails = {
     dependsOnGroupId: string | null;
     devices: string[];
     estimatedDurationMinutes: number | null;
+    restoreConfig?: Record<string, unknown> | null;
   }>;
 };
+
+type LoadedGroup = NonNullable<DRPlanDetails['groups']>[number];
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+/** Reads a persisted `restoreConfig` into the editable step fields. Unknown
+ *  command types fall back to '' so the operator has to pick one on save. */
+function stepFieldsFromRestoreConfig(
+  restoreConfig: unknown
+): Pick<DRGroupForm, 'stepType' | 'rebuildHostDeviceId' | 'outputDir' | 'waitTimeoutMinutes' | 'restorePayload'> {
+  const config = isRecord(restoreConfig) ? restoreConfig : {};
+  const stepType = isDRStepType(config.commandType) ? config.commandType : '';
+  return {
+    stepType,
+    rebuildHostDeviceId:
+      typeof config.rebuildHostDeviceId === 'string' && config.rebuildHostDeviceId ? config.rebuildHostDeviceId : null,
+    outputDir: typeof config.outputDir === 'string' && config.outputDir ? config.outputDir : DEFAULT_REBUILD_OUTPUT_DIR,
+    waitTimeoutMinutes:
+      typeof config.waitTimeoutMinutes === 'number' && Number.isFinite(config.waitTimeoutMinutes)
+        ? `${config.waitTimeoutMinutes}`
+        : `${DEFAULT_REBUILD_WAIT_TIMEOUT_MINUTES}`,
+    restorePayload: isRecord(config.payload) ? config.payload : undefined,
+  };
+}
+
+/** Serialises the step fields into the `restoreConfig` the API validates
+ *  (`drBareMetalRebuildConfigSchema` for the rebuild step; `{ commandType,
+ *  payload? }` for device-command steps). Caller guarantees `stepType` is set. */
+function restoreConfigFromGroup(group: DRGroupForm): Record<string, unknown> {
+  if (group.stepType === 'BARE_METAL_REBUILD') {
+    const waitTimeoutMinutes = Number(group.waitTimeoutMinutes);
+    return {
+      commandType: 'BARE_METAL_REBUILD',
+      snapshotSelection: 'latest_restorable',
+      ...(group.rebuildHostDeviceId ? { rebuildHostDeviceId: group.rebuildHostDeviceId } : {}),
+      outputDir: group.outputDir.trim() || DEFAULT_REBUILD_OUTPUT_DIR,
+      waitTimeoutMinutes: Number.isFinite(waitTimeoutMinutes) && group.waitTimeoutMinutes.trim()
+        ? waitTimeoutMinutes
+        : DEFAULT_REBUILD_WAIT_TIMEOUT_MINUTES,
+    };
+  }
+  return {
+    commandType: group.stepType,
+    ...(group.restorePayload ? { payload: group.restorePayload } : {}),
+  };
+}
+
+function loadedGroupToForm(group: LoadedGroup): DRGroupForm {
+  return {
+    localId: group.id,
+    id: group.id,
+    name: group.name,
+    deviceIds: Array.isArray(group.devices) ? group.devices : [],
+    estimatedDurationMinutes:
+      typeof group.estimatedDurationMinutes === 'number' ? `${group.estimatedDurationMinutes}` : '',
+    dependsOnGroupKey: group.dependsOnGroupId,
+    ...stepFieldsFromRestoreConfig(group.restoreConfig),
+  };
+}
 
 type DRPlanEditorProps = {
   open: boolean;
@@ -50,6 +119,10 @@ function createEmptyGroup(): DRGroupForm {
     deviceIds: [],
     estimatedDurationMinutes: '',
     dependsOnGroupKey: null,
+    stepType: '',
+    rebuildHostDeviceId: null,
+    outputDir: DEFAULT_REBUILD_OUTPUT_DIR,
+    waitTimeoutMinutes: `${DEFAULT_REBUILD_WAIT_TIMEOUT_MINUTES}`,
   };
 }
 
@@ -91,19 +164,7 @@ export default function DRPlanEditor({
           const planPayload = await planResponse.json();
           const plan = (planPayload?.data ?? planPayload) as DRPlanDetails;
           const nextGroups = Array.isArray(plan.groups)
-            ? plan.groups
-                .sort((a, b) => a.sequence - b.sequence)
-                .map((group) => ({
-                  localId: group.id,
-                  id: group.id,
-                  name: group.name,
-                  deviceIds: Array.isArray(group.devices) ? group.devices : [],
-                  estimatedDurationMinutes:
-                    typeof group.estimatedDurationMinutes === 'number'
-                      ? `${group.estimatedDurationMinutes}`
-                      : '',
-                  dependsOnGroupKey: group.dependsOnGroupId,
-                }))
+            ? plan.groups.sort((a, b) => a.sequence - b.sequence).map(loadedGroupToForm)
             : [];
 
           if (!cancelled) {
@@ -181,6 +242,30 @@ export default function DRPlanEditor({
       setError('Each recovery group must include at least one device.');
       return;
     }
+    if (groups.some((group) => !group.stepType)) {
+      setError(t('dRPlanEditor.chooseAStepTypeForEachGroup'));
+      return;
+    }
+    if (
+      groups.some((group) => {
+        if (group.stepType !== 'BARE_METAL_REBUILD') return false;
+        const minutes = Number(group.waitTimeoutMinutes);
+        return (
+          !group.waitTimeoutMinutes.trim() ||
+          !Number.isInteger(minutes) ||
+          minutes < REBUILD_WAIT_TIMEOUT_MIN ||
+          minutes > REBUILD_WAIT_TIMEOUT_MAX
+        );
+      })
+    ) {
+      setError(
+        t('dRPlanEditor.rebuildWaitTimeoutOutOfRange', {
+          min: REBUILD_WAIT_TIMEOUT_MIN,
+          max: REBUILD_WAIT_TIMEOUT_MAX,
+        })
+      );
+      return;
+    }
     if (groups.some((group) => groupReadiness[group.localId] !== true)) {
       setError('Device choices are not ready. Retry or finish loading devices before saving.');
       return;
@@ -239,6 +324,7 @@ export default function DRPlanEditor({
           estimatedDurationMinutes: group.estimatedDurationMinutes
             ? Number(group.estimatedDurationMinutes)
             : undefined,
+          restoreConfig: restoreConfigFromGroup(group),
         };
 
         if (group.id) {
@@ -299,6 +385,7 @@ export default function DRPlanEditor({
     rpoTargetMinutes,
     rtoTargetMinutes,
     status,
+    t,
   ]);
 
   return (

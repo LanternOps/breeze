@@ -572,7 +572,8 @@
     "lastChecked": "Last Checked",
     "noComplianceResultsReportedAssignA": "No compliance results reported. Assign a Configuration Policy with compliance rules to this device, or wait for the next evaluation.",
     "text": "—",
-    "s": "s"
+    "s": "s",
+    "assignPolicy": "Assign a configuration policy"
   },
   "deviceDetailPage": {
     "failedToFetchDevice": "Failed to fetch device",
@@ -664,7 +665,14 @@
     "networkAsset": "Network asset",
     "networkAssets": "Network assets",
     "operatorTasks": "Operator Tasks",
-    "operatorTasksForThisDevice": "AI Operator tasks for this device"
+    "operatorTasksForThisDevice": "AI Operator tasks for this device",
+    "tabGroups": {
+      "monitoring": "Monitoring",
+      "inventory": "Inventory",
+      "management": "Management",
+      "history": "History & Network",
+      "extensions": "Extensions"
+    }
   },
   "deviceEdrPanel": {
     "failedToIsolateDevice": "Failed to isolate device",
@@ -745,6 +753,19 @@
     "noMoreActivity": "No more activity"
   },
   "deviceFilesystemTab": {
+    "volumes": "Volumes",
+    "volumesLoading": "Loading volumes...",
+    "volumesEmpty": "No scannable volumes reported for this device.",
+    "failedToFetchVolumes": "Failed to fetch volumes",
+    "volumeOsBadge": "OS",
+    "volumeUsedOfTotal": "{{used}} of {{total}} used",
+    "volumeCapacityUnknown": "Capacity unknown",
+    "volumeNeverScanned": "Never scanned",
+    "volumeLastScanned": "Scanned {{when}}",
+    "volumeSelectAria": "Select volume {{mountPoint}}",
+    "scanCommandNotFound": "Scan command was not found",
+    "scanCommandNotQueued": "Scan command was not queued",
+    "scanStillRunning": "Filesystem scan is still running. Click Refresh in a few moments.",
     "failedToFetchFilesystemStatus": "Failed to fetch filesystem status",
     "failedToFetchCommandHistory": "Failed to fetch command history",
     "failedToLoadFilesystemStatus": "Failed to load filesystem status",
@@ -752,14 +773,14 @@
     "filesystemScanFailed": "Filesystem scan failed",
     "cleanupPreviewFailed": "Cleanup preview failed",
     "loadingDiskIntelligence": "Loading disk intelligence...",
-    "be1DiskCleanupIntelligence": "BE-1: Disk Cleanup Intelligence",
+    "title": "Disk Cleanup",
     "analyzeNow": "Analyze Now",
     "cleanupPreview": "Cleanup Preview",
     "refresh": "Refresh",
     "openFileManager": "Open File Manager",
     "scanRunning": "Scan running (",
     "partialScanResult": "Partial scan result",
-    "noFilesystemSnapshotYetRunAnalyze": "No filesystem snapshot yet. Run Analyze Now to collect BE-1 data.",
+    "noFilesystemSnapshotYetRunAnalyze": "No filesystem snapshot yet. Run Analyze Now to collect disk usage data.",
     "lastScan": "Last Scan",
     "trigger": "Trigger",
     "threshold": "Threshold",
@@ -788,7 +809,6 @@
     "largestDirectories": "Largest Directories",
     "indicatesLowerBoundSizeFromPartial": "indicates lower-bound size from partial traversal.",
     "noDirectoryDataAvailable": "No directory data available.",
-    "text": ">=",
     "latestCleanupPreview": "Latest Cleanup Preview",
     "estimatedRecovery": "Estimated Recovery",
     "candidateCount": "Candidate Count",
@@ -1350,7 +1370,8 @@
       "status": "Status",
       "type": "Type"
     },
-    "title": "Service & Process Monitoring"
+    "title": "Service & Process Monitoring",
+    "assignPolicy": "Assign a configuration policy"
   },
   "deviceNetworkConnections": {
     "allProtocols": "All Protocols",

@@ -9,6 +9,7 @@ import { partners, organizations } from './orgs';
 import { users } from './users';
 import { tickets, ticketPriorityEnum } from './portal';
 import { alerts } from './alerts';
+import { workTypes } from './workTypes';
 
 export const ticketAlertLinkTypeEnum = pgEnum('ticket_alert_link_type', ['created_from', 'attached', 'auto']);
 
@@ -27,6 +28,10 @@ export const ticketCategories = pgTable('ticket_categories', {
   defaultHourlyRate: numeric('default_hourly_rate', { precision: 10, scale: 2 }),
   // Partner currency the default rate was entered under (null when no rate); CHECK ticket_categories_rate_currency_chk is SQL-only.
   rateCurrency: char('rate_currency', { length: 3 }),
+  // #4615 / spec §3.1: the work type applied SERVER-SIDE at stamp time when a
+  // caller sends no workTypeId and the entry has a ticket. Composite FK
+  // ticket_categories_default_work_type_partner_fk is SQL-migration-only.
+  defaultWorkTypeId: uuid('default_work_type_id').references(() => workTypes.id),
   // #4177: minutes an AI time-entry proposal pre-fills for this category.
   // Nullable — no default means "use AI_TIME_ENTRY_DEFAULT_MINUTES". CHECK
   // (0 < n <= 1440) is SQL-only (ticket_categories_default_time_entry_minutes_chk).

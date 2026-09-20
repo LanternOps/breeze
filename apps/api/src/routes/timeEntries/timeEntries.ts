@@ -83,7 +83,11 @@ export function writeSimpleTimeEntryAudits(
       // point the audit row at an id that is a signal, not an entry.
       resourceType: mutation.action.startsWith('time_suggestion') ? 'time_suggestion' : 'time_entry',
       resourceId: mutation.entryId,
-      details: { entryIds: [mutation.entryId], count: 1, ...(mutation.source ? { source: mutation.source } : {}) },
+      details: {
+        entryIds: [mutation.entryId], count: 1,
+        ...(mutation.source ? { source: mutation.source } : {}),
+        ...(mutation.workTypeId !== undefined ? { workTypeId: mutation.workTypeId } : {}),
+      },
     });
   }
 }

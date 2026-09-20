@@ -95,7 +95,7 @@
     "loading": "Dienstprinzipale werden geladen…",
     "loadFailed": "Dienstprinzipale konnten nicht geladen werden.",
     "retry": "Erneut versuchen",
-    "empty": "Noch keine Dienstprinzipale.",
+    "empty": "Noch keine Dienstprinzipale. Erstellen Sie eines, um loszulegen.",
     "name": "Name",
     "principalDescription": "Beschreibung",
     "scopes": "Berechtigungsbereiche",
@@ -551,7 +551,14 @@
         "description": "Status, SLAs, Kategorien, Formulare",
         "linkCta": "Ticketing-Einstellungen verwalten →"
       },
-      "sendingDomains": { "label": "Absenderadressen", "description": "E-Mails von Ihrer eigenen Domain senden" },
+      "emailTemplates": {
+        "label": "E-Mail-Vorlagen",
+        "description": "Tickets, Angebote, Rechnungen, Einladungen"
+      },
+      "sendingDomains": {
+        "label": "Absenderadressen",
+        "description": "E-Mails von Ihrer eigenen Domain senden"
+      },
       "aiBudgets": {
         "label": "KI-Budgets",
         "description": "KI-Ausgabenlimits"
@@ -701,7 +708,8 @@
     "errorCheckFailed": "Die DNS-Prüfung konnte nicht gestartet werden.",
     "errorRemoveFailed": "Die Domain konnte nicht entfernt werden.",
     "errorIdentityFailed": "Die Absenderadresse konnte nicht gespeichert werden.",
-    "errorTestFailed": "Die Test-E-Mail konnte nicht gesendet werden."
+    "errorTestFailed": "Die Test-E-Mail konnte nicht gesendet werden.",
+    "removeTitle": "Sendedomain entfernen?"
   },
   "loginBranding": {
     "saved": "Login-Branding gespeichert",
@@ -841,6 +849,45 @@
     "deleteExpiredTitle": "Abgelaufene Registrierungsschlüssel löschen",
     "deleteExpiredConfirm": "Alle abgelaufenen Registrierungsschlüssel löschen? Schlüssel, die noch einen aktiven Installer-Downloadlink versorgen, bleiben erhalten. Dies kann nicht rückgängig gemacht werden."
   },
+  "emailTemplates": {
+    "title": "E-Mail-Vorlagen",
+    "description": "Passen Sie die E-Mails an, die Kunden zu Tickets, Angeboten, Rechnungen und Portaleinladungen erhalten. Die Antwortbenachrichtigung enthält nie den Antworttext.",
+    "usingDefault": "Standard",
+    "custom": "Angepasst",
+    "subject": "Betreff",
+    "heading": "Überschrift",
+    "buttonLabel": "Schaltflächenbeschriftung",
+    "html": "HTML-Text",
+    "htmlAria": "HTML-Text der E-Mail",
+    "insert": "Einfügen:",
+    "preview": "Vorschau",
+    "save": "Vorlage speichern",
+    "reset": "Auf Standard zurücksetzen",
+    "saved": "E-Mail-Vorlage gespeichert",
+    "saveFailed": "E-Mail-Vorlage konnte nicht gespeichert werden",
+    "loadFailed": "E-Mail-Vorlagen konnten nicht geladen werden.",
+    "back": "Zurück zur Liste",
+    "markupRemoved": "Ein Teil des Markups wurde entfernt: {{tags}}",
+    "variables": {
+      "ticket_number": "Ticketnummer",
+      "ticket_subject": "Betreff des Tickets",
+      "requester_name": "Name des Antragstellers",
+      "requester_email": "E-Mail des Antragstellers",
+      "org_name": "Name der Organisation",
+      "partner_name": "Firmenname",
+      "portal_url": "Portal-URL",
+      "email_only_hint": "Hinweis nur per E-Mail",
+      "resolution_note": "Lösungshinweis",
+      "quote_number": "Angebotsnummer",
+      "total": "Gesamtbetrag",
+      "expiry_date": "Ablaufdatum",
+      "accept_url": "Annahme-URL",
+      "invoice_number": "Rechnungsnummer",
+      "due_date": "Fälligkeitsdatum",
+      "invite_url": "Einladungs-URL",
+      "cta_button": "Schaltfläche"
+    }
+  },
   "inboundEmail": {
     "saveError": "Die Einstellungen für eingehende E-Mails konnten nicht gespeichert werden – Ihre Sitzung erfordert möglicherweise eine erneute Bestätigung für MFA. Wiederholen.",
     "orgNotAccessible": "Diese Organisation ist bei Ihrem Partner nicht verfügbar.",
@@ -871,6 +918,8 @@
     "dropUnverified": "E-Mails verwerfen, die die Absenderauthentifizierung nicht bestehen (SPF/DKIM/DMARC)",
     "dropUnverifiedDescription": "Ist diese Option deaktiviert, werden nicht verifizierte E-Mails zur Prüfung in Quarantäne gestellt. Ist sie aktiviert, werden sie ohne Benachrichtigung verworfen. Dies gilt für <all>alle</all> nicht verifizierten Absender – einschließlich zugeordneter Kunden, deren einzelne Nachricht die Prüfung nicht besteht.",
     "enableAutoresponse": "Senden Sie eine automatische Antwort zur Bestätigung neuer E-Mail-Tickets",
+    "editEmailTemplates": "Die Bestätigungs-E-Mail wird unter E-Mail-Vorlagen bearbeitet.",
+    "editEmailTemplatesLink": "E-Mail-Vorlagen bearbeiten",
     "autoresponseMessage": "Automatische Antwortnachricht",
     "subject": "Betreff",
     "subjectPlaceholder": "Wir haben Ihre Anfrage erhalten: {{ticket_subject}}",
@@ -3786,7 +3835,10 @@
     "passkeyStepUpNoUsableFactor": "Der aktuelle Faktor Ihres Kontos kann hier nicht bestätigt werden. Wenden Sie sich an einen Administrator, um einen Passkey hinzuzufügen.",
     "passkeyStepUpIncorrectCode": "Falscher Code. Bitte versuchen Sie es erneut.",
     "passkeyStepUpTooManyAttempts": "Zu viele Versuche. Bitte versuchen Sie es in ein paar Minuten erneut.",
-    "passkeyStepUpVerificationExpired": "Die Bestätigung ist abgelaufen. Bitte bestätigen Sie erneut."
+    "passkeyStepUpVerificationExpired": "Die Bestätigung ist abgelaufen. Bitte bestätigen Sie erneut.",
+    "passkeyRegistrationServerError": "Die Registrierung des Passkeys ist fehlgeschlagen. Bitte versuchen Sie es erneut.",
+    "deletePasskeyVerifyHeading": "Zum Löschen eines Passkeys bestätigen",
+    "deletePasskeyVerifyHint": "Geben Sie hier einen aktuellen MFA-Code ein, bevor Sie einen der oben genannten Passkeys entfernen. Dieser Code hat keine Auswirkung auf das Hinzufügen eines neuen Passkeys."
   },
   "roleManager": {
     "roles": "Rollen",
@@ -5741,5 +5793,25 @@
     "saveError": "Katalog-Standardwerte konnten nicht gespeichert werden",
     "saveSuccess": "Katalog-Standardwerte gespeichert",
     "saveButton": "Speichern"
+  },
+  "workTypes": {
+    "title": "Arbeitsarten",
+    "description": "Kennzeichnen Sie die ausgeführten Tätigkeiten in Zeiteinträgen. Kategorievorgaben helfen Technikern bei der Auswahl einer Arbeitsart.",
+    "newName": "Neue Arbeitsart",
+    "create": "Arbeitsart hinzufügen",
+    "archive": "Archivieren",
+    "archived": "Archiviert",
+    "archivedClearedDefaults_one": "Archiviert. Als Vorgabe in {{count}} Kategorie entfernt.",
+    "archivedClearedDefaults_other": "Archiviert. Als Vorgabe in {{count}} Kategorien entfernt.",
+    "saveError": "Die Arbeitsart konnte nicht gespeichert werden. Bitte versuchen Sie es erneut.",
+    "saveSuccess": "Arbeitsart gespeichert.",
+    "nameTaken": "Eine Arbeitsart mit diesem Namen existiert bereits.",
+    "rename": "Umbenennen",
+    "loadError": "Die Arbeitsarten konnten nicht geladen werden.",
+    "empty": "Noch keine Arbeitsarten. Fügen Sie oben Ihre erste Arbeitsart hinzu."
+  },
+  "ticketCategories": {
+    "defaultWorkType": "Standard-Arbeitsart",
+    "defaultWorkTypeHelp": "Wird verwendet, wenn für diese Kategorie Zeit ohne Arbeitsart erfasst wird."
   }
 }

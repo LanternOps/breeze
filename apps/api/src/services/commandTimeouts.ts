@@ -93,6 +93,7 @@ const RESTORE_TIMEOUT_TYPES = new Set<string>([
   CommandTypes.VM_RESTORE_FROM_BACKUP,
   CommandTypes.VM_INSTANT_BOOT,
   CommandTypes.BMR_RECOVER,
+  CommandTypes.BARE_METAL_REBUILD,
   CommandTypes.MSSQL_RESTORE,
   CommandTypes.HYPERV_RESTORE,
 ]);

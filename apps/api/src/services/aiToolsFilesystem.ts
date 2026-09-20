@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 /**
  * AI Filesystem Tools
  *
@@ -10,8 +11,16 @@
  * - disk_cleanup (Tier 1 preview, Tier 3 execute): Preview or execute disk cleanup
  */
 
-import { db } from '../db';
-import { devices, deviceFilesystemCleanupRuns, users } from '../db/schema';
+import { normalizeScanPath, osRootScanPath, toCleanupOs } from '@breeze/shared';
+import {
+  CLEANUP_EXECUTE_BUDGET_MS,
+  MIN_AGENT_VERSION_CLEANUP_GUARD,
+  agentSupportsCleanupGuard,
+  runCleanupExecution,
+  wasDispatched,
+} from './filesystemCleanupExecution';
+import { db, runOutsideDbContext, withDbAccessContext } from '../db';
+import { devices, deviceCommands, deviceFilesystemCleanupRuns, users } from '../db/schema';
 import { eq, and, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
@@ -21,7 +30,8 @@ import {
   getLatestFilesystemSnapshot,
   getLatestFilesystemCleanupSnapshot,
   parseFilesystemAnalysisStdout,
-  saveFilesystemSnapshot,
+  setFilesystemScanGeneration,
+  clearFilesystemScanGeneration,
   safeCleanupCategories,
 } from './filesystemAnalysis';
 import { aiExecuteCommand } from './aiDispatch';
@@ -63,6 +73,8 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1 as AiToolTier, // Base tier; guardrails escalate read/write/delete/mkdir/rename to Tier 3 (list stays Tier 2)
+    domain: 'devices',
+    searchHint: 'device files and folders: list, read, write, delete, mkdir, rename',
     deviceArgs: ['deviceId'],
     definition: {
       name: 'file_operations',
@@ -127,6 +139,8 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1 as AiToolTier,
+    domain: 'devices',
+    searchHint: 'disk space, low disk, largest folders and files on one device',
     deviceArgs: ['deviceId'],
     definition: {
       name: 'analyze_disk_usage',
@@ -136,7 +150,7 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
         properties: {
           deviceId: { type: 'string', description: 'The device UUID' },
           refresh: { type: 'boolean', description: 'If true, run a fresh filesystem analysis before returning results' },
-          path: { type: 'string', description: 'Root path to scan when refreshing (required for refresh)' },
+          path: { type: 'string', description: 'Volume or directory to analyse (e.g. "C:\\\\", "D:\\\\", "/", "/data"). Defaults to the OS root.' },
           maxDepth: { type: 'number', description: 'Max traversal depth (1-64)' },
           topFiles: { type: 'number', description: 'Largest file rows to keep (1-500)' },
           topDirs: { type: 'number', description: 'Largest directory rows to keep (1-200)' },
@@ -155,57 +169,115 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
 
       const access = await verifyDeviceAccess(deviceId, auth, refresh);
       if ('error' in access) return JSON.stringify({ error: access.error });
-      const defaultPath = access.device.osType === 'windows'
-        ? 'C:\\'
-        : '/';
-      const scanPath = typeof input.path === 'string' && input.path.length > 0 ? input.path : defaultPath;
-      const isRootScopedScan = scanPath === defaultPath;
+      const osType = access.device.osType;
+      const scanPath = normalizeScanPath(
+        osType,
+        typeof input.path === 'string' && input.path.length > 0 ? input.path : osRootScanPath(osType),
+      );
+      // Narrower than the route's check on purpose: the tool has no volume
+      // list, so only the OS root auto-continues a checkpointed baseline. A
+      // second volume's scan simply does not self-resume from the AI lane.
+      const isRootScopedScan = scanPath === osRootScanPath(osType);
 
-      let snapshot = await getLatestFilesystemSnapshot(deviceId);
+      const snapshot = await getLatestFilesystemSnapshot(deviceId, scanPath);
+      let freshPayload: Record<string, unknown> | null = null;
 
       if (refresh || !snapshot) {
         const timeoutMs = Math.max(90_000, ((Number(input.timeoutSeconds) || 300) + 75) * 1000);
-        const commandResult = await aiExecuteCommand(auth, 'analyze_disk_usage', deviceId, 'filesystem_analysis', {
-          trigger: 'on_demand',
-          path: scanPath,
-          maxDepth: input.maxDepth,
-          topFiles: input.topFiles,
-          topDirs: input.topDirs,
-          maxEntries: input.maxEntries,
-          workers: input.workers,
-          timeoutSeconds: input.timeoutSeconds,
-          autoContinue: isRootScopedScan,
-          resumeAttempt: 0,
-        }, { userId: auth.user.id, timeoutMs, preferHeartbeat: true });
+        const commandId = randomUUID();
+        // Commit registration before the command can be delivered. Escaping the
+        // ambient context does not close the outer AI transaction; this short
+        // org-scoped transaction commits independently before dispatch starts.
+        await runOutsideDbContext(() => withDbAccessContext({
+          scope: 'organization', orgId: access.device.orgId, accessibleOrgIds: [access.device.orgId],
+        }, () => setFilesystemScanGeneration(deviceId, access.device.orgId, scanPath, commandId)));
+        let commandResult: Awaited<ReturnType<typeof aiExecuteCommand>> | undefined;
+        try {
+          commandResult = await aiExecuteCommand(auth, 'analyze_disk_usage', deviceId, 'filesystem_analysis', {
+            trigger: 'on_demand',
+            path: scanPath,
+            maxDepth: input.maxDepth,
+            topFiles: input.topFiles,
+            topDirs: input.topDirs,
+            maxEntries: input.maxEntries,
+            workers: input.workers,
+            timeoutSeconds: input.timeoutSeconds,
+            autoContinue: isRootScopedScan,
+            resumeAttempt: 0,
+          }, { userId: auth.user.id, timeoutMs, preferHeartbeat: true, commandId });
+        } finally {
+          if (commandResult?.status !== 'completed') {
+            // Prechecks can fail before insertion. Commit recovery independently
+            // too, so a thrown dispatch cannot roll it back with the AI context.
+            await runOutsideDbContext(() => withDbAccessContext({
+              scope: 'organization', orgId: access.device.orgId, accessibleOrgIds: [access.device.orgId],
+            }, async () => {
+              const [command] = await db.select({ id: deviceCommands.id })
+                .from(deviceCommands).where(eq(deviceCommands.id, commandId)).limit(1);
+              if (!command) await clearFilesystemScanGeneration(deviceId, scanPath, commandId);
+            }));
+          }
+        }
 
         if (commandResult.status !== 'completed') {
           return JSON.stringify({ error: commandResult.error || 'Filesystem analysis failed' });
         }
 
         const parsed = parseFilesystemAnalysisStdout(commandResult.stdout ?? '{}');
-        snapshot = await saveFilesystemSnapshot(deviceId, access.device.orgId, 'on_demand', parsed);
+        if (Object.keys(parsed).length === 0) {
+          // Defect 5: the agent RESULT lane already refuses to write a blank
+          // snapshot (routes/agents/helpers.ts). Without the same guard here, a
+          // completed scan with empty or non-JSON stdout stored `{}`, which then
+          // WON the captured_at ordering and became the "latest snapshot" every
+          // later cleanup preview read — zeroing the Disk Cleanup tab with no
+          // error anywhere.
+          console.warn(
+            `[aiToolsFilesystem] analyze_disk_usage for device ${deviceId} completed with unparseable/empty stdout (len=${commandResult.stdout?.length ?? 0}); no snapshot written`
+          );
+          return JSON.stringify({
+            error: 'Filesystem analysis returned no parseable result; no snapshot was stored. Retry the scan.',
+          });
+        }
+        freshPayload = parsed;
       }
 
-      if (!snapshot) {
+      if (!snapshot && !freshPayload) {
         return JSON.stringify({ message: 'No filesystem analysis available. Try refresh=true.' });
       }
 
-      const cleanupPreview = buildCleanupPreview(snapshot);
+      // The shared command-result handler owns persistence. Render this command's
+      // payload directly: its handler may still be committing, and rereading the
+      // latest snapshot here could return the previous scan.
+      const resultSnapshot = freshPayload ? {
+        id: '', capturedAt: new Date(), trigger: 'on_demand', partial: freshPayload.partial === true,
+        summary: freshPayload.summary ?? {},
+        largestFiles: freshPayload.topLargestFiles ?? [],
+        largestDirs: freshPayload.topLargestDirectories ?? [],
+        tempAccumulation: freshPayload.tempAccumulation ?? [],
+        oldDownloads: freshPayload.oldDownloads ?? [],
+        unrotatedLogs: freshPayload.unrotatedLogs ?? [],
+        trashUsage: freshPayload.trashUsage ?? [],
+        duplicateCandidates: freshPayload.duplicateCandidates ?? [],
+        cleanupCandidates: freshPayload.cleanupCandidates ?? [],
+        errors: freshPayload.errors ?? [],
+      } : snapshot!;
+      const cleanupPreview = buildCleanupPreview(resultSnapshot);
       return JSON.stringify({
+        scanPath,
         snapshot: {
-          id: snapshot.id,
-          capturedAt: snapshot.capturedAt,
-          trigger: snapshot.trigger,
-          partial: snapshot.partial,
-          summary: snapshot.summary,
-          topLargestFiles: snapshot.largestFiles,
-          topLargestDirectories: snapshot.largestDirs,
-          tempAccumulation: snapshot.tempAccumulation,
-          oldDownloads: snapshot.oldDownloads,
-          unrotatedLogs: snapshot.unrotatedLogs,
-          trashUsage: snapshot.trashUsage,
-          duplicateCandidates: snapshot.duplicateCandidates,
-          errors: snapshot.errors,
+          id: freshPayload ? null : resultSnapshot.id,
+          capturedAt: resultSnapshot.capturedAt,
+          trigger: resultSnapshot.trigger,
+          partial: resultSnapshot.partial,
+          summary: resultSnapshot.summary,
+          topLargestFiles: resultSnapshot.largestFiles,
+          topLargestDirectories: resultSnapshot.largestDirs,
+          tempAccumulation: resultSnapshot.tempAccumulation,
+          oldDownloads: resultSnapshot.oldDownloads,
+          unrotatedLogs: resultSnapshot.unrotatedLogs,
+          trashUsage: resultSnapshot.trashUsage,
+          duplicateCandidates: resultSnapshot.duplicateCandidates,
+          errors: resultSnapshot.errors,
         },
         cleanupPreview: {
           estimatedBytes: cleanupPreview.estimatedBytes,
@@ -226,6 +298,8 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1 as AiToolTier,
+    domain: 'devices',
+    searchHint: 'disk cleanup: preview candidates, execute removal and report reclaimed space',
     deviceArgs: ['deviceId'],
     definition: {
       name: 'disk_cleanup',
@@ -235,6 +309,7 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
         properties: {
           deviceId: { type: 'string', description: 'The device UUID' },
           action: { type: 'string', enum: ['preview', 'execute'], description: 'preview (read-only) or execute (delete selected paths)' },
+          path: { type: 'string', description: 'Volume to preview or clean (e.g. "C:\\\\", "D:\\\\", "/", "/data"). Defaults to the OS root.' },
           categories: { type: 'array', items: { type: 'string' }, description: 'Optional cleanup categories filter for preview' },
           paths: { type: 'array', items: { type: 'string' }, description: 'Selected paths to delete (required for execute)' },
           maxCandidates: { type: 'number', description: 'Max preview candidates returned in chat (1-200, default 100)' }
@@ -263,9 +338,18 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
       const [userRow] = await db.select({ id: users.id }).from(users).where(eq(users.id, auth.user.id)).limit(1);
       const safeRequestedBy = userRow ? auth.user.id : null;
 
-      const snapshot = await getLatestFilesystemCleanupSnapshot(deviceId);
+      const osType = access.device.osType;
+      const scanPath = normalizeScanPath(
+        osType,
+        typeof input.path === 'string' && input.path.length > 0 ? input.path : osRootScanPath(osType),
+      );
+
+      const snapshot = await getLatestFilesystemCleanupSnapshot(deviceId, scanPath);
       if (!snapshot) {
-        return JSON.stringify({ message: 'No filesystem analysis snapshot available. Run analyze_disk_usage with refresh=true first.' });
+        return JSON.stringify({
+          scanPath,
+          message: 'No filesystem analysis snapshot available for this volume. Run analyze_disk_usage with refresh=true first.',
+        });
       }
 
       const requestedCategories = Array.isArray(input.categories)
@@ -281,9 +365,12 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
           .values({
             deviceId,
             orgId: access.device.orgId,
+            // Nullable during W02; the row was selected by this exact scanPath.
+            scanPath: snapshot.scanPath ?? scanPath,
             requestedBy: safeRequestedBy,
             plan: {
               snapshotId: snapshot.id,
+              scanPath: snapshot.scanPath ?? scanPath,
               categories: requestedCategories ?? safeCleanupCategories,
               preview,
             },
@@ -293,6 +380,7 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
 
         return JSON.stringify({
           cleanupRunId: cleanupRun?.id ?? null,
+          scanPath: snapshot.scanPath ?? scanPath,
           snapshotId: snapshot.id,
           estimatedBytes: preview.estimatedBytes,
           candidateCount: preview.candidateCount,
@@ -311,65 +399,113 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
         return JSON.stringify({ error: 'paths are required for execute action' });
       }
 
-      const byPath = new Map(preview.candidates.map((candidate) => [candidate.path, candidate]));
-      const selected = Array.from(new Set(requestedPaths))
-        .map((path) => byPath.get(path))
-        .filter((candidate): candidate is NonNullable<typeof candidate> => candidate !== undefined);
-      if (selected.length === 0) {
-        return JSON.stringify({ error: 'No valid cleanup candidates selected from the latest preview set' });
-      }
-
-      const actions: Array<{ path: string; category: string; sizeBytes: number; status: string; error?: string }> = [];
-      let bytesReclaimed = 0;
-
-      for (const candidate of selected) {
-        const commandResult = await aiExecuteCommand(auth, 'disk_cleanup', deviceId, 'file_delete', {
-          path: candidate.path,
-          recursive: true,
-        }, { userId: auth.user.id, timeoutMs: 30_000 });
-
-        if (commandResult.status === 'completed') {
-          bytesReclaimed += candidate.sizeBytes;
-        }
-        actions.push({
-          path: candidate.path,
-          category: candidate.category,
-          sizeBytes: candidate.sizeBytes,
-          status: commandResult.status,
-          error: commandResult.error ?? undefined,
+      // Defect 1 is ONE bug with two call sites. This lane used to keep its own
+      // copy of the loop and dispatched { path, recursive: true }, so the agent
+      // moved every "deleted" file to ~/.breeze-trash on the same volume and
+      // freed nothing. Both lanes now run the same screening and the same
+      // dispatch payload, which is the only way they stay in step.
+      // §13 row 3: the AI lane is gated exactly like the route. An agent
+      // without cleanupGuard would perform an unguarded permanent delete.
+      if (!agentSupportsCleanupGuard(access.device.agentVersion)) {
+        return JSON.stringify({
+          error: 'agent_update_required',
+          minAgentVersion: MIN_AGENT_VERSION_CLEANUP_GUARD,
+          agentVersion: access.device.agentVersion ?? null,
         });
       }
 
-      const failedCount = actions.filter((item) => item.status !== 'completed').length;
-      const runStatus = failedCount === actions.length ? 'failed' : 'executed';
+      const outcome = await runCleanupExecution({
+        os: toCleanupOs(access.device.osType),
+        requestedPaths,
+        candidates: preview.candidates,
+        // The AI lane re-derives its preview from the latest snapshot, so the
+        // snapshot's capture time is when the model "looked" (spec §13 row 2).
+        previewedAt: snapshot.capturedAt ?? new Date(0),
+        // The payload already carries the path; the first argument is only the
+        // key the service iterates on.
+        dispatch: (_path, payload) => aiExecuteCommand(
+          auth,
+          'disk_cleanup',
+          deviceId,
+          'file_delete',
+          payload,
+          { userId: auth.user.id, timeoutMs: 30_000 },
+        ),
+        budgetMs: CLEANUP_EXECUTE_BUDGET_MS,
+      });
+
+      const counts = {
+        completed: outcome.actions.filter((action) => action.status === 'completed').length,
+        partial: outcome.actions.filter((action) => action.status === 'partial').length,
+        failed: outcome.actions.filter((action) => action.status === 'failed').length,
+        skipped_locked: outcome.actions.filter((action) => action.status === 'skipped_locked').length,
+        rejected: outcome.actions.filter((action) => action.status === 'rejected').length,
+        skipped_budget: outcome.actions.filter((action) => action.status === 'skipped_budget').length,
+      };
+      const dispatchedPaths = outcome.actions
+        .filter(wasDispatched)
+        .map((action) => action.path);
+
+      if (dispatchedPaths.length === 0) {
+        // NOTHING left the API. An agent-guard rejection means the command DID
+        // reach the device, so it falls through to the run insert below rather
+        // than short-circuiting here.
+        // Every requested path was refused. Say WHICH — the old handler
+        // returned a bare "No valid cleanup candidates selected" with no list,
+        // so the model could not tell a typo from a rule rejection.
+        return JSON.stringify({
+          error: 'No valid cleanup candidates selected from the latest preview set',
+          rejectedPaths: outcome.rejectedPaths,
+          actions: outcome.actions,
+        });
+      }
+
+      const runStatus = counts.completed + counts.partial > 0 ? 'executed' : 'failed';
+      const runError = runStatus === 'failed'
+        ? 'all cleanup actions failed'
+        : counts.failed > 0
+          ? `${counts.failed} cleanup action(s) failed`
+          : null;
 
       const [cleanupRun] = await db
         .insert(deviceFilesystemCleanupRuns)
         .values({
           deviceId,
           orgId: access.device.orgId,
+          scanPath: snapshot.scanPath ?? scanPath,
           requestedBy: safeRequestedBy,
           approvedAt: new Date(),
           plan: {
             snapshotId: snapshot.id,
+            scanPath: snapshot.scanPath ?? scanPath,
             requestedPaths,
-            selectedPaths: selected.map((candidate) => candidate.path),
+            selectedPaths: dispatchedPaths,
+            rejectedPaths: outcome.rejectedPaths,
           },
-          executedActions: actions,
-          bytesReclaimed,
+          executedActions: {
+            partial: outcome.partial,
+            budgetMs: outcome.budgetMs,
+            actions: outcome.actions,
+          },
+          bytesReclaimed: outcome.bytesReclaimed,
           status: runStatus,
-          error: failedCount > 0 ? `${failedCount} cleanup action(s) failed` : null,
+          error: runError,
         })
         .returning();
 
       return JSON.stringify({
         cleanupRunId: cleanupRun?.id ?? null,
+        scanPath: snapshot.scanPath ?? scanPath,
         snapshotId: snapshot.id,
         status: runStatus,
-        bytesReclaimed,
-        selectedCount: selected.length,
-        failedCount,
-        actions
+        bytesReclaimed: outcome.bytesReclaimed,
+        selectedCount: dispatchedPaths.length,
+        failedCount: counts.failed,
+        counts,
+        rejectedPaths: outcome.rejectedPaths,
+        partial: outcome.partial,
+        budgetMs: outcome.budgetMs,
+        actions: outcome.actions,
       });
     }
   });

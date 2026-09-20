@@ -34,6 +34,7 @@
     "policiesCount_one": "{{count}} politika",
     "policiesCount_other": "{{count}} politika",
     "notDeployed": "Dağıtılmadı",
+    "toggleEnabled": "Etkin: {{name}}",
     "errors": {
       "fetch": "Monitörler yüklenemedi",
       "delete": "Monitör silinemedi",

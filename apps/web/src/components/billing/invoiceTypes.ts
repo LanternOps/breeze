@@ -177,6 +177,13 @@ export interface InvoiceDetail {
   currencyWarning?: StripeCurrencyWarning | null;
   /** See `AccountingSyncSummary`. Absent on older API responses. */
   accountingSync?: AccountingSyncSummary | null;
+  /** Draft-only display fallback (sweep paper cut #16): the org's billing
+   *  contact email, set by the API ONLY when it also fell back `invoice.
+   *  billToName` to the org's name (the draft carried no bill-to name of its
+   *  own). Null on every issued invoice and on any draft with its own
+   *  bill-to name — never a substitute for the persisted billing-contact
+   *  field on Organization Settings. */
+  billToEmail?: string | null;
 }
 
 export interface InvoicePayment {

@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { inspect } from 'node:util';
+import { db } from '../db';
+import { createTimeEntrySchema, startTimerSchema, updateTimeEntrySchema } from '@breeze/shared';
 
-const { dbMocks, emitMock, configMocks } = vi.hoisted(() => {
+const { dbMocks, emitMock, configMocks, workTypeMocks } = vi.hoisted(() => {
   const dbMocks = {
     // queue of results for successive db.select()...where()/limit() terminals
     selectResults: [] as unknown[][],
@@ -24,10 +26,24 @@ const { dbMocks, emitMock, configMocks } = vi.hoisted(() => {
   const configMocks = {
     getOrgBillingDefaults: vi.fn().mockResolvedValue(null),
   };
-  return { dbMocks, emitMock: vi.fn(), configMocks };
+  type WorkTypeRow = { id: string; partnerId: string; name: string; isActive: boolean };
+  const workTypeMocks = {
+    getActiveWorkType: vi.fn<(id: string, partnerId: string) => Promise<WorkTypeRow | null>>(
+      async (id: string) => ({ id, partnerId: 'p-1', name: 'Remote', isActive: true }),
+    ),
+  };
+  return { dbMocks, emitMock: vi.fn(), configMocks, workTypeMocks };
 });
 
 vi.mock('./timeEntryEvents', () => ({ emitTimeEntryEvent: emitMock }));
+
+// Work-type existence is a PRE-WRITE gate (see getActiveWorkType): validating
+// it through the real service would consume the shared db-mock select queue and
+// silently reorder every other fixture in this file, so it is mocked here and
+// covered directly in workTypeService.test.ts.
+vi.mock('./workTypeService', () => ({
+  getActiveWorkType: (id: string, partnerId: string) => workTypeMocks.getActiveWorkType(id, partnerId),
+}));
 
 vi.mock('./ticketConfigService', () => ({
   getOrgBillingDefaults: (...args: unknown[]) => configMocks.getOrgBillingDefaults(...args),
@@ -120,7 +136,7 @@ vi.mock('../db/schema', () => ({
     userId: 'userId', startedAt: 'startedAt', endedAt: 'endedAt',
     durationMinutes: 'durationMinutes', description: 'description',
     isBillable: 'isBillable', hourlyRate: 'hourlyRate', currencyCode: 'currencyCode', billingStatus: 'billingStatus',
-    source: 'source',
+    source: 'source', workTypeId: 'workTypeId',
     isApproved: 'isApproved', approvedBy: 'approvedBy', approvedAt: 'approvedAt',
     createdAt: 'createdAt', updatedAt: 'updatedAt'
   },
@@ -131,7 +147,7 @@ vi.mock('../db/schema', () => ({
     addedBy: 'addedBy', notes: 'notes', createdAt: 'createdAt', updatedAt: 'updatedAt'
   },
   tickets: { id: 'id', partnerId: 'partnerId', orgId: 'orgId', categoryId: 'categoryId', internalNumber: 'internalNumber', subject: 'subject' },
-  ticketCategories: { id: 'id', partnerId: 'partnerId', defaultBillable: 'defaultBillable', defaultHourlyRate: 'defaultHourlyRate', rateCurrency: 'rateCurrency' },
+  ticketCategories: { id: 'id', partnerId: 'partnerId', defaultBillable: 'defaultBillable', defaultHourlyRate: 'defaultHourlyRate', rateCurrency: 'rateCurrency', defaultWorkTypeId: 'defaultWorkTypeId' },
   organizations: { id: 'id', partnerId: 'partnerId', name: 'name', currencyCode: 'currencyCode' },
   partners: { id: 'id', currencyCode: 'currencyCode' },
   users: { id: 'id', name: 'name' },
@@ -1868,5 +1884,192 @@ describe('getTicketTimeEntryDefaults (#5321)', () => {
     dbMocks.selectResults.push([{ partnerId: 'p-1', currencyCode: 'USD' }]);
     await expect(getTicketTimeEntryDefaults('t-1', { ...ACTOR_D, accessibleOrgIds: ['o-1'] }))
       .rejects.toMatchObject({ status: 404, code: 'TICKET_ORG_DENIED' });
+  });
+});
+
+describe('workTypeId stamping', () => {
+  const callerWorkType = '11111111-1111-4111-8111-111111111111';
+  const categoryWorkType = '22222222-2222-4222-8222-222222222222';
+  const span = {
+    startedAt: new Date('2026-06-11T09:00:00Z'),
+    endedAt: new Date('2026-06-11T09:30:00Z'),
+  };
+
+  describe.each(['create', 'start'] as const)('%s', (operation) => {
+    it.each([
+      { name: 'explicit work type wins over category', ticket: true, input: { workTypeId: callerWorkType }, expected: callerWorkType },
+      { name: 'omission uses category default', ticket: true, input: {}, expected: categoryWorkType },
+      { name: 'explicit null clears category default', ticket: true, input: { workTypeId: null }, expected: null },
+      { name: 'standalone omission stays null', ticket: false, input: {}, expected: null },
+      { name: 'standalone explicit work type is retained', ticket: false, input: { workTypeId: callerWorkType }, expected: callerWorkType },
+    ])('$name', async ({ ticket, input, expected }) => {
+      if (ticket) {
+        dbMocks.selectResults.push(
+          [{ id: 't-1', partnerId: 'p-1', orgId: 'o-1', categoryId: 'cat-1' }],
+          [{ partnerId: 'p-1', currencyCode: 'USD' }],
+          [{ defaultBillable: true, defaultHourlyRate: '125.00', rateCurrency: 'USD', defaultWorkTypeId: categoryWorkType, defaultWorkTypeIsActive: true }],
+          [{ currencyCode: 'USD' }],
+          [{ id: 't-1', orgId: 'o-1' }],
+        );
+      }
+      dbMocks.insertResult = [{ id: 'te-1', workTypeId: expected }];
+      const recordAuditMutation = vi.fn();
+      const actor = { ...ACTOR, recordAuditMutation };
+      const body = { ...input, ...(ticket ? { ticketId: 't-1' } : {}) };
+      if (operation === 'create') await createTimeEntry({ ...span, ...body }, actor);
+      else await startTimer(body, actor);
+
+      expect(dbMocks.insertedValues[0]).toMatchObject({ workTypeId: expected });
+      expect(dbMocks.selectResults).toHaveLength(0);
+      expect(recordAuditMutation).toHaveBeenCalledWith(expect.objectContaining({ workTypeId: expected }));
+    });
+  });
+
+  it.each(['not_billed', 'billed'])('updates and clears work types on %s entries with audit tracking', async (billingStatus) => {
+    for (const workTypeId of [callerWorkType, null]) {
+      const entry = { id: 'te-1', partnerId: 'p-1', orgId: null, ticketId: null, userId: ACTOR.userId,
+        ...span, isApproved: false, billingStatus, workTypeId: categoryWorkType };
+      dbMocks.selectResults.push([entry]);
+      dbMocks.updateResult = [{ ...entry, workTypeId }];
+      const recordAuditMutation = vi.fn();
+      await updateTimeEntry('te-1', { workTypeId }, { ...ACTOR, recordAuditMutation });
+      expect(dbMocks.updateSetArgs.at(-1)).toMatchObject({ workTypeId, isApproved: false });
+      expect(emitMock).toHaveBeenLastCalledWith(expect.objectContaining({ payload: { changed: ['workTypeId'] } }));
+      expect(recordAuditMutation).toHaveBeenCalledWith(expect.objectContaining({ action: 'time_entry.updated', workTypeId }));
+    }
+  });
+
+  it.each([
+    { name: 'create', schema: createTimeEntrySchema, body: span },
+    { name: 'start', schema: startTimerSchema, body: {} },
+    { name: 'update', schema: updateTimeEntrySchema, body: { description: 'edited' } },
+  ])('$name schema preserves work type and validates UUIDs', ({ schema, body }) => {
+    for (const workTypeId of [callerWorkType, null]) {
+      expect(schema.parse({ ...body, workTypeId })).toHaveProperty('workTypeId', workTypeId);
+    }
+    expect(schema.parse(body)).not.toHaveProperty('workTypeId');
+    expect(schema.safeParse({ ...body, workTypeId: 'invalid' }).success).toBe(false);
+  });
+});
+
+it('timesheet selects the work type id and archived-capable label payload', async () => {
+  vi.mocked(db.select).mockClear();
+  dbMocks.selectResults = [[]];
+  await getTimesheet('u-1', new Date('2026-06-08T00:00:00Z'));
+  expect(db.select).toHaveBeenCalledWith(expect.objectContaining({
+    workTypeId: 'workTypeId',
+    workType: expect.anything(),
+  }));
+});
+
+describe('workTypeId validation (finding 1: unvalidated id -> composite FK 23503 -> raw 500)', () => {
+  const unknownWorkType = '99999999-9999-4999-8999-999999999999';
+  const span = {
+    startedAt: new Date('2026-06-11T09:00:00Z'),
+    endedAt: new Date('2026-06-11T09:30:00Z'),
+  };
+
+  beforeEach(() => {
+    workTypeMocks.getActiveWorkType.mockReset();
+    // Default across this file: any supplied id resolves. Each case below
+    // overrides it to return null (unknown id, ARCHIVED row, or other partner --
+    // getActiveWorkType collapses all three to the same miss).
+    workTypeMocks.getActiveWorkType.mockImplementation(async (id: string) => ({ id, partnerId: 'p-1', name: 'Remote', isActive: true }));
+  });
+
+  it('createTimeEntry rejects an unusable work type with 400 WORK_TYPE_NOT_FOUND', async () => {
+    workTypeMocks.getActiveWorkType.mockResolvedValue(null);
+    dbMocks.insertResult = [{ id: 'te-1' }];
+    await expect(createTimeEntry({ ...span, workTypeId: unknownWorkType }, ACTOR))
+      .rejects.toMatchObject({ status: 400, code: 'WORK_TYPE_NOT_FOUND' });
+    // The insert must never have been attempted: a 23503 would have aborted the
+    // request transaction and this 400 would be unreachable.
+    expect(dbMocks.insertedValues).toHaveLength(0);
+    expect(workTypeMocks.getActiveWorkType).toHaveBeenCalledWith(unknownWorkType, 'p-1');
+  });
+
+  it('startTimer rejects an unusable work type with 400 WORK_TYPE_NOT_FOUND', async () => {
+    workTypeMocks.getActiveWorkType.mockResolvedValue(null);
+    await expect(startTimer({ workTypeId: unknownWorkType }, ACTOR))
+      .rejects.toMatchObject({ status: 400, code: 'WORK_TYPE_NOT_FOUND' });
+    expect(dbMocks.insertedValues).toHaveLength(0);
+  });
+
+  it('updateTimeEntry rejects an unusable work type with 400 WORK_TYPE_NOT_FOUND', async () => {
+    workTypeMocks.getActiveWorkType.mockResolvedValue(null);
+    dbMocks.selectResults.push([{ id: 'te-1', partnerId: 'p-1', orgId: null, ticketId: null,
+      userId: ACTOR.userId, ...span, isApproved: false, billingStatus: 'not_billed', workTypeId: null }]);
+    await expect(updateTimeEntry('te-1', { workTypeId: unknownWorkType }, ACTOR))
+      .rejects.toMatchObject({ status: 400, code: 'WORK_TYPE_NOT_FOUND' });
+    expect(dbMocks.updateSetArgs).toHaveLength(0);
+  });
+
+  it('CONTROL: an explicit NULL work type is never looked up (clearing must not 400)', async () => {
+    workTypeMocks.getActiveWorkType.mockResolvedValue(null);
+    dbMocks.insertResult = [{ id: 'te-1', workTypeId: null }];
+    await createTimeEntry({ ...span, workTypeId: null }, ACTOR);
+    expect(workTypeMocks.getActiveWorkType).not.toHaveBeenCalled();
+    expect(dbMocks.insertedValues[0]).toMatchObject({ workTypeId: null });
+  });
+
+  it('CONTROL: the server-side CATEGORY default is not re-validated (retired categories keep supplying it)', async () => {
+    workTypeMocks.getActiveWorkType.mockResolvedValue(null);
+    const categoryWorkType = '22222222-2222-4222-8222-222222222222';
+    dbMocks.selectResults.push(
+      [{ id: 't-1', partnerId: 'p-1', orgId: 'o-1', categoryId: 'cat-1' }],
+      [{ partnerId: 'p-1', currencyCode: 'USD' }],
+      [{ defaultBillable: true, defaultHourlyRate: null, rateCurrency: null, defaultWorkTypeId: categoryWorkType, defaultWorkTypeIsActive: true }],
+      [{ currencyCode: 'USD' }],
+      [{ id: 't-1', orgId: 'o-1' }],
+    );
+    dbMocks.insertResult = [{ id: 'te-1', workTypeId: categoryWorkType }];
+    await createTimeEntry({ ...span, ticketId: 't-1' }, ACTOR);
+    expect(workTypeMocks.getActiveWorkType).not.toHaveBeenCalled();
+    expect(dbMocks.insertedValues[0]).toMatchObject({ workTypeId: categoryWorkType });
+  });
+});
+
+describe('category default work type is skipped when the work type is ARCHIVED (finding 3)', () => {
+  const categoryWorkType = '22222222-2222-4222-8222-222222222222';
+  const span = {
+    startedAt: new Date('2026-06-11T09:00:00Z'),
+    endedAt: new Date('2026-06-11T09:30:00Z'),
+  };
+
+  const seedTicket = (defaultWorkTypeIsActive: boolean | null) => dbMocks.selectResults.push(
+    [{ id: 't-1', partnerId: 'p-1', orgId: 'o-1', categoryId: 'cat-1' }],
+    [{ partnerId: 'p-1', currencyCode: 'USD' }],
+    [{ defaultBillable: true, defaultHourlyRate: null, rateCurrency: null,
+       defaultWorkTypeId: categoryWorkType, defaultWorkTypeIsActive }],
+    [{ currencyCode: 'USD' }],
+    [{ id: 't-1', orgId: 'o-1' }],
+  );
+
+  it('CONTROL: an ACTIVE category default is still stamped', async () => {
+    seedTicket(true);
+    dbMocks.insertResult = [{ id: 'te-1', workTypeId: categoryWorkType }];
+    await createTimeEntry({ ...span, ticketId: 't-1' }, ACTOR);
+    expect(dbMocks.insertedValues[0]).toMatchObject({ workTypeId: categoryWorkType });
+  });
+
+  it('an ARCHIVED category default stamps null instead', async () => {
+    seedTicket(false);
+    dbMocks.insertResult = [{ id: 'te-1', workTypeId: null }];
+    await createTimeEntry({ ...span, ticketId: 't-1' }, ACTOR);
+    expect(dbMocks.insertedValues[0]).toMatchObject({ workTypeId: null });
+  });
+
+  it('a category with NO default work type stamps null (left join misses)', async () => {
+    dbMocks.selectResults.push(
+      [{ id: 't-1', partnerId: 'p-1', orgId: 'o-1', categoryId: 'cat-1' }],
+      [{ partnerId: 'p-1', currencyCode: 'USD' }],
+      [{ defaultBillable: true, defaultHourlyRate: null, rateCurrency: null,
+         defaultWorkTypeId: null, defaultWorkTypeIsActive: null }],
+      [{ currencyCode: 'USD' }],
+      [{ id: 't-1', orgId: 'o-1' }],
+    );
+    dbMocks.insertResult = [{ id: 'te-1', workTypeId: null }];
+    await createTimeEntry({ ...span, ticketId: 't-1' }, ACTOR);
+    expect(dbMocks.insertedValues[0]).toMatchObject({ workTypeId: null });
   });
 });

@@ -9,6 +9,8 @@ import { getJwtClaims, loginPathWithNext } from '../../lib/authScope';
 import { priorityConfig, type TicketPriority } from '../tickets/ticketConfig';
 import { formatMoney } from '@/components/billing/shared/format';
 import { formatNumber } from '@/lib/i18n/format';
+import WorkTypesCard from './WorkTypesCard';
+import WorkTypeSelect, { type WorkTypeOption } from '../shared/WorkTypeSelect';
 
 interface Category {
   id: string;
@@ -19,6 +21,7 @@ interface Category {
   responseSlaMinutes: number | null;
   resolutionSlaMinutes: number | null;
   defaultTimeEntryMinutes: number | null;
+  defaultWorkTypeId?: string | null;
   defaultBillable: boolean;
   defaultHourlyRate: string | null;
   /** Currency the rate was stamped in — always set when `defaultHourlyRate` is
@@ -36,6 +39,7 @@ interface EditDraft {
   responseSlaMinutes: string;
   resolutionSlaMinutes: string;
   defaultTimeEntryMinutes: string;
+  defaultWorkTypeId: string | null;
   defaultBillable: boolean;
   defaultHourlyRate: string;
 }
@@ -120,6 +124,7 @@ const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true 
 export default function TicketCategoriesPage() {
   const { t } = useTranslation('settings');
   const [categories, setCategories] = useState<Category[]>([]);
+  const [workTypes, setWorkTypes] = useState<WorkTypeOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   // Partner currency labels the rate input; category rates themselves display
@@ -136,7 +141,7 @@ export default function TicketCategoriesPage() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState<EditDraft>({
     name: '', color: '#1c8a9e', parentId: '', defaultPriority: '',
-    responseSlaMinutes: '', resolutionSlaMinutes: '', defaultTimeEntryMinutes: '', defaultBillable: false, defaultHourlyRate: ''
+    responseSlaMinutes: '', resolutionSlaMinutes: '', defaultTimeEntryMinutes: '', defaultWorkTypeId: null, defaultBillable: false, defaultHourlyRate: ''
   });
 
   const validDefaultTimeEntryMinutes = draft.defaultTimeEntryMinutes === '' || (
@@ -221,6 +226,7 @@ export default function TicketCategoriesPage() {
       responseSlaMinutes: cat.responseSlaMinutes?.toString() ?? '',
       resolutionSlaMinutes: cat.resolutionSlaMinutes?.toString() ?? '',
       defaultTimeEntryMinutes: cat.defaultTimeEntryMinutes?.toString() ?? '',
+      defaultWorkTypeId: cat.defaultWorkTypeId ?? null,
       defaultBillable: cat.defaultBillable,
       defaultHourlyRate: cat.defaultHourlyRate ?? ''
     });
@@ -243,6 +249,7 @@ export default function TicketCategoriesPage() {
       responseSlaMinutes: draft.responseSlaMinutes === '' ? null : Number(draft.responseSlaMinutes),
       resolutionSlaMinutes: draft.resolutionSlaMinutes === '' ? null : Number(draft.resolutionSlaMinutes),
       defaultTimeEntryMinutes: draft.defaultTimeEntryMinutes === '' ? null : Number(draft.defaultTimeEntryMinutes),
+      defaultWorkTypeId: draft.defaultWorkTypeId,
       defaultBillable: draft.defaultBillable,
       defaultHourlyRate: draft.defaultHourlyRate === '' ? null : Number(draft.defaultHourlyRate)
     };
@@ -502,6 +509,18 @@ export default function TicketCategoriesPage() {
                           data-testid="category-default-time-entry-minutes"
                         />
                       </div>
+                      <div>
+                        <label className="flex flex-col gap-1 text-xs font-medium">
+                          {t('ticketCategories.defaultWorkType')}
+                          <WorkTypeSelect
+                            testId="ticket-category-default-work-type"
+                            value={draft.defaultWorkTypeId}
+                            fallbackOption={workTypes.find((workType) => workType.id === draft.defaultWorkTypeId)}
+                            onChange={(defaultWorkTypeId) => setDraft((d) => ({ ...d, defaultWorkTypeId }))}
+                          />
+                        </label>
+                        <p className="mt-1 text-xs text-muted-foreground">{t('ticketCategories.defaultWorkTypeHelp')}</p>
+                      </div>
                       <div className="flex items-center gap-2">
                         <input
                           type="checkbox"
@@ -550,6 +569,7 @@ export default function TicketCategoriesPage() {
           ))}
         </tbody>
       </table>
+      <WorkTypesCard onLoad={setWorkTypes} />
     </div>
   );
 }

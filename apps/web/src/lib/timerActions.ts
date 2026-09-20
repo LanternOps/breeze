@@ -55,7 +55,7 @@ export function onTimerChanged(cb: () => void): () => void {
  * @throws {ActionError} Failures are already toasted by runAction — callers should swallow
  * ActionError (return early on 401) and only toast non-ActionError.
  */
-export async function startTimerAction(input: { ticketId?: string; description?: string } = {}): Promise<void> {
+export async function startTimerAction(input: { ticketId?: string; description?: string; workTypeId?: string | null } = {}): Promise<void> {
   await runAction({
     request: () => fetchWithAuth('/time-entries/start', { method: 'POST', body: JSON.stringify(input) }),
     errorFallback: 'Failed to start timer',

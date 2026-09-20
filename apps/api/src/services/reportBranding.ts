@@ -1,6 +1,7 @@
 import { eq } from 'drizzle-orm';
 import { db } from '../db';
 import { organizations, partners } from '../db/schema';
+import { readWithPartnerAxisVisibility } from '../db/partnerAxisRead';
 import { parseHexColor, type ReportBranding } from '@breeze/shared/reportPdf';
 
 /** Parse intrinsic width/height from a PNG data URL (IHDR is always the first
@@ -26,12 +27,34 @@ export function pngAspectFromDataUrl(dataUrl: string): number | null {
  */
 export async function loadReportBrandingForOrg(orgId: string): Promise<ReportBranding> {
   const empty: ReportBranding = { name: null, logoDataUrl: null, logoAspect: null };
-  const [row] = await db
-    .select({ partnerName: partners.name, partnerSettings: partners.settings })
+
+  // Tenancy contract (CLAUDE.md, mirrors services/taxRateResolver.ts): the
+  // `organizations` hop runs in the caller's AMBIENT context so RLS decides
+  // which orgs are legible — a cross-org / cross-partner orgId finds no row
+  // here and never reaches the partner read. `partners` is a partner-AXIS
+  // table (`breeze_has_partner_access(id)`), and the portal request context
+  // (routes/portal/auth.ts) is scope 'organization' with
+  // `accessiblePartnerIds: []` / `currentPartnerId: null`, so the old single
+  // LEFT JOIN returned a NULL partner side without raising and collapsed ALL
+  // branding — name, logo, colours and the closing-line contact — to `empty`
+  // on every portal-rendered report (#6078). The sanctioned escape for a
+  // partner-axis read from org scope is `readWithPartnerAxisVisibility`
+  // (#2822); the id it is pinned to comes from the org row just resolved under
+  // the caller's own RLS, never from the caller.
+  const [org] = await db
+    .select({ partnerId: organizations.partnerId })
     .from(organizations)
-    .leftJoin(partners, eq(organizations.partnerId, partners.id))
     .where(eq(organizations.id, orgId))
     .limit(1);
+  if (!org?.partnerId) return empty;
+
+  const [row] = await readWithPartnerAxisVisibility(() =>
+    db
+      .select({ partnerName: partners.name, partnerSettings: partners.settings })
+      .from(partners)
+      .where(eq(partners.id, org.partnerId!))
+      .limit(1)
+  );
   if (!row?.partnerName) return empty;
   const settings = (row.partnerSettings ?? {}) as { branding?: { logoUrl?: string; primaryColor?: string; secondaryColor?: string }; contact?: { name?: string; email?: string } };
   const logoUrl = settings.branding?.logoUrl ?? null;

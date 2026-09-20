@@ -17,6 +17,7 @@ tracking_issue: LanternOps/breeze#5449
 **Depends on:** W01, W02, W03 merged to main; a helper build reporting `backup_version >= 0.112.0` (the W02 gate constant `BACKUP_SERVER_BASE_MIN_HELPER_VERSION`) installed on the Linux rig.
 
 ## Global Constraints
+- **Correction (lab run 2026-09-19):** `BACKUP_BASE_LEASE_MS=60000` below cannot work — the helper's publish margin is a fixed 1 h Go constant, so any lease <= 1 h fails every job at the manifest upload. The run used `3900000` (5 min publish window) for the chain and R5, `3660000` (60 s window) plus a throttled upload for R6, and SIGSTOP only for the few seconds R5 needs (the agent reaps a helper frozen for minutes). Base pins outlive a completed job until its lease lapses, so R4 runs ~65 min after the last dispatch.
 - Lab knobs on the API container: `BACKUP_GC_GRACE_MS=1000`, `BACKUP_GC_ORPHAN_MANIFEST_MAX_AGE_MS=1000`, `BACKUP_BASE_LEASE_MS=60000`, `BACKUP_PUBLISH_MARGIN_MS=1000`, `BACKUP_RESTORE_PIN_LINGER_MS=1000`. Production floors warn but do not apply outside `NODE_ENV=production` — check the stack is not built with production `NODE_ENV`.
 - Never run destructive restores on WIN-B (prod-enrolled); Linux rig only (campaign §9 decision 4).
 - Evidence lands under `~/breeze-assurance/runs/lnx/d18-*.txt` and is cited by filename in the campaign doc.

@@ -185,6 +185,8 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'patching',
+    searchHint: 'update rings, patch deferral, deadlines and auto-approval: list, get, create, update',
     definition: {
       name: 'manage_update_rings',
       description: 'Manage update rings (patch approval policies). Update rings control patch deferral, deadlines, and auto-approval. Create an update ring first, then link it to a configuration policy\'s patch feature via manage_policy_feature_link with featureType "patch" and featurePolicyId. Actions: list, get, create, update.',
@@ -347,6 +349,8 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'patching',
+    searchHint: 'software allowlist, blocklist and audit policies: list, get, create, update',
     definition: {
       name: 'manage_software_policies',
       description: 'Manage software policies (allowlist/blocklist/audit). Create a software policy first, then link it to a configuration policy\'s software_policy feature via manage_policy_feature_link with featureType "software_policy" and featurePolicyId. Actions: list, get, create, update.',
@@ -540,6 +544,8 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'security',
+    searchHint: 'USB, Bluetooth and Thunderbolt control policies: list, get, create, update',
     definition: {
       name: 'manage_peripheral_policies',
       description: 'Manage peripheral control policies (USB, Bluetooth, Thunderbolt). Create a peripheral policy first, then link it to a configuration policy\'s peripheral_control feature via manage_policy_feature_link with featureType "peripheral_control" and featurePolicyId. Actions: list, get, create, update.',
@@ -678,6 +684,8 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'backup',
+    searchHint: 'backup selection profiles, files, System State, SQL Server and Hyper-V: list, get, create, update, delete',
     definition: {
       name: 'manage_backup_profiles',
       description: 'Manage backup selection profiles — reusable "what to protect" bundles (file paths/excludes, System State, SQL Server, Hyper-V) for a device class, e.g. "Server". Link a profile to a configuration policy via manage_policy_feature_link with featureType "backup" and featurePolicyId = the profile id; the policy carries schedule/retention/destination. Profiles are org-owned or partner-wide ("all orgs"). Actions: list, get, create, update, delete.',
@@ -852,6 +860,8 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'backup',
+    searchHint: 'backup storage provider configurations: list, get, create, update',
     definition: {
       name: 'manage_backup_configs',
       description: 'Manage backup configurations (storage provider settings). Create a backup config first, then link it to a configuration policy\'s backup feature via manage_policy_feature_link with featureType "backup" and featurePolicyId. Use query_backups to list existing jobs and trigger_backup for on-demand backups. Actions: list, get, create, update.',

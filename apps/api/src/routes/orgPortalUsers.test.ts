@@ -61,7 +61,8 @@ vi.mock('../db', () => ({
 vi.mock('../db/schema', () => ({
   portalUsers: { id: 'id', orgId: 'orgId', email: 'email', name: 'name', passwordHash: 'passwordHash', authMethod: 'authMethod', receiveNotifications: 'receiveNotifications', status: 'status', invitedBy: 'invitedBy', invitedAt: 'invitedAt', lastLoginAt: 'lastLoginAt', createdAt: 'createdAt', contactId: 'contactId' },
   contacts: { id: 'id', orgId: 'orgId', email: 'email', roles: 'roles' },
-  organizations: { id: 'id', name: 'name', deletedAt: 'deletedAt' },
+  organizations: { id: 'id', name: 'name', deletedAt: 'deletedAt', partnerId: 'partnerId' },
+  partners: { id: 'id', name: 'name', settings: 'settings' },
   tickets: { id: 'id', submittedBy: 'submittedBy' },
   ticketComments: { id: 'id', portalUserId: 'portalUserId' },
   assetCheckouts: { id: 'id', checkedOutTo: 'checkedOutTo' }

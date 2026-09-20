@@ -167,6 +167,8 @@ export function registerBrowserTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'security',
+    searchHint: 'browser extension inventory, risk levels and active policy violations',
     deviceArgs: ['deviceId'],
     definition: {
       name: 'get_browser_security',
@@ -323,6 +325,8 @@ export function registerBrowserTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 3,
+    domain: 'security',
+    searchHint: 'browser extension compliance policies: list, create, update, apply',
     deviceArgs: ['deviceIds'],
     definition: {
       name: 'manage_browser_policy',

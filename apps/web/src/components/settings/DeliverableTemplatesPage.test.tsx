@@ -118,6 +118,25 @@ beforeEach(() => {
 });
 
 describe('DeliverableTemplatesPage', () => {
+  it('empty state gives a next-step sentence, not just a bare noun phrase (matches sibling Settings pages)', async () => {
+    fetchMock.mockImplementation(async (url: string, opts?: RequestInit) => {
+      const method = opts?.method ?? 'GET';
+      if (String(url).startsWith('/deliverable-templates') && method === 'GET') {
+        return jsonResponse({ data: [] });
+      }
+      if (String(url).startsWith('/ticket-checklist-templates') && method === 'GET') {
+        return jsonResponse({ data: [] });
+      }
+      return jsonResponse({ error: 'unexpected' }, 500);
+    });
+    render(<DeliverableTemplatesPage />);
+    const empty = await screen.findByText(/^No template sets/i);
+    // Bare "No template sets yet." with no second sentence is the paper cut —
+    // the create button (New template set) is right above it, so the copy
+    // should point at it rather than leaving a dead end.
+    expect(empty.textContent?.trim().split('. ').length).toBeGreaterThan(1);
+  });
+
   it('renders the All orgs badge for a partner-wide set and not for an org-owned one', async () => {
     render(<DeliverableTemplatesPage />);
     const badges = await screen.findAllByTestId('deliverable-template-all-orgs-badge');

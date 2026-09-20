@@ -85,6 +85,8 @@ export function registerAgentLogTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1 as AiToolTier,
+    domain: 'admin',
+    searchHint: 'agent diagnostic logs by device, level, component, time range or message text',
     deviceArgs: ['deviceIds'],
     definition: {
       name: 'search_agent_logs',
@@ -190,6 +192,8 @@ export function registerAgentLogTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 2 as AiToolTier,
+    domain: 'admin',
+    searchHint: 'agent log shipping verbosity: temporarily change the logging level for debugging',
     deviceArgs: ['deviceId'],
     definition: {
       name: 'set_agent_log_level',
@@ -275,6 +279,8 @@ export function registerAgentLogTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 2 as AiToolTier,
+    domain: 'admin',
+    searchHint: 'agent Go runtime pprof profiles, heap memory growth and goroutine leaks',
     deviceArgs: ['deviceId'],
     definition: {
       name: 'capture_agent_pprof',

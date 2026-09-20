@@ -1,4 +1,4 @@
-import { describe, expect, it, afterEach } from 'vitest';
+import { describe, expect, it, afterEach, vi } from 'vitest';
 import {
   resolveMsKnob,
   resolveBackupBaseLeaseMs,
@@ -6,6 +6,7 @@ import {
   resolveBackupPublishMarginMs,
   resolveBackupOrphanManifestMaxAgeMs,
   BACKUP_BASE_LEASE_MS_DEFAULT,
+  HELPER_PUBLISH_MARGIN_MS,
   BACKUP_RESTORE_PIN_LINGER_MS_DEFAULT,
   BACKUP_PUBLISH_MARGIN_MS_DEFAULT,
   BACKUP_ORPHAN_MANIFEST_MAX_AGE_MS_DEFAULT,
@@ -78,3 +79,28 @@ describe('resolveBackupOrphanManifestMaxAgeMs', () => {
     expect(resolveBackupOrphanManifestMaxAgeMs()).toBeGreaterThan(7 * 24 * 60 * 60 * 1000);
   });
 });
+
+describe('BACKUP_BASE_LEASE_MS vs the helper publish margin', () => {
+  afterEach(() => {
+    delete process.env.BACKUP_BASE_LEASE_MS;
+  });
+
+  // The helper refuses to publish once now + its built-in 1 h margin passes the lease
+  // (agent/internal/backup/snapshot.go publishMargin). A lease <= 1 h therefore fails EVERY
+  // backup at the manifest upload — proven in the D18 W04 lab run (#5453).
+  it('floors a production lease strictly above the helper publish margin', () => {
+    process.env.NODE_ENV = 'production';
+    process.env.BACKUP_BASE_LEASE_MS = String(60 * 60 * 1000);
+    expect(resolveBackupBaseLeaseMs()).toBeGreaterThan(HELPER_PUBLISH_MARGIN_MS);
+    expect(resolveBackupBaseLeaseMs()).toBe(2 * 60 * 60 * 1000);
+  });
+
+  it('warns outside production when the lease leaves the helper no publish window', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    process.env.BACKUP_BASE_LEASE_MS = '60000';
+    expect(resolveBackupBaseLeaseMs()).toBe(60000);
+    expect(warn.mock.calls.flat().join(' ')).toMatch(/every backup will fail to publish/);
+    warn.mockRestore();
+  });
+});
+

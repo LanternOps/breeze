@@ -59,6 +59,8 @@ export function registerEventLogTools(aiTools: Map<string, AiTool>): void {
   registerTool({
     tier: 1 as AiToolTier,
     deviceArgs: ['deviceIds'],
+    domain: 'monitoring',
+    searchHint: 'event logs across devices, full-text search, severity, source, category and time filters',
     definition: {
       name: 'search_logs',
       description:
@@ -184,6 +186,8 @@ export function registerEventLogTools(aiTools: Map<string, AiTool>): void {
   registerTool({
     tier: 1 as AiToolTier,
     deviceArgs: ['deviceIds'],
+    domain: 'monitoring',
+    searchHint: 'event log trends, error spikes, top sources and devices, hourly severity distribution',
     definition: {
       name: 'get_log_trends',
       description:
@@ -301,6 +305,8 @@ export function registerEventLogTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 2 as AiToolTier,
+    domain: 'monitoring',
+    searchHint: 'correlated event log patterns across devices, shared outages, updates and misconfigurations',
     definition: {
       name: 'detect_log_correlations',
       description:

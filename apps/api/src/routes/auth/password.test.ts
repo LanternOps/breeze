@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { ERROR_CODES } from '@breeze/shared';
 
 const {
   sendPasswordResetMock,
@@ -211,6 +212,18 @@ describe('password reset eligibility (#719)', () => {
     enqueuePasswordResetRequestMock.mockResolvedValue(undefined);
     vi.mocked(db.transaction).mockReset();
     stubTransaction();
+  });
+
+  it('GET /me returns NOT_FOUND when the authenticated user row is missing', async () => {
+    vi.mocked(db.select).mockReturnValue(selectChain([]) as any);
+
+    const res = await passwordRoutes.request('/me');
+
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({
+      error: 'User not found',
+      code: ERROR_CODES.NOT_FOUND,
+    });
   });
 
   // SR2-22: /forgot-password does ZERO existence-dependent work in the request

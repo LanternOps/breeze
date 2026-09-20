@@ -73,6 +73,8 @@ export function registerIntegrationTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'integrations',
+    searchHint: 'Breeze webhooks, delivery status, success and failure counts, recent delivery history',
     definition: {
       name: 'query_webhooks',
       description:
@@ -166,6 +168,8 @@ export function registerIntegrationTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'integrations',
+    searchHint: 'PSA integrations, connection status, sync history and external ticket mappings',
     definition: {
       name: 'query_psa_status',
       description:
@@ -241,6 +245,8 @@ export function registerIntegrationTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 2,
+    domain: 'integrations',
+    searchHint: 'Breeze webhook connectivity: send a test delivery to an endpoint',
     definition: {
       name: 'test_webhook',
       description:

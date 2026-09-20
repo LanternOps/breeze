@@ -17,6 +17,7 @@ import { eq, and, inArray, isNull, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext } from '../db';
 import {
   deviceCommands,
+  devices,
   discoveryJobs,
   scriptExecutions,
   scriptExecutionBatches,
@@ -32,6 +33,7 @@ import { backupCommandResultSchema } from '../routes/backup/resultSchemas';
 import { describeZodIssues } from '../lib/zodIssues';
 import { redactSecretsFromOutput, redactOptionalSecretText } from './secretRedaction';
 import { updateRestoreJobByCommandId } from './restoreResultPersistence';
+import { applyRebuildCommandResult } from './bareMetalRecoveryService';
 import { captureException } from './sentry';
 import { applyScriptCustomFieldWrites } from './customFields/scriptWriteBack';
 import type { ScriptCustomFieldWriteSummary } from '../db/schema/scripts';
@@ -205,6 +207,45 @@ async function handleVmRestoreResult({ agentId, command, result, resolvedDeviceI
     });
   } catch (err) {
     console.error(`[AgentWs] Failed to process queued restore result for ${agentId}:`, err);
+    captureException(err);
+  }
+}
+
+/**
+ * W05a `bare_metal_rebuild`: close the restore_jobs row by the
+ * transport-authorized command id (same as every queued restore), then apply
+ * the terminal status to the recovery row for a rebuild host whose
+ * /bmr/recover/progress posts never reached the server. The progress route
+ * stays the primary path — applyRebuildCommandResult is idempotent on a row
+ * it already terminalised.
+ */
+async function handleBareMetalRebuildResult({ agentId, command, result, resolvedDeviceId, commandId }: Parameters<CommandResultHandler>[0]): Promise<void> {
+  try {
+    await updateRestoreJobByCommandId({
+      commandId,
+      deviceId: resolvedDeviceId,
+      commandType: command.type,
+      result,
+    });
+  } catch (err) {
+    console.error(`[AgentWs] Failed to process bare-metal rebuild restore job for ${agentId}:`, err);
+    captureException(err);
+  }
+
+  const payload =
+    command.payload && typeof command.payload === 'object' && !Array.isArray(command.payload)
+      ? (command.payload as Record<string, unknown>)
+      : {};
+  const recoveryId = typeof payload.recoveryId === 'string' && UUID_REGEX.test(payload.recoveryId) ? payload.recoveryId : null;
+  // The recovery was created in the host's org (queueBareMetalRebuild passes
+  // expectedOrgId), so the enqueue-time org is the scope for this write.
+  const orgId = typeof command.submittedOrgId === 'string' ? command.submittedOrgId : null;
+  if (!recoveryId || !orgId) return;
+
+  try {
+    await applyRebuildCommandResult({ recoveryId, orgId, result: result as unknown as Record<string, unknown> });
+  } catch (err) {
+    console.error(`[AgentWs] Failed to apply bare-metal rebuild result to recovery ${recoveryId} for ${agentId}:`, err);
     captureException(err);
   }
 }
@@ -894,6 +935,43 @@ async function handleScriptCancelResult({ agentId, commandId, result }: Paramete
   }
 }
 
+/**
+ * §13 row 9: filesystem_analysis results delivered over the WebSocket were
+ * never persisted. The scan is dispatched with `preferHeartbeat: false`, so the
+ * socket is the NORMAL leg — the handler existed only on the HTTP route
+ * (routes/agents/commands.ts:525), and a completed scan silently wrote nothing.
+ *
+ * The HTTP leg keeps its direct call: its registry dispatch is gated on the
+ * separate REGISTRY_DISPATCHED_COMMAND_TYPES allowlist, which this type is
+ * deliberately NOT added to, so nothing is saved twice.
+ *
+ * `orgId` is not a handler parameter, so it is read from the device the
+ * transport already authorized — the same shape handleDiscoveryResult uses for
+ * its job lookup.
+ */
+async function handleFilesystemAnalysisResult({
+  command,
+  result,
+  resolvedDeviceId,
+  commandId,
+}: Parameters<CommandResultHandler>[0]): Promise<void> {
+  const { handleFilesystemAnalysisCommandResult } = await import('../routes/agents/helpers');
+  const [device] = await db
+    .select({ orgId: devices.orgId })
+    .from(devices)
+    .where(eq(devices.id, resolvedDeviceId))
+    .limit(1);
+  if (!device) {
+    const message = `[commandResultHandlers] filesystem_analysis result for unknown device ${resolvedDeviceId}`;
+    console.warn(message);
+    // A dropped scan result is silent data loss otherwise: nothing but this
+    // console line (which most deployments don't ship) ever showed it.
+    captureException(new Error(message), undefined, { commandId, resolvedDeviceId });
+    return;
+  }
+  await handleFilesystemAnalysisCommandResult(command, result, device.orgId);
+}
+
 export const commandResultHandlers: Record<string, CommandResultHandler> = {
   network_discovery: handleDiscoveryResult,
   backup_verify: handleBackupVerificationResult,
@@ -902,6 +980,7 @@ export const commandResultHandlers: Record<string, CommandResultHandler> = {
   vm_restore_from_backup: handleVmRestoreResult,
   vm_instant_boot: handleVmRestoreResult,
   bmr_recover: handleVmRestoreResult,
+  bare_metal_rebuild: handleBareMetalRebuildResult,
   hyperv_backup: handleProviderBackedBackupResult,
   mssql_backup: handleProviderBackedBackupResult,
   vault_sync: handleVaultSyncResult,
@@ -918,4 +997,5 @@ export const commandResultHandlers: Record<string, CommandResultHandler> = {
   pam_apply_v2: handlePamActuationV2Result,
   pam_cleanup_v2: handlePamActuationV2Result,
   install_patches: handleInstallPatchesResult,
+  filesystem_analysis: handleFilesystemAnalysisResult,
 };

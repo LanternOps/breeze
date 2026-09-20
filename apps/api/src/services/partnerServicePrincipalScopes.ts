@@ -17,6 +17,10 @@ export const PARTNER_SERVICE_PRINCIPAL_WRITE_SCOPES = Object.freeze([
   'organizations:write',
   'sites:write',
   'enrollment-keys:write',
+  // Contract header + line mutations on the Partner API. Opt-in; never part of
+  // the Weavestream default. Does not grant lifecycle (activate/pause/cancel)
+  // or the human JWT `/api/v1/contracts` surface.
+  'contracts:write',
 ] as const);
 
 export const PARTNER_SERVICE_PRINCIPAL_SCOPES = Object.freeze([

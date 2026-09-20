@@ -10,6 +10,7 @@ import {
   backupConfigs,
   backupJobs,
   backupSnapshots,
+  bareMetalRecoveries,
   deviceCommands,
   devices,
   hypervVms,
@@ -56,6 +57,7 @@ import { hypervRoutes } from '../../routes/backup/hyperv';
 import { mssqlRoutes } from '../../routes/backup/mssql';
 import { snapshotsRoutes } from '../../routes/backup/snapshots';
 import { bmrRoutes } from '../../routes/backup/bmr';
+import { bmrRecoveryRoutes } from '../../routes/backup/bmrRecoveries';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
@@ -77,6 +79,7 @@ type Fixture = {
   tokenB: string;
   mediaA: string;
   mediaB: string;
+  recoveryB: string;
 };
 
 type MountedRouteCase = {
@@ -123,6 +126,7 @@ function makeApp(f: Fixture): Hono {
   app.route('/', mssqlRoutes);
   app.route('/', snapshotsRoutes);
   app.route('/', bmrRoutes);
+  app.route('/', bmrRecoveryRoutes);
   return app;
 }
 
@@ -215,6 +219,20 @@ async function seedFixture(): Promise<Fixture> {
   const [mediaA, mediaB, mediaTargetB] = insertedMedia;
   if (!mediaA || !mediaB || !mediaTargetB) throw new Error('media fixture insert failed');
 
+  // W05a: a non-terminal recovery on the denied lineage (source B) for the
+  // by-ID cancel / reissue-code routes.
+  const [recoveryB] = await testDb.insert(bareMetalRecoveries).values({
+    orgId: org.id,
+    deviceId: sourceB.id,
+    snapshotId: snapshotB.id,
+    identity: 'new',
+    codeHash: `${suffix}`.padEnd(64, 'd').slice(0, 64),
+    codeExpiresAt: expiresAt,
+    nonceHash: 'e'.repeat(64),
+    status: 'created',
+  }).returning({ id: bareMetalRecoveries.id });
+  if (!recoveryB) throw new Error('recovery fixture insert failed');
+
   return {
     orgId: org.id,
     siteA: siteA.id,
@@ -233,6 +251,7 @@ async function seedFixture(): Promise<Fixture> {
     tokenB: tokenB.id,
     mediaA: mediaA.id,
     mediaB: mediaB.id,
+    recoveryB: recoveryB.id,
   };
 }
 
@@ -243,11 +262,15 @@ async function sideEffectSnapshot(orgId: string) {
   const [commandCount] = await testDb.select({ value: count() }).from(deviceCommands);
   const [tokenCount] = await testDb.select({ value: count() }).from(recoveryTokens).where(eq(recoveryTokens.orgId, orgId));
   const [mediaCount] = await testDb.select({ value: count() }).from(recoveryMediaArtifacts).where(eq(recoveryMediaArtifacts.orgId, orgId));
+  const recoveryState = await testDb
+    .select({ id: bareMetalRecoveries.id, status: bareMetalRecoveries.status, codeHash: bareMetalRecoveries.codeHash })
+    .from(bareMetalRecoveries)
+    .where(eq(bareMetalRecoveries.orgId, orgId));
   const snapshotState = await testDb
     .select({ id: backupSnapshots.id, legalHold: backupSnapshots.legalHold, isImmutable: backupSnapshots.isImmutable })
     .from(backupSnapshots)
     .where(eq(backupSnapshots.orgId, orgId));
-  return { restoreCount, backupCount, commandCount, tokenCount, mediaCount, snapshotState };
+  return { restoreCount, backupCount, commandCount, tokenCount, mediaCount, snapshotState, recoveryState };
 }
 
 function deniedRouteCases(f: Fixture): MountedRouteCase[] {
@@ -287,6 +310,9 @@ function deniedRouteCases(f: Fixture): MountedRouteCase[] {
     { name: 'BMR media by ID', method: 'GET', path: `/bmr/media/${f.mediaB}` },
     { name: 'BMR media download', method: 'GET', path: `/bmr/media/${f.mediaB}/download` },
     { name: 'BMR media signature', method: 'GET', path: `/bmr/media/${f.mediaB}/signature` },
+    { name: 'BMR recovery create source', method: 'POST', path: '/bmr/recoveries', body: { snapshotId: f.snapshotB, identity: 'new' } },
+    { name: 'BMR recovery cancel', method: 'POST', path: `/bmr/recoveries/${f.recoveryB}/cancel`, body: { reason: 'denied route coverage' } },
+    { name: 'BMR recovery reissue code', method: 'POST', path: `/bmr/recoveries/${f.recoveryB}/reissue-code` },
   ];
 }
 

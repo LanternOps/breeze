@@ -79,7 +79,7 @@ export default function InvoiceEditor({ detail, onChanged, onPendingEditsChange,
   const canSeeMargin = can('invoices', 'read');
   const [fallbackShowMargin] = useShowMargin();
   const effectiveShowMargin = showMargin ?? fallbackShowMargin;
-  const { invoice, lines: serverLines } = detail;
+  const { invoice, lines: serverLines, billToEmail } = detail;
   const currency = invoice.currencyCode;
 
   // ---- undo-able deletion (deferred DELETE + grace window) -----------------
@@ -838,11 +838,19 @@ export default function InvoiceEditor({ detail, onChanged, onPendingEditsChange,
           <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="invoice-bill-to">
             <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('invoiceEditor.billTo.title')}</h3>
             {invoice.billToName ? (
-              <p className="text-sm">
-                <a href={`/organizations/${encodeURIComponent(invoice.orgId)}`} data-testid="org-record-link" className="hover:underline">
-                  {invoice.billToName}
-                </a>
-              </p>
+              <>
+                <p className="text-sm">
+                  <a href={`/organizations/${encodeURIComponent(invoice.orgId)}`} data-testid="org-record-link" className="hover:underline">
+                    {invoice.billToName}
+                  </a>
+                </p>
+                {/* Draft-only fallback (sweep paper cut #16): set by the API
+                    ONLY alongside a fallen-back billToName — see invoiceTypes.
+                    InvoiceDetail.billToEmail. */}
+                {billToEmail && (
+                  <p className="text-sm text-muted-foreground" data-testid="invoice-bill-to-email">{billToEmail}</p>
+                )}
+              </>
             ) : (
               <p className="text-sm text-muted-foreground">
                 {t('invoiceEditor.billTo.noContact')}{' '}

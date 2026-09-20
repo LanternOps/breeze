@@ -17,6 +17,7 @@ const notFarFuture = (d: Date) => d.getTime() <= Date.now() + CLOCK_SKEW_MS;
 // restamps it (multi-currency spec §7). Editing hourlyRate/unitPrice does not
 // change the snapshot; billed rows reject monetary edits (ENTRY_BILLED / PART_BILLED).
 export const createTimeEntrySchema = z.object({
+  workTypeId: z.string().uuid().nullable().optional(),
   ticketId: z.string().guid().optional(),
   startedAt: z.coerce.date().refine(notFarFuture, { message: 'startedAt cannot be in the future' }),
   endedAt: z.coerce.date(),
@@ -30,6 +31,7 @@ export const createTimeEntrySchema = z.object({
 });
 
 export const updateTimeEntrySchema = z.object({
+  workTypeId: z.string().uuid().nullable().optional(),
   ticketId: z.string().guid().nullable().optional(),
   startedAt: z.coerce.date().refine(notFarFuture, { message: 'startedAt cannot be in the future' }).optional(),
   endedAt: z.coerce.date().optional(),
@@ -40,6 +42,7 @@ export const updateTimeEntrySchema = z.object({
 }).refine((v) => Object.keys(v).length > 0, { message: 'At least one field is required' });
 
 export const startTimerSchema = z.object({
+  workTypeId: z.string().uuid().nullable().optional(),
   ticketId: z.string().guid().optional(),
   description: z.string().max(10_000).optional()
 });

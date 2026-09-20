@@ -171,6 +171,8 @@ export const CommandTypes = {
   VM_RESTORE_ESTIMATE: 'vm_restore_estimate',
   VM_INSTANT_BOOT: 'vm_instant_boot',
   BMR_RECOVER: 'bmr_recover',
+  // W05a: server-driven rebuild on a helper host (Restore-as-VM engine path, DR rehearsal).
+  BARE_METAL_REBUILD: 'bare_metal_rebuild',
   // Vault
   VAULT_SYNC: 'vault_sync',
   VAULT_STATUS: 'vault_status',

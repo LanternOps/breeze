@@ -572,7 +572,8 @@
     "lastChecked": "Zuletzt überprüft",
     "noComplianceResultsReportedAssignA": "Es wurden keine Compliance-Ergebnisse gemeldet. Weisen Sie diesem Gerät eine Konfigurationsrichtlinie mit Compliance-Regeln zu oder warten Sie auf die nächste Auswertung.",
     "text": "—",
-    "s": "s"
+    "s": "s",
+    "assignPolicy": "Konfigurationsrichtlinie zuweisen"
   },
   "deviceDetailPage": {
     "failedToFetchDevice": "Gerät konnte nicht abgerufen werden",
@@ -664,7 +665,14 @@
     "networkAsset": "Netzwerk-Asset",
     "networkAssets": "Netzwerk-Assets",
     "operatorTasks": "Operator-Aufgaben",
-    "operatorTasksForThisDevice": "KI-Operator-Aufgaben für dieses Gerät"
+    "operatorTasksForThisDevice": "KI-Operator-Aufgaben für dieses Gerät",
+    "tabGroups": {
+      "monitoring": "Überwachung",
+      "inventory": "Inventar",
+      "management": "Verwaltung",
+      "history": "Verlauf & Netzwerk",
+      "extensions": "Erweiterungen"
+    }
   },
   "deviceEdrPanel": {
     "failedToIsolateDevice": "Das Gerät konnte nicht isoliert werden",
@@ -745,6 +753,19 @@
     "noMoreActivity": "Keine weitere Aktivität"
   },
   "deviceFilesystemTab": {
+    "volumes": "Datenträger",
+    "volumesLoading": "Datenträger werden geladen...",
+    "volumesEmpty": "Für dieses Gerät wurden keine scanbaren Datenträger gemeldet.",
+    "failedToFetchVolumes": "Datenträger konnten nicht abgerufen werden",
+    "volumeOsBadge": "BS",
+    "volumeUsedOfTotal": "{{used}} von {{total}} belegt",
+    "volumeCapacityUnknown": "Kapazität unbekannt",
+    "volumeNeverScanned": "Nie gescannt",
+    "volumeLastScanned": "Gescannt {{when}}",
+    "volumeSelectAria": "Datenträger {{mountPoint}} auswählen",
+    "scanCommandNotFound": "Der Scanbefehl wurde nicht gefunden",
+    "scanCommandNotQueued": "Der Scanbefehl wurde nicht eingereiht",
+    "scanStillRunning": "Der Scan des Dateisystems läuft noch. Klicken Sie in Kürze auf „Aktualisieren“.",
     "failedToFetchFilesystemStatus": "Dateisystemstatus konnte nicht abgerufen werden",
     "failedToFetchCommandHistory": "Der Befehlsverlauf konnte nicht abgerufen werden",
     "failedToLoadFilesystemStatus": "Dateisystemstatus konnte nicht geladen werden",
@@ -752,14 +773,14 @@
     "filesystemScanFailed": "Der Scan des Dateisystems ist fehlgeschlagen",
     "cleanupPreviewFailed": "Die Bereinigungsvorschau ist fehlgeschlagen",
     "loadingDiskIntelligence": "Datenträgerinformationen werden geladen...",
-    "be1DiskCleanupIntelligence": "BE-1: Datenträgerbereinigungsintelligenz",
+    "title": "Datenträgerbereinigung",
     "analyzeNow": "Jetzt analysieren",
     "cleanupPreview": "Bereinigungsvorschau",
     "refresh": "Aktualisieren",
     "openFileManager": "Öffnen Sie den Dateimanager",
     "scanRunning": "Scan läuft (",
     "partialScanResult": "Teilweises Scanergebnis",
-    "noFilesystemSnapshotYetRunAnalyze": "Noch kein Dateisystem-Snapshot. Führen Sie „Jetzt analysieren“ aus, um BE-1-Daten zu sammeln.",
+    "noFilesystemSnapshotYetRunAnalyze": "Noch kein Dateisystem-Snapshot. Führen Sie „Jetzt analysieren“ aus, um Daten zur Datenträgernutzung zu sammeln.",
     "lastScan": "Letzter Scan",
     "trigger": "Auslöser",
     "threshold": "Schwelle",
@@ -788,7 +809,6 @@
     "largestDirectories": "Größte Verzeichnisse",
     "indicatesLowerBoundSizeFromPartial": "gibt die untere Grenzgröße aus der teilweisen Durchquerung an.",
     "noDirectoryDataAvailable": "Keine Verzeichnisdaten verfügbar.",
-    "text": ">=",
     "latestCleanupPreview": "Neueste Bereinigungsvorschau",
     "estimatedRecovery": "Geschätzte Erholung",
     "candidateCount": "Anzahl der Kandidaten",
@@ -1350,7 +1370,8 @@
       "status": "Status",
       "type": "Typ"
     },
-    "title": "Service- und Prozessüberwachung"
+    "title": "Service- und Prozessüberwachung",
+    "assignPolicy": "Konfigurationsrichtlinie zuweisen"
   },
   "deviceNetworkConnections": {
     "allProtocols": "Alle Protokolle",

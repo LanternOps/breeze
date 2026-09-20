@@ -572,7 +572,8 @@
     "lastChecked": "Última verificação",
     "noComplianceResultsReportedAssignA": "Nenhum resultado de conformidade foi relatado. Atribua uma Política de Configuração com regras de conformidade a este dispositivo ou aguarde a próxima avaliação.",
     "text": "—",
-    "s": "s"
+    "s": "s",
+    "assignPolicy": "Atribuir uma política de configuração"
   },
   "deviceDetailPage": {
     "failedToFetchDevice": "Falha ao buscar o dispositivo",
@@ -664,7 +665,14 @@
     "networkAsset": "Ativo de rede",
     "networkAssets": "Ativos de rede",
     "operatorTasks": "Tarefas do operador",
-    "operatorTasksForThisDevice": "Tarefas do operador de IA para este dispositivo"
+    "operatorTasksForThisDevice": "Tarefas do operador de IA para este dispositivo",
+    "tabGroups": {
+      "monitoring": "Monitoramento",
+      "inventory": "Inventário",
+      "management": "Gerenciamento",
+      "history": "Histórico e rede",
+      "extensions": "Extensões"
+    }
   },
   "deviceEdrPanel": {
     "failedToIsolateDevice": "Falha ao isolar o dispositivo",
@@ -745,6 +753,19 @@
     "noMoreActivity": "Não há mais atividade"
   },
   "deviceFilesystemTab": {
+    "volumes": "Volumes",
+    "volumesLoading": "Carregando volumes...",
+    "volumesEmpty": "Nenhum volume analisável informado para este dispositivo.",
+    "failedToFetchVolumes": "Não foi possível obter os volumes",
+    "volumeOsBadge": "SO",
+    "volumeUsedOfTotal": "{{used}} de {{total}} em uso",
+    "volumeCapacityUnknown": "Capacidade desconhecida",
+    "volumeNeverScanned": "Nunca verificado",
+    "volumeLastScanned": "Verificado {{when}}",
+    "volumeSelectAria": "Selecionar volume {{mountPoint}}",
+    "scanCommandNotFound": "Comando de varredura não encontrado",
+    "scanCommandNotQueued": "O comando de varredura não foi enfileirado",
+    "scanStillRunning": "A varredura do sistema de arquivos ainda está em execução. Clique em Atualizar em instantes.",
     "failedToFetchFilesystemStatus": "Falha ao buscar o status do sistema de arquivos",
     "failedToFetchCommandHistory": "Falha ao buscar o histórico de comandos",
     "failedToLoadFilesystemStatus": "Falha ao carregar o status do sistema de arquivos",
@@ -752,14 +773,14 @@
     "filesystemScanFailed": "Falha na varredura do sistema de arquivos",
     "cleanupPreviewFailed": "Falha na prévia de limpeza",
     "loadingDiskIntelligence": "Carregando inteligência de disco...",
-    "be1DiskCleanupIntelligence": "BE-1: Inteligência de limpeza de disco",
+    "title": "Limpeza de disco",
     "analyzeNow": "Analisar agora",
     "cleanupPreview": "Prévia de limpeza",
     "refresh": "Atualizar",
     "openFileManager": "Abrir gerenciador de arquivos",
     "scanRunning": "Varredura em andamento (",
     "partialScanResult": "Resultado parcial da varredura",
-    "noFilesystemSnapshotYetRunAnalyze": "Ainda não há um snapshot do sistema de arquivos. Execute Analisar agora para coletar os dados do BE-1.",
+    "noFilesystemSnapshotYetRunAnalyze": "Ainda não há um snapshot do sistema de arquivos. Execute Analisar agora para coletar dados de uso do disco.",
     "lastScan": "Última varredura",
     "trigger": "Gatilho",
     "threshold": "Limite",
@@ -788,7 +809,6 @@
     "largestDirectories": "Maiores diretórios",
     "indicatesLowerBoundSizeFromPartial": "indica o tamanho mínimo resultante de uma varredura parcial.",
     "noDirectoryDataAvailable": "Nenhum dado de diretório disponível.",
-    "text": ">=",
     "latestCleanupPreview": "Prévia de limpeza mais recente",
     "estimatedRecovery": "Recuperação estimada",
     "candidateCount": "Número de candidatos",
@@ -1350,7 +1370,8 @@
       "status": "Status",
       "type": "Tipo"
     },
-    "title": "Monitoramento de serviços e processos"
+    "title": "Monitoramento de serviços e processos",
+    "assignPolicy": "Atribuir uma política de configuração"
   },
   "deviceNetworkConnections": {
     "allProtocols": "Todos os protocolos",

@@ -572,7 +572,8 @@
     "lastChecked": "Ultimo controllo",
     "noComplianceResultsReportedAssignA": "Nessun risultato di conformità segnalato. Assegna a questo dispositivo una Configuration Policy con regole di conformità oppure attendi la prossima valutazione.",
     "text": "—",
-    "s": "s"
+    "s": "s",
+    "assignPolicy": "Assegna un criterio di configurazione"
   },
   "deviceDetailPage": {
     "failedToFetchDevice": "Impossibile recuperare il dispositivo",
@@ -664,7 +665,14 @@
     "networkAsset": "Asset di rete",
     "networkAssets": "Asset di rete (elenco)",
     "operatorTasks": "Attività dell'operatore",
-    "operatorTasksForThisDevice": "Attività dell'operatore IA per questo dispositivo"
+    "operatorTasksForThisDevice": "Attività dell'operatore IA per questo dispositivo",
+    "tabGroups": {
+      "monitoring": "Monitoraggio",
+      "inventory": "Inventario",
+      "management": "Gestione",
+      "history": "Cronologia e rete",
+      "extensions": "Estensioni"
+    }
   },
   "deviceEdrPanel": {
     "failedToIsolateDevice": "Impossibile isolare il dispositivo",
@@ -745,6 +753,19 @@
     "noMoreActivity": "Nessun’altra attività"
   },
   "deviceFilesystemTab": {
+    "volumes": "Volumi",
+    "volumesLoading": "Caricamento volumi...",
+    "volumesEmpty": "Nessun volume analizzabile segnalato per questo dispositivo.",
+    "failedToFetchVolumes": "Impossibile recuperare i volumi",
+    "volumeOsBadge": "SO",
+    "volumeUsedOfTotal": "{{used}} di {{total}} in uso",
+    "volumeCapacityUnknown": "Capacità sconosciuta",
+    "volumeNeverScanned": "Mai scansionato",
+    "volumeLastScanned": "Scansionato {{when}}",
+    "volumeSelectAria": "Seleziona il volume {{mountPoint}}",
+    "scanCommandNotFound": "Comando di scansione non trovato",
+    "scanCommandNotQueued": "Comando di scansione non accodato",
+    "scanStillRunning": "La scansione del filesystem è ancora in corso. Fai clic su Aggiorna tra qualche istante.",
     "failedToFetchFilesystemStatus": "Impossibile recuperare lo stato del filesystem",
     "failedToFetchCommandHistory": "Impossibile recuperare la cronologia dei comandi",
     "failedToLoadFilesystemStatus": "Impossibile caricare lo stato del filesystem",
@@ -752,14 +773,14 @@
     "filesystemScanFailed": "Scansione del filesystem non riuscita",
     "cleanupPreviewFailed": "Anteprima pulizia non riuscita",
     "loadingDiskIntelligence": "Caricamento intelligence disco...",
-    "be1DiskCleanupIntelligence": "BE-1: intelligence per la pulizia del disco",
+    "title": "Pulizia del disco",
     "analyzeNow": "Analizza ora",
     "cleanupPreview": "Anteprima pulizia",
     "refresh": "Aggiorna",
     "openFileManager": "Apri file manager",
     "scanRunning": "Scansione in corso (",
     "partialScanResult": "Risultato parziale della scansione",
-    "noFilesystemSnapshotYetRunAnalyze": "Nessuno snapshot del filesystem disponibile. Esegui Analizza ora per raccogliere i dati BE-1.",
+    "noFilesystemSnapshotYetRunAnalyze": "Nessuno snapshot del filesystem disponibile. Esegui Analizza ora per raccogliere i dati di utilizzo del disco.",
     "lastScan": "Ultima scansione",
     "trigger": "Attivazione",
     "threshold": "Soglia",
@@ -788,7 +809,6 @@
     "largestDirectories": "Directory più grandi",
     "indicatesLowerBoundSizeFromPartial": "indica una dimensione minima stimata da un attraversamento parziale.",
     "noDirectoryDataAvailable": "Nessun dato sulle directory disponibile.",
-    "text": ">=",
     "latestCleanupPreview": "Ultima anteprima pulizia",
     "estimatedRecovery": "Recupero stimato",
     "candidateCount": "Numero candidati",
@@ -1350,7 +1370,8 @@
       "status": "Stato",
       "type": "Tipo"
     },
-    "title": "Monitoraggio di servizi e processi"
+    "title": "Monitoraggio di servizi e processi",
+    "assignPolicy": "Assegna un criterio di configurazione"
   },
   "deviceNetworkConnections": {
     "allProtocols": "Tutti i protocolli",

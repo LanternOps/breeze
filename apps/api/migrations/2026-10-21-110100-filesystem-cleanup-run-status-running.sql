@@ -1,0 +1,11 @@
+-- Disk Cleanup v2 W02: the `running` cleanup-run status (spec §4). W04's
+-- system-cleanup route inserts a row with status='running' before the agent
+-- answers, so the label has to exist one release earlier than its first writer.
+--
+-- ENUM ADD ONLY, in its own file: a label added by ALTER TYPE cannot be USED
+-- until the transaction that added it commits, and autoMigrate wraps each file
+-- in one transaction. Precedent:
+-- 2026-10-17-110400-report-type-endpoint-management-review.sql.
+--
+-- No rows are written, so no breeze.scope election is required. Idempotent.
+ALTER TYPE filesystem_cleanup_run_status ADD VALUE IF NOT EXISTS 'running';

@@ -230,6 +230,8 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
   // 1. list_configuration_policies — Tier 1 (read)
   registerTool({
     tier: 1,
+    domain: 'security',
+    searchHint: 'configuration policies, bundled feature settings, policy status and linked feature types',
     definition: {
       name: 'list_configuration_policies',
       description: 'List available configuration policies (bundled feature settings) visible to the caller — organization-owned policies plus, for partner-scoped callers, partner-wide ("all orgs") policies. Shows policy name, status, and linked feature types.',
@@ -291,6 +293,8 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
   // 2. get_effective_configuration — Tier 1 (read)
   registerTool({
     tier: 1,
+    domain: 'security',
+    searchHint: 'device effective configuration, winning policies and inheritance across partner, organization, site and group',
     deviceArgs: ['deviceId'],
     definition: {
       name: 'get_effective_configuration',
@@ -314,6 +318,8 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
   // 3. preview_configuration_change — Tier 1 (read)
   registerTool({
     tier: 1,
+    domain: 'security',
+    searchHint: 'configuration assignment changes, current versus proposed device settings preview',
     deviceArgs: ['deviceId'],
     definition: {
       name: 'preview_configuration_change',
@@ -361,6 +367,8 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
   // 4. apply_configuration_policy — Tier 2 (write)
   registerTool({
     tier: 2,
+    domain: 'security',
+    searchHint: 'configuration policy assignments to partners, organizations, sites, device groups or devices',
     definition: {
       name: 'apply_configuration_policy',
       description: 'Assign a configuration policy to a target (partner, organization, site, device group, or device). Use roleFilter and osFilter to scope the assignment to specific device types. The "partner" level is reserved for partner-OWNED policies (a reusable library, #2280, assignable to all orgs or a subset) — an org-owned policy can only be assigned at organization/site/device_group/device level.',
@@ -476,6 +484,8 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
   // 5. remove_configuration_policy_assignment — Tier 2 (write)
   registerTool({
     tier: 2,
+    domain: 'security',
+    searchHint: 'configuration policy assignment removal and inherited setting reversal',
     definition: {
       name: 'remove_configuration_policy_assignment',
       description: 'Remove a configuration policy assignment, undoing its effect on the target and all devices beneath it in the hierarchy.',
@@ -544,6 +554,8 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
   // 6. get_configuration_policy — Tier 1 (read)
   registerTool({
     tier: 1,
+    domain: 'security',
+    searchHint: 'configuration policy details, bundled feature links and assignments',
     definition: {
       name: 'get_configuration_policy',
       description: 'Get a single configuration policy by ID with its feature links (bundled feature settings) and assignment count.',
@@ -575,6 +587,8 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
   // 7. manage_configuration_policy — Tier 1 base, action-escalated
   registerTool({
     tier: 1,
+    domain: 'security',
+    searchHint: 'configuration policies: create, update, activate, deactivate, delete',
     definition: {
       name: 'manage_configuration_policy',
       description: 'Create, update, activate, deactivate, or delete configuration policies. Configuration policies bundle feature settings (patch, alert, compliance, etc.) and are assigned to targets in the hierarchy. On create, ownerScope "partner" makes a reusable partner-owned library policy that applies to NO organizations until assigned (partner-wide, or a subset of orgs) via apply_configuration_policy (requires full partner org access); "organization" (default) owns it in a single org.',
@@ -735,6 +749,8 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
   // 8. configuration_policy_compliance — Tier 1 (read)
   registerTool({
     tier: 1,
+    domain: 'security',
+    searchHint: 'configuration policy compliance: organization summary, per-policy device status',
     definition: {
       name: 'configuration_policy_compliance',
       description: 'Check compliance status for configuration policies. Use "summary" for org-wide compliance overview across all config policies, or "status" for per-device compliance details for a specific config policy.',
@@ -870,6 +886,8 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
   // 9. manage_policy_feature_link — Tier 2 (write)
   registerTool({
     tier: 2,
+    domain: 'security',
+    searchHint: 'configuration policy feature links and bundled settings: add, update, remove, list',
     definition: {
       name: 'manage_policy_feature_link',
       description: `Add, update, remove, or list feature links on a configuration policy. Feature links define the actual settings bundled into a policy. Each policy can have one link per feature type. This is the STANDARD way to configure all device management features.

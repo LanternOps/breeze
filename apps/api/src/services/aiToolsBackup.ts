@@ -140,6 +140,8 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'backup',
+    searchHint: 'backup configurations, jobs, policies: list and filter by device or job status',
     deviceArgs: ['deviceId'],
     definition: {
       name: 'query_backups',
@@ -290,6 +292,8 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'backup',
+    searchHint: 'backup health, recent jobs and storage summary for a device or organization',
     deviceArgs: ['deviceId'],
     definition: {
       name: 'get_backup_status',
@@ -438,6 +442,8 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'backup',
+    searchHint: 'backup snapshots, available restore points for one device',
     deviceArgs: ['deviceId'],
     definition: {
       name: 'browse_snapshots',
@@ -506,6 +512,8 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 3,
+    domain: 'backup',
+    searchHint: 'on-demand backup job for a device using a backup configuration',
     deviceArgs: ['deviceId'],
     definition: {
       name: 'trigger_backup',
@@ -598,6 +606,8 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 3,
+    domain: 'backup',
+    searchHint: 'backup snapshot recovery, full or selected file paths to a target device',
     deviceArgs: ['deviceId'],
     definition: {
       name: 'restore_snapshot',

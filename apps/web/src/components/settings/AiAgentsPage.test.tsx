@@ -1537,6 +1537,31 @@ describe('AiAgentsPage running-state badge (#4187 UI critique 3)', () => {
     expect(await screen.findByTestId('ai-agent-running-badge-a1')).toHaveTextContent('Running');
   });
 
+  // Paper cut 22 (2026-09-19 sweep): when the row's own on/off badge and the
+  // last-run outcome badge both read "Running" (an enabled agent with an
+  // in-flight run), the row printed "Running | Running" with nothing visibly
+  // distinguishing the two concepts — only an aria-label told them apart.
+  it('visibly labels the on/off badge and the last-run badge when both happen to read "Running"', async () => {
+    mockEndpoints([{
+      ...PARTNER_AGENT,
+      lastRunAt: '2026-08-30T12:00:00.000Z',
+      lastRunStatus: 'running',
+    }]);
+    render(<AiAgentsPage />);
+
+    const row = await screen.findByTestId('ai-agent-row-a1');
+    expect(within(row).getByTestId('ai-agent-running-badge-a1')).toHaveTextContent('Running');
+    expect(within(row).getByTestId('ai-agent-lastrun-a1')).toHaveTextContent('Running');
+
+    // A sighted user must see two DIFFERENT visible labels next to the two
+    // "Running" badges, not just an aria-label a screen reader alone hears.
+    const runningLabel = within(row).getByTestId('ai-agent-running-badge-label-a1');
+    const lastRunLabel = within(row).getByTestId('ai-agent-lastrun-badge-label-a1');
+    expect(runningLabel).toBeVisible();
+    expect(lastRunLabel).toBeVisible();
+    expect(runningLabel.textContent).not.toBe(lastRunLabel.textContent);
+  });
+
   it('shows a one-time "switched off, review its policy" note on the row a Re-enable just restored', async () => {
     // A STATEFUL mock, unlike `mockEnableEndpoints` (whose list fetch always
     // replays the same static fixture): the reload `reenable()` triggers

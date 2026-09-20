@@ -1316,6 +1316,33 @@ describe('TicketWorkbench pending/on_hold prompt', () => {
     expect(screen.getByTestId('ticket-workbench-pending-form')).toBeInTheDocument();
     expect(screen.getByTestId('ticket-workbench-pending-submit')).toHaveTextContent('Put on hold');
   });
+
+  it('the status select keeps showing the chosen target status while the pending form is open (does not snap back)', async () => {
+    mockTicketApiWithUsers({ 'tk-1': makeTicket({ status: 'open' }) });
+    render(<TicketWorkbench ticketId="tk-1" />);
+
+    await screen.findByTestId('ticket-workbench');
+    fireEvent.change(screen.getByTestId('ticket-workbench-status'), { target: { value: 'pending' } });
+
+    expect(screen.getByTestId('ticket-workbench-pending-form')).toBeInTheDocument();
+    // Discriminating assertion: an orphan <select> value with no matching option
+    // reads as '' in jsdom, so assert the actual chosen status, not just non-empty.
+    expect(screen.getByTestId('ticket-workbench-status')).toHaveValue('pending');
+  });
+
+  it('cancelling the pending form reverts the select back to the ticket\'s real status', async () => {
+    mockTicketApiWithUsers({ 'tk-1': makeTicket({ status: 'open' }) });
+    render(<TicketWorkbench ticketId="tk-1" />);
+
+    await screen.findByTestId('ticket-workbench');
+    fireEvent.change(screen.getByTestId('ticket-workbench-status'), { target: { value: 'on_hold' } });
+    expect(screen.getByTestId('ticket-workbench-status')).toHaveValue('on_hold');
+
+    fireEvent.click(screen.getByText('Cancel'));
+
+    expect(screen.queryByTestId('ticket-workbench-pending-form')).toBeNull();
+    expect(screen.getByTestId('ticket-workbench-status')).toHaveValue('open');
+  });
 });
 
 describe('TicketWorkbench rail and resolution note visibility', () => {

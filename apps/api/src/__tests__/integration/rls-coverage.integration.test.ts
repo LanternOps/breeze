@@ -191,6 +191,14 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   ['oauth_client_partner_grants', 'partner_id'],
   ['email_verification_tokens', 'partner_id'],
   ['ticket_categories', 'partner_id'],
+  // work_types (#4615, spec 2026-09-17 §4.2): partner-owned labour label.
+  // Shape 3, flat breeze_has_partner_access(partner_id). No org_id and no
+  // device_id by design (spec §4.1), so this is its ONLY registration list:
+  // not in CORE_ORG_CASCADE_DELETE_ORDER, not in CORE_TENANT_EXPORT_POLICY,
+  // not in orgMergeRegistry, and deliberately NOT in DUAL_AXIS_TENANT_TABLES
+  // or PARTNER_WIDE_SELECT_BRANCH_EXEMPT. Functional forge proof:
+  // workTypesPartnerRls.integration.test.ts.
+  ['work_types', 'partner_id'],
   ['ticket_response_templates', 'partner_id'],
   ['ticket_mailbox_connections', 'partner_id'],
   ['ticket_mailbox_tenant_ownerships', 'partner_id'],

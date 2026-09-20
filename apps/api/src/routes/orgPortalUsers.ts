@@ -2,12 +2,13 @@ import type { Hono } from 'hono';
 import { zValidator } from '../lib/validation';
 import { and, eq, isNull, desc, ne, sql } from 'drizzle-orm';
 import { db } from '../db';
-import { organizations, portalUsers, tickets, ticketComments, assetCheckouts } from '../db/schema';
+import { organizations, partners, portalUsers, tickets, ticketComments, assetCheckouts } from '../db/schema';
 import { linkLoginToContact, type LoginContactOutcome } from '../services/contacts/loginLink';
 import { requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { PERMISSIONS } from '../services/permissions';
 import { writeRouteAudit } from '../services/auditEvents';
 import { getEmailService } from '../services/email';
+import { partnerEmailCustomFromSettings } from '../services/emailTemplates/renderPartnerEmail';
 import { getRedis } from '../services/redis';
 import { purgeClientAiSessionsForUsers } from '../services/clientAiSessionStore';
 import { storePortalInviteToken, buildPortalUrl, purgePortalSessionsForUsers } from './portal/helpers';
@@ -91,8 +92,31 @@ async function issueAndSendInvite(c: any, orgId: string, user: { id: string; ema
   // These routes are requireScope('partner', 'system'); a system-scope caller
   // has partnerId === null, which resolves to the platform sender.
   const partnerId = (c.get('auth') as AuthContext | undefined)?.partnerId ?? null;
+  let partnerName: string | undefined;
+  let custom = null;
   try {
-    await emailService.sendPortalInvite({ to: user.email, inviteUrl, orgName: orgName ?? undefined, inviterName: inviterName ?? undefined, message, partnerId });
+    const orgRows = await db.select({ partnerId: organizations.partnerId }).from(organizations).where(eq(organizations.id, orgId)).limit(1);
+    const orgRow = Array.isArray(orgRows) ? orgRows[0] : undefined;
+    if (orgRow?.partnerId) {
+      const partnerRows = await db.select({ name: partners.name, settings: partners.settings }).from(partners).where(eq(partners.id, orgRow.partnerId)).limit(1);
+      const partner = Array.isArray(partnerRows) ? partnerRows[0] : undefined;
+      partnerName = partner?.name ?? undefined;
+      custom = partnerEmailCustomFromSettings(partner?.settings, 'portal_invite');
+    }
+  } catch {
+    custom = null;
+  }
+  try {
+    await emailService.sendPortalInvite({
+      to: user.email,
+      inviteUrl,
+      orgName: orgName ?? undefined,
+      inviterName: inviterName ?? undefined,
+      message,
+      partnerId,
+      partnerName,
+      custom,
+    });
     return true;
   } catch (err) {
     console.error('[orgPortalUsers] invite email failed:', err);

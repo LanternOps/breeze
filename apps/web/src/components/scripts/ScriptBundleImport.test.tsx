@@ -196,3 +196,51 @@ describe('ScriptBundleImportModal legacy tagging (#5654)', () => {
     expect(screen.getByText(/legacy-import tag/i)).toBeInTheDocument();
   });
 });
+
+describe('ScriptBundleImportModal import button pluralization (sweep paper cut #20)', () => {
+  it('says "Import 1 script" (singular) for a one-script bundle', async () => {
+    fetchWithAuthMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/scripts/bundle/preview')) {
+        return jsonResponse({ entries: [{ index: 0, name: 'legacy-script', status: 'new' }] });
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    render(<ScriptBundleImportModal isOpen onClose={vi.fn()} onImported={vi.fn()} />);
+    await uploadBundle();
+    // Exact match: `toHaveTextContent('Import 1 script')` would also pass
+    // against the buggy "Import 1 scripts" (substring match), which is
+    // exactly the bug this test exists to catch.
+    expect(screen.getByTestId('bundle-import-submit')).toHaveTextContent('Import 1 script', {
+      normalizeWhitespace: true
+    });
+    expect(screen.getByTestId('bundle-import-submit').textContent?.trim()).toBe('Import 1 script');
+  });
+
+  it('says "Import 2 scripts" (plural) for a two-script bundle', async () => {
+    const twoScriptBundle = JSON.stringify({
+      bundleVersion: 1,
+      scripts: [
+        { name: 'legacy-script-a', osTypes: ['linux'], language: 'bash', content: 'echo a' },
+        { name: 'legacy-script-b', osTypes: ['linux'], language: 'bash', content: 'echo b' }
+      ]
+    });
+    fetchWithAuthMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/scripts/bundle/preview')) {
+        return jsonResponse({
+          entries: [
+            { index: 0, name: 'legacy-script-a', status: 'new' },
+            { index: 1, name: 'legacy-script-b', status: 'new' }
+          ]
+        });
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    render(<ScriptBundleImportModal isOpen onClose={vi.fn()} onImported={vi.fn()} />);
+    const file = new File([twoScriptBundle], 'bundle.json', { type: 'application/json' });
+    fireEvent.change(screen.getByTestId('bundle-import-file-input'), { target: { files: [file] } });
+    await screen.findByTestId('bundle-import-mode');
+    expect(screen.getByTestId('bundle-import-submit')).toHaveTextContent('Import 2 scripts');
+  });
+});
