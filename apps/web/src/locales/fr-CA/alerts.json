@@ -685,6 +685,7 @@
       "failedToDelete": "Échec de la suppression de la politique d'escalade",
       "deleteConfirm": "Supprimer la politique d'escalade « {{name}} » ? Les moniteurs et lignes de routage qui la référencent cesseront d'escalader.",
       "legacyRepaired": "La politique enregistrée contenait des étapes qui ne correspondaient pas au format actuel et qui ont été ajustées.",
+      "delayRange": "Entrez un nombre entier de 1 à 10080 minutes (7 jours).",
       "minutesRange": "Entrez un nombre entier de 1 à 1440 minutes.",
       "timesRange": "Entrez un nombre entier de 1 à 10 répétitions.",
       "targetRequired": "Sélectionnez au moins un canal ou un utilisateur par étape."

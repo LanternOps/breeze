@@ -685,6 +685,7 @@
       "failedToDelete": "Eskalationsrichtlinie konnte nicht gelöscht werden",
       "deleteConfirm": "Eskalationsrichtlinie „{{name}}“ löschen? Monitore und Weiterleitungszeilen, die darauf verweisen, eskalieren nicht mehr.",
       "legacyRepaired": "Die gespeicherte Richtlinie enthielt Schritte, die nicht dem aktuellen Format entsprachen und angepasst wurden.",
+      "delayRange": "Geben Sie eine ganze Zahl von 1 bis 10080 Minuten (7 Tage) ein.",
       "minutesRange": "Geben Sie eine ganze Zahl von 1–1440 Minuten ein.",
       "timesRange": "Geben Sie eine ganze Zahl von 1–10 Wiederholungen ein.",
       "targetRequired": "Wählen Sie pro Schritt mindestens einen Kanal oder Benutzer aus."

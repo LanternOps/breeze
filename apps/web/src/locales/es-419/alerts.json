@@ -685,6 +685,7 @@
       "failedToDelete": "No se pudo eliminar la política de escalamiento",
       "deleteConfirm": "¿Eliminar la política de escalamiento «{{name}}»? Los monitores y filas de enrutamiento que la referencian dejarán de escalar.",
       "legacyRepaired": "La política guardada tenía pasos que no se ajustaban al formato actual y se modificaron.",
+      "delayRange": "Ingresa un número entero de 1 a 10080 minutos (7 días).",
       "minutesRange": "Ingresa un número entero de 1–1440 minutos.",
       "timesRange": "Ingresa un número entero de 1–10 veces.",
       "targetRequired": "Selecciona al menos un canal o usuario por paso."

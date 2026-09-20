@@ -685,6 +685,7 @@
       "failedToDelete": "Yükseltme ilkesi silinemedi",
       "deleteConfirm": "\"{{name}}\" yükseltme ilkesi silinsin mi? Buna başvuran monitörler ve yönlendirme satırları yükseltmeyi durduracak.",
       "legacyRepaired": "Kaydedilen politikada mevcut biçime uymayan adımlar vardı ve bu adımlar düzenlendi.",
+      "delayRange": "1 ile 10080 dakika (7 gün) arasında bir tam sayı girin.",
       "minutesRange": "1–1440 dakika arasında bir tam sayı girin.",
       "timesRange": "1–10 tekrar arasında bir tam sayı girin.",
       "targetRequired": "Her adım için en az bir kanal veya kullanıcı seçin."

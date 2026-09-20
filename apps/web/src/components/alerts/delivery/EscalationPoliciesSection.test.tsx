@@ -52,14 +52,14 @@ describe('EscalationPoliciesSection (W05b)', () => {
   });
   it('saves user-only targets and repeats, preserving both when editing', async () => {
     renderSection([{ id: 'ep-user', orgId: 'org-1', partnerId: null, name: 'Alex on-call',
-      steps: [{ delayMinutes: 5, channelIds: [], userIds: ['user-1'], repeat: { everyMinutes: 10, maxTimes: 2 } }] }]);
+      steps: [{ delayMinutes: 5, channelIds: [], userIds: ['user-1'], renotify: { everyMinutes: 10, maxTimes: 2 } }] }]);
     fireEvent.click(within(screen.getByTestId('escalation-row-ep-user')).getByTestId('escalation-row-edit'));
     expect(await screen.findByLabelText('Alex')).toBeChecked();
     expect(screen.getByTestId('escalation-step-0-every')).toHaveValue(10);
     fireEvent.click(screen.getByTestId('escalation-policy-drawer-save'));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/alerts/policies/ep-user', expect.objectContaining({ method: 'PUT' })));
     const call = fetchMock.mock.calls.find(([, options]) => options?.method === 'PUT')!;
-    expect(JSON.parse(call[1]!.body as string).steps[0]).toEqual({ delayMinutes: 5, channelIds: [], userIds: ['user-1'], repeat: { everyMinutes: 10, maxTimes: 2 } });
+    expect(JSON.parse(call[1]!.body as string).steps[0]).toEqual({ delayMinutes: 5, channelIds: [], userIds: ['user-1'], renotify: { everyMinutes: 10, maxTimes: 2 } });
   });
   it('save is disabled while a step has no target', async () => {
     renderSection([]);
@@ -81,7 +81,7 @@ describe('EscalationPoliciesSection (W05b)', () => {
 describe('escalation validation and read failures', () => {
   it.each([['every', 1441], ['every', 0], ['times', 11], ['times', 0]])('rejects repeat %s=%s', async (field, value) => {
     renderSection([{ id: 'ep', orgId: 'org-1', partnerId: null, name: 'On-call',
-      steps: [{ delayMinutes: 5, channelIds: [], userIds: ['user-1'], repeat: { everyMinutes: 1440, maxTimes: 10 } }] }]);
+      steps: [{ delayMinutes: 5, channelIds: [], userIds: ['user-1'], renotify: { everyMinutes: 1440, maxTimes: 10 } }] }]);
     fireEvent.click(screen.getByTestId('escalation-row-edit'));
     await screen.findByLabelText('Alex');
     expect(screen.getByTestId('escalation-policy-drawer-save')).toBeEnabled();
@@ -90,7 +90,7 @@ describe('escalation validation and read failures', () => {
   });
   it('rejects more than 50 occurrences and accepts exactly 50', async () => {
     renderSection([{ id: 'ep', orgId: 'org-1', partnerId: null, name: 'On-call',
-      steps: Array.from({ length: 5 }, () => ({ delayMinutes: 5, channelIds: [], userIds: ['user-1'], repeat: { everyMinutes: 10, maxTimes: 10 } })) }]);
+      steps: Array.from({ length: 5 }, () => ({ delayMinutes: 5, channelIds: [], userIds: ['user-1'], renotify: { everyMinutes: 10, maxTimes: 10 } })) }]);
     fireEvent.click(screen.getByTestId('escalation-row-edit'));
     await screen.findAllByLabelText('Alex');
     expect(screen.getByTestId('escalation-policy-drawer-save')).toBeDisabled();

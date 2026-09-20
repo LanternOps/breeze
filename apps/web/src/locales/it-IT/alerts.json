@@ -685,6 +685,7 @@
       "failedToDelete": "Impossibile eliminare il criterio di escalation",
       "deleteConfirm": "Eliminare il criterio di escalation «{{name}}»? I monitor e le righe di instradamento che vi fanno riferimento smetteranno di eseguire l'escalation.",
       "legacyRepaired": "La policy salvata conteneva passaggi non conformi al formato attuale, che sono stati adattati.",
+      "delayRange": "Inserisci un numero intero da 1 a 10080 minuti (7 giorni).",
       "minutesRange": "Inserisci un numero intero da 1 a 1440 minuti.",
       "timesRange": "Inserisci un numero intero da 1 a 10 ripetizioni.",
       "targetRequired": "Seleziona almeno un canale o un utente per passaggio."

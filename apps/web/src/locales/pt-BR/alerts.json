@@ -685,6 +685,7 @@
       "failedToDelete": "Falha ao excluir a política de escalonamento",
       "deleteConfirm": "Excluir a política de escalonamento “{{name}}”? Monitores e linhas de roteamento que a referenciam deixarão de escalonar.",
       "legacyRepaired": "A política salva tinha etapas que não correspondiam ao formato atual e foram ajustadas.",
+      "delayRange": "Insira um número inteiro de 1 a 10080 minutos (7 dias).",
       "minutesRange": "Insira um número inteiro de 1 a 1440 minutos.",
       "timesRange": "Insira um número inteiro de 1 a 10 repetições.",
       "targetRequired": "Selecione pelo menos um canal ou usuário por etapa."

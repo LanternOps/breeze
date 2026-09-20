@@ -108,7 +108,7 @@ export type InheritedRoutingRule = Omit<EditableRoutingRule, 'orgId' | 'partnerI
 export type RoutingRule = EditableRoutingRule | InheritedRoutingRule;
 export const isEditableRoutingRule = (row: RoutingRule): row is EditableRoutingRule => row.inherited !== true;
 export const isPartnerRail = (row: RoutingRule | EscalationPolicy): boolean => row.inherited === true || row.orgId === null;
-export type EditableEscalationPolicy = { inherited?: false; id: string; orgId: string | null; partnerId: string | null; name: string; steps: Array<{ delayMinutes: number; channelIds: string[]; userIds?: string[]; repeat?: { everyMinutes: number; maxTimes: number } }> };
+export type EditableEscalationPolicy = { inherited?: false; id: string; orgId: string | null; partnerId: string | null; name: string; steps: Array<{ delayMinutes: number; channelIds: string[]; userIds?: string[]; renotify?: { everyMinutes: number; maxTimes: number } }> };
 export type InheritedEscalationPolicy = { id: string; name: string; stepCount: number; inherited: true };
 export type EscalationPolicy = EditableEscalationPolicy | InheritedEscalationPolicy;
 export const isEditableEscalationPolicy = (row: EscalationPolicy): row is EditableEscalationPolicy => row.inherited !== true;
@@ -135,7 +135,7 @@ export function orderRoutingRules<T extends RoutingRule>(rules: T[]): T[] {
 }
 
 export async function runEscalationPolicySave(
-  policy: { id?: string; name: string; steps: Array<{ delayMinutes: number; channelIds: string[]; userIds?: string[]; repeat?: { everyMinutes: number; maxTimes: number } }>; ownerScope?: 'organization' | 'partner'; orgId?: string | null },
+  policy: { id?: string; name: string; steps: Array<{ delayMinutes: number; channelIds: string[]; userIds?: string[]; renotify?: { everyMinutes: number; maxTimes: number } }>; ownerScope?: 'organization' | 'partner'; orgId?: string | null },
   deps: { onUnauthorized: () => void }
 ): Promise<void> {
   const isEdit = !!policy.id;

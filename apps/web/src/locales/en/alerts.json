@@ -685,6 +685,7 @@
       "failedToDelete": "Failed to delete escalation policy",
       "deleteConfirm": "Delete escalation policy \"{{name}}\"? Monitors and routing rows that reference it will stop escalating.",
       "legacyRepaired": "The stored policy had steps that did not fit the current format and were adjusted.",
+      "delayRange": "Enter a whole number from 1–10080 minutes (7 days).",
       "minutesRange": "Enter a whole number from 1–1440 minutes.",
       "timesRange": "Enter a whole number from 1–10 times.",
       "targetRequired": "Select at least one channel or user per step."

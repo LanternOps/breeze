@@ -22,7 +22,7 @@ describe('legacy escalation steps (G1)', () => {
     ['missing channels', [{ delayMinutes: 5, userIds: ['user'] }], 5],
     ['null steps', null, 15],
     ['extra keys and string delay', [{ delayMinutes: '5', channelIds: ['ch'], extra: true }], 5],
-    ['invalid arrays and repeat', [{ delayMinutes: 'bad', channelIds: 7, userIds: [3, 'user'], repeat: { everyMinutes: 5, maxTimes: 'bad' } }], 15],
+    ['invalid arrays and repeat', [{ delayMinutes: 'bad', channelIds: 7, userIds: [3, 'user'], renotify: { everyMinutes: 5, maxTimes: 'bad' } }], 15],
     ['non-array steps', { length: 1 }, 15],
     ['null step', [null], 15],
   ])('repairs %s and tells the user', async (_, steps, delay) => {
@@ -30,6 +30,16 @@ describe('legacy escalation steps (G1)', () => {
     expect(screen.getByTestId('escalation-step-0-delay')).toHaveValue(delay);
     expect(screen.getByTestId('escalation-legacy-repaired')).toHaveTextContent('stored policy');
     await waitFor(() => expect(fetchWithAuth).toHaveBeenCalled());
+  });
+  it('drops the obsolete repeat field and reports a repair', async () => {
+    const currentStep = { ...validStep, renotify: { everyMinutes: 15, maxTimes: 1 } };
+    const { renotify, ...step } = currentStep;
+    const onSave = mount([{ ...step, repeat: renotify }]);
+    expect(screen.getByTestId('escalation-legacy-repaired')).toHaveTextContent('stored policy');
+    expect(screen.getByTestId('escalation-step-0-repeat')).not.toBeChecked();
+    await waitFor(() => expect(screen.getByTestId('escalation-policy-drawer-save')).toBeEnabled());
+    fireEvent.click(screen.getByTestId('escalation-policy-drawer-save'));
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ steps: [validStep] }));
   });
   it('strips extra fields from the saved step', async () => {
     const onSave = mount([{ ...validStep, delayMinutes: '5', extra: true }]);
@@ -45,16 +55,26 @@ describe('legacy escalation steps (G1)', () => {
 });
 
 describe('inline escalation validation (G4)', () => {
+  it.each([1441, 10080])('saves stored delay %s without repair (J2)', async (delayMinutes) => {
+    const onSave = mount([{ ...validStep, delayMinutes }]);
+    await waitFor(() => expect(screen.getByTestId('escalation-policy-drawer-save')).toBeEnabled());
+    expect(screen.queryByTestId('escalation-legacy-repaired')).toBeNull();
+    expect(screen.getByTestId('escalation-step-0-delay')).toHaveAttribute('max', '10080');
+    expect(screen.queryByTestId('escalation-step-0-delay-error')).toBeNull();
+    fireEvent.click(screen.getByTestId('escalation-policy-drawer-save'));
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ steps: [{ ...validStep, delayMinutes }] }));
+  });
   it.each([
-    ['delay', 0, 'Enter a whole number from 1–1440 minutes.'],
-    ['delay', 1441, 'Enter a whole number from 1–1440 minutes.'],
-    ['every', 2000, 'Enter a whole number from 1–1440 minutes.'],
+    ['delay', 0, 'Enter a whole number from 1–10080 minutes (7 days).'],
+    ['delay', 10081, 'Enter a whole number from 1–10080 minutes (7 days).'],
+    ['every', 1441, 'Enter a whole number from 1–1440 minutes.'],
     ['times', 11, 'Enter a whole number from 1–10 times.'],
   ])('explains invalid %s=%s and clears when fixed', async (field, value, message) => {
-    mount([{ ...validStep, repeat: { everyMinutes: 15, maxTimes: 1 } }]);
+    mount([{ ...validStep, renotify: { everyMinutes: 15, maxTimes: 1 } }]);
     await waitFor(() => expect(screen.getByTestId('escalation-policy-drawer-save')).toBeEnabled());
     const input = screen.getByTestId(`escalation-step-0-${field}`);
     fireEvent.change(input, { target: { value } });
+    expect(screen.getByTestId('escalation-policy-drawer-save')).toBeDisabled();
     expect(screen.getByText(message)).toBeInTheDocument();
     expect(input).toHaveAttribute('aria-invalid', 'true');
     expect(document.getElementById(input.getAttribute('aria-describedby')!)).toHaveTextContent(message);
@@ -72,8 +92,13 @@ describe('inline escalation validation (G4)', () => {
     await waitFor(() => expect(screen.getByTestId('escalation-policy-drawer-save')).toBeEnabled());
   });
   it('explains the policy notification limit and clears when fixed', async () => {
-    mount(Array.from({ length: 5 }, () => ({ ...validStep, repeat: { everyMinutes: 15, maxTimes: 10 } })));
-    expect(screen.getByText('A policy can send at most 50 notifications.')).toBeInTheDocument();
+    mount(Array.from({ length: 5 }, () => ({ ...validStep, renotify: { everyMinutes: 15, maxTimes: 10 } })));
+    const message = screen.getByTestId('escalation-policy-limit-error');
+    expect(message).toHaveTextContent('A policy can send at most 50 notifications.');
+    const save = screen.getByTestId('escalation-policy-drawer-save');
+    expect(save).toBeDisabled();
+    expect(save).toHaveAttribute('aria-describedby', message.id);
+    expect(screen.getByTestId('escalation-policy-drawer-footer')).toContainElement(message);
     fireEvent.change(screen.getByTestId('escalation-step-0-times'), { target: { value: 5 } });
     expect(screen.queryByText('A policy can send at most 50 notifications.')).toBeNull();
     await waitFor(() => expect(screen.getByTestId('escalation-policy-drawer-save')).toBeEnabled());
