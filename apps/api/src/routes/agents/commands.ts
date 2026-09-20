@@ -377,7 +377,7 @@ commandsRoutes.post(
     // reaper) remains acceptable for non-PAM commands. Every other terminal
     // result preserves the historical short circuit.
     const acceptsResult = commandAcceptsAgentResult(command.status, command.result, command.type);
-    if (!acceptsResult && command.type !== 'file_delete') {
+    if (!acceptsResult && command.type !== 'file_delete' && command.type !== 'system_cleanup_run') {
       return c.json({ success: true });
     }
 
@@ -412,10 +412,11 @@ commandsRoutes.post(
     // Authorize using the stored command above and redact before persisting;
     // this supplements the run without reopening the command.
     const recordSupplementalCleanup = async () => {
-      const payload = command.payload as { cleanupRunId?: unknown } | null;
-      if (command.type !== 'file_delete' || typeof payload?.cleanupRunId !== 'string' || !payload.cleanupRunId) return;
+      const payload = command.payload as { cleanupRunId?: unknown; runId?: unknown } | null;
+      const runId = command.type === 'system_cleanup_run' ? payload?.runId : payload?.cleanupRunId;
+      if (!['file_delete', 'system_cleanup_run'].includes(command.type) || typeof runId !== 'string' || !runId) return;
       const { commandResultHandlers } = await import('../../services/commandResultHandlers');
-      await commandResultHandlers.file_delete!({
+      await commandResultHandlers[command.type]!({
         agentId: agent.agentId ?? agentId, command, commandId, result: normalizedData,
         resolvedDeviceId: command.deviceId, stdout,
       });

@@ -489,6 +489,24 @@ describe('agent commands routes', () => {
     },
   );
 
+  it.each(['cancelled', 'completed', 'failed'])('reconciles resubmitted system cleanup for a %s command without reopening it', async (status) => {
+    selectMock.mockReturnValueOnce(chainMock([{
+      id: commandId, deviceId: 'device-1', type: 'system_cleanup_run', status, targetRole: 'agent',
+      payload: { runId: '44444444-4444-4444-8444-444444444444' }, result: { status },
+    }]));
+    const res = await app.request(`/agents/${agentId}/commands/${commandId}/result`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ commandId, status: 'completed', stdout: '{"freedBytes":3000}' }),
+    });
+    expect(res.status).toBe(200);
+    expect(systemCleanupRegistryHandlerMock).toHaveBeenCalledOnce();
+    expect(systemCleanupRegistryHandlerMock).toHaveBeenCalledWith(expect.objectContaining({
+      command: expect.objectContaining({ payload: { runId: '44444444-4444-4444-8444-444444444444' } }),
+      stdout: '{"freedBytes":3000}',
+    }));
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
   it('preserves the terminal short circuit for malformed PAM results', async () => {
     selectMock.mockReturnValueOnce(chainMock([{
       id: commandId,

@@ -1995,6 +1995,7 @@ async function processCommandResult(
               or(
                 commandAcceptsAgentResultCondition(),
                 and(eq(deviceCommands.type, 'file_delete'), sql`${deviceCommands.payload} ? 'cleanupRunId'`),
+                and(eq(deviceCommands.type, 'system_cleanup_run'), sql`${deviceCommands.payload} ? 'runId'`),
               )
             )
           )
@@ -2026,6 +2027,7 @@ async function processCommandResult(
                 or(
                   commandAcceptsAgentResultCondition(),
                   and(eq(deviceCommands.type, 'file_delete'), sql`${deviceCommands.payload} ? 'cleanupRunId'`),
+                  and(eq(deviceCommands.type, 'system_cleanup_run'), sql`${deviceCommands.payload} ? 'runId'`),
                 )
               )
             )
@@ -2093,16 +2095,17 @@ async function processCommandResult(
 
     const cleanupCommand = command;
     const recordSupplementalCleanup = async () => {
-      const payload = cleanupCommand.payload as { cleanupRunId?: unknown } | null;
-      if (cleanupCommand.type !== 'file_delete' || typeof payload?.cleanupRunId !== 'string' || !payload.cleanupRunId) return;
+      const payload = cleanupCommand.payload as { cleanupRunId?: unknown; runId?: unknown } | null;
+      const runId = cleanupCommand.type === 'system_cleanup_run' ? payload?.runId : payload?.cleanupRunId;
+      if (!['file_delete', 'system_cleanup_run'].includes(cleanupCommand.type) || typeof runId !== 'string' || !runId) return;
       await runWithAgentOrgDbAccess('agentWs.commandResult.cleanupEvidence', orgId, partnerId, () =>
-        commandResultHandlers.file_delete!({
+        commandResultHandlers[cleanupCommand.type]!({
           agentId, command: cleanupCommand, commandId: result.commandId, result: normalizedResult,
           resolvedDeviceId: resolvedDeviceId!, stdout,
         })
       );
     };
-    if (command.type === 'file_delete' && !commandAcceptsAgentResult(command.status, command.result, command.type)) {
+    if (['file_delete', 'system_cleanup_run'].includes(command.type) && !commandAcceptsAgentResult(command.status, command.result, command.type)) {
       await recordSupplementalCleanup();
       return;
     }
