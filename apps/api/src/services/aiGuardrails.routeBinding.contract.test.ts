@@ -219,6 +219,10 @@ interface Binding {
  * comments in `aiGuardrails.ts` beside each mapping.
  */
 const BINDINGS: readonly Binding[] = [
+  {
+    tool: 'list_incidents', routeFile: 'incidents.ts', method: 'get', path: '/',
+    toolOnly: { extra: [], reason: 'Site/device-bound callers only see incidents with a reachable affected device; REST list has no site/device gate.' },
+  },
   // Empty site allowlists hide all contacts, stricter than REST's org-level visibility.
   { tool: 'list_org_contacts', routeFile: 'orgContacts.ts', method: 'get', path: '/organizations/:id/contacts' },
   // Time reads narrow other-user access to platform admins (route also accepts *:* grants).

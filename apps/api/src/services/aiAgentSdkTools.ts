@@ -298,6 +298,7 @@ export const TOOL_TIERS = {
   get_monitor_activity: 2,
   reset_monitor_escalation: 2,
   // Org lifecycle tools (issue #2366) — new-customer intake (org → site → quote)
+  list_incidents: 1,
   list_org_contacts: 1,
   list_organizations: 1,
   manage_organizations: 2,      // create_org/update_org/create_site escalate to 3 in guardrails
@@ -2599,6 +2600,23 @@ export function buildBreezeSdkTools(
     ),
 
     // Org lifecycle tools (issue #2366) — new-customer intake (org → site → quote)
+
+    tool(
+      'list_incidents',
+      registryDescription('list_incidents'),
+      {
+        orgId: z.string().guid().optional(),
+        status: z.enum(['detected', 'analyzing', 'contained', 'recovering', 'closed']).optional(),
+        severity: z.enum(['p1', 'p2', 'p3', 'p4']).optional(),
+        classification: z.string().max(40).optional(),
+        assignedTo: z.string().guid().optional(),
+        startDate: z.string().datetime({ offset: true }).optional(),
+        endDate: z.string().datetime({ offset: true }).optional(),
+        limit: z.number().int().min(1).max(100).optional(),
+        offset: z.number().int().min(0).optional(),
+      },
+      makeHandler('list_incidents', getAuth, onPreToolUse, onPostToolUse)
+    ),
 
     tool(
       'list_org_contacts',

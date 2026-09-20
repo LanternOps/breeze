@@ -389,6 +389,18 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     includeBlockContent: z.boolean().optional(),
   }),
 
+  list_incidents: z.object({
+    orgId: z.string().guid().optional(),
+    status: z.enum(['detected', 'analyzing', 'contained', 'recovering', 'closed']).optional(),
+    severity: z.enum(['p1', 'p2', 'p3', 'p4']).optional(),
+    classification: z.string().max(40).optional(),
+    assignedTo: z.string().guid().optional(),
+    startDate: z.string().datetime({ offset: true }).optional(),
+    endDate: z.string().datetime({ offset: true }).optional(),
+    limit: z.number().int().min(1).max(100).optional(),
+    offset: z.number().int().min(0).optional(),
+  }),
+
   list_org_contacts: z.object({
     orgId: z.string().guid(),
     siteId: z.union([z.literal('none'), z.string().guid()]).optional(),
