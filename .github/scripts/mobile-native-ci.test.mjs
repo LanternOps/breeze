@@ -44,7 +44,35 @@ test('mobile compilation watches all native and workspace dependency inputs', ()
   // PRs and merge groups compare against the default branch, and a manual
   // dispatch on main falls through to `mobile: true`.
   assert.doesNotMatch(changes, /github\.event\.before/u, 'no push-only base: main pushes do not run CI');
-  assert.match(changes, /base: \$\{\{ github\.event\.repository\.default_branch \}\}/u, 'compare against the default branch');
+  // A merge-group ref carries every entry AHEAD of this one, so diffing it
+  // against the default branch attributes their changes to this entry: #6032
+  // (a Rust helper PR) inherited mobile: true from #6419's version bump sitting
+  // ahead of it, paid a 45-minute macOS job, hit `timeout-minutes: 45`, and was
+  // silently dequeued. Scope the comparison to THIS entry's own commits, the
+  // way the `lockfile` step below and the `changes` classifier already do.
+  assert.match(
+    changes,
+    /base: \$\{\{ steps\.base\.outputs\.ref \}\}/u,
+    'compare against the entry-scoped base, not the raw default branch',
+  );
+  const baseStep = changes.match(/- name: Resolve the diff base\n([\s\S]*?)(?=\n      - name: )/u);
+  assert.ok(baseStep, 'the diff base must be resolved in its own step');
+  assert.match(baseStep[1], /BASE_SHA: \$\{\{ github\.event\.merge_group\.base_sha \}\}/u);
+  assert.match(baseStep[1], /DEFAULT_BRANCH: \$\{\{ github\.event\.repository\.default_branch \}\}/u);
+  // Absent base sha (pull_request, workflow_dispatch) must fall back to the
+  // default branch rather than emit an empty base, which paths-filter would
+  // read as "everything changed".
+  assert.match(baseStep[1], /if \[\[ -z "\$\{BASE_SHA\}" \]\]; then\n\s+echo "ref=\$\{DEFAULT_BRANCH\}"/u);
+  assert.match(baseStep[1], /echo "ref=\$\{BASE_SHA\}"/u);
+  // paths-filter cannot diff against a sha the shallow checkout does not have,
+  // and a silent miss here reads as "no mobile change" — fail-open, the exact
+  // shape this fix exists to remove. The base must be fetched explicitly, the
+  // way the lockfile step already fetches its own.
+  assert.match(
+    baseStep[1],
+    /git fetch --no-tags --depth=1 origin "\$\{BASE_SHA\}"/u,
+    'the merge-group base sha must be fetched before it is used as a filter base',
+  );
   assert.doesNotMatch(workflow, /^  push:\n\s+branches: \[main\]/mu, 'ci.yml must not trigger on push to main; the queue already ran it');
   assert.match(changes, /github\.event_name == 'workflow_dispatch'/u);
   assert.doesNotMatch(changes, /- 'apps\/api\/\*\*'/u);
