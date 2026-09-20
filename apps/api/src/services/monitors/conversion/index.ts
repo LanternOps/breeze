@@ -7,3 +7,4 @@ export { resolveDeviceIdsForPolicy } from './legacyBaseline';
 export { isRevertAvailable, findLiveTargetDependencies } from './lifecycle';
 export { carryOpenAlerts, restoreMovedAlertRefs } from './history';
 export { previewPolicyConversion, buildPolicyConversionPreview, previewPartnerConversion, convertPolicy, convertPartnerLegacy, revertConversion, retireSource, ConversionError } from './convert';
+export { listConversionLedger } from './ledger';
