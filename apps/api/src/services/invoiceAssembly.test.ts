@@ -8,7 +8,7 @@ describe('timeEntryToLineSpec', () => {
   it('converts minutes to hours and computes line total; flags unapproved; non-taxable', () => {
     const spec = timeEntryToLineSpec({
       id: 'te1', ticketId: 'tk1', description: 'Onsite repair',
-      durationMinutes: 90, hourlyRate: '120.00', isApproved: false
+      durationMinutes: 90, billableMinutes: null, hourlyRate: '120.00', isApproved: false
     }, 'USD');
     expect(spec).toMatchObject({
       sourceType: 'time_entry', sourceId: 'te1', ticketId: 'tk1',
@@ -17,7 +17,7 @@ describe('timeEntryToLineSpec', () => {
     });
   });
   it('defaults the description; an explicit zero rate stays a valid zero line', () => {
-    const spec = timeEntryToLineSpec({ id: 'te2', ticketId: null, description: null, durationMinutes: 0, hourlyRate: '0.00', isApproved: true }, 'USD');
+    const spec = timeEntryToLineSpec({ id: 'te2', ticketId: null, description: null, durationMinutes: 0, billableMinutes: null, hourlyRate: '0.00', isApproved: true }, 'USD');
     expect(spec.description).toBe('Labor');
     expect(spec.unitPrice).toBe('0.00');
     expect(spec.lineTotal).toBe('0.00');
@@ -25,14 +25,14 @@ describe('timeEntryToLineSpec', () => {
   });
   it('one minute at 7.25/h is 0.15, not 0.14 (review #2: exact half-up, same as the SQL summary)', () => {
     const spec = timeEntryToLineSpec(
-      { id: 'te3', ticketId: null, description: null, durationMinutes: 1, hourlyRate: '7.25', isApproved: true }, 'USD'
+      { id: 'te3', ticketId: null, description: null, durationMinutes: 1, billableMinutes: null, hourlyRate: '7.25', isApproved: true }, 'USD'
     );
     expect(spec.quantity).toBe('0.02');
     expect(spec.lineTotal).toBe('0.15');
   });
   it('never substitutes zero for a NULL rate — that is an assembly gap, not a free line (review #1)', () => {
     expect(() => timeEntryToLineSpec(
-      { id: 'te2', ticketId: null, description: null, durationMinutes: 60, hourlyRate: null, isApproved: true }, 'USD'
+      { id: 'te2', ticketId: null, description: null, durationMinutes: 60, billableMinutes: null, hourlyRate: null, isApproved: true }, 'USD'
     )).toThrow(/hourly rate/i);
   });
 });
@@ -41,7 +41,7 @@ describe('timeEntryToLineSpec currency threading', () => {
   it('rounds the line total at the invoice currency minor unit (JPY → whole units)', () => {
     const spec = timeEntryToLineSpec({
       id: 'te3', ticketId: 'tk1', description: 'Onsite repair',
-      durationMinutes: 90, hourlyRate: '333.00', isApproved: true
+      durationMinutes: 90, billableMinutes: null, hourlyRate: '333.00', isApproved: true
     }, 'JPY');
     // 1.50h * 333.00 = 499.50 → whole-yen half-up round, not cent rounding
     expect(spec.lineTotal).toBe('500.00');
@@ -50,7 +50,7 @@ describe('timeEntryToLineSpec currency threading', () => {
   it('applies the single labor rounding rule: hours to 2dp first, then round in the currency (20 min x 1,000 JPY = 330)', () => {
     const spec = timeEntryToLineSpec({
       id: 'te4', ticketId: 'tk1', description: null,
-      durationMinutes: 20, hourlyRate: '1000', isApproved: true
+      durationMinutes: 20, billableMinutes: null, hourlyRate: '1000', isApproved: true
     }, 'JPY');
     // 0.33 h x 1000 = 330 — never 333 / 333.33 (exact-hours product).
     expect(spec.quantity).toBe('0.33');
@@ -118,7 +118,7 @@ describe('partitionByCurrency', () => {
 
   it('blocked totals are honest in the source currency (JPY row on a USD header rounds to whole yen)', () => {
     const result = partitionByCurrency(
-      [{ id: 'te', ticketId: null, description: null, durationMinutes: 20, hourlyRate: '1000', isApproved: true, currencyCode: 'JPY' }],
+      [{ id: 'te', ticketId: null, description: null, durationMinutes: 20, billableMinutes: null, hourlyRate: '1000', isApproved: true, currencyCode: 'JPY' }],
       'USD', timeEntryToLineSpec
     );
     expect(result.included).toEqual([]);
@@ -135,7 +135,7 @@ describe('partitionByCurrency', () => {
 
 describe('partitionTimeEntries — null rate is a structured gap, never zero (review #1)', () => {
   const row = (id: string, hourlyRate: string | null, currencyCode: string | null = 'EUR') => ({
-    id, ticketId: 'tk1', description: 'Work', durationMinutes: 90, hourlyRate, isApproved: true, currencyCode
+    id, ticketId: 'tk1', description: 'Work', durationMinutes: 90, billableMinutes: null, hourlyRate, isApproved: true, currencyCode
   });
 
   it('routes a null-rate entry to missingRate with its hours, and neither includes nor currency-blocks it', () => {
@@ -197,5 +197,74 @@ describe('mergeAssembly', () => {
     expect(merged.blockedByCurrency.USD).toHaveLength(2);
     expect(part.included).toHaveLength(1);
     expect(part.blockedByCurrency.USD).toHaveLength(1);
+  });
+});
+
+describe('minimums and rounding on invoice lines (#4628 W03)', () => {
+  const base = { id: 'te-1', ticketId: 'tk-1', isApproved: true, currencyCode: 'USD' as const };
+
+  it('bills the minimum, not the worked minutes', () => {
+    const spec = timeEntryToLineSpec(
+      { ...base, description: 'On-site', durationMinutes: 30, billableMinutes: 60, hourlyRate: '225.00' },
+      'USD'
+    );
+    expect(spec.quantity).toBe('1.00');
+    expect(spec.lineTotal).toBe('225.00');
+  });
+
+  it('says on the line when the billed quantity differs from the worked time', () => {
+    const spec = timeEntryToLineSpec(
+      { ...base, description: 'On-site', durationMinutes: 30, billableMinutes: 60, hourlyRate: '225.00' },
+      'USD'
+    );
+    expect(spec.description).toBe('On-site — 0.50 h worked, 1.00 h billed');
+  });
+
+  it('adds no note when the billed quantity equals the worked time', () => {
+    const spec = timeEntryToLineSpec(
+      { ...base, description: 'Remote', durationMinutes: 60, billableMinutes: 60, hourlyRate: '150.00' },
+      'USD'
+    );
+    expect(spec.description).toBe('Remote');
+  });
+
+  it('a pre-feature row (NULL billable_minutes) bills exactly as before', () => {
+    const spec = timeEntryToLineSpec(
+      { ...base, description: 'Remote', durationMinutes: 30, billableMinutes: null, hourlyRate: '150.00' },
+      'USD'
+    );
+    expect(spec.quantity).toBe('0.50');
+    expect(spec.lineTotal).toBe('75.00');
+    expect(spec.description).toBe('Remote');
+  });
+
+  it('still ONE line per entry — a minimum never adds a second line', () => {
+    const result = partitionTimeEntries(
+      [{ ...base, description: 'On-site', durationMinutes: 30, billableMinutes: 60, hourlyRate: '225.00' }],
+      'USD'
+    );
+    expect(result.included).toHaveLength(1);
+  });
+
+  it('an INCLUDED entry is a missingRate gap, never a zero line — and reports its BILLED quantity', () => {
+    // coverage 'included' => hourly_rate NULL (§3.4).
+    const result = partitionTimeEntries(
+      [{ ...base, description: 'Covered on-site', durationMinutes: 30, billableMinutes: 60, hourlyRate: null }],
+      'USD'
+    );
+    expect(result.included).toHaveLength(0);
+    expect(result.missingRate).toEqual([
+      expect.objectContaining({ sourceId: 'te-1', quantity: '1.00' }),
+    ]);
+  });
+
+  it('rounding-only: 31 minutes at a 15-minute increment bills 45', () => {
+    const spec = timeEntryToLineSpec(
+      { ...base, description: 'Remote', durationMinutes: 31, billableMinutes: 45, hourlyRate: '120.00' },
+      'USD'
+    );
+    expect(spec.quantity).toBe('0.75');
+    expect(spec.lineTotal).toBe('90.00');
+    expect(spec.description).toBe('Remote — 0.52 h worked, 0.75 h billed');
   });
 });
