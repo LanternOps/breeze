@@ -78,7 +78,9 @@ describe('Redis eviction policy contract', () => {
       'evicting policy tells operators old keys are reclaimed automatically; they',
       'are not — writes fail with OOM and the AOF replays the full dataset on',
       'restart. Fix the doc, or change the compose default first and update this',
-      'contract deliberately.',
+      'contract deliberately. If a doc legitimately needs to name a policy for',
+      'contrast, describe it without the identifier ("an LRU eviction policy")',
+      'rather than weakening this guard.',
     ].join(' ')).toEqual([]);
   });
 });
