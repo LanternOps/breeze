@@ -12,6 +12,7 @@ import { and, eq, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withDbAccessContext, type DbAccessContext } from '../db';
 import { devices, deviceCommands, deviceFilesystemCleanupRuns } from '../db/schema';
 import { queueCommandForExecutionWithSystemPrecheck, CommandTypes } from './commandQueue';
+import { SYSTEM_CLEANUP_RUN_MAX_TIMEOUT_MS } from './commandTimeouts';
 import { SYSTEM_CLEANUP_ACTION_IDS, SYSTEM_CLEANUP_RISK_FLAGS, systemCleanupRunBodySchema, systemCleanupRunBudgetMs } from '@breeze/shared/validators';
 import { compareAgentVersions, parseComparableVersion } from './agentEditionCompat';
 import { terminalPayloadErasureSet } from './sensitiveCommandPayload';
@@ -186,7 +187,7 @@ export type SystemCleanupQueueResult =
   | { ok: false; status: 409; error: 'agent_update_required'; minAgentVersion: string }
   | { ok: false; status: 400 | 503; error: string };
 export type SystemCleanupStartResult =
-  | { ok: true; commandId: string; cleanupRunId: string }
+  | { ok: true; commandId: string; cleanupRunId: string; deadlineAt: string }
   | Exclude<SystemCleanupQueueResult, { ok: true }>
   | { ok: false; status: 409; error: 'run_in_progress'; cleanupRunId: string };
 
@@ -344,7 +345,7 @@ async function startSystemCleanupRunOutsideContext(
       .where(eq(deviceFilesystemCleanupRuns.id, runId)),
   );
 
-  return { ok: true, commandId: queued.command.id, cleanupRunId: runId };
+  return { ok: true, commandId: queued.command.id, cleanupRunId: runId, deadlineAt: deadlineAt.toISOString() };
 }
 
 /**
@@ -433,40 +434,60 @@ export function startSystemCleanupRun(args: StartSystemCleanupRunArgs): Promise<
 }
 
 /**
- * The AI lane needs a RESULT, not a 202. The routes stay async (the web panel
- * polls W04's own `GET /devices/:id/filesystem/system-cleanup/list/:commandId`
- * and `.../run/:cleanupRunId`); this helper is the one place that waits, so
- * list/run themselves are still implemented exactly once.
+ * Wait (bounded) for a system-cleanup command to terminalise.
  *
- * Polls the command row rather than holding a socket waiter: a DISM run can
- * take 90 minutes and the run ceiling is hours, far beyond any in-memory
- * waiter's lifetime across an API restart. Each poll is its own short
- * org-scoped context — never the caller's request transaction, which a
- * two-hour wait would otherwise pin (#1105).
+ * The routes stay async (the web panel polls W04's own
+ * `GET /devices/:id/filesystem/system-cleanup/list/:commandId`); the AI
+ * `list` action is the one caller that waits, and only briefly — a caller
+ * that hits `timeout` re-checks the same command later rather than holding on.
+ *
+ * Each poll is its own short org-scoped context — never the caller's request
+ * transaction (#1105). NOTE that this buys nothing for the lookup itself:
+ * `device_commands` is intentionally RLS-free (the agent WS path writes it
+ * under system scope), so the org context filters NOTHING here. The only
+ * isolation is the WHERE: the command must match by id AND by the device the
+ * caller already verified access to AND by the command type it expects. A
+ * caller must never pass an unverified deviceId.
  *
  * `result` is the agent's stdout JSON, decoded but NOT schema-validated here:
  * the caller knows whether it asked for a catalog or a run and applies the
  * matching Zod shape. An unreadable payload is a failure, never `{}` — an
  * empty catalog is indistinguishable from the truth (spec defect 5).
  */
+export interface AwaitSystemCleanupResultArgs {
+  commandId: string;
+  /** The device the caller has ALREADY verified access to. */
+  deviceId: string;
+  orgId: string;
+  type: typeof CommandTypes.SYSTEM_CLEANUP_LIST | typeof CommandTypes.SYSTEM_CLEANUP_RUN;
+}
+
 export async function awaitSystemCleanupResult(
-  commandId: string,
-  orgId: string,
+  args: AwaitSystemCleanupResultArgs,
   timeoutMs: number,
   intervalMs = 5_000,
-): Promise<{ status: 'completed' | 'failed' | 'timeout'; result?: unknown; error?: string }> {
+): Promise<{ status: 'completed' | 'failed' | 'timeout' | 'not_found'; result?: unknown; error?: string }> {
   const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
+  // Poll at least once, so a 0 ms budget still reads the row.
+  do {
     const [row] = await runOutsideDbContext(() =>
-      withDbAccessContext(dbContextFor({ orgId }), () =>
+      withDbAccessContext(dbContextFor({ orgId: args.orgId }), () =>
         db
           .select({ status: deviceCommands.status, result: deviceCommands.result })
           .from(deviceCommands)
-          .where(eq(deviceCommands.id, commandId))
+          .where(and(
+            eq(deviceCommands.id, args.commandId),
+            eq(deviceCommands.deviceId, args.deviceId),
+            eq(deviceCommands.type, args.type),
+          ))
           .limit(1),
       ),
     );
-    if (row && row.status !== 'pending' && row.status !== 'sent' && row.status !== 'running') {
+    // The command row is inserted before dispatch returns, so a miss on the
+    // first poll is a wrong id/device/type, not a race — answer now rather
+    // than spend the whole budget on a row that can never appear.
+    if (!row) return { status: 'not_found', error: 'command not found' };
+    if (row.status !== 'pending' && row.status !== 'sent' && row.status !== 'running') {
       const payload = (row.result && typeof row.result === 'object' ? row.result : {}) as Record<string, unknown>;
       const error = typeof payload.error === 'string' ? payload.error : undefined;
       // Defensive fallback from spec §5.3: an agent that does not know the
@@ -484,7 +505,132 @@ export async function awaitSystemCleanupResult(
       }
       return { status: 'completed', result, error };
     }
+    if (Date.now() + intervalMs > deadline) break;
     await new Promise((resolve) => setTimeout(resolve, intervalMs));
-  }
+  } while (Date.now() < deadline);
   return { status: 'timeout', error: 'timed out' };
+}
+
+// --- Run status -------------------------------------------------------------
+
+/** The poll projection of a `kind = 'system'` cleanup run. */
+export interface SystemCleanupRunStatus {
+  cleanupRunId: string;
+  commandId: string | null;
+  status: 'previewed' | 'executed' | 'failed' | 'running';
+  error: string | null;
+  freedBytes: number;
+  actions: unknown[];
+  volumes: unknown[];
+  requestedAt: Date;
+  /** The per-selection deadline STORED on the row at claim time, or null for a row written before it existed. */
+  deadlineAt: string | null;
+}
+
+export type SystemCleanupRunStatusResult =
+  | { ok: true; run: SystemCleanupRunStatus }
+  | { ok: false; status: 404; error: 'run_not_found' }
+  | { ok: false; status: 409; error: 'agent_update_required'; minAgentVersion: string };
+
+function readCommandResult(result: unknown): { error?: string; stdout?: string } {
+  if (!result || typeof result !== 'object') return {};
+  const record = result as Record<string, unknown>;
+  return {
+    error: typeof record.error === 'string' ? record.error : undefined,
+    stdout: typeof record.stdout === 'string' ? record.stdout : undefined,
+  };
+}
+
+/**
+ * What state is this system run in? ONE implementation, shared by the human
+ * poll route (`GET /devices/:id/filesystem/system-cleanup/run/:cleanupRunId`)
+ * and the AI tool's `status` action, so the two lanes cannot drift.
+ *
+ * Runs in the CALLER's DB context (the route's ambient request transaction,
+ * the SDK's per-tool context): two short reads and, at most, one short
+ * finalising transaction. `device` must be a device the caller has already
+ * verified access to — the run lookup is scoped to it and its org, and the
+ * command lookup (RLS-free table) to it and the command type.
+ *
+ * The persisted status is authoritative: the agent result handler decides
+ * `executed` vs `failed` (a run whose every action failed is `failed`), and
+ * nothing here re-derives it from the payload.
+ *
+ * Lazy timeout. Nothing else transitions a `running` system run: the stale
+ * command reaper terminalises the COMMAND, not this row, so a device that
+ * never answers would otherwise leave the panel — or an AI session — polling
+ * indefinitely. The deadline is the one STORED on the row at claim time
+ * (spec §13 #14), not a constant and not a recomputation: the budget depends
+ * on what was selected, and two places deriving it independently is how they
+ * drift. A row written before this field existed falls back to the maximum,
+ * which is the conservative direction. Cancelling the command and failing the
+ * row are ONE transaction (spec §13 #6/#13): telling the operator a run failed
+ * while its command is still deliverable is the hazard the live_only TTL
+ * narrows but does not close.
+ */
+export async function resolveSystemCleanupRunStatus(args: {
+  device: { id: string; orgId: string };
+  cleanupRunId: string;
+}): Promise<SystemCleanupRunStatusResult> {
+  const { device, cleanupRunId } = args;
+  const [run] = await db
+    .select()
+    .from(deviceFilesystemCleanupRuns)
+    .where(and(
+      eq(deviceFilesystemCleanupRuns.id, cleanupRunId),
+      eq(deviceFilesystemCleanupRuns.deviceId, device.id),
+      eq(deviceFilesystemCleanupRuns.orgId, device.orgId),
+      eq(deviceFilesystemCleanupRuns.kind, 'system'),
+    ))
+    .limit(1);
+  if (!run) return { ok: false, status: 404, error: 'run_not_found' };
+
+  const agentUpdateRequired = {
+    ok: false as const, status: 409 as const, error: AGENT_UPDATE_REQUIRED_ERROR, minAgentVersion: MIN_AGENT_VERSION_SYSTEM_CLEANUP,
+  };
+  if (isUnknownCommandTypeError(run.error)) return agentUpdateRequired;
+  if (run.commandId) {
+    const [command] = await db.select().from(deviceCommands).where(and(
+      eq(deviceCommands.id, run.commandId), eq(deviceCommands.deviceId, device.id),
+      eq(deviceCommands.type, CommandTypes.SYSTEM_CLEANUP_RUN),
+    )).limit(1);
+    if (isUnknownCommandTypeError(readCommandResult(command?.result).error)) return agentUpdateRequired;
+  }
+
+  let status = run.status;
+  let error = run.error;
+
+  const plan = (run.plan ?? {}) as { deadlineAt?: unknown };
+  const storedDeadline = typeof plan.deadlineAt === 'string' ? plan.deadlineAt : null;
+  const deadlineAt = storedDeadline !== null
+    ? new Date(storedDeadline).getTime()
+    : new Date(run.requestedAt).getTime() + SYSTEM_CLEANUP_RUN_MAX_TIMEOUT_MS;
+
+  if (status === 'running' && Number.isFinite(deadlineAt) && Date.now() > deadlineAt) {
+    const finalised = await failSystemCleanupRunAndCancelCommand({
+      runId: run.id, deviceId: device.id, orgId: device.orgId, error: 'timed out',
+    });
+    // Losing the CAS means a real result landed first; report what the row
+    // said and let the next poll read the handler's answer.
+    if (finalised) {
+      status = 'failed';
+      error = 'timed out';
+    }
+  }
+
+  const executed = (run.executedActions ?? {}) as { actions?: unknown[]; volumes?: unknown[] };
+  return {
+    ok: true,
+    run: {
+      cleanupRunId: run.id,
+      commandId: run.commandId ?? null,
+      status,
+      error: error ?? null,
+      freedBytes: run.bytesReclaimed ?? 0,
+      actions: Array.isArray(executed.actions) ? executed.actions : [],
+      volumes: Array.isArray(executed.volumes) ? executed.volumes : [],
+      requestedAt: run.requestedAt,
+      deadlineAt: storedDeadline,
+    },
+  };
 }

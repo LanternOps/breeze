@@ -147,35 +147,94 @@ describe('systemCleanup service — AI origin passthrough', () => {
 });
 
 describe('awaitSystemCleanupResult', () => {
+  const whereClauses: unknown[] = [];
+  const LIST = { commandId: 'cmd-1', deviceId: DEVICE.id, orgId: DEVICE.orgId, type: 'system_cleanup_list' } as const;
+
+  function eqPairs(clause: unknown): Array<[unknown, unknown]> {
+    const record = clause as { conditions?: unknown[]; left?: unknown; right?: unknown };
+    if (record.conditions) return record.conditions.flatMap(eqPairs);
+    return [[record.left, record.right]];
+  }
+
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.useRealTimers();
     seam.commandRows = [];
+    whereClauses.length = 0;
     seam.context.mockImplementation(async (_context: unknown, callback: () => Promise<unknown>) => callback());
     seam.outside.mockImplementation(async (callback: () => Promise<unknown>) => callback());
     seam.select.mockImplementation(() => ({
       from: () => ({
-        where: () => ({
-          limit: () => Promise.resolve(seam.commandRows),
-        }),
+        where: (clause: unknown) => {
+          whereClauses.push(clause);
+          // device_commands has NO RLS, so the org context filters nothing:
+          // the predicates themselves are the only isolation. Evaluate them.
+          const pairs = eqPairs(clause);
+          const matches = (row: Record<string, unknown>) => pairs.every(([column, value]) => {
+            if (column === 'commands.id') return row.id === value;
+            if (column === 'commands.deviceId') return row.deviceId === value;
+            if (column === 'commands.type') return row.type === value;
+            return true;
+          });
+          return { limit: () => Promise.resolve(seam.commandRows.filter(matches)) };
+        },
       }),
     }));
   });
 
   it('returns the parsed agent payload from a completed command row', async () => {
-    seam.commandRows = [{ status: 'completed', result: { stdout: '{"catalogVersion":1}', error: undefined } }];
-    const outcome = await awaitSystemCleanupResult('cmd-1', DEVICE.orgId, 1_000);
+    seam.commandRows = [{ id: 'cmd-1', deviceId: DEVICE.id, type: 'system_cleanup_list', status: 'completed', result: { stdout: '{"catalogVersion":1}', error: undefined } }];
+    const outcome = await awaitSystemCleanupResult(LIST, 1_000);
     expect(outcome).toEqual({ status: 'completed', result: { catalogVersion: 1 }, error: undefined });
   });
 
+  it('selects the command by id AND device AND type (F2: the org context filters nothing on device_commands)', async () => {
+    seam.commandRows = [{ id: 'cmd-1', deviceId: DEVICE.id, type: 'system_cleanup_list', status: 'completed', result: { stdout: '{}' } }];
+    await awaitSystemCleanupResult(LIST, 1_000);
+    expect(eqPairs(whereClauses[0])).toEqual(expect.arrayContaining([
+      ['commands.id', 'cmd-1'],
+      ['commands.deviceId', DEVICE.id],
+      ['commands.type', 'system_cleanup_list'],
+    ]));
+  });
+
+  it('never resolves a completed command that belongs to another device', async () => {
+    seam.commandRows = [{ id: 'cmd-1', deviceId: 'some-other-device', type: 'system_cleanup_list', status: 'completed', result: { stdout: '{"catalogVersion":1}' } }];
+    const outcome = await awaitSystemCleanupResult(LIST, 1_000);
+    expect(outcome.status).not.toBe('completed');
+    expect(outcome).toEqual({ status: 'not_found', error: 'command not found' });
+  });
+
+  it('never resolves a completed command of another type', async () => {
+    seam.commandRows = [{ id: 'cmd-1', deviceId: DEVICE.id, type: 'system_cleanup_run', status: 'completed', result: { stdout: '{"catalogVersion":1}' } }];
+    const outcome = await awaitSystemCleanupResult(LIST, 1_000);
+    expect(outcome.status).not.toBe('completed');
+    expect(outcome).toEqual({ status: 'not_found', error: 'command not found' });
+  });
+
   it('maps the agent "unknown command type:" fallback to agent_update_required', async () => {
-    seam.commandRows = [{ status: 'failed', result: { error: 'unknown command type: system_cleanup_list' } }];
-    const outcome = await awaitSystemCleanupResult('cmd-1', DEVICE.orgId, 1_000);
+    seam.commandRows = [{ id: 'cmd-1', deviceId: DEVICE.id, type: 'system_cleanup_list', status: 'failed', result: { error: 'unknown command type: system_cleanup_list' } }];
+    const outcome = await awaitSystemCleanupResult(LIST, 1_000);
     expect(outcome).toEqual({ status: 'failed', error: 'agent_update_required' });
   });
 
-  it('times out when the row never terminalises', async () => {
-    seam.commandRows = [{ status: 'pending', result: null }];
-    const outcome = await awaitSystemCleanupResult('cmd-1', DEVICE.orgId, 0);
-    expect(outcome).toEqual({ status: 'timeout', error: 'timed out' });
+  it('actually polls at the interval, then times out when the row never terminalises', async () => {
+    vi.useFakeTimers();
+    seam.commandRows = [{ id: 'cmd-1', deviceId: DEVICE.id, type: 'system_cleanup_list', status: 'pending', result: null }];
+
+    const pending = awaitSystemCleanupResult(LIST, 10_000, 1_000);
+    // First poll happens synchronously on entry.
+    await vi.advanceTimersByTimeAsync(0);
+    expect(seam.select).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(seam.select).toHaveBeenCalledTimes(4);
+    // Each poll is its own short org-scoped context, never a held one.
+    expect(seam.outside).toHaveBeenCalledTimes(4);
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    await expect(pending).resolves.toEqual({ status: 'timeout', error: 'timed out' });
+    expect(seam.select.mock.calls.length).toBeGreaterThanOrEqual(10);
+    expect(seam.select.mock.calls.length).toBeLessThanOrEqual(11);
+    vi.useRealTimers();
   });
 });
