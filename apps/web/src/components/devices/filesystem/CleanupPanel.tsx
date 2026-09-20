@@ -280,7 +280,7 @@ export default function CleanupPanel({ deviceId, volumeLabel, preview, onExecute
       {result && counts && (
         <div className="mt-4 rounded-md border p-3" data-testid="cleanup-result">
           <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-            {t(result.status === 'failed' ? 'deviceFilesystemTab.cleanupFailed' : 'deviceFilesystemTab.resultTitle')}
+            {t(/* i18n-dynamic */ result.status === 'failed' ? 'deviceFilesystemTab.cleanupFailed' : 'deviceFilesystemTab.resultTitle')}
           </p>
           <p className="mt-1 text-sm font-medium">
             {t('deviceFilesystemTab.resultReclaimed')}: {formatBytes(result.bytesReclaimed)}
