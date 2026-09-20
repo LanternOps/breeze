@@ -334,7 +334,7 @@ func (a winCleanmgrAction) SubActions() []SubActionInfo {
 		if label == "" {
 			label = handler.label
 		}
-		info := SubActionInfo{ID: "win_cleanmgr:" + handler.slug, Label: label}
+		info := SubActionInfo{ID: "win_cleanmgr:" + handler.slug, Label: label, RiskFlags: append([]string{}, handler.riskFlags...)}
 		for _, path := range handler.paths() {
 			if size, ok := directorySize(expandWindowsPath(path)); ok {
 				info.EstimateBytes += size

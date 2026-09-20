@@ -76,10 +76,11 @@ type ActionInfo struct {
 // SubActionInfo is one selectable unit inside a composite action — today only
 // a cleanmgr handler.
 type SubActionInfo struct {
-	ID            string `json:"id"`
-	Label         string `json:"label"`
-	EstimateBytes int64  `json:"estimateBytes,omitempty"`
-	EstimateKnown bool   `json:"estimateKnown"`
+	RiskFlags     []string `json:"riskFlags"`
+	ID            string   `json:"id"`
+	Label         string   `json:"label"`
+	EstimateBytes int64    `json:"estimateBytes,omitempty"`
+	EstimateKnown bool     `json:"estimateKnown"`
 }
 
 // Params carries the one bounded integer the client may influence. Bounds are

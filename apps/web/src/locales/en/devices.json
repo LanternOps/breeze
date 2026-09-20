@@ -791,6 +791,7 @@
     },
     "runInProgress": "An OS cleanup is already running on this device. Wait for it to finish, then try again.",
     "consequence": {
+      "removes_driver_rollback": "This device will no longer be able to roll back the removed drivers to their previous versions.",
       "removes_packages": "Packages that are no longer required will be uninstalled.",
       "removes_os_rollback": "This device will no longer be able to roll back to its previous Windows version.",
       "removes_recovery_points": "Local snapshots are deleted. If the Time Machine disk is not connected, this device has no other restore points."

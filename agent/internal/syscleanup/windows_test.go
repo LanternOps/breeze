@@ -2,6 +2,7 @@ package syscleanup
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -379,5 +380,30 @@ func TestWindowsActionsShape(t *testing.T) {
 	}
 	if !containsFold(byID["win_dism_component_cleanup"].RiskFlags, RiskMayRequireRebootFree) {
 		t.Error("DISM component cleanup must carry may_require_reboot_free_state")
+	}
+}
+
+func TestCleanmgrSubActionsExposeHandlerRiskFlags(t *testing.T) {
+	withFakeVolumeCaches(t, []string{"Previous Installations", "Upgrade Discarded Files", "Device Driver Packages", "Setup Log Files"}, "")
+	for _, sub := range (winCleanmgrAction{}).SubActions() {
+		raw, err := json.Marshal(sub)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var wire struct {
+			RiskFlags []string `json:"riskFlags"`
+		}
+		if err := json.Unmarshal(raw, &wire); err != nil {
+			t.Fatal(err)
+		}
+		handler, _ := winCleanmgrHandlerBySubID(sub.ID)
+		if wire.RiskFlags == nil {
+			t.Errorf("%s omits riskFlags", sub.ID)
+		}
+		for _, flag := range handler.riskFlags {
+			if !containsFold(wire.RiskFlags, flag) {
+				t.Errorf("%s missing %s", sub.ID, flag)
+			}
+		}
 	}
 }

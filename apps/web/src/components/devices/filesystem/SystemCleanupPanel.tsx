@@ -17,7 +17,7 @@ type RiskFlag =
   | "removes_os_rollback"
   | "removes_recovery_points";
 
-type SubAction = { id: string; label: string; estimateBytes?: number; estimateKnown: boolean };
+type SubAction = { id: string; label: string; estimateBytes?: number; estimateKnown: boolean; riskFlags: RiskFlag[] };
 
 type CatalogAction = {
   id: string;
@@ -165,17 +165,22 @@ export default function SystemCleanupPanel({ deviceId }: { deviceId: string }) {
   }, [deviceId, handleFailure, t]);
 
   const selectedActions = useMemo(
-    () => (catalog?.actions ?? []).filter((action) => selected.has(action.id)),
+    () => (catalog?.actions ?? []).flatMap((action) =>
+      action.subActions?.length
+        ? action.subActions.map((sub) => ({ ...sub, riskFlags: [...action.riskFlags, ...sub.riskFlags] }))
+        : [action],
+    ).filter((action) => selected.has(action.id)),
     [catalog, selected],
   );
 
-  // Spec §13 #15. Three losses no later action can undo, each with its own
-  // sentence in the dialog: uninstalled packages, the Windows "go back"
+  // Spec §13 #15. Irreversible losses each have their own sentence in the
+  // dialog: uninstalled packages, driver rollback, the Windows "go back"
   // window, and a Mac's only on-disk restore points. Any of them arms the
   // second checkbox — one generic "are you sure" cannot say WHICH thing is
   // about to become unrecoverable, and that is the whole value of the step.
   const ACKNOWLEDGED_RISKS: RiskFlag[] = [
     "removes_packages",
+    "removes_driver_rollback",
     "removes_os_rollback",
     "removes_recovery_points",
   ];
@@ -244,7 +249,7 @@ export default function SystemCleanupPanel({ deviceId }: { deviceId: string }) {
       return next;
     });
 
-  const estimateLabel = (action: CatalogAction) =>
+  const estimateLabel = (action: { estimateKnown: boolean; estimateBytes?: number; estimateDetail?: string }) =>
     action.estimateKnown
       ? action.estimateDetail?.startsWith("heuristic:")
         ? formatBytes(action.estimateBytes ?? 0)
@@ -293,7 +298,7 @@ export default function SystemCleanupPanel({ deviceId }: { deviceId: string }) {
         <ul className="divide-y divide-slate-100 dark:divide-slate-800">
           {catalog.actions.map((action) => (
             <li key={action.id} data-testid={`system-cleanup-row-${action.id}`} className="flex items-start gap-3 py-2">
-              <input
+              {!action.subActions?.length && <input
                 type="checkbox"
                 className="mt-1"
                 data-testid={`system-cleanup-check-${action.id}`}
@@ -301,7 +306,7 @@ export default function SystemCleanupPanel({ deviceId }: { deviceId: string }) {
                 disabled={!action.available || busy !== null}
                 onChange={() => toggle(action.id)}
                 aria-label={action.label}
-              />
+              />}
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-2">
                   <span className={`text-xs font-medium ${action.available ? "text-slate-900 dark:text-slate-100" : "text-slate-400 dark:text-slate-500"}`}>
@@ -320,6 +325,34 @@ export default function SystemCleanupPanel({ deviceId }: { deviceId: string }) {
                 <p className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">{action.description}</p>
                 {action.estimateDetail && (
                   <p className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">{action.estimateDetail}</p>
+                )}
+                {Boolean(action.subActions?.length) && (
+                  <ul aria-label={action.label} className="mt-2 space-y-2">
+                    {action.subActions!.map((sub) => (
+                      <li key={sub.id} className="flex items-start gap-3">
+                        <input
+                          type="checkbox"
+                          className="mt-1"
+                          data-testid={`system-cleanup-check-${sub.id}`}
+                          checked={selected.has(sub.id)}
+                          disabled={!action.available || busy !== null}
+                          onChange={() => toggle(sub.id)}
+                          aria-label={sub.label}
+                        />
+                        <div className="min-w-0 flex-1 flex flex-wrap items-center gap-2">
+                          <span className="text-xs">{sub.label}</span>
+                          {sub.riskFlags.map((flag) => (
+                            <span key={flag} data-testid={`system-cleanup-risk-${sub.id}-${flag}`} className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-900 dark:bg-amber-900 dark:text-amber-100">
+                              {t(/* i18n-dynamic */ `systemCleanupPanel.risk.${flag}`)}
+                            </span>
+                          ))}
+                        </div>
+                        <span data-testid={`system-cleanup-estimate-${sub.id}`} className="shrink-0 text-[11px] text-slate-500 dark:text-slate-400">
+                          {estimateLabel(sub)}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
                 )}
                 {!action.available && action.unavailableReason && (
                   <p className="mt-0.5 text-[11px] text-slate-400 dark:text-slate-500">{action.unavailableReason}</p>

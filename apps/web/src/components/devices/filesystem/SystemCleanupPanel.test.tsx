@@ -321,3 +321,38 @@ describe('SystemCleanupPanel', () => {
       .not.toContain('systemCleanupPanel.');
   });
 });
+
+
+describe('cleanmgr sub-action selection', () => {
+  it('requires selected handler rollback acknowledgements and never submits the parent id', async () => {
+    const previousId = 'win_cleanmgr:previous_installations';
+    const driverId = 'win_cleanmgr:device_driver_packages';
+    fetchWithAuthMock.mockImplementation((input, init) => {
+      const url = String(input);
+      if (url.endsWith('/list') && init?.method === 'POST') return Promise.resolve(json({ success: true, data: { commandId: CMD } }));
+      if (url.endsWith(`/list/${CMD}`)) return Promise.resolve(json({ data: { status: 'completed', catalog: {
+        ...catalog, actions: [{ ...catalog.actions[0], id: 'win_cleanmgr', os: 'windows', riskFlags: ['long_running'], subActions: [
+          { id: previousId, label: 'Previous installations', estimateBytes: 1024, estimateKnown: true, riskFlags: ['removes_os_rollback'] },
+          { id: driverId, label: 'Driver packages', estimateKnown: false, riskFlags: ['removes_driver_rollback'] },
+        ] }],
+      } } }));
+      if (url.endsWith('/run')) return Promise.resolve(json({ success: true, data: { cleanupRunId: RUN } }));
+      return Promise.resolve(json({ data: { cleanupRunId: RUN, status: 'executed', error: null, freedBytes: 0, actions: [], volumes: [] } }));
+    });
+    render(<SystemCleanupPanel deviceId={DEVICE} />);
+    fireEvent.click(screen.getByTestId('system-cleanup-check'));
+    const previous = await screen.findByTestId(`system-cleanup-check-${previousId}`);
+    expect(screen.queryByTestId('system-cleanup-check-win_cleanmgr')).not.toBeInTheDocument();
+    expect(screen.getByTestId(`system-cleanup-risk-${previousId}-removes_os_rollback`)).toBeInTheDocument();
+    expect(screen.getByTestId(`system-cleanup-estimate-${previousId}`)).toHaveTextContent('1 KB');
+    fireEvent.click(previous);
+    fireEvent.click(screen.getByTestId(`system-cleanup-check-${driverId}`));
+    fireEvent.click(screen.getByTestId('system-cleanup-run'));
+    expect(screen.getByTestId('system-cleanup-confirm')).toHaveAttribute('aria-disabled', 'true');
+    expect(screen.getByTestId('system-cleanup-consequence-removes_os_rollback')).toBeInTheDocument();
+    expect(screen.getByTestId('system-cleanup-consequence-removes_driver_rollback')).not.toHaveTextContent('systemCleanupPanel.');
+    fireEvent.click(screen.getByTestId('system-cleanup-ack-irreversible'));
+    fireEvent.click(screen.getByTestId('system-cleanup-confirm'));
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledWith(expect.stringMatching(/\/run$/), expect.objectContaining({ body: JSON.stringify({ actionIds: [previousId, driverId] }) })));
+  });
+});

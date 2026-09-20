@@ -82,6 +82,7 @@ const actionIdSchema = z.enum(SYSTEM_CLEANUP_ACTION_IDS);
 const riskFlagSchema = z.enum(SYSTEM_CLEANUP_RISK_FLAGS);
 
 const subActionSchema = z.object({
+  riskFlags: z.array(riskFlagSchema).max(SYSTEM_CLEANUP_RISK_FLAGS.length).default([]),
   id: actionIdSchema,
   label: z.string().max(200),
   estimateBytes: z.number().int().min(0).optional(),
