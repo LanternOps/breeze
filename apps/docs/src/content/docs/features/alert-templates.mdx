@@ -7,6 +7,10 @@ sidebar:
 
 import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
+:::note[Creation is frozen]
+New alert templates are no longer created here. Author a **Monitor** under **Alerts → Monitors** instead. Existing templates stay editable and are converted to monitors in the next release.
+:::
+
 Alert Templates provide a reusable library of alert definitions that can be instantiated as rules across your organization. Breeze ships with a set of built-in templates covering common performance, capacity, availability, and network scenarios. You can also create custom templates tailored to your environment. Templates define the conditions, severity, target scope, and cooldown behaviour for an alert. Rules are concrete instances of a template, bound to an organization and optionally customised with different thresholds, targets, or severity levels.
 
 The correlation engine groups related alerts that fire within a time window, surfaces confidence-scored links between them, and provides root-cause hints to help you identify the underlying issue faster.
