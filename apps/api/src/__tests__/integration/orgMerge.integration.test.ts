@@ -453,9 +453,9 @@ async function seedFixture(): Promise<Fixture> {
         (${f.brandingL}::uuid, ${f.loser}::uuid),
         (${f.brandingS}::uuid, ${f.survivor}::uuid)`);
     await db.execute(sql`
-      INSERT INTO org_ticket_settings (id, org_id, rate_currency) VALUES
-        (${f.ticketSettingsL}::uuid, ${f.loser}::uuid, 'USD'),
-        (${f.ticketSettingsS}::uuid, ${f.survivor}::uuid, 'USD')`);
+      INSERT INTO org_ticket_settings (id, org_id) VALUES
+        (${f.ticketSettingsL}::uuid, ${f.loser}::uuid),
+        (${f.ticketSettingsS}::uuid, ${f.survivor}::uuid)`);
     await db.execute(sql`
       INSERT INTO ai_budgets (id, org_id) VALUES (${f.aiBudgetL}::uuid, ${f.loser}::uuid)`);
 

@@ -1,12 +1,12 @@
 /**
  * Real-driver integration tests: time_entries + ticket_parts RLS isolation,
- * timer-race semantics (D3), category-default billing (D2), and approval flow (D1).
+ * timer-race semantics (D3), billing-profile defaults (D2), and approval flow (D1).
  *
  * Runs under vitest.integration.config.ts — code-under-test connects as the
  * unprivileged `breeze_app` role so RLS is actually enforced.
  *
  * Fixture topology:
- *   partnerA → orgA → categoryA (defaultBillable=true, defaultHourlyRate=125.00)
+ *   partnerA → orgA → categoryA + default profile (billable, 125.00/hour)
  *           → ticketA (linked to categoryA)
  *           → techA (partner staff), adminA (manageAll=true)
  *   partnerB → orgB → ticketB
@@ -22,6 +22,7 @@ import { Hono } from 'hono';
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
 import {
+  billingProfiles,
   timeEntries,
   ticketParts,
   ticketCategories,
@@ -89,15 +90,17 @@ async function seedFixture(): Promise<Fixture> {
     email: `te-rls-adminA-${unique}@example.test`,
   });
 
-  // ticket_categories: defaultBillable=true, defaultHourlyRate=125.00
+  await adminDb.insert(billingProfiles).values({
+    partnerId: partnerA.id, name: `TE-RLS rates ${unique}`, currencyCode: 'USD',
+    isDefault: true, baseCoverage: 'billable', baseHourlyRate: '125.00',
+  });
+
+  // The category remains a ticket classification, independent of pricing.
   const [categoryA] = await adminDb
     .insert(ticketCategories)
     .values({
       partnerId: partnerA.id,
       name: `TE-RLS Cat A ${unique}`,
-      defaultBillable: true,
-      defaultHourlyRate: '125.00',
-      rateCurrency: 'USD',
     })
     .returning();
 
@@ -189,6 +192,7 @@ afterAll(async () => {
   // sequences / categories → partner_users / role_permissions / roles →
   // users → orgs → partners.
   await adminDb.delete(timeEntries).where(sql`${timeEntries.partnerId} IN (${partnerList})`);
+  await adminDb.delete(billingProfiles).where(sql`${billingProfiles.partnerId} IN (${partnerList})`);
   // ticket_parts cascades from tickets (ON DELETE CASCADE) but explicit delete
   // avoids ordering sensitivity.
   await adminDb
@@ -433,10 +437,10 @@ describe('timer semantics (D3) — real driver', () => {
   });
 });
 
-// ── 4. Category defaults (D2) — real driver ──────────────────────────────
+// ── 4. Billing-profile defaults (D2) — real driver ──────────────────────────────
 
-describe('category defaults (D2) — real driver', () => {
-  it('ticket-linked entry stamps isBillable + hourlyRate from category and denormalizes orgId', async () => {
+describe('billing-profile defaults (D2) — real driver', () => {
+  it('ticket-linked entry stamps isBillable + hourlyRate from the partner default profile and denormalizes orgId', async () => {
     const { ticketA, orgA, partnerAContext, techAActor } = await seedFixture();
 
     let entry: Awaited<ReturnType<typeof createTimeEntry>>;

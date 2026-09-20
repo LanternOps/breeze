@@ -87,9 +87,14 @@ vi.mock('../db/schema', () => ({
     id: 'id',
     partnerId: 'partnerId',
     name: 'name',
-    defaultHourlyRate: 'defaultHourlyRate',
+    color: 'color',
+    parentId: 'parentId',
+    defaultPriority: 'defaultPriority',
+    responseSlaMinutes: 'responseSlaMinutes',
+    resolutionSlaMinutes: 'resolutionSlaMinutes',
+    defaultTimeEntryMinutes: 'defaultTimeEntryMinutes',
+    createdAt: 'createdAt',
     defaultWorkTypeId: 'defaultWorkTypeId',
-    rateCurrency: 'rateCurrency',
     sortOrder: 'sortOrder',
     isActive: 'isActive',
     updatedAt: 'updatedAt'
@@ -311,6 +316,22 @@ describe('GET /ticket-categories', () => {
 describe('POST /ticket-categories', () => {
   beforeEach(() => { vi.clearAllMocks(); dbSelectResult.mockReset(); resetAuth(); });
 
+  it.each(['defaultHourlyRate', 'defaultBillable', 'rateCurrency'])('ignores deprecated %s with a warning', async (field) => {
+    dbInsertReturning.mockResolvedValue([{ id: 'cat-1', name: 'Hardware', partnerId: 'p-1' }]);
+    const res = await makeApp().request('/ticket-categories', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Hardware', [field]: 'ignored' }),
+    });
+    expect(res.status).toBe(201);
+    expect((await res.json()).deprecationWarnings).toContain(field);
+    const { db } = await import('../db');
+    const values = vi.mocked(db.insert).mock.results[0]?.value.values.mock.calls[0]?.[0];
+    expect(values).not.toHaveProperty(field);
+    const projection = vi.mocked(db.insert).mock.results[0]?.value.values.mock.results[0]?.value.returning.mock.calls[0]?.[0];
+    expect(projection).toHaveProperty('defaultWorkTypeId');
+    expect(projection).not.toHaveProperty(field);
+  });
+
   it('stamps partnerId from auth (never from body)', async () => {
     dbInsertReturning.mockResolvedValue([{ id: 'cat-1', name: 'Hardware', partnerId: 'p-1' }]);
     const res = await makeApp().request('/ticket-categories', {
@@ -325,7 +346,7 @@ describe('POST /ticket-categories', () => {
     const { db } = await import('../db');
     const insertValuesCalls = vi.mocked(db.insert).mock.results[0]?.value.values.mock.calls[0];
     expect(insertValuesCalls?.[0]?.partnerId).toBe('p-1');
-    expect(insertValuesCalls?.[0]?.rateCurrency).toBeNull();
+    expect(insertValuesCalls?.[0]).not.toHaveProperty('rateCurrency');
     expect(vi.mocked(db.select)).not.toHaveBeenCalled();
     expect(writeRouteAuditMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       orgId: null,
@@ -370,21 +391,7 @@ describe('POST /ticket-categories', () => {
     expect(body).toHaveProperty('error', 'Partner context required');
   });
 
-  it('converts defaultHourlyRate to a string and stamps the partner currency', async () => {
-    dbSelectResult.mockResolvedValueOnce([{ currencyCode: 'CAD' }]);
-    dbInsertReturning.mockResolvedValue([{ id: 'cat-2', name: 'Billable', partnerId: 'p-1', defaultHourlyRate: '150.00' }]);
-    const res = await makeApp().request('/ticket-categories', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: 'Billable', defaultHourlyRate: 150 })
-    });
-    expect(res.status).toBe(201);
-    const { db } = await import('../db');
-    const insertValuesCalls = vi.mocked(db.insert).mock.results[0]?.value.values.mock.calls[0];
-    expect(insertValuesCalls?.[0]?.defaultHourlyRate).toBe('150');
-    expect(insertValuesCalls?.[0]?.rateCurrency).toBe('CAD');
-    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(1);
-  });
+
 });
 
 describe('PATCH /ticket-categories/:id', () => {
@@ -410,75 +417,32 @@ describe('PATCH /ticket-categories/:id', () => {
     }));
   });
 
-  it('restamps the partner currency when the normalized hourly rate changes', async () => {
-    dbSelectResult
-      .mockResolvedValueOnce([{ partnerId: 'p-1', defaultHourlyRate: '100.00', rateCurrency: 'USD' }])
-      .mockResolvedValueOnce([{ currencyCode: 'CAD' }]);
-    dbUpdateReturning.mockResolvedValue([{ id: CAT_ID, name: 'Updated', partnerId: 'p-1', defaultHourlyRate: '90.00', rateCurrency: 'CAD' }]);
-
+  it.each([
+    { defaultHourlyRate: 90 },
+    { name: 'Renamed', defaultHourlyRate: 100 },
+    { defaultHourlyRate: 100.001 },
+    { defaultHourlyRate: null },
+    { defaultBillable: false },
+    { rateCurrency: 'CAD' },
+  ])('ignores deprecated pricing on PATCH: %j', async (input) => {
+    dbUpdateReturning.mockResolvedValue([{ id: CAT_ID, name: 'Updated', partnerId: 'p-1' }]);
     const res = await makeApp().request(`/ticket-categories/${CAT_ID}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ defaultHourlyRate: 90 })
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
     });
-
     expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.deprecationWarnings).toEqual(Object.keys(input).filter((key) => key !== 'name'));
     const { db } = await import('../db');
     const setArg = vi.mocked(db.update).mock.results[0]?.value.set.mock.calls[0]?.[0];
-    expect(setArg?.defaultHourlyRate).toBe('90');
-    expect(setArg?.rateCurrency).toBe('CAD');
-    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(2);
-  });
-
-  it('does not restamp currency when a resent hourly rate has the same normalized value', async () => {
-    dbSelectResult.mockResolvedValueOnce([{ partnerId: 'p-1', defaultHourlyRate: '100.00', rateCurrency: 'USD' }]);
-    dbUpdateReturning.mockResolvedValue([{ id: CAT_ID, name: 'Renamed', partnerId: 'p-1', defaultHourlyRate: '100.00', rateCurrency: 'USD' }]);
-
-    const res = await makeApp().request(`/ticket-categories/${CAT_ID}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: 'Renamed', color: '#ffffff', defaultHourlyRate: 100 })
-    });
-
-    expect(res.status).toBe(200);
-    const { db } = await import('../db');
-    const setArg = vi.mocked(db.update).mock.results[0]?.value.set.mock.calls[0]?.[0];
-    expect(Object.prototype.hasOwnProperty.call(setArg, 'rateCurrency')).toBe(false);
-    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(1);
-  });
-
-  it('does not restamp currency when the resent rate differs only beyond the column scale (100.001 vs 100.00)', async () => {
-    dbSelectResult.mockResolvedValueOnce([{ partnerId: 'p-1', defaultHourlyRate: '100.00', rateCurrency: 'USD' }]);
-    dbUpdateReturning.mockResolvedValue([{ id: CAT_ID, name: 'Renamed', partnerId: 'p-1', defaultHourlyRate: '100.00', rateCurrency: 'USD' }]);
-
-    const res = await makeApp().request(`/ticket-categories/${CAT_ID}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: 'Renamed', defaultHourlyRate: 100.001 })
-    });
-
-    expect(res.status).toBe(200);
-    const { db } = await import('../db');
-    const setArg = vi.mocked(db.update).mock.results[0]?.value.set.mock.calls[0]?.[0];
-    expect(Object.prototype.hasOwnProperty.call(setArg, 'rateCurrency')).toBe(false);
-    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(1);
-  });
-
-  it('clears rateCurrency when the hourly rate is cleared without reading the partner', async () => {
-    dbSelectResult.mockResolvedValueOnce([{ partnerId: 'p-1', defaultHourlyRate: '100.00', rateCurrency: 'USD' }]);
-    dbUpdateReturning.mockResolvedValue([{ id: CAT_ID, name: 'Updated', partnerId: 'p-1', defaultHourlyRate: null, rateCurrency: null }]);
-
-    const res = await makeApp().request(`/ticket-categories/${CAT_ID}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ defaultHourlyRate: null })
-    });
-
-    expect(res.status).toBe(200);
-    const { db } = await import('../db');
-    const setArg = vi.mocked(db.update).mock.results[0]?.value.set.mock.calls[0]?.[0];
-    expect(setArg?.rateCurrency).toBeNull();
-    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(1);
+    for (const field of ['defaultBillable', 'defaultHourlyRate', 'rateCurrency']) {
+      expect(setArg).not.toHaveProperty(field);
+      expect(body.data).not.toHaveProperty(field);
+    }
+    const projection = vi.mocked(db.update).mock.results[0]?.value.set.mock.results[0]?.value.where.mock.results[0]?.value.returning.mock.calls[0]?.[0];
+    expect(projection).toHaveProperty('defaultWorkTypeId');
+    for (const field of ['defaultBillable', 'defaultHourlyRate', 'rateCurrency']) expect(projection).not.toHaveProperty(field);
+    expect(vi.mocked(db.select)).not.toHaveBeenCalled();
   });
 
   it('does not read or update currency when defaultHourlyRate is omitted', async () => {
@@ -798,7 +762,11 @@ describe('category default time entry minutes', () => {
     expect(response.status).toBe(200);
     expect((await response.json()).data[0].defaultTimeEntryMinutes).toBe(45);
     const { db } = await import('../db');
-    expect(db.select).toHaveBeenCalledWith();
+    const projection = vi.mocked(db.select).mock.calls[0]?.[0];
+    expect(projection).toMatchObject({ defaultTimeEntryMinutes: 'defaultTimeEntryMinutes', defaultWorkTypeId: 'defaultWorkTypeId' });
+    for (const field of ['defaultBillable', 'defaultHourlyRate', 'rateCurrency']) {
+      expect(projection).not.toHaveProperty(field);
+    }
   });
 
   describe.each(['POST', 'PATCH'])('%s', (method) => {
@@ -868,25 +836,6 @@ describe('category default work type', () => {
       expect.objectContaining({ defaultWorkTypeId }),
     );
     expect((await res.json()).data.defaultWorkTypeId).toBe(defaultWorkTypeId);
-  });
-
-  it('W01 keeps the legacy pricing fields round-tripping', async () => {
-    dbSelectResult
-      .mockResolvedValueOnce([{ partnerId: 'p-1', defaultHourlyRate: null }])
-      .mockResolvedValueOnce([{ currencyCode: 'CAD' }]);
-    const pricing = { defaultBillable: true, defaultHourlyRate: '150', rateCurrency: 'CAD' };
-    dbUpdateReturning.mockResolvedValue([{ id: CATEGORY_ID, partnerId: 'p-1', ...pricing }]);
-    const res = await makeApp().request(`/ticket-categories/${CATEGORY_ID}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ defaultBillable: true, defaultHourlyRate: 150 }),
-    });
-    expect(res.status).toBe(200);
-    const { db } = await import('../db');
-    expect(vi.mocked(db.update).mock.results[0]?.value.set).toHaveBeenCalledWith(
-      expect.objectContaining(pricing),
-    );
-    expect((await res.json()).data).toMatchObject(pricing);
   });
 
   it.each([WORK_TYPE_ID, null])('POST accepts and persists defaultWorkTypeId %s', async (defaultWorkTypeId) => {

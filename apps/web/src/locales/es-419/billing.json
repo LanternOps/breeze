@@ -2212,7 +2212,8 @@
   "partnerBillingSettingsTabs": {
     "defaults": "Valores predeterminados",
     "documents": "Documentos",
-    "connections": "Conexiones"
+    "connections": "Conexiones",
+    "rates": "Tarifas"
   },
   "billingConnectionsTab": {
     "accounting": {
@@ -2226,5 +2227,60 @@
       "catalogCta": "Abrir catálogo de productos →",
       "distributorsCta": "Abrir distribuidores →"
     }
+  },
+  "orgBillingProfile": {
+    "label": "Perfil de facturación",
+    "inherit": "{{name}} (predeterminado del socio)",
+    "noProfile": "Sin perfil de facturación",
+    "unavailable": "Perfil asignado no disponible",
+    "resolved": "Tarifas de {{name}}",
+    "allOtherWork": "Todos los demás trabajos",
+    "billable": "Facturable a {{rate}}/h",
+    "included": "Incluido",
+    "nonBillable": "No facturable",
+    "noRate": "Facturable — tarifa sin configurar",
+    "minimum": "{{outcome}} · mínimo de {{minutes}} min",
+    "rounding": "Redondear a {{minutes}} minutos",
+    "archivedWorkType": "Tipo de trabajo archivado",
+    "mismatch": "El perfil de facturación asignado está inactivo o usa otra moneda. Se aplica el perfil predeterminado del socio con la moneda correspondiente.",
+    "currencyWarning": "El perfil de facturación asignado usa {{currency}}. Después de este cambio se aplicará el perfil predeterminado del socio con la moneda correspondiente.",
+    "loadError": "No se pudieron cargar los perfiles de facturación.",
+    "saveError": "No se pudo guardar el perfil de facturación.",
+    "partialSave": "Se guardó el perfil de facturación, pero no los demás ajustes de facturación. Vuelve a guardar para terminar."
+  },
+  "rates": {
+    "title": "Tarifas",
+    "description": "Define las tarifas de mano de obra por perfil de facturación y tipo de trabajo. Los cambios se aplican a nuevos registros de tiempo.",
+    "create": "Agregar perfil de facturación",
+    "loadError": "No se pudieron cargar los perfiles de facturación. Inténtalo de nuevo.",
+    "saveError": "No se pudo guardar el perfil de facturación.",
+    "saved": "Perfil de facturación guardado.",
+    "empty": "Agrega un perfil de facturación para configurar las tarifas de mano de obra.",
+    "profile": "Perfil de facturación",
+    "allOtherWork": "Todos los demás trabajos",
+    "actions": "Acciones",
+    "default": "Predeterminado",
+    "clone": "Duplicar perfil de facturación",
+    "setDefault": "Establecer como predeterminado",
+    "archive": "Archivar",
+    "usageUnavailable": "El uso por organizaciones no está disponible.",
+    "edit": "Editar perfil de facturación",
+    "name": "Nombre",
+    "currency": "Moneda",
+    "rounding": "Redondeo (minutos)",
+    "notes": "Notas",
+    "coverage": "Resultado de facturación",
+    "hourlyRate": "Tarifa por hora",
+    "minimum": "Mínimo (minutos)",
+    "billable": "Facturable",
+    "included": "Incluido",
+    "nonBillable": "No facturable",
+    "noRate": "Facturable · sin tarifa definida",
+    "billableAt": "Facturable a {{rate}}/h",
+    "minimumSummary": "Mínimo de {{minutes}} min",
+    "roundingSummary": "Redondear a {{minutes}} min",
+    "inherits": "Usa Todos los demás trabajos",
+    "currencyHelp": "No se puede cambiar la moneda de un perfil predeterminado o con tarifas. Deja el redondeo vacío para no redondear.",
+    "partialSave": "Se guardaron los datos del perfil, pero no las tarifas por tipo de trabajo. Vuelve a guardar para terminar."
   }
 }

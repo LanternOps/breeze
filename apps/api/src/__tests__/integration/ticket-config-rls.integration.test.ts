@@ -1,7 +1,7 @@
 /**
  * Real-driver integration tests: ticket configuration RLS isolation,
  * seeding idempotency, SLA chain ordering, changeTicketStatus end-to-end,
- * and time-entry org-rate defaults.
+ * and time-entry billing-profile defaults.
  *
  * Runs under vitest.integration.config.ts — code-under-test connects as the
  * unprivileged `breeze_app` role so RLS is actually enforced.
@@ -19,6 +19,10 @@ import { afterAll, describe, expect, it } from 'vitest';
 import { eq, sql, and } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
 import {
+  billingProfiles,
+  billingProfileRules,
+  orgBillingProfileAssignments,
+  workTypes,
   ticketStatuses,
   ticketPrioritySettings,
   orgTicketSettings,
@@ -163,6 +167,9 @@ afterAll(async () => {
     await adminDb.delete(sites).where(sql`${sites.orgId} IN (${orgList2})`);
   }
 
+  await adminDb.delete(orgBillingProfileAssignments).where(sql`${orgBillingProfileAssignments.partnerId} IN (${partnerList})`);
+  await adminDb.delete(billingProfiles).where(sql`${billingProfiles.partnerId} IN (${partnerList})`);
+  await adminDb.delete(workTypes).where(sql`${workTypes.partnerId} IN (${partnerList})`);
   await adminDb.delete(partnerUsers).where(sql`${partnerUsers.partnerId} IN (${partnerList})`);
   const partnerRoleIds = await adminDb
     .select({ id: roles.id })
@@ -261,7 +268,6 @@ describe('org_ticket_settings RLS isolation (org-axis, Shape 1)', () => {
         db.insert(orgTicketSettings).values({
           orgId: orgB.id, // wrong org — RLS must reject
           slaOverrides: {},
-          rateCurrency: 'USD',
         })
       )
     ).rejects.toMatchObject({ cause: { code: '42501' } });
@@ -283,8 +289,6 @@ describe('system-context reads (scope=system) bypass partner/org RLS', () => {
     await adminDb.insert(orgTicketSettings).values({
       orgId: orgA.id,
       slaOverrides: { urgent: { responseMinutes: 120 } },
-      defaultHourlyRate: '99.00',
-      rateCurrency: 'USD',
     });
 
     // System context must see the row.
@@ -495,7 +499,6 @@ describe('SLA chain end-to-end (D7 chain order, real DB)', () => {
     await adminDb.insert(orgTicketSettings).values({
       orgId: orgA.id,
       slaOverrides: { urgent: { responseMinutes: 120, resolutionMinutes: 480 } },
-      rateCurrency: 'USD',
     });
 
     await seedSystemStatuses(adminDb, partnerA.id);
@@ -552,34 +555,41 @@ describe('SLA chain end-to-end (D7 chain order, real DB)', () => {
   });
 });
 
-// ── 7. Time-entry org-rate end-to-end (real DB) ─────────────────────────────
+// ── 7. Time-entry billing-profile end-to-end (real DB) ─────────────────────────────
 
-describe('time-entry org-rate end-to-end (D6 chain, real DB)', () => {
-  it('org default_hourly_rate (150) wins over category rate (100)', async () => {
+describe('time-entry billing-profile resolution end-to-end (real DB)', () => {
+  it('assigned profile work-type row (150) wins over partner default card (100)', async () => {
     const adminDb = getTestDb() as any;
     const { partnerA, orgA, partnerAContext, userA } = await seedFixture();
     const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
 
-    // Category with default_hourly_rate=100.
+    const [workType] = await adminDb.insert(workTypes).values({
+      partnerId: partnerA.id, name: `Labour-${unique}`,
+    }).returning();
+    await adminDb.insert(billingProfiles).values({
+      partnerId: partnerA.id, name: `Default-${unique}`, currencyCode: 'USD',
+      isDefault: true, baseCoverage: 'billable', baseHourlyRate: '100.00',
+    });
+    const [assignedProfile] = await adminDb.insert(billingProfiles).values({
+      partnerId: partnerA.id, name: `Assigned-${unique}`, currencyCode: 'USD',
+      baseCoverage: 'billable', baseHourlyRate: '125.00',
+    }).returning();
+    await adminDb.insert(billingProfileRules).values({
+      partnerId: partnerA.id, billingProfileId: assignedProfile.id,
+      workTypeId: workType.id, coverage: 'billable', hourlyRate: '150.00',
+    });
+    await adminDb.insert(orgBillingProfileAssignments).values({
+      partnerId: partnerA.id, orgId: orgA.id, billingProfileId: assignedProfile.id,
+      assignedBy: userA.id,
+    });
     const [categoryA] = await adminDb
       .insert(ticketCategories)
       .values({
         partnerId: partnerA.id,
         name: `Cat-${unique}`,
-        defaultBillable: true,
-        defaultHourlyRate: '100.00',
-        rateCurrency: 'USD',
+        defaultWorkTypeId: workType.id,
       })
       .returning();
-
-    // Org override: default_hourly_rate=150 (should win over category's 100).
-    await adminDb.insert(orgTicketSettings).values({
-      orgId: orgA.id,
-      slaOverrides: {},
-      defaultHourlyRate: '150.00',
-      rateCurrency: 'USD',
-      defaultBillable: true,
-    });
 
     await seedSystemStatuses(adminDb, partnerA.id);
 
@@ -609,37 +619,30 @@ describe('time-entry org-rate end-to-end (D6 chain, real DB)', () => {
       );
     });
 
-    // org rate (150) must win over category rate (100).
+    // The assigned card row beats both its base and the partner default card.
+    expect(entry.billingProfileId).toBe(assignedProfile.id);
+    expect(entry.workTypeId).toBe(workType.id);
     expect(entry.hourlyRate).toBe('150.00');
     expect(entry.isBillable).toBe(true);
     expect(entry.orgId).toBe(orgA.id);
   });
 
-  it('category rate (100) wins when org row has null default_hourly_rate', async () => {
+  it('partner default card (100) applies when the org has no assignment', async () => {
     const adminDb = getTestDb() as any;
     const { partnerA, orgA, partnerAContext, userA } = await seedFixture();
     const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
 
-    // Category with rate=100.
+    const [defaultProfile] = await adminDb.insert(billingProfiles).values({
+      partnerId: partnerA.id, name: `Default-${unique}`, currencyCode: 'USD',
+      isDefault: true, baseCoverage: 'billable', baseHourlyRate: '100.00',
+    }).returning();
     const [categoryB] = await adminDb
       .insert(ticketCategories)
       .values({
         partnerId: partnerA.id,
         name: `CatB-${unique}`,
-        defaultBillable: true,
-        defaultHourlyRate: '100.00',
-        rateCurrency: 'USD',
       })
       .returning();
-
-    // Org row with null default_hourly_rate (no rate override).
-    await adminDb.insert(orgTicketSettings).values({
-      orgId: orgA.id,
-      slaOverrides: {},
-      defaultHourlyRate: null,
-      rateCurrency: 'USD',
-      defaultBillable: null,
-    });
 
     await seedSystemStatuses(adminDb, partnerA.id);
 
@@ -669,7 +672,8 @@ describe('time-entry org-rate end-to-end (D6 chain, real DB)', () => {
       );
     });
 
-    // category rate (100) wins since org has null override.
+    // Without an assignment, the partner default card prices the entry.
+    expect(entry.billingProfileId).toBe(defaultProfile.id);
     expect(entry.hourlyRate).toBe('100.00');
     expect(entry.isBillable).toBe(true);
   });

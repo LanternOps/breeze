@@ -68,7 +68,7 @@ function queueSelect(table: unknown, rows: unknown[]) {
   dbState.selectQueues.set(table, q);
 }
 
-function mockCategory(row: { defaultTimeEntryMinutes: number | null; defaultBillable?: boolean } | null) {
+function mockCategory(row: { defaultTimeEntryMinutes: number | null } | null) {
   // The ticket→category join projects the category columns; a ticket with no
   // category yields a row whose joined columns are all null.
   queueSelect(tickets, [row ?? { defaultTimeEntryMinutes: null }]);
@@ -119,7 +119,7 @@ describe('resolveAiTimeEntryDefaults (#4177)', () => {
   });
 
   it('takes the billable flag from getTicketTimeEntryDefaults, never from the category directly', async () => {
-    mockCategory({ defaultBillable: true, defaultTimeEntryMinutes: null });
+    mockCategory({ defaultTimeEntryMinutes: null });
     mockTicketDefaults({ isBillable: false }); // org override wins
     expect((await resolveAiTimeEntryDefaults(TICKET_ID)).isBillable).toBe(false);
   });

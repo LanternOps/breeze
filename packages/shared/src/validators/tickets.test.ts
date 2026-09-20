@@ -224,9 +224,9 @@ describe('ticket validators', () => {
     expect(ticketCategoryInputSchema.safeParse({ name: 'Hardware', color: 'teal' }).success).toBe(false);
   });
 
-  it('category strips client-supplied rateCurrency', () => {
-    const parsed = ticketCategoryInputSchema.parse({ name: 'a', rateCurrency: 'EUR' });
-    expect(parsed).not.toHaveProperty('rateCurrency');
+  it.each(['defaultBillable', 'defaultHourlyRate', 'rateCurrency'])('category strips deprecated %s', (field) => {
+    const parsed = ticketCategoryInputSchema.parse({ name: 'a', [field]: 'ignored' });
+    expect(parsed).not.toHaveProperty(field);
   });
 
   describe('bulkTicketActionSchema', () => {

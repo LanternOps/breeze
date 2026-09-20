@@ -35,7 +35,7 @@
  *   1. org change vs invoice / quote / contract creation
  *   2. org change vs ticket time-entry and part creation
  *   3. org change vs ticket org move (the cross-org, two-lock family)
- *   4. org change vs org ticket-rate upsert   (upsertOrgTicketSettings)
+ *   4. org change vs org SLA settings upsert   (upsertOrgTicketSettings)
  *   5. org change vs catalog org-override upsert (setOrgPriceOverride)
  */
 import './setup';
@@ -282,20 +282,23 @@ describe.runIf(RUN)('org currency change vs default-derived creation (#3778 barr
   });
 
   // -------------------------------------------------------------------------
-  // Race 4 — org ticket-rate upsert (the route's old pre-transaction read)
+  // Race 4 — org SLA settings upsert (the route's old pre-transaction read)
   // -------------------------------------------------------------------------
-  it('(4) upsertOrgTicketSettings waits on the org lock and stamps rate_currency with the NEW currency', async () => {
+  it('(4) upsertOrgTicketSettings waits on the org lock and preserves the SLA edit across the currency change', async () => {
     const f = await seedGateOrg('EUR');
     await raceAgainstOrgCurrencyChange(f.orgId, 'GBP', 'upsertOrgTicketSettings', () =>
       withSystemDbAccessContext(() => upsertOrgTicketSettings(
-        f.orgId, { defaultHourlyRate: 95, defaultBillable: true })));
+        f.orgId, { slaOverrides: { urgent: { responseMinutes: 95 } } })));
 
     const [row] = await withSystemDbAccessContext(() => db
-      .select({ rateCurrency: orgTicketSettings.rateCurrency, defaultHourlyRate: orgTicketSettings.defaultHourlyRate })
+      .select({ slaOverrides: orgTicketSettings.slaOverrides })
       .from(orgTicketSettings).where(eq(orgTicketSettings.orgId, f.orgId)).limit(1));
-    expect(row?.rateCurrency, 'org rate stamped the OLD currency after the change committed').not.toBe('EUR');
-    expect(row?.rateCurrency).toBe('GBP');
-    expect(row?.defaultHourlyRate).toBe('95.00');
+    expect(row?.slaOverrides).toEqual({ urgent: { responseMinutes: 95 } });
+    const [org] = await withSystemDbAccessContext(() => db
+      .select({ currencyCode: organizations.currencyCode }).from(organizations)
+      .where(eq(organizations.id, f.orgId)).limit(1));
+    expect(org?.currencyCode).not.toBe('EUR');
+    expect(org?.currencyCode).toBe('GBP');
   });
 
   // -------------------------------------------------------------------------

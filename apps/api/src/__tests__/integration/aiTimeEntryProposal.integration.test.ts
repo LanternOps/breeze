@@ -48,7 +48,7 @@ import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContex
 import { actionIntents } from '../../db/schema/actionIntents';
 import { approvalRequests } from '../../db/schema/approvals';
 import { aiAgents, aiAgentRuns } from '../../db/schema/aiAgents';
-import { ticketCategories, ticketDrafts, ticketOutbox, tickets, timeEntries } from '../../db/schema';
+import { billingProfiles, ticketCategories, ticketDrafts, ticketOutbox, tickets, timeEntries } from '../../db/schema';
 import type { BreezeEvent } from '../../services/eventBus';
 import { handleTicketCommentedEvent, handleTicketStatusChangedEvent } from '../../services/aiAgents/ticketHelpdeskSubscriber';
 import { registerAgentRunEnqueuer, type AgentRunEnqueuer } from '../../services/aiAgents/runService';
@@ -86,7 +86,7 @@ function uid(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-async function seedScenario(opts: { categoryMinutes?: number | null } = {}): Promise<Scenario> {
+async function seedScenario(opts: { categoryMinutes?: number | null; coverage?: 'billable' | 'non_billable' } = {}): Promise<Scenario> {
   const partner = await createPartner();
   const org = await createOrganization({ partnerId: partner.id });
 
@@ -114,12 +114,15 @@ async function seedScenario(opts: { categoryMinutes?: number | null } = {}): Pro
   await assignUserToOrganization(tech.id, org.id, techRole.id);
 
   const adminDb = getTestDb() as any;
+  await adminDb.insert(billingProfiles).values({
+    partnerId: partner.id, name: 'AI proposal rates', currencyCode: 'USD',
+    isDefault: true, baseCoverage: opts.coverage ?? 'non_billable',
+  });
   let categoryId: string | null = null;
   if (opts.categoryMinutes !== undefined) {
     const [category] = await adminDb.insert(ticketCategories).values({
       partnerId: partner.id,
       name: `AI time ${uid()}`,
-      defaultBillable: true,
       defaultTimeEntryMinutes: opts.categoryMinutes,
     }).returning();
     categoryId = category.id;
@@ -375,7 +378,7 @@ describe('AI time-entry proposal lane (#4177, W04) — real Postgres', () => {
   });
 
   runDb('resolving with an AI resolution note mints under its own trigger key and honours the category duration default', async () => {
-    const s = await seedScenario({ categoryMinutes: 25 });
+    const s = await seedScenario({ categoryMinutes: 25, coverage: 'billable' });
     const draftId = await seedDraft(s, 'resolution_note');
 
     await withDbAccessContext(s.orgContext, () =>
@@ -393,7 +396,7 @@ describe('AI time-entry proposal lane (#4177, W04) — real Postgres', () => {
       idempotencyKey: `ai-time-entry:${s.runId}:resolved_with_ai_note`,
     });
     // Category default (25) beats the module constant; billable comes from
-    // the resolver (org default absent → category default_billable=true).
+    // the resolver through the partner default billing profile.
     expect(intents[0]!.arguments).toMatchObject({ action: 'log_time_entry', durationMinutes: 25, isBillable: true });
     expect(await entriesForTicket(s.ticketId)).toHaveLength(0);
   });

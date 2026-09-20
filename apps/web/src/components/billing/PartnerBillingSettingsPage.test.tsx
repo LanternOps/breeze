@@ -31,19 +31,31 @@ describe('PartnerBillingSettingsPage', () => {
     window.location.hash = '';
   });
 
-  it('has three visible tabs: Defaults, Documents, Connections', async () => {
+  it('has four visible tabs in order: Defaults, Documents, Rates, Connections', async () => {
     fetchMock.mockResolvedValue(json({ currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30 }));
     renderPage();
     expect(await screen.findByTestId('billing-settings-tab-defaults')).toBeInTheDocument();
     expect(screen.getByTestId('billing-settings-tab-documents')).toBeInTheDocument();
     expect(screen.getByTestId('billing-settings-tab-connections')).toBeInTheDocument();
+    expect(screen.getAllByRole('tab').map(tab => tab.getAttribute('data-testid'))).toEqual(['billing-settings-tab-defaults', 'billing-settings-tab-documents', 'billing-settings-tab-rates', 'billing-settings-tab-connections']);
   });
 
-  it('reserves a Rates slot for #4628 W02 without rendering it (do not remove — see "Conflicts with #4628")', async () => {
-    fetchMock.mockResolvedValue(json({ currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30 }));
+  it('mounts Rates and its work types manager when selected, with row saves only', async () => {
+    fetchMock.mockImplementation(async (url: string) => json(url === '/billing-profiles' ? { profiles: [] } : url.includes('work-types') ? { workTypes: [] } : { currencyCode: 'USD' }));
     renderPage();
-    await screen.findByTestId('billing-settings-tab-defaults');
-    expect(screen.queryByTestId('billing-settings-tab-rates')).not.toBeInTheDocument();
+    await userEvent.click(await screen.findByTestId('billing-settings-tab-rates'));
+    expect(await screen.findByTestId('billing-rates-tab')).toBeInTheDocument();
+    expect(await screen.findByTestId('work-types-card')).toBeInTheDocument();
+    expect(screen.queryByTestId('partner-billing-save')).not.toBeInTheDocument();
+    expect(window.location.hash).toBe('#rates');
+  });
+
+  it('mounts Rates from the hash', async () => {
+    window.location.hash = 'rates';
+    fetchMock.mockImplementation(async (url: string) => json(url === '/billing-profiles' ? { profiles: [] } : url.includes('work-types') ? { workTypes: [] } : { currencyCode: 'USD' }));
+    renderPage();
+    expect(await screen.findByTestId('billing-rates-tab')).toBeInTheDocument();
+    expect(screen.getByTestId('billing-settings-tab-rates')).toHaveAttribute('aria-selected', 'true');
   });
 
   it('one Save button submits the full payload regardless of which tab is active; markup moved to Catalog', async () => {

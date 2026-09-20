@@ -525,5 +525,14 @@
       "message": "Isso oculta o chamado de todas as filas. Um administrador pode restaurá-lo na fila Arquivados.",
       "confirm": "Excluir chamado"
     }
+  },
+  "billingOutcome": {
+    "included": "Incluído",
+    "nonBillable": "Não faturável",
+    "hourly": "{{rate}} por hora",
+    "minimum": "Mínimo de {{minutes}} min",
+    "missingRate": "Faturável · tarifa não configurada",
+    "recalculated": "O faturamento é recalculado para este tipo de trabalho ao salvar.",
+    "unavailable": "Resultado do faturamento indisponível"
   }
 }

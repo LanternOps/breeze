@@ -37,13 +37,13 @@ type Chain = { update: { mock: { calls: unknown[][] } }; set: { mock: { calls: u
 
 const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
 
-/** The ten reads `getOrgCurrencyImpact` performs, in order. Callers override the
+/** The nine reads `getOrgCurrencyImpact` performs, in order. Callers override the
  *  interesting ones; everything else resolves empty. Billable rows arrive
  *  PRE-AGGREGATED (one row per currency), never one row per time entry/part. */
 function queueImpact(over: {
   org?: unknown[]; invoices?: unknown[]; quotes?: unknown[]; contracts?: unknown[];
   time?: unknown[]; missingRate?: unknown[]; parts?: unknown[];
-  rateSettings?: unknown[]; categories?: unknown[]; overrides?: unknown[];
+  assignedProfile?: unknown[]; overrides?: unknown[];
 } = {}) {
   queueResult(over.org ?? [{ id: 'org1', partnerId: 'p1', currencyCode: 'EUR' }]);
   queueResult(over.invoices ?? []);
@@ -52,8 +52,7 @@ function queueImpact(over: {
   queueResult(over.time ?? []);
   queueResult(over.missingRate ?? []);
   queueResult(over.parts ?? []);
-  queueResult(over.rateSettings ?? []);
-  queueResult(over.categories ?? [{ n: 0 }]);
+  queueResult(over.assignedProfile ?? []);
   queueResult(over.overrides ?? [{ n: 0 }]);
 }
 
@@ -211,25 +210,31 @@ describe('getOrgCurrencyImpact (#3778)', () => {
     expect(impact.impactsByCurrency[0]!.billables.laborAmount).toBe('330.00');
   });
 
-  it('reports the configuration warnings (org default rate stops applying, skipped rates/overrides)', async () => {
+  it('reports the configuration warnings (assigned profile currency mismatch, skipped overrides)', async () => {
     queueImpact({
-      rateSettings: [{ defaultHourlyRate: '85.50', rateCurrency: 'EUR' }],
-      categories: [{ n: 4 }],
+      assignedProfile: [{ id: 'profile1', currencyCode: 'EUR' }],
       overrides: [{ n: 2 }],
     });
     const impact = await getOrgCurrencyImpact('org1', 'GBP', actor);
     expect(impact.configurationWarnings).toEqual({
-      orgDefaultRate: { configured: true, rateCurrency: 'EUR', willStopApplying: true },
-      categoryRatesSkipped: 4,
+      assignedBillingProfile: { id: 'profile1', currencyCode: 'EUR', currencyMismatch: true },
       orgCatalogOverridesSkipped: 2,
       rateLessTimeEntries: 0,
     });
   });
 
-  it('does not warn when the org default rate is already in the target currency', async () => {
-    queueImpact({ rateSettings: [{ defaultHourlyRate: '85.50', rateCurrency: 'GBP' }] });
+  it('does not warn when the assigned profile is already in the target currency', async () => {
+    queueImpact({ assignedProfile: [{ id: 'profile1', currencyCode: 'GBP' }] });
     const impact = await getOrgCurrencyImpact('org1', 'GBP', actor);
-    expect(impact.configurationWarnings.orgDefaultRate).toEqual({ configured: true, rateCurrency: 'GBP', willStopApplying: false });
+    expect(impact.configurationWarnings.assignedBillingProfile).toEqual({ id: 'profile1', currencyCode: 'GBP', currencyMismatch: false });
+  });
+
+  it('does not warn when there is no assigned profile', async () => {
+    queueImpact();
+    const impact = await getOrgCurrencyImpact('org1', 'GBP', actor);
+    expect(impact.configurationWarnings.assignedBillingProfile).toEqual({
+      id: null, currencyCode: null, currencyMismatch: false,
+    });
   });
 
   it('never materialises billable ROWS — every billable read is a per-currency aggregate', async () => {

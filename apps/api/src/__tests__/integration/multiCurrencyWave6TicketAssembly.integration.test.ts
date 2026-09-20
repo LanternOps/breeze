@@ -7,7 +7,7 @@
  * Multi-currency rules under test (spec §7):
  *  - time entries and parts snapshot their currency at creation and are NEVER
  *    restamped;
- *  - rate defaults are match-or-skip — an org default rate whose `rate_currency`
+ *  - rate defaults are match-or-skip — an assigned billing profile whose currency
  *    differs from the org currency simply does not apply;
  *  - assembly groups sources by their OWN stamped currency against the draft's
  *    header currency and reports `{ included, blockedByCurrency, missingRate }` —
@@ -38,11 +38,10 @@ import { db, withSystemDbAccessContext } from '../../db';
 import { invoiceLines, invoices, organizations, ticketParts, timeEntries } from '../../db/schema';
 import { assembleDraftFromTicket, issueInvoice } from '../../services/invoiceService';
 import { addTicketPart, createTimeEntry, type TimeEntryActor } from '../../services/timeEntryService';
-// Legacy source assertion stays test-only until the Task 14 fixture cutover.
-import { resolveDefaultRate } from './fixtures/legacyLabourPricingResolver';
-import { upsertOrgTicketSettings } from '../../services/ticketConfigService';
+import { loadCardsForOrg } from '../../services/billingProfileService';
+import { resolveBillingRule } from '../../services/billingRuleResolver';
 import { createTicket } from '../../services/ticketService';
-import { gateLabel, seedGateOrg, type GateOrgFixture } from './multiCurrencyWave6GateFixtures';
+import { assignGateBillingProfile, gateLabel, seedGateOrg, type GateOrgFixture } from './multiCurrencyWave6GateFixtures';
 
 const RUN = !!process.env.DATABASE_URL;
 
@@ -83,19 +82,6 @@ async function seedTicket(fixture: GateOrgFixture, subject: string): Promise<str
     { userId: fixture.userId, name: 'Gate Technician' },
   ));
   return ticket.id as string;
-}
-
-/** Org-level default hourly rate, stamped with `rateCurrency` (the org currency
- *  the rate was entered under). Written through the real service seam. */
-async function setOrgDefaultRate(fixture: GateOrgFixture, rate: number): Promise<void> {
-  // #3778: the service resolves and stamps the CURRENT org currency itself
-  // (under the org SHARE barrier) — a caller can no longer name an arbitrary
-  // rate_currency, so an old-currency stamp is produced the only way it happens
-  // in production: enter the rate, then change the org currency.
-  await withSystemDbAccessContext(() => upsertOrgTicketSettings(
-    fixture.orgId,
-    { defaultHourlyRate: rate, defaultBillable: true },
-  ));
 }
 
 /** Direct org currency flip — the persisted effect of an org currency change on
@@ -146,10 +132,10 @@ async function readInvoiceLines(invoiceId: string) {
 describe.runIf(RUN)(gateLabel('G4', 'ticket labor + part -> assembly'), () => {
   it('assembles a EUR ticket: EUR-stamped labor and part become EUR-rounded lines and flip to billed on issue', async () => {
     const fixture = await seedGateOrg('EUR');
-    await setOrgDefaultRate(fixture, 85.5);
+    await assignGateBillingProfile(fixture, 85.5);
     const ticketId = await seedTicket(fixture, 'W6 G4 EUR labor + part');
 
-    // Labor: 90 minutes at the org default rate (match-or-skip applies it — the
+    // Labor: 90 minutes at the assigned profile rate (match-or-skip applies it — the
     // rate was entered under EUR and the org is EUR).
     const entry = await withSystemDbAccessContext(() => createTimeEntry(
       { ticketId, startedAt: T0, endedAt: minutesAfter(T0, 90) },
@@ -170,7 +156,7 @@ describe.runIf(RUN)(gateLabel('G4', 'ticket labor + part -> assembly'), () => {
       entryRow?.isBillable,
       assertionMessage('createTimeEntry snapshot', 'EUR', 'time_entries.is_billable', true, entryRow?.isBillable),
     ).toBe(true);
-    expectMoney(entryRow?.hourlyRate, 85.5, 'EUR', 'createTimeEntry applies the EUR org default rate');
+    expectMoney(entryRow?.hourlyRate, 85.5, 'EUR', 'createTimeEntry applies the EUR assigned profile rate');
 
     const partRow = await readPart(part.id);
     expect(
@@ -233,7 +219,7 @@ describe.runIf(RUN)(gateLabel('G4', 'ticket labor + part -> assembly'), () => {
 
   it('reports a pre-change USD entry under blockedByCurrency and still bills it via an explicit USD assembly (spec §7 recovery)', async () => {
     const fixture = await seedGateOrg('EUR');
-    await setOrgDefaultRate(fixture, 85.5);
+    await assignGateBillingProfile(fixture, 85.5);
     const ticketId = await seedTicket(fixture, 'W6 G4 old-currency recovery');
 
     const eurEntry = await withSystemDbAccessContext(() => createTimeEntry(
@@ -319,16 +305,18 @@ describe.runIf(RUN)(gateLabel('G4', 'ticket labor + part -> assembly'), () => {
     ).toBe('USD');
   });
 
-  it('skips an org default rate entered under a different currency instead of applying it (match-or-skip)', async () => {
-    // The rate was entered while the org was USD; the org is EUR now. Seed it
-    // exactly that way — the service always stamps the CURRENT org currency.
+  it('skips an assigned profile rate entered under a different currency instead of applying it (match-or-skip)', async () => {
+    // Assign a USD card, then change the org to EUR without restamping the card.
     const fixture = await seedGateOrg('USD');
-    await setOrgDefaultRate(fixture, 85.5);
+    await assignGateBillingProfile(fixture, 85.5);
     await flipOrgCurrency(fixture.orgId, 'EUR');
     const ticketId = await seedTicket(fixture, 'W6 G4 match-or-skip');
 
     expect(
-      resolveDefaultRate('EUR', { defaultHourlyRate: '85.50', rateCurrency: 'USD' }, null),
+      resolveBillingRule({
+        orgCurrency: 'EUR', workTypeId: null,
+        ...await withSystemDbAccessContext(() => loadCardsForOrg(fixture.orgId, fixture.partnerId, 'EUR')),
+      }).hourlyRate,
       'a USD-stamped default rate must not apply to a EUR org',
     ).toBeNull();
 
@@ -359,7 +347,7 @@ describe.runIf(RUN)(gateLabel('G4', 'ticket labor + part -> assembly'), () => {
 
   it('assembles a JPY ticket in whole yen, rounding the labor product exactly once', async () => {
     const fixture = await seedGateOrg('JPY');
-    await setOrgDefaultRate(fixture, 8000);
+    await assignGateBillingProfile(fixture, 8000);
     const ticketId = await seedTicket(fixture, 'W6 G4 JPY labor');
 
     // 1.5h x 8000 JPY = 12000 exactly.
@@ -413,18 +401,12 @@ describe.runIf(RUN)(gateLabel('G4', 'ticket labor + part -> assembly'), () => {
     }
   });
 
-  it('rejects a fractional JPY org default hourly rate at write time', async () => {
+  it('rejects a fractional JPY billing-profile hourly rate at write time', async () => {
     const fixture = await seedGateOrg('JPY');
 
-    // W6-G4-1 (EXPECTED RED): ticketConfigService.upsertOrgTicketSettings writes
-    // String(input.defaultHourlyRate) with no representability guard, and the
-    // shared validator only enforces multipleOf(0.01) — so ¥100.50 is persisted
-    // as the org default and every future JPY time entry inherits it.
     await expect(
-      withSystemDbAccessContext(() => upsertOrgTicketSettings(
-        fixture.orgId, { defaultHourlyRate: 100.5, defaultBillable: true },
-      )),
-      'a JPY org default hourly rate of 100.50 must be rejected at write time',
+      assignGateBillingProfile(fixture, 100.5),
+      'a JPY billing-profile hourly rate of 100.50 must be rejected at write time',
     ).rejects.toThrow();
   });
 

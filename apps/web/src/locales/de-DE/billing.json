@@ -2212,7 +2212,8 @@
   "partnerBillingSettingsTabs": {
     "defaults": "Standardwerte",
     "documents": "Dokumente",
-    "connections": "Verbindungen"
+    "connections": "Verbindungen",
+    "rates": "Tarife"
   },
   "billingConnectionsTab": {
     "accounting": {
@@ -2226,5 +2227,60 @@
       "catalogCta": "Produktkatalog öffnen →",
       "distributorsCta": "Distributoren öffnen →"
     }
+  },
+  "orgBillingProfile": {
+    "label": "Abrechnungsprofil",
+    "inherit": "{{name}} (Partnerstandard)",
+    "noProfile": "Kein Abrechnungsprofil",
+    "unavailable": "Zugewiesenes Profil nicht verfügbar",
+    "resolved": "Tarife aus {{name}}",
+    "allOtherWork": "Alle anderen Arbeiten",
+    "billable": "Abrechenbar zu {{rate}}/Std.",
+    "included": "Enthalten",
+    "nonBillable": "Nicht abrechenbar",
+    "noRate": "Abrechenbar — kein Tarif konfiguriert",
+    "minimum": "{{outcome}} · mindestens {{minutes}} Min.",
+    "rounding": "Auf {{minutes}} Minuten runden",
+    "archivedWorkType": "Archivierte Arbeitsart",
+    "mismatch": "Das zugewiesene Abrechnungsprofil ist inaktiv oder verwendet eine andere Währung. Stattdessen gilt der passende Partnerstandard.",
+    "currencyWarning": "Das zugewiesene Abrechnungsprofil verwendet {{currency}}. Nach dieser Änderung gilt der passende Partnerstandard.",
+    "loadError": "Abrechnungsprofile konnten nicht geladen werden.",
+    "saveError": "Das Abrechnungsprofil konnte nicht gespeichert werden.",
+    "partialSave": "Das Abrechnungsprofil wurde gespeichert, die übrigen Abrechnungseinstellungen jedoch nicht. Klicken Sie erneut auf Speichern."
+  },
+  "rates": {
+    "title": "Tarife",
+    "description": "Legen Sie Arbeitstarife nach Abrechnungsprofil und Arbeitsart fest. Änderungen gelten für neue Zeiteinträge.",
+    "create": "Abrechnungsprofil hinzufügen",
+    "loadError": "Abrechnungsprofile konnten nicht geladen werden. Versuchen Sie es erneut.",
+    "saveError": "Abrechnungsprofil konnte nicht gespeichert werden.",
+    "saved": "Abrechnungsprofil gespeichert.",
+    "empty": "Fügen Sie ein Abrechnungsprofil hinzu, um Arbeitstarife festzulegen.",
+    "profile": "Abrechnungsprofil",
+    "allOtherWork": "Alle sonstigen Arbeiten",
+    "actions": "Aktionen",
+    "default": "Standard",
+    "clone": "Abrechnungsprofil duplizieren",
+    "setDefault": "Als Standard festlegen",
+    "archive": "Archivieren",
+    "usageUnavailable": "Die Nutzung durch Organisationen ist nicht verfügbar.",
+    "edit": "Abrechnungsprofil bearbeiten",
+    "name": "Profilname",
+    "currency": "Währung",
+    "rounding": "Rundung (Minuten)",
+    "notes": "Notizen",
+    "coverage": "Abrechnungsergebnis",
+    "hourlyRate": "Stundensatz",
+    "minimum": "Minimum (Minuten)",
+    "billable": "Abrechenbar",
+    "included": "Enthalten",
+    "nonBillable": "Nicht abrechenbar",
+    "noRate": "Abrechenbar · kein Tarif festgelegt",
+    "billableAt": "Abrechenbar zu {{rate}}/Std.",
+    "minimumSummary": "Mindestens {{minutes}} Min.",
+    "roundingSummary": "Auf {{minutes}} Min. runden",
+    "inherits": "Verwendet Alle sonstigen Arbeiten",
+    "currencyHelp": "Die Währung eines Standardprofils oder eines Profils mit Tarifen kann nicht geändert werden. Leere Rundung bedeutet keine Rundung.",
+    "partialSave": "Profildetails wurden gespeichert, die Tarife der Arbeitsarten jedoch nicht. Klicken Sie erneut auf Speichern."
   }
 }

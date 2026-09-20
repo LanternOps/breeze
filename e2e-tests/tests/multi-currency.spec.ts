@@ -73,7 +73,7 @@ async function readAccessToken(page: Page): Promise<string> {
 }
 
 async function apiJson<T>(
-  request: APIRequestContext, token: string, method: 'get' | 'post' | 'patch',
+  request: APIRequestContext, token: string, method: 'get' | 'post' | 'patch' | 'put',
   path: string, data?: unknown,
 ): Promise<T> {
   const res = await request[method](path, {
@@ -116,12 +116,16 @@ test.describe('multi-currency — non-USD org browser slices', () => {
       expect(created.currencyCode).toBe('USD');
 
       // A billing contact (needed by the quote send composer in slice C) and an
-      // org default hourly rate — the rate is what makes the pre-flight panel's
+      // assigned USD billing profile — the card makes the pre-flight panel's
       // configuration warning non-vacuous below.
       await apiJson(page.request, token, 'patch', `/api/v1/orgs/${orgId}/billing-settings`,
         { billingContactEmail: `e2e-billing-${stamp}@example.com`, billingContactName: 'E2E Billing' });
-      await apiJson(page.request, token, 'patch', `/api/v1/orgs/organizations/${orgId}/ticket-settings`,
-        { defaultHourlyRate: 150 });
+      const { profile } = await apiJson<{ profile: { id: string } }>(
+        page.request, token, 'post', '/api/v1/billing-profiles',
+        { name: `E2E Multi-Currency ${stamp}`, currencyCode: 'USD', baseCoverage: 'billable', baseHourlyRate: '150.00' },
+      );
+      await apiJson(page.request, token, 'put', `/api/v1/orgs/organizations/${orgId}/billing-profile`,
+        { billingProfileId: profile.id });
 
       // Two USD documents before the change: one ISSUED (the amount that must
       // never move) and one DRAFT (so the advisory count is a real 1, not a 0).
@@ -146,7 +150,7 @@ test.describe('multi-currency — non-USD org browser slices', () => {
       await expect(billing.group('USD')).toBeVisible();
       await expect(billing.impactCount('USD', 'draftInvoices')).toHaveText('1');
       await expect(billing.impactCount('USD', 'draftQuotes')).toHaveText('0');
-      // The org default rate is stamped USD, so it stops applying after the move.
+      // The assigned USD profile will have a currency mismatch after the move.
       await expect(billing.warningRate()).toBeVisible();
       // Spec §7 recovery: an explicit same-currency assembly, never a conversion.
       await expect(billing.recovery('USD')).toContainText('USD');

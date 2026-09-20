@@ -525,5 +525,14 @@
       "message": "Dadurch wird das Ticket aus allen Warteschlangen ausgeblendet. Ein Administrator kann es aus der Warteschlange „Archiviert“ wiederherstellen.",
       "confirm": "Ticket löschen"
     }
+  },
+  "billingOutcome": {
+    "included": "Inklusive",
+    "nonBillable": "Nicht abrechenbar",
+    "hourly": "{{rate}}/Std.",
+    "minimum": "Mindestens {{minutes}} Min.",
+    "missingRate": "Abrechenbar · Stundensatz nicht konfiguriert",
+    "recalculated": "Die Abrechnung wird beim Speichern für diese Tätigkeitsart neu berechnet.",
+    "unavailable": "Abrechnungsergebnis nicht verfügbar"
   }
 }
