@@ -730,7 +730,15 @@
     "launchExecution": "Exécution du lancement",
     "startANewDrRunFor": "Démarrer une nouvelle exécution DR pour",
     "cancel": "Annuler",
-    "startExecution": "Démarrer l’exécution"
+    "startExecution": "Démarrer l’exécution",
+    "executeErrorFallback": "Impossible de démarrer l'exécution.",
+    "executeErrorNoRestorableSnapshot": "Démarrage impossible : un appareil d'un groupe de reconstruction bare-metal n'a aucun instantané de sauvegarde restaurable. Exécutez d'abord une sauvegarde réussie pour chaque appareil de ce groupe.",
+    "executeErrorNoRecoverySource": "Démarrage impossible : un groupe de récupération n'indique aucune source de récupération. Ajoutez au groupe un instantané, une tâche de restauration ou un jeton de récupération.",
+    "executeErrorGroupHasNoValidDevices": "Démarrage impossible : un groupe de récupération n'a aucun appareil valide. Modifiez le plan et ajoutez au moins un appareil à chaque groupe.",
+    "executeErrorInvalidSourceReference": "Démarrage impossible : un groupe de récupération référence une source de récupération dont l'identifiant est invalide. Modifiez le groupe et sélectionnez de nouveau sa source.",
+    "executeErrorInvalidStepConfig": "Démarrage impossible : un groupe de récupération a une configuration d'étape invalide. Modifiez le groupe et corrigez ses paramètres.",
+    "executeErrorResourceNotFound": "Démarrage impossible : un instantané référencé par ce plan n'existe plus. Modifiez le groupe concerné et choisissez un instantané actuel.",
+    "executeErrorBackupWriteRequired": "Démarrage impossible : ce plan contient un groupe de reconstruction bare-metal, qui nécessite l'autorisation d'écriture des sauvegardes."
   },
   "dRExecutionView": {
     "executionDetails": "Détails de l’exécution",
@@ -806,7 +814,9 @@
     "uniqueDeviceCount_one": "{{count}} dispositif unique",
     "uniqueDeviceCount_other": "{{count}} Appareils uniques",
     "chooseAStepTypeForEachGroup": "Choisissez un type d'étape pour chaque groupe de récupération.",
-    "rebuildWaitTimeoutOutOfRange": "Le délai d'attente de la reconstruction bare-metal doit être un nombre entier compris entre {{min}} et {{max}} minutes."
+    "rebuildWaitTimeoutOutOfRange": "Le délai d'attente de la reconstruction bare-metal doit être un nombre entier compris entre {{min}} et {{max}} minutes.",
+    "rebuildOutputDirMustBeAbsolute": "Le répertoire de sortie de la reconstruction bare-metal doit être un chemin absolu commençant par « / » et comporter au plus {{max}} caractères.",
+    "partialSaveFailure": "Une partie de ce plan a été enregistrée avant l'erreur : le plan et la liste peuvent donc diverger. Corrigez le problème puis enregistrez de nouveau. Le serveur indique : {{message}}"
   },
   "dRPlanGroupCard": {
     "device": "Dispositif",

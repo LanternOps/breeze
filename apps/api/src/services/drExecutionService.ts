@@ -426,6 +426,24 @@ export class DrRecoveryAuthorizationDeniedError extends Error {
   }
 }
 
+/**
+ * Denial codes that mean "a prerequisite resource is missing", which the route
+ * renders as 404. Every other `DrRecoveryAuthorizationDeniedError` code is a
+ * malformed plan/step configuration — a 400.
+ *
+ * #6382: these codes reach the operator verbatim in the DR dashboard, so a
+ * single overloaded `resource_not_found` was unactionable ("what is missing —
+ * the snapshot? the host? the device?"). Each refusal now names its own
+ * prerequisite so the console can print a sentence for it. `resource_not_found`
+ * is retained only for a snapshot reference that resolves to nothing, which is
+ * the one case where it is literally accurate.
+ */
+export const DR_MISSING_PREREQUISITE_DENIAL_CODES: ReadonlySet<string> = new Set([
+  'resource_not_found',
+  'no_restorable_snapshot',
+  'no_recovery_source',
+]);
+
 export type DrExecutionAuthorizationFailure = {
   status: 400 | 403 | 404 | 503;
   code: string;
@@ -460,7 +478,7 @@ export function classifyDrExecutionAuthorizationError(
   }
   if (error instanceof DrRecoveryAuthorizationDeniedError) {
     return {
-      status: error.code === 'resource_not_found' ? 404 : 400,
+      status: DR_MISSING_PREREQUISITE_DENIAL_CODES.has(error.code) ? 404 : 400,
       code: error.code,
     };
   }
@@ -535,7 +553,7 @@ export async function resolveDrGroupAuthorizationRefs(
     rawDeviceIds.length === 0
     || rawDeviceIds.some((value) => typeof value !== 'string' || !UUID_PATTERN.test(value))
   ) {
-    throw new DrRecoveryAuthorizationDeniedError('resource_not_found');
+    throw new DrRecoveryAuthorizationDeniedError('group_has_no_valid_devices');
   }
   const deviceIds = [...new Set(rawDeviceIds as string[])];
 
@@ -569,7 +587,7 @@ export async function resolveDrGroupAuthorizationRefs(
     for (const deviceId of deviceIds) {
       const snapshotId = await resolveLatest(orgId, deviceId);
       if (!snapshotId) {
-        throw new DrRecoveryAuthorizationDeniedError('resource_not_found');
+        throw new DrRecoveryAuthorizationDeniedError('no_restorable_snapshot');
       }
       addSource('snapshot', snapshotId);
     }
@@ -580,7 +598,7 @@ export async function resolveDrGroupAuthorizationRefs(
       const value = container[field];
       if (value === undefined) continue;
       if (typeof value !== 'string' || !UUID_PATTERN.test(value)) {
-        throw new DrRecoveryAuthorizationDeniedError('resource_not_found');
+        throw new DrRecoveryAuthorizationDeniedError('invalid_recovery_source_reference');
       }
       addSource(kind, value);
     }
@@ -588,13 +606,13 @@ export async function resolveDrGroupAuthorizationRefs(
 
   if (payload.snapshotId !== undefined) {
     if (typeof payload.snapshotId !== 'string' || !payload.snapshotId.trim()) {
-      throw new DrRecoveryAuthorizationDeniedError('resource_not_found');
+      throw new DrRecoveryAuthorizationDeniedError('invalid_recovery_source_reference');
     }
     addSource('snapshot', await deps.resolveProviderSnapshotId(orgId, payload.snapshotId));
   }
 
   if (sourceKeys.size === 0) {
-    throw new DrRecoveryAuthorizationDeniedError('resource_not_found');
+    throw new DrRecoveryAuthorizationDeniedError('no_recovery_source');
   }
   return refs;
 }

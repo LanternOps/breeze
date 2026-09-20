@@ -152,7 +152,7 @@ describe('BARE_METAL_REBUILD step against real PostgreSQL', () => {
     ).resolves.toBe(newestRestorable);
   });
 
-  runDb('denies (resource_not_found) and creates no recovery when a group device has no restorable snapshot', async () => {
+  runDb('denies (no_restorable_snapshot) and creates no recovery when a group device has no restorable snapshot', async () => {
     const testDb = getTestDb();
     const partner = await createPartner();
     const org = await createOrganization({ partnerId: partner.id });
@@ -175,7 +175,7 @@ describe('BARE_METAL_REBUILD step against real PostgreSQL', () => {
     const outcome = await withSystemDbAccessContext(() => reconcileDrExecution(execution!.id));
 
     expect(outcome.nextDelayMs).toBeNull();
-    expect(outcome.execution).toMatchObject({ status: 'failed', authorizationState: 'denied', authorizationDenialCode: 'resource_not_found' });
+    expect(outcome.execution).toMatchObject({ status: 'failed', authorizationState: 'denied', authorizationDenialCode: 'no_restorable_snapshot' });
     const recoveries = await testDb.execute(sql`select id from bare_metal_recoveries where dr_execution_id = ${execution!.id}`);
     expect(recoveries).toHaveLength(0);
   });

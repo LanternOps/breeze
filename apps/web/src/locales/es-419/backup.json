@@ -730,7 +730,15 @@
     "launchExecution": "Ejecución de lanzamiento",
     "startANewDrRunFor": "Inicie una nueva ejecución de DR para",
     "cancel": "Cancelar",
-    "startExecution": "Iniciar ejecución"
+    "startExecution": "Iniciar ejecución",
+    "executeErrorFallback": "No se pudo iniciar la ejecución.",
+    "executeErrorNoRestorableSnapshot": "No se puede iniciar: un dispositivo de un grupo de reconstrucción bare-metal no tiene una instantánea de respaldo restaurable. Ejecute primero un respaldo exitoso para cada dispositivo de ese grupo.",
+    "executeErrorNoRecoverySource": "No se puede iniciar: un grupo de recuperación no indica ninguna fuente de recuperación. Agregue al grupo una instantánea, un trabajo de restauración o un token de recuperación.",
+    "executeErrorGroupHasNoValidDevices": "No se puede iniciar: un grupo de recuperación no tiene dispositivos válidos. Edite el plan y agregue al menos un dispositivo a cada grupo.",
+    "executeErrorInvalidSourceReference": "No se puede iniciar: un grupo de recuperación hace referencia a una fuente de recuperación cuyo identificador no es válido. Edite el grupo y vuelva a seleccionar la fuente.",
+    "executeErrorInvalidStepConfig": "No se puede iniciar: un grupo de recuperación tiene una configuración de paso no válida. Edite el grupo y corrija sus ajustes.",
+    "executeErrorResourceNotFound": "No se puede iniciar: una instantánea a la que hace referencia este plan ya no existe. Edite el grupo afectado y elija una instantánea actual.",
+    "executeErrorBackupWriteRequired": "No se puede iniciar: este plan contiene un grupo de reconstrucción bare-metal, que requiere el permiso de escritura de respaldos."
   },
   "dRExecutionView": {
     "executionDetails": "Detalles de ejecución",
@@ -806,7 +814,9 @@
     "uniqueDeviceCount_one": "dispositivo único {{count}}",
     "uniqueDeviceCount_other": "dispositivos únicos {{count}}",
     "chooseAStepTypeForEachGroup": "Elija un tipo de paso para cada grupo de recuperación.",
-    "rebuildWaitTimeoutOutOfRange": "El tiempo de espera de la reconstrucción bare-metal debe ser un número entero entre {{min}} y {{max}} minutos."
+    "rebuildWaitTimeoutOutOfRange": "El tiempo de espera de la reconstrucción bare-metal debe ser un número entero entre {{min}} y {{max}} minutos.",
+    "rebuildOutputDirMustBeAbsolute": "El directorio de salida de la reconstrucción bare-metal debe ser una ruta absoluta que empiece con \"/\" y tener como máximo {{max}} caracteres.",
+    "partialSaveFailure": "Parte de este plan se guardó antes del error, por lo que el plan y la lista pueden no coincidir. Corrija el problema y guarde de nuevo. El servidor indicó: {{message}}"
   },
   "dRPlanGroupCard": {
     "device": "dispositivo",

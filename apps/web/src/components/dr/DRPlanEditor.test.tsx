@@ -144,3 +144,105 @@ describe('DRPlanEditor step type', () => {
     expect(body.restoreConfig).toEqual({ commandType: 'MSSQL_RESTORE', payload: { databaseName: 'erp' } });
   });
 });
+
+// #6382: a save is a plan write followed by one write per group and cannot be
+// rolled back from the browser. A group value the server rejects therefore used
+// to commit the plan rename while telling the operator the save had failed, and
+// the list behind the dialog kept the stale name until a manual reload.
+describe('DRPlanEditor save atomicity (#6382)', () => {
+  beforeEach(() => {
+    fetchMock.mockReset();
+  });
+
+  const editablePlanPayload = {
+    data: {
+      id: 'plan-1',
+      name: 'Plan A',
+      description: null,
+      status: 'draft',
+      rpoTargetMinutes: 60,
+      rtoTargetMinutes: 240,
+      groups: [
+        {
+          id: 'group-1',
+          name: 'Tier 1',
+          sequence: 0,
+          dependsOnGroupId: null,
+          devices: ['d-99'],
+          estimatedDurationMinutes: 30,
+          restoreConfig: {
+            commandType: 'BARE_METAL_REBUILD',
+            snapshotSelection: 'latest_restorable',
+            outputDir: '/srv/rebuild',
+            waitTimeoutMinutes: 90,
+          },
+        },
+      ],
+    },
+  };
+
+  const renderEditor = async (onPartialSave = vi.fn()) => {
+    render(
+      <DRPlanEditor
+        open
+        planId="plan-1"
+        onClose={vi.fn()}
+        onSaved={vi.fn()}
+        onPartialSave={onPartialSave}
+      />
+    );
+    const save = (await screen.findByText('Save plan')).closest('button')!;
+    await waitFor(() => expect(save).not.toBeDisabled());
+    return { save, onPartialSave };
+  };
+
+  it('refuses a relative rebuild output dir before issuing any write', async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init as RequestInit | undefined)?.method ?? 'GET';
+      if (url.startsWith('/devices/options')) return makeJsonResponse(deviceOptionsPayload);
+      if (url === '/dr/plans/plan-1' && method === 'GET') return makeJsonResponse(editablePlanPayload);
+      return makeJsonResponse({}, false, 404);
+    });
+
+    const { save } = await renderEditor();
+    fireEvent.change(screen.getByLabelText('Plan name'), { target: { value: 'Renamed plan' } });
+    fireEvent.change(screen.getByTestId('dr-group-rebuild-output-dir'), {
+      target: { value: 'relative/out' },
+    });
+    fireEvent.click(save);
+
+    expect(
+      await screen.findByText(/output directory must be an absolute path/i)
+    ).toBeInTheDocument();
+    // The rename must NOT have been committed.
+    expect(
+      fetchMock.mock.calls.some(
+        ([url, init]) =>
+          String(url) === '/dr/plans/plan-1' && (init as RequestInit | undefined)?.method === 'PATCH'
+      )
+    ).toBe(false);
+  });
+
+  it('reports a partially applied save and asks the caller to refetch', async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init as RequestInit | undefined)?.method ?? 'GET';
+      if (url.startsWith('/devices/options')) return makeJsonResponse(deviceOptionsPayload);
+      if (url === '/dr/plans/plan-1' && method === 'GET') return makeJsonResponse(editablePlanPayload);
+      if (url === '/dr/plans/plan-1' && method === 'PATCH') return makeJsonResponse({ data: { id: 'plan-1' } });
+      if (url === '/dr/plans/plan-1/groups/group-1' && method === 'PATCH') {
+        return makeJsonResponse({ error: 'invalid group' }, false, 400);
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+
+    const onPartialSave = vi.fn();
+    const { save } = await renderEditor(onPartialSave);
+    fireEvent.change(screen.getByLabelText('Plan name'), { target: { value: 'Renamed plan' } });
+    fireEvent.click(save);
+
+    expect(await screen.findByText(/Part of this plan was saved/i)).toBeInTheDocument();
+    await waitFor(() => expect(onPartialSave).toHaveBeenCalled());
+  });
+});

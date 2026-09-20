@@ -221,7 +221,7 @@ describe('drExecutionService', () => {
     expect(resolveLatestRestorableSnapshotId).toHaveBeenCalledWith(ORG_ID, DEVICE_2);
   });
 
-  it('BARE_METAL_REBUILD: a device with no restorable snapshot denies the group (resource_not_found)', async () => {
+  it('BARE_METAL_REBUILD: a device with no restorable snapshot denies the group (no_restorable_snapshot)', async () => {
     const resolveLatestRestorableSnapshotId = vi.fn(async (_o: string, d: string) => (d === DEVICE_ID ? SNAP_1 : null));
     const err = await resolveDrGroupAuthorizationRefs({
       ...groupRow(),
@@ -232,7 +232,7 @@ describe('drExecutionService', () => {
       resolveLatestRestorableSnapshotId,
     }).then(() => null, (e: unknown) => e);
     expect(err).toBeInstanceOf(DrRecoveryAuthorizationDeniedError);
-    expect((err as DrRecoveryAuthorizationDeniedError).code).toBe('resource_not_found');
+    expect((err as DrRecoveryAuthorizationDeniedError).code).toBe('no_restorable_snapshot');
     expect(resolveLatestRestorableSnapshotId).toHaveBeenCalledWith(ORG_ID, DEVICE_2);
   });
 
@@ -253,7 +253,7 @@ describe('drExecutionService', () => {
     }, ORG_ID, {
       resolveProviderSnapshotId: vi.fn(),
       resolveLatestRestorableSnapshotId: vi.fn().mockResolvedValue(SNAP_1),
-    })).rejects.toThrow('resource_not_found');
+    })).rejects.toThrow('no_recovery_source');
   });
 
   it('fails closed when a provider snapshot id is ambiguous', async () => {
@@ -268,7 +268,7 @@ describe('drExecutionService', () => {
       devices: [DEVICE_ID, 'malformed-device'],
     }, ORG_ID, {
       resolveProviderSnapshotId: vi.fn().mockResolvedValue('77777777-7777-7777-7777-777777777777'),
-    })).rejects.toThrow('resource_not_found');
+    })).rejects.toThrow('group_has_no_valid_devices');
   });
 
   it('normalizes duplicate target ids to one authorization and command identity', async () => {
@@ -805,6 +805,28 @@ describe('classifyDrExecutionAuthorizationError', () => {
     expect(classifyDrExecutionAuthorizationError(
       new DrRecoveryAuthorizationDeniedError('ambiguous_snapshot_reference'),
     )).toEqual({ status: 400, code: 'ambiguous_snapshot_reference' });
+  });
+
+  // #6382: the console prints this code at the operator, so each refusal must
+  // name its own missing prerequisite rather than share one opaque token.
+  it('keeps each missing-prerequisite denial distinct and 404', () => {
+    for (const code of ['no_restorable_snapshot', 'no_recovery_source']) {
+      expect(classifyDrExecutionAuthorizationError(
+        new DrRecoveryAuthorizationDeniedError(code),
+      )).toEqual({ status: 404, code });
+    }
+  });
+
+  it('reports a malformed plan/step configuration as 400 with its own code', () => {
+    for (const code of [
+      'group_has_no_valid_devices',
+      'invalid_recovery_source_reference',
+      'invalid_step_config',
+    ]) {
+      expect(classifyDrExecutionAuthorizationError(
+        new DrRecoveryAuthorizationDeniedError(code),
+      )).toEqual({ status: 400, code });
+    }
   });
 
   it('returns null for anything else so real faults keep propagating', () => {
