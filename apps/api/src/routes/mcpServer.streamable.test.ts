@@ -122,6 +122,7 @@ vi.mock('../services/permissions', async (importOriginal) => {
 });
 
 vi.mock('../services/aiTools', () => ({
+  aiTools: new Map(),
   getToolDefinitions: mocks.getToolDefinitions,
   executeTool: mocks.executeTool,
   getToolTier: mocks.getToolTier,
@@ -696,6 +697,33 @@ describe('Streamable HTTP transport (POST /sse)', () => {
         const bad = await app.request('/mcp/sse', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-API-Key': 'k', 'Mcp-Session-Id': init.headers.get('Mcp-Session-Id')! }, body: JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'tools/list', params: { cursor: '!!' } }) });
         expect((await bad.json()).error.code).toBe(-32602);
       } finally { vi.unstubAllEnvs(); }
+    });
+  });
+
+  describe('tools/call structuredContent (B-W01)', () => {
+    async function call(resultText: string) {
+      mocks.getToolDefinitions.mockReturnValue([{ name: 'query_devices', description: 'd', input_schema: { type: 'object', properties: {} } }]);
+      mocks.getToolTier.mockReturnValue(1);
+      mocks.executeTool.mockResolvedValue(resultText);
+      const app = appWithMcpRoutes();
+      const init = await app.request('/mcp/sse', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-API-Key': 'k' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize' }) });
+      const res = await app.request('/mcp/sse', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-API-Key': 'k', 'Mcp-Session-Id': init.headers.get('Mcp-Session-Id')! }, body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'query_devices', arguments: {} } }) });
+      return (await res.json()).result as { content: Array<{ type: string; text?: string }>; structuredContent?: unknown; isError?: boolean };
+    }
+    it('mirrors an object result into structuredContent and keeps the text block', async () => {
+      const r = await call(JSON.stringify({ devices: [{ id: 'd1' }], showing: 1 }));
+      expect(r.content[0]).toEqual({ type: 'text', text: JSON.stringify({ devices: [{ id: 'd1' }], showing: 1 }) });
+      expect(r.structuredContent).toEqual({ devices: [{ id: 'd1' }], showing: 1 });
+    });
+    it('omits structuredContent for non-object results (arrays, scalars, plain text)', async () => {
+      expect((await call('[1,2]')).structuredContent).toBeUndefined();
+      expect((await call('plain text')).structuredContent).toBeUndefined();
+      expect((await call('"str"')).structuredContent).toBeUndefined();
+    });
+    it('builds structuredContent from the redacted text, not the raw result', async () => {
+      const r = await call(JSON.stringify({ apiToken: 'secret-value', ok: true }));
+      // compactToolResultForChat/redactAiToolOutputText replaces token-shaped values; whatever the text block shows, structuredContent must equal it.
+      expect(r.structuredContent).toEqual(JSON.parse(r.content[0]!.text!));
     });
   });
 });

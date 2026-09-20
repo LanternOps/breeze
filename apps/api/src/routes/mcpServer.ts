@@ -1241,6 +1241,17 @@ async function handleToolsList(
 // tools/call
 // ============================================
 
+function structuredFromSafeText(safeText: string): Record<string, unknown> | undefined {
+  try {
+    const parsed: unknown = JSON.parse(safeText);
+    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 async function handleToolsCall(
   id: string | number,
   params: Record<string, unknown>,
@@ -1448,6 +1459,7 @@ async function handleToolsCall(
       };
       const result = await executeTool(toolName, toolInput, toolAuth);
       const safeResult = compactToolResultForChat(toolName, result);
+      const structured = structuredFromSafeText(safeResult);
 
       // If result contains imageBase64, return it as an MCP image content block
       // so Claude can actually see the screenshot (instead of raw base64 in JSON text)
@@ -1464,14 +1476,20 @@ async function handleToolsCall(
           }
           response = jsonRpcResult(id, { content });
         } else {
-          response = jsonRpcResult(id, { content: [{ type: 'text', text: safeResult }] });
+          response = jsonRpcResult(id, {
+            content: [{ type: 'text', text: safeResult }],
+            ...(structured ? { structuredContent: structured } : {}),
+          });
         }
       } catch (err) {
         if (!(err instanceof SyntaxError)) {
           console.error('[MCP] Unexpected error parsing vision response:', err);
         }
         // Not JSON or no imageBase64 — fall through to text
-        response = jsonRpcResult(id, { content: [{ type: 'text', text: safeResult }] });
+        response = jsonRpcResult(id, {
+          content: [{ type: 'text', text: safeResult }],
+          ...(structured ? { structuredContent: structured } : {}),
+        });
       }
 
       return { status: 'success', ledgerResult: safeResult, response };
@@ -1643,8 +1661,11 @@ async function handleTenantToolCall(
     result: resultText,
   });
 
+  // Tenant execution already redacts source credentials from resultText.
+  const structured = isError ? undefined : structuredFromSafeText(resultText);
   return jsonRpcResult(id, {
     content: [{ type: 'text', text: resultText }],
+    ...(structured ? { structuredContent: structured } : {}),
     ...(isError ? { isError: true } : {}),
   });
 }
