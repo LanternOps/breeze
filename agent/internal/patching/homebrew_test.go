@@ -3,11 +3,13 @@
 package patching
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"os/user"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -678,4 +680,41 @@ func TestBrewInstallCaskCallsUpgradeCask(t *testing.T) {
 	if !strings.Contains(err.Error(), "brew upgrade failed") {
 		t.Fatalf("unexpected error: %v", err)
 	}
+}
+
+// --- W04: BrewCleanup is exported so the system-cleanup catalogue can run it
+// as a first-class action and REPORT its outcome. runBrewCleanup keeps the
+// swallow-and-log behaviour its patch-job caller depends on (spec §7.2). ---
+
+func TestBrewCleanupDryRunArgsAreNonMutating(t *testing.T) {
+	got := brewCleanupDryRunArgs()
+	want := []string{"cleanup", "--prune=all", "-n"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("brewCleanupDryRunArgs() = %v, want %v", got, want)
+	}
+}
+
+// The exported entry point must SURFACE failures. runBrewCleanup swallowing
+// them is correct for a post-install maintenance hook and wrong for an action
+// a tech explicitly asked for and is watching a spinner on.
+func TestBrewCleanupReturnsItsErrorWhenBrewIsAbsent(t *testing.T) {
+	if _, err := exec.LookPath("brew"); err == nil {
+		t.Skip("brew is installed; this case needs the absent-binary path")
+	}
+	if _, err := BrewCleanup(context.Background(), true); err == nil {
+		t.Fatal("BrewCleanup must return an error when brew is not installed")
+	}
+}
+
+// The swallow-and-log wrapper still exists and still swallows — the patch job
+// must never be failed by a maintenance cleanup (#4912).
+func TestRunBrewCleanupStillSwallowsErrors(t *testing.T) {
+	// A failing fixture keeps this test from ever executing a real cleaner.
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "brew"), []byte("#!/bin/sh\nexit 1\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	h := &HomebrewProvider{}
+	h.runBrewCleanup() // must not panic and must not propagate anything
 }

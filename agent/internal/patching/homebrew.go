@@ -3,6 +3,7 @@
 package patching
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +14,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
+
+	"github.com/breeze-rmm/agent/internal/maintenance"
 )
 
 const brewCaskPrefix = "cask:"
@@ -281,6 +285,12 @@ func brewCleanupArgs() []string {
 	return []string{"cleanup", "--prune=all"}
 }
 
+// brewCleanupDryRunArgs builds the non-mutating estimate invocation. Pure and
+// table-testable, matching brewCleanupArgs/ensureBrewArgs in this file.
+func brewCleanupDryRunArgs() []string {
+	return []string{"cleanup", "--prune=all", "-n"}
+}
+
 // scheduleCleanup debounces `brew cleanup --prune=all` so a batch of
 // consecutive Install calls (one job upgrading N formulae/casks) triggers
 // exactly one cleanup run, fired shortly after the last package in the
@@ -311,29 +321,109 @@ func (h *HomebrewProvider) scheduleCleanup() {
 	h.cleanupTimer = time.AfterFunc(debounce, fn)
 }
 
-// runBrewCleanup actually runs `brew cleanup --prune=all` through the same
-// brewCommand() path Scan/Install/Uninstall use, so it executes as the
-// console user via sudo -n -H -u when the agent is running as root.
-// Cleanup is best-effort maintenance: any failure is logged (warn) and
-// swallowed, never surfaced to the patch job that triggered it.
-func (h *HomebrewProvider) runBrewCleanup() {
-	cmd, err := h.brewCommand(brewCleanupArgs()...)
+// brewCleanupTailLimit caps a captured cleanup stream, keeping the TAIL: the
+// only line the estimator reads ("This operation would free approximately …")
+// is the last one, and truncatePatchOutput keeps the head.
+const brewCleanupTailLimit = 16 * 1024
+
+func truncateBrewOutputTail(output []byte) string {
+	text := strings.TrimSpace(string(output))
+	if len(text) <= brewCleanupTailLimit {
+		return text
+	}
+	tail := text[len(text)-brewCleanupTailLimit:]
+	for len(tail) > 0 && !utf8.RuneStart(tail[0]) {
+		tail = tail[1:]
+	}
+	return "[truncated] " + strings.TrimSpace(tail)
+}
+
+// RunBrewCleanupBounded runs `brew cleanup --prune=all` (or `-n`) under the
+// caller's context, with a tail-preserving 16 KiB output cap, and returns both
+// the output and the error.
+//
+// It takes NO lock. Two callers need this invocation and they hold the
+// maintenance lock at different levels: `BrewCleanup` below (the patch-job
+// entry point) acquires it around this call, while the system-cleanup
+// catalogue's `mac_brew_cleanup` action runs underneath a lock its whole run
+// already holds — locking here as well would deadlock that path.
+//
+// It lives in `patching` rather than in `syscleanup` because this is where the
+// brew binary lookup and the console-user `sudo -n -H -u` handling already
+// live (`brewCommand`), and `syscleanup` may import `patching` while the
+// reverse would be a cycle. `syscleanup` calls it directly rather than
+// reimplementing the sudo dance, which is exactly the duplication spec §13's
+// narrative warns against.
+//
+// NOT runCmdCombinedOutputWithTimeout: that helper builds its own
+// context.WithTimeout and ignores the caller's, so a cancelled cleanup run
+// would leave brew running for up to patchMutateTimeout (30 minutes) after the
+// command it belonged to was already reported.
+func RunBrewCleanupBounded(ctx context.Context, dryRun bool) (string, error) {
+	args := brewCleanupArgs()
+	if dryRun {
+		args = brewCleanupDryRunArgs()
+	}
+	provider := &HomebrewProvider{}
+	built, err := provider.brewCommand(args...)
 	if err != nil {
-		log.Warn("brew cleanup: could not build command", "error", err)
-		return
+		return "", fmt.Errorf("brew cleanup: could not build command: %w", err)
 	}
 
-	// Serialized against Install/Uninstall via brewMutateMu — see its
-	// doc comment on HomebrewProvider for why.
+	cmd := exec.CommandContext(ctx, built.Path, built.Args[1:]...)
+	cmd.Env = built.Env
+	cmd.Dir = built.Dir
+	output, err := cmd.CombinedOutput()
+	text := truncateBrewOutputTail(output)
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return text, fmt.Errorf("brew cleanup cancelled: %w", ctxErr)
+	}
+	if err != nil {
+		return text, fmt.Errorf("brew cleanup failed: %w: %s", err, text)
+	}
+	return text, nil
+}
+
+// BrewCleanup is the exported, LOCKED entry point.
+//
+// Exported for the system-cleanup catalogue (Disk Cleanup v2 §7.2), which
+// needs both halves this function's unexported predecessor could not provide:
+// the command output (for the dry-run estimate) and the error (so a failed
+// action is reported as failed instead of vanishing into a warn log).
+//
+// The lock is the process-wide maintenance lock (spec §13 #4/#12), not the
+// provider's instance mutex: a `brew cleanup` firing on its debounce timer
+// while a `system_cleanup_run` is mid-flight is exactly the interleaving that
+// mutex cannot see, since the two live in different packages. Acquire (not
+// TryAcquire) because this path is background work with nobody waiting —
+// queueing behind a cleanup run is strictly better than skipping the cleanup.
+func BrewCleanup(ctx context.Context, dryRun bool) (string, error) {
+	release, err := maintenance.Acquire(ctx, "brew_cleanup")
+	if err != nil {
+		return "", fmt.Errorf("brew cleanup: %w", err)
+	}
+	defer release()
+	return RunBrewCleanupBounded(ctx, dryRun)
+}
+
+// runBrewCleanup is the patch-job path: best-effort maintenance whose failures
+// are logged (warn) and swallowed, never surfaced to the job that triggered it.
+//
+// The 30-minute ceiling replaces the one runCmdCombinedOutputWithTimeout used
+// to impose internally; it is now the caller's, which is what lets the
+// maintenance lock's wait be bounded too.
+func (h *HomebrewProvider) runBrewCleanup() {
+	ctx, cancel := context.WithTimeout(context.Background(), patchMutateTimeout)
+	defer cancel()
+
 	h.brewMutateMu.Lock()
-	output, err := runCmdCombinedOutputWithTimeout(cmd, patchMutateTimeout)
+	output, err := BrewCleanup(ctx, false)
 	h.brewMutateMu.Unlock()
 	if err != nil {
-		log.Warn("brew cleanup failed", "error", err, "output", truncatePatchOutput(output))
+		log.Warn("brew cleanup failed", "error", err.Error(), "output", output)
 		return
 	}
-
-	log.Info("brew cleanup completed", "output", truncatePatchOutput(output))
+	log.Info("brew cleanup completed", "output", output)
 }
 
 // Uninstall removes a Homebrew formula or cask.
