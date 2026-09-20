@@ -24,8 +24,8 @@ import { createTimeEntry, type TimeEntryActor } from '../../services/timeEntrySe
 // Keep the queue boundary out of the service-path proof; no DB/resolver mocks.
 vi.mock('../../services/timeEntryEvents', () => ({ emitTimeEntryEvent: vi.fn().mockResolvedValue(undefined) }));
 
-const MIGRATION = '2026-10-23-100200-labour-pricing-conversion.sql';
-const STAMP_MIGRATION = '2026-10-23-100100-time-entries-billing-stamp.sql';
+const MIGRATION = '2026-10-23-200200-labour-pricing-conversion.sql';
+const STAMP_MIGRATION = '2026-10-23-200100-time-entries-billing-stamp.sql';
 
 type Card = ResolvedCard & { partnerId: string; name: string; isDefault: boolean };
 async function loadCards(partnerId: string): Promise<Card[]> {
