@@ -1,6 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import { PERMISSION_GRANTS } from './permissions';
 
+it('exposes the billing_profiles grants', () => {
+  expect(PERMISSION_GRANTS.BILLING_PROFILES_READ).toEqual({ resource: 'billing_profiles', action: 'read' });
+  expect(PERMISSION_GRANTS.BILLING_PROFILES_WRITE).toEqual({ resource: 'billing_profiles', action: 'write' });
+});
+
 describe('PERMISSION_GRANTS topology grants', () => {
   it('exposes topology grants', () => {
     expect(PERMISSION_GRANTS.TOPOLOGY_WRITE).toEqual({ resource: 'topology', action: 'write' });

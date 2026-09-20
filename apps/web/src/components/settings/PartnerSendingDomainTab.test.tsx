@@ -175,8 +175,8 @@ describe('PartnerSendingDomainTab — mutations', () => {
     expect((screen.getByTestId('sending-domains-add-submit') as HTMLButtonElement).disabled).toBe(false);
   });
 
-  it('confirms before removing, and says the provider domain is kept when Breeze did not create it', async () => {
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+  it('confirms before removing via the app confirm modal (not window.confirm), and says the provider domain is kept when Breeze did not create it', async () => {
+    const windowConfirm = vi.spyOn(window, 'confirm');
     api.fetchSendingDomains.mockResolvedValue({
       supported: true, data: payload({ domains: [domain({ providerManaged: false })] }),
     });
@@ -186,21 +186,28 @@ describe('PartnerSendingDomainTab — mutations', () => {
 
     await user.click(await screen.findByTestId('sending-domain-d-1-remove'));
 
-    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('never deletes a domain it did not create'));
+    // The app's own modal, not the native dialog.
+    expect(windowConfirm).not.toHaveBeenCalled();
+    const dialogMessage = await screen.findByText(/never deletes a domain it did not create/);
+    expect(dialogMessage).toBeInTheDocument();
+    expect(api.removeSendingDomain).not.toHaveBeenCalled();
+
+    await user.click(screen.getByTestId('sending-domains-remove-confirm'));
+
     expect(api.removeSendingDomain).toHaveBeenCalledWith(expect.objectContaining({ domainId: 'd-1' }));
-    confirm.mockRestore();
+    windowConfirm.mockRestore();
   });
 
-  it('does not remove when the confirmation is declined', async () => {
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+  it('does not remove when the confirmation modal is cancelled', async () => {
     api.fetchSendingDomains.mockResolvedValue({ supported: true, data: payload({ domains: [domain()] }) });
     const user = userEvent.setup();
     render(<PartnerSendingDomainTab />);
 
     await user.click(await screen.findByTestId('sending-domain-d-1-remove'));
+    await screen.findByText(/goes back to the standard Breeze sender/);
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
 
     expect(api.removeSendingDomain).not.toHaveBeenCalled();
-    confirm.mockRestore();
   });
 
   it('saves an identity through the client', async () => {

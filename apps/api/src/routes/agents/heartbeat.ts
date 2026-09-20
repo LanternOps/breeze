@@ -1351,7 +1351,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   if (data.metrics) {
     try {
       const thresholdScan = await maybeQueueThresholdFilesystemAnalysis(
-        { id: device.id, osType: device.osType },
+        { id: device.id, osType: device.osType, orgId: device.orgId },
         data.metrics.diskPercent
       );
       if (thresholdScan.queued) {

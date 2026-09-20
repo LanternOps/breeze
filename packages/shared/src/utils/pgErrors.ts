@@ -15,10 +15,32 @@
  *   for the constraint name.
  */
 export function isPgUniqueViolation(err: unknown, constraint?: string): boolean {
+  return isPgSqlstate(err, '23505', constraint);
+}
+
+/**
+ * Detect a Postgres foreign-key violation (SQLSTATE 23503) from a thrown error,
+ * unwrapping the DrizzleQueryError `.cause` chain exactly like
+ * {@link isPgUniqueViolation}.
+ *
+ * Backstop only. A 23503 raised inside a request transaction has already
+ * ABORTED that transaction (see `startTimer`'s #2189 note), so catching one
+ * after the fact cannot produce a clean 400 — the follow-up statements fail
+ * with 25P02. Validate the referenced row BEFORE writing (see
+ * `getActiveWorkType`) and use this only to classify an error that reached a
+ * handler owning its own transaction boundary.
+ *
+ * @param constraint  When given, only matches that specific FK.
+ */
+export function isPgForeignKeyViolation(err: unknown, constraint?: string): boolean {
+  return isPgSqlstate(err, '23503', constraint);
+}
+
+function isPgSqlstate(err: unknown, sqlstate: string, constraint?: string): boolean {
   let cur: unknown = err;
   for (let depth = 0; cur && typeof cur === 'object' && depth < 5; depth++) {
     const e = cur as { code?: unknown; constraint?: unknown; constraint_name?: unknown; message?: unknown };
-    if (e.code === '23505') {
+    if (e.code === sqlstate) {
       if (!constraint) return true;
       // postgres.js surfaces the index as `constraint_name`; node-postgres uses
       // `constraint`. Fall back to a message scan only if neither is present.

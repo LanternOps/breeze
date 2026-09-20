@@ -74,6 +74,8 @@ describe('DeviceMonitoringTab', () => {
     render(<DeviceMonitoringTab deviceId="dev-1" />);
 
     expect(await screen.findByTestId('device-monitoring-empty')).toBeInTheDocument();
+    const link = screen.getByRole('link', { name: /assign a configuration policy/i });
+    expect(link).toHaveAttribute('href', '/configuration-policies');
   });
 
   it('renders an error state when the request fails', async () => {

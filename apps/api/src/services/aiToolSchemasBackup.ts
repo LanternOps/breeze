@@ -50,17 +50,39 @@ export const backupToolSchemas: Record<string, z.ZodType> = {
     selectedPaths: z.array(backupPath).max(1000).optional(),
   }),
 
-  restore_as_vm: z.object({
-    snapshotId: uuid,
-    targetDeviceId: uuid,
-    hypervisor: z.enum(['hyperv', 'vmware']),
-    vmName: z.string().min(1).max(200),
-    vmSpecs: z.object({
-      memoryMb: z.number().int().min(512).optional(),
-      cpuCount: z.number().int().min(1).optional(),
-      diskSizeGb: z.number().int().min(1).optional(),
-    }).optional(),
-  }),
+  // Two engines (bare-metal W05a). `hyperv` keeps the pre-existing shape;
+  // `rebuild` is strict and carries no `identity` — the server forces
+  // `identity: 'new'` for engine-produced images (spec §9).
+  restore_as_vm: z.preprocess(
+    (value) =>
+      value && typeof value === 'object' && !Array.isArray(value) && !('engine' in value)
+        ? { ...(value as Record<string, unknown>), engine: 'hyperv' }
+        : value,
+    z.discriminatedUnion('engine', [
+      z.object({
+        engine: z.literal('hyperv'),
+        snapshotId: uuid,
+        targetDeviceId: uuid,
+        hypervisor: z.enum(['hyperv', 'vmware']),
+        vmName: z.string().min(1).max(200),
+        vmSpecs: z.object({
+          memoryMb: z.number().int().min(512).optional(),
+          cpuCount: z.number().int().min(1).optional(),
+          diskSizeGb: z.number().int().min(1).optional(),
+        }).optional(),
+      }),
+      z.object({
+        engine: z.literal('rebuild'),
+        snapshotId: uuid,
+        rebuildHostDeviceId: uuid,
+        outputPath: z.string().min(1).max(1024).refine(
+          (p) => p.startsWith('/') && p.endsWith('.vhdx') && !p.includes('\0') && !p.includes('..'),
+          { message: 'absolute .vhdx path required' },
+        ),
+        imageSizeGb: z.number().int().min(1).optional(),
+      }).strict(),
+    ]),
+  ),
 
   instant_boot_vm: z.object({
     snapshotId: uuid,

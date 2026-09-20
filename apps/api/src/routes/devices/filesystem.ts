@@ -1,23 +1,37 @@
+import { normalizeScanPath, osRootScanPath } from '@breeze/shared';
+import type { Context } from 'hono';
+import type { ContentfulStatusCode } from 'hono/utils/http-status';
+import { toCleanupOs } from '@breeze/shared';
+import {
+  CLEANUP_EXECUTE_BUDGET_MS,
+  MIN_AGENT_VERSION_CLEANUP_GUARD,
+  agentSupportsCleanupGuard,
+  runCleanupExecution,
+  wasDispatched,
+} from '../../services/filesystemCleanupExecution';
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
-import { and, desc, eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { db } from '../../db';
-import { deviceDisks, deviceFilesystemCleanupRuns } from '../../db/schema';
+import { deviceFilesystemCleanupRuns } from '../../db/schema';
 import { authMiddleware, requireMfa, requireScope, requirePermission } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import { CommandTypes, executeCommand, queueCommandForExecution } from '../../services/commandQueue';
 import {
   buildCleanupPreview,
   getFilesystemScanState,
+  setFilesystemScanGeneration,
   getLatestFilesystemSnapshot,
   getLatestFilesystemCleanupSnapshot,
   readCheckpointPendingDirectories,
   readHotDirectories,
   readPlanPreviewCandidates,
+  readPlanScanPath,
   safeCleanupCategories,
   type FilesystemCleanupCandidate,
 } from '../../services/filesystemAnalysis';
+import { listFilesystemVolumes } from '../../services/filesystemVolumes';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED } from './helpers';
 
@@ -27,6 +41,11 @@ filesystemRoutes.use('*', authMiddleware);
 
 const deviceIdParamSchema = z.object({
   id: z.string().guid(),
+});
+
+const filesystemSnapshotQuerySchema = z.object({
+  /** Which volume's latest snapshot to read. Defaults to the device's OS root. */
+  path: z.string().min(1).max(2048).optional(),
 });
 
 const scanFilesystemBodySchema = z.object({
@@ -42,10 +61,13 @@ const scanFilesystemBodySchema = z.object({
 });
 
 const cleanupPreviewBodySchema = z.object({
+  /** Which volume to preview. Defaults to the device's OS root. */
+  path: z.string().min(1).max(2048).optional(),
   categories: z.array(z.enum(['temp_files', 'browser_cache', 'package_cache', 'trash'])).max(10).optional(),
 });
 
 const cleanupExecuteBodySchema = z.object({
+  path: z.string().min(1).max(2048).optional(),
   paths: z.array(z.string().min(1).max(4096)).min(1).max(200),
   // When set, the selection is validated against the exact candidate set the
   // user previewed in this cleanup run, rather than re-derived from whatever
@@ -77,28 +99,91 @@ function readSnapshotScanMode(snapshot: { rawPayload?: unknown } | null | undefi
   return typeof raw.scanMode === 'string' && raw.scanMode.length > 0 ? raw.scanMode : null;
 }
 
-async function readCurrentDiskUsedPercent(deviceId: string): Promise<number | null> {
-  const [disk] = await db
-    .select({ usedPercent: deviceDisks.usedPercent })
-    .from(deviceDisks)
-    .where(eq(deviceDisks.deviceId, deviceId))
-    .orderBy(desc(deviceDisks.usedPercent))
-    .limit(1);
-  return typeof disk?.usedPercent === 'number' ? disk.usedPercent : null;
-}
-
 function withinPercentDelta(current: number | null, baseline: number | null | undefined, maxDelta: number): boolean {
   if (current === null || baseline === null || baseline === undefined) return false;
   return Math.abs(current - baseline) <= maxDelta;
 }
 
-function getDefaultScanPathForOs(osType: unknown): string {
-  if (osType === 'windows') return 'C:\\';
-  return '/';
+/**
+ * Response shape, unified across this router (spec §5.2). Before W01 the GET
+ * returned a bare `{ data }`, the mutations returned `{ success, data }`, and
+ * an all-fail execute returned 500 with a body carrying neither `success` nor
+ * `error` — so `runAction` had nothing to show the user (defect 4/10).
+ */
+function okJson<T>(c: Context, data: T, status: ContentfulStatusCode = 200) {
+  return c.json({ success: true, data }, status);
+}
+
+function failJson(c: Context, error: string, status: ContentfulStatusCode, data?: unknown) {
+  return data === undefined
+    ? c.json({ success: false, error }, status)
+    : c.json({ success: false, error, data }, status);
 }
 
 filesystemRoutes.get(
   '/:id/filesystem',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
+  zValidator('param', deviceIdParamSchema),
+  zValidator('query', filesystemSnapshotQuerySchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { id: deviceId } = c.req.valid('param');
+    const { path: requestedPath } = c.req.valid('query');
+
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) {
+      return failJson(c, 'Access to this site denied', 403);
+    }
+    if (!device) {
+      return failJson(c, 'Device not found', 404);
+    }
+
+    const osType = (device as { osType?: unknown }).osType;
+    const scanPath = normalizeScanPath(osType, requestedPath ?? osRootScanPath(osType));
+
+    const snapshot = await getLatestFilesystemSnapshot(deviceId, scanPath);
+    if (!snapshot) {
+      return c.json({ success: false, error: 'No filesystem analysis available yet', scanPath }, 404);
+    }
+
+    return okJson(c, {
+      id: snapshot.id,
+      deviceId: snapshot.deviceId,
+      // Keep the raw agent path below; scanPath is the normalised request key.
+      // W02 leaves the column nullable for old replicas during rollout.
+      scanPath: snapshot.scanPath ?? scanPath,
+      capturedAt: snapshot.capturedAt,
+      trigger: snapshot.trigger,
+      partial: snapshot.partial,
+      reason: readSnapshotReason(snapshot),
+      path: readSnapshotPath(snapshot),
+      scanMode: readSnapshotScanMode(snapshot),
+      summary: snapshot.summary,
+      topLargestFiles: snapshot.largestFiles,
+      topLargestDirectories: snapshot.largestDirs,
+      tempAccumulation: snapshot.tempAccumulation,
+      oldDownloads: snapshot.oldDownloads,
+      unrotatedLogs: snapshot.unrotatedLogs,
+      trashUsage: snapshot.trashUsage,
+      duplicateCandidates: snapshot.duplicateCandidates,
+      cleanupCandidates: snapshot.cleanupCandidates,
+      errors: snapshot.errors,
+    });
+  }
+);
+
+/**
+ * The volumes a disk-cleanup scan can target (spec §5.1). Sourced from the
+ * `device_disks` inventory the agent already reports, filtered to what is
+ * actually scannable, and annotated with the per-volume scan state and latest
+ * snapshot so the tab can render a chip worth clicking.
+ *
+ * DEVICES_READ, like every other read here — listing mount points and their
+ * capacity reveals nothing a device detail page does not already show.
+ */
+filesystemRoutes.get(
+  '/:id/filesystem/volumes',
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   zValidator('param', deviceIdParamSchema),
@@ -114,33 +199,8 @@ filesystemRoutes.get(
       return c.json({ error: 'Device not found' }, 404);
     }
 
-    const snapshot = await getLatestFilesystemSnapshot(deviceId);
-    if (!snapshot) {
-      return c.json({ error: 'No filesystem analysis available yet' }, 404);
-    }
-
-    return c.json({
-      data: {
-        id: snapshot.id,
-        deviceId: snapshot.deviceId,
-        capturedAt: snapshot.capturedAt,
-        trigger: snapshot.trigger,
-        partial: snapshot.partial,
-        reason: readSnapshotReason(snapshot),
-        path: readSnapshotPath(snapshot),
-        scanMode: readSnapshotScanMode(snapshot),
-        summary: snapshot.summary,
-        topLargestFiles: snapshot.largestFiles,
-        topLargestDirectories: snapshot.largestDirs,
-        tempAccumulation: snapshot.tempAccumulation,
-        oldDownloads: snapshot.oldDownloads,
-        unrotatedLogs: snapshot.unrotatedLogs,
-        trashUsage: snapshot.trashUsage,
-        duplicateCandidates: snapshot.duplicateCandidates,
-        cleanupCandidates: snapshot.cleanupCandidates,
-        errors: snapshot.errors,
-      },
-    });
+    const volumes = await listFilesystemVolumes(deviceId, (device as { osType?: unknown }).osType);
+    return c.json({ data: volumes });
   }
 );
 
@@ -158,16 +218,26 @@ filesystemRoutes.post(
 
     const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
     if (device === SITE_ACCESS_DENIED) {
-      return c.json({ error: 'Access to this site denied' }, 403);
+      return failJson(c, 'Access to this site denied', 403);
     }
     if (!device) {
-      return c.json({ error: 'Device not found' }, 404);
+      return failJson(c, 'Device not found', 404);
     }
 
-    const scanState = await getFilesystemScanState(deviceId);
+    const osType = (device as { osType?: unknown }).osType;
+    const scanPath = normalizeScanPath(osType, payload.path);
+
+    // Inventory identifies volume roots and supplies their own disk usage.
+    // The volumes service includes the OS root even before inventory arrives.
+    const volumes = await listFilesystemVolumes(deviceId, osType);
+    const scannedVolume = volumes.find((volume) => volume.scanPath === scanPath) ?? null;
+
+    const scanState = await getFilesystemScanState(deviceId, scanPath);
     const hotDirectories = readHotDirectories(scanState?.hotDirectories, 12);
     const checkpointDirs = readCheckpointPendingDirectories(scanState?.checkpoint, 50_000);
-    const currentUsedPercent = await readCurrentDiskUsedPercent(deviceId);
+    // Compare against this volume, never the fullest disk on the device.
+    // Null means no delta is available, so auto strategy uses a baseline.
+    const currentUsedPercent = scannedVolume?.usedPercent ?? null;
     const fullRescanDeltaPercent = 3;
 
     let scanMode: 'baseline' | 'incremental' = 'baseline';
@@ -175,7 +245,8 @@ filesystemRoutes.post(
     let targetDirectories: string[] | undefined;
 
     const strategy = payload.strategy ?? 'auto';
-    const isRootScopedScan = payload.path === getDefaultScanPathForOs((device as { osType?: unknown }).osType);
+    // Any normalised volume root can resume; subdirectories are not roots.
+    const isRootScopedScan = scannedVolume !== null;
     const autoContinue = isRootScopedScan;
     if (strategy === 'baseline') {
       scanMode = 'baseline';
@@ -207,6 +278,7 @@ filesystemRoutes.post(
     const timeoutSeconds = payload.timeoutSeconds ?? (scanMode === 'baseline' ? 300 : 120);
     const commandPayload = {
       ...payload,
+      path: scanPath,
       timeoutSeconds,
       trigger: 'on_demand',
       scanMode,
@@ -231,8 +303,11 @@ filesystemRoutes.post(
     if (!queued.command) {
       // 500, not 502: Cloudflare replaces an origin 502 body with its own branded
       // page, which would blank the queue's reason on hosted deployments.
-      return c.json({ error: queued.error || 'Failed to queue filesystem analysis', code: 'agent_execution_failed' }, 500);
+      return c.json({ success: false, error: queued.error || 'Failed to queue filesystem analysis', code: 'agent_execution_failed' }, 500);
     }
+
+    // Register the volume before accepting its result, including its first scan.
+    await setFilesystemScanGeneration(deviceId, device.orgId, scanPath, queued.command.id);
 
     writeRouteAudit(c, {
       orgId: device.orgId,
@@ -242,7 +317,8 @@ filesystemRoutes.post(
       resourceName: device.hostname,
       details: {
         commandId: queued.command.id,
-        path: payload.path,
+        path: scanPath,
+        scanPath,
         maxDepth: payload.maxDepth ?? null,
         scanMode,
         strategy,
@@ -250,15 +326,13 @@ filesystemRoutes.post(
       result: 'success',
     });
 
-    return c.json({
-      success: true,
-      data: {
-        commandId: queued.command.id,
-        status: queued.command.status,
-        createdAt: queued.command.createdAt,
-        scanMode,
-        strategy,
-      },
+    return okJson(c, {
+      commandId: queued.command.id,
+      status: queued.command.status,
+      createdAt: queued.command.createdAt,
+      scanPath,
+      scanMode,
+      strategy,
     }, 202);
   }
 );
@@ -273,19 +347,21 @@ filesystemRoutes.post(
   async (c) => {
     const auth = c.get('auth');
     const { id: deviceId } = c.req.valid('param');
-    const { categories } = c.req.valid('json');
+    const { path: requestedPath, categories } = c.req.valid('json');
 
     const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
     if (device === SITE_ACCESS_DENIED) {
-      return c.json({ error: 'Access to this site denied' }, 403);
+      return failJson(c, 'Access to this site denied', 403);
     }
     if (!device) {
-      return c.json({ error: 'Device not found' }, 404);
+      return failJson(c, 'Device not found', 404);
     }
 
-    const snapshot = await getLatestFilesystemCleanupSnapshot(deviceId);
+    const osType = (device as { osType?: unknown }).osType;
+    const scanPath = normalizeScanPath(osType, requestedPath ?? osRootScanPath(osType));
+    const snapshot = await getLatestFilesystemCleanupSnapshot(deviceId, scanPath);
     if (!snapshot) {
-      return c.json({ error: 'No filesystem snapshot available. Run a scan first.' }, 404);
+      return c.json({ success: false, error: 'No filesystem snapshot available. Run a scan first.', scanPath }, 404);
     }
 
     const preview = buildCleanupPreview(snapshot, categories);
@@ -294,9 +370,12 @@ filesystemRoutes.post(
       .values({
         deviceId,
         orgId: device.orgId,
+        // Nullable during W02; the snapshot was selected by this exact key.
+        scanPath: snapshot.scanPath ?? scanPath,
         requestedBy: auth.user.id,
         plan: {
           snapshotId: snapshot.id,
+          scanPath: snapshot.scanPath ?? scanPath,
           categories: categories ?? safeCleanupCategories,
           preview,
         },
@@ -312,18 +391,17 @@ filesystemRoutes.post(
       resourceName: device.hostname,
       details: {
         snapshotId: snapshot.id,
+        scanPath: snapshot.scanPath ?? scanPath,
         categories: categories ?? safeCleanupCategories,
         estimatedBytes: preview.estimatedBytes,
         candidateCount: preview.candidateCount,
       },
     });
 
-    return c.json({
-      success: true,
-      data: {
-        cleanupRunId: cleanupRun?.id ?? null,
-        ...preview,
-      },
+    return okJson(c, {
+      cleanupRunId: cleanupRun?.id ?? null,
+      scanPath: snapshot.scanPath ?? scanPath,
+      ...preview,
     });
   }
 );
@@ -338,24 +416,35 @@ filesystemRoutes.post(
   async (c) => {
     const auth = c.get('auth');
     const { id: deviceId } = c.req.valid('param');
-    const { paths, cleanupRunId } = c.req.valid('json');
+    const { paths, cleanupRunId, path } = c.req.valid('json');
 
     const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
     if (device === SITE_ACCESS_DENIED) {
-      return c.json({ error: 'Access to this site denied' }, 403);
+      return failJson(c, 'Access to this site denied', 403);
     }
     if (!device) {
-      return c.json({ error: 'Device not found' }, 404);
+      return failJson(c, 'Device not found', 404);
     }
+
+    const osType = (device as { osType?: unknown }).osType;
 
     // Resolve the authoritative candidate set. When the caller pins a cleanup
     // run, use exactly the candidates it previewed; otherwise fall back to the
-    // latest snapshot's safe candidates.
+    // selected volume snapshot's safe candidates.
     let candidates: FilesystemCleanupCandidate[];
+    let scanPath: string;
     let sourceSnapshotId: string | null = null;
+    // When the operator looked at this plan. The agent refuses any target whose
+    // mtime is newer (spec §13 row 2). Epoch fallback keeps missing timestamps
+    // fail-closed instead of silently disabling the check.
+    let previewedAt = new Date(0);
     if (cleanupRunId) {
       const [run] = await db
-        .select({ plan: deviceFilesystemCleanupRuns.plan })
+        .select({
+          plan: deviceFilesystemCleanupRuns.plan,
+          scanPath: deviceFilesystemCleanupRuns.scanPath,
+          requestedAt: deviceFilesystemCleanupRuns.requestedAt,
+        })
         .from(deviceFilesystemCleanupRuns)
         .where(and(
           eq(deviceFilesystemCleanupRuns.id, cleanupRunId),
@@ -363,80 +452,116 @@ filesystemRoutes.post(
         ))
         .limit(1);
       if (!run) {
-        return c.json({ error: 'Cleanup run not found' }, 404);
+        return failJson(c, 'Cleanup run not found', 404);
       }
+      previewedAt = run.requestedAt ?? new Date(0);
       candidates = readPlanPreviewCandidates(run.plan);
       if (candidates.length === 0) {
         // Distinct from the path-mismatch 400 below: the pinned run itself has
         // no previewable candidates (e.g. it is an already-executed run, or its
         // stored preview is missing/corrupt), so no selection could ever match.
-        return c.json({
-          error: 'Pinned cleanup run has no previewable candidates (it may already be executed or its preview is unavailable). Re-run the cleanup preview.',
-        }, 400);
+        return failJson(c, 'Pinned cleanup run has no previewable candidates (it may already be executed or its preview is unavailable). Re-run the cleanup preview.', 400);
       }
+      // Prefer the column, then legacy plan metadata, then the OS root.
+      scanPath = run.scanPath ?? readPlanScanPath(run.plan) ?? osRootScanPath(osType);
     } else {
-      const snapshot = await getLatestFilesystemCleanupSnapshot(deviceId);
-      if (!snapshot) {
-        return c.json({ error: 'No filesystem snapshot available. Run a scan first.' }, 404);
+      if (!path && (await listFilesystemVolumes(deviceId, osType)).length > 1) {
+        return failJson(c, 'volume_required', 400);
       }
+      scanPath = normalizeScanPath(osType, path ?? osRootScanPath(osType));
+      const snapshot = await getLatestFilesystemCleanupSnapshot(deviceId, scanPath);
+      if (!snapshot) {
+        return c.json({ success: false, error: 'No filesystem snapshot available. Run a scan first.', scanPath }, 404);
+      }
+      previewedAt = snapshot.capturedAt ?? new Date(0);
       sourceSnapshotId = snapshot.id;
       candidates = buildCleanupPreview(snapshot).candidates;
     }
 
-    const byPath = new Map(candidates.map((candidate) => [candidate.path, candidate]));
-    const requested = Array.from(new Set(paths));
-    const selected = requested
-      .map((path) => byPath.get(path))
-      .filter((candidate): candidate is NonNullable<typeof candidate> => candidate !== undefined);
-
-    if (selected.length === 0) {
-      return c.json({ error: 'No valid cleanup paths selected from latest previewable candidates' }, 400);
-    }
-
-    const actions: Array<{ path: string; category: string; sizeBytes: number; status: string; error?: string }> = [];
-    let bytesReclaimed = 0;
-
-    for (const candidate of selected) {
-      const commandResult = await executeCommand(
-        deviceId,
-        CommandTypes.FILE_DELETE,
-        { path: candidate.path, recursive: true },
-        { userId: auth.user.id, timeoutMs: 30_000 }
-      );
-
-      if (commandResult.status === 'completed') {
-        bytesReclaimed += candidate.sizeBytes;
-      }
-
-      actions.push({
-        path: candidate.path,
-        category: candidate.category,
-        sizeBytes: candidate.sizeBytes,
-        status: commandResult.status,
-        error: commandResult.error ?? undefined,
+    // §13 row 3. An agent without `cleanupGuard` that receives `permanent: true`
+    // performs an UNGUARDED recursive permanent delete — strictly worse than
+    // today's trash-move, which is why the spec's mixed-version paragraph is
+    // withdrawn. Refuse before anything is dispatched.
+    if (!agentSupportsCleanupGuard((device as { agentVersion?: string | null }).agentVersion)) {
+      return failJson(c, 'agent_update_required', 409, {
+        minAgentVersion: MIN_AGENT_VERSION_CLEANUP_GUARD,
+        agentVersion: (device as { agentVersion?: string | null }).agentVersion ?? null,
       });
     }
 
-    const failedCount = actions.filter((action) => action.status !== 'completed').length;
-    const runStatus = failedCount === actions.length ? 'failed' : 'executed';
+    const requested = Array.from(new Set(paths));
+    const outcome = await runCleanupExecution({
+      os: toCleanupOs((device as { osType?: unknown }).osType),
+      requestedPaths: requested,
+      candidates,
+      previewedAt,
+      // The payload already carries the path; the first argument is only the
+      // key the service iterates on.
+      dispatch: (_path, payload) => executeCommand(
+        deviceId,
+        CommandTypes.FILE_DELETE,
+        payload,
+        { userId: auth.user.id, timeoutMs: 30_000 },
+      ),
+      budgetMs: CLEANUP_EXECUTE_BUDGET_MS,
+    });
+
+    const counts = {
+      completed: outcome.actions.filter((action) => action.status === 'completed').length,
+      partial: outcome.actions.filter((action) => action.status === 'partial').length,
+      failed: outcome.actions.filter((action) => action.status === 'failed').length,
+      skipped_locked: outcome.actions.filter((action) => action.status === 'skipped_locked').length,
+      rejected: outcome.actions.filter((action) => action.status === 'rejected').length,
+      skipped_budget: outcome.actions.filter((action) => action.status === 'skipped_budget').length,
+    };
+    const dispatchedPaths = outcome.actions
+      .filter(wasDispatched)
+      .map((action) => action.path);
+
+    if (dispatchedPaths.length === 0) {
+      // NOTHING left the API — every path failed the plan/rule/denied-root
+      // screening. Reporting WHICH and WHY is the point of defect 10's fix: the
+      // old route dropped non-candidates silently. An agent-guard rejection is
+      // NOT in this branch: that command reached the device, so it must be
+      // persisted and audited below.
+      return failJson(c, 'No valid cleanup paths selected from latest previewable candidates', 400, {
+        actions: outcome.actions,
+        rejectedPaths: outcome.rejectedPaths,
+      });
+    }
+
+    const runStatus = counts.completed + counts.partial > 0 ? 'executed' : 'failed';
+    const runError = runStatus === 'failed'
+      ? 'all cleanup actions failed'
+      : counts.failed > 0
+        ? `${counts.failed} cleanup action(s) failed`
+        : null;
 
     const [cleanupRun] = await db
       .insert(deviceFilesystemCleanupRuns)
       .values({
         deviceId,
         orgId: device.orgId,
+        scanPath,
         requestedBy: auth.user.id,
         approvedAt: new Date(),
         plan: {
           snapshotId: sourceSnapshotId,
+          scanPath,
+          previewedAt: previewedAt.toISOString(),
           sourceCleanupRunId: cleanupRunId ?? null,
           requestedPaths: requested,
-          selectedPaths: selected.map((candidate) => candidate.path),
+          selectedPaths: dispatchedPaths,
+          rejectedPaths: outcome.rejectedPaths,
         },
-        executedActions: actions,
-        bytesReclaimed,
+        executedActions: {
+          partial: outcome.partial,
+          budgetMs: outcome.budgetMs,
+          actions: outcome.actions,
+        },
+        bytesReclaimed: outcome.bytesReclaimed,
         status: runStatus,
-        error: failedCount > 0 ? `${failedCount} cleanup action(s) failed` : null,
+        error: runError,
       })
       .returning();
 
@@ -448,24 +573,38 @@ filesystemRoutes.post(
       resourceName: device.hostname,
       details: {
         cleanupRunId: cleanupRun?.id ?? null,
+        scanPath,
         requestedCount: requested.length,
-        selectedCount: selected.length,
-        failedCount,
-        bytesReclaimed,
+        selectedCount: dispatchedPaths.length,
+        failedCount: counts.failed,
+        rejectedCount: counts.rejected,
+        partialCount: counts.partial,
+        skippedLockedCount: counts.skipped_locked,
+        skippedBudgetCount: counts.skipped_budget,
+        rejectedPaths: outcome.rejectedPaths,
+        partial: outcome.partial,
+        bytesReclaimed: outcome.bytesReclaimed,
       },
       result: runStatus === 'executed' ? 'success' : 'failure',
     });
 
-    return c.json({
-      success: runStatus === 'executed',
-      data: {
-        cleanupRunId: cleanupRun?.id ?? null,
-        status: runStatus,
-        bytesReclaimed,
-        selectedCount: selected.length,
-        failedCount,
-        actions,
-      },
-    }, runStatus === 'executed' ? 200 : 500);
+    const responseData = {
+      cleanupRunId: cleanupRun?.id ?? null,
+      scanPath,
+      status: runStatus,
+      bytesReclaimed: outcome.bytesReclaimed,
+      selectedCount: dispatchedPaths.length,
+      failedCount: counts.failed,
+      counts,
+      rejectedPaths: outcome.rejectedPaths,
+      partial: outcome.partial,
+      budgetMs: outcome.budgetMs,
+      actions: outcome.actions,
+    };
+
+    if (runStatus === 'failed') {
+      return failJson(c, 'all cleanup actions failed', 500, responseData);
+    }
+    return okJson(c, responseData);
   }
 );

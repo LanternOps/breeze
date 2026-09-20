@@ -2139,6 +2139,7 @@
     "saveSuccess": "Configuración de facturación de la organización guardada",
     "tax": {
       "partnerDefault": "Valor predeterminado del socio",
+      "partnerDefaultWithValue": "{{pct}}% (valor predeterminado del socio)",
       "taxExempt": "Exento de impuestos",
       "taxId": "Impuesto ID",
       "taxRate": "Tasa impositiva (%)",

@@ -152,6 +152,43 @@ const mockPolicySelect = (rows: any[] = []) => ({
   })
 });
 
+/**
+ * Flattens a drizzle condition to its static text, same approach as
+ * jobs/enrollmentKeyCleanup.test.ts's `sqlText` / enrollmentKeys_get_rotate_delete.test.ts's
+ * — needed because `deviceGroups`/`inArray` build a real drizzle SQL object
+ * even though the table itself is mocked to plain string column refs.
+ */
+function sqlText(q: unknown): string {
+  if (q == null) return '';
+  if (typeof q === 'string') return q;
+  if (typeof q === 'number') return String(q);
+  if (q instanceof Date) return q.toISOString();
+  if (Array.isArray(q)) return q.map(sqlText).join(' ');
+  const obj = q as { queryChunks?: unknown[]; value?: unknown; getSQL?: () => unknown };
+  if (Array.isArray(obj.queryChunks)) return obj.queryChunks.map(sqlText).join(' ');
+  if (Array.isArray(obj.value)) return (obj.value as unknown[]).map(sqlText).join('');
+  if (obj.value instanceof Date) return obj.value.toISOString();
+  if (typeof obj.value === 'string' || typeof obj.value === 'number') return String(obj.value);
+  if (typeof obj.getSQL === 'function') return sqlText(obj.getSQL());
+  return '';
+}
+
+/** Captures the condition handed to `db.select().from().where(...)` for the
+ *  groups list query, so a test can inspect which org ids actually made it
+ *  into the WHERE clause. */
+function mockGroupsSelectCaptureWhere(rows: any[]): () => unknown {
+  let captured: unknown;
+  vi.mocked(db.select).mockReturnValueOnce({
+    from: vi.fn().mockReturnValue({
+      where: vi.fn((cond: unknown) => {
+        captured = cond;
+        return { orderBy: vi.fn().mockResolvedValue(rows) };
+      })
+    })
+  } as any);
+  return () => captured;
+}
+
 
 describe('groups routes', () => {
   let app: Hono;
@@ -459,6 +496,68 @@ describe('groups routes', () => {
       const body = await res.json();
       expect(body.data).toHaveLength(0);
       expect(body.total).toBe(0);
+    });
+
+    it('paper cut #10: a partner-scoped ?orgId= narrows the WHERE to that org only, not every accessible org', async () => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+          scope: 'partner',
+          orgId: null,
+          partnerId: PARTNER_ID,
+          accessibleOrgIds: [ORG_ID, ORG_ID_2],
+          canAccessOrg: (orgId: string) => orgId === ORG_ID || orgId === ORG_ID_2
+        });
+        return next();
+      });
+
+      vi.mocked(db.select).mockReset();
+      const getWhereArg = mockGroupsSelectCaptureWhere([makeGroup()]);
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              groupBy: vi.fn().mockResolvedValue([{ groupId: GROUP_ID, count: 1 }])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce(mockPolicySelect([]) as any);
+
+      const res = await app.request(`/groups?orgId=${ORG_ID}`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const where = sqlText(getWhereArg());
+      expect(where).toContain(ORG_ID);
+      expect(where).not.toContain(ORG_ID_2);
+    });
+
+    it('paper cut #10: a partner-scoped ?orgId= outside the accessible set returns empty, never a 403', async () => {
+      const OUTSIDE_ORG_ID = '99999999-9999-4999-8999-999999999999';
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+          scope: 'partner',
+          orgId: null,
+          partnerId: PARTNER_ID,
+          accessibleOrgIds: [ORG_ID, ORG_ID_2],
+          canAccessOrg: (orgId: string) => orgId === ORG_ID || orgId === ORG_ID_2
+        });
+        return next();
+      });
+
+      const res = await app.request(`/groups?orgId=${OUTSIDE_ORG_ID}`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toEqual([]);
+      expect(body.total).toBe(0);
+      expect(db.select).not.toHaveBeenCalled();
     });
   });
 

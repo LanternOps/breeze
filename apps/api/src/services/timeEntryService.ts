@@ -1,8 +1,10 @@
 import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, or, sql, type AnyColumn, type SQL } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { timeEntries, ticketParts, tickets, ticketCategories, organizations, partners, users, ticketComments } from '../db/schema';
+import { workTypes } from '../db/schema/workTypes';
 import { emitTimeEntryEvent } from './timeEntryEvents';
 import { getOrgBillingDefaults } from './ticketConfigService';
+import { getActiveWorkType } from './workTypeService';
 import { readOrgStampingDefaults } from './orgCurrencyCore';
 import { CURRENCY_CODES, isZeroDecimal, isRepresentableInCurrency, minorUnitExponent, roundToCurrency, multiplyToCurrency, toMinorUnits, fromMinorUnits } from '@breeze/shared';
 import type { CreateTimeEntryInput, UpdateTimeEntryInput, TicketPartInput, BillingStatus, TimeEntrySource } from '@breeze/shared';
@@ -43,7 +45,9 @@ export type TimeEntryServiceErrorCode =
   | 'ENDED_AT_REQUIRED'
   | 'RANGE_OUTSIDE_SIGNAL'
   | 'INVALID_TZ'
-  | 'ORG_DENIED';
+  | 'ORG_DENIED'
+  /** 400 — a caller-supplied work_type_id that is not an ACTIVE row of the acting partner. */
+  | 'WORK_TYPE_NOT_FOUND';
 
 export class TimeEntryServiceError extends Error {
   constructor(
@@ -74,6 +78,7 @@ export type TimeEntryAuditMutation = {
   orgId: string | null;
   /** W06 (#3900): the server-stamped provenance of the affected entry. */
   source?: TimeEntrySource;
+  workTypeId?: string | null;
 };
 
 export interface TimeEntryActor {
@@ -99,13 +104,14 @@ export interface TimeEntryActor {
 function recordAuditMutation(
   actor: TimeEntryActor,
   action: TimeEntryAuditMutation['action'],
-  entry: { id: string; orgId?: string | null; source?: string | null },
+  entry: { id: string; orgId?: string | null; source?: string | null; workTypeId?: string | null },
 ): void {
   actor.recordAuditMutation?.({
     action,
     entryId: entry.id,
     orgId: entry.orgId ?? null,
     ...(entry.source ? { source: entry.source as TimeEntrySource } : {}),
+    ...(entry.workTypeId !== undefined ? { workTypeId: entry.workTypeId } : {}),
   });
 }
 
@@ -194,7 +200,10 @@ async function resolveTicketOrg(
 
 async function getCategoryDefaults(
   categoryId: string
-): Promise<{ defaultBillable: boolean; defaultHourlyRate: string | null; rateCurrency: string | null } | null> {
+): Promise<{
+  defaultBillable: boolean; defaultHourlyRate: string | null; rateCurrency: string | null;
+  defaultWorkTypeId: string | null; defaultWorkTypeIsActive: boolean | null;
+} | null> {
   const rows = await runOutsideDbContext(() =>
     withSystemDbAccessContext(() =>
       db
@@ -203,9 +212,15 @@ async function getCategoryDefaults(
           partnerId: ticketCategories.partnerId,
           defaultBillable: ticketCategories.defaultBillable,
           defaultHourlyRate: ticketCategories.defaultHourlyRate,
-          rateCurrency: ticketCategories.rateCurrency
+          rateCurrency: ticketCategories.rateCurrency,
+          defaultWorkTypeId: ticketCategories.defaultWorkTypeId,
+          // Joined, not a second round trip: the default must not be stamped
+          // once the work type is archived (see resolveTicketLink). null when
+          // the category has no default at all.
+          defaultWorkTypeIsActive: workTypes.isActive
         })
         .from(ticketCategories)
+        .leftJoin(workTypes, eq(workTypes.id, ticketCategories.defaultWorkTypeId))
         .where(eq(ticketCategories.id, categoryId))
         .limit(1)
     )
@@ -238,6 +253,33 @@ export function resolveDefaultRate(
   return null;
 }
 
+/**
+ * Refuse a caller-supplied work type that is not an ACTIVE row of the acting
+ * partner, BEFORE any write.
+ *
+ * `(work_type_id, partner_id) -> work_types(id, partner_id)` is a composite FK,
+ * so a foreign or archived id raises 23503 — inside the request-long
+ * `withDbAccessContext` transaction, which that violation ABORTS. Mapping it
+ * afterwards is impossible (every follow-up statement fails with 25P02 and the
+ * driver substitutes the raw error back in at commit — exactly the #2189 trap
+ * startTimer documents), so the caller receives a raw 500. Hence: validate
+ * first, never catch 23503.
+ *
+ * Only a caller-supplied, non-null id is checked. `undefined` means "apply the
+ * server-side default" and an explicit `null` means "no work type" — neither
+ * references a row. The CATEGORY default is deliberately exempt too: spec §3.1
+ * keeps retired categories supplying their default, and that id is already
+ * partner-consistent by the category's own composite FK.
+ */
+async function assertWorkTypeUsable(
+  workTypeId: string | null | undefined,
+  partnerId: string,
+): Promise<void> {
+  if (workTypeId == null) return;
+  if (await getActiveWorkType(workTypeId, partnerId)) return;
+  throw new TimeEntryServiceError('Unknown work type', 400, 'WORK_TYPE_NOT_FOUND');
+}
+
 async function resolveTicketLink(ticketId: string, actor: TimeEntryActor) {
   const ticket = await getTicketForTimeTracking(ticketId);
   const org = await resolveTicketOrg(ticket);
@@ -264,7 +306,15 @@ async function resolveTicketLink(ticketId: string, actor: TimeEntryActor) {
     // D6: per-entry explicit override (applied by callers) → org default → category default → false
     defaultBillable: orgSettings?.defaultBillable ?? category?.defaultBillable ?? false,
     // D6 + match-or-skip: a default rate is used only when entered in the org's currency.
-    defaultHourlyRate: resolveDefaultRate(org!.currencyCode, orgSettings, category)
+    defaultHourlyRate: resolveDefaultRate(org!.currencyCode, orgSettings, category),
+    // Spec §3.1: server-side default keeps clients without a picker compatible.
+    // Retired CATEGORIES still supply defaults; do not filter on the category's
+    // is_active. The WORK TYPE's is_active is a different matter: archiving one
+    // clears it off every category in the same transaction
+    // (workTypeService.archiveWorkType), and this is the belt-and-braces for a
+    // row that predates that or was written around it — a picker that no longer
+    // offers a work type must not have the server keep stamping it.
+    defaultWorkTypeId: category?.defaultWorkTypeIsActive ? (category.defaultWorkTypeId ?? null) : null
   };
 }
 
@@ -462,6 +512,7 @@ export async function createTimeEntry(
   let orgId: string | null = null;
   let defaultBillable = false;
   let defaultRate: string | null = null;
+  let defaultWorkTypeId: string | null = null;
   let currencyCode: string | null = null;
 
   if (input.ticketId) {
@@ -473,6 +524,7 @@ export async function createTimeEntry(
     currencyCode = link.currencyCode;
     defaultBillable = link.defaultBillable;
     defaultRate = link.defaultHourlyRate;
+    defaultWorkTypeId = link.defaultWorkTypeId;
   } else if (provenance.orgLink) {
     // W06 (#3900): no ticket, but the signal knows its org — stamp org and the
     // org's locked currency so time_entries_currency_required_when_org_chk holds.
@@ -495,6 +547,9 @@ export async function createTimeEntry(
   }
 
   const hourlyRate = input.hourlyRate !== undefined ? toRate(input.hourlyRate) : defaultRate;
+  // Only undefined falls through; explicit null means no work type.
+  await assertWorkTypeUsable(input.workTypeId, partnerId);
+  const workTypeId = input.workTypeId !== undefined ? input.workTypeId : defaultWorkTypeId;
   assertRepresentable(hourlyRate, currencyCode);
 
   const rows = await db
@@ -503,6 +558,7 @@ export async function createTimeEntry(
       partnerId,
       orgId,
       ticketId: input.ticketId ?? null,
+      workTypeId,
       userId: actor.userId,
       startedAt: input.startedAt,
       endedAt: input.endedAt,
@@ -582,11 +638,12 @@ async function stopRunningEntry(
   return rows[0] ?? null;
 }
 
-export async function startTimer(input: { ticketId?: string; description?: string }, actor: TimeEntryActor) {
+export async function startTimer(input: { ticketId?: string; description?: string; workTypeId?: string | null }, actor: TimeEntryActor) {
   let partnerId = actor.partnerId;
   let orgId: string | null = null;
   let defaultBillable = false;
   let defaultRate: string | null = null;
+  let defaultWorkTypeId: string | null = null;
   let currencyCode: string | null = null;
 
   if (input.ticketId) {
@@ -597,6 +654,7 @@ export async function startTimer(input: { ticketId?: string; description?: strin
     currencyCode = link.currencyCode;
     defaultBillable = link.defaultBillable;
     defaultRate = link.defaultHourlyRate;
+    defaultWorkTypeId = link.defaultWorkTypeId;
   }
   if (!partnerId) {
     throw new TimeEntryServiceError('Partner is unresolvable for this entry', 400, 'PARTNER_UNRESOLVABLE');
@@ -610,6 +668,9 @@ export async function startTimer(input: { ticketId?: string; description?: strin
   // zero-decimal currency is a 400 here, never a silently rounded time entry.
   assertRepresentable(defaultRate, currencyCode);
 
+  // Match manual entry stamping, including an explicit null from the caller.
+  await assertWorkTypeUsable(input.workTypeId, partnerId);
+  const workTypeId = input.workTypeId !== undefined ? input.workTypeId : defaultWorkTypeId;
   const attempt = async () => {
     // D3: auto-stop the previous timer, then start the new one. The partial
     // unique index time_entries_one_running_per_user_uq is the race backstop.
@@ -639,6 +700,7 @@ export async function startTimer(input: { ticketId?: string; description?: strin
         partnerId: partnerId!,
         orgId,
         ticketId: input.ticketId ?? null,
+        workTypeId,
         userId: actor.userId,
         startedAt: new Date(),
         endedAt: null,
@@ -759,6 +821,7 @@ export async function updateTimeEntry(id: string, input: UpdateTimeEntryInput, a
   const link = typeof input.ticketId === 'string' ? await resolveAndLockTicketLink(input.ticketId, actor) : null;
   const entry = await getEntryOr404(id, actor); // FOR UPDATE — re-read under lock
   assertCanMutate(entry, actor);
+  await assertWorkTypeUsable(input.workTypeId, entry.partnerId);
   if (entry.billingStatus === 'billed' && BILLED_LOCKED_ENTRY_FIELDS.some((k) => input[k] !== undefined)) {
     throw new TimeEntryServiceError('This entry has been invoiced; only its description can change', 409, 'ENTRY_BILLED');
   }
@@ -771,6 +834,7 @@ export async function updateTimeEntry(id: string, input: UpdateTimeEntryInput, a
 
   const set: Record<string, unknown> = {};
   const changed: string[] = [];
+  if (input.workTypeId !== undefined) { set.workTypeId = input.workTypeId; changed.push('workTypeId'); }
   if (input.startedAt !== undefined) { set.startedAt = input.startedAt; changed.push('startedAt'); }
   if (input.endedAt !== undefined) { set.endedAt = input.endedAt; changed.push('endedAt'); }
   if (input.description !== undefined) { set.description = input.description; changed.push('description'); }
@@ -1086,6 +1150,15 @@ function entrySelection() {
     hourlyRate: timeEntries.hourlyRate,
     currencyCode: timeEntries.currencyCode,
     billingStatus: timeEntries.billingStatus,
+    workTypeId: timeEntries.workTypeId,
+    // Keep archived labels on historical entries. The correlated read preserves
+    // entry cardinality and stays in the ambient partner RLS context.
+    workType: sql<{ id: string; name: string; isActive: boolean } | null>`(
+      SELECT json_build_object('id', ${workTypes.id}, 'name', ${workTypes.name}, 'isActive', ${workTypes.isActive})
+      FROM ${workTypes}
+      WHERE ${workTypes.id} = ${timeEntries.workTypeId}
+        AND ${workTypes.partnerId} = ${timeEntries.partnerId}
+    )`,
     // W06 (#3900): read-only provenance on GET /, /timesheet and the
     // per-ticket list. Never accepted on a write.
     source: timeEntries.source,

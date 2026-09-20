@@ -48,7 +48,9 @@ vi.mock('drizzle-orm', () => ({
   sql: Object.assign((..._a: unknown[]) => ({ op: 'sql' }), {}),
 }));
 
-vi.mock('./aiAgentSystemPrompt', () => ({ AI_SYSTEM_PROMPT_BASE: 'base' }));
+vi.mock('./aiAgentSystemPrompt', () => ({ AI_SYSTEM_PROMPT_BASE: 'base', AI_SYSTEM_PROMPT_TAIL: 'tail' }));
+vi.mock('./aiToolIndex', () => ({ renderToolIndexByDomain: () => 'index' }));
+vi.mock('./aiAgentSdkTools', () => ({ listChatSurfaceToolNames: () => [] }));
 vi.mock('./brainDeviceContext', () => ({ getActiveDeviceContext: vi.fn() }));
 vi.mock('./aiInputSanitizer', () => ({ sanitizePageContext: (x: unknown) => x }));
 

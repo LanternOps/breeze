@@ -1,4 +1,4 @@
-import { redactLogFields, redactLogMessage } from './logRedaction';
+import { redactLogFields, redactLogMessage, redactToolOutputFields } from './logRedaction';
 import { scrubErrorFieldsDeep } from './aiToolErrors';
 
 type CompactStats = {
@@ -393,7 +393,7 @@ function compactCommandStylePayload(
       // see these fields — without this, credentials in structured command
       // output (service configs, env dumps) reach the model and the persisted
       // transcript verbatim.
-      const redactedStdout = redactLogFields(parsedStdout);
+      const redactedStdout = redactToolOutputFields(parsedStdout, redactAiToolOutputText);
       const compactedStdout = compactValue(redactedStdout, stdoutStats, {
         ...config,
         maxArrayItems: Math.min(config.maxArrayItems, 50),
@@ -715,7 +715,7 @@ export function compactToolResultForChat(
   const errorScrubbed = scrubErrorFieldsDeep(parsed);
 
   const minimized = sanitizeToolPayloadValue(toolName, errorScrubbed, stats);
-  const redacted = redactLogFields(minimized);
+  const redacted = redactToolOutputFields(minimized, redactAiToolOutputText);
   const sanitized = sanitizeToolPayloadValue(toolName, redacted, stats);
 
   // Try each tier from `sanitized`, not from the previous tier's output: a

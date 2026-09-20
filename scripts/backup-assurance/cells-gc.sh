@@ -29,9 +29,9 @@ for lbl in $LABELS; do echo "$lbl: $($S/mc ls -r lab/breeze-lab/snapshots/$lbl/ 
 say "expire the rows (system scope)"
 psql "select set_config('breeze.scope','system',false); update backup_snapshots set expires_at = now() - interval '1 hour' where id in ($IDS); select count(*) from backup_snapshots where id in ($IDS) and expires_at < now()"
 
-say "run GC"
-$L gc; sleep 90
-docker logs --since 3m "$LAB_API_CONTAINER" 2>&1 | grep -i -E 'cleanup|retention|sweep|deleted|unreferenced|expired' | grep -v -i debug | head -12 | cut -c1-240
+say "run GC twice: pass 1 retires + deletes, pass 2 confirms the emptied prefixes (swept_at is set one pass later by design)"
+$L gc; sleep 60; $L gc; sleep 30
+docker logs --since 2m "$LAB_API_CONTAINER" 2>&1 | grep -i -E 'cleanup|retention|sweep|deleted|unreferenced|expired' | grep -v -i debug | head -12 | cut -c1-240
 
 say "after: rows + objects"
 psql "select id, snapshot_id, file_count, expires_at from backup_snapshots where id in ($IDS)" || true
@@ -41,5 +41,33 @@ for lbl in $LABELS; do echo "$lbl: $($S/mc ls -r lab/breeze-lab/snapshots/$lbl/ 
 say "R1: newest file snapshot must still restore byte-exact (its references point into the expired prefixes)"
 SNAP=$($L snapshots "$DEV" | jq -r 'select(.backupType=="file") | .id' | head -1); echo "newest row $SNAP"
 RID=$($L restore "$SNAP" '{"targetPath":"/home/ubuntu/assure/postfix/R1"}'); $L wait-restore "$RID" 2400 | tee "$R/postfix-R1-restore.json" | jq -c '{status,restoredFiles,restoredSize,errorSummary,failed:(.resultDetails.failedFiles|tostring|.[:200])}'
-$S/vmssh 'ROOT=/home/ubuntu/assure/postfix/R1/home/ubuntu/assure/src; sudo ~/assure/hash-tree.sh ~/assure/src > ~/assure/pre3.tsv; sudo ~/assure/hash-tree.sh "$ROOT" > ~/assure/post-R1.tsv; ~/assure/compare-hashes.sh ~/assure/pre3.tsv ~/assure/post-R1.tsv --expect-skipped "^meta/links/" | grep -v "^  \(many/\|names/LLLL\)" | head -16' 2>/dev/null | tee "$R/postfix-R1-compare.txt"
+$S/vmssh 'ROOT=/home/ubuntu/assure/postfix/R1/home/ubuntu/assure/src; sudo ~/assure/hash-tree.sh ~/assure/src > ~/assure/pre3.tsv; sudo ~/assure/hash-tree.sh "$ROOT" > ~/assure/post-R1.tsv; ~/assure/compare-hashes.sh ~/assure/pre3.tsv ~/assure/post-R1.tsv --expect-skipped "^meta/links/" | grep -v "^  \(many/\|names/LLLL\)" | head -40' 2>/dev/null | tee "$R/postfix-R1-compare.txt"
+
+FAIL=0
+grep -q '^RESULT: BYTE-EXACT' "$R/postfix-R1-compare.txt" || { echo "FAIL R1: retained snapshot did not restore byte-exact"; FAIL=1; }
+
+say "R4: reclaimed prefixes must be empty and retired"
+for lbl in $LABELS; do
+  n=$($S/mc ls -r lab/breeze-lab/snapshots/$lbl/ 2>/dev/null | wc -l | tr -d ' ')
+  swept=$(psql "select count(*) from backup_snapshot_retirements where snapshot_id='$lbl' and swept_at is not null")
+  echo "$lbl: $n objects remain, swept_at set: $swept"
+  # Objects a retained manifest still references legitimately survive; everything else must be gone.
+  refd=$(for m in $(psql "select snapshot_id from backup_snapshots where device_id='$DEV'"); do
+           $S/mc cat lab/breeze-lab/snapshots/$m/manifest.json 2>/dev/null | jq -r '.files[].backupPath' | grep "^snapshots/$lbl/" ; done | sort -u | wc -l | tr -d ' ')
+  echo "$lbl: $refd objects still referenced by retained manifests"
+  if [ "$n" -ne "$refd" ]; then echo "FAIL: $lbl has $n objects but only $refd are referenced"; FAIL=1; fi
+  if [ "$refd" -eq 0 ] && [ "$swept" -ne 1 ]; then echo "FAIL: $lbl fully reclaimed but retirement not marked swept"; FAIL=1; fi
+done
+
+say "R4b: unrelated manifests (other devices / modes) untouched"
+for m in $(psql "select snapshot_id from backup_snapshots where device_id<>'$DEV'"); do
+  $S/mc stat lab/breeze-lab/snapshots/$m/manifest.json >/dev/null 2>&1 || { echo "FAIL: retained manifest $m missing"; FAIL=1; }
+done
+
+say "R4c: bucket total dropped"
+TOTAL_AFTER=$($S/mc ls -r lab/breeze-lab/snapshots/ 2>/dev/null | wc -l | tr -d ' ')
+echo "objects in bucket: before=$TOTAL_BEFORE after=$TOTAL_AFTER"
+[ "$TOTAL_AFTER" -lt "$TOTAL_BEFORE" ] || { echo "FAIL: nothing reclaimed"; FAIL=1; }
+
 echo; echo "### DONE gc"
+exit $FAIL

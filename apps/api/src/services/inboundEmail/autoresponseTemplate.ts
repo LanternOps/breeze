@@ -1,41 +1,23 @@
-import { escapeHtml } from '../emailLayout';
-import { renderTemplate, type TicketTemplateVars } from '@breeze/shared';
+import type { TicketTemplateVars } from '@breeze/shared';
+import { renderPartnerEmail } from '../emailTemplates/renderPartnerEmail';
 
-/** Acknowledgement email for an email-created ticket (spec §5). When a partner
- *  has customized the template, render it; otherwise emit the original hardcoded
- *  default byte-for-byte so existing partners see no change.
- *  Body is treated as PLAIN TEXT: the literal body and every variable value are
- *  HTML-escaped before substitution (customer-facing), then newlines → <br>. */
+/** Legacy wrapper. New send paths call renderPartnerEmail directly. */
 export function buildAutoresponseEmail(args: {
   internalNumber: string | null;
   subject: string;
   custom?: { subject: string | null; body: string | null };
   vars?: TicketTemplateVars;
 }): { subject: string; html: string } {
-  const label = args.internalNumber ?? 'your request';
-  const tokenPrefix = args.internalNumber ? `[${args.internalNumber}] ` : '';
-  const defaultSubject = `${tokenPrefix}We received your request: ${args.subject}`;
-
-  const vars = args.vars ?? {};
-  const customSubject = args.custom?.subject?.trim() ? args.custom.subject : null;
-  const customBody = args.custom?.body?.trim() ? args.custom.body : null;
-
-  const subject = customSubject
-    ? renderTemplate(customSubject, vars).replace(/[\r\n]+/g, ' ').trim()
-    : defaultSubject;
-
-  let html: string;
-  if (customBody) {
-    const escapedVars: TicketTemplateVars = Object.fromEntries(
-      Object.entries(vars).map(([k, v]) => [k, escapeHtml(v ?? '')]),
-    );
-    const rendered = renderTemplate(escapeHtml(customBody), escapedVars).replace(/\r?\n/g, '<br>');
-    html = `<p>${rendered}</p>`;
-  } else {
-    html =
-      `<p>Thanks — we've received your request and opened ticket <strong>${escapeHtml(label)}</strong>.</p>` +
-      `<p>Reply to this email to add more detail; our team will follow up.</p>`;
-  }
-
-  return { subject, html };
+  return renderPartnerEmail({
+    id: 'ticket_autoresponse',
+    custom: null,
+    vars: {
+      ticket_number: args.internalNumber ?? 'your request',
+      ticket_subject: args.subject,
+      ...args.vars,
+    },
+    internalNumber: args.internalNumber,
+    ticketSubject: args.subject,
+    inboundAutoresponseFallback: args.custom,
+  });
 }

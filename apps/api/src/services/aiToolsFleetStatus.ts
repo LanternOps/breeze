@@ -209,6 +209,8 @@ export async function computeInviteFunnel(auth: AuthContext): Promise<InviteFunn
 export function registerFleetStatusTools(aiTools: Map<string, AiTool>): void {
   aiTools.set('get_invite_funnel', {
     tier: 1 as AiToolTier,
+    domain: 'admin',
+    searchHint: 'deployment invites sent, clicked and enrolled, recent enrollments and online conversions',
     definition: {
       name: 'get_invite_funnel',
       description:

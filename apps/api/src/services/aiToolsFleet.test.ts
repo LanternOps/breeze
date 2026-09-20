@@ -275,6 +275,14 @@ describe('registerFleetTools', () => {
     expect(typeof tool.handler).toBe('function');
   });
 
+  // #6341 review fix: maintenance windows are a patch-cadence construct
+  // (spec's Domains table lists them under `patching`, alongside patches,
+  // update rings and deployments), not a monitoring construct.
+  it('manage_maintenance_windows has domain patching', () => {
+    const tool = toolMap.get('manage_maintenance_windows')!;
+    expect(tool.domain).toBe('patching');
+  });
+
   it('each tool handler returns a string (JSON)', async () => {
     const mockAuth = {
       user: { id: 'u1', email: 'test@test.com', name: 'Test' },

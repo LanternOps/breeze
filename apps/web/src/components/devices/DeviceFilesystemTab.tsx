@@ -1,3 +1,6 @@
+import { runAction, handleActionError } from "@/lib/runAction";
+import { navigateTo } from "@/lib/navigation";
+import { loginPathWithNext } from "../../lib/authScope";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   HardDrive,
@@ -14,6 +17,9 @@ import type { OSType } from "./DeviceList";
 import { formatNumber } from "@/lib/i18n/format";
 import { useTranslation } from "react-i18next";
 import "../../lib/i18n";
+import { osRootScanPath } from "@breeze/shared";
+import VolumePicker from "./filesystem/VolumePicker";
+import { useFilesystemVolumes } from "./filesystem/useFilesystemVolumes";
 
 type DeviceFilesystemTabProps = {
   deviceId: string;
@@ -36,6 +42,8 @@ type FilesystemSnapshot = {
   partial: boolean;
   reason?: string | null;
   path?: string | null;
+  /** The normalised key this snapshot is stored under (W02). */
+  scanPath?: string | null;
   scanMode?: string | null;
   summary: FilesystemSummary;
   cleanupCandidates?: Array<{
@@ -69,6 +77,7 @@ type FilesystemSnapshot = {
 };
 
 type FilesystemCleanupPreview = {
+  scanPath?: string | null;
   cleanupRunId: string | null;
   estimatedBytes: number;
   candidateCount: number;
@@ -225,11 +234,6 @@ function formatDateTime(value: string | undefined): string {
   });
 }
 
-function getDefaultScanPath(osType: OSType): string {
-  if (osType === "windows") return "C:\\";
-  return "/";
-}
-
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   return value as Record<string, unknown>;
@@ -262,12 +266,54 @@ function readThresholdEvents(commands: CommandRow[]): ThresholdEvent[] {
   return events.slice(0, 8);
 }
 
+const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true });
+
+// A stable React key for rows whose `path` is optional on the wire. `key={item.path}`
+// collapsed every path-less row onto the key `undefined`, so React reused one
+// DOM node for all of them.
+function rowKey(item: { path?: string }, index: number): string {
+  return item.path && item.path.length > 0 ? item.path : `row-${index}`;
+}
+
 export default function DeviceFilesystemTab({
   deviceId,
   osType,
   onOpenFiles,
 }: DeviceFilesystemTabProps) {
   const { t } = useTranslation("devices");
+  const {
+    volumes,
+    loading: volumesLoading,
+    error: volumesError,
+    reload: reloadVolumes,
+  } = useFilesystemVolumes(deviceId);
+  // Seed with the OS root so the tab still works if the volumes call fails.
+  const [selectedScanPath, setSelectedScanPath] = useState<string>(() => osRootScanPath(osType));
+
+  // Each selection has its own identity, including switching away and back.
+  // Async work may finish after abort, so check ownership before updating UI.
+  const selection = useMemo(() => ({ deviceId, scanPath: selectedScanPath }), [deviceId, selectedScanPath]);
+  const selectionRef = useRef(selection);
+  selectionRef.current = selection;
+
+  // Keep the selection when offered; otherwise use the OS volume or first chip.
+  useEffect(() => {
+    if (volumes.length === 0) return;
+    if (volumes.some((volume) => volume.scanPath === selectedScanPath)) return;
+    const osVolume = volumes.find((volume) => volume.isOsRoot) ?? volumes[0]!;
+    setSelectedScanPath(osVolume.scanPath);
+  }, [volumes, selectedScanPath]);
+
+  // Clear the previous volume's data while loadAll fetches the new selection.
+  useEffect(() => {
+    setCleanupPreview(null);
+    setSnapshot(null);
+    setScanCommand(null);
+    setActionLoading(null);
+    setRefreshing(false);
+    setError(undefined);
+    pollAbortRef.current?.abort();
+  }, [selection]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [actionLoading, setActionLoading] = useState<"scan" | "preview" | null>(
@@ -281,6 +327,23 @@ export default function DeviceFilesystemTab({
   // this, clicking "Cleanup Preview" succeeds silently below the fold and reads
   // as "nothing happened". Scroll the freshly-rendered panel into view.
   const cleanupPreviewRef = useRef<HTMLDivElement | null>(null);
+  // The scan poll ran for up to ~6 minutes and survived unmount, so navigating
+  // away mid-scan left a fetch loop calling setState on a dead component.
+  const pollAbortRef = useRef<AbortController | null>(null);
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      pollAbortRef.current?.abort();
+    };
+  }, []);
+
+  const isCurrentSelection = useCallback(
+    () => mountedRef.current && selectionRef.current === selection,
+    [selection],
+  );
+
   const [thresholdEvents, setThresholdEvents] = useState<ThresholdEvent[]>([]);
   const [scanCommand, setScanCommand] = useState<{
     id: string;
@@ -288,7 +351,9 @@ export default function DeviceFilesystemTab({
   } | null>(null);
 
   const fetchSnapshot = useCallback(async () => {
-    const response = await fetchWithAuth(`/devices/${deviceId}/filesystem`);
+    const response = await fetchWithAuth(
+      `/devices/${deviceId}/filesystem?path=${encodeURIComponent(selectedScanPath)}`,
+    );
     if (response.status === 404) {
       return null;
     }
@@ -298,11 +363,11 @@ export default function DeviceFilesystemTab({
         .catch(() => ({
           error: t("deviceFilesystemTab.failedToFetchFilesystemStatus"),
         }));
-      throw new Error(body.error || "Failed to fetch filesystem status");
+      throw new Error(body.error || t("deviceFilesystemTab.failedToFetchFilesystemStatus"));
     }
     const body = await response.json();
     return (body.data ?? null) as FilesystemSnapshot | null;
-  }, [deviceId]);
+  }, [deviceId, selectedScanPath, t]);
 
   const fetchThresholdEvents = useCallback(async () => {
     const response = await fetchWithAuth(
@@ -319,7 +384,7 @@ export default function DeviceFilesystemTab({
     const body = await response.json();
     const rows = Array.isArray(body.data) ? (body.data as CommandRow[]) : [];
     return readThresholdEvents(rows);
-  }, [deviceId]);
+  }, [deviceId, t]);
 
   const loadAll = useCallback(
     async (silent = false) => {
@@ -332,25 +397,27 @@ export default function DeviceFilesystemTab({
           fetchSnapshot(),
           fetchThresholdEvents(),
         ]);
+        if (!isCurrentSelection()) return;
         setSnapshot(latestSnapshot);
         setThresholdEvents(events);
       } catch (err) {
+        if (!isCurrentSelection()) return;
         setError(
           err instanceof Error
             ? err.message
             : t("deviceFilesystemTab.failedToLoadFilesystemStatus"),
         );
       } finally {
-        if (!silent) {
+        if (!silent && isCurrentSelection()) {
           setLoading(false);
         }
       }
     },
-    [fetchSnapshot, fetchThresholdEvents],
+    [fetchSnapshot, fetchThresholdEvents, isCurrentSelection, t],
   );
 
   const pollScanCommand = useCallback(
-    async (commandId: string, timeoutMs: number) => {
+    async (commandId: string, timeoutMs: number, signal: AbortSignal) => {
       const startedAt = Date.now();
       // Back off between status polls (2s → 10s) rather than hammering a fixed
       // 2s for the whole scan window; a baseline scan can run for minutes.
@@ -358,26 +425,32 @@ export default function DeviceFilesystemTab({
       const maxDelayMs = 10000;
 
       while (Date.now() - startedAt < timeoutMs) {
+        if (signal.aborted) return;
         const response = await fetchWithAuth(
           `/devices/${deviceId}/commands/${commandId}`,
+          { signal },
         );
+        if (signal.aborted) return;
         if (!response.ok) {
           const body = await response
             .json()
             .catch(() => ({
               error: t("deviceFilesystemTab.failedToFetchScanStatus"),
             }));
-          throw new Error(body.error || "Failed to fetch scan status");
+          throw new Error(
+            body.error || t("deviceFilesystemTab.failedToFetchScanStatus"),
+          );
         }
 
         const body = await response.json();
+        if (signal.aborted || !isCurrentSelection()) return;
         const command = (body.data ?? null) as CommandDetail | null;
         if (!command) {
-          throw new Error("Scan command was not found");
+          throw new Error(t("deviceFilesystemTab.scanCommandNotFound"));
         }
 
         const status = command.status ?? "pending";
-        setScanCommand({ id: commandId, status });
+        if (mountedRef.current) setScanCommand({ id: commandId, status });
 
         if (status === "completed") {
           return;
@@ -392,15 +465,24 @@ export default function DeviceFilesystemTab({
           throw new Error(error);
         }
 
-        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, delayMs);
+          signal.addEventListener(
+            "abort",
+            () => {
+              clearTimeout(timer);
+              resolve();
+            },
+            { once: true },
+          );
+        });
         delayMs = Math.min(maxDelayMs, Math.round(delayMs * 1.5));
       }
 
-      throw new Error(
-        "Filesystem scan is still running. Click Refresh in a few moments.",
-      );
+      if (signal.aborted) return;
+      throw new Error(t("deviceFilesystemTab.scanStillRunning"));
     },
-    [deviceId],
+    [deviceId, isCurrentSelection, t],
   );
 
   useEffect(() => {
@@ -411,47 +493,52 @@ export default function DeviceFilesystemTab({
     setActionLoading("scan");
     setError(undefined);
     setScanCommand(null);
+
+    pollAbortRef.current?.abort();
+    const controller = new AbortController();
+    pollAbortRef.current = controller;
+
+    const timeoutSeconds = 300;
     try {
-      const timeoutSeconds = 300;
-      const response = await fetchWithAuth(
-        `/devices/${deviceId}/filesystem/scan`,
-        {
-          method: "POST",
-          body: JSON.stringify({
-            path: getDefaultScanPath(osType),
-            maxDepth: 32,
-            topFiles: 50,
-            topDirs: 30,
-            maxEntries: 10000000,
-            workers: 6,
-            timeoutSeconds,
+      const body = await runAction<{ data?: { commandId?: string } }>({
+        request: () =>
+          fetchWithAuth(`/devices/${deviceId}/filesystem/scan`, {
+            method: "POST",
+            body: JSON.stringify({
+              path: selectedScanPath,
+              maxDepth: 32,
+              topFiles: 50,
+              topDirs: 30,
+              maxEntries: 10000000,
+              workers: 6,
+              timeoutSeconds,
+            }),
           }),
-        },
-      );
-      if (!response.ok) {
-        const body = await response
-          .json()
-          .catch(() => ({
-            error: t("deviceFilesystemTab.filesystemScanFailed"),
-          }));
-        throw new Error(body.error || "Filesystem scan failed");
-      }
-      const body = await response.json();
+        errorFallback: t("deviceFilesystemTab.filesystemScanFailed"),
+        onUnauthorized: UNAUTHORIZED,
+      });
+
+      if (controller.signal.aborted || !isCurrentSelection()) return;
       const commandId =
         typeof body?.data?.commandId === "string" ? body.data.commandId : null;
       if (!commandId) {
-        throw new Error("Scan command was not queued");
+        throw new Error(t("deviceFilesystemTab.scanCommandNotQueued"));
       }
 
-      setScanCommand({ id: commandId, status: "pending" });
+      if (mountedRef.current) setScanCommand({ id: commandId, status: "pending" });
       await pollScanCommand(
         commandId,
         Math.max(120_000, (timeoutSeconds + 90) * 1000),
+        controller.signal,
       );
+      if (controller.signal.aborted || !isCurrentSelection()) return;
       setCleanupPreview(null);
-      await loadAll(true);
+      await Promise.all([loadAll(true), reloadVolumes()]);
+      if (!isCurrentSelection()) return;
       setScanCommand(null);
     } catch (err) {
+      if (controller.signal.aborted || !isCurrentSelection()) return;
+      handleActionError(err, t("deviceFilesystemTab.filesystemScanFailed"));
       setError(
         err instanceof Error
           ? err.message
@@ -459,41 +546,37 @@ export default function DeviceFilesystemTab({
       );
       setScanCommand(null);
     } finally {
-      setActionLoading(null);
+      if (isCurrentSelection()) setActionLoading(null);
     }
-  }, [deviceId, loadAll, osType, pollScanCommand]);
+  }, [deviceId, isCurrentSelection, loadAll, selectedScanPath, pollScanCommand, reloadVolumes, t]);
 
   const runCleanupPreview = useCallback(async () => {
     setActionLoading("preview");
     setError(undefined);
     try {
-      const response = await fetchWithAuth(
-        `/devices/${deviceId}/filesystem/cleanup-preview`,
-        {
-          method: "POST",
-          body: JSON.stringify({}),
-        },
-      );
-      if (!response.ok) {
-        const body = await response
-          .json()
-          .catch(() => ({
-            error: t("deviceFilesystemTab.cleanupPreviewFailed"),
-          }));
-        throw new Error(body.error || "Cleanup preview failed");
-      }
-      const body = await response.json();
-      setCleanupPreview((body.data ?? null) as FilesystemCleanupPreview | null);
+      const body = await runAction<{ data?: FilesystemCleanupPreview | null }>({
+        request: () =>
+          fetchWithAuth(`/devices/${deviceId}/filesystem/cleanup-preview`, {
+            method: "POST",
+            body: JSON.stringify({ path: selectedScanPath }),
+          }),
+        errorFallback: t("deviceFilesystemTab.cleanupPreviewFailed"),
+        onUnauthorized: UNAUTHORIZED,
+      });
+      if (!isCurrentSelection()) return;
+      setCleanupPreview((body?.data ?? null) as FilesystemCleanupPreview | null);
     } catch (err) {
+      if (!isCurrentSelection()) return;
+      handleActionError(err, t("deviceFilesystemTab.cleanupPreviewFailed"));
       setError(
         err instanceof Error
           ? err.message
           : t("deviceFilesystemTab.cleanupPreviewFailed"),
       );
     } finally {
-      setActionLoading(null);
+      if (isCurrentSelection()) setActionLoading(null);
     }
-  }, [deviceId]);
+  }, [deviceId, isCurrentSelection, selectedScanPath, t]);
 
   // Bring the preview panel into view once it renders. Optional-chain the
   // method so jsdom (no scrollIntoView impl) doesn't throw in tests.
@@ -546,13 +629,14 @@ export default function DeviceFilesystemTab({
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2">
             <HardDrive className="h-4 w-4 text-muted-foreground" />
-            <h3 className="text-lg font-semibold">
-              {t("deviceFilesystemTab.be1DiskCleanupIntelligence")}
+            <h3 className="text-lg font-semibold" data-testid="filesystem-heading">
+              {t("deviceFilesystemTab.title")}
             </h3>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
+              data-testid="filesystem-analyze-button"
               onClick={runAnalyze}
               disabled={actionLoading !== null}
               className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-medium hover:bg-muted disabled:opacity-50"
@@ -566,6 +650,7 @@ export default function DeviceFilesystemTab({
             </button>
             <button
               type="button"
+              data-testid="filesystem-preview-button"
               onClick={runCleanupPreview}
               disabled={actionLoading !== null || !snapshot}
               className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-medium hover:bg-muted disabled:opacity-50"
@@ -582,7 +667,7 @@ export default function DeviceFilesystemTab({
               onClick={async () => {
                 setRefreshing(true);
                 await loadAll(true);
-                setRefreshing(false);
+                if (isCurrentSelection()) setRefreshing(false);
               }}
               disabled={refreshing}
               className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-medium hover:bg-muted disabled:opacity-50"
@@ -603,8 +688,22 @@ export default function DeviceFilesystemTab({
           </div>
         </div>
 
+        <div className="mt-4">
+          <VolumePicker
+            volumes={volumes}
+            selectedScanPath={selectedScanPath}
+            onSelect={setSelectedScanPath}
+            loading={volumesLoading}
+            error={volumesError}
+          />
+        </div>
+
         {error && (
-          <div className="mt-4 rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700">
+          <div
+            role="alert"
+            data-testid="filesystem-error-banner"
+            className="mt-4 rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700"
+          >
             <div className="flex items-center gap-2">
               <AlertCircle className="h-4 w-4" />
               <span>{error}</span>
@@ -613,7 +712,11 @@ export default function DeviceFilesystemTab({
         )}
 
         {scanCommand && (
-          <div className="mt-4 rounded-md border border-blue-300 bg-blue-50 px-3 py-2 text-sm text-blue-800">
+          <div
+            role="status"
+            data-testid="filesystem-scan-banner"
+            className="mt-4 rounded-md border border-blue-300 bg-blue-50 px-3 py-2 text-sm text-blue-800"
+          >
             <div className="flex items-center gap-2">
               <Loader2 className="h-4 w-4 animate-spin" />
               <span>
@@ -810,9 +913,9 @@ export default function DeviceFilesystemTab({
                       {t("deviceFilesystemTab.noFileDataAvailable")}
                     </p>
                   ) : (
-                    topLargestFiles.map((item) => (
+                    topLargestFiles.map((item, index) => (
                       <div
-                        key={item.path}
+                        key={rowKey(item, index)}
                         className="flex items-center justify-between gap-2 text-sm"
                       >
                         <span className="truncate">{item.path}</span>
@@ -843,14 +946,14 @@ export default function DeviceFilesystemTab({
                       {t("deviceFilesystemTab.noDirectoryDataAvailable")}
                     </p>
                   ) : (
-                    topLargestDirectories.map((item) => (
+                    topLargestDirectories.map((item, index) => (
                       <div
-                        key={item.path}
+                        key={rowKey(item, index)}
                         className="flex items-center justify-between gap-2 rounded bg-muted/20 px-2 py-1.5 text-sm"
                       >
                         <span className="truncate">{item.path}</span>
                         <span className="shrink-0 whitespace-nowrap text-right font-medium tabular-nums">
-                          {item.estimated ? t("deviceFilesystemTab.text") : ""}
+                          {item.estimated ? ">= " : ""}
                           {formatBytes(item.sizeBytes)}
                         </span>
                       </div>
@@ -932,9 +1035,9 @@ export default function DeviceFilesystemTab({
                 {t("deviceFilesystemTab.topCandidates")}
               </p>
               <div className="mt-2 space-y-1">
-                {previewTopCandidates.map((item) => (
+                {previewTopCandidates.map((item, index) => (
                   <div
-                    key={item.path}
+                    key={rowKey(item, index)}
                     className="flex items-center justify-between gap-2 text-sm"
                   >
                     <span className="truncate">{item.path}</span>

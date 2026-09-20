@@ -132,6 +132,8 @@ export function registerWorkspaceTools(map: Map<string, AiTool>): void {
 
   add({
     tier: 1,
+    domain: 'ai',
+    searchHint: 'AI workspace input artifacts: stage files for sandbox analysis',
     captureExempt: true,
     definition: definition('workspace_stage', WORKSPACE_TOOL_DESCRIPTIONS.workspace_stage, {
       handles: { type: 'array', items: { type: 'string' }, description: 'Artifact handles to stage.' },
@@ -145,6 +147,8 @@ export function registerWorkspaceTools(map: Map<string, AiTool>): void {
 
   add({
     tier: 1,
+    domain: 'ai',
+    searchHint: 'AI workspace scripts: run Bash, Python or Node in the analysis sandbox',
     captureExempt: true,
     definition: definition('workspace_run', WORKSPACE_TOOL_DESCRIPTIONS.workspace_run, {
       script: { type: 'string', description: 'Script source.' },
@@ -165,6 +169,8 @@ export function registerWorkspaceTools(map: Map<string, AiTool>): void {
 
   add({
     tier: 1,
+    domain: 'ai',
+    searchHint: 'AI workspace output files: collect generated artifacts for download',
     captureExempt: true,
     definition: definition('workspace_collect', WORKSPACE_TOOL_DESCRIPTIONS.workspace_collect, {
       paths: { type: 'array', items: { type: 'string' }, description: `Paths under ${WORKSPACE_OUT_DIR}.` },
@@ -178,6 +184,8 @@ export function registerWorkspaceTools(map: Map<string, AiTool>): void {
 
   add({
     tier: 1,
+    domain: 'ai',
+    searchHint: 'AI workspace sandbox: cancel the session and release resources',
     captureExempt: true,
     definition: definition('workspace_cancel', WORKSPACE_TOOL_DESCRIPTIONS.workspace_cancel, {}, []),
     handler: async (_input, auth) => envelope(async () => {

@@ -76,6 +76,8 @@ describe('DeviceComplianceTab', () => {
     render(<DeviceComplianceTab deviceId="dev-1" />);
 
     expect(await screen.findByTestId('device-compliance-empty')).toBeInTheDocument();
+    const link = screen.getByRole('link', { name: /assign a configuration policy/i });
+    expect(link).toHaveAttribute('href', '/configuration-policies');
   });
 
   it('surfaces the server-provided error message on a non-ok response', async () => {

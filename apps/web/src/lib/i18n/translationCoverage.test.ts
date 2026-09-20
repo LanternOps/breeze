@@ -146,7 +146,8 @@ const namespaceDuplicateBaselines = {
     // `identityDisplayNamePlaceholder` are sample values — a domain example and
     // a sample display name. Localising them would change the protected-literal
     // occurrence count that localeParity.test.ts:513 pins against English.
-    'settings.json': 128,
+    // +1: emailTemplates.variables.total — "Total" is spelled identically in pt-BR.
+    'settings.json': 129,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -282,7 +283,8 @@ const namespaceDuplicateBaselines = {
     // `identityDisplayNamePlaceholder` are sample values — a domain example and
     // a sample display name. Localising them would change the protected-literal
     // occurrence count that localeParity.test.ts:513 pins against English.
-    'settings.json': 130,
+    // +1: emailTemplates.variables.total — "Total" is spelled identically in es-419.
+    'settings.json': 131,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -441,7 +443,8 @@ const namespaceDuplicateBaselines = {
     // occurrence count that localeParity.test.ts:513 pins against English.
     // +1 W01 settings consolidation (#6224): partnerSettingsPage.tabs.modules.label
     // — "Modules" spells identically in French.
-    'settings.json': 177,
+    // +1: emailTemplates.variables.total — "Total" is spelled identically in French.
+    'settings.json': 178,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -598,7 +601,8 @@ const namespaceDuplicateBaselines = {
     // occurrence count that localeParity.test.ts:513 pins against English.
     // +1 W01 settings consolidation (#6224): partnerSettingsPage.tabs.modules.label
     // — "Modules" spells identically in Canadian French too.
-    'settings.json': 183,
+    // +1: emailTemplates.variables.total — "Total" is spelled identically in Canadian French.
+    'settings.json': 184,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two

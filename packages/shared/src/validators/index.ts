@@ -32,6 +32,7 @@ export * from './authenticator';
 export * from './catalog';
 export * from './invoices';
 export * from './contracts';
+export * from './workTypes';
 export * from './mlFeedback';
 export * from './quotes';
 export * from './contractTemplates';

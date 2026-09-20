@@ -36,6 +36,55 @@ A filesystem scan is initiated by sending a `POST` request to the scan endpoint 
 
 The agent-side scanner uses a **worker pool** to parallelize directory traversal. Multiple goroutines walk the filesystem concurrently, each processing a subtree and reporting results back to a coordinator. This is critical for scanning large volumes -- a serial scan of a 2TB disk with millions of files can take over an hour, while a parallelized scan with 8-16 workers can complete in minutes.
 
+### Volumes
+
+A scan targets one **volume** at a time. `GET /devices/:id/filesystem/volumes` lists the volumes a device can scan, derived from its reported disk inventory:
+
+```json
+{
+  "data": [
+    {
+      "mountPoint": "C:\\",
+      "scanPath": "C:\\",
+      "fsType": "NTFS",
+      "totalGb": 476.9,
+      "usedGb": 401.2,
+      "freeGb": 75.7,
+      "usedPercent": 84.1,
+      "isOsRoot": true,
+      "scanState": {
+        "lastRunMode": "incremental",
+        "lastBaselineCompletedAt": "2026-10-18T02:14:00.000Z",
+        "hasCheckpoint": false
+      },
+      "latestSnapshot": {
+        "id": "8f2b...",
+        "capturedAt": "2026-10-20T09:31:00.000Z",
+        "partial": false,
+        "cleanupEstimateBytes": 12884901888
+      }
+    }
+  ]
+}
+```
+
+Volumes that cannot be cleaned are not offered: read-only media (`cdfs`, `udf`, `iso9660`, `squashfs`), memory filesystems (`tmpfs`, `devtmpfs`), kernel filesystems (`proc`, `sysfs`), and container or network mounts (`overlay`, `nfs`, `nfs4`, `cifs`, `smbfs`, `9p`, `autofs`, and every `fuse*` variant), along with Windows UNC paths. Deleting through a network mount frees space on a machine that is not the one being cleaned.
+
+The device's OS volume is always listed, even on a device that has not yet reported a disk inventory, so a fresh endpoint can still be scanned. When no disk row backs it, its capacity fields are `null` rather than `0`.
+
+<Aside type="caution">
+  **Every volume keeps its own state.** Scan checkpoints, the incremental baseline, the hot-directory list and the "latest snapshot" a cleanup preview reads are all keyed on `(device, volume)`. A scan of `D:\` neither resets nor is read by anything belonging to `C:\`.
+</Aside>
+
+### Scan paths are normalised
+
+The volume key is a normalised path, and it is what `scan_path` stores, what `?path=` expects and what the agent receives:
+
+- **Windows** -- separators become `\`, repeats collapse, the drive letter is upper-cased, and a trailing `\` survives only on a volume root. `c:/Users//Todd/` and `C:\Users\Todd` are the same volume path; `c:\`, `C:/` and `C:` are all `C:\`.
+- **macOS and Linux** -- repeats collapse, `.` and `..` resolve, and a trailing `/` survives only on `/` itself. Case is preserved: `/Users` and `/users` are different directories on a case-sensitive volume.
+
+Requests may send any of these forms. The API normalises before reading or writing, so you never have to.
+
 ### Scan Strategies
 
 The system supports three scan strategies that control how much of the filesystem is traversed:
@@ -50,11 +99,11 @@ When using `auto` strategy, the API evaluates the following conditions to determ
 
 <Steps>
 
-1. If the scan targets a non-root path (not `C:\` or `/`), a `baseline` scan is always used.
+1. If the scan targets a subdirectory rather than a listed volume root, a `baseline` scan is always used.
 
 2. If a previous scan was interrupted and checkpoint data exists, a `baseline` scan resumes from the checkpoint.
 
-3. If no baseline has ever been completed for this device, a `baseline` scan is started.
+3. If no baseline has ever been completed for this volume, a `baseline` scan is started.
 
 4. If the current disk usage percentage has changed by more than 3% since the last baseline, a `baseline` scan is triggered.
 
@@ -70,7 +119,8 @@ The scan state table tracks:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `deviceId` | UUID | Primary key. One state record per device. |
+| `deviceId` | UUID | Device identifier. Together with `scanPath`, identifies one state record per volume. |
+| `scanPath` | text | Normalised volume path. Nullable during the rolling-upgrade window. |
 | `lastRunMode` | string | `baseline` or `incremental`. |
 | `lastBaselineCompletedAt` | timestamp | When the last full baseline scan finished. |
 | `lastDiskUsedPercent` | real | Disk usage percentage at the time of the last baseline. Used to decide when a full rescan is needed. |
@@ -439,6 +489,7 @@ Table: `device_filesystem_snapshots`
 |--------|------|-------------|
 | `id` | UUID | Primary key. |
 | `device_id` | UUID | Foreign key to `devices`. |
+| `scan_path` | text | The normalised volume/path this scan covered. One snapshot stream per volume. Nullable during the rolling-upgrade window. |
 | `captured_at` | timestamp | When the snapshot was created. |
 | `trigger` | enum | `on_demand` or `threshold`. |
 | `partial` | boolean | Whether the scan was incomplete. |
@@ -454,7 +505,7 @@ Table: `device_filesystem_snapshots`
 | `errors` | JSONB | Scan errors. |
 | `raw_payload` | JSONB | Complete raw agent response. |
 
-Indexed on `(device_id, captured_at)` for efficient latest-snapshot queries.
+Indexed on `(device_id, scan_path, captured_at DESC)` for efficient latest-snapshot-per-volume queries.
 
 ### Cleanup Runs
 
@@ -464,13 +515,16 @@ Table: `device_filesystem_cleanup_runs`
 |--------|------|-------------|
 | `id` | UUID | Primary key. |
 | `device_id` | UUID | Foreign key to `devices`. |
+| `scan_path` | text | The volume this run covers. Null for a system-cleanup run, which cleans the machine rather than a path. |
+| `kind` | text | `files` (the itemized file engine) or `system` (OS-native cleaners). |
+| `command_id` | UUID | The queued system-cleanup command, for `kind = 'system'` runs. |
 | `requested_by` | UUID | Foreign key to `users` (who initiated the cleanup). |
 | `requested_at` | timestamp | When the cleanup was requested. |
 | `approved_at` | timestamp | When the cleanup was approved for execution (null for preview-only runs). |
 | `plan` | JSONB | The cleanup plan (snapshot ID, categories, preview data). |
 | `executed_actions` | JSONB | Per-path execution results. |
 | `bytes_reclaimed` | bigint | Total bytes reclaimed by the cleanup. |
-| `status` | enum | `previewed`, `executed`, or `failed`. |
+| `status` | enum | `previewed`, `running`, `executed`, or `failed`. |
 | `error` | text | Error message if the run failed. |
 
 Indexed on `(device_id, requested_at)` for history queries.
@@ -481,7 +535,9 @@ Table: `device_filesystem_scan_state`
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `device_id` | UUID | Primary key. Foreign key to `devices`. One row per device. |
+| `device_id` | UUID | Foreign key to `devices`. First half of the unique key. |
+| `scan_path` | text | The normalised volume. Second half of the unique key -- one checkpoint and baseline per volume. Nullable during the rolling-upgrade window. |
+| `scan_generation` | UUID | Command ID owning the current scan. Claimed when applying results to reject superseded or duplicate results. |
 | `last_run_mode` | text | `baseline` or `incremental`. |
 | `last_baseline_completed_at` | timestamp | When the last full baseline finished. |
 | `last_disk_used_percent` | real | Disk usage at last baseline (for delta detection). |
@@ -497,10 +553,13 @@ All filesystem endpoints are prefixed with `/api/v1/devices/:deviceId`. Replace 
 
 | Method | Path | Description | Permission |
 |--------|------|-------------|------------|
-| `GET` | `/devices/:id/filesystem` | Get latest filesystem analysis snapshot | `devices.read` |
+| `GET` | `/devices/:id/filesystem/volumes` | List the volumes this device can scan and clean | `devices.read` |
+| `GET` | `/devices/:id/filesystem?path=` | Get the latest snapshot for a volume (defaults to the OS volume) | `devices.read` |
 | `POST` | `/devices/:id/filesystem/scan` | Trigger a filesystem scan | `devices.execute` |
 | `POST` | `/devices/:id/filesystem/cleanup-preview` | Preview safe cleanup candidates | `devices.execute` |
 | `POST` | `/devices/:id/filesystem/cleanup-execute` | Execute cleanup on approved paths | `devices.execute` |
+
+`POST /devices/:id/filesystem/scan` and `POST /devices/:id/filesystem/cleanup-preview` both accept a `path` naming the volume; both default to the device's OS volume. Every response that concerns one volume echoes the normalised `scanPath` it used.
 
 ---
 

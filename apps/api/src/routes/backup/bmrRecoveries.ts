@@ -6,32 +6,33 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '../../lib/validation';
-import { and, desc, eq, gt, isNull, notInArray } from 'drizzle-orm';
+import { and, desc, eq, gt, isNull } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
 import {
-  BARE_METAL_RECOVERY_TERMINAL,
   bareMetalRecoveries,
-  backupSnapshots,
   devices,
   recoveryTokens,
   type BareMetalRecoveryStatus,
 } from '../../db/schema';
 import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
-import { writeAuditEvent, writeRouteAudit } from '../../services/auditEvents';
+import { writeAuditEvent } from '../../services/auditEvents';
 import { PERMISSIONS } from '../../services/permissions';
 import { resolveScopedOrgId } from './helpers';
 import { authorizeRouteResilienceResources } from './resilienceAuthorization';
 import {
   canTransition,
-  formatRecoveryCode,
-  generateRecoveryCode,
   generateRecoveryNonce,
   hashRecoveryCode,
   hashRecoveryNonce,
   isOverdue,
   normalizeRecoveryCode,
-  RECOVERY_CODE_TTL_MS,
 } from '../../services/bareMetalRecoveryCodes';
+import {
+  BareMetalRecoveryError,
+  cancelBareMetalRecovery,
+  createBareMetalRecovery,
+  reissueRecoveryCode,
+} from '../../services/bareMetalRecoveryService';
 import {
   buildAuthenticatedBootstrapPayload,
   generateRecoveryToken,
@@ -43,11 +44,16 @@ import { enforcePublicRateLimit, enforceTokenRateLimit, runInRecoveryOrgContext 
 import {
   bmrExchangeSchema,
   bmrProgressSchema,
+  bmrRecoveryCancelSchema,
   bmrRecoveryCreateSchema,
   bmrRecoveryListSchema,
 } from './schemas';
 
 const idParamSchema = z.object({ id: z.string().guid() });
+
+function recoveryErrorResponse(c: { json: (body: unknown, status: 404 | 409) => Response }, err: BareMetalRecoveryError): Response {
+  return c.json({ error: err.code, ...(err.details ?? {}) }, err.status);
+}
 
 // Bare-metal recovery W04a review fix: thrown from inside the exchange
 // transaction when the conditional one-time-claim UPDATE matches 0 rows
@@ -78,6 +84,9 @@ export function toRecoverySummary(row: BareMetalRecoveryRow) {
     recoveryTokenId: row.recoveryTokenId,
     identity: row.identity,
     status: row.status,
+    executingDeviceId: row.executingDeviceId ?? null,
+    drExecutionId: row.drExecutionId ?? null,
+    drGroupId: row.drGroupId ?? null,
     overdue: isOverdue(row.status, row.rebootedAt),
     codeExpiresAt: row.codeExpiresAt.toISOString(),
     codeUsedAt: iso(row.codeUsedAt),
@@ -122,71 +131,118 @@ bmrRecoveryRoutes.post(
     );
     if (!authorization.ok) return authorization.response;
 
-    const [snapshot] = await db
-      .select()
-      .from(backupSnapshots)
-      .where(and(eq(backupSnapshots.id, payload.snapshotId), eq(backupSnapshots.orgId, orgId)))
-      .limit(1);
-    if (!snapshot) {
-      return c.json({ error: 'Snapshot not found' }, 404);
-    }
-    if (snapshot.bareMetalRestorable !== true) {
-      return c.json(
-        {
-          error: 'snapshot_not_bare_metal_restorable',
-          reasons: snapshot.bareMetalReasons ?? ['snapshot was not assessed for bare-metal restore'],
-        },
-        409
-      );
-    }
-
-    const [inProgress] = await db
-      .select({ id: bareMetalRecoveries.id, status: bareMetalRecoveries.status })
-      .from(bareMetalRecoveries)
-      .where(
-        and(
-          eq(bareMetalRecoveries.deviceId, snapshot.deviceId),
-          eq(bareMetalRecoveries.orgId, orgId),
-          notInArray(bareMetalRecoveries.status, [...BARE_METAL_RECOVERY_TERMINAL])
-        )
-      )
-      .limit(1);
-    if (inProgress) {
-      return c.json({ error: 'recovery_in_progress', recoveryId: inProgress.id, status: inProgress.status }, 409);
-    }
-
-    const code = generateRecoveryCode();
-    const [row] = await db
-      .insert(bareMetalRecoveries)
-      .values({
+    // W05a: the body lives in bareMetalRecoveryService so DR and Restore-as-VM
+    // create recoveries without HTTP; the service audits `bmr.recovery.create`.
+    try {
+      const { row, code } = await createBareMetalRecovery({
         orgId,
-        deviceId: snapshot.deviceId,
-        snapshotId: snapshot.id,
+        snapshotId: payload.snapshotId,
         identity: payload.identity,
-        codeHash: hashRecoveryCode(code),
-        codeExpiresAt: new Date(Date.now() + RECOVERY_CODE_TTL_MS),
-        // Placeholder until exchange, which generates and discloses the real
-        // nonce exactly once — the column is NOT NULL so create needs some
-        // hash here, but nothing in the system knows this placeholder's
-        // preimage, so it authenticates nothing on its own.
-        nonceHash: hashRecoveryNonce(generateRecoveryNonce()),
-        status: 'created',
         createdBy: auth.user?.id ?? null,
-      })
-      .returning();
-    if (!row) {
-      return c.json({ error: 'Failed to create recovery' }, 500);
+        source: 'route',
+      });
+      return c.json({ ...toRecoverySummary(row), code }, 201);
+    } catch (err) {
+      if (err instanceof BareMetalRecoveryError) {
+        if (err.code === 'snapshot_not_found') return c.json({ error: 'Snapshot not found' }, 404);
+        return recoveryErrorResponse(c, err);
+      }
+      throw err;
     }
+  }
+);
 
-    writeRouteAudit(c, {
-      orgId,
-      action: 'bmr.recovery.create',
-      resourceType: 'bare_metal_recovery',
-      resourceId: row.id,
-      details: { snapshotId: snapshot.id, deviceId: snapshot.deviceId, identity: payload.identity },
-    });
+// ── Session-authed: cancel / reissue-code (W05a) ────────────────────
 
-    return c.json({ ...toRecoverySummary(row), code: formatRecoveryCode(code) }, 201);
+async function loadAuthorizedRecovery(
+  c: Parameters<typeof authorizeRouteResilienceResources>[0],
+  orgId: string,
+  id: string,
+  operation: 'revoke' | 'token',
+): Promise<{ ok: true; row: BareMetalRecoveryRow } | { ok: false; response: Response }> {
+  const [row] = await db
+    .select()
+    .from(bareMetalRecoveries)
+    .where(and(eq(bareMetalRecoveries.id, id), eq(bareMetalRecoveries.orgId, orgId)))
+    .limit(1);
+  if (!row) {
+    return { ok: false, response: c.json({ error: 'Recovery not found' }, 404) };
+  }
+  // Site lineage runs through the device being recovered, exactly as the
+  // by-ID token routes authorize through their token's device.
+  const authorization = await authorizeRouteResilienceResources(
+    c,
+    orgId,
+    [{ kind: 'device', id: row.deviceId, role: 'target' }],
+    operation,
+  );
+  if (!authorization.ok) return { ok: false, response: authorization.response };
+  return { ok: true, row };
+}
+
+bmrRecoveryRoutes.post(
+  '/bmr/recoveries/:id/cancel',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.BACKUP_WRITE.resource, PERMISSIONS.BACKUP_WRITE.action),
+  requireMfa(),
+  zValidator('param', idParamSchema),
+  zValidator('json', bmrRecoveryCancelSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
+    if (!orgId) {
+      return c.json({ error: 'orgId is required for this scope' }, 400);
+    }
+    const { id } = c.req.valid('param');
+    const { reason } = c.req.valid('json');
+
+    const loaded = await loadAuthorizedRecovery(c, orgId, id, 'revoke');
+    if (!loaded.ok) return loaded.response;
+
+    try {
+      const row = await cancelBareMetalRecovery({
+        recoveryId: id,
+        orgId,
+        userId: auth.user?.id ?? null,
+        ...(reason ? { reason } : {}),
+      });
+      return c.json(toRecoverySummary(row));
+    } catch (err) {
+      if (err instanceof BareMetalRecoveryError) return recoveryErrorResponse(c, err);
+      throw err;
+    }
+  }
+);
+
+bmrRecoveryRoutes.post(
+  '/bmr/recoveries/:id/reissue-code',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.BACKUP_WRITE.resource, PERMISSIONS.BACKUP_WRITE.action),
+  requireMfa(),
+  zValidator('param', idParamSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
+    if (!orgId) {
+      return c.json({ error: 'orgId is required for this scope' }, 400);
+    }
+    const { id } = c.req.valid('param');
+
+    const loaded = await loadAuthorizedRecovery(c, orgId, id, 'token');
+    if (!loaded.ok) return loaded.response;
+
+    // Codes are never stored in plaintext anywhere; each reveal rotates the
+    // hash, so a reveal loop is bounded per recovery.
+    const limited = await enforceTokenRateLimit(c, 'reissue', id, 5, 3600);
+    if (limited) return limited;
+
+    try {
+      const { row, code } = await reissueRecoveryCode({ recoveryId: id, orgId, userId: auth.user?.id ?? null });
+      return c.json({ ...toRecoverySummary(row), code });
+    } catch (err) {
+      if (err instanceof BareMetalRecoveryError) return recoveryErrorResponse(c, err);
+      throw err;
+    }
   }
 );
 

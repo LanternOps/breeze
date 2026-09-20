@@ -200,6 +200,8 @@ export function registerMonitorTools(aiTools: Map<string, AiTool>): void {
   // ============================================
   registerTool({
     tier: 1,
+    domain: 'monitoring',
+    searchHint: 'monitor definitions, authored conditions, severity and response rules across organizations',
     definition: {
       name: 'list_monitors',
       description:
@@ -246,6 +248,8 @@ export function registerMonitorTools(aiTools: Map<string, AiTool>): void {
   // ============================================
   registerTool({
     tier: 1,
+    domain: 'monitoring',
+    searchHint: 'monitor definition details, configuration policy attachments and compiled alert rules',
     definition: {
       name: 'get_monitor',
       description:
@@ -284,6 +288,8 @@ export function registerMonitorTools(aiTools: Map<string, AiTool>): void {
   registerTool({
     tier: 2,
     deviceArgs: ['deviceId'],
+    domain: 'monitoring',
+    searchHint: 'monitor breach episodes, device state, recurrence counts and escalation history',
     definition: {
       name: 'get_monitor_activity',
       description:
@@ -330,6 +336,8 @@ export function registerMonitorTools(aiTools: Map<string, AiTool>): void {
   registerTool({
     tier: 2,
     deviceArgs: ['deviceId'],
+    domain: 'monitoring',
+    searchHint: 'monitor escalation latch reset for one device, resume automatic responses and restart recurrence window',
     definition: {
       name: 'reset_monitor_escalation',
       description:
@@ -373,6 +381,8 @@ export function registerMonitorTools(aiTools: Map<string, AiTool>): void {
   // ============================================
   registerTool({
     tier: 3,
+    domain: 'monitoring',
+    searchHint: 'monitor definitions: create, update, delete, enable, disable, attach, detach configuration policies',
     definition: {
       name: 'manage_monitor_definitions',
       description:

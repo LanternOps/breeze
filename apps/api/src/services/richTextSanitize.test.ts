@@ -23,6 +23,9 @@ describe('sanitizeRichTextHtml', () => {
     expect(sanitizeRichTextHtml('<a href="https://example.com">x</a>'))
       .toBe('<a href="https://example.com" rel="noopener noreferrer" target="_blank">x</a>');
   });
+  it('strips javascript hrefs that hide the scheme with a NBSP', () => {
+    expect(sanitizeRichTextHtml('<a href="java\u00a0script:alert(1)">x</a>')).toBe('<a>x</a>');
+  });
   it('downgrades disallowed headings/divs to their text content wrapped as-is', () => {
     expect(sanitizeRichTextHtml('<h1>big</h1><div>plain</div>')).toBe('big plain'.replace(' ', '')); // see impl: text preserved, tags dropped
   });

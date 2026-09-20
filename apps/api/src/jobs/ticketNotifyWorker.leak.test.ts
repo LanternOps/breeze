@@ -52,6 +52,12 @@ vi.mock('../services/sentry', () => ({ captureException: vi.fn() }));
 vi.mock('../services/ticketMailbox/resolveOutboundMailbox', () => ({
   resolveOutboundMailbox: vi.fn(async () => null)
 }));
+vi.mock('../services/inboundEmail/commentNotificationPortalHref', () => ({
+  resolveCommentNotificationPortalHref: vi.fn(async () => ({
+    href: 'https://example.test/portal/tickets/t-1',
+    hasPortalUser: false,
+  })),
+}));
 // outboundThreading.ts reads TICKETS_INBOUND_DOMAIN via getConfig(). Specifier
 // from jobs/ is '../config/validate' — the same as ticketNotifyWorker.test.ts.
 vi.mock('../config/validate', () => ({ getConfig: () => ({ TICKETS_INBOUND_DOMAIN: 'tickets.example.com' }) }));
@@ -212,7 +218,7 @@ describe('outbound composer never leaks an internal note (spec §6/§9)', () => 
       payload: { commentId: 'c-secret', isPublic: true }
     } as never);
 
-    // Branch 2: ticket resolved (un-threaded; no partner lookup)
+    // Branch 2: ticket resolved (layout; partner/org for templates, never comments)
     selectMock.mockReset();
     selectMock
       .mockResolvedValueOnce([TICKET_ROW])

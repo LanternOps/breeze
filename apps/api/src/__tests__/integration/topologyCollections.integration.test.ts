@@ -76,7 +76,7 @@ describe('topology collection persistence', () => {
     const a = await createTopologyGraph();
     await scoped(a.orgId, () => db.insert(topologyCollectionSources).values({orgId:a.orgId,siteId:a.siteId,
       producerId:a.deviceId,producerKind:'agent',producerEpoch:'epoch-1',protocol:'routes',contextKey:'main',acceptedSequence:'18446744073709551615'}));
-    await replayMigration('2026-10-20-150400-topology-m1-collection.sql');
+    await replayMigration('2026-10-22-170400-topology-m1-collection.sql');
     const rows = await scoped(a.orgId, () => db.select().from(topologyCollectionSources));
     expect(rows[0]!.acceptedSequence).toBe('18446744073709551615');
   });

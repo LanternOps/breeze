@@ -718,7 +718,7 @@ jobs:
     continue-on-error: true
     timeout-minutes: 30
     env:
-      HAS_KEY: ${{ secrets.AI_TOOL_EVAL_ANTHROPIC_API_KEY != '' }}
+      HAS_KEY: ${{ secrets.AI_TOOL_EVAL_KEY != '' }}
     steps:
       - name: Checkout
         uses: actions/checkout@<same SHA as security.yml> # v7
@@ -738,7 +738,7 @@ jobs:
       - name: Run eval
         if: env.HAS_KEY == 'true'
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.AI_TOOL_EVAL_ANTHROPIC_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.AI_TOOL_EVAL_KEY }}
           DATABASE_URL: postgresql://unused:unused@127.0.0.1:5432/unused
         run: |
           pnpm --filter @breeze/api ai:tool-eval -- \
@@ -749,7 +749,7 @@ jobs:
           cat tool-eval-summary.md >> "$GITHUB_STEP_SUMMARY"
       - name: Explain skip
         if: env.HAS_KEY != 'true'
-        run: echo "AI_TOOL_EVAL_ANTHROPIC_API_KEY is not set; eval skipped." >> "$GITHUB_STEP_SUMMARY"
+        run: echo "AI_TOOL_EVAL_KEY is not set; eval skipped." >> "$GITHUB_STEP_SUMMARY"
       - name: Upload report
         if: always()
         uses: actions/upload-artifact@<same SHA as security.yml> # v7
@@ -771,7 +771,7 @@ pnpm test:workflow-security
 git add .github/workflows/ai-tool-eval.yml && git commit -m "ci: scheduled, non-blocking AI tool-selection eval (A-W01)"
 ```
 
-Todd creates the `AI_TOOL_EVAL_ANTHROPIC_API_KEY` repository secret (a low-limit key on the platform account); the PR body says so.
+Todd creates the `AI_TOOL_EVAL_KEY` repository secret (a low-limit key on the platform account); the PR body says so.
 
 ---
 

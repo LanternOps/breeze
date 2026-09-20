@@ -155,6 +155,8 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
   aiTools.set('list_invoices', {
     tier: 2 as AiToolTier,
     deviceArgs: [],
+    domain: 'billing',
+    searchHint: 'invoices by organization or status, balances, deposits and currencies',
     definition: {
       name: 'list_invoices',
       description:
@@ -200,6 +202,8 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
   aiTools.set('get_invoice', {
     tier: 2 as AiToolTier,
     deviceArgs: [],
+    domain: 'billing',
+    searchHint: 'invoice accounting details, line items, balances and deposit payment status',
     definition: {
       name: 'get_invoice',
       description:
@@ -231,6 +235,8 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
   aiTools.set('manage_invoices', {
     tier: 2 as AiToolTier,
     deviceArgs: [],
+    domain: 'billing',
+    searchHint: 'invoices: create, edit, issue, void, record or void payments, create Stripe pay links',
     definition: {
       name: 'manage_invoices',
       description:

@@ -64,6 +64,7 @@ export const GATED_COMMAND_TYPES = [
   'backup_run',
   'backup_test_restore',
   'backup_verify',
+  'bare_metal_rebuild',
   'bmr_recover',
   'capture_pprof',
   'cis_benchmark',

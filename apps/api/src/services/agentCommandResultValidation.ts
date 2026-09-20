@@ -30,6 +30,7 @@ const RESTORE_COMMAND_TYPES = new Set([
   'backup_restore',
   'vm_restore_from_backup',
   'vm_instant_boot',
+  'bare_metal_rebuild',
 ]);
 
 const DR_COMMAND_TYPES = new Set([
@@ -73,6 +74,14 @@ export const restoreStructuredResultSchema = z.object({
   syncProgress: z.union([z.number(), z.record(z.string(), z.unknown())]).optional(),
   databaseName: z.string().max(255).optional(),
   restoredAs: z.string().max(255).optional(),
+  // W05a bare_metal_rebuild: the rebuild engine's Result fields the server keeps.
+  phaseReached: z.string().max(64).optional(),
+  refusal: z.string().max(10_000).optional(),
+  target: z.object({
+    kind: z.string().max(16),
+    path: z.string().max(4096),
+    imageSizeBytes: z.number().int().nonnegative().optional(),
+  }).passthrough().optional(),
 }).passthrough();
 
 export const backupVerificationStructuredResultSchema = z.object({

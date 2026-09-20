@@ -16,7 +16,7 @@ import { snapshotCost } from './catalogPricing';
 // to keep allocation atomic with the number write inside its single transaction.
 import { formatInvoiceNumber } from './invoiceNumbers';
 import { emitInvoiceEvent } from './invoiceEvents';
-import { resolveInvoiceFooter } from './invoicePdf';
+import { resolveInvoiceFooter, resolveDraftBillTo } from './invoicePdf';
 import { enqueueInvoicePdfRender } from '../jobs/invoiceWorker';
 import {
   enqueueAccountingInvoicePush, enqueueAccountingInvoiceVoid,
@@ -723,14 +723,35 @@ export async function getInvoice(invoiceId: string, actor: InvoiceActor) {
   // lookup failure (e.g. no accounting connection row) must never fail the
   // whole invoice detail load.
   const accountingSync = await getInvoiceAccountingSync(invoiceId, inv.partnerId).catch(() => null);
+  // Draft BILL TO fallback (sweep paper cut #16): a draft has no bill-to
+  // snapshot yet (billToName/billToAddress/billToTaxId are stamped only at
+  // issue — issueInvoice below), so the detail card would otherwise show "No
+  // billing contact set" even for an org with a name and a billing contact.
+  // Same resolver the PDF renderer uses (loadInvoiceForRender, invoicePdf.ts)
+  // — display-only, never written back to the invoices row, and a no-op once
+  // issued (resolveDraftBillTo short-circuits on status !== 'draft').
+  let billToEmail: string | null = null;
+  let displayInvoice = inv;
+  if (inv.status === 'draft' && !inv.billToName?.trim()) {
+    const [org] = await db
+      .select({ name: organizations.name, billingContact: organizations.billingContact })
+      .from(organizations).where(eq(organizations.id, inv.orgId)).limit(1);
+    const resolved = resolveDraftBillTo({
+      status: inv.status, billToName: inv.billToName,
+      orgName: org?.name ?? null, orgBillingContact: org?.billingContact ?? null,
+    });
+    displayInvoice = { ...inv, billToName: resolved.billToName };
+    billToEmail = resolved.billToEmail;
+  }
   // Multi-currency (#3777, spec §10): surface the CACHED account currency and a
   // warn-don't-block mismatch so the detail page can flag the FX spread before
   // the partner sends a pay link. Cached columns only — no Stripe call here.
   return {
-    invoice: inv, lines: linesWithDeviceCount, stripeConnected: connected, // accounting view (all lines)
+    invoice: displayInvoice, lines: linesWithDeviceCount, stripeConnected: connected, // accounting view (all lines)
     stripeAccountCurrency: connected ? conn.defaultCurrency ?? null : null,
     currencyWarning: connected ? buildStripeCurrencyWarning(inv.currencyCode, conn.defaultCurrency) : null,
     accountingSync,
+    billToEmail,
   };
 }
 

@@ -87,6 +87,7 @@ var allCommandTypes = []string{
 
 	// handlers_bmr_forward.go init()
 	tools.CmdVMRestoreEstimate, tools.CmdVMRestoreFromBackup, tools.CmdBMRRecover,
+	tools.CmdBareMetalRebuild,
 
 	// handlers_user.go init()
 	CmdNotifyUser, CmdTrayUpdate,

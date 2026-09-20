@@ -9,6 +9,7 @@
     "startButton": "Avvia una progettazione flotta",
     "startError": "Impossibile avviare l'esecuzione della progettazione flotta.",
     "startSuccess": "Esecuzione della progettazione flotta avviata.",
+    "running": "Progettazione flotta in corso…",
     "empty": "Nessuna progettazione flotta ancora per questa organizzazione.",
     "loadError": "Impossibile caricare le progettazioni flotta.",
     "detailLoadError": "Impossibile caricare questa progettazione flotta.",

@@ -146,6 +146,8 @@ export function registerQuoteTools(aiTools: Map<string, AiTool>): void {
   aiTools.set('list_quotes', {
     tier: 2 as AiToolTier,
     deviceArgs: [],
+    domain: 'billing',
+    searchHint: 'quotes and proposals by organization or status',
     definition: {
       name: 'list_quotes',
       description:
@@ -190,6 +192,8 @@ export function registerQuoteTools(aiTools: Map<string, AiTool>): void {
   aiTools.set('get_quote', {
     tier: 2 as AiToolTier,
     deviceArgs: [],
+    domain: 'billing',
+    searchHint: 'quote details, content blocks, line items, totals, deposits and category breakdown',
     definition: {
       name: 'get_quote',
       description:
@@ -259,6 +263,8 @@ export function registerQuoteTools(aiTools: Map<string, AiTool>): void {
   aiTools.set('manage_quotes', {
     tier: 2 as AiToolTier,
     deviceArgs: [],
+    domain: 'billing',
+    searchHint: 'quotes: create, edit drafts, blocks and lines, send, decline, create pay links',
     definition: {
       name: 'manage_quotes',
       description:

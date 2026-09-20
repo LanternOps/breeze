@@ -244,6 +244,8 @@ export function registerCatalogTools(aiTools: Map<string, AiTool>): void {
   aiTools.set('search_catalog', {
     tier: 2 as AiToolTier,
     deviceArgs: [],
+    domain: 'billing',
+    searchHint: 'product catalog search by name, SKU or distributor part number, hardware, software, services and bundles',
     definition: {
       name: 'search_catalog',
       description:
@@ -329,6 +331,8 @@ export function registerCatalogTools(aiTools: Map<string, AiTool>): void {
   aiTools.set('lookup_distributor_product', {
     tier: 2 as AiToolTier,
     deviceArgs: [],
+    domain: 'billing',
+    searchHint: 'TD SYNNEX live price and stock availability for one SKU or manufacturer part number outside the catalog',
     definition: {
       name: 'lookup_distributor_product',
       description:
@@ -384,6 +388,8 @@ export function registerCatalogTools(aiTools: Map<string, AiTool>): void {
   aiTools.set('get_catalog_item', {
     tier: 2 as AiToolTier,
     deviceArgs: [],
+    domain: 'billing',
+    searchHint: 'catalog item details, currency prices and bundle components',
     definition: {
       name: 'get_catalog_item',
       description:
@@ -463,6 +469,8 @@ export function registerCatalogTools(aiTools: Map<string, AiTool>): void {
   aiTools.set('manage_catalog', {
     tier: 2 as AiToolTier,
     deviceArgs: [],
+    domain: 'billing',
+    searchHint: 'product catalog: create, update items, set/remove currency prices, manage organization overrides and bundles',
     definition: {
       name: 'manage_catalog',
       description:

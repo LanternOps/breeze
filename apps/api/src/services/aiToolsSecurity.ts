@@ -57,6 +57,8 @@ export function registerSecurityTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 3,
+    domain: 'security',
+    searchHint: 'device security: scan, status, quarantine, remove, restore, vulnerabilities',
     deviceArgs: ['deviceId'],
     definition: {
       name: 'security_scan',
@@ -164,6 +166,8 @@ export function registerSecurityTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'security',
+    searchHint: 'control scores (AV, firewall, encryption) — not CVEs',
     deviceArgs: ['deviceId'],
     definition: {
       name: 'get_security_posture',
@@ -282,6 +286,8 @@ export function registerSecurityTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'security',
+    searchHint: 'sensitive data, PII, PCI, PHI, credentials, financial findings, discovery dashboard and recent scans',
     deviceArgs: ['deviceId'],
     definition: {
       name: 'get_sensitive_data_overview',
@@ -469,6 +475,8 @@ export function registerSecurityTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 3,
+    domain: 'security',
+    searchHint: 'sensitive data: encrypt, quarantine, secure delete, accept risk, mark false positive or remediated',
     definition: {
       name: 'remediate_sensitive_data',
       description: 'Queue or apply sensitive-data remediation actions for findings. Supports dry-run and manual status actions.',

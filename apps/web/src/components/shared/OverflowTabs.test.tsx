@@ -1,6 +1,6 @@
 import '@/lib/i18n';
 
-import { render, screen, fireEvent } from '@testing-library/react';
+import { act, render, screen, fireEvent } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { OverflowTabs, overflowTabId, overflowPanelId, type OverflowTab } from './OverflowTabs';
 
@@ -32,8 +32,12 @@ function stubWideLayout() {
 }
 
 function restoreLayout() {
+  // `clientWidth` lives on Element.prototype, so there is no HTMLElement-level
+  // descriptor to put back — delete the stub or it leaks into later suites.
   if (originalOffsetWidth) Object.defineProperty(HTMLElement.prototype, 'offsetWidth', originalOffsetWidth);
+  else delete (HTMLElement.prototype as any).offsetWidth;
   if (originalClientWidth) Object.defineProperty(HTMLElement.prototype, 'clientWidth', originalClientWidth);
+  else delete (HTMLElement.prototype as any).clientWidth;
 }
 
 describe('OverflowTabs', () => {
@@ -207,5 +211,198 @@ describe('OverflowTabs', () => {
     render(<OverflowTabs tabs={tabs} activeTab="a" onTabChange={onTabChange} testIdPrefix="t-" />);
     fireEvent.click(screen.getByTestId('t-a'));
     expect(onTabChange).toHaveBeenCalledWith('a');
+  });
+
+  describe('secondary tabs, counts and groups', () => {
+    beforeEach(() => {
+      stubWideLayout();
+    });
+    afterEach(() => {
+      restoreLayout();
+    });
+
+    const mixed: OverflowTab[] = [
+      { id: 'a', label: 'Alpha', icon: <span /> },
+      { id: 'b', label: 'Beta', icon: <span />, count: 3 },
+      { id: 'c', label: 'Gamma', icon: <span />, secondary: true, group: 'Signals', count: 2 },
+      { id: 'd', label: 'Delta', icon: <span />, secondary: true, group: 'Signals' },
+      { id: 'e', label: 'Epsilon', icon: <span />, secondary: true, group: 'Inventory' },
+    ];
+
+    it('keeps secondary tabs inside "More" even when the row has room for everything', () => {
+      render(<OverflowTabs tabs={mixed} activeTab="a" onTabChange={() => {}} testIdPrefix="t-" />);
+      expect(screen.getAllByRole('tab').map(t => t.id)).toEqual(['t-a', 't-b']);
+      expect(screen.queryByTestId('t-c')).toBeNull();
+      fireEvent.click(screen.getByRole('button', { name: /more/i }));
+      expect(screen.getAllByRole('menuitem').map(m => m.textContent)).toEqual(['Gamma2', 'Delta', 'Epsilon']);
+    });
+
+    it('renders group headers between groups inside "More"', () => {
+      render(<OverflowTabs tabs={mixed} activeTab="a" onTabChange={() => {}} />);
+      fireEvent.click(screen.getByRole('button', { name: /more/i }));
+      const menu = screen.getByRole('menu');
+      const headers = Array.from(menu.querySelectorAll('[data-overflow-group]')).map(h => h.textContent);
+      expect(headers).toEqual(['Signals', 'Inventory']);
+    });
+
+    it('shows a count badge on a visible tab, in the attention token, and a dot (not a sum) on the "More" trigger', () => {
+      render(<OverflowTabs tabs={mixed} activeTab="a" onTabChange={() => {}} testIdPrefix="t-" />);
+      const badge = screen.getByTestId('t-b-count');
+      expect(badge).toHaveTextContent('3');
+      expect(badge.className).toContain('text-warning-strong');
+      expect(badge.className).not.toContain('text-primary');
+      const more = screen.getByRole('button', { name: /more/i });
+      expect(more).not.toHaveTextContent('2');
+      expect(screen.getByTestId('t-overflow-tabs-hidden-dot')).toBeInTheDocument();
+    });
+
+    it('keeps the dot on the trigger while the active tab lives inside "More"', () => {
+      render(<OverflowTabs tabs={mixed} activeTab="e" onTabChange={() => {}} testIdPrefix="t-" />);
+      expect(screen.getByTestId('t-overflow-tabs-hidden-dot')).toBeInTheDocument();
+    });
+
+    it('renders no dot when nothing hidden needs attention', () => {
+      const quiet = mixed.map(t => ({ ...t, count: undefined }));
+      render(<OverflowTabs tabs={quiet} activeTab="a" onTabChange={() => {}} testIdPrefix="t-" />);
+      expect(screen.queryByTestId('t-overflow-tabs-hidden-dot')).toBeNull();
+    });
+
+    it('omits a zero count badge', () => {
+      render(<OverflowTabs tabs={[{ id: 'z', label: 'Zed', icon: <span />, count: 0 }]} activeTab="z" onTabChange={() => {}} testIdPrefix="t-" />);
+      expect(screen.getByTestId('t-z')).toHaveTextContent(/^Zed$/);
+    });
+
+    it('selects a secondary tab from the menu and reflects it on the trigger', () => {
+      const onTabChange = vi.fn();
+      render(<OverflowTabs tabs={mixed} activeTab="a" onTabChange={onTabChange} />);
+      fireEvent.click(screen.getByRole('button', { name: /more/i }));
+      fireEvent.click(screen.getByRole('menuitem', { name: /epsilon/i }));
+      expect(onTabChange).toHaveBeenCalledWith('e');
+    });
+  });
+
+  describe('group-first overflow ordering', () => {
+    // Default jsdom zero-width layout: only the first primary stays visible,
+    // every other primary spills. Spilled primaries must slot into their own
+    // group inside "More" rather than being prepended as a run of their own.
+    it('interleaves spilled primaries into their groups so no header repeats', () => {
+      const tabs: OverflowTab[] = [
+        { id: 'a', label: 'Alpha', icon: <span />, group: 'Monitoring' },
+        { id: 'b', label: 'Beta', icon: <span />, group: 'Inventory' },
+        { id: 'c', label: 'Gamma', icon: <span />, secondary: true, group: 'Monitoring' },
+        { id: 'd', label: 'Delta', icon: <span />, secondary: true, group: 'Inventory' },
+      ];
+      render(<OverflowTabs tabs={tabs} activeTab="a" onTabChange={() => {}} />);
+      expect(screen.getAllByRole('tab').map(t => t.textContent)).toEqual(['Alpha']);
+      fireEvent.click(screen.getByRole('button', { name: /more/i }));
+      const menu = screen.getByRole('menu');
+      const headers = Array.from(menu.querySelectorAll('[data-overflow-group]')).map(h => h.textContent);
+      expect(headers).toEqual(['Monitoring', 'Inventory']);
+      expect(screen.getAllByRole('menuitem').map(m => m.textContent)).toEqual(['Gamma', 'Beta', 'Delta']);
+    });
+  });
+
+  describe('"More" menu keyboard behaviour', () => {
+    beforeEach(() => {
+      stubWideLayout();
+    });
+    afterEach(() => {
+      restoreLayout();
+    });
+    const tabs: OverflowTab[] = [
+      { id: 'a', label: 'Alpha', icon: <span /> },
+      { id: 'c', label: 'Gamma', icon: <span />, secondary: true },
+      { id: 'd', label: 'Delta', icon: <span />, secondary: true },
+      { id: 'e', label: 'Epsilon', icon: <span />, secondary: true },
+    ];
+
+    it('moves focus into the menu on open, arrows through items with wrap, Home/End jump', () => {
+      render(<OverflowTabs tabs={tabs} activeTab="a" onTabChange={() => {}} />);
+      const more = screen.getByRole('button', { name: /more/i });
+      fireEvent.click(more);
+      const items = screen.getAllByRole('menuitem');
+      expect(document.activeElement).toBe(items[0]);
+      fireEvent.keyDown(items[0], { key: 'ArrowDown' });
+      expect(document.activeElement).toBe(items[1]);
+      fireEvent.keyDown(items[1], { key: 'End' });
+      expect(document.activeElement).toBe(items[2]);
+      fireEvent.keyDown(items[2], { key: 'ArrowDown' });
+      expect(document.activeElement).toBe(items[0]);
+      fireEvent.keyDown(items[0], { key: 'ArrowUp' });
+      expect(document.activeElement).toBe(items[2]);
+      fireEvent.keyDown(items[2], { key: 'Home' });
+      expect(document.activeElement).toBe(items[0]);
+    });
+
+    it('focuses the active item when the active tab is inside the menu', () => {
+      render(<OverflowTabs tabs={tabs} activeTab="d" onTabChange={() => {}} />);
+      fireEvent.click(screen.getByRole('button', { name: /delta/i }));
+      expect(document.activeElement).toBe(screen.getByRole('menuitem', { name: /delta/i }));
+    });
+
+    it('Escape closes the menu and returns focus to the trigger', () => {
+      render(<OverflowTabs tabs={tabs} activeTab="a" onTabChange={() => {}} />);
+      const more = screen.getByRole('button', { name: /more/i });
+      fireEvent.click(more);
+      fireEvent.keyDown(screen.getAllByRole('menuitem')[0], { key: 'Escape' });
+      expect(screen.queryByRole('menu')).toBeNull();
+      expect(document.activeElement).toBe(more);
+    });
+
+    it('constrains the menu height to the space below the trigger, not the viewport', () => {
+      render(<OverflowTabs tabs={tabs} activeTab="a" onTabChange={() => {}} />);
+      fireEvent.click(screen.getByRole('button', { name: /more/i }));
+      const menu = screen.getByRole('menu') as HTMLElement;
+      // jsdom: trigger rect bottom is 0, innerHeight 768 → 768 - 0 - 16
+      expect(menu.style.maxHeight).toBe('752px');
+    });
+  });
+
+  describe('re-measuring after webfonts settle (sweep paper cut #7)', () => {
+    const manyTabs: OverflowTab[] = Array.from({ length: 6 }, (_, i) => ({
+      id: `t${i}`,
+      label: `Tab ${i}`,
+      icon: <span data-testid={`icon-${i}`} />,
+    }));
+
+    afterEach(() => {
+      restoreLayout();
+      delete (document as unknown as { fonts?: unknown }).fonts;
+    });
+
+    it('re-measures once document.fonts.ready resolves, collapsing further if labels grew wider', async () => {
+      // Fallback-font pass: narrow labels, several fit at this container width.
+      let width = 50;
+      Object.defineProperty(HTMLElement.prototype, 'offsetWidth', {
+        configurable: true,
+        get: () => width,
+      });
+      Object.defineProperty(HTMLElement.prototype, 'clientWidth', {
+        configurable: true,
+        value: 340,
+      });
+
+      let resolveReady: () => void = () => {};
+      const ready = new Promise<void>((resolve) => {
+        resolveReady = resolve;
+      });
+      (document as unknown as { fonts: { ready: Promise<void> } }).fonts = { ready };
+
+      render(<OverflowTabs tabs={manyTabs} activeTab="t0" onTabChange={() => {}} testIdPrefix="x-" />);
+
+      const beforeCount = screen.getAllByRole('tab').length;
+      expect(beforeCount).toBeGreaterThan(1);
+      expect(beforeCount).toBeLessThan(manyTabs.length);
+
+      // The webfont swaps in: every label is now meaningfully wider.
+      width = 140;
+      await act(async () => {
+        resolveReady();
+        await ready;
+      });
+
+      const afterCount = screen.getAllByRole('tab').length;
+      expect(afterCount).toBeLessThan(beforeCount);
+    });
   });
 });

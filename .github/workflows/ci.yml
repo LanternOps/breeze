@@ -1679,16 +1679,24 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           set -o pipefail
-          sudo apt-get install -y --no-install-recommends gdisk dosfstools e2fsprogs xfsprogs parted util-linux udev
+          sudo apt-get install -y --no-install-recommends gdisk dosfstools e2fsprogs xfsprogs parted util-linux udev qemu-utils
           sudo udevadm settle || true
           cd agent
-          sudo -E env "PATH=$PATH" BREEZE_REBUILD_LOOP_TEST=1 go test -count=1 -run TestRun_LoopbackRealSystem ./internal/backup/rebuild/ -v 2>&1 | tee /tmp/rebuild-loopback.log
+          sudo -E env "PATH=$PATH" BREEZE_REBUILD_LOOP_TEST=1 go test -count=1 -run 'TestRun_LoopbackRealSystem|TestRun_LoopbackVhdxTarget' ./internal/backup/rebuild/ -v 2>&1 | tee /tmp/rebuild-loopback.log
           # A t.Skip (missing root, missing BREEZE_REBUILD_LOOP_TEST, or a
-          # missing tool) must never read as a pass here — the whole point
-          # of this step is to prove provisioning against a real loop
-          # device, not merely that `go test` exited 0.
+          # missing tool — qemu-img for the vhdx test) must never read as a
+          # pass here — the whole point of this step is to prove
+          # provisioning (and the W05a raw→VHDX conversion) against a real
+          # loop device, not merely that `go test` exited 0.
           if grep -q -- '--- SKIP' /tmp/rebuild-loopback.log; then
-            echo "::error::TestRun_LoopbackRealSystem was SKIPPED, not proven — see the skip reason logged above. Fix the environment (root/BREEZE_REBUILD_LOOP_TEST/missing tool), don't let this step go green on a skip."
+            echo "::error::A loopback test was SKIPPED, not proven — see the skip reason logged above. Fix the environment (root/BREEZE_REBUILD_LOOP_TEST/missing tool such as qemu-utils), don't let this step go green on a skip."
+            exit 1
+          fi
+          # Both tests must have actually run: a rename in the -run filter
+          # would otherwise leave this step vacuously green.
+          passes=$(grep -c -- '^--- PASS: TestRun_Loopback' /tmp/rebuild-loopback.log || true)
+          if [ "$passes" -ne 2 ]; then
+            echo "::error::expected exactly 2 loopback PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count"
             exit 1
           fi
 
@@ -2884,10 +2892,10 @@ jobs:
           persist-credentials: false
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
 
       - name: Build and export smoke image
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
           context: .
           file: ${{ matrix.dockerfile }}
@@ -3688,10 +3696,10 @@ jobs:
         run: python3 docker/ai-workspace/check-lock.py
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
 
       - name: Build analysis runtime (no publishing)
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
           context: docker/ai-workspace
           platforms: linux/amd64

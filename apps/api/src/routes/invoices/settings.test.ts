@@ -12,6 +12,15 @@ vi.mock('../../services/invoiceService', () => ({
   updateOrgBillingSettings: vi.fn()
 }));
 
+// Sweep paper cut #4: PATCH /partner/billing-settings must write the same
+// semantic audit shape /settings/partner's PATCH does (`partner.settings.update`
+// via writeRouteAudit) — the generic route-derived fallback in index.ts silently
+// skips a multi-org partner (resolveFallbackOrgId requires exactly one
+// accessibleOrgIds entry or an org-scoped token), so without an explicit
+// semantic audit here most partner admins get NO audit_logs row at all.
+vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: vi.fn() }));
+vi.mock('../../services/auditOrgResolver', () => ({ resolveAuditOrgIdForPartner: vi.fn(async () => 'audit-org-1') }));
+
 // Multi-currency wave 7 (#3779): the reporting-totals route is thin — the money
 // math lives in the service and is proven in reportingTotals.test.ts.
 vi.mock('../../services/reportingTotals', async () => {
@@ -56,6 +65,8 @@ import { ExchangeRateServiceError } from '../../services/exchangeRateService';
 import * as svc from '../../services/invoiceService';
 import { InvoiceServiceError } from '../../services/invoiceTypes';
 import { PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../../services/partnerWideAccess';
+import * as auditEvents from '../../services/auditEvents';
+import * as orgsModule from '../../services/auditOrgResolver';
 
 const ORG_ID = '22222222-2222-2222-2222-222222222222';
 
@@ -92,6 +103,36 @@ describe('billing settings routes', () => {
       expect.objectContaining({ currencyCode: 'EUR', invoiceNumberPrefix: 'EU', invoiceTermsDays: 14 }),
       expect.objectContaining({ partnerId: 'p1' })
     );
+  });
+
+  // Sweep paper cut #4: a successful save must write an audit_logs row, the
+  // same way /settings/partner's PATCH does (writeRouteAudit +
+  // resolveAuditOrgIdForPartner, action 'partner.settings.update').
+  it('PATCH /partner/billing-settings writes a semantic audit row on success', async () => {
+    (svc.updatePartnerBillingSettings as any).mockResolvedValue({
+      currencyCode: 'EUR', defaultTaxRate: '0.200', invoiceNumberPrefix: 'EU', invoiceTermsDays: 14, invoiceFooter: 'Thanks'
+    });
+    const res = await invoiceSettingsRoutes.request('/partner/billing-settings', jsonBody({
+      currencyCode: 'EUR', defaultTaxRate: 0.2, invoiceNumberPrefix: 'EU', invoiceTermsDays: 14, invoiceFooter: 'Thanks'
+    }));
+    expect(res.status).toBe(200);
+    expect(orgsModule.resolveAuditOrgIdForPartner).toHaveBeenCalledWith('p1');
+    expect(auditEvents.writeRouteAudit).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        orgId: 'audit-org-1',
+        action: 'partner.billing_settings.update',
+        resourceType: 'partner',
+      }),
+    );
+  });
+
+  it('PATCH /partner/billing-settings does NOT write an audit row when the service call fails validation (→ 400)', async () => {
+    const res = await invoiceSettingsRoutes.request('/partner/billing-settings', jsonBody({
+      currencyCode: 'not-valid',
+    }));
+    expect(res.status).toBe(400);
+    expect(auditEvents.writeRouteAudit).not.toHaveBeenCalled();
   });
 
   it.each(['selected', 'none'] as const)(
