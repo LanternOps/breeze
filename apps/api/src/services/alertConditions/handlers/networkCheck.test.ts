@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const { mockDb, alertDeviceMock } = vi.hoisted(() => ({
   mockDb: { select: vi.fn() },
-  alertDeviceMock: vi.fn(async (_check: { orgId: string; assetId: string | null }) => 'device-1'),
+  alertDeviceMock: vi.fn(async (_check: { orgId: string; assetId: string | null }): Promise<string | null> => 'device-1'),
 }));
 
 vi.mock('../../../db', () => ({ db: mockDb }));

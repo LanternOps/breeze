@@ -993,10 +993,46 @@ export async function getApplicableRules(deviceId: string): Promise<RuleWithTemp
 }
 
 /**
+ * Which rules one `evaluateDeviceAlerts` pass is responsible for (#6353).
+ *
+ * `device_sweep` is the per-device alert worker job: every rule EXCEPT
+ * `network_check` monitors, which have no per-device verdict (one probe per
+ * org, read back off `network_monitor_results`) and would otherwise raise one
+ * alert per online device the policy reaches.
+ *
+ * `network_check` is the device-independent sweep
+ * (`services/monitors/networkCheckAlertSweep.ts`): ONLY the `network_check`
+ * monitors in `monitorIds` — the checks this device is the resolved alert
+ * device for — evaluated whether or not the device is online.
+ */
+type DeviceEvaluationMode =
+  | { kind: 'device_sweep' }
+  | { kind: 'network_check'; monitorIds: ReadonlySet<string> };
+
+/**
  * Evaluate all rules for a device and create alerts as needed
  * Returns list of created alert IDs
  */
 export async function evaluateDeviceAlerts(deviceId: string): Promise<string[]> {
+  return evaluateDeviceAlertsInMode(deviceId, { kind: 'device_sweep' });
+}
+
+/**
+ * #6353 — evaluate the `network_check` monitors in `monitorIds` for the device
+ * the sweep resolved as their alert device. Same pipeline as the per-device
+ * sweep (episode seam, cooldown, flapping, dedupe per rule+device) so the alert
+ * is indistinguishable from any other monitor alert; only the rule selection
+ * and the detach scan differ. The device may be OFFLINE — that is the point.
+ */
+export async function evaluateNetworkCheckAlertsForDevice(
+  deviceId: string,
+  monitorIds: ReadonlySet<string>,
+): Promise<string[]> {
+  if (monitorIds.size === 0) return [];
+  return evaluateDeviceAlertsInMode(deviceId, { kind: 'network_check', monitorIds });
+}
+
+async function evaluateDeviceAlertsInMode(deviceId: string, mode: DeviceEvaluationMode): Promise<string[]> {
   const applicableRules = await getApplicableRules(deviceId);
 
   if (applicableRules.length === 0) {
@@ -1022,6 +1058,22 @@ export async function evaluateDeviceAlerts(deviceId: string): Promise<string[]> 
   const evaluatedMonitorIds = new Set<string>();
 
   for (const { rule, template, effectiveConditions, effectiveSeverity, effectiveCooldownMinutes, monitor } of applicableRules) {
+    // #6353 — a network_check has ONE verdict per org, evaluated by the
+    // device-independent sweep on the check's alert device. The per-device
+    // sweep skips it (but still counts it as evaluated, or the detach scan
+    // below would close the alert device's open episode every minute); the
+    // network_check sweep evaluates nothing else, and only the checks this
+    // device was resolved as the alert device for.
+    const isNetworkCheck = monitor?.kind === 'network_check';
+    if (mode.kind === 'device_sweep') {
+      if (isNetworkCheck) {
+        if (rule.managedByMonitorId) evaluatedMonitorIds.add(rule.managedByMonitorId);
+        continue;
+      }
+    } else if (!isNetworkCheck || !rule.managedByMonitorId || !mode.monitorIds.has(rule.managedByMonitorId)) {
+      continue;
+    }
+
     try {
       // Evaluate conditions
       const result = await evaluateConditions(effectiveConditions, deviceId);
@@ -1146,7 +1198,11 @@ export async function evaluateDeviceAlerts(deviceId: string): Promise<string[]> 
     }
   }
 
-  await detachUnresolvedMonitors(deviceId, evaluatedMonitorIds);
+  // Only the per-device sweep saw every monitor that resolves to this device;
+  // the network_check pass saw a subset and must not detach the rest.
+  if (mode.kind === 'device_sweep') {
+    await detachUnresolvedMonitors(deviceId, evaluatedMonitorIds);
+  }
 
   return createdAlerts;
 }
