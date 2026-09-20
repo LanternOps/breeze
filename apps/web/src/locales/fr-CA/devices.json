@@ -791,6 +791,7 @@
     },
     "runInProgress": "Un nettoyage système est déjà en cours sur cet appareil. Attendez qu'il se termine.",
     "consequence": {
+      "removes_driver_rollback": "Cet appareil ne pourra plus rétablir les pilotes supprimés à leurs versions précédentes.",
       "removes_packages": "Les paquets qui ne sont plus nécessaires seront désinstallés.",
       "removes_os_rollback": "Cet appareil ne pourra plus revenir à sa version précédente de Windows.",
       "removes_recovery_points": "Les instantanés locaux sont supprimés. Si le disque Time Machine n'est pas branché, cet appareil n'a aucun autre point de restauration."

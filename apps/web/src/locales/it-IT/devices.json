@@ -791,6 +791,7 @@
     },
     "runInProgress": "Una pulizia del sistema è già in corso su questo dispositivo. Attendi che finisca.",
     "consequence": {
+      "removes_driver_rollback": "Questo dispositivo non potrà più ripristinare i driver rimossi alle versioni precedenti.",
       "removes_packages": "I pacchetti non più necessari verranno disinstallati.",
       "removes_os_rollback": "Questo dispositivo non potrà più tornare alla versione precedente di Windows.",
       "removes_recovery_points": "Le istantanee locali vengono eliminate. Se il disco Time Machine non è collegato, questo dispositivo non ha altri punti di ripristino."

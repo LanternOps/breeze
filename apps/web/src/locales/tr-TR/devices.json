@@ -791,6 +791,7 @@
     },
     "runInProgress": "Bu cihazda zaten bir sistem temizliği çalışıyor. Bitmesini bekleyin.",
     "consequence": {
+      "removes_driver_rollback": "Bu cihaz kaldırılan sürücüleri artık önceki sürümlerine geri alamayacak.",
       "removes_packages": "Artık gerekmeyen paketler kaldırılacak.",
       "removes_os_rollback": "Bu cihaz artık önceki Windows sürümüne geri dönemeyecek.",
       "removes_recovery_points": "Yerel anlık görüntüler silinir. Time Machine diski bağlı değilse bu cihazın başka geri yükleme noktası kalmaz."
