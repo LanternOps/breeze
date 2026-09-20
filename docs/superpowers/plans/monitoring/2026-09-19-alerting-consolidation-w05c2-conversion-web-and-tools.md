@@ -10,7 +10,7 @@ branch: (set by feature-lifecycle after registration)
 
 **Goal:** Put W05c1's converter in front of a technician — the per-policy **Needs conversion** panel, the library **Needs conversion** filter and banner, the partner-level **Convert everything** action (and the platform-admin page hosted ops run it from) — and move every remaining writer and reader of legacy alert rows onto monitors: the Jobs **Alert workflows** typed filter, the device page **Monitoring** tab, Fleet Designer, the two AI tools, the Alert Templates screens (deleted, 301), the docs and the release notes.
 
-**Architecture:** Everything in this wave consumes W05c1's `/monitor-definitions/conversion/*` routes and the `PolicyConversionPreview` / `ConversionPreviewItem` shapes exactly as the common brief fixes them; the one place their paths appear on the web is a single client module (`apps/web/src/components/monitoring/conversion/conversionApi.ts`), so a W05c1 path rename is a one-file change. The policy Monitors tab gains three additive blocks (Needs-conversion panel, inheritance switch, Check-interval field) and nothing is removed from the legacy tabs — `featureTypeParity.test.ts` still holds until W05d. Two small API additions belong to this wave because no contract covers them: a device-scoped `GET /devices/:id/monitors` (effective monitors joined to `monitor_device_state` and the open `monitor_episodes` row) for the device tab, and a platform-admin `/admin/monitor-conversion/*` wrapper over `convertPartnerLegacy` for the hosted sweep. Fleet Designer and the AI tools stop writing `alert_rule` / `monitoring` links and go through `createMonitorDefinition` + the `monitors` feature-link attachment path instead.
+**Architecture:** Everything in this wave consumes W05c1's `/monitor-definitions/conversion/*` routes and the `PolicyConversionPreview` / `ConversionPreviewItem` shapes with binding D2/D3/D10 refinements; the one place their paths appear on the web is a single client module (`apps/web/src/components/monitoring/conversion/conversionApi.ts`), so a W05c1 path rename is a one-file change. The policy Monitors tab gains three additive blocks (Needs-conversion panel, inheritance switch, Check-interval field) and nothing is removed from the legacy tabs — `featureTypeParity.test.ts` still holds until W05d. Two small API additions belong to this wave because no contract covers them: a device-scoped `GET /devices/:id/monitors` (effective monitors joined to `monitor_device_state` and the open `monitor_episodes` row) for the device tab, and a platform-admin `/admin/monitor-conversion/*` wrapper over `convertPartnerLegacy` for the hosted sweep. Fleet Designer and the AI tools stop writing `alert_rule` / `monitoring` links and go through `createMonitorDefinition` + the `monitors` feature-link attachment path instead.
 
 **Tech Stack:** React 19 + react-i18next (8 locales), Astro pages (`Astro.redirect` 301s), `runAction` for every mutation, Vitest + jsdom (`apps/web`), Hono + Drizzle + zod (`apps/api`, `packages/shared`), Vitest with Drizzle mocks (unit) and the integration setup (`apps/api/src/__tests__/integration/setup`) for the one live-DB proof, Astro Starlight docs (`apps/docs`).
 
@@ -18,32 +18,53 @@ branch: (set by feature-lifecycle after registration)
 
 ## Ordering assumptions (read first)
 
-- **W05a, W05b and W05c1 have shipped on `main`.** This plan does not re-plan any of them. W05a already added **Create monitor**, the **Recommended** strip, the duplicate-condition warning and the creation freeze to the policy tabs; this wave adds only the Needs-conversion panel, the inheritance switch and the Check-interval write-through to `MonitorsTab.tsx`. W05b already shipped the Delivery page and the `/alerts/channels` 301, which Task 10 copies as the redirect pattern.
-- **W05c1's routes are consumed by exact name.** The common brief fixes the module (`apps/api/src/services/monitors/conversion/`), the types (`ConversionPreviewItem` with `notes: string[]` and `openAlerts: number`, `PolicyConversionPreview`, the `pending` counts `{ policies, rows }`) and the path prefix (`/monitor-definitions/conversion/*`), but not every leaf path. Task 1 pins the leaf paths this plan assumes in one client module and its **Step 0 verifies them**: `grep -n "conversion/" apps/api/src/routes/monitorDefinitions*.ts apps/api/src/routes/monitorDefinitions/*.ts`. If W05c1 named a leaf differently, change the constant in `conversionApi.ts` and nothing else. Do **not** add, rename or re-shape a W05c1 route from this wave.
-- **The contract's preview is synchronous.** The spec says a >500-device equivalence check "runs as a job and the panel shows progress", but `previewPolicyConversion(policyId, auth): Promise<PolicyConversionPreview>` returns the finished preview and no job/progress route exists in the contract. The panel therefore shows an indeterminate "Checking devices…" state while the request is in flight and prints `equivalence.devicesChecked` when it lands. If W05c1 shipped an async shape (202 + poll), extend `conversionApi.previewPolicy` to poll it — the panel reads only the resolved `PolicyConversionPreview`. Flagged in the plan report.
-- **No ledger-list route exists in the contract.** "Revert on a ledger row" is exposed here as an immediate **Undo** on the conversion ids the Convert response returns (`{ conversionIds }` → `POST …/revert` per id) for the lifetime of the panel session. Browsing the ledger later needs a `GET …/conversion/ledger?policyId` that W05c1 does not define; it is listed under Follow-ups, not invented here.
-- **Standalone `alert_rules` keep the existing `POST /monitor-definitions/convert-from-rule/:id` path.** `ConversionSourceTable` covers `alert_templates` (an unmanaged template *and* its rules) but not a bare `alert_rules` row, so the library's Needs-conversion view reuses `LegacyRulesPage`'s table (extracted, Task 6) for those and W05c1's per-policy routes for everything else. `/alerts/rules` itself stays until W05d, rendering the same extracted table.
-- **Which policies "need conversion" is decided by the API count, not by the client.** `GET /monitor-definitions/conversion/pending?orgId` returns counts only. The library view lists candidate policies from the org's policy list filtered on an unretired-capable legacy link (`featureType in ('alert_rule','monitoring','automations')`); that over-approximates after conversion (the link row survives, only its child rows are retired), which is why the per-policy panel hides itself when the preview returns zero items. The banner text always uses the API's counts.
-- **Three PRs, in order:** PR1 = Tasks 1–7 (conversion client, policy Monitors tab additions, library filter/banner, partner Convert everything, platform-admin page). PR2 = Tasks 8–10 (Alert workflows filter, device Monitoring tab, Alert Templates removal). PR3 = Tasks 11–15 (AI tools, Fleet Designer, docs + release notes, verification). PR2 and PR3 do not depend on PR1's code and may be opened from `main` in parallel once PR1 is green; never stack one on another's branch — a PR based on a sibling branch runs no CI at all (CLAUDE.md, tenancy section).
+- **W05a, W05b and W05c1 have shipped on `main`.** This plan does not re-plan any of them. W05a already added **Create monitor**, the **Recommended** strip, the duplicate-condition warning and the creation freeze to the policy tabs; this wave adds the Needs-conversion panel, persistent history, the inheritance switch and Check-interval write-through to `MonitorsTab.tsx`; Tasks 12–13 supply the editor controls and separate library Recommended strip. W05b already shipped the Delivery page and the `/alerts/channels` 301, which Task 11 copies as the redirect pattern.
+- **W05c1 routes are fixed by D2/D3/D10.** Task 1 mirrors the exact conversion subrouter contracts; do not invent alternate leaf paths. C1 produces `routes/monitorDefinitions.conversion.ts` (new prerequisite file, absent on this base).
+- **Async previews ship in PR1 (D10).** W05c1 returns 200 `{ data: PolicyConversionPreview }` or 202 `{ data: { status: 'running', progress: { checked, total } } }`; poll the same GET. Tasks 1 and 5 implement polling, cancellation, blocked-empty handling and disabling confirmation during refresh.
+- **Persistent ledger is required in PR1 (D2/D4).** Consume `GET /monitor-definitions/conversion/ledger?orgId&policyId&cursor&limit`; history remains accessible after the conversion panel disappears. `revertable` controls Undo; W05d returns `409 conversion_revert_unavailable` before mutation for removed runtimes.
+- **Standalone template groups (D13).** One conversion includes every rule of its template and one ledger entry, with reference-aware reversal and preserved alert provenance. The client refreshes the whole table after conversion; it never promises one monitor per rule. Standalone `alert_rules` keep the existing `POST /monitor-definitions/convert-from-rule/:id` path. `ConversionSourceTable` covers `alert_templates` (an unmanaged template *and* its rules) but not a bare `alert_rules` row, so the library's Needs-conversion view reuses `LegacyRulesPage`'s table (extracted, Task 6) for those and W05c1's per-policy routes for everything else. `/alerts/rules` itself stays until W05d, rendering the same extracted table.
+- **Which policies "need conversion" is decided by the API count, not by the client.** `GET /monitor-definitions/conversion/pending?orgId` returns counts only. The library view lists candidate policies from the org's policy list filtered on an unretired-capable legacy link (`featureType in ('alert_rule','monitoring','automation')`); that over-approximates after conversion (the link row survives, only its child rows are retired), which is why the per-policy panel hides itself when the preview returns zero items. The banner text always uses the API's counts.
+- **Three PRs:** PR1 = Tasks 1–8; PR2 = Tasks 9–13; PR3 = Tasks 14–18. PR3 depends on merged PR1 and PR2 for aggregate verification. Every PR targets `main`; never branch from an unmerged sibling.
 - **Tabs are not removed in this wave.** `AlertRuleTab.tsx` and `MonitoringTab.tsx` stay mounted; `featureTypeParity.test.ts` (every `CONFIG_FEATURE_TYPES` entry has a tab) must stay green untouched. Their removal, the `#alert_rule`/`#monitoring` hash redirects and `RETIRED_CONFIG_FEATURE_TYPES` are W05d.
 
 ## Global Constraints
 
 - **No migration in this wave.** Every schema change conversion needs landed in W05c1. The two API additions here are read routes plus one wrapper route over an existing W05c1 service; if you find yourself writing SQL DDL, stop — it belongs to W05c1 or W05d.
-- **Web mutations go through `runAction`** (`apps/web/src/lib/runAction.ts`): every Convert / Retire / Revert / Save / Reset button wraps its `fetchWithAuth` in `runAction({ request, successMessage, errorMessage })`; the catch pattern from CLAUDE.md (`err instanceof ActionError && err.status === 401` → return; non-`ActionError` → `showToast`). `no-silent-mutations.test.ts` guards the adopted set — do not add new files to `runActionAllowlist.ts`.
+- **Web mutations go through `runAction`** (`apps/web/src/lib/runAction.ts`): every Convert / Retire / Revert / Save / Reset button wraps its `fetchWithAuth` in `runAction({ request, successMessage, errorFallback })`; the catch pattern from CLAUDE.md (`err instanceof ActionError && err.status === 401` → return; non-`ActionError` → `showToast`). `no-silent-mutations.test.ts` guards the adopted set — do not add new files to `runActionAllowlist.ts`.
 - **Every new i18n key needs a real translation in all 8 locales** (`apps/web/src/locales/{en,de-DE,es-419,fr-CA,fr-FR,it-IT,pt-BR,tr-TR}`); the coverage test fails on a missing or English-echoed key. Deleted components take their keys out of all 8 files in the same commit (`titles.settingsAlertTemplates`, `titles.settingsAlertTemplatesDetail` in `pages.json`, plus whatever `AlertTemplateList` / `AlertTemplateEditor` own). Platform-admin pages follow the `SendingDomainsAdmin.tsx` precedent (English-only, unlisted, reached by URL) except for the one `titles.*` key the Astro layout needs.
 - **Hash for tab state, never query params** for transient UI (CLAUDE.md "URL State in Components"): the library's Needs-conversion filter is `#needs-conversion` via `useHashState`; the policy editor keeps `#monitors`.
 - **Retired web routes return a 301** from the Astro page (`return Astro.redirect('/alerts/monitors', 301)`), and every registry that lists the retired page (`settingsPageRegistry`, `routeScope.ts`, `Sidebar.nav.test.tsx` expectations) loses its entry in the same commit — `settingsPageRegistry.test.ts` asserts every settings screen is in the nav at one URL and old URLs redirect.
 - **AI tools change behaviour, not surface, in this wave.** `manage_policy_feature_link` *warns* on `alert_rule` / `monitoring` (refusal is W05d); `manage_service_monitors.list` reads via the resolver. `aiAgentSdkTools.mcpCoverage.test.ts` pins the tool surface — a changed description or input schema must update that pin in the same commit, and no tool is added or removed here.
 - **Fleet Designer writes monitors on the same axis as the policy** (org-owned policy → org monitor; partner-wide → partner monitor), through `createMonitorDefinition` and the `monitors` feature-link attachment path — never a direct insert into `monitor_definitions` / `config_policy_monitors`, and never an `alert_rule` or `monitoring` link. Partner-wide writes stay gated on `canManagePartnerWidePolicies(auth)` exactly where the legacy branch gated them.
-- **The device endpoint is read-only and device-scoped.** `GET /devices/:id/monitors` runs under the request's `withDbAccessContext` and the existing device-access check of the devices router; the reset action reuses the W03 episode reset route (Task 9 names it after verifying) — no new writer, no new RLS shape, no registration-list change.
+- **The device endpoint is read-only and device-scoped.** `GET /devices/:id/monitors` runs under the request's `withDbAccessContext` and the existing device-access check of the devices router; the reset action reuses the W03 episode reset route (Task 10 names it after verifying) — no new writer, no new RLS shape, no registration-list change.
 - Every task: **red test first**, then typecheck (`cd apps/web && npx tsc --noEmit -p .` / `cd apps/api && npx tsc --noEmit -p .` / `cd packages/shared && npx tsc --noEmit -p .`), then the task's targeted tests with `npx vitest run <path>` — never `pnpm --filter … test -- --run <path>` (the `--` is swallowed and the whole suite runs in watch mode), never a trailing-slash path filter (substring match silently skips dotted siblings).
-- `pnpm test` does **not** run the integration suites. Task 9's live proof and Task 15 need `pnpm test-stack up` … `pnpm test-stack down` — nothing reaps it for you.
+- `pnpm test` does **not** run the integration suites. Task 10's live proof and Task 18 need `pnpm test-stack up` … `pnpm test-stack down` — nothing reaps it for you.
 - Do not commit from a subagent; the orchestrator commits. Each task's Step 5 gives the commit message.
 
 ## File Structure (what changes where)
 
-<!-- FILE_STRUCTURE_TABLE -->
+| File or group | Change and task coverage |
+|---|---|
+| `apps/web/src/components/monitoring/conversion/{conversionApi,NeedsConversionPanel,ConversionPendingBanner,PendingPoliciesList}.*` | Conversion client/panel/library, Tasks 1, 5, 6; async preview implementation in PR1, Tasks 1 and 5 |
+| `apps/web/src/components/monitoring/conversion/ConversionLedger.*` | Persistent paginated history, retirement entries and lifecycle-aware Undo, Task 8 |
+| `apps/web/src/components/monitoring/{MonitorAuthoringFields.*,MonitorConditionFields.tsx,monitorKindFields.*,MonitorEditor.*}` | Composite children, restart parameters and failure-count bounds, Task 12 |
+| `apps/web/src/components/monitoring/RecommendedMonitors.*` | Library built-in deployment detection and policy picker, Task 13 |
+| `apps/web/src/components/configurationPolicies/{ConfigPolicyDetailPage,featureTabs/types,featureTabs/MonitorsTab,featureTabs/useFeatureLink}.*` | Policy tab props, interval, inheritance, conversion mount, Tasks 2–5 |
+| `apps/web/src/components/monitoring/{LegacyRulesPage,LegacyRulesTable,MonitorsListPage}.*` | Needs-conversion view and shared legacy table, Task 6 |
+| `apps/api/src/services/monitors/conversion/partnerBacklog.*`, `apps/api/src/routes/admin/{monitorConversion.*,index.ts}` | Hosted conversion backlog/wrapper, Task 7 |
+| `apps/web/src/components/admin/MonitorConversionAdmin.*`, `apps/web/src/pages/admin/monitor-conversion.astro` | Hosted admin UI, Task 7 |
+| `apps/web/src/components/automations/{alertWorkflowFilter,AutomationForm,AutomationEditPage}.*`, `AutomationsPage.tabs.test.tsx`, `apps/api/src/jobs/automationWorker.test.ts` | Typed workflow filter and runtime contract, Task 9 |
+| `apps/api/src/routes/devices/{monitors.ts,index.ts}`, `apps/api/src/__tests__/integration/deviceMonitors.integration.test.ts`, `apps/web/src/components/devices/DeviceMonitoringTab.*` | Effective device monitoring and isolation, Task 10 |
+| `apps/web/src/pages/settings/alert-templates/*.astro`, `apps/web/src/components/alerts/AlertTemplate*` | Redirect stubs and deleted editors/tests, Task 11 |
+| `apps/web/src/lib/{routeScope.*,runActionAllowlist.ts}`, `apps/web/src/lib/__tests__/{settingsPageRegistry,alertTemplatesRetired,no-silent-mutations}.test.ts`, `Sidebar.nav.test.tsx` | Registry, navigation, deletion and mutation coverage, Tasks 1, 7–10 |
+| `apps/web/src/locales/*/{policies,monitoring,pages,scripts,alerts}.json` | Real translations or removal of retired keys, Tasks 3–13 |
+| `apps/api/src/services/{aiToolsConfigPolicy.*,aiToolsFleet.ts,aiAgentSdkTools.ts,aiAgentSdkTools.mcpCoverage.test.ts,aiAgentSystemPrompt.ts,aiGuardrails.ts}`, `monitors/listServiceMonitors.*` | Canonical monitor AI behavior and schemas, Task 14 |
+| `packages/shared/src/{types/fleetDesign.ts,validators/fleetDesign.*}`, `apps/api/src/services/aiAgents/{outcomeTools.*,runLoop.design.test.ts,fleetDesignReport.test.ts}`, `FleetDesignViewer.test.tsx` | Monitor-shaped model proposals, Task 15 |
+| `apps/api/src/services/fleetDesign/{monitorProposalCompatibility.*,preview.ts,monitorAttachments.*,apply.*,drift.*,rollback.*}` | Historical report guard, apply, drift, rollback, Tasks 15–16 |
+| `apps/api/src/services/monitors/{monitorService.*,monitorCompiler.ts}`, `packages/shared/src/types/fleetDesignApply.ts`, `apps/api/src/__tests__/integration/fleetDesignApply.integration.test.ts` | Savepoint-aware monitor service, ledger provenance and live proof, Task 16 |
+| `apps/docs/src/content/docs/features/{alerts,monitors,notifications,configuration-policies,alert-templates,service-monitoring}.mdx`, `apps/docs/astro.config.mjs` | Domain docs, removals and redirects, Task 17 |
+| `apps/docs/src/content/docs/migration/{overview,ninjaone,syncro,other-rmms,atera,datto-rmm,n-central,kaseya-vsa,connectwise-automate,scripts-from-datto}.mdx`, `docs/release-notes/next-release-draft.md` | All ten affected guides and release checklist, Task 17 |
+| `apps/web/src/lib/__tests__/{alertingDocs,alertingVerification}.test.ts`, `scripts/verify-alerting-consolidation-w05c2.sh` | Documentation contract and complete final verification, Tasks 17–18 |
 
 ---
 
@@ -52,17 +73,17 @@ branch: (set by feature-lifecycle after registration)
 **Files:**
 - Create: `apps/web/src/components/monitoring/conversion/conversionApi.ts`
 - Create: `apps/web/src/components/monitoring/conversion/conversionApi.test.ts`
-- Modify: `apps/web/src/lib/__tests__/no-silent-mutations.test.ts` (`TARGET_GLOBS`, line 35 onward) — add the four new component files this PR creates (`src/components/monitoring/conversion/NeedsConversionPanel.tsx`, `ConversionPendingBanner.tsx`, `src/components/admin/MonitorConversionAdmin.tsx`, `src/components/configurationPolicies/featureTabs/MonitorsTab.tsx` is **not** added: it saves through `useFeatureLink`, which the guard does not classify)
+- Modify: `apps/web/src/lib/__tests__/no-silent-mutations.test.ts` (`TARGET_GLOBS`, lines 35–59) — register the three new component files with Task 7 (`src/components/monitoring/conversion/NeedsConversionPanel.tsx`, `ConversionPendingBanner.tsx`, `src/components/admin/MonitorConversionAdmin.tsx`, `src/components/configurationPolicies/featureTabs/MonitorsTab.tsx` is **not** added: it saves through `useFeatureLink`, registered with `runAction` in Task 3)
 
 **Interfaces:**
 - Consumes (W05c1, exact): `GET /monitor-definitions/conversion/pending?orgId` → `{ data: { policies: number; rows: number } }`; the policy preview/convert, revert, retire and partner convert-all leaves under `/monitor-definitions/conversion/*`; `PolicyConversionPreview` and `ConversionPreviewItem` (with `notes: string[]`, `openAlerts: number`).
-- Produces: `conversionPaths` (the only place the leaf paths appear), the TS mirrors of the contract types, `fetchPolicyPreview(policyId)`, `fetchPendingCounts(orgId)`, `convertBody(previewHash, sourceIds?)`, `retireBody(sourceTable, sourceId, reason)`, `readConvertResult(body)`, `readPartnerConvertResult(body)`. Mutations are **not** issued from this module — components call `fetchWithAuth` inside `runAction` with these paths and bodies, so the syntactic `runAction` guard sees every write.
+- Produces: `conversionPaths` (the only place the leaf paths appear), the TS mirrors of the contract types, `fetchPolicyPreview(policyId)`, `fetchPendingCounts(orgId)`, `convertBody(previewHash, sourceIds?)`, `retireBody(sourceTable, sourceId, reason)`, `readConvertResult(body)`, `readPartnerConvertResult(body)`. D2 ledger queries return `{ items, nextCursor }`; D3 preview POST returns `PartnerConversionPreview` and convert-all requires `{ previewHash }`. Mutations are **not** issued from this module — components call `fetchWithAuth` inside `runAction` with these paths and bodies, so the syntactic `runAction` guard sees every write.
 
 - [ ] **Step 0: Pin the leaf paths against what W05c1 actually shipped.**
   ```bash
-  grep -rn "conversion" apps/api/src/routes/monitorDefinitions.ts apps/api/src/routes/monitorDefinitions/ 2>/dev/null | grep -E "\.(get|post)\(" 
+  rg -n "\.(get|post)\(" apps/api/src/routes/monitorDefinitions.conversion.ts
   ```
-  Expect six handlers: policy preview (GET), policy convert (POST), revert (POST), retire (POST), partner convert-all (POST), pending (GET). The plan assumes `policies/:policyId/preview`, `policies/:policyId/convert`, `:conversionId/revert`, `retire`, `partner/convert-all`, `pending`. If a leaf differs, change **only** the matching entry in `conversionPaths` below and the literal in the test — nothing else in this wave hard-codes a path.
+  Expect eight handlers (including ledger GET and partner preview POST): policy preview (GET), policy convert (POST), revert (POST), retire (POST), partner convert-all (POST), pending (GET). The fixed leaves are `policies/:policyId/preview`, `policies/:policyId/convert`, `:conversionId/revert`, `retire`, `partner/preview`, `partner/convert-all`, `pending`, `ledger` (D2/D3/D10). A prerequisite implementation missing one must be corrected to the binding contract before this PR ships.
 
 - [ ] **Step 1: Write the failing test** — `conversionApi.test.ts`:
   ```ts
@@ -91,6 +112,27 @@ branch: (set by feature-lifecycle after registration)
       expect(conversionPaths.pending('org 1')).toBe('/monitor-definitions/conversion/pending?orgId=org%201');
       expect(conversionPaths.pending(null)).toBe('/monitor-definitions/conversion/pending');
     });
+
+  it('polls a large-policy preview until complete and reports progress', async () => {
+    vi.useFakeTimers();
+    const complete = { policyId: 'p1', previewHash: 'ready', items: [], inheritanceMode: 'cumulative',
+      equivalence: { devicesChecked: 700, deltas: [] } };
+    fetchMock.mockResolvedValueOnce(json({ data: { status: 'running', progress: { checked: 200, total: 700 } } }, 202))
+      .mockResolvedValueOnce(json({ data: complete }));
+    const onProgress = vi.fn();
+    try {
+      const promise = fetchPolicyPreview('p1', { onProgress });
+      await vi.advanceTimersByTimeAsync(1000);
+      await expect(promise).resolves.toEqual(complete);
+      expect(onProgress).toHaveBeenCalledWith({ checked: 200, total: 700 });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    } finally { vi.useRealTimers(); }
+  });
+  it('never accepts a pending result as a confirmation hash', async () => {
+    const controller = new AbortController(); controller.abort();
+    await expect(fetchPolicyPreview('p1', { signal: controller.signal })).rejects.toMatchObject({ name: 'AbortError' });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 
     it('fetchPolicyPreview unwraps { data } and returns the PolicyConversionPreview', async () => {
       const preview = { policyId: 'p1', previewHash: 'h', items: [], inheritanceMode: 'cumulative', equivalence: { devicesChecked: 0, deltas: [] } };
@@ -141,8 +183,9 @@ branch: (set by feature-lifecycle after registration)
   export type ProposedMonitor = {
     role: ProposedRole; kind: string; name: string; condition: Record<string, unknown>; severity: string;
     deliveryMode: 'inherit' | 'channels' | 'none'; deliveryChannelIds: string[];
-    escalationPolicyId: string | null; responses: unknown[];
+    escalationPolicyId: string | null; responses: unknown[]; enabled: boolean; cooldownMinutes: number; autoResolve: boolean;
   };
+  export type RetirementReason = 'operator' | `unconvertible:${string}`;
   export type ConversionPreviewItem = {
     sourceTable: ConversionSourceTable; sourceId: string; name: string;
     outcome: 'convertible' | 'unconvertible'; reason?: string;
@@ -154,6 +197,20 @@ branch: (set by feature-lifecycle after registration)
     equivalence: { devicesChecked: number; deltas: Array<{ deviceId: string; detail: string }> };
     blockedBy?: 'parent_unconverted' | 'prerequisite_missing';
   };
+  export type ConversionLedgerEntry = {
+    id: string; sourceTable: ConversionSourceTable; sourceId: string; sourceName: string;
+    policyId: string | null; convertedBy: string | null; convertedAt: string;
+    revertedAt: string | null; revertable: boolean;
+    outputs: Array<{ monitorId: string; role: string; reused: boolean }>;
+  };
+  export type LedgerPage = { items: ConversionLedgerEntry[]; nextCursor: string | null };
+  export type PartnerConversionPreview = {
+    partnerId: string; previewHash: string; policies: number; rows: number; convertible: number;
+    unconvertible: Array<{ policyId: string | null; policyName: string | null;
+      sourceTable: ConversionSourceTable; sourceId: string; name: string; reason: string }>;
+  };
+  export const readPartnerPreview = (body: unknown): PartnerConversionPreview => unwrap(body);
+  export const readRetireResult = (body: unknown): { conversionId: string } => unwrap(body);
   export type PendingCounts = { policies: number; rows: number };
   export type ConvertResult = { conversionIds: string[]; retired: number; monitorsCreated: number };
   export type PartnerConvertResult = { policies: number; converted: number; unconvertible: number };
@@ -165,6 +222,12 @@ branch: (set by feature-lifecycle after registration)
     convert: (policyId: string) => `${CONVERSION_BASE}/policies/${encodeURIComponent(policyId)}/convert`,
     revert: (conversionId: string) => `${CONVERSION_BASE}/${encodeURIComponent(conversionId)}/revert`,
     retire: () => `${CONVERSION_BASE}/retire`,
+    partnerPreview: () => `${CONVERSION_BASE}/partner/preview`,
+    ledger: (filters: { orgId?: string; policyId?: string; cursor?: string; limit?: number } = {}) => {
+      const query = new URLSearchParams();
+      for (const [key, value] of Object.entries(filters)) if (value != null) query.set(key, String(value));
+      return `${CONVERSION_BASE}/ledger?${query}`;
+    },
     partnerConvertAll: () => `${CONVERSION_BASE}/partner/convert-all`,
     pending: (orgId: string | null) =>
       orgId ? `${CONVERSION_BASE}/pending?orgId=${encodeURIComponent(orgId)}` : `${CONVERSION_BASE}/pending`,
@@ -180,8 +243,32 @@ branch: (set by feature-lifecycle after registration)
     return unwrap<T>(body);
   }
 
-  export async function fetchPolicyPreview(policyId: string): Promise<PolicyConversionPreview> {
-    return readJson(await fetchWithAuth(conversionPaths.preview(policyId)), 'Failed to load the conversion preview');
+  export type PreviewProgress = { checked: number; total: number };
+  export interface PreviewOptions { signal?: AbortSignal; onProgress?: (progress: PreviewProgress) => void }
+  function waitForPreview(signal?: AbortSignal): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const abort = () => { clearTimeout(timer); reject(new DOMException('Preview cancelled', 'AbortError')); };
+      const timer = setTimeout(() => { signal?.removeEventListener('abort', abort); resolve(); }, 1000);
+      signal?.addEventListener('abort', abort, { once: true });
+      if (signal?.aborted) abort();
+    });
+  }
+  export async function fetchPolicyPreview(policyId: string, options: PreviewOptions = {}): Promise<PolicyConversionPreview> {
+    for (;;) {
+      if (options.signal?.aborted) throw new DOMException('Preview cancelled', 'AbortError');
+      const response = options.signal
+        ? await fetchWithAuth(conversionPaths.preview(policyId), { signal: options.signal })
+        : await fetchWithAuth(conversionPaths.preview(policyId));
+      const value = await readJson<PolicyConversionPreview | {
+        status: 'running'; progress: PreviewProgress;
+      }>(response, 'Failed to load the conversion preview');
+      if ('status' in value && value.status === 'running') {
+        options.onProgress?.(value.progress);
+        await waitForPreview(options.signal);
+        continue;
+      }
+      return value as PolicyConversionPreview;
+    }
   }
 
   export async function fetchPendingCounts(orgId: string | null): Promise<PendingCounts> {
@@ -190,7 +277,7 @@ branch: (set by feature-lifecycle after registration)
 
   export const convertBody = (previewHash: string, sourceIds?: string[]) =>
     sourceIds ? { previewHash, sourceIds } : { previewHash };
-  export const retireBody = (sourceTable: ConversionSourceTable, sourceId: string, reason: string) =>
+  export const retireBody = (sourceTable: ConversionSourceTable, sourceId: string, reason: 'operator' | `unconvertible:${string}`) =>
     ({ sourceTable, sourceId, reason });
 
   export const readConvertResult = (body: unknown): ConvertResult => unwrap<ConvertResult>(body);
@@ -202,7 +289,7 @@ branch: (set by feature-lifecycle after registration)
     'src/components/monitoring/conversion/ConversionPendingBanner.tsx',
     'src/components/admin/MonitorConversionAdmin.tsx',
   ```
-  (the files land in Tasks 5–7; the guard tolerates a listed file that does not exist yet only if `absoluteFiles` is filtered on `existsSync` — check the loop below the list; if it is not, add the three entries in Task 7's commit instead).
+  (Add these entries with Task 7, after all three files exist; `no-silent-mutations.test.ts:694–695` asserts every target exists.)
 
 - [ ] **Step 4: Run, expect PASS.** `cd apps/web && npx vitest run src/components/monitoring/conversion/conversionApi.test.ts && npx tsc --noEmit -p .`
 - [ ] **Step 5: Commit.** `git add apps/web/src/components/monitoring/conversion/ apps/web/src/lib/__tests__/no-silent-mutations.test.ts && git commit -m "feat(web): conversion client — W05c1 paths and shapes in one module"`
@@ -212,7 +299,7 @@ branch: (set by feature-lifecycle after registration)
 ### Task 2: `siblingLinks` — a tab can see the policy's other feature links (PR1)
 
 **Files:**
-- Modify: `apps/web/src/components/configurationPolicies/featureTabs/types.ts` (`FeatureTabProps`, lines 40-52)
+- Modify: `apps/web/src/components/configurationPolicies/featureTabs/types.ts` (`FeatureTabProps`, lines 38–53)
 - Modify: `apps/web/src/components/configurationPolicies/ConfigPolicyDetailPage.tsx` (`renderFeatureTab`, lines 421-428)
 - Test: `apps/web/src/components/configurationPolicies/ConfigPolicyDetailPage.test.tsx`
 
@@ -261,6 +348,7 @@ branch: (set by feature-lifecycle after registration)
 
 **Files:**
 - Modify: `apps/web/src/components/configurationPolicies/featureTabs/MonitorsTab.tsx` (props 52-58; state after 73; `handleSave` 168-183; render after the attach `<select>` block, ~line 262)
+- Modify: `apps/web/src/components/configurationPolicies/featureTabs/useFeatureLink.ts:1–85` (runAction at the shared mutation boundary); `apps/web/src/lib/__tests__/no-silent-mutations.test.ts:35–59`.
 - Modify: `apps/web/src/locales/*/policies.json` (8 files, `configurationPolicies.featureTabs.monitorsTab`)
 - Test: `apps/web/src/components/configurationPolicies/featureTabs/MonitorsTab.test.tsx`
 
@@ -347,12 +435,14 @@ branch: (set by feature-lifecycle after registration)
   const savedCheckInterval = readCheckInterval(monitoringLink);
   const [checkInterval, setCheckInterval] = useState<string>(String(savedCheckInterval));
   const [checkIntervalError, setCheckIntervalError] = useState<string>();
+  const [inheritance, setInheritance] = useState<"cumulative" | "replace">(
+    (existingLink?.inlineSettings as { inheritance?: string })?.inheritance === "replace" ? "replace" : "cumulative");
   useEffect(() => { setCheckInterval(String(savedCheckInterval)); }, [savedCheckInterval]);
   ```
   save (replace `handleSave`):
   ```tsx
   const saveAttachments = async (): Promise<boolean> => {
-    if (items.length === 0) {
+    if (items.length === 0 && inheritance === "cumulative") {
       if (existingLink) {
         const ok = await remove(existingLink.id);
         if (!ok) return false;
@@ -363,7 +453,7 @@ branch: (set by feature-lifecycle after registration)
     const result = await save(existingLink?.id ?? null, {
       featureType: "monitors",
       featurePolicyId: null, // inline settings — never stamp the parent CONFIG policy's own id
-      inlineSettings: { items: buildPayloadItems() },
+      inlineSettings: { items: buildPayloadItems(), inheritance },
     });
     if (result) onLinkChanged(result, "monitors");
     return !!result;
@@ -422,6 +512,39 @@ branch: (set by feature-lifecycle after registration)
   </fieldset>
   ```
   Also pass `error={error ?? catalogError ?? checkIntervalError}` is **not** needed — the field shows its own error; keep the shell's `error` as is.
+  `useFeatureLink.ts` currently performs raw mutations (verified lines 25–43, 63–73). Route those same requests through `runAction` without changing its `{ save, remove, saving, error, clearError }` contract. Import:
+  ```ts
+  import { runAction, ActionError } from '@/lib/runAction';
+  import { showToast } from '../../shared/Toast';
+  import { i18n } from '@/lib/i18n';
+  ```
+  In `save`, retain the existing `url`, `method` and `body` construction (the argument is `existingLinkId`); replace only the request/response-check/parse block with:
+  ```ts
+  const data = await runAction<FeatureLink>({
+    request: () => fetchWithAuth(url, { method, body: JSON.stringify(body) }),
+    parseSuccess: (value) => (value as { data: FeatureLink }).data ?? value as FeatureLink,
+    successMessage: i18n.t('common:states.saved'), errorFallback: i18n.t('monitoring:editor.errors.save'),
+  });
+  return data;
+  ```
+  In `remove`, replace the request/response-check block (retain `return true`) with:
+  ```ts
+  await runAction({
+    request: () => fetchWithAuth(`/configuration-policies/${policyId}/features/${linkId}`, { method: 'DELETE' }),
+    successMessage: i18n.t('common:states.saved'), errorFallback: i18n.t('monitoring:editor.errors.save'),
+  });
+  ```
+  At the start of `save` catch, retain existing inline `setError` and null return, adding:
+  ```ts
+  if (err instanceof ActionError && err.status === 401) return null;
+  if (!(err instanceof ActionError)) showToast({ type: 'error', message: i18n.t('monitoring:editor.errors.save') });
+  ```
+  At the start of `remove` catch add:
+  ```ts
+  if (err instanceof ActionError && err.status === 401) return false;
+  if (!(err instanceof ActionError)) showToast({ type: 'error', message: i18n.t('monitoring:editor.errors.save') });
+  ```
+  Register `src/components/configurationPolicies/featureTabs/useFeatureLink.ts` in TARGET_GLOBS. Existing localized `states.saved` and `editor.errors.save` need no new keys. Remove the unused `extractApiError` import.
   i18n (`policies.json` → `configurationPolicies.featureTabs.monitorsTab`, all 8 locales):
 
   | key | en | de-DE | es-419 | fr-CA / fr-FR | it-IT | pt-BR | tr-TR |
@@ -432,7 +555,7 @@ branch: (set by feature-lifecycle after registration)
   | `checkIntervalInvalid` | Check interval must be between 10 and 3600 seconds. | Das Prüfintervall muss zwischen 10 und 3600 Sekunden liegen. | El intervalo de comprobación debe estar entre 10 y 3600 segundos. | L'intervalle de vérification doit être compris entre 10 et 3600 secondes. | L'intervallo di controllo deve essere compreso tra 10 e 3600 secondi. | O intervalo de verificação deve ficar entre 10 e 3600 segundos. | Kontrol aralığı 10 ile 3600 saniye arasında olmalıdır. |
 
 - [ ] **Step 4: Run, expect PASS.** `cd apps/web && npx vitest run src/components/configurationPolicies/featureTabs/MonitorsTab.test.tsx src/lib/i18n && npx tsc --noEmit -p .`
-- [ ] **Step 5: Commit.** `git add apps/web/src/components/configurationPolicies/featureTabs/MonitorsTab.tsx apps/web/src/components/configurationPolicies/featureTabs/MonitorsTab.test.tsx apps/web/src/locales/*/policies.json && git commit -m "feat(web): policy Monitors tab owns the agent check interval (writes the monitoring link until W05d)"`
+- [ ] **Step 5: Commit.** `git add apps/web/src/components/configurationPolicies/featureTabs/MonitorsTab.tsx apps/web/src/components/configurationPolicies/featureTabs/MonitorsTab.test.tsx apps/web/src/components/configurationPolicies/featureTabs/useFeatureLink.ts apps/web/src/lib/__tests__/no-silent-mutations.test.ts apps/web/src/locales/*/policies.json && git commit -m "feat(web): policy Monitors tab owns the agent check interval (writes the monitoring link until W05d)"`
 
 ---
 
@@ -465,6 +588,15 @@ branch: (set by feature-lifecycle after registration)
       });
     });
 
+    it('saves an empty replacement so inherited monitors stay suppressed', async () => {
+      render(<MonitorsTab {...baseProps} existingLink={{ ...ownMonitorsLink,
+        inlineSettings: { items: [], inheritance: 'replace' } }} parentLink={parentLink} />);
+      await screen.findByTestId('monitors-tab-inheritance-replace');
+      clickSave();
+      await waitFor(() => expect(saveMock).toHaveBeenCalled());
+      expect(inlineSettingsFromCall(saveMock.mock.calls[0])).toEqual({ items: [], inheritance: 'replace' });
+      expect(removeMock).not.toHaveBeenCalled();
+    });
     it('seeds the switch from the saved link', async () => {
       render(<MonitorsTab {...baseProps} existingLink={{ ...ownMonitorsLink, inlineSettings: { ...ownMonitorsLink.inlineSettings, inheritance: 'replace' } }} parentLink={parentLink} />);
       expect(((await screen.findByTestId('monitors-tab-inheritance-replace')) as HTMLInputElement).checked).toBe(true);
@@ -492,11 +624,11 @@ branch: (set by feature-lifecycle after registration)
     return raw === "replace" ? "replace" : "cumulative";
   }
   …
-  const [inheritance, setInheritance] = useState<InheritanceMode>(() => readInheritance(existingLink));
+  // Task 3 already declares inheritance; retain that state and add the reset below.
   useEffect(() => { setInheritance(readInheritance(existingLink)); }, [existingLink]);
   const parentItems = seedItems(parentLink);
   ```
-  Payloads — in `saveAttachments` and `handleOverride` replace `inlineSettings: { items: buildPayloadItems() }` with `inlineSettings: { items: buildPayloadItems(), inheritance }`.
+  D11: retain an empty replacement link; delete only empty cumulative links. W05d additionally preserves links owning settings/historical watches. Payloads — in `saveAttachments` and `handleOverride` replace `inlineSettings: { items: buildPayloadItems() }` with `inlineSettings: { items: buildPayloadItems(), inheritance }`.
   Render — a fieldset placed **after** the Agent collection block (Task 3) and before the attached list:
   ```tsx
   <fieldset className="rounded-md border bg-background p-4" data-testid="monitors-tab-inheritance">
@@ -563,8 +695,8 @@ branch: (set by feature-lifecycle after registration)
 - Test: `MonitorsTab.test.tsx` (mount gate)
 
 **Interfaces:**
-- Consumes: `fetchPolicyPreview`, `conversionPaths.convert/retire/revert`, `convertBody`, `retireBody`, `readConvertResult` (Task 1); `GET /configuration-policies/:id/features` → `{ data: FeatureLink[] }` (`routes/configurationPolicies/featureLinks.ts:86-101`) for the post-change refresh; `showToast({ type: 'undo', message, onUndo })` (`components/shared/Toast.tsx:9-15`) for the Undo affordance.
-- Produces: `NeedsConversionPanel({ policyId, hasLegacyRows, onChanged })`. Renders nothing when `hasLegacyRows` is false or the preview returns zero items (spec: "the tab never shows it on a fresh policy", "disappears when the policy has nothing left"). Each item: name, source-table badge, outcome, reason (unconvertible), `notes`, `openAlerts`, the proposed monitors with their roles; **Convert** per convertible item, **Retire** (with reason) per unconvertible item, **Convert all convertible**; `blockedBy` banners; equivalence deltas refuse conversion and list every delta; after a convert, an **Undo** toast reverts every `conversionId` the response returned.
+- Consumes: `fetchPolicyPreview`, `conversionPaths.convert/retire/revert`, `convertBody`, `retireBody`, `readConvertResult` (Task 1); `GET /configuration-policies/:id/features` → `{ data: FeatureLink[] }` (`routes/configurationPolicies/featureLinks.ts:86-101`) for the post-change refresh; the persistent ledger (Task 8) owns Undo.
+- Produces: `NeedsConversionPanel({ policyId, hasLegacyRows, onChanged })`. Renders nothing when `hasLegacyRows` is false or the completed, unblocked preview returns zero items (spec: "the tab never shows it on a fresh policy", "disappears when the policy has nothing left"). Each item: name, source-table badge, outcome, reason (unconvertible), `notes`, `openAlerts`, the proposed monitors with their roles; **Convert** per convertible item, **Retire** (with reason) per unconvertible item, **Convert all convertible**; `blockedBy` banners; equivalence deltas refuse conversion and list every delta; after conversion or retirement, refresh the persistent ledger (Task 8); its **Undo** control obeys `revertable`.
 
 - [ ] **Step 1: Write the failing tests** — `NeedsConversionPanel.test.tsx`:
   ```tsx
@@ -600,7 +732,7 @@ branch: (set by feature-lifecycle after registration)
 
   const item = (over: Partial<import('./conversionApi').ConversionPreviewItem> = {}) => ({
     sourceTable: 'config_policy_alert_rules' as const, sourceId: 'src-1', name: 'CPU > 80', outcome: 'convertible' as const,
-    proposed: [{ role: 'primary' as const, kind: 'cpu', name: 'CPU > 80', condition: { threshold: 80 }, severity: 'high', deliveryMode: 'inherit' as const, deliveryChannelIds: [], escalationPolicyId: null, responses: [] }],
+    proposed: [{ role: 'primary' as const, kind: 'cpu', name: 'CPU > 80', condition: { threshold: 80 }, severity: 'high', enabled: true, cooldownMinutes: 5, autoResolve: true, deliveryMode: 'inherit' as const, deliveryChannelIds: [], escalationPolicyId: null, responses: [] }],
     notes: ['Delivery: inherit (rule had no channels)'], openAlerts: 2, ...over,
   });
   const preview = (over: Record<string, unknown> = {}) => ({
@@ -611,6 +743,23 @@ branch: (set by feature-lifecycle after registration)
   beforeEach(() => { vi.clearAllMocks(); fetchPolicyPreview.mockResolvedValue(preview()); });
 
   describe('NeedsConversionPanel', () => {
+  it('shows missing prerequisites even when the blocked preview has no items', async () => {
+    fetchPolicyPreview.mockResolvedValue(preview({ items: [], blockedBy: 'prerequisite_missing' }));
+    render(<NeedsConversionPanel policyId="pol-1" hasLegacyRows onChanged={vi.fn()} />);
+    expect(await screen.findByTestId('conversion-blocked')).toHaveTextContent(/prerequisite/i);
+  });
+
+    it('cancels an in-flight preview when the policy changes or the panel unmounts', async () => {
+      fetchPolicyPreview.mockImplementation(() => new Promise(() => {}));
+      const view = render(<NeedsConversionPanel policyId="pol-1" hasLegacyRows onChanged={vi.fn()} />);
+      await waitFor(() => expect(fetchPolicyPreview).toHaveBeenCalledTimes(1));
+      const first = fetchPolicyPreview.mock.calls[0]![1].signal as AbortSignal;
+      view.rerender(<NeedsConversionPanel policyId="pol-2" hasLegacyRows onChanged={vi.fn()} />);
+      await waitFor(() => expect(fetchPolicyPreview).toHaveBeenCalledTimes(2));
+      expect(first.aborted).toBe(true);
+      const second = fetchPolicyPreview.mock.calls[1]![1].signal as AbortSignal;
+      view.unmount(); expect(second.aborted).toBe(true);
+    });
     it('renders nothing and calls no API when the policy has no legacy rows', () => {
       const { container } = render(<NeedsConversionPanel policyId="pol-1" hasLegacyRows={false} onChanged={vi.fn()} />);
       expect(container).toBeEmptyDOMElement();
@@ -635,7 +784,7 @@ branch: (set by feature-lifecycle after registration)
       expect(screen.getByText(/12 devices checked/)).toBeInTheDocument();
     });
 
-    it('converts one item with the preview hash, shows an Undo toast and reloads', async () => {
+    it('converts one item with the preview hash, shows success and reloads the ledger', async () => {
       const onChanged = vi.fn();
       fetchWithAuth.mockResolvedValue(json({ data: { conversionIds: ['conv-1'], retired: 1, monitorsCreated: 1 } }));
       render(<NeedsConversionPanel policyId="pol-1" hasLegacyRows onChanged={onChanged} />);
@@ -646,11 +795,7 @@ branch: (set by feature-lifecycle after registration)
       ));
       await waitFor(() => expect(onChanged).toHaveBeenCalled());
       expect(fetchPolicyPreview).toHaveBeenCalledTimes(2);
-      const undoToast = showToast.mock.calls.find(([t]) => (t as { type: string }).type === 'undo')?.[0] as { onUndo: () => void };
-      expect(undoToast).toBeDefined();
-      fetchWithAuth.mockResolvedValue(json({ success: true }));
-      undoToast.onUndo();
-      await waitFor(() => expect(fetchWithAuth).toHaveBeenLastCalledWith('/monitor-definitions/conversion/conv-1/revert', { method: 'POST' }));
+      expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
     });
 
     it('Convert all sends every convertible id and none of the unconvertible ones', async () => {
@@ -666,16 +811,16 @@ branch: (set by feature-lifecycle after registration)
 
     it('shows the reason and a Retire action for an unconvertible item', async () => {
       fetchPolicyPreview.mockResolvedValue(preview({ items: [item({ outcome: 'unconvertible', reason: 'unconvertible:nested_group', proposed: [] })] }));
-      fetchWithAuth.mockResolvedValue(json({ success: true }));
+      fetchWithAuth.mockResolvedValue(json({ data: { conversionId: 'retire-1' } }));
       render(<NeedsConversionPanel policyId="pol-1" hasLegacyRows onChanged={vi.fn()} />);
       const row = await screen.findByTestId('conversion-item-src-1');
       expect(row.textContent).toMatch(/nested/i);
       expect(screen.queryByTestId('conversion-convert-src-1')).toBeNull();
-      fireEvent.change(screen.getByTestId('conversion-retire-reason-src-1'), { target: { value: 'replaced by hand' } });
+      expect(screen.queryByTestId('conversion-retire-reason-src-1')).toBeNull();
       fireEvent.click(screen.getByTestId('conversion-retire-src-1'));
       await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledWith(
         '/monitor-definitions/conversion/retire',
-        { method: 'POST', body: JSON.stringify({ sourceTable: 'config_policy_alert_rules', sourceId: 'src-1', reason: 'replaced by hand' }) },
+        { method: 'POST', body: JSON.stringify({ sourceTable: 'config_policy_alert_rules', sourceId: 'src-1', reason: 'unconvertible:nested_group' }) },
       ));
     });
 
@@ -700,9 +845,14 @@ branch: (set by feature-lifecycle after registration)
     default: (p: { hasLegacyRows: boolean }) => <div data-testid="needs-conversion-panel" data-legacy={String(p.hasLegacyRows)} />,
   }));
   describe('MonitorsTab — Needs-conversion mount gate (W05c2)', () => {
-    it('passes hasLegacyRows=true when the policy carries an alert_rule, a watch-bearing monitoring or an automations link', async () => {
+    it('passes hasLegacyRows=true when the policy carries an alert_rule, a watch-bearing monitoring or an automation link', async () => {
       render(<MonitorsTab {...baseProps} siblingLinks={[{ id: 'l1', featureType: 'alert_rule', featurePolicyId: null, inlineSettings: { items: [{ name: 'x' }] } }]} />);
       expect((await screen.findByTestId('needs-conversion-panel')).getAttribute('data-legacy')).toBe('true');
+    });
+    it('includes an automation-only policy using the canonical singular feature type', async () => {
+      render(<MonitorsTab {...baseProps} siblingLinks={[{ id: 'workflow', featureType: 'automation', featurePolicyId: null,
+        inlineSettings: { items: [{ triggerType: 'event', eventType: 'alert.triggered' }] } }]} />);
+      expect(await screen.findByTestId('needs-conversion-panel')).toHaveAttribute('data-legacy', 'true');
     });
     it('passes hasLegacyRows=false for a monitoring link with no watches (the Check-interval carrier)', async () => {
       render(<MonitorsTab {...baseProps} siblingLinks={[{ id: 'l1', featureType: 'monitoring', featurePolicyId: null, inlineSettings: { checkIntervalSeconds: 60, watches: [] } }]} />);
@@ -713,14 +863,14 @@ branch: (set by feature-lifecycle after registration)
 - [ ] **Step 2: Run them, expect FAIL.** `cd apps/web && npx vitest run src/components/monitoring/conversion src/components/configurationPolicies/featureTabs/MonitorsTab.test.tsx` → `Failed to resolve import "./NeedsConversionPanel"`.
 - [ ] **Step 3: Implement.** `NeedsConversionPanel.tsx`:
   ```tsx
-  import { useCallback, useEffect, useState } from 'react';
+  import { useCallback, useEffect, useRef, useState } from 'react';
   import { useTranslation } from 'react-i18next';
   import { fetchWithAuth } from '../../../stores/auth';
   import { ActionError, runAction } from '@/lib/runAction';
   import { showToast } from '../../shared/Toast';
   import {
-    conversionPaths, convertBody, fetchPolicyPreview, readConvertResult, retireBody,
-    type ConversionPreviewItem, type ConvertResult, type PolicyConversionPreview,
+    conversionPaths, convertBody, fetchPolicyPreview, readConvertResult, readRetireResult, retireBody,
+    type ConversionPreviewItem, type ConvertResult, type PolicyConversionPreview, type PreviewProgress,
   } from './conversionApi';
 
   export interface NeedsConversionPanelProps {
@@ -738,43 +888,30 @@ branch: (set by feature-lifecycle after registration)
     const [preview, setPreview] = useState<PolicyConversionPreview | null>(null);
     const [load, setLoad] = useState<Load>({ status: 'idle' });
     const [busy, setBusy] = useState<string | null>(null);
-    const [reasons, setReasons] = useState<Record<string, string>>({});
+const activePreview = useRef<AbortController | null>(null);
+  const [progress, setProgress] = useState<PreviewProgress | null>(null);
 
-    const reload = useCallback(async () => {
-      setLoad({ status: 'loading' });
-      try {
-        setPreview(await fetchPolicyPreview(policyId));
-        setLoad({ status: 'ready' });
-      } catch (err) {
-        setLoad({ status: 'error', error: err instanceof Error ? err.message : t('monitoring:conversion.errors.preview') });
-      }
-    }, [policyId, t]);
-
-    useEffect(() => { if (hasLegacyRows) void reload(); }, [hasLegacyRows, reload]);
+  const reload = useCallback(async () => {
+    activePreview.current?.abort();
+    const controller = new AbortController(); activePreview.current = controller;
+    setPreview(null); setProgress(null); setLoad({ status: 'loading' });
+    try {
+      const next = await fetchPolicyPreview(policyId, { signal: controller.signal, onProgress: (value) => { if (!controller.signal.aborted) setProgress(value); } });
+      if (!controller.signal.aborted) { setPreview(next); setLoad({ status: 'ready' }); }
+    } catch (err) {
+      if (!controller.signal.aborted) setLoad({ status: 'error', error: err instanceof Error ? err.message : t('monitoring:conversion.errors.preview') });
+    }
+  }, [policyId, t]);
+  useEffect(() => {
+    if (hasLegacyRows) void reload();
+    return () => activePreview.current?.abort();
+  }, [hasLegacyRows, reload]);
 
     const handleActionFailure = (err: unknown, fallback: string) => {
       if (err instanceof ActionError && err.status === 401) return;
       if (!(err instanceof ActionError)) showToast({ type: 'error', message: fallback });
       // A stale previewHash (409) or any refused write means the preview moved: re-read it.
       void reload();
-    };
-
-    const undo = (conversionIds: string[]) => {
-      void (async () => {
-        try {
-          for (const id of conversionIds) {
-            await runAction({
-              request: () => fetchWithAuth(conversionPaths.revert(id), { method: 'POST' }),
-              errorFallback: t('monitoring:conversion.errors.revert'),
-            });
-          }
-          showToast({ type: 'success', message: t('monitoring:conversion.undone', { count: conversionIds.length }) });
-          onChanged();
-          await reload();
-        } catch (err) {
-          handleActionFailure(err, t('monitoring:conversion.errors.revert'));
-        }
-      })();
     };
 
     const convert = async (sourceIds: string[]) => {
@@ -790,9 +927,8 @@ branch: (set by feature-lifecycle after registration)
           errorFallback: t('monitoring:conversion.errors.convert'),
         });
         showToast({
-          type: 'undo',
+          type: 'success',
           message: t('monitoring:conversion.converted', { rows: result.retired, monitors: result.monitorsCreated }),
-          onUndo: () => undo(result.conversionIds),
         });
         onChanged();
         await reload();
@@ -806,11 +942,12 @@ branch: (set by feature-lifecycle after registration)
     const retire = async (item: ConversionPreviewItem) => {
       setBusy(item.sourceId);
       try {
-        await runAction({
+        await runAction<{ conversionId: string }>({
           request: () => fetchWithAuth(conversionPaths.retire(), {
             method: 'POST',
-            body: JSON.stringify(retireBody(item.sourceTable, item.sourceId, (reasons[item.sourceId] ?? '').trim() || 'operator')),
+            body: JSON.stringify(retireBody(item.sourceTable, item.sourceId, item.reason?.startsWith('unconvertible:') ? item.reason as `unconvertible:${string}` : 'operator')),
           }),
+          parseSuccess: readRetireResult,
           errorFallback: t('monitoring:conversion.errors.retire'),
           successMessage: t('monitoring:conversion.retired', { name: item.name }),
         });
@@ -824,11 +961,11 @@ branch: (set by feature-lifecycle after registration)
     };
 
     if (!hasLegacyRows) return null;
-    if (load.status === 'ready' && preview && preview.items.length === 0) return null;
+    if (load.status === 'ready' && preview && !preview.blockedBy && preview.items.length === 0) return null;
 
     const deltas = preview?.equivalence.deltas ?? [];
     const blocked = preview?.blockedBy;
-    const canConvert = !!preview && !blocked && deltas.length === 0 && busy === null;
+    const canConvert = load.status === 'ready' && !!preview && !blocked && deltas.length === 0 && busy === null;
     const convertible = (preview?.items ?? []).filter((it) => it.outcome === 'convertible');
     const reasonKey = (reason?: string) => `monitoring:conversion.reasons.${(reason ?? '').replace(/^unconvertible:/, '') || 'unknown'}`;
 
@@ -837,7 +974,7 @@ branch: (set by feature-lifecycle after registration)
         <h3 className="text-sm font-semibold">{t('monitoring:conversion.title')}</h3>
         <p className="mt-1 text-xs text-muted-foreground">{t('monitoring:conversion.description')}</p>
 
-        {load.status === 'loading' && <p className="mt-3 text-sm" data-testid="conversion-loading">{t('monitoring:conversion.checking')}</p>}
+        {load.status === 'loading' && <p className="mt-3 text-sm" data-testid="conversion-loading">{t('monitoring:conversion.checking')}{progress && <progress value={progress.checked} max={Math.max(1, progress.total)} aria-label={t('monitoring:conversion.checking')} data-testid="conversion-progress" />}</p>}
         {load.status === 'error' && (
           <div className="mt-3 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
             {load.error}
@@ -889,13 +1026,6 @@ branch: (set by feature-lifecycle after registration)
                       </button>
                     ) : (
                       <div className="flex items-center gap-2">
-                        <input
-                          data-testid={`conversion-retire-reason-${item.sourceId}`}
-                          value={reasons[item.sourceId] ?? ''}
-                          placeholder={t('monitoring:conversion.retireReasonPlaceholder')}
-                          onChange={(e) => setReasons((prev) => ({ ...prev, [item.sourceId]: e.target.value }))}
-                          className="h-8 w-48 rounded-md border bg-background px-2 text-xs"
-                        />
                         <button
                           type="button"
                           data-testid={`conversion-retire-${item.sourceId}`}
@@ -955,7 +1085,7 @@ branch: (set by feature-lifecycle after registration)
   // watch or alert-triggered automation. An empty-watch `monitoring` link is
   // the Check-interval carrier (Task 3), not legacy config.
   function linkHasLegacyRows(link: { featureType: string; inlineSettings: Record<string, unknown> | null }): boolean {
-    if (link.featureType === "alert_rule" || link.featureType === "automations") return true;
+    if (link.featureType === "alert_rule" || link.featureType === "automation") return true;
     if (link.featureType === "monitoring") return readWatches(link).length > 0;
     return false;
   }
@@ -967,7 +1097,7 @@ branch: (set by feature-lifecycle after registration)
     const json = await res.json();
     const links: Array<{ id: string; featureType: string; featurePolicyId: string | null; inlineSettings: Record<string, unknown> | null }> =
       Array.isArray(json?.data) ? json.data : [];
-    for (const type of ["monitors", "alert_rule", "monitoring", "automations"] as const) {
+    for (const type of ["monitors", "alert_rule", "monitoring", "automation"] as const) {
       const link = links.find((l) => l.featureType === type);
       onLinkChanged(link ? (link as FeatureLink) : null, type);
     }
@@ -995,7 +1125,6 @@ branch: (set by feature-lifecycle after registration)
     "convertAll_one": "Convert {{count}} convertible",
     "convertAll_other": "Convert all {{count}} convertible",
     "retire": "Retire",
-    "retireReasonPlaceholder": "Reason (optional)",
     "converted": "Converted {{rows}} legacy rows into {{monitors}} monitors.",
     "retired": "Retired {{name}}.",
     "undone_one": "Reverted {{count}} conversion.",
@@ -1029,12 +1158,12 @@ branch: (set by feature-lifecycle after registration)
   }
   ```
   Translations (same keys, all 7 locales — write them in full; `_one`/`_other` pairs everywhere `en` has them):
-  - **de-DE**: title "Konvertierung erforderlich"; description "Inline-Alarmregeln, Dienst-/Prozessüberwachungen und alarmausgelöste Automatisierungen dieser Richtlinie wurden noch nicht in Monitore konvertiert. Beim Konvertieren wird die Quellzeile an Ort und Stelle stillgelegt; nichts wird gelöscht."; checking "Geräte werden geprüft…"; devicesChecked "{{count}} Gerät auf identisches Verhalten geprüft." / "{{count}} Geräte auf identisches Verhalten geprüft."; blocked.parent_unconverted "Konvertieren Sie zuerst die übergeordnete Richtlinie — ihre Inline-Regeln bestimmen, was diese Richtlinie erbt."; blocked.prerequisite_missing "Eine erforderliche Korrektur ist auf diesem Server noch nicht bereitgestellt. Die Konvertierung ist bis dahin deaktiviert."; refusedTitle "Konvertierung abgelehnt: {{count}} Gerät würde sein Verhalten ändern." / "…{{count}} Geräte würden ihr Verhalten ändern."; convert "Konvertieren"; convertAll "{{count}} konvertierbare konvertieren" / "Alle {{count}} konvertierbaren konvertieren"; retire "Stilllegen"; retireReasonPlaceholder "Grund (optional)"; converted "{{rows}} Altzeilen in {{monitors}} Monitore konvertiert."; retired "{{name}} stillgelegt."; undone "{{count}} Konvertierung rückgängig gemacht." / "{{count}} Konvertierungen rückgängig gemacht."; openAlerts "{{count}} offener Alarm wechselt zum Monitor" / "{{count}} offene Alarme wechseln zum Monitor"; sourceTables: "Inline-Alarmregel", "Dienst-/Prozessüberwachung", "Alarmvorlage", "Alarmausgelöste Automatisierung", "Richtlinienautomatisierung", "Netzwerkprüfung"; outcomes "Konvertierbar" / "Nicht konvertierbar"; roles "Monitor", "CPU-Monitor", "Speicher-Monitor", "Reaktion"; reasons.unknown "Nicht konvertierbar ({{code}})."; nested_group "Die Regel verschachtelt Bedingungsgruppen; ein zusammengesetzter Monitor ist eine flache Gruppe."; no_condition "Die Vorlage hat keine auswertbare Bedingung und hat nie ausgelöst."; escalation_policy_axis "Die Eskalationsrichtlinie gehört einer Organisation, die Richtlinie ist aber partnerweit."; custom "Benutzerdefinierte Bedingungen haben keine Monitorart."; process_count "Prozessanzahl-Bedingungen haben keine Monitorart."; errors "Konvertierungsvorschau konnte nicht geladen werden", "Konvertierung fehlgeschlagen", "Stilllegen fehlgeschlagen", "Konvertierung konnte nicht rückgängig gemacht werden".
-  - **es-419**: "Requiere conversión"; "Las reglas de alerta en línea, las vigilancias de servicios/procesos y las automatizaciones activadas por alertas de esta política aún no se convirtieron en monitores. Convertir retira la fila de origen en su lugar; no se elimina nada."; "Comprobando dispositivos…"; "{{count}} dispositivo comprobado para un comportamiento idéntico." / "{{count}} dispositivos comprobados para un comportamiento idéntico."; "Convierta primero la política superior: sus reglas en línea deciden lo que hereda esta política."; "Una corrección previa aún no está implementada en este servidor. La conversión está deshabilitada hasta entonces."; "Conversión rechazada: {{count}} dispositivo cambiaría de comportamiento." / "…{{count}} dispositivos cambiarían de comportamiento."; "Convertir"; "Convertir {{count}} convertible" / "Convertir los {{count}} convertibles"; "Retirar"; "Motivo (opcional)"; "Se convirtieron {{rows}} filas heredadas en {{monitors}} monitores."; "Se retiró {{name}}."; "Se revirtió {{count}} conversión." / "Se revirtieron {{count}} conversiones."; "{{count}} alerta abierta pasa al monitor" / "{{count}} alertas abiertas pasan al monitor"; sourceTables "Regla de alerta en línea", "Vigilancia de servicio/proceso", "Plantilla de alerta", "Automatización activada por alerta", "Automatización de política", "Comprobación de red"; "Convertible" / "No se puede convertir"; roles "Monitor", "Monitor de CPU", "Monitor de memoria", "Respuesta"; reasons "No se puede convertir ({{code}}).", "La regla anida grupos de condiciones; un monitor compuesto es un solo grupo plano.", "La plantilla no tiene una condición evaluable y nunca se activó.", "La política de escalamiento pertenece a una organización, pero la política es de todo el partner.", "Las condiciones personalizadas no tienen tipo de monitor.", "Las condiciones de cantidad de procesos no tienen tipo de monitor."; errors "No se pudo cargar la vista previa de conversión", "No se pudo convertir", "No se pudo retirar", "No se pudo revertir la conversión".
-  - **fr-FR / fr-CA** (identical): "Conversion requise"; "Les règles d'alerte intégrées, les surveillances de services/processus et les automatisations déclenchées par alerte de cette politique n'ont pas encore été converties en moniteurs. La conversion retire la ligne source sur place ; rien n'est supprimé."; "Vérification des appareils…"; "{{count}} appareil vérifié pour un comportement identique." / "{{count}} appareils vérifiés pour un comportement identique."; "Convertissez d'abord la politique parente : ses règles intégrées déterminent ce que cette politique hérite."; "Un correctif prérequis n'est pas encore déployé sur ce serveur. La conversion est désactivée jusque-là."; "Conversion refusée : {{count}} appareil changerait de comportement." / "… {{count}} appareils changeraient de comportement."; "Convertir"; "Convertir {{count}} convertible" / "Convertir les {{count}} convertibles"; "Retirer"; "Motif (facultatif)"; "{{rows}} lignes héritées converties en {{monitors}} moniteurs."; "{{name}} retiré."; "{{count}} conversion annulée." / "{{count}} conversions annulées."; "{{count}} alerte ouverte passe au moniteur" / "{{count}} alertes ouvertes passent au moniteur"; sourceTables "Règle d'alerte intégrée", "Surveillance de service/processus", "Modèle d'alerte", "Automatisation déclenchée par alerte", "Automatisation de politique", "Vérification réseau"; "Convertible" / "Non convertible"; roles "Moniteur", "Moniteur CPU", "Moniteur mémoire", "Réponse"; reasons "Non convertible ({{code}}).", "La règle imbrique des groupes de conditions ; un moniteur composite est un seul groupe plat.", "Le modèle n'a aucune condition évaluable et ne s'est jamais déclenché.", "La politique d'escalade appartient à une organisation alors que la politique est à l'échelle du partenaire.", "Les conditions personnalisées n'ont pas de type de moniteur.", "Les conditions de nombre de processus n'ont pas de type de moniteur."; errors "Impossible de charger l'aperçu de conversion", "Échec de la conversion", "Échec du retrait", "Impossible d'annuler la conversion".
-  - **it-IT**: "Conversione necessaria"; "Le regole di avviso inline, i controlli di servizi/processi e le automazioni attivate da avvisi di questa policy non sono ancora stati convertiti in monitor. La conversione ritira la riga di origine sul posto; nulla viene eliminato."; "Verifica dei dispositivi…"; "{{count}} dispositivo verificato per un comportamento identico." / "{{count}} dispositivi verificati per un comportamento identico."; "Converti prima la policy superiore: le sue regole inline decidono cosa eredita questa policy."; "Una correzione prerequisita non è ancora distribuita su questo server. La conversione è disabilitata fino ad allora."; "Conversione rifiutata: {{count}} dispositivo cambierebbe comportamento." / "… {{count}} dispositivi cambierebbero comportamento."; "Converti"; "Converti {{count}} convertibile" / "Converti tutti i {{count}} convertibili"; "Ritira"; "Motivo (facoltativo)"; "Convertite {{rows}} righe legacy in {{monitors}} monitor."; "{{name}} ritirato."; "Annullata {{count}} conversione." / "Annullate {{count}} conversioni."; "{{count}} avviso aperto passa al monitor" / "{{count}} avvisi aperti passano al monitor"; sourceTables "Regola di avviso inline", "Controllo servizio/processo", "Modello di avviso", "Automazione attivata da avviso", "Automazione della policy", "Controllo di rete"; "Convertibile" / "Non convertibile"; roles "Monitor", "Monitor CPU", "Monitor memoria", "Risposta"; reasons "Non convertibile ({{code}}).", "La regola annida gruppi di condizioni; un monitor composito è un unico gruppo piatto.", "Il modello non ha una condizione valutabile e non si è mai attivato.", "La policy di escalation appartiene a un'organizzazione ma la policy è a livello di partner.", "Le condizioni personalizzate non hanno un tipo di monitor.", "Le condizioni sul numero di processi non hanno un tipo di monitor."; errors "Impossibile caricare l'anteprima della conversione", "Conversione non riuscita", "Ritiro non riuscito", "Impossibile annullare la conversione".
-  - **pt-BR**: "Precisa de conversão"; "Regras de alerta embutidas, monitoramentos de serviços/processos e automações acionadas por alerta desta política ainda não foram convertidos em monitores. A conversão aposenta a linha de origem no lugar; nada é excluído."; "Verificando dispositivos…"; "{{count}} dispositivo verificado para comportamento idêntico." / "{{count}} dispositivos verificados para comportamento idêntico."; "Converta primeiro a política superior — as regras embutidas dela decidem o que esta política herda."; "Uma correção pré-requisito ainda não foi implantada neste servidor. A conversão fica desabilitada até lá."; "Conversão recusada: {{count}} dispositivo mudaria de comportamento." / "… {{count}} dispositivos mudariam de comportamento."; "Converter"; "Converter {{count}} convertível" / "Converter todos os {{count}} convertíveis"; "Aposentar"; "Motivo (opcional)"; "{{rows}} linhas legadas convertidas em {{monitors}} monitores."; "{{name}} aposentado."; "{{count}} conversão revertida." / "{{count}} conversões revertidas."; "{{count}} alerta aberto passa para o monitor" / "{{count}} alertas abertos passam para o monitor"; sourceTables "Regra de alerta embutida", "Monitoramento de serviço/processo", "Modelo de alerta", "Automação acionada por alerta", "Automação da política", "Verificação de rede"; "Convertível" / "Não pode ser convertido"; roles "Monitor", "Monitor de CPU", "Monitor de memória", "Resposta"; reasons "Não pode ser convertido ({{code}}).", "A regra aninha grupos de condições; um monitor composto é um único grupo plano.", "O modelo não tem condição avaliável e nunca disparou.", "A política de escalonamento pertence a uma organização, mas a política é de todo o parceiro.", "Condições personalizadas não têm tipo de monitor.", "Condições de contagem de processos não têm tipo de monitor."; errors "Falha ao carregar a prévia da conversão", "Falha ao converter", "Falha ao aposentar", "Falha ao reverter a conversão".
-  - **tr-TR**: "Dönüştürme gerekiyor"; "Bu ilkedeki satır içi uyarı kuralları, hizmet/süreç izlemeleri ve uyarıyla tetiklenen otomasyonlar henüz monitöre dönüştürülmedi. Dönüştürme, kaynak satırı yerinde emekliye ayırır; hiçbir şey silinmez."; "Cihazlar kontrol ediliyor…"; "{{count}} cihaz aynı davranış için kontrol edildi." / "{{count}} cihaz aynı davranış için kontrol edildi."; "Önce üst ilkeyi dönüştürün — satır içi kuralları bu ilkenin neyi devralacağını belirler."; "Ön koşul olan bir düzeltme bu sunucuda henüz dağıtılmadı. Dönüştürme o zamana kadar devre dışı."; "Dönüştürme reddedildi: {{count}} cihazın davranışı değişirdi." / "Dönüştürme reddedildi: {{count}} cihazın davranışı değişirdi."; "Dönüştür"; "{{count}} dönüştürülebiliri dönüştür" / "{{count}} dönüştürülebilirin tümünü dönüştür"; "Emekliye ayır"; "Neden (isteğe bağlı)"; "{{rows}} eski satır {{monitors}} monitöre dönüştürüldü."; "{{name}} emekliye ayrıldı."; "{{count}} dönüştürme geri alındı." / "{{count}} dönüştürme geri alındı."; "{{count}} açık uyarı monitöre taşınıyor" / "{{count}} açık uyarı monitöre taşınıyor"; sourceTables "Satır içi uyarı kuralı", "Hizmet/süreç izleme", "Uyarı şablonu", "Uyarıyla tetiklenen otomasyon", "İlke otomasyonu", "Ağ denetimi"; "Dönüştürülebilir" / "Dönüştürülemez"; roles "Monitör", "CPU monitörü", "Bellek monitörü", "Yanıt"; reasons "Dönüştürülemez ({{code}}).", "Kural, koşul gruplarını iç içe kullanıyor; bileşik bir monitör tek bir düz gruptur.", "Şablonun değerlendirilebilir bir koşulu yok ve hiç tetiklenmedi.", "Yükseltme ilkesi bir kuruluşa ait ancak ilke iş ortağı genelinde.", "Özel koşulların monitör türü yok.", "Süreç sayısı koşullarının monitör türü yok."; errors "Dönüştürme ön izlemesi yüklenemedi", "Dönüştürme başarısız", "Emekliye ayırma başarısız", "Dönüştürme geri alınamadı".
+  - **de-DE**: title "Konvertierung erforderlich"; description "Inline-Alarmregeln, Dienst-/Prozessüberwachungen und alarmausgelöste Automatisierungen dieser Richtlinie wurden noch nicht in Monitore konvertiert. Beim Konvertieren wird die Quellzeile an Ort und Stelle stillgelegt; nichts wird gelöscht."; checking "Geräte werden geprüft…"; devicesChecked "{{count}} Gerät auf identisches Verhalten geprüft." / "{{count}} Geräte auf identisches Verhalten geprüft."; blocked.parent_unconverted "Konvertieren Sie zuerst die übergeordnete Richtlinie — ihre Inline-Regeln bestimmen, was diese Richtlinie erbt."; blocked.prerequisite_missing "Eine erforderliche Korrektur ist auf diesem Server noch nicht bereitgestellt. Die Konvertierung ist bis dahin deaktiviert."; refusedTitle "Konvertierung abgelehnt: {{count}} Gerät würde sein Verhalten ändern." / "…{{count}} Geräte würden ihr Verhalten ändern."; convert "Konvertieren"; convertAll "{{count}} konvertierbare konvertieren" / "Alle {{count}} konvertierbaren konvertieren"; retire "Stilllegen"; converted "{{rows}} Altzeilen in {{monitors}} Monitore konvertiert."; retired "{{name}} stillgelegt."; undone "{{count}} Konvertierung rückgängig gemacht." / "{{count}} Konvertierungen rückgängig gemacht."; openAlerts "{{count}} offener Alarm wechselt zum Monitor" / "{{count}} offene Alarme wechseln zum Monitor"; sourceTables: "Inline-Alarmregel", "Dienst-/Prozessüberwachung", "Alarmvorlage", "Alarmausgelöste Automatisierung", "Richtlinienautomatisierung", "Netzwerkprüfung"; outcomes "Konvertierbar" / "Nicht konvertierbar"; roles "Monitor", "CPU-Monitor", "Speicher-Monitor", "Reaktion"; reasons.unknown "Nicht konvertierbar ({{code}})."; nested_group "Die Regel verschachtelt Bedingungsgruppen; ein zusammengesetzter Monitor ist eine flache Gruppe."; no_condition "Die Vorlage hat keine auswertbare Bedingung und hat nie ausgelöst."; escalation_policy_axis "Die Eskalationsrichtlinie gehört einer Organisation, die Richtlinie ist aber partnerweit."; custom "Benutzerdefinierte Bedingungen haben keine Monitorart."; process_count "Prozessanzahl-Bedingungen haben keine Monitorart."; errors "Konvertierungsvorschau konnte nicht geladen werden", "Konvertierung fehlgeschlagen", "Stilllegen fehlgeschlagen", "Konvertierung konnte nicht rückgängig gemacht werden".
+  - **es-419**: "Requiere conversión"; "Las reglas de alerta en línea, las vigilancias de servicios/procesos y las automatizaciones activadas por alertas de esta política aún no se convirtieron en monitores. Convertir retira la fila de origen en su lugar; no se elimina nada."; "Comprobando dispositivos…"; "{{count}} dispositivo comprobado para un comportamiento idéntico." / "{{count}} dispositivos comprobados para un comportamiento idéntico."; "Convierta primero la política superior: sus reglas en línea deciden lo que hereda esta política."; "Una corrección previa aún no está implementada en este servidor. La conversión está deshabilitada hasta entonces."; "Conversión rechazada: {{count}} dispositivo cambiaría de comportamiento." / "…{{count}} dispositivos cambiarían de comportamiento."; "Convertir"; "Convertir {{count}} convertible" / "Convertir los {{count}} convertibles"; "Retirar"; "Se convirtieron {{rows}} filas heredadas en {{monitors}} monitores."; "Se retiró {{name}}."; "Se revirtió {{count}} conversión." / "Se revirtieron {{count}} conversiones."; "{{count}} alerta abierta pasa al monitor" / "{{count}} alertas abiertas pasan al monitor"; sourceTables "Regla de alerta en línea", "Vigilancia de servicio/proceso", "Plantilla de alerta", "Automatización activada por alerta", "Automatización de política", "Comprobación de red"; "Convertible" / "No se puede convertir"; roles "Monitor", "Monitor de CPU", "Monitor de memoria", "Respuesta"; reasons "No se puede convertir ({{code}}).", "La regla anida grupos de condiciones; un monitor compuesto es un solo grupo plano.", "La plantilla no tiene una condición evaluable y nunca se activó.", "La política de escalamiento pertenece a una organización, pero la política es de todo el partner.", "Las condiciones personalizadas no tienen tipo de monitor.", "Las condiciones de cantidad de procesos no tienen tipo de monitor."; errors "No se pudo cargar la vista previa de conversión", "No se pudo convertir", "No se pudo retirar", "No se pudo revertir la conversión".
+  - **fr-FR / fr-CA** (identical): "Conversion requise"; "Les règles d'alerte intégrées, les surveillances de services/processus et les automatisations déclenchées par alerte de cette politique n'ont pas encore été converties en moniteurs. La conversion retire la ligne source sur place ; rien n'est supprimé."; "Vérification des appareils…"; "{{count}} appareil vérifié pour un comportement identique." / "{{count}} appareils vérifiés pour un comportement identique."; "Convertissez d'abord la politique parente : ses règles intégrées déterminent ce que cette politique hérite."; "Un correctif prérequis n'est pas encore déployé sur ce serveur. La conversion est désactivée jusque-là."; "Conversion refusée : {{count}} appareil changerait de comportement." / "… {{count}} appareils changeraient de comportement."; "Convertir"; "Convertir {{count}} convertible" / "Convertir les {{count}} convertibles"; "Retirer"; "{{rows}} lignes héritées converties en {{monitors}} moniteurs."; "{{name}} retiré."; "{{count}} conversion annulée." / "{{count}} conversions annulées."; "{{count}} alerte ouverte passe au moniteur" / "{{count}} alertes ouvertes passent au moniteur"; sourceTables "Règle d'alerte intégrée", "Surveillance de service/processus", "Modèle d'alerte", "Automatisation déclenchée par alerte", "Automatisation de politique", "Vérification réseau"; "Convertible" / "Non convertible"; roles "Moniteur", "Moniteur CPU", "Moniteur mémoire", "Réponse"; reasons "Non convertible ({{code}}).", "La règle imbrique des groupes de conditions ; un moniteur composite est un seul groupe plat.", "Le modèle n'a aucune condition évaluable et ne s'est jamais déclenché.", "La politique d'escalade appartient à une organisation alors que la politique est à l'échelle du partenaire.", "Les conditions personnalisées n'ont pas de type de moniteur.", "Les conditions de nombre de processus n'ont pas de type de moniteur."; errors "Impossible de charger l'aperçu de conversion", "Échec de la conversion", "Échec du retrait", "Impossible d'annuler la conversion".
+  - **it-IT**: "Conversione necessaria"; "Le regole di avviso inline, i controlli di servizi/processi e le automazioni attivate da avvisi di questa policy non sono ancora stati convertiti in monitor. La conversione ritira la riga di origine sul posto; nulla viene eliminato."; "Verifica dei dispositivi…"; "{{count}} dispositivo verificato per un comportamento identico." / "{{count}} dispositivi verificati per un comportamento identico."; "Converti prima la policy superiore: le sue regole inline decidono cosa eredita questa policy."; "Una correzione prerequisita non è ancora distribuita su questo server. La conversione è disabilitata fino ad allora."; "Conversione rifiutata: {{count}} dispositivo cambierebbe comportamento." / "… {{count}} dispositivi cambierebbero comportamento."; "Converti"; "Converti {{count}} convertibile" / "Converti tutti i {{count}} convertibili"; "Ritira"; "Convertite {{rows}} righe legacy in {{monitors}} monitor."; "{{name}} ritirato."; "Annullata {{count}} conversione." / "Annullate {{count}} conversioni."; "{{count}} avviso aperto passa al monitor" / "{{count}} avvisi aperti passano al monitor"; sourceTables "Regola di avviso inline", "Controllo servizio/processo", "Modello di avviso", "Automazione attivata da avviso", "Automazione della policy", "Controllo di rete"; "Convertibile" / "Non convertibile"; roles "Monitor", "Monitor CPU", "Monitor memoria", "Risposta"; reasons "Non convertibile ({{code}}).", "La regola annida gruppi di condizioni; un monitor composito è un unico gruppo piatto.", "Il modello non ha una condizione valutabile e non si è mai attivato.", "La policy di escalation appartiene a un'organizzazione ma la policy è a livello di partner.", "Le condizioni personalizzate non hanno un tipo di monitor.", "Le condizioni sul numero di processi non hanno un tipo di monitor."; errors "Impossibile caricare l'anteprima della conversione", "Conversione non riuscita", "Ritiro non riuscito", "Impossibile annullare la conversione".
+  - **pt-BR**: "Precisa de conversão"; "Regras de alerta embutidas, monitoramentos de serviços/processos e automações acionadas por alerta desta política ainda não foram convertidos em monitores. A conversão aposenta a linha de origem no lugar; nada é excluído."; "Verificando dispositivos…"; "{{count}} dispositivo verificado para comportamento idêntico." / "{{count}} dispositivos verificados para comportamento idêntico."; "Converta primeiro a política superior — as regras embutidas dela decidem o que esta política herda."; "Uma correção pré-requisito ainda não foi implantada neste servidor. A conversão fica desabilitada até lá."; "Conversão recusada: {{count}} dispositivo mudaria de comportamento." / "… {{count}} dispositivos mudariam de comportamento."; "Converter"; "Converter {{count}} convertível" / "Converter todos os {{count}} convertíveis"; "Aposentar"; "{{rows}} linhas legadas convertidas em {{monitors}} monitores."; "{{name}} aposentado."; "{{count}} conversão revertida." / "{{count}} conversões revertidas."; "{{count}} alerta aberto passa para o monitor" / "{{count}} alertas abertos passam para o monitor"; sourceTables "Regra de alerta embutida", "Monitoramento de serviço/processo", "Modelo de alerta", "Automação acionada por alerta", "Automação da política", "Verificação de rede"; "Convertível" / "Não pode ser convertido"; roles "Monitor", "Monitor de CPU", "Monitor de memória", "Resposta"; reasons "Não pode ser convertido ({{code}}).", "A regra aninha grupos de condições; um monitor composto é um único grupo plano.", "O modelo não tem condição avaliável e nunca disparou.", "A política de escalonamento pertence a uma organização, mas a política é de todo o parceiro.", "Condições personalizadas não têm tipo de monitor.", "Condições de contagem de processos não têm tipo de monitor."; errors "Falha ao carregar a prévia da conversão", "Falha ao converter", "Falha ao aposentar", "Falha ao reverter a conversão".
+  - **tr-TR**: "Dönüştürme gerekiyor"; "Bu ilkedeki satır içi uyarı kuralları, hizmet/süreç izlemeleri ve uyarıyla tetiklenen otomasyonlar henüz monitöre dönüştürülmedi. Dönüştürme, kaynak satırı yerinde emekliye ayırır; hiçbir şey silinmez."; "Cihazlar kontrol ediliyor…"; "{{count}} cihaz aynı davranış için kontrol edildi." / "{{count}} cihaz aynı davranış için kontrol edildi."; "Önce üst ilkeyi dönüştürün — satır içi kuralları bu ilkenin neyi devralacağını belirler."; "Ön koşul olan bir düzeltme bu sunucuda henüz dağıtılmadı. Dönüştürme o zamana kadar devre dışı."; "Dönüştürme reddedildi: {{count}} cihazın davranışı değişirdi." / "Dönüştürme reddedildi: {{count}} cihazın davranışı değişirdi."; "Dönüştür"; "{{count}} dönüştürülebiliri dönüştür" / "{{count}} dönüştürülebilirin tümünü dönüştür"; "Emekliye ayır"; "{{rows}} eski satır {{monitors}} monitöre dönüştürüldü."; "{{name}} emekliye ayrıldı."; "{{count}} dönüştürme geri alındı." / "{{count}} dönüştürme geri alındı."; "{{count}} açık uyarı monitöre taşınıyor" / "{{count}} açık uyarı monitöre taşınıyor"; sourceTables "Satır içi uyarı kuralı", "Hizmet/süreç izleme", "Uyarı şablonu", "Uyarıyla tetiklenen otomasyon", "İlke otomasyonu", "Ağ denetimi"; "Dönüştürülebilir" / "Dönüştürülemez"; roles "Monitör", "CPU monitörü", "Bellek monitörü", "Yanıt"; reasons "Dönüştürülemez ({{code}}).", "Kural, koşul gruplarını iç içe kullanıyor; bileşik bir monitör tek bir düz gruptur.", "Şablonun değerlendirilebilir bir koşulu yok ve hiç tetiklenmedi.", "Yükseltme ilkesi bir kuruluşa ait ancak ilke iş ortağı genelinde.", "Özel koşulların monitör türü yok.", "Süreç sayısı koşullarının monitör türü yok."; errors "Dönüştürme ön izlemesi yüklenemedi", "Dönüştürme başarısız", "Emekliye ayırma başarısız", "Dönüştürme geri alınamadı".
 
 - [ ] **Step 4: Run, expect PASS.** `cd apps/web && npx vitest run src/components/monitoring/conversion src/components/configurationPolicies/featureTabs/MonitorsTab.test.tsx src/lib/i18n src/lib/__tests__/no-silent-mutations.test.ts && npx tsc --noEmit -p .`
 - [ ] **Step 5: Commit.** `git add apps/web/src/components/monitoring/conversion/NeedsConversionPanel.tsx apps/web/src/components/monitoring/conversion/NeedsConversionPanel.test.tsx apps/web/src/components/configurationPolicies/featureTabs/MonitorsTab.tsx apps/web/src/components/configurationPolicies/featureTabs/MonitorsTab.test.tsx apps/web/src/locales/*/monitoring.json && git commit -m "feat(web): Needs-conversion panel on the policy Monitors tab (preview, convert, retire, undo)"`
@@ -1054,7 +1183,7 @@ branch: (set by feature-lifecycle after registration)
 
 **Interfaces:**
 - Consumes: `fetchPendingCounts(orgId)` and `conversionPaths.partnerConvertAll()` + `readPartnerConvertResult` (Task 1); `GET /configuration-policies?limit=100` → `{ data: [{ id, name, orgId, partnerId, featureLinks: [{ id, featureType }] }] }` (`services/configurationPolicy.ts` `listConfigPolicies`, the `featureLinks` badge array; `orgId` is injected by `fetchWithAuth` for the `org-or-all` route class, `routeScope.ts:152`); `useOrgStore((s) => s.currentOrgId)`; `useJwtClaims()` (`@/lib/authScope`) for partner scope; `useAuthStore((s) => s.user?.canManagePartnerWide)` for the partner-wide gate (`stores/auth.ts:74`); `POST /alerts/rules`-era convert path stays exactly `POST /monitor-definitions/convert-from-rule/:ruleId` for standalone rules.
-- Produces: `ConversionPendingBanner({ orgId, onReview, onConverted? })` — hidden at zero rows; "N legacy rules across M policies have not been converted" + **Review**; for a partner-scope caller with `canManagePartnerWide`, **Convert everything…** → inline confirmation (counts restated, "unconvertible rows are retired with a reason and listed per policy") → `POST …/partner/convert-all` via `runAction` → toast with `{ policies, converted, unconvertible }`. `PendingPoliciesList()` — the org's policies whose `featureLinks` contain `alert_rule`, `monitoring` or `automations`, each linking to `/configuration-policies/<id>#monitors`. `MonitorsListPage` — `#needs-conversion` hash view (`useHashState`) showing `PendingPoliciesList` + `LegacyRulesTable` instead of the monitors table; view toggle buttons.
+- Produces: `ConversionPendingBanner({ orgId, onReview, onConverted? })` — hidden at zero rows; "N legacy rules across M policies have not been converted" + **Review**; for a partner-scope caller with `canManagePartnerWide`, **Convert everything…** → inline confirmation (counts restated, "unconvertible rows remain for review/manual retirement; W05d sweeps leftovers") → `POST …/partner/convert-all` via `runAction` → toast with `{ policies, converted, unconvertible }`. `PendingPoliciesList()` — the org's policies whose `featureLinks` contain `alert_rule`, `monitoring` or `automation`, each linking to `/configuration-policies/<id>#monitors`. `MonitorsListPage` — `#needs-conversion` hash view (`useHashState`) showing `PendingPoliciesList` + `LegacyRulesTable` instead of the monitors table; view toggle buttons.
 
 - [ ] **Step 1: Write the failing tests.**
   `ConversionPendingBanner.test.tsx`:
@@ -1102,16 +1231,18 @@ branch: (set by feature-lifecycle after registration)
       fireEvent.click(screen.getByTestId('conversion-pending-review'));
       expect(onReview).toHaveBeenCalled();
     });
-    it('offers Convert everything to a partner-wide manager, confirms, posts and reports the result', async () => {
+    it('previews all partner policies even with one org selected, confirms the hash and reports the result', async () => {
       const onConverted = vi.fn();
-      fetchWithAuth.mockResolvedValue(json({ data: { policies: 3, converted: 11, unconvertible: 1 } }));
-      render(<ConversionPendingBanner orgId={null} onReview={vi.fn()} onConverted={onConverted} />);
+      fetchWithAuth.mockResolvedValueOnce(json({ data: { partnerId: 'p-1', previewHash: 'partner-h', policies: 9, rows: 40, convertible: 39, unconvertible: [{ sourceTable: 'alert_templates', sourceId: 's1', name: 'Custom', policyId: null, policyName: null, reason: 'unconvertible:custom' }] } }))
+        .mockResolvedValueOnce(json({ data: { policies: 9, converted: 39, unconvertible: 1 } }));
+      render(<ConversionPendingBanner orgId="org-1" onReview={vi.fn()} onConverted={onConverted} />);
       fireEvent.click(await screen.findByTestId('conversion-convert-everything'));
-      expect(screen.getByTestId('conversion-convert-everything-confirm')).toHaveTextContent(/12 legacy rules/);
+      expect(await screen.findByTestId('conversion-convert-everything-confirm')).toHaveTextContent(/40 legacy rules/);
+      expect(screen.getByTestId('conversion-convert-everything-confirm')).toHaveTextContent('Custom');
       fireEvent.click(screen.getByTestId('conversion-convert-everything-run'));
-      await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledWith('/monitor-definitions/conversion/partner/convert-all', { method: 'POST' }));
+      await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledWith('/monitor-definitions/conversion/partner/convert-all', { method: 'POST', body: JSON.stringify({ previewHash: 'partner-h' }) }));
       await waitFor(() => expect(onConverted).toHaveBeenCalled());
-      expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: expect.stringMatching(/11.*3.*1/) }));
+      expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: expect.stringMatching(/39.*9.*1/) }));
       expect(fetchPendingCounts).toHaveBeenCalledTimes(2);
     });
     it('hides Convert everything for an org-scoped caller and for a partner user without partner-wide rights', async () => {
@@ -1216,7 +1347,7 @@ branch: (set by feature-lifecycle after registration)
   import { useJwtClaims } from '@/lib/authScope';
   import { ActionError, runAction } from '@/lib/runAction';
   import { showToast } from '../../shared/Toast';
-  import { conversionPaths, fetchPendingCounts, readPartnerConvertResult, type PartnerConvertResult, type PendingCounts } from './conversionApi';
+  import { conversionPaths, fetchPendingCounts, readPartnerConvertResult, readPartnerPreview, type PartnerConversionPreview, type PartnerConvertResult, type PendingCounts } from './conversionApi';
 
   export interface ConversionPendingBannerProps {
     orgId: string | null;
@@ -1231,6 +1362,7 @@ branch: (set by feature-lifecycle after registration)
     const isPartnerScope = claims.status === 'resolved' && claims.claims?.scope === 'partner';
     const [counts, setCounts] = useState<PendingCounts | null>(null);
     const [confirming, setConfirming] = useState(false);
+    const [partnerPreview, setPartnerPreview] = useState<PartnerConversionPreview | null>(null);
     const [running, setRunning] = useState(false);
 
     const load = useCallback(async () => {
@@ -1240,11 +1372,25 @@ branch: (set by feature-lifecycle after registration)
 
     if (!counts || counts.rows === 0) return null;
 
+    const previewEverything = async () => {
+      setRunning(true); setPartnerPreview(null); setConfirming(false);
+      try {
+        const result = await runAction<PartnerConversionPreview>({
+          request: () => fetchWithAuth(conversionPaths.partnerPreview(), { method: 'POST' }),
+          parseSuccess: readPartnerPreview, errorFallback: t('monitoring:conversion.errors.preview'),
+        });
+        setPartnerPreview(result); setConfirming(true);
+      } catch (err) {
+        if (err instanceof ActionError && err.status === 401) return;
+        if (!(err instanceof ActionError)) showToast({ type: 'error', message: t('monitoring:conversion.errors.preview') });
+      } finally { setRunning(false); }
+    };
     const convertEverything = async () => {
+      if (!partnerPreview) return;
       setRunning(true);
       try {
         const result = await runAction<PartnerConvertResult>({
-          request: () => fetchWithAuth(conversionPaths.partnerConvertAll(), { method: 'POST' }),
+          request: () => fetchWithAuth(conversionPaths.partnerConvertAll(), { method: 'POST', body: JSON.stringify({ previewHash: partnerPreview.previewHash }) }),
           parseSuccess: readPartnerConvertResult,
           errorFallback: t('monitoring:conversion.banner.errors.convertAll'),
         });
@@ -1253,6 +1399,7 @@ branch: (set by feature-lifecycle after registration)
         onConverted?.();
         await load();
       } catch (err) {
+        setPartnerPreview(null); setConfirming(false); // 409 requires a new preview and confirmation.
         if (err instanceof ActionError && err.status === 401) return;
         if (!(err instanceof ActionError)) showToast({ type: 'error', message: t('monitoring:conversion.banner.errors.convertAll') });
       } finally {
@@ -1269,16 +1416,19 @@ branch: (set by feature-lifecycle after registration)
               {t('monitoring:conversion.banner.review')}
             </button>
             {isPartnerScope && canManagePartnerWide && !confirming && (
-              <button type="button" data-testid="conversion-convert-everything" onClick={() => setConfirming(true)} className="rounded-md bg-primary px-3 py-1.5 font-medium text-primary-foreground hover:opacity-90">
+              <button type="button" data-testid="conversion-convert-everything" disabled={running} onClick={() => void previewEverything()} className="rounded-md bg-primary px-3 py-1.5 font-medium text-primary-foreground hover:opacity-90">
                 {t('monitoring:conversion.banner.convertEverything')}
               </button>
             )}
           </div>
         </div>
-        {confirming && (
+        {confirming && partnerPreview && (
           <div className="mt-3 rounded-md border bg-background p-3" data-testid="conversion-convert-everything-confirm">
             <p className="font-medium">{t('monitoring:conversion.banner.confirmTitle')}</p>
-            <p className="mt-1 text-xs text-muted-foreground">{t('monitoring:conversion.banner.confirmBody', { rows: counts.rows, policies: counts.policies })}</p>
+            <p className="mt-1 text-xs text-muted-foreground">{t('monitoring:conversion.banner.confirmBody', partnerPreview)}</p>
+            <ul>{partnerPreview.unconvertible.map((item) => <li key={`${item.sourceTable}:${item.sourceId}`}>
+              {item.policyName ?? item.policyId ?? '—'} · {item.name} · {item.reason}
+            </li>)}</ul>
             <div className="mt-2 flex justify-end gap-2">
               <button type="button" onClick={() => setConfirming(false)} className="rounded-md border px-3 py-1.5">{t('common:actions.cancel')}</button>
               <button type="button" data-testid="conversion-convert-everything-run" disabled={running} onClick={() => void convertEverything()} className="rounded-md bg-primary px-3 py-1.5 font-medium text-primary-foreground disabled:opacity-60">
@@ -1298,11 +1448,11 @@ branch: (set by feature-lifecycle after registration)
   import { fetchWithAuth } from '../../../stores/auth';
   import { ScopeBadge } from '../../shared/ScopeBadge';
 
-  const LEGACY_LINK_TYPES = ['alert_rule', 'monitoring', 'automations'] as const;
+  const LEGACY_LINK_TYPES = ['alert_rule', 'monitoring', 'automation'] as const;
   const SOURCE_LABEL_KEY: Record<(typeof LEGACY_LINK_TYPES)[number], string> = {
     alert_rule: 'monitoring:conversion.sourceTables.config_policy_alert_rules',
     monitoring: 'monitoring:conversion.sourceTables.config_policy_monitoring_watches',
-    automations: 'monitoring:conversion.sourceTables.config_policy_automations',
+    automation: 'monitoring:conversion.sourceTables.config_policy_automations',
   };
   type PolicyRow = { id: string; name: string; orgId: string | null; partnerId: string | null; featureLinks: Array<{ id: string; featureType: string }> };
 
@@ -1401,7 +1551,7 @@ branch: (set by feature-lifecycle after registration)
   | `conversion.banner.review` | Review | Prüfen | Revisar | Examiner | Esamina | Revisar | İncele |
   | `conversion.banner.convertEverything` | Convert everything… | Alles konvertieren… | Convertir todo… | Tout convertir… | Converti tutto… | Converter tudo… | Tümünü dönüştür… |
   | `conversion.banner.confirmTitle` | Convert every legacy rule, watch and alert-triggered automation across all your policies? | Alle Altregeln, Überwachungen und alarmausgelösten Automatisierungen in allen Ihren Richtlinien konvertieren? | ¿Convertir todas las reglas heredadas, vigilancias y automatizaciones activadas por alertas de todas sus políticas? | Convertir toutes les règles héritées, surveillances et automatisations déclenchées par alerte de toutes vos politiques ? | Convertire tutte le regole legacy, i controlli e le automazioni attivate da avvisi in tutte le policy? | Converter todas as regras legadas, monitoramentos e automações acionadas por alerta em todas as suas políticas? | Tüm ilkelerinizdeki her eski kural, izleme ve uyarıyla tetiklenen otomasyon dönüştürülsün mü? |
-  | `conversion.banner.confirmBody` | {{rows}} legacy rules in {{policies}} policies. Each converted row is retired in place — nothing is deleted. Rows that cannot be converted are retired with a reason and listed on their policy's Monitors tab. | {{rows}} Altregeln in {{policies}} Richtlinien. Jede konvertierte Zeile wird an Ort und Stelle stillgelegt — nichts wird gelöscht. Nicht konvertierbare Zeilen werden mit Begründung stillgelegt und auf dem Monitore-Tab ihrer Richtlinie aufgeführt. | {{rows}} reglas heredadas en {{policies}} políticas. Cada fila convertida se retira en su lugar; no se elimina nada. Las filas que no se pueden convertir se retiran con un motivo y se listan en la pestaña Monitores de su política. | {{rows}} règles héritées dans {{policies}} politiques. Chaque ligne convertie est retirée sur place — rien n'est supprimé. Les lignes non convertibles sont retirées avec un motif et listées dans l'onglet Moniteurs de leur politique. | {{rows}} regole legacy in {{policies}} policy. Ogni riga convertita viene ritirata sul posto: nulla viene eliminato. Le righe non convertibili vengono ritirate con un motivo ed elencate nella scheda Monitor della loro policy. | {{rows}} regras legadas em {{policies}} políticas. Cada linha convertida é aposentada no lugar — nada é excluído. Linhas que não podem ser convertidas são aposentadas com um motivo e listadas na aba Monitores da política. | {{policies}} ilkede {{rows}} eski kural. Dönüştürülen her satır yerinde emekliye ayrılır; hiçbir şey silinmez. Dönüştürülemeyen satırlar bir nedenle emekliye ayrılır ve ilkenin Monitörler sekmesinde listelenir. |
+  | `conversion.banner.confirmBody` | {{rows}} legacy rules in {{policies}} policies across the whole partner. Converted rows retire in place. Unconvertible rows remain for review or manual retirement in W05c; W05d converts leftovers and retires those it cannot convert. | {{rows}} Altregeln in {{policies}} Richtlinien des gesamten Partners. Konvertierte Zeilen werden stillgelegt. Nicht konvertierbare Zeilen bleiben in W05c zur Prüfung oder manuellen Stilllegung; W05d konvertiert Reste und legt nicht konvertierbare still. | {{rows}} reglas heredadas en {{policies}} políticas de todo el partner. Las filas convertidas se retiran en su lugar. Las demás quedan para revisión o retiro manual en W05c; W05d convierte las restantes y retira las que no puede convertir. | {{rows}} règles héritées dans {{policies}} politiques de tout le partenaire. Les lignes converties sont retirées sur place. Les autres restent à examiner ou retirer manuellement en W05c ; W05d convertit les restantes et retire celles non convertibles. | {{rows}} regole legacy in {{policies}} policy dell’intero partner. Le righe convertite vengono ritirate sul posto. Le altre restano da esaminare o ritirare manualmente in W05c; W05d converte le rimanenti e ritira quelle non convertibili. | {{rows}} regras legadas em {{policies}} políticas de todo o parceiro. Linhas convertidas são aposentadas no lugar. As demais ficam para revisão ou aposentadoria manual em W05c; W05d converte as restantes e aposenta as não convertíveis. | İş ortağının tümünde {{policies}} ilkede {{rows}} eski kural. Dönüştürülen satırlar yerinde emekliye ayrılır. Diğerleri W05c’de inceleme veya elle emekliye ayırma için kalır; W05d kalanları dönüştürür ve dönüştürülemeyenleri emekliye ayırır. |
   | `conversion.banner.confirmRun` | Convert everything | Alles konvertieren | Convertir todo | Tout convertir | Converti tutto | Converter tudo | Tümünü dönüştür |
   | `conversion.banner.convertedAll` | Converted {{converted}} rows across {{policies}} policies; {{unconvertible}} could not be converted. | {{converted}} Zeilen in {{policies}} Richtlinien konvertiert; {{unconvertible}} nicht konvertierbar. | Se convirtieron {{converted}} filas en {{policies}} políticas; {{unconvertible}} no se pudieron convertir. | {{converted}} lignes converties dans {{policies}} politiques ; {{unconvertible}} n'ont pas pu l'être. | Convertite {{converted}} righe in {{policies}} policy; {{unconvertible}} non convertibili. | {{converted}} linhas convertidas em {{policies}} políticas; {{unconvertible}} não puderam ser convertidas. | {{policies}} ilkede {{converted}} satır dönüştürüldü; {{unconvertible}} dönüştürülemedi. |
   | `conversion.banner.errors.convertAll` | Failed to convert everything | Konvertierung aller Einträge fehlgeschlagen | No se pudo convertir todo | Échec de la conversion globale | Conversione completa non riuscita | Falha ao converter tudo | Tümü dönüştürülemedi |
@@ -1424,8 +1574,8 @@ branch: (set by feature-lifecycle after registration)
 - Modify: `apps/web/src/locales/*/pages.json` (`titles.adminMonitorConversion`, 8 locales)
 
 **Interfaces:**
-- Consumes (W05c1): `convertPartnerLegacy(partnerId, auth): Promise<{ policies; converted; unconvertible }>` from `apps/api/src/services/monitors/conversion/`; the `retired_at` columns on the six source tables. Also `platformAdminMiddleware` (applied once by `routes/admin/index.ts:17` — never re-applied in the sub-router, `sendingDomains.ts:12-19`), `requireMfa()` on the mutating verb, `writeRouteAudit`, `runOutsideDbContext` + `withSystemDbAccessContext` (`db/index.ts`), `createSystemAuthContext` (`services/featureConfigResolver.ts:52`).
-- Produces: `GET /api/v1/admin/monitor-conversion/partners` → `{ data: Array<{ partnerId; partnerName; pendingRows; pendingPolicies }> }` (every partner, pending-first); `POST /api/v1/admin/monitor-conversion/partners/:partnerId/convert` (MFA) → `{ data: { policies, converted, unconvertible } }`. The converter runs under a **system-scope** auth that carries the platform admin's real `user` (so `converted_by` / `created_by` reference a real `users` row — `createSystemAuthContext`'s zero UUID is not one, memory `monitors_w02_defects…`) and the target `partnerId`; `canManagePartnerWidePolicies` passes on `scope: 'system'`. Web: `/admin/monitor-conversion` — unlisted (reached by URL, the `SendingDomainsAdmin` precedent), one row per partner with the counts and a **Convert** button; results printed inline so the release checklist can record them.
+- Consumes (W05c1): `previewPartnerConversion(partnerId, auth): Promise<PartnerConversionPreview>` and `convertPartnerLegacy(partnerId, previewHash, auth): Promise<{ policies; converted; unconvertible }>` from `apps/api/src/services/monitors/conversion/`; the `retired_at` columns on the six source tables. Also `platformAdminMiddleware` (applied once by `routes/admin/index.ts:16` — never re-applied in the sub-router, `sendingDomains.ts:12-19`), `requireMfa()` on the mutating verb, `writeRouteAudit`, `runOutsideDbContext` + `withSystemDbAccessContext` (`db/index.ts`), `createSystemAuthContext` (`services/featureConfigResolver.ts:52`).
+- Produces: `GET /api/v1/admin/monitor-conversion/partners` → `{ data: Array<{ partnerId; partnerName; pendingRows; pendingPolicies }> }` (every partner, pending-first); `POST /api/v1/admin/monitor-conversion/partners/:partnerId/convert` (MFA) → `{ data: { policies, converted, unconvertible } }`. The admin preview POST `/partners/:partnerId/preview` returns `PartnerConversionPreview`; confirm POST `/partners/:partnerId/convert` requires `{ previewHash }`. The converter runs under a **system-scope** auth that carries the platform admin's real `user` (so `converted_by` / `created_by` reference a real `users` row — `createSystemAuthContext`'s zero UUID is not one, memory `monitors_w02_defects…`) and the target `partnerId`; `canManagePartnerWidePolicies` passes on `scope: 'system'`. Web: `/admin/monitor-conversion` — unlisted (reached by URL, the `SendingDomainsAdmin` precedent), one row per partner with the counts and a **Convert** button; results printed inline so the release checklist can record them.
 
 - [ ] **Step 0: Verify the converter's entry points.** `ls apps/api/src/services/monitors/conversion/ && grep -n "export async function convertPartnerLegacy" -A 3 apps/api/src/services/monitors/conversion/*.ts`. Import `convertPartnerLegacy` from the file that exports it (the plan assumes an `index.ts` barrel; use the real path).
 - [ ] **Step 1: Write the failing tests.**
@@ -1471,12 +1621,12 @@ branch: (set by feature-lifecycle after registration)
     requireMfa: vi.fn(() => async (c: any, next: any) => (mocks.mfaAllowed.value ? next() : c.json({ error: 'MFA required', code: 'MFA_REQUIRED' }, 403))),
     audit: vi.fn(),
     backlog: vi.fn(),
-    convertPartnerLegacy: vi.fn(),
+    convertPartnerLegacy: vi.fn(), previewPartnerConversion: vi.fn(),
   }));
   vi.mock('../../middleware/auth', () => ({ requireMfa: mocks.requireMfa }));
   vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: mocks.audit }));
   vi.mock('../../services/monitors/conversion/partnerBacklog', () => ({ listPartnerConversionBacklog: mocks.backlog }));
-  vi.mock('../../services/monitors/conversion', () => ({ convertPartnerLegacy: mocks.convertPartnerLegacy }));
+  vi.mock('../../services/monitors/conversion', () => ({ convertPartnerLegacy: mocks.convertPartnerLegacy, previewPartnerConversion: mocks.previewPartnerConversion }));
   vi.mock('../../db', () => ({
     runOutsideDbContext: (fn: () => unknown) => fn(),
     withSystemDbAccessContext: (fn: () => unknown) => fn(),
@@ -1508,17 +1658,28 @@ branch: (set by feature-lifecycle after registration)
     });
     it('POST /partners/:id/convert runs the converter as system scope carrying the admin user and the partner, then audits', async () => {
       mocks.convertPartnerLegacy.mockResolvedValue({ policies: 1, converted: 3, unconvertible: 0 });
-      const res = await buildApp().request(`/admin/monitor-conversion/partners/${PARTNER}/convert`, { method: 'POST' });
+      const res = await buildApp().request(`/admin/monitor-conversion/partners/${PARTNER}/convert`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ previewHash: 'partner-h' }) });
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual({ data: { policies: 1, converted: 3, unconvertible: 0 } });
-      const [partnerId, auth] = mocks.convertPartnerLegacy.mock.calls[0]!;
+      const [partnerId, previewHash, auth] = mocks.convertPartnerLegacy.mock.calls[0]!;
+      expect(previewHash).toBe('partner-h');
       expect(partnerId).toBe(PARTNER);
       expect(auth).toEqual(expect.objectContaining({ scope: 'system', partnerId: PARTNER, partnerOrgAccess: 'all', user: expect.objectContaining({ id: ADMIN }) }));
       expect(mocks.audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: 'monitor_conversion.admin_partner_convert', resourceId: PARTNER }));
     });
+    it('previews the whole partner and rejects conversion without its hash', async () => {
+      mocks.previewPartnerConversion.mockResolvedValue({ partnerId: PARTNER, previewHash: 'h1', policies: 2, rows: 4, convertible: 4, unconvertible: [] });
+      const app = buildApp();
+      const preview = await app.request(`/admin/monitor-conversion/partners/${PARTNER}/preview`, { method: 'POST' });
+      expect(preview.status).toBe(200);
+      expect((await preview.json()).data.previewHash).toBe('h1');
+      const missing = await app.request(`/admin/monitor-conversion/partners/${PARTNER}/convert`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      expect(missing.status).toBe(400);
+      expect(mocks.convertPartnerLegacy).not.toHaveBeenCalled();
+    });
     it('POST is MFA-gated', async () => {
       mocks.mfaAllowed.value = false;
-      const res = await buildApp().request(`/admin/monitor-conversion/partners/${PARTNER}/convert`, { method: 'POST' });
+      const res = await buildApp().request(`/admin/monitor-conversion/partners/${PARTNER}/convert`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ previewHash: 'partner-h' }) });
       expect(res.status).toBe(403);
       expect(mocks.convertPartnerLegacy).not.toHaveBeenCalled();
     });
@@ -1528,7 +1689,35 @@ branch: (set by feature-lifecycle after registration)
     });
   });
   ```
-  `MonitorConversionAdmin.test.tsx` (mirror `SendingDomainsAdmin.test.tsx`): renders one row per partner with counts; clicking Convert posts to `/admin/monitor-conversion/partners/<id>/convert` through `runAction` and prints `converted/unconvertible` in the row; a 403 on load shows the unauthorized state.
+  `MonitorConversionAdmin.test.tsx`:
+  ```tsx
+  import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+  import { expect, it, vi } from 'vitest';
+  vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+  vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
+  import { fetchWithAuth } from '../../stores/auth';
+  import MonitorConversionAdmin from './MonitorConversionAdmin';
+  it('requires a full preview before confirming and submits its hash', async () => {
+    const json = (data: unknown) => new Response(JSON.stringify({ data }));
+    const request = vi.mocked(fetchWithAuth);
+    request.mockReset();
+    request.mockResolvedValueOnce(json([{ partnerId: 'p1', partnerName: 'Acme', pendingRows: 3, pendingPolicies: 1 }]))
+      .mockResolvedValueOnce(json({ partnerId: 'p1', previewHash: 'h1', rows: 5, policies: 2, convertible: 4,
+        unconvertible: [{ sourceTable: 'alert_templates', sourceId: 's1', name: 'Nested rule', reason: 'unconvertible:nested_group', policyId: null, policyName: null }] }))
+      .mockResolvedValueOnce(json({ policies: 2, converted: 4, unconvertible: 1 }))
+      .mockResolvedValueOnce(json([]));
+    render(<MonitorConversionAdmin />);
+    fireEvent.click(await screen.findByTestId('admin-preview-p1'));
+    expect(await screen.findByTestId('admin-conversion-confirm')).toHaveTextContent('5 rows across 2 policies');
+    expect(screen.getByText(/Nested rule/)).toBeInTheDocument();
+    expect(request.mock.calls.some(([url]) => String(url).endsWith('/convert'))).toBe(false);
+    fireEvent.click(screen.getByTestId('admin-conversion-run'));
+    await waitFor(() => expect(request).toHaveBeenCalledWith('/admin/monitor-conversion/partners/p1/convert', {
+      method: 'POST', body: JSON.stringify({ previewHash: 'h1' }),
+    }));
+  });
+  ```
+
 - [ ] **Step 2: Run them, expect FAIL.** `cd apps/api && npx vitest run src/services/monitors/conversion/partnerBacklog.test.ts src/routes/admin/monitorConversion.test.ts` → `Failed to load url ./partnerBacklog` / `./monitorConversion`; `cd apps/web && npx vitest run src/components/admin/MonitorConversionAdmin.test.tsx` → resolve error.
 - [ ] **Step 3: Implement.**
   `partnerBacklog.ts`:
@@ -1591,6 +1780,7 @@ branch: (set by feature-lifecycle after registration)
          WHERE a.retired_at IS NULL AND a.managed_by_monitor_id IS NULL
            AND a.trigger->>'type' = 'event'
            AND COALESCE(a.trigger->>'event', a.trigger->>'eventType') = 'alert.triggered'
+           AND (a.trigger->'filter'->>'ruleId' IS NOT NULL OR a.trigger->'filter'->>'configPolicyAlertRuleId' IS NOT NULL)
       )
       SELECT p.id AS partner_id, p.name AS partner_name,
              count(pd.partner_id)::int AS pending_rows,
@@ -1617,7 +1807,7 @@ branch: (set by feature-lifecycle after registration)
   import { runOutsideDbContext, withSystemDbAccessContext } from '../../db';
   import { writeRouteAudit } from '../../services/auditEvents';
   import { createSystemAuthContext } from '../../services/featureConfigResolver';
-  import { convertPartnerLegacy } from '../../services/monitors/conversion';
+  import { convertPartnerLegacy, previewPartnerConversion } from '../../services/monitors/conversion';
   import { listPartnerConversionBacklog } from '../../services/monitors/conversion/partnerBacklog';
 
   /**
@@ -1625,7 +1815,7 @@ branch: (set by feature-lifecycle after registration)
    * it"): list every partner's unretired legacy rows and run the partner-level
    * converter for one partner. Mounted UNDER platformAdminMiddleware by
    * routes/admin/index.ts — the gate is deliberately not repeated here
-   * (routes/admin/index.ts:20). MFA on the mutating verb, like tenant-erasure.
+   * (routes/admin/index.ts:16). MFA on the mutating verb, like tenant-erasure.
    */
   export const adminMonitorConversionRoutes = new Hono();
 
@@ -1640,7 +1830,6 @@ branch: (set by feature-lifecycle after registration)
   export function adminAuthForPartner(auth: AuthContext, partnerId: string): AuthContext {
     return {
       ...createSystemAuthContext(),
-      principal: { kind: 'system', reason: 'admin-monitor-conversion' },
       user: auth.user,
       partnerId,
       partnerOrgAccess: 'all',
@@ -1652,11 +1841,18 @@ branch: (set by feature-lifecycle after registration)
     return c.json({ data });
   });
 
-  adminMonitorConversionRoutes.post('/partners/:partnerId/convert', requireMfa(), zValidator('param', partnerParam), async (c) => {
+  adminMonitorConversionRoutes.post('/partners/:partnerId/preview', requireMfa(), zValidator('param', partnerParam), async (c) => {
+    const { partnerId } = c.req.valid('param');
+    const data = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
+      previewPartnerConversion(partnerId, adminAuthForPartner(c.get('auth') as AuthContext, partnerId))));
+    return c.json({ data });
+  });
+
+  adminMonitorConversionRoutes.post('/partners/:partnerId/convert', requireMfa(), zValidator('param', partnerParam), zValidator('json', z.object({ previewHash: z.string().min(1) })), async (c) => {
     const auth = c.get('auth') as AuthContext;
     const { partnerId } = c.req.valid('param');
     const result = await runOutsideDbContext(() =>
-      withSystemDbAccessContext(() => convertPartnerLegacy(partnerId, adminAuthForPartner(auth, partnerId))),
+      withSystemDbAccessContext(() => convertPartnerLegacy(partnerId, c.req.valid('json').previewHash, adminAuthForPartner(auth, partnerId))),
     );
     writeRouteAudit(c as never, {
       orgId: null,
@@ -1668,7 +1864,7 @@ branch: (set by feature-lifecycle after registration)
     return c.json({ data: result });
   });
   ```
-  (If `principal.reason` is a closed union in `middleware/auth.ts`, reuse `createSystemAuthContext()`'s value instead of the new literal — check `PrincipalKind` before choosing.) `routes/admin/index.ts`, after the sending-domains mount:
+  Keep the system principal from `createSystemAuthContext`; the admin user remains the real audited actor. D7 uses null for unattended system writes, never the synthetic zero UUID. `routes/admin/index.ts`, after the sending-domains mount:
   ```ts
   import { adminMonitorConversionRoutes } from './monitorConversion';
   // Alerting consolidation W05c2: the hosted post-deploy conversion sweep.
@@ -1676,7 +1872,81 @@ branch: (set by feature-lifecycle after registration)
   // partner with the admin as the actor; MFA on the POST.
   adminRoutes.route('/monitor-conversion', adminMonitorConversionRoutes);
   ```
-  `MonitorConversionAdmin.tsx` — copy `SendingDomainsAdmin.tsx`'s skeleton (load states, unauthorized state, `runAction` per row): fetch `/admin/monitor-conversion/partners?limit=200`, table columns Partner · Pending rows · Pending policies · Last result · Action; **Convert** button per row (`data-testid="admin-convert-<partnerId>"`) runs `runAction({ request: () => fetchWithAuth(`/admin/monitor-conversion/partners/${row.partnerId}/convert`, { method: 'POST' }), errorFallback: 'Conversion failed', successMessage: (d) => … })`, stores the result in row state (`Converted 11 · 1 unconvertible`), then reloads. Header copy: "Runs W05c's partner-level conversion. Record the results in the release checklist." Astro page `admin/monitor-conversion.astro` mirrors `admin/ai-kill-switch.astro` with `titleKey="titles.adminMonitorConversion"`.
+  `MonitorConversionAdmin.tsx`:
+  ```tsx
+  import { useEffect, useState } from 'react';
+  import { fetchWithAuth } from '../../stores/auth';
+  import { ActionError, runAction } from '@/lib/runAction';
+  import { showToast } from '../shared/Toast';
+  import { readPartnerPreview, readPartnerConvertResult, type PartnerConversionPreview } from '../monitoring/conversion/conversionApi';
+  type Row = { partnerId: string; partnerName: string; pendingRows: number; pendingPolicies: number };
+  export default function MonitorConversionAdmin() {
+    const [rows, setRows] = useState<Row[]>([]);
+    const [error, setError] = useState<string>();
+    const [busy, setBusy] = useState(false);
+    const [preview, setPreview] = useState<PartnerConversionPreview | null>(null);
+    const [results, setResults] = useState<Record<string, string>>({});
+    const load = async () => {
+      try {
+        const response = await fetchWithAuth('/admin/monitor-conversion/partners');
+        if (!response.ok) throw new Error(response.status === 403 ? 'Platform administrator required' : 'Failed to load backlog');
+        setRows((await response.json()).data); setError(undefined);
+      } catch (err) { setError(err instanceof Error ? err.message : 'Failed to load backlog'); }
+    };
+    useEffect(() => { void load(); }, []);
+    const act = async (partnerId: string, confirm: boolean) => {
+      if (confirm && preview?.partnerId !== partnerId) return;
+      setBusy(true);
+      try {
+        if (!confirm) {
+          setPreview(null);
+          setPreview(await runAction({
+            request: () => fetchWithAuth(`/admin/monitor-conversion/partners/${partnerId}/preview`, { method: 'POST' }),
+            errorFallback: 'Preview failed', parseSuccess: readPartnerPreview,
+          }));
+        } else {
+          const result = await runAction({
+            request: () => fetchWithAuth(`/admin/monitor-conversion/partners/${partnerId}/convert`, {
+              method: 'POST', body: JSON.stringify({ previewHash: preview!.previewHash }),
+            }), errorFallback: 'Conversion failed', parseSuccess: readPartnerConvertResult,
+            successMessage: 'Conversion complete',
+          });
+          setResults((old) => ({ ...old, [partnerId]: `Converted ${result.converted} · ${result.unconvertible} unconvertible` }));
+          setPreview(null); await load();
+        }
+      } catch (err) {
+        setPreview(null); // stale hash requires a fresh preview and deliberate confirmation
+        if (err instanceof ActionError && err.status === 401) return;
+        if (!(err instanceof ActionError)) showToast({ type: 'error', message: 'Conversion request failed' });
+      } finally { setBusy(false); }
+    };
+    return <section><h1>Legacy alert conversion</h1>
+      <p>Preview each partner and record conversion results in the release checklist.</p>
+      {error && <p role="alert">{error}<button onClick={() => void load()}>Retry</button></p>}
+      <table><thead><tr><th>Partner</th><th>Pending rows</th><th>Pending policies</th><th>Last result</th><th>Action</th></tr></thead>
+        <tbody>{rows.map((row) => <tr key={row.partnerId}><td>{row.partnerName}</td><td>{row.pendingRows}</td><td>{row.pendingPolicies}</td>
+          <td>{results[row.partnerId]}</td><td><button data-testid={`admin-preview-${row.partnerId}`} disabled={busy}
+            onClick={() => void act(row.partnerId, false)}>Preview</button></td></tr>)}</tbody></table>
+      {preview && <div data-testid="admin-conversion-confirm">
+        <p>{preview.rows} rows across {preview.policies} policies; {preview.convertible} convertible.</p>
+        <ul>{preview.unconvertible.map((item) => <li key={`${item.sourceTable}:${item.sourceId}`}>
+          {item.policyName ?? 'Standalone'} · {item.name} · {item.reason}
+        </li>)}</ul>
+        <p>Unconvertible sources remain for review or manual retirement in W05c. W05d processes leftovers.</p>
+        <button disabled={busy} onClick={() => setPreview(null)}>Cancel</button>
+        <button data-testid="admin-conversion-run" disabled={busy} onClick={() => void act(preview.partnerId, true)}>Convert reviewed scope</button>
+      </div>}
+    </section>;
+  }
+  ```
+  Astro `admin/monitor-conversion.astro` uses the existing admin layout pattern:
+  ```astro
+  ---
+  import DashboardLayout from '../../layouts/DashboardLayout.astro';
+  import MonitorConversionAdmin from '../../components/admin/MonitorConversionAdmin';
+  ---
+  <DashboardLayout titleKey="titles.adminMonitorConversion"><MonitorConversionAdmin client:load /></DashboardLayout>
+  ```
   `pages.json` `titles.adminMonitorConversion`: en "Legacy Alert Conversion" · de-DE "Konvertierung alter Alarmregeln" · es-419 "Conversión de alertas heredadas" · fr "Conversion des alertes héritées" · it-IT "Conversione avvisi legacy" · pt-BR "Conversão de alertas legados" · tr-TR "Eski uyarı dönüştürme".
 - [ ] **Step 4: Run, expect PASS.**
   ```bash
@@ -1689,7 +1959,145 @@ branch: (set by feature-lifecycle after registration)
 
 ---
 
-### Task 8: Alert workflows — typed severity and monitor-kind filters with lossless saves (PR2)
+### Task 8: Persistent conversion history and lifecycle-aware Undo (PR1)
+
+**Files:**
+- Create: `apps/web/src/components/monitoring/conversion/ConversionLedger.tsx`, `ConversionLedger.test.tsx`.
+- Modify: Task 6 `LegacyRulesTable.tsx` (new planned file, refresh callback); Task 1 `conversionApi.ts` / `conversionApi.test.ts` (planned files); Task 5 `MonitorsTab.tsx` integration (`apps/web/src/components/configurationPolicies/featureTabs/MonitorsTab.tsx:52–58,210–214` on base); Task 6 `MonitorsListPage.tsx:32–59,136–154`.
+- Modify: `apps/web/src/locales/*/monitoring.json` (all eight locales), `apps/web/src/lib/__tests__/no-silent-mutations.test.ts:35–59`.
+
+**Interfaces:**
+- Consumes D2 `GET /monitor-definitions/conversion/ledger?orgId&policyId&cursor&limit` → `{ items: ConversionLedgerEntry[]; nextCursor: string | null }`, scoped and authorized by C1 Task 14. Uses Task 1 mirrors and `conversionPaths.ledger/revert`. API query parameters are server-side filters/pagination, not transient UI state.
+- Produces `ConversionLedger({ orgId?, policyId?, revision?, onChanged? })`, mounted independently of `hasLegacyRows` or pending counts; pagination and retry; every entry lists source, actor (null = system), date and outputs; zero-output manual retirement entries remain visible. D4 `revertable` disables Undo; HTTP 409 invalidates the stale ledger and displays the error via `runAction`.
+
+- [ ] **Step 1: Write the failing tests.** `ConversionLedger.test.tsx`:
+  ```tsx
+  import '@/lib/i18n';
+  import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+  import { beforeEach, expect, it, vi } from 'vitest';
+  vi.mock('../../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+  vi.mock('../../shared/Toast', () => ({ showToast: vi.fn() }));
+  import { fetchWithAuth } from '../../../stores/auth';
+  import ConversionLedger from './ConversionLedger';
+  const request = vi.mocked(fetchWithAuth);
+  const json = (data: unknown, status = 200) => new Response(JSON.stringify(data), { status });
+  const entry = { id: 'c1', sourceTable: 'alert_templates', sourceId: 's1', sourceName: 'Retired template',
+    policyId: null, convertedBy: null, convertedAt: '2026-09-19T00:00:00Z', revertedAt: null,
+    revertable: true, outputs: [] };
+  beforeEach(() => vi.resetAllMocks());
+  it('loads retirement history on a later visit and reverts then refreshes it', async () => {
+    request.mockResolvedValueOnce(json({ items: [entry], nextCursor: null }))
+      .mockResolvedValueOnce(json({ success: true }))
+      .mockResolvedValueOnce(json({ items: [{ ...entry, revertedAt: '2026-09-20', revertable: false }], nextCursor: null }));
+    const changed = vi.fn();
+    render(<ConversionLedger policyId="p1" onChanged={changed} />);
+    fireEvent.click(await screen.findByTestId('ledger-undo-c1'));
+    await waitFor(() => expect(request).toHaveBeenCalledWith('/monitor-definitions/conversion/c1/revert', { method: 'POST' }));
+    await waitFor(() => expect(changed).toHaveBeenCalled());
+    await waitFor(() => expect(screen.getByTestId('ledger-undo-c1')).toBeDisabled());
+  });
+  it('paginates and disables Undo when the runtime is retired', async () => {
+    request.mockResolvedValueOnce(json({ items: [{ ...entry, revertable: false }], nextCursor: 'next' }))
+      .mockResolvedValueOnce(json({ items: [{ ...entry, id: 'c2' }], nextCursor: null }));
+    render(<ConversionLedger />);
+    expect(await screen.findByTestId('ledger-undo-c1')).toBeDisabled();
+    fireEvent.click(screen.getByTestId('ledger-more'));
+    expect(await screen.findByTestId('ledger-undo-c2')).toBeEnabled();
+    expect(String(request.mock.calls[1]![0])).toContain('cursor=next');
+  });
+  it('refreshes lifecycle state after a 409 and never reports successful Undo', async () => {
+    request.mockResolvedValueOnce(json({ items: [entry], nextCursor: null }))
+      .mockResolvedValueOnce(json({ error: 'conversion_revert_unavailable' }, 409))
+      .mockResolvedValueOnce(json({ items: [{ ...entry, revertable: false }], nextCursor: null }));
+    const changed = vi.fn(); render(<ConversionLedger onChanged={changed} />);
+    fireEvent.click(await screen.findByTestId('ledger-undo-c1'));
+    await waitFor(() => expect(screen.getByTestId('ledger-undo-c1')).toBeDisabled());
+    expect(changed).not.toHaveBeenCalled();
+  });
+  ```
+- [ ] **Step 2: Run it, expect FAIL.** `cd apps/web && npx vitest run src/components/monitoring/conversion/ConversionLedger.test.tsx` → missing `./ConversionLedger`.
+- [ ] **Step 3: Implement.** `ConversionLedger.tsx`:
+  ```tsx
+  import { useCallback, useEffect, useRef, useState } from 'react';
+  import { useTranslation } from 'react-i18next';
+  import { fetchWithAuth } from '../../../stores/auth';
+  import { ActionError, runAction } from '@/lib/runAction';
+  import { showToast } from '../../shared/Toast';
+  import { conversionPaths, type ConversionLedgerEntry, type LedgerPage } from './conversionApi';
+  export default function ConversionLedger({ orgId, policyId, revision = 0, onChanged }: {
+    orgId?: string; policyId?: string; revision?: number; onChanged?: () => void;
+  }) {
+    const { t } = useTranslation(['monitoring', 'common']);
+    const [rows, setRows] = useState<ConversionLedgerEntry[]>([]);
+    const [cursor, setCursor] = useState<string | null>(null);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState(false);
+    const [busy, setBusy] = useState(false);
+    const generation = useRef(0);
+    const load = useCallback(async (next?: string) => {
+      const current = ++generation.current;
+      setLoading(true); setError(false);
+      try {
+        const response = await fetchWithAuth(conversionPaths.ledger({ orgId, policyId, cursor: next, limit: 25 }));
+        if (!response.ok) throw new Error('ledger_read_failed');
+        const page: LedgerPage = await response.json();
+        if (current !== generation.current) return;
+        setRows((old) => next ? [...old, ...page.items] : page.items); setCursor(page.nextCursor);
+      } catch { if (current === generation.current) setError(true); }
+      finally { if (current === generation.current) setLoading(false); }
+    }, [orgId, policyId]);
+    useEffect(() => { setRows([]); void load(); return () => { generation.current++; }; }, [load, revision]);
+    const undo = async (row: ConversionLedgerEntry) => {
+      if (!row.revertable || row.revertedAt || busy) return;
+      setBusy(true);
+      try {
+        await runAction({ request: () => fetchWithAuth(conversionPaths.revert(row.id), { method: 'POST' }),
+          errorFallback: t('monitoring:conversion.errors.revert'), successMessage: t('monitoring:conversion.undone', { count: 1 }) });
+        onChanged?.();
+      } catch (err) {
+        if (err instanceof ActionError && err.status === 401) return;
+        if (!(err instanceof ActionError)) showToast({ type: 'error', message: t('monitoring:conversion.errors.revert') });
+      } finally { setBusy(false); await load(); }
+    };
+    return <section data-testid="conversion-ledger" className="space-y-3 rounded border p-4">
+      <h3>{t('monitoring:conversion.ledger.title')}</h3>
+      <p>{t('monitoring:conversion.ledger.deadline')}</p>
+      {loading && <p>{t('common:states.loading')}</p>}
+      {error && <button onClick={() => void load()}>{t('common:actions.retry')}</button>}
+      {!loading && !error && rows.length === 0 && <p>{t('monitoring:conversion.ledger.empty')}</p>}
+      <ul>{rows.map((row) => <li key={row.id}>
+        <p>{row.sourceName} · {row.convertedAt} · {row.convertedBy ?? t('monitoring:conversion.ledger.system')}</p>
+        <ul>{row.outputs.map((output) => <li key={`${output.monitorId}:${output.role}`}>
+          <a href={`/alerts/monitors/${output.monitorId}`}>{output.monitorId}</a> · {output.role}
+        </li>)}</ul>
+        <button data-testid={`ledger-undo-${row.id}`} disabled={loading || error || busy || !row.revertable || !!row.revertedAt}
+          onClick={() => void undo(row)}>{t('monitoring:conversion.ledger.undo')}</button>
+      </li>)}</ul>
+      {cursor && <button data-testid="ledger-more" disabled={loading} onClick={() => void load(cursor)}>{t('monitoring:conversion.ledger.more')}</button>}
+    </section>;
+  }
+  ```
+  In `MonitorsTab`, import the ledger and add `const [ledgerRevision, setLedgerRevision] = useState(0);`. At the beginning of Task 5's `refreshLinks`, call `setLedgerRevision((n) => n + 1);`. Render independently after the panel:
+  ```tsx
+  <ConversionLedger policyId={policyId} revision={ledgerRevision} onChanged={() => void refreshLinks()} />
+  ```
+  In `MonitorsListPage`, add `const [ledgerRevision, setLedgerRevision] = useState(0);`, increment it after each successful `fetchMonitors` response, import the ledger and render `<ConversionLedger orgId={currentOrgId ?? undefined} revision={ledgerRevision} onChanged={() => void fetchMonitors()} />` outside the conditional table/filter content. In `LegacyRulesTable`, accept optional `onConverted?: () => void`, call it after a successful conversion, and mount `<LegacyRulesTable onConverted={() => void fetchMonitors()} />` so template-group conversions refresh persistent history too. Add its component path to the mutation guard. All eight `monitoring.json` files gain `conversion.ledger`:
+
+  | key | en | de-DE | es-419 | fr-CA / fr-FR | it-IT | pt-BR | tr-TR |
+  |---|---|---|---|---|---|---|---|
+  | title | Conversion history | Konvertierungsverlauf | Historial de conversión | Historique des conversions | Cronologia conversioni | Histórico de conversão | Dönüştürme geçmişi |
+  | undo | Undo | Rückgängig | Deshacer | Annuler | Annulla | Desfazer | Geri al |
+  | more | Load more | Mehr laden | Cargar más | Charger plus | Carica altro | Carregar mais | Daha fazla yükle |
+  | empty | No conversion history. | Kein Konvertierungsverlauf. | No hay historial de conversión. | Aucun historique de conversion. | Nessuna conversione precedente. | Nenhum histórico de conversão. | Dönüştürme geçmişi yok. |
+  | system | System | System | Sistema | Système | Sistema | Sistema | Sistem |
+  | deadline | Undo is unavailable after W05d removes the source runtime. | Rückgängig ist nach Entfernung der Quelllaufzeit durch W05d nicht verfügbar. | Deshacer no está disponible cuando W05d elimina el evaluador de origen. | L'annulation est indisponible après la suppression du moteur source par W05d. | Annullamento non disponibile dopo la rimozione del motore di origine in W05d. | Desfazer fica indisponível após W05d remover o avaliador de origem. | W05d kaynak değerlendiriciyi kaldırdıktan sonra geri alma kullanılamaz. |
+
+- [ ] **Step 4: Run, expect PASS.** `cd apps/web && npx vitest run src/components/monitoring/conversion src/components/configurationPolicies/featureTabs/MonitorsTab.test.tsx src/lib/i18n src/lib/__tests__/no-silent-mutations.test.ts && npx tsc --noEmit -p .`.
+- [ ] **Step 5: Commit.** `git add apps/web/src/components/monitoring/conversion apps/web/src/components/monitoring/MonitorsListPage.tsx apps/web/src/components/configurationPolicies/featureTabs/MonitorsTab.tsx apps/web/src/locales/*/monitoring.json apps/web/src/lib/__tests__/no-silent-mutations.test.ts && git commit -m "feat(alerts): persist conversion history and lifecycle-aware Undo"`
+
+---
+
+### Task 9: Alert workflows — typed severity and monitor-kind filters with lossless saves (PR2)
 
 **Files:**
 - Create: `apps/web/src/components/automations/alertWorkflowFilter.ts`, `alertWorkflowFilter.test.ts`.
@@ -1701,6 +2109,7 @@ branch: (set by feature-lifecycle after registration)
 
 **Interfaces:**
 - Consumes: W05c1 `alert.triggered` payload `{ severity, kind, monitorId }`; `MONITOR_KINDS` and existing `monitoring:kinds.*` / `monitoring:severities.*` translations; `AutomationTrigger.filter?: Record<string, unknown>` and existing `valuesEqual` array-membership behavior (`automationWorker.ts:145–150`).
+- D12: C1 rehomes broad policy workflows into standalone policy-assigned workflows; these stay visible under Jobs and are never unconvertible/retirement candidates. The UI refreshes the singular `automation` feature link after rehoming.
 - Produces: optional UI multiselects serialized as `trigger.filter.severity: string[]` and `trigger.filter.kind: MonitorKind[]`. Empty selection removes that key, meaning any value; a selected kind rejects a sourced alert with no kind. Existing `ruleId`, `configPolicyAlertRuleId`, nested filters and unknown compatibility keys round-trip unchanged. The API keeps its free-form record; do not introduce plural payload keys `severities` or `monitorKinds` that the matcher cannot read. `#event-rules` remains the URL hash; its label becomes **Alert workflows**. No new API route or trigger type.
 
 - [ ] **Step 1: Write the failing tests.** Create `alertWorkflowFilter.test.ts`:
@@ -1850,7 +2259,7 @@ branch: (set by feature-lifecycle after registration)
 
 ---
 
-### Task 9: Device Monitoring tab — effective monitors, episodes and escalation reset (PR2)
+### Task 10: Device Monitoring tab — effective monitors, episodes and escalation reset (PR2)
 
 **Files:**
 - Create: `apps/api/src/routes/devices/monitors.ts` and `apps/api/src/__tests__/integration/deviceMonitors.integration.test.ts`.
@@ -1974,7 +2383,7 @@ branch: (set by feature-lifecycle after registration)
       });
       await testDb.update(organizationUsers).set({ siteIds: [env.site.id] })
         .where(eq(organizationUsers.userId, env.user.id));
-      clearPermissionCache(env.user.id);
+      await clearPermissionCache(env.user.id);
       const app = new Hono().route('/devices', monitorsRoutes);
       const get = (id: string, token = env.token) => app.request(`/devices/${id}/monitors`, {
         headers: { Authorization: `Bearer ${token}` },
@@ -2171,7 +2580,7 @@ branch: (set by feature-lifecycle after registration)
 
 ---
 
-### Task 10: Remove Alert Templates editors and redirect both settings routes (PR2)
+### Task 11: Remove Alert Templates editors and redirect both settings routes (PR2)
 
 **Files:**
 - Replace with redirect-only pages: `apps/web/src/pages/settings/alert-templates/index.astro:1–8`, `[id].astro:1–10`.
@@ -2256,7 +2665,340 @@ branch: (set by feature-lifecycle after registration)
 
 ---
 
-### Task 11: AI tools — legacy-write warnings and resolver-backed service monitor reads (PR3)
+### Task 12: Composite children and service-restart response controls (PR2)
+
+**Files:**
+- Create: `apps/web/src/components/monitoring/MonitorAuthoringFields.tsx`, `MonitorAuthoringFields.test.tsx`.
+- Modify: `apps/web/src/components/monitoring/MonitorConditionFields.tsx:32–48,77–223` (route composite to child editor, nested input ids/errors); `monitorKindFields.ts:50–100,277–293,302–345`, `monitorKindFields.test.ts:1–87`.
+- Modify: `apps/web/src/components/monitoring/MonitorEditor.tsx:96–113,691–701,766–774`, `MonitorEditor.test.tsx` (existing submit harness); `apps/web/src/locales/*/monitoring.json` (all eight locales).
+
+**Interfaces:**
+- Consumes W05c1 shared `monitorConditionSchemas`, `monitorResponsesSchema`, `composite` `{ match: 'all' | 'any'; children: [{ kind, condition }] }`, 2–10 server-evaluated children, no nesting. Existing renderer accepts any react-hook-form path via its `name` prop.
+- Produces `CompositeConditionFields({ name })`, `RestartResponseFields()` under the monitor form provider. An execute-command response can explicitly become an agent-local restart (`kind: 'restart_service', command: ''`); maxAttempts 0–50/default 3 and cooldownSeconds 30–86400/default 300 round-trip. Service/process/network-check failure fields accept 1–100. Existing unknown condition properties (including future W05e packetSize/headers) remain in form state on unrelated edits.
+
+- [ ] **Step 1: Write the failing tests.** `MonitorAuthoringFields.test.tsx`:
+  ```tsx
+  import '@/lib/i18n';
+  import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+  import { useForm, FormProvider } from 'react-hook-form';
+  import { expect, it, vi } from 'vitest';
+  import { monitorConditionSchemas, monitorResponsesSchema } from '@breeze/shared';
+  import { CompositeConditionFields, RestartResponseFields } from './MonitorAuthoringFields';
+  const child = { kind: 'cpu', condition: { operator: 'gt', value: 80 } };
+  function Harness({ submit }: { submit: (v: unknown) => void }) {
+    const methods = useForm({ defaultValues: { condition: { match: 'all', children: [child, child] },
+      responses: [{ type: 'execute_command', kind: 'restart_service', command: '', maxAttempts: 0, cooldownSeconds: 86400 }] } });
+    return <FormProvider {...methods}><form onSubmit={methods.handleSubmit(submit)}>
+      <CompositeConditionFields name="condition" /><RestartResponseFields /><button>Save</button>
+    </form></FormProvider>;
+  }
+  it('edits child fields and restart bounds without losing zero attempts', async () => {
+    const submit = vi.fn(); render(<Harness submit={submit} />);
+    expect(screen.getByTestId('restart-0-maxAttempts')).toHaveValue(0);
+    const first = screen.getByTestId('composite-child-0');
+    fireEvent.change(within(first).getByTestId('condition-field-value'), { target: { value: '91' } });
+    fireEvent.change(screen.getByTestId('composite-match'), { target: { value: 'any' } });
+    fireEvent.click(screen.getByText('Save'));
+    await waitFor(() => expect(submit).toHaveBeenCalled());
+    const value = submit.mock.calls[0]![0];
+    expect(value.condition.children[0].condition.value).toBe(91);
+    expect(value.condition.match).toBe('any');
+    expect(monitorConditionSchemas.composite.safeParse(value.condition).success).toBe(true);
+    expect(value.responses[0]).toMatchObject({ maxAttempts: 0, cooldownSeconds: 86400 });
+    expect(monitorResponsesSchema.safeParse(value.responses).success).toBe(true);
+  });
+  it('enforces child count and excludes kinds that cannot supply child evidence', () => {
+    render(<Harness submit={vi.fn()} />);
+    expect(screen.getByTestId('composite-remove-0')).toBeDisabled();
+    for (let n = 2; n < 10; n++) fireEvent.click(screen.getByTestId('composite-add'));
+    expect(screen.getByTestId('composite-add')).toBeDisabled();
+    const options = within(screen.getByTestId('composite-kind-0')).getAllByRole('option').map((o) => o.getAttribute('value'));
+    for (const kind of ['composite', 'service', 'process', 'process_resource', 'script', 'network_check']) expect(options).not.toContain(kind);
+  });
+  ```
+  Append this real metadata regression to `monitorKindFields.test.ts` (existing imports supply the field map):
+  ```ts
+  it.each(['service', 'process', 'network_check'] as const)('%s allows 100 consecutive failures', (kind) => {
+    expect(MONITOR_KIND_FIELDS[kind].find((field) => field.key === 'consecutiveFailures')).toMatchObject({ min: 1, max: 100 });
+  });
+  ```
+- [ ] **Step 2: Run it, expect FAIL.** `cd apps/web && npx vitest run src/components/monitoring/MonitorAuthoringFields.test.tsx src/components/monitoring/monitorKindFields.test.ts` → missing module and max 20 differs from 100.
+- [ ] **Step 3: Implement.** `MonitorAuthoringFields.tsx`:
+  ```tsx
+  import { useFieldArray, useFormContext } from 'react-hook-form';
+  import { useTranslation } from 'react-i18next';
+  import type { MonitorKind } from '@breeze/shared';
+  import MonitorConditionFields from './MonitorConditionFields';
+  import { defaultConditionFor } from './monitorKindFields';
+  export const COMPOSITE_CHILD_KINDS = ['cpu', 'memory', 'disk', 'offline', 'event_log', 'patch_compliance',
+    'cert_expiry', 'bandwidth', 'disk_io', 'network_errors', 'antivirus', 'software_presence', 'backup_continuity'] as const;
+  export function CompositeConditionFields({ name }: { name: string }) {
+    const { t } = useTranslation(['monitoring', 'common']);
+    const { control, register, watch, setValue } = useFormContext();
+    const { fields, append, remove } = useFieldArray({ control, name: `${name}.children` });
+    return <fieldset className="space-y-3 rounded border p-3">
+      <legend>{t('monitoring:editor.composite.children')}</legend>
+      <select data-testid="composite-match" {...register(`${name}.match`)}>
+        <option value="all">{t('monitoring:editor.composite.all')}</option>
+        <option value="any">{t('monitoring:editor.composite.any')}</option>
+      </select>
+      {fields.map((field, index) => {
+        const prefix = `${name}.children.${index}`;
+        const kind = watch(`${prefix}.kind`) as MonitorKind;
+        return <div key={field.id} data-testid={`composite-child-${index}`} className="space-y-2 rounded border p-3">
+          <select aria-label={t('monitoring:device.kind')} data-testid={`composite-kind-${index}`} value={kind}
+            onChange={(event) => {
+              const next = event.target.value as typeof COMPOSITE_CHILD_KINDS[number];
+              setValue(`${prefix}.kind`, next, { shouldDirty: true });
+              setValue(`${prefix}.condition`, defaultConditionFor(next), { shouldDirty: true });
+            }}>
+            {COMPOSITE_CHILD_KINDS.map((value) => <option key={value} value={value}>{t(`monitoring:kinds.${value}`)}</option>)}
+          </select>
+          <MonitorConditionFields kind={kind} name={`${prefix}.condition`} />
+          <button type="button" data-testid={`composite-remove-${index}`} disabled={fields.length <= 2}
+            onClick={() => remove(index)}>{t('common:actions.remove')}</button>
+        </div>;
+      })}
+      <button type="button" data-testid="composite-add" disabled={fields.length >= 10}
+        onClick={() => append({ kind: 'cpu', condition: defaultConditionFor('cpu') })}>{t('monitoring:editor.composite.add')}</button>
+    </fieldset>;
+  }
+  export function RestartResponseFields() {
+    const { t } = useTranslation('monitoring');
+    const { watch, setValue, register } = useFormContext();
+    const responses: Array<Record<string, unknown>> = watch('responses') ?? [];
+    return <div className="space-y-3">{responses.map((response, index) => response.type !== 'execute_command' ? null : (
+      <fieldset key={index} className="rounded border p-3">
+        <label><input type="checkbox" checked={response.kind === 'restart_service'} onChange={(event) => {
+          const next = { ...response };
+          if (event.target.checked) Object.assign(next, { kind: 'restart_service', command: '', maxAttempts: 3, cooldownSeconds: 300 });
+          else { delete next.kind; delete next.maxAttempts; delete next.cooldownSeconds; }
+          setValue(`responses.${index}`, next, { shouldDirty: true });
+        }} />{t('editor.restart.label')}</label>
+        {response.kind === 'restart_service' && ([['maxAttempts', 0, 50, 3], ['cooldownSeconds', 30, 86400, 300]] as const).map(([key, min, max, fallback]) => (
+          <label key={key} className="block">{t(`editor.restart.${key}`)}
+            <input type="number" data-testid={`restart-${index}-${key}`} min={min} max={max} step={1}
+              defaultValue={Number(response[key] ?? fallback)} {...register(`responses.${index}.${key}`, { valueAsNumber: true, min, max })} />
+          </label>
+        ))}
+      </fieldset>
+    ))}</div>;
+  }
+  ```
+  Route composite before scalar hooks and retain existing scalar implementation under a private name:
+  ```tsx
+  import { CompositeConditionFields } from './MonitorAuthoringFields';
+  export default function MonitorConditionFields(props: MonitorConditionFieldsProps) {
+    return props.kind === 'composite' ? <CompositeConditionFields name={props.name} /> : <ScalarConditionFields {...props} />;
+  }
+  // Rename the existing default function to this signature; keep its existing body.
+  function ScalarConditionFields({ kind, name }: MonitorConditionFieldsProps) {
+  ```
+  In that body, obtain nested errors with `name.split('.').reduce<any>((node, part) => node?.[part], errors) ?? {}`. Set `const fieldId = (key: string) => `${name.replaceAll('.', '-')}-${key}`;` and replace each input `id`/label `htmlFor` expression with `fieldId(field.key)`; keep existing `data-testid` values, scoped by each child wrapper in tests.
+
+  In `monitorKindFields.ts`, retain C1's `composite: []` map/default, or add the exact defaults if absent:
+  ```ts
+  // MONITOR_KIND_FIELDS entry
+  composite: [],
+  // defaultConditionFor switch
+  case 'composite': return { match: 'all', children: [
+    { kind: 'cpu', condition: defaultConditionFor('cpu') },
+    { kind: 'memory', condition: defaultConditionFor('memory') },
+  ] };
+  ```
+  Replace all three `max: 20` consecutive-failure fields with `max: 100`. In `MonitorEditor`, import `RestartResponseFields`, render `<RestartResponseFields />` immediately after the responses `ActionsEditor`; remove C1's temporary composite exclusion so the picker is `MONITOR_KINDS.map(...)`. The existing form save remains through `runAction`. Add `monitorConditionSchemas` and `monitorResponsesSchema` imports, and refine the existing local form schema without changing recurrence's form-only units:
+  ```ts
+  .superRefine((value, ctx) => {
+    const condition = monitorConditionSchemas[value.kind].safeParse(value.condition);
+    if (!condition.success) ctx.addIssue({ code: 'custom', path: ['condition'], message: 'Invalid condition' });
+    const responses = monitorResponsesSchema.safeParse(value.responses);
+    if (!responses.success) ctx.addIssue({ code: 'custom', path: ['responses'], message: 'Invalid responses' });
+  })
+  ```
+  After `<MonitorConditionFields ... />` render:
+  ```tsx
+  {errors.condition && <p role="alert">{t('monitoring:editor.errors.save')}</p>}
+  ```
+  After `<RestartResponseFields />` render:
+  ```tsx
+  {errors.responses && <p role="alert">{t('monitoring:editor.errors.save')}</p>}
+  ``` Preserve the entire loaded condition and response records on unrelated changes; do not reconstruct them from the visible field map. Translations under `editor` in all eight `monitoring.json` files:
+
+  | key | en | de-DE | es-419 | fr-CA / fr-FR | it-IT | pt-BR | tr-TR |
+  |---|---|---|---|---|---|---|---|
+  | composite.children | Child conditions | Teilbedingungen | Condiciones secundarias | Conditions enfants | Condizioni figlie | Condições filhas | Alt koşullar |
+  | composite.all | All conditions | Alle Bedingungen | Todas las condiciones | Toutes les conditions | Tutte le condizioni | Todas as condições | Tüm koşullar |
+  | composite.any | Any condition | Beliebige Bedingung | Cualquier condición | Toute condition | Qualsiasi condizione | Qualquer condição | Herhangi bir koşul |
+  | composite.add | Add condition | Bedingung hinzufügen | Agregar condición | Ajouter une condition | Aggiungi condizione | Adicionar condição | Koşul ekle |
+  | restart.label | Restart service on the device | Dienst auf dem Gerät neu starten | Reiniciar servicio en el dispositivo | Redémarrer le service sur l'appareil | Riavvia servizio sul dispositivo | Reiniciar serviço no dispositivo | Cihazdaki hizmeti yeniden başlat |
+  | restart.maxAttempts | Maximum restart attempts | Maximale Neustartversuche | Máximo de intentos de reinicio | Nombre maximal de redémarrages | Tentativi massimi di riavvio | Máximo de tentativas de reinício | En fazla yeniden başlatma denemesi |
+  | restart.cooldownSeconds | Restart cooldown (seconds) | Neustartwartezeit (Sekunden) | Espera entre reinicios (segundos) | Délai entre redémarrages (secondes) | Attesa tra riavvii (secondi) | Espera entre reinícios (segundos) | Yeniden başlatma bekleme süresi (saniye) |
+
+- [ ] **Step 4: Run, expect PASS.** `cd apps/web && npx vitest run src/components/monitoring/MonitorAuthoringFields.test.tsx src/components/monitoring/MonitorEditor.test.tsx src/components/monitoring/monitorKindFields.test.ts src/lib/i18n && npx tsc --noEmit -p .`.
+- [ ] **Step 5: Commit.** `git add apps/web/src/components/monitoring/MonitorAuthoringFields* apps/web/src/components/monitoring/MonitorConditionFields.tsx apps/web/src/components/monitoring/monitorKindFields* apps/web/src/components/monitoring/MonitorEditor* apps/web/src/locales/*/monitoring.json && git commit -m "feat(monitors): edit composite conditions and service restart limits"`
+
+---
+
+### Task 13: Library Recommended strip and policy attachment picker (PR2)
+
+**Files:**
+- Create: `apps/web/src/components/monitoring/RecommendedMonitors.tsx`, `RecommendedMonitors.test.tsx`.
+- Modify: `apps/web/src/components/monitoring/MonitorsListPage.tsx:20–29,40–59,136–154`, `MonitorsListPage.test.tsx` (real list-response mapping); `apps/web/src/lib/__tests__/no-silent-mutations.test.ts:35–59`.
+- Modify: `apps/web/src/locales/*/monitoring.json` (all eight locales).
+- Read: `apps/api/src/routes/monitorDefinitions.ts:94–117` (attachment counts); `apps/web/src/components/monitoring/DeployMonitorDialog.tsx:50–58,82–117` (policy picker/attachment request); `apps/web/src/components/configurationPolicies/featureTabs/useFeatureLink.ts:39–81` (feature-link writes).
+
+**Interfaces:**
+- Consumes library rows `{ id, builtinKey?, partnerId, orgId, attachmentCount? }`. Show recommendations only after a successful catalog load, for partner-owned built-ins with a known zero attachment count; never treat absent counts as zero. Use actual shipped built-ins, not invented CPU/disk/offline identities. Attached built-ins are omitted.
+- Produces `RecommendedMonitors({ rows, onAttached })`, loading/error/Retry policy picker, one feature-link save attaching selected recommendations together while preserving existing items and `inheritance` (including empty replacement). Existing API enforces owner/site/write authorization; errors surface through `runAction`. A library strip is independent of W05a's policy-tab strip.
+
+- [ ] **Step 1: Write the failing tests.** `RecommendedMonitors.test.tsx`:
+  ```tsx
+  import '@/lib/i18n';
+  import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+  import { beforeEach, expect, it, vi } from 'vitest';
+  vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+  vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
+  import { fetchWithAuth } from '../../stores/auth';
+  import RecommendedMonitors from './RecommendedMonitors';
+  const fetchMock = vi.mocked(fetchWithAuth);
+  const json = (data: unknown, status = 200) => new Response(JSON.stringify(data), { status });
+  const monitor = { id: '33333333-3333-4333-8333-333333333333', builtinKey: 'shipped-key',
+    orgId: null, partnerId: '22222222-2222-4222-8222-222222222222', attachmentCount: 0 };
+  const policyId = '11111111-1111-4111-8111-111111111111';
+  beforeEach(() => vi.resetAllMocks());
+  it('attaches built-ins to a chosen policy without discarding replacement mode', async () => {
+    fetchMock.mockResolvedValueOnce(json({ data: [{ id: policyId, name: 'Servers' }], pagination: { total: 1 } }))
+      .mockResolvedValueOnce(json({ data: [{ id: 'link', featureType: 'monitors', inlineSettings: { items: [], inheritance: 'replace' } }] }))
+      .mockResolvedValueOnce(json({ data: { id: 'link' } }));
+    const onAttached = vi.fn(); render(<RecommendedMonitors rows={[monitor]} onAttached={onAttached} />);
+    fireEvent.click(screen.getByTestId('recommended-open'));
+    await screen.findByText('Servers');
+    fireEvent.change(screen.getByTestId('recommended-policy'), { target: { value: policyId } });
+    fireEvent.click(screen.getByTestId('recommended-attach'));
+    await waitFor(() => expect(onAttached).toHaveBeenCalled());
+    const write = fetchMock.mock.calls.find(([, init]) => init?.method === 'PATCH')!;
+    expect(JSON.parse(String(write[1]!.body)).inlineSettings).toEqual({ inheritance: 'replace',
+      items: [{ monitorId: monitor.id, enabled: true, sortOrder: 0 }] });
+  });
+  it('hides deployed or unknown-count built-ins and never uses ordinary definitions', () => {
+    const { container } = render(<RecommendedMonitors rows={[
+      { ...monitor, attachmentCount: 1 }, { ...monitor, attachmentCount: undefined },
+      { ...monitor, builtinKey: null },
+    ]} onAttached={vi.fn()} />);
+    expect(container).toBeEmptyDOMElement();
+  });
+  it('keeps attachment disabled on a failed policy read', async () => {
+    fetchMock.mockResolvedValue(json({ error: 'unavailable' }, 500));
+    render(<RecommendedMonitors rows={[monitor]} onAttached={vi.fn()} />);
+    fireEvent.click(screen.getByTestId('recommended-open'));
+    expect(await screen.findByTestId('recommended-retry')).toBeInTheDocument();
+    expect(screen.getByTestId('recommended-attach')).toBeDisabled();
+  });
+  ```
+- [ ] **Step 2: Run it, expect FAIL.** `cd apps/web && npx vitest run src/components/monitoring/RecommendedMonitors.test.tsx` → missing `./RecommendedMonitors`.
+- [ ] **Step 3: Implement.** `RecommendedMonitors.tsx`:
+  ```tsx
+  import { useState } from 'react';
+  import { useTranslation } from 'react-i18next';
+  import { fetchWithAuth } from '../../stores/auth';
+  import { ActionError, runAction } from '@/lib/runAction';
+  import { showToast } from '../shared/Toast';
+  type Recommendation = { id: string; orgId: string | null; partnerId: string | null;
+    builtinKey?: string | null; attachmentCount?: number };
+  type Policy = { id: string; name: string };
+  export default function RecommendedMonitors({ rows, onAttached }: { rows: Recommendation[]; onAttached: () => void }) {
+    const { t } = useTranslation(['monitoring', 'common']);
+    const candidates = rows.filter((row) => row.builtinKey && row.partnerId && !row.orgId && row.attachmentCount === 0);
+    const [open, setOpen] = useState(false);
+    const [policies, setPolicies] = useState<Policy[]>([]);
+    const [policyId, setPolicyId] = useState('');
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState(false);
+    const [busy, setBusy] = useState(false);
+    const loadPolicies = async () => {
+      setOpen(true); setLoading(true); setError(false); setPolicies([]); setPolicyId('');
+      try {
+        const all: Policy[] = [];
+        for (let page = 1; ; page++) {
+          const response = await fetchWithAuth(`/configuration-policies?status=active&limit=100&page=${page}`);
+          if (!response.ok) throw new Error('policy_read_failed');
+          const body = await response.json();
+          all.push(...body.data);
+          if (body.data.length < 100 || all.length >= body.pagination.total) break;
+        }
+        setPolicies(all);
+      } catch { setError(true); } finally { setLoading(false); }
+    };
+    const attach = async () => {
+      if (!policyId || busy || !candidates.length) return;
+      setBusy(true);
+      try {
+        const response = await fetchWithAuth(`/configuration-policies/${policyId}/features`);
+        if (!response.ok) throw new Error('feature_read_failed');
+        const body = await response.json();
+        const link = body.data.find((value: { featureType: string }) => value.featureType === 'monitors');
+        if (link?.featurePolicyId) throw new Error('linked_feature_not_editable');
+        const settings = link?.inlineSettings ?? { items: [], inheritance: 'cumulative' };
+        const items = [...(settings.items ?? [])];
+        for (const row of candidates) if (!items.some((item) => item.monitorId === row.id))
+          items.push({ monitorId: row.id, enabled: true, sortOrder: items.length });
+        await runAction({
+          request: () => fetchWithAuth(`/configuration-policies/${policyId}/features${link ? `/${link.id}` : ''}`, {
+            method: link ? 'PATCH' : 'POST', body: JSON.stringify({ featureType: 'monitors', featurePolicyId: null,
+              inlineSettings: { ...settings, items } }),
+          }), errorFallback: t('monitoring:deploy.errors.attach'), successMessage: t('monitoring:deploy.attached'),
+        });
+        setOpen(false); onAttached();
+      } catch (err) {
+        if (err instanceof ActionError && err.status === 401) return;
+        if (!(err instanceof ActionError)) showToast({ type: 'error', message: t('monitoring:deploy.errors.attach') });
+      } finally { setBusy(false); }
+    };
+    if (!candidates.length) return null;
+    return <section className="space-y-3 rounded border p-4" data-testid="library-recommended">
+      <h2>{t('monitoring:list.recommended.title')}</h2>
+      <p>{t('monitoring:list.recommended.description', { count: candidates.length })}</p>
+      <button data-testid="recommended-open" onClick={() => void loadPolicies()} disabled={loading || busy}>{t('monitoring:deploy.selectPolicy')}</button>
+      {open && <div>
+        {loading && <p>{t('common:states.loading')}</p>}
+        {error && <button data-testid="recommended-retry" onClick={() => void loadPolicies()}>{t('common:actions.retry')}</button>}
+        <select aria-label={t('monitoring:deploy.selectPolicy')} data-testid="recommended-policy" value={policyId} onChange={(event) => setPolicyId(event.target.value)}>
+          <option value="">{t('monitoring:deploy.selectPolicy')}</option>
+          {policies.map((policy) => <option value={policy.id} key={policy.id}>{policy.name}</option>)}
+        </select>
+        <button data-testid="recommended-attach" disabled={!policyId || loading || error || busy} onClick={() => void attach()}>{t('monitoring:deploy.attach')}</button>
+        <button disabled={busy} onClick={() => setOpen(false)}>{t('common:actions.cancel')}</button>
+      </div>}
+    </section>;
+  }
+  ```
+  Import it in `MonitorsListPage` and render immediately after the header:
+  ```tsx
+  {!loading && !error && <RecommendedMonitors rows={rows} onAttached={() => void fetchMonitors()} />}
+  ```
+  The existing `setRows(data.data)` retains `builtinKey` and `attachmentCount`; do not replace it with a lossy mapping. Append to `MonitorsListPage.test.tsx` using its actual `fetchMock`, `json`, `rows` and render imports:
+  ```tsx
+  it('retains built-in deployment status from the actual library response', async () => {
+    fetchMock.mockImplementation(async (url) => url === '/monitor-definitions'
+      ? json({ data: [{ ...rows[0], builtinKey: 'shipped-key', orgId: null, partnerId: 'p1', attachmentCount: 0 }] })
+      : json({ items: [], nextCursor: null, data: { rows: 0, policies: 0 } }));
+    render(<MonitorsListPage />);
+    expect(await screen.findByTestId('library-recommended')).toBeInTheDocument();
+  });
+  ```
+ Add the new component to the mutation guard. Translations:
+
+  | key | en | de-DE | es-419 | fr-CA / fr-FR | it-IT | pt-BR | tr-TR |
+  |---|---|---|---|---|---|---|---|
+  | list.recommended.title | Recommended | Empfohlen | Recomendados | Recommandés | Consigliati | Recomendados | Önerilenler |
+  | list.recommended.description | Attach the built-in monitors to a policy. | Integrierte Monitore einer Richtlinie zuordnen. | Adjunte los monitores integrados a una política. | Rattachez les moniteurs intégrés à une politique. | Associa i monitor integrati a una policy. | Anexe os monitores integrados a uma política. | Yerleşik monitörleri bir ilkeye ekleyin. |
+
+- [ ] **Step 4: Run, expect PASS.** `cd apps/web && npx vitest run src/components/monitoring/RecommendedMonitors.test.tsx src/components/monitoring/MonitorsListPage.test.tsx src/lib/i18n src/lib/__tests__/no-silent-mutations.test.ts && npx tsc --noEmit -p .`.
+- [ ] **Step 5: Commit.** `git add apps/web/src/components/monitoring/RecommendedMonitors* apps/web/src/components/monitoring/MonitorsListPage* apps/web/src/locales/*/monitoring.json apps/web/src/lib/__tests__/no-silent-mutations.test.ts && git commit -m "feat(monitors): recommend undeployed built-ins in the library"`
+
+---
+
+### Task 14: AI tools — legacy-write warnings and resolver-backed service monitor reads (PR3)
 
 **Files:**
 - Create: `apps/api/src/services/monitors/listServiceMonitors.ts`, `listServiceMonitors.test.ts`.
@@ -2416,14 +3158,14 @@ branch: (set by feature-lifecycle after registration)
 
 ---
 
-### Task 12: Fleet Designer proposals use the monitor-definition condition contract (PR3)
+### Task 15: Fleet Designer proposals use the monitor-definition condition contract (PR3)
 
 **Files:**
 - Modify: `packages/shared/src/validators/fleetDesign.ts:1–2,63–74`, `fleetDesign.test.ts:23–51`; `packages/shared/src/types/fleetDesign.ts:53–64`.
 - Modify: `apps/api/src/services/aiAgents/outcomeTools.ts:564–581,599` and fixtures in `outcomeTools.test.ts`, `runLoop.design.test.ts:367–370`, `fleetDesignReport.test.ts:239–242`.
 - Modify: `apps/web/src/components/fleetDesign/FleetDesignViewer.test.tsx:16–48`; read `FleetDesignViewer.tsx:156–174` (names/rationales and stable item references already render both shapes).
-- Modify: `apps/api/src/services/fleetDesign/apply.ts:323–333` (`toRuleItem` adapts to the new typed proposal; persistence switches in Task 13).
-- Create: `apps/api/src/services/fleetDesign/monitorProposalCompatibility.ts`, `monitorProposalCompatibility.test.ts`; modify `apps/api/src/services/fleetDesign/preview.ts:129–131`.
+- Modify: `apps/api/src/services/fleetDesign/apply.ts:323–333` (`toRuleItem` adapts to the new typed proposal; persistence switches in Task 16).
+- Create: `apps/api/src/services/fleetDesign/monitorProposalCompatibility.ts`, `monitorProposalCompatibility.test.ts`; modify `apps/api/src/services/fleetDesign/preview.ts:169–188`.
 
 **Interfaces:**
 - Consumes: shared `monitorKindSchema`, `monitorConditionSchemas`, `monitorResponsesSchema`, `monitorDeliveryModeSchema`; W05c1 `composite` validation and restart action parameters.
@@ -2537,7 +3279,7 @@ branch: (set by feature-lifecycle after registration)
   deliveryMode: r.deliveryMode,
   deliveryChannelIds: r.deliveryChannelIds,
   ```
-  This is the typed read adaptation only; Task 13 changes where these proposals are written before PR3 is mergeable.
+  This is the typed read adaptation only; Task 16 changes where these proposals are written before PR3 is mergeable.
 
 
   `monitorProposalCompatibility.ts`:
@@ -2571,24 +3313,24 @@ branch: (set by feature-lifecycle after registration)
   (cd apps/api && npx vitest run src/services/fleetDesign/monitorProposalCompatibility.test.ts src/services/aiAgents/outcomeTools.test.ts src/services/aiAgents/runLoop.design.test.ts src/services/aiAgents/fleetDesignReport.test.ts)
   (cd apps/web && npx vitest run src/components/fleetDesign/FleetDesignViewer.test.tsx)
   ```
-  Run `cd apps/api && npx tsc --noEmit -p .` and `cd apps/web && npx tsc --noEmit -p .` as well. Task 13 changes persistence before PR3 is mergeable; Task 12 keeps the proposal readers type-correct.
+  Run `cd apps/api && npx tsc --noEmit -p .` and `cd apps/web && npx tsc --noEmit -p .` as well. Task 16 changes persistence before PR3 is mergeable; Task 15 keeps the proposal readers type-correct.
 - [ ] **Step 5: Commit.** `git add packages/shared/src/types/fleetDesign.ts packages/shared/src/validators/fleetDesign* apps/api/src/services/aiAgents/outcomeTools.ts apps/api/src/services/aiAgents/outcomeTools.test.ts apps/api/src/services/aiAgents/runLoop.design.test.ts apps/api/src/services/aiAgents/fleetDesignReport.test.ts apps/api/src/services/fleetDesign/monitorProposalCompatibility* apps/api/src/services/fleetDesign/preview.ts apps/api/src/services/fleetDesign/apply.ts apps/web/src/components/fleetDesign/FleetDesignViewer.test.tsx && git commit -m "feat(fleet-design): validate monitor proposals and block stale legacy approvals"`
 
 ---
 
-### Task 13: Fleet Designer apply, drift and rollback follow monitor attachments atomically (PR3)
+### Task 16: Fleet Designer apply, drift and rollback follow monitor attachments atomically (PR3)
 
 **Files:**
 - Create: `apps/api/src/services/fleetDesign/monitorAttachments.ts`, `monitorAttachments.test.ts`.
 - Modify: `apps/api/src/services/fleetDesign/apply.ts:316–460,535–580`, `apply.test.ts:210–220` and monitoring cases; `drift.ts:237–269`, `drift.test.ts`; `rollback.ts:201–204`, `rollback.test.ts`.
-- Modify: `apps/api/src/services/monitors/monitorService.ts:119–153,226–378`, `monitorService.test.ts`; `packages/shared/src/types/fleetDesignApply.ts:135–150`.
+- Modify: `apps/api/src/services/monitors/monitorService.ts:119–153,226–378`, `monitorService.test.ts`; `apps/api/src/services/monitors/monitorCompiler.ts:287–341` (CompileOptions); `packages/shared/src/types/fleetDesignApply.ts:135–150`.
 - Modify: `apps/api/src/__tests__/integration/fleetDesignApply.integration.test.ts:212–245,425–478` and tests for idempotency, step rollback and script provenance.
-- Read/reuse: `configurationPolicy.ts:1655–1720,1752–1800,1946` executor arguments; `fleetDesign/preview.ts:348–358` partner-wide retirement gate; W05c1 watch mapping contract (`command: ''` denotes agent-local restart).
+- Read/reuse: `configurationPolicy.ts:1655–1720,1752–1800,1901` executor arguments; `fleetDesign/preview.ts:348–358` partner-wide retirement gate; W05c1 watch mapping contract (`command: ''` denotes agent-local restart).
 
 **Interfaces:**
-- Consumes: Task 12 monitor-shaped `FleetDesignRule`; `createMonitorDefinition`, `updateMonitorDefinition`, `addFeatureLink`, `updateFeatureLink`, `listFeatureLinks`; Fleet Design's step savepoint `ApplyTransaction`.
+- Consumes: Task 15 monitor-shaped `FleetDesignRule`; `createMonitorDefinition`, `updateMonitorDefinition`, `addFeatureLink`, `updateFeatureLink`, `listFeatureLinks`; Fleet Design's step savepoint `ApplyTransaction`.
 - Produces: `attachFleetMonitors(policyId, proposals, auth, tx): Promise<Record<itemRef, monitorId>>`, `snapshotFleetMonitors(ids, executor = db)`; same-axis monitor definitions and one cumulative `monitors` link, preserving existing attachments and inheritance. An existing `replace` setting is preserved. No new `alert_rule` or watch-bearing `monitoring` link is written.
-- Monitor service adds an optional executor: `getMonitorDefinition(id, auth, executor = db)`, `updateMonitorDefinition(id, input, auth, executor = db)`, `createMonitorDefinition(input, auth, options = {}, executor = db)`. Reserve argument 3 for W05e's `CompileOptions`; the executor is argument 4. Before W05e, `CreateMonitorDefinitionOptions = Record<string, never>` permits only `{}`; W05e replaces that type with `CompileOptions`, preserving argument 4. Do not invent a competing compiler.
+- Monitor service adds an optional executor: `getMonitorDefinition(id, auth, executor = db)`, `updateMonitorDefinition(id, input, auth, executor = db)`, `createMonitorDefinition(input, auth, options = {}, executor = db)`. Argument 3 is `options: CompileOptions = {}` and argument 4 is `executor?: DbExecutor` (default `db`). Export `CompileOptions` from `monitorCompiler.ts` now as `Record<string, never>`; W05e extends that same type with adoption options and preserves all executor-aware operations. Do not invent a competing compiler.
 - Ledger JSON `FleetDesignCreatedRefs` gains `monitorId?`, `monitorIdsByItemRef?`, `monitorSnapshots?`, `monitorLinkId?`; `linksSnapshot.monitors?`. Existing JSON column classification stays `excludedOpen`; no migration or new table. Re-applying skips existing itemRefs; failure rolls back monitor definitions, compiled children, attachments and ledger rows in that step together.
 
 - [ ] **Step 1: Write the failing tests.** New `monitorAttachments.test.ts`:
@@ -2713,7 +3455,7 @@ branch: (set by feature-lifecycle after registration)
   from pathlib import Path
   p = Path('apps/api/src/services/monitors/monitorService.ts')
   s = p.read_text()
-  alias = "type DbExecutor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];\nexport type CreateMonitorDefinitionOptions = Record<string, never>;\n\n"
+  alias = "type DbExecutor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];\n\n"
   s = s.replace('export async function getMonitorDefinition(', alias + 'export async function getMonitorDefinition(', 1)
   def patch_block(start, end, replacements):
       global s
@@ -2733,7 +3475,7 @@ branch: (set by feature-lifecycle after registration)
       ('await db\n', 'await executor\n'),
   ])
   patch_block('export async function createMonitorDefinition(', 'export async function updateMonitorDefinition(', [
-      ('auth: AuthContext,\n', 'auth: AuthContext,\n  _options: CreateMonitorDefinitionOptions = {},\n  executor: DbExecutor = db,\n'),
+      ('auth: AuthContext,\n', 'auth: AuthContext,\n  options: CompileOptions = {},\n  executor: DbExecutor = db,\n'),
       ('input.escalationPolicyId ?? null, owner)', 'input.escalationPolicyId ?? null, owner, executor)'),
       ('return db.transaction(', 'return executor.transaction('),
   ])
@@ -2745,7 +3487,16 @@ branch: (set by feature-lifecycle after registration)
   ])
   p.write_text(s)
   ```
-  Both escalation-policy reads now use the supplied executor. Existing two-argument callers still compile. If W05e lands first, keep its `CompileOptions` third argument and `compileMonitorInTx(tx, created, options)` call while applying the same executor edits; never replace its adoption option with the pre-W05e empty options type.
+  In `monitorCompiler.ts:35,287`, export the options type and update the signature, retaining the compiler body:
+  ```ts
+  export type CompileOptions = Record<string, never>;
+  export async function compileMonitorInTx(tx: DbTx, def: MonitorDefinitionRow, options: CompileOptions = {}): Promise<CompiledRefs> {
+  ```
+  In `monitorService.ts`, import `type CompileOptions` from `./monitorCompiler` and replace the create path's compile call with:
+  ```ts
+  const refs = await compileMonitorInTx(tx, created, options);
+  ```
+ Both escalation-policy reads now use the supplied executor. Existing two-argument callers still compile. When W05e extends this contract, keep its `CompileOptions` third argument and `compileMonitorInTx(tx, created, options)` call while applying the same executor edits; never replace its adoption option with the pre-W05e empty options type.
 
 - [ ] **Step 3b: Implement attachment and snapshot helpers.** `monitorAttachments.ts`:
   ```ts
@@ -2804,7 +3555,7 @@ branch: (set by feature-lifecycle after registration)
   ```
   Watch restart remains agent-local; `alertOnStop` is not mapped to severity/delivery because W05c1 specifies it was inert. Proposal UI already shows `autoRestart`; the executable rule response array is separate from descriptive action metadata.
 
-- [ ] **Step 3c: Wire the existing apply transaction and ledger.** Import the helper functions into `apply.ts`. Keep Task 12's `toRuleItem` projection (`kind`, `condition`, `responses`, `deliveryMode`, `deliveryChannelIds`, name/severity/cooldown/rationale) for its descriptive callers. In `stepMonitoring`, replace the `newWatches`/`newRules` construction with:
+- [ ] **Step 3c: Wire the existing apply transaction and ledger.** Import the helper functions into `apply.ts`. Keep Task 15's `toRuleItem` projection (`kind`, `condition`, `responses`, `deliveryMode`, `deliveryChannelIds`, name/severity/cooldown/rationale) for its descriptive callers. In `stepMonitoring`, replace the `newWatches`/`newRules` construction with:
   ```ts
   const proposals = [
     ...items.watches.filter((n) => newWatchRefs.includes(`monitoring:${functionKey}:watch:${n}`)).map((n) => ({
@@ -2921,7 +3672,7 @@ branch: (set by feature-lifecycle after registration)
   ```
   Import `snapshotFleetMonitors` from `./monitorAttachments`. Rollback keeps its existing archive-and-unassign semantics; historical alerts and definitions survive. Never delete a manually edited monitor during rollback.
 
-- [ ] **Step 4: Run, expect PASS.** Update the existing Fleet unit mocks to mock `attachFleetMonitors`/`snapshotFleetMonitors` and include their calls in the existing final-argument savepoint assertion; change new-report fixtures from `conditions` to the concrete Task 12 monitor shape. Keep legacy fixtures in historical rollback cases. In live integration tests replace new-policy watch/rule-link expectations with monitor attachment assertions above, and keep old baseline fixtures to prove coexistence. Run:
+- [ ] **Step 4: Run, expect PASS.** Update the existing Fleet unit mocks to mock `attachFleetMonitors`/`snapshotFleetMonitors` and include their calls in the existing final-argument savepoint assertion; change new-report fixtures from `conditions` to the concrete Task 15 monitor shape. Keep legacy fixtures in historical rollback cases. In live integration tests replace new-policy watch/rule-link expectations with monitor attachment assertions above, and keep old baseline fixtures to prove coexistence. Run:
   ```bash
   (cd packages/shared && npx tsc --noEmit -p . && npx vitest run src/validators/fleetDesign.test.ts)
   (cd apps/api && npx tsc --noEmit -p . && npx vitest run src/services/fleetDesign src/services/monitors/monitorService.test.ts src/__tests__/partner-wide-write-coverage.test.ts src/__tests__/site-ceiling-write-coverage.test.ts)
@@ -2930,11 +3681,11 @@ branch: (set by feature-lifecycle after registration)
   (cd apps/api && npx vitest run -c vitest.integration.config.ts src/__tests__/integration/fleetDesignApply.integration.test.ts src/__tests__/integration/tenantCascade.integration.test.ts src/__tests__/integration/tenant-export-policy.integration.test.ts)
   ```
   PASS requires no unmanaged alert-rule inserts from new Fleet proposals, no legacy feature links on the new policy, stable ledger IDs on repeat apply, and zero orphan definitions after the forced savepoint rollback.
-- [ ] **Step 5: Commit.** `git add apps/api/src/services/fleetDesign apps/api/src/services/monitors/monitorService.ts apps/api/src/services/monitors/monitorService.test.ts packages/shared/src/types/fleetDesignApply.ts apps/api/src/__tests__/integration/fleetDesignApply.integration.test.ts && git commit -m "feat(fleet-design): apply monitor attachments within step transactions"`
+- [ ] **Step 5: Commit.** `git add apps/api/src/services/fleetDesign apps/api/src/services/monitors/monitorService.ts apps/api/src/services/monitors/monitorService.test.ts apps/api/src/services/monitors/monitorCompiler.ts packages/shared/src/types/fleetDesignApply.ts apps/api/src/__tests__/integration/fleetDesignApply.integration.test.ts && git commit -m "feat(fleet-design): apply monitor attachments within step transactions"`
 
 ---
 
-### Task 14: Publish the three-facet docs, migration instructions and W05c release notes (PR3)
+### Task 17: Publish the three-facet docs, migration instructions and W05c release notes (PR3)
 
 **Files:**
 - Modify: `apps/docs/src/content/docs/features/alerts.mdx:1–252`, `monitors.mdx:8–173`, `notifications.mdx:8,352–403,614–616`, `configuration-policies.mdx:68–115,160–180,375`.
@@ -2944,7 +3695,7 @@ branch: (set by feature-lifecycle after registration)
 - Create: `apps/web/src/lib/__tests__/alertingDocs.test.ts` (Vitest harness for static documentation contracts; docs package has no Vitest script).
 
 **Interfaces:**
-- Consumes: the shipped W05b Delivery page/resolver and W05c1 conversion routes, Tasks 8–13 user behavior. Old docs URLs redirect to `/features/monitors/`. Preserve provider-specific channel setup instructions and sourced-alert producers (warranty, compliance, backup, security, patches).
+- Consumes: the shipped W05b Delivery page/resolver and W05c1 conversion routes, Tasks 9–16 user behavior. Old docs URLs redirect to `/features/monitors/`. Preserve provider-specific channel setup instructions and sourced-alert producers (warranty, compliance, backup, security, patches).
 - Produces: domain documentation with Inbox · Monitors · Delivery, conversion preview/blocked reasons/Undo and manual Retire, policy inheritance and check interval, effective device monitoring, Alert workflows, Fleet Designer guidance. W05c deadline is **before the W05d retirement release, which must be at least one release later**; do not invent a date or release version. The hosted release checklist records per-partner counts without committing infrastructure hostnames or regions.
 
 - [ ] **Step 1: Write the failing test.** `alertingDocs.test.ts`:
@@ -3035,8 +3786,8 @@ branch: (set by feature-lifecycle after registration)
   Preview the proposed monitors and the device equivalence result. Convert only
   when the preview has no differences or blockers. Unconvertible items show their
   reason; replace their behavior deliberately or use **Retire** with a reason.
-  Successful conversion preserves source rows and alert history. The panel's
-  **Undo** reverses the conversions returned by that operation during the session.
+  Successful conversion preserves source rows and alert history. The persistent
+  **Conversion history → Undo** reverses an available ledger entry, including manual retirement, after revisiting the page. Undo becomes unavailable for legacy runtimes removed by W05d.
 
   Authorized partner managers can use **Convert everything** after reviewing the
   affected policies. Resolve unconvertible rows before the W05d retirement release,
@@ -3060,7 +3811,7 @@ branch: (set by feature-lifecycle after registration)
   2. Choose severity, cooldown and automatic resolution.
   3. Add up to ten responses. Responses execute on the device that breached.
   4. In **Notify**, use **Inherit**, **use these channels instead**, or **inbox only**.
-     The inherited preview shows the resolved channels and their source.
+     The inherited preview shows eligible channels, skipped destinations with their reasons, escalation and the winning source.
   5. Choose an escalation policy if needed and configure recurrence escalation.
   6. Save, test on a device, and attach to a configuration policy. Assign that
      policy to an organization, site, group or device.
@@ -3110,8 +3861,8 @@ branch: (set by feature-lifecycle after registration)
 
   Conversion retires source rows in place. Active, acknowledged and suppressed
   alerts move to the compiled monitor path with their provenance retained. No source
-  row is deleted. **Undo** reverses the most recent operation's returned conversion
-  IDs during the panel session. A flat supported AND/OR group can become a composite;
+  row is deleted. **Conversion history → Undo** restores an available ledger entry,
+  including retirement entries. W05d disables Undo for sources whose runtime was removed. A flat supported AND/OR group can become a composite;
   nested groups, unsupported process-count conditions and templates with no evaluable
   condition show an explicit reason. **Retire** is a deliberate operator action.
 
@@ -3191,7 +3942,10 @@ branch: (set by feature-lifecycle after registration)
   overrides; conversion carries them onto the monitor.
 
   New channels receive no alerts until added to a routing row or monitor override.
-  The monitor's resolved preview uses the same delivery decision as dispatch.''')
+  The monitor's resolved preview uses the same delivery decision as dispatch. Eligible
+  channels are sent; skipped disabled, missing or wrong-owner references are listed.
+  Escalation steps can target channels or users, repeat at the configured interval,
+  and cancel when the alert is acknowledged or resolved.''')
   s = s.replace('additional channels (email, webhook, Slack, Teams, PagerDuty, SMS, Pushover) are routed based on alert rule configuration or organization defaults.',
                 'additional channels are selected by monitor overrides and the explicit Delivery routing rows.')
   s = s.replace('Alert rules can reference an escalation policy via `escalationPolicyId` in their override settings.',
@@ -3265,8 +4019,8 @@ branch: (set by feature-lifecycle after registration)
     Open Alerts → Monitors → Needs conversion, then review each policy preview.
     Convert only after reviewing device equivalence and the proposed delivery.
     Unconvertible rows show reasons and require deliberate replacement or retirement.
-    Source rows and alert history are retained. Undo is available for the operation
-    returned by the current panel session. Partner managers can Convert everything;
+    Source rows and alert history are retained. Conversion history provides persistent
+    Undo until W05d removes the source runtime; unavailable entries disable Undo. Partner managers can Convert everything;
     review the returned unconvertible count afterward.
   - **Deadline:** complete review before W05d, which will ship at least one release
     later. W05d performs the remaining sweep and lists unconvertible retirements.
@@ -3284,49 +4038,18 @@ branch: (set by feature-lifecycle after registration)
 
 ---
 
-### Task 15: Verify cross-wave contracts, progress handling and all three PRs (PR3)
+### Task 18: Verify cross-wave contracts and all three PRs (PR3)
 
 **Files:**
-- Modify the Task 1 implementation: `apps/web/src/components/monitoring/conversion/conversionApi.ts`, `conversionApi.test.ts`; modify Task 5's `NeedsConversionPanel.tsx`, `NeedsConversionPanel.test.tsx` (these files are planned, not present on the inspected base).
+- Read/verify Task 1 and Task 5 async-preview files; polling and cancellation ship in PR1, not in this verification task.
 - Create: `scripts/verify-alerting-consolidation-w05c2.sh`, `apps/web/src/lib/__tests__/alertingVerification.test.ts`.
-- Verify all Files entries in Tasks 1–14, including shared validators, API routes/tools/services, eight locale directories, web route registries, docs redirects and release notes. No migration is introduced by W05c2.
+- Verify all Files entries in Tasks 1–17, including shared validators, API routes/tools/services, eight locale directories, web route registries, docs redirects and release notes. No migration is introduced by W05c2.
 
 **Interfaces:**
-- Consumes exact W05c1 leaf contracts from its Task 14: GET `/monitor-definitions/conversion/policies/:policyId/preview` returns 200 `{ data: PolicyConversionPreview }` or 202 `{ data: PolicyConversionPreviewPending }`; poll the same GET. W05c1 `PolicyConversionPreviewPending` contains `status: 'running'`, `progress: { checked, total }`. This implements the async branch anticipated in this plan's Ordering assumptions, following the spec's >500-device requirement.
-- Produces: completed previews only from `fetchPolicyPreview`, optional progress callback while polling, cancellation on unmount/policy change, stale-preview confirmation disabled during refresh; one reproducible verification command. Verification is local on the final integration of all three PRs, not evidence borrowed from a green sibling branch.
+- Consumes exact W05c1 leaf contracts from its Task 14: GET `/monitor-definitions/conversion/policies/:policyId/preview` returns 200 `{ data: PolicyConversionPreview }` or 202 `{ data: PolicyConversionPreviewPending }`; poll the same GET. W05c1 `PolicyConversionPreviewPending` contains `status: 'running'`, `progress: { checked, total }`. Tasks 1 and 5 already implement this in PR1; this task verifies the merged behavior.
+- Produces: one reproducible verification command covering PR1 completed previews, polling progress, cancellation on unmount/policy change, and stale-preview confirmation disabled during refresh. Verification is local on the final integration of all three PRs, not evidence borrowed from a green sibling branch.
 
-- [ ] **Step 1: Write the failing tests.** Append to `conversionApi.test.ts`:
-  ```ts
-  it('polls a large-policy preview until complete and reports progress', async () => {
-    vi.useFakeTimers();
-    const complete = { policyId: 'p1', previewHash: 'ready', items: [], inheritanceMode: 'cumulative',
-      equivalence: { devicesChecked: 700, deltas: [] } };
-    fetchMock.mockResolvedValueOnce(json({ data: { status: 'running', progress: { checked: 200, total: 700 } } }, 202))
-      .mockResolvedValueOnce(json({ data: complete }));
-    const onProgress = vi.fn();
-    try {
-      const promise = fetchPolicyPreview('p1', { onProgress });
-      await vi.advanceTimersByTimeAsync(1000);
-      await expect(promise).resolves.toEqual(complete);
-      expect(onProgress).toHaveBeenCalledWith({ checked: 200, total: 700 });
-      expect(fetchMock).toHaveBeenCalledTimes(2);
-    } finally { vi.useRealTimers(); }
-  });
-  it('never accepts a pending result as a confirmation hash', async () => {
-    const controller = new AbortController(); controller.abort();
-    await expect(fetchPolicyPreview('p1', { signal: controller.signal })).rejects.toMatchObject({ name: 'AbortError' });
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-  ```
-  Append to `NeedsConversionPanel.test.tsx`:
-  ```tsx
-  it('shows missing prerequisites even when the blocked preview has no items', async () => {
-    fetchPolicyPreview.mockResolvedValue(preview({ items: [], blockedBy: 'prerequisite_missing' }));
-    render(<NeedsConversionPanel policyId="pol-1" hasLegacyRows onChanged={vi.fn()} />);
-    expect(await screen.findByTestId('conversion-blocked')).toHaveTextContent(/prerequisite/i);
-  });
-  ```
-  New `alertingVerification.test.ts`:
+- [ ] **Step 1: Write the failing test.** Create `alertingVerification.test.ts`:
   ```ts
   import { existsSync, readFileSync } from 'node:fs';
   import { resolve } from 'node:path';
@@ -3342,68 +4065,9 @@ branch: (set by feature-lifecycle after registration)
     expect(source).not.toContain('test -- --run');
   });
   ```
-- [ ] **Step 2: Run it, expect FAIL.** `cd apps/web && npx vitest run src/components/monitoring/conversion/conversionApi.test.ts src/components/monitoring/conversion/NeedsConversionPanel.test.tsx src/lib/__tests__/alertingVerification.test.ts` → pending body returned instead of completed preview; missing blocked banner; `missing W05c2 verification script`.
+- [ ] **Step 2: Run it, expect FAIL.** `cd apps/web && npx vitest run src/components/monitoring/conversion/conversionApi.test.ts src/components/monitoring/conversion/NeedsConversionPanel.test.tsx src/lib/__tests__/alertingVerification.test.ts` → `missing W05c2 verification script`; the PR1 progress and blocked-empty tests already pass.
 
-- [ ] **Step 3: Implement the verified async contract and runner.** In `conversionApi.ts`, replace only `fetchPolicyPreview` and add its options type:
-  ```ts
-  export type PreviewProgress = { checked: number; total: number };
-  export interface PreviewOptions { signal?: AbortSignal; onProgress?: (progress: PreviewProgress) => void }
-  function waitForPreview(signal?: AbortSignal): Promise<void> {
-    return new Promise((resolve, reject) => {
-      const abort = () => { clearTimeout(timer); reject(new DOMException('Preview cancelled', 'AbortError')); };
-      const timer = setTimeout(() => { signal?.removeEventListener('abort', abort); resolve(); }, 1000);
-      signal?.addEventListener('abort', abort, { once: true });
-      if (signal?.aborted) abort();
-    });
-  }
-  export async function fetchPolicyPreview(policyId: string, options: PreviewOptions = {}): Promise<PolicyConversionPreview> {
-    for (;;) {
-      if (options.signal?.aborted) throw new DOMException('Preview cancelled', 'AbortError');
-      const response = options.signal
-        ? await fetchWithAuth(conversionPaths.preview(policyId), { signal: options.signal })
-        : await fetchWithAuth(conversionPaths.preview(policyId));
-      const value = await readJson<PolicyConversionPreview | {
-        status: 'running'; progress: PreviewProgress;
-      }>(response, 'Failed to load the conversion preview');
-      if ('status' in value && value.status === 'running') {
-        options.onProgress?.(value.progress);
-        await waitForPreview(options.signal);
-        continue;
-      }
-      return value as PolicyConversionPreview;
-    }
-  }
-  ```
-  `NeedsConversionPanel.tsx` imports `useRef` and `PreviewProgress`, adds:
-  ```tsx
-  const activePreview = useRef<AbortController | null>(null);
-  const [progress, setProgress] = useState<PreviewProgress | null>(null);
-  ```
-  Replace `reload` and its mount effect:
-  ```tsx
-  const reload = useCallback(async () => {
-    activePreview.current?.abort();
-    const controller = new AbortController(); activePreview.current = controller;
-    setPreview(null); setProgress(null); setLoad({ status: 'loading' });
-    try {
-      const next = await fetchPolicyPreview(policyId, { signal: controller.signal, onProgress: setProgress });
-      if (!controller.signal.aborted) { setPreview(next); setLoad({ status: 'ready' }); }
-    } catch (err) {
-      if (!controller.signal.aborted) setLoad({ status: 'error', error: err instanceof Error ? err.message : t('monitoring:conversion.errors.preview') });
-    }
-  }, [policyId, t]);
-  useEffect(() => {
-    if (hasLegacyRows) void reload();
-    return () => activePreview.current?.abort();
-  }, [hasLegacyRows, reload]);
-  ```
-  The no-items return becomes `if (load.status === 'ready' && preview && !preview.blockedBy && preview.items.length === 0) return null;`. `canConvert` also requires `load.status === 'ready'`. In the loading block add actual progress without new untranslated keys:
-  ```tsx
-  {progress && <progress value={progress.checked} max={Math.max(1, progress.total)}
-    aria-label={t('monitoring:conversion.checking')} data-testid="conversion-progress" />}
-  ```
-  Update Task 5's fetch call-count tests to accept the new options argument while retaining policy/hash assertions. The runtime contract still returns only the completed preview to consumers.
-
+- [ ] **Step 3: Implement the verification runner.**
   New `scripts/verify-alerting-consolidation-w05c2.sh` (from root, `chmod +x` before committing):
   ```bash
   #!/usr/bin/env bash
@@ -3450,47 +4114,14 @@ branch: (set by feature-lifecycle after registration)
 
 - [ ] **Step 4: Run, expect PASS and review the result.** `bash scripts/verify-alerting-consolidation-w05c2.sh`. Expected: all typechecks and targeted suites pass, docs build produces both redirect artifacts, live tenant/cascade/export proofs pass, test stack is torn down, `git diff --check` exits 0. Review the final change list with `git diff --stat` and `git status --short`; no migration, credentials, internal hosts or unrelated edits.
 
-  Verify these actual browser/API scenarios against the implementation checkout using an authorized test account: a >500-device preview reports progress and cannot confirm stale results; an empty blocked preview still names its prerequisite; conversion updates the pending counts; Alert workflows saves and reloads both filters and retains `ruleId`; a device in a forbidden site cannot be read or reset; a latched accessible device resets with feedback; both retired settings URLs return 301; a Fleet apply creates only `monitors` links and a second apply creates no duplicate definitions. Record actual command outcomes and any blocker in the PR description, never pre-fill “PASS” from this plan. These observations supplement, rather than replace, the executable tests above.
+  Verify these actual browser/API scenarios against the implementation checkout using an authorized test account: a >500-device preview reports progress and cannot confirm stale results; an empty blocked preview still names its prerequisite; conversion updates pending counts and persistent history; retirement creates a zero-output ledger entry; unavailable Undo stays disabled; partner confirmation displays full-scope refusals and sends its preview hash; empty replacement saves retain suppression; composite/restart edits round-trip; the library attaches undeployed built-ins; Alert workflows saves and reloads both filters and retains `ruleId`; a device in a forbidden site cannot be read or reset; a latched accessible device resets with feedback; both retired settings URLs return 301; a Fleet apply creates only `monitors` links and a second apply creates no duplicate definitions. Record actual command outcomes and any blocker in the PR description, never pre-fill “PASS” from this plan. These observations supplement, rather than replace, the executable tests above.
 
-  W05c2 owns no migrations. Before pushing the program's migration PRs, run `ls apps/api/migrations | sort | tail -1` in the `origin/main` checkout and preserve the brief's assigned ordering; do not rename a shipped W05b/W05c1 migration from this wave. PR branches use the project's `feat/` or `fix/` patterns, and each PR targets `main` with its own checks.
+  W05c2 owns no migrations. Before pushing the program's migration PRs, run `git fetch origin && git ls-tree -r --name-only origin/main apps/api/migrations | grep -E '^apps/api/migrations/[0-9]{4}-[^/]+\.sql$' | sort | tail -1` and `scripts/check-migration-naming.sh --against-ref origin/main` and preserve the brief's assigned ordering; do not rename a shipped W05b/W05c1 migration from this wave. PR branches use the project's `feat/` or `fix/` patterns, and each PR targets `main` with its own checks.
 
-- [ ] **Step 5: Commit.** `git add scripts/verify-alerting-consolidation-w05c2.sh apps/web/src/lib/__tests__/alertingVerification.test.ts apps/web/src/components/monitoring/conversion/conversionApi.ts apps/web/src/components/monitoring/conversion/conversionApi.test.ts apps/web/src/components/monitoring/conversion/NeedsConversionPanel.tsx apps/web/src/components/monitoring/conversion/NeedsConversionPanel.test.tsx && git commit -m "test(alerting): verify conversion progress and web tools integration"`
+- [ ] **Step 5: Commit.** `git add scripts/verify-alerting-consolidation-w05c2.sh apps/web/src/lib/__tests__/alertingVerification.test.ts && git commit -m "test(alerting): verify conversion progress and web tools integration"`
 
 ---
 
-## Appended file coverage (the original File Structure placeholder is preserved)
+## Open questions
 
-The original section at line 46 contains `<!-- FILE_STRUCTURE_TABLE -->`, not a table. This supplemental table is appended so the existing bytes remain intact. The authoritative individual file paths and inspected ranges are the Files blocks above; brace/glob groups here include their adjacent tests and all eight locale files.
-
-| File or group | Change and task coverage |
-|---|---|
-| `apps/web/src/components/monitoring/conversion/{conversionApi,NeedsConversionPanel,ConversionPendingBanner,PendingPoliciesList}.*` | Conversion client/panel/library, Tasks 1, 5, 6; async preview verification, Task 15 |
-| `apps/web/src/components/configurationPolicies/{ConfigPolicyDetailPage,featureTabs/types,featureTabs/MonitorsTab}.*` | Policy tab props, interval, inheritance, conversion mount, Tasks 2–5 |
-| `apps/web/src/components/monitoring/{LegacyRulesPage,LegacyRulesTable,MonitorsListPage}.*` | Needs-conversion view and shared legacy table, Task 6 |
-| `apps/api/src/services/monitors/conversion/partnerBacklog.*`, `apps/api/src/routes/admin/{monitorConversion.*,index.ts}` | Hosted conversion backlog/wrapper, Task 7 |
-| `apps/web/src/components/admin/MonitorConversionAdmin.*`, `apps/web/src/pages/admin/monitor-conversion.astro` | Hosted admin UI, Task 7 |
-| `apps/web/src/components/automations/{alertWorkflowFilter,AutomationForm,AutomationEditPage}.*`, `AutomationsPage.tabs.test.tsx`, `apps/api/src/jobs/automationWorker.test.ts` | Typed workflow filter and runtime contract, Task 8 |
-| `apps/api/src/routes/devices/{monitors.ts,index.ts}`, `apps/api/src/__tests__/integration/deviceMonitors.integration.test.ts`, `apps/web/src/components/devices/DeviceMonitoringTab.*` | Effective device monitoring and isolation, Task 9 |
-| `apps/web/src/pages/settings/alert-templates/*.astro`, `apps/web/src/components/alerts/AlertTemplate*` | Redirect stubs and deleted editors/tests, Task 10 |
-| `apps/web/src/lib/{routeScope.*,runActionAllowlist.ts}`, `apps/web/src/lib/__tests__/{settingsPageRegistry,alertTemplatesRetired,no-silent-mutations}.test.ts`, `Sidebar.nav.test.tsx` | Registry, navigation, deletion and mutation coverage, Tasks 1, 7–10 |
-| `apps/web/src/locales/*/{policies,monitoring,pages,scripts,alerts}.json` | Real translations or removal of retired keys, Tasks 3–10 |
-| `apps/api/src/services/{aiToolsConfigPolicy.*,aiToolsFleet.ts,aiAgentSdkTools.ts,aiAgentSdkTools.mcpCoverage.test.ts,aiAgentSystemPrompt.ts,aiGuardrails.ts}`, `monitors/listServiceMonitors.*` | Canonical monitor AI behavior and schemas, Task 11 |
-| `packages/shared/src/{types/fleetDesign.ts,validators/fleetDesign.*}`, `apps/api/src/services/aiAgents/{outcomeTools.*,runLoop.design.test.ts,fleetDesignReport.test.ts}`, `FleetDesignViewer.test.tsx` | Monitor-shaped model proposals, Task 12 |
-| `apps/api/src/services/fleetDesign/{monitorProposalCompatibility.*,preview.ts,monitorAttachments.*,apply.*,drift.*,rollback.*}` | Historical report guard, apply, drift, rollback, Tasks 12–13 |
-| `apps/api/src/services/monitors/monitorService.*`, `packages/shared/src/types/fleetDesignApply.ts`, `apps/api/src/__tests__/integration/fleetDesignApply.integration.test.ts` | Savepoint-aware monitor service, ledger provenance and live proof, Task 13 |
-| `apps/docs/src/content/docs/features/{alerts,monitors,notifications,configuration-policies,alert-templates,service-monitoring}.mdx`, `apps/docs/astro.config.mjs` | Domain docs, removals and redirects, Task 14 |
-| `apps/docs/src/content/docs/migration/{overview,ninjaone,syncro,other-rmms,atera,datto-rmm,n-central,kaseya-vsa,connectwise-automate,scripts-from-datto}.mdx`, `docs/release-notes/next-release-draft.md` | All ten affected guides and release checklist, Task 14 |
-| `apps/web/src/lib/__tests__/{alertingDocs,alertingVerification}.test.ts`, `scripts/verify-alerting-consolidation-w05c2.sh` | Documentation contract and complete final verification, Tasks 14–15 |
-
-**Open questions for the orchestrator (do not block on them):**
-
-- The preserved plan has no File Structure table (`2026-09-19-alerting-consolidation-w05c2-conversion-web-and-tools.md:46`). The appended table supplies coverage without replacing that placeholder. Tasks 7 and earlier also contain abbreviated prose implementation/test instructions; they were preserved as requested.
-- Preview contracts differ: this plan's original line 25 and the common brief assume a completed synchronous preview; W05c1 `2026-09-19-alerting-consolidation-w05c1-conversion-api.md:1635,2417,2518` defines 202 progress. Task 15 follows spec §Conversion and polls that exact leaf. `notes`/`openAlerts` are additive W05c1 fields (`:1617–1619`), absent from the shorter brief shape but present in the sibling contract; retain them.
-- The real feature type is singular `automation` (`packages/shared/src/constants/configFeatureTypes.ts:24`), while preserved Tasks 5–7 use `automations` in gates/refresh lists (`this plan:958,970,1301`). The spec's broad workflows must remain visible under Jobs. At implementation, use the canonical feature enum for link filters; do not introduce an `automations` feature type. W05c1 `:2429` describing policy workflows as unconvertible also needs reconciliation with spec `2026-09-19-alerting-consolidation-design.md:394` (re-home them, never retire broad workflows).
-- W05c1 validates retirement reason as `operator` or `unconvertible:*` (`2026-09-19-alerting-consolidation-w05c1-conversion-api.md:2435`), while preserved Task 5 submits arbitrary reason text (`this plan:674`). The API must follow the spec's explicit reason/provenance model; reconcile the UI field with the shipped reason vocabulary before implementation rather than silently discarding the operator's explanation.
-- The original partner confirmation says all unconvertible rows are retired (`this plan:1404`), while W05c1 leaves evaluable unconvertible rules running (`2026-09-19-alerting-consolidation-w05c1-conversion-api.md:2433`) and W05d adds explicit retirement options (`2026-09-19-alerting-consolidation-w05d-retirement.md:687–690`). Task 14 documents W05c review/manual retirement and the later W05d sweep; reconcile that preserved confirmation copy accordingly.
-- `RunActionOptions` uses `errorFallback`, not the original Global Constraints' `errorMessage` (`apps/web/src/lib/runAction.ts:25`; this plan:33). All appended implementation code uses the actual API. The device DB state is `breach` (`apps/api/src/db/schema/monitorEpisodes.ts:29–33`); preserve the wire enum while displaying the spec's breaching concept.
-- The SDK advertises service-monitor add/remove (`apps/api/src/services/aiAgentSdkTools.ts:2018–2034`) although the canonical schema is list-only (`aiToolSchemasFleet.ts:217–220`), and the policy tool omits `monitors` (`aiToolsConfigPolicy.ts:909–915`). Task 11 fixes these existing mismatches and updates coverage without adding a tool.
-- Fleet monitor creation currently lacks the executor required by its savepoint contract (`apps/api/src/services/monitors/monitorService.ts:239–253`; `fleetDesign/apply.test.ts:211–220`). Task 13 reserves W05e's third `CompileOptions` argument (`2026-09-19-alerting-consolidation-w05e-network-checks.md:624`) and adds the executor fourth; W05e must retain it. New Fleet policies are org-owned (`fleetDesign/apply.ts:396–410`); the existing partner gate is for retirement (`preview.ts:348`), not a partner-create branch as the original constraints imply.
-- Fleet has independent legacy model and reader assumptions (`aiAgents/outcomeTools.ts:564–581`, `fleetDesign/drift.ts:237–247`), and its old action is text-only (`fleetDesign/apply.ts:535–536`). Tasks 12–13 change all three together, keep recommendation metadata non-executing, and preserve historical views/rollback; selected old rule proposals must be regenerated rather than silently reinterpreted.
-- Spec says nine migration guides, but `apps/docs/src/content/docs/migration/scripts-from-datto.mdx:142` is a tenth affected guide. Task 14 covers it. The sibling W05d task also claims service-monitoring docs removal (`2026-09-19-alerting-consolidation-w05d-retirement.md:2002`); follow the spec's docs consolidation here, leaving W05d only to verify the already-existing redirect and update retirement-specific instructions.
+None. D1–D19 settle the reviewed questions; their applicable resolutions are incorporated in the tasks.

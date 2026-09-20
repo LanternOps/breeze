@@ -19,28 +19,28 @@ branch: (set by feature-lifecycle after registration)
 ## Ordering assumptions (read first)
 
 - **W05a, W05b, W05c1 and W05c2 have shipped in a prior release.** W05d must not ship in the same release as W05c: the hosted "Convert everything" pass and the self-hosted banner need one full release cycle before anything is deleted (spec §Waves: "W05d depends on W05c having shipped in a prior release"). Both W05d PRs ship in the *same* release, PR2 after PR1 is merged.
-- **W05c1 names come from its plan** (`2026-09-19-alerting-consolidation-w05c1-conversion-api.md`, File Structure rows 73-82): the module is `apps/api/src/services/monitors/conversion/{types,prerequisites,mapping,loadSources,equivalence,convert,index}.ts`; `convert.ts` owns `previewPolicyConversion`, `convertPolicy`, `convertPartnerLegacy`, `revertConversion`, `retireSource`, `countPendingConversions`; `loadSources.ts` loads a policy's unretired sources (its `case 'monitoring'` at plan line ~1507 is the watch lookup Task 4 widens); `index.ts` re-exports the surface; the routes live under `/monitor-definitions/conversion/*` in `routes/monitorDefinitions.ts`, declared before `/:id`, with `GET …/conversion/pending?orgId → { data: { policies, rows } }`. The retirement columns come from `2026-10-23-120000-legacy-source-retirement-columns.sql`. **Before Task 4:** `ls apps/api/src/services/monitors/conversion/ && grep -n "export async function convertPartnerLegacy\|export async function retireSource\|conversion/pending" apps/api/src/services/monitors/conversion/convert.ts apps/api/src/routes/monitorDefinitions.ts` — if a shipped name differs, follow the shipped code and keep this plan's names for the W05d-only pieces (`runLegacyAlertingRetirement`, `checkLegacyAlertingRetired`, the `retireUnconvertible` option, the `sweep`/`unconvertible` fields on the pending response).
+- **W05c1 contracts are prerequisites, not files created by W05d.** `services/monitors/conversion/index.ts` re-exports `previewPolicyConversion`, `previewPartnerConversion(partnerId, auth)`, `convertPartnerLegacy(partnerId, previewHash, auth)`, `revertConversion`, and `retireSource(...): Promise<{ conversionId: string }>`; `loadSources.ts` owns `countPendingConversions`. Routes live in `apps/api/src/routes/monitorDefinitions.conversion.ts`, mounted by `monitorDefinitions.ts`, with `GET /monitor-definitions/conversion/pending?orgId → { data: { policies, rows } }`. W05d consumes the binding D1–D19 contract even if another wave's plan is still being edited. `legacyBaseline.ts` exports `resolveLegacyBaseline(deviceId: string, executor: DbExecutor)` and stays private and executor-aware after public readers are removed. `lifecycle.ts` exports `isRevertAvailable(sourceTable: ConversionSourceTable): boolean`; Task 6 closes Revert for the five retired source tables. The nullable-system-actor writes, full partner preview/hash, template-group ledger, provenance restoration and coverage-preserving workflow rehoming must ship in C1. The retirement columns come from `2026-10-23-120000-legacy-source-retirement-columns.sql`.
 - **W05c2 names come from its plan** (`2026-09-19-alerting-consolidation-w05c2-conversion-web-and-tools.md`): the banner is `apps/web/src/components/monitoring/conversion/ConversionPendingBanner.tsx`, every conversion path is centralised in `components/monitoring/conversion/conversionApi.ts` (`conversionPaths.pending(orgId)`), and W05c2 Task 3 put the *Check interval* field on the Monitors tab (test id `monitors-tab-check-interval`) writing through `useFeatureLink.save(…, { featureType: 'monitoring', … })` — spec §Data model: keyed by the `monitoring` link **until W05d**. Task 2 repoints that write at the `monitors` link and rewrites W05c2's three test cases for it. W05a already deleted the `hub.*` keys in `monitoring.json` and the `pages/monitoring/*.astro` redirect stubs, and `AlertRuleEditPage`/`AlertRuleEditor`; `apps/web/src/components/alerts/AlertRuleForm.tsx` (+ `AlertRuleForm.retiredCondition.test.tsx`, `index.ts` export) survives W05a with no page importing it and goes in Task 11.
-- **Sweep = TypeScript after `serve()`, migration = SQL before it.** `initializeDatabaseForStartup({ autoMigrateEnabled })` (`apps/api/src/index.ts:1679-1682`) runs every migration before the listener; `ensureBuiltInMonitorsForAllPartners()` (`index.ts:1855-1871`, body at `services/monitors/builtInMonitors.ts:226-264`) is the precedent for per-partner work that must not delay `/health`. The W05d sweep is wired exactly the same way, immediately after it. Between `serve()` and the sweep finishing, unconverted inline rules do not fire — that window is the reason the release notes (Task 13) tell self-hosters to run *Convert everything* on the W05c release first.
+- **Sweep = TypeScript after `serve()`, migration = SQL before it.** `initializeDatabaseForStartup({ autoMigrateEnabled })` (`apps/api/src/index.ts:1679-1682`) runs every migration before the listener; `ensureBuiltInMonitorsForAllPartners()` (`index.ts:1855-1871`, body at `services/monitors/builtInMonitors.ts:226-264`) is the precedent for per-partner work that must not delay `/health`. The W05d sweep is wired exactly the same way, immediately after it. Between `serve()` and the sweep finishing, unconverted inline rules do not fire — that window is the reason the release notes (Task 14) tell self-hosters to run *Convert everything* on the W05c release first.
 - **The startup check counts two tables, not one.** The spec names `config_policy_alert_rules WHERE retired_at IS NULL`; after Task 3 the agent config builder no longer delivers `config_policy_monitoring_watches` either, so an unretired watch is exactly as silent as an unretired rule. Both counts must be zero.
-- **Equivalence refusals in the sweep become `unconvertible:equivalence_delta`.** The per-policy panel refuses a conversion whose before/after device sets differ and waits for a human (spec §Equivalence check). The sweep has no human, and after Task 8 the legacy evaluator is gone, so an unretired-but-unconverted row would be *silently* dead. The sweep therefore retires such rows with that reason so they are listed in the banner (spec §Conversion "Who runs it": "Nothing stops firing without being listed"). This is the conservative reading; the alternative — convert anyway and list the delta — changes what fires for some device, which the spec forbids. Flagged as an open question in the report.
-- **Open alerts of a retired-unconvertible source stay open for a human.** `checkAutoResolveFromConfigPolicy` (`services/alertService.ts:1386`, called from `jobs/alertWorker.ts:324`) is part of the legacy path and is deleted in Task 8; converted sources already had their non-terminal alerts moved to the compiled rule by W05c1 (spec §Open alerts), so only unconvertible sources are affected. Release notes say so.
+- **Equivalence refusals in the sweep become `unconvertible:equivalence_delta`.** The per-policy panel refuses a conversion whose before/after device sets differ and waits for a human (spec §Equivalence check). The sweep has no human, and after Task 9 the legacy evaluator is gone, so an unretired-but-unconverted row would be *silently* dead. The sweep therefore retires such rows with that reason so they are listed in the banner (spec §Conversion "Who runs it": "Nothing stops firing without being listed"). This is binding decision D19: refuse conversion on equivalence delta; retire and list the source. The comparison uses the retained normalized legacy baseline (D6), including resolved delivery, never the removed public feature readers.
+- **Open alerts of a retired-unconvertible source stay open for a human.** `checkAutoResolveFromConfigPolicy` (`services/alertService.ts:1386`, called from `jobs/alertWorker.ts:324`) is part of the legacy path and is deleted in Task 9; converted sources already had their non-terminal alerts moved to the compiled rule by W05c1 (spec §Open alerts), so only unconvertible sources are affected. Release notes say so.
 - **Code facts the spec/brief did not list, all verified and all in scope here:** `evaluateDeviceAlertsFromPolicy` has a *second* caller, `jobs/offlineDetector.ts:505` (`triggerConfigPolicyOfflineAlerts`, lines 476-520); the acknowledge-cooldown branch is duplicated in `routes/mobile.ts:1252-1256` and `services/alertService.ts:746-756` (`resolveAlert`); `getApplicableRulesFromPolicy` is also read by `services/offlineAlertEffects.ts:49` (the #6342 fix adds monitor resolution "alongside" it — the legacy half goes here); `PARTNER_LINKABLE_FEATURE_TYPES` (`services/configurationPolicy.ts:2654`) and `validateFeaturePolicyExists` (`:2804`, `:2826`, `:2890`) still name `alert_rule`/`monitoring`; the shared `addFeatureLinkSchema` hand-lists every feature type (`packages/shared/src/validators/index.ts:568`) instead of deriving from `CONFIG_FEATURE_TYPES`, as does the AI tool's JSON schema (`services/aiToolsConfigPolicy.ts:908-916`); `manage_alert_rules` `create_rule`/`update_rule`/`delete_rule` are *already* refused (`services/aiToolsFleet.ts:2579-2583`) but every pointer says `manage_policy_feature_link` + `alert_rule`; `routes/agents/helpers.partnerWidePolicies.test.ts` pins the `monitoring`-link query sequence that Task 3 changes.
-- **Retired feature-link rows are kept, and filtered.** Deleting `config_policy_feature_links` rows of type `alert_rule`/`monitoring` would cascade-delete `config_policy_alert_rules` (FK `ON DELETE CASCADE`, `db/schema/configurationPolicies.ts:190`) and strand `alerts.config_policy_id` history, which spec C4 forbids. So the rows stay; `listFeatureLinks` and `resolveEffectiveConfigWithExecutor` exclude `RETIRED_CONFIG_FEATURE_TYPES` (Task 6), and the web never receives them.
-- **Two PRs, in order:** PR1 = Tasks 1–5 (migration + re-key + agent builder + sweep + boot check + pending endpoint/banner). PR2 = Tasks 6–13 (constants + parity, service-branch deletions, evaluator deletion, transitional delivery removal, 410 routers, web deletions, AI tools + migrate script, docs + release notes). Task 14 is the verification pass run at the end of each PR. PR2 branches from `main` after PR1 merges — a PR based on a sibling branch runs no CI (CLAUDE.md, tenancy section).
+- **Retired feature-link rows are kept, and filtered.** Deleting `config_policy_feature_links` rows of type `alert_rule`/`monitoring` would cascade-delete `config_policy_alert_rules` (FK `ON DELETE CASCADE`, `db/schema/configurationPolicies.ts:190`) and strand `alerts.config_policy_id` history, which spec C4 forbids. So the rows stay; `listFeatureLinks` and `resolveEffectiveConfigWithExecutor` exclude `RETIRED_CONFIG_FEATURE_TYPES` (Task 7), and the web never receives them.
+- **Two PRs, in order:** PR1 = Tasks 1–6 (migration + re-key + agent builder + sweep + boot check + pending endpoint/banner + lifecycle guard). PR2 = Tasks 7–14 (constants + parity, service-branch deletions, evaluator deletion, transitional delivery removal, 410 routers, web deletions, AI tools + migrate script, docs + release notes). Task 15 is the verification pass run at the end of each PR. PR2 branches from `main` after PR1 merges — a PR based on a sibling branch runs no CI (CLAUDE.md, tenancy section).
 
 ## Global Constraints
 
-- **Migration filename `2026-10-24-100000-legacy-alerting-retirement-sweep.sql`** (assigned by the common brief). Before pushing: `git fetch origin && git ls-tree --name-only origin/main apps/api/migrations/ | sort | tail -1` must sort **before** it (newest at planning time: `2026-10-21-100200-billing-profiles-permissions.sql`; W05b/W05c1 claim `2026-10-21-*`, W05e claims `2026-10-22-110000-*`). Rename with a later `HHMMSS` if anything newer landed. Never name it for today's real date — shipped names run weeks ahead of the calendar and a today-named file would replay before the W05c1 columns it depends on.
+- **Migration filename `2026-10-24-100000-legacy-alerting-retirement-sweep.sql`** (assigned by the common brief). Before pushing: `git fetch origin && git ls-tree -r --name-only origin/main apps/api/migrations | grep -E '^apps/api/migrations/[0-9]{4}-[^/]+\.sql$' | sort | tail -1` must sort **before** it (newest on main at review: `2026-10-21-110100-…`; W05b/W05c1 use `2026-10-23-*`, W05e uses `2026-10-24-110000-*`). Also run `scripts/check-migration-naming.sh --against-ref origin/main`. Rename with a later `HHMMSS` if anything newer landed. Never name it for today's real date — shipped names run weeks ahead of the calendar and a today-named file would replay before the W05c1 columns it depends on.
 - The migration is idempotent (`NOT EXISTS` guards on every insert/update), has **no inner `BEGIN`/`COMMIT`**, starts with `SELECT set_config('breeze.scope', 'system', true);` because it contains DML (`migrationRlsScope.test.ts` — never join its frozen baseline), and every `INSERT`/`UPDATE`/`DELETE` reports its row count with `GET DIAGNOSTICS … RAISE WARNING`. The detection `SELECT`s that report unretired counts run *after* the elevation for the same reason (a `'none'`-scope read sees zero rows through `FORCE ROW LEVEL SECURITY`).
-- **No new tables, no new columns, no RLS change.** `config_policy_monitoring_settings` keeps its shape; only `feature_link_id` values move. No `CORE_ORG_CASCADE_DELETE_ORDER`, `CORE_TENANT_EXPORT_POLICY`, `CORE_DEVICE_*` or `DUAL_AXIS_TENANT_TABLES` change. `partners.settings` (jsonb) gains a `legacyAlertingRetirement` key — `partners` carries no `org_id`, so no export-policy entry.
+- **No new tables, no new columns, no RLS change.** C1's nullable system actors, template-group source provenance and output ownership constraints are prerequisites and retained unchanged. `config_policy_monitoring_settings` keeps its shape; only `feature_link_id` values move. No `CORE_ORG_CASCADE_DELETE_ORDER`, `CORE_TENANT_EXPORT_POLICY`, `CORE_DEVICE_*` or `DUAL_AXIS_TENANT_TABLES` change. `partners.settings` (jsonb) gains a `legacyAlertingRetirement` key — `partners` carries no `org_id`, so no export-policy entry.
 - **Partner-axis writes:** the sweep writes `partners.settings` and, through the converter, `monitor_definitions` rows with `partner_id`. If `apps/api/src/__tests__/partner-wide-write-coverage.test.ts` or `site-ceiling-write-coverage.test.ts` flags `services/monitors/conversion/retirementSweep.ts`, add the allowlist entry with the reason *"boot-time system sweep; per-partner `runOutsideDbContext + withSystemDbAccessContext`, no caller"* — the same reason `builtInMonitors.ts` carries.
 - **The agent wire shape is frozen.** `monitoring_settings` on the wire stays exactly `{ check_interval_seconds: int, watches: MonitoringWatchConfig[] }` (`routes/agents/helpers.ts:2019-2036`; Go `agent/internal/monitoring/types.go`). Task 3 changes only where the values come from. `auto_restart` semantics are unchanged.
 - Deleted code is deleted, not commented out or feature-flagged. Every deleted export gets its tests deleted or rewritten in the same task; `pnpm --filter @breeze/api exec tsc --noEmit` is the sweep for missed importers.
 - Web mutations go through `runAction` (`apps/web/src/lib/runAction.ts`); catch pattern per CLAUDE.md. Tab state is hash-based (`useHashTab`); the legacy hashes are rewritten with `history.replaceState`, never with a query param.
 - Every new i18n key needs **real translations in all 8 locales** (`apps/web/src/locales/{en,de-DE,es-419,fr-CA,fr-FR,it-IT,pt-BR,tr-TR}`); the coverage test fails on a missing or English-echoed key. Removed components take their key blocks out of all 8 files.
 - Every task: **red test first**, then `pnpm --filter @breeze/api exec tsc --noEmit` (and `pnpm --filter @breeze/web exec tsc --noEmit` for web tasks), then the task's targeted tests, then commit. Use `cd apps/api && npx vitest run <path>`; never `pnpm --filter … test -- --run <path>`; never a trailing-slash path filter.
-- `pnpm test` does **not** run the integration suites. Tasks 1, 3, 4 and 14 need `pnpm test-stack up` (private pg+redis for this worktree) and `pnpm test-stack down` afterwards — nothing reaps it for you.
+- `pnpm test` does **not** run the integration suites. Tasks 1–6 and 15 need `pnpm test-stack up` (private pg+redis for this worktree) and `pnpm test-stack down` afterwards — nothing reaps it for you.
 - Do not commit from a subagent; the orchestrator commits. Each task's Step 5 gives the commit message.
 
 ## File Structure (what changes where)
@@ -49,24 +49,29 @@ branch: (set by feature-lifecycle after registration)
 |---|---|
 | `apps/api/migrations/2026-10-24-100000-legacy-alerting-retirement-sweep.sql` | **Create (PR1).** Re-key `config_policy_monitoring_settings` to the `monitors` link; mirror `checkIntervalSeconds` into the link's `inline_settings`; report unretired counts. |
 | `apps/api/src/__tests__/integration/legacyAlertingRetirementMigration.integration.test.ts` | **Create (PR1).** Replays the migration against fixture policies; re-key, link creation, idempotency. |
-| `packages/shared/src/validators/monitors.ts` | Modify (PR1, lines 295-297): `monitorsInlineSettingsSchema` gains `checkIntervalSeconds` (10–3600, default 60). (PR2, Task 6: nothing further here.) |
+| `packages/shared/src/validators/monitors.ts` | Modify (PR1, lines 295-297): `monitorsInlineSettingsSchema` gains `checkIntervalSeconds` (10–3600, default 60). (PR2, Task 7: nothing further here.) |
 | `packages/shared/src/validators/monitors.test.ts` | Modify (PR1). |
 | `apps/api/src/services/configurationPolicy.ts` | Modify (PR1): `case 'monitors'` in `decomposeInlineSettings` (line 1117) upserts the settings row; `assembleInlineSettings` (line 1498) reads it back. Modify (PR2): delete `alert_rule`/`monitoring` arms at 756-790, 907-935, 1165-1167, 1171-1173, 1198-1199, 1219-1233, 1271-1291, 1430-1465; `PARTNER_LINKABLE_FEATURE_TYPES` (2654); `validateFeaturePolicyExists` (2804, 2826, 2890); `listFeatureLinks` (1901) and `resolveEffectiveConfigWithExecutor` (2308) exclude retired types. |
-| `apps/api/src/services/configurationPolicy.test.ts` (+ siblings that cover decompose/assemble) | Modify (PR1, PR2). |
+| `apps/api/src/services/configurationPolicy.monitors.test.ts`, `configurationPolicy.test.ts` (+ siblings that cover decompose/assemble) | Modify (PR1, PR2). |
 | `apps/web/src/components/configurationPolicies/featureTabs/MonitorsTab.tsx` | Modify (PR1): *Check interval* writes `checkIntervalSeconds` into the `monitors` link's inline settings, not the `monitoring` link. |
 | `apps/web/src/components/configurationPolicies/featureTabs/MonitorsTab.test.tsx` | Modify (PR1). |
 | `apps/api/src/routes/agents/helpers.ts` | Modify (PR1, lines 2163-2243 and 2243-2370): `resolvePolicyMonitoringSettings` joins `featureType = 'monitors'`, returns only `check_interval_seconds`; watches come from monitors only; `unionMonitoringWatches` deleted. |
 | `apps/api/src/routes/agents/helpers.monitorWatchDelivery.test.ts`, `helpers.partnerWidePolicies.test.ts`, `heartbeat.test.ts` | Modify (PR1): query sequence and fixtures move to the `monitors` link. |
 | `apps/api/src/__tests__/integration/monitorWatchDelivery.integration.test.ts`, `agentPolicyResolversPartnerWide.integration.test.ts` | Modify (PR1): check interval fixtures on the `monitors` link. |
-| `apps/api/src/services/monitors/conversion/convert.ts`, `types.ts`, `loadSources.ts` (W05c1) | Modify (PR1): `convertPartnerLegacy` gains `opts?: { retireUnconvertible?: boolean }` and returns `retired: RetiredSource[]`; the watch loader accepts settings rows under either link type. |
+| `apps/api/src/services/monitors/conversion/loadSources.ts` (W05c1) | Modify (PR1): `previewPartnerConversion` then hash-bound `convertPartnerLegacy` are consumed unchanged; the sweep retires reported refusals through the shared ledger writer; `readRetirementReport` shares pending scope; watch loading and the private baseline accept settings rows under either link type. |
+| `apps/api/src/services/monitors/conversion/legacyBaseline.ts`, `legacyBaseline.test.ts` | Retain C1's private normalized baseline when public readers are deleted; widen watch-link reads after re-key (PR1). |
+| `apps/api/src/services/monitors/conversion/lifecycle.ts`, `lifecycle.test.ts`, `convert.ts` | Modify/verify (PR1, Task 6): pre-mutation Revert guard; ledger eligibility. |
+| `apps/api/src/routes/monitorDefinitions.conversion.test.ts`, `apps/web/src/components/monitoring/conversion/ConversionLedger.test.tsx` | Modify (PR1, Task 6): HTTP conflict and disabled Undo. |
+| `apps/api/src/services/monitors/conversion/legacyDeliveryBaseline.ts`, `legacyDeliveryBaseline.test.ts`, `equivalence.ts` | Create private historical-delivery helper/tests and update C1's before comparison (PR2, Task 10). |
+| `apps/api/src/services/delivery/describeDelivery.ts`, `describeDelivery.test.ts`, `apps/web/src/components/monitoring/DeliveryPreview.tsx` | Modify (PR2, Task 10): remove live legacy source descriptions/types; preserve eligible/skipped channel metadata. |
 | `apps/api/src/services/monitors/conversion/retirementSweep.ts` | **Create (PR1).** `runLegacyAlertingRetirement()`, `sweepPartnerLegacyAlerting(partnerId)`, `checkLegacyAlertingRetired()`, `LegacyAlertingUnretiredError`, marker read/write. |
 | `apps/api/src/services/monitors/conversion/retirementSweep.test.ts` | **Create (PR1).** |
 | `apps/api/src/__tests__/integration/legacyAlertingRetirementSweep.integration.test.ts` | **Create (PR1).** Real-Postgres proof: convertible row converted, unconvertible row retired with reason, marker written, count check zero/non-zero. |
 | `apps/api/src/index.ts` | Modify (PR1, after line 1871): detached `runLegacyAlertingRetirement()` chain. |
-| `apps/api/src/routes/monitorDefinitions.ts` (W05c1 conversion routes) | Modify (PR1): `GET /conversion/pending` response gains `unconvertible` and `sweep`. |
+| `apps/api/src/routes/monitorDefinitions.conversion.ts` (W05c1 conversion subrouter) | Modify (PR1): `GET /conversion/pending` response gains `unconvertible` and `sweep`. |
 | `apps/api/src/routes/monitorDefinitions.conversion.pending.test.ts` | **Create (PR1).** |
 | `apps/web/src/components/monitoring/conversion/ConversionPendingBanner.tsx` (W05c2 name may differ) | Modify (PR1): post-sweep "could not be converted — review" list with per-viewer dismiss. |
-| `apps/web/src/components/monitoring/conversion/ConversionPendingBanner.test.tsx` | Modify (PR1). |
+| `apps/web/src/components/monitoring/conversion/ConversionPendingBanner.test.tsx`, `conversionApi.ts`, `conversionApi.test.ts` | Modify (PR1): report shape, locale reasons and per-viewer dismissal. |
 | `apps/web/src/locales/*/monitoring.json` | Modify (PR1): `conversion.retirement.*` keys. |
 | `packages/shared/src/constants/configFeatureTypes.ts` | Modify (PR2, lines 22-30): remove `alert_rule`, `monitoring`; add `RETIRED_CONFIG_FEATURE_TYPES`, `RetiredConfigFeatureType`, `isRetiredConfigFeatureType`. |
 | `packages/shared/src/constants/index.ts` | Modify (PR2): export the new names. |
@@ -74,6 +79,7 @@ branch: (set by feature-lifecycle after registration)
 | `apps/api/src/services/configFeatureTypes.ts` | Modify (PR2): re-export the retired list. |
 | `apps/api/src/services/policyBaselineDefaults.ts` | Modify (PR2, lines 62-81): drop the two `NOT_ENFORCED` entries. |
 | `apps/api/src/services/policyBaselineDefaults.test.ts` | Modify (PR2, lines 87-91): parity = `CONFIG_FEATURE_TYPES ∪ RETIRED_CONFIG_FEATURE_TYPES` vs DB enum, disjoint. |
+| `apps/api/src/services/configurationPolicy.retiredFeatureTypes.test.ts`, `apps/api/src/routes/configurationPolicies/index.test.ts` | Create (PR2): retired read/write and removed route-mount contracts. |
 | `apps/api/src/routes/configurationPolicies/resolution.test.ts` | Modify (PR2, lines 13, 16): fixture list. |
 | `apps/api/src/routes/configurationPolicies/featureLinks.ts` | Modify (PR2, lines 273-300, 517-535): delete the `alert_rule`/`monitoring` validation branches; refuse retired types with a pointer. |
 | `apps/api/src/routes/configurationPolicies/featureLinks.test.ts` (+ `*.alertRule*.test.ts` siblings) | Modify/delete (PR2). |
@@ -112,8 +118,7 @@ branch: (set by feature-lifecycle after registration)
 | `apps/api/src/services/aiToolSchemasFleet.ts`, `aiAgentSdkTools.ts`, `aiGuardrails.ts`, `aiAgentSystemPrompt.ts`, `mcpGuidance.ts` | Modify (PR2, `aiToolSchemasFleet.ts:165`; `aiAgentSdkTools.ts:1999-2014`; `aiGuardrails.ts:1006`; `aiAgentSystemPrompt.ts:70,74,88`; `mcpGuidance.ts:101`). |
 | `apps/api/src/services/aiAgentSdkTools.mcpCoverage.test.ts`, `aiToolsConfigPolicy.test.ts`, `aiToolsFleet.test.ts` | Modify (PR2). |
 | `apps/api/src/scripts/migrateToConfigPolicies.ts` | **Delete (PR2).** Allowlist entry `services/featureLinkReaders.contract.test.ts:83` removed. |
-| `apps/docs/src/content/docs/features/service-monitoring.mdx` | **Delete (PR2).** Redirect → `/features/monitors/`. |
-| `apps/docs/astro.config.mjs` | Modify (PR2, line 126; `redirects`): sidebar entry removed, redirect added. |
+| `apps/docs/src/content/docs/features/service-monitoring.mdx`, `apps/docs/astro.config.mjs` | Verify W05c2 already deleted the page/sidebar entry and installed `/features/service-monitoring/` → `/features/monitors/`; no second deletion. |
 | `apps/docs/src/content/docs/features/alerts.mdx`, `configuration-policies.mdx` (lines 107, 375), `monitors.mdx` | Modify (PR2). |
 | `docs/release-notes/next-release-draft.md`, `CHANGELOG.md` | Modify (PR2). |
 
@@ -143,7 +148,7 @@ branch: (set by feature-lifecycle after registration)
 import './setup';
 import { afterEach, describe, expect, it } from 'vitest';
 import { and, eq, sql } from 'drizzle-orm';
-import { db, withDbAccessContext, type DbAccessContext } from '../../db';
+import { db, withDbAccessContext, SYSTEM_DB_ACCESS_CONTEXT } from '../../db';
 import {
   configPolicyFeatureLinks,
   configPolicyMonitoringSettings,
@@ -153,7 +158,7 @@ import { replayMigration } from './replayMigration';
 import { createOrganization, createPartner } from './db-utils';
 
 const MIGRATION = '2026-10-24-100000-legacy-alerting-retirement-sweep.sql';
-const SYSTEM_CTX: DbAccessContext = { scope: 'system', orgId: null, partnerId: null, userId: null, roleId: null, isPlatformAdmin: false };
+const SYSTEM_CTX = SYSTEM_DB_ACCESS_CONTEXT;
 
 const created: string[] = [];
 afterEach(async () => {
@@ -239,7 +244,7 @@ describe('2026-10-24-100000-legacy-alerting-retirement-sweep.sql', () => {
 });
 ```
 
-(`DbAccessContext` field list: copy the `SYSTEM_CTX` literal from `monitorWatchDelivery.integration.test.ts:38-45` if the type has gained fields.)
+Use the exported `SYSTEM_DB_ACCESS_CONTEXT` (`apps/api/src/db/index.ts:187`); do not invent AuthContext fields on a DbAccessContext.
 
 - [ ] **Step 2: Run it, expect FAIL.**
 ```bash
@@ -398,14 +403,15 @@ git commit -m "feat(api): W05d migration re-keys monitoring settings to the moni
 **Files:**
 - Modify: `packages/shared/src/validators/monitors.ts` (lines 295-297)
 - Modify: `packages/shared/src/validators/monitors.test.ts` (append after line 130)
-- Modify: `apps/api/src/services/configurationPolicy.ts` (`decomposeInlineSettings` `case 'monitors'` line 1117-1130; `deleteNormalizedRows` `case 'monitors'` line 1245; `assembleInlineSettings` `case 'monitors'` line 1498-1512)
+- Modify: `apps/api/src/services/configurationPolicy.ts` (`decomposeInlineSettings` `case 'monitors'` line 1117-1130; `deleteNormalizedRows` `case 'monitors'` line 1245; `assembleInlineSettings` `case 'monitors'` line 1498-1512; `removeFeatureLink` lines 1887-1899)
 - Modify: `apps/api/src/services/configurationPolicy.monitors.test.ts`
+- Modify: Task 1's `apps/api/src/__tests__/integration/legacyAlertingRetirementMigration.integration.test.ts` (last-detachment history regression)
 - Modify: `apps/web/src/components/configurationPolicies/featureTabs/MonitorsTab.tsx` (`handleSave` line 168-183, `handleOverride` line 197-204; the W05c2 *Check interval* field)
 - Modify: `apps/web/src/components/configurationPolicies/featureTabs/MonitorsTab.test.tsx`
 
 **Interfaces:**
 - Consumes: `monitorsInlineSettingsSchema` (`{ items, inheritance }` after W05c1), `configPolicyMonitoringSettings`, `useFeatureLink(policyId).save(existingLinkId, { featureType, featurePolicyId, inlineSettings })`.
-- Produces: `MonitorsInlineSettings.checkIntervalSeconds: number` (10–3600, default 60); `decomposeInlineSettings('monitors')` upserts `config_policy_monitoring_settings(feature_link_id, check_interval_seconds)`; `assembleInlineSettings('monitors')` returns `{ items, inheritance, checkIntervalSeconds }` (and returns a non-null object even when `items` is empty, because the interval is a value); `deleteNormalizedRows('monitors')` also deletes the settings row.
+- Produces: `MonitorsInlineSettings.checkIntervalSeconds: number` (10–3600, default 60); `decomposeInlineSettings('monitors')` upserts `config_policy_monitoring_settings(feature_link_id, check_interval_seconds)`; `assembleInlineSettings('monitors')` returns `{ items, inheritance, checkIntervalSeconds }` (and returns a non-null object even when `items` is empty, because the interval is a value); `deleteNormalizedRows('monitors')` deletes attachments only; settings and historical watches survive. Empty saves keep existing links; removal of a settings-owning link clears attachments without deleting the link (D11).
 
 - [ ] **Step 1: Write the failing tests.** Append to `packages/shared/src/validators/monitors.test.ts`:
 
@@ -424,52 +430,111 @@ describe('monitors inline settings — checkIntervalSeconds (W05d)', () => {
 });
 ```
 
-Append to `apps/api/src/services/configurationPolicy.monitors.test.ts` (follow the file's existing `tx`/`db` mock shape — it already exercises the `monitors` decompose arm):
-
+In `apps/api/src/services/configurationPolicy.monitors.test.ts:161-236`, extend the existing `updateTx` helper's `insert(...).values(...)` return to support the settings upsert, and import `configPolicyMonitoringSettings` from `../db/schema`:
 ```ts
-describe('monitors decompose/assemble own config_policy_monitoring_settings (W05d)', () => {
-  it('decompose upserts the settings row keyed on the monitors link', async () => {
-    const tx = makeTx(); // the file's existing transaction mock factory
-    await decomposeForTest(tx, 'link-1', 'monitors', { items: [], checkIntervalSeconds: 120 });
-    expect(tx.insert).toHaveBeenCalledWith(configPolicyMonitoringSettings);
-    expect(tx.insertValues).toHaveBeenCalledWith(expect.objectContaining({ featureLinkId: 'link-1', checkIntervalSeconds: 120 }));
-    expect(tx.onConflictDoUpdate).toHaveBeenCalledWith(expect.objectContaining({ target: configPolicyMonitoringSettings.featureLinkId }));
+// Inside updateTx.insert(...).values(...), after calls.push(...):
+return table === configPolicyMonitoringSettings
+  ? { onConflictDoUpdate: vi.fn(async () => []) }
+  : Promise.resolve([]);
+```
+Add these cases **inside** its existing update describe so `updateTx` is in scope. Public signatures are verified at `configurationPolicy.ts:1752-1758`; no private decompose/assemble exports are introduced.
+```ts
+it('upserts interval and never deletes settings during last detachment', async () => {
+  const { tx, calls } = updateTx({
+    id: 'link-mon', configPolicyId: 'policy-1', featureType: 'monitors',
+    featurePolicyId: null, inlineSettings: { items: [{ monitorId: MONITOR_ID_1 }] },
   });
-  it('assemble returns the interval even with zero attachments', async () => {
-    const executor = makeExecutor({ monitorsRows: [], settingsRows: [{ checkIntervalSeconds: 45 }] });
-    const out = await assembleForTest(executor, 'monitors', 'link-1');
-    expect(out).toEqual(expect.objectContaining({ items: [], checkIntervalSeconds: 45 }));
-  });
-  it('deleteNormalizedRows for monitors removes the settings row too', async () => {
-    const tx = makeTx();
-    await deleteNormalizedForTest(tx, 'link-1', 'monitors');
-    expect(tx.delete).toHaveBeenCalledWith(configPolicyMonitors);
-    expect(tx.delete).toHaveBeenCalledWith(configPolicyMonitoringSettings);
+  vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+  await updateFeatureLink('link-mon', {
+    inlineSettings: { items: [], inheritance: 'replace', checkIntervalSeconds: 60 },
+  }, 'policy-1');
+  expect(calls.filter(c => c.op === 'delete').map(c => c.table)).toEqual([configPolicyMonitors]);
+  expect(calls).toContainEqual({ op: 'insert', table: configPolicyMonitoringSettings,
+    values: { featureLinkId: 'link-mon', checkIntervalSeconds: 60 } });
+});
+```
+Use this explicit additional select chain in the existing assemble describe (`:238-282`); the file already defines `selectWhereRows` and `selectOrderByRows` (`:50-65`):
+```ts
+it('assembles the interval and replace mode with no attachments', async () => {
+  const settingsChain: any = {};
+  settingsChain.from = vi.fn(() => settingsChain);
+  settingsChain.where = vi.fn(() => settingsChain);
+  settingsChain.limit = vi.fn(async () => [{ checkIntervalSeconds: 45 }]);
+  vi.mocked(db.select)
+    .mockReturnValueOnce(selectWhereRows([{ id: 'link-mon', configPolicyId: 'policy-1',
+      featureType: 'monitors', featurePolicyId: null,
+      inlineSettings: { items: [], inheritance: 'replace' } }]) as any)
+    .mockReturnValueOnce(selectOrderByRows([]) as any)
+    .mockReturnValueOnce(settingsChain);
+  const [link] = await listFeatureLinks('policy-1');
+  expect(link!.inlineSettings).toEqual({ items: [], inheritance: 'replace', checkIntervalSeconds: 45 });
+});
+```
+Existing add/update tests must now distinguish inserts by table (the new settings insert is not an attachment). Supply the same `onConflictDoUpdate` return for `configPolicyMonitoringSettings`; queue the additional settings select in both existing assemble tests.
+
+Append to Task 1's integration file, importing `configPolicyMonitoringWatches` from the schema and `updateFeatureLink, removeFeatureLink` from `../../services/configurationPolicy`. This checks the real cascading FKs, not only the mock calls:
+```ts
+it('last-detachment Save and the removal backstop retain retired watch history', async () => {
+  const partner = await createPartner();
+  const org = await createOrganization({ partnerId: partner.id });
+  const { policyId } = await policyWithMonitoringLink(org.id, 60, false);
+  await replayMigration(MIGRATION);
+  await withDbAccessContext(SYSTEM_CTX, async () => {
+    const [link] = await db.select().from(configPolicyFeatureLinks).where(and(
+      eq(configPolicyFeatureLinks.configPolicyId, policyId),
+      eq(configPolicyFeatureLinks.featureType, 'monitors')));
+    const [settings] = await db.select().from(configPolicyMonitoringSettings)
+      .where(eq(configPolicyMonitoringSettings.featureLinkId, link!.id));
+    const [watch] = await db.insert(configPolicyMonitoringWatches).values({
+      settingsId: settings!.id, watchType: 'service', name: 'Spooler',
+      retiredAt: new Date(), retiredReason: 'operator',
+    }).returning();
+    await updateFeatureLink(link!.id, {
+      inlineSettings: { items: [], inheritance: 'cumulative', checkIntervalSeconds: 60 },
+    }, policyId);
+    await removeFeatureLink(link!.id, policyId);
+    expect(await db.select().from(configPolicyMonitoringWatches)
+      .where(eq(configPolicyMonitoringWatches.id, watch!.id))).toEqual([watch]);
+    expect(await db.select().from(configPolicyMonitoringSettings)
+      .where(eq(configPolicyMonitoringSettings.id, settings!.id))).toHaveLength(1);
+    const [saved] = await db.select().from(configPolicyFeatureLinks)
+      .where(eq(configPolicyFeatureLinks.id, link!.id));
+    expect(saved!.inlineSettings).toMatchObject({ items: [], checkIntervalSeconds: 60 });
   });
 });
 ```
 
-`decomposeForTest` / `assembleForTest` / `deleteNormalizedForTest` are whatever that file already uses to reach the private arms (it drives them through `addFeatureLink` / `updateFeatureLink` / `getConfigPolicy` with a mocked `db`); keep its convention rather than exporting the private functions.
-
-In `apps/web/src/components/configurationPolicies/featureTabs/MonitorsTab.test.tsx`, replace W05c2 Task 3's three cases (they assert a PATCH/POST on the `monitoring` link with `{ checkIntervalSeconds, watches }`) with:
-
+In `MonitorsTab.test.tsx:1-61,121-138`, use its actual `saveMock`, `removeMock`, `clickSave`, and `baseProps` harness. Replace the last-detachment-removes-link case:
 ```tsx
-it('saves the check interval inside the monitors link inline settings (W05d)', async () => {
-  fetchMock.mockResolvedValue(json({ data: [] }));
-  render(<MonitorsTab {...baseProps} existingLink={{ id: 'l1', featureType: 'monitors', inlineSettings: { items: [], checkIntervalSeconds: 60 } } as never} />);
+it.each(['cumulative', 'replace'] as const)('last detachment saves an empty %s link', async (inheritance) => {
+  render(<MonitorsTab {...baseProps} existingLink={{ id: 'link-1', featureType: 'monitors',
+    featurePolicyId: null, inlineSettings: {
+      items: [{ monitorId: 'm1', enabled: true, sortOrder: 0 }], inheritance, checkIntervalSeconds: 60,
+    } }} />);
+  await screen.findByTestId('monitors-tab-item-m1');
+  fireEvent.click(screen.getByTestId('monitors-tab-item-detach-m1'));
+  clickSave();
+  await waitFor(() => expect(saveMock).toHaveBeenCalledWith('link-1', {
+    featureType: 'monitors', featurePolicyId: null,
+    inlineSettings: { items: [], inheritance, checkIntervalSeconds: 60 },
+  }));
+  expect(removeMock).not.toHaveBeenCalled();
+});
+it('saves the check interval on the monitors link', async () => {
+  render(<MonitorsTab {...baseProps} />);
   fireEvent.change(await screen.findByTestId('monitors-tab-check-interval'), { target: { value: '120' } });
-  fireEvent.click(screen.getByRole('button', { name: /save/i }));
-  await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
-    expect.stringMatching(/\/configuration-policies\/p1\/feature-links\/l1$/),
-    expect.objectContaining({ method: 'PATCH', body: expect.stringContaining('"checkIntervalSeconds":120') }),
-  ));
-  expect(fetchMock).not.toHaveBeenCalledWith(expect.stringMatching(/monitoring/), expect.anything());
+  clickSave();
+  await waitFor(() => expect(saveMock).toHaveBeenCalledWith(null, expect.objectContaining({
+    featureType: 'monitors', inlineSettings: expect.objectContaining({ checkIntervalSeconds: 120 }),
+  })));
+  expect(removeMock).not.toHaveBeenCalled();
 });
 ```
 
 - [ ] **Step 2: Run them, expect FAIL.**
 ```bash
 cd packages/shared && npx vitest run src/validators/monitors.test.ts
+cd apps/api && npx vitest run -c vitest.integration.config.ts src/__tests__/integration/legacyAlertingRetirementMigration.integration.test.ts
 cd apps/api && npx vitest run src/services/configurationPolicy.monitors.test.ts
 cd apps/web && npx vitest run src/components/configurationPolicies/featureTabs/MonitorsTab.test.tsx
 ```
@@ -529,7 +594,7 @@ export const monitorsInlineSettingsSchema = z.object({
       await tx.delete(configPolicyMonitors).where(eq(configPolicyMonitors.featureLinkId, linkId));
       break;
 ```
-(Adjust the third unit test above accordingly: assert `tx.delete` was **not** called with `configPolicyMonitoringSettings`. Link deletion still removes the row through the FK cascade, which is the existing behaviour for a removed link.)
+The settings FK (`configurationPolicies.ts:386`) and watch FK (`:408`) both cascade. Preserve the link in `removeFeatureLink` too: the API/AI removal path must not bypass the empty-save protection.
 
 `assembleInlineSettings` `case 'monitors'` (line 1498):
 ```ts
@@ -544,7 +609,7 @@ export const monitorsInlineSettingsSchema = z.object({
         .from(configPolicyMonitoringSettings)
         .where(eq(configPolicyMonitoringSettings.featureLinkId, linkId))
         .limit(1);
-      if (rows.length === 0 && !settingsRow) return null;
+      // An empty normalized attachment set is authoritative (including replace).
       return {
         items: rows.map((r) => ({
           monitorId: r.monitorId,
@@ -563,18 +628,64 @@ export const monitorsInlineSettingsSchema = z.object({
 const [checkIntervalSeconds, setCheckIntervalSeconds] = useState<number>(
   readCheckInterval(existingLink) ?? readCheckInterval(parentLink) ?? 60,
 );
-function readCheckInterval(link: InlineSettingsLike): number | undefined {
+function readCheckInterval(link: { inlineSettings?: unknown } | null | undefined): number | undefined {
   const v = (link?.inlineSettings as { checkIntervalSeconds?: unknown } | null | undefined)?.checkIntervalSeconds;
   return typeof v === 'number' ? v : undefined;
 }
 // in handleSave / handleOverride:
 inlineSettings: { items: buildPayloadItems(), inheritance, checkIntervalSeconds },
 ```
-and change `handleSave`'s empty-items branch so a policy with no attachments but a non-default interval keeps its link (`if (items.length === 0 && checkIntervalSeconds === 60 && inheritance === 'cumulative')` → remove; otherwise save). Delete the W05c2 `monitoring`-link fetch/PATCH for the interval and its "creating an empty-watch link" helper. The input keeps W05c2's `data-testid="monitors-tab-check-interval"` and label key — no new i18n keys in this task. W05c2's `siblingLinks` plumbing (its Task 2) that existed only so the Monitors tab could write the `monitoring` sibling link is deleted with the write.
+`handleSave` no longer calls `remove` for existing links. Even default intervals can own historical watches; the client does not know which do. Replace its empty branch with:
+```tsx
+if (!existingLink && items.length === 0 && checkIntervalSeconds === 60 && inheritance === 'cumulative') return;
+```
+The remaining `save` payload is `{ items: buildPayloadItems(), inheritance, checkIntervalSeconds }`. Replace `handleRemove` with an empty save as well, retaining the settings and the selected inheritance mode:
+```tsx
+const handleRemove = async () => {
+  if (!existingLink) return;
+  const result = await save(existingLink.id, {
+    featureType: 'monitors', featurePolicyId: null,
+    inlineSettings: { items: [], inheritance, checkIntervalSeconds },
+  });
+  if (result) { onLinkChanged(result, 'monitors'); setItems([]); }
+};
+```
+Both handlers use the existing `useFeatureLink.save` / `runAction` path. Delete the obsolete sibling `monitoring` fetch/PATCH and W05c2 sibling-link plumbing; the interval input retains its existing translated key.
+
+Replace `removeFeatureLink` (`configurationPolicy.ts:1887-1899`) with this service backstop. It locks the link before checking settings; mutations retain the existing transaction/context. A link owning settings is never deleted (D11). A zero-item replace link also stays an authoritative empty replacement.
+```ts
+export async function removeFeatureLink(linkId: string, configPolicyId: string) {
+  return db.transaction(async (tx) => {
+    const predicate = and(eq(configPolicyFeatureLinks.id, linkId),
+      eq(configPolicyFeatureLinks.configPolicyId, configPolicyId));
+    const [link] = await tx.select().from(configPolicyFeatureLinks).where(predicate).for('update');
+    if (!link) return null;
+    const [settings] = await tx.select().from(configPolicyMonitoringSettings)
+      .where(eq(configPolicyMonitoringSettings.featureLinkId, linkId)).limit(1);
+    const inline = (link.inlineSettings ?? {}) as Record<string, unknown>;
+    if (settings || (link.featureType === 'monitors' && inline.inheritance === 'replace')) {
+      if (link.featureType !== 'monitors') {
+        // Retired monitoring links can still own the duplicate settings row
+        // reported by Task 1. Keep that history too.
+        return link;
+      }
+      await tx.delete(configPolicyMonitors).where(eq(configPolicyMonitors.featureLinkId, linkId));
+      const [updated] = await tx.update(configPolicyFeatureLinks).set({
+        inlineSettings: { ...inline, items: [], checkIntervalSeconds: settings?.checkIntervalSeconds ?? 60 },
+        updatedAt: new Date(),
+      }).where(predicate).returning();
+      return updated ?? null;
+    }
+    const [deleted] = await tx.delete(configPolicyFeatureLinks).where(predicate).returning();
+    return deleted ?? null;
+  });
+}
+```
 
 - [ ] **Step 4: Run, expect PASS.**
 ```bash
 cd packages/shared && npx vitest run src/validators/monitors.test.ts
+cd apps/api && npx vitest run -c vitest.integration.config.ts src/__tests__/integration/legacyAlertingRetirementMigration.integration.test.ts
 pnpm --filter @breeze/api exec tsc --noEmit
 cd apps/api && npx vitest run src/services/configurationPolicy.monitors.test.ts src/services/configurationPolicy.inheritance.test.ts src/routes/configurationPolicies/featureLinks.test.ts
 pnpm --filter @breeze/web exec tsc --noEmit
@@ -583,7 +694,7 @@ cd apps/web && npx vitest run src/components/configurationPolicies/featureTabs/M
 
 - [ ] **Step 5: Commit.**
 ```bash
-git add packages/shared/src/validators/monitors.ts packages/shared/src/validators/monitors.test.ts apps/api/src/services/configurationPolicy.ts apps/api/src/services/configurationPolicy.monitors.test.ts apps/web/src/components/configurationPolicies/featureTabs/MonitorsTab.tsx apps/web/src/components/configurationPolicies/featureTabs/MonitorsTab.test.tsx
+git add apps/api/src/__tests__/integration/legacyAlertingRetirementMigration.integration.test.ts packages/shared/src/validators/monitors.ts packages/shared/src/validators/monitors.test.ts apps/api/src/services/configurationPolicy.ts apps/api/src/services/configurationPolicy.monitors.test.ts apps/web/src/components/configurationPolicies/featureTabs/MonitorsTab.tsx apps/web/src/components/configurationPolicies/featureTabs/MonitorsTab.test.tsx
 git commit -m "feat(monitors): checkIntervalSeconds lives on the monitors link; decompose/assemble own the settings row"
 ```
 
@@ -600,25 +711,32 @@ git commit -m "feat(monitors): checkIntervalSeconds lives on the monitors link; 
 - Consumes: `configPolicyEffectiveFeatureLinks.featureType = 'monitors'`, `configPolicyMonitoringSettings.checkIntervalSeconds`, `resolveMonitorDerivedWatches(deviceId)` (2091), `MONITOR_ONLY_CHECK_INTERVAL_SECONDS` (2070).
 - Produces: `buildMonitoringConfigUpdate(deviceId): Promise<MonitoringConfigUpdate | null>` unchanged in signature and wire shape; `check_interval_seconds` from the winning `monitors` link's settings row (default 60); `watches` from monitors only. `resolvePolicyMonitoringSettings` now returns `{ check_interval_seconds: number } | null` (renamed `resolvePolicyCheckInterval`).
 
-- [ ] **Step 1: Write the failing tests.** In `helpers.partnerWidePolicies.test.ts`, change the `monitoring:` cases (465-516): the fixture link's `feature` becomes `'monitors'`, the watches select is gone, and add:
+- [ ] **Step 1: Write the failing tests.** In `helpers.partnerWidePolicies.test.ts`, change the `monitoring:` cases (465-516): remove the queued legacy-watch read and pin the actual feature predicate with the following test:
 
+Add a hoisted `eqMock: vi.fn()` to the existing `vi.hoisted` object and destructuring (`helpers.partnerWidePolicies.test.ts:47-90`), and use this partial mock (there is no existing drizzle mock):
 ```ts
-it('monitors: the check interval comes from the winning monitors link, and no watches query runs (W05d)', async () => {
-  seedPolicyRows([{ level: 'partner', feature: 'monitors', settingsId: 's1', checkIntervalSeconds: 90 }]);
-  seedMonitorDerivedWatches([]);
-  const result = await buildMonitoringConfigUpdate('dev-1');
-  expect(result?.check_interval_seconds).toBe(90);
-  expect(result?.watches).toEqual([]);
-  expect(selectFromTables()).not.toContain(configPolicyMonitoringWatches);
-  expect(joinedFeatureTypes()).toEqual(['monitors']);
+vi.mock('drizzle-orm', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('drizzle-orm')>();
+  eqMock.mockImplementation(actual.eq);
+  return { ...actual, eq: eqMock };
 });
-it('a monitoring-link settings row is ignored after the re-key (W05d)', async () => {
-  seedPolicyRows([{ level: 'organization', feature: 'monitoring', settingsId: 's-legacy', checkIntervalSeconds: 15 }]);
-  seedMonitorDerivedWatches([]);
-  expect(await buildMonitoringConfigUpdate('dev-1')).toBeNull();
+import { configPolicyEffectiveFeatureLinks, configPolicyMonitoringWatches } from '../../db/schema';
+
+it('reads the monitors interval without querying historical watches', async () => {
+  dbMock._resetQueue([
+    deviceRow, orgWithPartner, [],
+    [{ level: 'partner', assignmentPriority: 1, checkIntervalSeconds: 90 }],
+    deviceRow, orgWithPartner, [], [],
+  ]);
+  const result = await buildMonitoringConfigUpdate(DEVICE_ID);
+  expect(result).toEqual({ check_interval_seconds: 90, watches: [] });
+  const tables = dbMock.select.mock.results.map(r => r.value.from.mock.calls[0]?.[0]);
+  expect(tables).not.toContain(configPolicyMonitoringWatches);
+  expect(eqMock).toHaveBeenCalledWith(configPolicyEffectiveFeatureLinks.featureType, 'monitors');
+  expect(eqMock).not.toHaveBeenCalledWith(configPolicyEffectiveFeatureLinks.featureType, 'monitoring');
 });
 ```
-(`seedPolicyRows`, `seedMonitorDerivedWatches`, `selectFromTables`, `joinedFeatureTypes` are the file's existing helpers around lines 244-316; extend them if a name differs.) In `helpers.monitorWatchDelivery.test.ts`, replace the union cases ("policy watch fills thresholds", "auto_restart is OR'd") with one case asserting a policy-tab watch row is **not** delivered even when present, and keep the monitor-derived cases unchanged. In `monitorWatchDelivery.integration.test.ts`, the fixture that inserts a `monitoring` link with a settings row for the check interval must insert a `monitors` link instead (`configPolicyFeatureLinks.featureType: 'monitors'`) and assert `check_interval_seconds` still reads 90 through it.
+`dbMock._resetQueue` and the thenable chains are real (`:47-73`); `deviceRow`, `orgWithPartner`, and `DEVICE_ID` are defined at `:236-244`. Do not add a mocked `feature: 'monitoring'` row and claim it proves exclusion: this harness does not evaluate SQL. In the existing monitor-watch integration fixture, move the interval's feature link to `monitors`; leave a retired watch beneath its settings row and assert the response contains only monitor-derived watches. Keep the resolver's current-context assertions and the monitor-derived response tests.
 
 - [ ] **Step 2: Run, expect FAIL.**
 ```bash
@@ -675,20 +793,17 @@ git commit -m "feat(agents): monitoring_settings check interval reads the monito
 - Create: `apps/api/src/services/monitors/conversion/retirementSweep.ts`
 - Create: `apps/api/src/services/monitors/conversion/retirementSweep.test.ts`
 - Create: `apps/api/src/__tests__/integration/legacyAlertingRetirementSweep.integration.test.ts`
-- Modify: `apps/api/src/services/monitors/conversion/convert.ts` (W05c1; `convertPartnerLegacy`), `conversion/types.ts` (the widened return type), `conversion/loadSources.ts` (the watch source predicate)
+- Modify: `apps/api/src/services/monitors/conversion/loadSources.ts`, `legacyBaseline.ts` (W05c1 prerequisite files; watch source predicate after settings re-key)
+- Test: `apps/api/src/services/monitors/conversion/legacyBaseline.test.ts` (W05c1; keep its normalized-row, inherited-consumer and delivery-equivalence regressions)
 - Modify: `apps/api/src/index.ts` (import block near line 170; the detached block after line 1871)
 - Test (existing): `apps/api/src/__tests__/partner-wide-write-coverage.test.ts`, `site-ceiling-write-coverage.test.ts` (allowlist if flagged)
 
 **Interfaces:**
-- Consumes: `convertPartnerLegacy(partnerId, auth)`, `retireSource(sourceTable, sourceId, reason, auth)`, `previewPolicyConversion(policyId, auth)` and `ConversionPreviewItem` (W05c1); `createSystemAuthContext()` (`services/featureConfigResolver.ts:52`); `runOutsideDbContext`, `withSystemDbAccessContext` (`db/index.ts`); `captureException(err, c?, tags?)` (`services/sentry.ts:687`); `partners.settings` jsonb (`db/schema/orgs.ts:39`).
+- Consumes: `previewPartnerConversion(partnerId, auth): Promise<PartnerConversionPreview>`, `convertPartnerLegacy(partnerId, previewHash, auth)`, `retireSource(sourceTable, sourceId, reason, auth): Promise<{ conversionId: string }>` and `ConversionError` (W05c1); `createSystemAuthContext()` (`services/featureConfigResolver.ts:52`); `runOutsideDbContext`, `withSystemDbAccessContext` (`db/index.ts`); `captureException(err, c?, tags?)` (`services/sentry.ts:687`); `partners.settings` jsonb (`db/schema/orgs.ts:39`).
 - Produces:
   ```ts
-  // services/monitors/conversion/convert.ts (W05c1 signature widened, backwards compatible; types in conversion/types.ts, re-exported by index.ts)
-  export interface ConvertPartnerLegacyOptions { retireUnconvertible?: boolean }
+  // services/monitors/conversion/retirementSweep.ts — W05d-local report type.
   export interface RetiredSource { sourceTable: ConversionSourceTable; sourceId: string; name: string; reason: string; policyId: string | null }
-  export async function convertPartnerLegacy(partnerId: string, auth: AuthContext, opts?: ConvertPartnerLegacyOptions):
-    Promise<{ policies: number; converted: number; unconvertible: number; retired: RetiredSource[] }>;
-
   // services/monitors/conversion/retirementSweep.ts
   export const LEGACY_ALERTING_RETIREMENT_VERSION = 1;
   export interface LegacyAlertingRemaining { configPolicyAlertRules: number; configPolicyMonitoringWatches: number }
@@ -696,6 +811,7 @@ git commit -m "feat(agents): monitoring_settings check interval reads the monito
   export class LegacyAlertingUnretiredError extends Error { readonly remaining: LegacyAlertingRemaining }
   export async function listPartnersWithUnretiredLegacyAlerting(): Promise<string[]>;
   export async function sweepPartnerLegacyAlerting(partnerId: string): Promise<{ converted: number; retired: RetiredSource[] }>;
+  export async function retirePreviewRefusals(preview: PartnerConversionPreview, auth: AuthContext): Promise<RetiredSource[]>;
   export async function checkLegacyAlertingRetired(): Promise<LegacyAlertingRemaining>;
   export async function runLegacyAlertingRetirement(): Promise<RetirementRunResult>;
   ```
@@ -704,10 +820,12 @@ git commit -m "feat(agents): monitoring_settings check interval reads the monito
 - [ ] **Step 1: Write the failing tests.** Create `apps/api/src/services/monitors/conversion/retirementSweep.test.ts`:
 
 ```ts
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const h = vi.hoisted(() => ({
   convertPartnerLegacy: vi.fn(),
+  previewPartnerConversion: vi.fn(),
+  retireSource: vi.fn(),
   captureException: vi.fn(),
   executeRows: [] as Array<Record<string, unknown>>,
   updateSet: vi.fn(),
@@ -718,39 +836,56 @@ vi.mock('../../../db', () => ({
   db: {
     execute: vi.fn(async () => h.executeRows),
     update: vi.fn(() => ({ set: h.updateSet.mockReturnValue({ where: vi.fn(async () => undefined) }) })),
-    select: vi.fn(() => ({ from: vi.fn(() => ({ where: vi.fn(async () => h.countRows) })) })),
+    select: vi.fn(() => ({ from: vi.fn(async () => h.countRows) })),
   },
   runOutsideDbContext: (fn: () => unknown) => fn(),
   withSystemDbAccessContext: (fn: () => unknown) => fn(),
 }));
-vi.mock('./index', () => ({ convertPartnerLegacy: h.convertPartnerLegacy }));
+vi.mock('./index', () => ({
+  convertPartnerLegacy: h.convertPartnerLegacy,
+  previewPartnerConversion: h.previewPartnerConversion,
+  retireSource: h.retireSource,
+  ConversionError: class extends Error { constructor(readonly code: string, message: string) { super(message); } },
+}));
 vi.mock('../../sentry', () => ({ captureException: h.captureException }));
 vi.mock('../../featureConfigResolver', () => ({ createSystemAuthContext: () => ({ scope: 'system' }) }));
 
-import { runLegacyAlertingRetirement, checkLegacyAlertingRetired, LegacyAlertingUnretiredError } from './retirementSweep';
+import { runLegacyAlertingRetirement, checkLegacyAlertingRetired, LegacyAlertingUnretiredError, retirePreviewRefusals } from './retirementSweep';
+import { ConversionError } from './index';
+import type { PartnerConversionPreview } from './types';
 
 beforeEach(() => {
   vi.clearAllMocks();
   h.executeRows = [];
   h.countRows = [{ rules: 0, watches: 0 }];
+  h.previewPartnerConversion.mockImplementation(async (partnerId: string) => ({
+    partnerId, previewHash: 'a'.repeat(64), policies: 0, rows: 0, convertible: 0, unconvertible: [],
+  }));
+  h.retireSource.mockResolvedValue({ conversionId: 'ledger-1' });
   delete process.env.BREEZE_LEGACY_ALERTING_SWEEP;
 });
+
+afterEach(() => vi.restoreAllMocks());
 
 describe('runLegacyAlertingRetirement (W05d)', () => {
   it('sweeps only partners that still own unretired legacy rows and records the marker', async () => {
     h.executeRows = [{ partner_id: 'p1' }, { partner_id: 'p2' }];
-    h.convertPartnerLegacy.mockResolvedValueOnce({ policies: 1, converted: 2, unconvertible: 1, retired: [{ sourceTable: 'config_policy_alert_rules', sourceId: 'r1', name: 'Custom', reason: 'unconvertible:custom', policyId: 'pol' }] });
-    h.convertPartnerLegacy.mockResolvedValueOnce({ policies: 0, converted: 0, unconvertible: 0, retired: [] });
+    h.previewPartnerConversion.mockResolvedValueOnce({ partnerId: 'p1', previewHash: 'a'.repeat(64), policies: 1,
+      rows: 3, convertible: 2, unconvertible: [{ sourceTable: 'config_policy_alert_rules', sourceId: 'r1',
+        name: 'Custom', reason: 'unconvertible:custom_condition', policyId: 'pol', policyName: 'Servers' }] });
+    h.convertPartnerLegacy.mockResolvedValueOnce({ policies: 1, converted: 2, unconvertible: 1 });
+    h.convertPartnerLegacy.mockResolvedValueOnce({ policies: 0, converted: 0, unconvertible: 0 });
     const out = await runLegacyAlertingRetirement();
     expect(h.convertPartnerLegacy).toHaveBeenCalledTimes(2);
-    expect(h.convertPartnerLegacy).toHaveBeenCalledWith('p1', expect.objectContaining({ scope: 'system' }), { retireUnconvertible: true });
+    expect(h.convertPartnerLegacy).toHaveBeenCalledWith('p1', 'a'.repeat(64), expect.objectContaining({ scope: 'system' }));
+    expect(h.retireSource).toHaveBeenCalledWith('config_policy_alert_rules', 'r1', 'unconvertible:custom_condition', expect.objectContaining({ scope: 'system' }));
     expect(out).toMatchObject({ partners: 2, converted: 2, retired: 1, failed: 0 });
     expect(h.updateSet).toHaveBeenCalledTimes(2);
   });
   it('one partner failing never blocks the rest, and is reported to Sentry', async () => {
     h.executeRows = [{ partner_id: 'p1' }, { partner_id: 'p2' }];
     h.convertPartnerLegacy.mockRejectedValueOnce(new Error('boom'));
-    h.convertPartnerLegacy.mockResolvedValueOnce({ policies: 0, converted: 1, unconvertible: 0, retired: [] });
+    h.convertPartnerLegacy.mockResolvedValueOnce({ policies: 0, converted: 1, unconvertible: 0 });
     const out = await runLegacyAlertingRetirement();
     expect(out).toMatchObject({ partners: 1, failed: 1, converted: 1 });
     expect(h.captureException).toHaveBeenCalledWith(expect.any(Error), undefined, expect.objectContaining({ area: 'legacy_alerting_sweep', partnerId: 'p1' }));
@@ -762,6 +897,33 @@ describe('runLegacyAlertingRetirement (W05d)', () => {
     const out = await runLegacyAlertingRetirement();
     expect(h.convertPartnerLegacy).not.toHaveBeenCalled();
     expect(out.remaining).toEqual({ configPolicyAlertRules: 3, configPolicyMonitoringWatches: 0 });
+  });
+});
+
+describe('retirePreviewRefusals', () => {
+  const item = { sourceTable: 'config_policy_alert_rules' as const, sourceId: 'r1', name: 'Custom',
+    reason: 'unconvertible:custom_condition', policyId: null, policyName: null };
+  const preview = { partnerId: 'p1', previewHash: 'a'.repeat(64), policies: 0, rows: 1,
+    convertible: 0, unconvertible: [item] } satisfies PartnerConversionPreview;
+  it('keeps the machine reason verbatim and returns only successful retirements', async () => {
+    expect(await retirePreviewRefusals(preview, { scope: 'system' } as never)).toEqual([
+      { sourceTable: item.sourceTable, sourceId: 'r1', name: 'Custom', reason: item.reason, policyId: null },
+    ]);
+    expect(h.retireSource.mock.calls[0]![2]).toBe('unconvertible:custom_condition');
+  });
+  it('treats already_converted as a completed race without a duplicate report', async () => {
+    h.retireSource.mockRejectedValueOnce(new ConversionError('already_converted', 'already completed'));
+    expect(await retirePreviewRefusals(preview, { scope: 'system' } as never)).toEqual([]);
+  });
+  it('does not swallow other errors', async () => {
+    h.retireSource.mockRejectedValueOnce(new Error('connection failed'));
+    await expect(retirePreviewRefusals(preview, { scope: 'system' } as never)).rejects.toThrow('connection failed');
+  });
+  it('never retires broad workflows, even from an obsolete preview', async () => {
+    const stale = { ...preview, unconvertible: [{ ...item, sourceTable: 'config_policy_automations' as const,
+      reason: 'unconvertible:alert_workflow_kept' }] };
+    expect(await retirePreviewRefusals(stale, { scope: 'system' } as never)).toEqual([]);
+    expect(h.retireSource).not.toHaveBeenCalled();
   });
 });
 
@@ -795,12 +957,12 @@ Create `apps/api/src/__tests__/integration/legacyAlertingRetirementSweep.integra
 import './setup';
 import { afterEach, describe, expect, it } from 'vitest';
 import { eq, sql } from 'drizzle-orm';
-import { db, withDbAccessContext, type DbAccessContext } from '../../db';
-import { configPolicyAlertRules, configPolicyFeatureLinks, configPolicyMonitors, configurationPolicies, monitorDefinitions, partners } from '../../db/schema';
+import { db, withDbAccessContext, SYSTEM_DB_ACCESS_CONTEXT } from '../../db';
+import { configPolicyAlertRules, configPolicyFeatureLinks, configPolicyMonitors, configurationPolicies, monitorDefinitions, monitorConversions, partners, users } from '../../db/schema';
 import { runLegacyAlertingRetirement, checkLegacyAlertingRetired } from '../../services/monitors/conversion/retirementSweep';
 import { createOrganization, createPartner } from './db-utils';
 
-const SYSTEM_CTX: DbAccessContext = { scope: 'system', orgId: null, partnerId: null, userId: null, roleId: null, isPlatformAdmin: false };
+const SYSTEM_CTX = SYSTEM_DB_ACCESS_CONTEXT;
 const policyIds: string[] = [];
 afterEach(async () => {
   await withDbAccessContext(SYSTEM_CTX, async () => {
@@ -828,6 +990,10 @@ describe('legacy alerting retirement sweep', () => {
       return { policyId: policy!.id, convertibleId: a!.id, customId: b!.id };
     });
 
+    // No fabricated users: a clean fixture has no synthetic zero-UUID actor.
+    await withDbAccessContext(SYSTEM_CTX, async () => {
+      expect(await db.select().from(users).where(eq(users.id, '00000000-0000-0000-0000-000000000000'))).toEqual([]);
+    });
     const run = await runLegacyAlertingRetirement();
     expect(run.failed).toBe(0);
     expect(run.converted).toBeGreaterThanOrEqual(1);
@@ -843,6 +1009,11 @@ describe('legacy alerting retirement sweep', () => {
       const [def] = await db.select().from(monitorDefinitions).where(eq(monitorDefinitions.id, conv!.convertedToMonitorId!));
       expect(def!.kind).toBe('cpu');
       expect(def!.orgId).toBe(org.id);
+      expect(def!.createdBy).toBeNull();
+      const ledgers = await db.select().from(monitorConversions)
+        .where(eq(monitorConversions.sourceId, convertibleId));
+      expect(ledgers).toHaveLength(1);
+      expect(ledgers[0]!.convertedBy).toBeNull();
 
       const [cust] = await db.select().from(configPolicyAlertRules).where(eq(configPolicyAlertRules.id, customId));
       expect(cust!.retiredAt).not.toBeNull();
@@ -869,45 +1040,18 @@ Expected: `Failed to resolve import "./retirementSweep"`.
 
 - [ ] **Step 3: Implement.**
 
-`apps/api/src/services/monitors/conversion/convert.ts` (W05c1) — widen `convertPartnerLegacy` (put `ConvertPartnerLegacyOptions` / `RetiredSource` in `conversion/types.ts` and re-export from `index.ts`):
+Keep C1's partner preview and conversion signatures unchanged (D3). The sweep first obtains the full, system-scoped partner preview and confirms its hash; C1 refuses any equivalence delta using the normalized baseline, preserves disabled state and rehomes broad workflows before returning. The sweep then retires only the preview's refused sources. No per-rule ledger writes: standalone sources are the template-group `alert_templates` entries (D13). No retirement of the preserved workflow outcome (D12), no alert resolution (D15/D19), and no `retireUnconvertible` option on the public conversion endpoint.
+
+**Watch source after re-key:** in **both** C1 `loadSources.ts` and the private `legacyBaseline.ts`, the join to settings accepts the old and new links:
 ```ts
-export interface ConvertPartnerLegacyOptions { retireUnconvertible?: boolean }
-export interface RetiredSource { sourceTable: ConversionSourceTable; sourceId: string; name: string; reason: string; policyId: string | null }
-
-export async function convertPartnerLegacy(
-  partnerId: string,
-  auth: AuthContext,
-  opts: ConvertPartnerLegacyOptions = {},
-): Promise<{ policies: number; converted: number; unconvertible: number; retired: RetiredSource[] }> {
-  // …existing W05c1 body: order policies parents-first, preview each,
-  // convertPolicy(policyId, preview.previewHash, auth) for the convertible
-  // items, accumulate { policies, converted, unconvertible } …
-  const retired: RetiredSource[] = [];
-  if (opts.retireUnconvertible) {
-    for (const { policyId, preview } of previews) {
-      // A policy the equivalence check refused, or one still blocked after the
-      // parents-first pass, cannot convert without a human — and after W05d
-      // nothing evaluates its rows. Retire them with the reason so the banner
-      // lists them (spec §Conversion "Who runs it").
-      const policyReason = preview.blockedBy
-        ? `unconvertible:${preview.blockedBy}`
-        : preview.equivalence.deltas.length > 0
-          ? 'unconvertible:equivalence_delta'
-          : null;
-      for (const item of preview.items) {
-        const reason = item.outcome === 'unconvertible' ? `unconvertible:${item.reason ?? 'unknown'}` : policyReason;
-        if (!reason) continue;
-        await retireSource(item.sourceTable, item.sourceId, reason, auth);
-        retired.push({ sourceTable: item.sourceTable, sourceId: item.sourceId, name: item.name, reason, policyId });
-      }
-    }
-  }
-  return { policies, converted, unconvertible, retired };
-}
+// loadSources.ts (own feature links):
+inArray(configPolicyFeatureLinks.featureType, ['monitoring', 'monitors'])
+// legacyBaseline.ts (effective/inherited feature links):
+inArray(configPolicyEffectiveFeatureLinks.featureType, ['monitoring', 'monitors'])
 ```
-`item.reason` is W05c1's code (`custom`, `nested_group`, `no_condition`, `escalation_policy_axis`, …); store it prefixed, matching the `retired_reason` domain in spec §Data model (`'unconvertible:<code>'`). `retireSource` is idempotent on an already-retired row (W05c1 contract) — a re-run of the sweep must not double-list; skip items whose row already carries `retired_at` (the preview omits them).
+Keep normalized `retired_at IS NULL`, enabled checks, assignment filters, inheritance and ordering unchanged. This also reads the duplicate old-link settings row reported by Task 1. Never substitute `resolveEffectiveConfig(...).features.alert_rule`: the actual evaluator joins normalized rows and can fall through a policy with no rule rows (`featureConfigResolver.ts:379-440`), whereas that public reader chooses link JSON (`configurationPolicy.ts:2493-2507`). D6 is a mandatory dependency: its retained baseline tests run after Tasks 7–9 delete public legacy readers.
 
-**Watch source after the re-key:** `grep -n "'monitoring'" apps/api/src/services/monitors/conversion/loadSources.ts` (W05c1 plan line ~1507, `case 'monitoring'`). Where the loader reaches `config_policy_monitoring_watches` through `config_policy_feature_links.feature_type = 'monitoring'`, widen the predicate to `inArray(configPolicyFeatureLinks.featureType, ['monitoring', 'monitors'])` — Task 1 moved the settings rows under the `monitors` link, and the watches follow their settings row. Without this the sweep finds zero watches on every re-keyed policy and the count check flags them forever.
+**System actors:** `createSystemAuthContext()` remains an authorization context only; its synthetic `user.id` is never persisted. C1's write sites use `auth.scope === 'system' ? null : auth.user.id` for ledger, definition, generated-policy and automation user FKs (D7). `monitor_definitions.created_by` already permits null (`db/schema/monitorDefinitions.ts:91`); no W05d relaxation is needed. C1 owns any necessary idempotent relaxation for other written columns. Keep `migrateToConfigPolicies.ts` historical and unchanged until Task 13 deletes it.
 
 Create `apps/api/src/services/monitors/conversion/retirementSweep.ts`:
 ```ts
@@ -927,7 +1071,11 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../../db'
 import { configPolicyAlertRules, configPolicyMonitoringWatches, partners } from '../../../db/schema';
 import { captureException } from '../../sentry';
 import { createSystemAuthContext } from '../../featureConfigResolver';
-import { convertPartnerLegacy, type RetiredSource } from './index';
+import { previewPartnerConversion, convertPartnerLegacy, retireSource, ConversionError } from './index';
+import type { AuthContext } from '../../../middleware/auth';
+import type { ConversionSourceTable, PartnerConversionPreview } from './types';
+
+export interface RetiredSource { sourceTable: ConversionSourceTable; sourceId: string; name: string; reason: string; policyId: string | null }
 
 export const LEGACY_ALERTING_RETIREMENT_VERSION = 1;
 const MARKER_UNCONVERTIBLE_CAP = 200;
@@ -978,15 +1126,52 @@ export async function listPartnersWithUnretiredLegacyAlerting(): Promise<string[
       SELECT COALESCE(t.partner_id, o.partner_id)
         FROM alert_templates t LEFT JOIN organizations o ON o.id = t.org_id
        WHERE t.retired_at IS NULL AND t.managed_by_monitor_id IS NULL AND t.is_built_in = false
+      UNION ALL
+      SELECT COALESCE(cp.partner_id, o.partner_id)
+        FROM config_policy_automations a
+        JOIN config_policy_feature_links l ON l.id = a.feature_link_id
+        JOIN configuration_policies cp ON cp.id = l.config_policy_id
+        LEFT JOIN organizations o ON o.id = cp.org_id
+       WHERE a.retired_at IS NULL AND a.trigger_type = 'event' AND a.event_type = 'alert.triggered'
+      UNION ALL
+      SELECT COALESCE(a.partner_id, o.partner_id)
+        FROM automations a LEFT JOIN organizations o ON o.id = a.org_id
+       WHERE a.retired_at IS NULL AND a.managed_by_monitor_id IS NULL
+         AND a.trigger->>'type' = 'event' AND a.trigger->>'eventType' = 'alert.triggered'
+         AND (a.trigger->'filter'->>'ruleId' IS NOT NULL
+           OR a.trigger->'filter'->>'configPolicyAlertRuleId' IS NOT NULL)
     ) u
     JOIN partners p ON p.id = u.partner_id AND p.deleted_at IS NULL
   `);
   return rows.map((r) => r.partner_id);
 }
 
+export async function retirePreviewRefusals(preview: PartnerConversionPreview, auth: AuthContext): Promise<RetiredSource[]> {
+  const retired: RetiredSource[] = [];
+  for (const item of preview.unconvertible) {
+    // C1 rehomes these workflows and does not return them as refusals.
+    // Defensive compatibility with a stale pre-D12 preview; never disable one.
+    if (item.reason === 'unconvertible:alert_workflow_kept') continue;
+    // Item reasons are ALREADY prefixed. Only C1's bare blockedBy values
+    // are prefixed when it builds the partner preview, not here.
+    const reason = item.reason ?? 'unconvertible:unknown';
+    try {
+      await retireSource(item.sourceTable, item.sourceId, reason, auth);
+      retired.push({ sourceTable: item.sourceTable, sourceId: item.sourceId,
+        name: item.name, reason, policyId: item.policyId });
+    } catch (error) {
+      if (error instanceof ConversionError && error.code === 'already_converted') continue;
+      throw error;
+    }
+  }
+  return retired;
+}
+
 export async function sweepPartnerLegacyAlerting(partnerId: string): Promise<{ converted: number; retired: RetiredSource[] }> {
   const auth = createSystemAuthContext();
-  const result = await convertPartnerLegacy(partnerId, auth, { retireUnconvertible: true });
+  const preview = await previewPartnerConversion(partnerId, auth);
+  const result = await convertPartnerLegacy(partnerId, preview.previewHash, auth);
+  const retired = await retirePreviewRefusals(preview, auth);
   const now = new Date().toISOString();
   await db
     .update(partners)
@@ -995,12 +1180,12 @@ export async function sweepPartnerLegacyAlerting(partnerId: string): Promise<{ c
         'version', ${LEGACY_ALERTING_RETIREMENT_VERSION}::int,
         'sweptAt', ${now}::text,
         'converted', ${result.converted}::int,
-        'retired', ${result.retired.length}::int,
-        'unconvertible', ${JSON.stringify(result.retired.slice(0, MARKER_UNCONVERTIBLE_CAP))}::jsonb
+        'retired', ${retired.length}::int,
+        'unconvertible', ${JSON.stringify(retired.slice(0, MARKER_UNCONVERTIBLE_CAP))}::jsonb
       ))`,
     })
     .where(eq(partners.id, partnerId));
-  return { converted: result.converted, retired: result.retired };
+  return { converted: result.converted, retired };
 }
 
 export async function checkLegacyAlertingRetired(): Promise<LegacyAlertingRemaining> {
@@ -1082,7 +1267,7 @@ If either coverage test names `retirementSweep.ts`, add its allowlist entry with
 
 - [ ] **Step 5: Commit.**
 ```bash
-git add apps/api/src/services/monitors/conversion/retirementSweep.ts apps/api/src/services/monitors/conversion/retirementSweep.test.ts apps/api/src/services/monitors/conversion/convert.ts apps/api/src/services/monitors/conversion/types.ts apps/api/src/services/monitors/conversion/loadSources.ts apps/api/src/services/monitors/conversion/index.ts apps/api/src/__tests__/integration/legacyAlertingRetirementSweep.integration.test.ts apps/api/src/index.ts apps/api/src/__tests__/partner-wide-write-coverage.test.ts apps/api/src/__tests__/site-ceiling-write-coverage.test.ts
+git add apps/api/src/services/monitors/conversion/retirementSweep.ts apps/api/src/services/monitors/conversion/retirementSweep.test.ts apps/api/src/services/monitors/conversion/loadSources.ts apps/api/src/services/monitors/conversion/legacyBaseline.ts apps/api/src/services/monitors/conversion/legacyBaseline.test.ts apps/api/src/__tests__/integration/legacyAlertingRetirementSweep.integration.test.ts apps/api/src/index.ts apps/api/src/__tests__/partner-wide-write-coverage.test.ts apps/api/src/__tests__/site-ceiling-write-coverage.test.ts
 git commit -m "feat(api): boot-time legacy alerting retirement sweep with startup count check"
 ```
 
@@ -1091,62 +1276,122 @@ git commit -m "feat(api): boot-time legacy alerting retirement sweep with startu
 ### Task 5: Pending endpoint lists unconvertible rows and the sweep outcome; banner shows them once (PR1)
 
 **Files:**
-- Modify: `apps/api/src/routes/monitorDefinitions.ts` (W05c1's `GET /conversion/pending` handler)
+- Modify: `apps/api/src/routes/monitorDefinitions.conversion.ts` (W05c1's `GET /pending` handler)
 - Create: `apps/api/src/routes/monitorDefinitions.conversion.pending.test.ts`
-- Modify: `apps/web/src/components/monitoring/conversion/ConversionPendingBanner.tsx` (W05c2's name — see Ordering assumptions), `ConversionPendingBanner.test.tsx`
+- Modify: `apps/api/src/services/monitors/conversion/loadSources.ts` (C1 prerequisite; `readRetirementReport` beside `countPendingConversions`)
+- Modify: `apps/api/src/__tests__/integration/legacyAlertingRetirementSweep.integration.test.ts` (Task 4; scoped report regressions)
+- Modify: `apps/web/src/components/monitoring/conversion/ConversionPendingBanner.tsx`, `ConversionPendingBanner.test.tsx`, `conversionApi.ts`, `conversionApi.test.ts` (W05c2 prerequisite-created)
 - Modify: `apps/web/src/locales/{en,de-DE,es-419,fr-CA,fr-FR,it-IT,pt-BR,tr-TR}/monitoring.json`
 
 **Interfaces:**
-- Consumes: W05c1 `GET /monitor-definitions/conversion/pending?orgId → { data: { policies: number; rows: number } }` (handler in `routes/monitorDefinitions.ts`, backed by `countPendingConversions` in `conversion/convert.ts`); W05c2 `conversionPaths.pending(orgId)` in `components/monitoring/conversion/conversionApi.ts`; `partners.settings.legacyAlertingRetirement` (Task 4); `retired_reason` on the four source tables.
+- Consumes: W05c1 `GET /monitor-definitions/conversion/pending?orgId → { data: { policies: number; rows: number } }` (handler in `routes/monitorDefinitions.conversion.ts`, backed by `countPendingConversions` in `conversion/loadSources.ts`); W05c2 `conversionPaths.pending(orgId)` in `components/monitoring/conversion/conversionApi.ts`; `partners.settings.legacyAlertingRetirement` (Task 4); `retired_reason` on the five source tables.
 - Produces:
   ```ts
   interface PendingConversionResponse {
     policies: number; rows: number;                          // W05c1, unchanged (still wrapped in { data: … })
     unconvertible: Array<{ sourceTable: ConversionSourceTable; sourceId: string; name: string; reason: string; policyId: string | null; policyName: string | null; retiredAt: string }>; // ≤ 200, newest first
-    sweep: { sweptAt: string; converted: number; retired: number } | null; // the caller's partner marker
+    sweep: { sweptAt: string; converted: number; retired: number } | null; // authorized partner-wide marker, null for org-specific reports
   }
   ```
-  Web: banner variant "N legacy rules could not be converted — review" with an expandable list and **Dismiss**; dismissal is per viewer in `localStorage` under `breeze.legacyAlertingRetirement.dismissed:<scopeId>:<sweptAt>` (a new sweep re-shows it), wrapped in try/catch.
+  Web: banner variant "N legacy rules could not be converted — review" with an expandable list and **Dismiss**; dismissal is per viewer in `localStorage` under `breeze.legacyAlertingRetirement.dismissed:<viewerId>:<scopeId>:<sweptAt>` (a new sweep re-shows it), wrapped in try/catch.
 
-- [ ] **Step 1: Write the failing tests.** `apps/api/src/routes/monitorDefinitions.conversion.pending.test.ts` (Drizzle mock pattern as in `monitorDefinitions.test.ts`):
-
+- [ ] **Step 1: Write the failing tests.** Create `apps/api/src/routes/monitorDefinitions.conversion.pending.test.ts` with a real Hono/mocked-service harness. C1 creates the subrouter/export; this avoids nonexistent `seedSelect`/`partnerAuth` helpers in the current monitor-route tests (`monitorDefinitions.test.ts:134-148,217-241`).
 ```ts
-it('GET /conversion/pending returns unconvertible rows and the partner sweep marker (W05d)', async () => {
-  seedSelect([
-    // pending counts (W05c1 queries) …
-    [{ policies: 0, rows: 0 }],
-    // unconvertible rows across the four source tables
-    [{ sourceTable: 'config_policy_alert_rules', sourceId: 'r1', name: 'Custom', reason: 'unconvertible:custom', policyId: 'pol', policyName: 'Servers', retiredAt: new Date('2026-11-01T00:00:00Z') }],
-    // partner marker
-    [{ settings: { legacyAlertingRetirement: { version: 1, sweptAt: '2026-11-01T00:00:00.000Z', converted: 4, retired: 1 } } }],
-  ]);
-  const res = await app.request('/monitor-definitions/conversion/pending?orgId=org-1', { headers: partnerAuth });
-  expect(res.status).toBe(200);
-  const { data: body } = await res.json();
-  expect(body.unconvertible).toEqual([expect.objectContaining({ sourceId: 'r1', reason: 'unconvertible:custom', retiredAt: '2026-11-01T00:00:00.000Z' })]);
-  expect(body.sweep).toEqual({ sweptAt: '2026-11-01T00:00:00.000Z', converted: 4, retired: 1 });
+import { beforeEach, expect, it, vi } from 'vitest';
+import { Hono } from 'hono';
+import type { AuthContext } from '../middleware/auth';
+import { createSystemAuthContext } from '../services/featureConfigResolver';
+const h = vi.hoisted(() => ({ counts: vi.fn(), report: vi.fn() }));
+vi.mock('../middleware/auth', () => ({
+  authMiddleware: async (_c: unknown, next: () => Promise<void>) => next(),
+  requireScope: () => async (_c: unknown, next: () => Promise<void>) => next(),
+  requirePermission: () => async (_c: unknown, next: () => Promise<void>) => next(),
+  requireMfa: () => async (_c: unknown, next: () => Promise<void>) => next(),
+}));
+vi.mock('../services/monitors/conversion', () => ({
+  countPendingConversions: h.counts, previewPolicyConversion: vi.fn(), previewPartnerConversion: vi.fn(),
+  convertPolicy: vi.fn(), convertPartnerLegacy: vi.fn(), revertConversion: vi.fn(), retireSource: vi.fn(),
+  listConversionLedger: vi.fn(), ConversionError: class extends Error {},
+  ConversionPrerequisiteMissingError: class extends Error {},
+}));
+vi.mock('../services/monitors/conversion/loadSources', () => ({ readRetirementReport: h.report }));
+vi.mock('../services/auditEvents', () => ({ writeRouteAudit: vi.fn() }));
+import { monitorConversionRoutes } from './monitorDefinitions.conversion';
+const ORG = '10000000-0000-4000-8000-000000000001';
+const OTHER = '10000000-0000-4000-8000-000000000002';
+function request(orgId = ORG) {
+  const app = new Hono<{ Variables: { auth: AuthContext } }>();
+  app.use('*', async (c, next) => {
+    c.set('auth', { ...createSystemAuthContext(), scope: 'organization', orgId: ORG,
+      canAccessOrg: (id: string) => id === ORG });
+    await next();
+  });
+  app.route('/monitor-definitions/conversion', monitorConversionRoutes);
+  return app.request(`/monitor-definitions/conversion/pending?orgId=${orgId}`);
+}
+beforeEach(() => {
+  vi.clearAllMocks();
+  h.counts.mockResolvedValue({ policies: 0, rows: 0 });
+  h.report.mockResolvedValue({ unconvertible: [], sweep: null });
 });
-it('sweep is null when the partner has never been swept', async () => { /* marker query returns [{ settings: {} }] → data.sweep === null */ });
+it('returns the report and passes the selected org to its authorized loader', async () => {
+  const report = { unconvertible: [{ sourceTable: 'config_policy_alert_rules', sourceId: OTHER,
+    name: 'Custom', reason: 'unconvertible:custom_condition', policyId: null, policyName: null,
+    retiredAt: '2026-11-01T00:00:00.000Z' }], sweep: null };
+  h.report.mockResolvedValue(report);
+  const res = await request();
+  expect(res.status).toBe(200);
+  expect(await res.json()).toEqual({ data: { policies: 0, rows: 0, ...report } });
+  expect(h.report).toHaveBeenCalledWith(expect.objectContaining({ orgId: ORG }), ORG);
+});
+it('returns null for an absent sweep marker', async () => {
+  const res = await request();
+  expect((await res.json()).data.sweep).toBeNull();
+});
+it('denies another organization before reading the report', async () => {
+  expect((await request(OTHER)).status).toBe(403);
+  expect(h.report).not.toHaveBeenCalled();
+});
+```
+In Task 4's live integration test, after retirement, use the real report loader under organization scope so Postgres exercises every qualified predicate. Add imports for `readRetirementReport`, `createSystemAuthContext`, and `type AuthContext` from their modules:
+```ts
+const otherOrg = await createOrganization({ partnerId: partner.id });
+const orgAuth: AuthContext = { ...createSystemAuthContext(), scope: 'organization',
+  orgId: org.id, partnerId: partner.id, accessibleOrgIds: [org.id],
+  canAccessOrg: id => id === org.id,
+  orgCondition: column => eq(column, org.id),
+};
+await withDbAccessContext({ scope: 'organization', orgId: org.id,
+  accessibleOrgIds: [org.id], currentPartnerId: partner.id }, async () => {
+  const report = await readRetirementReport(orgAuth, org.id);
+  expect(report.unconvertible.map(row => row.sourceId)).toEqual([customId]);
+  await expect(readRetirementReport(orgAuth, otherOrg.id)).rejects.toThrow('Organization access denied');
+});
+// A privileged caller selecting the other org must still get only that org.
+await withDbAccessContext(SYSTEM_CTX, async () => {
+  const report = await readRetirementReport(createSystemAuthContext(), otherOrg.id);
+  expect(report.unconvertible).toEqual([]);
+});
 ```
 
-`ConversionPendingBanner.test.tsx`:
+`ConversionPendingBanner.test.tsx`: C2's harness mocks `fetchPendingCounts` directly, not a raw fetch helper. Add `id: 'viewer-1'` to its `useAuthStore` mock's `user` shape, clear localStorage in beforeEach, and extend all existing pending fixtures with `unconvertible: [], sweep: null`:
 ```tsx
 it('lists unconvertible rows after the sweep and dismisses per viewer (W05d)', async () => {
-  fetchMock.mockResolvedValue(json({ data: { policies: 0, rows: 0, sweep: { sweptAt: 's1', converted: 2, retired: 1 },
-    unconvertible: [{ sourceTable: 'config_policy_alert_rules', sourceId: 'r1', name: 'Custom', reason: 'unconvertible:custom', policyId: 'p', policyName: 'Servers', retiredAt: 's1' }] } }));
-  render(<ConversionPendingBanner orgId="org-1" />);
+  fetchPendingCounts.mockResolvedValue({ policies: 0, rows: 0, sweep: { sweptAt: 's1', converted: 2, retired: 1 },
+    unconvertible: [{ sourceTable: 'config_policy_alert_rules', sourceId: 'r1', name: 'Custom', reason: 'unconvertible:custom_condition', policyId: 'p', policyName: 'Servers', retiredAt: 's1' }] });
+  render(<ConversionPendingBanner orgId="org-1" onReview={vi.fn()} />);
   expect(await screen.findByText(/1 legacy rule could not be converted/i)).toBeInTheDocument();
   fireEvent.click(screen.getByRole('button', { name: /review/i }));
   expect(screen.getByText('Custom')).toBeInTheDocument();
   expect(screen.getByText(/Servers/)).toBeInTheDocument();
   fireEvent.click(screen.getByRole('button', { name: /dismiss/i }));
   expect(screen.queryByText(/could not be converted/i)).not.toBeInTheDocument();
-  expect(window.localStorage.getItem('breeze.legacyAlertingRetirement.dismissed:org-1:s1')).toBe('1');
+  expect(window.localStorage.getItem('breeze.legacyAlertingRetirement.dismissed:viewer-1:org-1:s1')).toBe('1');
 });
 it('stays hidden when nothing is unconvertible', async () => {
-  fetchMock.mockResolvedValue(json({ data: { policies: 0, rows: 0, sweep: null, unconvertible: [] } }));
-  render(<ConversionPendingBanner orgId="org-1" />);
-  await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+  fetchPendingCounts.mockResolvedValue({ policies: 0, rows: 0, sweep: null, unconvertible: [] });
+  render(<ConversionPendingBanner orgId="org-1" onReview={vi.fn()} />);
+  await waitFor(() => expect(fetchPendingCounts).toHaveBeenCalled());
   expect(screen.queryByText(/could not be converted/i)).not.toBeInTheDocument();
 });
 ```
@@ -1154,66 +1399,105 @@ it('stays hidden when nothing is unconvertible', async () => {
 - [ ] **Step 2: Run, expect FAIL.**
 ```bash
 cd apps/api && npx vitest run src/routes/monitorDefinitions.conversion.pending.test.ts
+cd apps/api && npx vitest run -c vitest.integration.config.ts src/__tests__/integration/legacyAlertingRetirementSweep.integration.test.ts
 cd apps/web && npx vitest run src/components/monitoring/conversion/ConversionPendingBanner.test.tsx
 ```
 Expected: `expected undefined to deeply equal [ObjectContaining…]` (api); `Unable to find an element with the text: /1 legacy rule could not be converted/` (web).
 
-- [ ] **Step 3: Implement.** In the pending handler, after W05c1's two counts:
+- [ ] **Step 3: Implement.** Add `readRetirementReport` to C1's `conversion/loadSources.ts` beside `countPendingConversions`. It reads ledger-owned retirements (D2/D13), including all five source-table variants, and applies both the caller's ownership ceiling and requested org in one place. Standalone rules are reported once under their template-group ledger entry, never as an unsupported `sourceTable: 'alert_rules'`. Use the original `configuration_policies` name, not `cp`, so qualified schema columns remain valid. There are no invented template/rule predicates or camel-casing helpers.
 
 ```ts
-const unconvertible = await db.execute<{ source_table: string; source_id: string; name: string; reason: string; policy_id: string | null; policy_name: string | null; retired_at: Date }>(sql`
-  SELECT * FROM (
-    SELECT 'config_policy_alert_rules' AS source_table, r.id AS source_id, r.name, r.retired_reason AS reason,
-           cp.id AS policy_id, cp.name AS policy_name, r.retired_at
-      FROM config_policy_alert_rules r
-      JOIN config_policy_feature_links l ON l.id = r.feature_link_id
-      JOIN configuration_policies cp ON cp.id = l.config_policy_id
-     WHERE r.retired_reason LIKE 'unconvertible:%' AND ${policyAccessCondition(auth) ?? sql`true`}
-    UNION ALL
-    SELECT 'config_policy_monitoring_watches', w.id, COALESCE(w.display_name, w.name), w.retired_reason, cp.id, cp.name, w.retired_at
-      FROM config_policy_monitoring_watches w
-      JOIN config_policy_monitoring_settings s ON s.id = w.settings_id
-      JOIN config_policy_feature_links l ON l.id = s.feature_link_id
-      JOIN configuration_policies cp ON cp.id = l.config_policy_id
-     WHERE w.retired_reason LIKE 'unconvertible:%' AND ${policyAccessCondition(auth) ?? sql`true`}
-    UNION ALL
-    SELECT 'alert_templates', t.id, t.name, t.retired_reason, NULL, NULL, t.retired_at
-      FROM alert_templates t
-     WHERE t.retired_reason LIKE 'unconvertible:%' AND ${templateAccessCondition(auth)}
-    UNION ALL
-    SELECT 'alert_rules', ar.id, ar.name, ar.retired_reason, NULL, NULL, ar.retired_at
-      FROM alert_rules ar
-     WHERE ar.retired_reason LIKE 'unconvertible:%' AND ${alertRuleAccessCondition(auth)}
-  ) u
-  ORDER BY retired_at DESC
-  LIMIT 200
-`);
+// Add to loadSources.ts imports: and, eq, isNull, isNotNull, or, sql from drizzle-orm;
+// db from ../../../db; DbExecutor from ./legacyBaseline; monitorConversions, partners,
+// configurationPolicies from ../../../db/schema; AuthContext from ../../../middleware/auth;
+// canManagePartnerWidePolicies from ../../partnerWideAccess; ConversionSourceTable from ./types.
+export async function readRetirementReport(auth: AuthContext, requestedOrgId: string | null,
+  executor: DbExecutor = db) {
+  if (requestedOrgId && !auth.canAccessOrg(requestedOrgId)) throw new Error('Organization access denied');
+  const owner = auth.scope === 'system' ? sql`true` : or(
+    and(isNotNull(monitorConversions.orgId), auth.orgCondition(monitorConversions.orgId) ?? sql`false`),
+    canManagePartnerWidePolicies(auth) && auth.partnerId
+      ? and(isNull(monitorConversions.orgId), eq(monitorConversions.partnerId, auth.partnerId))
+      : sql`false`,
+  );
+  const selectedOrg = requestedOrgId ? eq(monitorConversions.orgId, requestedOrgId) : sql`true`;
+  const rows = await executor.execute<{
+    source_table: ConversionSourceTable; source_id: string; name: string; reason: string;
+    policy_id: string | null; policy_name: string | null; retired_at: Date;
+  }>(sql`
+    WITH sources AS (
+      SELECT 'config_policy_alert_rules' AS source_table, id, name, retired_reason, retired_at
+      FROM config_policy_alert_rules
+      UNION ALL
+      SELECT 'config_policy_monitoring_watches', id, COALESCE(display_name, name), retired_reason, retired_at
+      FROM config_policy_monitoring_watches
+      UNION ALL
+      SELECT 'alert_templates', id, name, retired_reason, retired_at FROM alert_templates
+      UNION ALL
+      SELECT 'automations', id, name, retired_reason, retired_at FROM automations
+      UNION ALL
+      SELECT 'config_policy_automations', id, name, retired_reason, retired_at FROM config_policy_automations
+    )
+    SELECT sources.source_table, sources.id AS source_id, sources.name,
+           sources.retired_reason AS reason, sources.retired_at,
+           ${configurationPolicies.id} AS policy_id, ${configurationPolicies.name} AS policy_name
+      FROM ${monitorConversions}
+      JOIN sources ON sources.id = ${monitorConversions.sourceId}
+        AND sources.source_table = ${monitorConversions.sourceTable}
+      LEFT JOIN ${configurationPolicies} ON ${configurationPolicies.id} = ${monitorConversions.policyId}
+     WHERE ${owner} AND ${selectedOrg} AND ${monitorConversions.revertedAt} IS NULL
+       AND sources.retired_at IS NOT NULL AND sources.retired_reason LIKE 'unconvertible:%'
+       AND sources.retired_reason <> 'unconvertible:alert_workflow_kept'
+     ORDER BY sources.retired_at DESC, sources.id
+     LIMIT 200
+  `);
+  const unconvertible = rows.map(row => ({ sourceTable: row.source_table, sourceId: row.source_id,
+    name: row.name, reason: row.reason, policyId: row.policy_id, policyName: row.policy_name,
+    retiredAt: new Date(row.retired_at).toISOString() }));
+  // Partner-wide marker counts must not leak other orgs' data to a scoped viewer.
+  // Org-specific reports still list all their refused sources through the ledger.
+  let sweep: { sweptAt: string; converted: number; retired: number } | null = null;
+  if (!requestedOrgId && auth.partnerId && canManagePartnerWidePolicies(auth)) {
+    const [partner] = await executor.select({ settings: partners.settings }).from(partners)
+      .where(eq(partners.id, auth.partnerId)).limit(1);
+    const marker = (partner?.settings as { legacyAlertingRetirement?: {
+      sweptAt: string; converted: number; retired: number;
+    } } | null)?.legacyAlertingRetirement;
+    if (marker?.sweptAt) sweep = { sweptAt: marker.sweptAt, converted: marker.converted, retired: marker.retired };
+  }
+  return { unconvertible, sweep };
+}
 ```
-`policyAccessCondition(auth)` is `services/configurationPolicy.ts:232`; the template/rule ownership predicates are the ones W05c1's pending counts already use (`routes/alerts/helpers.ts` `alertRuleOwnershipConditionForOrg` / the partner-wide rule scope helpers) — reuse them, do not write a fourth. RLS is the backstop either way. Then:
+In `routes/monitorDefinitions.conversion.ts`, import `readRetirementReport` from `../services/monitors/conversion/loadSources`. Keep C1's query validation, `auth.canAccessOrg` check and pending-count scope unchanged; replace its final return:
 ```ts
-const partnerId = auth.scope === 'partner' ? auth.partnerId : (await orgPartnerId(orgId));
-const [p] = partnerId ? await db.select({ settings: partners.settings }).from(partners).where(eq(partners.id, partnerId)).limit(1) : [];
-const marker = (p?.settings as Record<string, any> | null)?.legacyAlertingRetirement;
-const sweep = marker?.sweptAt ? { sweptAt: marker.sweptAt, converted: marker.converted ?? 0, retired: marker.retired ?? 0 } : null;
-return c.json({ data: { policies, rows, unconvertible: unconvertible.map(camel), sweep } });
+const report = await readRetirementReport(auth, orgId);
+return c.json({ data: { policies: counts.policies, rows: counts.rows, ...report } });
 ```
 
-`ConversionPendingBanner.tsx`: keep the W05c2 "needs conversion" variant; add the retirement variant rendered when `data.unconvertible.length > 0` and `!isDismissed(scopeId, data.sweep?.sweptAt ?? 'manual')`:
+In `conversionApi.ts`, widen `PendingCounts` to the `PendingConversionResponse` shape above (with `ConversionSourceTable` already defined there). `fetchPendingCounts` already unwraps the response without dropping fields; keep it. Test the full report round-trip in `conversionApi.test.ts`:
+```ts
+it('keeps retirement report fields when fetching pending counts', async () => {
+  const data = { policies: 0, rows: 0, unconvertible: [], sweep: null };
+  vi.mocked(fetchWithAuth).mockResolvedValue(new Response(JSON.stringify({ data })));
+  await expect(fetchPendingCounts('org-1')).resolves.toEqual(data);
+});
+```
+`ConversionPendingBanner.tsx`: keep the W05c2 "needs conversion" variant; add the retirement variant rendered when `data.unconvertible.length > 0` and `!isDismissed(viewerId, scopeId, data.sweep?.sweptAt ?? data.unconvertible[0]?.retiredAt ?? 'manual')`:
 ```tsx
-const dismissKey = (scopeId: string, sweptAt: string) => `breeze.legacyAlertingRetirement.dismissed:${scopeId}:${sweptAt}`;
-function isDismissed(scopeId: string, sweptAt: string): boolean {
-  try { return window.localStorage.getItem(dismissKey(scopeId, sweptAt)) === '1'; } catch { return false; }
+const dismissKey = (viewerId: string, scopeId: string, sweptAt: string) => `breeze.legacyAlertingRetirement.dismissed:${viewerId}:${scopeId}:${sweptAt}`;
+function isDismissed(viewerId: string, scopeId: string, sweptAt: string): boolean {
+  try { return window.localStorage.getItem(dismissKey(viewerId, scopeId, sweptAt)) === '1'; } catch { return false; }
 }
-function dismiss(scopeId: string, sweptAt: string) {
-  try { window.localStorage.setItem(dismissKey(scopeId, sweptAt), '1'); } catch { /* private window: render without persistence */ }
+function dismiss(viewerId: string, scopeId: string, sweptAt: string) {
+  try { window.localStorage.setItem(dismissKey(viewerId, scopeId, sweptAt), '1'); } catch { /* private window: render without persistence */ }
 }
-// …
+// The component assigns this JSX to retirementBanner when !hidden and data.unconvertible.length > 0.
 <div role="status" data-testid="legacy-retirement-banner" className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm dark:border-amber-700 dark:bg-amber-950">
   <div className="flex items-center justify-between gap-2">
     <span>{t('conversion.retirement.summary', { count: data.unconvertible.length })}</span>
     <div className="flex gap-2">
       <button type="button" className="underline" onClick={() => setOpen((o) => !o)}>{t('conversion.retirement.review')}</button>
-      <button type="button" className="underline" onClick={() => { dismiss(scopeId, sweptAt); setHidden(true); }}>{t('conversion.retirement.dismiss')}</button>
+      <button type="button" className="underline" onClick={() => { dismiss(viewerId, scopeId, sweptAt); setHidden(true); }}>{t('conversion.retirement.dismiss')}</button>
     </div>
   </div>
   {open && (
@@ -1222,13 +1506,23 @@ function dismiss(scopeId: string, sweptAt: string) {
         <li key={`${u.sourceTable}:${u.sourceId}`}>
           <span className="font-medium">{u.name}</span>
           {u.policyName ? <span className="text-muted-foreground"> — {u.policyName}</span> : null}
-          <span className="ml-2 rounded bg-muted px-1 text-xs">{t(/* i18n-dynamic */ `conversion.retirement.reasons.${u.reason.replace('unconvertible:', '')}`, { defaultValue: u.reason })}</span>
+          <span className="ml-2 rounded bg-muted px-1 text-xs">{t([/* i18n-dynamic */ `conversion.retirement.reasons.${u.reason.replace(/^unconvertible:/, '')}`, 'conversion.retirement.reasons.unknown'])} <code>{u.reason}</code></span>
         </li>
       ))}
       <li className="text-muted-foreground">{t('conversion.retirement.openAlertsNote')}</li>
     </ul>
   )}
 </div>
+```
+Before C2's early return, add the state below (every hook precedes the return); change `if (!counts || counts.rows === 0) return null` to `if (!counts) return null`. The existing `counts.rows > 0` pending section and `retirementBanner` render as siblings. A zero pending count must not suppress retirement reports.
+```tsx
+const viewerId = useAuthStore(s => s.user?.id ?? 'anonymous');
+const scopeId = orgId ?? (claims.status === 'resolved' ? claims.claims?.partnerId : null) ?? 'unscoped';
+const [open, setOpen] = useState(false);
+const [hidden, setHidden] = useState(false);
+const data = counts;
+const sweptAt = counts?.sweep?.sweptAt ?? counts?.unconvertible[0]?.retiredAt ?? 'manual';
+useEffect(() => { setHidden(isDismissed(viewerId, scopeId, sweptAt)); setOpen(false); }, [viewerId, scopeId, sweptAt]);
 ```
 `monitoring.json` keys (add to all 8 locales; `summary` uses i18next plurals `_one`/`_other`):
 | key | en | de-DE | es-419 | fr-CA / fr-FR | it-IT | pt-BR | tr-TR |
@@ -1238,7 +1532,7 @@ function dismiss(scopeId: string, sweptAt: string) {
 | `conversion.retirement.review` | `Review` | `Prüfen` | `Revisar` | `Vérifier` | `Verifica` | `Revisar` | `İncele` |
 | `conversion.retirement.dismiss` | `Dismiss` | `Ausblenden` | `Descartar` | `Ignorer` | `Ignora` | `Dispensar` | `Kapat` |
 | `conversion.retirement.openAlertsNote` | `These rules no longer fire. Their open alerts stay open until someone resolves them; recreate the condition as a monitor if it is still needed.` | `Diese Regeln lösen nicht mehr aus. Ihre offenen Warnungen bleiben offen, bis jemand sie löst; legen Sie die Bedingung bei Bedarf als Monitor neu an.` | `Estas reglas ya no se disparan. Sus alertas abiertas siguen abiertas hasta que alguien las resuelva; vuelve a crear la condición como monitor si aún la necesitas.` | `Ces règles ne se déclenchent plus. Leurs alertes ouvertes le restent jusqu’à ce que quelqu’un les résolve ; recréez la condition sous forme de moniteur si elle est encore nécessaire.` | `Queste regole non scattano più. Gli avvisi aperti restano aperti finché qualcuno non li risolve; ricrea la condizione come monitor se serve ancora.` | `Estas regras não disparam mais. Os alertas abertos permanecem abertos até que alguém os resolva; recrie a condição como monitor se ainda for necessária.` | `Bu kurallar artık tetiklenmiyor. Açık uyarıları biri çözene kadar açık kalır; hâlâ gerekiyorsa koşulu bir monitör olarak yeniden oluşturun.` |
-| `conversion.retirement.reasons.custom` | `custom condition` | `benutzerdefinierte Bedingung` | `condición personalizada` | `condition personnalisée` | `condizione personalizzata` | `condição personalizada` | `özel koşul` |
+| `conversion.retirement.reasons.custom_condition` | `custom condition` | `benutzerdefinierte Bedingung` | `condición personalizada` | `condition personnalisée` | `condizione personalizzata` | `condição personalizada` | `özel koşul` |
 | `conversion.retirement.reasons.nested_group` | `nested condition group` | `verschachtelte Bedingungsgruppe` | `grupo de condiciones anidado` | `groupe de conditions imbriqué` | `gruppo di condizioni annidato` | `grupo de condições aninhado` | `iç içe koşul grubu` |
 | `conversion.retirement.reasons.no_condition` | `no evaluable condition` | `keine auswertbare Bedingung` | `sin condición evaluable` | `aucune condition évaluable` | `nessuna condizione valutabile` | `sem condição avaliável` | `değerlendirilebilir koşul yok` |
 | `conversion.retirement.reasons.equivalence_delta` | `conversion would change what fires on some devices` | `Umwandlung würde ändern, was auf einigen Geräten auslöst` | `la conversión cambiaría lo que se dispara en algunos dispositivos` | `la conversion changerait ce qui se déclenche sur certains appareils` | `la conversione cambierebbe cosa scatta su alcuni dispositivi` | `a conversão mudaria o que dispara em alguns dispositivos` | `dönüştürme bazı cihazlarda neyin tetikleneceğini değiştirirdi` |
@@ -1246,12 +1540,21 @@ function dismiss(scopeId: string, sweptAt: string) {
 | `conversion.retirement.reasons.parent_unconverted` | `parent policy was not converted` | `übergeordnete Richtlinie wurde nicht umgewandelt` | `la política superior no se convirtió` | `la politique parente n’a pas été convertie` | `la policy padre non è stata convertita` | `a política pai não foi convertida` | `üst politika dönüştürülmedi` |
 | `conversion.retirement.reasons.prerequisite_missing` | `a prerequisite fix is missing on this server` | `auf diesem Server fehlt eine vorausgesetzte Korrektur` | `falta una corrección previa en este servidor` | `un correctif préalable manque sur ce serveur` | `su questo server manca una correzione prerequisita` | `falta uma correção pré-requisito neste servidor` | `bu sunucuda ön koşul düzeltmesi eksik` |
 
-(Any additional W05c1 reason code you find in `grep -rn "unconvertible:" apps/api/src/services/monitors/conversion/` gets a row in all 8 files; unknown codes fall back to the raw reason via `defaultValue`.)
+| `conversion.retirement.reasons.metric_without_kind` | `metric has no monitor kind` | `für die Metrik gibt es keinen Monitortyp` | `la métrica no tiene tipo de monitor` | `aucun type de moniteur pour cette métrique` | `la metrica non ha un tipo di monitor` | `a métrica não tem tipo de monitor` | `metriğin monitör türü yok` |
+| `conversion.retirement.reasons.child_kind_not_composable` | `condition cannot be part of a composite monitor` | `Bedingung ist nicht für zusammengesetzte Monitore geeignet` | `la condición no admite un monitor compuesto` | `condition incompatible avec un moniteur composite` | `condizione incompatibile con un monitor composto` | `condição incompatível com monitor composto` | `koşul bileşik monitörde kullanılamaz` |
+| `conversion.retirement.reasons.too_many_conditions` | `too many conditions` | `zu viele Bedingungen` | `demasiadas condiciones` | `trop de conditions` | `troppe condizioni` | `condições demais` | `çok fazla koşul` |
+| `conversion.retirement.reasons.too_many_responses` | `more than ten responses would be required` | `mehr als zehn Reaktionen wären erforderlich` | `se necesitarían más de diez respuestas` | `plus de dix réponses seraient nécessaires` | `servirebbero più di dieci risposte` | `seriam necessárias mais de dez respostas` | `ondan fazla yanıt gerekir` |
+| `conversion.retirement.reasons.auto_resolve_conditions` | `custom resolution conditions cannot be preserved` | `benutzerdefinierte Auflösungsbedingungen können nicht beibehalten werden` | `no se pueden conservar las condiciones de resolución personalizadas` | `les conditions de résolution personnalisées ne peuvent pas être conservées` | `impossibile mantenere le condizioni di risoluzione personalizzate` | `não é possível preservar as condições de resolução personalizadas` | `özel çözüm koşulları korunamıyor` |
+| `conversion.retirement.reasons.target_unconvertible` | `the response target cannot be converted` | `das Reaktionsziel kann nicht konvertiert werden` | `no se puede convertir el destino de la respuesta` | `la cible de la réponse ne peut pas être convertie` | `impossibile convertire la destinazione della risposta` | `o destino da resposta não pode ser convertido` | `yanıt hedefi dönüştürülemiyor` |
+| `conversion.retirement.reasons.unknown` | `conversion was refused; review the source` | `Konvertierung abgelehnt; Quelle prüfen` | `conversión rechazada; revise el origen` | `conversion refusée ; vérifiez la source` | `conversione rifiutata; verifica l’origine` | `conversão recusada; revise a origem` | `dönüştürme reddedildi; kaynağı inceleyin` |
+
+This table uses C1's actual machine codes, including `custom_condition` (not `custom`) and `metric_without_kind` (not `process_count`). `fr-CA / fr-FR` means write the provided French translation into **both** locale files. `alert_workflow_kept` is not a retirement reason: C1 rehomes those workflows and Task 4 excludes them defensively. Unknown future codes use the translated `unknown` message and show the raw code as separate diagnostic text; do not manufacture another prefix.
 
 - [ ] **Step 4: Run, expect PASS.**
 ```bash
 pnpm --filter @breeze/api exec tsc --noEmit
 cd apps/api && npx vitest run src/routes/monitorDefinitions.conversion.pending.test.ts src/routes/monitorDefinitions.test.ts
+cd apps/api && npx vitest run -c vitest.integration.config.ts src/__tests__/integration/legacyAlertingRetirementSweep.integration.test.ts
 pnpm --filter @breeze/web exec tsc --noEmit
 cd apps/web && npx vitest run src/components/monitoring/conversion/ConversionPendingBanner.test.tsx src/lib/__tests__/no-silent-mutations.test.ts src/locales
 ```
@@ -1259,15 +1562,115 @@ cd apps/web && npx vitest run src/components/monitoring/conversion/ConversionPen
 
 - [ ] **Step 5: Commit.**
 ```bash
-git add apps/api/src/routes/monitorDefinitions.ts apps/api/src/routes/monitorDefinitions.conversion.pending.test.ts apps/web/src/components/monitoring/conversion/ConversionPendingBanner.tsx apps/web/src/components/monitoring/conversion/ConversionPendingBanner.test.tsx apps/web/src/locales/*/monitoring.json
+git add apps/api/src/__tests__/integration/legacyAlertingRetirementSweep.integration.test.ts apps/api/src/routes/monitorDefinitions.conversion.ts apps/api/src/services/monitors/conversion/loadSources.ts apps/api/src/routes/monitorDefinitions.conversion.pending.test.ts apps/web/src/components/monitoring/conversion/ConversionPendingBanner.tsx apps/web/src/components/monitoring/conversion/ConversionPendingBanner.test.tsx apps/web/src/components/monitoring/conversion/conversionApi.ts apps/web/src/components/monitoring/conversion/conversionApi.test.ts apps/web/src/locales/*/monitoring.json
 git commit -m "feat(monitors): pending endpoint lists unconvertible legacy rows and the sweep outcome; one-time review banner"
 ```
 
-**PR1 ends here.** Run Task 14 (verification) for PR1 before opening it; PR body carries `Closes #<W05d sub-issue>` only on PR2.
+### Task 6: Close Revert before removing a source's runtime (PR1)
+
+**Files:**
+- Modify: `apps/api/src/services/monitors/conversion/lifecycle.ts`, `lifecycle.test.ts` (C1 prerequisite-created; D4).
+- Verify/modify: `apps/api/src/services/monitors/conversion/convert.ts` (C1 `revertConversion`, pre-mutation lifecycle guard); verify `conversion/ledger.ts` retains its authorized `revertable` projection.
+- Modify: `apps/api/src/routes/monitorDefinitions.conversion.test.ts` (C1 route harness `m.revert`, `request`, `SOURCE`).
+- Modify: `apps/api/src/__tests__/integration/legacyAlertingRetirementSweep.integration.test.ts` (Task 4 fixture; no-write regression).
+- Modify: `apps/web/src/components/monitoring/conversion/ConversionLedger.test.tsx` (C2 prerequisite-created); verify `ConversionLedger.tsx` already honors `revertable` and refreshes on 409.
+- Modify: `apps/docs/src/content/docs/features/monitors.mdx`, `docs/release-notes/next-release-draft.md` (deadline; detailed retirement docs remain Task 14).
+
+**Interfaces:**
+- Consumes D4 `isRevertAvailable(sourceTable: ConversionSourceTable): boolean`; D2 `ConversionLedgerEntry.revertable`; `revertConversion(conversionId, auth)`; C2 `ConversionLedger` uses `runAction` for Undo.
+- Produces: false for `config_policy_alert_rules`, `config_policy_monitoring_watches`, `alert_templates`, `automations`, `config_policy_automations`; true for `network_monitors` (W05e owns that runtime's later lifecycle). Authorized requests for an unavailable source return `409 { error: 'conversion_revert_unavailable' }` before any source, monitor, attachment, alert, cooldown or ledger mutation. Do not remove broad rehomed workflows; this guard only prevents restoring retired source semantics.
+
+- [ ] **Step 1: Write the failing tests.** Replace C1's always-available lifecycle test:
+```ts
+import { expect, it } from 'vitest';
+import { isRevertAvailable } from './lifecycle';
+import type { ConversionSourceTable } from './types';
+it.each<ConversionSourceTable>([
+  'config_policy_alert_rules', 'config_policy_monitoring_watches', 'alert_templates',
+  'automations', 'config_policy_automations',
+])('disallows restoring the retired %s runtime', source => {
+  expect(isRevertAvailable(source)).toBe(false);
+});
+it('leaves the network runtime lifecycle to W05e', () => {
+  expect(isRevertAvailable('network_monitors')).toBe(true);
+});
+```
+In C1's existing route test harness, add:
+```ts
+it('returns the lifecycle conflict for an authorized Undo', async () => {
+  m.revert.mockRejectedValueOnce(new ConversionError('conversion_revert_unavailable', 'Runtime retired'));
+  const response = await request(`/${SOURCE}/revert`, 'POST');
+  expect(response.status).toBe(409);
+  expect(await response.json()).toMatchObject({ error: 'conversion_revert_unavailable' });
+});
+```
+In Task 4's integration case, immediately after reading the converted source, definition and ledger (all still in `SYSTEM_CTX`), import `revertConversion` and append:
+```ts
+const original = { source: conv, definition: def, ledger: ledgers[0], attachment: attach };
+await expect(revertConversion(ledgers[0]!.id, createSystemAuthContext()))
+  .rejects.toMatchObject({ code: 'conversion_revert_unavailable' });
+const [sourceAfter] = await db.select().from(configPolicyAlertRules).where(eq(configPolicyAlertRules.id, convertibleId));
+const [definitionAfter] = await db.select().from(monitorDefinitions).where(eq(monitorDefinitions.id, def!.id));
+const [ledgerAfter] = await db.select().from(monitorConversions).where(eq(monitorConversions.id, ledgers[0]!.id));
+const [attachmentAfter] = await db.select().from(configPolicyMonitors).where(eq(configPolicyMonitors.id, attach!.id));
+expect({ source: sourceAfter, definition: definitionAfter, ledger: ledgerAfter, attachment: attachmentAfter }).toEqual(original);
+```
+Use C2's real ledger test harness (`request`, `json`, `entry`); it already tests stale 409 handling. Add a case for each W05d source:
+```tsx
+it.each(['config_policy_alert_rules', 'config_policy_monitoring_watches', 'alert_templates',
+  'automations', 'config_policy_automations'])('disables Undo for retired %s', async sourceTable => {
+  request.mockResolvedValueOnce(json({ items: [{ ...entry, sourceTable, revertable: false }], nextCursor: null }));
+  render(<ConversionLedger />);
+  const undo = await screen.findByTestId('ledger-undo-c1');
+  expect(undo).toBeDisabled();
+  fireEvent.click(undo);
+  expect(request.mock.calls.every(([, options]) => !options?.method || options.method === 'GET')).toBe(true);
+});
+```
+
+- [ ] **Step 2: Run it, expect FAIL.**
+```bash
+cd apps/api && npx vitest run src/services/monitors/conversion/lifecycle.test.ts src/routes/monitorDefinitions.conversion.test.ts
+cd apps/api && npx vitest run -c vitest.integration.config.ts src/__tests__/integration/legacyAlertingRetirementSweep.integration.test.ts
+cd apps/web && npx vitest run src/components/monitoring/conversion/ConversionLedger.test.tsx
+```
+C1's helper returns true, so the lifecycle test reports `expected true to be false` and live Revert mutates the source. The existing web guard test should already pass; the new server lifecycle closes the previously inferred runtime-loss path. Confirmed against `featureConfigResolver.ts:379-440`, `alertService.ts:1239-1372` and `routes/agents/helpers.ts:2333-2370`, whose legacy readers Tasks 3/8/9 remove.
+
+- [ ] **Step 3: Implement.** `lifecycle.ts`:
+```ts
+import type { ConversionSourceTable } from './types';
+export function isRevertAvailable(sourceTable: ConversionSourceTable): boolean {
+  return sourceTable === 'network_monitors';
+}
+```
+Keep C1's guard inside `revertConversion` immediately **after** loading/authorizing the ledger and **before** its first write:
+```ts
+if (!isRevertAvailable(ledger.sourceTable)) {
+  throw new ConversionError('conversion_revert_unavailable', 'This conversion cannot be reverted after its legacy runtime has been retired.');
+}
+```
+In C1's `ledger.ts`, keep the full projection: `revertable: !r.revertedAt && isRevertAvailable(r.sourceTable) && canMutateOrgWideGovernance(auth) && (r.orgId ? auth.canAccessOrg(r.orgId) : canManagePartnerWidePolicies(auth))`. The ownership and governance gates remain intact. C1 already includes the error code in `ConversionError` and maps it to 409; retain that branch. C2 already renders `disabled={!row.revertable}` and catches 409 through `runAction`, then reloads the ledger. Do not introduce a second client-side source list or bypass the server guard. The browser keeps its existing translated unavailable message; no new locale key is needed here.
+
+Add this exact documentation paragraph to `monitors.mdx` and the upgrade notes:
+```md
+Revert is available during W05c. Upgrading to W05d ends Revert for legacy alert rules, templates, watches and alert-triggered source automations because their legacy monitoring paths have been retired. Conversion history remains available; Undo is disabled for those entries and the API returns `409 conversion_revert_unavailable`. Review and revert conversions before upgrading if needed. Existing monitors and alert history remain intact.
+```
+
+- [ ] **Step 4: Run, expect PASS.** Repeat Step 2; run `pnpm --filter @breeze/api build` and `pnpm --filter @breeze/web exec tsc --noEmit`. Confirm a blocked Revert leaves every snapshot unchanged and the ledger remains readable. Network Revert stays available until its own wave changes the contract.
+
+- [ ] **Step 5: Commit.**
+```bash
+git add apps/api/src/services/monitors/conversion/lifecycle.ts apps/api/src/services/monitors/conversion/lifecycle.test.ts apps/api/src/services/monitors/conversion/convert.ts apps/api/src/routes/monitorDefinitions.conversion.test.ts apps/api/src/__tests__/integration/legacyAlertingRetirementSweep.integration.test.ts apps/web/src/components/monitoring/conversion/ConversionLedger.test.tsx apps/docs/src/content/docs/features/monitors.mdx docs/release-notes/next-release-draft.md
+git commit -m "fix(monitors): disable conversion revert when the legacy runtime is retired"
+```
 
 ---
 
-### Task 6: `RETIRED_CONFIG_FEATURE_TYPES` — shared constants, API parity, retired links filtered out of every listing and resolver (PR2)
+**PR1 ends here.** Run Task 15 (verification) for PR1 before opening it; PR body carries `Closes #<W05d sub-issue>` only on PR2.
+
+---
+
+### Task 7: `RETIRED_CONFIG_FEATURE_TYPES` — shared constants, API parity, retired links filtered out of every listing and resolver (PR2)
 
 **Files:**
 - Modify: `packages/shared/src/constants/configFeatureTypes.ts` (lines 22-30)
@@ -1327,29 +1730,52 @@ describe('CONFIG_FEATURE_TYPES parity with DB enum (W05d: canonical ∪ retired)
   });
 });
 ```
-Create `apps/api/src/services/configurationPolicy.retiredFeatureTypes.test.ts` (Drizzle mock in the style of `configurationPolicy.inheritance.test.ts`):
+Create `apps/api/src/services/configurationPolicy.retiredFeatureTypes.test.ts`. Use an explicitly defined select queue and mutation sentinel, matching the real chain shapes at `configurationPolicy.monitors.test.ts:50-65,162-198`; no private helper exports:
 ```ts
-it('listFeatureLinks never returns a retired link even when the row exists', async () => {
-  seedLinks([{ id: 'l1', configPolicyId: 'p1', featureType: 'alert_rule', inlineSettings: { items: [] } }, { id: 'l2', configPolicyId: 'p1', featureType: 'monitors', inlineSettings: { items: [] } }]);
-  const links = await listFeatureLinks('p1');
-  expect(links.map((l) => l.featureType)).toEqual(['monitors']);
-  expect(whereSql()).toContain('feature_type');            // the filter is in SQL, not post-hoc
-  expect(whereSql()).toMatch(/not in/i);
+import { readFileSync } from 'node:fs';
+import { beforeEach, expect, it, vi } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
+const h = vi.hoisted(() => ({ rows: [] as unknown[][], predicates: [] as unknown[],
+  mutate: vi.fn(() => { throw new Error('unexpected mutation'); }) }));
+vi.mock('../db', () => {
+  const executor: any = {
+    select: vi.fn(() => {
+      const rows = h.rows.shift() ?? [];
+      const chain: any = {};
+      chain.from = vi.fn(() => chain);
+      chain.where = vi.fn((predicate: unknown) => { h.predicates.push(predicate); return chain; });
+      chain.limit = vi.fn(async () => rows);
+      chain.orderBy = vi.fn(async () => rows);
+      chain.then = (resolve: (value: unknown) => unknown, reject: (error: unknown) => unknown) => Promise.resolve(rows).then(resolve, reject);
+      return chain;
+    }),
+    update: h.mutate, delete: h.mutate, insert: h.mutate,
+  };
+  executor.transaction = async (fn: (tx: unknown) => unknown) => fn(executor);
+  return { db: executor, runOutsideDbContext: (fn: () => unknown) => fn(),
+    withDbAccessContext: (_ctx: unknown, fn: () => unknown) => fn(),
+    withSystemDbAccessContext: (fn: () => unknown) => fn() };
 });
-it('resolveEffectiveConfig omits retired feature types from features and chain', async () => {
-  seedEffectiveRows([{ featureType: 'alert_rule', … }, { featureType: 'monitors', … }]);
-  const out = await resolveEffectiveConfig('dev-1', auth);
-  expect(Object.keys(out.features)).toEqual(['monitors']);
-  expect(out.chain.flatMap((c) => [...c.featureTypes])).not.toContain('alert_rule');
+import { listFeatureLinks, updateFeatureLink } from './configurationPolicy';
+beforeEach(() => { h.rows.length = 0; h.predicates.length = 0; h.mutate.mockClear(); });
+it('filters retired feature types in the list SQL', async () => {
+  h.rows.push([]);
+  expect(await listFeatureLinks('10000000-0000-4000-8000-000000000001')).toEqual([]);
+  const query = new PgDialect().sqlToQuery(h.predicates[0] as never);
+  expect(query.sql).toMatch(/feature_type.*not in/i);
+  expect(query.params).toEqual(expect.arrayContaining(['alert_rule', 'monitoring']));
 });
-it('PARTNER_LINKABLE_FEATURE_TYPES no longer lists alert_rule', () => {
-  expect(PARTNER_LINKABLE_FEATURE_TYPES.has('alert_rule' as never)).toBe(false);
+it('filters retired types in the effective-link query too', () => {
+  const source = readFileSync(new URL('./configurationPolicy.ts', import.meta.url), 'utf8');
+  expect(source).toMatch(/notInArray\(configPolicyEffectiveFeatureLinks\.featureType,\s*\[\.\.\.RETIRED_CONFIG_FEATURE_TYPES\]\)/);
 });
 ```
+The SQL assertion tests the real predicate rather than pretending the mock filters rows. Keep the existing inheritance integration suite for runtime resolution coverage.
 In `featureLinks.test.ts`:
 ```ts
 it('POST /:id/features with a retired featureType is 410 with a pointer (W05d)', async () => {
-  const res = await app.request('/configuration-policies/p1/features', { method: 'POST', headers: partnerAuthJson, body: JSON.stringify({ featureType: 'alert_rule', inlineSettings: { items: [] } }) });
+  mfaState.satisfied = true;
+  const res = await buildApp().request(`/${POLICY_ID}/features`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ featureType: 'alert_rule', inlineSettings: { items: [] } }) });
   expect(res.status).toBe(410);
   expect(await res.json()).toEqual(expect.objectContaining({ retiredFeatureType: 'alert_rule', hint: expect.stringContaining('/monitor-definitions') }));
 });
@@ -1431,17 +1857,20 @@ const rejectRetiredFeatureType = async (c: Context, next: Next) => {
   if (isRetiredConfigFeatureType(ft)) return c.json(RETIRED_FEATURE_TYPE_GONE(ft), 410);
   await next();
 };
-featureLinkRoutes.post('/:id/features', requireScope(…), requireConfigPolicyWrite, rejectRetiredFeatureType, zValidator('json', addFeatureLinkSchema), async (c) => { … });
+// Insert only this middleware entry in the existing post chain at
+// featureLinks.ts:114-121, after requireMfa and param validation and immediately
+// before zValidator('json', addFeatureLinkSchema):
+rejectRetiredFeatureType,
 ```
-(PATCH takes no `featureType`; a PATCH on an existing retired link cannot happen because `listFeatureLinks` never surfaces its id — and `updateFeatureLink` refuses it in Task 7.)
+(PATCH takes no `featureType`; a PATCH on an existing retired link cannot happen because `listFeatureLinks` never surfaces its id — and `updateFeatureLink` refuses it in Task 8.)
 
 - [ ] **Step 4: Run, expect PASS.**
 ```bash
 cd packages/shared && npx vitest run src/constants/configFeatureTypes.test.ts src/validators/index_configpolicy.test.ts
-pnpm --filter @breeze/api exec tsc --noEmit     # expect errors ONLY in files Tasks 7, 8, 12 delete/modify — list them; nothing else may appear
+pnpm --filter @breeze/api exec tsc --noEmit     # expect errors ONLY in files Tasks 8, 9, 13 delete/modify — list them; nothing else may appear
 cd apps/api && npx vitest run src/services/policyBaselineDefaults.test.ts src/services/configurationPolicy.retiredFeatureTypes.test.ts src/routes/configurationPolicies/resolution.test.ts src/routes/configurationPolicies/featureLinks.test.ts src/services/configurationPolicy.inheritance.test.ts
 ```
-The web build is red from here until Task 11 (its `Record<FeatureType, …>` maps still name the retired keys) — expected; PR2 is one branch.
+The web build is red from here until Task 12 (its `Record<FeatureType, …>` maps still name the retired keys) — expected; PR2 is one branch.
 
 - [ ] **Step 5: Commit.**
 ```bash
@@ -1451,47 +1880,56 @@ git commit -m "feat(shared,api): retire alert_rule and monitoring feature types;
 
 ---
 
-### Task 7: Delete the `alert_rule` / `monitoring` service arms, the inline-rule test route and the legacy policy resolvers (PR2)
+### Task 8: Delete the `alert_rule` / `monitoring` service arms, the inline-rule test route and the legacy policy resolvers (PR2)
 
 **Files:**
 - Modify: `apps/api/src/services/configurationPolicy.ts` — delete `decomposeInlineSettings` arms `case 'alert_rule'` (756-790) and `case 'monitoring'` (907-935); `assertDecomposableInlineSettings` arms (1165-1167, 1171-1173); `deleteNormalizedRows` arms (1198-1199, 1219-1233); `assembleInlineSettings` arms (1271-1291, 1430-1465); imports `alertRuleInlineSettingsSchema`, `monitoringInlineSettingsSchema`, `configPolicyAlertRules`, `configPolicyMonitoringWatches` if unused after; `updateFeatureLink` (1752) refuses a retired link.
 - Modify: `apps/api/src/routes/configurationPolicies/featureLinks.ts` — delete the `alert_rule`/`monitoring` validation blocks (273-300, 517-535) and `findOfflineDurationViolation` (+ its module if separate: `grep -rn findOfflineDurationViolation apps/api/src`).
 - Delete: `apps/api/src/routes/configurationPolicies/alertRuleTest.ts` (+ its tests: `ls apps/api/src/routes/configurationPolicies/alertRuleTest*.test.ts`); `testConfigPolicyAlertRuleSchema` in `routes/configurationPolicies/schemas.ts:15` and in `packages/shared/src/validators` (grep); mount at `routes/configurationPolicies/index.ts:5,19`.
 - Modify: `apps/api/src/services/featureConfigResolver.ts` — delete `GoverningAlertRulePolicy` (257-296), `resolveGoverningAlertRulePolicyForDevice` (298-377), `resolveAlertRulesForDevice` (379-441) and now-unused imports.
+- Create: `apps/api/src/routes/configurationPolicies/index.test.ts` (route mount regression; absent on base).
 - Modify: `apps/api/src/services/featureLinkReaders.contract.test.ts` (if it lists `alertRuleTest.ts` or the resolver; grep).
 - Modify/delete tests: `configurationPolicy.*.test.ts` cases that drive the two arms; `featureLinks.test.ts` alert_rule/monitoring cases; `featureConfigResolver.test.ts` alert-rule cases.
 
 **Interfaces:**
-- Consumes: Task 6's `isRetiredConfigFeatureType`.
+- Consumes: Task 7's `isRetiredConfigFeatureType`; C1/D6 `resolveLegacyBaseline(deviceId, executor)` (private converter baseline, retained).
 - Produces: `updateFeatureLink(linkId, …)` throws `Error('Feature link <id> is retired (alert_rule); it cannot be edited')` → route maps to 410 with `RETIRED_FEATURE_TYPE_GONE`; no code path parses `alertRuleInlineSettingsSchema` / `monitoringInlineSettingsSchema` in the service or routes.
 
-- [ ] **Step 1: Write the failing tests.** In `configurationPolicy.retiredFeatureTypes.test.ts` (Task 6 file):
+- [ ] **Step 1: Write the failing tests.** In `configurationPolicy.retiredFeatureTypes.test.ts` (Task 7 file), use its explicitly defined queue and sentinel:
 ```ts
-it('updateFeatureLink refuses a retired link instead of re-decomposing it', async () => {
-  seedLinkById('l-legacy', { featureType: 'alert_rule', configPolicyId: 'p1' });
-  await expect(updateFeatureLink('l-legacy', 'p1', { inlineSettings: { items: [] } }, auth)).rejects.toThrow(/retired/);
-  expect(tx.delete).not.toHaveBeenCalled();
+it('updateFeatureLink refuses a retired link before any normalized write', async () => {
+  h.rows.push([{ id: 'legacy-link', featureType: 'alert_rule', configPolicyId: 'policy-1' }]);
+  await expect(updateFeatureLink('legacy-link', { inlineSettings: { items: [] } }, 'policy-1'))
+    .rejects.toThrow('retired');
+  expect(h.mutate).not.toHaveBeenCalled();
 });
-it('assembleInlineSettings has no arm for retired types (falls to default → null)', async () => {
-  seedLinks([{ id: 'l1', configPolicyId: 'p1', featureType: 'monitors', inlineSettings: { items: [] } }]);
-  await listFeatureLinks('p1');
-  expect(selectFromTables()).not.toContain(configPolicyAlertRules);
-  expect(selectFromTables()).not.toContain(configPolicyMonitoringWatches);
+it('the public assembler no longer queries legacy tables', () => {
+  const source = readFileSync(new URL('./configurationPolicy.ts', import.meta.url), 'utf8');
+  const assembler = source.slice(source.indexOf('async function assembleInlineSettings'), source.indexOf('export async function addFeatureLink'));
+  expect(assembler).not.toContain("case 'alert_rule'");
+  expect(assembler).not.toContain("case 'monitoring'");
 });
 ```
-In `featureLinks.test.ts`, delete the "offline duration exceeds horizon" and "invalid monitoring settings" cases and add:
+In `featureLinks.test.ts`, use `buildApp`, `STUB_POLICY`, `POLICY_ID`, `LINK_ID`, and the mocks actually defined at lines 6–121:
 ```ts
-it('PATCH on a retired link is 410', async () => {
-  updateFeatureLinkMock.mockRejectedValueOnce(new Error('Feature link l-legacy is retired (alert_rule); it cannot be edited'));
-  const res = await app.request('/configuration-policies/p1/features/l-legacy', { method: 'PATCH', headers: partnerAuthJson, body: JSON.stringify({ inlineSettings: {} }) });
+it('PATCH on a retired link is 410 before the service writes', async () => {
+  mfaState.satisfied = true;
+  getConfigPolicyMock.mockResolvedValue({ ...STUB_POLICY,
+    featureLinks: [{ id: LINK_ID, featureType: 'alert_rule' }] });
+  const res = await buildApp().request(`/${POLICY_ID}/features/${LINK_ID}`, {
+    method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ inlineSettings: {} }),
+  });
   expect(res.status).toBe(410);
+  expect(updateFeatureLinkMock).not.toHaveBeenCalled();
 });
 ```
-A contract test that the routes tree no longer mounts the inline-rule test endpoint — in `apps/api/src/routes/configurationPolicies/index.test.ts` (create if absent):
+Create `routes/configurationPolicies/index.test.ts` as a mount contract (the actual mounts are `index.ts:5,19`):
 ```ts
-it('POST /:id/alert-rules/test is gone (W05d)', async () => {
-  const res = await app.request('/configuration-policies/p1/alert-rules/test', { method: 'POST', headers: partnerAuthJson, body: '{}' });
-  expect(res.status).toBe(404);
+import { readFileSync } from 'node:fs';
+import { expect, it } from 'vitest';
+it('does not import or mount the retired inline-rule test router', () => {
+  const source = readFileSync(new URL('./index.ts', import.meta.url), 'utf8');
+  expect(source).not.toMatch(/alertRuleTest/);
 });
 ```
 
@@ -1499,7 +1937,7 @@ it('POST /:id/alert-rules/test is gone (W05d)', async () => {
 ```bash
 cd apps/api && npx vitest run src/services/configurationPolicy.retiredFeatureTypes.test.ts src/routes/configurationPolicies/featureLinks.test.ts src/routes/configurationPolicies/index.test.ts
 ```
-Expected: `promise resolved instead of rejecting`, `expected 200 to be 410`, `expected 200 to be 404`.
+Expected: `unexpected mutation` instead of the retirement refusal, a non-410 PATCH result, and a source-match failure for `alertRuleTest`.
 
 - [ ] **Step 3: Implement.** Delete the arms listed under **Files** (each `case` block in full, including its comments). In `updateFeatureLink` (1752), after the existing link lookup:
 ```ts
@@ -1507,12 +1945,18 @@ Expected: `promise resolved instead of rejecting`, `expected 200 to be 410`, `ex
     throw new Error(`Feature link ${linkId} is retired (${existing.featureType}); it cannot be edited`);
   }
 ```
-and in the PATCH route's catch, map that message to `c.json(RETIRED_FEATURE_TYPE_GONE(existingLink.featureType), 410)` (the route already reads `existingLink.featureType` at 517/530 — reuse that read, then delete the two validation blocks). `git rm apps/api/src/routes/configurationPolicies/alertRuleTest.ts` and its tests; remove the import and mount (`index.ts:5,19`); delete `testConfigPolicyAlertRuleSchema` from `schemas.ts:15` and from `packages/shared/src/validators/index.ts` (grep; delete its zod object). In `featureConfigResolver.ts` delete lines 257-441 (the two exports and the type) and the `configPolicyAlertRules` import if unused. `alertService.ts:28` still imports `resolveAlertRulesForDevice` — Task 8 deletes that import; until then tsc is red on exactly that line (note it in the Task 7 commit body).
+In the PATCH route, after its authorized policy/link lookup and before validation or calling `updateFeatureLink`, return the same 410:
+```ts
+if (isRetiredConfigFeatureType(existingLink.featureType)) {
+  return c.json(RETIRED_FEATURE_TYPE_GONE(existingLink.featureType), 410);
+}
+```
+The service guard remains the backstop for non-HTTP callers. Delete the two obsolete validation blocks. `git rm apps/api/src/routes/configurationPolicies/alertRuleTest.ts` and its tests; remove the import and mount (`index.ts:5,19`); delete `testConfigPolicyAlertRuleSchema` from `schemas.ts:15` and from `packages/shared/src/validators/index.ts` (grep; delete its zod object). Keep `services/monitors/conversion/legacyBaseline.ts` and its tests: they read normalized rules/settings/watches directly through their supplied executor, including old/new settings links after Task 4. Delete no private conversion imports or normalized source tables. In `featureConfigResolver.ts` delete lines 257-441 (the two public exports and the type) and the `configPolicyAlertRules` import if unused. `alertService.ts:28` still imports `resolveAlertRulesForDevice` — Task 9 deletes that import; until then tsc is red on exactly that line (note it in the Task 8 commit body).
 
 - [ ] **Step 4: Run, expect PASS.**
 ```bash
-cd apps/api && npx vitest run src/services/configurationPolicy src/routes/configurationPolicies src/services/featureConfigResolver.test.ts src/services/featureLinkReaders.contract.test.ts
-pnpm --filter @breeze/api exec tsc --noEmit 2>&1 | grep -v "alertService.ts(28\|alertService.ts(12[0-9][0-9]\|alertService.ts(13[0-9][0-9]\|alertService.ts(14[0-9][0-9]" ; # only Task 8's file may remain red
+cd apps/api && npx vitest run src/services/configurationPolicy src/routes/configurationPolicies src/services/featureConfigResolver.test.ts src/services/featureLinkReaders.contract.test.ts src/services/monitors/conversion/legacyBaseline.test.ts
+pnpm --filter @breeze/api exec tsc --noEmit 2>&1 | grep -v "alertService.ts(28\|alertService.ts(12[0-9][0-9]\|alertService.ts(13[0-9][0-9]\|alertService.ts(14[0-9][0-9]" ; # only Task 9's file may remain red
 ```
 
 - [ ] **Step 5: Commit.**
@@ -1523,7 +1967,7 @@ git commit -m "refactor(api): delete alert_rule/monitoring decompose/assemble/va
 
 ---
 
-### Task 8: Delete the second evaluation sweep and the config-policy cooldown branches (PR2)
+### Task 9: Delete the second evaluation sweep and the config-policy cooldown branches (PR2)
 
 **Files:**
 - Modify: `apps/api/src/services/alertService.ts` — delete `ConfigPolicyAlertRule` + `getApplicableRulesFromPolicy` (1193-1230), `evaluateDeviceAlertsFromPolicy` (1232-1372), `checkAutoResolveFromConfigPolicy` (1374-~1480, through the end of its function); the `resolveAlert` config-policy cooldown branch (742-756: keep the `else if (alert.ruleId)` body as the only branch); imports at 21 (`configPolicyAlertRules`), 27 (`isConfigPolicyRuleCooling`, `markConfigPolicyRuleCooldown`), 28 (`resolveAlertRulesForDevice`); the comment at 816.
@@ -1538,30 +1982,44 @@ git commit -m "refactor(api): delete alert_rule/monitoring decompose/assemble/va
 - Consumes: nothing new.
 - Produces: `evaluateDeviceAlerts` is the only device sweep; `checkAllAutoResolve` the only auto-resolve; `alertCooldown.ts` exports no `cpar` functions; `alerts.config_policy_id` is read only by history/detail views (`routes/alerts/alerts.ts` GET paths, `alertService.createSourcedAlert` no longer writes it).
 
-- [ ] **Step 1: Write the failing tests.** `alertWorker.test.ts`:
+- [ ] **Step 1: Write the failing tests.** In `alertWorker.test.ts`, use the existing `workerState.processor` harness (`:130-132,324-340`) and retain its system-context assertion:
 ```ts
-it('evaluate-device runs exactly one sweep (W05d)', async () => {
-  evaluateDeviceAlertsMock.mockResolvedValue(['a1']);
-  const out = await processJob({ type: 'evaluate-device', deviceId: 'd1', orgId: 'o1' });
-  expect(out.alertsCreated).toBe(1);
-  expect(alertServiceModule).not.toHaveProperty('evaluateDeviceAlertsFromPolicy');
-  expect(alertServiceModule).not.toHaveProperty('checkAutoResolveFromConfigPolicy');
-});
-it('check-auto-resolve no longer queries alerts by config_policy_id', async () => {
-  await processJob({ type: 'check-auto-resolve', orgId: 'o1' });
-  expect(dbSelectMock).not.toHaveBeenCalled();           // the per-device config-policy loop is gone
-  expect(checkAllAutoResolveMock).toHaveBeenCalledWith('o1');
+it('evaluate-device runs only the monitor/standalone evaluator', async () => {
+  createAlertWorker();
+  const service = await import('../services/alertService');
+  vi.mocked(service.evaluateDeviceAlerts).mockResolvedValue(['a1']);
+  // Keep this temporary spy until Step 3 removes its export and mock.
+  vi.mocked(service.evaluateDeviceAlertsFromPolicy).mockResolvedValue([]);
+  const result = await workerState.processor!({ data: {
+    type: 'evaluate-device', deviceId: 'device-1', orgId: 'org-1',
+  } });
+  expect(result).toMatchObject({ alertsCreated: 1 });
+  expect(service.evaluateDeviceAlertsFromPolicy).not.toHaveBeenCalled();
 });
 ```
-`alertService.resolveCas.test.ts`: replace the "sets the config policy cooldown on resolve" case with:
+In Step 3, remove the temporary legacy mock/spy and replace its assertion with this permanent production import contract (add `readFileSync` from `node:fs`):
 ```ts
-it('resolving a legacy config-policy alert sets no cooldown (history-only, W05d)', async () => {
-  seedAlert({ id: 'a1', ruleId: null, configPolicyId: 'cpar-1', deviceId: 'd1' });
-  await resolveAlert('a1', { … });
-  expect(setCooldownMock).not.toHaveBeenCalled();
-  expect(Object.keys(alertCooldownModule)).not.toContain('markConfigPolicyRuleCooldown');
+expect(readFileSync(new URL('./alertWorker.ts', import.meta.url), 'utf8'))
+  .not.toMatch(/evaluateDeviceAlertsFromPolicy|checkAutoResolveFromConfigPolicy/);
+```
+`alertService.resolveCas.test.ts` has `WINNER`, `updateReturnResults` and `dbMock._selectResults` (`:62-81`), not `seedAlert`. Import `setCooldown` from `./alertCooldown` and add:
+```ts
+it('resolving history-only policy alerts does not read their source or write cooldown', async () => {
+  vi.mocked(setCooldown).mockClear();
+  dbMock.select.mockClear();
+  updateReturnResults.push([{ ...WINNER[0], configPolicyId: 'legacy-source', ruleId: null }]);
+  await expect(resolveAlert('alert-1')).resolves.toBe(true);
+  expect(setCooldown).not.toHaveBeenCalled();
+  const tables = dbMock.select.mock.results.map(result => result.value.from.mock.calls[0]?.[0]);
+  expect(tables).not.toContain(configPolicyAlertRules);
 });
 ```
+Import `configPolicyAlertRules` from `../db/schema` in that test (the mock's table token is already supplied). Make its existing `from` callable a spy so the table assertion is real:
+```ts
+// In dbMock.select at alertService.resolveCas.test.ts:9-11:
+from: vi.fn(() => ({ where: () => ({ limit: () => Promise.resolve(selectResults.shift() ?? []) }) })),
+```
+Keep its CAS winner/loser and published-event cases.
 `offlineDetector_reeval.test.ts`: the "config policy offline alerts" case becomes "triggerOfflineAlerts evaluates standalone offline rules only and never imports the policy evaluator". `routes/alerts/alerts.resolveCas.test.ts` / `mobile.resolveCas.test.ts`: the `configPolicyId` cooldown case asserts no cooldown call.
 
 - [ ] **Step 2: Run, expect FAIL.**
@@ -1594,7 +2052,13 @@ Expected: `expected {…} not to have property "evaluateDeviceAlertsFromPolicy"`
   // evaluates their source, so no cooldown is written for them.
   if (alert.ruleId) {
     const [rule] = await db.select().from(alertRules).where(eq(alertRules.id, alert.ruleId)).limit(1);
-    …existing body…
+    if (rule) {
+      const [template] = await db.select().from(alertTemplates)
+        .where(eq(alertTemplates.id, rule.templateId)).limit(1);
+      const overrides = rule.overrideSettings as Record<string, unknown> | null;
+      await setCooldown(alert.ruleId, alert.deviceId,
+        (overrides?.cooldownMinutes as number) ?? template?.cooldownMinutes ?? 15);
+    }
   }
 ```
 `routes/alerts/alerts.ts` 1082-1088 and `routes/mobile.ts` 1251-1256: delete the `else if (alert.configPolicyId) { … }` branch; drop `markConfigPolicyRuleCooldown` from the imports (22 / 23). `alertCooldown.ts`: delete 290-360; at 478:
@@ -1619,64 +2083,162 @@ git commit -m "refactor(api): delete evaluateDeviceAlertsFromPolicy and the conf
 
 ---
 
-### Task 9: Remove the transitional legacy delivery override (PR2)
+### Task 10: Remove the transitional legacy delivery override (PR2)
 
 **Files:**
 - Modify: `apps/api/src/services/delivery/resolveDelivery.ts` (W05b: `DeliverySource` union, `ResolveDeliveryInput.legacyOverride`, precedence step 3)
-- Modify: `apps/api/src/services/delivery/resolveDelivery.test.ts` (W05b cases at plan lines ~523-536)
+- Modify: `apps/api/src/services/delivery/resolveDelivery.test.ts` (W05b prerequisite-created).
+- Modify: `apps/api/src/services/delivery/describeDelivery.ts`, `describeDelivery.test.ts` (W05b prerequisite-created description map).
+- Create: `apps/api/src/services/monitors/conversion/legacyDeliveryBaseline.ts`, `legacyDeliveryBaseline.test.ts`.
+- Modify: `apps/api/src/services/monitors/conversion/equivalence.ts` (C1 prerequisite; private before-delivery call).
+- Modify: `apps/web/src/components/monitoring/DeliveryPreview.tsx` (W05b prerequisite-created type mirror).
 - Modify: `apps/api/src/services/notificationDispatcher.ts` (W05b's `legacyOverride` construction — the `alert.ruleId` unmanaged branch and the `alert.configPolicyId` branch — and the `legacyOverride` argument to `resolveDelivery`)
 - Modify: `apps/api/src/services/notificationDispatcher.test.ts` (+ `notificationDispatcher.*.test.ts` siblings that seed `configPolicyAlertRules` or `overrideSettings.notificationChannelIds`)
 - Modify: `apps/api/src/routes/alerts/delivery.ts` (W05b preview endpoint) only if it accepted a `legacyOverride`-shaped query (it should not; verify with grep).
 
 **Interfaces:**
 - Consumes: W05b `resolveDelivery`.
-- Produces: `DeliverySource = 'monitor_none' | 'monitor_channels' | 'routing_rule' | 'default_row' | 'none'`; `ResolveDeliveryInput` has no `legacyOverride`; the dispatcher passes `{ orgId, severity, monitorId, kind, siteId }` only. An unmanaged, unretired `alert_rules` row (a standalone rule nobody converted) now routes through routing rows like every other non-monitor alert — this is the one behaviour change and it is in the release notes (Task 13).
+- Produces: `DeliverySource = 'monitor_none' | 'monitor_channels' | 'routing_rule' | 'default_row' | 'none'`; `ResolveDeliveryInput` has no `legacyOverride`; the dispatcher passes `{ orgId, severity, monitorId, kind, siteId }` only. An unmanaged, unretired `alert_rules` row (a standalone rule nobody converted) now routes through routing rows like every other non-monitor alert — this is the one behaviour change and it is in the release notes (Task 14).
 
-- [ ] **Step 1: Write the failing tests.** In `resolveDelivery.test.ts`, delete the three `legacy_override` cases and add:
+- [ ] **Step 1: Write the failing tests.** In W05b's `resolveDelivery.test.ts`, use its actual `selectQueue`, `row`, `ORG`, `PARTNER`, `CH_ORG`, `ESC_MON` fixtures. Remove active legacy-override precedence expectations and add:
 ```ts
-it('has no legacy override step (W05d): an input carrying one is a type error and, at runtime, ignored', async () => {
-  seedRoutingRows([{ id: 'r1', channelIds: [CH_ORG], severities: ['high'], isDefault: false, orgId: ORG }]);
-  // @ts-expect-error legacyOverride was removed in W05d
-  const out = await resolveDelivery({ orgId: ORG, severity: 'high', legacyOverride: { channelIds: [CH_LEGACY] } });
-  expect(out).toEqual({ channelIds: [CH_ORG], escalationPolicyId: null, source: 'routing_rule', routingRuleId: 'r1', routingRuleName: expect.any(String) });
-});
-it('DeliverySource no longer includes legacy_override', () => {
-  const s: DeliverySource = 'routing_rule';
-  // @ts-expect-error removed in W05d
-  const bad: DeliverySource = 'legacy_override';
-  expect([s, bad]).toBeDefined();
+it.each(['routing_rule', 'default_row', 'none'] as const)(
+  'does not inherit legacy escalation in the %s result', async source => {
+    selectQueue.push([{ partnerId: PARTNER }]);
+    selectQueue.push(source === 'none' ? [] : [row({
+      id: 'retirement-row', isDefault: source === 'default_row',
+      channelIds: [CH_ORG], escalationPolicyId: null,
+    })]);
+    // @ts-expect-error the public legacyOverride input is retired in W05d
+    const out = await resolveDelivery({ orgId: ORG, severity: 'high', legacyOverride: { escalationPolicyId: ESC_MON } });
+    expect(out).toMatchObject({ source, escalationPolicyId: null, skippedChannelIds: [] });
+  },
+);
+it('ignores stale legacy channel overrides in the public resolver', async () => {
+  selectQueue.push([{ partnerId: PARTNER }], [row({ channelIds: [CH_ORG] })]);
+  // @ts-expect-error removed from the public API
+  const out = await resolveDelivery({ orgId: ORG, severity: 'high', legacyOverride: { channelIds: [] } });
+  expect(out.channelIds).toEqual([CH_ORG]);
+  expect(out.skippedChannelIds).toEqual([]);
 });
 ```
-In `notificationDispatcher.test.ts`: the "config-policy alert uses the rule's notification_channel_ids" and "unmanaged rule overrides win over routing" cases become "an alert with config_policy_id and no monitor resolves through routing rows; config_policy_alert_rules is never queried":
+The API typecheck is what validates `@ts-expect-error`; Vitest alone does not run TypeScript diagnostics. Keep W05b's monitor escalation and skipped-channel parity cases.
+
+Create `services/monitors/conversion/legacyDeliveryBaseline.test.ts` for the retained private conversion baseline. This is deliberately separate from active delivery: the sweep must compare the old behavior even after active dispatch has been retired.
 ```ts
-expect(selectFromTables()).not.toContain(configPolicyAlertRules);
-expect(resolveDeliveryMock).toHaveBeenCalledWith(expect.not.objectContaining({ legacyOverride: expect.anything() }));
+import { expect, it, vi } from 'vitest';
+vi.mock('../../delivery/resolveDelivery', () => ({ resolveDelivery: vi.fn() }));
+import { resolveDelivery } from '../../delivery/resolveDelivery';
+import { resolveLegacyDeliveryBaseline } from './legacyDeliveryBaseline';
+import type { DbExecutor } from './legacyBaseline';
+it('preserves override precedence, eligibility and independent escalation in the private baseline', async () => {
+  vi.mocked(resolveDelivery).mockResolvedValue({ channelIds: ['route-channel'], skippedChannelIds: [],
+    escalationPolicyId: null, source: 'default_row' });
+  const execute = vi.fn(async () => [{ id: 'old-channel', reason: 'disabled' }]);
+  const executor = { execute } as unknown as DbExecutor;
+  expect(await resolveLegacyDeliveryBaseline({ orgId: 'org', severity: 'high' },
+    { channelIds: ['old-channel'], escalationPolicyId: 'old-escalation' }, executor)).toEqual({
+      channelIds: [], skippedChannelIds: [{ id: 'old-channel', reason: 'disabled' }], escalationPolicyId: 'old-escalation',
+    });
+  expect((await resolveLegacyDeliveryBaseline({ orgId: 'org', severity: 'high' },
+    { channelIds: [], escalationPolicyId: 'old-escalation' }, executor)).escalationPolicyId).toBe('old-escalation');
+  expect(resolveDelivery).toHaveBeenCalledWith(expect.objectContaining({ monitorId: null, kind: null }), executor);
+});
 ```
 
 - [ ] **Step 2: Run, expect FAIL.**
 ```bash
-cd apps/api && npx vitest run src/services/delivery/resolveDelivery.test.ts src/services/notificationDispatcher.test.ts
+cd apps/api && npx vitest run src/services/delivery/resolveDelivery.test.ts src/services/monitors/conversion/legacyDeliveryBaseline.test.ts
 ```
-Expected: tsc-in-vitest error `Unused '@ts-expect-error' directive` and `expected { source: 'legacy_override' … }`.
+Expected: routing/default/none still inherit `ESC_MON`; the new private helper import cannot resolve. The dispatcher tests from W05b/C1 must still cover alerts queued before retirement and prove no legacy source lookups after implementation.
 
-- [ ] **Step 3: Implement.** `resolveDelivery.ts`: remove `'legacy_override'` from `DeliverySource`; remove `legacyOverride` from `ResolveDeliveryInput`; delete step 3 (the `legacyChannels`/`legacyEscalation` block); renumber the comment ladder (1 monitor none → 2 monitor channels → 3 routing rows → 4 org default → 5 partner default → 6 none) and the file header. Escalation: `escalationPolicyId: monitorEscalation ?? row.escalationPolicyId ?? null` stays. `notificationDispatcher.ts`: delete the `legacyOverride` variable, the `if (!rule.managedByMonitorId) { … }` block inside the `alert.ruleId` branch (keep `monitorId = monitorId ?? rule.managedByMonitorId ?? null`), the whole `else if (alert.configPolicyId) { … }` branch, and the `legacyOverride` property in the `resolveDelivery({...})` call; drop the `configPolicyAlertRules` import. `grep -n "legacyOverride\|legacy_override" apps/api/src` must print nothing.
+- [ ] **Step 3: Implement.** In the public `resolveDelivery.ts`, remove the input, union member, channel branch and declaration of `legacyEscalation`. Replace **every** fallback expression, retaining W05b's `finish(...)` eligibility wrapper and `skippedChannelIds` (D1):
+```ts
+// Routing-rule return:
+escalationPolicyId: monitorEscalation ?? rule.escalationPolicyId ?? null,
+// Default-row return:
+escalationPolicyId: monitorEscalation ?? defaultRow.escalationPolicyId ?? null,
+// No-row return:
+return finish({ channelIds: [], escalationPolicyId: monitorEscalation ?? null, source: 'none' });
+```
+Remove `'legacy_override'` from `DeliverySource`, from `services/delivery/describeDelivery.ts`'s description map and its legacy-specific tests, and from W05b's mirrored `ResolvedDelivery` type in `apps/web/src/components/monitoring/DeliveryPreview.tsx`. Keep both eligible destinations and skipped-channel metadata in the mirror. Delete active dispatcher construction of legacy overrides and both normalized/standalone legacy lookups; retain its compiled-monitor identification. No live dispatcher path reads `configPolicyAlertRules` or unmanaged `overrideSettings` for delivery.
+
+Create `services/monitors/conversion/legacyDeliveryBaseline.ts`. It is private to conversion and replaces C1's **before** comparison's call that passed `legacyOverride` to `resolveDelivery`; the proposed-monitor **after** comparison still calls the public resolver. This preserves a truthful comparison after deleting the active branch, and retains kind-less legacy routing semantics:
+```ts
+import { sql } from 'drizzle-orm';
+import { db } from '../../../db';
+import type { DbExecutor } from './legacyBaseline';
+import { resolveDelivery, type ResolveDeliveryInput, type ResolvedDelivery } from '../../delivery/resolveDelivery';
+type LegacyOverride = { channelIds?: string[] | null; escalationPolicyId?: string | null };
+export async function resolveLegacyDeliveryBaseline(input: ResolveDeliveryInput,
+  override: LegacyOverride | null, executor: DbExecutor = db): Promise<
+    Pick<ResolvedDelivery, 'channelIds' | 'skippedChannelIds' | 'escalationPolicyId'>> {
+  const channelIds = [...new Set(override?.channelIds ?? [])];
+  if (channelIds.length > 0) {
+    // Same eligibility contract as W05b; configured override wins even if all
+    // its channels are disabled. Falling through would invent notifications.
+    const rows = await executor.execute<{ id: string; reason: 'disabled' | 'wrong_owner' | 'missing' | null }>(sql`
+      SELECT * FROM public.breeze_delivery_channel_status(${input.orgId}::uuid, ${channelIds}::uuid[])
+    `);
+    const byId = new Map(rows.map(row => [row.id, row.reason]));
+    const skippedChannelIds: ResolvedDelivery['skippedChannelIds'] = [];
+    const eligible = channelIds.filter(id => {
+      const reason = byId.has(id) ? byId.get(id)! : 'missing';
+      if (reason === null) return true;
+      skippedChannelIds.push({ id, reason }); return false;
+    });
+    return { channelIds: eligible, skippedChannelIds, escalationPolicyId: override?.escalationPolicyId ?? null };
+  }
+  const resolved = await resolveDelivery({ ...input, kind: null, monitorId: null }, executor);
+  return { channelIds: resolved.channelIds, skippedChannelIds: resolved.skippedChannelIds,
+    escalationPolicyId: resolved.escalationPolicyId ?? override?.escalationPolicyId ?? null };
+}
+```
+In C1's `equivalence.ts`, retain its existing signature hash and add an optional fourth argument to its actual `effectiveSignature` helper. Import `resolveLegacyDeliveryBaseline` from `./legacyDeliveryBaseline`:
+```ts
+async function effectiveSignature(p: ProposedMonitor, input: Parameters<typeof resolveDelivery>[0],
+  executor: DbExecutor, legacy?: Parameters<typeof resolveLegacyDeliveryBaseline>[1]) {
+  const resolved = legacy === undefined
+    ? await resolveDelivery(input, executor)
+    : await resolveLegacyDeliveryBaseline(input, legacy, executor);
+  return sha(canonical({
+    behavior: monitorSignature({ ...p, deliveryMode: 'channels',
+      deliveryChannelIds: resolved.channelIds, escalationPolicyId: resolved.escalationPolicyId }),
+    skippedChannelIds: [...resolved.skippedChannelIds].sort((a, b) => a.id.localeCompare(b.id)),
+  }));
+}
+```
+In `signatureMapForLegacy`, replace the inline-rule call with:
+```ts
+for (const p of item!.proposed) out.set(`rule:${row.id}:${p.role}`, await effectiveSignature(p, {
+  orgId: device.orgId, siteId: device.siteId, severity: p.severity, kind: null,
+}, executor, { channelIds: row.notificationChannelIds, escalationPolicyId: row.escalationPolicyId }));
+```
+Pass an empty override object as argument four for watches:
+```ts
+for (const p of mapped.proposed) out.set(`watch:${row.id}:${p.role}`, await effectiveSignature(p,
+  { orgId: device.orgId, siteId: device.siteId, severity: p.severity, kind: null }, executor, {}));
+```
+Monitor calls in `signatureMapForMonitors` keep three arguments and use the public resolver. Any remaining legacy sources in the dry-run **after** set still use the private helper too. Preserve C1's per-device/site iteration, canonical channel/escalation comparison and delivery freshness hash; no public reader becomes the before baseline.
 
 - [ ] **Step 4: Run, expect PASS.**
 ```bash
 pnpm --filter @breeze/api exec tsc --noEmit
+pnpm --filter @breeze/web exec tsc --noEmit
+cd apps/api && npx vitest run src/services/monitors/conversion/legacyDeliveryBaseline.test.ts src/services/monitors/conversion/legacyBaseline.test.ts
 cd apps/api && npx vitest run src/services/delivery src/services/notificationDispatcher src/routes/alerts/delivery
 cd apps/api && npx vitest run -c vitest.integration.config.ts src/__tests__/integration/deliveryResolution.integration.test.ts   # W05b's dispatch-vs-preview parity suite; name per W05b plan
 ```
 
 - [ ] **Step 5: Commit.**
 ```bash
-git add apps/api/src/services/delivery/resolveDelivery.ts apps/api/src/services/delivery/resolveDelivery.test.ts apps/api/src/services/notificationDispatcher.ts apps/api/src/services/notificationDispatcher.test.ts
+git add apps/api/src/services/delivery/resolveDelivery.ts apps/api/src/services/delivery/resolveDelivery.test.ts apps/api/src/services/delivery/describeDelivery.ts apps/api/src/services/delivery/describeDelivery.test.ts apps/api/src/services/monitors/conversion/legacyDeliveryBaseline.ts apps/api/src/services/monitors/conversion/legacyDeliveryBaseline.test.ts apps/api/src/services/monitors/conversion/equivalence.ts apps/web/src/components/monitoring/DeliveryPreview.tsx apps/api/src/services/notificationDispatcher.ts apps/api/src/services/notificationDispatcher.test.ts
 git commit -m "refactor(delivery): remove the transitional legacy override from resolveDelivery and the dispatcher"
 ```
 
 ---
 
-### Task 10: Legacy write routers → 410 Gone, reads retained (PR2)
+### Task 11: Legacy write routers → 410 Gone, reads retained (PR2)
 
 **Files:**
 - Create: `apps/api/src/routes/legacyAlertingGone.ts`
@@ -1698,40 +2260,55 @@ git commit -m "refactor(delivery): remove the transitional legacy override from 
   } as const;
   export const legacyAlertingGone = (c: Context) => c.json(LEGACY_ALERTING_GONE, 410);
   ```
-  Every `POST|PUT|PATCH|DELETE` under `/alerts/rules*` and `/alert-templates/templates*`, `/alert-templates/rules*` returns 410 with that body after auth + scope + write-permission + MFA middleware. `GET`s are untouched. `/alert-templates/correlations*` (correlation rules — a different object, not an alert-authoring surface) is untouched.
+  `POST /alerts/rules/:id/test` is also 410 (D19); its replacement is `POST /monitor-definitions/:id/test` (`routes/monitorDefinitions.ts:727-729`). Every `POST|PUT|PATCH|DELETE` under `/alerts/rules*` and `/alert-templates/templates*`, `/alert-templates/rules*` returns 410 with that body after auth + scope + write-permission + MFA middleware. `GET`s are untouched. `/alert-templates/correlations*` (correlation rules — a different object, not an alert-authoring surface) is untouched.
 
-- [ ] **Step 1: Write the failing tests.** Rewrite `routes/alerts/rules.managedByMonitor.test.ts` (its three cases all exercised writes) into `rules.gone.test.ts`:
+- [ ] **Step 1: Write the failing tests.** Keep the existing files and their real harnesses. In `routes/alerts/rules.managedByMonitor.test.ts:9-89`, retain `authRef`, `grantedRef`, the auth/db/helper mocks, `makeApp()` and beforeEach. Import `LEGACY_ALERTING_GONE` from `../legacyAlertingGone`; replace the old 409 write cases inside its describe:
 ```ts
-import { describe, expect, it } from 'vitest';
-import { app, partnerAuthJson } from './testApp';   // the file's existing app/auth fixtures
-import { LEGACY_ALERTING_GONE } from '../legacyAlertingGone';
-
-describe('legacy /alerts/rules writes are 410 (W05d)', () => {
-  it.each([
-    ['POST', '/alerts/rules'],
-    ['PUT', '/alerts/rules/00000000-0000-0000-0000-000000000001'],
-    ['DELETE', '/alerts/rules/00000000-0000-0000-0000-000000000001'],
-    ['POST', '/alerts/rules/00000000-0000-0000-0000-000000000001/test'],
-  ])('%s %s', async (method, path) => {
-    const res = await app.request(path, { method, headers: partnerAuthJson, body: method === 'DELETE' ? undefined : '{}' });
-    expect(res.status).toBe(410);
-    expect(await res.json()).toEqual(LEGACY_ALERTING_GONE);
-  });
-  it('still 401s without a token (middleware precedes the 410)', async () => {
-    const res = await app.request('/alerts/rules', { method: 'POST', body: '{}' });
-    expect(res.status).toBe(401);
-  });
-  it('GET /alerts/rules still lists (reads retained)', async () => {
-    const res = await app.request('/alerts/rules?limit=1', { headers: partnerAuthJson });
-    expect(res.status).toBe(200);
-  });
+it.each([
+  ['POST', '/alerts/rules'],
+  ['PUT', `/alerts/rules/${RULE_ID}`],
+  ['DELETE', `/alerts/rules/${RULE_ID}`],
+  ['POST', `/alerts/rules/${RULE_ID}/test`],
+])('%s %s is retired', async (method, path) => {
+  const response = await makeApp().request(path, { method,
+    headers: { 'content-type': 'application/json' }, body: method === 'DELETE' ? undefined : '{}' });
+  expect(response.status).toBe(410);
+  expect(await response.json()).toEqual(LEGACY_ALERTING_GONE);
+});
+it('auth still precedes retirement', async () => {
+  authRef.current = null as never;
+  expect((await makeApp().request('/alerts/rules', { method: 'POST', body: '{}' })).status).toBe(401);
+});
+it('write permission still precedes retirement', async () => {
+  grantedRef.current = new Set(['alerts:read']);
+  expect((await makeApp().request('/alerts/rules', { method: 'POST', body: '{}' })).status).toBe(403);
 });
 ```
-Same shape for `alertTemplates/templates.gone.test.ts` (`POST /alert-templates/templates`, `PATCH|DELETE /alert-templates/templates/:id`) and `alertTemplates/rules.gone.test.ts` (`POST /alert-templates/rules`, `PATCH|DELETE /alert-templates/rules/:id`, `POST /alert-templates/rules/:id/toggle`), plus one case that `GET /alert-templates/correlations` is unaffected.
+`alertTemplates/templates.managedByMonitor.test.ts:55-60` and `rules.managedByMonitor.test.ts:72-77` both define **`app()`** (no `testApp` module). Replace their write cases using those existing harnesses:
+```ts
+// templates.managedByMonitor.test.ts — import ../legacyAlertingGone.
+it.each([['POST', '/alert-templates/templates'], ['PATCH', `/alert-templates/templates/${TEMPLATE_ID}`],
+  ['DELETE', `/alert-templates/templates/${TEMPLATE_ID}`]])('%s %s is retired', async (method, path) => {
+  const response = await app().request(path, { method, headers: { 'content-type': 'application/json' },
+    body: method === 'DELETE' ? undefined : '{}' });
+  expect(response.status).toBe(410);
+  expect(await response.json()).toEqual(LEGACY_ALERTING_GONE);
+});
+// rules.managedByMonitor.test.ts — import ../legacyAlertingGone.
+it.each([['POST', '/alert-templates/rules'], ['PATCH', `/alert-templates/rules/${RULE_ID}`],
+  ['DELETE', `/alert-templates/rules/${RULE_ID}`], ['POST', `/alert-templates/rules/${RULE_ID}/toggle`]])(
+  '%s %s is retired', async (method, path) => {
+    const response = await app().request(path, { method, headers: { 'content-type': 'application/json' },
+      body: method === 'DELETE' ? undefined : '{}' });
+    expect(response.status).toBe(410);
+    expect(await response.json()).toEqual(LEGACY_ALERTING_GONE);
+  });
+```
+Keep the existing scope/site/GET/correlation tests as the read-path controls; the write-only harnesses do not mock list queries.
 
 - [ ] **Step 2: Run, expect FAIL.**
 ```bash
-cd apps/api && npx vitest run src/routes/alerts/rules.gone.test.ts src/routes/alertTemplates/templates.gone.test.ts src/routes/alertTemplates/rules.gone.test.ts
+cd apps/api && npx vitest run src/routes/alerts/rules.managedByMonitor.test.ts src/routes/alertTemplates/templates.managedByMonitor.test.ts src/routes/alertTemplates/rules.managedByMonitor.test.ts
 ```
 Expected: `Failed to resolve import "../legacyAlertingGone"`, then `expected 400 to be 410` (zod rejects `{}` before any handler today).
 
@@ -1775,7 +2352,7 @@ git commit -m "feat(api): legacy alert rule and template write endpoints return 
 
 ---
 
-### Task 11: Web — delete the policy Alerts / Service & Process tabs and `/alerts/rules`; hash aliases; parity tests; i18n (PR2)
+### Task 12: Web — delete the policy Alerts / Service & Process tabs and `/alerts/rules`; hash aliases; parity tests; i18n (PR2)
 
 **Files:**
 - Delete: `apps/web/src/components/configurationPolicies/featureTabs/AlertRuleTab.tsx`, `AlertRuleTab.test.tsx`, `AlertRuleTab.testVerdict.test.tsx`, `AlertRuleTestModal.tsx`, `MonitoringTab.tsx`, `MonitoringTab.test.tsx`
@@ -1791,7 +2368,7 @@ git commit -m "feat(api): legacy alert rule and template write endpoints return 
 - Modify: `apps/web/src/locales/{en,de-DE,es-419,fr-CA,fr-FR,it-IT,pt-BR,tr-TR}/policies.json` (remove `…alertRuleTab` block, en 201-266, and `…monitoringTab` block, en 799-837), `pages.json` (`titles.alertsRules`, line 32), `alerts.json` (`alertsTabStrip.tabs.rules`, en 622; `list.*` block at en ~370-378 if only `LegacyRulesPage` read it — grep each key)
 
 **Interfaces:**
-- Consumes: Task 6's `CONFIG_FEATURE_TYPES` / `RETIRED_CONFIG_FEATURE_TYPES` (from `@breeze/shared`); `useHashTab` (`lib/useHashState.ts:77`).
+- Consumes: Task 7's `CONFIG_FEATURE_TYPES` / `RETIRED_CONFIG_FEATURE_TYPES` (from `@breeze/shared`); `useHashTab` (`lib/useHashState.ts:77`).
 - Produces: `FEATURE_META` and `featureTabIcons` keyed by the new `FeatureType`; `LEGACY_TAB_ALIASES: Record<'alert_rule' | 'monitoring', 'monitors'>` exported from `ConfigPolicyDetailPage.tsx`; a deep link to `#alert_rule` / `#monitoring` lands on `#monitors` with the URL rewritten via `history.replaceState`; `/alerts/rules`, `/alerts/rules/new`, `/alerts/rules/:id` → `301 /alerts/monitors`; `AlertsTabStrip` shows Alerts · Correlations · Monitors · Delivery (W05b already replaced Channels with Delivery — keep its list; only the Rules entry goes).
 
 - [ ] **Step 1: Write the failing tests.** `featureTypeParity.test.ts` — replace the last case with:
@@ -1888,7 +2465,7 @@ git commit -m "feat(web): retire the policy Alerts and Service & Process tabs an
 
 ---
 
-### Task 12: AI tools refuse the retired feature types; `manage_alert_rules` loses `list_templates`; the one-shot migrate script goes (PR2)
+### Task 13: AI tools refuse the retired feature types; `manage_alert_rules` loses `list_templates`; the one-shot migrate script goes (PR2)
 
 **Files:**
 - Modify: `apps/api/src/services/aiToolsConfigPolicy.ts` (`VALIDATED_INLINE_SETTINGS` 101-108; `manage_policy_feature_link` description 876-905 incl. the `alert_rule`/`monitoring` shape paragraphs at 879-880; JSON-schema `featureType.enum` 907-916; handler `add` branch 1000-1014; `update` anti-bypass 956-994)
@@ -1899,20 +2476,20 @@ git commit -m "feat(web): retire the policy Alerts and Service & Process tabs an
 - Delete (shared, now importer-less): `alertRuleInlineSettingsSchema`, `monitoringInlineSettingsSchema` and their types in `packages/shared/src/validators/index.ts` (+ cases in `index_configpolicy.test.ts`) — only after `grep -rn "alertRuleInlineSettingsSchema\|monitoringInlineSettingsSchema" apps packages --include='*.ts' --include='*.tsx' | grep -v node_modules` shows no consumer outside the validator file and its test.
 
 **Interfaces:**
-- Consumes: Task 6's `CONFIG_FEATURE_TYPES` / `isRetiredConfigFeatureType`; the W05c2 warning text for `alert_rule`/`monitoring` (replaced by a refusal).
+- Consumes: Task 7's `CONFIG_FEATURE_TYPES` / `isRetiredConfigFeatureType`; the W05c2 warning text for `alert_rule`/`monitoring` (replaced by a refusal).
 - Produces:
   - `manage_policy_feature_link` `add` with `featureType` in `RETIRED_CONFIG_FEATURE_TYPES` → `{ error: 'Feature type "alert_rule" was retired by the alerting consolidation. Author the condition with manage_monitor_definitions and attach it to the policy with featureType "monitors".', retiredFeatureType, useTool: 'manage_monitor_definitions' }`; its JSON-schema `featureType.enum` is `[...CONFIG_FEATURE_TYPES]`; `update` on a retired link → the same error (the anti-bypass read at 967-974 already fetches the existing link's type).
   - `manage_alert_rules` actions: `list_rules | get_rule | test_rule | list_channels | alert_summary` (no `list_templates`; `create_rule`/`update_rule`/`delete_rule` dropped from every schema, not just refused); `list_rules` returns rows with `managed_by_monitor_id IS NOT NULL` only and each row carries `monitorId`; every pointer says `manage_monitor_definitions`.
   - No file under `apps/api/src/scripts/` inserts `config_policy_alert_rules`.
 
-- [ ] **Step 1: Write the failing tests.** `aiAgentSdkTools.mcpCoverage.test.ts` — replace the case at line 378:
+- [ ] **Step 1: Write the failing tests.** `aiAgentSdkTools.mcpCoverage.test.ts` — import `RETIRED_CONFIG_FEATURE_TYPES` from `./configFeatureTypes` and `configFeatureTypeEnum` from `../db/schema/configurationPolicies`, then replace the case at line 378:
 ```ts
 it('manage_policy_feature_link accepts every canonical feature type and refuses every retired one', () => {
   for (const ft of CONFIG_FEATURE_TYPES) {
-    expect(validateToolInput('manage_policy_feature_link', { action: 'add', configPolicyId: UUID, featureType: ft, inlineSettings: {} }).ok).toBe(true);
+    expect(validateToolInput('manage_policy_feature_link', { action: 'add', configPolicyId: '00000000-0000-4000-8000-000000000000', featureType: ft, inlineSettings: {} }).success).toBe(true);
   }
   for (const ft of RETIRED_CONFIG_FEATURE_TYPES) {
-    expect(validateToolInput('manage_policy_feature_link', { action: 'add', configPolicyId: UUID, featureType: ft, inlineSettings: {} }).ok).toBe(false);
+    expect(validateToolInput('manage_policy_feature_link', { action: 'add', configPolicyId: '00000000-0000-4000-8000-000000000000', featureType: ft, inlineSettings: {} }).success).toBe(false);
   }
   // The DB enum still carries the retired values; the tool surface must not.
   expect([...CONFIG_FEATURE_TYPES, ...RETIRED_CONFIG_FEATURE_TYPES].sort()).toEqual([...configFeatureTypeEnum.enumValues].sort());
@@ -1927,25 +2504,36 @@ it('manage_alert_rules has no list_templates and no write actions (W05d)', () =>
 `aiToolsConfigPolicy.test.ts`:
 ```ts
 it('add with a retired featureType is refused with a pointer, before any DB read', async () => {
-  const out = JSON.parse(await handler({ action: 'add', configPolicyId: 'p1', featureType: 'monitoring', inlineSettings: { checkIntervalSeconds: 60, watches: [] } }, auth));
+  const tools = new Map<string, any>();
+  registerConfigPolicyTools(tools);
+  vi.mocked(db.select).mockClear();
+  const out = JSON.parse(await tools.get('manage_policy_feature_link')!.handler({ action: 'add', configPolicyId: POLICY_ID, featureType: 'monitoring', inlineSettings: { checkIntervalSeconds: 60, watches: [] } }, makeAuth()));
   expect(out).toEqual(expect.objectContaining({ retiredFeatureType: 'monitoring', useTool: 'manage_monitor_definitions' }));
-  expect(dbSelectMock).not.toHaveBeenCalled();
+  expect(db.select).not.toHaveBeenCalled();
 });
 ```
-`aiToolsFleet.test.ts`:
+`aiToolsFleet.test.ts:641-658` defines `tool` and `mockAuth` inside its `manage_alert_rules handler` describe. Use those actual fixtures. Add a hoisted spy for `isNotNull`, preserving all other Drizzle exports, and extend its existing alertRules schema mock (`:139`) with `managedByMonitorId: 'managedByMonitorId'`:
 ```ts
-it('manage_alert_rules list_rules returns managed rules only (W05d)', async () => {
-  seedRules([{ id: 'r1', managedByMonitorId: 'm1' }, { id: 'r2', managedByMonitorId: null }]);
-  const out = JSON.parse(await handler({ action: 'list_rules' }, auth));
-  expect(out.rules.map((r: { id: string }) => r.id)).toEqual(['r1']);
-  expect(whereSql()).toMatch(/managed_by_monitor_id.*is not null/i);
+const { isNotNullMock } = vi.hoisted(() => ({ isNotNullMock: vi.fn() }));
+vi.mock('drizzle-orm', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('drizzle-orm')>();
+  isNotNullMock.mockImplementation(actual.isNotNull);
+  return { ...actual, isNotNull: isNotNullMock };
 });
-it('manage_alert_rules list_templates is unknown', async () => {
-  const out = JSON.parse(await handler({ action: 'list_templates' }, auth));
-  expect(out.error).toMatch(/unknown action/i);
+import { alertRules } from '../db/schema';
+// Add inside the existing describe, where tool/mockAuth are defined:
+it('list_rules requests managed rows only', async () => {
+  isNotNullMock.mockClear();
+  const result = JSON.parse(await tool.handler({ action: 'list_rules' }, mockAuth));
+  expect(result.rules).toEqual([]); // existing mock returns an empty result
+  expect(isNotNullMock).toHaveBeenCalledWith(alertRules.managedByMonitorId);
+});
+it('list_templates is no longer an action', async () => {
+  const result = JSON.parse(await tool.handler({ action: 'list_templates' }, mockAuth));
+  expect(result.error).toMatch(/unknown action/i);
 });
 ```
-`featureLinkReaders.contract.test.ts`: no new case — removing the allowlist line makes the contract fail if the file still exists.
+The predicate assertion checks SQL construction; keep the existing tenant/site-scoping suites as isolation controls. `registerConfigPolicyTools`, `makeAuth`, `POLICY_ID`, and `db` in the preceding test are the real definitions at `aiToolsConfigPolicy.test.ts:129-162`.
 
 - [ ] **Step 2: Run, expect FAIL.**
 ```bash
@@ -1986,42 +2574,38 @@ git commit -m "feat(ai): policy feature-link tool refuses retired types; manage_
 
 ---
 
-### Task 13: Docs and release notes (PR2)
+### Task 14: Docs and release notes (PR2)
 
 **Files:**
-- Delete: `apps/docs/src/content/docs/features/service-monitoring.mdx`
-- Modify: `apps/docs/astro.config.mjs` (sidebar line 126; add/extend `redirects`)
+- Verify only: `apps/docs/src/content/docs/features/service-monitoring.mdx` is absent and `apps/docs/astro.config.mjs` retains W05c2's redirect (base sidebar entry at `:126`; W05c2 removes it). Do not delete the file again.
 - Modify: `apps/docs/src/content/docs/features/alerts.mdx` (sections at 116-170 "Creating Alert Rules", "Testing a Rule", "Partner-wide Rules", and 240 "Offline Duration for Configuration Policy Rules")
 - Modify: `apps/docs/src/content/docs/features/configuration-policies.mdx` (lines 107, 375)
 - Modify: `apps/docs/src/content/docs/features/monitors.mdx` (lines 35, 104-118 "Converting a legacy alert rule", 157 API row, 169-173 troubleshooting)
 - Modify: `docs/release-notes/next-release-draft.md`, `CHANGELOG.md` (`[Unreleased]`)
-- Modify: the nine `apps/docs/src/content/docs/migration/*.mdx` guides only where they still say "alert rule" as an authoring instruction (`grep -ln "alert rule\|Alert Rules" apps/docs/src/content/docs/migration/*.mdx`) — W05c2 re-pointed most; finish the sweep.
+- Verify only: W05c2's ten migration guides already point authoring at Monitors. This wave edits retirement-specific documentation only.
 
 **Interfaces:**
 - Consumes: W05c2's docs state (`alert-templates.mdx` already removed with a redirect; `alerts.mdx` already the three-facet domain page if W05c2 rewrote it — `git log --oneline -3 -- apps/docs/src/content/docs/features/alerts.mdx`).
-- Produces: `/features/service-monitoring/` → `/features/monitors/` (Astro `redirects`); no docs page instructs a reader to open a policy's **Alerts** or **Service & Process Monitoring** tab, `/alerts/rules`, or `POST /alerts/rules`; the `featureType` list at `configuration-policies.mdx:375` equals `CONFIG_FEATURE_TYPES`; release notes carry the removals, the boot check and what self-hosters see.
+- Produces: retirement-specific docs while preserving W05c2's `/features/service-monitoring/` → `/features/monitors/` redirect; no docs page instructs a reader to open a policy's **Alerts** or **Service & Process Monitoring** tab, `/alerts/rules`, or `POST /alerts/rules`; the `featureType` list at `configuration-policies.mdx:375` equals `CONFIG_FEATURE_TYPES`; release notes carry the removals, the boot check and what self-hosters see.
 
 - [ ] **Step 1: Write the failing check.** Docs have no unit tests; the red is the build plus a grep contract. Add to `apps/docs/package.json` scripts (if a `check:links`-style script does not already exist) nothing — instead run the grep as the assertion:
 ```bash
 grep -rn "Service & Process Monitoring tab\|/features/service-monitoring\|/alerts/rules\|POST /alerts/rules\|Alerts tab\|alert_rule\b" apps/docs/src/content/docs --include='*.mdx' | grep -v "retired\|no longer" 
 ```
-Expected before the change: matches at `configuration-policies.mdx:107,375`, `monitors.mdx:35,157,173`, `alerts.mdx:116-170`, `astro.config.mjs:126`. Expected after: no output.
+Expected before the change: remaining W05c retirement instructions in the three feature docs. These base line anchors shift after W05c2; its redirect is already correct. Expected after: no output.
 
-- [ ] **Step 2: Run it, expect FAIL** (matches listed above). Also `cd apps/docs && pnpm build` is green today; after deleting `service-monitoring.mdx` and before fixing the sidebar it fails with `Sidebar entry features/service-monitoring not found` — that is the second red.
+- [ ] **Step 2: Run it, expect FAIL** on remaining retirement-specific instructions. W05c2's deletion/redirect is already green; do not manufacture another missing-sidebar failure.
 
-- [ ] **Step 3: Implement.**
-`astro.config.mjs`: delete line 126; add at the top level of `defineConfig({ … })`:
-```js
-  redirects: {
-    // W05d — Service & Process Monitoring became monitors of kind service/process/process_resource.
-    '/features/service-monitoring/': '/features/monitors/',
-  },
+- [ ] **Step 3: Implement.** Verify the prerequisite deletion and redirect without changing either:
+```bash
+test ! -e apps/docs/src/content/docs/features/service-monitoring.mdx
+rg -n "'/features/service-monitoring/': '/features/monitors/'" apps/docs/astro.config.mjs
 ```
-(if W05c2 already added a `redirects` map for `/features/alert-templates/`, add this entry to it). `git rm apps/docs/src/content/docs/features/service-monitoring.mdx`.
+The first command exits zero; the second prints W05c2's redirect. Edit only the retirement instructions below; retain the Task 6 Revert deadline.
 
 `configuration-policies.mdx:107` → `A single policy carries every alert condition — service and process watches, thresholds, offline detection, event-log patterns — as monitors attached on its **Monitors** tab, plus one agent-collection setting, *Check interval*. See [Monitors](/features/monitors/).` `:375` → the canonical list without `alert_rule`/`monitoring`, ending: ``The retired values `alert_rule` and `monitoring` are rejected with `410 Gone`.``
 
-`monitors.mdx`: line 35 → `**Service stopped**, **Process stopped** and **Process resource** monitors are delivered to the agent directly from the policy's attached monitors; the per-policy *Check interval* on the Monitors tab sets how often the agent evaluates them.`; §"Converting a legacy alert rule" (104-118) → a short "Legacy rules" section: conversion happened in the previous release; anything that could not convert is listed once on **Alerts → Monitors** with its reason; open alerts from those rules stay open until resolved; the legacy write endpoints return `410 Gone`; delete the API row at 157 if W05c2 removed `convert-from-rule` (grep the routes) or reword it as retired; troubleshooting 169-173 → replace with "**The Monitors page shows *N legacy rules could not be converted*.** Open the list; each row names the policy and the reason. Recreate the condition as a monitor (Composite for multi-condition rules), then dismiss the banner."
+`monitors.mdx`: line 35 → `**Service stopped**, **Process stopped** and **Process resource** monitors are delivered to the agent directly from the policy's attached monitors; the per-policy *Check interval* on the Monitors tab sets how often the agent evaluates them.`; §"Converting a legacy alert rule" (104-118) → a short "Legacy rules" section: conversion happened in the previous release; anything that could not convert is listed once on **Alerts → Monitors** with its reason; open alerts from those rules stay open until resolved; the legacy write endpoints, including `POST /alerts/rules/:id/test`, return `410 Gone`; test monitors with `POST /monitor-definitions/:id/test`. Revert for these legacy sources ended at the W05d upgrade (Task 6); delete the API row at 157 if W05c2 removed `convert-from-rule` (grep the routes) or reword it as retired; troubleshooting 169-173 → replace with "**The Monitors page shows *N legacy rules could not be converted*.** Open the list; each row names the policy and the reason. Recreate the condition as a monitor (Composite for multi-condition rules), then dismiss the banner."
 
 `alerts.mdx`: "Creating Alert Rules" (116-160), "Testing a Rule" (162), "Partner-wide Rules" (168) and "Offline Duration for Configuration Policy Rules" (240) → one section **Alert conditions are monitors** pointing at `/features/monitors/`, keeping the severity/status/response/correlation/notification sections. Update the intro sentence at line 10 ("triggered by **rules** you define" → "raised by **monitors** you define").
 
@@ -2040,19 +2624,19 @@ grep -rn "Service & Process Monitoring tab\|/features/service-monitoring\|/alert
 
 - [ ] **Step 5: Commit.**
 ```bash
-git add -A apps/docs/src/content/docs apps/docs/astro.config.mjs docs/release-notes/next-release-draft.md CHANGELOG.md
-git commit -m "docs: alerting consolidation W05d — removals, boot check, self-hoster notes; service-monitoring page redirects to monitors"
+git add apps/docs/src/content/docs/features/alerts.mdx apps/docs/src/content/docs/features/configuration-policies.mdx apps/docs/src/content/docs/features/monitors.mdx docs/release-notes/next-release-draft.md CHANGELOG.md
+git commit -m "docs: alerting consolidation W05d — removals, boot check, self-hoster notes and Revert deadline"
 ```
 
 ---
 
-### Task 14: Verification pass (end of PR1 and again at end of PR2)
+### Task 15: Verification pass (end of PR1 and again at end of PR2)
 
 **Files:** none created. Read-only checks against the whole tree.
 
 - [ ] **Step 1: Migration naming and RLS scope.**
 ```bash
-git fetch origin && git ls-tree --name-only origin/main apps/api/migrations/ | sort | tail -1     # must sort BEFORE 2026-10-24-100000-…
+git fetch origin && git ls-tree -r --name-only origin/main apps/api/migrations | grep -E '^apps/api/migrations/[0-9]{4}-[^/]+\.sql$' | sort | tail -1     # must sort BEFORE 2026-10-24-100000-…
 bash scripts/check-migration-naming.sh --against-ref origin/main
 cd apps/api && npx vitest run src/db/autoMigrate.test.ts src/db/migrationRlsScope.test.ts src/config/composeBindMounts.test.ts
 ```
@@ -2074,7 +2658,7 @@ cd apps/web && npx vitest run src/components/configurationPolicies src/component
 ```
 Check the reported file counts against the File Structure table — vitest's filter is a substring match; a typo silently runs zero files.
 
-- [ ] **Step 4: Integration suites (live stack).** Touches migrations, the agent config builder and system-context writes, so all of these run:
+- [ ] **Step 4: Integration suites (live stack).** Touches migrations, the agent config builder and system-context writes, so all of these run (including the scoped retirement report and last-detachment/revert regressions):
 ```bash
 pnpm test-stack up
 cd apps/api && npx vitest run -c vitest.integration.config.ts \
@@ -2092,10 +2676,17 @@ pnpm test-stack down
 ```
 `rls-coverage`, `tenantCascade`, both export-policy suites and the org-lifecycle merge contract must be green *unchanged* — this wave adds no table, column, policy or list entry; a red there means a stray schema change slipped in.
 
-- [ ] **Step 5: Grep contracts (PR2).** Each must print nothing:
+- [ ] **Step 5: Grep contracts (PR2).** First verify the converter still has its private baseline and the lifecycle helper, while public delivery has no legacy branch:
 ```bash
-grep -rn "evaluateDeviceAlertsFromPolicy\|getApplicableRulesFromPolicy\|checkAutoResolveFromConfigPolicy\|isConfigPolicyRuleCooling\|markConfigPolicyRuleCooldown\|resolveAlertRulesForDevice\|resolveGoverningAlertRulePolicyForDevice" apps/api/src
-grep -rn "legacyOverride\|legacy_override" apps/api/src
+test -f apps/api/src/services/monitors/conversion/legacyBaseline.ts
+test -f apps/api/src/services/monitors/conversion/legacyDeliveryBaseline.ts
+rg -n 'resolveLegacyBaseline|resolveLegacyDeliveryBaseline' apps/api/src/services/monitors/conversion/equivalence.ts
+rg -n 'isRevertAvailable' apps/api/src/services/monitors/conversion
+```
+Then each obsolete-production-symbol check must print nothing (negative regression tests may still name removed symbols):
+```bash
+rg -n "evaluateDeviceAlertsFromPolicy|getApplicableRulesFromPolicy|checkAutoResolveFromConfigPolicy|isConfigPolicyRuleCooling|markConfigPolicyRuleCooldown|resolveAlertRulesForDevice|resolveGoverningAlertRulePolicyForDevice" apps/api/src --glob '!*.test.ts'
+rg -n "legacyOverride|legacy_override|legacyEscalation" apps/api/src/services/delivery apps/api/src/services/notificationDispatcher.ts apps/web/src/components/monitoring/DeliveryPreview.tsx --glob '!*.test.ts'
 grep -rn "AlertRuleTab\|MonitoringTab\|LegacyRulesPage\|AlertRuleForm\|AlertRuleTestModal" apps/web/src
 grep -rn "'alert_rule'\|'monitoring'" apps/api/src/services/configurationPolicy.ts apps/api/src/routes/configurationPolicies apps/api/src/routes/agents/helpers.ts apps/api/src/services/aiToolsConfigPolicy.ts apps/api/src/services/aiToolsFleet.ts | grep -v "RETIRED\|retired"
 grep -rn "list_templates\|migrateToConfigPolicies" apps/api/src packages/shared/src
@@ -2103,11 +2694,8 @@ grep -rn "alertRuleTab\|monitoringTab\|alertsRules" apps/web/src/locales
 ```
 And one that must print exactly the retired list: `grep -n "RETIRED_CONFIG_FEATURE_TYPES = " packages/shared/src/constants/configFeatureTypes.ts`.
 
-- [ ] **Step 6: Boot smoke (PR2).** Bring up the worktree stack (`pnpm wt-stack up`), watch the API log for `[startup] Legacy alerting retirement: … unretired rules=0 watches=0`, `GET /api/v1/monitor-definitions/conversion/pending?orgId=<seed org>` returns `sweep` non-null, `POST /api/v1/alerts/rules` returns 410, `/alerts/rules` redirects to `/alerts/monitors`, and `/configuration-policies/<id>#alert_rule` lands on `#monitors` with the hash rewritten. Then seed one unretired `config_policy_alert_rules` row by hand (`retired_at = NULL`) with `BREEZE_LEGACY_ALERTING_SWEEP=false`, restart the API, and confirm the error log line and the Sentry capture (`[legacy-alerting-retirement] Legacy alerting rows are still unretired …`) — that is the only proof the loud path is wired. `pnpm wt-stack down` afterwards; say what you left running.
+- [ ] **Step 6: Boot smoke (PR2).** Bring up the worktree stack (`pnpm wt-stack up`), watch the API log for `[startup] Legacy alerting retirement: … unretired rules=0 watches=0`, `GET /api/v1/monitor-definitions/conversion/pending?orgId=<seed org>` returns scoped `unconvertible` rows (partner-wide view returns the sweep marker), `POST /api/v1/alerts/rules` returns 410, `/alerts/rules` redirects to `/alerts/monitors`, and `/configuration-policies/<id>#alert_rule` lands on `#monitors` with the hash rewritten. Then seed one unretired `config_policy_alert_rules` row by hand (`retired_at = NULL`) with `BREEZE_LEGACY_ALERTING_SWEEP=false`, restart the API, and confirm the error log line and the Sentry capture (`[legacy-alerting-retirement] Legacy alerting rows are still unretired …`) — that is the only proof the loud path is wired. `pnpm wt-stack down` afterwards; say what you left running.
 
-- [ ] **Step 7: PR hygiene.** PR1 title `feat(alerting): W05d part 1 — retirement sweep, settings re-key, boot check`; PR2 title `feat(alerting): W05d part 2 — retire legacy alerting surfaces (410s, tabs, evaluator, docs)` with `Closes #<W05d sub-issue>`. Both bodies state: ordering assumption (W05c shipped in a prior release), the migration name check result, the sweep/boot-check design (TypeScript after `serve()`, mirrors built-in monitors), the two-table count, the equivalence-refusal → retire decision, and that no cascade/export/RLS list changed. Run `/pr-review-toolkit:review-pr` once per PR; act only on confirmed findings.
+- [ ] **Step 7: PR hygiene.** PR1 title `feat(alerting): W05d part 1 — retirement sweep, settings re-key, boot check and Revert guard`; PR2 title `feat(alerting): W05d part 2 — retire legacy alerting surfaces (410s, tabs, evaluator, docs)` with `Closes #<W05d sub-issue>`. Both bodies state: ordering assumption (W05c shipped in a prior release), the migration name check result, the sweep/boot-check design (TypeScript after `serve()`, mirrors built-in monitors), the two-table count, the equivalence-refusal → retire decision, the nullable system actor, the retained private baseline, the W05d Revert deadline and guard in PR1, and that no cascade/export/RLS list changed. Run `/pr-review-toolkit:review-pr` once per PR; act only on confirmed findings.
 
-**Open questions for the orchestrator (do not block on them):**
-1. Sweep refusal policy — retire on equivalence delta (chosen, spec-conservative) vs convert-and-list-the-delta (keeps more firing). Decide before PR1 ships to hosted.
-2. `POST /alerts/rules/:id/test` is read-only in effect; it is 410'd here because the spec says `POST/PUT/DELETE /alerts/rules*`. If a caller still needs a verdict on a compiled rule, the monitor test endpoint is the replacement.
-3. Open alerts of retired-unconvertible sources are left open for a human (no auto-resolve path remains). If that produces stale-alert noise on hosted, a one-time "resolve alerts of retired sources" admin action is a follow-up, not part of this wave.
+**Open questions:** None. D19 settles equivalence refusal, the legacy test endpoint's 410, and leaving non-terminal alerts for manual resolution. These decisions are implemented in Tasks 4, 9, 11 and 14.

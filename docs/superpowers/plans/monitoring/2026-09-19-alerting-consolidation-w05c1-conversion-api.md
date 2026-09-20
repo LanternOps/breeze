@@ -10,7 +10,7 @@ branch: (set by feature-lifecycle after registration)
 
 **Goal:** Every legacy alert-authoring row a configuration policy owns (inline alert rules, service/process watches, `alert.triggered` automations) and every unmanaged standalone rule/template can be previewed, converted into monitor definitions attached to the same policy, and retired in place — atomically, per policy, with a ledger, an equivalence check over every device in scope, open-alert carry-over, and a revert — through routes the W05c2 panel consumes.
 
-**Architecture:** Three API PRs. **PR1** widens the monitor model so conversion has somewhere to land: a `composite` kind (server-evaluated children only, compiles to an `{logic}` group), `restart_service` parameters on `execute_command`, `consecutiveFailures` 1..100, and an `inheritance: cumulative | replace` setting on the `monitors` feature link honoured by `resolveMonitorsForDevice`. **PR2** adds the retirement columns to the six legacy tables and the two org-XOR-partner ledger tables with RLS, then puts `retired_at IS NULL` in every evaluator, resolver, agent-config builder and list. **PR3** is the converter (`services/monitors/conversion/`): pure mappers from the spec's table, a dry-run equivalence check (`resolveEffectiveConfig` before vs `resolveMonitorsForDevice` inside a rolled-back transaction after, job-backed above 500 devices), the transactional convert/revert/retire with ledger and open-alert carry-over, the `/monitor-definitions/conversion/*` routes, the `alert.triggered` payload fields, and the onboarding writer moved from baseline `alert_rules` to built-in monitor attachments. The converter refuses to run until the three prerequisite fixes are provably present.
+**Architecture:** Three API PRs. **PR1** widens the monitor model so conversion has somewhere to land: a `composite` kind (server-evaluated children only, compiles to an `{logic}` group), `restart_service` parameters on `execute_command`, `consecutiveFailures` 1..100, and an `inheritance: cumulative | replace` setting on the `monitors` feature link honoured by `resolveMonitorsForDevice`. **PR2** adds the retirement columns to the six legacy tables and the two org-XOR-partner ledger tables with RLS, then puts `retired_at IS NULL` in every evaluator, resolver, agent-config builder and list. **PR3** is the converter (`services/monitors/conversion/`): private normalized baseline and inherited consumer scope, caller-bound previews, pure mappers from the spec's table, a dry-run equivalence check (`resolveLegacyBaseline` before vs `resolveMonitorsForDevice` inside a rolled-back transaction after, job-backed above 500 devices), the transactional convert/revert/retire with ledger and open-alert carry-over, the `/monitor-definitions/conversion/*` routes, the `alert.triggered` payload fields, and the onboarding writer moved from baseline `alert_rules` to built-in monitor attachments. The converter refuses to run until the three prerequisite fixes are provably present.
 
 **Tech Stack:** Hono, Drizzle ORM, PostgreSQL 16 (dual-axis RLS, deferrable composite FK), zod in `packages/shared`, BullMQ + Redis (equivalence job, cooldown re-key), Vitest (unit with Drizzle mocks; integration against real Postgres via `apps/api/src/__tests__/integration/setup`).
 
@@ -18,33 +18,34 @@ branch: (set by feature-lifecycle after registration)
 
 ## Ordering assumptions (read first)
 
-- **W05a and W05b have merged.** W05a froze creation on the legacy tabs (so the set of rows to convert is stable per policy) and W05b's `resolveDelivery` exists; this plan does not touch delivery resolution. Nothing here imports W05b symbols, so the two are only sequenced, not coupled.
+- **W05a and W05b have merged.** W05a froze creation on the legacy tabs (so the set of rows to convert is stable per policy) and W05b's `resolveDelivery` exists; Task 13 imports W05b's `resolveDelivery` and compares eligible channels, skipped-channel metadata and escalation per device/site. Routing, channel and escalation changes invalidate previews (D1/D6).
 - **#6342, #6343 and #6344 have merged as independent PRs.** This plan builds ON them and never re-implements them:
-  - **#6343** (`normalizeActions` keeps `kind` on `execute_command`; the watch builder reads it). Task 4 adds `maxAttempts` / `cooldownSeconds` on top. Verify before Task 4: `grep -n "kind" apps/api/src/services/automationRuntime.ts | sed -n '/execute_command/,/continue/p'` must show `kind` being preserved. If it does not, #6343 is not merged — stop and say so.
+  - **#6343** (`normalizeAutomationActions` keeps `kind` on `execute_command`; the watch builder reads it). Task 3 adds `maxAttempts` / `cooldownSeconds` on top. Verify before Task 3: `grep -n "kind" apps/api/src/services/automationRuntime.ts | sed -n '/execute_command/,/continue/p'` must show `kind` being preserved. If it does not, #6343 is not merged — stop and say so.
   - **#6344** (`resolveMonitorsForDevice` applies assignment `roleFilter` / `osFilter`). Task 5 adds the `inheritance` walk on top. Verify before Task 5: `grep -n "buildRoleOsFilterConditions\|matchesRoleOsFilter" apps/api/src/services/monitors/monitorResolver.ts` must match. If it does not, stop.
   - **#6342** (`offlineAlertEffects` resolves monitors for the device). Task 9 verifies it by grep and exports the capability constant next to it. Verify before Task 9: `grep -n "resolveMonitorsForDevice" apps/api/src/services/offlineAlertEffects.ts` must match.
 - The line numbers cited below were verified on `main @ b8dd148bd8` (before W05a/W05b and the three fixes). After those merge the numbers drift by a few lines; every task names the symbol as well as the line, and the `grep` in each task is the authority.
-- PR1 (Tasks 1–5) → PR2 (Tasks 6–8) → PR3 (Tasks 9–16). Each PR is independently green and mergeable; PR2 depends on PR1 only for the `composite` enum value in the drift check; PR3 depends on both.
+- PR1 (Tasks 1–5) → PR2 (Tasks 6–8) → PR3 (Tasks 9–18). Each PR is independently green and mergeable; PR2 depends on PR1 only for the `composite` enum value in the drift check; PR3 depends on both.
+- **Cross-check numbering:** the original HTTP Task 14 is now Task 16 after adding the private-baseline and workflow tasks; its D2/D3/D4/D10 endpoint/type names are unchanged for concurrent W05c2/W05d/W05e work.
 - **W05c2** (web + tools) consumes the routes and types produced here by exact name. **W05d** consumes `convertPartnerLegacy` and `retireSource`. **W05e** adds a `'network_monitors'` case to `retireSource` / `revertConversion` / `convertPartnerLegacy` and reads `monitor_conversions` — its plan is already written against the names below; do not rename.
 
 ## Global Constraints
 
-- **Migration names.** Three files, in this sort order: `2026-10-23-103000-monitor-kind-composite.sql` (PR1 — enum value only; the brief assigned two names and the `monitor_kind` enum needs a third file that lands before the ledger), `2026-10-23-110000-monitor-conversions.sql` (PR2 — ledger tables + RLS), `2026-10-23-120000-legacy-source-retirement-columns.sql` (PR2). Before pushing each PR: `git fetch origin main && git ls-tree --name-only origin/main apps/api/migrations/ | sort | tail -1` must sort **before** the new file (newest at planning time: `2026-10-21-100200-billing-profiles-permissions.sql`; W05b adds `2026-10-23-100000-delivery-routing-default-rows.sql`). Rename (bump `HHMMSS`) if anything newer landed. Never name a file for today's real date — shipped names run ahead of the calendar (CLAUDE.md §Schema Migration Workflow).
+- **Migration names.** Three files, in this sort order: `2026-10-23-103000-monitor-kind-composite.sql` (PR1 — enum value only; the brief assigned two names and the `monitor_kind` enum needs a third file that lands before the ledger), `2026-10-23-110000-monitor-conversions.sql` (PR2 — ledger tables + RLS), `2026-10-23-120000-legacy-source-retirement-columns.sql` (PR2). Before pushing each PR: `git fetch origin && git ls-tree -r --name-only origin/main apps/api/migrations | grep -E '^apps/api/migrations/[0-9]{4}-[^/]+\.sql$' | sort | tail -1` plus `scripts/check-migration-naming.sh --against-ref origin/main` must sort **before** the new file (newest at planning time: `2026-10-21-110100-…`; W05b adds `2026-10-23-100000-delivery-routing-default-rows.sql`). Rename (bump `HHMMSS`) if anything newer landed. Never name a file for today's real date — shipped names run ahead of the calendar (CLAUDE.md §Schema Migration Workflow).
 - Migrations are idempotent (`IF NOT EXISTS`, `DO $$ … $$`, `DROP POLICY IF EXISTS` + `CREATE`), contain **no inner `BEGIN`/`COMMIT`**, and the two PR2 files contain **no DML** — so `migrationRlsScope.test.ts` needs no `set_config('breeze.scope','system',true)` and its frozen baseline is untouched. If a later edit adds an `UPDATE`/`INSERT`, the elevation line goes first.
-- **Tenancy (CLAUDE.md §Tenant Isolation / RLS, §Partner-Wide First).** `monitor_conversions` and `monitor_conversion_outputs` are dual-axis config-shaped tables: `org_id` XOR `partner_id` (`<table>_one_owner_chk`), one dual-axis `FOR ALL` policy, a **separate, additive `FOR SELECT`** partner-wide branch keyed on `public.breeze_current_partner_id()` (template: `apps/api/migrations/2026-10-05-110000-config-policy-partner-wide-select.sql`; precedent in the same shape: `2026-10-16-160300-monitor-definitions.sql`), RLS enabled + forced, `GRANT … TO breeze_app`. The outputs table denormalises the owner axes and carries the composite FK `(conversion_id, org_id) → monitor_conversions(id, org_id)` **`DEFERRABLE INITIALLY IMMEDIATE`** (org merge contract, `orgLifecycleFoundations.integration.test.ts`).
-- **Registration lists (same PR as the migration — the step that gets missed, caught 0/5 by review and 5/5 by the contract tests):** `CORE_ORG_CASCADE_DELETE_ORDER` in `apps/api/src/services/tenantCascade.ts` (both tables, alphabetical by `localeCompare`: `monitor_conversion_outputs` < `monitor_conversions` < `monitor_definitions`, which is also child-before-parent); `CORE_TENANT_EXPORT_POLICY` in `apps/api/src/services/tenantExportPolicyRegistry.ts` (both tables; `moved_alert_ids` is `excludedOpen`; `preview_hash` matches the `hash` suspicious-name part and is `reviewedIncluded`); `DUAL_AXIS_TENANT_TABLES` **and** `XOR_OWNERSHIP_DUAL_AXIS_TABLES` in `apps/api/src/__tests__/integration/rls-coverage.integration.test.ts` (both tables). New columns on the three org-cascade legacy tables (`alert_rules`, `alert_templates`, `automations`) must be classified in `CORE_TENANT_EXPORT_POLICY` (`included` — scalars and a uuid). `config_policy_alert_rules`, `config_policy_monitoring_watches`, `config_policy_automations` carry no `org_id` (tenant reached through `configuration_policies`, `PARENT_FK_JOIN_POLICY_TABLES` lines 856–861) and need no export entry. Neither ledger table has `device_id`, so the device-side lists do not apply. No new FK lacks an explicit `ON DELETE`, so `orgCascadeFkOnDeleteAllowlist.ts` gains nothing.
-- **Partner-axis writers.** `partner-wide-write-coverage.test.ts` is textual: every file under `services/**` or `routes/**` that mutates a `partner_id`-bearing table must mention `canManagePartnerWidePolicies`. The conversion module's writer (`conversion/convert.ts`) calls it directly for partner-wide policies, so no allowlist entry; the ledger schema file is not a writer. `site-ceiling-write-coverage.test.ts`: the converter writes `configuration_policies` / `config_policy_feature_links` through `configurationPolicy.ts` (already exempt) and the routes gate with `canMutateOrgWideGovernance` (Task 14) — no allowlist entry.
+- **Tenancy (CLAUDE.md §Tenant Isolation / RLS, §Partner-Wide First).** `monitor_conversions` and `monitor_conversion_outputs` are dual-axis config-shaped tables: `org_id` XOR `partner_id` (`<table>_one_owner_chk`), one dual-axis `FOR ALL` policy, a **separate, additive `FOR SELECT`** partner-wide branch keyed on `public.breeze_current_partner_id()` (template: `apps/api/migrations/2026-10-05-110000-config-policy-partner-wide-select.sql`; precedent in the same shape: `2026-10-16-160300-monitor-definitions.sql`), RLS enabled + forced, `GRANT … TO breeze_app`. The outputs table denormalises the owner axes and carries both `(conversion_id, partner_id) → monitor_conversions(id, partner_id)` and the composite FK `(conversion_id, org_id) → monitor_conversions(id, org_id)` **`DEFERRABLE INITIALLY IMMEDIATE`** (org merge contract, `orgLifecycleFoundations.integration.test.ts`).
+- **Registration lists (same PR as the migration — the step that gets missed, caught 0/5 by review and 5/5 by the contract tests):** `CORE_ORG_CASCADE_DELETE_ORDER` in `apps/api/src/services/tenantCascade.ts` (both tables, alphabetical by `localeCompare`: `monitor_conversion_outputs` < `monitor_conversions` < `monitor_definitions`, which is also child-before-parent); `CORE_TENANT_EXPORT_POLICY` in `apps/api/src/services/tenantExportPolicyRegistry.ts` (both tables; `moved_alert_ids`, `moved_alert_refs` and `source_state` are `excludedOpen`; `preview_hash` matches the `hash` suspicious-name part and is `reviewedIncluded`); `DUAL_AXIS_TENANT_TABLES` **and** `XOR_OWNERSHIP_DUAL_AXIS_TABLES` in `apps/api/src/__tests__/integration/rls-coverage.integration.test.ts` (both tables). New columns on the three org-cascade legacy tables (`alert_rules`, `alert_templates`, `automations`) must be classified in `CORE_TENANT_EXPORT_POLICY` (`included` — scalars and a uuid). `config_policy_alert_rules`, `config_policy_monitoring_watches`, `config_policy_automations` carry no `org_id` (tenant reached through `configuration_policies`, `PARENT_FK_JOIN_POLICY_TABLES` lines 856–861) and need no export entry. Neither ledger table has `device_id`, so the device-side lists do not apply. No new FK lacks an explicit `ON DELETE`, so `orgCascadeFkOnDeleteAllowlist.ts` gains nothing.
+- **Partner-axis writers.** `partner-wide-write-coverage.test.ts` is textual: every file under `services/**` or `routes/**` that mutates a `partner_id`-bearing table must mention `canManagePartnerWidePolicies`. The conversion writers (`conversion/convert.ts`, `conversion/workflows.ts`) call it directly for partner-wide policies, so no allowlist entry; the ledger schema file is not a writer. `site-ceiling-write-coverage.test.ts`: the converter writes `configuration_policies` / `config_policy_feature_links` through `configurationPolicy.ts` (already exempt) and the routes gate with `canMutateOrgWideGovernance` (Task 16) — no allowlist entry.
 - **DB context.** The panel path runs under the request's `withDbAccessContext` (auth middleware); the equivalence job and the partner sweep run under `withDbAccessContext(<snapshot of the caller's DbAccessContext>)` inside the worker — never a bare pool, never `withSystemDbAccessContext` on the request path (#1105, #2417). Monitors are created only through `createMonitorDefinition` (which compiles in its own transaction) or `compileMonitorInTx`.
 - **Every code step has real code; red first.** Each task: write the failing test, run it and read the failure, implement, run green, typecheck (`cd apps/api && npx tsc --noEmit -p .` or `pnpm --filter @breeze/api exec tsc --noEmit`), commit. Never `pnpm --filter X test -- --run` (the `--` breaks vitest). Scoped runs: `cd apps/api && npx vitest run <path>`; shared: `cd packages/shared && npx vitest run <path>`. Integration suites: `pnpm test-stack up` once, then `cd apps/api && npx vitest run -c vitest.integration.config.ts <path>`; `pnpm test-stack down` when finished.
 - **Do not commit from a plan-execution subagent unless the task says so; the orchestrator owns branches.** Commit messages follow `<type>(<scope>): …`.
-- **No web changes in this wave** (W05c2). The shared `MONITOR_KINDS` change is visible to `apps/web`; Task 1 runs the web kind-parity tests so the shared package change cannot redden Test Web after merge.
+- **Web exception:** Task 1 changes only the shared-kind field map, picker and two locale keys; W05c2 owns the composite children/restart controls and their tests. The shared `MONITOR_KINDS` change is visible to `apps/web`; Task 1 runs the web kind-parity tests so the shared package change cannot redden Test Web after merge.
 
 ## File Structure (what changes where)
 
 | File | Change |
 |---|---|
 | `packages/shared/src/validators/monitors.ts` | Modify: `MONITOR_KINDS` += `'composite'`; `SERVER_EVALUATED_MONITOR_KINDS`; `compositeConditionSchema` (`match`, 2..10 `children` of server-evaluated kinds, child conditions cross-validated); `consecutiveFailures` max 100 on `service`/`process`/`network_check`; `monitorsInlineSettingsSchema.inheritance` |
-| `packages/shared/src/validators/monitors.test.ts` | Modify/create: composite + range + inheritance cases |
+| `packages/shared/src/validators/monitors.test.ts` | Modify: composite + range + inheritance cases |
 | `packages/shared/src/validators/automationActions.ts` | Modify: `execute_command` gains `maxAttempts` (0..50) and `cooldownSeconds` (30..86400), both optional |
 | `apps/api/migrations/2026-10-23-103000-monitor-kind-composite.sql` | Create: `ALTER TYPE monitor_kind ADD VALUE 'composite'` (guarded) |
 | `apps/api/src/db/schema/monitorDefinitions.ts` | Modify: `monitorKindEnum` += `'composite'` |
@@ -52,7 +53,7 @@ branch: (set by feature-lifecycle after registration)
 | `apps/api/src/services/monitors/kinds/composite.ts` | Create: kind spec, `overridableKeys: []`, `{logic, conditions}` compile |
 | `apps/api/src/services/monitors/kinds/index.ts` / `index.test.ts` | Modify: register `composite`; test iterates `.type` only for leaf kinds |
 | `apps/api/src/services/monitors/monitorCompiler.ts` | Modify: `buildCompiledCondition` returns `RootCondition` (no behaviour change) |
-| `apps/api/src/services/automationRuntime.ts` | Modify: `ExecuteCommandAction` + `normalizeActions` carry `maxAttempts` / `cooldownSeconds` |
+| `apps/api/src/services/automationRuntime.ts` | Modify: `ExecuteCommandAction` + `normalizeAutomationActions` carry `maxAttempts` / `cooldownSeconds` |
 | `apps/api/src/routes/agents/helpers.ts` | Modify: monitor-derived watch reads `max_restart_attempts` / `restart_cooldown_seconds` from the `restart_service` response; `resolvePolicyMonitoringSettings` watches read adds `retired_at IS NULL` |
 | `apps/api/src/services/monitors/monitorResolver.ts` | Modify: reads `inheritance` off the `monitors` link; `replace` walk; exports `MONITOR_RESOLVER_CAPABILITIES` |
 | `apps/api/src/services/configurationPolicy.ts` | Modify: `assembleInlineSettings('monitors')` returns `inheritance`; `deleteNormalizedRows` / `decomposeInlineSettings` / `assembleInlineSettings` for `alert_rule`, `automation`, `monitoring` preserve and hide retired rows |
@@ -74,11 +75,21 @@ branch: (set by feature-lifecycle after registration)
 | `apps/api/src/services/monitors/conversion/prerequisites.ts` | Create: capability check over the three fixes |
 | `apps/api/src/services/monitors/conversion/mapping.ts` | Create: pure source → monitor mappers, action fingerprint, signature + preview hash |
 | `apps/api/src/services/monitors/conversion/loadSources.ts` | Create: unretired sources of a policy, open-alert counts |
-| `apps/api/src/services/monitors/conversion/equivalence.ts` | Create: device scope, before/after signatures, dry-run resolver |
-| `apps/api/src/services/monitors/conversion/convert.ts` | Create: `previewPolicyConversion`, `convertPolicy`, `convertPartnerLegacy`, `revertConversion`, `retireSource`, `countPendingConversions` |
+| `apps/api/src/services/monitors/conversion/equivalence.ts` | Create: resolved-delivery and enabled behavior equivalence in a dry-run transaction |
+| `apps/api/src/services/monitors/conversion/convert.ts` | Create: `previewPolicyConversion`, `previewPartnerConversion`, `convertPolicy`, `convertPartnerLegacy`, `revertConversion`, `retireSource` |
+| `apps/api/src/services/monitors/conversion/legacyBaseline.ts` / `legacyBaseline.test.ts` | Create: private normalized baseline and inherited assignment scope, retained by W05d |
+| `apps/api/src/services/monitors/conversion/previewScope.ts` / `previewScope.test.ts` | Create: principal/DB snapshots, full freshness fingerprint, authorized cache reuse |
+| `apps/api/src/services/monitors/conversion/workflows.ts` / `workflows.test.ts` | Create: rehome policy workflows and preserve assignment/winner semantics |
+| `apps/api/src/services/monitors/conversion/history.ts` / `history.test.ts` | Create: shared open-alert carry-over, original reference restoration and reference-aware deletion |
+| `apps/api/src/services/monitors/conversion/lifecycle.ts` / `lifecycle.test.ts` | Create: revert availability contract consumed by W05d and ledger |
+| `apps/api/src/services/monitors/conversion/ledger.ts` / `ledger.test.ts` | Create: authorized persistent paginated ledger read |
+| `apps/api/src/routes/monitorDefinitions.conversion.ts` / `monitorDefinitions.conversion.test.ts` | Create: preview/progress, partner hash confirmation, ledger, retirement id and revert routes |
+| `apps/api/src/services/notificationDispatcher.ts` / `notificationDispatcher.configPolicyOverrides.test.ts` | Modify: both legacy override lookups exclude retired sources, queued dispatch regression |
+| `apps/api/src/services/monitors/monitorService.ts` / `monitorService.test.ts` | Modify: nullable system actor and executor-aware four-argument creation/deletion |
+| `apps/api/src/services/workerRegistry.ts` / `workerRegistry.test.ts` | Modify: socket-owner preview lifecycle |
 | `apps/api/src/services/monitors/conversion/index.ts` | Create: re-exports (the module surface W05c2/W05d/W05e import) |
 | `apps/api/src/jobs/monitorConversionPreviewWorker.ts` | Create: BullMQ queue + worker for the >500-device equivalence check |
-| `apps/api/src/services/monitors/ruleConversionService.ts` | Modify: retire the rule (`retired_at`, `converted_to_monitor_id`) and write a ledger row |
+| `apps/api/src/services/monitors/ruleConversionService.ts` | Modify: template-group preview/convert adapter using mapStandaloneRule, all rule/target associations under one ledger |
 | `apps/api/src/routes/monitorDefinitions.ts` | Modify: `/conversion/*` routes declared before `/:id` |
 | `apps/api/src/modules/mcpInvites/tools/configureDefaults.ts` | Modify: baseline step attaches the partner's built-in monitors to an org policy instead of inserting `alert_rules` |
 | `apps/api/src/__tests__/integration/monitorConversionsPartnerRls.integration.test.ts` | Create: live-RLS forge proof for the ledger |
@@ -93,16 +104,16 @@ branch: (set by feature-lifecycle after registration)
 **Files:**
 - Modify: `packages/shared/src/validators/monitors.ts` (lines 18–41 `MONITOR_KINDS`; 56–190 `monitorConditionSchemas`; 76–96 `service`/`process`; 173–189 `network_check`; 288–299 `monitorsInlineSettingsSchema`)
 - Modify: `packages/shared/src/validators/automationActions.ts` (lines 73–87, the `execute_command` arm)
-- Test: `packages/shared/src/validators/monitors.test.ts` (create if absent; the file exists as `monitors.test.ts` only if a prior wave added it — `ls packages/shared/src/validators/monitors*.test.ts`)
-- Modify (web guard, so Test Web stays green — `apps/web/src/components/monitoring/monitorKindFields.test.ts` iterates `MONITOR_KINDS` and requires a field-map entry, schema-shaped keys and a valid default for EVERY kind): `apps/web/src/components/monitoring/monitorKindFields.ts` (map at line 48 ff., `defaultConditionFor` at 247), `apps/web/src/components/monitoring/MonitorEditor.tsx:691` (hide `composite` from the kind picker until W05c2 builds its editor), `apps/web/src/locales/{en,de-DE,es-419,fr-CA,fr-FR,it-IT,pt-BR,tr-TR}/monitoring.json` (`kinds.composite`, `fields.match`)
+- Test: `packages/shared/src/validators/monitors.test.ts` (existing)
+- Modify (web guard, so Test Web stays green — `apps/web/src/components/monitoring/monitorKindFields.test.ts` iterates `MONITOR_KINDS` and requires a field-map entry, schema-shaped keys and a valid default for EVERY kind): `apps/web/src/components/monitoring/monitorKindFields.ts` (map at line 48 ff., `defaultConditionFor` at 247), `apps/web/src/components/monitoring/MonitorEditor.tsx:691` (keep `composite` in the exhaustive kind picker; W05c2 supplies the children editor), `apps/web/src/locales/{en,de-DE,es-419,fr-CA,fr-FR,it-IT,pt-BR,tr-TR}/monitoring.json` (`kinds.composite`, `fields.match`)
 
 **Interfaces:**
 - Produces (shared): `MONITOR_KINDS` (+ `'composite'`), `SERVER_EVALUATED_MONITOR_KINDS: readonly MonitorKind[]`, `ServerEvaluatedMonitorKind`, `compositeConditionSchema`, `CompositeCondition`, `monitorsInheritanceSchema`, `MonitorsInheritance = 'cumulative' | 'replace'`, `monitorsInlineSettingsSchema` (+ `inheritance`, default `'cumulative'`), `execute_command` action with `maxAttempts?: number`, `cooldownSeconds?: number`.
-- Consumed by: Task 2 (kind spec), Task 4 (runtime + watch builder), Task 5 (resolver), Task 10 (mappers), W05c2 editor.
+- Consumed by: Task 2 (kind spec), Task 3 (runtime + watch builder), Task 5 (resolver), Task 10 (mappers), W05c2 editor.
 
 - [ ] **Step 1: Write the failing tests**
 
-`packages/shared/src/validators/monitors.test.ts` (append to the existing file or create it):
+`packages/shared/src/validators/monitors.test.ts` (append to the existing file):
 
 ```ts
 import { describe, expect, it } from 'vitest';
@@ -323,8 +334,8 @@ Web guard (three small edits, no new UI):
 
 ```ts
   // W05c1: the composite kind exists in the shared enum so the API can compile
-  // it; the children editor ships in W05c2. Until then only `match` renders and
-  // the kind is hidden from the picker (MonitorEditor.tsx).
+  // it; W05c2 supplies the children editor and response controls.
+  // Keep the picker exhaustive; do not add a composite exclusion.
   composite: [
     { key: 'match', labelKey: 'monitoring:fields.match', kind: 'select', options: ['all', 'any'] },
   ],
@@ -343,7 +354,7 @@ and in `defaultConditionFor` add a case before `default`:
       };
 ```
 
-`apps/web/src/components/monitoring/MonitorEditor.tsx:691` — `{MONITOR_KINDS.filter((kind) => kind !== 'composite').map((kind) => (` with the comment `/* W05c2 adds the composite children editor; until then the kind is API-only */`.
+`apps/web/src/components/monitoring/MonitorEditor.tsx:691` — retain `{MONITOR_KINDS.map((kind) => (`. W05c2 PR1 implements the composite children editor, restart parameters and failure-count controls before the combined conversion release; there is no picker exclusion to remove later.
 
 Locale keys (real translations, all eight files, inside the existing `"kinds"` and `"fields"` objects of `monitoring.json`):
 
@@ -544,6 +555,16 @@ export const compositeKind: MonitorKindSpec<CompositeCondition> = {
 
 `apps/api/src/services/monitors/monitorCompiler.ts:122` — `export function buildCompiledCondition(def: MonitorDefinitionRow): RootCondition {` with `import type { RootCondition } from '../alertConditions/types';` (replacing the `AlertCondition` type import if it becomes unused). `buildCompiledTemplate` stores it in the jsonb `conditions` column — no other change. The comment at lines 140–142 stays true: still a single root node.
 
+Narrow the existing leaf assertion at `kinds/index.test.ts:54-55` after widening `RootCondition`:
+
+```ts
+const compiled = MONITOR_KIND_SPECS.process_resource.toAlertCondition(
+  { resource: 'memory', processName: 'x', operator: 'gt', value: 1 }, { monitorId: 'm1' });
+expect('type' in compiled).toBe(true);
+if (!('type' in compiled)) throw new Error('Expected a leaf condition');
+expect(compiled.type).toBe('process_memory_high');
+```
+
 - [ ] **Step 4: Run, expect PASS**
 
 `cd apps/api && npx vitest run src/services/monitors/kinds/ src/services/monitors/monitorCompiler.test.ts src/routes/monitorDefinitions.test.ts` and `cd apps/api && npx tsc --noEmit -p .` (the Task 1 registry error is gone). `cd apps/api && npx vitest run src/db/autoMigrate.test.ts src/db/migrationRlsScope.test.ts`. With a DB: `pnpm db:migrate && pnpm db:check-drift`.
@@ -552,10 +573,10 @@ export const compositeKind: MonitorKindSpec<CompositeCondition> = {
 
 `git add apps/api/migrations/2026-10-23-103000-monitor-kind-composite.sql apps/api/src/db/schema/monitorDefinitions.ts apps/api/src/services/monitors/kinds/ apps/api/src/services/monitors/monitorCompiler.ts && git commit -m "feat(monitors): composite kind — server-evaluated children compiled to an and/or group"`
 
-### Task 3: `restart_service` parameters survive `normalizeActions` and drive the delivered watch (on top of #6343)
+### Task 3: `restart_service` parameters survive `normalizeAutomationActions` and drive the delivered watch (on top of #6343)
 
 **Files:**
-- Modify: `apps/api/src/services/automationRuntime.ts:330-336` (`ExecuteCommandAction`), `:671-684` (the `execute_command` arm of `normalizeActions` — after #6343 it already preserves `kind`; add the two numbers)
+- Modify: `apps/api/src/services/automationRuntime.ts:330-336` (`ExecuteCommandAction`), `:671-684` (the `execute_command` arm of `normalizeAutomationActions` — after #6343 it already preserves `kind`; add the two numbers)
 - Modify: `apps/api/src/routes/agents/helpers.ts:2063-2067` (`MONITOR_WATCH_DEFAULTS` stays as the fallback), `:2148-2156` (the watch push)
 - Test: `apps/api/src/services/automationRuntime.test.ts` (next to line 98 "normalizes all supported action types"), `apps/api/src/routes/agents/helpers.monitorWatchDelivery.test.ts` (next to line 272)
 
@@ -632,7 +653,7 @@ export type ExecuteCommandAction = {
 };
 ```
 
-`normalizeActions`, `execute_command` arm — keep #6343's `kind` line and add, before `normalized.push`:
+`normalizeAutomationActions`, `execute_command` arm — keep #6343's `kind` line and add, before `normalized.push`:
 
 ```ts
       const maxAttempts = asFiniteInteger(action.maxAttempts);
@@ -697,7 +718,7 @@ Update the comment on `MONITOR_WATCH_DEFAULTS` (2058–2062): "`maxRestartAttemp
 **Task 3 addendum — `command` is optional for `kind: 'restart_service'`; the server-side dispatch is a recorded no-op.** Verified: `executeCommandAction` (`automationRuntime.ts:1598-1660`, reached from `:2128`) dispatches `command` to the device as an ad-hoc script with no special case for `kind`, and the agent restarts locally on its own (`agent/internal/monitoring/monitor.go:206-240`, `restartService` / `killProcess`). A legacy watch restarts ONCE, agent-side. A converted watch must not gain a second, server-side restart, and there is no OS-neutral restart command a policy spanning Windows and Linux could carry. So, in the same PR:
 
 - `packages/shared/src/validators/automationActions.ts` (`execute_command` arm): `command: z.string().optional()` and, on the arm, `.refine((a) => a.kind === 'restart_service' || (a.command?.trim().length ?? 0) > 0, { message: 'command is required unless kind is restart_service', path: ['command'] })`. (If the discriminated union rejects a refined member in this zod version, keep the arm plain and put the same rule in a `superRefine` on `monitorResponsesSchema` and on `automationActionsSchema`'s array — `alertRuleConditions.ts:67-77` documents that refined/piped members DO work in this repo's zod 4, so try the arm first.)
-- `automationRuntime.ts` `normalizeActions` `execute_command` arm: `if (!command && action.kind !== 'restart_service') throw …requires command`; push `command: command ?? ''`.
+- `automationRuntime.ts` `normalizeAutomationActions` `execute_command` arm: `if (!command && action.kind !== 'restart_service') throw …requires command`; push `command: command ?? ''`.
 - `executeCommandAction` (`:1598`): first statement —
 
 ```ts
@@ -705,14 +726,14 @@ Update the comment on `MONITOR_WATCH_DEFAULTS` (2058–2062): "`maxRestartAttemp
     // The agent performs the restart locally (auto_restart on the delivered
     // watch, routes/agents/helpers.ts). Nothing to dispatch; record why.
     return {
-      outcome: 'success',
+      outcome: { status: 'succeeded' },
       log: logEntry('restart_service handled by the agent watch; no server-side command', 'info', { actionIndex }),
     };
   }
 ```
 
-  (`ActionExecutionOutcome` — check the union at `:1368` and use its success member's literal; `logEntry` is the helper used at `:1634`.)
-- Tests: in `automationRuntime.test.ts` — `normalizeAutomationActions([{ type: 'execute_command', kind: 'restart_service' }])` yields `{ type: 'execute_command', kind: 'restart_service', command: '' }` and `normalizeAutomationActions([{ type: 'execute_command' }])` still throws `/requires command/`; in a new `automationRuntime.restartService.test.ts` (harness copied from `automationRuntime.runScript.test.ts`) — `executeCommandAction({ type: 'execute_command', kind: 'restart_service', command: '' }, 0, ctx)` resolves `outcome: 'success'` and `dispatchScriptToDevice` is NOT called; with `command: 'Restart-Service Spooler'` it IS called (hand-authored monitors keep today's behaviour). Shared: `automationActionSchema.safeParse({ type: 'execute_command', kind: 'restart_service' }).success === true`, `{ type: 'execute_command' }` false.
+  (`ActionExecutionOutcome` at `automationRuntime.ts:1340-1359` uses `{ status: 'succeeded' }`; `logEntry` is defined at `:1170`.)
+- Tests: in `automationRuntime.test.ts` — `normalizeAutomationActions([{ type: 'execute_command', kind: 'restart_service' }])` yields `{ type: 'execute_command', kind: 'restart_service', command: '' }` and `normalizeAutomationActions([{ type: 'execute_command' }])` still throws `/requires command/`; in a new `automationRuntime.restartService.test.ts` (harness copied from `automationRuntime.runScript.test.ts`) — `executeCommandAction({ type: 'execute_command', kind: 'restart_service', command: '' }, 0, ctx)` resolves `outcome: { status: 'succeeded' }` and `dispatchScriptToDevice` is NOT called; with `command: 'Restart-Service Spooler'` it IS called (hand-authored monitors keep today's behaviour). Shared: `automationActionSchema.safeParse({ type: 'execute_command', kind: 'restart_service' }).success === true`, `{ type: 'execute_command' }` false.
 - Commit with Task 3 (`feat(automations): execute_command command optional for restart_service; agent-local restart is not re-dispatched`).
 
 ### Task 4: `inheritance` persists on the `monitors` link and round-trips through assemble
@@ -773,7 +794,7 @@ describe('monitors link inheritance round-trip (W05c1)', () => {
 });
 ```
 
-(If `configurationPolicy.ts`'s import graph makes a bare `../db` mock insufficient — the file imports many services — copy the mock preamble from `apps/api/src/routes/configurationPolicies/featureLinks.monitors.test.ts` instead and drive the route; the assertions stay the same. The queue order above is: links read, attachment rows, link JSON read.)
+Use the direct-service automation-reference mocks from `apps/api/src/services/configurationPolicy.monitors.test.ts:6-37`, also supplied explicitly in Task 8; the route test mocks the service itself and cannot verify assembly. The queue order is links, attachment rows, link JSON.
 
 - [ ] **Step 2: Run it, expect FAIL**
 
@@ -828,7 +849,7 @@ Add `monitorsInheritanceSchema` to the `@breeze/shared` import at the top of the
 
 **Files:**
 - Modify: `apps/api/src/services/monitors/monitorResolver.ts` (`:149-171` assignments read — after #6344 it also carries `roleFilter`/`osFilter` conditions; `:181-198` attachments read gains `inlineSettings`; `:207-248` candidate build)
-- Test: `apps/api/src/services/monitors/monitorResolver.test.ts` (pure cases next to `pickWinner`), `apps/api/src/__tests__/integration/monitorResolver.integration.test.ts` (one real-DB case, run in Task 16)
+- Test: `apps/api/src/services/monitors/monitorResolver.test.ts` (pure cases next to `pickWinner`), `apps/api/src/__tests__/integration/monitorResolver.integration.test.ts` (one real-DB case, run in Task 18)
 
 **Interfaces:**
 - Produces: `export function selectContributingAttachments(args)` (pure, unit-tested) and `export const MONITOR_RESOLVER_CAPABILITIES = { roleOsFilters: true, inheritance: true } as const` (read by Task 9's prerequisite check; `roleOsFilters` is set in the SAME edit that the grep in Task 9 verifies, so it cannot be true without #6344's code present).
@@ -866,6 +887,12 @@ describe('inheritance: replace (W05c1, spec §Inheritance correction)', () => {
     expect(ids).toEqual(['partner-p:builtin-cpu:own', 'site-p:site-rule-1:own']);
   });
 
+  it('an empty replace attachment set continues to shadow inherited monitors', () => {
+    const assignments = [assignment('child', 'site', 'parent')];
+    const byPolicy = new Map([['parent', [row('parent', 'cpu')]]]);
+    expect(selectContributingAttachments({ assignments, byPolicy,
+      inheritanceByPolicy: new Map([['child', 'replace']]) })).toEqual([]);
+  });
   it('cumulative everywhere reproduces today\'s behaviour (own + parent for every assignment)', () => {
     const assignments = [assignment('org-p', 'organization', 'org-parent'), assignment('site-p', 'site')];
     const byPolicy = new Map([
@@ -1016,7 +1043,7 @@ Keep #6344's role/OS filtering exactly where it put it (the assignments read). U
 
 - [ ] **Step 4: Run, expect PASS**
 
-`cd apps/api && npx vitest run src/services/monitors/monitorResolver.test.ts src/services/alertService src/routes/agents/helpers.monitorWatchDelivery.test.ts` (the resolver is mocked in most callers; the substring run confirms no caller broke on the new export). `npx tsc --noEmit -p .`. Add the integration case now (it runs under Task 16): in `apps/api/src/__tests__/integration/monitorResolver.integration.test.ts` add a test that creates partner policy (cumulative, built-in attached), org policy (`inheritance: 'replace'`, monitor A attached, parent policy with monitor P attached) and site policy (`replace`, monitor B), assigns all three to one device, and asserts `resolveMonitorsForDevice` returns exactly `{builtin, B}` — never A or P.
+`cd apps/api && npx vitest run src/services/monitors/monitorResolver.test.ts src/services/alertService src/routes/agents/helpers.monitorWatchDelivery.test.ts` (the resolver is mocked in most callers; the substring run confirms no caller broke on the new export). `npx tsc --noEmit -p .`. Add the integration case now (it runs under Task 18): in `apps/api/src/__tests__/integration/monitorResolver.integration.test.ts` add a test that creates partner policy (cumulative, built-in attached), org policy (`inheritance: 'replace'`, monitor A attached, parent policy with monitor P attached) and site policy (`replace`, monitor B), assigns all three to one device, and asserts `resolveMonitorsForDevice` returns exactly `{builtin, B}` — never A or P.
 
 - [ ] **Step 5: Commit**
 
@@ -1035,11 +1062,11 @@ Keep #6344's role/OS filtering exactly where it put it (the assignments read). U
 - Modify: `apps/api/src/services/tenantCascade.ts:558-569` (`CORE_ORG_CASCADE_DELETE_ORDER`)
 - Modify: `apps/api/src/services/tenantExportPolicyRegistry.ts:387` (two entries before `monitor_definitions`)
 - Modify: `apps/api/src/__tests__/integration/rls-coverage.integration.test.ts:349-365` (`DUAL_AXIS_TENANT_TABLES`), `:686-691` (`XOR_OWNERSHIP_DUAL_AXIS_TABLES`)
-- Test: `apps/api/src/db/autoMigrate.test.ts`, `apps/api/src/db/migrationRlsScope.test.ts` (existing, auto-discover); the live contract suites run in Task 16 — but the red-first step here is the cascade **unit** guard: `apps/api/src/services/tenantCascade.test.ts` if it pins membership statically, else the integration suite.
+- Test: `apps/api/src/db/autoMigrate.test.ts`, `apps/api/src/db/migrationRlsScope.test.ts` (existing, auto-discover); the live contract suites run in Task 18 — but the red-first step here is the cascade **unit** guard: `apps/api/src/services/tenantCascade.test.ts:139` (existing membership guard).
 
 **Interfaces:**
 - Produces: tables (below); Drizzle `monitorConversions`, `monitorConversionOutputs`, types `MonitorConversionRow`, `MonitorConversionOutputRow`, `MONITOR_CONVERSION_SOURCE_TABLES`, `MONITOR_CONVERSION_OUTPUT_ROLES`.
-- Consumed by: Tasks 11–14, W05d, W05e (`'network_monitors'` is already a legal `source_table`).
+- Consumed by: Tasks 11–16, W05d, W05e (`'network_monitors'` is already a legal `source_table`).
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1053,7 +1080,7 @@ Append to `apps/api/src/__tests__/integration/rls-coverage.integration.test.ts` 
   // one in 2026-10-23-110000-monitor-conversions with the partner-wide SELECT
   // branch in the same migration. CHECK monitor_conversions_one_owner_chk /
   // monitor_conversion_outputs_one_owner_chk. Functional forge proof:
-  // monitorConversionsPartnerRls.integration.test.ts (Task 16).
+  // monitorConversionsPartnerRls.integration.test.ts (Task 18).
   'monitor_conversions',
   'monitor_conversion_outputs',
 ```
@@ -1062,7 +1089,7 @@ and to `XOR_OWNERSHIP_DUAL_AXIS_TABLES` (after `'monitor_definitions'`):
 
 ```ts
   // monitor_conversions_one_owner_chk / monitor_conversion_outputs_one_owner_chk,
-  // 2026-10-21-110000 (W05c1). Partner-wide SELECT branch ships in the same file.
+  // 2026-10-23-110000 (W05c1). Partner-wide SELECT branch ships in the same file.
   'monitor_conversions',
   'monitor_conversion_outputs',
 ```
@@ -1081,8 +1108,8 @@ and to `XOR_OWNERSHIP_DUAL_AXIS_TABLES` (after `'monitor_definitions'`):
 `apps/api/src/services/tenantExportPolicyRegistry.ts` — insert before the `"monitor_definitions"` line:
 
 ```ts
-  "monitor_conversion_outputs": tablePolicy("org_id", {"included":["id","conversion_id","org_id","partner_id","monitor_id","role","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["moved_alert_ids"]}),
-  "monitor_conversions": tablePolicy("org_id", {"included":["id","org_id","partner_id","source_table","source_id","policy_id","converted_by","converted_at","reverted_at","created_at"],"reviewedIncluded":["preview_hash"],"excludedSensitive":[],"excludedOpen":[]}),
+  "monitor_conversion_outputs": tablePolicy("org_id", {"included":["id","conversion_id","org_id","partner_id","monitor_id","role","reused_monitor","source_rule_id","policy_id","attachment_id","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["moved_alert_ids","moved_alert_refs"]}),
+  "monitor_conversions": tablePolicy("org_id", {"included":["id","org_id","partner_id","source_table","source_id","policy_id","converted_by","converted_at","reverted_at","created_at"],"reviewedIncluded":["preview_hash"],"excludedSensitive":[],"excludedOpen":["source_state"]}),
 ```
 
 - [ ] **Step 2: Run it, expect FAIL**
@@ -1096,7 +1123,7 @@ and to `XOR_OWNERSHIP_DUAL_AXIS_TABLES` (after `'monitor_definitions'`):
 ```sql
 -- Alerting consolidation W05c1 (spec §Conversion, §Tenancy and safety):
 -- the conversion ledger. One `monitor_conversions` row per converted legacy
--- source row (idempotent on (source_table, source_id) while un-reverted); one
+-- source row (an alert_templates source is the entire template/rules group) (idempotent on (source_table, source_id) while un-reverted); one
 -- `monitor_conversion_outputs` row per monitor that conversion produced
 -- (a watch can produce up to three: primary + resource_cpu + resource_memory).
 --
@@ -1124,6 +1151,7 @@ CREATE TABLE IF NOT EXISTS monitor_conversions (
   converted_by uuid REFERENCES users(id) ON DELETE SET NULL,
   converted_at timestamptz NOT NULL DEFAULT now(),
   preview_hash text NOT NULL,
+  source_state jsonb NOT NULL DEFAULT '{}'::jsonb,
   reverted_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now()
 );
@@ -1151,6 +1179,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS monitor_conversions_live_source_uidx
   ON monitor_conversions(source_table, source_id) WHERE reverted_at IS NULL;
 -- Referenced by the outputs composite FK below (a non-partial unique index is a valid FK target).
 CREATE UNIQUE INDEX IF NOT EXISTS monitor_conversions_id_org_uidx ON monitor_conversions(id, org_id);
+CREATE UNIQUE INDEX IF NOT EXISTS monitor_conversions_id_partner_uidx ON monitor_conversions(id, partner_id);
 
 ALTER TABLE monitor_conversions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE monitor_conversions FORCE ROW LEVEL SECURITY;
@@ -1185,6 +1214,11 @@ CREATE TABLE IF NOT EXISTS monitor_conversion_outputs (
   monitor_id uuid REFERENCES monitor_definitions(id) ON DELETE SET NULL,
   role text NOT NULL,
   moved_alert_ids jsonb NOT NULL DEFAULT '[]'::jsonb,
+  moved_alert_refs jsonb NOT NULL DEFAULT '[]'::jsonb,
+  reused_monitor boolean NOT NULL DEFAULT false,
+  source_rule_id uuid REFERENCES alert_rules(id) ON DELETE SET NULL,
+  policy_id uuid REFERENCES configuration_policies(id) ON DELETE SET NULL,
+  attachment_id uuid REFERENCES config_policy_monitors(id) ON DELETE SET NULL,
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
@@ -1204,6 +1238,12 @@ BEGIN
     ALTER TABLE monitor_conversion_outputs
       ADD CONSTRAINT monitor_conversion_outputs_conversion_org_fk
       FOREIGN KEY (conversion_id, org_id) REFERENCES monitor_conversions(id, org_id)
+      ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'monitor_conversion_outputs_conversion_partner_fk') THEN
+    ALTER TABLE monitor_conversion_outputs
+      ADD CONSTRAINT monitor_conversion_outputs_conversion_partner_fk
+      FOREIGN KEY (conversion_id, partner_id) REFERENCES monitor_conversions(id, partner_id)
       ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE;
   END IF;
 END $$;
@@ -1242,11 +1282,12 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON monitor_conversion_outputs TO breeze_app
 `apps/api/src/db/schema/monitorConversions.ts`:
 
 ```ts
-import { index, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
+import { boolean, index, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { organizations, partners } from './orgs';
 import { users } from './users';
-import { configurationPolicies } from './configurationPolicies';
+import { configurationPolicies, configPolicyMonitors } from './configurationPolicies';
+import { alertRules } from './alerts';
 import { monitorDefinitions } from './monitorDefinitions';
 
 /**
@@ -1279,6 +1320,7 @@ export const monitorConversions = pgTable(
     convertedBy: uuid('converted_by').references(() => users.id, { onDelete: 'set null' }),
     convertedAt: timestamp('converted_at', { withTimezone: true }).defaultNow().notNull(),
     previewHash: text('preview_hash').notNull(),
+    sourceState: jsonb('source_state').notNull().default({}).$type<Record<string, unknown>>(),
     revertedAt: timestamp('reverted_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   },
@@ -1289,6 +1331,7 @@ export const monitorConversions = pgTable(
       .on(table.sourceTable, table.sourceId)
       .where(sql`${table.revertedAt} IS NULL`),
     idOrgUidx: uniqueIndex('monitor_conversions_id_org_uidx').on(table.id, table.orgId),
+    idPartnerUidx: uniqueIndex('monitor_conversions_id_partner_uidx').on(table.id, table.partnerId),
   }),
 );
 
@@ -1300,13 +1343,21 @@ export const monitorConversionOutputs = pgTable(
       .notNull()
       .references(() => monitorConversions.id, { onDelete: 'cascade' }),
     // Denormalised owner axes (same XOR as the parent). The composite FK
-    // (conversion_id, org_id) DEFERRABLE INITIALLY IMMEDIATE lives in the
-    // migration only — drift detection compares columns, not FK declarations.
+    // (conversion_id, org_id) and (conversion_id, partner_id) deferrable FKs
+    // live in SQL; Task 18 tests them against Postgres. Drift checks filenames only.
     orgId: uuid('org_id').references(() => organizations.id),
     partnerId: uuid('partner_id').references(() => partners.id),
     monitorId: uuid('monitor_id').references(() => monitorDefinitions.id, { onDelete: 'set null' }),
     role: text('role').$type<MonitorConversionOutputRole>().notNull(),
     movedAlertIds: jsonb('moved_alert_ids').notNull().default([]).$type<string[]>(),
+    movedAlertRefs: jsonb('moved_alert_refs').notNull().default([]).$type<Array<{
+      id: string; ruleId: string | null; configPolicyId: string | null;
+      monitorId: string | null; context: Record<string, unknown> | null;
+    }>>(),
+    reusedMonitor: boolean('reused_monitor').notNull().default(false),
+    sourceRuleId: uuid('source_rule_id').references(() => alertRules.id, { onDelete: 'set null' }),
+    policyId: uuid('policy_id').references(() => configurationPolicies.id, { onDelete: 'set null' }),
+    attachmentId: uuid('attachment_id').references(() => configPolicyMonitors.id, { onDelete: 'set null' }),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => ({
@@ -1337,6 +1388,9 @@ export type MonitorConversionOutputRow = typeof monitorConversionOutputs.$inferS
 - Modify: `apps/api/src/db/schema/alerts.ts:44-74` (`alertTemplates`), `:83-101` (`alertRules`); `apps/api/src/db/schema/automations.ts:44-79` (`automations`); `apps/api/src/db/schema/configurationPolicies.ts:190-215` (`configPolicyAlertRules`), `:218-235` (`configPolicyAutomations`), `:406-436` (`configPolicyMonitoringWatches`)
 - Modify: `apps/api/src/services/tenantExportPolicyRegistry.ts:124,125,142` (`alert_rules`, `alert_templates`, `automations` gain three `included` columns)
 - Test: `apps/api/src/db/autoMigrate.test.ts`, `migrationRlsScope.test.ts` (auto); `tenant-export-policy.integration.test.ts` (live)
+
+- Modify: `apps/api/src/services/monitors/monitorService.ts:119-153,239-290` (executor-aware create and nullable actor); test `apps/api/src/services/monitors/monitorService.test.ts`.
+- Modify: `apps/api/src/services/configurationPolicy.ts:281-298,1963-1990` (nullable creation/assignment actors); `apps/api/src/db/schema/monitorDefinitions.ts:91` (verify existing nullable declaration).
 
 **Interfaces:**
 - Produces: on each of the six tables `retiredAt: timestamp('retired_at', { withTimezone: true })`, `retiredReason: text('retired_reason')`, `convertedToMonitorId: uuid('converted_to_monitor_id')` (FK `→ monitor_definitions(id) ON DELETE SET NULL` in SQL only, like `managedByMonitorId`, to keep schema imports acyclic). `RETIRED_REASON` vocabulary (Task 9): `'converted' | 'unconvertible:<code>' | 'operator'`.
@@ -1404,30 +1458,92 @@ Drizzle — add to each of the six table definitions (place after `managedByMoni
 
 (`configurationPolicies.ts` and `automations.ts` already import `text`, `timestamp`, `uuid`; `alerts.ts` too — verify with the tsc run.)
 
+Add to `monitorService.test.ts` using the existing create-definition test fixture and mocks: call `createMonitorDefinition(input, { ...auth, scope: 'system' }, {}, tx)` and assert the insert's `createdBy` is null and the supplied executor performs every owner/reference/insert/compile read. Add this direct schema assertion to the retirement migration's test:
+
+```ts
+import { readFileSync } from 'node:fs';
+import { expect, it } from 'vitest';
+it('allows the system sweep to omit actor FKs', () => {
+  const sql = readFileSync(new URL('../../migrations/2026-10-23-120000-legacy-source-retirement-columns.sql', import.meta.url), 'utf8');
+  expect(sql).toContain('ALTER TABLE monitor_definitions ALTER COLUMN created_by DROP NOT NULL');
+});
+```
+
+System actor contract (D7): `monitor_definitions.created_by` is already nullable (`db/schema/monitorDefinitions.ts:91`), as are `configuration_policies.created_by`, `config_policy_assignments.assigned_by` and `automations.created_by`. Add the idempotent safety DDL to this migration (it is a no-op on this tree):
+
+```sql
+ALTER TABLE monitor_definitions ALTER COLUMN created_by DROP NOT NULL;
+```
+
+In `monitorService.ts:239-284`, retain the four-argument executor contract for every caller (D8); make the owner/reference reads executor-aware as well as the insert/compile. `CompileOptions` starts empty and W05e extends it; never collapse argument four:
+
+```ts
+export interface CompileOptions {}
+export async function createMonitorDefinition(
+  input: CreateMonitorDefinitionInput, auth: AuthContext,
+  options: CompileOptions = {}, executor: DbExecutor = db,
+): Promise<MonitorDefinitionRow> {
+  const owner = resolveOwnerForCreate(input, auth);
+  await assertEscalationPolicyCompatible(input.escalationPolicyId ?? null, owner, executor);
+  const shape = validateDefinitionShape({ kind: input.kind, condition: input.condition,
+    responses: input.responses, recurrenceActions: input.recurrenceActions, aiAgentId: input.aiAgentId ?? null });
+  // Retain the existing :255-283 insert fields, replacing createdBy with:
+  // createdBy: auth.scope === 'system' ? null : auth.user.id
+  // and replace db.transaction(...) with executor.transaction(...).
+  return createValidatedMonitorInTx(input, auth, owner, shape, options, executor);
+}
+```
+
+Extract the existing transaction body at `monitorService.ts:253-290` into `createValidatedMonitorInTx` with these exact inferred parameters (the body stays verbatim except the actor and executor):
+
+```ts
+async function createValidatedMonitorInTx(
+  input: CreateMonitorDefinitionInput, auth: AuthContext,
+  owner: ReturnType<typeof resolveOwnerForCreate>, shape: ReturnType<typeof validateDefinitionShape>,
+  _options: CompileOptions, executor: DbExecutor,
+): Promise<MonitorDefinitionRow> {
+  return executor.transaction(async (tx) => {
+    const [created] = await tx.insert(monitorDefinitions).values({
+      ...input, orgId: owner.orgId, partnerId: owner.partnerId,
+      condition: shape.condition, responses: shape.responses as Array<Record<string, unknown>>,
+      recurrenceActions: shape.recurrenceActions as Array<Record<string, unknown>>,
+      createdBy: auth.scope === 'system' ? null : auth.user.id,
+    }).returning();
+    if (!created) throw new Error('Failed to create monitor definition');
+    const refs = await compileMonitorInTx(tx, created);
+    return { ...created, compiledAlertTemplateId: refs.alertTemplateId,
+      compiledAlertRuleId: refs.alertRuleId, compiledAutomationId: refs.automationId, compiledHash: refs.hash };
+  });
+}
+```
+
+`assertEscalationPolicyCompatible` (`monitorService.ts:119-153`) gains `executor: DbExecutor = db` and uses `executor.select()`. `createConfigPolicy` (`configurationPolicy.ts:281-298`) and `assignPolicy` (`:1963-1990`) accept `userId: string | null`. All conversion writers pass `auth.scope === 'system' ? null : auth.user.id`; the compiler already copies `def.createdBy` when creating its automation. Add `monitorService.ts`, its existing test, `configurationPolicy.ts` and `monitorDefinitions.ts` to this task's Files/commit inventory. The live final test creates a system conversion in a DB without a zero-UUID user and asserts both monitor and ledger actors are null.
+
 - [ ] **Step 4: Run, expect PASS**
 
 `cd apps/api && npx vitest run src/db/autoMigrate.test.ts src/db/migrationRlsScope.test.ts && npx tsc --noEmit -p .`; with the stack: `pnpm db:migrate && pnpm db:check-drift && npx vitest run -c vitest.integration.config.ts src/__tests__/integration/tenant-export-policy.integration.test.ts src/__tests__/integration/tenantExportErasureRoundtrip.integration.test.ts src/__tests__/integration/orgCascadeFkOnDelete.integration.test.ts`.
 
 - [ ] **Step 5: Commit**
 
-`git add apps/api/migrations/2026-10-23-120000-legacy-source-retirement-columns.sql apps/api/src/db/schema/alerts.ts apps/api/src/db/schema/automations.ts apps/api/src/db/schema/configurationPolicies.ts apps/api/src/services/tenantExportPolicyRegistry.ts && git commit -m "feat(alerts): retirement columns on the six legacy alert-authoring tables"`
+`git add apps/api/migrations/2026-10-23-120000-legacy-source-retirement-columns.sql apps/api/src/db/schema/alerts.ts apps/api/src/db/schema/automations.ts apps/api/src/db/schema/configurationPolicies.ts apps/api/src/services/tenantExportPolicyRegistry.ts apps/api/src/services/monitors/monitorService.ts apps/api/src/services/monitors/monitorService.test.ts apps/api/src/db/schema/monitorDefinitions.ts apps/api/src/services/configurationPolicy.ts && git commit -m "feat(alerts): retirement columns on the six legacy alert-authoring tables"`
 
 ### Task 8: `retired_at IS NULL` in every evaluator, resolver, agent builder and list; re-save never resurrects or deletes retired rows
 
 **Files:**
 - Modify: `apps/api/src/services/featureConfigResolver.ts:345-360` (`resolveGoverningAlertRulePolicyForDevice` rules join), `:419-422` (`resolveAlertRulesForDevice`), `:499-502` (`resolveAutomationsForDeviceWithPolicy`), `:1408-1440` (`scanScheduledAutomations`)
 - Modify: `apps/api/src/services/alertService.ts:893-902` (`getApplicableRules`)
+- Modify: `apps/api/src/services/notificationDispatcher.ts:270-299` (both transitional legacy override lookups in `processAlertNotifications`); test `apps/api/src/services/notificationDispatcher.configPolicyOverrides.test.ts:22-42,142-212`.
 - Modify: `apps/api/src/services/offlineAlertEffects.ts:29-36` (rule read), `:64-66` (`prepareRule` existence check)
 - Modify: `apps/api/src/routes/agents/helpers.ts:2339-2346` (policy watches)
 - Modify: `apps/api/src/jobs/automationWorker.ts:495-499` (`processTriggerEvent`), `:1171-1174` (event fan-out candidates), `:1228-1231` (policy automations loop)
 - Modify: `apps/api/src/routes/alerts/rules.ts:173-179` (+ query schema in `routes/alerts/schemas.ts`), `apps/api/src/routes/alertTemplates/helpers.ts:45-59` (`getAllTemplates`), `apps/api/src/routes/automations.ts:677-700` (list conditions)
 - Modify: `apps/api/src/services/configurationPolicy.ts:907-912` (`decompose` `monitoring` → upsert settings), `:1192-1233` (`deleteNormalizedRows`), `:1271-1276`, `:1296-1300`, `:1437-1441` (`assembleInlineSettings`)
-- Test: `apps/api/src/services/retiredSourceReaders.contract.test.ts` (create — static, no DB), `apps/api/src/services/configurationPolicy.retiredRows.test.ts` (create — Drizzle mock on the delete/upsert statements); behavioural proof in Task 16's round-trip
+- Test: `apps/api/src/services/retiredSourceReaders.contract.test.ts` (create — static, no DB), `apps/api/src/services/configurationPolicy.retiredRows.test.ts` (create — Drizzle mock on the delete/upsert statements); behavioural proof in Task 18's round-trip
 
 **Interfaces:**
 - Produces: `GET /alerts/rules?includeRetired=true` (default excludes); every other list excludes retired rows unconditionally. `config_policy_monitoring_settings` is now upserted on `feature_link_id` instead of deleted and re-inserted, so a settings row id is stable across saves (the watches' `settings_id` FK survives).
 
-Why the decompose change is load-bearing: `updateFeatureLink` runs `deleteNormalizedRows` then `decomposeInlineSettings` (configurationPolicy.ts:1188-1233). Today `alert_rule` deletes ALL rows for the link and `monitoring` deletes the settings row, which cascades to every watch. After Task 7 that would silently destroy the retired rows (and their `converted_to_monitor_id`) the first time a tech re-saves the frozen legacy tab — and, because `assembleInlineSettings` would have hidden them, the re-insert would not bring them back. Retired rows must be invisible to assemble AND immune to the delete.
+Why the decompose change is load-bearing: `updateFeatureLink` runs `deleteNormalizedRows` then `decomposeInlineSettings` (configurationPolicy.ts:1869-1875). Today `alert_rule` deletes ALL rows for the link and `monitoring` deletes the settings row, which cascades to every watch. After Task 7 that would silently destroy the retired rows (and their `converted_to_monitor_id`) the first time a tech re-saves the frozen legacy tab — and, because `assembleInlineSettings` would have hidden them, the re-insert would not bring them back. Retired rows must be invisible to assemble AND immune to the delete.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1460,10 +1576,12 @@ describe('retired legacy rows are filtered by every reader', () => {
     ['services/featureConfigResolver.ts', 'export async function resolveAutomationsForDeviceWithPolicy', 'configPolicyAutomations.retiredAt'],
     ['services/featureConfigResolver.ts', 'export async function scanScheduledAutomations', 'configPolicyAutomations.retiredAt'],
     ['services/alertService.ts', 'export async function getApplicableRules', 'alertRules.retiredAt'],
+    ['services/notificationDispatcher.ts', 'export async function processAlertNotifications', 'alertRules.retiredAt'],
+    ['services/notificationDispatcher.ts', 'export async function processAlertNotifications', 'configPolicyAlertRules.retiredAt'],
     ['services/offlineAlertEffects.ts', 'export async function expandOfflineAlertPlan', 'alertRules.retiredAt'],
     ['routes/agents/helpers.ts', 'async function resolvePolicyMonitoringSettings', 'configPolicyMonitoringWatches.retiredAt'],
     ['jobs/automationWorker.ts', 'async function processTriggerEvent', 'automations.retiredAt'],
-    ['jobs/automationWorker.ts', 'export async function handleAutomationEvent', 'automations.retiredAt'],
+    ['jobs/automationWorker.ts', 'export async function queueEventTriggers', 'automations.retiredAt'],
     ['routes/alertTemplates/helpers.ts', 'export async function getAllTemplates', 'alertTemplates.retiredAt'],
     ['services/configurationPolicy.ts', 'async function assembleInlineSettings', 'configPolicyAlertRules.retiredAt'],
     ['services/configurationPolicy.ts', 'async function assembleInlineSettings', 'configPolicyMonitoringWatches.retiredAt'],
@@ -1482,22 +1600,65 @@ describe('retired legacy rows are filtered by every reader', () => {
 });
 ```
 
-`apps/api/src/services/configurationPolicy.retiredRows.test.ts` — assert the SQL shape of the three writes (use the same `vi.mock('../db')` capture harness as `configurationPolicy.monitorsInheritance.test.ts` from Task 4, recording `delete().where(cond)` / `insert().values().onConflictDoUpdate(...)` calls):
+`apps/api/src/services/configurationPolicy.retiredRows.test.ts` — use the direct-service mocks in `configurationPolicy.monitors.test.ts:6-37` (not the route's service mocks). The complete local chain and read→save regression are:
 
 ```ts
-  it('deleteNormalizedRows(alert_rule) deletes only unretired rows', async () => {
-    await updateFeatureLink('link-1', { inlineSettings: { items: [] } }, 'p1');
-    const deleteWhere = dbMock.delete.mock.calls /* find the configPolicyAlertRules delete */;
-    expect(JSON.stringify(deleteWhere)).toMatch(/retired_at.*is null/i);
-  });
-  it('decompose(monitoring) upserts the settings row on feature_link_id instead of delete+insert', async () => {
-    await updateFeatureLink('link-2', { inlineSettings: { checkIntervalSeconds: 30, watches: [] } }, 'p1');
-    expect(dbMock.insert.mock.results.some((r) => r.value.onConflictDoUpdate.mock.calls.length > 0)).toBe(true);
-    expect(dbMock.delete /* configPolicyMonitoringSettings */).not.toHaveBeenCalledWith(expect.objectContaining({ table: 'config_policy_monitoring_settings' }));
-  });
+import { beforeEach, expect, it, vi } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
+const m = vi.hoisted(() => ({ rows: [] as unknown[][], deleted: [] as { table: unknown; predicate: any }[], inserted: [] as unknown[], upsert: vi.fn() }));
+vi.mock('./automationReferenceAuthorization', () => ({
+  AutomationReferenceAuthorizationError: class extends Error {}, resolveOwnedAutomationReferences: vi.fn(),
+}));
+vi.mock('./automationRuntime', () => ({
+  normalizeAutomationActions: (a: unknown) => a, resolveAutomationReferencesForOwner: vi.fn(),
+}));
+vi.mock('../db', () => {
+  const tx: any = {};
+  function result(rows: unknown[]) {
+    const c: any = { then: (yes: any, no: any) => Promise.resolve(rows).then(yes, no) };
+    for (const name of ['from', 'where', 'orderBy', 'limit', 'returning']) c[name] = () => c;
+    return c;
+  }
+  tx.select = () => result(m.rows.shift() ?? []);
+  tx.transaction = (fn: any) => fn(tx);
+  tx.update = () => ({ set: () => result([{ id: 'link' }]) });
+  tx.delete = (table: unknown) => ({ where: (predicate: unknown) => {
+    m.deleted.push({ table, predicate }); return Promise.resolve([]);
+  } });
+  tx.insert = (table: unknown) => ({ values: (value: unknown) => {
+    m.inserted.push({ table, value }); const c = result([{ id: 'settings' }]);
+    c.onConflictDoUpdate = (options: unknown) => { m.upsert(options); return c; }; return c;
+  } });
+  return { db: tx, runOutsideDbContext: (fn: any) => fn(),
+    withDbAccessContext: (_c: any, fn: any) => fn(), withSystemDbAccessContext: (fn: any) => fn() };
+});
+import { listFeatureLinks, updateFeatureLink } from './configurationPolicy';
+import { configPolicyAlertRules, configPolicyMonitoringSettings } from '../db/schema';
+beforeEach(() => { m.rows = []; m.deleted = []; m.inserted = []; m.upsert.mockReset(); });
+it.each(['alert_rule', 'automation'])('returns authoritative empty %s instead of retired mirror JSON', async (featureType) => {
+  const link = { id: 'link', configPolicyId: 'policy', featureType, featurePolicyId: null,
+    inlineSettings: { items: [{ name: 'Retired source' }] } };
+  m.rows = [[link], []];
+  const [loaded] = await listFeatureLinks('policy');
+  expect(loaded!.inlineSettings).toEqual({ items: [] });
+});
+it('saving an entirely retired rule feature cannot recreate its mirrored rules', async () => {
+  const link = { id: 'link', configPolicyId: 'policy', featureType: 'alert_rule', featurePolicyId: null,
+    inlineSettings: { items: [{ name: 'Retired source' }] } };
+  m.rows = [[link], [], [link]];
+  const [loaded] = await listFeatureLinks('policy');
+  await updateFeatureLink('link', { inlineSettings: loaded!.inlineSettings }, 'policy');
+  expect(m.inserted).toEqual([]);
+  const deletion = m.deleted.find((d) => d.table === configPolicyAlertRules)!;
+  expect(new PgDialect().sqlToQuery(deletion.predicate).sql).toContain('"retired_at" is null');
+});
+it('upserts watch settings without cascading deletion of retired watches', async () => {
+  m.rows = [[{ id: 'link', configPolicyId: 'policy', featureType: 'monitoring' }]];
+  await updateFeatureLink('link', { inlineSettings: { checkIntervalSeconds: 30, watches: [] } }, 'policy');
+  expect(m.deleted.some((d) => d.table === configPolicyMonitoringSettings)).toBe(false);
+  expect(m.upsert).toHaveBeenCalledWith(expect.objectContaining({ target: configPolicyMonitoringSettings.featureLinkId }));
+});
 ```
-
-(Shape the harness after `apps/api/src/routes/configurationPolicies/featureLinks.monitors.test.ts`, which already drives `updateFeatureLink` through a Drizzle mock; the assertions above are what must hold, the capture plumbing follows that file.)
 
 - [ ] **Step 2: Run it, expect FAIL**
 
@@ -1513,6 +1674,25 @@ Evaluators / resolvers (add `isNull` to the drizzle imports where missing):
 - `routes/agents/helpers.ts:2342-2345`: add `isNull(configPolicyMonitoringWatches.retiredAt)` to the `and(...)`.
 - `automationWorker.ts:498`: `and(eq(automations.id, data.automationId), eq(automations.enabled, true), isNull(automations.retiredAt))`; `:1174`: `and(ownershipCondition, eq(automations.enabled, true), isNull(automations.retiredAt))`; `:1229`: `if (!cpAutomation.enabled || cpAutomation.retiredAt) continue;`.
 
+Queued dispatch (including jobs enqueued before conversion): in `notificationDispatcher.ts:274` use `.where(and(eq(alertRules.id, alert.ruleId), isNull(alertRules.retiredAt)))`; at `:297` use `.where(and(eq(configPolicyAlertRules.id, alert.configPolicyId), isNull(configPolicyAlertRules.retiredAt)))`. W05b's resolver still owns precedence; retired rows cannot supply `legacyOverride`.
+
+In `notificationDispatcher.configPolicyOverrides.test.ts`, extend the hoisted state with `predicates: [] as SQL[]`; change its `where` mock to `(p: SQL) => { predicates.push(p); return chain; }`, and clear `predicates` in `beforeEach`. Import `SQL` and `PgDialect`. Mock W05b's `./delivery/resolveDelivery` using a hoisted `resolveDeliveryMock` returning `{ channelIds: [], skippedChannelIds: [], escalationPolicyId: null, source: 'none' }` in these cases. Append:
+
+```ts
+it.each(['rule', 'policy'] as const)('queued %s dispatch excludes a source retired after enqueue', async (axis) => {
+  selectQueue.push(
+    [makeAlert(axis === 'rule' ? { ruleId: 'old-rule' } : { configPolicyId: 'old-policy-rule' })],
+    [{ id: 'device-1', siteId: 'site-1' }],
+    [], // live-only source lookup: source has been retired
+  );
+  await processAlertNotifications({ type: 'process-alert', alertId: 'alert-1' });
+  const sql = predicates.map((p) => new PgDialect().sqlToQuery(p).sql).join('\n');
+  expect(sql).toContain(`"${axis === 'rule' ? 'alert_rules' : 'config_policy_alert_rules'}"."retired_at" is null`);
+  expect(resolveDeliveryMock.mock.calls.at(-1)?.[0].legacyOverride ?? null).toBeNull();
+  expect(queueAddBulkMock).not.toHaveBeenCalled();
+});
+```
+
 Lists:
 
 - `routes/alerts/schemas.ts` list query: `includeRetired: z.enum(['true', 'false']).optional()`; `routes/alerts/rules.ts:177` after the enabled filter: `if (query.includeRetired !== 'true') conditions.push(isNull(alertRules.retiredAt));`.
@@ -1520,6 +1700,14 @@ Lists:
 - `routes/automations.ts:677`: `const conditions: SQL<unknown>[] = [isNull(automations.retiredAt)];`.
 
 `configurationPolicy.ts`:
+
+- In `assembleInlineSettings`, replace both `if (rows.length === 0) return null;` statements in the `alert_rule` (`:1277`) and `automation` (`:1302`) cases with `if (rows.length === 0) return { items: [] };`. In `listFeatureLinks` (`:1946`), replace the mirror fallback with:
+
+```ts
+inlineSettings: link.featureType === 'alert_rule' || link.featureType === 'automation'
+  ? (assembled ?? { items: [] })
+  : (assembled ?? link.inlineSettings),
+```
 
 - `assembleInlineSettings` `alert_rule` (1275): `.where(and(eq(configPolicyAlertRules.featureLinkId, linkId), isNull(configPolicyAlertRules.retiredAt)))`; `automation` (1300) and `monitoring` watches (1440) likewise.
 - `deleteNormalizedRows`: `alert_rule` → `.where(and(eq(configPolicyAlertRules.featureLinkId, linkId), isNull(configPolicyAlertRules.retiredAt)))`; `automation` → same with `configPolicyAutomations`; `monitoring` →
@@ -1556,7 +1744,7 @@ Lists:
         .returning();
 ```
 
-`removeFeatureLink` (1888) deletes the link row, which cascades to children including retired rows — that is a deliberate whole-feature removal by the tech and is left as is; the ledger's `source_id` then dangles by design (no FK), and `revertConversion` (Task 13) reports `source_missing`.
+`removeFeatureLink` (1888) deletes the link row, which cascades to children including retired rows — that is a deliberate whole-feature removal by the tech and is left as is; the ledger's `source_id` then dangles by design (no FK), and `revertConversion` (Task 15) reports `source_not_found` before mutation.
 
 - [ ] **Step 4: Run, expect PASS**
 
@@ -1564,11 +1752,11 @@ Lists:
 
 - [ ] **Step 5: Commit**
 
-`git add apps/api/src/services/featureConfigResolver.ts apps/api/src/services/alertService.ts apps/api/src/services/offlineAlertEffects.ts apps/api/src/routes/agents/helpers.ts apps/api/src/jobs/automationWorker.ts apps/api/src/routes/alerts/rules.ts apps/api/src/routes/alerts/schemas.ts apps/api/src/routes/alertTemplates/helpers.ts apps/api/src/routes/automations.ts apps/api/src/services/configurationPolicy.ts apps/api/src/services/retiredSourceReaders.contract.test.ts apps/api/src/services/configurationPolicy.retiredRows.test.ts && git commit -m "feat(alerts): retired legacy rows are invisible to every evaluator, resolver, agent builder and list; re-save preserves them"`
+`git add apps/api/src/services/featureConfigResolver.ts apps/api/src/services/alertService.ts apps/api/src/services/offlineAlertEffects.ts apps/api/src/routes/agents/helpers.ts apps/api/src/jobs/automationWorker.ts apps/api/src/routes/alerts/rules.ts apps/api/src/routes/alerts/schemas.ts apps/api/src/routes/alertTemplates/helpers.ts apps/api/src/routes/automations.ts apps/api/src/services/configurationPolicy.ts apps/api/src/services/retiredSourceReaders.contract.test.ts apps/api/src/services/configurationPolicy.retiredRows.test.ts apps/api/src/services/notificationDispatcher.ts apps/api/src/services/notificationDispatcher.configPolicyOverrides.test.ts && git commit -m "feat(alerts): retired legacy rows are invisible to every evaluator, resolver, agent builder and list; re-save preserves them"`
 
 **PR2 gate:** unit: `cd apps/api && npx tsc --noEmit -p . && npx vitest run src/db src/services/tenantCascade src/services/retiredSourceReaders.contract.test.ts src/services/configurationPolicy`; live (`pnpm test-stack up`): `pnpm db:migrate && pnpm db:check-drift && npx vitest run -c vitest.integration.config.ts src/__tests__/integration/rls-coverage.integration.test.ts src/__tests__/integration/tenantCascade.integration.test.ts src/__tests__/integration/tenant-export-policy.integration.test.ts src/__tests__/integration/tenantExportErasureRoundtrip.integration.test.ts src/__tests__/integration/orgCascadeFkOnDelete.integration.test.ts src/__tests__/integration/monitorWatchDelivery.integration.test.ts`. Open PR2 (`Refs #<wave>`).
 
-## PR3 — converter, preview, routes, payload, onboarding (Tasks 9–16)
+## PR3 — converter, preview, routes, payload, onboarding (Tasks 9–18)
 
 ### Task 9: Conversion module contract types and the prerequisite capability check
 
@@ -1576,7 +1764,7 @@ Lists:
 - Create: `apps/api/src/services/monitors/conversion/types.ts`
 - Create: `apps/api/src/services/monitors/conversion/prerequisites.ts`
 - Modify: `apps/api/src/services/offlineAlertEffects.ts` (export `OFFLINE_EFFECTS_RESOLVE_MONITORS` next to the #6342 code)
-- Create: `apps/api/src/services/monitors/conversion/index.ts` (re-exports; grows in Tasks 12–13)
+- Create: `apps/api/src/services/monitors/conversion/index.ts` (re-exports; grows in Tasks 13–15)
 - Test: `apps/api/src/services/monitors/conversion/prerequisites.test.ts`
 
 **Interfaces (the cross-wave contract — W05c2, W05d, W05e import these names verbatim):**
@@ -1592,6 +1780,7 @@ export type ConversionOutputRole = MonitorConversionOutputRole;   // 'primary' |
 export interface ProposedMonitor {
   role: ConversionOutputRole;
   kind: MonitorKind;
+  enabled: boolean;
   name: string;
   condition: Record<string, unknown>;
   severity: AlertSeverity;
@@ -1613,6 +1802,9 @@ export interface ConversionPreviewItem {
   /** `unconvertible:<code>` — the exact string stored in `retired_reason` on Retire. */
   reason?: string;
   proposed: ProposedMonitor[];
+  responseTargetSourceId?: string;
+  responseActions?: unknown[];
+  workflow?: { policyId: string; sourceId: string; name: string; enabled: boolean; actions: unknown[]; onFailure: 'stop'|'continue'|'notify' };
   /** Human-readable facts the panel prints under the row (behaviour changes, dropped fields). */
   notes: string[];
   /** Open (active | acknowledged | suppressed) alerts the conversion will carry over. */
@@ -1641,6 +1833,18 @@ export interface PolicyConversionPreviewPending {
 export interface ConvertPolicyResult { conversionIds: string[]; retired: number; monitorsCreated: number }
 export interface ConvertPartnerResult { policies: number; converted: number; unconvertible: number }
 export interface PendingConversionCounts { policies: number; rows: number }
+export interface PartnerConversionPreview {
+  partnerId: string; previewHash: string; policies: number; rows: number; convertible: number;
+  unconvertible: Array<{ policyId: string | null; policyName: string | null;
+    sourceTable: ConversionSourceTable; sourceId: string; name: string; reason: string }>;
+}
+export interface ConversionLedgerEntry {
+  id: string; sourceTable: ConversionSourceTable; sourceId: string; sourceName: string;
+  policyId: string | null; convertedBy: string | null; convertedAt: string;
+  revertedAt: string | null; revertable: boolean;
+  outputs: Array<{ monitorId: string; role: string; reused: boolean }>;
+}
+
 
 export const RETIRED_REASON = {
   converted: 'converted',
@@ -1655,9 +1859,9 @@ export const EQUIVALENCE_JOB_THRESHOLD = 500;
 // prerequisites.ts
 export interface ConversionPrerequisite { id: '#6342' | '#6343' | '#6344'; label: string; check: () => boolean }
 export const CONVERSION_PREREQUISITES: readonly ConversionPrerequisite[];
-export function missingConversionPrerequisites(): string[]; // labels, [] when all present
+export function missingConversionPrerequisites(list?: readonly ConversionPrerequisite[]): string[]; // labels, [] when all present
 export class ConversionPrerequisiteMissingError extends Error { readonly missing: string[] }
-export function assertConversionPrerequisites(): void; // throws the error above
+export function assertConversionPrerequisites(list?: readonly ConversionPrerequisite[]): void; // throws the error above
 ```
 
 What the panel receives (W05c2): `previewPolicyConversion` returns `{ …, blockedBy: 'prerequisite_missing', missingPrerequisites: ['#6342 offline monitors fire through offlineAlertEffects', …], items: [], equivalence: { devicesChecked: 0, deltas: [] } }`; every mutating route answers `409 { error: 'CONVERSION_PREREQUISITE_MISSING', missing: string[] }`.
@@ -1786,7 +1990,7 @@ export function assertConversionPrerequisites(list: readonly ConversionPrerequis
 }
 ```
 
-`types.ts` as in the Interfaces block. `index.ts`: `export * from './types'; export * from './prerequisites';` (Tasks 12–13 add the rest).
+`types.ts` as in the Interfaces block. `index.ts`: `export * from './types'; export * from './prerequisites';` (Tasks 13–15 add the rest).
 
 - [ ] **Step 4: Run, expect PASS**
 
@@ -1815,9 +2019,33 @@ export function mapWatch(row: typeof configPolicyMonitoringWatches.$inferSelect)
 export function mapStandaloneRule(rule: typeof alertRules.$inferSelect, template: typeof alertTemplates.$inferSelect): MappingResult;
 export function mapAutomationResponses(row: typeof automations.$inferSelect): { actions: unknown[]; notes: string[] };
 export function fingerprintAction(action: unknown): string;          // canonical JSON of the action minus volatile keys
-export function monitorSignature(m: Pick<ProposedMonitor, 'kind'|'condition'|'severity'|'cooldownMinutes'|'autoResolve'|'deliveryMode'|'deliveryChannelIds'|'escalationPolicyId'|'responses'>): string; // sha256 of canonical JSON — reuse rule + equivalence key
+export function monitorSignature(m: Pick<ProposedMonitor, 'enabled'|'kind'|'condition'|'severity'|'cooldownMinutes'|'autoResolve'|'deliveryMode'|'deliveryChannelIds'|'escalationPolicyId'|'responses'>): string; // sha256 of canonical JSON — reuse rule + equivalence key
+/** Merge in source order; action order is behavioral, not a set. */
+export function mergeResponseProposals(items: ConversionPreviewItem[]): ConversionPreviewItem[] {
+  const out = structuredClone(items);
+  for (const item of out) {
+    if (!item.responseTargetSourceId || item.outcome !== 'convertible') continue;
+    const target = out.find((i) => i.sourceId === item.responseTargetSourceId);
+    const primary = target?.proposed.find((p) => p.role === 'primary');
+    if (!target || target.outcome !== 'convertible' || !primary) {
+      item.outcome = 'unconvertible'; item.reason = 'unconvertible:target_unconvertible'; continue;
+    }
+    const seen = new Set(primary.responses.map(fingerprintAction));
+    const added = (item.responseActions ?? []).filter((a) => {
+      const key = fingerprintAction(a); if (seen.has(key)) return false; seen.add(key); return true;
+    });
+    if (primary.responses.length + added.length > 10) {
+      item.outcome = target.outcome = 'unconvertible';
+      item.reason = target.reason = 'unconvertible:too_many_responses';
+      continue;
+    }
+    primary.responses.push(...added);
+  }
+  return out;
+}
+
 export function previewHash(input: { policyId: string; items: ConversionPreviewItem[]; inheritanceMode: string }): string;
-export const UNCONVERTIBLE = { metricWithoutKind: 'metric_without_kind', custom: 'custom_condition', nestedGroup: 'nested_group', childNotComposable: 'child_kind_not_composable', tooManyConditions: 'too_many_conditions', noCondition: 'no_condition', autoResolveConditions: 'auto_resolve_conditions', escalationPolicyAxis: 'escalation_policy_axis', alertWorkflowKept: 'alert_workflow_kept' } as const;
+export const UNCONVERTIBLE = { metricWithoutKind: 'metric_without_kind', custom: 'custom_condition', nestedGroup: 'nested_group', childNotComposable: 'child_kind_not_composable', tooManyConditions: 'too_many_conditions', noCondition: 'no_condition', autoResolveConditions: 'auto_resolve_conditions', escalationPolicyAxis: 'escalation_policy_axis', tooManyResponses: 'too_many_responses' } as const;
 ```
 
 Mapping rules (spec §Conversion table, with the facts verified in code):
@@ -1828,10 +2056,10 @@ Mapping rules (spec §Conversion table, with the facts verified in code):
 | inline rule, 2..10 conditions (or a stored flat `{logic, conditions}` group — `routes/alerts/schemas.ts:29` accepts arbitrary shapes for standalone rules, and old policy rows may carry one) | `composite` with `match: logic === 'or' ? 'any' : 'all'`; each child through `convertAlertConditionToMonitor([child])`; child kind ∉ `SERVER_EVALUATED_MONITOR_KINDS` → `child_kind_not_composable`; any child null → that child's code; a child that is itself a group → `nested_group`; >10 → `too_many_conditions` |
 | inline rule delivery | `notification_channel_ids` non-empty → `deliveryMode: 'channels'` + ids; empty/null → `'inherit'` (never `'none'`); `escalation_policy_id` → `escalationPolicyId` |
 | inline rule scalars | `severity`, `cooldownMinutes`, `autoResolve`, `name`; `rationale` → `description`; `titleTemplate`/`messageTemplate` dropped → note "Title/message use the monitor kind's templates"; non-empty `autoResolveConditions` → `unconvertible:auto_resolve_conditions` (a monitor cannot carry an array of resolve conditions and silently dropping them would change when the alert clears) |
-| watch | primary `service`/`process`: `{ serviceName\|processName: name, consecutiveFailures: alertAfterConsecutiveFailures }`; severity `getMonitorKindSpec(kind).defaultSeverity`; cooldown 5; autoResolve false; delivery `inherit`; `autoRestart` → `responses: [{ type: 'execute_command', kind: 'restart_service', command: '', maxAttempts: maxRestartAttempts, cooldownSeconds: restartCooldownSeconds, whenOffline: 'queue' }]` (Task 3 addendum: empty command = agent-local); `cpuThresholdPercent != null` → extra `process_resource` `{ resource: 'cpu', processName: name, operator: 'gt', value, durationMinutes: ceil(thresholdDurationSeconds/60) \|\| undefined }` role `resource_cpu`, name `"<name> — CPU"`; `memoryThresholdMb != null` → same with `resource: 'memory'`, role `resource_memory`, name `"<name> — memory"`; `alertOnStop`, `alertSeverity`, `displayName` ignored. **Always convertible.** Notes: `"Legacy watches never raised an inbox alert (heartbeat.ts monitoring-results ingest only counts failures); the monitor raises a <severity> alert after <n> consecutive failures."`; when `autoRestart`: `"Auto-restart stays agent-local (max <n> attempts, <s>s cooldown) as a restart_service response."`; when `alertOnStop === false`: `"alertOnStop=false was stored but never read; ignored."` |
-| standalone rule + template | as `ruleConversionService.ts:92-105` (overrides win over template); template `conditions` with no `type` and no array (the `/settings/alert-templates` envelope `{triggers, thresholdDefaults, …}`) → `no_condition`; target → assignment handled by the caller (Task 13 reuses `convertRuleToMonitor`) |
-| `automations` with `trigger.type === 'event' && eventType === 'alert.triggered'` and `filter.ruleId` / `filter.configPolicyAlertRuleId` naming a source in this preview | `mapAutomationResponses` → its `actions` (verbatim, `normalizeAutomationActions` shape), dedupe by `fingerprintAction` against the target monitor's responses, cap 10 → note `"<k> actions appended to <monitor>; <d> duplicates skipped"`; overflow → `unconvertible:too_many_responses` for the automation only |
-| `config_policy_automations` with `triggerType === 'event' && eventType === 'alert.triggered'` | **kept, listed** as `outcome: 'unconvertible'`, `reason: 'unconvertible:alert_workflow_kept'`, note `"Fires on every alert for devices governed by this policy (no rule filter exists on policy automations); it stays an Alert workflow. Retire it here only when a monitor response replaces it."` — appending it to this policy's monitors would NARROW its coverage (it fires on alerts from any rule today), which is the coverage change Codex warned about; there is no `filter` column on `config_policy_automations` (schema :218-235), so the spec's `filter.ruleId` branch can only apply to standalone `automations` |
+| watch | `enabled` is copied to EVERY definition and attachment, including resource outputs; disabled watches are excluded from the active equivalence set. Primary `service`/`process`: `{ serviceName\|processName: name, consecutiveFailures: alertAfterConsecutiveFailures }`; severity `getMonitorKindSpec(kind).defaultSeverity`; cooldown 5; autoResolve false; delivery `inherit`; `autoRestart` → `responses: [{ type: 'execute_command', kind: 'restart_service', command: '', maxAttempts: maxRestartAttempts, cooldownSeconds: restartCooldownSeconds, whenOffline: 'queue' }]` (Task 3 addendum: empty command = agent-local); `cpuThresholdPercent != null` → extra `process_resource` `{ resource: 'cpu', processName: name, operator: 'gt', value, durationMinutes: ceil(thresholdDurationSeconds/60) \|\| undefined }` role `resource_cpu`, name `"<name> — CPU"`; `memoryThresholdMb != null` → same with `resource: 'memory'`, role `resource_memory`, name `"<name> — memory"`; `alertOnStop`, `alertSeverity`, `displayName` ignored. **Field mapping is lossless; conversion still requires zero equivalence deltas.** Notes: `"Legacy watches never raised an inbox alert (heartbeat.ts monitoring-results ingest only counts failures); the monitor raises a <severity> alert after <n> consecutive failures."`; when `autoRestart`: `"Auto-restart stays agent-local (max <n> attempts, <s>s cooldown) as a restart_service response."`; when `alertOnStop === false`: `"alertOnStop=false was stored but never read; ignored."` |
+| standalone rule + template | as `ruleConversionService.ts:92-105` (overrides win over template); template `conditions` with no `type` and no array (the `/settings/alert-templates` envelope `{triggers, thresholdDefaults, …}`) → `no_condition`; target → assignment handled by the template-group writer in Task 15; it calls `mapStandaloneRule` for every rule before any write |
+| `automations` with `trigger.type === 'event' && eventType === 'alert.triggered'` and `filter.ruleId` / `filter.configPolicyAlertRuleId` naming a source in this preview | `mapAutomationResponses` → its `actions` (verbatim, `normalizeAutomationActions` shape), dedupe by `fingerprintAction` against the target monitor's responses, cap 10 → note `"<k> actions appended to <monitor>; <d> duplicates skipped"`; merge into proposed monitors BEFORE equivalence/hash; overflow → `unconvertible:too_many_responses` and block conversion of its target source as well, so retiring the rule cannot strand the still-running automation |
+| `config_policy_automations` with `triggerType === 'event' && eventType === 'alert.triggered'` | Convertible preservation item, `proposed: []`, `workflow` carries the complete normalized source payload. Rehome atomically to a standalone policy-assigned workflow under Jobs, retaining enabled state, actions, onFailure and dynamic assignment coverage (Task 14). Never emit `unconvertible:alert_workflow_kept`; W05d does not retire preserved workflows. |
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1839,7 +2067,8 @@ Mapping rules (spec §Conversion table, with the facts verified in code):
 
 ```ts
 import { describe, expect, it } from 'vitest';
-import { fingerprintAction, mapInlineRule, mapWatch, monitorSignature, previewHash, UNCONVERTIBLE } from './mapping';
+import type { ConversionPreviewItem } from './types';
+import { fingerprintAction, mapInlineRule, mapWatch, mergeResponseProposals, monitorSignature, previewHash, UNCONVERTIBLE } from './mapping';
 
 const rule = (over: Record<string, unknown> = {}) => ({
   id: 'r1', featureLinkId: 'l1', name: 'High CPU', severity: 'high', conditions: [{ type: 'metric', metric: 'cpu', operator: 'gt', value: 80 }],
@@ -1903,14 +2132,37 @@ describe('mapWatch', () => {
   });
 });
 
+it('keeps every disabled auto-restart watch output disabled', () => {
+  const result = mapWatch(watch({ enabled: false, autoRestart: true, cpuThresholdPercent: 80 }) as never);
+  expect(result.ok).toBe(true);
+  if (!result.ok) return;
+  expect(result.proposed.every((p) => p.enabled === false)).toBe(true);
+  expect(result.proposed[0]!.responses).toHaveLength(1);
+});
+
 describe('fingerprint / signature / previewHash', () => {
   it('fingerprintAction is key-order independent', () => {
     expect(fingerprintAction({ type: 'run_script', scriptId: 'a', whenOffline: 'queue' })).toBe(fingerprintAction({ whenOffline: 'queue', scriptId: 'a', type: 'run_script' }));
   });
   it('monitorSignature ignores name/description and changes on any behavioural field', () => {
-    const base = { kind: 'cpu', condition: { operator: 'gt', value: 80 }, severity: 'high', cooldownMinutes: 5, autoResolve: false, deliveryMode: 'inherit', deliveryChannelIds: [], escalationPolicyId: null, responses: [] } as const;
+    const base = { enabled: true, kind: 'cpu', condition: { operator: 'gt', value: 80 }, severity: 'high', cooldownMinutes: 5, autoResolve: false, deliveryMode: 'inherit', deliveryChannelIds: [], escalationPolicyId: null, responses: [] } as const;
     expect(monitorSignature({ ...base })).toBe(monitorSignature({ ...base }));
     expect(monitorSignature({ ...base, severity: 'low' })).not.toBe(monitorSignature(base));
+  });
+  it('hashes action payload and order before conversion, and refuses overflow', () => {
+    const r = mapInlineRule(rule() as never); if (!r.ok) throw new Error('Invalid fixture');
+    const items: ConversionPreviewItem[] = [
+      { sourceTable: 'config_policy_alert_rules', sourceId: 'rule', name: 'CPU', outcome: 'convertible', proposed: r.proposed, notes: [], openAlerts: 0 },
+      { sourceTable: 'automations', sourceId: 'auto', name: 'Respond', outcome: 'convertible', proposed: [], notes: [], openAlerts: 0,
+        responseTargetSourceId: 'rule', responseActions: [{ type: 'execute_command', command: 'first' }, { type: 'execute_command', command: 'second' }] },
+    ];
+    const merged = mergeResponseProposals(items);
+    expect(merged[0]!.proposed[0]!.responses).toEqual(items[1]!.responseActions);
+    const hash = (i: ConversionPreviewItem[]) => previewHash({ policyId: 'policy', items: i, inheritanceMode: 'replace' });
+    const changed = structuredClone(items); changed[1]!.responseActions!.reverse();
+    expect(hash(merged)).not.toBe(hash(mergeResponseProposals(changed)));
+    changed[1]!.responseActions = Array.from({ length: 11 }, (_, i) => ({ type: 'execute_command', command: `echo ${i}` }));
+    expect(mergeResponseProposals(changed).map((i) => i.reason)).toEqual(['unconvertible:too_many_responses', 'unconvertible:too_many_responses']);
   });
   it('previewHash is stable for the same items and differs on inheritance mode', () => {
     const items = [{ sourceTable: 'config_policy_alert_rules', sourceId: 'r1', name: 'x', outcome: 'convertible', proposed: [], notes: [], openAlerts: 0 }] as never;
@@ -1949,7 +2201,6 @@ export const UNCONVERTIBLE = {
   noCondition: 'no_condition',
   autoResolveConditions: 'auto_resolve_conditions',
   escalationPolicyAxis: 'escalation_policy_axis',
-  alertWorkflowKept: 'alert_workflow_kept',
 } as const;
 
 export type MappingResult =
@@ -1958,7 +2209,8 @@ export type MappingResult =
 
 const fail = (code: string, notes: string[] = []): MappingResult => ({ ok: false, reason: `unconvertible:${code}`, notes });
 
-function canonical(value: unknown): string {
+export function canonical(value: unknown): string {
+  if (value instanceof Date) return JSON.stringify(value.toISOString());
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
   if (value && typeof value === 'object') {
     const r = value as Record<string, unknown>;
@@ -1966,7 +2218,7 @@ function canonical(value: unknown): string {
   }
   return JSON.stringify(value ?? null);
 }
-const sha = (s: string) => createHash('sha256').update(s).digest('hex');
+export const sha = (s: string) => createHash('sha256').update(s).digest('hex');
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -2032,6 +2284,7 @@ export function mapInlineRule(row: typeof configPolicyAlertRules.$inferSelect): 
     notes,
     proposed: [{
       role: 'primary',
+      enabled: true,
       kind: mapped.kind,
       name: row.name,
       condition: mapped.condition,
@@ -2058,7 +2311,7 @@ export function mapWatch(row: typeof configPolicyMonitoringWatches.$inferSelect)
   if (row.autoRestart) notes.push(`Auto-restart stays agent-local (max ${row.maxRestartAttempts} attempts, ${row.restartCooldownSeconds}s cooldown) as a restart_service response.`);
   if (!row.alertOnStop) notes.push('alertOnStop=false was stored but never read at runtime; ignored.');
 
-  const base = { severity: spec.defaultSeverity, cooldownMinutes: 5, autoResolve: false, deliveryMode: 'inherit' as const, deliveryChannelIds: [], escalationPolicyId: null };
+  const base = { enabled: row.enabled, severity: spec.defaultSeverity, cooldownMinutes: 5, autoResolve: false, deliveryMode: 'inherit' as const, deliveryChannelIds: [], escalationPolicyId: null };
   const durationMinutes = row.thresholdDurationSeconds > 0 ? Math.ceil(row.thresholdDurationSeconds / 60) : undefined;
   const proposed: ProposedMonitor[] = [{
     ...base, role: 'primary', kind, name: row.name, responses,
@@ -2086,7 +2339,7 @@ export function mapStandaloneRule(rule: typeof alertRules.$inferSelect, template
   return {
     ok: true, notes: [],
     proposed: [{
-      role: 'primary', kind: mapped.kind, name: rule.name, condition: mapped.condition,
+      role: 'primary', enabled: rule.isActive, kind: mapped.kind, name: rule.name, condition: mapped.condition,
       severity: (overrides.severity as ProposedMonitor['severity'] | undefined) ?? template.severity,
       cooldownMinutes: (overrides.cooldownMinutes as number | undefined) ?? template.cooldownMinutes,
       autoResolve: template.autoResolve,
@@ -2112,11 +2365,11 @@ export function fingerprintAction(action: unknown): string {
   return sha(canonical(stripped));
 }
 
-export function monitorSignature(m: Pick<ProposedMonitor, 'kind' | 'condition' | 'severity' | 'cooldownMinutes' | 'autoResolve' | 'deliveryMode' | 'deliveryChannelIds' | 'escalationPolicyId' | 'responses'>): string {
+export function monitorSignature(m: Pick<ProposedMonitor, 'enabled' | 'kind' | 'condition' | 'severity' | 'cooldownMinutes' | 'autoResolve' | 'deliveryMode' | 'deliveryChannelIds' | 'escalationPolicyId' | 'responses'>): string {
   return sha(canonical({
-    kind: m.kind, condition: m.condition, severity: m.severity, cooldownMinutes: m.cooldownMinutes, autoResolve: m.autoResolve,
+    enabled: m.enabled, kind: m.kind, condition: m.condition, severity: m.severity, cooldownMinutes: m.cooldownMinutes, autoResolve: m.autoResolve,
     deliveryMode: m.deliveryMode, deliveryChannelIds: [...m.deliveryChannelIds].sort(), escalationPolicyId: m.escalationPolicyId,
-    responses: (m.responses as unknown[]).map(fingerprintAction).sort(),
+    responses: (m.responses as unknown[]).map(fingerprintAction),
   }));
 }
 
@@ -2124,7 +2377,7 @@ export function previewHash(input: { policyId: string; items: ConversionPreviewI
   return sha(canonical({
     policyId: input.policyId,
     inheritanceMode: input.inheritanceMode,
-    items: input.items.map((i) => ({ t: i.sourceTable, id: i.sourceId, o: i.outcome, r: i.reason ?? null, p: i.proposed.map(monitorSignature) })),
+    items: input.items.map((i) => ({ t: i.sourceTable, id: i.sourceId, o: i.outcome, r: i.reason ?? null, p: i.proposed.map(monitorSignature), actions: i.responseActions ?? [], workflow: i.workflow ?? null })),
   }));
 }
 ```
@@ -2269,12 +2522,181 @@ export async function loadPolicySources(policyId: string, executor: DbExecutor =
 
 - [ ] **Step 5: Commit** — `git add apps/api/src/services/monitors/conversion/loadSources.ts apps/api/src/services/monitors/conversion/loadSources.test.ts && git commit -m "feat(monitors): load a policy's unretired legacy sources and pending-conversion counts"`
 
-### Task 12: Equivalence check over every device in scope (dry-run transaction), job-backed above 500 devices
+### Task 12: Private normalized legacy baseline and inherited consumer scope
+
+**Files:**
+- Create: `apps/api/src/services/monitors/conversion/legacyBaseline.ts`, adjacent `legacyBaseline.test.ts`.
+- Reads: `apps/api/src/services/featureConfigResolver.ts:105-244,379-446` (normalized rows and assignment winner); `apps/api/src/routes/agents/helpers.ts:2242-2375` (settings winner before enabled watches); `apps/api/src/db/schema/configurationPolicies.ts:163-188` (effective view's `sourcePolicyId`); `apps/api/src/services/configPolicyOwnership.ts:62`.
+- Test: `apps/api/src/__tests__/integration/monitorConversionRoundtrip.integration.test.ts` (final task supplies the fixture).
+
+**Interfaces:**
+- Produces `resolveLegacyBaseline(deviceId: string, executor: DbExecutor): Promise<LegacyBaseline>` and internal `resolveDeviceIdsForPolicy(policyId: string, executor: DbExecutor): Promise<string[]>`.
+- Consumes normalized tables only; no public legacy reader imports. W05d retains this module. Empty rule links fall through; empty winning watch settings do not. Enabled state and role/OS filters retain their runtime meaning. The INFERRED baseline and inherited-scope findings are confirmed by the code cited above.
+
+- [ ] **Step 1: Write the failing tests**
+
+```ts
+// legacyBaseline.test.ts
+import { expect, it } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import { resolveLegacyBaseline, resolveDeviceIdsForPolicy, type DbExecutor } from './legacyBaseline';
+function fixture(results: unknown[][]) {
+  const predicates: any[] = [];
+  function query() {
+    const result = results.shift() ?? [];
+    const c: any = { then: (yes: any, no: any) => Promise.resolve(result).then(yes, no) };
+    for (const name of ['from', 'innerJoin', 'leftJoin', 'where', 'orderBy', 'limit']) {
+      c[name] = (...args: unknown[]) => {
+        if (name === 'where') predicates.push(args[0]);
+        if (name.endsWith('Join')) predicates.push(args[1]);
+        return c;
+      };
+    }
+    return c;
+  }
+  return { executor: { select: query, selectDistinct: query } as unknown as DbExecutor, predicates };
+}
+const device = { id: 'd', orgId: 'o', siteId: 's', deviceRole: 'server', osType: 'windows' };
+it('empty rule links fall through to the closest assignment with normalized rules', async () => {
+  const f = fixture([[device], [{ partnerId: 'p' }], [], [
+    { rule: { id: 'parent-rule' }, assignmentId: 'parent', level: 'organization', priority: 0, createdAt: new Date(0) },
+  ], []]);
+  expect((await resolveLegacyBaseline('d', f.executor)).rules.map((r) => r.id)).toEqual(['parent-rule']);
+  expect(f.predicates.map((p) => new PgDialect().sqlToQuery(p).sql).join(' ')).toContain('"retired_at" is null');
+});
+it('an empty enabled-watch set clears watches rather than selecting the next policy', async () => {
+  const f = fixture([[device], [{ partnerId: 'p' }], [], [], [
+    { settingsId: 'parent', level: 'organization', priority: 0, checkIntervalSeconds: 60 },
+    { settingsId: 'child', level: 'site', priority: 0, checkIntervalSeconds: 30 },
+  ], []]);
+  expect((await resolveLegacyBaseline('d', f.executor)).monitoring).toEqual({ settingsId: 'child', checkIntervalSeconds: 30, watches: [] });
+  expect(new PgDialect().sqlToQuery(f.predicates.at(-1)).params).toEqual(['child', true]);
+});
+it('scope follows effective-link consumers and role/OS filters', async () => {
+  const f = fixture([[{ id: 'child-device' }]]);
+  expect(await resolveDeviceIdsForPolicy('unassigned-parent', f.executor)).toEqual(['child-device']);
+  const text = f.predicates.map((p) => new PgDialect().sqlToQuery(p).sql).join(' ');
+  for (const column of ['source_policy_id', 'role_filter', 'os_filter', 'partner_id']) expect(text).toContain(column);
+});
+```
+
+- [ ] **Step 2: Run it, expect FAIL**
+
+`cd apps/api && npx vitest run src/services/monitors/conversion/legacyBaseline.test.ts` → cannot resolve `./legacyBaseline`.
+
+- [ ] **Step 3: Implement**
+
+```ts
+// legacyBaseline.ts
+import { and, asc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
+import { db } from '../../../db';
+import { devices, organizations, deviceGroupMemberships, configurationPolicies,
+  configPolicyAssignments, configPolicyEffectiveFeatureLinks, configPolicyAlertRules,
+  configPolicyMonitoringSettings, configPolicyMonitoringWatches } from '../../../db/schema';
+import { policyOwnershipCondition } from '../../configPolicyOwnership';
+export type DbExecutor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
+export interface LegacyBaseline {
+  rules: Array<typeof configPolicyAlertRules.$inferSelect>;
+  monitoring: { settingsId: string; checkIntervalSeconds: number;
+    watches: Array<typeof configPolicyMonitoringWatches.$inferSelect> } | null;
+}
+const LEVEL: Record<string, number> = { device: 5, device_group: 4, site: 3, organization: 2, partner: 1 };
+export async function resolveLegacyBaseline(deviceId: string, executor: DbExecutor): Promise<LegacyBaseline> {
+  const [device] = await executor.select().from(devices).where(eq(devices.id, deviceId)).limit(1);
+  if (!device) return { rules: [], monitoring: null };
+  const [org] = await executor.select({ partnerId: organizations.partnerId }).from(organizations)
+    .where(eq(organizations.id, device.orgId)).limit(1);
+  const groups = await executor.select({ groupId: deviceGroupMemberships.groupId }).from(deviceGroupMemberships)
+    .where(eq(deviceGroupMemberships.deviceId, deviceId));
+  const targets = [
+    and(eq(configPolicyAssignments.level, 'device'), eq(configPolicyAssignments.targetId, deviceId)),
+    and(eq(configPolicyAssignments.level, 'site'), eq(configPolicyAssignments.targetId, device.siteId)),
+    and(eq(configPolicyAssignments.level, 'organization'), eq(configPolicyAssignments.targetId, device.orgId)),
+  ];
+  if (org?.partnerId) targets.push(and(eq(configPolicyAssignments.level, 'partner'), eq(configPolicyAssignments.targetId, org.partnerId)));
+  if (groups.length) targets.push(and(eq(configPolicyAssignments.level, 'device_group'), inArray(configPolicyAssignments.targetId, groups.map((g) => g.groupId))));
+  const filters = and(or(...targets),
+    sql`(${configPolicyAssignments.roleFilter} IS NULL OR ${device.deviceRole} = ANY(${configPolicyAssignments.roleFilter}))`,
+    sql`(${configPolicyAssignments.osFilter} IS NULL OR ${device.osType} = ANY(${configPolicyAssignments.osFilter}))`);
+  const owner = policyOwnershipCondition({ orgId: device.orgId, partnerId: org?.partnerId ?? null });
+  const rows = await executor.select({ rule: configPolicyAlertRules, assignmentId: configPolicyAssignments.id,
+    level: configPolicyAssignments.level, priority: configPolicyAssignments.priority, createdAt: configPolicyAssignments.createdAt })
+    .from(configPolicyAssignments)
+    .innerJoin(configurationPolicies, and(eq(configPolicyAssignments.configPolicyId, configurationPolicies.id), eq(configurationPolicies.status, 'active'), owner))
+    .innerJoin(configPolicyEffectiveFeatureLinks, and(eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id), eq(configPolicyEffectiveFeatureLinks.featureType, 'alert_rule')))
+    .innerJoin(configPolicyAlertRules, and(eq(configPolicyAlertRules.featureLinkId, configPolicyEffectiveFeatureLinks.id), isNull(configPolicyAlertRules.retiredAt)))
+    .where(filters).orderBy(configPolicyAssignments.level, configPolicyAssignments.priority, configPolicyAssignments.createdAt, asc(configPolicyAlertRules.sortOrder));
+  rows.sort((a, b) => (LEVEL[b.level] ?? 0) - (LEVEL[a.level] ?? 0) || a.priority - b.priority || a.createdAt.getTime() - b.createdAt.getTime());
+  const rules = rows.filter((r) => r.assignmentId === rows[0]?.assignmentId).map((r) => r.rule);
+  const settings = await executor.select({ settingsId: configPolicyMonitoringSettings.id,
+    checkIntervalSeconds: configPolicyMonitoringSettings.checkIntervalSeconds,
+    level: configPolicyAssignments.level, priority: configPolicyAssignments.priority })
+    .from(configPolicyAssignments)
+    .innerJoin(configurationPolicies, eq(configPolicyAssignments.configPolicyId, configurationPolicies.id))
+    .innerJoin(configPolicyEffectiveFeatureLinks, and(eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id), eq(configPolicyEffectiveFeatureLinks.featureType, 'monitoring')))
+    .innerJoin(configPolicyMonitoringSettings, eq(configPolicyMonitoringSettings.featureLinkId, configPolicyEffectiveFeatureLinks.id))
+    .where(and(eq(configurationPolicies.status, 'active'), owner, filters));
+  // Actual watch runtime has no creation-time tie-breaker; preserve that order.
+  settings.sort((a, b) => (LEVEL[b.level] ?? 0) - (LEVEL[a.level] ?? 0) || a.priority - b.priority);
+  const winner = settings[0];
+  if (!winner) return { rules, monitoring: null };
+  const watches = await executor.select().from(configPolicyMonitoringWatches)
+    .where(and(eq(configPolicyMonitoringWatches.settingsId, winner.settingsId), eq(configPolicyMonitoringWatches.enabled, true), isNull(configPolicyMonitoringWatches.retiredAt)))
+    .orderBy(configPolicyMonitoringWatches.sortOrder);
+  return { rules, monitoring: { settingsId: winner.settingsId, checkIntervalSeconds: winner.checkIntervalSeconds, watches } };
+}
+export async function resolveDeviceIdsForPolicy(policyId: string, executor: DbExecutor = db): Promise<string[]> {
+  const rows = await executor.selectDistinct({ id: devices.id }).from(devices)
+    .innerJoin(organizations, eq(organizations.id, devices.orgId))
+    .innerJoin(configPolicyAssignments, or(
+      and(eq(configPolicyAssignments.level, 'device'), eq(configPolicyAssignments.targetId, devices.id)),
+      and(eq(configPolicyAssignments.level, 'site'), eq(configPolicyAssignments.targetId, devices.siteId)),
+      and(eq(configPolicyAssignments.level, 'organization'), eq(configPolicyAssignments.targetId, devices.orgId)),
+      and(eq(configPolicyAssignments.level, 'partner'), eq(configPolicyAssignments.targetId, organizations.partnerId)),
+      and(eq(configPolicyAssignments.level, 'device_group'), sql`EXISTS (SELECT 1 FROM ${deviceGroupMemberships}
+        WHERE ${deviceGroupMemberships.deviceId} = ${devices.id} AND ${deviceGroupMemberships.groupId} = ${configPolicyAssignments.targetId})`)))
+    .innerJoin(configurationPolicies, eq(configurationPolicies.id, configPolicyAssignments.configPolicyId))
+    .leftJoin(configPolicyEffectiveFeatureLinks, eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id))
+    .where(and(eq(configurationPolicies.status, 'active'),
+      or(eq(configurationPolicies.orgId, devices.orgId), and(isNull(configurationPolicies.orgId), eq(configurationPolicies.partnerId, organizations.partnerId))),
+      or(eq(configurationPolicies.id, policyId), eq(configPolicyEffectiveFeatureLinks.sourcePolicyId, policyId)),
+      sql`(${configPolicyAssignments.roleFilter} IS NULL OR ${devices.deviceRole} = ANY(${configPolicyAssignments.roleFilter}))`,
+      sql`(${configPolicyAssignments.osFilter} IS NULL OR ${devices.osType} = ANY(${configPolicyAssignments.osFilter}))`))
+    .orderBy(devices.id);
+  return rows.map((r) => r.id);
+}
+```
+
+Add to the final round-trip suite, using its actual `conversionFixture` and schema imports:
+
+```ts
+it('checks a parent with no direct assignment through its assigned inheriting child', async () => {
+  const f = await conversionFixture();
+  await withDbAccessContext(orgContext(f), async () => {
+    const [child] = await db.insert(configurationPolicies).values({ orgId: f.orgId, partnerId: null,
+      name: 'Inheriting child', parentPolicyId: f.policyId, status: 'active', createdBy: f.userId }).returning();
+    await db.update(configPolicyAssignments).set({ configPolicyId: child!.id })
+      .where(eq(configPolicyAssignments.configPolicyId, f.policyId));
+    expect(await resolveDeviceIdsForPolicy(f.policyId, db)).toContain(f.deviceId);
+  });
+});
+```
+
+- [ ] **Step 4: Run, expect PASS**
+
+`cd apps/api && npx vitest run src/services/monitors/conversion/legacyBaseline.test.ts && npx tsc --noEmit -p .`; final verification runs the actual inherited-parent SQL case under RLS.
+
+- [ ] **Step 5: Commit**
+
+`git add apps/api/src/services/monitors/conversion/legacyBaseline.ts apps/api/src/services/monitors/conversion/legacyBaseline.test.ts apps/api/src/__tests__/integration/monitorConversionRoundtrip.integration.test.ts && git commit -m "fix(monitors): preserve normalized legacy semantics and inherited conversion scope"`
+
+### Task 13: Equivalence check over every device in scope (dry-run transaction), job-backed above 500 devices
 
 **Files:**
 - Create: `apps/api/src/services/monitors/conversion/equivalence.ts`
 - Create: `apps/api/src/jobs/monitorConversionPreviewWorker.ts`
-- Modify: wherever `createAlertWorker()` is started (`grep -rn "createAlertWorker()" apps/api/src --include='*.ts' | grep -v test` — register `createMonitorConversionPreviewWorker()` beside it)
+- Modify: `apps/api/src/services/workerRegistry.ts:76-85` (socket-owner lifecycle registration, finalized in Task 18).
+- Create: `apps/api/src/services/monitors/conversion/previewScope.ts`, adjacent `previewScope.test.ts`.
 - Test: `apps/api/src/services/monitors/conversion/equivalence.test.ts` (pure diff + device-scope filter), `apps/api/src/jobs/monitorConversionPreviewWorker.test.ts` (job data → `withDbAccessContext` + progress writes, harness after `jobs/alertWorker.test.ts`)
 - Reads: `configurationPolicy.ts:2580-2627` (`previewEffectiveConfig` — the rolled-back-transaction pattern to mirror), `:2568` (`resolveEffectiveConfig` / `resolveEffectiveConfigWithExecutor(executor, deviceId, auth)`), `featureConfigResolver.ts:1077-1175` (`resolveDeviceIdsForSoftwarePolicy` — the device-scope walk to mirror, keyed on a policy id), `:146-167` (`matchesRoleOsFilter`, `buildRoleOsFilterConditions`), `monitorResolver.ts` (`resolveMonitorsForDevice(deviceId, executor)`), `db/index.ts:642` (`withDbAccessContext(context, fn)`), `services/redis.ts:125,286`, `services/bullmqQueue.ts:41` (`createInstrumentedQueue`)
 
@@ -2285,52 +2707,76 @@ export interface EquivalenceProposal {
   policy: PolicySources['policy'];
   inheritanceMode: 'cumulative' | 'replace';
   /** convertible items only: source id → the monitors to mint (or reuse) */
-  bySource: Array<{ sourceTable: ConversionSourceTable; sourceId: string; monitors: ProposedMonitor[] }>;
+  bySource: Array<{ sourceTable: ConversionSourceTable; sourceId: string; monitors: ProposedMonitor[]; workflow?: ConversionPreviewItem['workflow']; responseTargetSourceId?: string }>;
 }
-export async function resolveDeviceIdsForPolicy(policyId: string, executor?: DbExecutor): Promise<string[]>; // assignments of THIS policy → devices, roleFilter/osFilter applied per assignment via matchesRoleOsFilter
+export async function resolveDeviceIdsForPolicy(policyId: string, executor?: DbExecutor): Promise<string[]>; // private baseline module: own and inheriting effective-link consumers, role/OS filters
 export function diffSignatureSets(before: Map<string, string>, after: Map<string, string>): string[]; // label→signature maps; returns human-readable deltas
 export async function computeEquivalence(proposal: EquivalenceProposal, deviceIds: string[], auth: AuthContext, onProgress?: (checked: number, total: number) => Promise<void> | void): Promise<{ devicesChecked: number; deltas: EquivalenceDelta[] }>;
 
 // job worker
 export const MONITOR_CONVERSION_PREVIEW_QUEUE = 'monitor-conversion-preview';
-export interface ConversionPreviewJobData { policyId: string; dbContext: DbAccessContext; requestedBy: string; sourcesHash: string }
+export interface ConversionPreviewJobData { policyId: string; snapshot: PreviewAccessSnapshot; sourcesHash: string; scopeHash: string }
 export function getMonitorConversionPreviewQueue(): Queue;
 export function createMonitorConversionPreviewWorker(): Worker<ConversionPreviewJobData>;
-export const previewJobKey = (policyId: string) => `monitorconv:preview:${policyId}`; // Redis JSON { status:'running'|'done'|'failed', progress:{checked,total}, sourcesHash, result?: PolicyConversionPreview, error?: string, startedAt }, TTL 3600 s
+export const previewJobKey = (policyId: string, scopeHash: string, sourcesHash: string) => `monitorconv:preview:${policyId}:${scopeHash}:${sourcesHash}`; // Redis JSON { status:'running'|'done'|'failed', progress:{checked,total}, sourcesHash, result?: PolicyConversionPreview, error?: string, startedAt }, TTL 3600 s
 ```
 
 Before / after, per device — both sides expressed as `monitorSignature` strings keyed by a label so a delta can say WHAT changed:
 
-- **before** (outside the transaction): the legacy sweep's effective set = `resolveEffectiveConfig(deviceId, auth).features.alert_rule.inlineSettings.items` mapped through `mapInlineRule` (each convertible rule → its signatures; an unconvertible rule contributes the label `legacy:<name>` with a signature of its canonical row so it still has to be present after) + `features.monitoring.inlineSettings.watches` through `mapWatch` + the monitor sweep's effective set (`resolveMonitorsForDevice` → enabled monitors → their `monitor_definitions` rows, overrides applied with `applyOverrides`, → `monitorSignature`).
-- **after** (inside `db.transaction`, thrown away with a `PreviewRollback` exactly as `previewEffectiveConfig` does): insert the proposed `monitor_definitions` rows directly (no compile — the resolver reads only `monitor_definitions` + `config_policy_monitors`), upsert the policy's `monitors` link with `inheritance` and the new attachment rows (through `addFeatureLink` / `updateFeatureLink` with `tx` as executor so the link JSON and normalized rows agree), mark this policy's source rows `retired_at = now()` (so the legacy resolver stops seeing them and the NEXT policy in the chain, if any, becomes the legacy winner — that is a real delta the check must surface), then for each device compute the same two sets with `resolveEffectiveConfigWithExecutor(tx, deviceId, auth)` and `resolveMonitorsForDevice(deviceId, tx)`.
+- **before**: `resolveLegacyBaseline(deviceId, tx)` reads the normalized legacy rules and enabled watches with the real winner/fall-through semantics. Add the existing enabled effective monitors. Load standalone response automations targeting these rules and merge their canonical ordered actions before signing, so already-running responses are part of the baseline.
+- **after**: inside the same repeatable-read transaction, mint proposed definitions and attachments (`enabled` copied on both), retire the selected source rows, and compute `resolveLegacyBaseline(deviceId, tx)` plus `resolveMonitorsForDevice(deviceId, tx)` again; throw `PreviewRollback` so no proposed mutation persists. Public `resolveEffectiveConfig` and public legacy readers are never used. All policies/devices/assignments/definitions and routing/channel/escalation rows are fingerprinted from this same snapshot. Compare resolved delivery through W05b's `resolveDelivery(input, tx)` on BOTH sides, with no kind on a legacy rule and the new monitor's kind/id afterward. That catches a CPU-kind route newly matching an inherited legacy rule.
 - A device's delta = labels present on one side only, or same label with a different signature: `"device <id>: gains <name> (<kind>) from <policy>"`, `"loses …"`, `"<name>: severity high → low"` (the signature carries kind/condition/severity/cooldown/autoResolve/delivery/responses, so any of those changing is a delta). `deltas` is capped at 200 entries with a final `"… and N more"` entry.
 
-Devices: `resolveDeviceIdsForPolicy` mirrors `resolveDeviceIdsForSoftwarePolicy` (device / device_group / site / organization / partner levels → device ids), then applies `matchesRoleOsFilter(assignment, device)` per assignment so a "servers only" assignment scopes the check exactly as #6344 scopes the resolver. Above `EQUIVALENCE_JOB_THRESHOLD` (500) the caller enqueues the job instead (Task 13's `previewPolicyConversion` decides; this task provides both pieces).
+Devices come from `legacyBaseline.resolveDeviceIdsForPolicy`, including assigned inheriting children; no direct-assignment shortcut. Reject site/device-restricted preview callers with the shared governance guard before loading device details, rather than certifying a partial policy scope. Above 500 devices use the original principal snapshot; never `createSystemAuthContext()` for an interactive job. On each GET poll and confirmation, current middleware auth must pass the owner/governance checks again; recompute both fingerprints before returning cached results. Do not serve a result under a narrower/wider/revoked caller snapshot.
 
-Job worker: `createInstrumentedQueue(MONITOR_CONVERSION_PREVIEW_QUEUE)`; `new Worker(…, async (job) => withDbAccessContext(job.data.dbContext, () => runPreviewJob(job.data)), { connection: getBullMQConnection(), concurrency: 2, lockDuration: 600_000 })`; `jobId: previewJobKey(policyId)` so a second click while running is a no-op (`Queue.add` with an existing jobId returns the existing job). `runPreviewJob` builds the preview through Task 13's `buildPolicyConversionPreview(policyId, { userId: requestedBy, auth: createSystemAuthContext() }, { onProgress })` — the RLS boundary is the caller's own `dbContext`, so the app-layer system auth cannot see more than the caller could (RLS is stricter, CLAUDE.md §Partner-Wide First step 3) — writing `{ status: 'running', progress }` to Redis every 50 devices and `{ status: 'done', result }` at the end.
-
-- [ ] **Step 1: Write the failing tests** — `equivalence.test.ts`: `diffSignatureSets` (gain / loss / change / identical → `[]`); `resolveDeviceIdsForPolicy` with a mocked queue (assignments: one `site` with `roleFilter: ['server']`, devices under the site with roles `server` and `workstation` → only the server id). `monitorConversionPreviewWorker.test.ts`: the processor calls `withDbAccessContext` with `job.data.dbContext` (mock `../db`), writes a running entry then a done entry to the mocked Redis (`setex` calls with the key from `previewJobKey`), and a thrown preview error writes `{ status: 'failed', error }`.
+- [ ] **Step 1: Write the failing tests** — `equivalence.test.ts`: `diffSignatureSets` (gain / loss / change / identical → `[]`); `resolveDeviceIdsForPolicy` with a mocked queue (assignments: one `site` with `roleFilter: ['server']`, devices under the site with roles `server` and `workstation` → only the server id). `monitorConversionPreviewWorker.test.ts`: the processor calls `withDbAccessContext` with `job.data.snapshot.dbContext` (mock `../db`), writes a running entry then a done entry to the mocked Redis (`setex` calls with the key from `previewJobKey`), and a thrown preview error writes `{ status: 'failed', error }`.
 
 - [ ] **Step 2: Run it, expect FAIL** — `cd apps/api && npx vitest run src/services/monitors/conversion/equivalence.test.ts src/jobs/monitorConversionPreviewWorker.test.ts` → module-not-found for both.
 
-- [ ] **Step 3: Implement** — `equivalence.ts` core (the device-scope walk copies the `switch (assignment.level)` from `featureConfigResolver.ts:1118-1172` with `configPolicyAssignments.configPolicyId = policyId` as the first query and a `matchesRoleOsFilter` pass per assignment):
+- [ ] **Step 3: Implement** — `equivalence.ts` core (scope comes from the private baseline task):
 
 ```ts
 class PreviewRollback extends Error {}
 
-function signatureMapForLegacy(effective: EffectiveConfiguration | null): Map<string, string> {
+import { resolveDelivery } from '../../delivery/resolveDelivery';
+import { resolveLegacyBaseline, resolveDeviceIdsForPolicy } from './legacyBaseline';
+import type { LegacyBaseline } from './legacyBaseline';
+import { canonical, sha, mergeResponseProposals } from './mapping';
+
+async function effectiveSignature(p: ProposedMonitor, input: Parameters<typeof resolveDelivery>[0], executor: DbExecutor) {
+  const resolved = await resolveDelivery(input, executor);
+  return sha(canonical({
+    behavior: monitorSignature({ ...p, deliveryMode: 'channels',
+      deliveryChannelIds: resolved.channelIds, escalationPolicyId: resolved.escalationPolicyId }),
+    skippedChannelIds: [...resolved.skippedChannelIds].sort((a, b) => a.id.localeCompare(b.id)),
+  }));
+}
+async function signatureMapForLegacy(deviceId: string, effective: LegacyBaseline, executor: DbExecutor): Promise<Map<string, string>> {
   const out = new Map<string, string>();
-  const rules = (effective?.features.alert_rule?.inlineSettings as { items?: unknown[] } | undefined)?.items ?? [];
-  for (const raw of rules) {
-    const row = raw as Parameters<typeof mapInlineRule>[0];
-    const m = mapInlineRule(row);
-    if (m.ok) m.proposed.forEach((p, i) => out.set(`rule:${row.name}#${i}`, monitorSignature(p)));
-    else out.set(`legacy:${row.name}`, sha(canonical(row.conditions)));
+  const [device] = await executor.select().from(devices).where(eq(devices.id, deviceId)).limit(1);
+  if (!device) return out;
+  for (const row of effective.rules) {
+    const mapped = mapInlineRule(row);
+    if (!mapped.ok) { out.set(`legacy:${row.id}`, sha(canonical(row))); continue; }
+    // The same loader and merge are used by preview: actions exist before conversion too.
+    const candidates = await executor.select().from(automations).where(and(isNull(automations.retiredAt), eq(automations.enabled, true),
+      sql`${automations.trigger}->'filter'->>'configPolicyAlertRuleId' = ${row.id}`));
+    const responses = candidates.map((a) => ({ sourceTable: 'automations' as const, sourceId: a.id, name: a.name,
+      outcome: 'convertible' as const, proposed: [], notes: [], openAlerts: 0,
+      responseTargetSourceId: row.id, responseActions: a.actions as unknown[] }));
+    const [item] = mergeResponseProposals([{ sourceTable: 'config_policy_alert_rules', sourceId: row.id, name: row.name,
+      outcome: 'convertible', proposed: mapped.proposed, notes: [], openAlerts: 0 }, ...responses]);
+    for (const p of item!.proposed) out.set(`rule:${row.id}:${p.role}`, await effectiveSignature(p, {
+      orgId: device.orgId, siteId: device.siteId, severity: p.severity, kind: null,
+      legacyOverride: { channelIds: row.notificationChannelIds, escalationPolicyId: row.escalationPolicyId },
+    }, executor));
   }
-  const watches = (effective?.features.monitoring?.inlineSettings as { watches?: unknown[] } | undefined)?.watches ?? [];
-  for (const raw of watches) {
-    const m = mapWatch(raw as Parameters<typeof mapWatch>[0]);
-    if (m.ok) m.proposed.forEach((p) => out.set(`watch:${p.name}`, monitorSignature(p)));
+  for (const row of effective.monitoring?.watches ?? []) {
+    if (!row.enabled) continue;
+    const mapped = mapWatch(row);
+    if (!mapped.ok) { out.set(`legacy:watch:${row.id}`, sha(canonical(row))); continue; }
+    for (const p of mapped.proposed) out.set(`watch:${row.id}:${p.role}`, await effectiveSignature(p,
+      { orgId: device.orgId, siteId: device.siteId, severity: p.severity, kind: null }, executor));
   }
   return out;
 }
@@ -2342,42 +2788,51 @@ async function signatureMapForMonitors(deviceId: string, executor: DbExecutor): 
   const enabled = res.monitors.filter((m) => m.enabled);
   if (enabled.length === 0) return out;
   const defs = await executor.select().from(monitorDefinitions).where(inArray(monitorDefinitions.id, enabled.map((m) => m.monitorId)));
+  const [device] = await executor.select().from(devices).where(eq(devices.id, deviceId)).limit(1);
+  if (!device) return out;
   for (const def of defs) {
+    if (!def.enabled) continue;
     const eff = enabled.find((m) => m.monitorId === def.id)!;
     const spec = getMonitorKindSpec(def.kind);
     const condition = applyOverrides(spec, spec.conditionSchema.parse(def.condition), eff.overrides);
-    out.set(`monitor:${def.name}`, monitorSignature({
-      kind: def.kind, condition, severity: (eff.overrides?.severity as ProposedMonitor['severity']) ?? def.severity,
+    out.set(`monitor:${def.id}`, await effectiveSignature({
+      enabled: true, role: 'primary', name: def.name, kind: def.kind, condition, severity: (eff.overrides?.severity as ProposedMonitor['severity']) ?? def.severity,
       cooldownMinutes: def.cooldownMinutes, autoResolve: def.autoResolve, deliveryMode: def.deliveryMode as ProposedMonitor['deliveryMode'],
       deliveryChannelIds: def.deliveryChannelIds, escalationPolicyId: def.escalationPolicyId, responses: def.responses,
-    }));
+    }, { orgId: device.orgId, siteId: device.siteId, monitorId: def.id, kind: def.kind,
+      severity: (eff.overrides?.severity as ProposedMonitor['severity']) ?? def.severity }, executor));
   }
   return out;
 }
 
 export function diffSignatureSets(before: Map<string, string>, after: Map<string, string>): string[] {
-  const deltas: string[] = [];
-  const bySig = (m: Map<string, string>) => new Map([...m].map(([k, v]) => [v, k]));
-  const afterBySig = bySig(after), beforeBySig = bySig(before);
-  for (const [label, sig] of before) if (!afterBySig.has(sig)) deltas.push(`loses ${label}`);
-  for (const [label, sig] of after) if (!beforeBySig.has(sig)) deltas.push(`gains ${label}`);
+  const counts = (values: Map<string, string>) => {
+    const out = new Map<string, number>();
+    for (const value of values.values()) out.set(value, (out.get(value) ?? 0) + 1);
+    return out;
+  };
+  const a = counts(before), b = counts(after), deltas: string[] = [];
+  for (const signature of new Set([...a.keys(), ...b.keys()])) {
+    const delta = (b.get(signature) ?? 0) - (a.get(signature) ?? 0);
+    if (delta) deltas.push(`${delta > 0 ? 'gains' : 'loses'} ${Math.abs(delta)} condition instance(s): ${signature}`);
+  }
   return deltas;
 }
 
 export async function computeEquivalence(proposal, deviceIds, auth, onProgress) {
   const deltas: EquivalenceDelta[] = [];
   const before = new Map<string, Map<string, string>>();
-  for (const id of deviceIds) {
-    const legacy = signatureMapForLegacy(await resolveEffectiveConfig(id, auth));
-    const monitors = await signatureMapForMonitors(id, db);
-    before.set(id, new Map([...legacy, ...monitors]));
-  }
   let checked = 0;
   try {
     await db.transaction(async (tx) => {
+      for (const id of deviceIds) {
+        const legacy = await signatureMapForLegacy(id, await resolveLegacyBaseline(id, tx), tx);
+        const monitors = await signatureMapForMonitors(id, tx);
+        before.set(id, new Map([...legacy, ...monitors]));
+      }
       await applyProposalInTx(tx, proposal, auth);   // insert defs, upsert link + attachments, retire this policy's source rows
       for (const id of deviceIds) {
-        const legacy = signatureMapForLegacy(await resolveEffectiveConfigWithExecutor(tx, id, auth));
+        const legacy = await signatureMapForLegacy(id, await resolveLegacyBaseline(id, tx), tx);
         const monitors = await signatureMapForMonitors(id, tx);
         for (const d of diffSignatureSets(before.get(id)!, new Map([...legacy, ...monitors]))) {
           if (deltas.length < 200) deltas.push({ deviceId: id, detail: d });
@@ -2386,7 +2841,7 @@ export async function computeEquivalence(proposal, deviceIds, auth, onProgress) 
         if (onProgress && checked % 50 === 0) await onProgress(checked, deviceIds.length);
       }
       throw new PreviewRollback();
-    });
+    }, { isolationLevel: 'repeatable read' });
   } catch (err) {
     if (!(err instanceof PreviewRollback)) throw err;
   }
@@ -2395,42 +2850,329 @@ export async function computeEquivalence(proposal, deviceIds, auth, onProgress) 
 }
 ```
 
-`applyProposalInTx` is exported and REUSED by Task 13's real `convertPolicy` (same statements, no rollback) — one code path for dry-run and commit is what makes the preview trustworthy. It: inserts each `ProposedMonitor` as a `monitor_definitions` row owned like the policy (`orgId`/`partnerId` from `proposal.policy`), collects `sourceId → monitorIds`, upserts the `monitors` link (`addFeatureLink(policyId, 'monitors', null, { items, inheritance }, undefined, tx)` or `updateFeatureLink(link.id, { inlineSettings: { items: [...existing, ...new], inheritance } }, policyId, undefined, tx)`), and `UPDATE`s the source rows `retired_at = now(), retired_reason = 'converted', converted_to_monitor_id = <primary>` for `inlineRules` / `watches` / `standaloneAutomations` in `proposal.bySource`. In the dry run the compile step is skipped (the resolver does not need compiled rows); the commit path (Task 13) compiles.
+`applyProposalInTx` is exported and reused by the real converter. Extend `EquivalenceProposal.bySource` with `workflow?: ConversionPreviewItem['workflow']`, `responseTargetSourceId?: string`, and the complete merged proposals. Process `config_policy_automations` through the rehome helper and source ledger in BOTH dry-run and commit. Never call `updateFeatureLink` to append attachments: it deletes/reinserts unrelated rows and invalidates provenance ids. For an existing monitors link, use this executor-aware write core (new definitions are created with `createMonitorDefinition(input, auth, {}, tx)`):
+
+```ts
+const existing = await tx.select().from(configPolicyMonitors).where(eq(configPolicyMonitors.featureLinkId, link.id));
+const missing = proposedAttachments.filter((p) => !existing.some((e) => e.monitorId === p.monitorId));
+const inserted = missing.length ? await tx.insert(configPolicyMonitors).values(missing.map((p, i) => ({
+  featureLinkId: link.id, monitorId: p.monitorId, enabled: p.enabled, overrides: null,
+  sortOrder: Math.max(-1, ...existing.map((e) => e.sortOrder)) + 1 + i,
+}))).returning() : [];
+await tx.update(configPolicyFeatureLinks).set({ inlineSettings: { inheritance: proposal.inheritanceMode,
+  items: [...existing, ...inserted].map((r) => ({ monitorId: r.monitorId, enabled: r.enabled, overrides: r.overrides, sortOrder: r.sortOrder })) },
+  updatedAt: new Date() }).where(eq(configPolicyFeatureLinks.id, link.id));
+// Record inserted ids only; if an attachment already existed, attachmentId is null.
+```
+
+If no monitors link exists, `addFeatureLink(..., tx)` creates it once. An empty replace link is retained and shadows; delete only an empty cumulative link with no settings/history. W05d further prohibits deleting a link that owns monitoring settings or historical watches.
+
+Caller snapshot and freshness (`previewScope.ts`): only data crosses BullMQ. Token credentials and functions never do. `null` and omitted ceilings remain distinct from empty arrays.
+
+```ts
+import { and, eq, inArray, isNull, or } from 'drizzle-orm';
+import { getCurrentDbAccessContext, runOutsideDbContext, type DbAccessContext } from '../../../db';
+import type { AuthContext } from '../../../middleware/auth';
+import { canMutateOrgWideGovernance } from '../../siteCeilingAccess';
+import { getConfigPolicy } from '../../configurationPolicy';
+import { canonical, sha } from './mapping';
+export type SerializedAuth = Omit<AuthContext, 'orgCondition'|'canAccessOrg'|'canAccessSite'|'token'>;
+export interface PreviewAccessSnapshot { auth: SerializedAuth; dbContext: DbAccessContext }
+export function snapshotPreviewAccess(auth: AuthContext): PreviewAccessSnapshot {
+  const dbContext = getCurrentDbAccessContext();
+  if (!dbContext) throw new Error('Preview requires caller DB context');
+  const { orgCondition, canAccessOrg, canAccessSite, token, ...data } = auth;
+  return structuredClone({ auth: data, dbContext });
+}
+export function restorePreviewAuth(snapshot: PreviewAccessSnapshot): AuthContext {
+  const a = snapshot.auth;
+  return { ...a, token: null,
+    canAccessOrg: (id) => a.scope === 'system' || (a.accessibleOrgIds ?? []).includes(id),
+    canAccessSite: (id) => a.allowedSiteIds === undefined || (!!id && a.allowedSiteIds.includes(id)),
+    orgCondition: (column) => a.scope === 'system' ? undefined : inArray(column, a.accessibleOrgIds ?? []),
+  };
+}
+export const previewScopeHash = (snapshot: PreviewAccessSnapshot) => sha(canonical(snapshot));
+export async function authorizePreview(policyId: string, auth: AuthContext) {
+  if (!canMutateOrgWideGovernance(auth)) throw new ConversionError('partner_wide_denied', 'Full policy scope is required');
+  const policy = await getConfigPolicy(policyId, auth);
+  if (!policy) throw new ConversionError('policy_not_found', 'Policy not found');
+  if (!policy.orgId && !canManagePartnerWidePolicies(auth)) throw new ConversionError('partner_wide_denied', 'Partner-wide access required');
+  return policy;
+}
+```
+
+Import `ConversionError` from `./convert` and `canManagePartnerWidePolicies` from `../../partnerWideAccess`. Add a `previewFreshness` function in this same module; it takes the already-authorized policy's sources, full device scope and these real executor reads. Fingerprint full row content (including dates), not only source timestamps:
+
+```ts
+export async function previewFreshness(policyId: string, executor: DbExecutor): Promise<string> {
+  const sources = await loadPolicySources(policyId, executor);
+  if (!sources) throw new ConversionError('policy_not_found', 'Policy not found');
+  const ids = await resolveDeviceIdsForPolicy(policyId, executor);
+  const deviceRows = ids.length ? await executor.select().from(devices).where(inArray(devices.id, ids)).orderBy(devices.id) : [];
+  const orgIds = [...new Set(deviceRows.map((d) => d.orgId))];
+  const orgs = orgIds.length ? await executor.select().from(organizations).where(inArray(organizations.id, orgIds)).orderBy(organizations.id) : [];
+  const partnerIds = [...new Set([sources.policy.partnerId, ...orgs.map((o) => o.partnerId)].filter((v): v is string => !!v))];
+  const axis = (table: { orgId: any; partnerId: any }) => or(inArray(table.orgId, orgIds), and(isNull(table.orgId), inArray(table.partnerId, partnerIds)));
+  const routes = await executor.select().from(notificationRoutingRules).where(axis(notificationRoutingRules)).orderBy(notificationRoutingRules.id);
+  const channels = await executor.select().from(notificationChannels).where(axis(notificationChannels)).orderBy(notificationChannels.id);
+  const escalation = await executor.select().from(escalationPolicies).where(axis(escalationPolicies)).orderBy(escalationPolicies.id);
+  const policies = await executor.select().from(configurationPolicies).where(axis(configurationPolicies)).orderBy(configurationPolicies.id);
+  const policyIds = policies.map((p) => p.id);
+  const assignments = policyIds.length ? await executor.select().from(configPolicyAssignments).where(inArray(configPolicyAssignments.configPolicyId, policyIds)).orderBy(configPolicyAssignments.id) : [];
+  const links = policyIds.length ? await executor.select().from(configPolicyFeatureLinks).where(inArray(configPolicyFeatureLinks.configPolicyId, policyIds)).orderBy(configPolicyFeatureLinks.id) : [];
+  const definitions = await executor.select().from(monitorDefinitions).where(axis(monitorDefinitions)).orderBy(monitorDefinitions.id);
+  const competitors = await Promise.all(policies.map((p) => loadPolicySources(p.id, executor)));
+  return sha(canonical({ competitors: competitors.map((p) => p ? { ...p, openAlertsBySource: [...p.openAlertsBySource] } : null), sources: { ...sources, openAlertsBySource: [...sources.openAlertsBySource] }, ids,
+    deviceRows, policies, assignments, links, definitions, routes, channels, escalation }));
+}
+```
+
+The imports here are the existing schema exports plus `loadPolicySources`, `DbExecutor` and `resolveDeviceIdsForPolicy` from the private baseline. Only the digest is persisted; channel configuration/secrets never enter Redis or preview responses. Add normalized rules/watches/automation payloads of all competing effective policies to `sources` in this fingerprint using `loadPolicySources` for each policy, sorted by id, so changing a competitor also invalidates the baseline.
+
+Job enqueue and worker code (the queue getter/lifecycle are finalized in Task 18):
+
+```ts
+// Inside previewPolicyConversion, after authorizePreview and fresh fingerprints:
+const snapshot = snapshotPreviewAccess(auth);
+const scopeHash = previewScopeHash(snapshot);
+const sourcesHash = await previewFreshness(policyId, db);
+const key = previewJobKey(policyId, scopeHash, sourcesHash);
+await runOutsideDbContext(() => getMonitorConversionPreviewQueue().add('preview',
+  { policyId, snapshot, scopeHash, sourcesHash },
+  { jobId: sha(key), removeOnComplete: true, removeOnFail: true }));
+// BullMQ custom ids contain no colon; Redis keys may. No DB read in the outside callback.
+
+// Worker processor:
+async function runPreviewJob(data: ConversionPreviewJobData) {
+  return withDbAccessContext(data.snapshot.dbContext, async () => {
+    const auth = restorePreviewAuth(data.snapshot);
+    await authorizePreview(data.policyId, auth);
+    if (previewScopeHash(data.snapshot) !== data.scopeHash || await previewFreshness(data.policyId, db) !== data.sourcesHash) {
+      throw new ConversionError('preview_stale', 'Preview inputs changed');
+    }
+    const key = previewJobKey(data.policyId, data.scopeHash, data.sourcesHash);
+    const result = await buildPolicyConversionPreview(data.policyId, { userId: auth.scope === 'system' ? null : auth.user.id, auth }, {
+      onProgress: async (checked, total) => { await getRedis()!.setex(key, 3600, JSON.stringify({ status: 'running', progress: { checked, total }, scopeHash: data.scopeHash, sourcesHash: data.sourcesHash })); },
+    });
+    await getRedis()!.setex(key, 3600, JSON.stringify({ status: 'done', result, scopeHash: data.scopeHash, sourcesHash: data.sourcesHash }));
+    return result;
+  });
+}
+export function createMonitorConversionPreviewWorker() {
+  return new Worker<ConversionPreviewJobData>(MONITOR_CONVERSION_PREVIEW_QUEUE, async (job) => {
+    const { policyId, scopeHash, sourcesHash } = job.data;
+    const key = previewJobKey(policyId, scopeHash, sourcesHash);
+    await getRedis()!.setex(key, 3600, JSON.stringify({ status: 'running', progress: { checked: 0, total: 0 }, scopeHash, sourcesHash }));
+    try { return await runPreviewJob(job.data); }
+    catch (error) {
+      await getRedis()!.setex(key, 3600, JSON.stringify({ status: 'failed', error: 'preview_failed', scopeHash, sourcesHash }));
+      throw error;
+    }
+  }, { connection: getBullMQConnection(), concurrency: 2, lockDuration: 600_000 });
+}
+```
+
+Add executable regressions in `previewScope.test.ts` (mock the DB context getter with `vi.hoisted`, returning a fixed complete `DbAccessContext`; use a complete `AuthContext` fixture as in the final task):
+
+```ts
+it('separates every principal and access ceiling, including empty ceilings', () => {
+  const full = snapshotPreviewAccess(auth);
+  const restricted = snapshotPreviewAccess({ ...auth, allowedSiteIds: [] });
+  expect(previewScopeHash(full)).not.toBe(previewScopeHash(restricted));
+  expect(previewScopeHash(full)).not.toBe(previewScopeHash(snapshotPreviewAccess({ ...auth, allowedDeviceIds: [] })));
+  const restored = restorePreviewAuth(restricted);
+  expect(restored.principal).toEqual(auth.principal);
+  expect(restored.scope).toBe(auth.scope);
+  expect(restored.canAccessSite!('any-site')).toBe(false);
+});
+```
+
+In the worker test, use the real instrumented queue tripwire with strict mode and mock only transport; assert `getCurrentDbAccessContext()` is undefined inside `add`, and equals `data.snapshot.dbContext` inside the preview builder. The route regressions reject both empty and nonempty site/device ceilings before returning a cached result. The final live equivalence regression creates an inherited CPU rule with a CPU-kind routing row and asserts a delta; changing routing or an escalation step after preview must yield `preview_stale` on confirmation.
 
 - [ ] **Step 4: Run, expect PASS** — `cd apps/api && npx vitest run src/services/monitors/conversion/ src/jobs/monitorConversionPreviewWorker.test.ts && npx tsc --noEmit -p .`
 
-- [ ] **Step 5: Commit** — `git add apps/api/src/services/monitors/conversion/equivalence.ts apps/api/src/services/monitors/conversion/equivalence.test.ts apps/api/src/jobs/monitorConversionPreviewWorker.ts apps/api/src/jobs/monitorConversionPreviewWorker.test.ts <worker registration file> && git commit -m "feat(monitors): conversion equivalence check over every device in scope, job-backed above 500"`
+- [ ] **Step 5: Commit** — `git add apps/api/src/services/monitors/conversion/equivalence.ts apps/api/src/services/monitors/conversion/equivalence.test.ts apps/api/src/jobs/monitorConversionPreviewWorker.ts apps/api/src/jobs/monitorConversionPreviewWorker.test.ts apps/api/src/services/workerRegistry.ts apps/api/src/services/monitors/conversion/previewScope.ts apps/api/src/services/monitors/conversion/previewScope.test.ts && git commit -m "feat(monitors): conversion equivalence check over every device in scope, job-backed above 500"`
 
-### Task 13: `previewPolicyConversion` / `convertPolicy` / `convertPartnerLegacy` / `revertConversion` / `retireSource` — ledger, open-alert carry-over, cooldown re-key, standalone rules
+### Task 14: Rehome broad policy alert workflows without narrowing coverage
+
+**Files:**
+- Create: `apps/api/src/services/monitors/conversion/workflows.ts`, adjacent `workflows.test.ts`.
+- Modify: `apps/api/src/jobs/automationWorker.ts:495-499,1140-1255` (`processTriggerEvent`, `queueEventTriggers`); test `apps/api/src/jobs/automationWorker.test.ts`.
+- Reads: `apps/api/src/services/featureConfigResolver.ts:458-526` (winning automation assignment); `apps/api/src/services/automationRuntime.ts:845-887` (owner authorization and durable resource bindings); `apps/api/src/db/schema/configurationPolicies.ts:218-235` (no rule filter).
+
+**Interfaces:**
+- Produces `rehomePolicyWorkflow(tx, source, policy, auth): Promise<string>` and `policyWorkflowApplies(automation, deviceId, tx): Promise<boolean>`.
+- Stores `{ _policyWorkflow: { policyId, sourceId } }` in the existing standalone trigger's filter; normalizer already retains arbitrary filter records (`automationRuntime.ts:551`). This reserved field is server-owned assignment metadata and is removed before generic event-filter matching. The source is retired `converted` only after the new workflow and ledger exist. `source_state.workflowId` binds reversal and runtime assignment provenance; there are no monitor outputs. Existing export policy already excludes `automations.trigger` JSON; ledger `source_state` is `excludedOpen`.
+- W05d keeps these workflows and this assignment resolver. Its retirement candidates exclude already-converted sources; it must never emit `unconvertible:alert_workflow_kept`.
+
+- [ ] **Step 1: Write the failing tests**
+
+```ts
+// workflows.test.ts
+import { expect, it, vi } from 'vitest';
+import { rehomePolicyWorkflow, pickWorkflowAssignment } from './workflows';
+vi.mock('../../automationRuntime', () => ({
+  normalizeAutomationActions: (a: unknown) => a,
+  resolveAutomationReferencesForOwner: vi.fn().mockResolvedValue({}),
+  replaceAutomationResourceBindings: vi.fn().mockResolvedValue(undefined),
+}));
+it('preserves enabled, actions and failure behavior on a same-axis standalone workflow', async () => {
+  const values = vi.fn();
+  const tx: any = { insert: () => ({ values: (v: unknown) => { values(v); return { returning: async () => [{ id: 'workflow' }] }; } }) };
+  const source = { id: 'source', name: 'All critical alerts', enabled: false, actions: [{ type: 'execute_command', command: 'echo triage' }], onFailure: 'continue' };
+  await expect(rehomePolicyWorkflow(tx, source as never, { id: 'policy', orgId: 'org', partnerId: null }, { scope: 'system', canAccessOrg: () => true } as never)).resolves.toBe('workflow');
+  expect(values).toHaveBeenCalledWith(expect.objectContaining({ enabled: false, actions: source.actions, onFailure: 'continue', createdBy: null,
+    trigger: { type: 'event', eventType: 'alert.triggered', filter: { _policyWorkflow: { policyId: 'policy', sourceId: 'source' } } } }));
+});
+it('preserves unrelated-alert coverage while respecting the actual winning assignment', () => {
+  const rows = [
+    { sourceId: 'parent-source', assignmentId: 'parent', level: 'organization', priority: 0, createdAt: new Date(0) },
+    { sourceId: 'child-source', assignmentId: 'child', level: 'site', priority: 0, createdAt: new Date(0) },
+  ];
+  expect(pickWorkflowAssignment(rows)).toEqual(['child-source']);
+  expect(pickWorkflowAssignment(rows.slice(0, 1))).toEqual(['parent-source']);
+});
+```
+
+- [ ] **Step 2: Run it, expect FAIL**
+
+`cd apps/api && npx vitest run src/services/monitors/conversion/workflows.test.ts` → cannot resolve `./workflows`.
+
+- [ ] **Step 3: Implement**
+
+```ts
+// workflows.ts
+import { and, eq, inArray, isNull, or, sql } from 'drizzle-orm';
+import type { AuthContext } from '../../../middleware/auth';
+import { db } from '../../../db';
+import type { DbExecutor } from './legacyBaseline';
+import { automations, configPolicyAutomations, configPolicyAssignments, configPolicyEffectiveFeatureLinks,
+  configurationPolicies, devices, organizations, deviceGroupMemberships, monitorConversions } from '../../../db/schema';
+import { canManagePartnerWidePolicies } from '../../partnerWideAccess';
+import { normalizeAutomationActions, resolveAutomationReferencesForOwner, replaceAutomationResourceBindings } from '../../automationRuntime';
+
+type Assigned = { sourceId: string; assignmentId: string; level: string; priority: number; createdAt: Date };
+export function pickWorkflowAssignment(rows: Assigned[]): string[] {
+  const level: Record<string, number> = { device: 5, device_group: 4, site: 3, organization: 2, partner: 1 };
+  const sorted = [...rows].sort((a, b) => (level[b.level] ?? 0) - (level[a.level] ?? 0) || a.priority - b.priority || a.createdAt.getTime() - b.createdAt.getTime());
+  return sorted.filter((r) => r.assignmentId === sorted[0]?.assignmentId).map((r) => r.sourceId);
+}
+export async function rehomePolicyWorkflow(
+  tx: Parameters<Parameters<typeof db.transaction>[0]>[0], source: typeof configPolicyAutomations.$inferSelect,
+  policy: { id: string; orgId: string | null; partnerId: string | null }, auth: AuthContext,
+): Promise<string> {
+  if (policy.orgId ? !auth.canAccessOrg(policy.orgId) : (!canManagePartnerWidePolicies(auth) || (auth.scope !== 'system' && auth.partnerId !== policy.partnerId))) {
+    throw new Error('Workflow owner access denied');
+  }
+  const actions = normalizeAutomationActions(source.actions);
+  const owner = { orgId: policy.orgId, partnerId: policy.partnerId };
+  const references = await resolveAutomationReferencesForOwner(tx, owner, actions);
+  const [created] = await tx.insert(automations).values({ ...owner, name: source.name,
+    enabled: source.enabled, actions, onFailure: source.onFailure,
+    createdBy: auth.scope === 'system' ? null : auth.user.id,
+    trigger: { type: 'event', eventType: 'alert.triggered', filter: {
+      _policyWorkflow: { policyId: policy.id, sourceId: source.id },
+    } },
+  }).returning();
+  if (!created) throw new Error('Workflow creation failed');
+  await replaceAutomationResourceBindings(tx, created.id, owner, references);
+  return created.id;
+}
+export async function policyWorkflowApplies(automation: typeof automations.$inferSelect, deviceId: string, tx: DbExecutor): Promise<boolean> {
+  const meta = (automation.trigger as { filter?: { _policyWorkflow?: { policyId: string; sourceId: string } } }).filter?._policyWorkflow;
+  if (!meta) return true;
+  const [ledger] = await tx.select().from(monitorConversions).where(and(
+    eq(monitorConversions.sourceTable, 'config_policy_automations'), eq(monitorConversions.sourceId, meta.sourceId),
+    isNull(monitorConversions.revertedAt), sql`${monitorConversions.sourceState}->>'workflowId' = ${automation.id}`)).limit(1);
+  if (!ledger || ledger.policyId !== meta.policyId) return false;
+  const rows = await tx.select({ sourceId: configPolicyAutomations.id, assignmentId: configPolicyAssignments.id,
+    level: configPolicyAssignments.level, priority: configPolicyAssignments.priority, createdAt: configPolicyAssignments.createdAt })
+    .from(devices).innerJoin(organizations, eq(organizations.id, devices.orgId))
+    .innerJoin(configPolicyAssignments, or(
+      and(eq(configPolicyAssignments.level, 'device'), eq(configPolicyAssignments.targetId, devices.id)),
+      and(eq(configPolicyAssignments.level, 'site'), eq(configPolicyAssignments.targetId, devices.siteId)),
+      and(eq(configPolicyAssignments.level, 'organization'), eq(configPolicyAssignments.targetId, devices.orgId)),
+      and(eq(configPolicyAssignments.level, 'partner'), eq(configPolicyAssignments.targetId, organizations.partnerId)),
+      and(eq(configPolicyAssignments.level, 'device_group'), sql`EXISTS (SELECT 1 FROM ${deviceGroupMemberships} WHERE ${deviceGroupMemberships.deviceId} = ${devices.id} AND ${deviceGroupMemberships.groupId} = ${configPolicyAssignments.targetId})`)))
+    .innerJoin(configurationPolicies, eq(configurationPolicies.id, configPolicyAssignments.configPolicyId))
+    .innerJoin(configPolicyEffectiveFeatureLinks, and(eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id), eq(configPolicyEffectiveFeatureLinks.featureType, 'automation')))
+    .innerJoin(configPolicyAutomations, eq(configPolicyAutomations.featureLinkId, configPolicyEffectiveFeatureLinks.id))
+    .where(and(eq(devices.id, deviceId), eq(configurationPolicies.status, 'active'),
+      or(eq(configurationPolicies.orgId, devices.orgId), and(isNull(configurationPolicies.orgId), eq(configurationPolicies.partnerId, organizations.partnerId))),
+      sql`(${configPolicyAssignments.roleFilter} IS NULL OR ${devices.deviceRole} = ANY(${configPolicyAssignments.roleFilter}))`,
+      sql`(${configPolicyAssignments.osFilter} IS NULL OR ${devices.osType} = ANY(${configPolicyAssignments.osFilter}))`,
+      or(isNull(configPolicyAutomations.retiredAt), sql`EXISTS (SELECT 1 FROM ${monitorConversions}
+        WHERE ${monitorConversions.sourceTable} = 'config_policy_automations'
+          AND ${monitorConversions.sourceId} = ${configPolicyAutomations.id}
+          AND ${monitorConversions.revertedAt} IS NULL AND ${monitorConversions.sourceState}->>'workflowId' IS NOT NULL)`)))
+    .orderBy(configPolicyAssignments.level, configPolicyAssignments.priority, configPolicyAssignments.createdAt, configPolicyAutomations.sortOrder);
+  return pickWorkflowAssignment(rows).includes(meta.sourceId);
+}
+```
+
+In `queueEventTriggers` immediately after normalizing each standalone trigger, and again in `processTriggerEvent` before starting the automation, run the policy assignment check. Preserve the existing maintenance suppression and enqueue idempotency of policy jobs for rehomed workflows; apply the same maintenance check already at `automationWorker.ts:1234-1247` before either queueing or executing one. Strip only the reserved assignment metadata before generic filter matching:
+
+```ts
+const policyWorkflow = trigger.type === 'event' && trigger.filter?._policyWorkflow;
+if (policyWorkflow) {
+  const deviceId = typeof payload.deviceId === 'string' ? payload.deviceId : undefined;
+  if (!deviceId || !await policyWorkflowApplies(automation, deviceId, db)) continue;
+  const settings = await resolveMaintenanceConfigForDevice(deviceId);
+  if (settings) {
+    const window = isInMaintenanceWindow(settings);
+    if (window.active && window.suppressAutomations) continue;
+  }
+  const { _policyWorkflow, ...filter } = trigger.filter!;
+  trigger = { ...trigger, filter };
+}
+```
+
+The execution-path equivalent returns its existing skipped result instead of `continue`, using `data.eventPayload` as `payload`; it repeats assignment and maintenance checks so an assignment removed after enqueue cannot execute. The original normalized source remains in assignment competition via its live workflow ledger, but Task 8's public runtime reads hide it, preventing duplicate execution. Do not replace its filter with the ids of the policy's monitors: it still receives alerts from unrelated rules on governed devices.
+
+Add a real queued-event regression to `automationWorker.test.ts`: mock `policyWorkflowApplies` true, queue an `alert.triggered` with an unrelated `ruleId`, assert one standalone event job and no retired policy job; mock false for the same device after reassignment and assert no job. Disabled source produces disabled standalone workflow and is excluded by the existing `enabled` predicate. Unit tests also assert `rehomePolicyWorkflow` propagates reference-authorization failures without source retirement.
+
+- [ ] **Step 4: Run, expect PASS**
+
+`cd apps/api && npx vitest run src/services/monitors/conversion/workflows.test.ts src/jobs/automationWorker.test.ts src/services/automationRuntime.configPolicy.test.ts && npx tsc --noEmit -p .`
+
+- [ ] **Step 5: Commit**
+
+`git add apps/api/src/services/monitors/conversion/workflows.ts apps/api/src/services/monitors/conversion/workflows.test.ts apps/api/src/jobs/automationWorker.ts apps/api/src/jobs/automationWorker.test.ts && git commit -m "feat(monitors): preserve broad policy workflows as assigned standalone jobs"`
+
+### Task 15: `previewPolicyConversion` / `convertPolicy` / `convertPartnerLegacy` / `revertConversion` / `retireSource` — ledger, open-alert carry-over, cooldown re-key, standalone rules
 
 **Files:**
 - Create: `apps/api/src/services/monitors/conversion/convert.ts`
 - Modify: `apps/api/src/services/monitors/conversion/index.ts` (re-export everything)
 - Modify: `apps/api/src/services/alertCooldown.ts` (add `moveCooldownKeys`, `rekeyConfigPolicyCooldowns`, `rekeyCooldownsBackToConfigPolicy` next to `:290-365`)
-- Modify: `apps/api/src/services/monitors/ruleConversionService.ts:142-148` (retire + ledger instead of `isActive: false` only)
-- Modify: `apps/api/migrations/2026-10-23-110000-monitor-conversions.sql` + `db/schema/monitorConversions.ts` + export policy (Task 6, same PR2 if not yet merged; otherwise a new `2026-10-23-121000-monitor-conversion-outputs-reused.sql`): `monitor_conversion_outputs.reused_monitor boolean NOT NULL DEFAULT false` (`included` in the export policy) — revert must know whether to delete the monitor or only detach it
-- Test: `apps/api/src/services/monitors/conversion/convert.test.ts` (Drizzle-mock, the decision logic), `apps/api/src/services/alertCooldown.rekey.test.ts` (ioredis mock: SCAN → SET PX → DEL), `apps/api/src/services/monitors/ruleConversionService.test.ts` (existing; extend); the transactional proof is Task 16's round-trip
+- Modify: `apps/api/src/services/monitors/ruleConversionService.ts:49-70,75-160` (template-group adapter; use `mapStandaloneRule`, preserve existing response envelope).
+- Create: `apps/api/src/services/monitors/conversion/history.ts`, `lifecycle.ts`; adjacent `history.test.ts`, `lifecycle.test.ts`.
+- Consumes Task 6's complete ledger schema (`reused_monitor`, `moved_alert_refs`, `source_state`, source-rule/policy/attachment associations). No PR3 edit to a shipped PR2 migration.
+- Test: `apps/api/src/services/monitors/conversion/convert.test.ts` (Drizzle-mock, the decision logic), `apps/api/src/services/alertCooldown.rekey.test.ts` (ioredis mock: SCAN → SET PX → DEL), `apps/api/src/services/monitors/ruleConversionService.test.ts` (existing; extend); the transactional proof is Task 18's round-trip
 
 **Interfaces (the contract from the brief, verbatim names):**
 
 ```ts
 export async function previewPolicyConversion(policyId: string, auth: AuthContext, opts?: { mode?: 'auto' | 'inline' }): Promise<PolicyConversionPreview | PolicyConversionPreviewPending>;
-export async function buildPolicyConversionPreview(policyId: string, ctx: { userId: string; auth: AuthContext }, opts?: { onProgress?: (c: number, t: number) => Promise<void> | void }): Promise<PolicyConversionPreview>; // no threshold logic; used inline and by the job
+export async function buildPolicyConversionPreview(policyId: string, ctx: { userId: string | null; auth: AuthContext }, opts?: { onProgress?: (c: number, t: number) => Promise<void> | void }): Promise<PolicyConversionPreview>; // no threshold logic; used inline and by the job
 export async function convertPolicy(policyId: string, previewHash: string, auth: AuthContext, opts?: { sourceIds?: string[] }): Promise<{ conversionIds: string[]; retired: number; monitorsCreated: number }>;
-export async function convertPartnerLegacy(partnerId: string, auth: AuthContext): Promise<{ policies: number; converted: number; unconvertible: number }>;
+export async function convertPartnerLegacy(partnerId: string, previewHash: string, auth: AuthContext): Promise<{ policies: number; converted: number; unconvertible: number }>;
 export async function revertConversion(conversionId: string, auth: AuthContext): Promise<void>;
-export async function retireSource(sourceTable: ConversionSourceTable, sourceId: string, reason: string, auth: AuthContext): Promise<void>;
-export class ConversionError extends Error { constructor(readonly code: 'policy_not_found' | 'partner_wide_denied' | 'prerequisite_missing' | 'blocked' | 'preview_stale' | 'equivalence_delta' | 'source_not_found' | 'already_converted' | 'invalid_reason' | 'conversion_not_found', message: string, readonly details?: unknown) }
+export async function retireSource(sourceTable: ConversionSourceTable, sourceId: string, reason: string, auth: AuthContext): Promise<{ conversionId: string }>;
+export async function previewPartnerConversion(partnerId: string, auth: AuthContext): Promise<PartnerConversionPreview>;
+export class ConversionError extends Error { constructor(readonly code: 'policy_not_found' | 'partner_wide_denied' | 'prerequisite_missing' | 'blocked' | 'preview_stale' | 'equivalence_delta' | 'source_not_found' | 'already_converted' | 'invalid_reason' | 'conversion_not_found' | 'conversion_revert_unavailable', message: string, readonly details?: unknown) }
 ```
 
-Behaviour:
+Behaviour (all validation is also enforced in the service; route guards are not the only boundary):
 
-- **`buildPolicyConversionPreview`**: `assertConversionPrerequisites()` → on `ConversionPrerequisiteMissingError` return `{ policyId, previewHash: '', items: [], inheritanceMode: 'cumulative', equivalence: { devicesChecked: 0, deltas: [] }, blockedBy: 'prerequisite_missing', missingPrerequisites }`. `getConfigPolicy(policyId, auth)` null → `ConversionError('policy_not_found')`. Partner-wide policy (`orgId === null`) and `!canManagePartnerWidePolicies(auth)` → `ConversionError('partner_wide_denied', PARTNER_WIDE_WRITE_DENIED_MESSAGE)`. `loadPolicySources`. `parentUnconverted` → `blockedBy: 'parent_unconverted'` with the items still listed (the panel shows why) and no equivalence run. Items: inline rules → `mapInlineRule`; watches → `mapWatch`; standalone automations referencing a rule → convertible item whose `proposed` is `[]` and whose notes name the target monitor (its actions are appended to that rule's primary monitor at convert time; a rule that is unconvertible makes the automation `unconvertible:target_unconvertible`); policy automations → `unconvertible:alert_workflow_kept`. Escalation axis: for a partner-wide policy any proposed `escalationPolicyId` that is not a partner-wide policy of the same partner → `unconvertible:escalation_policy_axis` (same rule as `monitorService.assertEscalationPolicyCompatible`, `:119-153`; read `escalation_policies` owner columns). `openAlerts` from `openAlertsBySource`. `inheritanceMode = inlineRules.length > 0 ? 'replace' : (links.monitors?.inheritance ?? 'cumulative')`. Equivalence over `resolveDeviceIdsForPolicy` with the convertible items. `previewHash` from Task 10.
-- **`previewPolicyConversion`** (`mode: 'auto'`): count devices first; `≤ 500` → build inline; `> 500` → read `previewJobKey`; a `done` entry whose `sourcesHash` (sha of the source ids + `updated_at`s) still matches → return its result; `running` → return `{ status: 'running', progress }`; otherwise enqueue `{ policyId, dbContext: getCurrentDbAccessContext()!, requestedBy: auth.user.id, sourcesHash }` and return running with `{ checked: 0, total }`. `mode: 'inline'` (partner sweep, W05d) always builds inline.
-- **`convertPolicy`**: prerequisites → `ConversionError('prerequisite_missing')`; rebuild the preview inline (or take the `done` job result when its `sourcesHash` matches); `preview.blockedBy` → `blocked`; `preview.previewHash !== previewHash` → `preview_stale`; `deltas.length > 0` → `equivalence_delta` (details = deltas); then one `db.transaction`: `applyProposalInTx` with the real monitor path — for each convertible item's monitors, **reuse** an existing monitor visible to the policy's owner whose `monitorSignature` equals the proposal's (read `listMonitorDefinitions(auth)` once, compute signatures) else `createMonitorDefinition` (runs `compileMonitorInTx`; nested in the outer transaction as a savepoint); attach; append standalone-automation actions to the target monitor via `updateMonitorDefinition(monitorId, { responses: dedupedByFingerprint.slice(0, 10) }, auth)`; retire source rows (`retired_reason = 'converted'`, `converted_to_monitor_id = primary`); ledger `monitor_conversions` row per source (owner axis = policy owner, `policy_id`, `converted_by = auth.user.id`, `preview_hash`) + `monitor_conversion_outputs` per produced monitor (`role`, `reused_monitor`); **open-alert carry-over** per inline rule: `UPDATE alerts SET rule_id = <compiled rule id of the primary monitor>, config_policy_id = NULL, monitor_id = <monitor id>, context = COALESCE(context,'{}') || jsonb_build_object('convertedFrom', jsonb_build_object('sourceTable','config_policy_alert_rules','sourceId',<rule id>,'convertedAt',now())) WHERE config_policy_id = <rule id> AND status IN ('active','acknowledged','suppressed') RETURNING id` → `moved_alert_ids` on the primary output. After commit: `rekeyConfigPolicyCooldowns(rule.id, compiledRuleId)` for each converted inline rule (Redis is not transactional; a failure here logs + `captureException` and does not roll back — the worst case is one extra alert after the cooldown would have expired). Returns `{ conversionIds, retired, monitorsCreated }`.
-- **`convertPartnerLegacy`**: `canManagePartnerWidePolicies(auth)` else `partner_wide_denied`; `auth.scope !== 'system' && auth.partnerId !== partnerId` → denied. Policies = active partner-wide policies of the partner + active org policies of every org under it, those with pending rows (`countPendingConversions` per policy or one grouped query); for each, `buildPolicyConversionPreview` (inline, no threshold — the sweep is an admin action) and, when `!blockedBy && deltas.length === 0`, `convertPolicy(policyId, preview.previewHash, auth)`; `unconvertible` sums items with `outcome: 'unconvertible'` and policies skipped for deltas/blocked. Then standalone rules: every `alert_rules` row in the partner's scope with `managed_by_monitor_id IS NULL AND retired_at IS NULL AND is_active` → `convertRuleToMonitor(rule.id, auth)` (below); `not_convertible` → `retireSource('alert_templates', rule.templateId, 'unconvertible:no_condition', auth)` when the template has no `type` anywhere in its conditions AND is not the compliance-bridge template (`policyAlertBridge.ts:20` `POLICY_TEMPLATE_NAME = 'Policy Compliance Violation'` — export the constant and compare by name + `is_built_in`), which also retires the template's rules with the same reason; otherwise leave the rule (it fires today and is listed as unconvertible). Global built-in templates (`is_built_in AND org_id IS NULL`) are never touched.
-- **`revertConversion`**: load `monitor_conversions` by id (RLS + `policy_not_found`-style access: org rows via `auth.canAccessOrg`, partner rows via partner scope + capability), `reverted_at` set → `already_converted`-style `conversion_not_found`; in one transaction: un-retire the source (`retired_at = NULL, retired_reason = NULL, converted_to_monitor_id = NULL`; missing row → `source_not_found`, ledger still marked reverted); per output: role `response` → remove the appended actions (by fingerprint of the source automation's actions) from the monitor's responses via `updateMonitorDefinition`; other roles → `reused_monitor` ? remove the attachment item from the policy's `monitors` link : `deleteMonitorDefinition(monitorId, auth)` (attachments cascade; alerts keep history with `monitor_id` NULL); restore `moved_alert_ids`: `UPDATE alerts SET rule_id = NULL, config_policy_id = <source id>, monitor_id = NULL, context = context - 'convertedFrom' WHERE id = ANY(...)`; if the source was an inline rule and it was the policy's only converted rule set, flip the link's `inheritance` back to `cumulative` only when no other converted inline rule remains (otherwise leave it); `reverted_at = now()`. After commit: `rekeyCooldownsBackToConfigPolicy(compiledRuleId, sourceId)`.
-- **`retireSource`**: `reason` must be `'operator'` or start with `'unconvertible:'` else `invalid_reason`; resolve the row's owner (config tables: through link → policy; `alert_rules`/`alert_templates`/`automations`: the row's own axes) and gate (org access / partner capability); `UPDATE … SET retired_at = now(), retired_reason = reason WHERE id = … AND retired_at IS NULL` (0 rows → `already_converted`); write a `monitor_conversions` row with no outputs so the retirement is listed and revertible.
+- **`buildPolicyConversionPreview`** authorizes full policy scope with `authorizePreview`, then loads source rows and prerequisite capabilities. Preserve the existing blocked-prerequisite/parent response shapes. Map rules/watches including enabled state, create `responseTargetSourceId` + canonical `responseActions` for rule-bound automations, and `workflow` metadata for broad policy automations. Run `mergeResponseProposals` BEFORE equivalence/hash; overflow refuses both automation and target source. Disabled response automations remain disabled standalone sources rather than becoming active monitor responses. Check escalation owner compatibility before accepting proposals. Hash the complete proposals, ordered actions/workflows, scope hash and `previewFreshness` digest. No actions are appended for the first time during conversion.
+- **`previewPolicyConversion`** authorizes before every cache lookup; ≤500 devices run inline, larger scopes use Task 13's snapshot/key/worker. A completed entry is reusable only with matching caller scope AND full freshness digest. A failed/stale entry is recomputed. Queue.add runs inside `runOutsideDbContext` with only the previously authorized snapshot. Polling remains GET on the same URL, HTTP 202 while running (W05c2 implements polling/cancellation/blocked-empty in PR1).
+- **`convertPolicy`** freshly authorizes and rebuilds the full preview; selected `sourceIds` must include a response's target and all of its dependent response items. A mismatched hash is `preview_stale`; a blocked preview or any equivalence delta refuses before writing. Lock the policy, sources and relevant definitions in a transaction and recompute freshness after acquiring locks; serialize policy/partner conversion operations with `pg_advisory_xact_lock` and use SERIALIZABLE isolation for the read→write proof. Apply the EXACT proposed behavior using `createMonitorDefinition(input, auth, {}, tx)`. Reuse requires exact nullable `(orgId, partnerId)` equality plus full `monitorSignature` equality, including enabled state and ordered responses. Visibility alone never permits reuse. Existing attachments/settings remain intact; record only attachment ids actually inserted by this conversion. Ledger outputs always copy both owner axes from their parent. Store original source/link state in `source_state`, including prior retirement/enabled/inheritance fields. Rehome broad workflows through `rehomePolicyWorkflow`; store `workflowId` in the source's ledger state, then retire the source `converted`. Return actual counts; a source race yields `already_converted` without another ledger row.
+- **`previewPartnerConversion`** requires full partner membership (`canManagePartnerWidePolicies`) and unrestricted governance scope. Load every active partner policy and org policy under the partner plus every unmanaged template group, including disabled rules. Resolve inherited consumers before filtering devices. Build all policy and group previews in stable source order, parents before children; use a rolled-back transaction to stage parent conversions when previewing dependent children. The hash covers the complete initial plan, all refusals, scopes, source/target assignments and delivery freshness. Return D3's `PartnerConversionPreview`. Reusing an org count is forbidden. No source is retired by preview.
+- **`convertPartnerLegacy(partnerId, previewHash, auth)`** repeats partner authorization, rebuilds that complete partner plan and checks the supplied aggregate hash before any write. Apply the same staged plan atomically under a per-partner transaction lock. Each staged child is checked against its parent conversion in the same transaction. Preserve evaluable unconvertible sources during W05c; only explicit retirement or W05d's later sweep retires them. W05d calls `previewPartnerConversion` then `convertPartnerLegacy(partnerId, preview.previewHash, auth)` under system scope. Global built-in and compliance-bridge templates are excluded. There is ONE ledger row per template group, never one per rule; a group with any unconvertible member is refused as a whole.
+- **`revertConversion`** checks owner authorization and `isRevertAvailable(sourceTable)` BEFORE mutation; unavailable returns `conversion_revert_unavailable`. Lock the ledger, sources, outputs and definitions; missing sources yield `source_not_found` and leave ledger/outputs unchanged. Restore source state and every persisted moved-alert reference/context BEFORE any compiled row deletion. New post-conversion alerts are never resolved or dropped; retain history on a still-referenced definition or rehome it using output source provenance before deleting the compiled rule. Detach ONLY this conversion's inserted attachments. Keep a definition when another live conversion, attachment, alert history or unmanaged deployment still references it. Disable a rehomed workflow before restoring its legacy source. Restore previous inheritance only when no later conversion or user edit requires the current value; otherwise keep it and refuse behavior-changing reversal. Set `reverted_at` last. Re-key cooldowns after commit only for restored sources.
+- **`retireSource`** accepts exactly `operator` or `unconvertible:<code>`; uses the same source lock, authorization and ledger helper as conversion, recording complete pre-retirement state with zero outputs. Return `{ conversionId }`. A zero-row compare-and-set returns `already_converted`; W05d treats that race as already completed without duplicate reports. W05e network retirement uses this SAME function/ledger and original enabled/retirement state, not a separate no-ledger path. Conversion and retirement never mass-resolve open alerts.
 
 Cooldown re-key (`alertCooldown.ts`):
 
@@ -2463,26 +3205,219 @@ export async function rekeyCooldownsBackToConfigPolicy(compiledRuleId: string, s
 
 (The adaptive-multiplier keys `${COOLDOWN_PREFIX}:adaptive:<rule>:<device>` are NOT moved — they are a noise heuristic, and the `:475-478` cleanup already treats `:cpar:` and `:adaptive:` keys as separate families. `fromPattern` for the compiled rule is safe because a compiled rule id never collides with the `adaptive`/`cpar` segments.)
 
-`ruleConversionService.ts:142-148` — replace the `isActive: false` update with retire-in-place plus a ledger row, inside the same transaction:
+The final policy hash binds both authorization and live configuration, not just the mappers' proposal hash:
 
 ```ts
-    await db.update(alertRules).set({
-      isActive: false,
-      overrideSettings: { ...overrides, convertedToMonitorId: monitor.id },
-      retiredAt: new Date(),
-      retiredReason: 'converted',
-      convertedToMonitorId: monitor.id,
-    }).where(eq(alertRules.id, ruleId));
-    const [ledger] = await db.insert(monitorConversions).values({
-      orgId: rule.orgId, partnerId: rule.orgId ? null : rule.partnerId, sourceTable: 'alert_templates', sourceId: rule.templateId,
-      policyId: policy.id, convertedBy: auth.user.id, previewHash: monitorSignature(/* the created definition */),
-    }).returning({ id: monitorConversions.id });
-    await db.insert(monitorConversionOutputs).values({ conversionId: ledger!.id, orgId: rule.orgId, partnerId: rule.orgId ? null : rule.partnerId, monitorId: monitor.id, role: 'primary', movedAlertIds: movedIds });
+const scopeHash = previewScopeHash(snapshotPreviewAccess(auth));
+const freshness = await previewFreshness(policyId, executor);
+const previewHashValue = sha(canonical({
+  proposal: previewHash({ policyId, items: mergeResponseProposals(items), inheritanceMode }),
+  scopeHash, freshness,
+}));
 ```
 
-where `movedIds` comes from the same open-alert `UPDATE … RETURNING id` (standalone alerts are keyed `rule_id`, not `config_policy_id`: `UPDATE alerts SET rule_id = <compiled>, monitor_id = <monitor>, context = … WHERE rule_id = <old rule> AND status IN (…)`), and the template is retired `'converted'` when no other unretired rule references it. Keep the existing `ConversionFailure` union; `already_managed` now also covers `retired_at IS NOT NULL`.
+Use this value in `PolicyConversionPreview.previewHash`, cache results and the ledger. The partner hash similarly includes `partnerId`, caller scope, and every policy/group input hash and refusal in stable source order. Template-group input hashing includes ALL `alert_rules` fields and target assignments, not just the template timestamp (rules have no `updated_at` column). Recompute before confirmation under the same lock/snapshot and reject if either the affected set or any input changed.
 
-- [ ] **Step 1: Write the failing tests** — `convert.test.ts` (mocked `loadPolicySources`, `computeEquivalence`, `resolveDeviceIdsForPolicy`, `getConfigPolicy`, `listMonitorDefinitions`, `createMonitorDefinition`, `db`): (a) prerequisites missing → `blockedBy: 'prerequisite_missing'` with labels; (b) partner-wide policy + org token → `ConversionError('partner_wide_denied')`; (c) `parentUnconverted` → `blockedBy: 'parent_unconverted'` and `computeEquivalence` NOT called; (d) three inline rules (one processCount) + one watch with thresholds → 4 items, outcomes `['convertible','convertible','unconvertible','convertible']`, the watch item has 3 proposed, `inheritanceMode === 'replace'`, `openAlerts` copied from the map; (e) `convertPolicy` with a wrong hash → `preview_stale`; with deltas → `equivalence_delta`; (f) reuse: a visible monitor with an equal signature is attached, `createMonitorDefinition` not called, output `reused_monitor: true`; (g) `retireSource` rejects `'bogus'` with `invalid_reason` and accepts `'operator'`. `alertCooldown.rekey.test.ts`: two `cpar` keys with TTLs 1000/0 → one `set … PX 1000`, two `del`, returns 2. `ruleConversionService.test.ts`: the update carries `retiredAt`/`retiredReason: 'converted'`/`convertedToMonitorId` and a ledger insert follows.
+```ts
+export function partnerPreviewHash(partnerId: string, scopeHash: string,
+  parts: Array<{ sourceTable: ConversionSourceTable; sourceId: string; inputHash: string; reason: string | null }>): string {
+  return sha(canonical({ partnerId, scopeHash,
+    parts: [...parts].sort((a, b) => a.sourceTable.localeCompare(b.sourceTable) || a.sourceId.localeCompare(b.sourceId)) }));
+}
+```
+
+Append to `convert.test.ts`:
+
+```ts
+it('partner confirmation changes when another org adds a source or changes a refusal', () => {
+  const first = [{ sourceTable: 'alert_templates' as const, sourceId: 'template-a', inputHash: 'h1', reason: null }];
+  expect(partnerPreviewHash('partner', 'scope', first)).not.toBe(partnerPreviewHash('partner', 'scope', [
+    ...first, { sourceTable: 'alert_templates', sourceId: 'other-org-template', inputHash: 'h2', reason: 'unconvertible:no_condition' },
+  ]));
+  expect(partnerPreviewHash('partner', 'scope', first)).not.toBe(partnerPreviewHash('partner', 'narrower-scope', first));
+});
+```
+
+Record rule-bound response automations as `role: 'response'` outputs referencing the target monitor, with null `attachment_id`, `reused_monitor: true`, and `source_state` containing the added ordered actions and target conversion id. Reverting a target conversion restores its response sources in the same transaction; a response-only revert while its target remains converted returns `409 blocked`, preventing an original legacy rule filter from becoming inert. Once the target is restored, remove only that contribution and preserve responses still required by another live conversion. This dependency is included in the ledger's revertability calculation and the final round-trip regression.
+
+Reuse candidate selection belongs in `applyProposalInTx`; do not filter after choosing a signature match:
+
+```ts
+const reusable = visibleDefinitions.find((candidate) =>
+  candidate.orgId === proposal.policy.orgId && candidate.partnerId === proposal.policy.partnerId
+  && monitorSignature(candidate as ProposedMonitor) === monitorSignature(proposed));
+```
+
+`history.test.ts` is an executable statement-order regression using its exported history helpers; it does not invent a test harness:
+
+```ts
+import { expect, it, vi } from 'vitest';
+import { restoreMovedAlertRefs, canDeleteConversionMonitor } from './history';
+it('restores exact standalone references and context before deletion is considered', async () => {
+  const set = vi.fn(() => ({ where: async () => [] }));
+  const tx = { update: () => ({ set }) };
+  const original = { id: 'alert', ruleId: 'legacy-rule', configPolicyId: null, monitorId: null,
+    context: { retained: true, convertedFrom: { original: true } } };
+  await restoreMovedAlertRefs(tx as never, [original]);
+  const { id, ...refs } = original;
+  expect(set).toHaveBeenCalledWith(refs);
+});
+it('retains a monitor referenced by another live conversion', async () => {
+  const results = [[{ id: 'another-output' }], [], []];
+  const query = () => {
+    const rows = results.shift()!;
+    const c: any = { then: (yes: any, no: any) => Promise.resolve(rows).then(yes, no) };
+    for (const method of ['from', 'innerJoin', 'where', 'limit']) c[method] = () => c;
+    return c;
+  };
+  expect(await canDeleteConversionMonitor({ select: query } as never, 'monitor', 'first-conversion')).toBe(false);
+});
+```
+
+The live final suite additionally inserts a post-conversion resolved alert and proves it survives revert with its original status, restored source linkage and retained context. Add a mocked lifecycle-false service test to `convert.test.ts`: `isRevertAvailable.mockReturnValue(false)`, expect `conversion_revert_unavailable`, and assert update/delete/insert were never called.
+
+Template-group write core: export the verified `assignmentForRule` helper (`ruleConversionService.ts:49-70`) and use `mapStandaloneRule` instead of its old `convertAlertConditionToMonitor` call. Add `convertTemplateGroup(templateId, expectedHash, auth, executor)` in `convert.ts`; its input is the group from the partner preview (all rules sorted by id, all targets, every mapping/refusal). `convertRuleToMonitor(ruleId: string, auth: AuthContext, executor: DbExecutor = db)` first previews the WHOLE group, then invokes this writer and projects the selected rule's primary output to the existing `ConversionSuccess` shape. Extend that response additively with `conversionId` and `convertedRuleIds` so the caller sees the group scope. Authorization must cover the template and every member; any mixed owner axis is refused before writes.
+
+```ts
+// Inside convertTemplateGroup's already-authorized SERIALIZABLE transaction:
+const [template] = await tx.select().from(alertTemplates).where(eq(alertTemplates.id, templateId)).limit(1).for('update');
+if (!template || template.managedByMonitorId || template.retiredAt) throw new ConversionError('source_not_found', 'Template unavailable');
+const rules = await tx.select().from(alertRules).where(and(eq(alertRules.templateId, templateId), isNull(alertRules.managedByMonitorId), isNull(alertRules.retiredAt)))
+  .orderBy(alertRules.id).for('update');
+const plans = rules.map((rule) => ({ rule, target: assignmentForRule(rule), mapped: mapStandaloneRule(rule, template) }));
+if (plans.some((p) => !p.target || !p.mapped.ok || p.rule.orgId !== template.orgId || p.rule.partnerId !== template.partnerId)) {
+  throw new ConversionError('blocked', 'Template group cannot be converted atomically');
+}
+const [ledger] = await tx.insert(monitorConversions).values({
+  orgId: template.orgId, partnerId: template.partnerId, sourceTable: 'alert_templates', sourceId: template.id,
+  policyId: null, convertedBy: auth.scope === 'system' ? null : auth.user.id, previewHash: expectedHash,
+  sourceState: { template, rules },
+}).returning();
+if (!ledger) throw new Error('Ledger insert failed');
+for (const plan of plans) {
+  if (!plan.mapped.ok || !plan.target) throw new Error('Invalid group plan');
+  const owner = plan.rule.orgId ? { orgId: plan.rule.orgId } : { partnerId: plan.rule.partnerId! };
+  const actor = auth.scope === 'system' ? null : auth.user.id;
+  const policy = await createConfigPolicy(owner, { name: `Converted: ${plan.rule.name}` }, actor, tx);
+  await assignPolicy(policy.id, plan.target.level, plan.target.targetId, 0, actor, undefined, undefined, tx);
+  for (const proposed of plan.mapped.proposed) {
+    const monitor = await createMonitorDefinition({ ...proposed, ownerScope: plan.rule.orgId ? 'organization' : 'partner',
+      orgId: plan.rule.orgId ?? undefined, responses: proposed.responses, recurrenceActions: [], pauseResponsesOnEscalation: true,
+    } as Parameters<typeof createMonitorDefinition>[0], { ...auth, partnerId: plan.rule.partnerId ?? auth.partnerId }, {}, tx);
+    const link = await addFeatureLink(policy.id, 'monitors', null, { inheritance: 'cumulative',
+      items: [{ monitorId: monitor.id, enabled: proposed.enabled }] }, undefined, tx);
+    if (!link) throw new Error('Attachment failed');
+    const [attachment] = await tx.select().from(configPolicyMonitors).where(and(eq(configPolicyMonitors.featureLinkId, link.id), eq(configPolicyMonitors.monitorId, monitor.id))).limit(1);
+    const movedAlertRefs = await carryOpenAlerts(tx, { sourceTable: 'alert_templates', sourceId: template.id,
+      ruleId: plan.rule.id, compiledRuleId: monitor.compiledAlertRuleId!, monitorId: monitor.id });
+    await tx.insert(monitorConversionOutputs).values({ conversionId: ledger.id, orgId: ledger.orgId, partnerId: ledger.partnerId,
+      monitorId: monitor.id, role: proposed.role, sourceRuleId: plan.rule.id, policyId: policy.id,
+      attachmentId: attachment!.id, reusedMonitor: false, movedAlertIds: movedAlertRefs.map((a) => a.id), movedAlertRefs });
+    if (proposed.role === 'primary') await tx.update(alertRules).set({ retiredAt: new Date(), retiredReason: 'converted',
+      convertedToMonitorId: monitor.id }).where(eq(alertRules.id, plan.rule.id));
+  }
+}
+await tx.update(alertTemplates).set({ retiredAt: new Date(), retiredReason: 'converted' }).where(eq(alertTemplates.id, template.id));
+```
+
+Do not set `isActive: false` or alter `overrideSettings` as a side effect: retirement predicates stop evaluation and original enabled/override state remains available for reversal. Apply group equivalence and the expected preview hash BEFORE entering this core; use the same core in the rolled-back group preview. It creates a policy per original target, but one template ledger and per-output policy/rule associations.
+
+`history.ts` — shared with W05e. `OPEN_ALERT_STATUSES` from Task 11 is the only open-status definition. Capture original references under row locks, before moving any alert:
+
+```ts
+import { and, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
+import { alerts, monitorConversions, monitorConversionOutputs, configPolicyMonitors } from '../../../db/schema';
+import { OPEN_ALERT_STATUSES } from './loadSources';
+import type { DbExecutor } from './legacyBaseline';
+import type { ConversionSourceTable } from './types';
+export async function carryOpenAlerts(tx: DbExecutor, source: {
+  sourceTable: ConversionSourceTable; sourceId: string; ruleId?: string;
+  compiledRuleId: string; monitorId: string;
+}) {
+  const match = source.ruleId ? eq(alerts.ruleId, source.ruleId)
+    : source.sourceTable === 'network_monitors'
+      ? sql`${alerts.context}->>'source' = 'network_monitor' AND ${alerts.context}->>'monitorId' = ${source.sourceId}`
+      : eq(alerts.configPolicyId, source.sourceId);
+  const original = await tx.select({ id: alerts.id, ruleId: alerts.ruleId, configPolicyId: alerts.configPolicyId,
+    monitorId: alerts.monitorId, context: alerts.context }).from(alerts)
+    .where(and(match, inArray(alerts.status, [...OPEN_ALERT_STATUSES]))).for('update');
+  for (const row of original) await tx.update(alerts).set({ ruleId: source.compiledRuleId, configPolicyId: null,
+    monitorId: source.monitorId, context: { ...(row.context as Record<string, unknown> ?? {}), convertedFrom: {
+      sourceTable: source.sourceTable, sourceId: source.sourceId, ruleId: source.ruleId ?? null,
+    } } }).where(eq(alerts.id, row.id));
+  return original as Array<{ id: string; ruleId: string | null; configPolicyId: string | null; monitorId: string | null; context: Record<string, unknown> | null }>;
+}
+export async function restoreMovedAlertRefs(tx: DbExecutor, refs: Awaited<ReturnType<typeof carryOpenAlerts>>) {
+  for (const { id, ...original } of refs) await tx.update(alerts).set(original).where(eq(alerts.id, id));
+}
+export async function canDeleteConversionMonitor(tx: DbExecutor, monitorId: string, conversionId: string) {
+  const live = await tx.select({ id: monitorConversionOutputs.id }).from(monitorConversionOutputs)
+    .innerJoin(monitorConversions, eq(monitorConversions.id, monitorConversionOutputs.conversionId))
+    .where(and(eq(monitorConversionOutputs.monitorId, monitorId), ne(monitorConversions.id, conversionId), isNull(monitorConversions.revertedAt))).limit(1);
+  const attachments = await tx.select({ id: configPolicyMonitors.id }).from(configPolicyMonitors)
+    .where(eq(configPolicyMonitors.monitorId, monitorId)).limit(1);
+  const history = await tx.select({ id: alerts.id }).from(alerts).where(eq(alerts.monitorId, monitorId)).limit(1);
+  return live.length === 0 && attachments.length === 0 && history.length === 0;
+}
+```
+
+Revert core, after lifecycle/owner checks and source restoration, BEFORE calling `deleteMonitorDefinition`:
+
+```ts
+for (const output of outputs) await restoreMovedAlertRefs(tx, output.movedAlertRefs);
+for (const output of outputs) {
+  // Never wholesale-save the link: that would recreate every attachment id.
+  if (output.attachmentId) await tx.delete(configPolicyMonitors).where(eq(configPolicyMonitors.id, output.attachmentId));
+  if (!output.monitorId) continue;
+  const otherLive = await tx.select({ id: monitorConversionOutputs.id }).from(monitorConversionOutputs)
+    .innerJoin(monitorConversions, eq(monitorConversions.id, monitorConversionOutputs.conversionId))
+    .where(and(eq(monitorConversionOutputs.monitorId, output.monitorId), ne(monitorConversions.id, ledger.id), isNull(monitorConversions.revertedAt))).limit(1);
+  const otherAttachments = await tx.select({ id: configPolicyMonitors.id }).from(configPolicyMonitors).where(eq(configPolicyMonitors.monitorId, output.monitorId)).limit(1);
+  if (otherLive.length || otherAttachments.length) continue;
+  // Post-conversion history belongs back to this source only when no other deployment owns it.
+  // Terminal status, timestamps and resolution fields remain untouched.
+  if (output.sourceRuleId || ledger.sourceTable === 'config_policy_alert_rules') {
+    await tx.update(alerts).set({ ruleId: output.sourceRuleId ?? null,
+      configPolicyId: output.sourceRuleId ? null : ledger.sourceId, monitorId: null,
+      context: sql`COALESCE(${alerts.context}, '{}'::jsonb) || jsonb_build_object('revertedConversionId', ${ledger.id}::text)`,
+    }).where(eq(alerts.monitorId, output.monitorId));
+  }
+  // Watch/network/other history may lack a legacy rule target. Keep that definition
+  // and compiled rows as an unattached history owner instead of orphaning history.
+  if (!output.reusedMonitor && await canDeleteConversionMonitor(tx, output.monitorId, ledger.id)) {
+    await deleteMonitorDefinition(output.monitorId, auth, tx);
+  }
+}
+await tx.update(monitorConversions).set({ revertedAt: new Date() }).where(eq(monitorConversions.id, ledger.id));
+```
+
+Thread optional `executor: DbExecutor = db` through `getMonitorDefinition`, `deleteMonitorDefinition` and its internal reads/transaction (`monitorService.ts:226-237,382-390`); do not execute deletion through a bare/global executor. Synchronize link JSON from remaining normalized attachments while preserving `inheritance`; use `tx.update(configPolicyFeatureLinks)` rather than `updateFeatureLink` (which recreates attachment ids). Retirement reversal restores `source_state`'s original enabled/retirement values, including W05e network checks; a conversion with no outputs still reverts correctly.
+
+`lifecycle.ts` and test:
+
+```ts
+import type { ConversionSourceTable } from './types';
+export function isRevertAvailable(_sourceTable: ConversionSourceTable): boolean { return true; }
+// lifecycle.test.ts
+import { expect, it } from 'vitest';
+import { isRevertAvailable } from './lifecycle';
+it('allows legacy reversal while W05c runtimes still exist', () => {
+  expect(isRevertAvailable('config_policy_alert_rules')).toBe(true);
+  expect(isRevertAvailable('alert_templates')).toBe(true);
+});
+```
+
+At the start of `revertConversion`, after the authorized ledger read:
+
+```ts
+if (!isRevertAvailable(ledger.sourceTable)) {
+  throw new ConversionError('conversion_revert_unavailable', 'This source runtime has been retired');
+}
+```
+
+W05d changes that one function to false for the five removed legacy runtime tables; network checks retain their separately supported reversal. The ledger read computes `revertable` using this same function. W05c2 disables Undo once false and documents that legacy Undo ends when W05d is installed.
+
+- [ ] **Step 1: Write the failing tests** — `convert.test.ts` (mocked `loadPolicySources`, `computeEquivalence`, `resolveDeviceIdsForPolicy`, `getConfigPolicy`, `listMonitorDefinitions`, `createMonitorDefinition`, `db`): (a) prerequisites missing → `blockedBy: 'prerequisite_missing'` with labels; (b) partner-wide policy + org token → `ConversionError('partner_wide_denied')`; (c) `parentUnconverted` → `blockedBy: 'parent_unconverted'` and `computeEquivalence` NOT called; (d) three inline rules (one processCount) + one watch with thresholds → 4 items, outcomes `['convertible','convertible','unconvertible','convertible']`, the watch item has 3 proposed, `inheritanceMode === 'replace'`, `openAlerts` copied from the map; (e) `convertPolicy` with a wrong hash → `preview_stale`; with deltas → `equivalence_delta`; (f) reuse: an exact-owner monitor with an equal signature is attached; an otherwise equal visible partner monitor is NOT reused by an org policy, `createMonitorDefinition` not called, output `reused_monitor: true`; (g) `retireSource` rejects `'bogus'` with `invalid_reason` and accepts `'operator'`. `alertCooldown.rekey.test.ts`: two `cpar` keys with TTLs 1000/0 → one `set … PX 1000`, two `del`, returns 2. `ruleConversionService.test.ts`: two rules sharing one template produce one ledger, both rule outputs and both target assignments; a flat group uses `mapStandaloneRule`; one unconvertible member rolls the entire group back.
 
 - [ ] **Step 2: Run it, expect FAIL** — `cd apps/api && npx vitest run src/services/monitors/conversion/convert.test.ts src/services/alertCooldown.rekey.test.ts src/services/monitors/ruleConversionService.test.ts` → module-not-found / "expected update payload to contain retiredReason".
 
@@ -2493,24 +3428,28 @@ export * from './types';
 export * from './prerequisites';
 export * from './mapping';
 export { loadPolicySources, countPendingConversions, OPEN_ALERT_STATUSES } from './loadSources';
-export { computeEquivalence, resolveDeviceIdsForPolicy, diffSignatureSets, applyProposalInTx } from './equivalence';
-export { previewPolicyConversion, buildPolicyConversionPreview, convertPolicy, convertPartnerLegacy, revertConversion, retireSource, ConversionError } from './convert';
+export { computeEquivalence, diffSignatureSets, applyProposalInTx } from './equivalence';
+export { resolveDeviceIdsForPolicy } from './legacyBaseline';
+export { isRevertAvailable } from './lifecycle';
+export { carryOpenAlerts, restoreMovedAlertRefs } from './history';
+export { previewPolicyConversion, buildPolicyConversionPreview, previewPartnerConversion, convertPolicy, convertPartnerLegacy, revertConversion, retireSource, ConversionError } from './convert';
 ```
 
 - [ ] **Step 4: Run, expect PASS** — `cd apps/api && npx vitest run src/services/monitors/conversion/ src/services/alertCooldown src/services/monitors/ruleConversionService.test.ts src/__tests__/partner-wide-write-coverage.test.ts src/__tests__/site-ceiling-write-coverage.test.ts && npx tsc --noEmit -p .`
 
-- [ ] **Step 5: Commit** — `git add apps/api/src/services/monitors/conversion/ apps/api/src/services/alertCooldown.ts apps/api/src/services/alertCooldown.rekey.test.ts apps/api/src/services/monitors/ruleConversionService.ts apps/api/src/services/monitors/ruleConversionService.test.ts apps/api/src/services/policyAlertBridge.ts <reused_monitor migration/schema/export-policy files> && git commit -m "feat(monitors): policy conversion — preview, convert, partner sweep, revert, retire; ledger, open-alert carry-over, cooldown re-key"`
+- [ ] **Step 5: Commit** — `git add apps/api/src/services/monitors/conversion/ apps/api/src/services/alertCooldown.ts apps/api/src/services/alertCooldown.rekey.test.ts apps/api/src/services/monitors/ruleConversionService.ts apps/api/src/services/monitors/ruleConversionService.test.ts apps/api/src/services/policyAlertBridge.ts apps/api/src/services/monitors/monitorService.ts && git commit -m "feat(monitors): policy conversion — preview, convert, partner sweep, revert, retire; ledger, open-alert carry-over, cooldown re-key"`
 
-### Task 14: Conversion HTTP routes — policy preview/convert, revert, retire, partner convert-all, and pending counts
+### Task 16: Conversion HTTP routes — policy preview/convert, revert, retire, partner preview/convert-all, persistent ledger and pending counts
 
 **Files:**
 - Modify: `apps/api/src/routes/monitorDefinitions.ts:68-74,174` (authenticated parent; mount the conversion resource before `/:id`).
 - Create: `apps/api/src/routes/monitorDefinitions.conversion.ts` (the conversion resource and its validation/error boundary).
+- Create: `apps/api/src/services/monitors/conversion/ledger.ts`, adjacent `ledger.test.ts`; modify `conversion/index.ts` (created Task 9).
 - Test: `apps/api/src/routes/monitorDefinitions.test.ts:218-249` (extend mount regression), `apps/api/src/routes/monitorDefinitions.conversion.test.ts` (create); `apps/api/src/routes/monitorDefinitions.authGate.test.ts` (existing authentication regression).
-- Consumed implementations verified: `apps/api/src/services/partnerWideAccess.ts:26-31`, `apps/api/src/services/siteCeilingAccess.ts:67-72`, `apps/api/src/middleware/auth.ts:75-176`, `apps/api/src/lib/validation.ts:105-142`. Conversion services are created by Tasks 9–13, rather than existing source files.
+- Consumed implementations verified: `apps/api/src/services/partnerWideAccess.ts:26-31`, `apps/api/src/services/siteCeilingAccess.ts:67-72`, `apps/api/src/middleware/auth.ts:75-176`, `apps/api/src/lib/validation.ts:105-142`. Conversion services are created by Tasks 9–15, rather than existing source files.
 
 **Interfaces:**
-- Consumes: `previewPolicyConversion(policyId, auth)`, `convertPolicy(policyId, previewHash, auth, opts?)`, `revertConversion(conversionId, auth)`, `retireSource(sourceTable, sourceId, reason, auth)`, `convertPartnerLegacy(partnerId, auth)`, `countPendingConversions(scope)`, `ConversionError`, `ConversionPrerequisiteMissingError`, `MONITOR_CONVERSION_SOURCE_TABLES`.
+- Consumes: `previewPolicyConversion(policyId, auth)`, `convertPolicy(policyId, previewHash, auth, opts?)`, `revertConversion(conversionId, auth)`, `retireSource(sourceTable, sourceId, reason, auth)`, `previewPartnerConversion(partnerId, auth)`, `convertPartnerLegacy(partnerId, previewHash, auth)`, `countPendingConversions(scope)`, `ConversionError`, `ConversionPrerequisiteMissingError`, `MONITOR_CONVERSION_SOURCE_TABLES`.
 - Produces the exact W05c2 HTTP resource, mounted at `/monitor-definitions/conversion`:
 
 | Method / suffix | Input | Success |
@@ -2518,11 +3457,13 @@ export { previewPolicyConversion, buildPolicyConversionPreview, convertPolicy, c
 | GET `/policies/:policyId/preview` | UUID path | `200 { data: PolicyConversionPreview }`; `202 { data: PolicyConversionPreviewPending }` while running |
 | POST `/policies/:policyId/convert` | `{ previewHash: string, sourceIds?: string[] }` | `200 { data: ConvertPolicyResult }` |
 | POST `/:conversionId/revert` | UUID path, no body | `200 { success: true }` |
-| POST `/retire` | `{ sourceTable: ConversionSourceTable, sourceId: string, reason: string }` | `200 { success: true }` |
-| POST `/partner/convert-all` | no body; partner identity comes from `auth.partnerId` | `200 { data: ConvertPartnerResult }` |
+| POST `/retire` | `{ sourceTable: ConversionSourceTable, sourceId: string, reason: string }` | `200 { success: true, conversionId: string }` |
+| POST `/partner/preview` | no body; partner identity comes from `auth.partnerId` | `200 { data: PartnerConversionPreview }` |
+| POST `/partner/convert-all` | `{ previewHash: string }`; partner identity comes from `auth.partnerId` | `200 { data: ConvertPartnerResult }` |
+| GET `/ledger?orgId&policyId&cursor&limit` | authorized filters, opaque cursor, limit 1..100 (default 25) | `200 { items: ConversionLedgerEntry[]; nextCursor: string | null }` |
 | GET `/pending?orgId` | optional UUID; default `auth.orgId` | `200 { data: { policies: number, rows: number } }` |
 
-The domain payload of pending is the brief's `{ policies, rows }`; the transport envelope follows W05c2's `ApiResponse<T>` convention. `standaloneRules` remains an internal additive service field. Preview progress is polled at the **same** GET URL; no job-id API or new UI query state. The partner action is already the confirmation step of W05c2's preview/confirm UI. Each policy still gets Task 13's equivalence/staleness checks. A system HTTP caller must carry a selected partner; the background W05d sweep calls the service directly with its explicit partner id.
+The domain payload of pending is the brief's `{ policies, rows }`; the transport envelope follows W05c2's `ApiResponse<T>` convention. `standaloneRules` remains an internal additive service field. Preview progress is polled at the **same** GET URL; no job-id API or new UI query state. Partner confirmation uses the hash returned by the new partner-wide preview, never current-org pending counts. Ledger is a persistent read with an intentionally unwrapped D2 pagination response. Each policy still gets Task 15's equivalence/staleness checks. A system HTTP caller must carry a selected partner; the background W05d sweep calls the service directly with its explicit partner id.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -2536,7 +3477,7 @@ import type { AuthContext } from '../middleware/auth';
 const m = vi.hoisted(() => ({
   authenticated: true, permission: true, mfa: true,
   preview: vi.fn(), convert: vi.fn(), revert: vi.fn(), retire: vi.fn(),
-  partner: vi.fn(), counts: vi.fn(), audit: vi.fn(),
+  partner: vi.fn(), partnerPreview: vi.fn(), ledger: vi.fn(), counts: vi.fn(), audit: vi.fn(),
 }));
 vi.mock('../middleware/auth', () => ({
   authMiddleware: async (c: any, next: any) => m.authenticated ? next() : c.json({ error: 'Unauthorized' }, 401),
@@ -2548,7 +3489,7 @@ vi.mock('../services/auditEvents', () => ({ writeRouteAudit: m.audit }));
 vi.mock('../services/monitors/conversion', () => ({
   previewPolicyConversion: m.preview, convertPolicy: m.convert,
   revertConversion: m.revert, retireSource: m.retire,
-  convertPartnerLegacy: m.partner, countPendingConversions: m.counts,
+  convertPartnerLegacy: m.partner, previewPartnerConversion: m.partnerPreview, listConversionLedger: m.ledger, countPendingConversions: m.counts,
   ConversionError: class extends Error {
     constructor(public code: string, message: string, public details?: unknown) { super(message); }
   },
@@ -2588,7 +3529,7 @@ const mutations: Array<[string, unknown]> = [
   [`/policies/${POLICY}/convert`, { previewHash: HASH, sourceIds: [SOURCE] }],
   [`/${SOURCE}/revert`, undefined],
   ['/retire', { sourceTable: 'config_policy_alert_rules', sourceId: SOURCE, reason: 'operator' }],
-  ['/partner/convert-all', undefined],
+  ['/partner/convert-all', { previewHash: HASH }],
 ];
 beforeEach(() => {
   vi.resetAllMocks();
@@ -2596,6 +3537,9 @@ beforeEach(() => {
   m.preview.mockResolvedValue({ policyId: POLICY, previewHash: HASH, items: [], inheritanceMode: 'replace', equivalence: { devicesChecked: 0, deltas: [] } });
   m.convert.mockResolvedValue({ conversionIds: [SOURCE], retired: 1, monitorsCreated: 1 });
   m.counts.mockResolvedValue({ policies: 0, rows: 0, standaloneRules: 9 });
+  m.retire.mockResolvedValue({ conversionId: SOURCE });
+  m.ledger.mockResolvedValue({ items: [], nextCursor: null });
+  m.partnerPreview.mockResolvedValue({ partnerId: PARTNER, previewHash: HASH, policies: 2, rows: 3, convertible: 3, unconvertible: [] });
   m.partner.mockResolvedValue({ policies: 2, converted: 3, unconvertible: 1 });
 });
 describe('conversion resource', () => {
@@ -2620,18 +3564,18 @@ describe('conversion resource', () => {
   it('revert and retire return explicit mutation outcomes', async () => {
     for (const [path, body] of mutations.slice(1, 3)) {
       const r = await request(path, 'POST', body);
-      expect(await r.json()).toEqual({ success: true });
+      expect(await r.json()).toEqual(path === '/retire' ? { success: true, conversionId: SOURCE } : { success: true });
     }
     expect(m.revert).toHaveBeenCalledWith(SOURCE, expect.anything());
     expect(m.retire).toHaveBeenCalledWith('config_policy_alert_rules', SOURCE, 'operator', expect.anything());
     expect(m.audit).toHaveBeenCalledTimes(2);
   });
   it('partner convert-all infers the partner and requires full partner membership', async () => {
-    expect((await request('/partner/convert-all', 'POST')).status).toBe(403);
-    expect((await request('/partner/convert-all', 'POST', undefined, { scope: 'partner', partnerOrgAccess: 'selected' })).status).toBe(403);
-    const r = await request('/partner/convert-all', 'POST', undefined, { scope: 'partner', orgId: null, partnerOrgAccess: 'all' });
+    expect((await request('/partner/convert-all', 'POST', { previewHash: HASH })).status).toBe(403);
+    expect((await request('/partner/convert-all', 'POST', { previewHash: HASH }, { scope: 'partner', partnerOrgAccess: 'selected' })).status).toBe(403);
+    const r = await request('/partner/convert-all', 'POST', { previewHash: HASH }, { scope: 'partner', orgId: null, partnerOrgAccess: 'all' });
     expect(r.status).toBe(200);
-    expect(m.partner).toHaveBeenCalledWith(PARTNER, expect.objectContaining({ scope: 'partner' }));
+    expect(m.partner).toHaveBeenCalledWith(PARTNER, HASH, expect.objectContaining({ scope: 'partner' }));
   });
   it('pending projects the banner contract and denies a cross-org query before reading', async () => {
     const r = await request('/pending');
@@ -2669,7 +3613,7 @@ describe('conversion resource', () => {
   });
   it.each([
     ['policy_not_found', 404], ['partner_wide_denied', 403],
-    ['preview_stale', 409], ['equivalence_delta', 409], ['blocked', 409],
+    ['preview_stale', 409], ['conversion_revert_unavailable', 409], ['equivalence_delta', 409], ['blocked', 409],
     ['source_not_found', 404], ['conversion_not_found', 404], ['already_converted', 409],
   ] as const)('maps %s without claiming success', async (code, status) => {
     m.convert.mockRejectedValue(new ConversionError(code, code, { reason: code }));
@@ -2709,7 +3653,7 @@ import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '.
 import { MONITOR_CONVERSION_SOURCE_TABLES } from '../db/schema/monitorConversions';
 import {
   previewPolicyConversion, convertPolicy, revertConversion, retireSource,
-  convertPartnerLegacy, countPendingConversions,
+  convertPartnerLegacy, previewPartnerConversion, listConversionLedger, countPendingConversions,
   ConversionError, ConversionPrerequisiteMissingError,
 } from '../services/monitors/conversion';
 
@@ -2753,6 +3697,17 @@ monitorConversionRoutes.onError((error, c) => {
   return c.json({ error: error.code, message: error.message, details: error.details }, status);
 });
 
+monitorConversionRoutes.post('/partner/preview', read, governance, async (c) => {
+  const auth = c.get('auth');
+  if (!canManagePartnerWidePolicies(auth)) return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+  if (!auth.partnerId) return c.json({ error: 'Select a partner' }, 400);
+  return c.json({ data: await previewPartnerConversion(auth.partnerId, auth) });
+});
+monitorConversionRoutes.get('/ledger', read,
+  zValidator('query', z.object({ orgId: z.string().uuid().optional(), policyId: z.string().uuid().optional(),
+    cursor: z.string().uuid().optional(), limit: z.coerce.number().int().min(1).max(100).default(25) })), async (c) => {
+    return c.json(await listConversionLedger(c.req.valid('query'), c.get('auth')));
+  });
 monitorConversionRoutes.get('/pending', read,
   zValidator('query', z.object({ orgId: z.string().uuid().optional() })), async (c) => {
     const auth = c.get('auth');
@@ -2778,20 +3733,21 @@ monitorConversionRoutes.post('/policies/:policyId/convert', write, requireMfa(),
     writeRouteAudit(c, { action: 'monitor.conversion.convert', resourceType: 'configuration_policy', resourceId: policyId, details: data });
     return c.json({ data });
   });
-monitorConversionRoutes.post('/partner/convert-all', write, requireMfa(), governance, async (c) => {
+monitorConversionRoutes.post('/partner/convert-all', write, requireMfa(), governance,
+  zValidator('json', z.object({ previewHash: z.string().regex(/^[a-f0-9]{64}$/) }).strict()), async (c) => {
   const auth = c.get('auth');
   if (!canManagePartnerWidePolicies(auth)) return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
   if (!auth.partnerId) return c.json({ error: 'Select a partner' }, 400);
-  const data = await convertPartnerLegacy(auth.partnerId, auth);
+  const data = await convertPartnerLegacy(auth.partnerId, c.req.valid('json').previewHash, auth);
   writeRouteAudit(c, { action: 'monitor.conversion.convert_all', resourceType: 'partner', resourceId: auth.partnerId, details: data });
   return c.json({ data });
 });
 monitorConversionRoutes.post('/retire', write, requireMfa(), governance,
   zValidator('json', retireBody), async (c) => {
     const { sourceTable, sourceId, reason } = c.req.valid('json');
-    await retireSource(sourceTable, sourceId, reason, c.get('auth'));
-    writeRouteAudit(c, { action: 'monitor.conversion.retire', resourceType: sourceTable, resourceId: sourceId, details: { reason } });
-    return c.json({ success: true });
+    const { conversionId } = await retireSource(sourceTable, sourceId, reason, c.get('auth'));
+    writeRouteAudit(c, { action: 'monitor.conversion.retire', resourceType: sourceTable, resourceId: sourceId, details: { reason, conversionId } });
+    return c.json({ success: true, conversionId });
   });
 monitorConversionRoutes.post('/:conversionId/revert', write, requireMfa(), governance,
   zValidator('param', conversionParam), async (c) => {
@@ -2825,6 +3781,80 @@ it('mounts the literal conversion resource before monitor ids', async () => {
 });
 ```
 
+Create `apps/api/src/services/monitors/conversion/ledger.ts` and re-export `listConversionLedger` from the barrel. Add this file and its adjacent tests to this task's Files and commit command. It uses the same owner predicates as the converter and Task 15's lifecycle guard:
+
+```ts
+import { and, desc, eq, inArray, isNull, lt, or, sql } from 'drizzle-orm';
+import { db } from '../../../db';
+import { monitorConversions, monitorConversionOutputs } from '../../../db/schema';
+import type { AuthContext } from '../../../middleware/auth';
+import { canManagePartnerWidePolicies } from '../../partnerWideAccess';
+import { canMutateOrgWideGovernance } from '../../siteCeilingAccess';
+import { getConfigPolicy } from '../../configurationPolicy';
+import { ConversionError } from './convert';
+import { isRevertAvailable } from './lifecycle';
+import type { ConversionLedgerEntry } from './types';
+export async function listConversionLedger(query: { orgId?: string; policyId?: string; cursor?: string; limit?: number }, auth: AuthContext): Promise<{ items: ConversionLedgerEntry[]; nextCursor: string | null }> {
+  if (query.orgId && !auth.canAccessOrg(query.orgId)) throw new ConversionError('partner_wide_denied', 'Organization access denied');
+  if (query.policyId && !await getConfigPolicy(query.policyId, auth)) throw new ConversionError('policy_not_found', 'Policy not found');
+  const limit = Math.min(100, Math.max(1, query.limit ?? 25));
+  const owner = auth.scope === 'system' ? undefined : or(
+    inArray(monitorConversions.orgId, auth.accessibleOrgIds ?? []),
+    auth.partnerId ? and(isNull(monitorConversions.orgId), eq(monitorConversions.partnerId, auth.partnerId)) : undefined);
+  const rows = await db.select().from(monitorConversions).where(and(owner,
+    query.orgId ? eq(monitorConversions.orgId, query.orgId) : undefined,
+    query.cursor ? lt(monitorConversions.id, query.cursor) : undefined,
+    query.policyId ? or(eq(monitorConversions.policyId, query.policyId), sql`EXISTS (SELECT 1 FROM ${monitorConversionOutputs}
+      WHERE ${monitorConversionOutputs.conversionId} = ${monitorConversions.id} AND ${monitorConversionOutputs.policyId} = ${query.policyId})`) : undefined,
+  )).orderBy(desc(monitorConversions.id)).limit(limit + 1);
+  const page = rows.slice(0, limit);
+  const outputs = page.length ? await db.select().from(monitorConversionOutputs).where(inArray(monitorConversionOutputs.conversionId, page.map((r) => r.id))) : [];
+  return { items: page.map((r) => ({ id: r.id, sourceTable: r.sourceTable, sourceId: r.sourceId,
+    sourceName: String(r.sourceState.name ?? (r.sourceState.template as { name?: string } | undefined)?.name ?? r.sourceId),
+    policyId: r.policyId, convertedBy: r.convertedBy, convertedAt: r.convertedAt.toISOString(), revertedAt: r.revertedAt?.toISOString() ?? null,
+    revertable: !r.revertedAt && isRevertAvailable(r.sourceTable) && canMutateOrgWideGovernance(auth)
+      && (r.orgId ? auth.canAccessOrg(r.orgId) : canManagePartnerWidePolicies(auth)),
+    outputs: outputs.filter((o) => o.conversionId === r.id && o.monitorId).map((o) => ({ monitorId: o.monitorId!, role: o.role, reused: o.reusedMonitor })),
+  })), nextCursor: rows.length > limit ? page.at(-1)!.id : null };
+}
+```
+
+Append these concrete HTTP regressions to the test above. Add direct `ledger.test.ts` using the chain helper from the private baseline test to prove the SQL predicates include org ownership and policy output associations; the service denies inaccessible org/policy filters before selecting ledger rows.
+
+```ts
+it('previews the whole partner and requires its hash at confirmation', async () => {
+  const auth = { scope: 'partner' as const, orgId: null, partnerOrgAccess: 'all' as const };
+  expect((await request('/partner/preview', 'POST', undefined, auth)).status).toBe(200);
+  expect(m.partnerPreview).toHaveBeenCalledWith(PARTNER, expect.objectContaining(auth));
+  expect((await request('/partner/convert-all', 'POST', {}, auth)).status).toBe(400);
+  m.partner.mockRejectedValueOnce(new ConversionError('preview_stale', 'Partner scope changed'));
+  expect((await request('/partner/convert-all', 'POST', { previewHash: HASH }, auth)).status).toBe(409);
+});
+it('browses persistent ledger entries with an opaque cursor and lifecycle availability', async () => {
+  const entry = { id: SOURCE, sourceTable: 'config_policy_alert_rules', sourceId: SOURCE, sourceName: 'CPU',
+    policyId: POLICY, convertedBy: null, convertedAt: '2026-09-19T00:00:00.000Z', revertedAt: null,
+    revertable: false, outputs: [] };
+  m.ledger.mockResolvedValueOnce({ items: [entry], nextCursor: SOURCE });
+  const response = await request(`/ledger?orgId=${ORG}&policyId=${POLICY}&limit=1`);
+  expect(await response.json()).toEqual({ items: [entry], nextCursor: SOURCE });
+  expect(m.ledger).toHaveBeenCalledWith({ orgId: ORG, policyId: POLICY, limit: 1 }, expect.anything());
+  expect((await request('/ledger?limit=101')).status).toBe(400);
+});
+it('rejects unavailable revert before mutation or success audit', async () => {
+  m.revert.mockRejectedValueOnce(new ConversionError('conversion_revert_unavailable', 'Legacy runtime retired'));
+  const response = await request(`/${SOURCE}/revert`, 'POST');
+  expect(response.status).toBe(409);
+  expect(await response.json()).toMatchObject({ error: 'conversion_revert_unavailable' });
+  expect(m.audit).not.toHaveBeenCalled();
+});
+it.each([[], [SOURCE]])('does not return policy preview to site-restricted callers', async (allowedSiteIds) => {
+  m.preview.mockRejectedValueOnce(new ConversionError('partner_wide_denied', 'Full policy scope required'));
+  expect((await request(`/policies/${POLICY}/preview`, 'GET', undefined, { allowedSiteIds })).status).toBe(403);
+});
+```
+
+The service-level cache test must use a completed result from one scope, then request as another principal/ceiling and assert it is never returned. `retireSource` returning its `conversionId` lets W05c2 immediately refresh this persistent ledger after manual retirement. All W05c2 POST handlers use `runAction`, including partner preview; selection stays in the hash.
+
 - [ ] **Step 4: Run, expect PASS**
 
 From the repository root: `cd apps/api && npx vitest run src/routes/monitorDefinitions.conversion.test.ts src/routes/monitorDefinitions.test.ts src/routes/monitorDefinitions.authGate.test.ts src/__tests__/partner-wide-write-coverage.test.ts src/__tests__/site-ceiling-write-coverage.test.ts` → all pass; `cd apps/api && npx tsc --noEmit -p .` → exit 0. W05c2 uses `runAction` for all four POST actions, preserves the 202 polling state, and uses `location.hash` for selected UI state; there are no new web mutations or translations in this task.
@@ -2832,11 +3862,11 @@ From the repository root: `cd apps/api && npx vitest run src/routes/monitorDefin
 - [ ] **Step 5: Commit**
 
 ```bash
-git add apps/api/src/routes/monitorDefinitions.ts apps/api/src/routes/monitorDefinitions.conversion.ts apps/api/src/routes/monitorDefinitions.conversion.test.ts apps/api/src/routes/monitorDefinitions.test.ts
+git add apps/api/src/routes/monitorDefinitions.ts apps/api/src/routes/monitorDefinitions.conversion.ts apps/api/src/routes/monitorDefinitions.conversion.test.ts apps/api/src/routes/monitorDefinitions.test.ts apps/api/src/services/monitors/conversion/ledger.ts apps/api/src/services/monitors/conversion/ledger.test.ts apps/api/src/services/monitors/conversion/index.ts
 git commit -m "feat(monitors): expose scoped conversion preview, convert, revert, retire and pending routes"
 ```
 
-### Task 15: Publish monitor identity/kind and move onboarding plus the historical alert importer to monitor attachments
+### Task 17: Publish monitor identity/kind and move onboarding plus the historical alert importer to monitor attachments
 
 **Files:**
 - Modify: `apps/api/src/services/alertService.ts:46-68,157-160,226-267,289-326,349-399,1102-1113`; test `apps/api/src/services/alertService.test.ts:145-232`.
@@ -2846,14 +3876,14 @@ git commit -m "feat(monitors): expose scoped conversion preview, convert, revert
 - Reads: `apps/api/src/modules/mcpInvites/types.ts:17-27` (no authenticated user in `BootstrapContext`); `apps/api/src/services/monitors/builtInMonitors.ts:58-99`; `apps/api/src/db/schema/configurationPolicies.ts:78-104` (no default-policy marker); `apps/api/src/services/configurationPolicy.ts:1655-1662,1752-1758,1901-1949`; `apps/api/src/services/monitors/ruleConversionService.ts:25-40,49-70,120-139`; `apps/api/src/services/featureConfigResolver.ts:52-79` (synthetic system identity); `apps/api/src/db/index.ts:734-745,950` (system context / `runOutsideDbContext`).
 
 **Interfaces:**
-- Consumes: existing `monitorDefinitions.builtinKey`, the partner-wide SELECT-only branch, `addFeatureLink(..., executor)`, `updateFeatureLink(..., executor)`, `listFeatureLinks(policyId, executor)`, Task 1's `monitorsInlineSettingsSchema`, Task 13's ledger-aware `convertRuleToMonitor(ruleId, auth)`.
+- Consumes: existing `monitorDefinitions.builtinKey`, the partner-wide SELECT-only branch, `addFeatureLink(..., executor)`, `updateFeatureLink(..., executor)`, `listFeatureLinks(policyId, executor)`, Task 1's `monitorsInlineSettingsSchema`, Task 15's ledger-aware `convertRuleToMonitor(ruleId, auth, executor?)`.
 - Produces: `CreateAlertParams.kind?: MonitorKind | null`, `CreateSourcedAlertParams.kind?: MonitorKind | null`; published `alert.triggered` includes `monitorId: string | null` and `kind: MonitorKind | null`. Existing `ruleId` filters remain unchanged. Missing kind on an existing monitor id is resolved from the definition under the current DB context, so offline/recurrence callers need no parallel lookup code.
 - Produces: `applyStandardAlertPolicy(orgId: string, framework: 'standard' | 'cis', expectedPartnerId: string): Promise<{ created: boolean; skipped_reason?: string }>`; the bootstrap output key remains `applied.alert_policy` for compatibility.
 - Produces: exported `migrateAlertRulesLive(tx: Tx, orgId: string, auth: AuthContext): Promise<number>`, using target-specific monitor policies, never adding alert monitors to the historical umbrella policy.
 
 The schema has no default-policy pointer. For onboarding, establish the explicit local convention `name = 'Default monitoring'`, `description = 'Baseline monitor attachments created by configure_defaults.'`, owned by the bootstrap org. Reuse only that marked policy; preserve inactive state and all existing attachment settings. Lock the org before checking/creating so concurrent bootstrap calls cannot create duplicate baselines. Do not seed monitors: a partner's deleted/disabled built-ins are deliberate choices.
 
-The importer remains labelled historical and is still deleted by W05d. This is an interim repair of its alert-writing function, **not** an instruction to rerun the one-shot migration. Require a real actor for any future explicitly authorized invocation; the all-zero synthetic system user is not a valid `created_by`/`converted_by` FK.
+The importer remains labelled historical and is still deleted by W05d. This is an interim repair of its alert-writing function, **not** an instruction to rerun the one-shot migration. Any future explicitly authorized system invocation writes null actor FKs (D7); never persist the synthetic zero-UUID user.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -2904,7 +3934,7 @@ describe('alert.triggered monitor identity and kind', () => {
 });
 ```
 
-In the existing sourced-network test at `alertService.test.ts:218`, change the expected event `monitorId: 'monitor-1'` to `monitorId: null, kind: null`. Keep its input context unchanged: legacy network check ids are not `monitor_definitions.id`. The source-specific id remains in `alerts.context.monitorId` until W05e adopts the check. This collision is recorded in the closing questions.
+In the existing sourced-network test at `alertService.test.ts:218`, change the expected event `monitorId: 'monitor-1'` to `monitorId: null, kind: null`. Keep its input context unchanged: legacy network check ids are not `monitor_definitions.id`. The source-specific id remains in `alerts.context.monitorId` until W05e adopts the check. W05e consumers retain the legacy check id in source context and use typed `monitorId` only for definition ids (D13/D15).
 
 Create `configureDefaults.monitors.test.ts`:
 
@@ -3008,10 +4038,10 @@ function tx(rows: unknown[]) {
 }
 beforeEach(() => vi.resetAllMocks());
 it('converts each source via the ledger-aware service and never writes umbrella attachments', async () => {
-  const f = tx([{ id: 'r1' }, { id: 'r2' }]);
-  m.convert.mockResolvedValue({ ok: true, data: { monitorId: 'monitor', configPolicyId: 'target-specific-policy' } });
+  const f = tx([{ id: 'r1', templateId: 't1' }, { id: 'r2', templateId: 't1' }]);
+  m.convert.mockResolvedValue({ ok: true, data: { monitorId: 'monitor', configPolicyId: 'target-specific-policy', convertedRuleIds: ['r1', 'r2'] } });
   expect(await migrateAlertRulesLive(f.db as never, ORG, auth)).toBe(2);
-  expect(m.convert.mock.calls).toEqual([['r1', auth], ['r2', auth]]);
+  expect(m.convert.mock.calls).toEqual([['r1', auth, f.db]]);
   expect(f.db.insert).not.toHaveBeenCalled();
   const query = new PgDialect().sqlToQuery(f.where.mock.calls[0]![0]);
   expect(query.sql).toContain('"managed_by_monitor_id" is null');
@@ -3167,10 +4197,8 @@ Historical importer: add these imports; remove `configPolicyAlertRules`, `alertT
 
 ```ts
 import { pathToFileURL } from 'node:url';
-import { z } from 'zod';
 import { isNull } from 'drizzle-orm';
 import { runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { users } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
 import { createSystemAuthContext } from '../services/featureConfigResolver';
 import { convertRuleToMonitor } from '../services/monitors/ruleConversionService';
@@ -3180,14 +4208,17 @@ Replace `migrateAlertRulesLive` (349–418):
 
 ```ts
 export async function migrateAlertRulesLive(tx: Tx, orgId: string, auth: AuthContext): Promise<number> {
-  const rules = await tx.select({ id: alertRules.id }).from(alertRules).where(and(
+  const rules = await tx.select({ id: alertRules.id, templateId: alertRules.templateId }).from(alertRules).where(and(
     eq(alertRules.orgId, orgId), isNull(alertRules.managedByMonitorId), isNull(alertRules.retiredAt),
   ));
   let converted = 0;
+  const templates = new Set<string>();
   for (const rule of rules) {
-    const result = await convertRuleToMonitor(rule.id, auth);
+    if (templates.has(rule.templateId)) continue;
+    templates.add(rule.templateId);
+    const result = await convertRuleToMonitor(rule.id, auth, tx);
     if (!result.ok) throw new Error(`${rule.id}: ${result.failure.kind}`);
-    converted++;
+    converted += result.data.convertedRuleIds.length;
   }
   return converted;
 }
@@ -3216,11 +4247,7 @@ async function runHistoricalMigration() {
   return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
     const base = createSystemAuthContext();
     if (DRY_RUN) return migrate(base);
-    const actorFlag = process.argv.find((arg) => arg.startsWith('--actor-user-id='));
-    const actorId = z.string().uuid().parse(actorFlag?.slice('--actor-user-id='.length));
-    const [actor] = await db.select().from(users).where(eq(users.id, actorId)).limit(1);
-    if (!actor) throw new Error('Historical migration requires an existing actor user');
-    return migrate({ ...base, user: { id: actor.id, email: actor.email, name: actor.name, isPlatformAdmin: false } });
+    return migrate(base); // system writes persist null actors through the shared converter
   }, 'historical-config-policy-migration'));
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
@@ -3235,7 +4262,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
 }
 ```
 
-The actor flag identifies the audit actor; it grants no interactive request privileges. This standalone script still requires the deployment's administrative database configuration. Background conversion keeps real FK identities; onboarding's API key remains only in `writeAuditEvent.actorId` with `actorType: 'api_key'`.
+This standalone script still requires the deployment's administrative database configuration. Background conversion writes null for system actors (D7); onboarding's API key remains only in `writeAuditEvent.actorId` with `actorType: 'api_key'`.
 
 - [ ] **Step 4: Run, expect PASS**
 
@@ -3248,16 +4275,16 @@ git add apps/api/src/services/alertService.ts apps/api/src/services/alertService
 git commit -m "feat(alerts): publish monitor identity and route baseline writers through monitor attachments"
 ```
 
-### Task 16: Final verification — live ledger RLS, conversion/revert continuity, worker registration, and all PR gates
+### Task 18: Final verification — live ledger RLS, conversion/revert continuity, worker registration, and all PR gates
 
 **Files:**
 - Create: `apps/api/src/__tests__/integration/monitorConversionsPartnerRls.integration.test.ts`.
 - Create: `apps/api/src/__tests__/integration/monitorConversionRoundtrip.integration.test.ts`.
 - Create: `apps/api/src/__tests__/integration/monitorConversionFixtures.ts` (explicit fixture implementation shared by these two suites).
-- Modify: `apps/api/src/services/workerRegistry.ts:76-85` (Task 12's actual worker registration location; the API entry point delegates to this registry).
-- Modify: `apps/api/src/jobs/monitorConversionPreviewWorker.ts` (Task 12's lifecycle exports).
-- Test: `apps/api/src/services/workerRegistry.test.ts` (existing), `apps/api/src/jobs/monitorConversionPreviewWorker.test.ts` (Task 12), and the explicit suites below.
-- Verified fixture/reference paths: `apps/api/src/__tests__/integration/setup.ts:1-26,68-103,279-390`; `db-utils.ts:129-160`; `monitorDefinitionsPartnerRls.integration.test.ts:29-67,99-138`; `monitorCompiler.integration.test.ts:28-58`; `monitorResolver.integration.test.ts:29-45,145-170`; `apps/api/src/db/schema/devices.ts:421-446`; `apps/api/src/services/alertConditions/handlers/threshold.ts:8-35`.
+- Modify: `apps/api/src/services/workerRegistry.ts:76-85` (Task 13's actual worker registration location; the API entry point delegates to this registry).
+- Modify: `apps/api/src/jobs/monitorConversionPreviewWorker.ts` (Task 13's lifecycle exports).
+- Test: `apps/api/src/services/workerRegistry.test.ts` (existing), `apps/api/src/jobs/monitorConversionPreviewWorker.test.ts` (Task 13), and the explicit suites below.
+- Verified fixture/reference paths: `apps/api/src/__tests__/integration/setup.ts:1-26,68-103,279-390`; `db-utils.ts:134-160,176,216,295`; `monitorDefinitionsPartnerRls.integration.test.ts:29-67,99-138`; `monitorCompiler.integration.test.ts:28-58`; `monitorResolver.integration.test.ts:29-45,145-170`; `apps/api/src/db/schema/devices.ts:421-446`; `apps/api/src/services/alertConditions/handlers/threshold.ts:8-35`.
 
 **Interfaces:**
 - Consumes every PR1–PR3 contract: actual migrations and forced-RLS tables; `previewPolicyConversion`, `convertPolicy`, `revertConversion`, `retireSource`, `resolveMonitorsForDevice`, `getApplicableRules`, both transitional sweep functions, and the published event payload.
@@ -3323,6 +4350,23 @@ describe('conversion ledger live RLS', () => {
       expect(await db.select().from(monitorConversionOutputs).where(eq(monitorConversionOutputs.id, savedOutput!.id))).toEqual([]);
     });
   });
+  it('enforces both parent owner axes even in system scope', async () => {
+    const a = await conversionFixture(); const b = await conversionFixture();
+    const [partnerLedger] = await withDbAccessContext(SYSTEM_CONTEXT, () => db.insert(monitorConversions).values({
+      orgId: null, partnerId: a.partnerId, sourceTable: 'automations', sourceId: a.sourceId, previewHash: 'x',
+    }).returning());
+    const [orgLedger] = await withDbAccessContext(SYSTEM_CONTEXT, () => db.insert(monitorConversions).values({
+      orgId: a.orgId, partnerId: null, sourceTable: 'automations', sourceId: b.sourceId, previewHash: 'x',
+    }).returning());
+    const insert = (conversionId: string, partnerId: string) => withDbAccessContext(SYSTEM_CONTEXT, () =>
+      db.insert(monitorConversionOutputs).values({ conversionId, orgId: null, partnerId, role: 'primary' }));
+    await insert(partnerLedger!.id, a.partnerId); // positive control
+    await sqlState(() => insert(partnerLedger!.id, b.partnerId), '23503');
+    await sqlState(() => insert(orgLedger!.id, a.partnerId), '23503');
+    await sqlState(() => withDbAccessContext(SYSTEM_CONTEXT, () => db.insert(monitorConversionOutputs).values({
+      conversionId: partnerLedger!.id, orgId: a.orgId, partnerId: null, role: 'primary',
+    })), '23503');
+  });
   it('enforces XOR on conversions and outputs and cascades ledger children', async () => {
     const a = await conversionFixture();
     const values = { sourceTable: 'automations' as const, sourceId: a.sourceId, previewHash: 'test' };
@@ -3349,11 +4393,12 @@ import './setup';
 import { describe, expect, it } from 'vitest';
 import { and, eq, isNull } from 'drizzle-orm';
 import { db, withDbAccessContext } from '../../db';
-import { alerts, configPolicyAlertRules, monitorConversions, monitorConversionOutputs } from '../../db/schema';
+import { alerts, alertRules, alertTemplates, configPolicyAlertRules, monitorDefinitions, configurationPolicies, configPolicyAssignments, monitorConversions, monitorConversionOutputs } from '../../db/schema';
 import { getTestRedis } from './setup';
-import { convertPolicy, previewPolicyConversion, retireSource, revertConversion } from '../../services/monitors/conversion';
+import { convertPolicy, previewPolicyConversion, retireSource, revertConversion, resolveDeviceIdsForPolicy } from '../../services/monitors/conversion';
 import { evaluateDeviceAlerts, evaluateDeviceAlertsFromPolicy, getApplicableRules } from '../../services/alertService';
 import { resolveAlertRulesForDevice } from '../../services/featureConfigResolver';
+import { convertRuleToMonitor } from '../../services/monitors/ruleConversionService';
 import { conversionFixture, orgContext, seedConversionDevice } from './monitorConversionFixtures';
 
 describe('conversion round-trip under caller RLS', () => {
@@ -3419,6 +4464,74 @@ describe('conversion round-trip under caller RLS', () => {
     expect(await redis.pttl(oldKey)).toBeGreaterThan(0);
     await redis.del(oldKey);
   });
+  it('converts two rules of one template atomically and restores standalone alert references', async () => {
+    const f = await conversionFixture();
+    await withDbAccessContext(orgContext(f), async () => {
+      const [template] = await db.insert(alertTemplates).values({ orgId: f.orgId, partnerId: null,
+        name: 'Legacy group', conditions: { logic: 'and', conditions: [
+          { type: 'threshold', metric: 'cpuPercent', operator: 'gt', value: 80 },
+          { type: 'threshold', metric: 'ramPercent', operator: 'gt', value: 80 },
+        ] }, severity: 'high', titleTemplate: 'Legacy', messageTemplate: 'Legacy', isBuiltIn: false }).returning();
+      const rules = await db.insert(alertRules).values([
+        { orgId: f.orgId, partnerId: null, templateId: template!.id, name: 'Device target', targetType: 'device', targetId: f.deviceId },
+        { orgId: f.orgId, partnerId: null, templateId: template!.id, name: 'Site target', targetType: 'site', targetId: f.siteId, isActive: false },
+      ]).returning();
+      const [history] = await db.insert(alerts).values({ orgId: f.orgId, deviceId: f.deviceId, ruleId: rules[0]!.id,
+        status: 'suppressed', severity: 'high', title: 'Existing', context: { retained: 'original' } }).returning();
+      const result = await convertRuleToMonitor(rules[0]!.id, f.auth, db);
+      expect(result.ok).toBe(true); if (!result.ok) throw new Error('Group conversion refused');
+      expect(new Set(result.data.convertedRuleIds)).toEqual(new Set(rules.map((r) => r.id)));
+      const ledger = await db.select().from(monitorConversions).where(eq(monitorConversions.sourceId, template!.id));
+      expect(ledger).toHaveLength(1);
+      const outputs = await db.select().from(monitorConversionOutputs).where(eq(monitorConversionOutputs.conversionId, ledger[0]!.id));
+      expect(new Set(outputs.map((o) => o.sourceRuleId))).toEqual(new Set(rules.map((r) => r.id)));
+      expect(new Set(outputs.map((o) => o.policyId)).size).toBe(2);
+      expect(outputs.flatMap((o) => o.movedAlertRefs)).toContainEqual(expect.objectContaining({ id: history!.id,
+        ruleId: rules[0]!.id, configPolicyId: null, context: { retained: 'original' } }));
+      const disabledOutput = outputs.find((o) => o.sourceRuleId === rules[1]!.id)!;
+      const [disabled] = await db.select().from(monitorDefinitions).where(eq(monitorDefinitions.id, disabledOutput.monitorId!));
+      expect(disabled!.enabled).toBe(false); expect(disabled!.kind).toBe('composite');
+      await revertConversion(ledger[0]!.id, f.auth);
+      const [restored] = await db.select().from(alerts).where(eq(alerts.id, history!.id));
+      expect(restored).toMatchObject({ ruleId: rules[0]!.id, configPolicyId: null, status: 'suppressed', context: { retained: 'original' } });
+      expect(await db.select().from(alertRules).where(eq(alertRules.templateId, template!.id))).toHaveLength(2);
+    });
+  });
+  it('preserves post-conversion history and writes nullable system actors', async () => {
+    const f = await conversionFixture();
+    await withDbAccessContext(orgContext(f), async () => {
+      const systemAuth = { ...f.auth, scope: 'system' as const };
+      const preview = await previewPolicyConversion(f.policyId, systemAuth, { mode: 'inline' });
+      if ('status' in preview) throw new Error('Expected inline preview');
+      const result = await convertPolicy(f.policyId, preview.previewHash, systemAuth);
+      const [output] = await db.select().from(monitorConversionOutputs).where(eq(monitorConversionOutputs.conversionId, result.conversionIds[0]!));
+      const [monitor] = await db.select().from(monitorDefinitions).where(eq(monitorDefinitions.id, output!.monitorId!));
+      const [ledger] = await db.select().from(monitorConversions).where(eq(monitorConversions.id, result.conversionIds[0]!));
+      expect(monitor!.createdBy).toBeNull(); expect(ledger!.convertedBy).toBeNull();
+      const [later] = await db.insert(alerts).values({ orgId: f.orgId, deviceId: f.deviceId, ruleId: monitor!.compiledAlertRuleId,
+        monitorId: monitor!.id, status: 'resolved', severity: 'high', title: 'After conversion', context: { retained: true } }).returning();
+      await revertConversion(ledger!.id, systemAuth);
+      const [history] = await db.select().from(alerts).where(eq(alerts.id, later!.id));
+      expect(history).toMatchObject({ status: 'resolved', configPolicyId: f.sourceId, ruleId: null, monitorId: null });
+      expect(history!.context).toMatchObject({ retained: true, revertedConversionId: ledger!.id });
+    });
+  });
+  it('reverting the creating conversion keeps a definition reused by another policy', async () => {
+    const f = await conversionFixture();
+    await withDbAccessContext(orgContext(f), async () => {
+      const preview = await previewPolicyConversion(f.policyId, f.auth, { mode: 'inline' });
+      if ('status' in preview) throw new Error('Expected inline preview');
+      const first = await convertPolicy(f.policyId, preview.previewHash, f.auth);
+      const [output] = await db.select().from(monitorConversionOutputs).where(eq(monitorConversionOutputs.conversionId, first.conversionIds[0]!));
+      const [other] = await db.insert(monitorConversions).values({ orgId: f.orgId, sourceTable: 'automations',
+        sourceId: f.deviceId, previewHash: 'later' }).returning();
+      await db.insert(monitorConversionOutputs).values({ conversionId: other!.id, orgId: f.orgId, partnerId: null,
+        monitorId: output!.monitorId, reusedMonitor: true, role: 'primary' });
+      await revertConversion(first.conversionIds[0]!, f.auth);
+      expect(await db.select().from(monitorDefinitions).where(eq(monitorDefinitions.id, output!.monitorId!))).toHaveLength(1);
+      expect(await db.select().from(monitorConversionOutputs).where(eq(monitorConversionOutputs.conversionId, other!.id))).toHaveLength(1);
+    });
+  });
   it('fires through the monitor sweep only after conversion; a repeat sweep dedupes', async () => {
     const f = await conversionFixture();
     await withDbAccessContext(orgContext(f), async () => {
@@ -3468,7 +4581,7 @@ describe('conversion round-trip under caller RLS', () => {
 });
 ```
 
-Worker placement follows the actual runtime import graph: Task 12's preview imports the converter/prerequisite module, which imports `automationRuntime`; its dynamic `softwareDeployment` import (`automationRuntime.ts:2330`) reaches `routes/agentWs.ts` (`softwareDeployment.ts:26`). The registry's closure contract counts dynamic imports, so use `socket-owner` and run that contract below. Do not label this graph global merely because equivalence itself does not dispatch commands.
+Worker placement follows the actual runtime import graph: Task 13's preview imports the converter/prerequisite module, which imports `automationRuntime`; its dynamic `softwareDeployment` import (`automationRuntime.ts:2330`) reaches `routes/agentWs.ts` (`softwareDeployment.ts:26`). The registry's closure contract counts dynamic imports, so use `socket-owner` and run that contract below. Do not label this graph global merely because equivalence itself does not dispatch commands.
 
 Append a worker registration assertion in `apps/api/src/services/workerRegistry.test.ts` (its existing `WORKER_REGISTRY` import is reused):
 
@@ -3561,7 +4674,7 @@ export async function conversionFixture() {
 
 All fixture factories use real UUID rows; the RLS-negative tests run as `breeze_app` through the production context proxy. The shared integration setup truncates the tenant roots with cascade between tests. No synthetic actor is written into a users FK.
 
-At the end of `monitorConversionPreviewWorker.ts`, add the lifecycle wrappers around Task 12's factory:
+At the end of `monitorConversionPreviewWorker.ts`, add the lifecycle wrappers around Task 13's factory:
 
 ```ts
 let activePreviewWorker: ReturnType<typeof createMonitorConversionPreviewWorker> | null = null;
@@ -3589,7 +4702,7 @@ Add immediately after the `alertWorkers` entry in `WORKER_REGISTRY`:
   },
 ```
 
-Make the queue singleton and lifecycle agree: replace Task 12's getter with the following concrete getter, using its existing `Queue` and `createInstrumentedQueue` imports. In shutdown, close this variable instead of calling the getter so stopping a worker cannot create a fresh queue.
+Make the queue singleton and lifecycle agree: replace Task 13's getter with the following concrete getter, using its existing `Queue` and `createInstrumentedQueue` imports. In shutdown, close this variable instead of calling the getter so stopping a worker cannot create a fresh queue.
 
 ```ts
 let previewQueue: Queue | null = null;
@@ -3608,9 +4721,9 @@ The shutdown tail replacing `await getMonitorConversionPreviewQueue().close()` i
   }
 ```
 
-In `workerRegistry.test.ts:31`, insert `'monitorConversionPreviewWorker'` immediately after `'alertWorkers'` in `EXPECTED_WORKER_NAMES`; replace the count assertion at line 91 with `expect(WORKER_REGISTRY.length).toBe(EXPECTED_WORKER_NAMES.length)`. The explicit ordered names still detect accidental additions and removals.
+In `workerRegistry.test.ts:30`, insert `'monitorConversionPreviewWorker'` immediately after `'alertWorkers'` in `EXPECTED_WORKER_NAMES`; replace the count assertion at line 91 with `expect(WORKER_REGISTRY.length).toBe(EXPECTED_WORKER_NAMES.length)`. The explicit ordered names still detect accidental additions and removals.
 
-Keep one registry entry only; remove any duplicate initialization added while following Task 12's original `createAlertWorker()` search. This is the actual runtime entry point found during plan completion, not a second startup path.
+Keep one registry entry only; remove any duplicate initialization added while following Task 13's worker registration. This is the actual runtime entry point found during plan completion, not a second startup path.
 
 - [ ] **Step 4: Run the complete verification pass, expect PASS**
 
@@ -3619,7 +4732,7 @@ Run the following once against the implementation, with the worktree's test stac
 ```bash
 pnpm --filter @breeze/api build
 (cd packages/shared && npx vitest run src/validators/monitors.test.ts src/validators/automationActions.test.ts)
-(cd apps/api && npx vitest run src/services/monitors/ src/services/automationRuntime src/services/alertCooldown src/services/alertService src/services/offlineAlertEffects src/services/featureConfigResolver src/services/configurationPolicy.monitorsInheritance.test.ts src/services/configurationPolicy.retiredRows.test.ts src/services/retiredSourceReaders.contract.test.ts src/routes/monitorDefinitions src/routes/agents/helpers.monitorWatchDelivery.test.ts src/routes/agents/helpers.partnerWidePolicies.test.ts src/routes/configurationPolicies/featureLinks.monitors.test.ts src/routes/configurationPolicies/featureLinks.test.ts src/jobs/automationWorker.test.ts src/jobs/monitorConversionPreviewWorker.test.ts src/services/workerRegistry.test.ts src/services/workerEntrypointClosure.contract.test.ts src/modules/mcpInvites/tools/configureDefaults.test.ts src/modules/mcpInvites/tools/configureDefaults.monitors.test.ts src/scripts/migrateToConfigPolicies.test.ts)
+(cd apps/api && npx vitest run src/services/monitors/ src/services/automationRuntime src/services/alertCooldown src/services/alertService src/services/offlineAlertEffects src/services/featureConfigResolver src/services/configurationPolicy.monitorsInheritance.test.ts src/services/configurationPolicy.retiredRows.test.ts src/services/retiredSourceReaders.contract.test.ts src/services/notificationDispatcher.configPolicyOverrides.test.ts src/routes/monitorDefinitions src/routes/agents/helpers.monitorWatchDelivery.test.ts src/routes/agents/helpers.partnerWidePolicies.test.ts src/routes/configurationPolicies/featureLinks.monitors.test.ts src/routes/configurationPolicies/featureLinks.test.ts src/jobs/automationWorker.test.ts src/jobs/monitorConversionPreviewWorker.test.ts src/services/workerRegistry.test.ts src/services/workerEntrypointClosure.contract.test.ts src/modules/mcpInvites/tools/configureDefaults.test.ts src/modules/mcpInvites/tools/configureDefaults.monitors.test.ts src/scripts/migrateToConfigPolicies.test.ts)
 (cd apps/api && npx vitest run src/db/autoMigrate.test.ts src/db/migrationRlsScope.test.ts src/services/tenantCascade.test.ts src/services/tenantExportPolicyRegistry.tls.test.ts src/services/tenantExportPolicyRegistry.trigger.test.ts src/__tests__/partner-wide-write-coverage.test.ts src/__tests__/site-ceiling-write-coverage.test.ts)
 (cd apps/web && npx vitest run src/components/monitoring/monitorKindFields.test.ts src/components/monitoring/MonitorEditor src/lib/i18n/localeParity.test.ts src/lib/i18n/translationCoverage.test.ts src/lib/i18n/keyUsage.test.ts src/lib/__tests__/no-silent-mutations.test.ts)
 (cd apps/api && npx vitest run -c vitest.integration.config.ts src/__tests__/integration/monitorConversionsPartnerRls.integration.test.ts src/__tests__/integration/monitorConversionRoundtrip.integration.test.ts src/__tests__/integration/monitorResolver.integration.test.ts src/__tests__/integration/monitorWatchDelivery.integration.test.ts src/__tests__/integration/monitorCompiler.integration.test.ts src/__tests__/integration/monitorDefinitionsPartnerRls.integration.test.ts src/__tests__/integration/rls-coverage.integration.test.ts src/__tests__/integration/tenantCascade.integration.test.ts src/__tests__/integration/tenantCascadeExecution.integration.test.ts src/__tests__/integration/tenant-export-policy.integration.test.ts src/__tests__/integration/tenantExportErasureRoundtrip.integration.test.ts src/__tests__/integration/orgCascadeFkOnDelete.integration.test.ts src/__tests__/integration/orgLifecycleFoundations.integration.test.ts)
@@ -3631,15 +4744,14 @@ Check migration ordering and drift with the test database explicitly selected. D
 
 ```bash
 (cd apps/api && node --env-file=../../.env.test --import=tsx -e "const { spawnSync } = require('node:child_process'); const result = spawnSync('pnpm', ['db:check-drift'], { env: process.env, stdio: 'inherit' }); process.exit(result.status ?? 1)")
-git fetch origin main
-git ls-tree -r --name-only origin/main apps/api/migrations | sort | tail -1
-ls apps/api/migrations | sort | tail -1
+git fetch origin && git ls-tree -r --name-only origin/main apps/api/migrations | grep -E '^apps/api/migrations/[0-9]{4}-[^/]+\.sql$' | sort | tail -1
+scripts/check-migration-naming.sh --against-ref origin/main
 git diff --check
 ```
 
-Before pushing, repeat `ls apps/api/migrations | sort | tail -1` in the `origin/main` checkout (or use the recursive `git ls-tree` above without changing the worktree). Each new migration must sort after the newest shipped migration in its dependency order. Task 13's `reused_monitor` addition is a **new** `2026-10-23-121000-monitor-conversion-outputs-reused.sql` in PR3 when PR2 is already merged; never modify the shipped `110000` file. If upstream advanced, bump the unshipped names consistently in the plan, migration references and tests before implementation is pushed. Drift must be zero, scalar retirement columns classified as included, `moved_alert_ids` as `excludedOpen`, and `preview_hash` as `reviewedIncluded`.
+Before pushing, repeat the filtered recursive command above; optional and preflight migrations are excluded. All new columns, including `reused_monitor`, `moved_alert_refs`, `source_state` and output attachment/source associations, land in Task 6's unshipped ledger migration. Never modify a shipped migration. `db:check-drift` proves migration-filename parity only; the live RLS, FK, export and cascade suites above prove the structural contracts. Classify `moved_alert_ids`, `moved_alert_refs` and `source_state` as `excludedOpen`, scalar associations as `included`, and `preview_hash` as `reviewedIncluded`.
 
-Verify the two shared locale keys exist in every actual locale directory (the values were supplied in Task 1), and verify mutation and hash conventions through the named web checks. No new locale key is introduced by Tasks 14–16.
+Verify the two shared locale keys exist in every actual locale directory (the values were supplied in Task 1), and verify mutation and hash conventions through the named web checks. No new locale key is introduced by Tasks 16–18.
 
 ```bash
 python3 - <<'PY'
@@ -3656,7 +4768,7 @@ PY
 pnpm test-stack down
 ```
 
-Coverage reconciliation: Tasks 1–5 cover shared schemas, kind registration/compiler, runtime/watch params and inheritance; Tasks 6–8 cover all ledger/retirement migrations, six schemas, export/cascade/RLS registrations and retired readers; Tasks 9–13 cover capabilities, source loading, mapping, equivalence/job, conversion/cooldowns/standalone rule service; Task 14 covers the promised routes; Task 15 covers the payload and both identified legacy writers; this task supplies both integration files promised in File Structure and the runtime worker registration. Task numbers 1–16 all exist. Task 13's original five steps were complete at the append boundary; none was rewritten.
+Coverage reconciliation: Tasks 1–5 cover shared schemas, kind registration/compiler, runtime/watch params and inheritance; Tasks 6–8 cover all ledger/retirement migrations, six schemas, export/cascade/RLS registrations and retired readers; Tasks 9–15 cover capabilities, source loading, mapping, equivalence/job, conversion/cooldowns/standalone rule service; Task 16 covers the promised routes; Task 17 covers the payload and both identified legacy writers; this task supplies both integration files promised in File Structure and the runtime worker registration. Task numbers 1–18 all exist. The cross-check changes are folded into the affected tasks; no contradictory addendum overrides them.
 
 - [ ] **Step 5: Commit the verified PR3 gate**
 
@@ -3667,16 +4779,4 @@ git commit -m "test(monitors): verify conversion isolation, alert continuity, re
 
 Record the actual command outcomes in the implementation PR. PR3 is not ready while any required integration check is skipped or failing; do not claim a green gate from unit tests alone. The plan author does not execute this commit command.
 
-**Open questions for the orchestrator (do not block on them):**
-
-- **Preexisting task numbering and web exception:** this plan's original lines 23–24 call restart params “Task 4”, but their task is 3 (line 511); its Global Constraints line 40 says no web changes, while Task 1 explicitly includes kind-map/editor/locale changes. Preserve the original text; use task titles and the explicit Task 1 files as authoritative when scheduling.
-- **Policy alert workflows must be re-homed, not retired:** `apps/api/src/db/schema/configurationPolicies.ts:218-235` has no filter column; this plan's original lines 1834 and 2428 mark broad policy workflows `unconvertible:alert_workflow_kept`. Spec `docs/superpowers/specs/monitoring/2026-09-19-alerting-consolidation-design.md:405` requires preserving their coverage by re-homing them to standalone workflows assigned to the same policy. Follow that spec in implementation; do not let the W05d sweep retire still-working broad workflows merely because these older task paragraphs call them unconvertible.
-- **Response overflow must be surfaced:** this plan's original line 2430 uses `dedupedByFingerprint.slice(0, 10)`, whereas the spec's conversion table at `2026-09-19-alerting-consolidation-design.md:405` carries actions verbatim, with a maximum of ten. Task 10 already specifies `unconvertible:too_many_responses`. Use that explicit refusal before any write, never silent truncation.
-- **Standalone ledger cardinality and reversal need source provenance:** `apps/api/src/services/monitors/ruleConversionService.ts:75-97` converts one rule, and `apps/api/src/db/schema/alerts.ts:83-101` allows multiple rules per template. This plan's original lines 2468–2474 key their ledger by template id despite a unique live `(source_table, source_id)` index; its line 2432 restores every moved alert as `rule_id = NULL, config_policy_id = sourceId`. Spec `2026-09-19-alerting-consolidation-design.md:379-384` requires restoration of original `rule_id`/`config_policy_id`. Keep the fixed `ConversionSourceTable` union; resolve multi-rule template grouping and record per-alert original provenance before shipping standalone conversion. Restore moved alert FKs **before** deleting compiled monitor rows: `apps/api/src/db/schema/alerts.ts:107` declares a rule FK, so delete-first can fail.
-- **Full-scope equivalence and cached authorization:** the spec at `2026-09-19-alerting-consolidation-design.md:420-425` requires every affected device. This plan's original Task 12 limits the scope to assignments of this policy and keys Redis previews only by policy id (`:2310-2319`), while `apps/api/src/db/index.ts:646-650` does not replace an already active context. Check inheriting-child assignments too; bind cached jobs to the caller's complete access snapshot and reauthorize before returning a cached preview. Do not use `createSystemAuthContext` to widen an interactive preview's application authorization; transport the real principal and scope into the worker.
-- **Baseline naming and shipped defaults:** `apps/api/src/db/schema/configurationPolicies.ts:78-104` has no default-policy field. Task 15 uses a marked org baseline policy as the spec's default-policy attachment target. The old bootstrap description at `apps/api/src/modules/mcpInvites/tools/configureDefaults.ts:44` advertises CPU/disk/offline, but `apps/api/src/services/monitors/builtInMonitors.ts:58-99` contains CPU/memory/disk/patch compliance with different windows. Follow the spec's existing partner built-ins, preserving their actual definitions; the old copy is replaced.
-- **Historical importer lifecycle and actor:** `apps/api/src/scripts/migrateToConfigPolicies.ts:1-10` explicitly prohibits rerunning the historical script, while it still recreates inline alerts at `:397-409`. The spec at `2026-09-19-alerting-consolidation-design.md:433,501` schedules its deletion for W05d. Task 15 is an interim writer repair only; the script stays historical and is not executed by this plan. `apps/api/src/services/featureConfigResolver.ts:67` uses an all-zero system actor, but `apps/api/src/services/monitors/monitorService.ts:277` persists `auth.user.id`; W05d's automated sweep must also resolve that real-user/nullable-actor contract instead of inserting a nonexistent FK.
-- **Event identity collision:** `apps/api/src/jobs/monitorWorker.ts:412-416` uses the legacy network check id in `alerts.context.monitorId`; `apps/api/src/services/alertService.test.ts:201-223` also expects that id in the event payload. Task 15 reserves the new typed event fields for monitor definitions and keeps legacy identity in the source context. Coordinate the W05e consumers before removing any source-specific lookup; never mislabel a `network_monitors.id` as a monitor-definition id.
-- **Async preview consumer:** W05c2 `docs/superpowers/plans/monitoring/2026-09-19-alerting-consolidation-w05c2-conversion-web-and-tools.md:25,175-185` assumes a completed preview shape, while this plan's original `:1635-1640,2429` and the spec's >500-device rule require HTTP 202 progress. Task 14 fixes the API contract; W05c2 must poll the same GET endpoint and disable confirm until it receives a completed hash.
-- **Queue enqueue boundary:** this plan's original line 2429 enqueues from inside the request's DB context, but `apps/api/src/services/bullmqQueue.ts:60-65` calls `assertOutsideHeldDbContext` before `Queue.add`. Snapshot and authorize within the request, then enqueue outside the held DB context without elevating its scope; retain that caller snapshot in the worker. Do not weaken the tripwire. The runtime closure also requires `socket-owner` placement as implemented in Task 16 (`automationRuntime.ts:2330` → `softwareDeployment.ts:26`).
-- **Verification wording:** `apps/api/scripts/check-drift.ts:89-115` compares migration filenames against `breeze_migrations`; it explicitly does not compare live structural schema against Drizzle. Task 16 therefore requires the live RLS/export/cascade suites in addition to a successful drift command; a zero filename delta alone does not prove schema parity.
+**Open questions:** None. The cross-check decisions D1–D19 settle the previously listed questions; their applicable resolutions are requirements in the tasks above.

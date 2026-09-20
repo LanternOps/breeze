@@ -353,6 +353,12 @@ channels**: the monitor's own `escalationPolicyId` if set (today `inherit` + exp
 already works, `notificationDispatcher.ts:443`), else the winning routing row's, else none.
 The all-enabled-channels fallback is deleted.
 
+**`channelIds` means eligible destinations** (decided 2026-09-19 after the plan cross-check): the
+resolver itself drops disabled, wrong-owner and missing channels and reports them as
+`skippedChannelIds: [{ id, reason: 'disabled' | 'wrong_owner' | 'missing' }]`. The dispatcher sends
+to `channelIds` with no further filtering, so dispatch and preview can never disagree; the preview
+shows the skipped ones.
+
 **Transitional (W05b → W05d):** steps 1–2 also honour a legacy source's own overrides —
 `alert_rules.overrideSettings.notificationChannelIds/escalationPolicyId` and
 `config_policy_alert_rules.notification_channel_ids/escalation_policy_id` — for unretired rows,

@@ -8,9 +8,9 @@ branch: (set by feature-lifecycle after registration)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Every network check is a monitor of kind `network_check`: the unmanaged `network_monitors` rows and their `network_monitor_alert_rules` are adopted into monitor definitions through the W05c1 ledger, the Network Monitor page becomes the **Network** page (Assets · Templates · Results) with no check authoring, and every other writer (REST, AI tool, device page) points at the monitor editor.
+**Goal:** Make Monitors the sole network-check authoring surface and provide behavior-preserving conversion: representable unmanaged rows are prepared for adoption through the W05c1 ledger, with explicit offline-runtime refusals until safe, the Network Monitor page becomes the **Network** page (Assets · Templates · Results) with no check authoring, and every other writer (REST, AI tool, device page) points at the monitor editor.
 
-**Architecture:** Conversion *adopts* the existing `network_monitors` row rather than replacing it — the new definition's first compile stamps `managed_by_monitor_id` on the legacy row and updates it in place, so the row id, its `network_monitor_results` history, its asset binding, its TLS observation and `alerts.context.monitorId` all survive; only the alert rules are retired (`retired_at`) and the legacy worker's per-rule evaluation stops. The `network_check` condition is widened to carry everything the retired form could author (asset binding, per-type options, the `degraded` and `response_time_gt` verdicts, the legacy interval/timeout ranges) so nothing is unconvertible on shape, and the compiler emits the agent's own config key names (fixing the shipped `expectStatus`/`expectedStatus` mismatch). The `network_check` handler gains the legacy worker's *one alert device per check per org* rule, so a converted check attached to an org-wide policy raises one alert, on the same device it did before.
+**Architecture:** Conversion *adopts* the existing `network_monitors` row rather than replacing it — the new definition's first compile stamps `managed_by_monitor_id` on the legacy row and updates it in place, so the row id, its `network_monitor_results` history, its asset binding, its TLS observation and the legacy check id in alert source context all survive (typed event `monitorId` is reserved for monitor-definition ids); only the alert rules are retired (`retired_at`) and the legacy worker's per-rule evaluation stops. The `network_check` condition is widened to carry everything the retired form could author (asset binding, per-type options, the `degraded` and `response_time_gt` verdicts, the legacy interval/timeout ranges) while refusing any legacy semantics that cannot be represented exactly, and the compiler emits the agent's own config key names (fixing the shipped `expectStatus`/`expectedStatus` mismatch). The `network_check` handler gains the legacy worker's *one alert device per check per org* rule, so a converted check attached to an org-wide policy raises one alert, on the same device it did before.
 
 **Tech Stack:** Hono, Drizzle ORM, PostgreSQL 16, zod (`packages/shared`), BullMQ, Vitest (unit with Drizzle mocks; integration against real Postgres via `apps/api/src/__tests__/integration/setup`), React + react-i18next (8 locales), Astro Starlight docs.
 
@@ -18,61 +18,65 @@ branch: (set by feature-lifecycle after registration)
 
 ## Ordering assumptions (read first)
 
-- **W05a–W05d have shipped.** This plan consumes, by exact name, W05c1's `apps/api/src/services/monitors/conversion/` module (`ConversionSourceTable` already lists `'network_monitors'`, `ConversionPreviewItem`, `PolicyConversionPreview`, `convertPartnerLegacy`, `revertConversion`, `retireSource`, the `monitor_conversions` / `monitor_conversion_outputs` tables with `role in ('primary','resource_cpu','resource_memory','response')`, and `GET /monitor-definitions/conversion/pending`). **Verify before Task 5:** `ls apps/api/src/services/monitors/conversion/ && grep -n "network_monitors" apps/api/src/services/monitors/conversion/*.ts`. Neither existed on `main @ b8dd148bd8` when this plan was written; if W05c1's file names differ, follow W05c1's names and keep this plan's function names for the network-specific pieces.
+- **W05a–W05d have shipped.** This plan consumes, by exact name, W05c1's `apps/api/src/services/monitors/conversion/` module (`ConversionSourceTable` already lists `'network_monitors'`, `ConversionPreviewItem`, `PolicyConversionPreview`, `convertPartnerLegacy`, `revertConversion`, `retireSource`, the `monitor_conversions` / `monitor_conversion_outputs` tables with `role in ('primary','resource_cpu','resource_memory','response')`, and `GET /monitor-definitions/conversion/pending`). **Verify before Task 7:** `ls apps/api/src/services/monitors/conversion/ && grep -n "network_monitors" apps/api/src/services/monitors/conversion/*.ts`. Neither existed on `main @ b8dd148bd8` when this plan was written; use the exact producer paths in this plan; the W05c1 files are prerequisites, not existing baseline files.
 - **W05c1 already widened `network_check.consecutiveFailures` to `1..100`** (brief: `service`/`process`/`network_check` max 20 → 100). Task 2 keeps that and widens two *other* ranges.
 - **The spec's W05e row says "target = asset".** On `main` the `network_check` condition has no asset binding and `buildCompiledNetworkMonitor` (`apps/api/src/services/monitors/monitorCompiler.ts:219-245`) never writes `assetId`, so a compiled check today is always unbound (org-wide executor, org-level alert device). Task 2 adds `assetId` to the condition and the compiled row. This is a code fact the spec assumed was already true.
-- **Two shipped W04 defects are fixed here because conversion exposes them** (both verified in code, neither listed in the spec):
-  1. `buildCompiledNetworkMonitor` writes `config.expectStatus`; `buildMonitorCommand` (`services/monitorCommands.ts:37-44`) spreads config verbatim into the agent payload; the agent reads `expectedStatus` (`agent/internal/heartbeat/handlers_monitor.go:210`, default 200). A `network_check` monitor's expected status is silently ignored. Task 2 makes the compiler emit the legacy key names.
-  2. The alert sweep resolves monitors **per device** (`services/alertService.ts:881` → `resolveMonitorsForDevice`) and the `network_check` handler (`services/alertConditions/handlers/networkCheck.ts`) breaches for *any* device in the policy's scope. A converted check on an org-wide policy would raise one alert per online device for one outage; the legacy worker raises one alert per org on one resolved device (`jobs/monitorWorker.ts:294-345` `resolveMonitorAlertDevice`). Task 3 moves that rule into a shared resolver and gates the handler on it.
+- **#6352 and #6353 must be merged before PR1**, in addition to W05d. Task 2 retains/verifies #6352's `expectedStatus` compiler fix; Task 3 retains/verifies #6353's single-alert-device gate rather than undoing either prerequisite. Their local baseline is `monitorCompiler.ts:219-245`, `monitorCommands.ts:37-44`, `handlers_monitor.go:210`, and `monitorWorker.ts:294-345`.
 - **All unmanaged `network_monitors` rows are org-owned.** Both legacy writers (`routes/monitors.ts:495-507`, `services/aiToolsMonitoring.ts` create) insert `orgId` only; a partner-wide row (`org_id NULL`) is always a compiled artefact (`routes/monitors.ts:80-92`). Conversion is therefore an **org-axis** operation: no partner-axis write, no `canManagePartnerWidePolicies` gate, and `monitor_conversions.org_id` is always set.
-- **No "default policy" exists on config policies** (verified: no `is_default` column in `db/schema/configurationPolicies.ts`; onboarding at `modules/mcpInvites/tools/configureDefaults.ts:142` writes baseline `alert_rules`, not a policy). Task 5 mirrors `ruleConversionService.ts:130-140`: one generated policy **"Network checks — <org name>"** per org, assigned at organization level, reused across conversion batches through the ledger.
-- **Known limitation, filed not fixed:** the sweep only enqueues online devices (`jobs/alertWorker.ts:196-199`). After conversion, a check whose alert device is offline is silent until that device is back; the legacy worker created the alert regardless. File it as a follow-up ("evaluate `network_check` monitors for the alert device even when offline") and say so in the release notes.
-- **Three PRs, in order:** PR1 = Tasks 1–7 (API), PR2 = Tasks 8–10 (web), PR3 = Tasks 11–12 (tools, docs, verification). PR2 and PR3 each depend on PR1 being merged (they consume the 410s, the `managedByMonitorId` list field and the conversion routes). Do not stack them on each other's branches — a PR based on a sibling branch runs no CI (CLAUDE.md, tenancy section).
+- **No "default policy" exists on config policies** (verified: no `is_default` column in `db/schema/configurationPolicies.ts`; onboarding at `modules/mcpInvites/tools/configureDefaults.ts:142` writes baseline `alert_rules`, not a policy). Task 7 mirrors `ruleConversionService.ts:130-140`: one generated policy **"Network checks — <org name>"** per org when adoption becomes runtime-safe, assigned at organization level, reused across conversion batches through the ledger.
+- **D14 offline refusal is mandatory.** Verified in this checkout: `apps/api/src/jobs/alertWorker.ts:195-199` selects online devices; `apps/api/src/services/offlineAlertEffects.ts:14-18,31-44` handles only offline conditions, not continued network-check verdicts while another agent probes. This does not verify #6342 as covering network checks. Every selected alert/probing device can later go offline, so current online status is not evidence of equivalence. Task 7 refuses every otherwise-representable legacy check with `unconvertible:offline_probe_unsupported`, leaving its worker/rules running. Do not remove this guard without a separate runtime implementation and offline integration proof. The adoption implementation remains guarded; Task 9 proves refusal and reversible explicit retirement.
+- **Binding cross-wave contracts:** D2 ledger reads return `{ items: ConversionLedgerEntry[]; nextCursor: string | null }`, and `retireSource(...)` returns `{ conversionId }` including zero-output retirements. D3 requires `previewPartnerConversion(partnerId, auth)` then `convertPartnerLegacy(partnerId, previewHash, auth)`; network refusals participate in that full-scope hash. D4 `conversion/lifecycle.ts:isRevertAvailable` stays true for `network_monitors` while this wave retains its worker. D7 persists `null` for system actors. D8 preserves the fourth `DbExecutor` argument. D13/D15 use `movedAlertRefs` and shared `OPEN_ALERT_STATUSES`, preserving suppressed alerts and history on revert.
+- **Three PRs, in order:** PR1 = Tasks 1–9 (API), PR2 = Tasks 10–12 (web), PR3 = Tasks 13–14 (tools, docs, verification). PR2 depends on PR1; PR3 depends on PR1 and PR2 being merged (they consume the 410s, the `managedByMonitorId` list field and the conversion routes). Do not stack them on each other's branches — a PR based on a sibling branch runs no CI (CLAUDE.md, tenancy section).
 
 ## Global Constraints
 
-- **Migration filename `2026-10-24-110000-network-checks-as-monitors.sql`** (assigned by the common brief). Before pushing: `git fetch origin && git ls-tree --name-only origin/main apps/api/migrations/ | sort | tail -1` must sort **before** it (newest at planning time on `main`: `2026-10-21-100200-billing-profiles-permissions.sql`; W05b/c1/d claim `2026-10-21-*` and `2026-10-22-100000-*`). Rename with a later `HHMMSS` if anything newer landed. Never name it for today's real date.
+- **Migration filename `2026-10-24-110000-network-checks-as-monitors.sql`** (assigned by the common brief). Before pushing: `git fetch origin && git ls-tree -r --name-only origin/main apps/api/migrations | grep -E '^apps/api/migrations/[0-9]{4}-[^/]+\.sql$' | sort | tail -1` plus `scripts/check-migration-naming.sh --against-ref origin/main` must sort **before** it (newest at planning time on `main`: `2026-10-21-110100-…`; W05b/c1/d use the assigned `2026-10-23-*` and `2026-10-24-100000-*` names). Rename with a later `HHMMSS` if anything newer landed. Never name it for today's real date.
 - Migration is idempotent (`ADD COLUMN IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS`), has **no inner `BEGIN`/`COMMIT`**, and contains **no DML** — so no `set_config('breeze.scope','system',true)` is needed and none is added (`migrationRlsScope.test.ts` only requires the elevation before a write; if you add any `UPDATE`/`INSERT`/`DELETE`, put `SELECT set_config('breeze.scope', 'system', true);` first and report row counts with `GET DIAGNOSTICS … RAISE WARNING`).
-- **No new tenant tables. New columns on registered tables:** `network_monitors.retired_at`/`retired_reason` must be classified `included` in `CORE_TENANT_EXPORT_POLICY` (`services/tenantExportPolicyRegistry.ts:401`) in the same PR — the export-policy row is the one registration that fires on a **column**. `network_monitor_alert_rules` has no `org_id` (it reaches its tenant through `network_monitors`, `rls-coverage.integration.test.ts:832`), so it needs no export-policy entry and no cascade entry. No `CORE_ORG_CASCADE_DELETE_ORDER`, `CORE_DEVICE_*` or `DUAL_AXIS_TENANT_TABLES` change.
-- `partner-wide-write-coverage.test.ts` scans every file that mutates a dual-axis table. `network_monitors` is dual-axis, so the new conversion file needs an allowlist entry with a reason (Task 5 Step 6). `site-ceiling-write-coverage.test.ts` likewise; the conversion refuses site-restricted callers outright (Task 5), which is the reason recorded there.
-- **Worker-created rows take the DEVICE's org; compiled rows take the DEFINITION's owner** (unchanged). Adoption only ever stamps `managed_by_monitor_id` on a row whose `org_id` equals the definition's `org_id` (Task 4).
+- **No new tenant tables. New columns on registered tables:** `network_monitors.retired_at`/`retired_reason` must be classified `included` in `CORE_TENANT_EXPORT_POLICY` (`services/tenantExportPolicyRegistry.ts:401`) in the same PR; `monitor_conversions.network_source_snapshot` is `excludedOpen` (Task 6), and C1's `moved_alert_refs` stays `excludedOpen` — the export-policy row is the one registration that fires on a **column**. `network_monitor_alert_rules` has no `org_id` (it reaches its tenant through `network_monitors`, `rls-coverage.integration.test.ts:832`), so it needs no export-policy entry and no cascade entry. No `CORE_ORG_CASCADE_DELETE_ORDER`, `CORE_DEVICE_*` or `DUAL_AXIS_TENANT_TABLES` change; C1 already registers the common ledger tables.
+- `partner-wide-write-coverage.test.ts` scans every file that mutates a dual-axis table. `network_monitors` is dual-axis, so the new conversion file needs an allowlist entry with a reason (Task 7 Step 3). `site-ceiling-write-coverage.test.ts` likewise; the conversion refuses site/exact-device-restricted callers outright in both preview and conversion services (Task 7), which is the reason recorded there.
+- **Worker-created rows take the DEVICE's org; compiled rows take the DEFINITION's owner** (unchanged). Adoption only ever stamps `managed_by_monitor_id` on a row whose `org_id` equals the definition's `org_id` (Task 5).
 - Web mutations go through `runAction` (`apps/web/src/lib/runAction.ts`); catch pattern per CLAUDE.md. Every new i18n key needs **real translations in all 8 locales** (`apps/web/src/locales/{en,de-DE,es-419,fr-CA,fr-FR,it-IT,pt-BR,tr-TR}`); the coverage test fails on a missing or English-echoed key. Removed components take their `longTail.*` blocks out of all 8 files.
-- Hash for tab state (`useHashState`/`useHashTab`); the **new-monitor prefill uses query params** (`/alerts/monitors/new?kind=network_check&assetId=…`) because it is a deep link into a fresh form, not transient UI state — the same precedent `MonitoringPage.tsx:31-36` already sets with `/monitoring?assetId=`.
+- Hash for editor preselection and tab state: `/alerts/monitors/new#kind=network_check&assetId=<uuid>`. Merge these keys with W05a's `policy=<uuid>` rather than dropping the selected policy when tabs change. Query parameters remain only for API filters.
 - Every task: **red test first**, then `cd apps/api && npx tsc --noEmit -p .` (or `pnpm --filter @breeze/api exec tsc --noEmit`), then the task's targeted tests, then commit. Use `cd apps/api && npx vitest run <path>`; never `pnpm --filter … test -- --run <path>`; never a trailing-slash path filter.
-- `pnpm test` does **not** run the integration / export-policy suites. Tasks 1, 5 and 7 need `pnpm test-stack up` (private pg+redis for this worktree) and `pnpm test-stack down` afterwards — nothing reaps it for you.
+- `pnpm test` does **not** run the integration / export-policy suites. Tasks 1, 4, 6, 7 and 9 need `pnpm test-stack up` (private pg+redis for this worktree) and `pnpm test-stack down` afterwards — nothing reaps it for you.
 - Do not commit from a subagent; the orchestrator commits. Each task's Step 5 gives the commit message the orchestrator uses.
 
 ## File Structure (what changes where)
 
 | File | Change |
 |---|---|
-| `apps/api/migrations/2026-10-24-110000-network-checks-as-monitors.sql` | **Create.** `retired_at`/`retired_reason` on `network_monitors` and `network_monitor_alert_rules`; partial index for the pending count. |
-| `apps/api/src/db/schema/monitors.ts` | Modify (lines 10-56, 80-88): add the four columns. |
-| `apps/api/src/services/tenantExportPolicyRegistry.ts` | Modify (line 401): classify `retired_at`, `retired_reason` as `included`. |
+| `apps/api/migrations/2026-10-24-110000-network-checks-as-monitors.sql` | **Create.** `retired_at`/`retired_reason` on `network_monitors` and `network_monitor_alert_rules`; partial pending index; asset owner FK/check; parent ledger source snapshot. |
+| `apps/api/src/db/schema/monitors.ts` | Modify (lines 10-56, 80-88): retirement columns, composite asset/org FK and partner-asset CHECK. |
+| `apps/api/src/services/tenantExportPolicyRegistry.ts` | Modify (line 401): classify `retired_at`, `retired_reason` as `included`; parent ledger `network_source_snapshot` as `excludedOpen`. |
 | `packages/shared/src/validators/monitors.ts` | Modify (lines 173-189): widen `network_check` — `assetId`, per-type options, `degradedIsFailure`, `maxResponseMs`, legacy ranges; export `NetworkCheckMonitorCondition`. |
 | `packages/shared/src/validators/monitors.test.ts` | Modify: new `network_check` cases. |
 | `apps/api/src/services/monitors/kinds/networkCheck.ts` | Modify (whole file, 47 lines): condition type, `overridableKeys`, `toAlertCondition` carries the new verdict keys. |
 | `apps/api/src/services/monitors/monitorCompiler.ts` | Modify (lines 213-245 `buildCompiledNetworkMonitor`; 286-312 `compileMonitorInTx`): agent config key names, `assetId`, adoption option. |
 | `apps/api/src/services/monitors/monitorCompiler.w04.test.ts` | Modify (lines 175-236): config keys, `assetId`, adoption. |
-| `apps/api/src/services/monitors/monitorService.ts` | Modify (lines 239-291 `createMonitorDefinition`): optional `opts.adoptNetworkMonitorId` passthrough. |
+| `apps/api/src/services/monitors/monitorService.ts` | Modify (lines 239-320): asset-owner validation on create/merged update; preserve four-argument executor-aware create and pass CompileOptions. |
+| `apps/api/src/services/monitors/networkCheckAsset.ts`, `networkCheckAsset.test.ts`, `monitorService.test.ts` | Create guard/test; extend service regressions. |
+| `apps/api/src/db/schema/discovery.ts` | Modify (143-215): unique asset `(id, org_id)` FK target. |
+| `apps/api/src/db/schema/monitorConversions.ts` (W05c1) | Modify: `networkSourceSnapshot` nullable JSON, classified `excludedOpen`. |
+| `apps/api/src/services/monitors/conversion/networkHistory.ts`, `networkHistory.test.ts` | Create: common-ledger retirement, source snapshots, carry-over, reference-aware reversal. |
+| `apps/api/src/services/monitors/conversion/convert.ts`, `loadSources.ts`, `lifecycle.ts` (W05c1) | Modify network cases, pending counts, full-scope preview/hash and lifecycle. |
 | `apps/api/src/services/monitors/networkCheckAlertDevice.ts` | **Create.** `resolveNetworkCheckAlertDevice` — lifted from `jobs/monitorWorker.ts:294-345`. |
 | `apps/api/src/services/monitors/networkCheckAlertDevice.test.ts` | **Create.** |
-| `apps/api/src/jobs/monitorWorker.ts` | Modify (lines 294-345 delete local resolver; 393-411 rule query adds `retired_at IS NULL`; 415 uses shared resolver). |
+| `apps/api/src/jobs/monitorWorker.ts` | Modify (lines 294-345 delete local resolver; 393-411 rule query adds `retired_at IS NULL`; 415 uses shared resolver; 464-482 reserves event monitorId for definitions). |
 | `apps/api/src/jobs/monitorWorker.test.ts` | Modify: schema mock gains `retiredAt`; resolver import. |
 | `apps/api/src/services/alertConditions/types.ts` | Modify (lines 147-151): `NetworkCheckCondition` gains `degradedIsFailure?`, `maxResponseMs?`. |
 | `apps/api/src/services/alertConditions/handlers/networkCheck.ts` | Modify (whole file, 110 lines): alert-device gate, failure predicate. |
 | `apps/api/src/services/alertConditions/handlers/networkCheck.test.ts` | Modify: mock the resolver module; new cases. |
-| `apps/api/src/services/monitors/conversion/networkChecks.ts` | **Create.** Pure mapper + preview/convert/retire/revert/count. |
+| `apps/api/src/services/monitors/conversion/networkChecks.ts` | **Create.** Exact mapper + guarded preview/convert/count; re-export history services. |
 | `apps/api/src/services/monitors/conversion/networkChecks.test.ts` | **Create.** Mapper unit tests. |
-| `apps/api/src/services/monitors/conversion/index.ts` (W05c1) | Modify: `retireSource`/`revertConversion` gain the `'network_monitors'` case; `convertPartnerLegacy` loops orgs into `convertNetworkChecks`; pending count gains `networkChecks`. |
-| `apps/api/src/routes/monitorDefinitions.ts` | Modify: `GET /conversion/network-checks`, `POST /conversion/network-checks/convert` next to W05c1's conversion routes. |
+| `apps/api/src/services/monitors/conversion/index.ts` (W05c1) | Modify: Re-export `retireSource`/`revertConversion` with the `'network_monitors'` case; `previewPartnerConversion`/`convertPartnerLegacy` retain network refusals in the complete hash; pending count gains `networkChecks`. |
+| `apps/api/src/routes/monitorDefinitions.conversion.ts` (W05c1) | Modify: `GET /conversion/network-checks`, `POST /conversion/network-checks/convert` next to W05c1's conversion routes. |
 | `apps/api/src/routes/monitorDefinitions.conversion.networkChecks.test.ts` | **Create.** Route tests. |
 | `apps/api/src/__tests__/partner-wide-write-coverage.test.ts` | Modify (line ~71 block): allowlist entry for the conversion file. |
 | `apps/api/src/__tests__/site-ceiling-write-coverage.test.ts` | Modify: allowlist entry for the conversion file. |
-| `apps/api/src/routes/monitors.ts` | Modify: `POST /` (461-522), `PATCH /:id` (639-707), `POST /alerts` (870-905), `PATCH /alerts/:id` (925-957), `DELETE /alerts/:id` (959-986) → 410; delete dead zod schemas (261-343); list projection (430-456) adds `managedByMonitorId`, `retiredAt`, `includeRetired` query. |
+| `apps/api/src/routes/monitors.ts` | Modify: `POST /` (461-522), `PATCH /:id` (639-707), `POST /alerts` (870-905), `PATCH /alerts/:id` (925-957), `DELETE /alerts/:id` (959-986), unmanaged `DELETE /:id` (713-744) → 410; delete dead zod schemas (261-343); list projection (430-456) adds `managedByMonitorId`, `retiredAt`, `includeRetired` query. |
 | `apps/api/src/routes/monitors_list_create.test.ts`, `monitors_alerts.test.ts`, `monitors_detail.test.ts` | Modify: write paths assert 410. |
-| `apps/api/src/routes/discovery.ts` | Modify (`DELETE /assets/:id`, lines 1699-1750): 409 when managed checks are bound to the asset. |
-| `apps/api/src/__tests__/integration/networkCheckConversion.integration.test.ts` | **Create.** Real-Postgres proof: adopt → results → one alert on the alert device through the compiled rule → revert. |
+| `apps/api/src/routes/discovery.ts` | Modify (`DELETE /assets/:id`, lines 1699-1750): 409 for any bound retained check, managed or unmanaged. |
+| `apps/api/src/__tests__/integration/networkCheckConversion.integration.test.ts` | **Create.** Real-Postgres proof: offline refusal, cross-org asset FK, shared open-status carry-over, retirement → ledger → revert. |
 | `apps/web/src/components/layout/Sidebar.tsx` | Modify (line 275): `name: 'Network'`. |
 | `apps/web/src/components/layout/Sidebar.nav.test.tsx` | Modify (lines 86, 179-185, 334). |
 | `apps/web/src/locales/*/common.json` | Modify: `nav.networkMonitor` value; `longTail.monitoring.MonitoringPage.*`; `longTail.monitors.NetworkMonitorList.*` (+conversion banner keys); remove `longTail.monitors.CreateMonitorForm`; trim `longTail.monitors.MonitorDetailModal`. |
@@ -93,8 +97,8 @@ branch: (set by feature-lifecycle after registration)
 | `apps/web/src/components/devices/networkDevice/settings/useNetworkAssetMutations.test.ts` | Modify. |
 | `apps/web/src/components/monitoring/monitorKindFields.ts` | Modify (lines 196-234, 296): new fields, ranges. |
 | `apps/web/src/components/monitoring/monitorKindFields.test.ts` | Modify. |
-| `apps/web/src/components/monitoring/MonitorEditor.tsx` | Modify: `?kind`/`?assetId` prefill; `NetworkCheckAssetBinding` chip. |
-| `apps/web/src/components/monitoring/NetworkCheckAssetBinding.tsx` | **Create.** |
+| `apps/web/src/components/monitoring/MonitorEditor.tsx` | Modify: `#kind`/`assetId` prefill; `NetworkCheckAssetBinding` picker. |
+| `apps/web/src/components/monitoring/NetworkCheckAssetBinding.tsx`, `apps/web/src/components/monitoring/NetworkCheckAssetBinding.test.tsx` | **Create.** Picker, read error/retry and API-only option round-trip. |
 | `apps/web/src/components/monitoring/MonitorEditor.test.tsx` | Modify. |
 | `apps/api/src/services/aiToolsMonitoring.ts` | Modify (lines 197-228 description/schema; 305-366 create/update → refusal; `query_monitors` projection). |
 | `apps/api/src/services/aiToolsMonitoring.test.ts` | Modify (lines 350-420). |
@@ -409,7 +413,7 @@ branch: (set by feature-lifecycle after registration)
   { key: 'degradedIsFailure', labelKey: 'monitoring:fields.degradedIsFailure', kind: 'boolean' },
   { key: 'maxResponseMs', labelKey: 'monitoring:fields.maxResponseMs', kind: 'number', min: 1, max: 600000, optional: true },
   ```
-  (`packetSize` and `headers` are API-only this wave.) `defaultConditionFor('network_check')` (line 296) gains `degradedIsFailure: false`. If `showWhen` does not support `optional` select fields, follow how `antivirus`/`backup_continuity` fields (lines ~150-190) declare optional selects.
+  (`packetSize` and `headers` are API-only this wave and must survive editor saves unchanged; Task 12 pins that round-trip.) `defaultConditionFor('network_check')` (line 296) gains `degradedIsFailure: false`. If `showWhen` does not support `optional` select fields, follow how `antivirus`/`backup_continuity` fields (lines ~150-190) declare optional selects.
 
   `monitoring.json` `fields` — add in **all 8 locales** (en values; translate the rest, do not echo English):
   `pingCount` "Echo requests", `expectBanner` "Expected banner", `httpMethod` "HTTP method", `expectedBody` "Response must contain", `followRedirects` "Follow redirects", `verifySsl` "Verify TLS certificate", `recordType` "Record type", `expectedValue` "Expected value", `nameserver` "Nameserver", `degradedIsFailure` "Treat degraded as failure", `maxResponseMs` "Fail when slower than (ms)".
@@ -450,13 +454,14 @@ branch: (set by feature-lifecycle after registration)
   // in the schema mock: networkMonitors gains assetId: 'networkMonitors.assetId';
   // networkMonitorResults gains responseMs: 'networkMonitorResults.responseMs'.
 
+  beforeEach(() => { vi.clearAllMocks(); mockDb.select.mockReset(); alertDeviceMock.mockResolvedValue('device-1'); });
   describe('one alert device per check per org (W05e)', () => {
     it('breaches on the alert device', async () => {
       alertDeviceMock.mockResolvedValueOnce('device-1');
-      setReads([{ id: 'managed-1', assetId: 'asset-1' }], offline(2));
+      setReads([{ id: 'managed-1', assetId: 'a0000000-0000-4000-8000-000000000001' }], offline(2));
       const r = await networkCheckHandler.evaluate({ type: 'network_check', monitorId: MONITOR_ID, consecutiveFailures: 2 }, DEVICE_ID);
       expect(r.passed).toBe(true);
-      expect(alertDeviceMock).toHaveBeenCalledWith({ orgId: 'org-a', assetId: 'asset-1' });
+      expect(alertDeviceMock).toHaveBeenCalledWith({ orgId: 'org-a', assetId: 'a0000000-0000-4000-8000-000000000001' });
     });
     it('never breaches on any other device in the policy scope, even with an offline streak', async () => {
       alertDeviceMock.mockResolvedValueOnce('device-other');
@@ -608,7 +613,126 @@ branch: (set by feature-lifecycle after registration)
 
 ---
 
-### Task 4: Compiler adoption — a definition's first compile takes over an existing row (PR1)
+### Task 4: Enforce asset ownership on create, update and compiled rows (PR1)
+
+**Files:**
+- Modify: `apps/api/src/services/monitors/monitorService.ts:239-320` (create and merged update validation), `monitorService.test.ts:17-101` (existing `dbMock`, `auth`, `input` harness).
+- Create: `apps/api/src/services/monitors/networkCheckAsset.ts`, `networkCheckAsset.test.ts`.
+- Modify: `apps/api/src/db/schema/discovery.ts:143-215`, `apps/api/src/db/schema/monitors.ts:10-56`; Task 1's unshipped `apps/api/migrations/2026-10-24-110000-network-checks-as-monitors.sql`.
+- Test: `apps/api/src/__tests__/integration/networkCheckConversion.integration.test.ts` (Task 9 live FK proof).
+
+**Interfaces:** Consumes `discoveredAssets.orgId`, `NetworkCheckMonitorCondition`; produces `assertNetworkCheckAssetOwner(kind, condition, owner, executor): Promise<void>`. The INFERRED ownership finding is confirmed: `monitorService.ts:239-320` only validates shape/escalation, and `monitors.ts:20` has only a single-column FK. Reject a partner definition naming an asset, even one visible to its caller. Validate PATCH against the merged condition and persisted owner.
+
+- [ ] **Step 1: Write the failing test.** New `networkCheckAsset.test.ts`:
+  ```ts
+  import { describe, expect, it, vi } from 'vitest';
+  import { assertNetworkCheckAssetOwner } from './networkCheckAsset';
+  const orgId = '11111111-1111-4111-8111-111111111111';
+  const assetId = '22222222-2222-4222-8222-222222222222';
+  function executor(rows: unknown[]) {
+    const select = vi.fn(() => ({ from: () => ({ where: () => ({ limit: async () => rows }) }) }));
+    return { select };
+  }
+  it('rejects a missing or foreign-org asset before compilation', async () => {
+    await expect(assertNetworkCheckAssetOwner('network_check', { assetId }, { orgId, partnerId: null }, executor([]) as never))
+      .rejects.toThrow('asset_not_owned');
+  });
+  it('rejects an asset on a partner definition without reading the asset', async () => {
+    const tx = executor([{ id: assetId }]);
+    await expect(assertNetworkCheckAssetOwner('network_check', { assetId }, { orgId: null, partnerId: orgId }, tx as never))
+      .rejects.toThrow('asset_requires_org_owner');
+    expect(tx.select).not.toHaveBeenCalled();
+  });
+  it('accepts a same-org asset and an unbound check', async () => {
+    const tx = executor([{ id: assetId }]);
+    await expect(assertNetworkCheckAssetOwner('network_check', { assetId }, { orgId, partnerId: null }, tx as never)).resolves.toBeUndefined();
+    await expect(assertNetworkCheckAssetOwner('network_check', {}, { orgId: null, partnerId: orgId }, tx as never)).resolves.toBeUndefined();
+    expect(tx.select).toHaveBeenCalledTimes(1);
+  });
+  ```
+  Append service regressions using the existing harness (no invented fixtures):
+  ```ts
+  it('create rejects an asset not owned by the definition org', async () => {
+    dbMock.select.mockReturnValue({ from: () => ({ where: () => ({ limit: async () => [] }) }) });
+    await expect(createMonitorDefinition(input({ kind: 'network_check', condition: {
+      checkType: 'icmp_ping', target: 'example.com', assetId: '33333333-3333-4333-8333-333333333333',
+    } }), auth())).rejects.toThrow('asset_not_owned');
+    expect(dbMock.insert).not.toHaveBeenCalled();
+  });
+  it('update validates a replacement asset against the persisted owner', async () => {
+    const existing = { ...input(), id: ORG, orgId: ORG, partnerId: null, kind: 'network_check',
+      condition: { checkType: 'icmp_ping', target: 'example.com' }, escalationPolicyId: null };
+    dbMock.select.mockReturnValueOnce({ from: () => ({ where: () => ({ limit: async () => [existing] }) }) })
+      .mockReturnValueOnce({ from: () => ({ where: () => ({ limit: async () => [] }) }) });
+    await expect(updateMonitorDefinition(ORG, { condition: { ...existing.condition,
+      assetId: '33333333-3333-4333-8333-333333333333' } }, auth())).rejects.toThrow('asset_not_owned');
+    expect(dbMock.update).not.toHaveBeenCalled();
+  });
+  ```
+- [ ] **Step 2: Run, expect FAIL.** `cd apps/api && npx vitest run src/services/monitors/networkCheckAsset.test.ts src/services/monitors/monitorService.test.ts` → missing module, then unexpected transaction instead of `asset_not_owned` before the service calls are installed.
+- [ ] **Step 3: Implement.** `networkCheckAsset.ts`:
+  ```ts
+  import { and, eq } from 'drizzle-orm';
+  import { db } from '../../db';
+  import { discoveredAssets } from '../../db/schema';
+  type DbExecutor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
+  export class NetworkCheckAssetError extends Error {}
+  export async function assertNetworkCheckAssetOwner(
+    kind: string, condition: Record<string, unknown>, owner: { orgId: string | null; partnerId: string | null },
+    executor: DbExecutor = db,
+  ): Promise<void> {
+    if (kind !== 'network_check' || !condition.assetId) return;
+    if (!owner.orgId || owner.partnerId) throw new NetworkCheckAssetError('asset_requires_org_owner');
+    const [asset] = await executor.select({ id: discoveredAssets.id }).from(discoveredAssets)
+      .where(and(eq(discoveredAssets.id, String(condition.assetId)), eq(discoveredAssets.orgId, owner.orgId))).limit(1);
+    if (!asset) throw new NetworkCheckAssetError('asset_not_owned');
+  }
+  ```
+  Import `{ assertNetworkCheckAssetOwner, NetworkCheckAssetError }` from `./networkCheckAsset`. After shape validation in both create and update, use the same executor as compilation and translate to the existing `MonitorValidationError` (routes already return 400):
+  ```ts
+  // create, before any insert; owner/shape come from the existing validation.
+  try { await assertNetworkCheckAssetOwner(input.kind, shape.condition, owner, executor ?? db); }
+  catch (error) {
+    if (error instanceof NetworkCheckAssetError) throw new MonitorValidationError(error.message);
+    throw error;
+  }
+  // update, before any write, using the executor-aware update contract from C2.
+  try { await assertNetworkCheckAssetOwner(merged.kind, shape.condition, existing, executor ?? db); }
+  catch (error) {
+    if (error instanceof NetworkCheckAssetError) throw new MonitorValidationError(error.message);
+    throw error;
+  }
+  ```
+  Add to Task 1's migration (before shipping PR1; never edit a shipped migration):
+  ```sql
+  CREATE UNIQUE INDEX IF NOT EXISTS discovered_assets_id_org_uidx ON discovered_assets (id, org_id);
+  DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'network_monitors'::regclass AND conname = 'network_monitors_asset_org_fk') THEN
+      ALTER TABLE network_monitors ADD CONSTRAINT network_monitors_asset_org_fk
+        FOREIGN KEY (asset_id, org_id) REFERENCES discovered_assets (id, org_id)
+        DEFERRABLE INITIALLY IMMEDIATE;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'network_monitors'::regclass AND conname = 'network_monitors_asset_org_required') THEN
+      ALTER TABLE network_monitors ADD CONSTRAINT network_monitors_asset_org_required
+        CHECK (asset_id IS NULL OR (org_id IS NOT NULL AND partner_id IS NULL));
+    END IF;
+  END $$;
+  ```
+  No cleanup DML: existing cross-owner corruption fails migration visibly and must be investigated; never silently reassign an asset. Drizzle schema callbacks mirror the unique index, FK and check (imports `uniqueIndex`, `foreignKey`, `check`, `sql`):
+  ```ts
+  // discoveredAssets callback:
+  idOrgUidx: uniqueIndex('discovered_assets_id_org_uidx').on(table.id, table.orgId),
+  // networkMonitors callback (SQL migration supplies DEFERRABLE):
+  assetOrgFk: foreignKey({ name: 'network_monitors_asset_org_fk', columns: [table.assetId, table.orgId],
+    foreignColumns: [discoveredAssets.id, discoveredAssets.orgId] }),
+  assetOrgRequired: check('network_monitors_asset_org_required', sql`${table.assetId} IS NULL OR (${table.orgId} IS NOT NULL AND ${table.partnerId} IS NULL)`),
+  ```
+- [ ] **Step 4: Run, expect PASS.** Repeat Step 2, then `cd apps/api && npx tsc --noEmit -p .`; Task 9 verifies real deferrability and cross-tenant rejection, not only schema drift.
+- [ ] **Step 5: Commit.** `git add apps/api/src/services/monitors/networkCheckAsset.ts apps/api/src/services/monitors/networkCheckAsset.test.ts apps/api/src/services/monitors/monitorService.ts apps/api/src/services/monitors/monitorService.test.ts apps/api/src/db/schema/discovery.ts apps/api/src/db/schema/monitors.ts apps/api/migrations/2026-10-24-110000-network-checks-as-monitors.sql && git commit -m "fix(monitors): enforce network asset ownership on create update and compiled rows"`
+
+---
+
+### Task 5: Compiler adoption — a definition's first compile takes over an existing row (PR1)
 
 **Files:**
 - Modify: `apps/api/src/services/monitors/monitorCompiler.ts` (lines 286-312 `compileMonitorInTx`)
@@ -621,25 +745,35 @@ branch: (set by feature-lifecycle after registration)
   export interface CompileOptions { /** W05e — stamp managed_by_monitor_id on this unmanaged, same-org network_monitors row before the upsert so it is UPDATED in place. */ adoptNetworkMonitorId?: string }
   export class NetworkMonitorAdoptionError extends Error { constructor(public readonly networkMonitorId: string) }
   export async function compileMonitorInTx(tx: DbTx, def: MonitorDefinitionRow, opts?: CompileOptions): Promise<CompiledRefs>;
-  export async function createMonitorDefinition(input: CreateMonitorDefinitionInput, auth: AuthContext, opts?: CompileOptions): Promise<MonitorDefinitionRow>;
+  export function createMonitorDefinition(input: CreateMonitorDefinitionInput, auth: AuthContext, options?: CompileOptions, executor?: DbExecutor): Promise<MonitorDefinitionRow>; // implementation defaults options to {}
   ```
 
-- [ ] **Step 1: Write the failing test** (`monitorCompiler.w04.test.ts`, in the network_check describe; extend the tx stub so `tx.update(networkMonitors).set().where().returning()` returns `[{ id }]` when a recorded `adoptable` id is set and `[]` otherwise):
+- [ ] **Step 1: Write the failing test.** Extend the actual `makeTx` at `monitorCompiler.w04.test.ts:78` with an optional second argument `adoptable: string | null = null`; its existing outputs remain `_inserts`, `_updates`, `_selectOrder`. Import the real `networkMonitors` table. Replace only its `update` stub:
   ```ts
-  it('adopts an unmanaged same-org row: the managed upsert UPDATES it instead of inserting', async () => {
-    const tx = makeTx({ adoptable: 'legacy-row-1' });
+  update: (table: unknown) => ({ set: (values: Record<string, unknown>) => ({ where: () => {
+    const adoption = table === networkMonitors && Object.keys(values).length === 1 && 'managedByMonitorId' in values;
+    const apply = () => { updates.push({ id: adoption ? adoptable ?? 'missing' : 'existing', values }); };
+    return {
+      returning: async () => { apply(); return adoption ? (adoptable ? [{ id: adoptable }] : []) : [{ id: 'existing' }]; },
+      then: (resolve: (value: undefined) => unknown) => { apply(); return Promise.resolve(undefined).then(resolve); },
+    };
+  } }) }),
+  ```
+  Add `NetworkMonitorAdoptionError` to the existing dynamic compiler import, then:
+  ```ts
+  it('adopts in place using the existing row id', async () => {
+    const tx = makeTx({ networkMonitors: 'legacy-row-1' }, 'legacy-row-1');
     await compileMonitorInTx(tx as never, makeDef(), { adoptNetworkMonitorId: 'legacy-row-1' });
-    expect(tx.adoptions).toEqual([{ id: 'legacy-row-1', managedByMonitorId: 'd0000000-0000-4000-8000-000000000001' }]);
-    expect(tx.inserted.filter((r) => r.table === 'network_monitors')).toHaveLength(0);
-    expect(tx.updated.filter((r) => r.table === 'network_monitors')).toHaveLength(1);
+    expect(tx._updates).toContainEqual({ id: 'legacy-row-1', values: { managedByMonitorId: makeDef().id } });
+    expect(tx._inserts.filter((r: Record<string, unknown>) => 'monitorType' in r)).toHaveLength(0);
+    expect(tx._updates.filter((r: { values: Record<string, unknown> }) => 'monitorType' in r.values)).toHaveLength(1);
   });
-  it('refuses to adopt a row that is already managed or belongs to another org', async () => {
-    const tx = makeTx({ adoptable: null });
-    await expect(compileMonitorInTx(tx as never, makeDef(), { adoptNetworkMonitorId: 'legacy-row-1' }))
+  it('rejects a row the conditional adoption update cannot acquire', async () => {
+    await expect(compileMonitorInTx(makeTx({}, null) as never, makeDef(), { adoptNetworkMonitorId: 'legacy-row-1' }))
       .rejects.toBeInstanceOf(NetworkMonitorAdoptionError);
   });
   ```
-- [ ] **Step 2: Run it, expect FAIL.** `cd apps/api && npx vitest run src/services/monitors/monitorCompiler.w04.test.ts` → `NetworkMonitorAdoptionError is not exported` / adoptions `[]`.
+- [ ] **Step 2: Run it, expect FAIL.** `cd apps/api && npx vitest run src/services/monitors/monitorCompiler.w04.test.ts` → missing adoption export/expected adoption update absent.
 - [ ] **Step 3: Implement.** In `monitorCompiler.ts`:
   ```ts
   import { and, eq, isNull } from 'drizzle-orm';
@@ -678,24 +812,211 @@ branch: (set by feature-lifecycle after registration)
     await upsertManaged(tx, networkMonitors, def.id, { ...buildCompiledNetworkMonitor(def), updatedAt: now });
   }
   ```
-  (`sql` from `drizzle-orm`.) In `monitorService.ts` `createMonitorDefinition(input, auth, opts?: CompileOptions)` → `compileMonitorInTx(tx, created, opts)`; import and re-export `CompileOptions`, `NetworkMonitorAdoptionError`.
+  (`sql` from `drizzle-orm`.) In `monitorService.ts` `createMonitorDefinition(input, auth, options: CompileOptions = {}, executor?: DbExecutor)` → `compileMonitorInTx(tx, created, options)`; retain C2's executor-aware owner/reference reads and `executor ? work(executor) : db.transaction(work)` transaction boundary; import and re-export `CompileOptions`, `NetworkMonitorAdoptionError`.
 - [ ] **Step 4: Run, expect PASS.** `cd apps/api && npx tsc --noEmit -p . && npx vitest run src/services/monitors/monitorCompiler.w04.test.ts src/services/monitors/monitorCompiler.test.ts src/services/monitors/monitorService.test.ts`
 - [ ] **Step 5: Commit.** `git add apps/api/src/services/monitors/monitorCompiler.ts apps/api/src/services/monitors/monitorService.ts apps/api/src/services/monitors/monitorCompiler.w04.test.ts && git commit -m "feat(monitors): compile option to adopt an existing network_monitors row in place"`
 
 ---
 
-### Task 5: Conversion — mapper, preview/convert/retire/revert, policy, routes, ledger wiring (PR1)
+### Task 6: Preserve alert provenance and make network retirement reversible (PR1)
+
+**Files:**
+- Create: `apps/api/src/services/monitors/conversion/networkHistory.ts`, `networkHistory.test.ts`.
+- Modify (W05c1 producers): `apps/api/src/db/schema/monitorConversions.ts`, `apps/api/src/services/monitors/conversion/convert.ts`, `index.ts`, `lifecycle.ts`, `apps/api/src/routes/monitorDefinitions.conversion.ts`.
+- Modify: `apps/api/migrations/2026-10-24-110000-network-checks-as-monitors.sql` (Task 1, same PR); `apps/api/src/services/tenantExportPolicyRegistry.ts:401` (network row) and W05c1's `monitor_conversions` entry.
+- Modify: `apps/api/src/jobs/monitorWorker.ts:464-482` (source/event identity); `monitorWorker.test.ts`.
+- Test: Task 9's `apps/api/src/__tests__/integration/networkCheckConversion.integration.test.ts`.
+
+**Interfaces:** Consumes W05c1 `OPEN_ALERT_STATUSES` from `conversion/loadSources.ts`, `monitorConversionOutputs.movedAlertRefs` (D13, `excludedOpen`), `isRevertAvailable(sourceTable)` from `conversion/lifecycle.ts`. Produces `carryNetworkAlerts(tx, source, definition)`, `snapshotNetworkSource(tx, source)`, `retireNetworkCheck(sourceId, reason, auth): Promise<{ conversionId: string }>`, `revertNetworkCheckConversion(conversion, outputMonitorIds, auth): Promise<void>`. `networkSourceSnapshot` is a W05e-only nullable JSON column on the common parent ledger, needed even when a retirement has zero outputs. No second ledger or alternate open-status vocabulary.
+
+- [ ] **Step 1: Write the failing tests.** `networkHistory.test.ts`:
+  ```ts
+  import { describe, expect, it, vi } from 'vitest';
+  import { carryNetworkAlerts } from './networkHistory';
+  import { OPEN_ALERT_STATUSES } from './loadSources';
+  it('carries every shared open status with original refs and never writes a resolution', async () => {
+    const rows = OPEN_ALERT_STATUSES.map((status, i) => ({ id: `a-${i}`, status, ruleId: null,
+      configPolicyId: null, monitorId: null, context: { source: 'network_monitor', monitorId: 'legacy', alertRuleId: 'rule' } }));
+    const writes: Record<string, unknown>[] = [];
+    const tx = {
+      select: vi.fn(() => ({ from: () => ({ where: () => ({ for: async () => rows }) }) })),
+      update: vi.fn(() => ({ set: (values: Record<string, unknown>) => ({ where: async () => { writes.push(values); } }) })),
+    };
+    const refs = await carryNetworkAlerts(tx as never, { id: 'legacy', orgId: 'org' } as never,
+      { id: 'definition', compiledAlertRuleId: 'compiled' } as never);
+    expect(refs.map(r => r.id)).toEqual(rows.map(r => r.id));
+    expect(refs[2]?.context).toEqual(rows[2]?.context); // suppressed included
+    expect(writes).toHaveLength(OPEN_ALERT_STATUSES.length);
+    for (const write of writes) {
+      expect(write).toMatchObject({ ruleId: 'compiled', configPolicyId: null, monitorId: 'definition',
+        context: { convertedFrom: { sourceTable: 'network_monitors', sourceId: 'legacy' } } });
+      expect(write).not.toHaveProperty('status');
+      expect(write).not.toHaveProperty('resolvedAt');
+    }
+  });
+  ```
+- [ ] **Step 2: Run, expect FAIL.** `cd apps/api && npx vitest run src/services/monitors/conversion/networkHistory.test.ts` → missing module/export. Task 9 supplies the real retirement/revert, FK and cross-org regression tests.
+- [ ] **Step 3: Implement.** Add the parent snapshot to the unshipped W05e migration and Drizzle table, classifying it `excludedOpen` in `CORE_TENANT_EXPORT_POLICY` (the existing D13 output `moved_alert_refs` remains `excludedOpen`):
+  ```sql
+  ALTER TABLE monitor_conversions ADD COLUMN IF NOT EXISTS network_source_snapshot jsonb;
+  ```
+  ```ts
+  networkSourceSnapshot: jsonb('network_source_snapshot'),
+  ```
+  `networkHistory.ts`:
+  ```ts
+  import { createHash } from 'node:crypto';
+  import { and, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
+  import { db } from '../../../db';
+  import { alerts, configPolicyFeatureLinks, configPolicyMonitors, monitorConversions,
+    monitorConversionOutputs, monitorDefinitions, networkMonitors, networkMonitorAlertRules } from '../../../db/schema';
+  import type { AuthContext } from '../../../middleware/auth';
+  import { canMutateOrgWideGovernance } from '../../siteCeilingAccess';
+  import { OPEN_ALERT_STATUSES } from './loadSources';
+  import { isRevertAvailable } from './lifecycle';
+  type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+  type Row = typeof networkMonitors.$inferSelect;
+  type Definition = typeof monitorDefinitions.$inferSelect;
+  type Conversion = typeof monitorConversions.$inferSelect;
+  type RuleSnapshot = { id: string; retiredAt: string | null; retiredReason: string | null; isActive: boolean };
+  type Snapshot = { name: string; monitorType: Row['monitorType']; target: string; config: Record<string, unknown>; pollingInterval: number;
+    timeout: number; assetId: string | null; isActive: boolean; retiredAt: string | null;
+    retiredReason: string | null; rules: RuleSnapshot[] };
+  export class NetworkHistoryError extends Error {
+    constructor(public code: string, public status: 400 | 403 | 404 | 409) { super(code); }
+  }
+  function assertAccess(orgId: string | null, auth: AuthContext) {
+    if (!canMutateOrgWideGovernance(auth)) throw new NetworkHistoryError('site_restricted_conversion', 403);
+    if (!orgId || !auth.canAccessOrg(orgId)) throw new NetworkHistoryError('org_not_found', 404);
+  }
+  export async function snapshotNetworkSource(tx: Tx, row: Row): Promise<Snapshot> {
+    const rules = await tx.select().from(networkMonitorAlertRules).where(eq(networkMonitorAlertRules.monitorId, row.id)).for('update');
+    return { name: row.name, monitorType: row.monitorType, target: row.target, config: row.config as Record<string, unknown>,
+      pollingInterval: row.pollingInterval, timeout: row.timeout, assetId: row.assetId, isActive: row.isActive,
+      retiredAt: row.retiredAt?.toISOString() ?? null, retiredReason: row.retiredReason,
+      rules: rules.map(r => ({ id: r.id, retiredAt: r.retiredAt?.toISOString() ?? null,
+        retiredReason: r.retiredReason, isActive: r.isActive })) };
+  }
+  export async function carryNetworkAlerts(tx: Tx, row: Row, def: Definition) {
+    if (!def.compiledAlertRuleId) throw new Error('network_compiled_rule_missing');
+    const open = await tx.select().from(alerts).where(and(eq(alerts.orgId, row.orgId!),
+      inArray(alerts.status, [...OPEN_ALERT_STATUSES]), sql`${alerts.context}->>'source' = 'network_monitor'`,
+      sql`${alerts.context}->>'monitorId' = ${row.id}`)).for('update');
+    const refs = open.map(a => ({ id: a.id, ruleId: a.ruleId, configPolicyId: a.configPolicyId,
+      monitorId: a.monitorId, context: a.context as Record<string, unknown> | null }));
+    for (const a of open) await tx.update(alerts).set({ ruleId: def.compiledAlertRuleId,
+      configPolicyId: null, monitorId: def.id, context: {
+        ...(a.context as Record<string, unknown> ?? {}),
+        convertedFrom: { sourceTable: 'network_monitors', sourceId: row.id, convertedAt: new Date().toISOString() },
+      } }).where(and(eq(alerts.id, a.id), eq(alerts.orgId, row.orgId!)));
+    return refs;
+  }
+  export async function retireNetworkCheck(sourceId: string, reason: string, auth: AuthContext): Promise<{ conversionId: string }> {
+    if (!canMutateOrgWideGovernance(auth)) throw new NetworkHistoryError('site_restricted_conversion', 403);
+    if (reason !== 'operator' && !/^unconvertible:[a-z0-9_]+$/.test(reason)) {
+      throw new NetworkHistoryError('invalid_retirement_reason', 400);
+    }
+    return db.transaction(async tx => {
+      const [row] = await tx.select().from(networkMonitors).where(eq(networkMonitors.id, sourceId)).for('update');
+      assertAccess(row?.orgId ?? null, auth);
+      if (!row || row.retiredAt || row.managedByMonitorId) throw new NetworkHistoryError('already_converted', 409);
+      const networkSourceSnapshot = await snapshotNetworkSource(tx, row);
+      const [entry] = await tx.insert(monitorConversions).values({ orgId: row.orgId, partnerId: null,
+        sourceTable: 'network_monitors', sourceId, policyId: null,
+        convertedBy: auth.scope === 'system' ? null : auth.user.id,
+        previewHash: createHash('sha256').update(JSON.stringify({ sourceId, reason, networkSourceSnapshot })).digest('hex'), networkSourceSnapshot }).returning({ id: monitorConversions.id });
+      const now = new Date();
+      await tx.update(networkMonitors).set({ retiredAt: now, retiredReason: reason, isActive: false, updatedAt: now })
+        .where(and(eq(networkMonitors.id, sourceId), eq(networkMonitors.orgId, row.orgId!)));
+      await tx.update(networkMonitorAlertRules).set({ retiredAt: now, retiredReason: reason })
+        .where(and(eq(networkMonitorAlertRules.monitorId, sourceId), isNull(networkMonitorAlertRules.retiredAt)));
+      // Zero outputs. Existing alerts, including suppressed and terminal history,
+      // retain their status and source context; manual retirement never resolves them.
+      return { conversionId: entry!.id };
+    });
+  }
+  export async function revertNetworkCheckConversion(conversion: Conversion, outputMonitorIds: string[], auth: AuthContext): Promise<void> {
+    assertAccess(conversion.orgId, auth);
+    if (!isRevertAvailable('network_monitors')) throw new NetworkHistoryError('conversion_revert_unavailable', 409);
+    await db.transaction(async tx => {
+      const [entry] = await tx.select().from(monitorConversions).where(eq(monitorConversions.id, conversion.id)).for('update');
+      if (!entry || entry.revertedAt) throw new NetworkHistoryError('already_reverted', 409);
+      const [sourceRow] = await tx.select().from(networkMonitors)
+        .where(and(eq(networkMonitors.id, entry.sourceId), eq(networkMonitors.orgId, entry.orgId!))).for('update');
+      if (!sourceRow) throw new NetworkHistoryError('source_not_found', 404);
+      const source = entry.networkSourceSnapshot as Snapshot | null;
+      if (!source) throw new NetworkHistoryError('network_source_snapshot_missing', 409);
+      const outputs = await tx.select().from(monitorConversionOutputs).where(eq(monitorConversionOutputs.conversionId, entry.id));
+      // A second deployment needs the adopted probe. Refuse before mutation if
+      // it now has another live owner; never delete another conversion's monitor.
+      for (const id of outputMonitorIds) {
+        const [other] = await tx.select({ id: monitorConversions.id }).from(monitorConversionOutputs)
+          .innerJoin(monitorConversions, eq(monitorConversions.id, monitorConversionOutputs.conversionId))
+          .where(and(eq(monitorConversionOutputs.monitorId, id), ne(monitorConversions.id, entry.id), isNull(monitorConversions.revertedAt))).limit(1);
+        const attachments = await tx.select({ policyId: configPolicyFeatureLinks.configPolicyId }).from(configPolicyMonitors)
+          .innerJoin(configPolicyFeatureLinks, eq(configPolicyFeatureLinks.id, configPolicyMonitors.featureLinkId))
+          .where(eq(configPolicyMonitors.monitorId, id));
+        if (other || attachments.some(a => a.policyId !== entry.policyId)) throw new NetworkHistoryError('network_revert_in_use', 409);
+      }
+      for (const output of outputs) {
+        // D13 shape: persist exact original refs/context; do not restore statuses
+        // because the operator may have acknowledged/resolved since conversion.
+        const refs = (output.movedAlertRefs ?? []) as Array<{ id: string; ruleId: string | null;
+          configPolicyId: string | null; monitorId: string | null; context: Record<string, unknown> | null }>;
+        for (const ref of refs) await tx.update(alerts).set({ ruleId: ref.ruleId,
+          configPolicyId: ref.configPolicyId, monitorId: ref.monitorId, context: ref.context })
+          .where(and(eq(alerts.id, ref.id), eq(alerts.orgId, entry.orgId!)));
+        // Rehome all later alerts (including resolved/dismissed) before the FK
+        // target is deleted. Never leave rule_id pointing at a compiled rule.
+        if (!output.monitorId) continue; // definition already absent; original refs still restored above
+        const later = await tx.select().from(alerts).where(and(eq(alerts.monitorId, output.monitorId), eq(alerts.orgId, entry.orgId!)));
+        for (const a of later) await tx.update(alerts).set({ ruleId: null, configPolicyId: null, monitorId: null,
+          context: { ...(a.context as Record<string, unknown> ?? {}), source: 'network_monitor',
+            monitorId: entry.sourceId, alertRuleId: source.rules.find(r => r.isActive && !r.retiredAt)?.id,
+            convertedFrom: { sourceTable: 'network_monitors', sourceId: entry.sourceId, revertedConversionId: entry.id } },
+        }).where(eq(alerts.id, a.id));
+      }
+      // Un-adopt BEFORE deleting the definition; its FK cascades the probe.
+      const { rules, retiredAt, ...values } = source;
+      await tx.update(networkMonitors).set({ ...values, retiredAt: retiredAt ? new Date(retiredAt) : null,
+        managedByMonitorId: null, updatedAt: new Date() }).where(and(eq(networkMonitors.id, entry.sourceId), eq(networkMonitors.orgId, entry.orgId!)));
+      for (const rule of rules) await tx.update(networkMonitorAlertRules).set({ isActive: rule.isActive,
+        retiredAt: rule.retiredAt ? new Date(rule.retiredAt) : null, retiredReason: rule.retiredReason })
+        .where(and(eq(networkMonitorAlertRules.id, rule.id), eq(networkMonitorAlertRules.monitorId, entry.sourceId)));
+      for (const id of outputMonitorIds) await tx.delete(monitorDefinitions).where(and(eq(monitorDefinitions.id, id), eq(monitorDefinitions.orgId, entry.orgId!)));
+      await tx.update(monitorConversions).set({ revertedAt: new Date() }).where(eq(monitorConversions.id, entry.id));
+    });
+  }
+  ```
+  In `routes/monitorDefinitions.conversion.ts` import `NetworkHistoryError` from `../services/monitors/conversion/networkHistory` and put `if (err instanceof NetworkHistoryError) return c.json({ error: err.code }, err.status);` before the existing error branches for retirement/revert. Add this router to the task's git add command. Keep `network_monitors` revertable in D4's lifecycle; W05d's five deleted-runtime sources remain unavailable. D2's persistent ledger shows both conversion and manual retirement entries and refreshes after retirement. D13's `moved_alert_refs` representation above must be the same type imported from C1's provenance contract; do not create a second JSON field on outputs.
+
+  Event consumers: in `monitorWorker.ts` retain `context.monitorId = monitor.id` for historical legacy-source matching, also name it `legacyNetworkMonitorId` in source context. In the `eventPayload` replace `monitorId: monitor.id` with `legacyNetworkMonitorId: monitor.id`; `createSourcedAlert` supplies typed `monitorId` from its definition argument (null on legacy events). Add the regression to `monitorWorker.test.ts`:
+  ```ts
+  expect(createSourcedAlertMock).toHaveBeenCalledWith(expect.objectContaining({
+    context: expect.objectContaining({ monitorId: legacyId, legacyNetworkMonitorId: legacyId }),
+    eventPayload: expect.objectContaining({ legacyNetworkMonitorId: legacyId }),
+  }));
+  const payload = createSourcedAlertMock.mock.calls.at(-1)![0].eventPayload;
+  expect(payload).not.toHaveProperty('monitorId');
+  ```
+  Use the actual test's `createSourcedAlert` mock (`vi.mocked(createSourcedAlert)`) and fixture monitor id; bind `const createSourcedAlertMock = vi.mocked(createSourcedAlert); const legacyId = 'monitor-1';` in that test before these assertions.
+- [ ] **Step 4: Run, expect PASS.** `cd apps/api && npx tsc --noEmit -p . && npx vitest run src/services/monitors/conversion/networkHistory.test.ts src/jobs/monitorWorker.test.ts`; then Task 9's live suite and export-policy suite verify the snapshots, zero-output ledger and restoration.
+- [ ] **Step 5: Commit.** `git add apps/api/src/services/monitors/conversion apps/api/src/db/schema/monitorConversions.ts apps/api/migrations/2026-10-24-110000-network-checks-as-monitors.sql apps/api/src/services/tenantExportPolicyRegistry.ts apps/api/src/jobs/monitorWorker.ts apps/api/src/jobs/monitorWorker.test.ts apps/api/src/routes/monitorDefinitions.conversion.ts && git commit -m "fix(monitors): preserve network alert provenance and reversible retirement"`
+
+---
+
+### Task 7: Conversion — mapper, preview/convert/retire/revert, policy, routes, ledger wiring (PR1)
 
 **Files:**
 - Create: `apps/api/src/services/monitors/conversion/networkChecks.ts`, `networkChecks.test.ts`
-- Modify: W05c1's `apps/api/src/services/monitors/conversion/index.ts` (or wherever `retireSource`, `revertConversion`, `convertPartnerLegacy` and the pending count live — verify with `grep -rn "export async function retireSource\|export async function revertConversion\|export async function convertPartnerLegacy" apps/api/src/services/monitors/conversion/`)
-- Modify: `apps/api/src/routes/monitorDefinitions.ts` (next to W05c1's `/conversion/*` routes)
+- Modify (W05c1 producers): `apps/api/src/services/monitors/conversion/convert.ts`, `index.ts`, `loadSources.ts`, `lifecycle.ts` (D2–D4, D15).
+- Modify: `apps/api/src/routes/monitorDefinitions.conversion.ts` (W05c1 producer)
 - Create: `apps/api/src/routes/monitorDefinitions.conversion.networkChecks.test.ts`
 - Modify: `apps/api/src/__tests__/partner-wide-write-coverage.test.ts` (allowlist), `apps/api/src/__tests__/site-ceiling-write-coverage.test.ts` (allowlist)
 
 **Interfaces:**
 - Consumes (W05c1): `monitorConversions`, `monitorConversionOutputs` tables; `ConversionPreviewItem`; `previewHash` convention.
-- Consumes: `createMonitorDefinition(input, auth, { adoptNetworkMonitorId })` (Task 4); `createConfigPolicy`, `assignPolicy`, `addFeatureLink` (`services/configurationPolicy.ts:281, 1963, 1655`); `configPolicyFeatureLinks`, `configPolicyMonitors` (`db/schema/monitorDefinitions.ts:116`); `resolveAlert` (`services/alertService.ts`).
+- Consumes: `createMonitorDefinition(input, auth, { adoptNetworkMonitorId }, tx)` (Task 5); `createConfigPolicy`, `assignPolicy`, `addFeatureLink` (`services/configurationPolicy.ts:281, 1963, 1655`); `configPolicyFeatureLinks`, `configPolicyMonitors` (`db/schema/monitorDefinitions.ts:116`); `OPEN_ALERT_STATUSES` from `conversion/loadSources.ts` (W05c1); history helpers from Task 6.
 - Produces:
   ```ts
   export const NETWORK_CHECK_UNCONVERTIBLE = {
@@ -703,15 +1024,20 @@ branch: (set by feature-lifecycle after registration)
     noOrg: 'unconvertible:no_org',
     assetMissing: 'unconvertible:asset_missing',
     conditionInvalid: 'unconvertible:condition_invalid',
+    noActiveRules: 'unconvertible:no_active_rules',
+    multipleRules: 'unconvertible:multiple_network_rules',
+    predicate: 'unconvertible:network_predicate_unsupported',
+    threshold: 'unconvertible:network_threshold_out_of_range',
+    offlineProbe: 'unconvertible:offline_probe_unsupported',
   } as const;
   export interface NetworkCheckMapping { condition: NetworkCheckMonitorCondition; severity: AlertSeverity; deliveryMode: 'inherit' | 'none'; description?: string; notes: string[] }
   export function mapNetworkMonitorToDefinition(row: typeof networkMonitors.$inferSelect, rules: Array<typeof networkMonitorAlertRules.$inferSelect>): { ok: true; mapping: NetworkCheckMapping } | { ok: false; reason: string };
   export interface NetworkCheckConversionPreview { orgId: string; previewHash: string; items: Array<ConversionPreviewItem & { notes: string[]; openAlerts: number }> }
   export async function previewNetworkCheckConversion(orgId: string, auth: AuthContext): Promise<NetworkCheckConversionPreview>;
   export async function convertNetworkChecks(orgId: string, previewHash: string, auth: AuthContext, opts?: { sourceIds?: string[] }): Promise<{ conversionIds: string[]; retired: number; monitorsCreated: number; policyId: string | null }>;
-  export async function retireNetworkCheck(sourceId: string, reason: string, auth: AuthContext): Promise<void>;
+  export async function retireNetworkCheck(sourceId: string, reason: string, auth: AuthContext): Promise<{ conversionId: string }>;
   export async function revertNetworkCheckConversion(conversion: typeof monitorConversions.$inferSelect, outputMonitorIds: string[], auth: AuthContext): Promise<void>;
-  export async function countPendingNetworkChecks(orgId: string): Promise<number>;
+  export async function countPendingNetworkChecks(orgId: string, auth: AuthContext): Promise<number>;
   export const NETWORK_CHECKS_POLICY_NAME = (orgName: string) => `Network checks — ${orgName}`;
   ```
 - Routes: `GET /monitor-definitions/conversion/network-checks?orgId=<uuid>` → `NetworkCheckConversionPreview`; `POST /monitor-definitions/conversion/network-checks/convert` `{ orgId, previewHash, sourceIds? }` → the convert result; `GET /monitor-definitions/conversion/pending?orgId` gains `networkChecks: number`.
@@ -721,16 +1047,14 @@ branch: (set by feature-lifecycle after registration)
 |---|---|
 | `monitor_type`, `target`, `asset_id`, `polling_interval`, `timeout` | `checkType`, `target` (http: `config.url ?? target`; dns: `config.hostname ?? target`), `assetId`, `pollingIntervalSeconds`, `timeoutSeconds` |
 | `config.{count,packetSize}` / `{port,expectBanner}` / `{method,expectedStatus→expectStatus,expectedBody,headers,followRedirects,verifySsl}` / `{recordType,expectedValue,nameserver}` | same-named condition keys per `NETWORK_CHECK_OPTION_KEYS`; unknown keys ignored with a note |
-| rule `offline` | `consecutiveFailures` candidate 1 |
-| rule `consecutive_failures_gt N` | candidate `min(100, floor(N)+1)` |
-| rule `degraded` | `degradedIsFailure: true`, candidate 1 |
-| rule `response_time_gt ms` | `maxResponseMs = min(existing, ms)`, candidate 1 |
-| several active rules | `consecutiveFailures = min(candidates)`, `severity = highest` (critical > high > medium > low > info), note "Collapsed N alert rules…" |
-| no active rules | `severity: 'info'`, `deliveryMode: 'none'`, `consecutiveFailures: 2`, note "No active alert rules: converts as info, inbox-only" |
-| ≥1 active rule | `deliveryMode: 'inherit'` (the legacy `createSourcedAlert` path dispatched through routing/fallback, which is what `inherit` resolves to after W05b) |
-| first rule `message` | monitor `description` |
-| `is_active` | `enabled` |
-| open legacy alerts (`context.source='network_monitor'`, `context.monitorId=row.id`, status active/acknowledged) | resolved in the conversion transaction with note "Resolved on conversion to monitor <id>; the monitor re-raises if the check is still failing"; ids stored in `moved_alert_ids` |
+| one active rule `offline` | `consecutiveFailures: 1`, its exact severity |
+| one active rule `consecutive_failures_gt N` | finite nonnegative N → `floor(N)+1` only if ≤100; otherwise `unconvertible:network_threshold_out_of_range` |
+| `degraded` or `response_time_gt` | `unconvertible:network_predicate_unsupported` (the monitor predicate also matches offline and would widen coverage) |
+| several active rules (including differing thresholds/severities) | `unconvertible:multiple_network_rules`; never collapse independent episodes |
+| no active rules | `unconvertible:no_active_rules`; inbox-only still creates alerts and cannot model a non-alerting probe |
+| one representable active rule | `deliveryMode: 'inherit'`, `cooldownMinutes: 5`, `autoResolve: true`; enabled state copied to definition and attachment |
+| offline-device runtime missing | `unconvertible:offline_probe_unsupported` at preview AND confirmation; no mutation |
+| open legacy alerts (shared `OPEN_ALERT_STATUSES`, including suppressed) | carry original references/context in `movedAlertRefs`, rebind to compiled rule without resolving; reversal restores references before deleting compiled rows |
 
 - [ ] **Step 1: Write the failing tests.** `networkChecks.test.ts` (pure mapper, no db):
   ```ts
@@ -738,7 +1062,7 @@ branch: (set by feature-lifecycle after registration)
   import { mapNetworkMonitorToDefinition, NETWORK_CHECK_UNCONVERTIBLE } from './networkChecks';
 
   const row = (over: Record<string, unknown> = {}) => ({
-    id: 'nm-1', orgId: 'org-1', partnerId: null, managedByMonitorId: null, assetId: 'asset-1',
+    id: 'nm-1', orgId: 'org-1', partnerId: null, managedByMonitorId: null, assetId: 'a0000000-0000-4000-8000-000000000001',
     name: 'Gateway', monitorType: 'icmp_ping', target: '10.0.0.1', config: { count: 4 },
     pollingInterval: 60, timeout: 5, isActive: true, retiredAt: null, retiredReason: null, ...over,
   }) as never;
@@ -750,37 +1074,47 @@ branch: (set by feature-lifecycle after registration)
     it('maps type, target, asset, interval, timeout and per-type options', () => {
       const r = mapNetworkMonitorToDefinition(row(), [rule()]);
       expect(r).toMatchObject({ ok: true, mapping: { severity: 'high', deliveryMode: 'inherit',
-        condition: { checkType: 'icmp_ping', target: '10.0.0.1', assetId: 'asset-1', count: 4, pollingIntervalSeconds: 60, timeoutSeconds: 5, consecutiveFailures: 1, degradedIsFailure: false } } });
+        condition: { checkType: 'icmp_ping', target: '10.0.0.1', assetId: 'a0000000-0000-4000-8000-000000000001', count: 4, pollingIntervalSeconds: 60, timeoutSeconds: 5, consecutiveFailures: 1, degradedIsFailure: false } } });
     });
     it('http: url wins over target and expectedStatus becomes expectStatus', () => {
       const r = mapNetworkMonitorToDefinition(row({ monitorType: 'http_check', target: 'example.com', config: { url: 'https://example.com/health', expectedStatus: 204, method: 'HEAD' } }), [rule()]);
       expect(r.ok && r.mapping.condition).toMatchObject({ checkType: 'http_check', target: 'https://example.com/health', expectStatus: 204, method: 'HEAD' });
     });
-    it('consecutive_failures_gt N → N+1; several rules collapse to min threshold / max severity with a note', () => {
-      const r = mapNetworkMonitorToDefinition(row(), [rule({ condition: 'consecutive_failures_gt', threshold: '4', severity: 'critical' }), rule({ id: 'r-2', condition: 'offline', severity: 'medium' })]);
-      expect(r.ok && r.mapping).toMatchObject({ severity: 'critical', condition: { consecutiveFailures: 1 } });
-      expect(r.ok && r.mapping.notes.join(' ')).toMatch(/Collapsed 2 alert rules/);
+    it.each([
+      [[], 'unconvertible:no_active_rules'],
+      [[rule({ isActive: false })], 'unconvertible:no_active_rules'],
+      [[rule(), rule({ id: 'r-2', severity: 'critical' })], 'unconvertible:multiple_network_rules'],
+      [[rule({ condition: 'degraded' })], 'unconvertible:network_predicate_unsupported'],
+      [[rule({ condition: 'response_time_gt', threshold: '750' })], 'unconvertible:network_predicate_unsupported'],
+      [[rule({ condition: 'consecutive_failures_gt', threshold: '100' })], 'unconvertible:network_threshold_out_of_range'],
+    ])('refuses nonrepresentable rules without approximating', (rules, reason) => {
+      expect(mapNetworkMonitorToDefinition(row(), rules as never)).toEqual({ ok: false, reason });
     });
-    it('degraded → degradedIsFailure; response_time_gt → maxResponseMs', () => {
-      const r = mapNetworkMonitorToDefinition(row(), [rule({ condition: 'degraded' }), rule({ id: 'r-2', condition: 'response_time_gt', threshold: '750' })]);
-      expect(r.ok && r.mapping.condition).toMatchObject({ degradedIsFailure: true, maxResponseMs: 750, consecutiveFailures: 1 });
-    });
-    it('no active rules → info, inbox-only, default threshold, with a note', () => {
-      const r = mapNetworkMonitorToDefinition(row(), [rule({ isActive: false })]);
-      expect(r.ok && r.mapping).toMatchObject({ severity: 'info', deliveryMode: 'none', condition: { consecutiveFailures: 2 } });
-      expect(r.ok && r.mapping.notes.join(' ')).toMatch(/No active alert rules/);
+    it('preserves the strict consecutive threshold and severity', () => {
+      expect(mapNetworkMonitorToDefinition(row(), [rule({ condition: 'consecutive_failures_gt', threshold: '4', severity: 'critical' })]))
+        .toMatchObject({ ok: true, mapping: { severity: 'critical', condition: { consecutiveFailures: 5 } } });
     });
     it('refuses a managed row and a row with no org', () => {
       expect(mapNetworkMonitorToDefinition(row({ managedByMonitorId: 'def-1' }), [])).toEqual({ ok: false, reason: NETWORK_CHECK_UNCONVERTIBLE.alreadyManaged });
       expect(mapNetworkMonitorToDefinition(row({ orgId: null, partnerId: 'p-1' }), [])).toEqual({ ok: false, reason: NETWORK_CHECK_UNCONVERTIBLE.noOrg });
     });
-    it('reports the failing key when the legacy config does not satisfy the kind schema', () => {
+    it('refuses a legacy config outside the kind schema', () => {
       const r = mapNetworkMonitorToDefinition(row({ pollingInterval: 5 }), [rule()]);
-      expect(r).toEqual({ ok: false, reason: `${NETWORK_CHECK_UNCONVERTIBLE.conditionInvalid}:pollingIntervalSeconds` });
+      expect(r).toEqual({ ok: false, reason: NETWORK_CHECK_UNCONVERTIBLE.conditionInvalid });
     });
   });
   ```
-  `monitorDefinitions.conversion.networkChecks.test.ts` — mirror the mocking style of `monitorDefinitions.test.ts` (mock `../services/monitors/conversion/networkChecks`), and assert: `GET /conversion/network-checks` without `orgId` → 400; with an org the caller cannot access → 403/404 per `canAccessOrg`; `POST …/convert` without MFA → the `requireMfa()` response; a site-restricted caller (`permissions.allowedSiteIds` set) → 403 `site_restricted_conversion`; happy path forwards `{ orgId, previewHash, sourceIds }` and returns the service result.
+  Append direct-service access tests in `networkChecks.test.ts` (these fail before any DB read):
+  ```ts
+  import { previewNetworkCheckConversion, convertNetworkChecks } from './networkChecks';
+  import type { AuthContext } from '../../../middleware/auth';
+  it.each([[], ['11111111-1111-4111-8111-111111111111']])('rejects every site ceiling for preview and convert', async allowedSiteIds => {
+    const auth = { allowedSiteIds, canAccessOrg: () => true } as unknown as AuthContext;
+    await expect(previewNetworkCheckConversion('22222222-2222-4222-8222-222222222222', auth)).rejects.toMatchObject({ code: 'site_restricted_conversion', status: 403 });
+    await expect(convertNetworkChecks('22222222-2222-4222-8222-222222222222', 'a'.repeat(64), auth)).rejects.toMatchObject({ code: 'site_restricted_conversion', status: 403 });
+  });
+  ```
+  `monitorDefinitions.conversion.networkChecks.test.ts` — mirror the mocking style of `monitorDefinitions.test.ts` (mock `../services/monitors/conversion/networkChecks`), and assert: `GET /conversion/network-checks` without `orgId` → 400; with an org the caller cannot access → 403/404 per `canAccessOrg`; `POST …/convert` without MFA → the `requireMfa()` response; both GET preview and POST convert with `auth.allowedSiteIds` and `permissions.allowedSiteIds` set to `[]` or `[forbiddenSiteId]` → 403 `site_restricted_conversion`; happy path forwards `{ orgId, previewHash, sourceIds }` and returns the service result.
 - [ ] **Step 2: Run them, expect FAIL.** `cd apps/api && npx vitest run src/services/monitors/conversion/networkChecks.test.ts src/routes/monitorDefinitions.conversion.networkChecks.test.ts` → `Failed to resolve import "./networkChecks"`.
 - [ ] **Step 3: Implement.** `conversion/networkChecks.ts`:
   ```ts
@@ -792,21 +1126,28 @@ branch: (set by feature-lifecycle after registration)
   import { alerts, configurationPolicies, configPolicyFeatureLinks, configPolicyMonitors, discoveredAssets, monitorConversionOutputs, monitorConversions, networkMonitorAlertRules, networkMonitors, organizations } from '../../../db/schema';
   import type { AuthContext } from '../../../middleware/auth';
   import { addFeatureLink, assignPolicy, createConfigPolicy } from '../../configurationPolicy';
-  import { resolveAlert } from '../../alertService';
+  import { OPEN_ALERT_STATUSES } from './loadSources';
+  import { canMutateOrgWideGovernance } from '../../siteCeilingAccess';
+  import { carryNetworkAlerts, snapshotNetworkSource, retireNetworkCheck, revertNetworkCheckConversion } from './networkHistory';
+  export { retireNetworkCheck, revertNetworkCheckConversion } from './networkHistory';
   import { createMonitorDefinition, deleteMonitorDefinition } from '../monitorService';
-  import type { ConversionPreviewItem } from './types'; // W05c1 — adjust to its actual export
+  import type { ConversionPreviewItem } from './types'; // W05c1 producer
 
   export const NETWORK_CHECK_UNCONVERTIBLE = {
     alreadyManaged: 'unconvertible:already_managed',
     noOrg: 'unconvertible:no_org',
     assetMissing: 'unconvertible:asset_missing',
     conditionInvalid: 'unconvertible:condition_invalid',
+    noActiveRules: 'unconvertible:no_active_rules',
+    multipleRules: 'unconvertible:multiple_network_rules',
+    predicate: 'unconvertible:network_predicate_unsupported',
+    threshold: 'unconvertible:network_threshold_out_of_range',
+    offlineProbe: 'unconvertible:offline_probe_unsupported',
   } as const;
 
   export const NETWORK_CHECKS_POLICY_NAME = (orgName: string) => `Network checks — ${orgName}`;
   const MANAGED_NAME_PREFIX = '[monitor] ';
-  const SEVERITY_RANK: Record<AlertSeverity, number> = { critical: 4, high: 3, medium: 2, low: 1, info: 0 };
-  const LEGACY_TO_CONDITION_KEY: Record<string, string> = { expectedStatus: 'expectStatus' };
+    const LEGACY_TO_CONDITION_KEY: Record<string, string> = { expectedStatus: 'expectStatus' };
 
   type Row = typeof networkMonitors.$inferSelect;
   type Rule = typeof networkMonitorAlertRules.$inferSelect;
@@ -852,62 +1193,43 @@ branch: (set by feature-lifecycle after registration)
     if (ignored.length > 0) notes.push(`Ignored config keys with no monitor equivalent: ${ignored.join(', ')}`);
 
     const active = rules.filter((r) => r.isActive && !r.retiredAt);
-    let consecutive: number | null = null;
-    let degradedIsFailure = false;
-    let maxResponseMs: number | null = null;
-    let severity: AlertSeverity | null = null;
-    let description: string | undefined;
-    for (const r of active) {
-      let candidate: number | null = null;
-      switch (r.condition) {
-        case 'offline': candidate = 1; break;
-        case 'degraded': degradedIsFailure = true; candidate = 1; break;
-        case 'response_time_gt': {
-          const ms = numeric(r.threshold);
-          if (ms == null) { notes.push(`Rule ${r.id}: response_time_gt without a numeric threshold — ignored`); break; }
-          maxResponseMs = maxResponseMs == null ? ms : Math.min(maxResponseMs, ms);
-          candidate = 1;
-          break;
-        }
-        case 'consecutive_failures_gt': {
-          const n = numeric(r.threshold);
-          if (n == null) { notes.push(`Rule ${r.id}: consecutive_failures_gt without a numeric threshold — ignored`); break; }
-          candidate = Math.min(100, Math.max(1, Math.floor(n) + 1));
-          break;
-        }
-        default:
-          notes.push(`Rule ${r.id}: unsupported condition '${r.condition}' — ignored`);
+    if (active.length === 0) return { ok: false, reason: NETWORK_CHECK_UNCONVERTIBLE.noActiveRules };
+    if (active.length !== 1) return { ok: false, reason: NETWORK_CHECK_UNCONVERTIBLE.multipleRules };
+    const rule = active[0]!;
+    let consecutive = 1;
+    if (rule.condition === 'consecutive_failures_gt') {
+      const n = numeric(rule.threshold);
+      if (n == null || n < 0 || Math.floor(n) + 1 > 100) {
+        return { ok: false, reason: NETWORK_CHECK_UNCONVERTIBLE.threshold };
       }
-      if (candidate != null) consecutive = consecutive == null ? candidate : Math.min(consecutive, candidate);
-      if (!severity || SEVERITY_RANK[r.severity] > SEVERITY_RANK[severity]) severity = r.severity;
-      if (!description && r.message) description = r.message;
+      consecutive = Math.floor(n) + 1;
+    } else if (rule.condition !== 'offline') {
+      return { ok: false, reason: NETWORK_CHECK_UNCONVERTIBLE.predicate };
     }
-    if (active.length > 1) notes.push(`Collapsed ${active.length} alert rules into one condition (lowest threshold, highest severity)`);
-    if (rules.length > active.length) notes.push(`${rules.length - active.length} inactive alert rule(s) retired without effect`);
-    if (active.length === 0) notes.push('No active alert rules: converts as info, inbox-only');
-
+    const severity = rule.severity;
+    const description = rule.message ?? undefined;
     const parsed = monitorConditionSchemas.network_check.safeParse({
       ...condition,
-      consecutiveFailures: consecutive ?? 2,
-      degradedIsFailure,
-      ...(maxResponseMs != null ? { maxResponseMs } : {}),
+      consecutiveFailures: consecutive,
+      degradedIsFailure: false,
     });
     if (!parsed.success) {
-      return { ok: false, reason: `${NETWORK_CHECK_UNCONVERTIBLE.conditionInvalid}:${parsed.error.issues[0]?.path.join('.') ?? 'unknown'}` };
+      return { ok: false, reason: NETWORK_CHECK_UNCONVERTIBLE.conditionInvalid };
     }
     return {
       ok: true,
-      mapping: { condition: parsed.data, severity: severity ?? 'info', deliveryMode: active.length === 0 ? 'none' : 'inherit', description, notes },
+      mapping: { condition: parsed.data, severity, deliveryMode: 'inherit', description, notes },
     };
   }
   ```
   Preview / convert / retire / revert / count (same file):
   ```ts
   function assertOrgAccess(orgId: string, auth: AuthContext): void {
+    if (!canMutateOrgWideGovernance(auth)) throw new NetworkCheckConversionError('site_restricted_conversion', 403);
     if (!auth.canAccessOrg(orgId)) throw new NetworkCheckConversionError('org_not_found', 404);
   }
   export class NetworkCheckConversionError extends Error {
-    constructor(public readonly code: 'org_not_found' | 'stale_preview' | 'site_restricted', public readonly status: 404 | 409 | 403) { super(code); this.name = 'NetworkCheckConversionError'; }
+    constructor(public readonly code: 'org_not_found' | 'stale_preview' | 'site_restricted_conversion' | 'offline_probe_unsupported' | 'already_converted', public readonly status: 404 | 409 | 403) { super(code); this.name = 'NetworkCheckConversionError'; }
   }
 
   async function loadPending(orgId: string, sourceIds?: string[]) {
@@ -922,7 +1244,7 @@ branch: (set by feature-lifecycle after registration)
       : [];
     const openAlerts = ids.length
       ? await db.select({ id: alerts.id, monitorId: sql<string>`${alerts.context}->>'monitorId'` }).from(alerts)
-          .where(and(eq(alerts.orgId, orgId), inArray(alerts.status, ['active', 'acknowledged']), sql`${alerts.context}->>'source' = 'network_monitor'`, sql`${alerts.context}->>'monitorId' = ANY(${ids})`))
+          .where(and(eq(alerts.orgId, orgId), inArray(alerts.status, [...OPEN_ALERT_STATUSES]), sql`${alerts.context}->>'source' = 'network_monitor'`, sql`${alerts.context}->>'monitorId' = ANY(${ids})`))
       : [];
     return { rows, rulesByMonitor: groupBy(rules, (r) => r.monitorId), assetIds: new Set(assets.map((a) => a.id)), openAlertsByMonitor: groupBy(openAlerts, (a) => a.monitorId) };
   }
@@ -942,22 +1264,23 @@ branch: (set by feature-lifecycle after registration)
         : mapNetworkMonitorToDefinition(row, rules);
       const openAlerts = (openAlertsByMonitor.get(row.id) ?? []).length;
       const notes = mapped.ok ? [...mapped.mapping.notes] : [];
-      if (openAlerts > 0) notes.push(`${openAlerts} open alert(s) will be resolved with a conversion note`);
+      if (openAlerts > 0) notes.push(`${openAlerts} open alert(s) retain their status and history`);
       return {
         sourceTable: 'network_monitors' as const, sourceId: row.id, name: row.name,
-        outcome: mapped.ok ? ('convertible' as const) : ('unconvertible' as const),
-        reason: mapped.ok ? undefined : mapped.reason,
-        proposed: mapped.ok ? [{ role: 'primary' as const, kind: 'network_check' as const, name: row.name, condition: mapped.mapping.condition as Record<string, unknown>, severity: mapped.mapping.severity, deliveryMode: mapped.mapping.deliveryMode, deliveryChannelIds: [], escalationPolicyId: null, responses: [] }] : [],
+        outcome: 'unconvertible' as const,
+        reason: mapped.ok ? NETWORK_CHECK_UNCONVERTIBLE.offlineProbe : mapped.reason,
+        proposed: mapped.ok ? [{ role: 'primary' as const, kind: 'network_check' as const, name: row.name, condition: mapped.mapping.condition as Record<string, unknown>, severity: mapped.mapping.severity, enabled: row.isActive, cooldownMinutes: 5, autoResolve: true, deliveryMode: mapped.mapping.deliveryMode, deliveryChannelIds: [], escalationPolicyId: null, responses: [] }] : [],
         notes, openAlerts,
       };
     });
     return { orgId, previewHash: previewHashFor(rows, rulesByMonitor), items };
   }
 
-  async function findOrCreateNetworkChecksPolicy(orgId: string, auth: AuthContext): Promise<{ policyId: string; monitorsLinkId: string }> {
+  async function findOrCreateNetworkChecksPolicy(orgId: string, auth: AuthContext, tx: DbExecutor): Promise<{ policyId: string; monitorsLinkId: string }> {
+    const actor = auth.scope === 'system' ? null : auth.user.id;
     // Reuse the policy of the most recent unreverted network conversion for
     // this org, so batches never sprawl into one policy per click.
-    const [prior] = await db
+    const [prior] = await tx
       .select({ policyId: monitorConversions.policyId })
       .from(monitorConversions)
       .innerJoin(configurationPolicies, eq(configurationPolicies.id, monitorConversions.policyId))
@@ -966,14 +1289,14 @@ branch: (set by feature-lifecycle after registration)
       .limit(1);
     let policyId = prior?.policyId ?? null;
     if (!policyId) {
-      const [org] = await db.select({ name: organizations.name }).from(organizations).where(eq(organizations.id, orgId)).limit(1);
-      const policy = await createConfigPolicy({ orgId }, { name: NETWORK_CHECKS_POLICY_NAME(org?.name ?? orgId), description: 'Holds the network_check monitors converted from the Network page. Created by the W05e conversion.' }, auth.user.id);
+      const [org] = await tx.select({ name: organizations.name }).from(organizations).where(eq(organizations.id, orgId)).limit(1);
+      const policy = await createConfigPolicy({ orgId }, { name: NETWORK_CHECKS_POLICY_NAME(org?.name ?? orgId), description: 'Holds the network_check monitors converted from the Network page. Created by the W05e conversion.' }, actor, tx);
       if (!policy) throw new Error('Failed to create the network checks policy');
-      await assignPolicy(policy.id, 'organization', orgId, 0, auth.user.id);
-      await addFeatureLink(policy.id, 'monitors', null, { items: [] });
+      await assignPolicy(policy.id, 'organization', orgId, 0, actor, undefined, undefined, tx);
+      await addFeatureLink(policy.id, 'monitors', null, { items: [] }, undefined, tx);
       policyId = policy.id;
     }
-    const [link] = await db.select({ id: configPolicyFeatureLinks.id }).from(configPolicyFeatureLinks)
+    const [link] = await tx.select({ id: configPolicyFeatureLinks.id }).from(configPolicyFeatureLinks)
       .where(and(eq(configPolicyFeatureLinks.configPolicyId, policyId), eq(configPolicyFeatureLinks.featureType, 'monitors'))).limit(1);
     if (!link) throw new Error(`Policy ${policyId} has no monitors feature link`);
     return { policyId, monitorsLinkId: link.id };
@@ -985,12 +1308,19 @@ branch: (set by feature-lifecycle after registration)
     if (previewHashFor(full.rows, full.rulesByMonitor) !== previewHash) throw new NetworkCheckConversionError('stale_preview', 409);
     const selected = opts.sourceIds?.length ? full.rows.filter((r) => opts.sourceIds!.includes(r.id)) : full.rows;
     if (selected.length === 0) return { conversionIds: [], retired: 0, monitorsCreated: 0, policyId: null };
+    // D14: no supported offline network evaluation exists in the verified repo.
+    throw new NetworkCheckConversionError('offline_probe_unsupported', 409);
+  }
+
+  // Kept internal and unreachable from public conversion until the runtime gate
+  // has a real offline-device integration proof. Never expose a bypass parameter.
+  async function adoptNetworkChecksInTx(orgId: string, previewHash: string, auth: AuthContext, full: Awaited<ReturnType<typeof loadPending>>, selected: Row[]) {
 
     // Same shape as ruleConversionService.ts:107-156 — one transaction, every
     // step through the services so RLS and audit see a normal caller.
-    return db.transaction(async () => {
-      const { policyId, monitorsLinkId } = await findOrCreateNetworkChecksPolicy(orgId, auth);
-      const [{ nextSort }] = await db.select({ nextSort: sql<number>`coalesce(max(${configPolicyMonitors.sortOrder}), -1) + 1` }).from(configPolicyMonitors).where(eq(configPolicyMonitors.featureLinkId, monitorsLinkId));
+    return db.transaction(async (tx) => {
+      const { policyId, monitorsLinkId } = await findOrCreateNetworkChecksPolicy(orgId, auth, tx);
+      const [{ nextSort }] = await tx.select({ nextSort: sql<number>`coalesce(max(${configPolicyMonitors.sortOrder}), -1) + 1` }).from(configPolicyMonitors).where(eq(configPolicyMonitors.featureLinkId, monitorsLinkId));
       const conversionIds: string[] = [];
       let monitorsCreated = 0;
       let sort = Number(nextSort);
@@ -998,23 +1328,24 @@ branch: (set by feature-lifecycle after registration)
         const rules = full.rulesByMonitor.get(row.id) ?? [];
         const mapped = row.assetId && !full.assetIds.has(row.assetId) ? null : mapNetworkMonitorToDefinition(row, rules);
         if (!mapped || !mapped.ok) continue; // unconvertible: listed by the preview, retired only by an explicit retire
+        const sourceSnapshot = await snapshotNetworkSource(tx, row);
         const def = await createMonitorDefinition({
           ownerScope: 'organization', orgId, name: row.name, description: mapped.mapping.description,
           kind: 'network_check', enabled: row.isActive, condition: mapped.mapping.condition as Record<string, unknown>,
           severity: mapped.mapping.severity, cooldownMinutes: 5, autoResolve: true, responses: [],
           deliveryMode: mapped.mapping.deliveryMode, deliveryChannelIds: [], escalationPolicyId: null,
           recurrenceActions: [], pauseResponsesOnEscalation: true,
-        } as Parameters<typeof createMonitorDefinition>[0], auth, { adoptNetworkMonitorId: row.id });
-        await db.insert(configPolicyMonitors).values({ featureLinkId: monitorsLinkId, monitorId: def.id, enabled: true, sortOrder: sort++ });
-        await db.update(networkMonitorAlertRules).set({ retiredAt: new Date(), retiredReason: 'converted' })
+        } as Parameters<typeof createMonitorDefinition>[0], auth, { adoptNetworkMonitorId: row.id }, tx);
+        await tx.insert(configPolicyMonitors).values({ featureLinkId: monitorsLinkId, monitorId: def.id, enabled: row.isActive, sortOrder: sort++ });
+        await tx.update(networkMonitorAlertRules).set({ retiredAt: new Date(), retiredReason: 'converted' })
           .where(and(eq(networkMonitorAlertRules.monitorId, row.id), isNull(networkMonitorAlertRules.retiredAt)));
-        const open = full.openAlertsByMonitor.get(row.id) ?? [];
-        for (const a of open) await resolveAlert(a.id, `Resolved on conversion to monitor ${def.id}; the monitor re-raises if the check is still failing`);
-        const [conv] = await db.insert(monitorConversions).values({
+        const movedAlertRefs = await carryNetworkAlerts(tx, row, def);
+        const open = movedAlertRefs.map((a) => a.id);
+        const [conv] = await tx.insert(monitorConversions).values({
           orgId, partnerId: null, sourceTable: 'network_monitors', sourceId: row.id, policyId,
-          convertedBy: auth.user.id, previewHash,
+          convertedBy: auth.scope === 'system' ? null : auth.user.id, previewHash, networkSourceSnapshot: sourceSnapshot,
         }).returning({ id: monitorConversions.id });
-        await db.insert(monitorConversionOutputs).values({ conversionId: conv!.id, monitorId: def.id, role: 'primary', movedAlertIds: open.map((a) => a.id) });
+        await tx.insert(monitorConversionOutputs).values({ orgId, partnerId: null, conversionId: conv!.id, monitorId: def.id, role: 'primary', movedAlertIds: open, movedAlertRefs, reusedMonitor: false });
         conversionIds.push(conv!.id);
         monitorsCreated++;
       }
@@ -1022,48 +1353,39 @@ branch: (set by feature-lifecycle after registration)
     });
   }
 
-  export async function retireNetworkCheck(sourceId: string, reason: string, auth: AuthContext): Promise<void> {
-    const [row] = await db.select().from(networkMonitors).where(and(eq(networkMonitors.id, sourceId), isNull(networkMonitors.managedByMonitorId))).limit(1);
-    if (!row?.orgId) throw new NetworkCheckConversionError('org_not_found', 404);
-    assertOrgAccess(row.orgId, auth);
-    await db.transaction(async () => {
-      const now = new Date();
-      await db.update(networkMonitors).set({ retiredAt: now, retiredReason: reason, isActive: false, updatedAt: now }).where(eq(networkMonitors.id, sourceId));
-      await db.update(networkMonitorAlertRules).set({ retiredAt: now, retiredReason: reason }).where(and(eq(networkMonitorAlertRules.monitorId, sourceId), isNull(networkMonitorAlertRules.retiredAt)));
-      const open = await db.select({ id: alerts.id }).from(alerts).where(and(eq(alerts.orgId, row.orgId!), inArray(alerts.status, ['active', 'acknowledged']), sql`${alerts.context}->>'source' = 'network_monitor'`, sql`${alerts.context}->>'monitorId' = ${sourceId}`));
-      for (const a of open) await resolveAlert(a.id, `Resolved: network check retired (${reason})`);
-    });
-  }
-
-  export async function revertNetworkCheckConversion(conversion: typeof monitorConversions.$inferSelect, outputMonitorIds: string[], auth: AuthContext): Promise<void> {
-    if (!conversion.orgId) throw new NetworkCheckConversionError('org_not_found', 404);
-    assertOrgAccess(conversion.orgId, auth);
-    await db.transaction(async () => {
-      // ORDER MATTERS: managed_by_monitor_id is ON DELETE CASCADE to the
-      // definition. Un-adopt first, then delete the definition, or the legacy
-      // row and its whole result history go with it.
-      await db.update(networkMonitors)
-        .set({ managedByMonitorId: null, name: sql`regexp_replace(${networkMonitors.name}, '^\\[monitor\\] ', '')`, updatedAt: new Date() })
-        .where(eq(networkMonitors.id, conversion.sourceId));
-      await db.update(networkMonitorAlertRules).set({ retiredAt: null, retiredReason: null })
-        .where(and(eq(networkMonitorAlertRules.monitorId, conversion.sourceId), eq(networkMonitorAlertRules.retiredReason, 'converted')));
-      for (const id of outputMonitorIds) await deleteMonitorDefinition(id, auth);
-      await db.update(monitorConversions).set({ revertedAt: new Date() }).where(eq(monitorConversions.id, conversion.id));
-    });
-  }
-
-  export async function countPendingNetworkChecks(orgId: string): Promise<number> {
+  export async function countPendingNetworkChecks(orgId: string, auth: AuthContext): Promise<number> {
+    assertOrgAccess(orgId, auth);
     const [r] = await db.select({ n: sql<number>`count(*)::int` }).from(networkMonitors)
       .where(and(eq(networkMonitors.orgId, orgId), isNull(networkMonitors.managedByMonitorId), isNull(networkMonitors.retiredAt)));
     return Number(r?.n ?? 0);
   }
   ```
-  (`groupBy` is a 4-line local helper returning `Map<string, T[]>`.) The resolved alerts are **not** re-opened on revert — say so in the ledger UI copy (W05c2 panel) and in the docs.
-
-  W05c1 wiring (its module): `retireSource` — `case 'network_monitors': return retireNetworkCheck(sourceId, reason, auth);`. `revertConversion` — after loading the ledger row and its outputs: `if (conversion.sourceTable === 'network_monitors') return revertNetworkCheckConversion(conversion, outputs.map((o) => o.monitorId), auth);`. `convertPartnerLegacy(partnerId, auth)` — after the policy loop: for each org under the partner (`organizations.partnerId = partnerId`), `const p = await previewNetworkCheckConversion(org.id, auth); const r = await convertNetworkChecks(org.id, p.previewHash, auth); converted += r.monitorsCreated; unconvertible += p.items.filter((i) => i.outcome === 'unconvertible').length;`. Pending count handler — add `networkChecks: await countPendingNetworkChecks(orgId)`.
-
-  Routes (`routes/monitorDefinitions.ts`, next to W05c1's conversion routes, **before** `/:id`):
+  Local helpers (defined in this file, not assumed from a test harness):
   ```ts
+  type DbExecutor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
+  function groupBy<T>(rows: T[], key: (row: T) => string): Map<string, T[]> {
+    const grouped = new Map<string, T[]>();
+    for (const row of rows) { const k = key(row); grouped.set(k, [...(grouped.get(k) ?? []), row]); }
+    return grouped;
+  }
+  ```
+  All reads and writes in `findOrCreateNetworkChecksPolicy` and `adoptNetworkChecksInTx` use `tx`, including `createConfigPolicy(owner, input, actor, tx)`, `assignPolicy(policyId, 'organization', orgId, 0, actor, undefined, undefined, tx)`, `addFeatureLink(policyId, 'monitors', null, { items: [] }, undefined, tx)`. `actor = auth.scope === 'system' ? null : auth.user.id` (D7). No nested global-db transaction or implicit executor fallback.
+
+  W05c1 wiring in `conversion/convert.ts` (barrel exports in `index.ts`):
+  ```ts
+  // retireSource's network case returns the same zero-output ledger contract.
+  if (sourceTable === 'network_monitors') return retireNetworkCheck(sourceId, reason, auth);
+  // After the common isRevertAvailable check and authorization, before mutation:
+  if (conversion.sourceTable === 'network_monitors') return revertNetworkCheckConversion(conversion, outputs.flatMap(o => o.monitorId ? [o.monitorId] : []), auth);
+  ```
+  `previewPartnerConversion(partnerId, auth)` incorporates every network item/refusal from each authorized org into D3's `rows`, `convertible`, `unconvertible` and hash. `convertPartnerLegacy(partnerId, previewHash, auth)` rechecks that complete hash first; it invokes `convertNetworkChecks` only for network preview items with `outcome === 'convertible'` (none while D14's guard remains). Preserve the original principal and never replace it with system scope. `loadSources.ts` pending helper and `routes/monitorDefinitions.conversion.ts` return `networkChecks: await countPendingNetworkChecks(orgId, auth)` only after the same full-org access guard. Network ledger reads use D2's existing paginated endpoint; `revertable` comes from D4.
+
+  Routes (`routes/monitorDefinitions.conversion.ts`, W05c1's conversion subrouter, **before** `/:id`):
+  ```ts
+  // Reuse C1's alert-read/write middleware, or define these local aliases
+  // with the same existing PERMISSIONS constants (monitorDefinitions.ts:73-74).
+  const requireAlertRead = requirePermission(PERMISSIONS.ALERTS_READ.resource, PERMISSIONS.ALERTS_READ.action);
+  const requireAlertWrite = requirePermission(PERMISSIONS.ALERTS_WRITE.resource, PERMISSIONS.ALERTS_WRITE.action);
   const networkChecksQuerySchema = z.object({ orgId: z.string().uuid() });
   const networkChecksConvertSchema = z.object({ orgId: z.string().uuid(), previewHash: z.string().length(64), sourceIds: z.array(z.string().uuid()).max(500).optional() });
 
@@ -1072,7 +1394,7 @@ branch: (set by feature-lifecycle after registration)
     return Array.isArray(permissions?.allowedSiteIds);
   }
 
-  monitorDefinitionRoutes.get('/conversion/network-checks', requireScope('organization', 'partner', 'system'), requireAlertRead, zValidator('query', networkChecksQuerySchema), async (c) => {
+  monitorConversionRoutes.get('/network-checks', requireScope('organization', 'partner', 'system'), requireAlertRead, zValidator('query', networkChecksQuerySchema), async (c) => {
     try {
       return c.json(await previewNetworkCheckConversion(c.req.valid('query').orgId, c.get('auth')));
     } catch (err) {
@@ -1081,7 +1403,7 @@ branch: (set by feature-lifecycle after registration)
     }
   });
 
-  monitorDefinitionRoutes.post('/conversion/network-checks/convert', requireScope('organization', 'partner', 'system'), requireAlertWrite, requireMfa(), zValidator('json', networkChecksConvertSchema), async (c) => {
+  monitorConversionRoutes.post('/network-checks/convert', requireScope('organization', 'partner', 'system'), requireAlertWrite, requireMfa(), zValidator('json', networkChecksConvertSchema), async (c) => {
     // The conversion writes an ORG-assigned policy; a site-restricted technician
     // must not be able to widen their ceiling through it.
     if (siteRestricted(c)) return c.json({ error: 'site_restricted_conversion' }, 403);
@@ -1097,16 +1419,16 @@ branch: (set by feature-lifecycle after registration)
   });
   ```
   Allowlists — `partner-wide-write-coverage.test.ts` (in the `network_monitors` block after line 71):
-  `'services/monitors/conversion/networkChecks.ts': 'W05e conversion is org-axis only: every network_monitors write is scoped org_id = <org> AND managed_by_monitor_id IS NULL, and adoption in monitorCompiler.ts refuses a row outside the definition\'s org; a partner-wide (org_id NULL) row can never match',` and the equivalent entry in `site-ceiling-write-coverage.test.ts` with reason `'route refuses site-restricted callers (403 site_restricted_conversion) before the service runs; the service writes an org-assigned policy'`.
+  `'services/monitors/conversion/networkChecks.ts': 'W05e conversion is org-axis only: every network_monitors write is scoped org_id = <org> AND managed_by_monitor_id IS NULL, and adoption in monitorCompiler.ts refuses a row outside the definition\'s org; a partner-wide (org_id NULL) row can never match',` also register `services/monitors/conversion/networkHistory.ts` with the org-axis snapshot/restore rationale, and the equivalent entries in `site-ceiling-write-coverage.test.ts` with reason `'preview, convert, retire and revert service entries call canMutateOrgWideGovernance before any source/configuration/alert read; an org-assigned policy requires an unrestricted caller'`.
 - [ ] **Step 4: Run, expect PASS.**
   ```bash
   cd apps/api && npx tsc --noEmit -p . && npx vitest run src/services/monitors/conversion/networkChecks.test.ts src/routes/monitorDefinitions.conversion.networkChecks.test.ts src/__tests__/partner-wide-write-coverage.test.ts src/__tests__/site-ceiling-write-coverage.test.ts src/services/monitors/conversion
   ```
-- [ ] **Step 5: Commit.** `git add apps/api/src/services/monitors/conversion apps/api/src/routes/monitorDefinitions.ts apps/api/src/routes/monitorDefinitions.conversion.networkChecks.test.ts apps/api/src/__tests__/partner-wide-write-coverage.test.ts apps/api/src/__tests__/site-ceiling-write-coverage.test.ts && git commit -m "feat(monitors): convert unmanaged network checks into network_check monitors through the conversion ledger"`
+- [ ] **Step 5: Commit.** `git add apps/api/src/services/monitors/conversion apps/api/src/routes/monitorDefinitions.conversion.ts apps/api/src/routes/monitorDefinitions.conversion.networkChecks.test.ts apps/api/src/__tests__/partner-wide-write-coverage.test.ts apps/api/src/__tests__/site-ceiling-write-coverage.test.ts && git commit -m "feat(monitors): convert unmanaged network checks into network_check monitors through the conversion ledger"`
 
 ---
 
-### Task 6: Legacy write paths return 410; results list exposes the managed link; asset delete guards managed checks (PR1)
+### Task 8: Legacy write paths return 410; results list exposes the managed link; asset delete preserves bound check history (PR1)
 
 **Files:**
 - Modify: `apps/api/src/routes/monitors.ts` (`POST /` 461-522, `PATCH /:id` 639-707, `POST /alerts` 870-905, `PATCH /alerts/:id` 925-957, `DELETE /alerts/:id` 959-986; dead schemas 223-238, 261-343; list projection 430-456)
@@ -1114,28 +1436,32 @@ branch: (set by feature-lifecycle after registration)
 - Modify: `apps/api/src/routes/discovery.ts` (`DELETE /assets/:id`, 1699-1750)
 
 **Interfaces:**
-- Produces: `410 { error: 'network_check_authoring_retired', message, hint: { route: 'POST /monitor-definitions', kind: 'network_check' } }` on every retired write; `GET /monitors` items gain `managedByMonitorId: string | null`, `retiredAt: string | null`; query `includeRetired?: 'true'` (default excludes retired rows); `DELETE /discovery/assets/:id` → `409 { error: 'asset_has_managed_network_checks', monitorIds: string[] }`.
-- Kept: `GET /monitors`, `GET /monitors/dashboard`, `GET /monitors/:id`, `GET /monitors/:id/results`, `GET /monitors/:monitorId/alerts` (read), `POST /monitors/:id/check`, `POST /monitors/:id/test`, `DELETE /monitors/:id` (unmanaged only; managed → 409 unchanged).
+- Produces: `410 { error: 'network_check_authoring_retired', message, hint: { route: 'POST /monitor-definitions', kind: 'network_check' } }` on every retired write; `GET /monitors` items gain `managedByMonitorId: string | null`, `retiredAt: string | null`; query `includeRetired?: 'true'` (default excludes retired rows); `DELETE /discovery/assets/:id` → `409 { error: 'asset_has_retained_network_checks', monitorIds: string[] }`.
+- Kept: `GET /monitors`, `GET /monitors/dashboard`, `GET /monitors/:id`, `GET /monitors/:id/results`, `GET /monitors/:monitorId/alerts` (read), `POST /monitors/:id/check`, `POST /monitors/:id/test`. `DELETE /monitors/:id` returns 410 for unmanaged checks; managed rows retain their existing 409 guard.
 
 - [ ] **Step 1: Write the failing tests.** In `monitors_list_create.test.ts` replace every "creates a monitor" case with:
   ```ts
   it('POST /monitors is retired: 410 with a pointer to monitor definitions (W05e)', async () => {
-    const res = await app.request('/monitors', { method: 'POST', headers: authHeaders, body: JSON.stringify({ name: 'x', monitorType: 'icmp_ping', target: '10.0.0.1' }) });
+    const res = await app.request('/monitors', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'x', monitorType: 'icmp_ping', target: '10.0.0.1' }) });
     expect(res.status).toBe(410);
     expect(await res.json()).toMatchObject({ error: 'network_check_authoring_retired', hint: { route: 'POST /monitor-definitions', kind: 'network_check' } });
     expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
   });
-  it('GET /monitors projects managedByMonitorId and hides retired rows unless includeRetired=true', async () => { /* seed two rows, one retired; assert 1 vs 2 and the field */ });
+  it('DELETE /monitors refuses destructive unmanaged cleanup', async () => {
+    const res = await app.request(`/monitors/${MONITOR_ID}`, { method: 'DELETE' });
+    expect(res.status).toBe(410);
+    expect(vi.mocked(db.delete)).not.toHaveBeenCalled();
+  });
   ```
-  In `monitors_alerts.test.ts` replace create/update/delete rule cases with 410 assertions (keep the `GET /:monitorId/alerts` read case). In `monitors_detail.test.ts` replace the PATCH cases with one 410 assertion (managed and unmanaged alike). Keep every 401/403 middleware case — the 410 sits **behind** `requireScope`/`requireMonitorWrite`/`requireMfa()`, so unauthenticated callers still get 401.
-  For discovery, in the nearest `discovery*.test.ts` that covers `DELETE /assets/:id`: seed a managed check bound to the asset and assert 409 with `monitorIds`; and that no `delete` was issued.
+  In `MonitorDetailModal.test.tsx:23-35`, change `open()` to await `monitor-check-open-monitor` or `monitor-check-not-converted`, since its Edit-button wait is removed. In `monitors_alerts.test.ts` replace create/update/delete rule cases with 410 assertions (keep the `GET /:monitorId/alerts` read case). In `monitors_detail.test.ts` replace the PATCH cases with one 410 assertion (managed and unmanaged alike). Keep every 401/403 middleware case — the 410 sits **behind** `requireScope`/`requireMonitorWrite`/`requireMfa()`, so unauthenticated callers still get 401.
+  For discovery, in `discovery.test.ts:2223` (`mockAssetOnly` at 2224; add `id/orgId/assetId/managedByMonitorId` to its `networkMonitors` schema mock at 134): seed a managed check bound to the asset and assert 409 with `monitorIds`; and `expect(db.transaction).not.toHaveBeenCalled()` so no delete is issued.
 - [ ] **Step 2: Run them, expect FAIL.** `cd apps/api && npx vitest run src/routes/monitors_list_create.test.ts src/routes/monitors_alerts.test.ts src/routes/monitors_detail.test.ts` → `expected 201 to be 410`.
 - [ ] **Step 3: Implement.** `routes/monitors.ts`:
   ```ts
   // W05e — network checks are authored as monitors of kind `network_check`.
   // Every write that used to author a check or its alert rules is retired
-  // (410 Gone, spec §Removed screens). Reads, DELETE of an unmanaged check,
-  // and the operational check/test endpoints stay.
+  // (410 Gone, spec §Removed screens). Reads and operational check/test
+  // endpoints stay. Unmanaged cleanup is retirement-only through the ledger.
   const NETWORK_CHECK_AUTHORING_RETIRED = {
     error: 'network_check_authoring_retired',
     message: 'Network checks are authored as monitors. Create or edit a monitor of kind network_check under Alerts → Monitors.',
@@ -1143,18 +1469,17 @@ branch: (set by feature-lifecycle after registration)
   } as const;
   const authoringRetired = (c: Context) => c.json(NETWORK_CHECK_AUTHORING_RETIRED, 410);
   ```
-  Replace the five handlers' bodies with `async (c) => authoringRetired(c)` while keeping their middleware chains (`requireScope(...)`, `requireMonitorWrite`, `requireMfa()`), drop their `zValidator` lines, and delete `validateMonitorConfigForType`, `icmpConfigSchema`…`dnsConfigSchema`, `createMonitorSchema`, `updateMonitorSchema`, `createAlertRuleSchema`, `updateAlertRuleSchema`, `monitorTypes` if now unused (keep `listMonitorsSchema` and add `includeRetired: z.enum(['true', 'false']).optional()`). In the list handler add `if (query.includeRetired !== 'true') conditions.push(isNull(networkMonitors.retiredAt));` and project `managedByMonitorId: m.managedByMonitorId, retiredAt: m.retiredAt?.toISOString() ?? null`. `POST /:id/check` and `/:id/test` keep working for managed rows too (they go through `requireMonitorAccess`, which only refuses partner-wide rows).
+  Add `DELETE /:id` (lines 713-744) to the retired handlers; retain its managed-row 409 guard and replace the unmanaged deletion with `authoringRetired(c)`. Replace the other five handlers' bodies with `async (c) => authoringRetired(c)` while keeping their middleware chains (`requireScope(...)`, `requireMonitorWrite`, `requireMfa()`), drop their `zValidator` lines, and delete `validateMonitorConfigForType`, `icmpConfigSchema`…`dnsConfigSchema`, `createMonitorSchema`, `updateMonitorSchema`, `createAlertRuleSchema`, `updateAlertRuleSchema`, `monitorTypes` if now unused (keep `listMonitorsSchema` and add `includeRetired: z.enum(['true', 'false']).optional()`). In the list handler add `if (query.includeRetired !== 'true') conditions.push(isNull(networkMonitors.retiredAt));` and project `managedByMonitorId: m.managedByMonitorId, retiredAt: m.retiredAt?.toISOString() ?? null`. `POST /:id/check` and `/:id/test` keep working for managed rows too (they go through `requireMonitorAccess`, which only refuses partner-wide rows).
   `routes/discovery.ts` — before the transaction at ~1730:
   ```ts
-  // W05e — a compiled network_check probe is bound to this asset. Deleting the
-  // asset from under it would delete the managed row behind the compiler (the
-  // handler would then read "not provisioned" forever). Refuse and name them.
+  // W05e — a compiled network_check probe is bound to this asset. Any bound probe, including retired/unmanaged ones, owns
+  // results or ledger history. Refuse implicit deletion through asset cleanup.
   const managedChecks = await db
-    .select({ monitorId: networkMonitors.managedByMonitorId })
+    .select({ monitorId: networkMonitors.managedByMonitorId, checkId: networkMonitors.id })
     .from(networkMonitors)
-    .where(and(eq(networkMonitors.assetId, assetId), eq(networkMonitors.orgId, existing.orgId), isNotNull(networkMonitors.managedByMonitorId)));
+    .where(and(eq(networkMonitors.assetId, assetId), eq(networkMonitors.orgId, existing.orgId)));
   if (managedChecks.length > 0) {
-    return c.json({ error: 'asset_has_managed_network_checks', monitorIds: managedChecks.map((m) => m.monitorId) }, 409);
+    return c.json({ error: 'asset_has_retained_network_checks', monitorIds: managedChecks.map((m) => m.monitorId).filter(Boolean), checkIds: managedChecks.map((m) => m.checkId) }, 409);
   }
   ```
 - [ ] **Step 4: Run, expect PASS.** `cd apps/api && npx tsc --noEmit -p . && npx vitest run src/routes/monitors src/routes/discovery src/services/aiToolsMonitoring.siteScope.test.ts` (check the reported file count — `src/routes/monitors` is a substring match and also pulls in `monitoring*.test.ts`; that is intended here).
@@ -1162,146 +1487,165 @@ branch: (set by feature-lifecycle after registration)
 
 ---
 
-### Task 7: Integration proof — adopt, poll, one alert through the compiled rule, revert (PR1)
+### Task 9: Integration proof — offline refusal, ownership, retirement ledger and reversal (PR1)
 
-**Files:**
-- Create: `apps/api/src/__tests__/integration/networkCheckConversion.integration.test.ts`
-- Test infra: `apps/api/src/__tests__/integration/setup.ts`, `db-utils.ts` (`createPartner`, `createOrganization`, `createSite`, `createUser`)
+**Files:** Create `apps/api/src/__tests__/integration/networkCheckConversion.integration.test.ts`; consume existing `setup.ts` and `db-utils.ts:129,176,216,295` (`createUser`, `createPartner`, `createOrganization`, `createSite`).
 
-**Interfaces consumed:** `previewNetworkCheckConversion`, `convertNetworkChecks`, `revertConversion` (W05c1), `recordMonitorCheckResult` (`jobs/monitorWorker.ts:496`), `networkCheckHandler`, `evaluateDeviceAlerts` (`services/alertService.ts:998`), `publishEvent` (`services/eventBus`).
+**Interfaces:** Consumes Task 7 preview/convert and Task 6 history functions, D2 `retireSource` returning `{ conversionId }`, D4 lifecycle, `withDbAccessContext`/`withSystemDbAccessContext`. The public path must refuse offline-unsafe adoption; do not mock a capability to make a production success test pass. Test carry-over separately through the real transactional helper, including suppressed and terminal history.
 
 - [ ] **Step 1: Write the failing test.**
   ```ts
-  /**
-   * W05e — a converted network check keeps producing results and raises its
-   * alert through the MONITOR path (compiled alert rule + alert.triggered),
-   * exactly once per org, on the device the legacy worker used. Real Postgres
-   * under RLS; alertCooldown falls back to memory without Redis.
-   */
   import './setup';
   import { randomUUID } from 'node:crypto';
-  import { afterEach, describe, expect, it, vi } from 'vitest';
+  import { describe, expect, it } from 'vitest';
   import { and, eq, sql } from 'drizzle-orm';
-  import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
-  import { alerts, configPolicyAssignments, configurationPolicies, devices, discoveredAssets, monitorConversions, monitorDefinitions, networkMonitorAlertRules, networkMonitorResults, networkMonitors } from '../../db/schema';
+  import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
+  import { alerts, devices, discoveredAssets, monitorConversions, monitorConversionOutputs,
+    monitorDefinitions, networkMonitorAlertRules, networkMonitors } from '../../db/schema';
+  import { createPartner, createOrganization, createSite, createUser } from './db-utils';
   import type { AuthContext } from '../../middleware/auth';
-  import { createOrganization, createPartner, createSite, createUser } from './db-utils';
+  import { previewNetworkCheckConversion, convertNetworkChecks } from '../../services/monitors/conversion/networkChecks';
+  import { retireSource, revertConversion, OPEN_ALERT_STATUSES } from '../../services/monitors/conversion';
+  import { carryNetworkAlerts, snapshotNetworkSource } from '../../services/monitors/conversion/networkHistory';
+  import { createMonitorDefinition, updateMonitorDefinition } from '../../services/monitors/monitorService';
 
-  const publishEventMock = vi.fn(async () => undefined);
-  vi.mock('../../services/eventBus', async (orig) => ({ ...(await orig<typeof import('../../services/eventBus')>()), publishEvent: publishEventMock }));
-
-  const { previewNetworkCheckConversion, convertNetworkChecks } = await import('../../services/monitors/conversion/networkChecks');
-  const { revertConversion } = await import('../../services/monitors/conversion'); // W05c1
-  const { recordMonitorCheckResult } = await import('../../jobs/monitorWorker');
-  const { networkCheckHandler } = await import('../../services/alertConditions/handlers/networkCheck');
-  const { evaluateDeviceAlerts } = await import('../../services/alertService');
-
-  function orgAuth(orgId: string, partnerId: string, userId: string): AuthContext {
-    return {
-      user: { id: userId }, token: null, partnerId, orgId, scope: 'organization',
-      accessibleOrgIds: [orgId], partnerOrgAccess: 'all',
-      orgCondition: (col: unknown) => eq(col as never, orgId),
-      canAccessOrg: (id: string) => id === orgId,
-    } as unknown as AuthContext;
+  async function fixture() {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const site = await createSite({ orgId: org.id });
+    const user = await createUser({ partnerId: partner.id, orgId: org.id });
+    const auth = { scope: 'organization', user, orgId: org.id, partnerId: partner.id,
+      token: null, accessibleOrgIds: [org.id], partnerOrgAccess: null,
+      canAccessOrg: (id: string) => id === org.id, orgCondition: () => eq(networkMonitors.orgId, org.id) } as AuthContext;
+    const run = <T>(fn: () => Promise<T>) => withDbAccessContext({ scope: 'organization', orgId: org.id,
+      accessibleOrgIds: [org.id], userId: user.id, currentPartnerId: partner.id }, fn);
+    const [device] = await withSystemDbAccessContext(() => db.insert(devices).values({ orgId: org.id, siteId: site.id,
+      agentId: randomUUID(), hostname: 'network-test', osType: 'linux', osVersion: 'test', architecture: 'x86_64',
+      agentVersion: 'test', status: 'offline', isEphemeral: false }).returning());
+    const [asset] = await run(() => db.insert(discoveredAssets).values({ orgId: org.id, siteId: site.id,
+      ipAddress: '192.0.2.1', linkedDeviceId: device!.id }).returning());
+    const [check] = await run(() => db.insert(networkMonitors).values({ orgId: org.id, assetId: asset!.id,
+      name: 'Gateway', monitorType: 'icmp_ping', target: '192.0.2.1', config: { count: 4 } }).returning());
+    await run(() => db.insert(networkMonitorAlertRules).values({ monitorId: check!.id, condition: 'offline', severity: 'high' }));
+    return { org, partner, auth, run, device: device!, asset: asset!, check: check! };
   }
-  function orgCtx(orgId: string, partnerId: string, userId: string): DbAccessContext {
-    return { scope: 'organization', orgId, accessibleOrgIds: [orgId], accessiblePartnerIds: [], userId, currentPartnerId: partnerId };
-  }
-
-  async function insertDevice(orgId: string, siteId: string) {
-    const u = randomUUID().slice(0, 8);
-    const [d] = await withSystemDbAccessContext(() => db.insert(devices).values({
-      orgId, siteId, agentId: `w05e-${u}`, hostname: `w05e-${u}`, osType: 'linux', osVersion: '22.04',
-      architecture: 'x86_64', agentVersion: '0.0.0-test', status: 'online', lastSeenAt: new Date(), isEphemeral: false,
-    }).returning());
-    return d!;
-  }
-
-  const cleanup: Array<() => Promise<void>> = [];
-  afterEach(async () => { for (const fn of cleanup.reverse()) await fn(); cleanup.length = 0; publishEventMock.mockClear(); });
-
-  describe('network check conversion (W05e)', () => {
-    it('adopts the row, retires its rules, and alerts once through the compiled rule on the linked device', async () => {
-      const partner = await createPartner();
-      const org = await createOrganization({ partnerId: partner.id });
-      const site = await createSite({ orgId: org.id });
-      const user = await createUser({ partnerId: partner.id, orgId: org.id });
-      const linked = await insertDevice(org.id, site.id);   // the asset's device → the alert device
-      const prober = await insertDevice(org.id, site.id);   // runs the probe, must NOT alert
-      const [asset] = await withSystemDbAccessContext(() => db.insert(discoveredAssets).values({ orgId: org.id, siteId: site.id, ipAddress: '10.9.9.1', hostname: 'gw', linkedDeviceId: linked.id } as never).returning());
-      const [legacy] = await withSystemDbAccessContext(() => db.insert(networkMonitors).values({ orgId: org.id, assetId: asset!.id, name: 'Gateway', monitorType: 'icmp_ping', target: '10.9.9.1', config: { count: 4 }, pollingInterval: 60, timeout: 5 }).returning());
-      await withSystemDbAccessContext(() => db.insert(networkMonitorAlertRules).values({ monitorId: legacy!.id, condition: 'consecutive_failures_gt', threshold: '1', severity: 'high' }));
-      cleanup.push(async () => withSystemDbAccessContext(async () => {
-        await db.delete(alerts).where(eq(alerts.orgId, org.id));
-        await db.delete(monitorConversions).where(eq(monitorConversions.orgId, org.id));
-        await db.delete(monitorDefinitions).where(eq(monitorDefinitions.orgId, org.id));
-        await db.delete(networkMonitors).where(eq(networkMonitors.orgId, org.id));
-        await db.delete(configurationPolicies).where(eq(configurationPolicies.orgId, org.id));
-        await db.delete(discoveredAssets).where(eq(discoveredAssets.orgId, org.id));
-        await db.delete(devices).where(eq(devices.orgId, org.id));
+  describe('W05e network conversion contracts', () => {
+    it('refuses offline-unsafe conversion without adopting, retiring or writing a ledger', async () => {
+      const f = await fixture();
+      const preview = await f.run(() => previewNetworkCheckConversion(f.org.id, f.auth));
+      expect(preview.items[0]).toMatchObject({ outcome: 'unconvertible', reason: 'unconvertible:offline_probe_unsupported' });
+      await expect(f.run(() => convertNetworkChecks(f.org.id, preview.previewHash, f.auth))).rejects.toMatchObject({ code: 'offline_probe_unsupported' });
+      const [check] = await f.run(() => db.select().from(networkMonitors).where(eq(networkMonitors.id, f.check.id)));
+      expect(check).toMatchObject({ managedByMonitorId: null, retiredAt: null, isActive: true });
+      expect(await f.run(() => db.select().from(monitorConversions).where(eq(monitorConversions.sourceId, f.check.id)))).toEqual([]);
+    });
+    it.each([[], ['33333333-3333-4333-8333-333333333333']])('forbids restricted preview and direct service conversion', async allowedSiteIds => {
+      const f = await fixture();
+      const auth = { ...f.auth, allowedSiteIds };
+      await expect(f.run(() => previewNetworkCheckConversion(f.org.id, auth))).rejects.toMatchObject({ status: 403 });
+      await expect(f.run(() => convertNetworkChecks(f.org.id, 'a'.repeat(64), auth))).rejects.toMatchObject({ status: 403 });
+    });
+    it('retirement records a zero-output ledger and restores exact enabled/retired states', async () => {
+      const f = await fixture();
+      await f.run(() => db.update(networkMonitors).set({ isActive: false }).where(eq(networkMonitors.id, f.check.id)));
+      const sourceContext = { source: 'network_monitor', monitorId: f.check.id };
+      const [open] = await f.run(() => db.insert(alerts).values({ orgId: f.org.id, deviceId: f.device.id,
+        severity: 'high', title: 'Unreachable', status: 'suppressed', context: sourceContext }).returning());
+      const { conversionId } = await f.run(() => retireSource('network_monitors', f.check.id, 'operator', f.auth));
+      expect(await f.run(() => db.select().from(monitorConversionOutputs).where(eq(monitorConversionOutputs.conversionId, conversionId)))).toEqual([]);
+      await f.run(() => revertConversion(conversionId, f.auth));
+      const [restored] = await f.run(() => db.select().from(networkMonitors).where(eq(networkMonitors.id, f.check.id)));
+      expect(restored).toMatchObject({ isActive: false, retiredAt: null, retiredReason: null, name: 'Gateway' });
+      const [history] = await f.run(() => db.select().from(alerts).where(eq(alerts.id, open!.id)));
+      expect(history).toMatchObject({ status: 'suppressed', resolvedAt: null, context: sourceContext });
+    });
+    it('carries shared open alerts without touching terminal history', async () => {
+      const f = await fixture();
+      await f.run(() => db.insert(alerts).values([...OPEN_ALERT_STATUSES, 'resolved' as const, 'dismissed' as const].map(status => ({
+        orgId: f.org.id, deviceId: f.device.id, severity: 'high' as const, title: status, status,
+        context: { source: 'network_monitor', monitorId: f.check.id },
+      }))));
+      await f.run(() => db.transaction(async tx => {
+        const definition = await createMonitorDefinition({ ownerScope: 'organization', orgId: f.org.id,
+          name: 'Test', kind: 'network_check', enabled: false, condition: { checkType: 'icmp_ping', target: '192.0.2.1' },
+          severity: 'high', cooldownMinutes: 5, autoResolve: true, responses: [], deliveryMode: 'inherit',
+          deliveryChannelIds: [], recurrenceActions: [], pauseResponsesOnEscalation: true,
+        }, f.auth, {}, tx);
+        const refs = await carryNetworkAlerts(tx, f.check, definition);
+        expect(refs).toHaveLength(OPEN_ALERT_STATUSES.length);
+        const history = await tx.select().from(alerts).where(eq(alerts.orgId, f.org.id));
+        expect(history.filter(a => a.monitorId === definition.id).map(a => a.status).sort()).toEqual([...OPEN_ALERT_STATUSES].sort());
+        expect(history.filter(a => ['resolved', 'dismissed'].includes(a.status)).every(a => a.ruleId === null)).toBe(true);
       }));
-
-      const auth = orgAuth(org.id, partner.id, user.id);
-      const ctx = orgCtx(org.id, partner.id, user.id);
-
-      const preview = await withDbAccessContext(ctx, () => previewNetworkCheckConversion(org.id, auth));
-      expect(preview.items).toHaveLength(1);
-      expect(preview.items[0]).toMatchObject({ outcome: 'convertible', proposed: [{ kind: 'network_check', severity: 'high', condition: { consecutiveFailures: 2, assetId: asset!.id } }] });
-
-      const result = await withDbAccessContext(ctx, () => convertNetworkChecks(org.id, preview.previewHash, auth));
-      expect(result.monitorsCreated).toBe(1);
-
-      // Adopted in place: same row id, now managed, history intact, asset kept.
-      const [row] = await withSystemDbAccessContext(() => db.select().from(networkMonitors).where(eq(networkMonitors.id, legacy!.id)));
-      expect(row!.managedByMonitorId).toBeTruthy();
-      expect(row!.assetId).toBe(asset!.id);
-      expect(row!.name).toBe('[monitor] Gateway');
-      expect(row!.config).toEqual({ count: 4 });
-      const [rule] = await withSystemDbAccessContext(() => db.select().from(networkMonitorAlertRules).where(eq(networkMonitorAlertRules.monitorId, legacy!.id)));
-      expect(rule!.retiredReason).toBe('converted');
-      const [def] = await withSystemDbAccessContext(() => db.select().from(monitorDefinitions).where(eq(monitorDefinitions.id, row!.managedByMonitorId!)));
-      const [assignment] = await withSystemDbAccessContext(() => db.select().from(configPolicyAssignments).where(eq(configPolicyAssignments.configPolicyId, result.policyId!)));
-      expect(assignment).toMatchObject({ level: 'organization', targetId: org.id });
-
-      // Two offline results from the prober, attributed to the org.
-      for (let i = 0; i < 2; i++) {
-        await withSystemDbAccessContext(() => recordMonitorCheckResult(legacy!.id, { monitorId: legacy!.id, status: 'offline', responseMs: 0, error: 'timeout' }, { orgId: org.id, deviceId: prober.id }));
-      }
-      const legacyAlerts = await withSystemDbAccessContext(() => db.select({ id: alerts.id }).from(alerts).where(and(eq(alerts.orgId, org.id), sql`${alerts.context}->>'source' = 'network_monitor'`)));
-      expect(legacyAlerts).toHaveLength(0); // the legacy worker no longer raises for a converted check
-
-      const cond = { type: 'network_check', monitorId: def!.id, consecutiveFailures: 2 };
-      expect((await withSystemDbAccessContext(() => networkCheckHandler.evaluate(cond, linked.id))).passed).toBe(true);
-      expect((await withSystemDbAccessContext(() => networkCheckHandler.evaluate(cond, prober.id))).passed).toBe(false);
-
-      const raised = await withSystemDbAccessContext(() => evaluateDeviceAlerts(linked.id));
-      expect(raised.length).toBeGreaterThanOrEqual(1);
-      const [alert] = await withSystemDbAccessContext(() => db.select().from(alerts).where(eq(alerts.id, raised[0]!)));
-      expect(alert!.ruleId).toBe(def!.compiledAlertRuleId);
-      expect(alert!.deviceId).toBe(linked.id);
-      expect(publishEventMock).toHaveBeenCalledWith('alert.triggered', org.id, expect.objectContaining({ monitorId: def!.id, kind: 'network_check' }), expect.anything(), expect.anything());
-      expect(await withSystemDbAccessContext(() => evaluateDeviceAlerts(prober.id))).toHaveLength(0);
-
-      // Revert: un-adopt BEFORE deleting the definition, history survives.
-      await withDbAccessContext(ctx, () => revertConversion(result.conversionIds[0]!, auth));
-      const [reverted] = await withSystemDbAccessContext(() => db.select().from(networkMonitors).where(eq(networkMonitors.id, legacy!.id)));
-      expect(reverted).toMatchObject({ managedByMonitorId: null, name: 'Gateway' });
-      const results = await withSystemDbAccessContext(() => db.select().from(networkMonitorResults).where(eq(networkMonitorResults.monitorId, legacy!.id)));
-      expect(results).toHaveLength(2);
-      const [ruleBack] = await withSystemDbAccessContext(() => db.select().from(networkMonitorAlertRules).where(eq(networkMonitorAlertRules.monitorId, legacy!.id)));
-      expect(ruleBack!.retiredAt).toBeNull();
+    });
+    it('reverts exact alert refs before compiled deletion and rehomes later history', async () => {
+      const f = await fixture();
+      const originalContext = { source: 'network_monitor', monitorId: f.check.id, note: 'retain me' };
+      const [original] = await f.run(() => db.insert(alerts).values({ orgId: f.org.id, deviceId: f.device.id,
+        severity: 'high', title: 'Original', status: 'suppressed', context: originalContext }).returning());
+      // Exercise internal ledger/history mechanics without bypassing the public
+      // offline refusal: no enabled monitor is deployed or evaluated here.
+      const { conversionId, definitionId, laterId } = await f.run(() => db.transaction(async tx => {
+        const networkSourceSnapshot = await snapshotNetworkSource(tx, f.check);
+        const def = await createMonitorDefinition({ ownerScope: 'organization', orgId: f.org.id,
+          name: f.check.name, kind: 'network_check', enabled: false, condition: { checkType: 'icmp_ping', target: f.check.target },
+          severity: 'high', cooldownMinutes: 5, autoResolve: true, responses: [], deliveryMode: 'inherit',
+          deliveryChannelIds: [], recurrenceActions: [], pauseResponsesOnEscalation: true,
+        }, f.auth, { adoptNetworkMonitorId: f.check.id }, tx);
+        const movedAlertRefs = await carryNetworkAlerts(tx, f.check, def);
+        const [entry] = await tx.insert(monitorConversions).values({ orgId: f.org.id, partnerId: null,
+          sourceTable: 'network_monitors', sourceId: f.check.id, policyId: null, convertedBy: null,
+          previewHash: 'a'.repeat(64), networkSourceSnapshot }).returning();
+        await tx.insert(monitorConversionOutputs).values({ orgId: f.org.id, partnerId: null, conversionId: entry!.id,
+          monitorId: def.id, role: 'primary', movedAlertIds: movedAlertRefs.map(a => a.id), movedAlertRefs });
+        const [later] = await tx.insert(alerts).values({ orgId: f.org.id, deviceId: f.device.id, ruleId: def.compiledAlertRuleId,
+          monitorId: def.id, severity: 'high', title: 'Later', status: 'resolved', context: { detail: 'keep' } }).returning();
+        return { conversionId: entry!.id, definitionId: def.id, laterId: later!.id };
+      }));
+      await f.run(() => updateMonitorDefinition(definitionId, { condition: { checkType: 'dns_check', target: 'example.com' } }, f.auth));
+      await f.run(() => revertConversion(conversionId, f.auth));
+      const [restored] = await f.run(() => db.select().from(alerts).where(eq(alerts.id, original!.id)));
+      expect(restored).toMatchObject({ status: 'suppressed', ruleId: null, configPolicyId: null, monitorId: null, context: originalContext });
+      const [later] = await f.run(() => db.select().from(alerts).where(eq(alerts.id, laterId)));
+      expect(later).toMatchObject({ status: 'resolved', ruleId: null, monitorId: null,
+        context: { detail: 'keep', source: 'network_monitor', monitorId: f.check.id } });
+      expect(await f.run(() => db.select().from(monitorDefinitions).where(eq(monitorDefinitions.id, definitionId)))).toEqual([]);
+      const [check] = await f.run(() => db.select().from(networkMonitors).where(eq(networkMonitors.id, f.check.id)));
+      expect(check).toMatchObject({ managedByMonitorId: null, name: f.check.name, assetId: f.asset.id, monitorType: 'icmp_ping', config: { count: 4 } });
+    });
+    it('refuses reversal of a missing source before mutating its ledger', async () => {
+      const f = await fixture();
+      const { conversionId } = await f.run(() => retireSource('network_monitors', f.check.id, 'operator', f.auth));
+      await f.run(() => db.delete(networkMonitors).where(eq(networkMonitors.id, f.check.id)));
+      await expect(f.run(() => revertConversion(conversionId, f.auth))).rejects.toMatchObject({ code: 'source_not_found' });
+      const [entry] = await f.run(() => db.select().from(monitorConversions).where(eq(monitorConversions.id, conversionId)));
+      expect(entry!.revertedAt).toBeNull();
+    });
+    it('enforces the cross-org asset FK even under system access and declares it deferrable', async () => {
+      const a = await fixture(); const b = await fixture();
+      await expect(withSystemDbAccessContext(() => db.insert(networkMonitors).values({ orgId: a.org.id,
+        assetId: b.asset.id, name: 'forged', monitorType: 'icmp_ping', target: '192.0.2.1' })))
+        .rejects.toMatchObject({ cause: expect.objectContaining({ code: '23503' }) });
+      const rows = await withSystemDbAccessContext(() => db.execute(sql`SELECT condeferrable, condeferred FROM pg_constraint
+        WHERE conrelid = 'network_monitors'::regclass AND conname = 'network_monitors_asset_org_fk'`));
+      expect(rows[0]).toMatchObject({ condeferrable: true, condeferred: false });
     });
   });
   ```
-  (`alert.triggered` carries `monitorId` and `kind` after W05c1 — brief line "alert.triggered payload gains monitorId and kind". If `publishEvent`'s positional signature differs, match the call at `alertService.ts:110`.)
-- [ ] **Step 2: Run it, expect FAIL.** `pnpm test-stack up && cd apps/api && npx vitest run -c vitest.integration.config.ts src/__tests__/integration/networkCheckConversion.integration.test.ts` — before Tasks 3–5 this fails at the import; after them it must pass on the first full run. If it fails on `configPolicyAssignments` naming, check `db/schema/configurationPolicies.ts` for the assignments table export name.
-- [ ] **Step 3: Implement.** Nothing new — this task proves Tasks 1–6. If the `prober.id` evaluation raises an alert, Task 3's gate is not wired into the handler the sweep actually calls (check `alertConditions/registry.ts` registers the edited handler).
-- [ ] **Step 4: Run, expect PASS.** Same command; then `pnpm test-stack down`.
-- [ ] **Step 5: Commit.** `git add apps/api/src/__tests__/integration/networkCheckConversion.integration.test.ts && git commit -m "test(monitors): integration proof that a converted network check alerts once through the monitor path"`
+  `setup.ts` owns integration cleanup; fixtures use unique ids. If the driver exposes SQLSTATE directly rather than in `cause`, assert `error.code ?? error.cause?.code` equals `23503` without accepting any other rejection.
+- [ ] **Step 2: Run, expect FAIL.** `pnpm test-stack up`, then `cd apps/api && npx vitest run -c vitest.integration.config.ts src/__tests__/integration/networkCheckConversion.integration.test.ts`. Before Tasks 1–8, missing history exports/FK cause failure; after implementation, wrong status/ownership is a genuine regression.
+- [ ] **Step 3: Implement.** Wire Tasks 1–8 exactly; no offline-capability mock. Add the final lifecycle assertion:
+  ```ts
+  expect(isRevertAvailable('network_monitors')).toBe(true);
+  expect(isRevertAvailable('config_policy_alert_rules')).toBe(false); // W05d retained guard
+  ```
+  Import it from `../../services/monitors/conversion/lifecycle`.
+- [ ] **Step 4: Run, expect PASS.** Repeat Step 2 plus the real `tenant-export-policy.integration.test.ts`, `rls-coverage.integration.test.ts`, and `tenantCascade.integration.test.ts` suites with the same integration config. `pnpm test-stack down` from repo root afterward.
+- [ ] **Step 5: Commit.** `git add apps/api/src/__tests__/integration/networkCheckConversion.integration.test.ts && git commit -m "test(monitors): network refusal ownership provenance and retirement round trip"`
 
 ---
 
-### Task 8: Network page — nav label, titles, tabs, "New check" (PR2)
+### Task 10: Network page — nav label, titles, tabs, "New check" (PR2)
 
 **Files:**
 - Modify: `apps/web/src/components/layout/Sidebar.tsx` (line 275), `Sidebar.nav.test.tsx` (lines 86, 179-185, 334)
@@ -1309,7 +1653,7 @@ branch: (set by feature-lifecycle after registration)
 - Modify: `apps/web/src/locales/*/common.json` (`nav.networkMonitor`, `longTail.monitoring.MonitoringPage.*`), `apps/web/src/locales/*/pages.json` (`titles.monitoring`)
 
 **Interfaces:**
-- Produces: tabs `assets | templates | results`; hash `#checks` parsed as `results`; `MonitoringPage` "New check" button (`data-testid="monitoring-page-new-check"`) → `navigateTo('/alerts/monitors/new?kind=network_check[&assetId=…]')`.
+- Produces: tabs `assets | templates | results`; hash `#checks` parsed as `results`; `MonitoringPage` "New check" button (`data-testid="monitoring-page-new-check"`) → `navigateTo('/alerts/monitors/new#kind=network_check[&assetId=…]')`.
 
 - [ ] **Step 1: Write the failing tests.** `Sidebar.nav.test.tsx` — change the test at 179-185 to:
   ```ts
@@ -1331,7 +1675,7 @@ branch: (set by feature-lifecycle after registration)
     window.history.pushState({}, '', '/monitoring#results');
     render(<MonitoringPage />);
     fireEvent.click(screen.getByTestId('monitoring-page-new-check'));
-    expect(navigateToMock).toHaveBeenCalledWith('/alerts/monitors/new?kind=network_check');
+    expect(navigateToMock).toHaveBeenCalledWith('/alerts/monitors/new#kind=network_check');
   });
   ```
   (mock `@/lib/navigation` → `{ navigateTo: navigateToMock }` at the top; change the existing `'Network Checks'` click to `'Results'`.)
@@ -1343,12 +1687,10 @@ branch: (set by feature-lifecycle after registration)
   // `#checks` was the tab's hash until W05e; bookmarks keep working.
   const parseTab = (h: string): MonitoringTab | undefined =>
     h === 'checks' ? 'results' : (MONITORING_TABS as readonly string[]).includes(h) ? (h as MonitoringTab) : undefined;
-  …
   const [activeTab, setActiveTab] = useHashState<MonitoringTab>('assets', parseTab);
-  …
   {activeTab === 'results' && (
     <button type="button" data-testid="monitoring-page-new-check"
-      onClick={() => void navigateTo(`/alerts/monitors/new?kind=network_check${initialAssetId ? `&assetId=${encodeURIComponent(initialAssetId)}` : ''}`)}
+      onClick={() => void navigateTo(`/alerts/monitors/new#kind=network_check${initialAssetId ? `&assetId=${encodeURIComponent(initialAssetId)}` : ''}`)}
       className="flex shrink-0 items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90">
       <Plus className="h-4 w-4" />
       {t('longTail.monitoring.MonitoringPage.newCheck')}
@@ -1366,19 +1708,19 @@ branch: (set by feature-lifecycle after registration)
 
 ---
 
-### Task 9: Results tab is read-only; conversion banner; device page hands off to the editor (PR2)
+### Task 11: Results tab is read-only; conversion banner; device page hands off to the editor (PR2)
 
 **Files:**
 - Modify: `apps/web/src/components/monitors/NetworkMonitorList.tsx` (lines 21-22, 99, 239-247, 265-277, 342-350, 361-371)
 - Create: `apps/web/src/components/monitors/NetworkMonitorList.test.tsx`, `NetworkCheckConversionBanner.tsx`, `NetworkCheckConversionBanner.test.tsx`
 - Modify: `apps/web/src/components/monitors/MonitorDetailModal.tsx` (remove 105-111 edit state, 151-180 `handleSave`, 287-371 edit button + form, 413-437 alert rules), `MonitorDetailModal.test.tsx`
 - Delete: `apps/web/src/components/monitors/CreateMonitorForm.tsx`
-- Modify: `apps/web/src/components/devices/networkDevice/settings/MonitoringSection.tsx` (lines 5, 67, 337-340), `useNetworkAssetMutations.ts` (lines 171-179), `useNetworkAssetMutations.test.ts`
+- Modify: `apps/web/src/components/devices/networkDevice/settings/MonitoringSection.tsx` (lines 5, 67, 337-340), `useNetworkAssetMutations.ts` (lines 171-187), `useNetworkAssetMutations.test.ts`
 - Modify: `apps/web/src/locales/*/common.json`, `*/devices.json`
 
 **Interfaces:**
 - Consumes: `GET /monitors` items with `managedByMonitorId`; `GET /monitor-definitions/conversion/network-checks?orgId`; `POST /monitor-definitions/conversion/network-checks/convert`.
-- Produces: `NetworkCheckConversionBanner({ orgId, onConverted })` — shows "N network checks are not monitors yet" with **Review and convert** → dialog listing each item (name, outcome, notes) → **Convert N** (runAction) → `onConverted()`. `NetworkMonitorList` row: Monitor column (`Open monitor` link to `/alerts/monitors/<id>` or a `Not converted` badge); Delete only when `managedByMonitorId === null`.
+- Produces: `NetworkCheckConversionBanner({ orgId, onConverted })` — shows "N network checks are not monitors yet" with **Review and convert** → dialog listing each item (name, outcome, notes) → **Convert N** (runAction) → `onConverted()`. `NetworkMonitorList` row: Monitor column (`Open monitor` link to `/alerts/monitors/<id>` or a `Not converted` badge); No Delete affordance. Manual retirement uses the existing conversion Retire action (`reason: operator`) and persistent ledger from C2.
 
 - [ ] **Step 1: Write the failing tests.** `NetworkMonitorList.test.tsx`:
   ```ts
@@ -1395,7 +1737,7 @@ branch: (set by feature-lifecycle after registration)
 
   describe('NetworkMonitorList (read-only results, W05e)', () => {
     it('links a managed check to its monitor and offers no delete for it', async () => {
-      vi.mocked(fetchWithAuth).mockResolvedValue(json({ data: [row({ managedByMonitorId: 'def-1' })] }));
+      vi.mocked(fetchWithAuth).mockImplementation(async () => json({ data: [row({ managedByMonitorId: 'def-1' })] }));
       render(<NetworkMonitorList />);
       const link = await screen.findByTestId('network-check-open-monitor');
       expect(link).toHaveAttribute('href', '/alerts/monitors/def-1');
@@ -1403,7 +1745,7 @@ branch: (set by feature-lifecycle after registration)
       expect(screen.queryByText(/add monitor/i)).toBeNull();
     });
     it('marks an unconverted check and renders the conversion banner', async () => {
-      vi.mocked(fetchWithAuth).mockResolvedValue(json({ data: [row()] }));
+      vi.mocked(fetchWithAuth).mockImplementation(async () => json({ data: [row()] }));
       render(<NetworkMonitorList />);
       expect(await screen.findByTestId('network-check-not-converted')).toBeInTheDocument();
       expect(screen.getByTestId('conversion-banner')).toBeInTheDocument();
@@ -1491,44 +1833,78 @@ branch: (set by feature-lifecycle after registration)
     );
   }
   ```
-  `NetworkMonitorList.tsx`: drop `CreateMonitorForm` import/state (21, 99, 361-371); type gains `managedByMonitorId: string | null; retiredAt: string | null`; replace the Add Monitor button (239-247) with a link-styled button to `navigateTo('/alerts/monitors/new?kind=network_check' + (filterAssetId ? `&assetId=${…}` : ''))` labelled `actions.newCheck`; empty state (265-277) → `empty.prefix` "No network checks yet." + the same navigate; add a **Monitor** column after Target: managed → `<a data-testid="network-check-open-monitor" href={`/alerts/monitors/${monitor.managedByMonitorId}`}>{t('…headers.openMonitor')}</a>`, else `<span data-testid="network-check-not-converted" className="rounded-full bg-warning/15 px-2 py-0.5 text-xs">{t('…notConverted')}</span>`; delete button (342-350) gets `data-testid="network-check-delete"` and renders only when `!monitor.managedByMonitorId`; render `<NetworkCheckConversionBanner orgId={currentOrgId} onConverted={fetchMonitors} />` above the table when `currentOrgId && !filterAssetId`. Wrap `handleCheck`/`handleConfirmDelete` in `runAction` (they are POST/DELETE — `no-silent-mutations.test.ts` will flag the file once it is touched; check `apps/web/src/lib/runActionAllowlist.ts` first).
+  `NetworkMonitorList.tsx`: drop `CreateMonitorForm` import/state (21, 99, 361-371); type gains `managedByMonitorId: string | null; retiredAt: string | null`; replace the Add Monitor button (239-247) with a link-styled button to `navigateTo('/alerts/monitors/new#kind=network_check' + (filterAssetId ? `&assetId=${encodeURIComponent(filterAssetId)}` : ''))` labelled `actions.newCheck`; empty state (265-277) → `empty.prefix` "No network checks yet." + the same navigate; add a **Monitor** column after Target: managed → `<a data-testid="network-check-open-monitor" href={`/alerts/monitors/${monitor.managedByMonitorId}`}>{t('longTail.monitors.NetworkMonitorList.headers.openMonitor')}</a>`, else `<span data-testid="network-check-not-converted" className="rounded-full bg-warning/15 px-2 py-0.5 text-xs">{t('longTail.monitors.NetworkMonitorList.notConverted')}</span>`; remove the delete button (342-350), delete state, confirmation dialog and `handleConfirmDelete`; render `<NetworkCheckConversionBanner orgId={currentOrgId} onConverted={fetchMonitors} />` above the table when `currentOrgId && !filterAssetId`. Wrap `handleCheck` in `runAction` (it is POST — `no-silent-mutations.test.ts` will flag the file once it is touched; check `apps/web/src/lib/runActionAllowlist.ts` first).
   `MonitorDetailModal.tsx`: remove the edit state, `handleSave`, the Edit button and form, and the Alert Rules section; type gains `managedByMonitorId: string | null`; after the status bar render:
   ```tsx
   {monitor.managedByMonitorId
     ? <a data-testid="monitor-check-open-monitor" href={`/alerts/monitors/${monitor.managedByMonitorId}`} className="mt-3 inline-block text-sm text-primary hover:underline">{t('longTail.monitors.MonitorDetailModal.openMonitor')}</a>
     : <p data-testid="monitor-check-not-converted" className="mt-3 text-sm text-muted-foreground">{t('longTail.monitors.MonitorDetailModal.notConverted')}</p>}
   ```
-  and show the footer Delete only when unmanaged. Delete `CreateMonitorForm.tsx`. `MonitoringSection.tsx`: remove the import (5) and `addingCheck` render (337-340); the Add check button navigates to `/alerts/monitors/new?kind=network_check&assetId=${assetId}` and a hint line `networkDeviceDetailPage.settings.monitoring.addCheckHint` sits under the checks list. `useNetworkAssetMutations.ts`: delete `createCheck` (171-179).
-  i18n (8 locales; en shown, translate the rest): `longTail.monitors.NetworkMonitorList.actions.newCheck` "New check", `headers.monitor` "Monitor", `headers.openMonitor` "Open monitor", `notConverted` "Not converted", `empty.prefix` "No network checks yet.", `empty.action` "Create one as a monitor."; delete `actions.addMonitor`; `longTail.monitors.MonitorDetailModal.openMonitor` "Open the monitor that owns this check", `.notConverted` "This check is not a monitor yet — convert it from the Results tab."; delete `MonitorDetailModal.fields.*`, `.targetResetNote`, `.saved`, `.actions.cancelEdit`, `.alertRules.*`, `.errors.updateMonitor`; delete the whole `longTail.monitors.CreateMonitorForm` block; `longTail.monitors.NetworkCheckConversionBanner.{pending: "{{count}} network check(s) on this page are not monitors yet.", review: "Review and convert", title: "Convert network checks to monitors", convert: "Convert {{count}}", converted: "Converted {{count}} network check(s) to monitors", failed: "Could not convert network checks", outcome.convertible: "Convertible", outcome.unconvertible: "Cannot convert"}`; `devices.json` — delete `networkDeviceDetailPage.settings.toasts.checkCreated`/`checkCreateFailed`, add `networkDeviceDetailPage.settings.monitoring.addCheckHint` "Checks are authored as monitors. Add check opens the monitor editor bound to this asset."
+  and remove the footer Delete and its callback entirely. Delete `CreateMonitorForm.tsx`. `MonitoringSection.tsx`: remove the import (5) and `addingCheck` render (337-340); the Add check button navigates to `/alerts/monitors/new#kind=network_check&assetId=${assetId}` and a hint line `networkDeviceDetailPage.settings.monitoring.addCheckHint` sits under the checks list. `useNetworkAssetMutations.ts`: delete `createCheck` (171-179) and `deleteCheck` (181-187), their interface members, and the device settings delete button/callback; all check cleanup goes through ledger retirement.
+  Delete `actions.addMonitor`, the retired detail editing/alert-rule keys, the whole `CreateMonitorForm` block and the device check-created/check-create-failed keys in all locales. Apply these translations to the following ordered keys (first 16 in `common.json`, last in `devices.json`):
+  ```ts
+  const keys = [
+    'longTail.monitors.NetworkMonitorList.actions.newCheck',
+    'longTail.monitors.NetworkMonitorList.headers.monitor',
+    'longTail.monitors.NetworkMonitorList.headers.openMonitor',
+    'longTail.monitors.NetworkMonitorList.notConverted',
+    'longTail.monitors.NetworkMonitorList.empty.prefix',
+    'longTail.monitors.NetworkMonitorList.empty.action',
+    'longTail.monitors.MonitorDetailModal.openMonitor',
+    'longTail.monitors.MonitorDetailModal.notConverted',
+    'longTail.monitors.NetworkCheckConversionBanner.pending',
+    'longTail.monitors.NetworkCheckConversionBanner.review',
+    'longTail.monitors.NetworkCheckConversionBanner.title',
+    'longTail.monitors.NetworkCheckConversionBanner.convert',
+    'longTail.monitors.NetworkCheckConversionBanner.converted',
+    'longTail.monitors.NetworkCheckConversionBanner.failed',
+    'longTail.monitors.NetworkCheckConversionBanner.outcome.convertible',
+    'longTail.monitors.NetworkCheckConversionBanner.outcome.unconvertible',
+    'networkDeviceDetailPage.settings.monitoring.addCheckHint',
+  ];
+  const translations = {
+    en: ['New check', 'Monitor', 'Open monitor', 'Not converted', 'No network checks yet.', 'Create a monitor.', 'Open the monitor for this check', 'Review conversion on the Results tab.', '{{count}} network checks need review.', 'Review conversion', 'Network check conversion', 'Convert {{count}}', 'Converted {{count}} network checks', 'Could not convert network checks', 'Convertible', 'Cannot convert', 'Add check opens the monitor editor with this asset selected.'],
+    'de-DE': ['Neue Prüfung', 'Monitor', 'Monitor öffnen', 'Nicht konvertiert', 'Noch keine Netzwerkprüfungen.', 'Monitor erstellen.', 'Monitor dieser Prüfung öffnen', 'Konvertierung im Tab Ergebnisse prüfen.', '{{count}} Netzwerkprüfungen erfordern eine Prüfung.', 'Konvertierung prüfen', 'Netzwerkprüfungen konvertieren', '{{count}} konvertieren', '{{count}} Netzwerkprüfungen konvertiert', 'Netzwerkprüfungen konnten nicht konvertiert werden', 'Konvertierbar', 'Nicht konvertierbar', 'Prüfung hinzufügen öffnet den Monitor-Editor mit diesem Asset.'],
+    'es-419': ['Nueva verificación', 'Monitor', 'Abrir monitor', 'Sin convertir', 'Aún no hay verificaciones de red.', 'Crear un monitor.', 'Abrir el monitor de esta verificación', 'Revisa la conversión en Resultados.', '{{count}} verificaciones de red requieren revisión.', 'Revisar conversión', 'Conversión de verificaciones de red', 'Convertir {{count}}', 'Se convirtieron {{count}} verificaciones de red', 'No se pudieron convertir las verificaciones de red', 'Convertible', 'No se puede convertir', 'Agregar verificación abre el editor de monitores con este activo seleccionado.'],
+    'fr-CA': ['Nouvelle vérification', 'Moniteur', 'Ouvrir le moniteur', 'Non converti', 'Aucune vérification réseau.', 'Créer un moniteur.', 'Ouvrir le moniteur de cette vérification', 'Vérifiez la conversion dans Résultats.', '{{count}} vérifications réseau sont à examiner.', 'Examiner la conversion', 'Conversion des vérifications réseau', 'Convertir {{count}}', '{{count}} vérifications réseau converties', 'Impossible de convertir les vérifications réseau', 'Convertible', 'Conversion impossible', 'Ajouter une vérification ouvre le moniteur avec cet actif sélectionné.'],
+    'fr-FR': ['Nouvelle vérification', 'Moniteur', 'Ouvrir le moniteur', 'Non converti', 'Aucune vérification réseau.', 'Créer un moniteur.', 'Ouvrir le moniteur de cette vérification', 'Vérifiez la conversion dans Résultats.', '{{count}} vérifications réseau sont à examiner.', 'Examiner la conversion', 'Conversion des vérifications réseau', 'Convertir {{count}}', '{{count}} vérifications réseau converties', 'Impossible de convertir les vérifications réseau', 'Convertible', 'Conversion impossible', 'Ajouter une vérification ouvre le moniteur avec cet actif sélectionné.'],
+    'it-IT': ['Nuovo controllo', 'Monitor', 'Apri monitor', 'Non convertito', 'Nessun controllo di rete.', 'Crea un monitor.', 'Apri il monitor di questo controllo', 'Esamina la conversione in Risultati.', '{{count}} controlli di rete da esaminare.', 'Esamina conversione', 'Conversione dei controlli di rete', 'Converti {{count}}', '{{count}} controlli di rete convertiti', 'Impossibile convertire i controlli di rete', 'Convertibile', 'Non convertibile', 'Aggiungi controllo apre il monitor con questo asset selezionato.'],
+    'pt-BR': ['Nova verificação', 'Monitor', 'Abrir monitor', 'Não convertido', 'Nenhuma verificação de rede.', 'Criar um monitor.', 'Abrir o monitor desta verificação', 'Revise a conversão em Resultados.', '{{count}} verificações de rede precisam de revisão.', 'Revisar conversão', 'Conversão de verificações de rede', 'Converter {{count}}', '{{count}} verificações de rede convertidas', 'Não foi possível converter as verificações de rede', 'Conversível', 'Não é possível converter', 'Adicionar verificação abre o monitor com este ativo selecionado.'],
+    'tr-TR': ['Yeni denetim', 'Monitör', 'Monitörü aç', 'Dönüştürülmedi', 'Henüz ağ denetimi yok.', 'Monitör oluştur.', 'Bu denetimin monitörünü aç', 'Dönüşümü Sonuçlar sekmesinde inceleyin.', '{{count}} ağ denetimi inceleme bekliyor.', 'Dönüşümü incele', 'Ağ denetimi dönüşümü', '{{count}} öğeyi dönüştür', '{{count}} ağ denetimi dönüştürüldü', 'Ağ denetimleri dönüştürülemedi', 'Dönüştürülebilir', 'Dönüştürülemez', 'Denetim ekle, bu varlık seçili olarak monitör düzenleyicisini açar.'],
+  };
+  ```
+  The API refusal reason is displayed alongside each item, and Convert is disabled when all items are refused. This is the expected D14 state; do not label a successful empty/no-op conversion as complete. The existing C2 persistent ledger supplies manual retirement with `reason: 'operator'` and refreshes after the `{ conversionId }` response.
 - [ ] **Step 4: Run, expect PASS.** `cd apps/web && npx tsc --noEmit -p . && npx vitest run src/components/monitors src/components/devices/networkDevice src/lib/__tests__/no-silent-mutations.test.ts src/lib/__tests__/i18n`
 - [ ] **Step 5: Commit.** `git add -A apps/web/src/components/monitors apps/web/src/components/devices/networkDevice/settings apps/web/src/locales && git commit -m "feat(web): Results tab is read-only with a conversion banner; device page hands check creation to the monitor editor"`
 
 ---
 
-### Task 10: Monitor editor — `?kind`/`?assetId` prefill and the asset binding chip (PR2)
+### Task 12: Monitor editor — `#kind`/`assetId` prefill and the asset picker and option round-trip (PR2)
 
 **Files:**
 - Modify: `apps/web/src/components/monitoring/MonitorEditor.tsx` (props at 137-139; mount effect near 343-353; condition section render)
-- Create: `apps/web/src/components/monitoring/NetworkCheckAssetBinding.tsx`
+- Create: `apps/web/src/components/monitoring/NetworkCheckAssetBinding.tsx`, `NetworkCheckAssetBinding.test.tsx`
 - Modify: `apps/web/src/components/monitoring/MonitorEditor.test.tsx`
 - Modify: `apps/web/src/locales/*/monitoring.json` (`editor.networkCheckAsset.*`)
 
 **Interfaces:**
-- Consumes: `GET /discovery/assets/:id` (`routes/discovery.ts:1185`; the response envelope is what `useAssetMonitoring.ts:75-114` already reads — mirror its parsing).
-- Produces: on a new monitor, `?kind=<MonitorKind>` selects the kind (and `defaultConditionFor(kind)`); `?assetId=<uuid>` with `kind=network_check` sets `condition.assetId`, `condition.target = asset.ipAddress ?? asset.hostname`, and a default name `Ping <label>` (icmp) if the name is empty. `NetworkCheckAssetBinding({ assetId, onUnbind })` renders the asset label/IP or "Not bound — probe runs from any online agent in the org".
+- Consumes: `GET /discovery/assets/:id` (`routes/discovery.ts:1184,1263`; the response envelope is `{ data: asset }`).
+- Produces: on a new monitor, `#kind=<MonitorKind>` selects the kind (and `defaultConditionFor(kind)`); `assetId=<uuid>` in the hash with `kind=network_check` sets `condition.assetId`, `condition.target = asset.ipAddress ?? asset.hostname`, and a default name `Ping <label>` (icmp) if the name is empty. `NetworkCheckAssetBinding({ orgId, assetId, onSelect })` loads the org-scoped asset list, selects/unbinds assets, and preserves API-only `packetSize`/`headers` on every save. Partner ownership disables binding; changing to partner ownership clears `assetId` explicitly.
 
 - [ ] **Step 1: Write the failing test** (`MonitorEditor.test.tsx`, following its existing `fetchWithAuth` mocking):
   ```ts
-  it('prefills kind and asset from the query string for a new monitor (W05e)', async () => {
-    window.history.pushState({}, '', '/alerts/monitors/new?kind=network_check&assetId=11111111-1111-4111-8111-111111111111');
-    mockFetch({ '/discovery/assets/11111111-1111-4111-8111-111111111111': { data: { id: '11111111-1111-4111-8111-111111111111', label: 'Core switch', ipAddress: '10.0.0.2', hostname: 'core-sw', orgId: 'org-1' } } });
+  it('prefills kind and asset from the hash for a new monitor (W05e)', async () => {
+    window.history.pushState({}, '', '/alerts/monitors/new#kind=network_check&assetId=11111111-1111-4111-8111-111111111111');
+    const asset = { id: '11111111-1111-4111-8111-111111111111', label: 'Core switch', ipAddress: '10.0.0.2', hostname: 'core-sw', orgId: 'org-1' };
+    fetchMock.mockImplementation(async (input) => input === `/discovery/assets/${asset.id}` ? json({ data: asset })
+      : input.startsWith('/discovery/assets?') ? json({ data: [asset] }) : defaultFetchImpl(input));
     render(<MonitorEditor />);
-    expect(await screen.findByTestId('network-check-asset-binding')).toHaveTextContent('Core switch');
+    expect(await screen.findByRole('option', { name: 'Core switch' })).toBeInTheDocument();
     expect((screen.getByLabelText('Target') as HTMLInputElement).value).toBe('10.0.0.2');
     expect((screen.getByLabelText('Check type') as HTMLSelectElement).value).toBe('icmp_ping');
   });
-  it('ignores an unknown kind in the query string', async () => {
-    window.history.pushState({}, '', '/alerts/monitors/new?kind=bogus');
+  it('ignores an unknown kind in the hash', async () => {
+    window.history.pushState({}, '', '/alerts/monitors/new#kind=bogus');
     render(<MonitorEditor />);
     expect((await screen.findByLabelText('Kind') as HTMLSelectElement).value).toBe('cpu');
   });
@@ -1537,17 +1913,17 @@ branch: (set by feature-lifecycle after registration)
 - [ ] **Step 3: Implement.** In `MonitorEditor.tsx`, after the fetch effect (343-353):
   ```ts
   // W05e — deep link from the Network page / device page: a fresh editor
-  // opened with ?kind=network_check&assetId=… Query params (not the hash) on
-  // purpose: this is a one-shot prefill of a new form, the same precedent
-  // MonitoringPage sets with /monitoring?assetId=.
+  // opened with #kind=network_check&assetId=… Preserve any policy= hash key.
+  // Form preselection uses the same hash convention as the policy picker.
   useEffect(() => {
     if (!isNew || typeof window === 'undefined') return;
-    const params = new URLSearchParams(window.location.search);
+    const params = new URLSearchParams(window.location.hash.slice(1));
     const kind = params.get('kind');
     if (!kind || !(MONITOR_KINDS as readonly string[]).includes(kind)) return;
     handleKindChange(kind as MonitorKind);
     const assetId = params.get('assetId');
-    if (kind !== 'network_check' || !assetId || !/^[0-9a-f-]{36}$/i.test(assetId)) return;
+    if (kind !== 'network_check' || !assetId || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(assetId)) return;
+    setValue('ownerScope', 'organization', { shouldDirty: true });
     void (async () => {
       const res = await fetchWithAuth(`/discovery/assets/${encodeURIComponent(assetId)}`);
       if (!res.ok) return;
@@ -1563,18 +1939,151 @@ branch: (set by feature-lifecycle after registration)
   (`getValues` from the `useForm` destructure.) Render under `MonitorConditionFields` when `watchKind === 'network_check'`:
   ```tsx
   <NetworkCheckAssetBinding
+    orgId={isPartnerOwned ? null : ownerOrgId}
     assetId={(watch('condition') as { assetId?: string }).assetId ?? null}
-    onUnbind={() => { const { assetId: _drop, ...rest } = watch('condition') as Record<string, unknown>; setValue('condition', rest, { shouldDirty: true }); }}
+    onSelect={(asset) => setValue('condition', bindNetworkAsset(getValues('condition'), asset), { shouldDirty: true })}
   />
   ```
-  `NetworkCheckAssetBinding.tsx` fetches `/discovery/assets/:id` when `assetId` is set and renders `<div data-testid="network-check-asset-binding">` with `t('monitoring:editor.networkCheckAsset.bound', { label, ip })` + an **Unbind** button, or `t('monitoring:editor.networkCheckAsset.unbound')` when null. i18n `monitoring.json` `editor.networkCheckAsset` (8 locales): `bound` "Bound to asset {{label}} ({{ip}}) — probes run from this asset's site and alert on its linked device", `unbind` "Unbind", `unbound` "Not bound to an asset — the probe runs from any online agent in the organization". Translate for de-DE, es-419, fr-CA, fr-FR, it-IT, pt-BR, tr-TR (no English echoes).
-  A picker for choosing an asset from inside the editor is deliberately not built this wave — binding comes from the Network page and the device page deep links; file a follow-up.
-- [ ] **Step 4: Run, expect PASS.** `cd apps/web && npx tsc --noEmit -p . && npx vitest run src/components/monitoring/MonitorEditor.test.tsx src/components/monitoring/MonitorConditionFields src/lib/__tests__/i18n`
-- [ ] **Step 5: Commit.** `git add apps/web/src/components/monitoring/MonitorEditor.tsx apps/web/src/components/monitoring/NetworkCheckAssetBinding.tsx apps/web/src/components/monitoring/MonitorEditor.test.tsx apps/web/src/locales && git commit -m "feat(web): monitor editor prefills kind and asset from the query string; network_check asset binding"`
+  `NetworkCheckAssetBinding.tsx` (org-scoped read with error/retry; binding changes form state, its eventual mutation still uses the editor's `runAction`):
+  ```tsx
+  import { useEffect, useState } from 'react';
+  import { useTranslation } from 'react-i18next';
+  import { fetchWithAuth } from '../../stores/auth';
+  export type NetworkAsset = { id: string; label: string | null; hostname: string | null; ipAddress: string | null };
+  export function bindNetworkAsset(condition: Record<string, unknown>, asset: NetworkAsset | null): Record<string, unknown> {
+    const { assetId: _old, ...rest } = condition;
+    // Never reconstruct condition from visible fields: headers/packetSize are
+    // supported API-only values and must survive picker changes and Save.
+    return asset ? { ...rest, assetId: asset.id, target: asset.ipAddress ?? asset.hostname ?? rest.target } : rest;
+  }
+  export default function NetworkCheckAssetBinding({ orgId, assetId, onSelect }: {
+    orgId: string | null; assetId: string | null; onSelect: (asset: NetworkAsset | null) => void;
+  }) {
+    const { t } = useTranslation('monitoring');
+    const [assets, setAssets] = useState<NetworkAsset[]>([]);
+    const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
+    const [attempt, setAttempt] = useState(0);
+    useEffect(() => {
+      let cancelled = false;
+      setAssets([]); setStatus('loading');
+      if (!orgId) { setStatus('ready'); return; }
+      void (async () => {
+        try {
+          const res = await fetchWithAuth(`/discovery/assets?orgId=${encodeURIComponent(orgId)}`);
+          if (!res.ok) throw new Error('asset_read_failed');
+          const body = await res.json();
+          if (!Array.isArray(body.data)) throw new Error('asset_response_invalid');
+          if (!cancelled) { setAssets(body.data); setStatus('ready'); }
+        } catch { if (!cancelled) setStatus('error'); }
+      })();
+      return () => { cancelled = true; };
+    }, [orgId, attempt]);
+    return <div data-testid="network-check-asset-binding">
+      <label htmlFor="network-check-asset-picker">{t('editor.networkCheckAsset.label')}</label>
+      <select id="network-check-asset-picker" data-testid="network-check-asset-picker"
+        value={assetId ?? ''} disabled={!orgId || status !== 'ready'}
+        onChange={e => onSelect(assets.find(a => a.id === e.target.value) ?? null)}>
+        <option value="">{t('editor.networkCheckAsset.unbound')}</option>
+        {assetId && !assets.some(a => a.id === assetId) && <option value={assetId}>{assetId}</option>}
+        {assets.map(a => <option key={a.id} value={a.id}>{a.label ?? a.hostname ?? a.ipAddress ?? a.id}</option>)}
+      </select>
+      {status === 'error' && <p role="alert">{t('editor.networkCheckAsset.failed')}
+        <button type="button" onClick={() => setAttempt(v => v + 1)}>{t('common:actions.retry')}</button></p>}
+      {!orgId && <p>{t('editor.networkCheckAsset.orgRequired')}</p>}
+    </div>;
+  }
+  ```
+  In `MonitorEditor.tsx`, import `bindNetworkAsset` and the component, preserve raw condition on fetch/reset (`:321`) and submit (`:374`), and explicitly remove the binding on an owner change:
+  ```ts
+  useEffect(() => {
+    if (!isPartnerOwned || watchKind !== 'network_check') return;
+    const condition = getValues('condition');
+    if (condition.assetId) setValue('condition', bindNetworkAsset(condition, null), { shouldDirty: true });
+  }, [isPartnerOwned, watchKind, getValues, setValue]);
+  ```
+  Hash parsing/tab changes retain the C2/W05a policy key and these new keys:
+  ```ts
+  function tabFromHash(hash: string): EditorTab | undefined {
+    const tab = hash.includes('=') ? new URLSearchParams(hash).get('tab') : hash.split('/')[0];
+    return tab === 'settings' || tab === 'activity' ? tab : undefined;
+  }
+  const switchTab = (tab: EditorTab) => {
+    const raw = window.location.hash.slice(1);
+    const params = new URLSearchParams(raw.includes('=') ? raw : '');
+    params.set('tab', tab);
+    window.location.hash = params.toString();
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+  };
+  ```
+  Keep the hook's hash-change listener; do not invoke its setter, which replaces the complete hash. Remove the unused setter from destructuring.
+
+  Add `NetworkCheckAssetBinding.test.tsx` with actual component and round-trip regressions:
+  ```tsx
+  import '@/lib/i18n';
+  import { render, screen, fireEvent } from '@testing-library/react';
+  import { describe, expect, it, vi } from 'vitest';
+  import { fetchWithAuth } from '../../stores/auth';
+  import NetworkCheckAssetBinding, { bindNetworkAsset } from './NetworkCheckAssetBinding';
+  vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+  const asset = { id: '11111111-1111-4111-8111-111111111111', label: 'Gateway', hostname: null, ipAddress: '192.0.2.1' };
+  it('selects an asset directly from the editor', async () => {
+    vi.mocked(fetchWithAuth).mockResolvedValue(new Response(JSON.stringify({ data: [asset] })));
+    const onSelect = vi.fn();
+    render(<NetworkCheckAssetBinding orgId="org-1" assetId={null} onSelect={onSelect} />);
+    await screen.findByRole('option', { name: 'Gateway' });
+    fireEvent.change(screen.getByTestId('network-check-asset-picker'), { target: { value: asset.id } });
+    expect(onSelect).toHaveBeenCalledWith(asset);
+  });
+  it.each([{ checkType: 'icmp_ping', packetSize: 1400 }, { checkType: 'http_check', headers: { 'X-Probe': 'breeze' } }])(
+    'retains API-only options when binding and unbinding', option => {
+      const original = { target: 'example.com', ...option };
+      const bound = bindNetworkAsset(original, asset);
+      expect(bound).toMatchObject(option);
+      expect(bindNetworkAsset(bound, null)).toMatchObject(option);
+    });
+  ```
+  Append the actual Save round-trip regression to the existing `MonitorEditor.test.tsx` harness (`fetchMock`, `defaultFetchImpl`, `MONITOR_M1_FIXTURE`, `waitFor`):
+  ```tsx
+  it.each([
+    { checkType: 'icmp_ping', packetSize: 1400 },
+    { checkType: 'http_check', headers: { 'X-Probe': 'breeze' } },
+  ])('PATCH preserves API-only network options', async option => {
+    const fixture = { ...MONITOR_M1_FIXTURE, name: 'Network test', kind: 'network_check',
+      condition: { ...option, target: 'example.com', pollingIntervalSeconds: 60, timeoutSeconds: 5,
+        consecutiveFailures: 2, degradedIsFailure: false } };
+    fetchMock.mockImplementation(async (input: string, init?: RequestInit) => {
+      if (input === '/monitor-definitions/m1' && init?.method === 'PATCH') return json({ data: fixture });
+      if (input === '/monitor-definitions/m1') return json({ data: fixture });
+      if (input === '/monitor-definitions/m1/devices') return json({ data: [] });
+      return defaultFetchImpl(input);
+    });
+    render(<MonitorEditor monitorId="m1" />);
+    await waitFor(() => expect(screen.getByTestId('monitor-editor-name')).toHaveValue('Network test'));
+    fireEvent.click(screen.getByTestId('monitor-editor-save'));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/monitor-definitions/m1', expect.objectContaining({ method: 'PATCH' })));
+    const call = fetchMock.mock.calls.find(([url, init]) => url === '/monitor-definitions/m1' && init?.method === 'PATCH');
+    expect(JSON.parse(String(call?.[1]?.body)).condition).toMatchObject(option);
+  });
+  ```
+  New locale values for `editor.networkCheckAsset` (all eight, no English fallbacks):
+
+  | Locale | label | unbound | failed | orgRequired |
+  |---|---|---|---|---|
+  | en | Asset | No asset binding | Could not load assets | Select organization ownership to bind an asset. |
+  | de-DE | Asset | Keine Asset-Bindung | Assets konnten nicht geladen werden | Wählen Sie eine Organisation als Eigentümer, um ein Asset zu binden. |
+  | es-419 | Activo | Sin activo vinculado | No se pudieron cargar los activos | Selecciona una organización como propietaria para vincular un activo. |
+  | fr-CA | Actif | Aucun actif lié | Impossible de charger les actifs | Sélectionnez une organisation propriétaire pour lier un actif. |
+  | fr-FR | Actif | Aucun actif lié | Impossible de charger les actifs | Sélectionnez une organisation propriétaire pour lier un actif. |
+  | it-IT | Asset | Nessun asset associato | Impossibile caricare gli asset | Seleziona un'organizzazione proprietaria per associare un asset. |
+  | pt-BR | Ativo | Nenhum ativo vinculado | Não foi possível carregar os ativos | Selecione uma organização proprietária para vincular um ativo. |
+  | tr-TR | Varlık | Bağlı varlık yok | Varlıklar yüklenemedi | Varlık bağlamak için kuruluş sahipliğini seçin. |
+
+- [ ] **Step 4: Run, expect PASS.** `cd apps/web && npx tsc --noEmit -p . && npx vitest run src/components/monitoring/MonitorEditor.test.tsx src/components/monitoring/MonitorConditionFields src/components/monitoring/NetworkCheckAssetBinding.test.tsx src/lib/__tests__/i18n`
+- [ ] **Step 5: Commit.** `git add apps/web/src/components/monitoring/MonitorEditor.tsx apps/web/src/components/monitoring/NetworkCheckAssetBinding.tsx apps/web/src/components/monitoring/NetworkCheckAssetBinding.test.tsx apps/web/src/components/monitoring/MonitorEditor.test.tsx apps/web/src/locales && git commit -m "feat(web): monitor editor prefills kind and asset from the hash; network_check asset binding"`
 
 ---
 
-### Task 11: AI tools — `manage_monitors` create/update refuse with a pointer; reads stay (PR3)
+### Task 13: AI tools — `manage_monitors` create/update/delete refuse with guidance; reads stay (PR3)
 
 **Files:**
 - Modify: `apps/api/src/services/aiToolsMonitoring.ts` (`query_monitors` ~66-190; `manage_monitors` definition 197-228; create 305-346; update 348-380)
@@ -1582,7 +2091,7 @@ branch: (set by feature-lifecycle after registration)
 - Modify: `apps/api/src/services/aiToolsMonitors.ts` (`manage_monitor_definitions` description ~375)
 
 **Interfaces:**
-- Produces: `manage_monitors` `create`/`update` → `{ error: 'network_check_authoring_retired', useTool: 'manage_monitor_definitions', example: { action: 'create', definition: { kind: 'network_check', name: '…', condition: { checkType: 'icmp_ping', target: '10.0.0.1', assetId: '<optional asset uuid>' } } } }`; `get`/`delete` unchanged; `query_monitors` rows gain `managedByMonitorId`.
+- Produces: `manage_monitors` `create`/`update` → `{ error: 'network_check_authoring_retired', useTool: 'manage_monitor_definitions', example: { action: 'create', definition: { kind: 'network_check', name: '…', condition: { checkType: 'icmp_ping', target: '10.0.0.1', assetId: '<optional asset uuid>' } } } }`; `get` unchanged; `delete` refuses with retirement guidance; `query_monitors` rows gain `managedByMonitorId`.
 
 - [ ] **Step 1: Write the failing tests** — replace the `action: create` describe (350-420) with:
   ```ts
@@ -1600,13 +2109,19 @@ branch: (set by feature-lifecycle after registration)
     });
   });
   ```
-  and keep the `get`/`delete` site-scope cases.
+  keep the `get` site-scope cases and replace delete success with `expect(out).toMatchObject({ error: 'network_check_cleanup_retired', hint: { route: 'POST /monitor-definitions/conversion/retire', reason: 'operator' } }); expect(vi.mocked(db.delete)).not.toHaveBeenCalled();`.
 - [ ] **Step 2: Run them, expect FAIL.** `cd apps/api && npx vitest run src/services/aiToolsMonitoring.test.ts` → `expected { success: true } to match object { error: 'network_check_authoring_retired' }`.
 - [ ] **Step 3: Implement.** At the top of the `manage_monitors` handler:
   ```ts
   // W05e — network checks are authored as monitors of kind `network_check`.
   // The enum keeps 'create'/'update' so an older prompt gets this pointer
   // instead of a schema error.
+  if (action === 'delete') {
+    return JSON.stringify({ error: 'network_check_cleanup_retired',
+      message: 'Retire this check through the conversion ledger; history must be retained.',
+      hint: { route: 'POST /monitor-definitions/conversion/retire', sourceTable: 'network_monitors', sourceId: input.monitorId, reason: 'operator' },
+    });
+  }
   if (action === 'create' || action === 'update') {
     return JSON.stringify({
       error: 'network_check_authoring_retired',
@@ -1616,18 +2131,20 @@ branch: (set by feature-lifecycle after registration)
     });
   }
   ```
-  Delete the create/update branches that follow. Update the tool description to "Get a network check with recent results, or delete an unconverted one. Creating and editing checks moved to manage_monitor_definitions (kind network_check)." and the `monitorType`/`target`/`config` property descriptions to "(retired — use manage_monitor_definitions)". Add `managedByMonitorId` to the `query_monitors` select. In `aiToolsMonitors.ts` extend the `manage_monitor_definitions` description: "…Kind `network_check` compiles to a managed network probe; set `condition.assetId` to bind it to a discovered asset."
+  Delete the create/update/delete branches that follow. Update the tool description to "Get a network check with recent results. Unconverted checks are retired through the conversion ledger; deletion is unavailable while history is retained. Creating and editing checks moved to manage_monitor_definitions (kind network_check)." and the `monitorType`/`target`/`config` property descriptions to "(retired — use manage_monitor_definitions)". Add `managedByMonitorId` to the `query_monitors` select. In `aiToolsMonitors.ts` extend the `manage_monitor_definitions` description: "…Kind `network_check` compiles to a managed network probe; set `condition.assetId` to bind it to a discovered asset."
 - [ ] **Step 4: Run, expect PASS.** `cd apps/api && npx tsc --noEmit -p . && npx vitest run src/services/aiToolsMonitoring src/services/aiToolsMonitors.test.ts src/services/aiAgentSdkTools.test.ts src/services/aiGuardrails.agentPrincipal.contract.test.ts`
 - [ ] **Step 5: Commit.** `git add apps/api/src/services/aiToolsMonitoring.ts apps/api/src/services/aiToolsMonitoring.test.ts apps/api/src/services/aiToolsMonitoring.deviceScope.test.ts apps/api/src/services/aiToolsMonitors.ts && git commit -m "feat(ai): manage_monitors create/update point at manage_monitor_definitions kind network_check"`
 
 ---
 
-### Task 12: Docs, release notes, full verification pass (PR3)
+### Task 14: Docs, release notes, full verification pass (PR3)
 
 **Files:**
 - Modify: `apps/docs/src/content/docs/features/network-monitors.mdx` (retitle "Network Checks"; rewrite "In the console" 16-23; replace "Alert Rules on Monitors" 208-289 with "Alerting"; API Reference 375-411 marks the 410s; add "Converting existing checks"; Troubleshooting 463+ "Alert rules not firing" → "The monitor is not firing")
 - Modify: `apps/docs/src/content/docs/features/monitors.mdx` (kinds table 12-31 gains `Network check` — and the four other W04 kinds if still missing; "Converting a legacy alert rule" 104-118 gains a "Converting network checks" paragraph; a "Network check fields" table)
 - Modify: `docs/release-notes/next-release-draft.md`, `CHANGELOG.md` (`## [Unreleased]`)
+
+**Interfaces:** Consumes Tasks 1–13 contracts and D14 refusal/retention decisions; produces verified docs, release notes and the complete API/web/integration verification record.
 
 - [ ] **Step 1: Write the failing test.** Docs build is the test: `cd apps/docs && pnpm build` must pass after the edits; before editing, run `grep -n "POST /api/v1/monitors/alerts\|Alert Rule Schema" apps/docs/src/content/docs/features/network-monitors.mdx` and expect hits — those sections must be gone afterwards (`grep` returns nothing = green).
 - [ ] **Step 2: Run it, expect FAIL.** The grep returns lines 260-289 (the alert-rule API that no longer exists).
@@ -1635,43 +2152,43 @@ branch: (set by feature-lifecycle after registration)
   - Frontmatter `title: Network Checks`, `sidebar.label: Network Checks`, description "Ping, port, HTTP and DNS checks run from your agents; authored as monitors, results on the Network page."
   - **In the console**: "Network checks are authored as monitors of kind **Network check** under **Alerts → Monitors**. The **Network** page (Fleet Management → Network, `/monitoring`; called *Network Monitor* before this release) keeps **Assets**, **SNMP Templates** and **Results**. Results lists every check with its last status and links each to the monitor that owns it; **New check** opens the monitor editor with the kind pre-selected and, from an asset or the network device page, the asset pre-bound."
   - **Fields**: the condition table — check type, target, asset binding (what it does: site-pinned executor, alert device), per-type options (map the four legacy config tables 1:1, noting `expectStatus` is the API field name and is sent to the agent as `expectedStatus`), *Treat degraded as failure*, *Fail when slower than*, poll interval 10 s–24 h, timeout 1–300 s, consecutive failures 1–100.
-  - **Alerting**: replace the whole section. One monitor → one alert per organization, raised on the asset's linked device or the most recently seen device in the asset's site/org; severity, cooldown, delivery (Inherit/Channels/Inbox only) and escalation come from the monitor; the alert carries `monitorId` and `kind: network_check` on `alert.triggered` (Alert workflows filter on it). Keep the five-minute cooldown and dedupe paragraphs (now per monitor and device). Note the online-device limitation and the follow-up.
-  - **Converting existing checks**: the Results tab banner; what the mapping does (offline / consecutive failures / degraded / response time → the condition; several rules collapse; no rules → info + inbox-only; open legacy alerts are resolved with a note); the row is adopted (history kept); revert from the conversion ledger; unconvertible reasons.
-  - **API Reference**: `POST /monitors`, `PATCH /monitors/:id`, `POST /monitors/alerts`, `PATCH|DELETE /monitors/alerts/:id` → **410 Gone** with the `network_check_authoring_retired` body; reads, `/check`, `/test`, `DELETE /monitors/:id` (unconverted only) unchanged; `GET /monitors` gains `managedByMonitorId`, `retiredAt`, `includeRetired`; `DELETE /discovery/assets/:id` → 409 `asset_has_managed_network_checks`; the two conversion endpoints.
+  - **Alerting**: replace the whole section. One monitor → one alert per organization, raised on the asset's linked device or the most recently seen device in the asset's site/org; severity, cooldown, delivery (Inherit/Channels/Inbox only) and escalation come from the monitor; the alert carries `monitorId` and `kind: network_check` on `alert.triggered` (Alert workflows filter on it). Keep the five-minute cooldown and dedupe paragraphs (now per monitor and device). Explain that conversion is refused until offline-device evaluation preserves coverage.
+  - **Converting existing checks**: the Results tab banner; exact mapping for a single offline/consecutive-failure rule; explicit refusals for degraded/response-time predicates, mixed rules, out-of-range thresholds and non-alerting probes; the mandatory offline runtime refusal; open legacy alerts keep their status and provenance; the row is adopted (history kept); revert from the conversion ledger; unconvertible reasons.
+  - **API Reference**: `POST /monitors`, `PATCH /monitors/:id`, `POST /monitors/alerts`, `PATCH|DELETE /monitors/alerts/:id` → **410 Gone** with the `network_check_authoring_retired` body; reads, `/check`, `/test`, `DELETE /monitors/:id` returns 410 for unmanaged rows (cleanup uses ledger retirement); reads and operational probes unchanged; `GET /monitors` gains `managedByMonitorId`, `retiredAt`, `includeRetired`; `DELETE /discovery/assets/:id` → 409 `asset_has_retained_network_checks`; the two conversion endpoints.
   `monitors.mdx`: kinds table row `| Network check | An ICMP, TCP, HTTP or DNS probe run from an agent fails N times in a row (optionally: is degraded or slow) | High | Agent (probe) + server (verdict) |`; a short "Network check" subsection linking to the Network Checks page; the conversion paragraph.
   `docs/release-notes/next-release-draft.md` → under Self-Hosting / Upgrade Notes:
-  - "**Network checks are monitors now (W05e).** The *Network Monitor* nav entry is *Network* (Assets · Templates · Results). Existing checks keep polling unchanged; convert them from the Results tab banner (hosted: we run the partner-level *Convert everything*). A converted check keeps its row, history and asset binding; its alert rules are retired and the monitor raises one alert per organization on the asset's device. `POST /monitors`, `PATCH /monitors/:id` and every `/monitors/alerts*` write return **410**; the AI tool `manage_monitors` refuses create/update and points at `manage_monitor_definitions`. Checks with no alert rules convert as *info, inbox only*. Open legacy network alerts are resolved with a conversion note at conversion time. Known limitation: the sweep evaluates online devices only, so a check whose alert device is offline is silent until it is back (follow-up filed)."
+  - "**Network check authoring moves to Monitors (W05e).** The Network page keeps Assets, SNMP Templates and Results. The monitor editor includes an asset picker. Existing unmanaged checks keep polling and alerting. Preview lists unsupported cases, including `offline_probe_unsupported`: no legacy check is adopted until offline evaluation is supported. Checks without active rules remain non-alerting; mixed predicates, severities and unsupported thresholds are refused. Open alerts are never resolved by conversion or retirement. Explicit retirement is recorded in the persistent conversion ledger and can be reversed while the network runtime remains available. Legacy create/update/delete endpoints return 410; cleanup is retirement-only while the ledger is needed."
+
   - "**Fix:** a `network_check` monitor's *Expected status code* was never sent to the agent under the name it reads (`expectedStatus`); it is now."
   `CHANGELOG.md` `[Unreleased]` → `### Changed` (Network page, conversion, 410s) and `### Fixed` (expectStatus).
-- [ ] **Step 4: Run, expect PASS — the full verification pass.**
+- [ ] **Step 4: Run, expect PASS — the full verification pass.** From the repository root; subshells keep every command's working directory explicit:
   ```bash
-  cd apps/docs && pnpm build
-  cd ../../packages/shared && npx vitest run src/validators/monitors.test.ts
-  cd ../../apps/api && npx tsc --noEmit -p . && npx vitest run \
+  (cd apps/docs && pnpm build)
+  (cd packages/shared && npx vitest run src/validators/monitors.test.ts)
+  (cd apps/api && npx tsc --noEmit -p . && npx vitest run \
     src/services/monitors src/services/alertConditions src/jobs/monitorWorker src/routes/monitors src/routes/monitorDefinitions src/routes/discovery \
     src/services/aiToolsMonitoring src/services/aiToolsMonitors.test.ts src/__tests__/partner-wide-write-coverage.test.ts src/__tests__/site-ceiling-write-coverage.test.ts \
-    src/db/autoMigrate.test.ts src/db/migrationRlsScope.test.ts
+    src/db/autoMigrate.test.ts src/db/migrationRlsScope.test.ts)
   pnpm test-stack up
-  cd apps/api && npx vitest run -c vitest.integration.config.ts \
+  (cd apps/api && npx vitest run -c vitest.integration.config.ts \
     src/__tests__/integration/networkCheckConversion.integration.test.ts \
     src/__tests__/integration/networkMonitorPartnerRls.integration.test.ts \
     src/__tests__/integration/monitorDefinitionsPartnerRls.integration.test.ts \
     src/__tests__/integration/tenant-export-policy.integration.test.ts \
     src/__tests__/integration/rls-coverage.integration.test.ts \
-    src/__tests__/integration/tenantCascade.integration.test.ts
+    src/__tests__/integration/tenantCascade.integration.test.ts)
   pnpm db:check-drift
   pnpm test-stack down
-  cd apps/web && npx tsc --noEmit -p . && npx vitest run src/components/monitoring src/components/monitors src/components/layout/Sidebar.nav.test.tsx src/components/devices/networkDevice src/lib/__tests__
-  git fetch origin && git ls-tree --name-only origin/main apps/api/migrations/ | sort | tail -1   # must sort BEFORE 2026-10-24-110000-…; rename if not
+  (cd apps/web && npx tsc --noEmit -p . && npx vitest run src/components/monitoring src/components/monitors src/components/layout/Sidebar.nav.test.tsx src/components/devices/networkDevice src/lib/__tests__)
+  git fetch origin && git ls-tree -r --name-only origin/main apps/api/migrations | grep -E '^apps/api/migrations/[0-9]{4}-[^/]+\.sql$' | sort | tail -1
+  scripts/check-migration-naming.sh --against-ref origin/main
   ```
-  Then the manual walk on a `pnpm wt-stack up` stack: seed a legacy check via SQL, open `/monitoring#checks` (lands on Results), banner → convert, the row links to its monitor, the monitor editor shows the asset chip, `POST /monitors` returns 410, the device page's Add check opens the editor bound to the asset.
+  The newest top-level migration must sort before the assigned W05e filename; rename the unshipped migration if necessary. Drift checks do not prove FK deferrability, export classification or RLS isolation; those are the live assertions above.
+  Then the manual walk on a `pnpm wt-stack up` stack: seed a legacy check via SQL, open `/monitoring#checks` (lands on Results), banner → explicit offline refusal with no data changes, retire from the persistent ledger and revert, then open a new monitor and select an asset, `POST /monitors` returns 410, the device page's Add check opens the editor bound to the asset.
 - [ ] **Step 5: Commit.** `git add apps/docs/src/content/docs/features/network-monitors.mdx apps/docs/src/content/docs/features/monitors.mdx docs/release-notes/next-release-draft.md CHANGELOG.md && git commit -m "docs(monitoring): network checks as monitors — Network page, conversion, retired write endpoints"`
 
 ---
 
-## Follow-ups to file at plan approval (not in scope)
+## Open questions
 
-1. Sweep evaluates online devices only (`jobs/alertWorker.ts:196-199`): a `network_check` whose alert device is offline is silent. Extend the sweep to evaluate network-check monitors for the alert device regardless of its online state (or evaluate them per org instead of per device).
-2. An asset picker inside the monitor editor for `network_check` (today binding comes only from the Network page / device page deep links).
-3. `packetSize` and `headers` are API-only condition keys (not editor-authored).
-4. `manage_monitors` `delete` for unconverted checks and `DELETE /monitors/:id` could be removed once the ledger shows zero unmanaged rows on EU and US.
+None. D14 settles the asset picker, API-only option round-trip and retirement-only cleanup. Offline runtime support is an explicit conversion refusal, not an accepted behavioral regression or a release-note-only follow-up.
