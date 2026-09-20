@@ -39,6 +39,23 @@ describe('CleanupRunHistory', () => {
     expect(String(fetchMock.mock.calls[0][0])).toBe('/devices/dev-1/filesystem/cleanup-runs?limit=20');
   });
 
+  it('shows what a previewed run could reclaim, not only what it did reclaim', async () => {
+    // Issue #6376: `estimatedBytes` was fetched and typed but never rendered,
+    // so a previewed-but-unexecuted run read as "3 candidates / 0 B".
+    fetchMock.mockResolvedValue(json({
+      success: true,
+      data: {
+        runs: [run('r1', { status: 'previewed', bytesReclaimed: 0, actionCount: 0, estimatedBytes: 4096 })],
+        nextCursor: null,
+      },
+    }));
+
+    render(<CleanupRunHistory deviceId="dev-1" refreshToken={0} />);
+
+    const row = await screen.findByTestId('cleanup-run-r1');
+    expect(within(row).getByText(/4\.0 KB reclaimable/)).toBeInTheDocument();
+  });
+
   it('labels the kind and the status from the catalog, not from the raw token', async () => {
     fetchMock.mockResolvedValue(json({
       success: true,

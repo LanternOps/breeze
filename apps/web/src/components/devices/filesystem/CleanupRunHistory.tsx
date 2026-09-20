@@ -141,6 +141,11 @@ export default function CleanupRunHistory({ deviceId, refreshToken }: Props) {
               <p className="text-xs text-muted-foreground">
                 {formatDateTime(run.requestedAt)} ·{' '}
                 {t('deviceFilesystemTab.historyCandidates', { count: run.candidateCount })}
+                {/* Issue #6376: `estimatedBytes` was fetched and typed but never
+                    shown, so a previewed run read as "N candidates · 0 B". */}
+                {run.estimatedBytes > 0
+                  ? ` · ${t('deviceFilesystemTab.historyReclaimable', { size: formatBytes(run.estimatedBytes) })}`
+                  : ''}
                 {run.actionCount > 0 ? ` · ${formatNumber(run.actionCount)}` : ''}
               </p>
               {run.error && <p className="text-xs text-amber-700">{run.error}</p>}

@@ -914,7 +914,10 @@
       "running": "Running",
       "executed": "Executed",
       "failed": "Failed"
-    }
+    },
+    "previewSummary": "{{count}} candidates · {{size}} reclaimable",
+    "historyReclaimable": "{{size}} reclaimable",
+    "filesystemScanFinished": "Filesystem scan finished"
   },
   "deviceFilterToolbar": {
     "searchDevices": "Search devices",

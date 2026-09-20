@@ -43,6 +43,22 @@ describe('SnapshotPanels', () => {
     expect(within(summary).getByText('24')).toBeInTheDocument();
   });
 
+  it('pairs the cleanup-candidate count with its reclaimable size', () => {
+    // Issue #6376: the tile reported a count and never a size.
+    render(
+      <SnapshotPanels
+        snapshot={snapshot({ cleanupCandidates: [
+          { path: 'C:\\Windows\\Temp\\a', sizeBytes: 1024 },
+          { path: 'C:\\Windows\\Temp\\b', sizeBytes: 1024 },
+        ] })}
+        thresholdEvents={events}
+      />,
+    );
+    const tile = screen.getByTestId('filesystem-cleanup-candidates-tile');
+    expect(within(tile).getByText(/2/)).toBeInTheDocument();
+    expect(within(tile).getByText(/2\.0 KB/)).toBeInTheDocument();
+  });
+
   it('renders tempAccumulation, which the old tab collected and never showed', () => {
     render(<SnapshotPanels snapshot={snapshot()} thresholdEvents={events} />);
     const panel = screen.getByTestId('filesystem-temp-accumulation');

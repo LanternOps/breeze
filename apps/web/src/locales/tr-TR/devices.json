@@ -914,7 +914,10 @@
       "running": "Çalışıyor",
       "executed": "Yürütüldü",
       "failed": "Başarısız"
-    }
+    },
+    "previewSummary": "{{count}} aday · {{size}} geri kazanılabilir",
+    "historyReclaimable": "{{size}} geri kazanılabilir",
+    "filesystemScanFinished": "Dosya sistemi taraması tamamlandı"
   },
   "deviceFilterToolbar": {
     "searchDevices": "Cihazları arayın",

@@ -111,6 +111,9 @@ export default function DeviceFilesystemTab({
       await volumes.reload();
       if (!isCurrent()) return;
       scanPoll.reset();
+      // Issue #6376: Analyze Now toasted on failure only, so a completed scan
+      // was indistinguishable from one that silently did nothing.
+      showToast({ type: 'success', message: t('deviceFilesystemTab.filesystemScanFinished') });
     } catch (err) {
       if (!isCurrent() || err instanceof CommandPollAbortedError) return;
       if (err instanceof ActionError && err.status === 401) return;

@@ -195,6 +195,14 @@ export default function CleanupPanel({ deviceId, volumeLabel, preview, onExecute
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h4 className="font-semibold">{t('deviceFilesystemTab.cleanupTitle')}</h4>
         <div className="flex items-center gap-3">
+          {/* Issue #6376: the panel stated only what was ticked, so the size the
+              preview actually offered was invisible. */}
+          <span className="text-sm text-muted-foreground" data-testid="cleanup-preview-summary">
+            {t('deviceFilesystemTab.previewSummary', {
+              count: sortedCandidates.length,
+              size: formatBytes(preview.estimatedBytes),
+            })}
+          </span>
           <span className="text-sm text-muted-foreground" data-testid="cleanup-selection-summary">
             {t('deviceFilesystemTab.selectionSummary', {
               count: selectedPaths.length,
@@ -255,6 +263,11 @@ export default function CleanupPanel({ deviceId, volumeLabel, preview, onExecute
           <span className="text-right">{t('deviceFilesystemTab.columnSize')}</span>
         </div>
         <div className="max-h-96 overflow-auto">
+          {sortedCandidates.length === 0 && (
+            <p className="px-3 py-4 text-sm text-muted-foreground" data-testid="cleanup-no-candidates">
+              {t('deviceFilesystemTab.noCandidatesAvailable')}
+            </p>
+          )}
           {sortedCandidates.map((candidate) => (
             <label
               key={candidate.path}

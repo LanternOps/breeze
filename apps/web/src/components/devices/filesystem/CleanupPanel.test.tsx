@@ -223,6 +223,26 @@ describe('CleanupPanel', () => {
     expect(onExecuted).not.toHaveBeenCalled();
   });
 
+  it('states the whole candidate set and its reclaimable size, not just the selection', () => {
+    render(<CleanupPanel deviceId="dev-1" volumeLabel="C:\\" preview={preview()} onExecuted={vi.fn()} />);
+    // Issue #6376: the operator could not tell how much the preview offered in
+    // total, only how much they had ticked.
+    expect(screen.getByTestId('cleanup-preview-summary')).toHaveTextContent('3 candidates');
+    expect(screen.getByTestId('cleanup-preview-summary')).toHaveTextContent('3.0 KB reclaimable');
+  });
+
+  it('says so when a preview came back with nothing to clean', () => {
+    render(
+      <CleanupPanel
+        deviceId="dev-1"
+        volumeLabel="C:\\"
+        preview={preview({ candidates: [], categories: [], candidateCount: 0, estimatedBytes: 0 })}
+        onExecuted={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId('cleanup-no-candidates')).toBeInTheDocument();
+  });
+
   it('clears the selection when the preview is replaced', () => {
     const { rerender } = render(
       <CleanupPanel deviceId="dev-1" volumeLabel="C:\\" preview={preview()} onExecuted={vi.fn()} />,
