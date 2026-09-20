@@ -857,7 +857,16 @@
           "title": "Monitor consigliati",
           "body": "Breeze include monitor integrati per CPU, memoria, disco e conformità delle patch. Nessuno è ancora collegato a questa policy.",
           "action": "Collega tutti i monitor integrati"
-        }
+        },
+        "inheritanceTitle": "Monitor ereditati",
+        "inheritance": {
+          "cumulative": "Aggiungi ai monitor ereditati",
+          "cumulativeHint": "I dispositivi ricevono i monitor delle policy superiori più questi.",
+          "replace": "Sostituisci i monitor ereditati",
+          "replaceHint": "Si applicano solo i monitor di questa policy; gli allegati superiori vengono ignorati. Impostato dalla conversione per mantenere il comportamento delle regole inline."
+        },
+        "ignoredInherited_one": "{{count}} monitor ereditato viene ignorato durante la sostituzione:",
+        "ignoredInherited_other": "{{count}} monitor ereditati vengono ignorati durante la sostituzione:"
       },
       "pamTab": {
         "captureWindowsUACElevationPrompts": "Acquisisci prompt di elevazione UAC di Windows",

@@ -857,7 +857,16 @@
           "title": "Moniteurs recommandés",
           "body": "Breeze fournit des moniteurs intégrés pour le processeur, la mémoire, le disque et la conformité des correctifs. Aucun n'est encore attaché à cette politique.",
           "action": "Attacher tous les moniteurs intégrés"
-        }
+        },
+        "inheritanceTitle": "Moniteurs hérités",
+        "inheritance": {
+          "cumulative": "Ajouter aux moniteurs hérités",
+          "cumulativeHint": "Les appareils reçoivent les moniteurs des politiques parentes en plus de ceux-ci.",
+          "replace": "Remplacer les moniteurs hérités",
+          "replaceHint": "Seuls les moniteurs de cette politique s'appliquent ; les rattachements parents sont ignorés. Défini par la conversion pour conserver le comportement des règles intégrées."
+        },
+        "ignoredInherited_one": "{{count}} moniteur hérité est ignoré lors du remplacement :",
+        "ignoredInherited_other": "{{count}} moniteurs hérités sont ignorés lors du remplacement :"
       },
       "pamTab": {
         "captureWindowsUACElevationPrompts": "Capture Windows Prompts d’élévation UAC",

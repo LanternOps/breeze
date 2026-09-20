@@ -857,7 +857,16 @@
           "title": "Monitores recomendados",
           "body": "O Breeze inclui monitores integrados de CPU, memória, disco e conformidade de patches. Nenhum está anexado a esta política ainda.",
           "action": "Anexar todos os monitores integrados"
-        }
+        },
+        "inheritanceTitle": "Monitores herdados",
+        "inheritance": {
+          "cumulative": "Adicionar aos monitores herdados",
+          "cumulativeHint": "Os dispositivos recebem os monitores das políticas superiores mais estes.",
+          "replace": "Substituir os monitores herdados",
+          "replaceHint": "Só os monitores desta política se aplicam; os anexos superiores são ignorados. Definido pela conversão para manter o comportamento das regras embutidas."
+        },
+        "ignoredInherited_one": "{{count}} monitor herdado é ignorado ao substituir:",
+        "ignoredInherited_other": "{{count}} monitores herdados são ignorados ao substituir:"
       },
       "pamTab": {
         "captureWindowsUACElevationPrompts": "Capturar solicitações de elevação do UAC do Windows",

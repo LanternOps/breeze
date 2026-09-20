@@ -857,7 +857,16 @@
           "title": "Recommended monitors",
           "body": "Breeze ships built-in CPU, memory, disk and patch-compliance monitors. None are attached to this policy yet.",
           "action": "Attach all built-in monitors"
-        }
+        },
+        "inheritanceTitle": "Inherited monitors",
+        "inheritance": {
+          "cumulative": "Add to inherited monitors",
+          "cumulativeHint": "Devices get the parent policies' monitors plus these.",
+          "replace": "Replace inherited monitors",
+          "replaceHint": "Only this policy's monitors apply; parent attachments are ignored. Set by conversion to keep inline rules' behavior."
+        },
+        "ignoredInherited_one": "{{count}} inherited monitor is ignored while replacing:",
+        "ignoredInherited_other": "{{count}} inherited monitors are ignored while replacing:"
       },
       "pamTab": {
         "captureWindowsUACElevationPrompts": "Capture Windows UAC elevation prompts",

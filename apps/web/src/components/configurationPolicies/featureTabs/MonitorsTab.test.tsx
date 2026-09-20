@@ -190,6 +190,7 @@ describe('MonitorsTab', () => {
     expect(inline?.items).toEqual([
       { monitorId: 'm2', enabled: true, overrides: undefined, sortOrder: 0 },
     ]);
+    expect(inline?.inheritance).toBe('cumulative');
   });
 
   it('sends featurePolicyId: null even when a linked config policy is set', async () => {
@@ -253,5 +254,48 @@ describe('MonitorsTab — check interval write-through (W05c2)', () => {
     clickSave();
     expect(await screen.findByText(/between 10 and 3600/i)).toBeInTheDocument();
     expect(saveMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('MonitorsTab — inheritance switch (W05c2)', () => {
+  const parentLink = { id: 'link-parent', featureType: 'monitors' as const, featurePolicyId: null, inlineSettings: { items: [{ monitorId: 'm2', enabled: true }] } };
+
+  it('defaults to cumulative and saves the choice with the items', async () => {
+    render(<MonitorsTab {...baseProps} existingLink={ownMonitorsLink} />);
+    const cumulative = (await screen.findByTestId('monitors-tab-inheritance-cumulative')) as HTMLInputElement;
+    expect(cumulative.checked).toBe(true);
+    fireEvent.click(screen.getByTestId('monitors-tab-inheritance-replace'));
+    clickSave();
+    await waitFor(() => expect(saveMock).toHaveBeenCalled());
+    expect(inlineSettingsFromCall(saveMock.mock.calls[0] as unknown[])).toEqual({
+      items: [{ monitorId: 'm1', enabled: true, overrides: undefined, sortOrder: 0 }],
+      inheritance: 'replace',
+    });
+  });
+
+  it('saves an empty replacement so inherited monitors stay suppressed', async () => {
+    render(<MonitorsTab {...baseProps} existingLink={{ ...ownMonitorsLink,
+      inlineSettings: { items: [], inheritance: 'replace' } }} parentLink={parentLink} />);
+    await screen.findByTestId('monitors-tab-inheritance-replace');
+    clickSave();
+    await waitFor(() => expect(saveMock).toHaveBeenCalled());
+    expect(inlineSettingsFromCall(saveMock.mock.calls[0])).toEqual({ items: [], inheritance: 'replace' });
+    expect(removeMock).not.toHaveBeenCalled();
+  });
+  it('seeds the switch from the saved link', async () => {
+    render(<MonitorsTab {...baseProps} existingLink={{ ...ownMonitorsLink, inlineSettings: { ...ownMonitorsLink.inlineSettings, inheritance: 'replace' } }} parentLink={parentLink} />);
+    expect(((await screen.findByTestId('monitors-tab-inheritance-replace')) as HTMLInputElement).checked).toBe(true);
+  });
+
+  it('lists the parent monitors being ignored while replacing', async () => {
+    render(<MonitorsTab {...baseProps} existingLink={{ ...ownMonitorsLink, inlineSettings: { ...ownMonitorsLink.inlineSettings, inheritance: 'replace' } }} parentLink={parentLink} />);
+    const ignored = await screen.findByTestId('monitors-tab-ignored-inherited');
+    await waitFor(() => expect(ignored.textContent).toContain('Disk full')); // m2's catalog name
+  });
+
+  it('shows no ignored list in cumulative mode', async () => {
+    render(<MonitorsTab {...baseProps} existingLink={ownMonitorsLink} parentLink={parentLink} />);
+    await screen.findByTestId('monitors-tab-inheritance-cumulative');
+    expect(screen.queryByTestId('monitors-tab-ignored-inherited')).toBeNull();
   });
 });

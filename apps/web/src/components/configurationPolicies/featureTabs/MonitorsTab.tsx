@@ -31,6 +31,12 @@ type MonitorAttachmentItem = {
 
 type InlineSettingsLike = { inlineSettings: Record<string, unknown> | null } | undefined;
 
+type InheritanceMode = "cumulative" | "replace";
+function readInheritance(link: InlineSettingsLike): InheritanceMode {
+  const raw = (link?.inlineSettings as { inheritance?: unknown } | null | undefined)?.inheritance;
+  return raw === "replace" ? "replace" : "cumulative";
+}
+
 function seedItems(link: InlineSettingsLike): MonitorAttachmentItem[] {
   const raw = (link?.inlineSettings as { items?: unknown } | null | undefined)?.items;
   if (!Array.isArray(raw)) return [];
@@ -102,8 +108,9 @@ export default function MonitorsTab({
   const savedCheckInterval = readCheckInterval(monitoringLink);
   const [checkInterval, setCheckInterval] = useState<string>(String(savedCheckInterval));
   const [checkIntervalError, setCheckIntervalError] = useState<string>();
-  const [inheritance] = useState<"cumulative" | "replace">(
-    (existingLink?.inlineSettings as { inheritance?: string })?.inheritance === "replace" ? "replace" : "cumulative");
+  const [inheritance, setInheritance] = useState<InheritanceMode>(() => readInheritance(existingLink));
+  useEffect(() => { setInheritance(readInheritance(existingLink)); }, [existingLink]);
+  const parentItems = seedItems(parentLink);
   useEffect(() => { setCheckInterval(String(savedCheckInterval)); }, [savedCheckInterval]);
 
   useEffect(() => {
@@ -273,7 +280,7 @@ export default function MonitorsTab({
     const result = await save(null, {
       featureType: "monitors",
       featurePolicyId: null,
-      inlineSettings: { items: buildPayloadItems() },
+      inlineSettings: { items: buildPayloadItems(), inheritance },
     });
     if (result) onLinkChanged(result, "monitors");
   };
@@ -381,6 +388,44 @@ export default function MonitorsTab({
             {i18n.t("policies:configurationPolicies.featureTabs.monitorsTab.checkIntervalHint")}
           </p>
           {checkIntervalError && <p className="mt-1 text-xs text-destructive">{checkIntervalError}</p>}
+        </fieldset>
+
+        <fieldset className="rounded-md border bg-background p-4" data-testid="monitors-tab-inheritance">
+          <legend className="px-1 text-sm font-medium">
+            {i18n.t("policies:configurationPolicies.featureTabs.monitorsTab.inheritanceTitle")}
+          </legend>
+          {(["cumulative", "replace"] as const).map((mode) => (
+            <label key={mode} className="mt-2 flex items-start gap-2 text-sm">
+              <input
+                type="radio"
+                name="monitors-tab-inheritance"
+                data-testid={`monitors-tab-inheritance-${mode}`}
+                checked={inheritance === mode}
+                disabled={isInherited}
+                onChange={() => setInheritance(mode)}
+              />
+              <span>
+                <span className="font-medium">
+                  {i18n.t(/* i18n-dynamic */ `policies:configurationPolicies.featureTabs.monitorsTab.inheritance.${mode}`)}
+                </span>
+                <span className="block text-xs text-muted-foreground">
+                  {i18n.t(/* i18n-dynamic */ `policies:configurationPolicies.featureTabs.monitorsTab.inheritance.${mode}Hint`)}
+                </span>
+              </span>
+            </label>
+          ))}
+          {inheritance === "replace" && parentItems.length > 0 && (
+            <div className="mt-3 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-xs" data-testid="monitors-tab-ignored-inherited">
+              <p className="font-medium">
+                {i18n.t("policies:configurationPolicies.featureTabs.monitorsTab.ignoredInherited", { count: parentItems.length })}
+              </p>
+              <ul className="mt-1 list-disc pl-4">
+                {parentItems.map((it) => (
+                  <li key={it.monitorId}>{catalogById.get(it.monitorId)?.name ?? it.monitorId}</li>
+                ))}
+              </ul>
+            </div>
+          )}
         </fieldset>
 
         {items.length === 0 ? (

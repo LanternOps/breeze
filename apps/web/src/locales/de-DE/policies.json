@@ -857,7 +857,16 @@
           "title": "Empfohlene Monitore",
           "body": "Breeze liefert integrierte Monitore für CPU, Arbeitsspeicher, Datenträger und Patch-Compliance. Keiner ist dieser Richtlinie bisher zugeordnet.",
           "action": "Alle integrierten Monitore anhängen"
-        }
+        },
+        "inheritanceTitle": "Vererbte Monitore",
+        "inheritance": {
+          "cumulative": "Zu vererbten Monitoren hinzufügen",
+          "cumulativeHint": "Geräte erhalten die Monitore der übergeordneten Richtlinien plus diese.",
+          "replace": "Vererbte Monitore ersetzen",
+          "replaceHint": "Nur die Monitore dieser Richtlinie gelten; übergeordnete Zuordnungen werden ignoriert. Wird bei der Konvertierung gesetzt, um das Verhalten von Inline-Regeln zu erhalten."
+        },
+        "ignoredInherited_one": "{{count}} vererbter Monitor wird beim Ersetzen ignoriert:",
+        "ignoredInherited_other": "{{count}} vererbte Monitore werden beim Ersetzen ignoriert:"
       },
       "pamTab": {
         "captureWindowsUACElevationPrompts": "Windows-UAC-Aufforderungen zur Rechteerhöhung erfassen",
