@@ -3,6 +3,17 @@ import { db } from '../../../db';
 import { devices, networkMonitorResults, networkMonitors } from '../../../db/schema';
 import type { ConditionHandler } from '../registry';
 import type { ConditionResult, NetworkCheckCondition } from '../types';
+import { resolveNetworkCheckAlertDevice } from '../../monitors/networkCheckAlertDevice';
+
+/**
+ * #6353 — runtime capability the alerting-consolidation W05e converter gates
+ * on. `true` means: a `network_check` verdict is evaluated ONCE per managed
+ * check per running org (`services/monitors/networkCheckAlertSweep.ts`), on the
+ * device `resolveNetworkCheckAlertDevice` picks, independent of that device's
+ * online status — and this handler refuses to breach for any other device.
+ * Removing either half must flip this to `false`, which blocks conversion.
+ */
+export const NETWORK_CHECK_DEVICE_INDEPENDENT_EVALUATION = true as const;
 
 /**
  * `network_check` verdict handler (#5287 W04, #5291).
@@ -22,6 +33,14 @@ import type { ConditionResult, NetworkCheckCondition } from '../types';
  * inherit a sibling's outage, and a genuinely down org's streak would be
  * masked by a sibling's more recent `online` row.
  *
+ * ONE ALERT DEVICE PER CHECK PER ORG (#6353): the probe runs once per org, so
+ * the verdict is the org's, not any device's. The handler breaches only when
+ * called for the device `resolveNetworkCheckAlertDevice` picks for that org —
+ * the same rule the legacy network worker uses — and answers "not breaching"
+ * for every other device an org-wide policy reaches. The device-independent
+ * sweep (`networkCheckAlertSweep.ts`) is what calls it for the alert device,
+ * online or not; the per-device sweep skips `network_check` rules entirely.
+ *
  * `passed: true` means the monitor BREACHES.
  */
 export const networkCheckHandler: ConditionHandler = {
@@ -35,7 +54,7 @@ export const networkCheckHandler: ConditionHandler = {
     // network check runs from whichever agent the worker picked, so the device
     // this rule fired for is not necessarily the prober.
     const [managed] = await db
-      .select({ id: networkMonitors.id })
+      .select({ id: networkMonitors.id, assetId: networkMonitors.assetId })
       .from(networkMonitors)
       .where(eq(networkMonitors.managedByMonitorId, cond.monitorId))
       .limit(1);
@@ -57,6 +76,14 @@ export const networkCheckHandler: ConditionHandler = {
 
     if (!device) {
       return { passed: false, description: 'Device not found for network check evaluation' };
+    }
+
+    // One probe per org raises ONE alert per org, on the device the legacy
+    // worker would have chosen. Any other device — and an org with no eligible
+    // device at all — is "not breaching", never a duplicate alert.
+    const alertDeviceId = await resolveNetworkCheckAlertDevice({ orgId: device.orgId, assetId: managed.assetId });
+    if (alertDeviceId !== deviceId) {
+      return { passed: false, description: 'Not the alert device for this network check' };
     }
 
     const rows = await db

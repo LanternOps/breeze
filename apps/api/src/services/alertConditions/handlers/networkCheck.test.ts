@@ -1,13 +1,20 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { mockDb } = vi.hoisted(() => ({ mockDb: { select: vi.fn() } }));
+const { mockDb, alertDeviceMock } = vi.hoisted(() => ({
+  mockDb: { select: vi.fn() },
+  alertDeviceMock: vi.fn(async (_check: { orgId: string; assetId: string | null }) => 'device-1'),
+}));
 
 vi.mock('../../../db', () => ({ db: mockDb }));
+vi.mock('../../monitors/networkCheckAlertDevice', () => ({
+  resolveNetworkCheckAlertDevice: alertDeviceMock,
+}));
 
 vi.mock('../../../db/schema', () => ({
   devices: { id: 'devices.id', orgId: 'devices.orgId' },
   networkMonitors: {
     id: 'networkMonitors.id',
+    assetId: 'networkMonitors.assetId',
     managedByMonitorId: 'networkMonitors.managedByMonitorId',
   },
   networkMonitorResults: {
@@ -18,7 +25,7 @@ vi.mock('../../../db/schema', () => ({
   },
 }));
 
-import { networkCheckHandler } from './networkCheck';
+import { NETWORK_CHECK_DEVICE_INDEPENDENT_EVALUATION, networkCheckHandler } from './networkCheck';
 
 const DEVICE_ID = 'device-1';
 const MONITOR_ID = 'monitor-1';
@@ -64,6 +71,54 @@ function offline(n: number) {
 describe('networkCheckHandler (#5291 W04)', () => {
   beforeEach(() => {
     mockDb.select.mockReset();
+    alertDeviceMock.mockReset();
+    alertDeviceMock.mockResolvedValue('device-1');
+  });
+
+  describe('one alert device per check per org (#6353)', () => {
+    it('exports the device-independent-evaluation capability W05e gates on', () => {
+      expect(NETWORK_CHECK_DEVICE_INDEPENDENT_EVALUATION).toBe(true);
+    });
+
+    it('breaches on the alert device, resolved through the shared legacy rule for the DEVICE org', async () => {
+      setReads([{ id: 'nm-1', assetId: 'asset-1' }], offline(2), [{ orgId: 'org-b' }]);
+
+      const result = await networkCheckHandler.evaluate(
+        { type: 'network_check', monitorId: MONITOR_ID, consecutiveFailures: 2 },
+        DEVICE_ID,
+      );
+
+      expect(result.passed).toBe(true);
+      expect(alertDeviceMock).toHaveBeenCalledWith({ orgId: 'org-b', assetId: 'asset-1' });
+    });
+
+    it('never breaches on any other device the policy reaches, even with an offline streak', async () => {
+      alertDeviceMock.mockResolvedValue('device-other');
+      setReads([{ id: 'nm-1', assetId: null }], offline(5));
+
+      const result = await networkCheckHandler.evaluate(
+        { type: 'network_check', monitorId: MONITOR_ID, consecutiveFailures: 2 },
+        DEVICE_ID,
+      );
+
+      expect(result.passed).toBe(false);
+      expect(result.description).toMatch(/not the alert device/i);
+      // The results read is not even attempted for a non-alert device.
+      expect(mockDb.select).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not breach when the org has no eligible alert device at all', async () => {
+      alertDeviceMock.mockResolvedValue(null);
+      setReads([{ id: 'nm-1', assetId: null }], offline(5));
+
+      const result = await networkCheckHandler.evaluate(
+        { type: 'network_check', monitorId: MONITOR_ID, consecutiveFailures: 2 },
+        DEVICE_ID,
+      );
+
+      expect(result.passed).toBe(false);
+      expect(result.description).toMatch(/not the alert device/i);
+    });
   });
 
   it('breaches once the leading results are offline at least consecutiveFailures times', async () => {
