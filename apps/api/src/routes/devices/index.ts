@@ -13,6 +13,7 @@ import { scriptsRoutes } from './scripts';
 import { deviceAiOriginRoutes } from './aiOrigin';
 import { eventsRoutes } from './events';
 import { eventLogsRoutes } from './eventlogs';
+import { filesystemSystemCleanupRoutes } from './filesystemSystemCleanup';
 import { filesystemRoutes } from './filesystem';
 import { sessionsRoutes } from './sessions';
 import { diagnosticLogsRoutes } from './diagnosticLogs';
@@ -79,6 +80,7 @@ deviceRoutes.route('/', diagnoseRoutes);
 deviceRoutes.route('/', groupsRoutes);
 
 // Mount filesystem routes before core routes so /:id/filesystem resolves cleanly.
+deviceRoutes.route('/', filesystemSystemCleanupRoutes);
 deviceRoutes.route('/', filesystemRoutes);
 
 // Mount move-org BEFORE core routes — its POST /:id/move-org would collide

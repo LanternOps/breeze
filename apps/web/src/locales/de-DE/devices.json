@@ -254,6 +254,7 @@
     "deploySoftware": "Software bereitstellen",
     "clearSessions": "Sitzungen beenden",
     "changeSite": "Standort ändern",
+    "moveOrg": "In Organisation verschieben",
     "exitMaintenance": "Wartungsmodus beenden",
     "enterMaintenance": "Wartungsmodus aktivieren",
     "decommission": "Entfernen",
@@ -576,6 +577,7 @@
     "assignPolicy": "Konfigurationsrichtlinie zuweisen"
   },
   "deviceDetailPage": {
+    "movedToOrg": "{{hostname}} wurde nach {{orgName}} verschoben",
     "failedToFetchDevice": "Gerät konnte nicht abgerufen werden",
     "online": "online",
     "offline": "offline",
@@ -751,6 +753,51 @@
     "text": "–",
     "of": "von",
     "noMoreActivity": "Keine weitere Aktivität"
+  },
+  "systemCleanupPanel": {
+    "title": "Systembereinigung",
+    "description": "Integrierte Wartungswerkzeuge, die Speicher freigeben, den die Dateiprüfung nicht sieht. Schätzungen können vom tatsächlich freigegebenen Speicherplatz abweichen.",
+    "checkActions": "Verfügbare Aktionen prüfen",
+    "checking": "Wird geprüft…",
+    "run": "Auswahl ausführen",
+    "running": "Läuft… {{minutes}} Min. {{seconds}} Sek. vergangen",
+    "noActions": "Für dieses Gerät sind keine Systembereinigungsaktionen verfügbar.",
+    "estimateUpTo": "bis zu {{size}}",
+    "estimateUnknown": "Größe unbekannt",
+    "listFailed": "Die verfügbaren Bereinigungsaktionen konnten nicht gelesen werden.",
+    "listTimedOut": "Das Gerät hat nicht rechtzeitig geantwortet. Bitte in einigen Minuten erneut versuchen.",
+    "runFailed": "Die Bereinigung konnte nicht abgeschlossen werden.",
+    "runTimedOut": "Die Bereinigung läuft noch. Öffnen Sie diesen Tab später erneut, um das Ergebnis zu sehen.",
+    "agentUpdateRequired": "Aktualisieren Sie den Agenten dieses Geräts auf Version {{version}} oder neuer, um Systembereinigungen auszuführen.",
+    "confirmTitle": "Systembereinigung ausführen?",
+    "confirmMessage": "{{count}} Aktion(en) werden auf diesem Gerät ausgeführt. Einige dauern bis zu 90 Minuten und lassen sich nicht rückgängig machen.",
+    "confirmIrreversible": "Mir ist bewusst, dass diese Änderungen nicht rückgängig gemacht werden können.",
+    "freed": "{{size}} freigegeben",
+    "volumeFreed": "{{mount}}: {{size}} freigegeben",
+    "risk": {
+      "long_running": "kann lange dauern",
+      "may_require_reboot": "Speicher wird nach Neustart frei",
+      "may_require_reboot_free_state": "Teil des Speichers wird nach Neustart frei",
+      "removes_driver_rollback": "entfernt Treiber-Rollback",
+      "removes_packages": "deinstalliert Pakete",
+      "removes_os_rollback": "beendet Windows-Rollback",
+      "removes_recovery_points": "entfernt Wiederherstellungspunkte"
+    },
+    "status": {
+      "completed": "abgeschlossen",
+      "failed": "fehlgeschlagen",
+      "timed_out": "Zeitüberschreitung",
+      "unavailable": "nicht verfügbar",
+      "busy": "nicht gestartet – Gerät war beschäftigt",
+      "not_started": "nicht gestartet – Zeitbudget aufgebraucht"
+    },
+    "runInProgress": "Auf diesem Gerät läuft bereits eine Systembereinigung. Warten Sie, bis sie beendet ist.",
+    "consequence": {
+      "removes_driver_rollback": "Dieses Gerät kann die entfernten Treiber danach nicht mehr auf ihre vorherigen Versionen zurücksetzen.",
+      "removes_packages": "Nicht mehr benötigte Pakete werden deinstalliert.",
+      "removes_os_rollback": "Dieses Gerät kann danach nicht mehr zur vorherigen Windows-Version zurückkehren.",
+      "removes_recovery_points": "Lokale Snapshots werden gelöscht. Ohne angeschlossene Time-Machine-Festplatte hat dieses Gerät keine weiteren Wiederherstellungspunkte."
+    }
   },
   "deviceFilesystemTab": {
     "resultPartial": "Teilweise abgeschlossen",
@@ -2383,6 +2430,33 @@
     "submitting": "Wird ausgeführt…",
     "cancel": "Abbrechen",
     "genericError": "Wartungsmodus konnte nicht gestartet werden."
+  },
+  "moveDeviceOrgDialog": {
+    "title": "In eine andere Organisation verschieben",
+    "description": "Verschiebt {{hostname}} aus {{orgName}}. Verlauf, Tickets und Richtlinien wandern mit, und der Agent verbindet sich unter der neuen Organisation neu.",
+    "targetOrgLabel": "Zielorganisation",
+    "targetOrgPlaceholder": "Organisation auswählen",
+    "targetSiteLabel": "Zielstandort",
+    "targetSitePlaceholder": "Standort auswählen",
+    "loadingSites": "Standorte werden geladen…",
+    "noOtherOrgs": "Es gibt keine andere aktive Organisation, in die dieses Gerät verschoben werden kann.",
+    "noSites": "Die gewählte Organisation hat noch keine Standorte. Legen Sie zuerst einen Standort an.",
+    "currencyMismatchHeading": "Nicht abgerechnete Arbeit in einer anderen Währung",
+    "currencyMismatchDetail": "{{sourceCurrency}} → {{targetCurrency}}: {{timeEntries}} nicht abgerechnete Zeiteinträge und {{parts}} nicht abgerechnete Teile behalten nach dem Verschieben ihre ursprüngliche Währung.",
+    "currencyMismatchAccept": "Verstanden – Gerät verschieben und diese Einträge in ihrer ursprünglichen Währung belassen",
+    "currencyMismatchNoPermission": "Dafür ist die Berechtigung zum Schreiben von Rechnungen nötig. Bitten Sie einen Abrechnungsadministrator, die offene Arbeit zuerst abzurechnen oder zu bereinigen.",
+    "stepUpHeading": "Bestätigen Sie Ihre Identität",
+    "stepUpIntro": "Das Verschieben eines Geräts zwischen Organisationen erfordert einen zweiten Faktor.",
+    "stepUpCodeLabel": "Authenticator-Code",
+    "stepUpPasskeyNote": "Sie bestätigen mit Ihrem Passkey.",
+    "noStepUpFactor": "Fügen Sie Ihrem Konto eine Authenticator-App oder einen Passkey hinzu, bevor Sie Geräte zwischen Organisationen verschieben.",
+    "mfaRequired": "Schließen Sie zuerst die MFA-Anmeldung ab und versuchen Sie es erneut.",
+    "stepUpRetry": "Diese Bestätigung konnte nicht verwendet werden. Geben Sie einen neuen Code ein und versuchen Sie es erneut.",
+    "submit": "Gerät verschieben",
+    "submitStepUp": "Bestätigen und verschieben",
+    "submitting": "Wird ausgeführt…",
+    "cancel": "Abbrechen",
+    "genericError": "Das Gerät konnte nicht verschoben werden."
   },
   "networkDeviceDetailPage": {
     "approval": {

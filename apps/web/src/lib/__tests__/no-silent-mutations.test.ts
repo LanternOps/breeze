@@ -37,6 +37,11 @@ const TARGET_GLOBS = [
   'src/components/devices/DeviceFilesystemTab.tsx',
   // Disk Cleanup v2 W03: cleanup-execute moved into this panel.
   'src/components/devices/filesystem/CleanupPanel.tsx',
+  // Disk Cleanup v2 W04: both native-cleanup mutations (queue the catalog,
+  // queue the run) go through runAction. This file is in the targeted set
+  // from birth rather than added to the migration backlog — a silent failure
+  // here is a tech believing a 90-minute DISM run started when it never did.
+  'src/components/devices/filesystem/SystemCleanupPanel.tsx',
   // Network device "Check now" (#5988 W05): the probe reads liveness outside
   // W04's settings writer and must surface every mutation outcome.
   'src/components/devices/networkDevice/useAssetProbe.ts',
@@ -714,8 +719,9 @@ describe('no silent mutations in targeted set', () => {
     // Disk Cleanup v2 W01 adds DeviceFilesystemTab.tsx: 149 → 150.
     // Work types (#4628 W01) add WorkTypesCard.tsx: 150 → 151.
     // Disk Cleanup v2 W03 adds filesystem/CleanupPanel.tsx: 151 → 152.
-    // Billing profiles W02 adds Rates and the org assignment writer: 152 → 154.
-    expect(absoluteFiles.length).toBe(154);
+    // Disk Cleanup v2 W04 adds filesystem/SystemCleanupPanel.tsx: 152 → 153.
+    // Billing profiles W02 adds Rates and the org assignment writer: 153 → 155.
+    expect(absoluteFiles.length).toBe(155);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

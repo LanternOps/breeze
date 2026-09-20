@@ -326,3 +326,13 @@ describe('isSelfManagedDbContextRoute', () => {
     expect(isSelfManagedDbContextRoute(method, path)).toBe(false);
   });
 });
+
+  it('opts the two system-cleanup POSTs out of the ambient transaction, and nothing else', () => {
+    expect(isSelfManagedDbContextRoute('POST', '/api/v1/devices/22222222-2222-4222-8222-222222222222/filesystem/system-cleanup/run')).toBe(true);
+    expect(isSelfManagedDbContextRoute('POST', '/api/v1/devices/22222222-2222-4222-8222-222222222222/filesystem/system-cleanup/list')).toBe(true);
+    // The polls are plain reads — they must keep the request transaction.
+    expect(isSelfManagedDbContextRoute('GET', '/api/v1/devices/22222222-2222-4222-8222-222222222222/filesystem/system-cleanup/run/44444444-4444-4444-8444-444444444444')).toBe(false);
+    expect(isSelfManagedDbContextRoute('GET', '/api/v1/devices/22222222-2222-4222-8222-222222222222/filesystem/system-cleanup/list/33333333-3333-4333-8333-333333333333')).toBe(false);
+    // And the file engine's routes are untouched.
+    expect(isSelfManagedDbContextRoute('POST', '/api/v1/devices/22222222-2222-4222-8222-222222222222/filesystem/scan')).toBe(false);
+  });
