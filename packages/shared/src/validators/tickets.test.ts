@@ -224,9 +224,17 @@ describe('ticket validators', () => {
     expect(ticketCategoryInputSchema.safeParse({ name: 'Hardware', color: 'teal' }).success).toBe(false);
   });
 
-  it.each(['defaultBillable', 'defaultHourlyRate', 'rateCurrency'])('category strips deprecated %s', (field) => {
-    const parsed = ticketCategoryInputSchema.parse({ name: 'a', [field]: 'ignored' });
-    expect(parsed).not.toHaveProperty(field);
+  // #6472: retired pricing fields are rejected, never silently stripped.
+  it.each(['defaultBillable', 'defaultHourlyRate', 'rateCurrency'])('category rejects retired %s with an actionable message', (field) => {
+    const result = ticketCategoryInputSchema.safeParse({ name: 'a', [field]: 'ignored' });
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    const issue = result.error.issues.find((i) => i.path[0] === field);
+    expect(issue?.message).toContain(field);
+    expect(issue?.message).toContain('billing profile');
+  });
+  it('category update (partial) still rejects a retired pricing field', () => {
+    expect(ticketCategoryInputSchema.partial().safeParse({ defaultHourlyRate: 90 }).success).toBe(false);
   });
 
   describe('bulkTicketActionSchema', () => {

@@ -135,13 +135,27 @@ describe('PATCH /organizations/:id/ticket-settings', () => {
       body: JSON.stringify(body),
     });
 
-  it.each(['defaultHourlyRate', 'defaultBillable', 'rateCurrency'])('ignores %s with a deprecation warning, including legacy-only patches', async (field) => {
+  // #6472: a retired pricing field is a 400 that names the field and its
+  // replacement — never a 200 that discards the write.
+  it.each(['defaultHourlyRate', 'defaultBillable', 'rateCurrency'])('rejects a legacy-only %s patch with 400 and writes nothing', async (field) => {
     dbSelectResult.mockResolvedValueOnce([{ id: ORG_ID }]);
-    serviceMocks.upsertOrgTicketSettings.mockResolvedValue({ orgId: ORG_ID, slaOverrides: {} });
-    const res = await patch({ [field]: 'ignored' });
-    expect(res.status).toBe(200);
-    expect((await res.json()).deprecationWarnings).toContain(field);
-    expect(serviceMocks.upsertOrgTicketSettings).toHaveBeenCalledWith(ORG_ID, {});
+    const res = await patch({ [field]: 150 });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toContain(field);
+    expect(body.error).toContain('billing profile');
+    expect(body).not.toHaveProperty('deprecationWarnings');
+    expect(serviceMocks.upsertOrgTicketSettings).not.toHaveBeenCalled();
+    expect(auditSpy).not.toHaveBeenCalled();
+  });
+
+  it('rejects the whole request when a retired field rides along with a valid SLA override', async () => {
+    dbSelectResult.mockResolvedValueOnce([{ id: ORG_ID }]);
+    const res = await patch({ slaOverrides: { high: { responseMinutes: 30 } }, defaultHourlyRate: 150 });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toContain('defaultHourlyRate');
+    expect(serviceMocks.upsertOrgTicketSettings).not.toHaveBeenCalled();
+    expect(auditSpy).not.toHaveBeenCalled();
   });
 
   it('upserts and fires an audit event', async () => {

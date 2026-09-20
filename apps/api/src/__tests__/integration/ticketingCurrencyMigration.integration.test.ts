@@ -8,7 +8,6 @@ vi.mock('../../services/timeEntryEvents', () => ({ emitTimeEntryEvent: vi.fn().m
 
 import { eq, sql } from 'drizzle-orm';
 import { orgTicketSettingsSchema } from '@breeze/shared';
-import { legacyBillingDeprecationWarnings } from '../../lib/legacyBillingDeprecation';
 import { Hono } from 'hono';
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
 import {
@@ -298,45 +297,42 @@ describe.runIf(RUN)('ticketing currency snapshot permanence (wave 4 #3776)', () 
     expect(await readSettings(f.orgId)).toMatchObject({ defaultHourlyRate: '80.00', rateCurrency: 'USD' });
   });
 
-  it('(c) legacy settings input is ignored while SLA edits preserve the historical rate and currency', async () => {
+  it('(c) retired settings input is rejected while SLA edits preserve the historical rate and currency', async () => {
     const f = await seedFixture();
     await seedMoneyRows(f);
     await flipOrgCurrency(f.orgId, 'GBP');
 
-    const save = async (body: Record<string, unknown>) => {
-      const parsed = orgTicketSettingsSchema.parse(body);
-      expect(parsed).not.toHaveProperty('defaultHourlyRate');
-      expect(parsed).not.toHaveProperty('defaultBillable');
-      expect(parsed).not.toHaveProperty('rateCurrency');
-      await withDbAccessContext(partnerCtx(f), () => upsertOrgTicketSettings(f.orgId, parsed));
-      return legacyBillingDeprecationWarnings(body);
-    };
-    expect(await save({ defaultBillable: false })).toEqual(['defaultBillable']);
-    expect(await readSettings(f.orgId)).toMatchObject({
-      defaultHourlyRate: '80.00', rateCurrency: 'USD', defaultBillable: true,
-    });
-
-    expect(await save({
-      slaOverrides: { high: { responseMinutes: 30, resolutionMinutes: 240 } },
-      defaultHourlyRate: 80,
-      defaultBillable: true,
-    })).toEqual(expect.arrayContaining(['defaultHourlyRate', 'defaultBillable']));
-    expect(await readSettings(f.orgId)).toMatchObject({
-      defaultHourlyRate: '80.00', rateCurrency: 'USD', defaultBillable: true,
-      slaOverrides: { high: { responseMinutes: 30, resolutionMinutes: 240 } },
-    });
-
-    // Even changed or malformed legacy money cannot overwrite the old snapshot.
-    for (const rate of [90, 'invalid']) {
-      expect(await save({ defaultHourlyRate: rate, rateCurrency: 'GBP' }))
-        .toEqual(expect.arrayContaining(['defaultHourlyRate', 'rateCurrency']));
-      expect(await readSettings(f.orgId)).toMatchObject({
-        defaultHourlyRate: '80.00', rateCurrency: 'USD', defaultBillable: true,
-      });
+    // #6472: a retired pricing field never reaches the service. The schema
+    // rejects the whole request, so a rate change cannot be discarded behind a
+    // 200 — including when it rides along with a valid SLA override.
+    for (const body of [
+      { defaultBillable: false },
+      { slaOverrides: { high: { responseMinutes: 30, resolutionMinutes: 240 } }, defaultHourlyRate: 80, defaultBillable: true },
+      { defaultHourlyRate: 90, rateCurrency: 'GBP' },
+      { defaultHourlyRate: 'invalid', rateCurrency: 'GBP' },
+    ]) {
+      const result = orgTicketSettingsSchema.safeParse(body);
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.issues.some((issue) => /billing profile/.test(issue.message))).toBe(true);
+      }
     }
+    expect(await readSettings(f.orgId)).toMatchObject({
+      defaultHourlyRate: '80.00', rateCurrency: 'USD', defaultBillable: true,
+    });
+
+    // A clean SLA-only save still leaves the historical money columns untouched.
+    const parsed = orgTicketSettingsSchema.parse({
+      slaOverrides: { high: { responseMinutes: 30, resolutionMinutes: 240 } },
+    });
+    await withDbAccessContext(partnerCtx(f), () => upsertOrgTicketSettings(f.orgId, parsed));
+    expect(await readSettings(f.orgId)).toMatchObject({
+      defaultHourlyRate: '80.00', rateCurrency: 'USD', defaultBillable: true,
+      slaOverrides: { high: { responseMinutes: 30, resolutionMinutes: 240 } },
+    });
   });
 
-  it('(d) PATCH /ticket-categories/:id warns and ignores legacy rates after a partner currency flip', async () => {
+  it('(d) PATCH /ticket-categories/:id rejects legacy rates after a partner currency flip and changes nothing', async () => {
     const adminDb = getTestDb();
     // Partner-scope environment: wildcard permissions + orgAccess 'all' so the
     // partner-wide category gate (canManagePartnerWidePolicies) passes.
@@ -362,21 +358,30 @@ describe.runIf(RUN)('ticketing currency snapshot permanence (wave 4 #3776)', () 
 
     await adminDb.update(partners).set({ currencyCode: 'GBP' }).where(eq(partners.id, env.partner.id));
 
-    // A legacy caller can still rename the category without altering old pricing.
+    // #6472: a retired field is rejected whole-request — the rename riding
+    // along with it does not land either, and the stored snapshot is untouched.
     const renamed = await patch({ name: 'renamed', defaultHourlyRate: 100 });
-    expect(renamed.status).toBe(200);
+    expect(renamed.status).toBe(400);
     const renamedBody = await renamed.json();
-    expect(renamedBody.deprecationWarnings).toContain('defaultHourlyRate');
-    expect(renamedBody.data).not.toHaveProperty('defaultHourlyRate');
-    expect(renamedBody.data).not.toHaveProperty('rateCurrency');
-    expect(await read()).toEqual({ name: 'renamed', defaultHourlyRate: '100.00', rateCurrency: 'USD' });
+    expect(renamedBody.error).toContain('defaultHourlyRate');
+    expect(renamedBody.error).toContain('billing profile');
+    expect(renamedBody).not.toHaveProperty('deprecationWarnings');
+    expect(await read()).toEqual({ name: 'Snapshot category', defaultHourlyRate: '100.00', rateCurrency: 'USD' });
 
-    // Changed and malformed legacy rates are both ignored in the grace release.
+    // Changed and malformed legacy rates are both rejected, never applied.
     for (const rate of [125, 'invalid']) {
       const repriced = await patch({ defaultHourlyRate: rate });
-      expect(repriced.status).toBe(200);
-      expect((await repriced.json()).deprecationWarnings).toContain('defaultHourlyRate');
-      expect(await read()).toEqual({ name: 'renamed', defaultHourlyRate: '100.00', rateCurrency: 'USD' });
+      expect(repriced.status).toBe(400);
+      expect((await repriced.json()).error).toContain('defaultHourlyRate');
+      expect(await read()).toEqual({ name: 'Snapshot category', defaultHourlyRate: '100.00', rateCurrency: 'USD' });
     }
+
+    // A clean rename still works and still leaves the historical pricing alone.
+    const clean = await patch({ name: 'renamed' });
+    expect(clean.status).toBe(200);
+    const cleanBody = await clean.json();
+    expect(cleanBody.data).not.toHaveProperty('defaultHourlyRate');
+    expect(cleanBody.data).not.toHaveProperty('rateCurrency');
+    expect(await read()).toEqual({ name: 'renamed', defaultHourlyRate: '100.00', rateCurrency: 'USD' });
   });
 });

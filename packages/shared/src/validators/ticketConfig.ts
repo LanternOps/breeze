@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { ticketPrioritySchema } from './tickets';
+import { retiredLabourPricingFields } from './retiredLabourPricing';
 
 // Ticketing-configuration validators (2026-06-12 spec). Shared between the API
 // routes (zValidator) and the web settings forms. The core status / priority
@@ -55,18 +56,15 @@ export const prioritySettingsSchema = z.object({
 });
 export type PrioritySettingsInput = z.infer<typeof prioritySettingsSchema>;
 
-// W02 grace release: recognize deprecated keys only to allow legacy-only PATCHes.
-// Their values are ignored and never appear in the parsed service input.
+// #6472: the retired pricing keys are declared so a stale caller gets an actionable
+// 400 naming the billing-profile replacement, never a 200 that discards the write.
 export const orgTicketSettingsSchema = z.object({
   slaOverrides: z.partialRecord(ticketPrioritySchema, z.object({
     responseMinutes: slaMinutes.optional(),
     resolutionMinutes: slaMinutes.optional()
   })).optional(),
-  defaultHourlyRate: z.unknown().optional(),
-  defaultBillable: z.unknown().optional(),
-  rateCurrency: z.unknown().optional()
-}).refine((v) => Object.keys(v).length > 0, { message: 'At least one field is required' })
-  .transform(({ defaultHourlyRate, defaultBillable, rateCurrency, ...settings }) => settings);
+  ...retiredLabourPricingFields('organization')
+}).refine((v) => Object.keys(v).length > 0, { message: 'At least one field is required' });
 export type OrgTicketSettingsInput = z.infer<typeof orgTicketSettingsSchema>;
 
 // Phase 5: sender-domain -> customer-org mapping. Free email providers are

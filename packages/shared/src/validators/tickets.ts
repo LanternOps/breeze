@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { TICKET_ATTACHMENT_LIMITS } from '../constants/ticketAttachments';
+import { retiredLabourPricingFields } from './retiredLabourPricing';
 
 export const ticketStatusSchema = z.enum(['new', 'open', 'pending', 'on_hold', 'resolved', 'closed']);
 export const ticketPrioritySchema = z.enum(['low', 'normal', 'high', 'urgent']);
@@ -191,7 +192,9 @@ export const listTicketsQuerySchema = z.object({
 });
 
 export const ticketCategoryInputSchema = z.object({
-  // Deprecated pricing keys are stripped; routes report their presence as warnings.
+  // #6472: retired pricing keys are declared and rejected with an actionable
+  // message — never silently stripped.
+  ...retiredLabourPricingFields('category'),
   name: z.string().min(1).max(100),
   color: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
   parentId: z.string().guid().nullable().optional(),
