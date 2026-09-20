@@ -217,6 +217,8 @@ Tools are the primary way AI clients interact with Breeze. Each tool maps to one
 |---|---|---|
 | `manage_alerts` | 1/2 | List, get, acknowledge, or resolve alerts. List/get are Tier 1; acknowledge/resolve are Tier 2. |
 | `manage_alert_rules` | 1/2/3 | Full alert rule lifecycle: list, get, create, update, delete rules; test rules; list notification channels; alert summary. Create/update are Tier 2; delete is Tier 3. |
+| `list_incidents` | 1 | List incidents by organization, status, severity, classification, assignee, or date range. |
+| `list_remediation_suggestions` | 1 | List remediation suggestions by organization, source, device, or status, limited to accessible devices. |
 
 ### Command and script execution
 
@@ -253,12 +255,20 @@ Tools are the primary way AI clients interact with Breeze. Each tool maps to one
 | `manage_maintenance_windows` | 1/2/3 | Maintenance windows: list, get, check active, create, update, delete. |
 | `manage_automations` | 1/2/3 | Automation lifecycle: list, get, history, create, update, delete, enable, disable, manual run. |
 | `generate_report` | 1/2 | Reports: list, generate, get report data, create/update/delete definitions, view history. |
+| `list_org_contacts` | 1 | List an organization's contacts by site or role, respecting organization and site access. |
+| `list_sites` | 1 | List accessible sites with device counts, optionally filtered by organization or name. |
+| `get_site` | 1 | Retrieve one accessible site's details by site ID. |
+| `list_ai_agents` | 1 | List accessible AI agents and their enabled state, optionally including disabled agents. |
+| `list_ai_agent_runs` | 1 | List recent accessible AI agent runs with status, verdict, and cost, filtered by agent or organization. |
+| `get_ai_agent_run` | 1 | Retrieve one accessible AI agent run's trace by run ID. |
 
 ### Network tools
 
 | Tool | Tier | Description |
 |---|---|---|
 | `network_discovery` | 3 | Initiate a network discovery scan from a device (ping, ARP, or full). |
+| `list_network_assets` | 1 | List discovered network assets by organization, site, approval status, asset type, or linked device. |
+| `get_network_asset` | 1 | Retrieve one accessible discovered network asset's identity, addresses, linked device, and last-seen details. |
 
 ### Diagnostic tools
 
@@ -283,6 +293,9 @@ Tools are the primary way AI clients interact with Breeze. Each tool maps to one
 | Tool | Tier | Description |
 |---|---|---|
 | `manage_tickets` | 1/2/3 | Full ticket lifecycle. List/get are Tier 1. Create, comment, assign, update status, update fields (subject, description, category, priority, due date, tags, device, submitter), link/unlink alerts, create a ticket from an alert, edit/delete comments, and time tracking (log time entry, start/stop timer) are Tier 2. Moving a ticket to a different organization is Tier 3. |
+| `list_time_entries` | 1 | List logged work by ticket, user, organization, dates, billing status, or approval. Requires partner or system scope; non-admins see their own entries. |
+| `get_running_timer` | 1 | Retrieve the caller's running time entry, or null when no timer is running. Requires partner or system scope and a user principal. |
+| `get_timesheet` | 1 | Retrieve a weekly timesheet. Requires partner or system scope and a user principal; another user's timesheet requires admin access. |
 
 ### Billing tools
 
