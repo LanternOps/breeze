@@ -1495,11 +1495,20 @@ async function handleToolsCall(
       // that branch on `isError` (as MCP intends) and the execution reports
       // both see the truth. The text block is unchanged: the client still
       // reads the tool's own redacted message.
-      const returnedError = pureReturnedToolError(safeResult);
+      //
+      // Classify on the RAW result as well as the redacted one. Today's
+      // compaction tiers truncate an oversized error message but keep the
+      // `{error}` shape, so safeResult alone would be enough; the raw check is
+      // defence-in-depth against the `{summarized:true,…}` digest fallback,
+      // which drops the top-level `error` key and would silently turn exactly
+      // the failures with the most to say back into successes. The recorded
+      // MESSAGE always comes from the redacted side, so nothing unredacted is
+      // persisted to the ledger or the audit log.
+      const returnedError = pureReturnedToolError(result) ?? pureReturnedToolError(safeResult);
       if (returnedError !== undefined) {
         return {
           status: 'failure',
-          error: new Error(returnedError),
+          error: new Error(pureReturnedToolError(safeResult) ?? safeResult),
           response: jsonRpcResult(id, { content: [{ type: 'text', text: safeResult }], isError: true }),
         };
       }

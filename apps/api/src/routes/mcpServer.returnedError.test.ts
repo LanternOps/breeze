@@ -240,6 +240,38 @@ describe('MCP tools/call returned-error signalling (#6408)', () => {
     expect(findToolExecutionAuditEvent().result).toBe('success');
   });
 
+  // An oversized error: compactToolResultForChat truncates the message but
+  // keeps the `{error}` shape (verified — the `{summarized:true,…}` digest
+  // fallback does NOT fire for this payload), so it still classifies as a
+  // failure and never ships verbatim. The raw-result half of the
+  // classification in mcpServer.ts is defence-in-depth against compaction
+  // tiers that could drop the `error` key; it is not what carries this case.
+  it('truncates an oversized pure returned error and still classifies it as a failure', async () => {
+    const huge = 'x'.repeat(20000);
+    const result = await callAndParse(JSON.stringify({ error: `Validation failed: ${huge}` }));
+
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toBeUndefined();
+    const text = result.content[0]!.text!;
+    expect(text.length).toBeLessThan(20000);
+    expect(typeof JSON.parse(text).error).toBe('string');
+
+    const event = findToolExecutionAuditEvent();
+    expect(event.result).toBe('failure');
+    expect(event.errorMessage).not.toContain(huge);
+  });
+
+  // Tier <3 tools create no execution ledger (this suite's get_invite_funnel is
+  // tier 1), and every Tier-3 MCP call is stopped by the unconditional
+  // approval gate BEFORE the ledger is created — so the audit event is the
+  // observable record here. Ledger and audit are both driven off the same
+  // `outcome.status` in finalizeTier3ToolLifecycle.
+  it('creates no execution ledger for a sub-tier-3 returned error', async () => {
+    await callAndParse(JSON.stringify({ error: 'Device not found' }));
+    expect(mocks.ledgerBegin).not.toHaveBeenCalled();
+    expect(mocks.ledgerComplete).not.toHaveBeenCalled();
+  });
+
   it.each(['plain text failure', '"error"', '[{"error":"x"}]', '{"error":123}'])(
     'leaves a non-pure-error payload as a success: %s',
     async (text) => {
