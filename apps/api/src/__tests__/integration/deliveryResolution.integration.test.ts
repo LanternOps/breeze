@@ -33,6 +33,7 @@ import { channelsRoutes } from '../../routes/alerts/channels';
 import { routingRoutes } from '../../routes/alerts/routing';
 import { policiesRoutes } from '../../routes/alerts/policies';
 import { createOrganization, createPartner, createUser } from './db-utils';
+import { PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../../services/partnerWideAccess';
 import { listEscalationUsers } from '../../services/delivery/escalationExecution';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
@@ -482,14 +483,15 @@ describe('full W05b gate — dispatch ⇄ resolver ⇄ GET preview', () => {
   runDb('org HTTP writes cannot create partner channels, routing rows or escalation policies (403)', async () => {
     const f = await seedFixture();
     const attempts = [
-      { path: '/alerts/channels', body: { name: 'Forbidden', type: 'slack', config: {}, ownerScope: 'partner' } },
-      { path: '/alerts/routing-rules', body: { name: 'Forbidden', conditions: {}, channelIds: [f.partnerChannel], ownerScope: 'partner' } },
+      { path: '/alerts/channels', body: { name: 'Forbidden', type: 'slack', config: { webhookUrl: 'https://hooks.slack.example/forbidden' }, ownerScope: 'partner' } },
+      { path: '/alerts/routing-rules', body: { name: 'Forbidden', priority: 10, conditions: {}, channelIds: [f.partnerChannel], ownerScope: 'partner' } },
       { path: '/alerts/policies', body: { name: 'Forbidden', steps: [{ delayMinutes: 5, channelIds: [f.partnerChannel] }], ownerScope: 'partner' } },
     ];
     for (const { path, body } of attempts) {
       const response = await requestAsOrg(f, path, { method: 'POST',
         headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-      expect(response.status).toBe(403);
+      expect(response.status, path).toBe(403);
+      expect(await response.json(), path).toEqual({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
     }
   });
 

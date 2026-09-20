@@ -84,6 +84,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'get_compliance_status', description: 'Device-level compliance status', category: 'Security & Compliance' },
       // Alerts & Notifications
       { name: 'manage_alerts (list/get)', description: 'View alerts', category: 'Alerts & Notifications' },
+      { name: 'manage_delivery (resolve/list_routing/list_escalation)', description: 'Preview alert delivery and view routing rules and escalation policies', category: 'Alerts & Notifications' },
       { name: 'manage_notification_channels (list)', description: 'List notification channels', category: 'Alerts & Notifications' },
       { name: 'manage_alert_rules (list_rules/get_rule/test_rule)', description: 'View alert rules', category: 'Alerts & Notifications' },
       // Files, Disk & Registry
@@ -163,6 +164,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_alerts (acknowledge)', description: 'Acknowledge alerts', category: 'Alerts & Notifications' },
       { name: 'manage_alerts (resolve)', description: 'Resolve alerts', category: 'Alerts & Notifications' },
       { name: 'manage_alerts (suppress)', description: 'Suppress alerts temporarily', category: 'Alerts & Notifications' },
+      { name: 'manage_delivery (create_routing/update_routing/delete_routing/set_default/create_escalation/update_escalation/delete_escalation)', description: 'Manage alert routing, default destinations, and escalation policies (requires MFA)', category: 'Alerts & Notifications' },
       { name: 'manage_notification_channels (test)', description: 'Test notification channel', category: 'Alerts & Notifications' },
       // Monitoring & Analytics (#5290 W03)
       { name: 'get_monitor_activity', description: 'Per-device breach state and recent breach episodes for a monitor', category: 'Monitoring & Analytics' },
