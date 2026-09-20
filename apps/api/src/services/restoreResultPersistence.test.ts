@@ -33,6 +33,7 @@ vi.mock('../db/schema', () => ({
 
 import {
   buildRestoreResultMetadata,
+  deriveRestoreStatus,
   updateRestoreJobFromResult,
 } from './restoreResultPersistence';
 
@@ -178,5 +179,22 @@ describe('restore result persistence', () => {
         },
       },
     }));
+  });
+});
+
+// The rebuild engine reports a preflight refusal as a COMPLETED command whose
+// payload status is 'refused' (nothing was written). It must never surface in
+// restore_jobs as a successful restore.
+describe('deriveRestoreStatus', () => {
+  it.each([
+    ['completed', 'refused', 'failed'],
+    ['completed', 'failed', 'failed'],
+    ['completed', 'partial', 'partial'],
+    ['completed', 'degraded', 'partial'],
+    ['completed', 'completed', 'completed'],
+    ['completed', undefined, 'completed'],
+    ['failed', 'completed', 'failed'],
+  ] as const)('command %s + payload %s → %s', (command, payload, want) => {
+    expect(deriveRestoreStatus(command, payload)).toBe(want);
   });
 });

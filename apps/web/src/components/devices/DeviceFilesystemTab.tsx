@@ -13,6 +13,7 @@ import { useFilesystemSnapshot } from './filesystem/useFilesystemSnapshot';
 import { CommandPollAbortedError, useCommandPoll } from './filesystem/useCommandPoll';
 import SnapshotPanels from './filesystem/SnapshotPanels';
 import CleanupPanel from './filesystem/CleanupPanel';
+import SystemCleanupPanel from './filesystem/SystemCleanupPanel';
 import CleanupRunHistory from './filesystem/CleanupRunHistory';
 import type { FilesystemCleanupPreview } from './filesystem/filesystemTabUtils';
 
@@ -23,7 +24,7 @@ import type { FilesystemCleanupPreview } from './filesystem/filesystemTabUtils';
  * finished the job lived in File Manager, re-derived its own candidates, and
  * posted no `cleanupRunId`. It is now a composer over `./filesystem/` —
  * volume picker (W02) → scan controls → snapshot panels → cleanup panel →
- * run history — and every piece is independently tested.
+ * system cleanup panel → run history — and every piece is independently tested.
  */
 
 type DeviceFilesystemTabProps = {
@@ -297,6 +298,11 @@ export default function DeviceFilesystemTab({
         preview={preview}
         onExecuted={onExecuted}
       />
+
+      {/* OS-native cleaners (Disk Cleanup v2 §8). A SECOND engine on the same
+          surface: it is not path-scoped, so it deliberately sits below the
+          volume-scoped panels and does not react to the volume chips. */}
+      <SystemCleanupPanel deviceId={deviceId} />
 
       <CleanupRunHistory deviceId={deviceId} refreshToken={historyToken} />
     </div>

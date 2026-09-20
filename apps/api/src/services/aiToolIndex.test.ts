@@ -1,9 +1,45 @@
+import { AI_SYSTEM_PROMPT_BASE, AI_SYSTEM_PROMPT_TAIL } from './aiAgentSystemPrompt';
 import { describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { AI_TOOL_DOMAINS, AI_TOOL_DOMAIN_LABELS } from '@breeze/shared';
 import './aiTools'; // populates the registry
 import { getAllRegisteredToolNames } from './aiTools';
 import { buildBreezeSdkTools, listChatSurfaceToolNames } from './aiAgentSdkTools';
-import { DOMAIN_NOTES, listToolIndex, renderToolIndexByDomain } from './aiToolIndex';
+import { composeStaticSystemPrompt, DOMAIN_NOTES, listToolIndex, renderToolIndexByDomain } from './aiToolIndex';
+
+const COVERAGE_BURNDOWN_TOOLS = [
+  ['Tickets & time', 'list_time_entries'],
+  ['Tickets & time', 'get_running_timer'],
+  ['Tickets & time', 'get_timesheet'],
+  ['Accounts', 'list_org_contacts'],
+  ['Accounts', 'list_sites'],
+  ['Accounts', 'get_site'],
+  ['Monitoring & alerts', 'list_incidents'],
+  ['Monitoring & alerts', 'list_remediation_suggestions'],
+  ['Network', 'list_network_assets'],
+  ['Network', 'get_network_asset'],
+  ['AI agents', 'list_ai_agents'],
+  ['AI agents', 'list_ai_agent_runs'],
+  ['AI agents', 'get_ai_agent_run'],
+] as const;
+
+describe('A-W06 tool discoverability', () => {
+  it.each(COVERAGE_BURNDOWN_TOOLS)('renders %s tool %s under its domain', (label, name) => {
+    const text = renderToolIndexByDomain(listChatSurfaceToolNames());
+    const line = text.split('\n').find((entry) => entry.startsWith(`- **${label}**: `));
+    expect(line?.slice(`- **${label}**: `.length).split(', ')).toContain(name);
+  });
+
+  it('documents all 13 tools exactly once as Tier 1 table rows', () => {
+    const docs = readFileSync(new URL('../../../docs/src/content/docs/features/mcp-server.mdx', import.meta.url), 'utf8');
+    const rows = docs.split('\n').filter((line) => line.startsWith('| `'));
+    const missingOrIncorrect = COVERAGE_BURNDOWN_TOOLS.map(([, name]) => name).filter((name) => {
+      const matches = rows.filter((row) => row.startsWith(`| \`${name}\` |`));
+      return matches.length !== 1 || !matches[0]?.startsWith(`| \`${name}\` | 1 | `);
+    });
+    expect(missingOrIncorrect, 'missing, duplicate, or incorrectly tiered A-W06 documentation rows').toEqual([]);
+  });
+});
 
 describe('renderToolIndexByDomain (A-W02)', () => {
   const names = listChatSurfaceToolNames();
@@ -100,4 +136,11 @@ describe('the generated index tracks env-gated tool declarations (A-W02 review f
       vi.unstubAllEnvs();
     }
   });
+});
+
+// Preserve the exact static prefix previously assembled inline by buildSystemPrompt.
+it('composes byte-identically to the original production static prompt', () => {
+  const names = listChatSurfaceToolNames();
+  const original = [AI_SYSTEM_PROMPT_BASE, renderToolIndexByDomain(names), AI_SYSTEM_PROMPT_TAIL].join('\n');
+  expect(Buffer.from(composeStaticSystemPrompt(names))).toEqual(Buffer.from(original));
 });

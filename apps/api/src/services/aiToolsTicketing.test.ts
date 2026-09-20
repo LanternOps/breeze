@@ -45,6 +45,12 @@ vi.mock('./ticketChecklistService', async () => {
   return { ...actual, ...checklistMocks };
 });
 
+const billingPermissionMocks = vi.hoisted(() => ({ getUserPermissions: vi.fn() }));
+vi.mock('./permissions', async () => ({
+  ...await vi.importActual<typeof import('./permissions')>('./permissions'),
+  getUserPermissions: billingPermissionMocks.getUserPermissions,
+}));
+
 // Mutable handle so individual tests can override the limit() return value
 // (typed as returning unknown[] so mockResolvedValue(TICKET_ROW) compiles),
 // plus shared spies so the site-scope tests can assert on (a) how many
@@ -953,4 +959,54 @@ describe('work types in the ticketing tool', () => {
     const result = toolInputSchemas.manage_tickets!.safeParse({ ...timeInput, action: 'log_time_entry', workType: 'On-site' });
     expect(result).toMatchObject({ success: true, data: { workType: 'On-site' } });
   });
+});
+
+
+describe('billing override actor plumbing', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    billingPermissionMocks.getUserPermissions.mockResolvedValue({ permissions: [] });
+  });
+  it.each([false, true])('AI and approved worker proposals both pass manageBilling=%s', async manageBilling => {
+    billingPermissionMocks.getUserPermissions.mockResolvedValue({ permissions: manageBilling
+      ? [{ resource: 'time_entries', action: 'manage_billing' }] : [] });
+    timeEntryMocks.createTimeEntry.mockResolvedValue({ id: 'te-1' });
+    for (const context of [undefined, { approverRelease: { approverUserId: auth.user.id } }]) {
+      await getTool().handler({ action: 'log_time_entry', startedAt: '2026-06-11T09:00:00Z',
+        endedAt: '2026-06-11T09:30:00Z', hourlyRate: 999 }, auth, context);
+      expect(timeEntryMocks.createTimeEntry.mock.calls.at(-1)?.[1]).toMatchObject({ manageBilling });
+    }
+  });
+  it('system tools cannot override even with a platform-shaped user and wildcard permissions', async () => {
+    billingPermissionMocks.getUserPermissions.mockResolvedValue({ permissions: [{ resource: '*', action: '*' }] });
+    timeEntryMocks.createTimeEntry.mockResolvedValue({ id: 'te-1' });
+    await getTool().handler({ action: 'log_time_entry', startedAt: '2026-06-11T09:00:00Z',
+      endedAt: '2026-06-11T09:30:00Z', hourlyRate: 999 }, {
+      ...auth, principal: { kind: 'system', reason: 'worker' }, user: { ...auth.user, isPlatformAdmin: true },
+    });
+    expect(timeEntryMocks.createTimeEntry.mock.calls[0]?.[1]).toMatchObject({ manageBilling: false });
+    expect(billingPermissionMocks.getUserPermissions).not.toHaveBeenCalled();
+  });
+});
+
+
+// Exercise the real service gate behind the route/tool actor, with only the
+// org link and card lookup controlled. No database writes should be reached.
+vi.mock('./billingProfileService', () => ({
+  loadCardsForOrg: vi.fn(async () => ({ assignedCard: null, partnerDefaultCard: {
+    id: 'card-1', currencyCode: 'USD', roundingIncrementMinutes: null,
+    baseCoverage: 'billable', baseHourlyRate: '225.00', baseMinimumMinutes: null, rules: [],
+  } })),
+}));
+
+it.each([false, true])('AI tool (approved worker release=%s) refuses an off-card rate through the real service', async released => {
+  billingPermissionMocks.getUserPermissions.mockResolvedValue({ permissions: [] });
+  const actual = await vi.importActual<typeof import('./timeEntryService')>('./timeEntryService');
+  timeEntryMocks.createTimeEntry.mockImplementation((input, actor) => actual.createTimeEntry(input, actor, {
+    source: released ? 'ai_suggested' : 'manual', orgLink: { orgId: 'org-1', currencyCode: 'USD' },
+  }));
+  const result = await getTool().handler({ action: 'log_time_entry', startedAt: '2026-06-11T09:00:00Z',
+    endedAt: '2026-06-11T09:30:00Z', hourlyRate: 999 }, auth,
+    released ? { approverRelease: { approverUserId: auth.user.id } } : undefined);
+  expect(JSON.parse(result)).toEqual({ error: 'Changing billing terms requires manage billing permission' });
 });

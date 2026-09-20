@@ -20,6 +20,7 @@ const {
     orgReadDepths: [] as number[],
     deviceReadDepths: [] as number[],
     addBulkDepths: [] as number[],
+    networkCheckReadDepths: [] as number[],
     // Every operation the #1105 guard was consulted for. Asserting this is
     // non-empty is what pins the queue to createInstrumentedQueue — checking
     // only `tripwireViolations` would pass just as happily against a bare
@@ -150,6 +151,19 @@ vi.mock('../services/bullmqUtils', () => ({
   isReusableState: vi.fn(() => false)
 }));
 
+const { networkCheckOrgIdsMock, evaluateNetworkCheckAlertsForOrgMock } = vi.hoisted(() => ({
+  networkCheckOrgIdsMock: vi.fn(async () => [] as string[]),
+  evaluateNetworkCheckAlertsForOrgMock: vi.fn(),
+}));
+
+vi.mock('../services/monitors/networkCheckAlertSweep', () => ({
+  selectNetworkCheckOrgIds: (...args: unknown[]) => {
+    ctx.networkCheckReadDepths.push(ctx.depth);
+    return networkCheckOrgIdsMock(...(args as []));
+  },
+  evaluateNetworkCheckAlertsForOrg: evaluateNetworkCheckAlertsForOrgMock,
+}));
+
 import { createAlertWorker, processEvaluateAll, triggerFullEvaluation } from './alertWorker';
 
 const resetCtx = () => {
@@ -157,6 +171,7 @@ const resetCtx = () => {
   ctx.orgReadDepths.length = 0;
   ctx.deviceReadDepths.length = 0;
   ctx.addBulkDepths.length = 0;
+  ctx.networkCheckReadDepths.length = 0;
   ctx.tripwireCalls.length = 0;
   ctx.tripwireViolations.length = 0;
 };
@@ -337,6 +352,87 @@ describe('alertWorker evaluate-all #1105 DB-context scoping', () => {
 
     // evaluate-device does its own reads AND writes; it keeps the wrapper.
     expect(seenDepths).toEqual([1]);
+  });
+});
+
+// #6353 — a network_check has ONE verdict per org, so the sweep must enqueue
+// one device-independent job per org that runs a managed check, alongside (not
+// instead of) the per-device fan-out.
+describe('alertWorker evaluate-all network_check fan-out (#6353)', () => {
+  beforeEach(() => {
+    fleetState.fleet = [];
+    fleetState.chunkCalls = 0;
+    resetCtx();
+    workerState.processor = null;
+    addBulkMock.mockClear();
+    networkCheckOrgIdsMock.mockReset();
+    networkCheckOrgIdsMock.mockResolvedValue([]);
+    evaluateNetworkCheckAlertsForOrgMock.mockReset();
+    vi.spyOn(console, 'warn').mockImplementation(warnSpy);
+    vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    delete process.env.ALERT_WORKER_MAX_DEVICES_PER_RUN;
+    delete process.env.ALERT_WORKER_CHUNK_SIZE;
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('enqueues one evaluate-network-checks job per org with a managed check, read inside a context and enqueued outside it', async () => {
+    fleetState.fleet = buildFleet(10);
+    networkCheckOrgIdsMock.mockResolvedValue(['org-1', 'org-2']);
+
+    const result = await processEvaluateAll({ type: 'evaluate-all' });
+
+    expect(result.queued).toBe(10);
+    expect(result.networkCheckOrgsQueued).toBe(2);
+    // Device page + network-check page: two addBulk calls, both outside any context.
+    expect(addBulkMock).toHaveBeenCalledTimes(2);
+    expect(ctx.addBulkDepths).toEqual([0, 0]);
+    expect(ctx.tripwireViolations).toEqual([]);
+    const [jobs] = addBulkMock.mock.calls[1] as unknown as [{ name: string; data: { type: string; orgId: string } }[]];
+    expect(jobs).toEqual([
+      { name: 'evaluate-network-checks', data: { type: 'evaluate-network-checks', orgId: 'org-1' } },
+      { name: 'evaluate-network-checks', data: { type: 'evaluate-network-checks', orgId: 'org-2' } },
+    ]);
+    // The org read ran inside a short system context, like every other read here.
+    expect(ctx.networkCheckReadDepths).toEqual([1]);
+    expect(ctx.depth).toBe(0);
+  });
+
+  it('enqueues the network-check jobs even when NO device is online — that is the whole point', async () => {
+    fleetState.fleet = [];
+    networkCheckOrgIdsMock.mockResolvedValue(['org-1']);
+
+    const result = await processEvaluateAll({ type: 'evaluate-all' });
+
+    expect(result.queued).toBe(0);
+    expect(result.networkCheckOrgsQueued).toBe(1);
+    expect(addBulkMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('adds no network-check job when no org runs a managed check', async () => {
+    fleetState.fleet = buildFleet(3);
+
+    const result = await processEvaluateAll({ type: 'evaluate-all' });
+
+    expect(result.networkCheckOrgsQueued).toBe(0);
+    expect(addBulkMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('runs evaluate-network-checks inside a system DB context, like evaluate-device', async () => {
+    createAlertWorker();
+    const seenDepths: number[] = [];
+    evaluateNetworkCheckAlertsForOrgMock.mockImplementation(async (orgId: string) => {
+      seenDepths.push(ctx.depth);
+      return { orgId, checks: 1, devicesEvaluated: 1, checksWithoutDevice: 0, staleEpisodesDetached: 0, alertIds: ['a-1'] };
+    });
+
+    const result = await workerState.processor!({ data: { type: 'evaluate-network-checks', orgId: 'org-1' } });
+
+    expect(evaluateNetworkCheckAlertsForOrgMock).toHaveBeenCalledWith('org-1');
+    expect(seenDepths).toEqual([1]);
+    expect(result).toMatchObject({ orgId: 'org-1', alertsCreated: 1 });
   });
 });
 

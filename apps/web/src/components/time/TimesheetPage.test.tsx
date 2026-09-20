@@ -1,6 +1,9 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 
+let canManageBilling = true;
+vi.mock('../../lib/permissions', () => ({ usePermissions: () => ({ can: () => canManageBilling }) }));
+beforeEach(() => { canManageBilling = true; });
 const fetchWithAuth = vi.fn();
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: (...a: unknown[]) => fetchWithAuth(...a) }));
 const showToast = vi.fn();
@@ -143,16 +146,18 @@ describe('TimesheetPage', () => {
     });
   });
 
-  it('edits an unbilled entry with the full body (description, isBillable, hourlyRate)', async () => {
+  it('sends only changed billing overrides for an unbilled entry', async () => {
     render(<TimesheetPage />);
     fireEvent.click(await screen.findByTestId('timesheet-edit-te-1'));
     expect((screen.getByTestId('timesheet-edit-rate-te-1') as HTMLInputElement).disabled).toBe(false);
+    expect(screen.getByTestId('timesheet-edit-rate-te-1')).toHaveProperty('readOnly', false);
     fireEvent.change(screen.getByTestId('timesheet-edit-rate-te-1'), { target: { value: '120' } });
+    expect(screen.getByTestId('timesheet-edit-outcome-te-1')).toHaveTextContent('€120.00/h');
     fireEvent.click(screen.getByTestId('timesheet-edit-save-te-1'));
     await waitFor(() => {
       const call = fetchWithAuth.mock.calls.find((a) => a[0] === '/time-entries/te-1' && (a[1] as RequestInit)?.method === 'PATCH');
       expect(call).toBeTruthy();
-      expect(JSON.parse((call![1] as RequestInit).body as string)).toEqual({ description: 'patching', isBillable: true, hourlyRate: 120 });
+      expect(JSON.parse((call![1] as RequestInit).body as string)).toEqual({ description: 'patching', hourlyRate: 120 });
     });
   });
 
@@ -230,4 +235,34 @@ it('MOUNT: displays an archived row label and can explicitly clear it', async ()
     expect(call).toBeTruthy();
     expect(JSON.parse(call![1].body).workTypeId).toBeNull();
   });
+});
+
+
+it('shows the billing outcome and prevents unauthorized billing overrides', async () => {
+  canManageBilling = false;
+  render(<TimesheetPage />);
+  expect(await screen.findByTestId('timesheet-outcome-te-1')).toHaveTextContent('€100.00');
+  fireEvent.click(screen.getByTestId('timesheet-edit-te-1'));
+  expect(screen.getByTestId('timesheet-edit-rate-te-1')).toHaveProperty('readOnly', true);
+  expect(screen.getByTestId('timesheet-edit-billable-te-1')).toBeDisabled();
+  fireEvent.click(screen.getByTestId('timesheet-edit-save-te-1'));
+  await waitFor(() => expect(fetchWithAuth.mock.calls.some(([url, init]) => url === '/time-entries/te-1' && init?.method === 'PATCH')).toBe(true));
+  const body = JSON.parse(fetchWithAuth.mock.calls.find(([url, init]) => url === '/time-entries/te-1' && init?.method === 'PATCH')![1].body);
+  expect(body).not.toHaveProperty('hourlyRate');
+  expect(body).not.toHaveProperty('isBillable');
+});
+
+
+it('preserves an overridden outcome when the work type changes', async () => {
+  fetchWithAuth.mockImplementation(async (url: string) => {
+    if (url.startsWith('/time-entries/timesheet')) return jsonRes({ ...week, days: [{ ...week.days[0], entries: [{ ...entry, billingOverridden: true }] }, ...week.days.slice(1)] });
+    if (url === '/billing-profiles/work-types') return { ok: true, json: async () => ({ workTypes: [{ id: 'wt-2', name: 'On-site', isActive: true }] }) } as Response;
+    return jsonRes([]);
+  });
+  render(<TimesheetPage />);
+  fireEvent.click(await screen.findByTestId('timesheet-edit-te-1'));
+  await waitFor(() => expect(screen.getByTestId('timesheet-edit-work-type').querySelector('option[value="wt-2"]')).not.toBeNull());
+  fireEvent.change(screen.getByTestId('timesheet-edit-work-type'), { target: { value: 'wt-2' } });
+  expect(screen.getByTestId('timesheet-edit-outcome-te-1')).toHaveTextContent('€100.00/h');
+  expect(screen.getByTestId('timesheet-edit-outcome-te-1')).not.toHaveTextContent('recalculated');
 });

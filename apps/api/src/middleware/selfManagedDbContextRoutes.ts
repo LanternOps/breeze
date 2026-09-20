@@ -28,6 +28,19 @@ interface SelfManagedRoute {
 }
 
 const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
+  // Disk Cleanup v2 W04 (spec §13 #5). `startSystemCleanupRun` claims the run
+  // in a SHORT COMMITTED transaction, dispatches the command outside any
+  // transaction, and finalises in a second one. Under the auth middleware's
+  // ambient request transaction none of that works: the `running` row a
+  // concurrent request just wrote is invisible (so the single-run-per-device
+  // check passes twice), a crash after the agent began deleting rolls the
+  // claim away, and the websocket push happens before the commit — the agent
+  // can answer a run row that does not exist yet.
+  { method: 'POST', pattern: /^\/api\/v1\/devices\/[^/]+\/filesystem\/system-cleanup\/run\/?$/ },
+  // Same reasoning, smaller blast radius: the list route queues a command
+  // (and therefore pushes over the socket) and writes only an audit, which
+  // manages its own context.
+  { method: 'POST', pattern: /^\/api\/v1\/devices\/[^/]+\/filesystem\/system-cleanup\/list\/?$/ },
   // Commit source changes and record the audit before enqueueing discovery.
   { method: 'POST', pattern: /^\/api\/v1\/tool-sources\/?$/ },
   { method: 'PATCH', pattern: /^\/api\/v1\/tool-sources\/[^/]+\/?$/ },

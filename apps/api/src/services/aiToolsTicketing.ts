@@ -39,6 +39,9 @@ import {
   type UpdateTicketFieldsInput
 } from './ticketService';
 import {
+  listTimeEntries,
+  getRunningTimer,
+  getTimesheet,
   createTimeEntry,
   startTimer,
   stopTimer,
@@ -47,6 +50,7 @@ import {
 import { findStatusByName, listActiveStatusNames } from './ticketConfigService';
 import { TicketMoveCurrencyBlockedError } from './ticketMoveCurrencyGuard';
 import { getUserPermissions, hasPermission, PERMISSIONS } from './permissions';
+import { canManageTimeEntryBilling } from './timeEntryBillingPermission';
 import { listChecklist } from './ticketChecklistService';
 import { listWorkTypes } from './workTypeService';
 
@@ -127,14 +131,21 @@ function serviceErrorToJson(err: unknown): string | null {
   return null;
 }
 
-function timeEntryActorFrom(auth: AuthContext) {
+async function timeEntryActorFrom(auth: AuthContext) {
+  const userBacked = auth.principal?.kind === 'user_session' || auth.principal?.kind === 'oauth_grant';
+  const permissions = userBacked && !auth.user.isPlatformAdmin ? await getUserPermissions(auth.user.id, {
+    partnerId: auth.partnerId ?? undefined,
+    orgId: auth.orgId ?? undefined,
+    scope: auth.scope,
+  }) : null;
   return {
     userId: auth.user.id,
     name: auth.user.name,
     partnerId: auth.partnerId,
     accessibleOrgIds: auth.accessibleOrgIds,
     // AI tools always operate on the calling user's own entries — never admin-manage others'.
-    manageAll: false as const
+    manageAll: false as const,
+    manageBilling: canManageTimeEntryBilling(auth, permissions),
   };
 }
 
@@ -328,7 +339,102 @@ function parseAlertOverrides(value: unknown): ParseResult<Partial<Pick<CreateTic
   return { value: overrides };
 }
 
+const TIME_BILLING_STATUSES = ['not_billed', 'billed', 'no_charge', 'contract'] as const;
+
+function timeScopeRefusal(auth: AuthContext): string | null {
+  // GET /time-entries is requireScope('partner','system') (timeEntries.ts:23) — no org axis on time_entries (spec D4).
+  return auth.scope === 'partner' || auth.scope === 'system' ? null
+    : JSON.stringify({ error: 'Time entries are readable with a partner or system token only', code: 'PARTNER_SCOPE_REQUIRED' });
+}
+/** Stricter than timeActorFrom: wildcard grants are unavailable here; only platform admins manage other users. */
+const managesAllTime = (auth: AuthContext) => auth.user?.isPlatformAdmin === true;
+const orgAllowlist = (auth: AuthContext): string[] | null => (auth.scope === 'system' ? null : (auth.accessibleOrgIds ?? []));
+
+function jsonError(error: string): string {
+  return JSON.stringify({ error });
+}
+
 export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
+  aiTools.set('list_time_entries', {
+    tier: 1 as AiToolTier,
+    domain: 'tickets',
+    searchHint: 'logged time, time entries, timesheet hours by ticket, user or customer; billable vs unbilled',
+    deviceArgs: [],
+    definition: {
+      name: 'list_time_entries',
+      description: 'List time entries (logged work) with ticket, user, duration, billable flag and billing status. Filters: ticket, user, organization, date range, running, approval. Read-back for manage_tickets log_time_entry/start_timer/stop_timer.',
+      input_schema: {
+        type: 'object' as const,
+        properties: {
+          orgId: { type: 'string', description: 'Organization UUID' },
+          ticketId: { type: 'string', description: 'Ticket UUID' },
+          userId: { type: 'string', description: 'User UUID (admins only; others always see their own)' },
+          from: { type: 'string', description: 'ISO-8601 start (inclusive)' },
+          to: { type: 'string', description: 'ISO-8601 end (exclusive)' },
+          running: { type: 'boolean', description: 'Only entries with no end time' },
+          billingStatus: { type: 'string', enum: [...TIME_BILLING_STATUSES], description: 'Billing status: not_billed, billed, no_charge, contract' },
+          approved: { type: 'boolean' },
+          limit: { type: 'number', description: 'Max rows (default 50, max 200)' },
+          offset: { type: 'number', description: 'Rows to skip (default 0)' },
+        },
+        required: [],
+      },
+    },
+    handler: async (input, auth) => {
+      const refusal = timeScopeRefusal(auth); if (refusal) return refusal;
+      if (!auth.user?.id) return jsonError('list_time_entries requires a user session');
+      const orgId = typeof input.orgId === 'string' ? input.orgId : undefined;
+      if (orgId && !auth.canAccessOrg(orgId)) return jsonError('Access to this organization denied');
+      const limit = Math.min(Math.max(1, Number(input.limit) || 50), 200);
+      const offset = Math.max(0, Number(input.offset) || 0);
+      const parseDate = (v: unknown) => (typeof v === 'string' && !Number.isNaN(Date.parse(v)) ? new Date(v) : undefined);
+      try {
+        const { entries, total } = await listTimeEntries({
+          userId: managesAllTime(auth) ? (typeof input.userId === 'string' ? input.userId : undefined) : auth.user?.id,
+          ticketId: typeof input.ticketId === 'string' ? input.ticketId : undefined,
+          orgId,
+          accessibleOrgIds: orgAllowlist(auth),
+          from: parseDate(input.from), to: parseDate(input.to),
+          running: typeof input.running === 'boolean' ? input.running : undefined,
+          billingStatus: TIME_BILLING_STATUSES.includes(input.billingStatus as never) ? (input.billingStatus as (typeof TIME_BILLING_STATUSES)[number]) : undefined,
+          approved: typeof input.approved === 'boolean' ? input.approved : undefined,
+          limit, offset,
+        });
+        return JSON.stringify({ entries, total, limit, offset });
+      } catch (err) { console.error('[list_time_entries]', err); return jsonError('Operation failed. Check server logs for details.'); }
+    },
+  });
+
+  aiTools.set('get_running_timer', {
+    tier: 1 as AiToolTier, domain: 'tickets', searchHint: 'is my timer running, current running time entry, what am I clocked on', deviceArgs: [],
+    definition: { name: 'get_running_timer', description: 'Return the caller\'s currently running time entry (started, no end time), or null. Read-back for manage_tickets start_timer.', input_schema: { type: 'object' as const, properties: {}, required: [] } },
+    handler: async (_input, auth) => {
+      const refusal = timeScopeRefusal(auth); if (refusal) return refusal;
+      if (!auth.user?.id) return jsonError('get_running_timer requires a user session');
+      try { return JSON.stringify({ running: (await getRunningTimer(auth.user.id)) ?? null }); }
+      catch (err) { console.error('[get_running_timer]', err); return jsonError('Operation failed. Check server logs for details.'); }
+    },
+  });
+
+  aiTools.set('get_timesheet', {
+    tier: 1 as AiToolTier, domain: 'tickets', searchHint: 'weekly timesheet, hours per day this week, billable totals for a technician', deviceArgs: [],
+    definition: {
+      name: 'get_timesheet',
+      description: 'Weekly timesheet for one user: per-day entries and totals (total minutes, billable minutes, billable amounts by currency). Other users\' sheets need an admin.',
+      input_schema: { type: 'object' as const, properties: { weekStart: { type: 'string', description: 'ISO date of the week start (e.g. 2026-09-14)' }, userId: { type: 'string', description: 'User UUID (admins only)' } }, required: ['weekStart'] },
+    },
+    handler: async (input, auth) => {
+      const refusal = timeScopeRefusal(auth); if (refusal) return refusal;
+      if (!auth.user?.id) return jsonError('get_timesheet requires a user session');
+      const weekStart = typeof input.weekStart === 'string' ? new Date(input.weekStart) : new Date(NaN);
+      if (Number.isNaN(weekStart.getTime())) return jsonError('weekStart must be an ISO-8601 date');
+      const target = typeof input.userId === 'string' ? input.userId : auth.user.id;
+      if (target !== auth.user.id && !managesAllTime(auth)) return jsonError('Viewing other timesheets requires an admin role');
+      try { return JSON.stringify({ timesheet: await getTimesheet(target, weekStart, orgAllowlist(auth)) }); }
+      catch (err) { console.error('[get_timesheet]', err); return jsonError('Operation failed. Check server logs for details.'); }
+    },
+  });
+
   aiTools.set('manage_tickets', {
     tier: 1 as AiToolTier,
     deviceArgs: ['deviceId'],
@@ -481,7 +587,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
           },
           hourlyRate: {
             type: 'number',
-            description: 'Override hourly rate in the ticket organization\'s currency (log_time_entry; defaults from org/category settings only when their rate currency matches the org)'
+            description: 'Override hourly rate in the ticket organization\'s currency (log_time_entry; defaults from the resolved billing profile; overrides require time_entries:manage_billing)'
           }
         },
         required: ['action']
@@ -1069,7 +1175,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
               isBillable: typeof input.isBillable === 'boolean' ? input.isBillable : undefined,
               hourlyRate: typeof input.hourlyRate === 'number' ? input.hourlyRate : undefined
             },
-            timeEntryActorFrom(auth),
+            await timeEntryActorFrom(auth),
             // Provenance: a released AI proposal is `ai_suggested` (#4177) so
             // invoiceAssembly / time-saved reporting can tell it apart; a
             // human's own tool call stays the column default.
@@ -1101,7 +1207,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
               ticketId: input.ticketId ? String(input.ticketId) : undefined,
               description: input.description ? String(input.description) : undefined
             },
-            timeEntryActorFrom(auth)
+            await timeEntryActorFrom(auth)
           );
           return JSON.stringify({ timeEntry: entry, currencyCode: entryCurrency(entry) });
         } catch (err) {
@@ -1127,7 +1233,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
               description: input.description ? String(input.description) : undefined,
               isBillable: typeof input.isBillable === 'boolean' ? input.isBillable : undefined
             },
-            timeEntryActorFrom(auth)
+            await timeEntryActorFrom(auth)
           );
           return JSON.stringify({ timeEntry: entry, currencyCode: entryCurrency(entry) });
         } catch (err) {

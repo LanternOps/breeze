@@ -42,6 +42,7 @@ export * from './agentVersionPins';
 export * from './enrollmentDefaults';
 export * from './softwareDetection';
 export * from './softwareDownloadPolicy';
+export * from './systemCleanup';
 export * from './psa';
 export * from './deviceRoles';
 export * from './deviceFunctions';
@@ -1183,3 +1184,5 @@ export * from './topologyConfiguration';
 export * from './topologyDiagnostics';
 
 export { canonicalizeTopologyContext, canonicalizeTopologySection } from './topologyCollectionCanonical';
+
+export * from './billingProfiles';

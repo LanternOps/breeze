@@ -1,3 +1,4 @@
+// W04: Delete this legacy-column constraint/backfill suite when the six pricing columns are dropped.
 /**
  * Backfill anomaly-count test for the wave-4 ticketing currency migration
  * (multi-currency #3776, spec §14).
@@ -112,6 +113,7 @@ describe.runIf(RUN)('ticketing currency migration backfill (wave 4 #3776)', () =
         await tx.unsafe(`
           ALTER TABLE ticket_parts ALTER COLUMN currency_code DROP NOT NULL;
           ALTER TABLE org_ticket_settings ALTER COLUMN rate_currency DROP NOT NULL;
+          ALTER TABLE org_ticket_settings ALTER COLUMN rate_currency DROP DEFAULT;
           ALTER TABLE time_entries DROP CONSTRAINT time_entries_currency_required_when_org_chk;
           ALTER TABLE time_entries DROP CONSTRAINT time_entries_currency_required_when_rate_chk;
           ALTER TABLE ticket_categories DROP CONSTRAINT ticket_categories_rate_currency_chk;

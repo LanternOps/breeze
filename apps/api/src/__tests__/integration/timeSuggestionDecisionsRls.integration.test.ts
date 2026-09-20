@@ -396,7 +396,7 @@ describe('the signal read path under real RLS', () => {
   function actorFor(partnerId: string, userId: string, accessibleOrgIds: string[] | null) {
     return {
       userId, name: 'Tess Tech', email: 'tess@msp.example',
-      partnerId, accessibleOrgIds, manageAll: false, scope: 'partner' as const,
+      partnerId, accessibleOrgIds, manageAll: false, manageBilling: false, scope: 'partner' as const,
     };
   }
 

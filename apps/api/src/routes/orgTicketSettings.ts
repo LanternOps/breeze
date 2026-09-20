@@ -1,5 +1,6 @@
 import type { Hono } from 'hono';
 import { zValidator } from '../lib/validation';
+import { legacyBillingDeprecationWarnings } from '../lib/legacyBillingDeprecation';
 import { and, eq, isNull } from 'drizzle-orm';
 import { db } from '../db';
 import { organizations } from '../db/schema';
@@ -10,7 +11,7 @@ import { orgTicketSettingsSchema } from '@breeze/shared';
 import { getOrgTicketSettings, upsertOrgTicketSettings } from '../services/ticketConfigService';
 
 // Admin read/write for an org's ticketing overrides (org_ticket_settings:
-// SLA override map + billing defaults). Registered onto orgRoutes so it
+// SLA override map). Registered onto orgRoutes so it
 // inherits orgRoutes' authMiddleware — mounting at the top-level api app would
 // silently skip auth. Mirrors orgPortalSettings.ts.
 
@@ -56,13 +57,10 @@ export function registerOrgTicketSettingsRoutes(orgRoutes: Hono) {
     zValidator('json', orgTicketSettingsSchema),
     async (c) => {
       const body = c.req.valid('json');
+      const deprecationWarnings = legacyBillingDeprecationWarnings(await c.req.json());
       const org = await resolveAccessibleOrg(c);
       if (org instanceof Response) return org;
 
-      // #3778: the service resolves the org currency itself, inside its own
-      // transaction under the org SHARE barrier. `resolveAccessibleOrg` stays
-      // for the 404 / authorization check ONLY — its currency read was a
-      // pre-transaction stale read that could stamp `rate_currency` wrong.
       const data = await upsertOrgTicketSettings(org.id, body);
 
       writeRouteAudit(c, {
@@ -73,7 +71,7 @@ export function registerOrgTicketSettingsRoutes(orgRoutes: Hono) {
         details: { changedFields: Object.keys(body) }
       });
 
-      return c.json({ data });
+      return c.json({ data, ...(deprecationWarnings.length ? { deprecationWarnings } : {}) });
     }
   );
 }

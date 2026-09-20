@@ -1,5 +1,5 @@
 import { BREEZE_MCP_TOOL_NAMES } from '../../aiAgentSdkTools';
-import { getHelperAllowedMcpToolNames } from '../../helperToolFilter';
+import { getHelperAllowedMcpToolNames, type HelperPermissionLevel } from '../../helperToolFilter';
 import { SCRIPT_BUILDER_MCP_TOOL_NAMES } from '../../scriptBuilderTools';
 
 export type CaptureSurfaceId = 'chat' | 'helper-basic' | 'helper-standard' | 'helper-extended' | 'agent-full' | 'script-builder';
@@ -8,12 +8,26 @@ export interface CaptureSurface {
   id: CaptureSurfaceId;
   /** Exactly what the surface passes as query() allowedTools. */
   allowedTools: readonly string[];
+  helperPermissionLevel?: HelperPermissionLevel;
   /** Exactly what the surface passes as createBreezeMcpServer options.onlyTools; undefined = whole registry. */
   onlyTools?: ReadonlySet<string>;
   server: 'breeze' | 'script_builder';
   mcpServerName: string;               // key used in query() mcpServers
   includePartialMessages: boolean;     // true for the streamingSessionManager surfaces, false for agent runs
   source: string;                      // file:line the values were taken from — printed in the report
+}
+
+/** Keep the prompt permission and SDK allowlist on the same level. */
+function helperSurface(level: HelperPermissionLevel): CaptureSurface {
+  return {
+    id: `helper-${level}`,
+    helperPermissionLevel: level,
+    allowedTools: getHelperAllowedMcpToolNames(level),
+    server: 'breeze',
+    mcpServerName: 'breeze',
+    includePartialMessages: true,
+    source: 'routes/helper/index.ts:164-166,349; services/helperToolFilter.ts:22-70',
+  };
 }
 
 /**
@@ -33,18 +47,9 @@ export const CAPTURE_SURFACES: Readonly<Record<CaptureSurfaceId, CaptureSurface>
     id: 'chat', allowedTools: BREEZE_MCP_TOOL_NAMES, server: 'breeze', mcpServerName: 'breeze',
     includePartialMessages: true, source: 'services/streamingSessionManager.ts:1128-1155 (routes/ai.ts:833)',
   },
-  'helper-basic': {
-    id: 'helper-basic', allowedTools: getHelperAllowedMcpToolNames('basic'), server: 'breeze', mcpServerName: 'breeze',
-    includePartialMessages: true, source: 'routes/helper/index.ts:164-166,349; services/helperToolFilter.ts:22',
-  },
-  'helper-standard': {
-    id: 'helper-standard', allowedTools: getHelperAllowedMcpToolNames('standard'), server: 'breeze', mcpServerName: 'breeze',
-    includePartialMessages: true, source: 'routes/helper/index.ts:164-166,349; services/helperToolFilter.ts:34',
-  },
-  'helper-extended': {
-    id: 'helper-extended', allowedTools: getHelperAllowedMcpToolNames('extended'), server: 'breeze', mcpServerName: 'breeze',
-    includePartialMessages: true, source: 'routes/helper/index.ts:164-166,349; services/helperToolFilter.ts:48',
-  },
+  'helper-basic': helperSurface('basic'),
+  'helper-standard': helperSurface('standard'),
+  'helper-extended': helperSurface('extended'),
   'agent-full': {
     id: 'agent-full', allowedTools: BREEZE_MCP_TOOL_NAMES, server: 'breeze', mcpServerName: 'breeze',
     includePartialMessages: false, source: 'services/aiAgents/runLoop.ts:1866-1968 (profileAllowlist null on full)',

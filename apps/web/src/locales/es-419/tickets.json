@@ -525,5 +525,14 @@
       "message": "Esto oculta el ticket de todas las colas. Un administrador puede restaurarlo desde la cola Archivado.",
       "confirm": "Eliminar ticket"
     }
+  },
+  "billingOutcome": {
+    "included": "Incluido",
+    "nonBillable": "No facturable",
+    "hourly": "{{rate}} por hora",
+    "minimum": "Mínimo de {{minutes}} min",
+    "missingRate": "Facturable · tarifa no configurada",
+    "recalculated": "La facturación se recalcula para este tipo de trabajo al guardar.",
+    "unavailable": "Resultado de facturación no disponible"
   }
 }

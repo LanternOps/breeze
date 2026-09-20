@@ -716,6 +716,9 @@ export function resolveApprovalScope(
 
 // RBAC permission map: tool → { resource, action } (or action-based overrides)
 export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string } | Record<string, { resource: string; action: string }>> = {
+  list_time_entries: { resource: 'time_entries', action: 'read' },
+  get_running_timer: { resource: 'time_entries', action: 'read' },
+  get_timesheet: { resource: 'time_entries', action: 'read' },
   query_devices: { resource: 'devices', action: 'read' },
   get_device_details: { resource: 'devices', action: 'read' },
   get_vulnerability_report: { resource: 'devices', action: 'read' },
@@ -875,6 +878,16 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     decline: { resource: 'quotes', action: 'write' },
     create_pay_link: { resource: 'quotes', action: 'write' },
   },
+  // GET orgContacts.ts /organizations/:id/contacts: PERMISSIONS.ORGS_READ.
+  // GET remediationSuggestions.ts /: PERMISSIONS.DEVICES_READ.
+  list_remediation_suggestions: { resource: 'devices', action: 'read' },
+  list_incidents: { resource: 'alerts', action: 'read' },
+  list_ai_agents: { resource: 'ai_agents', action: 'read' },
+  list_ai_agent_runs: { resource: 'ai_agents', action: 'read' },
+  get_ai_agent_run: { resource: 'ai_agents', action: 'read' },
+  list_sites: { resource: 'sites', action: 'read' },
+  get_site: { resource: 'sites', action: 'read' },
+  list_org_contacts: { resource: 'organizations', action: 'read' },
   list_organizations: { resource: 'organizations', action: 'read' },
   manage_organizations: {
     create_org: { resource: 'organizations', action: 'write' },
@@ -1177,10 +1190,12 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   // Documentation tools
   // `general` was never a catalog resource. The documentation index is
   // static product content, not tenant data, and the only surface that
-  // reaches this tool is the AI chat route, which already requires
-  // ORGS_READ (routes/ai.ts:167) — so mirroring that is exactly "what the
-  // route requires" and nothing weaker.
-  search_documentation: { resource: 'organizations', action: 'read' },
+  // reaches this tool is the AI chat route, which requires ai_sessions:use
+  // (routes/ai.ts, #6396) — so mirroring that is exactly "what the route
+  // requires" and nothing weaker. It used to mirror organizations:read, which
+  // the seeded Org Admin / Org Technician roles do NOT hold: chat would open
+  // and the first docs lookup would be denied.
+  search_documentation: { resource: 'ai_sessions', action: 'use' },
   // Script library tools
   search_script_library: { resource: 'scripts', action: 'read' },
   list_scripts: { resource: 'scripts', action: 'read' },
@@ -1447,6 +1462,8 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   // Network (mirror backing REST routes: networkChanges.ts uses devices:read + alerts:acknowledge;
   // networkBaselines.ts uses devices:write)
   get_network_changes: { resource: 'devices', action: 'read' },
+  list_network_assets: { resource: 'devices', action: 'read' },
+  get_network_asset: { resource: 'devices', action: 'read' },
   get_network_asset_reachability: { resource: 'devices', action: 'read' },
   acknowledge_network_device: { resource: 'alerts', action: 'acknowledge' },
   configure_network_baseline: { resource: 'devices', action: 'write' },

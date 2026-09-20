@@ -6,6 +6,7 @@ import { navigateTo } from '@/lib/navigation';
 import { ActionError, runAction, handleActionError } from '../../lib/runAction';
 import { isValidEmail } from '@/lib/email';
 import { currencyLabel, currencyOptions } from '@/lib/currencies';
+import { useOrgBillingProfile } from './OrgBillingProfile';
 import { pctFromFraction } from './invoiceTypes';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
@@ -32,8 +33,7 @@ interface OrgCurrencyImpact {
   changeRequired: boolean;
   impactsByCurrency: OrgCurrencyImpactGroup[];
   configurationWarnings: {
-    orgDefaultRate: { configured: boolean; rateCurrency: string | null; willStopApplying: boolean };
-    categoryRatesSkipped: number;
+    assignedBillingProfile: { id: string | null; currencyCode: string | null; currencyMismatch: boolean };
     orgCatalogOverridesSkipped: number;
     /** Unbilled time with hours but no hourly rate, stamped in the TARGET
      *  currency or unstamped — NOT stranded by the change, so it is reported on
@@ -94,6 +94,7 @@ export default function OrgBillingSettings({ orgId }: Props) {
   const [currencyPanelOpen, setCurrencyPanelOpen] = useState(false);
   const [currencyStale, setCurrencyStale] = useState(false);
   const [changingCurrency, setChangingCurrency] = useState(false);
+  const billingProfile = useOrgBillingProfile(orgId, currencyCode, saving || changingCurrency);
 
   const [taxId, setTaxId] = useState('');
   const [taxExempt, setTaxExempt] = useState(false);
@@ -242,6 +243,7 @@ export default function OrgBillingSettings({ orgId }: Props) {
         request: () => fetchWithAuth(`/orgs/${orgId}/billing-settings`, {
           method: 'PATCH',
           body: JSON.stringify({
+            billingProfileId: billingProfile.billingProfileId,
             taxId: taxId.trim() === '' ? null : taxId.trim(),
             taxExempt,
             taxRate: pct === '' ? null : Number(pct) / 100,
@@ -261,13 +263,14 @@ export default function OrgBillingSettings({ orgId }: Props) {
         successMessage: t('orgBillingSettings.saveSuccess'),
         onUnauthorized: UNAUTHORIZED,
       });
+      if (billingProfile.billingProfileId !== undefined) billingProfile.markSaved();
       void load();
     } catch (err) {
       handleActionError(err, t('orgBillingSettings.saveError'));
     } finally {
       setSaving(false);
     }
-  }, [saving, contactEmailInvalid, taxId, taxExempt, taxPercent, contactEmail, contactName, line1, line2, city, region, postal, country, orgId, load]);
+  }, [saving, contactEmailInvalid, taxId, taxExempt, taxPercent, contactEmail, contactName, line1, line2, city, region, postal, country, orgId, load, billingProfile.billingProfileId, billingProfile.markSaved, t]);
 
   if (loading) return <p className="text-sm text-muted-foreground">{t('orgBillingSettings.loading')}</p>;
   if (loadError) {
@@ -301,7 +304,8 @@ export default function OrgBillingSettings({ orgId }: Props) {
       <section className="rounded-lg border bg-card p-6 shadow-xs">
         <h2 className="text-lg font-semibold">{t('orgBillingSettings.currency.title')}</h2>
         <p className="mt-1 text-sm text-muted-foreground">{t('orgBillingSettings.currency.description')}</p>
-        <div className="mt-4 sm:max-w-xs">
+        <div className="grid gap-6 sm:grid-cols-2">
+        <div className="mt-4">
           <label className="text-sm font-medium" htmlFor="ob-currency">{t('orgBillingSettings.currency.label')}</label>
           {/* An already-stored off-list code stays selectable via currencyOptions
               so an existing setting is never silently reset (#3204 precedent). */}
@@ -315,6 +319,9 @@ export default function OrgBillingSettings({ orgId }: Props) {
               <option key={code} value={code}>{currencyLabel(code, i18n.language)}</option>
             ))}
           </select>
+        </div>
+
+        {billingProfile.panel}
         </div>
 
         {currencyPanelOpen && (
@@ -397,16 +404,11 @@ export default function OrgBillingSettings({ orgId }: Props) {
                 <div>
                   <h4 className="text-sm font-semibold">{t('orgBillingSettings.currency.warningsTitle')}</h4>
                   <ul className="mt-1 list-disc space-y-1 pl-5 text-sm text-muted-foreground">
-                    {impact.configurationWarnings.orgDefaultRate.willStopApplying && (
+                    {impact.configurationWarnings.assignedBillingProfile.currencyMismatch && (
                       <li data-testid="org-billing-currency-warning-rate">
-                        {t('orgBillingSettings.currency.warningRate', {
-                          currency: impact.configurationWarnings.orgDefaultRate.rateCurrency ?? '',
+                        {t('orgBillingProfile.currencyWarning', {
+                          currency: impact.configurationWarnings.assignedBillingProfile.currencyCode ?? '',
                         })}
-                      </li>
-                    )}
-                    {impact.configurationWarnings.categoryRatesSkipped > 0 && (
-                      <li data-testid="org-billing-currency-warning-categories">
-                        {t('orgBillingSettings.currency.warningCategories', { count: impact.configurationWarnings.categoryRatesSkipped })}
                       </li>
                     )}
                     {impact.configurationWarnings.orgCatalogOverridesSkipped > 0 && (

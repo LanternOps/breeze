@@ -1,3 +1,5 @@
+const { ensureDefaultProfile } = vi.hoisted(() => ({ ensureDefaultProfile: vi.fn(async () => ({ id: 'default-profile' })) }));
+vi.mock('../services/billingProfileService', () => ({ ensureDefaultProfile }));
 import { countMfaPolicyLockouts, lockMfaPolicySettings } from '../services/mfaPolicyActivation';
 vi.mock('../services/mfaPolicyActivation', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../services/mfaPolicyActivation')>()),
@@ -553,7 +555,7 @@ describe('org routes', () => {
     });
 
     it('should create a partner and seed system ticket statuses', async () => {
-      const partner = { id: 'partner-1', name: 'Partner' };
+      const partner = { id: 'partner-1', name: 'Partner', currencyCode: 'CAD' };
       vi.mocked(db.select).mockReturnValue({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
@@ -584,6 +586,7 @@ describe('org routes', () => {
       expect(res.status).toBe(201);
       const body = await res.json();
       expect(body.id).toBe('partner-1');
+      expect(ensureDefaultProfile).toHaveBeenCalledWith('partner-1', 'CAD', expect.anything());
       // Verify seedSystemTicketStatuses was called with the new partner's id
       expect(vi.mocked(seedSystemTicketStatuses)).toHaveBeenCalledWith(
         expect.anything(), // tx
@@ -3020,6 +3023,7 @@ describe('org routes', () => {
       expect(res.status).toBe(201);
       const body = await res.json();
       expect(body.id).toBe('org-1');
+      expect(ensureDefaultProfile).toHaveBeenCalledWith('partner-123', 'USD', expect.anything());
     });
 
     it('should allow system scope create with explicit partnerId', async () => {

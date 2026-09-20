@@ -11,6 +11,7 @@ import {
   Building2,
 } from "lucide-react";
 import { useAiStore } from "@/stores/aiStore";
+import { usePermissions } from "@/lib/permissions";
 import AiChatMessages from "./AiChatMessages";
 import AiChatInput from "./AiChatInput";
 import AiContextBadge from "./AiContextBadge";
@@ -68,6 +69,11 @@ export default function AiChatSidebar() {
     loadM365Connections,
     setSelectedM365Connection,
   } = useAiStore();
+  // #6396: every own-session route requires ai_sessions:use; a role without it
+  // (Org Viewer, billing roles) gets no sidebar rather than a shell that 403s.
+  // Hooks above/below still run unconditionally — only the render is gated.
+  const { can } = usePermissions();
+  const canUseAi = can("ai_sessions", "use");
 
   const [searchQuery, setSearchQuery] = useState("");
   const restoredSessionIdRef = useRef<string | null>(null);
@@ -77,12 +83,12 @@ export default function AiChatSidebar() {
     const handler = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === "a") {
         e.preventDefault();
-        toggle();
+        if (canUseAi) toggle();
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [toggle]);
+  }, [toggle, canUseAi]);
 
   // Restore session history when sidebar opens with a persisted sessionId
   useEffect(() => {
@@ -128,6 +134,8 @@ export default function AiChatSidebar() {
     await closeSession();
     await createSession();
   }, [closeSession, createSession]);
+
+  if (!canUseAi) return null;
 
   return (
     <>

@@ -140,35 +140,11 @@ describe('formatReport', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// PARITY WITH THE LIVE RESOLVER
-//
-// The report's headline — "these orgs' uncategorised tickets start billing" —
-// is a PREDICTION about what timeEntryService does today versus what W02's
-// conversion will do. It is computed by a second, independent implementation
-// here, so it can drift from the resolver silently and Todd would read a
-// confident number that is simply wrong.
-//
-// This drives the same fixtures through the REAL exported resolver
-// (resolveDefaultRate) and the real legacy billable chain from
-// resolveTicketLink — `orgSettings?.defaultBillable ?? category?.defaultBillable
-// ?? false`, with category = null because these tickets are UNCATEGORISED — and
-// asserts the biconditional the report claims:
-//
-//   flagged  ⟺  the ticket is non-billable TODAY ONLY because of the `?? false`
-//               fallback (org.defaultBillable IS NULL)  AND  a default rate
-//               would resolve under the org's own currency.
-// ---------------------------------------------------------------------------
-import { resolveDefaultRate } from '../src/services/timeEntryService';
+// The dry-run is a pre-upgrade tool. Its oracle must stay frozen on the
+// legacy chain even after production switches to billing profiles.
+import { legacyResolve, resolveDefaultRate } from '../src/__tests__/integration/fixtures/legacyLabourPricingResolver';
 
-/** These tickets are UNCATEGORISED, so the category term of the chain is null. */
-const CATEGORY_DEFAULT_BILLABLE: boolean | null = null;
-
-/** The legacy billable answer for an UNCATEGORISED ticket, verbatim from resolveTicketLink. */
-const legacyBillable = (o: ReturnType<typeof org>): boolean =>
-  o.defaultBillable ?? CATEGORY_DEFAULT_BILLABLE ?? false;
-
-describe('dry-run report parity with the live rate/billable resolver', () => {
+describe('dry-run report parity with the frozen legacy rate/billable resolver', () => {
   const cases = [
     { label: 'null billable + matching-currency rate', defaultBillable: null, defaultHourlyRate: '150.00', rateCurrency: 'USD' },
     { label: 'null billable + wrong-currency rate', defaultBillable: null, defaultHourlyRate: '150.00', rateCurrency: 'EUR' },
@@ -188,14 +164,14 @@ describe('dry-run report parity with the live rate/billable resolver', () => {
     });
     const [report] = buildDryRunReport({ partners: [partner], categories: [], orgs: [o] });
 
-    // The live resolver, on the same inputs. `rateCurrency` is non-null in the
+    // The frozen legacy resolver, on the same inputs. `rateCurrency` is non-null in the
     // resolver's org shape whenever a rate exists; a null rate makes it moot.
-    const resolvedRate = resolveDefaultRate(
-      o.currencyCode,
-      { defaultHourlyRate: o.defaultHourlyRate, rateCurrency: o.rateCurrency ?? '' },
-      null,
-    );
-    const nonBillableOnlyByFallback = legacyBillable(o) === false && o.defaultBillable === null;
+    const { hourlyRate: resolvedRate, isBillable } = legacyResolve({
+      orgCurrency: o.currencyCode,
+      orgSettings: { defaultBillable: o.defaultBillable, defaultHourlyRate: o.defaultHourlyRate, rateCurrency: o.rateCurrency ?? '' },
+      category: null,
+    });
+    const nonBillableOnlyByFallback = !isBillable && o.defaultBillable === null;
     const expectedFlag = nonBillableOnlyByFallback && resolvedRate !== null;
 
     expect(report!.uncategorisedBecomingBillable.length > 0).toBe(expectedFlag);

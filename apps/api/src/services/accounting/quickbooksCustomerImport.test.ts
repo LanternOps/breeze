@@ -48,10 +48,14 @@ vi.mock('./providerRegistry', () => ({
   getAccountingProvider: () => ({ listRemoteCustomers: listRemoteCustomersMock }),
 }));
 
+// Org creation now also guarantees the partner's currency default card.
+vi.mock('../billingProfileService', () => ({ ensureDefaultProfile: vi.fn(async () => ({ id: 'default-profile' })) }));
+
 vi.mock('../sentry', () => ({ captureException: captureExceptionMock }));
 vi.mock('../tenantLifecycle', () => ({ restoreOrganizationTenantAccess: vi.fn() }));
 
 import { organizations, organizationExternalLinks, partners, sites } from '../../db/schema';
+import { ensureDefaultProfile } from '../billingProfileService';
 import { contacts } from '../../db/schema/contacts';
 import {
   importQuickbooksCustomers,
@@ -299,6 +303,7 @@ describe('importQuickbooksCustomers', () => {
     stubState();
     await importQuickbooksCustomers({ partnerId: 'p1', customerIds: ['1'] });
     expect(siteInserts()[0]!.address).toMatchObject({ state: 'TX', city: 'Austin' });
+    expect(ensureDefaultProfile).toHaveBeenCalledWith('p1', 'CAD', expect.anything());
   });
 
   it('skips customers linked via organization_external_links', async () => {

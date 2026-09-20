@@ -99,6 +99,7 @@ export const partners = pgTable('partners', {
   billingIdentitySyncedAt: timestamp('billing_identity_synced_at', { withTimezone: true }),
   billingSubscriptionStatus: text('billing_subscription_status'),
   currencyCode: char('currency_code', { length: 3 }).notNull().default('USD'),
+  labourPricingConvertedAt: timestamp('labour_pricing_converted_at', { withTimezone: true }).defaultNow(),
   defaultTaxRate: numeric('default_tax_rate', { precision: 8, scale: 5 }),
   invoiceNumberPrefix: varchar('invoice_number_prefix', { length: 12 }).notNull().default('INV'),
   invoiceTermsDays: integer('invoice_terms_days').notNull().default(30),

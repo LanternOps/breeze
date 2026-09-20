@@ -525,5 +525,14 @@
       "message": "Bu, bileti tüm kuyruklardan gizler. Bir yönetici bunu Arşivlendi kuyruğundan geri yükleyebilir.",
       "confirm": "Bileti sil"
     }
+  },
+  "billingOutcome": {
+    "included": "Dahil",
+    "nonBillable": "Faturalandırılamaz",
+    "hourly": "{{rate}}/sa.",
+    "minimum": "En az {{minutes}} dk.",
+    "missingRate": "Faturalandırılabilir · ücret yapılandırılmamış",
+    "recalculated": "Kaydedildiğinde bu iş türü için faturalandırma yeniden hesaplanır.",
+    "unavailable": "Faturalandırma sonucu kullanılamıyor"
   }
 }

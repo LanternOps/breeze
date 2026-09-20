@@ -9,6 +9,16 @@ The Breeze mobile app gives technicians and administrators on-the-go access to d
 
 ---
 
+## Installing the App
+
+**iOS** -- install [Breeze RMM from the App Store](https://apps.apple.com/app/breeze-rmm/id6789370762). On first launch the app asks which server to sign in to: the hosted **US** region, the hosted **EU** region, or a **custom server** URL for a self-hosted deployment.
+
+**Android** -- not published to Google Play yet. Build it from `apps/mobile` in the repo (`npx expo prebuild --platform android`, then a Gradle or EAS build). Push notifications require your own Firebase project's `google-services.json`, which is never committed.
+
+Self-hosters can point the published iOS app at their own server, but password-manager autofill is limited to the hosted domains -- see the note below.
+
+---
+
 ## Supported Platforms
 
 | Platform | Minimum Version | Bundle Identifier |

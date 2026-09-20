@@ -1,3 +1,5 @@
+import { usePermissions } from '../../lib/permissions';
+import BillingOutcome, { type BillingOutcomeStamp } from '../time/BillingOutcome';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import '@/lib/i18n';
 import { useTranslation } from 'react-i18next';
@@ -19,12 +21,7 @@ interface CurrencyAmount {
 interface BillingSummary {
   time: { totalMinutes: number; billableMinutes: number; billableAmounts: CurrencyAmount[] };
   parts: { partsCount: number; billableTotals: CurrencyAmount[] };
-  /** What the server would stamp on a new entry for this ticket (#5321):
-   *  the match-or-skip default rate, the org's locked currency, and the
-   *  billable default. Absent on an older API, and null when the server could
-   *  not resolve them — the quick-add then behaves exactly as it did before
-   *  (blank rate, server default applies) plus the missing-rate warning. */
-  defaults?: { hourlyRate: string | null; currencyCode: string; isBillable: boolean } | null;
+  defaults?: (BillingOutcomeStamp & { workTypeId?: string | null }) | null;
 }
 
 interface EntryRow {
@@ -62,12 +59,14 @@ function toReportingGroups(amounts: CurrencyAmount[]): { code: string; amount: s
 
 export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
   const { t } = useTranslation('tickets');
+  const { can } = usePermissions();
+  const canManageBilling = can('time_entries', 'manage_billing');
   const [summary, setSummary] = useState<BillingSummary | null>(null);
   const [entries, setEntries] = useState<EntryRow[]>([]);
   const [quickAddOpen, setQuickAddOpen] = useState(false);
   const [minutes, setMinutes] = useState('');
   const [description, setDescription] = useState('');
-  const [billable, setBillable] = useState(true);
+  const [billableOverride, setBillableOverride] = useState<boolean | undefined>(undefined);
   // #5321: the rate box shows the ticket's resolved default until the tech
   // types over it, so a prefill still lands when the summary resolves after the
   // panel is already open.
@@ -120,16 +119,18 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
     setTimerWorkTypeId(undefined);
     setMinutes('');
     setDescription('');
-    setBillable(true);
+    setBillableOverride(undefined);
     setRate('');
     setRateDirty(false);
   }, [ticketId]);
 
   // Derived, not stored: an untouched box mirrors the ticket default the moment
   // the summary lands; once the tech types, their value wins.
+  const billable = billableOverride ?? summary?.defaults?.isBillable ?? true;
+  const workTypeChanged = workTypeId !== undefined && workTypeId !== (summary?.defaults?.workTypeId ?? null);
   const defaultRate = summary?.defaults?.hourlyRate ?? null;
   const rateCurrency = summary?.defaults?.currencyCode ?? null;
-  const rateValue = rateDirty ? rate : (defaultRate ?? '');
+  const rateValue = rateDirty ? rate : (workTypeChanged ? '' : defaultRate ?? '');
   // `<input type="number" min={0}>` does not stop a typed negative here — the
   // submit is an onClick, not a form submit, so no constraint validation runs.
   // Name the problem rather than letting the button be a dead no-op.
@@ -139,7 +140,7 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
   // Billable + no rate is precisely the row invoice assembly refuses to bill
   // (ALL_MISSING_RATE 409). Say it here, not three screens later. A bad rate is
   // a different complaint — never show both.
-  const missingRate = billable && typedRate === '';
+  const missingRate = !workTypeChanged && billable && typedRate === '' && summary?.defaults?.coverage !== 'included';
 
   const startTimer = () => {
     // Guard against double-fire: a start request takes a beat server-side, and
@@ -174,11 +175,11 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
               startedAt: start.toISOString(),
               endedAt: end.toISOString(),
               description: description || undefined,
-              isBillable: billable,
+              ...(canManageBilling && billableOverride !== undefined ? { isBillable: billable } : {}),
               // Untouched (undefined) omits the field so the server-side
               // category default applies; an explicit "No work type" sends null.
               ...(workTypeId !== undefined ? { workTypeId } : {}),
-              ...(rateNumber !== undefined ? { hourlyRate: rateNumber } : {}),
+              ...(canManageBilling && rateDirty && rateNumber !== undefined ? { hourlyRate: rateNumber } : {}),
             }),
           }),
         errorFallback: t('ticketTimeBilling.toast.logFailed'),
@@ -190,6 +191,7 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
       setDescription('');
       setRate('');
       setRateDirty(false);
+      setBillableOverride(undefined);
       await refresh();
       // Notify the workbench feed (and other billing listeners) so the new
       // time-entry line appears without a manual reload — mirrors the timer
@@ -239,7 +241,7 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
 
       <label className="mt-2 block text-[11px] text-muted-foreground">
         {t('workType.label')}
-        <WorkTypeSelect value={timerWorkTypeId ?? null} onChange={setTimerWorkTypeId} testId="timer-work-type" disabled={startingTimer} />
+        <WorkTypeSelect value={timerWorkTypeId === undefined ? summary?.defaults?.workTypeId ?? null : timerWorkTypeId} onChange={setTimerWorkTypeId} testId="timer-work-type" disabled={startingTimer} />
       </label>
       <div className="mt-2 flex gap-2">
         <button
@@ -285,13 +287,15 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
           />
           <label className="block text-[11px] text-muted-foreground">
             {t('workType.label')}
-            <WorkTypeSelect value={workTypeId ?? null} onChange={setWorkTypeId} testId="ticket-billing-quick-add-work-type" disabled={busy} />
+            <WorkTypeSelect value={workTypeId === undefined ? summary?.defaults?.workTypeId ?? null : workTypeId} onChange={setWorkTypeId} testId="ticket-billing-quick-add-work-type" disabled={busy} />
           </label>
+          <BillingOutcome stamp={summary?.defaults} overrides={canManageBilling ? { ...(billableOverride !== undefined ? { isBillable: billableOverride } : {}), ...(rateDirty && parsedRate !== undefined && !rateInvalid ? { hourlyRate: String(parsedRate) } : {}) } : undefined} pending={workTypeChanged} testId="ticket-billing-quick-add-outcome" />
           <div className="flex items-center gap-1.5">
             <input
               type="number"
               min={0}
               step={0.01}
+              readOnly={!canManageBilling}
               value={rateValue}
               onChange={(e) => { setRate(e.target.value); setRateDirty(true); }}
               placeholder={t('ticketTimeBilling.rate')}
@@ -313,7 +317,8 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
             <input
               type="checkbox"
               checked={billable}
-              onChange={(e) => setBillable(e.target.checked)}
+              disabled={!canManageBilling}
+              onChange={(e) => setBillableOverride(e.target.checked)}
               data-testid="ticket-billing-quick-add-billable"
             />
             {t('ticketTimeBilling.billable')}

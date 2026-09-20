@@ -1,3 +1,4 @@
+import type { BillingOutcomeStamp } from '../components/time/BillingOutcome';
 import { fetchWithAuth } from '../stores/auth';
 import { runAction } from './runAction';
 
@@ -14,7 +15,7 @@ export function onBillingChanged(cb: () => void): () => void {
   return () => window.removeEventListener(BILLING_CHANGED_EVENT, cb);
 }
 
-export interface RunningTimer {
+export interface RunningTimer extends BillingOutcomeStamp {
   id: string;
   ticketId: string | null;
   startedAt: string;

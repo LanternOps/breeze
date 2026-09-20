@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 /**
@@ -15,6 +16,7 @@ const { dbState, mocks } = vi.hoisted(() => ({
   dbState: { selectQueues: new Map<unknown, unknown[][]>() },
   mocks: {
     getTicketTimeEntryDefaults: vi.fn(),
+    loadCardsForOrg: vi.fn(),
     createActionIntent: vi.fn(),
     runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
     withSystemDbAccessContext: vi.fn((fn: () => unknown) => fn()),
@@ -22,6 +24,7 @@ const { dbState, mocks } = vi.hoisted(() => ({
 }));
 
 vi.mock('../db', () => ({
+  getCurrentDbAccessContext: () => undefined,
   runOutsideDbContext: (fn: () => unknown) => mocks.runOutsideDbContext(fn),
   withSystemDbAccessContext: (fn: () => unknown) => mocks.withSystemDbAccessContext(fn),
   db: {
@@ -36,6 +39,8 @@ vi.mock('../db', () => ({
     })),
   },
 }));
+vi.mock('./billingProfileService', () => ({ loadCardsForOrg: mocks.loadCardsForOrg }));
+vi.mock('./aiAgents/runService', () => ({ createAndEnqueueAgentRun: vi.fn() }));
 vi.mock('./timeEntryService', () => ({
   getTicketTimeEntryDefaults: mocks.getTicketTimeEntryDefaults,
 }));
@@ -45,6 +50,8 @@ vi.mock('./actionIntents/intentService', () => ({
     constructor(message: string, public code: string) { super(message); this.name = 'ActionIntentError'; }
   },
 }));
+import { handleTicketStatusChangedEvent } from './aiAgents/ticketHelpdeskSubscriber';
+import type { BreezeEvent } from './eventBus';
 import { ActionIntentError } from './actionIntents/intentService';
 
 import { aiAgentRuns, aiAgents, devices, organizations, ticketDrafts, tickets } from '../db/schema';
@@ -68,7 +75,7 @@ function queueSelect(table: unknown, rows: unknown[]) {
   dbState.selectQueues.set(table, q);
 }
 
-function mockCategory(row: { defaultTimeEntryMinutes: number | null; defaultBillable?: boolean } | null) {
+function mockCategory(row: { defaultTimeEntryMinutes: number | null } | null) {
   // The ticket→category join projects the category columns; a ticket with no
   // category yields a row whose joined columns are all null.
   queueSelect(tickets, [row ?? { defaultTimeEntryMinutes: null }]);
@@ -119,7 +126,7 @@ describe('resolveAiTimeEntryDefaults (#4177)', () => {
   });
 
   it('takes the billable flag from getTicketTimeEntryDefaults, never from the category directly', async () => {
-    mockCategory({ defaultBillable: true, defaultTimeEntryMinutes: null });
+    mockCategory({ defaultTimeEntryMinutes: null });
     mockTicketDefaults({ isBillable: false }); // org override wins
     expect((await resolveAiTimeEntryDefaults(TICKET_ID)).isBillable).toBe(false);
   });
@@ -224,6 +231,41 @@ describe('proposeTimeEntryFromOutboxClaim (#4177) — the outbox claim is a poin
   function primeMint() {
     mockRunLineage(); mockCategory({ defaultTimeEntryMinutes: null }); mockTicketDefaults({ isBillable: false });
   }
+
+  it('the event-bus handler reads a non_billable card in system scope and proposes non-billable time', async () => {
+    const scope = new AsyncLocalStorage<string>();
+    mocks.runOutsideDbContext.mockImplementation((fn) => scope.run('none', fn));
+    mocks.withSystemDbAccessContext.mockImplementation((fn) => scope.run('system', fn));
+    const { getTicketTimeEntryDefaults } = await vi.importActual<typeof import('./timeEntryService')>('./timeEntryService');
+    mocks.getTicketTimeEntryDefaults.mockImplementationOnce(getTicketTimeEntryDefaults);
+    // Exercise the real defaults and rule resolvers; model FORCE RLS at the
+    // card loader, which hides the org's card outside a system context.
+    mocks.loadCardsForOrg.mockImplementationOnce(async () => ({
+      assignedCard: scope.getStore() === 'system' ? {
+        id: 'non-billable-card', currencyCode: 'USD', baseCoverage: 'non_billable',
+        baseHourlyRate: null, baseMinimumMinutes: null, roundingIncrementMinutes: null, rules: [],
+      } : null,
+      partnerDefaultCard: null,
+    }));
+    const created = captureCreateActionIntent();
+    queueSelect(ticketDrafts, [{ ...consumedDraft, kind: 'resolution_note' }]);
+    mockRunLineage();
+    mockCategory({ defaultTimeEntryMinutes: 20 });
+    queueSelect(tickets, [{ id: TICKET_ID, orgId: ORG_ID, partnerId: PARTNER_ID, categoryId: null }]);
+    queueSelect(organizations, [{ partnerId: PARTNER_ID, currencyCode: 'USD' }]);
+    queueSelect(tickets, [{ status: 'resolved', resolutionNote: 'Fixed' }]);
+
+    await scope.run('none', () => handleTicketStatusChangedEvent({
+      id: 'event-1', type: 'ticket.status_changed', orgId: ORG_ID,
+      source: 'ticket-outbox-publisher', priority: 'normal',
+      payload: { ticketId: TICKET_ID, to: 'resolved', aiDraft: { ...claim, trigger: 'resolved_with_ai_note' } },
+      metadata: { timestamp: new Date().toISOString() },
+    } as BreezeEvent));
+
+    expect(mocks.loadCardsForOrg).toHaveBeenCalledWith(ORG_ID, PARTNER_ID, 'USD');
+    expect(created).toHaveLength(1);
+    expect(created[0]!.input.input).toMatchObject({ isBillable: false, durationMinutes: 20 });
+  });
 
   it('mints for a verified consumed draft, with the technician taken from consumed_by (never the payload)', async () => {
     const created = captureCreateActionIntent();

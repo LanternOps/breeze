@@ -97,6 +97,8 @@ export const CAPABILITY_DOMAINS: Readonly<Record<AgentCapabilityId, readonly AiT
  */
 export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   // ---- alerts_monitoring ----
+  list_remediation_suggestions: 'alerts_monitoring',
+  list_incidents: 'alerts_monitoring',
   manage_alerts: 'alerts_monitoring',
   manage_delivery: 'alerts_monitoring',
   manage_alert_rules: 'alerts_monitoring',
@@ -151,6 +153,10 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
 
   // ---- tickets ----
   manage_tickets: 'tickets',
+  list_time_entries: 'tickets',
+  get_running_timer: 'tickets',
+  get_timesheet: 'tickets',
+
 
   // ---- patching_software ----
   manage_patches: 'patching_software',
@@ -258,6 +264,8 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   configure_network_baseline: 'network',
   get_network_changes: 'network',
   get_ip_history: 'network',
+  list_network_assets: 'network',
+  get_network_asset: 'network',
   get_network_asset_reachability: 'network',
 
   // ---- remote_access ----
@@ -328,6 +336,12 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
 
   // ---- tenancy (tone: high) ----
   manage_organizations: 'tenancy',
+  list_ai_agents: 'tenancy',
+  list_ai_agent_runs: 'tenancy',
+  get_ai_agent_run: 'tenancy',
+  list_sites: 'tenancy',
+  get_site: 'tenancy',
+  list_org_contacts: 'tenancy',
   list_organizations: 'tenancy',
   delete_tenant: 'tenancy',
   test_webhook: 'tenancy',

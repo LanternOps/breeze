@@ -148,23 +148,20 @@ describe('orgTicketSettingsSchema', () => {
   it('rejects an empty object', () => {
     expect(orgTicketSettingsSchema.safeParse({}).success).toBe(false);
   });
-  it('accepts defaultHourlyRate null', () => {
-    expect(orgTicketSettingsSchema.safeParse({ defaultHourlyRate: null }).success).toBe(true);
+  it.each([
+    { defaultHourlyRate: null }, { defaultHourlyRate: -1 },
+    { defaultHourlyRate: 10.001 }, { defaultBillable: true },
+    { defaultBillable: 'ignored' }, { rateCurrency: 'EUR' },
+  ])('ignores deprecated pricing values: %j', (input) => {
+    expect(orgTicketSettingsSchema.parse(input)).toEqual({});
   });
-  it('rejects a negative rate', () => {
-    expect(orgTicketSettingsSchema.safeParse({ defaultHourlyRate: -1 }).success).toBe(false);
+  it('preserves SLA overrides while stripping deprecated pricing and unknown fields', () => {
+    const slaOverrides = { normal: { resolutionMinutes: 480 } };
+    expect(orgTicketSettingsSchema.parse({ slaOverrides, defaultHourlyRate: 10, extra: true }))
+      .toEqual({ slaOverrides });
   });
-  it('rejects a 3-decimal rate (multipleOf 0.01)', () => {
-    expect(orgTicketSettingsSchema.safeParse({ defaultHourlyRate: 10.001 }).success).toBe(false);
-    expect(orgTicketSettingsSchema.safeParse({ defaultHourlyRate: 10.5 }).success).toBe(true);
-  });
-  it('accepts defaultBillable boolean and slaOverrides', () => {
-    expect(orgTicketSettingsSchema.safeParse({ defaultBillable: true }).success).toBe(true);
-    expect(orgTicketSettingsSchema.safeParse({ slaOverrides: { normal: { resolutionMinutes: 480 } } }).success).toBe(true);
-  });
-  it('strips a client-supplied rateCurrency', () => {
-    const parsed = orgTicketSettingsSchema.parse({ defaultHourlyRate: 10, rateCurrency: 'EUR' });
-    expect(parsed).not.toHaveProperty('rateCurrency');
+  it('rejects unknown-only patches', () => {
+    expect(orgTicketSettingsSchema.safeParse({ extra: true }).success).toBe(false);
   });
 });
 

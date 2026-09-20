@@ -250,6 +250,7 @@
     "deploySoftware": "Distribuisci software",
     "clearSessions": "Cancella sessioni",
     "changeSite": "Cambia sito",
+    "moveOrg": "Sposta in un'organizzazione",
     "exitMaintenance": "Esci dalla manutenzione",
     "enterMaintenance": "Entra in manutenzione",
     "decommission": "Rimuovi",
@@ -576,6 +577,7 @@
     "assignPolicy": "Assegna un criterio di configurazione"
   },
   "deviceDetailPage": {
+    "movedToOrg": "{{hostname}} è stato spostato in {{orgName}}",
     "failedToFetchDevice": "Impossibile recuperare il dispositivo",
     "online": "online",
     "offline": "offline",
@@ -751,6 +753,51 @@
     "text": "–",
     "of": "di",
     "noMoreActivity": "Nessun’altra attività"
+  },
+  "systemCleanupPanel": {
+    "title": "Pulizia del sistema",
+    "description": "Strumenti di manutenzione integrati che recuperano spazio che la scansione dei file non può vedere. Le stime possono differire dallo spazio effettivamente liberato.",
+    "checkActions": "Verifica le azioni disponibili",
+    "checking": "Verifica in corso…",
+    "run": "Esegui selezione",
+    "running": "In esecuzione… {{minutes}} min {{seconds}} s trascorsi",
+    "noActions": "Nessuna azione di pulizia del sistema è disponibile su questo dispositivo.",
+    "estimateUpTo": "fino a {{size}}",
+    "estimateUnknown": "dimensione sconosciuta",
+    "listFailed": "Impossibile leggere le azioni di pulizia disponibili su questo dispositivo.",
+    "listTimedOut": "Il dispositivo non ha risposto in tempo. Riprova tra qualche minuto.",
+    "runFailed": "Non è stato possibile completare la pulizia.",
+    "runTimedOut": "La pulizia è ancora in corso. Riapri questa scheda più tardi per vedere il risultato.",
+    "agentUpdateRequired": "Aggiorna l'agente di questo dispositivo alla versione {{version}} o successiva per eseguire le pulizie di sistema.",
+    "confirmTitle": "Eseguire la pulizia del sistema?",
+    "confirmMessage": "Verranno eseguite {{count}} azione/i su questo dispositivo. Alcune possono richiedere fino a 90 minuti e non sono reversibili.",
+    "confirmIrreversible": "Ho capito che queste modifiche non sono reversibili.",
+    "freed": "Liberati {{size}}",
+    "volumeFreed": "{{mount}}: {{size}} liberati",
+    "risk": {
+      "long_running": "può richiedere tempo",
+      "may_require_reboot": "spazio liberato dopo il riavvio",
+      "may_require_reboot_free_state": "parte dello spazio è liberata dopo il riavvio",
+      "removes_driver_rollback": "rimuove il ripristino dei driver",
+      "removes_packages": "disinstalla pacchetti",
+      "removes_os_rollback": "fine del rollback di Windows",
+      "removes_recovery_points": "rimuove i punti di ripristino"
+    },
+    "status": {
+      "completed": "completata",
+      "failed": "non riuscita",
+      "timed_out": "tempo scaduto",
+      "unavailable": "non disponibile",
+      "busy": "non avviata — dispositivo occupato",
+      "not_started": "non avviata — tempo esaurito"
+    },
+    "runInProgress": "Una pulizia del sistema è già in corso su questo dispositivo. Attendi che finisca.",
+    "consequence": {
+      "removes_driver_rollback": "Questo dispositivo non potrà più ripristinare i driver rimossi alle versioni precedenti.",
+      "removes_packages": "I pacchetti non più necessari verranno disinstallati.",
+      "removes_os_rollback": "Questo dispositivo non potrà più tornare alla versione precedente di Windows.",
+      "removes_recovery_points": "Le istantanee locali vengono eliminate. Se il disco Time Machine non è collegato, questo dispositivo non ha altri punti di ripristino."
+    }
   },
   "deviceFilesystemTab": {
     "resultPartial": "Completato parzialmente",
@@ -2383,6 +2430,33 @@
     "submitting": "Elaborazione…",
     "cancel": "Annulla",
     "genericError": "Impossibile avviare la modalità manutenzione."
+  },
+  "moveDeviceOrgDialog": {
+    "title": "Sposta in un'altra organizzazione",
+    "description": "Sposta {{hostname}} fuori da {{orgName}}. Cronologia, ticket e criteri lo seguono e l'agente si riconnette sotto la nuova organizzazione.",
+    "targetOrgLabel": "Organizzazione di destinazione",
+    "targetOrgPlaceholder": "Scegli un'organizzazione",
+    "targetSiteLabel": "Sede di destinazione",
+    "targetSitePlaceholder": "Scegli una sede",
+    "loadingSites": "Caricamento delle sedi…",
+    "noOtherOrgs": "Non esiste un'altra organizzazione attiva in cui spostare questo dispositivo.",
+    "noSites": "L'organizzazione scelta non ha ancora sedi. Aggiungine prima una.",
+    "currencyMismatchHeading": "Lavoro non fatturato in un'altra valuta",
+    "currencyMismatchDetail": "{{sourceCurrency}} → {{targetCurrency}}: {{timeEntries}} registrazioni di tempo non fatturate e {{parts}} parti non fatturate mantengono la valuta originale dopo lo spostamento.",
+    "currencyMismatchAccept": "Ho capito: sposta il dispositivo e mantieni quelle righe nella valuta originale",
+    "currencyMismatchNoPermission": "Per accettare serve il permesso di scrittura delle fatture. Chiedi a un amministratore della fatturazione di fatturare o chiudere prima il lavoro aperto.",
+    "stepUpHeading": "Conferma la tua identità",
+    "stepUpIntro": "Spostare un dispositivo tra organizzazioni richiede un secondo fattore.",
+    "stepUpCodeLabel": "Codice dell'app di autenticazione",
+    "stepUpPasskeyNote": "Confermerai con la tua passkey.",
+    "noStepUpFactor": "Aggiungi un'app di autenticazione o una passkey al tuo account prima di spostare dispositivi tra organizzazioni.",
+    "mfaRequired": "Completa prima l'accesso MFA, poi riprova.",
+    "stepUpRetry": "Non è stato possibile usare questa verifica. Inserisci un nuovo codice e riprova.",
+    "submit": "Sposta dispositivo",
+    "submitStepUp": "Verifica e sposta",
+    "submitting": "In corso…",
+    "cancel": "Annulla",
+    "genericError": "Impossibile spostare il dispositivo."
   },
   "networkDeviceDetailPage": {
     "approval": {

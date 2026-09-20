@@ -525,5 +525,14 @@
       "message": "This hides the ticket from all queues. An admin can restore it from the Archived queue.",
       "confirm": "Delete ticket"
     }
+  },
+  "billingOutcome": {
+    "included": "Included",
+    "nonBillable": "Non-billable",
+    "hourly": "{{rate}}/h",
+    "minimum": "{{minutes}} min minimum",
+    "missingRate": "Billable · rate not configured",
+    "recalculated": "Billing is recalculated for this work type when saved.",
+    "unavailable": "Billing outcome unavailable"
   }
 }

@@ -10,7 +10,13 @@ import type { Device } from './DeviceList';
 // network or the toast store.
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
+  // useJwtClaims / usePermissions read the store; tokens:null = unresolved,
+  // user:undefined = no permissions, so nothing new is offered by default.
+  useAuthStore: (sel: (s: { tokens: null; user: undefined }) => unknown) => sel({ tokens: null, user: undefined }),
 }));
+
+const { canMoveOrgMock } = vi.hoisted(() => ({ canMoveOrgMock: vi.fn(() => false) }));
+vi.mock('@/lib/moveOrgCapability', () => ({ useCanMoveDeviceOrg: canMoveOrgMock }));
 
 vi.mock('../shared/Toast', async () => {
   const actual = await vi.importActual<typeof import('../shared/Toast')>('../shared/Toast');
@@ -406,5 +412,32 @@ describe('DeviceActions — maintenance mode in the Power menu (#4936)', () => {
       'maintenance',
       expect.objectContaining({ id: 'device-1', status: 'maintenance' }),
     );
+  });
+});
+
+describe('DeviceActions — Move to Organization entry (device move-org D5)', () => {
+  beforeEach(() => { vi.clearAllMocks(); canMoveOrgMock.mockReturnValue(false); });
+
+  it('is hidden when the caller cannot move devices between organizations', async () => {
+    render(<DeviceActions device={onlineDevice} onAction={vi.fn()} />);
+    await userEvent.click(screen.getByTestId('device-actions-menu'));
+    expect(screen.queryByTestId('device-action-move-org')).not.toBeInTheDocument();
+  });
+
+  it('emits onAction("move-org") for a capable caller instead of opening a confirm', async () => {
+    canMoveOrgMock.mockReturnValue(true);
+    const onAction = vi.fn();
+    render(<DeviceActions device={onlineDevice} onAction={onAction} />);
+    await userEvent.click(screen.getByTestId('device-actions-menu'));
+    await userEvent.click(screen.getByTestId('device-action-move-org'));
+    expect(onAction).toHaveBeenCalledWith('move-org', onlineDevice);
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  it('is offered for an offline device too — the move is a database operation, not an agent command', async () => {
+    canMoveOrgMock.mockReturnValue(true);
+    render(<DeviceActions device={offlineDevice} onAction={vi.fn()} />);
+    await userEvent.click(screen.getByTestId('device-actions-menu'));
+    expect(screen.getByTestId('device-action-move-org')).toBeEnabled();
   });
 });

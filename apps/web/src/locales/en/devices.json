@@ -254,6 +254,7 @@
     "deploySoftware": "Deploy Software",
     "clearSessions": "Clear Sessions",
     "changeSite": "Change Site",
+    "moveOrg": "Move to Organization",
     "exitMaintenance": "Exit Maintenance",
     "enterMaintenance": "Enter Maintenance",
     "decommission": "Remove",
@@ -577,6 +578,7 @@
   },
   "deviceDetailPage": {
     "failedToFetchDevice": "Failed to fetch device",
+    "movedToOrg": "{{hostname}} moved to {{orgName}}",
     "online": "online",
     "offline": "offline",
     "rebootToSafeMode": "Reboot to Safe Mode",
@@ -751,6 +753,51 @@
     "text": "–",
     "of": "of",
     "noMoreActivity": "No more activity"
+  },
+  "systemCleanupPanel": {
+    "title": "OS cleanup actions",
+    "description": "Built-in maintenance tools that reclaim space the file scan cannot see. Estimates may differ from the space actually freed.",
+    "checkActions": "Check available actions",
+    "checking": "Checking…",
+    "run": "Run selected",
+    "running": "Running… {{minutes}}m {{seconds}}s elapsed",
+    "noActions": "No OS cleanup actions are available on this device.",
+    "estimateUpTo": "up to {{size}}",
+    "estimateUnknown": "size unknown",
+    "listFailed": "Could not read the cleanup actions available on this device.",
+    "listTimedOut": "The device did not answer in time. Try again in a few minutes.",
+    "runFailed": "The cleanup run could not be completed.",
+    "runTimedOut": "The cleanup run is still going. Reopen this tab later to see the result.",
+    "agentUpdateRequired": "Update this device's agent to version {{version}} or later to run OS cleanup actions.",
+    "confirmTitle": "Run OS cleanup actions?",
+    "confirmMessage": "{{count}} action(s) will run on this device. Some can take up to 90 minutes and cannot be undone.",
+    "confirmIrreversible": "I understand these changes cannot be undone.",
+    "freed": "Freed {{size}}",
+    "volumeFreed": "{{mount}}: {{size}} freed",
+    "risk": {
+      "long_running": "can take a while",
+      "may_require_reboot": "space freed after restart",
+      "may_require_reboot_free_state": "some space freed after restart",
+      "removes_driver_rollback": "removes driver rollback",
+      "removes_packages": "uninstalls packages",
+      "removes_os_rollback": "ends Windows rollback",
+      "removes_recovery_points": "removes restore points"
+    },
+    "status": {
+      "completed": "completed",
+      "failed": "failed",
+      "timed_out": "timed out",
+      "unavailable": "not available",
+      "busy": "not started — the device was busy",
+      "not_started": "not started — the run ran out of time"
+    },
+    "runInProgress": "An OS cleanup is already running on this device. Wait for it to finish, then try again.",
+    "consequence": {
+      "removes_driver_rollback": "This device will no longer be able to roll back the removed drivers to their previous versions.",
+      "removes_packages": "Packages that are no longer required will be uninstalled.",
+      "removes_os_rollback": "This device will no longer be able to roll back to its previous Windows version.",
+      "removes_recovery_points": "Local snapshots are deleted. If the Time Machine disk is not connected, this device has no other restore points."
+    }
   },
   "deviceFilesystemTab": {
     "resultPartial": "Partially completed",
@@ -2383,6 +2430,33 @@
     "submitting": "Working…",
     "cancel": "Cancel",
     "genericError": "Failed to start maintenance mode."
+  },
+  "moveDeviceOrgDialog": {
+    "title": "Move to another organization",
+    "description": "Moves {{hostname}} out of {{orgName}}. Its history, tickets and policies move with it, and the agent reconnects under the new organization.",
+    "targetOrgLabel": "Target organization",
+    "targetOrgPlaceholder": "Choose an organization",
+    "targetSiteLabel": "Target site",
+    "targetSitePlaceholder": "Choose a site",
+    "loadingSites": "Loading sites…",
+    "noOtherOrgs": "There is no other active organization to move this device to.",
+    "noSites": "The chosen organization has no sites yet. Add a site to it first.",
+    "currencyMismatchHeading": "Unbilled work in another currency",
+    "currencyMismatchDetail": "{{sourceCurrency}} → {{targetCurrency}}: {{timeEntries}} unbilled time entries and {{parts}} unbilled parts keep their original currency after the move.",
+    "currencyMismatchAccept": "I understand — move the device and keep those rows in their original currency",
+    "currencyMismatchNoPermission": "Accepting this needs invoice write permission. Ask a billing administrator to bill or clear the open work first.",
+    "stepUpHeading": "Confirm it's you",
+    "stepUpIntro": "Moving a device between organizations requires a second factor.",
+    "stepUpCodeLabel": "Authenticator code",
+    "stepUpPasskeyNote": "You'll confirm with your passkey.",
+    "noStepUpFactor": "Add an authenticator app or passkey to your account before moving devices between organizations.",
+    "mfaRequired": "Complete MFA sign-in first, then try again.",
+    "stepUpRetry": "That verification could not be used. Enter a fresh code and try again.",
+    "submit": "Move device",
+    "submitStepUp": "Verify and move",
+    "submitting": "Working…",
+    "cancel": "Cancel",
+    "genericError": "Failed to move the device."
   },
   "networkDeviceDetailPage": {
     "approval": {

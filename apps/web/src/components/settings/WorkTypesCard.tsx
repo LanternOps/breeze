@@ -1,5 +1,5 @@
-// W02 must move this card into the Rates screen and remove it from here.
-import { useCallback, useEffect, useState } from 'react';
+// Work-type management lives with the billing profile grid in Settings → Billing → Rates.
+import { useCallback, useEffect, useImperativeHandle, useRef, useState, type Ref } from 'react';
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
 import { ActionError, runAction } from '../../lib/runAction';
@@ -12,7 +12,12 @@ const endpoint = '/billing-profiles/work-types';
 const inputClass = 'min-w-0 flex-1 rounded-md border bg-background px-3 py-2 text-sm focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring';
 const buttonClass = 'rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50';
 
-export default function WorkTypesCard({ onLoad }: { onLoad?: (workTypes: WorkTypeOption[]) => void }) {
+export interface WorkTypesCardHandle {
+  add: () => void;
+  rename: (id: string) => void;
+  archive: (id: string) => void;
+}
+export default function WorkTypesCard({ onLoad, ref }: { onLoad?: (workTypes: WorkTypeOption[]) => void; ref?: Ref<WorkTypesCardHandle> }) {
   const { t } = useTranslation('settings');
   const [workTypes, setWorkTypes] = useState<WorkTypeOption[]>([]);
   const [loading, setLoading] = useState(true);
@@ -21,6 +26,15 @@ export default function WorkTypesCard({ onLoad }: { onLoad?: (workTypes: WorkTyp
   const [name, setName] = useState('');
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
+  const newNameRef = useRef<HTMLInputElement>(null);
+  useImperativeHandle(ref, () => ({
+    add: () => { newNameRef.current?.focus(); },
+    rename: (id) => {
+      const workType = workTypes.find(item => item.id === id);
+      if (workType && !busy) { setEditingId(id); setEditName(workType.name); }
+    },
+    archive: (id) => { void mutate('DELETE', id); },
+  }));
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -95,7 +109,7 @@ export default function WorkTypesCard({ onLoad }: { onLoad?: (workTypes: WorkTyp
       <form className="mt-4 flex flex-wrap items-end gap-2" onSubmit={(event) => { event.preventDefault(); void mutate('POST'); }}>
         <label className="flex min-w-0 flex-1 flex-col gap-1 text-sm font-medium">
           {t('workTypes.newName')}
-          <input data-testid="work-type-new-name" className={inputClass} maxLength={60} value={name} disabled={busy} onChange={(event) => setName(event.target.value)} />
+          <input ref={newNameRef} data-testid="work-type-new-name" className={inputClass} maxLength={60} value={name} disabled={busy} onChange={(event) => setName(event.target.value)} />
         </label>
         <button type="submit" data-testid="work-type-create" className={buttonClass} disabled={busy || !name.trim()}>{t('workTypes.create')}</button>
       </form>

@@ -1,3 +1,4 @@
+import { AI_AGENT_RUN_STATUSES } from '@breeze/shared';
 /**
  * AI Tool Input Schemas
  *
@@ -19,7 +20,7 @@ import {
   peripheralPolicyActionEnum,
   peripheralPolicyTargetTypeEnum,
   peripheralEventTypeEnum
-} from '../db/schema';
+} from '../db/schema/peripheralControl';
 import { CONFIG_FEATURE_TYPES } from './configFeatureTypes';
 import { CONTACT_ROLES } from './contacts/types';
 
@@ -110,6 +111,21 @@ export const deliveryToolSchema = z.object(deliveryToolShape).strict().superRefi
 
 // Tool schemas
 export const toolInputSchemas: Record<string, z.ZodType> = {
+  list_time_entries: z.object({
+    orgId: uuid.optional(),
+    ticketId: uuid.optional(),
+    userId: uuid.optional(),
+    from: z.string().optional(),
+    to: z.string().optional(),
+    running: z.boolean().optional(),
+    billingStatus: z.enum(['not_billed', 'billed', 'no_charge', 'contract']).optional(),
+    approved: z.boolean().optional(),
+    limit: z.number().int().min(1).max(200).optional(),
+    offset: z.number().int().min(0).optional(),
+  }),
+  get_running_timer: z.object({}),
+  get_timesheet: z.object({ weekStart: z.string(), userId: uuid.optional() }),
+
   query_devices: z.object({
     status: z.enum(['online', 'offline', 'maintenance', 'decommissioned']).optional(),
     osType: z.enum(['windows', 'macos', 'linux']).optional(),
@@ -168,6 +184,15 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     limit: z.number().int().min(1).optional(),
   }),
 
+  list_network_assets: z.object({
+    orgId: z.string().guid().optional(),
+    siteId: z.string().guid().optional(),
+    approvalStatus: z.enum(['pending', 'approved', 'dismissed']).optional(),
+    assetType: z.enum(['workstation', 'server', 'printer', 'router', 'switch', 'firewall', 'access_point', 'phone', 'iot', 'camera', 'nas', 'unknown', 'website', 'service']).optional(),
+    linkedDeviceId: z.string().guid().optional(),
+    limit: z.number().int().min(1).max(200).optional(),
+  }),
+  get_network_asset: z.object({ assetId: z.string().guid() }),
   get_network_asset_reachability: z.object({
     asset_id: uuid,
   }),
@@ -372,6 +397,50 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     blocksOffset: z.number().int().min(0).optional(),
     blocksLimit: z.number().int().min(1).max(100).optional(),
     includeBlockContent: z.boolean().optional(),
+  }),
+
+  list_remediation_suggestions: z.object({
+    orgId: z.string().guid().optional(),
+    sourceType: z.enum(['alert', 'anomaly', 'correlation', 'rca']).optional(),
+    sourceId: z.string().min(1).max(255).optional(),
+    deviceId: z.string().guid().optional(),
+    status: z.enum(['all', 'suggested', 'accepted', 'edited', 'rejected', 'executed', 'failed']).optional(),
+    limit: z.number().int().min(1).max(100).optional(),
+  }),
+
+  list_incidents: z.object({
+    orgId: z.string().guid().optional(),
+    status: z.enum(['detected', 'analyzing', 'contained', 'recovering', 'closed']).optional(),
+    severity: z.enum(['p1', 'p2', 'p3', 'p4']).optional(),
+    classification: z.string().max(40).optional(),
+    assignedTo: z.string().guid().optional(),
+    startDate: z.string().datetime({ offset: true }).optional(),
+    endDate: z.string().datetime({ offset: true }).optional(),
+    limit: z.number().int().min(1).max(100).optional(),
+    offset: z.number().int().min(0).optional(),
+  }),
+
+  list_ai_agents: z.object({ includeDisabled: z.boolean().optional() }),
+  list_ai_agent_runs: z.object({
+    agentId: z.string().guid().optional(), orgId: z.string().guid().optional(),
+    status: z.enum(AI_AGENT_RUN_STATUSES).optional(),
+    limit: z.number().int().min(1).max(50).optional(),
+  }),
+  get_ai_agent_run: z.object({ runId: z.string().guid() }),
+  list_sites: z.object({
+    orgId: z.string().guid().optional(),
+    search: z.string().max(255).optional(),
+    limit: z.number().int().min(1).max(100).optional(),
+    offset: z.number().int().min(0).optional(),
+  }),
+  get_site: z.object({ siteId: z.string().guid() }),
+
+  list_org_contacts: z.object({
+    orgId: z.string().guid(),
+    siteId: z.union([z.literal('none'), z.string().guid()]).optional(),
+    role: z.string().min(1).max(64).optional(),
+    limit: z.number().int().min(1).max(100).optional(),
+    offset: z.number().int().min(0).optional(),
   }),
 
   list_organizations: z.object({

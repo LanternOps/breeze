@@ -2212,7 +2212,8 @@
   "partnerBillingSettingsTabs": {
     "defaults": "Defaults",
     "documents": "Documents",
-    "connections": "Connections"
+    "connections": "Connections",
+    "rates": "Rates"
   },
   "billingConnectionsTab": {
     "accounting": {
@@ -2226,5 +2227,59 @@
       "catalogCta": "Open Product Catalog →",
       "distributorsCta": "Open Distributors →"
     }
+  },
+  "orgBillingProfile": {
+    "label": "Billing profile",
+    "inherit": "{{name}} (partner default)",
+    "noProfile": "No billing profile",
+    "unavailable": "Assigned profile unavailable",
+    "resolved": "Rates from {{name}}",
+    "allOtherWork": "All other work",
+    "billable": "Billable at {{rate}}/h",
+    "included": "Included",
+    "nonBillable": "Non-billable",
+    "noRate": "Billable — rate not configured",
+    "minimum": "{{outcome}} · {{minutes}} min minimum",
+    "rounding": "Round to {{minutes}} minutes",
+    "archivedWorkType": "Archived work type",
+    "mismatch": "The assigned billing profile is inactive or uses another currency. The matching partner default applies instead.",
+    "currencyWarning": "The assigned billing profile uses {{currency}}. After this change, the matching partner default will apply.",
+    "loadError": "Billing profiles could not be loaded.",
+    "saveError": "The billing profile could not be saved.",
+    "partialSave": "The billing profile was saved, but the other billing settings were not. Retry Save to finish."
+  },
+  "rates": {
+    "title": "Rates",
+    "description": "Set labour rates by billing profile and work type. Changes apply to new time entries.",
+    "create": "Add billing profile",
+    "loadError": "Could not load billing profiles. Try again.",
+    "saveError": "Could not save billing profile.",
+    "saved": "Billing profile saved.",
+    "empty": "Add a billing profile to configure labour rates.",
+    "profile": "Billing profile",
+    "allOtherWork": "All other work",
+    "actions": "Actions",
+    "default": "Default",
+    "clone": "Clone billing profile",
+    "setDefault": "Set as default",
+    "archive": "Archive",
+    "usageUnavailable": "Organization usage is unavailable.",
+    "edit": "Edit billing profile",
+    "name": "Name",
+    "currency": "Currency",
+    "rounding": "Rounding (minutes)",
+    "notes": "Notes",
+    "coverage": "Billing outcome",
+    "hourlyRate": "Hourly rate",
+    "minimum": "Minimum (minutes)",
+    "billable": "Billable",
+    "included": "Included",
+    "nonBillable": "Non-billable",
+    "noRate": "Billable · no rate set",
+    "billableAt": "Billable at {{rate}}/h",
+    "minimumSummary": "{{minutes}} min minimum",
+    "roundingSummary": "Round to {{minutes}} min",
+    "inherits": "Uses All other work",
+    "currencyHelp": "A default profile or a profile with rates cannot change currency. Blank rounding means no rounding."
   }
 }

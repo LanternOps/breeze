@@ -3,7 +3,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import FleetOrchestrationPage from './FleetOrchestrationPage';
 import { fetchWithAuth } from '../../stores/auth';
 
-vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+vi.mock('../../stores/auth', () => ({
+  fetchWithAuth: vi.fn(),
+  // usePermissions() selects user.permissions (#6396 gates the AI launchers).
+  useAuthStore: (selector: (s: { user: { permissions: Array<{ resource: string; action: string }> } }) => unknown) =>
+    selector({ user: { permissions: [{ resource: '*', action: '*' }] } }),
+}));
 vi.mock('@/hooks/useOrgScope', () => ({ getOrgScope: () => ({ scope: 'all' }) }));
 vi.mock('@/stores/aiStore', () => ({ useAiStore: { getState: () => ({ setPageContext: vi.fn() }) } }));
 vi.mock('./FindingsFeed', () => ({ default: () => <div>Findings</div> }));

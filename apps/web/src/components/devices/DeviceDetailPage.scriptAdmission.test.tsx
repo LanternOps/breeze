@@ -35,6 +35,8 @@ vi.mock('./DeviceDetails', () => ({
 }));
 vi.mock('./DeviceSettingsModal', () => ({ default: () => null }));
 vi.mock('./ChangeSiteModal', () => ({ default: () => null }));
+// The real dialog pulls in the org store, which needs more of stores/auth than this suite mocks.
+vi.mock('./MoveDeviceOrgDialog', () => ({ default: () => null }));
 vi.mock('./ScriptPickerModal', () => ({
   default: ({ isOpen, onSelect }: { isOpen: boolean; onSelect: (script: { id: string; name: string }, runAs: 'system') => void }) => isOpen ? (
     <button type="button" onClick={() => void onSelect({ id: 'script-1', name: 'Cleanup' }, 'system')}>Choose Cleanup</button>

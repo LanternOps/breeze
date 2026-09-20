@@ -525,5 +525,14 @@
       "message": "Nasconde il ticket da tutte le code. Un amministratore può ripristinarlo dalla coda Archiviati.",
       "confirm": "Elimina ticket"
     }
+  },
+  "billingOutcome": {
+    "included": "Incluso",
+    "nonBillable": "Non fatturabile",
+    "hourly": "{{rate}} all’ora",
+    "minimum": "Minimo {{minutes}} min",
+    "missingRate": "Fatturabile · tariffa non configurata",
+    "recalculated": "La fatturazione viene ricalcolata per questo tipo di lavoro al salvataggio.",
+    "unavailable": "Esito della fatturazione non disponibile"
   }
 }

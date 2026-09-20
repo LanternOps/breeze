@@ -6,10 +6,17 @@ vi.mock('@anthropic-ai/claude-agent-sdk', async (importOriginal) => {
   return { ...actual, query: queryMock };
 });
 
-import { denyPreToolUse, runSurfaceCapture } from './runSurface';
+import { denyPreToolUse, getCaptureSystemPrompt, runSurfaceCapture } from './runSurface';
 import { CAPTURE_SURFACES, type CaptureSurface } from './surfaces';
-import { buildBreezeSdkTools } from '../../aiAgentSdkTools';
-import { AI_SYSTEM_PROMPT_BASE } from '../../aiAgentSystemPrompt';
+import { buildBreezeSdkTools, listChatSurfaceToolNames } from '../../aiAgentSdkTools';
+import { AI_SYSTEM_PROMPT_TAIL } from '../../aiAgentSystemPrompt';
+
+import { composeStaticSystemPrompt } from '../../aiToolIndex';
+import { buildScriptBuilderSystemPrompt } from '../../scriptBuilderPrompt';
+import { buildHelperSystemPrompt } from '../../helperAiAgent';
+import { getHelperAllowedTools } from '../../helperToolFilter';
+import { buildAgentRunSystemPrompt } from '../../aiAgents/runnerPrompt';
+import { HELPER_CAPTURE_FIXTURE, AGENT_CAPTURE_FIXTURE } from './promptFixtures';
 
 /** An async generator standing in for the SDK's `query()` return value. */
 async function* messages(items: unknown[]): AsyncGenerator<unknown> {
@@ -41,6 +48,48 @@ describe('denyPreToolUse', () => {
 });
 
 describe('runSurfaceCapture', () => {
+  it('sends the complete static production chat prompt', async () => {
+    queryMock.mockReturnValueOnce(messages([]));
+    await runSurfaceCapture(baseOpts);
+    const prompt = queryMock.mock.lastCall![0].options.systemPrompt;
+    expect(prompt).toContain('## Available Tools by Domain');
+    expect(prompt).toContain(AI_SYSTEM_PROMPT_TAIL.split('\n')[0]);
+    expect(prompt).toBe(composeStaticSystemPrompt(listChatSurfaceToolNames()));
+  });
+
+  it('sends the script builder production prompt without editor context', async () => {
+    queryMock.mockReturnValueOnce(messages([]));
+    await runSurfaceCapture({ ...baseOpts, surface: CAPTURE_SURFACES['script-builder'] });
+    expect(queryMock.mock.lastCall![0].options.systemPrompt).toBe(buildScriptBuilderSystemPrompt());
+  });
+
+  it.each(['basic', 'standard', 'extended'] as const)(
+    'sends the production Helper prompt for %s with matching capabilities', async (permissionLevel) => {
+      const surface = CAPTURE_SURFACES[`helper-${permissionLevel}`];
+      const expected = buildHelperSystemPrompt({ ...HELPER_CAPTURE_FIXTURE, permissionLevel });
+      // Every capability in the builder is gated by this list. Check the whole
+      // list (including tools with no prose capability) against SDK permissions.
+      for (const tool of getHelperAllowedTools(permissionLevel)) {
+        expect(surface.allowedTools, `${surface.id}: ${tool}`).toContain(`mcp__breeze__${tool}`);
+      }
+      expect(expected).toContain('## Your Capabilities');
+      expect(getCaptureSystemPrompt(surface)).toBe(expected);
+      expect(getCaptureSystemPrompt(surface)).not.toContain('## Available Tools by Domain');
+      queryMock.mockReturnValueOnce(messages([]));
+      await runSurfaceCapture({ ...baseOpts, surface });
+      expect(queryMock.mock.lastCall![0].options.systemPrompt).toBe(expected);
+    },
+  );
+
+  it('sends the production full agent prompt with synthetic context', async () => {
+    const surface = CAPTURE_SURFACES['agent-full'];
+    const expected = buildAgentRunSystemPrompt(AGENT_CAPTURE_FIXTURE);
+    expect(getCaptureSystemPrompt(surface)).toBe(expected);
+    queryMock.mockReturnValueOnce(messages([]));
+    await runSurfaceCapture({ ...baseOpts, surface });
+    expect(queryMock.mock.lastCall![0].options.systemPrompt).toBe(expected);
+  });
+
   it('treats an error-subtype result (e.g. error_max_turns) as an expected end, not a failure', async () => {
     const resultMessage = {
       type: 'result',
@@ -112,7 +161,7 @@ describe('runSurfaceCapture', () => {
         includePartialMessages: CAPTURE_SURFACES.chat.includePartialMessages,
         maxTurns: 2,
         resume: 'prior-session',
-        systemPrompt: AI_SYSTEM_PROMPT_BASE,
+        systemPrompt: composeStaticSystemPrompt(listChatSurfaceToolNames()),
         settingSources: [],
         thinking: { type: 'disabled' },
         persistSession: true,

@@ -6,13 +6,20 @@ const authState = vi.hoisted(() => ({
   apiPrepare: vi.fn(),
   localLogout: vi.fn(),
   accessToken: 'access-old' as string | null,
+  permissions: undefined as Array<{ resource: string; action: string }> | undefined,
 }));
 vi.mock('../../stores/auth', () => {
+  const state = () => ({
+    user: {
+      id: 'user-1', name: 'User One', email: 'user@example.com', mfaEnabled: false,
+      permissions: authState.permissions,
+    },
+    isAuthenticated: true,
+  });
+  // Selector-aware like the real zustand hook: usePermissions() selects
+  // `s.user?.permissions` (#6396).
   const useAuthStore = Object.assign(
-    () => ({
-      user: { id: 'user-1', name: 'User One', email: 'user@example.com', mfaEnabled: false },
-      isAuthenticated: true,
-    }),
+    (selector?: (s: ReturnType<typeof state>) => unknown) => (selector ? selector(state()) : state()),
     {
       getState: () => ({
         logout: authState.localLogout,
@@ -213,5 +220,37 @@ describe('Header terminal logout UX', () => {
     rendered.unmount();
 
     expect(clearTimeoutSpy).toHaveBeenCalledWith(setTimeoutSpy.mock.results[deadlineCall]?.value);
+  });
+});
+
+// #6396: the AI assistant button is gated on ai_sessions:use so a role that
+// cannot open a chat session (Org Viewer, billing roles) does not get a button
+// that only ever 403s. UX only — the route re-checks the permission.
+describe('Header AI assistant button gating (#6396)', () => {
+  beforeEach(() => {
+    Object.defineProperty(window, 'matchMedia', {
+      configurable: true,
+      value: () => ({ matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn() }),
+    });
+  });
+  afterEach(() => { authState.permissions = undefined; });
+
+  it('hides the button when the user lacks ai_sessions:use', async () => {
+    authState.permissions = [{ resource: 'organizations', action: 'write' }];
+    render(<Header />);
+    await waitFor(() => expect(screen.getByLabelText('layout.header.accountMenu')).toBeInTheDocument());
+    expect(screen.queryByLabelText('layout.header.ai')).toBeNull();
+  });
+
+  it('shows the button when the user holds ai_sessions:use', async () => {
+    authState.permissions = [{ resource: 'ai_sessions', action: 'use' }];
+    render(<Header />);
+    await waitFor(() => expect(screen.getByLabelText('layout.header.ai')).toBeInTheDocument());
+  });
+
+  it('shows the button for a wildcard admin', async () => {
+    authState.permissions = [{ resource: '*', action: '*' }];
+    render(<Header />);
+    await waitFor(() => expect(screen.getByLabelText('layout.header.ai')).toBeInTheDocument());
   });
 });

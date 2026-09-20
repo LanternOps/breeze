@@ -49,7 +49,7 @@ import {
 } from './timeSuggestionService';
 
 const compiled = (i: number) => new PgDialect().sqlToQuery(execCalls[i] as never);
-const actor = { userId: 'u1', partnerId: 'p1', manageAll: false, accessibleOrgIds: ['o1'], scope: 'partner' as const };
+const actor = { userId: 'u1', partnerId: 'p1', manageAll: false, manageBilling: false, accessibleOrgIds: ['o1'], scope: 'partner' as const };
 const sessionRow = (over: Record<string, unknown> = {}) => ({
   id: 's1', type: 'desktop', device_id: 'd1', started_at: new Date('2026-08-29T14:02:00Z'), ended_at: new Date('2026-08-29T14:40:00Z'),
   duration_seconds: 2280, error_message: null, org_id: 'o1', org_name: 'ACME', org_type: 'customer', device_hostname: 'ACME-DC01',
@@ -354,6 +354,17 @@ describe('confirmTimeSuggestion', () => {
       { source: 'remote_session', orgLink: { orgId: 'o1', currencyCode: 'EUR' } }
     );
     expect(inserted[0]).toEqual([expect.objectContaining({ partnerId: 'p1', userId: 'u1', signalKind: 'remote_session', signalId: 's1', decision: 'confirmed', timeEntryId: 'e1' })]);
+  });
+
+  it.each([undefined, false, true])('passes billability only when explicitly supplied (%s)', async isBillable => {
+    enabled();
+    execResults.push([], [sessionRow()], []);
+    orgLinkMock.mockResolvedValue({ orgId: 'o1', currencyCode: 'EUR' });
+    createEntryMock.mockResolvedValue({ id: 'e1', orgId: 'o1' });
+    await confirmTimeSuggestion({ ...confirmBody, ...(isBillable === undefined ? {} : { isBillable }) }, actor);
+    const input = createEntryMock.mock.calls[0]![0];
+    if (isBillable === undefined) expect(input).not.toHaveProperty('isBillable');
+    else expect(input).toHaveProperty('isBillable', isBillable);
   });
 
   it('never lets the client choose org, currency or source', async () => {

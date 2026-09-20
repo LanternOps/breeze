@@ -224,3 +224,18 @@ describe('suggestionSignalsSchema', () => {
     expect(suggestionSignalsSchema.safeParse({ signals: [SIG], reason: 'x' }).success).toBe(false);
   });
 });
+
+describe('billing override input', () => {
+  it.each([null, 0, 30, 2147483647])('preserves minimumMinutes %s on create and update', minimumMinutes => {
+    const span = { startedAt: '2026-06-11T09:00:00Z', endedAt: '2026-06-11T09:30:00Z' };
+    expect(createTimeEntrySchema.parse({ ...span, minimumMinutes })).toHaveProperty('minimumMinutes', minimumMinutes);
+    expect(updateTimeEntrySchema.parse({ minimumMinutes })).toEqual({ minimumMinutes });
+  });
+  it.each([-1, 0.5, 2147483648, '30'])('rejects invalid minimumMinutes %s', minimumMinutes => {
+    expect(updateTimeEntrySchema.safeParse({ minimumMinutes }).success).toBe(false);
+  });
+  it('preserves resetBilling and rejects non-boolean values', () => {
+    expect(updateTimeEntrySchema.parse({ resetBilling: true })).toEqual({ resetBilling: true });
+    expect(updateTimeEntrySchema.safeParse({ resetBilling: 'true' }).success).toBe(false);
+  });
+});

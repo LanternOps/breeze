@@ -99,5 +99,8 @@ func validate(ctx context.Context, r *run) error {
 		return err
 	}
 	r.teardown()
+	if r.releaseErr != nil {
+		return fmt.Errorf("rebuild target is still in use after validation (unmount or detach failed): %w", r.releaseErr)
+	}
 	return nil
 }

@@ -1,6 +1,9 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent, act } from '@testing-library/react';
 
+let canManageBilling = true;
+vi.mock('../../lib/permissions', () => ({ usePermissions: () => ({ can: () => canManageBilling }) }));
+beforeEach(() => { canManageBilling = true; });
 const fetchWithAuth = vi.fn();
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: (...a: unknown[]) => fetchWithAuth(...a) }));
 vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
@@ -105,11 +108,12 @@ describe('TicketTimeBilling', () => {
       return route(url);
     };
 
-    it('prefills the rate from the ticket default and posts it', async () => {
+    it('prefills the resolved rate but lets the server apply it without an override', async () => {
       fetchWithAuth.mockImplementation(withDefaults({ hourlyRate: '150.00', currencyCode: 'USD', isBillable: true }));
       render(<TicketTimeBilling ticketId="tk-1" />);
       fireEvent.click(await screen.findByTestId('ticket-billing-quick-add-toggle'));
       const rate = screen.getByTestId('ticket-billing-quick-add-rate') as HTMLInputElement;
+      expect(rate.readOnly).toBe(false);
       expect(rate.value).toBe('150.00');
       expect(screen.queryByTestId('ticket-billing-quick-add-no-rate')).toBeNull();
       fireEvent.change(screen.getByTestId('ticket-billing-quick-add-minutes'), { target: { value: '30' } });
@@ -117,7 +121,7 @@ describe('TicketTimeBilling', () => {
       await waitFor(() => {
         const call = fetchWithAuth.mock.calls.find((args) => args[0] === '/time-entries');
         expect(call).toBeTruthy();
-        expect(JSON.parse((call![1] as RequestInit).body as string).hourlyRate).toBe(150);
+        expect(JSON.parse((call![1] as RequestInit).body as string)).not.toHaveProperty('hourlyRate');
       });
     });
 
@@ -345,4 +349,64 @@ it('MOUNT: choosing "No work type" before starting a timer sends an explicit nul
   fireEvent.change(picker, { target: { value: '' } });
   fireEvent.click(screen.getByTestId('ticket-billing-start-timer'));
   await waitFor(() => expect(requestBody('/time-entries/start')).toEqual({ ticketId: 'tk-1', workTypeId: null }));
+});
+
+
+describe('billing profile outcomes and permissions', () => {
+  it('keeps the resolved rate read-only and omits billing overrides without permission', async () => {
+    canManageBilling = false;
+    fetchWithAuth.mockImplementation(async (url: string) => url.includes('billing-summary')
+      ? { ok: true, json: async () => ({ data: { ...summary, defaults: { hourlyRate: '150.00', currencyCode: 'EUR', isBillable: true, coverage: 'billable', minimumMinutes: 60 } } }) } as Response
+      : route(url));
+    render(<TicketTimeBilling ticketId="tk-1" />);
+    await screen.findByTestId('ticket-billing-time-total');
+    fireEvent.click(screen.getByTestId('ticket-billing-quick-add-toggle'));
+    expect(screen.getByTestId('ticket-billing-quick-add-rate')).toHaveProperty('readOnly', true);
+    expect(screen.getByTestId('ticket-billing-quick-add-billable')).toBeDisabled();
+    expect(screen.getByTestId('ticket-billing-quick-add-outcome').textContent).toContain('€150.00');
+    fireEvent.change(screen.getByTestId('ticket-billing-quick-add-minutes'), { target: { value: '30' } });
+    fireEvent.click(screen.getByTestId('ticket-billing-quick-add-submit'));
+    await waitFor(() => expect(fetchWithAuth.mock.calls.some(([url, init]) => url === '/time-entries' && init?.method === 'POST')).toBe(true));
+    const body = JSON.parse(fetchWithAuth.mock.calls.find(([url, init]) => url === '/time-entries' && init?.method === 'POST')![1].body);
+    expect(body).not.toHaveProperty('hourlyRate');
+    expect(body).not.toHaveProperty('isBillable');
+  });
+  it('shows included coverage without a missing-rate warning', async () => {
+    fetchWithAuth.mockImplementation(async (url: string) => url.includes('billing-summary')
+      ? { ok: true, json: async () => ({ data: { ...summary, defaults: { hourlyRate: null, currencyCode: 'EUR', isBillable: true, coverage: 'included' } } }) } as Response
+      : route(url));
+    render(<TicketTimeBilling ticketId="tk-1" />);
+    await screen.findByTestId('ticket-billing-time-total');
+    fireEvent.click(screen.getByTestId('ticket-billing-quick-add-toggle'));
+    expect(screen.getByTestId('ticket-billing-quick-add-outcome')).toHaveTextContent('Included');
+    expect(screen.queryByTestId('ticket-billing-quick-add-no-rate')).toBeNull();
+  });
+});
+
+
+it('shows the default work type and invalidates the advisory outcome after a picker change', async () => {
+  fetchWithAuth.mockImplementation(async (url: string) => url.includes('billing-summary')
+    ? { ok: true, json: async () => ({ data: { ...summary, defaults: { hourlyRate: '150', currencyCode: 'EUR', isBillable: true, coverage: 'billable', workTypeId: 'wt-1' } } }) } as Response
+    : route(url));
+  render(<TicketTimeBilling ticketId="tk-1" />);
+  await screen.findByTestId('ticket-billing-time-total');
+  fireEvent.click(screen.getByTestId('ticket-billing-quick-add-toggle'));
+  await waitFor(() => expect(screen.getByTestId('ticket-billing-quick-add-work-type')).toHaveValue('wt-1'));
+  fireEvent.change(screen.getByTestId('ticket-billing-quick-add-work-type'), { target: { value: 'wt-2' } });
+  expect(screen.getByTestId('ticket-billing-quick-add-outcome')).toHaveTextContent('Billing is recalculated');
+  expect(screen.getByTestId('ticket-billing-quick-add-rate')).toHaveValue(null);
+});
+
+
+it('updates the quick-add outcome for a manager rate and billable override', async () => {
+  fetchWithAuth.mockImplementation(async (url: string) => url.includes('billing-summary')
+    ? { ok: true, json: async () => ({ data: { ...summary, defaults: { hourlyRate: null, currencyCode: 'EUR', isBillable: true, coverage: 'included' } } }) } as Response
+    : route(url));
+  render(<TicketTimeBilling ticketId="tk-1" />);
+  await screen.findByTestId('ticket-billing-time-total');
+  fireEvent.click(screen.getByTestId('ticket-billing-quick-add-toggle'));
+  fireEvent.change(screen.getByTestId('ticket-billing-quick-add-rate'), { target: { value: '225' } });
+  expect(screen.getByTestId('ticket-billing-quick-add-outcome')).toHaveTextContent('€225.00/h');
+  fireEvent.click(screen.getByTestId('ticket-billing-quick-add-billable'));
+  expect(screen.getByTestId('ticket-billing-quick-add-outcome')).toHaveTextContent('Non-billable');
 });

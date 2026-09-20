@@ -38,6 +38,12 @@ describe('classifyTimeEntryDenial', () => {
     expect(missing?.reason).toBe('permission');
   });
 
+  it('explains MANAGE_BILLING_REQUIRED without withdrawing time tracking', () => {
+    const denial = classifyTimeEntryDenial(new TimeEntryError('Denied', 'MANAGE_BILLING_REQUIRED', 403));
+    expect(denial?.message).toMatch(/billing.*permission/i);
+    expect(isAccountLevelDenial(denial!)).toBe(false);
+  });
+
   it('maps NOT_OWN_ENTRY to an ownership denial rather than a role problem', () => {
     const denial = classifyTimeEntryDenial(new TimeEntryError('nope', 'NOT_OWN_ENTRY', 403));
     expect(denial?.reason).toBe('ownership');

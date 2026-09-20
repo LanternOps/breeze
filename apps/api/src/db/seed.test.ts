@@ -611,3 +611,20 @@ describe('dev seed Default Partner settings', () => {
     });
   });
 });
+
+describe('ai_sessions:use (#6396)', () => {
+  const byName = (name: string) => SYSTEM_ROLES.find((r) => r.name === name)!;
+  it('is seeded in the permission catalog', () => {
+    expect(DEFAULT_PERMISSIONS.some((p) => p.resource === 'ai_sessions' && p.action === 'use')).toBe(true);
+  });
+  it('is granted to Org Admin, Org Technician and Partner Technician so they can open chat', () => {
+    expect(byName('Org Admin').permissions).toContain('ai_sessions:use');
+    expect(byName('Org Technician').permissions).toContain('ai_sessions:use');
+    expect(byName('Partner Technician').permissions).toContain('ai_sessions:use');
+  });
+  it('is NOT granted to viewer or billing roles', () => {
+    for (const name of ['Org Viewer', 'Partner Viewer', 'Partner Billing', 'Partner Billing Viewer']) {
+      expect(byName(name).permissions).not.toContain('ai_sessions:use');
+    }
+  });
+});

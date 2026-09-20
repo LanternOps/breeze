@@ -33,7 +33,7 @@ export type DrainOutcome =
  * success — treating it as a conflict would show a spurious error and, worse,
  * tempt a caller into re-sending.
  */
-export function classifyDrainOutcome(status: number | undefined): DrainOutcome {
+export function classifyDrainOutcome(status: number | undefined, code?: string): DrainOutcome {
   if (status === undefined) return 'retry';
 
   // 408 Request Timeout and 429 Too Many Requests are the only 4xx that a later
@@ -44,6 +44,7 @@ export function classifyDrainOutcome(status: number | undefined): DrainOutcome {
   if (status >= 200 && status < 300) return 'success';
 
   if (status === 409) return 'drop';
+  if (status === 403 && code === 'MANAGE_BILLING_REQUIRED') return 'dropAndToast';
   if (status === 403) return 'dropAndDisable';
   if (status === 404 || status === 410 || status === 400 || status === 422) return 'dropAndToast';
 

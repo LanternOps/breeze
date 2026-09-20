@@ -24,7 +24,7 @@ import { recordCommandDispatch } from './anomalyMetrics';
 // #5128. `dispatchDeviceCommand` imports back from this module; both uses are
 // function-level (neither evaluates the other's exports at module load), so the
 // ESM cycle resolves.
-import { dispatchDeviceCommand } from './dispatchDeviceCommand';
+import { dispatchDeviceCommand, dispatchDeviceCommandWithSystemPrecheck } from './dispatchDeviceCommand';
 import { deliverByFor, type OfflinePolicy } from './commandOfflinePolicy';
 import {
   decryptCommandForDelivery,
@@ -870,6 +870,22 @@ export async function queueCommandForExecution(
       : { error: res.error };
   }
 
+  return { command: res.command, delivery: res.delivery, deliverBy: res.deliverBy };
+}
+
+/** Queue without holding a database transaction across socket delivery. */
+export async function queueCommandForExecutionWithSystemPrecheck(
+  deviceId: string,
+  type: CommandType | string,
+  payload: CommandPayload = {},
+  options: NonNullable<Parameters<typeof queueCommandForExecution>[3]> & { expectedOrgId: string },
+): Promise<QueueCommandForExecutionResult> {
+  const res = await dispatchDeviceCommandWithSystemPrecheck({ deviceId, type, payload, ...options });
+  if (!res.ok) {
+    return res.code === 'trust_denied' && res.trust
+      ? { error: res.error, trust: res.trust }
+      : { error: res.error };
+  }
   return { command: res.command, delivery: res.delivery, deliverBy: res.deliverBy };
 }
 

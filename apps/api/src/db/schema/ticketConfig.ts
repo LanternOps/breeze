@@ -41,8 +41,8 @@ export const orgTicketSettings = pgTable('org_ticket_settings', {
   // { "<priority>": { "responseMinutes": n|null, "resolutionMinutes": n|null } } — shape owned by the shared Zod validator
   slaOverrides: jsonb('sla_overrides').notNull().default(sql`'{}'::jsonb`),
   defaultHourlyRate: numeric('default_hourly_rate', { precision: 10, scale: 2 }),
-  // Currency default_hourly_rate was entered under — stamped from the org, never from the client.
-  rateCurrency: char('rate_currency', { length: 3 }).notNull(),
+  // W04: legacy snapshot retained for export only; the inert default allows SLA-only inserts.
+  rateCurrency: char('rate_currency', { length: 3 }).notNull().default('USD'),
   defaultBillable: boolean('default_billable'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
