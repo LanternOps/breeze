@@ -36,7 +36,7 @@ import {
   sensitiveDataPolicies,
   peripheralPolicies,
 } from '../db/schema';
-import { and, eq, desc, or, isNull, sql, inArray, asc, getTableColumns, SQL } from 'drizzle-orm';
+import { and, eq, desc, or, isNull, isNotNull, sql, inArray, asc, getTableColumns, SQL } from 'drizzle-orm';
 import { canManagePartnerWidePolicies, PartnerWideWriteDeniedError } from './partnerWideAccess';
 import { buildRoleOsFilterConditions } from './featureConfigResolver';
 import {
@@ -1287,7 +1287,15 @@ async function assembleInlineSettings(
         .from(configPolicyAlertRules)
         .where(and(eq(configPolicyAlertRules.featureLinkId, linkId), isNull(configPolicyAlertRules.retiredAt)))
         .orderBy(asc(configPolicyAlertRules.sortOrder));
-      if (rows.length === 0) return { items: [] };
+      if (rows.length === 0) {
+        const [retired] = await executor.select({ id: configPolicyAlertRules.id })
+          .from(configPolicyAlertRules)
+          .where(and(eq(configPolicyAlertRules.featureLinkId, linkId), isNotNull(configPolicyAlertRules.retiredAt)))
+          .limit(1);
+        // Retired history makes an empty live set authoritative; links awaiting
+        // normalization must still fall back to their pre-backfill JSON mirror.
+        return retired ? { items: [] } : null;
+      }
       return {
         items: rows.map((r) => ({
           name: r.name,
@@ -1312,7 +1320,15 @@ async function assembleInlineSettings(
         .from(configPolicyAutomations)
         .where(and(eq(configPolicyAutomations.featureLinkId, linkId), isNull(configPolicyAutomations.retiredAt)))
         .orderBy(asc(configPolicyAutomations.sortOrder));
-      if (rows.length === 0) return { items: [] };
+      if (rows.length === 0) {
+        const [retired] = await executor.select({ id: configPolicyAutomations.id })
+          .from(configPolicyAutomations)
+          .where(and(eq(configPolicyAutomations.featureLinkId, linkId), isNotNull(configPolicyAutomations.retiredAt)))
+          .limit(1);
+        // Retired history makes an empty live set authoritative; links awaiting
+        // normalization must still fall back to their pre-backfill JSON mirror.
+        return retired ? { items: [] } : null;
+      }
       return {
         items: rows.map((r) => ({
           name: r.name,
@@ -1910,17 +1926,45 @@ export async function updateFeatureLink(
   });
 }
 
+/** A feature link is the permanent owner of converted source history. */
+async function featureLinkHasRetiredHistory(linkId: string, executor: DbExecutor): Promise<boolean> {
+  const [rule] = await executor.select({ id: configPolicyAlertRules.id })
+    .from(configPolicyAlertRules)
+    .where(and(eq(configPolicyAlertRules.featureLinkId, linkId), isNotNull(configPolicyAlertRules.retiredAt)))
+    .limit(1);
+  if (rule) return true;
+  const [automation] = await executor.select({ id: configPolicyAutomations.id })
+    .from(configPolicyAutomations)
+    .where(and(eq(configPolicyAutomations.featureLinkId, linkId), isNotNull(configPolicyAutomations.retiredAt)))
+    .limit(1);
+  if (automation) return true;
+  const [watch] = await executor.select({ id: configPolicyMonitoringWatches.id })
+    .from(configPolicyMonitoringWatches)
+    .innerJoin(configPolicyMonitoringSettings, eq(configPolicyMonitoringWatches.settingsId, configPolicyMonitoringSettings.id))
+    .where(and(eq(configPolicyMonitoringSettings.featureLinkId, linkId), isNotNull(configPolicyMonitoringWatches.retiredAt)))
+    .limit(1);
+  return !!watch;
+}
+
 export async function removeFeatureLink(linkId: string, configPolicyId: string) {
-  const [deleted] = await db
-    .delete(configPolicyFeatureLinks)
-    .where(
-      and(
-        eq(configPolicyFeatureLinks.id, linkId),
-        eq(configPolicyFeatureLinks.configPolicyId, configPolicyId)
-      )
-    )
-    .returning();
-  return deleted ?? null;
+  return db.transaction(async (tx) => {
+    const predicate = and(eq(configPolicyFeatureLinks.id, linkId), eq(configPolicyFeatureLinks.configPolicyId, configPolicyId));
+    const [existing] = await tx.select().from(configPolicyFeatureLinks).where(predicate).for('update');
+    if (!existing) return null;
+
+    // D11/D29: deleting the owner would cascade away retired source rows and
+    // leave conversion provenance dangling. Keep it as an empty live feature.
+    if (await featureLinkHasRetiredHistory(linkId, tx)) {
+      await deleteNormalizedRows(linkId, existing.featureType as ConfigFeatureType, tx);
+      const inlineSettings = existing.featureType === 'monitoring'
+        ? { ...(existing.inlineSettings as Record<string, unknown> ?? {}), watches: [] }
+        : { items: [] };
+      await tx.update(configPolicyFeatureLinks).set({ inlineSettings, updatedAt: new Date() }).where(predicate);
+      return { ...existing, inlineSettings, kept: true as const, reason: 'retired_history' as const };
+    }
+    const [deleted] = await tx.delete(configPolicyFeatureLinks).where(predicate).returning();
+    return deleted ? { ...deleted, kept: false as const } : null;
+  });
 }
 
 export async function listFeatureLinks(configPolicyId: string, executor: DbExecutor = db) {
@@ -1968,9 +2012,7 @@ export async function listFeatureLinks(configPolicyId: string, executor: DbExecu
             : {};
         effectiveInlineSettings = { ...mirror, ...(assembled as Record<string, unknown>) };
       } else {
-        effectiveInlineSettings = featureType === 'alert_rule' || featureType === 'automation'
-          ? (assembled ?? { items: [] })
-          : (assembled ?? link.inlineSettings);
+        effectiveInlineSettings = assembled ?? link.inlineSettings;
       }
       return {
         ...link,

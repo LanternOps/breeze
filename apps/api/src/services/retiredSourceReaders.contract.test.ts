@@ -24,6 +24,9 @@ describe('retired legacy rows are filtered by every reader', () => {
     ['services/featureConfigResolver.ts', 'export async function resolveAutomationsForDeviceWithPolicy', 'automation.retiredAt'],
     ['services/featureConfigResolver.ts', 'export async function resolveAutomationAssignmentForDevice', 'monitorConversions.sourceState'],
     ['services/featureConfigResolver.ts', 'export async function scanScheduledAutomations', 'configPolicyAutomations.retiredAt'],
+    ['services/policyEvaluationService.ts', 'export async function resolvePolicyRemediationAutomationIdForOrg', 'isNull(automations.retiredAt)'],
+    ['services/policyEvaluationService.ts', 'async function triggerRemediationAutomation', 'isNull(automations.retiredAt)'],
+    ['services/policyEvaluationService.ts', 'async function triggerConfigPolicyRemediation', 'isNull(automations.retiredAt)'],
     ['services/alertService.ts', 'export async function getApplicableRules', 'alertRules.retiredAt'],
     ['services/notificationDispatcher.ts', 'export async function processAlertNotifications', 'alertRules.retiredAt'],
     ['services/notificationDispatcher.ts', 'export async function processAlertNotifications', 'configPolicyAlertRules.retiredAt'],
@@ -40,6 +43,15 @@ describe('retired legacy rows are filtered by every reader', () => {
     ['services/configurationPolicy.ts', 'async function deleteNormalizedRows', 'configPolicyAutomations.retiredAt'],
   ])('%s %s references %s', (file, fn, needle) => {
     expect(body(file, fn)).toContain(needle);
+  });
+
+  it.each([
+    ['export async function resolvePolicyRemediationAutomationId(', 'resolvePolicyRemediationAutomationIdForOrg'],
+    ['export async function evaluatePolicy(', 'triggerRemediationAutomation'],
+    ['export async function evaluateDeviceComplianceFromConfigPolicy(', 'triggerConfigPolicyRemediation'],
+    ['export async function scanAndEvaluateConfigPolicyCompliance(', 'evaluateDeviceComplianceFromConfigPolicy'],
+  ])('policy remediation entry point %s reaches its guarded reader', (entry, reader) => {
+    expect(body('services/policyEvaluationService.ts', entry)).toContain(reader);
   });
 
   it('the alert rules and automations list routes filter retired rows', () => {

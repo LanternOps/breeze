@@ -244,6 +244,11 @@ export async function processAlertNotifications(data: ProcessAlertJobData): Prom
   let monitorId: string | null = alert.monitorId ?? null;
   let legacyOverride: { channelIds?: string[] | null; escalationPolicyId?: string | null } | null = null;
 
+  // PR 3 open-alert carry-over must re-key open alerts to their monitor in
+  // the conversion transaction. Without that dependency, a job queued before
+  // retirement whose alert still has no monitorId reaches default delivery
+  // with legacyOverride null and loses the retired source's escalation.
+  // This applies to both legacy lookup branches below.
   if (alert.ruleId) {
     const [rule] = await db
       .select({ overrideSettings: alertRules.overrideSettings, managedByMonitorId: alertRules.managedByMonitorId })
@@ -255,8 +260,8 @@ export async function processAlertNotifications(data: ProcessAlertJobData): Prom
       if (!rule.managedByMonitorId) {
         // Transitional (spec §Delivery resolution "Transitional", W05b → W05d):
         // an UNMANAGED legacy rule keeps its own channel/escalation overrides
-        // until it is converted. The live-only lookup also covers jobs queued
-        // before conversion.
+        // until it is converted. Retired sources are excluded; queued alerts
+        // depend on the transactional carry-over described above.
         // W05d deletes the branch. A MANAGED (monitor-compiled) rule is never
         // read for delivery — the monitor definition is the source of truth.
         const overrides = (rule.overrideSettings ?? {}) as Record<string, unknown>;

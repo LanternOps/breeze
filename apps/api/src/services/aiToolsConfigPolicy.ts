@@ -1094,7 +1094,9 @@ For link-only types, set featurePolicyId instead of inlineSettings:
 
         const deleted = await removeFeatureLink(featureLinkId, configPolicyId);
         if (!deleted) return JSON.stringify({ error: 'Feature link not found' });
-        return JSON.stringify({ success: true, message: `Feature link removed` });
+        return JSON.stringify(deleted.kept
+          ? { success: true, kept: true, reason: deleted.reason, message: 'Feature items removed; retired history retained' }
+          : { success: true, message: 'Feature link removed' });
       }
 
       return JSON.stringify({ error: `Unknown action: ${action}` });

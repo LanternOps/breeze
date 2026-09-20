@@ -33,5 +33,3 @@ BEGIN
     EXECUTE format('CREATE INDEX IF NOT EXISTS %I ON public.%I (retired_at) WHERE retired_at IS NOT NULL', t || '_retired_at_idx', t);
   END LOOP;
 END $$;
-
-ALTER TABLE monitor_definitions ALTER COLUMN created_by DROP NOT NULL;

@@ -18,7 +18,7 @@
  */
 import './setup';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { and, eq, inArray, isNull } from 'drizzle-orm';
+import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
 import {
   configPolicyFeatureLinks,
@@ -407,4 +407,14 @@ describe('monitor_definitions RLS — dual-axis (#5289)', () => {
       expect(left).toHaveLength(0);
     });
   });
+});
+
+// D7: a NULL creator denotes the system actor, including conversion sweeps.
+it('allows monitor definitions to omit the system actor FK', async () => {
+  const columns = await withDbAccessContext(SYSTEM_CTX, () => db.execute<{ is_nullable: string }>(sql`
+    SELECT is_nullable FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'monitor_definitions'
+      AND column_name = 'created_by'
+  `));
+  expect([...columns]).toEqual([{ is_nullable: 'YES' }]);
 });
