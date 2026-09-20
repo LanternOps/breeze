@@ -83,6 +83,30 @@ describe('MonitorEditor (#5289)', () => {
     } finally { window.history.replaceState(null, '', '/'); }
   });
 
+  it('leaves create mode after attachment failure and never creates twice', async () => {
+    const policyId = '10000000-0000-4000-8000-000000000009';
+    const id = '20000000-0000-4000-8000-000000000001';
+    window.history.replaceState(null, '', `/alerts/monitors/new#policy=${policyId}`);
+    fetchMock.mockImplementation(async (input: string, init?: RequestInit) => {
+      if (input === '/monitor-definitions' && init?.method === 'POST') return json({ data: { id } }, true, 201);
+      if (input === `/monitor-definitions/${id}/attachments`) return json({ error: 'Attach failed' }, false, 500);
+      return defaultFetchImpl(input);
+    });
+    try {
+      render(<MonitorEditor />);
+      fireEvent.change(await screen.findByTestId('monitor-editor-name'), { target: { value: 'CPU high' } });
+      fireEvent.click(screen.getByTestId('monitor-editor-save'));
+      await waitFor(() => expect(navMock).toHaveBeenCalledWith(`/alerts/monitors/${id}#policy=${policyId}`));
+      fireEvent.submit(screen.getByTestId('monitor-editor-save').closest('form')!);
+      await waitFor(() => expect(navMock).toHaveBeenCalledTimes(2));
+      expect(fetchMock.mock.calls.filter(([url, init]) => url === '/monitor-definitions' && init?.method === 'POST')).toHaveLength(1);
+      const errors = toastMock.mock.calls.filter(([toast]) => toast.type === 'error');
+      expect(errors).toHaveLength(1);
+      expect(errors[0][0].message).toContain('Monitor saved');
+      expect(errors[0][0].message).toContain('Failed to attach');
+    } finally { window.history.replaceState(null, '', '/'); }
+  });
+
   it('preserves the policy hash through actual editor tab clicks', async () => {
     const policyId = '10000000-0000-4000-8000-000000000009';
     window.history.replaceState(null, '', `/alerts/monitors/m1#policy=${policyId}`);

@@ -1,4 +1,4 @@
-import { findDuplicateConditions, type DuplicateInput } from "./duplicateConditions";
+import { effectiveAttachedMonitors, findDuplicateConditions, type DuplicateInput } from "./duplicateConditions";
 import { DuplicateConditionNotice } from "./DuplicateConditionNotice";
 import { LegacyFreezeNotice } from "./LegacyFreezeNotice";
 import { fetchWithAuth } from "../../../stores/auth";
@@ -460,11 +460,12 @@ export default function AlertRuleTab({
   linkedPolicyId,
   parentLink,
   allLinks = [],
+  inheritedMonitorsLink,
 }: FeatureTabProps) {
   useTranslation("policies");
   const linkOf = (type: string) => allLinks.find((link) => link.featureType === type);
   const watches = (linkOf("monitoring")?.inlineSettings as { watches?: Array<{ watchType?: string; name?: string; enabled?: boolean }> } | undefined)?.watches ?? [];
-  const attached = (linkOf("monitors")?.inlineSettings as { items?: Array<{ monitorId: string; enabled?: boolean }> } | undefined)?.items ?? [];
+  const attached = effectiveAttachedMonitors(linkOf("monitors"), inheritedMonitorsLink);
 
   const [catalog, setCatalog] = useState<DuplicateInput['catalog']>([]);
   useEffect(() => {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useHashState } from '@/lib/useHashState';
 import { useForm, FormProvider, Controller } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -168,11 +168,13 @@ export async function attachAfterCreate(
 ): Promise<string> {
   const policyId = editorHashParams(hash).get('policy');
   if (!policyId || !UUID_RE.test(policyId)) return `/alerts/monitors/${monitorId}`;
+  const attachFailure = `${i18n.t('monitoring:editor.saved')}. ${i18n.t('monitoring:deploy.errors.attach')}`;
   await runAction({
     request: () => fetcher(`/monitor-definitions/${monitorId}/attachments`, {
       method: 'POST', body: JSON.stringify({ configPolicyId: policyId }),
     }),
-    errorFallback: i18n.t('monitoring:deploy.errors.attach'),
+    errorFallback: attachFailure,
+    friendly: () => attachFailure,
     successMessage: i18n.t('monitoring:editor.attachedToPolicy'),
     onUnauthorized: UNAUTHORIZED,
   });
@@ -182,6 +184,7 @@ export async function attachAfterCreate(
 export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
   const { t } = useTranslation(['monitoring', 'common']);
   const isNew = !monitorId;
+  const createdEditorUrl = useRef<string | undefined>(undefined);
   const { isPartnerScope, defaultOwnerScope } = useDefaultOwnerScope();
   const currentOrgId = useOrgStore((s) => s.currentOrgId);
 
@@ -393,6 +396,11 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
   };
 
   const onSubmit = async (values: MonitorFormValues) => {
+    // Navigation can lag behind a successful create; never POST a second monitor.
+    if (createdEditorUrl.current) {
+      void navigateTo(createdEditorUrl.current);
+      return;
+    }
     setSaving(true);
     setError(undefined);
     try {
@@ -431,7 +439,15 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
       });
       const savedId = data?.data?.id ?? monitorId;
       if (isNew && savedId) {
-        void navigateTo(await attachAfterCreate(savedId, window.location.hash));
+        const hash = window.location.hash;
+        createdEditorUrl.current = `/alerts/monitors/${savedId}${hash}`;
+        try {
+          void navigateTo(await attachAfterCreate(savedId, hash));
+        } catch (err) {
+          if (err instanceof ActionError && err.status === 401) return;
+          handleActionError(err, `${t('monitoring:editor.saved')}. ${t('monitoring:deploy.errors.attach')}`);
+          void navigateTo(createdEditorUrl.current);
+        }
       } else {
         void fetchMonitor();
       }

@@ -1,3 +1,5 @@
+import type { FeatureLink } from './types';
+
 // duplicateConditions.ts
 // Pure, client-side detection of "this policy alerts twice for one condition":
 // an attached, enabled monitor of kind K next to an inline alert rule whose
@@ -17,6 +19,18 @@ export interface DuplicateInput {
   catalog: Array<{ id: string; name: string; kind: string; condition?: Record<string, unknown> | null }>;
   inlineRules: Array<{ name?: string; conditions?: Array<Record<string, unknown>> | null }>;
   watches: Array<{ watchType?: string; name?: string; enabled?: boolean }>;
+}
+
+/** Advisory-only cumulative attachments: the entire own entry wins per monitor. */
+export function effectiveAttachedMonitors(
+  ownLink: FeatureLink | undefined,
+  parentLink: FeatureLink | undefined,
+): DuplicateInput['attached'] {
+  const items = (link: FeatureLink | undefined) =>
+    (link?.inlineSettings?.items as DuplicateInput['attached'] | undefined) ?? [];
+  return [...new Map(
+    [...items(parentLink), ...items(ownLink)].map((item) => [item.monitorId, item]),
+  ).values()];
 }
 
 // Mirrors apps/api/src/services/alertConditions/utils.ts METRIC_NAME_MAP (line 13), minus

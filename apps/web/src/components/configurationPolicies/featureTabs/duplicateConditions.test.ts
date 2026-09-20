@@ -1,6 +1,7 @@
 // duplicateConditions.test.ts
 import { describe, expect, it } from 'vitest';
-import { findDuplicateConditions } from './duplicateConditions';
+import type { FeatureLink } from './types';
+import { effectiveAttachedMonitors, findDuplicateConditions } from './duplicateConditions';
 
 const catalog = [
   { id: 'm-cpu', name: 'High CPU usage', kind: 'cpu', condition: { operator: 'gt', value: 90 } },
@@ -75,5 +76,40 @@ describe('findDuplicateConditions', () => {
     });
     expect(hits).toHaveLength(2);
     expect(hits.every((h) => h.legacyLabel === 'Both')).toBe(true);
+  });
+});
+
+
+describe('effectiveAttachedMonitors', () => {
+  const link = (items: Array<{ monitorId: string; enabled?: boolean; overrides?: Record<string, unknown> }>): FeatureLink => ({
+    id: 'link', featureType: 'monitors', featurePolicyId: null, inlineSettings: { items },
+  });
+
+  it('unions own and parent attachments without mutating either link', () => {
+    const own = link([{ monitorId: 'm-off' }]);
+    const parent = link([{ monitorId: 'm-cpu', enabled: true }]);
+    const before = JSON.stringify([own, parent]);
+    const attached = effectiveAttachedMonitors(own, parent);
+    expect(attached).toHaveLength(2);
+    expect(findDuplicateConditions({ attached, catalog, watches: [], inlineRules: [
+      { name: 'CPU', conditions: [{ type: 'metric', metric: 'cpu' }] },
+    ] })).toEqual([{ monitorId: 'm-cpu', monitorName: 'High CPU usage', legacyLabel: 'CPU', source: 'alert_rule' }]);
+    expect(JSON.stringify([own, parent])).toBe(before);
+  });
+
+  it('keeps the entire own entry, including disabled state and overrides, for a shared monitor', () => {
+    const own = { monitorId: 'm-cpu', enabled: false, overrides: { value: 95 } };
+    const attached = effectiveAttachedMonitors(link([own]), link([{ monitorId: 'm-cpu', enabled: true, overrides: { value: 80 } }]));
+    expect(attached).toEqual([own]);
+    expect(findDuplicateConditions({ attached, catalog, watches: [], inlineRules: [
+      { conditions: [{ type: 'metric', metric: 'cpu' }] },
+    ] })).toEqual([]);
+  });
+
+  it('preserves attachments without a parent and handles missing links', () => {
+    const items = [{ monitorId: 'm-cpu', enabled: true }];
+    expect(effectiveAttachedMonitors(link(items), undefined)).toEqual(items);
+    expect(effectiveAttachedMonitors(undefined, link(items))).toEqual(items);
+    expect(effectiveAttachedMonitors(undefined, undefined)).toEqual([]);
   });
 });
