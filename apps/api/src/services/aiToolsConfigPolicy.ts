@@ -403,13 +403,13 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
     searchHint: 'configuration policy assignments to partners, organizations, sites, device groups or devices',
     definition: {
       name: 'apply_configuration_policy',
-      description: 'Assign a configuration policy to a target (partner, organization, site, device group, or device). Use roleFilter and osFilter to scope the assignment to specific device types. The "partner" level is reserved for partner-OWNED policies (a reusable library, #2280, assignable to all orgs or a subset) — an org-owned policy can only be assigned at organization/site/device_group/device level.',
+      description: 'Assign a configuration policy to a partner, organization, site, device group or device; filter by role or OS. Only partner-owned policies allow partner-level assignment. Org-owned policies require organization/site/device_group/device level.',
       input_schema: {
         type: 'object' as const,
         properties: {
           configPolicyId: { type: 'string', description: 'Configuration policy UUID' },
           level: { type: 'string', enum: ['partner', 'organization', 'site', 'device_group', 'device'], description: 'Assignment level' },
-          targetId: { type: 'string', description: 'Target UUID at the given level. Required for organization/site/device_group/device; omit for the "partner" level, where the target is derived server-side (the policy\'s own partner).' },
+          targetId: { type: 'string', description: 'Target UUID; required for organization/site/device_group/device. Omit for partner level: target is the policy owner.' },
           priority: { type: 'number', description: 'Priority (lower = higher priority, default 0)' },
           roleFilter: { type: 'array', items: { type: 'string' }, description: 'Only apply to devices with these roles (e.g. ["workstation","server"]). Omit for all roles.' },
           osFilter: { type: 'array', items: { type: 'string' }, description: 'Only apply to devices with these OS types (e.g. ["windows","macos","linux"]). Omit for all OS.' },
@@ -623,7 +623,7 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
     searchHint: 'configuration policies: create, update, activate, deactivate, delete',
     definition: {
       name: 'manage_configuration_policy',
-      description: 'Create, update, activate, deactivate, or delete configuration policies. Configuration policies bundle feature settings (patch, alert, compliance, etc.) and are assigned to targets in the hierarchy. On create, ownerScope "partner" makes a reusable partner-owned library policy that applies to NO organizations until assigned (partner-wide, or a subset of orgs) via apply_configuration_policy (requires full partner org access); "organization" (default) owns it in a single org.',
+      description: 'Manage bundled feature settings. Partner ownership requires full partner org access; policies apply to no orgs until assigned via apply_configuration_policy. Organization ownership is the default. Actions: create, update, activate, deactivate, delete.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -632,7 +632,7 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
           name: { type: 'string', description: 'Policy name (required for create)' },
           description: { type: 'string', description: 'Policy description' },
           status: { type: 'string', enum: ['active', 'inactive', 'archived'], description: 'Policy status (for create/update)' },
-          ownerScope: { type: 'string', enum: ['organization', 'partner'], description: 'Ownership for create: "organization" (default, owned by one org) or "partner" (a reusable partner-owned library policy, created empty and applied to orgs later via apply_configuration_policy; requires full partner org access)' },
+          ownerScope: { type: 'string', enum: ['organization', 'partner'], description: 'Create ownership: organization (default, one org) or partner (unassigned library policy; requires full partner org access).' },
           orgId: { type: 'string', description: 'Organization UUID (for org-scoped create; defaults to current org). Ignored when ownerScope is "partner".' },
         },
         required: ['action'],

@@ -688,7 +688,7 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
     searchHint: 'backup selection profiles, files, System State, SQL Server and Hyper-V: list, get, create, update, delete',
     definition: {
       name: 'manage_backup_profiles',
-      description: 'Manage backup selection profiles — reusable "what to protect" bundles (file paths/excludes, System State, SQL Server, Hyper-V) for a device class, e.g. "Server". Link a profile to a configuration policy via manage_policy_feature_link with featureType "backup" and featurePolicyId = the profile id; the policy carries schedule/retention/destination. Profiles are org-owned or partner-wide ("all orgs"). Actions: list, get, create, update, delete.',
+      description: 'Manage org-owned or partner-wide backup selection profiles: files, System State, SQL Server and Hyper-V. Profiles define what to protect; manage_policy_feature_link sets policy schedule, retention and destination. Actions: list, get, create, update, delete.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -697,7 +697,7 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
           name: { type: 'string', description: 'Profile name (required for create)' },
           description: { type: 'string', description: 'Optional description' },
           ownerScope: { type: 'string', enum: ['organization', 'partner'], description: 'create only: "organization" (default, current org) or "partner" ("all orgs" — requires full partner access)' },
-          selections: { type: 'object', description: 'Data sources: { file?: { enabled, paths[], excludes[] }, system_image?: { enabled, includeSystemState? }, mssql?: { enabled, backupType?: "full"|"differential"|"log", excludeDatabases[] }, hyperv?: { enabled, consistencyType?: "application"|"crash", excludeVms[] } }. At least one source enabled; file requires paths.' },
+          selections: { type: 'object', description: 'Backup sources: file, system_image, mssql, hyperv. At least one enabled; file requires paths.' },
           isActive: { type: 'boolean', description: 'Active state' },
         },
         required: ['action'],
@@ -864,7 +864,7 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
     searchHint: 'backup storage provider configurations: list, get, create, update',
     definition: {
       name: 'manage_backup_configs',
-      description: 'Manage backup configurations (storage provider settings). Create a backup config first, then link it to a configuration policy\'s backup feature via manage_policy_feature_link with featureType "backup" and featurePolicyId. Use query_backups to list existing jobs and trigger_backup for on-demand backups. Actions: list, get, create, update.',
+      description: 'Manage backup storage configurations; manage_backup_profiles defines selections. Use config IDs as inlineSettings.destinationConfigId with manage_policy_feature_link. Jobs: query_backups; on-demand runs: trigger_backup. Actions: list, get, create, update.',
       input_schema: {
         type: 'object' as const,
         properties: {

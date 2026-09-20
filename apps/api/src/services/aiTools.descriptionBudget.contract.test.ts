@@ -27,16 +27,13 @@ const WORKFLOW_PROSE = [/\b(step \d|first call|then call|after that|workflow:)\b
  * Never add or increase an entry; later diet tasks must delete fixed entries.
  */
 const DESCRIPTION_BUDGET_BASELINE: ReadonlyMap<string, { description?: number; params?: number }> = new Map([
-  ['apply_configuration_policy', { description: 389, params: 181 }],
   ['capture_agent_pprof', { description: 405 }],
   ['delete_tenant', { description: 398 }],
   ['export_dataset', { description: 342 }],
   ['get_contract', { description: 387 }],
   ['get_invite_funnel', { description: 574 }],
   ['get_invoice', { description: 441 }],
-  ['get_network_asset_reachability', { description: 369 }],
   ['get_quote', { description: 711 }],
-  ['get_security_posture', { description: 391 }],
   ['list_contracts', { description: 403 }],
   ['list_deliverable_templates', { description: 492 }],
   ['list_deliverables', { description: 317 }],
@@ -44,22 +41,16 @@ const DESCRIPTION_BUDGET_BASELINE: ReadonlyMap<string, { description?: number; p
   ['list_quotes', { description: 388 }],
   ['lookup_distributor_product', { description: 433 }],
   ['manage_ai_agents', { description: 641, params: 300 }],
-  ['manage_backup_configs', { description: 339 }],
-  ['manage_backup_profiles', { description: 445, params: 317 }],
   ['manage_catalog', { params: 217 }],
-  ['manage_configuration_policy', { description: 476, params: 225 }],
   ['manage_contracts', { params: 2009 }],
   ['manage_deliverables', { description: 1017, params: 263 }],
-  ['manage_delivery', { description: 459 }],
   ['manage_invoices', { description: 1526, params: 188 }],
   ['manage_key_dates', { params: 196 }],
-  ['manage_monitor_definitions', { description: 444, params: 745 }],
   ['manage_notification_channels', { params: 250 }],
   ['manage_org_documents', { description: 420, params: 180 }],
   ['manage_organizations', { description: 823 }],
   ['manage_quotes', { description: 891, params: 1419 }],
   ['manage_tickets', { description: 971, params: 282 }],
-  ['restore_as_vm', { description: 347 }],
   ['search_catalog', { description: 375 }],
   ['trigger_agent_restart', { description: 340 }],
 ]);
@@ -158,6 +149,13 @@ describe('AI tool description budget (A-W03)', () => {
     const taskDomains = new Set(['devices', 'scripts', 'patching', 'core']);
     const remaining = offences.filter(o => taskDomains.has(getToolDomain(o.tool) ?? ''));
     expect(remaining, JSON.stringify({ registry: registry.length, emitted: emitted.map(d => d.length), offenders: offences.length })).toEqual([]);
+  });
+
+  it('Task 4b domains fit the budget across registry and emitted schemas', () => {
+    const taskDomains = new Set(['monitoring', 'network', 'security', 'backup']);
+    const remaining = offences.filter(o => taskDomains.has(getToolDomain(o.tool) ?? ''));
+    console.log('Task 4b budget measurement', JSON.stringify({ registry: registry.length, emitted: emitted.map(d => d.length), offenders: offences.length, domainOffenders: remaining.length }));
+    expect(remaining).toEqual([]);
   });
 
   it('every tool outside the baseline fits the budget', () => {
