@@ -7,16 +7,6 @@
     "badgeHint": "Géré par un moniteur — modifiez-le plutôt depuis le moniteur.",
     "monitorLabel": "Moniteur"
   },
-  "hub": {
-    "title": "Surveillance et automatisation",
-    "tabs": {
-      "monitors": "Moniteurs",
-      "network": "Réseau",
-      "delivery": "Livraison",
-      "legacyRules": "Règles héritées"
-    },
-    "ariaLabel": "Sections de surveillance"
-  },
   "list": {
     "title": "Moniteurs",
     "description": "Surveillez une condition, réagissez sur l’appareil, notifiez et escaladez lorsqu’elle persiste.",
@@ -84,7 +74,6 @@
       "channels": "Règles de routage plus ces canaux",
       "none": "Ne pas notifier"
     },
-    "agentDeliveredHint": "Cette surveillance s’exécute sur l’appareil et doit aussi exister dans l’onglet Surveillance des services et des processus de la politique, jusqu’à ce que ce soit unifié.",
     "responsesHint": "Les réponses s’exécutent dans l’ordre sur l’appareil qui a enfreint la condition.",
     "recurrenceHint": "Compté en épisodes de manquement : un nouvel épisode ne commence qu’après le rétablissement de la condition.",
     "ownerScope": {

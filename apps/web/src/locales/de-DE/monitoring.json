@@ -7,16 +7,6 @@
     "badgeHint": "Von einem Monitor verwaltet — bearbeiten Sie ihn stattdessen über den Monitor.",
     "monitorLabel": "Monitor"
   },
-  "hub": {
-    "title": "Überwachung & Automatisierung",
-    "tabs": {
-      "monitors": "Monitore",
-      "network": "Netzwerk",
-      "delivery": "Zustellung",
-      "legacyRules": "Ältere Regeln"
-    },
-    "ariaLabel": "Überwachungsbereiche"
-  },
   "list": {
     "title": "Monitore",
     "description": "Überwachen Sie eine Bedingung, reagieren Sie auf dem Gerät, benachrichtigen Sie und eskalieren Sie, wenn sie wiederholt auftritt.",
@@ -84,7 +74,6 @@
       "channels": "Routing-Regeln plus diese Kanäle",
       "none": "Nicht benachrichtigen"
     },
-    "agentDeliveredHint": "Dieser Watch läuft auf dem Gerät und muss bis zur Vereinheitlichung zusätzlich im Tab „Dienst- & Prozessüberwachung“ der Richtlinie vorhanden sein.",
     "responsesHint": "Reaktionen laufen der Reihe nach auf dem Gerät, auf dem die Verletzung aufgetreten ist.",
     "recurrenceHint": "Wird in Verletzungsvorfällen gezählt: Ein neuer Vorfall beginnt erst, nachdem sich die Bedingung wieder normalisiert hat.",
     "ownerScope": {

@@ -7,16 +7,6 @@
     "badgeHint": "Managed by a monitor — edit it from the monitor instead.",
     "monitorLabel": "Monitor"
   },
-  "hub": {
-    "title": "Monitoring & Automation",
-    "tabs": {
-      "monitors": "Monitors",
-      "network": "Network",
-      "delivery": "Delivery",
-      "legacyRules": "Legacy rules"
-    },
-    "ariaLabel": "Monitoring sections"
-  },
   "list": {
     "title": "Monitors",
     "description": "Watch a condition, respond on the device, notify, and escalate when it keeps happening.",
@@ -84,7 +74,6 @@
       "channels": "Routing rules plus these channels",
       "none": "Do not notify"
     },
-    "agentDeliveredHint": "This watch runs on the device and must also exist in the policy's Service & Process Monitoring tab until that is unified.",
     "responsesHint": "Responses run on the device that breached, in order.",
     "recurrenceHint": "Counted in breach episodes: a new episode starts only after the condition recovered.",
     "ownerScope": {

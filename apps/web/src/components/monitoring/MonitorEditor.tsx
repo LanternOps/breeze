@@ -382,8 +382,6 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
     void fetchMonitor();
   }, [fetchKinds, fetchScripts, fetchChannels, fetchSoftwareCatalog, fetchAiAgents, fetchEscalationPolicies, fetchMonitor]);
 
-  const activeKindMeta = kindsMeta.find((k) => k.kind === watchKind);
-
   const handleKindChange = (kind: MonitorKind) => {
     setValue('kind', kind, { shouldDirty: true });
     setValue('condition', defaultConditionFor(kind), { shouldDirty: true });
@@ -727,9 +725,6 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
                 ))}
               </select>
             </div>
-            {activeKindMeta?.agentDelivered && (
-              <p className="text-xs text-muted-foreground">{t('monitoring:editor.agentDeliveredHint')}</p>
-            )}
             <MonitorConditionFields kind={watchKind} name="condition" />
           </section>
 

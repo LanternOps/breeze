@@ -7,16 +7,6 @@
     "badgeHint": "Gerenciado por um monitor — edite-o a partir do monitor.",
     "monitorLabel": "Monitor"
   },
-  "hub": {
-    "title": "Monitoramento e automação",
-    "tabs": {
-      "monitors": "Monitores",
-      "network": "Rede",
-      "delivery": "Entrega",
-      "legacyRules": "Regras legadas"
-    },
-    "ariaLabel": "Seções de monitoramento"
-  },
   "list": {
     "title": "Monitores",
     "description": "Observe uma condição, responda no dispositivo, notifique e escalone quando ela continuar ocorrendo.",
@@ -84,7 +74,6 @@
       "channels": "Regras de roteamento mais estes canais",
       "none": "Não notificar"
     },
-    "agentDeliveredHint": "Essa observação é executada no dispositivo e também deve existir na aba Monitoramento de Serviços e Processos da política, até que isso seja unificado.",
     "responsesHint": "As respostas são executadas em ordem no dispositivo que sofreu a violação.",
     "recurrenceHint": "Contado em episódios de violação: um novo episódio só começa depois que a condição se recuperar.",
     "ownerScope": {

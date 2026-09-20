@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '../../lib/i18n';
-import { Link2, Pencil, Plus, Trash2 } from 'lucide-react';
+import { Link2, Pencil, Trash2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
@@ -135,15 +135,11 @@ export default function AlertTemplateList() {
             {filteredTemplates.length} {t('alertTemplateList.of')} {templates.length} {t('alertTemplateList.templates')}
           </p>
         </div>
-        <button
-          type="button"
-          onClick={() => void navigateTo('/settings/alert-templates/new')}
-          data-testid="alert-template-create"
-          className="inline-flex h-10 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
-        >
-          <Plus className="h-4 w-4" />
-          {t('alertTemplateList.addTemplate')}
-        </button>
+        <div data-testid="alert-templates-frozen" role="note" className="flex flex-col gap-1 rounded-md border bg-muted/40 p-3 text-sm">
+          <p className="font-medium">{t('templates.frozen.title')}</p>
+          <p className="text-muted-foreground">{t('templates.frozen.body')}</p>
+          <a data-testid="alert-templates-frozen-link" href="/alerts/monitors" className="text-primary hover:underline">{t('templates.frozen.link')}</a>
+        </div>
       </div>
 
       <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:items-center">
