@@ -53,7 +53,7 @@ let setSpy: ReturnType<typeof vi.fn>;
 beforeEach(() => {
   vi.clearAllMocks();
   selectMock.mockReturnValue({ from: () => ({ where: () => ({ limit: () => Promise.resolve([runRow]) }) }) });
-  setSpy = vi.fn((_fields: Record<string, unknown>) => ({ where: () => Promise.resolve([{ id: RUN_ID }]) }));
+  setSpy = vi.fn((_fields: Record<string, unknown>) => ({ where: () => Object.assign(Promise.resolve([{ id: RUN_ID }]), { returning: async () => [{ id: RUN_ID }] }) }));
   updateMock.mockReturnValue({ set: setSpy });
 });
 
@@ -114,6 +114,28 @@ describe('handleSystemCleanupRunResult (spec §5.3)', () => {
           { id: 'linux_journal_vacuum', status: 'failed' },
         ],
       }),
+    }));
+  });
+
+  it('preserves late evidence and audits late_result when timeout wins the finish CAS', async () => {
+    const conditions: SQL[] = [];
+    setSpy.mockImplementationOnce(() => ({ where: (condition: SQL) => {
+      conditions.push(condition);
+      return Object.assign(Promise.resolve([]), { returning: async () => [] });
+    } }));
+    setSpy.mockImplementationOnce(() => ({ where: (condition: SQL) => {
+      conditions.push(condition);
+      return Object.assign(Promise.resolve([{ id: RUN_ID }]), { returning: async () => [{ id: RUN_ID }] });
+    } }));
+    await handleSystemCleanupRunResult(params());
+    expect(setSpy).toHaveBeenCalledTimes(2);
+    const late = setSpy.mock.calls[1]?.[0] as Record<string, unknown>;
+    expect(late.status).toBeUndefined();
+    expect(late.bytesReclaimed).toBe(3000);
+    expect(late.executedActions).toMatchObject({ freedBytes: 3000, lateResultAt: expect.any(String) });
+    expect(new PgDialect().sqlToQuery(conditions[1]!).sql).toContain('<>');
+    expect(writeAuditEventMock).toHaveBeenCalledExactlyOnceWith(expect.anything(), expect.objectContaining({
+      action: 'device.filesystem.system_cleanup.late_result',
     }));
   });
 

@@ -21,7 +21,7 @@ import {
   systemCleanupRunResultSchema,
 } from './systemCleanup';
 
-import { eq, and, inArray, isNull, sql } from 'drizzle-orm';
+import { eq, ne, and, inArray, isNull, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext } from '../db';
 import {
   deviceCommands,
@@ -1067,13 +1067,15 @@ export async function handleSystemCleanupRunResult(
 
   const now = new Date();
   const finish = async (fields: Record<string, unknown>) => {
-    await db
+    const rows = await db
       .update(deviceFilesystemCleanupRuns)
       .set({ ...fields, updatedAt: now })
       .where(and(
         eq(deviceFilesystemCleanupRuns.id, runId),
         eq(deviceFilesystemCleanupRuns.status, 'running'),
-      ));
+      ))
+      .returning({ id: deviceFilesystemCleanupRuns.id });
+    return rows.length > 0;
   };
 
   if (result.status !== 'completed') {
@@ -1097,7 +1099,7 @@ export async function handleSystemCleanupRunResult(
   const status = succeeded > 0 ? 'executed' : 'failed';
   const failedCount = parsed.actions.length - succeeded;
 
-  await finish({
+  const finished = await finish({
     status,
     approvedAt: now,
     bytesReclaimed: parsed.freedBytes,
@@ -1105,11 +1107,27 @@ export async function handleSystemCleanupRunResult(
     error: failedCount > 0 ? `${failedCount} cleanup action(s) did not complete` : null,
   });
 
+  if (!finished) {
+    // A timeout may win after the initial read. Preserve what ran without
+    // contradicting the terminal status already shown to the operator.
+    await db.update(deviceFilesystemCleanupRuns)
+      .set({
+        executedActions: { ...parsed, lateResultAt: now.toISOString() },
+        bytesReclaimed: parsed.freedBytes,
+        updatedAt: now,
+      })
+      .where(and(
+        eq(deviceFilesystemCleanupRuns.id, runId),
+        eq(deviceFilesystemCleanupRuns.deviceId, resolvedDeviceId),
+        ne(deviceFilesystemCleanupRuns.status, 'running'),
+      ));
+  }
+
   // No Hono context on this path, so the actor is attributed explicitly —
   // the pattern jobs/quoteSendQueue.ts uses for the same reason.
   writeAuditEvent(requestLikeFromSnapshot({}), {
     orgId: run.orgId,
-    action: 'device.filesystem.system_cleanup.run',
+    action: finished ? 'device.filesystem.system_cleanup.run' : 'device.filesystem.system_cleanup.late_result',
     resourceType: 'device',
     resourceId: resolvedDeviceId,
     actorId: run.requestedBy,
