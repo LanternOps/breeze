@@ -1,7 +1,5 @@
 /**
- * Deny-mode measurement with the shared base prompt as a constant term.
- * After A-W02, compose BASE + renderToolIndexByDomain(listChatSurfaceToolNames())
- * + AI_SYSTEM_PROMPT_TAIL here as well.
+ * Deny-mode measurement with the surface's production static prompt where available.
  *
  * Deny mode denies at the HANDLER level, not via `canUseTool`. `allowedTools`
  * bare-name entries pre-approve a tool before the SDK ever consults
@@ -30,8 +28,10 @@
  * failure before any result — bad key, transport crash, etc.) propagates.
  */
 import { query } from '@anthropic-ai/claude-agent-sdk';
+import { composeStaticSystemPrompt } from '../../aiToolIndex';
+import { buildScriptBuilderSystemPrompt } from '../../scriptBuilderPrompt';
 import { AI_SYSTEM_PROMPT_BASE } from '../../aiAgentSystemPrompt';
-import { buildBreezeSdkTools, createBreezeMcpServer, type PreToolUseCallback } from '../../aiAgentSdkTools';
+import { buildBreezeSdkTools, listChatSurfaceToolNames, createBreezeMcpServer, type PreToolUseCallback } from '../../aiAgentSdkTools';
 import { createScriptBuilderMcpServer, SCRIPT_BUILDER_MCP_TOOL_NAMES } from '../../scriptBuilderTools';
 import { createStreamObserver, type StreamObservation } from './streamObserver';
 import type { CaptureSurface, CaptureSurfaceId } from './surfaces';
@@ -65,6 +65,20 @@ const denyAuth = () => { throw new Error('tool-capture: handlers never execute (
 // what the query()-mocked test can exercise without the real SDK dispatch.
 export const denyPreToolUse: PreToolUseCallback = async () => ({ allowed: false, error: DENY_MESSAGE });
 
+/** Shared by capture and report byte counts, including failed SDK runs. */
+export function getCaptureSystemPrompt(surface: CaptureSurface): string {
+  switch (surface.id) {
+    case 'chat':
+      return composeStaticSystemPrompt(listChatSurfaceToolNames());
+    case 'script-builder':
+      return buildScriptBuilderSystemPrompt();
+    default:
+      // Helper needs a DB-backed device; agent-full needs run/policy context.
+      // Retain the harness fallback rather than inventing production context.
+      return AI_SYSTEM_PROMPT_BASE;
+  }
+}
+
 export async function runSurfaceCapture(opts: RunSurfaceOptions): Promise<SurfaceCaptureResult> {
   const { surface } = opts;
   const mcpServer = surface.server === 'breeze'
@@ -89,7 +103,7 @@ export async function runSurfaceCapture(opts: RunSurfaceOptions): Promise<Surfac
     const session = query({
       prompt: opts.prompt,
       options: {
-        systemPrompt: AI_SYSTEM_PROMPT_BASE,
+        systemPrompt: getCaptureSystemPrompt(surface),
         model: opts.model,
         maxTurns: opts.maxTurns ?? 2,
         tools: [],

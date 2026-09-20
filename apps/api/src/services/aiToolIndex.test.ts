@@ -1,9 +1,10 @@
+import { AI_SYSTEM_PROMPT_BASE, AI_SYSTEM_PROMPT_TAIL } from './aiAgentSystemPrompt';
 import { describe, expect, it, vi } from 'vitest';
 import { AI_TOOL_DOMAINS, AI_TOOL_DOMAIN_LABELS } from '@breeze/shared';
 import './aiTools'; // populates the registry
 import { getAllRegisteredToolNames } from './aiTools';
 import { buildBreezeSdkTools, listChatSurfaceToolNames } from './aiAgentSdkTools';
-import { DOMAIN_NOTES, listToolIndex, renderToolIndexByDomain } from './aiToolIndex';
+import { composeStaticSystemPrompt, DOMAIN_NOTES, listToolIndex, renderToolIndexByDomain } from './aiToolIndex';
 
 describe('renderToolIndexByDomain (A-W02)', () => {
   const names = listChatSurfaceToolNames();
@@ -100,4 +101,11 @@ describe('the generated index tracks env-gated tool declarations (A-W02 review f
       vi.unstubAllEnvs();
     }
   });
+});
+
+// Preserve the exact static prefix previously assembled inline by buildSystemPrompt.
+it('composes byte-identically to the original production static prompt', () => {
+  const names = listChatSurfaceToolNames();
+  const original = [AI_SYSTEM_PROMPT_BASE, renderToolIndexByDomain(names), AI_SYSTEM_PROMPT_TAIL].join('\n');
+  expect(Buffer.from(composeStaticSystemPrompt(names))).toEqual(Buffer.from(original));
 });

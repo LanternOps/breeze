@@ -8,8 +8,11 @@ vi.mock('@anthropic-ai/claude-agent-sdk', async (importOriginal) => {
 
 import { denyPreToolUse, runSurfaceCapture } from './runSurface';
 import { CAPTURE_SURFACES, type CaptureSurface } from './surfaces';
-import { buildBreezeSdkTools } from '../../aiAgentSdkTools';
-import { AI_SYSTEM_PROMPT_BASE } from '../../aiAgentSystemPrompt';
+import { buildBreezeSdkTools, listChatSurfaceToolNames } from '../../aiAgentSdkTools';
+import { AI_SYSTEM_PROMPT_BASE, AI_SYSTEM_PROMPT_TAIL } from '../../aiAgentSystemPrompt';
+
+import { composeStaticSystemPrompt } from '../../aiToolIndex';
+import { buildScriptBuilderSystemPrompt } from '../../scriptBuilderPrompt';
 
 /** An async generator standing in for the SDK's `query()` return value. */
 async function* messages(items: unknown[]): AsyncGenerator<unknown> {
@@ -41,6 +44,29 @@ describe('denyPreToolUse', () => {
 });
 
 describe('runSurfaceCapture', () => {
+  it('sends the complete static production chat prompt', async () => {
+    queryMock.mockReturnValueOnce(messages([]));
+    await runSurfaceCapture(baseOpts);
+    const prompt = queryMock.mock.lastCall![0].options.systemPrompt;
+    expect(prompt).toContain('## Available Tools by Domain');
+    expect(prompt).toContain(AI_SYSTEM_PROMPT_TAIL.split('\n')[0]);
+    expect(prompt).toBe(composeStaticSystemPrompt(listChatSurfaceToolNames()));
+  });
+
+  it('sends the script builder production prompt without editor context', async () => {
+    queryMock.mockReturnValueOnce(messages([]));
+    await runSurfaceCapture({ ...baseOpts, surface: CAPTURE_SURFACES['script-builder'] });
+    expect(queryMock.mock.lastCall![0].options.systemPrompt).toBe(buildScriptBuilderSystemPrompt());
+  });
+
+  it.each(['helper-basic', 'helper-standard', 'helper-extended', 'agent-full'] as const)(
+    'retains the existing fallback for %s without DB context', async (id) => {
+      queryMock.mockReturnValueOnce(messages([]));
+      await runSurfaceCapture({ ...baseOpts, surface: CAPTURE_SURFACES[id] });
+      expect(queryMock.mock.lastCall![0].options.systemPrompt).toBe(AI_SYSTEM_PROMPT_BASE);
+    },
+  );
+
   it('treats an error-subtype result (e.g. error_max_turns) as an expected end, not a failure', async () => {
     const resultMessage = {
       type: 'result',
@@ -112,7 +138,7 @@ describe('runSurfaceCapture', () => {
         includePartialMessages: CAPTURE_SURFACES.chat.includePartialMessages,
         maxTurns: 2,
         resume: 'prior-session',
-        systemPrompt: AI_SYSTEM_PROMPT_BASE,
+        systemPrompt: composeStaticSystemPrompt(listChatSurfaceToolNames()),
         settingSources: [],
         thinking: { type: 'disabled' },
         persistSession: true,

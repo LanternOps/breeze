@@ -1,3 +1,4 @@
+import { AI_SYSTEM_PROMPT_BASE, AI_SYSTEM_PROMPT_TAIL } from './aiAgentSystemPrompt';
 import { AI_TOOL_DOMAINS, AI_TOOL_DOMAIN_LABELS, type AiToolDomain } from '@breeze/shared';
 import { aiTools } from './aiToolNames';
 import { getToolDomain, getToolSearchHint } from './aiTools';
@@ -49,4 +50,9 @@ export function renderToolIndexByDomain(names: Iterable<string>): string {
     if (note) lines.push(`  Note: ${note}`);
   }
   return lines.join('\n');
+}
+
+/** Static production chat prompt, before user and page context is appended. */
+export function composeStaticSystemPrompt(toolNames: readonly string[]): string {
+  return [AI_SYSTEM_PROMPT_BASE, renderToolIndexByDomain(toolNames), AI_SYSTEM_PROMPT_TAIL].join('\n');
 }

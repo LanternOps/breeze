@@ -12,7 +12,7 @@ vi.mock('../../streamingSessionManager', () => ({
   buildClaudeSdkChildEnv: () => ({ ANTHROPIC_API_KEY: 'test-key', ENABLE_TOOL_SEARCH: 'inherited' }),
 }));
 vi.mock('../llmConfigResolver', () => ({ resolveLlmConfig: async () => ({ source: 'env' }) }));
-vi.mock('../toolCapture/runSurface', () => ({ runSurfaceCapture: vi.fn() }));
+vi.mock('../toolCapture/runSurface', () => ({ runSurfaceCapture: vi.fn(), getCaptureSystemPrompt: () => 'complete prompt — index and tail' }));
 vi.mock('../toolCapture/surfaces', () => ({
   CAPTURE_SURFACES: {
     chat: { id: 'chat', allowedTools: ['mcp__breeze__query_devices'] },
@@ -50,7 +50,8 @@ it('writes JSON and markdown using only first-call usage, and closes the DB', as
     env: { ANTHROPIC_API_KEY: 'test-key', ENABLE_TOOL_SEARCH: 'false' },
   }));
   const report = JSON.parse(String(vi.mocked(writeFile).mock.calls[0]![1]));
-  expect(report).toMatchObject({ summary: { total: 1, hits: 1 }, meanFirstCallInputTokens: 100,
+  expect(report).toMatchObject({ systemPromptBytes: Buffer.byteLength('complete prompt — index and tail', 'utf8'),
+    summary: { total: 1, hits: 1 }, meanFirstCallInputTokens: 100,
     cases: [{ inputTokens: 100, cacheReadInputTokens: 30, cacheCreationInputTokens: 20,
       ttftMs: 12, toolSearchUsed: true }] });
   expect(writeFile).toHaveBeenNthCalledWith(2, 'result.md', expect.stringContaining('accuracy 1/1'));
