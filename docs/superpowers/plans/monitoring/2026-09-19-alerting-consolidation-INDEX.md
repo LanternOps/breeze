@@ -1,5 +1,5 @@
 ---
-tracking_issue: (set by feature-lifecycle after registration)
+tracking_issue: LanternOps/breeze#6367
 spec: docs/superpowers/specs/monitoring/2026-09-19-alerting-consolidation-design.md
 diagrams: docs/superpowers/specs/monitoring/2026-09-19-alerting-consolidation-diagrams.html
 ---
