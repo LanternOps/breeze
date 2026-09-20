@@ -5,6 +5,7 @@ import { alertsRoutes } from './alerts';
 import { channelsRoutes } from './channels';
 import { policiesRoutes } from './policies';
 import { routingRoutes } from './routing';
+import { deliveryRoutes } from './delivery';
 import { deliveryRailsRoutes } from './deliveryRails';
 import { alertCorrelationRoutes } from './correlations';
 
@@ -20,5 +21,6 @@ alertRoutes.route('/', policiesRoutes);
 alertRoutes.route('/', routingRoutes);
 alertRoutes.route('/', alertCorrelationRoutes);
 alertRoutes.route('/', deliveryRailsRoutes);
+alertRoutes.route('/', deliveryRoutes);
 alertRoutes.route('/', alertsRoutes);
 

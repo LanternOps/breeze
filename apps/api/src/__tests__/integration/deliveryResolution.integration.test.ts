@@ -11,10 +11,27 @@ import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import { eq, inArray, sql } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
 import {
-  alerts, devices, escalationPolicies, monitorDefinitions, notificationChannels, notificationRoutingRules, organizationUsers, partnerUsers, sites,
+  alertRules, alertTemplates, alerts, devices, escalationPolicies, monitorDefinitions, notificationChannels, notificationRoutingRules, organizationUsers, partnerUsers, sites,
 } from '../../db/schema';
 import { getNotificationQueue, processAlertNotifications, shutdownNotificationDispatcher } from '../../services/notificationDispatcher';
 import { resolveDelivery } from '../../services/delivery/resolveDelivery';
+import { Hono } from 'hono';
+import type { AuthContext } from '../../middleware/auth';
+import type { ResolveDeliveryInput } from '../../services/delivery/resolveDelivery';
+import { describeDelivery, type DeliveryPreview } from '../../services/delivery/describeDelivery';
+vi.mock('../../middleware/auth', async importOriginal => {
+  const actual = await importOriginal<typeof import('../../middleware/auth')>();
+  return { ...actual,
+    requireMfa: () => async (_c: any, next: any) => next(),
+    requireScope: () => async (_c: any, next: any) => next(),
+    requirePermission: () => async (_c: any, next: any) => next(),
+  };
+});
+import { deliveryRoutes } from '../../routes/alerts/delivery';
+import { deliveryRailsRoutes } from '../../routes/alerts/deliveryRails';
+import { channelsRoutes } from '../../routes/alerts/channels';
+import { routingRoutes } from '../../routes/alerts/routing';
+import { policiesRoutes } from '../../routes/alerts/policies';
 import { createOrganization, createPartner, createUser } from './db-utils';
 import { listEscalationUsers } from '../../services/delivery/escalationExecution';
 
@@ -22,12 +39,14 @@ const runDb = it.runIf(!!process.env.DATABASE_URL);
 const SYSTEM_CTX: DbAccessContext = { scope: 'system', orgId: null, accessibleOrgIds: null, accessiblePartnerIds: null, userId: null };
 const sys = <T>(fn: () => Promise<T>) => withDbAccessContext(SYSTEM_CTX, fn);
 
-const created = { alerts: [] as string[], rules: [] as string[], policies: [] as string[], channels: [] as string[], monitors: [] as string[], devices: [] as string[], sites: [] as string[] };
+const created = { legacyRules: [] as string[], templates: [] as string[], alerts: [] as string[], rules: [] as string[], policies: [] as string[], channels: [] as string[], monitors: [] as string[], devices: [] as string[], sites: [] as string[] };
 
 afterAll(async () => { await shutdownNotificationDispatcher(); });
 afterEach(async () => {
   await sys(async () => {
     if (created.alerts.length) await db.delete(alerts).where(inArray(alerts.id, created.alerts));
+    for (const id of created.legacyRules) await db.delete(alertRules).where(eq(alertRules.id, id));
+    for (const id of created.templates) await db.delete(alertTemplates).where(eq(alertTemplates.id, id));
     for (const id of created.rules) await db.delete(notificationRoutingRules).where(eq(notificationRoutingRules.id, id));
     for (const id of created.monitors) await db.delete(monitorDefinitions).where(eq(monitorDefinitions.id, id));
     for (const id of created.policies) await db.delete(escalationPolicies).where(eq(escalationPolicies.id, id));
@@ -262,5 +281,226 @@ describe('listEscalationUsers — real SQL membership eligibility', () => {
     expect(ids).not.toContain(foreign.id);
     expect(listed).toEqual((includePartnerUsers ? [member, all, included] : [member])
       .map(({ id, name }) => ({ id, name })));
+  });
+});
+
+function requestAsOrg(f: DeliveryFixture, path: string, init?: RequestInit) {
+  const auth = { scope: 'organization', orgId: f.orgId, partnerId: f.partnerId,
+    canAccessOrg: (id: string) => id === f.orgId, allowedSiteIds: undefined } as AuthContext;
+  const app = new Hono();
+  app.use('*', async (c, next) => { c.set('auth', auth); await next(); });
+  app.route('/alerts', deliveryRoutes);
+  app.route('/alerts', deliveryRailsRoutes);
+  app.route('/alerts', channelsRoutes);
+  app.route('/alerts', routingRoutes);
+  app.route('/alerts', policiesRoutes);
+  return withDbAccessContext(orgCtx(f), async () => {
+    const role = await db.execute(sql`select current_user as role`);
+    expect(role[0]?.role).toBe('breeze_app');
+    return app.request(path, init);
+  });
+}
+
+function previewAs(f: DeliveryFixture, facts: ResolveDeliveryInput) {
+  const query = new URLSearchParams({ orgId: facts.orgId, severity: facts.severity });
+  if (facts.kind) query.set('kind', facts.kind);
+  if (facts.monitorId) query.set('monitorId', facts.monitorId);
+  if (facts.siteId) query.set('siteId', facts.siteId);
+  return requestAsOrg(f, `/alerts/delivery/resolve?${query}`);
+}
+
+async function agree(f: DeliveryFixture, facts: ResolveDeliveryInput, expectedChannels: string[], expectedEscalationChannels: string[] = []) {
+  const response = await previewAs(f, facts);
+  expect(response.status).toBe(200);
+  const preview = await response.json() as DeliveryPreview;
+  const resolved = await sys(() => resolveDelivery(facts));
+  const { display, description, ...decision } = preview;
+  expect(decision).toEqual(resolved);
+  expect(display.length).toBeGreaterThan(0);
+  expect([...decision.channelIds].sort()).toEqual([...expectedChannels].sort());
+  expect(description.channels.map(c => c.id).sort()).toEqual([...expectedChannels].sort());
+  const bulk = vi.spyOn(getNotificationQueue(), 'addBulk').mockResolvedValue([]);
+  const single = vi.spyOn(getNotificationQueue(), 'add').mockResolvedValue({ getState: async () => 'waiting' } as never);
+  try {
+    const result = await dispatch(await seedAlert(f, facts.severity as 'high', facts.monitorId ?? null));
+    const queuedIds = bulk.mock.calls.flatMap(([jobs]) => jobs.map(job => job.data.channelId));
+    expect(queuedIds.sort()).toEqual([...expectedChannels].sort());
+    const escalationIds = single.mock.calls.map(([, job]) => job.channelId);
+    expect(escalationIds.sort()).toEqual([...expectedEscalationChannels].sort());
+    expect(result.queued).toBe(expectedChannels.length);
+    expect(result.inAppSent).toBe(true);
+  } finally { bulk.mockRestore(); single.mockRestore(); }
+}
+
+describe('full W05b gate — dispatch ⇄ resolver ⇄ GET preview', () => {
+  runDb('org-row wins at equal priority and schedules the winning row escalation', async () => {
+    const f = await seedFixture();
+    const [policy] = await sys(() => db.insert(escalationPolicies).values({ orgId: f.orgId, name: 'On-call',
+      steps: [{ delayMinutes: 5, channelIds: [f.orgChannel] }] }).returning());
+    created.policies.push(policy!.id);
+    await seedRule({ partnerId: f.partnerId, conditions: { severities: ['critical'] }, channelIds: [f.partnerChannel] });
+    await seedRule({ orgId: f.orgId, conditions: { severities: ['critical'] }, channelIds: [f.orgChannel], escalationPolicyId: policy!.id });
+    await agree(f, { orgId: f.orgId, severity: 'critical', siteId: f.siteId }, [f.orgChannel], [f.orgChannel]);
+  });
+  runDb('org token inherits a partner row; foreign-partner rows cannot win', async () => {
+    const f = await seedFixture();
+    const foreign = await createPartner();
+    await seedRule({ partnerId: foreign.id, priority: 0, channelIds: [f.orgChannel] });
+    await seedRule({ partnerId: f.partnerId, channelIds: [f.partnerChannel] });
+    await agree(f, { orgId: f.orgId, severity: 'high', siteId: f.siteId }, [f.partnerChannel]);
+  });
+  runDb('org default shadows partner default, then partner default covers an org with no override', async () => {
+    const f = await seedFixture();
+    await seedRule({ partnerId: f.partnerId, isDefault: true, channelIds: [f.partnerChannel] });
+    const override = await seedRule({ orgId: f.orgId, isDefault: true, channelIds: [f.orgChannel, f.partnerChannel] });
+    await agree(f, { orgId: f.orgId, severity: 'low', siteId: f.siteId }, [f.orgChannel, f.partnerChannel]);
+    const deleted = await requestAsOrg(f, `/alerts/routing-rules/${override.id}`, { method: 'DELETE' });
+    expect(deleted.status).toBe(200);
+    await agree(f, { orgId: f.orgId, severity: 'low', siteId: f.siteId }, [f.partnerChannel]);
+  });
+  runDb('removing an org default without a partner default restores inbox-only delivery', async () => {
+    const f = await seedFixture();
+    const override = await seedRule({ orgId: f.orgId, isDefault: true, channelIds: [f.orgChannel] });
+    await agree(f, { orgId: f.orgId, severity: 'low', siteId: f.siteId }, [f.orgChannel]);
+    expect((await requestAsOrg(f, `/alerts/routing-rules/${override.id}`, { method: 'DELETE' })).status).toBe(200);
+    await agree(f, { orgId: f.orgId, severity: 'low', siteId: f.siteId }, []);
+  });
+  runDb('an empty default still schedules its independent escalation', async () => {
+    const f = await seedFixture();
+    const [policy] = await sys(() => db.insert(escalationPolicies).values({ orgId: f.orgId,
+      name: 'Escalate without initial channels', steps: [{ delayMinutes: 5, channelIds: [f.partnerChannel] }] }).returning());
+    created.policies.push(policy!.id);
+    await seedRule({ orgId: f.orgId, isDefault: true, channelIds: [], escalationPolicyId: policy!.id });
+    await agree(f, { orgId: f.orgId, severity: 'high', siteId: f.siteId }, [], [f.partnerChannel]);
+  });
+  runDb('legacy escalation overrides a conflicting row internally; browser preview cannot inject it', async () => {
+    const f = await seedFixture();
+    const [legacyPolicy, rowPolicy] = await sys(() => db.insert(escalationPolicies).values([
+      { orgId: f.orgId, name: 'Legacy escalation', steps: [{ delayMinutes: 5, channelIds: [f.partnerChannel] }] },
+      { orgId: f.orgId, name: 'Row escalation', steps: [{ delayMinutes: 5, channelIds: [f.orgChannel] }] },
+    ]).returning());
+    created.policies.push(legacyPolicy!.id, rowPolicy!.id);
+    await seedRule({ orgId: f.orgId, channelIds: [f.orgChannel], escalationPolicyId: rowPolicy!.id });
+    const [template] = await sys(() => db.insert(alertTemplates).values({ orgId: f.orgId,
+      name: 'Legacy template', conditions: {}, severity: 'high', titleTemplate: 'gate', messageTemplate: 'gate' }).returning());
+    created.templates.push(template!.id);
+    const [rule] = await sys(() => db.insert(alertRules).values({ orgId: f.orgId, templateId: template!.id,
+      name: 'Unmanaged legacy rule', targetType: 'device', targetId: f.deviceId,
+      overrideSettings: { escalationPolicyId: legacyPolicy!.id } }).returning());
+    created.legacyRules.push(rule!.id);
+    const facts = { orgId: f.orgId, severity: 'high' as const, siteId: f.siteId };
+    const internalFacts = { ...facts, legacyOverride: { escalationPolicyId: legacyPolicy!.id } };
+    const resolved = await sys(() => resolveDelivery(internalFacts));
+    expect(resolved).toMatchObject({ source: 'routing_rule', channelIds: [f.orgChannel], escalationPolicyId: legacyPolicy!.id });
+    const internalPreview = await withDbAccessContext(orgCtx(f), () => describeDelivery(internalFacts, resolved));
+    const { display, description, ...decision } = internalPreview;
+    expect(decision).toEqual(resolved);
+    expect(description.escalationPolicy).toEqual({ id: legacyPolicy!.id, name: 'Legacy escalation' });
+    expect(display).toContain('escalates via Legacy escalation');
+    const alertId = await seedAlert(f, 'high');
+    await sys(() => db.update(alerts).set({ ruleId: rule!.id }).where(eq(alerts.id, alertId)));
+    const bulk = vi.spyOn(getNotificationQueue(), 'addBulk').mockResolvedValue([]);
+    const single = vi.spyOn(getNotificationQueue(), 'add').mockResolvedValue({ getState: async () => 'waiting' } as never);
+    try {
+      expect((await dispatch(alertId)).queued).toBe(1);
+      expect(bulk.mock.calls.flatMap(([jobs]) => jobs.map(job => job.data.channelId))).toEqual(resolved.channelIds);
+      expect(single.mock.calls.map(([, job]) => job.channelId)).toEqual([f.partnerChannel]);
+    } finally { bulk.mockRestore(); single.mockRestore(); }
+    // HTTP previews describe current routing; legacy source facts are internal only.
+    const preview = await (await previewAs(f, facts)).json() as DeliveryPreview;
+    expect(preview.escalationPolicyId).toBe(rowPolicy!.id);
+    const injected = await requestAsOrg(f, `/alerts/delivery/resolve?orgId=${f.orgId}&severity=high&legacyOverride=${encodeURIComponent(JSON.stringify(internalFacts.legacyOverride))}`);
+    expect(injected.status).toBe(400);
+  });
+  runDb('all three inbox-only paths agree and none never schedules monitor escalation', async () => {
+    const f = await seedFixture();
+    await agree(f, { orgId: f.orgId, severity: 'medium', siteId: f.siteId }, []);
+    await seedRule({ orgId: f.orgId, isDefault: true, channelIds: [] });
+    await agree(f, { orgId: f.orgId, severity: 'medium', siteId: f.siteId }, []);
+    const [policy] = await sys(() => db.insert(escalationPolicies).values({ orgId: f.orgId, name: 'Suppressed escalation',
+      steps: [{ delayMinutes: 5, channelIds: [f.orgChannel] }] }).returning());
+    created.policies.push(policy!.id);
+    const [monitor] = await sys(() => db.insert(monitorDefinitions).values({ orgId: f.orgId, name: 'Quiet preview',
+      kind: 'cpu', severity: 'high', condition: { operator: 'gt', value: 90 }, deliveryMode: 'none',
+      escalationPolicyId: policy!.id }).returning());
+    created.monitors.push(monitor!.id);
+    await seedRule({ partnerId: f.partnerId, channelIds: [f.partnerChannel] });
+    await agree(f, { orgId: f.orgId, severity: 'high', siteId: f.siteId, monitorId: monitor!.id }, []);
+  });
+  runDb('preview and dispatch agree on disabled and unavailable references and retain escalation', async () => {
+    const f = await seedFixture();
+    const other = await seedFixture();
+    const missing = '99999999-9999-4999-8999-999999999999';
+    await sys(() => db.update(notificationChannels).set({ enabled: false }).where(eq(notificationChannels.id, f.orgChannel)));
+    const [policy] = await sys(() => db.insert(escalationPolicies).values({ orgId: f.orgId, name: 'Still escalate',
+      steps: [{ delayMinutes: 5, channelIds: [f.partnerChannel] }] }).returning());
+    created.policies.push(policy!.id);
+    await seedRule({ orgId: f.orgId, channelIds: [f.orgChannel, other.orgChannel, missing], escalationPolicyId: policy!.id });
+    await agree(f, { orgId: f.orgId, severity: 'high', siteId: f.siteId }, [], [f.partnerChannel]);
+    const result = await (await previewAs(f, { orgId: f.orgId, severity: 'high', siteId: f.siteId })).json();
+    expect(result.skippedChannelIds).toEqual([
+      { id: f.orgChannel, reason: 'disabled' }, { id: other.orgChannel, reason: 'unavailable' }, { id: missing, reason: 'unavailable' },
+    ]);
+  });
+  runDb('foreign and absent channel IDs have identical preview reasons and HTTP shapes; rails reveal neither', async () => {
+    const f = await seedFixture();
+    const foreign = await seedFixture();
+    const missing = '99999999-9999-4999-8999-999999999999';
+    const row = await seedRule({ orgId: f.orgId, channelIds: [foreign.orgChannel] });
+    const observations = [];
+    for (const id of [foreign.orgChannel, missing]) {
+      await sys(() => db.update(notificationRoutingRules).set({ channelIds: [id] })
+        .where(eq(notificationRoutingRules.id, row.id)));
+      const response = await previewAs(f, { orgId: f.orgId, severity: 'high', siteId: f.siteId });
+      const body = await response.json() as DeliveryPreview;
+      expect(body.skippedChannelIds).toEqual([{ id, reason: 'unavailable' }]);
+      // Only the caller's echoed reference differs; no name, owner or existence bit is returned.
+      const normalized = { ...body, skippedChannelIds: body.skippedChannelIds.map(item => ({ ...item, id: '<requested>' })) };
+      const railsResponse = await requestAsOrg(f, '/alerts/delivery/rails?rail=channels');
+      const rails = await railsResponse.json();
+      expect([...rails.data, ...rails.inherited].filter((channel: { id: string }) => channel.id === id)).toEqual([]);
+      observations.push({ previewStatus: response.status, preview: normalized,
+        railsStatus: railsResponse.status, rails });
+    }
+    expect(observations[0]).toEqual(observations[1]);
+    expect(observations[0]?.previewStatus).toBe(200);
+    expect(observations[0]?.railsStatus).toBe(200);
+    // The existing rails API lists visible choices; it has no ID lookup or skip-reason field.
+    // Both references are absent from the same safe list; preview carries the identical reason.
+  });
+
+  runDb('org HTTP reads inherit only the safe partner channel DTO, with no config key', async () => {
+    const f = await seedFixture();
+    const response = await requestAsOrg(f, '/alerts/delivery/rails?rail=channels');
+    expect(response.status).toBe(200);
+    const rails = await response.json();
+    expect(rails.inherited).toEqual([{ id: f.partnerChannel, name: 'Partner NOC',
+      type: 'slack', enabled: true, inherited: true }]);
+    expect(rails.inherited[0]).not.toHaveProperty('config');
+  });
+
+  runDb('org HTTP writes cannot create partner channels, routing rows or escalation policies (403)', async () => {
+    const f = await seedFixture();
+    const attempts = [
+      { path: '/alerts/channels', body: { name: 'Forbidden', type: 'slack', config: {}, ownerScope: 'partner' } },
+      { path: '/alerts/routing-rules', body: { name: 'Forbidden', conditions: {}, channelIds: [f.partnerChannel], ownerScope: 'partner' } },
+      { path: '/alerts/policies', body: { name: 'Forbidden', steps: [{ delayMinutes: 5, channelIds: [f.partnerChannel] }], ownerScope: 'partner' } },
+    ];
+    for (const { path, body } of attempts) {
+      const response = await requestAsOrg(f, path, { method: 'POST',
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      expect(response.status).toBe(403);
+    }
+  });
+
+  runDb('rejects an otherwise readable monitor from a sibling org', async () => {
+    const f = await seedFixture();
+    const other = await createOrganization({ partnerId: f.partnerId });
+    const [monitor] = await sys(() => db.insert(monitorDefinitions).values({ orgId: other.id, name: 'Foreign',
+      kind: 'cpu', severity: 'high', condition: {}, deliveryMode: 'channels', deliveryChannelIds: [f.orgChannel] }).returning());
+    created.monitors.push(monitor!.id);
+    const response = await previewAs(f, { orgId: f.orgId, severity: 'high', monitorId: monitor!.id });
+    expect(response.status).toBe(404);
+    expect((await previewAs(f, { orgId: other.id, severity: 'high' })).status).toBe(403);
   });
 });
