@@ -23,13 +23,10 @@
 export type ActTarget =
   | { kind: 'service'; serviceName: string }
   /**
-   * `paths` only. The preview PLAN this execution is pinned to is DB state
-   * (the latest `analyze_disk_usage`/`disk_cleanup:preview` snapshot for the
-   * device) — normalizeTarget has no I/O, so it cannot resolve or carry a
-   * planId. actRevalidation.ts resolves the plan and stamps it onto the
-   * `ActAssetPin`, not onto this target.
+   * The preview's run id and selected paths come from the tool input.
+   * actRevalidation.ts resolves that exact run and validates its live plan.
    */
-  | { kind: 'disk_cleanup'; paths: string[] }
+  | { kind: 'disk_cleanup'; cleanupRunId: string; paths: string[] }
   /**
    * NOT currently reachable via `ACT_MANIFEST` (deferred out of v1, #3826
    * scoped re-review — see the removed `manageProcessesKill` entry's former
@@ -147,7 +144,12 @@ const diskCleanupExecute: ActOperation = {
     if (paths.length !== rawPaths.length) {
       return { ok: false, reason: 'paths must be an array of non-empty strings' };
     }
-    return { ok: true, target: { kind: 'disk_cleanup', paths } };
+    const cleanupRunId = readString(input, 'cleanupRunId');
+    if (!cleanupRunId) {
+      // A later preview must never silently replace the authorized plan.
+      return { ok: false, reason: 'cleanupRunId is required for an unattended disk_cleanup execute' };
+    }
+    return { ok: true, target: { kind: 'disk_cleanup', cleanupRunId, paths } };
   },
   verifySpec: { kind: 'disk_usage_improved' },
 };
