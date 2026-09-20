@@ -132,8 +132,9 @@ func (a macSnapshotsAction) Run(ctx context.Context, _ Params) ActionResult {
 
 	listing := runProcess(ctx, darwinEstimateTimeout, binary, tmutilListSnapshotsArgs()...)
 	if listing.Err != nil || listing.ExitCode != 0 || listing.TimedOut {
+		// resultFromProc keeps timed_out and failed apart (catalog.go: they
+		// call for different next steps).
 		result := resultFromProc(a.ID(), listing)
-		result.Status = StatusFailed
 		result.DurationMs = time.Since(started).Milliseconds()
 		return result
 	}

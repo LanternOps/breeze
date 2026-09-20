@@ -1040,9 +1040,13 @@ export async function handleSystemCleanupRunResult(
   // already says, while dropping it silently would erase the only evidence
   // that the work DID happen (which matters when the freed bytes show up on
   // the next scan and nobody can explain them).
-  if (run.status !== 'running') {
-    const late = parseAgentJson(systemCleanupRunResultSchema, stdout);
-    await db
+  // ONE representation of late evidence, whichever window the race lands in
+  // (here, or below when the timeout commits between this read and the finish
+  // CAS): the poll projection reads `executedActions.actions` and
+  // `bytesReclaimed` for the run's own outcome, so late evidence must sit
+  // beside them under `lateResult`, never replace them.
+  const recordLateResult = (late: z.infer<typeof systemCleanupRunResultSchema> | null) =>
+    db
       .update(deviceFilesystemCleanupRuns)
       .set({
         executedActions: sql`jsonb_set(
@@ -1058,7 +1062,14 @@ export async function handleSystemCleanupRunResult(
         )`,
         updatedAt: new Date(),
       })
-      .where(eq(deviceFilesystemCleanupRuns.id, runId));
+      .where(and(
+        eq(deviceFilesystemCleanupRuns.id, runId),
+        eq(deviceFilesystemCleanupRuns.deviceId, resolvedDeviceId),
+        ne(deviceFilesystemCleanupRuns.status, 'running'),
+      ));
+
+  if (run.status !== 'running') {
+    await recordLateResult(parseAgentJson(systemCleanupRunResultSchema, stdout));
     console.warn(
       `[commandResultHandlers] system_cleanup_run ${command.id} answered a ${run.status} run ${runId}; recorded as lateResult without changing its status`,
     );
@@ -1109,18 +1120,9 @@ export async function handleSystemCleanupRunResult(
 
   if (!finished) {
     // A timeout may win after the initial read. Preserve what ran without
-    // contradicting the terminal status already shown to the operator.
-    await db.update(deviceFilesystemCleanupRuns)
-      .set({
-        executedActions: { ...parsed, lateResultAt: now.toISOString() },
-        bytesReclaimed: parsed.freedBytes,
-        updatedAt: now,
-      })
-      .where(and(
-        eq(deviceFilesystemCleanupRuns.id, runId),
-        eq(deviceFilesystemCleanupRuns.deviceId, resolvedDeviceId),
-        ne(deviceFilesystemCleanupRuns.status, 'running'),
-      ));
+    // contradicting the terminal status already shown to the operator — in
+    // the SAME shape as the branch above.
+    await recordLateResult(parsed);
   }
 
   // No Hono context on this path, so the actor is attributed explicitly —
@@ -1138,6 +1140,8 @@ export async function handleSystemCleanupRunResult(
       actions: parsed.actions.map((action) => ({ id: action.id, status: action.status })),
       volumes: parsed.volumes,
     },
+    // On `late_result` this describes the agent's answer, not the run's
+    // status, which whoever finalised the run already decided.
     result: status === 'executed' ? 'success' : 'failure',
   });
 }

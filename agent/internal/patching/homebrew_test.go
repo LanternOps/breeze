@@ -809,3 +809,22 @@ esac
 		t.Fatalf("Install did not execute: %v", err)
 	}
 }
+
+// A cleanup blocked behind a long brew mutation must give up when its own
+// context ends instead of stalling for the mutation's full 30-minute budget
+// (W04 review round 2): the caller holds the process-wide maintenance lock.
+func TestRunBrewCleanupBoundedHonoursContextWhileWaitingForMutation(t *testing.T) {
+	brewMutateSem <- struct{}{} // simulate an in-flight Install/Uninstall
+	defer func() { <-brewMutateSem }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	_, err := RunBrewCleanupBounded(ctx, true)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected DeadlineExceeded while waiting for the brew mutation, got %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("waited %s: the acquire did not honour the context", elapsed)
+	}
+}

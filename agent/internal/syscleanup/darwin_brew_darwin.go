@@ -8,13 +8,14 @@ import (
 	"github.com/breeze-rmm/agent/internal/patching"
 )
 
-// brewCleanupRun delegates to patching's BOUNDED, UNLOCKED entry point.
+// brewCleanupRun delegates to patching's BOUNDED entry point, which takes
+// the brew-mutation semaphore (context-aware) but NOT the maintenance lock.
 //
-// Unlocked on purpose: `syscleanup.Run` already holds the process-wide
-// maintenance lock for the whole run (spec §13 #4/#12), so calling
-// `patching.BrewCleanup` — which acquires it — would deadlock against
+// No maintenance lock on purpose: `syscleanup.Run` already holds the
+// process-wide maintenance lock for the whole run (spec §13 #4/#12), so
+// calling `patching.BrewCleanup` — which acquires it — would deadlock against
 // ourselves. `RunBrewCleanupBounded` is the same invocation both callers use;
-// only the locking level differs.
+// only the maintenance-lock level differs.
 //
 // Delegating rather than reimplementing is the point: the console-user
 // `sudo -n -H -u` dance Homebrew requires when the agent runs as root lives in

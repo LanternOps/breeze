@@ -46,9 +46,24 @@ type HomebrewProvider struct {
 
 }
 
-// brewMutateMu serializes mutations across all provider instances and native
-// cleanup runs. If both locks are needed, acquire maintenance before this mutex.
-var brewMutateMu sync.Mutex
+// brewMutateSem serializes mutations across all provider instances and native
+// cleanup runs. It is a channel rather than a sync.Mutex so the cleanup path
+// can give up when its context ends: Install/Uninstall hold it for up to
+// patchMutateTimeout (30 min), and a cleanup catalogue probe or run blocked
+// behind that — while itself holding the process-wide maintenance lock — must
+// honour its own deadline instead of stalling every maintenance consumer.
+// If both locks are needed, acquire maintenance before this semaphore.
+var brewMutateSem = make(chan struct{}, 1)
+
+// acquireBrewMutate blocks until the semaphore is held or ctx ends.
+func acquireBrewMutate(ctx context.Context) (release func(), err error) {
+	select {
+	case brewMutateSem <- struct{}{}:
+		return func() { <-brewMutateSem }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
 
 // defaultCleanupDebounce is how long scheduleCleanup waits after the most
 // recent successful Install before actually running `brew cleanup`. Patch
@@ -255,9 +270,9 @@ func (h *HomebrewProvider) Install(patchID string) (InstallResult, error) {
 	}
 	args = append(args, name)
 
-	brewMutateMu.Lock()
+	brewMutateSem <- struct{}{}
 	output, err := h.brewCombinedOutput(patchMutateTimeout, args...)
-	brewMutateMu.Unlock()
+	<-brewMutateSem
 	if err != nil {
 		return InstallResult{}, fmt.Errorf("brew upgrade failed: %w: %s", err, truncatePatchOutput(output))
 	}
@@ -355,8 +370,11 @@ func truncateBrewOutputTail(output []byte) string {
 // would leave brew running for up to patchMutateTimeout (30 minutes) after the
 // command it belonged to was already reported.
 func RunBrewCleanupBounded(ctx context.Context, dryRun bool) (string, error) {
-	brewMutateMu.Lock()
-	defer brewMutateMu.Unlock()
+	release, err := acquireBrewMutate(ctx)
+	if err != nil {
+		return "", fmt.Errorf("brew cleanup cancelled while waiting for another brew operation: %w", err)
+	}
+	defer release()
 	args := brewCleanupArgs()
 	if dryRun {
 		args = brewCleanupDryRunArgs()
@@ -441,9 +459,9 @@ func (h *HomebrewProvider) Uninstall(patchID string) error {
 	}
 	args = append(args, name)
 
-	brewMutateMu.Lock()
+	brewMutateSem <- struct{}{}
 	output, err := h.brewCombinedOutput(patchMutateTimeout, args...)
-	brewMutateMu.Unlock()
+	<-brewMutateSem
 	if err != nil {
 		return fmt.Errorf("brew uninstall failed: %w: %s", err, truncatePatchOutput(output))
 	}

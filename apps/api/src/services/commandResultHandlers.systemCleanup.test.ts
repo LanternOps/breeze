@@ -131,8 +131,14 @@ describe('handleSystemCleanupRunResult (spec §5.3)', () => {
     expect(setSpy).toHaveBeenCalledTimes(2);
     const late = setSpy.mock.calls[1]?.[0] as Record<string, unknown>;
     expect(late.status).toBeUndefined();
-    expect(late.bytesReclaimed).toBe(3000);
-    expect(late.executedActions).toMatchObject({ freedBytes: 3000, lateResultAt: expect.any(String) });
+    // Same shape as the already-terminal branch: evidence nested under
+    // `lateResult`, the run's own `bytesReclaimed`/`actions` untouched, so the
+    // poll projection cannot show a timed-out run as if it had succeeded.
+    expect(late.bytesReclaimed).toBeUndefined();
+    const lateSql = new PgDialect().sqlToQuery(late.executedActions as SQL);
+    expect(lateSql.sql).toContain("jsonb_set");
+    expect(lateSql.sql).toContain("{lateResult}");
+    expect(lateSql.params.some((param) => typeof param === 'string' && param.includes('"freedBytes":3000'))).toBe(true);
     expect(new PgDialect().sqlToQuery(conditions[1]!).sql).toContain('<>');
     expect(writeAuditEventMock).toHaveBeenCalledExactlyOnceWith(expect.anything(), expect.objectContaining({
       action: 'device.filesystem.system_cleanup.late_result',
