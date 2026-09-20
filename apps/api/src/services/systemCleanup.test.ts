@@ -1,4 +1,32 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const seam = vi.hoisted(() => ({
+  select: vi.fn(), insert: vi.fn(), update: vi.fn(), transaction: vi.fn(), queue: vi.fn(),
+  context: vi.fn(), outside: vi.fn(), lock: vi.fn(),
+  depth: 0, committed: false,
+}));
+vi.mock('../db', () => ({
+  db: { select: seam.select, insert: seam.insert, update: seam.update, transaction: seam.transaction },
+  withDbAccessContext: seam.context,
+  runOutsideDbContext: seam.outside,
+}));
+vi.mock('../db/schema', () => ({
+  devices: { id: 'devices.id', orgId: 'devices.orgId' },
+  deviceFilesystemCleanupRuns: {
+    id: 'runs.id', orgId: 'runs.orgId', deviceId: 'runs.deviceId',
+    kind: 'runs.kind', status: 'runs.status', commandId: 'runs.commandId',
+  },
+  deviceCommands: { id: 'commands.id', deviceId: 'commands.deviceId', status: 'commands.status' },
+}));
+vi.mock('drizzle-orm', () => ({
+  and: (...conditions: unknown[]) => ({ conditions }),
+  eq: (left: unknown, right: unknown) => ({ left, right }),
+}));
+vi.mock('./commandQueue', () => ({
+  queueCommandForExecutionWithSystemPrecheck: seam.queue,
+  CommandTypes: { SYSTEM_CLEANUP_LIST: 'system_cleanup_list', SYSTEM_CLEANUP_RUN: 'system_cleanup_run' },
+}));
+
 import {
   AGENT_UPDATE_REQUIRED_ERROR,
   MIN_AGENT_VERSION_SYSTEM_CLEANUP,
@@ -8,6 +36,9 @@ import {
   systemCleanupAgentGate,
   systemCleanupCatalogSchema,
   systemCleanupRunResultSchema,
+  queueSystemCleanupList,
+  startSystemCleanupRun,
+  failSystemCleanupRunAndCancelCommand,
 } from './systemCleanup';
 
 describe('agentSupportsSystemCleanup (spec §5.3)', () => {
@@ -223,5 +254,149 @@ describe('systemCleanupRunResultSchema maintenance and budget outcomes', () => {
     });
     expect(parsed.actions[0]?.status).toBe(status);
     expect(parsed.actions[0]?.subActions?.[0]?.status).toBe(status);
+  });
+});
+
+
+const SEAM_DEVICE_ID = '22222222-2222-4222-8222-222222222222';
+const SEAM_ORG_ID = '11111111-1111-4111-8111-111111111111';
+const SEAM_RUN_ID = '44444444-4444-4444-8444-444444444444';
+const SEAM_COMMAND_ID = '33333333-3333-4333-8333-333333333333';
+const seamArgs = {
+  device: { id: SEAM_DEVICE_ID, orgId: SEAM_ORG_ID, agentVersion: '0.115.0', status: 'online' },
+  requestedBy: '55555555-5555-4555-8555-555555555555',
+  actionIds: ['linux_pkg_cache_clean'],
+};
+
+// The mock tracks the transaction boundary rather than only invocation order:
+// a websocket result can see the claim only after that transaction commits.
+describe('system-cleanup queue/start service seam', () => {
+  const writes: Array<{ table: unknown; values: Record<string, unknown>; condition?: unknown }> = [];
+  let returnedUpdates: unknown[][];
+  let activeRuns: unknown[];
+  beforeEach(() => {
+    vi.clearAllMocks();
+    seam.depth = 0;
+    seam.committed = false;
+    writes.length = 0;
+    returnedUpdates = [];
+    activeRuns = [];
+    seam.context.mockImplementation(async (_context: unknown, callback: () => Promise<unknown>) => {
+      seam.depth++;
+      try { return await callback(); } finally { seam.depth--; }
+    });
+    seam.outside.mockImplementation(async (callback: () => Promise<unknown>) => {
+      const previous = seam.depth;
+      seam.depth = 0;
+      try { return await callback(); } finally { seam.depth = previous; }
+    });
+    seam.transaction.mockImplementation(async (callback: (tx: unknown) => Promise<unknown>) => {
+      const result = await callback({ select: seam.select, insert: seam.insert, update: seam.update });
+      seam.committed = true;
+      return result;
+    });
+    seam.lock.mockResolvedValue([{ id: SEAM_DEVICE_ID }]);
+    seam.select.mockImplementation(() => ({
+      from: (table: { id: string }) => ({
+        where: () => ({
+          for: seam.lock,
+          limit: () => table.id === 'devices.id'
+            ? { for: seam.lock, then: (resolve: (rows: unknown[]) => unknown) => Promise.resolve(resolve([{ id: SEAM_DEVICE_ID }])) }
+            : Promise.resolve(activeRuns),
+        }),
+      }),
+    }));
+    seam.insert.mockImplementation((table: unknown) => ({
+      values: (values: Record<string, unknown>) => {
+        writes.push({ table, values });
+        return { returning: async () => [{ id: SEAM_RUN_ID }] };
+      },
+    }));
+    seam.update.mockImplementation((table: unknown) => ({
+      set: (values: Record<string, unknown>) => ({
+        where: (condition: unknown) => {
+          writes.push({ table, values, condition });
+          const rows = returnedUpdates.shift() ?? [];
+          return Object.assign(Promise.resolve(rows), { returning: async () => rows });
+        },
+      }),
+    }));
+    seam.queue.mockResolvedValue({ command: { id: SEAM_COMMAND_ID, status: 'pending' } });
+  });
+
+  it.each(['0.114.0', '', 'dev', null])('gates both callers before any claim or dispatch for %s', async (agentVersion) => {
+    const args = { ...seamArgs, device: { ...seamArgs.device, agentVersion } };
+    for (const invoke of [queueSystemCleanupList, startSystemCleanupRun]) {
+      await expect(invoke(args)).resolves.toMatchObject({ ok: false, status: 409, error: 'agent_update_required' });
+    }
+    expect(seam.insert).not.toHaveBeenCalled();
+    expect(seam.queue).not.toHaveBeenCalled();
+  });
+
+  it('rejects invalid action ids before writing or dispatching', async () => {
+    await expect(startSystemCleanupRun({ ...seamArgs, actionIds: ['win_cleanmgr:DownloadsFolder'] }))
+      .resolves.toMatchObject({ ok: false, status: 400 });
+    expect(seam.insert).not.toHaveBeenCalled();
+    expect(seam.queue).not.toHaveBeenCalled();
+  });
+
+  it('queues a catalog without creating a run', async () => {
+    await expect(queueSystemCleanupList(seamArgs)).resolves.toEqual({ ok: true, commandId: SEAM_COMMAND_ID });
+    expect(seam.queue).toHaveBeenCalledWith(SEAM_DEVICE_ID, 'system_cleanup_list', {}, { userId: seamArgs.requestedBy, expectedOrgId: SEAM_ORG_ID });
+    expect(seam.insert).not.toHaveBeenCalled();
+  });
+
+  it('commits the locked claim before dispatch and stores its selection deadline', async () => {
+    seam.queue.mockImplementation(async () => {
+      expect(seam.depth).toBe(0);
+      expect(seam.committed).toBe(true);
+      expect(writes[0]?.values).toMatchObject({ kind: 'system', status: 'running' });
+      return { command: { id: SEAM_COMMAND_ID } };
+    });
+    await expect(startSystemCleanupRun(seamArgs)).resolves.toEqual({ ok: true, commandId: SEAM_COMMAND_ID, cleanupRunId: SEAM_RUN_ID });
+    expect(seam.lock).toHaveBeenCalledWith('update');
+    const plan = writes[0]?.values.plan as { deadlineAt: string };
+    expect(new Date(plan.deadlineAt).getTime() - Date.now()).toBeGreaterThan(14 * 60_000);
+    expect(new Date(plan.deadlineAt).getTime() - Date.now()).toBeLessThanOrEqual(15 * 60_000);
+    expect(writes.at(-1)?.values).toMatchObject({ commandId: SEAM_COMMAND_ID });
+  });
+
+  it('refuses an existing active claim after locking the device', async () => {
+    activeRuns = [{ id: SEAM_RUN_ID }];
+    await expect(startSystemCleanupRun(seamArgs)).resolves.toMatchObject({ ok: false, status: 409, error: 'run_in_progress', cleanupRunId: SEAM_RUN_ID });
+    expect(seam.lock).toHaveBeenCalledWith('update');
+    expect(seam.insert).not.toHaveBeenCalled();
+    expect(seam.queue).not.toHaveBeenCalled();
+  });
+
+  it.each(['returned', 'thrown'])('marks the committed claim failed on a %s queue error', async (mode) => {
+    if (mode === 'returned') seam.queue.mockResolvedValue({ error: 'Device is offline' });
+    else seam.queue.mockRejectedValue(new Error('Device is offline'));
+    await expect(startSystemCleanupRun(seamArgs)).resolves.toMatchObject({ ok: false, status: 503, error: 'Device is offline' });
+    expect(writes.at(-1)?.values).toMatchObject({ status: 'failed', error: 'Device is offline' });
+    expect(seam.depth).toBe(0);
+  });
+
+  it('atomically fails only the scoped running system run and cancels only its pending command', async () => {
+    returnedUpdates = [[{ id: SEAM_RUN_ID, commandId: SEAM_COMMAND_ID }], [{ id: SEAM_COMMAND_ID }]];
+    await expect(failSystemCleanupRunAndCancelCommand({ runId: SEAM_RUN_ID, deviceId: SEAM_DEVICE_ID, orgId: SEAM_ORG_ID, error: 'timed out' })).resolves.toBe(true);
+    expect(seam.transaction).toHaveBeenCalledTimes(1);
+    expect(writes[0]?.values).toMatchObject({ status: 'failed', error: 'timed out' });
+    expect(writes[0]?.condition).toMatchObject({ conditions: expect.arrayContaining([
+      { left: 'runs.id', right: SEAM_RUN_ID }, { left: 'runs.deviceId', right: SEAM_DEVICE_ID },
+      { left: 'runs.orgId', right: SEAM_ORG_ID }, { left: 'runs.kind', right: 'system' },
+      { left: 'runs.status', right: 'running' },
+    ]) });
+    expect(writes[1]?.values).toMatchObject({ status: 'cancelled' });
+    expect(writes[1]?.condition).toMatchObject({ conditions: expect.arrayContaining([
+      { left: 'commands.id', right: SEAM_COMMAND_ID }, { left: 'commands.deviceId', right: SEAM_DEVICE_ID },
+      { left: 'commands.status', right: 'pending' },
+    ]) });
+  });
+
+  it('leaves the command untouched when a real result wins the run CAS', async () => {
+    returnedUpdates = [[]];
+    await expect(failSystemCleanupRunAndCancelCommand({ runId: SEAM_RUN_ID, deviceId: SEAM_DEVICE_ID, orgId: SEAM_ORG_ID, error: 'timed out' })).resolves.toBe(false);
+    expect(seam.update).toHaveBeenCalledTimes(1);
   });
 });

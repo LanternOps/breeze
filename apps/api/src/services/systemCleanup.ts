@@ -8,7 +8,11 @@
  */
 
 import { z } from 'zod';
-import { SYSTEM_CLEANUP_ACTION_IDS, SYSTEM_CLEANUP_RISK_FLAGS } from '@breeze/shared/validators';
+import { and, eq } from 'drizzle-orm';
+import { db, runOutsideDbContext, withDbAccessContext, type DbAccessContext } from '../db';
+import { devices, deviceCommands, deviceFilesystemCleanupRuns } from '../db/schema';
+import { queueCommandForExecutionWithSystemPrecheck, CommandTypes } from './commandQueue';
+import { SYSTEM_CLEANUP_ACTION_IDS, SYSTEM_CLEANUP_RISK_FLAGS, systemCleanupRunBodySchema, systemCleanupRunBudgetMs } from '@breeze/shared/validators';
 import { compareAgentVersions, parseComparableVersion } from './agentEditionCompat';
 
 /**
@@ -155,4 +159,236 @@ export function parseAgentJson<T>(schema: z.ZodType<T>, stdout: string | null | 
   }
   const parsed = schema.safeParse(decoded);
   return parsed.success ? parsed.data : null;
+}
+
+
+export interface QueueSystemCleanupListArgs {
+  device: { id: string; orgId: string; agentVersion: string | null; status: string };
+  requestedBy: string | null;
+}
+export interface StartSystemCleanupRunArgs extends QueueSystemCleanupListArgs {
+  actionIds: string[];
+  params?: { journalVacuumBytes?: number };
+}
+export type SystemCleanupQueueResult =
+  | { ok: true; commandId: string }
+  | { ok: false; status: 409; error: 'agent_update_required'; minAgentVersion: string }
+  | { ok: false; status: 400 | 503; error: string };
+export type SystemCleanupStartResult =
+  | { ok: true; commandId: string; cleanupRunId: string }
+  | Exclude<SystemCleanupQueueResult, { ok: true }>
+  | { ok: false; status: 409; error: 'run_in_progress'; cleanupRunId: string };
+
+async function queueSystemCleanupListOutsideContext(
+  args: QueueSystemCleanupListArgs,
+): Promise<SystemCleanupQueueResult> {
+  // Gate BEFORE queuing: a stale agent must never receive a command it can
+  // only answer with a bare failure the UI cannot explain.
+  const gate = systemCleanupAgentGate(args.device);
+  if (!gate.ok) return gate;
+
+  const queued = await queueCommandForExecutionWithSystemPrecheck(
+    args.device.id,
+    CommandTypes.SYSTEM_CLEANUP_LIST,
+    {},
+    { userId: args.requestedBy ?? undefined, expectedOrgId: args.device.orgId },
+  );
+  if (!queued.command) {
+    return { ok: false, status: 503, error: queued.error || 'Failed to queue the cleanup catalog request' };
+  }
+  return { ok: true, commandId: queued.command.id };
+}
+
+async function startSystemCleanupRunOutsideContext(
+  args: StartSystemCleanupRunArgs,
+): Promise<SystemCleanupStartResult> {
+  const gate = systemCleanupAgentGate(args.device);
+  if (!gate.ok) return gate;
+
+  const selection = systemCleanupRunBodySchema.safeParse({ actionIds: args.actionIds, params: args.params });
+  if (!selection.success) return { ok: false, status: 400, error: 'Invalid system cleanup selection' };
+
+  const deadlineAt = new Date(Date.now() + systemCleanupRunBudgetMs(args.actionIds));
+
+  // CLAIM in a short COMMITTED transaction, then dispatch outside it
+  // (spec §13 #5). Three things this buys that the ambient request
+  // transaction did not:
+  //
+  //   1. the single-run-per-device rule is actually enforced. Inside the
+  //      request transaction the `running` row a concurrent request had just
+  //      written was invisible, so two techs clicking Run a second apart both
+  //      passed the check and both queued;
+  //   2. a crash after the agent started deleting cannot roll the row away —
+  //      the claim is committed before anything is dispatched;
+  //   3. the WebSocket push in `queueCommandForExecutionWithSystemPrecheck` cannot beat the
+  //      commit, so the result handler can never arrive at a row that does
+  //      not exist yet.
+  //
+  // This is why the two POST routes are registered in
+  // SELF_MANAGED_DB_CONTEXT_ROUTES: the auth middleware must NOT have an
+  // ambient transaction open around any of it.
+  const claim = await withDbAccessContext(dbContextFor(args.device), async () =>
+    db.transaction(async (tx) => {
+      // Single run per device (spec §13 #4): a second run would rewrite the
+      // StateFlags5555 profile the first one is executing from. The agent's
+      // maintenance lock catches it too, but reporting `run_in_progress`
+      // here is the answer a tech can act on; `busy` from the agent arrives
+      // minutes later attached to a run row that should not exist.
+      // Lock the device even when no run exists; a check alone races.
+      const [lockedDevice] = await tx.select({ id: devices.id }).from(devices)
+        .where(and(eq(devices.id, args.device.id), eq(devices.orgId, args.device.orgId)))
+        .for('update');
+      if (!lockedDevice) return { runId: null } as const;
+
+      const [inFlight] = await tx
+        .select({ id: deviceFilesystemCleanupRuns.id })
+        .from(deviceFilesystemCleanupRuns)
+        .where(and(
+          eq(deviceFilesystemCleanupRuns.deviceId, args.device.id),
+          eq(deviceFilesystemCleanupRuns.kind, 'system'),
+          eq(deviceFilesystemCleanupRuns.status, 'running'),
+        ))
+        .limit(1);
+      if (inFlight) return { conflict: inFlight.id } as const;
+
+      const [row] = await tx
+        .insert(deviceFilesystemCleanupRuns)
+        .values({
+          deviceId: args.device.id,
+          orgId: args.device.orgId,
+          requestedBy: args.requestedBy,
+          kind: 'system',
+          status: 'running',
+          plan: {
+            actionIds: args.actionIds,
+            params: args.params ?? {},
+            catalogVersion: null,
+            // Stored, not recomputed: the poll route's lazy timeout and any
+            // future reaper read THIS number, so neither has to re-derive a
+            // budget from a selection it would have to re-parse (§13 #14).
+            deadlineAt: deadlineAt.toISOString(),
+          },
+        })
+        .returning({ id: deviceFilesystemCleanupRuns.id });
+      return { runId: row?.id ?? null } as const;
+    }),
+  );
+
+  if (claim.conflict !== undefined) {
+    return {
+      ok: false,
+      status: 409,
+      error: 'run_in_progress',
+      cleanupRunId: claim.conflict,
+    };
+  }
+  if (!claim.runId) return { ok: false, status: 503, error: 'Failed to record the cleanup run' };
+  const runId = claim.runId;
+
+  // Dispatch OUTSIDE any transaction. queueCommandForExecutionWithSystemPrecheck pushes over the
+  // websocket, and a push inside a held transaction is both the #1105
+  // connection hold and a message the agent can answer before the row commits.
+  const queued = await queueCommandForExecutionWithSystemPrecheck(
+    args.device.id,
+    CommandTypes.SYSTEM_CLEANUP_RUN,
+    { runId, actionIds: args.actionIds, params: args.params ?? {} },
+    { userId: args.requestedBy ?? undefined, expectedOrgId: args.device.orgId },
+  ).catch((error: unknown) => ({ error: error instanceof Error ? error.message : 'Failed to queue the cleanup run', command: undefined }));
+
+  // Finalise in a SEPARATE short transaction, either way.
+  if (!queued.command) {
+    // A `running` row nobody will ever close is worse than no row: the panel
+    // would spin until the stored deadline caught it.
+    await withDbAccessContext(dbContextFor(args.device), async () =>
+      db
+        .update(deviceFilesystemCleanupRuns)
+        .set({ status: 'failed', error: queued.error || 'Failed to queue the cleanup run', updatedAt: new Date() })
+        .where(and(
+          eq(deviceFilesystemCleanupRuns.id, runId),
+          eq(deviceFilesystemCleanupRuns.status, 'running'),
+        )),
+    );
+    return { ok: false, status: 503, error: queued.error || 'Failed to queue the cleanup run' };
+  }
+
+  await withDbAccessContext(dbContextFor(args.device), async () =>
+    db
+      .update(deviceFilesystemCleanupRuns)
+      .set({ commandId: queued.command!.id, updatedAt: new Date() })
+      .where(eq(deviceFilesystemCleanupRuns.id, runId)),
+  );
+
+  return { ok: true, commandId: queued.command.id, cleanupRunId: runId };
+}
+
+/**
+ * Cancel a run's pending command and mark the run failed, ATOMICALLY
+ * (spec §13 #6, #13).
+ *
+ * The two halves must not be separable. Marking the run failed while its
+ * command is still deliverable is the exact hazard the `live_only` TTL class
+ * narrows but does not close: the operator is told the run failed, and the
+ * device then claims the command and starts deleting. Cancelling the command
+ * without failing the run leaves a row spinning forever.
+ *
+ * Shared by the poll route's lazy timeout and by the org-move cancel branch
+ * (Task 12b), so there is one implementation of "this run is over".
+ */
+export async function failSystemCleanupRunAndCancelCommand(args: {
+  runId: string;
+  deviceId: string;
+  orgId: string;
+  error: string;
+}): Promise<boolean> {
+  return withDbAccessContext(dbContextFor({ orgId: args.orgId }), async () =>
+    db.transaction(async (tx) => {
+      const [run] = await tx
+        .update(deviceFilesystemCleanupRuns)
+        .set({ status: 'failed', error: args.error, updatedAt: new Date() })
+        .where(and(
+          eq(deviceFilesystemCleanupRuns.id, args.runId),
+          eq(deviceFilesystemCleanupRuns.deviceId, args.deviceId),
+          eq(deviceFilesystemCleanupRuns.orgId, args.orgId),
+          eq(deviceFilesystemCleanupRuns.kind, 'system'),
+          // CAS: a real result that landed first must win.
+          eq(deviceFilesystemCleanupRuns.status, 'running'),
+        ))
+        .returning({ id: deviceFilesystemCleanupRuns.id, commandId: deviceFilesystemCleanupRuns.commandId });
+      if (!run) return false;
+
+      if (run.commandId) {
+        const completedAt = new Date();
+        const [cancelled] = await tx
+          .update(deviceCommands)
+          .set({
+            status: 'cancelled',
+            completedAt,
+            result: { status: 'cancelled', reason: 'cleanup_run_finalised' },
+          })
+          .where(and(
+            eq(deviceCommands.id, run.commandId),
+            eq(deviceCommands.deviceId, args.deviceId),
+            eq(deviceCommands.status, 'pending'),
+          ))
+          .returning({ id: deviceCommands.id });
+        // Losing this CAS is fine and expected: the agent already claimed it,
+        // so a real result is on its way and the late-result branch in the
+        // handler records it without flipping the status back.
+        void cancelled;
+      }
+      return true;
+    }),
+  );
+}
+
+function dbContextFor(device: { orgId: string }): DbAccessContext {
+  return { scope: 'organization', orgId: device.orgId, accessibleOrgIds: [device.orgId] };
+}
+
+export function queueSystemCleanupList(args: QueueSystemCleanupListArgs): Promise<SystemCleanupQueueResult> {
+  return runOutsideDbContext(() => queueSystemCleanupListOutsideContext(args));
+}
+
+export function startSystemCleanupRun(args: StartSystemCleanupRunArgs): Promise<SystemCleanupStartResult> {
+  return runOutsideDbContext(() => startSystemCleanupRunOutsideContext(args));
 }
