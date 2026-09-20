@@ -391,7 +391,10 @@ export default function DRPlanEditor({
       const removedGroups = originalGroups.filter(
         (group) => group.id && !groups.some((current) => current.id === group.id)
       );
-      await Promise.all(
+      // The removals run concurrently, so `Promise.all` would report only the
+      // first rejection and drop the rest — the operator would fix one group
+      // and be surprised by the next. Settle them all and report every failure.
+      const removalResults = await Promise.allSettled(
         removedGroups.map(async (group) => {
           const response = await fetchWithAuth(`/dr/plans/${activePlanId}/groups/${group.id}`, {
             method: 'DELETE',
@@ -403,6 +406,12 @@ export default function DRPlanEditor({
           wroteSomething = true;
         })
       );
+      const removalFailures = removalResults.flatMap((result) =>
+        result.status === 'rejected'
+          ? [result.reason instanceof Error ? result.reason.message : String(result.reason)]
+          : []
+      );
+      if (removalFailures.length > 0) throw new Error(removalFailures.join(' '));
 
       onSaved();
     } catch (err) {

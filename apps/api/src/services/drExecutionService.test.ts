@@ -256,6 +256,28 @@ describe('drExecutionService', () => {
     })).rejects.toThrow('no_recovery_source');
   });
 
+  // #6382: a malformed source reference is a broken plan configuration, not a
+  // missing resource — it must carry its own code so the console can say so,
+  // and so the classifier reports it as a 400 rather than a 404.
+  it('denies a malformed explicit source reference with invalid_recovery_source_reference', async () => {
+    await expect(resolveDrGroupAuthorizationRefs({
+      ...groupRow(),
+      restoreConfig: { commandType: 'vm_restore_from_backup', sourceSnapshotId: 'not-a-uuid' },
+    }, ORG_ID, {
+      resolveProviderSnapshotId: vi.fn(),
+    })).rejects.toThrow('invalid_recovery_source_reference');
+  });
+
+  it('denies a blank payload snapshot id with invalid_recovery_source_reference', async () => {
+    const resolveProviderSnapshotId = vi.fn();
+    await expect(resolveDrGroupAuthorizationRefs({
+      ...groupRow(),
+      restoreConfig: { commandType: 'vm_restore_from_backup', payload: { snapshotId: '  ' } },
+    }, ORG_ID, { resolveProviderSnapshotId }))
+      .rejects.toThrow('invalid_recovery_source_reference');
+    expect(resolveProviderSnapshotId).not.toHaveBeenCalled();
+  });
+
   it('fails closed when a provider snapshot id is ambiguous', async () => {
     await expect(resolveDrGroupAuthorizationRefs(groupRow(), ORG_ID, {
       resolveProviderSnapshotId: vi.fn().mockRejectedValue(new Error('ambiguous_snapshot_reference')),

@@ -224,6 +224,71 @@ describe('DRPlanEditor save atomicity (#6382)', () => {
     ).toBe(false);
   });
 
+  it('refuses an over-long rebuild output dir before issuing any write', async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init as RequestInit | undefined)?.method ?? 'GET';
+      if (url.startsWith('/devices/options')) return makeJsonResponse(deviceOptionsPayload);
+      if (url === '/dr/plans/plan-1' && method === 'GET') return makeJsonResponse(editablePlanPayload);
+      return makeJsonResponse({}, false, 404);
+    });
+
+    const { save } = await renderEditor();
+    fireEvent.change(screen.getByTestId('dr-group-rebuild-output-dir'), {
+      target: { value: `/srv/${'a'.repeat(1024)}` },
+    });
+    fireEvent.click(save);
+
+    expect(
+      await screen.findByText(/output directory must be an absolute path/i)
+    ).toBeInTheDocument();
+    expect(
+      fetchMock.mock.calls.some(
+        ([url, init]) =>
+          String(url) === '/dr/plans/plan-1' && (init as RequestInit | undefined)?.method === 'PATCH'
+      )
+    ).toBe(false);
+  });
+
+  it('reports every failed group removal, not just the first', async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init as RequestInit | undefined)?.method ?? 'GET';
+      if (url.startsWith('/devices/options')) return makeJsonResponse(deviceOptionsPayload);
+      if (url === '/dr/plans/plan-1' && method === 'GET') {
+        return makeJsonResponse({
+          data: {
+            ...editablePlanPayload.data,
+            groups: [
+              editablePlanPayload.data.groups[0]!,
+              { ...editablePlanPayload.data.groups[0]!, id: 'group-2', name: 'Tier 2', sequence: 1 },
+              { ...editablePlanPayload.data.groups[0]!, id: 'group-3', name: 'Tier 3', sequence: 2 },
+            ],
+          },
+        });
+      }
+      if (url === '/dr/plans/plan-1' && method === 'PATCH') return makeJsonResponse({ data: { id: 'plan-1' } });
+      if (/\/groups\/group-\d$/.test(url) && method === 'PATCH') return makeJsonResponse({ data: {} });
+      if (/\/groups\/group-[23]$/.test(url) && method === 'DELETE') {
+        return makeJsonResponse({ error: `cannot remove ${url.split('/').pop()}` }, false, 409);
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+
+    const onPartialSave = vi.fn();
+    const { save } = await renderEditor(onPartialSave);
+    // Drop the last two groups so both removals are issued concurrently.
+    const removeButtons = screen.getAllByRole('button', { name: /remove (recovery )?group/i });
+    fireEvent.click(removeButtons[2]!);
+    fireEvent.click(screen.getAllByRole('button', { name: /remove (recovery )?group/i })[1]!);
+    await waitFor(() => expect(save).not.toBeDisabled());
+    fireEvent.click(save);
+
+    const banner = await screen.findByText(/cannot remove group-2/i);
+    expect(banner.textContent).toMatch(/cannot remove group-3/i);
+    await waitFor(() => expect(onPartialSave).toHaveBeenCalled());
+  });
+
   it('reports a partially applied save and asks the caller to refetch', async () => {
     fetchMock.mockImplementation(async (input, init) => {
       const url = String(input);
