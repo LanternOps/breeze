@@ -18,7 +18,8 @@ import {
 } from '../../services/billableMinutes';
 import { BILLABLE_MINUTES_GRID } from '../../services/billableMinutes.test';
 import {
-  readTimeEntryById, startTimer, stopTimer, updateTimeEntry, type TimeEntryActor,
+  getTicketBillingSummary, readTimeEntryById, startTimer, stopTimer, updateTimeEntry,
+  type TimeEntryActor,
 } from '../../services/timeEntryService';
 import { assignProfileToOrg, createProfile, replaceProfileRows } from '../../services/billingProfileService';
 
@@ -92,6 +93,30 @@ async function seedClosedTimeEntry(opts: {
     VALUES (${id}, ${partner.id}, ${user.id}, ${startedAt.toISOString()}::timestamp,
       ${new Date(startedAt.getTime() + opts.durationMinutes * 60_000).toISOString()}::timestamp,
       ${opts.durationMinutes}, ${opts.minimumMinutes}, ${opts.roundingIncrementMinutes}, 'billable')`);
+  return id;
+}
+
+/** A finished, billable entry ON the seeded ticket, written straight to the
+ *  table so a pre-feature row (billable_minutes NULL) can be reproduced — the
+ *  service will not create one. */
+async function insertClosedEntryOnTicket(
+  f: Awaited<ReturnType<typeof seedActor>>,
+  opts: {
+    durationMinutes: number; billableMinutes: number | null;
+    minimumMinutes: number | null; roundingIncrementMinutes: number | null;
+  }
+) {
+  const id = randomUUID();
+  const startedAt = new Date('2026-03-03T09:00:00Z');
+  await getTestDb().execute(sql`INSERT INTO time_entries
+    (id, partner_id, org_id, ticket_id, user_id, work_type_id, started_at, ended_at,
+     duration_minutes, billable_minutes, minimum_minutes, rounding_increment_minutes,
+     coverage, is_billable, hourly_rate, currency_code)
+    VALUES (${id}, ${f.partnerId}, ${f.orgId}, ${f.ticketId}, ${f.userId}, ${f.workTypeId},
+      ${startedAt.toISOString()}::timestamp,
+      ${new Date(startedAt.getTime() + opts.durationMinutes * 60_000).toISOString()}::timestamp,
+      ${opts.durationMinutes}, ${opts.billableMinutes}, ${opts.minimumMinutes},
+      ${opts.roundingIncrementMinutes}, 'billable', true, '225.00', 'USD')`);
   return id;
 }
 
@@ -206,5 +231,52 @@ describe('billable_minutes: TS, SQL and the CHECK all agree (#4628 W03 §3.5)', 
     const f = await seedRunningTimerForActor({ minimumMinutes: null, roundingIncrementMinutes: 15, startedMinutesAgo: 31 });
     await f.run(() => stopTimer({}, f.actor));
     expect(await readBillableMinutes(f.entryId)).toBe(45);
+  });
+
+  it('a stop that REWRITES the terms computes from the new ones, not the stale columns', async () => {
+    // The load-bearing case for billableMinutesSql()'s `terms` argument, and
+    // the only path that proves it against real Postgres: stopping a timer as
+    // non-billable makes applyBillingInput null minimum_minutes in the SAME
+    // UPDATE that computes billable_minutes. SET expressions read the OLD row,
+    // so a column reference would still see the 60-minute minimum and store 60
+    // — while the CHECK validates the NEW row, whose minimum is NULL and whose
+    // only surviving term is the 15-minute rounding. The row would be rejected
+    // outright with 23514: a 500 on an ordinary timer stop.
+    const f = await seedRunningTimerForActor({
+      minimumMinutes: 60, roundingIncrementMinutes: 15, startedMinutesAgo: 20,
+    });
+    // Rewriting the terms at stop is a manager action (assertManageBilling).
+    const manager: TimeEntryActor = { ...f.actor, manageBilling: true };
+    const stopped = await f.run(() => stopTimer({ isBillable: false }, manager));
+
+    expect(stopped.durationMinutes).toBe(20);
+    expect(stopped.minimumMinutes).toBeNull();
+    // CEIL(20 / 15) * 15 = 30. Not 60, which is what the stale minimum gives.
+    expect(await readBillableMinutes(f.entryId)).toBe(30);
+  });
+
+  it('the ticket summary bills a PRE-FEATURE row at its worked duration', async () => {
+    // The migration deliberately leaves already-invoiced rows NULL, so tickets
+    // spanning the W02->W03 window hold a mix. `SUM(billable_minutes)` alone
+    // drops the NULL row silently — the COALESCE is the only thing keeping the
+    // older entry's time on the invoice, and nothing else in the suite pins it.
+    const f = await seedActor({ minimumMinutes: 60, roundingIncrementMinutes: 15 });
+    await insertClosedEntryOnTicket(f, {
+      durationMinutes: 45, billableMinutes: null,
+      minimumMinutes: null, roundingIncrementMinutes: null,
+    });
+    await insertClosedEntryOnTicket(f, {
+      durationMinutes: 20, billableMinutes: 60,
+      minimumMinutes: 60, roundingIncrementMinutes: 15,
+    });
+
+    const summary = await f.run(() => getTicketBillingSummary(f.ticketId));
+
+    // 45 worked (legacy, no terms) + 60 billed (20 worked under a 60 minimum).
+    expect(summary.time.billableMinutes).toBe(105);
+    // Utilization stays on ACTUAL minutes worked.
+    expect(summary.time.totalMinutes).toBe(65);
+    // 0.75 h + 1.00 h at 225.00.
+    expect(summary.time.billableAmounts).toEqual([{ currencyCode: 'USD', amount: '393.75' }]);
   });
 });

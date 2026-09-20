@@ -58,6 +58,16 @@ BEGIN
         AND (s.minimum_minutes IS NOT NULL OR s.rounding_increment_minutes IS NOT NULL)
         -- An invoiced row's quantity is already on a customer's document.
         AND s.billing_status <> 'billed'
+        -- ...and so is a DRAFT line's. `billing_status` only flips to 'billed'
+        -- inside issueInvoice, so an entry already gathered into a draft is
+        -- still 'not_billed' here: restamping it would move the billed quantity
+        -- out from under a line that keeps quantity = duration/60, and the
+        -- draft then issues at the old number while every reader shows the new
+        -- one. Nothing reconciles the two afterwards.
+        AND NOT EXISTS (
+          SELECT 1 FROM invoice_lines il
+          WHERE il.source_type = 'time_entry' AND il.source_id = s.id
+        )
       LIMIT 5000
     );
     GET DIAGNOSTICS batch = ROW_COUNT;

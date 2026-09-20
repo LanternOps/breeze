@@ -49,13 +49,17 @@ describe('computeBillableMinutes', () => {
   });
 });
 
-describe('cross-spec contract with block hours (#4547) — spec §5', () => {
-  /**
-   * #4547 drawdown MUST read COALESCE(billable_minutes, duration_minutes), not
-   * duration_minutes. This helper is the exact expression block hours will use;
-   * if someone changes the fallback here, #4547's drawdown changes with it and
-   * this test says so out loud.
-   */
+/**
+ * NOT a regression test — it documents the contract #4547 must implement.
+ *
+ * Block hours are unbuilt, so there is no drawdown code to exercise: the
+ * helpers below are defined in this file and asserted against themselves, and
+ * they will keep passing however `src/` changes. They are here so the decision
+ * is written down where the person building #4547 will read it, and the name
+ * says so plainly rather than leaving a future reader to believe drawdown is
+ * covered by a test. When #4547 lands, these move onto its real function.
+ */
+describe('block hours (#4547 §5): the contract W03 hands forward — documentation, not coverage', () => {
   const drawdownMinutes = (r: { durationMinutes: number | null; billableMinutes: number | null }) =>
     (r.billableMinutes ?? r.durationMinutes) ?? 0;
 

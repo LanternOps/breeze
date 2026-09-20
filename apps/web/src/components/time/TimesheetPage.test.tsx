@@ -268,10 +268,10 @@ it('preserves an overridden outcome when the work type changes', async () => {
 });
 
 describe('worked vs billed hours on the timesheet (#4628 W03)', () => {
-  const withEntry = (over: Record<string, unknown>) => ({
+  const withEntry = (over: Record<string, unknown>, dayOver: Record<string, unknown> = {}) => ({
     ...week,
     days: [
-      { date: '2026-06-08', totalMinutes: 30, billableMinutes: 30, entries: [{ ...entry, ...over }] },
+      { date: '2026-06-08', totalMinutes: 30, billableMinutes: 30, ...dayOver, entries: [{ ...entry, ...over }] },
       ...['09', '10', '11', '12', '13', '14'].map((d) => ({ date: `2026-06-${d}`, totalMinutes: 0, billableMinutes: 0, entries: [] })),
     ],
     totals: { totalMinutes: 30, billableMinutes: 30, billableAmounts: [{ currencyCode: 'USD', amount: '225.00' }] },
@@ -292,7 +292,10 @@ describe('worked vs billed hours on the timesheet (#4628 W03)', () => {
   });
 
   it('day totals still report ACTUAL minutes, not the billed quantity (§3.5)', async () => {
-    serve(withEntry({ durationMinutes: 30, billableMinutes: 60 }));
+    // The day must carry a DIFFERENT billed figure, or the negative below is
+    // unfalsifiable: with both at 30 nothing in the payload could render as
+    // "1h 0m", and the assertion would pass however the component read it.
+    serve(withEntry({ durationMinutes: 30, billableMinutes: 60 }, { billableMinutes: 60 }));
     render(<TimesheetPage />);
     expect((await screen.findByTestId('timesheet-day-2026-06-08')).textContent).toContain('30m');
     expect(screen.getByTestId('timesheet-day-2026-06-08').textContent).not.toContain('1h 0m');
