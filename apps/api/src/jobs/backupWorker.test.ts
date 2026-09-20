@@ -790,6 +790,10 @@ describe('processDispatchBackup (wave 3.5b #4084 — dispatch via facade)', () =
         rows = [{ featureLinkId: null, backupMode: 'file', modeTargets: { paths: ['/data'] } }]; // job mode lookup
       } else if (keys.length === 2 && keys.includes('id') && keys.includes('snapshotId')) {
         rows = []; // D18 W01: stampDispatchPinAndIdentity's base-candidate lookup — no eligible base by default
+      } else if (keys.includes('retirementId')) {
+        // #6351: stampDispatchPinAndIdentity's fallback-reason probe — runs
+        // only when no base was selected, and only feeds the log line.
+        rows = [];
       } else {
         throw new Error(`unexpected select shape: ${JSON.stringify(keys)}`);
       }
@@ -1069,6 +1073,10 @@ describe('processDispatchBackup — approval_generation mismatch (site-ceiling g
         // D18 W01: stampDispatchPinAndIdentity's base-candidate lookup —
         // no eligible base for these generation-gate tests (irrelevant to
         // what this describe block asserts).
+        rows = [];
+      } else if (keys.includes('retirementId')) {
+        // #6351: stampDispatchPinAndIdentity's fallback-reason probe — runs
+        // only when no base was selected, and only feeds the log line.
         rows = [];
       } else if (keys.length === 1 && keys[0] === 'id') {
         rows = [];

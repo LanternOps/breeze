@@ -379,3 +379,68 @@ runDb('an INACTIVE chain does not hold its full snapshot -- the hold releases', 
     expect(chain!.fullSnapshotId).toBeNull(); // ON DELETE SET NULL on a chain that is already broken
   });
 });
+
+// #6351: an ordinary daily snapshot expires at `taken + keepDaily` (7 days by
+// default) while dispatch's publish lease runs to `now + BACKUP_BASE_LEASE_MS`
+// (also 7 days). The old candidate filter demanded
+// `expires_at > publish_lease_expires_at`, which the newest snapshot missed by
+// exactly the gap between the two runs — so EVERY daily backup fell back to a
+// full copy. A snapshot that is merely unexpired right now must be picked as
+// the base; the pin (proved by the first test in this file) is what keeps it
+// alive across the lease.
+runDb('picks a base that expires inside the publish-lease window (#6351)', async () => {
+  const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const identity = `local::/tmp/gc-test-${unique}`;
+  const ctx = await withSystemDbAccessContext(async () => {
+    const { orgId, deviceId, configId } = await seedOrgDeviceConfig(unique);
+    const [baseJob] = await db.insert(backupJobs).values({ orgId, configId, deviceId, status: 'completed', startedAt: new Date(), completedAt: new Date() }).returning({ id: backupJobs.id });
+    await db.insert(backupSnapshots).values({
+      orgId, jobId: baseJob!.id, deviceId, configId,
+      snapshotId: `lease-base-${unique}`, backupType: 'file', storageIdentity: identity,
+      // 7 days minus a minute: unexpired now, but short of `now + 7d` lease.
+      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000 - 60 * 1000),
+    });
+    const [dispatchJob] = await db.insert(backupJobs).values({ orgId, configId, deviceId, status: 'pending' }).returning({ id: backupJobs.id });
+    return { orgId, deviceId, configId, dispatchJobId: dispatchJob!.id };
+  });
+
+  const outcome = await withSystemDbAccessContext(() => __testOnly.stampDispatchPinAndIdentity({
+    deviceId: ctx.deviceId, configId: ctx.configId, jobId: ctx.dispatchJobId,
+    mode: 'file', provider: 'local', providerConfig: { path: `/tmp/gc-test-${unique}` },
+  }));
+
+  expect(outcome.baseSnapshotId).toBe(`lease-base-${unique}`);
+  await withSystemDbAccessContext(async () => {
+    const [row] = await db.select().from(backupJobs).where(eq(backupJobs.id, ctx.dispatchJobId));
+    expect(row!.baseSnapshotId).toBe(`lease-base-${unique}`);
+  });
+});
+
+// The other half of the same contract: an ALREADY-expired snapshot is still
+// not a base, so relaxing the lease comparison did not relax expiry itself.
+runDb('still refuses an already-expired snapshot as a base (#6351)', async () => {
+  const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const identity = `local::/tmp/gc-test-${unique}`;
+  const ctx = await withSystemDbAccessContext(async () => {
+    const { orgId, deviceId, configId } = await seedOrgDeviceConfig(unique);
+    const [baseJob] = await db.insert(backupJobs).values({ orgId, configId, deviceId, status: 'completed', startedAt: new Date(), completedAt: new Date() }).returning({ id: backupJobs.id });
+    await db.insert(backupSnapshots).values({
+      orgId, jobId: baseJob!.id, deviceId, configId,
+      snapshotId: `stale-base-${unique}`, backupType: 'file', storageIdentity: identity,
+      expiresAt: new Date(Date.now() - 60 * 1000),
+    });
+    const [dispatchJob] = await db.insert(backupJobs).values({ orgId, configId, deviceId, status: 'pending' }).returning({ id: backupJobs.id });
+    return { orgId, deviceId, configId, dispatchJobId: dispatchJob!.id };
+  });
+
+  const outcome = await withSystemDbAccessContext(() => __testOnly.stampDispatchPinAndIdentity({
+    deviceId: ctx.deviceId, configId: ctx.configId, jobId: ctx.dispatchJobId,
+    mode: 'file', provider: 'local', providerConfig: { path: `/tmp/gc-test-${unique}` },
+  }));
+
+  expect(outcome.baseSnapshotId).toBe('');
+  await withSystemDbAccessContext(async () => {
+    const [row] = await db.select().from(backupJobs).where(eq(backupJobs.id, ctx.dispatchJobId));
+    expect(row!.baseSnapshotId).toBeNull();
+  });
+});
