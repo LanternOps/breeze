@@ -1,6 +1,7 @@
 package syscleanup
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -147,15 +148,15 @@ Remv --force-all [1.0]
 
 // dpkg reports Installed-Size in KiB.
 func TestParseDpkgInstalledSizes(t *testing.T) {
-	got, ok := parseDpkgInstalledSizes("402000\n10240\n\n")
+	got, ok := parseDpkgInstalledSizes(ProcResult{Stdout: "402000\n10240\n\n"}, 2)
 	if !ok || got != (402_000+10_240)*1024 {
 		t.Fatalf("parseDpkgInstalledSizes() = (%d, %v), want (%d, true)", got, ok, (402_000+10_240)*1024)
 	}
-	if _, ok := parseDpkgInstalledSizes("dpkg-query: no packages found\n"); ok {
+	if _, ok := parseDpkgInstalledSizes(ProcResult{Stdout: "dpkg-query: no packages found\n"}, 1); ok {
 		t.Fatal("a dpkg error body must be unknown, not 0")
 	}
-	if got, ok := parseDpkgInstalledSizes(""); !ok || got != 0 {
-		t.Fatalf("empty output for an empty package list = (%d, %v), want (0, true)", got, ok)
+	if got, ok := parseDpkgInstalledSizes(ProcResult{}, 1); ok || got != 0 {
+		t.Fatalf("empty dpkg output = (%d, %v), want (0, false)", got, ok)
 	}
 }
 
@@ -266,5 +267,25 @@ func TestLinuxActionsDeclareTheirRiskFlags(t *testing.T) {
 		if containsFold(byID[id].RiskFlags, RiskRemovesPackages) {
 			t.Errorf("%s must not carry removes_packages", id)
 		}
+	}
+}
+
+func TestDpkgEstimateRequiresSuccessfulCompleteOutput(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		result   ProcResult
+		packages int
+	}{
+		{"empty", ProcResult{}, 1},
+		{"exit failure", ProcResult{ExitCode: 1, Stdout: "10\n"}, 1},
+		{"error", ProcResult{Err: context.Canceled, Stdout: "10\n"}, 1},
+		{"timeout", ProcResult{TimedOut: true, Stdout: "10\n"}, 1},
+		{"missing package", ProcResult{Stdout: "10\n"}, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if bytes, known := parseDpkgInstalledSizes(tc.result, tc.packages); known || bytes != 0 {
+				t.Fatalf("incomplete/failed dpkg result gave (%d, %v)", bytes, known)
+			}
+		})
 	}
 }

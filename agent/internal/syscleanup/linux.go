@@ -151,10 +151,13 @@ func dpkgQueryInstalledSizeArgs(packages []string) []string {
 // result is a HEURISTIC, not an upper bound: unpacked footprint over-counts
 // files shared with packages that stay installed, and dpkg rounds to whole
 // KiB. The action labels it as such rather than presenting it as "up to".
-func parseDpkgInstalledSizes(stdout string) (int64, bool) {
+func parseDpkgInstalledSizes(proc ProcResult, packageCount int) (int64, bool) {
+	if proc.Err != nil || proc.TimedOut || proc.ExitCode != 0 || packageCount < 1 {
+		return 0, false
+	}
 	var total int64
-	saw := false
-	for _, line := range strings.Split(stdout, "\n") {
+	lines := 0
+	for _, line := range strings.Split(proc.Stdout, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" {
 			continue
@@ -164,11 +167,12 @@ func parseDpkgInstalledSizes(stdout string) (int64, bool) {
 			return 0, false
 		}
 		total += kib * 1024
-		saw = true
+		lines++
 	}
-	// No lines at all is only honest for an empty package list; the caller
-	// short-circuits that case and never reaches here with real packages.
-	_ = saw
+	// Each requested package must have a size; missing output is not zero.
+	if lines != packageCount {
+		return 0, false
+	}
 	return total, true
 }
 
@@ -328,7 +332,7 @@ func (linuxPkgAutoremoveAction) Estimate(ctx context.Context) (int64, bool, stri
 			return 0, false, ""
 		}
 		sizes := runProcess(ctx, linuxEstimateTimeout, dpkg, dpkgQueryInstalledSizeArgs(packages)...)
-		bytes, sizesKnown := parseDpkgInstalledSizes(sizes.Stdout)
+		bytes, sizesKnown := parseDpkgInstalledSizes(sizes, len(packages))
 		if !sizesKnown {
 			return 0, false, ""
 		}
