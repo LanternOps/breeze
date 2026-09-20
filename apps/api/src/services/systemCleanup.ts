@@ -14,6 +14,7 @@ import { devices, deviceCommands, deviceFilesystemCleanupRuns } from '../db/sche
 import { queueCommandForExecutionWithSystemPrecheck, CommandTypes } from './commandQueue';
 import { SYSTEM_CLEANUP_ACTION_IDS, SYSTEM_CLEANUP_RISK_FLAGS, systemCleanupRunBodySchema, systemCleanupRunBudgetMs } from '@breeze/shared/validators';
 import { compareAgentVersions, parseComparableVersion } from './agentEditionCompat';
+import { terminalPayloadErasureSet } from './sensitiveCommandPayload';
 
 /**
  * The agent release that introduced system_cleanup_list / system_cleanup_run.
@@ -381,6 +382,9 @@ async function failSystemCleanupRunInTransaction(
         status: 'cancelled',
         completedAt,
         result: { status: 'cancelled', reason: 'cleanup_run_finalised' },
+        // Terminal writers strip payload secrets in the same statement
+        // (terminalPayloadErasure.coverage.test.ts, #3409 PR4a).
+        ...terminalPayloadErasureSet(),
       })
       .where(and(
         run.commandId ? eq(deviceCommands.id, run.commandId) : and(

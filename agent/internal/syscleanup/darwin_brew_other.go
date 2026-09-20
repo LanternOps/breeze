@@ -12,5 +12,5 @@ import (
 // runner. internal/patching/homebrew.go is //go:build darwin, so importing it
 // from an untagged file would not compile anywhere else.
 func brewCleanupRun(context.Context, bool) (string, error) {
-	return "", errors.New("Homebrew cleanup is only available on macOS")
+	return "", errors.New("homebrew cleanup is only available on macOS")
 }

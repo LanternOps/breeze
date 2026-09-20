@@ -170,16 +170,6 @@ func systemRoot() string {
 	return `C:\Windows`
 }
 
-func expandPercentVars(path string) string {
-	expanded := path
-	for _, name := range []string{"SystemRoot", "SystemDrive", "ProgramData", "windir"} {
-		if value := os.Getenv(name); value != "" {
-			expanded = strings.ReplaceAll(expanded, "%"+name+"%", value)
-		}
-	}
-	return expanded
-}
-
 // DISM reports 1024-based sizes with a two-character suffix ("1.64 GB"), which
 // matches neither apt's 1000-based grammar nor dnf's single-letter one.
 var dismSizePattern = regexp.MustCompile(`^([0-9]+(?:\.[0-9]+)?)\s*(bytes|KB|MB|GB|TB)$`)

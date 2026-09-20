@@ -4,6 +4,7 @@ package syscleanup
 
 import (
 	"os"
+	"strings"
 	"syscall"
 	"unsafe"
 
@@ -84,6 +85,18 @@ func handlerDisplayNameImpl(keyName string) string {
 }
 
 func expandWindowsPathImpl(path string) string { return os.ExpandEnv(expandPercentVars(path)) }
+
+// expandPercentVars resolves the %Name% form the cleanmgr handler paths use;
+// os.ExpandEnv only understands $Name.
+func expandPercentVars(path string) string {
+	expanded := path
+	for _, name := range []string{"SystemRoot", "SystemDrive", "ProgramData", "windir"} {
+		if value := os.Getenv(name); value != "" {
+			expanded = strings.ReplaceAll(expanded, "%"+name+"%", value)
+		}
+	}
+	return expanded
+}
 
 // readDOCachePolicyImpl reads DOModifyCacheDrive. Absent policy -> "", which
 // deliveryOptimizationCachePath turns into the NetworkService default.
