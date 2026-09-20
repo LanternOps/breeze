@@ -219,6 +219,8 @@ interface Binding {
  * comments in `aiGuardrails.ts` beside each mapping.
  */
 const BINDINGS: readonly Binding[] = [
+  { tool: 'list_sites', routeFile: 'orgs.ts', method: 'get', path: '/sites', toolOnly: { extra: [], reason: 'Device counts are additionally narrowed to exact-device scope.' } },
+  { tool: 'get_site', routeFile: 'orgs.ts', method: 'get', path: '/sites/:id', toolOnly: { extra: [], reason: 'Requires a site UUID and conceals inaccessible sites as not found.' } },
   {
     tool: 'list_remediation_suggestions', routeFile: 'remediationSuggestions.ts', method: 'get', path: '/',
     toolOnly: { extra: [], reason: 'Explicit orgId requires organization access; exact-device scope also narrows device rows; empty site access returns no rows, including device-less suggestions.' },

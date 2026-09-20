@@ -302,6 +302,8 @@ export const TOOL_TIERS = {
   // Org lifecycle tools (issue #2366) — new-customer intake (org → site → quote)
   list_remediation_suggestions: 1,
   list_incidents: 1,
+  list_sites: 1,
+  get_site: 1,
   list_org_contacts: 1,
   list_organizations: 1,
   manage_organizations: 2,      // create_org/update_org/create_site escalate to 3 in guardrails
@@ -2654,6 +2656,24 @@ export function buildBreezeSdkTools(
         offset: z.number().int().min(0).optional(),
       },
       makeHandler('list_incidents', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'list_sites',
+      registryDescription('list_sites'),
+      {
+        orgId: z.string().guid().optional(),
+        search: z.string().max(255).optional(),
+        limit: z.number().int().min(1).max(100).optional(),
+        offset: z.number().int().min(0).optional(),
+      },
+      makeHandler('list_sites', getAuth, onPreToolUse, onPostToolUse)
+    ),
+    tool(
+      'get_site',
+      registryDescription('get_site'),
+      { siteId: z.string().guid() },
+      makeHandler('get_site', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(
