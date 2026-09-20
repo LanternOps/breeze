@@ -31,6 +31,7 @@ import {
 } from '../../services/streamingSessionManager';
 import { settleBlockedTurnForNewMessage } from '../../services/aiAgentSdk';
 import { writeAuditEvent } from '../../services/auditEvents';
+import { captureException } from '../../services/sentry';
 import { checkBillingCredits } from '../../services/aiCostTracker';
 import {
   isAiBudgetLockTimeout,
@@ -232,10 +233,9 @@ async function ensureActiveClientSession(
       server: createClientWorkbookMcpServer(host, getSession),
       name: clientMcpServerName(host),
     }),
-    {
-      injectApprovalModeInstructions: false,
-      ...(turnBudget ? { budgetReservationId: turnBudget.reservationId } : {}),
-    },
+    // The reservation is NOT handed to getOrCreate: it is attached atomically
+    // with the turn-slot claim in tryTransitionToProcessing (see #5557 there).
+    { injectApprovalModeInstructions: false },
   );
 
   // Refresh per-message client state read by the tool handlers and the result hook.
@@ -673,6 +673,11 @@ clientAiSessionRoutes.post(
         orgId: auth.orgId,
         reservationId: turnBudget.reservationId,
       }).catch((err) => {
+        // A failed release leaves the hold `active`, holding the org's cap
+        // until the sweep — a tenant locked out of its own budget. Every
+        // equivalent path in routes/ai.ts reports this, so this one does too:
+        // console alone makes it invisible outside a stdout grep.
+        captureException(err);
         console.error('[client-ai] Failed to release unused budget reservation:', err);
       });
 
@@ -693,9 +698,10 @@ clientAiSessionRoutes.post(
     // Concurrent message guard — atomic check-and-set (ai.ts convention). If
     // the turn is blocked only on pending approval waits, settle them so the
     // assistant can conclude and answer this message (#3089 — shared helper).
-    if (!streamingSessionManager.tryTransitionToProcessing(activeSession)) {
+    if (!streamingSessionManager.tryTransitionToProcessing(activeSession, turnBudget.reservationId)) {
       const settle = await settleBlockedTurnForNewMessage(activeSession);
-      if (settle !== 'concluded' || !streamingSessionManager.tryTransitionToProcessing(activeSession)) {
+      if (settle !== 'concluded'
+        || !streamingSessionManager.tryTransitionToProcessing(activeSession, turnBudget.reservationId)) {
         // A turn is already in flight and owns the session's reservation slot;
         // ours was never attached, so release it.
         await releaseTurnBudget();

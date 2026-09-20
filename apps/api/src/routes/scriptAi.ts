@@ -297,7 +297,7 @@ scriptAiRoutes.post(
     // Concurrent message guard - atomic check-and-set. If the turn is blocked
     // only on pending approval waits, settle them so the assistant can
     // conclude and answer this message (#3089 — shared helper, see ai.ts).
-    if (!streamingSessionManager.tryTransitionToProcessing(activeSession)) {
+    if (!streamingSessionManager.tryTransitionToProcessing(activeSession, budgetReservationId)) {
       await releaseUnusedAiBudgetReservation({ orgId: dbSession.orgId, reservationId: budgetReservationId });
       return c.json({ error: 'A message is already being processed for this session' }, 409);
     }

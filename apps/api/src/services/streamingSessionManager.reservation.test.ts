@@ -142,33 +142,45 @@ describe('getOrCreate — warm-session budget reservation attach (#5557)', () =>
     manager.shutdown();
   });
 
-  it('attaches a new reservation id to a warm, idle session that holds none', async () => {
+  it('attaches this turn\u2019s reservation atomically with the turn-slot claim', () => {
+    const session = { state: 'idle', budgetReservationId: undefined, lastActivityAt: 0 } as unknown as
+      Parameters<typeof manager.tryTransitionToProcessing>[0];
+
+    expect(manager.tryTransitionToProcessing(session, 'reservation-1')).toBe(true);
+    expect(session.budgetReservationId).toBe('reservation-1');
+  });
+
+  it('re-attaches on a SECOND turn of a warm session, which creation-time assignment never did', async () => {
     const first = await create(manager, 'sess-warm-attach', 'reservation-1');
     expect(first.budgetReservationId).toBe('reservation-1');
-    // Simulate the route settling the first turn's reservation and going idle.
+    // The first turn settled and cleared the slot; the session stays warm.
     first.state = 'idle';
     first.budgetReservationId = undefined;
 
     const second = await create(manager, 'sess-warm-attach', 'reservation-2');
-
-    // Without the #5557 fix, budgetReservationId is only ever set at session
-    // CREATION — the reused branch never assigns it, so this would stay
-    // undefined and the reservation the route just took would never reach
-    // the settle path.
     expect(second).toBe(first);
+    // getOrCreate deliberately does NOT attach on reuse — that is the race the
+    // fix moved away from. The reservation arrives with the slot claim.
+    expect(second.budgetReservationId).toBeUndefined();
+
+    expect(manager.tryTransitionToProcessing(second, 'reservation-2')).toBe(true);
+    // Before #5557 this stayed undefined on every turn after the first, so the
+    // reservation never reached the settle path and held the org's whole cap
+    // until the 30-minute sweep.
     expect(second.budgetReservationId).toBe('reservation-2');
   });
 
-  it('does not overwrite a reservation id already held by the session', async () => {
-    const first = await create(manager, 'sess-warm-race', 'reservation-a');
-    expect(first.budgetReservationId).toBe('reservation-a');
+  it('leaves the winner\u2019s reservation alone when a concurrent turn loses the slot', async () => {
+    const session = await create(manager, 'sess-warm-race', 'reservation-a');
+    session.state = 'idle';
+    session.budgetReservationId = undefined;
 
-    // A second caller reaches getOrCreate while the slot is still occupied
-    // (before the route's tryTransitionToProcessing guard runs) with a
-    // DIFFERENT reservation id — it must not clobber the winner's.
-    const second = await create(manager, 'sess-warm-race', 'reservation-b');
-
-    expect(second).toBe(first);
-    expect(second.budgetReservationId).toBe('reservation-a');
+    // A wins the slot and attaches its own reservation.
+    expect(manager.tryTransitionToProcessing(session, 'reservation-a')).toBe(true);
+    // B arrives after and is refused — crucially WITHOUT overwriting what the
+    // live dispatch is going to settle. B then releases 'reservation-b', which
+    // was never attached to anything.
+    expect(manager.tryTransitionToProcessing(session, 'reservation-b')).toBe(false);
+    expect(session.budgetReservationId).toBe('reservation-a');
   });
 });

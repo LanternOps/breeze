@@ -247,7 +247,7 @@ describe('POST /client-ai/sessions/:id/messages', () => {
       expect.objectContaining({ source: 'partner', configId: 'config-1', configVersion: 2 }),
       expect.anything(),
       expect.anything(),
-      expect.objectContaining({ budgetReservationId: 'res-default' }),
+      expect.objectContaining({ injectApprovalModeInstructions: false }),
     );
     expect(writeAuditEventMock).toHaveBeenCalledWith(
       expect.anything(),
@@ -461,7 +461,7 @@ describe('#5557 — atomic budget reservation on POST /client-ai/sessions/:id/me
     expect(reserveOrder).toBeLessThan(getOrCreateOrder);
   });
 
-  it('threads the reservation id and derived maxBudgetUsd into getOrCreate', async () => {
+  it('derives the SDK ceiling from the reservation and attaches it with the turn-slot claim', async () => {
     reserveAiBudgetMock.mockResolvedValueOnce({
       kind: 'reserved',
       reservationId: 'res-thread-1',
@@ -481,7 +481,14 @@ describe('#5557 — atomic budget reservation on POST /client-ai/sessions/:id/me
       expect.anything(),
       expect.anything(),
       expect.anything(),
-      expect.objectContaining({ budgetReservationId: 'res-thread-1' }),
+      expect.objectContaining({ injectApprovalModeInstructions: false }),
+    );
+    // #5557: the reservation is attached ATOMICALLY with the turn-slot claim,
+    // not in getOrCreate — getOrCreate awaits before returning, so attaching
+    // there let a losing caller release the winner's live reservation.
+    expect(managerMock.tryTransitionToProcessing).toHaveBeenCalledWith(
+      expect.anything(),
+      'res-thread-1',
     );
   });
 
@@ -541,5 +548,27 @@ describe('#5557 — atomic budget reservation on POST /client-ai/sessions/:id/me
     expect(reserveAiBudgetMock).not.toHaveBeenCalled();
     expect(releaseUnusedAiBudgetReservationMock).not.toHaveBeenCalled();
     expect(managerMock.getOrCreate).not.toHaveBeenCalled();
+  });
+
+  it('a failed user-message insert releases the reservation it already claimed and 500s', async () => {
+    reserveAiBudgetMock.mockResolvedValueOnce({
+      kind: 'reserved',
+      reservationId: 'res-insert-failure',
+      reservedCostCents: 250,
+    });
+    dbInsertMock.mockImplementation(() => ({
+      values: vi.fn(() => Promise.reject(new Error('insert failed'))),
+    }));
+
+    const res = await postMessage({ content: 'hi' });
+    expect(res.status).toBe(500);
+
+    // The turn never dispatched (insert failed before pushMessage), so this
+    // is a proven pre-dispatch failure — releasing the reservation here is
+    // correct, unlike releasing after a turn has actually been handed to the SDK.
+    expect(releaseUnusedAiBudgetReservationMock).toHaveBeenCalledWith(
+      expect.objectContaining({ orgId: ORG_ID, reservationId: 'res-insert-failure' }),
+    );
+    expect(activeSession.budgetReservationId).toBeUndefined();
   });
 });

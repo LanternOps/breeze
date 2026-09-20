@@ -913,4 +913,88 @@ describe('client-namespace AI budget reservations (#5557)', () => {
     );
     expect(second).toMatchObject({ kind: 'reserved', reservedCostCents: 100 });
   });
+  it('settles a client reservation, freeing the sub-cap it held', async () => {
+    const org = await makeOrgWithBudget(null, null);
+    const held = await withDbAccessContext(orgContext(org.id), () => reserveAiBudget({
+      orgId: org.id, idempotencyKey: 'client-settle', billingSource: 'platform',
+      namespace: 'client', clientBudget: CLIENT_CAP,
+    }));
+    if (held.kind !== 'reserved') throw new Error('expected a reserved client hold');
+
+    // The settle path a client turn takes is the SAME one technician turns
+    // take (recordUsageFromSdkResult -> settleAiBudgetReservation): real spend
+    // lands in ai_cost_usage and the row stops holding capacity.
+    const settled = await withDbAccessContext(orgContext(org.id), () => settleAiBudgetReservation({
+      orgId: org.id, reservationId: held.reservationId,
+      actualCostCents: 12.5, inputTokens: 10, outputTokens: 20,
+    }));
+    expect(settled.kind).toBe('settled');
+
+    const row = await withSystemDbAccessContext(() => db
+      .select({ status: aiBudgetReservations.status, actual: aiBudgetReservations.actualCostCents })
+      .from(aiBudgetReservations)
+      .where(eq(aiBudgetReservations.id, held.reservationId)));
+    expect(row[0]?.status).toBe('settled');
+    expect(Number(row[0]?.actual)).toBeCloseTo(12.5, 6);
+
+    // The sub-cap is free again. (The settled spend itself is counted through
+    // client_ai_usage, which recordClientUsage writes BEFORE the settle — see
+    // the ordering note in streamingSessionManager.)
+    const next = await withDbAccessContext(orgContext(org.id), () => reserveAiBudget({
+      orgId: org.id, idempotencyKey: 'client-settle-next', billingSource: 'platform',
+      namespace: 'client', clientBudget: CLIENT_CAP,
+    }));
+    expect(next).toMatchObject({ kind: 'reserved', reservedCostCents: 100 });
+  });
+
+  it('expires a stale client hold so the sub-cap cannot be held forever', async () => {
+    const org = await makeOrgWithBudget(null, null);
+    const stale = await withDbAccessContext(orgContext(org.id), () => reserveAiBudget({
+      orgId: org.id, idempotencyKey: 'client-stale', billingSource: 'platform',
+      namespace: 'client', clientBudget: CLIENT_CAP,
+    }));
+    if (stale.kind !== 'reserved') throw new Error('expected a reserved client hold');
+
+    await withSystemDbAccessContext(() => db
+      .update(aiBudgetReservations)
+      .set({ expiresAt: new Date(Date.now() - 60_000) })
+      .where(eq(aiBudgetReservations.id, stale.reservationId)));
+
+    // Even BEFORE the sweep relabels it, the `expires_at > now()` predicate in
+    // the sub-cap sum must stop counting it — otherwise a crashed add-in turn
+    // closes the surface until the sweep runs.
+    const beforeSweep = await withDbAccessContext(orgContext(org.id), () => reserveAiBudget({
+      orgId: org.id, idempotencyKey: 'client-stale-next', billingSource: 'platform',
+      namespace: 'client', clientBudget: CLIENT_CAP,
+    }));
+    expect(beforeSweep).toMatchObject({ kind: 'reserved', reservedCostCents: 100 });
+
+    expect(await withSystemDbAccessContext(() => sweepExpiredAiBudgetReservations()))
+      .toBeGreaterThanOrEqual(1);
+    const swept = await withSystemDbAccessContext(() => db
+      .select({ status: aiBudgetReservations.status, reason: aiBudgetReservations.expiryReason })
+      .from(aiBudgetReservations)
+      .where(eq(aiBudgetReservations.id, stale.reservationId)));
+    expect(swept[0]).toMatchObject({ status: 'expired', reason: 'active_ttl' });
+  });
+
+  it('shares a CAPPED organization budget across the two namespaces — exactly one turn wins', async () => {
+    // The org cap's in-flight sum is deliberately cross-namespace, so a
+    // technician turn and an add-in turn compete for the same finite remainder.
+    const org = await makeOrgWithBudget(100, 500);
+
+    const results = await Promise.all([
+      withDbAccessContext(orgContext(org.id), () => reserveAiBudget({
+        orgId: org.id, idempotencyKey: 'shared-technician', billingSource: 'platform',
+      })),
+      withDbAccessContext(orgContext(org.id), () => reserveAiBudget({
+        orgId: org.id, idempotencyKey: 'shared-client', billingSource: 'platform',
+        namespace: 'client', clientBudget: { dailyBudgetCents: null, monthlyBudgetCents: null },
+      })),
+    ]);
+
+    expect(results.filter((r) => r.kind === 'reserved')).toHaveLength(1);
+    expect(results.filter((r) => r.kind === 'denied')).toHaveLength(1);
+    expect(results.find((r) => r.kind === 'reserved')).toMatchObject({ reservedCostCents: 100 });
+  });
 });
