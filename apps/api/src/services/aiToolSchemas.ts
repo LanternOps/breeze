@@ -19,7 +19,7 @@ import {
   peripheralPolicyActionEnum,
   peripheralPolicyTargetTypeEnum,
   peripheralEventTypeEnum
-} from '../db/schema';
+} from '../db/schema/peripheralControl';
 import { CONFIG_FEATURE_TYPES } from './configFeatureTypes';
 import { CONTACT_ROLES } from './contacts/types';
 
