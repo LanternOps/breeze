@@ -976,5 +976,12 @@
     "forever": "Sonsuza kadar",
     "cancel": "İptal",
     "suppress": "Bastır"
+  },
+  "templates": {
+    "frozen": {
+      "title": "Yeni uyarı şablonları monitör olarak oluşturulur",
+      "body": "Mevcut şablonlar burada düzenlenebilir kalır ve bir sonraki sürümde dönüştürülür.",
+      "link": "Monitörleri aç"
+    }
   }
 }

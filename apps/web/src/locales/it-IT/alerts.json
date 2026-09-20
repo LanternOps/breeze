@@ -976,5 +976,12 @@
     "forever": "Per sempre",
     "cancel": "Annulla",
     "suppress": "Sopprimi"
+  },
+  "templates": {
+    "frozen": {
+      "title": "I nuovi modelli di avviso vengono creati come monitor",
+      "body": "I modelli esistenti restano modificabili qui e verranno convertiti nella prossima versione.",
+      "link": "Apri Monitor"
+    }
   }
 }

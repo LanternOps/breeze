@@ -38,6 +38,8 @@ export type ParentPolicySummary = {
 export type FeatureTabProps = {
   policyId: string;
   existingLink: FeatureLink | undefined;
+  /** Every feature link on this policy — lets a tab see its siblings' inline settings (W05a duplicate warning). */
+  allLinks?: FeatureLink[];
   onLinkChanged: (link: FeatureLink | null, featureType: FeatureType) => void;
   /** Shared linked Configuration Policy ID (set at the policy level, not per-tab) */
   linkedPolicyId: string | null;

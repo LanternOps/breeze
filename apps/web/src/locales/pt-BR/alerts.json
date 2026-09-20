@@ -976,5 +976,12 @@
     "forever": "Para sempre",
     "cancel": "Cancelar",
     "suppress": "Suprimir"
+  },
+  "templates": {
+    "frozen": {
+      "title": "Novos modelos de alerta são criados como monitores",
+      "body": "Os modelos existentes continuam editáveis aqui e serão convertidos na próxima versão.",
+      "link": "Abrir Monitores"
+    }
   }
 }

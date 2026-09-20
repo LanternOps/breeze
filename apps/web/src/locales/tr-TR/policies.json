@@ -844,7 +844,13 @@
         "inherited": "Devralındı",
         "overrideValue": "Geçersiz kılma değeri",
         "overridesLabel": "Geçersiz kılmalar:",
-        "failedToLoadMonitors": "İzleyiciler yüklenemedi"
+        "failedToLoadMonitors": "İzleyiciler yüklenemedi",
+        "createMonitor": "Monitör oluştur",
+        "recommended": {
+          "title": "Önerilen monitörler",
+          "body": "Breeze; CPU, bellek, disk ve yama uyumluluğu için yerleşik monitörler sunar. Bu ilkeye henüz hiçbiri bağlı değil.",
+          "action": "Tüm yerleşik monitörleri bağla"
+        }
       },
       "pamTab": {
         "captureWindowsUACElevationPrompts": "Windows UAC yükseltme istemlerini yakalayın",
@@ -1201,6 +1207,15 @@
         "save": "Kaydet",
         "cancel": "İptal",
         "none": "Kayıtlı gerekçe yok."
+      },
+      "legacyFreeze": {
+        "title": "Yeni kurallar monitör olarak oluşturulur",
+        "body": "Mevcut kurallar burada düzenlenebilir kalır ve bir sonraki sürümde monitörlere dönüştürülür.",
+        "link": "Monitörler sekmesini aç"
+      },
+      "duplicate": {
+        "title": "Bu ilkedeki cihazlar iki kez uyarı verecek",
+        "body": "Bu koşullar hem bağlı bir monitör hem de eski bir kural veya izleme olarak mevcut: {{names}}"
       }
     }
   },

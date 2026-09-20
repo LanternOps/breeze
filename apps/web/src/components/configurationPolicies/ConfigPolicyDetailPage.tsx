@@ -422,6 +422,7 @@ export default function ConfigPolicyDetailPage({
     const props = {
       policyId: policyId!,
       existingLink: linkFor(ft),
+      allLinks: featureLinks,
       onLinkChanged: handleLinkChanged,
       linkedPolicyId,
       parentLink: parentLinkFor(ft),

@@ -844,7 +844,13 @@
         "inherited": "Inherited",
         "overrideValue": "Override value",
         "overridesLabel": "Overrides:",
-        "failedToLoadMonitors": "Failed to load monitors"
+        "failedToLoadMonitors": "Failed to load monitors",
+        "createMonitor": "Create monitor",
+        "recommended": {
+          "title": "Recommended monitors",
+          "body": "Breeze ships built-in CPU, memory, disk and patch-compliance monitors. None are attached to this policy yet.",
+          "action": "Attach all built-in monitors"
+        }
       },
       "pamTab": {
         "captureWindowsUACElevationPrompts": "Capture Windows UAC elevation prompts",
@@ -1201,7 +1207,15 @@
         "save": "Save",
         "cancel": "Cancel",
         "none": "No rationale recorded."
-
+      },
+      "legacyFreeze": {
+        "title": "New rules are created as monitors",
+        "body": "Existing rules stay editable here and convert to monitors in the next release.",
+        "link": "Open the Monitors tab"
+      },
+      "duplicate": {
+        "title": "Devices in this policy will alert twice",
+        "body": "These conditions exist both as an attached monitor and as a legacy rule or watch: {{names}}"
       }
     }
   },
