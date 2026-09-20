@@ -8,6 +8,12 @@
 -- apps/api/src/db/schema/bareMetalRecoveries.ts. Adding a terminal status
 -- there requires a follow-up migration that rebuilds this index.
 
+-- The cleanup UPDATE below touches an RLS-forced tenant table. Without system
+-- scope it is a silent 0-row no-op on managed Postgres (the migration role is
+-- not BYPASSRLS), which would leave the duplicates in place and abort the
+-- CREATE UNIQUE INDEX. See apps/api/migrations/2026-09-30-100000-rls-scoped-backfill-replay.sql.
+SELECT set_config('breeze.scope', 'system', true);
+
 -- Pre-existing duplicates (from the SELECT-then-INSERT window this index
 -- closes) would abort the CREATE UNIQUE INDEX below. Retire the older rows of
 -- each device's non-terminal set, keeping the newest, and report the count so

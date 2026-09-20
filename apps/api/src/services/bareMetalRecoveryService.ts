@@ -162,7 +162,14 @@ function recoveryInProgressError(
 ): BareMetalRecoveryError {
   // `winner` is undefined only if the row that beat us reached a terminal
   // status between the 23505 and this read. The 409 still stands for this
-  // attempt — the caller retries and wins the next one.
+  // attempt — the caller retries and wins the next one — but the details
+  // cannot name the blocker, so say so rather than emitting an anonymous 409.
+  if (!winner) {
+    console.warn(
+      '[bareMetalRecoveryService] one-in-flight conflict resolved to an already-terminal row; '
+      + 'returning recovery_in_progress without a blocking recovery id',
+    );
+  }
   return new BareMetalRecoveryError('recovery_in_progress', 409, {
     recoveryId: winner?.id ?? null,
     status: winner?.status ?? null,

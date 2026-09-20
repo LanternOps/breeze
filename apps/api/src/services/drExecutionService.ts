@@ -1018,17 +1018,22 @@ const DR_EXECUTION_TERMINAL = ['completed', 'failed', 'aborted'] as const;
 /**
  * Reconcile one DR execution.
  *
- * **Serialisation contract (#6322).** Ticks for a single execution are
- * serialised by BullMQ (`jobId = dr-execution-<id>`); nothing else in the API
- * drives an execution forward. This function used to open with a bare
+ * **Serialisation contract (#6322).** BullMQ's stable `jobId`
+ * (`dr-execution-<id>`) keeps a second *queued* tick for the same execution
+ * from being added, which covers the common case — but it is not mutual
+ * exclusion: the id is reusable once the job completes, and the worker runs
+ * with `concurrency: 4` (see jobs/drExecutionWorker.ts). The real guard is the
+ * compare-and-swap write-back at the end of this function.
+ *
+ * This function used to open with a bare
  * `SELECT id FROM dr_executions ... FOR UPDATE` outside `db.transaction(...)`,
  * which auto-committed and released the lock on the spot — it read as mutual
  * exclusion while providing none. It is not re-added inside a transaction
  * because the body performs external side effects (authorization checks,
  * command dispatch, recovery creation) that must not run with a row lock held
- * open. The write-back at the end is instead a compare-and-swap that refuses
- * to resurrect an execution another writer has already made terminal, so a
- * second tick that slips through is a no-op rather than a state regression.
+ * open. The compare-and-swap refuses to resurrect an execution another writer
+ * has already made terminal, so a second tick that slips through is a no-op
+ * rather than a state regression.
  */
 export async function reconcileDrExecution(executionId: string): Promise<DrReconcileOutcome> {
   const [execution] = await db
@@ -1211,6 +1216,18 @@ export async function reconcileDrExecution(executionId: string): Promise<DrRecon
       .from(drExecutions)
       .where(eq(drExecutions.id, executionId))
       .limit(1);
+    if (current) {
+      // Expected under a duplicate tick, but never silent: a rising rate here
+      // means ticks are overlapping more than the queue is supposed to allow.
+      console.warn(
+        `[drExecutionService] reconcile ${executionId} lost the write-back race; `
+        + `another writer left it ${current.status}`,
+      );
+    } else {
+      // Not an expected outcome — dr_executions rows are not deleted under a
+      // live reconcile. Loud, because it means the row vanished mid-tick.
+      console.error(`[drExecutionService] reconcile ${executionId}: execution row disappeared mid-tick`);
+    }
     return { execution: current ?? null, nextDelayMs: null };
   }
 
