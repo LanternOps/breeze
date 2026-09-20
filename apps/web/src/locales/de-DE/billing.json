@@ -1654,6 +1654,7 @@
     },
     "summary": {
       "noTaxRate": "Positionen sind als steuerpflichtig gekennzeichnet, es ist jedoch kein Steuersatz festgelegt.",
+      "inheritedTaxRate": "Die Steuer ist noch nicht in diesem Entwurf enthalten — beim Ausstellen gilt der übernommene Satz von {{rate}}, was {{tax}} hinzufügt und {{total}} ergibt.",
       "setTaxRate": "Legen Sie eine in den Abrechnungseinstellungen fest",
       "subtotal": "Zwischensumme",
       "tax": "Steuer",

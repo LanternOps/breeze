@@ -1654,6 +1654,7 @@
     },
     "summary": {
       "noTaxRate": "Le righe sono contrassegnate come imponibili, ma non è impostata alcuna aliquota fiscale.",
+      "inheritedTaxRate": "L'imposta non è ancora su questa bozza: all'emissione si applica l'aliquota ereditata del {{rate}}, che aggiunge {{tax}} per un totale di {{total}}.",
       "setTaxRate": "Impostane una in Impostazioni fatturazione",
       "subtotal": "Subtotale",
       "tax": "Imposta",

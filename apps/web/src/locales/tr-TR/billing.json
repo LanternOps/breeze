@@ -1654,6 +1654,7 @@
     },
     "summary": {
       "noTaxRate": "Hatlar vergiye tabi olarak işaretlenmiştir ancak herhangi bir vergi oranı belirlenmemiştir.",
+      "inheritedTaxRate": "Vergi bu taslakta henüz yok — düzenlediğinizde devralınan {{rate}} oranı uygulanır ve {{tax}} eklenerek toplam {{total}} olur.",
       "setTaxRate": "Faturalandırma ayarlarında bir tane belirleyin",
       "subtotal": "Ara Toplam",
       "tax": "Vergi",

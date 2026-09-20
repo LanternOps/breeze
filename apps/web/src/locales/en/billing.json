@@ -1654,6 +1654,7 @@
     },
     "summary": {
       "noTaxRate": "Lines are marked taxable, but no tax rate is set.",
+      "inheritedTaxRate": "Tax isn't on this draft yet — the inherited rate of {{rate}} applies when you issue it, adding {{tax}} for a total of {{total}}.",
       "setTaxRate": "Set one in Billing settings",
       "subtotal": "Subtotal",
       "tax": "Tax",

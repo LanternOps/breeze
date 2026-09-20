@@ -128,6 +128,39 @@ describe('InvoiceEditor', () => {
     expect(screen.queryByTestId('invoice-tax-rate-hint')).not.toBeInTheDocument();
   });
 
+  it('says the inherited rate will apply at issue instead of falsely claiming none is set (#6338)', async () => {
+    // Draft carries no committed rate of its own, but the API resolved a 7.5%
+    // partner default that issueInvoice WILL apply — the old copy told the
+    // tech "no tax rate is set" and the $100.00 total they approved issued at
+    // $107.50.
+    const taxable = { ...manualLine, taxable: true };
+    const detail = { ...draft([taxable], { subtotal: '100.00' }), effectiveTaxRate: '0.07500' };
+    render(<InvoiceEditor detail={detail} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
+
+    expect(screen.queryByTestId('invoice-tax-rate-hint')).not.toBeInTheDocument();
+    const hint = screen.getByTestId('invoice-tax-inherited-hint');
+    expect(hint).toHaveTextContent('7.50%');
+    // Estimated tax on the $100.00 taxable basis, and the total it issues at.
+    expect(hint).toHaveTextContent('$7.50');
+    expect(hint).toHaveTextContent('$107.50');
+  });
+
+  it('still warns when neither the invoice nor the inherited rate has one (#6338)', async () => {
+    const taxable = { ...manualLine, taxable: true };
+    render(<InvoiceEditor detail={{ ...draft([taxable]), effectiveTaxRate: null }} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
+    expect(screen.getByTestId('invoice-tax-rate-hint')).toHaveTextContent('no tax rate is set');
+    expect(screen.queryByTestId('invoice-tax-inherited-hint')).not.toBeInTheDocument();
+  });
+
+  it('shows neither hint when no line is taxable, inherited rate or not (#6338)', async () => {
+    render(<InvoiceEditor detail={{ ...draft([manualLine]), effectiveTaxRate: '0.07500' }} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
+    expect(screen.queryByTestId('invoice-tax-inherited-hint')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('invoice-tax-rate-hint')).not.toBeInTheDocument();
+  });
+
   it('adds a manual line and triggers a reload (onChanged)', async () => {
     const onChanged = vi.fn();
     fetchMock.mockImplementation(async (input: string, opts?: RequestInit) => {

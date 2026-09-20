@@ -2602,3 +2602,55 @@ describe('voidInvoice refuses an invoice with applied payments (#5180)', () => {
       .rejects.toMatchObject({ code: 'INVOICE_HAS_PAYMENTS' });
   });
 });
+
+describe('getInvoice — effectiveTaxRate on drafts (#6338)', () => {
+  beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
+  const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
+  const draftInvoice = { id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD', taxRate: null, billToName: 'Acme' };
+
+  function queueDetailPreamble(inv: Record<string, unknown>) {
+    queueResult([inv]); // owned invoice
+    queueResult([]);    // lines
+    queueResult([]);    // grouped evidence counts
+    queueResult([]);    // stripe connection (not connected)
+    queueResult([]);    // accounting mapping
+  }
+
+  it('surfaces the PARTNER default as the rate that will apply at issue when the org rate is blank', async () => {
+    queueDetailPreamble(draftInvoice);
+    queueResult([{ taxExempt: false, taxRate: null }]);   // taxRateResolver: organizations
+    queueResult([{ defaultTaxRate: '0.07500' }]);          // taxRateResolver: partners
+    const out = await svc.getInvoice('i1', actor);
+    expect(out.invoice.taxRate).toBeNull(); // the stored draft rate is NOT rewritten
+    expect(out.effectiveTaxRate).toBe('0.07500');
+  });
+
+  it('a tax-exempt org resolves to null even when the partner has a default', async () => {
+    queueDetailPreamble(draftInvoice);
+    queueResult([{ taxExempt: true, taxRate: null }]);
+    queueResult([{ defaultTaxRate: '0.07500' }]);
+    const out = await svc.getInvoice('i1', actor);
+    expect(out.effectiveTaxRate).toBeNull();
+  });
+
+  it('the org rate wins over the partner default', async () => {
+    queueDetailPreamble(draftInvoice);
+    queueResult([{ taxExempt: false, taxRate: '0.09000' }]);
+    queueResult([{ defaultTaxRate: '0.07500' }]);
+    const out = await svc.getInvoice('i1', actor);
+    expect(out.effectiveTaxRate).toBe('0.09000');
+  });
+
+  it('degrades to null (never the partner default) when the org row is not RLS-visible', async () => {
+    queueDetailPreamble(draftInvoice);
+    queueResult([]); // organizations: no visible row -> OrgNotVisibleForTaxError
+    const out = await svc.getInvoice('i1', actor);
+    expect(out.effectiveTaxRate).toBeNull();
+  });
+
+  it('is null for an issued invoice — its rate is already committed on the row', async () => {
+    queueDetailPreamble({ ...draftInvoice, status: 'sent', taxRate: '0.07500' });
+    const out = await svc.getInvoice('i1', actor);
+    expect(out.effectiveTaxRate).toBeNull();
+  });
+});
