@@ -37,7 +37,7 @@ import Breadcrumbs from '../layout/Breadcrumbs';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
 // an island that hydrates before whichever other island happens to pull i18n in
 // would otherwise render raw keys (and mismatch the SSR markup).
-import '../../lib/i18n';
+import { i18n } from '../../lib/i18n';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
@@ -140,11 +140,43 @@ export interface MonitorEditorProps {
 
 type EditorTab = 'settings' | 'activity';
 
-// Pure hash parser (leading `#` already stripped by useHashState), following
-// the CLAUDE.md hash-tab convention (see DeviceDetails.tsx's tabFromHash).
-function tabFromHash(hash: string): EditorTab | undefined {
-  const seg = hash.split('/')[0] ?? '';
-  return seg === 'settings' || seg === 'activity' ? seg : undefined;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function editorHashParams(hash: string): URLSearchParams {
+  const raw = hash.replace(/^#/, '');
+  const first = raw.split('/')[0];
+  if (!raw.includes('=') && (first === 'settings' || first === 'activity')) {
+    return new URLSearchParams({ tab: first });
+  }
+  return new URLSearchParams(raw);
+}
+export function tabFromHash(hash: string): EditorTab | undefined {
+  const params = editorHashParams(hash);
+  const tab = params.get('tab');
+  if (tab === 'settings' || tab === 'activity') return tab;
+  return params.has('policy') ? 'settings' : undefined;
+}
+export function editorHashForTab(hash: string, tab: EditorTab): string {
+  const params = editorHashParams(hash);
+  if (!params.has('policy')) return `#${tab}`;
+  params.set('tab', tab);
+  return `#${params.toString()}`;
+}
+export async function attachAfterCreate(
+  monitorId: string,
+  hash: string,
+  fetcher: (url: string, init?: RequestInit) => Promise<Response> = fetchWithAuth,
+): Promise<string> {
+  const policyId = editorHashParams(hash).get('policy');
+  if (!policyId || !UUID_RE.test(policyId)) return `/alerts/monitors/${monitorId}`;
+  await runAction({
+    request: () => fetcher(`/monitor-definitions/${monitorId}/attachments`, {
+      method: 'POST', body: JSON.stringify({ configPolicyId: policyId }),
+    }),
+    errorFallback: i18n.t('monitoring:deploy.errors.attach'),
+    successMessage: i18n.t('monitoring:editor.attachedToPolicy'),
+    onUnauthorized: UNAUTHORIZED,
+  });
+  return `/configuration-policies/${policyId}#monitors`;
 }
 
 export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
@@ -358,7 +390,7 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
   };
 
   const switchTab = (tab: EditorTab) => {
-    window.location.hash = tab;
+    window.location.hash = editorHashForTab(window.location.hash, tab);
     setHashTab(tab);
   };
 
@@ -400,8 +432,8 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
         onUnauthorized: UNAUTHORIZED,
       });
       const savedId = data?.data?.id ?? monitorId;
-      if (isNew) {
-        void navigateTo(`/alerts/monitors/${savedId}`);
+      if (isNew && savedId) {
+        void navigateTo(await attachAfterCreate(savedId, window.location.hash));
       } else {
         void fetchMonitor();
       }

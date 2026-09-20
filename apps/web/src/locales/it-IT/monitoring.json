@@ -45,6 +45,7 @@
     "builtInHint": "Fornito da Breeze. Modifica le soglie, disattivalo o eliminalo: non tornerà."
   },
   "editor": {
+    "attachedToPolicy": "Monitor creato e collegato alla policy",
     "titleNew": "Nuovo monitor",
     "titleEdit": "Modifica monitor",
     "breadcrumb": {

@@ -45,6 +45,7 @@
     "builtInHint": "Breeze tarafından sağlandı. Eşikleri düzenleyin, devre dışı bırakın veya silin; geri gelmez."
   },
   "editor": {
+    "attachedToPolicy": "Monitör oluşturuldu ve ilkeye bağlandı",
     "titleNew": "Yeni monitör",
     "titleEdit": "Monitörü düzenle",
     "breadcrumb": {

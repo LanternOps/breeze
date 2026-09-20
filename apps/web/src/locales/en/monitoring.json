@@ -45,6 +45,7 @@
     "builtInHint": "Provisioned by Breeze. Edit thresholds, disable it, or delete it — it will not come back."
   },
   "editor": {
+    "attachedToPolicy": "Monitor created and attached to the policy",
     "titleNew": "New monitor",
     "titleEdit": "Edit monitor",
     "breadcrumb": {

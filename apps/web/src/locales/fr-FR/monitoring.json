@@ -45,6 +45,7 @@
     "builtInHint": "Fourni par Breeze. Modifiez les seuils, désactivez-le ou supprimez-le – il ne reviendra pas."
   },
   "editor": {
+    "attachedToPolicy": "Moniteur créé et attaché à la politique",
     "titleNew": "Nouveau moniteur",
     "titleEdit": "Modifier le moniteur",
     "breadcrumb": {

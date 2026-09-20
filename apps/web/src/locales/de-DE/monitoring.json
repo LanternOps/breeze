@@ -45,6 +45,7 @@
     "builtInHint": "Von Breeze bereitgestellt. Schwellenwerte bearbeiten, deaktivieren oder löschen – er kommt nicht zurück."
   },
   "editor": {
+    "attachedToPolicy": "Monitor erstellt und der Richtlinie zugeordnet",
     "titleNew": "Neuer Monitor",
     "titleEdit": "Monitor bearbeiten",
     "breadcrumb": {

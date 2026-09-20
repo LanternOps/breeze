@@ -45,6 +45,7 @@
     "builtInHint": "Provisionado pelo Breeze. Edite os limites, desative ou exclua — ele não voltará."
   },
   "editor": {
+    "attachedToPolicy": "Monitor criado e anexado à política",
     "titleNew": "Novo monitor",
     "titleEdit": "Editar monitor",
     "breadcrumb": {

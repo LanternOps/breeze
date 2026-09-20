@@ -45,6 +45,7 @@
     "builtInHint": "Aprovisionado por Breeze. Edita los umbrales, desactívalo o elimínalo; no volverá a aparecer."
   },
   "editor": {
+    "attachedToPolicy": "Monitor creado y adjuntado a la política",
     "titleNew": "Nuevo monitor",
     "titleEdit": "Editar monitor",
     "breadcrumb": {
