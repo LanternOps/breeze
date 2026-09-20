@@ -284,4 +284,38 @@ describe('RestoreWizard', () => {
       );
     });
   });
+
+  it('leaves a 401 to the auth redirect instead of banner-ing "Unauthorized" (#6349)', async () => {
+    // fetchWithAuth has already kicked off the session-expired redirect by the
+    // time runAction sees a 401, so the wizard must stay quiet rather than
+    // flashing a meaningless error under a navigating page.
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === '/backup/snapshots') {
+        return makeJsonResponse({ data: [{ id: 'snap-1', label: 'Server snapshot', status: 'Ready', size: '4 GB' }] });
+      }
+      if (url === '/backup/snapshots/snap-1/browse') return makeJsonResponse({ data: [] });
+      if (url === '/backup/restore?limit=6') return makeJsonResponse({ data: [] });
+      if (url === '/backup/restore' && method === 'POST') {
+        return makeJsonResponse({ error: 'Unauthorized' }, false, 401);
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<RestoreWizard />);
+    await screen.findByText('Restore Wizard');
+
+    for (let index = 0; index < 4; index += 1) {
+      fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
+    }
+    const start = screen.getByRole('button', { name: /Start restore/i }) as HTMLButtonElement;
+    fireEvent.click(start);
+
+    // The button un-disables once the in-flight flag clears, which is the
+    // observable signal that the catch/finally ran.
+    await waitFor(() => expect(start.disabled).toBe(false));
+    expect(showToastMock).not.toHaveBeenCalled();
+    expect(screen.queryByText('Unauthorized')).toBeNull();
+  });
 });
