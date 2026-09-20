@@ -7,6 +7,9 @@ const { dbMocks, emitMock, workTypeMocks, cardMocks } = vi.hoisted(() => {
   const dbMocks = {
     // queue of results for successive db.select()...where()/limit() terminals
     selectResults: [] as unknown[][],
+    // Projection objects handed to db.select(), so a test can assert on the
+    // SQL fragments a reader builds (COALESCE vs. bare duration_minutes).
+    selectArgs: [] as Array<Record<string, unknown> | undefined>,
     insertResult: [] as unknown[],
     // Per-call insert results (shifted before falling back to insertResult) —
     // lets a test give the first timeEntries insert a conflict (empty array via
@@ -48,8 +51,9 @@ vi.mock('../db', () => ({
   runOutsideDbContext: (fn: () => unknown) => fn(),
   withSystemDbAccessContext: (fn: () => unknown) => fn(),
   db: {
-    select: vi.fn(() => ({
+    select: vi.fn((projection?: Record<string, unknown>) => ({
       from: vi.fn(() => {
+        dbMocks.selectArgs.push(projection);
         const chain: any = {
           leftJoin: vi.fn(() => chain),
           where: vi.fn((arg: unknown) => {
@@ -134,6 +138,7 @@ vi.mock('../db/schema', () => ({
     source: 'source', workTypeId: 'workTypeId',
     billingProfileId: 'billingProfileId', coverage: 'coverage', billingOverridden: 'billingOverridden',
     minimumMinutes: 'minimumMinutes', roundingIncrementMinutes: 'roundingIncrementMinutes',
+    billableMinutes: 'billableMinutes',
     isApproved: 'isApproved', approvedBy: 'approvedBy', approvedAt: 'approvedAt',
     createdAt: 'createdAt', updatedAt: 'updatedAt'
   },
@@ -197,6 +202,7 @@ const mockCard = (baseHourlyRate: string | null = null, currencyCode = 'USD', ba
 
 beforeEach(() => {
   dbMocks.selectResults.length = 0;
+  dbMocks.selectArgs.length = 0;
   dbMocks.insertedValues.length = 0;
   dbMocks.updateSetArgs.length = 0;
   dbMocks.insertErrors.length = 0;
@@ -2332,5 +2338,99 @@ describe('both stop paths land billable_minutes (#4628 W03)', () => {
     await expect(updateTimeEntry('te-1', { endedAt: new Date('2026-03-03T10:20:00Z') }, manager))
       .rejects.toMatchObject({ code: 'ENTRY_BILLED', status: 409 });
     expect(dbMocks.updateSetArgs).toHaveLength(0);
+  });
+});
+
+describe('money readers read COALESCE(billable_minutes, duration_minutes) (#4628 W03)', () => {
+  const FROM = new Date('2026-03-01T00:00:00Z');
+  const TO = new Date('2026-03-31T00:00:00Z');
+  const render = (fragment: unknown) => inspect(fragment, { depth: 12 });
+
+  it('getTicketBillingSummary money SQL uses COALESCE, and totalMinutes stays actual', async () => {
+    dbMocks.selectResults.push([], [], [], []);
+    await getTicketBillingSummary('t-1');
+    const aggregates = dbMocks.selectArgs[0] as Record<string, unknown>;
+    const money = dbMocks.selectArgs[1] as Record<string, unknown>;
+    expect(render(money.amount)).toContain('COALESCE');
+    expect(render(money.amount)).toContain('billableMinutes');
+    expect(render(aggregates.billableMinutes)).toContain('billableMinutes');
+    // Utilization figure — actual minutes, never the billed quantity (§3.5).
+    expect(render(aggregates.totalMinutes)).not.toContain('billableMinutes');
+  });
+
+  it('getTicketBillingSummary returns includedMinutes for contract-covered entries', async () => {
+    dbMocks.selectResults.push([{ totalMinutes: 90, billableMinutes: 60, includedMinutes: 30 }], [], [{ partsCount: 0 }], []);
+    const result = await getTicketBillingSummary('t-1');
+    expect(result.time.includedMinutes).toBe(30);
+  });
+
+  it('an INCLUDED entry adds no money to the ticket summary', async () => {
+    // coverage 'included' => billing_status 'contract', hourly_rate NULL, so
+    // the hourly_rate IS NOT NULL predicate excludes it from the money query.
+    dbMocks.selectResults.push([{ totalMinutes: 45, billableMinutes: 0, includedMinutes: 45 }], [], [{ partsCount: 0 }], []);
+    const result = await getTicketBillingSummary('t-1');
+    expect(result.time.billableAmounts).toEqual([]);
+  });
+
+  const billableRow = (over: Record<string, unknown>) => ({
+    date: new Date('2026-03-03T09:00:00Z'), orgName: 'Acme', ticketNumber: 'T-1',
+    description: 'On-site', technician: 'Pat', currencyCode: 'USD',
+    billingStatus: 'not_billed', isApproved: true, ...over,
+  });
+
+  it('listBillables bills the MINIMUM, not the worked minutes', async () => {
+    dbMocks.selectResults.push([billableRow({ minutes: 20, billableMinutes: 60, rate: '225.00' })], []);
+    const { rows, totalsByCurrency } = await listBillables(FROM, TO);
+    expect(rows[0]).toMatchObject({ quantity: '1.00', amount: '225.00' }); // 60 min, not 0.33
+    expect(totalsByCurrency).toEqual([{ currencyCode: 'USD', amount: '225.00' }]);
+  });
+
+  it('listBillables falls back to duration_minutes on a pre-feature row', async () => {
+    dbMocks.selectResults.push([billableRow({ minutes: 30, billableMinutes: null, rate: '100.00' })], []);
+    const { rows } = await listBillables(FROM, TO);
+    expect(rows[0]).toMatchObject({ quantity: '0.50', amount: '50.00' });
+  });
+
+  it('an INCLUDED entry appears in listBillables with no money', async () => {
+    dbMocks.selectResults.push([billableRow({
+      minutes: 45, billableMinutes: 45, rate: null, billingStatus: 'contract',
+    })], []);
+    const { rows, totalsByCurrency } = await listBillables(FROM, TO);
+    expect(rows[0]).toMatchObject({ quantity: '0.75', amount: '0.00' });
+    // Pre-existing behaviour, re-pinned here: a rate-less row still carries its
+    // snapshot currency, so the currency appears with a ZERO total. It adds no
+    // money, which is the §3.5 property; it is not absent from the list.
+    expect(totalsByCurrency).toEqual([{ currencyCode: 'USD', amount: '0.00' }]);
+  });
+
+  it('the timesheet bills the minimum but reports ACTUAL minutes in day totals', async () => {
+    dbMocks.selectResults.push([{
+      id: 'te-1', startedAt: new Date('2026-03-03T09:00:00Z'),
+      durationMinutes: 20, billableMinutes: 60,
+      isBillable: true, hourlyRate: '225.00', currencyCode: 'USD',
+    }]);
+    const sheet = await getTimesheet('u-1', new Date('2026-03-02T00:00:00Z'));
+    expect(sheet.totals.billableAmounts).toEqual([{ currencyCode: 'USD', amount: '225.00' }]);
+    // Utilization is about time WORKED (§3.5).
+    expect(sheet.totals.totalMinutes).toBe(20);
+    expect(sheet.totals.billableMinutes).toBe(20);
+    expect(sheet.days[1]!.totalMinutes).toBe(20);
+  });
+
+  it('the timesheet selection carries billable_minutes to the client', async () => {
+    dbMocks.selectResults.push([]);
+    await getTimesheet('u-1', new Date('2026-03-02T00:00:00Z'));
+    expect(dbMocks.selectArgs[0]).toHaveProperty('billableMinutes', 'billableMinutes');
+  });
+
+  it('an INCLUDED entry adds no money to the timesheet', async () => {
+    dbMocks.selectResults.push([{
+      id: 'te-1', startedAt: new Date('2026-03-03T09:00:00Z'),
+      durationMinutes: 45, billableMinutes: 45,
+      isBillable: true, hourlyRate: null, currencyCode: 'USD',
+    }]);
+    const sheet = await getTimesheet('u-1', new Date('2026-03-02T00:00:00Z'));
+    expect(sheet.totals.billableAmounts).toEqual([]);
+    expect(sheet.totals.billableMinutes).toBe(45);
   });
 });

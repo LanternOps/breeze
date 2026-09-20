@@ -1255,6 +1255,9 @@ function entrySelection() {
     billingOverridden: timeEntries.billingOverridden,
     minimumMinutes: timeEntries.minimumMinutes,
     roundingIncrementMinutes: timeEntries.roundingIncrementMinutes,
+    // §3.5 billed quantity. Read by the timesheet money loop and by the web
+    // "worked vs billed" line; day totals deliberately stay on durationMinutes.
+    billableMinutes: timeEntries.billableMinutes,
     // Keep archived labels on historical entries. The correlated read preserves
     // entry cardinality and stays in the ambient partner RLS context.
     workType: sql<{ id: string; name: string; isActive: boolean } | null>`(
@@ -1388,7 +1391,9 @@ export async function getTimesheet(userId: string, weekStart: Date, accessibleOr
     // rounded rows equals the invoice total (never "round the sum"). The product
     // is exact decimal (review #2: 0.02 × 7.25 = 0.145 → 0.15, same as the SQL
     // summary) and rows are summed as integer minor units, never as floats.
-    const hours = ((entry.durationMinutes ?? 0) / 60).toFixed(2);
+    // Only the minutes source moved to the billed quantity (§3.5). The day-total
+    // loop above deliberately keeps ACTUAL minutes — that figure is utilization.
+    const hours = (((entry.billableMinutes ?? entry.durationMinutes) ?? 0) / 60).toFixed(2);
     const amount = multiplyToCurrency(hours, entry.hourlyRate, entry.currencyCode);
     money.set(entry.currencyCode, (money.get(entry.currencyCode) ?? 0) + toMinorUnits(amount, entry.currencyCode));
   }
@@ -1410,9 +1415,13 @@ export async function getTimesheet(userId: string, weekStart: Date, accessibleOr
 export async function getTicketBillingSummary(ticketId: string) {
   const timeRows = await db
     .select({
-      includedMinutes: sql<number>`COALESCE(SUM(${timeEntries.durationMinutes}) FILTER (WHERE ${timeEntries.coverage} = 'included'), 0)::int`,
+      // §3.4: contract-covered time, as the billed quantity — the figure a
+      // block-hours drawdown (#4547 §5) would consume for the same rows.
+      includedMinutes: sql<number>`COALESCE(SUM(COALESCE(${timeEntries.billableMinutes}, ${timeEntries.durationMinutes})) FILTER (WHERE ${timeEntries.coverage} = 'included'), 0)::int`,
+      // Utilization figure — ACTUAL minutes worked (§3.5). Not the billed quantity.
       totalMinutes: sql<number>`COALESCE(SUM(${timeEntries.durationMinutes}), 0)::int`,
-      billableMinutes: sql<number>`COALESCE(SUM(${timeEntries.durationMinutes}) FILTER (WHERE ${timeEntries.isBillable}), 0)::int`
+      // Billed quantity (§3.5): the minimum/rounding result when the row has one.
+      billableMinutes: sql<number>`COALESCE(SUM(COALESCE(${timeEntries.billableMinutes}, ${timeEntries.durationMinutes})) FILTER (WHERE ${timeEntries.isBillable}), 0)::int`
     })
     .from(timeEntries)
     .where(eq(timeEntries.ticketId, ticketId));
@@ -1421,9 +1430,10 @@ export async function getTicketBillingSummary(ticketId: string) {
   const timeMoney = await db
     .select({
       currencyCode: timeEntries.currencyCode,
-      // Labor rule: round hours to 2 dp first, then × rate, then ONE round per
-      // row at the currency's minor unit (the invoice-line figure) before summing.
-      amount: sql<string>`COALESCE(SUM(ROUND(ROUND(${timeEntries.durationMinutes}::numeric / 60, 2) * ${timeEntries.hourlyRate}, ${minorUnitScaleSql(timeEntries.currencyCode)})), 0)::numeric(12,2)`
+      // Labor rule unchanged: round hours to 2 dp first, then × rate, then ONE
+      // round per row at the currency's minor unit (the invoice-line figure)
+      // before summing. Only the MINUTES source changed (§3.5).
+      amount: sql<string>`COALESCE(SUM(ROUND(ROUND(COALESCE(${timeEntries.billableMinutes}, ${timeEntries.durationMinutes})::numeric / 60, 2) * ${timeEntries.hourlyRate}, ${minorUnitScaleSql(timeEntries.currencyCode)})), 0)::numeric(12,2)`
     })
     .from(timeEntries)
     .where(and(
@@ -1531,6 +1541,7 @@ export async function listBillables(
       description: timeEntries.description,
       technician: users.name,
       minutes: timeEntries.durationMinutes,
+      billableMinutes: timeEntries.billableMinutes,
       rate: timeEntries.hourlyRate,
       currencyCode: timeEntries.currencyCode,
       billingStatus: timeEntries.billingStatus,
@@ -1575,7 +1586,9 @@ export async function listBillables(
 
   const rows: BillableRow[] = [];
   for (const r of timeRows) {
-    const hours = ((r.minutes ?? 0) / 60).toFixed(2);
+    // Billed quantity (§3.5). NULL billable_minutes = pre-feature row or a row
+    // with no card terms — bill the actual duration.
+    const hours = (((r.billableMinutes ?? r.minutes) ?? 0) / 60).toFixed(2);
     const rate = toFinite(r.rate);
     rows.push({
       kind: 'time',
