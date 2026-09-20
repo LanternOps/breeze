@@ -37,7 +37,9 @@ import { multiplyToCurrency, roundToCurrency } from '@breeze/shared';
 import { db, withSystemDbAccessContext } from '../../db';
 import { invoiceLines, invoices, organizations, ticketParts, timeEntries } from '../../db/schema';
 import { assembleDraftFromTicket, issueInvoice } from '../../services/invoiceService';
-import { addTicketPart, createTimeEntry, resolveDefaultRate, type TimeEntryActor } from '../../services/timeEntryService';
+import { addTicketPart, createTimeEntry, type TimeEntryActor } from '../../services/timeEntryService';
+// Legacy source assertion stays test-only until the Task 14 fixture cutover.
+import { resolveDefaultRate } from './fixtures/legacyLabourPricingResolver';
 import { upsertOrgTicketSettings } from '../../services/ticketConfigService';
 import { createTicket } from '../../services/ticketService';
 import { gateLabel, seedGateOrg, type GateOrgFixture } from './multiCurrencyWave6GateFixtures';
@@ -70,7 +72,7 @@ function timeActor(fixture: GateOrgFixture): TimeEntryActor {
     userId: fixture.userId,
     name: 'Gate Technician',
     partnerId: fixture.partnerId,
-    manageAll: true,
+    manageAll: true, manageBilling: true,
     accessibleOrgIds: [fixture.orgId],
   };
 }

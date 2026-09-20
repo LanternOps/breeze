@@ -2107,6 +2107,29 @@ describe('releaseApprovedIntent', () => {
       );
     });
 
+    it('an off-card time proposal refused by the shared tool fails release under the human approver', async () => {
+      const argumentsWithRate = { ...args, hourlyRate: 999 };
+      const intent = timeEntryIntent({ arguments: argumentsWithRate,
+        argumentDigest: computeArgumentDigest(canonicalizeArguments(argumentsWithRate)) });
+      primeAgentRelease(intent);
+      actorContextMock.buildApproverAuthContextForIntent.mockResolvedValueOnce(approverAuth);
+      aiGuardrailsMock.checkToolPermission.mockResolvedValueOnce(null);
+      // The AI tool suite exercises this result through the REAL service gate;
+      // this suite pins the worker's identity handoff and refusal propagation.
+      aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({
+        error: 'Changing billing terms requires manage billing permission',
+      }));
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+      await releaseApprovedIntent(intent.id);
+      expect(aiToolsMock.executeTool).toHaveBeenCalledWith('manage_tickets', argumentsWithRate,
+        approverAuth, expect.objectContaining({ context: expect.objectContaining({
+          approverRelease: { approverUserId: APPROVER_ID },
+        }) }));
+      expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+        intent.id, 'executing', 'failed', expect.objectContaining({ errorCode: 'tool_returned_error' }),
+      );
+    });
+
     it('refuses to release a log_time_entry intent with no decided_by_user_id (fails closed, never executes)', async () => {
       const intent = timeEntryIntent({ decidedByUserId: null });
       primeAgentRelease(intent);

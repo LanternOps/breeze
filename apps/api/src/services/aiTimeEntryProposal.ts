@@ -28,10 +28,9 @@
  *    retry can never double-mint.
  *
  * Billable and rate come from `getTicketTimeEntryDefaults`, the single
- * existing resolver (`org_ticket_settings.default_billable ??
- * ticket_categories.default_billable ?? false`) — never read the category
- * directly here, or an org-level override silently stops applying to AI
- * proposals while it still applies to manual entries.
+ * profile resolver — never read category pricing directly here, or an
+ * assigned profile would stop applying to AI proposals while it still
+ * applies to manual entries.
  *
  * Duration has no existing resolver because nothing in the schema had a
  * duration default before this wave: `ticket_categories.default_time_entry_minutes`
@@ -87,6 +86,7 @@ const DEFAULTS_READ_ACTOR: TimeEntryActor = {
   userId: 'ai-time-entry-proposal:read-only',
   partnerId: null,
   manageAll: false,
+  manageBilling: false,
   accessibleOrgIds: null,
 };
 

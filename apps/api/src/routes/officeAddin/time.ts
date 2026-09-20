@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { hasPermission } from '../../services/permissions';
 import { zValidator } from '../../lib/validation';
 import { officeAddinTechAuthMiddleware, requireAddinCapability } from '../../middleware/officeAddinTechAuth';
 import type { OfficeAddinTechAuth } from '../../middleware/officeAddinTechAuth';
@@ -39,6 +40,7 @@ function addinTimeActorFrom(auth: OfficeAddinTechAuth): TimeEntryActor {
     email: auth.user.email,
     partnerId: auth.partnerId,
     manageAll: false,
+    manageBilling: hasPermission(auth.permissions, 'time_entries', 'manage_billing'),
     accessibleOrgIds: auth.accessibleOrgIds,
   };
 }

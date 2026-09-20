@@ -164,7 +164,7 @@ async function raceAgainstOrgCurrencyChange<T>(
 }
 
 function timeActor(f: GateOrgFixture): TimeEntryActor {
-  return { userId: f.userId, name: 'Barrier Tech', partnerId: f.partnerId, manageAll: true, accessibleOrgIds: [f.orgId] };
+  return { userId: f.userId, name: 'Barrier Tech', partnerId: f.partnerId, manageAll: true, manageBilling: true, accessibleOrgIds: [f.orgId] };
 }
 function ctx(f: GateOrgFixture, orgIds: string[] = [f.orgId]): DbAccessContext {
   return { scope: 'partner', orgId: null, accessibleOrgIds: orgIds, accessiblePartnerIds: [f.partnerId], userId: f.userId };

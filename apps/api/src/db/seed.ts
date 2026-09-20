@@ -170,6 +170,7 @@ export const DEFAULT_PERMISSIONS = [
   // time_entries:write, and an unseeded grant is dropped silently by seedRoles.
   { resource: 'time_entries', action: 'read', description: 'View time entries and timesheets' },
   { resource: 'time_entries', action: 'write', description: 'Log and edit time entries' },
+  { resource: 'time_entries', action: 'manage_billing', description: 'Override and reset time entry billing terms' },
 
   { resource: 'billing_profiles', action: 'read', description: 'View work types and billing profiles (rate cards)' },
   { resource: 'billing_profiles', action: 'write', description: 'Create and manage work types and billing profiles' },

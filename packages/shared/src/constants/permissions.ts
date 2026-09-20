@@ -106,6 +106,7 @@ export const PERMISSION_GRANTS = {
   // Time entries (ticketing Phase 3)
   TIME_ENTRIES_READ: { resource: 'time_entries', action: 'read' },
   TIME_ENTRIES_WRITE: { resource: 'time_entries', action: 'write' },
+  TIME_ENTRIES_MANAGE_BILLING: { resource: 'time_entries', action: 'manage_billing' },
 
   // Rate cards (#4628 / #4615, spec 2026-09-17 §6). One resource for work types
   // AND billing profiles, because they are one screen (Settings → Billing →

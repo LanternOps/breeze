@@ -60,7 +60,7 @@ BEGIN
     SELECT count(*) INTO n FROM ticket_categories c WHERE c.partner_id = p.id
       AND c.default_billable = true AND c.default_hourly_rate IS NOT NULL
       AND EXISTS (SELECT 1 FROM unnest(currencies) code WHERE code IS DISTINCT FROM c.rate_currency::text);
-    RAISE WARNING 'partner %: % category rates skipped in non-matching cards (counted once per category)', p.id, n;
+    IF n > 0 THEN RAISE WARNING 'partner %: % category rates skipped in non-matching cards (counted once per category)', p.id, n; END IF;
 
     FOREACH currency IN ARRAY currencies LOOP
       -- Task 5 may already have created a pristine default. Reuse that; keep
@@ -71,7 +71,7 @@ BEGIN
             OR bp.base_minimum_minutes IS NOT NULL OR bp.rounding_increment_minutes IS NOT NULL
             OR EXISTS (SELECT 1 FROM billing_profile_rules r WHERE r.billing_profile_id = bp.id));
       GET DIAGNOSTICS n = ROW_COUNT;
-      RAISE WARNING 'partner % currency %: % configured defaults retained as non-default cards', p.id, currency, n;
+      IF n > 0 THEN RAISE WARNING 'partner % currency %: % configured defaults retained as non-default cards', p.id, currency, n; END IF;
       SELECT id INTO profile_id FROM billing_profiles
         WHERE partner_id = p.id AND currency_code = currency AND is_default AND is_active;
       suffix := 0;
@@ -82,7 +82,7 @@ BEGIN
           VALUES (p.id, candidate_name, currency, true, 'billable')
           ON CONFLICT DO NOTHING RETURNING id INTO profile_id;
         GET DIAGNOSTICS n = ROW_COUNT;
-        RAISE WARNING 'partner %: created % default cards named %', p.id, n, candidate_name;
+        IF n > 0 THEN RAISE WARNING 'partner %: created % default cards named %', p.id, n, candidate_name; END IF;
         IF profile_id IS NULL THEN
           SELECT id INTO profile_id FROM billing_profiles
             WHERE partner_id = p.id AND currency_code = currency AND is_default AND is_active;
@@ -151,7 +151,7 @@ BEGIN
             VALUES (p.id, candidate_name, category_group.is_active)
             ON CONFLICT DO NOTHING RETURNING id INTO work_type_id;
           GET DIAGNOSTICS n = ROW_COUNT;
-          RAISE WARNING 'partner %: created % work types named % from categories %', p.id, n, candidate_name, category_group.ids;
+          IF n > 0 THEN RAISE WARNING 'partner %: created % work types named % from categories %', p.id, n, candidate_name, category_group.ids; END IF;
           EXIT WHEN work_type_id IS NOT NULL;
         END LOOP;
         IF pricing_count > 1 OR suffix > 0 THEN
@@ -162,7 +162,7 @@ BEGIN
           WHERE partner_id = p.id AND id = ANY(category_group.ids)
             AND default_work_type_id IS DISTINCT FROM work_type_id;
         GET DIAGNOSTICS n = ROW_COUNT;
-        RAISE WARNING 'partner %: set % category work-type defaults', p.id, n;
+        IF n > 0 THEN RAISE WARNING 'partner %: set % category work-type defaults', p.id, n; END IF;
 
         INSERT INTO billing_profile_rules (partner_id, billing_profile_id, work_type_id, coverage, hourly_rate)
           SELECT p.id, bp.id, work_type_id,
@@ -174,7 +174,7 @@ BEGIN
               (category_group.default_hourly_rate IS NOT NULL AND category_group.rate_currency = bp.currency_code))
           ON CONFLICT DO NOTHING;
         GET DIAGNOSTICS n = ROW_COUNT;
-        RAISE WARNING 'partner % work type %: created % default-card rows', p.id, work_type_id, n;
+        IF n > 0 THEN RAISE WARNING 'partner % work type %: created % default-card rows', p.id, work_type_id, n; END IF;
       END LOOP;
     END LOOP;
 
@@ -191,7 +191,7 @@ BEGIN
         AND s.default_billable IS NULL AND s.default_hourly_rate IS NULL
         AND a.billing_profile_id IS DISTINCT FROM bp.id;
     GET DIAGNOSTICS n = ROW_COUNT;
-    RAISE WARNING 'partner %: repointed % pre-existing assignments without legacy overrides to converted defaults', p.id, n;
+    IF n > 0 THEN RAISE WARNING 'partner %: repointed % pre-existing assignments without legacy overrides to converted defaults', p.id, n; END IF;
 
     FOR org IN
       SELECT o.id, o.name, o.currency_code, s.default_billable, s.default_hourly_rate, s.rate_currency
@@ -209,7 +209,7 @@ BEGIN
           VALUES (p.id, candidate_name, org.currency_code, base_coverage, base_rate)
           ON CONFLICT DO NOTHING RETURNING id INTO override_id;
         GET DIAGNOSTICS n = ROW_COUNT;
-        RAISE WARNING 'partner % org %: created % override cards named %', p.id, org.id, n, candidate_name;
+        IF n > 0 THEN RAISE WARNING 'partner % org %: created % override cards named %', p.id, org.id, n, candidate_name; END IF;
         EXIT WHEN override_id IS NOT NULL;
         candidate_name := format('%s [%s%s]', org.name, org.id,
           CASE WHEN suffix = 0 THEN '' ELSE '-' || suffix::text END);
@@ -239,22 +239,22 @@ BEGIN
             VALUES (p.id, override_id, category_row.default_work_type_id, row_coverage, row_rate)
             ON CONFLICT DO NOTHING;
           GET DIAGNOSTICS n = ROW_COUNT;
-          RAISE WARNING 'partner % org % work type %: created % override rows', p.id, org.id, category_row.default_work_type_id, n;
+          IF n > 0 THEN RAISE WARNING 'partner % org % work type %: created % override rows', p.id, org.id, category_row.default_work_type_id, n; END IF;
         END IF;
       END LOOP;
       INSERT INTO org_billing_profile_assignments (partner_id, org_id, billing_profile_id)
         VALUES (p.id, org.id, override_id) ON CONFLICT DO NOTHING;
       GET DIAGNOSTICS n = ROW_COUNT;
-      RAISE WARNING 'partner % org %: created % assignments', p.id, org.id, n;
+      IF n > 0 THEN RAISE WARNING 'partner % org %: created % assignments', p.id, org.id, n; END IF;
       UPDATE org_billing_profile_assignments SET billing_profile_id = override_id, assigned_by = NULL, updated_at = now()
         WHERE partner_id = p.id AND org_id = org.id AND billing_profile_id IS DISTINCT FROM override_id;
       GET DIAGNOSTICS n = ROW_COUNT;
-      RAISE WARNING 'partner % org %: replaced % existing assignments with converted legacy pricing', p.id, org.id, n;
+      IF n > 0 THEN RAISE WARNING 'partner % org %: replaced % existing assignments with converted legacy pricing', p.id, org.id, n; END IF;
     END LOOP;
 
     UPDATE partners SET labour_pricing_converted_at = now()
       WHERE id = p.id AND labour_pricing_converted_at IS NULL;
     GET DIAGNOSTICS n = ROW_COUNT;
-    RAISE WARNING 'partner %: marked % partners converted', p.id, n;
+    IF n > 0 THEN RAISE WARNING 'partner %: marked % partners converted', p.id, n; END IF;
   END LOOP;
 END $$;

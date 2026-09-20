@@ -1,16 +1,13 @@
 /**
- * W02 Tasks 6–7: real-Postgres conversion gate. Run with the integration config.
+ * W02 Tasks 6–9: real-Postgres conversion gate. Run with the integration config.
  *
- * This tests the conversion + pure resolver, not createTimeEntry's Task 8 switch.
- * Requests deliberately contain NO workTypeId: the adapter below looks up the
- * persisted category default, including retired categories, on the server.
- * IMPORTANT Task 8 seam: today's timeEntryService.ts:317 suppresses INACTIVE
- * work types. The spec/dry-run require retired categories to create inactive
- * work types, so that gate must be reconciled when switching the service. These
- * tests prove converted pricing, not that today's unchanged service uses it.
+ * The exhaustive matrix tests conversion + pure resolution; the shape-13
+ * regression also calls the real createTimeEntry service as breeze_app. Omitted
+ * workTypeId must preserve retired-category prices through server defaults,
+ * while explicitly choosing an inactive work type remains forbidden.
  */
 import './setup';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import { getTestDb } from './setup';
@@ -19,6 +16,11 @@ import { resolveBillingRule, type ResolvedCard } from '../../services/billingRul
 import { buildDryRunReport, type PartnerReport } from '../../../scripts/labour-pricing-dry-run.lib';
 import { legacyResolve } from './fixtures/legacyLabourPricingResolver';
 import { LEGACY_SHAPES, PRODUCTION_SHAPE, seedShape, type SeededFixture } from './fixtures/labourPricingConversionSeeds';
+import { withDbAccessContext, type DbAccessContext } from '../../db';
+import { createTimeEntry, type TimeEntryActor } from '../../services/timeEntryService';
+
+// Keep the queue boundary out of the service-path proof; no DB/resolver mocks.
+vi.mock('../../services/timeEntryEvents', () => ({ emitTimeEntryEvent: vi.fn().mockResolvedValue(undefined) }));
 
 const MIGRATION = '2026-10-23-100200-labour-pricing-conversion.sql';
 const STAMP_MIGRATION = '2026-10-23-100100-time-entries-billing-stamp.sql';
@@ -221,6 +223,52 @@ describe('labour pricing conversion — legacy parity gate', () => {
     const tickets = await getTestDb().execute(sql`SELECT partner_id FROM tickets WHERE org_id = ${nullPartner.orgs[0]!.id}`);
     expect(tickets.length).toBeGreaterThan(0);
     expect(tickets.every(ticket => ticket.partner_id === null)).toBe(true);
+  });
+
+  it('shape 13: real createTimeEntry preserves inactive category defaults but rejects explicitly picked inactive work types', async () => {
+    const fixture = await seedShape(LEGACY_SHAPES[12]!);
+    await replayMigration(MIGRATION);
+    const org = fixture.orgs[0]!;
+    const [user] = await getTestDb().execute(sql`SELECT id FROM users WHERE org_id = ${org.id} LIMIT 1`);
+    expect(user).toBeDefined();
+    const actor: TimeEntryActor = {
+      userId: user!.id as string, partnerId: fixture.partner.id,
+      manageAll: false, manageBilling: false, accessibleOrgIds: [org.id],
+    };
+    const context: DbAccessContext = {
+      scope: 'partner', orgId: null, accessibleOrgIds: [org.id],
+      accessiblePartnerIds: [fixture.partner.id], currentPartnerId: fixture.partner.id, userId: actor.userId,
+    };
+    let inactiveDefaults = 0;
+    for (const category of fixture.categories.filter(row => !row.isActive)) {
+      const pair = fixture.pairs.find(row => row.categoryId === category.id)!;
+      const [workType] = await getTestDb().execute(sql`SELECT w.id, w.is_active FROM work_types w
+        JOIN ticket_categories c ON c.default_work_type_id = w.id WHERE c.id = ${category.id}`);
+      expect(workType).toBeDefined();
+      const input = { ticketId: pair.ticketId, startedAt: new Date('2026-09-19T10:00:00Z'),
+        endedAt: new Date('2026-09-19T11:00:00Z') };
+      expect(Object.hasOwn(input, 'workTypeId')).toBe(false);
+      const expected = legacyResolve({ orgSettings: org.settings, category, orgCurrency: org.currencyCode });
+      const entry = await withDbAccessContext(context, () => createTimeEntry(input, actor));
+      expect(entry, category.name).toMatchObject({
+        ...expected, workTypeId: workType!.id, currencyCode: org.currencyCode, billingOverridden: false,
+        coverage: expected.isBillable ? 'billable' : 'non_billable', billingStatus: 'not_billed',
+      });
+      expect(entry.billingProfileId).not.toBeNull();
+      const [stored] = await getTestDb().execute(sql`SELECT work_type_id, hourly_rate, is_billable,
+        billing_profile_id FROM time_entries WHERE id = ${entry.id}`);
+      expect(stored, category.name).toEqual({ work_type_id: workType!.id, hourly_rate: expected.hourlyRate,
+        is_billable: expected.isBillable, billing_profile_id: entry.billingProfileId });
+      // Case-colliding inactive/active categories intentionally share an active
+      // type. Only genuinely inactive converted types reject explicit selection.
+      if (workType!.is_active === false) {
+        inactiveDefaults++;
+        await expect(withDbAccessContext(context, () => createTimeEntry({
+          ...input, workTypeId: workType!.id as string,
+        }, actor))).rejects.toMatchObject({ status: 400, code: 'WORK_TYPE_NOT_FOUND' });
+      }
+    }
+    expect(inactiveDefaults).toBe(2);
   });
 
   it('DECLARED difference 1: NULL org billable + matching rate makes uncategorized work billable', async () => {

@@ -24,6 +24,7 @@ export const createTimeEntrySchema = z.object({
   description: z.string().max(10_000).optional(),
   isBillable: z.boolean().optional(),
   hourlyRate: z.number().nonnegative().multipleOf(0.01).nullable().optional(),
+  minimumMinutes: z.number().int().min(0).max(2147483647).nullable().optional(),
   billingStatus: routineBillingStatusSchema.optional()
 }).refine((v) => v.endedAt.getTime() > v.startedAt.getTime(), {
   message: 'endedAt must be after startedAt',
@@ -31,6 +32,7 @@ export const createTimeEntrySchema = z.object({
 });
 
 export const updateTimeEntrySchema = z.object({
+  resetBilling: z.boolean().optional(),
   workTypeId: z.string().uuid().nullable().optional(),
   ticketId: z.string().guid().nullable().optional(),
   startedAt: z.coerce.date().refine(notFarFuture, { message: 'startedAt cannot be in the future' }).optional(),
@@ -38,6 +40,7 @@ export const updateTimeEntrySchema = z.object({
   description: z.string().max(10_000).nullable().optional(),
   isBillable: z.boolean().optional(),
   hourlyRate: z.number().nonnegative().multipleOf(0.01).nullable().optional(),
+  minimumMinutes: z.number().int().min(0).max(2147483647).nullable().optional(),
   billingStatus: routineBillingStatusSchema.optional()
 }).refine((v) => Object.keys(v).length > 0, { message: 'At least one field is required' });
 

@@ -55,6 +55,8 @@ describe('permissions catalog routes', () => {
       }
 
       // Spot-check a few specific entries the UI cares about.
+      expect(keys).toContain('time_entries:manage_billing');
+      expect(body.actionLabels.manage_billing).toBe('Manage Billing');
       expect(keys).toContain('remote:access');
       expect(keys).toContain('devices:read');
       expect(keys).toContain('audit:read');

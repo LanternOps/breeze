@@ -75,7 +75,7 @@ function timeActor(fixture: GateOrgFixture): TimeEntryActor {
     userId: fixture.userId,
     name: 'Gate Technician',
     partnerId: fixture.partnerId,
-    manageAll: true,
+    manageAll: true, manageBilling: false,
     accessibleOrgIds: [fixture.orgId],
   };
 }

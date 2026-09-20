@@ -204,7 +204,7 @@ function partnerCtx(f: Fixture): DbAccessContext {
 }
 
 function timeActor(f: Fixture): TimeEntryActor {
-  return { userId: f.userId, partnerId: f.partnerId, manageAll: true, accessibleOrgIds: [f.orgId] };
+  return { userId: f.userId, partnerId: f.partnerId, manageAll: true, manageBilling: true, accessibleOrgIds: [f.orgId] };
 }
 
 async function seedMoneyRows(f: Fixture): Promise<{ linkedEntryId: string; standaloneEntryId: string; partId: string }> {

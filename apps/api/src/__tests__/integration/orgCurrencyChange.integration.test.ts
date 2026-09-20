@@ -61,7 +61,7 @@ const ORG_RATE = 85.5;
 function timeActor(fixture: GateOrgFixture): TimeEntryActor {
   return {
     userId: fixture.userId, name: 'W6 Technician', partnerId: fixture.partnerId,
-    manageAll: true, accessibleOrgIds: [fixture.orgId],
+    manageAll: true, manageBilling: false, accessibleOrgIds: [fixture.orgId],
   };
 }
 
