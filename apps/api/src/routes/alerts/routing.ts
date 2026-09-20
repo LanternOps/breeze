@@ -75,13 +75,13 @@ const requireAlertWrite = requirePermission(PERMISSIONS.ALERTS_WRITE.resource, P
 type RoutingSiteAuth = { allowedSiteIds?: string[] };
 type RoutingRuleOwner = { orgId: string | null; partnerId: string | null };
 
-function routingSiteIds(conditions: unknown): string[] {
+export function routingSiteIds(conditions: unknown): string[] {
   if (!conditions || typeof conditions !== 'object' || Array.isArray(conditions)) return [];
   const value = (conditions as Record<string, unknown>).siteIds;
   return Array.isArray(value) ? value.filter((id): id is string => typeof id === 'string') : [];
 }
 
-async function canAccessRoutingSites(
+export async function canAccessRoutingSites(
   auth: RoutingSiteAuth,
   owner: RoutingRuleOwner,
   siteIds: string[],
