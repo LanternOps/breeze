@@ -54,9 +54,9 @@ describe('SnapshotPanels', () => {
         thresholdEvents={events}
       />,
     );
-    const tile = screen.getByTestId('filesystem-cleanup-candidates-tile');
-    expect(within(tile).getByText(/2/)).toBeInTheDocument();
-    expect(within(tile).getByText(/2\.0 KB/)).toBeInTheDocument();
+    // Assert the whole rendered line: `getByText(/2/)` alone would also match
+    // the "2" inside "2.0 KB" and prove nothing about the count.
+    expect(screen.getByTestId('filesystem-cleanup-candidates-tile')).toHaveTextContent('2 · 2.0 KB');
   });
 
   it('renders tempAccumulation, which the old tab collected and never showed', () => {

@@ -231,6 +231,23 @@ describe('CleanupPanel', () => {
     expect(screen.getByTestId('cleanup-preview-summary')).toHaveTextContent('3.0 KB reclaimable');
   });
 
+  it('counts what it actually rendered, not the server-reported candidateCount', () => {
+    // The summary sits above the list it describes, so it must agree with that
+    // list. Sourcing it from `candidateCount` would let the two disagree and
+    // recreate exactly the #6376 confusion (a stated total the operator cannot
+    // reach) rather than reporting it.
+    render(
+      <CleanupPanel
+        deviceId="dev-1"
+        volumeLabel="C:\\"
+        preview={preview({ candidateCount: 99 })}
+        onExecuted={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId('cleanup-preview-summary')).toHaveTextContent('3 candidates');
+    expect(screen.getAllByTestId(/^cleanup-candidate-C/)).toHaveLength(3);
+  });
+
   it('says so when a preview came back with nothing to clean', () => {
     render(
       <CleanupPanel
