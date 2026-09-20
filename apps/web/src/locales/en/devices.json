@@ -254,6 +254,7 @@
     "deploySoftware": "Deploy Software",
     "clearSessions": "Clear Sessions",
     "changeSite": "Change Site",
+    "moveOrg": "Move to Organization",
     "exitMaintenance": "Exit Maintenance",
     "enterMaintenance": "Enter Maintenance",
     "decommission": "Remove",
@@ -577,6 +578,7 @@
   },
   "deviceDetailPage": {
     "failedToFetchDevice": "Failed to fetch device",
+    "movedToOrg": "{{hostname}} moved to {{orgName}}",
     "online": "online",
     "offline": "offline",
     "rebootToSafeMode": "Reboot to Safe Mode",
