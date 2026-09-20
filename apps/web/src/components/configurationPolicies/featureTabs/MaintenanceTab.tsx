@@ -5,7 +5,7 @@ import {
   MAINTENANCE_DATETIME_TIME_PATTERN,
   MAINTENANCE_EXPLICIT_UTC_OFFSET_PATTERN,
   MAINTENANCE_TIME_OF_DAY_PATTERN,
-} from "@breeze/shared/validators";
+} from "@breeze/shared";
 import { FEATURE_META } from "./types";
 import { useFeatureLink } from "./useFeatureLink";
 import FeatureTabShell from "./FeatureTabShell";
