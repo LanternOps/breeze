@@ -206,6 +206,44 @@ describe('network_check compiles to a managed network_monitors row (#5291 W04)',
     expect(buildCompiledNetworkMonitor(makeDef({ enabled: false } as never)).isActive).toBe(false);
   });
 
+  /**
+   * #6352: `buildMonitorCommand` (`services/monitorCommands.ts`) spreads
+   * `network_monitors.config` verbatim into the agent command payload — no
+   * translation layer exists there. So every key the compiler writes into
+   * `config` for a given `checkType` MUST already be the exact key the
+   * agent's handler for that check type reads
+   * (`agent/internal/heartbeat/handlers_monitor.go`), even though the kind's
+   * own condition schema (`packages/shared/src/validators/monitors.ts`,
+   * `network_check`) uses a different name (`expectStatus`) for it. This
+   * table pins that contract per checkType so a future compiled field can't
+   * silently reintroduce the same mismatch.
+   */
+  it.each([
+    {
+      checkType: 'tcp_port' as const,
+      condition: { checkType: 'tcp_port', target: '10.0.0.1', port: 8080, pollingIntervalSeconds: 60, timeoutSeconds: 5, consecutiveFailures: 2 },
+      expectedConfig: { port: 8080 }, // agent: tools.GetPayloadInt(payload, "port", 443)
+    },
+    {
+      checkType: 'http_check' as const,
+      condition: { checkType: 'http_check', target: 'https://example.com', expectStatus: 301, pollingIntervalSeconds: 60, timeoutSeconds: 5, consecutiveFailures: 2 },
+      expectedConfig: { expectedStatus: 301 }, // agent: tools.GetPayloadInt(payload, "expectedStatus", 200)
+    },
+    {
+      checkType: 'icmp_ping' as const,
+      condition: { checkType: 'icmp_ping', target: '10.0.0.2', pollingIntervalSeconds: 60, timeoutSeconds: 5, consecutiveFailures: 2 },
+      expectedConfig: {},
+    },
+    {
+      checkType: 'dns_check' as const,
+      condition: { checkType: 'dns_check', target: 'example.com', pollingIntervalSeconds: 60, timeoutSeconds: 5, consecutiveFailures: 2 },
+      expectedConfig: {},
+    },
+  ])('compiles $checkType config keys to the agent payload keys it reads', ({ condition, expectedConfig }) => {
+    const row = buildCompiledNetworkMonitor(makeDef({ condition } as never));
+    expect(row.config).toEqual(expectedConfig);
+  });
+
   it('INSERTS the managed row on a first compile', async () => {
     const tx = makeTx();
     await compileMonitorInTx(tx, makeDef());
