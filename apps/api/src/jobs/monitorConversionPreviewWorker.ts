@@ -1,6 +1,7 @@
 import { Worker, type Queue } from 'bullmq';
 import { db, withDbAccessContext } from '../db';
 import { createInstrumentedQueue } from '../services/bullmqQueue';
+import { attachWorkerObservability } from './workerObservability';
 import { getBullMQConnection, getRedis } from '../services/redis';
 import { buildPolicyConversionPreview, ConversionError } from '../services/monitors/conversion/convert';
 import {
@@ -25,7 +26,7 @@ export function getMonitorConversionPreviewQueue(): Queue {
 }
 
 export function createMonitorConversionPreviewWorker(): Worker<ConversionPreviewJobData> {
-  return new Worker<ConversionPreviewJobData>(MONITOR_CONVERSION_PREVIEW_QUEUE, async (job) => {
+  const worker = new Worker<ConversionPreviewJobData>(MONITOR_CONVERSION_PREVIEW_QUEUE, async (job) => {
     const data = job.data;
     const { policyId, scopeHash, sourcesHash } = data;
     const key = previewJobKey(policyId, scopeHash, sourcesHash);
@@ -59,6 +60,8 @@ export function createMonitorConversionPreviewWorker(): Worker<ConversionPreview
       throw error;
     }
   }, { connection: getBullMQConnection(), concurrency: 2, lockDuration: 600_000 });
+  attachWorkerObservability(worker, 'monitorConversionPreviewWorker');
+  return worker;
 }
 
 let activePreviewWorker: Worker<ConversionPreviewJobData> | null = null;

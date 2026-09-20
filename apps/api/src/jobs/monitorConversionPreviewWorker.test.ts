@@ -26,6 +26,9 @@ vi.mock('bullmq', () => ({
   Queue: class { add = mocks.add; close = mocks.queueClose; },
   Worker: class {
     close = mocks.workerClose;
+    // attachWorkerObservability subscribes to lifecycle events on every
+    // constructed Worker (workerReadinessCoverage.test.ts enforces it).
+    on = vi.fn().mockReturnThis();
     constructor(name: string, processor: typeof mocks.processor, options: unknown) {
       mocks.processor = processor;
       mocks.workerConstruct(name, options);
