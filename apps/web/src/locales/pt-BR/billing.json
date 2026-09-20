@@ -2139,6 +2139,7 @@
     "saveSuccess": "Configurações de cobrança da organização salvas",
     "tax": {
       "partnerDefault": "Padrão do parceiro",
+      "partnerDefaultWithValue": "{{pct}}% (padrão do parceiro)",
       "taxExempt": "Isento de impostos",
       "taxId": "ID fiscal",
       "taxRate": "Alíquota de imposto (%)",
@@ -2211,7 +2212,8 @@
   "partnerBillingSettingsTabs": {
     "defaults": "Padrões",
     "documents": "Documentos",
-    "connections": "Conexões"
+    "connections": "Conexões",
+    "rates": "Tarifas"
   },
   "billingConnectionsTab": {
     "accounting": {
@@ -2225,5 +2227,59 @@
       "catalogCta": "Abrir catálogo de produtos →",
       "distributorsCta": "Abrir distribuidores →"
     }
+  },
+  "orgBillingProfile": {
+    "label": "Perfil de faturamento",
+    "inherit": "{{name}} (padrão do parceiro)",
+    "noProfile": "Nenhum perfil de faturamento",
+    "unavailable": "Perfil atribuído indisponível",
+    "resolved": "Tarifas de {{name}}",
+    "allOtherWork": "Todos os outros trabalhos",
+    "billable": "Faturável a {{rate}}/h",
+    "included": "Incluído",
+    "nonBillable": "Não faturável",
+    "noRate": "Faturável — tarifa não configurada",
+    "minimum": "{{outcome}} · mínimo de {{minutes}} min",
+    "rounding": "Arredondar para {{minutes}} minutos",
+    "archivedWorkType": "Tipo de trabalho arquivado",
+    "mismatch": "O perfil de faturamento atribuído está inativo ou usa outra moeda. O perfil padrão do parceiro na moeda correspondente será aplicado.",
+    "currencyWarning": "O perfil de faturamento atribuído usa {{currency}}. Após esta alteração, o perfil padrão do parceiro na moeda correspondente será aplicado.",
+    "loadError": "Não foi possível carregar os perfis de faturamento.",
+    "saveError": "Não foi possível salvar o perfil de faturamento.",
+    "partialSave": "O perfil de faturamento foi salvo, mas as outras configurações de faturamento não. Salve novamente para concluir."
+  },
+  "rates": {
+    "title": "Tarifas",
+    "description": "Defina tarifas de mão de obra por perfil de faturamento e tipo de trabalho. As alterações se aplicam aos novos registros de tempo.",
+    "create": "Adicionar perfil de faturamento",
+    "loadError": "Não foi possível carregar os perfis de faturamento. Tente novamente.",
+    "saveError": "Não foi possível salvar o perfil de faturamento.",
+    "saved": "Perfil de faturamento salvo.",
+    "empty": "Adicione um perfil de faturamento para configurar as tarifas de mão de obra.",
+    "profile": "Perfil de faturamento",
+    "allOtherWork": "Todos os outros trabalhos",
+    "actions": "Ações",
+    "default": "Padrão",
+    "clone": "Duplicar perfil de faturamento",
+    "setDefault": "Definir como padrão",
+    "archive": "Arquivar",
+    "usageUnavailable": "O uso por organizações não está disponível.",
+    "edit": "Editar perfil de faturamento",
+    "name": "Nome",
+    "currency": "Moeda",
+    "rounding": "Arredondamento (minutos)",
+    "notes": "Notas",
+    "coverage": "Resultado do faturamento",
+    "hourlyRate": "Tarifa por hora",
+    "minimum": "Mínimo (minutos)",
+    "billable": "Faturável",
+    "included": "Incluído",
+    "nonBillable": "Não faturável",
+    "noRate": "Faturável · sem tarifa definida",
+    "billableAt": "Faturável a {{rate}}/h",
+    "minimumSummary": "Mínimo de {{minutes}} min",
+    "roundingSummary": "Arredondar para {{minutes}} min",
+    "inherits": "Usa Todos os outros trabalhos",
+    "currencyHelp": "Não é possível alterar a moeda de um perfil padrão ou com tarifas. Deixe o arredondamento vazio para não arredondar."
   }
 }

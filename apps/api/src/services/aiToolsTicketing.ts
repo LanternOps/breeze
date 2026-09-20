@@ -47,7 +47,9 @@ import {
 import { findStatusByName, listActiveStatusNames } from './ticketConfigService';
 import { TicketMoveCurrencyBlockedError } from './ticketMoveCurrencyGuard';
 import { getUserPermissions, hasPermission, PERMISSIONS } from './permissions';
+import { canManageTimeEntryBilling } from './timeEntryBillingPermission';
 import { listChecklist } from './ticketChecklistService';
+import { listWorkTypes } from './workTypeService';
 
 type ParseResult<T> = { value: T } | { error: string };
 
@@ -126,15 +128,47 @@ function serviceErrorToJson(err: unknown): string | null {
   return null;
 }
 
-function timeEntryActorFrom(auth: AuthContext) {
+async function timeEntryActorFrom(auth: AuthContext) {
+  const userBacked = auth.principal?.kind === 'user_session' || auth.principal?.kind === 'oauth_grant';
+  const permissions = userBacked && !auth.user.isPlatformAdmin ? await getUserPermissions(auth.user.id, {
+    partnerId: auth.partnerId ?? undefined,
+    orgId: auth.orgId ?? undefined,
+    scope: auth.scope,
+  }) : null;
   return {
     userId: auth.user.id,
     name: auth.user.name,
     partnerId: auth.partnerId,
     accessibleOrgIds: auth.accessibleOrgIds,
     // AI tools always operate on the calling user's own entries — never admin-manage others'.
-    manageAll: false as const
+    manageAll: false as const,
+    manageBilling: canManageTimeEntryBilling(auth, permissions),
   };
+}
+
+/**
+ * Preserve undefined on omission so the service applies the category default.
+ *
+ * A well-formed UUID is NOT trusted. It used to short-circuit the lookup, but a
+ * model hallucinates syntactically valid ids as readily as names, and an id the
+ * partner does not own reached the composite FK `(work_type_id, partner_id)`
+ * unchecked -- a 23503 raised inside the request transaction, which aborts it,
+ * so this function's own caller could only surface a raw 500. Both an id and a
+ * name are now matched against the partner's ACTIVE list and a miss returns the
+ * same enumerated refusal, which is also what steers the model to a real value.
+ */
+async function resolveWorkTypeId(raw: string | undefined, partnerId: string): Promise<string | undefined> {
+  if (!raw) return undefined;
+  const active = await listWorkTypes(partnerId, { includeInactive: false });
+  const needle = raw.trim().toLowerCase();
+  const match = active.find((w) => w.id.toLowerCase() === needle || w.name.toLowerCase() === needle);
+  if (!match) {
+    throw new TimeEntryServiceError(
+      `Unknown work type "${raw}". Valid work types: ${active.map((w) => w.name).join(', ') || '(none configured)'}`,
+      400,
+    );
+  }
+  return match.id;
 }
 
 /**
@@ -306,6 +340,8 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
   aiTools.set('manage_tickets', {
     tier: 1 as AiToolTier,
     deviceArgs: ['deviceId'],
+    domain: 'tickets',
+    searchHint: 'tickets: list, get, create, update, assign, comment, link alerts or devices, log time, start/stop timer',
     definition: {
       name: 'manage_tickets',
       description:
@@ -313,6 +349,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
         'Use action "list" to search, "get" for full detail, "create" to open a new ticket, ' +
         '"comment" to add a reply or internal note, "assign" to set the assignee, ' +
         '"update_status" to move the lifecycle (resolving requires resolutionNote), ' +
+        '"list_work_types" to list active work types (id and name), ' +
         '"log_time_entry" to record a completed time block (requires startedAt + endedAt), ' +
         '"start_timer" to start a running timer (auto-stops any existing timer), ' +
         '"stop_timer" to stop the currently running timer, ' +
@@ -330,6 +367,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
               'comment',
               'assign',
               'update_status',
+              'list_work_types',
               'log_time_entry',
               'start_timer',
               'stop_timer',
@@ -442,9 +480,16 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
             type: 'boolean',
             description: 'Whether this time is billable to the customer (log_time_entry / stop_timer; defaults from ticket category)'
           },
+          workType: {
+            type: 'string',
+            description:
+              'Work type for log_time_entry / start_timer — the NAME (e.g. "On-site", "Remote", "After-hours") or its id. ' +
+              'Says WHAT the work was. Omit it to let the ticket category default apply. ' +
+              'Use list_work_types to see the options. Cannot be changed at stop_timer; edit the time entry instead.',
+          },
           hourlyRate: {
             type: 'number',
-            description: 'Override hourly rate in the ticket organization\'s currency (log_time_entry; defaults from org/category settings only when their rate currency matches the org)'
+            description: 'Override hourly rate in the ticket organization\'s currency (log_time_entry; defaults from the resolved billing profile; overrides require time_entries:manage_billing)'
           }
         },
         required: ['action']
@@ -980,6 +1025,18 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
         }
       }
 
+      if (action === 'list_work_types' ||
+          ((action === 'log_time_entry' || action === 'start_timer') && input.workType !== undefined)) {
+        if (auth.scope !== 'partner' || !auth.partnerId) {
+          return JSON.stringify({ error: 'Work types require partner scope' });
+        }
+      }
+
+      if (action === 'list_work_types') {
+        const rows = await listWorkTypes(auth.partnerId!, { includeInactive: false });
+        return JSON.stringify({ workTypes: rows.map(({ id, name }) => ({ id, name })) });
+      }
+
       // ── log_time_entry ────────────────────────────────────────────────────
       if (action === 'log_time_entry') {
         // #4177 (W04): an agent may PROPOSE a time entry (an action_intents
@@ -1009,6 +1066,10 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
         try {
           const entry = await createTimeEntry(
             {
+              workTypeId: await resolveWorkTypeId(
+                typeof input.workType === 'string' ? input.workType : undefined,
+                auth.partnerId!,
+              ),
               ticketId: input.ticketId ? String(input.ticketId) : undefined,
               startedAt: new Date(String(input.startedAt)),
               endedAt: new Date(String(input.endedAt)),
@@ -1016,7 +1077,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
               isBillable: typeof input.isBillable === 'boolean' ? input.isBillable : undefined,
               hourlyRate: typeof input.hourlyRate === 'number' ? input.hourlyRate : undefined
             },
-            timeEntryActorFrom(auth),
+            await timeEntryActorFrom(auth),
             // Provenance: a released AI proposal is `ai_suggested` (#4177) so
             // invoiceAssembly / time-saved reporting can tell it apart; a
             // human's own tool call stays the column default.
@@ -1041,10 +1102,14 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
         try {
           const entry = await startTimer(
             {
+              workTypeId: await resolveWorkTypeId(
+                typeof input.workType === 'string' ? input.workType : undefined,
+                auth.partnerId!,
+              ),
               ticketId: input.ticketId ? String(input.ticketId) : undefined,
               description: input.description ? String(input.description) : undefined
             },
-            timeEntryActorFrom(auth)
+            await timeEntryActorFrom(auth)
           );
           return JSON.stringify({ timeEntry: entry, currencyCode: entryCurrency(entry) });
         } catch (err) {
@@ -1057,13 +1122,20 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
 
       // ── stop_timer ────────────────────────────────────────────────────────
       if (action === 'stop_timer') {
+        // Spec §3.7: work types are stamped at start; stopping does not take
+        // the ticket lock needed for a work-type edit and its pricing changes.
+        if (input.workType !== undefined) {
+          return JSON.stringify({
+            error: 'Work type is set at timer start. Stop without workType, then edit the time entry to change it.',
+          });
+        }
         try {
           const entry = await stopTimer(
             {
               description: input.description ? String(input.description) : undefined,
               isBillable: typeof input.isBillable === 'boolean' ? input.isBillable : undefined
             },
-            timeEntryActorFrom(auth)
+            await timeEntryActorFrom(auth)
           );
           return JSON.stringify({ timeEntry: entry, currencyCode: entryCurrency(entry) });
         } catch (err) {

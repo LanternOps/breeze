@@ -41,16 +41,17 @@ vi.mock('../db', () => ({
 // FINAL result content meaningful.
 vi.mock('./aiAgent', () => ({ waitForPlanApproval: vi.fn(() => Promise.resolve(true)) }));
 
-vi.mock('./aiToolsM365', () => ({
+vi.mock('./aiToolsM365', async (importOriginal) => ({
+  ...await importOriginal<typeof import('./aiToolsM365')>(),
   m365LookupUserHandler: vi.fn(),
   m365RecentSigninsHandler: vi.fn(),
   m365ListGroupMembershipsHandler: vi.fn(),
   m365DisableUserHandler: vi.fn(),
   m365ResetPasswordHandler: vi.fn(),
-  registerM365Tools: vi.fn(),
 }));
 
-vi.mock('./aiToolsGoogle', () => ({
+vi.mock('./aiToolsGoogle', async (importOriginal) => ({
+  ...await importOriginal<typeof import('./aiToolsGoogle')>(),
   googleLookupUserHandler: vi.fn(),
   googleResetPasswordHandler: vi.fn(),
   googleSuspendUserHandler: vi.fn(),

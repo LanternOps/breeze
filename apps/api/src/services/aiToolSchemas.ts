@@ -19,7 +19,7 @@ import {
   peripheralPolicyActionEnum,
   peripheralPolicyTargetTypeEnum,
   peripheralEventTypeEnum
-} from '../db/schema';
+} from '../db/schema/peripheralControl';
 import { CONFIG_FEATURE_TYPES } from './configFeatureTypes';
 import { CONTACT_ROLES } from './contacts/types';
 
@@ -95,6 +95,18 @@ const cleanupPath = z.string().max(4096).refine(
   (path) => !path.includes('..'),
   { message: 'Path traversal (..) not allowed' }
 );
+
+export const deliveryToolShape = {
+  action: z.enum(['resolve','list_routing','create_routing','update_routing','delete_routing','set_default','list_escalation','create_escalation','update_escalation','delete_escalation']),
+  orgId: uuid.optional(), ownerScope: z.enum(['organization', 'partner']).optional(), id: uuid.optional(),
+  severity: z.enum(['critical','high','medium','low','info']).optional(), kind: monitorKindSchema.optional(),
+  siteId: uuid.optional(), monitorId: uuid.optional(), data: z.record(z.string(), z.unknown()).optional(),
+};
+export const deliveryToolSchema = z.object(deliveryToolShape).strict().superRefine((v, ctx) => {
+  if (v.action === 'resolve' && (!v.severity || !v.orgId)) ctx.addIssue({ code: 'custom', message: 'orgId and severity are required for resolve' });
+  if (/^(update|delete)_/.test(v.action) && !v.id) ctx.addIssue({ code: 'custom', path: ['id'], message: 'id is required for update/delete' });
+  if ((/^(create|update)_/.test(v.action) || v.action === 'set_default') && !v.data) ctx.addIssue({ code: 'custom', path: ['data'], message: 'data is required for writes' });
+});
 
 // Tool schemas
 export const toolInputSchemas: Record<string, z.ZodType> = {
@@ -214,6 +226,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
       'comment',
       'assign',
       'update_status',
+      'list_work_types',
       'log_time_entry',
       'start_timer',
       'stop_timer',
@@ -261,6 +274,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     startedAt: z.string().datetime().optional(),
     endedAt: z.string().datetime().optional(),
     isBillable: z.boolean().optional(),
+    workType: z.string().optional(),
     // Interpreted in the ticket org's currency (spec §9); the entry snapshots that currency.
     hourlyRate: z.number().nonnegative().optional(),
     fields: z.object({
@@ -998,8 +1012,15 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   disk_cleanup: z.object({
     deviceId: uuid,
     action: z.enum(['preview', 'execute']),
+    // The volume to preview/clean. Normalised server-side; defaults to the
+    // device's OS root. `safePath` (not `cleanupPath`) so the blocked-prefix
+    // list applies — a scan ROOT is never /proc, /sys or /dev.
+    path: safePath.optional(),
     categories: z.array(z.enum(['temp_files', 'browser_cache', 'package_cache', 'trash'])).max(10).optional(),
     paths: z.array(cleanupPath).min(1).max(200).optional(),
+    // Execute needs an explicit id or the run remembered by this tool's preview.
+    // The handler enforces the latter because it is process-local state.
+    cleanupRunId: uuid.optional(),
     maxCandidates: z.number().int().min(1).max(200).optional(),
   }).refine(
     (data) => data.action === 'preview' || (data.action === 'execute' && Array.isArray(data.paths) && data.paths.length > 0),
@@ -1576,6 +1597,8 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   test_webhook: z.object({
     webhookId: uuid,
   }),
+
+  manage_delivery: deliveryToolSchema,
 
   manage_notification_channels: z.object({
     action: z.enum(['list', 'test', 'create', 'update', 'delete']),

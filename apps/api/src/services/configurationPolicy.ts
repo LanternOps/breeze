@@ -36,7 +36,7 @@ import {
   sensitiveDataPolicies,
   peripheralPolicies,
 } from '../db/schema';
-import { and, eq, desc, or, isNull, sql, inArray, asc, getTableColumns, SQL } from 'drizzle-orm';
+import { and, eq, desc, or, isNull, isNotNull, sql, inArray, asc, getTableColumns, SQL } from 'drizzle-orm';
 import { canManagePartnerWidePolicies, PartnerWideWriteDeniedError } from './partnerWideAccess';
 import { buildRoleOsFilterConditions } from './featureConfigResolver';
 import {
@@ -55,6 +55,7 @@ import {
   eventLogInlineSettingsSchema,
   monitoringInlineSettingsSchema,
   monitorsInlineSettingsSchema,
+  monitorsInheritanceSchema,
   onedriveHelperInlineSettingsSchema,
   remoteAccessInlineSettingsSchema as remoteAccessCapabilitySettingsSchema,
   warrantyInlineSettingsSchema,
@@ -286,7 +287,7 @@ export async function createConfigPolicy(
     status?: 'active' | 'inactive' | 'archived';
     parentPolicyId?: string;
   },
-  userId: string,
+  userId: string | null,
   executor: DbExecutor = db
 ) {
   const values = {
@@ -909,6 +910,9 @@ async function decomposeInlineSettings(
       const [settingsRow] = await tx.insert(configPolicyMonitoringSettings).values({
         featureLinkId: linkId,
         checkIntervalSeconds: parsed.checkIntervalSeconds,
+      }).onConflictDoUpdate({
+        target: configPolicyMonitoringSettings.featureLinkId,
+        set: { checkIntervalSeconds: parsed.checkIntervalSeconds, updatedAt: new Date() },
       }).returning();
       if (settingsRow && parsed.watches.length > 0) {
         const VALID_SEVERITIES = ['critical', 'high', 'medium', 'low', 'info'] as const;
@@ -1196,10 +1200,10 @@ async function deleteNormalizedRows(
 ): Promise<void> {
   switch (featureType) {
     case 'alert_rule':
-      await tx.delete(configPolicyAlertRules).where(eq(configPolicyAlertRules.featureLinkId, linkId));
+      await tx.delete(configPolicyAlertRules).where(and(eq(configPolicyAlertRules.featureLinkId, linkId), isNull(configPolicyAlertRules.retiredAt)));
       break;
     case 'automation':
-      await tx.delete(configPolicyAutomations).where(eq(configPolicyAutomations.featureLinkId, linkId));
+      await tx.delete(configPolicyAutomations).where(and(eq(configPolicyAutomations.featureLinkId, linkId), isNull(configPolicyAutomations.retiredAt)));
       break;
     case 'compliance':
       await tx.delete(configPolicyComplianceRules).where(eq(configPolicyComplianceRules.featureLinkId, linkId));
@@ -1217,7 +1221,8 @@ async function deleteNormalizedRows(
       await tx.delete(configPolicySensitiveDataSettings).where(eq(configPolicySensitiveDataSettings.featureLinkId, linkId));
       break;
     case 'monitoring': {
-      // Watches cascade-delete from settings, so just delete settings.
+      // Keep the settings row stable: deleting it would cascade to retired
+      // watches and destroy their conversion history. Decompose upserts it.
       //
       // Deliberately does NOT touch config_policy_alert_rules. The monitoring
       // decompose path used to write alert rules keyed by the MONITORING link
@@ -1228,7 +1233,15 @@ async function deleteNormalizedRows(
       // the next save of an unrelated Monitoring setting, with nothing to
       // re-create them. Leaving the rows in place keeps them recoverable by a
       // replay of the migration.
-      await tx.delete(configPolicyMonitoringSettings).where(eq(configPolicyMonitoringSettings.featureLinkId, linkId));
+      await tx.delete(configPolicyMonitoringWatches).where(and(
+        inArray(
+          configPolicyMonitoringWatches.settingsId,
+          tx.select({ id: configPolicyMonitoringSettings.id })
+            .from(configPolicyMonitoringSettings)
+            .where(eq(configPolicyMonitoringSettings.featureLinkId, linkId)),
+        ),
+        isNull(configPolicyMonitoringWatches.retiredAt),
+      ));
       break;
     }
     case 'backup':
@@ -1272,9 +1285,17 @@ async function assembleInlineSettings(
       const rows = await executor
         .select()
         .from(configPolicyAlertRules)
-        .where(eq(configPolicyAlertRules.featureLinkId, linkId))
+        .where(and(eq(configPolicyAlertRules.featureLinkId, linkId), isNull(configPolicyAlertRules.retiredAt)))
         .orderBy(asc(configPolicyAlertRules.sortOrder));
-      if (rows.length === 0) return null;
+      if (rows.length === 0) {
+        const [retired] = await executor.select({ id: configPolicyAlertRules.id })
+          .from(configPolicyAlertRules)
+          .where(and(eq(configPolicyAlertRules.featureLinkId, linkId), isNotNull(configPolicyAlertRules.retiredAt)))
+          .limit(1);
+        // Retired history makes an empty live set authoritative; links awaiting
+        // normalization must still fall back to their pre-backfill JSON mirror.
+        return retired ? { items: [] } : null;
+      }
       return {
         items: rows.map((r) => ({
           name: r.name,
@@ -1297,9 +1318,17 @@ async function assembleInlineSettings(
       const rows = await executor
         .select()
         .from(configPolicyAutomations)
-        .where(eq(configPolicyAutomations.featureLinkId, linkId))
+        .where(and(eq(configPolicyAutomations.featureLinkId, linkId), isNull(configPolicyAutomations.retiredAt)))
         .orderBy(asc(configPolicyAutomations.sortOrder));
-      if (rows.length === 0) return null;
+      if (rows.length === 0) {
+        const [retired] = await executor.select({ id: configPolicyAutomations.id })
+          .from(configPolicyAutomations)
+          .where(and(eq(configPolicyAutomations.featureLinkId, linkId), isNotNull(configPolicyAutomations.retiredAt)))
+          .limit(1);
+        // Retired history makes an empty live set authoritative; links awaiting
+        // normalization must still fall back to their pre-backfill JSON mirror.
+        return retired ? { items: [] } : null;
+      }
       return {
         items: rows.map((r) => ({
           name: r.name,
@@ -1437,7 +1466,7 @@ async function assembleInlineSettings(
       const watches = await executor
         .select()
         .from(configPolicyMonitoringWatches)
-        .where(eq(configPolicyMonitoringWatches.settingsId, settingsRow.id))
+        .where(and(eq(configPolicyMonitoringWatches.settingsId, settingsRow.id), isNull(configPolicyMonitoringWatches.retiredAt)))
         .orderBy(asc(configPolicyMonitoringWatches.sortOrder));
 
       return {
@@ -1501,7 +1530,18 @@ async function assembleInlineSettings(
         .from(configPolicyMonitors)
         .where(eq(configPolicyMonitors.featureLinkId, linkId))
         .orderBy(asc(configPolicyMonitors.sortOrder));
-      if (rows.length === 0) return null;
+      // `inheritance` (W05c1) is not a per-attachment fact, so it has no
+      // normalized column: it lives on the link's JSON and is re-attached here
+      // so the read path never drops it once attachments exist.
+      const [link] = await executor
+        .select({ inlineSettings: configPolicyFeatureLinks.inlineSettings })
+        .from(configPolicyFeatureLinks)
+        .where(eq(configPolicyFeatureLinks.id, linkId))
+        .limit(1);
+      const inheritance = monitorsInheritanceSchema.catch('cumulative').parse(
+        (link?.inlineSettings as { inheritance?: unknown } | null)?.inheritance,
+      );
+      if (rows.length === 0 && inheritance === 'cumulative') return null;
       return {
         items: rows.map((r) => ({
           monitorId: r.monitorId,
@@ -1509,6 +1549,7 @@ async function assembleInlineSettings(
           overrides: r.overrides,
           sortOrder: r.sortOrder,
         })),
+        inheritance,
       };
     }
 
@@ -1885,17 +1926,45 @@ export async function updateFeatureLink(
   });
 }
 
+/** A feature link is the permanent owner of converted source history. */
+async function featureLinkHasRetiredHistory(linkId: string, executor: DbExecutor): Promise<boolean> {
+  const [rule] = await executor.select({ id: configPolicyAlertRules.id })
+    .from(configPolicyAlertRules)
+    .where(and(eq(configPolicyAlertRules.featureLinkId, linkId), isNotNull(configPolicyAlertRules.retiredAt)))
+    .limit(1);
+  if (rule) return true;
+  const [automation] = await executor.select({ id: configPolicyAutomations.id })
+    .from(configPolicyAutomations)
+    .where(and(eq(configPolicyAutomations.featureLinkId, linkId), isNotNull(configPolicyAutomations.retiredAt)))
+    .limit(1);
+  if (automation) return true;
+  const [watch] = await executor.select({ id: configPolicyMonitoringWatches.id })
+    .from(configPolicyMonitoringWatches)
+    .innerJoin(configPolicyMonitoringSettings, eq(configPolicyMonitoringWatches.settingsId, configPolicyMonitoringSettings.id))
+    .where(and(eq(configPolicyMonitoringSettings.featureLinkId, linkId), isNotNull(configPolicyMonitoringWatches.retiredAt)))
+    .limit(1);
+  return !!watch;
+}
+
 export async function removeFeatureLink(linkId: string, configPolicyId: string) {
-  const [deleted] = await db
-    .delete(configPolicyFeatureLinks)
-    .where(
-      and(
-        eq(configPolicyFeatureLinks.id, linkId),
-        eq(configPolicyFeatureLinks.configPolicyId, configPolicyId)
-      )
-    )
-    .returning();
-  return deleted ?? null;
+  return db.transaction(async (tx) => {
+    const predicate = and(eq(configPolicyFeatureLinks.id, linkId), eq(configPolicyFeatureLinks.configPolicyId, configPolicyId));
+    const [existing] = await tx.select().from(configPolicyFeatureLinks).where(predicate).for('update');
+    if (!existing) return null;
+
+    // D11/D29: deleting the owner would cascade away retired source rows and
+    // leave conversion provenance dangling. Keep it as an empty live feature.
+    if (await featureLinkHasRetiredHistory(linkId, tx)) {
+      await deleteNormalizedRows(linkId, existing.featureType as ConfigFeatureType, tx);
+      const inlineSettings = existing.featureType === 'monitoring'
+        ? { ...(existing.inlineSettings as Record<string, unknown> ?? {}), watches: [] }
+        : { items: [] };
+      await tx.update(configPolicyFeatureLinks).set({ inlineSettings, updatedAt: new Date() }).where(predicate);
+      return { ...existing, inlineSettings, kept: true as const, reason: 'retired_history' as const };
+    }
+    const [deleted] = await tx.delete(configPolicyFeatureLinks).where(predicate).returning();
+    return deleted ? { ...deleted, kept: false as const } : null;
+  });
 }
 
 export async function listFeatureLinks(configPolicyId: string, executor: DbExecutor = db) {
@@ -1965,7 +2034,7 @@ export async function assignPolicy(
   level: ConfigAssignmentLevel,
   targetId: string,
   priority: number = 0,
-  userId: string,
+  userId: string | null,
   roleFilter?: string[],
   osFilter?: string[],
   executor: DbExecutor = db

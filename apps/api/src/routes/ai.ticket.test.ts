@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
+import { TimeEntryServiceError } from '../services/timeEntryService';
 
 const authHarness = vi.hoisted(() => {
   const partnerAuth = {
@@ -187,9 +188,10 @@ vi.mock('../services/ticketService', () => ({
   },
 }));
 
-vi.mock('../services/timeEntryService', () => ({
-  createTimeEntry: routeMocks.createTimeEntryMock,
-}));
+vi.mock('../services/timeEntryService', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../services/timeEntryService')>();
+  return { createTimeEntry: routeMocks.createTimeEntryMock, TimeEntryServiceError: actual.TimeEntryServiceError };
+});
 
 vi.mock('./tickets/siteScope', () => ({
   deviceInSiteScope: routeMocks.deviceInSiteScopeMock,
@@ -608,6 +610,26 @@ describe('POST /ai/sessions/:id/ticket', () => {
     expect(json).toMatchObject({ resolved: false, timeLogged: true });
   });
 
+  it('omits the billing override when the client leaves it to the card', async () => {
+    const { billable: _billable, ...payload } = body;
+    const res = await postTicket('s1', partnerAuth, payload);
+    expect(res.status).toBe(201);
+    expect(createTimeEntryMock).toHaveBeenCalledTimes(1);
+    expect(createTimeEntryMock.mock.calls[0]![0]).not.toHaveProperty('isBillable');
+  });
+
+  it('returns a billing-gate timeLogError while retaining the created ticket', async () => {
+    createTimeEntryMock.mockRejectedValueOnce(new TimeEntryServiceError(
+      'Changing billing terms requires manage billing permission', 403, 'MANAGE_BILLING_REQUIRED',
+    ));
+    const res = await postTicket('s1');
+    expect(res.status).toBe(201);
+    expect(await res.json()).toMatchObject({
+      data: { id: 't1' }, timeLogged: false,
+      timeLogError: 'Changing billing terms requires manage billing permission',
+    });
+  });
+
   it('does not log a time entry when timeMinutes is zero', async () => {
     const res = await postTicket('s1', partnerAuth, { ...body, timeMinutes: 0 });
 
@@ -646,6 +668,7 @@ describe('POST /ai/sessions/:id/ticket', () => {
     expect(await res.json()).toMatchObject({
       data: { id: 't1', ticketNumber: 'ORG-1' },
       timeLogged: false,
+      timeLogError: 'The time entry could not be logged. Please log it on the ticket.',
     });
   });
 

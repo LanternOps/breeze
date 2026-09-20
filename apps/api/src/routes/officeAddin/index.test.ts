@@ -67,7 +67,7 @@ beforeEach(() => {
       user: { email: 'tech@partner.example', name: 'Tech Person' },
       accessibleOrgIds: null,
       partnerOrgAccess: 'all',
-      permissions: {},
+      permissions: { permissions: [] },
       canAccessOrg: () => true,
       canAccessSite: () => true,
     });

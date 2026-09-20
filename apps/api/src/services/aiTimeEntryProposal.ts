@@ -28,10 +28,9 @@
  *    retry can never double-mint.
  *
  * Billable and rate come from `getTicketTimeEntryDefaults`, the single
- * existing resolver (`org_ticket_settings.default_billable ??
- * ticket_categories.default_billable ?? false`) — never read the category
- * directly here, or an org-level override silently stops applying to AI
- * proposals while it still applies to manual entries.
+ * profile resolver — never read category pricing directly here, or an
+ * assigned profile would stop applying to AI proposals while it still
+ * applies to manual entries.
  *
  * Duration has no existing resolver because nothing in the schema had a
  * duration default before this wave: `ticket_categories.default_time_entry_minutes`
@@ -87,6 +86,7 @@ const DEFAULTS_READ_ACTOR: TimeEntryActor = {
   userId: 'ai-time-entry-proposal:read-only',
   partnerId: null,
   manageAll: false,
+  manageBilling: false,
   accessibleOrgIds: null,
 };
 
@@ -106,7 +106,7 @@ export async function resolveAiTimeEntryDefaults(ticketId: string): Promise<AiTi
   // inside a request transaction whose org context can see the ticket but
   // whose scope may not carry the partner-keyed category row's read branch.
   // Same discipline as timeEntryService's getCategoryDefaults.
-  const joined = await runOutsideDbContext(() =>
+  return runOutsideDbContext(() =>
     withSystemDbAccessContext(async () => {
       const [row] = await db
         .select({ defaultTimeEntryMinutes: ticketCategories.defaultTimeEntryMinutes })
@@ -114,15 +114,16 @@ export async function resolveAiTimeEntryDefaults(ticketId: string): Promise<AiTi
         .leftJoin(ticketCategories, eq(ticketCategories.id, tickets.categoryId))
         .where(eq(tickets.id, ticketId))
         .limit(1);
-      return row ?? null;
+      // Card resolution must share this context: event-bus callers have no
+      // ambient tenant scope and FORCE RLS would otherwise hide every card.
+      const defaults = await getTicketTimeEntryDefaults(ticketId, DEFAULTS_READ_ACTOR);
+      const categoryMinutes = row?.defaultTimeEntryMinutes ?? null;
+      return {
+        durationMinutes: categoryMinutes != null && categoryMinutes > 0 ? categoryMinutes : AI_TIME_ENTRY_DEFAULT_MINUTES,
+        isBillable: defaults.isBillable,
+      };
     }),
   );
-  const defaults = await getTicketTimeEntryDefaults(ticketId, DEFAULTS_READ_ACTOR);
-  const categoryMinutes = joined?.defaultTimeEntryMinutes ?? null;
-  return {
-    durationMinutes: categoryMinutes != null && categoryMinutes > 0 ? categoryMinutes : AI_TIME_ENTRY_DEFAULT_MINUTES,
-    isBillable: defaults.isBillable,
-  };
 }
 
 interface RunLineage {

@@ -1,5 +1,7 @@
 # Network Topology Redesign — Phase 4: Manual Mapping & Edit Mode — Implementation Plan
 
+> **Status: Superseded 2026-09-15 — historical and non-dispatchable.** Do not execute tasks or dispatch workers from this plan. The [intelligent topology specification](../../specs/monitoring/2026-09-15-intelligent-network-topology-design.md) supersedes this plan and the June design. Use the [replacement five-milestone implementation plan](2026-09-15-intelligent-network-topology-INDEX.md), now authored and registered with `register_feature`; its frontmatter links the authoritative feature tracker. The instructions below are retained only as historical context.
+
 > **For agentic workers:** This plan is designed to be executed with the **superpowers:subagent-driven-development** skill — each `### Task N` is a self-contained, independently-verifiable unit (failing test → run-fails → minimal real-code impl → run-passes → commit). Execute tasks in order; do not batch-commit. Every code step contains REAL code, not placeholders.
 
 **Issue:** #1728 — Network Discovery topology redesign

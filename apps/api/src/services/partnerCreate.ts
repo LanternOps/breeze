@@ -1,3 +1,4 @@
+import { ensureDefaultProfile } from './billingProfileService';
 import { and, eq, gt, isNull, or, sql } from 'drizzle-orm';
 import { db } from '../db';
 import {
@@ -102,6 +103,8 @@ export async function createPartner(
     if (!newPartner) {
       throw new Error('Failed to create company');
     }
+
+    await ensureDefaultProfile(newPartner.id, newPartner.currencyCode, tx);
 
     const [adminRole] = await tx
       .insert(roles)

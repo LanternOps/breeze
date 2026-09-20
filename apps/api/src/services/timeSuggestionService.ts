@@ -536,7 +536,7 @@ export async function confirmTimeSuggestion(
       startedAt: input.startedAt,
       endedAt,
       description,
-      isBillable: input.isBillable,
+      ...(input.isBillable !== undefined ? { isBillable: input.isBillable } : {}),
       hourlyRate: input.hourlyRate,
     } as Parameters<typeof createTimeEntry>[0],
     actor,

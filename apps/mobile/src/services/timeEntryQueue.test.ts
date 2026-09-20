@@ -808,6 +808,18 @@ describe('suggestion writes', () => {
     dedupeKey,
   });
 
+  it('parks a billing-denied suggestion visibly and continues later writes', async () => {
+    const denied = await enqueue(confirmWrite('denied'));
+    await enqueue(confirmWrite('next'));
+    const result = await drain(async (write) => {
+      if (write.id === denied.id) throw Object.assign(new Error('Billing permission required'), { status: 403, code: 'MANAGE_BILLING_REQUIRED' });
+    });
+    expect(result.sent).toBe(1);
+    expect(result.needsAttention).toEqual([expect.objectContaining(denied)]);
+    expect(result.remaining).toBe(0);
+    expect(await readNeedsAttention()).toEqual([expect.objectContaining({ code: 'MANAGE_BILLING_REQUIRED', write: expect.objectContaining(denied) })]);
+  });
+
   it('accepts the two new kinds through a cold-start reparse', async () => {
     await enqueue(confirmWrite('suggestion.confirm:remote_session:a'));
     await enqueue({ kind: 'suggestion.dismiss', payload: { signals: [SIG_B] }, dedupeKey: 'suggestion.dismiss:remote_session:b' });

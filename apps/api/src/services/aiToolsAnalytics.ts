@@ -173,6 +173,8 @@ export function registerAnalyticsTools(aiTools: Map<string, AiTool>): void {
   registerTool({
     tier: 1,
     deviceArgs: ['deviceId'],
+    domain: 'monitoring',
+    searchHint: 'SLA compliance, capacity predictions and service level definitions',
     definition: {
       name: 'query_analytics',
       description: 'Query analytics data including SLA compliance, capacity predictions, and SLA definitions.',
@@ -423,6 +425,8 @@ export function registerAnalyticsTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'monitoring',
+    searchHint: 'executive summary of device health, alert trends, patch compliance and SLA statistics',
     definition: {
       name: 'get_executive_summary',
       description: 'Get the latest executive summary with device health, alert trends, patch compliance, and SLA statistics.',

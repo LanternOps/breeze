@@ -129,6 +129,8 @@ export * from './ticketDrafts';
 export * from './ticketChecklists';
 export * from './catalog';
 export * from './timeTracking';
+export * from './workTypes';
+export * from './billingProfiles';
 export * from './invoices';
 export * from './stripePayments';
 export * from './partnerLlmConfigs';
@@ -164,5 +166,12 @@ export * from './agentRollback';
 export * from './offlineTransitionEffects';
 export * from './monitorDefinitions';
 export * from './monitorEpisodes';
+export * from './monitorConversions';
 export * from './toolSources';
+export * from './topology';
+
+export * from "./topologyCollections";
+export * from './topologyOperations';
+
+export * from './topologyTemplates';
 export * from './emailSendingDomains';

@@ -661,6 +661,8 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'patching',
+    searchHint: 'software deployments: list, get, device status, create, start, pause, resume, cancel',
     definition: {
       name: 'manage_deployments',
       description: 'Manage staged software deployments: list, get details, view per-device status, create, start, pause, resume, or cancel deployments.',
@@ -1007,6 +1009,8 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'patching',
+    searchHint: 'missing patches, KB approval, not CVEs: list, compliance, scan, approve, decline, defer, bulk approve, install, rollback',
     deviceArgs: ['deviceIds', 'deviceId'],
     definition: {
       name: 'manage_patches',
@@ -1514,6 +1518,8 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'devices',
+    searchHint: 'device groups: list, get, preview, membership log, create, update, delete, add/remove devices',
     deviceArgs: ['deviceIds'],
     definition: {
       name: 'manage_groups',
@@ -1842,6 +1848,11 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    // Spec's Domains table (2026-09-17-agent-tool-efficiency-and-mcp-modernization-design.md)
+    // lists maintenance windows under `patching`, alongside patches, update
+    // rings and deployments — a patch-cadence construct, not monitoring.
+    domain: 'patching',
+    searchHint: 'maintenance windows: list, get, check active now',
     deviceArgs: ['deviceIds'],
     definition: {
       name: 'manage_maintenance_windows',
@@ -2111,6 +2122,8 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'scripts',
+    searchHint: 'automations: list, get, history, enable, disable, run',
     definition: {
       name: 'manage_automations',
       description: 'Query and operate on automations: list, get details, view run history, enable/disable, or manually trigger a run. To create, update, or delete automations, use manage_policy_feature_link with featureType "automation".',
@@ -2452,6 +2465,8 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'monitoring',
+    searchHint: 'alert rules: list templates, list rules, get rule, test rule, list channels, alert summary',
     definition: {
       name: 'manage_alert_rules',
       description: 'Query alert rules, templates, and notification channels (read-only). Alert rules are managed through configuration policies — use manage_policy_feature_link with featureType "alert_rule" to create or modify alert rules. This tool is for querying only: list_templates to discover available templates, list_rules/get_rule to inspect existing rules, test_rule to check rule state, list_channels for notification channels, alert_summary for overview. Actions: list_templates, list_rules, get_rule, test_rule, list_channels, alert_summary.',
@@ -2677,6 +2692,8 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'admin',
+    searchHint: 'reports: list, generate, data, create, update, delete, history, download',
     definition: {
       name: 'generate_report',
       description: 'Manage reports: list saved definitions, generate on-demand, get report data directly, download a completed report run, create/update/delete report definitions, or view generation history.',
@@ -3156,6 +3173,8 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'monitoring',
+    searchHint: 'service and process monitoring watches: list',
     definition: {
       name: 'manage_service_monitors',
       description: 'Query service and process monitoring watches (read-only). To add or remove monitoring watches, use manage_policy_feature_link with featureType "monitoring" and action "update" to configure watches on a configuration policy.',
@@ -3236,6 +3255,8 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'devices',
+    searchHint: 'fleet hygiene findings, metric anomaly patterns, log correlations and reliability offenders',
     definition: {
       name: 'get_fleet_findings',
       description: 'List fleet hygiene findings: deduplicated, aggregate issues detected across the fleet (metric anomaly patterns, log correlations, reliability offenders). Read-only — use manage_deployments/manage_patches/run_script etc. to act on a finding\'s remediation.',

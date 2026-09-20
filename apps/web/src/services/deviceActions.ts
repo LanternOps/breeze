@@ -586,40 +586,55 @@ export async function fetchLiveSessions(deviceId: string): Promise<LiveSession[]
 }
 
 /**
+ * Typed error for gated device mutations (maintenance entry, org move).
+ * `code` is what dialogs branch on: STEP_UP_REQUIRED reveals the factor step,
+ * MFA_REQUIRED does not (a full MFA sign-in is needed, and a step-up factor
+ * cannot substitute for it). `details` carries structured refusal context
+ * (e.g. the 409 TICKET_MOVE_CURRENCY_BLOCKED guard summary).
+ */
+export class DeviceActionError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code?: string,
+    readonly details?: unknown
+  ) {
+    super(message);
+    this.name = 'DeviceActionError';
+  }
+}
+
+/**
  * Manual maintenance mode (RMM-QA-176 D10). Replaces `toggleMaintenanceMode`,
  * whose `{ enable[, durationHours] }` body the server now rejects: entry takes
  * a required reason and duration, and — when 2FA is enabled — a single-use
  * step-up grant bound to the digest of `{ deviceIds, reason, durationHours }`.
+ *
+ * Kept as an alias so existing imports keep compiling; it IS DeviceActionError.
  */
-export class MaintenanceActionError extends Error {
-  constructor(
-    message: string,
-    readonly status: number,
-    readonly code?: string
-  ) {
-    super(message);
-    this.name = 'MaintenanceActionError';
-  }
-}
+export const MaintenanceActionError = DeviceActionError;
+export type MaintenanceActionError = DeviceActionError;
 
-async function maintenanceRequest(path: string, body: unknown): Promise<any> {
+async function gatedRequest(path: string, body: unknown, fallback: string): Promise<any> {
   const response = await fetchWithAuth(path, {
     method: 'POST',
     body: JSON.stringify(body)
   });
   if (!response.ok) {
     const parsed = await response.json().catch(() => null);
-    // `code` is what the dialog branches on: STEP_UP_REQUIRED reveals the
-    // factor step, MFA_REQUIRED does not (a full MFA sign-in is needed, and a
-    // step-up factor cannot substitute for it).
-    throw new MaintenanceActionError(
-      (parsed as { error?: string } | null)?.error ?? 'Failed to update maintenance mode',
+    throw new DeviceActionError(
+      (parsed as { error?: string } | null)?.error ?? fallback,
       response.status,
-      (parsed as { code?: string } | null)?.code
+      (parsed as { code?: string } | null)?.code,
+      (parsed as { details?: unknown } | null)?.details
     );
   }
   const data = await response.json();
   return data.data ?? data;
+}
+
+async function maintenanceRequest(path: string, body: unknown): Promise<any> {
+  return gatedRequest(path, body, 'Failed to update maintenance mode');
 }
 
 // ---------------------------------------------------------------------------
@@ -805,4 +820,35 @@ export async function bulkEnterMaintenanceMode(body: {
   stepUpGrant?: string;
 }): Promise<BulkMaintenanceResponse> {
   return maintenanceRequest('/devices/bulk/maintenance', body);
+}
+
+// ---------------------------------------------------------------------------
+// Move a device to another organization (spec 2026-09-18 device-move-org D5)
+// ---------------------------------------------------------------------------
+
+export interface MoveDeviceOrgBody {
+  orgId: string;
+  siteId: string;
+  acceptCurrencyMismatch?: boolean;
+  /**
+   * Deliberately optional and omitted on the first submit: the SERVER decides
+   * whether a factor is required (403 STEP_UP_REQUIRED), so a 2FA-off
+   * deployment never prompts and the client can never decide for itself that
+   * it does not need one.
+   */
+  stepUpGrant?: string;
+}
+
+export interface MoveDeviceOrgResult {
+  success: true;
+  device: Record<string, unknown> | null;
+}
+
+/**
+ * Relocates a device (and its tickets) to another organization of the same
+ * partner. The route disconnects the agent after commit, so callers refetch
+ * the device rather than trusting the echoed row.
+ */
+export async function moveDeviceOrg(deviceId: string, body: MoveDeviceOrgBody): Promise<MoveDeviceOrgResult> {
+  return gatedRequest(`/devices/${deviceId}/move-org`, body, 'Failed to move device');
 }

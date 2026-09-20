@@ -6,6 +6,7 @@
  * capability placement and kind presets are authored. Contract test:
  * agentToolCatalog.contract.test.ts.
  */
+import type { AiToolDomain } from '@breeze/shared';
 import type {
   AiAgentKind,
   AgentToolCatalogDto,
@@ -56,6 +57,34 @@ export const AGENT_CAPABILITIES: readonly { id: AgentCapabilityId; tone: 'standa
 ];
 
 /**
+ * Which tool domains (spec 2026-09-17, `AI_TOOL_DOMAINS`) a capability may
+ * contain. The capability is the agent-builder grouping (with `tone`); the
+ * domain is the load/grant grouping. They overlap but are not 1:1, so this
+ * relation is what keeps them from drifting silently: a tool whose domain is
+ * not in its capability's set fails agentToolCatalog.domainRelation.contract.
+ * Widen an entry in the same commit as the tool that needs it, with a reason.
+ */
+export const CAPABILITY_DOMAINS: Readonly<Record<AgentCapabilityId, readonly AiToolDomain[]>> = {
+  alerts_monitoring: ['monitoring', 'integrations', 'devices', 'patching'], // notification channels; fleet hygiene findings; manage_maintenance_windows domain is patching (#6341)
+  services_startup: ['devices'],
+  files_disk: ['devices'],
+  scripts_commands: ['scripts', 'devices'],
+  author_scripts: ['scripts'],
+  tickets: ['tickets'],
+  patching_software: ['patching', 'security'], // compliance policies and enforcement status
+  security_response: ['security', 'integrations', 'monitoring'], // S1/Huntress; incident tools
+  backup_recovery: ['backup', 'integrations'], // M365/Google cloud-to-cloud backup and restore
+  config_policies: ['security', 'patching', 'backup', 'network'], // policy prerequisites; DNS security policies
+  network: ['network'],
+  remote_access: ['devices'],
+  endpoint_agent: ['admin', 'devices'],
+  automations_reports: ['scripts', 'admin', 'monitoring', 'core', 'devices', 'security'], // core context/docs; device inventory/performance; audit/change logs
+  business: ['billing', 'accounts', 'tickets'],
+  tenancy: ['accounts', 'admin', 'core', 'integrations', 'ai'], // list_organizations is core; webhooks/PSA/M365; AI-agent governance
+  workspace: ['ai', 'admin'], // dataset exports feed workspace analysis
+};
+
+/**
  * Every registered headless tool → capability. The contract test fails on a
  * registered tool missing here, an entry naming an unregistered tool, or an
  * entry naming an unknown capability — so adding a tool means adding a line
@@ -69,6 +98,7 @@ export const AGENT_CAPABILITIES: readonly { id: AgentCapabilityId; tone: 'standa
 export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   // ---- alerts_monitoring ----
   manage_alerts: 'alerts_monitoring',
+  manage_delivery: 'alerts_monitoring',
   manage_alert_rules: 'alerts_monitoring',
   manage_monitors: 'alerts_monitoring',
   // #5289 — monitor DEFINITIONS (the authored condition+response object), not

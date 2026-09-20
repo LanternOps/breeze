@@ -95,6 +95,43 @@ describe('automationRuntime', () => {
     expect(trigger.secret).toBeTruthy();
   });
 
+  it('preserves restart intent and limits through normalization', () => {
+    const response = { type: 'execute_command', kind: 'restart_service', command: 'Restart-Service Spooler', maxAttempts: 7, cooldownSeconds: 120 };
+    expect(normalizeAutomationActions([response])[0]).toMatchObject(response);
+  });
+
+  it.each([
+    { kind: 'unknown' }, { maxAttempts: -1 }, { maxAttempts: 51 },
+    { maxAttempts: 1.5 }, { maxAttempts: '7' },
+    { cooldownSeconds: 29 }, { cooldownSeconds: 86401 }, { cooldownSeconds: 30.5 },
+  ])('rejects invalid restart options %j', (options) => {
+    expect(() => normalizeAutomationActions([
+      { type: 'execute_command', command: 'restart target', ...options },
+    ])).toThrow(AutomationValidationError);
+  });
+
+  it('keeps kind, maxAttempts and cooldownSeconds on execute_command (#6343 + W05c1 spec C9)', () => {
+    const [action] = normalizeAutomationActions([
+      { type: 'execute_command', command: 'Restart-Service Spooler', kind: 'restart_service', maxAttempts: 5, cooldownSeconds: 600 },
+    ]);
+    expect(action).toMatchObject({ type: 'execute_command', kind: 'restart_service', maxAttempts: 5, cooldownSeconds: 600 });
+
+    const [plain] = normalizeAutomationActions([{ type: 'execute_command', command: 'echo ok' }]);
+    expect(plain).not.toHaveProperty('maxAttempts');
+    expect(plain).not.toHaveProperty('cooldownSeconds');
+  });
+
+  it('rejects out-of-range restart parameters', () => {
+    expect(() => normalizeAutomationActions([{ type: 'execute_command', command: 'x', maxAttempts: 51 }])).toThrow(/maxAttempts/);
+    expect(() => normalizeAutomationActions([{ type: 'execute_command', command: 'x', cooldownSeconds: 10 }])).toThrow(/cooldownSeconds/);
+  });
+
+  it('allows commandless agent-local restarts but still requires ordinary commands', () => {
+    expect(normalizeAutomationActions([{ type: 'execute_command', kind: 'restart_service' }])[0])
+      .toMatchObject({ type: 'execute_command', kind: 'restart_service', command: '' });
+    expect(() => normalizeAutomationActions([{ type: 'execute_command' }])).toThrow(/requires command/);
+  });
+
   it('normalizes all supported action types', () => {
     const actions = normalizeAutomationActions([
       { type: 'run_script', scriptId: 'script-1' },

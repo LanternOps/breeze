@@ -133,7 +133,7 @@ func TestAllCommandTypes(t *testing.T) {
 		"mssql_discover", "mssql_backup", "mssql_restore", "mssql_verify",
 		"hyperv_discover", "hyperv_backup", "hyperv_restore", "hyperv_checkpoint", "hyperv_vm_state",
 		"system_state_collect", "hardware_profile",
-		"vm_restore_estimate", "vm_restore_from_backup", "bmr_recover",
+		"vm_restore_estimate", "vm_restore_from_backup", "bmr_recover", "bare_metal_rebuild",
 	}
 
 	for _, cmdType := range types {

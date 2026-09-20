@@ -13,7 +13,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
  * `notificationDispatcher.test.ts` (same mock harness already lives there).
  */
 
-const { selectQueue, queueAddBulkMock, queueAddMock } = vi.hoisted(() => ({
+const { channelEligibilityMock, selectQueue, queueAddBulkMock, queueAddMock } = vi.hoisted(() => ({
+  channelEligibilityMock: vi.fn(),
   selectQueue: [] as unknown[][],
   queueAddBulkMock: vi.fn(),
   queueAddMock: vi.fn()
@@ -32,7 +33,12 @@ vi.mock('../db', () => {
     return chain;
   };
   return {
-    db: { select: vi.fn(() => makeSelect()) },
+    db: { select: vi.fn((fields?: Record<string, unknown>) => {
+      if (fields && 'enabled' in fields && 'orgId' in fields && 'partnerId' in fields) {
+        return { from: () => ({ where: () => channelEligibilityMock() }) };
+      }
+      return makeSelect();
+    }) },
     withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
     runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn())
   };
@@ -127,6 +133,10 @@ function makeJobStub(id: string, state: string = 'waiting') {
 
 beforeEach(() => {
   selectQueue.length = 0;
+  channelEligibilityMock.mockReset().mockResolvedValue(
+    ['aaaaaaaa-0000-4000-8000-000000000011', 'aaaaaaaa-0000-4000-8000-000000000012', 'aaaaaaaa-0000-4000-8000-000000000013', 'aaaaaaaa-0000-4000-8000-000000000014']
+      .map(id => ({ id, orgId: 'org-1', partnerId: null, enabled: true })),
+  );
   // Default: healthy jobs, never 'failed' — so the failed-job-recovery
   // getState/retry loop stays a no-op for every test EXCEPT the ones below
   // that explicitly override these mocks to exercise it. Without a default
@@ -139,6 +149,12 @@ beforeEach(() => {
   sendInAppNotificationMock.mockReset().mockResolvedValue({ success: true, notificationCount: 1 });
   webhookTotalAttemptsMock.mockReset().mockReturnValue(3);
 });
+
+const ORG_LOOKUP = [{ partnerId: null }];
+const DEFAULT_ROW_C1 = {
+  id: 'default-row', orgId: 'org-1', partnerId: null, name: 'Everything else', priority: 1000000,
+  conditions: {}, channelIds: ['aaaaaaaa-0000-4000-8000-000000000013'], enabled: true, escalationPolicyId: null, isDefault: true,
+};
 
 describe('processAlertNotifications status guard (a)', () => {
   it('no-ops (no addBulk, no in-app send lookups) when the loaded alert is resolved', async () => {
@@ -157,10 +173,9 @@ describe('processAlertNotifications status guard (a)', () => {
     selectQueue.push(
       [makeAlert({ status: 'acknowledged' })], // alert
       [{ id: 'device-1', displayName: 'Server-1' }], // device
-      [{ partnerId: null }], // org (partnerIdForOrg)
-      [], // routing rules (no match)
-      [{ id: 'channel-1' }], // org channels fallback
-      [{ id: 'channel-1' }] // validChannels
+      ORG_LOOKUP, ORG_LOOKUP,
+      [DEFAULT_ROW_C1],
+      [{ id: 'aaaaaaaa-0000-4000-8000-000000000013' }] // validChannels
     );
 
     const result = await processAlertNotifications({ type: 'process-alert', alertId: 'alert-1' });
@@ -183,10 +198,9 @@ describe('processAlertNotifications status guard (#4123, table-driven)', () => {
       selectQueue.push(
         [makeAlert({ status })], // alert
         [{ id: 'device-1', displayName: 'Server-1' }], // device
-        [{ partnerId: null }], // org (partnerIdForOrg)
-        [], // routing rules (no match)
-        [{ id: 'channel-1' }], // org channels fallback
-        [{ id: 'channel-1' }] // validChannels
+        ORG_LOOKUP, ORG_LOOKUP,
+        [DEFAULT_ROW_C1],
+        [{ id: 'aaaaaaaa-0000-4000-8000-000000000013' }] // validChannels
       );
     }
 
@@ -209,10 +223,9 @@ describe('processAlertNotifications baseline send jobId (c)', () => {
     selectQueue.push(
       [makeAlert({ status: 'active' })], // alert
       [{ id: 'device-1', displayName: 'Server-1' }], // device
-      [{ partnerId: null }], // org (partnerIdForOrg)
-      [], // routing rules (no match)
-      [{ id: 'channel-1' }], // org channels fallback
-      [{ id: 'channel-1' }] // validChannels
+      ORG_LOOKUP, ORG_LOOKUP,
+      [DEFAULT_ROW_C1],
+      [{ id: 'aaaaaaaa-0000-4000-8000-000000000013' }] // validChannels
     );
 
     await processAlertNotifications({ type: 'process-alert', alertId: 'alert-1' });
@@ -220,7 +233,7 @@ describe('processAlertNotifications baseline send jobId (c)', () => {
     expect(queueAddBulkMock).toHaveBeenCalledTimes(1);
     const jobs = queueAddBulkMock.mock.calls[0]![0] as Array<{ opts?: { jobId?: string } }>;
     expect(jobs).toHaveLength(1);
-    expect(jobs[0]!.opts?.jobId).toBe('alert-send-alert-1-channel-1-0');
+    expect(jobs[0]!.opts?.jobId).toBe('alert-send-alert-1-aaaaaaaa-0000-4000-8000-000000000013-0');
   });
 
   it('uses configured retries to set durable total attempts on the send job', async () => {
@@ -229,10 +242,9 @@ describe('processAlertNotifications baseline send jobId (c)', () => {
     selectQueue.push(
       [makeAlert({ status: 'active' })],
       [{ id: 'device-1', displayName: 'Server-1' }],
-      [{ partnerId: null }],
-      [],
-      [{ id: 'channel-1' }],
-      [{ id: 'channel-1', type: 'webhook', config }]
+      ORG_LOOKUP, ORG_LOOKUP,
+      [DEFAULT_ROW_C1],
+      [{ id: 'aaaaaaaa-0000-4000-8000-000000000013', type: 'webhook', config }]
     );
 
     await processAlertNotifications({ type: 'process-alert', alertId: 'alert-1' });
@@ -249,11 +261,11 @@ describe('scheduleEscalation job options (carried Task 8 review handoff)', () =>
     selectQueue.push(
       [makeAlert({ status: 'active', ruleId: 'rule-1' })], // alert
       [{ id: 'device-1', displayName: 'Server-1' }], // device
-      [{ overrideSettings: { notificationChannelIds: ['channel-1'], escalationPolicyId: 'policy-1' } }], // rule
-      [{ partnerId: null }], // org (partnerIdForOrg)
-      [{ id: 'channel-1', type: 'webhook', config: webhookConfig }], // validChannels (baseline)
-      [{ id: 'policy-1', orgId: 'org-1', partnerId: null, steps: [{ delayMinutes: 5, channelIds: ['channel-1'] }] }], // escalation policy
-      [{ id: 'channel-1', type: 'webhook', config: webhookConfig }] // validChannels (escalation)
+      [{ overrideSettings: { notificationChannelIds: ['aaaaaaaa-0000-4000-8000-000000000013'], escalationPolicyId: 'policy-1' } }], // rule
+      ORG_LOOKUP, ORG_LOOKUP,
+      [{ id: 'aaaaaaaa-0000-4000-8000-000000000013', type: 'webhook', config: webhookConfig }], // validChannels (baseline)
+      [{ id: 'policy-1', orgId: 'org-1', partnerId: null, steps: [{ delayMinutes: 5, channelIds: ['aaaaaaaa-0000-4000-8000-000000000013'] }] }], // escalation policy
+      [{ id: 'aaaaaaaa-0000-4000-8000-000000000013', type: 'webhook', config: webhookConfig }] // validChannels (escalation)
     );
 
     await processAlertNotifications({ type: 'process-alert', alertId: 'alert-1' });
@@ -264,10 +276,10 @@ describe('scheduleEscalation job options (carried Task 8 review handoff)', () =>
     expect(webhookTotalAttemptsMock).toHaveBeenNthCalledWith(2, webhookConfig);
     const [name, data, opts] = queueAddMock.mock.calls[0]!;
     expect(name).toBe('send');
-    expect(data).toEqual({ type: 'send', alertId: 'alert-1', channelId: 'channel-1', escalationStep: 1 });
+    expect(data).toEqual({ type: 'send', alertId: 'alert-1', channelId: 'aaaaaaaa-0000-4000-8000-000000000013', escalationStep: 1 });
     expect(opts).toEqual({
       delay: 5 * 60 * 1000,
-      jobId: 'escalation-alert-1-step1-channel-1',
+      jobId: 'escalation-alert-1-step1-aaaaaaaa-0000-4000-8000-000000000013',
       attempts: 3,
       backoff: { type: 'exponential', delay: 30_000 },
       removeOnComplete: true,
@@ -290,10 +302,9 @@ describe('processAlertNotifications baseline send failed-job recovery', () => {
     selectQueue.push(
       [makeAlert({ status: 'active' })], // alert
       [{ id: 'device-1', displayName: 'Server-1' }], // device
-      [{ partnerId: null }], // org (partnerIdForOrg)
-      [], // routing rules (no match)
-      [{ id: 'channel-1' }], // org channels fallback
-      [{ id: 'channel-1' }] // validChannels
+      ORG_LOOKUP, ORG_LOOKUP,
+      [DEFAULT_ROW_C1],
+      [{ id: 'aaaaaaaa-0000-4000-8000-000000000013' }] // validChannels
     );
   }
 
@@ -339,11 +350,11 @@ describe('scheduleEscalation failed-job recovery (same exposure as the baseline 
     selectQueue.push(
       [makeAlert({ status: 'active', ruleId: 'rule-1' })], // alert
       [{ id: 'device-1', displayName: 'Server-1' }], // device
-      [{ overrideSettings: { notificationChannelIds: ['channel-1'], escalationPolicyId: 'policy-1' } }], // rule
-      [{ partnerId: null }], // org (partnerIdForOrg)
-      [{ id: 'channel-1' }], // validChannels (baseline)
-      [{ id: 'policy-1', orgId: 'org-1', partnerId: null, steps: [{ delayMinutes: 5, channelIds: ['channel-1'] }] }], // escalation policy
-      [{ id: 'channel-1' }] // validChannels (escalation)
+      [{ overrideSettings: { notificationChannelIds: ['aaaaaaaa-0000-4000-8000-000000000013'], escalationPolicyId: 'policy-1' } }], // rule
+      ORG_LOOKUP, ORG_LOOKUP,
+      [{ id: 'aaaaaaaa-0000-4000-8000-000000000013' }], // validChannels (baseline)
+      [{ id: 'policy-1', orgId: 'org-1', partnerId: null, steps: [{ delayMinutes: 5, channelIds: ['aaaaaaaa-0000-4000-8000-000000000013'] }] }], // escalation policy
+      [{ id: 'aaaaaaaa-0000-4000-8000-000000000013' }] // validChannels (escalation)
     );
   }
 

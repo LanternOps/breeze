@@ -132,3 +132,16 @@ func TestKillProcessIsNotElevated(t *testing.T) {
 		t.Fatal("kill_process should not require elevation")
 	}
 }
+
+// cleanmgr, DISM, apt-get and journalctl --vacuum-size all need root/SYSTEM.
+// The check is warn-only, but a warning in the agent log is how a
+// mis-provisioned endpoint gets diagnosed instead of silently doing nothing.
+func TestSystemCleanupRunRequiresElevation(t *testing.T) {
+	if !RequiresElevation(tools.CmdSystemCleanupRun) {
+		t.Fatal("system_cleanup_run must be in elevatedCommandTypes")
+	}
+	// Listing is a read: probes and simulations only.
+	if RequiresElevation(tools.CmdSystemCleanupList) {
+		t.Fatal("system_cleanup_list must not require elevation")
+	}
+}

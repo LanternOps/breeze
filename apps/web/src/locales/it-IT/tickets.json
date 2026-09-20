@@ -1,4 +1,13 @@
 {
+  "timesheet": {
+    "workTypeColumn": "Tipo di lavoro"
+  },
+  "workType": {
+    "label": "Tipo di lavoro",
+    "none": "Nessun tipo di lavoro",
+    "archivedSuffix": "{{name}} (archiviato)",
+    "loadError": "Tipi di lavoro non disponibili"
+  },
   "slaChip": {
     "pausedLeft": "In pausa · {{relative}} rimanenti",
     "left": "{{relative}} rimanenti",
@@ -123,7 +132,9 @@
       "retry": "Riprova",
       "remove": "Rimuovi file",
       "tooMany": "Puoi allegare al massimo {{max}} file a un commento.",
-      "tooLarge": "{{name}} supera i 10 MB."
+      "tooLarge": "{{name}} supera i 10 MB.",
+      "sentWithoutAttachment_one": "Nota pubblicata, ma non è stato possibile aggiungere l'allegato. Riprova o rimuovilo.",
+      "sentWithoutAttachment_other": "Nota pubblicata, ma non è stato possibile aggiungere {{count}} allegati. Riprova o rimuovili."
     }
   },
   "ticketFeed": {
@@ -514,5 +525,14 @@
       "message": "Nasconde il ticket da tutte le code. Un amministratore può ripristinarlo dalla coda Archiviati.",
       "confirm": "Elimina ticket"
     }
+  },
+  "billingOutcome": {
+    "included": "Incluso",
+    "nonBillable": "Non fatturabile",
+    "hourly": "{{rate}} all’ora",
+    "minimum": "Minimo {{minutes}} min",
+    "missingRate": "Fatturabile · tariffa non configurata",
+    "recalculated": "La fatturazione viene ricalcolata per questo tipo di lavoro al salvataggio.",
+    "unavailable": "Esito della fatturazione non disponibile"
   }
 }

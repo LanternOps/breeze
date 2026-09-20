@@ -2139,6 +2139,7 @@
     "saveSuccess": "Kuruluşun faturalandırma ayarları kaydedildi",
     "tax": {
       "partnerDefault": "İş ortağı varsayılanı",
+      "partnerDefaultWithValue": "%{{pct}} (iş ortağı varsayılanı)",
       "taxExempt": "Vergiden muaf",
       "taxId": "Vergi Numarası",
       "taxRate": "Vergi oranı (%)",
@@ -2211,7 +2212,8 @@
   "partnerBillingSettingsTabs": {
     "defaults": "Varsayılanlar",
     "documents": "Belgeler",
-    "connections": "Bağlantılar"
+    "connections": "Bağlantılar",
+    "rates": "Ücretler"
   },
   "billingConnectionsTab": {
     "accounting": {
@@ -2225,5 +2227,59 @@
       "catalogCta": "Ürün Kataloğunu aç →",
       "distributorsCta": "Distribütörleri aç →"
     }
+  },
+  "orgBillingProfile": {
+    "label": "Faturalandırma profili",
+    "inherit": "{{name}} (iş ortağı varsayılanı)",
+    "noProfile": "Faturalandırma profili yok",
+    "unavailable": "Atanan profil kullanılamıyor",
+    "resolved": "{{name}} tarifeleri",
+    "allOtherWork": "Diğer tüm işler",
+    "billable": "{{rate}}/saat üzerinden faturalandırılır",
+    "included": "Dahil",
+    "nonBillable": "Faturalandırılmaz",
+    "noRate": "Faturalandırılabilir — ücret yapılandırılmadı",
+    "minimum": "{{outcome}} · en az {{minutes}} dk",
+    "rounding": "{{minutes}} dakikaya yuvarla",
+    "archivedWorkType": "Arşivlenmiş iş türü",
+    "mismatch": "Atanan faturalandırma profili etkin değil veya başka bir para birimi kullanıyor. Bunun yerine eşleşen para birimindeki iş ortağı varsayılanı uygulanır.",
+    "currencyWarning": "Atanan faturalandırma profili {{currency}} kullanıyor. Bu değişiklikten sonra eşleşen para birimindeki iş ortağı varsayılanı uygulanır.",
+    "loadError": "Faturalandırma profilleri yüklenemedi.",
+    "saveError": "Faturalandırma profili kaydedilemedi.",
+    "partialSave": "Faturalandırma profili kaydedildi, ancak diğer faturalandırma ayarları kaydedilmedi. Tamamlamak için yeniden kaydedin."
+  },
+  "rates": {
+    "title": "Ücretler",
+    "description": "Faturalandırma profiline ve iş türüne göre işçilik ücretlerini belirleyin. Değişiklikler yeni zaman kayıtlarına uygulanır.",
+    "create": "Faturalandırma profili ekle",
+    "loadError": "Faturalandırma profilleri yüklenemedi. Tekrar deneyin.",
+    "saveError": "Faturalandırma profili kaydedilemedi.",
+    "saved": "Faturalandırma profili kaydedildi.",
+    "empty": "İşçilik ücretlerini yapılandırmak için bir faturalandırma profili ekleyin.",
+    "profile": "Faturalandırma profili",
+    "allOtherWork": "Diğer tüm işler",
+    "actions": "İşlemler",
+    "default": "Varsayılan",
+    "clone": "Faturalandırma profilini kopyala",
+    "setDefault": "Varsayılan olarak ayarla",
+    "archive": "Arşivle",
+    "usageUnavailable": "Kuruluşların kullanım bilgisi mevcut değil.",
+    "edit": "Faturalandırma profilini düzenle",
+    "name": "Ad",
+    "currency": "Para birimi",
+    "rounding": "Yuvarlama (dakika)",
+    "notes": "Notlar",
+    "coverage": "Faturalandırma sonucu",
+    "hourlyRate": "Saatlik ücret",
+    "minimum": "Minimum (dakika)",
+    "billable": "Faturalandırılabilir",
+    "included": "Dahil",
+    "nonBillable": "Faturalandırılamaz",
+    "noRate": "Faturalandırılabilir · ücret belirlenmedi",
+    "billableAt": "{{rate}}/saat üzerinden faturalandırılabilir",
+    "minimumSummary": "En az {{minutes}} dk",
+    "roundingSummary": "{{minutes}} dakikaya yuvarla",
+    "inherits": "Diğer tüm işler kullanılır",
+    "currencyHelp": "Varsayılan veya ücret içeren bir profilin para birimi değiştirilemez. Yuvarlama alanı boşsa yuvarlama yapılmaz."
   }
 }

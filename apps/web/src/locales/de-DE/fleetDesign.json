@@ -9,6 +9,7 @@
     "startButton": "Flottendesign starten",
     "startError": "Der Flottendesign-Lauf konnte nicht gestartet werden.",
     "startSuccess": "Flottendesign-Lauf gestartet.",
+    "running": "Flottendesign läuft…",
     "empty": "Für diese Organisation gibt es noch keine Flottendesigns.",
     "loadError": "Flottendesigns konnten nicht geladen werden.",
     "detailLoadError": "Dieses Flottendesign konnte nicht geladen werden.",

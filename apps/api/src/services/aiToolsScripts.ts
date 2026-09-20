@@ -595,6 +595,8 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 3,
+    domain: 'scripts',
+    searchHint: 'device system commands, process and service control, files and event log diagnostics',
     deviceArgs: ['deviceId'],
     definition: {
       name: 'execute_command',
@@ -662,6 +664,8 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 3,
+    domain: 'scripts',
+    searchHint: 'script execution on devices from saved library scripts or reviewed proposals',
     deviceArgs: ['deviceIds'],
     definition: {
       name: 'run_script',
@@ -690,6 +694,8 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 3,
+    domain: 'scripts',
+    searchHint: 'running script cancellation, stop an execution on a device',
     // The device is derived from the execution, not supplied — so there is no
     // device-id property for the central `enforceDeviceArgs` gate to check.
     // The handler therefore gates inline. It uses the shared
@@ -779,6 +785,8 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 3,
+    domain: 'devices',
+    searchHint: 'device system services: list, start, stop, restart',
     deviceArgs: ['deviceId'],
     definition: {
       name: 'manage_services',
@@ -824,6 +832,8 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'devices',
+    searchHint: 'device processes, CPU and memory usage: list, kill',
     deviceArgs: ['deviceId'],
     definition: {
       name: 'manage_processes',
@@ -896,6 +906,8 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'scripts',
+    searchHint: 'organization script library, names, descriptions, languages, OS targets and categories',
     definition: {
       name: 'list_scripts',
       description: 'Search and filter scripts in the organization library. Returns a list of matching scripts including name, description, language, OS targets, and category.',
@@ -950,6 +962,8 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'scripts',
+    searchHint: 'script parameters, versions, execution statistics and optional source content',
     definition: {
       name: 'get_script_details',
       description: 'Get script details including parameters, version history, and execution statistics. Script content is omitted unless explicitly requested and may be minimized in AI transcripts.',
@@ -1078,6 +1092,8 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'scripts',
+    searchHint: 'built-in script templates and starting points for common tasks',
     definition: {
       name: 'list_script_templates',
       description: 'Browse available script templates for common tasks. Templates are pre-built scripts that can be used as starting points.',
@@ -1125,6 +1141,8 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'scripts',
+    searchHint: 'script run history, status, exit codes, stdout, stderr and timing',
     definition: {
       name: 'get_script_execution_history',
       description: 'Get past execution results for a script. Shows status, exit codes, stdout/stderr, and timing information.',
@@ -1201,6 +1219,8 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'scripts',
+    searchHint: 'single script execution by ID, current status, exit code, output and timing',
     definition: {
       name: 'get_script_execution',
       description: 'Get a single script execution by ID, including status, exit code, stdout, stderr, and timing. Use this for runs started OUTSIDE the current tool call — e.g. the user clicked Test Run in the script editor, or you have an execution id from get_script_execution_history. Also use it in exactly one other case: when run_script returned status "timeout" for a device, that means the 60s wait expired, NOT that the script failed — the device is still running it, and its real exit code and output land on the executionId run_script returned. Re-check that executionId before concluding anything about the script; do not "fix" a script on the strength of a timeout alone. For any other run_script outcome, the returned result is final — do not re-check it.',
@@ -1276,6 +1296,8 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'scripts',
+    searchHint: 'script search across organization scripts and built-in templates by category, language or OS',
     definition: {
       name: 'search_script_library',
       description: 'Search the script library including org scripts and built-in templates. Filter by category, language, OS, or search text.',
@@ -1402,6 +1424,8 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'devices',
+    searchHint: 'Windows scheduled tasks: list, run, disable, enable',
     deviceArgs: ['deviceId'],
     definition: {
       name: 'manage_scheduled_tasks',
@@ -1473,6 +1497,8 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 2,
+    domain: 'devices',
+    searchHint: 'Windows registry: read key, get value, set value, create key, delete key',
     deviceArgs: ['deviceId'],
     definition: {
       name: 'registry_operations',

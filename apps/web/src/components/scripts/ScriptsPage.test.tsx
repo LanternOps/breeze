@@ -9,7 +9,10 @@ import type { ScriptAdmissionResult } from '@breeze/shared';
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
-  useAuthStore: (selector: (s: unknown) => unknown) => selector({ user: null, tokens: null })
+  useAuthStore: Object.assign(
+    (selector: (s: unknown) => unknown) => selector({ user: null, tokens: null }),
+    { getState: () => ({ user: null, tokens: null }) }
+  )
 }));
 
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
@@ -353,5 +356,63 @@ describe('ScriptsPage post-run navigation (#4886)', () => {
     await waitFor(() => expect(scriptsFetchCount).toBe(2));
     expect(navigateTo).not.toHaveBeenCalled();
     expect(screen.getByText('Confirm Execute Multi')).toBeInTheDocument();
+  });
+});
+
+describe('ScriptsPage bundle import result persistence (#6005)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('keeps the import result screen visible while onImported triggers a background scripts refetch', async () => {
+    fetchWithAuthMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.startsWith('/scripts?')) {
+        // Resolve on a real macrotask, like an actual network round trip —
+        // a same-microtask-resolved mock lets React batch setLoading(true)
+        // and setLoading(false) into one commit and never demonstrates the
+        // real-world unmount, which only happens once loading genuinely
+        // commits as true while the modal is open (#6005).
+        await new Promise(resolve => setTimeout(resolve, 10));
+        return makeJsonResponse({ data: [baseScript] });
+      }
+      if (url === '/orgs/sites') return makeJsonResponse({ data: [] });
+      if (url === '/scripts/bundle/preview') {
+        return makeJsonResponse({ entries: [{ index: 0, name: 'Move-CoveStorage', status: 'new' }] });
+      }
+      if (url === '/scripts/bundle/import' && init?.method === 'POST') {
+        return makeJsonResponse({
+          imported: 1,
+          skipped: 0,
+          renamed: 0,
+          versioned: 0,
+          errors: [],
+          scripts: [{ index: 0, name: 'Move-CoveStorage', action: 'imported', scriptId: 'script-9' }]
+        });
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<ScriptsPage />);
+    await screen.findByText('Run Cleanup Temp Files');
+
+    fireEvent.click(screen.getByTestId('bundle-import-open'));
+
+    const file = new File(['Write-Host hi'], 'Move-CoveStorage.ps1', { type: 'text/plain' });
+    Object.defineProperty(file, 'text', { value: () => Promise.resolve('Write-Host hi') });
+    fireEvent.change(screen.getByTestId('bundle-import-file-input'), { target: { files: [file] } });
+    await screen.findByTestId('bundle-import-submit');
+    await waitFor(() => expect(screen.getByTestId('bundle-import-submit')).not.toBeDisabled());
+
+    fireEvent.click(screen.getByTestId('bundle-import-submit'));
+
+    // The refetch triggered by onImported must not unmount the result panel.
+    await screen.findByTestId('bundle-import-result');
+    // Give the background fetchScripts() refetch (triggered by onImported)
+    // time to fully resolve and re-render the page around the modal.
+    await new Promise(r => setTimeout(r, 100));
+    expect(screen.getByTestId('bundle-import-result')).toBeInTheDocument();
+    expect(screen.getByTestId('bundle-import-result')).toHaveTextContent('Move-CoveStorage');
+    expect(screen.queryByTestId('bundle-import-choose-files')).not.toBeInTheDocument();
   });
 });

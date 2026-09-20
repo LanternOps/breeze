@@ -95,7 +95,7 @@
     "loading": "Carregando entidades de serviço…",
     "loadFailed": "Falha ao carregar as entidades de serviço.",
     "retry": "Tentar novamente",
-    "empty": "Nenhuma entidade de serviço ainda.",
+    "empty": "Nenhuma entidade de serviço ainda. Crie uma para começar.",
     "name": "Nome",
     "principalDescription": "Descrição",
     "scopes": "Escopos",
@@ -551,7 +551,14 @@
         "description": "Status, SLAs, categorias, formulários",
         "linkCta": "Gerenciar configurações de tickets →"
       },
-      "sendingDomains": { "label": "Endereços de envio", "description": "Envie e-mails do seu próprio domínio" },
+      "emailTemplates": {
+        "label": "Modelos de e-mail",
+        "description": "Chamados, orçamentos, faturas, convites"
+      },
+      "sendingDomains": {
+        "label": "Endereços de envio",
+        "description": "Envie e-mails do seu próprio domínio"
+      },
       "aiBudgets": {
         "label": "Orçamentos de IA",
         "description": "Limites de gastos com IA"
@@ -701,7 +708,8 @@
     "errorCheckFailed": "Não foi possível iniciar a verificação de DNS.",
     "errorRemoveFailed": "Não foi possível remover o domínio.",
     "errorIdentityFailed": "Não foi possível salvar o endereço de remetente.",
-    "errorTestFailed": "Não foi possível enviar o e-mail de teste."
+    "errorTestFailed": "Não foi possível enviar o e-mail de teste.",
+    "removeTitle": "Remover o domínio de envio?"
   },
   "loginBranding": {
     "saved": "Identidade visual do login salva",
@@ -841,6 +849,45 @@
     "deleteExpiredTitle": "Excluir chaves de registro expiradas",
     "deleteExpiredConfirm": "Excluir todas as chaves de registro expiradas? As chaves que ainda sustentam um link de download do instalador ativo são mantidas. Esta ação não pode ser desfeita."
   },
+  "emailTemplates": {
+    "title": "Modelos de e-mail",
+    "description": "Personalize os e-mails que os clientes recebem para chamados, orçamentos, faturas e convites do portal. O aviso de resposta nunca inclui o texto da resposta.",
+    "usingDefault": "Padrão",
+    "custom": "Personalizado",
+    "subject": "Assunto",
+    "heading": "Título",
+    "buttonLabel": "Rótulo do botão",
+    "html": "Corpo HTML",
+    "htmlAria": "Corpo HTML do e-mail",
+    "insert": "Inserir:",
+    "preview": "Prévia",
+    "save": "Salvar modelo",
+    "reset": "Restaurar padrão",
+    "saved": "Modelo de e-mail salvo",
+    "saveFailed": "Falha ao salvar o modelo de e-mail",
+    "loadFailed": "Falha ao carregar os modelos de e-mail.",
+    "back": "Voltar à lista",
+    "markupRemoved": "Parte da marcação foi removida: {{tags}}",
+    "variables": {
+      "ticket_number": "Número do chamado",
+      "ticket_subject": "Assunto do chamado",
+      "requester_name": "Nome do solicitante",
+      "requester_email": "E-mail do solicitante",
+      "org_name": "Nome da organização",
+      "partner_name": "Nome da empresa",
+      "portal_url": "URL do portal",
+      "email_only_hint": "Aviso só por e-mail",
+      "resolution_note": "Nota de resolução",
+      "quote_number": "Número da proposta",
+      "total": "Total",
+      "expiry_date": "Data de validade",
+      "accept_url": "URL de aceitação",
+      "invoice_number": "Número da fatura",
+      "due_date": "Data de vencimento",
+      "invite_url": "URL do convite",
+      "cta_button": "Botão"
+    }
+  },
   "inboundEmail": {
     "saveError": "Não foi possível salvar as configurações de e-mail de entrada — talvez sua sessão precise de nova verificação MFA. Tente novamente.",
     "orgNotAccessible": "Essa organização não está disponível no seu parceiro.",
@@ -871,6 +918,8 @@
     "dropUnverified": "Descartar mensagens que falham na autenticação do remetente (SPF/DKIM/DMARC)",
     "dropUnverifiedDescription": "Quando desativado, mensagens não verificadas ficam em quarentena para revisão. Quando ativado, são descartadas silenciosamente. Isso se aplica a <all>todos</all> os remetentes não verificados — inclusive clientes mapeados cuja mensagem falhe na verificação.",
     "enableAutoresponse": "Enviar resposta automática confirmando novos chamados por e-mail",
+    "editEmailTemplates": "O e-mail de confirmação é editado em Modelos de e-mail.",
+    "editEmailTemplatesLink": "Editar modelos de e-mail",
     "autoresponseMessage": "Mensagem de resposta automática",
     "subject": "Assunto",
     "subjectPlaceholder": "Recebemos sua solicitação: {{ticket_subject}}",
@@ -3786,7 +3835,10 @@
     "passkeyStepUpNoUsableFactor": "O fator atual da sua conta não pode ser confirmado aqui. Entre em contato com um administrador para adicionar uma chave de acesso.",
     "passkeyStepUpIncorrectCode": "Código incorreto. Tente novamente.",
     "passkeyStepUpTooManyAttempts": "Muitas tentativas. Tente novamente em alguns minutos.",
-    "passkeyStepUpVerificationExpired": "A verificação expirou. Verifique novamente."
+    "passkeyStepUpVerificationExpired": "A verificação expirou. Verifique novamente.",
+    "passkeyRegistrationServerError": "Falha ao registrar a chave de acesso. Tente novamente.",
+    "deletePasskeyVerifyHeading": "Verificar para excluir uma chave de acesso",
+    "deletePasskeyVerifyHint": "Digite aqui um código MFA atual antes de remover uma das chaves de acesso acima. Este código não afeta a adição de uma nova chave de acesso."
   },
   "roleManager": {
     "roles": "Funções",
@@ -4254,7 +4306,6 @@
     "responseSLAMinutes": "SLA de resposta (minutos)",
     "resolutionSLAMinutes": "SLA de resolução (minutos)",
     "billableByDefault": "Faturável por padrão",
-    "defaultHourlyRate": "Taxa horária padrão ({{currency}})",
     "save": "Salvar",
     "cancel": "Cancelar",
     "responseMinutes": "Resposta {{count}}m",
@@ -4269,7 +4320,8 @@
     "active": "Ativo",
     "inactive": "Inativo",
     "deactivate": "Desativar",
-    "activate": "Ativar"
+    "activate": "Ativar",
+    "slaMinutesMustBeNumbers": "Os minutos do SLA devem ser números."
   },
   "ticketPrioritiesTab": {
     "prioritiesAndSLAsSaved": "Prioridades e SLAs salvos",
@@ -5741,5 +5793,25 @@
     "saveError": "Falha ao salvar os padrões do catálogo",
     "saveSuccess": "Padrões do catálogo salvos",
     "saveButton": "Salvar"
+  },
+  "workTypes": {
+    "title": "Tipos de trabalho",
+    "description": "Identifique o trabalho realizado nos registros de tempo. Os padrões das categorias ajudam os técnicos a escolher um tipo de trabalho.",
+    "newName": "Novo tipo de trabalho",
+    "create": "Adicionar tipo de trabalho",
+    "archive": "Arquivar",
+    "archived": "Arquivado",
+    "archivedClearedDefaults_one": "Arquivado. Removido como padrão de {{count}} categoria.",
+    "archivedClearedDefaults_other": "Arquivado. Removido como padrão de {{count}} categorias.",
+    "saveError": "Não foi possível salvar o tipo de trabalho. Tente novamente.",
+    "saveSuccess": "Tipo de trabalho salvo.",
+    "nameTaken": "Já existe um tipo de trabalho com esse nome.",
+    "rename": "Renomear",
+    "loadError": "Não foi possível carregar os tipos de trabalho.",
+    "empty": "Ainda não há tipos de trabalho. Adicione o primeiro acima."
+  },
+  "ticketCategories": {
+    "defaultWorkType": "Tipo de trabalho padrão",
+    "defaultWorkTypeHelp": "Usado quando o tempo é registrado para esta categoria sem um tipo de trabalho."
   }
 }

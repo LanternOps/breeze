@@ -1064,6 +1064,13 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
     ? (config.statuses.find((s) => s.coreStatus === ticket.status && s.isActive && ticket.statusName && s.name === ticket.statusName)
         ?? config.statuses.find((s) => s.coreStatus === ticket.status && s.isSystem))?.id ?? null
     : null;
+  // While the resolve/pending inline confirmation form is open, keep the
+  // select showing the status the user just picked instead of snapping back
+  // to ticket.status — otherwise the control reads as though the click did
+  // nothing (paper cut: it fired no request and visibly reverted). Reverts
+  // to the real status only when the form is cancelled (both cancel buttons
+  // clear pendingOpen/pendingStatusId).
+  const pendingDisplayStatus: TicketStatus | null = pendingOpen ?? (resolveOpen ? 'resolved' : null);
   const headerStatusColor = ticket.statusColor ?? config?.statuses.find((s) => s.id === selectedStatusId)?.color ?? null;
   const suggestedCategoryName = triageSuggestion?.categoryId
     ? (categories.find((category) => category.id === triageSuggestion.categoryId)?.name ?? triageSuggestion.categoryName ?? t('ticketWorkbench.triage.suggestedCategory'))
@@ -1133,7 +1140,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
             // ticket's custom status name within its core state, falling back to
             // the system row for that core state.
             <select
-              value={selectedStatusId ?? ''}
+              value={pendingDisplayStatus ? (pendingStatusId ?? selectedStatusId ?? '') : (selectedStatusId ?? '')}
               onChange={(e) => void onCustomStatusChange(e.target.value)}
               className={cn('rounded-md border border-l-4 px-2 py-1 text-xs font-medium', statusConfig[ticket.status].color)}
               style={headerStatusColor ? { borderLeftColor: headerStatusColor } : undefined}
@@ -1150,7 +1157,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
             </select>
           ) : (
             <select
-              value={ticket.status}
+              value={pendingDisplayStatus ?? ticket.status}
               onChange={(e) => void onStatusChange(e.target.value as TicketStatus)}
               className={cn('rounded-md border px-2 py-1 text-xs font-medium', statusConfig[ticket.status].color)}
               data-testid="ticket-workbench-status"

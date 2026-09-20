@@ -95,7 +95,7 @@
     "loading": "Cargando principales de servicio…",
     "loadFailed": "No se pudieron cargar los principales de servicio.",
     "retry": "Reintentar",
-    "empty": "Aún no hay principales de servicio.",
+    "empty": "Aún no hay principales de servicio. Cree uno para empezar.",
     "name": "Nombre",
     "principalDescription": "Descripción",
     "scopes": "Alcances",
@@ -551,7 +551,14 @@
         "description": "Estados, SLA, categorías, formularios",
         "linkCta": "Administrar configuración de tickets →"
       },
-      "sendingDomains": { "label": "Direcciones de envío", "description": "Envía correos desde tu propio dominio" },
+      "emailTemplates": {
+        "label": "Plantillas de correo",
+        "description": "Tickets, cotizaciones, facturas, invitaciones"
+      },
+      "sendingDomains": {
+        "label": "Direcciones de envío",
+        "description": "Envía correos desde tu propio dominio"
+      },
       "aiBudgets": {
         "label": "AI Presupuestos",
         "description": "límites de gasto AI"
@@ -701,7 +708,8 @@
     "errorCheckFailed": "No se pudo iniciar la revisión de DNS.",
     "errorRemoveFailed": "No se pudo quitar el dominio.",
     "errorIdentityFailed": "No se pudo guardar la dirección de remitente.",
-    "errorTestFailed": "No se pudo enviar el correo de prueba."
+    "errorTestFailed": "No se pudo enviar el correo de prueba.",
+    "removeTitle": "¿Quitar el dominio de envío?"
   },
   "loginBranding": {
     "saved": "Marca de inicio de sesión guardada",
@@ -841,6 +849,45 @@
     "deleteExpiredTitle": "Eliminar claves de inscripción caducadas",
     "deleteExpiredConfirm": "¿Eliminar todas las claves de inscripción caducadas? Se conservan las claves que aún respaldan un enlace de descarga del instalador activo. Esto no se puede deshacer."
   },
+  "emailTemplates": {
+    "title": "Plantillas de correo",
+    "description": "Personalice los correos que reciben los clientes para tickets, cotizaciones, facturas e invitaciones al portal. El aviso de respuesta nunca incluye el texto de la respuesta.",
+    "usingDefault": "Predeterminado",
+    "custom": "Personalizado",
+    "subject": "Asunto",
+    "heading": "Encabezado",
+    "buttonLabel": "Etiqueta del botón",
+    "html": "Cuerpo HTML",
+    "htmlAria": "Cuerpo HTML del correo",
+    "insert": "Insertar:",
+    "preview": "Vista previa",
+    "save": "Guardar plantilla",
+    "reset": "Restablecer predeterminado",
+    "saved": "Plantilla de correo guardada",
+    "saveFailed": "No se pudo guardar la plantilla de correo",
+    "loadFailed": "No se pudieron cargar las plantillas de correo.",
+    "back": "Volver a la lista",
+    "markupRemoved": "Se quitó algo de marcado: {{tags}}",
+    "variables": {
+      "ticket_number": "Número de ticket",
+      "ticket_subject": "Asunto del ticket",
+      "requester_name": "Nombre del solicitante",
+      "requester_email": "Correo del solicitante",
+      "org_name": "Nombre de la organización",
+      "partner_name": "Nombre de la empresa",
+      "portal_url": "URL del portal",
+      "email_only_hint": "Aviso solo por correo",
+      "resolution_note": "Nota de resolución",
+      "quote_number": "Número de cotización",
+      "total": "Total",
+      "expiry_date": "Fecha de vencimiento",
+      "accept_url": "URL de aceptación",
+      "invoice_number": "Número de factura",
+      "due_date": "Fecha de pago",
+      "invite_url": "URL de invitación",
+      "cta_button": "Botón"
+    }
+  },
   "inboundEmail": {
     "saveError": "No se pudo guardar la configuración del correo electrónico entrante; es posible que su sesión necesite una nueva verificación MFA. Reintentar.",
     "orgNotAccessible": "Esa organización no está disponible bajo su socio.",
@@ -871,6 +918,8 @@
     "dropUnverified": "Descartar correo que falla en la autenticación del remitente (SPF/DKIM/DMARC)",
     "dropUnverifiedDescription": "Cuando está desactivado, el correo no verificado se pone en cuarentena para su revisión. Cuando está encendido, cae silenciosamente. Esto se aplica a <all>all</all> remitentes no verificados, incluidos los clientes asignados cuyo mensaje individual no pasa la verificación.",
     "enableAutoresponse": "Enviar una respuesta automática reconociendo nuevos tickets por correo electrónico",
+    "editEmailTemplates": "El correo de acuse se edita en Plantillas de correo.",
+    "editEmailTemplatesLink": "Editar plantillas de correo",
     "autoresponseMessage": "Mensaje de respuesta automática",
     "subject": "Asunto",
     "subjectPlaceholder": "Recibimos su solicitud: {{ticket_subject}}",
@@ -3786,7 +3835,10 @@
     "passkeyStepUpNoUsableFactor": "El factor actual de tu cuenta no se puede confirmar aquí. Comunícate con un administrador para agregar una clave de acceso.",
     "passkeyStepUpIncorrectCode": "Código incorrecto. Inténtalo de nuevo.",
     "passkeyStepUpTooManyAttempts": "Demasiados intentos. Inténtalo de nuevo en unos minutos.",
-    "passkeyStepUpVerificationExpired": "La verificación expiró. Vuelve a verificar."
+    "passkeyStepUpVerificationExpired": "La verificación expiró. Vuelve a verificar.",
+    "passkeyRegistrationServerError": "No se pudo registrar la clave de acceso. Vuelve a intentarlo.",
+    "deletePasskeyVerifyHeading": "Verificar para eliminar una clave de acceso",
+    "deletePasskeyVerifyHint": "Ingresa aquí un código MFA actual antes de eliminar una de las claves de acceso anteriores. Este código no afecta la adición de una nueva clave de acceso."
   },
   "roleManager": {
     "roles": "Roles",
@@ -4201,7 +4253,6 @@
     "responseSLAMinutes": "Respuesta SLA (minutos)",
     "resolutionSLAMinutes": "Resolución SLA (minutos)",
     "billableByDefault": "Facturable por defecto",
-    "defaultHourlyRate": "Tarifa por hora predeterminada ({{currency}})",
     "save": "Guardar",
     "cancel": "Cancelar",
     "responseMinutes": "respuesta {{count}}m",
@@ -4216,7 +4267,8 @@
     "active": "Activo",
     "inactive": "Inactivo",
     "deactivate": "Desactivar",
-    "activate": "Activar"
+    "activate": "Activar",
+    "slaMinutesMustBeNumbers": "Los minutos del SLA deben ser números."
   },
   "ticketPrioritiesTab": {
     "prioritiesAndSLAsSaved": "Prioridades y SLA guardados",
@@ -5741,5 +5793,25 @@
     "saveError": "No se pudieron guardar los valores predeterminados del catálogo",
     "saveSuccess": "Valores predeterminados del catálogo guardados",
     "saveButton": "Guardar"
+  },
+  "workTypes": {
+    "title": "Tipos de trabajo",
+    "description": "Identifique el trabajo realizado en los registros de tiempo. Los valores predeterminados de las categorías ayudan a los técnicos a elegir un tipo de trabajo.",
+    "newName": "Nuevo tipo de trabajo",
+    "create": "Agregar tipo de trabajo",
+    "archive": "Archivar",
+    "archived": "Archivado",
+    "archivedClearedDefaults_one": "Archivado. Se quitó como predeterminado en {{count}} categoría.",
+    "archivedClearedDefaults_other": "Archivado. Se quitó como predeterminado en {{count}} categorías.",
+    "saveError": "No se pudo guardar el tipo de trabajo. Inténtelo de nuevo.",
+    "saveSuccess": "Tipo de trabajo guardado.",
+    "nameTaken": "Ya existe un tipo de trabajo con este nombre.",
+    "rename": "Cambiar nombre",
+    "loadError": "No se pudieron cargar los tipos de trabajo.",
+    "empty": "Aún no hay tipos de trabajo. Agregue el primero arriba."
+  },
+  "ticketCategories": {
+    "defaultWorkType": "Tipo de trabajo predeterminado",
+    "defaultWorkTypeHelp": "Se usa cuando se registra tiempo para esta categoría sin un tipo de trabajo."
   }
 }

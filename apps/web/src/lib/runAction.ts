@@ -29,8 +29,9 @@ export interface RunActionOptions<T> {
    *  when present, otherwise with `body.error` — routes that only emit a bare
    *  `{ error: 'some_token' }` (e.g. the approvals decide route's
    *  `step_up_required`) would otherwise toast the raw token verbatim.
-   *  The second argument includes parsed details for local copy cleanup. */
-  friendly?: (code: string, message: string) => string | undefined;
+   *  The second argument is the extracted message; the third is the parsed
+   * response body for structured details such as a minimum agent version. */
+  friendly?: (code: string, message: string, body?: unknown) => string | undefined;
   onUnauthorized?: () => void;
   /**
    * Opt in to treating a 401 as a normal, toastable failure instead of "your
@@ -122,7 +123,7 @@ export async function runAction<T = unknown>(opts: RunActionOptions<T>): Promise
     }
     let friendlyApplied = false;
     if (friendlyKey && opts.friendly) {
-      const friendly = opts.friendly(friendlyKey, message);
+      const friendly = opts.friendly(friendlyKey, message, data);
       if (friendly) {
         message = friendly;
         friendlyApplied = true;

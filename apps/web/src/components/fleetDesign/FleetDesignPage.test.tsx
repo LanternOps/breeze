@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { FLEET_DESIGNER_ENABLE_ERROR_CODES, type FleetDesignOutcome } from '@breeze/shared';
 import en from '../../locales/en/fleetDesign.json';
 import FleetDesignPage from './FleetDesignPage';
+import { fetchWithAuth } from '../../stores/auth';
 
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn().mockResolvedValue({ ok: false, json: async () => ({}) }) }));
 
@@ -331,5 +332,33 @@ describe('FleetDesignPage', () => {
 
     await waitFor(() => expect(screen.getByTestId('fleet-design-start-skip-reason')).toBeInTheDocument());
     expect(screen.getByTestId('fleet-design-start-skip-reason').textContent).toContain('turned off');
+  });
+
+  it('shows a running indicator after starting a design run and clears it once the run finishes (paper cut 23)', async () => {
+    startDesignRunMock.mockResolvedValue({
+      ok: true,
+      status: 202,
+      json: async () => ({ runId: 'agent-run-9' }),
+    });
+    vi.mocked(fetchWithAuth).mockImplementation(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.includes('/ai/agents/runs/agent-run-9')) {
+        return {
+          ok: true,
+          json: async () => ({ data: { status: 'completed', summary: null, computeCents: 0, costCents: 0, artifacts: [] } }),
+        } as Response;
+      }
+      return { ok: false, json: async () => ({}) } as Response;
+    });
+
+    render(<FleetDesignPage />);
+    await waitFor(() => expect(listDesignsMock).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByTestId('fleet-design-start-button'));
+
+    await waitFor(() => expect(screen.getByTestId('fleet-design-running-row')).toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByTestId('fleet-design-running-row')).not.toBeInTheDocument());
+    // The list is reloaded once the run lands, on top of the initial mount load.
+    await waitFor(() => expect(listDesignsMock.mock.calls.length).toBeGreaterThanOrEqual(2));
   });
 });

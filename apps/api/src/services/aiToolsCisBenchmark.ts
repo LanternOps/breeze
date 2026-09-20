@@ -69,6 +69,8 @@ export function registerCisBenchmarkTools(aiTools: Map<string, AiTool>): void {
 
 registerTool({
   tier: 1,
+  domain: 'security',
+  searchHint: 'CIS benchmark compliance, fleet scores, failed checks and security baselines',
   deviceArgs: ['deviceId'],
   definition: {
     name: 'get_cis_compliance',
@@ -271,6 +273,8 @@ registerTool({
 
 registerTool({
   tier: 1,
+  domain: 'security',
+  searchHint: 'CIS benchmark findings, failed checks and scan evidence for one device',
   deviceArgs: ['deviceId'],
   definition: {
     name: 'get_cis_device_report',
@@ -348,6 +352,8 @@ registerTool({
 
 registerTool({
   tier: 3,
+  domain: 'security',
+  searchHint: 'CIS failed checks: apply or roll back remediation on one device',
   deviceArgs: ['deviceId'],
   definition: {
     name: 'apply_cis_remediation',

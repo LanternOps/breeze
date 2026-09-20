@@ -175,6 +175,7 @@ rulesRoutes.get(
     if (enabledFilter !== undefined) {
       conditions.push(eq(alertRules.isActive, enabledFilter === 'true'));
     }
+    if (query.includeRetired !== 'true') conditions.push(isNull(alertRules.retiredAt));
 
     const whereCondition = conditions.length > 0 ? and(...conditions) : undefined;
 

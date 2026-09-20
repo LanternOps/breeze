@@ -55,16 +55,18 @@ export const prioritySettingsSchema = z.object({
 });
 export type PrioritySettingsInput = z.infer<typeof prioritySettingsSchema>;
 
-// rateCurrency is intentionally omitted: Zod strips unknown keys, so clients
-// cannot choose the currency snapshot stamped by the API from the organization.
+// W02 grace release: recognize deprecated keys only to allow legacy-only PATCHes.
+// Their values are ignored and never appear in the parsed service input.
 export const orgTicketSettingsSchema = z.object({
   slaOverrides: z.partialRecord(ticketPrioritySchema, z.object({
     responseMinutes: slaMinutes.optional(),
     resolutionMinutes: slaMinutes.optional()
   })).optional(),
-  defaultHourlyRate: z.number().nonnegative().multipleOf(0.01).nullable().optional(),
-  defaultBillable: z.boolean().nullable().optional()
-}).refine((v) => Object.keys(v).length > 0, { message: 'At least one field is required' });
+  defaultHourlyRate: z.unknown().optional(),
+  defaultBillable: z.unknown().optional(),
+  rateCurrency: z.unknown().optional()
+}).refine((v) => Object.keys(v).length > 0, { message: 'At least one field is required' })
+  .transform(({ defaultHourlyRate, defaultBillable, rateCurrency, ...settings }) => settings);
 export type OrgTicketSettingsInput = z.infer<typeof orgTicketSettingsSchema>;
 
 // Phase 5: sender-domain -> customer-org mapping. Free email providers are

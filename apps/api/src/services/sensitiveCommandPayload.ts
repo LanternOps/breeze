@@ -32,6 +32,9 @@ const AAD = 'device_commands.payload';
 
 const SENSITIVE_PAYLOAD_FIELDS: Record<string, readonly string[]> = {
   encryption_rotate_key: ['password', 'currentRecoveryKey'],
+  // W05a: the payload carries a server-minted recovery token (a bearer
+  // credential for the public /bmr/recover/* routes) — never the 9-char code.
+  bare_metal_rebuild: ['token'],
 };
 
 /**

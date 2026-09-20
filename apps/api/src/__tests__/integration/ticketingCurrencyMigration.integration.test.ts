@@ -1,3 +1,4 @@
+// W04: Remove legacy-column constraint/snapshot assertions when the six pricing columns are dropped; retain time-entry currency coverage.
 import './setup';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -6,6 +7,8 @@ import { describe, expect, it, vi } from 'vitest';
 vi.mock('../../services/timeEntryEvents', () => ({ emitTimeEntryEvent: vi.fn().mockResolvedValue(undefined) }));
 
 import { eq, sql } from 'drizzle-orm';
+import { orgTicketSettingsSchema } from '@breeze/shared';
+import { legacyBillingDeprecationWarnings } from '../../lib/legacyBillingDeprecation';
 import { Hono } from 'hono';
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
 import {
@@ -204,7 +207,7 @@ function partnerCtx(f: Fixture): DbAccessContext {
 }
 
 function timeActor(f: Fixture): TimeEntryActor {
-  return { userId: f.userId, partnerId: f.partnerId, manageAll: true, accessibleOrgIds: [f.orgId] };
+  return { userId: f.userId, partnerId: f.partnerId, manageAll: true, manageBilling: true, accessibleOrgIds: [f.orgId] };
 }
 
 async function seedMoneyRows(f: Fixture): Promise<{ linkedEntryId: string; standaloneEntryId: string; partId: string }> {
@@ -271,6 +274,13 @@ describe.runIf(RUN)('ticketing currency snapshot permanence (wave 4 #3776)', () 
     expect(await readEntry(rows.linkedEntryId)).toEqual({ hourlyRate: '250.00', currencyCode: 'USD' });
     await withDbAccessContext(partnerCtx(f), () => updateTimeEntry(rows.standaloneEntryId, { hourlyRate: 75 }, timeActor(f)));
     expect(await readEntry(rows.standaloneEntryId)).toEqual({ hourlyRate: '75.00', currencyCode: 'USD' });
+    // An explicit managed rate bills this formerly non-billable standalone
+    // entry. It must neither disappear nor leave contradictory coverage.
+    const [stamp] = await withSystemDbAccessContext(() => db.select({
+      isBillable: timeEntries.isBillable, coverage: timeEntries.coverage,
+      billingOverridden: timeEntries.billingOverridden, billingStatus: timeEntries.billingStatus,
+    }).from(timeEntries).where(eq(timeEntries.id, rows.standaloneEntryId)));
+    expect(stamp).toEqual({ isBillable: true, coverage: 'billable', billingOverridden: true, billingStatus: 'not_billed' });
   });
 
   it('(b) flipping organizations.currency_code leaves every existing entry, part and org-settings row untouched', async () => {
@@ -288,34 +298,45 @@ describe.runIf(RUN)('ticketing currency snapshot permanence (wave 4 #3776)', () 
     expect(await readSettings(f.orgId)).toMatchObject({ defaultHourlyRate: '80.00', rateCurrency: 'USD' });
   });
 
-  it('(c) org ticket settings restamp rate_currency only when the stored rate actually changes', async () => {
+  it('(c) legacy settings input is ignored while SLA edits preserve the historical rate and currency', async () => {
     const f = await seedFixture();
     await seedMoneyRows(f);
     await flipOrgCurrency(f.orgId, 'GBP');
 
-    // Billability-only edit after the flip: the rate is untouched, so is its currency.
-    await withDbAccessContext(partnerCtx(f), () => upsertOrgTicketSettings(f.orgId, { defaultBillable: false }));
-    expect(await readSettings(f.orgId)).toMatchObject({ defaultHourlyRate: '80.00', rateCurrency: 'USD', defaultBillable: false });
+    const save = async (body: Record<string, unknown>) => {
+      const parsed = orgTicketSettingsSchema.parse(body);
+      expect(parsed).not.toHaveProperty('defaultHourlyRate');
+      expect(parsed).not.toHaveProperty('defaultBillable');
+      expect(parsed).not.toHaveProperty('rateCurrency');
+      await withDbAccessContext(partnerCtx(f), () => upsertOrgTicketSettings(f.orgId, parsed));
+      return legacyBillingDeprecationWarnings(body);
+    };
+    expect(await save({ defaultBillable: false })).toEqual(['defaultBillable']);
+    expect(await readSettings(f.orgId)).toMatchObject({
+      defaultHourlyRate: '80.00', rateCurrency: 'USD', defaultBillable: true,
+    });
 
-    // The exact shape the editor sends on an SLA-only save: it RESENDS the
-    // same rate. `IS DISTINCT FROM excluded.default_hourly_rate` must see no
-    // change and keep the historical USD pair.
-    await withDbAccessContext(partnerCtx(f), () => upsertOrgTicketSettings(f.orgId, {
+    expect(await save({
       slaOverrides: { high: { responseMinutes: 30, resolutionMinutes: 240 } },
       defaultHourlyRate: 80,
       defaultBillable: true,
-    }));
+    })).toEqual(expect.arrayContaining(['defaultHourlyRate', 'defaultBillable']));
     expect(await readSettings(f.orgId)).toMatchObject({
       defaultHourlyRate: '80.00', rateCurrency: 'USD', defaultBillable: true,
       slaOverrides: { high: { responseMinutes: 30, resolutionMinutes: 240 } },
     });
 
-    // A genuinely new number is new money entered under the CURRENT org currency.
-    await withDbAccessContext(partnerCtx(f), () => upsertOrgTicketSettings(f.orgId, { defaultHourlyRate: 90 }));
-    expect(await readSettings(f.orgId)).toMatchObject({ defaultHourlyRate: '90.00', rateCurrency: 'GBP' });
+    // Even changed or malformed legacy money cannot overwrite the old snapshot.
+    for (const rate of [90, 'invalid']) {
+      expect(await save({ defaultHourlyRate: rate, rateCurrency: 'GBP' }))
+        .toEqual(expect.arrayContaining(['defaultHourlyRate', 'rateCurrency']));
+      expect(await readSettings(f.orgId)).toMatchObject({
+        defaultHourlyRate: '80.00', rateCurrency: 'USD', defaultBillable: true,
+      });
+    }
   });
 
-  it('(d) PATCH /ticket-categories/:id restamps rate_currency only for a new rate value after a partner currency flip', async () => {
+  it('(d) PATCH /ticket-categories/:id warns and ignores legacy rates after a partner currency flip', async () => {
     const adminDb = getTestDb();
     // Partner-scope environment: wildcard permissions + orgAccess 'all' so the
     // partner-wide category gate (canManagePartnerWidePolicies) passes.
@@ -341,14 +362,21 @@ describe.runIf(RUN)('ticketing currency snapshot permanence (wave 4 #3776)', () 
 
     await adminDb.update(partners).set({ currencyCode: 'GBP' }).where(eq(partners.id, env.partner.id));
 
-    // The editor resends the rate alongside a rename — same number, no restamp.
+    // A legacy caller can still rename the category without altering old pricing.
     const renamed = await patch({ name: 'renamed', defaultHourlyRate: 100 });
-    expect(renamed.status, await renamed.text()).toBe(200);
+    expect(renamed.status).toBe(200);
+    const renamedBody = await renamed.json();
+    expect(renamedBody.deprecationWarnings).toContain('defaultHourlyRate');
+    expect(renamedBody.data).not.toHaveProperty('defaultHourlyRate');
+    expect(renamedBody.data).not.toHaveProperty('rateCurrency');
     expect(await read()).toEqual({ name: 'renamed', defaultHourlyRate: '100.00', rateCurrency: 'USD' });
 
-    // A new number restamps to the partner's CURRENT currency.
-    const repriced = await patch({ defaultHourlyRate: 125 });
-    expect(repriced.status, await repriced.text()).toBe(200);
-    expect(await read()).toEqual({ name: 'renamed', defaultHourlyRate: '125.00', rateCurrency: 'GBP' });
+    // Changed and malformed legacy rates are both ignored in the grace release.
+    for (const rate of [125, 'invalid']) {
+      const repriced = await patch({ defaultHourlyRate: rate });
+      expect(repriced.status).toBe(200);
+      expect((await repriced.json()).deprecationWarnings).toContain('defaultHourlyRate');
+      expect(await read()).toEqual({ name: 'renamed', defaultHourlyRate: '100.00', rateCurrency: 'USD' });
+    }
   });
 });

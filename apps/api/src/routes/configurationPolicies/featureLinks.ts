@@ -640,7 +640,7 @@ featureLinkRoutes.delete(
       details: { linkId, featureType: deleted.featureType },
     });
 
-    return c.json({ success: true });
+    return c.json(deleted.kept ? { success: true, kept: true, reason: deleted.reason } : { success: true });
   }
 );
 

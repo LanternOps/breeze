@@ -5,8 +5,10 @@ import {
   monitorConditionSchemas,
   monitorsInlineSettingsSchema,
   MONITOR_KINDS,
+  SERVER_EVALUATED_MONITOR_KINDS,
+  compositeConditionSchema,
 } from './monitors';
-import { automationTriggerSchema } from './index';
+import { automationActionSchema, automationTriggerSchema } from './index';
 
 describe('monitor definition validators (#5289)', () => {
   it('lists the W02 kinds, then the W04 coverage kinds', () => {
@@ -29,6 +31,7 @@ describe('monitor definition validators (#5289)', () => {
       'backup_continuity',
       'script',
       'network_check',
+      'composite',
     ]);
   });
 
@@ -130,7 +133,7 @@ describe('monitor definition validators (#5289)', () => {
  */
 describe('W04 coverage condition schemas (#5291)', () => {
   it('lists the five W04 kinds after the W02 thirteen', () => {
-    expect(MONITOR_KINDS.slice(13)).toEqual([
+    expect(MONITOR_KINDS.slice(13, 18)).toEqual([
       'antivirus',
       'software_presence',
       'backup_continuity',
@@ -187,5 +190,89 @@ describe('W04 coverage condition schemas (#5291)', () => {
       condition: { name: 'TeamViewer', presence: 'installed' },
     });
     expect(result.success).toBe(false);
+  });
+});
+
+describe('composite monitor kind (W05c1)', () => {
+  it('is a registered kind whose children are restricted to server-evaluated kinds', () => {
+    expect(MONITOR_KINDS).toContain('composite');
+    expect(SERVER_EVALUATED_MONITOR_KINDS).not.toContain('composite');
+    for (const agentKind of ['service', 'process', 'process_resource', 'script', 'network_check']) {
+      expect(SERVER_EVALUATED_MONITOR_KINDS).not.toContain(agentKind);
+    }
+  });
+
+  it('accepts 2..10 children, cross-validates each child against its kind schema, defaults match=all', () => {
+    const ok = compositeConditionSchema.safeParse({
+      children: [
+        { kind: 'cpu', condition: { operator: 'gt', value: 80 } },
+        { kind: 'memory', condition: { operator: 'gt', value: 90, durationMinutes: 5 } },
+      ],
+    });
+    expect(ok.success).toBe(true);
+    expect(ok.success && ok.data.match).toBe('all');
+
+    const one = compositeConditionSchema.safeParse({ match: 'any', children: [{ kind: 'cpu', condition: { operator: 'gt', value: 80 } }] });
+    expect(one.success).toBe(false);
+
+    const badChild = compositeConditionSchema.safeParse({
+      match: 'all',
+      children: [
+        { kind: 'cpu', condition: { operator: 'gt', value: 80 } },
+        { kind: 'disk', condition: { operator: 'gt', value: 101 } },
+      ],
+    });
+    expect(badChild.success).toBe(false);
+    expect(badChild.success ? '' : JSON.stringify(badChild.error.issues[0]?.path)).toBe('["children",1,"condition"]');
+
+    const agentChild = compositeConditionSchema.safeParse({
+      match: 'all',
+      children: [
+        { kind: 'cpu', condition: { operator: 'gt', value: 80 } },
+        { kind: 'service', condition: { serviceName: 'spooler' } },
+      ],
+    });
+    expect(agentChild.success).toBe(false);
+
+    const nested = compositeConditionSchema.safeParse({
+      match: 'all',
+      children: [
+        { kind: 'cpu', condition: { operator: 'gt', value: 80 } },
+        { kind: 'composite', condition: { match: 'all', children: [] } },
+      ],
+    });
+    expect(nested.success).toBe(false);
+  });
+
+  it('monitorConditionSchemas.composite is the same schema', () => {
+    expect(monitorConditionSchemas.composite).toBe(compositeConditionSchema);
+  });
+});
+
+describe('consecutiveFailures widened to 1..100 (W05c1, matches the watch domain)', () => {
+  it.each(['service', 'process', 'network_check'] as const)('%s accepts 100 and rejects 101', (kind) => {
+    const base =
+      kind === 'service' ? { serviceName: 'x' } : kind === 'process' ? { processName: 'x' } : { checkType: 'icmp_ping', target: '10.0.0.1' };
+    expect(monitorConditionSchemas[kind].safeParse({ ...base, consecutiveFailures: 100 }).success).toBe(true);
+    expect(monitorConditionSchemas[kind].safeParse({ ...base, consecutiveFailures: 101 }).success).toBe(false);
+  });
+});
+
+describe('monitors link inheritance (W05c1)', () => {
+  it('defaults to cumulative and accepts replace', () => {
+    expect(monitorsInlineSettingsSchema.parse({ items: [] }).inheritance).toBe('cumulative');
+    expect(monitorsInlineSettingsSchema.parse({ items: [], inheritance: 'replace' }).inheritance).toBe('replace');
+    expect(monitorsInlineSettingsSchema.safeParse({ items: [], inheritance: 'closest' }).success).toBe(false);
+  });
+});
+
+describe('execute_command restart parameters (W05c1, spec C9)', () => {
+  it('accepts maxAttempts 0..50 and cooldownSeconds 30..86400, both optional', () => {
+    expect(automationActionSchema.safeParse({ type: 'execute_command', command: 'x' }).success).toBe(true);
+    expect(
+      automationActionSchema.safeParse({ type: 'execute_command', command: 'x', kind: 'restart_service', maxAttempts: 3, cooldownSeconds: 300 }).success,
+    ).toBe(true);
+    expect(automationActionSchema.safeParse({ type: 'execute_command', command: 'x', maxAttempts: 51 }).success).toBe(false);
+    expect(automationActionSchema.safeParse({ type: 'execute_command', command: 'x', cooldownSeconds: 29 }).success).toBe(false);
   });
 });

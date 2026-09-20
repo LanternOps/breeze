@@ -1,6 +1,6 @@
 import { and, eq } from 'drizzle-orm';
 import { db } from '../db';
-import { deploymentResults } from '../db/schema';
+import { deploymentResults, deviceFilesystemCleanupRuns } from '../db/schema';
 import { applyAutomationActionTerminal } from './automationActionResults';
 import { captureException } from './sentry';
 import { batchIdFromPayload, finalizeScriptExecutionTerminal } from './scriptExecutionTerminal';
@@ -123,6 +123,65 @@ export async function propagateCancelledDeviceCommand(params: {
       completedAt,
       executor,
     });
+  }
+
+  // Disk Cleanup v2 (spec §13 #13). A cancelled native cleanup command leaves
+  // its `device_filesystem_cleanup_runs` row `running` — on a device that has
+  // just moved org or been decommissioned, nothing will ever revisit it: the
+  // poll route that applies the lazy deadline is no longer reachable from the
+  // tech who started the run, and the reaper terminalises COMMANDS, not this
+  // row.
+  //
+  // In the caller's transaction (the org flip, the decommission write) for the
+  // same reason every branch above is: a rollback must not leave a cancelled
+  // command beside a run row that still claims to be executing.
+  //
+  // CAS on `running` so a real result that landed first keeps its outcome.
+  if (type === 'system_cleanup_run') {
+    const runId =
+      payload && typeof payload.runId === 'string' && payload.runId.trim().length > 0
+        ? payload.runId
+        : null;
+    if (runId) {
+      await executor
+        .update(deviceFilesystemCleanupRuns)
+        .set({ status: 'failed', error: errorMessage, updatedAt: completedAt })
+        .where(
+          and(
+            eq(deviceFilesystemCleanupRuns.id, runId),
+            eq(deviceFilesystemCleanupRuns.status, 'running'),
+          ),
+        );
+    }
+  }
+
+  // Disk Cleanup v2 W03 (spec §13 #13). A cleanup `file_delete` carries the id
+  // of the run that dispatched it (routes/devices/filesystem.ts). Cancelling
+  // the command without terminalising that run leaves it `running` until the
+  // 24-hour retention sweep, which is the same "waiting forever on a delivery
+  // that will never happen" this module exists to prevent.
+  //
+  // DYNAMIC import for the same reason as the patch branch above: keeping this
+  // module a leaf. An ordinary File Manager delete carries no `cleanupRunId`
+  // and falls through untouched.
+  if (type === 'file_delete') {
+    const cleanupRunId =
+      payload && typeof payload.cleanupRunId === 'string' && payload.cleanupRunId.length > 0
+        ? payload.cleanupRunId
+        : null;
+    if (cleanupRunId) {
+      const { cancelCleanupRunForCommand } = await import('./filesystemCleanupRuns');
+      // Not try/caught, exactly like the two branches above: `executor` is
+      // frequently the caller's open transaction (the org-move flip), and
+      // swallowing a failure here would commit a cancelled command alongside a
+      // run still claiming to be `running`.
+      await cancelCleanupRunForCommand({
+        cleanupRunId,
+        reason: errorMessage,
+        completedAt,
+        executor,
+      });
+    }
   }
 
   await executor

@@ -1,4 +1,13 @@
 {
+  "timesheet": {
+    "workTypeColumn": "Work Type"
+  },
+  "workType": {
+    "label": "Work type",
+    "none": "No work type",
+    "archivedSuffix": "{{name}} (archived)",
+    "loadError": "Work types unavailable"
+  },
   "slaChip": {
     "pausedLeft": "Paused · {{relative}} left",
     "left": "{{relative}} left",
@@ -123,7 +132,9 @@
       "retry": "Retry",
       "remove": "Remove file",
       "tooMany": "You can attach at most {{max}} files to one comment.",
-      "tooLarge": "{{name}} is larger than 10 MB."
+      "tooLarge": "{{name}} is larger than 10 MB.",
+      "sentWithoutAttachment_one": "Note posted, but the attachment could not be added. Retry or remove it.",
+      "sentWithoutAttachment_other": "Note posted, but {{count}} attachments could not be added. Retry or remove them."
     }
   },
   "ticketFeed": {
@@ -514,5 +525,14 @@
       "message": "This hides the ticket from all queues. An admin can restore it from the Archived queue.",
       "confirm": "Delete ticket"
     }
+  },
+  "billingOutcome": {
+    "included": "Included",
+    "nonBillable": "Non-billable",
+    "hourly": "{{rate}}/h",
+    "minimum": "{{minutes}} min minimum",
+    "missingRate": "Billable · rate not configured",
+    "recalculated": "Billing is recalculated for this work type when saved.",
+    "unavailable": "Billing outcome unavailable"
   }
 }

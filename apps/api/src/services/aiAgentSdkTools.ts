@@ -13,7 +13,7 @@ import { dbAccessContextFromAuth } from '../middleware/auth';
 import { db, withDbAccessContext, runOutsideDbContext } from '../db';
 import type { DbAccessContext } from '../db';
 import { eq } from 'drizzle-orm';
-import { executeTool, aiTools, type ExecuteToolOptions } from './aiTools';
+import { executeTool, aiTools, getAllRegisteredToolNames, getToolAlwaysLoad, getToolSearchHint, type ExecuteToolOptions } from './aiTools';
 import { WORKSPACE_MCP_SHAPES, WORKSPACE_TOOL_DESCRIPTIONS } from './workspace/workspaceTools';
 import type { CaptureScope } from './artifacts/toolResultCapture';
 import { LIST_DELIVERABLE_TEMPLATES_TOOL, LIST_DELIVERABLES_TOOL, MANAGE_DELIVERABLES_TOOL, MANAGE_KEY_DATES_TOOL } from './aiToolsDeliverables';
@@ -35,6 +35,7 @@ import { CONTACT_ROLES } from './contacts/types';
 import { ACTOR_TYPES, AI_AGENT_KINDS, INVOICE_STATUSES } from '@breeze/shared';
 import { getToolTimeout, withToolTimeout } from './toolTimeouts';
 import { aiRunContextInputShape } from './scriptRunRequest';
+import { deliveryToolShape } from './aiToolSchemas';
 import { aiScriptAuthoringEnabled } from '../config/env';
 import { captureMessage } from './sentry';
 import {
@@ -162,11 +163,13 @@ export type PostToolUseCallback = (
 
 export const TOOL_TIERS = {
   query_devices: 1,
+  search_documentation: 1,
   get_device_details: 1,
   analyze_metrics: 1,
   get_active_users: 1,
   get_user_experience_metrics: 1,
   manage_alerts: 1, // Base tier; action-level escalation handled in guardrails
+  manage_delivery: 1,
   get_dns_security: 1,
   get_huntress_status: 1,
   get_huntress_incidents: 1,
@@ -364,6 +367,29 @@ export const TOOL_TIERS = {
   google_assign_license: 3,
   google_remove_license: 3,
 } as const satisfies Readonly<Record<string, AiToolTier>> as Readonly<Record<string, AiToolTier>>;
+
+/**
+ * Names the chat/Helper Agent SDK server ACTUALLY declares right now: the
+ * names `buildBreezeSdkTools` returns under the current process env (so
+ * env-gated tools — M365, Google Workspace, AI script authoring — drop out
+ * when their flag is off), intersected with the registry (so a chat-only
+ * SDK-bridge tool with no `aiTools`/tier-map entry, e.g.
+ * `propose_action_plan`, stays out). Evaluated fresh on every call — this is
+ * read once per `buildSystemPrompt` invocation, so it tracks env at session
+ * time, not at module-load time. `getAuth` is a throwing no-op: only the
+ * `tool()` declarations are built here, no handler ever runs. Lives here to
+ * avoid a reverse import cycle from aiTools.ts and a CommonJS require in the
+ * ESM source runtime.
+ */
+export function listChatSurfaceToolNames(): string[] {
+  const registered = new Set(getAllRegisteredToolNames());
+  const fakeAuth = (): AuthContext => {
+    throw new Error('listChatSurfaceToolNames must not invoke tool handlers');
+  };
+  const declared = buildBreezeSdkTools(fakeAuth);
+  const names = new Set(declared.map((t) => t.name).filter((name) => registered.has(name)));
+  return [...names].sort();
+}
 
 // All tool names, prefixed for SDK MCP format
 export const BREEZE_MCP_TOOL_NAMES = Object.keys(TOOL_TIERS).map(
@@ -1290,52 +1316,13 @@ function nearestToolNames(name: string, candidates: readonly string[], limit = 3
     .map(({ candidate }) => candidate);
 }
 
-/**
- * Creates an SDK MCP server instance with all Breeze tools.
- * Auth context is fetched lazily via the getAuth thunk so all tool handlers
- * see the latest org-scoped access even when the session is reused.
- * Optional postToolUse callback fires after every tool execution for persistence/audit.
- *
- * `options.onlyTools` (F2 fix, P2-1 second live check): the SDK's
- * `allowedTools` (set by the caller on `query()`) only gates PERMISSION to
- * call a tool — it does not stop that tool's full JSON schema from being
- * sent to the model every turn. Registering the whole ~200-tool registry
- * unconditionally, as this function used to do, meant every turn of every
- * run (verdict runs included, despite being restricted to 4-5 tools by
- * `allowedTools`) paid the token cost of every tool definition — a single
- * verdict turn cost 9¢ (run `59fb933c-…`, `turn_count=1`). When
- * `onlyTools` is set, the registry `tools` array is filtered down to just
- * those bare names BEFORE `createSdkMcpServer` is called, so the SERVER
- * itself only advertises the pinned subset. `extraTools` are always
- * included regardless of `onlyTools` — they're never part of the registry
- * `tools` array (outcome tools in particular are deliberately absent from
- * `TOOL_TIERS`, see `outcomeTools.ts`), so there's nothing in `onlyTools` for
- * them to be filtered against. The name-collision guard below is unchanged:
- * it still runs against the full, unfiltered registry.
- *
- * `onlyTools` is populated only internally, from hardcoded profile
- * allowlists (see `aiAgents/runLoop.ts`'s `onlyTools` computation) — never
- * from request input — so a name in it that matches no registered tool is
- * always a programming error: a typo in the allowlist, or a tool renamed in
- * the registry without updating it. (#4447) Since every caller is internal,
- * that condition throws outside production (test/dev), so the bug is caught
- * before it ships; in production it degrades to the matched subset rather
- * than failing a live run, but logs via `console.error` and Sentry-captures
- * (event code `ai_agent_onlytools_unknown_name`) so it does not vanish the
- * way the old silent `.filter()` did. The Sentry capture is best-effort, not
- * guaranteed delivery: on a self-hosted install with no `SENTRY_DSN`,
- * `captureMessage` is a documented no-op (see `sentry.ts`) and the
- * `console.error` line is the only surviving signal — an operator has to be
- * watching API logs, not a Sentry inbox, to catch it there.
- */
-export function createBreezeMcpServer(
+/** Build the unfiltered SDK declarations before attaching registry metadata. */
+export function buildBreezeSdkTools(
   getAuth: () => AuthContext,
   onPreToolUse?: PreToolUseCallback,
   onPostToolUse?: PostToolUseCallback,
   getActiveSession?: () => ActiveSession,
-  extraTools: SdkTool[] = [],
-  options?: { onlyTools?: ReadonlySet<string> },
-) {
+): SdkTool[] {
   // One alias so the tool() declarations below keep their four-argument shape
   // while the underlying handler also receives the session. W01 capture needs
   // the session's org (auth.orgId is null for a partner-scope login) and its
@@ -1351,6 +1338,16 @@ export function createBreezeMcpServer(
   const uuid = z.string().guid();
 
   const tools = [
+    tool(
+      'search_documentation',
+      registryDescription('search_documentation'),
+      {
+        query: z.string().min(1).max(500),
+        section: z.enum(['getting-started', 'deploy', 'agents', 'security', 'features', 'monitoring', 'reference']).optional(),
+      },
+      makeHandler('search_documentation', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
     tool(
       'query_devices',
       'Search and filter devices in the organization. Returns a summary list.',
@@ -1405,6 +1402,13 @@ export function createBreezeMcpServer(
         limit: z.number().int().min(1).max(500).optional(),
       },
       makeHandler('get_user_experience_metrics', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_delivery',
+      'Resolve delivery or manage routing rules and escalation policies. Channel CRUD remains manage_notification_channels.',
+      deliveryToolShape,
+      makeHandler('manage_delivery', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(
@@ -3086,6 +3090,75 @@ export function createBreezeMcpServer(
 
   ];
 
+  return tools as SdkTool[];
+}
+
+/**
+ * A-W02: the registry is the single source of truth for tool-search
+ * metadata. Re-declare each tool through the SDK's public extras parameter
+ * so it writes `_meta['anthropic/searchHint']` and
+ * `_meta['anthropic/alwaysLoad']`. Every declaration must have a registry hint.
+ */
+export function attachRegistryMeta(def: SdkTool): SdkTool {
+  const searchHint = getToolSearchHint(def.name);
+  if (!searchHint) {
+    throw new Error(`[attachRegistryMeta] no registry searchHint for tool "${def.name}"`);
+  }
+  return tool(def.name, def.description, def.inputSchema, def.handler, {
+    annotations: def.annotations,
+    searchHint,
+    alwaysLoad: getToolAlwaysLoad(def.name),
+  }) as SdkTool;
+}
+
+/**
+ * Creates an SDK MCP server instance with all Breeze tools.
+ * Auth context is fetched lazily via the getAuth thunk so all tool handlers
+ * see the latest org-scoped access even when the session is reused.
+ * Optional postToolUse callback fires after every tool execution for persistence/audit.
+ *
+ * `options.onlyTools` (F2 fix, P2-1 second live check): the SDK's
+ * `allowedTools` (set by the caller on `query()`) only gates PERMISSION to
+ * call a tool — it does not stop that tool's full JSON schema from being
+ * sent to the model every turn. Registering the whole ~200-tool registry
+ * unconditionally, as this function used to do, meant every turn of every
+ * run (verdict runs included, despite being restricted to 4-5 tools by
+ * `allowedTools`) paid the token cost of every tool definition — a single
+ * verdict turn cost 9¢ (run `59fb933c-…`, `turn_count=1`). When
+ * `onlyTools` is set, the registry `tools` array is filtered down to just
+ * those bare names BEFORE `createSdkMcpServer` is called, so the SERVER
+ * itself only advertises the pinned subset. `extraTools` are always
+ * included regardless of `onlyTools` — they're never part of the registry
+ * `tools` array (outcome tools in particular are deliberately absent from
+ * `TOOL_TIERS`, see `outcomeTools.ts`), so there's nothing in `onlyTools` for
+ * them to be filtered against. The name-collision guard below is unchanged:
+ * it still runs against the full, unfiltered registry.
+ *
+ * `onlyTools` is populated only internally, from hardcoded profile
+ * allowlists (see `aiAgents/runLoop.ts`'s `onlyTools` computation) — never
+ * from request input — so a name in it that matches no registered tool is
+ * always a programming error: a typo in the allowlist, or a tool renamed in
+ * the registry without updating it. (#4447) Since every caller is internal,
+ * that condition throws outside production (test/dev), so the bug is caught
+ * before it ships; in production it degrades to the matched subset rather
+ * than failing a live run, but logs via `console.error` and Sentry-captures
+ * (event code `ai_agent_onlytools_unknown_name`) so it does not vanish the
+ * way the old silent `.filter()` did. The Sentry capture is best-effort, not
+ * guaranteed delivery: on a self-hosted install with no `SENTRY_DSN`,
+ * `captureMessage` is a documented no-op (see `sentry.ts`) and the
+ * `console.error` line is the only surviving signal — an operator has to be
+ * watching API logs, not a Sentry inbox, to catch it there.
+ */
+export function createBreezeMcpServer(
+  getAuth: () => AuthContext,
+  onPreToolUse?: PreToolUseCallback,
+  onPostToolUse?: PostToolUseCallback,
+  getActiveSession?: () => ActiveSession,
+  extraTools: SdkTool[] = [],
+  options?: { onlyTools?: ReadonlySet<string> },
+) {
+  const tools = buildBreezeSdkTools(getAuth, onPreToolUse, onPostToolUse, getActiveSession);
+
   // extraTools (e.g. headless-run outcome tools like submit_alert_verdict) are
   // never in the TOOL_TIERS registry — that's what keeps them off the chat/MCP
   // surface (see outcomeTools.ts). A name collision here would mean an outcome
@@ -3141,6 +3214,6 @@ export function createBreezeMcpServer(
   return createSdkMcpServer({
     name: 'breeze',
     version: '1.0.0',
-    tools: [...registeredTools, ...wrappedExtraTools],
+    tools: [...registeredTools.map(attachRegistryMeta), ...wrappedExtraTools],
   });
 }

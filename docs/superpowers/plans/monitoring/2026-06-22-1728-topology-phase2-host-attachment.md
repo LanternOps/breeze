@@ -1,5 +1,7 @@
 # Network Topology Redesign — Phase 2 (FDB Host Attachment) Implementation Plan
 
+> **Status: Superseded 2026-09-15 — historical and non-dispatchable.** Do not execute tasks or dispatch workers from this plan. The [intelligent topology specification](../../specs/monitoring/2026-09-15-intelligent-network-topology-design.md) supersedes this plan and the June design. Use the [replacement five-milestone implementation plan](2026-09-15-intelligent-network-topology-INDEX.md), now authored and registered with `register_feature`; its frontmatter links the authoritative feature tracker. The instructions below are retained only as historical context.
+
 > **For agentic workers:** Execute with the **superpowers:subagent-driven-development** skill. Each `### Task N` is an independent, TDD-ordered unit: write the failing test, prove it fails with the exact command, write the minimal REAL implementation, prove it passes, commit. Do not batch tasks. Do not run `git commit` until a task's run-passes step is green. Do NOT pull/rebase main inside a worktree.
 
 **Issue:** #1728 — Network Discovery topology redesign

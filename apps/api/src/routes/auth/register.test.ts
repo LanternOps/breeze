@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { ERROR_CODES } from '@breeze/shared';
 
 vi.mock('../../db', () => ({
   db: { select: vi.fn() },
@@ -77,7 +78,7 @@ vi.mock('./schemas', async () => {
 
 import { registerRoutes } from './register';
 import { db } from '../../db';
-import { createTokenPair, mintRefreshTokenFamily, getRedis } from '../../services';
+import { createTokenPair, mintRefreshTokenFamily, getRedis, rateLimiter } from '../../services';
 import { createPartner } from '../../services/partnerCreate';
 import { createPendingRegistration } from '../../services/pendingRegistration';
 import { enqueueRegistrationVerification } from '../../services/authEmailQueue';
@@ -125,6 +126,19 @@ describe('POST /register-partner — SR2-21: email-first, no account created bef
 
   afterEach(() => {
     delete process.env.IS_HOSTED;
+  });
+
+  it('returns RATE_LIMITED when registration is throttled', async () => {
+    vi.mocked(rateLimiter).mockResolvedValueOnce({ allowed: false, remaining: 0, resetAt: new Date() });
+
+    const res = await postRegisterPartner(VALID_BODY);
+
+    expect(res.status).toBe(429);
+    expect(await res.json()).toEqual({
+      error: 'Too many registration attempts. Try again later.',
+      code: ERROR_CODES.RATE_LIMITED,
+    });
+    expect(vi.mocked(createPendingRegistration)).not.toHaveBeenCalled();
   });
 
   it('creates NO partner, NO user, NO tokens, and sets NO cookie', async () => {

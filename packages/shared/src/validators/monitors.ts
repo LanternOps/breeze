@@ -16,30 +16,27 @@ import { automationActionSchema } from './automationActions';
  * The API's kind registry translates one into the other.
  */
 export const MONITOR_KINDS = [
-  'cpu',
-  'memory',
-  'disk',
-  'offline',
-  'event_log',
-  'patch_compliance',
-  'service',
-  'process',
-  'process_resource',
-  'cert_expiry',
-  'bandwidth',
-  'disk_io',
-  'network_errors',
-  // W04 coverage (#5287 / #5291). The first three are handler-only kinds over
-  // data the agent already reports; `script` dispatches its own diagnostic
-  // probe; `network_check` compiles to a managed `network_monitors` row.
-  'antivirus',
-  'software_presence',
-  'backup_continuity',
-  'script',
-  'network_check',
+  'cpu', 'memory', 'disk', 'offline', 'event_log', 'patch_compliance',
+  'service', 'process', 'process_resource', 'cert_expiry',
+  'bandwidth', 'disk_io', 'network_errors',
+  'antivirus', 'software_presence', 'backup_continuity', 'script', 'network_check',
+  // W05c1 (alerting consolidation, spec C8): "all/any of the following". Children
+  // are restricted to SERVER_EVALUATED_MONITOR_KINDS — agent-delivered and
+  // worker-provisioned kinds are selected by ROOT kind when agent config, script
+  // probes and network rows are built (helpers.ts, monitorScriptWorker.ts,
+  // monitorCompiler.ts), so a composite child of those kinds would never
+  // receive evidence.
+  'composite',
 ] as const;
 export type MonitorKind = (typeof MONITOR_KINDS)[number];
 export const monitorKindSchema = z.enum(MONITOR_KINDS);
+
+/** Kinds whose evidence the server sweep reads itself — the only legal composite children. */
+export const SERVER_EVALUATED_MONITOR_KINDS = [
+  'cpu', 'memory', 'disk', 'offline', 'event_log', 'patch_compliance', 'cert_expiry',
+  'bandwidth', 'disk_io', 'network_errors', 'antivirus', 'software_presence', 'backup_continuity',
+] as const satisfies readonly MonitorKind[];
+export type ServerEvaluatedMonitorKind = (typeof SERVER_EVALUATED_MONITOR_KINDS)[number];
 
 const operatorSchema = z.enum(['gt', 'gte', 'lt', 'lte', 'eq', 'neq']);
 const durationMinutesSchema = z.number().int().min(1).max(1440).optional();
@@ -53,7 +50,7 @@ const percentThresholdCondition = z
   })
   .strict();
 
-export const monitorConditionSchemas = {
+const leafConditionSchemas = {
   cpu: percentThresholdCondition,
   memory: percentThresholdCondition,
   disk: percentThresholdCondition,
@@ -76,13 +73,13 @@ export const monitorConditionSchemas = {
   service: z
     .object({
       serviceName: z.string().min(1).max(255),
-      consecutiveFailures: z.number().int().min(1).max(20).optional(),
+      consecutiveFailures: z.number().int().min(1).max(100).optional(),
     })
     .strict(),
   process: z
     .object({
       processName: z.string().min(1).max(255),
-      consecutiveFailures: z.number().int().min(1).max(20).optional(),
+      consecutiveFailures: z.number().int().min(1).max(100).optional(),
     })
     .strict(),
   process_resource: z
@@ -180,14 +177,54 @@ export const monitorConditionSchemas = {
       expectStatus: z.number().int().min(100).max(599).optional(), // http_check
       pollingIntervalSeconds: z.number().int().min(30).max(3600).default(60),
       timeoutSeconds: z.number().int().min(1).max(120).default(5),
-      consecutiveFailures: z.number().int().min(1).max(20).default(2),
+      consecutiveFailures: z.number().int().min(1).max(100).default(2),
     })
     .strict()
     .refine((v) => v.checkType !== 'tcp_port' || v.port != null, {
       message: 'port required for tcp_port',
       path: ['port'],
     }),
+} satisfies Record<Exclude<MonitorKind, 'composite'>, z.ZodTypeAny>;
+
+const compositeChildSchema = z
+  .object({
+    kind: z.enum(SERVER_EVALUATED_MONITOR_KINDS),
+    condition: z.record(z.string(), z.unknown()),
+  })
+  .strict();
+
+/**
+ * `{ match, children }` — no nesting (the child kind enum excludes `composite`),
+ * 2..10 children, each child condition validated against its own kind schema so
+ * an invalid leaf fails HERE with a `children[i].condition` path, never at
+ * compile time. The API kind spec compiles it to `{ logic: and|or, conditions }`,
+ * which `alertConditions/index.ts` `evaluateConditionRecursive` already walks.
+ */
+export const compositeConditionSchema = z
+  .object({
+    match: z.enum(['all', 'any']).default('all'),
+    children: z.array(compositeChildSchema).min(2).max(10),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    value.children.forEach((child, index) => {
+      const result = leafConditionSchemas[child.kind].safeParse(child.condition);
+      if (!result.success) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['children', index, 'condition'],
+          message: `child condition does not match kind ${child.kind}: ${result.error.issues[0]?.message ?? 'invalid'}`,
+        });
+      }
+    });
+  });
+export type CompositeCondition = z.infer<typeof compositeConditionSchema>;
+
+export const monitorConditionSchemas = {
+  ...leafConditionSchemas,
+  composite: compositeConditionSchema,
 } satisfies Record<MonitorKind, z.ZodTypeAny>;
+
 
 export type MonitorConditionSchemas = typeof monitorConditionSchemas;
 
@@ -292,8 +329,24 @@ export const monitorAttachmentItemSchema = z.object({
   sortOrder: z.number().int().min(0).optional(),
 });
 
+export const monitorsInheritanceSchema = z.enum(['cumulative', 'replace']);
+export type MonitorsInheritance = z.infer<typeof monitorsInheritanceSchema>;
+
+/**
+ * `inheritance` (W05c1, spec §Inheritance correction): how this policy's
+ * attachment set combines with the rest of the device's chain in
+ * `resolveMonitorsForDevice`.
+ *  - cumulative (default): every attachment in the chain competes per monitor,
+ *    closest wins; the parent's attachments are consulted.
+ *  - replace: among the chain's REPLACE-mode links only the closest one
+ *    contributes, and that link's parent is not consulted. Cumulative links in
+ *    the same chain still add. This is exactly how the legacy `alert_rule`
+ *    feature was selected (closest policy holding the feature wins), which is
+ *    what a converted policy needs to reproduce its inline behaviour.
+ */
 export const monitorsInlineSettingsSchema = z.object({
   items: z.array(monitorAttachmentItemSchema).max(200).default([]),
+  inheritance: monitorsInheritanceSchema.default('cumulative'),
 });
 export type MonitorsInlineSettings = z.infer<typeof monitorsInlineSettingsSchema>;
 export type MonitorAttachmentItem = z.infer<typeof monitorAttachmentItemSchema>;

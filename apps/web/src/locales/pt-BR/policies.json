@@ -844,7 +844,13 @@
         "inherited": "Herdado",
         "overrideValue": "Valor de substituição",
         "overridesLabel": "Substituições:",
-        "failedToLoadMonitors": "Falha ao carregar os monitores"
+        "failedToLoadMonitors": "Falha ao carregar os monitores",
+        "createMonitor": "Criar monitor",
+        "recommended": {
+          "title": "Monitores recomendados",
+          "body": "O Breeze inclui monitores integrados de CPU, memória, disco e conformidade de patches. Nenhum está anexado a esta política ainda.",
+          "action": "Anexar todos os monitores integrados"
+        }
       },
       "pamTab": {
         "captureWindowsUACElevationPrompts": "Capturar solicitações de elevação do UAC do Windows",
@@ -1201,6 +1207,15 @@
         "save": "Salvar",
         "cancel": "Cancelar",
         "none": "Nenhuma justificativa registrada."
+      },
+      "legacyFreeze": {
+        "title": "Novas regras são criadas como monitores",
+        "body": "As regras existentes continuam editáveis aqui e serão convertidas em monitores na próxima versão.",
+        "link": "Abrir a aba Monitores"
+      },
+      "duplicate": {
+        "title": "Os dispositivos desta política alertarão duas vezes",
+        "body": "Estas condições existem como monitor anexado e também como regra ou vigilância legada: {{names}}"
       }
     }
   },

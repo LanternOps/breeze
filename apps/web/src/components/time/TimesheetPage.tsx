@@ -1,3 +1,5 @@
+import { usePermissions } from '../../lib/permissions';
+import BillingOutcome, { type BillingOutcomeStamp } from './BillingOutcome';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { sourceBadgeLabelKey } from './timeEntrySource';
@@ -8,6 +10,7 @@ import { formatMinutes } from '../../lib/timeFormat';
 import { formatMoney } from '../billing/shared/format';
 import { ApproximateMoneyLine } from '../billing/shared/ApproximateMoneyLine';
 import { onTimerChanged } from '../../lib/timerActions';
+import WorkTypeSelect, { type WorkTypeOption } from '../shared/WorkTypeSelect';
 import { useHashState } from '@/lib/useHashState';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
 // an island that hydrates before whichever other island happens to pull i18n in
@@ -18,7 +21,10 @@ import '../../lib/i18n';
 // Types
 // ---------------------------------------------------------------------------
 
-interface TsEntry {
+interface TsEntry extends BillingOutcomeStamp {
+  billingOverridden?: boolean;
+  workTypeId?: string | null;
+  workType?: WorkTypeOption | null;
   id: string;
   startedAt: string;
   endedAt: string | null;
@@ -67,6 +73,7 @@ interface User {
 }
 
 interface EditForm {
+  workTypeId: string | null;
   description: string;
   isBillable: boolean;
   hourlyRate: string;
@@ -141,6 +148,8 @@ const FRIENDLY: Record<string, string> = {
 
 export default function TimesheetPage() {
   const { t } = useTranslation('common');
+  const { can } = usePermissions();
+  const canManageBilling = can('time_entries', 'manage_billing');
   // SSR-safe hash adoption lives in the hook (#2421). parseHash's week already
   // falls back to the current Monday; tech → undefined keeps the null default.
   const [week, setWeek] = useHashState<string>(mondayUtc(new Date()), (h) => parseHash(h).week);
@@ -150,7 +159,7 @@ export default function TimesheetPage() {
   const [adminDenied, setAdminDenied] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [editForm, setEditForm] = useState<EditForm>({ description: '', isBillable: true, hourlyRate: '' });
+  const [editForm, setEditForm] = useState<EditForm>({ workTypeId: null, description: '', isBillable: true, hourlyRate: '' });
   const [loading, setLoading] = useState(true);
   // Monotonic id of the newest in-flight timesheet request (see loadSheet).
   const fetchSeq = useRef(0);
@@ -300,6 +309,7 @@ export default function TimesheetPage() {
   const startEdit = useCallback((entry: TsEntry) => {
     setEditingId(entry.id);
     setEditForm({
+      workTypeId: entry.workTypeId ?? null,
       description: entry.description ?? '',
       isBillable: entry.isBillable,
       hourlyRate: entry.hourlyRate ?? '',
@@ -314,8 +324,9 @@ export default function TimesheetPage() {
       ? { description: editForm.description || null }
       : {
           description: editForm.description || null,
-          isBillable: editForm.isBillable,
-          hourlyRate: editForm.hourlyRate === '' ? null : Number(editForm.hourlyRate),
+          ...(editForm.workTypeId !== (entry.workTypeId ?? null) ? { workTypeId: editForm.workTypeId } : {}),
+          ...(canManageBilling && editForm.isBillable !== entry.isBillable ? { isBillable: editForm.isBillable } : {}),
+          ...(canManageBilling && editForm.hourlyRate !== (entry.hourlyRate ?? '') ? { hourlyRate: editForm.hourlyRate === '' ? null : Number(editForm.hourlyRate) } : {}),
         };
     try {
       await runAction({
@@ -332,7 +343,7 @@ export default function TimesheetPage() {
     } catch (err) {
       handleActionError(err, t('longTail.time.TimesheetPage.errors.saveEntryFailed'));
     }
-  }, [editForm, week, tech, loadSheet]);
+  }, [editForm, week, tech, loadSheet, canManageBilling]);
 
   // Formatted week label
   const weekLabel = (() => {
@@ -443,6 +454,9 @@ export default function TimesheetPage() {
       {/* Days */}
       {sheet && (
         <div className="flex flex-col gap-3">
+          <div className="px-4 text-sm font-medium" data-testid="timesheet-header-work-type">
+            {t('tickets:timesheet.workTypeColumn')}
+          </div>
           {sheet.days.map((day) => (
             <section
               key={day.date}
@@ -489,11 +503,21 @@ export default function TimesheetPage() {
                             placeholder={t('common:labels.description')}
                             className="min-w-0 flex-1 rounded-md border bg-background px-2 py-1 text-sm"
                           />
+                          <div className="w-full sm:w-40">
+                            <WorkTypeSelect
+                              value={editForm.workTypeId}
+                              onChange={(workTypeId) => setEditForm((form) => ({ ...form, workTypeId }))}
+                              fallbackOption={entry.workType}
+                              disabled={entry.billingStatus === 'billed'}
+                              testId="timesheet-edit-work-type"
+                            />
+                          </div>
+                          <BillingOutcome stamp={entry} overrides={canManageBilling ? { ...(editForm.isBillable !== entry.isBillable ? { isBillable: editForm.isBillable } : {}), ...(editForm.hourlyRate !== (entry.hourlyRate ?? '') ? { hourlyRate: editForm.hourlyRate === '' ? null : editForm.hourlyRate } : {}) } : undefined} pending={!entry.billingOverridden && editForm.workTypeId !== (entry.workTypeId ?? null)} testId={`timesheet-edit-outcome-${entry.id}`} />
                           <label className="flex items-center gap-1 text-sm">
                             <input
                               type="checkbox"
                               checked={editForm.isBillable}
-                              disabled={entry.billingStatus === 'billed'}
+                              disabled={entry.billingStatus === 'billed' || !canManageBilling}
                               onChange={(e) => setEditForm((f) => ({ ...f, isBillable: e.target.checked }))}
                               data-testid={`timesheet-edit-billable-${entry.id}`}
                             />
@@ -502,6 +526,7 @@ export default function TimesheetPage() {
                           <input
                             type="number"
                             value={editForm.hourlyRate}
+                            readOnly={!canManageBilling}
                             disabled={entry.billingStatus === 'billed'}
                             onChange={(e) => setEditForm((f) => ({ ...f, hourlyRate: e.target.value }))}
                             aria-label={t('longTail.time.TimesheetPage.rate')}
@@ -529,6 +554,9 @@ export default function TimesheetPage() {
                       ) : (
                         // Normal row
                         <>
+                          <span className="w-32 shrink-0 break-words text-sm text-muted-foreground" data-testid={`timesheet-work-type-${entry.id}`}>
+                            {entry.workType?.name ?? t('tickets:workType.none')}
+                          </span>
                           <input
                             type="checkbox"
                             checked={selected.has(entry.id)}
@@ -572,7 +600,8 @@ export default function TimesheetPage() {
                               )}
                             </div>
                           </div>
-                          <div className="flex items-center gap-2">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <BillingOutcome stamp={entry} testId={`timesheet-outcome-${entry.id}`} />
                             <span className="text-sm tabular-nums text-muted-foreground">
                               {entry.endedAt ? formatMinutes(entry.durationMinutes) : t('longTail.time.TimesheetPage.running')}
                             </span>

@@ -12,7 +12,7 @@ import {
   resolveAutomationReferencesForOwner,
 } from '../automationRuntime';
 import type { AutomationAction } from '../automationRuntime';
-import type { AlertCondition } from '../alertConditions/types';
+import type { RootCondition } from '../alertConditions/types';
 
 /**
  * The monitor COMPILER (#5287 W02).
@@ -30,7 +30,8 @@ import type { AlertCondition } from '../alertConditions/types';
  */
 
 type DbTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
-type DbExecutor = typeof db | DbTx;
+export type DbExecutor = typeof db | DbTx;
+export type CompileOptions = Record<string, never>;
 
 export interface CompiledRefs {
   alertTemplateId: string;
@@ -119,7 +120,7 @@ export function buildDiagnosticScriptReferences(
 }
 
 /** The condition the alertConditions registry will evaluate for this monitor. */
-export function buildCompiledCondition(def: MonitorDefinitionRow): AlertCondition {
+export function buildCompiledCondition(def: MonitorDefinitionRow): RootCondition {
   const spec = getMonitorKindSpec(def.kind);
   const condition = spec.conditionSchema.parse(def.condition);
   // W04: `script` and `network_check` read their evidence back through a row
@@ -235,9 +236,16 @@ export function buildCompiledNetworkMonitor(
     // `checkType` IS the monitor_type pgEnum vocabulary — nothing is mapped.
     monitorType: c.checkType,
     target: c.target,
+    // `buildMonitorCommand` (`services/monitorCommands.ts`) spreads this
+    // `config` verbatim into the agent command payload — there is no
+    // translation layer downstream. So every key written here must already be
+    // the exact key `agent/internal/heartbeat/handlers_monitor.go` reads for
+    // that checkType, even where it differs from the kind's own condition
+    // schema field name (`expectStatus` here vs. the agent's `expectedStatus`,
+    // #6352). `port` already matches the agent key and needs no translation.
     config: {
       ...(c.port != null ? { port: c.port } : {}),
-      ...(c.expectStatus != null ? { expectStatus: c.expectStatus } : {}),
+      ...(c.expectStatus != null ? { expectedStatus: c.expectStatus } : {}),
     },
     pollingInterval: c.pollingIntervalSeconds,
     timeout: c.timeoutSeconds,
@@ -287,6 +295,7 @@ async function upsertManaged<T extends { id: string }>(
 export async function compileMonitorInTx(
   tx: DbTx,
   def: MonitorDefinitionRow,
+  _options: CompileOptions = {},
 ): Promise<CompiledRefs> {
   const now = new Date();
 

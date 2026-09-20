@@ -1,5 +1,7 @@
 import './setup';
 
+import { withSystemDbAccessContext } from '../../db';
+import { assignProfileToOrg, createProfile } from '../../services/billingProfileService';
 import { eq } from 'drizzle-orm';
 import { partners } from '../../db/schema';
 import { createOrganization, createPartner, createSite, createUser } from './db-utils';
@@ -51,4 +53,16 @@ export function gateLabel(
   name: string,
 ): string {
   return `[wave6 gate][${slice}] ${name}`;
+}
+
+/** Exercise the real profile validation and organization assignment paths. */
+export async function assignGateBillingProfile(fixture: GateOrgFixture, rate: number) {
+  return withSystemDbAccessContext(async () => {
+    const profile = await createProfile({ scope: 'system' }, fixture.partnerId, {
+      name: 'Gate rates', currencyCode: fixture.currencyCode,
+      baseCoverage: 'billable', baseHourlyRate: String(rate),
+    });
+    await assignProfileToOrg(fixture.orgId, fixture.partnerId, profile.id, fixture.userId);
+    return profile;
+  });
 }

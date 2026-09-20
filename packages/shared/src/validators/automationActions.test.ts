@@ -116,3 +116,28 @@ describe('automationActionSchema - whenOffline', () => {
     if (parsed.success) expect(parsed.data.actions[0]).toMatchObject({ whenOffline: 'skip' });
   });
 });
+
+describe('automationActionSchema - restart_service', () => {
+  it.each([{ maxAttempts: 0, cooldownSeconds: 30 }, { maxAttempts: 50, cooldownSeconds: 86400 }])('accepts restart bounds %j', (limits) => {
+    expect(automationActionSchema.parse({ type: 'execute_command', command: 'restart target', ...limits })).toMatchObject(limits);
+  });
+
+  it.each([{ maxAttempts: -1 }, { maxAttempts: 51 }, { maxAttempts: 1.5 }, { cooldownSeconds: 29 }, { cooldownSeconds: 86401 }])('rejects invalid restart bounds %j', (limits) => {
+    expect(automationActionSchema.safeParse({ type: 'execute_command', command: 'restart target', ...limits }).success).toBe(false);
+  });
+
+  it('preserves restart parameters', () => {
+    const response = { type: 'execute_command', kind: 'restart_service', command: 'restart target', maxAttempts: 7, cooldownSeconds: 120 };
+    expect(automationActionSchema.parse(response)).toMatchObject(response);
+  });
+});
+
+describe('automationActionSchema - agent-local restart', () => {
+  it.each([undefined, '', '   '])('accepts restart_service with command %j', (command) => {
+    expect(automationActionSchema.safeParse({ type: 'execute_command', kind: 'restart_service', command }).success).toBe(true);
+  });
+
+  it.each([undefined, '', '   '])('rejects ordinary execute_command with command %j', (command) => {
+    expect(automationActionSchema.safeParse({ type: 'execute_command', command }).success).toBe(false);
+  });
+});

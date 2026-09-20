@@ -1,3 +1,4 @@
+import { topologyHeartbeat } from '../../services/topology/heartbeat';
 import { Hono } from 'hono';
 import { timingSafeEqual } from 'node:crypto';
 import { bodyLimit } from 'hono/body-limit';
@@ -1350,7 +1351,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   if (data.metrics) {
     try {
       const thresholdScan = await maybeQueueThresholdFilesystemAnalysis(
-        { id: device.id, osType: device.osType },
+        { id: device.id, osType: device.osType, orgId: device.orgId },
         data.metrics.diskPercent
       );
       if (thresholdScan.queued) {
@@ -1828,6 +1829,17 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     ),
   });
 
+  let networkContextReceipt;
+  try {
+    const topology = await db.transaction(() => topologyHeartbeat(device, data));
+    mergedConfigUpdate.networkContext = topology.config;
+    networkContextReceipt = topology.receipt;
+  } catch (error) {
+    console.error('[heartbeat] Topology collection failed:', error);
+    captureException(error);
+    networkContextReceipt = data.networkContextV1 === undefined ? undefined : { accepted: false, reason: 'collection_unavailable', sourceReceipts: [] };
+  }
+
   // Main-branch response payload — built inside the org context, but the
   // manifest-trust-keyset and policy probe config are fetched AFTER this
   // context closes (see below).
@@ -1837,6 +1849,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     mainResponse: {
       commands: deliverableCommands,
       configUpdate: mergedConfigUpdate,
+      networkContextReceipt,
       upgradeTo,
       helperUpgradeTo: helperUpgradeTo ?? undefined,
       watchdogUpgradeTo: watchdogUpgradeTo ?? undefined,

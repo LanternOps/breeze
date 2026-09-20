@@ -12,6 +12,7 @@ import ScriptPickerModal, {
   type ScriptRunAsSelection,
 } from "./ScriptPickerModal";
 import MaintenanceModeDialog from "./MaintenanceModeDialog";
+import MoveDeviceOrgDialog from "./MoveDeviceOrgDialog";
 import { isInMaintenance } from "../../lib/maintenanceResource";
 import type { Device, DeviceStatus, OSType } from "./DeviceList";
 import type { DeviceActionOptions } from "./DeviceActions";
@@ -65,6 +66,7 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
   const [changeSiteOpen, setChangeSiteOpen] = useState(false);
   const [scriptPickerOpen, setScriptPickerOpen] = useState(false);
   const [maintenanceDialogOpen, setMaintenanceDialogOpen] = useState(false);
+  const [moveOrgDialogOpen, setMoveOrgDialogOpen] = useState(false);
 
   // Track every in-flight wake watcher so that navigating away aborts the
   // long-running poll loop. Without this, watchWakeOutcome keeps polling
@@ -458,6 +460,13 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
           setChangeSiteOpen(true);
           return;
 
+        case "move-org":
+          // Spec 2026-09-18 device-move-org D5: the move needs a target org,
+          // a target site and possibly a step-up factor, so it opens a dialog
+          // instead of firing a request here.
+          setMoveOrgDialogOpen(true);
+          return;
+
         case "install-homebrew": {
           // Opt-in, per-device package-manager bootstrap. The pinned installer
           // URL + sha256 live server-side (services/homebrewBootstrap.ts) — the
@@ -759,6 +768,20 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
             type: "success",
             message: `${device.hostname} ${t("deviceDetailPage.putInto")} maintenance mode`,
           });
+          void fetchDevice();
+        }}
+      />
+      <MoveDeviceOrgDialog
+        open={moveOrgDialogOpen}
+        device={{ id: device.id, hostname: device.hostname, orgId: device.orgId, orgName: device.orgName }}
+        onClose={() => setMoveOrgDialogOpen(false)}
+        onCompleted={({ targetOrgName }) => {
+          showToast({
+            type: "success",
+            message: t("deviceDetailPage.movedToOrg", { hostname: device.hostname, orgName: targetOrgName }),
+          });
+          // Refetch rather than trust the echoed row: the route disconnects
+          // the agent after commit, so status and org fields settle server-side.
           void fetchDevice();
         }}
       />

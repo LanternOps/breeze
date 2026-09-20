@@ -3,7 +3,7 @@ title: Devices
 description: Work with the device list and device Info tab — customizable columns, filters, VPN presence, battery status, and manual (hand-entered) assets.
 ---
 
-import { Aside } from '@astrojs/starlight/components';
+import { Aside, Steps } from '@astrojs/starlight/components';
 
 The **Devices** page is the home view for every managed endpoint — servers, workstations, laptops, discovered network devices, and hand-entered manual assets across all the organizations you can access. This page covers the device list itself (columns and filters) and the device detail **Info** tab, including VPN presence and battery status.
 
@@ -124,6 +124,34 @@ Selecting several removed devices at once in the device list adds bulk equivalen
 
 <Aside type="tip">
   To purge removed devices automatically after a retention window instead of deleting them by hand, add the **Device Lifecycle** feature to a configuration policy (**Fleet Management → Config Policies**). It defaults to off; turning it on and setting a number of days (1-3650) permanently deletes any device still removed after that many days, on a daily schedule. See [Configuration Policies](/features/configuration-policies/).
+</Aside>
+
+---
+
+## Moving a Device to Another Organization
+
+A partner technician can relocate a device -- with its history, tickets, custom-field values and policy assignments -- to a different organization of the same partner. Open the device page, choose **Move to Organization** from the **…** menu, pick the target organization and one of its sites, and confirm.
+
+### What moving requires
+
+<Steps>
+1. **Partner or system scope, with `devices:write` and `organizations:write`.** Organization-scoped users do not see the action; the API refuses them.
+
+2. **A signed-in technician.** API keys, MCP tools and other machine principals cannot move devices. The route requires an interactive user session whether or not two-factor authentication is enabled for the deployment.
+
+3. **A fresh second factor.** An assured session is not enough on its own -- the technician re-verifies with an authenticator app code or a passkey at the moment of the move. A technician whose only second factor is SMS must add an authenticator app or a passkey first. The verification is bound to the exact device, target organization and target site chosen, so it cannot be replayed for a different move.
+</Steps>
+
+### Unbilled work in another currency
+
+If the device's tickets carry unbilled time or parts in a currency other than the target organization's, the move is refused with an explanation. A technician who also holds `invoices:write` may accept the mismatch, in which case those rows keep their original currency after the move; anyone else is asked to have the open work billed or cleared first.
+
+### What happens after the move
+
+The agent is disconnected and reconnects under the new organization within its normal heartbeat interval. The device page refreshes to the new organization and site. Two audit events are written, one in each organization's trail (`device.move_org.source` and `device.move_org.target`).
+
+<Aside type="note">
+Moving is refused while durable PAM lifecycle evidence exists for the device, and while any of its tickets is pinned to a service deliverable. Both refusals leave the device untouched.
 </Aside>
 
 ---

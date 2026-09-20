@@ -381,7 +381,7 @@ describe('processAlertNotifications — partner-wide rail fan-out (#2130)', () =
     expect(result.queued).toBe(1);
   });
 
-  it("a partner-wide channel participates in the no-rules fallback for member-org alerts only", async () => {
+  it("a partner-wide Everything else row delivers member-org alerts only (the no-rules fallback is gone)", async () => {
     const partnerA = await createPartner();
     const partnerB = await createPartner();
     const orgA = await createOrganization({ partnerId: partnerA.id });
@@ -392,18 +392,26 @@ describe('processAlertNotifications — partner-wide rail fan-out (#2130)', () =
     const alertA = await seedAlert(orgA.id, deviceA);
     const alertB = await seedAlert(orgB.id, deviceB);
 
-    // Only partner A has a (partner-wide) channel; no routing rules at all.
-    await seedPartnerChannel(partnerA.id);
+    // Partner A has a partner-wide channel AND its Everything else row
+    // (what the W05b migration writes for it). No other rules anywhere.
+    const channelA = await seedPartnerChannel(partnerA.id);
+    const [defaultA] = await withDbAccessContext(partnerContext(partnerA.id, []), () =>
+      db.insert(notificationRoutingRules).values({
+        orgId: null, partnerId: partnerA.id, name: 'Everything else', priority: 1000000,
+        conditions: {}, channelIds: [channelA], enabled: true, isDefault: true,
+      }).returning(),
+    );
+    createdRules.push(defaultA!.id);
 
     const resultA = await withDbAccessContext(SYSTEM_CTX, () =>
       processAlertNotifications({ type: 'process-alert', alertId: alertA }),
     );
-    expect(resultA.queued).toBe(1); // fallback found the partner-wide channel
+    expect(resultA.queued).toBe(1); // the default row found the partner-wide channel
 
     const resultB = await withDbAccessContext(SYSTEM_CTX, () =>
       processAlertNotifications({ type: 'process-alert', alertId: alertB }),
     );
-    expect(resultB.queued).toBe(0); // another partner's channel NEVER leaks in
+    expect(resultB.queued).toBe(0); // another partner's row NEVER leaks in; no row → inbox only
   });
 
   it('a partner-wide escalation policy schedules delayed sends for a member-org alert', async () => {

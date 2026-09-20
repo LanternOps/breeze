@@ -24,7 +24,7 @@ import { z } from 'zod';
 import { breezeRegion, MCP_OAUTH_ENABLED, OAUTH_ISSUER } from '../config/env';
 import { apiKeyAuthMiddleware, requireApiKeyScope } from '../middleware/apiKeyAuth';
 import { bearerTokenAuthMiddleware, resolvePartnerAccessibleOrgIds } from '../middleware/bearerTokenAuth';
-import { getToolDefinitions, executeTool, getToolTier } from '../services/aiTools';
+import { getToolDefinitions, executeTool, getToolTier, getToolDomain } from '../services/aiTools';
 import { checkGuardrails, checkToolPermission, checkToolRateLimit, checkPermissionRequirement, checkPermissionRequirements, TIER3_ACTIONS } from '../services/aiGuardrails';
 import { isTenantToolName } from '@breeze/shared/validators';
 import type { TenantToolDescriptor } from '../services/toolSources/resolver';
@@ -47,6 +47,9 @@ import { compactToolResultForChat, redactAiToolOutputText } from '../services/ai
 import { sanitizeThrownToolError } from '../services/aiToolErrors';
 import { resolveDeprecatedToolAlias } from '../services/aiToolAliases';
 import { MCP_SERVER_INSTRUCTIONS, listMcpPrompts, getMcpPrompt, hasMcpPrompt } from '../services/mcpGuidance';
+import { API_VERSION } from '../version';
+import { buildMcpToolPresentation } from '../services/mcpToolPresentation';
+import { decodeToolsListCursor, encodeToolsListCursor, mcpToolsListPageSize, negotiateMcpProtocolVersion, parseMcpProtocolVersionHeader } from '../services/mcpProtocol';
 import {
   beginMcpToolExecutionLedger,
   completeMcpToolExecutionLedger,
@@ -730,6 +733,19 @@ mcpServerRoutes.post(
     const apiKey = c.get('apiKey') as McpApiKeyWithAuthFields;
     const principalKey = mcpPrincipalKey(apiKey);
     const isInitialize = pre.body.method === 'initialize';
+    // 2025-06-18 §Protocol Version Header: clients MUST send MCP-Protocol-Version
+    // on every request after initialize; an unsupported value is a 400. Absent
+    // = assume 2025-03-26 (backwards compatibility). Initialize itself carries
+    // the version in params, so the header is not checked there.
+    if (!isInitialize) {
+      const parsed = parseMcpProtocolVersionHeader(c.req.header('MCP-Protocol-Version'));
+      if (!parsed.ok) {
+        return c.json(
+          { jsonrpc: '2.0', id: pre.body.id ?? null, error: { code: -32600, message: `Unsupported MCP-Protocol-Version: ${parsed.value}` } },
+          400,
+        );
+      }
+    }
     const redis = getRedis();
 
     let trustedSessionId: string | undefined;
@@ -873,9 +889,9 @@ mcpServerRoutes.delete('/sse', (c) => {
 // JSON-RPC Method Dispatcher
 // ============================================
 
-export function buildInitializeResult() {
+export function buildInitializeResult(requestedProtocolVersion?: unknown) {
   return {
-    protocolVersion: '2024-11-05',
+    protocolVersion: negotiateMcpProtocolVersion(requestedProtocolVersion),
     capabilities: {
       tools: { listChanged: false },
       resources: { subscribe: false, listChanged: false },
@@ -883,7 +899,8 @@ export function buildInitializeResult() {
     },
     serverInfo: {
       name: 'breeze-rmm',
-      version: '1.0.0',
+      title: 'Breeze RMM',
+      version: API_VERSION,
     },
     instructions: MCP_SERVER_INSTRUCTIONS,
   };
@@ -900,14 +917,14 @@ async function handleJsonRpc(
   try {
     switch (req.method) {
       case 'initialize':
-        return jsonRpcResult(req.id, buildInitializeResult());
+        return jsonRpcResult(req.id, buildInitializeResult((req.params as { protocolVersion?: unknown } | undefined)?.protocolVersion));
 
       case 'notifications/initialized':
         // Client acknowledgment — no response needed but return empty result
         return jsonRpcResult(req.id, {});
 
       case 'tools/list':
-        return await handleToolsList(req.id, scopes, auth);
+        return await handleToolsList(req.id, scopes, auth, req.params);
 
       case 'tools/call':
         return await handleToolsCall(req.id, req.params ?? {}, auth, scopes, apiKey, c, sessionId);
@@ -1126,6 +1143,7 @@ async function handleToolsList(
   id: string | number,
   scopes: string[],
   auth: AuthContext,
+  params?: Record<string, unknown>,
 ): Promise<JsonRpcResponse> {
   const allTools = getToolDefinitions();
   const hasExecute = scopes.includes('ai:execute');
@@ -1164,7 +1182,9 @@ async function handleToolsList(
     const description = gatedActions.length > 0
       ? `${tool.description ?? ''} (Actions ${gatedActions.map((a) => `"${a}"`).join(', ')} require interactive approval and are not available over MCP — use the Breeze web app AI assistant for those.)`
       : tool.description ?? '';
+    const presentation = buildMcpToolPresentation(tool, getToolTier(tool.name), getToolDomain(tool.name));
     return {
+      ...presentation,
       name: tool.name,
       description,
       inputSchema: tool.input_schema,
@@ -1184,7 +1204,7 @@ async function handleToolsList(
   // + the execute_admin lever), applied to each descriptor's own tier. A
   // resolution failure (DB hiccup, etc.) degrades to no tenant tools rather
   // than failing tools/list for the entire core registry.
-  let tenantResult: Array<{ name: string; description: string; input_schema: Record<string, unknown> }> = [];
+  let tenantResult: Array<Omit<(typeof result)[number], 'inputSchema'> & { inputSchema: Record<string, unknown> }> = [];
   try {
     const tenant = await liveResolveTenantTools(auth);
     tenantResult = tenant
@@ -1194,17 +1214,46 @@ async function handleToolsList(
           (d.tier === 2 && hasWrite) ||
           (d.tier === 3 && hasExecute && (!requireExecuteAdmin || hasExecuteAdmin)),
       )
-      .map((d) => d.definition);
+      .map((d) => ({
+        ...buildMcpToolPresentation(d.definition, d.tier, 'integrations', { external: true }),
+        name: d.definition.name,
+        description: d.definition.description,
+        inputSchema: d.definition.input_schema,
+      }));
   } catch (err) {
     console.error('[MCP] Failed to resolve tenant tools for tools/list:', err);
   }
 
-  return jsonRpcResult(id, { tools: [...result, ...tenantResult] });
+  const byName = (a: { name: string }, b: { name: string }) => a.name.localeCompare(b.name, 'en');
+  const all = [...result.sort(byName), ...tenantResult.sort(byName)];
+  const pageSize = mcpToolsListPageSize();
+  if (pageSize <= 0) return jsonRpcResult(id, { tools: all });
+  // Offsets are best-effort across changes to the principal's visible tools,
+  // including tenant-tool resolution failures that temporarily omit those tools.
+  const offset = params?.cursor === undefined ? 0 : decodeToolsListCursor(params.cursor);
+  if (offset === null) return jsonRpcError(id, -32602, 'Invalid cursor');
+  const page = all.slice(offset, offset + pageSize);
+  const next = offset + pageSize < all.length ? encodeToolsListCursor(offset + pageSize) : undefined;
+  return jsonRpcResult(id, next ? { tools: page, nextCursor: next } : { tools: page });
 }
 
 // ============================================
 // tools/call
 // ============================================
+
+function structuredFromSafeText(safeText: string): Record<string, unknown> | undefined {
+  try {
+    const parsed: unknown = JSON.parse(safeText);
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
+    const object = parsed as Record<string, unknown>;
+    // Digests and pure returned errors are text, not successful tool data.
+    if (object.summarized === true) return undefined;
+    if (typeof object.error === 'string' && Object.keys(object).every((key) => key === 'error' || key === '_chat')) return undefined;
+    return object;
+  } catch {
+    return undefined;
+  }
+}
 
 async function handleToolsCall(
   id: string | number,
@@ -1413,6 +1462,7 @@ async function handleToolsCall(
       };
       const result = await executeTool(toolName, toolInput, toolAuth);
       const safeResult = compactToolResultForChat(toolName, result);
+      const structured = structuredFromSafeText(safeResult);
 
       // If result contains imageBase64, return it as an MCP image content block
       // so Claude can actually see the screenshot (instead of raw base64 in JSON text)
@@ -1429,14 +1479,20 @@ async function handleToolsCall(
           }
           response = jsonRpcResult(id, { content });
         } else {
-          response = jsonRpcResult(id, { content: [{ type: 'text', text: safeResult }] });
+          response = jsonRpcResult(id, {
+            content: [{ type: 'text', text: safeResult }],
+            ...(structured ? { structuredContent: structured } : {}),
+          });
         }
       } catch (err) {
         if (!(err instanceof SyntaxError)) {
           console.error('[MCP] Unexpected error parsing vision response:', err);
         }
         // Not JSON or no imageBase64 — fall through to text
-        response = jsonRpcResult(id, { content: [{ type: 'text', text: safeResult }] });
+        response = jsonRpcResult(id, {
+          content: [{ type: 'text', text: safeResult }],
+          ...(structured ? { structuredContent: structured } : {}),
+        });
       }
 
       return { status: 'success', ledgerResult: safeResult, response };
@@ -1608,8 +1664,11 @@ async function handleTenantToolCall(
     result: resultText,
   });
 
+  // Tenant execution already redacts source credentials from resultText.
+  const structured = isError ? undefined : structuredFromSafeText(resultText);
   return jsonRpcResult(id, {
     content: [{ type: 'text', text: resultText }],
+    ...(structured ? { structuredContent: structured } : {}),
     ...(isError ? { isError: true } : {}),
   });
 }

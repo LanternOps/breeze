@@ -90,6 +90,10 @@ jobs:
       addins: ${{ steps.classify.outputs.addins }}
       m365: ${{ steps.classify.outputs.m365 }}
       rust: ${{ steps.classify.outputs.rust }}
+      # Narrow gate for `topology-browser-gate` (#6117): the one job that builds
+      # the production web bundle and drives it in a real Chromium. Same
+      # fail-safe shape as `code` — anything unresolvable turns it on.
+      topology_browser: ${{ steps.classify.outputs.topology_browser }}
     steps:
       - name: Checkout (classifier script only)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -122,7 +126,7 @@ jobs:
           # a code change through as docs-only.
           full_suite() {
             echo "$1" >&2
-            printf 'code=true\ndocs=true\nagent=true\napp=true\napi=true\nweb=true\nportal=true\naddins=true\nm365=true\nrust=true\n' | tee -a "${GITHUB_OUTPUT}"
+            printf 'code=true\ndocs=true\nagent=true\napp=true\napi=true\nweb=true\nportal=true\naddins=true\nm365=true\nrust=true\ntopology_browser=true\n' | tee -a "${GITHUB_OUTPUT}"
           }
           if [[ "${EVENT_NAME}" == "pull_request" ]]; then
             # The PR files API needs no checkout and sees renames/deletes too; a
@@ -1679,16 +1683,24 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           set -o pipefail
-          sudo apt-get install -y --no-install-recommends gdisk dosfstools e2fsprogs xfsprogs parted util-linux udev
+          sudo apt-get install -y --no-install-recommends gdisk dosfstools e2fsprogs xfsprogs parted util-linux udev qemu-utils
           sudo udevadm settle || true
           cd agent
-          sudo -E env "PATH=$PATH" BREEZE_REBUILD_LOOP_TEST=1 go test -count=1 -run TestRun_LoopbackRealSystem ./internal/backup/rebuild/ -v 2>&1 | tee /tmp/rebuild-loopback.log
+          sudo -E env "PATH=$PATH" BREEZE_REBUILD_LOOP_TEST=1 go test -count=1 -run 'TestRun_LoopbackRealSystem|TestRun_LoopbackVhdxTarget' ./internal/backup/rebuild/ -v 2>&1 | tee /tmp/rebuild-loopback.log
           # A t.Skip (missing root, missing BREEZE_REBUILD_LOOP_TEST, or a
-          # missing tool) must never read as a pass here — the whole point
-          # of this step is to prove provisioning against a real loop
-          # device, not merely that `go test` exited 0.
+          # missing tool — qemu-img for the vhdx test) must never read as a
+          # pass here — the whole point of this step is to prove
+          # provisioning (and the W05a raw→VHDX conversion) against a real
+          # loop device, not merely that `go test` exited 0.
           if grep -q -- '--- SKIP' /tmp/rebuild-loopback.log; then
-            echo "::error::TestRun_LoopbackRealSystem was SKIPPED, not proven — see the skip reason logged above. Fix the environment (root/BREEZE_REBUILD_LOOP_TEST/missing tool), don't let this step go green on a skip."
+            echo "::error::A loopback test was SKIPPED, not proven — see the skip reason logged above. Fix the environment (root/BREEZE_REBUILD_LOOP_TEST/missing tool such as qemu-utils), don't let this step go green on a skip."
+            exit 1
+          fi
+          # Both tests must have actually run: a rename in the -run filter
+          # would otherwise leave this step vacuously green.
+          passes=$(grep -c -- '^--- PASS: TestRun_Loopback' /tmp/rebuild-loopback.log || true)
+          if [ "$passes" -ne 2 ]; then
+            echo "::error::expected exactly 2 loopback PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count"
             exit 1
           fi
 
@@ -2884,10 +2896,10 @@ jobs:
           persist-credentials: false
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
 
       - name: Build and export smoke image
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
           context: .
           file: ${{ matrix.dockerfile }}
@@ -3452,6 +3464,87 @@ jobs:
             kill "$(cat auth-browser-transition-api.pid)" || true
           fi
 
+  # ─── Topology production-browser gate (#6117) ────────────────────────────
+  # The topology map's layout runs in a real module worker, and everything that
+  # can break it lives OUTSIDE the component: the emitted same-origin worker
+  # asset URL (Astro/Vite build config) and the shipped CSP (`worker-src`, in
+  # apps/web/src/middleware.ts and apps/web/astro.config.mjs). A jsdom unit test
+  # mocks the Worker away and sees none of it, so this gate drives the BUILT
+  # production server (`playwright.topology-worker.config.ts` starts
+  # `node apps/web/dist/server/entry.mjs` itself, never the Vite dev server).
+  #
+  # NO Postgres, Redis or API: both specs route every request through a
+  # controlled in-page fixture (e2e-tests/helpers/topologyFixture.ts and
+  # topologyWorkerFixture.ts), which is also what proves the page is passive —
+  # it asserts zero commands, schedules, model calls, layout writes and
+  # cross-origin requests. The server-side truth (RLS, origin attribution,
+  # cascade) is proven separately against real Postgres by
+  # topologyBaselineAcceptance.integration.test.ts.
+  #
+  # Path-filtered rather than run on every PR: it is a production build plus a
+  # browser, and `changes.outputs.topology_browser` turns it on for the topology
+  # UI, the web build/CSP configuration, the shared topology contracts, the
+  # specs/fixtures and this workflow. `classify-pr-paths.sh` fails SAFE, so an
+  # unresolvable diff runs it. The classifier only sets `topology_browser` on a
+  # non-docs path outside the tooling allowlist, so this gate is already skipped
+  # on a docs-only or tooling-only PR without the code/app clause. BLOCKING when
+  # it runs: ci-success fails on anything but `success` or `skipped`.
+  topology-browser-gate:
+    name: Topology Production Browser Gate (Chromium)
+    runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.topology_browser == 'true'
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version-file: .node-version
+          cache: 'pnpm'
+
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile
+
+      # e2e-tests is outside the pnpm workspace and carries its own lockfile.
+      - name: Install e2e dependencies
+        working-directory: e2e-tests
+        run: npm ci
+
+      - name: Install Chromium
+        uses: ./.github/actions/install-chromium
+        with:
+          working-directory: e2e-tests
+
+      # The gate exists to exercise the production bundle, so the build is a
+      # step here rather than a `build-web` artifact download: the config starts
+      # its own server from apps/web/dist and must never serve a stale one.
+      - name: Build production web bundle
+        run: pnpm --filter @breeze/web build:prod
+
+      - name: Run topology production-browser gate
+        run: pnpm --dir e2e-tests exec playwright test --config=playwright.topology-worker.config.ts --project=chromium
+
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: topology-browser-gate-report
+          path: |
+            e2e-tests/playwright-report
+            e2e-tests/test-results
+          if-no-files-found: ignore
+          retention-days: 7
+
   # ─── Portal dev-mode hydration guard (#3906) ─────────────────────────────
   # Regression cover for #3906: every portal React island SSR'd correctly
   # behind Caddy in a dev-mode stack and then silently failed to hydrate, so
@@ -3688,10 +3781,10 @@ jobs:
         run: python3 docker/ai-workspace/check-lock.py
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
 
       - name: Build analysis runtime (no publishing)
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
           context: docker/ai-workspace
           platforms: linux/amd64
@@ -3715,7 +3808,7 @@ jobs:
   ci-success:
     name: CI Success
     runs-on: ubuntu-latest
-    needs: [changes, workspace-runtime, docs-check, lint, typecheck, check-migrations, test-api, test-m365-graph-read-executor, test-m365-graph-actions-executor, test-m365-communications-executor, test-web, test-mobile, mobile-native-changes, build-mobile-ios, test-portal, test-viewer, test-office-addin-core, test-excel-addin, test-word-addin, test-powerpoint-addin, test-outlook-addin, security-audit, build-api, build-m365-graph-read-executor, build-m365-graph-actions-executor, build-m365-communications-executor, build-web, build-portal, build-agent, test-agent, test-agent-windows, recovery-media-e2e, windows-runtime-smoke, integration-test, check-migrations-nonsuperuser, rust-check, build-smoke-images, smoke-test, guided-setup-smoke, auth-browser-transition-browser-contract]
+    needs: [changes, workspace-runtime, docs-check, lint, typecheck, check-migrations, test-api, test-m365-graph-read-executor, test-m365-graph-actions-executor, test-m365-communications-executor, test-web, test-mobile, mobile-native-changes, build-mobile-ios, test-portal, test-viewer, test-office-addin-core, test-excel-addin, test-word-addin, test-powerpoint-addin, test-outlook-addin, security-audit, build-api, build-m365-graph-read-executor, build-m365-graph-actions-executor, build-m365-communications-executor, build-web, build-portal, build-agent, test-agent, test-agent-windows, recovery-media-e2e, windows-runtime-smoke, integration-test, check-migrations-nonsuperuser, rust-check, build-smoke-images, smoke-test, guided-setup-smoke, auth-browser-transition-browser-contract, topology-browser-gate]
     if: ${{ !cancelled() }}
     steps:
       - name: Check all jobs passed
@@ -3771,6 +3864,8 @@ jobs:
           SMOKE_TEST_RESULT: ${{ needs.smoke-test.result }}
           GUIDED_SETUP_SMOKE_RESULT: ${{ needs.guided-setup-smoke.result }}
           AUTH_BROWSER_TRANSITION_BROWSER_CONTRACT_RESULT: ${{ needs.auth-browser-transition-browser-contract.result }}
+          TOPOLOGY_BROWSER_GATE_RESULT: ${{ needs.topology-browser-gate.result }}
+          TOPOLOGY_BROWSER_CHANGED: ${{ needs.changes.outputs.topology_browser }}
           IS_PR: ${{ github.event_name == 'pull_request' }}
         run: |
           # Fail closed: only a successful path check may skip native compilation. The
@@ -3910,7 +4005,10 @@ jobs:
              [[ "${INTEGRATION_TEST_RESULT}" != "skipped" ]] || \
              [[ "${CHECK_MIGRATIONS_NONSUPERUSER_RESULT}" != "skipped" ]] || \
              [[ "${AUTH_BROWSER_TRANSITION_BROWSER_CONTRACT_RESULT}" != "skipped" ]] || \
+             [[ "${TOPOLOGY_BROWSER_GATE_RESULT}" != "skipped" ]] || \
              [[ "${RUST_CHECK_RESULT}" != "skipped" ]]; }; } || \
+             { [[ "${TOPOLOGY_BROWSER_CHANGED}" == "true" ]] && [[ "${TOPOLOGY_BROWSER_GATE_RESULT}" != "success" ]]; } || \
+             { [[ "${TOPOLOGY_BROWSER_GATE_RESULT}" != "success" ]] && [[ "${TOPOLOGY_BROWSER_GATE_RESULT}" != "skipped" ]]; } || \
              { [[ "${AGENT_CHANGED}" == "true" ]] && [[ "${RECOVERY_MEDIA_E2E_RESULT}" != "success" ]]; } || \
              { [[ "${AGENT_CHANGED}" != "true" ]] && [[ "${AGENT_CHANGED}" != "false" ]]; } || \
              { [[ "${AGENT_CHANGED}" == "false" ]] && [[ "${RECOVERY_MEDIA_E2E_RESULT}" != "skipped" ]]; }; }; }; then

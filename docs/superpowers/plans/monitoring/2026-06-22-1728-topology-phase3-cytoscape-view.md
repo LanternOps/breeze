@@ -1,5 +1,7 @@
 # Network Topology Redesign — Phase 3 (Cytoscape View + Saved Layout) Implementation Plan
 
+> **Status: Superseded 2026-09-15 — historical and non-dispatchable.** Do not execute tasks or dispatch workers from this plan. The [intelligent topology specification](../../specs/monitoring/2026-09-15-intelligent-network-topology-design.md) supersedes this plan and the June design. Use the [replacement five-milestone implementation plan](2026-09-15-intelligent-network-topology-INDEX.md), now authored and registered with `register_feature`; its frontmatter links the authoritative feature tracker. The instructions below are retained only as historical context.
+
 > **For agentic workers:** Execute this plan with the `superpowers:subagent-driven-development` skill — one task per subagent, strict TDD (failing test → run-fails → minimal real impl → run-passes → commit), verify each task's `parent`/`HEAD` after it commits.
 
 **Issue:** #1728 — Network Discovery topology view redesign

@@ -1,13 +1,4 @@
 ---
-import DashboardLayout from '../../../layouts/DashboardLayout.astro';
-import NotificationChannelsPage from '../../../components/alerts/NotificationChannelsPage';
-import Breadcrumbs from '../../../components/layout/Breadcrumbs';
+// Channels moved into the Delivery facet (alerting consolidation W05b).
+return Astro.redirect('/alerts/delivery', 301);
 ---
-
-<DashboardLayout titleKey="titles.alertsChannels">
-  <Breadcrumbs client:load items={[
-    { label: 'Alerts', href: '/alerts' },
-    { label: 'Notification Channels' }
-  ]} />
-  <NotificationChannelsPage client:load />
-</DashboardLayout>

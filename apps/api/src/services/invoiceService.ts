@@ -16,7 +16,7 @@ import { snapshotCost } from './catalogPricing';
 // to keep allocation atomic with the number write inside its single transaction.
 import { formatInvoiceNumber } from './invoiceNumbers';
 import { emitInvoiceEvent } from './invoiceEvents';
-import { resolveInvoiceFooter } from './invoicePdf';
+import { resolveInvoiceFooter, resolveDraftBillTo } from './invoicePdf';
 import { enqueueInvoicePdfRender } from '../jobs/invoiceWorker';
 import {
   enqueueAccountingInvoicePush, enqueueAccountingInvoiceVoid,
@@ -33,6 +33,7 @@ import {
   assertInvoiceSessionsRevoked,
   requestInvoiceSessionRevocation,
 } from './stripeSessionRevocation';
+import { assignProfileToOrg, clearOrgAssignment } from './billingProfileService';
 import { changeOrgCurrency } from './orgCurrencyService';
 import { readOrgStampingDefaults, OrgCurrencyServiceError, type DbExecutor as OrgLockExecutor } from './orgCurrencyCore';
 import { buildAutomationEligibleOrgPredicate } from './tenantStatus';
@@ -723,14 +724,35 @@ export async function getInvoice(invoiceId: string, actor: InvoiceActor) {
   // lookup failure (e.g. no accounting connection row) must never fail the
   // whole invoice detail load.
   const accountingSync = await getInvoiceAccountingSync(invoiceId, inv.partnerId).catch(() => null);
+  // Draft BILL TO fallback (sweep paper cut #16): a draft has no bill-to
+  // snapshot yet (billToName/billToAddress/billToTaxId are stamped only at
+  // issue — issueInvoice below), so the detail card would otherwise show "No
+  // billing contact set" even for an org with a name and a billing contact.
+  // Same resolver the PDF renderer uses (loadInvoiceForRender, invoicePdf.ts)
+  // — display-only, never written back to the invoices row, and a no-op once
+  // issued (resolveDraftBillTo short-circuits on status !== 'draft').
+  let billToEmail: string | null = null;
+  let displayInvoice = inv;
+  if (inv.status === 'draft' && !inv.billToName?.trim()) {
+    const [org] = await db
+      .select({ name: organizations.name, billingContact: organizations.billingContact })
+      .from(organizations).where(eq(organizations.id, inv.orgId)).limit(1);
+    const resolved = resolveDraftBillTo({
+      status: inv.status, billToName: inv.billToName,
+      orgName: org?.name ?? null, orgBillingContact: org?.billingContact ?? null,
+    });
+    displayInvoice = { ...inv, billToName: resolved.billToName };
+    billToEmail = resolved.billToEmail;
+  }
   // Multi-currency (#3777, spec §10): surface the CACHED account currency and a
   // warn-don't-block mismatch so the detail page can flag the FX spread before
   // the partner sends a pay link. Cached columns only — no Stripe call here.
   return {
-    invoice: inv, lines: linesWithDeviceCount, stripeConnected: connected, // accounting view (all lines)
+    invoice: displayInvoice, lines: linesWithDeviceCount, stripeConnected: connected, // accounting view (all lines)
     stripeAccountCurrency: connected ? conn.defaultCurrency ?? null : null,
     currencyWarning: connected ? buildStripeCurrencyWarning(inv.currencyCode, conn.defaultCurrency) : null,
     accountingSync,
+    billToEmail,
   };
 }
 
@@ -954,6 +976,7 @@ const orgBillingProjection = () => ({
 export async function updateOrgBillingSettings(
   orgId: string,
   patch: {
+    billingProfileId?: string | null;
     taxId?: string | null; taxExempt?: boolean; taxRate?: number | null;
     billingContactEmail?: string | null; billingContactName?: string | null;
     billingAddressLine1?: string | null; billingAddressLine2?: string | null;
@@ -1022,9 +1045,25 @@ export async function updateOrgBillingSettings(
   if (patch.billingAddressCountry !== undefined) set.billingAddressCountry = patch.billingAddressCountry;
   const projection = orgBillingProjection();
 
-  // One transaction so the contact merge and the column update still land
-  // together, as they did when this was a single statement.
+  // The assignment, contact merge, and column update must commit or roll back together.
   const row = await db.transaction(async (tx) => {
+    if (patch.billingProfileId !== undefined) {
+      const partnerId = requirePartner(actor);
+      // Lock the org before assignment rows. The helper's SHARE currency barrier
+      // alone would need upgrading for the settings UPDATE and can deadlock
+      // with another save holding SHARE while waiting on the same assignment.
+      const [org] = await tx.select({ id: organizations.id }).from(organizations)
+        .where(and(eq(organizations.id, orgId), eq(organizations.partnerId, partnerId)))
+        .for('update').limit(1);
+      if (!org) throw new InvoiceServiceError('Organization not found', 404, 'ORG_NOT_FOUND');
+      if (patch.billingProfileId === null) {
+        await clearOrgAssignment(orgId, partnerId, tx);
+      } else {
+        if (!actor.userId) throw new InvoiceServiceError('An assignment requires a user', 403, 'ORG_DENIED');
+        // Acquire the org currency barrier before any contact/settings writes.
+        await assignProfileToOrg(orgId, partnerId, patch.billingProfileId, actor.userId, tx);
+      }
+    }
     if (Object.keys(contactPatch).length > 0) {
       // Existence check, scoped to the contact path ONLY. The merge inserts a
       // `contacts` row for the org, so an unknown orgId would raise an FK
@@ -1038,7 +1077,7 @@ export async function updateOrgBillingSettings(
         .from(organizations)
         .where(eq(organizations.id, orgId))
         .limit(1);
-      if (!exists) return undefined;
+      if (!exists) throw new InvoiceServiceError('Organization not found', 404, 'INVOICE_NOT_FOUND');
 
       // Merged FIRST so the projection below observes the merged blob —
       // OrgBillingSettings.tsx renders straight from this response.
@@ -1049,12 +1088,13 @@ export async function updateOrgBillingSettings(
     // drizzle rejects `.set({})` — read the same projection back instead.
     if (Object.keys(set).length === 0) {
       const [r] = await tx.select(projection).from(organizations).where(eq(organizations.id, orgId)).limit(1);
+      if (!r) throw new InvoiceServiceError('Organization not found', 404, 'INVOICE_NOT_FOUND');
       return r;
     }
     const [r] = await tx.update(organizations).set(set).where(eq(organizations.id, orgId)).returning(projection);
+    if (!r) throw new InvoiceServiceError('Organization not found', 404, 'INVOICE_NOT_FOUND');
     return r;
   });
-  if (!row) throw new InvoiceServiceError('Organization not found', 404, 'INVOICE_NOT_FOUND');
   return row;
 }
 

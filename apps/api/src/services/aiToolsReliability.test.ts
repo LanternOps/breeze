@@ -43,7 +43,8 @@ vi.mock('../db/schema', () => new Proxy({
   },
 }));
 
-vi.mock('./aiToolSchemas', () => ({
+vi.mock('./aiToolSchemas', async (importOriginal) => ({
+  deliveryToolSchema: (await importOriginal<typeof import('./aiToolSchemas')>()).deliveryToolSchema,
   validateToolInput: vi.fn(() => ({ success: true })),
 }));
 

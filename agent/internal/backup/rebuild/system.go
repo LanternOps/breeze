@@ -39,6 +39,13 @@ type System interface {
 	Unmount(ctx context.Context, dir string) error
 	Sync(ctx context.Context) error
 	Arch() string // runtime.GOARCH
+	// LookPath resolves an executable on PATH (exec.LookPath) — preflight
+	// uses it to refuse a vhdx target before anything is written when
+	// qemu-img is missing.
+	LookPath(name string) (string, error)
+	// FreeSpace reports the bytes available to this process on the
+	// filesystem holding dir (statfs bavail*bsize).
+	FreeSpace(dir string) (int64, error)
 }
 
 func partitionDevice(disk string, number int) string {

@@ -30,6 +30,7 @@ import { allocateQuoteCounter, formatQuoteNumber } from './quoteNumbers';
 import { createQuoteAcceptToken, regenerateQuoteAcceptToken, type QuoteAcceptTokenIdentity } from './quoteAcceptToken';
 import { buildQuoteTemplate } from './quoteEmail';
 import { getEmailService } from './email';
+import { partnerEmailCustomFromSettings } from './emailTemplates/renderPartnerEmail';
 import { resolveBillingEmail } from './invoicePdf';
 import { isQuoteExpired } from './quoteExpiry';
 import { buildSellerSnapshot, buildBillToAddress } from './sellerSnapshot';
@@ -774,6 +775,7 @@ async function deliverQuoteEmail(
       subject: opts.subject,
       pdfAttached: includePdf,
       signature: partnerRow?.emailSignature ?? undefined,
+      custom: partnerEmailCustomFromSettings(partnerRow?.settings, 'quote_send'),
     });
     // MSP-branded envelope: display name "<Partner> via Breeze" on the
     // platform's own from-address (SPF/DKIM stays aligned — we never spoof

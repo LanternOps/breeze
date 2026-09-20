@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Reads changed-file paths on stdin (one per line) and prints ten lines in
-# GITHUB_OUTPUT form: `code`, `docs`, `agent`, `app`, then the six area flags
-# `api`, `web`, `portal`, `addins`, `m365`, `rust` — each `true|false`.
+# Reads changed-file paths on stdin (one per line) and prints eleven lines in
+# GITHUB_OUTPUT form: `code`, `docs`, `agent`, `app`, the six area flags
+# `api`, `web`, `portal`, `addins`, `m365`, `rust`, then `topology_browser` —
+# each `true|false`.
 #
 # A documentation path is docs/**, apps/docs/**, or a *.md / *.mdx file
 # anywhere — the exact set `ci.yml` used to `paths-ignore` and `docs-ci.yml`
@@ -57,9 +58,21 @@
 # Docs paths set no area. apps/mobile/** sets none either: mobile is gated by
 # its own `mobile-native-changes` filter and test-mobile rides `app`.
 #
+# `topology_browser` gates the one job that builds the production web bundle
+# and drives it in a real Chromium (`topology-browser-gate` in ci.yml, #6117).
+# It is deliberately narrow: only the topology UI, the build/CSP configuration
+# that governs how the layout module worker is emitted and allowed to run, the
+# shared topology contracts the bundle validates against, the specs/fixtures
+# themselves, and this workflow. It is matched only inside the non-docs branch,
+# so `topology_browser=true` always implies `code=true` — the gate builds and
+# boots the web app, which is meaningless on a PR that skips the code jobs.
+# Every path it matches also falls outside the tooling allowlist, so it implies
+# `app=true` as well.
+#
 # Fail-closed: an empty file list is `code=true docs=true agent=true
-# app=true` and every area true. Deciding "nothing changed" from no evidence is how a broken
-# listing would green a PR (or silently skip a job that should have run).
+# app=true topology_browser=true` and every area true. Deciding "nothing
+# changed" from no evidence is how a broken listing would green a PR (or
+# silently skip a job that should have run).
 set -euo pipefail
 
 # The QEMU job's dependency set, pinned beside this script (see that file's
@@ -102,6 +115,7 @@ portal=false
 addins=false
 m365=false
 rust=false
+topology_browser=false
 seen=false
 all_areas() {
   api=true; web=true; portal=true; addins=true; m365=true; rust=true
@@ -154,15 +168,35 @@ while IFS= read -r path; do
     .github/release-provenance/*) : ;;
     *) app=true ;;
   esac
+  # Topology production-browser gate (#6117): the topology UI, the web
+  # build/CSP config that governs the layout module worker, the shared topology
+  # contracts, the Chromium specs/fixtures and this workflow. Reached only on a
+  # non-docs path (the docs branch above `continue`s), so it implies code=true.
+  case "${path}" in
+    apps/web/src/components/topology/*|\
+    apps/web/src/middleware.*|\
+    apps/web/astro.config.*|\
+    apps/web/vite.config.*|\
+    apps/web/package.json|\
+    pnpm-lock.yaml|\
+    packages/shared/src/validators/topology*|\
+    packages/shared/src/types/topology*|\
+    e2e-tests/playwright.topology-worker.config.ts|\
+    e2e-tests/tests/topology-*.spec.ts|\
+    e2e-tests/helpers/topology*|\
+    e2e-tests/pages/TopologyPage.ts|\
+    .github/workflows/ci.yml) topology_browser=true ;;
+  esac
 done
 
 if [[ "${seen}" != "true" ]]; then
-  echo "classify-pr-paths: no changed files listed; treating as a code+docs+agent+app change in every area (fail-closed)" >&2
+  echo "classify-pr-paths: no changed files listed; treating as a code+docs+agent+app+topology_browser change in every area (fail-closed)" >&2
   code=true
   docs=true
   agent=true
   app=true
   all_areas
+  topology_browser=true
 fi
 
 echo "code=${code}"
@@ -175,3 +209,4 @@ echo "portal=${portal}"
 echo "addins=${addins}"
 echo "m365=${m365}"
 echo "rust=${rust}"
+echo "topology_browser=${topology_browser}"

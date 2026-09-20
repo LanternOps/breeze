@@ -1,6 +1,9 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent, act } from '@testing-library/react';
 
+let canManageBilling = true;
+vi.mock('../../lib/permissions', () => ({ usePermissions: () => ({ can: () => canManageBilling }) }));
+beforeEach(() => { canManageBilling = true; });
 const fetchWithAuth = vi.fn();
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: (...a: unknown[]) => fetchWithAuth(...a) }));
 vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
@@ -41,6 +44,8 @@ describe('TimerWidget', () => {
     fetchWithAuth.mockResolvedValue(jsonRes(makeRunning()));
     render(<TimerWidget />);
     fireEvent.click(await screen.findByTestId('timer-widget-stop'));
+    // Work types are selected at start, never when stopping a running timer.
+    expect(screen.queryByTestId('timer-work-type')).toBeNull();
     fireEvent.change(screen.getByTestId('timer-stop-description'), { target: { value: 'fixed it' } });
     fireEvent.click(screen.getByTestId('timer-stop-billable'));
     fetchWithAuth.mockResolvedValueOnce(jsonRes({ id: 'te-1' }))
@@ -63,4 +68,25 @@ describe('TimerWidget', () => {
     act(() => { window.dispatchEvent(new CustomEvent(TIMER_CHANGED_EVENT)); });
     expect(await screen.findByTestId('timer-widget')).toBeTruthy();
   });
+});
+
+
+it('shows the resolved outcome and omits billing override when stopping without permission', async () => {
+  canManageBilling = false;
+  fetchWithAuth.mockResolvedValue(jsonRes({ ...makeRunning(), coverage: 'included', isBillable: true }));
+  render(<TimerWidget />);
+  fireEvent.click(await screen.findByTestId('timer-widget-stop'));
+  expect(screen.getByTestId('timer-stop-outcome')).toBeInTheDocument();
+  expect(screen.getByTestId('timer-stop-billable')).toBeDisabled();
+  fireEvent.click(screen.getByTestId('timer-stop-submit'));
+  await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledWith('/time-entries/stop', expect.objectContaining({ body: '{}' })));
+});
+
+
+it('shows the manager billable draft in the stop outcome', async () => {
+  fetchWithAuth.mockResolvedValue(jsonRes({ ...makeRunning(), isBillable: true, coverage: 'included' }));
+  render(<TimerWidget />);
+  fireEvent.click(await screen.findByTestId('timer-widget-stop'));
+  fireEvent.click(screen.getByTestId('timer-stop-billable'));
+  expect(screen.getByTestId('timer-stop-outcome')).toHaveTextContent('Non-billable');
 });

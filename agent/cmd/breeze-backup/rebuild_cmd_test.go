@@ -21,7 +21,10 @@ func TestParseTargetFlag(t *testing.T) {
 		{"image:/tmp/x.img", "40G", rebuild.Target{Kind: rebuild.TargetImage, Path: "/tmp/x.img", ImageSizeBytes: 40 << 30}, false},
 		{"image:/tmp/x.img", "512M", rebuild.Target{Kind: rebuild.TargetImage, Path: "/tmp/x.img", ImageSizeBytes: 512 << 20}, false},
 		{"/dev/sdb", "", rebuild.Target{}, true},
-		{"vhdx:/x", "", rebuild.Target{}, true},
+		{"vhdx:/x", "", rebuild.Target{Kind: rebuild.TargetVHDX, Path: "/x"}, false},
+		{"vhdx:/tmp/x.vhdx", "20G", rebuild.Target{Kind: rebuild.TargetVHDX, Path: "/tmp/x.vhdx", ImageSizeBytes: 20 << 30}, false},
+		{"vhdx:/tmp/x.vhdx", "lots", rebuild.Target{}, true},
+		{"qcow2:/x", "", rebuild.Target{}, true},
 		{"image:/tmp/x.img", "lots", rebuild.Target{}, true},
 	} {
 		got, err := parseTargetFlag(tt.in, tt.size)

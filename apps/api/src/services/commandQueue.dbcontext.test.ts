@@ -59,7 +59,7 @@ vi.mock('../db', () => ({
       values: vi.fn((row: Record<string, unknown>) => ({
         returning: vi.fn(async () => {
           ctxState.events.push(`insert:device_commands@depth${ctxState.depth}`);
-          dbState.insertedCommand = { ...row, id: 'cmd-1' };
+          dbState.insertedCommand = { id: 'cmd-1', ...row };
           return [dbState.insertedCommand];
         }),
         execute: vi.fn(async () => undefined),
@@ -460,4 +460,14 @@ describe('precheckCommandExecution org gate (#5264)', () => {
 
     expect(result.status).toBe('completed');
   });
+});
+
+it('executeCommand preserves a caller-supplied command ID through committed insert and result', async () => {
+  const commandId = '11111111-1111-4111-8111-111111111111';
+  const result = await executeCommand('device-1', 'list_services', {}, {
+    commandId, preferHeartbeat: true,
+  });
+  expect(dbState.insertedCommand?.id).toBe(commandId);
+  expect(result.commandId).toBe(commandId);
+  expect(result.status).toBe('completed');
 });

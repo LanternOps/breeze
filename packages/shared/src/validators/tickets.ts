@@ -59,7 +59,7 @@ export const createTicketFromChatSchema = z
     status: z.enum(['open', 'resolved']),
     resolutionNote: z.string().max(50_000).optional(),
     timeMinutes: z.number().int().min(0).max(24 * 60),
-    billable: z.boolean(),
+    billable: z.boolean().optional(),
     priority: ticketPrioritySchema.optional(),
   })
   .refine((v) => v.status !== 'resolved' || (v.resolutionNote?.trim().length ?? 0) > 0, {
@@ -191,15 +191,16 @@ export const listTicketsQuerySchema = z.object({
 });
 
 export const ticketCategoryInputSchema = z.object({
-  // rateCurrency is server-managed; unknown client fields are stripped by Zod.
+  // Deprecated pricing keys are stripped; routes report their presence as warnings.
   name: z.string().min(1).max(100),
   color: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
   parentId: z.string().guid().nullable().optional(),
   defaultPriority: ticketPrioritySchema.nullable().optional(),
   responseSlaMinutes: z.number().int().positive().nullable().optional(),
   resolutionSlaMinutes: z.number().int().positive().nullable().optional(),
-  defaultBillable: z.boolean().optional(),
-  defaultHourlyRate: z.number().nonnegative().nullable().optional(),
+  // #4615 / spec §3.1: applied server-side at stamp time when the entry has
+  // no workTypeId. The work type selects a row in the resolved billing profile.
+  defaultWorkTypeId: z.string().uuid().nullable().optional(),
   defaultTimeEntryMinutes: z.number().int().min(1).max(1440).nullable().optional(),
   sortOrder: z.number().int().optional(),
   isActive: z.boolean().optional()

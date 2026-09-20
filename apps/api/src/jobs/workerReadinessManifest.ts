@@ -24,6 +24,12 @@ export type WorkerInitializerClassification =
       initializer:
         | 'desktopSessionOrphanRecovery'
         | 'oauthRevocationRetryWorker'
+        | 'topologyOutboxWorker'
+        | 'topologyReconcileWorker'
+        | 'topologyCollectionRetentionWorker'
+        | 'topologyTemplateApplyWorker'
+        | 'topologyDiagnosticWorker'
+        | 'topologyDiagnosticSweeper'
         | 'incidentCorrelationWorker'
         | 'incidentTimelineEnricher'
         | 'incidentSlaMonitor';
@@ -82,6 +88,9 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('m365SyncRetention'),
   consumers('serviceProcessCheckRetention'),
   consumers('changeLogRetention'),
+  // Disk Cleanup v2 W03. Plain Redis-required consumer: it constructs and
+  // attaches unconditionally wherever it is placed, with no feature flag.
+  consumers('filesystemCleanupRunRetention'),
   consumers('oauthCleanup'),
   consumers('stripeAccountCacheRefresh'),
   consumers('exchangeRateSync'),
@@ -101,6 +110,13 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   { kind: 'non_consumer', initializer: 'desktopSessionOrphanRecovery' },
   consumers('playbookRetention'),
   consumers('discoveryWorker'),
+  // Database-backed interval repair; no BullMQ consumer to declare.
+  { kind: 'non_consumer', initializer: 'topologyOutboxWorker' },
+  { kind: 'non_consumer', initializer: 'topologyReconcileWorker' },
+  { kind: 'non_consumer', initializer: 'topologyCollectionRetentionWorker' },
+  { kind: 'non_consumer', initializer: 'topologyTemplateApplyWorker' },
+  { kind: 'non_consumer', initializer: 'topologyDiagnosticWorker' },
+  { kind: 'non_consumer', initializer: 'topologyDiagnosticSweeper' },
   consumers('networkBaselineWorker'),
   consumers('snmpWorker'),
   consumers('monitorWorker'),

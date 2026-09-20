@@ -21,6 +21,7 @@ export interface OfflineRulePlan {
   titleTemplate: string;
   messageTemplate: string;
   templateId?: string;
+  monitorId?: string;
 }
 
 export type OfflineEffectPayload =

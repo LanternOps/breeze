@@ -38,7 +38,7 @@ vi.mock('../../services/timeEntryEvents', () => ({ emitTimeEntryEvent: vi.fn().m
 import { eq } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
 import {
-  catalogItemOrgPricing, contracts, invoices, organizations, orgTicketSettings, ticketParts, tickets, timeEntries,
+  catalogItemOrgPricing, contracts, invoices, organizations, billingProfiles, orgBillingProfileAssignments, ticketParts, tickets, timeEntries,
 } from '../../db/schema';
 import {
   activateContract, addContractLineToContract, createContract,
@@ -46,10 +46,9 @@ import {
 import { assembleDraftFromOrg, createManualInvoice, updateOrgBillingSettings } from '../../services/invoiceService';
 import { getOrgCurrencyImpact } from '../../services/orgCurrencyService';
 import { createTimeEntry, type TimeEntryActor } from '../../services/timeEntryService';
-import { upsertOrgTicketSettings } from '../../services/ticketConfigService';
 import { createTicket } from '../../services/ticketService';
 import { createCatalogItemWithPrice } from './db-utils';
-import { seedGateOrg, type GateOrgFixture } from './multiCurrencyWave6GateFixtures';
+import { assignGateBillingProfile, seedGateOrg, type GateOrgFixture } from './multiCurrencyWave6GateFixtures';
 
 const RUN = !!process.env.DATABASE_URL;
 
@@ -61,12 +60,13 @@ const ORG_RATE = 85.5;
 function timeActor(fixture: GateOrgFixture): TimeEntryActor {
   return {
     userId: fixture.userId, name: 'W6 Technician', partnerId: fixture.partnerId,
-    manageAll: true, accessibleOrgIds: [fixture.orgId],
+    manageAll: true, manageBilling: false, accessibleOrgIds: [fixture.orgId],
   };
 }
 
 interface Seeded {
   fixture: GateOrgFixture;
+  profileId: string;
   invoiceId: string;
   contractId: string;
   timeEntryId: string;
@@ -77,7 +77,7 @@ interface Seeded {
 /**
  * A EUR org (USD partner) holding one of everything the preflight reports:
  * a EUR draft invoice, a EUR ACTIVE contract, a EUR unbilled billable time
- * entry, a LEGACY USD unbilled part, a EUR org default hourly rate, and a EUR
+ * entry, a LEGACY USD unbilled part, an assigned EUR billing profile, and a EUR
  * catalog org override.
  *
  * The legacy USD part is inserted directly: `addTicketPart` stamps the org's
@@ -88,9 +88,7 @@ interface Seeded {
 async function seedEurOrg(): Promise<Seeded> {
   const fixture = await seedGateOrg('EUR');
 
-  await withSystemDbAccessContext(() => upsertOrgTicketSettings(
-    fixture.orgId, { defaultHourlyRate: ORG_RATE, defaultBillable: true },
-  ));
+  const profile = await assignGateBillingProfile(fixture, ORG_RATE);
 
   const invoice = await withSystemDbAccessContext(() => createManualInvoice(
     { orgId: fixture.orgId, notes: 'W6 org-currency draft' }, fixture.actor,
@@ -130,7 +128,7 @@ async function seedEurOrg(): Promise<Seeded> {
   }));
 
   return {
-    fixture, invoiceId: invoice.id, contractId: contract.id,
+    fixture, profileId: profile.id, invoiceId: invoice.id, contractId: contract.id,
     timeEntryId: entry.id, legacyPartId: legacyPart!.id, catalogItemId: item.id,
   };
 }
@@ -142,7 +140,8 @@ async function snapshotRows(s: Seeded) {
     contract: await db.select().from(contracts).where(eq(contracts.id, s.contractId)),
     timeEntry: await db.select().from(timeEntries).where(eq(timeEntries.id, s.timeEntryId)),
     part: await db.select().from(ticketParts).where(eq(ticketParts.id, s.legacyPartId)),
-    rateSettings: await db.select().from(orgTicketSettings).where(eq(orgTicketSettings.orgId, s.fixture.orgId)),
+    profile: await db.select().from(billingProfiles).where(eq(billingProfiles.id, s.profileId)),
+    assignment: await db.select().from(orgBillingProfileAssignments).where(eq(orgBillingProfileAssignments.orgId, s.fixture.orgId)),
     override: await db.select().from(catalogItemOrgPricing).where(eq(catalogItemOrgPricing.orgId, s.fixture.orgId)),
   }));
 }
@@ -185,11 +184,11 @@ describe.runIf(RUN)('org currency change (#3778, spec §5)', () => {
     expect(usd.billables.monetaryTimeSnapshots).toBe(0);
     expect(usd.recovery).toEqual({ kind: 'assemble_draft', currencyCode: 'USD' });
 
-    // Match-or-skip: the EUR org default rate stops applying under GBP, and the
+    // Match-or-skip: the assigned EUR profile stops applying under GBP, and the
     // EUR catalog override is skipped by resolvePrice (it cannot coexist with a
     // GBP one — UNIQUE(catalog_item_id, org_id)).
-    expect(impact.configurationWarnings.orgDefaultRate)
-      .toEqual({ configured: true, rateCurrency: 'EUR', willStopApplying: true });
+    expect(impact.configurationWarnings.assignedBillingProfile)
+      .toEqual({ id: s.profileId, currencyCode: 'EUR', currencyMismatch: true });
     expect(impact.configurationWarnings.orgCatalogOverridesSkipped).toBe(1);
   });
 
