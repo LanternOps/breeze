@@ -42,6 +42,7 @@ export * from './agentVersionPins';
 export * from './enrollmentDefaults';
 export * from './softwareDetection';
 export * from './softwareDownloadPolicy';
+export * from './systemCleanup';
 export * from './psa';
 export * from './deviceRoles';
 export * from './deviceFunctions';
