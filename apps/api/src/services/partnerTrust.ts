@@ -157,6 +157,8 @@ export const GATED_COMMAND_TYPES = [
   'start_desktop',
   'start_service',
   'stop_service',
+  'system_cleanup_list',
+  'system_cleanup_run',
   'system_state_collect',
   'take_screenshot',
   'task_disable',

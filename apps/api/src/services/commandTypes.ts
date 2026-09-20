@@ -59,6 +59,18 @@ export const CommandTypes = {
   FILE_TRASH_RESTORE: 'file_trash_restore',
   FILE_TRASH_PURGE: 'file_trash_purge',
   FILE_LIST_DRIVES: 'file_list_drives',
+  // OS-native disk cleanup (Disk Cleanup v2 §5.3). A SECOND cleanup engine
+  // beside FILESYSTEM_ANALYSIS: opaque platform maintenance (cleanmgr
+  // handlers, DISM component cleanup, Time Machine local snapshots, brew
+  // cleanup, package caches, journal vacuum) whose safety model is a closed
+  // catalogue of action ids rather than a previewed path list.
+  //
+  // Defined HERE and not in commandQueue.ts: #5128 moved this table into a
+  // leaf module precisely because commandOfflinePolicy.ts builds its
+  // fail-closed registry from it at load time, and the round trip through
+  // commandQueue was a real ESM initialisation cycle.
+  SYSTEM_CLEANUP_LIST: 'system_cleanup_list',
+  SYSTEM_CLEANUP_RUN: 'system_cleanup_run',
 
   // Terminal
   TERMINAL_START: 'terminal_start',
