@@ -1964,3 +1964,58 @@ func TestRunBackup_FileOnlyRunNeverCollectsLayout(t *testing.T) {
 		t.Fatalf("file-only run touched layout: called=%v job=%+v", called, job)
 	}
 }
+
+// TestRunBackup_SystemStateOnlyFailureDoesNotDuplicateReason covers #5415: on a
+// state-only run the collection failure becomes the job's fatal Error, and the
+// server concatenates Error and Warning into errorLog with exact-string dedup
+// only. Leaving the "system state was not collected: <reason>" warning in place
+// therefore printed the same reason twice. The warning is redundant once the
+// same failure is the terminal error, so it must be withdrawn.
+func TestRunBackup_SystemStateOnlyFailureDoesNotDuplicateReason(t *testing.T) {
+	stubCollectSystemState(t, func() (*systemstate.SystemStateManifest, string, error) {
+		return nil, "", fmt.Errorf(`reg save failed for hive(s) [SYSTEM]: exit status 1`)
+	})
+
+	mgr := NewBackupManager(BackupConfig{
+		Provider:           newMockProvider(),
+		SystemStateEnabled: true,
+	})
+	job, err := mgr.RunBackup()
+	if err == nil {
+		t.Fatal("a state-only run that collected nothing must fail loud")
+	}
+	if job.Status != jobStatusFailed {
+		t.Fatalf("status = %q, want failed", job.Status)
+	}
+	if !strings.Contains(job.Error.Error(), "SYSTEM") {
+		t.Errorf("the fatal error must name the failing hive; error = %q", job.Error)
+	}
+	if job.Warning != "" {
+		t.Errorf("the collection-failure note is already the fatal error; warning must not repeat it, got %q", job.Warning)
+	}
+}
+
+func TestRemoveWarning(t *testing.T) {
+	cases := []struct {
+		name     string
+		warning  string
+		fragment string
+		want     string
+	}{
+		{"only fragment", "a", "a", ""},
+		{"leading fragment", "a; b", "a", "b"},
+		{"middle fragment", "a; b; c", "b", "a; c"},
+		{"trailing fragment", "a; b", "b", "a"},
+		{"absent fragment", "a; b", "zzz", "a; b"},
+		{"empty fragment is a no-op", "a; b", "", "a; b"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			job := &BackupJob{Warning: tc.warning}
+			removeWarning(job, tc.fragment)
+			if job.Warning != tc.want {
+				t.Errorf("warning = %q, want %q", job.Warning, tc.want)
+			}
+		})
+	}
+}

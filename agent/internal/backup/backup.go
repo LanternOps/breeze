@@ -671,6 +671,12 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 
 	// System state collection: gather OS config, hardware profile, etc.
 	var systemStateErr error
+	// The exact warning fragment recorded for a failed collection, so the
+	// state-only failure branch below can withdraw it when the same error
+	// becomes the job's fatal Error (#5415) — otherwise the server's
+	// errorLog, which joins Error and Warning with exact-string dedup only,
+	// prints the same reason twice in slightly different wrappings.
+	var systemStateWarning string
 	// systemStateStagingIdx is always noStagingIdx now: the staging dir is
 	// published separately (see publishSystemState) rather than appended to
 	// backupPaths, so there is never an entry in backupPaths for the VSS
@@ -695,7 +701,8 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 			// absent — the same silent outcome as #3026, reached by a different
 			// route. CollectSystemState only errors when a REQUIRED class
 			// failed, i.e. the capture would not boot at restore time.
-			appendWarning(job, "system state was not collected: "+ssErr.Error())
+			systemStateWarning = "system state was not collected: " + ssErr.Error()
+			appendWarning(job, systemStateWarning)
 		} else {
 			manifest.CollectorVersion = m.config.AgentVersion
 			job.SystemStateManifest = manifest
@@ -934,6 +941,16 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 			job.Status = jobStatusFailed
 			job.CompletedAt = time.Now().UTC()
 			job.Error = errors.Join(scanErr, runErr)
+			if runErr == systemStateErr {
+				// The collection failure is now the terminal error, so the
+				// warning raised for it upstream is a duplicate. The server
+				// concatenates error and warning into backup_jobs.error_log
+				// and only dedupes exact string matches, so "…: <reason>;
+				// system state was not collected: <reason>" survives as two
+				// copies of the same sentence (#5415). Withdraw the note
+				// rather than teaching the server to fuzzy-match.
+				removeWarning(job, systemStateWarning)
+			}
 			return job, job.Error
 		}
 		if stateHasArtifacts {
@@ -1330,6 +1347,24 @@ func buildVSSMetadata(session *vss.VSSSession, durationMs int64) *vss.VSSMetadat
 func vssCreationFailureWarning(vssErr error) string {
 	return "VSS shadow copy could not be created, so every path was read from the live volume, " +
 		"where in-use files can be skipped or captured torn: " + vssErr.Error()
+}
+
+// removeWarning withdraws a previously appended fragment from job.Warning,
+// repairing the "; " separators so the remaining notes read unchanged. Used
+// when a note that was raised as a degradation warning is later promoted to
+// the job's fatal error and would otherwise be reported twice (#5415).
+func removeWarning(job *BackupJob, fragment string) {
+	if fragment == "" || job.Warning == "" {
+		return
+	}
+	parts := strings.Split(job.Warning, "; ")
+	kept := parts[:0]
+	for _, part := range parts {
+		if part != fragment {
+			kept = append(kept, part)
+		}
+	}
+	job.Warning = strings.Join(kept, "; ")
 }
 
 func appendWarning(job *BackupJob, fragment string) {
