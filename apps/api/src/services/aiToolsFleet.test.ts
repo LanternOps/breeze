@@ -1328,3 +1328,110 @@ describe('user-owned release attribution (#6200)', () => {
     expect(db.insert).not.toHaveBeenCalled();
   });
 });
+
+describe('tier-2 fleet writes refuse an ai_agent principal (#6206)', () => {
+  const toolMap = new Map<string, AiTool>();
+  registerFleetTools(toolMap);
+  const patchesTool = toolMap.get('manage_patches')!;
+  const reportTool = toolMap.get('generate_report')!;
+
+  // An agent principal's auth.user.id is an `aiAgents.id` (attribution only,
+  // see aiAgents/agentAuthContext.ts) — never a `users` row. Every field below
+  // mirrors buildAgentAuthContext's literal, including the deliberate
+  // agent-id-as-user-id that makes these writes a 23503.
+  const agentId = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+  const agentAuth = {
+    principal: { kind: 'ai_agent', agentId, runId: 'run-1' },
+    aiOrigin: { kind: 'ai_agent', agentRunId: 'run-1' },
+    user: { id: agentId, email: `agent+${agentId}@breeze.internal`, name: 'Patch Agent' },
+    token: null,
+    orgId: 'org-1',
+    partnerId: 'partner-1',
+    scope: 'organization',
+    accessibleOrgIds: ['org-1'],
+    partnerOrgAccess: null,
+    canAccessOrg: (id: string) => id === 'org-1',
+    orgCondition: () => undefined,
+  } as any;
+
+  // The same shape with a REAL user id and no ai_agent principal: the control
+  // that proves each refusal keys off the principal, not off some other gate
+  // these inputs happen to trip.
+  const humanAuth = {
+    ...agentAuth,
+    principal: undefined,
+    aiOrigin: undefined,
+    user: { id: 'cccccccc-cccc-cccc-cccc-cccccccccccc', email: 'tech@test.com', name: 'Tech' },
+  } as any;
+
+  const patchId = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+
+  afterEach(() => {
+    vi.mocked(db.insert).mockClear();
+    vi.mocked(db.select).mockClear();
+  });
+
+  it.each([
+    ['approve', { action: 'approve', patchId }],
+    ['decline', { action: 'decline', patchId }],
+    ['defer', { action: 'defer', patchId }],
+    ['bulk_approve', { action: 'bulk_approve', patchIds: [patchId] }],
+  ])('manage_patches:%s refuses an agent principal and writes nothing', async (action, input) => {
+    const result = JSON.parse(await patchesTool.handler(input, agentAuth));
+    expect(result).toEqual({ error: 'agent_principal_unsupported_action', action });
+    // The refusal must carry no `success` key: the SDK error classifier
+    // (aiAgentSdkTools.ts) only flags `{ error }` payloads without one, so a
+    // `success: false` would log a policy refusal as a successful tool call.
+    expect(result).not.toHaveProperty('success');
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['create', { action: 'create', name: 'R', reportType: 'device_inventory' }],
+    ['generate', { action: 'generate', reportId: 'rrrrrrrr-rrrr-rrrr-rrrr-rrrrrrrrrrrr' }],
+  ])('generate_report:%s refuses an agent principal and writes nothing', async (action, input) => {
+    const result = JSON.parse(await reportTool.handler(input, agentAuth));
+    expect(result).toEqual({ error: 'agent_principal_unsupported_action', action });
+    expect(result).not.toHaveProperty('success');
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  // Controls: a human caller must NOT get the agent refusal. These inputs still
+  // fail (no partner-wide capability / no report scope under the stub db), but
+  // on their own gates — so a refusal that fired for everyone would be caught.
+  it('does not refuse a human caller with the agent code', async () => {
+    const patchResult = JSON.parse(await patchesTool.handler({ action: 'approve', patchId }, humanAuth));
+    expect(patchResult.error).not.toBe('agent_principal_unsupported_action');
+    const reportResult = JSON.parse(await reportTool.handler(
+      { action: 'create', name: 'R', reportType: 'device_inventory' },
+      humanAuth,
+    ));
+    expect(reportResult.error).not.toBe('agent_principal_unsupported_action');
+  });
+
+  it('a users-FK 23503 is reported as an invalid acting identity, not a deleted record', async () => {
+    // The generic 23503 mapping blamed a missing template/device/policy, which
+    // is why #6200 took a prod incident to diagnose. A violated `*_users_id_fk`
+    // must name the real cause.
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([{ id: 'dddddddd-dddd-dddd-dddd-dddddddddddd', siteId: null }]),
+      }),
+    } as never);
+    vi.mocked(db.insert).mockImplementationOnce(() => {
+      const err = new Error('insert or update on table "patch_jobs" violates foreign key constraint') as Error & {
+        code: string; constraint_name: string;
+      };
+      err.code = '23503';
+      err.constraint_name = 'patch_jobs_created_by_users_id_fk';
+      throw err;
+    });
+
+    const result = JSON.parse(await patchesTool.handler(
+      { action: 'install', patchIds: [patchId], deviceIds: ['dddddddd-dddd-dddd-dddd-dddddddddddd'] },
+      humanAuth,
+    ));
+    expect(result.error).toMatch(/Acting user not found/);
+    expect(result.error).not.toMatch(/template, device, policy/);
+  });
+});

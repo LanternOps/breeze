@@ -8,7 +8,7 @@
 
 import type Anthropic from '@anthropic-ai/sdk';
 import { db } from '../db';
-import { pgErrorCode } from '../utils/pgErrors';
+import { pgErrorCode, pgErrorConstraint } from '../utils/pgErrors';
 import {
   automationPolicies,
   automationPolicyCompliance,
@@ -63,6 +63,7 @@ import { devices, sites } from '../db/schema';
 import { schedulePeripheralPolicyDevice } from '../jobs/peripheralJobs';
 import { eq, and, desc, sql, inArray, gte, lte, isNull, or, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
+import { isAiAgentPrincipal } from '../middleware/auth';
 
 async function scheduleAiGroupPeripheralReconciliation(deviceIds: readonly string[]): Promise<void> {
   await Promise.all([...new Set(deviceIds)].map((deviceId) =>
@@ -145,6 +146,45 @@ type FleetHandler = (
  */
 function approverReleaseMismatch(auth: AuthContext, context: ToolExecutionContext | undefined): boolean {
   return !!context?.approverRelease && context.approverRelease.approverUserId !== auth.user.id;
+}
+
+/**
+ * #6206: `true` when the caller is an AI-agent principal, i.e. `auth.user.id`
+ * is an `aiAgents.id` (attribution only, never a `users` row — see
+ * `aiAgents/agentAuthContext.ts`), not a real user id.
+ *
+ * Every tier-2 fleet branch that stores `auth.user.id` in a `users` FK must
+ * consult this first. Tier 2 auto-executes inline under the agent's own auth,
+ * so unlike the tier-3 sites fixed in #6200 there is no approver to substitute
+ * and `USER_OWNED_RELEASE_ACTIONS` cannot reach them. Writing the agent id
+ * anyway is a guaranteed 23503 — and a caught 23503 inside
+ * `withDbAccessContext` aborts the surrounding transaction, so the fix has to
+ * avoid the write, never catch it.
+ */
+function isAgentPrincipalCaller(auth: AuthContext): boolean {
+  return isAiAgentPrincipal(auth) && auth.principal.kind === 'ai_agent';
+}
+
+/**
+ * #6206: the refusal a tier-2 fleet action returns to an agent principal when
+ * the row it would write needs a real `users` owner and no agent-safe design
+ * exists for it. Mirrors `aiToolsTicketing.ts`'s `refuseAgentPrincipal`
+ * (#4209) exactly, including the deliberate absence of a `success` key — the
+ * SDK's error classifier only flags `{ error }` payloads that carry no
+ * `success`/`data`/`configured` key, so adding one would record a policy
+ * refusal as an ordinary successful tool call.
+ *
+ * Used by `manage_patches:{approve,decline,defer,bulk_approve}`, which write
+ * `patch_approvals.approved_by`. Approving a patch across a partner's fleet is
+ * policy, not reporting: it is deliberately NOT given a null/system
+ * attribution, because a nulled `approved_by` would leave an approval nobody
+ * can be held to. Giving agents a supervised route means lifting these to
+ * tier 3 so #6200's approver substitution applies — a product decision, and
+ * the typed error code is what lets the agent's loop relay the limitation
+ * instead of retrying into a 23503.
+ */
+function refuseFleetAgentPrincipal(action: string): string {
+  return JSON.stringify({ error: 'agent_principal_unsupported_action', action });
 }
 
 // ============================================
@@ -597,7 +637,22 @@ function safeHandler(toolName: string, fn: FleetHandler): FleetHandler {
       console.error(`[fleet:${toolName}]`, input.action, message, err);
 
       // Surface specific DB constraint errors instead of generic "Operation failed"
-      if (code === '23503') return JSON.stringify({ error: `Referenced record not found — a required ID (template, device, policy, etc.) does not exist or was deleted.` });
+      if (code === '23503') {
+        // #6206: a violated FK into `users` is a DIFFERENT failure from a
+        // stale template/device/policy id, and the generic message actively
+        // misdirects — it sends the reader looking for a deleted record when
+        // the real cause is an actor id that is not a users row at all (an
+        // `aiAgents.id` under an agent principal). Name it, so the next
+        // occurrence is diagnosable from the tool output alone.
+        const constraint = pgErrorConstraint(err);
+        if (constraint && /users_id_fk$/.test(constraint)) {
+          return JSON.stringify({
+            error: 'Acting user not found — this action records an owner in a users column, and the '
+              + 'current principal is not a user record. An AI agent principal cannot own this row.',
+          });
+        }
+        return JSON.stringify({ error: `Referenced record not found — a required ID (template, device, policy, etc.) does not exist or was deleted.` });
+      }
       if (code === '23505') return JSON.stringify({ error: `Duplicate entry — a record with this name or key already exists.` });
       if (code === '22P02') return JSON.stringify({ error: `Invalid ID format — expected a valid UUID.` });
       // Fail closed: anything else may embed the query/column list (#2603).
@@ -1048,6 +1103,13 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
       const orgId = getOrgId(auth);
 
       if (action === 'approve' || action === 'decline' || action === 'defer' || action === 'bulk_approve') {
+        // #6206: all four write `patch_approvals.approved_by`, a `users` FK.
+        // These are tier-2 actions, so an agent principal would execute them
+        // inline under its own auth and store an `aiAgents.id` there — a
+        // guaranteed 23503 the agent cannot interpret (the generic mapping in
+        // safeHandler blames a missing template/device/policy). Refuse before
+        // any partner resolution or write.
+        if (isAgentPrincipalCaller(auth)) return refuseFleetAgentPrincipal(action);
         if (!canManagePartnerWidePolicies(auth)) {
           return JSON.stringify({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
         }
@@ -2716,6 +2778,30 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
     handler: safeHandler('generate_report', async (input, auth) => {
       const action = input.action as string;
       const orgId = getOrgId(auth);
+
+      // #6206: `create` writes `reports.created_by` and `generate` writes
+      // `report_runs.requested_by_user_id` — both `users` FKs fed from
+      // `auth.user.id`, which under an agent principal is an `aiAgents.id`.
+      //
+      // Today these two never reach their insert: the scope gate resolves
+      // `auth.user.id` against `users` (siteScope.ts's
+      // `resolveExactReportAuthorityInSystemContext`) and denies an agent id as
+      // `user_inactive`, so the agent gets a scope-denied message for a reason
+      // that has nothing to do with the real limitation. That is incidental
+      // protection from an unrelated lookup, one refactor away from becoming
+      // the 23503 — so refuse explicitly, with the same typed code as the
+      // patch-approval actions above.
+      //
+      // Writing NULL/system attribution instead was considered and rejected:
+      // `persistedSiteScopeValues` would still record the run's authority as
+      // `principalKind: 'user'` with the agent id in `execution_scope_user_id`,
+      // and `reportScheduleWorker.ts` refuses a non-user principal when it
+      // re-authorizes a recurring definition. An agent-owned report identity is
+      // a real design (a principal kind the scope columns and the scheduler
+      // both understand), not a nullable column — tracked as follow-up.
+      if ((action === 'create' || action === 'generate') && isAgentPrincipalCaller(auth)) {
+        return refuseFleetAgentPrincipal(action);
+      }
 
       if (action === 'list') {
         const conditions: SQL[] = [];

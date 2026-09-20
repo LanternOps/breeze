@@ -204,6 +204,31 @@ function workerAllowlist(): ReadonlySet<string> {
   return new Set([...body.matchAll(/'([^']+:[^']*)'/g)].map((m) => m[1]!));
 }
 
+/**
+ * #6206: does the handler refuse an ai_agent principal before `writeLine`?
+ *
+ * Structural, like `hasDisabledRefusalBefore`: the refusal must sit inside the
+ * tool's own handler, above the write, and both name the principal check and
+ * return. A guard that only *mentions* agents (a comment) does not count.
+ */
+function hasAgentPrincipalRefusalBefore(tool: string, action: string, writeLine: number): boolean {
+  const lines = FLEET_SRC.split('\n');
+  const handlerLine = lines.findIndex((l) => l.includes(`safeHandler('${tool}'`));
+  if (handlerLine < 0) return false;
+  for (let i = handlerLine; i < writeLine - 1; i++) {
+    const line = lines[i]!;
+    if (!/isAgentPrincipalCaller\s*\(\s*auth\s*\)/.test(line)) continue;
+    // The refusal either returns on the same line or within the next two.
+    const window = lines.slice(i, Math.min(i + 3, writeLine)).join('\n');
+    if (!/return\s+refuseFleetAgentPrincipal\(/.test(window)) continue;
+    // …and it must actually cover THIS action: either the enclosing/own guard
+    // names it, or the guard chain it sits under does.
+    const scope = lines.slice(Math.max(handlerLine, i - 12), i + 3).join('\n');
+    if (new RegExp(`action === '${action}'`).test(scope) || !/action ===/.test(scope)) return true;
+  }
+  return false;
+}
+
 describe('aiToolsFleet users-FK writes are user-owned on release (#6200)', () => {
   const usersFk = usersFkPropertyNames();
   const tier3 = tier3Actions();
@@ -329,19 +354,19 @@ describe('aiToolsFleet users-FK writes are user-owned on release (#6200)', () =>
     ).toEqual([]);
   });
 
-  it('documents the tier-2 users-FK writes that cannot be fixed by this allowlist', () => {
+  it('every tier-2 users-FK write refuses an ai_agent principal before the write (#6206)', () => {
     // A tier-2 action auto-executes inline under the agent's own auth — there
-    // is no approval and so no approver to own the row. These sites carry the
-    // SAME latent 23503 but need a different fix (nullable/system attribution,
-    // lifting the action to tier 3, or refusing agent principals outright),
-    // which is why they are NOT smuggled into this PR.
+    // is no approval and so no approver to own the row, which is why
+    // `USER_OWNED_RELEASE_ACTIONS` (the #6200 fix) cannot reach these sites.
+    // They carry the SAME latent 23503, so each one must instead refuse an
+    // agent principal BEFORE the write: `isAgentPrincipalCaller(auth)` ->
+    // `refuseFleetAgentPrincipal(action)` (#6206). Catching the 23503 is not
+    // an option — inside `withDbAccessContext` it aborts the surrounding
+    // transaction and surfaces as a 500.
     //
-    //   Tracked by: LanternOps/breeze#6206
-    //
-    // This assertion is an INVENTORY, not an exemption: it fails when the set
-    // changes either way, so a new tier-2 users-FK write cannot land
-    // unnoticed — and when #6206 lands, shrink this list.
-    const tier2Exposed = new Set<string>();
+    // This is a contract, not an inventory: it fails when a NEW tier-2
+    // users-FK write lands without a guard, and it fails when an existing
+    // guard is deleted.
     const tier2Body = GUARDRAILS_SRC.slice(
       GUARDRAILS_SRC.indexOf('const TIER2_ACTIONS'),
       GUARDRAILS_SRC.indexOf('\n};', GUARDRAILS_SRC.indexOf('const TIER2_ACTIONS')),
@@ -350,16 +375,30 @@ describe('aiToolsFleet users-FK writes are user-owned on release (#6200)', () =>
     for (const m of tier2Body.matchAll(/^\s{2}(\w+)\s*:\s*\[([^\]]*)\]/gm)) {
       for (const a of m[2]!.matchAll(/'([^']+)'/g)) tier2.add(`${m[1]}:${a[1]}`);
     }
+    expect(tier2.size, 'TIER2_ACTIONS parse produced nothing — the tier source moved').toBeGreaterThan(0);
+
+    const exposed: string[] = [];
+    const guarded: string[] = [];
     for (const site of sites) {
       if (!usersFk.has(site.property)) continue;
       for (const action of site.actions) {
         const key = `${site.tool}:${action}`;
         if (!tier2.has(key)) continue;
         if (!zodActions(site.tool).includes(action)) continue;
-        tier2Exposed.add(key);
+        if (hasAgentPrincipalRefusalBefore(site.tool, action, site.line)) {
+          guarded.push(`${key}@${site.line}`);
+          continue;
+        }
+        exposed.push(`${key} writes ${site.property} (users FK) at aiToolsFleet.ts:${site.line}`);
       }
     }
-    expect([...tier2Exposed].sort()).toEqual([
+
+    // Anti-vacuity: the six known sites must still be FOUND and guarded, so a
+    // parse regression cannot turn this into an empty-set pass.
+    expect(
+      [...new Set(guarded.map((g) => g.split('@')[0]!))].sort(),
+      'the known #6206 tier-2 users-FK sites are no longer being found — the scan or the source moved',
+    ).toEqual([
       'generate_report:create',
       'generate_report:generate',
       'manage_patches:approve',
@@ -367,5 +406,14 @@ describe('aiToolsFleet users-FK writes are user-owned on release (#6200)', () =>
       'manage_patches:decline',
       'manage_patches:defer',
     ]);
+
+    expect(
+      exposed,
+      'These fleet branches store auth.user.id in a users FK and are TIER 2 — they auto-execute ' +
+        'inline under an agent principal, where that id is an aiAgents.id, so the insert is a ' +
+        '23503 (#6206). There is no approver to substitute; add an ' +
+        'isAgentPrincipalCaller(auth) -> refuseFleetAgentPrincipal(action) refusal before the ' +
+        `write, or give the action a real agent-owned identity:\n${JSON.stringify(exposed, null, 2)}`,
+    ).toEqual([]);
   });
 });
