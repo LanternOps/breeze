@@ -354,8 +354,13 @@ already works, `notificationDispatcher.ts:443`), else the winning routing row's,
 The all-enabled-channels fallback is deleted.
 
 **`channelIds` means eligible destinations** (decided 2026-09-19 after the plan cross-check): the
-resolver itself drops disabled, wrong-owner and missing channels and reports them as
-`skippedChannelIds: [{ id, reason: 'disabled' | 'wrong_owner' | 'missing' }]`. The dispatcher sends
+resolver itself drops ineligible channels and reports them as
+`skippedChannelIds: [{ id, reason: 'disabled' | 'unavailable' }]` — `unavailable` covers missing,
+foreign-tenant and not-visible alike, so a foreign channel id is indistinguishable from a
+nonexistent one (no cross-tenant existence oracle). Eligibility is ordinary RLS-scoped reads plus an
+explicit owner predicate applied identically in dispatch and preview; no `SECURITY DEFINER`
+function and no scope escalation (D21, quorum 2026-09-19; the partner-wide SELECT branches these
+tables need already shipped in `2026-10-10-120000`). The dispatcher sends
 to `channelIds` with no further filtering, so dispatch and preview can never disagree; the preview
 shows the skipped ones.
 

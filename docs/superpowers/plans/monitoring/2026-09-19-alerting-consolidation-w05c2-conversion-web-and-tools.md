@@ -3998,7 +3998,7 @@ const activePreview = useRef<AbortController | null>(null);
 
   New channels receive no alerts until added to a routing row or monitor override.
   The monitor's resolved preview uses the same delivery decision as dispatch. Eligible
-  channels are sent; skipped disabled, missing or wrong-owner references are listed.
+  channels are sent; skipped references are listed as disabled or unavailable (missing, foreign or not visible).
   Escalation steps can target channels or users, repeat at the configured interval,
   and cancel when the alert is acknowledged or resolved.''')
   s = s.replace('additional channels (email, webhook, Slack, Teams, PagerDuty, SMS, Pushover) are routed based on alert rule configuration or organization defaults.',

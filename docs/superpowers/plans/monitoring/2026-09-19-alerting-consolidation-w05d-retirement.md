@@ -2247,13 +2247,20 @@ export async function resolveLegacyDeliveryBaseline(input: ResolveDeliveryInput,
   if (channelIds.length > 0) {
     // Same eligibility contract as W05b; configured override wins even if all
     // its channels are disabled. Falling through would invent notifications.
-    const rows = await executor.execute<{ id: string; reason: 'disabled' | 'wrong_owner' | 'missing' | null }>(sql`
-      SELECT * FROM public.breeze_delivery_channel_status(${input.orgId}::uuid, ${channelIds}::uuid[])
+    // Ordinary reads retain this executor's RLS scope; use the same owner
+    // predicate for system dispatch and org preview (D21).
+    const rows = await executor.execute<{ id: string; reason: 'disabled' | null }>(sql`
+      SELECT channel.id, CASE WHEN channel.enabled THEN NULL ELSE 'disabled' END AS reason
+      FROM notification_channels AS channel
+      JOIN organizations AS org ON org.id = ${input.orgId}::uuid
+      WHERE channel.id = ANY(${channelIds}::uuid[])
+        AND (channel.org_id = org.id
+          OR (channel.org_id IS NULL AND channel.partner_id = org.partner_id))
     `);
     const byId = new Map(rows.map(row => [row.id, row.reason]));
     const skippedChannelIds: ResolvedDelivery['skippedChannelIds'] = [];
     const eligible = channelIds.filter(id => {
-      const reason = byId.has(id) ? byId.get(id)! : 'missing';
+      const reason = byId.has(id) ? byId.get(id)! : 'unavailable';
       if (reason === null) return true;
       skippedChannelIds.push({ id, reason }); return false;
     });
