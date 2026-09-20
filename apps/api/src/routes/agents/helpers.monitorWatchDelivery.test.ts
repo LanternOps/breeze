@@ -281,6 +281,24 @@ describe('buildMonitoringConfigUpdate — monitor-derived watches (#5291 W04)', 
     expect(out!.watches[0]).toMatchObject({ auto_restart: true, max_restart_attempts: 3, restart_cooldown_seconds: 300 });
   });
 
+  it('reads max_restart_attempts / restart_cooldown_seconds from the restart_service response, defaulting 3 / 300 (W05c1 spec C9)', async () => {
+    resolveMonitorsMock.mockResolvedValue({ kind: 'resolved', monitors: [effectiveMonitor()] });
+    dbMock._resetQueue([
+      ...policyQueue({ resolved: false }),
+      [monitorDefRow({ responses: [{ type: 'execute_command', kind: 'restart_service', command: 'Restart-Service Spooler', maxAttempts: 7, cooldownSeconds: 900 }] })],
+    ]);
+    const out = await buildMonitoringConfigUpdate(DEVICE_ID);
+    expect(out!.watches[0]).toMatchObject({ auto_restart: true, max_restart_attempts: 7, restart_cooldown_seconds: 900 });
+
+    resolveMonitorsMock.mockResolvedValue({ kind: 'resolved', monitors: [effectiveMonitor()] });
+    dbMock._resetQueue([
+      ...policyQueue({ resolved: false }),
+      [monitorDefRow({ responses: [{ type: 'execute_command', kind: 'restart_service', command: 'Restart-Service Spooler' }] })],
+    ]);
+    const defaults = await buildMonitoringConfigUpdate(DEVICE_ID);
+    expect(defaults!.watches[0]).toMatchObject({ auto_restart: true, max_restart_attempts: 3, restart_cooldown_seconds: 300 });
+  });
+
   it('does not infer restart intent from command text or limits', async () => {
     resolveMonitorsMock.mockResolvedValue({ kind: 'resolved', monitors: [effectiveMonitor()] });
     dbMock._resetQueue([
