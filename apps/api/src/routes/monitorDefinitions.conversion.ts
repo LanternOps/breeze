@@ -79,6 +79,10 @@ monitorConversionRoutes.get('/pending', read,
 monitorConversionRoutes.get('/policies/:policyId/preview', read,
   zValidator('param', policyParam), async (c) => {
     const data = await previewPolicyConversion(c.req.valid('param').policyId, c.get('auth'));
+    // 202 while the background job runs; 500 once it has failed its attempt
+    // budget — the caller polls this endpoint and would otherwise never learn
+    // the preview cannot be produced for these inputs.
+    if ('status' in data && data.status === 'failed') return c.json({ error: data.error }, 500);
     return c.json({ data }, 'status' in data && data.status === 'running' ? 202 : 200);
   });
 monitorConversionRoutes.post('/policies/:policyId/convert', write, requireMfa(), governance,

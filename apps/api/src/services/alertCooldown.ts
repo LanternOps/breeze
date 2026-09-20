@@ -373,12 +373,25 @@ async function moveCooldownKeys(redis: Redis, fromPattern: string, toKey: (devic
     for (const key of keys) {
       const deviceId = key.slice(key.lastIndexOf(':') + 1);
       const ttl = await redis.pttl(key);
+      // pttl: -1 = persistent, -2 = the key expired mid-scan. Deleting a
+      // persistent key without recreating it would silently drop that
+      // cooldown, so carry it over without a TTL and only skip the -2 race.
       if (ttl > 0) await redis.set(toKey(deviceId), Date.now().toString(), 'PX', ttl);
-      await redis.del(key);
-      moved++;
+      else if (ttl === -1) await redis.set(toKey(deviceId), Date.now().toString());
+      if (ttl !== -2) { await redis.del(key); moved++; }
     }
   } while (cursor !== '0');
   return moved;
+}
+/**
+ * `<fromRule>:<device>` → `<toRule>:<device>`. A converted alert TEMPLATE
+ * retires standalone `alert_rules`, whose cooldown keys already use the plain
+ * rule prefix — without this the compiled rule starts with no cooldown state
+ * and re-fires immediately for devices that were still suppressed.
+ */
+export async function rekeyRuleCooldowns(fromRuleId: string, toRuleId: string): Promise<number> {
+  const redis = getRedis(); if (!redis) return 0;
+  return moveCooldownKeys(redis, `${COOLDOWN_PREFIX}:${fromRuleId}:*`, (d) => buildCooldownKey(toRuleId, d));
 }
 /** `cpar:<source>:<device>` → `<compiledRule>:<device>` (W05c1 §Open alerts). */
 export async function rekeyConfigPolicyCooldowns(sourceRuleId: string, compiledRuleId: string): Promise<number> {

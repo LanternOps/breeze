@@ -4,7 +4,8 @@ import type { DbAccessContext } from '../../../db';
 import { devices, organizations, configurationPolicies, escalationPolicies, notificationRoutingRules } from '../../../db/schema';
 import type { PolicySources } from './loadSources';
 import type { DbExecutor } from './legacyBaseline';
-const mocks = vi.hoisted(() => ({ context: vi.fn(), policy: vi.fn(), sources: vi.fn(), devices: vi.fn() }));
+const mocks = vi.hoisted(() => ({ context: vi.fn(), policy: vi.fn(), sources: vi.fn(), devices: vi.fn(), fromAuth: vi.fn() }));
+vi.mock('../../../middleware/auth', () => ({ dbAccessContextFromAuth: mocks.fromAuth }));
 vi.mock('../../../db', () => ({ getCurrentDbAccessContext: mocks.context }));
 vi.mock('../../configurationPolicy', () => ({ getConfigPolicy: mocks.policy }));
 vi.mock('./loadSources', () => ({ loadPolicySources: mocks.sources }));
@@ -34,7 +35,15 @@ it('keeps its scope hash across the JSON queue boundary', () => {
   const snapshot = snapshotPreviewAccess({ ...auth, allowedSiteIds: undefined });
   expect(previewScopeHash(JSON.parse(JSON.stringify(snapshot)))).toBe(previewScopeHash(snapshot));
 });
-it('requires an existing caller database context', () => { mocks.context.mockReturnValue(undefined); expect(() => snapshotPreviewAccess(auth)).toThrow('caller DB context'); });
+it('derives the context from the caller auth when none is ambient (self-managed route / worker)', () => {
+  // The conversion entry points are self-managed precisely so their own
+  // isolated transaction is the only pooled connection they hold, so there is
+  // no ambient context to read — deriving it from auth must not throw (D30).
+  mocks.context.mockReturnValue(undefined);
+  mocks.fromAuth.mockReturnValue(context);
+  expect(snapshotPreviewAccess(auth).dbContext).toEqual(context);
+  expect(mocks.fromAuth).toHaveBeenCalledWith(auth);
+});
 it.each([{ allowedSiteIds: [] }, { allowedSiteIds: ['s'] }, { allowedDeviceIds: [] }, { allowedDeviceIds: ['d'] }])('rejects restricted scope before any policy lookup: %j', async (ceiling) => {
   await expect(authorizePreview('policy', { ...auth, ...ceiling })).rejects.toMatchObject({ code: 'partner_wide_denied' });
   expect(mocks.policy).not.toHaveBeenCalled();

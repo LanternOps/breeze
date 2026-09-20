@@ -2,7 +2,7 @@ import { and, inArray, isNull, or } from 'drizzle-orm';
 import type { PgColumn } from 'drizzle-orm/pg-core';
 import { getCurrentDbAccessContext, type DbAccessContext } from '../../../db';
 import { configPolicyAssignments, configPolicyFeatureLinks, configurationPolicies, devices, escalationPolicies, monitorDefinitions, notificationChannels, notificationRoutingRules, organizations } from '../../../db/schema';
-import type { AuthContext } from '../../../middleware/auth';
+import { dbAccessContextFromAuth, type AuthContext } from '../../../middleware/auth';
 import { getConfigPolicy } from '../../configurationPolicy';
 import { canManagePartnerWidePolicies } from '../../partnerWideAccess';
 import { canMutateOrgWideGovernance } from '../../siteCeilingAccess';
@@ -15,8 +15,10 @@ export type SerializedAuth = Omit<AuthContext, 'orgCondition' | 'canAccessOrg' |
 export interface PreviewAccessSnapshot { auth: SerializedAuth; dbContext: DbAccessContext }
 
 export function snapshotPreviewAccess(auth: AuthContext): PreviewAccessSnapshot {
-  const dbContext = getCurrentDbAccessContext();
-  if (!dbContext) throw new Error('Preview requires caller DB context');
+  // A conversion route is self-managed (no ambient context) precisely so its
+  // isolated transaction is the only pooled connection it holds, so derive the
+  // context from the caller's auth when there is none to read.
+  const dbContext = getCurrentDbAccessContext() ?? dbAccessContextFromAuth(auth);
   const { orgCondition, canAccessOrg, canAccessSite, token, ...data } = auth;
   // Match the JSON boundary used by BullMQ, including omission of undefined fields.
   return JSON.parse(JSON.stringify({ auth: data, dbContext })) as PreviewAccessSnapshot;

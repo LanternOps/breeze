@@ -38,25 +38,36 @@ export function createMonitorConversionPreviewWorker(): Worker<ConversionPreview
     };
     await writeState({ status: 'running', progress: { checked: 0, total: 0 } });
     try {
-      return await withDbAccessContext(data.snapshot.dbContext, async () => {
-        const auth = restorePreviewAuth(data.snapshot);
-        await authorizePreview(policyId, auth);
-        if (previewScopeHash(data.snapshot) !== scopeHash || await previewFreshness(policyId, db) !== sourcesHash) {
-          throw new ConversionError('preview_stale', 'Preview inputs changed');
-        }
-        const result = await buildPolicyConversionPreview(policyId, {
-          userId: auth.scope === 'system' ? null : auth.user.id, auth,
-        }, {
-          expectedFreshness: sourcesHash,
-          onProgress: async (checked, total) => {
-            await writeState({ status: 'running', progress: { checked, total } });
-          },
-        });
-        await writeState({ status: 'done', result });
-        return result;
+      // No withDbAccessContext wrapper here on purpose. buildPolicyConversionPreview
+      // opens its OWN repeatable-read transaction (isolation cannot be set on an
+      // already-started one) and re-runs authorizePreview inside it. Wrapping it
+      // would make that a SECOND pooled connection held behind this one — the
+      // #1105 / #2417 double-hold — and withDbAccessContext now refuses it.
+      // The freshness check also belongs inside that snapshot: expectedFreshness
+      // is re-checked against the same transaction the preview is built from,
+      // so a separate pre-read here would only prove a different snapshot.
+      const auth = restorePreviewAuth(data.snapshot);
+      const result = await buildPolicyConversionPreview(policyId, {
+        userId: auth.scope === 'system' ? null : auth.user.id, auth,
+      }, {
+        expectedFreshness: sourcesHash,
+        onProgress: async (checked, total) => {
+          await writeState({ status: 'running', progress: { checked, total } });
+        },
       });
+      await writeState({ status: 'done', result });
+      return result;
     } catch (error) {
-      await writeState({ status: 'failed', error: 'preview_failed' });
+      // Carry the attempt count forward: the reader stops re-enqueueing (and
+      // starts reporting the failure) once it reaches MAX_PREVIEW_ATTEMPTS.
+      // The raw error is deliberately not cached — it reaches Sentry through
+      // attachWorkerObservability instead.
+      let attempts = 1;
+      try {
+        const prior = await redis.get(key);
+        if (prior) attempts = (JSON.parse(prior).attempts ?? 0) + 1;
+      } catch { /* a malformed prior entry just restarts the count */ }
+      await writeState({ status: 'failed', error: 'preview_failed', attempts });
       throw error;
     }
   }, { connection: getBullMQConnection(), concurrency: 2, lockDuration: 600_000 });

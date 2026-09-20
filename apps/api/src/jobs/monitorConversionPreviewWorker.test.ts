@@ -69,7 +69,9 @@ beforeEach(() => {
   mocks.scopeHash.mockReturnValue(data.scopeHash);
   mocks.freshness.mockResolvedValue(data.sourcesHash);
   mocks.build.mockImplementation(async (_policy, _actor, options) => {
-    expect(getCurrentDbAccessContext()).toEqual(data.snapshot.dbContext);
+    // The worker deliberately holds NO context: buildPolicyConversionPreview
+    // opens the single isolated transaction and restores the snapshot itself.
+    expect(getCurrentDbAccessContext()).toBeUndefined();
     await options.onProgress(50, 501);
     return { policyId: data.policyId, equivalence: { devicesChecked: 501, deltas: [] } };
   });
@@ -78,10 +80,18 @@ beforeEach(() => {
 afterEach(async () => { await shutdownMonitorConversionPreviewWorker(); vi.unstubAllEnvs(); });
 
 describe('monitor conversion preview worker', () => {
-  it('restores caller DB scope and stores progress and completed results', async () => {
+  it('hands the caller snapshot to the builder and stores progress and completed results', async () => {
     const result = await run();
-    expect(mocks.withContext).toHaveBeenCalledWith(data.snapshot.dbContext);
-    expect(mocks.authorize).toHaveBeenCalledWith(data.policyId, data.snapshot.auth);
+    // No second pooled connection: the worker must NOT wrap the build in its
+    // own withDbAccessContext (#1105 / #2417 double-hold). The builder gets the
+    // restored auth and re-authorizes inside its own isolated transaction.
+    expect(mocks.withContext).not.toHaveBeenCalled();
+    expect(mocks.restore).toHaveBeenCalledWith(data.snapshot);
+    expect(mocks.build).toHaveBeenCalledWith(
+      data.policyId,
+      expect.objectContaining({ auth: data.snapshot.auth }),
+      expect.objectContaining({ expectedFreshness: data.sourcesHash }),
+    );
     expect(entries()).toMatchObject([
       { status: 'running', progress: { checked: 0, total: 0 } },
       { status: 'running', progress: { checked: 50, total: 501 } },
@@ -98,17 +108,22 @@ describe('monitor conversion preview worker', () => {
     expect(entries().at(-1)).toMatchObject({ status: 'failed', error: 'preview_failed' });
     expect(JSON.stringify(entries())).not.toContain('private channel credentials');
   });
-  it.each(['scope', 'sources'])('rejects stale %s before building', async (field) => {
-    (field === 'scope' ? mocks.scopeHash : mocks.freshness).mockReturnValue('changed');
+  it('passes the queued freshness down so the builder rejects stale sources in its own snapshot', async () => {
+    // Checking freshness here would only prove a DIFFERENT snapshot than the
+    // one the preview is built from; the builder compares expectedFreshness
+    // inside its isolated transaction instead.
+    mocks.build.mockRejectedValueOnce(Object.assign(new Error('stale'), { code: 'preview_stale' }));
     await expect(run()).rejects.toMatchObject({ code: 'preview_stale' });
-    expect(mocks.build).not.toHaveBeenCalled();
+    expect(mocks.build).toHaveBeenCalledWith(data.policyId, expect.anything(),
+      expect.objectContaining({ expectedFreshness: data.sourcesHash }));
     expect(entries().at(-1).status).toBe('failed');
   });
-  it('rechecks authorization before reading configuration or building', async () => {
-    mocks.authorize.mockRejectedValueOnce(new Error('Policy not found'));
+  it('propagates an authorization failure raised inside the builder', async () => {
+    // authorizePreview now runs inside buildPolicyConversionPreview's isolated
+    // transaction, under the restored caller context.
+    mocks.build.mockRejectedValueOnce(new Error('Policy not found'));
     await expect(run()).rejects.toThrow('Policy not found');
-    expect(mocks.freshness).not.toHaveBeenCalled();
-    expect(mocks.build).not.toHaveBeenCalled();
+    expect(entries().at(-1).status).toBe('failed');
   });
   it('uses the real strict queue tripwire and permits enqueues only outside held context', async () => {
     vi.stubEnv('DB_CONTEXT_TRIPWIRE_STRICT', 'true');

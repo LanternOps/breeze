@@ -57,6 +57,19 @@ export interface PolicyConversionPreviewPending {
   progress: { checked: number; total: number };
 }
 
+/**
+ * Returned by GET …/preview once the background job has failed
+ * MAX_PREVIEW_ATTEMPTS times for the same scope and sources. Without this a
+ * deterministically failing preview polls as `running` for ever, with progress
+ * resetting to 0 on every call and no way for the caller to learn it is broken.
+ * The reason is a fixed code: the underlying error is scrubbed from the cache
+ * and reaches Sentry instead.
+ */
+export interface PolicyConversionPreviewFailed {
+  status: 'failed';
+  error: 'preview_failed';
+}
+
 export interface ConvertPolicyResult { conversionIds: string[]; retired: number; monitorsCreated: number }
 export interface ConvertPartnerResult { policies: number; converted: number; unconvertible: number }
 export interface PendingConversionCounts { policies: number; rows: number }

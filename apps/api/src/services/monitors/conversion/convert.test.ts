@@ -72,7 +72,8 @@ vi.mock('../../../jobs/monitorConversionPreviewWorker', () => ({
 vi.mock('./lifecycle', () => ({ isRevertAvailable: m.lifecycle, findLiveTargetDependencies: vi.fn(async () => new Set()) }));
 vi.mock('../monitorService', () => ({ createMonitorDefinition: vi.fn(), deleteMonitorDefinition: vi.fn() }));
 vi.mock('../../alertCooldown', () => ({ rekeyConfigPolicyCooldowns: vi.fn(), rekeyCooldownsBackToConfigPolicy: vi.fn() }));
-import { buildPolicyConversionPreview, previewPolicyConversion, convertPolicy, retireSource, revertConversion, convertPartnerLegacy, partnerPreviewHash, previewPartnerConversion, previewTemplateGroup, convertTemplateGroup } from './convert';
+import { rekeyConfigPolicyCooldowns, rekeyCooldownsBackToConfigPolicy } from '../../alertCooldown';
+import { buildPolicyConversionPreview, previewPolicyConversion, convertPolicy, retireSource, revertConversion, convertPartnerLegacy, partnerPreviewHash, previewPartnerConversion, previewTemplateGroup, convertTemplateGroup, rekeyCommittedCooldowns } from './convert';
 import { alertTemplates, alertRules, configPolicyMonitors, monitorConversions, monitorConversionOutputs, organizations, sites, partners } from '../../../db/schema';
 vi.mock('../../configurationPolicy', () => ({ createConfigPolicy: vi.fn(), assignPolicy: vi.fn(), addFeatureLink: vi.fn() }));
 import { createConfigPolicy, assignPolicy, addFeatureLink } from '../../configurationPolicy';
@@ -216,6 +217,18 @@ it('recomputes failed cache entries and allows explicit inline mode', async () =
     mode: 'inline'
   });
   expect(m.equivalence).toHaveBeenCalledOnce();
+});
+
+it('stops retrying a repeatedly failing preview and tells the caller it failed', async () => {
+  m.devices.mockResolvedValue(Array(501).fill('d'));
+  // A preview that fails deterministically must not poll as `running` for ever:
+  // after MAX_PREVIEW_ATTEMPTS the caller is told, instead of seeing progress
+  // reset to 0 on every poll with no failure path in the contract at all.
+  m.get.mockResolvedValue(JSON.stringify({
+    status: 'failed', scopeHash: 'scope', sourcesHash: 'fresh', attempts: 3,
+  }));
+  expect(await previewPolicyConversion('policy', auth)).toHaveProperty('status', 'failed');
+  expect(m.add).not.toHaveBeenCalled();
 });
 
 it('blocks missing prerequisites and unconverted parents without applying a proposal', async () => {
@@ -624,6 +637,27 @@ function revertHarness(withOutput = true) {
   m.transaction.mockImplementationOnce(async fn => fn(tx));
   return { tx, events, moved, originalRule, originalTemplate, rows };
 }
+
+it('a post-commit cooldown rekey failure is logged, not thrown at the caller', async () => {
+  // The rekey runs AFTER the transaction commits, so throwing here would report
+  // a failure for a conversion that has already landed — and the retry would
+  // then answer `already_converted`.
+  vi.mocked(rekeyConfigPolicyCooldowns).mockRejectedValueOnce(new Error('redis down'));
+  vi.mocked(rekeyCooldownsBackToConfigPolicy).mockResolvedValueOnce(2);
+  const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+  await expect(rekeyCommittedCooldowns(
+    [{ sourceId: 's1', compiledRuleId: 'r1' }, { sourceId: 's2', compiledRuleId: null }],
+    'to_monitor',
+  )).resolves.toBeUndefined();
+  // Control: the rejection is only meaningful because the rekey really ran,
+  // and the null-compiledRule pair is skipped rather than rekeyed.
+  expect(rekeyConfigPolicyCooldowns).toHaveBeenCalledTimes(1);
+  expect(rekeyConfigPolicyCooldowns).toHaveBeenCalledWith('s1', 'r1');
+  expect(err).toHaveBeenCalled();
+  await expect(rekeyCommittedCooldowns([{ sourceId: 's3', compiledRuleId: 'r3' }], 'back_to_config_policy')).resolves.toBeUndefined();
+  expect(rekeyCooldownsBackToConfigPolicy).toHaveBeenCalledWith('r3', 's3');
+  err.mockRestore();
+});
 
 it('revert restores exact moved references before detaching its output or deleting compiled history', async () => {
   const h = revertHarness();

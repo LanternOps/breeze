@@ -7,7 +7,8 @@ import { canManagePartnerWidePolicies } from '../../partnerWideAccess';
 import { canMutateOrgWideGovernance } from '../../siteCeilingAccess';
 import { compileMonitorInTx } from '../monitorCompiler';
 import { createMonitorDefinition, deleteMonitorDefinition } from '../monitorService';
-import { rekeyConfigPolicyCooldowns, rekeyCooldownsBackToConfigPolicy } from '../../alertCooldown';
+import { rekeyConfigPolicyCooldowns, rekeyCooldownsBackToConfigPolicy, rekeyRuleCooldowns } from '../../alertCooldown';
+import { captureException } from '../../sentry';
 import { restoreMovedAlertRefs, carryOpenAlerts, canDeleteConversionMonitor } from './history';
 import { isRevertAvailable, findLiveTargetDependencies } from './lifecycle';
 import { createConfigPolicy, assignPolicy, addFeatureLink } from '../../configurationPolicy';
@@ -20,7 +21,7 @@ import { loadPolicySources, type PolicySources } from './loadSources';
 import { canonical, mapStandaloneRule, monitorSignature, mapAutomationResponses, mapInlineRule, mapWatch, mergeResponseProposals, previewHash, sha, type MappingResult } from './mapping';
 import { authorizePreview, previewFreshness, previewScopeHash, snapshotPreviewAccess } from './previewScope';
 import { missingConversionPrerequisites } from './prerequisites';
-import { EQUIVALENCE_JOB_THRESHOLD, type ConversionPreviewItem, type PolicyConversionPreview, type PolicyConversionPreviewPending, type ConversionSourceTable, type PartnerConversionPreview } from './types';
+import { EQUIVALENCE_JOB_THRESHOLD, type ConversionPreviewItem, type PolicyConversionPreview, type PolicyConversionPreviewPending, type PolicyConversionPreviewFailed, type ConversionSourceTable, type PartnerConversionPreview } from './types';
 
 export class ConversionError extends Error {
   constructor(readonly code: 'policy_not_found' | 'partner_wide_denied' | 'prerequisite_missing' | 'blocked' | 'preview_stale' | 'equivalence_delta' | 'source_not_found' | 'already_converted' | 'invalid_reason' | 'conversion_not_found' | 'conversion_revert_unavailable', message: string, readonly details?: unknown) {
@@ -109,7 +110,7 @@ async function buildPolicyPreviewInTx(policyId: string, auth: AuthContext, tx: D
   };
 }
 
-export async function previewPolicyConversion(policyId: string, auth: AuthContext, opts?: { mode?: 'auto' | 'inline'; }): Promise<PolicyConversionPreview | PolicyConversionPreviewPending> {
+export async function previewPolicyConversion(policyId: string, auth: AuthContext, opts?: { mode?: 'auto' | 'inline'; }): Promise<PolicyConversionPreview | PolicyConversionPreviewPending | PolicyConversionPreviewFailed> {
   await authorizePreview(policyId, auth);
   const ids = await resolveDeviceIdsForPolicy(policyId, db);
   if (opts?.mode === 'inline' || ids.length <= EQUIVALENCE_JOB_THRESHOLD) {
@@ -124,10 +125,17 @@ export async function previewPolicyConversion(policyId: string, auth: AuthContex
   const raw = await redis.get(key);
   if (raw) {
     try {
-      const cached = JSON.parse(raw) as { status?: string; scopeHash?: string; sourcesHash?: string; result?: PolicyConversionPreview; progress?: { checked: number; total: number; }; };
+      const cached = JSON.parse(raw) as { status?: string; scopeHash?: string; sourcesHash?: string; result?: PolicyConversionPreview; progress?: { checked: number; total: number; }; attempts?: number; };
       if (cached.scopeHash === scopeHash && cached.sourcesHash === sourcesHash) {
         if (cached.status === 'done' && cached.result) return cached.result;
         if (cached.status === 'running' && cached.progress) return { status: 'running', progress: cached.progress };
+        // A failed entry is retried — a preview failure is usually transient —
+        // but only MAX_PREVIEW_ATTEMPTS times. Past that the caller is told it
+        // failed instead of polling `running` for ever against a job that
+        // cannot succeed for these inputs.
+        if (cached.status === 'failed' && (cached.attempts ?? 1) >= MAX_PREVIEW_ATTEMPTS) {
+          return { status: 'failed', error: 'preview_failed' };
+        }
       }
     } catch { /* A malformed cache entry is recomputed from authorized current inputs. */ }
   }
@@ -137,6 +145,8 @@ export async function previewPolicyConversion(policyId: string, auth: AuthContex
 }
 
 type Owner = { orgId: string | null; partnerId: string | null; };
+/** Background preview attempts for one (policy, scope, sources) before the caller is told it failed. */
+const MAX_PREVIEW_ATTEMPTS = 3;
 const actor = (auth: AuthContext) => auth.scope === 'system' ? null : auth.user.id;
 function assertOwner(owner: Owner, auth: AuthContext) {
   if (!canMutateOrgWideGovernance(auth)) throw new ConversionError('partner_wide_denied', 'Full governance scope required');
@@ -220,6 +230,33 @@ async function cooldownPairs(tx: DbExecutor, ids: string[]) {
     .innerJoin(monitorDefinitions, eq(monitorDefinitions.id, monitorConversionOutputs.monitorId))
     .where(and(inArray(monitorConversions.id, ids), eq(monitorConversions.sourceTable, 'config_policy_alert_rules'), eq(monitorConversionOutputs.role, 'primary')));
 }
+/**
+ * The cooldown rekey runs AFTER its transaction has committed, so a Redis
+ * failure here must never reject the caller: the conversion (or revert) has
+ * already landed, and rejecting would report a failure for work that is done
+ * and then answer `already_converted` on the retry. Failures go to Sentry.
+ */
+export async function rekeyCommittedCooldowns(
+  pairs: readonly { sourceId: string; compiledRuleId: string | null }[],
+  direction: 'to_monitor' | 'back_to_config_policy' | 'rule_to_monitor' | 'monitor_to_rule',
+): Promise<void> {
+  for (const pair of pairs) {
+    if (!pair.compiledRuleId) continue;
+    try {
+      if (direction === 'to_monitor') await rekeyConfigPolicyCooldowns(pair.sourceId, pair.compiledRuleId);
+      else if (direction === 'back_to_config_policy') await rekeyCooldownsBackToConfigPolicy(pair.compiledRuleId, pair.sourceId);
+      else if (direction === 'rule_to_monitor') await rekeyRuleCooldowns(pair.sourceId, pair.compiledRuleId);
+      else await rekeyRuleCooldowns(pair.compiledRuleId, pair.sourceId);
+    } catch (error) {
+      captureException(error, undefined, {
+        errorId: 'monitor-conversion-cooldown-rekey-failed',
+        sourceId: pair.sourceId, compiledRuleId: pair.compiledRuleId, direction,
+      });
+      console.error(`[MonitorConversion] cooldown rekey (${direction}) failed for source ${pair.sourceId}; the conversion itself is committed:`, error);
+    }
+  }
+}
+
 export async function convertPolicy(policyId: string, expectedHash: string, auth: AuthContext, opts?: { sourceIds?: string[]; }) {
   const policy = await authorizePreview(policyId, auth);
   assertOwner(policy, auth);
@@ -239,7 +276,7 @@ export async function convertPolicy(policyId: string, expectedHash: string, auth
     const result = await applyProposalInTx(tx, proposalFrom(preview, sources.policy, opts?.sourceIds), auth);
     return { result, pairs: await cooldownPairs(tx, result.conversionIds) };
   });
-  for (const pair of committed.pairs) if (pair.compiledRuleId) await rekeyConfigPolicyCooldowns(pair.sourceId, pair.compiledRuleId);
+  await rekeyCommittedCooldowns(committed.pairs, 'to_monitor');
   return committed.result;
 }
 
@@ -349,6 +386,9 @@ async function partnerPlanInTx(partnerId: string, auth: AuthContext, tx: DbExecu
   if (expectedHash !== undefined && hash !== expectedHash) throw new ConversionError('preview_stale', 'Partner conversion inputs changed');
   const summary: PartnerConversionPreview = { partnerId, previewHash: hash, policies: 0, rows: 0, convertible: 0, unconvertible: [] };
   const conversionIds: string[] = [];
+  // cooldownPairs() only covers config_policy_alert_rules; a converted
+  // template retires standalone alert_rules, which rekey rule → rule.
+  const rulePairs: Array<{ sourceId: string; compiledRuleId: string | null; }> = [];
   for (const policy of ordered) {
     const sources = await lockPolicyInputs(tx, policy.id, auth);
     const preview = await buildPolicyPreviewInTx(policy.id, auth, tx);
@@ -383,9 +423,10 @@ async function partnerPlanInTx(partnerId: string, auth: AuthContext, tx: DbExecu
       summary.convertible++;
       const result = await applyTemplateGroupInTx(await loadTemplateGroup(template.id, auth, tx, true), preview.previewHash, auth, tx);
       conversionIds.push(result.conversionId);
+      rulePairs.push(...result.cooldownPairs);
     }
   }
-  return { summary, conversionIds, pairs: await cooldownPairs(tx, conversionIds) };
+  return { summary, conversionIds, pairs: await cooldownPairs(tx, conversionIds), rulePairs };
 }
 export async function previewPartnerConversion(partnerId: string, auth: AuthContext): Promise<PartnerConversionPreview> {
   assertPartner(partnerId, auth);
@@ -399,7 +440,8 @@ export async function previewPartnerConversion(partnerId: string, auth: AuthCont
 export async function convertPartnerLegacy(partnerId: string, expectedHash: string, auth: AuthContext) {
   assertPartner(partnerId, auth);
   const committed = await inCallerTransaction(auth, tx => partnerPlanInTx(partnerId, auth, tx, expectedHash));
-  for (const pair of committed.pairs) if (pair.compiledRuleId) await rekeyConfigPolicyCooldowns(pair.sourceId, pair.compiledRuleId);
+  await rekeyCommittedCooldowns(committed.pairs, 'to_monitor');
+  await rekeyCommittedCooldowns(committed.rulePairs, 'rule_to_monitor');
   return { policies: committed.summary.policies, converted: committed.conversionIds.length, unconvertible: committed.summary.unconvertible.length };
 }
 
@@ -412,6 +454,8 @@ interface TemplateGroupResult {
   conversionId: string;
   convertedRuleIds: string[];
   outputs: Array<{ sourceRuleId: string; role: string; monitorId: string; policyId: string; }>;
+  /** Retired rule id → its primary monitor's compiled rule id, for the post-commit cooldown rekey. */
+  cooldownPairs: Array<{ sourceId: string; compiledRuleId: string | null; }>;
 }
 class TemplatePreviewRollback extends Error { }
 
@@ -467,7 +511,7 @@ async function applyTemplateGroupInTx(group: Awaited<ReturnType<typeof loadTempl
     sourceState: { template, rules },
   }).onConflictDoNothing().returning();
   if (!ledger) throw new ConversionError('already_converted', 'Template group already converted');
-  const result: TemplateGroupResult = { conversionId: ledger.id, convertedRuleIds: rules.map((r) => r.id), outputs: [] };
+  const result: TemplateGroupResult = { conversionId: ledger.id, convertedRuleIds: rules.map((r) => r.id), outputs: [], cooldownPairs: [] };
   for (const plan of plans) {
     if (!plan.mapped.ok || !plan.target) throw new ConversionError('blocked', 'Invalid group plan');
     const owner = plan.rule.orgId ? { orgId: plan.rule.orgId } : { partnerId: plan.rule.partnerId! };
@@ -505,6 +549,8 @@ async function applyTemplateGroupInTx(group: Awaited<ReturnType<typeof loadTempl
       result.outputs.push({ sourceRuleId: plan.rule.id, role: proposed.role, monitorId: monitor.id, policyId: policy.id });
       if (proposed.role === 'primary') primaryId = monitor.id;
     }
+    const primaryCompiled = created.find((c) => c.proposed.role === 'primary')?.monitor.compiledAlertRuleId ?? null;
+    result.cooldownPairs.push({ sourceId: plan.rule.id, compiledRuleId: primaryCompiled });
     const retired = await tx.update(alertRules).set({ retiredAt: new Date(), retiredReason: 'operator', convertedToMonitorId: primaryId })
       .where(and(eq(alertRules.id, plan.rule.id), isNull(alertRules.retiredAt))).returning({ id: alertRules.id });
     if (!retired.length) throw new ConversionError('already_converted', 'Rule already converted');
@@ -624,7 +670,9 @@ export async function convertTemplateGroup(templateId: string, expectedHash: str
     if (preview.equivalence.deltas.length) throw new ConversionError('equivalence_delta', 'Template group behavior differs', preview.equivalence);
     return applyTemplateGroupInTx(group, expectedHash, auth, tx);
   };
-  return executor === db ? inCallerTransaction(auth, work) : executor.transaction(work);
+  const result = executor === db ? await inCallerTransaction(auth, work) : await executor.transaction(work);
+  await rekeyCommittedCooldowns(result.cooldownPairs, 'rule_to_monitor');
+  return result;
 }
 
 function originalRetirement(state: Record<string, unknown>) {
@@ -737,7 +785,7 @@ async function revertInTx(conversionId: string, auth: AuthContext, tx: DbExecuto
 }
 export async function revertConversion(conversionId: string, auth: AuthContext): Promise<void> {
   const pairs = await inCallerTransaction(auth, tx => revertInTx(conversionId, auth, tx));
-  for (const pair of pairs) if (pair.compiledRuleId) await rekeyCooldownsBackToConfigPolicy(pair.compiledRuleId, pair.sourceId);
+  await rekeyCommittedCooldowns(pairs, 'back_to_config_policy');
 }
 
 async function validTemplateTarget(owner: Owner, target: NonNullable<ReturnType<typeof assignmentForRule>>, tx: DbExecutor) {
