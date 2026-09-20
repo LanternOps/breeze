@@ -805,6 +805,15 @@ const REPOINT_TABLES: readonly string[] = [
   "metric_anomaly_incidents",
   "metric_rollups",
   "metric_rollups_default",
+  // #6370 — conversion ledger rows follow their org, including outputs with
+  // their own denormalised org_id. Partner-owned rows have NULL org_id and
+  // never match the repoint's WHERE org_id = <loser>. The output-to-conversion
+  // composite FKs are deferrable; the merge defers them while both rows move.
+  // No dedupe: a legacy source has one owner, and the live (source_table,
+  // source_id) unique index is global, not org-scoped. Both orgs cannot have
+  // live conversions of the same source; rewriting org_id changes no key.
+  "monitor_conversion_outputs",
+  "monitor_conversions",
   // #5289 — an org-owned monitor definition repoints with the org like any
   // other config row; its compiled alert_rules/alert_templates/automations rows
   // are already in this list and repoint alongside it.

@@ -59,7 +59,26 @@ import {
   configPolicyAlertRules,
   configPolicyFeatureLinks,
   configPolicyMonitoringSettings,
+  configPolicyMonitoringWatches,
 } from '../db/schema';
+
+// Monitoring keeps the settings id stable so retired watches retain their FK.
+function monitoringSettingsUpsert() {
+  const returning = vi.fn(async () => [{ id: 'settings-1', checkIntervalSeconds: 60 }]);
+  const onConflictDoUpdate = vi.fn((_options: unknown) => ({ returning }));
+  return { onConflictDoUpdate };
+}
+
+function expectMonitoringSettingsUpsert(
+  upsert: ReturnType<typeof monitoringSettingsUpsert>,
+  checkIntervalSeconds: number,
+) {
+  expect(upsert.onConflictDoUpdate).toHaveBeenCalledExactlyOnceWith({
+    target: configPolicyMonitoringSettings.featureLinkId,
+    // Exact keys: never reset retiredAt or convertedToMonitorId on re-save.
+    set: { checkIntervalSeconds, updatedAt: expect.any(Date) },
+  });
+}
 
 // Chain for `db.select().from(...).where(...)` awaited directly (links query)
 function selectWhereRows(rows: unknown[]) {
@@ -814,6 +833,7 @@ describe('updateFeatureLink — normalized row replacement', () => {
    */
   function updateTx(existing: Record<string, unknown>) {
     const calls: Array<{ op: 'delete' | 'insert'; table: unknown; values?: any }> = [];
+    const settingsUpsert = monitoringSettingsUpsert();
     const tx: any = {
       select: vi.fn(() => ({
         from: vi.fn(() => ({
@@ -834,15 +854,15 @@ describe('updateFeatureLink — normalized row replacement', () => {
       insert: vi.fn((table: unknown) => ({
         values: vi.fn((values: any) => {
           calls.push({ op: 'insert', table, values });
-          // Awaitable AND `.returning()`-able: monitoring's decompose chains
-          // `.returning()` off the settings insert to get the row id.
+          if (table === configPolicyMonitoringSettings) return settingsUpsert;
+          // Other normalized inserts are directly awaitable.
           const result: any = Promise.resolve([{ id: 'settings-1' }]);
           result.returning = vi.fn(() => Promise.resolve([{ id: 'settings-1' }]));
           return result;
         }),
       })),
     };
-    return { tx, calls };
+    return { tx, calls, settingsUpsert };
   }
 
   it('deletes the old alert_rule rows, then reinserts them with schema defaults', async () => {
@@ -901,7 +921,7 @@ describe('updateFeatureLink — normalized row replacement', () => {
     // gone (2026-07-30 consolidation) a delete here is pure data loss for any
     // policy the ownership migration has not yet touched — one unrelated save
     // on the Monitoring tab and the legacy rules are unrecoverable.
-    const { tx, calls } = updateTx({
+    const { tx, calls, settingsUpsert } = updateTx({
       id: 'link-mon', configPolicyId: 'policy-1', featureType: 'monitoring',
       featurePolicyId: null, inlineSettings: { checkIntervalSeconds: 60, watches: [] },
     });
@@ -912,7 +932,9 @@ describe('updateFeatureLink — normalized row replacement', () => {
     }, 'policy-1');
 
     const deletedTables = calls.filter((c) => c.op === 'delete').map((c) => c.table);
-    expect(deletedTables).toContain(configPolicyMonitoringSettings);
+    expect(deletedTables).toContain(configPolicyMonitoringWatches);
+    expect(deletedTables).not.toContain(configPolicyMonitoringSettings);
+    expectMonitoringSettingsUpsert(settingsUpsert, 120);
     expect(deletedTables).not.toContain(configPolicyAlertRules);
   });
 });
@@ -934,6 +956,7 @@ describe('monitoring decompose/assemble — no longer owns alert rules', () => {
   // are non-empty) is config_policy_monitoring_watches.
   function txForMonitoringInsert() {
     let insertCall = 0;
+    const settingsUpsert = monitoringSettingsUpsert();
     const insertedTables: unknown[] = [];
     const tx = {
       insert: vi.fn((table: unknown) => {
@@ -961,20 +984,18 @@ describe('monitoring decompose/assemble — no longer owns alert rules', () => {
         if (insertCall === 2) {
           // config_policy_monitoring_settings insert (decomposeInlineSettings)
           return {
-            values: vi.fn(() => ({
-              returning: vi.fn(() => Promise.resolve([{ id: 'settings-1', checkIntervalSeconds: 60 }])),
-            })),
+            values: vi.fn(() => settingsUpsert),
           };
         }
         // config_policy_monitoring_watches insert
         return { values: vi.fn(() => Promise.resolve([])) };
       }),
     };
-    return { tx, insertedTables, insertCallCount: () => insertCall };
+    return { tx, insertedTables, settingsUpsert, insertCallCount: () => insertCall };
   }
 
   it('monitoring decompose no longer inserts config_policy_alert_rules rows', async () => {
-    const { tx, insertedTables, insertCallCount } = txForMonitoringInsert();
+    const { tx, insertedTables, settingsUpsert, insertCallCount } = txForMonitoringInsert();
     vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
 
     const link = await addFeatureLink('policy-1', 'monitoring', null, {
@@ -986,10 +1007,12 @@ describe('monitoring decompose/assemble — no longer owns alert rules', () => {
     // Exactly 3 inserts: feature link, monitoring settings, monitoring watches.
     expect(insertCallCount()).toBe(3);
     expect(insertedTables).not.toContain(configPolicyAlertRules);
+    expectMonitoringSettingsUpsert(settingsUpsert, 60);
   });
 
   it('monitoring decompose persists rationale on the config_policy_monitoring_watches insert row', async () => {
     let watchRowValues: any;
+    const settingsUpsert = monitoringSettingsUpsert();
     let insertCall = 0;
     const tx = {
       insert: vi.fn(() => {
@@ -1015,9 +1038,7 @@ describe('monitoring decompose/assemble — no longer owns alert rules', () => {
         }
         if (insertCall === 2) {
           return {
-            values: vi.fn(() => ({
-              returning: vi.fn(() => Promise.resolve([{ id: 'settings-1', checkIntervalSeconds: 60 }])),
-            })),
+            values: vi.fn(() => settingsUpsert),
           };
         }
         return {
@@ -1036,10 +1057,12 @@ describe('monitoring decompose/assemble — no longer owns alert rules', () => {
     });
 
     expect(watchRowValues[0].rationale).toBe('why this service is watched');
+    expectMonitoringSettingsUpsert(settingsUpsert, 60);
   });
 
   it('monitoring decompose stores a null rationale when the watch omits it', async () => {
     let watchRowValues: any;
+    const settingsUpsert = monitoringSettingsUpsert();
     let insertCall = 0;
     const tx = {
       insert: vi.fn(() => {
@@ -1065,9 +1088,7 @@ describe('monitoring decompose/assemble — no longer owns alert rules', () => {
         }
         if (insertCall === 2) {
           return {
-            values: vi.fn(() => ({
-              returning: vi.fn(() => Promise.resolve([{ id: 'settings-1', checkIntervalSeconds: 60 }])),
-            })),
+            values: vi.fn(() => settingsUpsert),
           };
         }
         return {
@@ -1086,6 +1107,7 @@ describe('monitoring decompose/assemble — no longer owns alert rules', () => {
     });
 
     expect(watchRowValues[0].rationale).toBeNull();
+    expectMonitoringSettingsUpsert(settingsUpsert, 60);
   });
 
   it('monitoring decompose rejects legacy non-empty alertRules payloads', async () => {
