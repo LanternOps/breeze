@@ -890,3 +890,85 @@ func TestOpenCleanupTargetAnchorIOErrorsAreNotGuardRejections(t *testing.T) {
 		})
 	}
 }
+
+// withFullyLiteralCleanupRule prepends a SYNTHETIC wildcard-free rule for the
+// host OS so the execute path can be exercised against a real directory. The
+// shipped fully-literal rule is `/root/.local/share/Trash`, which a test cannot
+// create, and the rule table is compiled from an embedded file with no
+// injection seam — so the in-package test mutates the loaded table and restores
+// it. Prepending wins over the real `/tmp/**` rule, which matches first
+// otherwise.
+func withFullyLiteralCleanupRule(t *testing.T, dir string) {
+	t.Helper()
+	table, err := loadCleanupRules()
+	if err != nil || table == nil {
+		t.Fatalf("loadCleanupRules: %v", err)
+	}
+	patterns, err := compileCleanupPatterns([]string{normalizeCleanupPathFor(runtime.GOOS, dir)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := literalPrefixLen(patterns[0]); got != len(patterns[0]) {
+		t.Fatalf("fixture pattern %v is not fully literal (prefix %d)", patterns[0], got)
+	}
+	original := table.byOS[runtime.GOOS]
+	table.byOS[runtime.GOOS] = append([]compiledCleanupRule{{
+		category:    "trash",
+		granularity: "contents",
+		patterns:    patterns,
+	}}, original...)
+	t.Cleanup(func() { table.byOS[runtime.GOOS] = original })
+}
+
+// TestOpenCleanupTargetAcceptsAFullyLiteralRule is the execute-path half of the
+// #6375 regression. Anchoring a wildcard-free pattern on its own literal prefix
+// made the anchor equal the target, and openCleanupTarget refuses `rel == "."`
+// — so root's Trash was previewed forever and never deletable. The anchor now
+// steps up one component, and this asserts the real os.Root machinery accepts
+// the target while the leaf identity check still refuses a symlink there.
+func TestOpenCleanupTargetAcceptsAFullyLiteralRule(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX fixture; the Windows anchor grammar is covered by the rules-level test")
+	}
+	parent := cleanupTempDir(t)
+	literal := filepath.Join(parent, "Trash")
+	if err := os.Mkdir(literal, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	withFullyLiteralCleanupRule(t, literal)
+
+	target, err := openCleanupTarget(runtime.GOOS, literal, "/")
+	if err != nil {
+		t.Fatalf("a fully-literal rule target must open, got %v", err)
+	}
+	defer target.close()
+	if target.rel != "Trash" {
+		t.Errorf("rel = %q; the target must stay a named entry inside the stepped-up anchor", target.rel)
+	}
+
+	// The leaf check is what the anchor step-up must not cost us: swap the
+	// directory for a symlink and the live guard must still refuse it.
+	if err := os.RemoveAll(literal); err != nil {
+		t.Fatal(err)
+	}
+	elsewhere := filepath.Join(parent, "elsewhere")
+	if err := os.Mkdir(elsewhere, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(elsewhere, literal); err != nil {
+		t.Fatal(err)
+	}
+	linked, err := openCleanupTarget(runtime.GOOS, literal, "/")
+	if err != nil {
+		t.Fatalf("openCleanupTarget on the symlinked leaf: %v", err)
+	}
+	defer linked.close()
+	info, err := linked.root.Lstat(linked.rel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	guardErr := cleanupGuardRejection(info, linked.match, true, true, time.Time{}, time.Now())
+	if guardErr == nil || !strings.Contains(guardErr.Error(), "is a symlink") {
+		t.Fatalf("a symlinked leaf must still be refused, got %v", guardErr)
+	}
+}
