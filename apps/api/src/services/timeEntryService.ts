@@ -1415,9 +1415,14 @@ export async function getTimesheet(userId: string, weekStart: Date, accessibleOr
 export async function getTicketBillingSummary(ticketId: string) {
   const timeRows = await db
     .select({
-      // §3.4: contract-covered time, as the billed quantity — the figure a
-      // block-hours drawdown (#4547 §5) would consume for the same rows.
-      includedMinutes: sql<number>`COALESCE(SUM(COALESCE(${timeEntries.billableMinutes}, ${timeEntries.durationMinutes})) FILTER (WHERE ${timeEntries.coverage} = 'included'), 0)::int`,
+      // §3.4 contract-covered time, in ACTUAL minutes. The W03 plan proposed
+      // COALESCE here "for uniformity, not for effect", on the premise that an
+      // included row never carries card terms. It can: resolveBillingRule()
+      // stamps roundingIncrementMinutes from the card regardless of coverage,
+      // so COALESCE would have moved this number — and would then disagree with
+      // the portal's coveredByContract bucket, which §3.5 keeps on actual
+      // minutes. W02's timeEntryMoneyReaders.test.ts pins this form.
+      includedMinutes: sql<number>`COALESCE(SUM(${timeEntries.durationMinutes}) FILTER (WHERE ${timeEntries.coverage} = 'included'), 0)::int`,
       // Utilization figure — ACTUAL minutes worked (§3.5). Not the billed quantity.
       totalMinutes: sql<number>`COALESCE(SUM(${timeEntries.durationMinutes}), 0)::int`,
       // Billed quantity (§3.5): the minimum/rounding result when the row has one.

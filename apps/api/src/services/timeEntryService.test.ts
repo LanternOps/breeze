@@ -2356,6 +2356,10 @@ describe('money readers read COALESCE(billable_minutes, duration_minutes) (#4628
     expect(render(aggregates.billableMinutes)).toContain('billableMinutes');
     // Utilization figure — actual minutes, never the billed quantity (§3.5).
     expect(render(aggregates.totalMinutes)).not.toContain('billableMinutes');
+    // includedMinutes stays on ACTUAL minutes, matching the portal's
+    // coveredByContract bucket. An included row CAN carry the card's rounding
+    // increment, so a COALESCE here would move the number, not just tidy it.
+    expect(render(aggregates.includedMinutes)).not.toContain('billableMinutes');
   });
 
   it('getTicketBillingSummary returns includedMinutes for contract-covered entries', async () => {
