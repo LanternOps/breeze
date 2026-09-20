@@ -1578,7 +1578,7 @@ describe('MCP transport integration', () => {
       expect(typeof body.result.instructions).toBe('string');
       expect(body.result.instructions.length).toBeGreaterThan(100);
       expect(body.result.capabilities.prompts).toEqual({ listChanged: false });
-      expect(body.result.protocolVersion).toBe('2024-11-05');
+      expect(body.result.protocolVersion).toBe('2025-11-25');
     });
 
     it('prompts/list surfaces all 5 guided workflow prompts', async () => {

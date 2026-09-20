@@ -47,6 +47,8 @@ import { compactToolResultForChat, redactAiToolOutputText } from '../services/ai
 import { sanitizeThrownToolError } from '../services/aiToolErrors';
 import { resolveDeprecatedToolAlias } from '../services/aiToolAliases';
 import { MCP_SERVER_INSTRUCTIONS, listMcpPrompts, getMcpPrompt, hasMcpPrompt } from '../services/mcpGuidance';
+import { API_VERSION } from '../version';
+import { negotiateMcpProtocolVersion, parseMcpProtocolVersionHeader } from '../services/mcpProtocol';
 import {
   beginMcpToolExecutionLedger,
   completeMcpToolExecutionLedger,
@@ -730,6 +732,19 @@ mcpServerRoutes.post(
     const apiKey = c.get('apiKey') as McpApiKeyWithAuthFields;
     const principalKey = mcpPrincipalKey(apiKey);
     const isInitialize = pre.body.method === 'initialize';
+    // 2025-06-18 §Protocol Version Header: clients MUST send MCP-Protocol-Version
+    // on every request after initialize; an unsupported value is a 400. Absent
+    // = assume 2025-03-26 (backwards compatibility). Initialize itself carries
+    // the version in params, so the header is not checked there.
+    if (!isInitialize) {
+      const parsed = parseMcpProtocolVersionHeader(c.req.header('MCP-Protocol-Version'));
+      if (!parsed.ok) {
+        return c.json(
+          { jsonrpc: '2.0', id: pre.body.id ?? null, error: { code: -32600, message: `Unsupported MCP-Protocol-Version: ${parsed.value}` } },
+          400,
+        );
+      }
+    }
     const redis = getRedis();
 
     let trustedSessionId: string | undefined;
@@ -873,9 +888,9 @@ mcpServerRoutes.delete('/sse', (c) => {
 // JSON-RPC Method Dispatcher
 // ============================================
 
-export function buildInitializeResult() {
+export function buildInitializeResult(requestedProtocolVersion?: unknown) {
   return {
-    protocolVersion: '2024-11-05',
+    protocolVersion: negotiateMcpProtocolVersion(requestedProtocolVersion),
     capabilities: {
       tools: { listChanged: false },
       resources: { subscribe: false, listChanged: false },
@@ -883,7 +898,8 @@ export function buildInitializeResult() {
     },
     serverInfo: {
       name: 'breeze-rmm',
-      version: '1.0.0',
+      title: 'Breeze RMM',
+      version: API_VERSION,
     },
     instructions: MCP_SERVER_INSTRUCTIONS,
   };
@@ -900,7 +916,7 @@ async function handleJsonRpc(
   try {
     switch (req.method) {
       case 'initialize':
-        return jsonRpcResult(req.id, buildInitializeResult());
+        return jsonRpcResult(req.id, buildInitializeResult((req.params as { protocolVersion?: unknown } | undefined)?.protocolVersion));
 
       case 'notifications/initialized':
         // Client acknowledgment — no response needed but return empty result
