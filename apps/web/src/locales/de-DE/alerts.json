@@ -623,6 +623,63 @@
       "delivery": "Zustellung"
     }
   },
+  "deliveryPage": {
+    "loading": "Zustellungseinstellungen werden geladen…",
+    "loadFailed": "Zustellungseinstellungen konnten nicht geladen werden.",
+    "title": "Zustellung",
+    "subtitle": "Wer benachrichtigt wird – und wie.",
+    "precedence": "Die eigene Benachrichtigungseinstellung eines Monitors gewinnt; andernfalls die erste passende Zeile von oben.",
+    "sections": {
+      "channels": "Kanäle",
+      "routing": "Weiterleitung",
+      "escalation": "Eskalationsrichtlinien"
+    },
+    "routing": {
+      "everythingElse": "Alles andere",
+      "everythingElseHint": "Fängt jede Warnung ab, auf die keine Zeile darüber passt. Kanäle leeren für „nur Posteingang“.",
+      "inboxOnly": "Nur Posteingang",
+      "partnerRowHint": "Gehört Ihrem Partner; hier schreibgeschützt.",
+      "customizeForOrg": "Für diese Organisation anpassen",
+      "matchAll": "Alle Warnungen",
+      "severities": "Schweregrade",
+      "monitorKinds": "Monitorarten",
+      "sites": "Standorte",
+      "sendTo": "Senden an",
+      "escalateVia": "Eskalieren über",
+      "noEscalation": "Keine Eskalation",
+      "addRule": "Weiterleitungsregel hinzufügen",
+      "editRule": "Weiterleitungsregel bearbeiten",
+      "newRule": "Neue Weiterleitungsregel",
+      "editDefault": "„Alles andere“ bearbeiten",
+      "priority": "Priorität (niedriger läuft zuerst)",
+      "leaveEmptyForAll": "Leer lassen, um alle zu treffen",
+      "defaultSaved": "Zeile „Alles andere“ gespeichert",
+      "failedToSaveDefault": "Zeile „Alles andere“ konnte nicht gespeichert werden",
+      "deleteConfirm": "Weiterleitungsregel „{{name}}“ löschen?"
+    },
+    "escalation": {
+      "new": "Neue Eskalationsrichtlinie",
+      "edit": "Eskalationsrichtlinie bearbeiten",
+      "empty": "Noch keine Eskalationsrichtlinien. Eine Richtlinie sendet Folgebenachrichtigungen, solange eine Warnung unbestätigt bleibt.",
+      "steps": "Schritte",
+      "addStep": "Schritt hinzufügen",
+      "removeStep": "Schritt entfernen",
+      "delayMinutes": "Nach (Minuten)",
+      "notifyChannels": "Benachrichtigen",
+      "notifyUsers": "Benutzer benachrichtigen (in der App)",
+      "repeat": "Wiederholen",
+      "everyMinutes": "Alle (Minuten)",
+      "maxTimes": "Zusätzliche Sendungen",
+      "stepCount_one": "{{count}} Schritt",
+      "stepCount_other": "{{count}} Schritte",
+      "created": "Eskalationsrichtlinie erstellt",
+      "saved": "Eskalationsrichtlinie gespeichert",
+      "deleted": "Eskalationsrichtlinie gelöscht",
+      "failedToSave": "Eskalationsrichtlinie konnte nicht gespeichert werden",
+      "failedToDelete": "Eskalationsrichtlinie konnte nicht gelöscht werden",
+      "deleteConfirm": "Eskalationsrichtlinie „{{name}}“ löschen? Monitore und Weiterleitungszeilen, die darauf verweisen, eskalieren nicht mehr."
+    }
+  },
   "correlatedAlertGroups": {
     "evidence": "Beweise",
     "alertCorrelationDisabled": "Warnungskorrelation deaktiviert",

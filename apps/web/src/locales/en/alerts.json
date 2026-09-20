@@ -623,6 +623,63 @@
       "delivery": "Delivery"
     }
   },
+  "deliveryPage": {
+    "loading": "Loading delivery settings…",
+    "loadFailed": "Could not load delivery settings.",
+    "title": "Delivery",
+    "subtitle": "Who gets told, and how.",
+    "precedence": "A monitor's own Notify setting wins; otherwise the first matching row from the top.",
+    "sections": {
+      "channels": "Channels",
+      "routing": "Routing",
+      "escalation": "Escalation policies"
+    },
+    "routing": {
+      "everythingElse": "Everything else",
+      "everythingElseHint": "Catches every alert no row above matches. Empty its channels for inbox only.",
+      "inboxOnly": "Inbox only",
+      "partnerRowHint": "Owned by your partner; read-only here.",
+      "customizeForOrg": "Customize for this organization",
+      "matchAll": "All alerts",
+      "severities": "Severities",
+      "monitorKinds": "Monitor kinds",
+      "sites": "Sites",
+      "sendTo": "Send to",
+      "escalateVia": "Escalate via",
+      "noEscalation": "No escalation",
+      "addRule": "Add routing rule",
+      "editRule": "Edit routing rule",
+      "newRule": "New routing rule",
+      "editDefault": "Edit Everything else",
+      "priority": "Priority (lower runs first)",
+      "leaveEmptyForAll": "Leave empty to match all",
+      "defaultSaved": "Everything else row saved",
+      "failedToSaveDefault": "Failed to save the Everything else row",
+      "deleteConfirm": "Delete routing rule \"{{name}}\"?"
+    },
+    "escalation": {
+      "new": "New escalation policy",
+      "edit": "Edit escalation policy",
+      "empty": "No escalation policies yet. A policy sends follow-up notifications while an alert stays unacknowledged.",
+      "steps": "Steps",
+      "addStep": "Add step",
+      "removeStep": "Remove step",
+      "delayMinutes": "After (minutes)",
+      "notifyChannels": "Notify",
+      "notifyUsers": "Notify users (in-app)",
+      "repeat": "Repeat",
+      "everyMinutes": "Every (minutes)",
+      "maxTimes": "Additional sends",
+      "stepCount_one": "{{count}} step",
+      "stepCount_other": "{{count}} steps",
+      "created": "Escalation policy created",
+      "saved": "Escalation policy saved",
+      "deleted": "Escalation policy deleted",
+      "failedToSave": "Failed to save escalation policy",
+      "failedToDelete": "Failed to delete escalation policy",
+      "deleteConfirm": "Delete escalation policy \"{{name}}\"? Monitors and routing rows that reference it will stop escalating."
+    }
+  },
   "correlatedAlertGroups": {
     "evidence": "Evidence",
     "alertCorrelationDisabled": "Alert correlation disabled",

@@ -623,6 +623,63 @@
       "delivery": "Livraison"
     }
   },
+  "deliveryPage": {
+    "loading": "Chargement des réglages de livraison…",
+    "loadFailed": "Impossible de charger les réglages de livraison.",
+    "title": "Livraison",
+    "subtitle": "Qui est prévenu, et comment.",
+    "precedence": "Le réglage de notification propre au moniteur l'emporte ; sinon, la première ligne correspondante en partant du haut.",
+    "sections": {
+      "channels": "Canaux",
+      "routing": "Routage",
+      "escalation": "Politiques d'escalade"
+    },
+    "routing": {
+      "everythingElse": "Tout le reste",
+      "everythingElseHint": "Capte toute alerte qu'aucune ligne au-dessus ne couvre. Videz ses canaux pour « boîte de réception seulement ».",
+      "inboxOnly": "Boîte de réception seulement",
+      "partnerRowHint": "Appartient à votre partenaire ; en lecture seule ici.",
+      "customizeForOrg": "Personnaliser pour cette organisation",
+      "matchAll": "Toutes les alertes",
+      "severities": "Gravités",
+      "monitorKinds": "Types de moniteur",
+      "sites": "Sites concernés",
+      "sendTo": "Envoyer à",
+      "escalateVia": "Escalader via",
+      "noEscalation": "Pas d'escalade",
+      "addRule": "Ajouter une règle de routage",
+      "editRule": "Modifier la règle de routage",
+      "newRule": "Nouvelle règle de routage",
+      "editDefault": "Modifier « Tout le reste »",
+      "priority": "Priorité (la plus basse s'exécute en premier)",
+      "leaveEmptyForAll": "Laisser vide pour tout faire correspondre",
+      "defaultSaved": "Ligne « Tout le reste » enregistrée",
+      "failedToSaveDefault": "Échec de l'enregistrement de la ligne « Tout le reste »",
+      "deleteConfirm": "Supprimer la règle de routage « {{name}} » ?"
+    },
+    "escalation": {
+      "new": "Nouvelle politique d'escalade",
+      "edit": "Modifier la politique d'escalade",
+      "empty": "Aucune politique d'escalade pour l'instant. Une politique envoie des notifications de relance tant qu'une alerte reste non acquittée.",
+      "steps": "Étapes",
+      "addStep": "Ajouter une étape",
+      "removeStep": "Retirer l'étape",
+      "delayMinutes": "Après (minutes)",
+      "notifyChannels": "Notifier",
+      "notifyUsers": "Notifier les utilisateurs (dans l’application)",
+      "repeat": "Répéter",
+      "everyMinutes": "Toutes les (minutes)",
+      "maxTimes": "Envois supplémentaires",
+      "stepCount_one": "{{count}} étape",
+      "stepCount_other": "{{count}} étapes",
+      "created": "Politique d'escalade créée",
+      "saved": "Politique d'escalade enregistrée",
+      "deleted": "Politique d'escalade supprimée",
+      "failedToSave": "Échec de l'enregistrement de la politique d'escalade",
+      "failedToDelete": "Échec de la suppression de la politique d'escalade",
+      "deleteConfirm": "Supprimer la politique d'escalade « {{name}} » ? Les moniteurs et lignes de routage qui la référencent cesseront d'escalader."
+    }
+  },
   "correlatedAlertGroups": {
     "evidence": "Preuves",
     "alertCorrelationDisabled": "Corrélation d’alerte désactivée",

@@ -623,6 +623,63 @@
       "delivery": "Consegna"
     }
   },
+  "deliveryPage": {
+    "loading": "Caricamento delle impostazioni di consegna…",
+    "loadFailed": "Impossibile caricare le impostazioni di consegna.",
+    "title": "Consegna",
+    "subtitle": "Chi viene avvisato e come.",
+    "precedence": "L'impostazione di notifica del monitor ha la precedenza; altrimenti vale la prima riga corrispondente dall'alto.",
+    "sections": {
+      "channels": "Canali",
+      "routing": "Instradamento",
+      "escalation": "Criteri di escalation"
+    },
+    "routing": {
+      "everythingElse": "Tutto il resto",
+      "everythingElseHint": "Cattura ogni avviso che nessuna riga sopra intercetta. Svuota i canali per «solo posta in arrivo».",
+      "inboxOnly": "Solo posta in arrivo",
+      "partnerRowHint": "Appartiene al tuo partner; qui è in sola lettura.",
+      "customizeForOrg": "Personalizza per questa organizzazione",
+      "matchAll": "Tutti gli avvisi",
+      "severities": "Gravità",
+      "monitorKinds": "Tipi di monitor",
+      "sites": "Sedi",
+      "sendTo": "Invia a",
+      "escalateVia": "Escalation tramite",
+      "noEscalation": "Nessuna escalation",
+      "addRule": "Aggiungi regola di instradamento",
+      "editRule": "Modifica regola di instradamento",
+      "newRule": "Nuova regola di instradamento",
+      "editDefault": "Modifica «Tutto il resto»",
+      "priority": "Priorità (la più bassa viene eseguita per prima)",
+      "leaveEmptyForAll": "Lascia vuoto per corrispondere a tutto",
+      "defaultSaved": "Riga «Tutto il resto» salvata",
+      "failedToSaveDefault": "Impossibile salvare la riga «Tutto il resto»",
+      "deleteConfirm": "Eliminare la regola di instradamento «{{name}}»?"
+    },
+    "escalation": {
+      "new": "Nuovo criterio di escalation",
+      "edit": "Modifica criterio di escalation",
+      "empty": "Nessun criterio di escalation. Un criterio invia notifiche di follow-up finché un avviso resta non riconosciuto.",
+      "steps": "Passaggi",
+      "addStep": "Aggiungi passaggio",
+      "removeStep": "Rimuovi passaggio",
+      "delayMinutes": "Dopo (minuti)",
+      "notifyChannels": "Notifica",
+      "notifyUsers": "Notifica utenti (nell’app)",
+      "repeat": "Ripeti",
+      "everyMinutes": "Ogni (minuti)",
+      "maxTimes": "Invii aggiuntivi",
+      "stepCount_one": "{{count}} passaggio",
+      "stepCount_other": "{{count}} passaggi",
+      "created": "Criterio di escalation creato",
+      "saved": "Criterio di escalation salvato",
+      "deleted": "Criterio di escalation eliminato",
+      "failedToSave": "Impossibile salvare il criterio di escalation",
+      "failedToDelete": "Impossibile eliminare il criterio di escalation",
+      "deleteConfirm": "Eliminare il criterio di escalation «{{name}}»? I monitor e le righe di instradamento che vi fanno riferimento smetteranno di eseguire l'escalation."
+    }
+  },
   "correlatedAlertGroups": {
     "evidence": "Evidenza",
     "alertCorrelationDisabled": "Correlazione avvisi disabilitata",

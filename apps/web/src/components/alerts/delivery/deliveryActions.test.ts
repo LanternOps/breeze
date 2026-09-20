@@ -26,7 +26,8 @@ import {
   runChannelDelete,
   runRoutingRuleSave,
   runRoutingRuleDelete,
-} from '../DeliveryPage';
+  runDefaultRowSave,
+} from './deliveryActions';
 
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
 const showToastMock = vi.mocked(showToast);
@@ -310,5 +311,23 @@ describe('runChannelTest', () => {
     );
     // Still refetches (the failure was surfaced, not swallowed).
     expect(fetchChannelsMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('runDefaultRowSave (W05b)', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  it('PUTs /alerts/routing-rules/default with the axis and channels and toasts success', async () => {
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: { id: 'default-row' } }));
+    await runDefaultRowSave({ ownerScope: 'partner', channelIds: ['ch-1'], escalationPolicyId: null }, { onUnauthorized: ON_UNAUTHORIZED });
+    expect(fetchWithAuthMock).toHaveBeenCalledWith('/alerts/routing-rules/default', expect.objectContaining({ method: 'PUT' }));
+    expect(JSON.parse((fetchWithAuthMock.mock.calls[0]![1] as RequestInit).body as string)).toEqual({ ownerScope: 'partner', channelIds: ['ch-1'], escalationPolicyId: null });
+    expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+  });
+
+  it('runRoutingRuleSave sends escalationPolicyId', async () => {
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: { id: 'r' } }));
+    await runRoutingRuleSave({ name: 'x', priority: 1, conditions: { monitorKinds: ['cpu'] }, channelIds: ['ch-1'], escalationPolicyId: 'ep-1', enabled: true }, { onUnauthorized: ON_UNAUTHORIZED });
+    expect(JSON.parse((fetchWithAuthMock.mock.calls[0]![1] as RequestInit).body as string)).toMatchObject({ escalationPolicyId: 'ep-1', conditions: { monitorKinds: ['cpu'] } });
   });
 });

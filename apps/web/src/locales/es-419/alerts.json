@@ -623,6 +623,63 @@
       "delivery": "Entrega"
     }
   },
+  "deliveryPage": {
+    "loading": "Cargando ajustes de entrega…",
+    "loadFailed": "No se pudieron cargar los ajustes de entrega.",
+    "title": "Entrega",
+    "subtitle": "A quién se avisa y cómo.",
+    "precedence": "La configuración de notificación propia de un monitor gana; de lo contrario, la primera fila coincidente desde arriba.",
+    "sections": {
+      "channels": "Canales",
+      "routing": "Enrutamiento",
+      "escalation": "Políticas de escalamiento"
+    },
+    "routing": {
+      "everythingElse": "Todo lo demás",
+      "everythingElseHint": "Captura toda alerta con la que ninguna fila superior coincida. Vacía sus canales para «solo bandeja de entrada».",
+      "inboxOnly": "Solo bandeja de entrada",
+      "partnerRowHint": "Pertenece a tu partner; solo lectura aquí.",
+      "customizeForOrg": "Personalizar para esta organización",
+      "matchAll": "Todas las alertas",
+      "severities": "Severidades",
+      "monitorKinds": "Tipos de monitor",
+      "sites": "Sitios",
+      "sendTo": "Enviar a",
+      "escalateVia": "Escalar mediante",
+      "noEscalation": "Sin escalamiento",
+      "addRule": "Agregar regla de enrutamiento",
+      "editRule": "Editar regla de enrutamiento",
+      "newRule": "Nueva regla de enrutamiento",
+      "editDefault": "Editar «Todo lo demás»",
+      "priority": "Prioridad (la menor se ejecuta primero)",
+      "leaveEmptyForAll": "Déjalo vacío para coincidir con todo",
+      "defaultSaved": "Fila «Todo lo demás» guardada",
+      "failedToSaveDefault": "No se pudo guardar la fila «Todo lo demás»",
+      "deleteConfirm": "¿Eliminar la regla de enrutamiento «{{name}}»?"
+    },
+    "escalation": {
+      "new": "Nueva política de escalamiento",
+      "edit": "Editar política de escalamiento",
+      "empty": "Aún no hay políticas de escalamiento. Una política envía notificaciones de seguimiento mientras una alerta siga sin confirmarse.",
+      "steps": "Pasos",
+      "addStep": "Agregar paso",
+      "removeStep": "Quitar paso",
+      "delayMinutes": "Después de (minutos)",
+      "notifyChannels": "Notificar",
+      "notifyUsers": "Notificar usuarios (en la aplicación)",
+      "repeat": "Repetir",
+      "everyMinutes": "Cada (minutos)",
+      "maxTimes": "Envíos adicionales",
+      "stepCount_one": "{{count}} paso",
+      "stepCount_other": "{{count}} pasos",
+      "created": "Política de escalamiento creada",
+      "saved": "Política de escalamiento guardada",
+      "deleted": "Política de escalamiento eliminada",
+      "failedToSave": "No se pudo guardar la política de escalamiento",
+      "failedToDelete": "No se pudo eliminar la política de escalamiento",
+      "deleteConfirm": "¿Eliminar la política de escalamiento «{{name}}»? Los monitores y filas de enrutamiento que la referencian dejarán de escalar."
+    }
+  },
   "correlatedAlertGroups": {
     "evidence": "Evidencia",
     "alertCorrelationDisabled": "Correlación de alertas deshabilitada",

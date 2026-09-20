@@ -623,6 +623,63 @@
       "delivery": "Entrega"
     }
   },
+  "deliveryPage": {
+    "loading": "Carregando configurações de entrega…",
+    "loadFailed": "Não foi possível carregar as configurações de entrega.",
+    "title": "Entrega",
+    "subtitle": "Quem é avisado e como.",
+    "precedence": "A configuração de notificação do próprio monitor vence; caso contrário, a primeira linha correspondente de cima para baixo.",
+    "sections": {
+      "channels": "Canais",
+      "routing": "Roteamento",
+      "escalation": "Políticas de escalonamento"
+    },
+    "routing": {
+      "everythingElse": "Todo o resto",
+      "everythingElseHint": "Captura todo alerta que nenhuma linha acima cobre. Esvazie os canais para “somente caixa de entrada”.",
+      "inboxOnly": "Somente caixa de entrada",
+      "partnerRowHint": "Pertence ao seu parceiro; somente leitura aqui.",
+      "customizeForOrg": "Personalizar para esta organização",
+      "matchAll": "Todos os alertas",
+      "severities": "Severidades",
+      "monitorKinds": "Tipos de monitor",
+      "sites": "Locais",
+      "sendTo": "Enviar para",
+      "escalateVia": "Escalonar via",
+      "noEscalation": "Sem escalonamento",
+      "addRule": "Adicionar regra de roteamento",
+      "editRule": "Editar regra de roteamento",
+      "newRule": "Nova regra de roteamento",
+      "editDefault": "Editar “Todo o resto”",
+      "priority": "Prioridade (menor executa primeiro)",
+      "leaveEmptyForAll": "Deixe vazio para corresponder a todos",
+      "defaultSaved": "Linha “Todo o resto” salva",
+      "failedToSaveDefault": "Falha ao salvar a linha “Todo o resto”",
+      "deleteConfirm": "Excluir a regra de roteamento “{{name}}”?"
+    },
+    "escalation": {
+      "new": "Nova política de escalonamento",
+      "edit": "Editar política de escalonamento",
+      "empty": "Ainda não há políticas de escalonamento. Uma política envia notificações de acompanhamento enquanto um alerta continua sem confirmação.",
+      "steps": "Etapas",
+      "addStep": "Adicionar etapa",
+      "removeStep": "Remover etapa",
+      "delayMinutes": "Após (minutos)",
+      "notifyChannels": "Notificar",
+      "notifyUsers": "Notificar usuários (no aplicativo)",
+      "repeat": "Repetir",
+      "everyMinutes": "A cada (minutos)",
+      "maxTimes": "Envios adicionais",
+      "stepCount_one": "{{count}} etapa",
+      "stepCount_other": "{{count}} etapas",
+      "created": "Política de escalonamento criada",
+      "saved": "Política de escalonamento salva",
+      "deleted": "Política de escalonamento excluída",
+      "failedToSave": "Falha ao salvar a política de escalonamento",
+      "failedToDelete": "Falha ao excluir a política de escalonamento",
+      "deleteConfirm": "Excluir a política de escalonamento “{{name}}”? Monitores e linhas de roteamento que a referenciam deixarão de escalonar."
+    }
+  },
   "correlatedAlertGroups": {
     "evidence": "Evidências",
     "alertCorrelationDisabled": "Correlação de alertas desativada",
