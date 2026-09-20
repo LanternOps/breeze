@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Building2, MapPin, Loader2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
+import { fetchAllSites } from '@/lib/fetchAllSites';
 import { extractApiError } from '@/lib/apiError';
 
 interface OrgData {
@@ -63,17 +64,14 @@ export default function OrganizationSetupStep({ onNext }: OrganizationSetupStepP
         warnings.push(t('setup.organization.warnings.loadOrganizationsFailed'));
       }
 
-      // Fetch sites
-      const sitesRes = await fetchWithAuth('/orgs/sites');
+      // Fetch sites. `fetchAllSites` (#6412) pages to exhaustion and throws on
+      // a non-OK response (covered by the single warning below); a malformed
+      // 200 body now fails closed to `[]` inside its `asList` unwrap instead
+      // of surfacing as a separate parse warning.
       let sites: OrgData['sites'] = [];
-      if (sitesRes.ok) {
-        try {
-          const sitesData = await sitesRes.json();
-          sites = sitesData.data || sitesData || [];
-        } catch { warnings.push(t('setup.organization.warnings.parseSitesFailed')); }
-      } else {
-        warnings.push(t('setup.organization.warnings.loadSitesFailed'));
-      }
+      try {
+        sites = await fetchAllSites('/orgs/sites');
+      } catch { warnings.push(t('setup.organization.warnings.loadSitesFailed')); }
 
       if (warnings.length > 0) {
         setError(t('setup.organization.warnings.someDataUnavailable', { warnings: warnings.join('; ') }));

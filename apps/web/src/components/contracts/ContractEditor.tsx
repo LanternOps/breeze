@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
+import { fetchAllSites, ListFetchError } from '../../lib/fetchAllSites';
 import { navigateTo } from '@/lib/navigation';
 import '@/lib/i18n';
 import { runAction, handleActionError } from '../../lib/runAction';
@@ -357,11 +358,15 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
 
   const loadSites = useCallback(async (forOrg: string) => {
     if (!forOrg) { setSites([]); return; }
-    const res = await fetchWithAuth(`/orgs/sites?organizationId=${forOrg}`);
-    if (res.status === 401) return UNAUTHORIZED();
-    if (!res.ok) { handleActionError(new Error(res.statusText), t('contracts.contractEditor.errors.loadSites')); setSites([]); return; }
-    const body = await res.json().catch(() => null);
-    setSites(Array.isArray(body?.data) ? body.data : Array.isArray(body) ? body : []);
+    try {
+      setSites(await fetchAllSites(`/orgs/sites?organizationId=${forOrg}`));
+    } catch (err) {
+      // 401 keeps its dedicated bail: the auth redirect owns it, a toast would
+      // just talk over the navigation.
+      if (err instanceof ListFetchError && err.status === 401) return UNAUTHORIZED();
+      handleActionError(err, t('contracts.contractEditor.errors.loadSites'));
+      setSites([]);
+    }
   }, [t]);
 
   const loadEstimate = useCallback(async () => {

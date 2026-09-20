@@ -3,6 +3,7 @@ import { Plus, Trash2, Search, ChevronDown, Lock } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { extractApiError } from "@/lib/apiError";
 import { fetchWithAuth } from "../../stores/auth";
+import { fetchAllSites } from "@/lib/fetchAllSites";
 import { runAction, handleActionError } from "@/lib/runAction";
 import { DEVICE_ROLES, getDeviceRoleLabel } from "@/lib/deviceRoles";
 import HelpTooltip from "../shared/HelpTooltip";
@@ -165,29 +166,35 @@ export default function AssignmentsTab({
         return;
       }
       const endpointMap: Record<string, string> = {
-        site: `/orgs/sites?orgId=${orgId}&limit=200`,
         device_group: `/device-groups?orgId=${orgId}&limit=200`,
         device: `/devices?orgId=${orgId}&limit=200`,
       };
       try {
-        const url = endpointMap[level];
-        if (!url) return;
-        const res = await fetchWithAuth(url);
-        if (!res.ok) {
-          const errBody = await res.json().catch(() => null);
-          throw new Error(
-            extractApiError(
-              errBody,
-              i18n.t("policies:configurationPolicies.assignmentsTab.failedToLoadTargetsHttp", { status: res.status }),
-            ),
-          );
+        let items: any[];
+        if (level === "site") {
+          // Every site, not just the first page (#6412) — this feeds a
+          // mandatory assignment-target picker.
+          items = await fetchAllSites(`/orgs/sites?orgId=${orgId}`);
+        } else {
+          const url = endpointMap[level];
+          if (!url) return;
+          const res = await fetchWithAuth(url);
+          if (!res.ok) {
+            const errBody = await res.json().catch(() => null);
+            throw new Error(
+              extractApiError(
+                errBody,
+                i18n.t("policies:configurationPolicies.assignmentsTab.failedToLoadTargetsHttp", { status: res.status }),
+              ),
+            );
+          }
+          const data = await res.json();
+          items = Array.isArray(data.data)
+            ? data.data
+            : Array.isArray(data)
+              ? data
+              : [];
         }
-        const data = await res.json();
-        const items = Array.isArray(data.data)
-          ? data.data
-          : Array.isArray(data)
-            ? data
-            : [];
         const options: TargetOption[] = items.map((item: any) => ({
           id: item.id,
           name: item.hostname || item.name || item.id,

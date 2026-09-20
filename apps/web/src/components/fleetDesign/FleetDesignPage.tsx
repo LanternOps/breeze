@@ -5,6 +5,7 @@ import { Download, DraftingCompass, FileText, Loader2, Play, Power, RotateCcw } 
 import { FLEET_DESIGNER_ENABLE_ERROR_CODES, type FleetDesignOutcome, type FleetDesignLedgerItem, type FleetDesignRollbackResult, type FleetDesignerSetup } from "@breeze/shared";
 import { useOrgStore } from "../../stores/orgStore";
 import { fetchWithAuth } from "../../stores/auth";
+import { fetchAllSites } from "@/lib/fetchAllSites";
 import { showToast } from "../shared/Toast";
 import { ActionError, runAction } from "@/lib/runAction";
 import { useHashState } from "@/lib/useHashState";
@@ -231,12 +232,9 @@ export default function FleetDesignPage() {
     }
     let cancelled = false;
     setSiteId("");
-    fetchWithAuth(`/orgs/sites?organizationId=${encodeURIComponent(selectedOrgId)}`)
-      .then(async (res) => {
-        if (!res.ok || cancelled) return;
-        const data = (await res.json().catch(() => null)) as { data?: unknown; sites?: unknown } | null;
-        const rows = Array.isArray(data?.data) ? data.data : Array.isArray(data?.sites) ? data.sites : [];
-        if (!cancelled) setSites((rows as Array<{ id: string; name: string }>).map((s) => ({ id: s.id, name: s.name })));
+    fetchAllSites<{ id: string; name: string }>(`/orgs/sites?organizationId=${encodeURIComponent(selectedOrgId)}`)
+      .then((rows) => {
+        if (!cancelled) setSites(rows.map((s) => ({ id: s.id, name: s.name })));
       })
       .catch(() => {});
     return () => {

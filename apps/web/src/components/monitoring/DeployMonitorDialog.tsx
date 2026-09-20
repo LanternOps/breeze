@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Dialog } from '../shared/Dialog';
 import { fetchWithAuth } from '../../stores/auth';
+import { fetchAllSites } from '@/lib/fetchAllSites';
 import { useOrgStore } from '../../stores/orgStore';
 import { runAction, handleActionError, ActionError } from '../../lib/runAction';
 import { navigateTo } from '@/lib/navigation';
@@ -52,9 +53,8 @@ export default function DeployMonitorDialog({ monitorId, orgId, open, onClose, o
       .then((res) => (res.ok ? res.json() : { data: [] }))
       .then((data) => setPolicies(Array.isArray(data?.data) ? data.data : []))
       .catch(() => setPolicies([]));
-    void fetchWithAuth('/orgs/sites')
-      .then((res) => (res.ok ? res.json() : { data: [] }))
-      .then((data) => setSites(data.data ?? data.sites ?? []))
+    void fetchAllSites<Site>('/orgs/sites')
+      .then((list) => setSites(list))
       .catch(() => setSites([]));
     void fetchWithAuth('/groups')
       .then((res) => (res.ok ? res.json() : { data: [] }))

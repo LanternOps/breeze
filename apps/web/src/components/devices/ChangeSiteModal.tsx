@@ -3,6 +3,7 @@ import { X, Loader2, MapPin } from "lucide-react";
 import type { Device } from "./DeviceList";
 import { Dialog } from "../shared/Dialog";
 import { fetchWithAuth } from "../../stores/auth";
+import { fetchAllSites } from "@/lib/fetchAllSites";
 import { extractApiError } from "@/lib/apiError";
 import { useTranslation } from "react-i18next";
 import "../../lib/i18n";
@@ -42,18 +43,8 @@ export default function ChangeSiteModal({
 
     // Fetch only sites in the device's org — the API rejects cross-org moves,
     // so listing other orgs' sites would just create a dead-end choice.
-    fetchWithAuth(`/orgs/sites?organizationId=${device.orgId}`)
-      .then((res) =>
-        res.ok ? res.json() : Promise.reject(new Error("Failed to load sites")),
-      )
-      .then((data) => {
-        const list: Site[] = Array.isArray(data?.data)
-          ? data.data
-          : Array.isArray(data?.sites)
-            ? data.sites
-            : Array.isArray(data)
-              ? data
-              : [];
+    fetchAllSites<Site>(`/orgs/sites?organizationId=${device.orgId}`)
+      .then((list) => {
         setSites(list);
       })
       .catch((err) => {

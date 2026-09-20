@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '../../lib/i18n';
 import { fetchWithAuth } from '../../stores/auth';
+import { fetchAllSites, ListFetchError } from '@/lib/fetchAllSites';
 import { useOrgStore } from '../../stores/orgStore';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError, ActionError } from '../../lib/runAction';
@@ -257,11 +258,14 @@ export function InvoicesPage({ lockedOrgId }: InvoicesPageProps = {}) {
     setAssembleSiteId('');
     setAssembleSites([]);
     if (!orgId) return;
-    const res = await fetchWithAuth(`/orgs/sites?organizationId=${orgId}`);
-    if (res.status === 401) return UNAUTHORIZED();
-    if (!res.ok) { handleActionError(new Error(res.statusText), t('invoicesPage.errors.loadSites')); return; }
-    const body = (await res.json()) as { data?: Site[]; sites?: Site[] };
-    setAssembleSites(body.data ?? body.sites ?? []);
+    try {
+      const sites = await fetchAllSites<Site>(`/orgs/sites?organizationId=${orgId}`);
+      setAssembleSites(sites);
+    } catch (err) {
+      // 401 keeps its dedicated bail (the auth redirect owns it), as before.
+      if (err instanceof ListFetchError && err.status === 401) return UNAUTHORIZED();
+      handleActionError(err, t('invoicesPage.errors.loadSites'));
+    }
   }, [t]);
 
   const openAssemble = useCallback(() => {

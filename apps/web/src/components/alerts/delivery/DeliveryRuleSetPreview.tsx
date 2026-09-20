@@ -2,8 +2,7 @@ import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { MONITOR_KINDS, monitorKindSchema, monitorSeveritySchema, type MonitorKind } from '@breeze/shared';
 import { useHashState } from '@/lib/useHashState';
-import { fetchWithAuth } from '../../../stores/auth';
-import { asList } from '@/lib/asList';
+import { fetchAllSites } from '@/lib/fetchAllSites';
 import DeliveryPreview from './DeliveryPreview';
 const initial = 'preview/high/all/all';
 function parseHash(hash: string): string | undefined {
@@ -23,12 +22,9 @@ export default function DeliveryRuleSetPreview({ orgId }: { orgId: string | null
   const [sitesError, setSitesError] = useState(false);
   useEffect(() => {
     let active = true; setSites([]); setSitesError(false);
-    if (orgId) void fetchWithAuth(`/orgs/sites?organizationId=${encodeURIComponent(orgId)}&limit=100`)
-      .then(async response => {
-        if (!response.ok) throw new Error('Sites unavailable');
-        const rows = asList<{ id: string; name: string }>(await response.json(), 'sites');
-        if (active) setSites(rows);
-      }).catch(() => { if (active) setSitesError(true); });
+    if (orgId) void fetchAllSites<{ id: string; name: string }>(`/orgs/sites?organizationId=${encodeURIComponent(orgId)}`)
+      .then(rows => { if (active) setSites(rows); })
+      .catch(() => { if (active) setSitesError(true); });
     return () => { active = false; };
   }, [orgId]);
   const site = sites.some(s => s.id === siteValue) ? siteValue : undefined;

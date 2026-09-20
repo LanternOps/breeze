@@ -6,6 +6,7 @@ import { cn } from '@/lib/utils';
 import { extractApiError } from '@/lib/apiError';
 import type { AlertSeverity } from './AlertList';
 import { fetchWithAuth } from '../../stores/auth';
+import { fetchAllSites } from '@/lib/fetchAllSites';
 import { useOrgStore } from '@/stores/orgStore';
 import { getJwtClaims } from '@/lib/authScope';
 import { navigateTo } from '@/lib/navigation';
@@ -559,15 +560,11 @@ function ExistingAlertTemplateEditor({ templateId }: AlertTemplateEditorProps) {
 
   const fetchSites = useCallback(async () => {
     try {
-      const response = await fetchWithAuth('/orgs/sites');
-      if (response.ok) {
-        const data = await response.json();
-        const items = asList(data, 'sites');
-        setSites((items as Option[]).map((site: Option) => ({
-          id: site.id,
-          name: site.name
-        })));
-      }
+      const items = await fetchAllSites<Option>('/orgs/sites');
+      setSites(items.map((site: Option) => ({
+        id: site.id,
+        name: site.name
+      })));
     } catch {
       // Silently fail
     }

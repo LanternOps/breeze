@@ -85,8 +85,12 @@ describe('MoveDeviceOrgDialog (device move-org step-up D5)', () => {
     await userEvent.selectOptions(screen.getByTestId('move-org-target-org'), 'o2');
     // Without an explicit limit the route defaults to 50 (utils/pagination.ts),
     // so an org with more sites than that has targets the tech cannot select at
-    // all. 100 is the route's max and matches OrgDevicesTab.
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/orgs/sites?organizationId=o2&limit=100'));
+    // all. `fetchAllSites` (#6412) pages to exhaustion at the route's max
+    // (100) instead of a single fixed limit, so the request carries explicit
+    // `page`/`limit` params.
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith('/orgs/sites?organizationId=o2&page=1&limit=100', undefined),
+    );
     expect(screen.getByTestId('move-org-submit')).toBeDisabled();
     await userEvent.selectOptions(await screen.findByTestId('move-org-target-site'), 's2');
     expect(screen.getByTestId('move-org-submit')).toBeEnabled();

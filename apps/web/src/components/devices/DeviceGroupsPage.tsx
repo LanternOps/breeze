@@ -9,6 +9,7 @@ import {
 } from "react";
 import { Plus, Pencil, Trash2, Shield, Play, X, ListFilter } from "lucide-react";
 import { fetchWithAuth } from "@/stores/auth";
+import { fetchAllSites } from "@/lib/fetchAllSites";
 import { useFleetOrgOwner } from "@/hooks/useFleetOrgOwner";
 import { asList } from "@/lib/asList";
 import type { FilterConditionGroup } from "@breeze/shared";
@@ -332,12 +333,9 @@ export default function DeviceGroupsPage() {
   const fetchSites = useCallback(async () => {
     try {
       // Sites live under the orgs router (`/orgs/sites`) — a bare `/sites`
-      // 404s, which this page swallowed silently.
-      const response = await fetchWithAuth("/orgs/sites");
-      if (response.ok) {
-        const data = await response.json();
-        setSites(asList<Site>(data, "sites"));
-      }
+      // 404s, which this page swallowed silently. `fetchAllSites` (#6412)
+      // pages to exhaustion instead of the route's default 50-row page.
+      setSites(await fetchAllSites<Site>("/orgs/sites"));
     } catch {
       // Sites are optional and can be derived from device data.
     }

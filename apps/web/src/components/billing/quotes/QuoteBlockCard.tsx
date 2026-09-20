@@ -10,6 +10,7 @@ import '../../../lib/i18n';
 import { fromCents, markupPct, priceFromMarkup, toCents, type QuoteLineForMath } from '@breeze/shared';
 import { quoteImageUrl } from '../../../lib/api/quotes';
 import { fetchWithAuth } from '../../../stores/auth';
+import { fetchAllSites } from '../../../lib/fetchAllSites';
 import { type CatalogItem } from '../../../lib/api/catalog';
 import { type EcProduct, type Pax8Product, type Pax8PriceOption } from '../../../lib/api/distributors';
 import RichTextEditor from '../../common/RichTextEditor';
@@ -144,7 +145,7 @@ export function BlockCard({
     let alive = true;
     void Promise.all([
       Promise.resolve(fetchWithAuth(`/device-groups?orgId=${orgId}&limit=200`)).then(async (r) => r?.ok ? (await r.json()).data ?? [] : []),
-      Promise.resolve(fetchWithAuth(`/orgs/sites?organizationId=${orgId}`)).then(async (r) => r?.ok ? (await r.json()).data ?? [] : []),
+      fetchAllSites(`/orgs/sites?organizationId=${orgId}`).catch(() => []),
     ]).then(([groups, orgSites]) => {
       if (!alive) return;
       setDeviceGroups(groups); setSites(orgSites);

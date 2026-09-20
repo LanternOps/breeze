@@ -3,6 +3,7 @@ import { useEffect, useId, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Dialog } from '../shared/Dialog';
 import { fetchWithAuth } from '../../stores/auth';
+import { fetchAllSites } from '../../lib/fetchAllSites';
 import { runAction, ActionError } from '../../lib/runAction';
 import { navigateTo } from '@/lib/navigation';
 import { formatDateTime } from '@/lib/dateTimeFormat';
@@ -233,32 +234,26 @@ export default function PamRuleModal({
   const sitesOrgId = rule ? rule.orgId : selectedOrgId;
   useEffect(() => {
     if (!isEdit && !orgsLoaded) return;
-    const query = sitesOrgId
-      ? `?organizationId=${encodeURIComponent(sitesOrgId)}&limit=100`
-      : '?limit=100';
-    fetchWithAuth(`/orgs/sites${query}`)
-      .then(async (res) => {
-        if (res.ok) {
-          const data = await res.json();
-          const items = (asList(data, 'sites')) as NamedOption[];
-          setSites(items.map((s) => ({ id: s.id, name: s.name })));
-          setSiteId((prev) => {
-            if (prev && !items.some((s) => s.id === prev)) {
-              // The seeded site doesn't belong to the selected org — fall back to
-              // org-wide and tell the user rather than silently re-scoping.
-              if (!isEdit && prev === (seed?.siteId ?? '')) {
-                setSiteScopeNotice(
-                  t('pamPamRuleModal.notices.siteScopeReset', {
-                    defaultValue:
-                      "The site from the original request isn't available in the selected organization — scope reset to org-wide.",
-                  }),
-                );
-              }
-              return '';
+    const query = sitesOrgId ? `?organizationId=${encodeURIComponent(sitesOrgId)}` : '';
+    fetchAllSites<NamedOption>(`/orgs/sites${query}`)
+      .then((items) => {
+        setSites(items.map((s) => ({ id: s.id, name: s.name })));
+        setSiteId((prev) => {
+          if (prev && !items.some((s) => s.id === prev)) {
+            // The seeded site doesn't belong to the selected org — fall back to
+            // org-wide and tell the user rather than silently re-scoping.
+            if (!isEdit && prev === (seed?.siteId ?? '')) {
+              setSiteScopeNotice(
+                t('pamPamRuleModal.notices.siteScopeReset', {
+                  defaultValue:
+                    "The site from the original request isn't available in the selected organization — scope reset to org-wide.",
+                }),
+              );
             }
-            return prev;
-          });
-        }
+            return '';
+          }
+          return prev;
+        });
       })
       .catch(() => {});
   }, [isEdit, orgsLoaded, sitesOrgId]);

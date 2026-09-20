@@ -5,6 +5,7 @@ import { Dialog } from '../shared/Dialog';
 import { pickReauthTier, type ReauthTier } from '../settings/StepUpPrompt';
 import { mintStepUpGrant, StepUpMintError } from '../../lib/mfaStepUp';
 import { fetchWithAuth } from '../../stores/auth';
+import { fetchAllSites } from '@/lib/fetchAllSites';
 import { useOrgStore } from '../../stores/orgStore';
 import { usePermissions } from '@/lib/permissions';
 import { canonicalMoveOrgResource, moveOrgRequestBody } from '../../lib/moveOrgResource';
@@ -114,14 +115,12 @@ export default function MoveDeviceOrgDialog({
     let cancelled = false;
     setSitesLoading(true);
     setTargetSiteId('');
-    // Explicit limit: the route defaults to 50 (utils/pagination.ts) and caps at
-    // 100, and a site missing from this list is a target the tech simply cannot
-    // move to. Same as OrgDevicesTab.
-    fetchWithAuth(`/orgs/sites?organizationId=${targetOrgId}&limit=100`)
-      .then((res) => (res.ok ? res.json() : Promise.reject(new Error('sites'))))
-      .then((data) => {
+    // The route defaults to 50 (utils/pagination.ts) and caps at 100, and a
+    // site missing from this list is a target the tech simply cannot move to
+    // — `fetchAllSites` pages to exhaustion instead of a single fixed limit.
+    fetchAllSites<SiteOption>(`/orgs/sites?organizationId=${targetOrgId}`)
+      .then((list) => {
         if (cancelled) return;
-        const list: SiteOption[] = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
         setSites(list);
       })
       .catch(() => { if (!cancelled) { setSites([]); setError(t('moveDeviceOrgDialog.genericError')); } })

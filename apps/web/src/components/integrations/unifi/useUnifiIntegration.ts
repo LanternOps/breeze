@@ -5,6 +5,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { fetchWithAuth } from "../../../stores/auth";
+import { fetchAllSites, ListFetchError } from "../../../lib/fetchAllSites";
 import { runAction, handleActionError, ActionError } from "../../../lib/runAction";
 import { navigateTo } from "@/lib/navigation";
 import { loginPathWithNext, getJwtClaims } from "../../../lib/authScope";
@@ -29,6 +30,22 @@ import {
   type UnifiHostOption,
   type UnifiStatus,
 } from "./unifiTypes";
+
+/**
+ * Loads EVERY site (#6412 — `limit=500` still clamped to the server's 100-row
+ * ceiling) and wraps the result in a Response-shaped object so it drops
+ * straight into the existing `Promise.all([...fetchWithAuth(...)])` 401 /
+ * per-section-failure handling below without restructuring it.
+ */
+async function fetchAllSitesAsResponse(): Promise<Pick<Response, "status" | "ok" | "json">> {
+  try {
+    const sites = await fetchAllSites<BreezeSiteOption>("/orgs/sites");
+    return { status: 200, ok: true, json: async () => ({ data: sites }) };
+  } catch (err) {
+    const status = err instanceof ListFetchError ? err.status : 500;
+    return { status, ok: false, json: async () => ({}) };
+  }
+}
 
 const emptyControllerDraft: ControllerDraft = {
   controllerUrl: "",
@@ -220,7 +237,7 @@ export function useUnifiIntegration() {
         collectorsRes,
         agentLoad,
       ] = await Promise.all([
-        fetchWithAuth("/orgs/sites?limit=500"),
+        fetchAllSitesAsResponse(),
         fetchWithAuth("/orgs/organizations?limit=500"),
         fetchWithAuth("/unifi/mappings"),
         fetchWithAuth("/unifi/sync-runs"),
@@ -331,7 +348,7 @@ export function useUnifiIntegration() {
         agentLoad,
         controllerSitesRes,
       ] = await Promise.all([
-        fetchWithAuth("/orgs/sites?limit=500"),
+        fetchAllSitesAsResponse(),
         fetchWithAuth("/orgs/organizations?limit=500"),
         fetchWithAuth("/unifi/mappings"),
         fetchWithAuth("/unifi/collectors"),

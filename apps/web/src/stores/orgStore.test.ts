@@ -70,7 +70,7 @@ describe('org store', () => {
 
     expect(fetchWithAuthMock).toHaveBeenCalledWith('/orgs/organizations?page=1&limit=100&partnerId=partner-1');
     expect(fetchWithAuthMock).toHaveBeenCalledWith(
-      '/orgs/sites?organizationId=org-1&includeEnrollmentDefaults=1'
+      '/orgs/sites?organizationId=org-1&includeEnrollmentDefaults=1&page=1&limit=100'
     );
     expect(useOrgStore.getState().currentOrgId).toBe('org-1');
     expect(useOrgStore.getState().sites).toHaveLength(1);
@@ -214,7 +214,7 @@ describe('org store', () => {
     await useOrgStore.getState().fetchSites();
 
     expect(fetchWithAuthMock).toHaveBeenCalledWith(
-      '/orgs/sites?organizationId=org-1&includeEnrollmentDefaults=1'
+      '/orgs/sites?organizationId=org-1&includeEnrollmentDefaults=1&page=1&limit=100'
     );
     expect(useOrgStore.getState().sites.map((s) => s.id)).toEqual(['site-1']);
   });
