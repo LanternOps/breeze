@@ -1,17 +1,18 @@
 // apps/api/src/routes/billingProfiles.ts
 /**
- * Rate cards: work types today, billing profiles in W02 (#4628).
- *
- * ONE route file for both, because they are ONE screen -- Settings → Billing →
- * Rates, whose rows are profiles and whose columns are work types (spec §6/§7).
- * W02 adds profile CRUD, PUT /:id/rows and POST /:id/clone HERE; do not create
- * a second file.
+ * Billing profiles and work types share Settings → Billing → Rates.
  *
  * Partner scope only. An org-scoped token gets 403, not an empty list: the
  * tenancy argument in spec §4.1 rests on org tokens having no read path to
  * rates at all.
  */
 import { Hono, type Context } from 'hono';
+import { z } from 'zod';
+import { writeRouteAudit } from '../services/auditEvents';
+import { createProfileSchema, updateProfileSchema, profileRowsSchema } from '../services/billingProfileValidation';
+import {
+  listProfiles, getProfile, createProfile, updateProfile, replaceProfileRows, cloneProfile, BillingProfileServiceError,
+} from '../services/billingProfileService';
 import { authMiddleware, requireScope, requirePermission } from '../middleware/auth';
 import { PERMISSIONS } from '../services/permissions';
 import { createWorkTypeSchema, updateWorkTypeSchema } from '@breeze/shared';
@@ -31,7 +32,7 @@ const readPerm = requirePermission(PERMISSIONS.BILLING_PROFILES_READ.resource, P
 const writePerm = requirePermission(PERMISSIONS.BILLING_PROFILES_WRITE.resource, PERMISSIONS.BILLING_PROFILES_WRITE.action);
 
 function fail(c: Context, err: unknown) {
-  if (err instanceof WorkTypeServiceError) {
+  if (err instanceof WorkTypeServiceError || err instanceof BillingProfileServiceError) {
     return c.json({ error: err.message, code: err.code }, err.status as 400);
   }
   if (err instanceof PartnerWideWriteDeniedError) {
@@ -91,6 +92,101 @@ app.delete('/work-types/:id', writePerm, partnerWideWrite, async (c) => {
   try {
     const { workType, clearedCategoryCount } = await archiveWorkType(auth, c.req.param('id')!, auth.partnerId);
     return c.json({ workType, clearedCategoryCount });
+  } catch (err) { return fail(c, err); }
+});
+
+const profileIdSchema = z.string().uuid();
+const cloneProfileSchema = createProfileSchema.pick({ name: true });
+
+app.get('/', readPerm, async (c) => {
+  const auth = c.get('auth');
+  if (!auth.partnerId) return c.json({ error: 'Partner context required' }, 403);
+  try {
+    return c.json({ profiles: await listProfiles(auth.partnerId) });
+  } catch (err) { return fail(c, err); }
+});
+
+app.post('/', writePerm, partnerWideWrite, async (c) => {
+  const auth = c.get('auth');
+  if (!auth.partnerId) return c.json({ error: 'Partner context required' }, 403);
+  const parsed = createProfileSchema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) return c.json({ error: 'Invalid billing profile', issues: parsed.error.issues }, 400);
+  try {
+    const profile = await createProfile(auth, auth.partnerId, parsed.data);
+    writeRouteAudit(c, {
+      orgId: null, action: 'billing_profile.create', resourceType: 'billing_profile', resourceId: profile.id,
+      details: { before: null, after: profile },
+    });
+    return c.json({ profile }, 201);
+  } catch (err) { return fail(c, err); }
+});
+
+app.patch('/:id', writePerm, partnerWideWrite, async (c) => {
+  const auth = c.get('auth');
+  if (!auth.partnerId) return c.json({ error: 'Partner context required' }, 403);
+  const id = profileIdSchema.safeParse(c.req.param('id'));
+  if (!id.success) return c.json({ error: 'Invalid billing profile ID' }, 400);
+  const parsed = updateProfileSchema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) return c.json({ error: 'Invalid billing profile', issues: parsed.error.issues }, 400);
+  try {
+    const before = await getProfile(id.data, auth.partnerId);
+    const profile = await updateProfile(auth, id.data, auth.partnerId, parsed.data);
+    writeRouteAudit(c, {
+      orgId: null, action: 'billing_profile.update', resourceType: 'billing_profile', resourceId: profile.id,
+      details: { before, after: profile },
+    });
+    return c.json({ profile });
+  } catch (err) { return fail(c, err); }
+});
+
+app.delete('/:id', writePerm, partnerWideWrite, async (c) => {
+  const auth = c.get('auth');
+  if (!auth.partnerId) return c.json({ error: 'Partner context required' }, 403);
+  const id = profileIdSchema.safeParse(c.req.param('id'));
+  if (!id.success) return c.json({ error: 'Invalid billing profile ID' }, 400);
+  try {
+    const before = await getProfile(id.data, auth.partnerId);
+    const profile = await updateProfile(auth, id.data, auth.partnerId, { isActive: false });
+    writeRouteAudit(c, {
+      orgId: null, action: 'billing_profile.archive', resourceType: 'billing_profile', resourceId: profile.id,
+      details: { before, after: profile },
+    });
+    return c.json({ profile });
+  } catch (err) { return fail(c, err); }
+});
+
+app.put('/:id/rows', writePerm, partnerWideWrite, async (c) => {
+  const auth = c.get('auth');
+  if (!auth.partnerId) return c.json({ error: 'Partner context required' }, 403);
+  const id = profileIdSchema.safeParse(c.req.param('id'));
+  if (!id.success) return c.json({ error: 'Invalid billing profile ID' }, 400);
+  const parsed = profileRowsSchema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) return c.json({ error: 'Invalid billing profile rows', issues: parsed.error.issues }, 400);
+  try {
+    const before = await getProfile(id.data, auth.partnerId);
+    const profile = await replaceProfileRows(auth, id.data, auth.partnerId, parsed.data.rows);
+    writeRouteAudit(c, {
+      orgId: null, action: 'billing_profile.rows.replace', resourceType: 'billing_profile', resourceId: profile.id,
+      details: { before, after: profile },
+    });
+    return c.json({ profile });
+  } catch (err) { return fail(c, err); }
+});
+
+app.post('/:id/clone', writePerm, partnerWideWrite, async (c) => {
+  const auth = c.get('auth');
+  if (!auth.partnerId) return c.json({ error: 'Partner context required' }, 403);
+  const id = profileIdSchema.safeParse(c.req.param('id'));
+  if (!id.success) return c.json({ error: 'Invalid billing profile ID' }, 400);
+  const parsed = cloneProfileSchema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) return c.json({ error: 'Invalid billing profile name', issues: parsed.error.issues }, 400);
+  try {
+    const profile = await cloneProfile(auth, id.data, auth.partnerId, parsed.data.name);
+    writeRouteAudit(c, {
+      orgId: null, action: 'billing_profile.clone', resourceType: 'billing_profile', resourceId: profile.id,
+      details: { sourceProfileId: id.data, before: null, after: profile },
+    });
+    return c.json({ profile }, 201);
   } catch (err) { return fail(c, err); }
 });
 

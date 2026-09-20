@@ -1,3 +1,4 @@
+import { ensureDefaultProfile } from '../../services/billingProfileService';
 /**
  * Partner API provisioning writes (#3243).
  *
@@ -331,6 +332,7 @@ partnerProvisioningRoutes.post(
           })
           .returning();
         if (!organization) return { kind: 'failed' };
+        await ensureDefaultProfile(principal.partnerId, partnerRow.currencyCode, db);
 
         // Race-free quota enforcement WITHOUT calling the partner-export lock
         // functions (EXECUTE is deliberately revoked from breeze_app — they

@@ -1,3 +1,4 @@
+import { ensureDefaultProfile } from './billingProfileService';
 /**
  * Org currency change (multi-currency wave 6, #3778) — spec §5.
  *
@@ -380,7 +381,7 @@ export async function changeOrgCurrency(
   // any billable table.
   const outcome = await db.transaction(async (tx) => {
     const [locked] = await tx
-      .select({ id: organizations.id, currencyCode: organizations.currencyCode })
+      .select({ id: organizations.id, partnerId: organizations.partnerId, currencyCode: organizations.currencyCode })
       .from(organizations).where(eq(organizations.id, orgId)).limit(1).for('update');
     if (!locked) throw new InvoiceServiceError('Organization not found', 404, 'ORG_NOT_FOUND');
     requireOrg(actor, locked.id);
@@ -401,6 +402,7 @@ export async function changeOrgCurrency(
       );
     }
 
+    await ensureDefaultProfile(locked.partnerId, input.currencyCode, tx);
     await tx.update(organizations)
       .set({ currencyCode: input.currencyCode, updatedAt: new Date() })
       .where(eq(organizations.id, orgId));

@@ -415,6 +415,7 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   "oauth_grants": tablePolicy("org_id", {"included":["id","account_id","client_id","partner_id","org_id","expires_at","created_at","revoked_at","revoked_by_user_id","revoked_reason"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["payload"]}),
   "oauth_refresh_tokens": tablePolicy("org_id", {"included":["id","user_id","client_id","partner_id","org_id","expires_at","revoked_at","created_at","last_used_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["payload"]}),
   "onedrive_device_state": tablePolicy("org_id", {"included":["device_id","org_id","signed_in","onedrive_version","files_on_demand_on","last_reported_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["kfm_folder_states","mounted_libraries","entitled_libraries","signed_in_upns","drift_entries"]}),
+  "org_billing_profile_assignments": tablePolicy("org_id", {"included":["id","org_id","partner_id","billing_profile_id","assigned_by","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   // org_documents (W03): `data` is bytea -> excludedOpen by the open-container
   // rule. storage_key is an opaque `org-documents/<id>` path with no tenant
   // identifier (precedent: ticket_attachments.storage_key, included). sha256 is

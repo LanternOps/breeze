@@ -1,3 +1,5 @@
+const { ensureDefaultProfile } = vi.hoisted(() => ({ ensureDefaultProfile: vi.fn(async () => ({ id: 'default-profile' })) }));
+vi.mock('./billingProfileService', () => ({ ensureDefaultProfile }));
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Each db.select(...) chain resolves to the next queued row array, so a test
@@ -98,6 +100,7 @@ describe('getOrCreateQuickSupportOrg', () => {
     const result = await getOrCreateQuickSupportOrg(PARTNER_ID);
 
     expect(result).toEqual({ orgId: 'org-new', siteId: 'site-new' });
+    expect(ensureDefaultProfile).toHaveBeenCalledWith(PARTNER_ID, 'CAD', expect.anything());
     expect(insertCalls[0]?.table).toBe('organizations');
     expect(insertCalls[0]?.values).toMatchObject({
       partnerId: PARTNER_ID,

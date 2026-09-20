@@ -1,3 +1,5 @@
+const { ensureDefaultProfile } = vi.hoisted(() => ({ ensureDefaultProfile: vi.fn(async () => ({ id: 'default-profile' })) }));
+vi.mock('./billingProfileService', () => ({ ensureDefaultProfile }));
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // Controllable Drizzle chain mock (invoiceService.test.ts / contractService.test.ts
@@ -58,6 +60,22 @@ function queueImpact(over: {
 beforeEach(() => { results.length = 0; log.length = 0; selectProjections.length = 0; vi.clearAllMocks(); });
 
 describe('changeOrgCurrency (#3778)', () => {
+  it('creates the new currency default in the same transaction before publishing the currency', async () => {
+    queueResult([{ id: 'org1', partnerId: 'p1', currencyCode: 'EUR' }]);
+    queueResult([]);
+    queueImpact();
+    await changeOrgCurrency('org1', { currencyCode: 'GBP', expectedCurrentCurrencyCode: 'EUR', confirmSnapshotRetention: true }, actor);
+    expect(ensureDefaultProfile).toHaveBeenCalledExactlyOnceWith('p1', 'GBP', db);
+    expect(vi.mocked(ensureDefaultProfile).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(db.update).mock.invocationCallOrder[0]!);
+  });
+
+  it('does not publish a currency change if ensuring its default card fails', async () => {
+    queueResult([{ id: 'org1', partnerId: 'p1', currencyCode: 'EUR' }]);
+    ensureDefaultProfile.mockRejectedValueOnce(new Error('profile write failed'));
+    await expect(changeOrgCurrency('org1', { currencyCode: 'GBP', expectedCurrentCurrencyCode: 'EUR', confirmSnapshotRetention: true }, actor)).rejects.toThrow('profile write failed');
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
   it('takes the organizations FOR UPDATE lock as the transaction FIRST query', async () => {
     queueResult([{ id: 'org1', currencyCode: 'EUR' }]); // the locked row
     queueResult([]); // the UPDATE

@@ -10,6 +10,18 @@ const { listWorkTypes, createWorkType, updateWorkType, archiveWorkType, authRef,
   permissionCalls: [] as Array<{ resource: string; action: string }>,
 }));
 
+const profileMocks = vi.hoisted(() => ({
+  listProfiles: vi.fn(), getProfile: vi.fn(), createProfile: vi.fn(), updateProfile: vi.fn(),
+  replaceProfileRows: vi.fn(), cloneProfile: vi.fn(), writeRouteAudit: vi.fn(),
+}));
+vi.mock('../services/billingProfileService', () => ({
+  ...profileMocks,
+  BillingProfileServiceError: class extends Error {
+    constructor(message: string, public status: number, public code: string) { super(message); }
+  },
+}));
+vi.mock('../services/auditEvents', () => ({ writeRouteAudit: profileMocks.writeRouteAudit }));
+
 vi.mock('../services/workTypeService', () => ({
   listWorkTypes, createWorkType, updateWorkType, archiveWorkType,
   WorkTypeServiceError: class extends Error {
@@ -251,5 +263,109 @@ describe('permission wiring', () => {
     expect(denied.status).toBe(403);
     expect(await denied.json()).toMatchObject({ requires: { resource: 'billing_profiles', action } });
     permsRef.current = previous;
+  });
+});
+
+const profileEndpoints = [
+  ['GET', '/', undefined],
+  ['POST', '/', { name: 'Standard', currencyCode: 'USD', baseCoverage: 'billable' }],
+  ['PATCH', `/${workTypeId}`, { name: 'Revised' }],
+  ['DELETE', `/${workTypeId}`, undefined],
+  ['PUT', `/${workTypeId}/rows`, { rows: [] }],
+  ['POST', `/${workTypeId}/clone`, { name: 'Copy' }],
+] as const;
+
+function profileRequest(method: string, path: string, body?: unknown) {
+  return billingProfilesRoutes.request(path, {
+    method, headers: { 'content-type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+}
+
+describe('billing profile routes', () => {
+  beforeEach(() => {
+    Object.values(profileMocks).forEach((mock) => mock.mockReset());
+    permsRef.current = { permissions: [{ resource: 'billing_profiles', action: 'read' }, { resource: 'billing_profiles', action: 'write' }] };
+    profileMocks.listProfiles.mockResolvedValue([]);
+    profileMocks.getProfile.mockResolvedValue({ id: workTypeId, name: 'Before' });
+    for (const mock of [profileMocks.createProfile, profileMocks.updateProfile, profileMocks.replaceProfileRows, profileMocks.cloneProfile]) {
+      mock.mockResolvedValue({ id: workTypeId, name: 'After' });
+    }
+  });
+
+  it.each(profileEndpoints)('%s %s succeeds under the acting partner and audits mutations', async (method, path, body) => {
+    const res = await profileRequest(method, path, body);
+    expect(res.status).toBe(method === 'POST' ? 201 : 200);
+    if (method === 'GET') {
+      expect(profileMocks.listProfiles).toHaveBeenCalledWith(partnerId);
+      expect(await res.json()).toEqual({ profiles: [] });
+      expect(profileMocks.writeRouteAudit).not.toHaveBeenCalled();
+    } else {
+      expect(profileMocks.writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        resourceType: 'billing_profile', resourceId: workTypeId,
+        details: expect.objectContaining({ after: { id: workTypeId, name: 'After' } }),
+      }));
+    }
+  });
+
+  it('archives through updateProfile rather than deleting a historical profile', async () => {
+    await profileRequest('DELETE', `/${workTypeId}`);
+    expect(profileMocks.updateProfile).toHaveBeenCalledWith(authRef.current, workTypeId, partnerId, { isActive: false });
+    expect(profileMocks.writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      details: { before: { id: workTypeId, name: 'Before' }, after: { id: workTypeId, name: 'After' } },
+    }));
+  });
+
+  it('passes the entire rows array in one service call', async () => {
+    const rows = [{ workTypeId, coverage: 'billable', hourlyRate: '225.00', minimumMinutes: 60 }];
+    expect((await profileRequest('PUT', `/${workTypeId}/rows`, { rows })).status).toBe(200);
+    expect(profileMocks.replaceProfileRows).toHaveBeenCalledExactlyOnceWith(authRef.current, workTypeId, partnerId, rows);
+  });
+
+  it.each(profileEndpoints)('%s %s rejects org scope', async (method, path, body) => {
+    authRef.current!.scope = 'organization';
+    expect((await profileRequest(method, path, body)).status).toBe(403);
+  });
+
+  it.each(profileEndpoints)('%s %s rejects unauthenticated calls', async (method, path, body) => {
+    authRef.current = null;
+    expect((await profileRequest(method, path, body)).status).toBe(401);
+  });
+
+  it.each(profileEndpoints)('%s %s uses read/write permission precisely', async (method, path, body) => {
+    permsRef.current = { permissions: [{ resource: 'billing_profiles', action: method === 'GET' ? 'write' : 'read' }] };
+    expect((await profileRequest(method, path, body)).status).toBe(403);
+  });
+
+  it.each(profileEndpoints.filter(([method]) => method !== 'GET'))('%s %s rejects selected-org partner mutations', async (method, path, body) => {
+    authRef.current!.partnerOrgAccess = 'selected';
+    expect((await profileRequest(method, path, body)).status).toBe(403);
+  });
+
+  it.each([
+    ['POST', '/', {}], ['POST', '/', { name: ' ', currencyCode: 'USD', baseCoverage: 'billable' }],
+    ['PATCH', `/${workTypeId}`, {}], ['PATCH', '/bad-id', { name: 'Valid' }],
+    ['DELETE', '/bad-id', undefined], ['PUT', `/${workTypeId}/rows`, { rows: [{ workTypeId: 'invalid' }] }],
+    ['POST', `/${workTypeId}/clone`, { name: ' ' }],
+  ])('%s %s rejects invalid input', async (method, path, body) => {
+    expect((await profileRequest(method as string, path as string, body)).status).toBe(400);
+    expect(profileMocks.writeRouteAudit).not.toHaveBeenCalled();
+  });
+
+  it('maps a cross-partner profile lookup to 404 without mutation or audit', async () => {
+    const { BillingProfileServiceError } = await import('../services/billingProfileService');
+    profileMocks.getProfile.mockRejectedValue(new BillingProfileServiceError('Profile not found', 404, 'PROFILE_NOT_FOUND'));
+    const res = await profileRequest('PATCH', `/${workTypeId}`, { name: 'Changed' });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toMatchObject({ code: 'PROFILE_NOT_FOUND' });
+    expect(profileMocks.updateProfile).not.toHaveBeenCalled();
+    expect(profileMocks.writeRouteAudit).not.toHaveBeenCalled();
+  });
+
+  it('maps a name conflict to 409 and does not audit failure', async () => {
+    const { BillingProfileServiceError } = await import('../services/billingProfileService');
+    profileMocks.createProfile.mockRejectedValue(new BillingProfileServiceError('Duplicate', 409, 'PROFILE_NAME_TAKEN'));
+    expect((await profileRequest('POST', '/', { name: 'Standard', currencyCode: 'USD', baseCoverage: 'billable' })).status).toBe(409);
+    expect(profileMocks.writeRouteAudit).not.toHaveBeenCalled();
   });
 });

@@ -134,6 +134,8 @@ const ORG_AXIS_POLICY_EXCLUDED_TABLES: ReadonlySet<string> = new Set<string>([
   // parent ticket at write time for filtering only — the RLS axis is
   // partner_id. Spec §8a / Phase 3 plan: deliberately no org/portal policies.
   'time_entries',
+  // Partner-axis: org metadata must not hide suspended customers' assignments.
+  'org_billing_profile_assignments',
   // Huntress credentials and discovered-org mappings are partner-scoped.
   // org_id is retained only as legacy/mapping metadata and may be NULL for
   // quarantined Huntress orgs.
@@ -199,6 +201,9 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   // or PARTNER_WIDE_SELECT_BRANCH_EXEMPT. Functional forge proof:
   // workTypesPartnerRls.integration.test.ts.
   ['work_types', 'partner_id'],
+  ['billing_profiles', 'partner_id'],
+  ['billing_profile_rules', 'partner_id'],
+  ['org_billing_profile_assignments', 'partner_id'],
   ['ticket_response_templates', 'partner_id'],
   ['ticket_mailbox_connections', 'partner_id'],
   ['ticket_mailbox_tenant_ownerships', 'partner_id'],

@@ -1,3 +1,4 @@
+import { ensureDefaultProfile } from './billingProfileService';
 /**
  * AI Organization/Site Tools (issue #2366)
  *
@@ -287,6 +288,7 @@ async function handleCreateOrg(
           status: organizations.status,
         });
       if (!org) throw new Error('Organization insert returned no row');
+      await ensureDefaultProfile(partnerId, partnerRow.currencyCode, db);
 
       // Default site, same invariant as partnerCreate + the QB customer
       // import — a brand-new org must be immediately usable for quoting

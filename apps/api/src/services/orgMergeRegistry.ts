@@ -421,6 +421,7 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   audit_retention_policies: { kind: 'keep-survivor' }, // verified: audit_retention_policies.org_id UNIQUE (audit.ts) — every org now gets one seeded by breeze_seed_org_audit_retention (#4824), so both sides of a merge always collide on a plain repoint
   ai_budgets: { kind: 'keep-survivor' }, // verified: ai_budgets.org_id UNIQUE (ai.ts)
   portal_branding: { kind: 'keep-survivor' }, // verified: portal_branding.org_id UNIQUE (portal.ts)
+  org_billing_profile_assignments: { kind: 'keep-survivor' }, // org_id UNIQUE
   org_ticket_settings: { kind: 'keep-survivor' }, // verified: org_ticket_settings.org_id UNIQUE (ticketConfig.ts)
   pam_org_config: { kind: 'keep-survivor' }, // verified: pam_org_config_org_id_unique (pam.ts)
   client_ai_org_policies: { kind: 'keep-survivor' }, // verified: client_ai_org_policies_org_uniq (clientAi.ts)

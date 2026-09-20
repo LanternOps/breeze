@@ -582,6 +582,7 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'oauth_grants',
   'oauth_refresh_tokens',
   'onedrive_device_state',
+  'org_billing_profile_assignments',
   // org_documents (service deliverables W03). Alphabetical slot only: the list
   // is STATIC and alphabetised (the contract test asserts exactly that), while
   // the real delete order comes from topologicalCascadeOrder(), which reads FK

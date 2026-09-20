@@ -5,6 +5,7 @@ import { db, withSystemDbAccessContext } from './index';
 import { roles, permissions, rolePermissions, scripts, alertTemplates, partners, organizations, sites, users, partnerUsers } from './schema';
 import { applyNewPartnerDefaultSettings } from '../services/partnerDefaultSettings';
 import { seedSystemTicketStatuses } from '../services/ticketConfigService';
+import { ensureDefaultProfile } from '../services/billingProfileService';
 import { cutScriptVersion } from '../services/scriptVersions';
 import { eq, and, isNull } from 'drizzle-orm';
 import { hashPassword } from '../services/password';
@@ -1285,6 +1286,7 @@ export async function seedDefaultAdmin() {
           settings: DEV_SEED_DEFAULT_PARTNER_SETTINGS
         })
         .returning();
+      await ensureDefaultProfile(newPartner!.id, newPartner!.currencyCode, tx);
       await seedSystemTicketStatuses(tx, newPartner!.id);
       return newPartner!.id;
     });
@@ -1326,6 +1328,7 @@ export async function seedDefaultAdmin() {
         status: 'active'
       })
       .returning();
+    await ensureDefaultProfile(partnerId, partnerRow.currencyCode, db);
     orgId = newOrg!.id;
     console.log('  Created default organization.');
   }
