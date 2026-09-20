@@ -115,7 +115,21 @@ vi.mock('../middleware/auth', () => ({
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
   requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
   requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
+  // #6337 — the SNMP routes are self-managed for DB context: they open their
+  // own short context and enqueue the immediate poll after it closes. The
+  // stub tracks context depth so a test can prove the enqueue is NOT made
+  // inside the held context (the #1105 tripwire condition).
+  withAuthDbAccessContext: vi.fn(async (_auth: any, fn: () => Promise<any>) => {
+    dbContextDepth += 1;
+    try {
+      return await fn();
+    } finally {
+      dbContextDepth -= 1;
+    }
+  }),
 }));
+
+let dbContextDepth = 0;
 
 vi.mock('../services/auditEvents', () => ({
   writeRouteAudit: vi.fn(),
@@ -1258,6 +1272,48 @@ describe('monitoring routes', () => {
       expect(res.status).toBe(200);
       expect(enqueueSnmpPoll).toHaveBeenCalledTimes(1);
       expect(enqueueSnmpPoll).toHaveBeenCalledWith(SNMP_DEVICE_ID, ORG_ID);
+    });
+
+    it('PUT: enqueues the poll AFTER the DB context closes (#6337)', async () => {
+      mockPutChain(null, true);
+      const insertValues = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: SNMP_DEVICE_ID, snmpVersion: 'v2c', port: 161, community: 'enc:v1:mock', username: null, templateId: 'aaaaaaaa-1111-1111-1111-111111111111', pollingInterval: 300, isActive: true, lastPolled: null, lastStatus: null }]),
+      });
+      vi.mocked(db.insert).mockReturnValueOnce({ values: insertValues } as never);
+      // The #1105 tripwire fires when bullmq's Queue.add STARTS inside a held
+      // withDbAccessContext. Capturing the depth at call time is the only way
+      // to prove the enqueue moved out of it — a `void`-detached promise still
+      // starts synchronously inside the context and would read depth 1 here.
+      let depthAtEnqueue = -1;
+      vi.mocked(enqueueSnmpPoll).mockImplementationOnce(async () => {
+        depthAtEnqueue = dbContextDepth;
+        return 'job-1';
+      });
+
+      const res = await put({ snmpVersion: 'v2c', community: 'public', templateId: 'aaaaaaaa-1111-1111-1111-111111111111' });
+
+      expect(res.status).toBe(200);
+      expect(depthAtEnqueue).toBe(0);
+    });
+
+    it('PATCH: enqueues the poll AFTER the DB context closes (#6337)', async () => {
+      mockPatchChain({ id: SNMP_DEVICE_ID, templateId: 'aaaaaaaa-2222-2222-2222-222222222222', isActive: true }, true);
+      const updateSet = vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: SNMP_DEVICE_ID, snmpVersion: 'v2c', port: 161, community: null, username: null, templateId: 'aaaaaaaa-3333-3333-3333-333333333333', pollingInterval: 300, isActive: true, lastPolled: null, lastStatus: null }]),
+        }),
+      });
+      vi.mocked(db.update).mockReturnValueOnce({ set: updateSet } as never);
+      let depthAtEnqueue = -1;
+      vi.mocked(enqueueSnmpPoll).mockImplementationOnce(async () => {
+        depthAtEnqueue = dbContextDepth;
+        return 'job-1';
+      });
+
+      const res = await patch({ templateId: 'aaaaaaaa-3333-3333-3333-333333333333' });
+
+      expect(res.status).toBe(200);
+      expect(depthAtEnqueue).toBe(0);
     });
 
     it('PUT: a rejected enqueueSnmpPoll does not fail the request or leak an unhandled rejection', async () => {

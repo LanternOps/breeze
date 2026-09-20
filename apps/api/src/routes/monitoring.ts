@@ -3,7 +3,7 @@ import { zValidator } from '../lib/validation';
 import { z } from 'zod';
 import { optionalQueryBoolean } from '@breeze/shared';
 import { and, desc, eq, gte, inArray, isNotNull, lte, or, sql } from 'drizzle-orm';
-import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission, requireScope, withAuthDbAccessContext, type AuthContext as RequestAuthContext } from '../middleware/auth';
 import { db } from '../db';
 import { devices, deviceSoftware, deviceChangeLog, discoveredAssets, networkMonitors, snmpDevices, snmpMetrics, snmpTemplates, snmpAlertThresholds, serviceProcessCheckResults } from '../db/schema';
 import { writeRouteAudit } from '../services/auditEvents';
@@ -563,162 +563,176 @@ monitoringRoutes.put(
     const auth = c.get('auth') as AuthContext;
     const assetId = c.req.param('id')!;
     const body = c.req.valid('json');
-    const assetResult = await resolveAssetForMonitoringMutation(
-      auth,
-      c.get('permissions') as UserPermissions | undefined,
-      assetId,
-    );
-    if ('error' in assetResult) return c.json({ error: assetResult.error }, assetResult.status);
-    const { asset } = assetResult;
 
-    // #5213: ip_address is nullable now (manual website / DNS-only assets).
-    // snmp_devices.ip_address is varchar NOT NULL, so the old `?? ''` fallback
-    // satisfied the constraint and left the poller aimed at an empty string.
-    if (!asset.ipAddress) {
-      return c.json({ error: 'This asset has no IP address; SNMP polling needs one' }, 400);
-    }
+    // #6337 — the write runs in its OWN short DB access context and the
+    // immediate-poll enqueue happens strictly AFTER that context commits.
+    // This route is registered in selfManagedDbContextRoutes.ts, so the auth
+    // middleware opens no ambient request transaction: an unawaited
+    // `void enqueueSnmpPoll(...)` still STARTED the bullmq.add synchronously
+    // inside the held context and tripped the #1105 tripwire on every save
+    // (and would fail the request under DB_CONTEXT_TRIPWIRE_STRICT), while
+    // `runOutsideDbContext` would only silence the warning without closing
+    // the outer transaction.
+    const outcome = await withAuthDbAccessContext(c.get('auth') as RequestAuthContext, async () => {
+      const assetResult = await resolveAssetForMonitoringMutation(
+        auth,
+        c.get('permissions') as UserPermissions | undefined,
+        assetId,
+      );
+      if ('error' in assetResult) return c.json({ error: assetResult.error }, assetResult.status);
+      const { asset } = assetResult;
 
-    if (body.templateId && !(await validateSnmpTemplateAccess(body.templateId, asset.orgId))) {
-      return c.json({ error: 'SNMP template not found' }, 404);
-    }
+      // #5213: ip_address is nullable now (manual website / DNS-only assets).
+      // snmp_devices.ip_address is varchar NOT NULL, so the old `?? ''` fallback
+      // satisfied the constraint and left the poller aimed at an empty string.
+      if (!asset.ipAddress) {
+        return c.json({ error: 'This asset has no IP address; SNMP polling needs one' }, 400);
+      }
 
-    // `templateId` ABSENT and `templateId: null` are different requests
-    // (spec §8): absent means "choose for me", explicit null means "no
-    // template". zod drops absent optional keys, so the key's presence is the
-    // signal — do not use `?? null`, which conflates the two.
-    const templateIdProvided = Object.prototype.hasOwnProperty.call(body, 'templateId');
+      if (body.templateId && !(await validateSnmpTemplateAccess(body.templateId, asset.orgId))) {
+        return c.json({ error: 'SNMP template not found' }, 404);
+      }
 
-    const existingRows = await db.select()
-      .from(snmpDevices)
-      .where(and(eq(snmpDevices.assetId, assetId), eq(snmpDevices.orgId, asset.orgId)))
-      .orderBy(desc(snmpDevices.createdAt))
-      .limit(10);
+      // `templateId` ABSENT and `templateId: null` are different requests
+      // (spec §8): absent means "choose for me", explicit null means "no
+      // template". zod drops absent optional keys, so the key's presence is the
+      // signal — do not use `?? null`, which conflates the two.
+      const templateIdProvided = Object.prototype.hasOwnProperty.call(body, 'templateId');
 
-    const existing = (() => {
-      if (existingRows.length === 0) return null;
-      const active = existingRows.find((row) => row.isActive);
-      return active ?? existingRows[0];
-    })();
+      const existingRows = await db.select()
+        .from(snmpDevices)
+        .where(and(eq(snmpDevices.assetId, assetId), eq(snmpDevices.orgId, asset.orgId)))
+        .orderBy(desc(snmpDevices.createdAt))
+        .limit(10);
 
-    // Apply the suggestion only when the resulting row would otherwise have no
-    // template: on create, or on a row whose template_id is already null (spec
-    // D5 "only on create when no template is given", §8 "templateId omitted
-    // applies it"). Omitting templateId on a row that HAS one now preserves it
-    // rather than silently wiping it.
-    let templateSuggestion: TemplateSuggestion | null = null;
-    let resolvedTemplateId: string | null = templateIdProvided
-      ? (body.templateId ?? null)
-      : (existing?.templateId ?? null);
-    if (!templateIdProvided && !resolvedTemplateId) {
-      templateSuggestion = await suggestTemplate({
-        sysObjectId: readSysObjectId(asset.snmpData),
-        assetType: asset.assetType ?? null,
-        orgId: asset.orgId,
-      });
-      if (templateSuggestion) resolvedTemplateId = templateSuggestion.templateId;
-    }
+      const existing = (() => {
+        if (existingRows.length === 0) return null;
+        const active = existingRows.find((row) => row.isActive);
+        return active ?? existingRows[0];
+      })();
 
-    const setValues: Record<string, unknown> = {
-      name: asset.hostname ?? (asset.ipAddress as any),
-      ipAddress: asset.ipAddress as any,
-      snmpVersion: body.snmpVersion,
-      pollingInterval: body.pollingInterval ?? 300,
-      port: body.port ?? 161,
-      templateId: resolvedTemplateId,
-      isActive: true
-    };
-    // Only overwrite credential fields when explicitly provided to avoid
-    // wiping stored secrets on partial updates.
-    if (body.community !== undefined) {
-      if (isMaskedSnmpSecret(body.community) && !existing?.community) return c.json({ error: 'Masked community cannot be used without an existing secret' }, 400);
-      setValues.community = isMaskedSnmpSecret(body.community) ? existing?.community ?? null : encryptSnmpSecret(body.community);
-    }
-    else if (!existing) setValues.community = null;
-    if (body.username !== undefined) setValues.username = body.username ?? null;
-    else if (!existing) setValues.username = null;
-    if (body.authProtocol !== undefined) setValues.authProtocol = body.authProtocol ?? null;
-    else if (!existing) setValues.authProtocol = null;
-    if (body.authPassword !== undefined) {
-      if (isMaskedSnmpSecret(body.authPassword) && !existing?.authPassword) return c.json({ error: 'Masked auth password cannot be used without an existing secret' }, 400);
-      setValues.authPassword = isMaskedSnmpSecret(body.authPassword) ? existing?.authPassword ?? null : encryptSnmpSecret(body.authPassword);
-    }
-    else if (!existing) setValues.authPassword = null;
-    if (body.privProtocol !== undefined) setValues.privProtocol = body.privProtocol ?? null;
-    else if (!existing) setValues.privProtocol = null;
-    if (body.privPassword !== undefined) {
-      if (isMaskedSnmpSecret(body.privPassword) && !existing?.privPassword) return c.json({ error: 'Masked privacy password cannot be used without an existing secret' }, 400);
-      setValues.privPassword = isMaskedSnmpSecret(body.privPassword) ? existing?.privPassword ?? null : encryptSnmpSecret(body.privPassword);
-    }
-    else if (!existing) setValues.privPassword = null;
+      // Apply the suggestion only when the resulting row would otherwise have no
+      // template: on create, or on a row whose template_id is already null (spec
+      // D5 "only on create when no template is given", §8 "templateId omitted
+      // applies it"). Omitting templateId on a row that HAS one now preserves it
+      // rather than silently wiping it.
+      let templateSuggestion: TemplateSuggestion | null = null;
+      let resolvedTemplateId: string | null = templateIdProvided
+        ? (body.templateId ?? null)
+        : (existing?.templateId ?? null);
+      if (!templateIdProvided && !resolvedTemplateId) {
+        templateSuggestion = await suggestTemplate({
+          sysObjectId: readSysObjectId(asset.snmpData),
+          assetType: asset.assetType ?? null,
+          orgId: asset.orgId,
+        });
+        if (templateSuggestion) resolvedTemplateId = templateSuggestion.templateId;
+      }
 
-    // Re-arm the poll scheduler on any config change (#3217). A device that
-    // backed off to the one-hour cap because of, say, a wrong community string
-    // must exercise the corrected config on the next tick — otherwise the fix
-    // looks like it did nothing and the device reads 'offline' for an hour.
-    setValues.consecutiveFailures = 0;
-    setValues.lastPollAttemptedAt = null;
+      const setValues: Record<string, unknown> = {
+        name: asset.hostname ?? (asset.ipAddress as any),
+        ipAddress: asset.ipAddress as any,
+        snmpVersion: body.snmpVersion,
+        pollingInterval: body.pollingInterval ?? 300,
+        port: body.port ?? 161,
+        templateId: resolvedTemplateId,
+        isActive: true
+      };
+      // Only overwrite credential fields when explicitly provided to avoid
+      // wiping stored secrets on partial updates.
+      if (body.community !== undefined) {
+        if (isMaskedSnmpSecret(body.community) && !existing?.community) return c.json({ error: 'Masked community cannot be used without an existing secret' }, 400);
+        setValues.community = isMaskedSnmpSecret(body.community) ? existing?.community ?? null : encryptSnmpSecret(body.community);
+      }
+      else if (!existing) setValues.community = null;
+      if (body.username !== undefined) setValues.username = body.username ?? null;
+      else if (!existing) setValues.username = null;
+      if (body.authProtocol !== undefined) setValues.authProtocol = body.authProtocol ?? null;
+      else if (!existing) setValues.authProtocol = null;
+      if (body.authPassword !== undefined) {
+        if (isMaskedSnmpSecret(body.authPassword) && !existing?.authPassword) return c.json({ error: 'Masked auth password cannot be used without an existing secret' }, 400);
+        setValues.authPassword = isMaskedSnmpSecret(body.authPassword) ? existing?.authPassword ?? null : encryptSnmpSecret(body.authPassword);
+      }
+      else if (!existing) setValues.authPassword = null;
+      if (body.privProtocol !== undefined) setValues.privProtocol = body.privProtocol ?? null;
+      else if (!existing) setValues.privProtocol = null;
+      if (body.privPassword !== undefined) {
+        if (isMaskedSnmpSecret(body.privPassword) && !existing?.privPassword) return c.json({ error: 'Masked privacy password cannot be used without an existing secret' }, 400);
+        setValues.privPassword = isMaskedSnmpSecret(body.privPassword) ? existing?.privPassword ?? null : encryptSnmpSecret(body.privPassword);
+      }
+      else if (!existing) setValues.privPassword = null;
 
-    const upserted = await (async () => {
-      if (existing) {
-        const [row] = await db.update(snmpDevices)
-          .set(setValues)
-          .where(eq(snmpDevices.id, existing.id))
+      // Re-arm the poll scheduler on any config change (#3217). A device that
+      // backed off to the one-hour cap because of, say, a wrong community string
+      // must exercise the corrected config on the next tick — otherwise the fix
+      // looks like it did nothing and the device reads 'offline' for an hour.
+      setValues.consecutiveFailures = 0;
+      setValues.lastPollAttemptedAt = null;
+
+      const upserted = await (async () => {
+        if (existing) {
+          const [row] = await db.update(snmpDevices)
+            .set(setValues)
+            .where(eq(snmpDevices.id, existing.id))
+            .returning();
+          return row ?? null;
+        }
+        const [row] = await db.insert(snmpDevices)
+          .values({
+            orgId: asset.orgId,
+            assetId: asset.id,
+            ...setValues
+          } as any)
           .returning();
         return row ?? null;
+      })();
+
+      if (!upserted) return c.json({ error: 'Failed to save SNMP monitoring configuration' }, 500);
+
+      // Deactivate any other SNMP device rows for this asset. Failure is
+      // non-fatal since the primary row was already upserted successfully.
+      if (existingRows.length > 1) {
+        try {
+          await db.update(snmpDevices)
+            .set({ isActive: false })
+            .where(and(eq(snmpDevices.assetId, assetId), eq(snmpDevices.orgId, asset.orgId), sql`${snmpDevices.id} <> ${upserted.id}`));
+        } catch (err) {
+          console.error(`[monitoring] Failed to deactivate duplicate SNMP devices for asset=${assetId}, org=${asset.orgId}, kept=${upserted.id}:`, err);
+        }
       }
-      const [row] = await db.insert(snmpDevices)
-        .values({
-          orgId: asset.orgId,
-          assetId: asset.id,
-          ...setValues
-        } as any)
-        .returning();
-      return row ?? null;
-    })();
 
-    if (!upserted) return c.json({ error: 'Failed to save SNMP monitoring configuration' }, 500);
-
-    // Deactivate any other SNMP device rows for this asset. Failure is
-    // non-fatal since the primary row was already upserted successfully.
-    if (existingRows.length > 1) {
-      try {
-        await db.update(snmpDevices)
-          .set({ isActive: false })
-          .where(and(eq(snmpDevices.assetId, assetId), eq(snmpDevices.orgId, asset.orgId), sql`${snmpDevices.id} <> ${upserted.id}`));
-      } catch (err) {
-        console.error(`[monitoring] Failed to deactivate duplicate SNMP devices for asset=${assetId}, org=${asset.orgId}, kept=${upserted.id}:`, err);
-      }
-    }
-
-    writeRouteAudit(c, {
-      orgId: asset.orgId,
-      action: existing ? 'monitoring.snmp.update' : 'monitoring.snmp.create',
-      resourceType: 'discovered_asset',
-      resourceId: assetId,
-      resourceName: asset.hostname ?? (asset.ipAddress as any) ?? undefined,
-      details: { snmpDeviceId: upserted.id, snmpVersion: upserted.snmpVersion }
+      writeRouteAudit(c, {
+        orgId: asset.orgId,
+        action: existing ? 'monitoring.snmp.update' : 'monitoring.snmp.create',
+        resourceType: 'discovered_asset',
+        resourceId: assetId,
+        resourceName: asset.hostname ?? (asset.ipAddress as any) ?? undefined,
+        details: { snmpDeviceId: upserted.id, snmpVersion: upserted.snmpVersion }
+      });
+      return { asset, upserted, existing, templateSuggestion } as const;
     });
+    if (outcome instanceof Response) return outcome;
+    const { asset, upserted, existing, templateSuggestion } = outcome;
 
     // #6209 — a template change (or first-time SNMP setup) shouldn't sit
     // waiting for the scheduler's next due tick (up to a full
     // pollingInterval, longer under backoff). Enqueue an immediate poll so
-    // the new OID set shows up within seconds. Fire-and-forget like
-    // writeRouteAudit above (unawaited so the Redis round-trip never extends
-    // the request's held withDbAccessContext transaction, and its actual
-    // execution naturally lands after that transaction commits — see
-    // groups.ts's dynamic-group-evaluation comment for why a detached
-    // promise resumes post-commit here) — but NOT the same safety net:
-    // writeRouteAudit's failure path retries with backoff and reports to
-    // Sentry on exhaustion (auditService.ts); a missed immediate poll has no
-    // such retry, only this console.error + captureException, because the
-    // worst case is a device polling on its next scheduled tick instead of
-    // immediately — low enough stakes that logging is enough, but real
-    // failures (e.g. Redis misconfigured) still need to surface somewhere.
+    // the new OID set shows up within seconds. Awaited here because we are
+    // outside any DB context, so the Redis round-trip pins no pooled
+    // connection — but NOT the same safety net as writeRouteAudit, whose
+    // failure path retries with backoff and reports to Sentry on exhaustion
+    // (auditService.ts); a missed immediate poll has no such retry, only this
+    // console.error + captureException, because the worst case is a device
+    // polling on its next scheduled tick instead of immediately — low enough
+    // stakes that logging is enough, but real failures (e.g. Redis
+    // misconfigured) still need to surface somewhere.
     if (!existing || existing.templateId !== upserted.templateId) {
-      void enqueueSnmpPoll(upserted.id, asset.orgId).catch((err) => {
+      try {
+        await enqueueSnmpPoll(upserted.id, asset.orgId);
+      } catch (err) {
         console.error(`[monitoring] Failed to enqueue immediate poll for snmp device ${upserted.id}:`, err);
         captureException(err);
-      });
+      }
     }
 
     return c.json({
@@ -755,87 +769,97 @@ monitoringRoutes.patch(
     const auth = c.get('auth') as AuthContext;
     const assetId = c.req.param('id')!;
     const body = c.req.valid('json');
-    const assetResult = await resolveAssetForMonitoringMutation(
-      auth,
-      c.get('permissions') as UserPermissions | undefined,
-      assetId,
-    );
-    if ('error' in assetResult) return c.json({ error: assetResult.error }, assetResult.status);
-    const { asset } = assetResult;
 
-    if (body.templateId && !(await validateSnmpTemplateAccess(body.templateId, asset.orgId))) {
-      return c.json({ error: 'SNMP template not found' }, 404);
-    }
+    // #6337 — see the PUT handler above: self-managed DB context so the
+    // enqueue below runs after the write commits, outside any held context.
+    const outcome = await withAuthDbAccessContext(c.get('auth') as RequestAuthContext, async () => {
+      const assetResult = await resolveAssetForMonitoringMutation(
+        auth,
+        c.get('permissions') as UserPermissions | undefined,
+        assetId,
+      );
+      if ('error' in assetResult) return c.json({ error: assetResult.error }, assetResult.status);
+      const { asset } = assetResult;
 
-    const [existing] = await db.select()
-      .from(snmpDevices)
-      .where(and(eq(snmpDevices.assetId, assetId), eq(snmpDevices.orgId, asset.orgId)))
-      .orderBy(desc(snmpDevices.isActive), desc(snmpDevices.createdAt))
-      .limit(1);
-    if (!existing) return c.json({ error: 'No SNMP monitoring configuration found for this asset' }, 404);
+      if (body.templateId && !(await validateSnmpTemplateAccess(body.templateId, asset.orgId))) {
+        return c.json({ error: 'SNMP template not found' }, 404);
+      }
 
-    const setValues: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(body)) {
-      if (v !== undefined) setValues[k] = v;
-    }
-    if (typeof body.community === 'string') {
-      if (isMaskedSnmpSecret(body.community)) delete setValues.community;
-      else setValues.community = encryptSnmpSecret(body.community);
-    }
-    if (typeof body.authPassword === 'string') {
-      if (isMaskedSnmpSecret(body.authPassword)) delete setValues.authPassword;
-      else setValues.authPassword = encryptSnmpSecret(body.authPassword);
-    }
-    if (typeof body.privPassword === 'string') {
-      if (isMaskedSnmpSecret(body.privPassword)) delete setValues.privPassword;
-      else setValues.privPassword = encryptSnmpSecret(body.privPassword);
-    }
+      const [existing] = await db.select()
+        .from(snmpDevices)
+        .where(and(eq(snmpDevices.assetId, assetId), eq(snmpDevices.orgId, asset.orgId)))
+        .orderBy(desc(snmpDevices.isActive), desc(snmpDevices.createdAt))
+        .limit(1);
+      if (!existing) return c.json({ error: 'No SNMP monitoring configuration found for this asset' }, 404);
 
-    // Deliberately NOT auto-applying a template suggestion here (#6099
-    // follow-up). PATCH is a partial-edit endpoint: unlike PUT/create, an
-    // absent `templateId` on PATCH does not mean "no explicit choice yet" —
-    // it means "this edit isn't about the template." Every PATCH caller that
-    // omits templateId for an unrelated field (the web form's own explicit
-    // clear followed by, say, an interval change; AI tools; scheduler/
-    // threshold saves; agent paths) must leave templateId exactly as it was,
-    // including staying null after an explicit clear. Auto-apply only
-    // belongs on the one-time "no explicit choice yet" moment, which is PUT.
-    // The web UI already has the suggestion from a separate GET
-    // (`/monitoring/templates/suggest`, W03) and offers "Use suggestion"
-    // from there, so nothing is lost by not echoing it here too.
-    if (Object.keys(setValues).length === 0) return c.json({ error: 'No fields to update' }, 400);
+      const setValues: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(body)) {
+        if (v !== undefined) setValues[k] = v;
+      }
+      if (typeof body.community === 'string') {
+        if (isMaskedSnmpSecret(body.community)) delete setValues.community;
+        else setValues.community = encryptSnmpSecret(body.community);
+      }
+      if (typeof body.authPassword === 'string') {
+        if (isMaskedSnmpSecret(body.authPassword)) delete setValues.authPassword;
+        else setValues.authPassword = encryptSnmpSecret(body.authPassword);
+      }
+      if (typeof body.privPassword === 'string') {
+        if (isMaskedSnmpSecret(body.privPassword)) delete setValues.privPassword;
+        else setValues.privPassword = encryptSnmpSecret(body.privPassword);
+      }
 
-    // Captured before the scheduler fields below are mixed in, so the audit
-    // trail records what the caller actually changed.
-    const changedFields = Object.keys(setValues);
+      // Deliberately NOT auto-applying a template suggestion here (#6099
+      // follow-up). PATCH is a partial-edit endpoint: unlike PUT/create, an
+      // absent `templateId` on PATCH does not mean "no explicit choice yet" —
+      // it means "this edit isn't about the template." Every PATCH caller that
+      // omits templateId for an unrelated field (the web form's own explicit
+      // clear followed by, say, an interval change; AI tools; scheduler/
+      // threshold saves; agent paths) must leave templateId exactly as it was,
+      // including staying null after an explicit clear. Auto-apply only
+      // belongs on the one-time "no explicit choice yet" moment, which is PUT.
+      // The web UI already has the suggestion from a separate GET
+      // (`/monitoring/templates/suggest`, W03) and offers "Use suggestion"
+      // from there, so nothing is lost by not echoing it here too.
+      if (Object.keys(setValues).length === 0) return c.json({ error: 'No fields to update' }, 400);
 
-    // Re-arm the poll scheduler on any config change (#3217) — see the upsert
-    // route above. Applied after the empty-body guard so a no-op PATCH still
-    // 400s rather than silently resetting the backoff.
-    setValues.consecutiveFailures = 0;
-    setValues.lastPollAttemptedAt = null;
+      // Captured before the scheduler fields below are mixed in, so the audit
+      // trail records what the caller actually changed.
+      const changedFields = Object.keys(setValues);
 
-    const [updated] = await db.update(snmpDevices)
-      .set(setValues)
-      .where(eq(snmpDevices.id, existing.id))
-      .returning();
-    if (!updated) return c.json({ error: 'Failed to update SNMP monitoring configuration' }, 500);
+      // Re-arm the poll scheduler on any config change (#3217) — see the upsert
+      // route above. Applied after the empty-body guard so a no-op PATCH still
+      // 400s rather than silently resetting the backoff.
+      setValues.consecutiveFailures = 0;
+      setValues.lastPollAttemptedAt = null;
 
-    writeRouteAudit(c, {
-      orgId: asset.orgId,
-      action: 'monitoring.snmp.patch',
-      resourceType: 'discovered_asset',
-      resourceId: assetId,
-      details: { snmpDeviceId: updated.id, changes: changedFields }
+      const [updated] = await db.update(snmpDevices)
+        .set(setValues)
+        .where(eq(snmpDevices.id, existing.id))
+        .returning();
+      if (!updated) return c.json({ error: 'Failed to update SNMP monitoring configuration' }, 500);
+
+      writeRouteAudit(c, {
+        orgId: asset.orgId,
+        action: 'monitoring.snmp.patch',
+        resourceType: 'discovered_asset',
+        resourceId: assetId,
+        details: { snmpDeviceId: updated.id, changes: changedFields }
+      });
+      return { asset, existing, updated, changedFields } as const;
     });
+    if (outcome instanceof Response) return outcome;
+    const { asset, existing, updated, changedFields } = outcome;
 
     // #6209 — see the PUT handler above for the full rationale. Only when
     // this PATCH actually touched templateId and changed its value.
     if (changedFields.includes('templateId') && existing.templateId !== updated.templateId) {
-      void enqueueSnmpPoll(updated.id, asset.orgId).catch((err) => {
+      try {
+        await enqueueSnmpPoll(updated.id, asset.orgId);
+      } catch (err) {
         console.error(`[monitoring] Failed to enqueue immediate poll for snmp device ${updated.id}:`, err);
         captureException(err);
-      });
+      }
     }
 
     return c.json({
