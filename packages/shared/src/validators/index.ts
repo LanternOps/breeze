@@ -1269,6 +1269,9 @@ export const maintenanceInlineSettingsSchema = z
       .string()
       .min(1)
       .refine(isValidIanaTimezone, { message: 'Must be a valid IANA timezone (e.g. America/New_York)' })
+      // The refine above has already rejected anything canonicalizeTimezone
+      // would return null for, so the `??` is defensive-only and never a
+      // silent fallback on bad input — a non-IANA zone is a 400, not a UTC.
       .transform((tz) => canonicalizeTimezone(tz) ?? UTC_TIMEZONE)
       .default(UTC_TIMEZONE),
     suppressAlerts: z.boolean().default(true),
