@@ -21,7 +21,11 @@ import { getTestDb } from './setup';
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
 describe('DR reconciliation authorization against real PostgreSQL', () => {
-  runDb('serializes the execution row and quarantines legacy authority with zero commands', async () => {
+  // #6322 removed the no-op `SELECT ... FOR UPDATE` this case was named for
+  // (it auto-committed outside a transaction and locked nothing). What it
+  // actually proves — concurrent ticks converge on one quarantined outcome
+  // and dispatch nothing — still holds, now via the guarded write-back.
+  runDb('converges concurrent ticks on the legacy-authority quarantine with zero commands', async () => {
     const testDb = getTestDb();
     const partner = await createPartner();
     const org = await createOrganization({ partnerId: partner.id });

@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, or, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, notInArray, or } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import {
   BARE_METAL_RECOVERY_TERMINAL,
@@ -1009,15 +1009,35 @@ async function authorizeDrGroup(execution: DrExecutionRecord, group: DrPlanGroup
   return new Date();
 }
 
+/**
+ * Terminal execution statuses: once a row reaches one of these no reconcile
+ * tick may move it again.
+ */
+const DR_EXECUTION_TERMINAL = ['completed', 'failed', 'aborted'] as const;
+
+/**
+ * Reconcile one DR execution.
+ *
+ * **Serialisation contract (#6322).** Ticks for a single execution are
+ * serialised by BullMQ (`jobId = dr-execution-<id>`); nothing else in the API
+ * drives an execution forward. This function used to open with a bare
+ * `SELECT id FROM dr_executions ... FOR UPDATE` outside `db.transaction(...)`,
+ * which auto-committed and released the lock on the spot — it read as mutual
+ * exclusion while providing none. It is not re-added inside a transaction
+ * because the body performs external side effects (authorization checks,
+ * command dispatch, recovery creation) that must not run with a row lock held
+ * open. The write-back at the end is instead a compare-and-swap that refuses
+ * to resurrect an execution another writer has already made terminal, so a
+ * second tick that slips through is a no-op rather than a state regression.
+ */
 export async function reconcileDrExecution(executionId: string): Promise<DrReconcileOutcome> {
-  await db.execute(sql`SELECT id FROM dr_executions WHERE id = ${executionId} FOR UPDATE`);
   const [execution] = await db
     .select()
     .from(drExecutions)
     .where(eq(drExecutions.id, executionId))
     .limit(1);
 
-  if (!execution || ['completed', 'failed', 'aborted'].includes(execution.status)) {
+  if (!execution || (DR_EXECUTION_TERMINAL as readonly string[]).includes(execution.status)) {
     return { execution: execution ?? null, nextDelayMs: null };
   }
 
@@ -1162,6 +1182,8 @@ export async function reconcileDrExecution(executionId: string): Promise<DrRecon
     results.activeGroupId = results.groupResults.find((group) => group.status === 'running')?.groupId ?? null;
   }
 
+  // Compare-and-swap: only a still-non-terminal row may be moved. See the
+  // serialisation contract on this function (#6322).
   const [updated] = await db
     .update(drExecutions)
     .set({
@@ -1174,10 +1196,25 @@ export async function reconcileDrExecution(executionId: string): Promise<DrRecon
         authorizationCheckedAt,
       } : {}),
     })
-    .where(eq(drExecutions.id, execution.id))
+    .where(and(
+      eq(drExecutions.id, execution.id),
+      notInArray(drExecutions.status, [...DR_EXECUTION_TERMINAL]),
+    ))
     .returning();
 
-  const finalExecution = updated ?? execution;
+  if (!updated) {
+    // Another writer terminalised (or deleted) the row between our read and
+    // this write. Its state wins — report what is actually in the database
+    // rather than the stale row this tick started from, and stop ticking.
+    const [current] = await db
+      .select()
+      .from(drExecutions)
+      .where(eq(drExecutions.id, executionId))
+      .limit(1);
+    return { execution: current ?? null, nextDelayMs: null };
+  }
+
+  const finalExecution = updated;
   return {
     execution: finalExecution,
     nextDelayMs: ['pending', 'running'].includes(finalExecution.status)

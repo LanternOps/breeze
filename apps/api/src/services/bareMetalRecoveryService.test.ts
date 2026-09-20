@@ -162,6 +162,67 @@ describe('createBareMetalRecovery', () => {
     expect(expiresIn).toBeLessThanOrEqual(RECOVERY_CODE_TTL_MS);
   });
 
+  // #6322: the SELECT-then-INSERT pre-check loses the race between two
+  // concurrent creators. The partial unique index is the arbiter; the loser's
+  // 23505 must surface as the same `recovery_in_progress` 409, not a 500.
+  it('maps the one-in-flight unique violation to recovery_in_progress (409) naming the winner', async () => {
+    selectMock
+      .mockReturnValueOnce(chainMock([restorableSnapshot]))
+      // Pre-check sees nothing — both creators got this far.
+      .mockReturnValueOnce(chainMock([]))
+      // Re-read after the 23505 finds the row that won.
+      .mockReturnValueOnce(chainMock([{ id: 'rec-winner', status: 'created' }]));
+    insertMock.mockImplementationOnce(() => {
+      throw Object.assign(new Error('duplicate key value violates unique constraint'), {
+        code: '23505',
+        constraint_name: 'bare_metal_recoveries_device_in_flight_idx',
+      });
+    });
+
+    const err = await expectRecoveryError(
+      createBareMetalRecovery({ orgId: ORG_ID, snapshotId: SNAPSHOT_ID, identity: 'original', createdBy: USER_ID, source: 'route' }),
+      'recovery_in_progress', 409,
+    );
+    expect(err.details).toEqual({ recoveryId: 'rec-winner', status: 'created' });
+  });
+
+  it('still reports recovery_in_progress when the winner terminalised before the re-read', async () => {
+    selectMock
+      .mockReturnValueOnce(chainMock([restorableSnapshot]))
+      .mockReturnValueOnce(chainMock([]))
+      .mockReturnValueOnce(chainMock([]));
+    insertMock.mockImplementationOnce(() => {
+      throw Object.assign(new Error('duplicate key value violates unique constraint'), {
+        code: '23505',
+        constraint_name: 'bare_metal_recoveries_device_in_flight_idx',
+      });
+    });
+
+    const err = await expectRecoveryError(
+      createBareMetalRecovery({ orgId: ORG_ID, snapshotId: SNAPSHOT_ID, identity: 'original', createdBy: USER_ID, source: 'route' }),
+      'recovery_in_progress', 409,
+    );
+    expect(err.details).toEqual({ recoveryId: null, status: null });
+  });
+
+  it('lets an unrelated unique violation escape instead of masking it as recovery_in_progress', async () => {
+    selectMock
+      .mockReturnValueOnce(chainMock([restorableSnapshot]))
+      .mockReturnValueOnce(chainMock([]));
+    insertMock.mockImplementationOnce(() => {
+      throw Object.assign(new Error('duplicate key value violates unique constraint'), {
+        code: '23505',
+        constraint_name: 'bare_metal_recoveries_code_hash_idx',
+      });
+    });
+
+    const err = await createBareMetalRecovery({
+      orgId: ORG_ID, snapshotId: SNAPSHOT_ID, identity: 'original', createdBy: USER_ID, source: 'route',
+    }).then(() => null, (e: unknown) => e);
+    expect(err).not.toBeInstanceOf(BareMetalRecoveryError);
+    expect((err as { code?: string }).code).toBe('23505');
+  });
+
   it('writes the DR linkage and rebuild host onto the row (W05b Task 6)', async () => {
     selectMock
       .mockReturnValueOnce(chainMock([restorableSnapshot]))

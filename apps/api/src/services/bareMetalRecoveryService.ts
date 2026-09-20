@@ -15,6 +15,7 @@ import {
   recoveryTokens,
   type BareMetalRecoveryStatus,
 } from '../db/schema';
+import { isPgUniqueViolation } from '../utils/pgErrors';
 import { createAuditLogAsync } from './auditService';
 import {
   formatRecoveryCode,
@@ -27,6 +28,13 @@ import {
 import { generateRecoveryToken, hashRecoveryToken } from './recoveryBootstrap';
 
 export type BareMetalRecoveryRow = typeof bareMetalRecoveries.$inferSelect;
+
+/**
+ * Partial unique index on `bare_metal_recoveries (device_id)` restricted to
+ * non-terminal statuses — the database-side arbiter for "one in-flight
+ * recovery per device" (#6322).
+ */
+const DEVICE_IN_FLIGHT_CONSTRAINT = 'bare_metal_recoveries_device_in_flight_idx';
 type DbTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 export type DrDb = typeof db | DbTransaction;
 
@@ -129,6 +137,73 @@ export function externalReferenceRefusal(
   });
 }
 
+/** The device's current non-terminal recovery, if any. */
+async function findInFlightRecovery(
+  tx: DrDb,
+  deviceId: string,
+  orgId: string,
+): Promise<{ id: string; status: BareMetalRecoveryStatus } | undefined> {
+  const [row] = await tx
+    .select({ id: bareMetalRecoveries.id, status: bareMetalRecoveries.status })
+    .from(bareMetalRecoveries)
+    .where(
+      and(
+        eq(bareMetalRecoveries.deviceId, deviceId),
+        eq(bareMetalRecoveries.orgId, orgId),
+        notInArray(bareMetalRecoveries.status, [...BARE_METAL_RECOVERY_TERMINAL]),
+      ),
+    )
+    .limit(1);
+  return row;
+}
+
+function recoveryInProgressError(
+  winner: { id: string; status: BareMetalRecoveryStatus } | undefined,
+): BareMetalRecoveryError {
+  // `winner` is undefined only if the row that beat us reached a terminal
+  // status between the 23505 and this read. The 409 still stands for this
+  // attempt — the caller retries and wins the next one.
+  return new BareMetalRecoveryError('recovery_in_progress', 409, {
+    recoveryId: winner?.id ?? null,
+    status: winner?.status ?? null,
+  });
+}
+
+/**
+ * Insert the recovery row, letting the database settle the one-in-flight race
+ * (#6322).
+ *
+ * The insert runs in a NESTED transaction so drizzle emits a SAVEPOINT when a
+ * request transaction is already open: a 23505 then rolls back to the
+ * savepoint and leaves the caller's transaction usable. Catching the violation
+ * on a bare statement instead would abort the enclosing transaction and turn
+ * every later statement into a 25P02 — the trap that produced the repeat 500s
+ * in the network-proxy incident.
+ */
+async function insertRecoveryRow(
+  tx: DrDb,
+  values: typeof bareMetalRecoveries.$inferInsert,
+  deviceId: string,
+  orgId: string,
+): Promise<BareMetalRecoveryRow> {
+  let row: BareMetalRecoveryRow | undefined;
+  try {
+    row = await (tx as typeof db).transaction(async (inner) => {
+      const [inserted] = await inner.insert(bareMetalRecoveries).values(values).returning();
+      return inserted;
+    });
+  } catch (error) {
+    if (isPgUniqueViolation(error, DEVICE_IN_FLIGHT_CONSTRAINT)) {
+      throw recoveryInProgressError(await findInFlightRecovery(tx, deviceId, orgId));
+    }
+    throw error;
+  }
+  if (!row) {
+    throw new Error('Failed to create bare-metal recovery');
+  }
+  return row;
+}
+
 export async function createBareMetalRecovery(input: {
   orgId: string;
   snapshotId: string;
@@ -170,25 +245,18 @@ export async function createBareMetalRecovery(input: {
 
   // One non-terminal recovery per device (W04a). DR dispatch records this as
   // a failedDispatches entry rather than throwing past the group.
-  const [inProgress] = await tx
-    .select({ id: bareMetalRecoveries.id, status: bareMetalRecoveries.status })
-    .from(bareMetalRecoveries)
-    .where(
-      and(
-        eq(bareMetalRecoveries.deviceId, snapshot.deviceId),
-        eq(bareMetalRecoveries.orgId, input.orgId),
-        notInArray(bareMetalRecoveries.status, [...BARE_METAL_RECOVERY_TERMINAL]),
-      ),
-    )
-    .limit(1);
+  //
+  // This pre-check is the fast path and the source of the friendly 409 detail,
+  // but it is NOT the guard: two concurrent creators both pass it (#6322). The
+  // partial unique index `bare_metal_recoveries_device_in_flight_idx` is the
+  // real arbiter, and the loser's 23505 is mapped to the same error below.
+  const inProgress = await findInFlightRecovery(tx, snapshot.deviceId, input.orgId);
   if (inProgress) {
-    throw new BareMetalRecoveryError('recovery_in_progress', 409, { recoveryId: inProgress.id, status: inProgress.status });
+    throw recoveryInProgressError(inProgress);
   }
 
   const code = generateRecoveryCode();
-  const [row] = await tx
-    .insert(bareMetalRecoveries)
-    .values({
+  const row = await insertRecoveryRow(tx, {
       orgId: input.orgId,
       deviceId: snapshot.deviceId,
       snapshotId: snapshot.id,
@@ -206,11 +274,7 @@ export async function createBareMetalRecovery(input: {
       executingDeviceId: input.executingDeviceId ?? null,
       drExecutionId: input.drExecutionId ?? null,
       drGroupId: input.drGroupId ?? null,
-    })
-    .returning();
-  if (!row) {
-    throw new Error('Failed to create bare-metal recovery');
-  }
+  }, snapshot.deviceId, input.orgId);
 
   audit({
     orgId: input.orgId,

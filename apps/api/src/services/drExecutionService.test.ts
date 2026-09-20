@@ -368,6 +368,46 @@ describe('drExecutionService', () => {
     expect(enqueueDrExecutionReconcile).not.toHaveBeenCalled();
   });
 
+  // #6322: the opening `SELECT ... FOR UPDATE` sat outside db.transaction(),
+  // so it auto-committed and released the lock immediately — mutual exclusion
+  // in appearance only. It is gone; the write-back is a compare-and-swap
+  // instead, and these two tests pin both halves.
+  it('takes no row lock outside a transaction while reconciling', async () => {
+    vi.mocked(db.select).mockImplementationOnce(() => createQueryChain([{
+      id: EXECUTION_ID, planId: PLAN_ID, orgId: ORG_ID, executionType: 'rehearsal',
+      status: 'completed', startedAt: new Date(), completedAt: new Date(),
+      initiatedBy: 'user-1', results: null, createdAt: new Date(),
+    }]) as any);
+
+    await reconcileDrExecution(EXECUTION_ID);
+
+    expect(db.execute).not.toHaveBeenCalled();
+  });
+
+  it('does not resurrect an execution another writer terminalised mid-tick', async () => {
+    const pending = {
+      id: EXECUTION_ID, planId: PLAN_ID, orgId: ORG_ID, executionType: 'rehearsal',
+      status: 'pending', startedAt: new Date('2026-03-30T00:00:00.000Z'), completedAt: null,
+      initiatedBy: 'user-1', results: null, createdAt: new Date('2026-03-30T00:00:00.000Z'),
+    };
+    vi.mocked(db.select)
+      .mockImplementationOnce(() => createQueryChain([pending]) as any)
+      .mockImplementationOnce(() => createQueryChain([groupRow()]) as any)
+      .mockImplementationOnce(() => createQueryChain([{
+        id: '77777777-7777-7777-7777-777777777777', snapshotId: 'snap-1',
+      }]) as any)
+      // The compare-and-swap matched nothing, so reconcile re-reads the row.
+      .mockImplementationOnce(() => createQueryChain([{ ...pending, status: 'aborted', completedAt: new Date() }]) as any);
+    vi.mocked(queueCommandForExecution).mockResolvedValueOnce({ command: { id: 'cmd-1', status: 'sent' } } as any);
+    // Zero rows updated: the guarded UPDATE found the row already terminal.
+    vi.mocked(db.update).mockImplementationOnce(() => createUpdateChain([]) as any);
+
+    const outcome = await reconcileDrExecution(EXECUTION_ID);
+
+    expect(outcome.execution?.status).toBe('aborted');
+    expect(outcome.nextDelayMs).toBeNull();
+  });
+
   it('durably denies revoked authority before any command or running transition', async () => {
     const deniedExecution = {
       id: EXECUTION_ID,
