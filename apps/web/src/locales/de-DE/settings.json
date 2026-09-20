@@ -2803,6 +2803,7 @@
         "set_agent_log_level": "Agent-Protokollstufe festlegen",
         "set_device_context": "Gerätekontext festlegen",
         "sync_huntress_data": "Huntress-Daten synchronisieren",
+        "system_cleanup": "Systembereinigung",
         "take_screenshot": "Screenshot aufnehmen"
       },
       "actions": {
@@ -3050,6 +3051,10 @@
           "scan": "Einen Sicherheitsscan ausführen",
           "status": "Sicherheitsscan-Status",
           "vulnerabilities": "Nach Schwachstellen suchen"
+        },
+        "system_cleanup": {
+          "list": "Systembereinigungsaktionen auflisten",
+          "run": "Systembereinigung ausführen"
         }
       },
       "alwaysOnCount_one": "{{count}} schreibgeschütztes Tool",
