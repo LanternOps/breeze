@@ -30,7 +30,9 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { composeStaticSystemPrompt } from '../../aiToolIndex';
 import { buildScriptBuilderSystemPrompt } from '../../scriptBuilderPrompt';
-import { AI_SYSTEM_PROMPT_BASE } from '../../aiAgentSystemPrompt';
+import { buildHelperSystemPrompt } from '../../helperAiAgent';
+import { buildAgentRunSystemPrompt } from '../../aiAgents/runnerPrompt';
+import { HELPER_CAPTURE_FIXTURE, AGENT_CAPTURE_FIXTURE } from './promptFixtures';
 import { buildBreezeSdkTools, listChatSurfaceToolNames, createBreezeMcpServer, type PreToolUseCallback } from '../../aiAgentSdkTools';
 import { createScriptBuilderMcpServer, SCRIPT_BUILDER_MCP_TOOL_NAMES } from '../../scriptBuilderTools';
 import { createStreamObserver, type StreamObservation } from './streamObserver';
@@ -72,10 +74,14 @@ export function getCaptureSystemPrompt(surface: CaptureSurface): string {
       return composeStaticSystemPrompt(listChatSurfaceToolNames());
     case 'script-builder':
       return buildScriptBuilderSystemPrompt();
-    default:
-      // Helper needs a DB-backed device; agent-full needs run/policy context.
-      // Retain the harness fallback rather than inventing production context.
-      return AI_SYSTEM_PROMPT_BASE;
+    case 'helper-basic':
+    case 'helper-standard':
+    case 'helper-extended':
+      if (!surface.helperPermissionLevel) throw new Error(`Missing Helper permission level: ${surface.id}`);
+      return buildHelperSystemPrompt({ ...HELPER_CAPTURE_FIXTURE, permissionLevel: surface.helperPermissionLevel });
+    case 'agent-full':
+      // Production runLoop.driveSdkLoop uses this pure builder with run context.
+      return buildAgentRunSystemPrompt(AGENT_CAPTURE_FIXTURE);
   }
 }
 

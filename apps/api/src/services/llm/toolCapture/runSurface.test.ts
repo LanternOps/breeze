@@ -6,13 +6,17 @@ vi.mock('@anthropic-ai/claude-agent-sdk', async (importOriginal) => {
   return { ...actual, query: queryMock };
 });
 
-import { denyPreToolUse, runSurfaceCapture } from './runSurface';
+import { denyPreToolUse, getCaptureSystemPrompt, runSurfaceCapture } from './runSurface';
 import { CAPTURE_SURFACES, type CaptureSurface } from './surfaces';
 import { buildBreezeSdkTools, listChatSurfaceToolNames } from '../../aiAgentSdkTools';
-import { AI_SYSTEM_PROMPT_BASE, AI_SYSTEM_PROMPT_TAIL } from '../../aiAgentSystemPrompt';
+import { AI_SYSTEM_PROMPT_TAIL } from '../../aiAgentSystemPrompt';
 
 import { composeStaticSystemPrompt } from '../../aiToolIndex';
 import { buildScriptBuilderSystemPrompt } from '../../scriptBuilderPrompt';
+import { buildHelperSystemPrompt } from '../../helperAiAgent';
+import { getHelperAllowedTools } from '../../helperToolFilter';
+import { buildAgentRunSystemPrompt } from '../../aiAgents/runnerPrompt';
+import { HELPER_CAPTURE_FIXTURE, AGENT_CAPTURE_FIXTURE } from './promptFixtures';
 
 /** An async generator standing in for the SDK's `query()` return value. */
 async function* messages(items: unknown[]): AsyncGenerator<unknown> {
@@ -59,13 +63,32 @@ describe('runSurfaceCapture', () => {
     expect(queryMock.mock.lastCall![0].options.systemPrompt).toBe(buildScriptBuilderSystemPrompt());
   });
 
-  it.each(['helper-basic', 'helper-standard', 'helper-extended', 'agent-full'] as const)(
-    'retains the existing fallback for %s without DB context', async (id) => {
+  it.each(['basic', 'standard', 'extended'] as const)(
+    'sends the production Helper prompt for %s with matching capabilities', async (permissionLevel) => {
+      const surface = CAPTURE_SURFACES[`helper-${permissionLevel}`];
+      const expected = buildHelperSystemPrompt({ ...HELPER_CAPTURE_FIXTURE, permissionLevel });
+      // Every capability in the builder is gated by this list. Check the whole
+      // list (including tools with no prose capability) against SDK permissions.
+      for (const tool of getHelperAllowedTools(permissionLevel)) {
+        expect(surface.allowedTools, `${surface.id}: ${tool}`).toContain(`mcp__breeze__${tool}`);
+      }
+      expect(expected).toContain('## Your Capabilities');
+      expect(getCaptureSystemPrompt(surface)).toBe(expected);
+      expect(getCaptureSystemPrompt(surface)).not.toContain('## Available Tools by Domain');
       queryMock.mockReturnValueOnce(messages([]));
-      await runSurfaceCapture({ ...baseOpts, surface: CAPTURE_SURFACES[id] });
-      expect(queryMock.mock.lastCall![0].options.systemPrompt).toBe(AI_SYSTEM_PROMPT_BASE);
+      await runSurfaceCapture({ ...baseOpts, surface });
+      expect(queryMock.mock.lastCall![0].options.systemPrompt).toBe(expected);
     },
   );
+
+  it('sends the production full agent prompt with synthetic context', async () => {
+    const surface = CAPTURE_SURFACES['agent-full'];
+    const expected = buildAgentRunSystemPrompt(AGENT_CAPTURE_FIXTURE);
+    expect(getCaptureSystemPrompt(surface)).toBe(expected);
+    queryMock.mockReturnValueOnce(messages([]));
+    await runSurfaceCapture({ ...baseOpts, surface });
+    expect(queryMock.mock.lastCall![0].options.systemPrompt).toBe(expected);
+  });
 
   it('treats an error-subtype result (e.g. error_max_turns) as an expected end, not a failure', async () => {
     const resultMessage = {
