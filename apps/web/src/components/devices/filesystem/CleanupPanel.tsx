@@ -258,7 +258,7 @@ export default function CleanupPanel({ deviceId, volumeLabel, preview, onExecute
           <div className="mt-2 grid gap-2 sm:grid-cols-4">
             {CLEANUP_ACTION_STATUSES.filter((status) => status !== 'failed').map((status) => (
               <div key={status} className="rounded bg-muted/20 px-2 py-1.5 text-xs">
-                <span className="text-muted-foreground">{t(RESULT_LABEL_KEYS[status])}</span>
+                <span className="text-muted-foreground">{t(/* i18n-dynamic */ RESULT_LABEL_KEYS[status])}</span>
                 <span className="ml-1 font-medium" data-testid={`cleanup-count-${status}`}>
                   {formatNumber(counts[status])}
                 </span>

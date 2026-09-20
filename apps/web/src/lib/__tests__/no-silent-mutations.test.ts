@@ -35,6 +35,8 @@ const FIXTURE_ROOT = resolve(__dirname, 'fixtures/no-silent-mutations/src');
 const TARGET_GLOBS = [
   // Disk Cleanup v2 W01: scan and cleanup-preview failures must surface.
   'src/components/devices/DeviceFilesystemTab.tsx',
+  // Disk Cleanup v2 W03: cleanup-execute moved into this panel.
+  'src/components/devices/filesystem/CleanupPanel.tsx',
   // Network device "Check now" (#5988 W05): the probe reads liveness outside
   // W04's settings writer and must surface every mutation outcome.
   'src/components/devices/networkDevice/useAssetProbe.ts',
@@ -709,7 +711,8 @@ describe('no silent mutations in targeted set', () => {
     // and EmailTemplateEditor.tsx: 147 → 149.
     // Disk Cleanup v2 W01 adds DeviceFilesystemTab.tsx: 149 → 150.
     // Work types (#4628 W01) add WorkTypesCard.tsx: 150 → 151.
-    expect(absoluteFiles.length).toBe(151);
+    // Disk Cleanup v2 W03 adds filesystem/CleanupPanel.tsx: 151 → 152.
+    expect(absoluteFiles.length).toBe(152);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }
