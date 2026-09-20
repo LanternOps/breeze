@@ -2406,6 +2406,7 @@
     "stepUpPasskeyNote": "Sie bestätigen mit Ihrem Passkey.",
     "noStepUpFactor": "Fügen Sie Ihrem Konto eine Authenticator-App oder einen Passkey hinzu, bevor Sie Geräte zwischen Organisationen verschieben.",
     "mfaRequired": "Schließen Sie zuerst die MFA-Anmeldung ab und versuchen Sie es erneut.",
+    "stepUpRetry": "Diese Bestätigung konnte nicht verwendet werden. Geben Sie einen neuen Code ein und versuchen Sie es erneut.",
     "submit": "Gerät verschieben",
     "submitStepUp": "Bestätigen und verschieben",
     "submitting": "Wird ausgeführt…",

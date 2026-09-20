@@ -124,6 +124,22 @@ describe('MoveDeviceOrgDialog (device move-org step-up D5)', () => {
     await waitFor(() => expect(onCompleted).toHaveBeenCalledWith({ targetOrgId: 'o2', targetOrgName: 'Target Org' }));
   });
 
+  it('a grant-carrying resubmit refused with STEP_UP_REQUIRED again says so instead of silently emptying the code', async () => {
+    // The route answers a consumed / raced / epoch-bumped grant with the same
+    // 403 body as a missing one (MoveOrgStepUpConsumedError in moveOrg.ts).
+    moveMock.mockRejectedValueOnce(stepUpDenial).mockRejectedValueOnce(stepUpDenial);
+    mintMock.mockResolvedValueOnce('grant-1');
+    renderDialog();
+    await chooseTarget();
+    await userEvent.click(screen.getByTestId('move-org-submit'));
+    await userEvent.type(await screen.findByTestId('move-org-stepup-code'), '123456');
+    await userEvent.click(screen.getByTestId('move-org-submit'));
+
+    await waitFor(() => expect(moveMock).toHaveBeenCalledTimes(2));
+    expect(await screen.findByTestId('move-org-error')).toHaveTextContent(/fresh/i);
+    expect(screen.getByTestId('move-org-stepup-code')).toHaveValue('');
+  });
+
   it('does not dispatch after cancellation during step-up', async () => {
     moveMock.mockRejectedValueOnce(stepUpDenial);
     let finish!: (grant: string) => void;

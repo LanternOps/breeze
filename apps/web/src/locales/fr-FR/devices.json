@@ -2406,6 +2406,7 @@
     "stepUpPasskeyNote": "Vous confirmerez avec votre passkey.",
     "noStepUpFactor": "Ajoutez une application d'authentification ou une passkey à votre compte avant de déplacer des appareils entre organisations.",
     "mfaRequired": "Terminez d'abord la connexion MFA, puis réessayez.",
+    "stepUpRetry": "Cette vérification n'a pas pu être utilisée. Saisissez un nouveau code et réessayez.",
     "submit": "Déplacer l'appareil",
     "submitStepUp": "Vérifier et déplacer",
     "submitting": "En cours…",

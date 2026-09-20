@@ -94,7 +94,12 @@ export default function MoveDeviceOrgDialog({
     setError(null);
     setSubmitting(false);
     setDiscoveredTier(null);
-    if (organizations.length === 0) void fetchOrganizations();
+  }, [open]);
+
+  // Separate from the reset above: an org-store refresh while the dialog is
+  // open must not wipe an in-progress step-up.
+  useEffect(() => {
+    if (open && organizations.length === 0) void fetchOrganizations();
   }, [open, organizations.length, fetchOrganizations]);
 
   const targets = useMemo(
@@ -167,6 +172,14 @@ export default function MoveDeviceOrgDialog({
       const status = (err as { status?: number } | null)?.status;
       const errCode = (err as { code?: string } | null)?.code;
       if (status === 403 && errCode === 'STEP_UP_REQUIRED') {
+        if (stepUpGrant) {
+          // The route answers a spent, raced or epoch-invalidated grant with the
+          // same 403 as a missing one. We are already on the factor step, so
+          // say the proof was refused rather than just emptying the code box.
+          setCode('');
+          setError(t('moveDeviceOrgDialog.stepUpRetry'));
+          return;
+        }
         if (tier === null) {
           try {
             const [userResponse, passkeyResponse] = await Promise.all([

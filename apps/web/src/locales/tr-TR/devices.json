@@ -2406,6 +2406,7 @@
     "stepUpPasskeyNote": "Geçiş anahtarınızla doğrulayacaksınız.",
     "noStepUpFactor": "Cihazları kuruluşlar arasında taşımadan önce hesabınıza bir kimlik doğrulayıcı uygulaması veya geçiş anahtarı ekleyin.",
     "mfaRequired": "Önce MFA oturum açmayı tamamlayın, sonra yeniden deneyin.",
+    "stepUpRetry": "Bu doğrulama kullanılamadı. Yeni bir kod girip tekrar deneyin.",
     "submit": "Cihazı taşı",
     "submitStepUp": "Doğrula ve taşı",
     "submitting": "İşleniyor…",

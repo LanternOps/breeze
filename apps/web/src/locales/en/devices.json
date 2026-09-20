@@ -2406,6 +2406,7 @@
     "stepUpPasskeyNote": "You'll confirm with your passkey.",
     "noStepUpFactor": "Add an authenticator app or passkey to your account before moving devices between organizations.",
     "mfaRequired": "Complete MFA sign-in first, then try again.",
+    "stepUpRetry": "That verification could not be used. Enter a fresh code and try again.",
     "submit": "Move device",
     "submitStepUp": "Verify and move",
     "submitting": "Working…",

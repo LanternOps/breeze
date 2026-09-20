@@ -2406,6 +2406,7 @@
     "stepUpPasskeyNote": "Você confirmará com sua chave de acesso.",
     "noStepUpFactor": "Adicione um app autenticador ou uma chave de acesso à sua conta antes de mover dispositivos entre organizações.",
     "mfaRequired": "Conclua primeiro o login com MFA e tente novamente.",
+    "stepUpRetry": "Não foi possível usar essa verificação. Digite um novo código e tente novamente.",
     "submit": "Mover dispositivo",
     "submitStepUp": "Verificar e mover",
     "submitting": "Processando…",
