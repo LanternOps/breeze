@@ -33,7 +33,7 @@ describe('filesystem scan_path contraction replay', () => {
     const root = osType === 'windows' ? 'C:\\' : '/';
     const otherPath = osType === 'windows' ? 'D:\\' : '/data';
     const migration = readFileSync(path.resolve(__dirname,
-      '../../../migrations/2026-10-21-110200-filesystem-scan-path-not-null.sql'), 'utf8');
+      '../../../migrations/2026-10-22-160000-filesystem-scan-path-not-null.sql'), 'utf8');
     const rollback = new Error('rollback contraction replay fixture');
 
     try {

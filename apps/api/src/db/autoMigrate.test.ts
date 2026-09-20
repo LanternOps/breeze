@@ -1354,7 +1354,7 @@ describe('device removal retention: decommissioned_at + device_lifecycle feature
 
 
 describe('filesystem scan_path contraction (Disk Cleanup v2 W03)', () => {
-  const contraction = '2026-10-21-110200-filesystem-scan-path-not-null.sql';
+  const contraction = '2026-10-22-160000-filesystem-scan-path-not-null.sql';
 
   it('sorts after both W02 expand migrations', () => {
     const files = listMigrationFilenames();

@@ -30,7 +30,7 @@ const MIGRATION = '2026-10-21-110000-filesystem-multi-volume.sql';
 // setup.ts migrates through W03. These tests explicitly restore the W02
 // expand shape, replay ONLY W02, and restore contraction even on assertion failure.
 const expandSql = readFileSync(new URL(`../../../migrations/${MIGRATION}`, import.meta.url), 'utf8');
-const contractionSql = readFileSync(new URL('../../../migrations/2026-10-21-110200-filesystem-scan-path-not-null.sql', import.meta.url), 'utf8');
+const contractionSql = readFileSync(new URL('../../../migrations/2026-10-22-160000-filesystem-scan-path-not-null.sql', import.meta.url), 'utf8');
 async function replayExpandMigration() {
   await getTestDb().transaction(async (tx) => {
     await tx.execute(sql`SELECT set_config('breeze.scope', 'system', true)`);

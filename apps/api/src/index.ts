@@ -106,6 +106,7 @@ import { fleetFindingsRoutes } from './routes/fleetFindings';
 import { discoveryRoutes } from './routes/discovery';
 import { discoveryAssetProbeRoutes } from './routes/discoveryAssetProbe';
 import { monitoringAssetMetricsRoutes } from './routes/monitoringAssetMetrics';
+import { topologyRoutes } from './routes/topology';
 import { networkBaselineRoutes } from './routes/networkBaselines';
 import { networkChangeRoutes } from './routes/networkChanges';
 import { portalRoutes } from './routes/portal';
@@ -1107,6 +1108,7 @@ api.route('/extensions', extensionsWebRoutes);
 // Tool Catalog W1 (#5215 / #5216) — BYO MCP tool sources. 404s whole-router
 // when TOOL_SOURCES_ENABLED is off (routes/toolSources.ts's first `use('*')`).
 api.route('/tool-sources', toolSourcesRoutes);
+api.route('/topology', topologyRoutes);
 
 // One system-scoped state store, shared by the per-request enabled gate and the
 // built-in extension loader. The gate checks installed_extensions.enabled on

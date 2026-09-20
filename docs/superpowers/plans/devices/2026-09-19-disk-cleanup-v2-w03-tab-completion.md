@@ -71,7 +71,7 @@ Every spec claim this wave leans on was re-verified against the working tree on 
 
 25. **The AI lane needs the same claim/finalise treatment, and it is W03's now.** Amendment 10 recorded that `services/aiToolsFilesystem.ts:255-370` runs its own lane and is therefore *not broken* by the route's required `cleanupRunId`. §13 #16 supersedes the "leave it to W05" half of that: the executor and act-mode pinning move into this wave so the requirement and its consumers ship together. Tasks 18-20 do that; amendment 10's factual claim (the tool does not call the route) still holds and is why they are parallel changes rather than caller updates.
 
-26. **The migration filename must sort after two `2026-10-20-150000-*` files already on `origin/main`.** Verified 2026-09-19: `origin/main` carries `2026-10-20-150000-bare-metal-recoveries-dr-link.sql` and `2026-10-20-150000-partner-api-contract-scopes.sql`, so the spec's "the newest file is `…-140000-tickets-partner-org-composite-fk.sql`" is stale. `2026-10-21-110200-filesystem-scan-path-not-null.sql` sorts after both and after W02's `150100`. Task 16 re-checks with `scripts/check-migration-naming.sh --against-ref origin/main` before committing, because the pre-push hook re-runs it against a moving `origin/main`.
+26. **The migration filename must sort after two `2026-10-20-150000-*` files already on `origin/main`.** Verified 2026-09-19: `origin/main` carries `2026-10-20-150000-bare-metal-recoveries-dr-link.sql` and `2026-10-20-150000-partner-api-contract-scopes.sql`, so the spec's "the newest file is `…-140000-tickets-partner-org-composite-fk.sql`" is stale. `2026-10-22-160000-filesystem-scan-path-not-null.sql` sorts after both and after W02's `150100`. Task 16 re-checks with `scripts/check-migration-naming.sh --against-ref origin/main` before committing, because the pre-push hook re-runs it against a moving `origin/main`.
 
 27. **W03 now ships a migration, so its Global Constraints change.** The "no schema, no migration" line in the original draft was true of the spec's W03 row; §13 #7 moves the `SET NOT NULL` contraction here. The wave still adds no new table and no new **column**, so the RLS allowlists, the cascade lists and `CORE_TENANT_EXPORT_POLICY` are all unchanged — the export policy fires on a new column, and nullability is not one.
 
@@ -80,7 +80,7 @@ Every spec claim this wave leans on was re-verified against the working tree on 
 ## Global Constraints
 
 - **No agent change.** Spec §3 row W03: Agent release = no. Nothing in this wave may touch `agent/`.
-- **Exactly one migration**, `2026-10-21-110200-filesystem-scan-path-not-null.sql` (Task 16, spec §13 #7 — the contract half of W02's expand/contract). It is idempotent, elects `SELECT set_config('breeze.scope','system',true)` before its first write, reports every repaired row count through `RAISE WARNING`, and opens no inner `BEGIN;`. `pnpm db:check-drift` must be clean after the Drizzle mirror is updated in the same task.
+- **Exactly one migration**, `2026-10-22-160000-filesystem-scan-path-not-null.sql` (Task 16, spec §13 #7 — the contract half of W02's expand/contract). It is idempotent, elects `SELECT set_config('breeze.scope','system',true)` before its first write, reports every repaired row count through `RAISE WARNING`, and opens no inner `BEGIN;`. `pnpm db:check-drift` must be clean after the Drizzle mirror is updated in the same task.
 - **No new tenant-scoped table and no new column**, so no `rls-coverage.integration.test.ts` allowlist change, no `CORE_ORG_CASCADE_DELETE_ORDER` entry, and no `CORE_TENANT_EXPORT_POLICY` entry. Those contracts fire on a new table or a new **column**; changing a column's nullability and a table's primary key is neither. (`device_filesystem_cleanup_runs`, `device_filesystem_snapshots` and `device_filesystem_scan_state` are already registered in all of them.)
 - **`cleanup-execute` holds no DB transaction across the agent round-trip** (spec §13 #5). It is registered in `middleware/selfManagedDbContextRoutes.ts` and opens its own short `withAuthDbAccessContext` blocks around the claim and the finalise. Two contracts follow from that and are tested, not assumed: a committed claim is visible to a second connection, and a finalise that throws leaves the row `running` rather than rolling it back to `previewed`.
 - **A destructive step never runs against a plan older than `CLEANUP_PREVIEW_TTL_HOURS = 24`** (spec §13 #2), on the route, in the AI tool, and in act-mode revalidation — one constant, three enforcement points, each with its own red test.
@@ -123,7 +123,7 @@ Every spec claim this wave leans on was re-verified against the working tree on 
 | `apps/docs/src/content/docs/features/filesystem-analysis.mdx`, `apps/api/src/data/docsIndex.json` | finished-tab + run-history docs, index regenerated (Task 15) |
 | `apps/api/src/middleware/selfManagedDbContextRoutes.ts` (+ `.test.ts`) | `cleanup-execute` opts out of the ambient request transaction (Task 1) |
 | `apps/api/src/__tests__/integration/filesystemCleanupExecute.integration.test.ts` | two-connection claim visibility + crash boundary, real Postgres (Task 1) |
-| `apps/api/migrations/2026-10-21-110200-filesystem-scan-path-not-null.sql`, `apps/api/src/db/schema/filesystem.ts` | `scan_path` NOT NULL, `(device_id, scan_path)` primary key, Drizzle mirror (Task 16) |
+| `apps/api/migrations/2026-10-22-160000-filesystem-scan-path-not-null.sql`, `apps/api/src/db/schema/filesystem.ts` | `scan_path` NOT NULL, `(device_id, scan_path)` primary key, Drizzle mirror (Task 16) |
 | `apps/api/src/services/commandCancelPropagation.ts` (+ `.test.ts`) | org-move cancels an in-flight cleanup run (Task 17) |
 | `apps/api/src/services/aiToolSchemas.ts`, `apps/api/src/services/aiToolsFilesystem.ts` (+ `cleanupRunPin.test.ts`) | AI `disk_cleanup` requires a pinned run and carries it from its own preview (Task 18) |
 | `apps/api/src/services/aiAgents/actManifest.ts`, `actRevalidation.ts`, `actVerify.ts` | act target carries `cleanupRunId`; `pinDiskCleanup` looks the run up by id (Task 19) |
@@ -6360,7 +6360,7 @@ EOF
 Spec §13 #7: W02 ships the column nullable with a backfill and a unique index so a multi-replica rollout cannot break old writers; W03 ships the contraction once W02 is deployed. Expand/contract, two waves, on purpose.
 
 **Files:**
-- Create: `apps/api/migrations/2026-10-21-110200-filesystem-scan-path-not-null.sql`
+- Create: `apps/api/migrations/2026-10-22-160000-filesystem-scan-path-not-null.sql`
 - Modify: `apps/api/src/db/schema/filesystem.ts` (`deviceFilesystemSnapshots` `:20-41`, `deviceFilesystemScanState` `:61-72`)
 - Modify (Test): `apps/api/src/db/autoMigrate.test.ts` (no edit if the ordering assertions are generic; run it either way)
 
@@ -6381,7 +6381,7 @@ Verified 2026-09-19: `origin/main` already holds **two** `2026-10-20-150000-*` f
 bash scripts/check-migration-naming.sh --against-ref origin/main
 ```
 
-- [ ] **Step 2: Write the migration** — create `apps/api/migrations/2026-10-21-110200-filesystem-scan-path-not-null.sql`:
+- [ ] **Step 2: Write the migration** — create `apps/api/migrations/2026-10-22-160000-filesystem-scan-path-not-null.sql`:
 
 ```sql
 -- Disk Cleanup v2 W03 (spec §4, §13 #7) — the CONTRACT half of the expand/
@@ -6521,7 +6521,7 @@ Expected: all three tables already present. This wave adds **no column** — it 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add apps/api/migrations/2026-10-21-110200-filesystem-scan-path-not-null.sql \
+git add apps/api/migrations/2026-10-22-160000-filesystem-scan-path-not-null.sql \
   apps/api/src/db/schema/filesystem.ts
 git commit -m "$(cat <<'EOF'
 feat(db): contract filesystem scan_path to NOT NULL and key scan state by (device_id, scan_path)

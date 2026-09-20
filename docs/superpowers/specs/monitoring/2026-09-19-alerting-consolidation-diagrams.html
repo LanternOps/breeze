@@ -1,0 +1,434 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Breeze Alerting Consolidation</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+:root{
+  --bg:#f5f6f8; --surface:#ffffff; --ink:#1c2330; --muted:#5f6a7a; --line:#c9d0da;
+  --accent:#2a63d6; --accent-soft:#e3ecfb; --retire:#b2543a; --retire-soft:#f6e6df;
+  --keep-soft:#e7f3ec; --keep:#2e7d5b;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#11151b; --surface:#1a2029; --ink:#e7ebf1; --muted:#9aa4b3; --line:#3a4453;
+    --accent:#7ba6ff; --accent-soft:#1f2c47; --retire:#e5906f; --retire-soft:#3a2620;
+    --keep-soft:#1c3128; --keep:#7cc9a3;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#11151b; --surface:#1a2029; --ink:#e7ebf1; --muted:#9aa4b3; --line:#3a4453;
+  --accent:#7ba6ff; --accent-soft:#1f2c47; --retire:#e5906f; --retire-soft:#3a2620;
+  --keep-soft:#1c3128; --keep:#7cc9a3;
+}
+body{background:var(--bg);color:var(--ink);font-family:"Public Sans",system-ui,-apple-system,"Segoe UI",sans-serif;font-size:15px;line-height:1.5}
+.wrap{max-width:980px;margin:0 auto;padding-block:32px 64px;padding-inline:20px}
+header h1{font-size:28px;font-weight:700;letter-spacing:-0.01em;margin:0 0 6px;text-wrap:balance}
+header p{margin:0;color:var(--muted);max-width:64ch}
+.thesis{margin:20px 0 8px;padding:14px 18px;border-left:3px solid var(--accent);background:var(--surface);font-size:16px;max-width:70ch}
+.legend{display:flex;flex-wrap:wrap;gap:16px 22px;margin:18px 0 6px;font-size:12px;color:var(--muted);font-family:"IBM Plex Mono",ui-monospace,Menlo,monospace}
+.legend span{display:inline-flex;align-items:center;gap:8px}
+.sw{width:22px;height:12px;border:1.5px solid var(--ink);border-radius:2px;background:var(--surface)}
+.sw.a{border-color:var(--accent);background:var(--accent-soft)}
+.sw.r{border-color:var(--retire);background:var(--retire-soft)}
+.sw.k{border-color:var(--keep);background:var(--keep-soft)}
+.sw.d{border-style:dashed}
+figure{margin:36px 0 0}
+figure h2{font-size:18px;font-weight:600;margin:0 0 4px}
+figure .lede{margin:0 0 14px;color:var(--muted);max-width:70ch}
+.frame{background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:12px;overflow-x:auto}
+svg{display:block;max-width:100%;height:auto;font-family:"Public Sans",system-ui,sans-serif;font-size:12px;color:var(--ink)}
+svg .box{fill:var(--surface);stroke:currentColor;stroke-width:1.2}
+svg .box.a{fill:var(--accent-soft);stroke:var(--accent)}
+svg .box.r{fill:var(--retire-soft);stroke:var(--retire)}
+svg .box.k{fill:var(--keep-soft);stroke:var(--keep)}
+svg .box.d{stroke-dasharray:4 3}
+svg .zone{fill:none;stroke:var(--line);stroke-width:1;stroke-dasharray:5 4}
+svg .ln{stroke:currentColor;stroke-width:1.1;fill:none}
+svg .ln.a{stroke:var(--accent);stroke-width:1.6}
+svg .ln.r{stroke:var(--retire)}
+svg .ln.d{stroke-dasharray:4 3}
+svg .ln.faint{opacity:.55}
+svg text{fill:currentColor}
+svg .mono{font-family:"IBM Plex Mono",ui-monospace,Menlo,monospace;font-size:11px}
+svg .lab{font-size:10.5px;fill:var(--muted)}
+svg .hd{font-size:11px;font-weight:600;letter-spacing:.06em;fill:var(--muted)}
+svg .ttl{font-weight:600}
+svg .acc{fill:var(--accent)}
+svg .ret{fill:var(--retire)}
+svg .keep{fill:var(--keep)}
+svg marker path{fill:currentColor}
+svg marker.a path{fill:var(--accent)}
+svg marker.r path{fill:var(--retire)}
+figcaption{margin-top:10px;color:var(--muted);font-size:13px;max-width:78ch}
+.notes{margin-top:36px;padding-top:18px;border-top:1px solid var(--line);color:var(--muted);font-size:13px}
+.notes code{font-family:"IBM Plex Mono",ui-monospace,Menlo,monospace;font-size:12px;color:var(--ink)}
+@media (max-width:520px){ body{font-size:14px} header h1{font-size:23px} .thesis{font-size:15px} }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+<header>
+  <h1>Breeze Alerting Consolidation</h1>
+  <p>Diagrams for the 2026-09-19 design spec. Four pictures: what exists today, the end state, how delivery is decided, and how legacy rules become monitors.</p>
+</header>
+
+<p class="thesis">In an RMM, a monitor exists to produce an alert. So <strong>Alerts</strong> is the domain, with three facets: <strong>Monitors</strong> (what we watch for and what happens), the <strong>Inbox</strong> (what is wrong now), and <strong>Delivery</strong> (who gets told). Config policies answer one question: which devices. "Monitoring" means seeing data, and lives where the data is.</p>
+
+<div class="legend">
+  <span><i class="sw a"></i>kept / canonical path</span>
+  <span><i class="sw r"></i>retired by this program</span>
+  <span><i class="sw k"></i>unchanged, stays</span>
+  <span><i class="sw d"></i>transitional (gone by W05d)</span>
+</div>
+
+<!-- FIGURE 1: TODAY -->
+<figure>
+  <h2>1 · Today: nine front doors, seven tables, four evaluators</h2>
+  <p class="lede">Every line is a real write or read path on <code>main</code>. Two evaluators sweep every device every cycle, independently, so one condition authored twice raises two alerts.</p>
+  <div class="frame">
+  <svg viewBox="0 0 1000 420" role="img" aria-label="Nine authoring surfaces write into seven tables which are read by four evaluators that all feed the alert inbox; only the Monitors path is kept.">
+    <defs>
+      <marker id="m1" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L8,4 L0,8 z"/></marker>
+      <marker id="m1a" class="a" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L8,4 L0,8 z"/></marker>
+    </defs>
+    <text x="20" y="18" class="hd">AUTHORING SURFACES</text>
+    <text x="370" y="18" class="hd">TABLES</text>
+    <text x="700" y="18" class="hd">EVALUATORS</text>
+    <text x="920" y="18" class="hd">INBOX</text>
+
+    <!-- surfaces x 20..250 -->
+    <rect x="20" y="30" width="230" height="28" rx="3" class="box r"/><text x="30" y="48">Policy › Alerts tab</text>
+    <rect x="20" y="68" width="230" height="28" rx="3" class="box r"/><text x="30" y="86">Policy › Service &amp; Process</text>
+    <rect x="20" y="106" width="230" height="28" rx="3" class="box r"/><text x="30" y="124">Policy › Automations (alert half)</text>
+    <rect x="20" y="144" width="230" height="28" rx="3" class="box r"/><text x="30" y="162">Alerts › Rules (legacy)</text>
+    <rect x="20" y="182" width="230" height="28" rx="3" class="box a"/><text x="30" y="200" class="ttl">Alerts › Monitors</text>
+    <rect x="20" y="220" width="230" height="28" rx="3" class="box r"/><text x="30" y="238">Settings › Alert Templates</text>
+    <rect x="20" y="258" width="230" height="28" rx="3" class="box"/><text x="30" y="276">Jobs › Event rules</text>
+    <rect x="20" y="296" width="230" height="28" rx="3" class="box r"/><text x="30" y="314">Fleet Designer · onboarding</text>
+    <rect x="20" y="334" width="230" height="28" rx="3" class="box r"/><text x="30" y="352">Network Monitor › Checks</text>
+
+    <!-- tables x 360..600 -->
+    <rect x="360" y="30" width="240" height="28" rx="3" class="box r"/><text x="370" y="48" class="mono">config_policy_alert_rules</text>
+    <rect x="360" y="80" width="240" height="28" rx="3" class="box r"/><text x="370" y="98" class="mono">config_policy_monitoring_watches</text>
+    <rect x="360" y="130" width="240" height="28" rx="3" class="box r"/><text x="370" y="148" class="mono">config_policy_automations</text>
+    <rect x="360" y="180" width="240" height="28" rx="3" class="box"/><text x="370" y="198" class="mono">alert_rules + alert_templates</text>
+    <rect x="360" y="230" width="240" height="28" rx="3" class="box a"/><text x="370" y="248" class="mono ttl">monitor_definitions</text>
+    <rect x="360" y="280" width="240" height="28" rx="3" class="box"/><text x="370" y="298" class="mono">automations</text>
+    <rect x="360" y="330" width="240" height="28" rx="3" class="box r"/><text x="370" y="348" class="mono">network_monitors</text>
+
+    <!-- evaluators x 690..880 -->
+    <rect x="690" y="50" width="190" height="40" rx="3" class="box r"/><text x="700" y="66" class="mono">evaluateDeviceAlerts</text><text x="700" y="80" class="mono">FromPolicy</text>
+    <rect x="690" y="150" width="190" height="40" rx="3" class="box a"/><text x="700" y="166" class="mono ttl">evaluateDeviceAlerts</text><text x="700" y="181" class="lab">the sweep</text>
+    <rect x="690" y="240" width="190" height="40" rx="3" class="box"/><text x="700" y="256">offline transition path</text><text x="700" y="271" class="lab">skips monitors today (#6342)</text>
+    <rect x="690" y="330" width="190" height="40" rx="3" class="box r"/><text x="700" y="346">network engine</text><text x="700" y="361" class="lab">own severity model</text>
+
+    <!-- inbox -->
+    <rect x="920" y="50" width="60" height="320" rx="3" class="box k"/>
+    <text x="950" y="215" transform="rotate(-90 950 215)" text-anchor="middle" class="ttl">alerts</text>
+
+    <!-- surface -> table -->
+    <path d="M250,44 L360,44" class="ln r" marker-end="url(#m1)"/>
+    <path d="M250,82 L360,94" class="ln r" marker-end="url(#m1)"/>
+    <path d="M250,120 L360,144" class="ln r" marker-end="url(#m1)"/>
+    <path d="M250,158 L360,194" class="ln r" marker-end="url(#m1)"/>
+    <path d="M250,196 L360,244" class="ln a" marker-end="url(#m1a)"/>
+    <path d="M250,234 L360,198" class="ln r" marker-end="url(#m1)"/>
+    <path d="M250,272 L360,294" class="ln" marker-end="url(#m1)"/>
+    <path d="M250,310 C300,310 300,48 360,48" class="ln r faint" marker-end="url(#m1)"/>
+    <path d="M250,312 C300,312 300,98 360,98" class="ln r faint" marker-end="url(#m1)"/>
+    <path d="M250,314 C300,314 300,200 360,200" class="ln r faint" marker-end="url(#m1)"/>
+    <path d="M250,348 L360,344" class="ln r" marker-end="url(#m1)"/>
+    <!-- compiler: monitors -> managed rows -->
+    <path d="M480,230 L480,208" class="ln a" marker-end="url(#m1a)"/>
+    <path d="M480,258 L480,280" class="ln a" marker-end="url(#m1a)"/>
+    <text x="488" y="222" class="lab acc">compiles</text>
+
+    <!-- table -> evaluator -->
+    <path d="M600,44 L690,66" class="ln r" marker-end="url(#m1)"/>
+    <path d="M600,94 L690,166" class="ln faint" marker-end="url(#m1)"/>
+    <path d="M600,194 L690,170" class="ln a" marker-end="url(#m1a)"/>
+    <path d="M600,196 L690,258" class="ln faint" marker-end="url(#m1)"/>
+    <path d="M600,48 C650,48 650,262 690,262" class="ln r faint" marker-end="url(#m1)"/>
+    <path d="M600,344 L690,350" class="ln r" marker-end="url(#m1)"/>
+    <!-- evaluator -> inbox -->
+    <path d="M880,70 L920,70" class="ln r" marker-end="url(#m1)"/>
+    <path d="M880,170 L920,170" class="ln a" marker-end="url(#m1a)"/>
+    <path d="M880,260 L920,260" class="ln" marker-end="url(#m1)"/>
+    <path d="M880,350 L920,350" class="ln r" marker-end="url(#m1)"/>
+
+    <text x="20" y="400" class="lab">Also: escalation policies have API CRUD and no screen; delivery is decided in five places; alert templates from the Settings editor can never fire.</text>
+  </svg>
+  </div>
+  <figcaption>Everything in rust goes. The blue path is the one that stays: a monitor compiles into managed rows that the one sweep evaluates.</figcaption>
+</figure>
+
+<!-- FIGURE 2: END STATE -->
+<figure>
+  <h2>2 · End state: one domain, three facets, and targeting kept separate</h2>
+  <p class="lede">A monitor is authored once, attached to policies (targeting), compiled into rows the tech never edits, evaluated by one sweep, and the resulting alert is delivered by one resolver.</p>
+  <div class="frame">
+  <svg viewBox="0 0 960 560" role="img" aria-label="Alerts domain with Monitors, Inbox and Delivery facets; a monitor attaches to config policies which assign devices; the monitor compiles to managed rows evaluated by one sweep; alerts flow to the inbox, then to delivery and optionally to alert workflows under Jobs.">
+    <defs>
+      <marker id="m2" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L8,4 L0,8 z"/></marker>
+      <marker id="m2a" class="a" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L8,4 L0,8 z"/></marker>
+    </defs>
+    <rect x="20" y="20" width="920" height="190" rx="6" class="zone"/>
+    <text x="34" y="40" class="hd">ALERTS · ONE NAV ENTRY · TABS: ALERTS | CORRELATIONS | MONITORS | DELIVERY</text>
+
+    <rect x="30" y="56" width="290" height="134" rx="4" class="box a"/>
+    <text x="42" y="76" class="ttl">Monitors</text><text x="112" y="76" class="lab">the only authoring surface</text>
+    <text x="42" y="98">What to watch · Severity &amp; noise</text>
+    <text x="42" y="116">Respond on the device · Notify (inherited shown)</text>
+    <text x="42" y="134">Escalate to a human: N episodes in M days</text>
+    <text x="42" y="154" class="lab">kinds: cpu · memory · disk · offline · event log · service</text>
+    <text x="42" y="168" class="lab">process · patch · cert · script · antivirus · backup</text>
+    <text x="42" y="182" class="lab">network check · composite (all / any of 2..10)</text>
+
+    <rect x="335" y="56" width="290" height="134" rx="4" class="box k"/>
+    <text x="347" y="76" class="ttl">Inbox</text><text x="395" y="76" class="lab">what is wrong now</text>
+    <text x="347" y="98">Alerts · Correlations · Incidents link</text>
+    <text x="347" y="116">acknowledge · suppress · resolve · dismiss</text>
+    <text x="347" y="134">each alert links to its monitor and episode</text>
+    <text x="347" y="160" class="lab">unchanged in shape; loses nothing</text>
+
+    <rect x="640" y="56" width="290" height="134" rx="4" class="box a"/>
+    <text x="652" y="76" class="ttl">Delivery</text><text x="712" y="76" class="lab">who gets told</text>
+    <text x="652" y="98">Channels · Routing · Escalation policies</text>
+    <text x="652" y="116">ends with an editable "Everything else" row</text>
+    <text x="652" y="134">one resolver: dispatch and preview</text>
+    <text x="652" y="160" class="lab">replaces: Channels tab, routing page,</text>
+    <text x="652" y="174" class="lab">per-rule channel lists, all-channels fallback</text>
+
+    <rect x="30" y="270" width="290" height="92" rx="4" class="box"/>
+    <text x="42" y="290" class="ttl">Config policy › Monitors tab</text>
+    <text x="42" y="308">targeting only: attach · enable · override</text>
+    <text x="42" y="326">inherit: add to parent | replace parent</text>
+    <text x="42" y="344" class="lab">removed: Alerts · Service &amp; Process · alert jobs</text>
+
+    <rect x="335" y="270" width="290" height="92" rx="4" class="box d"/>
+    <text x="347" y="290" class="ttl">Managed rows</text><text x="460" y="290" class="lab">compiler-owned, read-only</text>
+    <text x="347" y="308" class="mono">alert_rules · alert_templates</text>
+    <text x="347" y="324" class="mono">automations (ruleId-filtered)</text>
+    <text x="347" y="344" class="lab">implementation detail; no screen edits these</text>
+
+    <rect x="640" y="270" width="290" height="92" rx="4" class="box"/>
+    <text x="652" y="290" class="ttl">Jobs › Alert workflows</text>
+    <text x="652" y="308">cross-cutting reactive rules, fleet-wide</text>
+    <text x="652" y="326">typed filter: severity · monitor kind</text>
+    <text x="652" y="344" class="lab">e.g. "any critical alert → AI triage"</text>
+
+    <rect x="30" y="430" width="290" height="92" rx="4" class="box k"/>
+    <text x="42" y="450" class="ttl">Devices</text><text x="102" y="450" class="lab">assigned by org · site · group · device</text>
+    <text x="42" y="468">role / OS filters honoured (#6344)</text>
+    <text x="42" y="486">Device page › Monitoring shows effective</text>
+    <text x="42" y="504">monitors, state, open episode, reset</text>
+
+    <rect x="335" y="430" width="290" height="92" rx="4" class="box a"/>
+    <text x="347" y="450" class="ttl">One sweep</text><text x="430" y="450" class="lab">+ offline path (#6342)</text>
+    <text x="347" y="468">evaluates managed rows on device data</text>
+    <text x="347" y="486">episodes · cooldown · dedupe · resolve</text>
+    <text x="347" y="506" class="lab">policy sweep deleted in W05d</text>
+
+    <rect x="640" y="430" width="290" height="92" rx="4" class="box k"/>
+    <text x="652" y="450" class="ttl">Network</text><text x="715" y="450" class="lab">/monitoring, renamed W05e</text>
+    <text x="652" y="468">assets · SNMP · results · topology</text>
+    <text x="652" y="486">check authoring moves to Monitors</text>
+    <text x="652" y="506" class="lab">seeing the network, not authoring rules</text>
+
+    <path d="M175,190 L175,270" class="ln a" marker-end="url(#m2a)"/>
+    <text x="182" y="236" class="lab acc">attach</text>
+    <path d="M175,362 L175,430" class="ln" marker-end="url(#m2)"/>
+    <text x="182" y="400" class="lab">assign</text>
+    <path d="M320,120 C328,120 328,300 335,300" class="ln a" marker-end="url(#m2a)"/>
+    <text x="316" y="215" class="lab acc" transform="rotate(-90 316 215)" text-anchor="middle">compile</text>
+    <path d="M480,362 L480,430" class="ln a" marker-end="url(#m2a)"/>
+    <text x="487" y="400" class="lab acc">evaluate</text>
+    <path d="M320,476 L335,476" class="ln d" marker-end="url(#m2)"/>
+    <path d="M625,476 C634,476 634,190 480,190" class="ln a faint" marker-end="url(#m2a)"/>
+    <text x="600" y="205" class="lab acc" text-anchor="end">raises alert</text>
+    <path d="M625,120 L640,120" class="ln a" marker-end="url(#m2a)"/>
+    <text x="632" y="110" class="lab acc" text-anchor="middle">resolve</text>
+    <path d="M625,160 C634,160 634,300 640,300" class="ln" marker-end="url(#m2)"/>
+    <text x="632" y="240" class="lab" transform="rotate(-90 632 240)" text-anchor="middle">alert.triggered</text>
+    <path d="M785,190 L785,270" class="ln faint" marker-end="url(#m2)"/>
+    <text x="792" y="236" class="lab">escalation policy, optional</text>
+  </svg>
+  </div>
+  <figcaption>Blue arrows are the only path a condition travels: author → attach → compile → evaluate → alert → resolve delivery. Nothing else authors a condition.</figcaption>
+</figure>
+
+<!-- FIGURE 3: DELIVERY PRECEDENCE -->
+<figure>
+  <h2>3 · Delivery: one precedence, first hit wins, default is a row you can edit</h2>
+  <p class="lede">Today the last step is "every enabled channel in the org plus the partner's". It becomes an "Everything else" row written by the migration from that exact set, so day one is identical and new channels are opt-in.</p>
+  <div class="frame">
+  <svg viewBox="0 0 960 330" role="img" aria-label="Delivery precedence ladder: in-app always; then the monitor's own setting; then routing rows; then the Everything-else default row; then inbox only. Escalation resolves independently. The all-channels fallback is deleted.">
+    <defs>
+      <marker id="m3" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L8,4 L0,8 z"/></marker>
+      <marker id="m3a" class="a" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L8,4 L0,8 z"/></marker>
+    </defs>
+    <text x="20" y="22" class="hd">CHANNELS · first hit wins</text>
+    <rect x="20" y="40" width="120" height="70" rx="4" class="box k"/>
+    <text x="80" y="64" text-anchor="middle" class="ttl">alert fires</text>
+    <text x="80" y="82" text-anchor="middle" class="lab">in-app bell always</text>
+    <text x="80" y="96" text-anchor="middle" class="lab">(step 0)</text>
+
+    <rect x="180" y="40" width="160" height="70" rx="4" class="box a"/>
+    <text x="260" y="60" text-anchor="middle" class="ttl">1 · monitor says</text>
+    <text x="260" y="78" text-anchor="middle">inbox only → stop</text>
+    <text x="260" y="96" text-anchor="middle">these channels → stop</text>
+
+    <rect x="380" y="40" width="200" height="70" rx="4" class="box a"/>
+    <text x="480" y="60" text-anchor="middle" class="ttl">2 · routing rows</text>
+    <text x="480" y="78" text-anchor="middle">match severity · kind · site</text>
+    <text x="480" y="96" text-anchor="middle" class="lab">org rows then partner rows, by priority</text>
+
+    <rect x="620" y="40" width="180" height="70" rx="4" class="box a"/>
+    <text x="710" y="60" text-anchor="middle" class="ttl">3 · Everything else</text>
+    <text x="710" y="78" text-anchor="middle">org's row, else partner's</text>
+    <text x="710" y="96" text-anchor="middle" class="lab">editable · can be "inbox only"</text>
+
+    <rect x="840" y="40" width="100" height="70" rx="4" class="box k"/>
+    <text x="890" y="70" text-anchor="middle" class="ttl">4 · no row</text>
+    <text x="890" y="88" text-anchor="middle" class="lab">inbox only</text>
+
+    <path d="M140,75 L180,75" class="ln" marker-end="url(#m3)"/>
+    <path d="M340,75 L380,75" class="ln a" marker-end="url(#m3a)"/>
+    <text x="360" y="68" text-anchor="middle" class="lab">inherit</text>
+    <path d="M580,75 L620,75" class="ln a" marker-end="url(#m3a)"/>
+    <text x="600" y="68" text-anchor="middle" class="lab">no match</text>
+    <path d="M800,75 L840,75" class="ln" marker-end="url(#m3)"/>
+
+    <!-- deleted fallback -->
+    <rect x="380" y="140" width="420" height="44" rx="4" class="box r"/>
+    <text x="590" y="158" text-anchor="middle" class="ret ttl">deleted: "every enabled channel in the org + every partner-wide channel"</text>
+    <text x="590" y="175" text-anchor="middle" class="lab">migration copies this exact set into each Everything-else row, then it is gone</text>
+    <path d="M590,140 L590,110" class="ln r d" marker-end="url(#m3)"/>
+
+    <!-- escalation lane -->
+    <text x="20" y="232" class="hd">ESCALATION · resolved independently of channels</text>
+    <rect x="20" y="248" width="260" height="56" rx="4" class="box"/>
+    <text x="32" y="268" class="ttl">monitor's escalation policy</text>
+    <text x="32" y="286" class="lab">if set, in any delivery mode except inbox-only</text>
+    <path d="M280,276 L320,276" class="ln" marker-end="url(#m3)"/>
+    <text x="300" y="268" text-anchor="middle" class="lab">else</text>
+    <rect x="320" y="248" width="260" height="56" rx="4" class="box"/>
+    <text x="332" y="268" class="ttl">winning routing row's policy</text>
+    <text x="332" y="286" class="lab">rows and the default row may name one</text>
+    <path d="M580,276 L620,276" class="ln" marker-end="url(#m3)"/>
+    <text x="600" y="268" text-anchor="middle" class="lab">else</text>
+    <rect x="620" y="248" width="180" height="56" rx="4" class="box k"/>
+    <text x="710" y="272" text-anchor="middle" class="ttl">none</text>
+    <text x="710" y="290" text-anchor="middle" class="lab">cancelled on acknowledge, as today</text>
+    <text x="840" y="272" class="lab">Escalation policies</text>
+    <text x="840" y="288" class="lab">get a screen (none today).</text>
+  </svg>
+  </div>
+  <figcaption>The monitor's Notify card shows the resolved answer for its severity and kind ("Critical → PagerDuty, partner rule 'Pages', escalates via On-call") from the same function the dispatcher runs.</figcaption>
+</figure>
+
+<!-- FIGURE 4: CONVERSION + WAVES -->
+<figure>
+  <h2>4 · Conversion: retire in place, prove equivalence, then remove the code</h2>
+  <p class="lede">Nothing is deleted and nothing stops firing silently. A source row becomes one or more monitors plus an attachment, is marked retired, and its open alerts are re-pointed in the same transaction.</p>
+  <div class="frame">
+  <svg viewBox="0 0 960 470" role="img" aria-label="Five legacy sources flow through a converter with preview and equivalence check into monitors, attachments, a ledger and retired source rows; below, the five waves W05a to W05e with the three prerequisite issues gating W05c.">
+    <defs>
+      <marker id="m4" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L8,4 L0,8 z"/></marker>
+      <marker id="m4a" class="a" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L8,4 L0,8 z"/></marker>
+    </defs>
+    <text x="20" y="22" class="hd">SOURCES</text>
+    <rect x="20" y="34" width="230" height="26" rx="3" class="box r"/><text x="30" y="51" class="mono">config_policy_alert_rules</text>
+    <rect x="20" y="66" width="230" height="26" rx="3" class="box r"/><text x="30" y="83" class="mono">config_policy_monitoring_watches</text>
+    <rect x="20" y="98" width="230" height="26" rx="3" class="box r"/><text x="30" y="115" class="mono">alert_templates + alert_rules</text>
+    <rect x="20" y="130" width="230" height="26" rx="3" class="box r"/><text x="30" y="147" class="mono">automations (alert.triggered)</text>
+    <rect x="20" y="162" width="230" height="26" rx="3" class="box r"/><text x="30" y="179" class="mono">network_monitors (W05e)</text>
+
+    <rect x="300" y="34" width="330" height="154" rx="4" class="box a"/>
+    <text x="312" y="54" class="ttl">Converter</text><text x="385" y="54" class="lab">per policy · idempotent · one transaction</text>
+    <text x="312" y="76">1 · preview: every device in scope, before vs</text>
+    <text x="312" y="92">    after condition set must be equal</text>
+    <text x="312" y="112">2 · child policy with its own rules → its</text>
+    <text x="312" y="128">    attachment set is marked "replace inherited"</text>
+    <text x="312" y="148">3 · unconvertible → listed with reason</text>
+    <text x="312" y="168" class="lab">2..10 conditions → composite · thresholds → resource monitors</text>
+    <text x="312" y="182" class="lab">watch auto-restart → restart_service response (#6343)</text>
+
+    <path d="M250,47 L300,60" class="ln r" marker-end="url(#m4)"/>
+    <path d="M250,79 L300,90" class="ln r" marker-end="url(#m4)"/>
+    <path d="M250,111 L300,111" class="ln r" marker-end="url(#m4)"/>
+    <path d="M250,143 L300,132" class="ln r" marker-end="url(#m4)"/>
+    <path d="M250,175 L300,160" class="ln r d" marker-end="url(#m4)"/>
+
+    <text x="660" y="22" class="hd">OUTPUTS · same transaction</text>
+    <rect x="660" y="34" width="280" height="34" rx="3" class="box a"/>
+    <text x="670" y="49" class="ttl">monitor(s) + policy attachment</text><text x="670" y="62" class="lab">owner = the policy's own axis (org or partner)</text>
+    <rect x="660" y="76" width="280" height="34" rx="3" class="box"/>
+    <text x="670" y="91" class="ttl">ledger</text><text x="720" y="91" class="mono">monitor_conversions + outputs</text><text x="670" y="104" class="lab">revertable · one source, up to three monitors</text>
+    <rect x="660" y="118" width="280" height="34" rx="3" class="box r d"/>
+    <text x="670" y="133" class="ttl">source row retired in place</text><text x="670" y="146" class="mono">retired_at · reason · converted_to</text>
+    <rect x="660" y="160" width="280" height="34" rx="3" class="box k"/>
+    <text x="670" y="175" class="ttl">open alerts re-pointed</text><text x="670" y="188" class="lab">rule_id → compiled rule · context.convertedFrom</text>
+
+    <path d="M630,60 L660,51" class="ln a" marker-end="url(#m4a)"/>
+    <path d="M630,90 L660,93" class="ln" marker-end="url(#m4)"/>
+    <path d="M630,120 L660,135" class="ln" marker-end="url(#m4)"/>
+    <path d="M630,150 L660,177" class="ln" marker-end="url(#m4)"/>
+
+    <text x="20" y="250" class="hd">WAVES</text>
+    <rect x="20" y="266" width="150" height="68" rx="4" class="box"/>
+    <text x="30" y="284" class="ttl">W05a · stop bleeding</text>
+    <text x="30" y="300" class="lab">2 PRs · no schema</text>
+    <text x="30" y="314" class="lab">freeze legacy creation,</text>
+    <text x="30" y="327" class="lab">dup warning, fix copy</text>
+
+    <rect x="200" y="266" width="150" height="68" rx="4" class="box a"/>
+    <text x="210" y="284" class="ttl">W05b · delivery</text>
+    <text x="210" y="300" class="lab">3 PRs</text>
+    <text x="210" y="314" class="lab">resolver, default rows,</text>
+    <text x="210" y="327" class="lab">Delivery page, escalation UI</text>
+
+    <rect x="390" y="266" width="200" height="68" rx="4" class="box a"/>
+    <text x="400" y="284" class="ttl">W05c · conversion</text>
+    <text x="400" y="300" class="lab">5 PRs · needs #6342 #6343 #6344</text>
+    <text x="400" y="314" class="lab">converter, panel, composite,</text>
+    <text x="400" y="327" class="lab">Templates page removed</text>
+
+    <rect x="630" y="266" width="150" height="68" rx="4" class="box r"/>
+    <text x="640" y="284" class="ttl">W05d · retirement</text>
+    <text x="640" y="300" class="lab">2 PRs · a release later</text>
+    <text x="640" y="314" class="lab">system sweep of leftovers,</text>
+    <text x="640" y="327" class="lab">tabs, routes, 2nd sweep gone</text>
+
+    <rect x="800" y="266" width="140" height="68" rx="4" class="box"/>
+    <text x="810" y="284" class="ttl">W05e · network</text>
+    <text x="810" y="300" class="lab">3 PRs · separable</text>
+    <text x="810" y="314" class="lab">checks become monitors,</text>
+    <text x="810" y="327" class="lab">page renamed Network</text>
+
+    <path d="M170,300 L200,300" class="ln" marker-end="url(#m4)"/>
+    <path d="M350,300 L390,300" class="ln" marker-end="url(#m4)"/>
+    <path d="M590,300 L630,300" class="ln" marker-end="url(#m4)"/>
+    <path d="M780,300 L800,300" class="ln" marker-end="url(#m4)"/>
+
+    <rect x="370" y="370" width="240" height="52" rx="4" class="box d"/>
+    <text x="490" y="390" text-anchor="middle" class="ttl">prerequisite fixes</text>
+    <text x="490" y="406" text-anchor="middle" class="lab">#6342 offline monitors never fire</text>
+    <text x="490" y="418" text-anchor="middle" class="lab">#6343 restart lost · #6344 role/OS filters</text>
+    <path d="M490,370 L490,334" class="ln d" marker-end="url(#m4)"/>
+    <text x="20" y="450" class="lab">W05a and W05b are independent. W05c needs both plus the three fixes. W05d ships at least one release after W05c so self-hosters get the assisted path first.</text>
+  </svg>
+  </div>
+  <figcaption>Hosted: we run "Convert everything" per partner after W05c ships. Self-hosted: a banner counts what is left; W05d's migration converts the remainder in system scope and lists anything it could not.</figcaption>
+</figure>
+
+<div class="notes">
+  <p>Spec: <code>docs/superpowers/specs/monitoring/2026-09-19-alerting-consolidation-design.md</code> on branch <code>monitors-alerts-confusion</code>. Prerequisite issues: #6342, #6343, #6344. Supersedes the 2026-09-08 spec's D1 and its deferred "W5 retirement".</p>
+</div>
+</div>
+</body>
+</html>

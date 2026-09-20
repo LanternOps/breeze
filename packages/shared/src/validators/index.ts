@@ -1172,3 +1172,6 @@ export * from './monitors';
 
 // Tool sources (BYO MCP/OpenAPI, spec 2026-09-07)
 export * from './toolSources';
+
+// Intelligent network topology canonical wire contracts (#5996)
+export * from './topology';
