@@ -398,6 +398,15 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     includeBlockContent: z.boolean().optional(),
   }),
 
+  list_remediation_suggestions: z.object({
+    orgId: z.string().guid().optional(),
+    sourceType: z.enum(['alert', 'anomaly', 'correlation', 'rca']).optional(),
+    sourceId: z.string().min(1).max(255).optional(),
+    deviceId: z.string().guid().optional(),
+    status: z.enum(['all', 'suggested', 'accepted', 'edited', 'rejected', 'executed', 'failed']).optional(),
+    limit: z.number().int().min(1).max(100).optional(),
+  }),
+
   list_incidents: z.object({
     orgId: z.string().guid().optional(),
     status: z.enum(['detected', 'analyzing', 'contained', 'recovering', 'closed']).optional(),

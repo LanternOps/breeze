@@ -300,6 +300,7 @@ export const TOOL_TIERS = {
   get_monitor_activity: 2,
   reset_monitor_escalation: 2,
   // Org lifecycle tools (issue #2366) — new-customer intake (org → site → quote)
+  list_remediation_suggestions: 1,
   list_incidents: 1,
   list_org_contacts: 1,
   list_organizations: 1,
@@ -2623,6 +2624,20 @@ export function buildBreezeSdkTools(
     ),
 
     // Org lifecycle tools (issue #2366) — new-customer intake (org → site → quote)
+
+    tool(
+      'list_remediation_suggestions',
+      registryDescription('list_remediation_suggestions'),
+      {
+        orgId: z.string().guid().optional(),
+        sourceType: z.enum(['alert', 'anomaly', 'correlation', 'rca']).optional(),
+        sourceId: z.string().min(1).max(255).optional(),
+        deviceId: z.string().guid().optional(),
+        status: z.enum(['all', 'suggested', 'accepted', 'edited', 'rejected', 'executed', 'failed']).optional(),
+        limit: z.number().int().min(1).max(100).optional(),
+      },
+      makeHandler('list_remediation_suggestions', getAuth, onPreToolUse, onPostToolUse)
+    ),
 
     tool(
       'list_incidents',
