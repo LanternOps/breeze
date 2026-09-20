@@ -389,6 +389,14 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     includeBlockContent: z.boolean().optional(),
   }),
 
+  list_org_contacts: z.object({
+    orgId: z.string().guid(),
+    siteId: z.union([z.literal('none'), z.string().guid()]).optional(),
+    role: z.string().min(1).max(64).optional(),
+    limit: z.number().int().min(1).max(100).optional(),
+    offset: z.number().int().min(0).optional(),
+  }),
+
   list_organizations: z.object({
     search: z.string().max(255).optional(),
     limit: z.number().int().min(1).max(100).optional(),

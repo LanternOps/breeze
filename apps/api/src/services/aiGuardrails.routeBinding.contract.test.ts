@@ -219,6 +219,8 @@ interface Binding {
  * comments in `aiGuardrails.ts` beside each mapping.
  */
 const BINDINGS: readonly Binding[] = [
+  // Empty site allowlists hide all contacts, stricter than REST's org-level visibility.
+  { tool: 'list_org_contacts', routeFile: 'orgContacts.ts', method: 'get', path: '/organizations/:id/contacts' },
   // Time reads narrow other-user access to platform admins (route also accepts *:* grants).
   { tool: 'list_time_entries', routeFile: 'timeEntries/timeEntries.ts', method: 'get', path: '/' },
   { tool: 'get_running_timer', routeFile: 'timeEntries/timeEntries.ts', method: 'get', path: '/running' },

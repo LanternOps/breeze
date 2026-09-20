@@ -39,6 +39,7 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { organizations, partners, sites } from '../db/schema';
 // Concrete module, not the barrel — see the note in routes/orgs.ts.
 import { ORG_SLUG_UNIQUE_INDEX } from '../db/schema/orgs';
+import { PG_UUID_REGEX } from '../utils/uuid';
 import { escapeLike } from '../utils/sql';
 import { isPgUniqueViolation } from '../utils/pgErrors';
 import type { AuthContext } from '../middleware/auth';
@@ -49,7 +50,7 @@ import {
   revokeOrganizationTenantAccess,
 } from './tenantLifecycle';
 import { abortOrganizationOffboardingAroundStatusChange } from './tenantOffboarding';
-import { createContact, ContactValidationError } from './contacts/crud';
+import { createContact, ContactValidationError, listContacts, countContacts, type ContactListFilters } from './contacts/crud';
 import { contactCreateAuditEvent } from './contacts/audit';
 import { CONTACT_ROLES } from './contacts/types';
 
@@ -550,6 +551,81 @@ async function handleAddContact(
 }
 
 export function registerOrgTools(aiTools: Map<string, AiTool>): void {
+  aiTools.set('list_org_contacts', {
+    tier: 1 as AiToolTier,
+    domain: 'accounts',
+    searchHint: 'customer contacts, people at an organization, primary contact, email/phone for a site',
+    deviceArgs: [],
+    definition: {
+      name: 'list_org_contacts',
+      description: 'List organization contacts with names, email, phone, roles and primary status. Filter by site or role. Internal notes are omitted.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          orgId: { type: 'string', description: 'Organization UUID' },
+          siteId: { type: 'string', description: 'Site UUID, or none for organization-level contacts' },
+          role: { type: 'string', description: 'Contact role to match (1–64 characters)' },
+          limit: { type: 'number', description: 'Max rows (default 25, max 100)' },
+          offset: { type: 'number', description: 'Rows to skip (default 0)' },
+        },
+        required: ['orgId'],
+      },
+    },
+    handler: async (input, auth) => {
+      const orgId = input.orgId;
+      if (typeof orgId !== 'string' || !PG_UUID_REGEX.test(orgId)) {
+        return jsonError('orgId must be an organization UUID');
+      }
+      if (auth.scope !== 'system' && !auth.canAccessOrg(orgId)) {
+        return jsonError('Access to this organization denied');
+      }
+      const siteId = input.siteId;
+      if (siteId !== undefined && (typeof siteId !== 'string' || (siteId !== 'none' && !PG_UUID_REGEX.test(siteId)))) {
+        return jsonError('siteId must be a site UUID or none');
+      }
+      if (siteId !== undefined && siteId !== 'none' && (
+        (auth.allowedSiteIds && !auth.allowedSiteIds.includes(siteId)) ||
+        (auth.canAccessSite && !auth.canAccessSite(siteId))
+      )) return jsonError('Access to this site denied');
+      const role = input.role;
+      if (role !== undefined && (typeof role !== 'string' || role.length < 1 || role.length > 64)) {
+        return jsonError('role must be 1–64 characters');
+      }
+      const limit = Math.min(Math.max(1, Math.floor(Number(input.limit) || 25)), 100);
+      const offset = Math.max(0, Math.floor(Number(input.offset) || 0));
+      // Stricter than REST: even org-level contacts are hidden for empty site scope.
+      if (auth.allowedSiteIds?.length === 0) {
+        return JSON.stringify({ contacts: [], total: 0, limit, offset });
+      }
+      try {
+        // Match resolveAccessibleOrg: deleted/missing organizations are not readable.
+        const [org] = await db.select({ id: organizations.id }).from(organizations)
+          .where(and(eq(organizations.id, orgId), isNull(organizations.deletedAt))).limit(1);
+        if (!org) return jsonError('Organization not found');
+        const filters: ContactListFilters = {
+          ...(siteId === undefined ? {} : { siteId: siteId === 'none' ? null : siteId }),
+          ...(role === undefined ? {} : { role }),
+          ...(auth.allowedSiteIds ? { allowedSiteIds: auth.allowedSiteIds } : {}),
+        };
+        const [contacts, total] = await Promise.all([
+          listContacts(db, orgId, filters, { limit, offset }),
+          countContacts(db, orgId, filters),
+        ]);
+        // Named projection prevents notes or future private fields entering model context.
+        const safeContacts = contacts.map((contact) => ({
+          id: contact.id, orgId: contact.orgId, siteId: contact.siteId,
+          name: contact.name, email: contact.email, phone: contact.phone,
+          mobile: contact.mobile, title: contact.title, roles: contact.roles,
+          isPrimary: contact.isPrimary, createdAt: contact.createdAt, updatedAt: contact.updatedAt,
+        }));
+        return JSON.stringify({ contacts: safeContacts, total, limit, offset });
+      } catch (err) {
+        console.error('[list_org_contacts]', err);
+        return jsonError('Operation failed. Check server logs for details.');
+      }
+    },
+  });
+
   aiTools.set('list_organizations', {
     tier: 1 as AiToolTier,
     domain: 'core',

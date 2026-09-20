@@ -878,6 +878,8 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     decline: { resource: 'quotes', action: 'write' },
     create_pay_link: { resource: 'quotes', action: 'write' },
   },
+  // GET orgContacts.ts /organizations/:id/contacts: PERMISSIONS.ORGS_READ.
+  list_org_contacts: { resource: 'organizations', action: 'read' },
   list_organizations: { resource: 'organizations', action: 'read' },
   manage_organizations: {
     create_org: { resource: 'organizations', action: 'write' },
