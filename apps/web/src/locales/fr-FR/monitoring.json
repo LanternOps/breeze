@@ -461,6 +461,14 @@
       "convert": "Échec de la conversion",
       "retire": "Échec du retrait",
       "revert": "Impossible d'annuler la conversion"
+    },
+    "ledger": {
+      "title": "Historique des conversions",
+      "undo": "Annuler",
+      "more": "Charger plus",
+      "empty": "Aucun historique de conversion.",
+      "system": "Système",
+      "deadline": "L'annulation est indisponible après la suppression du moteur source par W05d."
     }
   }
 }

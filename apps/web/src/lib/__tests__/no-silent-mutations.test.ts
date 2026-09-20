@@ -33,6 +33,7 @@ const FIXTURE_ROOT = resolve(__dirname, 'fixtures/no-silent-mutations/src');
 // WS-A "targeted set": files that have ADOPTED runAction and must not regress
 // to silent mutations. Grows as more handlers migrate (see the backlog).
 const TARGET_GLOBS = [
+  'src/components/monitoring/conversion/ConversionLedger.tsx',
   'src/components/monitoring/conversion/NeedsConversionPanel.tsx',
   'src/components/monitoring/conversion/ConversionPendingBanner.tsx',
   'src/components/admin/MonitorConversionAdmin.tsx',
@@ -764,7 +765,8 @@ describe('no silent mutations in targeted set', () => {
     // Business reports (#3198 W03) add reports/ReportTemplates.tsx: 164 → 165.
     // Alerting W05c2 adopts the shared feature-link mutation hook: 165 → 166.
     // W05c2 adds NeedsConversionPanel, ConversionPendingBanner, MonitorConversionAdmin: 166 → 169.
-    expect(absoluteFiles.length).toBe(169);
+    // Persistent conversion history adds ConversionLedger (Undo): 169 → 170.
+    expect(absoluteFiles.length).toBe(170);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

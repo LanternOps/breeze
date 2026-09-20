@@ -23,7 +23,7 @@ type LegacyRule = {
   convertedToMonitorId: string | null;
 };
 
-export default function LegacyRulesTable() {
+export default function LegacyRulesTable({ onConverted }: { onConverted?: () => void }) {
   const { t } = useTranslation(['monitoring', 'common']);
   const [rows, setRows] = useState<LegacyRule[]>([]);
   const [loading, setLoading] = useState(true);
@@ -66,6 +66,7 @@ export default function LegacyRulesTable() {
         onUnauthorized: UNAUTHORIZED,
         friendly: (code) => code === 'RULE_NOT_CONVERTIBLE' ? t('monitoring:legacy.notConvertible') : undefined,
       });
+      onConverted?.();
       const monitorId = data?.data?.monitorId;
       if (monitorId) void navigateTo(`/alerts/monitors/${monitorId}`);
       else void fetchRules();

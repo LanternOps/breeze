@@ -461,6 +461,14 @@
       "convert": "Dönüştürme başarısız",
       "retire": "Emekliye ayırma başarısız",
       "revert": "Dönüştürme geri alınamadı"
+    },
+    "ledger": {
+      "title": "Dönüştürme geçmişi",
+      "undo": "Geri al",
+      "more": "Daha fazla yükle",
+      "empty": "Dönüştürme geçmişi yok.",
+      "system": "Sistem",
+      "deadline": "W05d kaynak değerlendiriciyi kaldırdıktan sonra geri alma kullanılamaz."
     }
   }
 }

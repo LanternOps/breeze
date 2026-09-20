@@ -2,6 +2,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import MonitorsTab from './MonitorsTab';
 
+// Ledger requests and lifecycle behavior are covered by ConversionLedger.test.tsx.
+vi.mock('../../monitoring/conversion/ConversionLedger', () => ({ default: () => null }));
+
 // useFeatureLink wraps the save/remove API calls; stub it so we can assert the
 // payload the tab submits without hitting the network.
 const saveMock = vi.fn(async () => ({ id: 'link-1' }));

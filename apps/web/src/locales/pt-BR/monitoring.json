@@ -461,6 +461,14 @@
       "convert": "Falha ao converter",
       "retire": "Falha ao aposentar",
       "revert": "Falha ao reverter a conversão"
+    },
+    "ledger": {
+      "title": "Histórico de conversão",
+      "undo": "Desfazer",
+      "more": "Carregar mais",
+      "empty": "Nenhum histórico de conversão.",
+      "system": "Sistema",
+      "deadline": "Desfazer fica indisponível após W05d remover o avaliador de origem."
     }
   }
 }

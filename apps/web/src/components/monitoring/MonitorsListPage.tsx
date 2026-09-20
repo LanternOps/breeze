@@ -1,5 +1,6 @@
 import { useHashState } from '@/lib/useHashState';
 import { useOrgStore } from '../../stores/orgStore';
+import ConversionLedger from './conversion/ConversionLedger';
 import ConversionPendingBanner from './conversion/ConversionPendingBanner';
 import PendingPoliciesList from './conversion/PendingPoliciesList';
 import LegacyRulesTable from './LegacyRulesTable';
@@ -42,6 +43,7 @@ export default function MonitorsListPage() {
   const [view] = useHashState<ListView>('all', (hash) => (hash === 'needs-conversion' ? 'needs-conversion' : undefined));
   const currentOrgId = useOrgStore((s) => s.currentOrgId);
   const showView = (next: ListView) => { window.location.hash = next === 'all' ? '' : next; };
+  const [ledgerRevision, setLedgerRevision] = useState(0);
   const [rows, setRows] = useState<MonitorRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -56,6 +58,7 @@ export default function MonitorsListPage() {
       if (!response.ok) throw new Error(t('monitoring:list.errors.fetch'));
       const data = await response.json();
       setRows(Array.isArray(data?.data) ? data.data : []);
+      setLedgerRevision((n) => n + 1);
     } catch (err) {
       setError(err instanceof Error ? err.message : t('monitoring:list.errors.fetch'));
     } finally {
@@ -179,7 +182,7 @@ export default function MonitorsListPage() {
       {view === 'needs-conversion' ? (
         <div className="space-y-6" data-testid="monitors-list-needs-conversion">
           <PendingPoliciesList />
-          <LegacyRulesTable />
+          <LegacyRulesTable onConverted={() => void fetchMonitors()} />
         </div>
       ) : (
         <>
@@ -263,6 +266,8 @@ export default function MonitorsListPage() {
 
         </>
       )}
+
+      <ConversionLedger orgId={currentOrgId ?? undefined} revision={ledgerRevision} onChanged={() => void fetchMonitors()} />
 
       <ConfirmDialog
         open={!!pendingDelete}

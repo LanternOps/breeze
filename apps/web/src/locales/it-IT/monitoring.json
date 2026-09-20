@@ -461,6 +461,14 @@
       "convert": "Conversione non riuscita",
       "retire": "Ritiro non riuscito",
       "revert": "Impossibile annullare la conversione"
+    },
+    "ledger": {
+      "title": "Cronologia conversioni",
+      "undo": "Annulla",
+      "more": "Carica altro",
+      "empty": "Nessuna conversione precedente.",
+      "system": "Sistema",
+      "deadline": "Annullamento non disponibile dopo la rimozione del motore di origine in W05d."
     }
   }
 }

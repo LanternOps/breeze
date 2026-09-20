@@ -461,6 +461,14 @@
       "convert": "Konvertierung fehlgeschlagen",
       "retire": "Stilllegen fehlgeschlagen",
       "revert": "Konvertierung konnte nicht rückgängig gemacht werden"
+    },
+    "ledger": {
+      "title": "Konvertierungsverlauf",
+      "undo": "Rückgängig",
+      "more": "Mehr laden",
+      "empty": "Kein Konvertierungsverlauf.",
+      "system": "Automatisches System",
+      "deadline": "Rückgängig ist nach Entfernung der Quelllaufzeit durch W05d nicht verfügbar."
     }
   }
 }

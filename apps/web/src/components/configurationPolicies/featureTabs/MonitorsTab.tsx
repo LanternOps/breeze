@@ -2,6 +2,7 @@ import { findDuplicateConditions } from "./duplicateConditions";
 import { DuplicateConditionNotice } from "./DuplicateConditionNotice";
 import { useState, useEffect } from "react";
 import { Radar, Trash2 } from "lucide-react";
+import ConversionLedger from "../../monitoring/conversion/ConversionLedger";
 import NeedsConversionPanel from "../../monitoring/conversion/NeedsConversionPanel";
 import type { FeatureLink, FeatureTabProps } from "./types";
 import { FEATURE_META } from "./types";
@@ -94,7 +95,9 @@ export default function MonitorsTab({
   const watches = (linkOf("monitoring")?.inlineSettings as { watches?: Array<{ watchType?: string; name?: string; enabled?: boolean }> } | undefined)?.watches ?? [];
 
   const hasLegacyRows = (siblingLinks ?? []).some(linkHasLegacyRows);
+  const [ledgerRevision, setLedgerRevision] = useState(0);
   const refreshLinks = async () => {
+    setLedgerRevision((n) => n + 1);
     const res = await fetchWithAuth(`/configuration-policies/${policyId}/features`);
     if (!res.ok) return;
     const json = await res.json();
@@ -561,6 +564,7 @@ export default function MonitorsTab({
           </ul>
         )}
         <NeedsConversionPanel key={policyId} policyId={policyId} hasLegacyRows={hasLegacyRows} onChanged={() => void refreshLinks()} />
+        <ConversionLedger policyId={policyId} revision={ledgerRevision} onChanged={() => void refreshLinks()} />
       </div>
     </FeatureTabShell>
   );

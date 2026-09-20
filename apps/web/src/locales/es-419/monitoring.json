@@ -461,6 +461,14 @@
       "convert": "No se pudo convertir",
       "retire": "No se pudo retirar",
       "revert": "No se pudo revertir la conversión"
+    },
+    "ledger": {
+      "title": "Historial de conversión",
+      "undo": "Deshacer",
+      "more": "Cargar más",
+      "empty": "No hay historial de conversión.",
+      "system": "Sistema",
+      "deadline": "Deshacer no está disponible cuando W05d elimina el evaluador de origen."
     }
   }
 }
