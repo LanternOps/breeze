@@ -1,3 +1,7 @@
+import DeliveryPreview from '../alerts/delivery/DeliveryPreview';
+import { useDeliveryResource } from '../alerts/delivery/useDeliveryResource';
+import type { EscalationPolicy } from '../alerts/delivery/deliveryActions';
+import { useJwtClaims } from '../../lib/authScope';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useHashState } from '@/lib/useHashState';
 import { useForm, FormProvider, Controller } from 'react-hook-form';
@@ -49,7 +53,6 @@ type KindMeta = {
 };
 
 type AiAgent = { id: string; name: string };
-type EscalationPolicy = { id: string; name: string; orgId: string | null; partnerId: string | null };
 type Attachment = {
   id: string;
   configPolicyId: string;
@@ -184,6 +187,8 @@ export async function attachAfterCreate(
 export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
   const { t } = useTranslation(['monitoring', 'common']);
   const isNew = !monitorId;
+  const jwt = useJwtClaims();
+  const currentPartnerId = jwt.status === 'resolved' ? jwt.claims.partnerId : null;
   const createdEditorUrl = useRef<string | undefined>(undefined);
   const { isPartnerScope, defaultOwnerScope } = useDefaultOwnerScope();
   const currentOrgId = useOrgStore((s) => s.currentOrgId);
@@ -204,10 +209,8 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
 
   const [kindsMeta, setKindsMeta] = useState<KindMeta[]>([]);
   const [scripts, setScripts] = useState<Script[]>([]);
-  const [notificationChannels, setNotificationChannels] = useState<NotificationChannel[]>([]);
   const [softwareCatalog, setSoftwareCatalog] = useState<SoftwareCatalogItem[]>([]);
   const [aiAgents, setAiAgents] = useState<AiAgent[]>([]);
-  const [escalationPolicies, setEscalationPolicies] = useState<EscalationPolicy[]>([]);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [builtinKey, setBuiltinKey] = useState<string | null>(null);
   // Null for a partner-wide monitor — DeployMonitorDialog falls back to the
@@ -238,6 +241,8 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
   } = methods;
 
   const watchKind = watch('kind');
+  const watchSeverity = watch('severity');
+  const watchDeliveryChannelIds = watch('deliveryChannelIds');
   const watchAiAgentId = watch('aiAgentId');
   const watchDeliveryMode = watch('deliveryMode');
   const watchOwnerScope = watch('ownerScope');
@@ -245,14 +250,25 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
   const isLoading = saving || isSubmitting;
   const isPartnerOwned = isNew ? watchOwnerScope === 'partner' : monitorPartnerId !== null;
   const ownerOrgId = isNew ? currentOrgId : monitorOrgId;
-  const compatibleEscalationPolicies = useMemo(() => escalationPolicies.filter((policy) => {
+  const deliveryChoiceOrgId = ownerOrgId ?? currentOrgId;
+  const deliveryChoiceSuffix = deliveryChoiceOrgId ? `&orgId=${encodeURIComponent(deliveryChoiceOrgId)}` : '';
+  const channelRail = useDeliveryResource<NotificationChannel>(`/alerts/delivery/rails?rail=channels${deliveryChoiceSuffix}`);
+  const escalationRail = useDeliveryResource<EscalationPolicy>(`/alerts/delivery/rails?rail=escalation${deliveryChoiceSuffix}`);
+  const notificationChannels = useMemo(() => [...new Map([
+    ...channelRail.data.map(({ id, name, type }) => ({ id, name, type })),
+    ...channelRail.inherited,
+  ].map(channel => [channel.id, channel] as const)).values()], [channelRail.data, channelRail.inherited]);
+  const escalationPolicies = escalationRail.data;
+
+  const compatibleEscalationPolicies = useMemo(() => escalationPolicies.filter(policy => {
+    if (policy.inherited === true) {
+      return !isPartnerOwned || isNew || monitorPartnerId === currentPartnerId;
+    }
     if (policy.orgId === null && policy.partnerId !== null) {
-      // The policy endpoint is tenant-scoped; saved partner-wide monitors
-      // additionally pin the choice to their persisted owner.
       return !isPartnerOwned || isNew || policy.partnerId === monitorPartnerId;
     }
     return !isPartnerOwned && policy.orgId === ownerOrgId;
-  }), [escalationPolicies, isPartnerOwned, isNew, monitorPartnerId, ownerOrgId]);
+  }), [escalationPolicies, isPartnerOwned, isNew, monitorPartnerId, currentPartnerId, ownerOrgId]);
 
   useEffect(() => {
     // Changing create ownership must not submit a now-hidden org policy.
@@ -287,18 +303,6 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
     }
   }, []);
 
-  const fetchChannels = useCallback(async () => {
-    try {
-      const response = await fetchWithAuth('/alerts/channels');
-      if (response.ok) {
-        const data = await response.json();
-        setNotificationChannels(data.data ?? data.channels ?? []);
-      }
-    } catch {
-      // Silently fail
-    }
-  }, []);
-
   const fetchSoftwareCatalog = useCallback(async () => {
     try {
       const response = await fetchWithAuth('/software/catalog');
@@ -317,18 +321,6 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
       if (response.ok) {
         const data = await response.json();
         setAiAgents(Array.isArray(data?.data) ? data.data : []);
-      }
-    } catch {
-      // Silently fail
-    }
-  }, []);
-
-  const fetchEscalationPolicies = useCallback(async () => {
-    try {
-      const response = await fetchWithAuth('/alerts/policies');
-      if (response.ok) {
-        const data = await response.json();
-        setEscalationPolicies(Array.isArray(data?.data) ? data.data : []);
       }
     } catch {
       // Silently fail
@@ -378,12 +370,10 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
   useEffect(() => {
     void fetchKinds();
     void fetchScripts();
-    void fetchChannels();
     void fetchSoftwareCatalog();
     void fetchAiAgents();
-    void fetchEscalationPolicies();
     void fetchMonitor();
-  }, [fetchKinds, fetchScripts, fetchChannels, fetchSoftwareCatalog, fetchAiAgents, fetchEscalationPolicies, fetchMonitor]);
+  }, [fetchKinds, fetchScripts, fetchSoftwareCatalog, fetchAiAgents, fetchMonitor]);
 
   const handleKindChange = (kind: MonitorKind) => {
     setValue('kind', kind, { shouldDirty: true });
@@ -838,14 +828,22 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
                 </div>
               )}
             />
+            {[channelRail, escalationRail].map((rail, index) => rail.status === 'error'
+              ? <div key={index} role="alert">{t('alerts:deliveryPage.loadFailed')}
+                  <button type="button" data-testid={`monitor-editor-delivery-rail-${index}-retry`} onClick={rail.reload}>{t('common:actions.retry')}</button></div>
+              : rail.status === 'loading' ? <p key={index} role="status">{t('alerts:deliveryPage.loading')}</p> : null)}
+
             {watchDeliveryMode === 'channels' && (
               <div className="space-y-2">
-                <label className="text-xs font-medium text-muted-foreground">{t('monitoring:editor.fields.channels')}</label>
+                <label htmlFor="monitor-editor-channels" className="text-xs font-medium text-muted-foreground">{t('monitoring:editor.fields.channels')}</label>
                 <select
                   multiple
+                  id="monitor-editor-channels"
                   data-testid="monitor-editor-channels"
                   className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   {...register('deliveryChannelIds')}
+                  value={watchDeliveryChannelIds}
+                  disabled={channelRail.status !== 'success'}
                 >
                   {notificationChannels.map((channel) => (
                     <option key={channel.id} value={channel.id}>
@@ -855,6 +853,31 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
                 </select>
               </div>
             )}
+            {watchDeliveryMode === 'inherit' && <p className="text-xs text-muted-foreground">{t('monitoring:editor.deliveryPreview.draft')}</p>}
+            {watchDeliveryMode === 'inherit' && (
+              <DeliveryPreview
+                orgId={monitorOrgId ?? currentOrgId}
+                severity={watchSeverity}
+                kind={watchKind}
+                escalationOverride={compatibleEscalationPolicies.find(p => p.id === watchEscalationPolicyId) ?? null}
+              />
+            )}
+            {watchDeliveryMode !== 'none' && (
+              <div className="space-y-2">
+                <label htmlFor="monitor-editor-escalation-policy" className="text-xs font-medium text-muted-foreground">
+                  {t('monitoring:editor.fields.escalationPolicy')}
+                </label>
+                <select id="monitor-editor-escalation-policy" data-testid="monitor-editor-escalation-policy"
+                  className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring" {...register('escalationPolicyId')}
+                  value={watchEscalationPolicyId ?? ''} disabled={escalationRail.status !== 'success'}>
+                  <option value="">{t('monitoring:editor.deliveryModes.inherit')}</option>
+                  {compatibleEscalationPolicies.map(policy => <option key={policy.id} value={policy.id}>{policy.name}</option>)}
+                </select>
+              </div>
+            )}
+            <a href="/alerts/delivery" data-testid="monitor-editor-delivery-home" className="text-sm text-primary underline">
+              {t('monitoring:editor.deliveryPreview.manage')}
+            </a>
           </section>
 
           <section className="space-y-3">
@@ -911,24 +934,7 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
                 )}
               </div>
             </div>
-            <div className="space-y-2">
-              <label className="text-xs font-medium text-muted-foreground" htmlFor="monitor-editor-escalation-policy">
-                {t('monitoring:editor.fields.escalationPolicy')}
-              </label>
-              <select
-                id="monitor-editor-escalation-policy"
-                data-testid="monitor-editor-escalation-policy"
-                className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-                {...register('escalationPolicyId')}
-              >
-                <option value="">—</option>
-                {compatibleEscalationPolicies.map((policy) => (
-                  <option key={policy.id} value={policy.id}>
-                    {policy.name}
-                  </option>
-                ))}
-              </select>
-            </div>
+
             <ActionsEditor
               name="recurrenceActions"
               compact

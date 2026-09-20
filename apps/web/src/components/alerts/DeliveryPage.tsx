@@ -1,3 +1,4 @@
+import DeliveryRuleSetPreview from './delivery/DeliveryRuleSetPreview';
 import { useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import AlertsTabStrip from './AlertsTabStrip';
@@ -40,6 +41,7 @@ export default function DeliveryPage() {
     {state(routing, 'routing')}{state(policies, 'escalation')}
     {channels.status === 'success' && routing.status === 'success' && policies.status === 'success' &&
       <RoutingSection {...props} channels={choices} rules={routing.data} policies={policies.data} />}
+    <DeliveryRuleSetPreview orgId={currentOrgId} />
     {channels.status === 'success' && policies.status === 'success' &&
       <EscalationPoliciesSection {...props} channels={choices} policies={policies.data} />}
   </div>;

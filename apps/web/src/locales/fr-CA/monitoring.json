@@ -109,6 +109,35 @@
       "title": "Tester sur un appareil",
       "selectDevice": "Appareil",
       "run": "Exécuter le test"
+    },
+    "deliveryPreview": {
+      "selectOrg": "Sélectionnez une organisation pour prévisualiser la livraison.",
+      "failed": "Impossible de prévisualiser la livraison.",
+      "loading": "Résolution de la livraison…",
+      "disabled": "{{name}} (désactivé)",
+      "unavailable": "Canal indisponible",
+      "destination": "Livraison pour {{severity}} : {{channels}}",
+      "partnerRule": "Règle du partenaire : {{name}}",
+      "orgRule": "Règle de l’organisation : {{name}}",
+      "partnerDefault": "Valeur par défaut du partenaire : {{name}}",
+      "orgDefault": "Valeur par défaut de l’organisation : {{name}}",
+      "noRow": "Aucune ligne de livraison n’est configurée.",
+      "monitorOverride": "Réglage propre au moniteur",
+      "escalation": "Escalade via {{name}}",
+      "withoutSite": "Aucun site sélectionné ; les règles propres à un site sont exclues.",
+      "testRules": "Tester cet ensemble de règles",
+      "kind": "Type de moniteur",
+      "noKind": "Aucun type de moniteur",
+      "site": "Site concerné",
+      "noSite": "Aucun site",
+      "sitesFailed": "Impossible de charger les sites.",
+      "manage": "Gérer la livraison",
+      "draft": "L’aperçu utilise les valeurs actuelles de l’éditeur.",
+      "skipped": "Ignoré {{id}} : {{reason}}",
+      "skipReasons": {
+        "disabled": "désactivé",
+        "unavailable": "indisponible"
+      }
     }
   },
   "kinds": {

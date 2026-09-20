@@ -21,6 +21,6 @@ it.each(['routing','escalation'])('a failed %s read never offers an inbox-only d
   expect(screen.getByTestId('channels-ready')).toBeInTheDocument();
   expect(screen.queryByTestId('routing-default-edit')).toBeNull();
   if (rail === 'escalation') expect(screen.queryByTestId('escalation-new')).toBeNull();
-  failed = false; fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+  failed = false; fireEvent.click(screen.getByTestId(`delivery-${rail}-retry`));
   expect(await screen.findByTestId('routing-default-edit')).toBeInTheDocument();
 });

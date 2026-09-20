@@ -109,6 +109,35 @@
       "title": "Auf einem Gerät testen",
       "selectDevice": "Gerät",
       "run": "Test ausführen"
+    },
+    "deliveryPreview": {
+      "selectOrg": "Wählen Sie eine Organisation für die Zustellungsvorschau.",
+      "failed": "Zustellungsvorschau fehlgeschlagen.",
+      "loading": "Zustellung wird ermittelt…",
+      "disabled": "{{name}} (deaktiviert)",
+      "unavailable": "Kanal nicht verfügbar",
+      "destination": "Zustellung bei {{severity}}: {{channels}}",
+      "partnerRule": "Partnerregel: {{name}}",
+      "orgRule": "Organisationsregel: {{name}}",
+      "partnerDefault": "Partnerstandard: {{name}}",
+      "orgDefault": "Organisationsstandard: {{name}}",
+      "noRow": "Keine Zustellungszeile konfiguriert.",
+      "monitorOverride": "Monitorüberschreibung",
+      "escalation": "Eskaliert über {{name}}",
+      "withoutSite": "Kein Standort ausgewählt; standortspezifische Regeln werden ausgeschlossen.",
+      "testRules": "Diesen Regelsatz testen",
+      "kind": "Monitorart",
+      "noKind": "Keine Monitorart",
+      "site": "Standort",
+      "noSite": "Kein Standort",
+      "sitesFailed": "Standorte konnten nicht geladen werden.",
+      "manage": "Zustellung verwalten",
+      "draft": "Die Vorschau verwendet die aktuellen Editorwerte.",
+      "skipped": "Übersprungen {{id}}: {{reason}}",
+      "skipReasons": {
+        "disabled": "deaktiviert",
+        "unavailable": "nicht verfügbar"
+      }
     }
   },
   "kinds": {
