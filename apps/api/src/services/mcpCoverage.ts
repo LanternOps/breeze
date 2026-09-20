@@ -186,6 +186,8 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'devices/eventlogs.ts': { tools: ['search_logs', 'get_log_trends', 'detect_log_correlations'] },
   'devices/events.ts': { gap: '#6141' },
   'devices/filesystem.ts': { tools: ['analyze_disk_usage', 'disk_cleanup'] },
+  // OS-native cleanup catalogs/runs are not covered by disk_cleanup's file deletion workflow.
+  'devices/filesystemSystemCleanup.ts': { gap: '#6141' },
   'devices/function.ts': { gap: '#6141' },
   'devices/groups.ts': { tools: ['manage_groups'] },
   'devices/hardware.ts': { tools: ['get_ip_history', 'get_device_details'] },
@@ -408,12 +410,24 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'timeEntries/suggestions.ts': { gap: '#6141' },
   'timeEntries/timeEntries.ts': { tools: ['list_time_entries', 'get_running_timer', 'get_timesheet', 'manage_tickets'] },
   'toolSources.ts': { gap: '#6141' },
+  // Collector selection and diagnostic run lifecycle have no registered AI tool.
+  'topology/diagnostics.ts': { gap: '#6141' },
   'topology/graphs.ts': { gap: '#6141' },
   'topology/layouts.ts': { gap: '#6141' },
   'topology/manual.ts': { gap: '#6141' },
   'topology/middleware.ts': { exempt: 'internal_plumbing', note: 'Authorization/helper or router composition module; the textual scanner matches context access, not a standalone endpoint.' },
   'topology/mutations.ts': { exempt: 'internal_plumbing', note: 'Authorization/helper or router composition module; the textual scanner matches context access, not a standalone endpoint.' },
+  // Shared permission middleware and response/error wrappers register no endpoints.
+  'topology/operations.ts': { exempt: 'internal_plumbing' },
+  // Topology monitoring policy CRUD has no registered AI tool.
+  'topology/policies.ts': { gap: '#6141' },
   'topology/settings.ts': { gap: '#6141' },
+  // Topology probe target CRUD has no registered AI tool.
+  'topology/targets.ts': { gap: '#6141' },
+  // Template application preview, execution and status have no registered AI tool.
+  'topology/templateApplications.ts': { gap: '#6141' },
+  // The topology template library and version publishing have no registered AI tool.
+  'topology/templates.ts': { gap: '#6141' },
   'tunnelHttp.ts': { exempt: 'internal_plumbing', note: 'WebSocket/HTTP transport for event, remote-session or tunnel traffic.' },
   'tunnelWs.ts': { exempt: 'internal_plumbing', note: 'WebSocket/HTTP transport for event, remote-session or tunnel traffic.' },
   'tunnels.ts': { gap: '#6141' },

@@ -42,13 +42,14 @@
  */
 
 import { AI_AGENT_KINDS, AI_AGENT_RUN_STATUSES, type AiAgentKind, type AiAgentRunStatus } from '@breeze/shared';
-import { and, asc, desc, eq, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../db';
 import { actionIntents, aiAgentRuns, aiAgents, aiToolExecutions, devices } from '../db/schema';
 import { listAgents } from './aiAgents/agentService';
 import { buildRunTrace } from './aiAgents/runTrace';
 import { runSiteScopeCondition } from './aiAgentRunSiteScope';
+import { deviceScopeCondition, resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
 
 import {
   authorizeSupervisedKey,
@@ -142,11 +143,11 @@ export function registerAiAgentGovernanceTools(aiTools: Map<string, AiTool>): vo
       if (orgId && !auth.canAccessOrg(orgId)) {
         return JSON.stringify({ error: 'Access to this organization denied' });
       }
-      if (auth.allowedSiteIds?.length === 0 ||
+      if (auth.allowedSiteIds?.length === 0 || auth.allowedDeviceIds?.length === 0 ||
           (auth.scope === 'partner' && !auth.accessibleOrgIds?.length)) {
         return JSON.stringify({ runs: [], showing: 0 });
       }
-      const conditions = [auth.orgCondition(aiAgentRuns.orgId), runSiteScopeCondition(auth)];
+      const conditions = [auth.orgCondition(aiAgentRuns.orgId), runSiteScopeCondition(auth), deviceScopeCondition(auth, aiAgentRuns.deviceId)];
       if (typeof input.agentId === 'string') conditions.push(eq(aiAgentRuns.agentId, input.agentId));
       if (typeof input.status === 'string') conditions.push(eq(aiAgentRuns.status, input.status as AiAgentRunStatus));
       if (orgId) conditions.push(eq(aiAgentRuns.orgId, orgId));
@@ -175,7 +176,7 @@ export function registerAiAgentGovernanceTools(aiTools: Map<string, AiTool>): vo
     },
     handler: async (input, auth) => {
       const id = z.string().guid().safeParse(input.runId);
-      if (!id.success || auth.allowedSiteIds?.length === 0 ||
+      if (!id.success || auth.allowedSiteIds?.length === 0 || auth.allowedDeviceIds?.length === 0 ||
           (auth.scope === 'partner' && !auth.accessibleOrgIds?.length)) {
         return JSON.stringify({ error: 'Run not found' });
       }
@@ -196,7 +197,7 @@ export function registerAiAgentGovernanceTools(aiTools: Map<string, AiTool>): vo
       }).from(aiAgentRuns)
         .leftJoin(aiAgents, eq(aiAgentRuns.agentId, aiAgents.id))
         .leftJoin(devices, eq(aiAgentRuns.deviceId, devices.id))
-        .where(and(eq(aiAgentRuns.id, id.data), auth.orgCondition(aiAgentRuns.orgId), runSiteScopeCondition(auth)))
+        .where(and(eq(aiAgentRuns.id, id.data), auth.orgCondition(aiAgentRuns.orgId), runSiteScopeCondition(auth), deviceScopeCondition(auth, aiAgentRuns.deviceId)))
         .limit(1);
       if (!run) return JSON.stringify({ error: 'Run not found' });
       const ledgerRows = run.sessionId ? await db.select({
@@ -205,12 +206,16 @@ export function registerAiAgentGovernanceTools(aiTools: Map<string, AiTool>): vo
         completedAt: aiToolExecutions.completedAt, errorMessage: aiToolExecutions.errorMessage,
       }).from(aiToolExecutions).where(eq(aiToolExecutions.sessionId, run.sessionId))
         .orderBy(asc(aiToolExecutions.createdAt)) : [];
+      // The run and an intent can target different devices. Resolve both axes
+      // inside the run's org before reading its intent summaries.
+      const allowedDeviceIds = await resolveSiteAllowedDeviceIds(run.orgId, auth);
       const intents = await db.select({
         id: actionIntents.id, status: actionIntents.status, actionName: actionIntents.actionName,
         approvalScope: actionIntents.approvalScope, decidedVia: actionIntents.decidedVia,
       }).from(actionIntents).where(and(
         eq(actionIntents.requestingAgentRunId, run.id), eq(actionIntents.orgId, run.orgId),
         auth.orgCondition(actionIntents.orgId),
+        allowedDeviceIds === null ? undefined : inArray(actionIntents.scopeDeviceId, allowedDeviceIds),
       ));
       const agent = run.agentName !== null && run.agentKind !== null
         ? { name: run.agentName, kind: run.agentKind } : null;
