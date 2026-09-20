@@ -353,6 +353,7 @@ describe('cleanupExpiredSnapshots -- pins + retirement (D18 W01 section 3.2/3.3/
     selectQueue.push([]); // s5 backup pin -- none
     selectQueue.push([]); // s5 restore pin -- none
     selectQueue.push([]); // s5 recovery pin -- none
+    selectQueue.push([]); // s5 active chain base pin (#5421) -- none
 
     const result = await cleanupExpiredSnapshots('org-1');
 
@@ -364,6 +365,36 @@ describe('cleanupExpiredSnapshots -- pins + retirement (D18 W01 section 3.2/3.3/
     expect(insertedRows).toEqual([
       expect.objectContaining({ snapshotId: 'snap-5', reason: 'max_versions' }),
     ]);
+  });
+
+  it('holds a max-versions-over-cap full that still anchors an ACTIVE chain (#5421)', async () => {
+    // The prune pass routes candidates through the SAME deleteSnapshotRow, so
+    // the chain-base hold must apply there too -- the real-world MSSQL case is
+    // a full falling out of the maxVersions window BEFORE the next full runs,
+    // which is count-based, not expiry-based.
+    selectQueue.push([]); // expired query -- nothing expired by date
+
+    const retention = { maxVersions: 1 };
+    const base = {
+      deviceId: 'd1', configId: 'c1', storageIdentity: 's3::e::b', backupType: 'application' as const, retention,
+    };
+    selectQueue.push([
+      { ...base, id: 'mv1', snapshotId: 'snap-mv-1', timestamp: new Date('2026-05-05') }, // kept (within cap)
+      { ...base, id: 'mv2', snapshotId: 'snap-mv-2', timestamp: new Date('2026-05-04') }, // over cap, chain base
+    ]); // versionBoundSnapshots query
+    selectQueue.push([{ id: 'mv2', legalHold: false, isImmutable: false, immutableUntil: null }]); // mv2 lock
+    selectQueue.push([]); // mv2 backup pin -- none
+    selectQueue.push([]); // mv2 restore pin -- none
+    selectQueue.push([]); // mv2 recovery pin -- none
+    selectQueue.push([{ id: 'chain-mv' }]); // mv2 active chain base pin -- FOUND
+
+    const result = await cleanupExpiredSnapshots('org-1');
+
+    expect(result.skippedChainBase).toBe(1);
+    expect(result.prunedByMaxVersions).toBe(0);
+    expect(result.deleted).toBe(0);
+    expect(mockDb.delete).not.toHaveBeenCalled();
+    expect(insertedRows.length).toBe(0);
   });
 
   it('logs and skips a row whose delete rejects with a FK violation (D17), and still deletes the next expired row', async () => {

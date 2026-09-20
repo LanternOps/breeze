@@ -370,6 +370,10 @@ async function deleteSnapshotRow(params: {
   // re-points `full_snapshot_id` at the new snapshot, releasing the previous
   // full on the very next run; a chain that goes `is_active = false` (a new
   // chain type, a broken chain, a removed target) stops holding immediately.
+  // Deliberately NOT scoped by orgId: a hold must be maximal. The snapshot's
+  // own org already bounds which rows this pass considers, and if a chain row
+  // ever carried a mismatched org (data bug, mid-flight org move) the safe
+  // outcome is still "hold", not "delete the base out from under it".
   const [chainPin] = await db
     .select({ id: backupChains.id })
     .from(backupChains)
