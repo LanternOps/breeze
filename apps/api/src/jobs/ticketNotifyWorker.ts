@@ -28,7 +28,7 @@
 import { Worker, type Job } from 'bullmq';
 import { eq } from 'drizzle-orm';
 import * as dbModule from '../db';
-import { organizations, partners, tickets } from '../db/schema';
+import { organizations, partners, tickets, ticketComments } from '../db/schema';
 import { getEmailService } from '../services/email';
 import { escapeHtml } from '../services/emailLayout';
 import { renderPartnerEmail, type PartnerEmailCustom } from '../services/emailTemplates/renderPartnerEmail';
@@ -111,6 +111,11 @@ type PartnerSettings = {
       address?: string;
       autoresponseSubject?: string | null;
       autoresponseBody?: string | null;
+      // When true, a public tech reply emails the customer the actual comment
+      // text (for MSPs that do not run the client portal). Default/absent keeps
+      // the portal-notification email and the leak guard. See the shared
+      // ticketingInboundSettingsSchema (@breeze/shared).
+      fullMessageReply?: boolean;
     };
   };
   emailTemplates?: {
@@ -358,6 +363,30 @@ async function collectRequesterEmail(
 
   const composed = await composeLaidOutRequesterMail(ticket, 'ticket_comment_notification');
 
+  // Reply-content mode (per-partner). By DEFAULT the customer gets the portal
+  // "you have a new reply, sign in" notification and the comment text never
+  // leaves the platform (leak guard). A partner that does NOT run the client
+  // portal can opt in to `fullMessageReply`, which appends the actual public
+  // comment text to the email so email becomes a real back-and-forth. Only the
+  // just-posted PUBLIC comment is included; internal notes never reach this path
+  // (the worker gates on event.payload.isPublic before calling here).
+  let html = composed.html;
+  const bits = await loadPartnerMailBits(ticket.partnerId);
+  if (bits.inbound?.fullMessageReply) {
+    const rows = await db
+      .select({ content: ticketComments.content, isPublic: ticketComments.isPublic })
+      .from(ticketComments)
+      .where(eq(ticketComments.id, commentId))
+      .limit(1);
+    const comment = rows[0];
+    // Defense in depth: never inline a non-public comment even if one somehow
+    // reached here — the emitter's isPublic gate is the authority, this is a
+    // second check at the point the text would leave the platform.
+    if (comment?.isPublic && comment.content.trim()) {
+      html = appendFullReplyBody(html, comment.content);
+    }
+  }
+
   const built = buildThreadingHeaders({ ticketId: ticket.id, commentId });
   const headers = Object.keys(built).length > 0 ? built : undefined;
 
@@ -371,13 +400,28 @@ async function collectRequesterEmail(
   return [{
     to: ticket.submitterEmail,
     subject: subjectOverride ?? composed.subject,
-    html: composed.html,
+    html,
     replyTo: composed.replyTo,
     headers,
     graphMailbox,
     purpose: 'ticket.customer_notification',
     partnerId: ticket.partnerId ?? null
   }];
+}
+
+/**
+ * Append the actual reply text to a comment-notification email (fullMessageReply
+ * partners only). The body is HTML-escaped and newline-preserved, wrapped in a
+ * quoted block below the rendered notification. Kept deliberately simple — the
+ * comment `content` is plain text authored by a technician.
+ */
+function appendFullReplyBody(html: string, body: string): string {
+  const safe = escapeHtml(body).replace(/\r?\n/g, '<br>');
+  const block =
+    '<div style="margin-top:16px;padding:12px 16px;border-left:3px solid #d1d5db;'
+    + 'color:#374151;font-size:14px;line-height:1.5;white-space:normal;">'
+    + `${safe}</div>`;
+  return `${html}${block}`;
 }
 
 /**

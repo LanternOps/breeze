@@ -174,6 +174,24 @@ export interface PartnerInboundPolicy {
    * sender matching. Default false (preserves the quarantine-for-review behavior).
    */
   dropUnverifiedSenders: boolean;
+  /**
+   * Per-hour ticket-creation caps (flood protection). `null` ⇒ no partner
+   * override, so the caller applies the INBOUND_MAX_* env default; `0` ⇒ the
+   * partner explicitly disabled that window (unlimited). Enforced in the inbound
+   * worker via a Redis sliding window BEFORE the DB transaction (#1105 forbids a
+   * Redis round-trip inside the held context), so these are raw overrides — the
+   * effective value is resolved in services/inboundEmail/inboundRateLimit.ts.
+   */
+  maxTicketsPerSenderPerHour: number | null;
+  maxTicketsPerDomainPerHour: number | null;
+  maxTicketsPerPartnerPerHour: number | null;
+  /**
+   * When true, a public tech reply emails the customer the actual comment text
+   * (threaded) instead of the portal "you have a new reply, sign in" notification.
+   * Default false preserves the current portal-notification behavior (and the
+   * leak guard) for MSPs that run the client portal.
+   */
+  fullMessageReply: boolean;
 }
 
 /**
@@ -213,10 +231,21 @@ export async function loadPartnerInboundPolicy(
       ? 'triage'
       : 'quarantine';
 
+  // Cap overrides: a finite non-negative integer is an explicit partner setting
+  // (including 0 = unlimited); anything else (absent/null/NaN) is `null` so the
+  // caller falls back to the env default. Guarded so a malformed stored value
+  // never becomes a negative or fractional window.
+  const capOverride = (v: unknown): number | null =>
+    typeof v === 'number' && Number.isInteger(v) && v >= 0 ? v : null;
+
   return {
     enabled: inbound.enabled !== false,
     unknownSenderMode: mode,
     defaultTriageOrgId: inbound.defaultTriageOrgId ?? null,
     dropUnverifiedSenders: inbound.dropUnverifiedSenders === true,
+    maxTicketsPerSenderPerHour: capOverride(inbound.maxTicketsPerSenderPerHour),
+    maxTicketsPerDomainPerHour: capOverride(inbound.maxTicketsPerDomainPerHour),
+    maxTicketsPerPartnerPerHour: capOverride(inbound.maxTicketsPerPartnerPerHour),
+    fullMessageReply: inbound.fullMessageReply === true,
   };
 }

@@ -19,7 +19,7 @@ import type { NormalizedInboundEmail, InboundParseStatus } from './types';
 import type { M365MailboxGenerationContext } from '../inboundEmailQueue';
 import { TICKET_TOKEN_RE, findTicketInPartner, findClosedTicketInPartner, type SenderResolver } from './threadMatcher';
 import { claimMessageLink, findLinkByMessageId, normalizeMessageId } from '../ticketEmailLinks';
-import { ownOutboundReason } from './loopPrevention';
+import { ownOutboundReason, ticketCreationLoopReason } from './loopPrevention';
 
 // Synthetic actor for the inbound pipeline. Only ever written to audit_logs.actor_id
 // (NOT NULL, but no FK to users — same pattern as auditEvents.ANONYMOUS_ACTOR_ID /
@@ -136,6 +136,14 @@ export interface ProcessInboundEmailDependencies {
   afterMailboxGenerationLock?: () => Promise<void>;
   /** Test-only observation point after a subject-token matcher pins the ticket. */
   afterTicketMatchLock?: (ticketId: string) => Promise<void>;
+  /**
+   * Inbound flood-cap verdict, computed by the worker BEFORE this transaction
+   * opened (the Redis rate check cannot run inside the held DB context, #1105).
+   * When `throttled` is true the message is quarantined for review with a
+   * rate-limited note instead of creating a ticket. Absent ⇒ not throttled (the
+   * webhook/add-in and test callers that don't run the cap pass nothing).
+   */
+  throttle?: { throttled: boolean; bucket: string | null };
 }
 
 export async function processInboundEmail(
@@ -223,6 +231,21 @@ export async function processInboundEmail(
       return;
     }
 
+    // (1e) MAIL LOOP / BOUNCE. Suppress ticket creation for unambiguous loop and
+    // bounce signals — Auto-Submitted: auto-replied, a null Return-Path (`<>`),
+    // X-Loop, X-Auto-Response-Suppress, or List-Id — so an auto-responder war or a
+    // bounce storm cannot manufacture tickets. Deliberately NARROW: a device
+    // notification (`Auto-Submitted: auto-generated`, no-reply@ copier/monitoring)
+    // is NOT suppressed here — those are legitimate tickets. The broader
+    // Precedence/system-sender set still suppresses only the auto-REPLY
+    // (autoresponseSuppressionReason), not the ticket. Logged 'ignored' with the
+    // reason for the audit trail.
+    const loopReason = ticketCreationLoopReason(n);
+    if (loopReason) {
+      await logInbound(n, partnerId, 'ignored', null, `loop/bounce suppressed: ${loopReason}`);
+      return;
+    }
+
     // (2) Idempotency — provider retries / at-least-once delivery. Scoped to the partner.
     // This SELECT alone is NOT the exactly-once guarantee: under CONCURRENT delivery two
     // workers can both miss the dup here and race to insert. Exactly-once is enforced by the
@@ -271,6 +294,26 @@ export async function processInboundEmail(
     const policy = await loadPartnerInboundPolicy(partnerId);
     if (!policy.enabled) {
       await logInbound(n, partnerId, 'ignored', null, 'inbound disabled for partner');
+      return;
+    }
+
+    // (1e) FLOOD CAP. The worker evaluated the per-sender/domain/partner sliding
+    // windows in Redis before this transaction opened (see inboundRateLimit.ts;
+    // the check cannot run in-tx, #1105) and handed the verdict in via deps.
+    // Over-cap mail is QUARANTINED for review — visible and recoverable, never
+    // silently dropped — so a burst can neither mint unbounded tickets nor be
+    // lost. Placed after the enabled gate (a disabled partner short-circuits
+    // first) and before routing/create so no ticket, comment, or autoresponse is
+    // produced. The window was recorded once, on the job's first attempt, so a
+    // BullMQ retry does not re-count or wrongly quarantine.
+    if (dependencies.throttle?.throttled) {
+      await logInbound(
+        n,
+        partnerId,
+        'quarantined',
+        null,
+        `rate-limited: ${dependencies.throttle.bucket ?? 'inbound'} cap exceeded`,
+      );
       return;
     }
 

@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { autoresponseSuppressionReason, outboundMessageIdPattern, ownOutboundReason } from './loopPrevention';
+import {
+  autoresponseSuppressionReason,
+  outboundMessageIdPattern,
+  ownOutboundReason,
+  ticketCreationLoopReason,
+} from './loopPrevention';
 import type { NormalizedInboundEmail } from './types';
 
 function email(over: Partial<NormalizedInboundEmail>): NormalizedInboundEmail {
@@ -112,5 +117,56 @@ describe('ownOutboundReason (spec §8.5)', () => {
 
   it('returns null for ordinary inbound mail', () => {
     expect(ownOutboundReason(email({}), INBOUND_DOMAIN)).toBeNull();
+  });
+});
+
+describe('ticketCreationLoopReason', () => {
+  it('lets a normal human message through (null)', () => {
+    expect(ticketCreationLoopReason(email({}))).toBeNull();
+  });
+
+  it('suppresses Auto-Submitted: auto-replied (a loop reply)', () => {
+    expect(ticketCreationLoopReason(email({ autoSubmitted: 'auto-replied' }))).toBe('auto-replied');
+    expect(ticketCreationLoopReason(email({ autoSubmitted: 'Auto-Replied' }))).toBe('auto-replied');
+  });
+
+  it('does NOT suppress Auto-Submitted: auto-generated (device/copier notifications are real tickets)', () => {
+    // The load-bearing case: a copier/monitoring/backup email that MSPs want as a ticket.
+    expect(ticketCreationLoopReason(email({ autoSubmitted: 'auto-generated', from: 'no-reply@copier.example.com' }))).toBeNull();
+  });
+
+  it('suppresses a null Return-Path bounce (<>), but not an ordinary sender path', () => {
+    expect(ticketCreationLoopReason(email({ returnPath: '<>' }))).toBe('null-return-path');
+    expect(ticketCreationLoopReason(email({ returnPath: '  <>  ' }))).toBe('null-return-path');
+    expect(ticketCreationLoopReason(email({ returnPath: '' }))).toBe('null-return-path');
+    expect(ticketCreationLoopReason(email({ returnPath: '<bob@customer.com>' }))).toBeNull();
+    // Absent (undefined) is NOT a null return path.
+    expect(ticketCreationLoopReason(email({ returnPath: undefined }))).toBeNull();
+    expect(ticketCreationLoopReason(email({ returnPath: null }))).toBeNull();
+  });
+
+  it('suppresses X-Loop when present', () => {
+    expect(ticketCreationLoopReason(email({ xLoop: 'help@partner.example.com' }))).toBe('x-loop');
+    expect(ticketCreationLoopReason(email({ xLoop: '' }))).toBeNull();
+  });
+
+  it('suppresses X-Auto-Response-Suppress with a real token, ignores empty/unknown', () => {
+    expect(ticketCreationLoopReason(email({ autoResponseSuppress: 'All' }))).toBe('auto-response-suppress');
+    expect(ticketCreationLoopReason(email({ autoResponseSuppress: 'OOF, AutoReply' }))).toBe('auto-response-suppress');
+    expect(ticketCreationLoopReason(email({ autoResponseSuppress: 'DR RN NRN' }))).toBe('auto-response-suppress');
+    expect(ticketCreationLoopReason(email({ autoResponseSuppress: 'somethingelse' }))).toBeNull();
+    expect(ticketCreationLoopReason(email({ autoResponseSuppress: '' }))).toBeNull();
+  });
+
+  it('suppresses mailing-list mail (List-Id present)', () => {
+    expect(ticketCreationLoopReason(email({ listId: 'news.example.com' }))).toBe('list-mail');
+    expect(ticketCreationLoopReason(email({ listId: '' }))).toBeNull();
+  });
+
+  it('does NOT suppress on Precedence: bulk or system local-parts (those only gate the auto-reply)', () => {
+    // These stay ticket-creating so a device/notification sender still opens a ticket;
+    // only autoresponseSuppressionReason withholds the auto-REPLY for them.
+    expect(ticketCreationLoopReason(email({ precedence: 'bulk' }))).toBeNull();
+    expect(ticketCreationLoopReason(email({ from: 'no-reply@x.com' }))).toBeNull();
   });
 });

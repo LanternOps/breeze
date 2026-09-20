@@ -58,6 +58,26 @@ export interface NormalizedInboundEmail {
   autoSubmitted?: string; // for loop-prevention (used in PR3)
   precedence?: string;
   /**
+   * Loop/bounce signal headers (ingest-level loop suppression). Every provider
+   * that participates maps these explicitly, same as autoSubmitted/precedence.
+   *   - returnPath: the envelope Return-Path. An empty path — the literal `<>` —
+   *     marks a bounce / non-delivery notification, which must never become a
+   *     ticket or be replied to. Absent (undefined) is NOT a null return path.
+   *   - xLoop: RFC-informal X-Loop; presence indicates the sender is guarding
+   *     against a mail loop.
+   *   - autoResponseSuppress: Microsoft's X-Auto-Response-Suppress (values like
+   *     All, OOF, AutoReply, DR, RN, NRN) — the sender asks not to be auto-replied
+   *     to; used here as a loop signal for ticket creation too.
+   *   - listId: RFC 2919 List-Id — bulk/mailing-list mail, not a support request.
+   * NOTE: `Auto-Submitted: auto-generated` (a device/copier notification) is
+   * deliberately NOT a ticket-suppression signal — those are legitimate tickets.
+   * Only `auto-replied` is treated as a loop (see loopPrevention.ts).
+   */
+  returnPath?: string | null;
+  xLoop?: string;
+  autoResponseSuppress?: string;
+  listId?: string;
+  /**
    * The value of X-Breeze-Outbound, when the message carries it — i.e. this is
    * our OWN partner-lane mail coming back (spec §8.5).
    *

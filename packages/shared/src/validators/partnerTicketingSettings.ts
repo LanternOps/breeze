@@ -35,6 +35,19 @@ export const ticketingInboundSettingsSchema = z.object({
   dropUnverifiedSenders: z.boolean().optional(),
   autoresponseSubject: z.string().max(200).nullable().optional(),
   autoresponseBody: z.string().max(5000).nullable().optional(),
+  // Flood protection: per-hour ticket-creation caps enforced in the inbound
+  // worker (before the DB transaction — a Redis rate check cannot run inside
+  // the held context, #1105). Each is a sliding 1h window; 0 means "unlimited"
+  // (skip that window). Absent ⇒ the INBOUND_MAX_* env defaults apply. Over-cap
+  // mail is quarantined (review queue), never silently dropped.
+  maxTicketsPerSenderPerHour: z.number().int().min(0).max(10000).optional(),
+  maxTicketsPerDomainPerHour: z.number().int().min(0).max(50000).optional(),
+  maxTicketsPerPartnerPerHour: z.number().int().min(0).max(200000).optional(),
+  // Reply-to-client content mode. Default (false/absent) keeps the existing
+  // portal-notification email ("you have a new reply, sign in"). When true, a
+  // public tech reply emails the customer the actual comment text (threaded) —
+  // for MSPs that do not run the client portal.
+  fullMessageReply: z.boolean().optional(),
 });
 export type TicketingInboundSettings = z.infer<typeof ticketingInboundSettingsSchema>;
 

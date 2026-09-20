@@ -38,6 +38,56 @@ export function autoresponseSuppressionReason(
   return null;
 }
 
+// X-Auto-Response-Suppress tokens that mean "do not auto-reply to me" (Microsoft).
+// Presence of any of these — or the catch-all `all` — is treated as a loop signal.
+const SUPPRESS_TOKENS = new Set(['all', 'oof', 'autoreply', 'dr', 'rn', 'nrn']);
+
+/**
+ * Ingest-level LOOP/BOUNCE suppression (distinct from autoresponse suppression).
+ * Returns a reason when this message must NOT create or append to a ticket at
+ * all — because it is a mail loop or a bounce, not a support request — or null
+ * when it should flow through normally.
+ *
+ * Deliberately NARROW to avoid false positives against legitimate automated
+ * senders that MSPs want as tickets (copiers, monitoring, backup reports). Those
+ * arrive as `Auto-Submitted: auto-generated` from `no-reply@`-style addresses and
+ * must still create tickets. Only unambiguous loop/bounce signals suppress here:
+ *
+ *   - Auto-Submitted: auto-replied — an automatic REPLY to our mail (RFC 3834).
+ *     `auto-generated` (a device notification) is explicitly NOT suppressed.
+ *   - a null Return-Path (`<>`) — a bounce / non-delivery report.
+ *   - X-Loop present — the sender is guarding against a loop.
+ *   - X-Auto-Response-Suppress asking to suppress replies (All/OOF/AutoReply/…).
+ *   - List-Id present — bulk/mailing-list mail, not a support request.
+ *
+ * The broader set (Precedence: bulk, system local-parts, self-domain) stays in
+ * `autoresponseSuppressionReason`: it only withholds our auto-REPLY, while still
+ * letting the mail become a ticket — correct for device/notification senders.
+ */
+export function ticketCreationLoopReason(n: NormalizedInboundEmail): string | null {
+  const autoSubmitted = n.autoSubmitted?.trim().toLowerCase();
+  if (autoSubmitted === 'auto-replied') return 'auto-replied';
+
+  // A true null return path is the literal `<>` (optionally whitespace). Absent
+  // (undefined) is NOT a null path — many legit messages omit Return-Path at the
+  // API boundary. Only an explicit empty envelope sender marks a bounce.
+  if (n.returnPath != null) {
+    const rp = n.returnPath.trim();
+    if (rp === '<>' || rp === '') return 'null-return-path';
+  }
+
+  if (n.xLoop && n.xLoop.trim() !== '') return 'x-loop';
+
+  if (n.autoResponseSuppress) {
+    const tokens = n.autoResponseSuppress.toLowerCase().split(/[,\s]+/).filter(Boolean);
+    if (tokens.some((t) => SUPPRESS_TOKENS.has(t))) return 'auto-response-suppress';
+  }
+
+  if (n.listId && n.listId.trim() !== '') return 'list-mail';
+
+  return null;
+}
+
 /**
  * The Message-ID shapes `outboundThreading.ts` generates, as a matcher.
  *

@@ -310,6 +310,43 @@ export function m365SyncTickBatch(): number {
   return positiveIntEnv('M365_SYNC_TICK_BATCH', 200, 1, 5_000);
 }
 
+/**
+ * Like `positiveIntEnv` but 0 is a legal value (meaning "unlimited" for the
+ * inbound ticket-creation caps). Anything unparseable or negative falls back.
+ */
+function nonNegativeIntEnv(name: string, fallback: number, max: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || !/^\d+$/.test(raw.trim())) return fallback;
+  const parsed = Number.parseInt(raw.trim(), 10);
+  if (!Number.isFinite(parsed) || parsed < 0) return fallback;
+  return Math.min(parsed, max);
+}
+
+// Inbound email-to-ticket flood protection (per-hour sliding-window caps
+// enforced in the inbound worker). These are the DEFAULT floors; a partner may
+// override each via settings.ticketing.inbound.maxTicketsPer*PerHour. 0 anywhere
+// means "unlimited" (skip that window). Over-cap mail is quarantined, not dropped.
+/** Default per-sender ticket-creation cap per hour. */
+export function inboundMaxPerSenderPerHour(): number {
+  return nonNegativeIntEnv('INBOUND_MAX_PER_SENDER_PER_HOUR', 30, 10_000);
+}
+/** Default per-sender-domain ticket-creation cap per hour. */
+export function inboundMaxPerDomainPerHour(): number {
+  return nonNegativeIntEnv('INBOUND_MAX_PER_DOMAIN_PER_HOUR', 200, 50_000);
+}
+/** Default per-partner ticket-creation cap per hour. */
+export function inboundMaxPerPartnerPerHour(): number {
+  return nonNegativeIntEnv('INBOUND_MAX_PER_PARTNER_PER_HOUR', 1_000, 200_000);
+}
+/** Global BullMQ inbound-queue processing ceiling (jobs per second). */
+export function inboundQueueMaxPerSec(): number {
+  return positiveIntEnv('INBOUND_QUEUE_MAX_PER_SEC', 20, 1, 5_000);
+}
+/** Max messages a single mailbox sweep ingests before deferring to the next sweep. */
+export function inboundMaxPerSweep(): number {
+  return positiveIntEnv('INBOUND_MAX_PER_SWEEP', 200, 1, 10_000);
+}
+
 // Breeze AI for Office (Excel add-in / client AI). The Entra application
 // (client) ID of the multi-tenant add-in app registration. Empty = the whole
 // /client-ai surface is dark (exchange and admin routes return 404), mirroring
