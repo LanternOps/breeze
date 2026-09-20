@@ -13,6 +13,22 @@ export interface Embedder {
   embed(texts: string[], inputType: 'document' | 'query'): Promise<number[][]>;
 }
 
+/**
+ * #5557 — DELIBERATELY UNMETERED, and the reasoning is recorded here so the
+ * next audit does not have to re-derive it.
+ *
+ * Workspace ingest/search embeddings are a platform-key infrastructure cost,
+ * not tenant-attributable LLM spend: they are driven by document ingestion
+ * rather than by an operator's turn, they carry no per-organization budget to
+ * admit against, and the `ai_budget_reservations` fence exists to stop a capped
+ * TENANT from overspending its own cap. Reserving here would deny a tenant's
+ * technician chat because an unrelated background ingest held the cap.
+ *
+ * The exposure is therefore a platform cost-control question (rate limiting,
+ * already present above via `requestsPerMinute`), not a tenant-isolation or
+ * budget-bypass one. Metering it needs a platform/system budget that does not
+ * exist yet — tracked as a follow-up on #5557, not closed by it.
+ */
 export class VoyageEmbedder implements Embedder {
   private requestTimestamps: number[] = [];
 

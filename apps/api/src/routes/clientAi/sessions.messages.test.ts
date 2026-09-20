@@ -12,6 +12,7 @@ const {
   resolveToolResultMock, failPendingMock,
   applyDlpMock,
   resolveClientLlmConfigMock,
+  reserveAiBudgetMock, releaseUnusedAiBudgetReservationMock, FakeAiBudgetLockTimeoutError,
 } = vi.hoisted(() => ({
   CLIENT_USER_ID: 'beefbeef-1111-4222-8333-444455556666',
   ORG_ID: '0c0c0c0c-1111-4222-8333-444455556666',
@@ -37,6 +38,19 @@ const {
   failPendingMock: vi.fn(() => 0),
   applyDlpMock: vi.fn(),
   resolveClientLlmConfigMock: vi.fn(),
+  reserveAiBudgetMock: vi.fn(),
+  releaseUnusedAiBudgetReservationMock: vi.fn(
+    (_input: { orgId: string; reservationId: string }) => Promise.resolve({ kind: 'released' }),
+  ),
+  FakeAiBudgetLockTimeoutError: class FakeAiBudgetLockTimeoutError extends Error {},
+}));
+
+vi.mock('../../services/aiBudgetReservations', () => ({
+  reserveAiBudget: (...args: unknown[]) => reserveAiBudgetMock(...args),
+  releaseUnusedAiBudgetReservation: (input: { orgId: string; reservationId: string }) =>
+    releaseUnusedAiBudgetReservationMock(input),
+  isAiBudgetLockTimeout: (err: unknown) => err instanceof FakeAiBudgetLockTimeoutError,
+  AiBudgetLockTimeoutError: FakeAiBudgetLockTimeoutError,
 }));
 
 vi.mock('../../services/aiAgentSdk', () => ({
@@ -123,6 +137,11 @@ beforeEach(() => {
     configVersion: 2,
   });
   policyState.policy = { ...defaultClientAiPolicy(ORG_ID), enabled: true };
+  reserveAiBudgetMock.mockResolvedValue({
+    kind: 'reserved',
+    reservationId: 'res-default',
+    reservedCostCents: 250,
+  });
   dbSelectMock.mockImplementation(() => selectChain([SESSION_ROW]));
   dbInsertMock.mockImplementation(() => ({
     values: vi.fn(() => ({ returning: vi.fn(() => Promise.resolve([{ id: SESSION_ID }])) })),
@@ -224,11 +243,11 @@ describe('POST /client-ai/sessions/:id/messages', () => {
       expect.anything(),
       expect.anything(),
       expect.anything(),
-      undefined,
+      2.5, // #5557: derived from the reservation's reservedCostCents (250 / 100)
       expect.objectContaining({ source: 'partner', configId: 'config-1', configVersion: 2 }),
       expect.anything(),
       expect.anything(),
-      expect.anything(),
+      expect.objectContaining({ budgetReservationId: 'res-default' }),
     );
     expect(writeAuditEventMock).toHaveBeenCalledWith(
       expect.anything(),
@@ -402,5 +421,125 @@ describe('POST /client-ai/sessions/:id/messages', () => {
 
     await postMessage({ content: 'sum column B please' });
     expect(setSpy).toHaveBeenCalledWith(expect.objectContaining({ title: 'sum column B please' }));
+  });
+});
+
+describe('#5557 — atomic budget reservation on POST /client-ai/sessions/:id/messages', () => {
+  let activeSession: ReturnType<typeof makeActiveSession>;
+
+  beforeEach(() => {
+    passthroughDlp();
+    activeSession = makeActiveSession();
+    managerMock.getOrCreate.mockResolvedValue(activeSession);
+    managerMock.get.mockReturnValue(undefined);
+  });
+
+  it('reserves budget BEFORE dispatch — namespace/budget fields, and before getOrCreate is invoked', async () => {
+    reserveAiBudgetMock.mockResolvedValueOnce({
+      kind: 'reserved',
+      reservationId: 'res-order-1',
+      reservedCostCents: 500,
+    });
+
+    const res = await postMessage({ content: 'hi' });
+    expect(res.status).toBe(202);
+
+    expect(reserveAiBudgetMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        orgId: ORG_ID,
+        sessionId: SESSION_ID,
+        namespace: 'client',
+        clientBudget: {
+          dailyBudgetCents: policyState.policy.dailyBudgetCents,
+          monthlyBudgetCents: policyState.policy.monthlyBudgetCents,
+        },
+      }),
+    );
+
+    const reserveOrder = reserveAiBudgetMock.mock.invocationCallOrder[0]!;
+    const getOrCreateOrder = managerMock.getOrCreate.mock.invocationCallOrder[0]!;
+    expect(reserveOrder).toBeLessThan(getOrCreateOrder);
+  });
+
+  it('threads the reservation id and derived maxBudgetUsd into getOrCreate', async () => {
+    reserveAiBudgetMock.mockResolvedValueOnce({
+      kind: 'reserved',
+      reservationId: 'res-thread-1',
+      reservedCostCents: 375,
+    });
+
+    const res = await postMessage({ content: 'hi' });
+    expect(res.status).toBe(202);
+
+    expect(managerMock.getOrCreate).toHaveBeenCalledWith(
+      SESSION_ID,
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      3.75,
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({ budgetReservationId: 'res-thread-1' }),
+    );
+  });
+
+  it('a denied reservation returns 402 with the denial message and never calls getOrCreate', async () => {
+    reserveAiBudgetMock.mockResolvedValueOnce({
+      kind: 'denied',
+      reason: 'daily_cap',
+      message: 'Daily AI budget for your organization has been reached ($5.00).',
+    });
+
+    const res = await postMessage({ content: 'hi' });
+    expect(res.status).toBe(402);
+    expect(await res.json()).toEqual({
+      error: 'Daily AI budget for your organization has been reached ($5.00).',
+    });
+    expect(managerMock.getOrCreate).not.toHaveBeenCalled();
+  });
+
+  it('an AiBudgetLockTimeoutError from reserveAiBudget returns 503', async () => {
+    reserveAiBudgetMock.mockRejectedValueOnce(new FakeAiBudgetLockTimeoutError('lock timeout'));
+
+    const res = await postMessage({ content: 'hi' });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'ai_budget_lock_timeout' });
+    expect(managerMock.getOrCreate).not.toHaveBeenCalled();
+  });
+
+  it('409 concurrency path releases the reservation taken for the losing turn', async () => {
+    reserveAiBudgetMock.mockResolvedValueOnce({
+      kind: 'reserved',
+      reservationId: 'res-concurrency-loser',
+      reservedCostCents: 100,
+    });
+    managerMock.tryTransitionToProcessing.mockReturnValue(false);
+    // settleBlockedTurnForNewMessage mock (module-level) resolves
+    // 'not_blocked_on_approvals' by default — not 'concluded' — so the guard
+    // never re-tries tryTransitionToProcessing and the route must release.
+
+    const res = await postMessage({ content: 'hi' });
+    expect(res.status).toBe(409);
+
+    expect(releaseUnusedAiBudgetReservationMock).toHaveBeenCalledWith(
+      expect.objectContaining({ orgId: ORG_ID, reservationId: 'res-concurrency-loser' }),
+    );
+  });
+
+  it('a DLP-blocked prompt takes NO reservation — capacity is not burned before dispatch is possible', async () => {
+    applyDlpMock.mockResolvedValueOnce({
+      action: 'block',
+      blockReason: 'dlp_blocked:iban',
+      redactions: [{ rule: 'iban', count: 1, location: 'text' }],
+    });
+
+    const res = await postMessage({ content: 'acct DE89370400440532013000' });
+    expect(res.status).toBe(400);
+
+    expect(reserveAiBudgetMock).not.toHaveBeenCalled();
+    expect(releaseUnusedAiBudgetReservationMock).not.toHaveBeenCalled();
+    expect(managerMock.getOrCreate).not.toHaveBeenCalled();
   });
 });

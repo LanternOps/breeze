@@ -816,3 +816,101 @@ describe('durable AI budget reservations', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// #5557 — the /client-ai (Office add-in) namespace against real Postgres.
+//
+// The unit suite proves the arithmetic; only a real database proves the
+// SERIALIZATION, which is the whole point of the fence: the org row lock plus
+// the namespaced in-flight sum must let exactly one of two simultaneous add-in
+// turns through.
+// ---------------------------------------------------------------------------
+describe('client-namespace AI budget reservations (#5557)', () => {
+  const CLIENT_CAP = { dailyBudgetCents: 100, monthlyBudgetCents: 500 };
+
+  it('admits exactly one of two simultaneous add-in turns under the client sub-cap', async () => {
+    // Organization AI budget UNLIMITED on purpose: before #5557 nothing at all
+    // fenced this surface when the org itself was uncapped.
+    const org = await makeOrgWithBudget(null, null);
+
+    const reserve = (idempotencyKey: string) => withDbAccessContext(orgContext(org.id), () =>
+      reserveAiBudget({
+        orgId: org.id,
+        idempotencyKey,
+        billingSource: 'platform',
+        namespace: 'client',
+        clientBudget: CLIENT_CAP,
+        now: new Date('2026-09-06T12:00:00.000Z'),
+      }),
+    );
+
+    const results = await Promise.all([reserve('client-a'), reserve('client-b')]);
+    expect(results.filter((r) => r.kind === 'reserved')).toHaveLength(1);
+    const denied = results.find((r) => r.kind === 'denied');
+    expect(denied).toMatchObject({ reason: 'client_daily_budget_in_flight' });
+    expect(results.find((r) => r.kind === 'reserved')).toMatchObject({
+      reservedCostCents: 100,
+    });
+
+    const rows = await withDbAccessContext(orgContext(org.id), () =>
+      db.select({ namespace: aiBudgetReservations.namespace })
+        .from(aiBudgetReservations)
+        .where(eq(aiBudgetReservations.orgId, org.id)),
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.namespace).toBe('client');
+  });
+
+  it('keeps the two surfaces from starving each other: a client hold does not deny a technician turn', async () => {
+    const org = await makeOrgWithBudget(null, null);
+
+    const clientHold = await withDbAccessContext(orgContext(org.id), () =>
+      reserveAiBudget({
+        orgId: org.id,
+        idempotencyKey: 'client-hold',
+        billingSource: 'platform',
+        namespace: 'client',
+        clientBudget: CLIENT_CAP,
+      }),
+    );
+    expect(clientHold.kind).toBe('reserved');
+
+    // The organization cap is unlimited, so the technician surface is admitted
+    // regardless of the client sub-cap being fully held.
+    const technician = await withDbAccessContext(orgContext(org.id), () =>
+      reserveAiBudget({
+        orgId: org.id,
+        idempotencyKey: 'technician-turn',
+        billingSource: 'platform',
+      }),
+    );
+    expect(technician.kind).toBe('unlimited');
+  });
+
+  it('releasing a client hold returns the sub-cap to the next add-in turn', async () => {
+    const org = await makeOrgWithBudget(null, null);
+    const first = await withDbAccessContext(orgContext(org.id), () =>
+      reserveAiBudget({
+        orgId: org.id,
+        idempotencyKey: 'client-release-1',
+        billingSource: 'platform',
+        namespace: 'client',
+        clientBudget: CLIENT_CAP,
+      }),
+    );
+    if (first.kind !== 'reserved') throw new Error('expected a reserved client hold');
+
+    await releaseUnusedAiBudgetReservation({ orgId: org.id, reservationId: first.reservationId });
+
+    const second = await withDbAccessContext(orgContext(org.id), () =>
+      reserveAiBudget({
+        orgId: org.id,
+        idempotencyKey: 'client-release-2',
+        billingSource: 'platform',
+        namespace: 'client',
+        clientBudget: CLIENT_CAP,
+      }),
+    );
+    expect(second).toMatchObject({ kind: 'reserved', reservedCostCents: 100 });
+  });
+});

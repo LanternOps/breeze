@@ -78,6 +78,19 @@ vi.mock('../../services/clientAiUsage', () => ({
   getRemainingClientBudgetUsd: getRemainingBudgetMock,
 }));
 vi.mock('../../services/aiCostTracker', () => ({ checkBillingCredits: checkBillingCreditsMock }));
+// #5557: /messages now takes an atomic budget reservation before dispatch.
+// This suite is about the host guard, not budgeting, so admit unconditionally.
+vi.mock('../../services/aiBudgetReservations', () => ({
+  reserveAiBudget: vi.fn(async () => ({
+    kind: 'unlimited' as const,
+    reservationId: '99999999-9999-4999-8999-999999999999',
+    dailyPeriodKey: '2026-09-10',
+    monthlyPeriodKey: '2026-09',
+    status: 'active' as const,
+  })),
+  releaseUnusedAiBudgetReservation: vi.fn(async () => undefined),
+  isAiBudgetLockTimeout: vi.fn(() => false),
+}));
 vi.mock('../../services/rate-limit', () => ({ rateLimiter: rateLimiterMock }));
 vi.mock('../../services/redis', () => ({ getRedis: vi.fn(() => ({}) as never) }));
 vi.mock('../../services/clientAiToolBridge', () => ({

@@ -836,6 +836,24 @@ export class StreamingSessionManager {
           : refreshedAuthWithOrigin;
         reusable.auditSnapshot = snapshot;
         reusable.allowedTools = allowedTools;
+        // #5557: attach THIS turn's budget reservation to a warm session.
+        // `budgetReservationId` was only ever set at session creation
+        // (below), so from the second message onward on an in-memory session
+        // the reservation the route had just taken never reached the settle
+        // path: the turn's spend was recorded unsettled and the hold — which
+        // is the org's ENTIRE remaining cap — sat until the 30-minute sweep,
+        // locking the tenant out of its own budget.
+        //
+        // Assign only when the slot is free. The route's concurrency guard
+        // (`tryTransitionToProcessing`) runs AFTER this call, so two callers
+        // can both be here with `state === 'idle'`; overwriting would hand the
+        // winning turn the loser's reservation, which the loser then releases
+        // on its 409 path while it is in use. Leaving an occupied slot alone
+        // makes the loser's own reservation the unused one it correctly
+        // releases.
+        if (options?.budgetReservationId && reusable.budgetReservationId === undefined) {
+          reusable.budgetReservationId = options.budgetReservationId;
+        }
         // Re-resolve the approval mode so a settings change applies to the NEXT
         // message rather than only to a brand-new in-memory session (#5593).
         // Skipped while a turn is in flight: the route answers a concurrent

@@ -11,10 +11,30 @@ export type { AiBillingSource } from './aiCostTracker';
 
 export type AiBudgetReservationStatus =
   | 'active' | 'settled' | 'indeterminate' | 'released' | 'expired';
+/**
+ * Which cap a reservation is admitted against. One ledger, two surfaces
+ * (#5557): `technician` is the operator-facing AI (chat, helper, script
+ * builder, agent runs); `client` is the Office add-in end-user surface, which
+ * carries an ADDITIONAL per-org sub-cap from `client_ai_org_policies` on top of
+ * the organization's AI budget.
+ *
+ * Settled spend is shared — a client turn already writes `ai_cost_usage`
+ * through `recordUsageFromSdkResult` — so the organization cap is GLOBAL and
+ * its held-sum predicates stay deliberately cross-namespace. The namespace only
+ * selects the extra client sub-cap and the holds that count against it. Making
+ * the org cap namespace-filtered would let client spend settle into a cap its
+ * own holds never counted toward.
+ */
+export type AiBudgetNamespace = 'technician' | 'client';
+
 export type AiBudgetDenialReason =
   | 'ai_disabled'
   | 'daily_budget'
   | 'monthly_budget'
+  | 'client_daily_budget'
+  | 'client_monthly_budget'
+  | 'client_daily_budget_in_flight'
+  | 'client_monthly_budget_in_flight'
   /**
    * The cap is not spent — it is held by another dispatch that has not settled
    * yet. A reservation takes the WHOLE remaining cap (see `reserveAiBudget`),
@@ -68,11 +88,21 @@ export function isAiBudgetLockTimeout(error: unknown): error is AiBudgetLockTime
   return error instanceof AiBudgetLockTimeoutError;
 }
 
+/** The client-AI sub-cap, read from `client_ai_org_policies`. null = unlimited. */
+export interface ClientAiBudgetCaps {
+  dailyBudgetCents: number | null;
+  monthlyBudgetCents: number | null;
+}
+
 export interface ReserveAiBudgetInput {
   orgId: string;
   idempotencyKey: string;
   billingSource: AiBillingSource;
   sessionId?: string | null;
+  /** Defaults to 'technician' so every pre-#5557 call site keeps its behaviour. */
+  namespace?: AiBudgetNamespace;
+  /** REQUIRED when namespace is 'client'; rejected otherwise. */
+  clientBudget?: ClientAiBudgetCaps;
   now?: Date;
 }
 
@@ -118,6 +148,7 @@ type ReservationRow = Record<string, unknown> & {
   idempotency_key: string;
   session_id: string | null;
   billing_source: AiBillingSource;
+  namespace: AiBudgetNamespace;
   daily_period_key: string;
   monthly_period_key: string;
   uncapped: boolean;
@@ -133,6 +164,10 @@ type UsageAndReservationsRow = Record<string, unknown> & {
   monthly_usage: string | number;
   daily_reserved: string | number;
   monthly_reserved: string | number;
+  client_daily_usage: string | number;
+  client_monthly_usage: string | number;
+  client_daily_reserved: string | number;
+  client_monthly_reserved: string | number;
 };
 
 export interface AiBudgetOutputCapInput {
@@ -216,6 +251,15 @@ function validateIdentity(input: ReserveAiBudgetInput): void {
   }
   if (input.idempotencyKey.length < 1 || input.idempotencyKey.length > 200) {
     throw new Error('idempotencyKey must contain 1-200 characters');
+  }
+  // Fail loudly rather than silently admitting a client turn against the
+  // organization cap alone — that is exactly the #5557 bypass this closes.
+  const namespace = input.namespace ?? 'technician';
+  if (namespace === 'client' && !input.clientBudget) {
+    throw new Error('clientBudget is required for a client-namespace reservation');
+  }
+  if (namespace !== 'client' && input.clientBudget) {
+    throw new Error('clientBudget is only meaningful for a client-namespace reservation');
   }
 }
 
@@ -302,6 +346,24 @@ function denial(reason: AiBudgetDenialReason, capCents?: number): ReserveAiBudge
       message: "Another AI request is in flight against this organization's budget; retry shortly",
     };
   }
+  if (reason === 'client_daily_budget_in_flight' || reason === 'client_monthly_budget_in_flight') {
+    return {
+      kind: 'denied',
+      reason,
+      message: 'Another AI request is in flight against your organization\u2019s budget; retry shortly',
+    };
+  }
+  if (reason === 'client_daily_budget' || reason === 'client_monthly_budget') {
+    const clientPeriod = reason === 'client_daily_budget' ? 'Daily' : 'Monthly';
+    return {
+      kind: 'denied',
+      reason,
+      // Wording matches the pre-#5557 checkClientBudget strings the add-in
+      // already surfaces: this is an end user, not a technician.
+      message: `${clientPeriod} AI budget for your organization has been reached `
+        + `($${((capCents ?? 0) / 100).toFixed(2)}). Contact your IT provider to raise it.`,
+    };
+  }
   const period = reason === 'daily_budget' ? 'Daily' : 'Monthly';
   return {
     kind: 'denied',
@@ -343,6 +405,8 @@ export async function reserveAiBudget(input: ReserveAiBudgetInput): Promise<Rese
   const now = input.now ?? new Date();
   const keys = periodKeys(now);
   const sessionId = input.sessionId ?? null;
+  const namespace: AiBudgetNamespace = input.namespace ?? 'technician';
+  const clientCaps = namespace === 'client' ? input.clientBudget! : null;
 
   // ONE CLOCK, and it is Postgres's. `now` (injectable, used above for the
   // period keys) is the API host's wall clock; `expires_at`, the sweep's
@@ -356,7 +420,7 @@ export async function reserveAiBudget(input: ReserveAiBudgetInput): Promise<Rese
     await lockOrganizationRow(input.orgId, 'admission', AI_BUDGET_LOCK_TIMEOUT_MS);
 
     const existing = rows<ReservationRow>(await db.execute<ReservationRow>(sql`
-      SELECT id, org_id, idempotency_key, session_id, billing_source,
+      SELECT id, org_id, idempotency_key, session_id, billing_source, namespace,
              daily_period_key, monthly_period_key, uncapped,
              reserved_cost_cents, actual_cost_cents, status, settlement_fingerprint,
              expires_at
@@ -365,7 +429,9 @@ export async function reserveAiBudget(input: ReserveAiBudgetInput): Promise<Rese
       FOR UPDATE
     `))[0];
     if (existing) {
-      if (existing.billing_source !== input.billingSource || existing.session_id !== sessionId) {
+      if (existing.billing_source !== input.billingSource
+        || existing.session_id !== sessionId
+        || existing.namespace !== namespace) {
         throw new Error('AI budget reservation idempotency key conflicts with another dispatch');
       }
       return existingResult(existing);
@@ -384,7 +450,10 @@ export async function reserveAiBudget(input: ReserveAiBudgetInput): Promise<Rese
     const budget = await getEffectiveAiBudget(input.orgId);
     if (!budget.enabled) return denial('ai_disabled');
 
-    const uncapped = budget.dailyBudgetCents === null && budget.monthlyBudgetCents === null;
+    const orgUncapped = budget.dailyBudgetCents === null && budget.monthlyBudgetCents === null;
+    const clientUncapped = !clientCaps
+      || (clientCaps.dailyBudgetCents === null && clientCaps.monthlyBudgetCents === null);
+    const uncapped = orgUncapped && clientUncapped;
     let reservedCostCents = 0;
     if (!uncapped) {
       // B3: the reserved sums are TIME-BOUNDED. A row whose window has closed no
@@ -409,7 +478,29 @@ export async function reserveAiBudget(input: ReserveAiBudgetInput): Promise<Rese
                     WHERE org_id = ${input.orgId}::uuid
                       AND monthly_period_key = ${keys.monthly}
                       AND status IN ('active', 'indeterminate')
-                      AND expires_at > now()), 0)::text AS monthly_reserved
+                      AND expires_at > now()), 0)::text AS monthly_reserved,
+          -- #5557: the client sub-cap. Settled client spend is summed across
+          -- every portal user in the org (client_ai_usage is per-user), and the
+          -- in-flight side counts ONLY client-namespace holds — a technician
+          -- hold must not close the add-in surface.
+          COALESCE((SELECT sum(total_cost_cents::numeric) FROM client_ai_usage
+                    WHERE org_id = ${input.orgId}::uuid AND period = 'daily'
+                      AND period_key = ${keys.daily}), 0)::text AS client_daily_usage,
+          COALESCE((SELECT sum(total_cost_cents::numeric) FROM client_ai_usage
+                    WHERE org_id = ${input.orgId}::uuid AND period = 'monthly'
+                      AND period_key = ${keys.monthly}), 0)::text AS client_monthly_usage,
+          COALESCE((SELECT sum(reserved_cost_cents) FROM ai_budget_reservations
+                    WHERE org_id = ${input.orgId}::uuid
+                      AND namespace = 'client'
+                      AND daily_period_key = ${keys.daily}
+                      AND status IN ('active', 'indeterminate')
+                      AND expires_at > now()), 0)::text AS client_daily_reserved,
+          COALESCE((SELECT sum(reserved_cost_cents) FROM ai_budget_reservations
+                    WHERE org_id = ${input.orgId}::uuid
+                      AND namespace = 'client'
+                      AND monthly_period_key = ${keys.monthly}
+                      AND status IN ('active', 'indeterminate')
+                      AND expires_at > now()), 0)::text AS client_monthly_reserved
       `))[0];
       if (!usage) throw new Error('Failed to read AI budget usage');
 
@@ -442,20 +533,54 @@ export async function reserveAiBudget(input: ReserveAiBudgetInput): Promise<Rese
       // Load-bearing: the TIGHTER of the two caps. Using dailyRemaining alone
       // lets a large daily allowance overrun a small monthly one.
       reservedCostCents = Math.min(dailyRemaining, monthlyRemaining);
+
+      // #5557: the client sub-cap narrows further, never widens. An org with no
+      // AI budget at all still gets an atomic fence here whenever the add-in
+      // policy carries one.
+      if (clientCaps && !clientUncapped) {
+        const clientDailyUsed = Math.max(0, Number(usage.client_daily_usage));
+        const clientMonthlyUsed = Math.max(0, Number(usage.client_monthly_usage));
+        const clientDailyHeld = Math.max(0, Number(usage.client_daily_reserved));
+        const clientMonthlyHeld = Math.max(0, Number(usage.client_monthly_reserved));
+        const clientDailyRemaining = clientCaps.dailyBudgetCents === null
+          ? Number.POSITIVE_INFINITY
+          : clientCaps.dailyBudgetCents - clientDailyUsed - clientDailyHeld;
+        const clientMonthlyRemaining = clientCaps.monthlyBudgetCents === null
+          ? Number.POSITIVE_INFINITY
+          : clientCaps.monthlyBudgetCents - clientMonthlyUsed - clientMonthlyHeld;
+        if (clientDailyRemaining <= 0) {
+          const cap = clientCaps.dailyBudgetCents ?? 0;
+          return clientDailyHeld > 0 && cap - clientDailyUsed > 0
+            ? denial('client_daily_budget_in_flight')
+            : denial('client_daily_budget', cap);
+        }
+        if (clientMonthlyRemaining <= 0) {
+          const cap = clientCaps.monthlyBudgetCents ?? 0;
+          return clientMonthlyHeld > 0 && cap - clientMonthlyUsed > 0
+            ? denial('client_monthly_budget_in_flight')
+            : denial('client_monthly_budget', cap);
+        }
+        reservedCostCents = Math.min(
+          reservedCostCents,
+          clientDailyRemaining,
+          clientMonthlyRemaining,
+        );
+      }
     }
 
     const inserted = rows<ReservationRow>(await db.execute<ReservationRow>(sql`
       INSERT INTO ai_budget_reservations (
-        org_id, idempotency_key, session_id, billing_source,
+        org_id, idempotency_key, session_id, billing_source, namespace,
         daily_period_key, monthly_period_key, uncapped, reserved_cost_cents,
         expires_at
       ) VALUES (
         ${input.orgId}::uuid, ${input.idempotencyKey}, ${sessionId}::uuid, ${input.billingSource},
+        ${namespace},
         ${keys.daily}, ${keys.monthly}, ${uncapped},
         ${moneyString(reservedCostCents, 'reservedCostCents')}::numeric,
         now() + make_interval(secs => ${activeTtlSeconds})
       )
-      RETURNING id, org_id, idempotency_key, session_id, billing_source,
+      RETURNING id, org_id, idempotency_key, session_id, billing_source, namespace,
                 daily_period_key, monthly_period_key, uncapped,
                 reserved_cost_cents, actual_cost_cents, status, settlement_fingerprint,
                 expires_at
@@ -496,7 +621,7 @@ export async function settleAiBudgetReservation(
     await lockOrganizationRow(input.orgId, 'settlement', AI_BUDGET_SETTLEMENT_LOCK_TIMEOUT_MS);
 
     const reservation = rows<ReservationRow>(await db.execute<ReservationRow>(sql`
-      SELECT id, org_id, idempotency_key, session_id, billing_source,
+      SELECT id, org_id, idempotency_key, session_id, billing_source, namespace,
              daily_period_key, monthly_period_key, uncapped,
              reserved_cost_cents, actual_cost_cents, status, settlement_fingerprint,
              expires_at
@@ -651,7 +776,7 @@ export async function markAiBudgetReservationIndeterminate(input: {
   return inReservationTransaction('aiBudgetReservations.indeterminate', async () => {
     await lockOrganizationRow(input.orgId, 'indeterminate marking', AI_BUDGET_SETTLEMENT_LOCK_TIMEOUT_MS);
     const reservation = rows<ReservationRow>(await db.execute<ReservationRow>(sql`
-      SELECT id, org_id, idempotency_key, session_id, billing_source,
+      SELECT id, org_id, idempotency_key, session_id, billing_source, namespace,
              daily_period_key, monthly_period_key, uncapped,
              reserved_cost_cents, actual_cost_cents, status, settlement_fingerprint,
              expires_at
@@ -691,7 +816,7 @@ export async function releaseUnusedAiBudgetReservation(input: {
   return inReservationTransaction('aiBudgetReservations.releaseUnused', async () => {
     await lockOrganizationRow(input.orgId, 'release', AI_BUDGET_SETTLEMENT_LOCK_TIMEOUT_MS);
     const reservation = rows<ReservationRow>(await db.execute<ReservationRow>(sql`
-      SELECT id, org_id, idempotency_key, session_id, billing_source,
+      SELECT id, org_id, idempotency_key, session_id, billing_source, namespace,
              daily_period_key, monthly_period_key, uncapped,
              reserved_cost_cents, actual_cost_cents, status, settlement_fingerprint,
              expires_at
