@@ -55,6 +55,7 @@
       "activity": "Aktivität"
     },
     "fields": {
+    "match": "Bedingung",
       "name": "Name",
       "description": "Beschreibung",
       "kind": "Art",
@@ -141,6 +142,7 @@
     }
   },
   "kinds": {
+    "composite": "Kombiniert (alle oder eine von mehreren)",
     "cpu": "CPU-Auslastung",
     "memory": "Arbeitsspeicherauslastung",
     "disk": "Festplattennutzung",

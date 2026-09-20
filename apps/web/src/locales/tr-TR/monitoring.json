@@ -55,6 +55,7 @@
       "activity": "Etkinlik"
     },
     "fields": {
+    "match": "Eşleşme",
       "name": "Ad",
       "description": "Açıklama",
       "kind": "Tür",
@@ -141,6 +142,7 @@
     }
   },
   "kinds": {
+    "composite": "Bileşik (birkaç koşulun tümü veya herhangi biri)",
     "cpu": "CPU Kullanımı",
     "memory": "Bellek Kullanımı",
     "disk": "Disk Kullanımı",

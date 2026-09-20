@@ -235,6 +235,13 @@ export const MONITOR_KIND_FIELDS: Record<MonitorKind, readonly KindField[]> = {
       max: 20,
     },
   ],
+  // W05c1: the composite kind exists in the shared enum so the API can compile
+  // it; W05c2 supplies the children editor and response controls.
+  // Keep the picker exhaustive; do not add a composite exclusion.
+  composite: [
+    { key: 'match', labelKey: 'monitoring:fields.match', kind: 'select', options: ['all', 'any'] },
+  ],
+
 };
 
 /**
@@ -283,5 +290,14 @@ export function defaultConditionFor(kind: MonitorKind): Record<string, unknown> 
       return { scriptId: '00000000-0000-0000-0000-000000000000', intervalMinutes: 60, timeoutSeconds: 300, breachOnNonZeroExit: true };
     case 'network_check':
       return { checkType: 'icmp_ping', target: '8.8.8.8', pollingIntervalSeconds: 60, timeoutSeconds: 5, consecutiveFailures: 2 };
+    case 'composite':
+      return {
+        match: 'all',
+        children: [
+          { kind: 'cpu', condition: { operator: 'gt', value: 90, durationMinutes: 5 } },
+          { kind: 'memory', condition: { operator: 'gt', value: 90, durationMinutes: 5 } },
+        ],
+      };
+
   }
 }

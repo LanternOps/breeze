@@ -55,6 +55,7 @@
       "activity": "Actividad"
     },
     "fields": {
+    "match": "Coincidencia",
       "name": "Nombre",
       "description": "Descripción",
       "kind": "Tipo",
@@ -141,6 +142,7 @@
     }
   },
   "kinds": {
+    "composite": "Compuesto (todas o alguna de varias)",
     "cpu": "Uso de CPU",
     "memory": "Uso de memoria",
     "disk": "Uso de disco",

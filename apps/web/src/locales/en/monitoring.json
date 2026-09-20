@@ -55,6 +55,7 @@
       "activity": "Activity"
     },
     "fields": {
+    "match": "Match",
       "name": "Name",
       "description": "Description",
       "kind": "Kind",
@@ -141,6 +142,7 @@
     }
   },
   "kinds": {
+    "composite": "Composite (all or any of several)",
     "cpu": "CPU usage",
     "memory": "Memory usage",
     "disk": "Disk usage",

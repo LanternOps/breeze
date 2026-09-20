@@ -52,6 +52,8 @@ export const monitorKindEnum = pgEnum('monitor_kind', [
   'backup_continuity',
   'script',
   'network_check',
+  // W05c1 — 2026-10-23-103000-monitor-kind-composite.sql
+  'composite',
 ]);
 
 export const monitorDefinitions = pgTable(

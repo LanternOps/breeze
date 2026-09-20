@@ -55,6 +55,7 @@
       "activity": "Attività"
     },
     "fields": {
+    "match": "Corrispondenza",
       "name": "Nome",
       "description": "Descrizione",
       "kind": "Tipo",
@@ -141,6 +142,7 @@
     }
   },
   "kinds": {
+    "composite": "Composito (tutte o una di più condizioni)",
     "cpu": "Utilizzo CPU",
     "memory": "Utilizzo memoria",
     "disk": "Utilizzo disco",
