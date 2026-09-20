@@ -222,14 +222,105 @@ func applyServiceValidation(result *ValidationResult, serviceUnits []string, ser
 func checkServicesLinux(units []string) (bool, []string) {
 	var inactive []string
 	for _, unit := range units {
+		if isTemplateUnit(unit) {
+			// A template unit (getty@.service) is not itself startable —
+			// only its instances are — so `is-active` on it always reports
+			// inactive. Probing one can never signal a real regression, it
+			// only buries the ones that can (#5479).
+			slog.Debug("bmr: skipping template unit in service probe", "unit", unit)
+			continue
+		}
 		out, err := runServiceProbeCommand("systemctl", "is-active", unit)
 		state := strings.TrimSpace(string(out))
-		if err != nil || state != "active" {
-			inactive = append(inactive, unit)
-			slog.Warn("bmr: service not active", "unit", unit, "state", state)
+		if err == nil && state == "active" {
+			continue
 		}
+		if healthy, reason := inactiveUnitIsHealthy(unit); healthy {
+			slog.Debug("bmr: unit not active but healthy", "unit", unit, "state", state, "reason", reason)
+			continue
+		}
+		inactive = append(inactive, unit)
+		slog.Warn("bmr: service not active", "unit", unit, "state", state)
 	}
 	return len(inactive) == 0, inactive
+}
+
+// isTemplateUnit reports whether name is a systemd TEMPLATE unit — an
+// instance-less name whose prefix ends in "@", e.g. "getty@.service" or
+// "user@.service". `systemctl list-unit-files` lists these alongside
+// ordinary units, so they reach the probe through
+// parseSystemdEnabledUnits, but they describe how to build instances
+// rather than naming a runnable service. An actual instance
+// ("getty@tty1.service") has text between the "@" and the ".", so it is
+// NOT a template and is still probed normally.
+func isTemplateUnit(name string) bool {
+	base := name
+	if idx := strings.LastIndex(base, "."); idx >= 0 {
+		base = base[:idx]
+	}
+	return strings.HasSuffix(base, "@")
+}
+
+// unitProbeProperties are the systemd properties inactiveUnitIsHealthy
+// inspects for a unit that `is-active` did not report as "active". Kept as
+// one ordered slice so the command and the parse stay in step.
+var unitProbeProperties = []string{"Type", "ActiveState", "SubState", "ConditionResult"}
+
+// inactiveUnitIsHealthy decides whether a unit that `systemctl is-active`
+// did not call "active" is nonetheless in an expected state for a healthy
+// system, and returns a short reason when it is (#5479). Two cases:
+//
+//   - a oneshot unit that ran to completion: `Type=oneshot` with
+//     ActiveState inactive/active and SubState anything but "failed".
+//     Without RemainAfterExit, systemd drops such a unit back to
+//     "inactive" the moment its command exits successfully — the normal
+//     resting state of e2scrub_reap.service, dmesg.service,
+//     grub-common.service and friends.
+//   - a unit systemd deliberately skipped because its Condition*= checks
+//     did not hold (`ConditionResult=no`) — e.g. a unit gated on hardware
+//     or a file the recovered machine does not have.
+//
+// Anything else — a failed unit, an activating/deactivating one, or a
+// `systemctl show` that errors out — stays a genuine finding. A unit that
+// no longer exists at all (LoadState=not-found) also stays a finding: the
+// snapshot said it was enabled, so its absence after a restore is exactly
+// the kind of regression this probe exists to catch.
+func inactiveUnitIsHealthy(unit string) (bool, string) {
+	args := []string{"show"}
+	for _, prop := range unitProbeProperties {
+		args = append(args, "--property="+prop)
+	}
+	args = append(args, unit)
+
+	out, err := runServiceProbeCommand("systemctl", args...)
+	if err != nil {
+		return false, ""
+	}
+	props := parseSystemctlShow(out)
+	if props["ConditionResult"] == "no" {
+		return true, "condition not met"
+	}
+	if props["Type"] == "oneshot" && props["SubState"] != "failed" &&
+		(props["ActiveState"] == "inactive" || props["ActiveState"] == "active") {
+		return true, "oneshot completed"
+	}
+	return false, ""
+}
+
+// parseSystemctlShow turns `systemctl show --property=X ...` output
+// (KEY=VALUE, one per line) into a map. Values may legitimately contain
+// "=", so only the FIRST "=" separates key from value; lines without one
+// are ignored.
+func parseSystemctlShow(out []byte) map[string]string {
+	props := make(map[string]string)
+	for _, line := range strings.Split(string(out), "\n") {
+		key, value, found := strings.Cut(strings.TrimSpace(line), "=")
+		if !found || key == "" {
+			continue
+		}
+		props[key] = value
+	}
+	return props
 }
 
 func checkServicesWindows() (bool, []string) {

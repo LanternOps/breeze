@@ -1103,3 +1103,97 @@ func TestApplyArtifactMetadata_LchownRunsBeforeChmod(t *testing.T) {
 		t.Fatalf("call order = %v, want [lchown chmod] (chown must run before chmod: chown clears setuid/setgid on Linux)", order)
 	}
 }
+
+// TestRunRecoveryContext_VerificationFailure_SetsTerminalError is the #5479
+// regression: a system-state artifact that fails integrity verification
+// used to leave RecoveryResult.Error EMPTY, putting the reason only in
+// Warnings — so the server (which persists result.error onto the restore
+// job) and the console could say nothing beyond "failed". The first
+// verification failure must now be promoted to a terminal error naming the
+// artifact and the mismatch, while staying in Warnings as before.
+func TestRunRecoveryContext_VerificationFailure_SetsTerminalError(t *testing.T) {
+	baseDir := t.TempDir()
+	provider := providers.NewLocalProvider(baseDir)
+	snapshotID := "snap-5479-terminal-error"
+	buildOrdinaryManifestFixture(t, provider, snapshotID)
+
+	content := []byte("truncated state artifact")
+	uploadSystemStateArtifact(t, provider, snapshotID, "config/resolv.txt", content)
+	uploadSystemStateManifest(t, provider, snapshotID, systemstate.SystemStateManifest{
+		SchemaVersion: 1,
+		Artifacts: []systemstate.Artifact{
+			// SizeBytes deliberately disagrees with what was uploaded, the
+			// shape observed in the field (D15 tamper cell).
+			{Name: ".resolv.conf.systemd-resolved.bak", Category: "config", Path: "config/resolv.txt", SizeBytes: int64(len(content)) + 759},
+		},
+	})
+
+	useFakeRestorer(t, &fakeStateRestorer{})
+
+	result, err := RunRecoveryContext(context.Background(), RecoveryConfig{SnapshotID: snapshotID, ExpectSystemState: true}, provider)
+	if err != nil {
+		t.Fatalf("RunRecoveryContext failed: %v", err)
+	}
+	if result.StateApplied {
+		t.Fatal("expected StateApplied=false on a size mismatch")
+	}
+	if result.Error == "" {
+		t.Fatalf("expected a terminal error naming the verification failure, got none; warnings: %v", result.Warnings)
+	}
+	if !strings.Contains(result.Error, ".resolv.conf.systemd-resolved.bak") ||
+		!strings.Contains(result.Error, "size mismatch") {
+		t.Fatalf("error = %q, want it to name the artifact and the size mismatch", result.Error)
+	}
+	var warned bool
+	for _, w := range result.Warnings {
+		if strings.Contains(w, "failed verification, discarding") {
+			warned = true
+		}
+	}
+	if !warned {
+		t.Fatalf("the per-artifact warning must be preserved, warnings: %v", result.Warnings)
+	}
+}
+
+// TestAppendRecoveryError_KeepsFirstReasonFirst proves the error
+// accumulator keeps the earliest (most causal) reason at the head instead
+// of letting a later phase overwrite it (#5479).
+func TestAppendRecoveryError_KeepsFirstReasonFirst(t *testing.T) {
+	result := &RecoveryResult{}
+	appendRecoveryError(result, "")
+	if result.Error != "" {
+		t.Fatalf("empty reason must be ignored, got %q", result.Error)
+	}
+	appendRecoveryError(result, "system state not applied: artifact x failed verification")
+	appendRecoveryError(result, "file restore errors: boom")
+	want := "system state not applied: artifact x failed verification; file restore errors: boom"
+	if result.Error != want {
+		t.Fatalf("error = %q, want %q", result.Error, want)
+	}
+}
+
+// TestRunRecoveryContext_NotCompleted_NeverHasEmptyError is the general
+// #5479 invariant behind the specific fixes: any run whose status is not
+// "completed" must carry SOME terminal error, because that string is all
+// the server persists and all the console can show. Here system state was
+// expected but no manifest exists, which fails validation with a named
+// check and leaves the run "partial".
+func TestRunRecoveryContext_NotCompleted_NeverHasEmptyError(t *testing.T) {
+	baseDir := t.TempDir()
+	provider := providers.NewLocalProvider(baseDir)
+	snapshotID := "snap-5479-no-empty-error"
+	buildOrdinaryManifestFixture(t, provider, snapshotID)
+
+	useFakeRestorer(t, &fakeStateRestorer{})
+
+	result, err := RunRecoveryContext(context.Background(), RecoveryConfig{SnapshotID: snapshotID, ExpectSystemState: true}, provider)
+	if err != nil {
+		t.Fatalf("RunRecoveryContext failed: %v", err)
+	}
+	if result.Status == "completed" {
+		t.Fatal("fixture should not reach completed")
+	}
+	if result.Error == "" {
+		t.Fatalf("status %q must carry a terminal error; warnings: %v", result.Status, result.Warnings)
+	}
+}
