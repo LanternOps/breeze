@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../../stores/auth';
 import { ActionError, runAction } from '@/lib/runAction';
 import { showToast } from '../../shared/Toast';
-import { conversionPaths, type ConversionLedgerEntry, type LedgerPage } from './conversionApi';
+import { conversionPaths, fetchLedgerPage, type ConversionLedgerEntry } from './conversionApi';
 export default function ConversionLedger({ orgId, policyId, revision = 0, onChanged }: {
   orgId?: string; policyId?: string; revision?: number; onChanged?: () => void;
 }) {
@@ -18,11 +18,10 @@ export default function ConversionLedger({ orgId, policyId, revision = 0, onChan
     const current = ++generation.current;
     setLoading(true); setError(false);
     try {
-      const response = await fetchWithAuth(conversionPaths.ledger({ orgId, policyId, cursor: next, limit: 25 }));
-      if (!response.ok) throw new Error('ledger_read_failed');
-      const page: LedgerPage = await response.json();
+      const page = await fetchLedgerPage({ orgId, policyId, cursor: next, limit: 25 });
       if (current !== generation.current) return;
-      setRows((old) => next ? [...old, ...page.items] : page.items); setCursor(page.nextCursor);
+      const items = page.items ?? [];
+      setRows((old) => next ? [...old, ...items] : items); setCursor(page.nextCursor ?? null);
     } catch { if (current === generation.current) setError(true); }
     finally { if (current === generation.current) setLoading(false); }
   }, [orgId, policyId]);

@@ -51,6 +51,12 @@ const DIRECT_READ_ALLOWLIST = new Set([
   'services/monitors/conversion/loadSources.ts',
   'services/monitors/conversion/previewScope.ts',
 
+  // #6371 W05c2 — the hosted-sweep backlog counts UNRETIRED legacy rows per
+  // partner in one raw aggregate. It joins the authored links because that is
+  // where a legacy row physically hangs; the effective view would fold a
+  // parent's link into every child policy and count the same rows repeatedly.
+  'services/monitors/conversion/partnerBacklog.ts',
+
   // Authored link CRUD + listFeatureLinks (the editor's own-links view). This
   // file's own effective-config resolver imports the view instead.
   'services/configurationPolicy.ts',

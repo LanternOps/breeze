@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { zValidator } from '../../lib/validation';
 import { requireMfa } from '../../middleware/auth';
 import type { AuthContext } from '../../middleware/auth';
-import { runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { withSystemDbAccessContext } from '../../db';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { createSystemAuthContext } from '../../services/featureConfigResolver';
 import { convertPartnerLegacy, previewPartnerConversion, ConversionError, ConversionPrerequisiteMissingError } from '../../services/monitors/conversion';
@@ -56,17 +56,19 @@ adminMonitorConversionRoutes.get('/partners', async (c) => {
 
 adminMonitorConversionRoutes.post('/partners/:partnerId/preview', requireMfa(), zValidator('param', partnerParam), async (c) => {
   const { partnerId } = c.req.valid('param');
-  const data = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
-    previewPartnerConversion(partnerId, adminAuthForPartner(c.get('auth') as AuthContext, partnerId))));
+  // Self-managed route (SELF_MANAGED_DB_CONTEXT_ROUTES): no ambient context to
+  // escape, so the converter's own transaction is the only connection held.
+  const data = await withSystemDbAccessContext(() =>
+    previewPartnerConversion(partnerId, adminAuthForPartner(c.get('auth') as AuthContext, partnerId)));
   return c.json({ data });
 });
 
 adminMonitorConversionRoutes.post('/partners/:partnerId/convert', requireMfa(), zValidator('param', partnerParam), zValidator('json', z.object({ previewHash: z.string().min(1) })), async (c) => {
   const auth = c.get('auth') as AuthContext;
   const { partnerId } = c.req.valid('param');
-  const result = await runOutsideDbContext(() =>
-    withSystemDbAccessContext(() => convertPartnerLegacy(partnerId, c.req.valid('json').previewHash, adminAuthForPartner(auth, partnerId))),
-  );
+  // Self-managed route: see the preview handler above.
+  const result = await withSystemDbAccessContext(() =>
+    convertPartnerLegacy(partnerId, c.req.valid('json').previewHash, adminAuthForPartner(auth, partnerId)));
   writeRouteAudit(c as never, {
     orgId: null,
     action: 'monitor_conversion.admin_partner_convert',

@@ -106,6 +106,14 @@ export async function fetchPolicyPreview(policyId: string, options: PreviewOptio
   }
 }
 
+/**
+ * The API wraps every conversion response in `{ data }`; going through
+ * readJson/unwrap is what keeps `items` from arriving undefined.
+ */
+export async function fetchLedgerPage(filters: { orgId?: string; policyId?: string; cursor?: string; limit?: number }): Promise<LedgerPage> {
+  return readJson<LedgerPage>(await fetchWithAuth(conversionPaths.ledger(filters)), 'Failed to load the conversion history');
+}
+
 export async function fetchPendingCounts(orgId: string | null): Promise<PendingCounts> {
   return readJson(await fetchWithAuth(conversionPaths.pending(orgId)), 'Failed to count pending conversions');
 }
