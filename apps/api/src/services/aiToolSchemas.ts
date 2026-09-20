@@ -96,6 +96,18 @@ const cleanupPath = z.string().max(4096).refine(
   { message: 'Path traversal (..) not allowed' }
 );
 
+export const deliveryToolShape = {
+  action: z.enum(['resolve','list_routing','create_routing','update_routing','delete_routing','set_default','list_escalation','create_escalation','update_escalation','delete_escalation']),
+  orgId: uuid.optional(), ownerScope: z.enum(['organization', 'partner']).optional(), id: uuid.optional(),
+  severity: z.enum(['critical','high','medium','low','info']).optional(), kind: monitorKindSchema.optional(),
+  siteId: uuid.optional(), monitorId: uuid.optional(), data: z.record(z.string(), z.unknown()).optional(),
+};
+export const deliveryToolSchema = z.object(deliveryToolShape).strict().superRefine((v, ctx) => {
+  if (v.action === 'resolve' && (!v.severity || !v.orgId)) ctx.addIssue({ code: 'custom', message: 'orgId and severity are required for resolve' });
+  if (/^(update|delete)_/.test(v.action) && !v.id) ctx.addIssue({ code: 'custom', path: ['id'], message: 'id is required for update/delete' });
+  if ((/^(create|update)_/.test(v.action) || v.action === 'set_default') && !v.data) ctx.addIssue({ code: 'custom', path: ['data'], message: 'data is required for writes' });
+});
+
 // Tool schemas
 export const toolInputSchemas: Record<string, z.ZodType> = {
   query_devices: z.object({
@@ -1585,6 +1597,8 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   test_webhook: z.object({
     webhookId: uuid,
   }),
+
+  manage_delivery: deliveryToolSchema,
 
   manage_notification_channels: z.object({
     action: z.enum(['list', 'test', 'create', 'update', 'delete']),

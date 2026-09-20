@@ -271,3 +271,26 @@ describe('SDK declarations carry registry search metadata (A-W02)', () => {
     }
   });
 });
+
+import { checkGuardrails, requiredPermissionsForTool } from './aiGuardrails';
+import { validateToolInput } from './aiToolSchemas';
+
+describe('manage_delivery has every registration', () => {
+  it('does not add a frozen-gap exception', () => {
+    expect(getAllRegisteredToolNames()).toContain('manage_delivery');
+    expect(TOOL_TIERS.manage_delivery).toBe(1);
+    expect(KNOWN_MISSING_TOOL_TIERS.has('manage_delivery')).toBe(false);
+  });
+  it.each(['resolve', 'list_routing', 'list_escalation'])('%s is read-only', action => {
+    expect(checkGuardrails('manage_delivery', { action }).tier).toBe(1);
+    expect(requiredPermissionsForTool('manage_delivery', { action })).toEqual([{ resource: 'alerts', action: 'read' }]);
+  });
+  it.each(['create_routing','update_routing','delete_routing','set_default','create_escalation','update_escalation','delete_escalation'])('%s uses mutation tier and write permission', action => {
+    expect(checkGuardrails('manage_delivery', { action })).toMatchObject({ tier: 2, requiresApproval: false });
+    expect(requiredPermissionsForTool('manage_delivery', { action })).toEqual([{ resource: 'alerts', action: 'write' }]);
+  });
+  it('fails closed on unknown actions', () => {
+    expect(requiredPermissionsForTool('manage_delivery', { action: 'unknown' })).toBeNull();
+    expect(validateToolInput('manage_delivery', { action: 'unknown' }).success).toBe(false);
+  });
+});

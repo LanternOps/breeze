@@ -98,6 +98,7 @@ export const CAPABILITY_DOMAINS: Readonly<Record<AgentCapabilityId, readonly AiT
 export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   // ---- alerts_monitoring ----
   manage_alerts: 'alerts_monitoring',
+  manage_delivery: 'alerts_monitoring',
   manage_alert_rules: 'alerts_monitoring',
   manage_monitors: 'alerts_monitoring',
   // #5289 — monitor DEFINITIONS (the authored condition+response object), not

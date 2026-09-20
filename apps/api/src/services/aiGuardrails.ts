@@ -139,6 +139,7 @@ export const TIER2_ACTIONS: Record<string, string[]> = {
   manage_backup_configs: ['create', 'update'],
   manage_backup_profiles: ['create', 'update', 'delete'],
   // Notification channel & saved filter tools — Tier 2 actions
+  manage_delivery: ['create_routing','update_routing','delete_routing','set_default','create_escalation','update_escalation','delete_escalation'],
   manage_notification_channels: ['test', 'create', 'update', 'delete'],
   manage_saved_filters: ['create', 'delete'],
 };
@@ -1260,6 +1261,18 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   query_compliance_policies: { resource: 'devices', action: 'read' },
   get_compliance_status: { resource: 'devices', action: 'read' },
   // Notification channel tools
+  manage_delivery: {
+    resolve: { resource: 'alerts', action: 'read' },
+    list_routing: { resource: 'alerts', action: 'read' },
+    list_escalation: { resource: 'alerts', action: 'read' },
+    create_routing: { resource: 'alerts', action: 'write' },
+    update_routing: { resource: 'alerts', action: 'write' },
+    delete_routing: { resource: 'alerts', action: 'write' },
+    set_default: { resource: 'alerts', action: 'write' },
+    create_escalation: { resource: 'alerts', action: 'write' },
+    update_escalation: { resource: 'alerts', action: 'write' },
+    delete_escalation: { resource: 'alerts', action: 'write' },
+  },
   manage_notification_channels: {
     list: { resource: 'alerts', action: 'read' },
     test: { resource: 'alerts', action: 'write' },
@@ -1610,6 +1623,7 @@ const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: number }>
   trigger_agent_restart: { limit: 5, windowSeconds: 600 },
   create_remote_session: { limit: 10, windowSeconds: 300 },
   // Notification channel & saved filter tools
+  manage_delivery: { limit: 10, windowSeconds: 300 },
   manage_notification_channels: { limit: 10, windowSeconds: 300 },
   manage_saved_filters: { limit: 15, windowSeconds: 300 },
   // CIS hardening tools

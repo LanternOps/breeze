@@ -1,20 +1,26 @@
+import {
+  createRoutingRuleSchema, updateRoutingRuleSchema, upsertDefaultRowSchema,
+  getRoutingRuleWithAccess, routingSiteIds, canAccessRoutingSites,
+} from '../../services/delivery/railContracts';
+export {
+  createRoutingRuleSchema, updateRoutingRuleSchema, upsertDefaultRowSchema,
+  getRoutingRuleWithAccess, routingSiteIds, canAccessRoutingSites,
+} from '../../services/delivery/railContracts';
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
 import { db } from '../../db';
-import { notificationRoutingRules, organizations, sites } from '../../db/schema';
-import { eq, and, asc, inArray, isNull, or, sql } from 'drizzle-orm';
-import { requireMfa, requirePermission, requireScope, siteAccessCheck } from '../../middleware/auth';
+import { notificationRoutingRules } from '../../db/schema';
+import { eq, and, asc, inArray, isNull, or } from 'drizzle-orm';
+import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { ensureOrgAccess, resolveWriteOrgId } from './helpers';
 import {
   canManagePartnerWidePolicies,
-  canReadPartnerWideRows,
   PARTNER_WIDE_WRITE_DENIED_MESSAGE,
 } from '../../services/partnerWideAccess';
 import { PERMISSIONS } from '../../services/permissions';
 
-import { monitorKindSchema } from '@breeze/shared';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../../services/siteCeilingAccess';
 import {
   DeliveryWriteError,
@@ -27,114 +33,12 @@ const listRoutingRulesSchema = z.object({
   orgId: z.string().guid().optional(),
 });
 
-// Evaluated keys only (spec §Data model "Routing"): `conditionTypes` and
-// `deviceTags` were accepted for two years and never read by the dispatcher;
-// `.strict()` turns a write of either into a 400 instead of a silent no-op.
-const routingConditionsSchema = z.object({
-  severities: z.array(z.enum(['critical', 'high', 'medium', 'low', 'info'])).optional(),
-  monitorKinds: z.array(monitorKindSchema).optional(),
-  siteIds: z.array(z.string().guid()).optional(),
-}).strict();
-
-const createRoutingRuleSchema = z.object({
-  // 'partner' creates a partner-wide ("all orgs") routing rule: orgId NULL,
-  // partnerId = caller's partner (#2130). Create-only.
-  ownerScope: z.enum(['organization', 'partner']).optional(),
-  name: z.string().min(1).max(255),
-  priority: z.number().int().min(0),
-  conditions: routingConditionsSchema,
-  channelIds: z.array(z.string().guid()).min(1),
-  escalationPolicyId: z.string().guid().nullable().optional(),
-  enabled: z.boolean().optional().default(true),
-});
-
-const updateRoutingRuleSchema = z.object({
-  name: z.string().min(1).max(255).optional(),
-  priority: z.number().int().min(0).optional(),
-  conditions: routingConditionsSchema.optional(),
-  // No .min(1): the Everything else row may be emptied (inbox only). Non-default
-  // rows are re-checked in the handler.
-  channelIds: z.array(z.string().guid()).optional(),
-  escalationPolicyId: z.string().guid().nullable().optional(),
-  enabled: z.boolean().optional(),
-});
-
-const upsertDefaultRowSchema = z.object({
-  ownerScope: z.enum(['organization', 'partner']).optional(),
-  channelIds: z.array(z.string().guid()),
-  escalationPolicyId: z.string().guid().nullable().optional(),
-});
-
 const ESCALATION_POLICY_AXIS_MESSAGE = 'Escalation policy is not available to this rule owner';
 
 export const routingRoutes = new Hono();
 
 const requireAlertRead = requirePermission(PERMISSIONS.ALERTS_READ.resource, PERMISSIONS.ALERTS_READ.action);
 const requireAlertWrite = requirePermission(PERMISSIONS.ALERTS_WRITE.resource, PERMISSIONS.ALERTS_WRITE.action);
-
-type RoutingSiteAuth = { allowedSiteIds?: string[] };
-type RoutingRuleOwner = { orgId: string | null; partnerId: string | null };
-
-export function routingSiteIds(conditions: unknown): string[] {
-  if (!conditions || typeof conditions !== 'object' || Array.isArray(conditions)) return [];
-  const value = (conditions as Record<string, unknown>).siteIds;
-  return Array.isArray(value) ? value.filter((id): id is string => typeof id === 'string') : [];
-}
-
-export async function canAccessRoutingSites(
-  auth: RoutingSiteAuth,
-  owner: RoutingRuleOwner,
-  siteIds: string[],
-  validateOwnership: boolean
-): Promise<boolean> {
-  const uniqueSiteIds = [...new Set(siteIds)];
-  if (uniqueSiteIds.length === 0) return auth.allowedSiteIds === undefined;
-  if (!validateOwnership && auth.allowedSiteIds === undefined) return true;
-
-  const ownershipCondition = owner.orgId !== null
-    ? eq(sites.orgId, owner.orgId)
-    : owner.partnerId
-      ? sql`${sites.orgId} IN (SELECT ${organizations.id} FROM ${organizations} WHERE ${organizations.partnerId} = ${owner.partnerId})`
-      : undefined;
-  if (!ownershipCondition) return false;
-
-  const rows = await db
-    .select({ id: sites.id })
-    .from(sites)
-    .where(and(inArray(sites.id, uniqueSiteIds), ownershipCondition));
-  if (rows.length !== uniqueSiteIds.length) return false;
-
-  const canAccessSite = siteAccessCheck(auth.allowedSiteIds);
-  return rows.every((row) => canAccessSite(row.id));
-}
-
-// Dual-axis by-id lookup (#2130): org-owned rules via org access; partner-wide
-// rules (orgId NULL) via the caller's own partner (or system scope). Writes are
-// additionally gated on canManagePartnerWidePolicies at the routes.
-async function getRoutingRuleWithAccess(
-  ruleId: string,
-  auth: { scope?: string; partnerId?: string | null; canAccessOrg: (orgId: string) => boolean }
-) {
-  const [rule] = await db
-    .select()
-    .from(notificationRoutingRules)
-    .where(eq(notificationRoutingRules.id, ruleId))
-    .limit(1);
-
-  if (!rule) {
-    return null;
-  }
-
-  // Dual-axis access (#2130): partner-wide rules (orgId NULL) via
-  // canReadPartnerWideRows (system scope, or the owning partner's own
-  // PARTNER-scoped token). Org tokens carry a partnerId too, so matching on
-  // partnerId alone (sweep 2026-09-08 G6-4) handed every partner-wide rule's
-  // existence to every org user under that partner.
-  const hasAccess = rule.orgId !== null
-    ? ensureOrgAccess(rule.orgId, auth)
-    : canReadPartnerWideRows({ scope: auth.scope ?? '', partnerId: auth.partnerId ?? null }, rule.partnerId);
-  return hasAccess ? rule : null;
-}
 
 routingRoutes.get(
   '/routing-rules',

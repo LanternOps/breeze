@@ -11,7 +11,7 @@ import {
 } from '../../services/partnerWideAccess';
 import { listPoliciesSchema, createPolicySchema, updatePolicySchema } from './schemas';
 import { getPagination, ensureOrgAccess, getEscalationPolicyWithOrgCheck } from './helpers';
-import { validateEscalationUsers } from '../../services/delivery/escalationExecution';
+import { validatePolicyUsers } from '../../services/delivery/railContracts';
 import { DeliveryWriteError } from '../../services/delivery/routingRuleWrites';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../../services/siteCeilingAccess';
 import { PERMISSIONS } from '../../services/permissions';
@@ -156,7 +156,7 @@ policiesRoutes.post(
 
     if (!canMutateOrgWideGovernance(auth)) return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
     try {
-      if (data.steps) await validateEscalationUsers(data.steps, owner, undefined, { includePartnerUsers: auth.scope !== 'organization' });
+      if (data.steps) await validatePolicyUsers(data.steps, owner, auth);
     } catch (error) {
       if (error instanceof DeliveryWriteError) return c.json({ error: error.message }, error.status);
       throw error;
@@ -220,18 +220,7 @@ policiesRoutes.put(
     const owner = { orgId: policy.orgId, partnerId: policy.partnerId };
     if (!canMutateOrgWideGovernance(auth)) return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
     try {
-      if (data.steps) {
-        // Org callers may retain targets configured by an MSP technician, but
-        // may only add users from their own org. Validate against stored IDs.
-        const storedUserIds = new Set<string>(Array.isArray(policy.steps)
-          ? policy.steps.flatMap(step => Array.isArray(step?.userIds)
-            ? step.userIds.filter((id: unknown): id is string => typeof id === 'string') : [])
-          : []);
-        const stepsToValidate = auth.scope === 'organization'
-          ? data.steps.map(step => ({ ...step, userIds: step.userIds.filter(id => !storedUserIds.has(id)) }))
-          : data.steps;
-        await validateEscalationUsers(stepsToValidate, owner, undefined, { includePartnerUsers: auth.scope !== 'organization' });
-      }
+      if (data.steps) await validatePolicyUsers(data.steps, owner, auth, policy.steps);
     } catch (error) {
       if (error instanceof DeliveryWriteError) return c.json({ error: error.message }, error.status);
       throw error;
