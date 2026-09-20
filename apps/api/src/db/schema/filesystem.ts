@@ -9,7 +9,7 @@ import {
   real,
   text,
   index,
-  uniqueIndex
+  primaryKey
 } from 'drizzle-orm/pg-core';
 import { devices } from './devices';
 import { organizations } from './orgs';
@@ -30,13 +30,9 @@ export const deviceFilesystemSnapshots = pgTable('device_filesystem_snapshots', 
    * keyed on a raw `c:\` would never be found by a `C:\` read, which is
    * defect 6.
    *
-   * NULLABLE in W02 by design (expand/contract, spec §13 #7): an API replica
-   * still draining during the deploy writes snapshots without it, and NOT NULL
-   * would reject those inserts and lose the scan. Every reader therefore falls
-   * back to the scan path it asked for (`snapshot.scanPath ?? scanPath`).
-   * W03's contract migration flips this to `.notNull()`.
+   * Required after W03's contraction; W02's deployed writers supply it.
    */
-  scanPath: text('scan_path'),
+  scanPath: text('scan_path').notNull(),
   capturedAt: timestamp('captured_at').defaultNow().notNull(),
   trigger: filesystemSnapshotTriggerEnum('trigger').notNull().default('on_demand'),
   partial: boolean('partial').notNull().default(false),
@@ -87,12 +83,8 @@ export const deviceFilesystemCleanupRuns = pgTable('device_filesystem_cleanup_ru
 
 export const deviceFilesystemScanState = pgTable('device_filesystem_scan_state', {
   deviceId: uuid('device_id').notNull().references(() => devices.id),
-  /**
-   * Second half of the key — one checkpoint/baseline per VOLUME. Nullable in
-   * W02 for the same expand/contract reason as the snapshot column; W03 flips
-   * it and promotes the unique index below to the primary key.
-   */
-  scanPath: text('scan_path'),
+  /** Second half of the primary key: one checkpoint/baseline per volume. */
+  scanPath: text('scan_path').notNull(),
   /**
    * The `filesystem_analysis` command id that started the run currently owning
    * this row (spec §13 #18). Producers set it when queuing
@@ -113,13 +105,5 @@ export const deviceFilesystemScanState = pgTable('device_filesystem_scan_state',
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 }, (table) => ({
-  // A UNIQUE INDEX, not a primary key (amendment 16): a primary key requires
-  // the NOT NULL that W03 owns, while the old single-column key had to be
-  // dropped in W02 because it permits only one row per device. `ON CONFLICT
-  // (device_id, scan_path)` infers this index exactly as it would a
-  // constraint, so `upsertFilesystemScanState` is unaffected. W03 replaces
-  // this with `primaryKey({ name: 'device_filesystem_scan_state_pkey', … })`
-  // via `ADD CONSTRAINT … PRIMARY KEY USING INDEX`.
-  devicePathUidx: uniqueIndex('device_filesystem_scan_state_device_path_uidx')
-    .on(table.deviceId, table.scanPath),
+  pk: primaryKey({ name: 'device_filesystem_scan_state_pkey', columns: [table.deviceId, table.scanPath] }),
 }));
