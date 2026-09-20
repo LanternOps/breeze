@@ -5,6 +5,7 @@ import { authMiddleware, requireMfa, requireScope, requirePermission } from '../
 import { PERMISSIONS } from '../../services/permissions';
 import { partnerBillingSettingsSchema, orgBillingSettingsSchema, orgCurrencyImpactQuerySchema, reportingTotalsQuerySchema } from '@breeze/shared';
 import { updatePartnerBillingSettings, updateOrgBillingSettings } from '../../services/invoiceService';
+import { BillingProfileServiceError } from '../../services/billingProfileService';
 import { getOrgCurrencyImpact } from '../../services/orgCurrencyService';
 import { computeReportingTotal, parseGroupsParam, resolvePartnerReportingCurrency } from '../../services/reportingTotals';
 import { ExchangeRateServiceError } from '../../services/exchangeRateService';
@@ -23,6 +24,7 @@ import { resolveAuditOrgIdForPartner } from '../../services/auditOrgResolver';
 // (the #1383 regression). authMiddleware leads each route's middleware chain.
 export const invoiceSettingsRoutes = new Hono();
 const scopes = requireScope('partner', 'system');
+const profileWritePerm = requirePermission(PERMISSIONS.BILLING_PROFILES_WRITE.resource, PERMISSIONS.BILLING_PROFILES_WRITE.action);
 const writePerm = requirePermission(PERMISSIONS.INVOICES_WRITE.resource, PERMISSIONS.INVOICES_WRITE.action);
 const requirePartnerWideBillingAdmin = async (c: Context, next: Next) => {
   if (!canManagePartnerWidePolicies(c.get('auth'))) {
@@ -61,9 +63,18 @@ invoiceSettingsRoutes.patch('/partner/billing-settings', authMiddleware, scopes,
 invoiceSettingsRoutes.patch('/orgs/:orgId/billing-settings', authMiddleware, scopes, writePerm,
   zValidator('param', z.object({ orgId: z.string().guid() })),
   zValidator('json', orgBillingSettingsSchema),
+  async (c, next) => {
+    if (c.req.valid('json').billingProfileId !== undefined) return profileWritePerm(c, next);
+    await next();
+  },
   async (c) => {
     try { return c.json({ data: await updateOrgBillingSettings(c.req.valid('param').orgId, c.req.valid('json'), invoiceActorFrom(c)) }); }
-    catch (err) { return handleServiceError(c, err); }
+    catch (err) {
+      if (err instanceof BillingProfileServiceError) {
+        return c.json({ error: err.message, code: err.code }, err.status as 400);
+      }
+      return handleServiceError(c, err);
+    }
   });
 
 // Multi-currency wave 6 (#3778): ADVISORY, read-only preview of what a currency

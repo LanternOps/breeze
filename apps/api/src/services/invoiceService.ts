@@ -33,6 +33,7 @@ import {
   assertInvoiceSessionsRevoked,
   requestInvoiceSessionRevocation,
 } from './stripeSessionRevocation';
+import { assignProfileToOrg, clearOrgAssignment } from './billingProfileService';
 import { changeOrgCurrency } from './orgCurrencyService';
 import { readOrgStampingDefaults, OrgCurrencyServiceError, type DbExecutor as OrgLockExecutor } from './orgCurrencyCore';
 import { buildAutomationEligibleOrgPredicate } from './tenantStatus';
@@ -975,6 +976,7 @@ const orgBillingProjection = () => ({
 export async function updateOrgBillingSettings(
   orgId: string,
   patch: {
+    billingProfileId?: string | null;
     taxId?: string | null; taxExempt?: boolean; taxRate?: number | null;
     billingContactEmail?: string | null; billingContactName?: string | null;
     billingAddressLine1?: string | null; billingAddressLine2?: string | null;
@@ -1043,9 +1045,25 @@ export async function updateOrgBillingSettings(
   if (patch.billingAddressCountry !== undefined) set.billingAddressCountry = patch.billingAddressCountry;
   const projection = orgBillingProjection();
 
-  // One transaction so the contact merge and the column update still land
-  // together, as they did when this was a single statement.
+  // The assignment, contact merge, and column update must commit or roll back together.
   const row = await db.transaction(async (tx) => {
+    if (patch.billingProfileId !== undefined) {
+      const partnerId = requirePartner(actor);
+      // Lock the org before assignment rows. The helper's SHARE currency barrier
+      // alone would need upgrading for the settings UPDATE and can deadlock
+      // with another save holding SHARE while waiting on the same assignment.
+      const [org] = await tx.select({ id: organizations.id }).from(organizations)
+        .where(and(eq(organizations.id, orgId), eq(organizations.partnerId, partnerId)))
+        .for('update').limit(1);
+      if (!org) throw new InvoiceServiceError('Organization not found', 404, 'ORG_NOT_FOUND');
+      if (patch.billingProfileId === null) {
+        await clearOrgAssignment(orgId, partnerId, tx);
+      } else {
+        if (!actor.userId) throw new InvoiceServiceError('An assignment requires a user', 403, 'ORG_DENIED');
+        // Acquire the org currency barrier before any contact/settings writes.
+        await assignProfileToOrg(orgId, partnerId, patch.billingProfileId, actor.userId, tx);
+      }
+    }
     if (Object.keys(contactPatch).length > 0) {
       // Existence check, scoped to the contact path ONLY. The merge inserts a
       // `contacts` row for the org, so an unknown orgId would raise an FK
@@ -1059,7 +1077,7 @@ export async function updateOrgBillingSettings(
         .from(organizations)
         .where(eq(organizations.id, orgId))
         .limit(1);
-      if (!exists) return undefined;
+      if (!exists) throw new InvoiceServiceError('Organization not found', 404, 'INVOICE_NOT_FOUND');
 
       // Merged FIRST so the projection below observes the merged blob —
       // OrgBillingSettings.tsx renders straight from this response.
@@ -1070,12 +1088,13 @@ export async function updateOrgBillingSettings(
     // drizzle rejects `.set({})` — read the same projection back instead.
     if (Object.keys(set).length === 0) {
       const [r] = await tx.select(projection).from(organizations).where(eq(organizations.id, orgId)).limit(1);
+      if (!r) throw new InvoiceServiceError('Organization not found', 404, 'INVOICE_NOT_FOUND');
       return r;
     }
     const [r] = await tx.update(organizations).set(set).where(eq(organizations.id, orgId)).returning(projection);
+    if (!r) throw new InvoiceServiceError('Organization not found', 404, 'INVOICE_NOT_FOUND');
     return r;
   });
-  if (!row) throw new InvoiceServiceError('Organization not found', 404, 'INVOICE_NOT_FOUND');
   return row;
 }
 

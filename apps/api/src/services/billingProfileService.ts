@@ -188,8 +188,9 @@ export async function getOrgAssignment(orgId: string, partnerId: string): Promis
     eq(orgBillingProfileAssignments.orgId, orgId), eq(orgBillingProfileAssignments.partnerId, partnerId))).limit(1);
   return row ?? null;
 }
-export async function assignProfileToOrg(orgId: string, partnerId: string, profileId: string, assignedBy: string): Promise<Assignment> {
-  return db.transaction(async tx => {
+/** Reuse a supplied transaction so assignment and surrounding settings commit together. */
+export async function assignProfileToOrg(orgId: string, partnerId: string, profileId: string, assignedBy: string, executor?: DbExecutor): Promise<Assignment> {
+  const assign = async (tx: DbExecutor): Promise<Assignment> => {
     // Canonical org SHARE barrier pairs with changeOrgCurrency's UPDATE lock.
     const { currencyCode } = await readOrgStampingDefaults(tx, orgId);
     const profile = await profileById(tx, profileId, partnerId, true);
@@ -208,15 +209,16 @@ export async function assignProfileToOrg(orgId: string, partnerId: string, profi
         setWhere: eq(orgBillingProfileAssignments.partnerId, partnerId) }).returning();
     if (!assignment) throw new BillingProfileServiceError('Organization not found', 404, 'ORG_NOT_FOUND');
     return assignment;
-  }).catch(error => {
+  };
+  return (executor ? assign(executor) : db.transaction(assign)).catch(error => {
     if (error instanceof OrgCurrencyServiceError && error.code === 'ORG_NOT_FOUND') {
       throw new BillingProfileServiceError(error.message, 404, 'ORG_NOT_FOUND');
     }
     throw error;
   });
 }
-export async function clearOrgAssignment(orgId: string, partnerId: string): Promise<void> {
-  await db.delete(orgBillingProfileAssignments).where(and(eq(orgBillingProfileAssignments.orgId, orgId), eq(orgBillingProfileAssignments.partnerId, partnerId)));
+export async function clearOrgAssignment(orgId: string, partnerId: string, executor: DbExecutor = db): Promise<void> {
+  await executor.delete(orgBillingProfileAssignments).where(and(eq(orgBillingProfileAssignments.orgId, orgId), eq(orgBillingProfileAssignments.partnerId, partnerId)));
 }
 export async function loadCardsForOrg(orgId: string, partnerId: string, orgCurrency: string): Promise<{ assignedCard: Card | null; partnerDefaultCard: Card | null }> {
   const assignment = await getOrgAssignment(orgId, partnerId);

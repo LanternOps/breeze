@@ -4,7 +4,6 @@ import { fetchWithAuth } from '../../stores/auth';
 import { usePermissions } from '../../lib/permissions';
 import { navigateTo } from '@/lib/navigation';
 import { loginPathWithNext } from '../../lib/authScope';
-import { runAction } from '../../lib/runAction';
 import { formatMoney } from './shared/format';
 
 type Coverage = 'billable' | 'included' | 'non_billable';
@@ -15,8 +14,8 @@ type Profile = {
   roundingIncrementMinutes: number | null; rules: Rule[];
 };
 
-/** Assignment and catalog are separate API resources. Save participates in the
- * parent's page Save; the selector never mutates on change. */
+/** Loads assignment and catalog resources; stages changes for the parent's
+ * atomic page Save. The selector never mutates on change. */
 export function useOrgBillingProfile(orgId: string, currency: string, busy = false) {
   const { t } = useTranslation('billing');
   const { can } = usePermissions();
@@ -60,18 +59,10 @@ export function useOrgBillingProfile(orgId: string, currency: string, busy = fal
     return () => { cancelled = true; };
   }, [orgId, canRead, generation]);
 
-  const save = useCallback(async () => {
-    if (!canWrite || loading || error || selectedId === savedId) return false;
-    await runAction({
-      request: () => fetchWithAuth(`/orgs/organizations/${orgId}/billing-profile`, selectedId
-        ? { method: 'PUT', body: JSON.stringify({ billingProfileId: selectedId }) }
-        : { method: 'DELETE' }),
-      errorFallback: t('orgBillingProfile.saveError'),
-      onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true }),
-    });
-    setSavedId(selectedId);
-    return true;
-  }, [orgId, canWrite, loading, error, selectedId, savedId, t]);
+  const billingProfileId = canWrite && !loading && !error && selectedId !== savedId
+    ? selectedId || null
+    : undefined;
+  const markSaved = useCallback(() => { setSavedId(selectedId); }, [selectedId]);
 
   const assigned = profiles.find(profile => profile.id === selectedId);
   const fallback = profiles.find(profile => profile.isActive && profile.isDefault && profile.currencyCode === currency);
@@ -105,5 +96,5 @@ export function useOrgBillingProfile(orgId: string, currency: string, busy = fal
       </div>}
     </div>
   );
-  return { panel, save };
+  return { panel, billingProfileId, markSaved };
 }

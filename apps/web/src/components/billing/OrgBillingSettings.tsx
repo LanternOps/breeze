@@ -94,7 +94,6 @@ export default function OrgBillingSettings({ orgId }: Props) {
   const [currencyPanelOpen, setCurrencyPanelOpen] = useState(false);
   const [currencyStale, setCurrencyStale] = useState(false);
   const [changingCurrency, setChangingCurrency] = useState(false);
-  const [assignmentPartiallySaved, setAssignmentPartiallySaved] = useState(false);
   const billingProfile = useOrgBillingProfile(orgId, currencyCode, saving || changingCurrency);
 
   const [taxId, setTaxId] = useState('');
@@ -238,14 +237,13 @@ export default function OrgBillingSettings({ orgId }: Props) {
   const save = useCallback(async () => {
     if (saving || contactEmailInvalid) return;
     setSaving(true);
-    let assignmentSaved = false;
     try {
-      assignmentSaved = await billingProfile.save();
       const pct = taxPercent.trim();
       await runAction({
         request: () => fetchWithAuth(`/orgs/${orgId}/billing-settings`, {
           method: 'PATCH',
           body: JSON.stringify({
+            billingProfileId: billingProfile.billingProfileId,
             taxId: taxId.trim() === '' ? null : taxId.trim(),
             taxExempt,
             taxRate: pct === '' ? null : Number(pct) / 100,
@@ -265,15 +263,14 @@ export default function OrgBillingSettings({ orgId }: Props) {
         successMessage: t('orgBillingSettings.saveSuccess'),
         onUnauthorized: UNAUTHORIZED,
       });
-      setAssignmentPartiallySaved(false);
+      if (billingProfile.billingProfileId !== undefined) billingProfile.markSaved();
       void load();
     } catch (err) {
-      if (assignmentSaved) setAssignmentPartiallySaved(true);
       handleActionError(err, t('orgBillingSettings.saveError'));
     } finally {
       setSaving(false);
     }
-  }, [saving, contactEmailInvalid, taxId, taxExempt, taxPercent, contactEmail, contactName, line1, line2, city, region, postal, country, orgId, load, billingProfile.save, t]);
+  }, [saving, contactEmailInvalid, taxId, taxExempt, taxPercent, contactEmail, contactName, line1, line2, city, region, postal, country, orgId, load, billingProfile.billingProfileId, billingProfile.markSaved, t]);
 
   if (loading) return <p className="text-sm text-muted-foreground">{t('orgBillingSettings.loading')}</p>;
   if (loadError) {
@@ -526,7 +523,6 @@ export default function OrgBillingSettings({ orgId }: Props) {
         </div>
       </section>
 
-      {assignmentPartiallySaved && <p role="alert" className="text-sm text-destructive" data-testid="org-billing-partial-save">{t('orgBillingProfile.partialSave')}</p>}
       <div className="flex justify-end">
         <button
           type="button" onClick={() => void save()} disabled={saving || contactEmailInvalid}

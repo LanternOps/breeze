@@ -325,9 +325,9 @@ function profileApi(assignment: string | null = null, currency = 'USD', failSave
     if (url === '/billing-profiles') return json({ profiles: [standardProfile, { ...standardProfile, id: 'silver', name: 'Silver', isDefault: false, currencyCode: currency, baseCoverage: 'included' }] });
     if (url === '/billing-profiles/work-types') return json({ workTypes: [] });
     if (String(url).endsWith('/billing-profile')) {
-      if (init?.method && failSave) return json({ error: 'Cannot assign profile' }, false, 409);
       return json({ assignment: assignment ? { billingProfileId: assignment } : null });
     }
+    if (init?.method === 'PATCH' && failSave) return json({ error: 'Cannot assign profile' }, false, 409);
     return orgPayload();
   });
 }
@@ -340,20 +340,30 @@ describe('OrgBillingSettings billing profile', () => {
     expect(screen.getByTestId('org-billing-profile-rates')).toHaveTextContent('150.00');
     expect(screen.getByTestId('org-billing-profile-rates')).toHaveTextContent('Standard rates');
   });
-  it('stages the assignment and PUTs only on page Save', async () => {
+  it('stages the assignment and saves it with the other settings in one PATCH', async () => {
     profileApi();
     render(<OrgBillingSettings orgId="org-1" />);
     fireEvent.change(await screen.findByTestId('org-billing-profile'), { target: { value: 'silver' } });
-    expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'PUT')).toBe(false);
+    fireEvent.change(screen.getByTestId('org-billing-contact-name'), { target: { value: 'Accounts Payable' } });
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method)).toHaveLength(0);
     fireEvent.click(screen.getByTestId('org-billing-save'));
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/orgs/organizations/org-1/billing-profile', expect.objectContaining({ method: 'PUT', body: JSON.stringify({ billingProfileId: 'silver' }) })));
+    await waitFor(() => expect(findPatch()).toBeDefined());
+    expect(JSON.parse(findPatch()![1]!.body as string)).toMatchObject({ billingProfileId: 'silver', billingContactName: 'Accounts Payable' });
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method)).toHaveLength(1);
+    await waitFor(() => expect(screen.getByTestId('org-billing-save')).not.toBeDisabled());
+    fireEvent.click(screen.getByTestId('org-billing-save'));
+    await waitFor(() => expect(fetchMock.mock.calls.filter(([, init]) => init?.method)).toHaveLength(2));
+    const lastPatch = fetchMock.mock.calls.filter(([, init]) => init?.method === 'PATCH')[1];
+    expect(JSON.parse(lastPatch[1]!.body as string)).not.toHaveProperty('billingProfileId');
   });
-  it('clears an assignment with DELETE on page Save', async () => {
+  it('clears an assignment with billingProfileId null in the page PATCH', async () => {
     profileApi('silver');
     render(<OrgBillingSettings orgId="org-1" />);
     fireEvent.change(await screen.findByTestId('org-billing-profile'), { target: { value: '' } });
     fireEvent.click(screen.getByTestId('org-billing-save'));
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/orgs/organizations/org-1/billing-profile', expect.objectContaining({ method: 'DELETE' })));
+    await waitFor(() => expect(findPatch()).toBeDefined());
+    expect(JSON.parse(findPatch()![1]!.body as string)).toHaveProperty('billingProfileId', null);
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method)).toHaveLength(1);
   });
   it('shows currency mismatch and the fallback profile', async () => {
     profileApi('silver', 'EUR');
@@ -371,11 +381,12 @@ describe('OrgBillingSettings billing profile', () => {
 });
 
 describe('OrgBillingSettings assignment save consistency', () => {
+  beforeEach(() => vi.clearAllMocks());
   it('locks the assignment selector while a page save is pending', async () => {
     profileApi();
     const base = fetchMock.getMockImplementation()!;
     let finish!: (response: Response) => void;
-    fetchMock.mockImplementation((url, init) => init?.method === 'PUT'
+    fetchMock.mockImplementation((url, init) => init?.method === 'PATCH'
       ? new Promise<Response>(resolve => { finish = resolve; }) : base(url, init));
     render(<OrgBillingSettings orgId="org-1" />);
     const selector = await screen.findByTestId('org-billing-profile');
@@ -386,18 +397,33 @@ describe('OrgBillingSettings assignment save consistency', () => {
     await waitFor(() => expect(screen.getByTestId('org-billing-save')).not.toBeDisabled());
   });
 
-  it('discloses a saved assignment when the remaining page save fails, including retry', async () => {
-    profileApi();
-    const base = fetchMock.getMockImplementation()!;
-    fetchMock.mockImplementation((url, init) => init?.method === 'PATCH'
-      ? Promise.resolve(json({ error: 'Contact save failed' }, false)) : base(url, init));
+  it('keeps the assignment staged after a failed atomic save and includes it on retry', async () => {
+    profileApi(null, 'USD', true);
     render(<OrgBillingSettings orgId="org-1" />);
     fireEvent.change(await screen.findByTestId('org-billing-profile'), { target: { value: 'silver' } });
     fireEvent.click(screen.getByTestId('org-billing-save'));
-    expect(await screen.findByTestId('org-billing-partial-save')).toHaveTextContent('billing profile was saved');
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+    await waitFor(() => expect(screen.getByTestId('org-billing-save')).not.toBeDisabled());
+    expect(screen.queryByTestId('org-billing-partial-save')).not.toBeInTheDocument();
+    expect(screen.getByTestId('org-billing-profile')).toHaveValue('silver');
+    profileApi();
     fireEvent.click(screen.getByTestId('org-billing-save'));
     await waitFor(() => expect(screen.getByTestId('org-billing-save')).not.toBeDisabled());
-    expect(screen.getByTestId('org-billing-partial-save')).toBeInTheDocument();
-    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(1);
+    const mutations = fetchMock.mock.calls.filter(([, init]) => init?.method);
+    expect(mutations).toHaveLength(2);
+    for (const [url, init] of mutations) {
+      expect(url).toBe('/orgs/org-1/billing-settings');
+      expect(init?.method).toBe('PATCH');
+      expect(JSON.parse(init!.body as string)).toHaveProperty('billingProfileId', 'silver');
+    }
+  });
+
+  it('omits an unchanged assignment from the page PATCH', async () => {
+    profileApi('silver');
+    render(<OrgBillingSettings orgId="org-1" />);
+    await screen.findByTestId('org-billing-profile');
+    fireEvent.click(screen.getByTestId('org-billing-save'));
+    await waitFor(() => expect(findPatch()).toBeDefined());
+    expect(JSON.parse(findPatch()![1]!.body as string)).not.toHaveProperty('billingProfileId');
   });
 });

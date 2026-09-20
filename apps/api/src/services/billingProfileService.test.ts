@@ -226,6 +226,39 @@ describe('profile mutations', () => {
   });
 });
 describe('assignments and loader', () => {
+  it('uses the supplied transaction for every assignment query without opening another transaction', async () => {
+    const executor = { select: vi.fn().mockImplementation(db.select), insert: vi.fn().mockImplementation(db.insert) } as unknown as typeof db;
+    state.reads.push([{ currencyCode: 'USD' }], [profile], [{ id: orgId }]);
+    await expect(assignProfileToOrg(orgId, partner, id, workTypeId, executor))
+      .resolves.toMatchObject({ orgId, partnerId: partner, billingProfileId: id, assignedBy: workTypeId });
+    expect(executor.select).toHaveBeenCalledTimes(3);
+    expect(executor.insert).toHaveBeenCalledTimes(1);
+    expect(db.transaction).not.toHaveBeenCalled();
+  });
+  it.each([
+    { name: 'missing organization', reads: [[]], code: 'ORG_NOT_FOUND' },
+    { name: 'another partner profile', reads: [[{ currencyCode: 'USD' }], []], code: 'PROFILE_NOT_FOUND' },
+    { name: 'inactive profile', reads: [[{ currencyCode: 'USD' }], [{ ...profile, isActive: false }]], code: 'PROFILE_NOT_FOUND' },
+    { name: 'currency mismatch', reads: [[{ currencyCode: 'EUR' }], [profile]], code: 'PROFILE_CURRENCY_MISMATCH' },
+    { name: 'another partner organization', reads: [[{ currencyCode: 'USD' }], [profile], []], code: 'ORG_NOT_FOUND' },
+  ])('preserves $name validation inside a supplied transaction', async ({ reads, code }) => {
+    const executor = { select: vi.fn().mockImplementation(db.select), insert: vi.fn().mockImplementation(db.insert) } as unknown as typeof db;
+    state.reads.push(...reads);
+    await expect(assignProfileToOrg(orgId, partner, id, workTypeId, executor))
+      .rejects.toMatchObject({ name: 'BillingProfileServiceError', code });
+    expect(executor.select).toHaveBeenCalled();
+    expect(executor.insert).not.toHaveBeenCalled();
+    expect(db.transaction).not.toHaveBeenCalled();
+  });
+  it('clears the assignment through the supplied transaction with both ownership predicates', async () => {
+    const where = vi.fn().mockResolvedValue([]);
+    const executor = { delete: vi.fn().mockReturnValue({ where }) } as unknown as typeof db;
+    await clearOrgAssignment(orgId, partner, executor);
+    expect(executor.delete).toHaveBeenCalledTimes(1);
+    expect(sqlText(where.mock.calls[0]![0]).params).toEqual([orgId, partner]);
+    expect(db.delete).not.toHaveBeenCalled();
+    expect(db.transaction).not.toHaveBeenCalled();
+  });
   it('maps a missing organization from the canonical lock helper', async () => {
     state.reads.push([]);
     await expect(assignProfileToOrg(orgId, partner, id, workTypeId))
@@ -243,6 +276,7 @@ describe('assignments and loader', () => {
   it('assigns a matching card and stamps the real actor', async () => {
     state.reads.push([{ currencyCode: 'USD' }], [profile], [{ id: orgId }]);
     await expect(assignProfileToOrg(orgId, partner, id, workTypeId)).resolves.toMatchObject({ orgId, partnerId: partner, assignedBy: workTypeId });
+    expect(db.transaction).toHaveBeenCalledTimes(1);
   });
   it('reads and clears with both partner and org predicates', async () => {
     state.reads.push([{ id: 'assignment' }]);
