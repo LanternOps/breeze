@@ -7,16 +7,6 @@
     "badgeHint": "Gestionado por un monitor: edítelo desde el monitor en su lugar.",
     "monitorLabel": "Monitor"
   },
-  "hub": {
-    "title": "Monitoreo y automatización",
-    "tabs": {
-      "monitors": "Monitores",
-      "network": "Red",
-      "delivery": "Entrega",
-      "legacyRules": "Reglas heredadas"
-    },
-    "ariaLabel": "Secciones de monitoreo"
-  },
   "list": {
     "title": "Monitores",
     "description": "Observe una condición, responda en el dispositivo, notifique y escale cuando siga ocurriendo.",
@@ -45,6 +35,7 @@
     "builtInHint": "Aprovisionado por Breeze. Edita los umbrales, desactívalo o elimínalo; no volverá a aparecer."
   },
   "editor": {
+    "attachedToPolicy": "Monitor creado y adjuntado a la política",
     "titleNew": "Nuevo monitor",
     "titleEdit": "Editar monitor",
     "breadcrumb": {
@@ -64,6 +55,7 @@
       "activity": "Actividad"
     },
     "fields": {
+    "match": "Coincidencia",
       "name": "Nombre",
       "description": "Descripción",
       "kind": "Tipo",
@@ -83,7 +75,6 @@
       "channels": "Reglas de enrutamiento más estos canales",
       "none": "No notificar"
     },
-    "agentDeliveredHint": "Esta observación se ejecuta en el dispositivo y, hasta que eso se unifique, también debe existir en la pestaña de monitoreo de servicios y procesos de la política.",
     "responsesHint": "Las respuestas se ejecutan en orden en el dispositivo que incumplió la condición.",
     "recurrenceHint": "Se cuenta en episodios de incumplimiento: un episodio nuevo comienza solo después de que la condición se haya recuperado.",
     "ownerScope": {
@@ -119,9 +110,39 @@
       "title": "Probar en un dispositivo",
       "selectDevice": "Dispositivo",
       "run": "Ejecutar prueba"
+    },
+    "deliveryPreview": {
+      "selectOrg": "Selecciona una organización para ver la entrega.",
+      "failed": "No se pudo obtener la vista previa.",
+      "loading": "Resolviendo la entrega…",
+      "disabled": "{{name}} (deshabilitado)",
+      "unavailable": "Canal no disponible",
+      "destination": "Entrega para {{severity}}: {{channels}}",
+      "partnerRule": "Regla del partner: {{name}}",
+      "orgRule": "Regla de la organización: {{name}}",
+      "partnerDefault": "Valor predeterminado del partner: {{name}}",
+      "orgDefault": "Valor predeterminado de la organización: {{name}}",
+      "noRow": "No hay ninguna fila de entrega configurada.",
+      "monitorOverride": "Configuración propia del monitor",
+      "escalation": "Escala mediante {{name}}",
+      "withoutSite": "Sin sitio seleccionado; se excluyen las reglas específicas de sitio.",
+      "testRules": "Probar este conjunto de reglas",
+      "kind": "Tipo de monitor",
+      "noKind": "Sin tipo de monitor",
+      "site": "Sitio",
+      "noSite": "Sin sitio",
+      "sitesFailed": "No se pudieron cargar los sitios.",
+      "manage": "Administrar la entrega",
+      "draft": "La vista previa usa los valores actuales del editor.",
+      "skipped": "Omitido {{id}}: {{reason}}",
+      "skipReasons": {
+        "disabled": "deshabilitado",
+        "unavailable": "no disponible"
+      }
     }
   },
   "kinds": {
+    "composite": "Compuesto (todas o alguna de varias)",
     "cpu": "Uso de CPU",
     "memory": "Uso de memoria",
     "disk": "Uso de disco",

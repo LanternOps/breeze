@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('./commandQueue', () => ({
+  executeCommandWithSystemPrecheck: vi.fn().mockResolvedValue({ status: 'completed' }),
   executeCommand: vi.fn().mockResolvedValue({ status: 'completed' }),
   queueCommandForExecution: vi.fn().mockResolvedValue({ command: { id: 'cmd-1' } }),
   queueCommand: vi.fn().mockResolvedValue({ id: 'cmd-1' }),
@@ -13,10 +14,11 @@ vi.mock('./scriptDispatch', () => ({
   dispatchScriptToDevice: vi.fn().mockResolvedValue({ ok: true, commandId: 'cmd-1' }),
 }));
 
-import { executeCommand, queueCommandForExecution, queueCommand, insertQueuedCommandInTransaction } from './commandQueue';
+import { executeCommandWithSystemPrecheck, executeCommand, queueCommandForExecution, queueCommand, insertQueuedCommandInTransaction } from './commandQueue';
 import { dispatchDeviceCommand } from './dispatchDeviceCommand';
 import { dispatchScriptToDevice } from './scriptDispatch';
 import {
+  aiExecuteCommandWithSystemPrecheck,
   aiExecuteCommand,
   aiQueueCommandForExecution,
   aiQueueCommand,
@@ -43,6 +45,14 @@ describe('aiDispatch adapter (#5022 W01)', () => {
       {},
       expect.objectContaining({ aiOrigin: AGENT_ORIGIN }),
     );
+  });
+
+  it('binds context-free cleanup dispatch to its org and preserves AI origin', async () => {
+    await aiExecuteCommandWithSystemPrecheck(withOrigin, 'disk_cleanup', 'dev-1', 'file_delete', { cleanupRunId: 'run-1' }, { expectedOrgId: 'org-1', userId: 'user-1', timeoutMs: 30000 });
+    expect(executeCommandWithSystemPrecheck).toHaveBeenCalledWith('dev-1', 'file_delete', { cleanupRunId: 'run-1' }, { expectedOrgId: 'org-1', userId: 'user-1', timeoutMs: 30000, aiOrigin: AGENT_ORIGIN });
+    expect(executeCommand).not.toHaveBeenCalled();
+    await expect(aiExecuteCommandWithSystemPrecheck(withoutOrigin, 'disk_cleanup', 'dev-1', 'file_delete', {}, { expectedOrgId: 'org-1' })).rejects.toBeInstanceOf(MissingAiOriginError);
+    expect(executeCommandWithSystemPrecheck).toHaveBeenCalledTimes(1);
   });
 
   it('throws, naming the tool, when the AuthContext carries no origin', async () => {

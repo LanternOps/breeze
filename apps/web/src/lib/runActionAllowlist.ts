@@ -22,7 +22,6 @@ export const RUN_ACTION_MIGRATION_BACKLOG: ReadonlyArray<string> = [
   'apps/web/src/components/devices/DeviceSettingsModal.tsx',
   // DeviceWarrantyCard.tsx migrated to runAction (#1723) — now in TARGET_GLOBS.
   'apps/web/src/components/alerts/AlertCorrelationView.tsx',
-  'apps/web/src/components/alerts/AlertRuleEditor.tsx',
   // AlertRulesPage.tsx removed (#3988): the page it backed has been a 301 to
   // /configuration-policies since d8a6bc833 (2026-02-22), so the component was
   // unreachable from any route.

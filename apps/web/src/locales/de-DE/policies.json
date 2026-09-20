@@ -844,7 +844,13 @@
         "inherited": "Geerbt",
         "overrideValue": "Überschreibungswert",
         "overridesLabel": "Überschreibungen:",
-        "failedToLoadMonitors": "Überwachungen konnten nicht geladen werden"
+        "failedToLoadMonitors": "Überwachungen konnten nicht geladen werden",
+        "createMonitor": "Monitor erstellen",
+        "recommended": {
+          "title": "Empfohlene Monitore",
+          "body": "Breeze liefert integrierte Monitore für CPU, Arbeitsspeicher, Datenträger und Patch-Compliance. Keiner ist dieser Richtlinie bisher zugeordnet.",
+          "action": "Alle integrierten Monitore anhängen"
+        }
       },
       "pamTab": {
         "captureWindowsUACElevationPrompts": "Windows-UAC-Aufforderungen zur Rechteerhöhung erfassen",
@@ -1201,6 +1207,15 @@
         "save": "Speichern",
         "cancel": "Abbrechen",
         "none": "Keine Begründung hinterlegt."
+      },
+      "legacyFreeze": {
+        "title": "Neue Regeln werden als Monitore erstellt",
+        "body": "Bestehende Regeln bleiben hier bearbeitbar und werden im nächsten Release in Monitore umgewandelt.",
+        "link": "Monitore-Tab öffnen"
+      },
+      "duplicate": {
+        "title": "Geräte in dieser Richtlinie melden doppelt",
+        "body": "Diese Bedingungen existieren sowohl als angehängter Monitor als auch als Alt-Regel oder -Überwachung: {{names}}"
       }
     }
   },

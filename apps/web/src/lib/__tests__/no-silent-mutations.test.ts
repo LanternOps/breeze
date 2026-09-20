@@ -35,10 +35,12 @@ const FIXTURE_ROOT = resolve(__dirname, 'fixtures/no-silent-mutations/src');
 const TARGET_GLOBS = [
   // Disk Cleanup v2 W01: scan and cleanup-preview failures must surface.
   'src/components/devices/DeviceFilesystemTab.tsx',
+  // Disk Cleanup v2 W03: cleanup-execute moved into this panel.
+  'src/components/devices/filesystem/CleanupPanel.tsx',
   // Network device "Check now" (#5988 W05): the probe reads liveness outside
   // W04's settings writer and must surface every mutation outcome.
   'src/components/devices/networkDevice/useAssetProbe.ts',
-  'src/components/alerts/NotificationChannelsPage.tsx',
+  'src/components/alerts/delivery/deliveryActions.ts',
   'src/components/alerts/AlertsPage.tsx',
   'src/components/alerts/AlertDetailPage.tsx',
   // Alert verdict feedback (P2-1 Task 15): submitVerdictFeedback is the one
@@ -711,8 +713,9 @@ describe('no silent mutations in targeted set', () => {
     // and EmailTemplateEditor.tsx: 147 → 149.
     // Disk Cleanup v2 W01 adds DeviceFilesystemTab.tsx: 149 → 150.
     // Work types (#4628 W01) add WorkTypesCard.tsx: 150 → 151.
-    // Billing profiles W02 adds Rates and the org assignment writer: 151 → 153.
-    expect(absoluteFiles.length).toBe(153);
+    // Disk Cleanup v2 W03 adds filesystem/CleanupPanel.tsx: 151 → 152.
+    // Billing profiles W02 adds Rates and the org assignment writer: 152 → 154.
+    expect(absoluteFiles.length).toBe(154);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

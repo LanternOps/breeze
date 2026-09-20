@@ -5,7 +5,7 @@ description: Configure notification channels and deliver alerts via email, Slack
 
 import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
-Breeze RMM delivers notifications through multiple channels whenever alerts trigger, automations execute, or other platform events occur. Notification channels are configured per organization and dispatched asynchronously through a background job queue. Every alert automatically generates in-app notifications for all active users in the affected organization; additional channels (email, webhook, Slack, Teams, PagerDuty, SMS, Pushover) are routed based on alert rule configuration or organization defaults.
+Breeze delivers alert notifications through the channels configured in **Alerts > Delivery**. The page has three sections: Channels, Routing, and Escalation policies. Channels and routing can belong to one organization or to its partner. Every alert still creates in-app notifications; external delivery follows the monitor's Notify choice and the visible routing rows, ending at **Everything else**.
 
 ---
 
@@ -351,56 +351,71 @@ Push notifications subscribe to the same `alert.triggered` event bus and run in 
 
 ## Notification Routing
 
-### From alerts
-
-When an alert triggers, the notification dispatcher determines which channels to notify:
+Open **Alerts > Delivery**, then **Routing**. A monitor's own Notify setting wins; otherwise the first matching row from the top decides delivery.
 
 <Steps>
-1. **In-app notifications** are sent immediately to all active users in the organization (always).
-2. If the alert was created by an **alert rule** with `notificationChannelIds` in its override settings, those specific channels are used.
-3. If no rule-level channel overrides exist (or the alert has no associated rule), **all enabled channels** for the organization are used -- including any partner-wide channels owned by the organization's partner.
-4. Each channel receives a queued send job via the background queue.
+1. In-app notifications are created independently of external delivery.
+2. A monitor set to **Inbox only** sends no external notifications and does not escalate. A monitor set to **Use these channels instead** uses its own channel list.
+3. During the conversion period, an unretired legacy rule's explicit channel override still applies. Conversion carries that choice onto the monitor; upgrading Delivery does not silently remove it.
+4. Other alerts use the first matching enabled routing row. Rows match severity, monitor kind (`monitorKinds`), and site. Lower priority numbers run first; organization rows win ties with partner rows. Non-default rows are considered before defaults.
+5. If no ordinary row matches, the organization's **Everything else** row applies when present; otherwise the partner's **Everything else** row applies. Empty default channels mean **Inbox only** initially. With no default row, initial delivery is also inbox only; any independently resolved escalation still runs.
 </Steps>
 
-### From automations
+A site-specific row matches only a known matching site. A monitor-kind row cannot match an alert with no monitor kind. The old condition-type and device-tag routing inputs never affected delivery and are no longer accepted.
 
-Automations can send notifications as an action step using the `send_notification` action type, which targets a specific notification channel by ID.
+**Everything else** is always shown last and cannot be reordered. The partner row is permanent; **Use partner default** removes an optional org override after confirming the inherited channels/escalation (or inbox only). Its channels and escalation policy can be edited. In an organization view, **Customize for this organization** creates the optional org default from the partner's current choices. That row stops following the partner default for that organization and can be removed later to inherit again.
+
+### Preview delivery
+
+A monitor's **Notify > Inherit** card shows the channel names, the matching row and its owner, and the escalation policy. Its link opens **Alerts > Delivery**. Changing severity or monitor kind refreshes the preview using the current editor values. Explicit channel and inbox-only choices remain editable on the monitor.
+
+On Delivery, **Test this rule set** previews a severity, optional monitor kind, and optional site. Select an organization first for partner-wide monitors. Without a site, site-specific rows are excluded. This preview does not send notifications.
+
+The API is `GET /alerts/delivery/resolve?orgId=<uuid>&severity=critical&kind=cpu&siteId=<uuid>&monitorId=<uuid>`. Only `orgId` and `severity` are required. It returns eligible `channelIds`, `skippedChannelIds`, `escalationPolicyId`, `source`, optional `routingRuleId`/`routingRuleName`, a readable `display`, and structured names in `description`. A supplied monitor ID uses that saved monitor's Notify settings. The request is read-only and requires `alerts:read`; an inaccessible org/site/monitor is rejected.
+
+The decision returns eligible `channelIds` and `skippedChannelIds` with `disabled` or `unavailable` reasons. Unavailable channels may be missing, outside the organization’s ownership, or invisible to the current session; the preview does not distinguish those cases. The preview shows both, and escalation resolves independently. Channel test results, send failures, throttles, suppression, and acknowledgement can affect actual delivery after a decision is made; a preview is not a delivery receipt.
 
 ### Escalation policies
 
-Alert rules can reference an escalation policy via `escalationPolicyId` in their override settings. Escalation policies define timed steps that send additional notifications if an alert remains unacknowledged.
+Open **Alerts > Delivery > Escalation policies** to create, edit, or delete a policy. Give it a name and timed steps, then choose it on a routing row or in a monitor's Notify card. Partner-wide policies have an **All orgs** badge and require partner-wide management access to change.
 
-**Escalation policy structure:**
+Steps notify channels, users in-app, or both, with at least one target per step. Use 1..10 steps, integer delays of 1..10080 minutes, repeat intervals of 1..1440 minutes and 1..10 additional sends, with at most 50 total occurrences. Optional `renotify: { everyMinutes, maxTimes }` repeats a step at that interval; `maxTimes` is the number of additional sends after its first notification.
+
+Escalation resolves independently of the initial channel list: an explicit monitor escalation wins unless Notify is **Inbox only**; otherwise an unretired legacy source's explicit escalation wins, followed by the winning routing/default row's escalation, then none. W05d removes the legacy arm only after conversion or retirement, leaving monitor → row → null. An empty default channel list can therefore mean inbox now and escalation later. Acknowledging or resolving the alert cancels pending escalation jobs.
 
 ```json
 {
-  "name": "Critical Alert Escalation",
+  "name": "On-call",
   "steps": [
-    {
-      "delayMinutes": 15,
-      "channelIds": ["channel-uuid-1"]
-    },
-    {
-      "delayMinutes": 60,
-      "channelIds": ["channel-uuid-1", "channel-uuid-2"]
-    }
+    { "delayMinutes": 15, "channelIds": ["channel-uuid-1"] },
+    { "delayMinutes": 60, "channelIds": ["channel-uuid-1"], "userIds": ["user-uuid-1"], "renotify": { "everyMinutes": 15, "maxTimes": 2 } }
   ]
 }
 ```
 
-Each step schedules delayed notification jobs. When an alert is acknowledged or resolved, all pending escalation jobs for that alert are automatically cancelled.
+User targets are validated on save and checked again against the alert’s organization when delivered: active unrestricted org members or partner users whose all/selected org access includes that org. Org callers may newly select only org members, while existing partner-picked targets survive edits. Partner/system callers can also select partner users; partner-wide policies list all active partner users and re-filter per alert. **Product owner confirmation pending** (HO-20260919-alerting-consolidation Q1).
 
----
+### From automations
+
+An automation's `send_notification` action targets its configured channel explicitly. It does not change the alert delivery defaults.
+
+### AI and MCP
+
+Use `manage_delivery` to resolve delivery, list/create/update/delete ordinary routing rows, edit the default with `set_default`, remove an optional org default with `delete_routing` to inherit again (the partner default is permanent), and list/create/update/delete escalation policies using the same bounded schemas and caller-aware user validation as the web/API. Reads require `alerts:read`; mutations require `alerts:write` and the applicable ownership and MFA/agent guards. Use `manage_notification_channels` for channel CRUD and test sends.
+
+### Upgrade note: explicit defaults
+
+<Aside type="caution" title="New channels are opt-in">
+New notification channels are not subscribed to anything until added to a routing row.
+
+The upgrade creates **Everything else** rows from the previously effective enabled-channel set. A partner row contains its enabled partner-wide channels. An org row is created only when that org has enabled org-owned channels, and contains those channels plus the partner's enabled partner-wide channels. Existing ordinary routing rows and explicit overrides retain precedence. Review the resulting rows in Delivery before adding new destinations.
+</Aside>
 
 ## Partner-wide Channels and Routing
 
-Notification channels, routing rules, and escalation policies can each be created **partner-wide** ("All organizations") instead of scoped to one organization. A partner-scoped user with access to every organization can set this up once -- one NOC Slack channel, one PagerDuty destination, one routing rule set, one escalation chain -- and have it apply across every org the partner manages.
+Choose **All organizations** when creating a partner-owned channel, routing row, or escalation policy. Ownership is fixed at creation. The org view shows its rows together with inherited partner rows; inherited rows are labelled and read-only. Manage partner rows from the partner view. Inherited reads never include channel configuration or escalation step targets: channels show identity, type and enabled state, routing shows site-filtered conditions and destination IDs, and escalation policies show identity and step count.
 
-- **Creation** -- when creating a channel or routing rule, choose **All organizations** instead of **This organization only**. This choice is only available at creation time; ownership can't change afterward. Escalation policies support the same `ownerScope` field via the API.
-- **Delivery** -- when an alert triggers, the dispatcher considers both the alert org's own channels/routing rules/escalation policy and its partner's partner-wide ones. Org-owned and partner-wide routing rules compete in a single priority ordering (lowest priority number wins, regardless of which axis owns the rule). Partner-wide channels also participate in the no-rules fallback, so they go live for every member organization immediately without needing a routing rule.
-- **Test sends** -- sending a test notification on a partner-wide channel (`POST /alerts/channels/:id/test`) requires the same partner-wide management access as editing it, since it fires a real notification on the shared destination.
-- **Records stay per-device-org** -- individual notification send records always belong to the firing device's own organization, never the partner, so delivery history and throttling stay scoped correctly even for a shared channel.
-- **UI** -- partner-wide channels and routing rules show an **All orgs** badge in their respective lists on the **Alerts > Channels** page.
+Partner-wide channels do not automatically subscribe new alerts merely because they exist. Add them to a routing/default row or a monitor's explicit channel choice. Test sends on a shared channel require partner-wide management access. Delivery history, throttling, and send records remain scoped to the firing device's organization.
 
 ---
 
@@ -611,7 +626,7 @@ The outcome is also recorded on the channel itself, so a failure stays visible a
 ## Troubleshooting
 
 **No notifications being sent for alerts.**
-Verify that notification channels exist and are enabled for the organization. Check whether the alert rule has `notificationChannelIds` in its override settings -- if empty, the dispatcher falls back to all enabled org channels. If no channels are configured at all, only in-app notifications will be delivered. Confirm the notification dispatcher was initialized at application startup.
+Open the monitor's Notify preview or **Alerts > Delivery > Test this rule set** with the alert's organization, severity, kind, and site. Check which row won, whether it has channels, and whether those channels are enabled and pass a channel test. A new channel receives no alerts until it is explicitly selected. An empty Everything else row or no default row produces only in-app notifications unless an independent escalation is configured. Existing legacy overrides remain effective during conversion. Confirm the notification dispatcher is running and inspect delivery history for failed or throttled sends.
 
 **Email notifications not arriving.**
 Ensure the EmailService is configured with valid SMTP settings. Check that the channel config has a `recipients` or `to` field with valid email addresses. The sender validates addresses against a basic pattern; typos in email addresses will cause validation failures.

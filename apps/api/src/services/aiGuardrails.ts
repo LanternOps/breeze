@@ -288,6 +288,7 @@ export const TIER3_ACTIONS: Record<string, string[]> = {
   manage_hyperv_checkpoints: ['delete', 'apply'],
   // Monitoring tools — Tier 3 actions (require user approval)
   manage_monitors: ['create', 'update', 'delete'],
+  manage_delivery: ['create_routing','update_routing','delete_routing','set_default','create_escalation','update_escalation','delete_escalation'],
   // Ticketing — move_org is a tenant-shape mutation and requires approval.
   // log_time_entry/start_timer/stop_timer downgraded to Tier 2 (2026-07-20).
   manage_tickets: ['move_org'],
@@ -514,6 +515,7 @@ export const TIER3_SUPERVISED_ACTIONS: Record<string, string[]> = {
   manage_peripheral_policies: ['create', 'update'],
   manage_dr_plan: ['delete_group'],
   manage_monitors: ['create', 'update', 'delete'],
+  manage_delivery: ['create_routing','update_routing','delete_routing','set_default','create_escalation','update_escalation','delete_escalation'],
   manage_contracts: ['pause', 'resume'],
   // create_site adds a location within an existing org, not a new tenant —
   // spec §3.2's tenant-shape bullet names only create_org/update_org.
@@ -1260,6 +1262,18 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   query_compliance_policies: { resource: 'devices', action: 'read' },
   get_compliance_status: { resource: 'devices', action: 'read' },
   // Notification channel tools
+  manage_delivery: {
+    resolve: { resource: 'alerts', action: 'read' },
+    list_routing: { resource: 'alerts', action: 'read' },
+    list_escalation: { resource: 'alerts', action: 'read' },
+    create_routing: { resource: 'alerts', action: 'write' },
+    update_routing: { resource: 'alerts', action: 'write' },
+    delete_routing: { resource: 'alerts', action: 'write' },
+    set_default: { resource: 'alerts', action: 'write' },
+    create_escalation: { resource: 'alerts', action: 'write' },
+    update_escalation: { resource: 'alerts', action: 'write' },
+    delete_escalation: { resource: 'alerts', action: 'write' },
+  },
   manage_notification_channels: {
     list: { resource: 'alerts', action: 'read' },
     test: { resource: 'alerts', action: 'write' },
@@ -1610,6 +1624,7 @@ const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: number }>
   trigger_agent_restart: { limit: 5, windowSeconds: 600 },
   create_remote_session: { limit: 10, windowSeconds: 300 },
   // Notification channel & saved filter tools
+  manage_delivery: { limit: 10, windowSeconds: 300 },
   manage_notification_channels: { limit: 10, windowSeconds: 300 },
   manage_saved_filters: { limit: 15, windowSeconds: 300 },
   // CIS hardening tools

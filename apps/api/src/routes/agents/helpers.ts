@@ -2127,6 +2127,8 @@ export interface MonitoringConfigUpdate {
  * The defaults `config_policy_monitoring_watches` itself carries, so a
  * monitor-derived watch and a policy-tab watch for the same service are
  * indistinguishable on the wire (configurationPolicies.ts:425-427).
+ * maxRestartAttempts / restartCooldownSeconds are the fallback when a
+ * restart_service response carries no explicit values (W05c1).
  */
 const MONITOR_WATCH_DEFAULTS = {
   maxRestartAttempts: 3,
@@ -2207,6 +2209,10 @@ async function resolveMonitorDerivedWatches(deviceId: string): Promise<MonitorDe
       : (condition.processName as string | undefined);
     if (!name) continue;
 
+    const restartResponse = (def.responses ?? []).find(
+      (a) => a?.type === 'execute_command' && a?.kind === 'restart_service',
+    );
+
     watches.push({
       watch_type: def.kind === 'service' ? 'service' : 'process',
       name,
@@ -2217,11 +2223,9 @@ async function resolveMonitorDerivedWatches(deviceId: string): Promise<MonitorDe
       // supersedes the agent-side flag, so the restart still happens locally
       // and offline. A free-text `command` is NOT sniffed for intent — the
       // explicit discriminator is the contract.
-      auto_restart: (def.responses ?? []).some(
-        (a) => a?.type === 'execute_command' && a?.kind === 'restart_service',
-      ),
-      max_restart_attempts: MONITOR_WATCH_DEFAULTS.maxRestartAttempts,
-      restart_cooldown_seconds: MONITOR_WATCH_DEFAULTS.restartCooldownSeconds,
+      auto_restart: restartResponse !== undefined,
+      max_restart_attempts: (restartResponse?.maxAttempts as number | undefined) ?? MONITOR_WATCH_DEFAULTS.maxRestartAttempts,
+      restart_cooldown_seconds: (restartResponse?.cooldownSeconds as number | undefined) ?? MONITOR_WATCH_DEFAULTS.restartCooldownSeconds,
     });
   }
 

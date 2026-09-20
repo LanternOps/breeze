@@ -32,8 +32,9 @@ import {
   monitorDefinitions,
 } from '../../db/schema';
 import { buildMonitoringConfigUpdate } from '../../routes/agents/helpers';
+import { createMonitorDefinition, getMonitorDefinition } from '../../services/monitors/monitorService';
 import { getRedis } from '../../services/redis';
-import { createOrganization, createPartner, createSite } from './db-utils';
+import { createOrganization, createPartner, createSite, createUser } from './db-utils';
 
 const SYSTEM_CTX: DbAccessContext = {
   scope: 'system',
@@ -237,5 +238,99 @@ describe('partner-wide monitor watch delivery (#5291 W04)', () => {
     );
 
     expect(result).toBeNull();
+  });
+});
+
+describe('restart response watch delivery (#6343)', () => {
+  it('round-trips a restart response through create and read into the agent watch', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const user = await createUser({ partnerId: partner.id, orgId: org.id });
+    const site = await createSite({ orgId: org.id });
+    const device = await seedDevice(org.id, site.id);
+    await purgeCache(device.id);
+
+    const auth = {
+      principal: { kind: 'user_session' },
+      user: { id: user.id, email: user.email, name: user.name, isPlatformAdmin: false },
+      token: null,
+      partnerId: partner.id,
+      orgId: org.id,
+      scope: 'organization',
+      accessibleOrgIds: [org.id],
+      partnerOrgAccess: null,
+      orgCondition: (column: Parameters<typeof eq>[0]) => eq(column, org.id),
+      canAccessOrg: (orgId: string) => orgId === org.id,
+    } as Parameters<typeof createMonitorDefinition>[1];
+    const response = {
+      type: 'execute_command',
+      kind: 'restart_service',
+      command: 'Restart-Service Spooler',
+      shell: 'powershell',
+      whenOffline: 'queue',
+      maxAttempts: 7,
+      cooldownSeconds: 120,
+    } as const;
+
+    const created = await withDbAccessContext(SYSTEM_CTX, () =>
+      createMonitorDefinition({
+        ownerScope: 'organization',
+        name: `Restart Spooler ${randomUUID().slice(0, 8)}`,
+        kind: 'service',
+        enabled: true,
+        condition: { serviceName: 'Spooler', consecutiveFailures: 4 },
+        severity: 'high',
+        cooldownMinutes: 5,
+        autoResolve: false,
+        responses: [response],
+        deliveryMode: 'inherit',
+        deliveryChannelIds: [],
+        recurrenceActions: [],
+        pauseResponsesOnEscalation: true,
+      }, auth),
+    );
+    createdMonitors.push(created.id);
+
+    const stored = await withDbAccessContext(orgContext(org.id, partner.id), () =>
+      getMonitorDefinition(created.id, auth),
+    );
+    expect(stored?.responses).toEqual([response]);
+
+    await withDbAccessContext(SYSTEM_CTX, async () => {
+      const [policy] = await db.insert(configurationPolicies).values({
+        orgId: org.id,
+        name: `restart-policy-${randomUUID().slice(0, 8)}`,
+        status: 'active',
+      }).returning({ id: configurationPolicies.id });
+      createdPolicies.push(policy!.id);
+      const [link] = await db.insert(configPolicyFeatureLinks).values({
+        configPolicyId: policy!.id,
+        featureType: 'monitors',
+      }).returning({ id: configPolicyFeatureLinks.id });
+      await db.insert(configPolicyMonitors).values({
+        featureLinkId: link!.id,
+        monitorId: stored!.id,
+        enabled: true,
+      });
+      await db.insert(configPolicyAssignments).values({
+        configPolicyId: policy!.id,
+        level: 'organization',
+        targetId: org.id,
+        priority: 0,
+      });
+    });
+
+    const result = await withDbAccessContext(orgContext(org.id, partner.id), () =>
+      buildMonitoringConfigUpdate(device.id),
+    );
+    expect(result?.watches).toEqual([{
+      watch_type: 'service',
+      name: 'Spooler',
+      alert_on_stop: true,
+      alert_after_consecutive_failures: 4,
+      auto_restart: true,
+      max_restart_attempts: 7,
+      restart_cooldown_seconds: 120,
+    }]);
   });
 });

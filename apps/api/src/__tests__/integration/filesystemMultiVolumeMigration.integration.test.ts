@@ -13,9 +13,10 @@ import './setup';
 import scanPathFixtures from '../../../../../packages/shared/src/fixtures/scanPath.json';
 import { randomUUID } from 'node:crypto';
 import { sql } from 'drizzle-orm';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { createOrganization, createPartner, createSite } from './db-utils';
-import { replayMigration } from './replayMigration';
+
 import { getTestDb } from './setup';
 import {
   claimFilesystemScanGeneration,
@@ -25,6 +26,38 @@ import {
 } from '../../services/filesystemAnalysis';
 
 const MIGRATION = '2026-10-21-110000-filesystem-multi-volume.sql';
+// Written, not executed locally: requires the integration Postgres service.
+// setup.ts migrates through W03. These tests explicitly restore the W02
+// expand shape, replay ONLY W02, and restore contraction even on assertion failure.
+const expandSql = readFileSync(new URL(`../../../migrations/${MIGRATION}`, import.meta.url), 'utf8');
+const contractionSql = readFileSync(new URL('../../../migrations/2026-10-22-160000-filesystem-scan-path-not-null.sql', import.meta.url), 'utf8');
+async function replayExpandMigration() {
+  await getTestDb().transaction(async (tx) => {
+    await tx.execute(sql`SELECT set_config('breeze.scope', 'system', true)`);
+    await tx.execute(sql.raw(expandSql));
+  });
+}
+function useExpandPhase() {
+  beforeEach(async () => {
+    if (!process.env.DATABASE_URL) return;
+    await getTestDb().transaction(async (tx) => {
+      await tx.execute(sql`SELECT set_config('breeze.scope', 'system', true)`);
+      await tx.execute(sql.raw(`
+        ALTER TABLE device_filesystem_scan_state DROP CONSTRAINT IF EXISTS device_filesystem_scan_state_pkey;
+        ALTER TABLE device_filesystem_scan_state ALTER COLUMN scan_path DROP NOT NULL;
+        ALTER TABLE device_filesystem_snapshots ALTER COLUMN scan_path DROP NOT NULL;
+      `));
+      await tx.execute(sql.raw(expandSql));
+    });
+  });
+  afterEach(async () => {
+    if (!process.env.DATABASE_URL) return;
+    await getTestDb().transaction(async (tx) => {
+      await tx.execute(sql`SELECT set_config('breeze.scope', 'system', true)`);
+      await tx.execute(sql.raw(contractionSql));
+    });
+  });
+}
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
 async function seedDevice(osType: 'windows' | 'linux' | 'macos') {
@@ -68,6 +101,7 @@ async function scanPathOf(snapshotId: string): Promise<string | null> {
 }
 
 describe('2026-10-21-110000 — snapshot scan_path backfill', () => {
+  useExpandPhase();
   runDb('matches the shared runtime normalizer fixture table', async () => {
     const snapshots: Array<{ id: string; expected: string }> = [];
     for (const fixture of scanPathFixtures) {
@@ -75,7 +109,7 @@ describe('2026-10-21-110000 — snapshot scan_path backfill', () => {
       const id = await seedPreMigrationSnapshot(deviceId, orgId, fixture.input);
       snapshots.push({ id, expected: fixture.expected });
     }
-    await replayMigration(MIGRATION);
+    await replayExpandMigration();
     for (const { id, expected } of snapshots) {
       expect(await scanPathOf(id)).toBe(expected);
     }
@@ -85,7 +119,7 @@ describe('2026-10-21-110000 — snapshot scan_path backfill', () => {
     const { deviceId, orgId } = await seedDevice('windows');
     const id = await seedPreMigrationSnapshot(deviceId, orgId, 'c:/Users//Todd/');
 
-    await replayMigration(MIGRATION);
+    await replayExpandMigration();
 
     // Drive letter upper-cased, separators converted and collapsed, trailing
     // separator dropped, and the case BELOW the drive preserved — byte for
@@ -98,7 +132,7 @@ describe('2026-10-21-110000 — snapshot scan_path backfill', () => {
     const root = await seedPreMigrationSnapshot(deviceId, orgId, 'c:\\');
     const second = await seedPreMigrationSnapshot(deviceId, orgId, 'd:/');
 
-    await replayMigration(MIGRATION);
+    await replayExpandMigration();
 
     expect(await scanPathOf(root)).toBe('C:\\');
     expect(await scanPathOf(second)).toBe('D:\\');
@@ -109,7 +143,7 @@ describe('2026-10-21-110000 — snapshot scan_path backfill', () => {
     const nested = await seedPreMigrationSnapshot(deviceId, orgId, '//var//tmp/');
     const root = await seedPreMigrationSnapshot(deviceId, orgId, '/');
 
-    await replayMigration(MIGRATION);
+    await replayExpandMigration();
 
     expect(await scanPathOf(nested)).toBe('/var/tmp');
     expect(await scanPathOf(root)).toBe('/');
@@ -121,7 +155,7 @@ describe('2026-10-21-110000 — snapshot scan_path backfill', () => {
     const noKey = await seedPreMigrationSnapshot(windows.deviceId, windows.orgId, null);
     const empty = await seedPreMigrationSnapshot(linux.deviceId, linux.orgId, '');
 
-    await replayMigration(MIGRATION);
+    await replayExpandMigration();
 
     expect(await scanPathOf(noKey)).toBe('C:\\');
     expect(await scanPathOf(empty)).toBe('/');
@@ -134,7 +168,7 @@ describe('2026-10-21-110000 — snapshot scan_path backfill', () => {
     const { deviceId, orgId } = await seedDevice('linux');
     const dotted = await seedPreMigrationSnapshot(deviceId, orgId, '/opt/app/../data');
 
-    await replayMigration(MIGRATION);
+    await replayExpandMigration();
 
     expect(await scanPathOf(dotted)).toBe('/opt/app/../data');
     expect(await scanPathOf(dotted)).not.toBe('/');
@@ -168,6 +202,7 @@ describe('2026-10-21-110000 — snapshot scan_path backfill', () => {
 });
 
 describe('2026-10-21-110000 — scan-state key and the rest of the shape', () => {
+  useExpandPhase();
   /** Seeds a legacy scan-state row: no scan_path, with resume state attached. */
   async function seedLegacyScanState(
     deviceId: string,
@@ -207,7 +242,7 @@ describe('2026-10-21-110000 — scan-state key and the rest of the shape', () =>
     await seedPreMigrationSnapshot(deviceId, orgId, 'D:\\');
     await seedLegacyScanState(deviceId, orgId, 'D:\\media');
 
-    await replayMigration(MIGRATION);
+    await replayExpandMigration();
 
     const state = await scanStateOf(deviceId);
     expect(state.scan_path).toBe('D:\\');
@@ -220,7 +255,7 @@ describe('2026-10-21-110000 — scan-state key and the rest of the shape', () =>
     await seedPreMigrationSnapshot(deviceId, orgId, '/');
     await seedLegacyScanState(deviceId, orgId, '/var');
 
-    await replayMigration(MIGRATION);
+    await replayExpandMigration();
 
     const state = await scanStateOf(deviceId);
     expect(state.scan_path).toBe('/');
@@ -242,7 +277,7 @@ describe('2026-10-21-110000 — scan-state key and the rest of the shape', () =>
     await seedPreMigrationSnapshot(deviceId, orgId, 'D:\\');
     await seedLegacyScanState(deviceId, orgId, 'D:\\media');
 
-    await replayMigration(MIGRATION);
+    await replayExpandMigration();
 
     const state = await scanStateOf(deviceId);
     expect(state.scan_path).toBe('C:\\');
@@ -265,7 +300,7 @@ describe('2026-10-21-110000 — scan-state key and the rest of the shape', () =>
     await seedPreMigrationSnapshot(deviceId, orgId, rawPath);
     await seedLegacyScanState(deviceId, orgId, 'D:\\media');
 
-    await replayMigration(MIGRATION);
+    await replayExpandMigration();
 
     const state = await scanStateOf(deviceId);
     expect(state.scan_path).toBe('C:\\');
@@ -278,7 +313,7 @@ describe('2026-10-21-110000 — scan-state key and the rest of the shape', () =>
     const { deviceId, orgId } = await seedDevice('linux');
     await seedLegacyScanState(deviceId, orgId, '/data');
 
-    await replayMigration(MIGRATION);
+    await replayExpandMigration();
 
     const state = await scanStateOf(deviceId);
     expect(state.scan_path).toBe('/');
@@ -289,7 +324,7 @@ describe('2026-10-21-110000 — scan-state key and the rest of the shape', () =>
     const { deviceId, orgId } = await seedDevice('linux');
     await seedLegacyScanState(deviceId, orgId, '/data');
 
-    await replayMigration(MIGRATION);
+    await replayExpandMigration();
 
     const state = await scanStateOf(deviceId);
     expect(state.scan_generation).toBeNull();
@@ -299,7 +334,7 @@ describe('2026-10-21-110000 — scan-state key and the rest of the shape', () =>
       UPDATE device_filesystem_scan_state SET last_applied_command_id = ${commandId}
        WHERE device_id = ${deviceId}
     `);
-    await replayMigration(MIGRATION);
+    await replayExpandMigration();
     expect((await scanStateOf(deviceId)).last_applied_command_id).toBe(commandId);
   });
 
@@ -425,9 +460,9 @@ describe('2026-10-21-110000 — scan-state key and the rest of the shape', () =>
     const db = getTestDb();
     const id = await seedPreMigrationSnapshotOrExisting(deviceId, orgId);
 
-    await replayMigration(MIGRATION);
+    await replayExpandMigration();
     const afterFirst = await scanPathOf(id);
-    await replayMigration(MIGRATION);
+    await replayExpandMigration();
     const afterSecond = await scanPathOf(id);
 
     expect(afterSecond).toBe(afterFirst);

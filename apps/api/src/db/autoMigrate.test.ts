@@ -1351,3 +1351,50 @@ describe('device removal retention: decommissioned_at + device_lifecycle feature
     expect(migrationSql).not.toMatch(/\bCOMMIT;/);
   });
 });
+
+
+describe('filesystem scan_path contraction (Disk Cleanup v2 W03)', () => {
+  const contraction = '2026-10-22-160000-filesystem-scan-path-not-null.sql';
+
+  it('sorts after both W02 expand migrations', () => {
+    const files = listMigrationFilenames();
+    expect(files).toContain(contraction);
+    for (const expanded of [
+      '2026-10-21-110000-filesystem-multi-volume.sql',
+      '2026-10-21-110100-filesystem-cleanup-run-status-running.sql',
+    ]) {
+      expect(files).toContain(expanded);
+      expect(files.indexOf(contraction)).toBeGreaterThan(files.indexOf(expanded));
+    }
+  });
+
+  it('requires scan paths and replaces the interim index with the named composite primary key', async () => {
+    const { deviceFilesystemSnapshots, deviceFilesystemScanState, deviceFilesystemCleanupRuns } =
+      await import('./schema/filesystem');
+    expect(deviceFilesystemSnapshots.scanPath.notNull).toBe(true);
+    expect(deviceFilesystemScanState.scanPath.notNull).toBe(true);
+    // System cleanup runs remain path-independent.
+    expect(deviceFilesystemCleanupRuns.scanPath.notNull).toBe(false);
+    const config = getTableConfig(deviceFilesystemScanState);
+    expect(config.primaryKeys).toHaveLength(1);
+    expect(config.primaryKeys[0]!.getName()).toBe('device_filesystem_scan_state_pkey');
+    expect(config.primaryKeys[0]!.columns.map((column) => column.name)).toEqual(['device_id', 'scan_path']);
+    expect(config.indexes).toHaveLength(0);
+  });
+
+  it('reconciles duplicate root candidates before converting NULL scan paths', () => {
+    const migration = readFileSync(path.resolve(__dirname, '../../migrations', contraction), 'utf8');
+    expect(migration).toMatch(/row_number\(\) OVER[\s\S]*PARTITION BY st.device_id[\s\S]*ORDER BY st.updated_at DESC/);
+    expect(migration).toMatch(/DELETE FROM device_filesystem_scan_state[\s\S]*position > 1/);
+    expect(migration.indexOf('DELETE FROM device_filesystem_scan_state'))
+      .toBeLessThan(migration.indexOf('UPDATE device_filesystem_scan_state'));
+    expect(migration).toMatch(/RAISE WARNING 'filesystem scan_path contraction: discarded % duplicate root candidates'/);
+  });
+
+  it('promotes W02’s actual unique index even though W02 already removed the old primary key', () => {
+    const migration = readFileSync(path.resolve(__dirname, '../../migrations', contraction), 'utf8');
+    expect(migration).toMatch(/IF NOT EXISTS[\s\S]*contype = 'p'/);
+    expect(migration).toMatch(/ADD CONSTRAINT device_filesystem_scan_state_pkey\s+PRIMARY KEY USING INDEX device_filesystem_scan_state_device_path_uidx/);
+    expect(migration).not.toMatch(/\bBEGIN;|\bCOMMIT;/);
+  });
+});

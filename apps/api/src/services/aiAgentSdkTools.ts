@@ -35,6 +35,7 @@ import { CONTACT_ROLES } from './contacts/types';
 import { ACTOR_TYPES, AI_AGENT_KINDS, INVOICE_STATUSES } from '@breeze/shared';
 import { getToolTimeout, withToolTimeout } from './toolTimeouts';
 import { aiRunContextInputShape } from './scriptRunRequest';
+import { deliveryToolShape } from './aiToolSchemas';
 import { aiScriptAuthoringEnabled } from '../config/env';
 import { captureMessage } from './sentry';
 import {
@@ -168,6 +169,7 @@ export const TOOL_TIERS = {
   get_active_users: 1,
   get_user_experience_metrics: 1,
   manage_alerts: 1, // Base tier; action-level escalation handled in guardrails
+  manage_delivery: 1,
   get_dns_security: 1,
   get_huntress_status: 1,
   get_huntress_incidents: 1,
@@ -1400,6 +1402,13 @@ export function buildBreezeSdkTools(
         limit: z.number().int().min(1).max(500).optional(),
       },
       makeHandler('get_user_experience_metrics', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_delivery',
+      'Resolve delivery or manage routing rules and escalation policies. Channel CRUD remains manage_notification_channels.',
+      deliveryToolShape,
+      makeHandler('manage_delivery', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(

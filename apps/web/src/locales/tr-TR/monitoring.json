@@ -7,16 +7,6 @@
     "badgeHint": "Bir monitör tarafından yönetiliyor — bunun yerine monitörden düzenleyin.",
     "monitorLabel": "Monitör"
   },
-  "hub": {
-    "title": "İzleme ve Otomasyon",
-    "tabs": {
-      "monitors": "Monitörler",
-      "network": "Ağ",
-      "delivery": "Teslimat",
-      "legacyRules": "Eski kurallar"
-    },
-    "ariaLabel": "İzleme bölümleri"
-  },
   "list": {
     "title": "Monitörler",
     "description": "Bir koşulu izleyin, cihazda yanıt verin, bildirin ve tekrarlamaya devam ederse yükseltin.",
@@ -45,6 +35,7 @@
     "builtInHint": "Breeze tarafından sağlandı. Eşikleri düzenleyin, devre dışı bırakın veya silin; geri gelmez."
   },
   "editor": {
+    "attachedToPolicy": "Monitör oluşturuldu ve ilkeye bağlandı",
     "titleNew": "Yeni monitör",
     "titleEdit": "Monitörü düzenle",
     "breadcrumb": {
@@ -64,6 +55,7 @@
       "activity": "Etkinlik"
     },
     "fields": {
+    "match": "Eşleşme",
       "name": "Ad",
       "description": "Açıklama",
       "kind": "Tür",
@@ -83,7 +75,6 @@
       "channels": "Yönlendirme kuralları ve bu kanallar",
       "none": "Bildirim gönderme"
     },
-    "agentDeliveredHint": "Bu izleme cihazda çalışır ve bu birleştirilene kadar politikanın Hizmet ve Süreç İzleme sekmesinde de bulunmalıdır.",
     "responsesHint": "Yanıtlar, ihlalin gerçekleştiği cihazda sırayla çalışır.",
     "recurrenceHint": "İhlal olaylarında sayılır: yeni bir olay yalnızca koşul düzeldikten sonra başlar.",
     "ownerScope": {
@@ -119,9 +110,39 @@
       "title": "Bir cihazda test et",
       "selectDevice": "Cihaz",
       "run": "Testi çalıştır"
+    },
+    "deliveryPreview": {
+      "selectOrg": "Teslimatı önizlemek için bir kuruluş seçin.",
+      "failed": "Teslimat önizlenemedi.",
+      "loading": "Teslimat çözümleniyor…",
+      "disabled": "{{name}} (devre dışı)",
+      "unavailable": "Kanal kullanılamıyor",
+      "destination": "{{severity}} için teslimat: {{channels}}",
+      "partnerRule": "İş ortağı kuralı: {{name}}",
+      "orgRule": "Kuruluş kuralı: {{name}}",
+      "partnerDefault": "İş ortağı varsayılanı: {{name}}",
+      "orgDefault": "Kuruluş varsayılanı: {{name}}",
+      "noRow": "Teslimat satırı yapılandırılmamış.",
+      "monitorOverride": "Monitöre özel ayar",
+      "escalation": "{{name}} üzerinden yükseltilir",
+      "withoutSite": "Site seçilmedi; siteye özel kurallar uygulanmaz.",
+      "testRules": "Bu kural kümesini test et",
+      "kind": "Monitör türü",
+      "noKind": "Monitör türü yok",
+      "site": "Konum",
+      "noSite": "Site yok",
+      "sitesFailed": "Siteler yüklenemedi.",
+      "manage": "Teslimatı yönet",
+      "draft": "Önizleme düzenleyicideki güncel değerleri kullanır.",
+      "skipped": "Atlandı {{id}}: {{reason}}",
+      "skipReasons": {
+        "disabled": "devre dışı",
+        "unavailable": "kullanılamıyor"
+      }
     }
   },
   "kinds": {
+    "composite": "Bileşik (birkaç koşulun tümü veya herhangi biri)",
     "cpu": "CPU Kullanımı",
     "memory": "Bellek Kullanımı",
     "disk": "Disk Kullanımı",

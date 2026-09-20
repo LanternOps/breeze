@@ -125,3 +125,36 @@ describe('filesystem_analysis result handler registration', () => {
     warn.mockRestore();
   });
 });
+
+vi.mock('./filesystemCleanupRuns', () => ({ recordLateCleanupResult: vi.fn(async () => 'recorded') }));
+
+describe('file_delete cleanup result ingestion', () => {
+  it('is dispatched by both transports', () => {
+    expect(commandResultHandlers.file_delete).toBeTypeOf('function');
+    expect(setLiteralEntries(read('../routes/agents/commands.ts'), 'REGISTRY_DISPATCHED_COMMAND_TYPES')).toContain('file_delete');
+  });
+
+  it.each(['completed', 'failed'])('records %s with the authorized command id and payload run', async (status) => {
+    const { recordLateCleanupResult } = await import('./filesystemCleanupRuns');
+    vi.mocked(recordLateCleanupResult).mockClear();
+    await commandResultHandlers.file_delete!({
+      agentId: 'agent', resolvedDeviceId: 'dev', commandId: 'authorized-id', stdout: undefined,
+      command: { type: 'file_delete', payload: { cleanupRunId: 'run', path: '/tmp/a' } } as never,
+      result: { status, error: 'detail' } as never,
+    });
+    expect(recordLateCleanupResult).toHaveBeenCalledWith(expect.objectContaining({
+      cleanupRunId: 'run', commandId: 'authorized-id', path: '/tmp/a', status, error: 'detail', completedAt: expect.any(Date),
+    }));
+  });
+
+  it('ignores ordinary file deletes', async () => {
+    const { recordLateCleanupResult } = await import('./filesystemCleanupRuns');
+    vi.mocked(recordLateCleanupResult).mockClear();
+    await commandResultHandlers.file_delete!({
+      agentId: 'agent', resolvedDeviceId: 'dev', commandId: 'cmd', stdout: undefined,
+      command: { type: 'file_delete', payload: { path: '/tmp/a' } } as never,
+      result: { status: 'completed' } as never,
+    });
+    expect(recordLateCleanupResult).not.toHaveBeenCalled();
+  });
+});

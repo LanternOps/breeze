@@ -7,16 +7,6 @@
     "badgeHint": "Von einem Monitor verwaltet — bearbeiten Sie ihn stattdessen über den Monitor.",
     "monitorLabel": "Monitor"
   },
-  "hub": {
-    "title": "Überwachung & Automatisierung",
-    "tabs": {
-      "monitors": "Monitore",
-      "network": "Netzwerk",
-      "delivery": "Zustellung",
-      "legacyRules": "Ältere Regeln"
-    },
-    "ariaLabel": "Überwachungsbereiche"
-  },
   "list": {
     "title": "Monitore",
     "description": "Überwachen Sie eine Bedingung, reagieren Sie auf dem Gerät, benachrichtigen Sie und eskalieren Sie, wenn sie wiederholt auftritt.",
@@ -45,6 +35,7 @@
     "builtInHint": "Von Breeze bereitgestellt. Schwellenwerte bearbeiten, deaktivieren oder löschen – er kommt nicht zurück."
   },
   "editor": {
+    "attachedToPolicy": "Monitor erstellt und der Richtlinie zugeordnet",
     "titleNew": "Neuer Monitor",
     "titleEdit": "Monitor bearbeiten",
     "breadcrumb": {
@@ -64,6 +55,7 @@
       "activity": "Aktivität"
     },
     "fields": {
+    "match": "Bedingung",
       "name": "Name",
       "description": "Beschreibung",
       "kind": "Art",
@@ -83,7 +75,6 @@
       "channels": "Routing-Regeln plus diese Kanäle",
       "none": "Nicht benachrichtigen"
     },
-    "agentDeliveredHint": "Dieser Watch läuft auf dem Gerät und muss bis zur Vereinheitlichung zusätzlich im Tab „Dienst- & Prozessüberwachung“ der Richtlinie vorhanden sein.",
     "responsesHint": "Reaktionen laufen der Reihe nach auf dem Gerät, auf dem die Verletzung aufgetreten ist.",
     "recurrenceHint": "Wird in Verletzungsvorfällen gezählt: Ein neuer Vorfall beginnt erst, nachdem sich die Bedingung wieder normalisiert hat.",
     "ownerScope": {
@@ -119,9 +110,39 @@
       "title": "Auf einem Gerät testen",
       "selectDevice": "Gerät",
       "run": "Test ausführen"
+    },
+    "deliveryPreview": {
+      "selectOrg": "Wählen Sie eine Organisation für die Zustellungsvorschau.",
+      "failed": "Zustellungsvorschau fehlgeschlagen.",
+      "loading": "Zustellung wird ermittelt…",
+      "disabled": "{{name}} (deaktiviert)",
+      "unavailable": "Kanal nicht verfügbar",
+      "destination": "Zustellung bei {{severity}}: {{channels}}",
+      "partnerRule": "Partnerregel: {{name}}",
+      "orgRule": "Organisationsregel: {{name}}",
+      "partnerDefault": "Partnerstandard: {{name}}",
+      "orgDefault": "Organisationsstandard: {{name}}",
+      "noRow": "Keine Zustellungszeile konfiguriert.",
+      "monitorOverride": "Monitorüberschreibung",
+      "escalation": "Eskaliert über {{name}}",
+      "withoutSite": "Kein Standort ausgewählt; standortspezifische Regeln werden ausgeschlossen.",
+      "testRules": "Diesen Regelsatz testen",
+      "kind": "Monitorart",
+      "noKind": "Keine Monitorart",
+      "site": "Standort",
+      "noSite": "Kein Standort",
+      "sitesFailed": "Standorte konnten nicht geladen werden.",
+      "manage": "Zustellung verwalten",
+      "draft": "Die Vorschau verwendet die aktuellen Editorwerte.",
+      "skipped": "Übersprungen {{id}}: {{reason}}",
+      "skipReasons": {
+        "disabled": "deaktiviert",
+        "unavailable": "nicht verfügbar"
+      }
     }
   },
   "kinds": {
+    "composite": "Kombiniert (alle oder eine von mehreren)",
     "cpu": "CPU-Auslastung",
     "memory": "Arbeitsspeicherauslastung",
     "disk": "Festplattennutzung",

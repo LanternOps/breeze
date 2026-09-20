@@ -439,3 +439,8 @@ describe('runCleanupExecution wall-clock budget (spec §5.2)', () => {
     expect(outcome.rejectedPaths).toEqual(['/home/bob/taxes.pdf']);
   });
 });
+
+it('preserves completed actions when the next dispatch throws', async () => {
+  const dispatch = vi.fn().mockResolvedValueOnce({ status: 'completed' }).mockRejectedValueOnce(new Error('insert failed'));
+  await expect(runCleanupExecution({ os: 'linux', requestedPaths: ['/tmp/a.tmp', '/tmp/b.tmp'], candidates: [tempCandidate('/tmp/a.tmp'), tempCandidate('/tmp/b.tmp')], previewedAt: PREVIEWED_AT, dispatch })).rejects.toMatchObject({ message: 'insert failed', outcome: { bytesReclaimed: 4096, actions: [expect.objectContaining({ path: '/tmp/a.tmp', status: 'completed' })] } });
+});

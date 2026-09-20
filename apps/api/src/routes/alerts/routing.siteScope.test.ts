@@ -224,4 +224,33 @@ describe('notification routing site authorization', () => {
     expect(deleteRes.status).toBe(403);
     expect(db.delete).not.toHaveBeenCalled();
   });
+  it.each([
+    ['POST', 'conditionTypes'], ['POST', 'deviceTags'],
+    ['PATCH', 'conditionTypes'], ['PATCH', 'deviceTags'],
+  ] as const)('rejects %s conditions.%s before querying or writing', async (method, field) => {
+    if (method === 'PATCH') selectQueue.push([existingRule([ALLOWED_SITE])], [{ id: ALLOWED_SITE }], [{ id: ALLOWED_SITE }]);
+    else selectQueue.push([{ id: ALLOWED_SITE }]);
+    const conditions = { severities: ['critical'], siteIds: [ALLOWED_SITE], [field]: ['disk'] };
+    const res = await app().request(method === 'POST' ? '/alerts/routing-rules' : `/alerts/routing-rules/${RULE_ID}`, {
+      method, headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(method === 'POST' ? { ...createBody([ALLOWED_SITE]), conditions } : { conditions }),
+    });
+    expect(res.status).toBe(400);
+    expect(JSON.stringify(await res.json())).toContain(field);
+    expect(db.select).not.toHaveBeenCalled();
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
+  });
+  it.each(['POST', 'PATCH'] as const)('accepts supported conditions on %s', async (method) => {
+    if (method === 'PATCH') selectQueue.push([existingRule([ALLOWED_SITE])], [{ id: ALLOWED_SITE }], [{ id: ALLOWED_SITE }]);
+    else selectQueue.push([{ id: ALLOWED_SITE }]);
+    const conditions = { severities: ['critical'], siteIds: [ALLOWED_SITE] };
+    const res = await app().request(method === 'POST' ? '/alerts/routing-rules' : `/alerts/routing-rules/${RULE_ID}`, {
+      method, headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(method === 'POST' ? { ...createBody([ALLOWED_SITE]), conditions } : { conditions }),
+    });
+    expect(res.status).toBe(method === 'POST' ? 201 : 200);
+    expect(method === 'POST' ? insertValuesMock : updateSetMock).toHaveBeenCalledWith(expect.objectContaining({ conditions }));
+  });
+
 });

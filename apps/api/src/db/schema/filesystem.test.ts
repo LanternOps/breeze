@@ -17,14 +17,11 @@ import { CORE_TENANT_EXPORT_POLICY } from '../../services/tenantExportPolicyRegi
  * other.
  */
 describe('filesystem schema — the scan-path axis (spec §4)', () => {
-  it('records scan_path on snapshots, NULLABLE in W02', () => {
-    // Expand/contract (amendment 15, spec §13 #7): an old replica still
-    // draining supplies no scan_path, and NOT NULL here would fail its
-    // snapshot INSERT with 23502 and lose a completed scan. W03 contracts.
+  it('requires scan_path on snapshots after W03 contraction', () => {
     const column = getTableConfig(deviceFilesystemSnapshots).columns
       .find((c) => c.name === 'scan_path');
     expect(column).toBeDefined();
-    expect(column!.notNull).toBe(false);
+    expect(column!.notNull).toBe(true);
   });
 
   it('indexes snapshots on (device_id, scan_path, captured_at) and drops the old two-column index', () => {
@@ -33,27 +30,20 @@ describe('filesystem schema — the scan-path axis (spec §4)', () => {
     expect(indexes).not.toContain('idx_device_filesystem_snapshots_device_captured');
   });
 
-  it('keys scan state on a UNIQUE INDEX over (device_id, scan_path), not a primary key', () => {
-    // Amendment 16: a primary key needs the NOT NULL W03 owns, and the old
-    // single-column key had to go now because it permits one row per device.
-    // ON CONFLICT (device_id, scan_path) infers a plain unique index exactly
-    // as it would a constraint, so the writer contract is unchanged.
+  it('keys scan state on the composite (device_id, scan_path) primary key', () => {
     const config = getTableConfig(deviceFilesystemScanState);
-    expect(config.primaryKeys).toHaveLength(0);
-    const unique = config.indexes.find(
-      (i) => i.config.name === 'device_filesystem_scan_state_device_path_uidx',
-    );
-    expect(unique, 'the (device_id, scan_path) unique index is missing').toBeDefined();
-    expect(unique!.config.unique).toBe(true);
-    expect(unique!.config.columns.map((c) => (c as { name: string }).name))
+    expect(config.primaryKeys).toHaveLength(1);
+    expect(config.primaryKeys[0]!.columns.map((column) => column.name))
       .toEqual(['device_id', 'scan_path']);
+    expect(config.indexes.some((index) => index.config.name === 'device_filesystem_scan_state_device_path_uidx'))
+      .toBe(false);
   });
 
-  it('records a nullable scan_path and scan_generation on scan state', () => {
+  it('requires scan_path but keeps generation fields nullable on scan state', () => {
     const byName = new Map(
       getTableConfig(deviceFilesystemScanState).columns.map((c) => [c.name, c]),
     );
-    expect(byName.get('scan_path')?.notNull).toBe(false);
+    expect(byName.get('scan_path')?.notNull).toBe(true);
     // The filesystem_analysis command id owning the current run (amendment 18).
     expect(byName.get('last_applied_command_id')).toBeDefined();
     expect(byName.get('last_applied_command_id')!.notNull).toBe(false);

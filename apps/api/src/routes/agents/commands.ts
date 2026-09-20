@@ -87,6 +87,7 @@ export const commandsRoutes = new Hono();
  * receive — a behaviour change beyond this PR's one intentional one.
  */
 const REGISTRY_DISPATCHED_COMMAND_TYPES = new Set([
+  'file_delete',
   'network_discovery',
   'hyperv_backup',
   'mssql_backup',
@@ -371,7 +372,8 @@ commandsRoutes.post(
     // 'timeout'`, written by the wait deadline in commandQueue or by the stale
     // reaper) remains acceptable for non-PAM commands. Every other terminal
     // result preserves the historical short circuit.
-    if (!commandAcceptsAgentResult(command.status, command.result, command.type)) {
+    const acceptsResult = commandAcceptsAgentResult(command.status, command.result, command.type);
+    if (!acceptsResult && command.type !== 'file_delete') {
       return c.json({ success: true });
     }
 
@@ -401,6 +403,23 @@ commandsRoutes.post(
       heuristicallyRedacted,
       rawStdout,
     );
+
+    // Cleanup evidence can arrive after cancellation or a terminal result.
+    // Authorize using the stored command above and redact before persisting;
+    // this supplements the run without reopening the command.
+    const recordSupplementalCleanup = async () => {
+      const payload = command.payload as { cleanupRunId?: unknown } | null;
+      if (command.type !== 'file_delete' || typeof payload?.cleanupRunId !== 'string' || !payload.cleanupRunId) return;
+      const { commandResultHandlers } = await import('../../services/commandResultHandlers');
+      await commandResultHandlers.file_delete!({
+        agentId: agent.agentId ?? agentId, command, commandId, result: normalizedData,
+        resolvedDeviceId: command.deviceId, stdout,
+      });
+    };
+    if (!acceptsResult) {
+      await recordSupplementalCleanup();
+      return c.json({ success: true });
+    }
 
     // D20-D (REST twin of agentWs.ts processCommandResult): mssql_backup and
     // hyperv_backup's FIRST reply can be a non-terminal queue-admission/
@@ -480,6 +499,7 @@ commandsRoutes.post(
     }
 
     if (updatedRows.length === 0) {
+      await recordSupplementalCleanup();
       return c.json({ success: true });
     }
 

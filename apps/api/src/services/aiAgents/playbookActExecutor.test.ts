@@ -688,3 +688,65 @@ describe('executeBuiltInPlaybookForRun — variable substitution preserves array
     expect(capturedInput).toMatchObject({ deviceId: 'device-1', action: 'execute', paths: ['/tmp/a', '/tmp/b'] });
   });
 });
+
+
+describe('executeBuiltInPlaybookForRun — late step variables', () => {
+  const cleanupRunId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const preview: PlaybookStep = {
+    type: 'act', name: 'Preview', description: '', tool: 'disk_cleanup',
+    toolInput: { deviceId: '{{deviceId}}', action: 'preview' },
+  };
+  const execute: PlaybookStep = {
+    type: 'act', name: 'Execute', description: '', tool: 'disk_cleanup',
+    toolInput: { deviceId: '{{deviceId}}', action: 'execute', cleanupRunId: '{{cleanupRunId}}', paths: '{{cleanupPaths}}' },
+  };
+
+  async function runSteps(steps: PlaybookStep[], variables: Record<string, unknown>, executeToolFn: PlaybookExecutorDeps['executeToolFn']) {
+    const { createHash } = await import('node:crypto');
+    const digest = createHash('sha256').update(JSON.stringify(steps)).digest('hex');
+    dbMockState.playbookRows = [{
+      id: 'pb-late', name: 'Disk Cleanup', steps, isBuiltIn: true, isActive: true, orgId: null,
+    }];
+    const deps = makeDeps({
+      executeToolFn,
+      revalidate: vi.fn(async ({ input }) => {
+        const normalized = diskCleanupOp.normalizeTarget(input, RUN.deviceId);
+        if (!normalized.ok) return { ok: false as const, deny: normalized.reason };
+        return { ok: true as const, pin: { op: diskCleanupOp, target: normalized.target } };
+      }),
+    });
+    return executeBuiltInPlaybookForRun({
+      run: RUN, agentAuth: AGENT_AUTH, playbookId: 'pb-late', expectedDigest: digest,
+      variables, reserved: { count: 0 }, deadlineMs: FAR_FUTURE_DEADLINE, deps,
+    });
+  }
+
+  it('resolves {{cleanupRunId}} from the previous step output and preserves array variables', async () => {
+    const executeToolFn = vi.fn()
+      .mockResolvedValueOnce(JSON.stringify({ cleanupRunId, candidates: [] }))
+      .mockResolvedValueOnce(JSON.stringify({ status: 'executed' }));
+    const outcome = await runSteps([preview, execute], { cleanupPaths: ['/tmp/a'], cleanupRunId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' }, executeToolFn);
+    expect(outcome.execution).toBe('succeeded');
+    const executeInput = executeToolFn.mock.calls[1]![1] as Record<string, unknown>;
+    expect(executeInput.cleanupRunId).toBe(cleanupRunId);
+    expect(executeInput.paths).toEqual(['/tmp/a']);
+  });
+
+  it('leaves an unresolved {{cleanupRunId}} token alone so normalizeTarget fails closed', async () => {
+    const executeToolFn = vi.fn();
+    const outcome = await runSteps([execute], { cleanupPaths: ['/tmp/a'] }, executeToolFn);
+    expect(outcome.execution).toBe('failed');
+    expect(executeToolFn).not.toHaveBeenCalled();
+  });
+
+  it('still forces deviceId back to the run device after late resolution', async () => {
+    const executeToolFn = vi.fn()
+      .mockResolvedValueOnce(JSON.stringify({ cleanupRunId, deviceId: 'output-controlled-device' }))
+      .mockResolvedValueOnce(JSON.stringify({ status: 'executed' }));
+    const outcome = await runSteps([preview, execute], {
+      cleanupPaths: ['/tmp/a'], deviceId: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+    }, executeToolFn);
+    expect(outcome.execution).toBe('succeeded');
+    expect((executeToolFn.mock.calls[1]![1] as Record<string, unknown>).deviceId).toBe(RUN.deviceId);
+  });
+});

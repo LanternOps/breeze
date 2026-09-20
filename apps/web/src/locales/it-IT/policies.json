@@ -844,7 +844,13 @@
         "inherited": "Ereditato",
         "overrideValue": "Valore di override",
         "overridesLabel": "Override:",
-        "failedToLoadMonitors": "Impossibile caricare i monitor"
+        "failedToLoadMonitors": "Impossibile caricare i monitor",
+        "createMonitor": "Crea monitor",
+        "recommended": {
+          "title": "Monitor consigliati",
+          "body": "Breeze include monitor integrati per CPU, memoria, disco e conformità delle patch. Nessuno è ancora collegato a questa policy.",
+          "action": "Collega tutti i monitor integrati"
+        }
       },
       "pamTab": {
         "captureWindowsUACElevationPrompts": "Acquisisci prompt di elevazione UAC di Windows",
@@ -1201,6 +1207,15 @@
         "save": "Salva",
         "cancel": "Annulla",
         "none": "Nessuna motivazione registrata."
+      },
+      "legacyFreeze": {
+        "title": "Le nuove regole vengono create come monitor",
+        "body": "Le regole esistenti restano modificabili qui e verranno convertite in monitor nella prossima versione.",
+        "link": "Apri la scheda Monitor"
+      },
+      "duplicate": {
+        "title": "I dispositivi di questa policy genereranno avvisi doppi",
+        "body": "Queste condizioni esistono sia come monitor collegato sia come regola o controllo legacy: {{names}}"
       }
     }
   },

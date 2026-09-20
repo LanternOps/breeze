@@ -4,7 +4,7 @@ import { afterAll, describe, expect, it, vi } from 'vitest';
 import type { Worker } from 'bullmq';
 import { eq } from 'drizzle-orm';
 import { withSystemDbAccessContext } from '../../db';
-import { alerts, alertNotifications, devices, notificationChannels } from '../../db/schema';
+import { alerts, alertNotifications, devices, notificationChannels, notificationRoutingRules } from '../../db/schema';
 import { createOrganization, createPartner, createSite } from './db-utils';
 import { getTestDb } from './setup';
 
@@ -34,8 +34,12 @@ import {
 import { closeRedis } from '../../services/redis';
 
 let worker: Worker | undefined;
+let routingRuleId: string | undefined;
 afterAll(async () => {
   await worker?.close();
+  if (routingRuleId) {
+    await getTestDb().delete(notificationRoutingRules).where(eq(notificationRoutingRules.id, routingRuleId));
+  }
   await shutdownNotificationDispatcher();
   await closeRedis();
 });
@@ -67,6 +71,12 @@ describe('webhook durable retry scheduling', () => {
         config: { url: `https://example.com/${name}`, retryCount: 2 },
       })),
     ).returning();
+    const [routingRule] = await db.insert(notificationRoutingRules).values({
+      orgId: org.id, partnerId: null, name: 'Everything else',
+      isDefault: true, conditions: {}, priority: 1000000,
+      channelIds: channels.map((channel) => channel.id), enabled: true,
+    }).returning({ id: notificationRoutingRules.id });
+    routingRuleId = routingRule!.id;
     const queue = getNotificationQueue();
     const result = await withSystemDbAccessContext(() => processAlertNotifications({ type: 'process-alert', alertId: alert!.id }));
     expect(result.queued).toBe(3);

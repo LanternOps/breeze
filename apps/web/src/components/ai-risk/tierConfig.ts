@@ -84,6 +84,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'get_compliance_status', description: 'Device-level compliance status', category: 'Security & Compliance' },
       // Alerts & Notifications
       { name: 'manage_alerts (list/get)', description: 'View alerts', category: 'Alerts & Notifications' },
+      { name: 'manage_delivery (resolve/list_routing/list_escalation)', description: 'Preview alert delivery and view routing rules and escalation policies', category: 'Alerts & Notifications' },
       { name: 'manage_notification_channels (list)', description: 'List notification channels', category: 'Alerts & Notifications' },
       { name: 'manage_alert_rules (list_rules/get_rule/test_rule)', description: 'View alert rules', category: 'Alerts & Notifications' },
       // Files, Disk & Registry
@@ -250,6 +251,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'restore_snapshot', description: 'Restore a backup snapshot', category: 'Backup & Recovery' },
       // Monitoring & Analytics
       { name: 'manage_monitors (create/update/delete)', description: 'Create, update, or delete monitors', category: 'Monitoring & Analytics' },
+      { name: 'manage_delivery (create_routing/update_routing/delete_routing/set_default/create_escalation/update_escalation/delete_escalation)', description: 'Manage alert routing, default destinations, and escalation policies (requires approval)', category: 'Alerts & Notifications' },
       // Monitor definitions (#5289 Task 8): ordinary config-object CRUD
       // (create/update/delete/enable/disable/attach/detach) — supervised, same
       // class as the software/browser/peripheral policy tools.

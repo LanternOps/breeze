@@ -25,7 +25,7 @@ branch: (set by feature-lifecycle after registration)
 - **Persistent ledger is required in PR1 (D2/D4).** Consume `GET /monitor-definitions/conversion/ledger?orgId&policyId&cursor&limit`; history remains accessible after the conversion panel disappears. `revertable` controls Undo; W05d returns `409 conversion_revert_unavailable` before mutation for removed runtimes.
 - **Standalone template groups (D13).** One conversion includes every rule of its template and one ledger entry, with reference-aware reversal and preserved alert provenance. The client refreshes the whole table after conversion; it never promises one monitor per rule. Standalone `alert_rules` keep the existing `POST /monitor-definitions/convert-from-rule/:id` path. `ConversionSourceTable` covers `alert_templates` (an unmanaged template *and* its rules) but not a bare `alert_rules` row, so the library's Needs-conversion view reuses `LegacyRulesPage`'s table (extracted, Task 6) for those and W05c1's per-policy routes for everything else. `/alerts/rules` itself stays until W05d, rendering the same extracted table.
 - **Which policies "need conversion" is decided by the API count, not by the client.** `GET /monitor-definitions/conversion/pending?orgId` returns counts only. The library view lists candidate policies from the org's policy list filtered on an unretired-capable legacy link (`featureType in ('alert_rule','monitoring','automation')`); that over-approximates after conversion (the link row survives, only its child rows are retired), which is why the per-policy panel hides itself when the preview returns zero items. The banner text always uses the API's counts.
-- **Three PRs:** PR1 = Tasks 1–8; PR2 = Tasks 9–13; PR3 = Tasks 14–18. PR3 depends on merged PR1 and PR2 for aggregate verification. Every PR targets `main`; never branch from an unmerged sibling.
+- **Three PRs:** PR1 = Tasks 1–8; PR2 = Tasks 9–13; PR3 = Tasks 14–18. PR3 depends on merged PR1 and PR2 for aggregate verification. Every PR targets `main`; never branch from an unmerged sibling. Each PR gate runs the full API unit suite: `cd apps/api && npx vitest run` (D27).
 - **Tabs are not removed in this wave.** `AlertRuleTab.tsx` and `MonitoringTab.tsx` stay mounted; `featureTypeParity.test.ts` (every `CONFIG_FEATURE_TYPES` entry has a tab) must stay green untouched. Their removal, the `#alert_rule`/`#monitoring` hash redirects and `RETIRED_CONFIG_FEATURE_TYPES` are W05d.
 
 ## Global Constraints
@@ -3990,11 +3990,13 @@ const activePreview = useRef<AbortController | null>(null);
   3. Otherwise the first matching routing row wins: ascending priority, organization
      rows before partner rows at equal priority. Match severity, monitor kind and site.
   4. The organization's **Everything else** row wins over the partner's default row.
-     Empty default channels mean inbox only. With neither default, delivery is inbox only.
+     Empty default channels stop channel sends; escalation still applies. With neither
+     default nor explicit escalation, delivery is inbox only.
 
-  Escalation resolves independently: the monitor's explicit policy, then the winning
-  routing row's policy. During W05c, unconverted legacy sources retain their existing
-  overrides; conversion carries them onto the monitor.
+  Escalation resolves independently unless the monitor is set to inbox only: the monitor's
+  explicit policy, then an unretired legacy source's explicit policy, then the winning
+  routing row's policy, then none. During W05c, legacy channel overrides also precede routing;
+  conversion carries these settings onto the monitor. W05d removes the legacy arm.
 
   New channels receive no alerts until added to a routing row or monitor override.
   The monitor's resolved preview uses the same delivery decision as dispatch. Eligible
@@ -4008,7 +4010,7 @@ const activePreview = useRef<AbortController | null>(null);
   s = re.sub(r'^- \*\*Delivery\*\*.*$', '- **Delivery** -- non-default rows run in priority order, organization before partner at equal priority. The organization Everything else row shadows the partner default. Adding a channel never subscribes it automatically.', s, flags=re.M)
   s = s.replace('Escalation policies support the same `ownerScope` field via the API.', 'Escalation policies use the same ownership selector on Delivery.')
   s = s.replace('**Alerts > Channels** page', '**Alerts → Delivery** page')
-  s = re.sub(r'^Verify that notification channels exist.*$', 'Inspect the monitor Notify preview and the matching Delivery row. Confirm its channels are enabled and subscribed, and test the destination. An empty Everything else row intentionally means inbox only.', s, flags=re.M)
+  s = re.sub(r'^Verify that notification channels exist.*$', 'Inspect the monitor Notify preview and the matching Delivery row. Confirm its channels are enabled and subscribed, and test the destination. Empty Everything else channels stop initial channel delivery; any resolved escalation still applies.', s, flags=re.M)
   p.write_text(s)
 
   p = base / 'features/configuration-policies.mdx'
@@ -4130,13 +4132,8 @@ const activePreview = useRef<AbortController | null>(null);
   root_dir="$(git rev-parse --show-toplevel)"
   cd "$root_dir"
   (cd packages/shared && npx tsc --noEmit -p . && npx vitest run src/validators/fleetDesign.test.ts src/validators/monitors.test.ts)
-  (cd apps/api && npx tsc --noEmit -p . && npx vitest run \
-    src/services/monitors src/services/fleetDesign src/services/aiToolsConfigPolicy.test.ts \
-    src/services/aiToolsFleet src/services/aiAgentSdkTools.mcpCoverage.test.ts \
-    src/services/aiAgents/outcomeTools.test.ts src/services/aiAgents/runLoop.design.test.ts \
-    src/services/aiAgents/fleetDesignReport.test.ts src/jobs/automationWorker.test.ts \
-    src/routes/admin/monitorConversion.test.ts src/routes/monitorDefinitions \
-    src/__tests__/partner-wide-write-coverage.test.ts src/__tests__/site-ceiling-write-coverage.test.ts)
+  (cd apps/api && npx tsc --noEmit -p .)
+  (cd apps/api && npx vitest run)
   (cd apps/web && npx tsc --noEmit -p . && npx vitest run \
     src/components/monitoring src/components/automations src/components/fleetDesign \
     src/components/configurationPolicies/ConfigPolicyDetailPage.test.tsx \
@@ -4165,9 +4162,9 @@ const activePreview = useRef<AbortController | null>(null);
     src/__tests__/integration/orgLifecycleFoundations.integration.test.ts)
   git diff --check
   ```
-  The two conversion integration suites are W05c1 outputs; fail if the prerequisite checkout lacks them. Do not use `--passWithNoTests` or silently omit live proofs. This script starts Docker only when the implementer executes the verification task; plan preparation never executes it.
+  Any integration test that seeds a notification channel and expects delivery must also seed a matching routing row or an Everything else row; there is no channel fallback (D27). The two conversion integration suites are W05c1 outputs; fail if the prerequisite checkout lacks them. Do not use `--passWithNoTests` or silently omit live proofs. This script starts Docker only when the implementer executes the verification task; plan preparation never executes it.
 
-- [ ] **Step 4: Run, expect PASS and review the result.** `bash scripts/verify-alerting-consolidation-w05c2.sh`. Expected: all typechecks and targeted suites pass, docs build produces both redirect artifacts, live tenant/cascade/export proofs pass, test stack is torn down, `git diff --check` exits 0. Review the final change list with `git diff --stat` and `git status --short`; no migration, credentials, internal hosts or unrelated edits.
+- [ ] **Step 4: Run, expect PASS and review the result.** `bash scripts/verify-alerting-consolidation-w05c2.sh`. Expected: all typechecks, the full API unit suite and targeted web/shared suites pass, docs build produces both redirect artifacts, live tenant/cascade/export proofs pass, test stack is torn down, `git diff --check` exits 0. Review the final change list with `git diff --stat` and `git status --short`; no migration, credentials, internal hosts or unrelated edits.
 
   Verify these actual browser/API scenarios against the implementation checkout using an authorized test account: a >500-device preview reports progress and cannot confirm stale results; an empty blocked preview still names its prerequisite; conversion updates pending counts and persistent history; retirement creates a zero-output ledger entry; unavailable Undo stays disabled; partner confirmation displays full-scope refusals and sends its preview hash; empty replacement saves retain suppression; composite/restart edits round-trip; the library attaches undeployed built-ins; Alert workflows saves and reloads both filters and retains `ruleId`; a device in a forbidden site cannot be read or reset; a latched accessible device resets with feedback; both retired settings URLs return 301; a Fleet apply creates only `monitors` links and a second apply creates no duplicate definitions. Record actual command outcomes and any blocker in the PR description, never pre-fill “PASS” from this plan. These observations supplement, rather than replace, the executable tests above.
 

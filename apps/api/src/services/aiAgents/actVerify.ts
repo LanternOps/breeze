@@ -410,7 +410,7 @@ export async function verifyActExecution(args: VerifyActExecutionArgs): Promise<
 export function actTargetSummary(target: ActTarget): string {
   switch (target.kind) {
     case 'service': return target.serviceName;
-    case 'disk_cleanup': return `${target.paths.length} path(s)`;
+    case 'disk_cleanup': return `${target.paths.length} path(s) from run ${target.cleanupRunId}`;
     case 'process': return target.processName;
     case 'script': return target.scriptId;
     case 'playbook': return target.playbookId;

@@ -23,14 +23,20 @@ const SAMPLES: Record<string, Record<string, unknown>> = {
   backup_continuity: { check: 'no_successful_backup', maxAgeHours: 26 },
   script: { scriptId: '11111111-2222-4333-8444-555555555555', intervalMinutes: 60, timeoutSeconds: 300 },
   network_check: { checkType: 'icmp_ping', target: '10.0.0.1' },
+  // W05c1: composite compiles to a group, so the per-kind loop below validates
+  // the whole tree through validateConditions like every leaf.
+  composite: {
+    match: 'any',
+    children: [
+      { kind: 'cpu', condition: { operator: 'gt', value: 90 } },
+      { kind: 'offline', condition: { durationMinutes: 10 } },
+    ],
+  },
 };
 
 describe('monitor kind registry (#5289)', () => {
-  // W04 (#5291): the one assertion in this wave that cannot pass by accident —
-  // it fails at 13 until MONITOR_KINDS is widened, which is what makes the
-  // per-kind loop below a real control rather than a vacuous one.
-  it('ships eighteen kinds after W04', () => {
-    expect(MONITOR_KINDS).toHaveLength(18);
+  it('ships nineteen kinds after W05c1', () => {
+    expect(MONITOR_KINDS).toHaveLength(19);
   });
 
   it('has a spec for every kind and every compiled condition validates against alertConditions', () => {
@@ -49,8 +55,11 @@ describe('monitor kind registry (#5289)', () => {
   });
 
   it('process_resource picks the handler type from resource', () => {
-    expect(MONITOR_KIND_SPECS.process_resource.toAlertCondition({ resource: 'memory', processName: 'x', operator: 'gt', value: 1 }, { monitorId: 'm1' }).type)
-      .toBe('process_memory_high');
+    const compiled = MONITOR_KIND_SPECS.process_resource.toAlertCondition(
+      { resource: 'memory', processName: 'x', operator: 'gt', value: 1 }, { monitorId: 'm1' });
+    expect('type' in compiled).toBe(true);
+    if (!('type' in compiled)) throw new Error('Expected a leaf condition');
+    expect(compiled.type).toBe('process_memory_high');
   });
 
   it('applyOverrides only touches overridable keys and re-validates', () => {

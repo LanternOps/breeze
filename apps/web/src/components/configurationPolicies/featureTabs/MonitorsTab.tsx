@@ -1,3 +1,5 @@
+import { findDuplicateConditions } from "./duplicateConditions";
+import { DuplicateConditionNotice } from "./DuplicateConditionNotice";
 import { useState, useEffect } from "react";
 import { Radar, Trash2 } from "lucide-react";
 import type { FeatureTabProps } from "./types";
@@ -14,6 +16,8 @@ type MonitorCatalogEntry = {
   kind: string;
   severity: string;
   enabled: boolean;
+  builtinKey: string | null;
+  condition: Record<string, unknown> | null;
 };
 
 // The attachment list this tab edits — mirrors monitorAttachmentItemSchema
@@ -55,8 +59,13 @@ export default function MonitorsTab({
   onLinkChanged,
   linkedPolicyId,
   parentLink,
+  allLinks = [],
 }: FeatureTabProps) {
-  useTranslation("policies");
+  const { t } = useTranslation("policies");
+  const linkOf = (type: string) => allLinks.find((link) => link.featureType === type);
+  const inlineRules = (linkOf("alert_rule")?.inlineSettings as { items?: Array<{ name?: string; conditions?: Array<Record<string, unknown>> }> } | undefined)?.items ?? [];
+  const watches = (linkOf("monitoring")?.inlineSettings as { watches?: Array<{ watchType?: string; name?: string; enabled?: boolean }> } | undefined)?.watches ?? [];
+
   const { save, remove, saving, error, clearError } = useFeatureLink(policyId);
   const isInherited = !!parentLink && !existingLink;
 
@@ -98,6 +107,10 @@ export default function MonitorsTab({
             kind: String(r.kind ?? ""),
             severity: String(r.severity ?? ""),
             enabled: Boolean(r.enabled),
+            builtinKey: typeof r.builtinKey === "string" ? r.builtinKey : null,
+            condition: r.condition && typeof r.condition === "object" && !Array.isArray(r.condition)
+              ? r.condition as Record<string, unknown>
+              : null,
           })),
         );
       })
@@ -122,6 +135,14 @@ export default function MonitorsTab({
   const catalogById = new Map(catalog.map((c) => [c.id, c]));
   const attachedIds = new Set(items.map((it) => it.monitorId));
   const availableToAttach = catalog.filter((c) => !attachedIds.has(c.id));
+
+  const builtIns = catalog.filter((c) => Boolean(c.builtinKey));
+  const anyBuiltInAttached = items.some((item) => builtIns.some((b) => b.id === item.monitorId));
+  const attachBuiltIns = () => setItems((previous) => {
+    const attached = new Set(previous.map((item) => item.monitorId));
+    return [...previous, ...builtIns.filter((b) => !attached.has(b.id))
+      .map((b) => ({ monitorId: b.id, enabled: true }))];
+  });
 
   const handleAttach = (monitorId: string) => {
     if (!monitorId || attachedIds.has(monitorId)) return;
@@ -228,6 +249,7 @@ export default function MonitorsTab({
         !isInherited && !!linkedPolicyId && !!existingLink ? handleRevert : undefined
       }
     >
+      <DuplicateConditionNotice hits={findDuplicateConditions({ attached: items, catalog, inlineRules, watches })} />
       <div className="space-y-6">
         <div>
           <label className="text-sm font-medium" htmlFor="monitors-tab-attach-select">
@@ -235,6 +257,11 @@ export default function MonitorsTab({
               "policies:configurationPolicies.featureTabs.monitorsTab.attachMonitor",
             )}
           </label>
+          <a data-testid="monitors-tab-create"
+            href={`/alerts/monitors/new#policy=${encodeURIComponent(policyId)}`}
+            className="inline-flex h-9 items-center rounded-md border px-3 text-sm hover:bg-muted">
+            {t('configurationPolicies.featureTabs.monitorsTab.createMonitor')}
+          </a>
           <select
             id="monitors-tab-attach-select"
             data-testid="monitors-tab-attach-select"
@@ -265,6 +292,20 @@ export default function MonitorsTab({
             ))}
           </select>
         </div>
+
+        {!catalogLoading && !catalogError && builtIns.length > 0 && !anyBuiltInAttached && (
+          <div data-testid="monitors-tab-recommended" className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-md border border-dashed p-3 text-sm">
+            <div>
+              <p className="font-medium">{t('configurationPolicies.featureTabs.monitorsTab.recommended.title')}</p>
+              <p className="text-muted-foreground">{t('configurationPolicies.featureTabs.monitorsTab.recommended.body')}</p>
+            </div>
+            <button type="button" data-testid="monitors-tab-recommended-attach"
+              className="inline-flex h-9 items-center rounded-md bg-primary px-3 text-primary-foreground"
+              onClick={attachBuiltIns}>
+              {t('configurationPolicies.featureTabs.monitorsTab.recommended.action')}
+            </button>
+          </div>
+        )}
 
         {items.length === 0 ? (
           <p className="text-sm text-muted-foreground">
