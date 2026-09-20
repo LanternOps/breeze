@@ -669,11 +669,26 @@ async function stopRunningEntry(
   }
   // CAS on ended_at IS NULL: two concurrent stops -> one winner, one no-op.
   // Duration computed in SQL from the row's own started_at (avoids a pre-select round-trip).
+  // Built ONCE and inlined by billableMinutesSql in both of its branches: the
+  // column is being assigned in this same UPDATE, so a `duration_minutes`
+  // reference inside the fragment would read the OLD (NULL) value and the
+  // CHECK would reject the row (23514). For the same reason, a stop that also
+  // rewrites the terms must hand billableMinutesSql the NEW ones — SET reads
+  // the old row, the CHECK validates the new one.
+  const durationExpr = sql`FLOOR(EXTRACT(EPOCH FROM (${now.toISOString()}::timestamp - ${timeEntries.startedAt})) / 60)::int`;
   const rows = await db
     .update(timeEntries)
     .set({
       endedAt: now,
-      durationMinutes: sql`FLOOR(EXTRACT(EPOCH FROM (${now.toISOString()}::timestamp - ${timeEntries.startedAt})) / 60)::int`,
+      durationMinutes: durationExpr,
+      // Spec §3.5 — same arithmetic as computeBillableMinutes(), pinned by
+      // time_entries_billable_minutes_chk.
+      billableMinutes: billableMinutesSql(durationExpr, billingOverride
+        ? {
+          minimumMinutes: billingOverride.minimumMinutes,
+          roundingIncrementMinutes: billingOverride.roundingIncrementMinutes,
+        }
+        : {}),
       ...(overrides.description !== undefined ? { description: overrides.description } : {}),
       ...(billingOverride ?? {})
     })
@@ -936,6 +951,29 @@ export async function updateTimeEntry(id: string, input: UpdateTimeEntryInput, a
   if ((input.startedAt !== undefined || input.endedAt !== undefined) && endedAt) {
     set.durationMinutes = computeDurationMinutes(startedAt, endedAt);
     changed.push('durationMinutes');
+  }
+  // Spec §3.5 — recompute the billed quantity whenever EITHER the duration or
+  // the card terms on this row move. Mobile replays a stop as PATCH { endedAt }
+  // (apps/mobile/src/services/timeEntryReplay.test.ts), so this branch — not
+  // just stopRunningEntry — is a real stop path. Placed after the re-price and
+  // override blocks so a re-price and a duration change in one PATCH both feed
+  // the same recompute.
+  if (
+    set.durationMinutes !== undefined ||
+    set.minimumMinutes !== undefined ||
+    set.roundingIncrementMinutes !== undefined
+  ) {
+    const nextDuration = (set.durationMinutes as number | undefined) ?? entry.durationMinutes;
+    const nextMinimum = set.minimumMinutes !== undefined
+      ? (set.minimumMinutes as number | null) : entry.minimumMinutes;
+    const nextIncrement = set.roundingIncrementMinutes !== undefined
+      ? (set.roundingIncrementMinutes as number | null) : entry.roundingIncrementMinutes;
+    set.billableMinutes = computeBillableMinutes({
+      durationMinutes: nextDuration ?? null,
+      minimumMinutes: nextMinimum ?? null,
+      roundingIncrementMinutes: nextIncrement ?? null,
+    });
+    changed.push('billableMinutes');
   }
 
   // W6-G4-2: validate the rate against the currency this row will actually carry

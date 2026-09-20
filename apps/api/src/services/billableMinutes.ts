@@ -43,13 +43,30 @@ export function computeBillableMinutes(input: {
  *
  * `durationExpr` is inlined TWICE on purpose: the CAS sets duration_minutes in
  * the same UPDATE, so a column reference would still see the OLD value.
+ *
+ * `terms` exists for the same reason one level up. An UPDATE's SET expressions
+ * are evaluated against the OLD row, but the CHECK validates the NEW one — so
+ * a statement that ALSO rewrites minimum_minutes / rounding_increment_minutes
+ * (a manager's stop-with-override) must pass the new values here. Leaving a
+ * term out reads that row's existing column, which is correct only when the
+ * same statement leaves it alone.
  */
-export function billableMinutesSql(durationExpr: SQL | number): SQL<number> {
+export function billableMinutesSql(
+  durationExpr: SQL | number,
+  terms: {
+    minimumMinutes?: SQL | number | null;
+    roundingIncrementMinutes?: SQL | number | null;
+  } = {}
+): SQL<number> {
   const d = sql`(${durationExpr})`;
+  const term = (value: SQL | number | null | undefined, column: SQL): SQL =>
+    value === undefined ? column : value === null ? sql`NULL::int` : sql`${value}::int`;
+  const min = term(terms.minimumMinutes, sql`${timeEntries.minimumMinutes}`);
+  const inc = term(terms.roundingIncrementMinutes, sql`${timeEntries.roundingIncrementMinutes}`);
   return sql<number>`GREATEST(
-    COALESCE(${timeEntries.minimumMinutes}, 0),
-    CASE WHEN COALESCE(${timeEntries.roundingIncrementMinutes}, 0) > 0
-         THEN (CEIL(${d}::numeric / ${timeEntries.roundingIncrementMinutes}) * ${timeEntries.roundingIncrementMinutes})::int
+    COALESCE(${min}, 0),
+    CASE WHEN COALESCE(${inc}, 0) > 0
+         THEN (CEIL(${d}::numeric / ${inc}) * ${inc})::int
          ELSE ${d} END
   )::int`;
 }

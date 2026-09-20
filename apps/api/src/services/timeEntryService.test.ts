@@ -2237,3 +2237,100 @@ describe('billable_minutes write paths (#4628 W03)', () => {
     });
   });
 });
+
+describe('both stop paths land billable_minutes (#4628 W03)', () => {
+  const span = { startedAt: new Date('2026-03-03T09:00:00Z'), endedAt: new Date('2026-03-03T09:20:00Z') };
+  const tech = { ...ACTOR, manageBilling: false };
+  const manager = { ...tech, manageBilling: true };
+  const card = { id: 'profile-1', currencyCode: 'USD', baseCoverage: 'billable', baseHourlyRate: '225.00',
+    baseMinimumMinutes: 60, roundingIncrementMinutes: 15, rules: [] };
+  const entry = { id: 'te-1', partnerId: 'p-1', orgId: 'o-1', ticketId: 't-1', userId: ACTOR.userId,
+    startedAt: span.startedAt, endedAt: span.endedAt, durationMinutes: 20, isApproved: false,
+    currencyCode: 'USD', workTypeId: null, billingProfileId: 'profile-1', coverage: 'billable',
+    isBillable: true, hourlyRate: '225.00', minimumMinutes: 60, roundingIncrementMinutes: 15,
+    billingStatus: 'not_billed', billingOverridden: false };
+
+  /** Flatten a drizzle SQL fragment into its literal text chunks. */
+  const chunkText = (node: unknown): string => {
+    if (node == null || typeof node !== 'object') return '';
+    const n = node as Record<string, unknown>;
+    if (Array.isArray(n.queryChunks)) return (n.queryChunks as unknown[]).map(chunkText).join('');
+    if (Array.isArray(n.value) && (n.value as unknown[]).every((v) => typeof v === 'string')) {
+      return (n.value as string[]).join('');
+    }
+    return '';
+  };
+  /** Every real column the fragment references, by its SQL name. */
+  const columnNames = (node: unknown): string[] => {
+    if (node == null || typeof node !== 'object') return [];
+    const n = node as Record<string, unknown>;
+    if (Array.isArray(n.queryChunks)) return (n.queryChunks as unknown[]).flatMap(columnNames);
+    if (typeof n.name === 'string' && n.table !== undefined) return [n.name];
+    return [];
+  };
+
+  beforeEach(() => { cardMocks.loadCardsForOrg.mockResolvedValue({ assignedCard: card, partnerDefaultCard: null }); });
+
+  it('stopRunningEntry (CAS) sets billable_minutes in the SAME statement, from an inlined duration expression', async () => {
+    dbMocks.updateResult = [entry];
+    await stopTimer({}, tech);
+    const fragment = dbMocks.updateSetArgs[0]!.billableMinutes;
+    const text = chunkText(fragment);
+    expect(text).toContain('GREATEST');
+    expect(text).toContain('CEIL');
+    // The duration expression is INLINED. The CAS assigns duration_minutes in
+    // this same UPDATE, so a column reference would read the OLD (NULL) value
+    // and the CHECK would reject the row (23514).
+    expect(text).toContain('FLOOR(EXTRACT(EPOCH');
+    expect(columnNames(fragment)).not.toContain('duration_minutes');
+    expect(columnNames(fragment)).toEqual(
+      expect.arrayContaining(['minimum_minutes', 'rounding_increment_minutes'])
+    );
+  });
+
+  it('a stop that OVERRIDES the terms computes from the override, not the stale columns', async () => {
+    // The CAS evaluates SET expressions against the OLD row, but the CHECK
+    // validates the NEW one. A manager stop that clears the minimum must not
+    // leave billable_minutes derived from the minimum it just removed, or the
+    // row is rejected with 23514.
+    dbMocks.selectResults.push([{ ...entry, endedAt: null, durationMinutes: null }]);
+    dbMocks.updateResult = [entry];
+    await stopTimer({ isBillable: false }, manager);
+    const set = dbMocks.updateSetArgs[0]!;
+    expect(set.minimumMinutes).toBeNull();
+    expect(set.billableMinutes).toBeDefined();
+    expect(columnNames(set.billableMinutes)).not.toContain('minimum_minutes');
+  });
+
+  it('updateTimeEntry recomputes billable_minutes whenever it recomputes durationMinutes', async () => {
+    dbMocks.selectResults.push([{ ...entry, endedAt: null, durationMinutes: null }]);
+    await updateTimeEntry('te-1', { endedAt: span.endedAt }, tech);
+    expect(dbMocks.updateSetArgs[0]).toMatchObject({ durationMinutes: 20, billableMinutes: 60 });
+  });
+
+  it('updateTimeEntry does NOT touch billable_minutes when neither timestamp nor terms changed', async () => {
+    dbMocks.selectResults.push([entry]);
+    await updateTimeEntry('te-1', { description: 'typo fix' }, tech);
+    expect(dbMocks.updateSetArgs[0]).not.toHaveProperty('billableMinutes');
+  });
+
+  it('updateTimeEntry re-derives billable_minutes when a re-price changes the minimum', async () => {
+    // Spec §3.7: an entry is re-priced when its own workTypeId changes.
+    dbMocks.selectResults.push([{ ...entry, minimumMinutes: null, roundingIncrementMinutes: null }]);
+    await updateTimeEntry('te-1', { workTypeId: 'wt-onsite' }, tech);
+    expect(dbMocks.updateSetArgs[0]).toMatchObject({ minimumMinutes: 60, billableMinutes: 60 });
+  });
+
+  it('a manager raising the minimum re-derives the billed quantity', async () => {
+    dbMocks.selectResults.push([entry]);
+    await updateTimeEntry('te-1', { minimumMinutes: 90 }, manager);
+    expect(dbMocks.updateSetArgs[0]).toMatchObject({ minimumMinutes: 90, billableMinutes: 90 });
+  });
+
+  it('a billed entry cannot be re-timed, so its billed quantity can never move', async () => {
+    dbMocks.selectResults.push([{ ...entry, billingStatus: 'billed' }]);
+    await expect(updateTimeEntry('te-1', { endedAt: new Date('2026-03-03T10:20:00Z') }, manager))
+      .rejects.toMatchObject({ code: 'ENTRY_BILLED', status: 409 });
+    expect(dbMocks.updateSetArgs).toHaveLength(0);
+  });
+});
