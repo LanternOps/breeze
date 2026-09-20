@@ -110,6 +110,21 @@ export const deliveryToolSchema = z.object(deliveryToolShape).strict().superRefi
 
 // Tool schemas
 export const toolInputSchemas: Record<string, z.ZodType> = {
+  list_time_entries: z.object({
+    orgId: uuid.optional(),
+    ticketId: uuid.optional(),
+    userId: uuid.optional(),
+    from: z.string().optional(),
+    to: z.string().optional(),
+    running: z.boolean().optional(),
+    billingStatus: z.enum(['not_billed', 'billed', 'no_charge', 'contract']).optional(),
+    approved: z.boolean().optional(),
+    limit: z.number().int().min(1).max(200).optional(),
+    offset: z.number().int().min(0).optional(),
+  }),
+  get_running_timer: z.object({}),
+  get_timesheet: z.object({ weekStart: z.string(), userId: uuid.optional() }),
+
   query_devices: z.object({
     status: z.enum(['online', 'offline', 'maintenance', 'decommissioned']).optional(),
     osType: z.enum(['windows', 'macos', 'linux']).optional(),

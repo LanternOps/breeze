@@ -151,6 +151,10 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
 
   // ---- tickets ----
   manage_tickets: 'tickets',
+  list_time_entries: 'tickets',
+  get_running_timer: 'tickets',
+  get_timesheet: 'tickets',
+
 
   // ---- patching_software ----
   manage_patches: 'patching_software',

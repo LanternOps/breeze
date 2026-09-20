@@ -162,6 +162,10 @@ export type PostToolUseCallback = (
 // ============================================
 
 export const TOOL_TIERS = {
+  list_time_entries: 1,
+  get_running_timer: 1,
+  get_timesheet: 1,
+
   query_devices: 1,
   search_documentation: 1,
   get_device_details: 1,
@@ -1338,6 +1342,36 @@ export function buildBreezeSdkTools(
   const uuid = z.string().guid();
 
   const tools = [
+    tool(
+      'list_time_entries',
+      registryDescription('list_time_entries'),
+      {
+        orgId: uuid.optional(),
+        ticketId: uuid.optional(),
+        userId: uuid.optional(),
+        from: z.string().optional(),
+        to: z.string().optional(),
+        running: z.boolean().optional(),
+        billingStatus: z.enum(['not_billed', 'billed', 'no_charge', 'contract']).optional(),
+        approved: z.boolean().optional(),
+        limit: z.number().int().min(1).max(200).optional(),
+        offset: z.number().int().min(0).optional(),
+      },
+      makeHandler('list_time_entries', getAuth, onPreToolUse, onPostToolUse)
+    ),
+    tool(
+      'get_running_timer',
+      registryDescription('get_running_timer'),
+      {},
+      makeHandler('get_running_timer', getAuth, onPreToolUse, onPostToolUse)
+    ),
+    tool(
+      'get_timesheet',
+      registryDescription('get_timesheet'),
+      { weekStart: z.string(), userId: uuid.optional() },
+      makeHandler('get_timesheet', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
     tool(
       'search_documentation',
       registryDescription('search_documentation'),

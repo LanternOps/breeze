@@ -219,6 +219,11 @@ interface Binding {
  * comments in `aiGuardrails.ts` beside each mapping.
  */
 const BINDINGS: readonly Binding[] = [
+  // Time reads narrow other-user access to platform admins (route also accepts *:* grants).
+  { tool: 'list_time_entries', routeFile: 'timeEntries/timeEntries.ts', method: 'get', path: '/' },
+  { tool: 'get_running_timer', routeFile: 'timeEntries/timeEntries.ts', method: 'get', path: '/running' },
+  { tool: 'get_timesheet', routeFile: 'timeEntries/timeEntries.ts', method: 'get', path: '/timesheet' },
+
   // §2.5 — report generation is an EXPORT, not a report read.
   { tool: 'generate_report', action: 'generate', routeFile: 'reports/generate.ts', method: 'post', path: '/generate' },
 

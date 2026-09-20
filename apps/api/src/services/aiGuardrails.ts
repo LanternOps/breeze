@@ -716,6 +716,9 @@ export function resolveApprovalScope(
 
 // RBAC permission map: tool → { resource, action } (or action-based overrides)
 export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string } | Record<string, { resource: string; action: string }>> = {
+  list_time_entries: { resource: 'time_entries', action: 'read' },
+  get_running_timer: { resource: 'time_entries', action: 'read' },
+  get_timesheet: { resource: 'time_entries', action: 'read' },
   query_devices: { resource: 'devices', action: 'read' },
   get_device_details: { resource: 'devices', action: 'read' },
   get_vulnerability_report: { resource: 'devices', action: 'read' },
