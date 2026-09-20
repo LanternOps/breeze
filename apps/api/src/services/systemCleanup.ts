@@ -585,8 +585,8 @@ export async function resolveSystemCleanupRunStatus(args: {
     .limit(1);
   if (!run) return { ok: false, status: 404, error: 'run_not_found' };
 
-  const agentUpdateRequired = {
-    ok: false as const, status: 409 as const, error: AGENT_UPDATE_REQUIRED_ERROR, minAgentVersion: MIN_AGENT_VERSION_SYSTEM_CLEANUP,
+  const agentUpdateRequired: SystemCleanupRunStatusResult = {
+    ok: false, status: 409, error: AGENT_UPDATE_REQUIRED_ERROR, minAgentVersion: MIN_AGENT_VERSION_SYSTEM_CLEANUP,
   };
   if (isUnknownCommandTypeError(run.error)) return agentUpdateRequired;
   if (run.commandId) {
