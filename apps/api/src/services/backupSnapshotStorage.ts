@@ -312,6 +312,46 @@ async function fetchLocalObjectText(providerConfig: Record<string, unknown>, key
   return readFile(targetPath, 'utf8');
 }
 
+async function fetchS3ObjectBytes(providerConfig: Record<string, unknown>, key: string): Promise<Uint8Array> {
+  const { bucket, client } = buildS3StorageClient(providerConfig);
+  const response = await client.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+  if (!response.Body) {
+    throw new Error(`Empty response body for ${key}`);
+  }
+  return response.Body.transformToByteArray();
+}
+
+async function fetchLocalObjectBytes(providerConfig: Record<string, unknown>, key: string): Promise<Uint8Array> {
+  const rootPath = getStringValue(providerConfig, 'path') || getStringValue(providerConfig, 'basePath');
+  if (!rootPath) {
+    throw new Error('Local backup storage is misconfigured');
+  }
+  const normalizedKey = pathPosix.normalize(key).replace(/^\/+/, '');
+  const targetPath = ensureContainedLocalPath(rootPath, normalizedKey);
+  const buffer = await readFile(targetPath); // no encoding argument — raw bytes
+  return new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+}
+
+/**
+ * Byte-exact fetch of one object (used by W09 hydration, which SHA-256-hashes
+ * the raw manifest bytes and must match whatever the agent actually wrote —
+ * `fetchBackupObjectText`'s UTF-8 string round-trip is not guaranteed
+ * byte-identical for every input). Same not-found/error semantics as
+ * `fetchBackupObjectText`: throws on any failure, callers classify via
+ * `isBackupObjectNotFound`.
+ */
+export async function fetchBackupObjectBytes(input: {
+  provider: string | null | undefined;
+  providerConfig: unknown;
+  key: string;
+}): Promise<Uint8Array> {
+  const provider = input.provider ?? null;
+  const providerConfig = asRecord(input.providerConfig);
+  if (provider === 's3') return fetchS3ObjectBytes(providerConfig, input.key);
+  if (provider === 'local') return fetchLocalObjectBytes(providerConfig, input.key);
+  throw new Error(`Provider ${provider ?? 'unknown'} does not support object fetch for GC`);
+}
+
 /**
  * Fetches one object's contents as text (used by GC to fetch/parse retained
  * snapshot manifests). Throws on any failure — callers must treat a throw as

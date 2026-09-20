@@ -24,6 +24,7 @@ import {
   checkBackupProviderCapabilities,
   deleteBackupSnapshotArtifacts,
   deleteBackupObjectKeys,
+  fetchBackupObjectBytes,
   fetchBackupObjectText,
   listBackupObjectsUnderPrefix,
 } from './backupSnapshotStorage';
@@ -370,6 +371,25 @@ describe('backup snapshot storage', () => {
       expect(result.failedKeys.every((f) => f.error === 'network down')).toBe(true);
     });
   });
+
+  describe('fetchBackupObjectBytes', () => {
+    it('fetches S3 object bytes via transformToByteArray, not transformToString', async () => {
+      const bytes = new Uint8Array([1, 2, 3]);
+      sendMock.mockResolvedValueOnce({ Body: { transformToByteArray: async () => bytes } });
+      const result = await fetchBackupObjectBytes({
+        provider: 's3',
+        providerConfig: { bucket: 'backups', region: 'us-east-1' },
+        key: 'snapshots/a/manifest.json',
+      });
+      expect(result).toEqual(bytes);
+    });
+
+    it('throws for an unsupported provider, same as fetchBackupObjectText', async () => {
+      await expect(
+        fetchBackupObjectBytes({ provider: 'unknown', providerConfig: {}, key: 'x' }),
+      ).rejects.toThrow(/does not support object fetch/);
+    });
+  });
 });
 
 // Local-provider GC I/O exercised against a REAL tempdir (no mocks): the
@@ -422,6 +442,15 @@ describe('local-provider GC I/O (real filesystem)', () => {
       key: 'snapshots/snapA/manifest.json',
     });
     expect(text).toBe('{"files":[]}');
+  });
+
+  it('reads a local object with no text encoding (raw bytes)', async () => {
+    const result = await fetchBackupObjectBytes({
+      provider: 'local',
+      providerConfig: { path: root },
+      key: 'snapshots/snapA/manifest.json',
+    });
+    expect(Buffer.from(result).toString('utf8')).toBe('{"files":[]}');
   });
 
   it('deletes only the intended keys, leaving siblings intact', async () => {
