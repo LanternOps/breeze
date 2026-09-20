@@ -1,6 +1,8 @@
+import { and, eq, isNull, sql } from 'drizzle-orm';
+import { resolveAutomationAssignmentForDevice } from '../../featureConfigResolver';
 import type { AuthContext } from '../../../middleware/auth';
 import type { DbExecutor } from '../monitorCompiler';
-import { automations, type configPolicyAutomations } from '../../../db/schema';
+import { automations, monitorConversions, type configPolicyAutomations } from '../../../db/schema';
 import { canManagePartnerWidePolicies } from '../../partnerWideAccess';
 import {
   normalizeAutomationActions, resolveAutomationReferencesForOwner, replaceAutomationResourceBindings,
@@ -32,4 +34,15 @@ export async function rehomePolicyWorkflow(
   if (!created) throw new Error('Workflow creation failed');
   await replaceAutomationResourceBindings(tx, created.id, owner, references);
   return created.id;
+}
+
+export async function policyWorkflowApplies(automation: typeof automations.$inferSelect, deviceId: string, tx: DbExecutor): Promise<boolean> {
+  const meta = (automation.trigger as { filter?: { _policyWorkflow?: { policyId: string; sourceId: string } } }).filter?._policyWorkflow;
+  if (!meta) return true;
+  const [ledger] = await tx.select().from(monitorConversions).where(and(
+    eq(monitorConversions.sourceTable, 'config_policy_automations'), eq(monitorConversions.sourceId, meta.sourceId),
+    isNull(monitorConversions.revertedAt), sql`${monitorConversions.sourceState}->>'workflowId' = ${automation.id}`)).limit(1);
+  if (!ledger || ledger.policyId !== meta.policyId) return false;
+  const winner = await resolveAutomationAssignmentForDevice(deviceId, tx);
+  return winner?.automations.some((source) => source.id === meta.sourceId) ?? false;
 }

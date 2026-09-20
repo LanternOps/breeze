@@ -2,7 +2,9 @@ import { beforeEach, expect, it, vi } from 'vitest';
 import type { AuthContext } from '../../../middleware/auth';
 import type { configPolicyAutomations } from '../../../db/schema';
 import type { DbExecutor } from '../monitorCompiler';
-import { rehomePolicyWorkflow } from './workflows';
+import { resolveAutomationAssignmentForDevice } from '../../featureConfigResolver';
+vi.mock('../../featureConfigResolver', () => ({ resolveAutomationAssignmentForDevice: vi.fn() }));
+import { rehomePolicyWorkflow, policyWorkflowApplies } from './workflows';
 
 const mocks = vi.hoisted(() => ({ references: vi.fn(), bindings: vi.fn() }));
 vi.mock('../../automationRuntime', () => ({
@@ -76,4 +78,21 @@ it('rejects missing created rows and propagates binding failures to roll back th
 });
 it('requires a transaction so a binding failure cannot leave a standalone workflow committed', async () => {
   await expect(rehomePolicyWorkflow({} as DbExecutor, source, policy, auth)).rejects.toThrow('Workflow requires a transaction');
+});
+
+it('uses the shared winner, including converted sources, for broad workflow coverage', async () => {
+  const tx: any = { select: () => ({ from: () => ({ where: () => ({ limit: async () => [{ policyId: 'policy' }] }) }) }) };
+  const automation = { id: 'workflow', trigger: { filter: { _policyWorkflow: { policyId: 'policy', sourceId: 'child-source' } } } };
+  vi.mocked(resolveAutomationAssignmentForDevice).mockResolvedValue({ configPolicyId: 'child', automations: [{ id: 'child-source', retiredAt: new Date() } as never] });
+  expect(await policyWorkflowApplies(automation as never, 'device', tx)).toBe(true);
+  expect(resolveAutomationAssignmentForDevice).toHaveBeenLastCalledWith('device', tx);
+  vi.mocked(resolveAutomationAssignmentForDevice).mockResolvedValue({ configPolicyId: 'parent', automations: [{ id: 'parent-source' } as never] });
+  expect(await policyWorkflowApplies(automation as never, 'device', tx)).toBe(false);
+});
+
+
+it.each([{ rows: [] }, { rows: [{ policyId: 'other' }] }])('rejects missing or mismatched live workflow provenance', async ({ rows }) => {
+  const tx: any = { select: () => ({ from: () => ({ where: () => ({ limit: async () => rows }) }) }) };
+  expect(await policyWorkflowApplies({ id: 'workflow', trigger: { filter: { _policyWorkflow: { policyId: 'policy', sourceId: 'source' } } } } as never, 'device', tx)).toBe(false);
+  expect(resolveAutomationAssignmentForDevice).not.toHaveBeenCalled();
 });

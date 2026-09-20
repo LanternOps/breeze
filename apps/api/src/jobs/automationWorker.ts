@@ -45,6 +45,7 @@ import { isReusableState } from '../services/bullmqUtils';
 import { assertQueueJobName, parseQueueJobData } from '../services/bullmqValidation';
 import { automationQueueJobDataSchema, type AutomationAssignmentLevel, type AutomationQueueJobData } from './queueSchemas';
 import { attachWorkerObservability } from './workerObservability';
+import { policyWorkflowApplies } from '../services/monitors/conversion/workflows';
 import { recordEpisodeResponse } from '../services/monitors/episodeService';
 
 const { db } = dbModule;
@@ -491,6 +492,19 @@ async function processTriggerSchedule(data: TriggerScheduleJobData): Promise<{ r
   return { runId: run.id };
 }
 
+/** Recheck maintenance at both boundaries; a failed lookup must not run a workflow. */
+async function policyWorkflowMaintenanceSuppressed(deviceId: string): Promise<boolean> {
+  try {
+    const settings = await resolveMaintenanceConfigForDevice(deviceId);
+    if (!settings) return false;
+    const window = isInMaintenanceWindow(settings);
+    return window.active && window.suppressAutomations;
+  } catch (error) {
+    console.warn(`[AutomationWorker] Maintenance check failed for workflow device ${deviceId}, skipping:`, error);
+    return true;
+  }
+}
+
 async function processTriggerEvent(data: TriggerEventJobData): Promise<{ runId?: string; skipped?: string }> {
   const [automation] = await db
     .select()
@@ -514,6 +528,17 @@ async function processTriggerEvent(data: TriggerEventJobData): Promise<{ runId?:
   }
 
   const payload = normalizePayload(data.eventPayload);
+  if (trigger.filter?._policyWorkflow) {
+    const deviceId = typeof payload.deviceId === 'string' ? payload.deviceId : undefined;
+    if (!deviceId || !await policyWorkflowApplies(automation, deviceId, db)) {
+      return { skipped: 'policy_workflow_not_assigned' };
+    }
+    if (await policyWorkflowMaintenanceSuppressed(deviceId)) {
+      return { skipped: 'maintenance_window' };
+    }
+    const { _policyWorkflow, ...filter } = trigger.filter!;
+    trigger = { ...trigger, filter };
+  }
   if (!shouldTriggerEventAutomation(trigger, data.eventType, payload)) {
     return { skipped: 'filter_mismatch' };
   }
@@ -1185,6 +1210,14 @@ export async function queueEventTriggers(event: BreezeEvent<Record<string, unkno
 
     if (trigger.type !== 'event') {
       continue;
+    }
+
+    if (trigger.filter?._policyWorkflow) {
+      const deviceId = typeof payload.deviceId === 'string' ? payload.deviceId : undefined;
+      if (!deviceId || !await policyWorkflowApplies(automation, deviceId, db)) continue;
+      if (await policyWorkflowMaintenanceSuppressed(deviceId)) continue;
+      const { _policyWorkflow, ...filter } = trigger.filter!;
+      trigger = { ...trigger, filter };
     }
 
     if (!shouldTriggerEventAutomation(trigger, event.type, payload)) {
