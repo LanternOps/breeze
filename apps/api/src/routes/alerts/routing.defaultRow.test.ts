@@ -43,6 +43,7 @@ vi.mock('../../services/delivery/routingRuleWrites', async (importOriginal) => {
 });
 
 import { routingRoutes } from './routing';
+import { SITE_CEILING_WRITE_DENIED_MESSAGE } from '../../services/siteCeilingAccess';
 
 const app = () => { const a = new Hono(); a.route('/alerts', routingRoutes); return a; };
 const RULE_ID = '5d4c3b2a-1111-4222-8333-444455556666';
@@ -96,12 +97,38 @@ describe('Everything else row rules', () => {
     const res = await app().request(`/alerts/routing-rules/${RULE_ID}`, jsonReq('PATCH', { channelIds: [] }));
     expect(res.status).toBe(400);
   });
-  it('DELETE of either Everything else row is 409', async () => {
-    for (const owner of [{ orgId: null, partnerId: 'p-1' }, { orgId: 'org-a', partnerId: null }]) {
-      existingRowRef.current = { id: RULE_ID, ...owner, name: 'Everything else', isDefault: true, conditions: {} };
-      expect((await app().request(`/alerts/routing-rules/${RULE_ID}`, { method: 'DELETE' })).status).toBe(409);
+  it('DELETE of the org Everything else override succeeds so the org can inherit', async () => {
+    authRef.current = orgAuth();
+    existingRowRef.current = { id: RULE_ID, orgId: 'org-a', partnerId: null, name: 'Everything else', isDefault: true, conditions: {} };
+    const res = await app().request(`/alerts/routing-rules/${RULE_ID}`, { method: 'DELETE' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ data: { id: RULE_ID, deleted: true } });
+    expect(deletedRef.current).toBe(true);
+  });
+  it('DELETE of the partner Everything else row is 409', async () => {
+    existingRowRef.current = { id: RULE_ID, orgId: null, partnerId: 'p-1', name: 'Everything else', isDefault: true, conditions: {} };
+    const res = await app().request(`/alerts/routing-rules/${RULE_ID}`, { method: 'DELETE' });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: "The partner's Everything else row cannot be deleted; empty its channels for inbox only" });
+    expect(deletedRef.current).toBe(false);
+  });
+  it.each([{ allowedSiteIds: [] }, { allowedSiteIds: ['33333333-3333-4333-8333-333333333333'] }, { allowedDeviceIds: [] }])(
+    'DELETE of the org default rejects governance ceiling %j', async ceiling => {
+      authRef.current = { ...orgAuth(), ...ceiling };
+      existingRowRef.current = { id: RULE_ID, orgId: 'org-a', partnerId: null, name: 'Everything else', isDefault: true, conditions: {} };
+      const res = await app().request(`/alerts/routing-rules/${RULE_ID}`, { method: 'DELETE' });
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: SITE_CEILING_WRITE_DENIED_MESSAGE });
       expect(deletedRef.current).toBe(false);
-    }
+    },
+  );
+  it('DELETE cannot remove another org\'s Everything else override', async () => {
+    authRef.current = orgAuth();
+    existingRowRef.current = { id: RULE_ID, orgId: '22222222-2222-4222-8222-222222222222', partnerId: null, name: 'Everything else', isDefault: true, conditions: {} };
+    const res = await app().request(`/alerts/routing-rules/${RULE_ID}`, { method: 'DELETE' });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Routing rule not found' });
+    expect(deletedRef.current).toBe(false);
   });
   it('PUT /routing-rules/default upserts the org row for an org token and the partner row for ownerScope partner', async () => {
     authRef.current = orgAuth();

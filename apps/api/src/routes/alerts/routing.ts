@@ -457,7 +457,10 @@ routingRoutes.delete(
       }
 
       if (existing.isDefault) {
-        return c.json({ error: 'The Everything else row cannot be deleted; empty its channels for inbox only' }, 409);
+        if (existing.orgId === null) {
+          return c.json({ error: "The partner's Everything else row cannot be deleted; empty its channels for inbox only" }, 409);
+        }
+        if (!canMutateOrgWideGovernance(auth)) return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
       }
 
       const canAccessExistingSites = await canAccessRoutingSites(

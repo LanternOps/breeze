@@ -1,7 +1,8 @@
 /**
  * Write rules for notification_routing_rules that the route AND the
  * manage_delivery AI tool must agree on (spec §End state "Delivery": the
- * "Everything else" row cannot be deleted or reordered; its channels may be
+ * partner's "Everything else" row cannot be deleted; an org's override can be
+ * removed to inherit. Default rows cannot be reordered; their channels may be
  * emptied to mean inbox only). One body, two callers.
  */
 import { and, eq, isNull } from 'drizzle-orm';
