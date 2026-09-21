@@ -150,7 +150,7 @@ func WidenScopeFromManifest(ctx context.Context, provider providers.BackupProvid
 	}
 	tmpPath := tmp.Name()
 	_ = tmp.Close()
-	defer os.Remove(tmpPath)
+	defer func() { _ = os.Remove(tmpPath) }()
 
 	manifestKey := "snapshots/" + snapshotID + "/manifest.json"
 	if err := provider.Download(manifestKey, tmpPath); err != nil {

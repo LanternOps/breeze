@@ -26,7 +26,7 @@ func (p *nonScopedProvider) Download(remote, local string) error {
 	return writeScopeTestFile(local, b)
 }
 func (p *nonScopedProvider) List(string) ([]string, error) { return nil, nil }
-func (p *nonScopedProvider) Delete(string) error            { return nil }
+func (p *nonScopedProvider) Delete(string) error           { return nil }
 
 func writeScopeTestFile(path string, b []byte) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

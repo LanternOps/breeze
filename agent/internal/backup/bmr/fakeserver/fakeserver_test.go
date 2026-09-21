@@ -121,7 +121,7 @@ func TestFakeServer_BootstrapEchoesGrantedCapabilities(t *testing.T) {
 	resp := postJSON(t, ts.URL+"/api/v1/backup/bmr/recover/exchange", map[string]any{
 		"code": "ABCDEFGHJ", "capabilities": []string{"snapshot-file-membership-v1"},
 	})
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
@@ -193,7 +193,7 @@ func TestFakeServer_RefusesExchangeWithoutCapabilityWhenReferencesExist(t *testi
 	defer ts.Close()
 
 	resp := postJSON(t, ts.URL+"/api/v1/backup/bmr/recover/exchange", map[string]any{"code": "ABCDEFGHJ"})
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusConflict {
 		t.Fatalf("status = %d, want 409", resp.StatusCode)
 	}
@@ -227,7 +227,7 @@ func TestFakeServer_DownloadDeniesUnreferencedObject(t *testing.T) {
 	exResp := postJSON(t, ts.URL+"/api/v1/backup/bmr/recover/exchange", map[string]any{
 		"code": "ABCDEFGHJ", "capabilities": []string{"snapshot-file-membership-v1"},
 	})
-	defer exResp.Body.Close()
+	defer func() { _ = exResp.Body.Close() }()
 	if exResp.StatusCode != http.StatusOK {
 		t.Fatalf("exchange status = %d, want 200", exResp.StatusCode)
 	}
@@ -246,7 +246,7 @@ func TestFakeServer_DownloadDeniesUnreferencedObject(t *testing.T) {
 	if err != nil {
 		t.Fatalf("do request: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusConflict {
 		t.Fatalf("status = %d, want 409 (an object outside the seeded reference set must be refused even with membership granted)", resp.StatusCode)
 	}
