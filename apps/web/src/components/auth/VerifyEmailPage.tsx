@@ -11,6 +11,13 @@ import '../../lib/i18n';
 type State =
   | { phase: 'loading' }
   | { phase: 'no-token' }
+  // #6539: the token was read from the URL but has NOT been submitted. The page
+  // renders a "Confirm" button and only the click consumes the token. This
+  // defeats automated link fetchers (M365 Safe Links, Proofpoint/Mimecast URL
+  // detonation) that render JS and would otherwise auto-complete the pending
+  // registration for a mailbox they merely scanned — verifying an address for
+  // someone who never controlled it. A human clicks; a scanner does not.
+  | { phase: 'confirm'; token: string }
   | { phase: 'success'; autoActivated: boolean }
   // SR2-21 step 2: the token completed a PENDING REGISTRATION — the account was
   // just created and this browser is now logged in. We navigate to the dashboard;
@@ -33,22 +40,24 @@ export default function VerifyEmailPage() {
   const { t } = useTranslation('auth');
   const login = useAuthStore((s) => s.login);
   const [state, setState] = useState<State>({ phase: 'loading' });
-  // Strict-mode in dev mounts components twice — block the duplicate POST so we
-  // don't burn the single-use token before the user sees a result.
+  // Consume the single-use token at most once — guards a double-click of Confirm
+  // and dev strict-mode double-invocation of the click handler.
   const submittedRef = useRef(false);
 
+  // Read the token on mount but DO NOT submit it (#6539). Submission is deferred
+  // to an explicit user click so a JS-rendering mail scanner cannot consume it.
   useEffect(() => {
-    if (submittedRef.current) return;
-    submittedRef.current = true;
-
     const params = new URLSearchParams(window.location.search);
     const token = params.get('token');
-    if (!token) {
-      setState({ phase: 'no-token' });
-      return;
-    }
+    setState(token ? { phase: 'confirm', token } : { phase: 'no-token' });
+  }, []);
 
-    (async () => {
+  const verify = async (token: string) => {
+    if (submittedRef.current) return;
+    submittedRef.current = true;
+    setState({ phase: 'loading' });
+
+    {
       const result = await apiVerifyEmail(token);
       if (result.success) {
         // SR2-21: a registration-completion response carries the auto-login
@@ -85,8 +94,8 @@ export default function VerifyEmailPage() {
         return;
       }
       setState({ phase: 'error', reason: 'invalid' });
-    })();
-  }, []);
+    }
+  };
 
   if (state.phase === 'loading') {
     return (
@@ -95,6 +104,33 @@ export default function VerifyEmailPage() {
           <StatusIcon variant="pending" label={t('verifyEmail.loading.iconLabel', { defaultValue: 'Verifying' })} />
           <h2 className="text-lg font-semibold">{t('verifyEmail.loading.title', { defaultValue: 'Verifying your email…' })}</h2>
         </div>
+      </div>
+    );
+  }
+
+  if (state.phase === 'confirm') {
+    // #6539: require an explicit click to consume the token. The button — not
+    // page load — is what calls verify(), so an automated link scanner cannot
+    // complete the verification.
+    const token = state.token;
+    return (
+      <div className="space-y-6 rounded-lg border bg-card p-6 shadow-xs">
+        <div className="space-y-2 text-center">
+          <StatusIcon variant="pending" label={t('verifyEmail.confirm.iconLabel', { defaultValue: 'Confirm' })} />
+          <h2 className="text-lg font-semibold">{t('verifyEmail.confirm.title', { defaultValue: 'Confirm your email' })}</h2>
+          <p className="text-sm text-muted-foreground">
+            {t('verifyEmail.confirm.description', {
+              defaultValue: 'Click the button below to confirm your email address and finish setting up your account.',
+            })}
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => void verify(token)}
+          className="flex h-11 w-full items-center justify-center rounded-md bg-primary text-sm font-medium text-primary-foreground transition hover:opacity-90"
+        >
+          {t('verifyEmail.confirm.button', { defaultValue: 'Confirm my email' })}
+        </button>
       </div>
     );
   }
