@@ -672,5 +672,38 @@ describe('bare-metal recoveries routes', () => {
       const set = updateMock.mock.results[0]!.value.set.mock.calls[0][0];
       expect(set.failureReason).toBe('grub-install: no such device');
     });
+
+    it('progress: a failedFilesSample over 50 entries is rejected by the schema (400), never reaches the handler', async () => {
+      const sample = Array.from({ length: 98411 }, (_, i) => `file-${i}.gz`);
+      const res = await publicApp.request('/backup/bmr/recover/progress', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: VALID_RECOVERY_TOKEN, status: 'failed', result: { failedFilesSample: sample } }),
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it('progress: a 50-entry failedFilesSample is accepted and the failed status persists', async () => {
+      selectMock
+        .mockReturnValueOnce(chainMock([{ id: 'token-1', orgId: ORG_ID, status: 'authenticated', expiresAt: new Date(Date.now() + 60_000) }]))
+        .mockReturnValueOnce(chainMock([{ id: RECOVERY_ID, orgId: ORG_ID, deviceId: DEVICE_ID, identity: 'original', status: 'restoring', rebootedAt: null, validatedAt: null }]));
+      const sample = Array.from({ length: 50 }, (_, i) => `file-${i}.gz`);
+      const res = await publicApp.request('/backup/bmr/recover/progress', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: VALID_RECOVERY_TOKEN, status: 'failed', result: { failedFilesSample: sample, error: '98,411 files refused' } }),
+      });
+      expect(res.status).toBe(200);
+    });
+
+    it('progress: an oversized result payload (>768KB serialized) is rejected by the schema', async () => {
+      const huge = { blob: 'x'.repeat(800 * 1024) };
+      const res = await publicApp.request('/backup/bmr/recover/progress', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: VALID_RECOVERY_TOKEN, status: 'restoring', result: huge }),
+      });
+      expect(res.status).toBe(400);
+    });
   });
 });

@@ -9,7 +9,13 @@ vi.mock('node:fs', () => ({
 }));
 
 const resolveSnapshotProviderConfigMock = vi.fn();
-const lineageRows = vi.hoisted(() => [] as Array<Array<{ orgId: string; deviceId: string }>>);
+// FIFO queue of rows returned by successive `db.select().from().where().limit()`
+// calls, in call order. `getAuthenticatedRecoveryDownloadTarget` always issues
+// the lineage select first; for an external-reference download,
+// `authorizeExternalReference` (W09 Task 6) then issues, in order: the token
+// snapshot's file_index_status, the backup_snapshot_files membership row, and
+// the backup_snapshot_origins row.
+const lineageRows = vi.hoisted(() => [] as Array<Array<Record<string, unknown>>>);
 
 vi.mock('../db', () => ({
   db: {
@@ -50,6 +56,7 @@ vi.mock('@aws-sdk/s3-request-presigner', () => ({
   getSignedUrl: (...args: unknown[]) => getSignedUrlMock(...(args as [])),
 }));
 
+import { stat as statMock } from 'node:fs/promises';
 import { getAuthenticatedRecoveryDownloadTarget } from './recoveryDownloadService';
 
 describe('getAuthenticatedRecoveryDownloadTarget', () => {
@@ -71,6 +78,7 @@ describe('getAuthenticatedRecoveryDownloadTarget', () => {
         status: 'authenticated',
         authenticatedAt: new Date('2099-04-01T00:00:00.000Z'),
         expiresAt: new Date('2099-04-02T00:00:00.000Z'),
+        negotiatedCapabilities: null,
       },
       'snapshots/snap-ext-001/manifest.json'
     );
@@ -155,9 +163,19 @@ describe('getAuthenticatedRecoveryDownloadTarget', () => {
       'snapshots/other-snapshot/manifest.json'
     );
 
+    // W09 (#6464) Task 6: a key under a DIFFERENT snapshot id is now a
+    // structurally-valid "external reference" (classifyBackupObjectKey),
+    // not an out-of-scope path — so a token that never negotiated
+    // snapshot-file-membership-v1 (this tokenRow carries no
+    // negotiatedCapabilities field at all) is refused with the
+    // capability-denial reason rather than the old blanket "outside the
+    // allowed snapshot scope" text. The case this test guards — a foreign
+    // snapshot id is never silently served — still holds; only the reason
+    // string changed. See R7/R12 cases below for the full authorization
+    // matrix this reason now participates in.
     expect(result).toEqual({
       unavailable: true,
-      reason: 'Requested path is outside the allowed snapshot scope.',
+      reason: 'Requested path references an object this recovery is not authorized to read.',
     });
   });
 
@@ -226,6 +244,119 @@ describe('getAuthenticatedRecoveryDownloadTarget', () => {
           'snapshots/snap-ext-001/manifest.json'
         )
       ).rejects.toThrow(/not a valid URL/);
+    });
+  });
+
+  describe('external-reference downloads (W09, #6464)', () => {
+    const baseTokenRow = {
+      id: 'token-ext',
+      orgId: 'org-1',
+      deviceId: 'device-1',
+      snapshotId: 'snapshot-db-current',
+      status: 'authenticated' as const,
+      authenticatedAt: new Date('2099-04-01T00:00:00.000Z'),
+      expiresAt: new Date('2099-04-02T00:00:00.000Z'),
+      negotiatedCapabilities: ['snapshot-file-membership-v1'],
+    };
+
+    function mockCurrentSnapshotLocal(storageIdentity = 'store-1') {
+      resolveSnapshotProviderConfigMock.mockResolvedValue({
+        snapshot: {
+          snapshotId: 'current',
+          metadata: {},
+          storageIdentity,
+        },
+        providerType: 'local',
+        providerConfig: { path: '/var/backups' },
+      });
+    }
+
+    it("R6: an external key that IS a member of the snapshot index, with a verified origin, is authorized — physical key uses the ORIGIN prefix, not the token snapshot's", async () => {
+      mockCurrentSnapshotLocal('store-1');
+      lineageRows.push([{ fileIndexStatus: 'complete' }]); // token snapshot file index
+      lineageRows.push([{ id: 'file-row-1' }]); // membership
+      lineageRows.push([
+        {
+          originOrgId: 'org-1',
+          originDeviceId: 'device-1',
+          originStorageIdentity: 'store-1',
+          originStoragePrefix: 'archive-2025',
+        },
+      ]); // origin
+
+      const result = await getAuthenticatedRecoveryDownloadTarget(baseTokenRow as any, 'snapshots/older/files/a.gz');
+
+      expect(result.unavailable).toBe(false);
+      const [filePathArg] = (statMock as any).mock.calls[0];
+      expect(filePathArg).toContain('archive-2025/snapshots/older/files/a.gz');
+      expect(filePathArg).not.toContain('/current/');
+    });
+
+    it('R7 (a): a sibling file of a referenced origin snapshot that is NOT itself in the index is refused', async () => {
+      mockCurrentSnapshotLocal();
+      lineageRows.push([{ fileIndexStatus: 'complete' }]);
+      lineageRows.push([]); // no membership row
+
+      const result = await getAuthenticatedRecoveryDownloadTarget(baseTokenRow as any, 'snapshots/older/files/not-referenced.gz');
+
+      expect(result).toMatchObject({
+        unavailable: true,
+        reason: 'Requested path references an object this recovery is not authorized to read.',
+      });
+    });
+
+    it('R7 (b): a key under an ANCESTOR manifest object itself (not a content file) is refused unless it is also indexed', async () => {
+      mockCurrentSnapshotLocal();
+      lineageRows.push([{ fileIndexStatus: 'complete' }]);
+      lineageRows.push([]); // manifest.json is not itself a member of the file index
+
+      const result = await getAuthenticatedRecoveryDownloadTarget(baseTokenRow as any, 'snapshots/older/manifest.json');
+
+      expect(result).toMatchObject({ unavailable: true });
+    });
+
+    it('R7 (c): a key under a newer, UNREFERENCED snapshot is refused', async () => {
+      mockCurrentSnapshotLocal();
+      lineageRows.push([{ fileIndexStatus: 'complete' }]);
+      lineageRows.push([]); // never referenced, never indexed
+
+      const result = await getAuthenticatedRecoveryDownloadTarget(baseTokenRow as any, 'snapshots/newer-unrelated/files/x.gz');
+
+      expect(result).toMatchObject({ unavailable: true });
+    });
+
+    it('R12: an own-prefix key is unaffected by capability negotiation — allowed even with no negotiated capabilities', async () => {
+      mockCurrentSnapshotLocal();
+
+      const result = await getAuthenticatedRecoveryDownloadTarget(
+        { ...baseTokenRow, negotiatedCapabilities: null } as any,
+        'snapshots/current/manifest.json'
+      );
+
+      expect(result.unavailable).toBe(false);
+    });
+
+    it('an external key is refused when the token never negotiated the membership capability, even if the key IS indexed', async () => {
+      mockCurrentSnapshotLocal();
+
+      const result = await getAuthenticatedRecoveryDownloadTarget(
+        { ...baseTokenRow, negotiatedCapabilities: null } as any,
+        'snapshots/older/files/a.gz'
+      );
+
+      expect(result).toMatchObject({
+        unavailable: true,
+        reason: 'Requested path references an object this recovery is not authorized to read.',
+      });
+    });
+
+    it("an external key is refused when the snapshot's file_index_status is not complete (e.g. agent)", async () => {
+      mockCurrentSnapshotLocal();
+      lineageRows.push([{ fileIndexStatus: 'agent' }]);
+
+      const result = await getAuthenticatedRecoveryDownloadTarget(baseTokenRow as any, 'snapshots/older/files/a.gz');
+
+      expect(result).toMatchObject({ unavailable: true });
     });
   });
 });

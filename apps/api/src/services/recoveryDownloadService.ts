@@ -1,13 +1,14 @@
 import { createReadStream } from 'node:fs';
 import { stat } from 'node:fs/promises';
-import { posix as pathPosix, resolve as resolvePath } from 'node:path';
+import { resolve as resolvePath } from 'node:path';
 import { GetObjectCommand } from '@aws-sdk/client-s3';
 import { createGuardedS3Client } from './guardedS3Client';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { coerceS3EndpointUrl } from '@breeze/shared';
 import { and, eq } from 'drizzle-orm';
 import { db } from '../db';
-import { backupSnapshots, recoveryTokens } from '../db/schema';
+import { backupSnapshotFiles, backupSnapshotOrigins, backupSnapshots, recoveryTokens } from '../db/schema';
+import { classifyBackupObjectKey, hasMembershipCapability } from './backupObjectKey';
 import {
   asRecord,
   computeRecoveryDownloadExpiry,
@@ -17,21 +18,69 @@ import {
 
 type RecoveryDownloadRow = Pick<
   typeof recoveryTokens.$inferSelect,
-  'id' | 'orgId' | 'deviceId' | 'snapshotId' | 'status' | 'authenticatedAt' | 'expiresAt'
+  'id' | 'orgId' | 'deviceId' | 'snapshotId' | 'status' | 'authenticatedAt' | 'expiresAt' | 'negotiatedCapabilities'
 >;
+
+/**
+ * W09 (#6464) Task 6 — the download-time half of the exact-membership
+ * contract. First confirms the TOKEN snapshot's file index is fully built
+ * (`file_index_status = 'complete'` — an `agent`/`failed` index is
+ * incomplete or untrustworthy and must never authorize an external
+ * reference), then runs two indexed EXISTS-shaped checks: is this exact key
+ * a member of the TOKEN snapshot's server-verified file index, and is its
+ * origin snapshot verified against the SAME org/device/storage identity as
+ * the token. All queries run inside the caller's `runInRecoveryOrgContext`
+ * — RLS on both tables (Task 2) additionally enforces the org boundary
+ * independent of the explicit `orgId` equality checks here.
+ */
+export async function authorizeExternalReference(
+  dbHandle: typeof import('../db').db,
+  args: { snapshotDbId: string; key: string; originSnapshotId: string; orgId: string; deviceId: string; pinnedStorageIdentity: string },
+): Promise<{ ok: true; originStoragePrefix: string | null } | { ok: false; reason: string }> {
+  const [tokenSnapshot] = await dbHandle
+    .select({ fileIndexStatus: backupSnapshots.fileIndexStatus })
+    .from(backupSnapshots)
+    .where(eq(backupSnapshots.id, args.snapshotDbId))
+    .limit(1);
+  if (!tokenSnapshot || tokenSnapshot.fileIndexStatus !== 'complete') {
+    return { ok: false, reason: 'file index not complete' };
+  }
+
+  const [membership] = await dbHandle
+    .select({ id: backupSnapshotFiles.id })
+    .from(backupSnapshotFiles)
+    .where(and(eq(backupSnapshotFiles.snapshotDbId, args.snapshotDbId), eq(backupSnapshotFiles.backupPath, args.key)))
+    .limit(1);
+  if (!membership) {
+    return { ok: false, reason: 'key is not a member of the snapshot file index' };
+  }
+
+  const [origin] = await dbHandle
+    .select({
+      originOrgId: backupSnapshotOrigins.originOrgId,
+      originDeviceId: backupSnapshotOrigins.originDeviceId,
+      originStorageIdentity: backupSnapshotOrigins.originStorageIdentity,
+      originStoragePrefix: backupSnapshotOrigins.originStoragePrefix,
+    })
+    .from(backupSnapshotOrigins)
+    .where(and(eq(backupSnapshotOrigins.snapshotDbId, args.snapshotDbId), eq(backupSnapshotOrigins.originSnapshotId, args.originSnapshotId)))
+    .limit(1);
+  if (!origin) {
+    return { ok: false, reason: 'no verified origin record for this snapshot reference' };
+  }
+  if (
+    origin.originOrgId !== args.orgId ||
+    origin.originDeviceId !== args.deviceId ||
+    origin.originStorageIdentity !== args.pinnedStorageIdentity
+  ) {
+    return { ok: false, reason: 'origin identity does not match the recovery token' };
+  }
+
+  return { ok: true, originStoragePrefix: origin.originStoragePrefix };
+}
 
 function isDownloadEligibleStatus(status: string, authenticatedAt: Date | null): boolean {
   return status === 'authenticated' || (status === 'active' && authenticatedAt !== null);
-}
-
-function normalizeSnapshotPath(remotePath: string, expectedPrefix: string): string | null {
-  const cleaned = pathPosix.normalize(String(remotePath || '').trim()).replace(/^\/+/, '');
-  const prefix = expectedPrefix.replace(/^\/+|\/+$/g, '');
-  if (!cleaned || cleaned === '.' || cleaned.includes('\0')) return null;
-  if (cleaned === prefix || cleaned.startsWith(`${prefix}/`)) {
-    return cleaned;
-  }
-  return null;
 }
 
 function ensureContainedLocalPath(rootPath: string, relativePath: string): string {
@@ -75,8 +124,16 @@ function buildS3Client(config: {
 function deriveRemoteStorageKey(
   normalizedRemotePath: string,
   providerConfig: Record<string, unknown>,
-  snapshotMetadata: Record<string, unknown>
+  snapshotMetadata: Record<string, unknown>,
+  originStoragePrefixOverride?: string | null
 ) {
+  // W09 (#6464) Task 6: an external reference is served from the ORIGIN
+  // snapshot's own verified storage prefix, never the token snapshot's —
+  // origin.originStoragePrefix was captured and verified by
+  // hydrateSnapshotFileIndex (Task 4) at index-build time.
+  if (originStoragePrefixOverride) {
+    return `${originStoragePrefixOverride.replace(/^\/+|\/+$/g, '')}/${normalizedRemotePath}`;
+  }
   const storagePrefix = getStringValue(snapshotMetadata, 'storagePrefix');
   if (storagePrefix) {
     const marker = snapshotMetadata.snapshotId && typeof snapshotMetadata.snapshotId === 'string'
@@ -140,11 +197,37 @@ export async function getAuthenticatedRecoveryDownloadTarget(
     return { unavailable: true, reason: 'Recovery snapshot storage is unavailable.' } as const;
   }
 
-  const expectedPrefix = `snapshots/${resolved.snapshot.snapshotId}`;
-  const normalizedRemotePath = normalizeSnapshotPath(remotePath, expectedPrefix);
-  if (!normalizedRemotePath) {
+  const ownSnapshotId = resolved.snapshot.snapshotId;
+  const scope = classifyBackupObjectKey(String(remotePath || '').replace(/^\/+/, ''), ownSnapshotId);
+  if (!scope) {
     return { unavailable: true, reason: 'Requested path is outside the allowed snapshot scope.' } as const;
   }
+
+  let originStoragePrefix: string | null = null;
+  if (scope.kind === 'external') {
+    if (!hasMembershipCapability(tokenRow.negotiatedCapabilities)) {
+      return {
+        unavailable: true,
+        reason: 'Requested path references an object this recovery is not authorized to read.',
+      } as const;
+    }
+    const authorization = await authorizeExternalReference(db, {
+      snapshotDbId,
+      key: scope.key,
+      originSnapshotId: scope.originSnapshotId,
+      orgId: tokenRow.orgId,
+      deviceId: tokenRow.deviceId,
+      pinnedStorageIdentity: resolved.snapshot.storageIdentity ?? '',
+    });
+    if (!authorization.ok) {
+      return {
+        unavailable: true,
+        reason: 'Requested path references an object this recovery is not authorized to read.',
+      } as const;
+    }
+    originStoragePrefix = authorization.originStoragePrefix;
+  }
+  const normalizedRemotePath = scope.key;
 
   const providerConfig = asRecord(resolved.providerConfig);
   const snapshotMetadata = {
@@ -166,7 +249,7 @@ export async function getAuthenticatedRecoveryDownloadTarget(
       secretAccessKey: getStringValue(providerConfig, 'secretKey') || getStringValue(providerConfig, 'secretAccessKey') || undefined,
       sessionToken: getStringValue(providerConfig, 'sessionToken') ?? undefined,
     });
-    const key = deriveRemoteStorageKey(normalizedRemotePath, providerConfig, snapshotMetadata);
+    const key = deriveRemoteStorageKey(normalizedRemotePath, providerConfig, snapshotMetadata, originStoragePrefix);
     const expiresInSeconds = Math.max(
       1,
       Math.min(300, Math.floor((downloadExpiry.getTime() - Date.now()) / 1000))
@@ -193,7 +276,10 @@ export async function getAuthenticatedRecoveryDownloadTarget(
       return { unavailable: true, reason: 'Snapshot storage is misconfigured.' } as const;
     }
 
-    const filePath = ensureContainedLocalPath(rootPath, normalizedRemotePath);
+    const filePath = ensureContainedLocalPath(
+      rootPath,
+      originStoragePrefix ? `${originStoragePrefix}/${normalizedRemotePath}` : normalizedRemotePath
+    );
     const fileInfo = await stat(filePath);
     return {
       unavailable: false,

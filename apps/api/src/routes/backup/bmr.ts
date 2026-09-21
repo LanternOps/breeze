@@ -1439,6 +1439,7 @@ bmrPublicRoutes.get(
           status: recoveryTokens.status,
           authenticatedAt: recoveryTokens.authenticatedAt,
           expiresAt: recoveryTokens.expiresAt,
+          negotiatedCapabilities: recoveryTokens.negotiatedCapabilities,
         })
         .from(recoveryTokens)
         .where(eq(recoveryTokens.tokenHash, tokenHash))
