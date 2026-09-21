@@ -225,7 +225,7 @@ describe('manage_invoices', () => {
       auth,
     );
 
-    expect(getUserPermissions).toHaveBeenCalledWith('u-1', expect.objectContaining({ partnerId: 'p-1' }));
+    expect(getUserPermissions).toHaveBeenCalledWith('u-1', expect.objectContaining({ partnerId: 'p-1' }), { bypassCache: true });
     // contracts:manage was NOT granted, so it must not appear in the evidence.
     const passedActor = vi.mocked(contractService.getContract).mock.calls[0]?.[1];
     expect(passedActor?.permissions?.has('contracts:read')).toBe(true);

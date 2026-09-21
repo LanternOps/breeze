@@ -33,7 +33,12 @@ describe('resolveContractActorFromAuth', () => {
 
   it('resolves permissions under the caller scope so the system-scope branch is reachable', async () => {
     await resolveContractActorFromAuth({ ...auth, scope: 'system', partnerId: null } as AuthContext);
-    expect(getUserPermissions).toHaveBeenCalledWith('u-1', expect.objectContaining({ scope: 'system' }));
+    expect(getUserPermissions).toHaveBeenCalledWith('u-1', expect.objectContaining({ scope: 'system' }), expect.anything());
+  });
+
+  it('resolves permissions bypassing the cache so it cannot diverge from the live tier-2 check', async () => {
+    await resolveContractActorFromAuth(auth);
+    expect(getUserPermissions).toHaveBeenCalledWith('u-1', expect.any(Object), { bypassCache: true });
   });
 
   it('projects only the REAL resolved grants as evidence', async () => {

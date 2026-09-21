@@ -42,7 +42,10 @@ export async function resolveContractActorFromAuth(auth: AuthContext): Promise<C
         orgId: auth.orgId ?? undefined,
         partnerId: auth.partnerId ?? undefined,
         scope: auth.scope,
-      })
+        // Bypass the 5-minute cache: this is the second permission read on the
+        // tier-2 release path and must not diverge from the live check that
+        // aiSessionLiveAuthority just made (a bypassed read never refreshes it).
+      }, { bypassCache: true })
     : null;
   return {
     userId: auth.user.id,
