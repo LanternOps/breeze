@@ -133,9 +133,20 @@ describe('ticketCreationLoopReason', () => {
     // ...a trailing RFC 5322 comment...
     expect(ticketCreationLoopReason(email({ autoSubmitted: 'auto-replied (vacation)' }))).toBe('auto-replied');
     expect(ticketCreationLoopReason(email({ autoSubmitted: 'auto-replied (out of office); x=y' }))).toBe('auto-replied');
-    // ...and a LEADING comment / CFWS (finding 8, re-review #3), incl. nesting.
+    // ...and a LEADING comment / CFWS (finding 8), incl. DEEP nesting and escaped
+    // parens (RFC 5322 §3.2.2), which need a real scanner not a regex (review #4).
     expect(ticketCreationLoopReason(email({ autoSubmitted: '(vacation) auto-replied' }))).toBe('auto-replied');
     expect(ticketCreationLoopReason(email({ autoSubmitted: '  (a (nested)) auto-replied; foo=bar' }))).toBe('auto-replied');
+    expect(ticketCreationLoopReason(email({ autoSubmitted: '(a (b (c))) auto-replied' }))).toBe('auto-replied');
+    // Backslash-escaped parens inside the leading comment (literal `\(` / `\)`).
+    expect(ticketCreationLoopReason(email({ autoSubmitted: '(vacation \\(away) auto-replied' }))).toBe('auto-replied');
+    expect(ticketCreationLoopReason(email({ autoSubmitted: '(vacation \\) away) auto-replied' }))).toBe('auto-replied');
+  });
+
+  it('does NOT match auto-replied when it sits INSIDE a comment, not as the keyword (review #4)', () => {
+    // The whole comment is CFWS and is skipped; the real keyword follows it.
+    expect(ticketCreationLoopReason(email({ autoSubmitted: '(x \\) auto-replied (y)) no' }))).toBeNull();
+    expect(ticketCreationLoopReason(email({ autoSubmitted: '(x \\) auto-replied (y)) auto-generated' }))).toBeNull();
   });
 
   it('does NOT treat a different token as auto-replied (exact keyword only)', () => {

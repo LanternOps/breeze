@@ -72,15 +72,36 @@ export function autoresponseSuppressionReason(
  */
 function autoSubmittedKeyword(raw: string | undefined): string | null {
   if (!raw) return null;
-  let v = raw.toLowerCase();
-  // Strip leading whitespace and comments until neither remains. The comment
-  // pattern consumes one level of nesting; iterating handles a few more.
-  for (let prev = ''; v !== prev; ) {
-    prev = v;
-    v = v.replace(/^\s+/, '').replace(/^\((?:[^()]|\([^()]*\))*\)/, '');
+  const s = raw.toLowerCase();
+  const n = s.length;
+  let i = 0;
+
+  // Skip leading CFWS: runs of whitespace and RFC 5322 comments. Comments nest to
+  // ANY depth and a backslash escapes the next char (so `\(` / `\)` are literals,
+  // not paren delimiters), which a regex cannot reliably track — hence a scanner.
+  // Skipping a comment consumes its ENTIRE contents, so an `auto-replied` sitting
+  // INSIDE a comment can never be mistaken for the keyword.
+  for (;;) {
+    while (i < n && /\s/.test(s.charAt(i))) i += 1;
+    if (i < n && s.charAt(i) === '(') {
+      let depth = 0;
+      while (i < n) {
+        const c = s.charAt(i);
+        if (c === '\\') { i += 2; continue; }      // escaped pair: skip both chars
+        if (c === '(') { depth += 1; i += 1; continue; }
+        if (c === ')') { depth -= 1; i += 1; if (depth === 0) break; continue; }
+        i += 1;
+      }
+      continue; // more leading whitespace/comments may follow
+    }
+    break;
   }
-  const token = v.match(/^[^\s;(]+/)?.[0];
-  return token && token.length > 0 ? token : null;
+
+  // The keyword is the token from here up to the first CFWS/`;`/`(` boundary.
+  const start = i;
+  while (i < n && !/[\s;(]/.test(s.charAt(i))) i += 1;
+  const token = s.slice(start, i);
+  return token.length > 0 ? token : null;
 }
 
 export function ticketCreationLoopReason(n: NormalizedInboundEmail): string | null {
