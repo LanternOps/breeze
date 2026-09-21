@@ -180,4 +180,62 @@ describe('AiToolCallCard', () => {
       expect(container.textContent).toContain('aiToolCallCard.approvedFailed');
     });
   });
+
+  /**
+   * #6500 — a server-refused tool call that never goes through the durable
+   * approval handoff (guardrail/RBAC/rate-limit denials, and immediate
+   * Tier-1 checks like "device is not online") only ever carried a red icon
+   * in the collapsed header; the refusal reason itself was reachable only by
+   * expanding the card. Live repro: `system_cleanup` on an offline device
+   * rendered with nothing visible to explain the failure. This mirrors the
+   * #6022 always-visible treatment onto the plain (non-handoff) isError path.
+   */
+  describe('plain server refusal without a handoff (#6500)', () => {
+    const refusal =
+      'Device WIN-DESK01 is not online (status: offline). This tool needs a live connection; to run when the device reconnects use the Run Script / deployment tools instead.';
+
+    it('shows the refusal reason WITHOUT expanding the card', () => {
+      const { getByTestId } = render(
+        <AiToolCallCard
+          toolName="system_cleanup"
+          output={{ error: refusal }}
+          isError
+        />,
+      );
+      expect(getByTestId('ai-tool-failed-reason').textContent).toContain(
+        'is not online',
+      );
+    });
+
+    it('labels the collapsed header as failed, not a bare icon', () => {
+      const { container, getByTestId } = render(
+        <AiToolCallCard
+          toolName="system_cleanup"
+          output={{ error: refusal }}
+          isError
+        />,
+      );
+      expect(getByTestId('ai-tool-failed')).toBeTruthy();
+      expect(container.textContent).toContain('aiToolCallCard.failed');
+      expect(container.querySelector('.text-red-400')).not.toBeNull();
+    });
+
+    it('does not show a reason line for a plain successful result', () => {
+      const { queryByTestId } = render(
+        <AiToolCallCard toolName="query_devices" output={{ devices: [] }} />,
+      );
+      expect(queryByTestId('ai-tool-failed-reason')).toBeNull();
+    });
+
+    it('does not misread a non-string error field as a reason', () => {
+      const { queryByTestId } = render(
+        <AiToolCallCard
+          toolName="system_cleanup"
+          output={{ error: { code: 503 } }}
+          isError
+        />,
+      );
+      expect(queryByTestId('ai-tool-failed-reason')).toBeNull();
+    });
+  });
 });
