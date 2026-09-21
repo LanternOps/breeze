@@ -198,4 +198,52 @@ describe('accept on behalf — draft straight to issued invoice', () => {
     const [q] = await withSystemDbAccessContext(() => db.select().from(quotes).where(eq(quotes.id, created.id)));
     expect(q!.status).toBe('draft'); // untouched by the rejected attempt
   });
+
+  runDb('rejects an on-behalf acceptance row with no reference at the database, not only at the API', async () => {
+    const { partner, org } = await seed();
+    const ctx = ctxFor(org.id, partner.id);
+    const actor = actorFor(org.id, partner.id);
+    const created = await withDbAccessContext(ctx, () => createQuote({ orgId: org.id, currencyCode: 'USD' }, actor));
+    // The CHECK is the backstop behind the Zod schema: a future caller that
+    // skips validation must still not be able to write an evidence-less
+    // on-behalf record. Drizzle wraps the real Postgres error in a
+    // DrizzleQueryError ("Failed query: ...") — the constraint name and
+    // SQLSTATE live on `.cause`, not on the wrapper's own `.message`.
+    let caught: any;
+    try {
+      await withSystemDbAccessContext(() => db.insert(quoteAcceptances).values({
+        quoteId: created.id, orgId: org.id, signerName: 'X',
+        quoteSha256: 'a'.repeat(64), hashVersion: 2,
+        origin: 'on_behalf', method: 'verbal', reference: null, recordedByUserId: null,
+      } as never));
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeDefined();
+    expect(caught.cause?.code).toBe('23514');
+    expect(caught.cause?.message ?? caught.message).toMatch(/quote_acceptances_reference_chk/);
+  });
+
+  runDb('rejects a customer-origin acceptance row that names a recorder at the database', async () => {
+    const { partner, org, actorUser } = await seed();
+    const ctx = ctxFor(org.id, partner.id);
+    const actor = actorFor(org.id, partner.id);
+    const created = await withDbAccessContext(ctx, () => createQuote({ orgId: org.id, currencyCode: 'USD' }, actor));
+    // The inverse backstop: a CUSTOMER row can never claim an MSP recorder —
+    // that would misattribute a click the customer actually made.
+    let caught: any;
+    try {
+      await withSystemDbAccessContext(() => db.insert(quoteAcceptances).values({
+        quoteId: created.id, orgId: org.id, signerName: 'Jane Buyer',
+        quoteSha256: 'b'.repeat(64), hashVersion: 2,
+        origin: 'customer', method: 'typed-signature', reference: null,
+        recordedByUserId: actorUser.id,
+      } as never));
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeDefined();
+    expect(caught.cause?.code).toBe('23514');
+    expect(caught.cause?.message ?? caught.message).toMatch(/quote_acceptances_recorder_chk/);
+  });
 });
