@@ -141,8 +141,14 @@ var ErrCodeInvalid = fmt.Errorf("bmr: recovery code invalid or already used")
 // operator into the recovery console) for a recovery token and its
 // bootstrap, via POST /api/v1/backup/bmr/recover/exchange. This is the
 // console's Deps.Exchange seam (agent/internal/recoveryconsole).
+// exchangeCodeRequest is the POST /bmr/recover/exchange request body.
+type exchangeCodeRequest struct {
+	Code         string   `json:"code"`
+	Capabilities []string `json:"capabilities,omitempty"`
+}
+
 func ExchangeRecoveryCode(ctx context.Context, serverURL, code string) (string, *BootstrapResponse, error) {
-	payload, err := json.Marshal(map[string]string{"code": code})
+	payload, err := json.Marshal(exchangeCodeRequest{Code: code, Capabilities: ClientCapabilities()})
 	if err != nil {
 		return "", nil, fmt.Errorf("bmr: marshal exchange request: %w", err)
 	}
@@ -244,8 +250,14 @@ func (e *authenticateStatusError) Error() string {
 	return fmt.Sprintf("bmr: authenticate failed with status %d", e.statusCode)
 }
 
+// authenticateRequest is the POST /bmr/recover/authenticate request body.
+type authenticateRequest struct {
+	Token        string   `json:"token"`
+	Capabilities []string `json:"capabilities,omitempty"`
+}
+
 func authenticateRecoverySessionContext(ctx context.Context, serverURL, token string) (*BootstrapResponse, error) {
-	payload, err := json.Marshal(map[string]string{"token": token})
+	payload, err := json.Marshal(authenticateRequest{Token: token, Capabilities: ClientCapabilities()})
 	if err != nil {
 		return nil, fmt.Errorf("bmr: marshal authenticate request: %w", err)
 	}

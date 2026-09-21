@@ -331,12 +331,16 @@ func TestRunRecoveryWithToken_AuthenticatesAndCompletes(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/v1/backup/bmr/recover/authenticate":
-			var payload map[string]string
+			var payload map[string]json.RawMessage
 			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 				t.Fatalf("decode authenticate payload: %v", err)
 			}
-			if payload["token"] != "brz_rec_test" {
-				t.Fatalf("unexpected token %q", payload["token"])
+			var token string
+			if err := json.Unmarshal(payload["token"], &token); err != nil {
+				t.Fatalf("decode authenticate token: %v", err)
+			}
+			if token != "brz_rec_test" {
+				t.Fatalf("unexpected token %q", token)
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"bootstrap": BootstrapResponse{

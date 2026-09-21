@@ -34,16 +34,17 @@ type AuthenticatedProviderConfig struct {
 }
 
 type AuthenticatedDownloadDescriptor struct {
-	Type                string `json:"type"`
-	Method              string `json:"method"`
-	URL                 string `json:"url"`
-	TokenQueryParam     string `json:"tokenQueryParam,omitempty"`
-	TokenHeaderName     string `json:"tokenHeaderName,omitempty"`
-	TokenHeaderFormat   string `json:"tokenHeaderFormat,omitempty"`
-	PathQueryParam      string `json:"pathQueryParam"`
-	RequiresAuthSession bool   `json:"requiresAuthentication"`
-	PathPrefix          string `json:"pathPrefix"`
-	ExpiresAt           string `json:"expiresAt"`
+	Type                string   `json:"type"`
+	Method              string   `json:"method"`
+	URL                 string   `json:"url"`
+	TokenQueryParam     string   `json:"tokenQueryParam,omitempty"`
+	TokenHeaderName     string   `json:"tokenHeaderName,omitempty"`
+	TokenHeaderFormat   string   `json:"tokenHeaderFormat,omitempty"`
+	PathQueryParam      string   `json:"pathQueryParam"`
+	RequiresAuthSession bool     `json:"requiresAuthentication"`
+	PathPrefix          string   `json:"pathPrefix"`
+	ExpiresAt           string   `json:"expiresAt"`
+	Capabilities        []string `json:"capabilities,omitempty"`
 }
 
 type AuthenticatedSnapshot struct {
@@ -59,6 +60,23 @@ type AuthenticatedSnapshot struct {
 	// routes/backup/bmrRecoveries.ts). "system_image" alone is enough to
 	// expect system state — see SnapshotExpectsSystemState (#5412).
 	BackupType string `json:"backupType"`
+	// FileIndex is present only when the client negotiated
+	// CapabilitySnapshotFileMembershipV1 AND the snapshot's owning job
+	// reports referenced_files > 0 (Part 0 §1). Its Status is always
+	// "complete" by the time the agent sees it — the server refuses the
+	// authenticate/exchange call itself while hydration is pending
+	// (Part 0 §1 negotiateRecoveryCapabilities), so a non-complete
+	// FileIndexInfo can never legitimately reach the agent.
+	FileIndex *FileIndexInfo `json:"fileIndex,omitempty"`
+}
+
+// FileIndexInfo mirrors apps/api/src/services/recoveryBootstrap.ts's
+// buildAuthenticatedBootstrapPayload snapshot.fileIndex shape field-for-field.
+type FileIndexInfo struct {
+	Status            string   `json:"status"`
+	ManifestSHA256    string   `json:"manifestSha256"`
+	ExternalCount     int      `json:"externalCount"`
+	OriginSnapshotIDs []string `json:"originSnapshotIds"`
 }
 
 type AuthenticatedDevice struct {
