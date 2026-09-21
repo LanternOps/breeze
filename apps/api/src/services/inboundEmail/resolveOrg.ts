@@ -174,13 +174,10 @@ export interface PartnerInboundPolicy {
    * sender matching. Default false (preserves the quarantine-for-review behavior).
    */
   dropUnverifiedSenders: boolean;
-  /**
-   * When true, a public tech reply emails the customer the actual comment text
-   * (threaded) instead of the portal "you have a new reply, sign in" notification.
-   * Default false preserves the current portal-notification behavior (and the
-   * leak guard) for MSPs that run the client portal.
-   */
-  fullMessageReply: boolean;
+  // NB: fullMessageReply is deliberately NOT part of this policy. It is a purely
+  // outbound-notification concern, read from the partner settings by
+  // ticketNotifyWorker on its own send path; the ingest consumer of this policy
+  // (inboundEmailService) never uses it, so surfacing it here would be a dead field.
 }
 
 /**
@@ -225,6 +222,5 @@ export async function loadPartnerInboundPolicy(
     unknownSenderMode: mode,
     defaultTriageOrgId: inbound.defaultTriageOrgId ?? null,
     dropUnverifiedSenders: inbound.dropUnverifiedSenders === true,
-    fullMessageReply: inbound.fullMessageReply === true,
   };
 }
