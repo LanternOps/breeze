@@ -40,7 +40,7 @@ describe('targetService — kind/pointer agreement (recipe spec §5.1)', () => {
       orgId: 'org-1', taskId: 'task-1', targetKind: 'device',
       deviceId: 'device-1', targetLabel: 'h'.repeat(400), targetOrdinal: 0,
     });
-    expect((values.mock.calls[0][0] as { targetLabel: string }).targetLabel.length).toBe(255);
+    expect(((values.mock.calls as unknown as Array<[{ targetLabel: string }]>)[0]![0]).targetLabel.length).toBe(255);
   });
 
   it('writes the connection id into the column its provider names, and nulls the other', async () => {
@@ -50,7 +50,7 @@ describe('targetService — kind/pointer agreement (recipe spec §5.1)', () => {
       orgId: 'org-1', taskId: 'task-1', targetId: 'target-1', provider: 'google',
       connectionId: 'conn-1', externalId: '1234567890', principalLabel: 'dana@acme.com',
     });
-    expect(values.mock.calls[0][0]).toMatchObject({
+    expect((values.mock.calls as unknown as Array<[Record<string, unknown>]>)[0]![0]).toMatchObject({
       provider: 'google', googleConnectionId: 'conn-1', m365ConnectionId: null,
     });
   });

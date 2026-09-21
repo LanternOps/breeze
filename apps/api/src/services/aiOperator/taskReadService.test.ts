@@ -222,3 +222,63 @@ describe('mapOperatorTask (detail)', () => {
     expect(dto.nextAction).toBe('queued');
   });
 });
+
+describe('mapOperatorTask — wave E2 graph projections', () => {
+  const target = {
+    id: 'target-1', targetKind: 'contact' as const, deviceId: null, ticketId: null,
+    contactId: 'contact-1', targetLabel: 'Dana Example', targetOrdinal: 0,
+    state: 'active' as const, detachedAt: null, detachedReason: null,
+  };
+  const account = {
+    targetId: 'target-1', provider: 'm365' as const, m365ConnectionId: 'conn-1',
+    googleConnectionId: null, externalId: 'aaaa-bbbb', principalLabel: 'dana@acme.com',
+  };
+  const step = {
+    id: 'step-1', stepKey: 'investigate', stepKind: 'reason' as const, targetId: 'target-1',
+    attemptOrdinal: 0, state: 'running' as const, planRevision: 1,
+    expectedCriterion: 'account cannot sign in', dependencyKind: null, dependencyId: null,
+    detail: null, startedAt: new Date('2026-09-17T10:00:00Z'), settledAt: null,
+  };
+  const event = {
+    id: 'event-1', transitionSeq: 1, eventType: 'task_admitted' as const,
+    actorKind: 'user' as const, actorUserId: 'user-1', stepKey: 'investigate',
+    targetId: 'target-1', detail: 'admitted', createdAt: new Date('2026-09-17T10:00:00Z'),
+  };
+
+  it('nests accounts under their target', () => {
+    const dto = mapOperatorTask(baseTaskRow(), [], [], [target], [account], [step], [event]);
+    expect(dto.targets).toHaveLength(1);
+    expect(dto.targets[0]!.accounts).toEqual([{
+      provider: 'm365', connectionId: 'conn-1',
+      externalId: 'aaaa-bbbb', principalLabel: 'dana@acme.com',
+    }]);
+  });
+
+  it('collapses the two provider connection columns into one connectionId', () => {
+    const dto = mapOperatorTask(baseTaskRow(), [], [], [target],
+      [{ ...account, provider: 'google' as const, m365ConnectionId: null, googleConnectionId: 'g-1' }],
+      [], []);
+    expect(dto.targets[0]!.accounts[0]).toMatchObject({ provider: 'google', connectionId: 'g-1' });
+  });
+
+  it('keeps the inline target projection so a pre-E2 client is unaffected', () => {
+    const dto = mapOperatorTask(baseTaskRow(), [], [], [target], [account], [step], [event]);
+    // recipe spec §5.5: the inline columns stay until P3-5.
+    expect(dto.target).toEqual(expect.objectContaining({ deviceId: expect.anything() }));
+    expect(dto.schemaVersion).toBe(1);
+  });
+
+  it('never leaks a step checkpoint onto the wire', () => {
+    const dto = mapOperatorTask(baseTaskRow(), [], [], [target], [account], [step], [event]);
+    assertNoLeakedTripwireKeys(dto);
+    expect(JSON.stringify(dto)).not.toContain('checkpoint');
+  });
+
+  it('emits events in ascending transition_seq so the timeline reads forwards', () => {
+    const dto = mapOperatorTask(baseTaskRow(), [], [], [], [], [], [
+      { ...event, id: 'e2', transitionSeq: 2 },
+      { ...event, id: 'e1', transitionSeq: 1 },
+    ]);
+    expect(dto.events.map((e) => e.transitionSeq)).toEqual([1, 2]);
+  });
+});

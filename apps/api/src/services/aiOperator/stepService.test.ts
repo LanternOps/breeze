@@ -57,7 +57,7 @@ describe('stepService (Operator spec §11, recipe spec §5.3)', () => {
       targetId: null, state: 'succeeded', detail: 'restart dispatched and verified',
     });
     expect(updated[0]).toMatchObject({ state: 'succeeded' });
-    expect(updated[0].settledAt).toBeInstanceOf(Date);
+    expect(updated[0]!.settledAt).toBeInstanceOf(Date);
   });
 
   it('classifies every service_recovery step key without consulting a model', () => {

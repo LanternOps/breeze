@@ -38,7 +38,7 @@ describe('appendTaskEvent (recipe spec §5, Operator spec §11)', () => {
     // would instead race to a 23505 and abort the caller's transaction.
     expect(update).toHaveBeenCalledTimes(1);
     expect(inserted).toHaveLength(1);
-    expect(inserted[0]).toMatchObject({
+    expect(inserted[0]!).toMatchObject({
       orgId: 'org-1', taskId: 'task-1', transitionSeq: 7,
       eventType: 'step_opened', actorKind: 'coordinator', stepKey: 'investigate',
     });
@@ -50,7 +50,7 @@ describe('appendTaskEvent (recipe spec §5, Operator spec §11)', () => {
       orgId: 'org-1', taskId: 'task-1',
       eventType: 'task_settled', actor: { kind: 'reconciler' },
     });
-    expect(inserted[0].actorUserId).toBeNull();
+    expect(inserted[0]!.actorUserId).toBeNull();
   });
 
   it('stamps the user id for a user actor', async () => {
@@ -69,7 +69,7 @@ describe('appendTaskEvent (recipe spec §5, Operator spec §11)', () => {
       eventType: 'operation_settled', actor: { kind: 'system' },
       detail: 'x'.repeat(9000),
     });
-    expect((inserted[0].detail as string).length).toBe(4000);
+    expect((inserted[0]!.detail as string).length).toBe(4000);
   });
 
   it('is a no-op when the task row is gone, and inserts nothing', async () => {

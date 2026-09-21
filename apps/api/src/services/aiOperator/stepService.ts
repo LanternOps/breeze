@@ -116,6 +116,10 @@ export async function openStep(
       },
     })
     .returning({ id: aiOperatorTaskSteps.id });
+  if (!row) {
+    // ON CONFLICT DO UPDATE always returns the inserted-or-updated row.
+    throw new Error('[aiOperator] openStep: upsert returned no row');
+  }
 
   if (input.actor) {
     await appendTaskEvent(dbh, {

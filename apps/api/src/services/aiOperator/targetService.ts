@@ -108,6 +108,11 @@ export async function createTaskTarget(
       state: 'active',
     })
     .returning({ id: aiOperatorTaskTargets.id });
+  if (!row) {
+    // A plain INSERT … RETURNING either returns the row or raises; an empty
+    // result is a broken invariant, never a client-input problem.
+    throw new Error('[aiOperator] createTaskTarget: insert returned no row');
+  }
 
   if (input.actor) {
     await appendTaskEvent(dbh, {
@@ -183,6 +188,10 @@ export async function freezeTargetAccount(
       },
     })
     .returning({ id: aiOperatorTaskTargetAccounts.id });
+  if (!row) {
+    // ON CONFLICT DO UPDATE always returns the inserted-or-updated row.
+    throw new Error('[aiOperator] freezeTargetAccount: upsert returned no row');
+  }
 
   if (input.actor) {
     await appendTaskEvent(dbh, {

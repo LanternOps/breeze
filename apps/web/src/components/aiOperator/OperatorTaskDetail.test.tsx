@@ -62,6 +62,10 @@ function buildTask(overrides: Partial<AiOperatorTaskDto> = {}): AiOperatorTaskDt
     runs: [
       { id: 'run-1', status: 'completed', attemptOrdinal: 1, promptVersion: 'v1', resolvedModel: 'sonnet' },
     ],
+    // Wave E2 (#6167) additive graph projections — not rendered yet.
+    targets: [],
+    steps: [],
+    events: [],
     ...overrides,
   };
 }
