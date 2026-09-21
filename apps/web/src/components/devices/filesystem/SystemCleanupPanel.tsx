@@ -94,6 +94,17 @@ export default function SystemCleanupPanel({ deviceId }: { deviceId: string }) {
     return body?.error === "agent_update_required" ? (body.minAgentVersion ?? "") : null;
   };
 
+  // Both queueing POSTs (list, run) can 409 `agent_update_required` before
+  // there is ever a commandId/cleanupRunId to poll, which routes through
+  // runAction and toasts BEFORE handleFailure gets a chance to render the
+  // banner's copy. Map the raw code to the same human sentence the banner
+  // uses so the toast and the banner never disagree.
+  const friendlyActionError = useCallback((code: string, _message: string, body?: unknown) => {
+    if (code !== "agent_update_required") return undefined;
+    const version = (body as { minAgentVersion?: string } | undefined)?.minAgentVersion ?? "";
+    return t("systemCleanupPanel.agentUpdateRequired", { version });
+  }, [t]);
+
   const handleFailure = useCallback((err: unknown, fallback: string) => {
     // Two different 409s share a status code and must not share an answer:
     // `agent_update_required` raises the update banner and disables Run
@@ -129,6 +140,7 @@ export default function SystemCleanupPanel({ deviceId }: { deviceId: string }) {
       const queued = await runAction<{ data: { commandId: string } }>({
         request: () => fetchWithAuth(`/devices/${deviceId}/filesystem/system-cleanup/list`, { method: "POST" }),
         errorFallback: t("systemCleanupPanel.listFailed"),
+        friendly: friendlyActionError,
       });
 
       const startedAt = Date.now();
@@ -162,7 +174,7 @@ export default function SystemCleanupPanel({ deviceId }: { deviceId: string }) {
     } finally {
       if (mounted.current) setBusy(null);
     }
-  }, [deviceId, handleFailure, t]);
+  }, [deviceId, handleFailure, friendlyActionError, t]);
 
   const selectedActions = useMemo(
     () => (catalog?.actions ?? []).flatMap((action) =>
@@ -206,6 +218,7 @@ export default function SystemCleanupPanel({ deviceId }: { deviceId: string }) {
           body: JSON.stringify({ actionIds: selectedActions.map((action) => action.id) }),
         }),
         errorFallback: t("systemCleanupPanel.runFailed"),
+        friendly: friendlyActionError,
       });
 
       setRun({ cleanupRunId: queued.data.cleanupRunId, status: "running", error: null, freedBytes: 0, actions: [], volumes: [] });
@@ -240,7 +253,7 @@ export default function SystemCleanupPanel({ deviceId }: { deviceId: string }) {
     } finally {
       if (mounted.current) { setBusy(null); setAcknowledged(false); }
     }
-  }, [deviceId, handleFailure, selectedActions, t]);
+  }, [deviceId, handleFailure, friendlyActionError, selectedActions, t]);
 
   const toggle = (id: string) =>
     setSelected((current) => {
