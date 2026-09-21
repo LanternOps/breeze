@@ -2,18 +2,22 @@
 import '../styles/globals.css';
 import { ClientRouter } from 'astro:transitions';
 import AuthPanelBranding from '../components/auth/AuthPanelBranding';
+import { tServer } from '../lib/i18n/server';
 
 interface Props {
-  title: string;
+  title?: string;
+  titleKey?: string;
   description?: string;
   tagline?: string;
 }
 
 const {
   title,
-  description = 'Breeze RMM - Remote Monitoring and Management',
-  tagline = 'The modern RMM platform built for speed, clarity, and scale.',
+  titleKey,
+  description = tServer(Astro.locals.locale, 'layout.metaDescription'),
+  tagline = tServer(Astro.locals.locale, 'authShell.tagline'),
 } = Astro.props;
+const pageTitle = titleKey ? tServer(Astro.locals.locale, titleKey) : title;
 ---
 
 <!DOCTYPE html>
@@ -29,7 +33,7 @@ const {
       the main app layout having installed the theme swap listener.
     -->
     <script is:inline src="/theme-bootstrap.js"></script>
-    <title>{title} | Breeze RMM</title>
+    <title>{pageTitle} | Breeze RMM</title>
     <ClientRouter />
   </head>
   <body class="min-h-screen bg-background antialiased">

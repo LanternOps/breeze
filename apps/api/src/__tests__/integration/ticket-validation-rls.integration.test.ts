@@ -38,12 +38,20 @@ import {
   ticketCategories,
   partnerTicketSequences,
   users,
+  partnerUsers,
   organizations,
   partners,
 } from '../../db/schema';
 import { createTicket, TicketServiceError } from '../../services/ticketService';
 import { getTicketEventsQueue } from '../../services/ticketEvents';
-import { createOrganization, createPartner, createUser } from './db-utils';
+import {
+  assignUserToPartner,
+  createOrganization,
+  createPartner,
+  createRole,
+  createUser,
+  grantRolePermissions,
+} from './db-utils';
 import { getTestDb } from './setup';
 
 /**
@@ -77,6 +85,9 @@ async function seedFixture() {
     orgId: null, // MSP staff — hidden from org scope by the users RLS policy
     email: `tv-rls-staff-${unique}@example.test`,
   });
+  const staffRole = await createRole({ scope: 'partner', partnerId: p1.id });
+  await grantRolePermissions(staffRole.id, [{ resource: 'tickets', action: 'read' }]);
+  await assignUserToPartner(staff.id, p1.id, staffRole.id, 'all');
   const [c1] = await adminDb
     .insert(ticketCategories)
     .values({ partnerId: p1.id, name: `TV-RLS Cat P1 ${unique}` })
@@ -88,6 +99,13 @@ async function seedFixture() {
     orgId: null,
     email: `tv-rls-other-${unique}@example.test`,
   });
+  const noRead = await createUser({
+    partnerId: p1.id,
+    orgId: null,
+    email: `tv-rls-no-read-${unique}@example.test`,
+  });
+  const noReadRole = await createRole({ scope: 'partner', partnerId: p1.id });
+  await assignUserToPartner(noRead.id, p1.id, noReadRole.id, 'all');
   const [c2] = await adminDb
     .insert(ticketCategories)
     .values({ partnerId: p2.id, name: `TV-RLS Cat P2 ${unique}` })
@@ -106,7 +124,7 @@ async function seedFixture() {
     userId: actor.id,
   };
 
-  return { p1, o1, actor, staff, c1, p2, u2, c2, orgContext };
+  return { p1, o1, actor, staff, noRead, c1, p2, u2, c2, orgContext };
 }
 
 afterAll(async () => {
@@ -141,7 +159,10 @@ afterAll(async () => {
   await adminDb
     .delete(ticketCategories)
     .where(sql`${ticketCategories.partnerId} IN (${partnerList})`);
+  await adminDb.delete(partnerUsers).where(sql`${partnerUsers.partnerId} IN (${partnerList})`);
   await adminDb.delete(users).where(sql`${users.partnerId} IN (${partnerList})`);
+  await adminDb.execute(sql`DELETE FROM role_permissions WHERE role_id IN (SELECT id FROM roles WHERE partner_id IN (${partnerList}))`);
+  await adminDb.execute(sql`DELETE FROM roles WHERE partner_id IN (${partnerList})`);
   await adminDb.delete(organizations).where(sql`${organizations.partnerId} IN (${partnerList})`);
   await adminDb.delete(partners).where(sql`${partners.id} IN (${partnerList})`);
 });
@@ -215,5 +236,25 @@ describe('ticket validation reads under org-scoped RLS (system-context regressio
 
     expect(err.status).toBe(400);
     expect(err.code).toBe('ASSIGNEE_WRONG_PARTNER');
+  });
+
+  it('rejects a same-partner assignee without ticket-read authority before insertion', async () => {
+    const { o1, actor, noRead, orgContext } = await seedFixture();
+    const admin = getTestDb() as any;
+    const before = await admin.select({ id: tickets.id }).from(tickets);
+
+    const err = await captureTicketServiceError(() =>
+      withDbAccessContext(orgContext, () =>
+        createTicket(
+          { orgId: o1.id, subject: 'must never persist', source: 'manual', assigneeId: noRead.id },
+          { userId: actor.id }
+        )
+      )
+    );
+
+    expect(err.status).toBe(400);
+    expect(err.code).toBe('ASSIGNEE_NOT_ELIGIBLE');
+    const after = await admin.select({ id: tickets.id }).from(tickets);
+    expect(after).toEqual(before);
   });
 });

@@ -3,14 +3,21 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Stable spy so `expect(mockLogin).not.toHaveBeenCalled()` is meaningful — the
 // selector must hand back the SAME login fn on every render, not a fresh one.
-const { mockLogin } = vi.hoisted(() => ({ mockLogin: vi.fn() }));
+const { mockLogin, mockLogout, mockRestoreAccessTokenFromCookieDetailed, authState } = vi.hoisted(() => ({
+  mockLogin: vi.fn(),
+  mockLogout: vi.fn(),
+  mockRestoreAccessTokenFromCookieDetailed: vi.fn(),
+  // Mutated per-test to drive the sweep paper cut #1 already-signed-in check.
+  authState: { isAuthenticated: false },
+}));
 
 vi.mock('../../stores/auth', () => ({
   useAuthStore: Object.assign(
-    (selector: (s: { login: ReturnType<typeof vi.fn> }) => unknown) =>
-      selector({ login: mockLogin }),
-    {},
+    (selector: (s: { login: ReturnType<typeof vi.fn>; isAuthenticated: boolean }) => unknown) =>
+      selector({ login: mockLogin, isAuthenticated: authState.isAuthenticated }),
+    { getState: () => ({ login: mockLogin, logout: mockLogout, isAuthenticated: authState.isAuthenticated }) },
   ),
+  restoreAccessTokenFromCookieDetailed: mockRestoreAccessTokenFromCookieDetailed,
   apiRegisterPartner: vi.fn(),
   fetchWithAuth: vi.fn(),
 }));
@@ -31,7 +38,7 @@ const mockNavigateTo = vi.mocked(navigateTo);
 // "loaded + enabled" so the form renders; the disabled path has its own test.
 function setRegistration(enabled: boolean, loaded = true) {
   useFeaturesStore.setState({
-    features: { billing: false, support: false, aiOperatorTasks: false },
+    features: { billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, toolSources: false },
     cfAccessLogin: { enabled: false },
     registration: { enabled },
     loaded,
@@ -52,6 +59,46 @@ describe('PartnerRegisterPage — SR2-21 email-first signup', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     setRegistration(true);
+    authState.isAuthenticated = false;
+  });
+
+  // Sweep paper cut #1: this bare Astro page is reached by a full-page nav,
+  // so an already-signed-in visitor has a persisted `isAuthenticated` flag
+  // but no in-memory token. The page must resolve that with its OWN
+  // cookie-refresh check before ever letting the registration gate's /config
+  // call race the same condition inside fetchWithAuth — which used to end in
+  // a wrong, confusing /login?reason=session-expired bounce for a valid session.
+  describe('already-signed-in visitor (#1)', () => {
+    beforeEach(() => {
+      authState.isAuthenticated = true;
+    });
+
+    it('sends a genuinely valid session to the dashboard, never to /login', async () => {
+      mockRestoreAccessTokenFromCookieDetailed.mockResolvedValue('restored');
+      render(<PartnerRegisterPage />);
+
+      await waitFor(() => expect(mockNavigateTo).toHaveBeenCalledWith('/dashboard', { replace: true }));
+      expect(mockNavigateTo).not.toHaveBeenCalledWith(expect.stringContaining('/login'));
+      expect(screen.queryByLabelText(/company name/i)).toBeNull();
+    });
+
+    it('does not evict a valid session on a transient refresh failure (502/offline)', async () => {
+      mockRestoreAccessTokenFromCookieDetailed.mockResolvedValue('transient');
+      render(<PartnerRegisterPage />);
+
+      await screen.findByLabelText(/company name/i);
+      expect(mockLogout).not.toHaveBeenCalled();
+      expect(mockNavigateTo).not.toHaveBeenCalledWith(expect.stringContaining('session-expired'));
+    });
+
+    it('clears a merely stale flag and shows the registration form instead of bouncing to /login?reason=session-expired', async () => {
+      mockRestoreAccessTokenFromCookieDetailed.mockResolvedValue('auth-failed');
+      render(<PartnerRegisterPage />);
+
+      await screen.findByLabelText(/company name/i);
+      expect(mockLogout).toHaveBeenCalledTimes(1);
+      expect(mockNavigateTo).not.toHaveBeenCalledWith(expect.stringContaining('session-expired'));
+    });
   });
 
   it('redirects to login when registration is disabled at runtime (#1308)', async () => {

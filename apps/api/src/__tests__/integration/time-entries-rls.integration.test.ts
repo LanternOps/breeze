@@ -1,12 +1,12 @@
 /**
  * Real-driver integration tests: time_entries + ticket_parts RLS isolation,
- * timer-race semantics (D3), category-default billing (D2), and approval flow (D1).
+ * timer-race semantics (D3), billing-profile defaults (D2), and approval flow (D1).
  *
  * Runs under vitest.integration.config.ts — code-under-test connects as the
  * unprivileged `breeze_app` role so RLS is actually enforced.
  *
  * Fixture topology:
- *   partnerA → orgA → categoryA (defaultBillable=true, defaultHourlyRate=125.00)
+ *   partnerA → orgA → categoryA + default profile (billable, 125.00/hour)
  *           → ticketA (linked to categoryA)
  *           → techA (partner staff), adminA (manageAll=true)
  *   partnerB → orgB → ticketB
@@ -22,6 +22,7 @@ import { Hono } from 'hono';
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
 import {
+  billingProfiles,
   timeEntries,
   ticketParts,
   ticketCategories,
@@ -48,6 +49,7 @@ import { createOrganization, createPartner, createSite, createUser, setupTestEnv
 import { getTestDb } from './setup';
 import { createAccessToken } from '../../services/jwt';
 import { moveOrgRoutes } from '../../routes/devices/moveOrg';
+import { withMoveOrgStepUpGrant } from './moveOrgStepUpFixture';
 
 // Partner/org ids seeded by this file, for afterAll cleanup.
 const seededPartnerIds: string[] = [];
@@ -66,8 +68,8 @@ interface Fixture {
   techB: { id: string };
   partnerAContext: DbAccessContext;
   orgAContext: DbAccessContext;
-  techAActor: { userId: string; partnerId: string; manageAll: false; accessibleOrgIds: string[] | null };
-  adminAActor: { userId: string; partnerId: string; manageAll: true; accessibleOrgIds: string[] | null };
+  techAActor: { userId: string; partnerId: string; manageAll: false; manageBilling: false; accessibleOrgIds: string[] | null };
+  adminAActor: { userId: string; partnerId: string; manageAll: true; manageBilling: false; accessibleOrgIds: string[] | null };
 }
 
 async function seedFixture(): Promise<Fixture> {
@@ -88,15 +90,17 @@ async function seedFixture(): Promise<Fixture> {
     email: `te-rls-adminA-${unique}@example.test`,
   });
 
-  // ticket_categories: defaultBillable=true, defaultHourlyRate=125.00
+  await adminDb.insert(billingProfiles).values({
+    partnerId: partnerA.id, name: `TE-RLS rates ${unique}`, currencyCode: 'USD',
+    isDefault: true, baseCoverage: 'billable', baseHourlyRate: '125.00',
+  });
+
+  // The category remains a ticket classification, independent of pricing.
   const [categoryA] = await adminDb
     .insert(ticketCategories)
     .values({
       partnerId: partnerA.id,
       name: `TE-RLS Cat A ${unique}`,
-      defaultBillable: true,
-      defaultHourlyRate: '125.00',
-      rateCurrency: 'USD',
     })
     .returning();
 
@@ -153,8 +157,8 @@ async function seedFixture(): Promise<Fixture> {
     userId: techA.id,
   };
 
-  const techAActor = { userId: techA.id, partnerId: partnerA.id, manageAll: false as const, accessibleOrgIds: [orgA.id] };
-  const adminAActor = { userId: adminA.id, partnerId: partnerA.id, manageAll: true as const, accessibleOrgIds: [orgA.id] };
+  const techAActor = { userId: techA.id, partnerId: partnerA.id, manageAll: false as const, manageBilling: false as const, accessibleOrgIds: [orgA.id] };
+  const adminAActor = { userId: adminA.id, partnerId: partnerA.id, manageAll: true as const, manageBilling: false as const, accessibleOrgIds: [orgA.id] };
 
   return {
     partnerA, orgA, categoryA, ticketA, techA, adminA,
@@ -188,6 +192,7 @@ afterAll(async () => {
   // sequences / categories → partner_users / role_permissions / roles →
   // users → orgs → partners.
   await adminDb.delete(timeEntries).where(sql`${timeEntries.partnerId} IN (${partnerList})`);
+  await adminDb.delete(billingProfiles).where(sql`${billingProfiles.partnerId} IN (${partnerList})`);
   // ticket_parts cascades from tickets (ON DELETE CASCADE) but explicit delete
   // avoids ordering sensitivity.
   await adminDb
@@ -432,10 +437,10 @@ describe('timer semantics (D3) — real driver', () => {
   });
 });
 
-// ── 4. Category defaults (D2) — real driver ──────────────────────────────
+// ── 4. Billing-profile defaults (D2) — real driver ──────────────────────────────
 
-describe('category defaults (D2) — real driver', () => {
-  it('ticket-linked entry stamps isBillable + hourlyRate from category and denormalizes orgId', async () => {
+describe('billing-profile defaults (D2) — real driver', () => {
+  it('ticket-linked entry stamps isBillable + hourlyRate from the partner default profile and denormalizes orgId', async () => {
     const { ticketA, orgA, partnerAContext, techAActor } = await seedFixture();
 
     let entry: Awaited<ReturnType<typeof createTimeEntry>>;
@@ -611,13 +616,14 @@ describe('moveOrg org_id rewrite — real driver (spec §6)', () => {
     const app = new Hono();
     app.route('/devices', moveOrgRoutes);
 
+    // Move-org step-up (spec 2026-09-18 W01): the route requires a fresh grant; mint one for exactly this request.
     const res = await app.request(`/devices/${deviceA.id}/move-org`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${token}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ orgId: orgA2.id, siteId: siteA2.id }),
+      body: JSON.stringify(await withMoveOrgStepUpGrant(token, deviceA.id, { orgId: orgA2.id, siteId: siteA2.id })),
     });
 
     // Must succeed.

@@ -1,7 +1,7 @@
 import '@/lib/i18n';
 
 import { fireEvent, render, screen } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import DeviceReliabilityPanel from './DeviceReliabilityPanel';
 import { fetchWithAuth } from '../../stores/auth';
@@ -9,9 +9,14 @@ import { fetchWithAuth } from '../../stores/auth';
 const showToast = vi.fn();
 const useMlFeatureFlagsMock = vi.hoisted(() => vi.fn());
 const startDeviceTaskMock = vi.hoisted(() => vi.fn());
+const permState = vi.hoisted(() => ({ permissions: [{ resource: '*', action: '*' }] as Array<{ resource: string; action: string }> }));
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
+  // usePermissions() selects user.permissions; wildcard so the Ask AI button
+  // renders (#6396 gates it on ai_sessions:use).
+  useAuthStore: (selector: (s: { user: { permissions: Array<{ resource: string; action: string }> } }) => unknown) =>
+    selector({ user: { permissions: permState.permissions } }),
 }));
 
 vi.mock('../../stores/aiStore', () => ({
@@ -721,5 +726,38 @@ describe('DeviceReliabilityPanel', () => {
     fireEvent.click(await screen.findByTestId('reliability-offenders-toggle'));
 
     expect(await screen.findByText(/No offending services or components recorded/)).toBeInTheDocument();
+  });
+});
+
+// #6396: without ai_sessions:use the assistant sidebar is unmounted, so the
+// Ask AI button must not render as a dead click.
+describe('DeviceReliabilityPanel Ask AI gating (#6396)', () => {
+  const healthySnapshot = {
+    snapshot: {
+      deviceId: 'dev-1', hostname: 'host-1', osType: 'macos', status: 'online',
+      reliabilityScore: 98, trendDirection: 'stable', trendConfidence: 0.2, uptime30d: 99.9,
+      crashCount30d: 0, hangCount30d: 0, serviceFailureCount30d: 0, hardwareErrorCount30d: 0,
+      mtbfHours: null, topIssues: [], drivers: [], computedAt: '2026-06-18T12:00:00.000Z',
+    },
+    history: [],
+  };
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useMlFeatureFlagsMock.mockReturnValue({ flags: {}, loaded: true, error: null, isDisabled: () => false, reload: vi.fn() });
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse(healthySnapshot));
+  });
+  afterEach(() => { permState.permissions = [{ resource: '*', action: '*' }]; });
+
+  it('renders Ask AI with ai_sessions:use (control for the negative case below)', async () => {
+    permState.permissions = [{ resource: 'ai_sessions', action: 'use' }];
+    render(<DeviceReliabilityPanel deviceId="dev-1" />);
+    expect(await screen.findByTestId('reliability-ask-ai')).toBeInTheDocument();
+  });
+
+  it('hides Ask AI when the user lacks ai_sessions:use', async () => {
+    permState.permissions = [{ resource: 'devices', action: 'read' }];
+    render(<DeviceReliabilityPanel deviceId="dev-1" />);
+    await screen.findAllByText(/98/);
+    expect(screen.queryByTestId('reliability-ask-ai')).toBeNull();
   });
 });

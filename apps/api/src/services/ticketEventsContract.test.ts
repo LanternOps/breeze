@@ -160,6 +160,7 @@ vi.mock('./ticketPush', () => ({
   loadTicketPushPrefs: hoisted.loadTicketPushPrefsMock,
   listAnySlaSubscribers: hoisted.listAnySlaSubscribersMock,
   isAuthorisedForTicket: hoisted.isAuthorisedForTicketMock,
+  isEligibleTicketRecipient: vi.fn(async () => true),
   admitPush: hoisted.admitPushMock,
   resolvePushJobs: hoisted.resolvePushJobsMock,
   assertSamePartner: (c: { partnerId: string }, eventPartnerId: string | null) =>
@@ -175,8 +176,14 @@ vi.mock('bullmq', () => ({ Queue: vi.fn(() => ({ add: vi.fn() })), Worker: vi.fn
 vi.mock('../services/redis', () => ({ getBullMQConnection: vi.fn(() => ({})) }));
 vi.mock('../services/email', () => ({ getEmailService: hoisted.getEmailServiceMock }));
 vi.mock('../services/sentry', () => ({ captureException: vi.fn() }));
-vi.mock('../services/emailLayout', () => ({
-  escapeHtml: (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+vi.mock('./inboundEmail/commentNotificationPortalHref', () => ({
+  resolveCommentNotificationPortalHref: vi.fn(async () => ({
+    href: 'https://example.test/portal/tickets/t-1',
+    hasPortalUser: false,
+  })),
+}));
+vi.mock('./ticketMailbox/resolveOutboundMailbox', () => ({
+  resolveOutboundMailbox: vi.fn(async () => null),
 }));
 
 // ── real implementations ─────────────────────────────────────────────────────

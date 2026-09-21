@@ -18,6 +18,38 @@ const DIRECT_READ_ALLOWLIST = new Set([
   'db/schema/configurationPolicies.ts',
   'db/schema/backup.ts',
   'db/schema/onedriveHelper.ts',
+  // #5289 — config_policy_monitors declares its FK to the link table.
+  'db/schema/monitorDefinitions.ts',
+
+  // #5289 — monitors resolve CUMULATIVELY, which is exactly what the effective
+  // view cannot express: the view hands back a parent's link only for feature
+  // types the child does NOT override, so a child policy with its own monitors
+  // link would silently drop every monitor attached to its parent. The resolver
+  // therefore reads the AUTHORED links for the policy and its parent and ranks
+  // the attachments itself (closest attachment wins, per monitor).
+  'services/monitors/monitorResolver.ts',
+  // #5289 — attachment CRUD and the "which policies attach this monitor" view:
+  // the policy's own links, never an inherited projection of them.
+  'routes/monitorDefinitions.ts',
+  // #5289 — AI-tool mirror of routes/monitorDefinitions.ts above: every read
+  // here is either reporting a monitor's own (authored) policy attachments
+  // (get_monitor) or the attach/detach read-modify-write path over the same
+  // authored rows (currentAttachmentItems, mirroring that file's currentItems).
+  // None of these resolve a policy's EFFECTIVE monitor set — that's
+  // services/monitors/monitorResolver.ts's job — so there is no call site here
+  // that should switch to the view.
+  'services/aiToolsMonitors.ts',
+
+  // #6370 W05c1 — conversion operates on the policy's OWN authored rows: it
+  // retires them and re-homes their alerts. The effective view would hand back
+  // a PARENT policy's link for a feature the child does not override, and
+  // retiring that would silently convert a sibling policy's sources. Preview,
+  // equivalence and scope read the same authored set so the preview hash covers
+  // exactly what convert will retire.
+  'services/monitors/conversion/convert.ts',
+  'services/monitors/conversion/equivalence.ts',
+  'services/monitors/conversion/loadSources.ts',
+  'services/monitors/conversion/previewScope.ts',
 
   // Authored link CRUD + listFeatureLinks (the editor's own-links view). This
   // file's own effective-config resolver imports the view instead.
@@ -37,6 +69,19 @@ const DIRECT_READ_ALLOWLIST = new Set([
   // every child, so the pin must stay on the base table to identify exactly one
   // row; a miss returns TARGET_ABSENT (deny), never "no constraint applies".
   'services/actionIntents/effectDigest.ts',
+  // Fleet Designer evidence (W01): reports each policy's AUTHORED watches and
+  // rules so the design's `retired` section names rows the policy actually
+  // owns — the W03 retire step rewrites that policy's own link. Reading the
+  // view would let the designer propose retiring an inherited row the child
+  // cannot edit. Never decides what a device gets.
+  'services/aiAgents/designEvidence.ts',
+  // Fleet Designer drift (W05): compares the approved design against the
+  // AUTHORED watches and rules of the policies the apply step itself wrote
+  // (and of the policies whose own links the retire step rewrote). Those are
+  // exactly the rows rollback can restore, so inherited rows must not appear:
+  // through the view a parent's link would read as "extra" drift on a child
+  // policy nobody edited. Never decides what a device gets.
+  'services/fleetDesign/drift.ts',
 
   // Standalone-entity delete guards and authored-link editors.
   'routes/updateRingsHelpers.ts',
@@ -198,7 +243,9 @@ describe('feature-link readers contract', () => {
       'routes/remote/helpers.ts',
       'services/deviceLifecyclePolicy.ts',
       'services/helperPermissions.ts',
-      'services/warrantyAlertEvaluator.ts',
+      // #5511 W02: the warranty hierarchy read moved out of warrantyAlertEvaluator.ts
+      // into this shared module (alerting + HP CMSL heartbeat delivery).
+      'services/warrantyPolicyResolution.ts',
       'services/configPolicyPatching.ts',
       'jobs/automationWorker.ts',
       'jobs/backupWorker.ts',

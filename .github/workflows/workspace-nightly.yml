@@ -1,0 +1,97 @@
+name: Workspace Nightly (Vercel Sandbox)
+
+# Spec §11 rollout step 2: "nightly real-Vercel suite green for a week" is the
+# gate between shipping the adapter dark and enabling the capability for the
+# first partner. This workflow is that gate.
+#
+# Deliberately NOT on pull_request: it needs live Vercel credentials (which a
+# fork PR must never see), it spends real sandbox-minutes, and several cases
+# wait out a deliberate network timeout. `CI Success` does not depend on it —
+# it is evidence for a human rollout decision, not a merge gate.
+on:
+  schedule:
+    # 03:17 UTC — off the hour so it does not pile onto the runner surge every
+    # other cron in this repo lands on.
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: workspace-nightly
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  PNPM_VERSION: '10.34.5'
+
+jobs:
+  vercel-sandbox-e2e:
+    name: Vercel Sandbox e2e
+    runs-on: ubuntu-latest
+    # Well above the suite's own ceiling: a hung vendor call must fail the job,
+    # not hold a runner for six hours.
+    timeout-minutes: 30
+    # `github.repository` guard so a fork that enables Actions cannot schedule
+    # this against secrets it does not have (it would fail anyway; this makes
+    # the skip explicit rather than a nightly red on someone else's fork).
+    if: github.repository == 'LanternOps/breeze'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version-file: .node-version
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run the Vercel sandbox e2e suite
+        env:
+          WORKSPACE_E2E: '1'
+          AI_WORKSPACE_BACKEND: vercel
+          VERCEL_SANDBOX_TOKEN: ${{ secrets.VERCEL_SANDBOX_TOKEN }}
+          VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VERCEL_SANDBOX_REGION_EU: fra1
+          VERCEL_SANDBOX_REGION_US: iad1
+          NODE_ENV: test
+        run: pnpm --filter @breeze/api test:workspace-e2e
+
+      # A failed suite can leave a sandbox running until its 10-minute deadline.
+      # That is bounded and self-healing, but a create that succeeded while the
+      # job was cancelled has no `finally` at all — so sweep unconditionally.
+      - name: Sweep any sandbox this job left behind
+        if: always()
+        env:
+          VERCEL_SANDBOX_TOKEN: ${{ secrets.VERCEL_SANDBOX_TOKEN }}
+          VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        run: |
+          node --input-type=module -e '
+            import { Sandbox } from "@vercel/sandbox";
+            const credentials = {
+              token: process.env.VERCEL_SANDBOX_TOKEN,
+              teamId: process.env.VERCEL_TEAM_ID,
+              projectId: process.env.VERCEL_PROJECT_ID,
+            };
+            const page = await Sandbox.list({ namePrefix: "breeze-", sortBy: "name", ...credentials });
+            for (const row of await page.toArray()) {
+              if (row.status === "stopped" || row.status === "aborted") continue;
+              const sandbox = await Sandbox.get({ name: row.name, resume: false, ...credentials });
+              await sandbox.delete({ deleteOrphanSnapshots: true });
+              console.log("swept", row.name);
+            }
+          '
+        working-directory: apps/api

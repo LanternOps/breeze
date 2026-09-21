@@ -1,4 +1,4 @@
-import { Context, Next } from 'hono';
+import { Context, Next, type MiddlewareHandler } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { verifyToken, TokenPayload } from '../services/jwt';
 import { getBoundMobileDeviceBlock, mobileDeviceBlockedResponse } from './mobileDeviceBlocked';
@@ -8,6 +8,7 @@ import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext
 import { users, partnerUsers, organizations } from '../db/schema';
 import { and, eq, inArray, isNull, or, SQL } from 'drizzle-orm';
 import type { PgColumn } from 'drizzle-orm/pg-core';
+import type { AiOriginRef } from '@breeze/shared';
 import type { PartnerTrustState } from '../db/schema/orgs';
 import { ENABLE_2FA } from '../routes/auth/schemas';
 import { assertActiveTenantContext, TenantInactiveError } from '../services/tenantStatus';
@@ -67,6 +68,26 @@ export function isInteractiveUserSession(auth: Pick<AuthContext, 'principal'>): 
   return auth.principal.kind === 'user_session';
 }
 
+/**
+ * "A human must be doing this" — UNCONDITIONAL. NOT redundant with
+ * requireMfa(): API-key and MCP-OAuth contexts are built with `token: {}`
+ * (routes/mcpServer.ts), and hasSatisfiedMfa returns true for ANY context
+ * when ENABLE_2FA is off — so on such a deployment the MFA gate would ADMIT a
+ * machine principal. This gate is what makes "machine-principal denial with
+ * zero state change" independent of MFA configuration. Place it before any
+ * lookup so a denial costs no query. Used by device maintenance (RMM-QA-176,
+ * on entry AND exit) and device move-org (spec 2026-09-18 D1).
+ */
+export function requireInteractiveSession(): MiddlewareHandler {
+  return async (c: Context, next: Next) => {
+    const auth = c.get('auth') as AuthContext | undefined;
+    if (!auth || !isInteractiveUserSession(auth)) {
+      return c.json({ error: 'Interactive user session required' }, 403);
+    }
+    return next();
+  };
+}
+
 export function isAiAgentPrincipal(auth: Pick<AuthContext, 'principal'>): boolean {
   return auth.principal?.kind === 'ai_agent';
 }
@@ -84,6 +105,19 @@ export interface AuthContext {
    * session, right now" needs this discriminator; user identity is not enough.
    */
   principal: PrincipalKind;
+
+  /**
+   * Set when this request originated from an AI surface (#5022 W01). Minted
+   * ONCE per surface -- autonomous agent run, chat session, MCP ledger session
+   * -- never per tool.
+   *
+   * This is the in-process CARRIER and the only route into the act/verify
+   * bypass lanes (`executeCommandWithSystemPrecheck`), which never enter
+   * `executeTool`. It is NOT the conduit: no insert chokepoint receives an
+   * AuthContext, so the origin is passed explicitly through each dispatch
+   * options bag as well. Use `services/aiDispatch.ts` -- do not hand-thread it.
+   */
+  aiOrigin?: AiOriginRef;
 
   user: {
     id: string;
@@ -857,9 +891,17 @@ export function requirePermission(resource: string, action: string) {
       throw new HTTPException(403, { message: 'AI agents cannot call HTTP routes' });
     }
 
+    // #5733 — pass the token scope. The system-scope token LOGIN mints carries
+    // neither partnerId nor orgId, so without this the resolver has no axis to
+    // look up and every requirePermission route answers 403 for a platform
+    // admin. getUserPermissions takes the wildcard branch only for that
+    // null/null shape, and authorises it off a live users.is_platform_admin
+    // read rather than this claim; a system token that DOES carry an axis stays
+    // governed by that membership's grants (#5071).
     const userPerms = await getUserPermissions(auth.user.id, {
       partnerId: auth.partnerId || undefined,
-      orgId: auth.orgId || undefined
+      orgId: auth.orgId || undefined,
+      scope: auth.scope
     });
 
     if (!userPerms) {
@@ -878,9 +920,26 @@ export function requirePermission(resource: string, action: string) {
 }
 
 /**
- * Require that the caller completed MFA for this session.
- * This is enforced via the JWT `mfa` claim which is set when tokens are minted
- * after MFA verification.
+ * Require an MFA-ASSURED session: the JWT `mfa` claim is true.
+ *
+ * Contract (read this before relying on it): `mfa: true` means the session
+ * satisfies the caller's EFFECTIVE MFA policy (services/mfaPolicy.ts — org /
+ * partner `security.requireMfa`, role `force_mfa`, the partner-admin force
+ * flag). Every mint site (password login, SSO, CF Access, refresh
+ * carry-forward) sets it from that policy:
+ *   - account has a factor enrolled  → true only after the factor is proven;
+ *   - no factor, policy requires MFA → false (session is locked to the
+ *     enrollment flow by the 428 gate in authMiddleware);
+ *   - no factor, policy does not require MFA → true. A tenant that has not
+ *     turned MFA on admits password-only sessions here BY DESIGN.
+ *
+ * So this gate is NOT proof that a second factor was presented. A route that
+ * must see a fresh, proven factor regardless of tenant policy (agent
+ * rollback, maintenance entry, factor management) uses the operation-bound
+ * step-up grant primitive instead (services/mfaStepUpGrant.ts +
+ * POST /auth/mfa/step-up), which denies accounts with no usable factor.
+ * Docs must describe this gate as "MFA when your MFA policy requires it",
+ * never as an unconditional MFA requirement.
  */
 export function requireMfa() {
   return async (c: Context, next: Next) => {
@@ -909,8 +968,9 @@ export function requireMfa() {
 }
 
 /**
- * Returns true when MFA is either disabled globally or has been satisfied
- * in the caller's authenticated token context.
+ * Returns true when MFA is either disabled globally or the session's `mfa`
+ * claim is true — i.e. the session satisfies the effective MFA policy (see
+ * {@link requireMfa} for the full contract). Not a factor-proof predicate.
  */
 export function hasSatisfiedMfa(auth: Pick<AuthContext, 'token'>): boolean {
   if (!ENABLE_2FA) return true;
@@ -943,7 +1003,8 @@ export function requireOrgAccess(orgIdParam: string = 'orgId') {
     if (!userPerms) {
       const fetchedPerms = await getUserPermissions(auth.user.id, {
         partnerId: auth.partnerId || undefined,
-        orgId: auth.orgId || undefined
+        orgId: auth.orgId || undefined,
+        scope: auth.scope
       });
       userPerms = fetchedPerms || undefined;
     }
@@ -982,7 +1043,8 @@ export function requireSiteAccess(siteIdParam: string = 'siteId') {
     if (!userPerms) {
       const fetchedPerms = await getUserPermissions(auth.user.id, {
         partnerId: auth.partnerId || undefined,
-        orgId: auth.orgId || undefined
+        orgId: auth.orgId || undefined,
+        scope: auth.scope
       });
       userPerms = fetchedPerms || undefined;
     }

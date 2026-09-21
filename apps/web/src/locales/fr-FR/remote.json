@@ -30,8 +30,12 @@
     "desktopUnavailable": "Ordinateur de bureau indisponible",
     "dismiss": "Fermer",
     "downloadFor": "Télécharger pour {{platform}}",
+    "ending": {
+      "description": "La session précédente est encore en cours de fermeture sur l’appareil. Patientez un instant puis réessayez.",
+      "title": "La session se termine encore"
+    },
     "errors": {
-      "agentUpgradeRequired": "Le bureau à distance nécessite une mise à jour de l'agent sur cet appareil (prise en charge du bail de révocation de session). L'agent se met à jour automatiquement — cela se règle généralement en moins d'une minute. Le terminal et le transfert de fichiers ne sont pas concernés.",
+      "agentUpgradeRequired": "Le bureau à distance nécessite une mise à jour de l'agent sur cet appareil (prise en charge du bail de révocation de session et de la barrière de démarrage). L'agent se met à jour automatiquement — cela se règle généralement en moins d'une minute. Le terminal et le transfert de fichiers ne sont pas concernés.",
       "connectionFailed": "Connexion défaillante",
       "createDesktopCode": "Échec de la création du code de connexion au bureau",
       "createDesktopSession": "Impossible de créer une session de bureau",
@@ -63,6 +67,21 @@
     "openInBrowser": "Ouvrir dans le navigateur",
     "policyDisabled": "Le bureau à distance est désactivé par la politique",
     "policyDisabledNamed": "Le bureau à distance est désactivé par la politique « {{name}} »",
+    "revoked": {
+      "title": "Session révoquée",
+      "setUpMfa": "Configurer la MFA",
+      "reasons": {
+        "session_ended": "La session était déjà terminée.",
+        "user_inactive": "Votre compte n'est plus actif.",
+        "epoch_baseline_missing": "Vos autorisations n'ont pas pu être vérifiées. Essayez de vous reconnecter.",
+        "permissions_changed": "Vos autorisations ont changé depuis le début de cette session. Reconnectez-vous pour continuer avec votre accès actuel.",
+        "membership_removed": "Vous n'avez plus accès à cette organisation ou à cet appareil.",
+        "site_scope_lost": "Cet appareil est en dehors de votre périmètre de site assigné.",
+        "mfa_required": "L'authentification multifacteur est désormais requise pour l'accès au bureau à distance.",
+        "hard_deadline": "Cette session a atteint sa durée maximale autorisée.",
+        "default": "La session a été terminée par une politique de sécurité. Reconnectez-vous pour réessayer."
+      }
+    },
     "unavailable": {
       "default": "Le mode de bureau n’est pas disponible sur cet appareil",
       "headless": "Cet appareil n’a pas d’affichage — le bureau à distance n’est pas disponible",
@@ -207,38 +226,9 @@
     "cancelledUploadNote": "L’envoi s’est arrêté dans ce navigateur. Si la commande d’écriture a déjà atteint le périphérique, le fichier peut toujours y être enregistré.",
     "copyTo": "Copier pour",
     "disk": {
-      "analyze": "Analysez",
-      "baseline": "Référence",
-      "candidates": "{{count}} candidats · {{size}} potentiel",
-      "captured": "Capturé : {{date}}",
-      "categories": {
-        "browser_cache": "Cache navigateur",
-        "package_cache": "Cache de paquets",
-        "temp_files": "Fichiers temporaires",
-        "trash": "Déchets"
-      },
-      "cleanupPreview": "Aperçu du nettoyage",
-      "cleanupResult": "Nettoyage {{status}} : récupéré {{size}} de {{count}} cible(s), {{failed}} échoué.",
-      "data": "Data : {{size}}",
-      "deleteFiles": "Supprimer les fichiers",
-      "deleteTargets": "Supprimer les cibles",
-      "deleteTargetsConfirm": "Supprimer {{count}} cible(s) de nettoyage sélectionnée(s) ? Ces fichiers seront définitivement supprimés de l’appareil.",
-      "description": "Scan rapide et planification de nettoyage en toute sécurité pour {{path}}",
-      "execute": "Exécuter ({{count}})",
-      "incremental": "Incrémentalement",
-      "largestDirectories": "Annuaires les plus importants",
-      "largestFiles": "Plus gros fichiers",
-      "lowerBound": "Borne inférieure",
-      "mode": "Mode : {{value}}",
-      "onDemand": "À la demande",
-      "partialScan": "Balayage partiel",
-      "previewCleanup": "Nettoyage Aperçu",
-      "scanRunning": "Exécution de la balayage ({{status}})",
-      "scanned": "Numérisé : fichiers {{count}}",
-      "selected": "Sélectionné : {{count}} · {{size}}",
-      "threshold": "Seuil",
-      "title": "Analyse du disque",
-      "trigger": "Déclencheur : {{value}}"
+      "title": "Nettoyage du disque",
+      "openTab": "Ouvrir le nettoyage du disque",
+      "openHint": "Analysez, prévisualisez et récupérez de l’espace disque depuis l’onglet Nettoyage du disque de cet appareil."
     },
     "dismiss": "Fermer",
     "dropFiles": "Fichiers de chute",
@@ -664,7 +654,8 @@
       "connecting": "En connexion...",
       "disconnected": "Déconnecté",
       "failed": "Échec",
-      "pending": "En attente"
+      "pending": "En attente",
+      "teardownPending": "En cours de fin (en attente de l’appareil)"
     },
     "subtitle": "Journal d’audit d’accès à distance",
     "title": "Historique des sessions",
@@ -700,6 +691,7 @@
       "timeline": "Chronologie"
     },
     "subtitle": "Consultez et auditez les sessions d’accès à distance",
+    "teardownPending": "En attente de la confirmation de l’appareil",
     "title": "Historique des sessions",
     "viewDevice": "Dispositif de vue",
     "viewRecording": "Voir l’enregistrement"

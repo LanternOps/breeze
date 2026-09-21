@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { compactToolResultForChat, redactSensitiveToolInput } from './aiToolOutput';
+import { MAX_TOOL_RESULT_CHARS, compactToolResultForChat, redactSensitiveToolInput } from './aiToolOutput';
 
 // #3521: a truncated array carries a trailing in-band sentinel string. When a
 // test cross-checks kept-vs-dropped counts, exclude that synthetic element.
@@ -585,5 +585,56 @@ describe('array truncation in-band sentinel (#3521)', () => {
     // marker is not counted as one of the real items (that would give PRIOR + 1
     // too many), and the prior count is carried forward, not reset.
     expect(n).toBe(PRIOR + (REAL - keptReal));
+  });
+});
+
+describe('compactToolResultForChat — capture envelope (execution-plane W01, spec §5.2)', () => {
+  const bigStdout = 'L'.repeat(30_000);
+  const nativeResult = JSON.stringify({ status: 'success', exitCode: 0, stdout: bigStdout });
+  const envelope = JSON.stringify({
+    artifact: { handle: '00000000-0000-4000-8000-0000000000a4', bytes: 30_120, contentType: 'application/json', head: '{"status"', tail: '"}' },
+    compacted: nativeResult,
+  });
+
+  it('is exported so the capture hook fires on exactly the same threshold', () => {
+    expect(MAX_TOOL_RESULT_CHARS).toBe(8_000);
+  });
+
+  it('keeps the artifact block verbatim and compacts ONLY the inner payload', () => {
+    const out = compactToolResultForChat('execute_command', envelope);
+    const parsed = JSON.parse(out) as { artifact: Record<string, unknown>; compacted: unknown };
+    expect(parsed.artifact).toEqual({
+      handle: '00000000-0000-4000-8000-0000000000a4',
+      bytes: 30_120,
+      contentType: 'application/json',
+      head: '{"status"',
+      tail: '"}',
+    });
+    expect(out.length).toBeLessThanOrEqual(MAX_TOOL_RESULT_CHARS);
+  });
+
+  it('applies the SAME tool-specific compaction the native shape would have got', () => {
+    const viaEnvelope = JSON.parse(compactToolResultForChat('execute_command', envelope)) as { compacted: unknown };
+    const direct = JSON.parse(compactToolResultForChat('execute_command', nativeResult)) as Record<string, unknown>;
+    // The command-shaped compaction marks its stdout truncation; the envelope
+    // path must produce the same inner object, not a generically-trimmed one.
+    expect(viaEnvelope.compacted).toEqual(direct);
+  });
+
+  it('leaves a non-envelope result byte-identical to today', () => {
+    const plain = JSON.stringify({ status: 'success', rows: [1, 2, 3] });
+    expect(compactToolResultForChat('query_devices', plain)).toBe(plain);
+  });
+
+  it('does not treat a tool payload that merely HAS an `artifact` key as an envelope', () => {
+    // `compacted` must be a string AND `artifact.handle` a string — a report
+    // tool returning { artifact: { reportId } } is not a capture envelope.
+    const lookalike = JSON.stringify({ artifact: { reportId: 'r1' }, rows: [1] });
+    expect(compactToolResultForChat('generate_report', lookalike)).toBe(lookalike);
+  });
+
+  it('honours an explicit maxChars', () => {
+    const out = compactToolResultForChat('query_devices', JSON.stringify({ rows: Array.from({ length: 400 }, (_, i) => ({ i, pad: 'p'.repeat(40) })) }), 1_000);
+    expect(out.length).toBeLessThanOrEqual(1_000);
   });
 });

@@ -156,6 +156,8 @@ Vendor cost figures are the quote's own snapshot of each line at the time it was
 
 The **Send** dialog accepts an optional **personal message**. When you add one, it renders in the email above the accept link, so you can add a short note to the customer without leaving the quote. Leave it blank to send the standard email.
 
+Partners edit the proposal email under **Settings → Partner → Email templates** (Quote / proposal) -- subject, heading, button label, and HTML body. Merge variables: `{{quote_number}}`, `{{partner_name}}`, `{{total}}`, `{{expiry_date}}`, and `{{accept_url}}`. The **Review & accept** button always uses the server accept link; partners cannot point it somewhere else. A personal message from the send dialog and your email signature still appear around that body. Leave it on the default to keep the built-in wording. This does not change the email card's accent bar or pull colors from the Branding tab.
+
 After you click Send, the quote shows a brief **"Sending in Ns — Undo"** countdown (about 30 seconds) before the email actually leaves. Click **Undo** during that window and nothing is sent — the quote stays a draft and you can keep editing. Once the countdown finishes the email goes out and the quote moves to **Sent**.
 
 <Aside type="caution" title="Who can accept a quote from the customer portal">
@@ -193,7 +195,7 @@ Beyond priced line items, a quote body can contain content blocks that turn it i
 | **Rich text** | Scope, assumptions, terms — formatted paragraphs, lists, and headings |
 | **Table** | Comparison grids, schedules, responsibility matrices |
 | **Callout** | Pulling out a caveat, an inclusion, or a deadline |
-| **Contract** | Attaching a template from your [contract template library](/features/contracts/#contract-templates) for the customer to review as part of the proposal |
+| **Contract** | Attaching a template from your [agreement template library](/features/agreements/#contract-templates) for the customer to review as part of the proposal |
 
 Tables and callouts are edited **in place** on the quote itself, so what you see while editing is what the customer receives — no round trip through a PDF to check the result.
 
@@ -203,7 +205,7 @@ Tables and callouts are edited **in place** on the quote itself, so what you see
 
 ### Contract blocks
 
-A **Contract** block attaches a document from your [contract template library](/features/contracts/#contract-templates) to a quote, so the customer reviews (and, by accepting the quote, effectively agrees to) that document alongside the priced lines.
+A **Contract** block attaches a document from your [agreement template library](/features/agreements/#contract-templates) to a quote, so the customer reviews (and, by accepting the quote, effectively agrees to) that document alongside the priced lines.
 
 <Steps>
 1. Add a **Contract** block and choose a **template**. Breeze attaches its **latest published version** -- there's no separate version picker, and a template with no published version yet can't be attached.
@@ -248,6 +250,6 @@ Quote access is governed by role permissions: viewing requires quote read access
 
 - [Product Catalog](/features/product-catalog/) -- the price list quotes pull from
 - [Invoices](/features/invoices/) -- where an accepted quote's one-time charges land, deposit first
-- [Recurring Contracts](/features/contracts/) -- where an accepted quote's recurring lines become agreements
-- [Recurring Contracts → Contract Templates](/features/contracts/#contract-templates) -- manage the document library contract blocks attach
+- [Recurring Contracts](/features/contracts/) -- where an accepted quote's recurring lines become contracts
+- [Agreements → Agreement templates](/features/agreements/#contract-templates) -- manage the document library contract blocks attach
 - [Online Payments](/features/online-payments/) -- let customers pay the deposit and balance by card

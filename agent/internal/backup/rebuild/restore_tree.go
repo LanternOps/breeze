@@ -38,7 +38,7 @@ func mountTree(ctx context.Context, r *run) error {
 		if fstype == "fat32" {
 			fstype = "vfat"
 		}
-		if err := r.sys.Mount(ctx, r.sys.PartitionDevice(r.disk, p.Number), dir, fstype); err != nil {
+		if err := mountWithBusyRetry(ctx, r.sys, r.sys.PartitionDevice(r.disk, p.Number), dir, fstype); err != nil {
 			return err
 		}
 		if p.MountPoint == "/" {
@@ -59,7 +59,16 @@ func restoreTree(ctx context.Context, r *run) error {
 			return err
 		}
 	}
-	res, err := backup.RestoreFromSnapshotContext(ctx, r.opts.Provider, backup.RestoreConfig{SnapshotID: r.opts.SnapshotID, TargetPath: r.staging}, func(phase string, cur, total int64, msg string) {
+	// A persistent work root keeps the restore's resume state across engine
+	// runs: without it RestoreFromSnapshotContext creates an ephemeral work
+	// dir and deletes it on return, so a resumed rebuild re-restores every
+	// file instead of skipping the ones already on disk (found live on the
+	// W03 boot proof: 104k files restored twice).
+	workRoot := restoreWorkRoot(r.opts.StateDir)
+	if err := os.MkdirAll(workRoot, 0o700); err != nil {
+		return fmt.Errorf("create restore work root: %w", err)
+	}
+	res, err := backup.RestoreFromSnapshotContext(ctx, r.opts.Provider, backup.RestoreConfig{SnapshotID: r.opts.SnapshotID, TargetPath: r.staging, WorkRoot: workRoot}, func(phase string, cur, total int64, msg string) {
 		r.progress(PhaseRestore, msg, cur, total)
 	})
 	if err != nil {
@@ -73,15 +82,42 @@ func restoreTree(ctx context.Context, r *run) error {
 			return errors.New(msg)
 		}
 		r.warn("%s", msg)
+		r.failedFiles = make(map[string]bool, len(res.FailedFiles))
+		for _, f := range res.FailedFiles {
+			r.failedFiles[f] = true
+		}
 	}
+	// Belt-and-braces (#5493): run this even when boot() will be skipped
+	// (Options.SkipBoot) — boot() is the phase that actually bind-mounts
+	// /proc, /sys, /dev, /run, but a SkipBoot run still produces a staging
+	// tree that must be a bootable disk image, so the mount points must
+	// exist regardless of whether boot() itself runs.
+	if err := ensureMountpoints(r.staging); err != nil {
+		return fmt.Errorf("ensure mount points: %w", err)
+	}
+	// System state: apply whatever preflight staged. StateApplied flips
+	// only on a nil return from the offline apply; with ExpectSystemState
+	// an apply that never ran (nothing staged) is as fatal as one that
+	// failed — the run must not reach "completed" without it (#5412).
+	staged := false
 	if r.stateStaging != "" {
 		if entries, _ := os.ReadDir(r.stateStaging); len(entries) > 0 {
+			staged = true
 			warnings, err := bmr.RestoreSystemStateOffline(ctx, r.staging, r.stateStaging)
 			r.warnings = append(r.warnings, warnings...)
 			if err != nil {
 				return fmt.Errorf("apply system state: %w", err)
 			}
+			r.result.StateApplied = true
+			r.state.StateApplied = true
 		}
+	}
+	if r.opts.ExpectSystemState && !staged {
+		return errors.New("apply system state: system state expected but no artifacts were staged by preflight")
 	}
 	return nil
 }
+
+// restoreWorkRoot is where the restore keeps its resume state and manifest
+// scratch between engine runs. Removed by Run once the rebuild completes.
+func restoreWorkRoot(stateDir string) string { return filepath.Join(stateDir, "work") }

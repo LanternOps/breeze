@@ -17,6 +17,7 @@ tracking_issue: LanternOps/breeze#5449
 **Depends on:** W01, W02, W03 merged to main; a helper build reporting `backup_version >= 0.112.0` (the W02 gate constant `BACKUP_SERVER_BASE_MIN_HELPER_VERSION`) installed on the Linux rig.
 
 ## Global Constraints
+- **Correction (lab run 2026-09-19):** `BACKUP_BASE_LEASE_MS=60000` below cannot work — the helper's publish margin is a fixed 1 h Go constant, so any lease <= 1 h fails every job at the manifest upload. The run used `3900000` (5 min publish window) for the chain and R5, `3660000` (60 s window) plus a throttled upload for R6, and SIGSTOP only for the few seconds R5 needs (the agent reaps a helper frozen for minutes). Base pins outlive a completed job until its lease lapses, so R4 runs ~65 min after the last dispatch.
 - Lab knobs on the API container: `BACKUP_GC_GRACE_MS=1000`, `BACKUP_GC_ORPHAN_MANIFEST_MAX_AGE_MS=1000`, `BACKUP_BASE_LEASE_MS=60000`, `BACKUP_PUBLISH_MARGIN_MS=1000`, `BACKUP_RESTORE_PIN_LINGER_MS=1000`. Production floors warn but do not apply outside `NODE_ENV=production` — check the stack is not built with production `NODE_ENV`.
 - Never run destructive restores on WIN-B (prod-enrolled); Linux rig only (campaign §9 decision 4).
 - Evidence lands under `~/breeze-assurance/runs/lnx/d18-*.txt` and is cited by filename in the campaign doc.
@@ -175,7 +176,7 @@ git commit -m "docs(backup-assurance): close D18 — R4 PASS on MinIO, pin/lease
 **Backup storage is now reclaimed.** Retention previously deleted only the database record of an expired snapshot; its objects stayed in the bucket forever. Expired snapshots' exclusive objects are now removed by the 6-hourly GC. Two things to know:
 - Reclamation on a destination only activates once every device backing up to it runs the backup helper from this release or newer (older helpers choose their own dedupe base and cannot be pinned). The API logs `reclamation deferred: legacy helper <device>` until then.
 - Deleting a device or organisation now also reclaims its backups after the orphan window (default 9 days). Previously those objects leaked.
-New env knobs (all optional): `BACKUP_BASE_LEASE_MS` (7 d), `BACKUP_PUBLISH_MARGIN_MS` (1 h), `BACKUP_RESTORE_PIN_LINGER_MS` (7 d), `BACKUP_GC_ORPHAN_MANIFEST_MAX_AGE_MS` (9 d). Migrations `2026-10-15-140005` and `-140006` add the pin columns and the `backup_snapshot_retirements` table; the backfill is batched and safe on large tables.
+New env knobs (all optional): `BACKUP_BASE_LEASE_MS` (7 d), `BACKUP_PUBLISH_MARGIN_MS` (1 h), `BACKUP_RESTORE_PIN_LINGER_MS` (7 d), `BACKUP_GC_ORPHAN_MANIFEST_MAX_AGE_MS` (9 d). Migrations `2026-10-15-160201` and `-160202` add the pin columns and the `backup_snapshot_retirements` table; the backfill is batched and safe on large tables.
 ```
 
 - [ ] **Step 2: Re-read both docs pages after W02 merged; remove any remaining "storage is not reclaimed" sentence; add the legacy-helper deferral and the device-deletion behaviour.**

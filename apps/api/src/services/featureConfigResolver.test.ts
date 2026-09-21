@@ -96,6 +96,7 @@ vi.mock('drizzle-orm', () => {
   return {
     and: (...conditions: unknown[]) => ({ op: 'and', conditions }),
     eq: (column: unknown, value: unknown) => ({ op: 'eq', column, value }),
+    isNull: (column: unknown) => ({ op: 'isNull', column }),
     inArray: (column: unknown, values: unknown[]) => ({ op: 'inArray', column, values }),
     asc: (value: unknown) => ({ op: 'asc', value }),
     sql,
@@ -132,6 +133,34 @@ function makeSettings(overrides: Record<string, unknown> = {}): any {
 }
 
 describe('isInMaintenanceWindow', () => {
+  // AI patch agent W04 (#5750): the wall clock is rendered in UTC field
+  // space, so the SERVER's zone never enters the arithmetic. Pinned with
+  // TZ-sensitive dates: on a US-zone server the old local-constructor
+  // rendering turned 02:00 UTC into 03:00 on the US spring-forward Sunday.
+  describe('server-timezone independence', () => {
+    it('evaluates a UTC 02:00 window on the US spring-forward Sunday exactly at 02:00Z', () => {
+      const settings = makeSettings({ windowStart: '02:00' });
+      expect(isInMaintenanceWindow(settings, new Date('2026-03-08T01:59:59Z')).active).toBe(false);
+      expect(isInMaintenanceWindow(settings, new Date('2026-03-08T02:00:00Z')).active).toBe(true);
+      expect(isInMaintenanceWindow(settings, new Date('2026-03-08T03:59:59Z')).active).toBe(true);
+      expect(isInMaintenanceWindow(settings, new Date('2026-03-08T04:00:00Z')).active).toBe(false);
+    });
+
+    it("reads a once window's naive datetime as wall time in the WINDOW's zone", () => {
+      const settings = makeSettings({ recurrence: 'once', timezone: 'Asia/Kolkata', windowStart: '2026-03-15T02:00:00' });
+      // 02:00 IST is 20:30Z the previous day.
+      expect(isInMaintenanceWindow(settings, new Date('2026-03-14T20:29:59Z')).active).toBe(false);
+      expect(isInMaintenanceWindow(settings, new Date('2026-03-14T20:30:00Z')).active).toBe(true);
+      expect(isInMaintenanceWindow(settings, new Date('2026-03-14T22:30:00Z')).active).toBe(false);
+    });
+
+    it("renders a once window carrying an explicit Z into the window's zone (it names an instant)", () => {
+      const settings = makeSettings({ recurrence: 'once', timezone: 'Asia/Kolkata', windowStart: '2026-03-15T02:00:00Z' });
+      expect(isInMaintenanceWindow(settings, new Date('2026-03-15T01:59:59Z')).active).toBe(false);
+      expect(isInMaintenanceWindow(settings, new Date('2026-03-15T02:00:00Z')).active).toBe(true);
+    });
+  });
+
   // ============================================
   // Daily recurrence
   // ============================================

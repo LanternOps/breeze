@@ -203,9 +203,35 @@ describe('TicketComposer', () => {
       fireEvent.click(screen.getByTestId('ticket-composer-send'));
       // Only the successful id is claimed; the failed one is never invented.
       await waitFor(() => expect(onSend).toHaveBeenCalledWith('partial', true, ['id-good.png']));
-      // After the comment lands every chip is dropped — a leftover failed chip
-      // would otherwise ride along on the NEXT comment.
-      await waitFor(() => expect(screen.queryByTestId('ticket-composer-chips')).toBeNull());
+      // The successful chip is cleared with the rest of the draft, but the
+      // failed chip is NOT silently discarded — the user must still see and
+      // act on (retry/remove) the file that never made it onto the comment.
+      await waitFor(() => expect(screen.queryByTestId('ticket-composer-chip-good.png')).toBeNull());
+      expect(screen.getByTestId('ticket-composer-chip-retry-bad.png')).toBeInTheDocument();
+    });
+
+    it('surfaces a partial-success toast when the note posts but a rejected attachment is dropped', async () => {
+      const onUpload = vi.fn(async () => {
+        throw new Error('415');
+      });
+      render(<TicketComposer requesterName="Pat" onSend={onSend} onUploadAttachment={onUpload} />);
+
+      upload([png('notes.txt')]);
+      await screen.findByTestId('ticket-composer-chip-retry-notes.txt');
+
+      fireEvent.change(screen.getByTestId('ticket-composer-input'), { target: { value: 'see attached' } });
+      fireEvent.click(screen.getByTestId('ticket-composer-send'));
+
+      await waitFor(() => expect(onSend).toHaveBeenCalledWith('see attached', true, []));
+      // Explicit partial-success feedback beyond the earlier upload-error toast —
+      // the composer must not clear as though everything succeeded.
+      await waitFor(() =>
+        expect(showToastMock).toHaveBeenCalledWith(
+          expect.objectContaining({ type: 'warning', message: expect.stringContaining('could not be added') })
+        )
+      );
+      expect(screen.getByTestId('ticket-composer-chip-retry-notes.txt')).toBeInTheDocument();
+      expect(screen.getByTestId('ticket-composer-input')).toHaveValue('');
     });
   });
 });

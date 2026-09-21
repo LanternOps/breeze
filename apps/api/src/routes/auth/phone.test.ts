@@ -222,7 +222,8 @@ describe('phone routes', () => {
       vi.mocked(getEffectiveMfaPolicy).mockResolvedValue({
         required: true,
         allowedMethods: { totp: true, sms: true, passkey: true },
-        source: { roleForceMfa: true, settingsRequireMfa: true, killSwitchOff: false },
+        pendingEnrollment: null,
+        source: { roleForceMfa: true, settingsRequireMfa: true, killSwitchOff: false, graceWindow: 'none' as const },
       });
       const sendVerificationCode = vi.fn().mockResolvedValue({ success: true });
       vi.mocked(getTwilioService).mockReturnValue({
@@ -252,7 +253,8 @@ describe('phone routes', () => {
       vi.mocked(getEffectiveMfaPolicy).mockResolvedValue({
         required: true,
         allowedMethods: { totp: true, sms: true, passkey: true },
-        source: { roleForceMfa: true, settingsRequireMfa: true, killSwitchOff: false },
+        pendingEnrollment: null,
+        source: { roleForceMfa: true, settingsRequireMfa: true, killSwitchOff: false, graceWindow: 'none' as const },
       });
       const sendVerificationCode = vi.fn();
       vi.mocked(getTwilioService).mockReturnValue({ sendVerificationCode } as any);
@@ -289,7 +291,8 @@ describe('phone routes', () => {
       vi.mocked(getEffectiveMfaPolicy).mockResolvedValue({
         required: false,
         allowedMethods: { totp: true, sms: false, passkey: true },
-        source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: true },
+        pendingEnrollment: null,
+        source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: true, graceWindow: 'none' as const },
       });
 
       const res = await app.request('/auth/mfa/sms/enable', {
@@ -315,7 +318,8 @@ describe('phone routes', () => {
       vi.mocked(getEffectiveMfaPolicy).mockResolvedValue({
         required: false,
         allowedMethods: { totp: true, sms: true, passkey: true },
-        source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: true },
+        pendingEnrollment: null,
+        source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: true, graceWindow: 'none' as const },
       });
 
       const res = await app.request('/auth/mfa/sms/enable', {
@@ -328,6 +332,11 @@ describe('phone routes', () => {
       const body = await res.json();
       expect(body.success).toBe(true);
       expect(completeInitialMfaEnrollment).toHaveBeenCalledOnce();
+      // The factor this call installs is what assures the replacement session,
+      // so its source is 'factor' (spec D6) — the enrollment primitive rejects
+      // any other source.
+      const enrollInput = vi.mocked(completeInitialMfaEnrollment).mock.calls[0]?.[0] as any;
+      expect(enrollInput.identity).toMatchObject({ mfa: true, mfaSrc: 'factor' });
     });
 
     // SR2-20: adding SMS as a NEW factor on an ALREADY-PROTECTED account
@@ -337,7 +346,8 @@ describe('phone routes', () => {
       vi.mocked(getEffectiveMfaPolicy).mockResolvedValue({
         required: false,
         allowedMethods: { totp: true, sms: true, passkey: true },
-        source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: true },
+        pendingEnrollment: null,
+        source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: true, graceWindow: 'none' as const },
       });
       vi.mocked(enforceExistingFactorStepUp).mockResolvedValueOnce(
         new Response(JSON.stringify({ error: 'existing_factor_step_up_required', stepUpUrl: '/auth/mfa/step-up' }), {
@@ -360,7 +370,8 @@ describe('phone routes', () => {
       vi.mocked(getEffectiveMfaPolicy).mockResolvedValue({
         required: false,
         allowedMethods: { totp: true, sms: true, passkey: true },
-        source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: true },
+        pendingEnrollment: null,
+        source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: true, graceWindow: 'none' as const },
       });
       vi.mocked(enforceExistingFactorStepUp).mockResolvedValueOnce(null);
 
@@ -421,7 +432,8 @@ describe('phone routes', () => {
       vi.mocked(getEffectiveMfaPolicy).mockResolvedValue({
         required: false,
         allowedMethods: { totp: true, sms: false, passkey: true },
-        source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: true },
+        pendingEnrollment: null,
+        source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: true, graceWindow: 'none' as const },
       });
 
       const res = await app.request('/auth/mfa/sms/enable', {
@@ -484,7 +496,8 @@ describe('phone routes', () => {
       vi.mocked(getEffectiveMfaPolicy).mockResolvedValue({
         required: false,
         allowedMethods: { totp: true, sms: true, passkey: true },
-        source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: false },
+        pendingEnrollment: null,
+        source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: false, graceWindow: 'none' as const },
       });
       vi.mocked(db.select).mockReturnValue(selectChain([liveUser]) as any);
       vi.mocked(getTwilioService).mockReturnValue({
@@ -549,7 +562,8 @@ describe('phone routes', () => {
       vi.mocked(getEffectiveMfaPolicy).mockResolvedValue({
         required: false,
         allowedMethods: { totp: true, sms: false, passkey: true },
-        source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: false },
+        pendingEnrollment: null,
+        source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: false, graceWindow: 'none' as const },
       });
 
       const res = await send();
@@ -622,6 +636,8 @@ describe('phone routes', () => {
       // Assurance is carried forward, never elevated: this caller's token
       // carried no `mfa` claim, so neither may the replacement.
       expect(input.identity.mfa).toBe(false);
+      // Not assured ⇒ no assurance source either.
+      expect(input.identity.mfaSrc).toBeUndefined();
       // SR-001: binding comes from the signed `mdid` claim (absent here), never
       // the request header.
       expect(input.identity.mobileDeviceId).toBeUndefined();
@@ -647,7 +663,7 @@ describe('phone routes', () => {
           partnerId: null,
           orgId: 'org-1',
           user: { id: 'user-1', email: 'user@example.test', name: 'Sample User' },
-          token: { sid: 'family-1', aep: 1, mep: 1, mfa: true, mdid: 'signed-device' },
+          token: { sid: 'family-1', aep: 1, mep: 1, mfa: true, mfa_src: 'idp', mdid: 'signed-device' },
         });
         return next();
       }) as never);
@@ -666,6 +682,9 @@ describe('phone routes', () => {
       const input = vi.mocked(completeMfaFactorReplacement).mock.calls[0]?.[0] as any;
       expect(input.identity.mobileDeviceId).toBe('signed-device');
       expect(input.identity.mfa).toBe(true);
+      // The assurance SOURCE is carried forward from the signed claim just
+      // like the binding — a replacement never recomputes or upgrades it.
+      expect(input.identity.mfaSrc).toBe('idp');
     });
 
     // The write is already committed and every other session is already gone;

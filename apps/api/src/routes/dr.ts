@@ -1,7 +1,7 @@
 import { Hono, type Context } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
-import { eq, and, desc, asc, inArray } from 'drizzle-orm';
+import { eq, and, desc, asc, inArray, lt, or } from 'drizzle-orm';
 import { db } from '../db';
 import { drPlans, drPlanGroups, drExecutions, devices } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission } from '../middleware/auth';
@@ -14,13 +14,21 @@ import {
   drExecutionTriggerSchema,
   drExecutionsQuerySchema,
 } from './backup/schemas';
-import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
+import { PERMISSIONS, canAccessSite, hasPermission, type UserPermissions } from '../services/permissions';
 import type { AuthContext } from '../middleware/auth';
 import { isSiteRestrictedPrincipalKind } from '../services/resilienceSiteAuthorization';
 import {
   classifyDrExecutionAuthorizationError,
   createDrExecutionAndEnqueue,
 } from '../services/drExecutionService';
+import { isBareMetalRebuildConfig } from '../services/drBareMetalRebuildStep';
+import {
+  collectReadableDrRows,
+  drGroupsReadable,
+  drReadSiteCeiling,
+  filterReadableDrExecutions,
+  filterReadableDrPlans,
+} from '../services/drReadAuthorization';
 
 export const drRoutes = new Hono();
 const requireDrRead = requirePermission(
@@ -70,6 +78,12 @@ function uniqueDeviceIds(value: unknown): string[] {
 function siteRestriction(c: Context): UserPermissions | null {
   // authMiddleware runs on '*' before every handler here, so auth is always set.
   const auth = c.get('auth') as AuthContext;
+  // An unrecognised principal kind reads as unrestricted here because every
+  // route in this file is already behind authMiddleware + requirePermission.
+  // `drReadSiteCeiling` (services/drReadAuthorization.ts) deliberately DENIES
+  // the same kind, because it is also reached by shared AI/MCP and autonomous
+  // tool execution where no such middleware runs. The asymmetry is intentional;
+  // converging the two is a security change, not a cleanup.
   if (!isSiteRestrictedPrincipalKind(auth.principal?.kind)) return null;
 
   // Fall back to the token's own grant rather than treating a missing
@@ -253,7 +267,8 @@ drRoutes.get('/plans', requireDrRead, async (c) => {
     .where(eq(drPlans.orgId, orgId))
     .orderBy(desc(drPlans.createdAt));
 
-  return c.json({ data: rows });
+  const permissions = c.get('permissions') as UserPermissions | undefined;
+  return c.json({ data: await filterReadableDrPlans(rows, auth, orgId, permissions?.allowedSiteIds) });
 });
 
 drRoutes.get(
@@ -279,6 +294,11 @@ drRoutes.get(
       .from(drPlanGroups)
       .where(eq(drPlanGroups.planId, id))
       .orderBy(asc(drPlanGroups.sequence));
+
+    const permissions = c.get('permissions') as UserPermissions | undefined;
+    if (!await drGroupsReadable(groups, auth, orgId, permissions?.allowedSiteIds)) {
+      return c.json({ error: 'Plan not found' }, 404);
+    }
 
     return c.json({ data: { ...plan, groups } });
   }
@@ -557,6 +577,20 @@ drRoutes.post(
       return c.json({ error: 'Cannot execute an archived plan' }, 400);
     }
 
+    // W05b: a BARE_METAL_REBUILD step creates bare-metal recoveries, which is
+    // the same act as POST /bmr/recoveries — so it carries the same bar
+    // (backup:write) on top of devices:execute + MFA.
+    const groupsForGate = await db
+      .select({ restoreConfig: drPlanGroups.restoreConfig })
+      .from(drPlanGroups)
+      .where(and(eq(drPlanGroups.planId, planId), eq(drPlanGroups.orgId, orgId)));
+    if (groupsForGate.some((group) => isBareMetalRebuildConfig(group.restoreConfig))) {
+      const perms = c.get('permissions') as UserPermissions | undefined;
+      if (!perms || !hasPermission(perms, PERMISSIONS.BACKUP_WRITE.resource, PERMISSIONS.BACKUP_WRITE.action)) {
+        return c.json({ error: 'backup_write_required' }, 403);
+      }
+    }
+
     // createDrExecutionAndEnqueue authorizes every group device against the
     // caller's site grant before an execution row exists, so a denial here is an
     // expected outcome — not a fault. Uncaught it would reach the global handler
@@ -611,14 +645,30 @@ drRoutes.get(
 
     const limit = query.limit ?? 100;
 
-    const rows = await db
-      .select()
-      .from(drExecutions)
-      .where(and(...conditions))
-      .orderBy(desc(drExecutions.createdAt))
-      .limit(limit);
+    const permissions = c.get('permissions') as UserPermissions | undefined;
+    const allowedSiteIds = permissions?.allowedSiteIds;
+    const siteCeiling = drReadSiteCeiling(auth, allowedSiteIds);
+    if (siteCeiling?.length === 0) return c.json({ data: [] });
 
-    return c.json({ data: rows });
+    const load = (cursor: { createdAt: Date; id: string } | undefined, pageSize: number) => {
+      const pageConditions = [...conditions];
+      if (cursor) {
+        pageConditions.push(or(
+          lt(drExecutions.createdAt, cursor.createdAt),
+          and(eq(drExecutions.createdAt, cursor.createdAt), lt(drExecutions.id, cursor.id)),
+        )!);
+      }
+      return db.select().from(drExecutions).where(and(...pageConditions))
+        .orderBy(desc(drExecutions.createdAt), desc(drExecutions.id)).limit(pageSize);
+    };
+    if (siteCeiling === null) return c.json({ data: await load(undefined, limit) });
+
+    const visible = await collectReadableDrRows({
+      limit,
+      load,
+      filter: (rows) => filterReadableDrExecutions(rows, auth, orgId, allowedSiteIds),
+    });
+    return c.json({ data: visible });
   }
 );
 
@@ -654,6 +704,17 @@ drRoutes.get(
           .where(eq(drPlanGroups.planId, plan.id))
           .orderBy(asc(drPlanGroups.sequence))
       : [];
+
+    const permissions = c.get('permissions') as UserPermissions | undefined;
+    const [visible] = await filterReadableDrExecutions(
+      [{ ...execution, planId: execution.planId, results: execution.results }],
+      auth,
+      orgId,
+      permissions?.allowedSiteIds,
+    );
+    if (!visible || !await drGroupsReadable(groups, auth, orgId, permissions?.allowedSiteIds)) {
+      return c.json({ error: 'Execution not found' }, 404);
+    }
 
     return c.json({
       data: {

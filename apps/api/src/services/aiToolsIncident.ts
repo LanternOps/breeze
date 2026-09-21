@@ -11,25 +11,77 @@
  */
 
 import { db } from '../db';
-import { incidents, incidentEvidence, incidentActions } from '../db/schema';
-import { eq, and, desc, SQL } from 'drizzle-orm';
+import { devices, incidents, incidentEvidence, incidentActions } from '../db/schema';
+import { eq, and, desc, gte, ilike, lte, count, sql, SQL } from 'drizzle-orm';
+import { z } from 'zod';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { resolveWritableToolOrgId, verifyDeviceAccess } from './aiTools';
-import { queueCommandForExecution } from './commandQueue';
+import { deviceScopeCondition, scopeDeviceIdsToCaller, siteScopeCondition } from './aiToolsSiteScope';
+import { aiQueueCommandForExecution } from './aiDispatch';
 import { publishEvent } from './eventBus';
 import type { IncidentTimelineEntry } from '../db/schema/incidentResponse';
-import { HIGH_RISK_CONTAINMENT_ACTIONS } from '../routes/incidents.validation';
+import { HIGH_RISK_CONTAINMENT_ACTIONS, listIncidentsSchema } from '../routes/incidents.validation';
 import { sanitizeThrownToolError } from './aiToolErrors';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
+// Scalar-only list surface: never expose timeline or other incident jsonb.
+const SAFE_INCIDENT_PROJECTION = {
+  id: incidents.id, orgId: incidents.orgId, title: incidents.title,
+  status: incidents.status, severity: incidents.severity, classification: incidents.classification,
+  assignedTo: incidents.assignedTo, detectedAt: incidents.detectedAt, resolvedAt: incidents.resolvedAt,
+  createdAt: incidents.createdAt, updatedAt: incidents.updatedAt,
+};
+const listIncidentInputSchema = listIncidentsSchema.omit({ page: true }).extend({
+  limit: z.number().int().min(1).max(100).default(25),
+  offset: z.number().int().min(0).default(0),
+});
+
+/**
+ * The device ids on an incident that this caller may see.
+ *
+ * `null` for a caller restricted on NEITHER axis (no narrowing).
+ * `incidents.affected_devices` is the incident's ONLY device axis — evidence and
+ * action rows carry no device column — so it is what both the admission check
+ * and the response filtering below key on.
+ *
+ * BOTH axes apply (`scopeDeviceIdsToCaller` = exact-device ∩ site). Keying on
+ * `allowedDeviceIds` alone narrowed an agent run correctly and did nothing at
+ * all for a site-restricted human (audit 2026-09-17 §1.1).
+ */
+async function scopedAffectedDevices(
+  auth: AuthContext,
+  orgId: string,
+  affectedDevices: unknown,
+): Promise<string[] | null> {
+  return scopeDeviceIdsToCaller(auth, orgId, affectedDevices);
+}
+
+/**
+ * Org axis + exact-device axis + SITE axis (#6096 #8; site added by the
+ * 2026-09-17 audit §1.1).
+ *
+ * An incident is a device-attributable record: its timeline, its actions and
+ * its forensic evidence are all ABOUT the affected devices. A device-bound
+ * agent run — and a site-restricted technician — must therefore reach an
+ * incident only when it touches at least one device they may see. An incident
+ * naming none of them (including one naming no devices at all, which is not
+ * attributable to either) fails closed. Reported as not-found by callers so it
+ * doesn't leak existence.
+ *
+ * The scoped id list rides back on the returned row so the response filtering
+ * does not re-run the device scan.
+ */
 async function findIncidentWithAccess(incidentId: string, auth: AuthContext) {
   const conditions: SQL[] = [eq(incidents.id, incidentId)];
   const orgCond = auth.orgCondition(incidents.orgId);
   if (orgCond) conditions.push(orgCond);
   const [incident] = await db.select().from(incidents).where(and(...conditions)).limit(1);
-  return incident || null;
+  if (!incident) return null;
+  const scoped = await scopedAffectedDevices(auth, incident.orgId, incident.affectedDevices);
+  if (scoped !== null && scoped.length === 0) return null;
+  return { ...incident, scopedDeviceIds: scoped };
 }
 
 export function registerIncidentTools(aiTools: Map<string, AiTool>): void {
@@ -44,6 +96,8 @@ export function registerIncidentTools(aiTools: Map<string, AiTool>): void {
   registerTool({
     tier: 2 as AiToolTier,
     deviceArgs: ['affectedDeviceIds'],
+    domain: 'monitoring',
+    searchHint: 'security incident creation with initial investigation timeline',
     definition: {
       name: 'create_incident',
       description:
@@ -175,6 +229,8 @@ export function registerIncidentTools(aiTools: Map<string, AiTool>): void {
   registerTool({
     tier: 3 as AiToolTier,
     deviceArgs: ['deviceId'],
+    domain: 'monitoring',
+    searchHint: 'incident containment actions on an affected device',
     definition: {
       name: 'execute_containment',
       description:
@@ -234,7 +290,9 @@ export function registerIncidentTools(aiTools: Map<string, AiTool>): void {
         approvalRef: (input.approvalRef as string) ?? undefined,
       };
 
-      const result = await queueCommandForExecution(
+      const result = await aiQueueCommandForExecution(
+        auth,
+        'execute_containment',
         input.deviceId as string,
         'execute_containment',
         payload,
@@ -279,6 +337,8 @@ export function registerIncidentTools(aiTools: Map<string, AiTool>): void {
   registerTool({
     tier: 2 as AiToolTier,
     deviceArgs: ['deviceId'],
+    domain: 'monitoring',
+    searchHint: 'forensic evidence collection from a device for an incident investigation',
     definition: {
       name: 'collect_evidence',
       description:
@@ -328,7 +388,9 @@ export function registerIncidentTools(aiTools: Map<string, AiTool>): void {
         evidenceTypes: input.evidenceTypes as string[],
       };
 
-      const result = await queueCommandForExecution(
+      const result = await aiQueueCommandForExecution(
+        auth,
+        'collect_evidence',
         input.deviceId as string,
         'collect_evidence',
         payload,
@@ -355,6 +417,8 @@ export function registerIncidentTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1 as AiToolTier,
+    domain: 'monitoring',
+    searchHint: 'incident timeline, response actions and collected evidence',
     definition: {
       name: 'get_incident_timeline',
       description:
@@ -407,7 +471,7 @@ export function registerIncidentTools(aiTools: Map<string, AiTool>): void {
           status: incident.status,
           summary: incident.summary,
           relatedAlerts: incident.relatedAlerts,
-          affectedDevices: incident.affectedDevices,
+          affectedDevices: incident.scopedDeviceIds ?? incident.affectedDevices,
           detectedAt: incident.detectedAt,
           containedAt: incident.containedAt,
           resolvedAt: incident.resolvedAt,
@@ -444,6 +508,8 @@ export function registerIncidentTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1 as AiToolTier,
+    domain: 'monitoring',
+    searchHint: 'incident report, response summary, action counts, evidence breakdown and timeline',
     definition: {
       name: 'generate_incident_report',
       description:
@@ -523,7 +589,7 @@ export function registerIncidentTools(aiTools: Map<string, AiTool>): void {
           resolvedAt: incident.resolvedAt,
           closedAt: incident.closedAt,
           durationMinutes,
-          affectedDevices: incident.affectedDevices,
+          affectedDevices: incident.scopedDeviceIds ?? incident.affectedDevices,
           relatedAlerts: incident.relatedAlerts,
         },
         actionsSummary: {
@@ -554,6 +620,87 @@ export function registerIncidentTools(aiTools: Map<string, AiTool>): void {
           collectedBy: e.collectedBy,
         })),
       });
+    },
+  });
+
+  registerTool({
+    tier: 1,
+    domain: 'monitoring',
+    searchHint: 'open incidents, incident list by customer, severity, status, assignee; security incident feed',
+    deviceArgs: [],
+    definition: {
+      name: 'list_incidents',
+      description: 'List security incidents by organization, status, severity, classification, assignee and detection date. Returns incident summaries and a total count.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          orgId: { type: 'string', description: 'Organization UUID' },
+          status: { type: 'string', enum: ['detected', 'analyzing', 'contained', 'recovering', 'closed'], description: 'Status: detected, analyzing, contained, recovering or closed' },
+          severity: { type: 'string', enum: ['p1', 'p2', 'p3', 'p4'], description: 'Severity: p1, p2, p3 or p4' },
+          classification: { type: 'string', description: 'Case-insensitive classification pattern; % matches any sequence' },
+          assignedTo: { type: 'string', description: 'Assigned user UUID' },
+          startDate: { type: 'string', description: 'ISO-8601 detection date lower bound, inclusive' },
+          endDate: { type: 'string', description: 'ISO-8601 detection date upper bound, inclusive' },
+          limit: { type: 'number', description: 'Maximum rows (default 25, max 100)' },
+          offset: { type: 'number', description: 'Rows to skip (default 0)' },
+        },
+        required: [],
+      },
+    },
+    handler: async (input, auth) => {
+      const parsed = listIncidentInputSchema.safeParse({
+        ...input,
+        limit: typeof input.limit === 'number' ? Math.min(100, Math.max(1, input.limit)) : input.limit,
+      });
+      if (!parsed.success) return JSON.stringify({ error: parsed.error.issues[0]?.message ?? 'Invalid incident filters' });
+      const { orgId, status, severity, classification, assignedTo, startDate, endDate, limit, offset } = parsed.data;
+      if (!['organization', 'partner', 'system'].includes(auth.scope)) {
+        return JSON.stringify({ error: 'Organization, partner or system scope required' });
+      }
+      if (auth.scope === 'organization' && !auth.orgId) {
+        return JSON.stringify({ error: 'Organization context required' });
+      }
+      if (orgId && (!auth.canAccessOrg(orgId) || (auth.scope === 'organization' && orgId !== auth.orgId))) {
+        return JSON.stringify({ error: 'Access to this organization denied' });
+      }
+      if (auth.scope === 'partner' && (auth.accessibleOrgIds ?? []).length === 0) {
+        return JSON.stringify({ incidents: [], total: 0, limit, offset });
+      }
+      if (auth.allowedSiteIds?.length === 0 || auth.allowedDeviceIds?.length === 0) {
+        return JSON.stringify({ incidents: [], total: 0, limit, offset });
+      }
+      const conditions: SQL[] = [];
+      const orgCond = orgId ? eq(incidents.orgId, orgId) : auth.orgCondition(incidents.orgId);
+      if (orgCond) conditions.push(orgCond);
+      // Stricter than GET /incidents: match the existing incident tools' admission
+      // rule for site/device-bound callers. Apply before pagination AND counting.
+      if (auth.allowedSiteIds || auth.allowedDeviceIds) {
+        const reachableDevice = and(
+          eq(devices.orgId, incidents.orgId),
+          sql`${incidents.affectedDevices} @> jsonb_build_array(${devices.id}::text)`,
+          siteScopeCondition(auth, devices.siteId),
+          deviceScopeCondition(auth, devices.id),
+        );
+        conditions.push(sql`exists (select 1 from ${devices} where ${reachableDevice})`);
+      }
+      if (status) conditions.push(eq(incidents.status, status));
+      if (severity) conditions.push(eq(incidents.severity, severity));
+      if (classification) conditions.push(ilike(incidents.classification, classification));
+      if (assignedTo) conditions.push(eq(incidents.assignedTo, assignedTo));
+      if (startDate) conditions.push(gte(incidents.detectedAt, new Date(startDate)));
+      if (endDate) conditions.push(lte(incidents.detectedAt, new Date(endDate)));
+      const where = and(...conditions);
+      try {
+        const [rows, totals] = await Promise.all([
+          db.select(SAFE_INCIDENT_PROJECTION).from(incidents).where(where)
+            .orderBy(desc(incidents.detectedAt), desc(incidents.createdAt), desc(incidents.id))
+            .limit(limit).offset(offset),
+          db.select({ count: count() }).from(incidents).where(where),
+        ]);
+        return JSON.stringify({ incidents: rows, total: Number(totals[0]?.count ?? 0), limit, offset });
+      } catch (error) {
+        return JSON.stringify({ error: sanitizeThrownToolError('list_incidents', error) });
+      }
     },
   });
 }

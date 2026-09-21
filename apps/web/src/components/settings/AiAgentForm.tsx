@@ -292,6 +292,7 @@ export default function AiAgentForm({
     <ModeChoice
       mode={draft.mode}
       onChange={(mode) => patch({ mode })}
+      kind={agent.kind}
       actSupported={actSupported}
       enteringActMode={enteringActMode}
       actAck={actAck}
@@ -456,14 +457,19 @@ export default function AiAgentForm({
             />
           </div>
 
-          {/* Scheduled sweeps (P2-2, #4189). Triage-only, because the API
-              refuses every other kind (`agent_kind_not_triage`). Gated on the
-              STORED kind, not the draft: kind is create-only, so the two
-              cannot diverge on this form. */}
-          {agent.kind === 'triage' && (
+          {/* Scheduled sweeps (P2-2, #4189) and, since Fleet Designer (W01),
+              scheduled fleet designs — triage or designer only, because the
+              API refuses every other kind (`agent_kind_not_triage` /
+              `agent_kind_not_designer`). Gated on the STORED kind, not the
+              draft: kind is create-only, so the two cannot diverge on this
+              form. `agentKind` tells the section which schedule kinds
+              (sweep/narrative vs. design) its create chooser may offer. */}
+          {/* AI patch agent W01 (#5747) adds the third schedulable kind. */}
+          {(agent.kind === 'triage' || agent.kind === 'designer' || agent.kind === 'patch') && (
             <AiAgentSchedulesSection
               agentId={agent.id}
               agentOwnerScope={agent.ownerScope}
+              agentKind={agent.kind}
               isPartnerScope={isPartnerScope}
               orgId={orgScope.orgId}
               onDirtyChange={setScheduleDirty}

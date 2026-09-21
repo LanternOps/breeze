@@ -8,6 +8,7 @@ function setup(overrides: Partial<Parameters<typeof ModeChoice>[0]> = {}) {
   const props = {
     mode: 'shadow' as const,
     onChange,
+    kind: 'triage' as const,
     actSupported: true,
     enteringActMode: false,
     actAck: false,
@@ -35,18 +36,18 @@ describe('ModeChoice (Task 13, #5051 — extracted from AiAgentForm)', () => {
 
   it('shows the act warning only in act mode, and the acknowledgement only when entering it', () => {
     const { rerender } = render(
-      <ModeChoice mode="shadow" onChange={vi.fn()} actSupported enteringActMode={false} actAck={false} onActAckChange={vi.fn()} actKeysWillBeOmitted={false} />,
+      <ModeChoice mode="shadow" onChange={vi.fn()} kind="triage" actSupported enteringActMode={false} actAck={false} onActAckChange={vi.fn()} actKeysWillBeOmitted={false} />,
     );
     expect(screen.queryByTestId('ai-agent-act-warning')).toBeNull();
 
     rerender(
-      <ModeChoice mode="act" onChange={vi.fn()} actSupported enteringActMode={false} actAck={false} onActAckChange={vi.fn()} actKeysWillBeOmitted={false} />,
+      <ModeChoice mode="act" onChange={vi.fn()} kind="triage" actSupported enteringActMode={false} actAck={false} onActAckChange={vi.fn()} actKeysWillBeOmitted={false} />,
     );
     expect(screen.getByTestId('ai-agent-act-warning')).toBeInTheDocument();
     expect(screen.queryByTestId('ai-agent-act-ack')).toBeNull();
 
     rerender(
-      <ModeChoice mode="act" onChange={vi.fn()} actSupported enteringActMode actAck={false} onActAckChange={vi.fn()} actKeysWillBeOmitted={false} />,
+      <ModeChoice mode="act" onChange={vi.fn()} kind="triage" actSupported enteringActMode actAck={false} onActAckChange={vi.fn()} actKeysWillBeOmitted={false} />,
     );
     expect(screen.getByTestId('ai-agent-act-ack')).not.toBeChecked();
   });
@@ -66,12 +67,12 @@ describe('ModeChoice (Task 13, #5051 — extracted from AiAgentForm)', () => {
 
   it('mounts the act-keys status region unconditionally, gating only its text', () => {
     const { rerender } = render(
-      <ModeChoice mode="shadow" onChange={vi.fn()} actSupported enteringActMode={false} actAck={false} onActAckChange={vi.fn()} actKeysWillBeOmitted={false} />,
+      <ModeChoice mode="shadow" onChange={vi.fn()} kind="triage" actSupported enteringActMode={false} actAck={false} onActAckChange={vi.fn()} actKeysWillBeOmitted={false} />,
     );
     expect(screen.getByTestId('ai-agent-act-keys-cleared')).toHaveTextContent('');
 
     rerender(
-      <ModeChoice mode="shadow" onChange={vi.fn()} actSupported enteringActMode={false} actAck={false} onActAckChange={vi.fn()} actKeysWillBeOmitted />,
+      <ModeChoice mode="shadow" onChange={vi.fn()} kind="triage" actSupported enteringActMode={false} actAck={false} onActAckChange={vi.fn()} actKeysWillBeOmitted />,
     );
     expect(screen.getByTestId('ai-agent-act-keys-cleared').textContent).not.toBe('');
   });
@@ -102,5 +103,70 @@ describe('ModeChoice (Task 13, #5051 — extracted from AiAgentForm)', () => {
       expect(card.className).toContain('flex-col');
       expect(card.className).toContain('items-start');
     }
+  });
+
+  // #6202: shadow mode still mints real, executable approval cards — an
+  // operator misread "shadow" as "observe only" and approved three cards
+  // expecting a dry run. The card must say up front that approving runs it.
+  it('shows a shadow-mode approval notice only in shadow mode, not off/act', () => {
+    const { rerender } = render(
+      <ModeChoice mode="off" onChange={vi.fn()} kind="triage" actSupported enteringActMode={false} actAck={false} onActAckChange={vi.fn()} actKeysWillBeOmitted={false} />,
+    );
+    expect(screen.queryByTestId('ai-agent-shadow-info')).toBeNull();
+
+    rerender(
+      <ModeChoice mode="shadow" onChange={vi.fn()} kind="triage" actSupported enteringActMode={false} actAck={false} onActAckChange={vi.fn()} actKeysWillBeOmitted={false} />,
+    );
+    expect(screen.getByTestId('ai-agent-shadow-info')).toHaveTextContent(
+      'Proposals land in Approvals; approving one runs it for real, not a dry run.',
+    );
+
+    rerender(
+      <ModeChoice mode="act" onChange={vi.fn()} kind="triage" actSupported enteringActMode={false} actAck={false} onActAckChange={vi.fn()} actKeysWillBeOmitted={false} />,
+    );
+    expect(screen.queryByTestId('ai-agent-shadow-info')).toBeNull();
+  });
+
+  // Fleet Designer (W01) — the designer kind is read-only and produces no
+  // intents, so `allowedModesForKind('designer')` excludes `shadow`: there is
+  // nothing to shadow.
+  // #6214: a greyed-out Shadow card read as broken ("shadow is disabled, it
+  // doesn't work off, and there's no way to turn it on") — the kind-excluded
+  // mode is not offered at all, and act is labelled for what it is.
+  it('hides shadow entirely and labels act as On for a designer kind', () => {
+    setup({ kind: 'designer', mode: 'off', actSupported: true });
+    expect(screen.queryByTestId('ai-agent-mode-shadow')).toBeNull();
+    expect(screen.getAllByRole('radio')).toHaveLength(2);
+    const act = screen.getByTestId('ai-agent-mode-act');
+    expect(act).not.toBeDisabled();
+    expect(act).toHaveTextContent('On');
+    expect(act).toHaveTextContent('Never changes a device');
+    expect(screen.queryByTestId('ai-agent-mode-act-unavailable')).toBeNull();
+  });
+
+  it('replaces the act warning with the designer note (keeping the acknowledgement) for a designer in act', () => {
+    const { onActAckChange } = setup({ kind: 'designer', mode: 'act', enteringActMode: true });
+    expect(screen.queryByTestId('ai-agent-act-warning')).toBeNull();
+    expect(screen.getByTestId('ai-agent-designer-act-note')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('ai-agent-act-ack'));
+    expect(onActAckChange).toHaveBeenCalledWith(true);
+  });
+
+  it('still greys out act (tenant ineligible) for a designer rather than hiding it', () => {
+    setup({ kind: 'designer', mode: 'off', actSupported: false });
+    expect(screen.getByTestId('ai-agent-mode-act')).toBeDisabled();
+    expect(screen.getByTestId('ai-agent-mode-act-unavailable')).toBeInTheDocument();
+  });
+
+  it('arrow keys never land on a disabled act card when it is the only other designer option', () => {
+    const { onChange } = setup({ kind: 'designer', mode: 'off', actSupported: false });
+    fireEvent.keyDown(screen.getByTestId('ai-agent-mode-off'), { key: 'ArrowRight' });
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it('arrow keys step across only the two offered designer modes', () => {
+    const { onChange } = setup({ kind: 'designer', mode: 'off' });
+    fireEvent.keyDown(screen.getByTestId('ai-agent-mode-off'), { key: 'ArrowRight' });
+    expect(onChange).toHaveBeenLastCalledWith('act');
   });
 });

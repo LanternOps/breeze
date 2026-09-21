@@ -699,7 +699,11 @@ async function drainQueue(send: (write: QueuedWrite) => Promise<void>): Promise<
       sent += 1;
       nextIndex += 1;
     } catch (error) {
-      if (isPermanentRejection(error)) {
+      // An explicit billing override can become unauthorized while offline.
+      // Preserve the work for correction and let later writes continue.
+      const billingOverrideDenied = write.kind === 'suggestion.confirm'
+        && getStatus(error) === 403 && getStringField(error, 'code') === 'MANAGE_BILLING_REQUIRED';
+      if (isPermanentRejection(error) || billingOverrideDenied) {
         const landed = await parkNeedsAttention({
           write,
           status: getStatus(error) as number,

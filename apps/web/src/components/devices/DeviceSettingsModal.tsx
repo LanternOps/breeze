@@ -4,8 +4,8 @@ import { useTranslation } from 'react-i18next';
 import type { Device } from './DeviceList';
 import { Dialog } from '../shared/Dialog';
 import { fetchWithAuth } from '../../stores/auth';
+import { fetchAllSites } from '@/lib/fetchAllSites';
 import { extractApiError } from '@/lib/apiError';
-import { asList } from '@/lib/asList';
 import UninstallStateBadge from './UninstallStateBadge';
 
 type Site = {
@@ -26,6 +26,7 @@ export default function DeviceSettingsModal({ device, isOpen, onClose, onSaved, 
   const [displayName, setDisplayName] = useState(device.displayName || device.hostname);
   const [siteId, setSiteId] = useState(device.siteId);
   const [tags, setTags] = useState<string[]>(device.tags ?? []);
+  const [purchaseDate, setPurchaseDate] = useState(device.purchaseDate ?? '');
   const [newTag, setNewTag] = useState('');
   const [sites, setSites] = useState<Site[]>([]);
   const [saving, setSaving] = useState(false);
@@ -35,6 +36,7 @@ export default function DeviceSettingsModal({ device, isOpen, onClose, onSaved, 
     if (!isOpen) return;
     // Reset form to current device values when opened
     setDisplayName(device.displayName || device.hostname);
+    setPurchaseDate(device.purchaseDate ?? '');
     setSiteId(device.siteId);
     setTags(device.tags ?? []);
     setNewTag('');
@@ -42,9 +44,8 @@ export default function DeviceSettingsModal({ device, isOpen, onClose, onSaved, 
 
     // Scope to the device's org — the PATCH endpoint rejects cross-org moves,
     // so showing other orgs' sites would just surface invalid choices.
-    fetchWithAuth(`/orgs/sites?organizationId=${device.orgId}`)
-      .then(res => res.ok ? res.json() : Promise.reject(new Error(t('deviceSettingsModal.errors.loadSites'))))
-      .then(data => setSites(asList(data, 'sites')))
+    fetchAllSites<Site>(`/orgs/sites?organizationId=${device.orgId}`)
+      .then(list => setSites(list))
       .catch(() => setSites([]));
   }, [isOpen, device]);
 
@@ -79,6 +80,8 @@ export default function DeviceSettingsModal({ device, isOpen, onClose, onSaved, 
       if (siteId !== device.siteId) body.siteId = siteId;
       const tagsChanged = JSON.stringify(tags) !== JSON.stringify(device.tags ?? []);
       if (tagsChanged) body.tags = tags;
+      const originalPurchase = device.purchaseDate ?? '';
+      if (purchaseDate !== originalPurchase) body.purchaseDate = purchaseDate || null;
 
       if (Object.keys(body).length === 0) {
         onClose();
@@ -135,6 +138,26 @@ export default function DeviceSettingsModal({ device, isOpen, onClose, onSaved, 
             />
             <p className="mt-1 text-xs text-muted-foreground">
               {t('deviceSettingsModal.hostname', { hostname: device.hostname })}
+            </p>
+          </div>
+
+          {/* Purchase date (Hardware Lifecycle report) */}
+          <div>
+            <label htmlFor="purchaseDate" className="block text-sm font-medium mb-1.5">
+              {t('deviceSettingsModal.purchaseDate')}
+            </label>
+            <input
+              id="purchaseDate"
+              data-testid="device-purchase-date"
+              type="date"
+              value={purchaseDate}
+              onChange={e => setPurchaseDate(e.target.value)}
+              className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-primary"
+            />
+            <p className="mt-1 text-xs text-muted-foreground">
+              {device.purchaseDateSource === 'vendor' && purchaseDate === (device.purchaseDate ?? '')
+                ? t('deviceSettingsModal.purchaseDateVendorHint')
+                : t('deviceSettingsModal.purchaseDateHelp')}
             </p>
           </div>
 

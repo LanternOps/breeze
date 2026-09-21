@@ -95,7 +95,7 @@
     "loading": "Chargement des principaux de service…",
     "loadFailed": "Échec du chargement des principaux de service.",
     "retry": "Réessayer",
-    "empty": "Aucun principal de service pour le moment.",
+    "empty": "Aucun principal de service pour le moment. Créez-en un pour commencer.",
     "name": "Nom",
     "principalDescription": "Description",
     "scopes": "Portées",
@@ -211,7 +211,8 @@
       "actionPlan": "Plan d’action",
       "autoApprove": "Approbation automatique",
       "hybridPlan": "Plan hybride"
-    }
+    },
+    "overridesOrgTab": "Les champs que vous définissez ici remplacent et verrouillent le même champ dans l’onglet IA de chaque organisation."
   },
   "aiBudgetThresholds": {
     "invalid": "Saisissez jusqu'à cinq nombres entiers entre 1 et 99, séparés par des virgules."
@@ -547,7 +548,16 @@
       },
       "ticketing": {
         "label": "Billetterie",
-        "description": "Statuts, SLA, exportations"
+        "description": "Statuts, ERS, catégories, formulaires",
+        "linkCta": "Gérer les paramètres de billetterie →"
+      },
+      "emailTemplates": {
+        "label": "Modèles de courriel",
+        "description": "Billets, soumissions, factures, invitations"
+      },
+      "sendingDomains": {
+        "label": "Adresses d'envoi",
+        "description": "Envoyez vos courriels à partir de votre propre domaine"
       },
       "aiBudgets": {
         "label": "Budgets IA",
@@ -564,6 +574,10 @@
       "loginBranding": {
         "label": "Connexion Branding",
         "description": "Apparence de la page de connexion"
+      },
+      "modules": {
+        "label": "Modules",
+        "description": "Bureau de service et facturation activés/désactivés"
       }
     },
     "saved": "Paramètres partenaires enregistrés",
@@ -594,6 +608,108 @@
       "saved": "Modules mis à jour",
       "saveFailed": "Échec de la mise à jour des modules"
     }
+  },
+  "partnerSendingDomains": {
+    "title": "Adresses d'expéditeur personnalisées",
+    "description": "Envoyez les courriels destinés aux clients à partir de votre propre domaine plutôt que de l'adresse Breeze standard.",
+    "loadFailed": "Impossible de charger vos domaines d'envoi.",
+    "staticNote": "Les domaines d'envoi de ce serveur relèvent de sa configuration de messagerie; SPF et DKIM pour ces domaines se configurent en dehors de Breeze.",
+    "staticNotAllowed": "Demandez à votre administrateur Breeze d'autoriser ce domaine.",
+    "staticVerifyHint": "Ce domaine devient utilisable dès que votre serveur de messagerie accepte un message d'essai envoyé à partir de celui-ci.",
+    "lockedTitle": "Les adresses d'expéditeur personnalisées ne sont pas encore offertes",
+    "lockedProbation": "Votre compte est encore en vérification. Les adresses d'expéditeur personnalisées seront débloquées une fois celle-ci terminée.",
+    "lockedRestricted": "Votre compte est restreint; les adresses d'expéditeur personnalisées ne sont donc pas offertes.",
+    "lockedNotAllowlisted": "Les adresses d'expéditeur personnalisées sont déployées par étapes et ne sont pas encore activées pour votre compte.",
+    "lockedPartnerInactive": "Votre compte n'est pas actif; les adresses d'expéditeur personnalisées ne sont donc pas offertes.",
+    "lockedProviderKeySendOnly": "La clé de messagerie de ce serveur peut envoyer des messages, mais pas gérer de domaines. Demandez à votre administrateur Breeze une clé avec accès complet.",
+    "lockedShowVerification": "Voir l'état de la vérification",
+    "addTitle": "Ajouter un domaine d'envoi",
+    "addLabel": "Nom de domaine",
+    "addPlaceholder": "mail.yourcompany.com",
+    "addInvalid": "Entrez un domaine comme mail.yourcompany.com.",
+    "addSubmit": "Ajouter le domaine",
+    "added": "Domaine ajouté. Préparation des enregistrements DNS.",
+    "recommendTitle": "Nous recommandons un sous-domaine dédié",
+    "recommendReason1": "Il garde la réputation d'envoi de vos courriels Breeze à part du reste de votre messagerie.",
+    "recommendReason2": "Un domaine racine déjà vérifié ailleurs chez notre fournisseur de courriel ne peut pas être ajouté ici : nous ne retirons jamais un domaine à un autre compte.",
+    "recommendReason3": "Certains filtres signalent un expéditeur externe qui se sert du domaine du destinataire, même quand DKIM passe. Un sous-domaine contourne cette règle de correspondance exacte, ce qui compte surtout pour les équipes internes dont les clients sont des collègues.",
+    "statusProvisioning": "Préparation des enregistrements DNS…",
+    "statusPending": "En attente du DNS",
+    "statusVerified": "Vérifié",
+    "statusAtRisk": "À surveiller",
+    "statusFailed": "Échec",
+    "statusSuspended": "Suspendu",
+    "statusRemoving": "Retrait…",
+    "provisioningSlow": "C'est plus long qu'à l'habitude. Nous continuons d'essayer : vous pouvez quitter cette page et revenir plus tard.",
+    "recordsTitle": "Publiez ces enregistrements DNS",
+    "recordsNote": "Les changements DNS peuvent prendre jusqu'à 72 heures avant de nous parvenir, et nous continuons de vérifier. Si les enregistrements demeurent invisibles après ce délai, le domaine passe en échec et vous pouvez réessayer.",
+    "recordsType": "Type d'enregistrement",
+    "recordsHost": "Libellé d'hôte",
+    "recordsFqdn": "Nom complet",
+    "recordsValue": "Valeur",
+    "recordsPriority": "Priorité",
+    "recordsCopied": "Copié dans le presse-papiers",
+    "checkNow": "Vérifier maintenant",
+    "checkStarted": "Vérification du DNS en cours.",
+    "atRiskBanner": "Nous ne voyons plus l'enregistrement {{type}} à {{fqdn}}. Les courriels partent encore de ce domaine, mais republiez cet enregistrement d'ici 72 heures, sinon le domaine passe en échec.",
+    "failedProviderConflict": "Ce domaine est peut-être déjà inscrit chez Breeze ou chez notre fournisseur de courriel. Servez-vous d'un sous-domaine dédié ou écrivez au soutien technique.",
+    "failedProviderRejected": "Notre fournisseur de courriel a refusé ce domaine.",
+    "failedQuotaExhausted": "Ce serveur Breeze a atteint sa limite de domaines chez le fournisseur de courriel. Écrivez au soutien technique.",
+    "failedDnsNotDetected": "Nous n'avons pas trouvé les enregistrements DNS en 72 heures.",
+    "failedDnsRemoved": "Les enregistrements DNS ont été retirés.",
+    "failedUnknown": "La vérification ne s'est pas terminée.",
+    "retry": "Réessayer",
+    "removeConfirm": "Retirer {{domain}}? Ses courriels reviennent à l'expéditeur Breeze standard.",
+    "removeConfirmUnmanaged": "Retirer {{domain}} de Breeze? Le domaine demeure dans le compte de votre fournisseur de courriel : Breeze ne supprime jamais un domaine qu'il n'a pas créé.",
+    "removeStarted": "Retrait du domaine en cours.",
+    "suspendedNotice": "Breeze a suspendu ce domaine. Écrivez au soutien technique.",
+    "lastSendError": "Dernier problème de livraison : {{error}}",
+    "identitiesTitle": "Adresses d'expéditeur",
+    "identitiesDescription": "Choisissez l'adresse d'où part chaque type de courriel. Ce que vous laissez vide demeure sur l'expéditeur Breeze standard.",
+    "identitiesNoDomain": "Vérifiez d'abord un domaine, puis choisissez les adresses d'expéditeur.",
+    "streamSupportName": "Soutien à la clientèle",
+    "streamBillingName": "Facturation",
+    "streamGeneralName": "Notifications générales",
+    "streamSupportMail": "Mises à jour de billets aux clients, invitations au portail et réinitialisations de mot de passe du portail.",
+    "streamBillingMail": "Soumissions et factures.",
+    "streamGeneralMail": "Envois de rapports planifiés.",
+    "repliesSupport": "Le courriel de billets fixe Reply-To à {{inbound}}, de sorte que la réponse d'un client revient au billet. Les invitations au portail et les réinitialisations de mot de passe ne fixent pas de Reply-To : ces réponses vont à l'adresse ci-dessous.",
+    "repliesSupportNoInbound": "Ce serveur n'a pas d'adresse de réception, alors les réponses au courriel de billets vont à l'adresse ci-dessous. Prenez une boîte que quelqu'un lit, ou un alias qui réachemine vers Breeze.",
+    "repliesBilling": "Les soumissions et les factures fixent Reply-To à votre courriel de facturation; les réponses s'y rendent donc.",
+    "repliesGeneral": "Rien ici ne fixe son propre Reply-To : les réponses vont à l'adresse ci-dessous, ou au Reply-To que vous indiquez.",
+    "repliesMailboxHint": "Les gens et les réponses automatiques répondent parfois à l'adresse d'expéditeur : faites de chacune une vraie boîte ou un alias.",
+    "identityDomain": "Domaine vérifié",
+    "identityLocalPart": "Adresse",
+    "identityDisplayName": "Nom affiché",
+    "identityDisplayNamePlaceholder": "Acme Support",
+    "identityReplyTo": "Adresse Reply-To (facultatif)",
+    "identityFrom": "Envoie à partir de {{address}}",
+    "identityClear": "Utiliser l'expéditeur standard",
+    "identitySaved": "Adresse d'expéditeur enregistrée.",
+    "identityCleared": "Retour à l'expéditeur Breeze standard.",
+    "identityLocalPartInvalid": "Servez-vous de lettres, de chiffres, de points, de traits d'union, de plus et de traits soulignés, sans commencer ni terminer par un signe de ponctuation.",
+    "identityLocalPartReserved": "postmaster, abuse et mailer-daemon sont réservés.",
+    "identityDisplayNameInvalid": "Un nom affiché ne peut pas contenir d'adresse courriel ni de lien.",
+    "identityReplyToInvalid": "Entrez une adresse courriel complète.",
+    "testTitle": "Envoyer un courriel d'essai",
+    "testDescription": "Nous envoyons un message à partir de ce domaine vers votre propre adresse de connexion.",
+    "testSubmit": "Envoyer le courriel d'essai",
+    "testQueued": "Courriel d'essai mis en file.",
+    "testPending": "Courriel d'essai en cours…",
+    "testLastSent": "Dernier essai envoyé le {{when}}.",
+    "testLastFailed": "Dernier essai en échec le {{when}} : {{error}}",
+    "errorDomainUnavailable": "Ce domaine est peut-être déjà inscrit chez Breeze ou chez notre fournisseur de courriel. Servez-vous d'un sous-domaine dédié ou écrivez au soutien technique.",
+    "errorDomainLimitReached": "Vous pouvez détenir au plus {{max}} domaines d'envoi. Retirez-en un d'abord.",
+    "errorRateLimited": "Trop de tentatives. Attendez un moment et réessayez.",
+    "errorNotFound": "Ce domaine n'existe plus. Actualisez la page.",
+    "errorDomainNotSendable": "Ce domaine n'est pas encore vérifié; il ne peut donc pas servir d'adresse d'expéditeur.",
+    "errorUnsupported": "Les adresses d'expéditeur personnalisées ne sont pas activées sur ce serveur.",
+    "errorAddFailed": "Impossible d'ajouter le domaine.",
+    "errorCheckFailed": "Impossible de lancer la vérification DNS.",
+    "errorRemoveFailed": "Impossible de retirer le domaine.",
+    "errorIdentityFailed": "Impossible d'enregistrer l'adresse d'expéditeur.",
+    "errorTestFailed": "Impossible d'envoyer le courriel d'essai.",
+    "removeTitle": "Retirer le domaine d'envoi?"
   },
   "loginBranding": {
     "saved": "Enregistrement de la marque enregistrée",
@@ -733,6 +849,45 @@
     "deleteExpiredTitle": "Supprimer les clés d’inscription expirées",
     "deleteExpiredConfirm": "Supprimer toutes les clés d’inscription expirées ? Les clés qui alimentent encore un lien de téléchargement d’installateur actif sont conservées. Cela ne peut pas être annulé."
   },
+  "emailTemplates": {
+    "title": "Modèles de courriel",
+    "description": "Personnalisez les courriels que les clients reçoivent pour les billets, soumissions, factures et invitations au portail. L'avis de réponse n'inclut jamais le texte de la réponse.",
+    "usingDefault": "Par défaut",
+    "custom": "Personnalisé",
+    "subject": "Objet",
+    "heading": "Titre",
+    "buttonLabel": "Libellé du bouton",
+    "html": "Corps HTML",
+    "htmlAria": "Corps HTML du courriel",
+    "insert": "Insérer :",
+    "preview": "Aperçu",
+    "save": "Enregistrer le modèle",
+    "reset": "Réinitialiser",
+    "saved": "Modèle de courriel enregistré",
+    "saveFailed": "Échec de l'enregistrement du modèle de courriel",
+    "loadFailed": "Échec du chargement des modèles de courriel.",
+    "back": "Retour à la liste",
+    "markupRemoved": "Une partie du balisage a été retirée : {{tags}}",
+    "variables": {
+      "ticket_number": "Numéro de billet",
+      "ticket_subject": "Objet du billet",
+      "requester_name": "Nom du demandeur",
+      "requester_email": "Courriel du demandeur",
+      "org_name": "Nom de l'organisation",
+      "partner_name": "Nom de l'entreprise",
+      "portal_url": "URL du portail",
+      "email_only_hint": "Indication courriel uniquement",
+      "resolution_note": "Note de résolution",
+      "quote_number": "Numéro de soumission",
+      "total": "Total",
+      "expiry_date": "Date d'expiration",
+      "accept_url": "URL d'acceptation",
+      "invoice_number": "Numéro de facture",
+      "due_date": "Date d'échéance",
+      "invite_url": "URL d'invitation",
+      "cta_button": "Bouton"
+    }
+  },
   "inboundEmail": {
     "saveError": "Impossible d’enregistrer les paramètres des courriels entrants : votre session peut nécessiter une nouvelle vérification MFA. Réessayez.",
     "orgNotAccessible": "Cette organisation n’est pas disponible sous le nom de votre partenaire.",
@@ -763,6 +918,8 @@
     "dropUnverified": "Envoi de courrier qui échoue à l’authentification de l’expéditeur (SPF/DKIM/DMARC)",
     "dropUnverifiedDescription": "Lorsque cette option est désactivée, les courriels non vérifiés sont mis en quarantaine pour examen. Lorsqu’elle est activée, ils sont supprimés silencieusement. Cela s’applique à <all>tous</all> les expéditeurs non vérifiés, y compris les clients associés dont le message échoue à la vérification.",
     "enableAutoresponse": "Envoyez une réponse automatique pour accuser réceptionné des nouveaux billets par courriel",
+    "editEmailTemplates": "Le courriel d'accusé de réception s'édite sous Modèles de courriel.",
+    "editEmailTemplatesLink": "Modifier les modèles de courriel",
     "autoresponseMessage": "Message d’autoréponse",
     "subject": "Sujet",
     "subjectPlaceholder": "Nous avons reçu votre demande : {{ticket_subject}}",
@@ -896,7 +1053,10 @@
     },
     "customCss": {
       "title": "Personnalisé CSS (avancé)",
-      "description": "Utilisez des styles personnalisés pour affiner l’espacement, la typographie ou la mise en page."
+      "description": "Utilisez des styles personnalisés pour affiner l’espacement, la typographie ou la mise en page.",
+      "saveError": "Échec de l’enregistrement du CSS personnalisé.",
+      "loadError": "Impossible de charger le CSS personnalisé actuellement enregistré. La modification est désactivée tant qu’il n’est pas chargé.",
+      "saveBlockedByLoadError": "Le CSS personnalisé n’a pas été enregistré : la valeur actuelle n’a pas pu être vérifiée. Rechargez la page et réessayez."
     },
     "preview": {
       "action": "Prévisualiser",
@@ -1130,6 +1290,10 @@
       "description": "Choisissez les renseignements de service que ce client peut voir dans le portail.",
       "enableAll": "Activer toute la visibilité",
       "toggles": {
+        "enableDevices": {
+          "label": "Appareils",
+          "description": "Afficher la page Appareils. Le libre-service donne également accès à cette page."
+        },
         "enableDashboard": {
           "label": "Tableau de bord",
           "description": "Affiche un résumé de l'état du service à la connexion."
@@ -1149,7 +1313,33 @@
         "enableSupportUsage": {
           "label": "Utilisation du soutien",
           "description": "Affiche le total du temps de soutien facturable pour le mois en cours."
+        },
+        "enableService": {
+          "label": "Service",
+          "description": "Affiche les livrables planifiés, ce qui a été livré et les dates clés."
+        },
+        "enableDocuments": {
+          "label": "Documents",
+          "description": "Permet aux clients de télécharger les documents partagés."
+        },
+        "enableLifecycle": {
+          "label": "Cycle de vie du matériel",
+          "description": "Affiche le plan de remplacement à jour des appareils de votre client."
         }
+      }
+    },
+    "accent": {
+      "title": "Accent du portail",
+      "description": "La couleur des boutons et des liens dans le portail de vos clients. Les couleurs de statut ne changent jamais.",
+      "options": {
+        "spruce": "Épinette",
+        "ink": "Encre",
+        "oxblood": "Bordeaux",
+        "navy": "Marine",
+        "plum": "Prune",
+        "bronze": "Bronze antique",
+        "teal": "Sarcelle",
+        "forest": "Forêt"
       }
     },
     "support": {
@@ -1429,7 +1619,7 @@
     "completeReview": "Revue complète"
   },
   "aiUsagePage": {
-    "aIUsageBudget": "Utilisation et budget de l’IA",
+    "aIUsageBudget": "Utilisation de l’IA",
     "monitorAIAssistantUsageAndConfigureBudgetLimits": "Surveillez l’utilisation de l’assistant IA et configurez les limites budgétaires",
     "budgetConfiguration": "Configuration du budget",
     "aIEnabled": "IA activée",
@@ -1479,7 +1669,19 @@
     "untitled": "Sans titre",
     "billedToPartnerKey": "Facturé sur votre clé — l'utilisation de l'IA est portée à votre propre compte Anthropic, et non aux crédits IA de Breeze",
     "billedToPartnerKeyViaEndpoint": "Facturé sur votre clé via {{name}}: l'utilisation de l'IA est portée à votre propre compte Anthropic, et non aux crédits IA de Breeze",
-    "creditsRemaining": "Crédits IA Breeze restants"
+    "creditsRemaining": "Crédits IA Breeze restants",
+    "defaultValue": "Par défaut ({{value}})",
+    "viewPartnerWideBudgets": "Budgets IA du partenaire",
+    "monitorAIAssistantUsage": "Surveiller l’utilisation de l’assistant IA",
+    "effectiveBudget": "Budget en vigueur",
+    "effectiveBudgetHelp": "Les limites actuellement en vigueur pour cette organisation, et l’endroit où chacune a été définie.",
+    "effectiveBudgetUnavailable": "Le budget effectif n’a pas pu être chargé. Rechargez la page pour réessayer.",
+    "sourcePartner": "Défini par le partenaire",
+    "sourceOrganization": "Défini par l’organisation",
+    "sourceDefault": "Par défaut",
+    "selectOrgForEffectiveBudget": "Sélectionnez une organisation pour voir son budget en vigueur, ou modifiez les valeurs par défaut à l’échelle du partenaire.",
+    "editPartnerWideDefaults": "Modifier les valeurs par défaut à l’échelle du partenaire",
+    "thresholdsOff": "Désactivé"
   },
   "aiAgentsPage": {
     "schedules": {
@@ -1502,13 +1704,26 @@
       "timezone": "Fuseau horaire",
       "kinds": {
         "sweep": "Balayage",
-        "narrative": "Rapport hebdomadaire"
+        "narrative": "Rapport hebdomadaire",
+        "design": "Conception du parc",
+        "patch": "Plan de correctifs"
       },
       "kindsLabel": "Contrôles à exécuter",
       "kind": "Type de planification",
       "weeklyOnlyHint": "Un rapport hebdomadaire se déclenche exactement une fois par semaine : une minute et une heure littérales, * pour le jour-du-mois et le mois, et un seul jour de la semaine de 0 à 6. Par exemple, 0 7 * * 1 s'exécute chaque lundi à 7 h.",
+      "monthlyOrRarerHint": "Une conception du parc se déclenche au plus une fois par mois : une minute, une heure et un jour-du-mois (1-28) littéraux, le mois étant * ou une liste de mois littéraux séparés par des virgules, et * pour le jour de la semaine. Par exemple, 0 6 1 1,4,7,10 * s'exécute chaque trimestre le 1er à 6 h.",
+      "dailyOrRarerHint": "Un plan de correctifs se déclenche au plus une fois par jour : une minute et une heure littérales, et * ou une liste littérale pour le jour-du-mois, le mois et le jour de la semaine. Par exemple, 0 2 * * * s'exécute chaque nuit à 2 h.",
       "kindsRequired": "Sélectionnez au moins un contrôle.",
       "enabled": "Activé",
+      "actMode": {
+        "label": "Mode d'action",
+        "hint": "Une fois activé, ce planning peut appliquer certains correctifs automatiquement au lieu d'attendre une approbation.",
+        "deploymentDisabledHint": "Le mode action est indisponible car BREEZE_AI_AGENTS_SWEEP_ACT_ENABLED est désactivé pour ce déploiement. Communiquez avec votre administrateur pour l’activer.",
+        "disabledHint": "L'activation du mode d'action nécessite un accès partenaire complet à toutes les organisations.",
+        "scopeNote": "Les correctifs non supervisés se limitent au redémarrage d'un service arrêté, uniquement sur les appareils dont l'organisation dispose déjà de l'autorisation manage_services:restart. Tout le reste continue d'attendre une approbation.",
+        "disableForOrg": "Désactiver le mode d'action pour cette organisation",
+        "disableForOrgHint": "Cette organisation hérite toujours du réglage du mode d'action de la référence partenaire, sauf désactivation ici — elle ne peut jamais l'activer de façon indépendante."
+      },
       "override": "Déroger pour cette organisation",
       "editOverride": "Modifier la dérogation de cette organisation",
       "overrideHint": "La dérogation de cette organisation à la référence du partenaire. Elle suit toujours la cadence de la référence.",
@@ -1527,7 +1742,8 @@
         "pending_reboots": "Redémarrages en attente",
         "failed_backups": "Sauvegardes en échec",
         "service_down": "Service arrêté",
-        "unpatched_critical": "Vulnérabilités critiques non corrigées"
+        "unpatched_critical": "Vulnérabilités critiques non corrigées",
+        "expiring_certs": "Certificats qui expirent"
       },
       "toasts": {
         "saved": "Horaire enregistré",
@@ -1546,8 +1762,11 @@
         "baselineAgentMismatch": "Cette référence appartient à un autre agent.",
         "agentNotPartnerWide": "Les horaires de balayage exigent un agent valable pour tout le partenaire.",
         "agentKindNotTriage": "Seul un agent de triage peut être planifié.",
+        "agentKindNotDesigner": "Une planification de conception du parc doit cibler un agent Concepteur du parc.",
+        "agentKindNotPatch": "Une planification de plan de correctifs doit cibler un agent Correctifs.",
         "kindsNotEmpty": "Une planification de rapport hebdomadaire n'exécute aucun contrôle. Retirez les contrôles sélectionnés avant d'enregistrer.",
-        "invalidCronForKind": "Un rapport hebdomadaire doit se déclencher exactement une fois par semaine. Utilisez une minute et une heure littérales, * pour le jour-du-mois et le mois, et un seul jour de la semaine."
+        "invalidCronForKind": "Un rapport hebdomadaire doit se déclencher exactement une fois par semaine. Utilisez une minute et une heure littérales, * pour le jour-du-mois et le mois, et un seul jour de la semaine.",
+        "actModeOrgCannotArm": "Le mode d'action est activé sur la référence partenaire ; une dérogation d'organisation ne peut que le désactiver, jamais l'activer."
       }
     },
     "title": "Agents IA",
@@ -1556,7 +1775,8 @@
     "kindHints": {
       "triage": "Examine les nouvelles alertes et propose quoi faire.",
       "patch": "Revoit les correctifs manquants et propose quoi installer.",
-      "helpdesk": "Prend les billets en charge et propose des réponses et des prochaines étapes."
+      "helpdesk": "Prend les billets en charge et propose des réponses et des prochaines étapes.",
+      "designer": "Lit l’ensemble du parc et rédige une conception de surveillance justifiée qu’un technicien doit approuver."
     },
     "emptyState": {
       "title": "Aucun agent pour l’instant",
@@ -1571,7 +1791,10 @@
       "shadowConsequence": "Observe et propose; une personne approuve tout.",
       "act": "Action",
       "actConsequence": "Exécute les opérations autorisées sans clic. Aucune annulation automatique.",
-      "actUnavailable": "Pas encore disponible pour cet agent."
+      "actUnavailable": "Pas encore disponible pour cet agent.",
+      "designerAct": "Activé",
+      "designerActConsequence": "S'exécute selon un planning ou à la demande et rédige un Fleet Design. Ne modifie jamais un appareil.",
+      "shadowApprovalNotice": "Les propositions arrivent dans Approbations; approuver l'une d'elles l'exécute pour de vrai, ce n'est pas un essai."
     },
     "allOrgs": "Toutes les organisations",
     "allOrgsHint": "À l’échelle du partenaire : s’applique à chaque organisation, sauf si une organisation la restreint.",
@@ -1579,7 +1802,14 @@
     "stateDisabled": "Désactivé",
     "runningBadge": {
       "running": "En cours d’exécution",
-      "notRunning": "Ne s’exécute pas"
+      "notRunning": "Ne s’exécute pas",
+      "inactive": "Activé (inactif)"
+    },
+    "subsystemDisabled": {
+      "title": "Les agents IA sont désactivés sur ce serveur",
+      "envFlag": "Définissez {{flag}} pour autoriser l'exécution des agents. D'ici là, chaque déclenchement est ignoré.",
+      "killSwitch": "L'arrêt d'urgence de la plateforme est activé. Les agents ne s'exécuteront pas tant qu'un administrateur ne l'aura pas levé.",
+      "skips": "{{total}} déclenchement(s) ignoré(s) récemment — {{reasons}}"
     },
     "reenableNote": "Restauré, mais désactivé. Consultez sa politique avant de l’activer.",
     "chipLabels": {
@@ -1598,6 +1828,8 @@
       "never": "Jamais exécuté",
       "at": "Dernière exécution {{at}}"
     },
+    "nextOccurrence": "Prochaine exécution {{at}}",
+    "runNowNoOrg": "Sélectionnez une organisation pour exécuter un plan de correctifs.",
     "disableDialog": {
       "title": "Désactiver {{name}}?",
       "message": "Les exécutions futures s’arrêtent, les planifications rattachées cessent de se déclencher et les dérogations d’organisation de cet agent cessent de s’appliquer. Une exécution déjà en cours se poursuit jusqu’à sa limite de temps.",
@@ -1629,6 +1861,7 @@
       "invalidSupervisedActionKeys": "Une ou plusieurs actions sélectionnées ne peuvent pas être autorisées par la politique.",
       "supervisedKeyRejected": "{{key}}: {{reason}}",
       "notDisabled": "Cet agent est déjà actif.",
+      "noPatchAgent": "Aucun agent de correctifs ne s'applique à cette organisation.",
       "actRecipientsUnreachable": "Les rôles de notification sélectionnés n'ont aucun membre actif, personne ne pourrait donc être sollicité. Choisissez un rôle comptant des membres avant d'activer le mode Agir.",
       "invalidScriptIds": "Un ou plusieurs scripts ne peuvent pas être autorisés pour cet agent.",
       "scriptRejected": "Script {{id}}: {{reason}}",
@@ -1646,7 +1879,8 @@
       "disable": "Désactiver",
       "confirmDisable": "Confirmer la désactivation",
       "reenable": "Réactiver",
-      "runs": "Exécutions"
+      "runs": "Exécutions",
+      "runNow": "Exécuter maintenant"
     },
     "toasts": {
       "saved": "Agent enregistré",
@@ -1654,7 +1888,9 @@
       "disabled": "Agent désactivé",
       "disableFailed": "Impossible de désactiver l’agent.",
       "reenabled": "Agent réactivé",
-      "reenableFailed": "Impossible de réactiver l’agent."
+      "reenableFailed": "Impossible de réactiver l’agent.",
+      "runNowQueued": "Exécution du plan de correctifs mise en file d'attente",
+      "runNowFailed": "Impossible de démarrer une exécution du plan de correctifs."
     },
     "issues": {
       "name": "Donnez un nom à l’agent.",
@@ -1685,7 +1921,8 @@
     "kinds": {
       "triage": "Tri des alertes",
       "patch": "Correctifs",
-      "helpdesk": "Service d’assistance"
+      "helpdesk": "Service d’assistance",
+      "designer": "Concepteur du parc"
     },
     "modes": {
       "off": "Désactivé",
@@ -1742,6 +1979,9 @@
       "supervisedActionKeysFailed": "Impossible de charger la liste des actions décidables par politique ; l’autorisation sans surveillance ne peut pas être modifiée pour le moment.",
       "ticketAutonomousWrites": "Écritures autonomes de tickets",
       "ticketAutonomousWritesHint": "Dérogation d'organisation seulement — les écritures autonomes de tickets nécessitent le mode action et cette activation au niveau de l'organisation",
+      "alertCategories": "Catégories d'alertes",
+      "alertCategoriesHint": "Seules les alertes dont la catégorie de modèle est listée ici réveillent cet agent. Laisser vide pour toute catégorie. Les alertes de correctifs portent « patching ».",
+      "alertCategoriesPlaceholder": "p. ex. patching, monitor",
       "enabledHint": "« Activé » et le mode sont deux interrupteurs distincts et une exécution a besoin des deux : si ceci est désactivé, rien ne s’exécute quel que soit le mode, et en mode Désactivé rien ne s’exécute même si ceci est activé.",
       "enabledCreateHint": "Les nouveaux agents sont créés éteints. Vérifiez la liste des outils autorisés et les limites ci-dessous, puis activez ceci lorsque vous voulez que l’agent commence à s’exécuter.",
       "actKeysCleared": "Les autorisations du mode action sont conservées, mais ne seront pas enregistrées tant que cet agent ne repasse pas en mode Action.",
@@ -1820,7 +2060,8 @@
       "profile": {
         "sweep": "Balayage",
         "narrative": "Rapport hebdomadaire",
-        "triage": "Triage des tickets"
+        "triage": "Triage des tickets",
+        "design": "Conception du parc"
       },
       "sweep": {
         "title": "Constats du balayage",
@@ -1828,6 +2069,20 @@
         "empty": "Aucun constat signalé.",
         "evidenceTruncated": "Les éléments ont été tronqués : toutes les lignes correspondantes n’ont pas été présentées à l’agent.",
         "proposalCreated": "Approbation demandée",
+        "actSummary": "Action sans supervision sur {{acted}} appareils sur {{proposed}} — les autres attendent une approbation.",
+        "outcomes": {
+          "auto_executing": "Exécution sans supervision",
+          "executed": "Terminé",
+          "failed": "Échec",
+          "declined": "Refusé",
+          "expired": "Expiré",
+          "unknown": "Résultat inconnu"
+        },
+        "stoppedBy": {
+          "fleet_cap": "limite quotidienne du parc atteinte",
+          "day_cap": "limite quotidienne d’actions atteinte",
+          "occurrence_cap": "plafond d’appareils par balayage atteint"
+        },
         "columns": {
           "kind": "Vérification",
           "severity": "Gravité",
@@ -1842,7 +2097,8 @@
           "pending_reboots": "Redémarrages en attente",
           "failed_backups": "Sauvegardes en échec",
           "service_down": "Service arrêté",
-          "unpatched_critical": "Vulnérabilités critiques non corrigées"
+          "unpatched_critical": "Vulnérabilités critiques non corrigées",
+          "expiring_certs": "Certificats bientôt expirés"
         },
         "severities": {
           "critical": "Critique",
@@ -1853,11 +2109,90 @@
         },
         "reasons": {
           "device_not_in_evidence": "Appareil absent des éléments du balayage",
+          "subject_not_in_evidence": "Élément absent des éléments du balayage",
           "device_not_in_org": "Appareil absent de cette organisation",
           "not_allowlisted": "Outil non autorisé pour cet agent",
           "no_eligible_approvers": "Aucun approbateur éligible",
           "intent_error": "Impossible de créer l’approbation",
-          "max_actions_per_run": "Limite d’actions atteinte pour cette exécution"
+          "max_actions_per_run": "Limite d’actions atteinte pour cette exécution",
+          "intent_invalid_provenance": "Impossible de valider l’approbation (erreur interne)"
+        }
+      },
+      "patch": {
+        "title": "Plan de correctifs",
+        "empty": "L'agent n'a proposé aucun travail de correctifs.",
+        "evidenceTruncated": "Les éléments ont été tronqués : toutes les lignes correspondantes n'ont pas été présentées à l'agent.",
+        "posture": "{{compliance}} % conforme · {{count}} appareil à risque",
+        "posture_other": "{{compliance}} % conforme · {{count}} appareils à risque",
+        "patchCount": "{{count}} mise à jour",
+        "patchCount_other": "{{count}} mises à jour",
+        "refused": "Non consigné : {{reason}}",
+        "unconfirmed": "Ce plan n'a jamais été confirmé — l'agent n'a pas pu revérifier ses entrées par rapport aux éléments, donc rien ci-dessous n'a été validé.",
+        "unconfirmedItem": "Non confirmé — cette entrée n'a jamais été revérifiée.",
+        "intentCreated": "En attente d'approbation — ouvrir la fiche",
+        "suppressed": "Déjà proposé : {{reason}}",
+        "capReached": "Non proposé : {{reason}}",
+        "intentError": "Impossible de créer la fiche d'approbation : {{reason}}",
+        "dropped": "{{count}} mise à jour a été exclue de la fiche",
+        "dropped_other": "{{count}} mises à jour ont été exclues de la fiche",
+        "counts": "{{created}} en attente d'approbation · {{suppressed}} déjà proposées",
+        "failureClass": "Classe d'échec : {{label}}",
+        "attempts": "{{count}} tentative échouée",
+        "attempts_other": "{{count}} tentatives échouées",
+        "rebootWindow": "Fenêtre : {{start}} – {{end}}",
+        "redundancyGroup": "Groupe de redondance : {{group}}",
+        "escalation": "Nécessite une intervention humaine – aucune nouvelle tentative automatique.",
+        "escalations": "{{count}} escalade",
+        "escalations_other": "{{count}} escalades",
+        "classes": {
+          "install": "Installation",
+          "approval_advisory": "Recommandation d'approbation",
+          "reboot_plan": "Plan de redémarrage",
+          "chase": "Suivi d'échec",
+          "escalation": "Escalade"
+        },
+        "reasons": {
+          "device_not_in_evidence": "Appareil absent des éléments de correctifs",
+          "device_not_in_org": "Appareil absent de cette organisation",
+          "patch_not_in_evidence": "Mise à jour absente des éléments de correctifs",
+          "window_not_resolved": "Impossible de résoudre la fenêtre de maintenance",
+          "job_result_not_in_evidence": "Résultat de la tâche de correctifs absent des éléments",
+          "no_eligible_patches": "Aucune mise à jour n'est actuellement admissible pour cet appareil",
+          "not_allowlisted": "L'agent n'est pas autorisé à proposer des installations",
+          "max_actions_per_run": "Limite d'actions atteinte pour cette exécution",
+          "no_eligible_approvers": "Personne ne peut approuver cette action",
+          "intent_error": "L'approbation n'a pas pu être créée",
+          "live_intent_exists": "Une fiche d'approbation pour cette mise à jour est déjà ouverte",
+          "recently_rejected": "Cette mise à jour a été rejetée récemment",
+          "recently_cancelled": "La fiche de cette mise à jour a été annulée récemment",
+          "recently_completed": "Cette mise à jour a été installée récemment",
+          "failure_class_mismatch": "La classe d'échec citée ne correspond pas aux éléments de preuve",
+          "class_not_retryable": "Ce type d'échec n'est jamais retenté automatiquement",
+          "chase_attempts_exhausted": "La limite de nouvelles tentatives pour cette mise à jour est atteinte – escaladé à la place",
+          "attempt_count_mismatch": "Le nombre de tentatives cité ne correspond pas aux éléments de preuve",
+          "failure_history_truncated": "L'historique des échecs était incomplet : le nombre de tentatives n'était pas fiable",
+          "reboot_policy_not_window_gated": "La politique de redémarrage de l'appareil redémarre en dehors des fenêtres de maintenance, un plan de fenêtre ne serait donc pas respecté",
+          "redundancy_unknown": "Le groupe de redondance de l'appareil est inconnu, l'ordre n'a donc pas pu être vérifié",
+          "redundancy_collision": "Un autre appareil du même groupe de redondance est déjà planifié pour cette fenêtre"
+        },
+        "ineligible": {
+          "not_outstanding": "Non en attente sur cet appareil",
+          "superseded": "Remplacée par une mise à jour plus récente",
+          "blocked_by_source": "Exclue par les sources de mise à jour de la politique",
+          "held_by_deferral": "Retenue par la fenêtre de report",
+          "blocked_by_category": "Exclue par les règles de catégorie de l'anneau",
+          "blocked_by_app_rule": "Bloquée par une règle d'application",
+          "awaiting_manual_approval": "En attente d'approbation manuelle",
+          "no_ring_resolved": "L'appareil n'a aucun anneau de mise à jour",
+          "device_not_in_org": "Appareil absent de cette organisation"
+        },
+        "failureClasses": {
+          "transient": "Transitoire",
+          "needs_reboot": "Redémarrage requis",
+          "disk_space": "Espace disque",
+          "store_corrupt": "Magasin de mises à jour corrompu",
+          "permanent": "Permanent",
+          "unknown": "Inconnu"
         }
       },
       "narrative": {
@@ -1866,7 +2201,25 @@
         "truncatedNote": "Le contexte de l'agent a été tronqué : cette synthèse n'a pas vu la semaine entière.",
         "openReport": "Ouvrir le rapport",
         "download": "Télécharger le PDF",
-        "downloadFailed": "Impossible de télécharger le PDF."
+        "downloadFailed": "Impossible de télécharger le PDF.",
+        "delivery": {
+          "sent": "Envoyé par courriel à {{sent}} destinataires sur {{total}}",
+          "refused_one": "{{count}} destinataire n’a pas reçu le courriel : autorité sur le rapport, adresse manquante ou refus du fournisseur.",
+          "refused_other": "{{count}} destinataires n’ont pas reçu le courriel : autorité sur le rapport, adresse manquante ou refus du fournisseur.",
+          "pending_one": "{{count}} envoi n’a pas encore été effectué : il sera réessayé.",
+          "pending_other": "{{count}} envois n’ont pas encore été effectués : ils seront réessayés.",
+          "unknown_one": "{{count}} envoi n’a pas pu être confirmé : le fournisseur de courriel n’a pas donné de réponse définitive.",
+          "unknown_other": "{{count}} envois n’ont pas pu être confirmés : le fournisseur de courriel n’a pas donné de réponse définitive.",
+          "recipientsUnresolved": "La recherche des destinataires a échoué; personne n’a reçu cette synthèse par courriel. Le rapport lui-même a été enregistré."
+        }
+      },
+      "fleetDesign": {
+        "title": "Conception du parc",
+        "counts": "{{functions}} fonctions · {{watches}} surveillances · {{rules}} règles d'alerte",
+        "openReport": "Ouvrir le rapport",
+        "download": "Télécharger le PDF",
+        "downloadFailed": "Impossible de télécharger le PDF.",
+        "truncatedNote": "Les preuves ont été tronquées — cette conception n'a pas vu l'ensemble du parc."
       },
       "noAgent": "Agent inconnu",
       "loading": "Chargement des exécutions…",
@@ -1900,7 +2253,9 @@
           "startedAt": "Démarré",
           "finishedAt": "Terminé",
           "turnCount": "Tours",
-          "summary": "Résumé"
+          "summary": "Résumé",
+          "computeCost": "Calcul",
+          "computeEstimated": "(estimé)"
         },
         "flags": {
           "budgetExceeded": "Budget dépassé",
@@ -1932,6 +2287,34 @@
             "skipped": "Vérification ignorée"
           },
           "viewApproval": "Consulter dans Approbations"
+        },
+        "artifacts": {
+          "title": "Fichiers produits par cette exécution",
+          "download": "Télécharger",
+          "preview": "Aperçu",
+          "attachToTicket": "Joindre comme note interne",
+          "attach": "Joindre {{name}} comme note interne",
+          "ticketIdPlaceholder": "ID du billet",
+          "attachedToTicket": "Joint au billet comme note interne",
+          "attachFailed": "Impossible de joindre le fichier à ce billet",
+          "attachedButCommentFailed": "Le fichier a été joint, mais la note n'a pas pu être ajoutée au billet",
+          "downloadExpired": "Ce fichier a expiré et n'est plus disponible au téléchargement."
+        },
+        "workspace": {
+          "title": "Ce qui s’est exécuté dans le bac à sable",
+          "region": "Région",
+          "status": "Bac à sable",
+          "cpu": "Temps CPU",
+          "steps": "Étapes",
+          "script": "Script",
+          "stdout": "Sortie",
+          "exitCode": "sortie",
+          "timedOut": "délai dépassé",
+          "noExitCode": "aucun code de sortie",
+          "artifactExpired": "expiré"
+        },
+        "progress": {
+          "title": "Progression"
         },
         "ledger": {
           "title": "Exécutions d'outils",
@@ -2033,6 +2416,7 @@
       "emptyState": {
         "title": "Aucun résultat d’IA pour cette période",
         "description": "Les résultats apparaîtront ici dès que vos agents IA évalueront une alerte, trieront un ticket ou appliqueront un correctif en mode observation ou action. Élargissez la période de rapport ci-dessus, ou configurez un agent pour commencer.",
+        "descriptionWidestWindow": "Les résultats apparaîtront ici dès que vos agents IA évalueront une alerte, trieront un ticket ou appliqueront un correctif en mode observation ou action. Il n’y a pas encore assez de données, même pour la période de rapport la plus longue — configurez un agent pour commencer.",
         "action": "Configurer un agent"
       },
       "tileGroups": {
@@ -2129,6 +2513,7 @@
           "fixWatchesHeld": "Surveillances de correctif maintenues",
           "fixWatchesRecurred": "Surveillances de correctif récurrentes",
           "narrativesDelivered": "Rapports hebdomadaires livrés",
+          "fleetDesignsDelivered": "Fleet Designs livrés",
           "estTimeSaved": "Temps gagné estimé",
           "llmSpend": "Dépenses LLM",
           "window": "Fenêtre du rapport (jours)",
@@ -2137,6 +2522,31 @@
         },
         "weightRowLabel": "{{label}} (minutes créditées)",
         "neverRebuilt": "Jamais reconstruit"
+      },
+      "measured": {
+        "heading": "Mesuré (corrélationnel)",
+        "caption": "Travail touché par l'IA comparé au travail non touché, de même nature et dans la même fenêtre. Ce n'est ni une comparaison avant/après ni une affirmation causale : l'IA s'occupe généralement des cas les plus faciles en premier.",
+        "alertResolution": "Résolution des alertes, par règle",
+        "ticketFirstResponse": "Première réponse au billet, par priorité et catégorie",
+        "technicianMinutes": "Minutes de technicien consignées",
+        "armAiTouched": "Touché par l'IA",
+        "armUntouched": "Non touché",
+        "withinHorizonAlerts": "Résolues en 24 h",
+        "withinHorizonTickets": "Première réponse en 4 h",
+        "cohortSize": "{n} dans la cohorte",
+        "percentileP50": "p50 : {minutes} min",
+        "percentileP90": "p90 : {minutes} min",
+        "recordedMinutesValue": "{minutes} min (médiane)",
+        "loggingCoverage": "Temps consigné sur {ai} des billets touchés par l'IA et {untouched} des autres. Une médiane calculée sur des billets partiellement consignés n'est pas une médiane du travail.",
+        "censoredNote": "Tout centile affiché est censuré à droite : les cas encore ouverts comptent comme inachevés plutôt que d'être écartés.",
+        "loading": "Chargement de la comparaison mesurée…",
+        "error": "Impossible de charger la comparaison mesurée.",
+        "omitted": {
+          "insufficientData": "Données insuffisantes : aucun groupe de travail comparable n'a au moins 20 cas de chaque côté.",
+          "insufficientFollowup": "Cette fenêtre est trop courte pour observer le résultat d'assez de cas. Essayez une fenêtre plus longue.",
+          "insufficientAuthority": "Vous n'avez pas la permission de saisie de temps requise pour voir les minutes de technicien consignées.",
+          "siteRestricted": "La comparaison mesurée n'est pas affichée en accès restreint par site, car elle agrège des données de toute une organisation."
+        }
       }
     },
     "graduation": {
@@ -2194,7 +2604,8 @@
         "below_threshold": "Il n’y a pas encore assez d’exécutions vérifiées.",
         "too_recent": "La première exécution vérifiée est encore trop récente.",
         "has_failures": "Un échec ou une récurrence a été consigné durant cette période.",
-        "not_policy_decidable": "Cette opération ne peut jamais être préautorisée."
+        "not_policy_decidable": "Cette opération ne peut jamais être préautorisée.",
+        "below_sweep_threshold": "Il faut plus de correctifs vérifiés pour lesquels un balayage planifié a choisi la cible."
       },
       "confirm": {
         "title": "Demander une préautorisation",
@@ -2235,6 +2646,10 @@
         "scripts_commands": {
           "label": "Scripts et commandes",
           "description": "Exécuter des scripts, des playbooks et des commandes système, et gérer les processus, tâches planifiées et entrées de registre concernés."
+        },
+        "author_scripts": {
+          "label": "Rédiger des scripts",
+          "description": "Rédiger un nouveau script sous forme de proposition soumise à une révision indépendante. Rien de ce qu'un agent rédige ne s'exécute avant d'avoir été révisé et approuvé."
         },
         "tickets": {
           "label": "Billets d'assistance",
@@ -2279,6 +2694,10 @@
         "tenancy": {
           "label": "Gestion des organisations",
           "description": "Gérer les organisations, les sites et les intégrations inter-organisations."
+        },
+        "workspace": {
+          "label": "Bac à sable d’analyse de données",
+          "description": "Exportez des jeux de données du parc et exécutez du code d’analyse dans un bac à sable isolé, sans réseau ni accès aux appareils. Les constats reviennent sous forme de propositions qu’un technicien approuve."
         }
       },
       "tools": {
@@ -2384,6 +2803,7 @@
         "set_agent_log_level": "Définir le niveau de journalisation de l'agent",
         "set_device_context": "Définir le contexte de l'appareil",
         "sync_huntress_data": "Synchroniser les données Huntress",
+        "system_cleanup": "Nettoyage du système",
         "take_screenshot": "Prendre une capture d'écran"
       },
       "actions": {
@@ -2631,6 +3051,11 @@
           "scan": "Lancer une analyse de sécurité",
           "status": "État de l'analyse de sécurité",
           "vulnerabilities": "Rechercher des vulnérabilités"
+        },
+        "system_cleanup": {
+          "list": "Lister les actions de nettoyage du système",
+          "run": "Exécuter le nettoyage du système",
+          "status": "État du nettoyage du système"
         }
       },
       "alwaysOnCount_one": "{{count}} outil en lecture seule",
@@ -2685,7 +3110,8 @@
       "loggedProposalCount_other": "{{count}} propositions consignées",
       "unattendedCount_one": "{{count}} sans intervention",
       "unattendedCount_other": "{{count}} sans intervention",
-      "scriptGateNote": "Reste une demande d'approbation tant qu'aucun script n'est autorisé pour cet agent."
+      "scriptGateNote": "Reste une demande d'approbation tant qu'aucun script n'est autorisé pour cet agent.",
+      "designerReadOnly": "Le Concepteur du parc accède à tous les outils en lecture seule et à un outil de rapport. Il n'a aucune capacité de modification à choisir."
     },
     "summary": {
       "edit": "Modifier",
@@ -2786,6 +3212,11 @@
           "blurb": "Traite les tickets dès leur création, leur première réponse ou leur résolution.",
           "runsWhen": "un ticket est créé, reçoit sa première réponse, ou est marqué résolu",
           "recommended": "redémarrer les services et libérer de l'espace disque pour résoudre les demandes courantes"
+        },
+        "designer": {
+          "blurb": "Lit l'ensemble du parc et rédige une conception de surveillance justifiée qu'un technicien doit approuver.",
+          "runsWhen": "vous lancez une Conception du parc pour une organisation, ou selon une planification trimestrielle",
+          "recommended": "une migration à partir de zéro, ou un audit de configuration trimestriel"
         }
       },
       "kindCard": {
@@ -2808,6 +3239,11 @@
       "searchPlaceholder": "Rechercher des scripts…",
       "selectedCount_one": "{{count}} script autorisé",
       "selectedCount_other": "{{count}} scripts autorisés"
+    },
+    "designerNote": {
+      "title": "Cet agent ne fait que lire et rédiger des rapports",
+      "body": "Un Fleet Designer n'exécute jamais rien sur un appareil. Activé signifie qu'il peut s'exécuter et remettre ses designs aux destinataires que vous choisissez.",
+      "ack": "Je comprends que cet agent s'exécute sans surveillance et remet des Fleet Designs."
     }
   },
   "apiKeyForm": {
@@ -2939,7 +3375,9 @@
     "loadingApproverDevices": "Chargement des appareils d’approbation...",
     "tryAgain": "Réessayer",
     "noApproverDevicesRegisteredYetSignInToTheBreezeMobileApp": "Aucun appareil d’approbation n’est encore enregistré. Connectez-vous à l’application mobile Breeze sur votre téléphone et elle apparaît automatiquement ici, ou inscrivez-vous à ce navigateur ci-dessous pour approuver avec une biométrie.",
-    "platformBound": "En direction du quai",
+    "hardwareAttested": "Attesté matériellement",
+    "notAttested": "Non attesté",
+    "notAttestedTooltip": "Les approbations critiques ne sont pas offertes sur cet appareil tant qu'il n'est pas réenregistré avec une version attestée de l'application.",
     "registered": "Enregistré",
     "lastUsed": "Dernière utilisation",
     "cancel": "Annuler",
@@ -3143,7 +3581,8 @@
   "catalogSettingsPage": {
     "productCatalog": "Catalogue de produits",
     "theProductCatalogIsAvailableToPartnerAccountsOnly": "Le catalogue de produits est disponible uniquement pour les comptes partenaires.",
-    "manageHardwareSoftwareAndServiceItemsUsedAcrossQuotesCon": "Gérez le matériel, les logiciels et les éléments de service utilisés lors des devis, contrats et factures. Connectez les distributeurs (Pax8, TD SYNNEX) sous la section Intégrations → Distributeurs."
+    "manageHardwareSoftwareAndServiceItemsUsedAcrossQuotesCon": "Gérez le matériel, les logiciels et les éléments de service utilisés lors des devis, contrats et factures. Connectez les distributeurs (Pax8, TD SYNNEX) sous la section Intégrations → Distributeurs.",
+    "distributorsLink": "Gérer les connexions aux distributeurs →"
   },
   "changePasswordForm": {
     "currentPasswordIsRequired": "Un mot de passe actuel est requis",
@@ -3397,7 +3836,10 @@
     "passkeyStepUpNoUsableFactor": "Le facteur actuel de votre compte ne peut pas être confirmé ici. Contactez un administrateur pour ajouter une clé d'accès.",
     "passkeyStepUpIncorrectCode": "Code incorrect. Veuillez réessayer.",
     "passkeyStepUpTooManyAttempts": "Trop de tentatives. Veuillez réessayer dans quelques minutes.",
-    "passkeyStepUpVerificationExpired": "La vérification a expiré. Veuillez vérifier à nouveau."
+    "passkeyStepUpVerificationExpired": "La vérification a expiré. Veuillez vérifier à nouveau.",
+    "passkeyRegistrationServerError": "L'inscription de la clé d'accès a échoué. Veuillez réessayer.",
+    "deletePasskeyVerifyHeading": "Vérifier pour supprimer une clé d'accès",
+    "deletePasskeyVerifyHint": "Saisissez ici un code MFA actuel avant de supprimer l'une des clés d'accès ci-dessus. Ce code n'a aucun effet sur l'ajout d'une nouvelle clé d'accès."
   },
   "roleManager": {
     "roles": "Rôles",
@@ -3841,6 +4283,7 @@
     "languageLoadFailed": "Préférence enregistrée, mais la langue ne se chargeait pas — l’anglais montré. Vérifiez votre connexion et réessayez."
   },
   "ticketCategoriesPage": {
+    "defaultTimeEntryMinutes": "Saisie de temps par défaut (minutes)",
     "sLAMinutesAndHourlyRateMustBeNumbers": "SLA minutes et tarif horaire doivent être des chiffres.",
     "categoryUpdated": "Catégorie mise à jour",
     "ticketing": "Billetterie",
@@ -3864,7 +4307,6 @@
     "responseSLAMinutes": "Réponse SLA (minutes)",
     "resolutionSLAMinutes": "Résolution SLA (minutes)",
     "billableByDefault": "Facturable par défaut",
-    "defaultHourlyRate": "Taux horaire par défaut ({{currency}})",
     "save": "Enregistrer",
     "cancel": "Annuler",
     "responseMinutes": "{{count}}m réponse",
@@ -3879,7 +4321,8 @@
     "active": "Actif",
     "inactive": "Inactif",
     "deactivate": "Désactiver",
-    "activate": "Activez"
+    "activate": "Activez",
+    "slaMinutesMustBeNumbers": "Les minutes du SLA doivent être des nombres."
   },
   "ticketPrioritiesTab": {
     "prioritiesAndSLAsSaved": "Priorités et SLA sauvés",
@@ -3942,7 +4385,10 @@
     "inboundEmail": "Courriel entrant",
     "cannedResponses": "Réponses préfabriquées",
     "checkingAccess": "Vérification de votre accès...",
-    "timeTracking": "Suivi du temps"
+    "timeTracking": "Suivi du temps",
+    "email": "Courriel",
+    "templates": "Modèles",
+    "timeCapture": "Saisie du temps"
   },
   "ticketFormsCard": {
     "heading": "Formulaires d’admission",
@@ -4096,6 +4542,11 @@
       }
     }
   },
+  "orgAiBudgetSettings": {
+    "title": "Budget IA",
+    "description": "Plafonds de dépenses, limites de fréquence et mode d’approbation de l’assistant IA dans cette organisation. Les champs définis par votre partenaire sont affichés ici, mais ne peuvent être modifiés que dans l’onglet du partenaire.",
+    "selectOrganization": "Sélectionnez une organisation pour configurer son budget IA."
+  },
   "orgSettingsPage": {
     "loading": "Chargement des paramètres d’organisation...",
     "confirmDiscard": "Vous avez des modifications non enregistrées dans cette section. Changer les éliminera. Continuer ?",
@@ -4149,7 +4600,9 @@
       "notifications": "Notifications",
       "notificationsDescription": "Courriel, Slack, webhooks",
       "ticketing": "Billetterie",
-      "ticketingDescription": "SLA et les dérogations de facturation"
+      "ticketingDescription": "SLA et les dérogations de facturation",
+      "ai": "IA",
+      "aiDescription": "Budget de l’assistant IA, limites de fréquence et mode d’approbation"
     },
     "overview": {
       "title": "Aperçu de l’organisation",
@@ -4170,6 +4623,12 @@
       "organizationId": "Organisation ID",
       "copyOrganizationId": "Copier l’ID de l’organisation",
       "organizationIdHelp": "Utilisez ce ID lors d’une invitation ou d’une configuration d’intégrations."
+    },
+    "ai": {
+      "externalProcessing": "Autoriser l’analyse IA en bac à sable",
+      "externalProcessingDescription": "Permet aux exécutions d’analyse IA d’exécuter du code pour cette organisation dans un bac à sable isolé, sans accès réseau, hébergé dans la région de cette organisation. Désactivé par défaut.",
+      "externalProcessingSaved": "Enregistré",
+      "externalProcessingSaveFailed": "Impossible de modifier ce paramètre"
     },
     "breadcrumbs": {
       "settings": "Paramètres",
@@ -4422,27 +4881,10 @@
       "suspended": "Suspendu",
       "churned": "Tourné",
       "offboarding": "Départ en cours"
+    },
+    "help": {
+      "slug": "Généré à partir du nom. Unique dans votre compte; utilisé par l'API et les intégrations."
     }
-  },
-  "organizationList": {
-    "title": "Organisations",
-    "count": "{{filtered}} de {{total}} organisations",
-    "searchPlaceholder": "Rechercher des organisations",
-    "allStatuses": "Tous les statuts",
-    "status": {
-      "active": "Active",
-      "trial": "Procès",
-      "suspended": "Suspendu",
-      "churned": "Tourné",
-      "offboarding": "Départ en cours",
-      "merging": "Fusion en cours",
-      "archived": "Archivé",
-      "purging": "Purge en cours"
-    },
-    "columns": {
-      "devices": "Appareils"
-    },
-    "empty": "Aucune organisation trouvée. Essayez d’ajuster votre recherche ou vos filtres."
   },
   "bulkOrgImport": {
     "title": "Import en masse",
@@ -4506,23 +4948,11 @@
     }
   },
   "organizationsPage": {
-    "loading": "Chargement des organisations...",
-    "title": "Organisations & Sites",
-    "description": "Gérer les organisations et leurs sites.",
     "actions": {
-      "addOrganization": "Ajouter l’organisation",
-      "tryAgain": "Réessayer",
-      "editOrganization": "Modifier l’organisation",
-      "archiveOrganization": "Archiver l'organisation",
-      "deleting": "Suppression…",
-      "openRecord": "Ouvrir la fiche",
-      "openSettings": "Paramètres"
+      "tryAgain": "Réessayer"
     },
     "errors": {
-      "fetchOrganizations": "Impossible de récupérer des organisations",
       "generic": "Une erreur s’est produite",
-      "saveOrder": "Impossible d’enregistrer l’ordre organisationnel",
-      "saveOrganization": "Impossible d’enregistrer l’organisation",
       "saveSite": "Impossible d’enregistrer le site ({{status}})",
       "deleteSite": "Impossible de supprimer le site",
       "loadSites": "Impossible de charger les sites de cette organisation."
@@ -4537,25 +4967,8 @@
       "archived": "Archivé",
       "purging": "Purge en cours"
     },
-    "deviceCount": "{{count}} appareils",
-    "list": {
-      "title": "Organisations",
-      "searchPlaceholder": "Rechercher...",
-      "empty": "Aucune organisation trouvée.",
-      "noMatches": "Aucune organisation ne correspond à votre recherche.",
-      "dragToReorder": "De la traînée à la réorganisation"
-    },
     "sites": {
       "loading": "Chargement des sites..."
-    },
-    "emptySelection": {
-      "title": "Aucune organisation sélectionnée",
-      "description": "Sélectionnez une organisation parmi la liste pour consulter ses sites."
-    },
-    "add": {
-      "title": "Ajouter l’organisation",
-      "description": "Créez une nouvelle organisation avec les détails ci-dessous.",
-      "submit": "Créer une organisation"
     },
     "siteModal": {
       "editTitle": "Modifier le site",
@@ -4571,11 +4984,11 @@
     },
     "deleteSite": {
       "title": "Supprimer le site",
-      "messagePrefix": "Êtes-vous sûr de vouloir supprimer ?",
-      "messageSuffix": " Cette action ne peut être annulée."
+      "message": "Supprimer {{name}}? Le site sera supprimé de façon permanente et ne pourra pas être récupéré.",
+      "blockedMessage_one": "{{name}} compte encore {{count}} appareil. Déplacez-le vers un autre site avant de supprimer celui-ci.",
+      "blockedMessage_other": "{{name}} compte encore {{count}} appareils. Déplacez-les vers un autre site avant de supprimer celui-ci."
     },
     "merge": {
-      "openButton": "Fusionner avec une autre organisation",
       "title": "Fusionner l'organisation",
       "description": "Déplacez les données de {{name}} vers une organisation survivante. {{name}} est ensuite retirée définitivement et ne peut plus être récupérée.",
       "survivorLabel": "Fusionner avec",
@@ -4642,36 +5055,6 @@
       "errors": {
         "archive": "Échec de l'archivage de l'organisation",
         "mfaRequired": "L'archivage des organisations nécessite l'authentification multifacteur. Activez la MFA dans les paramètres de sécurité de votre profil, puis réessayez."
-      }
-    },
-    "archived": {
-      "sectionTitle": "Archivées",
-      "loading": "Chargement des organisations archivées...",
-      "empty": "Aucune organisation archivée.",
-      "noMatches": "Aucune organisation archivée ne correspond à votre recherche.",
-      "badge": "Archivée",
-      "archivingBadge": "Archivage en cours…",
-      "keptIndefinitely": "Conservée indéfiniment",
-      "purgeToday": "Suppression définitive aujourd'hui",
-      "purgeCountdown_one": "Suppression définitive dans {{count}} jour",
-      "purgeCountdown_other": "Suppression définitive dans {{count}} jours",
-      "truncatedNote": "Affichage des {{count}} premières organisations archivées. Effectuez une recherche pour affiner la liste.",
-      "readOnlyNotice": "Cette organisation est archivée et en lecture seule. Restaurez-la pour reprendre un accès normal.",
-      "drainNotice": "Cette organisation est en cours d'archivage — ses agents sont en train d'être désinstallés, et elle reste en lecture seule jusqu'à la fin du processus. Restaurez-la pour annuler et la ramener.",
-      "errors": {
-        "fetch": "Échec du chargement des organisations archivées"
-      }
-    },
-    "restore": {
-      "action": "Restaurer",
-      "restoring": "Restauration...",
-      "success": "{{name}} restaurée — statut : {{status}}.",
-      "recreateRequiredNote": "Avant qu'elle soit à nouveau pleinement utilisable : {{items}}",
-      "suspendedNote": "Elle était suspendue avant son archivage ; elle a donc été restaurée à l'état suspendu — réglez ce point avant qu'elle ne reprenne un accès normal.",
-      "errors": {
-        "restore": "Échec de la restauration de l'organisation",
-        "mfaRequired": "La restauration des organisations nécessite l'authentification multifacteur. Activez la MFA dans les paramètres de sécurité de votre profil, puis réessayez.",
-        "purging": "Cette organisation est déjà en cours de suppression définitive et ne peut plus être restaurée."
       }
     }
   },
@@ -4770,7 +5153,9 @@
     "count": "{{filtered}} de {{total}} sites",
     "searchPlaceholder": "Rechercher des sites",
     "actions": {
-      "add": "Ajouter le site"
+      "add": "Ajouter le site",
+      "editSite": "Modifier {{name}}",
+      "deleteSite": "Supprimer {{name}}"
     },
     "columns": {
       "timezone": "Fuse horaire",
@@ -4978,7 +5363,15 @@
     "columns": {
       "email": "Courriel",
       "role": "Rôle",
-      "lastLogin": "Dernière connexion"
+      "lastLogin": "Dernière connexion",
+      "mfaStatus": "Statut MFA"
+    },
+    "mfaStatus": {
+      "enrolled": "Inscrit",
+      "pending": "En attente",
+      "pendingByDate": "En attente — à inscrire avant le {{date}}",
+      "overdue": "En retard",
+      "notRequired": "Non requise"
     },
     "status": {
       "active": "Actif",
@@ -5049,6 +5442,7 @@
     "confirmYourPassword": "Confirmez votre mot de passe"
   },
   "tenantVariablesPage": {
+    "orgOwnedNote": "Les variables propres à une organisation sont répertoriées sous celle-ci.",
     "title": "Variables",
     "description": "Définissez une valeur une seule fois — jeton de site d'un fournisseur, URL d'un dépôt interne — et référencez-la dans vos scripts au lieu de la coder en dur pour chaque client.",
     "loading": "Chargement des variables…",
@@ -5088,6 +5482,16 @@
     "empty": {
       "title": "Aucune variable pour l'instant",
       "description": "Créez-en une pour ne plus coller le même jeton dans les scripts de chaque client."
+    },
+    "filters": {
+      "searchLabel": "Rechercher des variables",
+      "searchPlaceholder": "Rechercher par clé ou description",
+      "scopeGroupLabel": "Filtrer par portée",
+      "scopeAll": "Toutes les portées"
+    },
+    "noMatches": {
+      "title": "Aucune variable ne correspond à vos filtres",
+      "description": "Essayez un autre terme de recherche ou effacez le filtre de portée."
     },
     "errors": {
       "load": "Impossible de charger les variables."
@@ -5305,5 +5709,115 @@
       "conflict": "Conflit",
       "orgNotFound": "Organisation introuvable"
     }
+  },
+  "scriptAuthoringPage": {
+    "title": "Rédaction de scripts",
+    "subtitle": "Permettez à l'assistant et à vos agents d'écrire, de vérifier et — lorsque vous l'autorisez — d'exécuter des scripts sans carte d'approbation.",
+    "partnerCard": {
+      "title": "Plafond du partenaire",
+      "description": "Le paramètre le plus large que toute organisation de ce partenaire peut utiliser. Chaque organisation ne peut que le restreindre.",
+      "readOnly": "Seul un administrateur partenaire disposant d'un accès complet aux organisations peut modifier le plafond.",
+      "missing": "Votre partenaire n'a pas encore défini de plafond ; la voie non supervisée ne peut donc pas être activée ici."
+    },
+    "orgCard": {
+      "title": "Cette organisation",
+      "description": "Une autorisation explicite. La voie non supervisée reste désactivée tant que le plafond du partenaire et cet interrupteur ne l'autorisent pas tous les deux.",
+      "noOrgSelected": "Sélectionnez une organisation pour gérer ses paramètres de rédaction de scripts."
+    },
+    "fields": {
+      "proposingEnabled": "Autoriser l'IA à proposer des scripts",
+      "unattendedAllowed": "Autoriser les organisations à utiliser la voie non supervisée",
+      "unattendedEnabled": "Exécuter les scripts approuvés à faible risque sans carte d'approbation",
+      "maxRiskTier": "Niveau de risque maximal autorisé en mode non supervisé",
+      "allowedClasses": "Ce qu'un script non supervisé peut toucher",
+      "perHour": "Nombre maximal d'exécutions non supervisées par heure",
+      "reviewerModel": "Modèle de vérification",
+      "reviewerModelHint": "Laissez vide pour utiliser la valeur par défaut de la plateforme.",
+      "protectedResources": "Ne jamais toucher à ceci",
+      "protectedServices": "Services",
+      "protectedPaths": "Chemins",
+      "protectedRegistryKeys": "Clés de registre",
+      "protectedDeviceTags": "Balises d'appareil"
+    },
+    "tier": {
+      "low": "Faible",
+      "medium": "Moyen"
+    },
+    "class": {
+      "registry": "Registre",
+      "services": "Services",
+      "processes": "Processus",
+      "files_system": "Fichiers système",
+      "files_user": "Fichiers utilisateur",
+      "temp_files": "Fichiers temporaires",
+      "network_egress": "Trafic réseau sortant",
+      "firewall": "Pare-feu",
+      "credentials": "Identifiants",
+      "users_groups": "Utilisateurs et groupes",
+      "packages": "Paquets",
+      "scheduled_tasks": "Tâches planifiées",
+      "disk": "Disque",
+      "boot": "Configuration de démarrage",
+      "security_tooling": "Outils de sécurité",
+      "dns_cache": "Cache DNS",
+      "printing": "Impression",
+      "browser": "Navigateurs",
+      "shell_eval": "Code dynamique"
+    },
+    "windowsOnly": "Windows uniquement",
+    "hardDenied": "Jamais disponible en mode non supervisé, quel que soit le plafond.",
+    "aboveCeiling": "Votre partenaire n'autorise pas cela.",
+    "lane": {
+      "closedTitle": "La voie non supervisée fonctionne normalement",
+      "openTitle": "La voie non supervisée est en pause",
+      "openBody": "{{reason}} Les exécutions non supervisées sont refusées tant qu'un approbateur n'a pas réinitialisé la voie. Les approbations continuent de fonctionner normalement.",
+      "reset": "Réinitialiser la voie",
+      "resetStepUpBody": "La réinitialisation du couloir sans surveillance exige une nouvelle vérification de sécurité.",
+      "resetSuccess": "La voie non supervisée fonctionne de nouveau.",
+      "resetFailed": "Impossible de réinitialiser la voie."
+    },
+    "stepUp": {
+      "title": "Confirmez que c'est bien vous",
+      "body": "L'activation des exécutions non supervisées nécessite une nouvelle vérification de sécurité."
+    },
+    "save": "Enregistrer",
+    "saving": "Enregistrement…",
+    "saved": "Paramètres de rédaction de scripts enregistrés.",
+    "saveFailed": "Ces paramètres n'ont pas pu être enregistrés.",
+    "loading": "Chargement…",
+    "loadFailed": "Les paramètres de rédaction de scripts n'ont pas pu être chargés."
+  },
+  "ticketingHubPage": {
+    "heading": "Paramètres de billetterie",
+    "description": "Statuts, ERS, catégories, formulaires d'admission, courriel, modèles et saisie du temps, appliqués à toutes vos organisations."
+  },
+  "catalogDefaultsCard": {
+    "title": "Valeurs par défaut du catalogue",
+    "description": "Utilisées pour préremplir les importations du catalogue et le remplissage automatique de l'éditeur de soumissions — sans effet direct sur la résolution des prix.",
+    "loading": "Chargement des valeurs par défaut du catalogue...",
+    "loadError": "Échec du chargement des valeurs par défaut du catalogue.",
+    "saveError": "Échec de l'enregistrement des valeurs par défaut du catalogue",
+    "saveSuccess": "Valeurs par défaut du catalogue enregistrées",
+    "saveButton": "Enregistrer"
+  },
+  "workTypes": {
+    "title": "Types de travail",
+    "description": "Identifiez le travail effectué dans les saisies de temps. Les valeurs par défaut des catégories aident les techniciens à choisir un type de travail.",
+    "newName": "Nouveau type de travail",
+    "create": "Ajouter un type de travail",
+    "archive": "Archiver",
+    "archived": "Archivé",
+    "archivedClearedDefaults_one": "Archivé. Retiré comme valeur par défaut de {{count}} catégorie.",
+    "archivedClearedDefaults_other": "Archivé. Retiré comme valeur par défaut de {{count}} catégories.",
+    "saveError": "Impossible d’enregistrer le type de travail. Veuillez réessayer.",
+    "saveSuccess": "Type de travail enregistré.",
+    "nameTaken": "Un type de travail portant ce nom existe déjà.",
+    "rename": "Renommer",
+    "loadError": "Impossible de charger les types de travail.",
+    "empty": "Aucun type de travail pour le moment. Ajoutez votre premier type de travail ci-dessus."
+  },
+  "ticketCategories": {
+    "defaultWorkType": "Type de travail par défaut",
+    "defaultWorkTypeHelp": "Utilisé lorsque du temps est enregistré pour cette catégorie sans type de travail."
   }
 }

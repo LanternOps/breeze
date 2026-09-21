@@ -72,8 +72,11 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'analyze_boot_performance', description: 'Boot performance analysis', category: 'Devices & Hardware' },
       { name: 'get_device_context', description: 'Brain device context lookup', category: 'Devices & Hardware' },
       // Network & DNS
+      { name: 'list_network_assets', description: 'List network assets', category: 'Network & DNS' },
+      { name: 'get_network_asset', description: 'Get network asset details', category: 'Network & DNS' },
       { name: 'get_network_changes', description: 'Network change detection', category: 'Network & DNS' },
       { name: 'get_ip_history', description: 'IP address history', category: 'Network & DNS' },
+      { name: 'get_network_asset_reachability', description: 'Network asset reachability with source and age', category: 'Network & DNS' },
       { name: 'get_dns_security', description: 'DNS security analysis', category: 'Network & DNS' },
       // Security & Compliance
       { name: 'get_security_posture', description: 'Security posture scores', category: 'Security & Compliance' },
@@ -82,13 +85,17 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'query_compliance_policies', description: 'List compliance policies', category: 'Security & Compliance' },
       { name: 'get_compliance_status', description: 'Device-level compliance status', category: 'Security & Compliance' },
       // Alerts & Notifications
+      { name: 'list_incidents', description: 'List incidents', category: 'Alerts & Notifications' },
+      { name: 'list_remediation_suggestions', description: 'List remediation suggestions', category: 'Alerts & Notifications' },
       { name: 'manage_alerts (list/get)', description: 'View alerts', category: 'Alerts & Notifications' },
+      { name: 'manage_delivery (resolve/list_routing/list_escalation)', description: 'Preview alert delivery and view routing rules and escalation policies', category: 'Alerts & Notifications' },
       { name: 'manage_notification_channels (list)', description: 'List notification channels', category: 'Alerts & Notifications' },
       { name: 'manage_alert_rules (list_rules/get_rule/test_rule)', description: 'View alert rules', category: 'Alerts & Notifications' },
       // Files, Disk & Registry
       { name: 'analyze_disk_usage', description: 'Filesystem analysis', category: 'Files, Disk & Registry' },
       { name: 'disk_cleanup (preview)', description: 'Preview cleanup candidates', category: 'Files, Disk & Registry' },
-      { name: 'registry_operations (read_key/get_value)', description: 'Read Windows registry', category: 'Files, Disk & Registry' },
+      { name: 'system_cleanup (list)', description: 'List OS-native cleaners and their estimated reclaim', category: 'Files, Disk & Registry' },
+      { name: 'system_cleanup (status)', description: 'Read the progress and result of a native cleanup run', category: 'Files, Disk & Registry' },
       // Logs & Audit
       { name: 'query_audit_log', description: 'Search audit logs', category: 'Logs & Audit' },
       { name: 'query_change_log', description: 'Device change log search', category: 'Logs & Audit' },
@@ -103,6 +110,10 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'get_script_details', description: 'Script content, versions, and stats', category: 'Scripts & Automation' },
       { name: 'get_script_execution_history', description: 'Past execution results for a script', category: 'Scripts & Automation' },
       { name: 'get_script_execution', description: 'One script execution with its output', category: 'Scripts & Automation' },
+      // AI script authoring (behind BREEZE_AI_SCRIPT_AUTHORING_ENABLED). A
+      // proposal is inert: nothing runs until run_script consumes it (Tier 3).
+      { name: 'propose_script', description: 'Author a script as a proposal for independent review', category: 'Scripts & Automation' },
+      { name: 'get_script_proposal', description: 'Read a script proposal, its scan and its review', category: 'Scripts & Automation' },
       { name: 'list_playbooks', description: 'List self-healing playbooks', category: 'Scripts & Automation' },
       { name: 'get_playbook_history', description: 'Playbook execution history', category: 'Scripts & Automation' },
       // Configuration Policies
@@ -127,12 +138,29 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_monitors (get)', description: 'Monitor details and history', category: 'Monitoring & Analytics' },
       { name: 'query_analytics', description: 'SLA compliance and capacity predictions', category: 'Monitoring & Analytics' },
       { name: 'get_executive_summary', description: 'Executive summary metrics', category: 'Monitoring & Analytics' },
+      // Monitor definitions (#5289 Task 8) — distinct from the network-monitor
+      // `query_monitors` / `manage_monitors` above: a monitor definition is the
+      // authored condition+severity+delivery object that compiles into a
+      // managed alert rule/automation.
+      { name: 'list_monitors', description: 'List monitor definitions visible to the caller', category: 'Monitoring & Analytics' },
+      { name: 'get_monitor', description: 'Get a monitor definition with its policy attachments', category: 'Monitoring & Analytics' },
       // Remote Access & Control
       { name: 'list_remote_sessions', description: 'List remote sessions', category: 'Remote Access & Control' },
       // Integrations
+      { name: 'list_org_contacts', description: 'List organization contacts', category: 'Integrations' },
+      { name: 'list_sites', description: 'List organization sites', category: 'Integrations' },
+      { name: 'get_site', description: 'Get site details', category: 'Integrations' },
       { name: 'query_webhooks', description: 'List webhooks and delivery status', category: 'Integrations' },
       { name: 'query_psa_status', description: 'PSA connection status', category: 'Integrations' },
       { name: 'query_agent_versions', description: 'Agent versions and upgrade status', category: 'Integrations' },
+      // Ticketing
+      { name: 'list_time_entries', description: 'List tracked time entries', category: 'Ticketing' },
+      { name: 'get_running_timer', description: 'Get the current running timer', category: 'Ticketing' },
+      { name: 'get_timesheet', description: 'Get a timesheet summary', category: 'Ticketing' },
+      // AI Governance
+      { name: 'list_ai_agents', description: 'List AI agents', category: 'AI Governance' },
+      { name: 'list_ai_agent_runs', description: 'List AI agent runs', category: 'AI Governance' },
+      { name: 'get_ai_agent_run', description: 'Get AI agent run details', category: 'AI Governance' },
       // Other
       { name: 'query_custom_fields', description: 'Custom field definitions and values', category: 'Other' },
       { name: 'manage_tags (list)', description: 'List all device tags', category: 'Other' },
@@ -154,6 +182,9 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_alerts (resolve)', description: 'Resolve alerts', category: 'Alerts & Notifications' },
       { name: 'manage_alerts (suppress)', description: 'Suppress alerts temporarily', category: 'Alerts & Notifications' },
       { name: 'manage_notification_channels (test)', description: 'Test notification channel', category: 'Alerts & Notifications' },
+      // Monitoring & Analytics (#5290 W03)
+      { name: 'get_monitor_activity', description: 'Per-device breach state and recent breach episodes for a monitor', category: 'Monitoring & Analytics' },
+      { name: 'reset_monitor_escalation', description: 'Clear a monitor recurrence escalation for one device and resume its automatic responses', category: 'Monitoring & Analytics' },
       // Devices & Hardware
       { name: 'set_device_context', description: 'Set brain device context', category: 'Devices & Hardware' },
       { name: 'resolve_device_context', description: 'Resolve brain device context', category: 'Devices & Hardware' },
@@ -167,6 +198,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'execute_command (list_processes/file_list/event_logs_list)', description: 'Read-only device commands (process list, directory listings, event log channel list)', category: 'Remote Access & Control' },
       // Files, Disk & Registry
       { name: 'file_operations (list)', description: 'List directory contents on device', category: 'Files, Disk & Registry' },
+      { name: 'registry_operations (read_key/get_value)', description: 'Read Windows registry values on device', category: 'Files, Disk & Registry' },
       // Logs & Audit
       { name: 'detect_log_correlations', description: 'Log correlation detection', category: 'Logs & Audit' },
       { name: 'set_agent_log_level', description: 'Set agent log level', category: 'Logs & Audit' },
@@ -226,6 +258,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       // Files, Disk & Registry
       { name: 'file_operations (read/write/delete/mkdir/rename)', description: 'Read or mutate files on device', category: 'Files, Disk & Registry' },
       { name: 'disk_cleanup (execute)', description: 'Execute disk cleanup', category: 'Files, Disk & Registry' },
+      { name: 'system_cleanup (run)', description: 'Run OS-native cleaners (Windows Disk Cleanup/DISM, macOS snapshots/Homebrew, Linux caches/journal)', category: 'Files, Disk & Registry' },
       { name: 'registry_operations (set_value/create_key/delete_key)', description: 'Modify Windows registry', category: 'Files, Disk & Registry' },
       // Network & DNS
       { name: 'network_discovery', description: 'Network discovery scan', category: 'Network & DNS' },
@@ -236,6 +269,11 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'restore_snapshot', description: 'Restore a backup snapshot', category: 'Backup & Recovery' },
       // Monitoring & Analytics
       { name: 'manage_monitors (create/update/delete)', description: 'Create, update, or delete monitors', category: 'Monitoring & Analytics' },
+      { name: 'manage_delivery (create_routing/update_routing/delete_routing/set_default/create_escalation/update_escalation/delete_escalation)', description: 'Manage alert routing, default destinations, and escalation policies (requires approval)', category: 'Alerts & Notifications' },
+      // Monitor definitions (#5289 Task 8): ordinary config-object CRUD
+      // (create/update/delete/enable/disable/attach/detach) — supervised, same
+      // class as the software/browser/peripheral policy tools.
+      { name: 'manage_monitor_definitions', description: 'Create, update, delete, or attach/detach a monitor definition', category: 'Monitoring & Analytics' },
       // Integrations
       { name: 'trigger_agent_upgrade', description: 'Queue agent upgrade', category: 'Integrations' },
       { name: 'trigger_agent_restart', description: 'Restart a wedged/silent agent via the watchdog', category: 'Integrations' },
@@ -282,10 +320,10 @@ export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   // Remote Access & Control
   { toolName: 'execute_command', limit: 10, windowSeconds: 300, tier: 3, permission: 'devices.execute', category: 'Remote Access & Control' },
   { toolName: 'run_script', limit: 5, windowSeconds: 300, tier: 3, permission: 'scripts.execute', category: 'Remote Access & Control' },
-  { toolName: 'computer_control', limit: 20, windowSeconds: 300, tier: 3, permission: 'devices.execute', category: 'Remote Access & Control' },
+  { toolName: 'computer_control', limit: 20, windowSeconds: 300, tier: 3, permission: 'devices.execute + remote.access', category: 'Remote Access & Control' },
   { toolName: 'take_screenshot', limit: 10, windowSeconds: 300, tier: 3, permission: 'devices.execute', category: 'Remote Access & Control' },
   { toolName: 'analyze_screen', limit: 10, windowSeconds: 300, tier: 3, permission: 'devices.execute', category: 'Remote Access & Control' },
-  { toolName: 'create_remote_session', limit: 10, windowSeconds: 300, tier: 3, permission: 'devices.execute', category: 'Remote Access & Control' },
+  { toolName: 'create_remote_session', limit: 10, windowSeconds: 300, tier: 3, permission: 'devices.execute + remote.access', category: 'Remote Access & Control' },
   { toolName: 'set_device_context', limit: 20, windowSeconds: 300, tier: 2, permission: 'devices.write', category: 'Devices & Hardware' },
   { toolName: 'resolve_device_context', limit: 20, windowSeconds: 300, tier: 2, permission: 'devices.write', category: 'Devices & Hardware' },
   // Services & Processes
@@ -299,7 +337,8 @@ export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   { toolName: 'file_operations', limit: 20, windowSeconds: 300, tier: 3, permission: 'devices.execute', category: 'Files, Disk & Registry' },
   { toolName: 'analyze_disk_usage', limit: 10, windowSeconds: 300, tier: 1, permission: 'devices.read', category: 'Files, Disk & Registry' },
   { toolName: 'disk_cleanup', limit: 3, windowSeconds: 600, tier: 3, permission: 'devices.execute', category: 'Files, Disk & Registry' },
-  { toolName: 'registry_operations', limit: 15, windowSeconds: 300, tier: 1, permission: 'devices.read', category: 'Files, Disk & Registry' },
+  { toolName: 'system_cleanup', limit: 30, windowSeconds: 3600, tier: 3, permission: 'devices.execute', category: 'Files, Disk & Registry' },
+  { toolName: 'registry_operations', limit: 15, windowSeconds: 300, tier: 2, permission: 'devices.execute', category: 'Files, Disk & Registry' },
   // Network & DNS
   { toolName: 'network_discovery', limit: 2, windowSeconds: 600, tier: 3, permission: 'devices.execute', category: 'Network & DNS' },
   // Logs & Audit
@@ -309,11 +348,11 @@ export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   { toolName: 'set_agent_log_level', limit: 5, windowSeconds: 600, tier: 2, permission: 'devices.execute', category: 'Logs & Audit' },
   { toolName: 'capture_agent_pprof', limit: 3, windowSeconds: 600, tier: 2, permission: 'devices.execute', category: 'Logs & Audit' },
   // Configuration Policies
-  { toolName: 'get_configuration_policy', limit: 30, windowSeconds: 300, tier: 1, permission: 'policies.read', category: 'Configuration Policies' },
-  { toolName: 'manage_configuration_policy', limit: 20, windowSeconds: 300, tier: 1, permission: 'policies.write', category: 'Configuration Policies' },
-  { toolName: 'configuration_policy_compliance', limit: 30, windowSeconds: 300, tier: 1, permission: 'policies.read', category: 'Configuration Policies' },
-  { toolName: 'apply_configuration_policy', limit: 10, windowSeconds: 300, tier: 2, permission: 'policies.write', category: 'Configuration Policies' },
-  { toolName: 'remove_configuration_policy_assignment', limit: 10, windowSeconds: 300, tier: 2, permission: 'policies.write', category: 'Configuration Policies' },
+  { toolName: 'get_configuration_policy', limit: 30, windowSeconds: 300, tier: 1, permission: 'devices.read', category: 'Configuration Policies' },
+  { toolName: 'manage_configuration_policy', limit: 20, windowSeconds: 300, tier: 1, permission: 'devices.write', category: 'Configuration Policies' },
+  { toolName: 'configuration_policy_compliance', limit: 30, windowSeconds: 300, tier: 1, permission: 'devices.read', category: 'Configuration Policies' },
+  { toolName: 'apply_configuration_policy', limit: 10, windowSeconds: 300, tier: 2, permission: 'devices.write', category: 'Configuration Policies' },
+  { toolName: 'remove_configuration_policy_assignment', limit: 10, windowSeconds: 300, tier: 2, permission: 'devices.write', category: 'Configuration Policies' },
   // Scripts & Automation
   { toolName: 'execute_playbook', limit: 5, windowSeconds: 600, tier: 3, permission: 'devices.execute', category: 'Scripts & Automation' },
   // Other
@@ -330,13 +369,13 @@ export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   { toolName: 'manage_notification_channels', limit: 10, windowSeconds: 300, tier: 1, permission: 'alerts.read', category: 'Alerts & Notifications' },
   { toolName: 'manage_saved_filters', limit: 15, windowSeconds: 300, tier: 1, permission: 'devices.read', category: 'Other' },
   // Fleet Operations
-  { toolName: 'manage_deployments', limit: 10, windowSeconds: 600, tier: 1, permission: 'deployments.write', category: 'Fleet Operations' },
-  { toolName: 'manage_patches', limit: 15, windowSeconds: 300, tier: 1, permission: 'patches.read', category: 'Fleet Operations' },
-  { toolName: 'manage_groups', limit: 20, windowSeconds: 300, tier: 1, permission: 'groups.write', category: 'Fleet Operations' },
-  { toolName: 'manage_maintenance_windows', limit: 15, windowSeconds: 300, tier: 1, permission: 'maintenance.write', category: 'Fleet Operations' },
+  { toolName: 'manage_deployments', limit: 10, windowSeconds: 600, tier: 1, permission: 'devices.write', category: 'Fleet Operations' },
+  { toolName: 'manage_patches', limit: 15, windowSeconds: 300, tier: 1, permission: 'devices.read', category: 'Fleet Operations' },
+  { toolName: 'manage_groups', limit: 20, windowSeconds: 300, tier: 1, permission: 'devices.write', category: 'Fleet Operations' },
+  { toolName: 'manage_maintenance_windows', limit: 15, windowSeconds: 300, tier: 1, permission: 'devices.write', category: 'Fleet Operations' },
   { toolName: 'manage_automations', limit: 10, windowSeconds: 600, tier: 1, permission: 'automations.write', category: 'Fleet Operations' },
   { toolName: 'manage_alert_rules', limit: 15, windowSeconds: 300, tier: 1, permission: 'alerts.write', category: 'Alerts & Notifications' },
-  { toolName: 'generate_report', limit: 10, windowSeconds: 300, tier: 1, permission: 'reports.write', category: 'Fleet Operations' },
+  { toolName: 'generate_report', limit: 10, windowSeconds: 300, tier: 1, permission: 'reports.read', category: 'Fleet Operations' },
 ];
 
 // ── RBAC mappings (flat reference, not rendered in grouped UI) ───────────────
@@ -357,6 +396,7 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
   // Network
   get_network_changes: 'devices.read',
   get_ip_history: 'devices.read',
+  get_network_asset_reachability: 'devices.read',
   get_dns_security: 'devices.read',
   acknowledge_network_device: 'devices.write',
   configure_network_baseline: 'devices.write',
@@ -364,7 +404,7 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
   // Commands
   execute_command: 'devices.execute',
   run_script: 'scripts.execute',
-  computer_control: 'devices.execute',
+  computer_control: 'devices.execute + remote.access',
   // Alerts
   manage_alerts: {
     list: 'alerts.read',
@@ -382,9 +422,10 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
   get_security_posture: 'devices.read',
   // Files & disk
   disk_cleanup: { preview: 'devices.read', execute: 'devices.execute' },
+  system_cleanup: { list: 'devices.read', run: 'devices.execute', status: 'devices.read' },
   file_operations: { list: 'devices.read', read: 'devices.read', write: 'devices.execute', delete: 'devices.execute', mkdir: 'devices.execute', rename: 'devices.execute' },
   // Registry
-  registry_operations: { read_key: 'devices.read', get_value: 'devices.read', set_value: 'devices.execute', create_key: 'devices.execute', delete_key: 'devices.execute' },
+  registry_operations: { read_key: 'devices.execute', get_value: 'devices.execute', set_value: 'devices.execute', create_key: 'devices.execute', delete_key: 'devices.execute' },
   // Tags & custom fields
   manage_tags: { list: 'devices.read', add: 'devices.write', remove: 'devices.write' },
   query_custom_fields: 'devices.read',
@@ -409,6 +450,8 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
   // Scripts
   search_script_library: 'scripts.read',
   get_script_details: 'scripts.read',
+  propose_script: 'scripts.execute',
+  get_script_proposal: 'scripts.read',
   // Software & playbooks
   list_playbooks: 'devices.read',
   execute_playbook: 'devices.execute',
@@ -417,24 +460,24 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
   manage_software_policy: 'devices.execute',
   remediate_software_violation: 'devices.execute',
   // Configuration policies
-  list_configuration_policies: 'policies.read',
-  get_configuration_policy: 'policies.read',
+  list_configuration_policies: 'devices.read',
+  get_configuration_policy: 'devices.read',
   get_effective_configuration: 'devices.read',
   preview_configuration_change: 'devices.read',
-  configuration_policy_compliance: { summary: 'policies.read', status: 'policies.read' },
+  configuration_policy_compliance: { summary: 'devices.read', status: 'devices.read' },
   manage_configuration_policy: {
-    create: 'policies.write',
-    update: 'policies.write',
-    activate: 'policies.write',
-    deactivate: 'policies.write',
-    delete: 'policies.write',
+    create: 'devices.write',
+    update: 'devices.write',
+    activate: 'devices.write',
+    deactivate: 'devices.write',
+    delete: 'devices.write',
   },
-  apply_configuration_policy: 'policies.write',
-  remove_configuration_policy_assignment: 'policies.write',
+  apply_configuration_policy: 'devices.write',
+  remove_configuration_policy_assignment: 'devices.write',
   // Backup & DR
-  query_backups: 'devices.read',
-  get_backup_status: 'devices.read',
-  browse_snapshots: 'devices.read',
+  query_backups: 'organizations.read',
+  get_backup_status: 'organizations.read',
+  browse_snapshots: 'backup.read',
   trigger_backup: 'devices.execute',
   restore_snapshot: 'devices.execute',
   // Monitoring
@@ -452,55 +495,56 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
   trigger_agent_upgrade: 'devices.execute',
   trigger_agent_restart: 'devices.execute',
   // Remote sessions
-  list_remote_sessions: 'devices.read',
-  create_remote_session: 'devices.execute',
+  // remote:access is required on top of the device grant (routes/remote/index.ts:16).
+  list_remote_sessions: 'devices.read + remote.access',
+  create_remote_session: 'devices.execute + remote.access',
   // Compliance policies
-  query_compliance_policies: 'policies.read',
-  get_compliance_status: 'policies.read',
+  query_compliance_policies: 'devices.read',
+  get_compliance_status: 'devices.read',
   // Notification channels
   manage_notification_channels: { list: 'alerts.read', test: 'alerts.write' },
   // Saved filters
   manage_saved_filters: { list: 'devices.read', get: 'devices.read', create: 'devices.write', delete: 'devices.write' },
   // Fleet tools
   manage_deployments: {
-    list: 'deployments.read',
-    get: 'deployments.read',
-    device_status: 'deployments.read',
-    create: 'deployments.write',
-    start: 'deployments.write',
-    pause: 'deployments.write',
-    resume: 'deployments.write',
-    cancel: 'deployments.write',
+    list: 'devices.read',
+    get: 'devices.read',
+    device_status: 'devices.read',
+    create: 'devices.write',
+    start: 'devices.execute',
+    pause: 'devices.execute',
+    resume: 'devices.execute',
+    cancel: 'devices.execute',
   },
   manage_patches: {
-    list: 'patches.read',
-    compliance: 'patches.read',
-    scan: 'patches.execute',
-    approve: 'patches.approve',
-    decline: 'patches.approve',
-    defer: 'patches.approve',
-    bulk_approve: 'patches.approve',
-    install: 'patches.execute',
-    rollback: 'patches.execute',
+    list: 'devices.read',
+    compliance: 'devices.read',
+    scan: 'devices.execute',
+    approve: 'devices.execute',
+    decline: 'devices.execute',
+    defer: 'devices.execute',
+    bulk_approve: 'devices.execute',
+    install: 'devices.execute',
+    rollback: 'devices.execute',
   },
   manage_groups: {
-    list: 'groups.read',
-    get: 'groups.read',
-    preview: 'groups.read',
-    membership_log: 'groups.read',
-    create: 'groups.write',
-    update: 'groups.write',
-    delete: 'groups.write',
-    add_devices: 'groups.write',
-    remove_devices: 'groups.write',
+    list: 'devices.read',
+    get: 'devices.read',
+    preview: 'devices.read',
+    membership_log: 'devices.read',
+    create: 'devices.write',
+    update: 'devices.write',
+    delete: 'devices.write',
+    add_devices: 'devices.write',
+    remove_devices: 'devices.write',
   },
   manage_maintenance_windows: {
-    list: 'maintenance.read',
-    get: 'maintenance.read',
-    active_now: 'maintenance.read',
-    create: 'maintenance.write',
-    update: 'maintenance.write',
-    delete: 'maintenance.write',
+    list: 'devices.read',
+    get: 'devices.read',
+    active_now: 'devices.read',
+    create: 'devices.write',
+    update: 'devices.write',
+    delete: 'devices.write',
   },
   manage_automations: {
     list: 'automations.read',
@@ -511,7 +555,7 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
     delete: 'automations.write',
     enable: 'automations.write',
     disable: 'automations.write',
-    run: 'automations.execute',
+    run: 'automations.write',
   },
   manage_alert_rules: {
     list_rules: 'alerts.read',
@@ -527,7 +571,7 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
   manage_ai_agents: { authorize_supervised_key: 'ai_agents.write' },
   generate_report: {
     list: 'reports.read',
-    generate: 'reports.write',
+    generate: 'reports.export',
     data: 'reports.read',
     create: 'reports.write',
     update: 'reports.write',

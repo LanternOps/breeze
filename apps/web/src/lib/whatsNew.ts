@@ -18,6 +18,45 @@ export interface WhatsNewEntry {
  */
 export const WHATS_NEW_ENTRIES: WhatsNewEntry[] = [
   {
+    version: '0.115.0',
+    date: '2026-09-21',
+    title: 'Automatic network topology maps, one alert delivery resolver, and disk cleanup that actually frees space',
+    highlights: [
+      'Network devices now assemble themselves into a live topology map from passive agent evidence — no active scanning needed — with shared config templates and on-demand diagnostics from the map.',
+      'Alerting: one delivery resolver replaces the old "send to everything enabled" fallback, with a real Delivery page (Channels, Routing, Escalation policies) and a preview of who actually gets notified.',
+      'Disk Cleanup now deletes for real (space is actually reclaimed), scans any fixed volume, and adds OS-native cleaners — Windows Disk Cleanup/DISM, macOS snapshots/Homebrew, Linux caches/journal.',
+      'Billing Profiles replace scattered legacy rate fields with one Rates screen, including minimums and rounding on billed time; existing rates convert automatically on upgrade.',
+      'Moving a device to another organization now requires an interactive session, and a step-up MFA prompt when two-factor authentication is on.',
+    ],
+    learnMoreUrl: 'https://breezermm.com/release-notes',
+  },
+  {
+    version: '0.114.0',
+    date: '2026-09-17',
+    title: 'Four new evidence report types, honest network device polling, and clearer visibility controls',
+    highlights: [
+      'Four new evidence report types are available under Reports for compliance and QBR evidence: identity & access review, vulnerability management, endpoint management, and threat detection.',
+      'The network device page now shows what SNMP polling actually found, including failed polls, instead of hiding them. SNMPv1 devices poll correctly again, and one bad OID instance no longer blanks the whole poll.',
+      'The portal Devices page is now a per-organization visibility toggle, off by default, so customers only see it once you turn it on.',
+      'The org AI budget editor moved into Org settings, under a new AI tab.',
+      "Variables' All Organizations view now lists only partner-wide variables, with each row showing its owning organization.",
+    ],
+    learnMoreUrl: 'https://breezermm.com/release-notes',
+  },
+  {
+    version: '0.113.0',
+    date: '2026-09-13',
+    title: 'Remote desktop sessions that stay up, AI-authored scripts you approve on a card, and service deliverables in the customer portal',
+    highlights: [
+      'Remote desktop sessions no longer drop after about a minute. Since early August every peer-to-peer session was ended by the server as an orphan; the fix is server-side, so no agent update is needed. Secondary monitors also get correct input and cursor placement on Windows with the updated helper.',
+      'The AI assistant can now write a script as a proposal: it is scanned, independently reviewed, and shown to you on an approval card with the goal, risk tier, findings, target devices and the code. Approved runs are verified with an independent device read before the script can be saved to the library, where its origin and reviewer stay visible.',
+      'Service deliverables: define deliverable templates, apply them to an organization or contract, track key dates and evidence, and let customers see Service and Documents in the portal. Organizations also get a document library with evidence attachments.',
+      'Faster navigation: a Devices & Assets section, recent devices, a jump-back palette and keyboard shortcuts. Consecutive Tier-3 approvals need one step-up ceremony instead of one per decision.',
+      'Fixes: AI credit calls reach billing again, the approval mode is kept on the first AI budget save, chat sessions bind to the device you are looking at, UniFi lowercase status values count as online, and decommissioned devices stop being reconciled for peripheral policy.',
+    ],
+    learnMoreUrl: 'https://breezermm.com/release-notes',
+  },
+  {
     version: '0.112.0',
     date: '2026-09-10',
     title: 'Windows MSI installs again, bound authority for automation, and bare-metal recovery that restores the whole machine',

@@ -45,6 +45,8 @@ import {
 import { queueCommandForExecution } from '../../services/commandQueue';
 import { parseCisCollectorOutput } from '../../services/cisHardening';
 import {
+  claimFilesystemScanGeneration,
+  setFilesystemScanGeneration,
   getFilesystemScanState,
   mergeFilesystemAnalysisPayload,
   parseFilesystemAnalysisStdout,
@@ -54,7 +56,13 @@ import {
   upsertFilesystemScanState,
 } from '../../services/filesystemAnalysis';
 import { recordSoftwarePolicyAudit } from '../../services/softwarePolicyService';
-import { resolvePatchConfigForDevice } from '../../services/featureConfigResolver';
+import {
+  resolvePatchConfigForDevice,
+  buildRoleOsFilterConditions,
+  matchesRoleOsFilter,
+} from '../../services/featureConfigResolver';
+import { resolveEffectiveWarrantyInlineSettings } from '../../services/warrantyPolicyResolution';
+import { warrantyHpCmslCollectionEffective } from '@breeze/shared/validators';
 import { policyOwnershipCondition } from '../../services/configPolicyOwnership';
 import { resolveUserGroupMembershipCached } from '../../services/onedriveGraph';
 import { captureException } from '../../services/sentry';
@@ -63,12 +71,17 @@ import { redactSecretsDeep, redactOptionalSecretText } from '../../services/secr
 import { CloudflareMtlsService } from '../../services/cloudflareMtls';
 import { normalizeCertificateSerial } from '../../services/agentCertificateBinding';
 import { isAllowedPolicyConfigProbe } from './policyProbeSafety';
+import { resolveMonitorsForDevice } from '../../services/monitors/monitorResolver';
+import { MONITOR_KIND_SPECS, applyOverrides } from '../../services/monitors/kinds';
+import { monitorDefinitions } from '../../db/schema/monitorDefinitions';
 import { PAM_DEFAULTS, parsePamSettings, type PamSettings } from './pamSettings';
 import {
   normalizeAgentUpdatePolicy,
   type AgentUpdateSettings,
 } from './agentUpdatePolicy';
 import {
+  normalizeScanPath,
+  osRootScanPath,
   isAlwaysMaintenanceWindow,
   parseMaintenanceWindow,
   resolveInheritedAgentVersionPins,
@@ -1505,13 +1518,17 @@ export async function handleCisCommandResult(
 // Filesystem Analysis
 // ============================================
 
+/**
+ * The volume a threshold-triggered scan targets: the device's OS root, in the
+ * same normalised form every other producer uses, so the result handler keys
+ * its snapshot on the key a `GET /filesystem` with no `?path=` reads back.
+ */
 export function getFilesystemThresholdScanPath(osType: unknown): string {
-  if (osType === 'windows') return 'C:\\';
-  return '/';
+  return osRootScanPath(osType);
 }
 
 export async function maybeQueueThresholdFilesystemAnalysis(
-  device: Pick<typeof devices.$inferSelect, 'id' | 'osType'>,
+  device: Pick<typeof devices.$inferSelect, 'id' | 'osType' | 'orgId'>,
   diskPercent: number
 ): Promise<{ queued: boolean; path?: string; thresholdPercent?: number }> {
   if (!Number.isFinite(diskPercent) || diskPercent < filesystemDiskThresholdPercent) {
@@ -1553,7 +1570,7 @@ export async function maybeQueueThresholdFilesystemAnalysis(
   }
 
   const path = getFilesystemThresholdScanPath(device.osType);
-  await db.insert(deviceCommands).values({
+  const [thresholdCommand] = await db.insert(deviceCommands).values({
     deviceId: device.id,
     type: filesystemAnalysisCommandType,
     payload: {
@@ -1572,7 +1589,11 @@ export async function maybeQueueThresholdFilesystemAnalysis(
       followSymlinks: false,
     },
     status: 'pending',
-  });
+  }).returning({ id: deviceCommands.id });
+
+  if (thresholdCommand) {
+    await setFilesystemScanGeneration(device.id, device.orgId, path, thresholdCommand.id);
+  }
 
   return {
     queued: true,
@@ -1597,6 +1618,7 @@ export async function handleFilesystemAnalysisCommandResult(
 
   const parsed = parseFilesystemAnalysisStdout(resultData.stdout ?? '');
   if (Object.keys(parsed).length === 0) {
+    captureException(new Error(`filesystem_analysis command ${command.id} dropped: unparseable stdout`));
     // A completed scan whose stdout is empty or non-JSON produces no snapshot,
     // which surfaces to the user as an empty Disk Cleanup tab with no error.
     console.warn(
@@ -1606,68 +1628,115 @@ export async function handleFilesystemAnalysisCommandResult(
   }
 
   // orgId comes from the caller's agent-auth context, which already resolved
-  // the device's org — no need to re-query devices here.
+  // the device's org — no need to re-query it here. The OS, however, is not in
+  // that context (AgentAuthContext carries no OS), and the scan-path key is
+  // OS-dependent: guessing POSIX would key every Windows device on '/' and
+  // recreate the very defect this wave closes. One indexed primary-key lookup.
+  const [deviceRow] = await db
+    .select({ osType: devices.osType })
+    .from(devices)
+    .where(eq(devices.id, command.deviceId))
+    .limit(1);
 
-  // The scan-state read and the disk-usage read are independent; run them
-  // together. The disk figure is only consumed by the scan-state upsert below.
-  const [currentState, diskRows] = await Promise.all([
-    getFilesystemScanState(command.deviceId),
-    db
-      .select({ usedPercent: deviceDisks.usedPercent })
-      .from(deviceDisks)
-      .where(eq(deviceDisks.deviceId, command.deviceId))
-      .limit(1),
-  ]);
-  const currentDiskUsedPercent =
-    typeof diskRows[0]?.usedPercent === 'number' ? diskRows[0].usedPercent : null;
+  if (!deviceRow) {
+    captureException(new Error(`filesystem_analysis command ${command.id} dropped: unknown device`));
+    console.warn(
+      `[agents/helpers] filesystem_analysis command ${command.id} has no devices row for ${command.deviceId}; no snapshot written`
+    );
+    return;
+  }
 
-  const existingAggregate = isObject(currentState?.aggregate) ? currentState.aggregate : {};
-  const mergedPayload = scanMode === 'baseline'
-    ? mergeFilesystemAnalysisPayload(existingAggregate, parsed)
-    : parsed;
-  const pendingDirs = readCheckpointPendingDirectories(mergedPayload.checkpoint, 50_000);
-  const hasCheckpoint = scanMode === 'baseline' && pendingDirs.length > 0;
-  const snapshotPayload = hasCheckpoint
-    ? {
-      ...mergedPayload,
-      partial: true,
-      reason: `checkpoint pending ${pendingDirs.length} directories`,
-      checkpoint: { pendingDirs },
-      scanMode,
+  const osType = deviceRow.osType;
+  // Every producer (the scan route, the AI tool, the threshold queue) already
+  // sends the normalised form; normalising again is what makes an in-flight
+  // command queued by the PREVIOUS release land on the right key too.
+  const scanPath = normalizeScanPath(osType, asString(payload.path) ?? osRootScanPath(osType));
+
+  // A savepoint inside the request context rolls back the receipt along with
+  // both writes, even when the caller catches a post-processing failure.
+  const persisted = await db.transaction(async (tx) => {
+    const claim = await claimFilesystemScanGeneration(command.deviceId, scanPath, command.id, tx, orgId);
+    if (claim === 'superseded' || claim === 'already_applied') {
+      captureException(new Error(`filesystem_analysis command ${command.id} dropped: ${claim}`));
+      return null;
     }
-    : {
-      ...mergedPayload,
-      scanMode,
-    };
 
-  await saveFilesystemSnapshot(command.deviceId, orgId, snapshotTrigger, snapshotPayload);
+    // The scan-state read and the disk-usage read are independent; run them
+    // together. The disk figure is only consumed by the scan-state upsert below.
+    const [currentState, diskRows] = await Promise.all([
+      getFilesystemScanState(command.deviceId, scanPath, tx),
+      tx
+        .select({
+          mountPoint: deviceDisks.mountPoint,
+          usedPercent: deviceDisks.usedPercent,
+        })
+        .from(deviceDisks)
+        .where(eq(deviceDisks.deviceId, command.deviceId))
+        .limit(64),
+    ]);
 
-  const hotFromRun = extractHotDirectoriesFromSnapshotPayload(snapshotPayload, 24);
-  const mergedHotDirectories = Array.from(
-    new Set([
-      ...hotFromRun,
-      ...readHotDirectories(currentState?.hotDirectories, 24),
-    ])
-  ).slice(0, 24);
+    // Defect 8: match the SCANNED volume's own disk row. The old code took
+    // `LIMIT 1` — an arbitrary row — so a `D:\` scan recorded `C:`'s 80% as D's
+    // baseline and every later `D:\` scan read a huge delta and forced a full
+    // rescan. No match means no figure, which means the next scan takes a
+    // baseline rather than comparing against an unrelated disk.
+    const matchedDisk = diskRows.find(
+      (disk) => normalizeScanPath(osType, disk.mountPoint) === scanPath
+    );
+    const currentDiskUsedPercent =
+      typeof matchedDisk?.usedPercent === 'number' ? matchedDisk.usedPercent : null;
 
-  // Baseline completion is defined solely by having no pending checkpoint
-  // directories left to resume. The snapshot's `partial` flag must NOT gate
-  // this: `partial` is also set (and stays sticky across merges) for routine
-  // max-depth truncation, which is not a resumable condition — folding it in
-  // here left `lastBaselineCompletedAt` permanently null on any deep tree, which
-  // forced every subsequent scan back to a full baseline and defeated the
-  // incremental hot-directory path.
-  const baselineCompleted = scanMode === 'baseline' && pendingDirs.length === 0;
-  await upsertFilesystemScanState(command.deviceId, orgId, {
-    lastRunMode: scanMode,
-    lastBaselineCompletedAt: baselineCompleted
-      ? new Date()
-      : currentState?.lastBaselineCompletedAt ?? null,
-    lastDiskUsedPercent: currentDiskUsedPercent ?? currentState?.lastDiskUsedPercent ?? null,
-    checkpoint: hasCheckpoint ? { pendingDirs } : {},
-    aggregate: scanMode === 'baseline' && !baselineCompleted ? mergedPayload : {},
-    hotDirectories: mergedHotDirectories,
+    const existingAggregate = isObject(currentState?.aggregate) ? currentState.aggregate : {};
+    const mergedPayload = scanMode === 'baseline'
+      ? mergeFilesystemAnalysisPayload(existingAggregate, parsed)
+      : parsed;
+    const pendingDirs = readCheckpointPendingDirectories(mergedPayload.checkpoint, 50_000);
+    const hasCheckpoint = scanMode === 'baseline' && pendingDirs.length > 0;
+    const snapshotPayload = hasCheckpoint
+      ? {
+        ...mergedPayload,
+        partial: true,
+        reason: `checkpoint pending ${pendingDirs.length} directories`,
+        checkpoint: { pendingDirs },
+        scanMode,
+      }
+      : {
+        ...mergedPayload,
+        scanMode,
+      };
+
+    await saveFilesystemSnapshot(command.deviceId, orgId, snapshotTrigger, scanPath, snapshotPayload, tx);
+
+    const hotFromRun = extractHotDirectoriesFromSnapshotPayload(snapshotPayload, 24);
+    const mergedHotDirectories = Array.from(
+      new Set([
+        ...hotFromRun,
+        ...readHotDirectories(currentState?.hotDirectories, 24),
+      ])
+    ).slice(0, 24);
+
+    // Baseline completion is defined solely by having no pending checkpoint
+    // directories left to resume. The snapshot's `partial` flag must NOT gate
+    // this: `partial` is also set (and stays sticky across merges) for routine
+    // max-depth truncation, which is not a resumable condition — folding it in
+    // here left `lastBaselineCompletedAt` permanently null on any deep tree, which
+    // forced every subsequent scan back to a full baseline and defeated the
+    // incremental hot-directory path.
+    const baselineCompleted = scanMode === 'baseline' && pendingDirs.length === 0;
+    await upsertFilesystemScanState(command.deviceId, orgId, scanPath, {
+      lastRunMode: scanMode,
+      lastBaselineCompletedAt: baselineCompleted
+        ? new Date()
+        : currentState?.lastBaselineCompletedAt ?? null,
+      lastDiskUsedPercent: currentDiskUsedPercent ?? currentState?.lastDiskUsedPercent ?? null,
+      checkpoint: hasCheckpoint ? { pendingDirs } : {},
+      aggregate: scanMode === 'baseline' && !baselineCompleted ? mergedPayload : {},
+      hotDirectories: mergedHotDirectories,
+    }, tx);
+    return { hasCheckpoint, pendingDirs };
   });
+  if (!persisted) return;
+  const { hasCheckpoint, pendingDirs } = persisted;
 
   if (!hasCheckpoint || scanMode !== 'baseline') {
     return;
@@ -1690,6 +1759,8 @@ export async function handleFilesystemAnalysisCommandResult(
       and(
         eq(deviceCommands.deviceId, command.deviceId),
         eq(deviceCommands.type, filesystemAnalysisCommandType),
+        // Only a scan of this volume suppresses its continuation.
+        sql`${deviceCommands.payload}->>'path' = ${scanPath}`,
         sql`${deviceCommands.status} IN ('pending', 'sent')`
       )
     )
@@ -1701,6 +1772,7 @@ export async function handleFilesystemAnalysisCommandResult(
 
   const nextPayload: Record<string, unknown> = {
     ...(isObject(payload) ? payload : {}),
+    path: scanPath,
     scanMode: 'baseline',
     checkpoint: { pendingDirs },
     autoContinue: true,
@@ -1718,16 +1790,21 @@ export async function handleFilesystemAnalysisCommandResult(
     }
   );
   if (queued.command) {
+    await setFilesystemScanGeneration(command.deviceId, orgId, scanPath, queued.command.id);
     return;
   }
 
-  await db.insert(deviceCommands).values({
+  const [fallbackCommand] = await db.insert(deviceCommands).values({
     deviceId: command.deviceId,
     type: filesystemAnalysisCommandType,
     payload: nextPayload,
     status: 'pending',
     createdBy: command.createdBy,
-  });
+  }).returning({ id: deviceCommands.id });
+
+  if (fallbackCommand) {
+    await setFilesystemScanGeneration(command.deviceId, orgId, scanPath, fallbackCommand.id);
+  }
 }
 
 export function extractHotDirectoriesFromSnapshotPayload(payload: Record<string, unknown>, limit: number): string[] {
@@ -1781,7 +1858,12 @@ const LEVEL_PRIORITY: Record<string, number> = {
 async function resolveDeviceEventLogSettings(deviceId: string): Promise<EventLogSettings> {
   // 1. Load device
   const [device] = await db
-    .select({ orgId: devices.orgId, siteId: devices.siteId })
+    .select({
+      orgId: devices.orgId,
+      siteId: devices.siteId,
+      deviceRole: devices.deviceRole,
+      osType: devices.osType,
+    })
     .from(devices)
     .where(eq(devices.id, deviceId))
     .limit(1);
@@ -1824,6 +1906,8 @@ async function resolveDeviceEventLogSettings(deviceId: string): Promise<EventLog
     .select({
       level: configPolicyAssignments.level,
       assignmentPriority: configPolicyAssignments.priority,
+      roleFilter: configPolicyAssignments.roleFilter,
+      osFilter: configPolicyAssignments.osFilter,
       retentionDays: configPolicyEventLogSettings.retentionDays,
       maxEventsPerCycle: configPolicyEventLogSettings.maxEventsPerCycle,
       collectCategories: configPolicyEventLogSettings.collectCategories,
@@ -1842,18 +1926,24 @@ async function resolveDeviceEventLogSettings(deviceId: string): Promise<EventLog
       eq(configurationPolicies.status, 'active'),
       policyOwnershipCondition({ orgId: device.orgId, partnerId: org?.partnerId ?? null }),
       or(...targetConditions),
+      ...buildRoleOsFilterConditions({ deviceRole: device.deviceRole, osType: device.osType }),
     ));
 
-  if (rows.length === 0) return EVENT_LOG_DEFAULTS;
+  // Filter by deviceRole and osType using canonical predicate
+  const eligibleRows = rows.filter((r) =>
+    matchesRoleOsFilter(r, { deviceRole: device.deviceRole, osType: device.osType })
+  );
+
+  if (eligibleRows.length === 0) return EVENT_LOG_DEFAULTS;
 
   // 6. Sort by level priority DESC, then assignment priority ASC — first match wins
-  rows.sort((a, b) => {
+  eligibleRows.sort((a, b) => {
     const levelDiff = (LEVEL_PRIORITY[b.level] ?? 0) - (LEVEL_PRIORITY[a.level] ?? 0);
     if (levelDiff !== 0) return levelDiff;
     return a.assignmentPriority - b.assignmentPriority;
   });
 
-  const winner = rows[0];
+  const winner = eligibleRows[0];
   if (!winner) return EVENT_LOG_DEFAULTS;
   return {
     retentionDays: winner.retentionDays,
@@ -2033,10 +2123,203 @@ export interface MonitoringConfigUpdate {
   watches: MonitoringWatchConfig[];
 }
 
+/**
+ * The defaults `config_policy_monitoring_watches` itself carries, so a
+ * monitor-derived watch and a policy-tab watch for the same service are
+ * indistinguishable on the wire (configurationPolicies.ts:425-427).
+ * maxRestartAttempts / restartCooldownSeconds are the fallback when a
+ * restart_service response carries no explicit values (W05c1).
+ */
+const MONITOR_WATCH_DEFAULTS = {
+  maxRestartAttempts: 3,
+  restartCooldownSeconds: 300,
+  alertAfterConsecutiveFailures: 2,
+} as const;
+
+/** `check_interval_seconds` when monitors deliver watches but no policy resolved. */
+const MONITOR_ONLY_CHECK_INTERVAL_SECONDS = 60;
+
+/**
+ * Service/process watches derived from the device's EFFECTIVE MONITOR SET
+ * (#5287 W04). W02 made `service` and `process` monitors first-class authoring
+ * objects but nothing delivered them; this is that delivery.
+ *
+ * Runs in the CALLER'S OWN DB CONTEXT. `monitor_definitions_partner_wide_select`
+ * (W02) is what lets a partner-wide monitor's definition be read on the agent
+ * path, because middleware/agentAuth sets `breeze.current_partner_id`. Wrapping
+ * this in a system context would be the forbidden request-path escalation
+ * (#2417) and would double-hold a pooled connection (#1105).
+ *
+ * Discriminated so a device that vanished mid-request (raced a delete/org
+ * move) is never folded into "resolved with zero monitor-derived watches" —
+ * see the `resolveDeviceMonitoringSettings` caller (#5677).
+ */
+type MonitorDerivedWatchesResult =
+  | { kind: 'device_missing' }
+  | { kind: 'resolved'; watches: MonitoringWatchConfig[] };
+
+async function resolveMonitorDerivedWatches(deviceId: string): Promise<MonitorDerivedWatchesResult> {
+  const resolution = await resolveMonitorsForDevice(deviceId);
+  if (resolution.kind === 'device_missing') return { kind: 'device_missing' };
+  const effective = resolution.monitors;
+  const enabledIds = effective.filter((m) => m.enabled).map((m) => m.monitorId);
+  if (enabledIds.length === 0) return { kind: 'resolved', watches: [] };
+
+  const definitions = await db
+    .select({
+      id: monitorDefinitions.id,
+      kind: monitorDefinitions.kind,
+      condition: monitorDefinitions.condition,
+      responses: monitorDefinitions.responses,
+    })
+    .from(monitorDefinitions)
+    .where(and(
+      inArray(monitorDefinitions.id, enabledIds),
+      eq(monitorDefinitions.enabled, true),
+      inArray(monitorDefinitions.kind, ['service', 'process']),
+    ));
+
+  const overridesById = new Map(effective.map((m) => [m.monitorId, m.overrides]));
+  const watches: MonitoringWatchConfig[] = [];
+
+  for (const def of definitions) {
+    const spec = MONITOR_KIND_SPECS[def.kind];
+    if (!spec) continue;
+    let condition: Record<string, unknown>;
+    try {
+      condition = applyOverrides(spec, def.condition, overridesById.get(def.id) ?? null);
+    } catch (err) {
+      // An out-of-range override is an authoring bug on ONE monitor. Dropping
+      // that monitor is right; failing the whole heartbeat block would strand
+      // every other watch on the device. But it is NOT transient — it recurs on
+      // every heartbeat forever — so it must be visible: without this log the
+      // watch simply vanishes from the device's config with nothing anywhere
+      // to explain it. Mirrors monitorScriptWorker's handling of the same throw.
+      console.error('[monitoring] dropping monitor with an invalid override', {
+        monitorId: def.id,
+        deviceId,
+        error: err,
+      });
+      captureException(err);
+      continue;
+    }
+
+    const name = def.kind === 'service'
+      ? (condition.serviceName as string | undefined)
+      : (condition.processName as string | undefined);
+    if (!name) continue;
+
+    const restartResponse = (def.responses ?? []).find(
+      (a) => a?.type === 'execute_command' && a?.kind === 'restart_service',
+    );
+
+    watches.push({
+      watch_type: def.kind === 'service' ? 'service' : 'process',
+      name,
+      alert_on_stop: true,
+      alert_after_consecutive_failures:
+        (condition.consecutiveFailures as number | undefined) ?? MONITOR_WATCH_DEFAULTS.alertAfterConsecutiveFailures,
+      // Spec §Responses: an execute_command response of kind 'restart_service'
+      // supersedes the agent-side flag, so the restart still happens locally
+      // and offline. A free-text `command` is NOT sniffed for intent — the
+      // explicit discriminator is the contract.
+      auto_restart: restartResponse !== undefined,
+      max_restart_attempts: (restartResponse?.maxAttempts as number | undefined) ?? MONITOR_WATCH_DEFAULTS.maxRestartAttempts,
+      restart_cooldown_seconds: (restartResponse?.cooldownSeconds as number | undefined) ?? MONITOR_WATCH_DEFAULTS.restartCooldownSeconds,
+    });
+  }
+
+  return { kind: 'resolved', watches };
+}
+
+/**
+ * Union monitor-derived watches with the policy tab's, keyed on
+ * (watch_type, lower(name)). The MONITOR wins every field except:
+ *  - `auto_restart`, which is OR'd — never lowered, because it drives the
+ *    agent's own offline-capable restart; and
+ *  - the process thresholds, which fall back to the policy row, because a
+ *    `service`/`process` monitor authors none (that is `process_resource`).
+ */
+function unionMonitoringWatches(
+  monitorWatches: MonitoringWatchConfig[],
+  policyWatches: MonitoringWatchConfig[],
+): MonitoringWatchConfig[] {
+  const key = (w: MonitoringWatchConfig) => `${w.watch_type}:${w.name.toLowerCase()}`;
+  const merged = new Map<string, MonitoringWatchConfig>();
+
+  for (const w of monitorWatches) merged.set(key(w), { ...w });
+
+  for (const p of policyWatches) {
+    const k = key(p);
+    const existing = merged.get(k);
+    if (!existing) {
+      merged.set(k, { ...p });
+      continue;
+    }
+    existing.auto_restart = existing.auto_restart || p.auto_restart;
+    if (existing.cpu_threshold_percent == null && p.cpu_threshold_percent != null) {
+      existing.cpu_threshold_percent = p.cpu_threshold_percent;
+    }
+    if (existing.memory_threshold_mb == null && p.memory_threshold_mb != null) {
+      existing.memory_threshold_mb = p.memory_threshold_mb;
+    }
+    if (existing.threshold_duration_seconds == null && p.threshold_duration_seconds != null) {
+      existing.threshold_duration_seconds = p.threshold_duration_seconds;
+    }
+  }
+
+  return [...merged.values()];
+}
+
 async function resolveDeviceMonitoringSettings(deviceId: string): Promise<MonitoringConfigUpdate | null> {
+  // Monitors are the primary source and win the union (#5287 W04); the policy
+  // tab is read FIRST only so its query sequence is untouched by this change —
+  // helpers.partnerWidePolicies.test.ts pins that sequence and must stay green
+  // unmodified. Both sources emit the same frozen `MonitoringWatchConfig`
+  // shape; the union below is order-independent.
+  const policy = await resolvePolicyMonitoringSettings(deviceId);
+  const monitorResult = await resolveMonitorDerivedWatches(deviceId);
+
+  // A device that vanished between authentication and here (raced a
+  // delete/org move) must NOT be folded into "resolved with zero
+  // monitor-derived watches": unioning `[]` into a truthy (possibly also
+  // empty) policy result would produce the #2949 "stop watching" clear
+  // signal for monitors this device still legitimately has, purely because
+  // of the race — not because resolution actually found zero (#5677). Omit
+  // the monitoring update entirely this heartbeat instead, same as
+  // `resolvePolicyMonitoringSettings` already does when its own device
+  // lookup misses.
+  if (monitorResult.kind === 'device_missing') {
+    // Surface this: the device just authenticated the heartbeat that reached
+    // this code, so a vanish between then and here should be rare. Silently
+    // omitting the monitoring update is the right behavior (see above), but
+    // silent AND invisible would hide a real bug (e.g. a stale deviceId)
+    // behind "just a benign race" forever (#5677 review).
+    console.warn(`[monitoring] device vanished mid-resolution, omitting monitoring update for device ${deviceId}`);
+    return null;
+  }
+  const monitorWatches = monitorResult.watches;
+
+  // Null ONLY when both sources are empty AND no policy resolved. A policy that
+  // resolved with zero enabled watches still returns `watches: []` below — that
+  // is the #2949 "stop watching" signal.
+  if (!policy && monitorWatches.length === 0) return null;
+
+  return {
+    check_interval_seconds: policy?.check_interval_seconds ?? MONITOR_ONLY_CHECK_INTERVAL_SECONDS,
+    watches: unionMonitoringWatches(monitorWatches, policy?.watches ?? []),
+  };
+}
+
+async function resolvePolicyMonitoringSettings(deviceId: string): Promise<MonitoringConfigUpdate | null> {
   // 1. Load device
   const [device] = await db
-    .select({ orgId: devices.orgId, siteId: devices.siteId })
+    .select({
+      orgId: devices.orgId,
+      siteId: devices.siteId,
+      deviceRole: devices.deviceRole,
+      osType: devices.osType,
+    })
     .from(devices)
     .where(eq(devices.id, deviceId))
     .limit(1);
@@ -2088,6 +2371,8 @@ async function resolveDeviceMonitoringSettings(deviceId: string): Promise<Monito
     .select({
       level: configPolicyAssignments.level,
       assignmentPriority: configPolicyAssignments.priority,
+      roleFilter: configPolicyAssignments.roleFilter,
+      osFilter: configPolicyAssignments.osFilter,
       settingsId: configPolicyMonitoringSettings.id,
       checkIntervalSeconds: configPolicyMonitoringSettings.checkIntervalSeconds,
     })
@@ -2102,18 +2387,24 @@ async function resolveDeviceMonitoringSettings(deviceId: string): Promise<Monito
       eq(configurationPolicies.status, 'active'),
       policyOwnershipCondition({ orgId: device.orgId, partnerId: org?.partnerId ?? null }),
       or(...targetConditions),
+      ...buildRoleOsFilterConditions({ deviceRole: device.deviceRole, osType: device.osType }),
     ));
 
-  if (rows.length === 0) return null;
+  // Filter by deviceRole and osType using canonical predicate
+  const eligibleRows = rows.filter((r) =>
+    matchesRoleOsFilter(r, { deviceRole: device.deviceRole, osType: device.osType })
+  );
+
+  if (eligibleRows.length === 0) return null;
 
   // 6. Sort by level priority DESC, then assignment priority ASC — first match wins
-  rows.sort((a, b) => {
+  eligibleRows.sort((a, b) => {
     const levelDiff = (LEVEL_PRIORITY[b.level] ?? 0) - (LEVEL_PRIORITY[a.level] ?? 0);
     if (levelDiff !== 0) return levelDiff;
     return a.assignmentPriority - b.assignmentPriority;
   });
 
-  const winner = rows[0];
+  const winner = eligibleRows[0];
   if (!winner) return null;
 
   // 7. Load watches for the winning settings row
@@ -2123,6 +2414,7 @@ async function resolveDeviceMonitoringSettings(deviceId: string): Promise<Monito
     .where(and(
       eq(configPolicyMonitoringWatches.settingsId, winner.settingsId),
       eq(configPolicyMonitoringWatches.enabled, true),
+      isNull(configPolicyMonitoringWatches.retiredAt),
     ))
     .orderBy(configPolicyMonitoringWatches.sortOrder);
 
@@ -2860,6 +3152,38 @@ export interface PatchSourceSettings {
 export async function buildPatchSourceConfigUpdate(deviceId: string): Promise<PatchSourceSettings> {
   const patch = await resolvePatchConfigForDevice(deviceId);
   return { exclusiveWindowsUpdate: patch?.exclusiveWindowsUpdate ?? false };
+}
+
+// ============================================
+// HP CMSL Warranty Collection Config (#5511 W02)
+// ============================================
+
+export interface WarrantySettings {
+  /**
+   * When true the (Windows-only) agent may collect HP warranty data on the
+   * device via HP's CMSL. False explicitly tells the agent to stop — so
+   * unassigning the policy, or a nearer policy replacing the link without an
+   * hpCmsl block, cleanly revokes collection.
+   */
+  hpCmslEnabled: boolean;
+}
+
+/**
+ * Resolves the warranty feature link for the device and surfaces the HP CMSL
+ * collection flag for the heartbeat config push. A device with no warranty
+ * policy assigned resolves to `false`, which the agent treats as "stop
+ * collecting". The caller (heartbeat) omits the block entirely on a resolver
+ * error so a transient failure never revokes collection fleet-wide — which is
+ * why this function deliberately does NOT catch.
+ *
+ * `warrantyHpCmslCollectionEffective` additionally requires an acceptance
+ * recorded against the CURRENT HP_CMSL_EULA_ID: an enabled block with no
+ * consent, or one naming superseded terms, delivers `false` (contract D2/D3).
+ * Collection never runs on an acceptance we cannot point at.
+ */
+export async function buildWarrantyConfigUpdate(deviceId: string): Promise<WarrantySettings> {
+  const inlineSettings = await resolveEffectiveWarrantyInlineSettings(deviceId);
+  return { hpCmslEnabled: warrantyHpCmslCollectionEffective(inlineSettings) };
 }
 
 // ============================================

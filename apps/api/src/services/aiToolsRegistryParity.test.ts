@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { aiTools } from './aiTools';
+import { aiTools, getToolDefinitions } from './aiTools';
 import { toolInputSchemas } from './aiToolSchemas';
 import { TOOL_PERMISSIONS } from './aiGuardrails';
+import { TOOL_TIERS } from './aiAgentSdkTools';
 
 describe('aiTools registry parity', () => {
   const toolNames = Array.from(aiTools.keys());
@@ -49,5 +50,40 @@ describe('aiTools registry parity', () => {
     const registered = new Set(toolNames);
     const unknown = [...legacySchemaGaps, ...legacyPermissionGaps].filter(name => !registered.has(name));
     expect(unknown, `Not in the aiTools registry: ${unknown.join(', ')}`).toEqual([]);
+  });
+
+  // Task A10: tenant (BYO MCP) tool names are qualified as `<slug>__<name>`
+  // (packages/shared/src/validators/toolSources.ts's `qualifiedToolName`) —
+  // the ONLY thing that lets `routes/mcpServer.ts`'s `tools/call` and
+  // `aiAgentSdk.ts`'s `createSessionPreToolUse` dispatch on name shape alone
+  // (`isTenantToolName`) rather than a slower membership check against every
+  // resolved tenant tool. A core tool ever registered with `__` in its name
+  // would silently collide with that dispatch and get routed as if it were a
+  // tenant tool.
+  it('no core tool name (TOOL_TIERS or getToolDefinitions()) contains "__"', () => {
+    const tierNames = Object.keys(TOOL_TIERS).filter(name => name.includes('__'));
+    const definitionNames = getToolDefinitions()
+      .map(tool => tool.name)
+      .filter(name => name.includes('__'));
+    expect(tierNames, `TOOL_TIERS names containing "__": ${tierNames.join(', ')}`).toEqual([]);
+    expect(definitionNames, `getToolDefinitions() names containing "__": ${definitionNames.join(', ')}`).toEqual([]);
+  });
+
+  // Disk Cleanup v2 W05 (spec §9.3 item 3). The two hand-maintained copies of
+  // system_cleanup's shape must agree KEY FOR KEY: `z.object()` STRIPS unknown
+  // keys rather than rejecting, so a key the model is told to send but Zod does
+  // not know vanishes silently and the tool still reports success. `actionIds`
+  // vanishing would turn a targeted run into an empty one.
+  it('system_cleanup advertises exactly the keys it validates, and keeps a shape-introspectable schema', () => {
+    const advertised = Object.keys(
+      aiTools.get('system_cleanup')!.definition.input_schema.properties as Record<string, unknown>,
+    ).sort();
+    const schema = toolInputSchemas.system_cleanup as { shape?: Record<string, unknown> } | undefined;
+    // Amendment B9: a `.refine()` would make this a ZodEffects with no
+    // `.shape`, which silently removes one of the two enum sources
+    // `toolActionEnum` unions for the approval-scope contract test.
+    expect(schema?.shape, 'system_cleanup must stay a plain z.object (no .refine)').toBeDefined();
+    expect(Object.keys(schema!.shape!).sort()).toEqual(advertised);
+    expect(advertised).toEqual(['action', 'actionIds', 'cleanupRunId', 'commandId', 'deviceId', 'params']);
   });
 });

@@ -1,16 +1,19 @@
 ---
 import DashboardLayout from '../../layouts/DashboardLayout.astro';
-import PartnerBillingSettings from '../../components/billing/PartnerBillingSettings';
+import PartnerBillingSettingsPage from '../../components/billing/PartnerBillingSettingsPage';
+import { tServer } from '../../lib/i18n/server';
+
+const locale = Astro.locals.locale;
 ---
 
-<DashboardLayout title="Billing Settings">
+<DashboardLayout titleKey="titles.settingsBilling">
   <div class="space-y-6">
     <div>
-      <h1 class="text-xl font-semibold">Billing settings</h1>
+      <h1 class="text-xl font-semibold">{tServer(locale, 'settingsBillingPage.heading')}</h1>
       <p class="mt-1 text-sm text-muted-foreground">
-        Invoice currency, tax, numbering, terms, and footer for your customers.
+        {tServer(locale, 'settingsBillingPage.description')}
       </p>
     </div>
-    <PartnerBillingSettings client:load />
+    <PartnerBillingSettingsPage client:load />
   </div>
 </DashboardLayout>

@@ -2,11 +2,14 @@
 // Auth Types
 // ============================================
 
+import type { EmailTemplateId } from '../utils/emailTemplates';
+
 export * from './auth';
 export * from './deviceOptions';
 export * from './agentHealth';
 export * from './scriptAdmission';
 export * from './softwareInventoryObservation';
+export * from './scriptProposals';
 
 // ============================================
 // Multi-Tenancy Types
@@ -778,6 +781,12 @@ export interface PartnerSettings {
   // (newly created or stale entries) are appended in createdAt order.
   organizationOrder?: string[];
   remoteAccessProviders?: InheritableRemoteAccessSettings;
+  emailTemplates?: Partial<Record<EmailTemplateId, {
+    subject?: string | null;
+    heading?: string | null;
+    buttonLabel?: string | null;
+    html?: string | null;
+  }>>;
 }
 
 // ============================================
@@ -807,10 +816,18 @@ export * from './aiAgents';
 export * from './aiAgentGraduation';
 export * from './aiAgentRuns';
 export * from './aiAgentSchedules';
+export * from './aiToolDomains';
 export * from './aiOperator';
+export * from './aiOrigin';
 export * from './orgNarrativeReport';
+export * from './fleetDesign';
+export * from './fleetDesignApply';
+export * from './aiPatchPlan';
+export * from './deviceFunction';
+export * from './sendingDomains';
 export * from './ticketTriage';
 export * from './aiAgentImpact';
+export * from './aiAgentImpactMeasured';
 
 // ============================================
 // Billing Enum SSOT
@@ -837,12 +854,19 @@ export * from './vulnerability';
 
 export * from './postureReport';
 export * from './executiveSummaryReport';
+export * from './hardwareLifecycleReport';
+export * from './identityAccessReport';
+export * from './threatDetectionReport';
+export * from './endpointManagementReport';
+export * from './vulnerabilityManagementReport';
 
 // ============================================
 // Portal Visibility DTOs (Wave 1 - #4562)
 // ============================================
 
 export * from './portalVisibility';
+export * from './portalChromeAccent';
+export * from './portalService';
 
 // ============================================
 // Public login-context wire contract (#2183)
@@ -869,3 +893,24 @@ export * from './stripeAccount';
 // ============================================
 
 export * from './tickets';
+
+// ============================================
+// AI run artifacts (execution plane, spec 2026-09-13)
+// ============================================
+
+export * from './aiArtifacts';
+
+// ============================================
+// Tool sources (BYO MCP/OpenAPI, spec 2026-09-07)
+// ============================================
+
+export * from './toolSources';
+
+// Intelligent network topology canonical wire contracts (#5996)
+export * from './topology';
+
+export * from './topologyCollection';
+
+export * from './topologyConfiguration';
+
+export * from './topologyDiagnostics';

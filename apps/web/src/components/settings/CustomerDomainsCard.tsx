@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import { fetchWithAuth } from '../../stores/auth';
+import { fetchAllOrganizationsFrom } from '../../lib/fetchAllOrganizations';
 import { handleActionError, runAction } from '../../lib/runAction';
 import { navigateTo } from '@/lib/navigation';
 import { loginPathWithNext } from '../../lib/authScope';
@@ -46,13 +47,13 @@ export function CustomerDomainsCard() {
   }, []);
 
   const loadOrgs = useCallback(async () => {
-    const res = await fetchWithAuth('/orgs/organizations?limit=100');
-    if (!res.ok) {
+    let nextOrgs: OrgOption[];
+    try {
+      nextOrgs = await fetchAllOrganizationsFrom<OrgOption>('/orgs/organizations');
+    } catch {
       setError(true);
       return;
     }
-    const body = (await res.json()) as { data?: OrgOption[] };
-    const nextOrgs = body.data ?? [];
     setOrgs(nextOrgs);
     setOrgId((current) => current || nextOrgs[0]?.id || '');
   }, []);

@@ -41,13 +41,25 @@
  *    principal outright, so a model cannot reach this tool at all.
  */
 
-import { AI_AGENT_KINDS, type AiAgentKind } from '@breeze/shared';
+import { AI_AGENT_KINDS, AI_AGENT_RUN_STATUSES, type AiAgentKind, type AiAgentRunStatus } from '@breeze/shared';
+import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
+import { z } from 'zod';
+import { db } from '../db';
+import { actionIntents, aiAgentRuns, aiAgents, aiToolExecutions, devices } from '../db/schema';
+import { listAgents } from './aiAgents/agentService';
+import { buildRunTrace } from './aiAgents/runTrace';
+import { runSiteScopeCondition } from './aiAgentRunSiteScope';
+import { deviceScopeCondition, resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
 
 import {
   authorizeSupervisedKey,
   SupervisedKeyGrantError,
 } from './aiAgents/supervisedKeyGrant';
 import type { AiTool, AiToolTier } from './aiTools';
+import {
+  canMutateOrgWideGovernance,
+  SITE_CEILING_WRITE_DENIED_MESSAGE,
+} from './siteCeilingAccess';
 
 /**
  * The three structural facts only the DISPATCH site can establish, checked
@@ -90,8 +102,133 @@ function assertReleaseContext(
 }
 
 export function registerAiAgentGovernanceTools(aiTools: Map<string, AiTool>): void {
+  aiTools.set('list_ai_agents', {
+    tier: 1, domain: 'ai', deviceArgs: [],
+    searchHint: 'AI agents configured for a partner or customer, enabled state, kind, schedule',
+    definition: {
+      name: 'list_ai_agents',
+      description: 'List accessible AI agents with their name, kind, enabled state and organization or partner ownership.',
+      input_schema: {
+        type: 'object', properties: {
+          includeDisabled: { type: 'boolean', description: 'Include soft-disabled agents (default false)' },
+        },
+      },
+    },
+    handler: async (input, auth) => {
+      const rows = await listAgents(auth, { includeDisabled: input.includeDisabled === true });
+      // AiAgentRow has no profile: profiles belong to individual runs.
+      const agents = rows.map(({ id, name, kind, enabled, orgId, partnerId, createdAt }) =>
+        ({ id, name, kind, enabled, orgId, partnerId, createdAt }));
+      return JSON.stringify({ agents, showing: agents.length });
+    },
+  });
+
+  aiTools.set('list_ai_agent_runs', {
+    tier: 1, domain: 'ai', deviceArgs: [],
+    searchHint: 'recent AI agent runs, run status, verdicts, cost by agent or customer',
+    definition: {
+      name: 'list_ai_agent_runs',
+      description: 'List recent AI agent runs with status, verdict, model and cost. Status: queued, running, awaiting_approval, completed, failed, cancelled, expired, skipped.',
+      input_schema: {
+        type: 'object', properties: {
+          agentId: { type: 'string', description: 'Agent UUID' },
+          orgId: { type: 'string', description: 'Organization UUID' },
+          status: { type: 'string', enum: [...AI_AGENT_RUN_STATUSES], description: 'Run status: queued, running, awaiting_approval, completed, failed, cancelled, expired, skipped' },
+          limit: { type: 'number', description: 'Maximum rows (default 25, maximum 50)' },
+        },
+      },
+    },
+    handler: async (input, auth) => {
+      const orgId = typeof input.orgId === 'string' ? input.orgId : undefined;
+      if (orgId && !auth.canAccessOrg(orgId)) {
+        return JSON.stringify({ error: 'Access to this organization denied' });
+      }
+      if (auth.allowedSiteIds?.length === 0 || auth.allowedDeviceIds?.length === 0 ||
+          (auth.scope === 'partner' && !auth.accessibleOrgIds?.length)) {
+        return JSON.stringify({ runs: [], showing: 0 });
+      }
+      const conditions = [auth.orgCondition(aiAgentRuns.orgId), runSiteScopeCondition(auth), deviceScopeCondition(auth, aiAgentRuns.deviceId)];
+      if (typeof input.agentId === 'string') conditions.push(eq(aiAgentRuns.agentId, input.agentId));
+      if (typeof input.status === 'string') conditions.push(eq(aiAgentRuns.status, input.status as AiAgentRunStatus));
+      if (orgId) conditions.push(eq(aiAgentRuns.orgId, orgId));
+      const limit = typeof input.limit === 'number' && Number.isFinite(input.limit)
+        ? Math.min(50, Math.max(1, Math.floor(input.limit))) : 25;
+      const runs = await db.select({
+        id: aiAgentRuns.id, agentId: aiAgentRuns.agentId, orgId: aiAgentRuns.orgId,
+        status: aiAgentRuns.status, profile: aiAgentRuns.profile,
+        startedAt: aiAgentRuns.startedAt, finishedAt: aiAgentRuns.finishedAt,
+        resolvedModel: aiAgentRuns.resolvedModel, costCents: aiAgentRuns.costCents,
+        runVerdict: sql<string | null>`${aiAgentRuns.outcome}->>'runVerdict'`,
+      }).from(aiAgentRuns).where(and(...conditions)).orderBy(desc(aiAgentRuns.startedAt)).limit(limit);
+      return JSON.stringify({ runs, showing: runs.length });
+    },
+  });
+
+  aiTools.set('get_ai_agent_run', {
+    tier: 1, domain: 'ai', deviceArgs: [],
+    searchHint: 'one AI agent run: trace, findings, tool calls, outcome summary',
+    definition: {
+      name: 'get_ai_agent_run',
+      description: 'Get an accessible AI agent run with a safe trace, findings, tool execution ledger and action intent summaries.',
+      input_schema: {
+        type: 'object', properties: { runId: { type: 'string', description: 'Run UUID' } }, required: ['runId'],
+      },
+    },
+    handler: async (input, auth) => {
+      const id = z.string().guid().safeParse(input.runId);
+      if (!id.success || auth.allowedSiteIds?.length === 0 || auth.allowedDeviceIds?.length === 0 ||
+          (auth.scope === 'partner' && !auth.accessibleOrgIds?.length)) {
+        return JSON.stringify({ error: 'Run not found' });
+      }
+      // Raw outcome is consumed ONLY by buildRunTrace, never serialized directly.
+      const [run] = await db.select({
+        id: aiAgentRuns.id, agentId: aiAgentRuns.agentId, orgId: aiAgentRuns.orgId,
+        deviceId: aiAgentRuns.deviceId, alertId: aiAgentRuns.alertId,
+        anomalyIncidentId: aiAgentRuns.anomalyIncidentId, sessionId: aiAgentRuns.sessionId,
+        triggerKind: aiAgentRuns.triggerKind, modeAtStart: aiAgentRuns.modeAtStart,
+        status: aiAgentRuns.status, summary: aiAgentRuns.summary,
+        scheduleId: aiAgentRuns.scheduleId, triggerRef: aiAgentRuns.triggerRef,
+        reportRunId: aiAgentRuns.reportRunId, computeCents: aiAgentRuns.computeCents,
+        outcome: aiAgentRuns.outcome, intentIds: aiAgentRuns.intentIds,
+        turnCount: aiAgentRuns.turnCount, costCents: aiAgentRuns.costCents,
+        errorCode: aiAgentRuns.errorCode, queuedAt: aiAgentRuns.queuedAt,
+        startedAt: aiAgentRuns.startedAt, finishedAt: aiAgentRuns.finishedAt,
+        agentName: aiAgents.name, agentKind: aiAgents.kind, deviceHostname: devices.hostname,
+      }).from(aiAgentRuns)
+        .leftJoin(aiAgents, eq(aiAgentRuns.agentId, aiAgents.id))
+        .leftJoin(devices, eq(aiAgentRuns.deviceId, devices.id))
+        .where(and(eq(aiAgentRuns.id, id.data), auth.orgCondition(aiAgentRuns.orgId), runSiteScopeCondition(auth), deviceScopeCondition(auth, aiAgentRuns.deviceId)))
+        .limit(1);
+      if (!run) return JSON.stringify({ error: 'Run not found' });
+      const ledgerRows = run.sessionId ? await db.select({
+        toolName: aiToolExecutions.toolName, status: aiToolExecutions.status,
+        durationMs: aiToolExecutions.durationMs, createdAt: aiToolExecutions.createdAt,
+        completedAt: aiToolExecutions.completedAt, errorMessage: aiToolExecutions.errorMessage,
+      }).from(aiToolExecutions).where(eq(aiToolExecutions.sessionId, run.sessionId))
+        .orderBy(asc(aiToolExecutions.createdAt)) : [];
+      // The run and an intent can target different devices. Resolve both axes
+      // inside the run's org before reading its intent summaries.
+      const allowedDeviceIds = await resolveSiteAllowedDeviceIds(run.orgId, auth);
+      const intents = await db.select({
+        id: actionIntents.id, status: actionIntents.status, actionName: actionIntents.actionName,
+        approvalScope: actionIntents.approvalScope, decidedVia: actionIntents.decidedVia,
+      }).from(actionIntents).where(and(
+        eq(actionIntents.requestingAgentRunId, run.id), eq(actionIntents.orgId, run.orgId),
+        auth.orgCondition(actionIntents.orgId),
+        allowedDeviceIds === null ? undefined : inArray(actionIntents.scopeDeviceId, allowedDeviceIds),
+      ));
+      const agent = run.agentName !== null && run.agentKind !== null
+        ? { name: run.agentName, kind: run.agentKind } : null;
+      return JSON.stringify({ trace: buildRunTrace(
+        run, agent, run.deviceHostname ? { hostname: run.deviceHostname } : null, ledgerRows, intents,
+      ) });
+    },
+  });
+
   aiTools.set('manage_ai_agents', {
     tier: 3 as AiToolTier,
+    domain: 'ai',
+    searchHint: 'autonomous AI agent governance: authorize a supervised action key with a second approver',
     deviceArgs: [],
     definition: {
       name: 'manage_ai_agents',
@@ -150,6 +287,24 @@ export function registerAiAgentGovernanceTools(aiTools: Map<string, AiTool>): vo
           auth.principal?.kind ?? 'unknown',
           context?.actionIntentId,
         );
+        // SITE CEILING (audit §1.1). The grant converts "ask a human" into
+        // "run unattended for this ORG", fanning out across every site — there
+        // is nothing to narrow for a caller who holds only part of the org, so
+        // a site or exact-device ceiling fails closed exactly as it does for
+        // every other org-wide governance object. Enforced here rather than in
+        // `assertReleaseContext` so it applies to the caller's context on BOTH
+        // paths: the chat raise, and the release, which re-runs this handler
+        // under the requester's LIVE site restriction
+        // (`buildAuthContextForIntent`, actionIntents/actorContext.ts).
+        // Returned, not thrown, for the same reason every other refusal here
+        // is: `isReturnedToolError` must see `{error}` to terminalize the
+        // intent as `failed:tool_returned_error`.
+        if (!canMutateOrgWideGovernance(auth)) {
+          return JSON.stringify({
+            error: 'site_ceiling',
+            message: SITE_CEILING_WRITE_DENIED_MESSAGE,
+          });
+        }
         const result = await authorizeSupervisedKey({
           orgId,
           kind: input.kind as AiAgentKind,

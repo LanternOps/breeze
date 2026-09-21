@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '../../lib/i18n';
-import { Plus, Save, Trash2 } from 'lucide-react';
+import { Link2, Plus, Save, Trash2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { extractApiError } from '@/lib/apiError';
 import type { AlertSeverity } from './AlertList';
 import { fetchWithAuth } from '../../stores/auth';
+import { fetchAllSites } from '@/lib/fetchAllSites';
+import { fetchAllOrganizationsFrom } from '@/lib/fetchAllOrganizations';
 import { useOrgStore } from '@/stores/orgStore';
 import { getJwtClaims } from '@/lib/authScope';
 import { navigateTo } from '@/lib/navigation';
@@ -124,6 +126,9 @@ type AlertTemplateResponse = {
   conditions?: Partial<TemplateConditionsPayload>;
   targets?: Record<string, unknown>;
   defaultCooldownMinutes?: number;
+  // Non-null when this template was compiled from a monitor definition
+  // (#5287). The API 409s (`alert_template_managed_by_monitor`) on save.
+  managedByMonitorId?: string | null;
 };
 
 const categoryOptions = [
@@ -373,7 +378,23 @@ const stripEscalationIds = (rules: EscalationRule[]) =>
     route: rule.route
   }));
 
-export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorProps) {
+export default function AlertTemplateEditor(props: AlertTemplateEditorProps) {
+  const { t } = useTranslation('alerts');
+  if (props.templateId === 'new') {
+    return (
+      <div data-testid="alert-template-editor-frozen" role="note" className="rounded-md border bg-muted/40 p-3 text-sm">
+        <p className="font-medium">{t('templates.frozen.title')}</p>
+        <p>{t('templates.frozen.body')}</p>
+        <a data-testid="alert-template-editor-frozen-link" href="/alerts/monitors" className="text-primary hover:underline">
+          {t('templates.frozen.link')}
+        </a>
+      </div>
+    );
+  }
+  return <ExistingAlertTemplateEditor {...props} />;
+}
+
+function ExistingAlertTemplateEditor({ templateId }: AlertTemplateEditorProps) {
   const { t } = useTranslation('alerts');
   const isNew = templateId === 'new';
   const [loading, setLoading] = useState(!isNew);
@@ -384,6 +405,10 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
   // Scope of the template being edited (for the header badge); null until an
   // existing template loads. New templates have no scope yet.
   const [scopeInfo, setScopeInfo] = useState<{ orgId: string | null; partnerId: string | null; isBuiltIn: boolean } | null>(null);
+  // #5287 — a monitor-compiled template is read-only like a built-in, but
+  // renders its own banner (with a link back to the monitor) instead of the
+  // built-in text below.
+  const [managedByMonitorId, setManagedByMonitorId] = useState<string | null>(null);
 
   // Partner-wide create controls (#1425). Only surfaced for partner-scope users
   // with more than one org; org-scope users always create for their own org and
@@ -395,7 +420,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
   const [availability, setAvailability] = useState<Availability>('partner');
   const [availabilityOrgId, setAvailabilityOrgId] = useState('');
 
-  const readOnly = scopeInfo?.isBuiltIn === true;
+  const readOnly = scopeInfo?.isBuiltIn === true || managedByMonitorId !== null;
 
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
@@ -508,6 +533,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
         partnerId: template.partnerId ?? null,
         isBuiltIn: template.isBuiltIn ?? template.builtIn ?? false,
       });
+      setManagedByMonitorId(template.managedByMonitorId ?? null);
 
       setHasLoaded(true);
     } catch (err) {
@@ -519,15 +545,11 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
 
   const fetchOrganizations = useCallback(async () => {
     try {
-      const response = await fetchWithAuth('/orgs/organizations');
-      if (response.ok) {
-        const data = await response.json();
-        const items = asList(data, 'organizations');
-        setOrganizations((items as Option[]).map((org: Option) => ({
-          id: org.id,
-          name: org.name
-        })));
-      }
+      const items = await fetchAllOrganizationsFrom<Option>('/orgs/organizations');
+      setOrganizations(items.map((org: Option) => ({
+        id: org.id,
+        name: org.name
+      })));
     } catch {
       // Silently fail
     }
@@ -535,15 +557,11 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
 
   const fetchSites = useCallback(async () => {
     try {
-      const response = await fetchWithAuth('/orgs/sites');
-      if (response.ok) {
-        const data = await response.json();
-        const items = asList(data, 'sites');
-        setSites((items as Option[]).map((site: Option) => ({
-          id: site.id,
-          name: site.name
-        })));
-      }
+      const items = await fetchAllSites<Option>('/orgs/sites');
+      setSites(items.map((site: Option) => ({
+        id: site.id,
+        name: site.name
+      })));
     } catch {
       // Silently fail
     }
@@ -823,9 +841,11 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
             )}
           </div>
           <p className="text-muted-foreground">
-            {readOnly
-              ? 'Built-in template — read-only. Duplicate it to customize.'
-              : 'Configure trigger logic, routing, and automation responses.'}
+            {managedByMonitorId
+              ? t('monitoring:managed.readOnly')
+              : readOnly
+                ? 'Built-in template — read-only. Duplicate it to customize.'
+                : 'Configure trigger logic, routing, and automation responses.'}
           </p>
         </div>
         <button
@@ -845,6 +865,29 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
         </div>
       )}
 
+      {managedByMonitorId ? (
+        <div
+          className="rounded-lg border border-blue-500/40 bg-blue-500/10 p-6"
+          data-testid="alert-template-managed-notice"
+        >
+          <div className="flex items-center gap-2 text-blue-700 dark:text-blue-200">
+            <Link2 className="h-5 w-5" />
+            <h2 className="text-sm font-semibold">{t('monitoring:managed.readOnly')}</h2>
+          </div>
+          <p className="mt-2 text-sm text-muted-foreground">
+            {t('monitoring:managed.description')}
+          </p>
+          {/* Monitor detail page lands in a later wave — the route is reserved
+              now so this link lights up without another edit here (#5287). */}
+          <a
+            href={`/alerts/monitors/${managedByMonitorId}`}
+            className="mt-4 inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline"
+            data-testid="alert-template-managed-link"
+          >
+            {t('monitoring:managed.open')}
+          </a>
+        </div>
+      ) : (
       <div className="grid gap-6 lg:grid-cols-[1.4fr_1fr]">
         <div className="space-y-6">
           <div className="rounded-lg border bg-card p-6 shadow-xs">
@@ -1510,6 +1553,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
           </div>
         </div>
       </div>
+      )}
     </div>
   );
 }

@@ -17,9 +17,13 @@ The `/pam/*` control-plane endpoints require a JWT bearer token (or API key) and
 
 | Operation class | Permission | Extra gate |
 |---|---|---|
-| Read (list, active, rules) | `devices:read` | -- |
-| Rule create / update / delete | `devices:write` | MFA |
-| Approve / deny / revoke | `devices:execute` | MFA |
+| Read (list, active, rules, config, signer groups) | `devices:read` | -- |
+| Rule create / update / delete, signer groups, org config | `pam:manage_policy` | MFA (rule **preview** needs the permission but not MFA) |
+| Approve / deny / revoke (and the assertion challenge) | `pam:approve` | MFA on respond and revoke |
+
+<Aside type="caution" title="Changed in v0.112.0">
+  Rule authorship used to ride `devices:write` and decisions `devices:execute`. Both now require the dedicated PAM permissions above, which the upgrade grants only to the built-in Org Admin role (Partner Admin holds `*:*`). A caller that still relies on device permissions gets `403` with `code: "pam_approve_required"` on decisions. See [Who can approve and manage PAM](/features/pam/#who-can-approve-and-manage-pam).
+</Aside>
 
 Tenant isolation is enforced by row-level security on every query. Site-restricted technicians are additionally narrowed to their allowed sites: requests outside those sites are filtered from reads and rejected on writes with `403`.
 
@@ -111,7 +115,7 @@ The resulting WebAuthn assertion is then passed as `proof` on the Respond call b
 
 ### Respond (approve / deny)
 
-`POST /pam/elevation-requests/:id/respond` — requires `devices:execute` + MFA.
+`POST /pam/elevation-requests/:id/respond` — requires `pam:approve` + MFA.
 
 Request body:
 
@@ -155,7 +159,7 @@ Only a `pending` request can be decided. The transition is an atomic compare-and
 
 ### Revoke
 
-`POST /pam/elevation-requests/:id/revoke` — requires `devices:execute` + MFA.
+`POST /pam/elevation-requests/:id/revoke` — requires `pam:approve` + MFA.
 
 Ends an active elevation early.
 
@@ -185,7 +189,7 @@ Ends an active elevation early.
 
 ### Create / update a rule
 
-`POST /pam/rules` (create) and `PATCH /pam/rules/:id` (partial update) — require `devices:write` + MFA.
+`POST /pam/rules` (create) and `PATCH /pam/rules/:id` (partial update) — require `pam:manage_policy` + MFA.
 
 ```json
 {
@@ -231,6 +235,17 @@ Rule-shape validation (enforced on create and on the merged result of an update)
 - `matchRiskTier` must be a tier the rule's tool selector can actually resolve to. A rule pinned to a tier no tool produces can never match, so create and update reject it with `400` and a body carrying `code: "pam_rule_risk_tier_unreachable"` plus a `validTiers` array of the tiers that selector currently resolves to. A rule naming a tool the API doesn't recognise (an extension tool, for example) is **not** rejected -- the check fails open rather than blocking a legitimate write.
 
 Create returns `201` with the full rule; update returns `200`.
+
+### Re-approving a suspended auto-approve rule
+
+The v0.112.0 upgrade switches every rule whose verdict was `auto_approve` to `require_approval` and keeps the original in a `suspendedVerdict` field, which `GET /pam/rules` returns alongside `verdict` (`"verdict": "require_approval", "suspendedVerdict": "auto_approve"`). To restore the original verdict:
+
+```json
+PATCH /pam/rules/:id
+{ "reapprove": true }
+```
+
+Requires `pam:manage_policy` + MFA. The rule's `verdict` reverts to the suspended value, `suspendedVerdict` becomes `null`, and `reapprovedAt` / `reapprovedByUserId` are recorded. A `reapprove` body on a rule that is not suspended returns `400 "Rule is not suspended pending re-approval"`, and combining `reapprove` with an explicit `verdict` is rejected with `400`. Editing a suspended rule's `verdict` directly also clears `suspendedVerdict`, so a later `reapprove` cannot resurrect a stale verdict.
 
 ### Risk-tier drift
 

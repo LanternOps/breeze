@@ -49,6 +49,11 @@ export const configFeatureTypeEnum = pgEnum('config_feature_type', [
   'onedrive_helper',
   'vulnerability',
   'device_lifecycle',
+  // #5289. APPENDED, matching the migration's ADD VALUE order — drizzle-kit
+  // compares enum value order, so inserting it mid-list reports phantom drift.
+  // Deliberately the plural: 'monitoring' above is the service/process watch
+  // feature and the two must never be confusable.
+  'monitors',
 ]);
 
 export const configAssignmentLevelEnum = pgEnum('config_assignment_level', [
@@ -194,6 +199,21 @@ export const configPolicyAlertRules = pgTable('config_policy_alert_rules', {
   titleTemplate: text('title_template').notNull().default('{{ruleName}} triggered on {{deviceName}}'),
   messageTemplate: text('message_template').notNull().default('{{ruleName}} condition met'),
   sortOrder: integer('sort_order').notNull().default(0),
+  // Fleet Designer W03 (#5653): the designer's "why" for a rule it proposed;
+  // NULL for hand-authored rules. Round-trips through inlineSettings.
+  rationale: text('rationale'),
+  // #5289 delivery parity: a config-policy alert rule could not say where it
+  // notifies or which escalation policy applies, so its alerts fell back to org
+  // defaults with no escalation at all while the standalone alert-rule path
+  // honoured both. Nullable = "inherit", which is the pre-#5289 behaviour.
+  escalationPolicyId: uuid('escalation_policy_id'),
+  notificationChannelIds: jsonb('notification_channel_ids').$type<string[] | null>(),
+  // W05c1 retirement (2026-10-23-120000-legacy-source-retirement-columns.sql):
+  // Converted or operator-retired rows stay for history; readers filter
+  // retired_at IS NULL. FK to monitor_definitions ON DELETE SET NULL in SQL.
+  retiredAt: timestamp('retired_at', { withTimezone: true }),
+  retiredReason: text('retired_reason'),
+  convertedToMonitorId: uuid('converted_to_monitor_id'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 }, (table) => ({
@@ -213,6 +233,12 @@ export const configPolicyAutomations = pgTable('config_policy_automations', {
   actions: jsonb('actions').notNull(),
   onFailure: automationOnFailureEnum('on_failure').notNull().default('stop'),
   sortOrder: integer('sort_order').notNull().default(0),
+  // W05c1 retirement (2026-10-23-120000-legacy-source-retirement-columns.sql):
+  // Converted or operator-retired rows stay for history; readers filter
+  // retired_at IS NULL. FK to monitor_definitions ON DELETE SET NULL in SQL.
+  retiredAt: timestamp('retired_at', { withTimezone: true }),
+  retiredReason: text('retired_reason'),
+  convertedToMonitorId: uuid('converted_to_monitor_id'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 }, (table) => ({
@@ -411,8 +437,16 @@ export const configPolicyMonitoringWatches = pgTable('config_policy_monitoring_w
   autoRestart: boolean('auto_restart').notNull().default(false),
   maxRestartAttempts: integer('max_restart_attempts').notNull().default(3),
   restartCooldownSeconds: integer('restart_cooldown_seconds').notNull().default(300),
+  // Fleet Designer W03 (#5653): the designer's "why" for a watch it proposed.
+  rationale: text('rationale'),
 
   sortOrder: integer('sort_order').notNull().default(0),
+  // W05c1 retirement (2026-10-23-120000-legacy-source-retirement-columns.sql):
+  // Converted or operator-retired rows stay for history; readers filter
+  // retired_at IS NULL. FK to monitor_definitions ON DELETE SET NULL in SQL.
+  retiredAt: timestamp('retired_at', { withTimezone: true }),
+  retiredReason: text('retired_reason'),
+  convertedToMonitorId: uuid('converted_to_monitor_id'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 }, (table) => ({

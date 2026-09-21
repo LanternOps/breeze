@@ -7,6 +7,12 @@ import {
   renderButton,
   renderLayout,
 } from './emailLayout';
+import type { PartnerLaneMailPurpose, PlatformMailPurpose } from './emailDomains/mailPurposes';
+import { platformFallbackFrom, resolveSender } from './emailDomains/senderResolution';
+import {
+  renderPartnerEmail,
+  type PartnerEmailCustom,
+} from './emailTemplates/renderPartnerEmail';
 
 export interface EmailAttachment {
   filename: string;
@@ -14,13 +20,56 @@ export interface EmailAttachment {
   contentType?: string;
 }
 
-export interface SendEmailParams {
+/** Which transport produced a failure, and whatever structure it reported. */
+export interface EmailTransportErrorFields {
+  transport: 'resend' | 'smtp' | 'mailgun';
+  /** HTTP status, for the two API transports. */
+  statusCode?: number;
+  /** Resend's own error name, e.g. `validation_error`. */
+  providerErrorName?: string;
+  /** nodemailer's parsed SMTP reply code. Absent when it reported `false`. */
+  smtpResponseCode?: number;
+  /** nodemailer's raw SMTP reply line. */
+  smtpResponse?: string;
+}
+
+/**
+ * A transport failure with its structure intact.
+ *
+ * WHY: the partner lane has to tell "the relay refused this SENDER" (fall back
+ * to EMAIL_FROM, spec §8.4) from "the relay refused this MESSAGE" (throw), and
+ * before this class the only evidence was a flattened string — see the `static`
+ * adapter's classifier and W02 plan amendment 7.
+ *
+ * `message` is IDENTICAL to what this service threw before. Three live matchers
+ * key on that text (services/reportNarrativeDelivery.ts:138, :145, :146), so a
+ * reworded message would silently reclassify narrative-delivery failures. This
+ * class adds fields; it never edits prose.
+ */
+export class EmailTransportError extends Error implements EmailTransportErrorFields {
+  readonly transport: 'resend' | 'smtp' | 'mailgun';
+  readonly statusCode?: number;
+  readonly providerErrorName?: string;
+  readonly smtpResponseCode?: number;
+  readonly smtpResponse?: string;
+
+  constructor(message: string, fields: EmailTransportErrorFields, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = 'EmailTransportError';
+    this.transport = fields.transport;
+    this.statusCode = fields.statusCode;
+    this.providerErrorName = fields.providerErrorName;
+    this.smtpResponseCode = fields.smtpResponseCode;
+    this.smtpResponse = fields.smtpResponse;
+  }
+}
+
+export interface SendEmailBase {
   to: string | string[];
   cc?: string | string[];
   subject: string;
   html: string;
   text?: string;
-  from?: string;
   replyTo?: string | string[];
   // Custom RFC headers for threading + loop-prevention (Phase 4):
   // Message-ID, In-Reply-To, References, Auto-Submitted. Flat map; each
@@ -28,6 +77,31 @@ export interface SendEmailParams {
   headers?: Record<string, string>;
   attachments?: EmailAttachment[];
 }
+
+/**
+ * A message whose sender has already been decided. The ONLY shape that reaches
+ * a transport. `services/emailDomains/**` uses it for the `static` and `fake`
+ * adapters and the test send, which hand a custom From to the platform
+ * transport (plan index amendment 2).
+ */
+export interface RawEmailMessage extends SendEmailBase {
+  from: string;
+}
+
+/**
+ * Every send declares WHAT IT IS; `services/emailDomains/mailPurposes.ts`
+ * decides who it is from. There is no raw `from`: an unclassified send does
+ * not compile (spec G5), and a spoofed envelope address is unrepresentable.
+ *
+ * A partner-lane purpose MUST state its partner — `null` is allowed and means
+ * "the platform sender", for call sites that cannot always resolve one. It has
+ * to come from a row the call site already read or from the verified auth
+ * context, never from request input (spec §8.1).
+ */
+export type SendEmailParams = SendEmailBase & (
+  | { purpose: PlatformMailPurpose; partnerId?: never; partnerName?: never }
+  | { purpose: PartnerLaneMailPurpose; partnerId: string | null; partnerName?: string | null }
+);
 
 export interface InvoiceEmailParams {
   invoiceNumber: string;
@@ -52,14 +126,25 @@ export interface InvoiceEmailParams {
   /** True when the linked page can take payment (payable status + partner has
    *  Stripe connected) — flips the CTA to "View & pay invoice". */
   payEnabled?: boolean;
+  /** Partner-saved template override; null/absent uses code defaults. */
+  custom?: PartnerEmailCustom | null;
 }
 
-export interface PasswordResetEmailParams {
+/**
+ * Two audiences share this template: an MSP staff account (platform lane —
+ * account recovery must never depend on a partner's DNS, spec §8.2) and a
+ * customer's portal login (partner lane, `support` stream). The purpose is
+ * therefore a caller decision, and it drags `partnerId` with it.
+ */
+export type PasswordResetEmailParams = {
   to: string | string[];
   name?: string;
   resetUrl: string;
   supportEmail?: string;
-}
+} & (
+  | { purpose: 'auth.password_reset' }
+  | { purpose: 'portal.password_reset'; partnerId: string | null }
+);
 
 export interface PortalInviteEmailParams {
   to: string | string[];
@@ -68,6 +153,15 @@ export interface PortalInviteEmailParams {
   inviterName?: string;
   message?: string;
   supportEmail?: string;
+  /**
+   * The partner that owns the org this invite belongs to — the `support`
+   * stream's sender once W04 lands. Must come from a row the call site already
+   * read or from the verified auth context, never from request input (§8.1).
+   */
+  partnerId: string | null;
+  partnerName?: string;
+  /** Partner-saved template override; null/absent uses code defaults. */
+  custom?: PartnerEmailCustom | null;
 }
 
 export interface VerificationEmailParams {
@@ -75,6 +169,12 @@ export interface VerificationEmailParams {
   name?: string;
   verificationUrl: string;
   supportEmail?: string;
+  /**
+   * `auth.email_verification` for signup and resend; `auth.email_change_verify`
+   * for the link sent to a NEW address during an email change. Both are
+   * platform purposes — same lane, different delivery-event tag (§9.3).
+   */
+  purpose: 'auth.email_verification' | 'auth.email_change_verify';
 }
 
 export interface InviteEmailParams {
@@ -223,23 +323,96 @@ export class EmailService {
   }
 
   /**
-   * The default sender with a custom display name — keeps the envelope address
-   * (so SPF/DKIM alignment is untouched) while showing e.g.
-   * `"Acme MSP via Breeze" <no-reply@2breeze.app>` in the customer's inbox.
-   * The display name is stripped of header-breaking characters; falls back to
-   * the plain default sender when nothing usable survives.
+   * Which platform transport this instance resolved to. Callers that need to
+   * decide whether a real external send would occur (e.g. the sending-domains
+   * `fake` provider, which must never make an external call) branch on this
+   * instead of re-deriving provider selection themselves.
    */
-  fromWithDisplayName(displayName: string): string {
-    const match = this.defaultFrom.match(/<([^<>\s]+@[^<>\s]+)>/);
-    const address = (match?.[1] ?? this.defaultFrom).trim();
-    const safe = displayName.replace(/[\r\n"<>\\]/g, ' ').replace(/\s+/g, ' ').trim();
-    if (!safe || !address.includes('@')) return this.defaultFrom;
-    return `"${safe}" <${address}>`;
+  transportKind(): EmailProvider {
+    return this.provider;
   }
 
   async sendEmail(params: SendEmailParams): Promise<void> {
-    const { to, cc, subject, html, text, from, replyTo, headers, attachments } = params;
-    const sender = from ?? this.defaultFrom;
+    const { to, cc, subject, html, text, replyTo, headers, attachments } = params;
+
+    const resolved = await resolveSender({
+      purpose: params.purpose,
+      partnerId: params.partnerId ?? null,
+      partnerName: params.partnerName ?? null,
+      defaultFrom: this.defaultFrom,
+    });
+
+    if (resolved.lane === 'partner') {
+      // Dynamic so a platform-lane send never loads the provider registry, the
+      // Resend SDK or BullMQ — and so `email.ts -> partnerLaneSend.ts ->
+      // providerRegistry.ts -> adapters/static.ts -> email.ts` is not a static
+      // import cycle (plan amendment 1).
+      const { sendOnPartnerLane } = await import('./emailDomains/partnerLaneSend');
+      const outcome = await sendOnPartnerLane({
+        message: {
+          to,
+          cc,
+          subject,
+          html,
+          text,
+          // Reply-To precedence (spec §8.3): the call site's replyTo, then the
+          // identity's default, then none. Tickets therefore keep
+          // {slug}@TICKETS_INBOUND_DOMAIN and quotes/invoices keep
+          // partner.billingEmail, because those call sites set replyTo.
+          replyTo: replyTo ?? resolved.replyTo ?? undefined,
+          headers,
+          attachments,
+          from: resolved.from,
+        },
+        purpose: params.purpose,
+        partnerId: resolved.partnerId,
+        domainId: resolved.domainId,
+        stream: resolved.stream,
+      });
+      if (outcome.delivered) return;
+
+      // Definitively not sent (spec §8.4). Put it on the platform lane with the
+      // purpose's fallback From — the exact envelope this send site produced
+      // before the feature existed. Deliberately rebuilt from the ORIGINAL
+      // params: no X-Breeze-Outbound, no partner tags, and the call site's own
+      // Reply-To rather than the identity's, whose domain is the one that just
+      // refused us.
+      await this.deliverRaw({
+        to,
+        cc,
+        subject,
+        html,
+        text,
+        replyTo,
+        headers,
+        attachments,
+        from: platformFallbackFrom(params.purpose, this.defaultFrom, params.partnerName ?? null),
+      });
+      return;
+    }
+
+    await this.deliverRaw({
+      to,
+      cc,
+      subject,
+      html,
+      text,
+      replyTo,
+      headers,
+      attachments,
+      from: resolved.from,
+    });
+  }
+
+  /**
+   * @internal The one raw entry point: it takes an explicit From and asks no
+   * questions. Only `services/emailDomains/**` may call it (enforced by
+   * `email.deliverRawScope.test.ts`) — product code calls `sendEmail` and
+   * declares a purpose, or the classification G5 depends on leaks away.
+   */
+  async deliverRaw(message: RawEmailMessage): Promise<void> {
+    const { to, cc, subject, html, text, from, replyTo, headers, attachments } = message;
+    const sender = from;
 
     if (this.provider === 'resend') {
       if (!this.resend) {
@@ -262,7 +435,14 @@ export class EmailService {
         }))
       });
       if (error) {
-        throw new Error(`Resend error: ${error.message}`);
+        // Text unchanged; the SDK's own name/statusCode now ride along so the
+        // partner lane can classify without regex-matching prose.
+        const detail = error as { name?: unknown; statusCode?: unknown };
+        throw new EmailTransportError(`Resend error: ${error.message}`, {
+          transport: 'resend',
+          providerErrorName: typeof detail.name === 'string' ? detail.name : undefined,
+          statusCode: typeof detail.statusCode === 'number' ? detail.statusCode : undefined,
+        }, { cause: error });
       }
       return;
     }
@@ -272,6 +452,9 @@ export class EmailService {
         throw new Error('Mailgun config is not initialized');
       }
 
+      // `cc` is deliberately NOT forwarded: sendViaMailgun supports it, this
+      // call has never passed it, and W01 is byte-identical by construction.
+      // Fixing it is its own issue (plan index amendment 6).
       await sendViaMailgun(this.mailgunConfig, {
         from: sender,
         to,
@@ -297,33 +480,62 @@ export class EmailService {
     // headers (e.g. Auto-Submitted) stay in the generic map.
     const { messageId, inReplyTo, references, rest } = liftThreadingHeaders(headers);
 
-    await this.smtpTransport.sendMail({
-      from: sender,
-      to,
-      cc,
-      subject,
-      html,
-      text,
-      replyTo,
-      messageId,
-      inReplyTo,
-      references,
-      headers: rest,
-      attachments: attachments?.map((a) => ({
-        filename: a.filename,
-        content: a.content,
-        contentType: a.contentType
-      }))
-    });
+    try {
+      await this.smtpTransport.sendMail({
+        from: sender,
+        to,
+        cc,
+        subject,
+        html,
+        text,
+        replyTo,
+        messageId,
+        inReplyTo,
+        references,
+        headers: rest,
+        attachments: attachments?.map((a) => ({
+          filename: a.filename,
+          content: a.content,
+          contentType: a.contentType
+        }))
+      });
+    } catch (err) {
+      // nodemailer's error is the only one that already carried structure, so
+      // the message is simply forwarded. `responseCode` is `false` — not
+      // missing — when the reply had no leading digits, which is why this is a
+      // typeof check and not a truthiness check.
+      const detail = err as { responseCode?: unknown; response?: unknown } | null;
+      throw new EmailTransportError(
+        err instanceof Error ? err.message : String(err),
+        {
+          transport: 'smtp',
+          smtpResponseCode: typeof detail?.responseCode === 'number' ? detail.responseCode : undefined,
+          smtpResponse: typeof detail?.response === 'string' ? detail.response : undefined,
+        },
+        { cause: err },
+      );
+    }
   }
 
   async sendPasswordReset(params: PasswordResetEmailParams): Promise<void> {
     const template = buildPasswordResetTemplate(params);
+    if (params.purpose === 'portal.password_reset') {
+      await this.sendEmail({
+        to: params.to,
+        subject: template.subject,
+        html: template.html,
+        text: template.text,
+        purpose: 'portal.password_reset',
+        partnerId: params.partnerId
+      });
+      return;
+    }
     await this.sendEmail({
       to: params.to,
       subject: template.subject,
       html: template.html,
-      text: template.text
+      text: template.text,
+      purpose: 'auth.password_reset'
     });
   }
 
@@ -333,7 +545,8 @@ export class EmailService {
       to: params.to,
       subject: template.subject,
       html: template.html,
-      text: template.text
+      text: template.text,
+      purpose: params.purpose
     });
   }
 
@@ -343,7 +556,8 @@ export class EmailService {
       to: params.to,
       subject: template.subject,
       html: template.html,
-      text: template.text
+      text: template.text,
+      purpose: 'auth.staff_invite'
     });
   }
 
@@ -353,7 +567,8 @@ export class EmailService {
       to: params.to,
       subject: template.subject,
       html: template.html,
-      text: template.text
+      text: template.text,
+      purpose: 'staff.alert_notification'
     });
   }
 
@@ -363,7 +578,8 @@ export class EmailService {
       to: params.to,
       subject: template.subject,
       html: template.html,
-      text: template.text
+      text: template.text,
+      purpose: 'auth.account_locked'
     });
   }
 
@@ -373,7 +589,8 @@ export class EmailService {
       to: params.to,
       subject: template.subject,
       html: template.html,
-      text: template.text
+      text: template.text,
+      purpose: 'auth.email_changed'
     });
   }
 
@@ -383,7 +600,8 @@ export class EmailService {
       to: params.to,
       subject: template.subject,
       html: template.html,
-      text: template.text
+      text: template.text,
+      purpose: 'auth.signup_existing_account'
     });
   }
 
@@ -393,7 +611,9 @@ export class EmailService {
       to: params.to,
       subject: template.subject,
       html: template.html,
-      text: template.text
+      text: template.text,
+      purpose: 'portal.invite',
+      partnerId: params.partnerId
     });
   }
 }
@@ -729,7 +949,7 @@ async function mailgunFetch(config: MailgunProviderConfig, init: RequestInit): P
 
 async function sendViaMailgun(
   config: MailgunProviderConfig,
-  params: SendEmailParams & { from: string }
+  params: RawEmailMessage
 ): Promise<void> {
   const authToken = Buffer.from(`api:${config.apiKey}`).toString('base64');
   const recipients = Array.isArray(params.to) ? params.to : [params.to];
@@ -804,7 +1024,12 @@ async function sendViaMailgun(
   if (!response.ok) {
     const message = await response.text().catch(() => '');
     const details = message ? `: ${message}` : '';
-    throw new Error(`Mailgun API error (${response.status})${details}`);
+    // `Mailgun API error (<status>)<details>` is matched verbatim by
+    // services/reportNarrativeDelivery.ts:145-146. Only the shape changes.
+    throw new EmailTransportError(`Mailgun API error (${response.status})${details}`, {
+      transport: 'mailgun',
+      statusCode: response.status,
+    });
   }
 }
 
@@ -852,17 +1077,25 @@ export function buildPortalInviteTemplate(params: PortalInviteEmailParams): Emai
   const orgName = params.orgName?.trim();
   const inviter = params.inviterName?.trim();
   const customMessage = params.message?.trim();
-  const subject = orgName ? `You're invited to the ${orgName} support portal` : `You're invited to your support portal`;
-  const preheader = 'Set your password to access your support portal.';
-  const heading = orgName ? `Join the ${orgName} portal` : 'Join your support portal';
-  const invitedBy = inviter ? `${escapeHtml(inviter)} invited you` : 'You have been invited';
-  const body = `
-      <p style="${BODY_PARA}">${invitedBy} to the${orgName ? ` ${escapeHtml(orgName)}` : ''} support portal, where you can open tickets, view invoices, and track your devices.</p>
-      ${customMessage ? `<p style="${BODY_PARA}">${escapeHtml(customMessage)}</p>` : ''}
-      ${renderButton('Set your password', params.inviteUrl)}
-      <p style="${MUTED_PARA}">This invite link expires in 7 days. If you didn't expect this, you can ignore this email.</p>
-  `;
-  const html = renderLayout({ title: subject, preheader, heading, body, footer: supportFooter(params.supportEmail, 'Need help? Contact') });
+  const messageBlock = customMessage
+    ? `<p style="${BODY_PARA}">${escapeHtml(customMessage)}</p>`
+    : '';
+  const custom = params.custom ?? null;
+  const rendered = renderPartnerEmail({
+    id: 'portal_invite',
+    custom,
+    vars: {
+      requester_name: inviter ?? '',
+      partner_name: params.partnerName ?? '',
+      invite_url: params.inviteUrl,
+      org_name: orgName ?? '',
+    },
+    ctaUrl: params.inviteUrl,
+    footer: supportFooter(params.supportEmail, 'Need help? Contact'),
+    preheader: 'Set your password to access your support portal.',
+    bodyBeforeCta: messageBlock,
+    bodyAfterCta: '',
+  });
   const support = getSupportEmail(params.supportEmail);
   const text = [
     orgName ? `You're invited to the ${orgName} support portal.` : `You're invited to your support portal.`,
@@ -871,7 +1104,7 @@ export function buildPortalInviteTemplate(params: PortalInviteEmailParams): Emai
     'This invite link expires in 7 days.',
     support ? `Need help? Contact ${support}.` : null
   ].filter(Boolean).join('\n');
-  return { subject, html, text };
+  return { subject: rendered.subject, html: rendered.html, text };
 }
 
 function buildVerificationTemplate(params: VerificationEmailParams): EmailTemplate {
@@ -986,48 +1219,46 @@ function buildInviteTemplate(params: InviteEmailParams): EmailTemplate {
 
 export function buildInvoiceTemplate(params: InvoiceEmailParams): EmailTemplate {
   const number = params.invoiceNumber.trim();
-  const subject = params.subject?.trim() || `Invoice ${number} from ${params.partnerName}`;
-  const preheader = `Invoice ${number} — ${params.total}${params.dueDate ? `, due ${params.dueDate}` : ''}.`;
   const dueNow = params.amountDueNow ?? params.total;
-  // The composer can drop the attachment; the intro must not then promise one.
   const pdfAttached = params.pdfAttached ?? true;
-  const introSuffix = pdfAttached ? ' A PDF copy is attached to this email.' : '';
-  const dueLine = params.dueDate
-    ? `<p style="${BODY_PARA}">Amount due now: <strong>${escapeHtml(dueNow)}</strong> by <strong>${escapeHtml(params.dueDate)}</strong>.</p>`
-    : `<p style="${BODY_PARA}">Amount due now: <strong>${escapeHtml(dueNow)}</strong>.</p>`;
   const paidLine = params.amountPaid
     ? `<p style="${MUTED_PARA}">Paid to date: ${escapeHtml(params.amountPaid)} of ${escapeHtml(params.total)}.</p>`
     : '';
-  // Sender's personal note, if any. Escaped, with newlines preserved as <br> so a
-  // multi-line note keeps its shape. Rendered between the intro and the amounts
-  // (mirrors buildQuoteTemplate).
   const note = params.message?.trim();
   const messageBlock = note
     ? `<p style="${BODY_PARA}">${escapeHtml(note).replace(/\r?\n/g, '<br>')}</p>`
     : '';
-  // Partner signature: muted, under the CTA — reads as a sign-off, not content.
   const signature = params.signature?.trim();
   const signatureBlock = signature
     ? `<p style="${MUTED_PARA}">${escapeHtml(signature).replace(/\r?\n/g, '<br>')}</p>`
     : '';
-  const body = `
-      <p style="${BODY_PARA}">Hi there,</p>
-      <p style="${BODY_PARA}">${escapeHtml(params.partnerName)} has sent you invoice <strong>${escapeHtml(number)}</strong>.${introSuffix}</p>
-      ${messageBlock}
-      ${dueLine}
-      ${paidLine}
-      ${renderButton(params.payEnabled ? 'View & pay invoice' : 'View invoice', params.portalUrl)}
-      <p style="${MUTED_PARA}">You can view this invoice and download a copy any time using this link — no sign-in needed.</p>
-      ${signatureBlock}
-  `;
-  const html = renderLayout({
-    title: subject,
-    preheader,
-    heading: `Invoice ${number}`,
-    body,
-    footer: supportFooter(params.supportEmail, 'Questions about this invoice? Contact'),
-    // Customer-facing: the brand line shows the MSP the invoice is from, not the platform.
+
+  const custom = params.custom ?? null;
+  const perSendSubject = params.subject?.trim() || null;
+  const customHtml = custom?.html?.trim() || null;
+  const rendered = renderPartnerEmail({
+    id: 'invoice_send',
+    custom: {
+      subject: perSendSubject ?? custom?.subject ?? null,
+      heading: custom?.heading ?? null,
+      buttonLabel: custom?.buttonLabel ?? null,
+      html: customHtml,
+    },
+    vars: {
+      invoice_number: number,
+      partner_name: params.partnerName,
+      total: dueNow,
+      due_date: params.dueDate ?? '',
+      portal_url: params.portalUrl,
+      pdf_attached: pdfAttached ? '1' : '0',
+    },
+    ctaUrl: params.portalUrl,
+    ctaLabel: params.payEnabled ? 'View & pay invoice' : 'View invoice',
     brandName: params.partnerName,
+    footer: supportFooter(params.supportEmail, 'Questions about this invoice? Contact'),
+    preheader: `Invoice ${number} — ${params.total}${params.dueDate ? `, due ${params.dueDate}` : ''}.`,
+    bodyBeforeCta: `${messageBlock}${paidLine}`,
+    bodyAfterCta: signatureBlock,
   });
 
   const support = getSupportEmail(params.supportEmail);
@@ -1044,7 +1275,7 @@ export function buildInvoiceTemplate(params: InvoiceEmailParams): EmailTemplate 
     .filter(Boolean)
     .join('\n');
 
-  return { subject, html, text };
+  return { subject: rendered.subject, html: rendered.html, text };
 }
 
 export interface QuoteOutcomeEmailParams {

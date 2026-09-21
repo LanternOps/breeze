@@ -83,4 +83,23 @@ describe('aiToolLabel', () => {
       'Updated automations',
     );
   });
+
+  it('keeps two different cleanup tools distinguishable in the transcript (#W05)', () => {
+    // BEFORE: the read-only-action override forced the `get` conjugation on a
+    // tool whose own leading verb is unmapped, so BOTH of these rendered
+    // "Checked cleanup" — two different tools, one caption, on a transcript a
+    // technician reads to find out what the assistant actually did.
+    expect(aiToolLabel('system_cleanup', 'completed', { action: 'list' })).toBe('System cleanup');
+    expect(aiToolLabel('disk_cleanup', 'completed', { action: 'preview' })).toBe('Disk cleanup');
+    expect(aiToolLabel('system_cleanup', 'running', { action: 'run' })).toBe('System cleanup');
+    expect(aiToolLabel('system_cleanup', 'completed')).toBe('System cleanup');
+  });
+
+  it('still forces the read-only conjugation for a MAPPED leading verb', () => {
+    // The #5170 behaviour is untouched — this fallback only reaches tools whose
+    // own leading verb VERB_FORMS does not know, which previously produced a
+    // caption built from a verb that had nothing to do with the tool.
+    expect(aiToolLabel('manage_automations', 'completed', { action: 'list' })).toBe('Checked automations');
+    expect(aiToolLabel('manage_services', 'completed', { action: 'status' })).toBe('Checked services');
+  });
 });

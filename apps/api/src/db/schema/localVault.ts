@@ -9,6 +9,7 @@ import {
   bigint,
   index,
   uniqueIndex,
+  foreignKey,
 } from 'drizzle-orm/pg-core';
 import { organizations } from './orgs';
 import { devices } from './devices';
@@ -37,6 +38,11 @@ export const localVaults = pgTable(
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
   },
   (table) => ({
+    deviceOrgFk: foreignKey({
+      columns: [table.deviceId, table.orgId],
+      foreignColumns: [devices.id, devices.orgId],
+      name: 'local_vaults_device_org_fkey',
+    }),
     orgIdx: index('local_vaults_org_idx').on(table.orgId),
     deviceIdx: index('local_vaults_device_idx').on(table.deviceId),
   })

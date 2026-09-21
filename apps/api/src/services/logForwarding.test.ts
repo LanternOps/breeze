@@ -1,11 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-// logForwarding imports ../db and ./secretCrypto at module load. We only test
-// the transport (bulkIndexToEndpoint), which takes config directly and never
-// touches the DB, so stub those modules to keep the unit isolated.
-vi.mock('../db', () => ({ db: {} }));
-vi.mock('../db/schema', () => ({ organizations: {} }));
-vi.mock('./secretCrypto', () => ({ decryptForColumn: (_t: string, _c: string, v: unknown) => v }));
+vi.mock('../db', () => ({
+  db: { select: vi.fn() },
+  getCurrentDbAccessContext: vi.fn(() => ({ scope: 'organization', currentPartnerId: 'stale-partner' })),
+  runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
+  withSystemDbAccessContext: vi.fn(async (fn: () => unknown) => fn()),
+}));
+vi.mock('../db/schema', () => ({
+  organizations: { id: 'organizations.id', settings: 'organizations.settings', partnerId: 'organizations.partner_id' },
+  partners: { id: 'partners.id', settings: 'partners.settings' },
+}));
+vi.mock('drizzle-orm', () => ({ eq: vi.fn((column, value) => ({ column, value })) }));
+vi.mock('./secretCrypto', () => ({ decryptForColumn: vi.fn((_t: string, _c: string, v: unknown) => v) }));
 vi.mock('./sentry', () => ({ captureException: vi.fn() }));
 
 // The outbound request goes through safeFetch (SSRF-pinned). Mock it but keep
@@ -15,9 +21,12 @@ vi.mock('./urlSafety', async (importOriginal) => {
   return { ...actual, safeFetch: vi.fn() };
 });
 
-import { bulkIndexToEndpoint } from './logForwarding';
+import { bulkIndexEvents, getOrgForwardingConfig, bulkIndexToEndpoint } from './logForwarding';
 import { safeFetch, SsrfBlockedError } from './urlSafety';
 import { captureException } from './sentry';
+
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { decryptForColumn } from './secretCrypto';
 
 const safeFetchMock = vi.mocked(safeFetch);
 const captureExceptionMock = vi.mocked(captureException);
@@ -243,5 +252,112 @@ describe('bulkIndexToEndpoint', () => {
 
     expect(safeFetchMock).not.toHaveBeenCalled();
     expect(result).toEqual({ indexed: 0, errors: 0 });
+  });
+});
+
+
+describe('organization forwarding destination resolution', () => {
+  const orgId = '00000000-0000-4000-8000-000000000001';
+  const partnerId = '00000000-0000-4000-8000-000000000002';
+  const partnerConfig = {
+    ...baseConfig,
+    elasticsearchUrl: 'https://partner-logs.example.com',
+    elasticsearchApiKey: 'partner-key',
+    elasticsearchPassword: 'partner-password',
+    indexPrefix: 'partner-events',
+  };
+  const where = vi.fn();
+
+  function prime(orgSettings: unknown, partnerSettings: unknown, exists = true) {
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn((table: { id: string }) => ({
+        where: (condition: unknown) => {
+          where(table.id, condition);
+          return { limit: vi.fn(async () => table.id === 'organizations.id'
+            ? (exists ? [{ settings: orgSettings, partnerId }] : [])
+            : [{ settings: partnerSettings }]) };
+        },
+      })),
+    } as never);
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    safeFetchMock.mockResolvedValue(okBulkResponse());
+  });
+
+  it('delivers to the org destination when the partner has no forwarding settings', async () => {
+    prime({ logForwarding: { ...baseConfig, elasticsearchApiKey: 'org-key' } }, {});
+    await bulkIndexEvents(orgId, [event]);
+    expect(safeFetchMock).toHaveBeenCalledWith(`${baseConfig.elasticsearchUrl}/_bulk`, expect.anything());
+    expect(decryptForColumn).toHaveBeenCalledWith('organizations', 'settings', 'org-key');
+  });
+
+  it('delivers to the partner destination when the org has none', async () => {
+    prime({}, { eventLogs: partnerConfig });
+    expect(await bulkIndexEvents(orgId, [event])).toEqual({ indexed: 1, errors: 0 });
+    expect(safeFetchMock).toHaveBeenCalledWith(`${partnerConfig.elasticsearchUrl}/_bulk`, expect.objectContaining({
+      headers: expect.objectContaining({ authorization: 'ApiKey partner-key' }),
+      body: expect.stringContaining('partner-events-'),
+    }));
+    expect(decryptForColumn).toHaveBeenCalledWith('partners', 'settings', 'partner-key');
+    expect(decryptForColumn).toHaveBeenCalledWith('partners', 'settings', 'partner-password');
+  });
+
+  it('uses the enabled partner destination even when the org has its own', async () => {
+    prime({ logForwarding: { ...baseConfig, elasticsearchApiKey: 'org-key' } }, { eventLogs: partnerConfig });
+    expect(await getOrgForwardingConfig(orgId)).toEqual(partnerConfig);
+    expect(decryptForColumn).not.toHaveBeenCalledWith('organizations', 'settings', 'org-key');
+  });
+
+  it('does not send org credentials to a partner destination without credentials', async () => {
+    prime({ logForwarding: { ...baseConfig, elasticsearchApiKey: 'org-secret' } }, {
+      eventLogs: { enabled: true, elasticsearchUrl: partnerConfig.elasticsearchUrl },
+    });
+    await bulkIndexEvents(orgId, [event]);
+    expect(safeFetchMock).toHaveBeenCalledWith(`${partnerConfig.elasticsearchUrl}/_bulk`, expect.objectContaining({
+      headers: { 'content-type': 'application/x-ndjson' },
+      body: expect.stringContaining('breeze-logs-'),
+    }));
+  });
+
+  it.each([
+    ['neither configured', {}, {}],
+    ['org disabled', { logForwarding: { ...baseConfig, enabled: false } }, {}],
+  ])('does not deliver when %s', async (_name, orgSettings, partnerSettings) => {
+    prime(orgSettings, partnerSettings);
+    expect(await bulkIndexEvents(orgId, [event])).toEqual({ indexed: 0, errors: 0 });
+    expect(safeFetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['partner disabled', { ...partnerConfig, enabled: false }],
+    ['partner missing endpoint', { enabled: true }],
+  ])('delivers to the org destination when %s', async (_name, eventLogs) => {
+    prime({ logForwarding: { ...baseConfig, elasticsearchApiKey: 'org-key' } }, { eventLogs });
+    expect(await bulkIndexEvents(orgId, [event])).toEqual({ indexed: 1, errors: 0 });
+    expect(safeFetchMock).toHaveBeenCalledWith(`${baseConfig.elasticsearchUrl}/_bulk`, expect.objectContaining({
+      headers: expect.objectContaining({ authorization: 'ApiKey org-key' }),
+    }));
+    expect(decryptForColumn).toHaveBeenCalledWith('organizations', 'settings', 'org-key');
+  });
+
+  it('pins the elevated partner read to the live org relationship', async () => {
+    prime({}, { eventLogs: partnerConfig });
+    await getOrgForwardingConfig(orgId);
+    expect(where.mock.calls).toEqual([
+      ['organizations.id', { column: 'organizations.id', value: orgId }],
+      ['partners.id', { column: 'partners.id', value: partnerId }],
+    ]);
+    expect(runOutsideDbContext).toHaveBeenCalledOnce();
+    expect(withSystemDbAccessContext).toHaveBeenCalledOnce();
+  });
+
+  it('does not elevate or deliver if the org is absent or hidden by RLS', async () => {
+    prime({}, { eventLogs: partnerConfig }, false);
+    expect(await bulkIndexEvents(orgId, [event])).toEqual({ indexed: 0, errors: 0 });
+    expect(db.select).toHaveBeenCalledOnce();
+    expect(runOutsideDbContext).not.toHaveBeenCalled();
+    expect(safeFetchMock).not.toHaveBeenCalled();
   });
 });

@@ -831,6 +831,35 @@ describe('oauthInteractionRoutes', () => {
       .toHaveBeenCalledWith('https://api.example/mcp/server', 'mcp:read mcp:write');
   });
 
+  it('H3: re-consent with prompt=consent and an existing grant falls back to params.scope', async () => {
+    // Second authorize for a client the user already consented to (e.g. the
+    // MCP client lost its token and restarted the flow with prompt=consent).
+    // oidc-provider raises a `consent` prompt whose only reason is
+    // `consent_prompt`; the existing grant already covers every scope, so
+    // `prompt.details` carries no new/accepted/missing scopes. The GET
+    // handler renders the consent UI from `params.scope` in that state, so
+    // the POST must accept the same set — previously it 400'd invalid_scope
+    // and the user could never re-authorize (2026-09-11).
+    const d = details({
+      session: { accountId: 'u1' },
+      prompt: { name: 'consent', reasons: ['consent_prompt'], details: {} },
+    } as any);
+    mocks.interactionDetails.mockResolvedValue(d);
+    queueSelect([{ partnerId: PARTNER_ID, userId: 'u1' }], 'limit');
+    queueSelect([{ partnerId: PARTNER_ID, orgId: 'org-1' }], 'limit');
+    queueSelect([{ status: 'active' }], 'limit'); // partner status check
+    queueUpdate(); // setGrantBreezeMeta on oauth_grants
+    queueInsertGrantReturning({ firstConsented: false });
+
+    const res = await request(loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
+      method: 'POST',
+      body: JSON.stringify({ partner_id: PARTNER_ID, approve: true }),
+    });
+    expect(res.status).toBe(200);
+    expect(mocks.Grant.instances[0]?.addResourceScope)
+      .toHaveBeenCalledWith('https://api.example/mcp/server', 'mcp:read mcp:write');
+  });
+
   // -------------------------------------------------------------------
   // MCP-OAUTH-01 — consent bug (a): the POST handler must recompute the
   // MCP-scope intersection against the SELECTED partner's authoritative

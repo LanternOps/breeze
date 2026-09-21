@@ -2,9 +2,10 @@ import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState } fr
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import { Bot, PauseCircle, Plus } from 'lucide-react';
-import { AI_AGENT_KINDS } from '@breeze/shared';
+import { AI_AGENT_KINDS, type AiAgentsSystemStatusDto } from '@breeze/shared';
 import { fetchWithAuth } from '../../stores/auth';
 import { useDefaultOwnerScope } from '@/hooks/useDefaultOwnerScope';
+import { useOrgScope } from '@/hooks/useOrgScope';
 import { useHashState } from '@/lib/useHashState';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { handleActionError, runAction } from '@/lib/runAction';
@@ -42,12 +43,21 @@ const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true 
 export default function AiAgentsPage() {
   const { t } = useTranslation('settings');
   const { isPartnerScope, defaultOwnerScope } = useDefaultOwnerScope();
+  // AI patch agent W01 (#5747): which org a "Run now" would belong to.
+  const orgScope = useOrgScope();
 
   const [agents, setAgents] = useState<AiAgentDto[]>([]);
   // #4170: which kinds already have an active partner-wide baseline for this
   // org's partner — reported alongside `data` because a not-yet-created org
   // row has no `hasPartnerBaseline` of its own for the create form to read.
   const [partnerBaselineKinds, setPartnerBaselineKinds] = useState<Set<string>>(new Set());
+  /**
+   * #5380 — the SUBSYSTEM's state, as opposed to any one row's `enabled`
+   * flag. `null` means the API did not report it (an older server), which is
+   * deliberately NOT treated as "disabled": inventing an outage banner from a
+   * missing field would be its own false alarm.
+   */
+  const [system, setSystem] = useState<AiAgentsSystemStatusDto | null>(null);
   const [loading, setLoading] = useState(true);
   // True once a load has completed at least once. `loading` alone would make
   // every refresh (a save, a re-enable) tear the empty state down and put the
@@ -61,6 +71,10 @@ export default function AiAgentsPage() {
    *  is rendered here, not in the form. */
   const [editorDirty, setEditorDirty] = useState(false);
   const [enablingId, setEnablingId] = useState<string | null>(null);
+  /** AI patch agent W01 (#5747) — the patch agent whose "Run now" is in
+   *  flight; every Run now is disabled while one is, the same single-fire
+   *  posture `reenable` takes. */
+  const [runningNowId, setRunningNowId] = useState<string | null>(null);
   const allOrgsHintId = useId();
   const inertHintId = useId();
   /** The agent a Re-enable just restored, so its live row can show a one-time
@@ -87,11 +101,13 @@ export default function AiAgentsPage() {
     triage: t('aiAgentsPage.kinds.triage'),
     patch: t('aiAgentsPage.kinds.patch'),
     helpdesk: t('aiAgentsPage.kinds.helpdesk'),
+    designer: t('aiAgentsPage.kinds.designer'),
   };
   const KIND_HINT: Record<(typeof AI_AGENT_KINDS)[number], string> = {
     triage: t('aiAgentsPage.kindHints.triage'),
     patch: t('aiAgentsPage.kindHints.patch'),
     helpdesk: t('aiAgentsPage.kindHints.helpdesk'),
+    designer: t('aiAgentsPage.kindHints.designer'),
   };
   // Same reason, over `AI_AGENT_RUN_STATUSES`. Shares the runs page's own
   // vocabulary rather than minting a second set of status words.
@@ -120,7 +136,9 @@ export default function AiAgentsPage() {
       // truncated body. Unguarded, that rejection escaped `void load()` with
       // no unhandledrejection handler anywhere, leaving the page in a
       // permanent loading state that renders as an ordinary empty screen.
-      const body = (await response.json()) as { data?: unknown; partnerBaselineKinds?: unknown };
+      const body = (await response.json()) as {
+        data?: unknown; partnerBaselineKinds?: unknown; system?: unknown;
+      };
       // A body we cannot read is an ERROR, not zero agents. `?? []` reported
       // "no agents yet" for a shape change and, worse, told the create form
       // every kind was free — so the next save 409'd on an agent the page had
@@ -128,6 +146,10 @@ export default function AiAgentsPage() {
       if (!Array.isArray(body.data)) throw new Error('GET /ai/agents: malformed body');
       setAgents(body.data as AiAgentDto[]);
       setPartnerBaselineKinds(new Set(Array.isArray(body.partnerBaselineKinds) ? body.partnerBaselineKinds : []));
+      // Shape-checked on the one field every branch below reads. Anything
+      // else (a partial block, an older server) stays `null` = "not reported".
+      const reported = body.system as AiAgentsSystemStatusDto | undefined;
+      setSystem(reported && typeof reported.enabled === 'boolean' ? reported : null);
     } catch (err) {
       console.error('[AiAgentsPage] could not load agents', err);
       setError(true);
@@ -267,6 +289,73 @@ export default function AiAgentsPage() {
     if (enabled) await load();
   }, [load, t]);
 
+  /**
+   * #5380 — the row-level badge, now aware of the SUBSYSTEM.
+   *
+   * Three states, not two. "Running" is a claim about liveness, so it may
+   * only be made when both the row and the subsystem are on; an enabled row
+   * on a kill-switched server gets a third word that says the row is on AND
+   * that nothing will fire. A server that did not report its subsystem state
+   * (`system === null`) keeps the original two-state behaviour rather than
+   * accusing a healthy deployment of being off.
+   */
+  const subsystemOff = system !== null && !system.enabled;
+  const runningLabel = (enabled: boolean): string => {
+    if (!enabled) return t('aiAgentsPage.runningBadge.notRunning');
+    return subsystemOff
+      ? t('aiAgentsPage.runningBadge.inactive')
+      : t('aiAgentsPage.runningBadge.running');
+  };
+  const runningTone = (enabled: boolean): 'success' | 'warning' | 'muted' => {
+    if (!enabled) return 'muted';
+    return subsystemOff ? 'warning' : 'success';
+  };
+
+  /**
+   * The disabled-subsystem banner (#5380) plus its skip trace (#5381).
+   *
+   * The two switches get DIFFERENT sentences because they have different
+   * remedies: the env flag is an operator's `.env` (named outright, since a
+   * self-hoster has no other way to learn it), the kill switch is an admin
+   * flip. Telling someone to set an env var that is already set is how a
+   * banner wastes an outage.
+   */
+  const subsystemBanner = () => {
+    if (!subsystemOff || system === null) return null;
+    const skips = system.skips;
+    return (
+      <div
+        className="rounded-md border border-warning/40 bg-warning/10 px-4 py-3 text-sm"
+        role="status"
+        data-testid="ai-agents-subsystem-disabled"
+      >
+        <p className="font-medium">{t('aiAgentsPage.subsystemDisabled.title')}</p>
+        {system.envFlagEnabled ? (
+          <p className="mt-1 text-muted-foreground" data-testid="ai-agents-subsystem-killswitch">
+            {t('aiAgentsPage.subsystemDisabled.killSwitch')}
+          </p>
+        ) : (
+          <p className="mt-1 text-muted-foreground" data-testid="ai-agents-subsystem-envflag">
+            {t('aiAgentsPage.subsystemDisabled.envFlag', { flag: system.envFlagName })}
+          </p>
+        )}
+        {/* `skips === null` is UNKNOWN, not zero — rendering "0 skipped"
+            would be the same false reassurance #5381 is about. */}
+        {skips && skips.total > 0 && (
+          <p className="mt-1 text-muted-foreground" data-testid="ai-agents-skip-trace">
+            {t('aiAgentsPage.subsystemDisabled.skips', {
+              total: skips.total,
+              // `kill_switch_off (15)` — the reason is a machine-readable
+              // `AgentRunSkipReason` value and the count a number, so this
+              // format carries no wording to translate.
+              reasons: skips.reasons.map((r) => `${r.reason} (${r.count})`).join(', '),
+            })}
+          </p>
+        )}
+      </div>
+    );
+  };
+
   /** The last-run cell: an absolute timestamp plus the run's own outcome
    *  badge, or a plain sentence when the agent has never run. Both matter —
    *  "enabled, shadow" says nothing about whether the agent is actually
@@ -283,11 +372,24 @@ export default function AiAgentsPage() {
       <span className="inline-flex flex-wrap items-center gap-1.5" data-testid={`ai-agent-lastrun-${agent.id}`}>
         {agent.lastRunAt && agent.lastRunStatus ? (
           <>
-            <span
-              className={badgeClass(runStatusTone(agent.lastRunStatus), { size: 'sm' })}
-              aria-label={`${t('aiAgentsPage.chipLabels.lastRunStatus')}: ${RUN_STATUS_LABEL[agent.lastRunStatus] ?? agent.lastRunStatus}`}
-            >
-              {RUN_STATUS_LABEL[agent.lastRunStatus] ?? agent.lastRunStatus}
+            {/* Paper cut 22: this badge's word can coincide with the row's own
+                on/off badge (both read "Running" for a live agent mid-run).
+                A visible caption — not just the aria-label — is what tells a
+                sighted user which "Running" is which. */}
+            <span className="inline-flex items-center gap-1">
+              <span
+                className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
+                aria-hidden="true"
+                data-testid={`ai-agent-lastrun-badge-label-${agent.id}`}
+              >
+                {t('aiAgentsPage.chipLabels.lastRunStatus')}
+              </span>
+              <span
+                className={badgeClass(runStatusTone(agent.lastRunStatus), { size: 'sm' })}
+                aria-label={`${t('aiAgentsPage.chipLabels.lastRunStatus')}: ${RUN_STATUS_LABEL[agent.lastRunStatus] ?? agent.lastRunStatus}`}
+              >
+                {RUN_STATUS_LABEL[agent.lastRunStatus] ?? agent.lastRunStatus}
+              </span>
             </span>
             <span>{t('aiAgentsPage.lastRun.at', { at: formatDateTime(agent.lastRunAt) })}</span>
           </>
@@ -304,6 +406,83 @@ export default function AiAgentsPage() {
           </a>
         )}
       </span>
+    );
+  };
+
+  /**
+   * AI patch agent W01 (#5747) — when this agent next fires, computed by the
+   * list route with the same cron evaluator the schedules drawer uses. An
+   * agent with no enabled baseline, or one whose stored cron cannot be
+   * evaluated, reports null and renders an em dash: "no next run" is a fact
+   * worth showing, not a cell to omit.
+   */
+  const nextOccurrenceCell = (agent: AiAgentDto) => (
+    <span data-testid={`ai-agent-next-occurrence-${agent.id}`}>
+      {agent.nextOccurrenceAt
+        ? t('aiAgentsPage.nextOccurrence', { at: formatDateTime(agent.nextOccurrenceAt) })
+        // A bare em dash, not a translated key: it is punctuation in every
+        // locale, and an eight-way "translation" of it is what pushes the
+        // exact-English duplicate baselines up. Same precedent as
+        // `sweepReasonLabel`'s own `'—'` on RunDetailPage.
+        : '—'}
+    </span>
+  );
+
+  /**
+   * "Run now" for a patch agent: queues one device-less patch run for the
+   * SELECTED org. Wrapped in `runAction` with an inline thunk (the
+   * no-silent-mutations guard is a lexical check), so the route's HTTP-200
+   * `{ success: false, skipped }` decline surfaces as a failure toast rather
+   * than as a button that appears to do nothing.
+   *
+   * There is no shared API client for AI agents — this file calls
+   * `fetchWithAuth` inline everywhere else, and one call does not justify
+   * introducing one.
+   */
+  const runningRef = useRef(false);
+  const runPatchNow = useCallback(async (agent: AiAgentDto, orgId: string) => {
+    if (runningRef.current) return;
+    runningRef.current = true;
+    setRunningNowId(agent.id);
+    try {
+      await runAction({
+        request: () => fetchWithAuth('/ai/patch-plan/runs', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ orgId }),
+        }),
+        successMessage: t('aiAgentsPage.toasts.runNowQueued'),
+        errorFallback: t('aiAgentsPage.toasts.runNowFailed'),
+        friendly: (code) => (code === 'no_patch_agent'
+          ? t('aiAgentsPage.errors.noPatchAgent')
+          : undefined),
+        onUnauthorized: UNAUTHORIZED,
+      });
+    } catch (err) {
+      handleActionError(err, t('aiAgentsPage.toasts.runNowFailed'));
+    } finally {
+      setRunningNowId(null);
+      runningRef.current = false;
+    }
+  }, [t]);
+
+  /** The Run now control, for an enabled patch agent only. Disabled — with the
+   *  reason in its tooltip — while the page is on "All organizations": a patch
+   *  run belongs to exactly one org, and guessing one is worse than asking. */
+  const runNowButton = (agent: AiAgentDto) => {
+    if (agent.kind !== 'patch' || !agent.enabled) return null;
+    const orgId = orgScope.scope === 'org' ? orgScope.orgId : null;
+    return (
+      <button
+        type="button"
+        onClick={() => { if (orgId) void runPatchNow(agent, orgId); }}
+        disabled={orgId === null || runningNowId !== null}
+        title={orgId === null ? t('aiAgentsPage.runNowNoOrg') : undefined}
+        className="rounded-md border px-3 py-1.5 text-sm font-medium disabled:opacity-50"
+        data-testid={`ai-agent-run-now-${agent.id}`}
+      >
+        {t('aiAgentsPage.actions.runNow')}
+      </button>
     );
   };
 
@@ -345,6 +524,10 @@ export default function AiAgentsPage() {
           {t('aiAgentsPage.errors.load')}
         </div>
       )}
+
+      {/* Above everything the page says about individual agents: no per-row
+          detail matters while nothing can run at all. */}
+      {subsystemBanner()}
 
       {/* Task 13 (#5051): the guided create flow replaces the list ENTIRELY
           while open — full width, its own header/footer — rather than
@@ -560,12 +743,28 @@ export default function AiAgentsPage() {
                       re-enable note below — read as if it had landed back in
                       that section. "Running"/"Not running" names the thing
                       this badge actually reports. */}
-                  <span
-                    className={badgeClass(agent.enabled ? 'success' : 'muted', { size: 'sm' })}
-                    aria-label={`${t('aiAgentsPage.chipLabels.running')}: ${agent.enabled ? t('aiAgentsPage.runningBadge.running') : t('aiAgentsPage.runningBadge.notRunning')}`}
-                    data-testid={`ai-agent-running-badge-${agent.id}`}
-                  >
-                    {agent.enabled ? t('aiAgentsPage.runningBadge.running') : t('aiAgentsPage.runningBadge.notRunning')}
+                  {/* #5380: an enabled row on a server where the subsystem
+                      is off is NOT running — it reported "Running" for hours
+                      on US prod while every trigger was a no-op. The third
+                      state says the row is on AND that nothing will fire. */}
+                  {/* Paper cut 22: paired with the last-run badge below, this
+                      can print the same word ("Running") with nothing visibly
+                      telling them apart — a caption, not only an aria-label. */}
+                  <span className="inline-flex items-center gap-1">
+                    <span
+                      className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
+                      aria-hidden="true"
+                      data-testid={`ai-agent-running-badge-label-${agent.id}`}
+                    >
+                      {t('aiAgentsPage.chipLabels.running')}
+                    </span>
+                    <span
+                      className={badgeClass(runningTone(agent.enabled), { size: 'sm' })}
+                      aria-label={`${t('aiAgentsPage.chipLabels.running')}: ${runningLabel(agent.enabled)}`}
+                      data-testid={`ai-agent-running-badge-${agent.id}`}
+                    >
+                      {runningLabel(agent.enabled)}
+                    </span>
                   </span>
                   {/* #4170: an org-only row is an override of a partner
                       baseline, never a standalone policy — with no baseline
@@ -582,6 +781,7 @@ export default function AiAgentsPage() {
                     </span>
                   )}
                   {lastRunCell(agent)}
+                  {nextOccurrenceCell(agent)}
                 </p>
                 {justReenabledId === agent.id && (
                   <p
@@ -601,6 +801,7 @@ export default function AiAgentsPage() {
               >
                 {t('aiAgentsPage.actions.runs')}
               </a>
+              {runNowButton(agent)}
               <button
                 type="button"
                 onClick={() => openEditor({ agent })}
@@ -668,6 +869,10 @@ export default function AiAgentsPage() {
                       })}
                     </span>
                     {lastRunCell(agent)}
+                    {/* A disabled agent never fires, so this reads "—" for
+                        every row here — kept for column parity with the live
+                        list above rather than as live information. */}
+                    {nextOccurrenceCell(agent)}
                   </p>
                 </div>
                 <a

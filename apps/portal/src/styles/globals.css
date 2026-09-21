@@ -225,6 +225,153 @@
   }
 }
 
+/*
+  Curated portal chrome accents (packages/shared/src/types/portalChromeAccent.ts,
+  PORTAL_CHROME_ACCENTS) — GENERATED from that spec's `light`/`dark` HSL
+  triplets verbatim; do not hand-edit a value here without also updating the
+  spec (or the reverse). apps/portal/src/styles/chromeAccents.test.ts parses
+  this file and fails on any drift from PORTAL_CHROME_ACCENTS.
+
+  'spruce' is the default and needs no override — the base :root/.dark/media
+  blocks above already ARE spruce. Each other key gets three rules: a light
+  override selected by `[data-accent]` alone, and two dark overrides (the
+  explicit `.dark` opt-in and the `prefers-color-scheme` media opt-in) that
+  themeParity.test.ts asserts stay identical to each other, the same contract
+  the base palette keeps. `--primary-on-tint` and `--ring` ride along so the
+  score rule, links and focus ring pick up the accent too; every other token
+  (status colours, neutrals, hairline) is untouched — accents are chrome-only.
+*/
+:root[data-accent='ink'] {
+  --primary: 30 12% 18%;
+  --primary-foreground: 42 45% 97%;
+  --primary-on-tint: 30 12% 18%;
+  --ring: 30 12% 26%;
+}
+:root[data-accent='oxblood'] {
+  --primary: 8 55% 30%;
+  --primary-foreground: 42 45% 97%;
+  --primary-on-tint: 8 55% 30%;
+  --ring: 8 55% 36%;
+}
+:root[data-accent='navy'] {
+  --primary: 222 40% 28%;
+  --primary-foreground: 42 45% 97%;
+  --primary-on-tint: 222 40% 28%;
+  --ring: 222 40% 34%;
+}
+:root[data-accent='plum'] {
+  --primary: 300 30% 26%;
+  --primary-foreground: 42 45% 97%;
+  --primary-on-tint: 300 30% 26%;
+  --ring: 300 30% 32%;
+}
+:root[data-accent='bronze'] {
+  --primary: 30 55% 26%;
+  --primary-foreground: 42 45% 97%;
+  --primary-on-tint: 30 55% 26%;
+  --ring: 30 55% 32%;
+}
+:root[data-accent='teal'] {
+  --primary: 190 45% 24%;
+  --primary-foreground: 42 45% 97%;
+  --primary-on-tint: 190 45% 24%;
+  --ring: 190 45% 30%;
+}
+:root[data-accent='forest'] {
+  --primary: 140 40% 20%;
+  --primary-foreground: 42 45% 97%;
+  --primary-on-tint: 140 40% 20%;
+  --ring: 140 40% 26%;
+}
+
+.dark[data-accent='ink'] {
+  --primary: 38 20% 78%;
+  --primary-foreground: 30 12% 10%;
+  --primary-on-tint: 38 22% 82%;
+  --ring: 38 20% 64%;
+}
+.dark[data-accent='oxblood'] {
+  --primary: 10 45% 68%;
+  --primary-foreground: 8 50% 10%;
+  --primary-on-tint: 10 50% 74%;
+  --ring: 10 45% 56%;
+}
+.dark[data-accent='navy'] {
+  --primary: 218 38% 70%;
+  --primary-foreground: 222 45% 10%;
+  --primary-on-tint: 218 42% 76%;
+  --ring: 218 38% 58%;
+}
+.dark[data-accent='plum'] {
+  --primary: 300 26% 70%;
+  --primary-foreground: 300 35% 10%;
+  --primary-on-tint: 300 30% 76%;
+  --ring: 300 26% 58%;
+}
+.dark[data-accent='bronze'] {
+  --primary: 34 50% 66%;
+  --primary-foreground: 30 55% 10%;
+  --primary-on-tint: 34 55% 72%;
+  --ring: 34 50% 54%;
+}
+.dark[data-accent='teal'] {
+  --primary: 188 38% 64%;
+  --primary-foreground: 190 45% 10%;
+  --primary-on-tint: 188 42% 70%;
+  --ring: 188 38% 52%;
+}
+.dark[data-accent='forest'] {
+  --primary: 138 32% 64%;
+  --primary-foreground: 140 40% 10%;
+  --primary-on-tint: 138 36% 70%;
+  --ring: 138 32% 52%;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root[data-accent='ink']:not(.light) {
+    --primary: 38 20% 78%;
+    --primary-foreground: 30 12% 10%;
+    --primary-on-tint: 38 22% 82%;
+    --ring: 38 20% 64%;
+  }
+  :root[data-accent='oxblood']:not(.light) {
+    --primary: 10 45% 68%;
+    --primary-foreground: 8 50% 10%;
+    --primary-on-tint: 10 50% 74%;
+    --ring: 10 45% 56%;
+  }
+  :root[data-accent='navy']:not(.light) {
+    --primary: 218 38% 70%;
+    --primary-foreground: 222 45% 10%;
+    --primary-on-tint: 218 42% 76%;
+    --ring: 218 38% 58%;
+  }
+  :root[data-accent='plum']:not(.light) {
+    --primary: 300 26% 70%;
+    --primary-foreground: 300 35% 10%;
+    --primary-on-tint: 300 30% 76%;
+    --ring: 300 26% 58%;
+  }
+  :root[data-accent='bronze']:not(.light) {
+    --primary: 34 50% 66%;
+    --primary-foreground: 30 55% 10%;
+    --primary-on-tint: 34 55% 72%;
+    --ring: 34 50% 54%;
+  }
+  :root[data-accent='teal']:not(.light) {
+    --primary: 188 38% 64%;
+    --primary-foreground: 190 45% 10%;
+    --primary-on-tint: 188 42% 70%;
+    --ring: 188 38% 52%;
+  }
+  :root[data-accent='forest']:not(.light) {
+    --primary: 138 32% 64%;
+    --primary-foreground: 140 40% 10%;
+    --primary-on-tint: 138 36% 70%;
+    --ring: 138 32% 52%;
+  }
+}
+
 @layer base {
   * {
     @apply border-border;

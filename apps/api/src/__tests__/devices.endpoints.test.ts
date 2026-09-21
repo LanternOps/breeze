@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 
-vi.mock('../services/maintenanceAuthorization', () => ({ lockMaintenanceAssurance: vi.fn(async () => true) }));
+vi.mock('../services/stepUpActorAssurance', () => ({ lockActorAssurance: vi.fn(async () => true) }));
 import { deviceRoutes } from '../routes/devices';
 import { createAuthenticatedClient, createTestDevice, createTestUser } from './helpers';
 
@@ -135,6 +135,13 @@ vi.mock('../db/schema', () => ({
   users: { id: 'id', email: 'email', name: 'name', status: 'status', mfaEnabled: 'mfaEnabled' },
   devices: { id: 'id', orgId: 'orgId' },
   deviceCommands: { deviceId: 'deviceId', status: 'status', createdAt: 'createdAt' },
+  deviceDisks: { deviceId: 'deviceId', mountPoint: 'mountPoint', fsType: 'fsType', totalGb: 'totalGb', usedGb: 'usedGb', freeGb: 'freeGb', usedPercent: 'usedPercent' },
+  // filesystemCleanupRuns builds module-level SQL fragments from these columns.
+  deviceFilesystemCleanupRuns: {
+    id: 'id', deviceId: 'deviceId', kind: 'kind', status: 'status', scanPath: 'scanPath',
+    requestedAt: 'requestedAt', approvedAt: 'approvedAt', bytesReclaimed: 'bytesReclaimed',
+    error: 'error', plan: 'plan', executedActions: 'executedActions',
+  },
   alerts: { deviceId: 'deviceId', status: 'status', triggeredAt: 'triggeredAt' },
   alertRules: {},
   alertTemplates: {},

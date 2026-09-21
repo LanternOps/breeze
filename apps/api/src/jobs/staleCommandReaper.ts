@@ -27,6 +27,7 @@ import { UNINSTALL_REASON_DEVICE_REMOVE } from '../services/deviceUninstallDrain
 import { captureException } from '../services/sentry';
 import { recordBackupCommandTimeout, recordRestoreTimeout } from '../services/backupMetrics';
 import { revokeViewerSession } from '../services/viewerTokenRevocation';
+import { terminalIntentSet } from '../services/remoteDesktopTerminalIntent';
 import { backupHelperSupportsQueue } from '../services/backupHelperCapabilities';
 import { queueBackupStopCommand, CommandTypes } from '../services/commandQueue';
 import { envInt } from '../utils/envInt';
@@ -72,7 +73,7 @@ const SHORTEST_TIMEOUT_MS = 5 * 60 * 1000; // conservative SQL pre-filter
 const BACKUP_COMMAND_TYPES = new Set([
   'backup_run', 'backup_stop', 'backup_restore', 'backup_verify',
   'backup_test_restore', 'backup_cleanup', 'vm_restore_from_backup',
-  'vm_instant_boot', 'bmr_recover', 'mssql_backup', 'mssql_restore',
+  'vm_instant_boot', 'bmr_recover', 'bare_metal_rebuild', 'mssql_backup', 'mssql_restore',
   'hyperv_backup', 'hyperv_restore',
 ]);
 
@@ -98,6 +99,9 @@ const BACKUP_STALL_TIMEOUT_MS = 15 * 60 * 1000;      // progress-capable agent w
 const BACKUP_OFFLINE_GRACE_MS = 10 * 60 * 1000;      // device offline mid-job (covers reboot)
 const BACKUP_ABSOLUTE_TIMEOUT_MS = 24 * 60 * 60 * 1000; // legacy agents: no progress signal exists
 const BACKUP_PENDING_TIMEOUT_MS = 60 * 60 * 1000;    // dispatch enqueued but never flipped/failed
+// D18 W01 (#5429/§3.2 F8): a restore_jobs row created pending BEFORE its
+// command_id exists — see reapCommandlessPendingRestores's docstring.
+const RESTORE_COMMANDLESS_PENDING_TIMEOUT_MS = 60 * 60 * 1000; // 1 hour
 
 // Reads the threshold from services/deviceLiveness, its single owner (D7).
 // This file used to carry its own `= 5` copy, mirroring what was then a
@@ -524,7 +528,7 @@ export async function reapStaleDeviceCommands(): Promise<number> {
     if (BACKUP_COMMAND_TYPES.has(cmd.type)) {
       recordBackupCommandTimeout(cmd.type, 'reaper');
     }
-    if (cmd.type === 'backup_restore' || cmd.type === 'vm_restore_from_backup' || cmd.type === 'vm_instant_boot' || cmd.type === 'bmr_recover') {
+    if (cmd.type === 'backup_restore' || cmd.type === 'vm_restore_from_backup' || cmd.type === 'vm_instant_boot' || cmd.type === 'bmr_recover' || cmd.type === 'bare_metal_rebuild') {
       recordRestoreTimeout(cmd.type);
     }
 
@@ -548,6 +552,17 @@ export async function reapStaleDeviceCommands(): Promise<number> {
 
   return reaped;
 }
+
+/** Mirrors scripts.timeout_seconds' own DEFAULT 300 (schema/scripts.ts:47). */
+const DEFAULT_EXECUTION_TIMEOUT_SECONDS = 300;
+
+function resolveExecutionTimeoutSeconds(
+  row: { timeoutSeconds: number | null; scriptTimeoutSeconds: number | null },
+): number {
+  return row.timeoutSeconds ?? row.scriptTimeoutSeconds ?? DEFAULT_EXECUTION_TIMEOUT_SECONDS;
+}
+
+export const __testOnly = { resolveExecutionTimeoutSeconds, DEFAULT_EXECUTION_TIMEOUT_SECONDS };
 
 export async function reapStaleScriptExecutions(): Promise<number> {
   // #3190: this used to be a flat `300s + 5min grace` for every execution,
@@ -575,10 +590,15 @@ export async function reapStaleScriptExecutions(): Promise<number> {
       scriptId: scriptExecutions.scriptId,
       createdAt: scriptExecutions.createdAt,
       startedAt: scriptExecutions.startedAt,
-      timeoutSeconds: scripts.timeoutSeconds,
+      // Snapshot first. The join stays only to serve rows written before
+      // 2026-10-16-100200 — and it is a LEFT join now, because a
+      // proposal-backed execution has no scripts parent and an inner join
+      // would drop it from the reaper entirely (it would then run forever).
+      timeoutSeconds: scriptExecutions.timeoutSeconds,
+      scriptTimeoutSeconds: scripts.timeoutSeconds,
     })
     .from(scriptExecutions)
-    .innerJoin(scripts, eq(scripts.id, scriptExecutions.scriptId))
+    .leftJoin(scripts, eq(scripts.id, scriptExecutions.scriptId))
     .where(
       and(
         inArray(scriptExecutions.status, ['pending', 'queued', 'running']),
@@ -596,7 +616,7 @@ export async function reapStaleScriptExecutions(): Promise<number> {
     // check on a fixed constant would keep enforcing the old floor and make
     // the fix inert for exactly the short-timeout case #3190 describes.
     const timeoutMs = getCommandTimeoutMs(CommandTypes.SCRIPT, {
-      timeoutSeconds: exec.timeoutSeconds,
+      timeoutSeconds: resolveExecutionTimeoutSeconds(exec),
     });
     const referenceTime = exec.status === 'running' && exec.startedAt
       ? exec.startedAt.getTime()
@@ -1236,11 +1256,11 @@ async function reapStaleRemoteSessions(): Promise<number> {
   // Pending/connecting sessions older than 10 minutes
   const pendingResult = await db
     .update(remoteSessions)
-    .set({
+    .set(terminalIntentSet({
       status: 'disconnected',
       endedAt: new Date(),
       errorMessage: 'Session timed out: connection was never established',
-    })
+    }, 'pending'))
     .where(
       and(
         inArray(remoteSessions.status, ['pending', 'connecting']),
@@ -1252,11 +1272,11 @@ async function reapStaleRemoteSessions(): Promise<number> {
   // Zombie active sessions older than 24 hours
   const activeResult = await db
     .update(remoteSessions)
-    .set({
+    .set(terminalIntentSet({
       status: 'disconnected',
       endedAt: new Date(),
       errorMessage: 'Session timed out: exceeded maximum session duration',
-    })
+    }, 'pending'))
     .where(
       and(
         eq(remoteSessions.status, 'active'),
@@ -1481,6 +1501,46 @@ export async function reapStaleBackupJobs(): Promise<number> {
   return reaped;
 }
 
+/**
+ * D18 §3.2 (Codex F8): a restore_jobs row is created `pending` BEFORE its
+ * command_id exists (routes/backup/restore.ts:281,361) — a crash between
+ * those two statements leaves a row propagateTimedOutDeviceCommand can never
+ * reach, because that path matches restores ONLY by command_id
+ * (`WHERE command_id = $1`). Without this reaper, such a row keeps
+ * retention's restore pin alive past its linger only by luck of the linger
+ * window, then pins forever with no path to a terminal status. This rule is
+ * independent of that linger: any commandless pending row older than one
+ * hour is failed outright, regardless of the (separately configurable)
+ * BACKUP_RESTORE_PIN_LINGER_MS retention uses for its own pin check.
+ */
+export async function reapCommandlessPendingRestores(): Promise<number> {
+  const cutoff = new Date(Date.now() - RESTORE_COMMANDLESS_PENDING_TIMEOUT_MS);
+  const completedAt = new Date();
+  const reapedRows = await db
+    .update(restoreJobs)
+    .set({
+      status: 'failed',
+      completedAt,
+      updatedAt: completedAt,
+      targetConfig: sql`coalesce(${restoreJobs.targetConfig}, '{}'::jsonb) || jsonb_build_object(
+        'error', 'Restore never received a command (crashed before dispatch)'
+      )`,
+    })
+    .where(
+      and(
+        isNull(restoreJobs.commandId),
+        eq(restoreJobs.status, 'pending'),
+        lt(restoreJobs.createdAt, cutoff),
+      ),
+    )
+    .returning({ id: restoreJobs.id });
+
+  if (reapedRows.length > 0) {
+    console.log(`[StaleCommandReaper] Reaped ${reapedRows.length} commandless pending restore(s)`);
+  }
+  return reapedRows.length;
+}
+
 // ── Worker & queue management ─────────────────────────────────────
 
 /**
@@ -1502,6 +1562,7 @@ export const REAPER_DOMAINS = [
   ['softwareDeploymentResults', reapStaleSoftwareDeploymentResults],
   ['remoteSessions', reapStaleRemoteSessions],
   ['backupJobs', reapStaleBackupJobs],
+  ['commandlessRestores', reapCommandlessPendingRestores],
 ] as const;
 
 function createWorker(): Worker<ReaperJobData> {

@@ -18,7 +18,11 @@ import { eq, and, desc, sql, ilike, inArray, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import { escapeLike } from '../utils/sql';
 import type { AiTool } from './aiTools';
-import { resolveSiteAllowedDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
+import {
+  deviceScopeCondition,
+  resolveSiteAllowedDeviceIds,
+  SITE_SCOPE_EMPTY_NOTE,
+} from './aiToolsSiteScope';
 import { scheduleHuntressSync } from '../jobs/huntressSync';
 import { offlineStatusSqlList, resolvedStatusSqlList } from './huntressConstants';
 
@@ -35,6 +39,8 @@ export function registerHuntressTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'integrations',
+    searchHint: 'Huntress integration health, agent coverage and incident summary',
     definition: {
       name: 'get_huntress_status',
       description: 'Get Huntress integration health, agent coverage, and incident summary metrics.',
@@ -133,6 +139,14 @@ export function registerHuntressTools(aiTools: Map<string, AiTool>): void {
         agentScopedConditions.push(inArray(huntressAgents.deviceId, allowed));
         incidentScopedConditions.push(inArray(huntressIncidents.deviceId, allowed));
       }
+
+      // Exact-device axis, applied independently of the site axis: a device-LESS
+      // analysis run carries `allowedDeviceIds` with NO `allowedSiteIds`, so the
+      // branch above no-ops for it and every aggregate covered the whole org (#6086).
+      const agentDeviceCondition = deviceScopeCondition(auth, huntressAgents.deviceId);
+      if (agentDeviceCondition) agentScopedConditions.push(agentDeviceCondition);
+      const incidentDeviceCondition = deviceScopeCondition(auth, huntressIncidents.deviceId);
+      if (incidentDeviceCondition) incidentScopedConditions.push(incidentDeviceCondition);
       const [[integrationCount], [summaryAgentCounts], [summaryIncidentCounts], agentCounts, incidentCounts, severityCounts] = await Promise.all([
         db
           .select({
@@ -247,6 +261,8 @@ export function registerHuntressTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'integrations',
+    searchHint: 'Huntress incidents by severity, status, device or integration',
     deviceArgs: ['deviceId'],
     definition: {
       name: 'get_huntress_incidents',
@@ -308,6 +324,10 @@ export function registerHuntressTools(aiTools: Map<string, AiTool>): void {
         conditions.push(inArray(huntressIncidents.deviceId, allowed));
       }
 
+      // Exact-device axis, applied independently of the site axis (#6086).
+      const incidentDeviceCondition = deviceScopeCondition(auth, huntressIncidents.deviceId);
+      if (incidentDeviceCondition) conditions.push(incidentDeviceCondition);
+
       const where = conditions.length > 0 ? and(...conditions) : undefined;
       const [rows, [countRow]] = await Promise.all([
         db
@@ -358,6 +378,8 @@ export function registerHuntressTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 2,
+    domain: 'integrations',
+    searchHint: 'Huntress integration data: trigger a manual sync',
     definition: {
       name: 'sync_huntress_data',
       description: 'Trigger a manual Huntress sync for a partner-level integration.',

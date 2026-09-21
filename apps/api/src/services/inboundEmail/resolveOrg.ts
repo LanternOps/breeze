@@ -1,6 +1,7 @@
 import { and, eq, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { contacts, customerEmailDomains, partners } from '../../db/schema';
+import { readTicketingInboundSettings } from '@breeze/shared';
 import { createContact, matchContactByEmail, normalizeContactEmail } from '../contacts/crud';
 
 /** Lowercased domain part of an email address, or null if malformed. */
@@ -173,6 +174,10 @@ export interface PartnerInboundPolicy {
    * sender matching. Default false (preserves the quarantine-for-review behavior).
    */
   dropUnverifiedSenders: boolean;
+  // NB: fullMessageReply is deliberately NOT part of this policy. It is a purely
+  // outbound-notification concern, read from the partner settings by
+  // ticketNotifyWorker on its own send path; the ingest consumer of this policy
+  // (inboundEmailService) never uses it, so surfacing it here would be a dead field.
 }
 
 /**
@@ -193,17 +198,16 @@ export async function loadPartnerInboundPolicy(
     .from(partners)
     .where(eq(partners.id, partnerId))
     .limit(1);
-  const settings = (rows[0]?.settings ?? {}) as Record<string, unknown>;
-  const inbound =
-    (((settings.ticketing as Record<string, unknown> | undefined)?.inbound) as
-      | {
-          enabled?: boolean;
-          defaultTriageOrgId?: string | null;
-          triageUnknownSenders?: boolean;
-          unknownSenderMode?: string;
-          dropUnverifiedSenders?: boolean;
-        }
-      | undefined) ?? {};
+  // Tolerant read against the shared contract (W02-API / M14): validated data
+  // on the happy path, the raw sub-object plus a warning when a stored row
+  // doesn't match — never a throw, and never a whole-object drop. The latter
+  // matters most HERE: `enabled` defaults to true below, so collapsing a
+  // partially-malformed row to `{}` would silently re-enable ingestion for a
+  // partner that explicitly turned it off.
+  const { settings: inbound, valid } = readTicketingInboundSettings(rows[0]?.settings);
+  if (!valid) {
+    console.warn(`[inboundEmail] stored ticketing.inbound failed validation for partner ${partnerId}; reading it unvalidated`);
+  }
 
   // Prefer the explicit 3-way mode; fall back to the legacy boolean. An
   // unrecognized stored value falls through to the safe 'quarantine' default.

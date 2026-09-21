@@ -18,6 +18,7 @@ const RESOURCE_LABELS: Record<string, string> = {
   tickets: 'Tickets',
   ticket_mailbox: 'Ticket Mailbox (Microsoft 365)',
   time_entries: 'Time Entries',
+  billing_profiles: 'Rates & Work Types',
   users: 'Users',
   organizations: 'Organizations',
   connected_apps: 'Connected Applications',
@@ -31,6 +32,8 @@ const RESOURCE_LABELS: Record<string, string> = {
   quotes: 'Quotes',
   invoices: 'Invoices',
   contracts: 'Contracts',
+  documents: 'Organization Documents',
+  agreements: 'Agreements',
   sso: 'Single Sign-On',
   topology: 'Network Topology',
   vulnerabilities: 'Vulnerabilities',
@@ -40,7 +43,11 @@ const RESOURCE_LABELS: Record<string, string> = {
   variables: 'Variables',
   pam: 'Privileged Access',
   accounting: 'Accounting',
-  workspace: 'Workspace'
+  workspace: 'Workspace',
+  // Tool catalog (#5216): registering external MCP tool sources, and calling
+  // the tools they expose from AI surfaces.
+  tool_sources: 'External Tool Sources',
+  external_tools: 'External Tools'
 };
 
 const ACTION_LABELS: Record<string, string> = {
@@ -54,6 +61,7 @@ const ACTION_LABELS: Record<string, string> = {
   access: 'Access',
   export: 'Export',
   manage: 'Manage',
+  manage_billing: 'Manage Billing',
   send: 'Send',
   fulfill: 'Fulfill',
   admin: 'Administer',
@@ -63,7 +71,8 @@ const ACTION_LABELS: Record<string, string> = {
   create: 'Create',
   approve: 'Approve',
   manage_policy: 'Manage policy',
-  credentials: 'Manage Credentials'
+  credentials: 'Manage Credentials',
+  use: 'Use'
 };
 
 // GET /permissions/catalog - Returns the authoritative list of assignable

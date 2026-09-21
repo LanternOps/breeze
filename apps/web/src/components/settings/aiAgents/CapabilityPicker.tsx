@@ -245,6 +245,36 @@ export default function CapabilityPicker({
   const searchInputId = useId();
   const showNamesLabelId = useId();
 
+  // Fleet Designer (W01): the designer kind's tool allowlist is fixed
+  // (`DESIGN_TOOL_ALLOWLIST` + `submit_fleet_design`) — every reachable tool
+  // is read-only, and there is no mutating capability to choose. Rendering
+  // the full picker would offer a selectable list that can never be
+  // meaningfully populated; showing only the always-on section plus a note
+  // is what the operator actually needs to see. Placed after every hook
+  // above so the early return can never change hook call order across
+  // renders.
+  if (kind === 'designer') {
+    return (
+      <div className="space-y-3" data-testid="capability-picker">
+        {readOnlyTools.length > 0 && (
+          <details className="rounded-md border p-2" open>
+            <summary className="cursor-pointer text-xs font-medium text-muted-foreground" data-testid="capability-picker-always-on">
+              {t('aiAgentsPage.catalog.alwaysOnCount', { count: readOnlyTools.length })}
+            </summary>
+            <ul className="mt-1.5 list-disc space-y-0.5 pl-5 text-xs text-muted-foreground">
+              {readOnlyTools.map((tool) => (
+                <li key={tool.name}>{toolLabel(tool.name)}</li>
+              ))}
+            </ul>
+          </details>
+        )}
+        <p className="text-xs text-muted-foreground" data-testid="capability-picker-designer-readonly">
+          {t('aiAgentsPage.catalog.designerReadOnly')}
+        </p>
+      </div>
+    );
+  }
+
   const renderCapability = (capabilityId: string) => {
     const cap = catalog.capabilities.find((c) => c.id === capabilityId);
     if (!cap) return null;

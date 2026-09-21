@@ -6,11 +6,15 @@
  */
 
 import type Anthropic from '@anthropic-ai/sdk';
+import type { AiToolDomain } from '@breeze/shared';
 import { db } from '../db';
-import { devices, alerts } from '../db/schema';
+import { devices } from '../db/schema';
 import { eq, and, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import { validateToolInput } from './aiToolSchemas';
+import type { CaptureScope } from './artifacts/toolResultCapture';
+import { captureContextFrom, captureLargeToolResult } from './artifacts/toolResultCapture';
+import { captureException } from './sentry';
 import {
   extensionContributionRegistry,
   type ExtensionContributionRegistry,
@@ -30,6 +34,7 @@ import type { ToolExecutionContext } from './toolExecutionContext';
 // Pre-existing domain modules
 import { registerAgentLogTools } from './aiToolsAgentLogs';
 import { registerVulnerabilityTools } from './aiToolsVulnerability';
+import { registerWorkspaceTools } from './workspace/workspaceTools';
 import { registerBackupTools } from './aiToolsBackup';
 import { registerBackupVmTools } from './aiToolsBackupVm';
 import { registerConfigPolicyTools } from './aiToolsConfigPolicy';
@@ -39,6 +44,7 @@ import { registerFleetTools } from './aiToolsFleet';
 import { registerPolicyPrereqTools } from './aiToolsPolicyPrereqs';
 import { registerIntegrationTools } from './aiToolsIntegrations';
 import { registerMonitoringTools } from './aiToolsMonitoring';
+import { registerMonitorTools } from './aiToolsMonitors';
 import { registerMssqlTools } from './aiToolsMssql';
 import { registerHypervTools } from './aiToolsHyperv';
 import { registerVaultTools } from './aiToolsVault';
@@ -56,10 +62,13 @@ import { registerDnsTools } from './aiToolsDns';
 import { registerPeripheralTools } from './aiToolsPeripherals';
 import { registerBrowserTools } from './aiToolsBrowser';
 import { registerScriptTools } from './aiToolsScripts';
+import { registerScriptProposalTools } from './aiToolsScriptProposals';
 import { registerCisBenchmarkTools } from './aiToolsCisBenchmark';
 import { registerComplianceTools } from './aiToolsCompliance';
 import { registerPlaybookTools } from './aiToolsPlaybooks';
 import { registerAlertTools } from './aiToolsAlerts';
+import { registerDeliveryTools } from './aiToolsDelivery';
+import { registerRemediationTools } from './aiToolsRemediation';
 import { registerIncidentTools } from './aiToolsIncident';
 import { registerPerformanceTools } from './aiToolsPerformance';
 import { registerUserRiskTools } from './aiToolsUserRisk';
@@ -78,16 +87,17 @@ import { registerTicketingTools } from './aiToolsTicketing';
 import { registerCatalogTools } from './aiToolsCatalog';
 import { registerBillingTools } from './aiToolsBilling';
 import { registerContractTools } from './aiToolsContracts';
+import { registerDeliverableTools } from './aiToolsDeliverables';
 import { registerQuoteTools } from './aiToolsQuotes';
 import { registerOrgTools } from './aiToolsOrgs';
 import { registerPamTools } from './aiToolsPam';
+import { registerExportTools } from './aiToolsExport';
 // M365 helpdesk tools are session-aware (handler signature includes a sessionId)
 // so they are NOT registered in the `aiTools` execution registry — they run via
 // makeSessionAwareHandler in the SDK server. Their tiers still must be visible to
 // getToolTier so checkGuardrails can gate them; import the tier tables for fallback.
-import { m365ToolTiers, registerM365Tools } from './aiToolsM365';
-import { googleToolTiers } from './aiToolsGoogle';
-
+import { m365ToolSearchHints, m365ToolTiers, registerM365Tools } from './aiToolsM365';
+import { googleToolSearchHints, googleToolTiers } from './aiToolsGoogle';
 // ============================================
 // Shared Types
 // ============================================
@@ -97,6 +107,12 @@ export type AiToolTier = 1 | 2 | 3 | 4;
 export interface AiTool {
   definition: Anthropic.Tool;
   tier: AiToolTier;
+  /** Exactly one closed domain (spec 2026-09-17). Drives the prompt index, tool search grouping, MCP _meta, and per-grant domains. */
+  domain: AiToolDomain;
+  /** ≤ 120 chars, one line. What a user would say when they need this tool — synonyms, not workflow. Forwarded to the Agent SDK as `_meta['anthropic/searchHint']`. */
+  searchHint: string;
+  /** Never deferred behind tool search. Only `core` tools may set this; A-W04 owns the final set. */
+  alwaysLoad?: boolean;
   /**
    * `context` carries material a release path already verified against the
    * approval's pinned effect digest (see `toolExecutionContext.ts`). It is
@@ -131,6 +147,16 @@ export interface AiTool {
    * NOT covered by this and must still narrow results themselves.
    */
   deviceArgs?: readonly string[];
+  /**
+   * Opt this tool OUT of large-result artifact capture (execution-plane spec
+   * §5.2). Default false: an oversized result is persisted and replaced with
+   * `{ artifact, compacted }`. Set it only for a tool whose value IS its
+   * structure — the workspace tools (W03) and `export_dataset` (W04), which
+   * already return a handle and would otherwise be captured recursively.
+   * A tool that returns bulk DATA must never set this: that is the case the
+   * capture exists for.
+   */
+  captureExempt?: boolean;
 }
 
 // ============================================
@@ -209,13 +235,22 @@ export async function enforceDeviceArgs(
   return { ok: true };
 }
 
-export async function findAlertWithAccess(alertId: string, auth: AuthContext) {
-  const conditions: SQL[] = [eq(alerts.id, alertId)];
-  const orgCond = auth.orgCondition(alerts.orgId);
-  if (orgCond) conditions.push(orgCond);
-  const [alert] = await db.select().from(alerts).where(and(...conditions)).limit(1);
-  return alert || null;
-}
+/**
+ * Resolve one alert the caller may actually reach, on ALL THREE axes (org,
+ * exact-device, site).
+ *
+ * RE-EXPORT, not a second body (#6096 I6 follow-up). This module and
+ * `aiToolsAlerts.ts` each carried a byte-identical copy with their own
+ * callers — exactly the shape that drifted once already. The implementation
+ * lives in `aiToolsAlerts.ts` and is re-exported here because THIS is the
+ * import direction that already exists at runtime (this module imports
+ * `registerAlertTools` from that one); pointing the new edge the other way
+ * would close a genuine ESM cycle between the tool hub and one of its domain
+ * modules. Both public paths — `services/aiTools` and `services/aiToolsAlerts`
+ * (which `aiToolsTicketing.ts` imports) — keep working and now resolve to the
+ * SAME function object, pinned by `aiTools.findAlertWithAccess.test.ts`.
+ */
+export { findAlertWithAccess } from './aiToolsAlerts';
 
 export function resolveWritableToolOrgId(
   auth: AuthContext,
@@ -275,6 +310,7 @@ registerFleetTools(aiTools);
 registerPolicyPrereqTools(aiTools);
 registerIntegrationTools(aiTools);
 registerMonitoringTools(aiTools);
+registerMonitorTools(aiTools);
 registerDeviceTools(aiTools);
 registerNetworkTools(aiTools);
 registerSentinelOneTools(aiTools);
@@ -284,16 +320,20 @@ registerDnsTools(aiTools);
 registerPeripheralTools(aiTools);
 registerBrowserTools(aiTools);
 registerScriptTools(aiTools);
+registerScriptProposalTools(aiTools);
 registerCisBenchmarkTools(aiTools);
 registerComplianceTools(aiTools);
 registerPlaybookTools(aiTools);
 registerAlertTools(aiTools);
+registerDeliveryTools(aiTools);
 registerTicketingTools(aiTools);
 registerCatalogTools(aiTools);
 registerBillingTools(aiTools);
 registerContractTools(aiTools);
+registerDeliverableTools(aiTools);
 registerQuoteTools(aiTools);
 registerOrgTools(aiTools);
+registerRemediationTools(aiTools);
 registerIncidentTools(aiTools);
 registerPerformanceTools(aiTools);
 registerUserRiskTools(aiTools);
@@ -308,7 +348,10 @@ registerAiAgentGovernanceTools(aiTools);
 registerUITools(aiTools);
 registerPamTools(aiTools);
 registerVulnerabilityTools(aiTools);
+// Execution plane W04 — sandbox workspace tools (services/workspace/).
+registerWorkspaceTools(aiTools);
 registerM365Tools(aiTools);
+registerExportTools(aiTools);
 
 // ============================================
 // Exports
@@ -321,7 +364,8 @@ registerM365Tools(aiTools);
 // behavior identical to the pre-extraction version; see aiToolNames.ts's
 // header and aiToolNames.test.ts.
 registerReservedAiToolNamePredicate(
-  (toolName) => m365ToolTiers[toolName] !== undefined || googleToolTiers[toolName] !== undefined,
+  (toolName) => m365ToolTiers[toolName] !== undefined
+    || googleToolTiers[toolName] !== undefined,
 );
 
 /** The state-store surface the extension AI-tool gate needs (injectable for tests). */
@@ -398,6 +442,29 @@ export function getAllRegisteredToolNames(): string[] {
     ...Object.keys(m365ToolTiers),
     ...Object.keys(googleToolTiers),
   ];
+}
+
+const SESSION_AWARE_DOMAIN: AiToolDomain = 'integrations';
+
+export function getToolDomain(toolName: string): AiToolDomain | undefined {
+  const registered = aiTools.get(toolName);
+  if (registered) return registered.domain;
+  if (toolName in m365ToolTiers || toolName in googleToolTiers) return SESSION_AWARE_DOMAIN;
+  return undefined;
+}
+
+export function getToolSearchHint(toolName: string): string | undefined {
+  // This chat-only tool executes inline in the SDK bridge, outside aiTools.
+  if (toolName === 'propose_action_plan') {
+    return 'Propose a multi-step action plan for user approval before execution';
+  }
+  return aiTools.get(toolName)?.searchHint
+    ?? m365ToolSearchHints[toolName]
+    ?? googleToolSearchHints[toolName];
+}
+
+export function getToolAlwaysLoad(toolName: string): boolean {
+  return aiTools.get(toolName)?.alwaysLoad === true;
 }
 
 /**
@@ -488,6 +555,22 @@ export type ExecuteToolOptions = {
    * every other caller omits it and the handler sees `undefined`.
    */
   context?: ToolExecutionContext;
+  /**
+   * Where an oversized result should be attributed if it has to be captured
+   * (execution-plane spec §5.2). Supplied by the CHAT path only, from its
+   * active session: `auth.orgId` is null for a partner-scope login, and a chat
+   * call has no run to anchor to. The AGENT RUN path supplies nothing — its
+   * auth context is built from the run row and already carries both the org and
+   * the run id (services/aiAgents/agentAuthContext.ts).
+   *
+   * OPTIONAL AND ABSENT BY DEFAULT: a caller that omits it gets today's
+   * behaviour with no branch taken. It rides here rather than on
+   * `ToolExecutionContext` (documented as deliberately narrow, verified-release
+   * material) or on `AuthContext` (a caller identity read by every tenancy
+   * gate) — this bag is what toolExecutionContext.ts's own argument points at
+   * for unrelated per-invocation inputs.
+   */
+  capture?: CaptureScope;
 };
 
 export async function executeTool(
@@ -550,6 +633,31 @@ export async function executeTool(
   // typed without a third one, since a handler written `(input, auth, ...rest)`
   // or reading `arguments` would otherwise capture pre-verified release
   // material the host never intended to hand out.
-  if (coreTool) return coreTool.handler(effectiveInput, auth, opts?.context);
-  return (tool as RegistryAiTool).handler(effectiveInput, auth);
+  const rawResult = coreTool
+    ? await coreTool.handler(effectiveInput, auth, opts?.context)
+    : await (tool as RegistryAiTool).handler(effectiveInput, auth);
+
+  // Large-result capture (execution-plane spec §5.2). HERE, after the handler
+  // and BEFORE any compaction — the callers all compact immediately after this
+  // await, and by then the oversized bytes are gone. Deliberately NOT applied
+  // to the tool-error envelopes returned above: they are short by construction
+  // and an artifact of an error string is nonsense.
+  //
+  // A captureExempt tool and an unattributable call take the SAME null-context
+  // path, so there is exactly one passthrough branch. `captureLargeToolResult`
+  // returns the raw string unchanged for a null context, below the threshold,
+  // and with the workspace flag off, and turns a STORE failure into a typed
+  // tool error (§9) rather than the raw result inline. This catch is only for
+  // the genuinely unexpected: capture is an enhancement, never a reason a tool
+  // call fails.
+  const captureCtx = (tool as { captureExempt?: boolean }).captureExempt
+    ? null
+    : captureContextFrom(auth, opts, toolName);
+  try {
+    return await captureLargeToolResult(rawResult, captureCtx);
+  } catch (err) {
+    captureException(err);
+    console.error(`[aiTools] artifact capture failed for ${toolName}; returning the raw result`, err);
+    return rawResult;
+  }
 }

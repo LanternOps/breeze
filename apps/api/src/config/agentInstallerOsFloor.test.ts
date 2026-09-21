@@ -40,15 +40,16 @@ describe('agent installer minimum-OS LaunchCondition (#4608)', () => {
     // Windows 11 24H2 (2026-09-10). CurrentMajorVersionNumber exists only on
     // Windows 10 / Server 2016+, and registry reads bypass the shim.
     const prop = wxs.match(
-      /<Property\s+Id="([A-Za-z_0-9]+)"[^>]*>\s*<RegistrySearch\s+[^>]*Key="SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion"[^>]*Name="CurrentMajorVersionNumber"/s,
+      /<Property\s+Id="([A-Z_0-9]+)"[^>]*>\s*<RegistrySearch\s+[^>]*Key="SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion"[^>]*Name="CurrentMajorVersionNumber"/s,
     )?.[1];
     expect(prop, 'a <Property> wrapping the CurrentMajorVersionNumber RegistrySearch').toBeDefined();
     const launchConditions = [...wxs.matchAll(/<Launch\s+Condition="([^"]*)"/g)].map((m) => m[1] ?? "");
     // The Launch condition must read the property the search fills, and
     // `Installed OR` keeps repair/upgrade/uninstall unblocked.
     expect(launchConditions).toContain(`Installed OR ${prop}`);
-    // Private (mixed-case) so it cannot be preset on the msiexec command line.
-    expect(prop).not.toBe(prop?.toUpperCase());
+    // WiX WIX0012: a search property must be public (all uppercase); a
+    // mixed-case id failed the v0.112.0 release build.
+    expect(prop).toBe(prop?.toUpperCase());
     for (const cond of launchConditions) {
       // VersionNT64 (bitness) is the only allowed use, however escaped.
       const stripped = cond.replaceAll('VersionNT64', '');
@@ -69,7 +70,7 @@ describe('agent installer minimum-OS LaunchCondition (#4608)', () => {
   });
 
   it('gives a clear message naming the supported floor', () => {
-    const match = wxs.match(/<Launch\s+Condition="Installed OR WindowsCurrentMajorVersion"\s+Message="([^"]+)"/);
+    const match = wxs.match(/<Launch\s+Condition="Installed OR WINDOWS_CURRENT_MAJOR_VERSION"\s+Message="([^"]+)"/);
     expect(match).not.toBeNull();
     const message = match?.[1] ?? '';
     expect(message).toContain('Windows 10');

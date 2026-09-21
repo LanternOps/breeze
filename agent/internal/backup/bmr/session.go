@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/backup/providers"
+	"github.com/breeze-rmm/agent/internal/httputil"
 )
 
 var newHTTPClient = func() *http.Client {
@@ -86,7 +87,7 @@ func RunRecoveryWithTokenContext(ctx context.Context, cfg RecoveryConfig) (*Reco
 		effectiveCfg.TargetPaths = targetPathsFromConfig(bootstrap.TargetConfig)
 	}
 	if bootstrap.Snapshot != nil {
-		effectiveCfg.ExpectSystemState = hasSystemStateManifest(bootstrap.Snapshot.SystemStateManifest)
+		effectiveCfg.ExpectSystemState = SnapshotExpectsSystemState(bootstrap.Snapshot)
 	}
 
 	runResult, runErr := runRecovery(ctx, effectiveCfg, provider)
@@ -94,6 +95,24 @@ func RunRecoveryWithTokenContext(ctx context.Context, cfg RecoveryConfig) (*Reco
 		result = runResult
 	}
 	return completeAndReturn(runErr)
+}
+
+// BackupTypeSystemImage is the backup_snapshots.backup_type value of a
+// whole-machine capture — the only kind bare-metal recovery can rebuild.
+const BackupTypeSystemImage = "system_image"
+
+// SnapshotExpectsSystemState is the single derivation every bootstrap-driven
+// recovery path (bmr-recover, breeze-backup rebuild --token, the recovery
+// console) uses to decide whether the snapshot MUST carry system state: a
+// system_image backup always does, and any snapshot advertising a state
+// manifest does. Keying on the manifest column alone (the pre-#5412 rule)
+// let a system_image snapshot whose state collection failed — NULL
+// manifest — recover "completed" with no OS state applied.
+func SnapshotExpectsSystemState(snap *AuthenticatedSnapshot) bool {
+	if snap == nil {
+		return false
+	}
+	return snap.BackupType == BackupTypeSystemImage || hasSystemStateManifest(snap.SystemStateManifest)
 }
 
 // hasSystemStateManifest reports whether raw (bootstrap.Snapshot's
@@ -112,8 +131,117 @@ func hasSystemStateManifest(raw json.RawMessage) bool {
 	return !bytes.Equal(trimmed, []byte("null"))
 }
 
+// ErrCodeInvalid is returned by ExchangeRecoveryCode when the server
+// rejects a recovery code (unknown, already used, expired, or wrong
+// status) — always a 404 from POST /bmr/recover/exchange, which never
+// distinguishes those reasons to an unauthenticated caller (spec §8.1).
+var ErrCodeInvalid = fmt.Errorf("bmr: recovery code invalid or already used")
+
+// ExchangeRecoveryCode exchanges a one-time recovery code (typed by the
+// operator into the recovery console) for a recovery token and its
+// bootstrap, via POST /api/v1/backup/bmr/recover/exchange. This is the
+// console's Deps.Exchange seam (agent/internal/recoveryconsole).
+func ExchangeRecoveryCode(ctx context.Context, serverURL, code string) (string, *BootstrapResponse, error) {
+	payload, err := json.Marshal(map[string]string{"code": code})
+	if err != nil {
+		return "", nil, fmt.Errorf("bmr: marshal exchange request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, buildBMRURL(serverURL, "/api/v1/backup/bmr/recover/exchange"), bytes.NewReader(payload))
+	if err != nil {
+		return "", nil, fmt.Errorf("bmr: create exchange request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := newHTTPClient().Do(req)
+	if err != nil {
+		return "", nil, fmt.Errorf("bmr: exchange request failed: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", nil, fmt.Errorf("bmr: read exchange response: %w", err)
+	}
+
+	if resp.StatusCode == http.StatusNotFound {
+		return "", nil, ErrCodeInvalid
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		var errorBody map[string]any
+		if err := json.Unmarshal(data, &errorBody); err == nil {
+			if message, ok := errorBody["error"].(string); ok && message != "" {
+				return "", nil, fmt.Errorf("bmr: exchange failed: %s", message)
+			}
+		}
+		return "", nil, fmt.Errorf("bmr: exchange failed with status %d", resp.StatusCode)
+	}
+
+	var body struct {
+		Token     string          `json:"token"`
+		Bootstrap json.RawMessage `json:"bootstrap"`
+	}
+	if err := json.Unmarshal(data, &body); err != nil {
+		return "", nil, fmt.Errorf("bmr: decode exchange response: %w", err)
+	}
+	if body.Token == "" || len(body.Bootstrap) == 0 {
+		return "", nil, fmt.Errorf("bmr: exchange response missing token or bootstrap")
+	}
+	// The server returns the same authenticate ENVELOPE here as
+	// /bmr/recover/authenticate does (flat legacy fields + a nested versioned
+	// `bootstrap` carrying download/recovery). Decode it through the shared
+	// envelope-aware decoder; a bare Unmarshal into BootstrapResponse read
+	// only the flat outer fields, left Download/Recovery nil, and the console
+	// failed AFTER the one-time code had been consumed (KIT proof, #5493).
+	bootstrap, err := decodeBootstrapResponse(body.Bootstrap)
+	if err != nil {
+		return "", nil, fmt.Errorf("bmr: decode exchange bootstrap: %w", err)
+	}
+	return body.Token, bootstrap, nil
+}
+
 func authenticateRecoverySession(serverURL, token string) (*BootstrapResponse, error) {
 	return authenticateRecoverySessionContext(context.Background(), serverURL, token)
+}
+
+// AuthenticateRecoverySession is the exported wrapper of
+// authenticateRecoverySessionContext for token-driven bare-metal recovery
+// (W04a): breeze-backup rebuild --token calls this to fetch a fresh
+// bootstrap (device/snapshot/provider access + the Recovery binding) for an
+// already-minted recovery token.
+func AuthenticateRecoverySession(ctx context.Context, serverURL, token string) (*BootstrapResponse, error) {
+	return authenticateRecoverySessionContext(ctx, serverURL, token)
+}
+
+// NewRecoveryProvider builds the backup provider that downloads snapshot
+// content through the server's authenticated recovery-download proxy,
+// exactly like RunRecoveryWithTokenContext's own bootstrap.Download branch
+// above. Returns an error when the bootstrap carries no download descriptor
+// (a token authenticated against a provider config the helper must build
+// itself instead — not the bare-metal recovery path).
+func NewRecoveryProvider(ctx context.Context, serverURL, token string, bs *BootstrapResponse) (providers.BackupProvider, error) {
+	if bs == nil || bs.Download == nil {
+		return nil, fmt.Errorf("bmr: bootstrap has no download descriptor")
+	}
+	return newRecoveryDownloadProvider(ctx, serverURL, token, bs.Download), nil
+}
+
+// authenticateStatusError is a non-2xx answer from /bmr/recover/authenticate,
+// typed so the download provider's session refresher can tell a rate limit
+// (429, with the server's Retry-After) from a transient server error (5xx)
+// from a rejected token (any other 4xx) without matching error text. Error()
+// keeps the exact strings this function returned before the type existed.
+type authenticateStatusError struct {
+	statusCode int
+	message    string
+	retryAfter time.Duration
+}
+
+func (e *authenticateStatusError) Error() string {
+	if e.message != "" {
+		return fmt.Sprintf("bmr: authenticate failed: %s", e.message)
+	}
+	return fmt.Sprintf("bmr: authenticate failed with status %d", e.statusCode)
 }
 
 func authenticateRecoverySessionContext(ctx context.Context, serverURL, token string) (*BootstrapResponse, error) {
@@ -140,13 +268,17 @@ func authenticateRecoverySessionContext(ctx context.Context, serverURL, token st
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		statusErr := &authenticateStatusError{
+			statusCode: resp.StatusCode,
+			retryAfter: httputil.ParseRetryAfter(resp.Header, time.Now()),
+		}
 		var errorBody map[string]any
 		if err := json.Unmarshal(data, &errorBody); err == nil {
-			if message, ok := errorBody["error"].(string); ok && message != "" {
-				return nil, fmt.Errorf("bmr: authenticate failed: %s", message)
+			if message, ok := errorBody["error"].(string); ok {
+				statusErr.message = message
 			}
 		}
-		return nil, fmt.Errorf("bmr: authenticate failed with status %d", resp.StatusCode)
+		return nil, statusErr
 	}
 	body, err := decodeBootstrapResponse(data)
 	if err != nil {

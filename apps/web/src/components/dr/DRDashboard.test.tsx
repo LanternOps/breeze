@@ -138,3 +138,60 @@ describe('DRDashboard', () => {
     expect(screen.getByText('DR Plan Editor')).toBeTruthy();
   });
 });
+
+// #6382: executing a plan is the highest-stakes button on this page. A refusal
+// used to render the server's machine token verbatim ("resource_not_found"),
+// which named neither the missing prerequisite nor the remedy.
+describe('DRDashboard execute failure copy (#6382)', () => {
+  const planRow = {
+    id: 'plan-1',
+    name: 'Primary Site Failover',
+    description: null,
+    status: 'active',
+    rpoTargetMinutes: 15,
+    rtoTargetMinutes: 60,
+    createdAt: '2026-03-29T00:00:00.000Z',
+    updatedAt: '2026-03-29T00:00:00.000Z',
+  };
+
+  const mockExecuteFailure = (body: unknown, status: number) => {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init as RequestInit | undefined)?.method ?? 'GET';
+      if (url === '/dr/plans') return makeJsonResponse({ data: [planRow] });
+      if (url === '/dr/plans/plan-1' && method === 'GET') return makeJsonResponse({ data: { groups: [] } });
+      if (url === '/dr/executions?limit=100') return makeJsonResponse({ data: [] });
+      if (url === '/dr/plans/plan-1/execute') return makeJsonResponse(body, false, status);
+      return makeJsonResponse({}, false, 404);
+    });
+  };
+
+  const startExecution = async () => {
+    render(<DRDashboard />);
+    fireEvent.click((await screen.findByText('Execute')).closest('button')!);
+    fireEvent.click(await screen.findByRole('button', { name: /Start Execution/i }));
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    window.location.hash = '';
+  });
+
+  it('explains a missing restorable snapshot instead of echoing the token', async () => {
+    mockExecuteFailure({ error: 'no_restorable_snapshot' }, 404);
+    await startExecution();
+
+    expect(
+      await screen.findByText(/no restorable backup snapshot/i)
+    ).toBeInTheDocument();
+    expect(screen.queryByText('no_restorable_snapshot')).toBeNull();
+  });
+
+  it('explains a missing backup:write permission instead of echoing the token', async () => {
+    mockExecuteFailure({ error: 'backup_write_required' }, 403);
+    await startExecution();
+
+    expect(await screen.findByText(/backup write permission/i)).toBeInTheDocument();
+    expect(screen.queryByText('backup_write_required')).toBeNull();
+  });
+});

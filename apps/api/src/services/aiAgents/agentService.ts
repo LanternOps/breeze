@@ -1,5 +1,13 @@
 import { and, desc, eq, isNull, or } from 'drizzle-orm';
-import type { AiAgentActAssets, AiAgentRecipients, CreateAiAgentInput, UpdateAiAgentInput } from '@breeze/shared';
+import {
+  allowedModesForKind,
+  type AiAgentActAssets,
+  type AiAgentKind,
+  type AiAgentRecipients,
+  type AiAgentTriggers,
+  type CreateAiAgentInput,
+  type UpdateAiAgentInput,
+} from '@breeze/shared';
 import { db } from '../../db';
 import { aiAgents, type AiAgentRow } from '../../db/schema';
 import type { AuthContext } from '../../middleware/auth';
@@ -18,6 +26,7 @@ import {
 } from './managedAutomation';
 import { hasResolvableAgentRecipient, validateAgentRecipients } from './recipients';
 import { assertScriptIdsAuthorizable } from './scriptAuthorization';
+import { ensureDefaultPatchSchedule } from './scheduleService';
 
 export class UnsupportedAgentModeError extends Error {
   readonly code = 'mode_not_supported';
@@ -25,6 +34,26 @@ export class UnsupportedAgentModeError extends Error {
   constructor(mode: string) {
     super(`mode_not_supported: ${mode}`);
     this.name = 'UnsupportedAgentModeError';
+  }
+}
+
+/**
+ * Fleet Designer (W01) — distinct from `UnsupportedAgentModeError` above:
+ * `shadow` IS a generally-supported mode (`isSupportedAgentMode` passes it),
+ * it is just not available for a `designer` agent specifically
+ * (`allowedModesForKind`, packages/shared/types/aiAgents.ts). `kind` cannot
+ * be patched, so the only place this can be checked is against the
+ * EXISTING row's kind — `updateAgent` below is that one place. Same
+ * `createAiAgentSchema`/`allowedModesForKind` single source of truth the
+ * create route's zod `superRefine` uses, so create and update can never
+ * disagree about which modes a kind allows.
+ */
+export class ModeNotAllowedForKindError extends Error {
+  readonly code = 'mode_not_allowed_for_kind';
+
+  constructor(mode: string, kind: string) {
+    super(`mode ${mode} is not available for a ${kind} agent`);
+    this.name = 'ModeNotAllowedForKindError';
   }
 }
 
@@ -192,6 +221,7 @@ function assertSupervisedActionKeysValid(keys: string[] | undefined): void {
 async function assertActPrerequisites(
   owner: AgentOwner,
   resolved: {
+    kind: AiAgentKind;
     mode: string;
     toolAllowlist: string[];
     actAssets: Partial<AiAgentActAssets>;
@@ -203,7 +233,12 @@ async function assertActPrerequisites(
   const missing: Array<'recipient' | 'act_eligible_tool'> = [];
   const hasRecipient = await hasResolvableAgentRecipient(owner, resolved.recipients);
   if (!hasRecipient) missing.push('recipient');
-  if (!hasActEligibleSurface(resolved.toolAllowlist, resolved.actAssets)) {
+  // Fleet Designer (W01): `act` for a designer means "run and write reports" —
+  // the profile has no mutating surface by construction (designProfile.ts, a
+  // floor of read-only tools plus submit_fleet_design), so requiring an
+  // act-eligible tool would make the kind unreachable. The recipient
+  // requirement stays: the finished design is delivered to someone.
+  if (resolved.kind !== 'designer' && !hasActEligibleSurface(resolved.toolAllowlist, resolved.actAssets)) {
     missing.push('act_eligible_tool');
   }
   if (missing.length > 0) throw new ActPrerequisitesNotMetError(missing);
@@ -251,6 +286,23 @@ function createPolicyColumns(input: CreateAiAgentInput): Partial<typeof aiAgents
   };
 }
 
+/**
+ * AI patch agent W04 (#5750): the shallow trigger merge, plus the one
+ * clear-to-unrestricted sentinel — `alertCategories: null` DELETES the stored
+ * key (an absent key keeps it; `[]` never parses). A stored row never carries
+ * the null.
+ */
+function mergeTriggers(
+  stored: AiAgentTriggers,
+  patch: NonNullable<UpdateAiAgentInput['triggers']>,
+): AiAgentTriggers {
+  const { alertCategories, ...rest } = patch;
+  const merged: AiAgentTriggers = { ...stored, ...rest };
+  if (alertCategories === null) delete merged.alertCategories;
+  else if (alertCategories !== undefined) merged.alertCategories = alertCategories;
+  return merged;
+}
+
 function updatePolicyColumns(
   existing: AiAgentRow,
   input: UpdateAiAgentInput,
@@ -266,7 +318,7 @@ function updatePolicyColumns(
       : { limits: { ...stored.limits, ...input.limits } }),
     ...(input.triggers === undefined
       ? {}
-      : { triggers: { ...stored.triggers, ...input.triggers } }),
+      : { triggers: mergeTriggers(stored.triggers, input.triggers) }),
     ...(input.recipients === undefined
       ? {}
       : { recipients: { ...stored.recipients, ...input.recipients } }),
@@ -547,6 +599,29 @@ export async function withAgentRowLocked<T>(
   return fn(row);
 }
 
+/**
+ * AI patch agent W01 (#5747, OD-9 A) — give an enabled partner-wide patch
+ * agent its default 02:00 schedule. Best effort by design: a failure here
+ * must NEVER fail the create/enable, so it runs in its own SAVEPOINT
+ * (`db.transaction`) with the savepoint's `tx` as the executor — a plain
+ * try/catch around an ambient-`db` statement would not be enough, because
+ * postgres-js rethrows a failed statement when the enclosing request
+ * transaction ends even if the caller caught it (see `fixWatch.ts`'s
+ * `demoteRecurredKeys`). `ensureDefaultPatchSchedule` itself decides
+ * applicability (partner-wide, enabled, not deleted) and idempotency.
+ */
+async function ensureDefaultPatchScheduleSafely(row: AiAgentRow): Promise<void> {
+  if (row.kind !== 'patch') return;
+  try {
+    await db.transaction(async (tx) => ensureDefaultPatchSchedule(row, tx));
+  } catch (error) {
+    console.warn('[aiAgents] could not create the default patch schedule — the agent change still stands', {
+      agentId: row.id, error,
+    });
+    captureException(error, undefined, { service: 'aiAgents', operation: 'ensureDefaultPatchSchedule', agentId: row.id });
+  }
+}
+
 export async function createAgent(
   auth: AuthContext,
   owner: AgentOwner,
@@ -585,6 +660,7 @@ export async function createAgent(
   // exactly what THIS create will persist (input's own fields are already
   // complete: createAiAgentSchema materializes every nested default).
   await assertActPrerequisites(owner, {
+    kind: input.kind,
     mode: input.mode,
     toolAllowlist: input.toolAllowlist,
     actAssets: input.actAssets,
@@ -630,6 +706,7 @@ export async function createAgent(
   // transaction, so a wiring failure must roll the agent insert back rather
   // than leave an audited agent with no trigger automation.
   await ensureManagedTriageAutomation(row);
+  await ensureDefaultPatchScheduleSafely(row);
   await recordAgentMutation(row, auth, 'created');
   return row;
 }
@@ -651,6 +728,19 @@ export async function updateAgent(
       throw new AgentAccessDeniedError('Agent not found');
     }
     assertAgentWriteAllowed(auth, existing);
+
+    // Fleet Designer (W01): `kind` is immutable on PATCH, so this is the
+    // only place a mode-vs-kind mismatch can be caught for an update — the
+    // create route's zod schema handles it there via `allowedModesForKind`
+    // in its `superRefine`, but that never runs for a PATCH body. Gated on
+    // `isSupportedAgentMode` first so an outright-bogus mode (never a real
+    // `AiAgentMode` at all) still surfaces as `UnsupportedAgentModeError`
+    // from `scalarPolicyColumns` below, not this kind-specific error — the
+    // two checks answer different questions and must not race for which one
+    // throws first.
+    if (input.mode !== undefined && isSupportedAgentMode(input.mode) && !allowedModesForKind(existing.kind).includes(input.mode)) {
+      throw new ModeNotAllowedForKindError(input.mode, existing.kind);
+    }
 
     const stored = normalizeAgentPolicy(existing);
     const owner: AgentOwner = { orgId: existing.orgId, partnerId: existing.partnerId };
@@ -696,6 +786,7 @@ export async function updateAgent(
     // passes; a PATCH that narrows the allowlist/actAssets/recipients out from
     // under an existing act-mode agent is refused before the UPDATE runs.
     await assertActPrerequisites(owner, {
+      kind: existing.kind,
       mode: input.mode ?? stored.mode,
       toolAllowlist: input.toolAllowlist ?? stored.toolAllowlist,
       actAssets: input.actAssets === undefined ? stored.actAssets : { ...stored.actAssets, ...input.actAssets },
@@ -721,6 +812,11 @@ export async function updateAgent(
     if (input.enabled !== undefined && input.enabled !== existing.enabled) managedPatch.enabled = row.enabled;
     if (managedPatch.name !== undefined || managedPatch.enabled !== undefined) {
       await syncManagedAutomation(row.id, managedPatch);
+    }
+    // AI patch agent W01: the enabled false -> true transition is the moment
+    // a patch agent should start working — see ensureDefaultPatchScheduleSafely.
+    if (!existing.enabled && row.enabled) {
+      await ensureDefaultPatchScheduleSafely(row);
     }
     await recordAgentMutation(row, auth, 'updated');
     return row;

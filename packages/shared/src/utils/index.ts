@@ -6,6 +6,9 @@ export * from './semverCompare';
 export * from './timezone';
 export * from './assuranceLevel';
 export * from './ticketTemplate';
+export * from './alertTemplate';
+export * from './emailTemplates';
+export * from './hrefSafety';
 export * from './quoteMath';
 export * from './quoteFulfillment';
 export * from './depositMath';
@@ -35,3 +38,10 @@ export {
   type ExclusionPatternVerdict,
   type ExclusionPatternProblem,
 } from './backupExclusionGlob';
+export * from './hardwareLifecycle';
+export * from './identityAccess';
+export * from './threatDetection';
+export * from './endpointManagement';
+export * from './vulnerabilityManagement';
+export * from './cleanupRules';
+export * from './scanPath';

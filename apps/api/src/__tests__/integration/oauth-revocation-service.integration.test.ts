@@ -29,6 +29,8 @@ import {
   oauthSessions,
 } from '../../db/schema';
 import { revokeClientFamilies } from '../../oauth/revocationService';
+import { BreezeOidcAdapter } from '../../oauth/adapter';
+import { isOAuthGrantDurablyActive } from '../../oauth/grantStatus';
 import { isGrantRevoked } from '../../oauth/revocationCache';
 import { createOrganization, createPartner, createUser } from './db-utils';
 import { getTestDb } from './setup';
@@ -84,6 +86,15 @@ describe('revokeClientFamilies (integration)', () => {
     await getTestDb().insert(oauthClientPartnerGrants).values({ clientId, partnerId: partner.id });
     // Grant with NO refresh token — the auth-code access-token path.
     await seedGrant({ id: 'grant-code-only', clientId, accountId: user.id, partnerId: partner.id, orgId: org.id });
+    await getTestDb().insert(oauthAuthorizationCodes).values({
+      id: 'live-code-before-disconnect',
+      userId: user.id,
+      clientId,
+      partnerId: partner.id,
+      orgId: org.id,
+      payload: { accountId: user.id, clientId, grantId: 'grant-code-only' },
+      expiresAt: future(),
+    });
 
     const result = await revokeClientFamilies(clientId, { kind: 'partner', partnerId: partner.id });
 
@@ -91,6 +102,16 @@ describe('revokeClientFamilies (integration)', () => {
     expect((await grantRow('grant-code-only'))?.revokedAt).not.toBeNull();
     // Grant marker is live — bearer auth would reject an already-minted JWT.
     expect(await isGrantRevoked('grant-code-only')).toBe(true);
+    expect(await isOAuthGrantDurablyActive('grant-code-only')).toBe(false);
+    const [code] = await getTestDb()
+      .select({ consumedAt: oauthAuthorizationCodes.consumedAt })
+      .from(oauthAuthorizationCodes)
+      .where(eq(oauthAuthorizationCodes.id, 'live-code-before-disconnect'));
+    expect(code?.consumedAt).not.toBeNull();
+    await expect(
+      new BreezeOidcAdapter('AuthorizationCode').find('live-code-before-disconnect'),
+    ).resolves.toBeUndefined();
+    await expect(new BreezeOidcAdapter('Grant').find('grant-code-only')).resolves.toBeUndefined();
     // This partner's join row is gone; the shared client row stays.
     const join = await getTestDb().select().from(oauthClientPartnerGrants).where(eq(oauthClientPartnerGrants.clientId, clientId));
     expect(join).toHaveLength(0);
@@ -122,6 +143,8 @@ describe('revokeClientFamilies (integration)', () => {
     expect((await grantRow('grant-p2'))?.revokedAt).toBeNull();
     expect(await isGrantRevoked('grant-p1')).toBe(true);
     expect(await isGrantRevoked('grant-p2')).toBe(false);
+    expect(await isOAuthGrantDurablyActive('grant-p1')).toBe(false);
+    expect(await isOAuthGrantDurablyActive('grant-p2')).toBe(true);
     const joins = await getTestDb().select({ partnerId: oauthClientPartnerGrants.partnerId }).from(oauthClientPartnerGrants).where(eq(oauthClientPartnerGrants.clientId, clientId));
     expect(joins.map((j) => j.partnerId)).toEqual([p2.id]);
   });

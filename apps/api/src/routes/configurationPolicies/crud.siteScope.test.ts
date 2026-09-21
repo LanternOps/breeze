@@ -6,13 +6,11 @@ const {
   updateConfigPolicyMock,
   deleteConfigPolicyMock,
   dbSelectMock,
-  getParentLinkFeatureTypesMock,
 } = vi.hoisted(() => ({
   createConfigPolicyMock: vi.fn(),
   updateConfigPolicyMock: vi.fn(),
   deleteConfigPolicyMock: vi.fn(),
   dbSelectMock: vi.fn(),
-  getParentLinkFeatureTypesMock: vi.fn(),
 }));
 
 vi.mock('../../services/configurationPolicy', async (importOriginal) => {
@@ -22,7 +20,6 @@ vi.mock('../../services/configurationPolicy', async (importOriginal) => {
     createConfigPolicy: createConfigPolicyMock,
     updateConfigPolicy: updateConfigPolicyMock,
     deleteConfigPolicy: deleteConfigPolicyMock,
-    getParentLinkFeatureTypes: getParentLinkFeatureTypesMock,
   };
 });
 
@@ -40,7 +37,7 @@ vi.mock('../../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => next()),
   requireScope: vi.fn(() => (c: any, next: any) => next()),
   requirePermission: vi.fn(() => (c: any, next: any) => next()),
-  hasSatisfiedMfa: vi.fn(() => true),
+  requireMfa: vi.fn(() => (_c: any, next: any) => next()),
 }));
 
 import { crudRoutes } from './crud';
@@ -75,7 +72,6 @@ function app(auth: any) {
 describe('configuration policies CRUD — site-ceiling gate', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    getParentLinkFeatureTypesMock.mockResolvedValue([]);
   });
 
   it.each([

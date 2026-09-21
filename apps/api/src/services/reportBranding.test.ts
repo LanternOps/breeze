@@ -7,6 +7,15 @@ vi.mock('../db', () => ({
   },
 }));
 
+// The partner hop goes through readWithPartnerAxisVisibility (#2822); the org
+// hop must NOT. Mocked as a pass-through so the chain order below is the only
+// thing under test here — the real escape is proved in
+// __tests__/integration/reportBrandingPartnerVisibility.integration.test.ts.
+const readWithPartnerAxisVisibilityMock = vi.fn(async <T>(fn: () => Promise<T>) => fn());
+vi.mock('../db/partnerAxisRead', () => ({
+  readWithPartnerAxisVisibility: <T>(fn: () => Promise<T>) => readWithPartnerAxisVisibilityMock(fn),
+}));
+
 vi.mock('../db/schema', () => ({
   organizations: {
     id: 'organizations.id',
@@ -22,6 +31,7 @@ vi.mock('../db/schema', () => ({
 import { loadReportBrandingForOrg, pngAspectFromDataUrl } from './reportBranding';
 
 const ORG_ID = '22222222-2222-2222-2222-222222222222';
+const PARTNER_ID = '33333333-3333-3333-3333-333333333333';
 
 function selectChain(rows: unknown[]) {
   const chain: Record<string, unknown> = {};
@@ -30,6 +40,13 @@ function selectChain(rows: unknown[]) {
   chain.where = vi.fn(() => chain);
   chain.limit = vi.fn(async () => rows);
   return chain;
+}
+
+/** Stage the two hops in order: the org lookup, then the partner lookup. */
+function stage(orgRows: unknown[], partnerRows: unknown[] = []) {
+  selectMock
+    .mockReturnValueOnce(selectChain(orgRows))
+    .mockReturnValueOnce(selectChain(partnerRows));
 }
 
 /** Build a minimal-but-valid PNG data URL with the given intrinsic dimensions
@@ -46,6 +63,11 @@ function png(w: number, h: number): string {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // mockClear leaves queued `mockReturnValueOnce` values in place, and a test
+  // that stages two hops but consumes one would otherwise hand its leftover
+  // chain to the NEXT test's org lookup. Reset the queues explicitly.
+  selectMock.mockReset();
+  readWithPartnerAxisVisibilityMock.mockReset().mockImplementation(async (fn: () => Promise<unknown>) => fn());
 });
 
 describe('pngAspectFromDataUrl', () => {
@@ -64,33 +86,56 @@ describe('pngAspectFromDataUrl', () => {
 });
 
 describe('loadReportBrandingForOrg', () => {
-  it('uploaded PNG logo: name + logoDataUrl + logoAspect all resolve', async () => {
-    selectMock.mockReturnValueOnce(
-      selectChain([
-        { partnerName: 'Olive MSP', partnerSettings: { branding: { logoUrl: png(1, 2) } } },
-      ]),
-    );
+  it('passes hex brand colours through and drops anything that is not hex', async () => {
+    stage([{ partnerId: PARTNER_ID }], [{ partnerName: 'Olive MSP', partnerSettings: { branding: { primaryColor: '#7a1d18', secondaryColor: 'orange' } } }]);
     const branding = await loadReportBrandingForOrg(ORG_ID);
-    expect(branding).toEqual({ name: 'Olive MSP', logoDataUrl: png(1, 2), logoAspect: 0.5 });
+    expect(branding.primaryColor).toBe('#7a1d18');
+    expect(branding.accentColor).toBeNull();
+  });
+
+  it('uploaded PNG logo: name + logoDataUrl + logoAspect all resolve', async () => {
+    stage([{ partnerId: PARTNER_ID }], [
+      { partnerName: 'Olive MSP', partnerSettings: { branding: { logoUrl: png(1, 2) } } },
+    ]);
+    const branding = await loadReportBrandingForOrg(ORG_ID);
+    expect(branding).toEqual({ name: 'Olive MSP', logoDataUrl: png(1, 2), logoAspect: 0.5, primaryColor: null, accentColor: null, contactEmail: null, contactName: null });
   });
 
   it('external https logo URL: name resolves, logo degrades to null (server cannot format-verify it)', async () => {
-    selectMock.mockReturnValueOnce(
-      selectChain([
-        { partnerName: 'Olive MSP', partnerSettings: { branding: { logoUrl: 'https://cdn.example.com/logo.png' } } },
-      ]),
-    );
+    stage([{ partnerId: PARTNER_ID }], [
+      { partnerName: 'Olive MSP', partnerSettings: { branding: { logoUrl: 'https://cdn.example.com/logo.png' } } },
+    ]);
     const branding = await loadReportBrandingForOrg(ORG_ID);
-    expect(branding).toEqual({ name: 'Olive MSP', logoDataUrl: null, logoAspect: null });
+    expect(branding).toEqual({ name: 'Olive MSP', logoDataUrl: null, logoAspect: null, primaryColor: null, accentColor: null, contactEmail: null, contactName: null });
   });
 
-  it('org has no partner: all-null branding', async () => {
-    selectMock.mockReturnValueOnce(selectChain([{ partnerName: null, partnerSettings: null }]));
-    expect(await loadReportBrandingForOrg(ORG_ID)).toEqual({ name: null, logoDataUrl: null, logoAspect: null });
+  it('contact name + email ride along from partner settings (the portal closing line, #6078)', async () => {
+    stage([{ partnerId: PARTNER_ID }], [
+      { partnerName: 'Olive MSP', partnerSettings: { contact: { name: ' Dana Ops ', email: ' dana@olive.example ' } } },
+    ]);
+    const branding = await loadReportBrandingForOrg(ORG_ID);
+    expect(branding.contactName).toBe('Dana Ops');
+    expect(branding.contactEmail).toBe('dana@olive.example');
   });
 
-  it('org row missing entirely: all-null branding', async () => {
-    selectMock.mockReturnValueOnce(selectChain([]));
+  it('org has no partner: all-null branding, and the partner read never happens', async () => {
+    stage([{ partnerId: null }]);
     expect(await loadReportBrandingForOrg(ORG_ID)).toEqual({ name: null, logoDataUrl: null, logoAspect: null });
+    expect(readWithPartnerAxisVisibilityMock).not.toHaveBeenCalled();
+    expect(selectMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('org row missing entirely (cross-tenant orgId hidden by RLS): all-null branding, no partner read', async () => {
+    stage([]);
+    expect(await loadReportBrandingForOrg(ORG_ID)).toEqual({ name: null, logoDataUrl: null, logoAspect: null });
+    expect(readWithPartnerAxisVisibilityMock).not.toHaveBeenCalled();
+    expect(selectMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('reads the partner row through readWithPartnerAxisVisibility ONLY — the org read runs outside it (#2822)', async () => {
+    stage([{ partnerId: PARTNER_ID }], [{ partnerName: 'Olive MSP', partnerSettings: {} }]);
+    await loadReportBrandingForOrg(ORG_ID);
+    expect(readWithPartnerAxisVisibilityMock).toHaveBeenCalledTimes(1);
+    expect(selectMock).toHaveBeenCalledTimes(2);
   });
 });

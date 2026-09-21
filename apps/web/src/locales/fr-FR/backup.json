@@ -405,8 +405,7 @@
     "signedAt": "Signé à :",
     "noRecoveryBundlesHaveBeenCreatedForThis": "Aucun pack de récupération n’a encore été créé pour ce jeton.",
     "bootableRecoveryMedia": "Supports de récupération démarrables",
-    "buildASignedLinuxAmd64RecoveryIsoFrom": "Créez une image ISO de récupération Linux/amd64 signée à partir du dernier paquet de récupération signé.",
-    "createIso": "Créer un ISO",
+    "bootableRecoveryMediaDescription": "Images ISO de récupération Breeze signées, générées et publiées à chaque version. Gravez-en une sur une clé USB ou associez-la comme support virtuel pour démarrer la console de récupération guidée.",
     "downloadIso": "Télécharger ISO",
     "via": "via",
     "noBootableRecoveryMediaHasBeenCreatedFor": "Aucun média de récupération bootable n’a encore été créé pour ce jeton.",
@@ -466,9 +465,7 @@
     "failedToCopyToClipboard": "Impossible de copier dans le presse-papiers.",
     "failedToCreateRecoveryBundle": "Impossible de créer un kit de récupération",
     "failedToDownloadRecoveryBundle": "Impossible de télécharger le kit de récupération",
-    "failedToCreateBootableRecoveryMedia": "Impossible de créer un support de récupération amorçable",
     "failedToDownloadRecoveryBundleSignature": "Impossible de télécharger la signature du kit de récupération",
-    "failedToDownloadBootMediaSignature": "Impossible de télécharger la signature du support de démarrage",
     "failedToDownloadBootableRecoveryMedia": "Impossible de télécharger un support de récupération amorçable",
     "copied": "Copié",
     "copyCommand": "Copier la commande",
@@ -498,6 +495,8 @@
     "originalLocation": "Emplacement d’origine",
     "restoreFilesInPlace": "Restaurez les fichiers à leur emplacement d’origine.",
     "alternatePath": "Chemin alternatif",
+    "alternatePathPlaceholder": "p. ex. D:\\Restored ou /var/restore",
+    "alternatePathRequired": "Saisissez un chemin de destination pour continuer.",
     "restoreToANewFolder": "Restaurez les fichiers dans un nouveau dossier.",
     "reviewConfirm": "Vérifiez et confirmez",
     "confirmTheRestoreSummaryBeforeStarting": "Confirmez le résumé de la restauration avant de commencer.",
@@ -620,7 +619,12 @@
     "cpu": "CPU,",
     "mbRam": "MB RAM,",
     "gbDisk": "Disque GB",
-    "mode": "Mode"
+    "mode": "Mode",
+    "rebuildHost": "Hôte de reconstruction",
+    "outputPath": "Chemin de sortie",
+    "rebuildEngine": "Moteur de reconstruction (Linux)",
+    "manualAttachNote": "Attachez le VHDX à une VM Hyper-V manuellement ; la création automatique de VM pour les invités Linux arrivera avec le moteur Windows.",
+    "newIdentityNote": "L'image reconstruite reçoit toujours une nouvelle identité de machine et ne reprend jamais l'identité de l'appareil d'origine."
   },
   "vMRestoreSpecsStep": {
     "vmSpecifications": "Spécifications VM",
@@ -658,7 +662,16 @@
     "bootsTheVmDirectlyFromTheBackupStorage": "Démarre la VM directement depuis le stockage de sauvegarde. Prêt dans quelques secondes. La migration en arrière-plan copie les données vers l’hôte.",
     "back": "Retour",
     "continue": "Continuer",
-    "starting": "Commencer..."
+    "starting": "Commencer...",
+    "rebuildEngineLinux": "Moteur de reconstruction (Linux)",
+    "rebuildEngineDescription": "Reconstruit cet instantané de machine complète Linux en une image disque VHDX Hyper-V sur un appareil Linux exécutant l'assistant Breeze. L'image reçoit toujours une nouvelle identité de machine.",
+    "selectRebuildHost": "Sélectionner l'hôte de reconstruction Linux",
+    "chooseALinuxDeviceWithQemuUtils": "Choisissez un appareil Linux en ligne disposant de qemu-utils et d'un espace libre suffisant pour l'image.",
+    "outputPath": "Chemin de sortie",
+    "outputPathHint": "Chemin absolu sur l'hôte de reconstruction se terminant par .vhdx.",
+    "outputPathInvalid": "Saisissez un chemin absolu se terminant par .vhdx.",
+    "startRebuild": "Lancer la reconstruction",
+    "rebuildStarted": "Reconstruction lancée. Le VHDX apparaîtra sur l'hôte de reconstruction une fois celle-ci terminée."
   },
   "vaultConfigDialog": {
     "device": "Dispositif",
@@ -719,7 +732,15 @@
     "launchExecution": "Exécution du lancement",
     "startANewDrRunFor": "Démarrer une nouvelle exécution DR pour",
     "cancel": "Annuler",
-    "startExecution": "Démarrer l’exécution"
+    "startExecution": "Démarrer l’exécution",
+    "executeErrorFallback": "Impossible de démarrer l'exécution.",
+    "executeErrorNoRestorableSnapshot": "Démarrage impossible : un appareil d'un groupe de reconstruction bare-metal n'a aucun instantané de sauvegarde restaurable. Exécutez d'abord une sauvegarde réussie pour chaque appareil de ce groupe.",
+    "executeErrorNoRecoverySource": "Démarrage impossible : un groupe de récupération n'indique aucune source de récupération. Ajoutez au groupe un instantané, une tâche de restauration ou un jeton de récupération.",
+    "executeErrorGroupHasNoValidDevices": "Démarrage impossible : un groupe de récupération n'a aucun appareil valide. Modifiez le plan et ajoutez au moins un appareil à chaque groupe.",
+    "executeErrorInvalidSourceReference": "Démarrage impossible : un groupe de récupération référence une source de récupération dont l'identifiant est invalide. Modifiez le groupe et sélectionnez de nouveau sa source.",
+    "executeErrorInvalidStepConfig": "Démarrage impossible : un groupe de récupération a une configuration d'étape invalide. Modifiez le groupe et corrigez ses paramètres.",
+    "executeErrorResourceNotFound": "Démarrage impossible : un instantané référencé par ce plan n'existe plus. Modifiez le groupe concerné et choisissez un instantané actuel.",
+    "executeErrorBackupWriteRequired": "Démarrage impossible : ce plan contient un groupe de reconstruction bare-metal, qui nécessite l'autorisation d'écriture des sauvegardes."
   },
   "dRExecutionView": {
     "executionDetails": "Détails de l’exécution",
@@ -742,7 +763,28 @@
     "executionDetailsAreUnavailable": "Les détails de l’exécution ne sont pas disponibles.",
     "abortDisasterRecoveryExecution": "Annuler l’exécution de la reprise après sinistre ?",
     "deviceCount_one": "dispositif {{count}}",
-    "deviceCount_other": "{{count}} dispositifs"
+    "deviceCount_other": "{{count}} dispositifs",
+    "recoveryStatus": {
+      "created": "Code émis",
+      "media_booted": "Support démarré",
+      "planned": "Planifié",
+      "restoring": "Restauration en cours",
+      "validated": "Validé",
+      "rebooted": "Redémarré",
+      "checked_in": "Enregistré",
+      "completed": "Terminé",
+      "failed": "Échoué",
+      "refused": "Refusé",
+      "unknown": "Récupération en attente"
+    },
+    "reissueCode": "Réémettre le code",
+    "reissueCodeFailed": "Impossible de réémettre le code de récupération",
+    "cancelRecovery": "Annuler la récupération",
+    "cancelRecoveryFailed": "Impossible d'annuler la récupération",
+    "recoveryCancelled": "Récupération annulée",
+    "codeShownOnce": "Ce code n'est affiché qu'une seule fois et expire dans 15 minutes. Saisissez-le à l'invite du support de récupération.",
+    "copyCode": "Copier le code",
+    "copied": "Copié"
   },
   "dRPlanEditor": {
     "defineRecoveryObjectivesSequenceGroupsAndAssignDevices": "Définir les objectifs de récupération, les groupes de séquences et assigner les dispositifs dans l’ordre de restauration.",
@@ -772,7 +814,11 @@
     "groupCount_one": "{{count}} groupe",
     "groupCount_other": "{{count}} groupes",
     "uniqueDeviceCount_one": "{{count}} dispositif unique",
-    "uniqueDeviceCount_other": "{{count}} Appareils uniques"
+    "uniqueDeviceCount_other": "{{count}} Appareils uniques",
+    "chooseAStepTypeForEachGroup": "Choisissez un type d'étape pour chaque groupe de récupération.",
+    "rebuildWaitTimeoutOutOfRange": "Le délai d'attente de la reconstruction bare-metal doit être un nombre entier compris entre {{min}} et {{max}} minutes.",
+    "rebuildOutputDirMustBeAbsolute": "Le répertoire de sortie de la reconstruction bare-metal doit être un chemin absolu commençant par « / » et comporter au plus {{max}} caractères.",
+    "partialSaveFailure": "Une partie de ce plan a été enregistrée avant l'erreur : le plan et la liste peuvent donc diverger. Corrigez le problème puis enregistrez de nouveau. Le serveur indique : {{message}}"
   },
   "dRPlanGroupCard": {
     "device": "Dispositif",
@@ -787,7 +833,23 @@
     "deviceSelection": "Sélection des appareils",
     "noDevicesAvailableToAssign": "Aucun appareil disponible à attribuer.",
     "deviceCount_one": "dispositif {{count}}",
-    "deviceCount_other": "{{count}} dispositifs"
+    "deviceCount_other": "{{count}} dispositifs",
+    "stepType": "Type d'étape",
+    "chooseAStepType": "Choisir un type d'étape",
+    "stepTypes": {
+      "vmRestoreFromBackup": "Restauration de VM depuis une sauvegarde",
+      "vmInstantBoot": "Démarrage instantané de VM",
+      "hypervRestore": "Restauration Hyper-V",
+      "mssqlRestore": "Restauration SQL Server",
+      "bmrRecover": "Récupération bare-metal (support de démarrage)",
+      "bareMetalRebuild": "Reconstruction bare-metal (moteur de reconstruction)"
+    },
+    "rebuildHost": "Hôte de reconstruction",
+    "rebuildHostHint": "Appareil Linux équipé de qemu-utils qui exécute les répétitions. En basculement, chaque appareil démarre plutôt sur le support de récupération.",
+    "outputDir": "Répertoire de sortie",
+    "outputDirHint": "Répertoire sur l'hôte de reconstruction qui reçoit une image VHDX par appareil.",
+    "waitTimeout": "Délai d'attente (min)",
+    "waitTimeoutHint": "Minutes d'attente de l'enregistrement de chaque appareil avant l'échec de l'étape."
   },
   "profiles": {
     "title": "Profils de sauvegarde",
@@ -801,6 +863,7 @@
     "inUseCount_other": "Utilisé par {{count}} politiques",
     "sourceFile": "Fichiers",
     "sourceSystemState": "État du système",
+    "sourceWholeMachine": "Machine complète",
     "sourceSql": "SQL Server",
     "sourceHyperv": "Hyper-V",
     "templateTitle": "Nouveau profil de sauvegarde",
@@ -871,5 +934,31 @@
     "deleteConfirmBody": "Supprimer « {{name}} » ? Cette action est irréversible.",
     "deleteInUse_one": "Ce profil est utilisé par {{count}} politique de configuration. Dissociez-le d'abord à cet endroit.",
     "deleteInUse_other": "Ce profil est utilisé par {{count}} politiques de configuration. Dissociez-le d'abord à cet endroit."
+  },
+  "bareMetalRecovery": {
+    "title": "Récupération sur métal nu",
+    "description": "Créez un code de récupération à usage unique pour reconstruire une machine entière à partir d'un instantané sur du matériel neuf ou réparé.",
+    "snapshotLabel": "Instantané",
+    "selectSnapshotPlaceholder": "Sélectionnez un instantané…",
+    "selectSnapshotFirst": "Sélectionnez d'abord un instantané.",
+    "identityLabel": "Identité de l'appareil",
+    "identityOriginal": "Appareil d'origine (conserver l'identité de cet appareil)",
+    "identityNew": "Nouvel appareil (inscrire comme nouvel appareil)",
+    "createButton": "Créer un code de récupération",
+    "createFailed": "Échec de la création de la récupération.",
+    "codeInstructions": "Saisissez ce code lorsque le support de récupération Breeze vous le demande. Il expire dans 15 minutes et ne peut être utilisé qu'une seule fois.",
+    "codeExpires": "Expire à {{time}}",
+    "overdueNotice": "Aucune confirmation pour l'instant — consultez la console de récupération.",
+    "statusFailed": "Échec de la récupération",
+    "statusRefused": "Récupération refusée",
+    "status": {
+      "created": "Créée",
+      "media_booted": "Support démarré",
+      "planned": "Planifiée",
+      "restoring": "Restauration en cours",
+      "validated": "Validée",
+      "rebooted": "Redémarrée",
+      "checked_in": "Confirmée"
+    }
   }
 }

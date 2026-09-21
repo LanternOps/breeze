@@ -31,6 +31,8 @@
       "devices": "Devices",
       "tickets": "Tickets",
       "billing": "Contracts & Billing",
+      "service": "Service",
+      "documents": "Documents",
       "activity": "Activity"
     },
     "comingSoon": {
@@ -70,7 +72,8 @@
         "invoicesNothingDue": "Nothing due",
         "contacts": "Contacts",
         "portalUsers": "Portal users",
-        "sites": "Sites"
+        "sites": "Sites",
+        "lastActivity": "Last activity"
       },
       "activity": {
         "title": "Recent activity",
@@ -125,8 +128,264 @@
       "sections": {
         "contracts": "Contracts",
         "invoices": "Invoices",
-        "quotes": "Quotes"
+        "quotes": "Quotes",
+        "agreements": "Agreements"
       }
+    },
+    "documents": {
+      "title": "Documents",
+      "subtitle": "Runbooks, baselines, policies and delivery evidence for this organization.",
+      "empty": "No documents yet. Upload a runbook, a baseline or a signed policy to start the library.",
+      "emptyFiltered": "No documents in this category.",
+      "loadFailed": "Could not load documents.",
+      "upload": "Upload document",
+      "uploading": "Uploading…",
+      "replace": "Replace",
+      "download": "Download",
+      "delete": "Delete",
+      "deleteConfirm": "Delete \"{{title}}\"? This removes the file and every earlier version of it. This cannot be undone.",
+      "edit": "Edit",
+      "save": "Save",
+      "cancel": "Cancel",
+      "versions": "Version history",
+      "showSuperseded": "Show earlier versions",
+      "form": {
+        "title": "Title",
+        "description": "Description",
+        "category": "Category",
+        "portalVisible": "Visible in the customer portal",
+        "file": "File",
+        "fileHint": "PDF, JPEG, PNG or WebP, up to 10 MB.",
+        "replaceHint": "The current version is kept as history and the new file becomes the current one."
+      },
+      "filter": {
+        "all": "All categories"
+      },
+      "category": {
+        "baseline": "Baseline",
+        "runbook": "Runbook",
+        "policy": "Policy",
+        "evidence": "Evidence",
+        "report": "Report",
+        "export": "Export",
+        "other": "Other"
+      },
+      "column": {
+        "title": "Title",
+        "category": "Category",
+        "size": "Size",
+        "uploaded": "Uploaded",
+        "portal": "Portal",
+        "actions": "Actions"
+      },
+      "badge": {
+        "superseded": "Earlier version",
+        "portal": "In portal"
+      },
+      "errors": {
+        "tooLarge": "That file is larger than 10 MB.",
+        "unsupportedType": "Only PDF, JPEG, PNG and WebP files can be stored.",
+        "storageUnavailable": "Document storage is unavailable right now. Try again shortly.",
+        "notHead": "This document has already been replaced. Reload and work from the current version.",
+        "emptyFile": "That file is empty.",
+        "uploadFailed": "Could not upload the document.",
+        "updateFailed": "Could not save the document.",
+        "deleteFailed": "Could not delete the document.",
+        "downloadFailed": "Could not download the document."
+      },
+      "toast": {
+        "uploaded": "Document uploaded",
+        "replaced": "New version uploaded",
+        "updated": "Document updated",
+        "deleted": "Document deleted"
+      }
+    }
+  },
+  "orgBoard": {
+    "partnerOption": "{{id}}… ({{count}} orgs)",
+    "partnerOption_one": "{{id}}… ({{count}} org)",
+    "partnerScopeHint": "Showing one partner's accounts; totals below are for this partner only",
+    "title": "Organizations",
+    "description": "Every customer, what it still needs, and what is open.",
+    "loading": "Loading organizations…",
+    "actions": {
+      "addOrganization": "Add organization",
+      "tryAgain": "Try again",
+      "clearFilters": "Clear filters",
+      "openRecord": "Open record",
+      "contact": "Contact {{name}}",
+      "newTicket": "New ticket",
+      "workHere": "Work in this org",
+      "settings": "Settings",
+      "archive": "Archive organization",
+      "merge": "Merge into another organization",
+      "restore": "Restore",
+      "restoring": "Restoring…"
+    },
+    "rowMenu": { "label": "Actions for {{name}}" },
+    "search": { "label": "Search organizations, contacts and emails" },
+    "lens": { "label": "Lens", "setup": "Setup", "account": "Account", "both": "Both" },
+    "filters": {
+      "label": "Filter",
+      "all": "All",
+      "setupIncomplete": "Setup incomplete",
+      "accountMissing": "Account data missing",
+      "openTickets": "Open tickets",
+      "trial": "Trial",
+      "archived": "Archived",
+      "unlinked": "Unlinked"
+    },
+    "sort": { "label": "Sort", "manual": "Manual order", "name": "A to Z", "tickets": "Open tickets" },
+    "columns": { "organization": "Organization", "setup": "Setup", "account": "Account data", "tickets": "Open tickets", "actions": "Row actions", "integrations": "Integrations" },
+    "band": {
+      "label": "Account readiness",
+      "all": "Accounts",
+      "allSub": "{{trial}} trial · {{suspended}} suspended",
+      "setupIncomplete": "Setup incomplete",
+      "accountMissing": "Account data missing",
+      "openTickets": "Open tickets",
+      "openTicketsSub": "{{count}} SLA breached",
+      "pending": "Checking organizations…",
+      "partial": "Some organizations could not be checked.",
+      "unlinked": "Unlinked"
+    },
+    "chips": {
+      "noSite": "No site",
+      "noDevices": "No devices enrolled",
+      "noCheckIn": "No agent has checked in",
+      "staleCheckIn_one": "No agent check-in for {{count}} day",
+      "staleCheckIn_other": "No agent check-in for {{count}} days",
+      "noPolicy": "No policy assigned",
+      "primaryContact": "Primary contact",
+      "contactEmail": "Contact email",
+      "contactPhone": "Contact phone",
+      "billingContact": "Billing contact",
+      "billingAddress": "Billing address",
+      "overdueInvoices_one": "{{count}} overdue invoice",
+      "overdueInvoices_other": "{{count}} overdue invoices",
+      "invitation_one": "{{count}} invitation not accepted",
+      "invitation_other": "{{count}} invitations not accepted",
+      "complete": "Complete",
+      "notApplicable": "Not applicable",
+      "unavailable": "Unavailable",
+      "stillNeeded": "Still needed",
+      "link": "{{chip}} for {{orgName}}",
+      "noActiveContract": "No active contract",
+      "noBackup": "No backup configured"
+    },
+    "repair": {
+      "sites": "Open the Sites tab for {{orgName}}",
+      "devices": "Open the Devices tab for {{orgName}}",
+      "policies": "Open configuration policies",
+      "contacts": "Open the Contacts tab for {{orgName}}",
+      "settings": "Open settings for {{orgName}}",
+      "billing": "Open the Billing tab for {{orgName}}",
+      "backup": "Open backup for {{orgName}}"
+    },
+    "integrations": {
+      "system": { "psa": "PSA", "dns_filter": "DNS filter" },
+      "state": {
+        "linked": "Linked",
+        "pending": "Pending",
+        "error": "Needs attention",
+        "identity": "Identity only",
+        "not_linked": "Not linked"
+      },
+      "reason": {
+        "suggested_match": "Suggested match, not yet confirmed",
+        "sync_error": "Last sync failed",
+        "consent_pending": "Waiting for Microsoft consent",
+        "expired": "Connection expired",
+        "degraded": "Connection degraded",
+        "suspended": "Connection suspended",
+        "error": "Connection reported an error",
+        "never_synced": "Never synced",
+        "sync_failed": "Connector sync failed",
+        "disabled": "Connection disabled",
+        "connector_error": "Connector inactive or failing"
+      },
+      "notLinked": "{{system}} not linked",
+      "nothingLinked": "Nothing linked",
+      "connectorMuted": "{{system}} connector is not connected",
+      "badgeLabel": "{{orgName}}: {{system}}, {{state}}",
+      "badgeLabelWithReason": "{{orgName}}: {{system}}, {{state}} ({{reason}})",
+      "connectors": {
+        "repair": {
+          "reauth_required": "{{system}} needs reconnecting",
+          "disconnected": "{{system}} is disconnected",
+          "error": "{{system}} connector has an error",
+          "disabled": "{{system}} connector is disabled"
+        },
+        "openSettings": "Open {{system}} settings"
+      }
+    },
+    "tickets": { "open": "{{count}} open", "awaiting": "{{count}} awaiting customer", "sla": "{{count}} SLA breached" },
+    "meta": {
+      "workspace": "Workspace",
+      "devices_one": "{{count}} device",
+      "devices_other": "{{count}} devices",
+      "sites_one": "{{count}} site",
+      "sites_other": "{{count}} sites",
+      "archivedBadge": "Archived",
+      "archivingBadge": "Archiving…",
+      "keptIndefinitely": "Kept indefinitely",
+      "purgeToday": "Purges today",
+      "purgeCountdown_one": "Purges in {{count}} day",
+      "purgeCountdown_other": "Purges in {{count}} days"
+    },
+    "reorder": {
+      "handle": "Reorder {{name}}",
+      "hint": "Use the up and down arrow keys to move this organization.",
+      "dragToReorder": "Drag to reorder",
+      "moved": "{{name}} moved to position {{position}} of {{total}}"
+    },
+    "footer": {
+      "summary": "{{accounts}} active accounts · {{devices}} devices",
+      "summaryWithTickets": "{{accounts}} active accounts · {{devices}} devices · {{tickets}} open tickets",
+      "manualHint": "Manual order: drag a row or use the arrow keys on its handle."
+    },
+    "empty": {
+      "title": "No organizations yet",
+      "description": "Add your first customer to start tracking setup and account data.",
+      "noMatches": "No organizations match your search or filter."
+    },
+    "archived": {
+      "loading": "Loading archived organizations…",
+      "empty": "No archived organizations.",
+      "noMatches": "No archived organizations match your search.",
+      "truncatedNote": "Showing the first {{count}} archived organizations. Search to narrow the list.",
+      "fetchError": "Failed to load archived organizations"
+    },
+    "restore": {
+      "success": "{{name}} restored — status: {{status}}.",
+      "recreateRequiredNote": "Before it's fully usable again: {{items}}",
+      "suspendedNote": "It was suspended before being archived, so it has been restored as suspended — resolve that before it resumes normal access.",
+      "errors": {
+        "restore": "Failed to restore the organization",
+        "mfaRequired": "Restoring organizations requires multi-factor authentication. Enable MFA in your profile security settings, then try again.",
+        "purging": "This organization is already being permanently deleted and can no longer be restored."
+      }
+    },
+    "add": {
+      "title": "Add organization",
+      "description": "Create a new organization with the details below.",
+      "submit": "Create organization",
+      "created": "{{name}} added. Its row shows what to set up next."
+    },
+    "errors": {
+      "fetchOrganizations": "Failed to fetch organizations",
+      "generic": "An error occurred",
+      "saveOrder": "Failed to save organization order",
+      "saveOrganization": "Failed to save organization",
+      "readiness": "Could not check account readiness for some organizations."
+    }
+  },
+  "shared": {
+    "sortableTh": {
+      "ascending": "Ascending",
+      "descending": "Descending",
+      "sortBy": "Sort by {{label}}",
+      "sortByWithDirection": "Sort by {{label}}, {{direction}}"
     }
   }
 }

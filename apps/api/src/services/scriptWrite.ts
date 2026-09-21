@@ -8,8 +8,14 @@
  * lived only in route handlers with no service-layer chokepoint — this module
  * is that chokepoint. Do not add a second script-insert path that bypasses it.
  */
-import type { ScriptParameterDefinition } from '@breeze/shared';
+import type { ScriptOrigin, ScriptParameterDefinition } from '@breeze/shared';
 import { db } from '../db';
+import {
+  cutScriptVersion,
+  type ScriptVersionExecutor,
+  type ScriptVersionProvenance,
+  type ScriptVersionTx,
+} from './scriptVersions';
 import { scripts } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
 import {
@@ -198,13 +204,34 @@ export type ScriptInsertInput = {
  * can NEVER produce an `isSystem: true` row — at any caller scope, including
  * system — which is deliberately stricter than `POST /scripts`.
  */
+export type ScriptInsertOptions = {
+  requestedIsSystem?: boolean;
+  /** Birth record for the version row this insert cuts. Defaults to 'system'
+   *  for a clamped system script and 'human' otherwise; the bundle importer
+   *  passes 'imported'. Ignored when `provenance` is given. */
+  origin?: ScriptOrigin;
+  /** Full provenance for the v1 row, for callers that have more than an origin
+   *  in hand (W03's promote passes the proposal's review evidence here rather
+   *  than cutting a second version on top of the create). */
+  provenance?: ScriptVersionProvenance;
+  /** W03 promotion: the APPROVER who acknowledged the STRICT patterns on the
+   *  card, stamped as security_acknowledged_by instead of the caller. Only
+   *  consulted when something was actually acknowledged. */
+  securityAcknowledgedBy?: string | null;
+  /** W03 promotion: run inside the caller's transaction (as a savepoint) so the
+   *  script insert and the proposal's `promoted` CAS commit or roll back as one
+   *  unit. Default: a fresh transaction, as every existing caller expects. */
+  tx?: ScriptVersionTx;
+};
+
 export async function insertScriptRow(
   auth: Pick<AuthContext, 'scope' | 'user'>,
   scope: ScriptCreateScope,
   input: ScriptInsertInput,
-  opts: { requestedIsSystem?: boolean } = {}
+  opts: ScriptInsertOptions = {}
 ) {
   const isSystem = auth.scope === 'system' ? (opts.requestedIsSystem ?? false) : false;
+  const origin: ScriptOrigin = opts.provenance?.origin ?? opts.origin ?? (isSystem ? 'system' : 'human');
 
   // Clamped at the chokepoint for the same reason `isSystem` is (#5129): both
   // intakes — POST /scripts and the bundle importer — go through here, so
@@ -216,7 +243,16 @@ export async function insertScriptRow(
     submitted: input.acknowledgedSecurityPatterns,
   });
 
-  const [script] = await db
+  // The row and its v1 version are one unit of work: a create that left no
+  // version behind would make headScriptVersion() null for a live script, and
+  // script_versions is append-only so it could not be repaired afterwards.
+  //
+  // `version: 0` is transient — cutScriptVersion locks the row, moves it to 1,
+  // and snapshots it. Nothing outside this transaction ever sees 0.
+  const acknowledgedBy = opts.securityAcknowledgedBy ?? auth.user.id;
+  const handle: ScriptVersionExecutor = opts.tx ?? db;
+  return handle.transaction(async (tx) => {
+  const [script] = await tx
     .insert(scripts)
     .values({
       orgId: isSystem && !scope.orgId ? null : scope.orgId,
@@ -231,16 +267,34 @@ export async function insertScriptRow(
       timeoutSeconds: input.timeoutSeconds,
       runAs: input.runAs,
       isSystem,
-      version: 1,
+      version: 0,
+      // The RECORD's birth (spec §4.1); the version row below carries the same
+      // origin plus the review evidence, when there is any.
+      origin,
+      originProposalId: opts.provenance?.proposalId ?? null,
       exitCodeSeverityMapping: input.exitCodeSeverityMapping ?? null,
       acknowledgedSecurityPatterns: acknowledgement.acknowledged,
       // Only stamp attribution when something was actually acknowledged; an
       // ordinary script with no risky pattern must not look risk-approved.
-      securityAcknowledgedBy: acknowledgement.acknowledged.length > 0 ? auth.user.id : null,
+      securityAcknowledgedBy: acknowledgement.acknowledged.length > 0 ? acknowledgedBy : null,
       securityAcknowledgedAt: acknowledgement.acknowledged.length > 0 ? new Date() : null,
       createdBy: auth.user.id
     })
     .returning();
 
-  return script;
+    if (!script) {
+      throw new Error('Script insert returned no row');
+    }
+
+    const cut = await cutScriptVersion(tx, {
+      scriptId: script.id,
+      provenance: opts.provenance ?? {
+        origin,
+        changelog: 'Initial version',
+        createdBy: auth.user.id
+      }
+    });
+
+    return { ...script, version: cut.version, headVersionId: cut.id };
+  });
 }

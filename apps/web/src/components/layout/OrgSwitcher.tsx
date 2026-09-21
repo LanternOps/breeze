@@ -10,26 +10,23 @@ import {
 import { cn } from '@/lib/utils';
 import { useOrgStore, type Organization } from '@/stores/orgStore';
 import { applyOrgSwitch, consumeSwitchToast, getOrgSwitchRedirect } from '@/lib/orgSwitch';
+import { FALLBACK_STATUS_CLASS, statusColors } from '@/lib/orgStatus';
 import { showToast } from '@/components/shared/Toast';
 import { useTranslation } from 'react-i18next';
 
 // Re-exported for callers/tests that import the redirect rule from here.
 export { getOrgSwitchRedirect };
 
-const statusColors: Record<string, string> = {
-  active: 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-300',
-  trial: 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-300',
-  suspended: 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-300',
-  inactive: 'bg-gray-100 text-gray-800 dark:bg-gray-900 dark:text-gray-300'
-};
+// Status colours come from the shared org status map (lib/orgStatus), so the
+// pill in this header is the same pill as on the org list and record page.
 
 function StatusBadge({ status }: { status: string }) {
   const { t } = useTranslation('common');
   return (
     <span
       className={cn(
-        'inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium capitalize',
-        statusColors[status] || statusColors.inactive
+        'inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium capitalize',
+        statusColors[status as Organization['status']] ?? FALLBACK_STATUS_CLASS
       )}
     >
       {t(/* i18n-dynamic */ `layout.org.status.${status}`, { defaultValue: status })}

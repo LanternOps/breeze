@@ -177,6 +177,21 @@ export interface InvoiceDetail {
   currencyWarning?: StripeCurrencyWarning | null;
   /** See `AccountingSyncSummary`. Absent on older API responses. */
   accountingSync?: AccountingSyncSummary | null;
+  /** Draft-only (#6338), read-only: the tax rate that `issueInvoice` WILL
+   *  apply to this draft, resolved by the API's one shared tax resolver
+   *  (org tax-exempt and an org-level rate both win over the partner default).
+   *  A draft's own `invoice.taxRate` is ORG-level only, so it reads null while
+   *  a partner default is waiting to be applied at issue. Null on issued
+   *  invoices, when there is genuinely no rate, and on older API responses.
+   *  Never write it back — it is a preview, not the committed rate. */
+  effectiveTaxRate?: string | null;
+  /** Draft-only display fallback (sweep paper cut #16): the org's billing
+   *  contact email, set by the API ONLY when it also fell back `invoice.
+   *  billToName` to the org's name (the draft carried no bill-to name of its
+   *  own). Null on every issued invoice and on any draft with its own
+   *  bill-to name — never a substitute for the persisted billing-contact
+   *  field on Organization Settings. */
+  billToEmail?: string | null;
 }
 
 export interface InvoicePayment {

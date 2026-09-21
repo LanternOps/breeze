@@ -9,7 +9,6 @@ import {
   defaultOfflinePolicy,
   deliverByFor,
   deliveryTtlMs,
-  isOfflineQueueEnabled,
   resolveOfflinePolicy,
 } from './commandOfflinePolicy';
 
@@ -127,6 +126,7 @@ describe('commandOfflinePolicy registry (#5128 W1)', () => {
     expect(defaultOfflinePolicy(CommandTypes.BACKUP_RUN)).toEqual({ kind: 'reject' });
     expect(defaultOfflinePolicy(CommandTypes.BACKUP_RESTORE)).toEqual({ kind: 'reject' });
     expect(defaultOfflinePolicy(CommandTypes.BMR_RECOVER)).toEqual({ kind: 'reject' });
+    expect(defaultOfflinePolicy(CommandTypes.BARE_METAL_REBUILD)).toEqual({ kind: 'reject' });
   });
 
   it('standard TTL is 7 days by default and env-tunable', () => {
@@ -157,56 +157,23 @@ describe('commandOfflinePolicy registry (#5128 W1)', () => {
     expect(deliveryTtlMs('live')).toBe(REJECT_RACE_GRACE_MS);
   });
 
-  // #5128 W4 flipped the default. This is the ONLY test that asserts the
-  // unset-env behaviour — every other flag test stubs the value explicitly, so
-  // without this one the default could flip back unnoticed.
-  it('defaults ON when the env var is unset, and only an explicit "false" opts out', () => {
-    vi.stubEnv('DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED', undefined);
-    expect(isOfflineQueueEnabled()).toBe(true);
-    vi.stubEnv('DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED', '');
-    expect(isOfflineQueueEnabled()).toBe(true);
-    vi.stubEnv('DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED', 'false');
-    expect(isOfflineQueueEnabled()).toBe(false);
-  });
-
-  it('flag off + previouslyRejected keeps reject; flag on lets the registry queue', () => {
-    vi.stubEnv('DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED', 'false');
-    expect(isOfflineQueueEnabled()).toBe(false);
-    expect(resolveOfflinePolicy(CommandTypes.INSTALL_PATCHES, undefined, { previouslyRejected: true })).toEqual({
-      kind: 'reject',
+  it('resolves queueable commands directly from the registry without compatibility options', () => {
+    expect(resolveOfflinePolicy(CommandTypes.INSTALL_PATCHES, undefined)).toEqual({
+      kind: 'queue', deliverWithinMs: deliveryTtlMs('standard'),
     });
-    vi.stubEnv('DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED', 'true');
-    expect(isOfflineQueueEnabled()).toBe(true);
-    expect(resolveOfflinePolicy(CommandTypes.INSTALL_PATCHES, undefined, { previouslyRejected: true }).kind).toBe(
-      'queue'
-    );
+    expect(resolveOfflinePolicy(CommandTypes.SCRIPT, undefined).kind).toBe('queue');
+    expect(resolveOfflinePolicy(CommandTypes.SOFTWARE_INSTALL, undefined).kind).toBe('queue');
   });
 
-  it('the flag does not gate callers that already queued today', () => {
-    vi.stubEnv('DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED', 'false');
-    expect(resolveOfflinePolicy(CommandTypes.SCRIPT, undefined, { previouslyRejected: false }).kind).toBe('queue');
-    expect(resolveOfflinePolicy(CommandTypes.SOFTWARE_INSTALL, undefined, { previouslyRejected: false }).kind).toBe(
-      'queue'
-    );
-  });
-
-  it('an explicit requested policy always wins over the flag and the registry', () => {
-    vi.stubEnv('DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED', 'false');
-    expect(
-      resolveOfflinePolicy(CommandTypes.INSTALL_PATCHES, { kind: 'queue', deliverWithinMs: 1000 }, {
-        previouslyRejected: true,
-      })
-    ).toEqual({ kind: 'queue', deliverWithinMs: 1000 });
-    vi.stubEnv('DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED', 'true');
-    expect(resolveOfflinePolicy(CommandTypes.SCRIPT, { kind: 'reject' }, { previouslyRejected: false })).toEqual({
-      kind: 'reject',
-    });
+  it('an explicit requested policy wins over the registry', () => {
+    expect(resolveOfflinePolicy(CommandTypes.INSTALL_PATCHES, { kind: 'queue', deliverWithinMs: 1000 }))
+      .toEqual({ kind: 'queue', deliverWithinMs: 1000 });
+    expect(resolveOfflinePolicy(CommandTypes.SCRIPT, { kind: 'reject' })).toEqual({ kind: 'reject' });
   });
 
   it('an explicit policy for an unregistered type still throws (fail-closed)', () => {
-    expect(() =>
-      resolveOfflinePolicy('definitely_not_a_command', { kind: 'reject' }, { previouslyRejected: false })
-    ).toThrow(UnregisteredCommandTypeError);
+    expect(() => resolveOfflinePolicy('definitely_not_a_command', { kind: 'reject' }))
+      .toThrow(UnregisteredCommandTypeError);
   });
 
   it('deliverByFor: queue adds deliverWithinMs; reject gets NO deadline at all', () => {
@@ -225,5 +192,23 @@ describe('commandOfflinePolicy registry (#5128 W1)', () => {
   it('REJECT_RACE_GRACE_MS is only the `live` TTL class value, never stamped on a row', () => {
     expect(deliveryTtlMs('live')).toBe(REJECT_RACE_GRACE_MS);
     expect(deliverByFor(defaultOfflinePolicy('list_processes'))).toBeNull();
+  });
+
+  it('delivers destructive cleanup commands live-only, not for a week', () => {
+    expect(COMMAND_OFFLINE_POLICY_REGISTRY.system_cleanup_list).toBe('live_only');
+    expect(COMMAND_OFFLINE_POLICY_REGISTRY.system_cleanup_run).toBe('live_only');
+    expect(deliveryTtlMs('live_only')).toBe(15 * 60 * 1000);
+    // The point of the class: strictly shorter than everything that existed.
+    expect(deliveryTtlMs('live_only')).toBeLessThan(deliveryTtlMs('short'));
+    expect(deliveryTtlMs('live_only')).toBeLessThan(deliveryTtlMs('standard'));
+    // Still QUEUEABLE — a device that reconnects inside the window gets it.
+    expect(defaultOfflinePolicy('system_cleanup_run')).toEqual({ kind: 'queue', deliverWithinMs: 15 * 60 * 1000 });
+  });
+
+  it('live_only TTL is env-tunable with a one-minute floor', () => {
+    vi.stubEnv('DEVICE_COMMAND_QUEUE_LIVE_ONLY_TTL_MINUTES', '5');
+    expect(deliveryTtlMs('live_only')).toBe(5 * 60 * 1000);
+    vi.stubEnv('DEVICE_COMMAND_QUEUE_LIVE_ONLY_TTL_MINUTES', '0');
+    expect(deliveryTtlMs('live_only')).toBe(15 * 60 * 1000);
   });
 });

@@ -1,11 +1,20 @@
 {
+  "aiInitiator": {
+    "assistant": "KI-Assistent",
+    "agent": "KI-Agent",
+    "originUnavailable": "Ursprung nicht verfügbar",
+    "openSession": "Unterhaltung öffnen",
+    "openAgentRun": "Agentenlauf öffnen",
+    "tool": "Verwendetes Tool: {{name}}",
+    "occurredAt": "Aufgetreten am {{time}}"
+  },
   "lists": {
     "separator": ", "
   },
   "nav": {
     "fleetPosture": "Flottenstatus",
     "dashboard": "Dashboard",
-    "devices": "Geräte",
+    "devices": "Geräte & Assets",
     "alerts": "Warnmeldungen",
     "approvals": "Genehmigungen",
     "pendingApprovals": "{{count}} ausstehende Genehmigungen",
@@ -20,6 +29,8 @@
     "oneDrive": "OneDrive",
     "aiForOffice": "KI für Office",
     "networkMonitor": "Netzwerküberwachung",
+    "jobs": "Aufträge",
+    "monitoring": "Überwachung",
     "networkDiscovery": "Netzwerkerkennung",
     "edr": "EDR",
     "dnsSecurity": "DNS-Sicherheit",
@@ -32,6 +43,7 @@
     "quotes": "Angebote",
     "invoices": "Rechnungen",
     "contracts": "Verträge",
+    "agreements": "Vereinbarungen",
     "timesheets": "Zeiterfassungen",
     "productCatalog": "Produktkatalog",
     "deviceGroups": "Gerätegruppen",
@@ -46,10 +58,13 @@
     "partner": "Partner",
     "billing": "Abrechnung",
     "organizations": "Organisationen",
-    "aiUsageBudget": "KI-Nutzung und Budget",
+    "aiUsage": "KI-Nutzung",
+    "scriptAuthoring": "Skripterstellung",
+    "toolSources": "Tool-Quellen",
     "aiAgents": "KI-Agenten",
     "aiAgentRuns": "KI-Agenten-Läufe",
     "aiImpact": "KI-Wirkung",
+    "fleetDesign": "Flottendesign",
     "customFields": "Benutzerdefinierte Felder",
     "savedFilters": "Gespeicherte Filter",
     "users": "Benutzer",
@@ -80,7 +95,9 @@
     "aiRisk": "KI-Risiko",
     "deviceBackup": "Gerätesicherung",
     "sectionServiceDesk": "Service-Desk",
-    "serviceManagement": "Service-Management"
+    "serviceManagement": "Service-Management",
+    "ticketing": "Ticketing",
+    "deliverableTemplates": "Liefervorlagen"
   },
   "documentTitles": {
     "dashboard": "Dashboard",
@@ -713,7 +730,19 @@
         "scripts": "Skripte",
         "alerts": "Warnmeldungen",
         "users": "Benutzer",
-        "settings": "Einstellungen"
+        "settings": "Einstellungen",
+        "recent-devices": "Zuletzt geöffnete Geräte",
+        "recent-pages": "Zuletzt besucht"
+      },
+      "actions": {
+        "newDevice": "Neues Gerät",
+        "newDeviceDescription": "Gerät zur Flotte hinzufügen",
+        "runScript": "Skript ausführen",
+        "runScriptDescription": "Ein Skript auf Geräten ausführen",
+        "alertRules": "Alarmregeln",
+        "alertRulesDescription": "Alarmierung in Konfigurationsrichtlinien verwalten",
+        "keyboardShortcuts": "Tastenkürzel",
+        "keyboardShortcutsDescription": "Alle Tasten und Tastenfolgen auf einer Karte"
       }
     },
     "notifications": {
@@ -753,7 +782,10 @@
       "collapse": "Seitenleiste einklappen",
       "expand": "Seitenleiste ausklappen",
       "collapseSections": "Alle Bereiche einklappen",
-      "closeMenu": "Menü schließen"
+      "closeMenu": "Menü schließen",
+      "recentDevices": "Zuletzt geöffnete Geräte",
+      "hideRecentDevices": "Zuletzt geöffnete Geräte ausblenden",
+      "showRecentDevices": "Zuletzt geöffnete Geräte anzeigen"
     },
     "orgRequired": {
       "title": "Organisation auswählen",
@@ -764,6 +796,20 @@
       "title": "Organisationen konnten nicht geladen werden",
       "description": "Beim Laden Ihrer Organisationsliste ist ein Fehler aufgetreten. Prüfen Sie Ihre Verbindung und versuchen Sie es erneut.",
       "retry": "Erneut versuchen"
+    },
+    "shortcuts": {
+      "title": "Tastenkürzel",
+      "general": "Allgemein",
+      "goTo": "Gehe zu",
+      "goToHint": "g drücken, loslassen, dann die Taste.",
+      "then": "dann",
+      "search": "Breeze durchsuchen",
+      "searchSlash": "Suche (öffnet auch mit dieser Taste)",
+      "cycleSidebar": "Seitenleisten-Modus wechseln",
+      "help": "Hilfebereich öffnen",
+      "showThis": "Diese Karte anzeigen",
+      "close": "Dialog oder Menü schließen",
+      "typingNote": "Einzeltasten-Kürzel pausieren, während Sie in ein Feld tippen."
     }
   },
   "migrationBanner": {
@@ -912,7 +958,8 @@
         "fallbackTitle": "Überwachen",
         "fields": {
           "interval": "Intervall (s)",
-          "timeout": "Zeitüberschreitung (s)"
+          "timeout": "Zeitüberschreitung (s)",
+          "target": "Ziel-URL"
         },
         "labels": {
           "lastChecked": "Zuletzt geprüft: {{time}}",
@@ -940,6 +987,20 @@
           "httpCheck": "HTTP-Prüfung",
           "icmpPing": "ICMP-Ping",
           "tcpPort": "TCP-Port"
+        },
+        "targetResetNote": "Wenn Sie die URL ändern, wird die TLS-Beobachtung zurückgesetzt.",
+        "saved": "Monitor aktualisiert",
+        "certificate": {
+          "title": "Zertifikat",
+          "issuer": "Aussteller",
+          "expires": "Gültig bis",
+          "observedHost": "Beobachteter Host",
+          "state": "Zustand",
+          "states": {
+            "observed": "Beobachtet",
+            "handshakeFailed": "TLS-Handshake fehlgeschlagen",
+            "notTls": "Kein TLS"
+          }
         }
       },
       "NetworkMonitorList": {
@@ -1651,7 +1712,8 @@
         "running": "läuft",
         "editEntry": "Eintrag {{id}} bearbeiten",
         "total": "Gesamt: {{duration}}",
-        "billableTotal": "Abrechnungsfähig: {{duration}}"
+        "billableTotal": "Abrechnungsfähig: {{duration}}",
+        "billedVsWorked": "{{worked}} Std. gearbeitet · {{billed}} Std. abgerechnet"
       },
       "sourceBadge": {
         "timer": "Timer",
@@ -1790,7 +1852,9 @@
         "assetsDescription": "Einheitliche Ansicht von SNMP-Abfragen und Netzwerkprüfungen pro erkanntem Asset.",
         "table": {
           "asset": "Asset",
-          "overall": "Insgesamt"
+          "overall": "Insgesamt",
+          "reachability": "Erreichbarkeit",
+          "collection": "Datenerfassung"
         },
         "ip": "IP",
         "snmp": "SNMP",
@@ -1842,7 +1906,29 @@
         "disabling": "Deaktivieren...",
         "yesDisable": "Ja, deaktivieren",
         "monitoringNotActive": "Für dieses Asset ist die Überwachung nicht aktiv.",
-        "saving": "Speichern..."
+        "saving": "Speichern...",
+        "openSettings": "Einstellungen…",
+        "reachability": {
+          "responding": "Antwortet",
+          "notResponding": "Antwortet nicht",
+          "unverified": "Nicht überprüft",
+          "sources": {
+            "networkCheck": "Netzwerkprüfung",
+            "probe": "Jetzt prüfen",
+            "scan": "Scan",
+            "unifi": "UniFi-Steuerung",
+            "snmp": "SNMP-Abfrage"
+          }
+        },
+        "collectionState": {
+          "collecting": "Daten werden erfasst",
+          "partial": "Teilweise",
+          "no_template": "Keine Vorlage",
+          "failing": "Fehlgeschlagen",
+          "paused": "Pausiert",
+          "never_polled": "Noch nie abgefragt",
+          "not_configured": "Nicht konfiguriert"
+        }
       },
       "MonitoringPage": {
         "tabs": {
@@ -2443,5 +2529,15 @@
     "approximateUnavailableStale": "≈ Summe nicht verfügbar — {{target}}-Wechselkurs für {{codes}} ist zu alt",
     "approximateUnavailableMixed": "≈ Summe nicht verfügbar — {{codes}} konnte nicht in {{target}} umgerechnet werden",
     "approximateUnavailableCodesOverflow": "{{codes}} und {{more}} weitere"
+  },
+  "mfaEnrollmentGraceBanner": {
+    "message": "Ihre Rolle wird künftig eine Zwei-Faktor-Authentifizierung erfordern. Richten Sie sie bis {{date}} ein.",
+    "cta": "2FA einrichten",
+    "dismiss": "Erinnerung an die Zwei-Faktor-Authentifizierung schließen"
+  },
+  "mfaPolicyOffBanner": {
+    "message": "Für Ihr Team ist keine Multi-Faktor-Authentifizierung erforderlich. Sitzungen nur mit Passwort können Skripte ausführen, Geräte verschieben und Richtlinien ändern.",
+    "cta": "MFA erzwingen",
+    "dismiss": "Erinnerung an die MFA-Richtlinie für heute schließen"
   }
 }

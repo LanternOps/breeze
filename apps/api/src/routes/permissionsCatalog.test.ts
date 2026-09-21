@@ -55,6 +55,8 @@ describe('permissions catalog routes', () => {
       }
 
       // Spot-check a few specific entries the UI cares about.
+      expect(keys).toContain('time_entries:manage_billing');
+      expect(body.actionLabels.manage_billing).toBe('Manage Billing');
       expect(keys).toContain('remote:access');
       expect(keys).toContain('devices:read');
       expect(keys).toContain('audit:read');
@@ -71,6 +73,12 @@ describe('permissions catalog routes', () => {
       }
       expect(body.actionLabels.cross_site_restore).toBe('Cross-Site Restore');
       expect(body.resourceLabels.workspace).toBe('Workspace');
+
+      // W02: the agreements resource must carry a human label, or the role
+      // editor renders a raw `agreements` string in the resource column.
+      expect(keys).toContain('agreements:read');
+      expect(keys).toContain('agreements:write');
+      expect(body.resourceLabels.agreements).toBe('Agreements');
       expect(body.actionLabels.credentials).toBe('Manage Credentials');
     });
 

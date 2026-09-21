@@ -14,7 +14,6 @@ export const RUN_ACTION_MIGRATION_BACKLOG: ReadonlyArray<string> = [
   'apps/web/src/components/devices/ChangeSiteModal.tsx',
   'apps/web/src/components/devices/CreateGroupModal.tsx',
   'apps/web/src/components/devices/DeviceBootPerformanceTab.tsx',
-  'apps/web/src/components/devices/DeviceFilesystemTab.tsx',
   'apps/web/src/components/devices/DeviceGroupsPage.tsx',
   // DeviceList.tsx removed: its only fetchWithAuth call (POST /filters/preview,
   // a read) moved to hooks/useAdvancedFilterIds.ts — no mutating calls remain.
@@ -23,7 +22,6 @@ export const RUN_ACTION_MIGRATION_BACKLOG: ReadonlyArray<string> = [
   'apps/web/src/components/devices/DeviceSettingsModal.tsx',
   // DeviceWarrantyCard.tsx migrated to runAction (#1723) — now in TARGET_GLOBS.
   'apps/web/src/components/alerts/AlertCorrelationView.tsx',
-  'apps/web/src/components/alerts/AlertRuleEditor.tsx',
   // AlertRulesPage.tsx removed (#3988): the page it backed has been a 301 to
   // /configuration-policies since d8a6bc833 (2026-02-22), so the component was
   // unreachable from any route.
@@ -39,4 +37,16 @@ export const RUN_ACTION_MIGRATION_BACKLOG: ReadonlyArray<string> = [
   // inline error banner + the row updating in place, but the fetchWithAuth
   // mutations are not yet routed through runAction.
   'apps/web/src/components/software/SoftwareVersionManager.tsx',
+  // ComplianceDashboard.tsx: handleFormSubmit (policy create/update — the
+  // handler that arms autoInstall, #5505 W04) IS migrated to runAction.
+  // handleConfirmDelete / handleCheckCompliance / handleRemediate remain on
+  // bare fetchWithAuth — out of that wave's scope. Not yet moved into
+  // TARGET_GLOBS: doing so would flag those three untouched handlers.
+  'apps/web/src/components/software/ComplianceDashboard.tsx',
+  // ReportsList.tsx: handleGenerate (2026-09-16 pre-release sweep — "Generate
+  // now" 200'd with no toast and the row kept reading "Last Generated: Never"
+  // until reload) IS migrated to runAction. handleDelete remains on bare
+  // fetchWithAuth — out of that fix's scope. Not yet moved into TARGET_GLOBS:
+  // doing so would flag that untouched handler.
+  'apps/web/src/components/reports/ReportsList.tsx',
 ];

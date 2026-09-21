@@ -1,3 +1,4 @@
+import TopologyEntry from '../topology/TopologyEntry';
 import { useCallback, useMemo, useState, useEffect } from 'react';
 import { Plus, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -9,6 +10,7 @@ import DiscoveredAssetList, { mapAsset, toDetail } from './DiscoveredAssetList';
 import AssetDetailModal, { type AssetDetail } from './AssetDetailModal';
 import NetworkTopologyMap from './NetworkTopologyMap';
 import NetworkChangesPanel from './NetworkChangesPanel';
+import NetworkBaselinesPanel from './NetworkBaselinesPanel';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { useOrgScope } from '@/hooks/useOrgScope';
@@ -22,7 +24,7 @@ import { asList } from '@/lib/asList';
 // would otherwise render raw keys (and mismatch the SSR markup).
 import '../../lib/i18n';
 
-const DISCOVERY_TABS = ['assets', 'profiles', 'jobs', 'topology', 'changes'] as const;
+const DISCOVERY_TABS = ['assets', 'profiles', 'jobs', 'topology', 'changes', 'baselines'] as const;
 type DiscoveryTab = (typeof DISCOVERY_TABS)[number];
 
 type ApiDiscoverySchedule = {
@@ -246,7 +248,7 @@ function mapProfileToDisplay(profile: ApiDiscoveryProfile, t: TFunction): Discov
 
 function getTabFromHash(): DiscoveryTab {
   if (typeof window === 'undefined') return 'assets';
-  const hash = window.location.hash.replace('#', '');
+  const hash = window.location.hash.replace('#', '').split('/')[0];
   if (hash && (DISCOVERY_TABS as readonly string[]).includes(hash)) {
     return hash as DiscoveryTab;
   }
@@ -348,7 +350,8 @@ export default function DiscoveryPage() {
     jobs: t('discoveryPage.tabs.jobs'),
     assets: t('discoveryPage.tabs.assets'),
     topology: t('discoveryPage.tabs.topology'),
-    changes: t('discoveryPage.tabs.changes')
+    changes: t('discoveryPage.tabs.changes'),
+    baselines: t('discoveryPage.tabs.baselines')
   };
   const tabButtons = DISCOVERY_TABS.map((id) => ({ id, label: tabLabels[id] }));
 
@@ -704,18 +707,13 @@ export default function DiscoveryPage() {
 
       {activeTab === 'topology' && (
         <>
-          <NetworkTopologyMap onNodeClick={(nodeId) => setTopologyAssetId(nodeId)} />
+          <TopologyEntry sites={sites} legacy={<NetworkTopologyMap onNodeClick={(nodeId) => setTopologyAssetId(nodeId)} />} />
           {topologyAssetId && (
             <AssetDetailModal
               open={!!topologyAssetId}
               asset={topologyAsset}
               loading={topologyAssetLoading}
               onClose={() => setTopologyAssetId(null)}
-              onDeleted={() => setTopologyAssetId(null)}
-              onUpdated={() => {
-                // Re-fetch to refresh data
-                setTopologyAssetId(prev => prev);
-              }}
             />
           )}
         </>
@@ -725,6 +723,21 @@ export default function DiscoveryPage() {
         <NetworkChangesPanel
           currentOrgId={currentOrgId}
           siteOptions={siteOptions}
+        />
+      )}
+
+      {activeTab === 'baselines' && (
+        // No page-level "current site" concept exists anymore (orgStore.ts
+        // dropped it — see its partialize comment); the panel's own site
+        // dropdown lets a user pick one when creating a baseline. "View
+        // changes" on a baseline hands off to the existing Changes tab —
+        // filtering that tab down to just this baseline's events is left to
+        // a follow-up, matching #5433's ask to wire the panel in as a tab.
+        <NetworkBaselinesPanel
+          currentOrgId={currentOrgId}
+          currentSiteId={null}
+          siteOptions={siteOptions}
+          onViewChanges={() => navigateToTab('changes')}
         />
       )}
         </>

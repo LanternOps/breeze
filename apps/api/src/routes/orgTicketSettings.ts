@@ -10,7 +10,7 @@ import { orgTicketSettingsSchema } from '@breeze/shared';
 import { getOrgTicketSettings, upsertOrgTicketSettings } from '../services/ticketConfigService';
 
 // Admin read/write for an org's ticketing overrides (org_ticket_settings:
-// SLA override map + billing defaults). Registered onto orgRoutes so it
+// SLA override map). Registered onto orgRoutes so it
 // inherits orgRoutes' authMiddleware — mounting at the top-level api app would
 // silently skip auth. Mirrors orgPortalSettings.ts.
 
@@ -59,10 +59,6 @@ export function registerOrgTicketSettingsRoutes(orgRoutes: Hono) {
       const org = await resolveAccessibleOrg(c);
       if (org instanceof Response) return org;
 
-      // #3778: the service resolves the org currency itself, inside its own
-      // transaction under the org SHARE barrier. `resolveAccessibleOrg` stays
-      // for the 404 / authorization check ONLY — its currency read was a
-      // pre-transaction stale read that could stamp `rate_currency` wrong.
       const data = await upsertOrgTicketSettings(org.id, body);
 
       writeRouteAudit(c, {

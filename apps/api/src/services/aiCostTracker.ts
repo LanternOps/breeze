@@ -7,6 +7,7 @@
 
 import { db, withSystemDbAccessContext } from '../db';
 import { aiSessions, aiCostUsage, aiBudgets, organizations } from '../db/schema';
+import { aiAgentRuns } from '../db/schema/aiAgents';
 import { eq, and, sql, desc, isNotNull } from 'drizzle-orm';
 import { getRedis } from './redis';
 import { rateLimiter } from './rate-limit';
@@ -15,6 +16,7 @@ import { getLlmBillingSourceForOrg } from './llm/llmConfigResolver';
 import { captureException, captureMessage } from './sentry';
 import { evaluateAiBudgetThresholds } from './aiBudgetAlerts';
 import { getCatalogEntryName } from './llmProviderCatalog';
+import { settleAiBudgetReservationDurably } from './aiBudgetReservations';
 
 export type AiBillingSource = 'platform' | 'partner_key';
 
@@ -108,6 +110,18 @@ export function isPricedModel(model: string): boolean {
   return model in MODEL_PRICING;
 }
 
+// Sandbox COMPUTE pricing (spec §5.6) lives in its own pure module and is
+// re-exported here because that is the name the execution-plane wave contract
+// uses. Kept out of this file's body deliberately: aiCostTracker.ts is already
+// ~1,500 lines, and compute pricing has no dependency on anything in it.
+export {
+  AI_COMPUTE_PRICE_MULTIPLIER_ENV,
+  COMPUTE_PRICING,
+  type ComputePrice,
+  calculateComputeCents,
+  computePriceMultiplier,
+} from './aiComputePricing';
+
 // Models a partner may pin as their BYOK default. MODEL_PRICING keeps legacy
 // snapshot ids for cost attribution on old sessions; those must not be offered
 // (or accepted) as new defaults — a retired snapshot pinned partner-wide fails
@@ -193,7 +207,7 @@ async function fetchAndCachePartnerCredits(partnerId: string): Promise<PartnerCr
   if (!billingUrl || !billingKey) return { ok: false, reason: 'unconfigured' };
 
   try {
-    const res = await fetch(`${billingUrl}/api/internal/partners/${partnerId}/ai-credits`, {
+    const res = await fetch(`${billingUrl}/billing/api/internal/partners/${partnerId}/ai-credits`, {
       headers: { 'Authorization': `Bearer ${billingKey}` },
     });
 
@@ -374,7 +388,7 @@ export async function deductBillingCredits(orgId: string, costCents: number): Pr
   }
 
   try {
-    const res = await fetch(`${billingUrl}/api/internal/partners/${org.partnerId}/ai-credits/deduct`, {
+    const res = await fetch(`${billingUrl}/billing/api/internal/partners/${org.partnerId}/ai-credits/deduct`, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${billingKey}`,
@@ -407,6 +421,127 @@ export async function deductBillingCredits(orgId: string, costCents: number): Pr
         ai_billing_http_status: 'transport_error',
       });
     });
+  }
+}
+
+/**
+ * Execution plane W04 (spec §5.6 "Reservation") — the credits gate for the
+ * SANDBOX COMPUTE leg of an analysis run.
+ *
+ * Compute is OURS regardless of who pays for tokens: a BYOK partner pays
+ * Anthropic for the model, but the microVM is billed to us, so this is
+ * checked (and later deducted) for `platform` runs exactly like token spend,
+ * and skipped for `partner_key` — which does NOT mean partner_key compute is
+ * free: it is charged and settled on the run row and `ai_cost_usage` all the
+ * same ({@link settleComputeCents}), just not against prepaid AI credits.
+ *
+ * A SIBLING of `checkBillingCredits` rather than a parameter on it: a dozen
+ * call sites branch on that function's `string | null` shape and none of them
+ * has a compute leg to declare.
+ *
+ * `reserveCents` is the reservation about to be taken, not spend already
+ * incurred — this runs BEFORE the run row exists, which is the whole point
+ * (spec §5.6: "this is the fix for the 'credits are enforced after the fact'
+ * gap for this lane").
+ */
+export async function checkComputeCredits(
+  orgId: string,
+  billingSource: AiBillingSource,
+  reserveCents: number,
+): Promise<AiAccessDenial | null> {
+  if (billingSource !== 'platform') return null;
+  if (reserveCents <= 0) return null;
+  return checkBillingCreditsDetailed(orgId, billingSource);
+}
+
+/**
+ * Execution plane W04 (spec §5.6) — stamp an analysis run's compute
+ * RESERVATION on its own row.
+ *
+ * The reservation is what makes concurrent admissions safe: admission sums
+ * settled `compute_cents` PLUS outstanding `compute_reserved_cents` for the
+ * day, so N runs that each fit under the ceiling cannot collectively blow
+ * through it. It is deliberately stored on the run rather than in Redis —
+ * a reservation that evaporates with a cache is a reservation that does not
+ * bound anything, and the row is already the durable record the settlement
+ * writes back to.
+ *
+ * Non-throwing is NOT an option here: a reservation that silently failed to
+ * write would leave the run admitted with no fence at all, so the caller
+ * takes it inside the same transaction as every other admission counter.
+ */
+export async function reserveComputeCents(
+  orgId: string,
+  runId: string,
+  reserveCents: number,
+  _billingSource: AiBillingSource,
+): Promise<void> {
+  if (reserveCents <= 0) return;
+  await withSystemDbAccessContext(() => db
+    .update(aiAgentRuns)
+    .set({ computeReservedCents: reserveCents })
+    .where(and(eq(aiAgentRuns.id, runId), eq(aiAgentRuns.orgId, orgId))));
+}
+
+/**
+ * Execution plane W04 (spec §5.6, §9) — replace a run's reservation with what
+ * the sandbox actually cost.
+ *
+ * Called from the run loop's `finally` for EVERY billing source, and from the
+ * admission enqueue-failure path with `0` (that zero IS the release: there is
+ * exactly one way a reservation ever ends). `compute_reserved_cents` is
+ * cleared in the same statement that writes `compute_cents`, so the daily sum
+ * can never double-count a settled run.
+ *
+ * Credits are deducted only for `platform`; a BYOK partner is still CHARGED
+ * (the row and the `ai_cost_usage` rollup carry the cents) — they just do not
+ * come out of prepaid AI credits, exactly like token spend.
+ */
+export async function settleComputeCents(
+  orgId: string,
+  runId: string,
+  actualCents: number,
+  billingSource: AiBillingSource,
+): Promise<void> {
+  const cents = Number.isFinite(actualCents) && actualCents > 0 ? Math.ceil(actualCents) : 0;
+
+  await withSystemDbAccessContext(() => db
+    .update(aiAgentRuns)
+    .set({ computeCents: cents, computeReservedCents: null })
+    .where(and(eq(aiAgentRuns.id, runId), eq(aiAgentRuns.orgId, orgId))));
+
+  if (cents <= 0) return;
+
+  const now = new Date();
+  const dailyKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}-${String(now.getUTCDate()).padStart(2, '0')}`;
+  const monthlyKey = dailyKey.slice(0, 7);
+  for (const [period, periodKey] of [['daily', dailyKey], ['monthly', monthlyKey]] as const) {
+    try {
+      await withSystemDbAccessContext(() => db
+        .insert(aiCostUsage)
+        .values({ orgId, period, periodKey, computeCents: cents, billingSource })
+        .onConflictDoUpdate({
+          target: [aiCostUsage.orgId, aiCostUsage.period, aiCostUsage.periodKey],
+          set: {
+            computeCents: sql`${aiCostUsage.computeCents} + ${cents}`,
+            updatedAt: new Date(),
+          },
+        }));
+    } catch (err) {
+      // Same posture as the token rollup above: a failed aggregate must not
+      // fail the run, and the authoritative number is on the run row
+      // (`ai_agent_runs.compute_cents`, written above and outside this catch)
+      // — admission's daily ceiling reads THAT, not this column. Paged anyway:
+      // nothing reconciles a dropped rollup, so the drift is permanent, and
+      // silent permanent drift in a spend column is how an invoice built on it
+      // later comes out wrong with no record of why.
+      console.error(`[AI] Failed to roll up ${period} compute for org=${orgId}, run=${runId}:`, err);
+      captureException(err instanceof Error ? err : new Error(String(err)));
+    }
+  }
+
+  if (billingSource === 'platform') {
+    await deductBillingCredits(orgId, cents);
   }
 }
 
@@ -699,13 +834,36 @@ export async function recordUsage(
   isToolExecution: boolean,
   billingSource: AiBillingSource,
   catalogPricing?: CatalogPricingSnapshot,
+  budgetReservationId?: string,
+  additionalCostCents = 0,
 ): Promise<void> {
-  const costCents = catalogPricing
+  if (!Number.isFinite(additionalCostCents) || additionalCostCents < 0) {
+    throw new Error('additionalCostCents must be a finite non-negative amount');
+  }
+  const tokenCostCents = catalogPricing
     ? calculateCatalogCostCents(catalogPricing, inputTokens, outputTokens)
     : calculateCostCents(model, inputTokens, outputTokens);
+  const costCents = tokenCostCents + additionalCostCents;
   const now = new Date();
   const dailyKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}-${String(now.getUTCDate()).padStart(2, '0')}`;
   const monthlyKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
+
+  if (budgetReservationId) {
+    await settleAiBudgetReservationDurably({
+      orgId,
+      reservationId: budgetReservationId,
+      actualCostCents: costCents,
+      inputTokens,
+      outputTokens,
+      messageCount: 1,
+      toolExecutionCount: isToolExecution ? 1 : 0,
+      ...(sessionId !== null ? { session: { id: sessionId, turnCount: 1 } } : {}),
+    });
+    checkCostAnomalies(sessionId, orgId, costCents).catch(err => {
+      console.error('[AI] Cost anomaly check failed:', err);
+    });
+    return;
+  }
 
   // Run queries individually instead of in a transaction to avoid
   // SAVEPOINT errors with the postgres.js driver (postgres@3.4.8).
@@ -819,6 +977,7 @@ export async function recordUsageFromSdkResult(
   },
   billingSource: AiBillingSource,
   catalogPricing?: CatalogPricingSnapshot,
+  budgetReservationId?: string,
 ): Promise<void> {
   if (!orgId) {
     console.warn(`[AI] Skipping recordUsageFromSdkResult — empty orgId for session=${sessionId}`);
@@ -884,6 +1043,26 @@ export async function recordUsageFromSdkResult(
   const now = new Date();
   const dailyKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}-${String(now.getUTCDate()).padStart(2, '0')}`;
   const monthlyKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
+
+  if (budgetReservationId) {
+    await settleAiBudgetReservationDurably({
+      orgId,
+      reservationId: budgetReservationId,
+      actualCostCents: costCents,
+      inputTokens: recordedInputTokens,
+      outputTokens,
+      messageCount: 1,
+      toolExecutionCount,
+      session: { id: sessionId, turnCount: result.num_turns },
+    });
+    checkCostAnomalies(sessionId, orgId, costCents).catch(err => {
+      console.error('[AI] Cost anomaly check failed:', err);
+    });
+    if (billingSource === 'platform' && costCents > 0) {
+      await deductBillingCredits(orgId, costCents);
+    }
+    return;
+  }
 
   // Update session totals
   try {
@@ -993,6 +1172,7 @@ export async function recordSessionlessSdkUsage(
     model?: string;
   },
   billingSource: AiBillingSource,
+  budgetReservationId?: string,
 ): Promise<void> {
   if (!orgId) {
     console.warn('[AI] Skipping recordSessionlessSdkUsage — empty orgId');
@@ -1019,11 +1199,6 @@ export async function recordSessionlessSdkUsage(
     );
   }
 
-  // A cache-only turn (every plain input/output counter 0, the whole prompt
-  // served from cache) still COSTS money — gating the write on
-  // input/output alone silently dropped those from the org rollup.
-  if (!anyTokens && costCents <= 0) return;
-
   // What the `*_input_tokens` COLUMNS store: the three disjoint input slices
   // summed. Pricing above deliberately keeps them split (different rates).
   const recordedInputTokens = sumInputTokens(result.usage);
@@ -1032,6 +1207,30 @@ export async function recordSessionlessSdkUsage(
   // the honest message count for it; 1 keeps the counter monotonic when the SDK
   // reports no turns.
   const messageCount = result.numTurns > 0 ? result.numTurns : 1;
+
+  if (budgetReservationId) {
+    await settleAiBudgetReservationDurably({
+      orgId,
+      reservationId: budgetReservationId,
+      actualCostCents: Math.max(0, costCents),
+      inputTokens: recordedInputTokens,
+      outputTokens,
+      messageCount,
+      toolExecutionCount,
+    });
+    checkCostAnomalies(null, orgId, costCents).catch(err => {
+      console.error('[AI] Cost anomaly check failed (sessionless SDK):', err);
+    });
+    if (billingSource === 'platform' && costCents > 0) {
+      await deductBillingCredits(orgId, costCents);
+    }
+    return;
+  }
+
+  // A cache-only turn (every plain input/output counter 0, the whole prompt
+  // served from cache) still COSTS money — gating the write on
+  // input/output alone silently dropped those from the org rollup.
+  if (!anyTokens && costCents <= 0) return;
 
   const now = new Date();
   const dailyKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}-${String(now.getUTCDate()).padStart(2, '0')}`;
@@ -1258,6 +1457,12 @@ export async function updateBudget(orgId: string, settings: {
   approvalMode?: 'per_step' | 'action_plan' | 'auto_approve' | 'hybrid_plan';
   alertThresholdPercents?: number[] | null;
 }): Promise<void> {
+  // Serialize local budget changes with reserve/settle, which use the same
+  // stable org row as their transaction lock. Without this, lowering or
+  // disabling a budget can race a provider admission based on stale settings.
+  await db.execute(sql`
+    SELECT id FROM organizations WHERE id = ${orgId}::uuid FOR UPDATE
+  `);
   const [existing] = await db
     .select()
     .from(aiBudgets)
@@ -1278,6 +1483,11 @@ export async function updateBudget(orgId: string, settings: {
       maxTurnsPerSession: settings.maxTurnsPerSession ?? 50,
       messagesPerMinutePerUser: settings.messagesPerMinutePerUser ?? 20,
       messagesPerHourPerOrg: settings.messagesPerHourPerOrg ?? 200,
+      // #5592 — this branch enumerates columns, so every field of the
+      // `settings` parameter must appear here. Omitting one silently discards
+      // the user's choice on the FIRST save (the row takes the column default)
+      // and only sticks on the second save, which takes the update branch.
+      approvalMode: settings.approvalMode ?? 'per_step',
       alertThresholdPercents: settings.alertThresholdPercents ?? null,
     });
   }

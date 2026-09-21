@@ -37,6 +37,26 @@ function deviceTitle(d: ApproverDevice): string {
   return 'Unnamed device';
 }
 
+/**
+ * Mirrors `L4_TRUSTED_PLATFORM_BOUND_BASES` in
+ * `apps/api/src/services/authenticatorAssurance.ts` (#1374 W07, issue #5162) —
+ * the ONLY bases that reach critical-tier (L4) approvals. Keep in sync with
+ * that server-side set; this is UI-only and never itself a security gate.
+ * A missing/undefined `platformBoundBasis` (API predates #1374 W02, or the
+ * legacy single-POST registration path) is deliberately NOT trusted here —
+ * fail toward the honest "Not attested" badge, never the reverse.
+ */
+const L4_TRUSTED_PLATFORM_BOUND_BASES = new Set<NonNullable<ApproverDevice['platformBoundBasis']>>([
+  'webauthn_backup_flags',
+  'ios_se_p256_app_attest',
+  'android_tee_key_attestation',
+  'android_strongbox_key_attestation',
+]);
+
+function isHardwareAttested(device: ApproverDevice): boolean {
+  return device.platformBoundBasis !== undefined && L4_TRUSTED_PLATFORM_BOUND_BASES.has(device.platformBoundBasis);
+}
+
 const OK_RESPONSE = { ok: true, status: 200, json: async () => ({ success: true }) } as Response;
 
 export default function ApproverDevicesSection({
@@ -297,12 +317,19 @@ export default function ApproverDevicesSection({
                           {deviceTitle(device)}
                         </span>
                       )}
-                      {device.isPlatformBound && (
+                      {isHardwareAttested(device) ? (
                         <span
                           data-testid={`approver-device-platform-badge-${device.id}`}
                           className="rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary"
                         >
-                          {t('approverDevicesSection.platformBound')}</span>
+                          {t('approverDevicesSection.hardwareAttested')}</span>
+                      ) : (
+                        <span
+                          data-testid={`approver-device-platform-badge-${device.id}`}
+                          title={t('approverDevicesSection.notAttestedTooltip')}
+                          className="rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground"
+                        >
+                          {t('approverDevicesSection.notAttested')}</span>
                       )}
                       {device.lastUsedAt === null && (
                         <span

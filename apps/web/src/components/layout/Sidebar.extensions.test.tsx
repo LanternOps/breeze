@@ -92,7 +92,7 @@ describe('Sidebar extension navigation', () => {
 
     // Core top-level items still render.
     expect(await screen.findByText('Dashboard')).toBeInTheDocument();
-    expect(screen.getByText('Devices')).toBeInTheDocument();
+    expect(screen.getByText('Devices & Assets')).toBeInTheDocument();
     // No stray "Extensions" section header.
     expect(screen.queryByText('Extensions')).not.toBeInTheDocument();
   });

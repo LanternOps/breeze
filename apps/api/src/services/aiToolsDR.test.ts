@@ -121,6 +121,8 @@ function makeAuth(): AuthContext {
     partnerId: null,
     orgId: ORG_ID,
     scope: 'organization',
+    principal: { kind: 'user_session' },
+    allowedSiteIds: undefined,
     accessibleOrgIds: [ORG_ID],
     canAccessOrg: (orgId: string) => orgId === ORG_ID,
     orgCondition: vi.fn(() => undefined),
@@ -267,6 +269,60 @@ describe('aiToolsDR handlers', () => {
     const result = await toolMap.get(toolName)!.handler(input as Record<string, unknown>, makeAuth());
     expect(typeof result).toBe('string');
     expect(() => JSON.parse(result)).not.toThrow();
+  });
+
+  // ── W05b Task 7: BARE_METAL_REBUILD restoreConfig goes through the step schema ──
+  describe('manage_dr_plan BARE_METAL_REBUILD restoreConfig', () => {
+    const HOST_ID = '99999999-9999-4999-8999-999999999999';
+    const planRow = { id: PLAN_ID, orgId: ORG_ID, name: 'Primary DR Plan', status: 'active' };
+
+    it('rejects waitTimeoutMinutes below the floor without touching the database', async () => {
+      const result = JSON.parse(await toolMap.get('manage_dr_plan')!.handler({
+        action: 'add_group', planId: PLAN_ID, name: 'Tier 1', devices: [DEVICE_ID],
+        restoreConfig: { commandType: 'BARE_METAL_REBUILD', waitTimeoutMinutes: 2 },
+      }, makeAuth()));
+      expect(result.error).toMatch(/restoreConfig/);
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('rejects a rebuildHostDeviceId the caller cannot reach', async () => {
+      // plan lookup → found; device lookup (verifyDeviceAccess) → nothing.
+      mockSelectSequence([[planRow], []]);
+      const result = JSON.parse(await toolMap.get('manage_dr_plan')!.handler({
+        action: 'add_group', planId: PLAN_ID, name: 'Tier 1', devices: [DEVICE_ID],
+        restoreConfig: { commandType: 'BARE_METAL_REBUILD', rebuildHostDeviceId: HOST_ID },
+      }, makeAuth()));
+      expect(result.error).toBe('Device not found or access denied');
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('stores the normalised config (defaults applied) when the host is reachable', async () => {
+      mockSelectSequence([[planRow], [{ id: HOST_ID, orgId: ORG_ID, siteId: null, status: 'online', osType: 'linux' }]]);
+      mockInsertSequence([[{ id: GROUP_ID }]]);
+      const result = JSON.parse(await toolMap.get('manage_dr_plan')!.handler({
+        action: 'add_group', planId: PLAN_ID, name: 'Tier 1', devices: [DEVICE_ID],
+        restoreConfig: { commandType: 'BARE_METAL_REBUILD', rebuildHostDeviceId: HOST_ID },
+      }, makeAuth()));
+      expect(result.success).toBe(true);
+      const inserted = vi.mocked(db.insert).mock.results[0]!.value.values.mock.calls[0][0];
+      expect(inserted.restoreConfig).toEqual({
+        commandType: 'BARE_METAL_REBUILD',
+        snapshotSelection: 'latest_restorable',
+        rebuildHostDeviceId: HOST_ID,
+        outputDir: '/var/lib/breeze/rebuild/out',
+        waitTimeoutMinutes: 240,
+      });
+    });
+
+    it('update_group validates restoreConfig the same way', async () => {
+      mockSelectSequence([[{ id: GROUP_ID, orgId: ORG_ID, devices: [DEVICE_ID] }]]);
+      const result = JSON.parse(await toolMap.get('manage_dr_plan')!.handler({
+        action: 'update_group', planId: PLAN_ID, groupId: GROUP_ID,
+        restoreConfig: { commandType: 'BARE_METAL_REBUILD', outputDir: 'relative/path' },
+      }, makeAuth()));
+      expect(result.error).toMatch(/restoreConfig/);
+      expect(db.update).not.toHaveBeenCalled();
+    });
   });
 
   it('uses orgCondition for org-scoped DR queries', async () => {

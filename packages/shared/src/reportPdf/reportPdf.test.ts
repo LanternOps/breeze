@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { buildPostureBackupMetric, buildReportPdf } from './reportPdf';
 import type { PostureSummary } from '../types/postureReport';
 import type { ExecutiveSummary } from '../types/executiveSummaryReport';
+import type { FleetDesignReportSummary, FleetDesignSubmission } from '../types/fleetDesign';
+import { fleetDesignOutcomeFromSubmission, type FleetDesignOutcomeRefs } from '../validators/fleetDesign';
 
 const postureSummary: PostureSummary = {
   org: { id: 'o1', name: 'Acme Corp' },
@@ -328,5 +330,153 @@ describe('buildReportPdf in Node (no DOM)', () => {
     expect(Buffer.from(missingMetric.output('arraybuffer')).byteLength).toBe(
       Buffer.from(noPrevious.output('arraybuffer')).byteLength,
     );
+  });
+});
+
+// Copied from validators/fleetDesign.test.ts's validSubmission() so this file
+// doesn't depend on another test module's fixtures. Intentionally loosely
+// typed (inferred, not annotated FleetDesignSubmission) — see that file for why.
+const FD1 = '11111111-1111-4111-8111-111111111111';
+const FD2 = '22222222-2222-4222-8222-222222222222';
+
+function validFleetDesignSubmission() {
+  return {
+    found: {
+      summary: ['12 devices across 2 sites.'],
+      findings: [{ title: 'Shared local admin on 4 workstations', deviceCount: 4, evidence: ['posture:localAdmin'] }],
+    },
+    functions: [
+      { functionKey: 'file_server', deviceIds: [FD1], confidence: 0.9, evidence: ['SMB listener; 2 TB data volume'] },
+    ],
+    monitoring: [
+      {
+        functionKey: 'file_server',
+        watches: [{ watchType: 'service', name: 'LanmanServer', alertOnStop: true, autoRestart: true, rationale: 'SMB is the function.' }],
+        alertRules: [{
+          name: 'File server disk over 85%', severity: 'high',
+          conditions: [{ type: 'metric', metric: 'disk', operator: 'gt', value: 85, durationMinutes: 15 }],
+          cooldownMinutes: 60, rationale: 'Data volume growth is the failure mode.', action: 'none', paging: 'business_hours',
+        }],
+      },
+    ],
+    retired: [{ kind: 'watch', policyId: 'p1', policyName: 'Legacy monitoring', itemName: 'Print Spooler', reason: 'No print server function detected.' }],
+    automation: [{ functionKey: 'file_server', playbooks: [{ builtInName: 'Restart stopped service' }], scripts: [] }],
+    legacy: [{ scriptId: 's1', scriptName: 'cleanup.ps1', intent: 'Disk cleanup', bucket: 'covered', coveredBy: 'Automation: file_server', notes: 'Superseded by the new automation.' }],
+    baseline: { notes: ['Alert rate is dominated by disk warnings.'] },
+    unsure: {
+      lowConfidenceFunctions: [{ functionKey: 'kiosk', deviceIds: [FD2], confidence: 0.4, evidence: ['single logon user'] }],
+      unreachableDevices: [], needsHuman: [], roleCorrections: [],
+    },
+  };
+}
+
+const fleetDesignRefs: FleetDesignOutcomeRefs = {
+  deviceIds: new Set([FD1, FD2]),
+  baseline: { alertsPer100EndpointsPerMonth: 42, ticketsPerMonth: 7, precursors: [{ condition: 'disk_used_over_threshold', deviceCount: 3 }] },
+  generatedAt: '2026-09-12T00:00:00.000Z',
+};
+
+const outcomeFixture = fleetDesignOutcomeFromSubmission(
+  validFleetDesignSubmission() as unknown as FleetDesignSubmission,
+  fleetDesignRefs,
+);
+
+describe('buildReportPdf: ai_fleet_design', () => {
+  it('renders a fleet design summary without throwing and titles it Fleet Design', () => {
+    const summary: FleetDesignReportSummary = {
+      fleetDesign: {
+        schemaVersion: 1,
+        outcome: outcomeFixture,
+        orgName: 'Acme',
+        agentName: 'Designer',
+        generatedAt: '2026-09-12T09:00:00Z',
+      },
+    };
+    const doc = buildReportPdf([], { reportType: 'ai_fleet_design', generatedAt: '2026-09-12 09:00', timezone: 'UTC', summary });
+    expect(doc.getNumberOfPages()).toBeGreaterThanOrEqual(1);
+    const text = pdfCommandText(doc);
+    expect(text).toContain('Fleet Design');
+    // Discriminate against the generic fallback's titleCase("ai_fleet_design")
+    // -> "Ai Fleet Design" (which also contains the substring "Fleet Design").
+    expect(text).not.toContain('Ai Fleet Design');
+    expect(text).toContain('What was found');
+  });
+
+  it('names the evidence sections that were not measured so a zero is never read as a measurement', () => {
+    const summary: FleetDesignReportSummary = {
+      fleetDesign: { outcome: outcomeFixture, orgName: 'Acme', unavailable: ['counts', 'precursors'] },
+    };
+    const doc = buildReportPdf([], { reportType: 'ai_fleet_design', generatedAt: '2026-09-12 09:00', timezone: 'UTC', summary });
+    expect(pdfCommandText(doc)).toContain('Not measured: counts, precursors');
+    const clean = buildReportPdf([], { reportType: 'ai_fleet_design', generatedAt: '2026-09-12 09:00', timezone: 'UTC', summary: { fleetDesign: { outcome: outcomeFixture, orgName: 'Acme' } } });
+    expect(pdfCommandText(clean)).not.toContain('Not measured');
+  });
+
+  it('renders every section title and key section content', () => {
+    const summary: FleetDesignReportSummary = { fleetDesign: { outcome: outcomeFixture, orgName: 'Acme' } };
+    const doc = buildReportPdf([], { reportType: 'ai_fleet_design', generatedAt: '2026-09-12 09:00', timezone: 'UTC', summary });
+    const text = pdfCommandText(doc);
+    expect(text).toContain('What was found');
+    expect(text).toContain('What each device is for');
+    expect(text).toContain('What to watch, and why');
+    expect(text).toContain('What is not carried forward');
+    expect(text).toContain('Automation');
+    expect(text).toContain('Legacy script inventory');
+    expect(text).toContain('Baseline and precursors');
+    expect(text).toContain('What the designer is unsure about');
+    expect(text).toContain('LanmanServer');
+    expect(text).toContain('File server disk over 85%');
+    expect(text).toContain('Print Spooler');
+    expect(text).toContain('cleanup.ps1');
+  });
+
+  it('renders a "Drift since the approved design" section before the eight sections when drift is present (W05)', () => {
+    const summary: FleetDesignReportSummary = {
+      fleetDesign: {
+        outcome: outcomeFixture,
+        orgName: 'Acme',
+        drift: {
+          approvedReportRunId: 'run-1',
+          appliedAt: '2026-06-01T10:00:00.000Z',
+          missing: [{ functionKey: 'file_server', kind: 'rule', name: 'SMB share offline' }],
+          extra: [{ policyId: 'p2', policyName: 'Hand-made', kind: 'watch', name: 'Fax', deviceCount: 3 }],
+          changed: [{ functionKey: 'file_server', kind: 'watch', name: 'Spooler', field: 'enabled', approved: 'true', live: 'false' }],
+        },
+      },
+    };
+    const doc = buildReportPdf([], { reportType: 'ai_fleet_design', generatedAt: '2026-09-12 09:00', timezone: 'UTC', summary });
+    const text = pdfCommandText(doc);
+    expect(text).toContain('Drift since the approved design');
+    expect(text).toContain('2026-06-01');
+    expect(text).toContain('SMB share offline');
+    expect(text).toContain('Hand-made');
+    expect(text).toContain('Spooler');
+    expect(text.indexOf('Drift since the approved design')).toBeLessThan(text.indexOf('What was found'));
+  });
+
+  it('omits the drift section when drift is null or absent', () => {
+    const doc = buildReportPdf([], { reportType: 'ai_fleet_design', generatedAt: '2026-09-12 09:00', timezone: 'UTC', summary: { fleetDesign: { outcome: outcomeFixture, orgName: 'Acme', drift: null } } });
+    expect(pdfCommandText(doc)).not.toContain('Drift since the approved design');
+  });
+
+  it('includes the proposals-only footnote', () => {
+    const summary: FleetDesignReportSummary = { fleetDesign: { outcome: outcomeFixture, orgName: 'Acme' } };
+    const doc = buildReportPdf([], { reportType: 'ai_fleet_design', generatedAt: '2026-09-12 09:00', timezone: 'UTC', summary });
+    const text = pdfCommandText(doc);
+    expect(text).toContain('Proposals only');
+    expect(text).toContain('nothing here is live until a technician applies it.');
+  });
+
+  it('renders without throwing when the outcome (and every other optional field) is absent', () => {
+    const summary: FleetDesignReportSummary = { fleetDesign: {} };
+    let doc: ReturnType<typeof buildReportPdf> | undefined;
+    expect(() => {
+      doc = buildReportPdf([], { reportType: 'ai_fleet_design', generatedAt: '2026-09-12 09:00', timezone: 'UTC', summary });
+    }).not.toThrow();
+    expect(doc!.getNumberOfPages()).toBeGreaterThanOrEqual(1);
+  });
+
+  it('falls through to the generic branch without throwing when fleetDesign is missing', () => {
+    expect(() => buildReportPdf([], { reportType: 'ai_fleet_design', generatedAt: '2026-09-12 09:00', timezone: 'UTC', summary: {} as FleetDesignReportSummary })).not.toThrow();
   });
 });

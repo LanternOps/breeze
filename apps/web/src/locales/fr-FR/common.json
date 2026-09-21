@@ -1,11 +1,20 @@
 {
+  "aiInitiator": {
+    "assistant": "Assistant IA",
+    "agent": "Agent IA",
+    "originUnavailable": "Origine non disponible",
+    "openSession": "Ouvrir la conversation",
+    "openAgentRun": "Ouvrir l'exécution de l'agent",
+    "tool": "Outil : {{name}}",
+    "occurredAt": "Survenu le {{time}}"
+  },
   "lists": {
     "separator": ", "
   },
   "nav": {
     "fleetPosture": "Posture du parc",
     "dashboard": "Tableau de bord",
-    "devices": "Dispositifs",
+    "devices": "Dispositifs et actifs",
     "alerts": "Alertes",
     "approvals": "Approbations",
     "pendingApprovals": "{{count}} approbations en attente",
@@ -20,6 +29,8 @@
     "oneDrive": "OneDrive",
     "aiForOffice": "IA pour Office",
     "networkMonitor": "Moniteur réseau",
+    "jobs": "Tâches",
+    "monitoring": "Supervision",
     "networkDiscovery": "Découverte du réseau",
     "edr": "EDR",
     "dnsSecurity": "DNS Sécurité",
@@ -32,6 +43,7 @@
     "quotes": "Citations",
     "invoices": "Factures",
     "contracts": "Contrats",
+    "agreements": "Conventions",
     "timesheets": "Feuilles de temps",
     "productCatalog": "Catalogue de produits",
     "deviceGroups": "Groupes d'appareils",
@@ -46,10 +58,13 @@
     "partner": "Partenaire",
     "billing": "Facturation",
     "organizations": "Organisations",
-    "aiUsageBudget": "Utilisation et budget de l’IA",
+    "aiUsage": "Utilisation de l’IA",
+    "scriptAuthoring": "Rédaction de scripts",
+    "toolSources": "Sources d’outils",
     "aiAgents": "Agents IA",
     "aiAgentRuns": "Exécutions des agents IA",
     "aiImpact": "Impact de l’IA",
+    "fleetDesign": "Conception de flotte",
     "customFields": "Champs personnalisés",
     "savedFilters": "Filtres enregistrés",
     "users": "Utilisateurs",
@@ -80,7 +95,9 @@
     "aiRisk": "Risque IA",
     "deviceBackup": "Sauvegarde des appareils",
     "sectionServiceDesk": "Centre de services",
-    "serviceManagement": "Gestion des services"
+    "serviceManagement": "Gestion des services",
+    "ticketing": "Tickets",
+    "deliverableTemplates": "Modèles de livrables"
   },
   "documentTitles": {
     "dashboard": "Tableau de bord",
@@ -713,7 +730,19 @@
         "scripts": "Scénarios",
         "alerts": "Alertes",
         "users": "Utilisateurs",
-        "settings": "Paramètres"
+        "settings": "Paramètres",
+        "recent-devices": "Dispositifs récents",
+        "recent-pages": "Consultés récemment"
+      },
+      "actions": {
+        "newDevice": "Nouveau dispositif",
+        "newDeviceDescription": "Ajouter un dispositif à votre parc",
+        "runScript": "Exécuter un script",
+        "runScriptDescription": "Exécuter un script sur des dispositifs",
+        "alertRules": "Règles d'alerte",
+        "alertRulesDescription": "Gérer les alertes dans les politiques de configuration",
+        "keyboardShortcuts": "Raccourcis clavier",
+        "keyboardShortcutsDescription": "Toutes les touches et séquences sur une seule carte"
       }
     },
     "notifications": {
@@ -753,7 +782,10 @@
       "collapse": "Réduire la barre latérale",
       "expand": "Agrandir la barre latérale",
       "collapseSections": "Réduire toutes les sections",
-      "closeMenu": "Fermer le menu"
+      "closeMenu": "Fermer le menu",
+      "recentDevices": "Dispositifs récents",
+      "hideRecentDevices": "Masquer les dispositifs récents",
+      "showRecentDevices": "Afficher les dispositifs récents"
     },
     "orgRequired": {
       "title": "Sélectionnez une organisation",
@@ -764,6 +796,20 @@
       "title": "Impossible de charger vos organisations",
       "description": "Une erreur s'est produite lors du chargement de la liste des organisations. Vérifiez votre connexion et réessayez.",
       "retry": "Réessayer"
+    },
+    "shortcuts": {
+      "title": "Raccourcis clavier",
+      "general": "Général",
+      "goTo": "Aller à",
+      "goToHint": "Appuyez sur g, relâchez, puis la touche.",
+      "then": "puis",
+      "search": "Rechercher dans Breeze",
+      "searchSlash": "Recherche (s'ouvre aussi avec cette touche)",
+      "cycleSidebar": "Changer le mode de la barre latérale",
+      "help": "Ouvrir le panneau d'aide",
+      "showThis": "Afficher cette carte",
+      "close": "Fermer une boîte de dialogue ou un menu",
+      "typingNote": "Les raccourcis à une touche sont suspendus pendant la saisie dans un champ."
     }
   },
   "migrationBanner": {
@@ -912,7 +958,8 @@
         "fallbackTitle": "Moniteur",
         "fields": {
           "interval": "Intervalle (s)",
-          "timeout": "Temps mort (s)"
+          "timeout": "Temps mort (s)",
+          "target": "URL cible"
         },
         "labels": {
           "lastChecked": "Dernière vérification : {{time}}",
@@ -940,6 +987,20 @@
           "httpCheck": "Vérification HTTP",
           "icmpPing": "Ping ICMP",
           "tcpPort": "Port TCP"
+        },
+        "targetResetNote": "La modification de l’URL réinitialise l’observation TLS.",
+        "saved": "Moniteur mis à jour",
+        "certificate": {
+          "title": "Certificat",
+          "issuer": "Émetteur",
+          "expires": "Expiration",
+          "observedHost": "Hôte observé",
+          "state": "État",
+          "states": {
+            "observed": "Observé",
+            "handshakeFailed": "Échec de la négociation TLS",
+            "notTls": "Sans TLS"
+          }
         }
       },
       "NetworkMonitorList": {
@@ -1651,7 +1712,8 @@
         "running": "En cours",
         "editEntry": "Modifier l’entrée {{id}}",
         "total": "Total : {{duration}}",
-        "billableTotal": "Facturable : {{duration}}"
+        "billableTotal": "Facturable : {{duration}}",
+        "billedVsWorked": "{{worked}} h travaillées · {{billed}} h facturées"
       },
       "sourceBadge": {
         "timer": "Minuteur",
@@ -1790,7 +1852,9 @@
         "assetsDescription": "Vue unifiée des sondages et vérifications réseau de SNMP par actif découvert.",
         "table": {
           "asset": "Actif",
-          "overall": "Globalisation"
+          "overall": "Globalisation",
+          "reachability": "Joignabilité",
+          "collection": "Collecte"
         },
         "ip": "IP",
         "snmp": "SNMP",
@@ -1842,7 +1906,29 @@
         "disabling": "Désactivant...",
         "yesDisable": "Oui, désactiver",
         "monitoringNotActive": "La surveillance n’est pas active pour cet actif.",
-        "saving": "Enregistrement..."
+        "saving": "Enregistrement...",
+        "openSettings": "Paramètres…",
+        "reachability": {
+          "responding": "Répond",
+          "notResponding": "Ne répond pas",
+          "unverified": "Non vérifié",
+          "sources": {
+            "networkCheck": "vérification réseau",
+            "probe": "vérifier maintenant",
+            "scan": "analyse",
+            "unifi": "contrôleur UniFi",
+            "snmp": "interrogation SNMP"
+          }
+        },
+        "collectionState": {
+          "collecting": "Collecte en cours",
+          "partial": "Partielle",
+          "no_template": "Aucun modèle",
+          "failing": "En échec",
+          "paused": "En pause",
+          "never_polled": "Jamais interrogé",
+          "not_configured": "Non configuré"
+        }
       },
       "MonitoringPage": {
         "tabs": {
@@ -2443,5 +2529,15 @@
     "approximateUnavailableStale": "≈ total non disponible — le taux de change vers {{target}} pour {{codes}} est trop ancien",
     "approximateUnavailableMixed": "≈ total non disponible — impossible de convertir {{codes}} en {{target}}",
     "approximateUnavailableCodesOverflow": "{{codes}} et {{more}} autres"
+  },
+  "mfaEnrollmentGraceBanner": {
+    "message": "Votre rôle nécessitera l’authentification à deux facteurs. Configurez-la avant le {{date}}.",
+    "cta": "Configurer la 2FA",
+    "dismiss": "Ignorer le rappel d’authentification à deux facteurs"
+  },
+  "mfaPolicyOffBanner": {
+    "message": "L'authentification multifacteur n'est pas obligatoire pour votre équipe. Les sessions avec mot de passe seul peuvent exécuter des scripts, déplacer des appareils et modifier des politiques.",
+    "cta": "Exiger la MFA",
+    "dismiss": "Masquer le rappel de politique MFA pour aujourd'hui"
   }
 }

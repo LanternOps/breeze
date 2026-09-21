@@ -1,4 +1,4 @@
-import { redactLogFields, redactLogMessage } from './logRedaction';
+import { redactLogFields, redactLogMessage, redactToolOutputFields } from './logRedaction';
 import { scrubErrorFieldsDeep } from './aiToolErrors';
 
 type CompactStats = {
@@ -47,7 +47,14 @@ const COMPACTION_TIERS: CompactConfig[] = [
   { maxStringChars: 300, maxArrayItems: 10, maxObjectKeys: 15, maxDepth: 4, maxStdoutChars: 1_000 },
 ];
 
-const MAX_TOOL_RESULT_CHARS = 8_000;
+/**
+ * The single chat-context budget for one tool result. EXPORTED because the
+ * artifact capture hook (services/artifacts/toolResultCapture.ts) must fire on
+ * exactly this threshold: a duplicated literal would drift the first time this
+ * is tuned, and the capture would then either never fire or fire on results
+ * that still fit.
+ */
+export const MAX_TOOL_RESULT_CHARS = 8_000;
 const RAW_PREVIEW_CHARS = 2_000;
 const STDOUT_TEXT_CHARS = 6_000;
 const STDERR_TEXT_CHARS = 1_200;
@@ -386,7 +393,7 @@ function compactCommandStylePayload(
       // see these fields — without this, credentials in structured command
       // output (service configs, env dumps) reach the model and the persisted
       // transcript verbatim.
-      const redactedStdout = redactLogFields(parsedStdout);
+      const redactedStdout = redactToolOutputFields(parsedStdout, redactAiToolOutputText);
       const compactedStdout = compactValue(redactedStdout, stdoutStats, {
         ...config,
         maxArrayItems: Math.min(config.maxArrayItems, 50),
@@ -518,6 +525,52 @@ function sanitizeToolPayloadValue(
   return output;
 }
 
+const MAX_SYSTEM_CLEANUP_ACTIONS = 40;
+const MAX_SYSTEM_CLEANUP_OUTPUT_TAIL = 2_000;
+
+/**
+ * `system_cleanup` has two result shapes behind one tool name: the `list`
+ * catalog (`{ catalog: { actions: [...] } }`) and the `run` report
+ * (`{ actions: [{ outputTail }], volumes, freedBytes }`). Both are pruned here;
+ * the numbers an answer is actually built from — freedBytes, status, exitCode,
+ * estimates — are never dropped, only the prose is.
+ */
+function compactSystemCleanupPayload(payload: Record<string, unknown>, stats: CompactStats): Record<string, unknown> {
+  const output = { ...payload };
+
+  const catalog = isRecord(output.catalog) ? { ...output.catalog } : null;
+  if (catalog) {
+    const actions = asArray(catalog.actions);
+    const { items, dropped } = pruneLargeList(actions, MAX_SYSTEM_CLEANUP_ACTIONS);
+    catalog.actions = items;
+    catalog.returnedActionCount = items.length;
+    catalog.totalActionCount = actions.length;
+    catalog.truncatedActionCount = Math.max(0, dropped);
+    if (dropped > 0) {
+      stats.arraysTruncated += 1;
+      stats.arrayItemsDropped += dropped;
+    }
+    output.catalog = catalog;
+  }
+
+  const runActions = asArray(output.actions);
+  if (runActions.length > 0) {
+    output.actions = runActions.map((entry) => {
+      if (!isRecord(entry)) return entry;
+      const tail = entry.outputTail;
+      if (typeof tail !== 'string' || tail.length <= MAX_SYSTEM_CLEANUP_OUTPUT_TAIL) return entry;
+      stats.arrayItemsDropped += 1;
+      return {
+        ...entry,
+        outputTail: tail.slice(-MAX_SYSTEM_CLEANUP_OUTPUT_TAIL),
+        outputTailTruncated: true,
+      };
+    });
+  }
+
+  return output;
+}
+
 function applyToolSpecificCompaction(
   toolName: string,
   parsed: unknown,
@@ -532,6 +585,10 @@ function applyToolSpecificCompaction(
 
   if (toolName === 'disk_cleanup') {
     return compactDiskCleanupPayload(parsed, stats);
+  }
+
+  if (toolName === 'system_cleanup') {
+    return compactSystemCleanupPayload(parsed, stats);
   }
 
   const looksLikeCommandResult = (
@@ -639,8 +696,44 @@ function safeStringify(value: unknown): string {
  * outcome 2, where the rows are intact and must be consumed — `manage_alerts`
  * in particular returns `_chat` right next to a real `alerts` array.
  */
-export function compactToolResultForChat(toolName: string, rawResult: string): string {
+/**
+ * The shape `captureLargeToolResult` returns for an oversized result
+ * (execution-plane spec §5.2): an opaque handle with raw previews, plus the
+ * tool's own result, which is then compacted here exactly as it would have been
+ * without the capture. Recognised STRUCTURALLY (handle + compacted string), not
+ * by the presence of an `artifact` key, so a tool that legitimately returns
+ * `{ artifact: … }` is untouched.
+ */
+function asCaptureEnvelope(value: unknown): { artifact: Record<string, unknown>; compacted: string } | null {
+  if (!isRecord(value)) return null;
+  const { artifact, compacted } = value as Record<string, unknown>;
+  if (typeof compacted !== 'string') return null;
+  if (!isRecord(artifact) || typeof artifact.handle !== 'string') return null;
+  if (Object.keys(value).length !== 2) return null;
+  return { artifact, compacted };
+}
+
+export function compactToolResultForChat(
+  toolName: string,
+  rawResult: string,
+  maxChars: number = MAX_TOOL_RESULT_CHARS,
+): string {
   const parsed = tryParseJson(rawResult);
+
+  // Capture envelope: the artifact block is small, fixed and must survive
+  // verbatim (it is the model's only route back to the bytes). Compact the
+  // INNER payload with the remaining budget so `applyToolSpecificCompaction`
+  // still sees the tool's native shape — keyed on `stdout`/`alerts`/… — rather
+  // than `artifact`/`compacted`, and the model's view of the compacted half is
+  // byte-identical to what it would have got with capture switched off.
+  const envelope = asCaptureEnvelope(parsed);
+  if (envelope) {
+    const artifactJson = JSON.stringify({ artifact: envelope.artifact, compacted: '' });
+    const innerBudget = Math.max(512, maxChars - artifactJson.length - 8);
+    const inner = compactToolResultForChat(toolName, envelope.compacted, innerBudget);
+    return safeStringify({ artifact: envelope.artifact, compacted: tryParseJson(inner) ?? inner });
+  }
+
   if (parsed === null) {
     // Non-JSON output is raw tool payload (command stdout, file contents, log
     // text) — NOT error text. It is deliberately not error-scrubbed here: the
@@ -649,7 +742,7 @@ export function compactToolResultForChat(toolName: string, rawResult: string): s
     // Thrown errors never reach this branch; they are wrapped in
     // JSON.stringify({ error }) by sanitizeThrownToolError at the call sites.
     const redactedRaw = redactAiToolOutputText(rawResult);
-    if (redactedRaw.length <= MAX_TOOL_RESULT_CHARS) {
+    if (redactedRaw.length <= maxChars) {
       return redactedRaw;
     }
     return JSON.stringify({
@@ -672,7 +765,7 @@ export function compactToolResultForChat(toolName: string, rawResult: string): s
   const errorScrubbed = scrubErrorFieldsDeep(parsed);
 
   const minimized = sanitizeToolPayloadValue(toolName, errorScrubbed, stats);
-  const redacted = redactLogFields(minimized);
+  const redacted = redactToolOutputFields(minimized, redactAiToolOutputText);
   const sanitized = sanitizeToolPayloadValue(toolName, redacted, stats);
 
   // Try each tier from `sanitized`, not from the previous tier's output: a
@@ -688,7 +781,7 @@ export function compactToolResultForChat(toolName: string, rawResult: string): s
     const compacted = compactValue(toolSpecific, tierStats, tier);
     const withMeta = appendChatMeta(compacted, tierStats, rawResult.length);
     serialized = safeStringify(withMeta);
-    if (serialized.length <= MAX_TOOL_RESULT_CHARS) {
+    if (serialized.length <= maxChars) {
       return serialized;
     }
   }

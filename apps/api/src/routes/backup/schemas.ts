@@ -1,10 +1,11 @@
 import { z } from 'zod';
-import { coerceS3EndpointUrl, deriveS3RegionFromEndpoint } from '@breeze/shared';
+import { coerceS3EndpointUrl, deriveS3RegionFromEndpoint, optionalQueryBoolean } from '@breeze/shared';
 import {
   backupRetentionSchema as sharedBackupRetentionSchema,
   backupRetentionUpdateSchema as sharedBackupRetentionUpdateSchema,
   backupScheduleSchema as sharedBackupScheduleSchema,
 } from '@breeze/shared/validators';
+import { drRestoreConfigSchema } from '../../services/drBareMetalRebuildStep';
 
 const queryBoolean = z.preprocess((value) => {
   if (typeof value === 'boolean') return value;
@@ -148,7 +149,11 @@ export const jobListSchema = z.object({
 
 export const snapshotListSchema = z.object({
   deviceId: z.string().optional(),
-  configId: z.string().optional()
+  configId: z.string().optional(),
+  // Bare-metal recovery W04a: the recovery-creation panel needs "which
+  // snapshots CAN start a bare-metal recovery" without pulling every
+  // snapshot and filtering client-side.
+  bareMetalRestorable: optionalQueryBoolean,
 });
 
 export const snapshotProtectionReasonSchema = z.object({
@@ -286,11 +291,70 @@ export const bmrCreateTokenSchema = z.object({
 
 export const bmrAuthenticateSchema = z.object({
   token: z.string().min(1),
+  capabilities: z.array(z.string().min(1).max(64)).max(16).optional(),
 });
 
 export const bmrRecoveryDownloadSchema = z.object({
   token: z.string().min(1),
   path: z.string().min(1).max(4096),
+});
+
+// ── Bare-metal recovery schemas (W04a) ──────────────────────────────
+
+export const bmrRecoveryCreateSchema = z.object({
+  snapshotId: z.string().guid(),
+  identity: z.enum(['original', 'new']).default('original'),
+});
+
+// W05a: POST /bmr/recoveries/:id/cancel — body is optional.
+export const bmrRecoveryCancelSchema = z
+  .object({ reason: z.string().trim().min(1).max(500).optional() })
+  .default({});
+
+export const bmrRecoveryListSchema = z.object({
+  deviceId: z.string().guid().optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+});
+
+// Deliberately generous bound (1..32): the code is normalized/validated by
+// normalizeRecoveryCode() regardless of exact input shape (dashes, spaces,
+// case), so this schema only needs to keep the request body itself small.
+export const bmrExchangeSchema = z.object({
+  code: z.string().min(1).max(32),
+  capabilities: z.array(z.string().min(1).max(64)).max(16).optional(),
+});
+
+// W09a (#6464) Task 6: bound the agent-reported `result` payload so an
+// unbounded or malformed report never reaches the handler. 768 KiB matches
+// the agent's own total-body bound (see Part 0 "Bounded reporting") so a
+// maximally-sized agent report is never rejected by the server, while
+// `failedFilesSample` is capped independently at 50 entries — the agent
+// itself only ever samples up to that many, so a larger array indicates a
+// non-conforming or malicious client.
+const bmrProgressResultSchema = z
+  .any()
+  .superRefine((value, ctx) => {
+    if (JSON.stringify(value ?? null).length > 768 * 1024) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'result payload too large (max 768KB serialized)' });
+    }
+  })
+  .refine(
+    (value) => {
+      if (!value || typeof value !== 'object' || !('failedFilesSample' in value)) return true;
+      const sample = (value as Record<string, unknown>).failedFilesSample;
+      return Array.isArray(sample) && sample.length <= 50 && sample.every((entry) => typeof entry === 'string' && entry.length <= 4096);
+    },
+    { message: 'failedFilesSample must be at most 50 string entries of at most 4096 characters each' },
+  );
+
+export const bmrProgressSchema = z.object({
+  token: z.string().min(1),
+  status: z.enum(['media_booted', 'planned', 'restoring', 'validated', 'rebooted', 'failed', 'refused']),
+  target: z.record(z.string(), z.any()).optional(),
+  plan: z.any().optional(),
+  result: bmrProgressResultSchema.optional(),
+  reason: z.string().max(2000).optional(),
+  warnings: z.array(z.string().max(2000)).max(64).optional(),
 });
 
 export const bmrTokenListSchema = z.object({
@@ -340,23 +404,14 @@ export const bmrMediaListSchema = z.object({
   offset: z.coerce.number().int().min(0).default(0),
 });
 
-export const bmrBootMediaCreateSchema = z.object({
-  tokenId: z.string().guid(),
-  bundleArtifactId: z.string().guid().optional(),
-  platform: z.literal('linux').default('linux'),
-  architecture: z.literal('amd64').default('amd64'),
-  mediaType: z.literal('iso').default('iso'),
-});
-
-export const bmrBootMediaListSchema = z.object({
-  tokenId: z.string().guid().optional(),
-  snapshotId: z.string().guid().optional(),
-  status: z.enum(['pending', 'building', 'ready_signed', 'failed', 'expired']).optional(),
-  limit: z.coerce.number().int().min(1).max(100).default(50),
-  offset: z.coerce.number().int().min(0).default(0),
-});
-
-export const bmrVmRestoreSchema = z.object({
+// Restore-as-VM (W05a): two engines behind one route. `hyperv` is the
+// existing Hyper-V path (fields verbatim); `rebuild` drives the Linux rebuild
+// engine on a helper host and produces a VHDX. The rebuild variant is strict
+// and carries NO `identity` field — the server always creates the recovery
+// with `identity: 'new'` (spec §9: a rehearsal image can never resume the
+// production identity), so a client cannot even ask.
+const bmrVmRestoreHypervSchema = z.object({
+  engine: z.literal('hyperv'),
   snapshotId: z.string().guid(),
   targetDeviceId: z.string().guid(),
   hypervisor: z.literal('hyperv'),
@@ -370,6 +425,35 @@ export const bmrVmRestoreSchema = z.object({
     })
     .optional(),
 });
+
+export const rebuildVhdxOutputPathSchema = z
+  .string()
+  .min(1)
+  .max(1024)
+  .refine((p) => p.startsWith('/') && p.endsWith('.vhdx'), 'absolute .vhdx path required');
+
+const bmrVmRestoreRebuildSchema = z
+  .object({
+    engine: z.literal('rebuild'),
+    snapshotId: z.string().guid(),
+    rebuildHostDeviceId: z.string().guid(),
+    outputPath: rebuildVhdxOutputPathSchema,
+    imageSizeGb: z.number().int().min(1).optional(),
+  })
+  .strict();
+
+// zod 4 does not apply a `.default()` on the discriminator when the key is
+// absent (the union matches on the raw value first), so the legacy Hyper-V
+// payload — every existing wizard/tool/integration caller sends no `engine`
+// — is defaulted in a preprocess step instead.
+export const bmrVmRestoreSchema = z.preprocess(
+  (value) =>
+    value && typeof value === 'object' && !Array.isArray(value) && !('engine' in value)
+      ? { ...(value as Record<string, unknown>), engine: 'hyperv' }
+      : value,
+  z.discriminatedUnion('engine', [bmrVmRestoreHypervSchema, bmrVmRestoreRebuildSchema]),
+);
+export type BmrVmRestoreInput = z.infer<typeof bmrVmRestoreSchema>;
 
 export const instantBootSchema = z.object({
   snapshotId: z.string().guid(),
@@ -466,7 +550,7 @@ export const drGroupCreateSchema = z.object({
   sequence: z.number().int().min(0).optional(),
   dependsOnGroupId: z.string().guid().optional(),
   devices: z.array(z.string().guid()).optional(),
-  restoreConfig: z.record(z.string(), z.any()).optional(),
+  restoreConfig: drRestoreConfigSchema.optional(),
   estimatedDurationMinutes: z.number().int().min(0).optional(),
 });
 
@@ -475,7 +559,7 @@ export const drGroupUpdateSchema = z.object({
   sequence: z.number().int().min(0).optional(),
   dependsOnGroupId: z.string().guid().nullable().optional(),
   devices: z.array(z.string().guid()).optional(),
-  restoreConfig: z.record(z.string(), z.any()).optional(),
+  restoreConfig: drRestoreConfigSchema.optional(),
   estimatedDurationMinutes: z.number().int().min(0).nullable().optional(),
 });
 

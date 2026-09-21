@@ -1,6 +1,7 @@
 import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, integer, real, bigint, date, primaryKey, index, unique, uniqueIndex, foreignKey } from 'drizzle-orm/pg-core';
 import { ipClassEnum, organizations, sites } from './orgs';
 import { users } from './users';
+import { aiInitiatorKindEnum } from './aiInitiator';
 import type { BatteryStatus, DesktopAccessState, InterfaceBandwidth, TCCPermissions, VpnPresence } from '@breeze/shared';
 
 export const osTypeEnum = pgEnum('os_type', ['windows', 'macos', 'linux']);
@@ -62,6 +63,12 @@ export const devices = pgTable('devices', {
   osType: osTypeEnum('os_type').notNull(),
   deviceRole: varchar('device_role', { length: 30 }).notNull().default('unknown'),
   deviceRoleSource: varchar('device_role_source', { length: 20 }).notNull().default('auto'),
+  // Fleet Designer W02 (#5652) — projection of the ACTIVE
+  // device_function_assessments row ("what is this device for"), written ONLY
+  // by services/deviceFunction.ts in the same transaction as the assessment.
+  // Both NULL, or both set, pinned by devices_device_function_source_chk.
+  deviceFunction: text('device_function'),
+  deviceFunctionSource: text('device_function_source').$type<'ai' | 'manual'>(),
   // Orthogonal virtualization attribute (issue #1387): is this box running on a
   // hypervisor, and which one. Set by the agent from SMBIOS hardware identity
   // strings. Distinct from device_role — a virtual workstation is still a
@@ -72,6 +79,12 @@ export const devices = pgTable('devices', {
   isVirtual: boolean('is_virtual').notNull().default(false),
   virtualizationPlatform: varchar('virtualization_platform', { length: 30 }),
   osVersion: varchar('os_version', { length: 100 }).notNull(),
+  // Hardware Lifecycle report: when the device was bought. Source is 'manual'
+  // (operator-entered, never overwritten by sync) or 'vendor' (derived from the
+  // warranty provider's ship date). Both NULL or both set —
+  // devices_purchase_date_source_chk.
+  purchaseDate: date('purchase_date'),
+  purchaseDateSource: varchar('purchase_date_source', { length: 20 }).$type<'manual' | 'vendor'>(),
   osBuild: varchar('os_build', { length: 100 }),
   architecture: varchar('architecture', { length: 20 }).notNull(),
   agentVersion: varchar('agent_version', { length: 50 }).notNull(),
@@ -98,6 +111,14 @@ export const devices = pgTable('devices', {
   maintenanceStartedBy: uuid('maintenance_started_by').references(() => users.id, { onDelete: 'set null' }),
   lastSeenAt: timestamp('last_seen_at'),
   enrolledAt: timestamp('enrolled_at').defaultNow().notNull(),
+  // Bare-metal recovery W04a: stamped by the heartbeat check-in that completes
+  // a recovery. recoveredFromSnapshotId is a soft reference to
+  // backup_snapshots.id (no FK, like possibleReplacementOfDeviceId above) —
+  // a real FK would create a devices <-> backup_snapshots cascade cycle
+  // (backup_snapshots.device_id already points the other way), which
+  // topologicalCascadeOrder() in tenantCascade.ts rejects outright.
+  recoveredAt: timestamp('recovered_at', { withTimezone: true }),
+  recoveredFromSnapshotId: uuid('recovered_from_snapshot_id'),
   enrolledBy: uuid('enrolled_by').references(() => users.id),
   // Linked device profiles for multi-boot systems (#2138). NULL => unlinked.
   // When set, the device is one boot profile of a physical machine grouped in
@@ -215,6 +236,13 @@ export const devices = pgTable('devices', {
   // Non-sticky, same contract as the versions above: rewritten every beat so a
   // downgrade clears the claim.
   revocationLeaseProtocolVersion: integer('revocation_lease_protocol_version').notNull().default(0),
+  // SEC-038 W06 desktop start/terminal fence capability. 1 = this agent build
+  // keeps the durable per-session generation fence (W04/W05) and refuses stale
+  // or post-terminal starts. 0 (default, and every agent that omits the field)
+  // means unfenced; behind REMOTE_DESKTOP_FENCE_REQUIRED the three
+  // desktop-start dispatch sites refuse with 503 agent_upgrade_required, same
+  // shape as the revocation-lease gate above. Non-sticky: rewritten every beat.
+  desktopFenceProtocolVersion: integer('desktop_fence_protocol_version').notNull().default(0),
   rollbackComponentVersions: jsonb('rollback_component_versions').$type<Record<string, string> | null>(),
   // Agent-reported build edition + migration-needed flag (heartbeat telemetry).
   // Non-sensitive; drives the self-hosted migration banner. Written unconditionally
@@ -244,6 +272,7 @@ export const devices = pgTable('devices', {
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
   partnerExportUpdatedAt: timestamp('partner_export_updated_at', { precision: 3 }).defaultNow().notNull()
 }, (table) => ({
+  idOrgSiteUnique: uniqueIndex('devices_id_org_id_site_id_uniq').on(table.id, table.orgId, table.siteId),
   idOrgUnique: uniqueIndex('devices_id_org_id_uniq').on(table.id, table.orgId),
 }));
 
@@ -568,7 +597,15 @@ export const deviceCommands = pgTable('device_commands', {
   // claim time to cancel rows whose device has since moved org. Deliberately
   // NOT named org_id so the RLS/cascade auto-discovery keeps device_commands
   // system-scoped (agent WS path, no RLS -- see CLAUDE.md).
-  submittedOrgId: uuid('submitted_org_id').references(() => organizations.id, { onDelete: 'set null' })
+  submittedOrgId: uuid('submitted_org_id').references(() => organizations.id, { onDelete: 'set null' }),
+  // --- AI origin attribution (#5022 W01) ---------------------------------
+  // Bare uuids, no FK: a system-scoped command row must never be blockable or
+  // mutable by the lifecycle of an ai_sessions / ai_agent_runs row. Neither
+  // name is `org_id`, so the RLS and cascade auto-discovery still treat this
+  // table as system-scoped (both key on the literal column name).
+  aiInitiatorKind: aiInitiatorKindEnum('ai_initiator_kind'),
+  aiSessionId: uuid('ai_session_id'),
+  aiAgentRunId: uuid('ai_agent_run_id')
 });
 
 export const connectionProtocolEnum = pgEnum('connection_protocol', ['tcp', 'tcp6', 'udp', 'udp6']);

@@ -5,6 +5,7 @@ import {
   Clock3,
   Loader2,
   PauseCircle,
+  RefreshCcwDot,
   RefreshCw,
   ShieldCheck,
   Unplug,
@@ -17,7 +18,7 @@ import { getJwtClaims } from "../../lib/authScope";
 import { usePermissions } from "../../lib/permissions";
 import { handleActionError, runAction } from "../../lib/runAction";
 import { navigateTo } from "@/lib/navigation";
-import { formatDateTime } from "@/lib/dateTimeFormat";
+import { formatDateTime, formatRelativeTime } from "@/lib/dateTimeFormat";
 import "@/lib/i18n";
 
 const STATUSES = [
@@ -49,6 +50,40 @@ const STABLE_ERROR_CODES = [
 ] as const;
 type StableErrorCode = (typeof STABLE_ERROR_CODES)[number];
 
+const GRANT_HEALTH_STATES = [
+  "active",
+  "degraded",
+  "missing",
+  "unexpected",
+  "both",
+  "manifest-stale",
+] as const;
+type GrantHealthState = (typeof GRANT_HEALTH_STATES)[number];
+
+const SYNC_DOMAINS = [
+  "users", "signin_activity", "intune_devices", "ca_policies", "skus", "secure_score",
+] as const;
+type SyncDomain = (typeof SYNC_DOMAINS)[number];
+
+const SYNC_STATUSES = [
+  "success", "partial", "needs_consent", "throttled", "error", "never",
+] as const;
+type SyncStatus = (typeof SYNC_STATUSES)[number];
+
+type SyncDomainState = {
+  domain: SyncDomain;
+  status: SyncStatus;
+  asOf: string | null;
+  truncated: boolean;
+  unlicensed: boolean;
+};
+type SyncSummary = {
+  lastSuccessAt: string | null;
+  users: number | null;
+  devices: number | null;
+  domains: SyncDomainState[];
+};
+
 export const M365_CUSTOMER_GRAPH_READ_CALLBACK_RESULTS = [
   "active",
   "degraded",
@@ -74,7 +109,9 @@ type Connection = {
   clientId: string | null;
   displayName: string | null;
   status: ConnectionStatus;
+  grantHealth: GrantHealthState;
   manifestVersion: number;
+  currentManifestVersion: number;
   observedGrants: Grant[];
   missingGrants: Grant[];
   unexpectedGrants: Grant[];
@@ -87,15 +124,19 @@ type Envelope = {
   profile: {
     id: "customer-graph-read";
     displayName: string;
-    manifestVersion: 2;
+    // Was the literal 2. The manifest is the source of truth; pinning a number
+    // here would have to be edited on every bump.
+    manifestVersion: number;
     requiredGrants: Grant[];
   };
   onboardingEnabled: boolean;
   connection: Connection | null;
+  syncEnabled: boolean;
+  sync: SyncSummary | null;
 };
 
 type LoadState = "unavailable" | "loading" | "ready" | "error";
-type ActionName = "consent" | "retest" | "disconnect";
+type ActionName = "consent" | "upgrade" | "retest" | "disconnect" | "sync";
 type OrgGeneration = {
   orgId: string | null;
   generation: number;
@@ -173,7 +214,8 @@ function parseTimestamp(value: unknown): string | null | undefined {
 function parseConnection(value: unknown): Connection | null | undefined {
   if (value === null) return null;
   const keys = [
-    "id", "tenantId", "clientId", "displayName", "status", "manifestVersion",
+    "id", "tenantId", "clientId", "displayName", "status", "grantHealth",
+    "manifestVersion", "currentManifestVersion",
     "observedGrants", "missingGrants", "unexpectedGrants", "grantsVerifiedAt",
     "lastVerifiedAt", "lastErrorCode",
   ];
@@ -190,6 +232,11 @@ function parseConnection(value: unknown): Connection | null | undefined {
     || (value.displayName !== null && typeof value.displayName !== "string")
     || typeof value.status !== "string" || !(STATUSES as readonly string[]).includes(value.status)
     || typeof value.manifestVersion !== "number" || !Number.isSafeInteger(value.manifestVersion) || value.manifestVersion < 1
+    || typeof value.grantHealth !== "string"
+      || !(GRANT_HEALTH_STATES as readonly string[]).includes(value.grantHealth)
+    || typeof value.currentManifestVersion !== "number"
+      || !Number.isSafeInteger(value.currentManifestVersion)
+      || value.currentManifestVersion < 1
     || observedGrants === null || missingGrants === null || unexpectedGrants === null
     || grantsVerifiedAt === undefined || lastVerifiedAt === undefined
     || (value.lastErrorCode !== null && typeof value.lastErrorCode !== "string")
@@ -200,7 +247,9 @@ function parseConnection(value: unknown): Connection | null | undefined {
     clientId: value.clientId as string | null,
     displayName: value.displayName as string | null,
     status: value.status as ConnectionStatus,
+    grantHealth: value.grantHealth as GrantHealthState,
     manifestVersion: value.manifestVersion,
+    currentManifestVersion: value.currentManifestVersion,
     observedGrants,
     missingGrants,
     unexpectedGrants,
@@ -210,11 +259,55 @@ function parseConnection(value: unknown): Connection | null | undefined {
   };
 }
 
+function parseCount(value: unknown): number | null | undefined {
+  if (value === null) return null;
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) return undefined;
+  return value;
+}
+
+function parseSyncDomain(value: unknown): SyncDomainState | null {
+  if (!isRecord(value) || !hasExactKeys(value, ["domain", "status", "asOf", "truncated", "unlicensed"])) return null;
+  const asOf = parseTimestamp(value.asOf);
+  if (
+    typeof value.domain !== "string" || !(SYNC_DOMAINS as readonly string[]).includes(value.domain)
+    || typeof value.status !== "string" || !(SYNC_STATUSES as readonly string[]).includes(value.status)
+    || asOf === undefined
+    || typeof value.truncated !== "boolean"
+    || typeof value.unlicensed !== "boolean"
+  ) return null;
+  return {
+    domain: value.domain as SyncDomain,
+    status: value.status as SyncStatus,
+    asOf,
+    truncated: value.truncated,
+    unlicensed: value.unlicensed,
+  };
+}
+
+/** `null` is a legitimate value (flag off / nothing seeded); `undefined` is a parse failure. */
+function parseSync(value: unknown): SyncSummary | null | undefined {
+  if (value === null) return null;
+  if (!isRecord(value) || !hasExactKeys(value, ["lastSuccessAt", "users", "devices", "domains"])) return undefined;
+  const lastSuccessAt = parseTimestamp(value.lastSuccessAt);
+  const users = parseCount(value.users);
+  const devices = parseCount(value.devices);
+  if (
+    !Array.isArray(value.domains) || value.domains.length > SYNC_DOMAINS.length
+    || lastSuccessAt === undefined || users === undefined || devices === undefined
+  ) return undefined;
+  const domains = value.domains.map(parseSyncDomain);
+  if (domains.some((domain) => domain === null)) return undefined;
+  return { lastSuccessAt, users, devices, domains: domains as SyncDomainState[] };
+}
+
 function parseEnvelope(value: unknown): Envelope | null {
-  if (!isRecord(value) || !hasExactKeys(value, ["profile", "onboardingEnabled", "connection"])) return null;
+  if (!isRecord(value) || !hasExactKeys(value, [
+    "profile", "onboardingEnabled", "connection", "syncEnabled", "sync",
+  ])) return null;
   if (!isRecord(value.profile) || !hasExactKeys(value.profile, ["id", "displayName", "manifestVersion", "requiredGrants"])) return null;
   const grants = parseGrants(value.profile.requiredGrants);
   const connection = parseConnection(value.connection);
+  const sync = parseSync(value.sync);
   if (
     value.profile.id !== "customer-graph-read"
     || typeof value.profile.displayName !== "string"
@@ -222,16 +315,20 @@ function parseEnvelope(value: unknown): Envelope | null {
     || grants === null || !matchesTrustedManifest(grants)
     || typeof value.onboardingEnabled !== "boolean"
     || connection === undefined
+    || typeof value.syncEnabled !== "boolean"
+    || sync === undefined
   ) return null;
   return {
     profile: {
       id: "customer-graph-read",
       displayName: value.profile.displayName,
-      manifestVersion: 2,
+      manifestVersion: TRUSTED_PROFILE.version,
       requiredGrants: grants,
     },
     onboardingEnabled: value.onboardingEnabled,
     connection,
+    syncEnabled: value.syncEnabled,
+    sync,
   };
 }
 
@@ -425,6 +522,33 @@ export default function M365CustomerGraphReadCard({
     });
   }, [canWrite, data, isCurrent, orgId, perform, scope, scopedRequest, t]);
 
+  const startUpgradeConsent = useCallback(() => {
+    if (!orgId || !data?.connection || !canWrite) return;
+    const target = scope;
+    const connectionId = data.connection.id;
+    void perform(target, "upgrade", async () => {
+      try {
+        const url = await runAction<string>({
+          request: () => scopedRequest(
+            target,
+            () => fetchWithAuth(
+              `/m365/connections/${connectionId}/upgrade-consent?orgId=${target.orgId}`,
+              { method: "POST" },
+            ),
+            { adminConsentUrl: "https://login.microsoftonline.com/organizations/" },
+          ),
+          parseSuccess: parseConsentUrl,
+          errorFallback: t("m365CustomerGraphRead.actions.upgradeFailed"),
+        });
+        if (isCurrent(target)) navigateTo(url);
+      } catch (error) {
+        if (isCurrent(target)) {
+          handleActionError(error, t("m365CustomerGraphRead.actions.upgradeFailed"));
+        }
+      }
+    });
+  }, [canWrite, data, isCurrent, orgId, perform, scope, scopedRequest, t]);
+
   const retest = useCallback(() => {
     if (
       !orgId
@@ -451,6 +575,35 @@ export default function M365CustomerGraphReadCard({
       } catch (error) {
         if (isCurrent(target)) {
           handleActionError(error, t("m365CustomerGraphRead.actions.retestFailed"));
+        }
+      }
+    });
+  }, [canWrite, data, isCurrent, load, orgId, perform, scope, scopedRequest, t]);
+
+  const syncNow = useCallback(() => {
+    if (
+      !orgId || !data?.connection || !canWrite || !data.syncEnabled
+      || !(["active", "degraded"] as ConnectionStatus[]).includes(data.connection.status)
+    ) return;
+    const target = scope;
+    const connectionId = data.connection.id;
+    void perform(target, "sync", async () => {
+      try {
+        await runAction({
+          request: () => scopedRequest(
+            target,
+            () => fetchWithAuth(`/m365/connections/${connectionId}/sync?orgId=${target.orgId}`, { method: "POST" }),
+            {},
+          ),
+          errorFallback: t("m365CustomerGraphRead.actions.syncFailed"),
+          successMessage: () => isCurrent(target)
+            ? t("m365CustomerGraphRead.actions.syncSucceeded")
+            : "",
+        });
+        if (isCurrent(target)) await load(target);
+      } catch (error) {
+        if (isCurrent(target)) {
+          handleActionError(error, t("m365CustomerGraphRead.actions.syncFailed"));
         }
       }
     });
@@ -502,10 +655,36 @@ export default function M365CustomerGraphReadCard({
   const StatusIcon = connection ? statusIcon(connection.status) : Unplug;
   const errorCopy = useMemo(() => {
     if (!connection?.lastErrorCode) return null;
+    // The banner below already says this, in words an administrator can act on.
+    if (connection.grantHealth === "manifest-stale" && connection.lastErrorCode === "manifest_stale") {
+      return null;
+    }
     return isStableErrorCode(connection.lastErrorCode)
       ? t(/* i18n-dynamic */ `m365CustomerGraphRead.errors.${connection.lastErrorCode}`)
       : t("m365CustomerGraphRead.errors.unknown");
   }, [connection, t]);
+  const syncChips = useMemo(() => {
+    const chips: { key: string; label: string }[] = [];
+    for (const entry of data?.sync?.domains ?? []) {
+      const domain = t(/* i18n-dynamic */ `m365CustomerGraphRead.sync.domains.${entry.domain}`);
+      if (entry.unlicensed) {
+        // Its own sentence, not "{{domain}}: unlicensed": the actionable fact is
+        // that the TENANT needs Entra ID P1, not that a sync went wrong.
+        chips.push({ key: `${entry.domain}:unlicensed`, label: t("m365CustomerGraphRead.sync.chips.unlicensed") });
+      } else if (entry.status === "throttled") {
+        chips.push({ key: `${entry.domain}:throttled`, label: t("m365CustomerGraphRead.sync.chips.throttled", { domain }) });
+      } else if (entry.status === "needs_consent") {
+        chips.push({ key: `${entry.domain}:needs-consent`, label: t("m365CustomerGraphRead.sync.chips.needsConsent", { domain }) });
+      } else if (entry.status === "error") {
+        chips.push({ key: `${entry.domain}:error`, label: t("m365CustomerGraphRead.sync.chips.error", { domain }) });
+      } else if (entry.status === "partial" || entry.truncated) {
+        chips.push({ key: `${entry.domain}:partial`, label: t("m365CustomerGraphRead.sync.chips.partial", { domain }) });
+      }
+      // 'success' and 'never' get no chip: the summary line already says whether
+      // anything has ever synced, and a chip per healthy domain is noise.
+    }
+    return chips;
+  }, [data, t]);
   const callbackCopy = callbackResult === "active"
     ? t("m365CustomerGraphRead.callback.active")
     : callbackResult === "degraded"
@@ -574,6 +753,29 @@ export default function M365CustomerGraphReadCard({
             <p className="rounded-md border border-warning/40 bg-warning/10 p-3 text-sm text-foreground">{errorCopy}</p>
           )}
 
+          {connection?.grantHealth === "manifest-stale" && (
+            <div
+              role="alert"
+              data-testid="m365-read-manifest-stale-banner"
+              className="rounded-md border border-warning/40 bg-warning/10 p-4 text-sm text-foreground"
+            >
+              <div className="flex items-start gap-2">
+                <AlertTriangle aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
+                <p>{t("m365CustomerGraphRead.upgrade.banner")}</p>
+              </div>
+              <button
+                type="button"
+                onClick={startUpgradeConsent}
+                disabled={!canWrite || action !== null}
+                data-testid="m365-read-approve-new-permissions"
+                className="mt-3 inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {action === "upgrade" && <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />}
+                {t("m365CustomerGraphRead.actions.approveNewPermissions")}
+              </button>
+            </div>
+          )}
+
           {connection && (
             <div className="border-t pt-5">
               <dl className="grid gap-x-8 gap-y-4 sm:grid-cols-2 lg:grid-cols-3">
@@ -583,6 +785,34 @@ export default function M365CustomerGraphReadCard({
                 <div><dt className="text-xs font-medium text-muted-foreground">{t("m365CustomerGraphRead.grants.grantsVerifiedAt")}</dt><dd className="mt-1 text-sm text-foreground">{connection.grantsVerifiedAt ? formatDateTime(connection.grantsVerifiedAt) : t("m365CustomerGraphRead.never")}</dd></div>
                 <div><dt className="text-xs font-medium text-muted-foreground">{t("m365CustomerGraphRead.lastVerifiedAt")}</dt><dd className="mt-1 text-sm text-foreground">{connection.lastVerifiedAt ? formatDateTime(connection.lastVerifiedAt) : t("m365CustomerGraphRead.never")}</dd></div>
               </dl>
+            </div>
+          )}
+
+          {data.syncEnabled && data.sync && (
+            <div className="border-t pt-5" data-testid="m365-sync-summary">
+              <p className="text-sm text-foreground">
+                {data.sync.lastSuccessAt
+                  ? `${t("m365CustomerGraphRead.sync.lastSynced", {
+                      relative: formatRelativeTime(data.sync.lastSuccessAt),
+                    })} · ${t("m365CustomerGraphRead.sync.counts", {
+                      users: data.sync.users ?? 0,
+                      devices: data.sync.devices ?? 0,
+                    })}`
+                  : t("m365CustomerGraphRead.sync.never")}
+              </p>
+              {syncChips.length > 0 && (
+                <ul className="mt-3 flex flex-wrap gap-2">
+                  {syncChips.map((chip) => (
+                    <li
+                      key={chip.key}
+                      data-testid="m365-sync-chip"
+                      className="inline-flex items-center rounded-full border border-warning/40 bg-warning/10 px-2.5 py-1 text-xs font-medium text-foreground"
+                    >
+                      {chip.label}
+                    </li>
+                  ))}
+                </ul>
+              )}
             </div>
           )}
 
@@ -630,6 +860,11 @@ export default function M365CustomerGraphReadCard({
                 {canRetestConnection && (
                   <button type="button" onClick={retest} disabled={!canWrite || action !== null} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border bg-background px-4 py-2 text-sm font-medium text-foreground hover:bg-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary disabled:cursor-not-allowed disabled:opacity-50">
                     <RefreshCw aria-hidden="true" className={`h-4 w-4 ${action === "retest" ? "animate-spin" : ""}`} />{t("m365CustomerGraphRead.actions.retest")}
+                  </button>
+                )}
+                {data.syncEnabled && canRetestConnection && (
+                  <button type="button" onClick={syncNow} disabled={!canWrite || action !== null} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border bg-background px-4 py-2 text-sm font-medium text-foreground hover:bg-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary disabled:cursor-not-allowed disabled:opacity-50">
+                    <RefreshCcwDot aria-hidden="true" className={`h-4 w-4 ${action === "sync" ? "animate-spin" : ""}`} />{t("m365CustomerGraphRead.actions.syncNow")}
                   </button>
                 )}
                 <button type="button" onClick={disconnect} disabled={!canWrite || action !== null} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-destructive/40 px-4 py-2 text-sm font-medium text-destructive hover:bg-destructive/10 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-destructive disabled:cursor-not-allowed disabled:opacity-50">

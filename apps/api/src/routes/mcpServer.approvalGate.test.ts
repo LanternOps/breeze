@@ -90,6 +90,7 @@ vi.mock('../middleware/apiKeyAuth', () => ({
 }));
 
 vi.mock('../services/aiTools', () => ({
+  getToolDomain: vi.fn(() => 'devices'),
   getToolDefinitions: (...args: any[]) => mocks.getToolDefinitions(...args),
   executeTool: (...args: any[]) => mocks.executeTool(...args),
   getToolTier: (...args: any[]) => mocks.getToolTier(...args),
@@ -325,10 +326,29 @@ describe('MCP interactive-approval-only gate (all Tier 3, tier-driven)', () => {
       expect(mocks.executeTool).not.toHaveBeenCalled();
     });
 
-    it('action:"get_value" (stays Tier 1) proceeds past the gate to the normal handler path', async () => {
+    // SR5-01 applied to registry reads (2026-09-17 ROLE audit §2.4): read_key /
+    // get_value moved into TIER2_ACTIONS, so they still clear the Tier-3
+    // approval gate but are no longer reachable on an `ai:read` key.
+    it('action:"get_value" (now Tier 2) is refused on an ai:read-only key', async () => {
       const res = await callTool('registry_operations', {
         action: 'get_value', deviceId: 'dev-1', keyPath: 'HKLM\\Software\\Foo', valueName: 'Bar',
       }, ['ai:read']);
+      const body = await res.json();
+      // Review finding #5: assert the SPECIFIC scope/tier refusal, not just
+      // "some error code exists" — that would pass identically for an
+      // unrelated failure (a thrown exception, a malformed request, …) and
+      // never actually pin that this is the tier-2-requires-ai:write gate.
+      expect(body.error).toEqual({
+        code: -32603,
+        message: 'Tool "registry_operations" requires ai:write scope',
+      });
+      expect(mocks.executeTool).not.toHaveBeenCalled();
+    });
+
+    it('action:"get_value" proceeds past the approval gate with ai:write', async () => {
+      const res = await callTool('registry_operations', {
+        action: 'get_value', deviceId: 'dev-1', keyPath: 'HKLM\\Software\\Foo', valueName: 'Bar',
+      }, ['ai:read', 'ai:write']);
       const body = await res.json();
       expect(body.error).toBeUndefined();
       expect(mocks.executeTool).toHaveBeenCalledWith(

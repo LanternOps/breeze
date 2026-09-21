@@ -42,6 +42,9 @@
       "unknownPermission": "Unbekannte Berechtigung (Rolle {{appRoleId}})",
       "grantsVerifiedAt": "Berechtigungen geprüft"
     },
+    "upgrade": {
+      "banner": "Neue Microsoft 365-Berechtigungen sind für bedingten Zugriff, die Sicherheitsbewertung und die Sichtbarkeit von Administratorrollen erforderlich. Ein globaler Administrator muss sie genehmigen."
+    },
     "actions": {
       "connect": "Verbinden",
       "reconsent": "Erneut zustimmen",
@@ -53,7 +56,32 @@
       "retestSucceeded": "Die erneute Verbindungsprüfung ist abgeschlossen.",
       "disconnectWarning": "Durch das Trennen kann Breeze diese Verbindung nicht mehr verwenden. Die mandantenweite Microsoft-Zustimmung bleibt bestehen, bis ein Kundenadministrator sie in Microsoft Entra entfernt.",
       "disconnectFailed": "Die Verbindung konnte nicht getrennt werden.",
-      "disconnectSucceeded": "Die Breeze-Verbindung wurde getrennt."
+      "disconnectSucceeded": "Die Breeze-Verbindung wurde getrennt.",
+      "approveNewPermissions": "Neue Berechtigungen genehmigen",
+      "upgradeFailed": "Die Genehmigung der neuen Berechtigungen konnte nicht gestartet werden.",
+      "syncNow": "Jetzt synchronisieren",
+      "syncFailed": "Die Mandantensynchronisierung konnte nicht angefordert werden.",
+      "syncSucceeded": "Mandantensynchronisierung angefordert."
+    },
+    "sync": {
+      "lastSynced": "Zuletzt synchronisiert {{relative}}",
+      "counts": "{{users}} Benutzer · {{devices}} Geräte",
+      "never": "Noch nicht synchronisiert",
+      "chips": {
+        "partial": "{{domain}}: unvollständig",
+        "needsConsent": "{{domain}}: Zustimmung erforderlich",
+        "throttled": "{{domain}}: gedrosselt",
+        "error": "{{domain}}: Fehler",
+        "unlicensed": "Anmeldeaktivität erfordert Entra ID P1"
+      },
+      "domains": {
+        "users": "Benutzer",
+        "signin_activity": "Anmeldeaktivität",
+        "intune_devices": "Intune-Geräte",
+        "ca_policies": "Bedingter Zugriff",
+        "skus": "Lizenzen",
+        "secure_score": "Sicherheitsbewertung"
+      }
     },
     "errors": {
       "consent_expired": "Die Zustimmungssitzung ist abgelaufen. Starten Sie die Zustimmung erneut.",
@@ -746,6 +774,15 @@
     "syncedWithTaxVariance": "Synchronisiert mit Steuerabweichung"
   },
   "quickbooksIntegration": {
+    "owedTitle": "Ausstehende QuickBooks-Vorgänge",
+    "owedLoadError": "Ausstehende Vorgänge konnten nicht geladen werden. Laden Sie die Seite neu, um es erneut zu versuchen.",
+    "owedCount": "Ausstehende Vorgänge: {{total}}",
+    "owedEmpty": "Keine ausstehenden Vorgänge",
+    "owedDelete": "Zahlung löschen",
+    "owedPush": "Zahlung übertragen",
+    "owedViewInvoice": "Rechnung anzeigen",
+    "owedInvoiceUnavailable": "Rechnung nicht verfügbar",
+    "owedAge": "Wartezeit: {{minutes}} Min.",
     "quickbooksConnected": "QuickBooks verbunden.",
     "quickbooksConnectionFailedPleaseTryAgain": "QuickBooks-Verbindung fehlgeschlagen. Bitte versuchen Sie es erneut.",
     "failedToStartTheQuickBooksConnection": "Die QuickBooks-Verbindung konnte nicht gestartet werden.",
@@ -874,7 +911,11 @@
     "couldNotRefresh": "Stripe-Kontodaten konnten nicht aktualisiert werden.",
     "notCached": "Währung noch nicht zwischengespeichert – aktualisieren, um sie von Stripe abzurufen.",
     "staleCache": "Stripe war nicht erreichbar – es werden die zuletzt zwischengespeicherten Kontodaten angezeigt.",
-    "reconnectRequired": "Ihr gespeicherter Stripe-Schlüssel (•••• {{last4}}) funktioniert nicht mehr: {{reason}} Fügen Sie einen neuen Schlüssel ein, um die Verbindung wiederherzustellen; Online-Zahlungen schlagen bis dahin fehl."
+    "reconnectRequired": "Ihr gespeicherter Stripe-Schlüssel (•••• {{last4}}) funktioniert nicht mehr: {{reason}} Fügen Sie einen neuen Schlüssel ein, um die Verbindung wiederherzustellen; Online-Zahlungen schlagen bis dahin fehl.",
+    "reconciliationError": "Die Abstimmung von Zahlungsstornierungen läuft nicht: {{reason}} Ersetzen Sie den Stripe-Schlüssel durch einen Schlüssel, der Ereignisse lesen kann.",
+    "revocationCredentialUnavailable": "{{count}} Online-Zahlungslink(s) konnten nicht storniert werden, weil der Stripe-Schlüssel, der sie erstellt hat, nicht mehr verfügbar ist. Diese Links sind bei Stripe möglicherweise noch zahlbar — stornieren Sie sie in Ihrem Stripe-Dashboard und stellen Sie die Rechnungen neu aus.",
+    "revocationChargedRepair": "{{count}} Online-Zahlungslink(s) wurden bezahlt, nachdem Breeze Stripe zur Stornierung aufgefordert hatte. Das Geld ist real — gleichen Sie diese Zahlungen ab (und erstatten Sie sie, falls die Rechnung bereits anderweitig beglichen wurde).",
+    "revocationBlocked": "{{count}} Online-Zahlungslink(s) konnten nicht storniert werden — Stripe hat die Anfrage mit dem hinterlegten Schlüssel abgelehnt. Speichern Sie einen funktionierenden Stripe-Schlüssel, um es erneut zu versuchen, oder stornieren Sie die Links in Ihrem Stripe-Dashboard."
   },
   "unifiIntegration": {
     "failedToSaveSiteMappings": "Standort-Zuordnungen konnten nicht gespeichert werden.",

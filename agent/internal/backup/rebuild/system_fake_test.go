@@ -20,19 +20,46 @@ type fakeSystem struct {
 	mounted  []string // devices reported by MountedSources
 	rootSrcs []string
 	fail     map[string]error // command prefix → error
-	arch     string
-	mountLog []string // "device dir"
-	unmounts []string
+	// failTimes, when non-nil for a prefix, fails that command with the
+	// given error the first N times it is run and succeeds from the
+	// (N+1)th call onward — for testing a bounded retry (see
+	// TestRunMkfsWithBusyRetry_RetriesOnDeviceBusyThenSucceeds in
+	// provision_test.go). Checked before fail, so an
+	// exhausted failTimes entry falls through to permanent success even if
+	// the same prefix also has a `fail` entry.
+	failTimes   map[string]*failTimesEntry
+	arch        string
+	mountLog    []string // "device dir"
+	unmounts    []string
+	lastRun     []string         // name + args of the most recent Run call
+	lookPathErr map[string]error // LookPath answers err for these names, "" path + nil otherwise
+	freeSpace   int64            // FreeSpace answer (default 1 PiB)
 }
 
 func newFakeSystem(dir string, diskSize int64) *fakeSystem {
-	return &fakeSystem{dir: dir, diskSize: diskSize, fail: map[string]error{}, arch: "amd64"}
+	return &fakeSystem{dir: dir, diskSize: diskSize, fail: map[string]error{}, arch: "amd64", freeSpace: 1 << 50}
+}
+
+// failTimesEntry is the state behind fakeSystem.failTimes: fail with err
+// while remaining > 0, decrementing on each match; once remaining reaches
+// 0 the command succeeds (empty output, nil error) every time after.
+type failTimesEntry struct {
+	remaining int
+	out       []byte
+	err       error
 }
 
 func (f *fakeSystem) record(name string, args ...string) ([]byte, error) {
 	line := strings.TrimSpace(name + " " + strings.Join(args, " "))
 	f.mu.Lock()
 	f.cmds = append(f.cmds, line)
+	for prefix, entry := range f.failTimes {
+		if strings.HasPrefix(line, prefix) && entry.remaining > 0 {
+			entry.remaining--
+			f.mu.Unlock()
+			return entry.out, entry.err
+		}
+	}
 	f.mu.Unlock()
 	for prefix, err := range f.fail {
 		if strings.HasPrefix(line, prefix) {
@@ -43,6 +70,9 @@ func (f *fakeSystem) record(name string, args ...string) ([]byte, error) {
 }
 
 func (f *fakeSystem) Run(_ context.Context, name string, args ...string) ([]byte, error) {
+	f.mu.Lock()
+	f.lastRun = append([]string{name}, args...)
+	f.mu.Unlock()
 	return f.record(name, args...)
 }
 func (f *fakeSystem) Chroot(root string) func(context.Context, string, ...string) ([]byte, error) {
@@ -89,6 +119,13 @@ func (f *fakeSystem) Unmount(_ context.Context, dir string) error {
 }
 func (f *fakeSystem) Sync(context.Context) error { _, err := f.record("sync"); return err }
 func (f *fakeSystem) Arch() string               { return f.arch }
+func (f *fakeSystem) LookPath(name string) (string, error) {
+	if err, ok := f.lookPathErr[name]; ok {
+		return "", err
+	}
+	return "/usr/bin/" + name, nil
+}
+func (f *fakeSystem) FreeSpace(string) (int64, error) { return f.freeSpace, nil }
 
 func (f *fakeSystem) has(prefix string) bool {
 	for _, c := range f.cmds {

@@ -9,6 +9,7 @@ import {
   Layers,
   LifeBuoy,
   PackageCheck,
+  Radar,
   RefreshCw,
   ScrollText,
   Shield,
@@ -117,6 +118,7 @@ type EffectiveConfiguration = {
 const FEATURE_META: Record<FeatureType, { label: string; Icon: LucideIcon }> = {
   patch: { label: "Patch Management", Icon: PackageCheck },
   alert_rule: { label: "Alert Rules", Icon: Bell },
+  monitors: { label: "Monitors", Icon: Radar },
   automation: { label: "Automation", Icon: Zap },
   maintenance: { label: "Maintenance Windows", Icon: Wrench },
   compliance: { label: "Compliance", Icon: ClipboardCheck },

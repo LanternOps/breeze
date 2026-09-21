@@ -26,7 +26,12 @@ import { SessionEventBus } from '../streamingSessionManager';
 import { captureException, captureMessage } from '../sentry';
 import { OpenAICompatibleProvider } from './openaiCompatibleProvider';
 import { buildMessagesFromHistory, ToolUseInHistoryError } from './historyBuilder';
-import { recordOpenAIUsage } from '../aiCostTracker';
+import { deductBillingCredits } from '../aiCostTracker';
+import {
+  markAiBudgetReservationIndeterminate,
+  releaseUnusedAiBudgetReservation,
+  settleAiBudgetReservationDurably,
+} from '../aiBudgetReservations';
 import { sanitizeErrorForClient } from '../aiAgent';
 import { getConfig } from '../../config/validate';
 import { extractRowCount } from '../../db/rowCount';
@@ -177,13 +182,14 @@ export class OpenAISessionManager {
     _model: string,
     systemPrompt: string,
     userMessage: string,
+    budgetDispatch: { reservationId: string; maxBudgetUsd?: number },
   ): void {
     // Abort any previous turn (defensive: covers the gap between
     // tryTransitionToProcessing and startTurn) then assign a fresh controller.
     try { session.abortController.abort(); } catch { /* ignore */ }
     session.abortController = new AbortController();
     runOutsideDbContextSafe(() => {
-      void this.runTurn(session, _model, systemPrompt, userMessage).catch((err) => {
+      void this.runTurn(session, _model, systemPrompt, userMessage, budgetDispatch).catch((err) => {
         captureException(err);
         console.error('[OpenAISessionManager] Background runTurn error:', err);
       });
@@ -195,6 +201,7 @@ export class OpenAISessionManager {
     _model: string,
     systemPrompt: string,
     userMessage: string,
+    budgetDispatch: { reservationId: string; maxBudgetUsd?: number },
   ): Promise<void> {
     const { breezeSessionId, orgId } = session;
 
@@ -202,6 +209,15 @@ export class OpenAISessionManager {
     try {
       history = await buildMessagesFromHistory(breezeSessionId, orgId);
     } catch (err) {
+      // N12: aiBudgetReservations opens its own SYSTEM transaction; wrapping it
+      // here only costs an extra pooled connection for the round trip.
+      await releaseUnusedAiBudgetReservation({
+        orgId,
+        reservationId: budgetDispatch.reservationId,
+      }).catch((releaseError) => {
+        captureException(releaseError);
+        console.error('[OpenAISessionManager] Failed to release unused budget reservation:', releaseError);
+      });
       if (err instanceof ToolUseInHistoryError) {
         session.eventBus.publish({ type: 'error', message: err.message });
         session.eventBus.publish({ type: 'done' });
@@ -236,11 +252,33 @@ export class OpenAISessionManager {
     // ai_sessions.model targets Anthropic defaults; on this path vLLM expects MCP_LLM_MODEL
     // (validated at startup when MCP_LLM_PROVIDER=openai-compatible).
     const providerModel = getConfig().MCP_LLM_MODEL!;
+    const maxTokens = budgetDispatch.maxBudgetUsd === undefined
+      ? undefined
+      : this.provider.maxOutputTokensForBudgetUsd(messages, budgetDispatch.maxBudgetUsd);
+    if (budgetDispatch.maxBudgetUsd !== undefined && maxTokens === null) {
+      // N12: see above — no context wrap needed.
+      await releaseUnusedAiBudgetReservation({
+        orgId,
+        reservationId: budgetDispatch.reservationId,
+      });
+      session.eventBus.publish({
+        type: 'error',
+        message: 'The remaining AI budget cannot safely fund this request.',
+      });
+      session.eventBus.publish({ type: 'done' });
+      session.state = 'idle';
+      return;
+    }
+
+    let providerInvoked = false;
+    let reservationSettled = false;
 
     try {
       try {
+        providerInvoked = true;
         for await (const event of this.provider.chatStream(messages, {
           model: providerModel,
+          maxTokens: maxTokens ?? undefined,
           signal: session.abortController.signal,
         })) {
           if (session.state === 'closing' || session.state === 'closed') break;
@@ -302,25 +340,47 @@ export class OpenAISessionManager {
           console.error('[OpenAISessionManager] Failed to save assistant message:', err);
         }
 
+      }
+
+      if (inputTokens > 0 || outputTokens > 0) {
         try {
           const costUsd = this.provider.computeCostUsd(inputTokens, outputTokens);
-          await withDbAccessContext(
-            { scope: 'organization', orgId, accessibleOrgIds: [orgId] },
-            () => recordOpenAIUsage(
-              breezeSessionId,
-              orgId,
-              inputTokens,
-              outputTokens,
-              costUsd,
-              'platform',
-            ),
-          );
+          // N12: no context wrap. Every aiBudgetReservations entry point opens
+          // its own short SYSTEM transaction (runOutsideDbContext +
+          // withSystemDbAccessContext), so a context opened here is exited
+          // immediately and only costs a pooled connection for the round trip.
+          await settleAiBudgetReservationDurably({
+            orgId,
+            reservationId: budgetDispatch.reservationId,
+            actualCostCents: Math.round(costUsd * 100 * 100) / 100,
+            inputTokens,
+            outputTokens,
+            messageCount: 1,
+            session: { id: breezeSessionId },
+          });
+          reservationSettled = true;
+          await deductBillingCredits(orgId, Math.round(costUsd * 100 * 100) / 100);
         } catch (err) {
           captureException(err);
-          console.error('[OpenAISessionManager] Failed to record usage:', err);
+          console.error('[OpenAISessionManager] Failed to settle reserved usage:', err);
         }
       }
     } finally {
+      if (providerInvoked && !reservationSettled) {
+        try {
+          // N12: no context wrap. Every aiBudgetReservations entry point opens
+          // its own short SYSTEM transaction (runOutsideDbContext +
+          // withSystemDbAccessContext), so a context opened here is exited
+          // immediately and only costs a pooled connection for the round trip.
+          await markAiBudgetReservationIndeterminate({
+            orgId,
+            reservationId: budgetDispatch.reservationId,
+          });
+        } catch (err) {
+          captureException(err);
+          console.error('[OpenAISessionManager] Failed to retain indeterminate budget reservation:', err);
+        }
+      }
       // Turn count: increments only after we invoked the LLM HTTP path — success or failure on that path
       // (provider errors incl. HTTP 5xx, tool-call rejection, mid-stream abort). Upstream refusal before
       // chatStream starts (e.g. ToolUseInHistoryError) does not consume a turn; maintainer may revisit.

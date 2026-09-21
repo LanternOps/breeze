@@ -42,8 +42,11 @@ describe('useSiteCrud', () => {
       await result.current.refresh();
     });
 
+    // `fetchAllSites` (#6412) pages to exhaustion, so the request now also
+    // carries explicit `page`/`limit` params instead of relying on the
+    // server's default page size.
     expect(fetchMock).toHaveBeenCalledWith(
-      `/orgs/sites?organizationId=${ORG_ID}`,
+      `/orgs/sites?organizationId=${ORG_ID}&page=1&limit=100`,
       expect.objectContaining({ orgIdOverride: ORG_ID }),
     );
     expect(result.current.sites).toEqual([SITE]);
@@ -58,12 +61,15 @@ describe('useSiteCrud', () => {
     });
 
     expect(fetchMock).toHaveBeenCalledWith(
-      '/orgs/sites?organizationId=brand-new-org',
+      '/orgs/sites?organizationId=brand-new-org&page=1&limit=100',
       expect.objectContaining({ orgIdOverride: 'brand-new-org' }),
     );
   });
 
   it('refresh() fails closed (null) on a malformed 200 body, without touching sites state destructively', async () => {
+    // `fetchAllSites(..., { strictShape: true })` (#6412) keeps this branch: a
+    // 200 body that isn't a parseable list throws rather than being unwrapped
+    // to `[]`, so a first-site caller still sees "unknown", not "confirmed zero".
     fetchMock.mockResolvedValue(jsonResponse({ data: null }));
     const { result } = renderHook(() => useSiteCrud(ORG_ID, { onUnauthorized, t }));
 

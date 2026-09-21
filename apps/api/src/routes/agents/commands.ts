@@ -37,9 +37,7 @@ import { detectResultValidationFamily, validateCriticalCommandResult, DR_COMMAND
 import { redactSecretsFromOutput, redactAgentResultErrorFields } from '../../services/secretRedaction';
 import { isRawStdoutArtifactCommand } from '../../services/commandAudit';
 import {
-  applySoftwareInstallResult,
   reconcileSoftwareInstallResult,
-  SW_INSTALL_COMMAND_ID_REGEX,
 } from '../../services/softwareDeploymentResult';
 
 import {
@@ -89,6 +87,11 @@ export const commandsRoutes = new Hono();
  * receive — a behaviour change beyond this PR's one intentional one.
  */
 const REGISTRY_DISPATCHED_COMMAND_TYPES = new Set([
+  // Disk Cleanup v2 W04. Listed here because this route has NO inline block
+  // for it — the handler is registry-only precisely so both transports run
+  // exactly the same code.
+  'system_cleanup_run',
+  'file_delete',
   'network_discovery',
   'hyperv_backup',
   'mssql_backup',
@@ -102,6 +105,11 @@ const REGISTRY_DISPATCHED_COMMAND_TYPES = new Set([
   'peripheral_policy_sync_v2',
   'pam_apply_v2',
   'pam_cleanup_v2',
+  // W05a: the handler both closes the restore job AND applies the terminal
+  // status to the bare_metal_recoveries row, so it is dispatched here rather
+  // than through the inline restore branch below (which would only do the
+  // first half and, if listed in both, do it twice).
+  'bare_metal_rebuild',
 ]);
 
 const PAM_COMMAND_TYPES = new Set(['pam_apply_v2', 'pam_cleanup_v2']);
@@ -138,7 +146,8 @@ function buildStoredCommandResult(
 function normalizeCriticalResultIfNeeded(
   commandType: string,
   commandId: string,
-  data: z.infer<typeof commandResultSchema>
+  data: z.infer<typeof commandResultSchema>,
+  commandPayload?: unknown
 ) {
   if (!detectResultValidationFamily(commandType)) {
     return {
@@ -158,7 +167,7 @@ function normalizeCriticalResultIfNeeded(
       durationMs: data.durationMs,
       error: data.error,
       result: data.result,
-    });
+    }, { commandPayload });
 
     if (!validated) {
       return {
@@ -246,18 +255,9 @@ commandsRoutes.get('/:id/commands', async (c) => {
 // window keeps the handler visible to the scanner. See #4019.
 //
 // The endpoint accepts results ONLY for the command types the claim allowlist
-// permits while the agent sits on a narrowed drain surface. Being on the drain
-// ROUTE allowlist is not the same as being harmless: this route has a second,
-// id-shaped entrance.
-//
-// A NON-UUID commandId short-circuits into the `sw-install-…` branch, which
-// writes deployment history via `applySoftwareInstallResult` with NO
-// `device_commands` row to consult — its only gate is that the device UUID
-// embedded in the caller-supplied id matches the authenticated device. A
-// command-type allowlist cannot see that path at all, so a draining agent could
-// keep stamping deployment_results rows for its org. Refuse the whole shape
-// while draining; the drain only ever delivers real, UUID-keyed
-// `device_commands` rows.
+// permits while the agent sits on a narrowed drain surface.
+// Draining agents may only report results for persisted, UUID-keyed commands
+// whose type can be checked against their claim allowlist.
 commandsRoutes.post(
   '/:id/commands/:commandId/result',
   zValidator('param', commandResultParamSchema),
@@ -281,30 +281,6 @@ commandsRoutes.post(
     // Commands dispatched directly over WebSocket can use non-UUID IDs and
     // intentionally have no device_commands row.
     if (!uuidRegex.test(commandId)) {
-      // Software install commands carry their tracking IDs in the commandId
-      // itself: `sw-install-<deploymentUuid>-<deviceUuid>-<attemptNumber>`.
-      // Persist the outcome to deployment_results so the dashboard reflects
-      // reality. The attempt suffix is optional (legacy ids default to 0);
-      // applySoftwareInstallResult rejects results whose attempt no longer
-      // matches the row's current retryCount (superseded by a retry).
-      const swInstallMatch = commandId.match(SW_INSTALL_COMMAND_ID_REGEX);
-      if (swInstallMatch) {
-        const [, deploymentIdFromCmd, deviceIdFromCmd, attemptFromCmd] = swInstallMatch;
-        if (deploymentIdFromCmd && deviceIdFromCmd && deviceIdFromCmd === deviceId) {
-          await applySoftwareInstallResult({
-            deploymentId: deploymentIdFromCmd,
-            deviceId,
-            status: data.status,
-            exitCode: data.exitCode,
-            stdout: data.stdout,
-            stderr: data.stderr,
-            error: data.error,
-            startedAt: data.startedAt,
-            durationMs: data.durationMs,
-            attemptNumber: attemptFromCmd ? parseInt(attemptFromCmd, 10) : 0,
-          });
-        }
-      }
       return c.json({ success: true });
     }
 
@@ -401,7 +377,8 @@ commandsRoutes.post(
     // 'timeout'`, written by the wait deadline in commandQueue or by the stale
     // reaper) remains acceptable for non-PAM commands. Every other terminal
     // result preserves the historical short circuit.
-    if (!commandAcceptsAgentResult(command.status, command.result, command.type)) {
+    const acceptsResult = commandAcceptsAgentResult(command.status, command.result, command.type);
+    if (!acceptsResult && command.type !== 'file_delete' && command.type !== 'system_cleanup_run') {
       return c.json({ success: true });
     }
 
@@ -409,7 +386,7 @@ commandsRoutes.post(
       normalizedData: rawNormalizedData,
       stdout: rawStdout,
       validationError,
-    } = normalizeCriticalResultIfNeeded(command.type, commandId, data);
+    } = normalizeCriticalResultIfNeeded(command.type, commandId, data, command.payload);
 
     // #2434 chokepoint (REST twin of agentWs.processCommandResult): redact
     // agent-supplied error/stderr ONCE before the device_commands write and
@@ -431,6 +408,24 @@ commandsRoutes.post(
       heuristicallyRedacted,
       rawStdout,
     );
+
+    // Cleanup evidence can arrive after cancellation or a terminal result.
+    // Authorize using the stored command above and redact before persisting;
+    // this supplements the run without reopening the command.
+    const recordSupplementalCleanup = async () => {
+      const payload = command.payload as { cleanupRunId?: unknown; runId?: unknown } | null;
+      const runId = command.type === 'system_cleanup_run' ? payload?.runId : payload?.cleanupRunId;
+      if (!['file_delete', 'system_cleanup_run'].includes(command.type) || typeof runId !== 'string' || !runId) return;
+      const { commandResultHandlers } = await import('../../services/commandResultHandlers');
+      await commandResultHandlers[command.type]!({
+        agentId: agent.agentId ?? agentId, command, commandId, result: normalizedData,
+        resolvedDeviceId: command.deviceId, stdout,
+      });
+    };
+    if (!acceptsResult) {
+      await recordSupplementalCleanup();
+      return c.json({ success: true });
+    }
 
     // D20-D (REST twin of agentWs.ts processCommandResult): mssql_backup and
     // hyperv_backup's FIRST reply can be a non-terminal queue-admission/
@@ -510,6 +505,7 @@ commandsRoutes.post(
     }
 
     if (updatedRows.length === 0) {
+      await recordSupplementalCleanup();
       return c.json({ success: true });
     }
 
@@ -578,14 +574,10 @@ commandsRoutes.post(
       }
     }
 
-    // Offline-queued software installs (dispatchSoftwareInstallToDevice
-    // fallback): the result arrives with the device_commands UUID instead of
-    // the sw-install-<deployment>-<device>-<attempt> id, so reconcile the
-    // matching deployment_results row here. deviceId comes from the
-    // authenticated agent context; the payload's deploymentId/retryCount were
-    // written server-side at queue time (see buildAndDispatchSoftwareInstalls).
-    // The status='pending' + retryCount=attempt guard in the helper makes
-    // replays AND results from a retry-superseded queued command a no-op.
+    // Software-install results carry the persisted command UUID. Reconcile
+    // deployment_results using the authenticated device and the server-written
+    // deploymentId/retryCount payload. The helper's pending-status and attempt
+    // guards make replays and retry-superseded results a no-op.
     if (command.type === 'software_install') {
       try {
         // #5128: shared with the websocket transport so the two cannot drift.
@@ -699,6 +691,24 @@ commandsRoutes.post(
         });
       } catch (err) {
         console.error(`[agents] vault sync post-processing failed for ${commandId}:`, err);
+        captureException(err);
+      }
+    }
+
+    if (command.type === 'network_diagnostic') {
+      try {
+        const { ingestTopologyDiagnosticCommandResult } = await import(
+          '../../services/topology/diagnosticResults'
+        );
+        await ingestTopologyDiagnosticCommandResult({
+          commandType: command.type,
+          deviceId: command.deviceId,
+          agentId: agent?.agentId ?? agentId,
+          commandId,
+          result: normalizedData.result,
+        });
+      } catch (err) {
+        console.error(`[agents] topology diagnostic post-processing failed for ${commandId}:`, err);
         captureException(err);
       }
     }

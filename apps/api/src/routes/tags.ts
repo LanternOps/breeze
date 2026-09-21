@@ -1,9 +1,9 @@
 import { Hono } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { db } from '../db';
-import { devices } from '../db/schema';
+import { devices, manualAssets } from '../db/schema';
 import { authMiddleware, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { PERMISSIONS, type UserPermissions } from '../services/permissions';
 
@@ -36,6 +36,40 @@ async function getOrgIdsForAuth(
   }
 
   return null;
+}
+
+/**
+ * Manual assets (#4622) are a first-class class of the unified Devices list
+ * (`deviceClass: 'manual'`), and carry their own `tags` column, so the tag
+ * taxonomy has to aggregate them too (#5425).
+ *
+ * Scoping mirrors `routes/devices/manual.ts`'s `GET /devices/manual` so the tag
+ * facets agree with the list they filter: org axis (RLS-backed, shape 1 direct
+ * `org_id`), app-layer site allowlist on the site axis, and the same
+ * retired/linked exclusions — a linked asset is already represented by its
+ * device or discovered-asset row, so counting it again would double-count.
+ */
+function manualAssetConditions(
+  orgIds: string[] | null,
+  allowedSiteIds: string[] | undefined
+): ReturnType<typeof eq>[] {
+  const conditions = [
+    isNull(manualAssets.retiredAt),
+    isNull(manualAssets.linkedDeviceId),
+    isNull(manualAssets.linkedDiscoveredAssetId)
+  ] as ReturnType<typeof eq>[];
+
+  if (orgIds) {
+    conditions.push(inArray(manualAssets.orgId, orgIds));
+  }
+
+  if (allowedSiteIds) {
+    conditions.push(allowedSiteIds.length > 0
+      ? inArray(manualAssets.siteId, allowedSiteIds)
+      : sql`false`);
+  }
+
+  return conditions;
 }
 
 // GET / - List all unique tags across devices in the org
@@ -80,10 +114,16 @@ tagRoutes.get(
       .from(devices)
       .where(whereCondition);
 
-    // Aggregate tags and count occurrences
+    const manualRows = await db
+      .select({ tags: manualAssets.tags })
+      .from(manualAssets)
+      .where(and(...manualAssetConditions(orgIds, allowedSiteIds)));
+
+    // Aggregate tags and count occurrences. `deviceCount` counts rows of the
+    // unified Devices list, so manual assets add to the same counter.
     const tagCounts = new Map<string, number>();
 
-    for (const row of deviceRows) {
+    for (const row of [...deviceRows, ...manualRows]) {
       const tags = row.tags ?? [];
       for (const tag of tags) {
         if (typeof tag === 'string' && tag.trim()) {
@@ -159,14 +199,41 @@ tagRoutes.get(
       .from(devices)
       .where(whereCondition);
 
-    const data = deviceRows.map((d) => ({
-      id: d.id,
-      hostname: d.hostname,
-      displayName: d.displayName,
-      status: d.status,
-      osType: d.osType,
-      tags: d.tags ?? []
-    }));
+    const manualRows = await db
+      .select({
+        id: manualAssets.id,
+        name: manualAssets.name,
+        tags: manualAssets.tags
+      })
+      .from(manualAssets)
+      .where(and(
+        ...manualAssetConditions(orgIds, allowedSiteIds),
+        sql`${sql.param(query.tag)} = ANY(${manualAssets.tags})`
+      ));
+
+    const data = [
+      ...deviceRows.map((d) => ({
+        id: d.id,
+        deviceClass: 'agent' as const,
+        hostname: d.hostname,
+        displayName: d.displayName,
+        status: d.status,
+        osType: d.osType,
+        tags: d.tags ?? []
+      })),
+      // Same presentation shape `GET /devices/manual` uses: the asset name
+      // stands in for hostname/displayName, status is 'unknown' (a manual asset
+      // has no reachability), and every agent-only field is null.
+      ...manualRows.map((m) => ({
+        id: m.id,
+        deviceClass: 'manual' as const,
+        hostname: m.name,
+        displayName: m.name,
+        status: 'unknown' as const,
+        osType: null,
+        tags: m.tags ?? []
+      }))
+    ];
 
     return c.json({ data, total: data.length });
   }

@@ -42,8 +42,9 @@ const STANDARD_TOOLS = [
 ] as const;
 
 // standard + device-pinned destructive tools — always PAM-governed.
-// (run_backup_verification is deliberately absent: it is declared on the SDK
-// MCP server but has no executeTool registration, so it cannot run anywhere.)
+// (Backup verification is not offered here: the only backup tools registered
+// for execution are org-wide — get_backup_status / query_backups / trigger_backup
+// — and the Helper gate denies org-wide tools.)
 const EXTENDED_TOOLS = [
   ...STANDARD_TOOLS,
   'computer_control',

@@ -93,6 +93,7 @@ describe('invoice payment audit logging', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.data.id).toBe(INV_ID);
+    expect(body.quickbooksRecordUntouched).toBe(false);
     expect(writeRouteAudit).toHaveBeenCalledTimes(1);
     expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), {
       orgId: ORG_ID,
@@ -117,7 +118,9 @@ describe('invoice payment audit logging', () => {
       }
     });
 
-    await app().request(`/${INV_ID}/payments/${PAY_ID}`, { method: 'DELETE' });
+    const res = await app().request(`/${INV_ID}/payments/${PAY_ID}`, { method: 'DELETE' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ data: { id: INV_ID }, quickbooksRecordUntouched: true });
 
     expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       action: 'invoice.payment.voided',

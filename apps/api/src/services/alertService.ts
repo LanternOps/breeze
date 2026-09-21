@@ -8,6 +8,7 @@
  * - Interpolate template strings
  */
 
+import type { MonitorKind } from '@breeze/shared';
 import { db } from '../db';
 import {
   alerts,
@@ -18,7 +19,9 @@ import {
   deviceGroupMemberships,
   organizations,
   sites,
-  configPolicyAlertRules
+  configPolicyAlertRules,
+  monitorDefinitions,
+  monitorDeviceState
 } from '../db/schema';
 import { eq, and, inArray, isNull, isNotNull, or, sql, type SQL } from 'drizzle-orm';
 import { evaluateConditions, evaluateAutoResolveConditions, interpolateTemplate } from './alertConditions';
@@ -28,6 +31,15 @@ import { publishEvent } from './eventBus';
 import { resolveDeviceSiteId } from './deviceSiteResolver';
 import { enqueueAlertCorrelation } from '../jobs/alertCorrelation';
 import { captureException } from './sentry';
+import { resolveMonitorsForDevice } from './monitors/monitorResolver';
+import { applyOverrides, getMonitorKindSpec } from './monitors/kinds';
+import {
+  recordMonitorEvaluation,
+  detachMonitorFromDevice,
+  linkEpisodeAlert,
+  type MonitorObservation,
+} from './monitors/episodeService';
+import { fireEscalationLatch } from './monitors/escalationLatch';
 
 // Types for alert creation
 export interface CreateAlertParams {
@@ -38,6 +50,20 @@ export interface CreateAlertParams {
   title: string;
   message: string;
   context?: Record<string, unknown>;
+  /**
+   * #5289 — set when the firing rule was COMPILED from a monitor definition,
+   * so the alert can link back to the monitor a technician actually authored
+   * (the compiled rule is an implementation detail they never see).
+   */
+  monitorId?: string | null;
+  kind?: MonitorKind | null;
+  /** #5290 — the breach episode this alert belongs to. */
+  episodeId?: string | null;
+  /**
+   * #5290 — recurrence escalation. A requires-human alert is NEVER
+   * auto-resolved and never auto-suppressed by an AI verdict.
+   */
+  requiresHuman?: boolean;
 }
 
 // Rule with template info for evaluation
@@ -49,6 +75,12 @@ export interface RuleWithTemplate {
   effectiveCooldownMinutes: number;
   notificationChannelIds: string[];
   escalationPolicyId?: string;
+  /**
+   * #5290 — the monitor definition behind a compiled rule, carried through from
+   * the batched read above so the episode seam needs no extra query per rule.
+   * Null for an ordinary standalone rule.
+   */
+  monitor: typeof monitorDefinitions.$inferSelect | null;
 }
 
 /**
@@ -116,6 +148,14 @@ async function publishAlertTriggeredOrRollback(opts: {
   }
 }
 
+async function monitorEventFields(monitorId: string | null | undefined, kind?: MonitorKind | null): Promise<{ monitorId: string | null; kind: MonitorKind | null }> {
+  if (!monitorId) return { monitorId: null, kind: null };
+  if (kind) return { monitorId, kind };
+  const [definition] = await db.select({ kind: monitorDefinitions.kind })
+    .from(monitorDefinitions).where(eq(monitorDefinitions.id, monitorId)).limit(1);
+  return { monitorId, kind: definition?.kind ?? null };
+}
+
 /**
  * Create a new alert
  * - Checks cooldown to prevent duplicates
@@ -125,7 +165,10 @@ async function publishAlertTriggeredOrRollback(opts: {
  * @returns Created alert ID, or null if blocked by cooldown/dedupe
  */
 export async function createAlert(params: CreateAlertParams): Promise<string | null> {
-  const { ruleId, deviceId, orgId, severity, title, message, context } = params;
+  const {
+    ruleId, deviceId, orgId, severity, title, message, context, monitorId,
+    episodeId, requiresHuman,
+  } = params;
 
   // Get the rule to check cooldown settings
   const [rule] = await db
@@ -190,6 +233,8 @@ export async function createAlert(params: CreateAlertParams): Promise<string | n
   // Record state transition for flapping detection
   await recordStateTransition(ruleId, deviceId, 'triggered');
 
+  const monitorFields = await monitorEventFields(monitorId ?? rule.managedByMonitorId, params.kind);
+
   // Create the alert
   const [newAlert] = await db
     .insert(alerts)
@@ -201,6 +246,9 @@ export async function createAlert(params: CreateAlertParams): Promise<string | n
       title,
       message,
       context: context ?? {},
+      monitorId: monitorFields.monitorId,
+      episodeId: episodeId ?? null,
+      requiresHuman: requiresHuman ?? false,
       status: 'active',
       triggeredAt: new Date()
     })
@@ -227,7 +275,8 @@ export async function createAlert(params: CreateAlertParams): Promise<string | n
       deviceId,
       severity,
       title,
-      message
+      message,
+      ...monitorFields
     },
     publisher: 'alert-service',
     siteId
@@ -275,6 +324,20 @@ export interface CreateSourcedAlertParams {
    * pass it explicitly (including `null`) when the caller already knows it.
    */
   siteId?: string | null;
+  /**
+   * #5289 — the monitor definition behind this alert, when there is one. A
+   * rule-less monitor alert (the recurrence escalation) sources its delivery
+   * channels and escalation policy from the monitor via this id.
+   */
+  monitorId?: string | null;
+  kind?: MonitorKind | null;
+  /** #5290 — the breach episode this alert belongs to. */
+  episodeId?: string | null;
+  /**
+   * #5290 — recurrence escalation. NEVER auto-resolved, never auto-suppressed
+   * by an AI verdict, always its own correlation root.
+   */
+  requiresHuman?: boolean;
 }
 
 /**
@@ -299,6 +362,7 @@ export interface CreateSourcedAlertParams {
  */
 export async function createSourcedAlert(params: CreateSourcedAlertParams): Promise<string | null> {
   const { deviceId, orgId, severity, title, message, context, publisher, eventPayload, triggeredAt } = params;
+  const monitorFields = await monitorEventFields(params.monitorId, params.kind);
 
   const [newAlert] = await db
     .insert(alerts)
@@ -312,6 +376,9 @@ export async function createSourcedAlert(params: CreateSourcedAlertParams): Prom
       title,
       message,
       context,
+      monitorId: params.monitorId ?? null,
+      episodeId: params.episodeId ?? null,
+      requiresHuman: params.requiresHuman ?? false,
       status: 'active',
       triggeredAt: triggeredAt ?? new Date()
     })
@@ -344,6 +411,7 @@ export async function createSourcedAlert(params: CreateSourcedAlertParams): Prom
       // `source` last so it is always the one persisted in context — a caller
       // cannot accidentally publish a source that disagrees with the row.
       ...eventPayload,
+      ...monitorFields,
       source: context.source
     },
     publisher,
@@ -376,6 +444,12 @@ export async function checkAutoResolve(alertId: string): Promise<boolean> {
     .limit(1);
 
   if (!alert || alert.status !== 'active') {
+    return false;
+  }
+
+  // #5290 — a recurrence escalation is closed by a human, never by the machine.
+  // Checked BEFORE any condition evaluation so the machine never even asks.
+  if (alert.requiresHuman) {
     return false;
   }
 
@@ -812,6 +886,23 @@ export async function getApplicableRules(deviceId: string): Promise<RuleWithTemp
     );
   }
 
+  // #5289 — the 'monitor' target type. A compiled monitor rule reaches a device
+  // only through configuration-policy attachment, never by org/site/group
+  // targeting, so the resolver is the authority on which ones apply. A monitor
+  // the resolution says is DISABLED for this device contributes no rule at all.
+  // `device_missing` (the device raced a delete between the check above and
+  // here) contributes no monitor-target rules either — same as a genuine zero,
+  // since this function already returned [] earlier if the device never
+  // existed for the `device` lookup above (#5677).
+  const monitorResolution = await resolveMonitorsForDevice(deviceId);
+  const effectiveMonitors = monitorResolution.kind === 'resolved' ? monitorResolution.monitors : [];
+  const enabledMonitorIds = effectiveMonitors.filter((m) => m.enabled).map((m) => m.monitorId);
+  if (enabledMonitorIds.length > 0) {
+    targetConditions.push(
+      and(eq(alertRules.targetType, 'monitor'), inArray(alertRules.targetId, enabledMonitorIds))
+    );
+  }
+
   // Get all active rules that apply to this device: the device org's own
   // rules plus its partner's partner-wide rules (#2128).
   const ownershipCondition = await alertRuleOwnershipConditionForOrg(device.orgId);
@@ -822,6 +913,7 @@ export async function getApplicableRules(deviceId: string): Promise<RuleWithTemp
       and(
         ownershipCondition,
         eq(alertRules.isActive, true),
+        isNull(alertRules.retiredAt),
         or(...targetConditions)
       )
     );
@@ -839,6 +931,19 @@ export async function getApplicableRules(deviceId: string): Promise<RuleWithTemp
 
   const templateMap = new Map(templates.map(t => [t.id, t]));
 
+  // Per-device monitor overrides (threshold tweaks, severity) come from the
+  // winning ATTACHMENT, so two devices can run the same monitor at different
+  // thresholds. One batched read for the managed rules in this call.
+  const managedMonitorIds = [...new Set(rules.map(r => r.managedByMonitorId).filter((id): id is string => !!id))];
+  const monitorDefinitionsById = new Map<string, typeof monitorDefinitions.$inferSelect>();
+  if (managedMonitorIds.length > 0) {
+    const defs = await db
+      .select()
+      .from(monitorDefinitions)
+      .where(inArray(monitorDefinitions.id, managedMonitorIds));
+    for (const def of defs) monitorDefinitionsById.set(def.id, def);
+  }
+
   // Build rule-with-template objects
   const result: RuleWithTemplate[] = [];
 
@@ -848,14 +953,55 @@ export async function getApplicableRules(deviceId: string): Promise<RuleWithTemp
 
     const overrides = rule.overrideSettings as Record<string, unknown> | null;
 
+    let effectiveConditions: unknown = (overrides?.conditions as unknown) ?? template.conditions;
+    let effectiveSeverity =
+      (overrides?.severity as 'critical' | 'high' | 'medium' | 'low' | 'info') ?? template.severity;
+
+    if (rule.managedByMonitorId) {
+      const effective = effectiveMonitors.find((m) => m.monitorId === rule.managedByMonitorId);
+      const def = monitorDefinitionsById.get(rule.managedByMonitorId);
+      if (effective?.overrides && def) {
+        try {
+          const spec = getMonitorKindSpec(def.kind);
+          const base = spec.conditionSchema.parse(def.condition);
+          effectiveConditions = spec.toAlertCondition(applyOverrides(spec, base, effective.overrides), { monitorId: def.id });
+          effectiveSeverity =
+            (effective.overrides.severity as typeof effectiveSeverity | undefined) ?? effectiveSeverity;
+        } catch (error) {
+          // A per-attachment override that no longer validates (the monitor's
+          // kind changed under it) must NOT silently disable the monitor —
+          // fall back to the compiled, un-overridden condition and say so.
+          //
+          // Reported to Sentry as well as the log: this is invisible to the
+          // technician who set the override (it still saves fine; only
+          // evaluation rejects it), so a console line nobody reads would leave
+          // a device evaluating a different threshold than the UI shows,
+          // indefinitely.
+          console.error(
+            `[AlertService] Ignoring invalid monitor override for monitor=${rule.managedByMonitorId} device=${deviceId}:`,
+            error
+          );
+          captureException(error, undefined, {
+            area: 'monitors',
+            issue: 'invalid_monitor_override',
+            monitorId: rule.managedByMonitorId,
+            deviceId,
+          });
+        }
+      }
+    }
+
     result.push({
       rule,
       template,
-      effectiveConditions: (overrides?.conditions as unknown) ?? template.conditions,
-      effectiveSeverity: (overrides?.severity as 'critical' | 'high' | 'medium' | 'low' | 'info') ?? template.severity,
+      effectiveConditions,
+      effectiveSeverity,
       effectiveCooldownMinutes: (overrides?.cooldownMinutes as number) ?? template.cooldownMinutes,
       notificationChannelIds: (overrides?.notificationChannelIds as string[]) ?? [],
-      escalationPolicyId: overrides?.escalationPolicyId as string | undefined
+      escalationPolicyId: overrides?.escalationPolicyId as string | undefined,
+      monitor: rule.managedByMonitorId
+        ? monitorDefinitionsById.get(rule.managedByMonitorId) ?? null
+        : null
     });
   }
 
@@ -863,10 +1009,46 @@ export async function getApplicableRules(deviceId: string): Promise<RuleWithTemp
 }
 
 /**
+ * Which rules one `evaluateDeviceAlerts` pass is responsible for (#6353).
+ *
+ * `device_sweep` is the per-device alert worker job: every rule EXCEPT
+ * `network_check` monitors, which have no per-device verdict (one probe per
+ * org, read back off `network_monitor_results`) and would otherwise raise one
+ * alert per online device the policy reaches.
+ *
+ * `network_check` is the device-independent sweep
+ * (`services/monitors/networkCheckAlertSweep.ts`): ONLY the `network_check`
+ * monitors in `monitorIds` — the checks this device is the resolved alert
+ * device for — evaluated whether or not the device is online.
+ */
+type DeviceEvaluationMode =
+  | { kind: 'device_sweep' }
+  | { kind: 'network_check'; monitorIds: ReadonlySet<string> };
+
+/**
  * Evaluate all rules for a device and create alerts as needed
  * Returns list of created alert IDs
  */
 export async function evaluateDeviceAlerts(deviceId: string): Promise<string[]> {
+  return evaluateDeviceAlertsInMode(deviceId, { kind: 'device_sweep' });
+}
+
+/**
+ * #6353 — evaluate the `network_check` monitors in `monitorIds` for the device
+ * the sweep resolved as their alert device. Same pipeline as the per-device
+ * sweep (episode seam, cooldown, flapping, dedupe per rule+device) so the alert
+ * is indistinguishable from any other monitor alert; only the rule selection
+ * and the detach scan differ. The device may be OFFLINE — that is the point.
+ */
+export async function evaluateNetworkCheckAlertsForDevice(
+  deviceId: string,
+  monitorIds: ReadonlySet<string>,
+): Promise<string[]> {
+  if (monitorIds.size === 0) return [];
+  return evaluateDeviceAlertsInMode(deviceId, { kind: 'network_check', monitorIds });
+}
+
+async function evaluateDeviceAlertsInMode(deviceId: string, mode: DeviceEvaluationMode): Promise<string[]> {
   const applicableRules = await getApplicableRules(deviceId);
 
   if (applicableRules.length === 0) {
@@ -885,11 +1067,86 @@ export async function evaluateDeviceAlerts(deviceId: string): Promise<string[]> 
   }
 
   const createdAlerts: string[] = [];
+  // #5290 — every monitor the sweep actually evaluated for this device. Any
+  // monitor_device_state row NOT in this set has stopped resolving to the
+  // device (attachment removed, policy unassigned, attachment disabled), which
+  // closes its open episode as `monitor_detached` after the loop.
+  const evaluatedMonitorIds = new Set<string>();
 
-  for (const { rule, template, effectiveConditions, effectiveSeverity, effectiveCooldownMinutes } of applicableRules) {
+  for (const { rule, template, effectiveConditions, effectiveSeverity, effectiveCooldownMinutes, monitor } of applicableRules) {
+    // #6353 — a network_check has ONE verdict per org, evaluated by the
+    // device-independent sweep on the check's alert device. The per-device
+    // sweep skips it (but still counts it as evaluated, or the detach scan
+    // below would close the alert device's open episode every minute); the
+    // network_check sweep evaluates nothing else, and only the checks this
+    // device was resolved as the alert device for.
+    const isNetworkCheck = monitor?.kind === 'network_check';
+    if (mode.kind === 'device_sweep') {
+      if (isNetworkCheck) {
+        if (rule.managedByMonitorId) evaluatedMonitorIds.add(rule.managedByMonitorId);
+        continue;
+      }
+    } else if (!isNetworkCheck || !rule.managedByMonitorId || !mode.monitorIds.has(rule.managedByMonitorId)) {
+      continue;
+    }
+
     try {
       // Evaluate conditions
       const result = await evaluateConditions(effectiveConditions, deviceId);
+
+      // #5290 — the episode seam sits HERE, after the evaluation and BEFORE
+      // createAlert, on purpose:
+      //   * cooldown and flapping (both inside createAlert) gate the ALERT but
+      //     never the episode — noise controls cannot hide a loop;
+      //   * the escalation latch and its pause are durable before createAlert
+      //     publishes `alert.triggered`, so the compiled response automation
+      //     can never be queued between the latch and the pause;
+      //   * a non-triggering evaluation, which today does nothing at all, now
+      //     closes the open episode.
+      let episodeId: string | null = null;
+      if (rule.managedByMonitorId && monitor) {
+        evaluatedMonitorIds.add(rule.managedByMonitorId);
+        try {
+          const observation: MonitorObservation = result.triggered
+            ? 'breach'
+            : result.dataState === 'unknown'
+              ? 'unknown'
+              : 'ok';
+          const outcome = await recordMonitorEvaluation({
+            monitor,
+            deviceId,
+            // ALWAYS the DEVICE's org (#5290): a partner-wide monitor has no
+            // org of its own and its episodes are org-scoped.
+            orgId: device.orgId,
+            observation,
+          });
+          episodeId = outcome.episodeId;
+          // `needsEscalationAlert` retries an alert that the latch failed to
+          // raise earlier — the pause is already durable, so without the retry
+          // the device's responses stay held with nothing telling a human why.
+          if ((outcome.latched || outcome.needsEscalationAlert) && outcome.episodeId) {
+            await fireEscalationLatch({
+              monitor,
+              deviceId,
+              orgId: device.orgId,
+              episodeId: outcome.episodeId,
+              episodesInWindow: outcome.episodesInWindow,
+            });
+          }
+        } catch (error) {
+          // Episode bookkeeping must never cost the device its alert.
+          console.error(
+            `[AlertService] Episode bookkeeping failed for monitor=${rule.managedByMonitorId} device=${deviceId}:`,
+            error
+          );
+          captureException(error, undefined, {
+            area: 'monitors',
+            issue: 'episode_record_failed',
+            monitorId: rule.managedByMonitorId,
+            deviceId,
+          });
+        }
+      }
 
       if (result.triggered) {
         // Build template context
@@ -918,6 +1175,11 @@ export async function evaluateDeviceAlerts(deviceId: string): Promise<string[]> 
           severity: effectiveSeverity,
           title,
           message,
+          // #5289 — provenance, so the alert links to the authored monitor
+          // rather than to the compiled rule the technician never sees.
+          monitorId: rule.managedByMonitorId ?? null,
+          kind: monitor?.kind ?? null,
+          episodeId,
           context: {
             ...result.context,
             conditionsMet: result.conditionsMet,
@@ -929,6 +1191,23 @@ export async function evaluateDeviceAlerts(deviceId: string): Promise<string[]> 
 
         if (alertId) {
           createdAlerts.push(alertId);
+          if (episodeId) {
+            await linkEpisodeAlert(episodeId, alertId).catch((error) => {
+              console.error(
+                `[AlertService] Failed to link alert ${alertId} to episode ${episodeId}:`,
+                error
+              );
+              // Reported as well as logged: a run of these silently degrades the
+              // episode → alert traceability the Activity tab is built on, and
+              // nothing else would ever notice the pattern.
+              captureException(error, undefined, {
+                area: 'monitors',
+                issue: 'episode_alert_link_failed',
+                episodeId,
+                alertId,
+              });
+            });
+          }
         }
       }
     } catch (error) {
@@ -936,7 +1215,47 @@ export async function evaluateDeviceAlerts(deviceId: string): Promise<string[]> 
     }
   }
 
+  // Only the per-device sweep saw every monitor that resolves to this device;
+  // the network_check pass saw a subset and must not detach the rest.
+  if (mode.kind === 'device_sweep') {
+    await detachUnresolvedMonitors(deviceId, evaluatedMonitorIds);
+  }
+
   return createdAlerts;
+}
+
+/**
+ * #5290 — close the open episode of every monitor that still has state for this
+ * device but no longer resolves to it. One indexed read per sweep
+ * (`monitor_device_state_device_idx`).
+ */
+async function detachUnresolvedMonitors(
+  deviceId: string,
+  evaluatedMonitorIds: Set<string>
+): Promise<void> {
+  try {
+    const open = await db
+      .select({ monitorId: monitorDeviceState.monitorId })
+      .from(monitorDeviceState)
+      .where(
+        and(
+          eq(monitorDeviceState.deviceId, deviceId),
+          isNotNull(monitorDeviceState.currentEpisodeId)
+        )
+      );
+
+    for (const row of open) {
+      if (evaluatedMonitorIds.has(row.monitorId)) continue;
+      await detachMonitorFromDevice(row.monitorId, deviceId);
+    }
+  } catch (error) {
+    console.error(`[AlertService] Failed to detach stale monitor episodes for device ${deviceId}:`, error);
+    captureException(error, undefined, {
+      area: 'monitors',
+      issue: 'episode_detach_failed',
+      deviceId,
+    });
+  }
 }
 
 // ============================================
@@ -1147,7 +1466,9 @@ export async function checkAutoResolveFromConfigPolicy(deviceId: string): Promis
       and(
         eq(alerts.deviceId, deviceId),
         eq(alerts.status, 'active'),
-        isNotNull(alerts.configPolicyId)
+        isNotNull(alerts.configPolicyId),
+        // #5290 — a requires-human alert is never auto-resolved.
+        eq(alerts.requiresHuman, false)
       )
     );
 
@@ -1223,7 +1544,9 @@ export async function checkAutoResolveFromConfigPolicy(deviceId: string): Promis
  */
 export async function checkAllAutoResolve(orgId?: string): Promise<number> {
   // Get active alerts (optionally filtered by org)
-  const conditions = [eq(alerts.status, 'active')];
+  // #5290 — a requires-human alert is never auto-resolved, so it is excluded in
+  // the SELECT rather than skipped per-row: the sweep must not even load it.
+  const conditions = [eq(alerts.status, 'active'), eq(alerts.requiresHuman, false)];
   if (orgId) {
     conditions.push(eq(alerts.orgId, orgId));
   }

@@ -150,43 +150,61 @@ Select contracts using the checkboxes in the contract list to reveal a bulk acti
 
 Actions run per-item in isolation, so partial success is possible.
 
-## Contract Templates
+## Service deliverables
 
-Separate from the recurring-billing contracts above, Breeze keeps a library of **contract templates** -- the legal-document text (or an uploaded PDF) you attach to a quote for the customer to review and effectively sign as part of accepting a proposal. Open **Contracts → Templates** to manage the library.
+Service deliverables (v0.113.0+) track the recurring work a customer is paying for — the monthly patch report, the quarterly review, the annual DR test — so nothing is silently missed and the customer can see what was delivered. Deliverables live on the organization, optionally tied to a contract, and appear in three places:
 
-A template is owned either by your whole partner (usable on any customer's quotes) or by a single organization, chosen when you create it.
+- the organization's **Service** tab (`Organizations → (organization) → Service`), with an **Upcoming 90 days** panel;
+- a **Service deliverables** section on each contract's detail page, for deliverables tied to that contract;
+- the customer portal's **Service** page, when you turn it on for that customer (see [Customer Portal](/features/portal/#service)).
 
-### Creating a Template
+### Defining a deliverable
 
 <Steps>
-1. Go to **Contracts → Templates** and click **New template**.
-2. Name it and choose its owner: your **partner** (available to every organization) or one **organization** (available only there).
-3. Add a version -- either **author** the document as rich text directly in Breeze, or **upload a PDF** (up to 10MB). An uploaded file must be a readable, unencrypted PDF.
-4. **Publish** the version once it's ready to use on quotes.
+1. Open the organization's **Service** tab and click **Add deliverable**.
+2. Name it, describe it, and optionally pick the **Contract** it belongs to (or leave **Not tied to a contract**).
+3. Choose a **Cadence** — Monthly, Quarterly, Every six months, Annually or One time — and the **First due date**. **Effective from / until** bound the schedule; **Lead time** controls how many days before the due date the occurrence opens, and **Grace period** how long after it a late delivery still counts before it is **Missed**.
+4. Decide how an occurrence completes: **Marked delivered by a technician**, or **Delivered when the linked ticket resolves**. Turn on **Evidence required before marking delivered** if a report, screenshot or PDF must be attached first; **Attach report runs as evidence** files matching report runs automatically.
+5. Optionally set an **Owner** and a **Ticket category** — the daily sweep opens a ticket for each occurrence that comes due, assigned and categorised from these — and **Show in customer portal**.
 </Steps>
 
-### Versions
+Each deliverable rolls up to a status of **On track**, **Due soon**, **Late**, **Missed** or **Inactive**. Each occurrence is **Scheduled**, **Open**, **Awaiting evidence**, **Delivered**, **Missed** or **Waived**; from an occurrence you can **Mark delivered**, **Waive**, **Reopen**, **Reschedule**, or **Add** / **Remove evidence**. Evidence is a PDF, JPEG, PNG or WebP up to 10 MB and is filed in the organization's [document library](/features/portal/#documents) as it is attached.
 
-Each template can have multiple versions. A new version starts as a **draft** you can keep editing; **publishing** it locks the content and assigns it a version number -- published versions are immutable, so a template already attached to a quote never changes underneath the customer. To revise a published template, add another version and publish that one; existing quotes stay pinned to whichever version they were attached with (see [Contract blocks](/features/quotes/#contract-blocks) in the quote editor).
+### Key dates
 
-**Archive** a template to stop it from being used on new quotes. Archiving doesn't touch versions already attached to existing quotes or the executed documents generated from them.
+The **Service** tab also keeps the organization's **key dates** — insurance renewals, vendor contract ends, compliance deadlines, audits, or anything else. Give each one a label, a date, a **Remind (days before)** lead, and optionally an owner, notes, **Repeats every year** and **Show in customer portal**. When the reminder window opens, the daily sweep raises a ticket (once per date) for the owner; annual key dates roll forward to the next anniversary after they pass.
 
-### Variables
+### Template sets
 
-An authored template can include `{{variable}}` placeholders that Breeze fills in per quote when the block is rendered or sent. Each placeholder is either:
+Define a service tier once and apply it to any customer. Under **Settings → Deliverable Templates**, create a **template set** — owned by **All organizations (partner-wide)** or **This organization only** — and add the deliverables it contains. From an organization's **Service** tab, **Apply template set** creates every deliverable in the set for that organization (optionally tied to a contract, with an effective-from date and an owner) and reports what it created and what it skipped because it was already present. Managing partner-wide sets requires full partner organization access.
 
-- **Auto** -- filled automatically from the quote, with no data entry required. The built-in auto variables are the customer's name and address, your organization's (seller) name, the quote number and title, the one-time/monthly/annual/total amounts, and the effective and expiry dates.
-- **Manual** -- anything else. The technician attaching the template to a quote fills these in by hand (for example, a scope note or a specific term).
+A template item's evidence source can also be set to one of the automated [evidence reports](/features/reports/#scheduled-auto-evidence) (identity & access review, vulnerability management, endpoint management review, threat detection review). Every organization the template applies to then gets a period-correct evidence artifact generated automatically for that deliverable, instead of a technician needing to run and attach a report by hand each period.
 
-Publishing a version scans its body for `{{variable}}` tokens and classifies each one automatically -- a name that matches a built-in auto variable is treated as auto, everything else as manual.
+<Aside type="note" title="Tickets only when Service Management is on">
+  The daily sweep records every occurrence and reminder regardless, but only opens tickets when the organization's Service Management is on. If an owner or ticket category can no longer be used, the ticket is opened without it rather than stalling the sweep.
+</Aside>
+
+## Agreements
+
+The legal document a customer signs with a proposal -- your MSA or standard terms -- is an **agreement template**, and the copy they signed is a **signed agreement**. Both live in their own area now: see [Agreements](/features/agreements/). A signed agreement is filed against the contract the accepting quote created, and appears in the **Signed agreements** section of that contract.
 
 ## Permissions
 
-Contract access is governed by role permissions: viewing requires contract read access, creating and editing requires contract write access, and lifecycle actions (activate, pause, resume, cancel) require contract management access. The same permissions gate the contract template library. Assign these through **Settings → Users & Roles**.
+Contract access is governed by role permissions: viewing requires contract read access, creating and editing requires contract write access, and lifecycle actions (activate, pause, resume, cancel) require contract management access. Service deliverables ride on the same contract permissions, and attaching evidence to a deliverable additionally needs the **Documents: write** permission (`documents:write`), because evidence is filed in the organization's document library.
+
+Agreement templates and signed agreements have their **own** permissions (`agreements:read` / `agreements:write`), documented on the [Agreements](/features/agreements/#permissions) page. Splitting them lets you grant one without the other: a technician who needs a customer's signed MSA does not need contract billing authority, and a billing clerk who runs recurring contracts does not need to author legal terms.
+
+<Aside type="note" title="Upgrading">
+  Nothing is taken away on upgrade. Any role that already held contract write access gains **Agreements: write** and **Agreements: read**; any role that held contract read access gains **Agreements: read** — including roles you created yourself. The built-in **Partner Billing** role gets both, **Partner Billing Viewer** gets read, and **Partner Admin** is unaffected (it holds everything). Review the split under **Settings → Users & Roles** if you want to tighten it.
+</Aside>
+
+Assign these through **Settings → Users & Roles**.
 
 ## Related
 
 - [Invoices](/features/invoices/) -- where generated invoices land
 - [Product Catalog](/features/product-catalog/) -- link contract lines to catalog items
 - [Online Payments](/features/online-payments/) -- let customers pay generated invoices online
-- [Quotes → Contract blocks](/features/quotes/#contract-blocks) -- attach a contract template to a quote
+- [Agreements](/features/agreements/) -- the agreement template library and signed agreements
+- [Quotes → Contract blocks](/features/quotes/#contract-blocks) -- attach an agreement template to a quote
+- [Customer Portal → Service and Documents](/features/portal/#service) -- show deliverables, key dates and shared documents to the customer

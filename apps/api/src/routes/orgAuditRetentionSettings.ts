@@ -12,12 +12,23 @@ import { getOrgAuditRetentionPolicy, upsertOrgAuditRetentionPolicy } from '../se
 // Admin read/write for an org's audit-log retention policy
 // (audit_retention_policies — issue #4633). Registered onto orgRoutes so it
 // inherits orgRoutes' authMiddleware — mounting at the top-level api app
-// would silently skip auth. Mirrors orgTicketSettings.ts.
+// would silently skip auth. Mounting mirrors orgTicketSettings.ts, but the
+// scope list deliberately does not: these routes also admit organization
+// scope (own org only — issue #5423), while ticket settings stay
+// partner/system.
 
 async function resolveAccessibleOrg(c: any): Promise<{ id: string } | Response> {
   const auth = c.get('auth') as AuthContext;
   const id = c.req.param('id')!;
-  if (auth.scope === 'partner' && !auth.canAccessOrg(id)) {
+  // Org-scoped callers may only reach their OWN org (issue #5423): the
+  // token's bound orgId must match the path id, and the accessible-org
+  // allowlist must agree. Partner callers are bounded by the allowlist
+  // alone; system scope is unbounded. The identity check runs before the
+  // org lookup so a cross-tenant probe never touches the table.
+  if (auth.scope === 'organization' && auth.orgId !== id) {
+    return c.json({ error: 'Organization not found' }, 404);
+  }
+  if (auth.scope !== 'system' && !auth.canAccessOrg(id)) {
     return c.json({ error: 'Organization not found' }, 404);
   }
   const orgRows = await db
@@ -37,7 +48,7 @@ export function registerOrgAuditRetentionSettingsRoutes(orgRoutes: Hono) {
 
   orgRoutes.get(
     '/organizations/:id/audit-retention',
-    requireScope('partner', 'system'),
+    requireScope('organization', 'partner', 'system'),
     requireAuditRead,
     async (c) => {
       const org = await resolveAccessibleOrg(c);
@@ -50,7 +61,7 @@ export function registerOrgAuditRetentionSettingsRoutes(orgRoutes: Hono) {
 
   orgRoutes.put(
     '/organizations/:id/audit-retention',
-    requireScope('partner', 'system'),
+    requireScope('organization', 'partner', 'system'),
     requireAuditManage,
     requireMfa(),
     zValidator('json', auditRetentionPolicySchema),

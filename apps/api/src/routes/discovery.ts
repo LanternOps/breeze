@@ -1,4 +1,4 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
 import { and, eq, desc, sql, inArray } from 'drizzle-orm';
@@ -23,9 +23,16 @@ import {
 import { enqueueDiscoveryScan, getDiscoveryQueue } from '../jobs/discoveryWorker';
 import { isRedisAvailable } from '../services/redis';
 import { writeRouteAudit } from '../services/auditEvents';
+import { withLegacyTopologyWrite, requireLegacyLayoutNodes } from '../services/topology/legacyWrites';
+import { TopologyWriteError, lockLegacyTopologySourceRows } from '../services/topology/writes';
+import { TopologyError } from '../services/topology/access';
+import { limitTopologyMutationBody } from './topology/mutations';
 import { isCronDue } from '../services/automationRuntime';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
 import { createDiscoveryJobIfIdle } from '../services/discoveryJobCreation';
+import { maskOidShapedModel, nicVendorFromMac } from '../services/assetIdentity';
+import { reachabilityToListStatus } from '../services/assetReachability';
+import { loadReachability } from '../services/assetReachabilityLoader';
 import {
   encryptSnmpCommunities,
   encryptSnmpCredentials,
@@ -394,8 +401,8 @@ const layoutPatchSchema = z.object({
   positions: z.array(z.object({
     nodeType: z.enum(['discovered_asset', 'manual_node']),
     nodeId: z.string().guid(),
-    x: z.number().finite(),
-    y: z.number().finite(),
+    x: z.number().finite().min(-1_000_000).max(1_000_000),
+    y: z.number().finite().min(-1_000_000).max(1_000_000),
   })).min(1).max(2000),
 });
 
@@ -1123,6 +1130,8 @@ discoveryRoutes.get(
       .where(where)
       .orderBy(desc(discoveredAssets.lastSeenAt));
 
+    const reachabilityByAsset = await loadReachability(results.map((row) => row.asset.id));
+
     return c.json({
       data: results.map((row) => {
         const a = row.asset;
@@ -1132,12 +1141,18 @@ discoveryRoutes.get(
           assetType: a.assetType,
           approvalStatus: a.approvalStatus,
           isOnline: a.isOnline,
+          // W01 (spec §4.4). `isOnline` above is retained for one release and
+          // means "last scan/controller verdict"; everything new reads this.
+          reachability: reachabilityByAsset.get(a.id) ?? null,
           hostname: a.hostname,
           label: a.label,
           ipAddress: a.ipAddress,
           macAddress: a.macAddress,
           manufacturer: a.manufacturer,
-          model: a.model,
+          // Spec §9 read-time guard — a raw sysObjectID is not a model. The raw
+          // value stays reachable through snmpData.sysObjectId.
+          model: maskOidShapedModel(a.model),
+          nicVendor: nicVendorFromMac(a.macAddress),
           openPorts: a.openPorts,
           snmpData: a.snmpData,
           responseTimeMs: a.responseTimeMs,
@@ -1219,6 +1234,10 @@ discoveryRoutes.get(
         // through the device IT WAS LINKED TO is a loopback).
         suggestedBridgeDeviceId: bridgeDevices.id,
         siteName: sites.name,
+        // The site's IANA zone. The page formats every absolute timestamp in
+        // it (spec §11 Formatting); `sites` is already left-joined for the
+        // name, so this costs one more column and no extra query.
+        siteTimezone: sites.timezone,
       })
       .from(discoveredAssets)
       .leftJoin(devices, and(
@@ -1244,21 +1263,34 @@ discoveryRoutes.get(
     }
 
     const a = row.asset;
+    const reachability = (await loadReachability([a.id])).get(a.id) ?? null;
     return c.json({
       data: {
         id: a.id,
         orgId: a.orgId,
         siteId: a.siteId,
         siteName: row.siteName ?? null,
+        siteTimezone: row.siteTimezone ?? null,
         assetType: a.assetType,
         approvalStatus: a.approvalStatus,
         isOnline: a.isOnline,
+        // W01 (spec §4.4). `isOnline` is retained for one release and means
+        // "last scan/controller verdict"; everything new reads this.
+        reachability,
+        probe: a.lastProbeStatus ? {
+          state: a.lastProbeStatus,
+          observedAt: a.lastProbeAt?.toISOString() ?? null,
+          responseMs: a.lastProbeResponseMs ?? null,
+        } : null,
         hostname: a.hostname,
         label: a.label,
         ipAddress: a.ipAddress,
         macAddress: a.macAddress,
         manufacturer: a.manufacturer,
-        model: a.model,
+        // Spec §9 read-time guard — a raw sysObjectID is not a model. The raw
+        // value stays reachable through snmpData.sysObjectId.
+        model: maskOidShapedModel(a.model),
+        nicVendor: nicVendorFromMac(a.macAddress),
         openPorts: a.openPorts,
         osFingerprint: a.osFingerprint,
         snmpData: a.snmpData,
@@ -1817,12 +1849,19 @@ discoveryRoutes.get(
       : await db.select().from(topologyManualNodes))
       .filter((node) => canAccessRecordSite(permissions, node.siteId));
 
+    // W01 (spec §4.4) — the topology map is an asset-status export like any
+    // other, so it takes the same derivation. 'unknown' is a real third state
+    // here: the client renders it muted rather than as a red node.
+    const topologyReachability = await loadReachability(assets.map((a) => a.id));
+
     const nodes = [
       ...assets.map((a) => ({
         id: a.id,
         type: a.assetType,
         label: a.label ?? a.hostname ?? a.ipAddress ?? a.id,
-        status: a.isOnline ? 'online' : 'offline',
+        status: reachabilityToListStatus(
+          topologyReachability.get(a.id) ?? { state: 'unverified', source: null, observedAt: null, lastKnown: null, detail: {} },
+        ),
         approvalStatus: a.approvalStatus,
         ipAddress: a.ipAddress,
         macAddress: a.macAddress,
@@ -1874,6 +1913,16 @@ discoveryRoutes.get(
   }
 );
 
+// Compatibility mutations share the v2 lock/replay transaction. Their old
+// request/response shapes remain valid; no revision is invented by the client.
+async function legacyTopologyHandler<T>(c: Context, work: () => Promise<T>) {
+  try { return await work(); }
+  catch (error) {
+    if (error instanceof TopologyWriteError || error instanceof TopologyError) return c.json({ error: error.message, code: error.code }, error.status);
+    throw error;
+  }
+}
+
 // PATCH /discovery/topology/layout — batch upsert saved node positions
 // (drag-to-save, #1728). Runs on the request `db` so writes are RLS-scoped to the
 // caller (org/site server-derived); never a bare/system pool (silent 0-row class).
@@ -1881,8 +1930,9 @@ discoveryRoutes.patch(
   '/topology/layout',
   requireScope('organization', 'partner', 'system'),
   requireTopologyWrite,
+  limitTopologyMutationBody,
   zValidator('json', layoutPatchSchema),
-  async (c) => {
+  async (c) => legacyTopologyHandler(c, async () => {
     const auth = c.get('auth');
     const body = c.req.valid('json');
     const perms = c.get('permissions') as UserPermissions | undefined;
@@ -1908,29 +1958,32 @@ discoveryRoutes.patch(
     }
 
     let upserted = 0;
-    await db.transaction(async (tx) => {
-      for (const p of body.positions) {
-        // Upsert keyed on (site_id, node_type, node_id) — onConflictDoUpdate
-        // resolves the unique-key collision in-statement so a re-save is a clean
-        // update, never a duplicate-key 500.
-        await tx
-          .insert(topologyLayout)
-          .values({
-            orgId: orgResult.orgId!,
-            siteId: body.siteId,
-            nodeType: p.nodeType,
-            nodeId: p.nodeId,
-            x: p.x,
-            y: p.y,
-            pinned: true,
-            updatedBy: auth.user?.id ?? null,
-          })
-          .onConflictDoUpdate({
-            target: [topologyLayout.siteId, topologyLayout.nodeType, topologyLayout.nodeId],
-            set: { x: p.x, y: p.y, pinned: true, updatedBy: auth.user?.id ?? null, updatedAt: new Date() },
-          });
-        upserted += 1;
-      }
+    await withLegacyTopologyWrite(auth, perms, { orgId: orgResult.orgId!, siteId: body.siteId }, async (ctx) => {
+      await requireLegacyLayoutNodes(ctx, body.positions);
+      await db.transaction(async (tx) => {
+        for (const p of body.positions) {
+          // Upsert keyed on (site_id, node_type, node_id) — onConflictDoUpdate
+          // resolves the unique-key collision in-statement so a re-save is a clean
+          // update, never a duplicate-key 500.
+          await tx
+            .insert(topologyLayout)
+            .values({
+              orgId: orgResult.orgId!,
+              siteId: body.siteId,
+              nodeType: p.nodeType,
+              nodeId: p.nodeId,
+              x: p.x,
+              y: p.y,
+              pinned: true,
+              updatedBy: auth.user?.id ?? null,
+            })
+            .onConflictDoUpdate({
+              target: [topologyLayout.siteId, topologyLayout.nodeType, topologyLayout.nodeId],
+              set: { x: p.x, y: p.y, pinned: true, updatedBy: auth.user?.id ?? null, updatedAt: new Date() },
+            });
+          upserted += 1;
+        }
+      });
     });
 
     writeRouteAudit(c, {
@@ -1942,7 +1995,7 @@ discoveryRoutes.patch(
     });
 
     return c.json({ upserted });
-  }
+  })
 );
 
 // POST /discovery/topology/manual-node — create a hand-mapped placeholder node
@@ -1952,8 +2005,9 @@ discoveryRoutes.post(
   '/topology/manual-node',
   requireScope('organization', 'partner', 'system'),
   requireTopologyWrite,
+  limitTopologyMutationBody,
   zValidator('json', createManualNodeSchema),
-  async (c) => {
+  async (c) => legacyTopologyHandler(c, async () => {
     const auth = c.get('auth');
     const body = c.req.valid('json');
     const orgResult = resolveOrgId(auth, body.orgId ?? c.req.query('orgId'), true);
@@ -1972,17 +2026,20 @@ discoveryRoutes.post(
       return c.json({ error: 'Access to this site denied' }, 403);
     }
 
-    const [node] = await db
-      .insert(topologyManualNodes)
-      .values({
-        orgId: orgResult.orgId!,
-        siteId: body.siteId,
-        label: body.label,
-        role: body.role,
-        notes: body.notes ?? null,
-        createdBy: auth.user?.id ?? null,
-      })
-      .returning();
+    const node = await withLegacyTopologyWrite(auth, perms, { orgId: orgResult.orgId!, siteId: body.siteId }, async () => {
+      const [created] = await db
+        .insert(topologyManualNodes)
+        .values({
+          orgId: orgResult.orgId!,
+          siteId: body.siteId,
+          label: body.label,
+          role: body.role,
+          notes: body.notes ?? null,
+          createdBy: auth.user?.id ?? null,
+        })
+        .returning();
+      return created;
+    });
 
     writeRouteAudit(c, {
       orgId: orgResult.orgId ?? undefined,
@@ -1993,7 +2050,7 @@ discoveryRoutes.post(
     });
 
     return c.json(node, 201);
-  }
+  })
 );
 
 // Resolve a manual-edge endpoint to confirm it is an asset/manual-node in (org, site).
@@ -2041,8 +2098,9 @@ discoveryRoutes.post(
   '/topology/manual-edge',
   requireScope('organization', 'partner', 'system'),
   requireTopologyWrite,
+  limitTopologyMutationBody,
   zValidator('json', createManualEdgeSchema),
-  async (c) => {
+  async (c) => legacyTopologyHandler(c, async () => {
     const auth = c.get('auth');
     const body = c.req.valid('json');
     const orgResult = resolveOrgId(auth, body.orgId ?? c.req.query('orgId'), true);
@@ -2057,53 +2115,55 @@ discoveryRoutes.post(
       return c.json({ error: 'Access to this site denied' }, 403);
     }
 
-    const [srcOk, tgtOk] = await Promise.all([
-      manualEdgeEndpointExists(body.source, orgResult.orgId!, body.siteId),
-      manualEdgeEndpointExists(body.target, orgResult.orgId!, body.siteId),
-    ]);
-    if (!srcOk || !tgtOk) {
-      return c.json({ error: 'Edge endpoint not found in this site' }, 404);
-    }
+    const edge = await withLegacyTopologyWrite(auth, perms, { orgId: orgResult.orgId!, siteId: body.siteId }, async () => {
+      // Resolve again under the shared site lock so an inventory move cannot
+      // race a validated endpoint into a different site before insertion.
+      const srcOk = await manualEdgeEndpointExists(body.source, orgResult.orgId!, body.siteId);
+      const tgtOk = await manualEdgeEndpointExists(body.target, orgResult.orgId!, body.siteId);
+      if (!srcOk || !tgtOk) throw new TopologyWriteError('topology_entity_not_found', 404, 'Edge endpoint not found in this site');
+      // Pre-check the provenance unique key (org, site, src, tgt, method='manual').
+      // A raw duplicate insert would trip the unique index 23505 — but the whole
+      // request runs inside a single withDbAccessContext transaction, so an
+      // in-statement error poisons that transaction and the COMMIT then 500s.
+      // Checking first keeps the transaction clean and lets us return a 409.
+      const [dupe] = await db
+        .select({ id: networkTopology.id })
+        .from(networkTopology)
+        .where(
+          and(
+            eq(networkTopology.orgId, orgResult.orgId!),
+            eq(networkTopology.siteId, body.siteId),
+            eq(networkTopology.sourceType, body.source.type),
+            eq(networkTopology.sourceId, body.source.id),
+            eq(networkTopology.targetType, body.target.type),
+            eq(networkTopology.targetId, body.target.id),
+            eq(networkTopology.method, 'manual'),
+          ),
+        )
+        .limit(1);
+      if (dupe) {
+        throw new TopologyWriteError('topology_relationship_exists', 409, 'A manual edge already connects these two nodes');
+      }
 
-    // Pre-check the provenance unique key (org, site, src, tgt, method='manual').
-    // A raw duplicate insert would trip the unique index 23505 — but the whole
-    // request runs inside a single withDbAccessContext transaction, so an
-    // in-statement error poisons that transaction and the COMMIT then 500s.
-    // Checking first keeps the transaction clean and lets us return a 409.
-    const [dupe] = await db
-      .select({ id: networkTopology.id })
-      .from(networkTopology)
-      .where(
-        and(
-          eq(networkTopology.orgId, orgResult.orgId!),
-          eq(networkTopology.siteId, body.siteId),
-          eq(networkTopology.sourceType, body.source.type),
-          eq(networkTopology.sourceId, body.source.id),
-          eq(networkTopology.targetType, body.target.type),
-          eq(networkTopology.targetId, body.target.id),
-          eq(networkTopology.method, 'manual'),
-        ),
-      )
-      .limit(1);
-    if (dupe) {
-      return c.json({ error: 'A manual edge already connects these two nodes' }, 409);
-    }
-
-    const [edge] = await db
-      .insert(networkTopology)
-      .values({
-        orgId: orgResult.orgId!,
-        siteId: body.siteId,
-        sourceType: body.source.type,
-        sourceId: body.source.id,
-        targetType: body.target.type,
-        targetId: body.target.id,
-        connectionType: 'manual',
-        method: 'manual',
-        confidence: 'asserted',
-        createdBy: auth.user?.id ?? null,
-      })
-      .returning();
+      await lockLegacyTopologySourceRows({ orgId: orgResult.orgId!, siteId: body.siteId }, 'network_topology', and(
+        eq(networkTopology.sourceType, body.source.type), eq(networkTopology.sourceId, body.source.id), eq(networkTopology.targetType, body.target.type), eq(networkTopology.targetId, body.target.id), eq(networkTopology.method, 'manual'))!);
+      const [edge] = await db
+        .insert(networkTopology)
+        .values({
+          orgId: orgResult.orgId!,
+          siteId: body.siteId,
+          sourceType: body.source.type,
+          sourceId: body.source.id,
+          targetType: body.target.type,
+          targetId: body.target.id,
+          connectionType: 'manual',
+          method: 'manual',
+          confidence: 'asserted',
+          createdBy: auth.user?.id ?? null,
+        })
+        .returning();
+      return edge;
+    });
 
     writeRouteAudit(c, {
       orgId: orgResult.orgId ?? undefined,
@@ -2113,7 +2173,7 @@ discoveryRoutes.post(
     });
 
     return c.json(edge, 201);
-  }
+  })
 );
 
 // DELETE /discovery/topology/manual-edge/:id — remove a hand-asserted edge
@@ -2124,7 +2184,7 @@ discoveryRoutes.delete(
   '/topology/manual-edge/:id',
   requireScope('organization', 'partner', 'system'),
   requireTopologyWrite,
-  async (c) => {
+  async (c) => legacyTopologyHandler(c, async () => {
     const auth = c.get('auth');
     const id = c.req.param('id')!;
     const orgResult = resolveOrgId(auth, c.req.query('orgId'));
@@ -2153,7 +2213,10 @@ discoveryRoutes.delete(
       return c.json({ error: 'Manual edge not found' }, 404);
     }
 
-    await db.delete(networkTopology).where(eq(networkTopology.id, existing.id));
+    await withLegacyTopologyWrite(auth, perms, { orgId: existing.orgId, siteId: existing.siteId }, async () => {
+      await lockLegacyTopologySourceRows({ orgId: existing.orgId, siteId: existing.siteId }, 'network_topology', eq(networkTopology.id, existing.id));
+      await db.delete(networkTopology).where(and(eq(networkTopology.id, existing.id), eq(networkTopology.orgId, existing.orgId), eq(networkTopology.siteId, existing.siteId), eq(networkTopology.method, 'manual')));
+    });
 
     writeRouteAudit(c, {
       orgId: existing.orgId ?? undefined,
@@ -2163,7 +2226,7 @@ discoveryRoutes.delete(
     });
 
     return c.json({ success: true });
-  }
+  })
 );
 
 // DELETE /discovery/topology/manual-node/:id — remove a hand-mapped placeholder
@@ -2176,7 +2239,7 @@ discoveryRoutes.delete(
   '/topology/manual-node/:id',
   requireScope('organization', 'partner', 'system'),
   requireTopologyWrite,
-  async (c) => {
+  async (c) => legacyTopologyHandler(c, async () => {
     const auth = c.get('auth');
     const id = c.req.param('id')!;
     const orgResult = resolveOrgId(auth, c.req.query('orgId'));
@@ -2206,33 +2269,35 @@ discoveryRoutes.delete(
       return c.json({ error: 'Manual node not found' }, 404);
     }
 
-    await db.transaction(async (tx) => {
-      // Manual edges that reference this placeholder as source. Only method='manual'
-      // rows are removed — measured edges never carry a manual_node endpoint.
-      await tx.delete(networkTopology).where(
-        and(
-          eq(networkTopology.method, 'manual'),
-          eq(networkTopology.sourceType, 'manual_node'),
-          eq(networkTopology.sourceId, node.id),
-        ),
-      );
-      // ...and as target.
-      await tx.delete(networkTopology).where(
-        and(
-          eq(networkTopology.method, 'manual'),
-          eq(networkTopology.targetType, 'manual_node'),
-          eq(networkTopology.targetId, node.id),
-        ),
-      );
-      // Its saved Cytoscape position.
-      await tx.delete(topologyLayout).where(
-        and(
-          eq(topologyLayout.nodeType, 'manual_node'),
-          eq(topologyLayout.nodeId, node.id),
-        ),
-      );
-      await tx.delete(topologyManualNodes).where(eq(topologyManualNodes.id, node.id));
-    });
+    await withLegacyTopologyWrite(auth, perms, { orgId: node.orgId, siteId: node.siteId }, async () => {
+      await db.transaction(async (tx) => {
+        // Manual edges that reference this placeholder as source. Only method='manual'
+        // rows are removed — measured edges never carry a manual_node endpoint.
+        await tx.delete(networkTopology).where(
+          and(
+            eq(networkTopology.method, 'manual'),
+            eq(networkTopology.sourceType, 'manual_node'),
+            eq(networkTopology.sourceId, node.id),
+          ),
+        );
+        // ...and as target.
+        await tx.delete(networkTopology).where(
+          and(
+            eq(networkTopology.method, 'manual'),
+            eq(networkTopology.targetType, 'manual_node'),
+            eq(networkTopology.targetId, node.id),
+          ),
+        );
+        // Its saved Cytoscape position.
+        await tx.delete(topologyLayout).where(
+          and(
+            eq(topologyLayout.nodeType, 'manual_node'),
+            eq(topologyLayout.nodeId, node.id),
+          ),
+        );
+        await tx.delete(topologyManualNodes).where(eq(topologyManualNodes.id, node.id));
+      });
+    }, node.id);
 
     writeRouteAudit(c, {
       orgId: node.orgId ?? undefined,
@@ -2243,5 +2308,5 @@ discoveryRoutes.delete(
     });
 
     return c.json({ success: true });
-  }
+  })
 );

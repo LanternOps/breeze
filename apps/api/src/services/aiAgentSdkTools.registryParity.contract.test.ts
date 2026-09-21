@@ -25,10 +25,10 @@
  * NOTE: no vi.mock — this suite needs the REAL registry, same rationale as
  * aiGuardrails.readonly.contract.test.ts.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
-import { TOOL_TIERS } from './aiAgentSdkTools';
-import { getAllRegisteredToolNames, getToolTier } from './aiTools';
+import { TOOL_TIERS, attachRegistryMeta, buildBreezeSdkTools } from './aiAgentSdkTools';
+import { getAllRegisteredToolNames, getToolTier, getToolAlwaysLoad, getToolSearchHint } from './aiTools';
 
 /**
  * Registered tools with no `TOOL_TIERS` entry, and therefore invisible to
@@ -63,6 +63,7 @@ const KNOWN_MISSING_TOOL_TIERS: ReadonlySet<string> = new Set([
   'get_hyperv_vm_details',
   'get_incident_timeline',
   'get_ip_history',
+  'get_monitor',
   'get_mssql_backup_status',
   'get_network_changes',
   'get_peripheral_activity',
@@ -75,6 +76,7 @@ const KNOWN_MISSING_TOOL_TIERS: ReadonlySet<string> = new Set([
   'get_vault_status',
   'get_vm_restore_estimate',
   'instant_boot_vm',
+  'list_monitors',
   'list_remote_sessions',
   'manage_backup_profiles',
   'manage_browser_policy',
@@ -82,6 +84,7 @@ const KNOWN_MISSING_TOOL_TIERS: ReadonlySet<string> = new Set([
   'manage_dr_plan',
   'manage_hyperv_checkpoints',
   'manage_hyperv_vm',
+  'manage_monitor_definitions',
   'manage_notification_channels',
   'manage_peripheral_policy',
   'manage_processes',
@@ -116,7 +119,6 @@ const KNOWN_MISSING_TOOL_TIERS: ReadonlySet<string> = new Set([
   'restore_snapshot',
   'revoke_elevation',
   'search_c2c_items',
-  'search_documentation',
   'search_script_library',
   'test_webhook',
   'trigger_agent_restart',
@@ -139,10 +141,7 @@ const KNOWN_MISSING_TOOL_TIERS: ReadonlySet<string> = new Set([
  * registered or the dead entry gets removed.
  */
 const KNOWN_UNREGISTERED_TOOL_TIERS: ReadonlySet<string> = new Set([
-  'get_backup_health',
-  'get_recovery_readiness',
   'propose_action_plan',
-  'run_backup_verification',
 ]);
 
 describe('aiTools registry ⊆ TOOL_TIERS — a registered tool must be reachable from chat (#3300)', () => {
@@ -232,5 +231,66 @@ describe('TOOL_TIERS agrees with the registry tier (#3300)', () => {
         'registry is the source of truth for what the tool actually does; a ' +
         'lower tier here silently downgrades its approval gate.',
     ).toEqual([]);
+  });
+});
+
+describe('SDK declarations carry registry search metadata (A-W02)', () => {
+  const fakeAuth = () => { throw new Error('handlers must not run in this test'); };
+  const raw = (() => {
+    vi.stubEnv('M365_ENABLED', 'true');
+    vi.stubEnv('GOOGLE_WORKSPACE_ENABLED', 'true');
+    vi.stubEnv('BREEZE_AI_SCRIPT_AUTHORING_ENABLED', 'true');
+    try {
+      return buildBreezeSdkTools(fakeAuth as never);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  })();
+  const declared = raw.map(attachRegistryMeta);
+
+  it('builds the full declared set', () => {
+    expect(declared.length).toBeGreaterThan(140);
+  });
+
+  it('every declared tool has the registry hint in _meta and alwaysLoad only where the registry says so', () => {
+    const bad = declared.filter((t) => {
+      const meta = (t._meta ?? {}) as Record<string, unknown>;
+      return meta['anthropic/searchHint'] !== getToolSearchHint(t.name)
+        || (meta['anthropic/alwaysLoad'] === true) !== getToolAlwaysLoad(t.name);
+    }).map((t) => t.name);
+    expect(bad, 'declarations whose _meta disagrees with the registry').toEqual([]);
+  });
+
+  it('keeps name, description, schema and handler intact when attaching meta', () => {
+    const byName = new Map(declared.map((t) => [t.name, t]));
+    for (const t of raw) {
+      const wrapped = byName.get(t.name)!;
+      expect(wrapped.description).toBe(t.description);
+      expect(Object.keys(wrapped.inputSchema)).toEqual(Object.keys(t.inputSchema));
+      expect(wrapped.handler).toBe(t.handler);
+    }
+  });
+});
+
+import { checkGuardrails, requiredPermissionsForTool } from './aiGuardrails';
+import { validateToolInput } from './aiToolSchemas';
+
+describe('manage_delivery has every registration', () => {
+  it('does not add a frozen-gap exception', () => {
+    expect(getAllRegisteredToolNames()).toContain('manage_delivery');
+    expect(TOOL_TIERS.manage_delivery).toBe(1);
+    expect(KNOWN_MISSING_TOOL_TIERS.has('manage_delivery')).toBe(false);
+  });
+  it.each(['resolve', 'list_routing', 'list_escalation'])('%s is read-only', action => {
+    expect(checkGuardrails('manage_delivery', { action }).tier).toBe(1);
+    expect(requiredPermissionsForTool('manage_delivery', { action })).toEqual([{ resource: 'alerts', action: 'read' }]);
+  });
+  it.each(['create_routing','update_routing','delete_routing','set_default','create_escalation','update_escalation','delete_escalation'])('%s uses mutation tier and write permission', action => {
+    expect(checkGuardrails('manage_delivery', { action })).toMatchObject({ tier: 3, requiresApproval: true, approvalScope: 'supervised' });
+    expect(requiredPermissionsForTool('manage_delivery', { action })).toEqual([{ resource: 'alerts', action: 'write' }]);
+  });
+  it('fails closed on unknown actions', () => {
+    expect(requiredPermissionsForTool('manage_delivery', { action: 'unknown' })).toBeNull();
+    expect(validateToolInput('manage_delivery', { action: 'unknown' }).success).toBe(false);
   });
 });

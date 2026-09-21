@@ -7,8 +7,8 @@
 
 import { Queue, Worker, Job } from 'bullmq';
 import * as dbModule from '../db';
-import { networkMonitors, networkMonitorResults, devices, networkMonitorAlertRules, alerts, discoveredAssets } from '../db/schema';
-import { eq, and, sql, desc, inArray } from 'drizzle-orm';
+import { networkMonitors, networkMonitorResults, devices, networkMonitorAlertRules, alerts, organizations } from '../db/schema';
+import { eq, and, sql, inArray } from 'drizzle-orm';
 import { getBullMQConnection } from '../services/redis';
 import { createInstrumentedQueue } from '../services/bullmqQueue';
 import { isReusableState } from '../services/bullmqUtils';
@@ -25,6 +25,9 @@ import {
 } from './queueSchemas';
 import { attachWorkerObservability } from './workerObservability';
 import { redactOptionalSecretText, redactSecretsDeep } from '../services/secretRedaction';
+import { monitorRequestUrl, readTlsObservation, tlsObservationUpdate } from '../services/monitors/tlsObservation';
+import { selectMonitorExecutor } from '../services/networkExecutorSelection';
+import { resolveNetworkCheckAlertDevice } from '../services/monitors/networkCheckAlertDevice';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -65,6 +68,10 @@ interface ProcessCheckResultJobData {
   type: 'process-check-result';
   monitorId: string;
   result: MonitorCheckResult;
+  /** #5291 W04 - the org the probe ran for (the reporting device's org). */
+  orgId?: string;
+  /** #5291 W04 - the device that ran the probe. */
+  deviceId?: string;
 }
 
 interface MonitorSchedulerJobData {
@@ -74,6 +81,8 @@ interface MonitorSchedulerJobData {
 type MonitorJobData = MonitorQueueJobData;
 
 const MONITOR_ALERT_COOLDOWN_MINUTES = 5;
+/** #5291 W04 - fan-out cap for one partner-wide network check, per tick. */
+const PARTNER_FANOUT_ORG_LIMIT = 500;
 const PRIVILEGED_JOB_OPTIONS = {
   attempts: 3,
   backoff: {
@@ -148,7 +157,37 @@ function createMonitorWorker(): Worker<MonitorJobData> {
 type CheckMonitorInputs =
   | { status: 'monitor-missing' }
   | { status: 'inactive' }
+  // #5291 W04 - the job named an org that is neither the monitor's own org nor
+  // an org under its partner. A forged or stale queue payload must not be able
+  // to run one tenant's check against another tenant's device.
+  | { status: 'org-mismatch' }
   | { status: 'ok'; monitor: typeof networkMonitors.$inferSelect; agentId: string | null };
+
+/**
+ * #5291 W04 - the ONE org a check-monitor job runs for.
+ *
+ * For an org-owned monitor that is `monitor.orgId` and the job must agree. For
+ * a partner-wide monitor (`org_id NULL`) the scheduler fanned one job out per
+ * org under `monitor.partnerId`, so the running org comes from the JOB and is
+ * verified here against the partner before any device is selected.
+ *
+ * Returns false on any mismatch - and on a lookup MISS, which is a deny: an
+ * org row that cannot be read under the worker's own context is not evidence
+ * of membership.
+ */
+async function jobOrgIsAuthorized(
+  monitor: { orgId: string | null; partnerId: string | null },
+  jobOrgId: string,
+): Promise<boolean> {
+  if (monitor.orgId !== null) return monitor.orgId === jobOrgId;
+  if (!monitor.partnerId) return false;
+  const [org] = await db
+    .select({ id: organizations.id })
+    .from(organizations)
+    .where(and(eq(organizations.id, jobOrgId), eq(organizations.partnerId, monitor.partnerId)))
+    .limit(1);
+  return !!org;
+}
 
 /**
  * Phase 1 of a check-monitor job: read the monitor row and select the
@@ -156,7 +195,7 @@ type CheckMonitorInputs =
  * Redis or the agent WebSocket, so the pooled connection is released before
  * the connectivity check and dispatch (#1105).
  */
-async function loadCheckMonitorInputs(data: CheckMonitorJobData): Promise<CheckMonitorInputs> {
+async function loadCheckMonitorInputs(data: CheckMonitorJobData, selectedAgentId?: string): Promise<CheckMonitorInputs> {
   const [monitor] = await db
     .select()
     .from(networkMonitors)
@@ -171,7 +210,14 @@ async function loadCheckMonitorInputs(data: CheckMonitorJobData): Promise<CheckM
     return { status: 'inactive' };
   }
 
-  const agentId = await selectExecutionAgentForMonitor(monitor);
+  if (!(await jobOrgIsAuthorized(monitor, data.orgId))) {
+    return { status: 'org-mismatch' };
+  }
+
+  // The probe device comes from the RUNNING org (data.orgId), never from
+  // monitor.orgId - which is NULL for a partner-wide check and would silently
+  // match no device at all.
+  const agentId = await selectExecutionAgentForMonitor({ orgId: data.orgId, assetId: monitor.assetId, siteId: monitor.siteId }, selectedAgentId);
   return { status: 'ok', monitor, agentId };
 }
 
@@ -190,9 +236,14 @@ export async function processCheckMonitor(data: CheckMonitorJobData): Promise<{
     case 'inactive':
       console.log(`[MonitorWorker] Monitor ${data.monitorId} is inactive, skipping check`);
       return { dispatched: false, agentId: null };
+    case 'org-mismatch':
+      console.warn(
+        `[MonitorWorker] Dropping check job for monitor ${data.monitorId}: org ${data.orgId} is neither its own org nor an org under its partner`
+      );
+      return { dispatched: false, agentId: null };
   }
 
-  const { monitor, agentId } = inputs;
+  const { agentId } = inputs;
 
   // Phase 2 — connectivity check and the agent WebSocket dispatch, both with
   // NO DB context open (#1105). dispatchCommandToAgent does Redis/WS I/O via
@@ -203,7 +254,13 @@ export async function processCheckMonitor(data: CheckMonitorJobData): Promise<{
     return { dispatched: false, agentId: null };
   }
 
-  const command = buildMonitorCommand(monitor);
+  // Revalidate after connectivity I/O, in a fresh short DB context. Pin the
+  // previous executor so a changed scope cannot silently select a replacement.
+  const current = await runWithSystemDbAccess(() => loadCheckMonitorInputs(data, agentId));
+  if (current.status !== 'ok' || current.agentId !== agentId) {
+    return { dispatched: false, agentId: null };
+  }
+  const command = buildMonitorCommand(current.monitor);
   const outcome = await dispatchCommandToAgent(agentId, command, { priority: 'probe' });
 
   if (outcome.status !== 'sent') {
@@ -222,117 +279,17 @@ function parseNumericThreshold(threshold: string | null | undefined): number | n
 }
 
 /**
- * Quick Support exclusion (applies to every device selection below):
- * ephemeral devices (`devices.isEphemeral`) live in the hidden per-partner
- * 'quick_support' org and are a stranger's personal machine borrowed for one
- * ~20-minute session. That org stays inside technicians' accessibleOrgIds for
- * RLS reasons, so background workers are NOT filtered for us. Such a device must
- * never be conscripted as a monitor executor (it would run network probes on a
- * home network) nor be picked as the attribution device for a monitor alert.
+ * Kept as a named export because monitorWorker.test.ts and
+ * monitorWorker.dbcontext.test.ts assert on it directly. The rules now live in
+ * services/networkExecutorSelection.ts, shared with routes/monitors.ts and the
+ * manual probe (spec §5).
  */
 export async function selectExecutionAgentForMonitor(
-  monitor: {
-    orgId: string;
-    assetId: string | null;
-  }
+  monitor: { orgId: string; assetId: string | null; siteId?: string | null },
+  agentId?: string,
 ): Promise<string | null> {
-  let assetSiteId: string | null = null;
-
-  if (monitor.assetId) {
-    const [asset] = await db
-      .select({ siteId: discoveredAssets.siteId })
-      .from(discoveredAssets)
-      .where(and(eq(discoveredAssets.id, monitor.assetId), eq(discoveredAssets.orgId, monitor.orgId)))
-      .limit(1);
-    assetSiteId = asset?.siteId ?? null;
-  }
-
-  if (assetSiteId) {
-    // Site-bound monitor: the executing agent MUST live in the monitor's site.
-    // If no online agent is available there, return null rather than crossing
-    // the site boundary to an arbitrary org agent (SR5-08) — that would direct
-    // a root-level agent in another site to probe this target.
-    const [siteAgent] = await db
-      .select({ agentId: devices.agentId })
-      .from(devices)
-      .where(and(
-        eq(devices.orgId, monitor.orgId),
-        eq(devices.isEphemeral, false),
-        eq(devices.siteId, assetSiteId),
-        eq(devices.status, 'online')
-      ))
-      .limit(1);
-
-    return siteAgent?.agentId ?? null;
-  }
-
-  // Unbound monitor (no site scope): org-wide selection is legitimate. Monitors
-  // created by site-restricted callers are now required to be site-bound
-  // (aiToolsMonitoring create gate), so this path is reached only for monitors
-  // an unrestricted caller intentionally left assetless.
-  const [onlineAgent] = await db
-    .select({ agentId: devices.agentId })
-    .from(devices)
-    .where(and(
-      eq(devices.orgId, monitor.orgId),
-      eq(devices.isEphemeral, false),
-      eq(devices.status, 'online')
-    ))
-    .limit(1);
-
-  return onlineAgent?.agentId ?? null;
-}
-
-async function resolveMonitorAlertDevice(
-  monitor: {
-    orgId: string;
-    assetId: string | null;
-  }
-): Promise<string | null> {
-  let preferredSiteId: string | null = null;
-
-  if (monitor.assetId) {
-    const [asset] = await db
-      .select({
-        linkedDeviceId: discoveredAssets.linkedDeviceId,
-        siteId: discoveredAssets.siteId
-      })
-      .from(discoveredAssets)
-      .where(and(eq(discoveredAssets.id, monitor.assetId), eq(discoveredAssets.orgId, monitor.orgId)))
-      .limit(1);
-
-    if (asset?.linkedDeviceId) {
-      return asset.linkedDeviceId;
-    }
-
-    preferredSiteId = asset?.siteId ?? null;
-  }
-
-  if (preferredSiteId) {
-    const [siteDevice] = await db
-      .select({ id: devices.id })
-      .from(devices)
-      .where(and(
-        eq(devices.orgId, monitor.orgId),
-        eq(devices.isEphemeral, false),
-        eq(devices.siteId, preferredSiteId)
-      ))
-      .orderBy(desc(devices.lastSeenAt), desc(devices.enrolledAt))
-      .limit(1);
-
-    if (siteDevice?.id) {
-      return siteDevice.id;
-    }
-  }
-
-  const [orgDevice] = await db
-    .select({ id: devices.id })
-    .from(devices)
-    .where(and(eq(devices.orgId, monitor.orgId), eq(devices.isEphemeral, false)))
-    .orderBy(desc(devices.lastSeenAt), desc(devices.enrolledAt))
-    .limit(1);
-
-  return orgDevice?.id ?? null;
+  const pick = await selectMonitorExecutor(monitor, { agentId });
+  return 'agentId' in pick ? pick.agentId : null;
 }
 
 function getMonitorAlertConditionState(
@@ -372,7 +329,14 @@ function getMonitorAlertConditionState(
 
 async function evaluateMonitorAlertRules(
   monitor: typeof networkMonitors.$inferSelect,
-  result: MonitorCheckResult
+  result: MonitorCheckResult,
+  /**
+   * #5291 W04 - the org this check RAN for. Equals `monitor.orgId` for an
+   * org-owned monitor; for a partner-wide one it is the fanned-out org, and
+   * `monitor.orgId` is NULL. Every device, dedupe and alert read below uses
+   * this, never the definition owner.
+   */
+  runningOrgId: string,
 ): Promise<void> {
   const rules = await db
     .select()
@@ -384,7 +348,9 @@ async function evaluateMonitorAlertRules(
 
   if (rules.length === 0) return;
 
-  const alertDeviceId = await resolveMonitorAlertDevice(monitor);
+  // #6353 — shared with the `network_check` monitor path, so a converted check
+  // keeps alerting on the same device it did as a legacy rule.
+  const alertDeviceId = await resolveNetworkCheckAlertDevice({ orgId: runningOrgId, assetId: monitor.assetId });
   if (!alertDeviceId) {
     console.warn(`[MonitorWorker] Skipping alert evaluation for monitor ${monitor.id}: no device context available`);
     return;
@@ -396,7 +362,7 @@ async function evaluateMonitorAlertRules(
       .select({ id: alerts.id })
       .from(alerts)
       .where(and(
-        eq(alerts.orgId, monitor.orgId),
+        eq(alerts.orgId, runningOrgId),
         eq(alerts.deviceId, alertDeviceId),
         inArray(alerts.status, ['active', 'acknowledged']),
         sql`${alerts.context}->>'source' = 'network_monitor'`,
@@ -433,9 +399,11 @@ async function evaluateMonitorAlertRules(
     // keyed on the monitor alert rule rather than an `alertRules` row.
     const alertId = await createSourcedAlert({
       deviceId: alertDeviceId,
-      // Alert rows always take the DEVICE's org; monitors are org-scoped and
-      // resolveMonitorAlertDevice only returns devices in monitor.orgId.
-      orgId: monitor.orgId,
+      // Alert rows always take the DEVICE's org. `runningOrgId` IS that org:
+      // resolveNetworkCheckAlertDevice only returns devices in it, and for a
+      // partner-wide monitor it is the org the job fanned out to, never the
+      // (NULL) definition owner. #5291 W04.
+      orgId: runningOrgId,
       severity: rule.severity,
       title,
       message,
@@ -477,7 +445,15 @@ async function evaluateMonitorAlertRules(
 
 export async function recordMonitorCheckResult(
   monitorId: string,
-  result: MonitorCheckResult
+  result: MonitorCheckResult,
+  /**
+   * #5291 W04 - who actually ran the probe. The reporting agent's device and
+   * ITS org, which for a partner-wide monitor is the fanned-out org rather
+   * than the (NULL) definition owner. Optional so an in-flight queue payload
+   * enqueued before this wave still records; when absent the monitor's own
+   * org is used, which is correct for every org-owned monitor.
+   */
+  reporter?: { orgId?: string | null; deviceId?: string | null },
 ): Promise<void> {
   // #2434 chokepoint: monitor check results arrive from agents (the WS
   // Redis-down direct path AND the BullMQ process-check-result path both
@@ -495,11 +471,35 @@ export async function recordMonitorCheckResult(
   };
   const now = new Date();
 
+  // Resolve the org the result belongs to BEFORE the insert. The reporter
+  // carries it on both normal paths, but the Redis-down direct path
+  // (agentWs.ts) resolves it from a live `devices` read that can miss if the
+  // device row was removed mid-session — and an org-owned monitor's result
+  // written with org_id NULL is invisible to every org-scoped reader, i.e. it
+  // silently disappears from that customer's history. Falling back to the
+  // monitor's own org is exact for an org-owned monitor; a partner-wide one
+  // genuinely has no org to fall back to and is handled below.
+  let runningOrgId = reporter?.orgId ?? null;
+  if (!runningOrgId) {
+    const [owner] = await db
+      .select({ orgId: networkMonitors.orgId })
+      .from(networkMonitors)
+      .where(eq(networkMonitors.id, monitorId))
+      .limit(1);
+    runningOrgId = owner?.orgId ?? null;
+  }
+
   // Use a transaction to keep results table and monitor state in sync
   await db.transaction(async (tx) => {
     // Write to results table
     await tx.insert(networkMonitorResults).values({
       monitorId,
+      // Worker-created child rows take the DEVICE's org (#5291 W04), with the
+      // monitor's own org as the fallback resolved above. NULL here means the
+      // monitor is partner-wide AND the reporter carried no device org, which
+      // is the one case where there is genuinely no tenant to attribute to.
+      orgId: runningOrgId,
+      deviceId: reporter?.deviceId ?? null,
       status: result.status,
       responseMs: result.responseMs ?? null,
       statusCode: result.statusCode ?? null,
@@ -508,6 +508,30 @@ export async function recordMonitorCheckResult(
       timestamp: now
     });
 
+    // #5754 provenance guard. Only read when the result actually carries an
+    // observation, so every icmp/dns/tcp check keeps its current statement
+    // count. `FOR UPDATE` is what makes it a guard rather than a hint: a
+    // concurrent `PATCH /monitors/:id` either commits first (and we read its
+    // new URL, so this stale result is dropped) or blocks until we commit
+    // (and its own tls reset then clears whatever we wrote). Without the lock
+    // the read could be taken just before an edit lands and the check would
+    // pass on data that is already stale.
+    let tlsGuard: { expectedRequestUrl?: string | null; monitorId: string } = { monitorId };
+    if (readTlsObservation(result.details)) {
+      const [current] = await tx
+        .select({ target: networkMonitors.target, config: networkMonitors.config })
+        .from(networkMonitors)
+        .where(eq(networkMonitors.id, monitorId))
+        .for('update')
+        .limit(1);
+      // A missing row means the monitor was deleted mid-flight; `null` still
+      // fails the equality check, so the observation is dropped.
+      tlsGuard = {
+        monitorId,
+        expectedRequestUrl: current ? monitorRequestUrl(current) : null,
+      };
+    }
+
     // Update monitor state
     const isFailure = result.status === 'offline';
     const updateSet: Record<string, unknown> = {
@@ -515,7 +539,16 @@ export async function recordMonitorCheckResult(
       lastStatus: result.status,
       lastResponseMs: result.responseMs ?? null,
       lastError: result.error ?? null,
-      updatedAt: now
+      updatedAt: now,
+      // #5754: the TLS observation joins THIS updateSet rather than a second
+      // statement, so the certificate reading and the check it came from can
+      // never disagree. The fragment is empty for any result carrying no
+      // `sslState` — every icmp/dns/tcp check, and every agent predating the
+      // wave — so those never clear a good observation. It is written on the
+      // `network_monitors` DEFINITION row, so for a partner-wide monitor
+      // (org_id NULL, fanned out to many orgs) the last reporting org wins;
+      // harmless today because loadExpiringCerts reads org-owned rows only.
+      ...tlsObservationUpdate(result.details, now, tlsGuard),
     };
 
     if (isFailure) {
@@ -536,32 +569,65 @@ export async function recordMonitorCheckResult(
     .where(eq(networkMonitors.id, monitorId))
     .limit(1);
 
-  if (monitor) {
-    await evaluateMonitorAlertRules(monitor, result);
+  if (!monitor) return;
+
+  // A partner-wide monitor owns no org, so if the reporter carried none either
+  // there is nothing to attribute an alert to - skip rather than guess a tenant.
+  if (!runningOrgId) {
+    console.warn(
+      `[MonitorWorker] Skipping alert evaluation for partner-wide monitor ${monitor.id}: result carried no reporting org`
+    );
+    return;
   }
+
+  await evaluateMonitorAlertRules(monitor, result, runningOrgId);
 }
 
 async function processCheckResult(data: ProcessCheckResultJobData): Promise<{
   resultWritten: boolean;
 }> {
-  await recordMonitorCheckResult(data.monitorId, data.result);
+  // #5291 W04 - a payload enqueued before this wave carries neither orgId nor
+  // deviceId. Resolve the org from the monitor then; for an org-owned monitor
+  // that IS the running org, and a partner-wide monitor cannot have such a
+  // payload because it did not exist before this wave.
+  let orgId = data.orgId ?? null;
+  if (!orgId) {
+    const [owner] = await runWithSystemDbAccess(() =>
+      db
+        .select({ orgId: networkMonitors.orgId })
+        .from(networkMonitors)
+        .where(eq(networkMonitors.id, data.monitorId))
+        .limit(1)
+    );
+    orgId = owner?.orgId ?? null;
+  }
+
+  await recordMonitorCheckResult(data.monitorId, data.result, { orgId, deviceId: data.deviceId ?? null });
 
   console.log(`[MonitorWorker] Result recorded for monitor ${data.monitorId}: ${data.result.status}`);
   return { resultWritten: true };
 }
 
-export async function processScheduler(): Promise<{ enqueued: number }> {
-  const now = new Date();
-
-  // Phase 1 — read due monitors inside a short system DB context, then let it
-  // CLOSE. Everything after this is pure Redis/BullMQ work; holding it inside
-  // the context would pin a pooled connection idle-in-transaction for the whole
-  // enqueue loop, starving the connection pool (#1105).
+/**
+ * Every (monitor, org) pair due for a check right now (#5291 W04).
+ *
+ * Split out of `processScheduler` so the fan-out can be proven against REAL
+ * Postgres under REAL RLS without a Redis/BullMQ stack — see
+ * networkMonitorPartnerRls.integration.test.ts. Pure reads, no side effects.
+ */
+export async function selectDueMonitorJobs(
+  now: Date = new Date(),
+): Promise<Array<{ monitorId: string; orgId: string }>> {
+  // Read due monitors inside a short system DB context, then let it CLOSE. The
+  // caller's enqueue loop is pure Redis/BullMQ work; holding the context across
+  // it would pin a pooled connection idle-in-transaction for the whole loop,
+  // starving the connection pool (#1105).
   const dueMonitors = await runWithSystemDbAccess(() =>
     db
       .select({
         id: networkMonitors.id,
         orgId: networkMonitors.orgId,
+        partnerId: networkMonitors.partnerId,
         pollingInterval: networkMonitors.pollingInterval,
         lastChecked: networkMonitors.lastChecked
       })
@@ -574,16 +640,68 @@ export async function processScheduler(): Promise<{ enqueued: number }> {
       )
   );
 
-  if (dueMonitors.length === 0) return { enqueued: 0 };
+  if (dueMonitors.length === 0) return [];
+
+  // #5291 W04 - expand each due monitor into the orgs it must run FOR. An
+  // org-owned row is itself; a partner-wide row (org_id NULL) fans out one job
+  // per org under its partner. Without this a partner-wide row would enqueue
+  // `orgId: null` and every downstream read would match nothing SILENTLY.
+  const partnerIds = [...new Set(
+    dueMonitors.filter((m) => m.orgId === null && m.partnerId).map((m) => m.partnerId as string)
+  )];
+  const orgsByPartner = new Map<string, string[]>();
+  if (partnerIds.length > 0) {
+    const rows = await runWithSystemDbAccess(() =>
+      db
+        .select({ id: organizations.id, partnerId: organizations.partnerId })
+        .from(organizations)
+        .where(inArray(organizations.partnerId, partnerIds))
+    );
+    for (const row of rows) {
+      if (!row.partnerId) continue;
+      const list = orgsByPartner.get(row.partnerId) ?? [];
+      list.push(row.id);
+      orgsByPartner.set(row.partnerId, list);
+    }
+  }
+
+  const jobs: Array<{ monitorId: string; orgId: string }> = [];
+  for (const monitor of dueMonitors) {
+    if (monitor.orgId !== null) {
+      jobs.push({ monitorId: monitor.id, orgId: monitor.orgId });
+      continue;
+    }
+    if (!monitor.partnerId) {
+      console.warn(`[MonitorWorker] Monitor ${monitor.id} has neither org nor partner owner; skipping`);
+      continue;
+    }
+    const orgIds = orgsByPartner.get(monitor.partnerId) ?? [];
+    if (orgIds.length > PARTNER_FANOUT_ORG_LIMIT) {
+      // One misconfigured partner-wide check must not be able to flood the
+      // queue with thousands of jobs every polling interval.
+      console.error(
+        `[MonitorWorker] Partner-wide monitor ${monitor.id} fans out to ${orgIds.length} orgs (> ${PARTNER_FANOUT_ORG_LIMIT}); skipping`
+      );
+      continue;
+    }
+    for (const orgId of orgIds) jobs.push({ monitorId: monitor.id, orgId });
+  }
+
+  return jobs;
+}
+
+export async function processScheduler(): Promise<{ enqueued: number }> {
+  const jobs = await selectDueMonitorJobs();
+  if (jobs.length === 0) return { enqueued: 0 };
 
   // Phase 2 — enqueue checks with NO DB context open (pure Redis/BullMQ).
   let enqueued = 0;
-  for (const monitor of dueMonitors) {
+  for (const job of jobs) {
     try {
-      await enqueueMonitorCheck(monitor.id, monitor.orgId);
+      await enqueueMonitorCheck(job.monitorId, job.orgId);
       enqueued++;
     } catch (err) {
-      console.error(`[MonitorWorker] Failed to enqueue check for monitor ${monitor.id}:`, err);
+      console.error(`[MonitorWorker] Failed to enqueue check for monitor ${job.monitorId}:`, err);
     }
   }
 
@@ -599,7 +717,14 @@ export async function enqueueMonitorCheck(
   meta: QueueActorMeta = MONITOR_DISPATCH_META,
 ): Promise<string> {
   const queue = getMonitorQueue();
-  const stableJobId = `monitor-check-${monitorId}`;
+  // #5291 W04 — the org is PART OF THE KEY. A partner-wide monitor fans out one
+  // job per org under the partner in a single scheduler tick; with a
+  // monitor-only key the first org's job would still be `waiting` when the
+  // second org's call arrived, `isReusableState` would return that job id, and
+  // orgs 2..N would silently never be enqueued at all — the exact no-error
+  // no-op class this wave exists to remove. The key was correct before W04,
+  // when one network_monitors row was always exactly one org.
+  const stableJobId = `monitor-check-${monitorId}-${orgId}`;
   const existing = await queue.getJob(stableJobId);
   if (existing) {
     const state = await existing.getState();
@@ -628,6 +753,8 @@ export async function enqueueMonitorCheckResult(
   monitorId: string,
   result: MonitorCheckResult,
   meta: QueueActorMeta = MONITOR_RESULT_META,
+  /** #5291 W04 - the reporting device and ITS org; stamped on the result row. */
+  reporter?: { orgId?: string | null; deviceId?: string | null },
 ): Promise<string> {
   const queue = getMonitorQueue();
   const stableJobId = result.checkId ? `monitor-result-${result.checkId}` : null;
@@ -646,7 +773,13 @@ export async function enqueueMonitorCheckResult(
   const job = await queue.add(
     'process-check-result',
     monitorQueueJobDataSchema.parse(
-      withQueueMeta({ type: 'process-check-result', monitorId, result }, meta)
+      withQueueMeta({
+        type: 'process-check-result',
+        monitorId,
+        result,
+        ...(reporter?.orgId ? { orgId: reporter.orgId } : {}),
+        ...(reporter?.deviceId ? { deviceId: reporter.deviceId } : {}),
+      }, meta)
     ),
     {
       ...(stableJobId ? { jobId: stableJobId } : {}),

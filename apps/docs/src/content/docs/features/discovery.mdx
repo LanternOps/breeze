@@ -61,7 +61,7 @@ When several detection sources disagree about a device's type, the better-inform
 
 ### Network Topology
 
-Discovery builds an interactive map of how your network actually fits together -- a measured backbone of switches and routers with the hosts attached to them -- and lets you hand-map anything discovery can't see. Connections carry their provenance (how Breeze knows about them) so you can tell measured links from ones you drew yourself. See [Network Topology](#network-topology) below.
+Discovery builds an interactive map of how your network actually fits together -- a measured backbone of switches and routers with the hosts attached to them -- and lets you hand-map anything discovery can't see. Connections carry their provenance (how Breeze knows about them) so you can tell measured links from ones you drew yourself. See [Network Topology (classic view)](#network-topology-classic-view) below. Where it's enabled, agents assemble a live logical **[Site Map](#site-map)** from passive network evidence instead, with shared configuration templates and on-demand diagnostics.
 
 ---
 
@@ -109,7 +109,7 @@ Port scanning does not require elevated privileges and works on all platforms.
 
 ### SNMP Discovery
 
-SNMP discovery queries each target on UDP port 161 using the configured community strings (default: `public`). It fetches three system OIDs:
+SNMP discovery queries each target on UDP port 161 (or the port set in the profile's SNMP settings) using the profile's SNMP credentials. It fetches three system OIDs:
 
 | OID | Field | Usage |
 |-----|-------|-------|
@@ -117,13 +117,26 @@ SNMP discovery queries each target on UDP port 161 using the configured communit
 | `1.3.6.1.2.1.1.2.0` | sysObjectID | Device model and type classification |
 | `1.3.6.1.2.1.1.5.0` | sysName | Hostname / device name |
 
-Both SNMPv2c and SNMPv3 (NoAuthNoPriv) are supported. To use SNMPv3, prefix the username with `v3:` in the `snmpCommunities` array:
+SNMPv1, SNMPv2c and SNMPv3 (noAuthNoPriv, authNoPriv and authPriv) are supported. The profile's `snmpCredentials` object carries the version and, for v3, the user name, authentication protocol (MD5, SHA, SHA224, SHA256, SHA384, SHA512) and privacy protocol (DES, AES, AES192, AES256) with their passphrases; passphrases are stored encrypted and masked on read. For v2c the community string goes in `snmpCommunities`:
 
 ```json
 {
-  "snmpCommunities": ["public", "private", "v3:admin-user"]
+  "snmpCommunities": [],
+  "snmpCredentials": {
+    "version": "v3",
+    "username": "ro-monitor",
+    "authProtocol": "sha",
+    "authPassphrase": "…",
+    "privacyProtocol": "aes",
+    "privacyPassphrase": "…",
+    "port": 161,
+    "timeout": 2000,
+    "retries": 1
+  }
 }
 ```
+
+The agent tries the structured credential first, then each `snmpCommunities` entry (the legacy `v3:<user>` prefix for a noAuthNoPriv v3 user is still honoured). The built-in `public` community is used **only** when the profile configures no SNMP credential at all — a profile set to v3 is never probed with v2c/`public`. When a target rejects the configured v3 credentials (unknown user, wrong digest, decryption error) the agent logs a warning with the credential summary (user name and protocols, never passphrases) and the count of rejecting targets, so "no SNMP data" can be told apart from "device does not speak SNMP".
 
 SNMP data is used by the asset classifier to determine manufacturer (Cisco, HP, Dell, Juniper, MikroTik, Synology, QNAP, Ubiquiti, Fortinet) and device type.
 
@@ -178,7 +191,8 @@ Authorization: Bearer <token>
 | `excludeIps` | string[] | No | IPs to skip during scanning |
 | `methods` | string[] | Yes | Scan methods: `arp`, `ping`, `port_scan`, `snmp` |
 | `portRanges` | any | No | Port ranges for port scan (e.g., `["22,80,443", "1000-2000"]`) |
-| `snmpCommunities` | string[] | No | SNMP community strings. Prefix `v3:` for SNMPv3 usernames |
+| `snmpCommunities` | string[] | No | SNMPv1/v2c community strings (legacy `v3:<user>` prefix = noAuthNoPriv v3 user) |
+| `snmpCredentials` | object | No | Structured SNMP settings: `version` (`v1`/`v2c`/`v3`), `username`, `authProtocol`, `authPassphrase`, `privacyProtocol`, `privacyPassphrase`, `port`, `timeout` (ms), `retries` |
 | `schedule` | object | Yes | Schedule configuration (see below) |
 | `deepScan` | boolean | No | Allow subnets larger than /16 (65,536+ hosts). Default `false` |
 | `identifyOS` | boolean | No | Attempt OS fingerprinting from SNMP and port data. Default `false` |
@@ -346,11 +360,25 @@ A manually-added asset is a real discovered-asset row (`source: manual`) — it 
 
 Clicking a network-discovered device in the unified **Devices** list opens a dedicated detail page (`/devices/network/:id`) instead of a popup. The page has breadcrumbs back to **Devices** and a working back button, so you can navigate in and out without losing your place.
 
-The page has two tabs — **Overview** (identity, IP/MAC, manufacturer/model, SNMP data, ping, open ports) and **Monitoring** (SNMP/network monitoring status, linked device, discovery metadata). The selected tab is reflected in the URL hash (e.g. `#monitoring`), so you can bookmark or share a link directly to a specific tab.
+The page has two tabs — **Overview** (identity, IP/MAC, manufacturer/model, SNMP data, ping, open ports) and **Monitoring** (poll configuration, OIDs, and history). The selected tab is reflected in the URL hash (e.g. `#monitoring`), so you can bookmark or share a link directly to a specific tab.
 
 From the **Overview** tab you can override the auto-detected device type using the **Asset Type** dropdown. If a device's type was set manually, a **Reset to auto-detected** link appears so you can revert to the type the scan originally detected.
 
-From the **Monitoring** tab you can see the asset's link state and **Unlink** it from its enrolled Breeze device. Unlinking is **durable** regardless of how the link was made: future scans will not silently re-link the asset — auto-linking is suppressed for it until you deliberately re-link. The network device detail page is also where you link (or re-link) an asset to an enrolled device manually.
+**Reachability header.** The header always shows a reachability badge, never a bare "Online" — it names both the state and where that state came from: **Responding**, **Not responding**, or **Unverified**, followed by the source (**Network check**, **Probe**, **Scan**, **UniFi**, or **SNMP**) and how long ago, e.g. "Responding · Network check 2m ago." If nothing has ever reported on the device, it shows **"Nothing has reported on this device."** A **Check now** button triggers an on-demand probe.
+
+**Health and Reachability cards.** The **Reachability** card breaks the headline status down by source, with its own detail line per check type. A stat strip below it shows **Reachability**, **Last poll**, and a device-type-specific slot (for example **Lowest supply** for a printer, or **Ports up** for a switch). A **Device health** or **Printer health** card (depending on the detected device type) surfaces the metrics most relevant to that device type, with a **View all N OIDs** link into the full collection and a **Choose a template** prompt if no SNMP template is assigned yet.
+
+**Monitoring tab.** The Monitoring tab shows a poll configuration summary, an OID table, and metric history charts. Each row in the OID table reports its own state: **Collecting**, **Unsupported**, **Stale**, or **Never polled**. A failed poll always says why — for example, an OID the device doesn't support reports the exact code it returned; a table value that needs a newer agent says so explicitly ("update the agent on the bridging device"); a walk that hit its row limit is marked **Partial**. The poll configuration summary itself reports overall collection status as **Polling**, **Failing**, **No template**, **No agent in site**, **Asset moved**, **Never polled**, or **Paused**.
+
+**Template suggestion.** When Breeze recognizes a device's identity (from its SNMP `sysObjectID`), the Overview and Monitoring tabs show a suggested SNMP template with the reason it was suggested (e.g. "Suggested: Xerox Printer — matched by device identity"). Click **Use suggestion** to apply it. If no template is assigned at all, a warning explains that nothing is being polled until one is set.
+
+All asset-level settings — identity, monitoring configuration, and the manual link to an enrolled Breeze device — are consolidated in a single **Settings** modal, opened from the button in the page header.
+
+<Aside type="note">
+  SNMPv1 devices are polled using SNMP version 1 rather than being treated as v2c.
+</Aside>
+
+From the Settings modal's **Link** section you can see the asset's link state and **Unlink** it from its enrolled Breeze device. Unlinking is **durable** regardless of how the link was made: future scans will not silently re-link the asset — auto-linking is suppressed for it until you deliberately re-link. The network device detail page is also where you link (or re-link) an asset to an enrolled device manually.
 
 ### Asset-to-Device Linking
 
@@ -447,9 +475,13 @@ Click a row to see its detail, where you can link the change to an enrolled devi
 
 ---
 
-## Network Topology
+## Network Topology (classic view)
 
 The **Topology** tab on the Discovery page renders your network as an interactive map: subnets group their hosts, and lines show how infrastructure and endpoints connect. Every connection is labeled with how Breeze learned it, so you can trust what you're looking at.
+
+<Aside type="note">
+  Breeze is rolling out a next-generation **Site Map** (per-site logical maps, shared configuration templates, and on-demand diagnostics) on this same **Topology** tab. Where it's enabled for your organization it replaces the view below automatically; otherwise this classic scan-and-SNMP map is what you'll see. See [Site Map](#site-map) below.
+</Aside>
 
 ### How connections are measured
 
@@ -485,9 +517,44 @@ Uplink ports carrying many MAC addresses are filtered out of host-attachment so 
 
 ---
 
-## Network Monitors
+## Site Map
 
-Discovered assets can be attached to network monitors for ongoing health checking. Monitors are managed through the dedicated `/monitoring` routes and support four check types:
+Where it's enabled, the **Topology** tab shows a per-site **Site Map** instead of the classic view above: a logical map of a site built automatically from what your agents passively observe on the network -- interfaces, routes, and neighbor tables -- refreshed on an interval without you having to run a scan. It adds shared configuration templates you can apply across many sites at once, automatic layout, and on-demand diagnostics you can launch straight from the map.
+
+<Aside type="caution">
+  Site Map needs agents running **v0.115.0 or later** to collect the passive network evidence it's built from. Sites with older agents keep showing the classic Topology view (or an emptier map) until their agents are updated. This feature is being rolled out gradually -- if you don't see it yet for an organization, the classic view above is what's shown instead.
+</Aside>
+
+### Exploring a site's map
+
+Pick a site from the site selector at the top of the tab (it's skipped if you only manage one site). The map opens on the **Overview** view; switch to **Logical** for the addressing-and-routing picture, or **Physical** where interface-level detail has been observed. A **List** toggle swaps the diagram for a searchable table of the same nodes -- useful on a large site or for keyboard-only navigation.
+
+Click any node or connection to open its **Inspector**, which shows what it is, its health, how confidently Breeze knows about it (measured evidence vs. an inferred placeholder), and how recently it was last observed. A node that resolves to an enrolled device or discovered asset links straight to its inventory page. Large or partially-scoped sites show a frontier control you can expand to pull in more of the map on demand.
+
+### Automatic layout
+
+The map lays itself out automatically -- **Arrange** nudges new nodes into place, and **Reflow** rebuilds the whole layout from scratch. If you have edit access, drag a node to reposition it, use **Pin** to hold a node in place through future auto-layouts, and **Save layout** to persist your arrangement; **Fit** resets the view to frame everything. If someone else saves a layout change while you're mid-edit, you're prompted to reload rather than silently overwriting their work.
+
+### On-demand diagnostics
+
+Select a node or connection and click **Diagnose** to run an on-demand, ping/traceroute-style check without leaving the map. Choose what to test against -- the device's reported gateway, its configured DNS server, general internet reachability, or a target you've configured explicitly -- pick an agent to run it from, and start the check. Results stream back step by step (each hop's method, outcome, and round-trip detail), and you can cancel a run that's still in progress. Diagnostics require the `topology:diagnostics` capability to be enabled for your organization and an eligible agent at the site.
+
+### Shared configuration templates
+
+Instead of configuring passive collection and diagnostic targets one site at a time, build a **configuration template** once -- at the partner level (applies across all your managed organizations) or the organization level -- and pin sites to a version of it. From the map's **Configuration** panel you can:
+
+- See which template version (partner and/or organization) a site is currently pinned to, and where each effective setting is coming from.
+- **Preview changes** before committing: the preview shows exactly what will change on every selected site, flags any site with a conflicting revision, and expires a few minutes after it's generated so you're never applying a stale preview.
+- **Apply** the previewed change across up to 500 sites at once, then watch each site's apply status resolve individually.
+- Add per-site overrides on top of the pinned template -- for example, an explicit HTTPS or DNS diagnostic target -- without forking the whole template.
+
+<Aside type="note">
+  Recurring (scheduled) template application isn't available yet -- **Apply** runs once, immediately, against the sites you select.
+</Aside>
+
+---
+
+Discovered assets can be attached to network monitors for ongoing health checking. Monitors are managed from **Fleet Management → Network Monitor** (`/monitoring`) and support four check types:
 
 | Monitor Type | Description |
 |--------------|-------------|
@@ -536,7 +603,7 @@ The asset list endpoint (`GET /discovery/assets`) includes `snmpMonitoringEnable
 | POST | `/discovery/assets/bulk-dismiss` | Dismiss up to 200 assets at once (`assetIds`) |
 | DELETE | `/discovery/assets/:id` | Delete asset and associated monitors |
 
-### Network Topology
+### Network Topology (classic view)
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -549,6 +616,53 @@ The asset list endpoint (`GET /discovery/assets`) includes `snmpMonitoringEnable
 
 <Aside>
   All discovery endpoints require authentication and one of these scopes: `organization`, `partner`, or `system`. Organization-scoped tokens are automatically restricted to their own organization's data.
+</Aside>
+
+### Site Map
+
+All Site Map endpoints are scoped to a site: `/topology/sites/:siteId/...`.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/topology/sites/:siteId/graph` | Get the site's logical/physical/overview graph |
+| GET | `/topology/sites/:siteId/nodes` | Search/list graph nodes |
+| GET | `/topology/sites/:siteId/nodes/:nodeId` | Get a single node |
+| GET | `/topology/sites/:siteId/relationships/:relationshipId` | Get a connection |
+| GET | `/topology/sites/:siteId/relationships/:relationshipId/evidence` | Get the evidence behind a connection |
+| GET | `/topology/sites/:siteId/health` | Get health for a set of nodes/relationships |
+| PATCH | `/topology/sites/:siteId/layouts/:view` | Save node positions for a view (requires site write access) |
+| POST | `/topology/sites/:siteId/manual-nodes` | Add a manual placeholder node |
+| PATCH | `/topology/sites/:siteId/manual-nodes/:nodeId` | Update a manual node |
+| DELETE | `/topology/sites/:siteId/manual-nodes/:nodeId` | Remove a manual node |
+| POST | `/topology/sites/:siteId/manual-relationships` | Draw a manual connection |
+| DELETE | `/topology/sites/:siteId/manual-relationships/:relationshipId` | Remove a manual connection |
+| GET | `/topology/sites/:siteId/settings` | Read the site's resolved configuration |
+| PATCH | `/topology/sites/:siteId/settings` | Override the site's configuration |
+| GET | `/topology/sites/:siteId/targets` | List explicit diagnostic targets |
+| POST | `/topology/sites/:siteId/targets` | Add a diagnostic target |
+| PATCH | `/topology/sites/:siteId/targets/:id` | Update a diagnostic target |
+| DELETE | `/topology/sites/:siteId/targets/:id` | Remove a diagnostic target |
+| GET | `/topology/sites/:siteId/policies` | List monitoring policies |
+| POST | `/topology/sites/:siteId/policies` | Add a monitoring policy |
+| PATCH | `/topology/sites/:siteId/policies/:id` | Update a monitoring policy |
+| DELETE | `/topology/sites/:siteId/policies/:id` | Remove a monitoring policy |
+| GET | `/topology/sites/:siteId/collectors` | List agents/contexts eligible to run a diagnostic |
+| POST | `/topology/sites/:siteId/diagnostic-runs` | Start an on-demand diagnostic run |
+| GET | `/topology/sites/:siteId/diagnostic-runs/:runId` | Get diagnostic run status and step results |
+| POST | `/topology/sites/:siteId/diagnostic-runs/:runId/cancel` | Cancel a diagnostic run |
+| GET | `/topology/sites/:siteId/template-options` | List template versions eligible to pin to this site |
+| GET | `/topology/templates` | List configuration templates (`ownerScope=partner\|organization`) |
+| POST | `/topology/templates` | Create a template |
+| PATCH | `/topology/templates/:templateId` | Update a template |
+| GET | `/topology/templates/:templateId/versions` | List a template's versions |
+| POST | `/topology/templates/:templateId/versions` | Create a new draft version |
+| POST | `/topology/templates/:templateId/versions/:versionId/publish` | Publish a draft version |
+| POST | `/topology/template-applications/preview` | Preview applying template version(s) across up to 500 sites |
+| POST | `/topology/template-applications` | Apply a previewed template change (requires `Idempotency-Key`) |
+| GET | `/topology/template-applications/:operationId` | Get apply status per site |
+
+<Aside>
+  Site Map endpoints require the requesting token's `organization` or `partner` scope to have access to the site, and mutating endpoints require site write/configure access. Diagnostic and configuration-write endpoints additionally require the corresponding Site Map capability to be enabled for the organization.
 </Aside>
 
 ---

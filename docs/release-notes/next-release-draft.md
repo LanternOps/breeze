@@ -8,6 +8,14 @@ Add an entry the moment you introduce something an operator or self-hoster would
 notice — a new env var, a new log line, a new metric, a changed default, a
 behaviour change. A commit subject weeks later will not carry it.
 
-Last release: **v0.112.0** (2026-09-10).
+Last release: **v0.115.0** (2026-09-21).
 
 ---
+
+## Release to-do (pre-cut gates — see `/release` Step 0.2)
+
+- [ ] (nothing yet)
+
+## Self-Hosting / Upgrade Notes (fold into the release body)
+
+- (nothing yet)

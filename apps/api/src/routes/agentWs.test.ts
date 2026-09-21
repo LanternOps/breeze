@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 import { createHash } from 'node:crypto';
 
 // #3409 PR4a: sealing a secret envelope requires v3 (AAD-bound) encryption,
@@ -7,6 +8,7 @@ import { createHash } from 'node:crypto';
 process.env.APP_ENCRYPTION_KEY_ID = 'current';
 process.env.APP_ENCRYPTION_KEYRING = JSON.stringify({ current: 'current-key-material' });
 import { and, eq, notInArray } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 const updateRestoreJobFromResultMock = vi.fn().mockResolvedValue(true);
 const applyCommandAutomationTerminalMock = vi.fn().mockResolvedValue(true);
@@ -32,6 +34,7 @@ vi.mock('../db', () => ({
 }));
 
 vi.mock('../db/schema', () => ({
+  snmpDevices: { id: 'snmpDevices.id', orgId: 'snmpDevices.orgId' },
   // #4673 W02 — validateAgentToken innerJoins organizations to resolve the
   // owning MSP's partnerId; the query is fully mocked at each call site, but
   // the module still evaluates `organizations.partnerId` when building the
@@ -273,16 +276,12 @@ vi.mock('../services/automationActionResults', () => ({
     applyAutomationActionTerminalMock(...(args as [])),
 }));
 
-// sw-install orphan branch: keep the real SW_INSTALL_COMMAND_ID_REGEX (shared
-// with routes/agents/commands.ts) and mock only the deployment_results writer.
+// Keep the real software result module exports while mocking reconciliation.
 vi.mock('../services/softwareDeploymentResult', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../services/softwareDeploymentResult')>();
   return {
     ...actual,
     applySoftwareInstallResult: vi.fn(),
-    // #5128 — a software_install now carries a real device_commands UUID, so
-    // its result lands on the GENERIC owned-command path and is reconciled
-    // here instead of by the sw-install-<...> regex branch.
     reconcileSoftwareInstallResult: vi.fn(),
   };
 });
@@ -423,6 +422,7 @@ import { revokeViewerSession } from '../services/viewerTokenRevocation';
 import { publishEvent } from '../services/eventBus';
 import {
   consumeDispatchedExpectation,
+  recordDispatchedExpectation,
   refreshDispatchedExpectation,
 } from '../services/agentWorkExpectation';
 import { applyBackupCommandResultToJob } from '../services/backupResultPersistence';
@@ -1326,12 +1326,8 @@ describe('agent websocket command results', () => {
 
   // ── #5128: software_install results on the GENERIC owned-command path ────
   //
-  // Before #5128 a WS-pushed install carried the synthetic
-  // `sw-install-<deployment>-<device>-<attempt>` id and was reconciled by the
-  // regex branch. New dispatches persist a device_commands row FIRST and push
-  // with its UUID, so the result lands here — without this wiring the
-  // deployment_results row strands `pending` forever on the websocket
-  // transport.
+  // Dispatches persist a device_commands row and push with its UUID.
+  // The result must reconcile deployment_results on the WebSocket transport.
   it('reconciles a software_install result delivered under a real command UUID', async () => {
     const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123', partnerId: 'partner-123' };
     const { handlers, ws } = await connectedAgent('agent-123', preValidatedAgent);
@@ -1709,6 +1705,13 @@ describe('agent websocket command results', () => {
       payload: { monitorId: 'monitor-1' },
     } as any);
 
+    // #5291 W04 — the monitor branch looks the probing device up so the result
+    // row can be tenant-scoped (a partner-wide network check's definition owns
+    // no org, so the device is the only tenant evidence there is).
+    vi.mocked(db.select).mockReturnValue(
+      selectAgentDevice([{ id: 'device-123', orgId: 'org-123' }]) as any,
+    );
+
     vi.mocked(isRedisAvailable).mockReturnValue(true);
     let outsideDepth = 0;
     vi.mocked(runOutsideDbContext).mockImplementation((fn: any) => {
@@ -1744,7 +1747,9 @@ describe('agent websocket command results', () => {
     expect(enqueueMonitorCheckResult).toHaveBeenCalledWith(
       'monitor-1',
       expect.objectContaining({ monitorId: 'monitor-1', status: 'online', responseMs: 12 }),
-      expect.objectContaining({ source: 'route:agentWs:monitor-result' })
+      expect.objectContaining({ source: 'route:agentWs:monitor-result' }),
+      // #5291 W04 — the reporting device and ITS org travel with the result.
+      { orgId: 'org-123', deviceId: 'device-123' },
     );
     expect(enqueuedOutsideContext).toBe(true);
     expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
@@ -2772,6 +2777,78 @@ describe('backup command_result non-terminal guards (guard ordering integration)
       expect.objectContaining({ status: 'completed', agentStatus: 'partial' }),
       expect.anything()
     );
+  });
+
+  // #5413 lesson (a). The strict queue schema (jobs/queueSchemas.ts) validates
+  // the SAME payload the route schema already accepted. When the two drift —
+  // as they did over `originalPath` on VSS-backed Windows runs — the enqueue
+  // throws a ZodError AFTER the dispatch expectation was consumed, and the old
+  // catch just re-recorded the expectation and dropped the result. That left
+  // three Windows file jobs `running` forever with the device online, a full
+  // transferredSize, a snapshotId, no snapshot row and no reaper rule covering
+  // "result rejected". A schema rejection is deterministic — retrying the same
+  // result can only be rejected again — so it must fail the job loudly.
+  it('fails the backup job loudly when the strict queue schema rejects the result (#5413)', async () => {
+    vi.mocked(isRedisAvailable).mockReturnValue(true);
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { handlers, ws } = await connectedAgent('agent-123', preValidatedAgent);
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectOwnedCommandResult([]) as any)
+      .mockReturnValueOnce(selectAgentDevice([]) as any)
+      .mockReturnValueOnce(selectWithInnerJoin([backupJobRow]) as any);
+
+    vi.mocked(consumeDispatchedExpectation).mockResolvedValue({ ok: true });
+    vi.mocked(applyBackupCommandResultToJob).mockResolvedValue({
+      applied: true,
+      snapshotDbId: null,
+      providerSnapshotId: null,
+    });
+    // Reproduce the real failure: the queue-side parse refuses an unmodeled key.
+    vi.mocked(enqueueBackupResults).mockImplementationOnce(async () => {
+      throw new z.ZodError([
+        {
+          code: 'unrecognized_keys',
+          keys: ['originalPath'],
+          path: ['result', 'snapshot', 'files', 0],
+          message: 'Unrecognized key: "originalPath"',
+        } as never,
+      ]);
+    });
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: jobId,
+        status: 'completed',
+        result: JSON.stringify({
+          snapshotId: 'snap-1',
+          status: 'completed',
+          filesBackedUp: 1,
+          snapshot: {
+            id: 'snap-1',
+            files: [{ sourcePath: '\\\\?\\GLOBALROOT\\x', originalPath: 'C:\\x', backupPath: 'o/1' }],
+          },
+        }),
+      })
+    } as any, ws as any);
+
+    // The job is driven terminal with a diagnosable error rather than left running.
+    expect(applyBackupCommandResultToJob).toHaveBeenCalledWith(
+      expect.objectContaining({
+        jobId,
+        orgId: 'org-123',
+        deviceId: 'device-123',
+        resultStatus: 'failed',
+        result: expect.objectContaining({
+          error: expect.stringContaining('rejected by the server queue-result schema'),
+        }),
+      })
+    );
+    // And the expectation is NOT re-armed — a retry of the identical payload
+    // would be rejected identically, so re-arming only re-hangs the job.
+    expect(recordDispatchedExpectation).not.toHaveBeenCalled();
+
+    errorSpy.mockRestore();
   });
 });
 
@@ -4772,7 +4849,18 @@ describe('superseded agent socket cannot submit results (delivery epoch)', () =>
 
     const sessionSetSpy = vi.fn().mockReturnValue({
       where: vi.fn().mockReturnValue({
-        returning: vi.fn().mockResolvedValue([{ id: SESSION_ID }]),
+        // SEC-038 W03: `commitDesktopTerminalIntent` normalizes this RETURNING
+        // row via `toTerminalSessionRow`, which throws without a
+        // `terminalGeneration` — the row needs the full contract shape for the
+        // peer-disconnected handler to reach `result.ok` and revoke the token.
+        returning: vi.fn().mockResolvedValue([{
+          id: SESSION_ID,
+          type: 'desktop',
+          deviceId: 'device-sup',
+          status: 'disconnected',
+          terminalGeneration: 1n,
+          terminationPhase: 'confirmed',
+        }]),
       }),
     });
     vi.mocked(db.update).mockReturnValue({ set: sessionSetSpy } as any);
@@ -5025,101 +5113,18 @@ describe('late terminal_start failure binds to the exact terminal generation', (
   });
 });
 
-describe('sw-install WS orphan-result branch', () => {
-  const deploymentUuid = '11111111-1111-4111-8111-111111111111';
-  const deviceUuid = '33333333-3333-4333-8333-333333333333';
-  const otherDeviceUuid = '55555555-5555-4555-8555-555555555555';
-  const swCommandId = `sw-install-${deploymentUuid}-${deviceUuid}`;
-
-  beforeEach(() => {
-    vi.mocked(applySoftwareInstallResult).mockReset();
-    vi.mocked(applySoftwareInstallResult).mockResolvedValue(null);
-  });
-
-  function swResult(overrides: Record<string, unknown> = {}) {
-    return {
-      type: 'command_result' as const,
-      commandId: swCommandId,
-      status: 'completed' as const,
-      exitCode: 0,
-      stdout: 'installed',
-      durationMs: 9_000,
-      ...overrides,
-    };
-  }
-
-  it('applies a sw-install result bound to the socket-authenticated device', async () => {
-    await processOrphanedCommandResult('agent-sw', deviceUuid, swResult());
-
-    expect(applySoftwareInstallResult).toHaveBeenCalledTimes(1);
-    expect(applySoftwareInstallResult).toHaveBeenCalledWith({
-      deploymentId: deploymentUuid,
-      deviceId: deviceUuid,
+describe('retired software-install WS results', () => {
+  it.each(['', '-2'])('ignores IDs without a persisted command row (suffix %s)', async (suffix) => {
+    vi.mocked(applySoftwareInstallResult).mockClear();
+    const deviceId = '33333333-3333-4333-8333-333333333333';
+    await processOrphanedCommandResult('agent-sw', deviceId, {
+      type: 'command_result',
+      commandId: `sw-install-11111111-1111-4111-8111-111111111111-${deviceId}${suffix}`,
       status: 'completed',
       exitCode: 0,
       stdout: 'installed',
-      stderr: undefined,
-      error: undefined,
-      startedAt: undefined,
-      durationMs: 9_000,
-      attemptNumber: 0,
     });
-  });
-
-  it('parses the attempt suffix off a retried sw-install commandId and passes it through', async () => {
-    const retriedCommandId = `sw-install-${deploymentUuid}-${deviceUuid}-2`;
-
-    await processOrphanedCommandResult('agent-sw', deviceUuid, swResult({ commandId: retriedCommandId }));
-
-    expect(applySoftwareInstallResult).toHaveBeenCalledWith(
-      expect.objectContaining({
-        deploymentId: deploymentUuid,
-        deviceId: deviceUuid,
-        attemptNumber: 2,
-      })
-    );
-  });
-
-  it('rejects a sw-install result whose embedded device id does not match the authenticated device', async () => {
-    await processOrphanedCommandResult('agent-sw', otherDeviceUuid, swResult());
-
     expect(applySoftwareInstallResult).not.toHaveBeenCalled();
-  });
-
-  it('passes failure details through to the shared helper', async () => {
-    await processOrphanedCommandResult(
-      'agent-sw',
-      deviceUuid,
-      swResult({ status: 'failed', exitCode: 1603, error: 'msi fatal error', stdout: undefined })
-    );
-
-    expect(applySoftwareInstallResult).toHaveBeenCalledWith(
-      expect.objectContaining({
-        deploymentId: deploymentUuid,
-        deviceId: deviceUuid,
-        status: 'failed',
-        exitCode: 1603,
-        error: 'msi fatal error',
-      })
-    );
-  });
-
-  it('does not treat non-sw-install command ids as software installs', async () => {
-    await processOrphanedCommandResult(
-      'agent-sw',
-      deviceUuid,
-      swResult({ commandId: 'dev-push-abc123' })
-    );
-
-    expect(applySoftwareInstallResult).not.toHaveBeenCalled();
-  });
-
-  it('survives a helper failure without throwing (logged + captured)', async () => {
-    vi.mocked(applySoftwareInstallResult).mockRejectedValueOnce(new Error('db down'));
-
-    await expect(
-      processOrphanedCommandResult('agent-sw', deviceUuid, swResult())
-    ).resolves.toBeUndefined();
   });
 });
 
@@ -5200,5 +5205,185 @@ describe('agent websocket revocation_lease_renew', () => {
 
     expect(renewRevocationLeaseMock).not.toHaveBeenCalled();
     expect(ws.send).not.toHaveBeenCalled();
+  });
+
+  // SEC-038 W05: the renewal answer is also how an agent resyncs its durable
+  // desktop start fence, so it echoes the session's current start generation
+  // and termination phase — as canonical decimal strings, never JSON numbers,
+  // because the generation is a bigint.
+  it('echoes the start generation and termination phase on a renewed answer', async () => {
+    renewRevocationLeaseMock.mockResolvedValue({
+      status: 'renewed',
+      expiresAt: 111,
+      hardDeadline: 222,
+      renewEverySec: 25,
+      graceSec: 90,
+      startGeneration: '9007199254740993',
+      terminationPhase: 'none',
+    });
+    const ws = await sendRenew({ type: 'revocation_lease_renew', sessionId: SESSION_ID });
+
+    expect(JSON.parse(vi.mocked(ws.send).mock.calls[0]![0] as string)).toEqual({
+      type: 'revocation_lease',
+      sessionId: SESSION_ID,
+      expiresAt: 111,
+      hardDeadline: 222,
+      renewEverySec: 25,
+      graceSec: 90,
+      startGeneration: '9007199254740993',
+      terminationPhase: 'none',
+    });
+  });
+
+  it('echoes the terminal generation on a revoked answer', async () => {
+    renewRevocationLeaseMock.mockResolvedValue({
+      status: 'revoked',
+      reason: 'membership_removed',
+      terminalGeneration: '12',
+    });
+    const ws = await sendRenew({ type: 'revocation_lease_renew', sessionId: SESSION_ID });
+
+    expect(JSON.parse(vi.mocked(ws.send).mock.calls[0]![0] as string)).toEqual({
+      type: 'revocation_lease_revoked',
+      sessionId: SESSION_ID,
+      reason: 'membership_removed',
+      terminalGeneration: '12',
+    });
+  });
+
+  it('omits the terminal generation when the service could not determine one', async () => {
+    renewRevocationLeaseMock.mockResolvedValue({ status: 'forbidden' });
+    const ws = await sendRenew({ type: 'revocation_lease_renew', sessionId: SESSION_ID });
+
+    const answer = JSON.parse(vi.mocked(ws.send).mock.calls[0]![0] as string);
+    expect(answer.type).toBe('revocation_lease_revoked');
+    // Non-disclosure: another device's session metadata never leaves here.
+    expect(answer).not.toHaveProperty('terminalGeneration');
+  });
+
+  // The agent correlates its fence resync with a nonce so a stalled answer to
+  // an earlier renewal cannot certify a later one. Every answer type echoes it.
+  it('echoes the sync nonce on every answer type', async () => {
+    const cases: Array<[Record<string, unknown>, string]> = [
+      [{ status: 'renewed', expiresAt: 1, hardDeadline: 2, renewEverySec: 25, graceSec: 90 }, 'revocation_lease'],
+      [{ status: 'revoked', reason: 'membership_removed' }, 'revocation_lease_revoked'],
+      [{ status: 'unavailable' }, 'revocation_lease_unavailable'],
+    ];
+    for (const [result, type] of cases) {
+      renewRevocationLeaseMock.mockResolvedValue(result);
+      const ws = await sendRenew({
+        type: 'revocation_lease_renew',
+        sessionId: SESSION_ID,
+        syncNonce: 'nonce-1',
+      });
+      const answer = JSON.parse(vi.mocked(ws.send).mock.calls[0]![0] as string);
+      expect(answer.type).toBe(type);
+      expect(answer.syncNonce).toBe('nonce-1');
+    }
+  });
+
+  it('drops a renew whose sync nonce is not a short opaque string', async () => {
+    const ws = await sendRenew({
+      type: 'revocation_lease_renew',
+      sessionId: SESSION_ID,
+      syncNonce: 'x'.repeat(200),
+    });
+    expect(renewRevocationLeaseMock).not.toHaveBeenCalled();
+    expect(ws.send).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('orphaned SNMP poll outcomes (#6021)', () => {
+  const snmpDeviceId = '11111111-1111-4111-8111-111111111111';
+  const deviceId = '22222222-2222-4222-8222-222222222222';
+  const orgId = '33333333-3333-4333-8333-333333333333';
+
+  beforeEach(() => vi.clearAllMocks());
+
+  async function dispatch(commandId: string) {
+    await connectedAgent('agent-snmp-errors', { deviceId, orgId, partnerId: 'partner-123' });
+    expect(sendCommandToAgent('agent-snmp-errors', {
+      id: commandId, type: 'snmp_poll', payload: { deviceId: snmpDeviceId },
+    })).toBe(true);
+    const set = vi.fn(() => ({ where: vi.fn(() => ({ returning: vi.fn().mockResolvedValue([{ orgId }]) })) }));
+    vi.mocked(db.update).mockClear().mockReturnValue({ set } as any);
+    return set;
+  }
+
+  it('persists a failure without payload using the dispatched target and consumes it once', async () => {
+    const commandId = 'snmp-error-test';
+    const set = await dispatch(commandId);
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const result = { type: 'command_result' as const, commandId, status: 'failed' as const, error: 'walk timeout' };
+    await processOrphanedCommandResult('agent-snmp-errors', deviceId, result);
+    expect(set).toHaveBeenCalledWith({ lastError: 'walk timeout', lastErrorAt: expect.any(Date), lastStatus: 'warning' });
+    expect(warning).toHaveBeenCalledWith('[AgentWs] SNMP poll failed', { deviceId, orgId, snmpDeviceId, error: 'walk timeout' });
+    await processOrphanedCommandResult('agent-snmp-errors', deviceId, result);
+    expect(set).toHaveBeenCalledTimes(1);
+    warning.mockRestore();
+  });
+
+  it.each([true, false])('clears the error on a successful poll (Redis: %s)', async (redisAvailable) => {
+    const commandId = `snmp-recovery-test-${redisAvailable}`;
+    const set = await dispatch(commandId);
+    vi.mocked(isRedisAvailable).mockReturnValue(redisAvailable);
+    await processOrphanedCommandResult('agent-snmp-errors', deviceId, {
+      type: 'command_result', commandId, status: 'completed', result: {
+        deviceId: snmpDeviceId, metrics: [{ oid: '1.3.6.1.2.1.1.3.0', name: 'uptime', value: 42 }],
+      },
+    });
+    expect(set).toHaveBeenCalledWith(expect.objectContaining({ lastError: null, lastErrorAt: null }));
+  });
+
+  it('clears the previous error for a successful empty poll', async () => {
+    const commandId = 'snmp-empty-recovery-test';
+    const set = await dispatch(commandId);
+    await processOrphanedCommandResult('agent-snmp-errors', deviceId, {
+      type: 'command_result', commandId, status: 'completed',
+      result: { deviceId: snmpDeviceId, metrics: [] },
+    });
+    expect(set).toHaveBeenCalledWith({ lastError: null, lastErrorAt: null });
+    expect(enqueueSnmpPollResults).not.toHaveBeenCalled();
+  });
+
+  it('rejects failure from another agent and a mismatched target', async () => {
+    const commandId = 'snmp-forged-error-test';
+    const set = await dispatch(commandId);
+    await processOrphanedCommandResult('other-agent', deviceId, {
+      type: 'command_result', commandId, status: 'failed', error: 'forged',
+    });
+    expect(set).not.toHaveBeenCalled();
+    await processOrphanedCommandResult('agent-snmp-errors', deviceId, {
+      type: 'command_result', commandId, status: 'failed', error: 'forged', result: { deviceId },
+    });
+    expect(set).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('cleanup supplemental command results', () => {
+  beforeEach(() => { vi.resetAllMocks(); });
+  it.each(['cancelled', 'completed', 'failed'])('records a %s cleanup result without changing the command', async (status) => {
+    const { commandResultHandlers } = await import('../services/commandResultHandlers');
+    const handler = vi.spyOn(commandResultHandlers, 'file_delete').mockResolvedValue(undefined);
+    try {
+      const { handlers, ws } = await connectedAgent('agent-cleanup-late', {
+        deviceId: 'device-cleanup', orgId: 'org-cleanup', partnerId: 'partner-cleanup',
+      });
+      const commandId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+      const command = { id: commandId, deviceId: 'device-cleanup', type: 'file_delete', status, targetRole: 'agent',
+        payload: { cleanupRunId: 'stored-run', path: '/tmp/a' }, result: { status } };
+      const where = vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([command]) });
+      vi.mocked(db.select).mockReturnValue({ from: vi.fn().mockReturnValue({ where }) } as never);
+      await handlers.onMessage({ data: JSON.stringify({ type: 'command_result', commandId, status: 'failed', error: 'password=secret-value' }) } as never, ws as never);
+      const lookup = new PgDialect().sqlToQuery(where.mock.calls[0]![0]);
+      expect(lookup.params).toEqual(expect.arrayContaining([commandId, 'device-cleanup', 'agent', 'file_delete']));
+      expect(lookup.sql).toContain("? 'cleanupRunId'");
+      expect(handler).toHaveBeenCalledWith(expect.objectContaining({
+        command, result: expect.objectContaining({ status: 'failed', error: expect.not.stringContaining('secret-value') }),
+      }));
+      expect(db.update).not.toHaveBeenCalled();
+    } finally { handler.mockRestore(); }
   });
 });

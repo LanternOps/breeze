@@ -21,7 +21,10 @@ func TestParseTargetFlag(t *testing.T) {
 		{"image:/tmp/x.img", "40G", rebuild.Target{Kind: rebuild.TargetImage, Path: "/tmp/x.img", ImageSizeBytes: 40 << 30}, false},
 		{"image:/tmp/x.img", "512M", rebuild.Target{Kind: rebuild.TargetImage, Path: "/tmp/x.img", ImageSizeBytes: 512 << 20}, false},
 		{"/dev/sdb", "", rebuild.Target{}, true},
-		{"vhdx:/x", "", rebuild.Target{}, true},
+		{"vhdx:/x", "", rebuild.Target{Kind: rebuild.TargetVHDX, Path: "/x"}, false},
+		{"vhdx:/tmp/x.vhdx", "20G", rebuild.Target{Kind: rebuild.TargetVHDX, Path: "/tmp/x.vhdx", ImageSizeBytes: 20 << 30}, false},
+		{"vhdx:/tmp/x.vhdx", "lots", rebuild.Target{}, true},
+		{"qcow2:/x", "", rebuild.Target{}, true},
 		{"image:/tmp/x.img", "lots", rebuild.Target{}, true},
 	} {
 		got, err := parseTargetFlag(tt.in, tt.size)
@@ -83,7 +86,43 @@ func TestRebuildCommand_DryRunWritesResultJSON(t *testing.T) {
 func TestRebuildCommand_RequiresFlags(t *testing.T) {
 	cmd := newRebuildCommand()
 	cmd.SetArgs([]string{})
+	var out strings.Builder
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
 	if err := cmd.Execute(); err == nil {
 		t.Fatal("expected an error for missing required flags")
+	}
+	// SilenceUsage must keep the failure readable on recovery media: a full
+	// cobra flag/usage dump after the real error buries it.
+	if strings.Contains(out.String(), "Usage:") {
+		t.Fatalf("expected no usage dump on failure (SilenceUsage), got:\n%s", out.String())
+	}
+}
+
+func TestRebuildCommand_TokenModeRequiresNoProviderConfig(t *testing.T) {
+	dir := t.TempDir()
+	provFile := filepath.Join(dir, "prov.json")
+	if err := os.WriteFile(provFile, []byte(`{"provider":"local","providerConfig":{"path":"`+filepath.Join(dir, "store")+`"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := newRebuildCommand()
+	cmd.SetArgs([]string{
+		"--token", "brz_rec_test", "--server", "http://example.invalid",
+		"--provider-config", provFile,
+		"--target", "image:" + filepath.Join(dir, "t.img"), "--image-size", "1G",
+	})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "use either --token/--server or --provider-config") {
+		t.Fatalf("expected the mutual-exclusion error, got: %v", err)
+	}
+}
+
+func TestRebuildCommand_TokenModeRequiresServer(t *testing.T) {
+	dir := t.TempDir()
+	cmd := newRebuildCommand()
+	cmd.SetArgs([]string{"--token", "brz_rec_test", "--target", "image:" + filepath.Join(dir, "t.img"), "--image-size", "1G"})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "--server is required") {
+		t.Fatalf("expected the --server-required error, got: %v", err)
 	}
 }

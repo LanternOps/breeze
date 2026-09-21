@@ -120,7 +120,11 @@ export type AiContentBlock =
 // ============================================
 
 export type AiPageContext =
-  | { type: 'device'; id: string; hostname: string; os?: string; status?: string; ip?: string }
+  // `orgId` is the org the device belongs to, supplied so the web client can
+  // tell that an open chat session belongs to a different tenant than the page
+  // it is now sitting on (#5684). It is a client-side hint only: the API never
+  // authorizes on it — the session org is derived from the device row (#5593).
+  | { type: 'device'; id: string; hostname: string; orgId?: string; os?: string; status?: string; ip?: string }
   | { type: 'alert'; id: string; title: string; severity?: string; deviceHostname?: string }
   | { type: 'dashboard'; orgName?: string; deviceCount?: number; alertCount?: number }
   | { type: 'custom'; label: string; data: Record<string, unknown> };
@@ -150,11 +154,44 @@ export interface AiTicketDraft {
  * only when the assistant chose nothing and the script row could not be read,
  * in which case the card falls back to "the script's saved run context".
  */
+/**
+ * W03 (#5612): the trimmed proposal block that rides the `approval_required`
+ * SSE frame so a client with no API access to `GET /ai/script-proposals/:id`
+ * (the helper) can still render a truthful card. Capped server-side
+ * (content ≤ 16 KiB, findings ≤ 20).
+ */
+export interface AiApprovalScriptProposalSummary {
+  proposalId: string;
+  goal: string;
+  summary: string;
+  riskTier: string;
+  findings: string[];
+  content: string;
+  strictHits: string[];
+}
+
 export interface AiScriptRunContext {
   effectiveRunAs: 'system' | 'user' | 'elevated' | null;
   scriptDefaultRunAs: 'system' | 'user' | 'elevated' | null;
   chosenByAssistant: boolean;
   targetSessionId: number | null;
+}
+
+/**
+ * One artifact a finished `analysis` run produced, as the chat run card shows
+ * it (execution-plane spec §5.5). Deliberately NOT `AiRunArtifactDto`: the card
+ * renders a chip, not a preview, and the previews on the full DTO are raw
+ * customer bytes that have no business riding an SSE frame for every artifact
+ * of every run. The run page fetches the full DTOs when a technician opens it.
+ *
+ * `handle` is the artifact id; the download path is derived client-side as
+ * `/api/v1/ai/artifacts/<handle>` (W01's `AiRunArtifactDto.downloadPath`).
+ */
+export interface AiRunResultArtifactRef {
+  handle: string;
+  name: string;
+  bytes: number;
+  contentType: string;
 }
 
 export type AiStreamEvent =
@@ -188,7 +225,20 @@ export type AiStreamEvent =
    * assistant choose SYSTEM for a user-context script is a privilege
    * decision, and the human deciding it has to be told.
    */
-  | { type: 'approval_required'; executionId: string; approvalRequestId?: string; selfApprovalRequestId?: string; approvalScope?: AiApprovalScope; intentExpiresAt?: string; toolName: string; input: Record<string, unknown>; description: string; requiresAdminApproval?: boolean; deviceContext?: { hostname: string; displayName?: string; status: string; lastSeenAt?: string; activeSessions?: Array<{ username: string; activityState?: string; idleMinutes?: number; sessionType: string }> }; intentBacked?: boolean; scriptRunContext?: AiScriptRunContext | null }
+  | { type: 'approval_required'; executionId: string; approvalRequestId?: string; selfApprovalRequestId?: string; approvalScope?: AiApprovalScope; intentExpiresAt?: string; toolName: string; input: Record<string, unknown>; description: string; requiresAdminApproval?: boolean; deviceContext?: { hostname: string; displayName?: string; status: string; lastSeenAt?: string; activeSessions?: Array<{ username: string; activityState?: string; idleMinutes?: number; sessionType: string }> }; intentBacked?: boolean; scriptRunContext?: AiScriptRunContext | null; scriptProposal?: AiApprovalScriptProposalSummary }
+  /**
+   * W03 (#5612): a proposal outcome delivered into the author's chat session —
+   * request-changes findings + note, or a verification result. The durable
+   * copy is the `ai_messages` row; this is the best-effort live nudge.
+   */
+  | { type: 'script_proposal_update'; proposalId: string; outcome: 'changes_requested' | 'verified' | 'verification_failed' | 'verification_unknown'; message: string }
+  /**
+   * W04 (#5612): an intent that was ALREADY approved at creation by the
+   * reviewer-gated unattended lane (`decided_via = 'script_reviewer'`). There
+   * is no approval row for anyone to act on, so the session must not show an
+   * approval card; this informational event replaces it.
+   */
+  | { type: 'unattended_release'; executionId: string; intentId: string; toolName: string; description: string; deviceContext?: { hostname: string; displayName?: string; status: string; lastSeenAt?: string }; scriptRunContext?: AiScriptRunContext | null; scriptProposal?: AiApprovalScriptProposalSummary }
   | { type: 'plan_approval_required'; planId: string; steps: ActionPlanStep[] }
   | { type: 'plan_step_start'; planId: string; stepIndex: number; toolName: string }
   | { type: 'plan_step_complete'; planId: string; stepIndex: number; toolName: string; isError: boolean }
@@ -211,6 +261,23 @@ export type AiStreamEvent =
       status: 'success' | 'error' | 'rejected' | 'timeout';
       redactions?: Array<{ rule: string; count: number; location: string }>;
       blockReason?: string;
+    }
+  // ── Execution plane (spec §5.5) — a workspace `analysis` run associated
+  //    with this chat session. Chat-initiated launch is currently disabled
+  //    (#6086); this event shape is retained for when delegated authorization
+  //    lands. Published by services/workspace/chatRunBridge.ts, NOT by the SDK message loop: these
+  //    arrive out of band from the worker role, so a client may see them at any
+  //    point in a turn, or (when no turn is open) not at all — the run card
+  //    polls GET /ai/agents/runs/:runId as its always-correct source and treats
+  //    these as a live upgrade.
+  | { type: 'run_progress'; runId: string; step: string; label: string; ordinal: number }
+  | {
+      type: 'run_result';
+      runId: string;
+      status: 'completed' | 'failed';
+      /** `ai_agent_runs.summary` — narrative text, never a tool payload. */
+      summary: string | null;
+      artifacts: AiRunResultArtifactRef[];
     }
   // `usage` is set by the streaming manager's result case so client surfaces
   // can render turn cost (turn_complete). Technician UI ignores it.

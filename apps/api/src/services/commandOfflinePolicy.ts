@@ -9,7 +9,7 @@ import { CommandTypes } from './commandTypes';
 export type OfflinePolicy = { kind: 'reject' } | { kind: 'queue'; deliverWithinMs: number };
 
 /** TTL class = how long a queued row may wait for the device (OD-1). */
-export type DeliveryTtlClass = 'live' | 'standard' | 'short' | 'power_state';
+export type DeliveryTtlClass = 'live' | 'live_only' | 'standard' | 'short' | 'power_state';
 
 /**
  * The `live` TTL class's nominal window. It is NOT stamped on `reject` rows —
@@ -44,10 +44,25 @@ function envHours(name: string, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function envMinutes(name: string, fallback: number): number {
+  const raw = process.env[name];
+  const parsed = raw === undefined || raw === '' ? Number.NaN : Number(raw);
+  return Number.isFinite(parsed) && parsed >= 1 ? parsed : fallback;
+}
+
 export function deliveryTtlMs(cls: DeliveryTtlClass): number {
   switch (cls) {
     case 'live':
       return REJECT_RACE_GRACE_MS;
+    case 'live_only':
+      // Disk Cleanup v2 (spec §13 #6). Destructive maintenance whose OWNING
+      // ROW has its own clock: a cleanup run is marked failed at its budget,
+      // and a command that outlives that row deletes things with nobody
+      // watching for the result. Fifteen minutes is "the device is here now,
+      // or this never happens" — long enough to survive a reconnect, far
+      // short of the 24 h `short` class, which is the shortest thing that
+      // existed before this.
+      return envMinutes('DEVICE_COMMAND_QUEUE_LIVE_ONLY_TTL_MINUTES', 15) * 60 * 1000;
     case 'standard':
       return envHours('DEVICE_COMMAND_QUEUE_TTL_HOURS', 168) * HOUR_MS;
     case 'short':
@@ -55,22 +70,6 @@ export function deliveryTtlMs(cls: DeliveryTtlClass): number {
     case 'power_state':
       return envHours('DEVICE_COMMAND_QUEUE_POWER_STATE_TTL_HOURS', 24) * HOUR_MS;
   }
-}
-
-/**
- * Gates the `queue` arm for callers that hard-rejected offline devices before
- * #5128 (patch executor, automations, scan/rollback, AI tools). Scripts,
- * software installs and the generic device-command routes already queued and
- * are NOT gated.
- *
- * #5128 W4 flipped the default ON: only an explicit
- * `DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED=false` opts back out, which is the
- * documented escape hatch for an operator who wants the pre-#5128 hard
- * rejection while they adjust their automations. The flag and this function
- * are removed entirely in W5.
- */
-export function isOfflineQueueEnabled(): boolean {
-  return process.env.DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED !== 'false';
 }
 
 const C = CommandTypes;
@@ -134,6 +133,14 @@ const LIVE: readonly string[] = [
   // Addressed to a RELAY agent on the target's LAN — that relay must be online.
   C.WAKE_ON_LAN,
   C.CAPTURE_PPROF,
+  // A diagnostic plan carries its own absolute expiry and is bound to the
+  // origin's CURRENT context. Persisting one as future execution would deliver
+  // a probe authorized against a network state that no longer exists, so an
+  // offline origin is a hard rejection rather than a queued row.
+  C.NETWORK_DIAGNOSTIC,
+  // Cancels work the agent is running RIGHT NOW; a queued one would arrive
+  // long after the run it names has expired.
+  C.NETWORK_DIAGNOSTIC_CANCEL,
   // Non-CommandTypes literals whose only dispatch path is `executeCommand`,
   // which waits for the result synchronously (`waitForCommandResult`) — the one
   // combination the design forbids pairing with `queue` (#5128 §A). The two
@@ -171,6 +178,19 @@ const BACKUP_AND_RESTORE: readonly string[] = [
   C.VM_RESTORE_FROM_BACKUP,
   C.VM_INSTANT_BOOT,
   C.BMR_RECOVER,
+  C.BARE_METAL_REBUILD,
+];
+
+/**
+ * Destructive OS maintenance. Queueable — a device that reconnects inside the
+ * window should still get the work — but only just: the owning
+ * `device_filesystem_cleanup_runs` row is finalised on its own budget, and a
+ * command delivered after that finalisation would act on a run the operator
+ * has already been told failed.
+ */
+const LIVE_ONLY: readonly string[] = [
+  C.SYSTEM_CLEANUP_LIST,
+  C.SYSTEM_CLEANUP_RUN,
 ];
 
 /**
@@ -278,6 +298,7 @@ for (const type of Object.values(CommandTypes)) registry[type] = 'standard';
 for (const type of EXTRA_ROUTE_TYPES) registry[type] = 'standard';
 for (const type of LIVE) registry[type] = 'live';
 for (const type of BACKUP_AND_RESTORE) registry[type] = 'live';
+for (const type of LIVE_ONLY) registry[type] = 'live_only';
 for (const type of SHORT) registry[type] = 'short';
 for (const type of POWER_STATE_TTL_TYPES) registry[type] = 'power_state';
 registry.wake = 'live';
@@ -293,7 +314,7 @@ export const COMMAND_OFFLINE_POLICY_REGISTRY: Readonly<Record<string, DeliveryTt
  * an oversight.
  */
 export const EXPLICITLY_CLASSIFIED_COMMAND_TYPES: ReadonlySet<string> = Object.freeze(
-  new Set<string>([...LIVE, ...BACKUP_AND_RESTORE, ...SHORT, ...POWER_STATE_TTL_TYPES, ...STANDARD_REVIEWED]),
+  new Set<string>([...LIVE, ...LIVE_ONLY, ...BACKUP_AND_RESTORE, ...SHORT, ...POWER_STATE_TTL_TYPES, ...STANDARD_REVIEWED]),
 ) as ReadonlySet<string>;
 
 export function defaultOfflinePolicy(type: string): OfflinePolicy {
@@ -310,12 +331,10 @@ export function defaultOfflinePolicy(type: string): OfflinePolicy {
  */
 export function resolveOfflinePolicy(
   type: string,
-  requested: OfflinePolicy | undefined,
-  opts: { previouslyRejected: boolean }
+  requested: OfflinePolicy | undefined
 ): OfflinePolicy {
   const def = defaultOfflinePolicy(type);
   if (requested) return requested;
-  if (def.kind === 'queue' && opts.previouslyRejected && !isOfflineQueueEnabled()) return { kind: 'reject' };
   return def;
 }
 

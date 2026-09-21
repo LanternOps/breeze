@@ -126,6 +126,14 @@ Prefer to configure `.env` yourself? The manual path is below.
      with `not found`. The guided installer checks this for you.
    </Aside>
 
+   **Then fill in the image digests.** Since v0.112.0, `.env.example` ships the
+   four `BREEZE_*_IMAGE_REF` lines as `@sha256:replace-with-signed-release-digest`
+   placeholders, and `docker compose up` will not start until they name real
+   images. The guided installer resolves them from the release's signed image
+   inventory automatically; on the manual path, run the verifier script from the
+   release and copy the four refs it emits into `.env` — see
+   [Signed, digest-pinned image references](/deploy/production/#signed-digest-pinned-image-references-v01120-and-later).
+
 5. **Start Breeze**
 
    ```bash

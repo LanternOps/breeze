@@ -1,5 +1,5 @@
 {
-  "lastReviewedRef": "v0.111.1",
-  "reviewedAt": "2026-09-09",
-  "notes": "v0.111.1 hotfix sweep: added the discovered_assets backfill lock-hierarchy crash-loop to deploy/upgrades.mdx as a new v0.111.1 section ahead of v0.111.0, with the danger callout, the fix-forward SQL copied from docs/release-notes/next-release-draft.md, and the recovery steps. No other doc surface affected."
+  "lastReviewedRef": "c3f059006",
+  "reviewedAt": "2026-09-21",
+  "notes": "v0.115.0 diff sweep (v0.114.0..origin/main): topology M1 site map (flag-gated) + classic topology relabel (discovery, reference/api), composite monitor kind + consecutiveFailures 100 + cumulative/replace policy-link inheritance + legacy-rule-to-monitor converter (backend-only, monitors/alerts), billing profile rounding+minimum stamping on time entries (ticketing), bare-metal Restore-as-VM VHDX + DR BARE_METAL_REBUILD step + 24h restore ceiling + specific failure reasons (backup/*), helper device-credential-lifecycle enforcement + partner trust review partner-wide-manage gate + script-parameter-as-data hardening (security/hardening, agents/helper)."
 }

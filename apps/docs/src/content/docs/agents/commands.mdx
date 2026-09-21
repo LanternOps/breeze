@@ -320,6 +320,8 @@ Browse, read, write, and manage files on the agent filesystem. All paths are cle
 | `file_mkdir` | Create a directory | `path` |
 | `file_rename` | Rename or move a file | `oldPath`, `newPath` |
 | `filesystem_analysis` | Deep filesystem analysis | `path`, `scanMode`, `maxDepth`, `topFiles`, `topDirs`, `timeoutSeconds` |
+| `system_cleanup_list` | List the OS-native cleanup actions available on the device | *(none)* |
+| `system_cleanup_run` | Run selected OS-native cleanup actions | `runId`, `actionIds`, `params` |
 
 ### `file_list`
 
@@ -394,6 +396,55 @@ Deep filesystem scan that identifies large files, large directories, duplicate c
 
 The response includes `topLargestFiles`, `topLargestDirectories`, `tempAccumulation`, `oldDownloads`, `unrotatedLogs`, `trashUsage`, `duplicateCandidates`, `cleanupCandidates`, and a `summary` with scan statistics. If the scan is interrupted (timeout or max entries), `partial: true` is set along with a `checkpoint` that can be passed to resume.
 
+### `system_cleanup_list`
+
+Returns the catalog of OS-native cleanup actions this device can perform. Read-only: it probes for the presence of each tool, checks write access where relevant, and — for the actions that have a non-mutating simulation mode — produces a size estimate. It removes nothing.
+
+Takes no parameters.
+
+The response contains `catalogVersion`, `volumesBefore` (per-volume free space at the time of the check), and an `actions[]` array. Each action carries `id`, `label`, `description`, `os`, `available`, an optional `unavailableReason`, `estimateBytes` / `estimateKnown` / `estimateDetail`, `riskFlags[]` and `affectsVolumes[]`. The Windows `win_cleanmgr` action also carries `subActions[]`, one per Disk Cleanup handler registered on that build.
+
+<Aside type="caution">
+  **Estimates are labelled by kind.** Measurable cache sizes are upper bounds; DISM component-store overhead, journal usage-minus-target and autoremove package sizes are heuristics. A direct `StartComponentCleanup` has no 30-day grace period, and its freed space is not equal to the reported overhead. `journalctl` vacuums archived journals only, and Time Machine snapshot sizes are unknown. When a parser cannot read a tool's output, the action reports `estimateKnown: false` rather than `0` — "unknown" and "nothing to reclaim" are different answers.
+</Aside>
+
+Estimation runs concurrently with an overall three-minute cap; an action whose estimate does not finish inside it reports `estimateKnown: false`.
+
+### `system_cleanup_run`
+
+Runs the selected catalog actions **sequentially**, in catalog order, and measures the result.
+
+| Param | Type | Required | Description |
+|---|---|---|---|
+| `runId` | string | Yes | The `device_filesystem_cleanup_runs` row this result closes |
+| `actionIds` | string[] | Yes | A non-empty subset of the catalog's ids |
+| `params.journalVacuumBytes` | int | No | Target size for `linux_journal_vacuum` (64 MiB – 4 GiB, default 256 MiB) |
+
+The response contains `runId`, an `actions[]` array (`id`, optional `subActions[]`, `status`, `exitCode`, `durationMs`, `outputTail`, `error`), `volumes[]` (`mount`, `freeBefore`, `freeAfter`) and `freedBytes`.
+
+Per-action `status` values:
+
+| Status | Meaning |
+|---|---|
+| `completed` | The tool ran and exited cleanly |
+| `failed` | The tool ran and reported a problem |
+| `timed_out` | This action overran its own cap and its process tree was terminated |
+| `unavailable` | The tool is not present, or the agent cannot write where it needs to. Never attempted |
+| `busy` | Another maintenance operation (a concurrent run, a patch job's package cleanup) held the agent's maintenance lock. Nothing was attempted; retry |
+| `not_started` | The run's aggregate budget expired before this action's turn |
+
+`freedBytes` is **measured**, not estimated: it is the sum over affected volumes of free-space-after minus free-space-before, floored at zero. One action failing does not stop the next.
+
+The run is bounded by an aggregate budget — the sum of the selected actions' own timeouts plus ten minutes, capped at three hours — computed when the run is queued and recorded on it. Actions run **sequentially**, serialised across the whole agent process against each other and against package-manager maintenance, so two runs can never rewrite one another's Disk Cleanup selection.
+
+Both command types are delivered **live-only**: a queued command expires after fifteen minutes rather than waiting days for a device to come back, because the cleanup run it belongs to is closed out on its own budget and a command that outlives it would act with nobody watching.
+
+<Aside>
+  The action catalog is closed. The only input the server accepts is a set of ids from a fixed list plus one bounded integer; every command line the agent runs is built from constants, with absolute binary paths, no shell, a per-action timeout and a 16 KiB output cap. `cleanmgr` handlers that touch user data or recovery state — Downloads, the recovery image, language packs, and all per-user caches — are excluded in code, and DISM is never invoked with `/ResetBase`.
+</Aside>
+
+Both command types require agent **0.115.0** or later. Older agents answer with `unknown command type:`, which the API surfaces as `409 agent_update_required`.
+
 ---
 
 ## Terminal
@@ -447,8 +498,8 @@ Two remote desktop modes are available: WebRTC-based (legacy) and WebSocket-base
 
 | Action | Description | Key Payload Fields |
 |---|---|---|
-| `start_desktop` | Start a WebRTC desktop session | `sessionId`, `offer`, `iceServers` |
-| `stop_desktop` | Stop a WebRTC desktop session | `sessionId` |
+| `start_desktop` | Start a WebRTC desktop session | `sessionId`, `offer`, `iceServers`, `startGeneration` |
+| `stop_desktop` | Stop a WebRTC desktop session | `sessionId`, `terminalGeneration` |
 
 #### `start_desktop`
 
@@ -457,8 +508,18 @@ Two remote desktop modes are available: WebRTC-based (legacy) and WebSocket-base
 | `sessionId` | string | Yes | Unique session identifier |
 | `offer` | string | Yes | WebRTC SDP offer |
 | `iceServers` | array | No | Array of `{ urls, username, credential }` ICE server configs |
+| `startGeneration` | string | No | Monotonic start/terminal generation for this session, as a canonical decimal string (never a JSON number). The agent refuses a start that is not strictly newer than every generation it has already seen for the session. Absent from servers that predate the fence; such starts are admitted. |
 
 Returns `{ sessionId, answer }` where `answer` is the WebRTC SDP answer.
+
+#### `stop_desktop`
+
+| Param | Type | Required | Description |
+|---|---|---|---|
+| `sessionId` | string | Yes | Session to stop |
+| `terminalGeneration` | string | No | The generation at which the server declared the session terminal, as a canonical decimal string. The command id is `desk-stop-<sessionId>-<terminalGeneration>`; the agent's `completed` result for that exact id moves the server-side teardown phase from `pending` to `confirmed`. A stop installs a terminal tombstone for the session even when no session is running, so a start that arrives after its own stop is refused. |
+
+Returns `{ stopped: true }`.
 
 ### WebSocket Streaming
 
@@ -754,7 +815,8 @@ Network discovery, SNMP polling, and connectivity checks for monitoring.
 | `excludeIps` | string[] | -- | IP addresses to skip |
 | `methods` | string[] | -- | Scan methods: `ping`, `arp`, `port` |
 | `portRanges` | string[] | -- | Port ranges for port scanning (e.g. `["22", "80", "443"]`) |
-| `snmpCommunities` | string[] | -- | SNMP community strings to try |
+| `snmpCommunities` | string[] | -- | SNMPv1/v2c community strings to try |
+| `snmpCredentials` | object | -- | Structured SNMP credential (`version`, `username`, `authProtocol`, `authPassphrase`, `privacyProtocol`, `privacyPassphrase`, `port`, `timeout` in ms, `retries`); tried before `snmpCommunities`. `public` is only used when neither is set |
 | `timeout` | int | `2` | Per-host timeout in seconds |
 | `concurrency` | int | `128` | Max concurrent scan workers |
 | `deepScan` | bool | `false` | Enable deep scanning (more ports, slower) |

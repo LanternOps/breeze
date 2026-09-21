@@ -5,6 +5,12 @@ import { WORKER_READINESS_MANIFEST, declareExpectedConsumers } from './workerRea
 const NON_CONSUMERS = [
   'desktopSessionOrphanRecovery',
   'oauthRevocationRetryWorker',
+  'topologyOutboxWorker',
+  'topologyReconcileWorker',
+  'topologyCollectionRetentionWorker',
+  'topologyTemplateApplyWorker',
+  'topologyDiagnosticWorker',
+  'topologyDiagnosticSweeper',
   'incidentCorrelationWorker',
   'incidentTimelineEnricher',
   'incidentSlaMonitor',
@@ -52,15 +58,16 @@ interface Flags {
   abuseSignalsEnabled: boolean;
   eventDispatchEnabled: boolean;
   aiAgentsEnabled: boolean;
+  sendingDomainsConfigured: boolean;
 }
 const ALL_ON: Flags = {
   partnerTrustEnabled: true, auditChainVerifyEnabled: true, abuseSignalsEnabled: true,
-  eventDispatchEnabled: true, aiAgentsEnabled: true,
+  eventDispatchEnabled: true, aiAgentsEnabled: true, sendingDomainsConfigured: true,
 };
 // Default configuration: opt-in flags off, audit verification on.
 const DEFAULT_FLAGS: Flags = {
   partnerTrustEnabled: false, auditChainVerifyEnabled: true, abuseSignalsEnabled: false,
-  eventDispatchEnabled: false, aiAgentsEnabled: false,
+  eventDispatchEnabled: false, aiAgentsEnabled: false, sendingDomainsConfigured: false,
 };
 
 /** Initializers a process of `role` starts: registry entries by placement + the role-gated out-of-registry starters. */
@@ -81,6 +88,7 @@ function ruleIsOn(rule: string, flags: Flags): boolean {
     case 'audit_chain_verify_enabled': return flags.auditChainVerifyEnabled;
     case 'event_dispatch_enabled': return flags.eventDispatchEnabled;
     case 'ai_agents_enabled': return flags.aiAgentsEnabled;
+    case 'sending_domains_configured': return flags.sendingDomainsConfigured;
     default: throw new Error(`unknown rule ${rule}`);
   }
 }
@@ -172,7 +180,7 @@ describe('worker readiness manifest', () => {
     expect(required).toEqual(expectedRequiredNames('all', DEFAULT_FLAGS));
     // Named, not numbered: exactly these consumers are optional on a default self-hosted box.
     const optional = declaredConsumerNames().filter((n) => !required.includes(n)).sort();
-    expect(optional).toEqual(['abuseSignalsWorker', 'aiAgentRunner', 'eventDispatch', 'eventDispatchMaintenance']);
+    expect(optional).toEqual(['abuseSignalsWorker', 'aiAgentRunner', 'eventDispatch', 'eventDispatchMaintenance', 'sendingDomainsWorker']);
   });
 
   it('makes abuse signals required when configured on', () => {
@@ -221,6 +229,7 @@ describe('role-scoped, rule-resolved declarations (spec section 5, D3/D3a)', () 
     ['ai_agents_enabled', 'aiAgentRunner', 'api', { ...ALL_ON, aiAgentsEnabled: false }],
     ['abuse_or_partner_trust_enabled', 'abuseSignalsWorker', 'worker', { ...ALL_ON, abuseSignalsEnabled: false, partnerTrustEnabled: false }],
     ['audit_chain_verify_enabled', 'auditChainVerify', 'worker', { ...ALL_ON, auditChainVerifyEnabled: false }],
+    ['sending_domains_configured', 'sendingDomainsWorker', 'worker', { ...ALL_ON, sendingDomainsConfigured: false }],
   ] as const)('%s off: %s is declared optional and disabled feature_disabled; on: required', (_rule, name, role, offFlags) => {
     const off = declare(role, offFlags);
     expect(off.declared.get(name)).toBe(false);
@@ -255,10 +264,10 @@ describe('role-scoped, rule-resolved declarations (spec section 5, D3/D3a)', () 
     expect(disabled).toEqual(['eventDispatch']);
   });
 
-  it('on a default all box exactly four consumers are optional (names, not a number)', () => {
+  it('on a default all box exactly five consumers are optional (names, not a number)', () => {
     const { declared } = declare('all', DEFAULT_FLAGS);
     const optional = [...declared.entries()].filter(([, r]) => !r).map(([n]) => n).sort();
-    expect(optional).toEqual(['abuseSignalsWorker', 'aiAgentRunner', 'eventDispatch', 'eventDispatchMaintenance']);
+    expect(optional).toEqual(['abuseSignalsWorker', 'aiAgentRunner', 'eventDispatch', 'eventDispatchMaintenance', 'sendingDomainsWorker']);
     expect([...declared.values()].filter(Boolean)).toHaveLength(declared.size - optional.length);
   });
 

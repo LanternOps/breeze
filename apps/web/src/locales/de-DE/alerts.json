@@ -618,8 +618,77 @@
     "tabs": {
       "alerts": "Warnungen",
       "correlations": "Korrelationen",
+      "monitors": "Monitore",
       "rules": "Regeln",
-      "channels": "Kanäle"
+      "delivery": "Zustellung"
+    }
+  },
+  "deliveryPage": {
+    "loading": "Zustellungseinstellungen werden geladen…",
+    "loadFailed": "Zustellungseinstellungen konnten nicht geladen werden.",
+    "title": "Zustellung",
+    "subtitle": "Wer benachrichtigt wird – und wie.",
+    "precedence": "Die eigene Benachrichtigungseinstellung eines Monitors gewinnt; andernfalls die erste passende Zeile von oben.",
+    "sections": {
+      "channels": "Kanäle",
+      "routing": "Weiterleitung",
+      "escalation": "Eskalationsrichtlinien"
+    },
+    "routing": {
+      "everythingElse": "Alles andere",
+      "everythingElseHint": "Fängt jede Warnung ab, auf die keine Zeile darüber passt. Kanäle leeren für „nur Posteingang“.",
+      "inboxOnly": "Nur Posteingang",
+      "partnerRowHint": "Gehört Ihrem Partner; hier schreibgeschützt.",
+      "customizeForOrg": "Für diese Organisation anpassen",
+      "matchAll": "Alle Warnungen",
+      "severities": "Schweregrade",
+      "monitorKinds": "Monitorarten",
+      "sites": "Standorte",
+      "sendTo": "Senden an",
+      "escalateVia": "Eskalieren über",
+      "noEscalation": "Keine Eskalation",
+      "addRule": "Weiterleitungsregel hinzufügen",
+      "editRule": "Weiterleitungsregel bearbeiten",
+      "newRule": "Neue Weiterleitungsregel",
+      "editDefault": "„Alles andere“ bearbeiten",
+      "priority": "Priorität (niedriger läuft zuerst)",
+      "leaveEmptyForAll": "Leer lassen, um alle zu treffen",
+      "defaultSaved": "Zeile „Alles andere“ gespeichert",
+      "failedToSaveDefault": "Zeile „Alles andere“ konnte nicht gespeichert werden",
+      "deleteConfirm": "Weiterleitungsregel „{{name}}“ löschen?",
+      "usePartnerDefault": "Partnerstandard verwenden",
+      "usePartnerDefaultConfirm": "Diese Organisation verwendet wieder die Zeile „Alles andere“ des Partners.",
+      "usePartnerDefaultInboxConfirm": "Es gibt keinen Partnerstandard. Warnungen, die keiner Zeile entsprechen, erscheinen nur im Posteingang.",
+      "customizeForOrgHint": "Nach der Anpassung werden Änderungen am Partnerstandard nicht mehr übernommen. Die Überschreibung dieser Organisation kann später entfernt werden.",
+      "sitesLoadFailed": "Standorte konnten nicht geladen werden. Versuchen Sie es erneut."
+    },
+    "escalation": {
+      "occurrenceLimit": "Eine Richtlinie darf höchstens 50 Benachrichtigungen senden.",
+      "new": "Neue Eskalationsrichtlinie",
+      "edit": "Eskalationsrichtlinie bearbeiten",
+      "empty": "Noch keine Eskalationsrichtlinien. Eine Richtlinie sendet Folgebenachrichtigungen, solange eine Warnung unbestätigt bleibt.",
+      "steps": "Schritte",
+      "addStep": "Schritt hinzufügen",
+      "removeStep": "Schritt entfernen",
+      "delayMinutes": "Nach (Minuten)",
+      "notifyChannels": "Benachrichtigen",
+      "notifyUsers": "Benutzer benachrichtigen (in der App)",
+      "repeat": "Wiederholen",
+      "everyMinutes": "Alle (Minuten)",
+      "maxTimes": "Zusätzliche Sendungen",
+      "stepCount_one": "{{count}} Schritt",
+      "stepCount_other": "{{count}} Schritte",
+      "created": "Eskalationsrichtlinie erstellt",
+      "saved": "Eskalationsrichtlinie gespeichert",
+      "deleted": "Eskalationsrichtlinie gelöscht",
+      "failedToSave": "Eskalationsrichtlinie konnte nicht gespeichert werden",
+      "failedToDelete": "Eskalationsrichtlinie konnte nicht gelöscht werden",
+      "deleteConfirm": "Eskalationsrichtlinie „{{name}}“ löschen? Monitore und Weiterleitungszeilen, die darauf verweisen, eskalieren nicht mehr.",
+      "legacyRepaired": "Die gespeicherte Richtlinie enthielt Schritte, die nicht dem aktuellen Format entsprachen und angepasst wurden.",
+      "delayRange": "Geben Sie eine ganze Zahl von 1 bis 10080 Minuten (7 Tage) ein.",
+      "minutesRange": "Geben Sie eine ganze Zahl von 1–1440 Minuten ein.",
+      "timesRange": "Geben Sie eine ganze Zahl von 1–10 Wiederholungen ein.",
+      "targetRequired": "Wählen Sie pro Schritt mindestens einen Kanal oder Benutzer aus."
     }
   },
   "correlatedAlertGroups": {
@@ -904,7 +973,7 @@
     "notificationRoutingRules": "Regeln für die Weiterleitung von Benachrichtigungen",
     "routeAlertsToSpecificChannelsBasedOn": "Leiten Sie Warnungen je nach Schweregrad an bestimmte Kanäle weiter. Die erste übereinstimmende Regel gewinnt.",
     "rule": "Regel",
-    "noRoutingRulesConfiguredAllAlertsGo": "Keine Routing-Regeln konfiguriert. Alle Benachrichtigungen gehen an alle aktivierten Kanäle.",
+    "newChannelsRequireRouting": "Neue Kanäle stellen erst dann Warnungen zu, wenn sie in einer Routing-Regel oder in der Zeile „Alles andere“ ausgewählt werden.",
     "addRoutingRule": "Routing-Regel hinzufügen",
     "partnerWideRuleRoutesAlertsFromEvery": "Partnerweite Regel – leitet Warnungen von jeder Organisation weiter",
     "allOrgs": "Partnerweit",
@@ -975,5 +1044,12 @@
     "forever": "Für immer",
     "cancel": "Abbrechen",
     "suppress": "Unterdrücken"
+  },
+  "templates": {
+    "frozen": {
+      "title": "Neue Alarmvorlagen werden als Monitore erstellt",
+      "body": "Bestehende Vorlagen bleiben hier bearbeitbar und werden im nächsten Release umgewandelt.",
+      "link": "Monitore öffnen"
+    }
   }
 }

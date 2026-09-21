@@ -1,0 +1,236 @@
+{
+  "section": {
+    "title": "Entregas do serviço",
+    "empty": "Nenhuma entrega ainda. Adicione os relatórios e revisões recorrentes devidos a este cliente."
+  },
+  "table": {
+    "name": "Entrega",
+    "cadence": "Frequência",
+    "nextDue": "Próximo vencimento",
+    "lastDelivered": "Última entrega",
+    "status": "Status",
+    "portal": "Portal"
+  },
+  "cadence": {
+    "monthly": "Mensal",
+    "quarterly": "Trimestral",
+    "semiannual": "Semestral",
+    "annual": "Anual",
+    "one_time": "Única"
+  },
+  "status": {
+    "on_track": "Em dia",
+    "due_soon": "Vence em breve",
+    "late": "Atrasada",
+    "missed": "Perdida",
+    "inactive": "Inativa"
+  },
+  "occurrence": {
+    "status": {
+      "scheduled": "Agendada",
+      "open": "Aberta",
+      "awaiting_evidence": "Aguardando evidência",
+      "delivered": "Entregue",
+      "missed": "Perdida",
+      "waived": "Dispensada"
+    }
+  },
+  "actions": {
+    "add": "Adicionar entrega",
+    "edit": "Editar",
+    "deactivate": "Desativar",
+    "deliver": "Marcar como entregue",
+    "waive": "Dispensar",
+    "reopen": "Reabrir",
+    "reschedule": "Reagendar",
+    "addEvidence": "Adicionar evidência",
+    "removeEvidence": "Remover evidência",
+    "save": "Salvar",
+    "cancel": "Cancelar"
+  },
+  "form": {
+    "name": "Nome",
+    "description": "Descrição",
+    "contract": "Contrato",
+    "noContract": "Sem vínculo com contrato",
+    "contractsUnavailable": "Não foi possível carregar os contratos desta organização. Recarregue a página antes de salvar.",
+    "cadence": "Frequência",
+    "anchorDueDate": "Primeira data de vencimento",
+    "effectiveFrom": "Vigente a partir de",
+    "effectiveUntil": "Vigente até",
+    "leadDays": "Antecedência (dias)",
+    "graceDays": "Prazo de tolerância (dias)",
+    "artifactRequired": "Evidência obrigatória antes de marcar como entregue",
+    "completionMode": {
+      "label": "Conclusão",
+      "explicit": "Marcada como entregue por um técnico",
+      "on_ticket_resolve": "Entregue quando o chamado vinculado for resolvido"
+    },
+    "autoEvidenceReport": "Anexar execuções de relatório como evidência",
+    "autoEvidenceNone": "Nenhum",
+    "autoEvidenceHelp": "A evidência é gerada no dia de vencimento e se torna visível para o cliente quando a ocorrência é entregue.",
+    "autoEvidenceEmpty": "Ainda não há tipos de relatório de evidência gerenciados disponíveis.",
+    "owner": "Responsável",
+    "ticketCategory": "Categoria do chamado",
+    "portalVisible": "Exibir no portal do cliente",
+    "sortOrder": "Ordem de exibição",
+    "instructions": "Instruções internas",
+    "instructionsHint": "Interno — nunca exibido ao cliente.",
+    "checklistTemplate": "Modelo de checklist",
+    "checklistTemplateNone": "Nenhum",
+    "checklistTemplateAllOrgs": "Todas as orgs",
+    "checklistTemplateManage": "Gerenciar modelos de checklist"
+  },
+  "drawer": {
+    "title": "Ocorrências",
+    "empty_one": "Ainda não há ocorrências. A primeira é planejada {{count}} dia antes do vencimento.",
+    "empty_other": "Ainda não há ocorrências. A primeira é planejada {{count}} dias antes do vencimento.",
+    "emptyWithDate_one": "Ainda não há ocorrências. A primeira é planejada {{count}} dia antes do vencimento ({{date}}).",
+    "emptyWithDate_other": "Ainda não há ocorrências. A primeira é planejada {{count}} dias antes do vencimento ({{date}}).",
+    "evidence": "Evidências",
+    "noEvidence": "Nenhuma evidência anexada",
+    "late": "Atrasada",
+    "rescheduledFrom": "Reagendada de {{date}}",
+    "deliveryNote": "Observação da entrega",
+    "waivedReason": "Motivo da dispensa",
+    "newDueDate": "Nova data de vencimento",
+    "uploadEvidence": "Enviar um arquivo como evidência",
+    "uploadEvidenceHint": "PDF, JPEG, PNG ou WebP, até 10 MB. O arquivo é arquivado na biblioteca de documentos desta organização.",
+    "evidenceDocument": "Documento",
+    "upload": "Enviar",
+    "checklistProgress": "{{done}} / {{total}}",
+    "showChecklist": "Mostrar checklist",
+    "hideChecklist": "Ocultar checklist"
+  },
+  "evidence": {
+    "reportRun": "Execução de relatório",
+    "document": "Documento",
+    "reportRunId": "ID da execução de relatório"
+  },
+  "upcoming": {
+    "title": "Próximos 90 dias",
+    "empty": "Nada vence nos próximos 90 dias."
+  },
+  "group": {
+    "noContract": "Sem contrato"
+  },
+  "errors": {
+    "evidenceRequired": "Anexe uma evidência antes de marcar esta ocorrência como entregue.",
+    "duplicateName": "Já existe uma entrega com este nome nesta organização.",
+    "loadFailed": "Não foi possível carregar as entregas.",
+    "saveFailed": "Não foi possível salvar a entrega.",
+    "actionFailed": "Não foi possível atualizar a ocorrência.",
+    "uploadFailed": "Não foi possível enviar o arquivo de evidência.",
+    "tooLarge": "Esse arquivo é maior que 10 MB.",
+    "unsupportedType": "Só é possível anexar arquivos PDF, JPEG, PNG e WebP.",
+    "storageUnavailable": "O armazenamento de documentos está indisponível no momento. Tente novamente em instantes."
+  },
+  "confirm": {
+    "deactivate": "Desativar {{name}}? As ocorrências abertas serão encerradas e nenhuma nova será agendada.",
+    "deleteKeyDate": "Excluir a data-chave {{label}}?"
+  },
+  "keyDates": {
+    "title": "Datas-chave",
+    "empty": "Nenhuma data-chave registrada.",
+    "add": "Adicionar data-chave",
+    "label": "Rótulo",
+    "kind": {
+      "label": "Tipo",
+      "insurance_renewal": "Renovação de seguro",
+      "vendor_contract_end": "Fim de contrato com fornecedor",
+      "compliance_deadline": "Prazo de conformidade",
+      "audit": "Auditoria",
+      "other": "Outro"
+    },
+    "date": "Data",
+    "recursAnnually": "Repete todo ano",
+    "remindDaysBefore": "Lembrar (dias antes)",
+    "portalVisible": "Exibir no portal do cliente",
+    "contractEnd": "Fim do contrato",
+    "notes": "Observações",
+    "owner": "Responsável",
+    "edit": "Editar data-chave",
+    "delete": "Excluir",
+    "errors": {
+      "loadFailed": "Não foi possível carregar as datas-chave.",
+      "saveFailed": "Não foi possível salvar a data-chave."
+    },
+    "toast": {
+      "saved": "Data-chave salva",
+      "deleted": "Data-chave excluída"
+    }
+  },
+  "toast": {
+    "saved": "Entrega salva",
+    "delivered": "Marcada como entregue",
+    "waived": "Ocorrência dispensada",
+    "reopened": "Ocorrência reaberta",
+    "rescheduled": "Ocorrência reagendada",
+    "evidenceAdded": "Evidência adicionada",
+    "evidenceRemoved": "Evidência removida",
+    "deactivated": "Entrega desativada",
+    "evidenceUploaded": "Evidência enviada"
+  },
+  "templates": {
+    "pageTitle": "Modelos de entregas",
+    "pageDescription": "Defina um nível de serviço uma vez e aplique-o a qualquer cliente. Conjuntos válidos para todo o parceiro ficam disponíveis para cada organização que você gerencia.",
+    "empty": "Ainda não há conjuntos de modelos. Crie um para definir um nível de serviço reutilizável para seus clientes.",
+    "allOrganizations": "Todas as orgs",
+    "actions": {
+      "newSet": "Novo conjunto de modelos",
+      "addItem": "Adicionar entrega",
+      "apply": "Aplicar conjunto de modelos",
+      "edit": "Editar",
+      "delete": "Excluir",
+      "save": "Salvar",
+      "cancel": "Cancelar"
+    },
+    "form": {
+      "name": "Nome do conjunto",
+      "description": "Descrição",
+      "itemName": "Nome da entrega",
+      "cadence": "Frequência",
+      "leadDays": "Abrir este número de dias antes do vencimento",
+      "graceDays": "Marcar como não cumprida este número de dias após o vencimento",
+      "artifactRequired": "Evidência obrigatória",
+      "completionMode": "Conclusão",
+      "autoEvidenceReportType": "Tipo de relatório de evidência"
+    },
+    "ownerScope": {
+      "legend": "Para quem é este conjunto?",
+      "allOrganizations": "Todas as organizações (válido para todo o parceiro)",
+      "thisOrganizationOnly": "Somente esta organização"
+    },
+    "apply": {
+      "title": "Aplicar conjunto de modelos",
+      "set": "Conjunto de modelos",
+      "contract": "Contrato (opcional)",
+      "noContract": "Sem contrato",
+      "effectiveFrom": "Vigente a partir de",
+      "owner": "Responsável (opcional)",
+      "submit": "Aplicar",
+      "created_one": "{{count}} entrega criada",
+      "created_other": "{{count}} entregas criadas",
+      "skipped": "Ignoradas (já existentes): {{names}}"
+    },
+    "errors": {
+      "collision": "Estas entregas já existem no destino: {{names}}",
+      "duplicateSetName": "Já existe um conjunto de modelos com este nome.",
+      "duplicateItemName": "Já existe um item com este nome no conjunto.",
+      "partnerWideDenied": "Gerenciar modelos válidos para todo o parceiro exige acesso completo à organização do parceiro.",
+      "loadFailed": "Não foi possível carregar os conjuntos de modelos.",
+      "saveFailed": "Não foi possível salvar o conjunto de modelos.",
+      "deleteFailed": "Não foi possível excluir o conjunto de modelos.",
+      "itemSaveFailed": "Não foi possível salvar a entrega.",
+      "itemDeleteFailed": "Não foi possível remover a entrega.",
+      "applyFailed": "Não foi possível aplicar o conjunto de modelos."
+    },
+    "toast": {
+      "setSaved": "Conjunto de modelos salvo",
+      "setDeleted": "Conjunto de modelos excluído",
+      "itemSaved": "Entrega salva",
+      "itemDeleted": "Entrega removida",
+      "applied": "Conjunto de modelos aplicado"
+    }
+  }
+}

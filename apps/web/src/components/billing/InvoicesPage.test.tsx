@@ -468,7 +468,7 @@ describe('InvoicesPage', () => {
     it('fetches the locked org directly and shows it in the create dialog when it falls outside the default org-list page', async () => {
       fetchMock.mockImplementation(async (input: string) => {
         // Deliberately excludes 'org-3' — the locked org — from the paginated list.
-        if (input === '/orgs/organizations') return json({ data: ORGS });
+        if (input.startsWith('/orgs/organizations?')) return json({ data: ORGS });
         if (input === '/orgs/organizations/org-3') return json({ id: 'org-3', name: 'Off-Page Org' });
         if (input.startsWith('/invoices')) return json({ data: [] });
         return json({}, false, 404);
@@ -479,6 +479,23 @@ describe('InvoicesPage', () => {
       const orgSelect = screen.getByTestId('invoices-assemble-org') as HTMLSelectElement;
       await waitFor(() => expect(orgSelect.value).toBe('org-3'));
       expect(within(orgSelect).getByText('Off-Page Org')).toBeInTheDocument();
+    });
+  });
+
+  describe('Export billables (M5)', () => {
+    it('shows an Export billables button that opens BillablesExportCard in a dialog', async () => {
+      wireDefault();
+      render(<InvoicesPage />);
+      await waitFor(() => expect(screen.getByTestId('invoices-table')).toBeInTheDocument());
+      fireEvent.click(screen.getByTestId('invoices-export-billables-open'));
+      expect(await screen.findByTestId('billables-export-card')).toBeInTheDocument();
+    });
+
+    it('hides the Export billables button when the page is locked to one org', async () => {
+      wireDefault();
+      render(<InvoicesPage lockedOrgId="org-1" />);
+      await waitFor(() => expect(screen.getByTestId('invoices-table')).toBeInTheDocument());
+      expect(screen.queryByTestId('invoices-export-billables-open')).not.toBeInTheDocument();
     });
   });
 });

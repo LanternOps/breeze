@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { useChatStore } from '../../stores/chatStore';
-import type { SessionSummary, PendingApproval, DeviceContext } from '../../stores/chatStore';
+import type { SessionSummary, PendingApproval, PendingApprovalScriptProposal, DeviceContext } from '../../stores/chatStore';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
 import WorkspacePanel from '../workspace/WorkspacePanel';
 import { SegmentedControl } from '../ui/SegmentedControl';
@@ -175,7 +175,50 @@ function DeviceBadge({ ctx }: { ctx: DeviceContext }) {
   );
 }
 
-function ToolApprovalPopup({
+/**
+ * W03 (#5612): the helper's read-only view of an AI script proposal. STRICT
+ * hits are listed but cannot be acknowledged here — acknowledging requires
+ * scripts:write + MFA, which the helper session does not carry — so the note
+ * says to use the web or mobile approval surface for those.
+ */
+function ScriptProposalSummary({ proposal }: { proposal: PendingApprovalScriptProposal }) {
+  return (
+    <div className="helper-proposal" data-testid="helper-proposal">
+      <div className="helper-proposal-head">
+        <span className="helper-proposal-risk" data-testid="helper-proposal-risk" data-tier={proposal.riskTier}>
+          {proposal.riskTier}
+        </span>
+        <span className="helper-proposal-summary" data-testid="helper-proposal-summary">{proposal.summary}</span>
+      </div>
+      <div className="helper-proposal-goal" data-testid="helper-proposal-goal">{proposal.goal}</div>
+      {proposal.findings.length > 0 && (
+        <ul className="helper-proposal-findings">
+          {proposal.findings.map((f, i) => (
+            <li key={i} data-testid={`helper-proposal-finding-${i}`}>{f}</li>
+          ))}
+        </ul>
+      )}
+      {proposal.strictHits.length > 0 && (
+        <div className="helper-proposal-strict">
+          <div className="helper-proposal-strict-note" data-testid="helper-proposal-strict-note">
+            Dangerous patterns must be acknowledged from the Breeze web or mobile approval — this window cannot acknowledge them.
+          </div>
+          <ul>
+            {proposal.strictHits.map((hit, i) => (
+              <li key={hit} data-testid={`helper-proposal-strict-${i}`}>{hit}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+      <details className="helper-approval-details" data-testid="helper-proposal-body">
+        <summary data-testid="helper-proposal-body-toggle">Show script</summary>
+        <pre className="helper-approval-input">{proposal.content}</pre>
+      </details>
+    </div>
+  );
+}
+
+export function ToolApprovalPopup({
   approval,
   onApprove,
   onDeny,
@@ -218,7 +261,12 @@ function ToolApprovalPopup({
         <div className="helper-approval-body">
           <div className="helper-approval-desc">{approval.description}</div>
           {approval.deviceContext && <DeviceBadge ctx={approval.deviceContext} />}
-          {hasVisibleInput && (
+          {approval.scriptProposal ? (
+            // W03 (#5612): a proposal-backed run renders the reviewer's summary,
+            // findings and the body — the parameter JSON is a proposal id and a
+            // device list, which tells the approver nothing.
+            <ScriptProposalSummary proposal={approval.scriptProposal} />
+          ) : hasVisibleInput && (
             <details className="helper-approval-details">
               <summary>Show parameters</summary>
               <pre className="helper-approval-input">

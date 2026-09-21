@@ -212,6 +212,34 @@
       "cancel": "Cancel",
       "createReport": "Create report"
     },
+    "lifecycleOptions": {
+      "cancel": "Cancel",
+      "createReport": "Create report",
+      "includeManualAssets": "Include hand-entered assets",
+      "includeManualAssetsHelp": "Manual assets with a purchase or warranty date appear alongside agent devices.",
+      "includeOtherEquipment": "List other equipment",
+      "includeOtherEquipmentHelp": "Printers, network and IoT hardware are listed without a replacement timeline.",
+      "replaceAgeYears": "Plan replacement after (years)",
+      "replaceAgeYearsHelp": "A computer is due for replacement this many years after purchase, or when its warranty ends if it is still covered and that runs longer.",
+      "serverReplaceAgeYears": "Plan server replacement after (years)",
+      "serverReplaceAgeYearsHelp": "Servers follow their own timeline and are listed in a separate section of the report."
+    },
+    "vulnerabilityManagementOptions": {
+      "cancel": "Cancel",
+      "createReport": "Create report",
+      "includeAccepted": "Include accepted risks and exceptions",
+      "includeAcceptedHelp": "Lists accepted and mitigated findings, flagging the ones whose acceptance expires in the next period.",
+      "severity": {
+        "critical": "Critical",
+        "high": "High",
+        "low": "Low",
+        "medium": "Medium"
+      },
+      "severityFloor": "Minimum severity to list",
+      "severityFloorHelp": "Findings below this severity are left out of the tables. It never hides an actively exploited (KEV) or high-EPSS finding — those are always counted and listed.",
+      "topN": "Remediation list length",
+      "topNHelp": "How many patchable findings the remediate-first table holds. The report states how many were withheld rather than truncating silently."
+    },
     "reportBuilderPage": {
       "configurationTitle": "Report Configuration",
       "description": "Generate a one-time report without saving it.",
@@ -264,15 +292,47 @@
         "showing": "Showing {{start}} to {{end}} of {{total}} records"
       },
       "refresh": "Refresh",
+      "lifecycle": {
+        "dueSoon": "Due soon",
+        "onTrack": "On track",
+        "otherEquipment": "Other equipment",
+        "recommendations": "What we recommend",
+        "replaceNow": "Replace now",
+        "unknownAge": "Purchase date unknown"
+      },
+      "vulnerabilityManagement": {
+        "critical": "Open critical",
+        "expiringExceptions": "Exceptions expiring next period",
+        "high": "Open high",
+        "highEpss": "Likely to be exploited",
+        "knownExploited": "Actively exploited (KEV)",
+        "notMeasured": "N/A"
+      },
       "reportTypes": {
+        "ai_fleet_design": "Fleet Design",
         "ai_org_narrative": "Weekly AI Operations Narrative",
         "alert_summary": "Alert Summary",
         "compliance": "Compliance Report",
         "device_inventory": "Device Inventory",
         "executive_summary": "Executive Summary",
+        "hardware_lifecycle": "Hardware Lifecycle",
+        "vulnerability_management": "Vulnerability Management",
+        "identity_access_review": "Identity & Access Review",
         "performance": "Performance Report",
         "security_compliance_posture": "Security & Compliance Posture",
-        "software_inventory": "Software Inventory"
+        "software_inventory": "Software Inventory",
+        "threat_detection_review": "Threat Detection Review",
+        "endpoint_management_review": "Endpoint Management Review"
+      },
+      "threatDetection": {
+        "agents": "Endpoints with a detection agent",
+        "breezeDevices": "Devices Breeze manages",
+        "carriedIn": "Carried in, still open",
+        "coverage": "Limits of this report",
+        "devicesWithoutAgent": "Managed devices with no agent",
+        "notMeasured": "N/A",
+        "opened": "Detections raised",
+        "resolved": "Detections resolved"
       },
       "tryAgain": "Try again",
       "values": {
@@ -282,6 +342,26 @@
       "viewModes": {
         "chart": "Chart",
         "table": "Table"
+      },
+      "endpointManagement": {
+        "breezeWithoutIntune": "Breeze devices not enrolled",
+        "dataGaps": "What we could not measure",
+        "intuneDevices": "Enrolled in Intune",
+        "intuneWithoutBreezeLink": "Intune records not linked",
+        "noncompliant": "Not compliant",
+        "notMeasured": "N/A",
+        "staleEnrolments": "Stale enrolments"
+      },
+      "identityAccess": {
+        "notMeasured": "N/A",
+        "coverage": "Limits of this report",
+        "signins": "Interactive sign-ins",
+        "distinctUsers": "Accounts signing in",
+        "failures": "Sign-ins that failed",
+        "admins": "Accounts with an admin role",
+        "adminsWithoutMfa": "Administrators without MFA",
+        "mfaUnknown": "MFA state unknown",
+        "dormant": "Dormant accounts"
       }
     },
     "reportsList": {
@@ -319,18 +399,27 @@
       },
       "loading": "Loading reports...",
       "never": "Never",
+      "success": {
+        "generated": "Report \"{{name}}\" generated."
+      },
       "visibleInPortal": "Visible in customer portal",
       "newReport": "New Report",
       "nextOccurrence": "Next: {{next}}",
       "reportTypes": {
+        "ai_fleet_design": "Fleet Design",
         "ai_org_narrative": "Weekly AI Operations Narrative",
         "alert_summary": "Alert Summary",
         "compliance": "Compliance Report",
         "device_inventory": "Device Inventory",
         "executive_summary": "Executive Summary",
+        "hardware_lifecycle": "Hardware Lifecycle",
+        "vulnerability_management": "Vulnerability Management",
+        "identity_access_review": "Identity & Access Review",
         "performance": "Performance Report",
         "security_compliance_posture": "Security & Compliance Posture",
-        "software_inventory": "Software Inventory"
+        "software_inventory": "Software Inventory",
+        "threat_detection_review": "Threat Detection Review",
+        "endpoint_management_review": "Endpoint Management Review"
       },
       "runsTable": {
         "actions": "Actions",
@@ -701,7 +790,18 @@
         "templateName": "Quarterly Compliance Pack",
         "value": "Value"
       },
-      "recipients": { "contacts": "Organization contacts", "legacy": "Legacy email addresses", "convert": "Convert to contact", "added": "Report recipient added", "removed": "Report recipient removed", "converted": "Email address converted to a contact", "updateFailed": "Could not update the report recipients", "convertFailed": "Could not convert this email address", "mfaRequired": "Converting a recipient requires multi-factor authentication. Enable MFA in your profile and try again.", "loadFailed": "Could not load the report recipients" },
+      "recipients": {
+        "contacts": "Organization contacts",
+        "legacy": "Legacy email addresses",
+        "convert": "Convert to contact",
+        "added": "Report recipient added",
+        "removed": "Report recipient removed",
+        "converted": "Email address converted to a contact",
+        "updateFailed": "Could not update the report recipients",
+        "convertFailed": "Could not convert this email address",
+        "mfaRequired": "Converting a recipient requires multi-factor authentication. Enable MFA in your profile and try again.",
+        "loadFailed": "Could not load the report recipients"
+      },
       "previewTable": {
         "selectFields": "Select fields to populate the preview table."
       },
@@ -818,6 +918,7 @@
       "previewAlt": "{{name}} preview",
       "reportTypes": {
         "activity": "Activity",
+        "ai_fleet_design": "Fleet Design",
         "ai_org_narrative": "Weekly AI Operations Narrative",
         "alert_summary": "Alert Summary",
         "alerts": "Alerts",
@@ -825,10 +926,15 @@
         "device_inventory": "Device Inventory",
         "devices": "Devices",
         "executive_summary": "Executive Summary",
+        "hardware_lifecycle": "Hardware Lifecycle",
+        "vulnerability_management": "Vulnerability Management",
+        "identity_access_review": "Identity & Access Review",
         "patches": "Patches",
         "performance": "Performance Report",
         "security_compliance_posture": "Security & Compliance Posture",
-        "software_inventory": "Software Inventory"
+        "software_inventory": "Software Inventory",
+        "threat_detection_review": "Threat Detection Review",
+        "endpoint_management_review": "Endpoint Management Review"
       },
       "schedules": {
         "daily": "Daily",
@@ -859,14 +965,65 @@
           "description": "High-level KPIs, risk posture, and strategic trends for leadership.",
           "name": "Executive Summary"
         },
+        "hardware_lifecycle": {
+          "description": "Customer-ready device replacement plan: age, warranty, replace-by dates and OS support status, with a staged recommendation.",
+          "name": "Hardware Lifecycle Report"
+        },
+        "vulnerability_management": {
+          "description": "Open findings by severity, with actively exploited (KEV) and high-EPSS findings called out separately, the patchable findings to remediate first, and the accepted-risk exceptions expiring next period.",
+          "name": "Vulnerability Management Report"
+        },
+        "identity_access_review": {
+          "name": "Identity & Access Review",
+          "description": "Interactive Microsoft 365 sign-ins for a period, with the identity inventory, dormant accounts, conditional access posture and remote-access client presence — and the window actually covered stated on the face of it."
+        },
         "security_compliance_posture": {
           "description": "Insurance/vetting-ready evidence: EDR coverage, encryption, firewall, patching, vulnerabilities, privileged access, and security integrations with percent-implemented rollups.",
           "name": "Security & Compliance Posture (Insurance)"
+        },
+        "threat_detection_review": {
+          "description": "The threat detections held for a period, with the window actually covered stated on the face of it — never a zero for a source that was not connected.",
+          "name": "Threat Detection Review"
+        },
+        "endpoint_management_review": {
+          "description": "Microsoft Intune evidence: enrolment coverage, compliance breakdown with a 30-day trend, stale enrolments and licence seats, with the freshness of each sync stated.",
+          "name": "Intune Endpoint Management Review"
         }
       },
       "title": "Report Templates",
       "useTemplate": "Use template",
       "useTemplateTitle": "Use {{name}}"
+    },
+    "threatDetectionOptions": {
+      "cancel": "Cancel",
+      "coverageNote": "The report prints the window it actually covers. If the detection source was not connected for part of the period, it says so instead of reporting zero.",
+      "createReport": "Create report",
+      "includeCarriedIn": "Include detections carried in",
+      "includeCarriedInHelp": "Detections that opened before this period and are still unresolved are listed alongside the period’s own.",
+      "topIncidents": "List at most (detections)",
+      "topIncidentsHelp": "Caps the detection table so a noisy month cannot produce a hundred-page PDF. The report states how many were withheld rather than truncating silently."
+    },
+    "endpointManagementOptions": {
+      "cancel": "Cancel",
+      "createReport": "Create report",
+      "includeLicences": "Include licence seats",
+      "includeLicencesHelp": "Shows seats in use against seats purchased for each Microsoft 365 product.",
+      "staleEnrolmentDays": "Flag enrolments idle for (days)",
+      "staleEnrolmentDaysHelp": "A device that has not checked in with Intune for this many days counts as a stale enrolment. Judged against the Intune sync cadence, not against the reporting period.",
+      "trendDays": "Compliance trend window (days)",
+      "trendDaysHelp": "How far back the daily compliance trend reads from Microsoft 365 posture rollups."
+    },
+    "identityAccessOptions": {
+      "cancel": "Cancel",
+      "createReport": "Create report",
+      "orgWideNote": "This report covers the whole organization. Microsoft 365 identity data has no site dimension, so it cannot be narrowed to particular sites — and an account limited to certain sites cannot run it at all.",
+      "dormantDays": "Treat an account as dormant after (days)",
+      "dormantDaysHelp": "Enabled accounts with no recorded successful sign-in in this many days are listed. An account never seen signing in is listed as “never observed”, which is not the same as a long gap.",
+      "homeCountries": "Expected sign-in countries (ISO codes)",
+      "homeCountriesHelp": "Two-letter country codes, separated by commas — for example US, CA. Sign-ins from outside the list are counted. Leave it empty and the section reads “not configured”, never “no foreign sign-ins”.",
+      "adminDetail": "Include administrator sign-in detail",
+      "adminDetailHelp": "Lists each interactive sign-in by an account holding an admin role, including the address it came from. This is the section an auditor reads first.",
+      "coverageNote": "The report covers interactive sign-ins only and prints the window it actually covers. Microsoft keeps sign-in logs for about 30 days and requires an Entra ID P1 or P2 licence to release them, so the first report after enabling collection is partial and says so."
     }
   }
 }

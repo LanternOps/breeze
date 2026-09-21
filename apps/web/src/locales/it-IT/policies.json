@@ -835,6 +835,23 @@
         "openAlertsFeature": "Apri Avvisi",
         "legacyAlertRulesMovedToAlerts": "{{count}} regola/e di avviso legacy salvate in questa scheda sono state spostate nella funzione Avvisi di questo criterio. Il monitoraggio non le memorizza più."
       },
+      "monitorsTab": {
+        "attachMonitor": "Collega un monitor",
+        "loadingMonitors": "Caricamento dei monitor…",
+        "noMoreMonitorsToAttach": "Nessun altro monitor disponibile da collegare",
+        "selectAMonitorToAttach": "Seleziona un monitor da collegare…",
+        "noMonitorsAttached": "Nessun monitor ancora collegato a questa policy.",
+        "inherited": "Ereditato",
+        "overrideValue": "Valore di override",
+        "overridesLabel": "Override:",
+        "failedToLoadMonitors": "Impossibile caricare i monitor",
+        "createMonitor": "Crea monitor",
+        "recommended": {
+          "title": "Monitor consigliati",
+          "body": "Breeze include monitor integrati per CPU, memoria, disco e conformità delle patch. Nessuno è ancora collegato a questa policy.",
+          "action": "Collega tutti i monitor integrati"
+        }
+      },
       "pamTab": {
         "captureWindowsUACElevationPrompts": "Acquisisci prompt di elevazione UAC di Windows",
         "theAgentObservesUACConsentPromptsAnd": "L'agent osserva i prompt di consenso UAC e li registra come richieste di elevazione per la revisione PAM. L'acquisizione è disattivata per impostazione predefinita: abilitala qui per includere l'ambito di un dispositivo in PAM.",
@@ -1175,7 +1192,30 @@
         "generateACriticalAlertWhenWarrantyExpires": "Genera un avviso critico quando la garanzia scade entro questo numero di giorni.",
         "enabled": "enabled",
         "warnDays": "warnDays",
-        "criticalDays": "criticalDays"
+        "criticalDays": "criticalDays",
+        "collectHpWarrantyFromTheDevice": "Raccogli la garanzia HP dal dispositivo",
+        "hpCmslConsentExplainer": "I dati di garanzia HP vengono letti sul dispositivo tramite la Client Management Script Library di HP. Selezionando questa casella si accetta la licenza HP per conto di questo cliente e HP può raccogliere informazioni tecniche dal dispositivo, incluso il suo indirizzo IP. Se resta deselezionata, i dispositivi HP mantengono lo stato di garanzia che hanno già.",
+        "hpCmslNoAcceptanceRecordedYet": "Nessuna accettazione registrata finora. Salvando con questa casella selezionata vengono registrati il tuo utente e l'ora del server.",
+        "hpCmslAcceptedByOn": "Accettato da {{user}} il {{date}}",
+        "hpCmslTermsChangedSaveAgain": "HP ha modificato le condizioni di licenza dopo questa accettazione. Salva di nuovo per accettare nuovamente.",
+        "hpCmslInheritanceReplacesTheWholeLink": "Questo criterio sostituisce per intero le impostazioni di garanzia ereditate, senza alcuna unione campo per campo. Salvandolo con la raccolta sul dispositivo disattivata si interrompe la raccolta della garanzia HP su ogni dispositivo che raggiunge."
+      },
+      "rationale": {
+        "label": "Motivazione",
+        "edit": "Modifica motivazione",
+        "placeholder": "Perché esiste questo elemento…",
+        "save": "Salva",
+        "cancel": "Annulla",
+        "none": "Nessuna motivazione registrata."
+      },
+      "legacyFreeze": {
+        "title": "Le nuove regole vengono create come monitor",
+        "body": "Le regole esistenti restano modificabili qui e verranno convertite in monitor nella prossima versione.",
+        "link": "Apri la scheda Monitor"
+      },
+      "duplicate": {
+        "title": "I dispositivi di questa policy genereranno avvisi doppi",
+        "body": "Queste condizioni esistono sia come monitor collegato sia come regola o controllo legacy: {{names}}"
       }
     }
   },
@@ -1310,6 +1350,8 @@
       "readyToDeployStandalone": "Pronto per la distribuzione."
     },
     "complianceDashboard": {
+      "autoInstallArmed": "Installazione automatica attivata",
+      "complianceCheckQueued": "Verifica di conformità in coda",
       "failedToLoadSoftwarePolicyData": "Impossibile caricare i dati del criterio software",
       "couldNotLoadLatestPolicyDetailsShowing": "Impossibile caricare i dettagli più recenti del criterio. Visualizzazione dei dati memorizzati nella cache.",
       "couldNotLoadPolicyDetailsShowingCached": "Impossibile caricare i dettagli del criterio. Visualizzazione dei dati memorizzati nella cache.",
@@ -1349,7 +1391,19 @@
       "failedToUpdatePolicy": "Impossibile aggiornare il criterio",
       "failedToCreatePolicy": "Impossibile creare il criterio",
       "policyUpdated": "Criterio aggiornato correttamente",
-      "policyCreated": "Criterio creato correttamente"
+      "policyCreated": "Criterio creato correttamente",
+      "armInstallRequiresMfa": "L'attivazione dell'installazione automatica richiede l'autenticazione a più fattori. Completa la MFA, quindi riprova.",
+      "armInstallRequiresPermission": "L'attivazione dell'installazione automatica richiede l'autorizzazione devices.execute. Chiedi a un amministratore di concederla, quindi riprova.",
+      "installStatusPending": "Installazione in coda",
+      "installStatusInProgress": "Installazione in corso…",
+      "installStatusCompleted": "Installato",
+      "installStatusFailed": "Installazione non riuscita",
+      "installStatusGaveUp": "Rinuncia dopo ripetuti fallimenti",
+      "installStatusSkipped": "Saltato in questo passaggio",
+      "installSkippedNoCatalog": "Una regola obbligatoria non ha un elemento del catalogo collegato, quindi non c'è nulla da installare. Aggiungi un collegamento al catalogo nell'editor dei criteri per risolvere il problema.",
+      "installSkippedCapOrPlatform": "Non è un errore: è stato raggiunto il limite di installazioni per passaggio oppure la piattaforma di questo dispositivo non ha un metodo di installazione per il software. Potrebbe essere ritentato al passaggio successivo.",
+      "installAttempts": "{{count}} tentativo/i",
+      "installLastAttempt": "Ultimo tentativo di installazione: "
     },
     "deploymentList": {
       "running": "In esecuzione",
@@ -1387,7 +1441,9 @@
       "noDeploymentsYet": "Non è stata ancora creata alcuna distribuzione.",
       "failedToCancelDeployment": "Impossibile annullare la distribuzione",
       "deploymentCancelled": "Distribuzione annullata",
-      "pageOf": "Pagina {{page}} di {{pages}}"
+      "pageOf": "Pagina {{page}} di {{pages}}",
+      "policyOwned": "Gestito da criterio",
+      "policyOwnedTooltip": "Creato automaticamente dalla remediation di installazione automatica di un criterio software"
     },
     "deploymentProgress": {
       "queued": "In coda",
@@ -1571,6 +1627,9 @@
       "s": "s"
     },
     "policyForm": {
+      "dryRunUnassigned": "0 dispositivi — di solito perché questa policy non è ancora assegnata ad alcun dispositivo, ma anche una flotta interamente conforme o un elenco di siti vuoto dà 0",
+      "manageAssignments": "Gestisci le assegnazioni delle policy di configurazione",
+      "gracePeriodHelp": "Applicato alla prossima verifica di conformità",
       "scope": "Ambito",
       "allOrganizations": "Tutte le organizzazioni",
       "partnerWideTemplate": "(template a livello di partner)",
@@ -1615,7 +1674,16 @@
       "autoUninstall2": "autoUninstall",
       "gracePeriod": "grace-period",
       "gracePeriod2": "gracePeriod",
-      "saving": "Salvataggio..."
+      "saving": "Salvataggio...",
+      "catalogLink": "Elemento del catalogo collegato",
+      "catalogLinkNone": "Nessuno — non collegato",
+      "autoInstall": "Installa automaticamente il software mancante",
+      "autoInstallCatalogWarning": "{{count}} di {{total}} regola/e non hanno un elemento del catalogo collegato e verranno rilevate come mancanti ma mai installate.",
+      "dryRunLoading": "Verifica di quanti dispositivi saranno interessati...",
+      "dryRunResult": "Questo installerà il software mancante su circa {{count}} dispositivo/i.",
+      "dryRunUnavailable": "L'anteprima del numero di dispositivi non è ancora disponibile. L'attivazione avrà comunque effetto alla prossima verifica di conformità.",
+      "dryRunNewPolicy": "Questo è un nuovo criterio — l'impatto sui dispositivi non sarà noto fino alla prima verifica di conformità dopo il salvataggio.",
+      "catalogUnavailable": "Non è stato possibile caricare il catalogo software, quindi i selettori di collegamento al catalogo qui sotto sono vuoti. Non è la stessa cosa che non avere elementi nel catalogo: ricarica la pagina prima di dare per scontato che una regola non possa essere collegata."
     },
     "softwareCatalog": {
       "ready": "Pronto",

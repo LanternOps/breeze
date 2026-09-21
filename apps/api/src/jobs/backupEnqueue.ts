@@ -98,6 +98,8 @@ export interface ProcessResultsResult {
   referencedBytes?: number;
   // system_image (system-state) backups carry these; the WS handler must
   // forward them or the snapshot loses its type label + BMR restore manifest.
+  // Free-form agent job metadata — see backupProcessResultSchema (#5413).
+  metadata?: Record<string, unknown>;
   backupType?: 'file' | 'system_image' | 'database' | 'application';
   systemStateManifest?: Record<string, unknown> | null;
   // Bare-metal recovery (W01): disk layout + guard verdict, same forwarding
@@ -115,6 +117,9 @@ export interface ProcessResultsResult {
     size?: number;
     files?: Array<{
       sourcePath: string;
+      // D12 (#5413): the stable pre-VSS path. Declared here as well as on both
+      // zod schemas so a caller building this literal by hand cannot drop it.
+      originalPath?: string;
       backupPath: string;
       size?: number;
       modTime?: string;
@@ -123,6 +128,14 @@ export interface ProcessResultsResult {
       kind?: 'symlink' | 'dir';
       linkTarget?: string;
     }>;
+    // D18 (#5429/§3.1): must mirror backupSnapshotSummarySchema, or
+    // agentWs.ts's caller can construct a ProcessResultsResult carrying these
+    // fields (from the parsed WS ingress payload) that TypeScript happily
+    // accepts here, then loses at the very next hop when
+    // backupQueueJobDataSchema.parse(...) strict-validates it.
+    baseSnapshotId?: string;
+    formatVersion?: number;
+    backupIdentity?: string;
   };
   error?: string;
 }

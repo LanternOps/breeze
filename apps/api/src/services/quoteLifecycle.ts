@@ -30,6 +30,7 @@ import { allocateQuoteCounter, formatQuoteNumber } from './quoteNumbers';
 import { createQuoteAcceptToken, regenerateQuoteAcceptToken, type QuoteAcceptTokenIdentity } from './quoteAcceptToken';
 import { buildQuoteTemplate } from './quoteEmail';
 import { getEmailService } from './email';
+import { partnerEmailCustomFromSettings } from './emailTemplates/renderPartnerEmail';
 import { resolveBillingEmail } from './invoicePdf';
 import { isQuoteExpired } from './quoteExpiry';
 import { buildSellerSnapshot, buildBillToAddress } from './sellerSnapshot';
@@ -774,6 +775,7 @@ async function deliverQuoteEmail(
       subject: opts.subject,
       pdfAttached: includePdf,
       signature: partnerRow?.emailSignature ?? undefined,
+      custom: partnerEmailCustomFromSettings(partnerRow?.settings, 'quote_send'),
     });
     // MSP-branded envelope: display name "<Partner> via Breeze" on the
     // platform's own from-address (SPF/DKIM stays aligned — we never spoof
@@ -783,7 +785,14 @@ async function deliverQuoteEmail(
     await emailService.sendEmail({
       to: recipients,
       cc: opts.cc && opts.cc.length > 0 ? opts.cc : undefined,
-      from: partnerName ? emailService.fromWithDisplayName(`${partnerName} via Breeze`) : undefined,
+      // MSP-branded envelope: the registry's `partner_display_name` fallback
+      // renders "<Partner> via Breeze" on the platform's own from-address
+      // (SPF/DKIM stays aligned — we never spoof the MSP's domain) until the
+      // partner has a verified sending domain. Both values come from rows this
+      // function already holds, never from request input (spec §8.1).
+      purpose: 'quote.sent',
+      partnerId: quote.partnerId,
+      partnerName: partnerName ?? null,
       replyTo,
       subject: template.subject, html: template.html, text: template.text,
       attachments: pdf ? [{ filename: `${quoteNumber}.pdf`, content: pdf, contentType: 'application/pdf' }] : undefined,

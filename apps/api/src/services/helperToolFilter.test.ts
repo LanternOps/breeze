@@ -86,9 +86,12 @@ describe('helper governed tool sets (finding A, Phase 1)', () => {
     }
   });
 
-  it('run_backup_verification stays excluded (no executeTool registration exists)', () => {
+  it('no level contains a tool that is not registered for execution', () => {
+    // The three orphan backup tools used to be the example here; they were
+    // removed (execution-plane W01, registry guard). Keep the invariant with a
+    // real org-wide tool instead.
     for (const level of ['basic', 'standard', 'extended'] as const) {
-      expect(getHelperAllowedTools(level)).not.toContain('run_backup_verification');
+      expect(getHelperAllowedTools(level)).not.toContain('get_backup_status');
     }
   });
 
@@ -97,8 +100,7 @@ describe('helper governed tool sets (finding A, Phase 1)', () => {
       const tools = getHelperAllowedTools(level);
       for (const t of [
         ...ORG_WIDE,
-        'get_backup_health',
-        'get_recovery_readiness',
+        'get_backup_status',
         'get_cis_compliance',
       ]) {
         expect(tools, `${level} must not contain org-wide tool ${t}`).not.toContain(t);
@@ -121,5 +123,19 @@ describe('helper governed tool sets (finding A, Phase 1)', () => {
         ).toBeDefined();
       }
     }
+  });
+
+  // Disk Cleanup v2 W05, spec §9.3 item 10. The Helper runs in front of an END
+  // USER, not a technician. `system_cleanup run` executes vetted maintenance
+  // binaries as LocalSystem for up to 90 minutes and some handlers are
+  // irreversible — that is not an end-user self-service action at any
+  // permission level, and it has no HELPER_TOOL_SCOPING entry, so the
+  // executeTool gate denies it even if a whitelist later named it.
+  it('system_cleanup is denied to the Helper at every level', () => {
+    for (const level of ['basic', 'standard', 'extended'] as const) {
+      expect(getHelperAllowedTools(level)).not.toContain('system_cleanup');
+      expect(validateHelperToolAccess('system_cleanup', level)).toContain('not available');
+    }
+    expect(HELPER_TOOL_SCOPING.system_cleanup).toBeUndefined();
   });
 });

@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, text, timestamp, pgEnum, index } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, text, timestamp, pgEnum, index, date } from 'drizzle-orm/pg-core';
 import { organizations } from './orgs';
 import { discoveredAssetTypeEnum } from './discovery';
 
@@ -43,6 +43,9 @@ export const manualAssets = pgTable(
     notes: text('notes'),
     tags: text('tags').array().notNull().default([]),
     retiredAt: timestamp('retired_at', { withTimezone: true }),
+    // Hardware Lifecycle report — see devices.purchaseDate.
+    purchaseDate: date('purchase_date'),
+    purchaseDateSource: varchar('purchase_date_source', { length: 20 }).$type<'manual' | 'vendor'>(),
     createdBy: uuid('created_by'),
     updatedBy: uuid('updated_by'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),

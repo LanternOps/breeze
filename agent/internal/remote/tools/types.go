@@ -3,6 +3,7 @@ package tools
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"math"
 	"strconv"
 	"strings"
@@ -138,6 +139,15 @@ const (
 	CmdFilesystemAnalysis = "filesystem_analysis"
 	CmdFileListDrives     = "file_list_drives"
 
+	// OS-native disk cleanup (Disk Cleanup v2 §7). A SECOND cleanup engine
+	// beside filesystem_analysis / file_delete: opaque, non-itemised platform
+	// maintenance (cleanmgr handlers, DISM component cleanup, Time Machine
+	// local snapshots, brew cleanup, package caches, journal vacuum) that the
+	// file scanner structurally cannot see. Its safety model is a CLOSED
+	// catalogue rather than a previewed path list — see internal/syscleanup.
+	CmdSystemCleanupList = "system_cleanup_list"
+	CmdSystemCleanupRun  = "system_cleanup_run"
+
 	// Network discovery
 	CmdNetworkDiscovery = "network_discovery"
 
@@ -145,10 +155,12 @@ const (
 	CmdSnmpPoll = "snmp_poll"
 
 	// Network monitoring
-	CmdNetworkPing      = "network_ping"
-	CmdNetworkTcpCheck  = "network_tcp_check"
-	CmdNetworkHttpCheck = "network_http_check"
-	CmdNetworkDnsCheck  = "network_dns_check"
+	CmdNetworkDiagnostic       = "network_diagnostic"
+	CmdNetworkDiagnosticCancel = "network_diagnostic_cancel"
+	CmdNetworkPing             = "network_ping"
+	CmdNetworkTcpCheck         = "network_tcp_check"
+	CmdNetworkHttpCheck        = "network_http_check"
+	CmdNetworkDnsCheck         = "network_dns_check"
 
 	// Script management (executor)
 	CmdScriptCancel      = "script_cancel"
@@ -179,6 +191,10 @@ const (
 	CmdVMRestoreFromBackup = "vm_restore_from_backup"
 	CmdVMRestoreEstimate   = "vm_restore_estimate"
 	CmdBMRRecover          = "bmr_recover"
+	// CmdBareMetalRebuild (W05a) runs the rebuild engine on a Linux host
+	// against a server-minted recovery token (payload: recoveryId, token,
+	// server, target{kind,path,imageSizeBytes}, identity).
+	CmdBareMetalRebuild = "bare_metal_rebuild"
 
 	// Log shipping
 	CmdSetLogLevel = "set_log_level"
@@ -601,6 +617,10 @@ type FilesystemAnalysisSummary struct {
 	BytesScanned          int64 `json:"bytesScanned"`
 	MaxDepthReached       int   `json:"maxDepthReached"`
 	PermissionDeniedCount int64 `json:"permissionDeniedCount"`
+	// Set when the duplicate-group map hit maxFSDuplicateGroups and stopped
+	// admitting new keys, so "no duplicates found" can be distinguished from
+	// "we stopped looking". omitempty keeps every existing payload byte-stable.
+	DuplicateTrackingTruncated bool `json:"duplicateTrackingTruncated,omitempty"`
 }
 
 // FilesystemAnalysisResponse captures the full analysis payload.
@@ -792,4 +812,45 @@ func GetPayloadStringSlice(payload map[string]any, key string) []string {
 		}
 	}
 	return result
+}
+
+// GetPayloadObjectSlice reads a JSON array of objects from a command payload —
+// e.g. the SNMP poll command's `oidSpecs`. Same contract as
+// GetPayloadStringSlice: a missing key, a non-array value, or a nil payload all
+// yield nil, and members of the wrong shape are dropped rather than failing the
+// whole command. A server that sends junk must not take the agent down with it.
+func GetPayloadObjectSlice(payload map[string]any, key string) []map[string]any {
+	raw, ok := payload[key]
+	if !ok {
+		return nil
+	}
+	slice, ok := raw.([]any)
+	if !ok {
+		return nil
+	}
+	result := make([]map[string]any, 0, len(slice))
+	for _, v := range slice {
+		if obj, ok := v.(map[string]any); ok {
+			result = append(result, obj)
+		}
+	}
+	if dropped := len(slice) - len(result); dropped > 0 {
+		slog.Warn("dropped malformed payload object entries", "key", key, "dropped", dropped)
+	}
+	return result
+}
+
+// GetPayloadObject reads a single JSON object from a command payload — e.g. the
+// SNMP poll command's `limits`. Returns nil for a missing key or a non-object
+// value, so callers fall back to their own defaults.
+func GetPayloadObject(payload map[string]any, key string) map[string]any {
+	raw, ok := payload[key]
+	if !ok {
+		return nil
+	}
+	obj, ok := raw.(map[string]any)
+	if !ok {
+		return nil
+	}
+	return obj
 }

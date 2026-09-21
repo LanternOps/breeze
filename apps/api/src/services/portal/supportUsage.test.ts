@@ -147,3 +147,65 @@ describe('supportUsageForOrg', () => {
     })).rejects.toThrow('month must use YYYY-MM');
   });
 });
+
+describe('billed quantity in the portal buckets (#4628 W03)', () => {
+  beforeEach(() => {
+    state.rows = [];
+    state.columns = undefined;
+  });
+
+  it('the billed bucket reports the BILLED quantity, so it matches the invoice', async () => {
+    state.rows = [{
+      ticketNumber: 'T-1', title: 'Visible',
+      durationMinutes: 20, billableMinutes: 60,
+      billingStatus: 'billed', isApproved: true,
+    }];
+    const result = await supportUsageForOrg(args);
+    expect(result.totals.billed).toEqual({ minutes: 60, hours: 1 });
+    expect(result.tickets[0]!.billedMinutes).toBe(60);
+  });
+
+  it('toBeBilled reports the billed quantity too', async () => {
+    state.rows = [{
+      ticketNumber: 'T-1', title: null,
+      durationMinutes: 20, billableMinutes: 60,
+      billingStatus: 'not_billed', isApproved: true,
+    }];
+    const result = await supportUsageForOrg(args);
+    expect(result.totals.toBeBilled).toEqual({ minutes: 60, hours: 1 });
+    expect(result.tickets[0]!.toBeBilledMinutes).toBe(60);
+  });
+
+  it('a pre-feature portal row falls back to the actual duration', async () => {
+    state.rows = [{
+      ticketNumber: 'T-1', title: null,
+      durationMinutes: 30, billableMinutes: null,
+      billingStatus: 'billed', isApproved: true,
+    }];
+    const result = await supportUsageForOrg(args);
+    expect(result.totals.billed).toEqual({ minutes: 30, hours: 0.5 });
+  });
+
+  it('pendingReview and coveredByContract stay ACTUAL minutes (scope pin)', async () => {
+    state.rows = [
+      {
+        ticketNumber: 'T-1', title: null,
+        durationMinutes: 20, billableMinutes: 60,
+        billingStatus: 'not_billed', isApproved: false,
+      },
+      {
+        ticketNumber: 'T-2', title: null,
+        durationMinutes: 20, billableMinutes: 60,
+        billingStatus: 'contract', isApproved: true,
+      },
+    ];
+    const result = await supportUsageForOrg(args);
+    expect(result.totals.pendingReview.minutes).toBe(20);
+    expect(result.totals.coveredByContract.minutes).toBe(20);
+  });
+
+  it('selects billable_minutes from the database', async () => {
+    await supportUsageForOrg(args);
+    expect(state.columns).toHaveProperty('billableMinutes');
+  });
+});

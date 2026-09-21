@@ -1,3 +1,5 @@
+const { ensureDefaultProfile } = vi.hoisted(() => ({ ensureDefaultProfile: vi.fn(async () => ({ id: 'default-profile' })) }));
+vi.mock('../../services/billingProfileService', () => ({ ensureDefaultProfile }));
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { createHash } from 'node:crypto';
@@ -288,6 +290,7 @@ describe('POST /organizations', () => {
     expect(body.data).toMatchObject({ id: ORG_ID, orgId: ORG_ID, name: 'Acme', slug: 'acme', type: 'customer' });
     expect(body.data.revision).toMatch(/^[a-f0-9]{64}$/);
     expect(mocks.systemContextOpens).toBe(1);
+    expect(ensureDefaultProfile).toHaveBeenCalledWith(PARTNER_ID, 'CAD', expect.anything());
     expect(insertedValues[0]).toMatchObject({ partnerId: PARTNER_ID, currencyCode: 'CAD', name: 'Acme', slug: 'acme' });
   });
 

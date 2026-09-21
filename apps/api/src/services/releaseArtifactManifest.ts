@@ -639,6 +639,42 @@ async function fetchSmallBuffer(url: string, label: string): Promise<Buffer> {
   return buffer;
 }
 
+/**
+ * Best-effort sha256/size lookup for a named asset, for DISPLAY only (the
+ * bare-metal recovery media catalog, GET /backup/bmr/boot-media — W04b).
+ * Unlike verifyReleaseArtifactManifestAsset this does NOT check the Ed25519
+ * signature: the value shown here is not a trust decision (the actual
+ * download still goes through GitHub's release redirect, or the S3/disk
+ * path in self-host local mode, unaffected by this field), it is just
+ * "what does the manifest currently say" for an operator glancing at the
+ * download list. Returns null on ANY failure — unreachable manifest,
+ * malformed JSON, unknown asset — so a manifest hiccup degrades the catalog
+ * to "no checksum shown" rather than a 500.
+ */
+export async function lookupReleaseManifestAssetForDisplay(
+  assetName: string,
+  manifestUrl: string,
+): Promise<{ sha256: string; size: number } | null> {
+  try {
+    const manifestBytes = await fetchSmallBuffer(manifestUrl, "release artifact manifest");
+    const manifest = parseManifest(manifestBytes);
+    const assets = manifest.assets as ReleaseArtifactManifestAsset[];
+    const entry = assets.find((a) => a.name === assetName);
+    if (
+      !entry ||
+      typeof entry.sha256 !== "string" ||
+      !/^[a-f0-9]{64}$/.test(entry.sha256) ||
+      typeof entry.size !== "number" ||
+      entry.size <= 0
+    ) {
+      return null;
+    }
+    return { sha256: entry.sha256, size: entry.size };
+  } catch {
+    return null;
+  }
+}
+
 export async function probeSafeReleaseArtifact(url: string): Promise<Response> {
   return safeFetchFollowingRedirects(url, {
     method: "HEAD",

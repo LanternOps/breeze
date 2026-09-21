@@ -1,0 +1,236 @@
+{
+  "section": {
+    "title": "Entregables del servicio",
+    "empty": "Aún no hay entregables. Agregue los informes y revisiones periódicos que se le deben a este cliente."
+  },
+  "table": {
+    "name": "Entregable",
+    "cadence": "Frecuencia",
+    "nextDue": "Próximo vencimiento",
+    "lastDelivered": "Última entrega",
+    "status": "Estado",
+    "portal": "Portal"
+  },
+  "cadence": {
+    "monthly": "Mensual",
+    "quarterly": "Trimestral",
+    "semiannual": "Semestral",
+    "annual": "Anual",
+    "one_time": "Una sola vez"
+  },
+  "status": {
+    "on_track": "Al día",
+    "due_soon": "Vence pronto",
+    "late": "Atrasado",
+    "missed": "Incumplido",
+    "inactive": "Inactivo"
+  },
+  "occurrence": {
+    "status": {
+      "scheduled": "Programada",
+      "open": "Abierta",
+      "awaiting_evidence": "Esperando evidencia",
+      "delivered": "Entregada",
+      "missed": "Incumplida",
+      "waived": "Exonerada"
+    }
+  },
+  "actions": {
+    "add": "Agregar entregable",
+    "edit": "Editar",
+    "deactivate": "Desactivar",
+    "deliver": "Marcar como entregado",
+    "waive": "Exonerar",
+    "reopen": "Reabrir",
+    "reschedule": "Reprogramar",
+    "addEvidence": "Agregar evidencia",
+    "removeEvidence": "Quitar evidencia",
+    "save": "Guardar",
+    "cancel": "Cancelar"
+  },
+  "form": {
+    "name": "Nombre",
+    "description": "Descripción",
+    "contract": "Contrato",
+    "noContract": "Sin vínculo a un contrato",
+    "contractsUnavailable": "No se pudieron cargar los contratos de esta organización. Recarga la página antes de guardar.",
+    "cadence": "Frecuencia",
+    "anchorDueDate": "Primera fecha de vencimiento",
+    "effectiveFrom": "Vigente desde",
+    "effectiveUntil": "Vigente hasta",
+    "leadDays": "Anticipación (días)",
+    "graceDays": "Período de gracia (días)",
+    "artifactRequired": "Se requiere evidencia antes de marcar como entregado",
+    "completionMode": {
+      "label": "Cierre",
+      "explicit": "Marcado como entregado por un técnico",
+      "on_ticket_resolve": "Entregado cuando se resuelve el ticket vinculado"
+    },
+    "autoEvidenceReport": "Adjuntar ejecuciones de informe como evidencia",
+    "autoEvidenceNone": "Ninguno",
+    "autoEvidenceHelp": "La evidencia se genera el día de vencimiento y se vuelve visible para el cliente cuando se entrega la ocurrencia.",
+    "autoEvidenceEmpty": "Todavía no hay tipos de informes de evidencia gestionados disponibles.",
+    "owner": "Responsable",
+    "ticketCategory": "Categoría del ticket",
+    "portalVisible": "Mostrar en el portal del cliente",
+    "sortOrder": "Orden",
+    "instructions": "Instrucciones internas",
+    "instructionsHint": "Interno — nunca se muestra al cliente.",
+    "checklistTemplate": "Plantilla de lista de verificación",
+    "checklistTemplateNone": "Ninguna",
+    "checklistTemplateAllOrgs": "Todas las orgs",
+    "checklistTemplateManage": "Administrar plantillas de lista de verificación"
+  },
+  "drawer": {
+    "title": "Ocurrencias",
+    "empty_one": "Aún no hay ocurrencias. La primera se planifica {{count}} día antes de su fecha de vencimiento.",
+    "empty_other": "Aún no hay ocurrencias. La primera se planifica {{count}} días antes de su fecha de vencimiento.",
+    "emptyWithDate_one": "Aún no hay ocurrencias. La primera se planifica {{count}} día antes de su fecha de vencimiento ({{date}}).",
+    "emptyWithDate_other": "Aún no hay ocurrencias. La primera se planifica {{count}} días antes de su fecha de vencimiento ({{date}}).",
+    "evidence": "Evidencia",
+    "noEvidence": "Sin evidencia adjunta",
+    "late": "Atrasada",
+    "rescheduledFrom": "Reprogramada desde {{date}}",
+    "deliveryNote": "Nota de entrega",
+    "waivedReason": "Motivo de la exoneración",
+    "newDueDate": "Nueva fecha de vencimiento",
+    "uploadEvidence": "Subir un archivo como evidencia",
+    "uploadEvidenceHint": "PDF, JPEG, PNG o WebP, hasta 10 MB. El archivo se archiva en la biblioteca de documentos de esta organización.",
+    "evidenceDocument": "Documento",
+    "upload": "Subir",
+    "checklistProgress": "{{done}} / {{total}}",
+    "showChecklist": "Mostrar lista de verificación",
+    "hideChecklist": "Ocultar lista de verificación"
+  },
+  "evidence": {
+    "reportRun": "Ejecución de informe",
+    "document": "Documento",
+    "reportRunId": "ID de la ejecución de informe"
+  },
+  "upcoming": {
+    "title": "Próximos 90 días",
+    "empty": "Nada vence en los próximos 90 días."
+  },
+  "group": {
+    "noContract": "Sin contrato"
+  },
+  "errors": {
+    "evidenceRequired": "Adjunte evidencia antes de marcar esta ocurrencia como entregada.",
+    "duplicateName": "Ya existe un entregable con este nombre para esta organización.",
+    "loadFailed": "No se pudieron cargar los entregables.",
+    "saveFailed": "No se pudo guardar el entregable.",
+    "actionFailed": "No se pudo actualizar la ocurrencia.",
+    "uploadFailed": "No se pudo subir el archivo de evidencia.",
+    "tooLarge": "Ese archivo pesa más de 10 MB.",
+    "unsupportedType": "Solo se pueden adjuntar archivos PDF, JPEG, PNG y WebP.",
+    "storageUnavailable": "El almacenamiento de documentos no está disponible en este momento. Vuelva a intentarlo en unos minutos."
+  },
+  "confirm": {
+    "deactivate": "¿Desactivar {{name}}? Las ocurrencias abiertas se cerrarán y no se programarán nuevas.",
+    "deleteKeyDate": "¿Eliminar la fecha clave {{label}}?"
+  },
+  "keyDates": {
+    "title": "Fechas clave",
+    "empty": "No hay fechas clave registradas.",
+    "add": "Agregar fecha clave",
+    "label": "Etiqueta",
+    "kind": {
+      "label": "Tipo",
+      "insurance_renewal": "Renovación de seguro",
+      "vendor_contract_end": "Fin de contrato con proveedor",
+      "compliance_deadline": "Plazo de cumplimiento",
+      "audit": "Auditoría",
+      "other": "Otro"
+    },
+    "date": "Fecha",
+    "recursAnnually": "Se repite cada año",
+    "remindDaysBefore": "Recordar (días antes)",
+    "portalVisible": "Mostrar en el portal del cliente",
+    "contractEnd": "Fin del contrato",
+    "notes": "Notas",
+    "owner": "Responsable",
+    "edit": "Editar fecha clave",
+    "delete": "Eliminar",
+    "errors": {
+      "loadFailed": "No se pudieron cargar las fechas clave.",
+      "saveFailed": "No se pudo guardar la fecha clave."
+    },
+    "toast": {
+      "saved": "Fecha clave guardada",
+      "deleted": "Fecha clave eliminada"
+    }
+  },
+  "toast": {
+    "saved": "Entregable guardado",
+    "delivered": "Marcado como entregado",
+    "waived": "Ocurrencia exonerada",
+    "reopened": "Ocurrencia reabierta",
+    "rescheduled": "Ocurrencia reprogramada",
+    "evidenceAdded": "Evidencia agregada",
+    "evidenceRemoved": "Evidencia quitada",
+    "deactivated": "Entregable desactivado",
+    "evidenceUploaded": "Evidencia subida"
+  },
+  "templates": {
+    "pageTitle": "Plantillas de entregables",
+    "pageDescription": "Defina un nivel de servicio una vez y aplíquelo a cualquier cliente. Los conjuntos de todo el partner están disponibles para cada organización que administra.",
+    "empty": "Aún no hay conjuntos de plantillas. Cree uno para definir un nivel de servicio reutilizable para sus clientes.",
+    "allOrganizations": "Todas las orgs",
+    "actions": {
+      "newSet": "Nuevo conjunto de plantillas",
+      "addItem": "Agregar entregable",
+      "apply": "Aplicar conjunto de plantillas",
+      "edit": "Editar",
+      "delete": "Eliminar",
+      "save": "Guardar",
+      "cancel": "Cancelar"
+    },
+    "form": {
+      "name": "Nombre del conjunto",
+      "description": "Descripción",
+      "itemName": "Nombre del entregable",
+      "cadence": "Frecuencia",
+      "leadDays": "Abrir este número de días antes del vencimiento",
+      "graceDays": "Marcar como incumplido este número de días después del vencimiento",
+      "artifactRequired": "Evidencia requerida",
+      "completionMode": "Finalización",
+      "autoEvidenceReportType": "Tipo de informe de evidencia"
+    },
+    "ownerScope": {
+      "legend": "¿Para quién es este conjunto?",
+      "allOrganizations": "Todas las organizaciones (todo el partner)",
+      "thisOrganizationOnly": "Solo esta organización"
+    },
+    "apply": {
+      "title": "Aplicar conjunto de plantillas",
+      "set": "Conjunto de plantillas",
+      "contract": "Contrato (opcional)",
+      "noContract": "Sin contrato",
+      "effectiveFrom": "Vigente desde",
+      "owner": "Responsable (opcional)",
+      "submit": "Aplicar",
+      "created_one": "Se creó {{count}} entregable",
+      "created_other": "Se crearon {{count}} entregables",
+      "skipped": "Omitidos (ya existentes): {{names}}"
+    },
+    "errors": {
+      "collision": "Estos entregables ya existen en el destino: {{names}}",
+      "duplicateSetName": "Ya existe un conjunto de plantillas con este nombre.",
+      "duplicateItemName": "Ya existe un elemento con este nombre en el conjunto.",
+      "partnerWideDenied": "Administrar plantillas de todo el partner requiere acceso completo a la organización del partner.",
+      "loadFailed": "No se pudieron cargar los conjuntos de plantillas.",
+      "saveFailed": "No se pudo guardar el conjunto de plantillas.",
+      "deleteFailed": "No se pudo eliminar el conjunto de plantillas.",
+      "itemSaveFailed": "No se pudo guardar el entregable.",
+      "itemDeleteFailed": "No se pudo quitar el entregable.",
+      "applyFailed": "No se pudo aplicar el conjunto de plantillas."
+    },
+    "toast": {
+      "setSaved": "Conjunto de plantillas guardado",
+      "setDeleted": "Conjunto de plantillas eliminado",
+      "itemSaved": "Entregable guardado",
+      "itemDeleted": "Entregable eliminado",
+      "applied": "Conjunto de plantillas aplicado"
+    }
+  }
+}

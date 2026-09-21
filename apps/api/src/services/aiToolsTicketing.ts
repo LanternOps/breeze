@@ -8,11 +8,16 @@
 
 import { and, desc, eq, isNull, ne, or, sql, type SQL } from 'drizzle-orm';
 import { db } from '../db';
-import { alerts, deviceHardware, devices, ticketDrafts, tickets } from '../db/schema';
+import { deviceHardware, devices, ticketDrafts, tickets } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
 import { isAiAgentPrincipal } from '../middleware/auth';
 import { deviceInSiteScope, ticketSiteScopeCondition } from '../routes/tickets/siteScope';
+import { deviceIdSiteDenied, deviceScopeCondition } from './aiToolsSiteScope';
+// One implementation of alert-by-id access, not a twin (#6096 I6). aiToolsAlerts
+// does not import this module, so the edge is acyclic.
+import { findAlertWithAccess } from './aiToolsAlerts';
 import type { AiTool, AiToolTier } from './aiTools';
+import type { ToolExecutionContext } from './toolExecutionContext';
 import {
   createTicket,
   changeTicketStatus,
@@ -28,11 +33,15 @@ import {
   editTicketComment,
   deleteTicketComment,
   moveTicketOrg,
+  revalidateTicketAssignee,
   type CreateTicketInput,
   type TicketStatus,
   type UpdateTicketFieldsInput
 } from './ticketService';
 import {
+  listTimeEntries,
+  getRunningTimer,
+  getTimesheet,
   createTimeEntry,
   startTimer,
   stopTimer,
@@ -41,6 +50,9 @@ import {
 import { findStatusByName, listActiveStatusNames } from './ticketConfigService';
 import { TicketMoveCurrencyBlockedError } from './ticketMoveCurrencyGuard';
 import { getUserPermissions, hasPermission, PERMISSIONS } from './permissions';
+import { canManageTimeEntryBilling } from './timeEntryBillingPermission';
+import { listChecklist } from './ticketChecklistService';
+import { listWorkTypes } from './workTypeService';
 
 type ParseResult<T> = { value: T } | { error: string };
 
@@ -66,6 +78,39 @@ function agentRunIdFrom(auth: AuthContext): string | null {
   return isAiAgentPrincipal(auth) && auth.principal.kind === 'ai_agent' ? auth.principal.runId : null;
 }
 
+/**
+ * #4209 (W03): the refusal the three users-FK actions return for an ai_agent
+ * principal.
+ *
+ * `assign` writes `tickets.assigned_to`; `update_status` and `create` write
+ * `created_by`/actor columns and emit `actorUserId`. All three go through
+ * `actorFrom(auth)`, whose `auth.user.id` for an ai_agent principal is an
+ * `aiAgents.id` — attribution only, never a `users` row (agentAuthContext.ts).
+ * Writing it into any of those columns forges a foreign key and fails at
+ * runtime with a 23503 the agent cannot interpret.
+ *
+ * The `comment`, `update_fields` and `draft` branches each got a real
+ * agent-principal design (addAiTriageNote, applyAiFieldUpdates, ticket_drafts);
+ * these three did not, so they refuse rather than guess. Supporting them means
+ * designing agent attribution for assignment, status and creation — a product
+ * decision, tracked separately. A stable, typed error code is what lets the
+ * agent's tool loop relay the limitation instead of retrying a 23503.
+ *
+ * Review finding: the payload carries NO `success` key, on purpose. The SDK's
+ * error classifier (`aiAgentSdkTools.ts`, "Detect error responses returned as
+ * JSON strings by tool handlers") flags a result as a tool error only when
+ * `'error' in parsed && !('success' in parsed) && !('data' in parsed) &&
+ * !('configured' in parsed)`. Adding `success: false` would EXEMPT the refusal
+ * from that check, so it would be recorded by `safePostToolUse` as an ordinary
+ * successful tool call and the MCP content block would omit `isError: true` —
+ * a policy refusal indistinguishable from a success in the execution log,
+ * which is precisely the observability this wave exists to add. The bare
+ * `{ error, … }` shape is also what every other refusal in this file uses.
+ */
+function refuseAgentPrincipal(action: string): string {
+  return JSON.stringify({ error: 'agent_principal_unsupported_action', action });
+}
+
 /** Postgres unique-violation, however the driver happens to wrap it (mirrors ticketService.ts's isUniqueViolation). */
 function isUniqueViolation(err: unknown): boolean {
   if (!err || typeof err !== 'object') return false;
@@ -86,15 +131,47 @@ function serviceErrorToJson(err: unknown): string | null {
   return null;
 }
 
-function timeEntryActorFrom(auth: AuthContext) {
+async function timeEntryActorFrom(auth: AuthContext) {
+  const userBacked = auth.principal?.kind === 'user_session' || auth.principal?.kind === 'oauth_grant';
+  const permissions = userBacked && !auth.user.isPlatformAdmin ? await getUserPermissions(auth.user.id, {
+    partnerId: auth.partnerId ?? undefined,
+    orgId: auth.orgId ?? undefined,
+    scope: auth.scope,
+  }) : null;
   return {
     userId: auth.user.id,
     name: auth.user.name,
     partnerId: auth.partnerId,
     accessibleOrgIds: auth.accessibleOrgIds,
     // AI tools always operate on the calling user's own entries — never admin-manage others'.
-    manageAll: false as const
+    manageAll: false as const,
+    manageBilling: canManageTimeEntryBilling(auth, permissions),
   };
+}
+
+/**
+ * Preserve undefined on omission so the service applies the category default.
+ *
+ * A well-formed UUID is NOT trusted. It used to short-circuit the lookup, but a
+ * model hallucinates syntactically valid ids as readily as names, and an id the
+ * partner does not own reached the composite FK `(work_type_id, partner_id)`
+ * unchecked -- a 23503 raised inside the request transaction, which aborts it,
+ * so this function's own caller could only surface a raw 500. Both an id and a
+ * name are now matched against the partner's ACTIVE list and a miss returns the
+ * same enumerated refusal, which is also what steers the model to a real value.
+ */
+async function resolveWorkTypeId(raw: string | undefined, partnerId: string): Promise<string | undefined> {
+  if (!raw) return undefined;
+  const active = await listWorkTypes(partnerId, { includeInactive: false });
+  const needle = raw.trim().toLowerCase();
+  const match = active.find((w) => w.id.toLowerCase() === needle || w.name.toLowerCase() === needle);
+  if (!match) {
+    throw new TimeEntryServiceError(
+      `Unknown work type "${raw}". Valid work types: ${active.map((w) => w.name).join(', ') || '(none configured)'}`,
+      400,
+    );
+  }
+  return match.id;
 }
 
 /**
@@ -115,9 +192,11 @@ function entryCurrency(entry: { currencyCode?: string | null }): string | null {
  *
  * Site axis: RLS enforces only the org axis, so a site-restricted
  * org user must also be gated on the SITE axis here. After the org-scoped load,
- * a device-bound ticket is resolved only when its device's site is in the
- * caller's allowlist (deviceInSiteScope); deviceless (org-level) tickets stay
- * accessible at org scope — matching getScopedTicketOr404 in the HTTP route.
+ * a device-bound ticket is resolved only when its device is in the caller's
+ * exact-device allowlist AND its site is in the caller's site allowlist
+ * (deviceInSiteScope enforces both axes independently, #6086 finding 6);
+ * deviceless (org-level) tickets stay accessible at org scope — they are not
+ * device-attributable — matching getScopedTicketOr404 in the HTTP route.
  *
  * Returns the ticket row, or null when not found / out of the caller's scope.
  */
@@ -131,18 +210,6 @@ async function findTicketWithAccess(ticketId: string, auth: AuthContext) {
     return null;
   }
   return ticket;
-}
-
-async function findAlertWithAccess(alertId: string, auth: AuthContext) {
-  const conditions: SQL[] = [eq(alerts.id, alertId)];
-  const orgCond = auth.orgCondition(alerts.orgId);
-  if (orgCond) conditions.push(orgCond);
-  const [alert] = await db.select().from(alerts).where(and(...conditions)).limit(1);
-  if (!alert) return null;
-  if (alert.deviceId && !(await deviceInSiteScope(auth, alert.deviceId))) {
-    return null;
-  }
-  return alert;
 }
 
 async function canManageAnyTicketComment(auth: AuthContext): Promise<boolean> {
@@ -272,10 +339,107 @@ function parseAlertOverrides(value: unknown): ParseResult<Partial<Pick<CreateTic
   return { value: overrides };
 }
 
+const TIME_BILLING_STATUSES = ['not_billed', 'billed', 'no_charge', 'contract'] as const;
+
+function timeScopeRefusal(auth: AuthContext): string | null {
+  // GET /time-entries is requireScope('partner','system') (timeEntries.ts:23) — no org axis on time_entries (spec D4).
+  return auth.scope === 'partner' || auth.scope === 'system' ? null
+    : JSON.stringify({ error: 'Time entries are readable with a partner or system token only', code: 'PARTNER_SCOPE_REQUIRED' });
+}
+/** Stricter than timeActorFrom: wildcard grants are unavailable here; only platform admins manage other users. */
+const managesAllTime = (auth: AuthContext) => auth.user?.isPlatformAdmin === true;
+const orgAllowlist = (auth: AuthContext): string[] | null => (auth.scope === 'system' ? null : (auth.accessibleOrgIds ?? []));
+
+function jsonError(error: string): string {
+  return JSON.stringify({ error });
+}
+
 export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
+  aiTools.set('list_time_entries', {
+    tier: 1 as AiToolTier,
+    domain: 'tickets',
+    searchHint: 'logged time, time entries, timesheet hours by ticket, user or customer; billable vs unbilled',
+    deviceArgs: [],
+    definition: {
+      name: 'list_time_entries',
+      description: 'List time entries (logged work) with ticket, user, duration, billable flag and billing status. Filters: ticket, user, organization, date range, running, approval. Read-back for manage_tickets log_time_entry/start_timer/stop_timer.',
+      input_schema: {
+        type: 'object' as const,
+        properties: {
+          orgId: { type: 'string', description: 'Organization UUID' },
+          ticketId: { type: 'string', description: 'Ticket UUID' },
+          userId: { type: 'string', description: 'User UUID (admins only; others always see their own)' },
+          from: { type: 'string', description: 'ISO-8601 start (inclusive)' },
+          to: { type: 'string', description: 'ISO-8601 end (exclusive)' },
+          running: { type: 'boolean', description: 'Only entries with no end time' },
+          billingStatus: { type: 'string', enum: [...TIME_BILLING_STATUSES], description: 'Billing status: not_billed, billed, no_charge, contract' },
+          approved: { type: 'boolean' },
+          limit: { type: 'number', description: 'Max rows (default 50, max 200)' },
+          offset: { type: 'number', description: 'Rows to skip (default 0)' },
+        },
+        required: [],
+      },
+    },
+    handler: async (input, auth) => {
+      const refusal = timeScopeRefusal(auth); if (refusal) return refusal;
+      if (!auth.user?.id) return jsonError('list_time_entries requires a user session');
+      const orgId = typeof input.orgId === 'string' ? input.orgId : undefined;
+      if (orgId && !auth.canAccessOrg(orgId)) return jsonError('Access to this organization denied');
+      const limit = Math.min(Math.max(1, Number(input.limit) || 50), 200);
+      const offset = Math.max(0, Number(input.offset) || 0);
+      const parseDate = (v: unknown) => (typeof v === 'string' && !Number.isNaN(Date.parse(v)) ? new Date(v) : undefined);
+      try {
+        const { entries, total } = await listTimeEntries({
+          userId: managesAllTime(auth) ? (typeof input.userId === 'string' ? input.userId : undefined) : auth.user?.id,
+          ticketId: typeof input.ticketId === 'string' ? input.ticketId : undefined,
+          orgId,
+          accessibleOrgIds: orgAllowlist(auth),
+          from: parseDate(input.from), to: parseDate(input.to),
+          running: typeof input.running === 'boolean' ? input.running : undefined,
+          billingStatus: TIME_BILLING_STATUSES.includes(input.billingStatus as never) ? (input.billingStatus as (typeof TIME_BILLING_STATUSES)[number]) : undefined,
+          approved: typeof input.approved === 'boolean' ? input.approved : undefined,
+          limit, offset,
+        });
+        return JSON.stringify({ entries, total, limit, offset });
+      } catch (err) { console.error('[list_time_entries]', err); return jsonError('Operation failed. Check server logs for details.'); }
+    },
+  });
+
+  aiTools.set('get_running_timer', {
+    tier: 1 as AiToolTier, domain: 'tickets', searchHint: 'is my timer running, current running time entry, what am I clocked on', deviceArgs: [],
+    definition: { name: 'get_running_timer', description: 'Return the caller\'s currently running time entry (started, no end time), or null. Read-back for manage_tickets start_timer.', input_schema: { type: 'object' as const, properties: {}, required: [] } },
+    handler: async (_input, auth) => {
+      const refusal = timeScopeRefusal(auth); if (refusal) return refusal;
+      if (!auth.user?.id) return jsonError('get_running_timer requires a user session');
+      try { return JSON.stringify({ running: (await getRunningTimer(auth.user.id)) ?? null }); }
+      catch (err) { console.error('[get_running_timer]', err); return jsonError('Operation failed. Check server logs for details.'); }
+    },
+  });
+
+  aiTools.set('get_timesheet', {
+    tier: 1 as AiToolTier, domain: 'tickets', searchHint: 'weekly timesheet, hours per day this week, billable totals for a technician', deviceArgs: [],
+    definition: {
+      name: 'get_timesheet',
+      description: 'Weekly timesheet for one user: per-day entries and totals (total minutes, billable minutes, billable amounts by currency). Other users\' sheets need an admin.',
+      input_schema: { type: 'object' as const, properties: { weekStart: { type: 'string', description: 'ISO date of the week start (e.g. 2026-09-14)' }, userId: { type: 'string', description: 'User UUID (admins only)' } }, required: ['weekStart'] },
+    },
+    handler: async (input, auth) => {
+      const refusal = timeScopeRefusal(auth); if (refusal) return refusal;
+      if (!auth.user?.id) return jsonError('get_timesheet requires a user session');
+      const weekStart = typeof input.weekStart === 'string' ? new Date(input.weekStart) : new Date(NaN);
+      if (Number.isNaN(weekStart.getTime())) return jsonError('weekStart must be an ISO-8601 date');
+      const target = typeof input.userId === 'string' ? input.userId : auth.user.id;
+      if (target !== auth.user.id && !managesAllTime(auth)) return jsonError('Viewing other timesheets requires an admin role');
+      try { return JSON.stringify({ timesheet: await getTimesheet(target, weekStart, orgAllowlist(auth)) }); }
+      catch (err) { console.error('[get_timesheet]', err); return jsonError('Operation failed. Check server logs for details.'); }
+    },
+  });
+
   aiTools.set('manage_tickets', {
     tier: 1 as AiToolTier,
     deviceArgs: ['deviceId'],
+    domain: 'tickets',
+    searchHint: 'tickets: list, get, create, update, assign, comment, link alerts or devices, log time, start/stop timer',
     definition: {
       name: 'manage_tickets',
       description:
@@ -283,6 +447,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
         'Use action "list" to search, "get" for full detail, "create" to open a new ticket, ' +
         '"comment" to add a reply or internal note, "assign" to set the assignee, ' +
         '"update_status" to move the lifecycle (resolving requires resolutionNote), ' +
+        '"list_work_types" to list active work types (id and name), ' +
         '"log_time_entry" to record a completed time block (requires startedAt + endedAt), ' +
         '"start_timer" to start a running timer (auto-stops any existing timer), ' +
         '"stop_timer" to stop the currently running timer, ' +
@@ -300,6 +465,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
               'comment',
               'assign',
               'update_status',
+              'list_work_types',
               'log_time_entry',
               'start_timer',
               'stop_timer',
@@ -412,16 +578,23 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
             type: 'boolean',
             description: 'Whether this time is billable to the customer (log_time_entry / stop_timer; defaults from ticket category)'
           },
+          workType: {
+            type: 'string',
+            description:
+              'Work type for log_time_entry / start_timer — the NAME (e.g. "On-site", "Remote", "After-hours") or its id. ' +
+              'Says WHAT the work was. Omit it to let the ticket category default apply. ' +
+              'Use list_work_types to see the options. Cannot be changed at stop_timer; edit the time entry instead.',
+          },
           hourlyRate: {
             type: 'number',
-            description: 'Override hourly rate in the ticket organization\'s currency (log_time_entry; defaults from org/category settings only when their rate currency matches the org)'
+            description: 'Override hourly rate in the ticket organization\'s currency (log_time_entry; defaults from the resolved billing profile; overrides require time_entries:manage_billing)'
           }
         },
         required: ['action']
       }
     },
 
-    handler: async (input, auth) => {
+    handler: async (input, auth, context?: ToolExecutionContext) => {
       const action = input.action as string;
       const actor = actorFrom(auth);
 
@@ -435,6 +608,14 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
         // their allowed sites (deviceless org-level tickets stay visible).
         const siteCondition = ticketSiteScopeCondition(auth);
         if (siteCondition) conditions.push(siteCondition);
+        // Exact-device axis (#6086 finding 6): a device-bound agent run must not
+        // enumerate a SIBLING device's tickets. Independent of the site axis —
+        // a device-less analysis run carries allowedDeviceIds with no
+        // allowedSiteIds, so the site condition above is undefined for it.
+        // Deviceless (org-level) tickets stay visible: they are not
+        // device-attributable (same carve-out as findTicketWithAccess).
+        const deviceCondition = deviceScopeCondition(auth, tickets.deviceId);
+        if (deviceCondition) conditions.push(or(isNull(tickets.deviceId), deviceCondition)!);
         if (input.orgId) conditions.push(eq(tickets.orgId, input.orgId as string));
         if (input.deviceId) conditions.push(eq(tickets.deviceId, input.deviceId as string));
         if (input.status) conditions.push(eq(tickets.status, input.status as TicketStatus));
@@ -469,11 +650,28 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
         // defense-in-depth is folded into the single query (no extra round-trip).
         const ticket = await findTicketWithAccess(String(input.ticketId), auth);
         if (!ticket) return JSON.stringify({ error: 'Ticket not found' });
-        return JSON.stringify({ ticket });
+        // #5808 W03 — READ ONLY. Labels and progress, so "summarise where this
+        // ticket stands" works. No per-step detail and no doneByUserId: the
+        // attestation is a compliance record, not context for a summary. There
+        // is deliberately NO tick-off action (spec §6.5, OD-7 A) — an agent
+        // ticking a box it did not perform is a falsified record. The control
+        // that actually enforces that is W01's isInteractiveUserSession gate on
+        // the `done` branch, not the absence of a tool here: an MCP API key
+        // carries its creator's real user id.
+        const checklist = await listChecklist(ticket.id);
+        return JSON.stringify({
+          ticket,
+          checklist: checklist.total === 0 ? null : {
+            done: checklist.done,
+            total: checklist.total,
+            items: checklist.items.map((i) => ({ label: i.label, done: i.done })),
+          },
+        });
       }
 
       // ── create ────────────────────────────────────────────────────────────
       if (action === 'create') {
+        if (agentRunIdFrom(auth)) return refuseAgentPrincipal(action);
         if (!input.subject) return JSON.stringify({ error: 'subject is required for create action' });
         if (!input.orgId) return JSON.stringify({ error: 'orgId is required for create action' });
         // auth.canAccessOrg is pre-computed from accessibleOrgIds (system → true,
@@ -540,6 +738,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
 
       // ── assign ────────────────────────────────────────────────────────────
       if (action === 'assign') {
+        if (agentRunIdFrom(auth)) return refuseAgentPrincipal(action);
         if (!input.ticketId) return JSON.stringify({ error: 'ticketId is required for assign action' });
         // Scoped pre-check: ensure ticket is visible in caller's org scope before mutating.
         const found = await findTicketWithAccess(String(input.ticketId), auth);
@@ -554,6 +753,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
 
       // ── update_status ─────────────────────────────────────────────────────
       if (action === 'update_status') {
+        if (agentRunIdFrom(auth)) return refuseAgentPrincipal(action);
         if (!input.ticketId) return JSON.stringify({ error: 'ticketId is required for update_status action' });
         if (!input.status && !input.statusName) return JSON.stringify({ error: 'status or statusName is required for update_status action' });
         // Exactly one of status / statusName must be provided.
@@ -818,6 +1018,13 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
         if (found.deviceId !== null) return JSON.stringify({ linked: false, reason: 'already_linked' });
 
         const deviceId = matches[0]!.id;
+        // Exact-device/site axes (#6086 finding 6): the identity match above is
+        // org-only, so without this a device-bound run could link (and then
+        // pivot through) a device outside its allowlist. Fails closed on an
+        // unresolvable device; a no-op for unrestricted callers.
+        if (await deviceIdSiteDenied(auth, deviceId)) {
+          return JSON.stringify({ linked: false, reason: 'device_out_of_scope' });
+        }
         // The `device_id IS NULL` guard in the WHERE (not just the read above)
         // is the actual CAS — closes the race between two concurrent
         // link_device calls both passing the "not yet linked" read.
@@ -834,6 +1041,10 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
         if (updated.length === 0) {
           return JSON.stringify({ linked: false, reason: 'already_linked' });
         }
+        await revalidateTicketAssignee(String(input.ticketId), {
+          ...actor,
+          principalKind: isAiAgentPrincipal(auth) ? 'ai_agent' : 'user',
+        });
         return JSON.stringify({ linked: true, deviceId });
       }
 
@@ -912,8 +1123,36 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
         }
       }
 
+      if (action === 'list_work_types' ||
+          ((action === 'log_time_entry' || action === 'start_timer') && input.workType !== undefined)) {
+        if (auth.scope !== 'partner' || !auth.partnerId) {
+          return JSON.stringify({ error: 'Work types require partner scope' });
+        }
+      }
+
+      if (action === 'list_work_types') {
+        const rows = await listWorkTypes(auth.partnerId!, { includeInactive: false });
+        return JSON.stringify({ workTypes: rows.map(({ id, name }) => ({ id, name })) });
+      }
+
       // ── log_time_entry ────────────────────────────────────────────────────
       if (action === 'log_time_entry') {
+        // #4177 (W04): an agent may PROPOSE a time entry (an action_intents
+        // row, see services/aiTimeEntryProposal.ts) but never create one
+        // inline — the row needs a real `users` owner, which only the release
+        // path (executing as `decided_by_user_id`) can supply. Distinct code
+        // from `agent_principal_unsupported_action` because the correct route
+        // EXISTS; the agent's loop should relay "propose it", not "can't".
+        if (agentRunIdFrom(auth)) {
+          return JSON.stringify({ error: 'agent_principal_requires_intent_release', action });
+        }
+        // A released proposal arrives with the APPROVER's auth and their id
+        // in the context bag (intentReleaseWorker.ts). Refuse rather than
+        // trust if the two ever disagree — the entry's owner is the one
+        // thing this branch must never get wrong.
+        if (context?.approverRelease && context.approverRelease.approverUserId !== auth.user.id) {
+          return JSON.stringify({ error: 'approver_auth_mismatch', action });
+        }
         if (!input.startedAt) return JSON.stringify({ error: 'startedAt is required for log_time_entry action' });
         if (!input.endedAt) return JSON.stringify({ error: 'endedAt is required for log_time_entry action' });
         // Site-scope parity: if a ticketId is given, pre-check the ticket is in scope
@@ -925,6 +1164,10 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
         try {
           const entry = await createTimeEntry(
             {
+              workTypeId: await resolveWorkTypeId(
+                typeof input.workType === 'string' ? input.workType : undefined,
+                auth.partnerId!,
+              ),
               ticketId: input.ticketId ? String(input.ticketId) : undefined,
               startedAt: new Date(String(input.startedAt)),
               endedAt: new Date(String(input.endedAt)),
@@ -932,7 +1175,11 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
               isBillable: typeof input.isBillable === 'boolean' ? input.isBillable : undefined,
               hourlyRate: typeof input.hourlyRate === 'number' ? input.hourlyRate : undefined
             },
-            timeEntryActorFrom(auth)
+            await timeEntryActorFrom(auth),
+            // Provenance: a released AI proposal is `ai_suggested` (#4177) so
+            // invoiceAssembly / time-saved reporting can tell it apart; a
+            // human's own tool call stays the column default.
+            { source: context?.approverRelease ? 'ai_suggested' : 'manual' }
           );
           return JSON.stringify({ timeEntry: entry, currencyCode: entryCurrency(entry) });
         } catch (err) {
@@ -953,10 +1200,14 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
         try {
           const entry = await startTimer(
             {
+              workTypeId: await resolveWorkTypeId(
+                typeof input.workType === 'string' ? input.workType : undefined,
+                auth.partnerId!,
+              ),
               ticketId: input.ticketId ? String(input.ticketId) : undefined,
               description: input.description ? String(input.description) : undefined
             },
-            timeEntryActorFrom(auth)
+            await timeEntryActorFrom(auth)
           );
           return JSON.stringify({ timeEntry: entry, currencyCode: entryCurrency(entry) });
         } catch (err) {
@@ -969,13 +1220,20 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
 
       // ── stop_timer ────────────────────────────────────────────────────────
       if (action === 'stop_timer') {
+        // Spec §3.7: work types are stamped at start; stopping does not take
+        // the ticket lock needed for a work-type edit and its pricing changes.
+        if (input.workType !== undefined) {
+          return JSON.stringify({
+            error: 'Work type is set at timer start. Stop without workType, then edit the time entry to change it.',
+          });
+        }
         try {
           const entry = await stopTimer(
             {
               description: input.description ? String(input.description) : undefined,
               isBillable: typeof input.isBillable === 'boolean' ? input.isBillable : undefined
             },
-            timeEntryActorFrom(auth)
+            await timeEntryActorFrom(auth)
           );
           return JSON.stringify({ timeEntry: entry, currencyCode: entryCurrency(entry) });
         } catch (err) {

@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useState } from 'react';
 import { AlertTriangle, Monitor, Receipt, ScrollText, Ticket, Users } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { resolveAlertTitle } from '@breeze/shared';
 import { formatDate, formatDateTime } from '@/lib/dateTimeFormat';
 import { formatCurrency, formatNumber } from '@/lib/i18n/format';
 import { useAuditActionFormatter } from '@/lib/auditFormat';
 import type { AlertRow, AuditLogEntry } from '@/components/dashboard/types';
+import OrgKeyDatesCard from './OrgKeyDatesCard';
 import { useLatest, type OrgFetch, type OrgSummary } from './orgRecordFetch';
 import type { ServiceManagementMode } from './orgRecordTabs';
 
@@ -262,7 +264,7 @@ export default function OrgOverviewTab({ orgId, orgFetch, summary, summaryFailed
               {alerts.map((alert) => (
                 <li key={alert.id} className="px-4 py-2.5 text-sm">
                   <a className="font-medium hover:underline" href={`/alerts/${alert.id}`}>
-                    {alert.title ?? alert.message ?? alert.id}
+                    {resolveAlertTitle(alert.title ?? alert.message, alert.deviceHostname, alert.id)}
                   </a>
                   <p className="mt-0.5 text-xs text-muted-foreground">
                     {[alert.deviceHostname, formatDateTime(alert.triggeredAt ?? alert.createdAt)]
@@ -313,6 +315,7 @@ export default function OrgOverviewTab({ orgId, orgFetch, summary, summaryFailed
             </ul>
           )}
         </section>
+        <OrgKeyDatesCard orgId={orgId} orgFetch={orgFetch} />
       </div>
     </div>
   );

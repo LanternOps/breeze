@@ -48,7 +48,9 @@ import { createAuditLog } from './auditService';
 import * as self from './tenantCascade';
 import { pgErrorCode } from '../utils/pgErrors';
 import { deleteObjectKeys } from './ticketAttachmentStorage';
+import { getBlobStorage } from './artifacts/blobStorage';
 import { deleteObjects } from './s3Storage';
+import { releaseSendingDomainsForPartner } from './emailDomains/domainRelease';
 
 type StorageKeyRow = { storageKey: string | null };
 type CountRow = { count: number | string };
@@ -276,6 +278,15 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // DELETE CASCADE. No cross-references to ai_budgets, so its position is
   // pure alphabetization ('_' sorts before letters under localeCompare).
   'ai_budget_alert_events',
+  // ai_budget_reservations (SEC-142/143): durable pre-dispatch spend fence,
+  // Shape 1 with NOT NULL org_id ON DELETE CASCADE. It also carries a
+  // composite (session_id, org_id) FK to ai_sessions with a column-scoped
+  // ON DELETE SET NULL (session_id) — that FK has an explicit ON DELETE, so
+  // like the neighbours above the real DELETE order comes from
+  // topologicalCascadeOrder()'s runtime pg_constraint read, not this array.
+  // The alphabetical position happens to be children-before-parents anyway
+  // ('ai_budget_reservations' < 'ai_sessions').
+  'ai_budget_reservations',
   'ai_budgets',
   'ai_cost_usage',
   // AI Operator thin slice (#5205 W03, #5208). All three are Shape 1 with a
@@ -296,7 +307,26 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'ai_operator_operations',
   'ai_operator_task_outbox',
   'ai_operator_tasks',
+  // Execution plane W01 (spec §6.1): artifact rows. Child of ai_agent_runs via
+  // the composite (run_id, org_id) FK, ON DELETE CASCADE — topologicalCascadeOrder()
+  // reads that edge from pg_constraint and deletes these before the runs. Blob
+  // bytes are pre-cleared in cascadeDeleteOrg step 1a-bis BEFORE any row goes,
+  // because the row is the only index to the key.
+  'ai_run_artifacts',
+  // Execution plane W02 (#5713): one row per sandbox instance, Shape 1 with a
+  // NOT NULL org_id, so an entry here is mandatory. Its only outbound FK is
+  // the composite (run_id, org_id) -> ai_agent_runs ON DELETE CASCADE, and
+  // ai_agent_runs sorts EARLIER in this alphabetical list — harmless, because
+  // the FK carries an explicit ON DELETE and topologicalCascadeOrder()'s
+  // runtime pg_constraint read, not this array, decides the real DELETE order.
+  'ai_run_workspaces',
   'ai_screenshots',
+  // AI script authoring W04 (#5612). ai_script_lane_state is per-org circuit
+  // state (PK org_id); ai_script_policies is dual-owner config whose PARTNER
+  // rows have org_id NULL and are therefore never cascade participants —
+  // only the org GRANT row is deleted here.
+  'ai_script_lane_state',
+  'ai_script_policies',
   'ai_sessions',
   // ai_unattended_exposure (Wave 5 Part A, #3827): blast-cap ledger. Sorts
   // here alphabetically (after ai_sessions, before alert_correlation_groups)
@@ -334,8 +364,10 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'backup_profiles',
   'backup_sla_configs',
   'backup_sla_events',
+  'backup_snapshot_retirements',
   'backup_snapshots',
   'backup_verifications',
+  'bare_metal_recoveries',
   'brain_device_context',
   'browser_extensions',
   'browser_policies',
@@ -387,6 +419,14 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // 'custom_field' before the 'e' in 'customer' (the prefix-extension trap).
   'customer_email_domains',
   'delegant_m365_connections',
+  // Items before sets — children before parents (both branch FKs are
+  // ON DELETE CASCADE, but the cascade list deletes explicitly).
+  // localeCompare already orders them that way ('i' < 's'); both sort after
+  // 'delegant_m365_connections' ('e' < 'i') and before 'deployment_invites'
+  // ('l' < 'p'). Partner-wide rows carry org_id NULL, so an org erasure never
+  // touches them — only org-owned sets and their items.
+  'deliverable_template_items',
+  'deliverable_template_sets',
   'deployment_invites',
   'deployments',
   'device_agent_health_latest',
@@ -403,6 +443,9 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'device_filesystem_cleanup_runs',
   'device_filesystem_scan_state',
   'device_filesystem_snapshots',
+  // Leaf table (Fleet Designer W02, #5652): composite FK to devices ON DELETE
+  // CASCADE, run FK ON DELETE SET NULL (run_id); no children of its own.
+  'device_function_assessments',
   'device_group_memberships',
   'device_groups',
   'device_hardware',
@@ -447,6 +490,10 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'escalation_policies',
   'event_delivery_receipts',
   'executive_summaries',
+  // Fleet Designer W03 (#5653): apply ledger. report_run_id FK is ON DELETE
+  // CASCADE (report_runs is pre-cleared above), org_id reached here too —
+  // either order is a no-op for the other. Leaf table, no children.
+  'fleet_design_applied_items',
   'fleet_finding_devices',
   'fleet_findings',
   'fleet_remediation_run_targets',
@@ -477,8 +524,27 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'log_correlation_rules',
   'log_correlations',
   'log_search_queries',
+  // M365 tenant sync snapshots (spec §3). Alphabetical placement is the whole
+  // contract for this array: tenantCascade.integration.test.ts asserts
+  // localeCompare order, while FK-children-before-parents is asserted against
+  // topologicalCascadeOrder()'s RUNTIME pg_constraint read — so
+  // m365_sync_state sorting after m365_connections here is harmless even
+  // though it FK-references it. None of these is append-only and none carries
+  // an immutability trigger, so no AUDIT_ADMIN_REQUIRED_TABLES entry.
+  'm365_ca_policies',
   'm365_connections',
   'm365_consent_sessions',
+  'm365_intune_devices',
+  'm365_license_skus',
+  'm365_posture_rollups',
+  'm365_secure_score_snapshots',
+  // #5784 W05. Append-only interactive sign-in events. Its only FK is
+  // org_id -> organizations, which is last in this array, so the
+  // children-before-parents property holds. DELETE is granted (the retention
+  // worker purges it), so no AUDIT_ADMIN_REQUIRED_TABLES entry either.
+  'm365_signin_events',
+  'm365_sync_state',
+  'm365_users',
   'maintenance_windows',
   // #4622 — org-scoped hand-entered inventory. Not append-only and carrying no
   // immutability trigger, so no AUDIT_ADMIN_REQUIRED_TABLES entry.
@@ -489,8 +555,30 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'metric_rollups',
   'metric_rollups_default',
   'ml_feedback_events',
+  // #5289. Deleting a definition cascades to its compiled alert template /
+  // rule / automation rows and to every config_policy_monitors attachment, all
+  // of which are listed earlier or reached by FK, so alphabetical order is also
+  // a safe delete order here (asserted by tenantCascade.integration.test.ts).
+  // W05c1 conversion ledger. outputs → conversions (ON DELETE CASCADE) and
+  // conversions.policy_id → configuration_policies (SET NULL), outputs.monitor_id
+  // → monitor_definitions (SET NULL): alphabetical order is also child-before-
+  // parent here.
+  'monitor_conversion_outputs',
+  'monitor_conversions',
+  'monitor_definitions',
+  // #5290 — device-scoped operational rows. Both FK to monitor_definitions with
+  // ON DELETE CASCADE, and monitor_device_state.current_episode_id FKs to
+  // monitor_episodes with ON DELETE SET NULL, so neither ordering can raise an
+  // FK violation and pure alphabetical order satisfies the children-before-
+  // parents property too.
+  'monitor_device_state',
+  'monitor_episodes',
   'network_baselines',
   'network_change_events',
+  // #5291 W04 - gained a denormalized org_id so a partner-wide parent's
+  // results still reach a tenant. Sorts before 'network_monitors' under
+  // localeCompare AND is its FK child, so child-before-parent holds.
+  'network_monitor_results',
   'network_monitors',
   'network_topology',
   'notification_channels',
@@ -500,12 +588,24 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'oauth_grants',
   'oauth_refresh_tokens',
   'onedrive_device_state',
+  'org_billing_profile_assignments',
+  // org_documents (service deliverables W03). Alphabetical slot only: the list
+  // is STATIC and alphabetised (the contract test asserts exactly that), while
+  // the real delete order comes from topologicalCascadeOrder(), which reads FK
+  // edges from pg_catalog at run time. service_deliverable_evidence is an FK
+  // CHILD of org_documents (sd_evidence_document_org_fk), so the topological
+  // pass necessarily emits it FIRST — verified by the "topological order has all
+  // FK children appearing before their parents" case in
+  // tenantCascade.integration.test.ts. The self-FK on supersedes_document_id is
+  // ignored by that sort by design (one DELETE clears the whole org's rows).
+  'org_documents',
   'org_ticket_settings',
   // organization_external_links (#3242): external-system linkage rows. The
   // composite FK to organizations (id, partner_id) carries ON DELETE CASCADE,
   // but the table is enumerated here per the cascade contract test's
   // requirement that every org_id-columned table be listed for auditability.
   'organization_external_links',
+  'organization_key_dates',
   'organization_users',
   'agent_rollback_events',
   'agent_rollback_directives',
@@ -574,6 +674,8 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'script_categories',
   'script_execution_batches',
   'script_executions',
+  'script_proposal_reviews',
+  'script_proposals',
   'script_tags',
   'scripts',
   'security_policies',
@@ -585,6 +687,11 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'sensitive_data_findings',
   'sensitive_data_policies',
   'sensitive_data_scans',
+  // service_deliverable_* : evidence -> occurrences -> deliverables (children first);
+  // localeCompare puts '_e' < '_o' < 's', so alphabetical order IS FK order here.
+  'service_deliverable_evidence',
+  'service_deliverable_occurrences',
+  'service_deliverables',
   'service_principals',
   'service_process_check_results',
   'sites',
@@ -627,6 +734,29 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // S3 objects are cleared BEFORE this DELETE by the pre-step in
   // cascadeDeleteOrg — the rows are the only index to the object keys.
   'ticket_attachments',
+  // ticket_checklist_items (#5783 W01): one tickable step on a ticket. Shape 1
+  // (direct org_id, denormalised from tickets.org_id). The composite
+  // (ticket_id, org_id) FK is ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE;
+  // done_by_user_id / created_by are ON DELETE SET NULL. Cascade leaf — nothing
+  // FK-references it. localeCompare: 'ticket_attachments' <
+  // 'ticket_checklist_items' < 'ticket_drafts' ('at' < 'ch' < 'dr'), and it
+  // precedes its FK parent 'tickets'. The FK would take the rows anyway, but
+  // the cascade walks this array explicitly and an unlisted org_id table fails
+  // tenantCascade.integration.test.ts.
+  'ticket_checklist_items',
+  // ticket_checklist_template_items before ticket_checklist_templates —
+  // children before parents. Both branch FKs (template_id, org_id) and
+  // (template_id, partner_id) are ON DELETE CASCADE, but the cascade list
+  // deletes explicitly, so the child must still come first. localeCompare
+  // already orders them that way ('_' < 's' at the diverging character, the
+  // same prefix-extension trap as contract_template_versions /
+  // contract_templates); verified with
+  // `node --eval "console.log('ticket_checklist_template_items'.localeCompare('ticket_checklist_templates'))"`
+  // => -1. Both sort after 'ticket_checklist_items' and before 'ticket_drafts'.
+  // Partner-wide rows carry org_id NULL, so an org erasure never touches them —
+  // only org-owned templates and their items.
+  'ticket_checklist_template_items',
+  'ticket_checklist_templates',
   // ticket_drafts (P2-4, #4191): the reply/resolution-note an agent proposes
   // for a ticket. Composite FKs to tickets(id, org_id) (ON DELETE CASCADE —
   // this row dies with its ticket) and to ai_agent_runs/action_intents(id,
@@ -668,8 +798,35 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'tickets',
   'time_entries',
   'time_series_metrics',
+  // Tool catalog (#5215 / #5216). Child before parent: tool_source_tools
+  // references tool_sources, so it must be deleted first. localeCompare agrees
+  // (verified: 'tool_source_tools'.localeCompare('tool_sources') === -1), so
+  // the alphabetical and FK-order properties do not fight here.
+  'tool_source_tools',
+  'tool_sources',
+  'topology_change_outbox',
+  'topology_collection_runs',
+  'topology_collection_sources',
+  'topology_config_template_versions',
+  'topology_config_templates',
+  'topology_diagnostic_runs',
+  'topology_diagnostic_steps',
+  'topology_interfaces',
   'topology_layout',
+  'topology_layouts',
   'topology_manual_nodes',
+  'topology_monitor_bindings',
+  'topology_monitoring_policies',
+  'topology_node_bindings',
+  'topology_node_positions',
+  'topology_nodes',
+  'topology_observations',
+  'topology_policy_targets',
+  'topology_probe_targets',
+  'topology_relationship_support',
+  'topology_relationships',
+  'topology_site_state',
+  'topology_site_template_bindings',
   'tunnel_allowlists',
   'tunnel_sessions',
   'unifi_clients',
@@ -860,10 +1017,17 @@ const ASSOCIATED_SYSTEM_SCOPED_TABLES: ReadonlyArray<{
   // narrative-artifact fixture, #4190, but not caused by it: an ordinary
   // scheduled report has produced these rows since the feature shipped).
   //
-  // Safe to clear first: the only FK INTO report_runs is
-  // `ai_agent_runs.report_run_id`, which is ON DELETE SET NULL (confdeltype
-  // 'n'), so the run rows survive this statement with a null link and are
-  // then deleted by the main loop on their own org_id.
+  // Safe to clear first: two FKs point INTO report_runs and neither can raise
+  // 23503 here —
+  //   * `ai_agent_runs.report_run_id` is ON DELETE SET NULL (confdeltype 'n'):
+  //     the run rows survive this statement with a null link and are then
+  //     deleted by the main loop on their own org_id;
+  //   * `service_deliverable_evidence.sd_evidence_report_run_fk`
+  //     (report_run_id, report_id) is ON DELETE CASCADE (confdeltype 'c',
+  //     #5573 W01): the evidence rows referencing a deleted run go with it.
+  //     Those rows carry org_id and are also reached by the main loop, so a
+  //     run cleared here or an evidence row deleted there are both fine in
+  //     either order.
   //
   // No partner-axis twin is needed (unlike the SSO/PSA/software entries):
   // `reports.org_id` is NOT NULL, so every definition — and therefore every
@@ -954,6 +1118,10 @@ const AUDIT_ADMIN_REQUIRED_TABLES: ReadonlySet<string> = new Set<string>([
   'peripheral_policy_delivery_events',
   'agent_rollback_events',
   'pam_actuation_results',
+  // Append-only review evidence: REVOKE UPDATE/DELETE from breeze_app plus an
+  // immutability trigger (2026-10-16-100100), so erasure has to run as
+  // breeze_audit_admin with breeze.allow_audit_retention=1.
+  'script_proposal_reviews',
 ]);
 
 interface FkEdge {
@@ -961,6 +1129,12 @@ interface FkEdge {
   child_table: string;
   parent_table: string;
 }
+
+/**
+ * Tables whose rows are the only index to an S3 object key. The erasure
+ * pre-clear reads them ONE AT A TIME (see the 1a. block in cascadeDeleteOrg).
+ */
+const OBJECT_PRECLEAR_TABLES = ['ticket_attachments', 'org_documents'] as const;
 
 /**
  * Read foreign-key edges from pg_catalog and return a topological order
@@ -1108,8 +1282,9 @@ export async function cascadeDeleteOrg(
   // detected we throw and abort BEFORE deleting anything.
   const order = await topologicalCascadeOrder();
 
-  // 1a. Clear ticket-attachment OBJECTS before ANY row is deleted anywhere (W08 #3902,
-  //     spec D9). The rows are the ONLY index to the object keys — deleting
+  // 1a. Clear customer OBJECTS before ANY row is deleted anywhere (W08 #3902
+  //     spec D9; widened to org_documents by service deliverables W03 spec
+  //     #5573 §4.9). The rows are the ONLY index to the object keys — deleting
   //     them first would leave customer bytes in the bucket with nothing left
   //     to find them by, which is exactly the GDPR failure erasure exists to
   //     prevent. A storage fault therefore ABORTS the erasure before anything
@@ -1117,34 +1292,109 @@ export async function cascadeDeleteOrg(
   //     the same keys are re-read and the job finishes. Best-effort deletion
   //     with a logged count is deliberately rejected.
   //
-  //     db-backed rows carry their bytes in the row and need no pre-clear.
-  try {
-    const keys = await dbModule.withSystemDbAccessContext(async () => {
-      const result = await dbModule.db.execute(sql`
-        SELECT storage_key
-        FROM ticket_attachments
-        WHERE org_id = ${orgId}::uuid
-          AND storage_backend = 's3'
-          AND storage_key IS NOT NULL
-      `);
-      const rows = (result as unknown as { rows?: Array<{ storage_key: string }> }).rows
-        ?? (result as unknown as Array<{ storage_key: string }>);
-      return Array.isArray(rows) ? rows.map((r) => r.storage_key).filter(Boolean) : [];
-    });
-    if (keys.length > 0) {
-      await deleteObjectKeys(keys);
-    }
-  } catch (err) {
-    if (!isUndefinedTable(err)) {
+  //     One read PER byte table, deliberately NOT a UNION: the 42P01 tolerance
+  //     below exists for partial-schema fixtures, and a union would let ONE
+  //     missing table blind the read for the other — skipping the pre-clear for
+  //     a table that does exist and orphaning its objects. The reads are still
+  //     followed by a SINGLE deleteObjectKeys batch before the first DELETE, so
+  //     "objects go before rows" remains one observable step.
+  //
+  //     db-backed rows carry their bytes in the row and need no pre-clear; a
+  //     soft-deleted org_documents row has already had its object removed and
+  //     its storage_key cleared, so the NOT NULL excludes it.
+  const objectKeys: string[] = [];
+  for (const table of OBJECT_PRECLEAR_TABLES) {
+    try {
+      const keys = await dbModule.withSystemDbAccessContext(async () => {
+        const result = await dbModule.db.execute(sql`
+          SELECT storage_key
+          FROM ${sql.raw(`"${table}"`)}
+          WHERE org_id = ${orgId}::uuid
+            AND storage_backend = 's3'
+            AND storage_key IS NOT NULL
+        `);
+        const rows = (result as unknown as { rows?: Array<{ storage_key: string }> }).rows
+          ?? (result as unknown as Array<{ storage_key: string }>);
+        return Array.isArray(rows) ? rows.map((r) => r.storage_key).filter(Boolean) : [];
+      });
+      objectKeys.push(...keys);
+    } catch (err) {
+      if (isUndefinedTable(err)) {
+        // Tolerated for partial-schema fixtures only — say so, because in a real
+        // deployment it means this table's objects were never cleared.
+        console.warn(
+          `[tenantCascade] object pre-clear skipped for missing table ${table} (org=${orgId}); ` +
+          'any objects it holds are NOT cleared',
+        );
+        continue;
+      }
       await writeErasureFailedAudit(
-        orgId, performedBy, performedByEmail, 'ticket_attachments_objects', stats, err,
+        orgId, performedBy, performedByEmail, 'tenant_object_preclear', stats, err,
       );
       throw new Error(
-        `[tenantCascade] attachment object pre-clear failed for org=${orgId}; erasure aborted before any row was deleted and is rerunnable: ${
+        `[tenantCascade] object pre-clear failed for org=${orgId} table=${table}; erasure aborted before any row was deleted and is rerunnable: ${
           err instanceof Error ? err.message : String(err)
         }`,
       );
     }
+  }
+  if (objectKeys.length > 0) {
+    try {
+      await deleteObjectKeys(objectKeys);
+    } catch (err) {
+      await writeErasureFailedAudit(
+        orgId, performedBy, performedByEmail, 'tenant_object_preclear', stats, err,
+      );
+      throw new Error(
+        `[tenantCascade] object pre-clear failed for org=${orgId}; erasure aborted before any row was deleted and is rerunnable: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
+
+  // 1a-bis. Clear AI ARTIFACT blobs, same rule and same reasoning as 1a
+  //     (execution-plane spec §8: "erasure deletes blobs via the helper before
+  //     the rows cascade"). `ai_run_artifacts.blob_key` is the only index to the
+  //     object — the key deliberately carries no tenant id, so a bucket listing
+  //     cannot reconstruct which objects belonged to this org once the rows are
+  //     gone. A storage fault therefore ABORTS the erasure before anything is
+  //     removed; the same keys are re-read on the re-run.
+  //
+  //     A separate block from 1a because the keys live in a different store
+  //     (region-keyed artifact buckets, not the platform attachment bucket) and
+  //     the helper deletes one key per request.
+  try {
+    const artifactKeys = await dbModule.withSystemDbAccessContext(async () => {
+      const result = await dbModule.db.execute(sql`
+        SELECT blob_key
+        FROM ai_run_artifacts
+        WHERE org_id = ${orgId}::uuid
+      `);
+      const rows = (result as unknown as { rows?: Array<{ blob_key: string }> }).rows
+        ?? (result as unknown as Array<{ blob_key: string }>);
+      return Array.isArray(rows) ? rows.map((r) => r.blob_key).filter(Boolean) : [];
+    });
+    if (artifactKeys.length > 0) {
+      const blobs = getBlobStorage();
+      for (const key of artifactKeys) {
+        await blobs.delete(key);
+      }
+    }
+  } catch (err) {
+    if (!isUndefinedTable(err)) {
+      await writeErasureFailedAudit(
+        orgId, performedBy, performedByEmail, 'ai_run_artifacts_blobs', stats, err,
+      );
+      throw new Error(
+        `[tenantCascade] artifact blob pre-clear failed for org=${orgId}; erasure aborted before any row was deleted and is rerunnable: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+    console.warn(
+      `[tenantCascade] artifact blob pre-clear skipped for missing table ai_run_artifacts (org=${orgId})`,
+    );
   }
 
   // 1b. Clear system-scoped associated tables (e.g. device_commands, the
@@ -1386,6 +1636,19 @@ export async function cascadeDeletePartner(
     details: { partnerId, startedAt },
     result: 'success',
   });
+
+  // Release provider-side sending domains BEFORE any delete (spec §3.5).
+  // partner_sending_domains carries a BEFORE DELETE guard that raises while the
+  // row still owns a provider_domain_id, so the partner-axis sweep below would
+  // abort the purge without this. It writes an email_provider_domain_releases
+  // row for every provider_managed domain — that table has no partner_id, so it
+  // survives the sweep and the worker drains it afterwards — and never one for
+  // a domain Breeze did not create. No provider call is made here.
+  //
+  // It runs after the forensic breadcrumb above on purpose: the purge_started
+  // audit must exist even if this step throws. It opens its own system context,
+  // like every other statement in this function (see the nesting warning below).
+  await releaseSendingDomainsForPartner(partnerId);
 
   // Lookup child orgs under system context — organizations has partner-axis RLS;
   // bare breeze_app would silently return 0 rows.

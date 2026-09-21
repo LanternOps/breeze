@@ -780,6 +780,7 @@ describe('getOrCreate — catalog egress proxy wiring', () => {
       expect.objectContaining({ total_cost_usd: 3.5 }),
       'partner_key',
       expect.objectContaining({ catalogEntryId: ENTRY_ID, revisionId: REVISION_ID, inputCentsPerM: 300 }),
+      undefined,
     );
   });
 });

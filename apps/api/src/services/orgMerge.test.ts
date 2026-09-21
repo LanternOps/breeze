@@ -20,6 +20,8 @@ const mockState = vi.hoisted(() => ({
   failExecuteMatching: null as RegExp | null,
   /** id returned by the mocked `db.insert(...).values(...).returning(...)`. */
   insertedId: 'merge-event-1',
+  ticketCandidates: [] as Array<{ id: string }>,
+  revalidateTicketAssignee: vi.fn(),
 }));
 
 function sqlToText(q: unknown): string {
@@ -80,6 +82,7 @@ vi.mock('../db', () => ({
       if (mockState.failExecuteMatching?.test(text)) {
         return Promise.reject(new Error('stamp write exploded'));
       }
+      if (/SELECT id FROM tickets WHERE org_id/.test(text)) return Promise.resolve(mockState.ticketCandidates);
       const next = mockState.executeResponses.shift();
       return Promise.resolve(next === undefined ? [] : next);
     }),
@@ -91,8 +94,16 @@ vi.mock('../db', () => ({
   },
 }));
 
+vi.mock('./ticketService', () => ({ revalidateTicketAssignee: mockState.revalidateTicketAssignee }));
+
 vi.mock('./auditService', () => ({
   createAuditLog: vi.fn(async () => {}),
+}));
+
+// Real prepare/rekey transactions are exercised by topology-lifecycle.integration.test.ts.
+vi.mock('./topology/tenantLifecycle', () => ({
+  prepareTopologyOrgMerge: vi.fn(async () => ({ siteIds: [] })),
+  finalizeTopologyOrgMerge: vi.fn(async () => ({ rekeyed: 0, fenced: 0 })),
 }));
 
 import {
@@ -333,10 +344,10 @@ describe('assertPairStillMergeable (in-transaction TOCTOU re-check)', () => {
     mockState.executedParams = [];
   });
 
-  it('locks both rows FOR UPDATE and passes when nothing changed', async () => {
+  it('locks both rows FOR NO KEY UPDATE and passes when nothing changed', async () => {
     mockState.executeResponses = [[row({}), row({ id: S, status: 'active' })]];
     await expect(assertPairStillMergeable(loser, survivor)).resolves.toBeUndefined();
-    expect(mockState.executedSql.join(' ')).toMatch(/FOR UPDATE/);
+    expect(mockState.executedSql.join(' ')).toMatch(/FOR NO KEY UPDATE/);
   });
 
   it('rejects when the survivor was suspended during the drain', async () => {
@@ -505,7 +516,7 @@ describe('runPolicy phases', () => {
   it('a custom table with a resolve half runs it in the resolve pass, and only repoints in move', async () => {
     const policy = { kind: 'custom', note: 'discovered_assets' } as const;
 
-    // 5 child re-homes + 1 DELETE, all in the RESOLVE pass.
+    // Monitor-authority detach + 4 child re-homes + 1 DELETE, all in the RESOLVE pass.
     mockState.executeResponses = [
       { count: 0 }, { count: 2 }, { count: 0 }, { count: 0 }, { count: 0 }, { count: 1 },
     ];
@@ -513,9 +524,13 @@ describe('runPolicy phases', () => {
     expect(resolved.dropped).toBe(1);
     expect(resolved.moved).toBe(0);
     expect(mockState.executedSql).toHaveLength(6);
+    // A same-IP collision is not same-site identity: monitors are detached, never
+    // re-parented onto the surviving asset, and that happens before anything else.
+    expect(mockState.executedSql[0]).toMatch(/breeze_detach_topology_monitor_authority/);
+    expect(mockState.executedSql.join('\n')).not.toMatch(/UPDATE\s+"?network_monitors/);
     // The children are re-homed BEFORE the delete — the other order is the
     // 23503 this whole executor exists to prevent.
-    expect(mockState.executedSql.slice(0, 5).every((s) => /UPDATE/.test(s) && !/DELETE/.test(s))).toBe(true);
+    expect(mockState.executedSql.slice(1, 5).every((s) => /UPDATE/.test(s) && !/DELETE/.test(s))).toBe(true);
     expect(mockState.executedSql[5]).toMatch(/DELETE FROM/);
     expect(resolved.notes.join('\n')).toMatch(/dropped 1 duplicate discovered asset/);
     expect(resolved.notes.join('\n')).toMatch(/snmp_devices: 2/);
@@ -661,6 +676,29 @@ describe('stampTerminalShell', () => {
   // namespace (the same `self.` surface the engine uses), the stamp is left
   // REAL, and its write is made to fail: `executeOrgMerge` must still resolve
   // with the merge result, and must NOT unfence — the merge committed.
+  it('revalidates moved ticket assignees after all tenant and permission rewrites', async () => {
+    vi.spyOn(orgMergeModule, 'loadAndValidate').mockResolvedValue({ loser, survivor });
+    vi.spyOn(orgMergeModule, 'fenceLoser').mockResolvedValue(undefined);
+    vi.spyOn(orgMergeModule, 'assertPairStillMergeable').mockResolvedValue(undefined);
+    vi.spyOn(orgMergeModule, 'runPolicy').mockResolvedValue({ moved: 0, dropped: 0, notes: [] });
+    const fixups = vi.spyOn(orgMergeModule, 'runPostPassFixups').mockResolvedValue({ moved: 0, dropped: 0 });
+    vi.spyOn(orgMergeModule, 'collectDuplicates').mockResolvedValue({ duplicatePortalEmails: [], duplicateExternalLinkSystems: [] });
+    vi.spyOn(orgMergeModule, 'stampTerminalShell').mockResolvedValue(undefined);
+    mockState.ticketCandidates = [{ id: 'ticket-with-device' }, { id: 'ticket-without-device' }];
+    try {
+      await orgMergeModule.executeOrgMerge(input);
+      expect(mockState.revalidateTicketAssignee).toHaveBeenCalledTimes(2);
+      expect(mockState.revalidateTicketAssignee).toHaveBeenCalledWith('ticket-with-device', { userId: input.performedBy });
+      expect(mockState.revalidateTicketAssignee).toHaveBeenCalledWith('ticket-without-device', { userId: input.performedBy });
+      expect(mockState.revalidateTicketAssignee.mock.invocationCallOrder[0]).toBeGreaterThan(fixups.mock.invocationCallOrder[0]!);
+      const index = mockState.executedSql.findIndex(s => /SELECT id FROM tickets WHERE org_id/.test(s));
+      expect(mockState.executedParams[index]).toContain(LOSER);
+    } finally {
+      mockState.ticketCandidates = [];
+      mockState.revalidateTicketAssignee.mockClear();
+    }
+  });
+
   it('a failing stamp still resolves executeOrgMerge and never unfences', async () => {
     const error = vi.spyOn(console, 'error').mockImplementation(() => {});
     vi.spyOn(orgMergeModule, 'loadAndValidate').mockResolvedValue({ loser, survivor });

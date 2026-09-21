@@ -1,4 +1,9 @@
 {
+  "aiActivity": {
+    "title": "KI-Aktivität",
+    "count": "{{count}} Aktionen in den letzten {{days}} Tagen ausgelöst",
+    "tooltip": "Zählt auf diesem Gerät protokollierte, von KI ausgelöste Skripte und Befehle. Ein Abbruch zählt als eigene Aktion. Wird nach bestem Bemühen erfasst."
+  },
   "deviceChangeHistoryTab": {
     "title": "Änderungsverlauf",
     "loading": "Änderungsverlauf wird geladen…",
@@ -249,6 +254,7 @@
     "deploySoftware": "Software bereitstellen",
     "clearSessions": "Sitzungen beenden",
     "changeSite": "Standort ändern",
+    "moveOrg": "In Organisation verschieben",
     "exitMaintenance": "Wartungsmodus beenden",
     "enterMaintenance": "Wartungsmodus aktivieren",
     "decommission": "Entfernen",
@@ -278,7 +284,21 @@
     "loadMore": "Mehr laden",
     "couldnTLoadMore": "Konnte nicht mehr laden.",
     "viewAllActivity2": "Alle Aktivitäten anzeigen",
-    "text": "→"
+    "text": "→",
+    "viewProposal": "Vorschlag ansehen",
+    "trigger": {
+      "manual": "Manuelle Auslösung",
+      "schedule": "Zeitplan",
+      "sweep_finding": "Prüfbefund",
+      "alert": "Warnmeldung",
+      "monitor": "Überwachung",
+      "fleet_finding": "Flottenbefund",
+      "policy": "Richtlinie",
+      "automation": "Automatisierung",
+      "ticket": "Supportanfrage",
+      "anomaly": "Anomalie",
+      "api": "API-Aufruf"
+    }
   },
   "deviceAlertHistory": {
     "failedToFetchAlertHistory": "Der Alarmverlauf konnte nicht abgerufen werden",
@@ -553,9 +573,11 @@
     "lastChecked": "Zuletzt überprüft",
     "noComplianceResultsReportedAssignA": "Es wurden keine Compliance-Ergebnisse gemeldet. Weisen Sie diesem Gerät eine Konfigurationsrichtlinie mit Compliance-Regeln zu oder warten Sie auf die nächste Auswertung.",
     "text": "—",
-    "s": "s"
+    "s": "s",
+    "assignPolicy": "Konfigurationsrichtlinie zuweisen"
   },
   "deviceDetailPage": {
+    "movedToOrg": "{{hostname}} wurde nach {{orgName}} verschoben",
     "failedToFetchDevice": "Gerät konnte nicht abgerufen werden",
     "online": "online",
     "offline": "offline",
@@ -645,7 +667,14 @@
     "networkAsset": "Netzwerk-Asset",
     "networkAssets": "Netzwerk-Assets",
     "operatorTasks": "Operator-Aufgaben",
-    "operatorTasksForThisDevice": "KI-Operator-Aufgaben für dieses Gerät"
+    "operatorTasksForThisDevice": "KI-Operator-Aufgaben für dieses Gerät",
+    "tabGroups": {
+      "monitoring": "Überwachung",
+      "inventory": "Inventar",
+      "management": "Verwaltung",
+      "history": "Verlauf & Netzwerk",
+      "extensions": "Erweiterungen"
+    }
   },
   "deviceEdrPanel": {
     "failedToIsolateDevice": "Das Gerät konnte nicht isoliert werden",
@@ -725,7 +754,70 @@
     "of": "von",
     "noMoreActivity": "Keine weitere Aktivität"
   },
+  "systemCleanupPanel": {
+    "title": "Systembereinigung",
+    "description": "Integrierte Wartungswerkzeuge, die Speicher freigeben, den die Dateiprüfung nicht sieht. Schätzungen können vom tatsächlich freigegebenen Speicherplatz abweichen.",
+    "checkActions": "Verfügbare Aktionen prüfen",
+    "checking": "Wird geprüft…",
+    "run": "Auswahl ausführen",
+    "running": "Läuft… {{minutes}} Min. {{seconds}} Sek. vergangen",
+    "noActions": "Für dieses Gerät sind keine Systembereinigungsaktionen verfügbar.",
+    "estimateUpTo": "bis zu {{size}}",
+    "estimateUnknown": "Größe unbekannt",
+    "listFailed": "Die verfügbaren Bereinigungsaktionen konnten nicht gelesen werden.",
+    "listTimedOut": "Das Gerät hat nicht rechtzeitig geantwortet. Bitte in einigen Minuten erneut versuchen.",
+    "runFailed": "Die Bereinigung konnte nicht abgeschlossen werden.",
+    "runTimedOut": "Die Bereinigung läuft noch. Öffnen Sie diesen Tab später erneut, um das Ergebnis zu sehen.",
+    "agentUpdateRequired": "Aktualisieren Sie den Agenten dieses Geräts auf Version {{version}} oder neuer, um Systembereinigungen auszuführen.",
+    "confirmTitle": "Systembereinigung ausführen?",
+    "confirmMessage": "{{count}} Aktion(en) werden auf diesem Gerät ausgeführt. Einige dauern bis zu 90 Minuten und lassen sich nicht rückgängig machen.",
+    "confirmIrreversible": "Mir ist bewusst, dass diese Änderungen nicht rückgängig gemacht werden können.",
+    "freed": "{{size}} freigegeben",
+    "volumeFreed": "{{mount}}: {{size}} freigegeben",
+    "risk": {
+      "long_running": "kann lange dauern",
+      "may_require_reboot": "Speicher wird nach Neustart frei",
+      "may_require_reboot_free_state": "Teil des Speichers wird nach Neustart frei",
+      "removes_driver_rollback": "entfernt Treiber-Rollback",
+      "removes_packages": "deinstalliert Pakete",
+      "removes_os_rollback": "beendet Windows-Rollback",
+      "removes_recovery_points": "entfernt Wiederherstellungspunkte"
+    },
+    "status": {
+      "completed": "abgeschlossen",
+      "failed": "fehlgeschlagen",
+      "timed_out": "Zeitüberschreitung",
+      "unavailable": "nicht verfügbar",
+      "busy": "nicht gestartet – Gerät war beschäftigt",
+      "not_started": "nicht gestartet – Zeitbudget aufgebraucht"
+    },
+    "runInProgress": "Auf diesem Gerät läuft bereits eine Systembereinigung. Warten Sie, bis sie beendet ist.",
+    "consequence": {
+      "removes_driver_rollback": "Dieses Gerät kann die entfernten Treiber danach nicht mehr auf ihre vorherigen Versionen zurücksetzen.",
+      "removes_packages": "Nicht mehr benötigte Pakete werden deinstalliert.",
+      "removes_os_rollback": "Dieses Gerät kann danach nicht mehr zur vorherigen Windows-Version zurückkehren.",
+      "removes_recovery_points": "Lokale Snapshots werden gelöscht. Ohne angeschlossene Time-Machine-Festplatte hat dieses Gerät keine weiteren Wiederherstellungspunkte."
+    }
+  },
   "deviceFilesystemTab": {
+    "resultPartial": "Teilweise abgeschlossen",
+    "resultSkippedLinks": "Übersprungene Links: {{count}}",
+    "errorAgentUpdateRequired": "Aktualisieren Sie den Agenten auf Version {{minAgentVersion}} oder neuer, um die Bereinigung auszuführen.",
+    "errorCleanupRunRequired": "Führen Sie vor der Bereinigung eine Bereinigungsvorschau aus.",
+    "errorVolumeRequired": "Wählen Sie vor der Bereinigung ein Volume aus.",
+    "volumes": "Datenträger",
+    "volumesLoading": "Datenträger werden geladen...",
+    "volumesEmpty": "Für dieses Gerät wurden keine scanbaren Datenträger gemeldet.",
+    "failedToFetchVolumes": "Datenträger konnten nicht abgerufen werden",
+    "volumeOsBadge": "BS",
+    "volumeUsedOfTotal": "{{used}} von {{total}} belegt",
+    "volumeCapacityUnknown": "Kapazität unbekannt",
+    "volumeNeverScanned": "Nie gescannt",
+    "volumeLastScanned": "Gescannt {{when}}",
+    "volumeSelectAria": "Datenträger {{mountPoint}} auswählen",
+    "scanCommandNotFound": "Der Scanbefehl wurde nicht gefunden",
+    "scanCommandNotQueued": "Der Scanbefehl wurde nicht eingereiht",
+    "scanStillRunning": "Der Scan des Dateisystems läuft noch. Klicken Sie in Kürze auf „Aktualisieren“.",
     "failedToFetchFilesystemStatus": "Dateisystemstatus konnte nicht abgerufen werden",
     "failedToFetchCommandHistory": "Der Befehlsverlauf konnte nicht abgerufen werden",
     "failedToLoadFilesystemStatus": "Dateisystemstatus konnte nicht geladen werden",
@@ -733,14 +825,14 @@
     "filesystemScanFailed": "Der Scan des Dateisystems ist fehlgeschlagen",
     "cleanupPreviewFailed": "Die Bereinigungsvorschau ist fehlgeschlagen",
     "loadingDiskIntelligence": "Datenträgerinformationen werden geladen...",
-    "be1DiskCleanupIntelligence": "BE-1: Datenträgerbereinigungsintelligenz",
+    "title": "Datenträgerbereinigung",
     "analyzeNow": "Jetzt analysieren",
     "cleanupPreview": "Bereinigungsvorschau",
     "refresh": "Aktualisieren",
     "openFileManager": "Öffnen Sie den Dateimanager",
-    "scanRunning": "Scan läuft (",
+    "scanRunning": "Scan läuft ({{status}})",
     "partialScanResult": "Teilweises Scanergebnis",
-    "noFilesystemSnapshotYetRunAnalyze": "Noch kein Dateisystem-Snapshot. Führen Sie „Jetzt analysieren“ aus, um BE-1-Daten zu sammeln.",
+    "noFilesystemSnapshotYetRunAnalyze": "Noch kein Snapshot für diesen Datenträger. Führen Sie „Jetzt analysieren“ aus.",
     "lastScan": "Letzter Scan",
     "trigger": "Auslöser",
     "threshold": "Schwelle",
@@ -769,15 +861,63 @@
     "largestDirectories": "Größte Verzeichnisse",
     "indicatesLowerBoundSizeFromPartial": "gibt die untere Grenzgröße aus der teilweisen Durchquerung an.",
     "noDirectoryDataAvailable": "Keine Verzeichnisdaten verfügbar.",
-    "text": ">=",
     "latestCleanupPreview": "Neueste Bereinigungsvorschau",
     "estimatedRecovery": "Geschätzte Erholung",
     "candidateCount": "Anzahl der Kandidaten",
-    "categories": "Kategorien",
     "byCategory": "Nach Kategorie",
     "noSafeCleanupCategoriesFound": "Keine sicheren Bereinigungskategorien gefunden.",
     "topCandidates": "Top-Kandidaten",
-    "noCandidatesAvailable": "Keine Kandidaten verfügbar."
+    "noCandidatesAvailable": "Keine Kandidaten verfügbar.",
+    "categoriesLabel": "Kategorien",
+    "confirmContentsNote": "Papierkorb-Ziele löschen den Inhalt zum Ausführungszeitpunkt, nicht den in der Vorschau aufgelisteten.",
+    "errorPreviewExpired": "Diese Bereinigungsvorschau ist älter als 24 Stunden. Führen Sie die Bereinigungsvorschau erneut aus.",
+    "errorRunNotPreviewed": "Dieser Bereinigungslauf wurde bereits ausgeführt oder läuft noch. Führen Sie die Bereinigungsvorschau erneut aus.",
+    "cleanupTitle": "Auswählen, was bereinigt wird",
+    "cleanupPreviewRequired": "Führen Sie zuerst die Bereinigungsvorschau aus, um auszuwählen, was gelöscht wird.",
+    "categories": {
+      "temp_files": "Temporäre Dateien",
+      "browser_cache": "Browser-Cache",
+      "package_cache": "Paket-Cache",
+      "trash": "Papierkorb"
+    },
+    "selectAllInCategory": "Alle auswählen",
+    "clearCategory": "Auswahl aufheben",
+    "columnPath": "Pfad",
+    "columnSize": "Größe",
+    "selectionSummary": "{{count}} ausgewählt · {{size}}",
+    "executeSelected": "Auswahl löschen ({{count}})",
+    "confirmTitle": "Bereinigungsziele endgültig löschen",
+    "confirmMessage": "{{count}} Element(e) mit insgesamt {{size}} aus {{volume}} löschen? Dies umgeht den Papierkorb und kann nicht rückgängig gemacht werden.",
+    "confirmPathsHeading": "Erste {{shown}} von {{total}} Pfaden",
+    "confirmLabel": "Endgültig löschen",
+    "cleanupFailed": "Bereinigung fehlgeschlagen",
+    "cleanupFinished": "Bereinigung abgeschlossen – {{size}} freigegeben",
+    "resultTitle": "Bereinigungsergebnis",
+    "resultReclaimed": "Freigegeben",
+    "resultCompleted": "Gelöscht",
+    "resultSkippedLocked": "Gesperrt (übersprungen)",
+    "resultRejected": "Abgelehnt",
+    "resultSkippedBudget": "Nicht erreicht (Zeitlimit)",
+    "resultFailures": "Fehler",
+    "tempAccumulation": "Temporäre Ansammlung",
+    "noTempAccumulationData": "Keine Daten zu temporären Ansammlungen.",
+    "historyTitle": "Bereinigungsverlauf",
+    "historyEmpty": "Noch keine Bereinigungsläufe erfasst.",
+    "historyLoadMore": "Mehr laden",
+    "historyFailed": "Bereinigungsverlauf konnte nicht geladen werden",
+    "historyKindFiles": "Dateibereinigung",
+    "historyKindSystem": "Systembereinigung",
+    "historyReclaimed": "{{size}} freigegeben",
+    "historyCandidates": "{{count}} Kandidaten",
+    "status": {
+      "previewed": "Vorschau",
+      "running": "Läuft",
+      "executed": "Ausgeführt",
+      "failed": "Fehlgeschlagen"
+    },
+    "previewSummary": "{{count}} Kandidaten · {{size}} freigebbar",
+    "historyReclaimable": "{{size}} freigebbar",
+    "filesystemScanFinished": "Dateisystem-Scan abgeschlossen"
   },
   "deviceFilterToolbar": {
     "searchDevices": "Geräte suchen",
@@ -930,6 +1070,23 @@
     "role": "Rolle",
     "changeRole": "Rolle wechseln",
     "source": "Quelle",
+    "function": "Funktion",
+    "changeFunction": "Funktion wechseln",
+    "functionNone": "Nicht bewertet",
+    "functionSource": {
+      "ai": "KI",
+      "manual": "Manuell"
+    },
+    "functionConfidence": "{{pct}} % Konfidenz",
+    "functionEvidence": "Warum der Designer das annimmt",
+    "functionEvidenceUnavailable": "Die Bewertungsdetails konnten nicht geladen werden.",
+    "functionCustom": "Benutzerdefiniert…",
+    "functionCustomSlug": "benutzerdefinierter Schlüssel (a-z, 0-9, -)",
+    "functionCustomLabel": "Etikett",
+    "functionClear": "Löschen",
+    "functionSaved": "Gerätefunktion gespeichert",
+    "functionCleared": "Gerätefunktion gelöscht",
+    "functionSaveFailed": "Gerätefunktion konnte nicht gespeichert werden",
     "operatingSystem": "Betriebssystem",
     "osType": "Betriebssystemtyp",
     "osVersion": "Betriebssystemversion",
@@ -1269,6 +1426,9 @@
     "tenantId": "Mieter-ID:",
     "mdmEnrollment": "MDM-Registrierung:",
     "detectionSource": "Erkennungsquelle:",
+    "identityDetectionUnsupported": "Beitrittserkennung nicht unterstützt",
+    "identityDetectionUnsupportedHint": "Breeze prüft den Verzeichnis- bzw. Intune/Entra-Registrierungsstatus auf dem Betriebssystem dieses Geräts noch nicht. Der Beitrittsstatus ist daher unbekannt und nicht als „nicht beigetreten“ bestätigt.",
+    "flagUnknown": "{{label}}: Unbekannt",
     "detectedManagementTools": "Erkannte Verwaltungstools",
     "tool": "Werkzeug",
     "s": "s",
@@ -1311,7 +1471,8 @@
       "status": "Status",
       "type": "Typ"
     },
-    "title": "Service- und Prozessüberwachung"
+    "title": "Service- und Prozessüberwachung",
+    "assignPolicy": "Konfigurationsrichtlinie zuweisen"
   },
   "deviceNetworkConnections": {
     "allProtocols": "Alle Protokolle",
@@ -1676,7 +1837,10 @@
     "saveChanges": "Änderungen speichern",
     "site": "Standort",
     "tags": "Schlagworte",
-    "title": "Geräteeinstellungen"
+    "title": "Geräteeinstellungen",
+    "purchaseDate": "Kaufdatum",
+    "purchaseDateHelp": "Wird vom Hardware-Lebenszyklusbericht zur Austauschplanung verwendet.",
+    "purchaseDateVendorHint": "Aus dem Versanddatum des Herstellers übernommen. Geben Sie ein Datum ein, um es zu überschreiben."
   },
   "deviceSoftwareInventory": {
     "actions": {
@@ -1877,7 +2041,7 @@
     "refresh": "Aktualisieren",
     "selectedOrganization": "die ausgewählte Organisation",
     "subtitle": "Verwalten und überwachen Sie Ihre Flotte.",
-    "title": "Geräte",
+    "title": "Geräte & Assets",
     "toasts": {
       "actionFailed": "{{action}} auf {{hostname}} fehlgeschlagen",
       "advancedFilterFailed": "Erweiterter Filter konnte nicht geladen werden – es werden keine Geräte angezeigt. Bearbeiten oder löschen Sie den Filter, um es erneut zu versuchen.",
@@ -2270,19 +2434,57 @@
     "cancel": "Abbrechen",
     "genericError": "Wartungsmodus konnte nicht gestartet werden."
   },
+  "moveDeviceOrgDialog": {
+    "title": "In eine andere Organisation verschieben",
+    "description": "Verschiebt {{hostname}} aus {{orgName}}. Verlauf, Tickets und Richtlinien wandern mit, und der Agent verbindet sich unter der neuen Organisation neu.",
+    "targetOrgLabel": "Zielorganisation",
+    "targetOrgPlaceholder": "Organisation auswählen",
+    "targetSiteLabel": "Zielstandort",
+    "targetSitePlaceholder": "Standort auswählen",
+    "loadingSites": "Standorte werden geladen…",
+    "noOtherOrgs": "Es gibt keine andere aktive Organisation, in die dieses Gerät verschoben werden kann.",
+    "noSites": "Die gewählte Organisation hat noch keine Standorte. Legen Sie zuerst einen Standort an.",
+    "currencyMismatchHeading": "Nicht abgerechnete Arbeit in einer anderen Währung",
+    "currencyMismatchDetail": "{{sourceCurrency}} → {{targetCurrency}}: {{timeEntries}} nicht abgerechnete Zeiteinträge und {{parts}} nicht abgerechnete Teile behalten nach dem Verschieben ihre ursprüngliche Währung.",
+    "currencyMismatchAccept": "Verstanden – Gerät verschieben und diese Einträge in ihrer ursprünglichen Währung belassen",
+    "currencyMismatchNoPermission": "Dafür ist die Berechtigung zum Schreiben von Rechnungen nötig. Bitten Sie einen Abrechnungsadministrator, die offene Arbeit zuerst abzurechnen oder zu bereinigen.",
+    "stepUpHeading": "Bestätigen Sie Ihre Identität",
+    "stepUpIntro": "Das Verschieben eines Geräts zwischen Organisationen erfordert einen zweiten Faktor.",
+    "stepUpCodeLabel": "Authenticator-Code",
+    "stepUpPasskeyNote": "Sie bestätigen mit Ihrem Passkey.",
+    "noStepUpFactor": "Fügen Sie Ihrem Konto eine Authenticator-App oder einen Passkey hinzu, bevor Sie Geräte zwischen Organisationen verschieben.",
+    "mfaRequired": "Schließen Sie zuerst die MFA-Anmeldung ab und versuchen Sie es erneut.",
+    "stepUpRetry": "Diese Bestätigung konnte nicht verwendet werden. Geben Sie einen neuen Code ein und versuchen Sie es erneut.",
+    "submit": "Gerät verschieben",
+    "submitStepUp": "Bestätigen und verschieben",
+    "submitting": "Wird ausgeführt…",
+    "cancel": "Abbrechen",
+    "genericError": "Das Gerät konnte nicht verschoben werden."
+  },
   "networkDeviceDetailPage": {
+    "approval": {
+      "pendingBanner": "Genehmigung ausstehend: Es wird noch nichts überwacht.",
+      "dismissedBanner": "Verworfen: in Gerätelisten ausgeblendet.",
+      "approve": "Genehmigen",
+      "dismiss": "Verwerfen",
+      "approvedAnnouncement": "Asset genehmigt",
+      "dismissedAnnouncement": "Asset verworfen"
+    },
     "backToDevices": "Zurück zu den Geräten",
-    "configurePrefix": "Konfigurieren Sie SNMP-Abfragen und Netzwerkmonitore über das",
     "confirmUnlink": "Verknüpfung dieses Geräts aufheben?",
     "confirmUnlinkMessage": "Der Discovery-Eintrag und das verwaltete Gerät werden danach als separate Einträge angezeigt. Die automatische Verknüpfung bleibt für dieses Gerät deaktiviert, bis Sie es erneut verknüpfen.",
     "connecting": "Verbindung wird hergestellt",
-    "discoveryAssetView": "Discovery-Asset-Ansicht",
     "emptyPorts": "Beim letzten Scan wurden keine offenen Ports gefunden.",
     "emptySnmp": "Es wurden keine SNMP-Daten erfasst – das Gerät hat möglicherweise nicht reagiert oder SNMP wurde nicht geprüft. Überprüfen Sie, ob die SNMP-Methode aktiviert ist und der Community-String im Erkennungsprofil festgelegt ist.",
     "errors": {
+      "unexpected": "Etwas ist schiefgelaufen. Bitte versuchen Sie es erneut.",
       "load": "Das Netzwerkgerät konnte nicht geladen werden. Überprüfen Sie Ihre Verbindung und versuchen Sie es erneut.",
       "malformed": "Der Server hat eine unerwartete Antwort für dieses Netzwerkgerät zurückgegeben. Versuchen Sie es erneut, und wenden Sie sich an den Support, falls das Problem weiterhin auftritt.",
-      "notFound": "Netzwerkgerät nicht gefunden"
+      "notFound": "Netzwerkgerät nicht gefunden",
+      "monitoringLoad": "Die Überwachungsdaten dieses Geräts konnten nicht geladen werden. Versuchen Sie es erneut.",
+      "checksLoad": "Netzwerkprüfungen konnten nicht geladen werden.",
+      "thresholdsLoad": "Schwellenwertalarme konnten nicht geladen werden.",
+      "templateLoad": "Die SNMP-Vorlage konnte nicht geladen werden."
     },
     "fields": {
       "assetType": "Typ",
@@ -2301,7 +2503,20 @@
       "ping": "Ping",
       "snmpMonitoring": "SNMP-Überwachung",
       "status": "Status",
-      "tags": "Schlagworte"
+      "tags": "Schlagworte",
+      "bridgingAgent": "Vermittelnder Agent",
+      "ipAddress": "IP-Adresse",
+      "macAddress": "MAC-Adresse",
+      "nicVendor": "Netzwerkkartenhersteller",
+      "nicVendorHint": "Der für die MAC-Adresse registrierte Hersteller. Er weicht vom Gerätehersteller ab, wenn die Netzwerkkarte von einem anderen Hersteller stammt.",
+      "site": "Standort",
+      "sysObjectId": "sysObjectID (Rohwert)",
+      "legacyScanVerdict": "Ergebnis des letzten Scans",
+      "legacyScanVerdictHint": "— das Ergebnis des letzten Subnetzscans, nicht die aktuelle Erreichbarkeit",
+      "pollStatus": "Abfragestatus",
+      "template": "Vorlage",
+      "pollingInterval": "Abfrageintervall",
+      "snmpTransport": "SNMP-Verbindung"
     },
     "goBack": "Zurück",
     "live": {
@@ -2309,7 +2524,6 @@
       "refreshed": "Gerätedetails aktualisiert"
     },
     "loading": "Netzwerkgerät wird geladen...",
-    "manageInDiscovery": "In Discovery verwalten",
     "manuallySet": "Manuell eingestellt",
     "manuallySetWithDetected": "Manuell eingestellt · Scan erkannt {{type}}",
     "networkDevice": "Netzwerkgerät",
@@ -2335,17 +2549,43 @@
       "agentListFailed": "Die Liste der Agenten konnte nicht geladen werden. Erneut versuchen."
     },
     "resetToAutoDetected": "Auf „Automatisch erkannt“ zurücksetzen",
-    "savingType": "Wird gespeichert…",
-    "resettingType": "Wird zurückgesetzt…",
     "sections": {
       "discovery": "Entdeckung",
       "identity": "Identität",
       "monitoringStatus": "Überwachungsstatus",
       "openPorts": "Offene Ports",
-      "snmpData": "SNMP-Daten"
+      "snmpData": "SNMP-Daten",
+      "reachability": "Erreichbarkeit",
+      "collection": "Datenerfassung",
+      "printerHealth": "Druckerzustand",
+      "scanDetails": "Alle Scandetails",
+      "pollConfiguration": "Abfragekonfiguration",
+      "oids": "Objektkennungen (OIDs)",
+      "networkChecks": "Netzwerkprüfungen",
+      "thresholds": "SNMP-Schwellenwertalarme",
+      "history": "Verlauf",
+      "deviceHealth": "Gerätezustand"
     },
     "stats": {
-      "asOf": "Stand: {{time}}"
+      "asOf": "Stand: {{time}}",
+      "lowestSupply": "Niedrigster Füllstand",
+      "portsUp": "Aktive Ports",
+      "portsUpValue": "{{up}} von {{total}}",
+      "reachability": "Erreichbarkeit",
+      "lastPoll": "Letzte Abfrage"
+    },
+    "probe": {
+      "checkNow": "Jetzt prüfen",
+      "checking": "Wird geprüft…",
+      "errors": {
+        "noAgentInSite": "Kein Agent an diesem Standort ist online und kann das Gerät erreichen. Bringen Sie hier einen Agenten online und versuchen Sie es erneut.",
+        "inFlight": "Für dieses Gerät läuft bereits eine Prüfung.",
+        "noIp": "Dieses Gerät hat keine IP-Adresse, die geprüft werden kann.",
+        "timedOut": "Der Agent hat nicht innerhalb einer Minute geantwortet. Möglicherweise ist er offline oder beschäftigt.",
+        "unknown": "Dieses Gerät konnte gerade nicht geprüft werden.",
+        "noSite": "Dieses Asset ist keinem Standort zugewiesen. Weisen Sie es einem Standort zu und versuchen Sie es erneut.",
+        "refreshFailed": "Gespeichert, aber die Seite konnte das Ergebnis nicht lesen. Laden Sie die Seite neu."
+      }
     },
     "tabs": {
       "overview": "Übersicht",
@@ -2387,7 +2627,320 @@
       "sysName": "Systemname",
       "sysDescr": "Beschreibung",
       "sysObjectId": "Objekt-ID (OID)"
-    }
+    },
+    "settings": {
+      "title": "Einstellungen für {{name}}",
+      "subtitle": "Verwalten Sie jeden Bereich unabhängig.",
+      "navLabel": "Bereiche der Asset-Einstellungen",
+      "unsavedChanges": "Ungespeicherte Änderungen",
+      "refreshFailed": "Gespeichert, aber die Seite konnte nicht aktualisiert werden. Laden Sie die Seite neu, um die Änderung zu sehen.",
+      "sections": {
+        "identity": "Identität",
+        "monitoring": "Überwachung",
+        "link": "Verknüpfung",
+        "danger": "Gefahrenbereich"
+      },
+      "identity": {
+        "description": "Legen Sie fest, wie dieses Asset identifiziert wird.",
+        "displayName": "Anzeigename",
+        "type": "Gerätetyp",
+        "typeFixed": "Dieser gespeicherte Typ kann nicht erneut ausgewählt werden. Sie können einen anderen Typ wählen.",
+        "typeDetected": "Erkannt: {{type}}",
+        "typeConsequence": "Ändert die vorgeschlagene SNMP-Vorlage und die Geräteansicht.",
+        "resetToDetected": "Auf erkannten Typ zurücksetzen",
+        "tags": "Schlagwörter",
+        "tagsHint": "Schlagwörter durch Kommas trennen.",
+        "notes": "Notizen",
+        "conflict": "Dieses Asset wurde an anderer Stelle geändert. Prüfen Sie die aktuellen Werte, bevor Sie erneut speichern.",
+        "typeGroups": {
+          "endpoints": "Endgeräte",
+          "networkGear": "Netzwerkgeräte",
+          "peripherals": "Peripheriegeräte",
+          "other": "Sonstige"
+        }
+      },
+      "monitoring": {
+        "description": "SNMP-Datenerfassung und Netzwerkprüfungen konfigurieren.",
+        "loadFailed": "Die Überwachungseinstellungen konnten nicht geladen werden. Versuchen Sie es erneut.",
+        "checksLoadFailed": "Die Netzwerkprüfungen konnten nicht geladen werden. Versuchen Sie es erneut.",
+        "conflict": "Die Überwachungseinstellungen wurden an anderer Stelle geändert. Prüfen Sie die aktuellen Werte, bevor Sie erneut speichern.",
+        "communityRequired": "Geben Sie einen Community-String ein, um SNMP v1 oder v2c zu aktivieren.",
+        "usernameRequired": "Geben Sie einen Benutzernamen ein, um SNMP v3 zu aktivieren.",
+        "invalidInterval": "Das Abfrageintervall muss eine ganze Zahl zwischen 30 und 86400 Sekunden sein.",
+        "invalidPort": "Der Port muss eine ganze Zahl zwischen 1 und 65535 sein.",
+        "pause": "Abfragen pausieren",
+        "resume": "Abfragen fortsetzen",
+        "disable": "Gesamte Überwachung deaktivieren",
+        "disableTitle": "Gesamte Überwachung deaktivieren?",
+        "disableMessage": "SNMP-Abfragen und Netzwerkprüfungen für dieses Asset werden deaktiviert.",
+        "checksTitle": "Netzwerkprüfungen",
+        "noChecks": "Keine Netzwerkprüfungen konfiguriert.",
+        "addCheck": "Prüfung hinzufügen",
+        "removeCheck": "Prüfung entfernen",
+        "removeCheckTitle": "Netzwerkprüfung entfernen?",
+        "removeCheckMessage": "Netzwerkprüfung „{{name}}“ entfernen? Dies kann nicht rückgängig gemacht werden.",
+        "never": "nie",
+        "leaveBlankToKeep": "Gespeichert — leer lassen, um den aktuellen Wert beizubehalten",
+        "snmpVersion": "SNMP-Version",
+        "pollingInterval": "Abfrageintervall (Sekunden)",
+        "community": "Community-String",
+        "username": "Benutzername",
+        "authProtocol": "Authentifizierungsprotokoll",
+        "authPassword": "Authentifizierungspasswort",
+        "privacyProtocol": "Verschlüsselungsprotokoll",
+        "privacyPassword": "Verschlüsselungspasswort",
+        "port": "SNMP-Port",
+        "template": "SNMP-Vorlage",
+        "templatesUnavailable": "Vorlagen konnten nicht geladen werden. Die aktuelle Vorlage bleibt erhalten.",
+        "suggestionsUnavailable": "Vorschläge nicht verfügbar",
+        "noTemplate": "Keine Vorlage",
+        "suggestion": "Vorschlag: {{template}} — {{reason}}",
+        "useSuggestion": "Vorschlag übernehmen",
+        "noTemplateWarning": "Keine Vorlage zugewiesen, daher werden keine Daten abgefragt.",
+        "collectionStatus": {
+          "ok": "Datenerfassung läuft",
+          "failing": "Datenerfassung fehlgeschlagen",
+          "no_template": "Keine Vorlage zugewiesen, daher werden keine Daten abgefragt",
+          "no_agent": "Kein Agent an diesem Standort verfügbar",
+          "asset_moved": "Asset an einen anderen Standort verschoben",
+          "never_polled": "Noch nie abgefragt",
+          "paused": "Abfragen pausiert",
+          "warning": "Teilweise Datenerfassung",
+          "offline": "Keine Antwort auf Abfragen",
+          "unknown": "Erfassungsstatus unbekannt"
+        },
+        "checkState": {
+          "responding": "Antwortet",
+          "degraded": "Beeinträchtigt",
+          "notResponding": "Antwortet nicht",
+          "paused": "Pausiert",
+          "unverified": "Nicht verifiziert"
+        },
+        "checkSource": {
+          "icmp_ping": "Ping-Test",
+          "tcp_port": "TCP-Port",
+          "http_check": "HTTP-Prüfung",
+          "dns_check": "DNS-Prüfung"
+        }
+      },
+      "link": {
+        "description": "Verknüpfen Sie dieses erkannte Asset mit dem verwalteten Gerät, das derselben Maschine entspricht.",
+        "unlinkHint": "Durch das Aufheben der Verknüpfung wird auch verhindert, dass sie beim nächsten Scan automatisch erneut erstellt wird."
+      },
+      "danger": {
+        "description": "Genehmigungsstatus und endgültige Löschung.",
+        "approvalTitle": "Genehmigung",
+        "approvedExplainer": "Dieses Asset ist genehmigt und wird in Gerätelisten angezeigt.",
+        "pendingExplainer": "Genehmigung ausstehend: Es wird noch nichts überwacht.",
+        "dismissedExplainer": "Verworfen: in Gerätelisten ausgeblendet.",
+        "approve": "Genehmigen",
+        "dismiss": "Verwerfen",
+        "deleteTitle": "Asset löschen",
+        "deleteDescription": "Entfernt das Asset und alle dafür erfassten Daten. Wenn sich das Gerät weiterhin im Netzwerk befindet, wird es bei der nächsten Erkennung erneut erstellt.",
+        "deleteAsset": "Asset löschen",
+        "deleteConfirmTitle": "Dieses Asset löschen?",
+        "deleteConfirmMessage": "„{{name}}“ und alle unten aufgeführten Daten werden entfernt. Dies kann nicht rückgängig gemacht werden.",
+        "deleteConfirmPrompt": "Geben Sie zur Bestätigung {{name}} ein",
+        "cascade": {
+          "snmp": "Seine SNMP-Abfragekonfiguration",
+          "metrics": "Alle erfassten Messwerte",
+          "thresholds": "Seine SNMP-Alarmschwellenwerte",
+          "checks": "Alle diesem Asset zugeordneten Netzwerkprüfungen",
+          "topology": "Seine gespeicherte Position auf der Topologiekarte"
+        }
+      },
+      "openMonitoringSettings": "Überwachungseinstellungen bearbeiten",
+      "openLinkSettings": "Diese Verknüpfung verwalten",
+      "toasts": {
+        "identitySaved": "Identität gespeichert",
+        "identitySaveFailed": "Die Änderungen an der Identität konnten nicht gespeichert werden",
+        "approved": "Asset genehmigt",
+        "approveFailed": "Das Asset konnte nicht genehmigt werden",
+        "dismissed": "Asset verworfen",
+        "dismissFailed": "Das Asset konnte nicht verworfen werden",
+        "assetDeleted": "Asset gelöscht",
+        "assetDeleteFailed": "Das Asset konnte nicht gelöscht werden",
+        "snmpSaved": "SNMP-Einstellungen gespeichert",
+        "snmpSaveFailed": "Die SNMP-Einstellungen konnten nicht gespeichert werden",
+        "pollingPaused": "SNMP-Abfragen pausiert",
+        "pollingResumed": "SNMP-Abfragen fortgesetzt",
+        "monitoringDisabled": "Überwachung für dieses Asset deaktiviert",
+        "monitoringDisableFailed": "Die Überwachung konnte nicht deaktiviert werden",
+        "checkCreated": "Netzwerkprüfung hinzugefügt",
+        "checkCreateFailed": "Die Netzwerkprüfung konnte nicht hinzugefügt werden",
+        "checkRemoved": "Netzwerkprüfung entfernt",
+        "checkRemoveFailed": "Die Netzwerkprüfung konnte nicht entfernt werden"
+      }
+    },
+    "header": {
+      "lastError": "Letzter Fehler: {{error}}",
+      "settings": "Einstellungen"
+    },
+    "editInSettings": "In den Einstellungen bearbeiten",
+    "reachability": {
+      "state": {
+        "responding": "Antwortet",
+        "notResponding": "Antwortet nicht",
+        "unverified": "Ungeprüft"
+      },
+      "source": {
+        "networkCheck": "Netzwerkprüfung",
+        "probe": "Erreichbarkeitsprüfung",
+        "scan": "Netzwerkscan",
+        "unifi": "UniFi",
+        "snmp": "SNMP"
+      },
+      "lastSeenBy": "zuletzt von {{source}} gesehen: {{relative}}",
+      "neverObserved": "noch nie beobachtet",
+      "detail": {
+        "check": {
+          "online": "Erreichbar",
+          "degraded": "Beeinträchtigt",
+          "offline": "Nicht erreichbar"
+        },
+        "probe": {
+          "ok": "Geantwortet",
+          "failed": "Keine Antwort",
+          "pending": "Warten auf den Agenten"
+        },
+        "snmp": {
+          "ok": "Abfrage läuft",
+          "failing": "Fehlgeschlagen",
+          "no_template": "Keine Vorlage",
+          "no_agent": "Kein Agent am Standort",
+          "asset_moved": "Asset verschoben",
+          "never_polled": "Noch nie abgefragt"
+        },
+        "snmpFailures": "{{count}} aufeinanderfolgende Fehler",
+        "snmpNote": "Ein SNMP-Fehler kann den vermittelnden Agenten statt des Geräts betreffen — Fehler werden beim Versand der Abfrage gezählt.",
+        "scan": {
+          "seen": "Gesehen",
+          "missed": "Nicht gesehen"
+        },
+        "emptyTitle": "Für dieses Gerät liegen keine Meldungen vor",
+        "emptyDescription": "Bisher hat weder ein Scan noch eine Prüfung, Abfrage oder manuelle Erreichbarkeitsprüfung eine Beobachtung geliefert."
+      }
+    },
+    "collection": {
+      "status": {
+        "ok": "Abfrage läuft",
+        "failing": "Fehlgeschlagen",
+        "noTemplate": "Keine Vorlage",
+        "noAgent": "Kein Agent am Standort",
+        "assetMoved": "Asset verschoben",
+        "neverPolled": "Noch nie abgefragt",
+        "paused": "Pausiert",
+        "notConfigured": "Nicht konfiguriert"
+      },
+      "count": {
+        "collecting": "{{count}} werden erfasst",
+        "unsupported": "{{count}} nicht unterstützt",
+        "stale": "{{count}} veraltet",
+        "unknown": "{{count}} unbekannt",
+        "neverPolled": "{{count}} noch nie abgefragt",
+        "noOids": "Keine OIDs in dieser Vorlage"
+      },
+      "viewOids": "OIDs anzeigen",
+      "oidState": {
+        "collecting": "Wird erfasst",
+        "unsupported": "Nicht unterstützt",
+        "stale": "Veraltet",
+        "neverPolled": "Noch nie abgefragt",
+        "unknown": "Unbekannt"
+      },
+      "unknownNeedsAgentUpdate": "Diese Agent-Version kann keine Tabellenwerte lesen — aktualisieren Sie den Agent auf dem Vermittlungsgerät.",
+      "partialRows": "Unvollständig — die Tabellenabfrage hat ihr Zeilenlimit erreicht.",
+      "unsupportedWithCode": "Das Gerät hat mit {{code}} geantwortet — diese OID ist darauf nicht implementiert."
+    },
+    "health": {
+      "empty": {
+        "title": "Es wird noch nichts überwacht",
+        "action": "Überwachung einrichten",
+        "benefit": {
+          "printer": "Aktivieren Sie SNMP, um Toner- und Tintenstände, Papierfächer, Seitenzähler und Druckerfehler anzuzeigen.",
+          "switch": "Aktivieren Sie SNMP, um Schnittstellenstatus, Durchsatz pro Port und Betriebszeit anzuzeigen.",
+          "generic": "Aktivieren Sie SNMP, um Zustandsdaten dieses Geräts zu erfassen, oder fügen Sie eine Ping- oder Portprüfung hinzu."
+        }
+      },
+      "noTemplate": "SNMP ist aktiviert, aber es ist keine Vorlage zugewiesen — daher wird nichts abgefragt.",
+      "pickTemplate": "Vorlage auswählen",
+      "viewAllOids": "Alle {{count}} OIDs anzeigen"
+    },
+    "printer": {
+      "low": "Niedrig",
+      "supplyFallback": "Verbrauchsmaterial {{instance}}",
+      "pageCount": "Seiten insgesamt",
+      "sinceYesterday": "{{count}} seit gestern",
+      "sinceLastWeek": "{{count}} in der letzten Woche",
+      "notCollectedYet": "Es wurden noch keine Daten zum Druckerzustand erfasst.",
+      "status": {
+        "other": "Sonstiger Zustand",
+        "unknown": "Unbekannt",
+        "idle": "Bereit",
+        "printing": "Druckt",
+        "warmup": "Wärmt auf"
+      },
+      "deviceStatus": {
+        "unknown": "Unbekannt",
+        "running": "In Betrieb",
+        "warning": "Warnung",
+        "testing": "Test läuft",
+        "down": "Ausgefallen"
+      },
+      "errors": {
+        "lowPaper": "Wenig Papier",
+        "noPaper": "Kein Papier",
+        "lowToner": "Wenig Toner",
+        "noToner": "Kein Toner",
+        "doorOpen": "Klappe offen",
+        "jammed": "Papierstau",
+        "offline": "Nicht verbunden",
+        "serviceRequested": "Service erforderlich",
+        "inputTrayMissing": "Papierzufuhr fehlt",
+        "outputTrayMissing": "Ausgabefach fehlt",
+        "markerSupplyMissing": "Verbrauchsmaterial fehlt",
+        "outputNearFull": "Ausgabefach fast voll",
+        "outputFull": "Ausgabefach voll",
+        "inputTrayEmpty": "Papierzufuhr leer",
+        "overduePreventMaint": "Wartung überfällig"
+      }
+    },
+    "charts": {
+      "loadFailed": "Der Verlauf dieses Messwerts konnte nicht geladen werden.",
+      "pickOids": "Diagramm",
+      "cap": "Die maximale Anzahl von {{count}} Diagrammen wird angezeigt. Entfernen Sie eines, um ein weiteres hinzuzufügen.",
+      "perBucket": "Änderung pro {{bucket}}",
+      "bucket": {
+        "fiveMinutes": "5 Min.",
+        "hour": "Stunde",
+        "day": "Tag"
+      },
+      "emptyTitle": "Noch keine Messwerte für OIDs",
+      "emptyDescription": "Der Verlauf erscheint, sobald eine Abfrage einen Wert für mindestens eine OID liefert.",
+      "truncated": "Es werden nur die ersten 64 Instanzreihen angezeigt."
+    },
+    "poll": {
+      "everySeconds": "alle {{count}} Sek.",
+      "everyMinutes": "alle {{count}} Min.",
+      "everyHours": "alle {{count}} Std."
+    },
+    "checks": {
+      "emptyTitle": "Keine Netzwerkprüfungen für dieses Gerät",
+      "emptyDescription": "Eine Ping- oder Portprüfung ermittelt die Erreichbarkeit dieses Geräts unabhängig vom Erkennungsscan.",
+      "add": "Prüfung hinzufügen",
+      "paused": "Pausiert",
+      "status": {
+        "online": "Erreichbar",
+        "degraded": "Beeinträchtigt",
+        "offline": "Nicht erreichbar",
+        "never": "Noch nie geprüft"
+      }
+    },
+    "thresholds": {
+      "emptyTitle": "Keine SNMP-Schwellenwertalarme eingerichtet",
+      "emptyDescription": "Abgefragte Werte dieses Geräts lösen bisher keine Alarme aus."
+    },
+    "loadingMonitoring": "Überwachungsdaten werden geladen…"
   },
   "osIcons": {
     "linux": "Linux",
@@ -2769,7 +3322,8 @@
       "assignedContactPlaceholder": "Kontakte durchsuchen…",
       "tags": "Tags",
       "tagsPlaceholder": "Durch Kommas getrennt",
-      "notes": "Notizen"
+      "notes": "Notizen",
+      "purchaseDate": "Kaufdatum"
     }
   },
   "addNetworkAssetModal": {

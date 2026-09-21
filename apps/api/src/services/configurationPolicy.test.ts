@@ -59,7 +59,26 @@ import {
   configPolicyAlertRules,
   configPolicyFeatureLinks,
   configPolicyMonitoringSettings,
+  configPolicyMonitoringWatches,
 } from '../db/schema';
+
+// Monitoring keeps the settings id stable so retired watches retain their FK.
+function monitoringSettingsUpsert() {
+  const returning = vi.fn(async () => [{ id: 'settings-1', checkIntervalSeconds: 60 }]);
+  const onConflictDoUpdate = vi.fn((_options: unknown) => ({ returning }));
+  return { onConflictDoUpdate };
+}
+
+function expectMonitoringSettingsUpsert(
+  upsert: ReturnType<typeof monitoringSettingsUpsert>,
+  checkIntervalSeconds: number,
+) {
+  expect(upsert.onConflictDoUpdate).toHaveBeenCalledExactlyOnceWith({
+    target: configPolicyMonitoringSettings.featureLinkId,
+    // Exact keys: never reset retiredAt or convertedToMonitorId on re-save.
+    set: { checkIntervalSeconds, updatedAt: expect.any(Date) },
+  });
+}
 
 // Chain for `db.select().from(...).where(...)` awaited directly (links query)
 function selectWhereRows(rows: unknown[]) {
@@ -595,6 +614,204 @@ describe('addFeatureLink — alert_rule inlineSettings service-layer validation'
 
     expect(normalizedRowValues[0].conditions).toEqual([{ type: 'offline', durationMinutes: 10 }]);
   });
+
+  // #5650 W03: rationale threads from the item payload into the
+  // config_policy_alert_rules insert row (decomposeInlineSettings), and back
+  // out again via assembleInlineSettings — see listFeatureLinks coverage below.
+  it('persists rationale on the config_policy_alert_rules insert row', async () => {
+    let normalizedRowValues: any;
+    let insertCall = 0;
+    const tx = {
+      insert: vi.fn(() => ({
+        values: vi.fn((v: any) => {
+          insertCall += 1;
+          if (insertCall === 1) {
+            return {
+              onConflictDoNothing: vi.fn(() => ({
+                returning: vi.fn(() =>
+                  Promise.resolve([
+                    {
+                      id: 'link-ar',
+                      configPolicyId: 'policy-1',
+                      featureType: 'alert_rule',
+                      featurePolicyId: null,
+                      inlineSettings: v.inlineSettings,
+                    },
+                  ])
+                ),
+              })),
+            };
+          }
+          normalizedRowValues = v;
+          return Promise.resolve([]);
+        }),
+      })),
+    };
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+
+    await addFeatureLink('policy-1', 'alert_rule', null, {
+      items: [
+        {
+          name: 'High CPU',
+          conditions: [{ type: 'metric', metric: 'cpu', operator: 'gt', value: 85 }],
+          rationale: 'because sustained CPU pressure predicts device slowdown tickets',
+        },
+      ],
+    });
+
+    expect(normalizedRowValues[0].rationale).toBe(
+      'because sustained CPU pressure predicts device slowdown tickets'
+    );
+  });
+
+  it('stores a null rationale when the item omits it', async () => {
+    let normalizedRowValues: any;
+    let insertCall = 0;
+    const tx = {
+      insert: vi.fn(() => ({
+        values: vi.fn((v: any) => {
+          insertCall += 1;
+          if (insertCall === 1) {
+            return {
+              onConflictDoNothing: vi.fn(() => ({
+                returning: vi.fn(() =>
+                  Promise.resolve([
+                    {
+                      id: 'link-ar',
+                      configPolicyId: 'policy-1',
+                      featureType: 'alert_rule',
+                      featurePolicyId: null,
+                      inlineSettings: v.inlineSettings,
+                    },
+                  ])
+                ),
+              })),
+            };
+          }
+          normalizedRowValues = v;
+          return Promise.resolve([]);
+        }),
+      })),
+    };
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+
+    await addFeatureLink('policy-1', 'alert_rule', null, {
+      items: [
+        {
+          name: 'High CPU',
+          conditions: [{ type: 'metric', metric: 'cpu', operator: 'gt', value: 85 }],
+        },
+      ],
+    });
+
+    expect(normalizedRowValues[0].rationale).toBeNull();
+  });
+});
+
+// #5650 W03: assembleInlineSettings round-trip coverage for rationale on both
+// alert_rule items and monitoring watches.
+describe('assembleInlineSettings — rationale round-trip (#5650 W03)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('alert_rule: returns the stored rationale on each item', async () => {
+    const link = {
+      id: 'link-ar',
+      configPolicyId: 'policy-1',
+      featureType: 'alert_rule',
+      featurePolicyId: null,
+      inlineSettings: { items: [] },
+    };
+
+    function selectOrderByRows(rows: unknown[]) {
+      const chain: any = {};
+      chain.from = vi.fn(() => chain);
+      chain.where = vi.fn(() => chain);
+      chain.orderBy = vi.fn(() => Promise.resolve(rows));
+      return chain;
+    }
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectWhereRows([link]) as any) // links query
+      .mockReturnValueOnce(
+        selectOrderByRows([
+          {
+            name: 'High CPU',
+            severity: 'medium',
+            conditions: [{ type: 'metric', metric: 'cpu', operator: 'gt', value: 85 }],
+            cooldownMinutes: 5,
+            autoResolve: false,
+            autoResolveConditions: null,
+            titleTemplate: '{{ruleName}} triggered on {{deviceName}}',
+            messageTemplate: '{{ruleName}} condition met',
+            escalationPolicyId: null,
+            notificationChannelIds: null,
+            sortOrder: 0,
+            rationale: 'because sustained CPU pressure predicts device slowdown tickets',
+          },
+        ]) as any
+      );
+
+    const result = await listFeatureLinks('policy-1');
+    const settings = result[0]!.inlineSettings as Record<string, unknown>;
+    const items = settings.items as Array<Record<string, unknown>>;
+
+    expect(items[0]?.rationale).toBe(
+      'because sustained CPU pressure predicts device slowdown tickets'
+    );
+  });
+
+  it('monitoring: returns the stored rationale on each watch', async () => {
+    const link = {
+      id: 'link-mon',
+      configPolicyId: 'policy-1',
+      featureType: 'monitoring',
+      featurePolicyId: null,
+      inlineSettings: { checkIntervalSeconds: 60, watches: [] },
+    };
+
+    function selectOrderByRows(rows: unknown[]) {
+      const chain: any = {};
+      chain.from = vi.fn(() => chain);
+      chain.where = vi.fn(() => chain);
+      chain.orderBy = vi.fn(() => Promise.resolve(rows));
+      return chain;
+    }
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectWhereRows([link]) as any) // links query
+      .mockReturnValueOnce(
+        selectLimitRows([{ id: 'settings-1', featureLinkId: 'link-mon', checkIntervalSeconds: 60 }]) as any
+      ) // config_policy_monitoring_settings
+      .mockReturnValueOnce(
+        selectOrderByRows([
+          {
+            watchType: 'service',
+            name: 'MSSQLSERVER',
+            displayName: null,
+            enabled: true,
+            alertOnStop: true,
+            alertAfterConsecutiveFailures: 2,
+            alertSeverity: 'high',
+            cpuThresholdPercent: null,
+            memoryThresholdMb: null,
+            thresholdDurationSeconds: 60,
+            autoRestart: false,
+            maxRestartAttempts: 3,
+            restartCooldownSeconds: 300,
+            sortOrder: 0,
+            rationale: 'why this service is watched',
+          },
+        ]) as any
+      );
+
+    const result = await listFeatureLinks('policy-1');
+    const settings = result[0]!.inlineSettings as Record<string, unknown>;
+    const watches = settings.watches as Array<Record<string, unknown>>;
+
+    expect(watches[0]?.rationale).toBe('why this service is watched');
+  });
 });
 
 // ============================================================
@@ -616,6 +833,7 @@ describe('updateFeatureLink — normalized row replacement', () => {
    */
   function updateTx(existing: Record<string, unknown>) {
     const calls: Array<{ op: 'delete' | 'insert'; table: unknown; values?: any }> = [];
+    const settingsUpsert = monitoringSettingsUpsert();
     const tx: any = {
       select: vi.fn(() => ({
         from: vi.fn(() => ({
@@ -636,15 +854,15 @@ describe('updateFeatureLink — normalized row replacement', () => {
       insert: vi.fn((table: unknown) => ({
         values: vi.fn((values: any) => {
           calls.push({ op: 'insert', table, values });
-          // Awaitable AND `.returning()`-able: monitoring's decompose chains
-          // `.returning()` off the settings insert to get the row id.
+          if (table === configPolicyMonitoringSettings) return settingsUpsert;
+          // Other normalized inserts are directly awaitable.
           const result: any = Promise.resolve([{ id: 'settings-1' }]);
           result.returning = vi.fn(() => Promise.resolve([{ id: 'settings-1' }]));
           return result;
         }),
       })),
     };
-    return { tx, calls };
+    return { tx, calls, settingsUpsert };
   }
 
   it('deletes the old alert_rule rows, then reinserts them with schema defaults', async () => {
@@ -703,7 +921,7 @@ describe('updateFeatureLink — normalized row replacement', () => {
     // gone (2026-07-30 consolidation) a delete here is pure data loss for any
     // policy the ownership migration has not yet touched — one unrelated save
     // on the Monitoring tab and the legacy rules are unrecoverable.
-    const { tx, calls } = updateTx({
+    const { tx, calls, settingsUpsert } = updateTx({
       id: 'link-mon', configPolicyId: 'policy-1', featureType: 'monitoring',
       featurePolicyId: null, inlineSettings: { checkIntervalSeconds: 60, watches: [] },
     });
@@ -714,7 +932,9 @@ describe('updateFeatureLink — normalized row replacement', () => {
     }, 'policy-1');
 
     const deletedTables = calls.filter((c) => c.op === 'delete').map((c) => c.table);
-    expect(deletedTables).toContain(configPolicyMonitoringSettings);
+    expect(deletedTables).toContain(configPolicyMonitoringWatches);
+    expect(deletedTables).not.toContain(configPolicyMonitoringSettings);
+    expectMonitoringSettingsUpsert(settingsUpsert, 120);
     expect(deletedTables).not.toContain(configPolicyAlertRules);
   });
 });
@@ -736,6 +956,7 @@ describe('monitoring decompose/assemble — no longer owns alert rules', () => {
   // are non-empty) is config_policy_monitoring_watches.
   function txForMonitoringInsert() {
     let insertCall = 0;
+    const settingsUpsert = monitoringSettingsUpsert();
     const insertedTables: unknown[] = [];
     const tx = {
       insert: vi.fn((table: unknown) => {
@@ -763,20 +984,18 @@ describe('monitoring decompose/assemble — no longer owns alert rules', () => {
         if (insertCall === 2) {
           // config_policy_monitoring_settings insert (decomposeInlineSettings)
           return {
-            values: vi.fn(() => ({
-              returning: vi.fn(() => Promise.resolve([{ id: 'settings-1', checkIntervalSeconds: 60 }])),
-            })),
+            values: vi.fn(() => settingsUpsert),
           };
         }
         // config_policy_monitoring_watches insert
         return { values: vi.fn(() => Promise.resolve([])) };
       }),
     };
-    return { tx, insertedTables, insertCallCount: () => insertCall };
+    return { tx, insertedTables, settingsUpsert, insertCallCount: () => insertCall };
   }
 
   it('monitoring decompose no longer inserts config_policy_alert_rules rows', async () => {
-    const { tx, insertedTables, insertCallCount } = txForMonitoringInsert();
+    const { tx, insertedTables, settingsUpsert, insertCallCount } = txForMonitoringInsert();
     vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
 
     const link = await addFeatureLink('policy-1', 'monitoring', null, {
@@ -788,6 +1007,107 @@ describe('monitoring decompose/assemble — no longer owns alert rules', () => {
     // Exactly 3 inserts: feature link, monitoring settings, monitoring watches.
     expect(insertCallCount()).toBe(3);
     expect(insertedTables).not.toContain(configPolicyAlertRules);
+    expectMonitoringSettingsUpsert(settingsUpsert, 60);
+  });
+
+  it('monitoring decompose persists rationale on the config_policy_monitoring_watches insert row', async () => {
+    let watchRowValues: any;
+    const settingsUpsert = monitoringSettingsUpsert();
+    let insertCall = 0;
+    const tx = {
+      insert: vi.fn(() => {
+        insertCall += 1;
+        if (insertCall === 1) {
+          return {
+            values: vi.fn((v: any) => ({
+              onConflictDoNothing: vi.fn(() => ({
+                returning: vi.fn(() =>
+                  Promise.resolve([
+                    {
+                      id: 'link-mon',
+                      configPolicyId: 'policy-1',
+                      featureType: 'monitoring',
+                      featurePolicyId: null,
+                      inlineSettings: v.inlineSettings,
+                    },
+                  ])
+                ),
+              })),
+            })),
+          };
+        }
+        if (insertCall === 2) {
+          return {
+            values: vi.fn(() => settingsUpsert),
+          };
+        }
+        return {
+          values: vi.fn((v: any) => {
+            watchRowValues = v;
+            return Promise.resolve([]);
+          }),
+        };
+      }),
+    };
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+
+    await addFeatureLink('policy-1', 'monitoring', null, {
+      checkIntervalSeconds: 60,
+      watches: [{ watchType: 'service', name: 'MSSQLSERVER', rationale: 'why this service is watched' }],
+    });
+
+    expect(watchRowValues[0].rationale).toBe('why this service is watched');
+    expectMonitoringSettingsUpsert(settingsUpsert, 60);
+  });
+
+  it('monitoring decompose stores a null rationale when the watch omits it', async () => {
+    let watchRowValues: any;
+    const settingsUpsert = monitoringSettingsUpsert();
+    let insertCall = 0;
+    const tx = {
+      insert: vi.fn(() => {
+        insertCall += 1;
+        if (insertCall === 1) {
+          return {
+            values: vi.fn((v: any) => ({
+              onConflictDoNothing: vi.fn(() => ({
+                returning: vi.fn(() =>
+                  Promise.resolve([
+                    {
+                      id: 'link-mon',
+                      configPolicyId: 'policy-1',
+                      featureType: 'monitoring',
+                      featurePolicyId: null,
+                      inlineSettings: v.inlineSettings,
+                    },
+                  ])
+                ),
+              })),
+            })),
+          };
+        }
+        if (insertCall === 2) {
+          return {
+            values: vi.fn(() => settingsUpsert),
+          };
+        }
+        return {
+          values: vi.fn((v: any) => {
+            watchRowValues = v;
+            return Promise.resolve([]);
+          }),
+        };
+      }),
+    };
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+
+    await addFeatureLink('policy-1', 'monitoring', null, {
+      checkIntervalSeconds: 60,
+      watches: [{ watchType: 'service', name: 'MSSQLSERVER' }],
+    });
+
+    expect(watchRowValues[0].rationale).toBeNull();
+    expectMonitoringSettingsUpsert(settingsUpsert, 60);
   });
 
   it('monitoring decompose rejects legacy non-empty alertRules payloads', async () => {
@@ -1888,5 +2208,144 @@ describe('listConfigPolicies feature links', () => {
     // An inArray() against an empty id list is a SQL error in Drizzle, so the
     // third statement must not be issued at all.
     expect(vi.mocked(db.select)).toHaveBeenCalledTimes(2);
+  });
+});
+
+// ============================================================
+// #6312 — maintenance inlineSettings service-layer validation
+// ============================================================
+
+describe('addFeatureLink — maintenance inlineSettings service-layer validation', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  // Only satisfies the first (feature link) insert — decompose's schema.parse()
+  // throws before the config_policy_maintenance_settings insert is attempted.
+  function txForFeatureLinkInsertOnly() {
+    return {
+      insert: vi.fn(() => ({
+        values: vi.fn((v: any) => ({
+          onConflictDoNothing: vi.fn(() => ({
+            returning: vi.fn(() =>
+              Promise.resolve([
+                {
+                  id: 'link-maint',
+                  configPolicyId: 'policy-1',
+                  featureType: 'maintenance',
+                  featurePolicyId: null,
+                  inlineSettings: v.inlineSettings,
+                },
+              ])
+            ),
+          })),
+        })),
+      })),
+    };
+  }
+
+  // The route is a pre-check, not the enforcement boundary: the AI
+  // manage_policy_feature_link tool and any other direct caller reach
+  // addFeatureLink without passing through it.
+  it.each([
+    ['an unknown recurrence', { recurrence: 'fortnightly' }],
+    ['a negative durationHours', { durationHours: -5 }],
+    ['a non-IANA timezone', { timezone: 'Nowhere/Nope' }],
+    ['an unparseable recurring windowStart', { recurrence: 'daily', windowStart: 'banana' }],
+    ["a 'once' window with no start", { recurrence: 'once', windowStart: '' }],
+  ])('refuses maintenance inlineSettings with %s', async (_label, inlineSettings) => {
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(txForFeatureLinkInsertOnly()));
+
+    await expect(
+      addFeatureLink('policy-1', 'maintenance', null, inlineSettings)
+    ).rejects.toThrow();
+  });
+
+  it('writes the parsed settings — not the old typeof-coerced defaults — to the normalized row', async () => {
+    let normalizedRowValues: any;
+    let insertCall = 0;
+    const tx = {
+      insert: vi.fn(() => ({
+        values: vi.fn((v: any) => {
+          insertCall += 1;
+          if (insertCall === 1) {
+            return {
+              onConflictDoNothing: vi.fn(() => ({
+                returning: vi.fn(() =>
+                  Promise.resolve([
+                    {
+                      id: 'link-maint',
+                      configPolicyId: 'policy-1',
+                      featureType: 'maintenance',
+                      featurePolicyId: null,
+                      inlineSettings: v.inlineSettings,
+                    },
+                  ])
+                ),
+              })),
+            };
+          }
+          normalizedRowValues = v;
+          return Promise.resolve([]);
+        }),
+      })),
+    };
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+
+    const link = await addFeatureLink('policy-1', 'maintenance', null, {
+      recurrence: 'daily',
+      windowStart: '02:30',
+      durationHours: 4,
+      timezone: 'America/New_York',
+    });
+
+    expect(link).not.toBeNull();
+    expect(normalizedRowValues).toMatchObject({
+      featureLinkId: 'link-maint',
+      recurrence: 'daily',
+      windowStart: '02:30',
+      durationHours: 4,
+      timezone: 'America/New_York',
+      // Schema defaults, identical to what the old coercion produced for the
+      // fields the caller omitted.
+      suppressAlerts: true,
+      suppressPatching: false,
+      suppressAutomations: false,
+      suppressScripts: false,
+      rebootIfPending: false,
+      notifyBeforeMinutes: 15,
+      notifyOnStart: true,
+      notifyOnEnd: true,
+    });
+  });
+
+  it('normalizes an empty recurring windowStart to null (the midnight anchor)', async () => {
+    let normalizedRowValues: any;
+    let insertCall = 0;
+    const tx = {
+      insert: vi.fn(() => ({
+        values: vi.fn((v: any) => {
+          insertCall += 1;
+          if (insertCall === 1) {
+            return {
+              onConflictDoNothing: vi.fn(() => ({
+                returning: vi.fn(() =>
+                  Promise.resolve([
+                    { id: 'link-maint', configPolicyId: 'policy-1', featureType: 'maintenance', featurePolicyId: null, inlineSettings: v.inlineSettings },
+                  ])
+                ),
+              })),
+            };
+          }
+          normalizedRowValues = v;
+          return Promise.resolve([]);
+        }),
+      })),
+    };
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+
+    await addFeatureLink('policy-1', 'maintenance', null, { recurrence: 'weekly', windowStart: '' });
+
+    expect(normalizedRowValues.windowStart).toBeNull();
   });
 });

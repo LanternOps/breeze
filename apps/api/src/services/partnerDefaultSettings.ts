@@ -41,18 +41,33 @@ const isPlainObject = (value: unknown): value is Record<string, unknown> =>
  * and the admin route echoes the persisted `settings` back in its 201 response,
  * so a caller who sent a malformed value sees what actually landed.
  *
+ * 2026-09-18 (Strix scan follow-up, spec
+ * docs/superpowers/specs/2026-09-18-mfa-required-default-new-partners-design.md):
+ * new partners also default to `security.requireMfa = true`. Same rules —
+ * caller intent wins (an explicit `false` is how the dev seed and a
+ * platform-admin opt-out are expressed), unrelated `security.*` keys are
+ * preserved, a non-object `security` branch is replaced. Applied ONLY here, at
+ * creation: `services/mfaPolicy.ts` still reads an absent key as "not
+ * required", so existing partners are untouched on upgrade. Deliberately not
+ * hosted-conditional — this module stays import-free.
+ *
  * Returns a fresh object; the caller's input is never mutated.
  */
 export function applyNewPartnerDefaultSettings(settings?: unknown): Record<string, unknown> {
   const base = isPlainObject(settings) ? { ...settings } : {};
   const ticketing = isPlainObject(base.ticketing) ? { ...base.ticketing } : {};
   const inbound = isPlainObject(ticketing.inbound) ? { ...ticketing.inbound } : {};
+  const security = isPlainObject(base.security) ? { ...base.security } : {};
 
   if (inbound.enabled === undefined) {
     inbound.enabled = false;
   }
+  if (security.requireMfa === undefined) {
+    security.requireMfa = true;
+  }
 
   ticketing.inbound = inbound;
   base.ticketing = ticketing;
+  base.security = security;
   return base;
 }

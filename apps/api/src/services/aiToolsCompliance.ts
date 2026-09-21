@@ -28,9 +28,16 @@ import { evaluateSoftwarePolicyArming, normalizeSoftwarePolicyRules } from './so
 import {
   auditSoftwarePolicyToolEvent,
   summarizeEnforcementChange,
+  AI_AUTO_INSTALL_REFUSAL_MESSAGE,
+  remediationOptionsArmsAutoInstall,
 } from './aiToolsSoftwarePolicyAudit';
 import { canManagePartnerWidePolicies } from './partnerWideAccess';
-import { resolveSiteAllowedDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
+import {
+  deviceScopeCondition,
+  resolveSiteAllowedDeviceIds,
+  runFrozenDeviceIds,
+  SITE_SCOPE_EMPTY_NOTE,
+} from './aiToolsSiteScope';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -76,6 +83,8 @@ export function registerComplianceTools(aiTools: Map<string, AiTool>): void {
 
 registerTool({
   tier: 1,
+  domain: 'patching',
+  searchHint: 'software compliance, unauthorized installations, missing required software and policy violations',
   deviceArgs: ['deviceIds'],
   definition: {
     name: 'get_software_compliance',
@@ -116,6 +125,12 @@ registerTool({
       }
       conditions.push(inArray(softwareComplianceStatus.deviceId, allowed));
     }
+
+    // Exact-device axis, applied independently of the site axis: a device-LESS
+    // analysis run carries `allowedDeviceIds` with NO `allowedSiteIds`, so the
+    // branch above no-ops for it and the tool read the whole org (#6086).
+    const complianceDeviceCondition = deviceScopeCondition(auth, softwareComplianceStatus.deviceId);
+    if (complianceDeviceCondition) conditions.push(complianceDeviceCondition);
 
     const limit = Math.min(Math.max(1, Number(input.limit) || 50), 500);
 
@@ -167,6 +182,8 @@ registerTool({
 
 registerTool({
   tier: 3,
+  domain: 'patching',
+  searchHint: 'software allowlist, blocklist and audit policies: create, update, disable, list, get',
   definition: {
     name: 'manage_software_policy',
     description: 'Create, update, disable (soft-delete), list, or fetch software policies (allowlist/blocklist/audit).',
@@ -200,7 +217,7 @@ registerTool({
         priority: { type: 'number', description: 'Policy priority (0-100)' },
         enforceMode: { type: 'boolean', description: 'Auto-remediate violations' },
         isActive: { type: 'boolean', description: 'Enable/disable policy' },
-        remediationOptions: { type: 'object', description: 'Remediation behavior options' },
+        remediationOptions: { type: 'object', description: 'Remediation behavior options: { autoUninstall?: boolean, notifyUser?: boolean, gracePeriod?: number, cooldownMinutes?: number, maintenanceWindowOnly?: boolean }. autoInstall is NOT settable here — arming software installation requires a human operator with devices.execute and MFA.' },
         limit: { type: 'number', description: 'List limit (default 50)' },
       },
       required: ['action'],
@@ -275,6 +292,11 @@ registerTool({
         return JSON.stringify({ error: 'At least one software rule is required' });
       }
 
+      // Contract-A D4: AI callers may never arm software installation.
+      if (remediationOptionsArmsAutoInstall(input.remediationOptions)) {
+        return JSON.stringify({ error: AI_AUTO_INSTALL_REFUSAL_MESSAGE });
+      }
+
       const [policy] = await db
         .insert(softwarePolicies)
         .values({
@@ -340,6 +362,11 @@ registerTool({
       // capability (same gate as the HTTP route).
       if (existing.orgId === null && !canManagePartnerWidePolicies(auth)) {
         return JSON.stringify({ error: 'Modifying a partner-wide software policy requires full partner org access (orgAccess must be "all")' });
+      }
+
+      // Contract-A D4: AI callers may never arm software installation.
+      if (remediationOptionsArmsAutoInstall(input.remediationOptions)) {
+        return JSON.stringify({ error: AI_AUTO_INSTALL_REFUSAL_MESSAGE });
       }
 
       const updates: Omit<Partial<typeof softwarePolicies.$inferInsert>, 'approvalGeneration'> & { approvalGeneration?: SQL } = {
@@ -471,6 +498,8 @@ registerTool({
 
 registerTool({
   tier: 3,
+  domain: 'patching',
+  searchHint: 'software policy violations, queue uninstall remediation for unauthorized software',
   deviceArgs: ['deviceIds'],
   definition: {
     name: 'remediate_software_violation',
@@ -506,7 +535,7 @@ registerTool({
     // not the policy's own enforcement setting, so it is not a substitute.
     // Deliberately no override parameter: re-arming is an administrator's
     // decision made on the policy, not an argument the model can supply.
-    const arming = evaluateSoftwarePolicyArming(policy);
+    const arming = evaluateSoftwarePolicyArming(policy, 'uninstall');
     if (!arming.armed) {
       auditSoftwarePolicyToolEvent(auth, 'remediate_software_violation', {
         orgId: policy.orgId,
@@ -564,6 +593,12 @@ registerTool({
         complianceConditions.push(inArray(softwareComplianceStatus.deviceId, allowed));
       }
 
+      // Exact-device axis, applied independently of the site axis (#6086). This
+      // fan-out QUEUES UNINSTALLS, so a device-less analysis run reaching every
+      // violating device in the org is the worst shape of this bug.
+      const remediationDeviceCondition = deviceScopeCondition(auth, softwareComplianceStatus.deviceId);
+      if (remediationDeviceCondition) complianceConditions.push(remediationDeviceCondition);
+
       const rows = await db
         .select({ deviceId: softwareComplianceStatus.deviceId })
         .from(softwareComplianceStatus)
@@ -613,6 +648,8 @@ registerTool({
 
 registerTool({
   tier: 1,
+  domain: 'security',
+  searchHint: 'compliance policies and enforcement status',
   definition: {
     name: 'query_compliance_policies',
     description: 'List compliance policies and their enforcement status.',
@@ -684,6 +721,8 @@ registerTool({
 
 registerTool({
   tier: 1,
+  domain: 'security',
+  searchHint: 'device compliance status for a specific policy',
   deviceArgs: ['deviceId'],
   definition: {
     name: 'get_compliance_status',
@@ -751,6 +790,10 @@ registerTool({
       }
       conditions.push(inArray(automationPolicyCompliance.deviceId, allowed));
     }
+
+    // Exact-device axis, applied independently of the site axis (#6086).
+    const automationDeviceCondition = deviceScopeCondition(auth, automationPolicyCompliance.deviceId);
+    if (automationDeviceCondition) conditions.push(automationDeviceCondition);
 
     const records = await db
       .select({

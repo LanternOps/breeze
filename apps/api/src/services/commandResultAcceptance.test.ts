@@ -6,6 +6,7 @@ import {
   ACCEPTED_COMMAND_RESULT_STATUSES,
   SERVER_TIMEOUT_RESULT_STATUS,
   BACKUP_QUEUE_ACK_RESULT_STATUS,
+  TIMEOUT_REOPEN_EXCLUDED_COMMAND_TYPES,
 } from './commandResultAcceptance';
 import { QUEUED_BACKUP_WORKLOAD_COMMAND_TYPES } from './commandTypes';
 
@@ -13,6 +14,15 @@ describe('commandAcceptsAgentResult (#3607)', () => {
   it('accepts the in-flight statuses', () => {
     for (const status of ACCEPTED_COMMAND_RESULT_STATUSES) {
       expect(commandAcceptsAgentResult(status, null)).toBe(true);
+    }
+  });
+
+  it('never reopens a timed-out diagnostic whose plan authority has lapsed', () => {
+    for (const type of TIMEOUT_REOPEN_EXCLUDED_COMMAND_TYPES) {
+      expect(
+        commandAcceptsAgentResult('failed', { status: SERVER_TIMEOUT_RESULT_STATUS }, type),
+      ).toBe(false);
+      expect(commandAcceptsAgentResult('sent', null, type)).toBe(true);
     }
   });
 
@@ -131,6 +141,7 @@ describe('commandAcceptsAgentResultCondition (#3607)', () => {
     expect(params).toEqual([
       ...ACCEPTED_COMMAND_RESULT_STATUSES,
       'failed',
+      ...TIMEOUT_REOPEN_EXCLUDED_COMMAND_TYPES,
       SERVER_TIMEOUT_RESULT_STATUS,
       'completed',
       ...QUEUED_BACKUP_WORKLOAD_COMMAND_TYPES,

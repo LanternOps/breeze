@@ -126,10 +126,37 @@ const MANAGE_INVOICES_REQUIRED: Record<string, readonly string[]> = {
   create_pay_link: ['invoiceId'],
 };
 
+
+/**
+ * SCOPE PARITY WITH THE HTTP DOOR (#6110 review, finding 1).
+ *
+ * A tool must require exactly what its route requires. Every route file under `routes/invoices/` is
+ * `requireScope('partner','system')` (invoices.ts:20, lifecycle.ts:24,
+ * assembly.ts:17, payments.ts:12, pdf.ts:12, stripe.ts:18, evidence.ts:14,
+ * bulk.ts:11, settings.ts:23).
+ * An organization-scoped token therefore cannot reach this domain over HTTP at
+ * all — and an org token still carries the OWNING PARTNER's partnerId, so a
+ * bare partnerId-presence check is not a substitute. Autonomous AI-agent runs
+ * mint `scope: 'organization'` too (aiAgents/agentAuthContext.ts), so this gate
+ * refuses them as well; the `business` capability group that carries these
+ * tools already contains partner-only tools (aiToolsDeliverables.ts), so that is
+ * an existing, expected shape rather than a new one.
+ */
+function partnerScopeRefusal(auth: AuthContext): string | null {
+  if (auth.scope === 'partner' || auth.scope === 'system') return null;
+  return JSON.stringify({
+    error: 'Invoice access requires a partner-scoped session; organization-scoped callers cannot reach the '
+      + 'matching HTTP routes either',
+    code: 'PARTNER_SCOPE_REQUIRED',
+  });
+}
+
 export function registerBillingTools(aiTools: Map<string, AiTool>): void {
   aiTools.set('list_invoices', {
     tier: 2 as AiToolTier,
     deviceArgs: [],
+    domain: 'billing',
+    searchHint: 'invoices by organization or status, balances, deposits and currencies',
     definition: {
       name: 'list_invoices',
       description:
@@ -151,6 +178,8 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
       }
     },
     handler: async (input, auth) => {
+      const refusal = partnerScopeRefusal(auth);
+      if (refusal) return refusal;
       const limit = Math.min(Math.max(1, Number(input.limit) || 25), 100);
       try {
         const rows = await listInvoices(
@@ -173,6 +202,8 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
   aiTools.set('get_invoice', {
     tier: 2 as AiToolTier,
     deviceArgs: [],
+    domain: 'billing',
+    searchHint: 'invoice accounting details, line items, balances and deposit payment status',
     definition: {
       name: 'get_invoice',
       description:
@@ -188,6 +219,8 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
       }
     },
     handler: async (input, auth) => {
+      const refusal = partnerScopeRefusal(auth);
+      if (refusal) return refusal;
       try {
         const result = await getInvoice(String(input.invoiceId), actorFromAuth(auth));
         return JSON.stringify({ ...result, invoice: withDepositPaid(result.invoice) });
@@ -202,6 +235,8 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
   aiTools.set('manage_invoices', {
     tier: 2 as AiToolTier,
     deviceArgs: [],
+    domain: 'billing',
+    searchHint: 'invoices: create, edit, issue, void, record or void payments, create Stripe pay links',
     definition: {
       name: 'manage_invoices',
       description:
@@ -257,6 +292,8 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
       },
     },
     handler: async (input, auth) => {
+      const refusal = partnerScopeRefusal(auth);
+      if (refusal) return refusal;
       const actor = actorFromAuth(auth);
       const s = (k: string) => (input[k] == null ? undefined : String(input[k]));
 
@@ -269,6 +306,11 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
       if (missing) return missing;
 
       // PARTNER SCOPE FOR THE PAYMENT ACTIONS (review wave 2, finding 5).
+      // NOW SUBSUMED by the family-wide `partnerScopeRefusal` at the top of this
+      // handler (#6110 finding 1) — kept deliberately as the narrowest statement
+      // of WHY these two actions in particular can never run at org scope, so
+      // that relaxing the family gate cannot silently relax these.
+
       // `recordPayment`/`voidPayment` reach `accounting_entity_mappings` and
       // `accounting_connections`, both PARTNER-axis under RLS: an org-scoped
       // principal sees ZERO rows there, so `requestPaymentPush` /
@@ -314,6 +356,9 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
               userId: auth.user.id,
               partnerId: actor.partnerId,
               accessibleOrgIds: actor.accessibleOrgIds,
+              // The read leg of add_contract_line went through an ungated actor,
+              // bolting an org-wide contract/line read onto a site-checked write.
+              allowedSiteIds: actor.allowedSiteIds,
             };
             const contractId = String(input.contractId);
             const contractLineId = String(input.contractLineId);

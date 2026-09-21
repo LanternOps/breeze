@@ -7,18 +7,24 @@
  * - configure_network_baseline (Tier 2): Create/update network baseline configuration
  * - get_ip_history (Tier 1): Query historical IP assignments
  * - network_discovery (Tier 3): Initiate a network discovery scan
+ * - get_network_asset_reachability (Tier 1): Sourced, dated reachability for a discovered asset
  */
 
 import { isIP } from 'node:net';
+import { z } from 'zod';
+import { maskOidShapedModel, nicVendorFromMac } from './assetIdentity';
 import { db } from '../db';
 import {
   devices,
   deviceIpHistory,
+  discoveredAssets,
   networkBaselines,
   networkChangeEvents,
   sites,
   type NetworkBaselineScanSchedule,
 } from '../db/schema';
+import { loadReachability } from './assetReachabilityLoader';
+import { deviceSiteDenied, siteScopeCondition, SITE_SCOPE_EMPTY_NOTE, deviceScopeCondition, filterToDeviceScope } from './aiToolsSiteScope';
 import { eq, and, desc, gte, inArray, lte, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
@@ -31,6 +37,7 @@ import {
   buildBaselineAuthorityEnvelope,
   type BaselineAuthorityEnvelope,
 } from './networkBaselineAuthority';
+import { aiExecuteCommand } from './aiDispatch';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -56,6 +63,9 @@ async function verifyDeviceAccess(
   auth: AuthContext,
   requireOnline = false
 ): Promise<{ device: typeof devices.$inferSelect } | { error: string }> {
+  if (auth.allowedDeviceIds && !auth.allowedDeviceIds.includes(deviceId)) {
+    return { error: 'Device not found or access denied' };
+  }
   const conditions: SQL[] = [eq(devices.id, deviceId)];
   const orgCond = auth.orgCondition(devices.orgId);
   if (orgCond) conditions.push(orgCond);
@@ -82,11 +92,6 @@ function siteAccessDenied(auth: AuthContext, siteId: string | null | undefined):
   return !auth.canAccessSite || !auth.canAccessSite(siteId);
 }
 
-let _commandQueue: typeof import('./commandQueue') | null = null;
-async function getCommandQueue() {
-  if (!_commandQueue) _commandQueue = await import('./commandQueue');
-  return _commandQueue;
-}
 
 // ============================================
 // Registration
@@ -106,10 +111,139 @@ async function armScheduleAuthority(
   return buildBaselineAuthorityEnvelope(auth, effect);
 }
 
+function jsonError(error: string): string {
+  return JSON.stringify({ error });
+}
+
+function resolveAssetOrgId(auth: AuthContext, requested?: string): { orgId: string } | { error: string } {
+  if (auth.scope === 'organization') {
+    if (!auth.orgId) return { error: 'Organization context required' };
+    if (requested && requested !== auth.orgId) return { error: 'Access to this organization denied' };
+    return { orgId: auth.orgId };
+  }
+  if (auth.scope !== 'partner' && auth.scope !== 'system') return { error: 'Organization context required' };
+  if (requested) {
+    if (!auth.canAccessOrg(requested)
+      || (auth.scope === 'partner' && !(auth.accessibleOrgIds ?? []).includes(requested))) {
+      return { error: 'Access to this organization denied' };
+    }
+    return { orgId: requested };
+  }
+  if (auth.scope === 'partner') {
+    const orgs = auth.accessibleOrgIds ?? [];
+    if (orgs.length === 1) return { orgId: orgs[0]! };
+    return { error: 'orgId is required when partner has multiple organizations' };
+  }
+  return { error: 'orgId is required for system scope' };
+}
+
+// Named scalar columns only: never expose SNMP data, ports, or internal notes.
+// Built lazily to retain compatibility with older tests' partial schema mocks.
+function safeAssetProjection() {
+  return {
+    id: discoveredAssets.id, orgId: discoveredAssets.orgId, siteId: discoveredAssets.siteId,
+    assetType: discoveredAssets.assetType, approvalStatus: discoveredAssets.approvalStatus,
+    hostname: discoveredAssets.hostname, label: discoveredAssets.label,
+    ipAddress: discoveredAssets.ipAddress, macAddress: discoveredAssets.macAddress,
+    manufacturer: discoveredAssets.manufacturer, model: discoveredAssets.model,
+    linkedDeviceId: discoveredAssets.linkedDeviceId, detectedAssetType: discoveredAssets.detectedAssetType,
+    isOnline: discoveredAssets.isOnline, firstSeenAt: discoveredAssets.firstSeenAt, lastSeenAt: discoveredAssets.lastSeenAt,
+  };
+}
+
 export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
   function registerTool(tool: AiTool): void {
     aiTools.set(tool.definition.name, tool);
   }
+
+  registerTool({
+    tier: 1,
+    domain: 'network',
+    searchHint: 'discovered network devices, switches, printers, unmanaged assets on a customer LAN, MAC/IP/vendor',
+    deviceArgs: ['linkedDeviceId'],
+    definition: {
+      name: 'list_network_assets',
+      description: 'List discovered network assets with IP, MAC, model, linked device and last-seen time, filtered by organization, site, type or approval status.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          orgId: { type: 'string', description: 'Organization UUID' },
+          siteId: { type: 'string', description: 'Site UUID' },
+          approvalStatus: { type: 'string', enum: ['pending', 'approved', 'dismissed'], description: 'Approval status: pending, approved, dismissed' },
+          assetType: {
+            type: 'string',
+            enum: ['workstation', 'server', 'printer', 'router', 'switch', 'firewall', 'access_point', 'phone', 'iot', 'camera', 'nas', 'unknown', 'website', 'service'],
+            description: 'Type: workstation, server, printer, router, switch, firewall, access_point, phone, iot, camera, nas, unknown, website, service',
+          },
+          linkedDeviceId: { type: 'string', description: 'Linked managed device UUID' },
+          limit: { type: 'number', description: 'Maximum rows (default 50, maximum 200)' },
+        },
+      },
+    },
+    handler: async (input, auth) => {
+      const parsed = z.object({
+        orgId: z.string().guid().optional(), siteId: z.string().guid().optional(),
+        approvalStatus: z.enum(['pending', 'approved', 'dismissed']).optional(),
+        assetType: z.enum(['workstation', 'server', 'printer', 'router', 'switch', 'firewall', 'access_point', 'phone', 'iot', 'camera', 'nas', 'unknown', 'website', 'service']).optional(),
+        linkedDeviceId: z.string().guid().optional(), limit: z.number().finite().optional(),
+      }).safeParse(input);
+      if (!parsed.success) return jsonError('Invalid network asset filters');
+      const filters = parsed.data;
+      const resolved = resolveAssetOrgId(auth, filters.orgId);
+      if ('error' in resolved) return jsonError(resolved.error);
+      if (auth.allowedSiteIds?.length === 0) {
+        return JSON.stringify({ assets: [], showing: 0, note: SITE_SCOPE_EMPTY_NOTE });
+      }
+      if (filters.siteId && auth.allowedSiteIds && !auth.allowedSiteIds.includes(filters.siteId)) {
+        return jsonError('Access to this site denied');
+      }
+      if (auth.allowedDeviceIds?.length === 0) return JSON.stringify({ assets: [], showing: 0 });
+      const conditions: SQL[] = [eq(discoveredAssets.orgId, resolved.orgId)];
+      const siteCondition = filters.siteId ? eq(discoveredAssets.siteId, filters.siteId) : siteScopeCondition(auth, discoveredAssets.siteId);
+      if (siteCondition) conditions.push(siteCondition);
+      const deviceCondition = deviceScopeCondition(auth, discoveredAssets.linkedDeviceId);
+      if (deviceCondition) conditions.push(deviceCondition);
+      if (filters.approvalStatus) conditions.push(eq(discoveredAssets.approvalStatus, filters.approvalStatus));
+      if (filters.assetType) conditions.push(eq(discoveredAssets.assetType, filters.assetType));
+      if (filters.linkedDeviceId) conditions.push(eq(discoveredAssets.linkedDeviceId, filters.linkedDeviceId));
+      const limit = Math.min(200, Math.max(1, Math.trunc(filters.limit ?? 50)));
+      const rows = await db.select(safeAssetProjection()).from(discoveredAssets)
+        .where(and(...conditions)).orderBy(desc(discoveredAssets.lastSeenAt)).limit(limit);
+      const assets = rows.map((row) => ({ ...row, model: maskOidShapedModel(row.model), nicVendor: nicVendorFromMac(row.macAddress) }));
+      return JSON.stringify({ assets, showing: assets.length });
+    },
+  });
+
+  registerTool({
+    tier: 1,
+    domain: 'network',
+    searchHint: 'one discovered network asset by id: model, IP, MAC, linked device, last seen',
+    deviceArgs: [],
+    definition: {
+      name: 'get_network_asset',
+      description: 'Get a discovered network asset by UUID with its model, IP, MAC, linked device and last-seen time.',
+      input_schema: {
+        type: 'object', properties: { assetId: { type: 'string', description: 'Discovered asset UUID' } }, required: ['assetId'],
+      },
+    },
+    handler: async (input, auth) => {
+      const parsed = z.string().guid().safeParse(input.assetId);
+      if (!parsed.success) return jsonError('Asset not found');
+      if (!['organization', 'partner', 'system'].includes(auth.scope)
+        || (auth.scope === 'organization' && !auth.orgId)
+        || (auth.scope === 'partner' && !(auth.accessibleOrgIds ?? []).length)
+        || auth.allowedSiteIds?.length === 0 || auth.allowedDeviceIds?.length === 0) return jsonError('Asset not found');
+      const conditions: SQL[] = [eq(discoveredAssets.id, parsed.data)];
+      const orgCondition = auth.orgCondition(discoveredAssets.orgId);
+      if (orgCondition) conditions.push(orgCondition);
+      const [row] = await db.select(safeAssetProjection()).from(discoveredAssets).where(and(...conditions)).limit(1);
+      if (!row || (auth.scope !== 'system' && !auth.canAccessOrg(row.orgId))
+        || (auth.scope === 'organization' && row.orgId !== auth.orgId)
+        || (auth.scope === 'partner' && !(auth.accessibleOrgIds ?? []).includes(row.orgId))
+        || deviceSiteDenied(auth, row.siteId, row.linkedDeviceId)) return jsonError('Asset not found');
+      return JSON.stringify({ asset: { ...row, model: maskOidShapedModel(row.model), nicVendor: nicVendorFromMac(row.macAddress) } });
+    },
+  });
 
   // ============================================
   // 1. get_network_changes - Tier 1 (read-only)
@@ -117,6 +251,8 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'network',
+    searchHint: 'network changes, new, missing, changed or rogue devices',
     definition: {
       name: 'get_network_changes',
       description: 'Query network change events (new devices, disappeared devices, changed devices, and rogue devices).',
@@ -153,6 +289,16 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
         }
         conditions.push(inArray(networkChangeEvents.siteId, auth.allowedSiteIds));
       }
+
+      // Exact-device axis (#6096 I4) — UNCONDITIONAL, beside the site block and
+      // never inside it: a device-LESS analysis run carries `allowedDeviceIds`
+      // with no site axis at all. Change events name a device by
+      // `linkedDeviceId`, so a device-bound run would otherwise read every
+      // sibling finding at its own site. `inArray` also drops UNLINKED rows
+      // (rogue devices never matched to a fleet device): SQL `IN` is never true
+      // for NULL, and such a row is not attributable to the run's device.
+      const changeDeviceScope = deviceScopeCondition(auth, networkChangeEvents.linkedDeviceId);
+      if (changeDeviceScope) conditions.push(changeDeviceScope);
 
       if (orgId) conditions.push(eq(networkChangeEvents.orgId, orgId));
 
@@ -201,6 +347,8 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 2,
+    domain: 'network',
+    searchHint: 'network change acknowledgement with optional investigation notes',
     definition: {
       name: 'acknowledge_network_device',
       description: 'Acknowledge a network change event and optionally attach notes.',
@@ -226,6 +374,12 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
         }
         conditions.push(inArray(networkChangeEvents.siteId, auth.allowedSiteIds));
       }
+      // Exact-device axis (#6096 I4): acknowledging is a write on a finding
+      // about a specific device. Same shape as get_network_changes above —
+      // applied whether or not the site axis is set, and excluding unlinked
+      // rows for a device-restricted caller.
+      const ackDeviceScope = deviceScopeCondition(auth, networkChangeEvents.linkedDeviceId);
+      if (ackDeviceScope) conditions.push(ackDeviceScope);
 
       const [event] = await db
         .select()
@@ -239,6 +393,12 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
 
       // Defense in depth for malformed/stale fixtures and future query edits.
       if (siteAccessDenied(auth, event.siteId)) {
+        return JSON.stringify({ error: 'Event not found or access denied' });
+      }
+      // Same, on the device axis: an unlinked (NULL) or sibling-linked event is
+      // outside a device-restricted caller's reach.
+      if (auth.allowedDeviceIds
+        && (!event.linkedDeviceId || !auth.allowedDeviceIds.includes(event.linkedDeviceId))) {
         return JSON.stringify({ error: 'Event not found or access denied' });
       }
 
@@ -266,6 +426,8 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 2,
+    domain: 'network',
+    searchHint: 'network baseline configuration, scheduled scan cadence and change alerts',
     definition: {
       name: 'configure_network_baseline',
       description: 'Create or update network baseline configuration for scheduled scan cadence and alert behavior.',
@@ -463,6 +625,8 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
   registerTool({
     tier: 1,
     deviceArgs: ['device_id'],
+    domain: 'network',
+    searchHint: 'historical IP assignments, device address timeline and reverse lookup at a point in time',
     definition: {
       name: 'get_ip_history',
       description: 'Query historical IP assignments. Supports timeline mode (device_id) and reverse lookup mode (ip_address + at_time).',
@@ -585,6 +749,15 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
           conditions.push(orgCondition);
         }
 
+        // Exact-device axis (#6086): "which device held this IP" is otherwise
+        // answered org-wide, so a device-bound run learns about siblings. The
+        // axis is independent of the site block above — a device-less analysis
+        // run carries `allowedDeviceIds` with no `allowedSiteIds` at all.
+        const deviceCondition = deviceScopeCondition(auth, deviceIpHistory.deviceId);
+        if (deviceCondition) {
+          conditions.push(deviceCondition);
+        }
+
         if (interfaceName) {
           conditions.push(eq(deviceIpHistory.interfaceName, interfaceName));
         }
@@ -604,7 +777,11 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
           .orderBy(desc(deviceIpHistory.firstSeen))
           .limit(limit);
 
-        const visibleResults = results.filter((row) => !siteAccessDenied(auth, row.device.siteId));
+        const visibleResults = filterToDeviceScope(
+          auth,
+          results.filter((row) => !siteAccessDenied(auth, row.device.siteId)),
+          (row) => row.device.id,
+        );
 
         return JSON.stringify({
           mode: 'reverse_lookup',
@@ -639,12 +816,86 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
   });
 
   // ============================================
-  // 5. network_discovery - Tier 3 (requires approval)
+  // 5. get_network_asset_reachability - Tier 1 (read-only)
+  // ============================================
+
+  registerTool({
+    tier: 1,
+    domain: 'network',
+    searchHint: 'printer, switch, AP, camera or NAS reachability with evidence source and age',
+    definition: {
+      name: 'get_network_asset_reachability',
+      description:
+        'Report whether a discovered network asset (printer, switch, AP, camera, NAS) is currently reachable, '
+        + 'with the SOURCE of the evidence and how old it is. Always state the source and age when answering — '
+        + '"responding via SNMP 2 minutes ago", never a bare "online". A state of "unverified" means nothing has '
+        + 'checked the device recently; report it as unverified, not as down.',
+      input_schema: {
+        type: 'object' as const,
+        properties: {
+          asset_id: { type: 'string', description: 'Discovered asset UUID' },
+        },
+        required: ['asset_id'],
+      },
+    },
+    handler: async (input, auth) => {
+      const assetId = typeof input.asset_id === 'string' ? input.asset_id : '';
+      if (!assetId) return JSON.stringify({ error: 'asset_id is required' });
+
+      // Org axis via RLS + the explicit predicate; site axis app-layer, fail closed.
+      const conditions: SQL[] = [eq(discoveredAssets.id, assetId)];
+      const orgCondition = auth.orgCondition(discoveredAssets.orgId);
+      if (orgCondition) conditions.push(orgCondition);
+      if (auth.allowedSiteIds !== undefined) {
+        if (auth.allowedSiteIds.length === 0) return JSON.stringify({ error: 'Asset not found or access denied' });
+        conditions.push(inArray(discoveredAssets.siteId, auth.allowedSiteIds));
+      }
+      // Exact-device axis, independent of the site axis (a device-LESS run has
+      // no `allowedSiteIds`). `inArray` is never true for NULL, so an asset not
+      // linked to a Breeze device is invisible to a device-restricted run —
+      // same fail-closed rule as `assertMonitorSiteAccess` (#6086).
+      const assetDeviceCondition = deviceScopeCondition(auth, discoveredAssets.linkedDeviceId);
+      if (assetDeviceCondition) conditions.push(assetDeviceCondition);
+
+      const [asset] = await db
+        .select({
+          id: discoveredAssets.id,
+          label: discoveredAssets.label,
+          hostname: discoveredAssets.hostname,
+          ipAddress: discoveredAssets.ipAddress,
+          assetType: discoveredAssets.assetType,
+          siteId: discoveredAssets.siteId,
+        })
+        .from(discoveredAssets)
+        .where(and(...conditions))
+        .limit(1);
+
+      if (!asset) return JSON.stringify({ error: 'Asset not found or access denied' });
+      if (siteAccessDenied(auth, asset.siteId)) return JSON.stringify({ error: 'Asset not found or access denied' });
+
+      const reachability = (await loadReachability([asset.id])).get(asset.id) ?? null;
+
+      return JSON.stringify({
+        asset: {
+          id: asset.id,
+          name: asset.label ?? asset.hostname ?? asset.ipAddress ?? asset.id,
+          assetType: asset.assetType,
+          ipAddress: asset.ipAddress,
+        },
+        reachability,
+      });
+    },
+  });
+
+  // ============================================
+  // 6. network_discovery - Tier 3 (requires approval)
   // ============================================
 
   registerTool({
     tier: 3,
     deviceArgs: ['deviceId'],
+    domain: 'network',
+    searchHint: 'network discovery scan from a managed device to find nearby assets',
     definition: {
       name: 'network_discovery',
       description: 'Initiate a network discovery scan from a device to find other devices on the network.',
@@ -664,8 +915,7 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
       const access = await verifyDeviceAccess(deviceId, auth, true);
       if ('error' in access) return JSON.stringify({ error: access.error });
 
-      const { executeCommand } = await getCommandQueue();
-      const result = await executeCommand(deviceId, 'network_discovery', {
+      const result = await aiExecuteCommand(auth, 'network_discovery', deviceId, 'network_discovery', {
         subnet: input.subnet,
         scanType: input.scanType ?? 'ping'
       }, { userId: auth.user.id, timeoutMs: 120000 });

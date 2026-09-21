@@ -1,3 +1,4 @@
+import type { RemediationTriggerKind } from '@breeze/shared';
 import { sql } from 'drizzle-orm';
 import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, integer, index, uniqueIndex, check, foreignKey } from 'drizzle-orm/pg-core';
 import { organizations, partners } from './orgs';
@@ -28,6 +29,9 @@ export const automationActionResultStatusEnum = pgEnum('automation_action_result
 ]);
 export const automationActionTerminalSourceEnum = pgEnum('automation_action_terminal_source', [
   'command', 'script_execution', 'deployment_result', 'timeout', 'cancellation', 'reaper', 'dispatch',
+  // #5290 — a child ai_triage agent run terminalises its action result from the
+  // ai.agent.run.* events. Appended last: the enum is order-sensitive for drift.
+  'agent_run',
 ]);
 export const policyEnforcementEnum = pgEnum('policy_enforcement', ['monitor', 'warn', 'enforce']);
 export const complianceStatusEnum = pgEnum('compliance_status', ['compliant', 'non_compliant', 'pending', 'error']);
@@ -51,6 +55,20 @@ export const automations = pgTable('automations', {
   managedByAgentId: uuid('managed_by_agent_id').references(() => aiAgents.id, {
     onDelete: 'restrict',
   }),
+  /**
+   * #5289: set only on the automation COMPILED from a monitor definition's
+   * responses. services/monitors/monitorCompiler.ts is the single writer; the
+   * routes and the manage_automations AI tool refuse edits, enable/disable and
+   * manual runs on a row carrying it. Declared without .references() to keep
+   * schema imports acyclic — the FK (ON DELETE CASCADE) lives in the migration.
+   */
+  managedByMonitorId: uuid('managed_by_monitor_id'),
+  // W05c1 retirement (2026-10-23-120000-legacy-source-retirement-columns.sql):
+  // Converted or operator-retired rows stay for history; readers filter
+  // retired_at IS NULL. FK to monitor_definitions ON DELETE SET NULL in SQL.
+  retiredAt: timestamp('retired_at', { withTimezone: true }),
+  retiredReason: text('retired_reason'),
+  convertedToMonitorId: uuid('converted_to_monitor_id'),
   name: varchar('name', { length: 255 }).notNull(),
   description: text('description'),
   enabled: boolean('enabled').notNull().default(true),
@@ -174,11 +192,22 @@ export const automationActionResults = pgTable('automation_action_results', {
   orgId: uuid('org_id').notNull().references(() => organizations.id, { onDelete: 'cascade' }),
   actionIndex: integer('action_index').notNull(),
   actionType: varchar('action_type', { length: 64 }).notNull(),
+  /** Creation-time cause, distinct from the initiator/execution lane.
+   * refId identifies the occurrence (sweep run, alert, monitor, fleet finding),
+   * deliberately without a FK. Build stable keys with @breeze/shared helpers.
+   * action_intents_block_content_update guards all three on action intents.
+   */
+  triggerKind: text('trigger_kind').$type<RemediationTriggerKind>(),
+  triggerRefId: uuid('trigger_ref_id'),
+  triggerKey: varchar('trigger_key', { length: 200 }),
+
   status: automationActionResultStatusEnum('status').notNull().default('pending'),
   terminalSource: automationActionTerminalSourceEnum('terminal_source'),
   commandId: uuid('command_id'),
   scriptExecutionId: uuid('script_execution_id'),
   deploymentResultId: uuid('deployment_result_id'),
+  // #5290 — correlation to the child ai_triage agent run (see Task 7).
+  agentRunId: uuid('agent_run_id'),
   message: text('message'),
   output: text('output'),
   error: text('error'),
@@ -200,6 +229,8 @@ export const automationActionResults = pgTable('automation_action_results', {
     .on(table.scriptExecutionId).where(sql`${table.scriptExecutionId} IS NOT NULL`),
   uniqueIndex('automation_action_results_deployment_result_uq')
     .on(table.deploymentResultId).where(sql`${table.deploymentResultId} IS NOT NULL`),
+  uniqueIndex('automation_action_results_agent_run_uq')
+    .on(table.agentRunId).where(sql`${table.agentRunId} IS NOT NULL`),
   index('automation_action_results_run_idx').on(table.runId),
   index('automation_action_results_device_idx').on(table.deviceId),
   index('automation_action_results_org_idx').on(table.orgId),

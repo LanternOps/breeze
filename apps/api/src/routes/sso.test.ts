@@ -404,7 +404,8 @@ vi.mock('../services/mfaPolicy', () => ({
   getEffectiveMfaPolicy: vi.fn(async () => ({
     required: mfaPolicyState.required,
     allowedMethods: { totp: true, sms: true, passkey: true },
-    source: { roleForceMfa: mfaPolicyState.required, settingsRequireMfa: false, killSwitchOff: false },
+    pendingEnrollment: null,
+    source: { roleForceMfa: mfaPolicyState.required, settingsRequireMfa: false, killSwitchOff: false, graceWindow: 'none' as const },
   })),
 }));
 
@@ -2452,7 +2453,7 @@ describe('sso routes', () => {
       wireLinkedLogin({ trustsIdpMfa: true, amr: ['pwd', 'mfa'] });
       const res = await doCallback();
       expect(res.status).toBe(302);
-      expect(createTokenPair).toHaveBeenCalledWith(expect.objectContaining({ mfa: true }), expect.any(Object));
+      expect(createTokenPair).toHaveBeenCalledWith(expect.objectContaining({ mfa: true, mfaSrc: 'idp' }), expect.any(Object));
     });
 
     it('denies an org-axis SSO identity outside its owning partner allowlist before minting', async () => {
@@ -2472,6 +2473,8 @@ describe('sso routes', () => {
       const res = await doCallback();
       expect(res.status).toBe(302);
       expect(createTokenPair).toHaveBeenCalledWith(expect.objectContaining({ mfa: false }), expect.any(Object));
+      const identity = vi.mocked(createTokenPair).mock.calls.at(-1)?.[0] as { mfaSrc?: string };
+      expect(identity.mfaSrc).toBeUndefined();
     });
 
     it('mints mfa:false when the provider does NOT trust IdP MFA even if amr attests it', async () => {

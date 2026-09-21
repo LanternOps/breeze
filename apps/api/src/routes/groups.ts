@@ -3,7 +3,7 @@ import { zValidator } from '../lib/validation';
 import { z } from 'zod';
 import { and, desc, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import { db } from '../db';
-import { deviceGroups, deviceGroupMemberships, devices, groupMembershipLog, sites } from '../db/schema';
+import { configPolicyAssignments, configurationPolicies, deviceGroups, deviceGroupMemberships, devices, groupMembershipLog, sites } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { evaluateFilterWithPreview, extractFieldsFromFilter, validateFilter, FilterQueryTimeoutError } from '../services/filterEngine';
 import { FILTER_PREVIEW_TIMEOUT_BODY, FILTER_PREVIEW_TIMEOUT_STATUS, reportFilterPreviewTimeout } from '../services/filterPreviewTimeout';
@@ -63,6 +63,7 @@ type DeviceGroup = {
   createdAt: string;
   updatedAt: string;
   deviceIds?: string[];
+  policy?: { id: string; name: string };
 };
 
 type GroupMembership = {
@@ -89,6 +90,15 @@ const filterConditionGroupSchema: z.ZodType<FilterConditionGroup> = z.lazy(() =>
 ) as z.ZodType<FilterConditionGroup>;
 
 const listGroupsQuerySchema = z.object({
+  /**
+   * Narrows the result to one org, for callers (e.g. the configuration-policy
+   * assignments target picker) that need only the groups belonging to one
+   * org they can already access — never widens access beyond what
+   * `getOrgIdsForAuth` already computed from the caller's own scope; an
+   * `orgId` outside that set returns an empty list rather than 403ing, so a
+   * partner-scoped caller can't use this to probe org existence.
+   */
+  orgId: z.string().guid().optional(),
   siteId: z.string().guid().optional(),
   type: z.enum(['static', 'dynamic']).optional(),
   parentId: z.string().guid().optional(),
@@ -244,7 +254,8 @@ async function siteBelongsToOrg(siteId: string, orgId: string): Promise<boolean>
 function mapGroupRow(
   group: typeof deviceGroups.$inferSelect,
   deviceCount: number,
-  deviceIds?: string[]
+  deviceIds?: string[],
+  policy?: { id: string; name: string } | null
 ): DeviceGroup {
   const result: DeviceGroup = {
     id: group.id,
@@ -258,7 +269,8 @@ function mapGroupRow(
     parentId: group.parentId,
     deviceCount,
     createdAt: group.createdAt.toISOString(),
-    updatedAt: group.updatedAt.toISOString()
+    updatedAt: group.updatedAt.toISOString(),
+    policy: policy ?? undefined,
   };
   if (deviceIds) {
     result.deviceIds = deviceIds;
@@ -282,13 +294,30 @@ groupRoutes.get(
       return c.json({ data: [], total: 0 });
     }
 
+    // Intersect with the requested org, never widen: `orgIds` is null only for
+    // system scope (unrestricted), so a system caller's `?orgId=` is used
+    // as-is; every other scope already computed the exact set it may see, and
+    // a requested org outside that set yields nothing rather than a 403 that
+    // would confirm the org exists.
+    let effectiveOrgIds = orgIds;
+    if (query.orgId) {
+      if (orgIds) {
+        if (!orgIds.includes(query.orgId)) {
+          return c.json({ data: [], total: 0 });
+        }
+        effectiveOrgIds = [query.orgId];
+      } else {
+        effectiveOrgIds = [query.orgId];
+      }
+    }
+
     if (query.siteId && perms?.allowedSiteIds && !canAccessSite(perms, query.siteId)) {
       return c.json({ error: 'Device not found or access denied' }, 403);
     }
 
     const conditions: SQL[] = [];
-    if (orgIds) {
-      conditions.push(inArray(deviceGroups.orgId, orgIds));
+    if (effectiveOrgIds) {
+      conditions.push(inArray(deviceGroups.orgId, effectiveOrgIds));
     }
     if (perms?.allowedSiteIds) {
       if (perms.allowedSiteIds.length === 0) return c.json({ data: [], total: 0 });
@@ -396,11 +425,39 @@ groupRoutes.get(
       }
     }
 
+    // Query policy assignments for these groups
+    const groupPolicyMap = new Map<string, { id: string; name: string }>();
+    if (groupIds.length > 0) {
+      const policyRows = await db
+        .select({
+          groupId: configPolicyAssignments.targetId,
+          policyId: configPolicyAssignments.configPolicyId,
+          policyName: configurationPolicies.name,
+        })
+        .from(configPolicyAssignments)
+        .innerJoin(configurationPolicies, eq(configPolicyAssignments.configPolicyId, configurationPolicies.id))
+        .where(
+          and(
+            eq(configPolicyAssignments.level, 'device_group'),
+            inArray(configPolicyAssignments.targetId, groupIds),
+            eq(configurationPolicies.status, 'active')
+          )
+        )
+        .orderBy(configPolicyAssignments.priority, configPolicyAssignments.createdAt);
+
+      for (const row of policyRows) {
+        if (!groupPolicyMap.has(row.groupId)) {
+          groupPolicyMap.set(row.groupId, { id: row.policyId, name: row.policyName });
+        }
+      }
+    }
+
     const data = results.map((group) =>
       mapGroupRow(
         group,
         countMap.get(group.id) ?? 0,
-        membershipMap?.get(group.id)
+        membershipMap?.get(group.id),
+        groupPolicyMap.get(group.id)
       )
     );
 
@@ -430,7 +487,31 @@ groupRoutes.get(
 
     const deviceCount = await getDeviceCountForGroup(id);
 
-    return c.json({ data: mapGroupRow(group, deviceCount) });
+    const [assignedPolicy] = await db
+      .select({
+        policyId: configPolicyAssignments.configPolicyId,
+        policyName: configurationPolicies.name,
+      })
+      .from(configPolicyAssignments)
+      .innerJoin(configurationPolicies, eq(configPolicyAssignments.configPolicyId, configurationPolicies.id))
+      .where(
+        and(
+          eq(configPolicyAssignments.level, 'device_group'),
+          eq(configPolicyAssignments.targetId, id),
+          eq(configurationPolicies.status, 'active')
+        )
+      )
+      .orderBy(configPolicyAssignments.priority, configPolicyAssignments.createdAt)
+      .limit(1);
+
+    return c.json({
+      data: mapGroupRow(
+        group,
+        deviceCount,
+        undefined,
+        assignedPolicy ? { id: assignedPolicy.policyId, name: assignedPolicy.policyName } : null
+      ),
+    });
   }
 );
 

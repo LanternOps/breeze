@@ -1,9 +1,11 @@
 # Network Discovery Topology Redesign — Design Spec
 
+> **Superseded — do not implement or dispatch from this document.** The [intelligent topology specification](2026-09-15-intelligent-network-topology-design.md) replaces this design and its four phase plans/index. Preserve this text only as implementation history; existing shipped behavior is a migration input, not work to replay. Use the [replacement five-milestone implementation plan](../../plans/monitoring/2026-09-15-intelligent-network-topology-INDEX.md), now authored and registered.
+
 **Issue:** #1728 — "Network Discovery topology view needs redesign — connections/nodes don't render meaningfully"
 **Date:** 2026-06-22
 **Related:** #1325 (removed fabricated subnet/gateway-star topology)
-**Status:** Design — approved in brainstorm, pending implementation plan
+**Status:** Superseded 2026-09-15 — historical, non-dispatchable
 
 ## 1. Summary
 

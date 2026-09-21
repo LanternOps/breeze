@@ -1,12 +1,21 @@
+import { isTenantToolName, remediationTriggerSchema, type RemediationTrigger } from '@breeze/shared';
 import { buildActionLabel, hasDeviceIdStub } from './actionLabel';
 import { argumentDeviceId, resolveApprovalDeviceName } from './approvalDeviceName';
 import { randomUUID, createHash } from 'crypto';
 import { and, eq, inArray, sql } from 'drizzle-orm';
-import { actionIntentTaskContextSchema, type ActionIntentTaskContext, type AssuranceLevel } from '@breeze/shared';
+import {
+  actionIntentTaskContextSchema,
+  type ActionIntentTaskContext,
+  type AiAgentPolicySnapshot,
+  type AiSweepKind,
+  type AssuranceLevel,
+  type ScriptReviewerEvidence,
+} from '@breeze/shared';
 import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext, type Database, type DbAccessContext } from '../../db';
 import { createNotification } from '../userNotifications';
 import { captureException } from '../sentry';
-import { policyDecideEnabled } from '../../config/env';
+import { policyDecideEnabled, sweepActEnabled } from '../../config/env';
+import { subjectMatchesArguments } from './intentTargetScope';
 import {
   actionIntents,
   intentOutbox,
@@ -28,18 +37,30 @@ import {
   checkGuardrails,
   type AgentGuardrailPolicy,
   type GuardrailCheck,
+  type GuardrailContext,
 } from '../aiGuardrails';
+import {
+  consumeProposalForIntent,
+  latestCompletedReview,
+  loadProposalForRelease,
+  loadProposalGuardrailContext,
+} from '../scriptProposals';
 import { getUserPermissions, userCanDecideApprovals } from '../permissions';
+import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../siteCeilingAccess';
+import { PERMISSION_GRANTS, serializeAiOrigin } from '@breeze/shared';
 import { dispatchApprovalPushToTokens, getUserPushTokens } from '../expoPush';
+import { isTerminalIntentStatus, type IntentOutcomeSnapshot } from '../aiToolHandoff';
 import { canonicalizeArguments, computeArgumentDigest } from './canonicalize';
 import { recordActionIntentEvent } from './metrics';
 import {
+  isOrgWideGovernanceIntent,
   resolveAgentIntentApprovers,
   resolveIntentApprovers,
   resolveIntentTargetScope,
   type IntentTargetScope,
+  type ResolveIntentApproversDiagnostics,
 } from './intentApprovers';
-import { computeEffectDigestOutcome, type EffectDigestOutcome } from './effectDigest';
+import { computeEffectDigestOutcome, EffectDigestUnresolvableError, type EffectDigestOutcome } from './effectDigest';
 import {
   assertArgsMatchScope,
   assertArgsMatchTicketScope,
@@ -48,6 +69,8 @@ import {
   IntentScopeArgumentMismatchError,
 } from './intentTargetScope';
 import { evaluateTicketAutonomy } from './ticketAutonomy';
+import { createAuditLogAsync } from '../auditService';
+import { evaluateScriptReviewerAutonomy, type ScriptReviewerDecision } from './scriptReviewerAutonomy';
 import { aiOperatorOperations, aiOperatorTasks } from '../../db/schema/aiOperatorTasks';
 import {
   isTaskLinkedIntent,
@@ -138,6 +161,8 @@ export class ActionIntentAuthorizationError extends ActionIntentError {
 // ---------------------------------------------------------------------------
 
 export interface CreateActionIntentInput {
+  /** Creation-time cause; absent for legacy callers. Validated before DB access. */
+  trigger?: RemediationTrigger;
   toolName: string;
   input: Record<string, unknown>;
   /** Audit justification (an agent's sweep summary, a ticket-triage rationale). */
@@ -188,6 +213,15 @@ export interface CreateActionIntentInput {
    */
   scope?: { deviceId: string } | { ticketId: string };
   /**
+   * #4442 W04 — the sweep-act eligibility the CALLER assembled from system
+   * state (`sweepFindings.ts`: the effective schedule act mode plus the
+   * trusted evidence subject it matched). Agent principal only, and only ever
+   * meaningful alongside `trigger.kind === 'sweep_finding'` and a device
+   * `scope` — `resolvePolicyDecisionState` re-checks both, so passing this
+   * from anywhere else changes nothing.
+   */
+  sweepAct?: SweepActEligibility;
+  /**
    * P2-4 (#4191): requests the creation-transaction ticket-autonomy decision
    * (`ticketAutonomy.ts`'s `evaluateTicketAutonomy`) — honored ONLY for the
    * `ai_agent` principal, and only alongside `scope: { ticketId }` (one of
@@ -196,6 +230,23 @@ export interface CreateActionIntentInput {
    * an `autonomyDenied` breadcrumb on its `result` column.
    */
   autonomy?: { kind: 'ticket_autonomy' };
+  /**
+   * Tool catalog W01 PR B (#5216): the intent releases through an EXTERNAL
+   * (tenant tool-source, BYO MCP) tool rather than a core one. `toolName`
+   * is then the qualified `<slug>__<name>` the chat session resolved, and
+   * the binding pins the exact `tool_source_tools` row + `revision` the
+   * approver is shown — release revalidation reloads that row and fails
+   * closed on drift/disable (revalidateRelease.ts).
+   *
+   * When set, `checkGuardrails` (the CORE classifier) is NOT consulted: it
+   * would answer tier 4 "unknown tool" for a qualified name. The external
+   * tool is always Tier 3 / `supervised` here (Tier 1-2 external calls
+   * auto-execute in-session and never mint an intent; the caller passes
+   * only Tier-3 descriptors). Chat/MCP principals only: an ai_agent
+   * principal is refused (`external_tool_not_allowed_for_agent`) — agents
+   * calling tenant tools is W5 work (flows-as-tools).
+   */
+  externalTool?: { toolSourceToolId: string; revision: string; sourceName: string };
   /**
    * #5205 W04 (#5209): AI Operator task context. TRUSTED, INTERNAL-ONLY —
    * never accepted from an HTTP body (see `actionIntentTaskContextSchema`'s
@@ -213,6 +264,14 @@ export interface CreateActionIntentInput {
    * own `ai_agent_runs.task_id` matches.
    */
   task?: ActionIntentTaskContext;
+  /**
+   * AI script authoring (spec §4.5): the proposal's reviewed risk tier, when
+   * the caller has already loaded it. Absent, `createActionIntent` loads it
+   * itself for a `run_script { proposalId }` call (see
+   * `resolveGuardrailForIntent`). This is the contract the unattended lane
+   * (W04) consumes — keep the field name.
+   */
+  guardrailContext?: GuardrailContext;
 }
 
 export type ActionIntentSnapshot = {
@@ -599,6 +658,38 @@ interface CreationResult {
  * anything — an `'unattempted'` intent from a shadow-mode run degrades to
  * `human_required` there, it does not execute unattended.
  */
+/**
+ * #4442 W04 — everything CREATION knows about a sweep-minted proposal's act
+ * eligibility. Assembled by the CALLER from system state (the effective
+ * schedule and the run's own trusted evidence subject);
+ * `resolvePolicyDecisionState` only READS it, so the gate stays pure and
+ * directly unit-testable. Freshness and the live condition re-probe are
+ * decide-time concerns and deliberately not here — see
+ * `policyDecide.ts`'s `attemptPolicyDecision`.
+ */
+export interface SweepActEligibility {
+  /** The EFFECTIVE (partner baseline ∧ org override) act-mode value. */
+  scheduleActMode: boolean;
+  /** The SYSTEM's own subject for the evidence row this proposal cites. */
+  subject: { kind: AiSweepKind; key: string; observedAt: string | null };
+  /** Whether the intent's arguments name exactly that subject. */
+  argumentsMatchSubject: boolean;
+}
+
+/**
+ * @internal Exported ONLY for `policyDecide.sweepFlagOff.test.ts` and
+ * `intentService.sweepAct.test.ts` (#4442 W04). The eight-gate ladder below
+ * decides whether a Tier-3 intent may be authorized without a human, so it
+ * deserves a direct unit surface rather than being reachable only through
+ * `createActionIntent`'s full transaction. Not part of the module's public
+ * API — production callers go through `createActionIntent`.
+ */
+export function __resolvePolicyDecisionStateForTest(
+  args: Parameters<typeof resolvePolicyDecisionState>[0],
+): ActionIntentPolicyDecisionState {
+  return resolvePolicyDecisionState(args);
+}
+
 function resolvePolicyDecisionState(args: {
   guardrail: GuardrailCheck;
   approvalScope: ActionIntentApprovalScope;
@@ -624,6 +715,15 @@ function resolvePolicyDecisionState(args: {
    * from a device-less run. See the `hasScope` branch below.
    */
   hasScope: boolean;
+  /**
+   * #4442 W04: `action_intents.trigger_kind` (W01) for the intent being
+   * created. The sweep-act allowance below keys on THIS, not on "has a
+   * scope" — load-bearing, so a ticket scope, or a scope kind added later,
+   * cannot inherit the allowance by having a scope.
+   */
+  triggerKind?: string | null;
+  /** #4442 W04: system-assembled act eligibility; absent = not act-eligible. */
+  sweepAct?: SweepActEligibility;
 }): ActionIntentPolicyDecisionState {
   void args.toolName;
   void args.input;
@@ -652,7 +752,28 @@ function resolvePolicyDecisionState(args: {
   // is roadmap #4442 (explicitly OUT of P2-5, quorum 2026-09-01), behind
   // its own review, and is expected to REPLACE this line rather than route
   // around it.
-  if (args.hasScope) return 'human_required';
+  // #4442 W04 — the narrow replacement for P2-2's blanket `if (args.hasScope)`.
+  // A scoped intent is decidable ONLY when every one of these holds; anything
+  // unresolved falls through to human_required, like every other branch here.
+  // Keying on trigger_kind and NOT on "has a scope" is load-bearing: a ticket
+  // scope (P2-4), or a scope kind added later, must not inherit this allowance.
+  //
+  // `sweepActEnabled()` is checked FIRST inside the branch, before anything
+  // else on `args` is even read, so the flag-off regression control's "reads
+  // nothing else" assertion holds (policyDecide.sweepFlagOff.test.ts).
+  if (args.hasScope) {
+    if (!sweepActEnabled()) return 'human_required';
+    if (args.triggerKind !== 'sweep_finding') return 'human_required';
+    const act = args.sweepAct;
+    if (!act) return 'human_required';
+    if (!act.scheduleActMode) return 'human_required';
+    if (!act.argumentsMatchSubject) return 'human_required';
+    // Freshness and the live condition re-probe are DECIDE-time, not here —
+    // see attemptPolicyDecision. Creation cannot probe: it runs inside the
+    // intent's own transaction and a probe there would hold a pooled
+    // connection across a second query for every proposal in the occurrence.
+  }
+
   if (!args.agentRun) return 'human_required';
   if (args.approvalScope !== 'supervised') return 'human_required';
   if (args.agentMode !== 'act') return 'human_required';
@@ -680,6 +801,14 @@ interface HumanFanoutArgs {
   agentEligibleApprovers: string[];
   requesterEligible: boolean;
   requesterId: string;
+  /**
+   * Review finding #1: diagnostics from the org-wide-governance ceiling
+   * filter that produced `eligibleApprovers`/`requesterEligible` (null when
+   * the intent isn't org-wide-governance-shaped, or no candidate reached the
+   * filter). Used ONLY to pick a more truthful cancellation errorCode below
+   * — never widens who is actually eligible.
+   */
+  governanceDiagnostics?: ResolveIntentApproversDiagnostics | null;
 }
 
 interface HumanFanoutResult {
@@ -717,6 +846,7 @@ async function runHumanFanout(args: HumanFanoutArgs): Promise<HumanFanoutResult>
     agentEligibleApprovers,
     requesterEligible,
     requesterId,
+    governanceDiagnostics,
   } = args;
 
   let approvalRequestIds: string[] = [];
@@ -810,15 +940,27 @@ async function runHumanFanout(args: HumanFanoutArgs): Promise<HumanFanoutResult>
     // No eligible approvers and the requester isn't one either — fail
     // closed: create then immediately cancel, visible in audit (spec §4
     // step 4 / §8).
+    //
+    // Review finding #1: when the ONLY reason nobody survived is the
+    // org-wide-governance site ceiling (every approvals:decide holder
+    // resolved fine but was site/exact-device restricted), report that as a
+    // distinct errorCode — `no_eligible_approvers` alone can't tell an
+    // operator "nobody holds the permission at all" apart from "several
+    // people do, but none of them can actually approve this specific
+    // org-wide grant".
+    const cancelErrorCode =
+      governanceDiagnostics && governanceDiagnostics.droppedBySiteCeiling > 0
+        ? 'no_eligible_approvers_site_ceiling'
+        : 'no_eligible_approvers';
     const [cancelled] = await tx
       .update(actionIntents)
-      .set({ status: 'cancelled', errorCode: 'no_eligible_approvers', decidedAt: new Date() })
+      .set({ status: 'cancelled', errorCode: cancelErrorCode, decidedAt: new Date() })
       .where(eq(actionIntents.id, inserted.id))
       .returning();
     finalIntent = cancelled ?? {
       ...inserted,
       status: 'cancelled',
-      errorCode: 'no_eligible_approvers',
+      errorCode: cancelErrorCode,
     };
     // #5205 W05 (#5210), spec §6.3: this row is freshly inserted in THIS same
     // transaction (createActionIntent's caller), so the CAS above cannot lose
@@ -954,10 +1096,35 @@ function triggerPolicyDecisionAttempt(intentId: string): void {
     });
 }
 
+/**
+ * The guardrail check `createActionIntent` runs, with the proposal context
+ * loaded first when the tool call names one.
+ *
+ * Exported so the seam is directly testable: without the context, a
+ * proposal-backed run_script would be refused here as tier 4 `tool_blocked`,
+ * and every proposal intent would die at creation.
+ *
+ * The load is a plain read outside any transaction — this runs BEFORE the
+ * creation transaction opens, so it cannot double-hold a pooled connection.
+ */
+export async function resolveGuardrailForIntent(
+  toolName: string,
+  input: Record<string, unknown>,
+  orgId: string | null,
+  provided?: GuardrailContext,
+): Promise<{ check: GuardrailCheck; context: GuardrailContext | undefined }> {
+  const context = provided
+    ?? (toolName === 'run_script' && typeof input.proposalId === 'string' && orgId
+      ? await loadProposalGuardrailContext(input, orgId)
+      : undefined);
+  return { check: checkGuardrails(toolName, input, context), context };
+}
+
 export async function createActionIntent(
   auth: AuthContext,
   input: CreateActionIntentInput,
 ): Promise<ActionIntentSnapshot> {
+  const trigger = input.trigger === undefined ? undefined : remediationTriggerSchema.parse(input.trigger);
   // Mutual source/principal consistency (wave 3b): an ai_agent principal may
   // ONLY write source='ai_agent' rows, and nothing else may claim that
   // source. The requester-less attribution facts (requestedByUserId NULL +
@@ -1039,7 +1206,94 @@ export async function createActionIntent(
   const scopeDeviceId = input.scope && 'deviceId' in input.scope ? input.scope.deviceId : null;
   const scopeTicketId = input.scope && 'ticketId' in input.scope ? input.scope.ticketId : null;
 
-  const guardrail = checkGuardrails(input.toolName, input.input);
+  // Tool catalog W01 PR B (#5216): an EXTERNAL tool binding replaces the core
+  // classifier with a fixed Tier-3/supervised verdict — see the field's doc
+  // on CreateActionIntentInput. Validated BEFORE any DB access, like `scope`.
+  const externalTool = input.externalTool ?? null;
+  if (externalTool) {
+    if (auth.principal.kind === 'ai_agent') {
+      throw new ActionIntentError(
+        'AI agent principals cannot create intents for external (tool-source) tools',
+        'external_tool_not_allowed_for_agent',
+      );
+    }
+    if (!isTenantToolName(input.toolName)) {
+      throw new ActionIntentError(
+        `externalTool binding requires a qualified <slug>__<name> tool name (got '${input.toolName}')`,
+        'invalid_external_tool',
+      );
+    }
+    // `tool_source_tool_id` is a Postgres uuid column — same 22P02-at-INSERT
+    // reasoning as the `binding` checks below. An empty revision would make
+    // the pairing CHECK pass while pinning nothing; refuse it.
+    if (!CANONICAL_UUID_LOWER.test(externalTool.toolSourceToolId)) {
+      throw new ActionIntentError('externalTool.toolSourceToolId must be a canonical lowercase UUID', 'invalid_external_tool');
+    }
+    if (typeof externalTool.revision !== 'string' || externalTool.revision.length === 0) {
+      throw new ActionIntentError('externalTool.revision must be a non-empty string', 'invalid_external_tool');
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Site / exact-device ceiling on ORG-WIDE GOVERNANCE intents.
+  //
+  // THE choke point for the raise: every path that mints an intent — the chat
+  // preToolUse callback (services/aiAgentSdk.ts), the HTTP promote route
+  // (routes/aiAgents.ts) and every agent lane (runLoop, sweepFindings,
+  // patchPlan, alertVerdicts, ticketTriageFindings, aiTimeEntryProposal) —
+  // funnels through this function, so gating here covers all of them at once
+  // rather than being re-remembered per caller. (MCP never mints one at all:
+  // routes/mcpServer.ts fails every Tier-3 `tools/call` closed with
+  // MCP_APPROVAL_REQUIRED before it can reach an intent.)
+  //
+  // It must be the RAISE that is refused, not just the tool handler, because
+  // a Tier-3 intent outlives the handler: the row is minted BEFORE the
+  // handler runs, and after approval the release worker dispatches through
+  // the HEADLESS `*Action` functions (services/m365ToolsHeadless.ts,
+  // services/googleToolsHeadless.ts), which take no AuthContext and so never
+  // reach `canMutateOrgWideGovernance` at all. Without this, a site-restricted
+  // technician could mint an org-wide identity-tenant mutation and have
+  // someone else's approval execute it.
+  //
+  // Placed ahead of `resolveGuardrailForIntent` deliberately: the refusal
+  // precedes every DB read and write, so a refused raise leaves no row, no
+  // approval request and no proposal consumption behind.
+  //
+  // HUMAN lane only. An `ai_agent` principal is governed by
+  // `checkAgentGuardrails` (resolved just below), which already denies these
+  // tools categorically (`agent_policy_denied`: session-only / secret-bearing /
+  // human-only). A device-bound run carries `allowedSiteIds`, so letting this
+  // gate run first would mask that denial with the wrong lane's error code.
+  if (
+    auth.principal?.kind !== 'ai_agent'
+    && isOrgWideGovernanceIntent(input.toolName, input.input)
+    && !canMutateOrgWideGovernance(auth)
+  ) {
+    throw new ActionIntentError(SITE_CEILING_WRITE_DENIED_MESSAGE, 'site_ceiling');
+  }
+
+  const { check: guardrail, context: guardrailContext } = externalTool
+    ? {
+        check: {
+          tier: 3,
+          allowed: true,
+          requiresApproval: true,
+          readOnly: false,
+          approvalScope: 'supervised',
+          description: `${input.toolName} — external tool from ${externalTool.sourceName}`,
+        } satisfies GuardrailCheck,
+        context: undefined,
+      }
+    : await resolveGuardrailForIntent(
+        input.toolName,
+        input.input,
+        // `input.orgId` is the caller-supplied address; the authoritative
+        // `resolvedOrg` is computed a few lines below, and the guardrail only needs
+        // the org to scope a READ that is re-validated by assertProposalRunnable
+        // and by consumeProposalForIntent inside the transaction.
+        input.orgId ?? auth.orgId ?? null,
+        input.guardrailContext,
+      );
   if (!guardrail.allowed || guardrail.tier >= 4) {
     throw new ActionIntentTierError(
       `Tool "${input.toolName}" is not permitted on the action-intent path: ${guardrail.reason ?? 'blocked'}`,
@@ -1118,6 +1372,9 @@ export async function createActionIntent(
   // human-originated intent (agentRun stays null, which already forces
   // human_required on its own).
   let agentRunMode: string | undefined;
+  // W04 (#5612): the run's immutable start-of-run policy snapshot, handed to
+  // the script lane's agent-authority gate (invariant 13).
+  let agentRunPolicySnapshot: AiAgentPolicySnapshot | null = null;
   // #5106: the scoped device's human-readable name, threaded through to
   // buildActionLabel below so the approval headline reads "on <hostname>"
   // instead of the raw "on device <id>..." stub. Stays null for every
@@ -1215,6 +1472,7 @@ export async function createActionIntent(
     }
     agentRun = loaded.run;
     agentRow = loaded.agent;
+    agentRunPolicySnapshot = loaded.run.policySnapshot ?? null;
 
     // #5205 W04 (#5209), Codex quorum D1b (adopted): the caller ASSERTING a
     // task id proves nothing. `ai_agent_runs.task_id` / `task_step_key` are
@@ -1329,7 +1587,7 @@ export async function createActionIntent(
       // populates it the moment Task A4 lands, rather than needing a second
       // follow-up PR to wire the creation call site too.
       ...(scopeTicketId ? { scope: { ticketId: scopeTicketId } } : {}),
-    } as AgentGuardrailPolicy);
+    } as AgentGuardrailPolicy, guardrailContext);
     if (verdict.disposition === 'deny') {
       throw new ActionIntentError(
         `Agent policy denies "${input.toolName}": ${verdict.reason ?? 'denied'}`,
@@ -1371,8 +1629,17 @@ export async function createActionIntent(
     // keys for exactly the same reason a device sweep fan-out does.
     scopeId: scopeDeviceId ?? scopeTicketId ?? null,
   });
-  const targetSummary = buildTargetSummary(input.toolName, input.input);
-  const impactSummary = buildImpactSummary(input.toolName, input.input, guardrail);
+  // External tools have no IMPACT_SUMMARY_BUILDERS entry and no aiTools
+  // definition: the approver reads which source the call goes to and which
+  // argument keys it carries (values are on the card's argument JSON).
+  const targetSummary = externalTool
+    ? `${input.toolName} (external tool from ${externalTool.sourceName})`
+    : buildTargetSummary(input.toolName, input.input);
+  const impactSummary = externalTool
+    ? `Calls ${input.toolName} on ${externalTool.sourceName} with arguments: ${
+        Object.keys(input.input).length > 0 ? Object.keys(input.input).sort().join(', ') : '(none)'
+      }`
+    : buildImpactSummary(input.toolName, input.input, guardrail);
   // What the approver READS. `targetSummary` stays the audit signature.
   const labelReason = input.actionLabel ?? guardrail.description ?? null;
   // #5106 turned "on device 6eae0f70..." into "on <name>" using the SCOPED
@@ -1434,7 +1701,36 @@ export async function createActionIntent(
   // idempotency conflict below, this resolved set is simply discarded —
   // cheap relative to the round-trip savings on the common (non-conflicting)
   // path.
-  const eligibleAll = await resolveIntentApprovers(orgId);
+  // W03 (#5612): a STRICT-bearing proposal can only be approved by someone who
+  // can also acknowledge the patterns (scripts:write + MFA, spec §4.5), so the
+  // four-eyes candidate set is filtered to scripts:write holders. The context
+  // was already loaded once for the guardrail above — no second proposal read.
+  // Audit §1.1: an ORG-WIDE GOVERNANCE intent (today
+  // manage_ai_agents:authorize_supervised_key) is refused at decide time for
+  // any approver carrying a site/exact-device ceiling
+  // (`canMutateOrgWideGovernance`, approvals/decideApprovalRequest.ts). Fan out
+  // to the same population the decide gate admits, or the queue fills with rows
+  // nobody can action and — more seriously — the sole-operator determination
+  // disagrees with its own decide-time re-derivation, which passes this SAME
+  // flag. The two call sites must always move together.
+  const requireOrgWideGovernance = isOrgWideGovernanceIntent(input.toolName, input.input);
+  // Review finding #1: capture WHY candidates were dropped from the
+  // org-wide-governance ceiling filter (site-restricted vs. genuinely
+  // unresolvable vs. a missed org lookup) so the fail-closed cancellation
+  // below can report a distinct, more truthful errorCode instead of a bare
+  // `no_eligible_approvers` that can't distinguish "nobody holds
+  // approvals:decide" from "several do, all site-restricted".
+  let governanceDiagnostics: ResolveIntentApproversDiagnostics | null = null;
+  const eligibleAll = await resolveIntentApprovers(orgId, {
+    alsoRequire:
+      input.toolName === 'run_script' && (guardrailContext?.proposal?.strictHits?.length ?? 0) > 0
+        ? PERMISSION_GRANTS.SCRIPTS_WRITE
+        : undefined,
+    requireOrgWideGovernance,
+    onDiagnostics: (diagnostics) => {
+      governanceDiagnostics = diagnostics;
+    },
+  });
   const eligibleApprovers = eligibleAll.filter((userId) => userId !== requesterId);
   const requesterEligible = eligibleAll.includes(requesterId);
 
@@ -1559,6 +1855,10 @@ export async function createActionIntent(
         input: input.input,
         agentMode: agentRunMode,
         hasScope: input.scope !== undefined,
+        // #4442 W04: the PARSED trigger, i.e. the same value stamped onto
+        // `action_intents.trigger_kind` below — never the raw input.
+        triggerKind: trigger?.kind ?? null,
+        sweepAct: input.sweepAct,
       });
 
       // P2-4 Task A3 (#4191) — the creation-transaction ticket-autonomy
@@ -1587,9 +1887,58 @@ export async function createActionIntent(
           ? { autonomyDenied: autonomyDecision.reason }
           : null;
 
+      // AI script authoring W04 (#5612), spec §4.6 — the THIRD autonomy type
+      // at this seam, evaluated in the SAME transaction on the SAME ambient
+      // `db` as the ticket one above and the insert below, for the same
+      // reason: a concurrent policy flip must not land between "decide" and
+      // "insert", and the hourly reservation must be held under the advisory
+      // lock across both (the lock is taken inside the evaluator and lives
+      // until this transaction ends).
+      //
+      // Short-circuited to nothing for every intent that is not `run_script`
+      // with a `proposalId` — the overwhelming majority — so this module
+      // costs nothing on the ordinary path.
+      //
+      // Ticket autonomy wins when it granted: an intent carries exactly one
+      // `decided_via`, and re-deciding an already-decided row would make the
+      // evidence describe a decision that did not release it.
+      const proposalIdArg = input.toolName === 'run_script'
+        ? (input.input as { proposalId?: unknown }).proposalId
+        : undefined;
+      let scriptLaneDecision: ScriptReviewerDecision | null = null;
+      if (!autonomyGranted && typeof proposalIdArg === 'string') {
+        const proposal = await loadProposalForRelease(db, proposalIdArg, orgId);
+        const review = proposal ? await latestCompletedReview(db, proposal.id) : null;
+        scriptLaneDecision = proposal
+          ? await evaluateScriptReviewerAutonomy({
+            auth,
+            intentDraft: {
+              orgId,
+              approvalScope,
+              agentRun: agentRun
+                ? { id: agentRun.id, agentId: agentRun.agentId, policySnapshot: agentRunPolicySnapshot }
+                : null,
+              arguments: input.input,
+            },
+            proposal,
+            review,
+          })
+          : { granted: false, reason: 'proposal_not_runnable' };
+      }
+      const scriptLaneGranted = scriptLaneDecision?.granted === true;
+      // A refusal is a breadcrumb on a row that still proceeds down the
+      // ordinary human path — never an error, exactly like `autonomyDenied`.
+      const scriptLaneRefusalResult: Record<string, unknown> | null =
+        scriptLaneDecision && !scriptLaneDecision.granted
+          ? { scriptLaneRefusal: scriptLaneDecision.reason }
+          : null;
+
       const [inserted] = await db
         .insert(actionIntents)
         .values({
+          triggerKind: trigger?.kind ?? null,
+          triggerRefId: trigger?.refId ?? null,
+          triggerKey: trigger?.key ?? null,
           orgId,
           partnerId: auth.partnerId ?? null,
           // Agent intents are requester-less by design (wave 3b): the run is
@@ -1608,6 +1957,13 @@ export async function createActionIntent(
                 : agentRow
                   ? agentRow.id
                   : null,
+          // #5022 W01: persist the AI origin at INSERT (these columns are
+          // never updated — `action_intents_immutable_trg` blocks it). The
+          // release worker rebuilds the AuthContext from scratch, so without
+          // this a chat-minted origin would not survive the approval boundary
+          // and the approved action would dispatch unattributed. Distinct from
+          // originPrincipal* above, which describes the REQUESTER.
+          ...serializeAiOrigin(auth.aiOrigin),
           connectionId: input.binding?.connectionId ?? null,
           tenantId: input.binding?.tenantId ?? null,
           // P2-2/P2-4 typed target scope. Immutable except for the non-null
@@ -1632,6 +1988,10 @@ export async function createActionIntent(
           impactSummary,
           reason: input.reason ?? null,
           riskTier: guardrail.tier,
+          // Tool catalog W01 PR B (#5216): both or neither —
+          // `action_intents_external_tool_chk`. Immutable from here on.
+          toolSourceToolId: externalTool?.toolSourceToolId ?? null,
+          toolRevision: externalTool?.revision ?? null,
           idempotencyKey,
           correlationId: randomUUID(),
           approvalScope,
@@ -1663,7 +2023,22 @@ export async function createActionIntent(
               releaseBy: new Date(Date.now() + RELEASE_LEASE_MS),
             }
             : {}),
-          result: autonomyResult,
+          // W04 (#5612): the SAME approved-at-creation shape, with the lane's
+          // typed evidence. `decidedByUserId: null` because no human decided
+          // this; `releaseBy` the same fixed lease every approved intent gets.
+          // `script_proposals.decided_by` stays NULL too (the proposal CAS
+          // below only claims `intent_id`).
+          ...(scriptLaneDecision?.granted
+            ? {
+              status: 'approved' as const,
+              decidedVia: 'script_reviewer',
+              decidedAt: new Date(),
+              decidedByUserId: null,
+              releaseBy: new Date(Date.now() + RELEASE_LEASE_MS),
+              scriptReviewerEvidence: scriptLaneDecision.evidence,
+            }
+            : {}),
+          result: autonomyResult ?? scriptLaneRefusalResult,
         })
         // IMPORTANT-4: action_intents_org_idem_uniq is now a PARTIAL unique
         // index (migration 2026-07-18-action-intents.sql) covering only LIVE
@@ -1738,10 +2113,19 @@ export async function createActionIntent(
           existing.source !== input.source ||
           (!sameTaskReuse
             && (existing.requestingAgentRunId ?? null) !== (agentRun?.id ?? null)) ||
-          existing.argumentDigest !== argumentDigest
+          existing.argumentDigest !== argumentDigest ||
+          // Tool catalog W01 PR B (#5216): the external binding is part of the
+          // request's identity. A tool row deleted and recreated under the
+          // same qualified name (new uuid, or a new revision after
+          // rediscovery) is a DIFFERENT approval target, so reusing the live
+          // intent would hand the caller a binding release revalidation is
+          // going to refuse as `external_tool_disabled`/`_drift` — a confusing
+          // spurious failure instead of an honest conflict here.
+          (existing.toolSourceToolId ?? null) !== (externalTool?.toolSourceToolId ?? null) ||
+          (existing.toolRevision ?? null) !== (externalTool?.revision ?? null)
         ) {
           throw new ActionIntentError(
-            'Idempotency key already belongs to a different live request (action/source/run/arguments mismatch)',
+            'Idempotency key already belongs to a different live request (action/source/run/arguments/external-tool mismatch)',
             'idempotency_conflict',
           );
         }
@@ -1758,6 +2142,24 @@ export async function createActionIntent(
           isNew: false,
           effectDigestOutcome,
         };
+      }
+
+      // AI script authoring (spec §4.1 / §4.2): a proposal is consumed by
+      // EXACTLY ONE intent. The CAS (`WHERE intent_id IS NULL AND status =
+      // 'reviewed' AND expires_at > now()`) is the mutual exclusion the
+      // `assertProposalRunnable` pre-check only previews; it runs here, inside
+      // the creation transaction, so a lost race rolls the intent insert back
+      // rather than leaving a second live intent pointing at the same
+      // proposal. The replay path above never reaches this: the existing
+      // intent already holds the claim.
+      if (input.toolName === 'run_script' && typeof input.input.proposalId === 'string') {
+        const claimed = await consumeProposalForIntent(db, input.input.proposalId, inserted.id);
+        if (!claimed) {
+          throw new ActionIntentError(
+            `Proposal ${input.input.proposalId} is not runnable: it is not reviewed, has expired, or has already been claimed by another intent`,
+            'proposal_not_runnable',
+          );
+        }
       }
 
       // New intent: fan out the cross-user approval_requests (deferred behind
@@ -1821,7 +2223,7 @@ export async function createActionIntent(
       // human fan-out entirely, same as the (not-yet-reachable-here)
       // policy-authorized case would — no approval_requests rows, no
       // approver notification.
-      if (!autonomyGranted && decisionState === 'human_required') {
+      if (!autonomyGranted && !scriptLaneGranted && decisionState === 'human_required') {
         ({ approvalRequestIds, requesterApprovalRequestId, fanOutUserIds, finalIntent } =
           await runHumanFanout({
             db,
@@ -1841,6 +2243,7 @@ export async function createActionIntent(
             agentEligibleApprovers,
             requesterEligible,
             requesterId,
+            governanceDiagnostics,
           }));
       }
 
@@ -1868,7 +2271,12 @@ export async function createActionIntent(
       // to release directly for a `decidedVia: 'ticket_autonomy'` row
       // instead of calling `attemptPolicyDecision`) — a backstop in case
       // this row's own publish is ever the one that gets stuck.
-      if (autonomyGranted) {
+      // W04 (#5612): a script-lane grant publishes the same durable release
+      // job. The proposal was already claimed for this intent by the CAS
+      // above (`consumeProposalForIntent`), which throws — rolling this whole
+      // transaction back — on a lost race, so an approved lane intent can
+      // never commit without owning its proposal.
+      if (autonomyGranted || scriptLaneGranted) {
         await db.insert(intentOutbox).values({
           intentId: inserted.id,
           eventType: 'intent_approved',
@@ -1900,6 +2308,11 @@ export async function createActionIntent(
     if (err instanceof OperationReplayError) {
       throw new ActionIntentError(err.message, 'operation_replay');
     }
+    // An unpinnable proposal is a deliberate refusal, not a database fault.
+    // Wrapping it as `fanout_failed` would tell the operator the outbox broke.
+    if (err instanceof EffectDigestUnresolvableError) {
+      throw new ActionIntentError(err.message, 'effect_digest_unresolvable');
+    }
     console.error('[intentService] action intent creation transaction failed (rolled back):', err);
     throw new ActionIntentError(
       'Failed to create action intent (approval fan-out / outbox)',
@@ -1920,13 +2333,20 @@ export async function createActionIntent(
   // `pending_approval` snapshot exactly as it always did; the attempt's
   // outcome surfaces later via the intent's own state, not this call's return
   // value.
-  // `!input.scope` is belt-and-braces, not redundancy with taste: a scoped
-  // intent cannot BE 'unattempted' (resolvePolicyDecisionState forces
-  // human_required for it — spec §4.2 amendment, #4189), so this second
-  // condition only fires if that invariant is ever broken upstream. It is
-  // cheap, and the failure it guards against is a sweep proposal
-  // auto-executing.
-  if (creation.isNew && !input.scope && creation.intent.policyDecisionState === 'unattempted') {
+  // The second, belt-and-braces gate. Before #4442 W04 this was a blanket
+  // `!input.scope`, mirroring the creation gate's blanket refusal of every
+  // scoped intent. W04 narrows BOTH in the same shape: an unscoped intent is
+  // unchanged, and a scoped one is only kicked off when the same act
+  // conditions `resolvePolicyDecisionState` applied still hold here. It is
+  // deliberately not deleted — it is cheap, and the failure it guards against
+  // is a sweep proposal auto-executing.
+  const scopedAttemptAllowed = !input.scope || (
+    sweepActEnabled()
+    && trigger?.kind === 'sweep_finding'
+    && input.sweepAct?.scheduleActMode === true
+    && input.sweepAct.argumentsMatchSubject === true
+  );
+  if (creation.isNew && scopedAttemptAllowed && creation.intent.policyDecisionState === 'unattempted') {
     triggerPolicyDecisionAttempt(creation.intent.id);
   }
 
@@ -1973,9 +2393,14 @@ export async function createActionIntent(
   const auditActor = agentRun
     ? { actorType: 'ai_agent' as const }
     : { actorId: requesterId };
-  const agentAuditDetails = agentRun && agentRow
-    ? { agentId: agentRow.id, agentRunId: agentRun.id }
-    : {};
+  const agentAuditDetails = {
+    ...(agentRun && agentRow ? { agentId: agentRow.id, agentRunId: agentRun.id } : {}),
+    ...(trigger ? {
+      triggerKind: trigger.kind,
+      triggerRefId: trigger.refId ?? null,
+      triggerKey: trigger.key ?? null,
+    } : {}),
+  };
 
   if (creation.isNew && creation.effectDigestOutcome.kind === 'unresolved') {
     recordActionIntentEvent({
@@ -2005,7 +2430,15 @@ export async function createActionIntent(
       outcome: cancelledForNoApprovers ? 'cancelled' : 'created',
       ...auditActor,
       details: cancelledForNoApprovers
-        ? { errorCode: creation.intent.errorCode ?? 'no_eligible_approvers', ...agentAuditDetails }
+        ? {
+          errorCode: creation.intent.errorCode ?? 'no_eligible_approvers',
+          // Review finding #1: carry WHY the fan-out came up empty into the
+          // audit trail, not just a bare errorCode — an operator (or a
+          // future incident) needs to tell "nobody holds approvals:decide"
+          // apart from "several people do, all site-restricted".
+          ...(governanceDiagnostics ? { governanceDiagnostics } : {}),
+          ...agentAuditDetails,
+        }
         : {
           approverCount: creation.approvalRequestIds.length,
           // Gated on four_eyes: supervised intents always have exactly one
@@ -2020,6 +2453,34 @@ export async function createActionIntent(
             creation.fanOutUserIds[0] === requesterId,
           ...agentAuditDetails,
         },
+    });
+  }
+
+  // AI script authoring W04 (#5612), spec §4.6: `ai.script.unattended_run`
+  // at approval. After the creation transaction committed (audit writes run
+  // outside the caller's transaction, auditService.ts) — fire-and-forget with
+  // createAuditLogAsync's in-process retry queue: the intent already
+  // committed, and a transient audit fault must not undo an approved run.
+  if (creation.isNew && creation.intent.decidedVia === 'script_reviewer') {
+    const evidence = creation.intent.scriptReviewerEvidence as ScriptReviewerEvidence | null;
+    void createAuditLogAsync({
+      trigger,
+      orgId,
+      actorType: agentRun ? 'ai_agent' : 'system',
+      actorId: agentRun?.agentId ?? requesterId ?? 'ai-script-lane',
+      action: 'ai.script.unattended_run',
+      resourceType: 'action_intent',
+      resourceId: creation.intent.id,
+      details: {
+        proposalId: evidence?.proposalId ?? null,
+        reviewId: evidence?.reviewId ?? null,
+        touchClasses: evidence?.touchClasses ?? null,
+        policySnapshot: evidence?.policySnapshot ?? null,
+        checkpointRequired: evidence?.checkpointRequired ?? null,
+        origin: agentRun ? 'agent' : 'chat',
+      },
+      result: 'success',
+      initiatedBy: 'ai',
     });
   }
 
@@ -2575,4 +3036,79 @@ export async function waitForIntentDecision(
   }
 
   return lastStatus;
+}
+
+// ============================================================================
+// waitForIntentTerminalOutcome — the post-handoff read-back (#6022)
+// ============================================================================
+
+/**
+ * Read an intent's TERMINAL outcome back, for a chat turn that handed the
+ * action off to the durable release worker.
+ *
+ * Strictly an OBSERVER, and that is the whole safety argument: like
+ * `waitForIntentDecision` it never writes, never releases, never retries and
+ * never terminalizes. Giving up simply returns the last row it read (or `null`
+ * if it never managed one), so the worker remains the sole owner of the
+ * intent's lifecycle and the `approved -> executing` CAS stays the single
+ * mutual-exclusion point.
+ *
+ * Why it exists: #5107's handoff told the model "approved and running, the
+ * outcome is reported separately" and nothing ever reported it. When the
+ * worker's execution failed — #6022's autoInstall guardrail refusal — the chat
+ * kept saying "Approved · running" and the model narrated a success that never
+ * happened. A guardrail refusal terminalizes in milliseconds, so a SHORT wait
+ * converts the overwhelmingly common failure case into a truthful tool error
+ * while leaving genuinely long-running work to time out honestly.
+ *
+ * Returns as soon as the status is terminal (see `TERMINAL_INTENT_STATUSES`),
+ * with the `result`/`error_code` needed to describe it. `null` means "no
+ * readable outcome" — NOT a failure; `describeIntentOutcome` maps it back to
+ * "still running" precisely so a failed read can never be narrated as a failed
+ * action.
+ */
+export async function waitForIntentTerminalOutcome(
+  intentId: string,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<IntentOutcomeSnapshot | null> {
+  const startTime = Date.now();
+  let pollInterval = 250;
+  let last: IntentOutcomeSnapshot | null = null;
+
+  // Always take one read, even on a zero/negative budget: a sibling wait may
+  // have exhausted the shared approval budget, and the guardrail refusal this
+  // exists to surface is already committed by then.
+  for (;;) {
+    if (signal?.aborted) return last;
+
+    try {
+      const [row] = await withSystemDbAccessContext(() =>
+        db
+          .select({
+            status: actionIntents.status,
+            errorCode: actionIntents.errorCode,
+            result: actionIntents.result,
+          })
+          .from(actionIntents)
+          .where(eq(actionIntents.id, intentId))
+          .limit(1),
+      );
+
+      if (!row) return last;
+      last = { status: row.status, errorCode: row.errorCode ?? null, result: row.result ?? null };
+      if (isTerminalIntentStatus(last.status)) return last;
+    } catch (err) {
+      console.error(
+        `[intentService] waitForIntentTerminalOutcome poll error for intent ${intentId}:`,
+        err,
+      );
+    }
+
+    const remaining = timeoutMs - (Date.now() - startTime);
+    if (remaining <= 0) return last;
+
+    await new Promise((resolve) => setTimeout(resolve, Math.min(pollInterval, remaining)));
+    pollInterval = Math.min(pollInterval * 1.5, 1000);
+  }
 }

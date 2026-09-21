@@ -19,6 +19,9 @@ vi.mock('../db', () => ({
     update: vi.fn(),
     insert: vi.fn(),
   },
+  // remoteDesktopStartIntent.ts (real impl, not mocked in this file) throws
+  // unless this reports an open db access context.
+  hasDbAccessContext: vi.fn(() => true),
 }));
 
 vi.mock('../db/schema', () => ({
@@ -29,6 +32,9 @@ vi.mock('../db/schema', () => ({
     userId: 'remoteSessions.userId',
     desktopStartCommandId: 'remoteSessions.desktopStartCommandId',
     desktopPromptMode: 'remoteSessions.desktopPromptMode',
+    desktopStartGeneration: 'remoteSessions.desktopStartGeneration',
+    terminalGeneration: 'remoteSessions.terminalGeneration',
+    terminationPhase: 'remoteSessions.terminationPhase',
   },
   devices: { id: 'devices.id' },
   users: { id: 'users.id', status: 'users.status' },
@@ -229,6 +235,54 @@ function mockUpdateReturning(updatedRow: unknown) {
   } as never);
 }
 
+/**
+ * Rigs the two real db.select calls commitDesktopStreamStartIntent's twin,
+ * commitDesktopStartIntent, and assertDesktopStartIntentCurrent make
+ * (remoteDesktopStartIntent.ts — SEC-038 W02, not mocked in this file): the
+ * row-locked read, then the pre-send re-read. Layered as mockReturnValueOnce
+ * on top of mockViewerSelect's persistent (and, for this route, unused —
+ * authorizeLiveRemoteSessionAccess is mocked directly) db.select rig, so it
+ * only intercepts these two specific calls.
+ */
+function rigDesktopStartIntentSelects(options: {
+  lockedStatus?: string;
+  committedGeneration?: bigint;
+} = {}) {
+  const { lockedStatus = 'pending', committedGeneration = 1n } = options;
+
+  // A prior test may have left an unconsumed mockReturnValueOnce queued on
+  // db.select (e.g. a denial test that never reached commitDesktopStartIntent
+  // after primeHappyPath queued these two) — clearAllMocks() alone doesn't
+  // drop it. Reset before queuing so this test's two values are the only ones
+  // pending. mockViewerSelect's own persistent db.select rig is unaffected by
+  // real callers here: the auth path goes through the separately-mocked
+  // authorizeLiveRemoteSessionAccess, so resetting the base implementation is
+  // safe.
+  vi.mocked(db.select).mockReset();
+
+  vi.mocked(db.select).mockReturnValueOnce({
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        limit: vi.fn().mockReturnValue({
+          for: vi.fn().mockResolvedValue([
+            { status: lockedStatus, terminationPhase: 'none', generation: 0n },
+          ]),
+        }),
+      }),
+    }),
+  } as never);
+
+  vi.mocked(db.select).mockReturnValueOnce({
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        limit: vi.fn().mockResolvedValue([
+          { terminationPhase: 'none', generation: committedGeneration },
+        ]),
+      }),
+    }),
+  } as never);
+}
+
 const ACTIVE_SESSION = {
   id: SESSION_ID,
   type: 'desktop',
@@ -259,7 +313,8 @@ function primeHappyPath() {
     idleTimeoutMinutes: 5,
     maxSessionDurationHours: 8,
   } as never);
-  mockUpdateReturning({ id: SESSION_ID, status: 'connecting', webrtcOffer: { sdp: 'v=0' } });
+  mockUpdateReturning({ generation: 1n });
+  rigDesktopStartIntentSelects({ lockedStatus: 'pending' });
 }
 
 // -------------------------------------------------------------------
@@ -522,6 +577,29 @@ describe('GET /:id/viewer/session failure diagnostics', () => {
     expect(await res.json()).toMatchObject({ id: SESSION_ID, status: 'disconnected', errorMessage, webrtcAnswer: null });
     expect(db.update).not.toHaveBeenCalled();
     expect(sendCommandToAgent).not.toHaveBeenCalled();
+  });
+
+  // SEC-038 W06 (#5537): a server-side End whose stop_desktop has not yet been
+  // acknowledged by the agent leaves the row terminal with
+  // terminationPhase='pending'. The viewer's answer poll must see the phase
+  // and must never be handed a stale answer it could connect with.
+  it('surfaces terminationPhase and withholds the answer while teardown is pending', async () => {
+    mockViewerSelect({
+      session: { ...failedSession, status: 'disconnected', terminationPhase: 'pending' },
+      device: DEVICE,
+      user: USER,
+    });
+    const res = await request();
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ status: 'disconnected', terminationPhase: 'pending', webrtcAnswer: null });
+  });
+
+  it('reports terminationPhase=none on a live session', async () => {
+    vi.mocked(isViewerSessionRevoked).mockResolvedValue(false);
+    mockViewerSelect({ session: { ...failedSession, status: 'active', errorMessage: null, terminationPhase: 'none' }, device: DEVICE, user: USER });
+    const res = await request();
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ status: 'active', terminationPhase: 'none', webrtcAnswer: 'v=0 stale-answer' });
   });
 
   it('preserves the negotiated answer for an authorized active status response', async () => {

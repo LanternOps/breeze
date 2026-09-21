@@ -46,11 +46,13 @@ const BUILT_IN_PLAYBOOKS: BuiltInPlaybook[] = [
       {
         type: 'act',
         name: 'Execute cleanup',
-        description: 'Delete selected cleanup candidates from the latest preview.',
+        description: 'Delete selected cleanup candidates from the run the preview step pinned.',
         tool: 'disk_cleanup',
         toolInput: {
           deviceId: '{{deviceId}}',
           action: 'execute',
+          // Produced by the preview step above, substituted after it runs.
+          cleanupRunId: '{{cleanupRunId}}',
           paths: '{{cleanupPaths}}',
         },
       },

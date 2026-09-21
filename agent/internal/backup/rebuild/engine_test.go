@@ -290,7 +290,7 @@ func TestRun_FullLinuxFlowOnFakeSystem(t *testing.T) {
 	if err != nil {
 		t.Fatalf("err=%v\n%s", err, sys.dump())
 	}
-	if res.Status != "completed" || res.PhaseReached != PhaseValidate || len(res.Phases) != 7 {
+	if res.Status != "completed" || res.PhaseReached != PhaseConvert || len(res.Phases) != 8 {
 		t.Fatalf("res = %+v\n%s", res, sys.dump())
 	}
 	// Provision: zap, three partitions with type GUIDs + partition GUIDs, rescan, formats with UUIDs.
@@ -355,8 +355,58 @@ func TestRun_FullLinuxFlowOnFakeSystem(t *testing.T) {
 	if res.FilesRestored < 11 || len(res.Warnings) != 0 {
 		t.Errorf("files=%d warnings=%v", res.FilesRestored, res.Warnings)
 	}
-	if strings.Join(phaseNames(phases), ",") != "preflight,provision,restore,boot,identity,encryption,validate" {
+	if strings.Join(phaseNames(phases), ",") != "preflight,provision,restore,boot,identity,encryption,validate,convert" {
 		t.Errorf("progress phases = %v", phases)
+	}
+}
+
+// #5493: found live on the bare-metal boot proof. The whole-machine backup
+// preset excludes /proc, /sys, /dev, /run, /tmp, /var/tmp, /mnt, /media, so
+// a snapshot taken before the backup-side fix (collectBackupFilesFromPaths
+// force-recording an excluded directory's own manifest entry) never
+// contains them at all — restore alone leaves the staging root without
+// them. boot()'s pseudoMounts/BindMount calls normally paper over this on a
+// real system (a bind mount creates its target), but a SkipBoot run (or any
+// run where boot() is skipped/fails before reaching them) must not depend on
+// that: restoreTree's ensureMountpoints call is the belt-and-braces fix.
+//
+// This proves it in isolation: SkipBoot means boot() never executes (and
+// fakeSystem's own BindMount, which happens to os.MkdirAll its target, never
+// fires either), and the seeded snapshot's content map (seedSnapshot) has no
+// proc/sys/dev/run/tmp entries — so these directories can only exist
+// afterward because ensureMountpoints created them.
+func TestRun_EnsureMountpointsSurvivesSkipBoot(t *testing.T) {
+	skipUnlessLinuxSystemState(t)
+	resetBmrCalls()
+	dir := t.TempDir()
+	sys := newFakeSystem(dir, 100*GiB)
+	p := seedSnapshot(t, "snap-1", testLayout())
+	staging := filepath.Join(dir, "mnt")
+	res, err := Run(context.Background(), Options{
+		SnapshotID: "snap-1", Provider: p, Target: Target{Kind: TargetImage, Path: filepath.Join(dir, "t.img"), ImageSizeBytes: 100 * GiB},
+		Identity: IdentityOriginal, StateDir: dir, StagingRoot: staging, System: sys, SkipBoot: true,
+	})
+	if err != nil {
+		t.Fatalf("err=%v\n%s", err, sys.dump())
+	}
+	if res.Status != "completed" {
+		t.Fatalf("res = %+v\n%s", res, sys.dump())
+	}
+	if sys.has("mount --bind") {
+		t.Fatalf("SkipBoot run must never bind-mount (that would mask the defect this test checks): %s", sys.dump())
+	}
+	for _, name := range []string{"proc", "sys", "dev", "run"} {
+		fi, statErr := os.Stat(filepath.Join(staging, name))
+		if statErr != nil || !fi.IsDir() {
+			t.Errorf("%s missing after a SkipBoot run: %v", name, statErr)
+		}
+	}
+	fi, statErr := os.Stat(filepath.Join(staging, "tmp"))
+	if statErr != nil || !fi.IsDir() {
+		t.Fatalf("tmp missing after a SkipBoot run: %v", statErr)
+	}
+	if fi.Mode()&os.ModeSticky == 0 || fi.Mode().Perm() != 0o777 {
+		t.Errorf("tmp mode = %v, want sticky 1777", fi.Mode())
 	}
 }
 
@@ -471,5 +521,117 @@ func TestRun_StrictRestoreFailsOnMissingObject(t *testing.T) {
 	res, err := Run(context.Background(), Options{SnapshotID: "snap-1", Provider: p, Target: Target{Kind: TargetDisk, Path: "/dev/sdb"}, Identity: IdentityNew, StateDir: dir, StagingRoot: filepath.Join(dir, "mnt"), System: sys})
 	if err == nil || res.Status != "failed" || res.PhaseReached != PhaseRestore || !strings.Contains(res.Error, "/usr/bin/tool") {
 		t.Fatalf("res = %+v err=%v", res, err)
+	}
+}
+
+// TestRun_ResumeReusesRestoreProgress proves the restore phase resumes from
+// the persistent work root instead of re-downloading every file: run 1 hits a
+// missing object (strict restore fails after every other file landed), run 2
+// with AllowPartialRestore must report the landed files as skipped.
+func TestRun_ResumeReusesRestoreProgress(t *testing.T) {
+	skipUnlessLinuxSystemState(t)
+	resetBmrCalls()
+	dir := t.TempDir()
+	sys := newFakeSystem(dir, 100*GiB)
+	p := seedSnapshot(t, "snap-1", testLayout())
+	delete(p.files, "snapshots/snap-1/files/path_0/usr/bin/tool")
+	opts := Options{SnapshotID: "snap-1", Provider: p, Target: Target{Kind: TargetDisk, Path: "/dev/sdb"}, Identity: IdentityNew, StateDir: dir, StagingRoot: filepath.Join(dir, "mnt"), System: sys}
+	if res, err := Run(context.Background(), opts); err == nil || res == nil || res.PhaseReached != PhaseRestore {
+		t.Fatalf("first run = %+v err=%v", res, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "work", "restore-work", "staging", "snap-1")); err != nil {
+		t.Fatalf("restore work root must survive a failed run: %v", err)
+	}
+	var skipped, restored int
+	opts.System = newFakeSystem(dir, 100*GiB)
+	opts.AllowPartialRestore = true
+	opts.Progress = func(ph Phase, msg string, _, _ int64) {
+		if ph != PhaseRestore {
+			return
+		}
+		if strings.Contains(msg, "skipped (resumed)") {
+			skipped++
+		} else if strings.HasPrefix(msg, "restored:") {
+			restored++
+		}
+	}
+	res2, err := Run(context.Background(), opts)
+	if err != nil || res2.Status != "completed" || !res2.Resumed {
+		t.Fatalf("second run = %+v err=%v", res2, err)
+	}
+	if skipped == 0 || restored != 0 {
+		t.Fatalf("resume must skip already-restored files: skipped=%d restored=%d", skipped, restored)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "work")); !os.IsNotExist(err) {
+		t.Fatalf("work root must be removed after a completed run (err=%v)", err)
+	}
+}
+
+// TestRun_VhdxTargetRunsAllEightPhases proves the W05a vhdx target end to
+// end on the fake system: the engine stages a raw image at <Path>.raw,
+// attaches THAT (not the .vhdx path) as the loop device, runs the seven
+// W03 phases against it, and then an explicit eighth phase converts the
+// raw file with qemu-img and deletes it.
+func TestRun_VhdxTargetRunsAllEightPhases(t *testing.T) {
+	skipUnlessLinuxSystemState(t)
+	resetBmrCalls()
+	dir := t.TempDir()
+	sys := newFakeSystem(dir, 100*GiB)
+	p := seedSnapshot(t, "snap-1", testLayout())
+	out := filepath.Join(dir, "t.vhdx")
+	var phases []Phase
+	res, err := Run(context.Background(), Options{
+		SnapshotID: "snap-1", Provider: p, Target: Target{Kind: TargetVHDX, Path: out, ImageSizeBytes: 100 * GiB},
+		Identity: IdentityNew, StateDir: dir, StagingRoot: filepath.Join(dir, "mnt"), System: sys, SkipBoot: true,
+		Progress: func(ph Phase, _ string, _, _ int64) {
+			if len(phases) == 0 || phases[len(phases)-1] != ph {
+				phases = append(phases, ph)
+			}
+		},
+	})
+	if err != nil {
+		t.Fatalf("err=%v\n%s", err, sys.dump())
+	}
+	if res.Status != "completed" || res.PhaseReached != PhaseConvert || len(res.Phases) != 8 {
+		t.Fatalf("res = %+v\n%s", res, sys.dump())
+	}
+	if res.Phases[7].Phase != PhaseConvert || res.Phases[7].Status != PhaseCompleted {
+		t.Fatalf("phase 8 = %+v", res.Phases[7])
+	}
+	if !sys.has("losetup --find --show --partscan " + out + ".raw") {
+		t.Fatalf("loop device must be attached on the raw staging file\n%s", sys.dump())
+	}
+	if !sys.has("qemu-img convert -f raw -O vhdx -o subformat=dynamic " + out + ".raw " + out) {
+		t.Fatalf("missing qemu-img convert\n%s", sys.dump())
+	}
+	if sys.indexOf("qemu-img") < sys.indexOf("losetup -d /dev/loop7") {
+		t.Fatalf("convert must run after the loop device is detached\n%s", sys.dump())
+	}
+	if strings.Join(phaseNames(phases), ",") != "preflight,provision,restore,boot,identity,encryption,validate,convert" {
+		t.Errorf("progress phases = %v", phases)
+	}
+	if res.Target.Kind != TargetVHDX || res.Target.Path != out {
+		t.Errorf("result target = %+v", res.Target)
+	}
+}
+
+// TestRun_DiskTargetRecordsConvertSkipped: the phase table is fixed-length
+// for every caller, so a non-vhdx run still reports the eighth phase — as
+// skipped, never as completed.
+func TestRun_DiskTargetRecordsConvertSkipped(t *testing.T) {
+	skipUnlessLinuxSystemState(t)
+	resetBmrCalls()
+	dir := t.TempDir()
+	sys := newFakeSystem(dir, 100*GiB)
+	p := seedSnapshot(t, "snap-1", testLayout())
+	res, err := Run(context.Background(), Options{SnapshotID: "snap-1", Provider: p, Target: Target{Kind: TargetDisk, Path: "/dev/sdb"}, Identity: IdentityNew, StateDir: dir, StagingRoot: filepath.Join(dir, "mnt"), System: sys, SkipBoot: true})
+	if err != nil {
+		t.Fatalf("err=%v\n%s", err, sys.dump())
+	}
+	if len(res.Phases) != 8 || res.Phases[7].Phase != PhaseConvert || res.Phases[7].Status != PhaseSkipped {
+		t.Fatalf("phases = %+v", res.Phases)
+	}
+	if sys.has("qemu-img") {
+		t.Fatalf("disk target must never run qemu-img\n%s", sys.dump())
 	}
 }

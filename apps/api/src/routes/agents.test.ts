@@ -43,6 +43,8 @@ vi.mock('../services/partnerDeviceCapacity', () => ({
   PartnerDeviceCapacityError: class PartnerDeviceCapacityError extends Error {},
 }));
 vi.mock('../services/filesystemAnalysis', () => ({
+  claimFilesystemScanGeneration: vi.fn(async () => 'claimed'),
+  setFilesystemScanGeneration: vi.fn(),
   parseFilesystemAnalysisStdout: vi.fn(() => ({ summary: { filesScanned: 1 } })),
   saveFilesystemSnapshot: vi.fn(() => Promise.resolve({ id: 'snapshot-1' })),
   getFilesystemScanState: vi.fn(() => Promise.resolve(null)),
@@ -276,6 +278,7 @@ describe('agent routes', () => {
     vi.mocked(db.insert).mockImplementation(() => defaultInsertChain() as any);
     vi.mocked(db.update).mockImplementation(() => defaultUpdateChain() as any);
     vi.mocked(db.transaction).mockReset();
+    vi.mocked(db.transaction).mockImplementation(async (fn) => fn(db as never));
     app = new Hono();
     app.route('/agents', agentRoutes);
   });
@@ -963,6 +966,9 @@ describe('agent routes', () => {
           { file_path: '/etc/ssh/sshd_config', config_key: 'PermitRootLogin' }
         ],
         patch_source_settings: { exclusiveWindowsUpdate: false },
+        // #5511 W02: a resolved absent warranty policy delivers an explicit
+        // false (the revoke-on-unassign contract), exactly like patch_source.
+        warranty_settings: { hp_cmsl_enabled: false },
         // Security remediation Wave 6, Task 9 — always sent (true or false),
         // mirroring AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID. Sending the explicit
         // false is what makes the switch reversible: an omitted key is a no-op
@@ -1082,6 +1088,7 @@ describe('agent routes', () => {
         policy_registry_state_probes: [],
         policy_config_state_probes: [],
         patch_source_settings: { exclusiveWindowsUpdate: false },
+        warranty_settings: { hp_cmsl_enabled: false },
         require_manifest_signing_key_id: false
       });
       expect(insertValues).toHaveBeenCalledWith(
@@ -1326,7 +1333,9 @@ describe('agent routes', () => {
 
       expect(res.status).toBe(200);
       expect(saveFilesystemSnapshot).toHaveBeenCalled();
-      const [sfDeviceId, , sfTrigger, sfPayload] =
+      // (deviceId, orgId, trigger, scanPath, payload) since W02 — scanPath is
+      // index 3, so the payload moved to index 4.
+      const [sfDeviceId, , sfTrigger, , sfPayload] =
         vi.mocked(saveFilesystemSnapshot).mock.calls[0]!;
       expect(sfDeviceId).toBe('device-123');
       expect(sfTrigger).toBe('threshold');
@@ -1369,7 +1378,9 @@ describe('agent routes', () => {
 
       expect(res.status).toBe(200);
       expect(saveFilesystemSnapshot).toHaveBeenCalled();
-      const [sfDeviceId, , sfTrigger, sfPayload] =
+      // (deviceId, orgId, trigger, scanPath, payload) since W02 — scanPath is
+      // index 3, so the payload moved to index 4.
+      const [sfDeviceId, , sfTrigger, , sfPayload] =
         vi.mocked(saveFilesystemSnapshot).mock.calls[0]!;
       expect(sfDeviceId).toBe('device-123');
       expect(sfTrigger).toBe('on_demand');

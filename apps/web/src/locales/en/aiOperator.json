@@ -114,7 +114,9 @@
   "operatorTaskFeed": {
     "loading": "Loading Operator tasks...",
     "loadFailed": "Operator tasks failed to load.",
-    "empty": "No Operator tasks for this device."
+    "empty": "No Operator tasks for this device.",
+    "emptyHint": "The AI Operator investigates and resolves issues on a device when you delegate an alert to it. Tasks delegated for this device will appear here.",
+    "learnMore": "Learn about the AI Operator"
   },
   "delegate": {
     "button": "Delegate to Operator",

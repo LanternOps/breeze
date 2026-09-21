@@ -3,6 +3,10 @@ import { optionalQueryBoolean } from './queryParams';
 
 export const billingStatusSchema = z.enum(['not_billed', 'billed', 'no_charge', 'contract']);
 export type BillingStatus = z.infer<typeof billingStatusSchema>;
+// `billed` is an invoice lifecycle fact, not a routine time/part disposition.
+// Invoice issue writes it internally after locking the invoice and every source;
+// public create/update inputs retain the technician-owned dispositions only.
+const routineBillingStatusSchema = z.enum(['not_billed', 'no_charge', 'contract']);
 
 const CLOCK_SKEW_MS = 5 * 60_000;
 const notFarFuture = (d: Date) => d.getTime() <= Date.now() + CLOCK_SKEW_MS;
@@ -13,29 +17,35 @@ const notFarFuture = (d: Date) => d.getTime() <= Date.now() + CLOCK_SKEW_MS;
 // restamps it (multi-currency spec §7). Editing hourlyRate/unitPrice does not
 // change the snapshot; billed rows reject monetary edits (ENTRY_BILLED / PART_BILLED).
 export const createTimeEntrySchema = z.object({
+  workTypeId: z.string().uuid().nullable().optional(),
   ticketId: z.string().guid().optional(),
   startedAt: z.coerce.date().refine(notFarFuture, { message: 'startedAt cannot be in the future' }),
   endedAt: z.coerce.date(),
   description: z.string().max(10_000).optional(),
   isBillable: z.boolean().optional(),
   hourlyRate: z.number().nonnegative().multipleOf(0.01).nullable().optional(),
-  billingStatus: billingStatusSchema.optional()
+  minimumMinutes: z.number().int().min(0).max(2147483647).nullable().optional(),
+  billingStatus: routineBillingStatusSchema.optional()
 }).refine((v) => v.endedAt.getTime() > v.startedAt.getTime(), {
   message: 'endedAt must be after startedAt',
   path: ['endedAt']
 });
 
 export const updateTimeEntrySchema = z.object({
+  resetBilling: z.boolean().optional(),
+  workTypeId: z.string().uuid().nullable().optional(),
   ticketId: z.string().guid().nullable().optional(),
   startedAt: z.coerce.date().refine(notFarFuture, { message: 'startedAt cannot be in the future' }).optional(),
   endedAt: z.coerce.date().optional(),
   description: z.string().max(10_000).nullable().optional(),
   isBillable: z.boolean().optional(),
   hourlyRate: z.number().nonnegative().multipleOf(0.01).nullable().optional(),
-  billingStatus: billingStatusSchema.optional()
+  minimumMinutes: z.number().int().min(0).max(2147483647).nullable().optional(),
+  billingStatus: routineBillingStatusSchema.optional()
 }).refine((v) => Object.keys(v).length > 0, { message: 'At least one field is required' });
 
 export const startTimerSchema = z.object({
+  workTypeId: z.string().uuid().nullable().optional(),
   ticketId: z.string().guid().optional(),
   description: z.string().max(10_000).optional()
 });
@@ -83,7 +93,7 @@ export const ticketPartSchema = z.object({
   unitPrice: z.number().nonnegative().multipleOf(0.01).default(0),
   costBasis: z.number().nonnegative().multipleOf(0.01).nullable().optional(),
   isBillable: z.boolean().optional(),
-  billingStatus: billingStatusSchema.optional(),
+  billingStatus: routineBillingStatusSchema.optional(),
   notes: z.string().max(10_000).optional()
 });
 
@@ -111,7 +121,10 @@ export type TicketPartInput = z.infer<typeof ticketPartSchema>;
 // ── W06 (#3900): provenance vocabulary + suggestion routes ──────────────────
 // `source` is READ-side only in this wave. It is never accepted on any
 // create/update schema: provenance is stamped by the server (spec D5).
-export const TIME_ENTRY_SOURCES = ['manual', 'timer', 'location', 'remote_session', 'support_session'] as const;
+// `ai_suggested` (#4177, W04) is stamped only by the action-intent release
+// path when a technician approves an AI time-entry proposal — like every
+// other value it is never accepted from a public create/update payload.
+export const TIME_ENTRY_SOURCES = ['manual', 'timer', 'location', 'remote_session', 'support_session', 'ai_suggested'] as const;
 export const timeEntrySourceSchema = z.enum(TIME_ENTRY_SOURCES);
 export type TimeEntrySource = z.infer<typeof timeEntrySourceSchema>;
 

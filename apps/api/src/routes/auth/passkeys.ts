@@ -376,6 +376,7 @@ passkeyRoutes.post('/passkeys/register/verify', authMiddleware, zValidator('json
           partnerId: auth.partnerId ?? null,
           scope: auth.scope,
           mfa: true,
+          mfaSrc: 'factor',
           mobileDeviceId: readMobileDeviceId(c) ?? undefined,
         },
         capability,
@@ -446,6 +447,7 @@ passkeyRoutes.post('/passkeys/register/verify', authMiddleware, zValidator('json
           // endpoint's step-up gate proves an existing factor, not that the
           // session itself was MFA-assured.
           mfa: auth.token?.mfa === true,
+          mfaSrc: auth.token?.mfa === true ? auth.token.mfa_src : undefined,
           // SR-001: a RE-MINT takes its device binding from the previously
           // signed `mdid` claim, never the forgeable request header.
           mobileDeviceId: carryForwardBinding(auth.token ?? {}),
@@ -858,6 +860,7 @@ passkeyRoutes.post('/mfa/passkey/verify', zValidator('json', passkeyMfaVerifySch
     partnerId: context.partnerId,
     scope: context.scope,
     mfa: true,
+    mfaSrc: 'factor',
     mobileDeviceId: readMobileDeviceId(c) ?? undefined,
   };
 
@@ -1028,6 +1031,7 @@ passkeyRoutes.delete('/passkeys/:id', authMiddleware, zValidator('json', deleteP
         partnerId: auth.partnerId ?? null,
         scope: auth.scope,
         mfa: auth.token?.mfa === true,
+        mfaSrc: auth.token?.mfa === true ? auth.token.mfa_src : undefined,
         mobileDeviceId: carryForwardBinding(auth.token ?? {}),
       },
       capability,

@@ -238,25 +238,34 @@ async function requirePrincipalOrgAccess(c: any, id: string) {
   return { principal, auth };
 }
 
-// SR2-15 delegation ceiling. A service-principal key must never carry a scope
-// its human actor does not currently hold, and a site-restricted actor cannot
-// manage an org-wide principal. Enforced on create AND on every path that hands
-// out or re-points a live key (rotate, migrate-key) — guarding create alone is a
-// front-door-only check: rotate would still let a sub-ceiling actor capture a
-// full-scope credential from an over-scoped principal. Returns a 403 Response to
-// short-circuit, or null when the actor is within their ceiling.
-function enforceScopeDelegation(c: any, scopes: string[]) {
+// A service principal has no site axis and is therefore organization-wide.
+// Keep this gate separate from scope delegation: every mutation must respect
+// the caller's site ceiling, while authority-reducing disable must remain
+// available to an unrestricted org admin even if the principal carries scopes
+// that admin cannot delegate onto a new credential.
+function enforceOrgWidePrincipalManagement(c: any) {
   const permissions = c.get('permissions') as UserPermissions | undefined;
-
-  // A service principal is organization-wide — service_principals has no site
-  // axis — so a site-restricted actor must not manage one, or the principal
-  // reaches every site in the org and escapes their restriction.
   if (permissions?.allowedSiteIds) {
     return c.json(
       { error: 'Site-restricted users cannot manage service principals, which are organization-wide' },
       403,
     );
   }
+
+  return null;
+}
+
+// SR2-15 delegation ceiling. A service-principal key must never carry a scope
+// its human actor does not currently hold. Enforced on create AND on every path
+// that hands out or re-points a live key (rotate, migrate-key) — guarding create
+// alone is a front-door-only check: rotate would still let a sub-ceiling actor
+// capture a full-scope credential from an over-scoped principal. Returns a 403
+// Response to short-circuit, or null when the actor is within their ceiling.
+function enforceScopeDelegation(c: any, scopes: string[]) {
+  const orgWideDenied = enforceOrgWidePrincipalManagement(c);
+  if (orgWideDenied) return orgWideDenied;
+
+  const permissions = c.get('permissions') as UserPermissions | undefined;
 
   const delegation = validateApiKeyScopeDelegation(scopes, permissions);
   if (!delegation.ok) {
@@ -313,6 +322,9 @@ servicePrincipalRoutes.post(
     const { id } = c.req.valid('param');
     const gate = await requirePrincipalOrgAccess(c, id);
     if ('response' in gate) return gate.response;
+
+    const denied = enforceOrgWidePrincipalManagement(c);
+    if (denied) return denied;
 
     try {
       const disabled = await disableServicePrincipal(id, gate.auth.user.id);

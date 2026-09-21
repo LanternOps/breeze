@@ -1,3 +1,5 @@
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AI_AGENT_LIMIT_DEFAULTS, type AiAgentPolicy, type AiAgentPolicySnapshot } from '@breeze/shared';
 
@@ -6,6 +8,7 @@ import { AI_AGENT_LIMIT_DEFAULTS, type AiAgentPolicy, type AiAgentPolicySnapshot
 // ---------------------------------------------------------------------------
 const dbMockState = vi.hoisted(() => ({
   cleanupRunRows: [] as unknown[],
+  cleanupWhere: undefined as SQL | undefined,
   playbookRows: [] as unknown[],
   // Wave 5A Task 2 (#3827): `ai_kill_state` table branch for the (real,
   // unmocked) `readAiKillState()` this suite exercises through
@@ -34,7 +37,10 @@ vi.mock('../../db', () => ({
       from: vi.fn((table: unknown) => {
         const tableName = String((table as Record<symbol, unknown>)[Symbol.for('drizzle:Name')]);
         const builder: Record<string, unknown> = {
-          where: vi.fn(() => builder),
+          where: vi.fn((clause: SQL) => {
+            if (tableName === 'device_filesystem_cleanup_runs') dbMockState.cleanupWhere = clause;
+            return builder;
+          }),
           orderBy: vi.fn(() => builder),
           limit: vi.fn(async () => {
             if (tableName === 'device_filesystem_cleanup_runs') return dbMockState.cleanupRunRows;
@@ -191,6 +197,7 @@ beforeEach(() => {
   // below explicitly stubs it on.
   vi.stubEnv('BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED', 'false');
   dbMockState.cleanupRunRows = [];
+  dbMockState.cleanupWhere = undefined;
   dbMockState.playbookRows = [];
   dbMockState.killStateRows = [{ killed: false, epoch: 0 }];
   dbMockState.killStateShouldThrow = false;
@@ -487,11 +494,14 @@ describe('revalidateActExecution — step 3.5: per-script act authorization (Tas
 });
 
 describe('revalidateActExecution — step 4: disk_cleanup asset pin', () => {
-  const executeInput = { deviceId: DEVICE_ID, action: 'execute', paths: ['/tmp/a'] };
+  const cleanupRunId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const executeInput = { deviceId: DEVICE_ID, action: 'execute', cleanupRunId, paths: ['/tmp/a'] };
 
   function previewRow(overrides: { estimatedBytes?: number; candidatePaths?: string[] } = {}) {
     const candidatePaths = overrides.candidatePaths ?? ['/tmp/a', '/tmp/b'];
     return {
+      status: 'previewed',
+      requestedAt: new Date(),
       plan: {
         preview: {
           estimatedBytes: overrides.estimatedBytes ?? 1024,
@@ -503,20 +513,59 @@ describe('revalidateActExecution — step 4: disk_cleanup asset pin', () => {
     };
   }
 
+  it('denies an unattended disk_cleanup with no pinned run id', async () => {
+    dbMockState.cleanupRunRows = [previewRow()];
+    const { cleanupRunId: _omitted, ...input } = executeInput;
+    const result = await revalidateActExecution({
+      run: runArgs(), op: diskCleanupOp, toolName: 'disk_cleanup', input, reserved: reservation(),
+    });
+    expect(result).toMatchObject({ ok: false });
+    expect('deny' in result && result.deny).toContain('cleanupRunId');
+  });
+
+  it('pins the run by id instead of substituting a newer preview, scoped to device and org', async () => {
+    dbMockState.cleanupRunRows = [previewRow()];
+    const result = await revalidateActExecution({
+      run: runArgs(), op: diskCleanupOp, toolName: 'disk_cleanup', input: executeInput, reserved: reservation(),
+    });
+    expect(result).toMatchObject({ ok: true });
+    const query = new PgDialect().sqlToQuery(dbMockState.cleanupWhere!);
+    expect(query.sql).toContain('"device_filesystem_cleanup_runs"."id" =');
+    expect(query.sql).toContain('"device_filesystem_cleanup_runs"."device_id" =');
+    expect(query.sql).toContain('"device_filesystem_cleanup_runs"."org_id" =');
+    expect(query.params).toEqual([cleanupRunId, DEVICE_ID, ORG_ID]);
+  });
+
+  it('denies a pinned run that is no longer previewed', async () => {
+    dbMockState.cleanupRunRows = [{ ...previewRow(), status: 'executed' }];
+    const result = await revalidateActExecution({
+      run: runArgs(), op: diskCleanupOp, toolName: 'disk_cleanup', input: executeInput, reserved: reservation(),
+    });
+    expect('deny' in result && result.deny).toContain('no longer previewable');
+  });
+
+  it('denies a pinned run past the preview TTL', async () => {
+    dbMockState.cleanupRunRows = [{ ...previewRow(), requestedAt: new Date(Date.now() - 25 * 3_600_000) }];
+    const result = await revalidateActExecution({
+      run: runArgs(), op: diskCleanupOp, toolName: 'disk_cleanup', input: executeInput, reserved: reservation(),
+    });
+    expect('deny' in result && result.deny).toContain('expired');
+  });
+
   it('no preview plan exists for this device → deny', async () => {
     dbMockState.cleanupRunRows = [];
     const result = await revalidateActExecution({
       run: runArgs(), op: diskCleanupOp, toolName: 'disk_cleanup', input: executeInput, reserved: reservation(),
     });
-    expect(result).toEqual({ ok: false, deny: expect.stringMatching(/no disk-cleanup preview plan/i) });
+    expect(result).toEqual({ ok: false, deny: expect.stringMatching(/pinned disk-cleanup run does not exist/i) });
   });
 
-  it('a requested path outside the latest preview → deny', async () => {
+  it('a requested path outside the pinned run → deny', async () => {
     dbMockState.cleanupRunRows = [previewRow({ candidatePaths: ['/tmp/other'] })];
     const result = await revalidateActExecution({
       run: runArgs(), op: diskCleanupOp, toolName: 'disk_cleanup', input: executeInput, reserved: reservation(),
     });
-    expect(result).toEqual({ ok: false, deny: expect.stringMatching(/not part of the latest cleanup preview/i) });
+    expect(result).toEqual({ ok: false, deny: expect.stringMatching(/not part of the pinned cleanup run/i) });
   });
 
   it('a plan exceeding the v1 byte bound → deny', async () => {

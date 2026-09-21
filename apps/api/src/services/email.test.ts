@@ -84,44 +84,12 @@ describe('email service', () => {
     await service!.sendEmail({
       to: 'user@example.com',
       subject: 'Test',
-      html: '<p>Hello</p>'
+      html: '<p>Hello</p>',
+      purpose: 'ops.alert'
     });
 
     expect(resendSendMock).toHaveBeenCalledTimes(1);
     expect(createTransportMock).not.toHaveBeenCalled();
-  });
-
-  describe('fromWithDisplayName', () => {
-    it('wraps the default address with a quoted display name', async () => {
-      process.env.RESEND_API_KEY = 're_test_123';
-      process.env.EMAIL_FROM = 'noreply@example.com';
-      const { getEmailService } = await import('./email');
-      expect(getEmailService()!.fromWithDisplayName('Acme MSP via Breeze'))
-        .toBe('"Acme MSP via Breeze" <noreply@example.com>');
-    });
-
-    it('extracts the address when EMAIL_FROM already carries a display name', async () => {
-      process.env.RESEND_API_KEY = 're_test_123';
-      process.env.EMAIL_FROM = 'Breeze <noreply@example.com>';
-      const { getEmailService } = await import('./email');
-      expect(getEmailService()!.fromWithDisplayName('Acme MSP via Breeze'))
-        .toBe('"Acme MSP via Breeze" <noreply@example.com>');
-    });
-
-    it('strips header-breaking characters from the display name', async () => {
-      process.env.RESEND_API_KEY = 're_test_123';
-      process.env.EMAIL_FROM = 'noreply@example.com';
-      const { getEmailService } = await import('./email');
-      expect(getEmailService()!.fromWithDisplayName('Evil"\r\nBcc: victim <x>'))
-        .toBe('"Evil Bcc: victim x" <noreply@example.com>');
-    });
-
-    it('falls back to the default sender when the name is empty after sanitizing', async () => {
-      process.env.RESEND_API_KEY = 're_test_123';
-      process.env.EMAIL_FROM = 'noreply@example.com';
-      const { getEmailService } = await import('./email');
-      expect(getEmailService()!.fromWithDisplayName('"<>"')).toBe('noreply@example.com');
-    });
   });
 
   it('uses SMTP when EMAIL_PROVIDER is smtp', async () => {
@@ -141,7 +109,8 @@ describe('email service', () => {
       to: ['user@example.com'],
       subject: 'SMTP Test',
       html: '<p>Hello SMTP</p>',
-      replyTo: 'help@example.com'
+      replyTo: 'help@example.com',
+      purpose: 'ops.alert'
     });
 
     expect(createTransportMock).toHaveBeenCalledTimes(1);
@@ -180,7 +149,8 @@ describe('email service', () => {
     await service!.sendEmail({
       to: 'user@example.com',
       subject: 'Auto SMTP',
-      html: '<p>Auto SMTP</p>'
+      html: '<p>Auto SMTP</p>',
+      purpose: 'ops.alert'
     });
 
     expect(createTransportMock).toHaveBeenCalledTimes(1);
@@ -224,7 +194,8 @@ describe('email service', () => {
       subject: 'Mailgun Test',
       html: '<p>Hello Mailgun</p>',
       text: 'Hello Mailgun',
-      replyTo: ['support@example.com', 'help@example.com']
+      replyTo: ['support@example.com', 'help@example.com'],
+      purpose: 'ops.alert'
     });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -309,7 +280,8 @@ describe('email service', () => {
     await service!.sendEmail({
       to: 'user@example.com',
       subject: 'Auto Mailgun',
-      html: '<p>Auto Mailgun</p>'
+      html: '<p>Auto Mailgun</p>',
+      purpose: 'ops.alert'
     });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -351,6 +323,86 @@ describe('buildInvoiceTemplate', () => {
     const t = buildInvoiceTemplate({ ...base, amountDueNow: '$10,000.00' });
     expect(t.html).not.toContain('Paid to date');
     expect(t.text).not.toContain('Paid to date');
+  });
+
+  it('null custom keeps current wording and the server pay URL', async () => {
+    const { buildInvoiceTemplate } = await import('./email');
+    const t = buildInvoiceTemplate({ ...base, custom: null });
+    expect(t.html).toContain('Hi there,');
+    expect(t.html).toContain('has sent you invoice');
+    expect(t.html).toContain('INV-0001');
+    expect(t.html).toContain('Amount due now');
+    expect(t.html).toContain('A PDF copy is attached to this email.');
+    expect(t.html).toContain('no sign-in needed');
+    expect(t.html).toContain('View invoice');
+    expect(t.html).toContain(`href="${base.portalUrl}"`);
+    expect(t.text).toContain(base.portalUrl);
+  });
+
+  it('uses View & pay invoice when payment is enabled', async () => {
+    const { buildInvoiceTemplate } = await import('./email');
+    const t = buildInvoiceTemplate({ ...base, payEnabled: true });
+    expect(t.html).toContain('View &amp; pay invoice');
+    expect(t.html).not.toContain('>View invoice<');
+  });
+
+  it('does not duplicate catalog PDF and amount-due lines on custom html', async () => {
+    const { buildInvoiceTemplate } = await import('./email');
+    const { emailTemplateFieldDefaults } = await import('@breeze/shared');
+    const t = buildInvoiceTemplate({
+      ...base,
+      custom: {
+        subject: null,
+        heading: null,
+        buttonLabel: null,
+        html: emailTemplateFieldDefaults('invoice_send').html.replace('Hi there', 'Hello'),
+      },
+    });
+    expect(t.html.match(/A PDF copy is attached to this email\./g)).toHaveLength(1);
+    expect(t.html.match(/Amount due now:/g)).toHaveLength(1);
+    expect(t.html.match(/no sign-in needed/g)).toHaveLength(1);
+  });
+
+  it('custom html substitutes invoice_number and keeps the server pay URL', async () => {
+    const { buildInvoiceTemplate } = await import('./email');
+    const t = buildInvoiceTemplate({
+      ...base,
+      custom: { subject: null, heading: null, buttonLabel: null, html: '<p>Invoice {{invoice_number}} is due.</p>' },
+    });
+    expect(t.html).toContain('Invoice INV-0001 is due.');
+    expect(t.html).toContain(`href="${base.portalUrl}"`);
+    expect(t.html).not.toContain('{{invoice_number}}');
+  });
+
+  it('strips javascript: from a custom href using invoice_number', async () => {
+    const { buildInvoiceTemplate } = await import('./email');
+    const t = buildInvoiceTemplate({
+      ...base,
+      invoiceNumber: 'javascript:alert(1)',
+      custom: {
+        subject: 'Invoice',
+        heading: 'Invoice',
+        buttonLabel: null,
+        html: '<a href="{{invoice_number}}">x</a>',
+      },
+    });
+    expect(t.html).not.toMatch(/href\s*=\s*["']javascript:/i);
+    expect(t.html).toContain(`href="${base.portalUrl}"`);
+    expect(t.html).toContain('<a>x</a>');
+  });
+
+  it('keeps the per-send note and signature around custom html', async () => {
+    const { buildInvoiceTemplate } = await import('./email');
+    const t = buildInvoiceTemplate({
+      ...base,
+      message: 'Pay when you can.',
+      signature: 'Billing',
+      custom: { subject: null, heading: null, buttonLabel: null, html: '<p>Custom {{invoice_number}}</p>' },
+    });
+    expect(t.html).toContain('Custom INV-0001');
+    expect(t.html).toContain('Pay when you can.');
+    expect(t.html).toContain('Billing');
+    expect(t.html).toContain(`href="${base.portalUrl}"`);
   });
 });
 
@@ -432,6 +484,7 @@ describe('email transport deadlines (#3905)', () => {
       subject: 'Proposal',
       html: '<p>hi</p>',
       attachments: [{ filename: 'q.pdf', content: Buffer.from('pdf'), contentType: 'application/pdf' }],
+      purpose: 'ops.alert',
     });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -443,7 +496,7 @@ describe('email transport deadlines (#3905)', () => {
     mailgunEnv();
     const { getEmailService } = await import('./email');
     const service = getEmailService();
-    await service!.sendEmail({ to: 'user@example.com', subject: 'Proposal', html: '<p>hi</p>' });
+    await service!.sendEmail({ to: 'user@example.com', subject: 'Proposal', html: '<p>hi</p>', purpose: 'ops.alert' });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const init = fetchMock.mock.calls[0]![1] as RequestInit;
@@ -485,7 +538,153 @@ describe('email transport deadlines (#3905)', () => {
     const service = getEmailService();
 
     await expect(
-      service!.sendEmail({ to: 'user@example.com', subject: 'Proposal', html: '<p>hi</p>' }),
+      service!.sendEmail({ to: 'user@example.com', subject: 'Proposal', html: '<p>hi</p>', purpose: 'ops.alert' }),
     ).rejects.toThrow(/Mailgun request timed out after 1000ms/);
+  });
+});
+
+/**
+ * The partner lane, end-to-end through the REAL resolveSender and the REAL
+ * sendOnPartnerLane. Only the database lookup, the config reader, the cap and
+ * the provider registry are mocked — everything between `sendEmail` and the
+ * transport is production code, which is what makes the failure-semantics
+ * assertions below worth having.
+ */
+describe('email service — the partner lane (spec §8.3, §8.4)', () => {
+  const laneSend = vi.fn();
+  const lookup = vi.fn();
+  const cap = vi.fn();
+
+  vi.doMock('./emailDomains/config', () => ({
+    isPartnerLaneConfigured: () => true,
+    getEmailDomainsConfig: () => ({ dailySendCap: 0, partnerAllowlist: [] }),
+  }));
+  vi.doMock('./emailDomains/partnerLaneLookup', () => ({ lookupPartnerLaneIdentity: lookup }));
+  vi.doMock('./emailDomains/sendCap', () => ({ tryCountPartnerLaneSend: cap }));
+  vi.doMock('./emailDomains/providerRegistry', () => ({
+    getEmailDomainProvider: () => ({ id: 'resend', verifiesByDns: true, send: laneSend }),
+  }));
+  vi.doMock('../jobs/sendingDomainsWorker', () => ({ enqueueSyncDomain: vi.fn(async () => undefined) }));
+  vi.doMock('./opsAlerts', () => ({ sendOpsAlert: vi.fn(async () => true), isOpsAlertingConfigured: () => false }));
+
+  const PARTNER = '11111111-1111-1111-1111-111111111111';
+  const IDENTITY = {
+    ok: true as const, partnerName: 'Acme MSP', localPart: 'support', displayName: 'Acme Support',
+    replyTo: 'help@acme.test', domainId: 'd1', domain: 'mail.acme.test',
+  };
+
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    process.env = { ...originalEnv };
+    resetEmailEnv();
+    process.env.EMAIL_PROVIDER = 'resend';
+    process.env.RESEND_API_KEY = 're_test_123';
+    process.env.EMAIL_FROM = 'Breeze <no-reply@2breeze.app>';
+    resendSendMock.mockResolvedValue({ id: 'resend-1' });
+    laneSend.mockResolvedValue({ providerMessageId: 'partner-1' });
+    lookup.mockResolvedValue(IDENTITY);
+    cap.mockResolvedValue(true);
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  async function service() {
+    const { getEmailService } = await import('./email');
+    return getEmailService()!;
+  }
+
+  const BASE = {
+    to: 'customer@example.test',
+    subject: 'Invoice INV-1',
+    html: '<p>hi</p>',
+  } as const;
+
+  it('sends a partner-lane purpose through the provider, not the platform transport', async () => {
+    await (await service()).sendEmail({ ...BASE, purpose: 'invoice.sent', partnerId: PARTNER, partnerName: 'Acme MSP' });
+    expect(laneSend).toHaveBeenCalledTimes(1);
+    expect(resendSendMock).not.toHaveBeenCalled();
+    expect(laneSend.mock.calls[0]![0].from).toBe('"Acme Support" <support@mail.acme.test>');
+  });
+
+  it('applies the Reply-To precedence: call site, then identity, then none', async () => {
+    const svc = await service();
+    await svc.sendEmail({ ...BASE, purpose: 'invoice.sent', partnerId: PARTNER, replyTo: 'accounts@acmemsp.example' });
+    expect(laneSend.mock.calls[0]![0].replyTo).toBe('accounts@acmemsp.example');
+
+    laneSend.mockClear();
+    await svc.sendEmail({ ...BASE, purpose: 'invoice.sent', partnerId: PARTNER });
+    expect(laneSend.mock.calls[0]![0].replyTo).toBe('help@acme.test');
+
+    laneSend.mockClear();
+    lookup.mockResolvedValue({ ...IDENTITY, replyTo: null });
+    await svc.sendEmail({ ...BASE, purpose: 'invoice.sent', partnerId: PARTNER });
+    expect(laneSend.mock.calls[0]![0].replyTo).toBeUndefined();
+  });
+
+  it('a platform purpose never reaches the partner lane, whatever the registry says', async () => {
+    await (await service()).sendEmail({ ...BASE, purpose: 'auth.password_reset' });
+    expect(laneSend).not.toHaveBeenCalled();
+    expect(lookup).not.toHaveBeenCalled();
+    expect(resendSendMock.mock.calls[0]![0].from).toBe('Breeze <no-reply@2breeze.app>');
+  });
+
+  it.each([
+    ['domain_unusable', '"Acme MSP via Breeze" <no-reply@2breeze.app>'],
+    ['lane_unavailable', '"Acme MSP via Breeze" <no-reply@2breeze.app>'],
+  ] as const)('falls back to the platform lane on %s, with the purpose fallback From', async (kind, expectedFrom) => {
+    const { PartnerLaneSendFailure } = await import('./emailDomains/provider');
+    laneSend.mockRejectedValue(new PartnerLaneSendFailure({ kind }));
+    await (await service()).sendEmail({
+      ...BASE, purpose: 'invoice.sent', partnerId: PARTNER, partnerName: 'Acme MSP',
+      headers: { 'Message-ID': '<m@x>' },
+    });
+    expect(resendSendMock).toHaveBeenCalledTimes(1);
+    const fallback = resendSendMock.mock.calls[0]![0];
+    expect(fallback.from).toBe(expectedFrom);
+    // Spec §8.4: the fallback carries NEITHER the outbound marker NOR any
+    // partner tag. A platform-lane message wearing X-Breeze-Outbound would be
+    // dropped by our own inbound pipeline if it ever came back.
+    expect(fallback.headers).toEqual({ 'Message-ID': '<m@x>' });
+    expect(fallback.headers['X-Breeze-Outbound']).toBeUndefined();
+  });
+
+  it('the fallback uses the CALL SITE Reply-To, not the identity default', async () => {
+    const { PartnerLaneSendFailure } = await import('./emailDomains/provider');
+    laneSend.mockRejectedValue(new PartnerLaneSendFailure({ kind: 'domain_unusable' }));
+    await (await service()).sendEmail({ ...BASE, purpose: 'ticket.customer_notification', partnerId: PARTNER });
+    // help@acme.test is on the domain that just refused us; routing replies
+    // there would compound the failure.
+    expect(resendSendMock.mock.calls[0]![0].replyTo).toBeUndefined();
+  });
+
+  it.each(['message_rejected', 'ambiguous'] as const)('rethrows %s and NEVER touches the second lane', async (kind) => {
+    const { PartnerLaneSendFailure } = await import('./emailDomains/provider');
+    laneSend.mockRejectedValue(new PartnerLaneSendFailure({ kind, detail: 'd' }));
+    await expect((await service()).sendEmail({ ...BASE, purpose: 'invoice.sent', partnerId: PARTNER }))
+      .rejects.toBeInstanceOf(PartnerLaneSendFailure);
+    expect(resendSendMock).not.toHaveBeenCalled();
+  });
+
+  it('rethrows an unknown exception from the adapter and never falls back', async () => {
+    laneSend.mockRejectedValue(new TypeError('adapter blew up'));
+    await expect((await service()).sendEmail({ ...BASE, purpose: 'invoice.sent', partnerId: PARTNER }))
+      .rejects.toThrow('adapter blew up');
+    expect(resendSendMock).not.toHaveBeenCalled();
+  });
+
+  it('a partner-lane purpose with partnerId: null is a plain platform send', async () => {
+    await (await service()).sendEmail({ ...BASE, purpose: 'report.delivery', partnerId: null });
+    expect(laneSend).not.toHaveBeenCalled();
+    expect(lookup).not.toHaveBeenCalled();
+    expect(resendSendMock.mock.calls[0]![0].from).toBe('Breeze <no-reply@2breeze.app>');
+  });
+
+  it('an over-cap send goes out on the platform lane, exactly once', async () => {
+    cap.mockResolvedValue(false);
+    await (await service()).sendEmail({ ...BASE, purpose: 'invoice.sent', partnerId: PARTNER, partnerName: 'Acme MSP' });
+    expect(laneSend).not.toHaveBeenCalled();
+    expect(resendSendMock).toHaveBeenCalledTimes(1);
+    expect(resendSendMock.mock.calls[0]![0].from).toBe('"Acme MSP via Breeze" <no-reply@2breeze.app>');
   });
 });

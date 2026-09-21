@@ -47,7 +47,8 @@ Before going live, verify every item:
 ### Authentication
 
 - [ ] MFA enabled for all admin accounts (authenticator app, SMS, or a passkey)
-- [ ] Roles that should require MFA have **Force MFA** turned on. Users in a force-MFA role get a `428 Precondition Required` response until they enrol an allowed MFA method; the dashboard then redirects them through a forced-enrollment page before any other workflow becomes available. **This enforcement defaults OFF** (`MFA_FORCE_FOR_PARTNER_ADMIN=false`) as of this release — set it to `true` to actually enforce Force MFA roles; see `.env.example`.
+- [ ] **Require MFA** is on for your partner (Settings → Partner → Security). Partners created after 2026-09-18 have it on by default; partners created earlier keep whatever they had and their policy-managers see a daily reminder banner until it is turned on. When the partner setting is on, it is locked for every organisation under that partner and users without an enrolled factor are routed to enrolment at their next sign-in. To opt a partner out, turn the toggle off — a platform administrator creating a partner via `POST /orgs/partners` can also pass `settings.security.requireMfa: false`.
+- [ ] Roles that should require MFA have **Force MFA** turned on. Users in a force-MFA role get a `428 Precondition Required` response until they enrol an allowed MFA method; the dashboard then redirects them through a forced-enrollment page before any other workflow becomes available. **This enforcement defaults OFF** (`MFA_FORCE_FOR_PARTNER_ADMIN=false`) as of this release — set it to `true` to actually enforce Force MFA roles; see `.env.example`. From v0.113.0 a user who has never enrolled a factor gets a nonrenewable 14-day enrolment window (banner and email notices) before the wall applies — see [Users & Roles](/reference/users-and-roles/).
 - [ ] Registration disabled in production (`ENABLE_REGISTRATION=false`) after initial setup
 - [ ] Rate limiting active on login endpoints
 - [ ] Session lifetime is a fixed 7 days (`SESSION_EXPIRY_DAYS` in `services/session.ts`) — there is no env var to configure it
@@ -64,6 +65,9 @@ Before going live, verify every item:
 - [ ] Cross-tenant probe detection enabled — if an agent token is used to access a device in another tenant, the token is automatically suspended and re-enrollment is blocked until an admin reviews the device.
 - [ ] Source-IP tracking active — every heartbeat records the agent's source IP, and an `agent.source.ip.changed` audit event fires when it shifts, surfacing token theft or NAT changes.
 - [ ] Consider enabling [Cloudflare mTLS](/security/mtls/) for zero-trust agent auth
+- [ ] Helper (device) authentication now enforces the full device-credential lifecycle — a suspended agent token, a decommissioned or quarantined device, or a suspended/severed tenant all deny a Helper session with the same opaque response a stale token would get. The Helper's database access context also no longer carries partner-axis write access; it is scoped to its own organization only.
+- [ ] Partner trust review requests require partner-wide manage access (`canManagePartnerWidePolicies`) — an org-scoped caller can no longer request a review on the partner's behalf.
+- [ ] Script parameter values are rendered as data, never code, consistently across bash, PowerShell, and Python interpreter frames on the agent — including nested constructs such as command substitutions, heredocs, and f-string fields. See [Scripts](/features/scripts/) for the full contract, including the contexts a placeholder cannot be used in.
 
 ### Outbound Request Safety (SSRF)
 

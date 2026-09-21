@@ -25,6 +25,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/authstate"
 	"github.com/breeze-rmm/agent/internal/backup"
 	"github.com/breeze-rmm/agent/internal/backup/providers"
+	"github.com/breeze-rmm/agent/internal/backup/rebuild"
 	"github.com/breeze-rmm/agent/internal/backupipc"
 	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/ipc"
@@ -674,6 +675,14 @@ func handleBackupCommand(conn *ipc.Conn, env *ipc.Envelope, mgr *backup.BackupMa
 		ctx, cleanup := commandCanceller.track(req.CommandID)
 		defer cleanup()
 		result = execBackupRestoreWithProgress(ctx, req.CommandID, req.Payload, mgr, vaultState, conn)
+	} else if req.CommandType == "backup_verify" {
+		ctx, cleanup := commandCanceller.track(req.CommandID)
+		defer cleanup()
+		result = execBackupVerifyContext(ctx, req.Payload, mgr, vaultState)
+	} else if req.CommandType == "backup_test_restore" {
+		ctx, cleanup := commandCanceller.track(req.CommandID)
+		defer cleanup()
+		result = execBackupTestRestoreContext(ctx, req.Payload, mgr, vaultState)
 	} else {
 		result = run()
 	}
@@ -754,6 +763,12 @@ func executeCommand(req backupipc.BackupCommandRequest, mgr *backup.BackupManage
 			ctx, cleanup := commandCanceller.track(req.CommandID)
 			defer cleanup()
 			return execBMRRecover(ctx, req.Payload, nil)
+		case "bare_metal_rebuild":
+			// Token mode: the payload's recovery token is the provider, so
+			// no agent.yaml manager is needed (same as bmr_recover).
+			ctx, cleanup := commandCanceller.track(req.CommandID)
+			defer cleanup()
+			return execBareMetalRebuild(ctx, req.Payload, rebuild.Run)
 		case "backup_verify":
 			// Verify/test-restore build their read provider from the command
 			// payload's providerConfig (restoreProviderForCommand), so they work
@@ -912,6 +927,10 @@ func executeCommand(req backupipc.BackupCommandRequest, mgr *backup.BackupManage
 		ctx, cleanup := commandCanceller.track(req.CommandID)
 		defer cleanup()
 		return execBMRRecover(ctx, req.Payload, mgr)
+	case "bare_metal_rebuild":
+		ctx, cleanup := commandCanceller.track(req.CommandID)
+		defer cleanup()
+		return execBareMetalRebuild(ctx, req.Payload, rebuild.Run)
 	case "vm_restore_from_backup":
 		ctx, cleanup := commandCanceller.track(req.CommandID)
 		defer cleanup()

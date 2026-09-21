@@ -59,6 +59,13 @@ const GOVERNANCE_TABLE_NAMES = [
   'pamSignerGroups',
   'backupConfigs',
   'backupProfiles',
+  // Identity-tenant connections: an M365 connection IS the org's whole Entra
+  // tenant and a Google Workspace connection IS its whole Workspace customer
+  // (the DWD service account behind every mutating google_* tool). Connecting
+  // or severing one turns the entire m365_*/google_* surface on or off for the
+  // organization at once, and there is no per-site slice of it.
+  'm365Connections',
+  'googleWorkspaceConnections',
 ] as const;
 
 /**
@@ -90,8 +97,31 @@ const ALLOWED_WITHOUT_CEILING_CHECK: Record<string, string> = {
   // ever apply to organization-scope callers), and the tool always targets
   // the org being bootstrapped, never one chosen by a site-restricted
   // caller.
+  // The M365 control-plane connection lifecycle (consent / upgrade-consent /
+  // retest / sync / disconnect, for BOTH the customer-graph-read and
+  // customer-graph-actions profiles). Every caller-facing entry point is
+  // gated by its ROUTE: routes/m365CustomerGraphRead.ts (5 POST handlers) and
+  // routes/m365CustomerGraphActions.ts (3) each call
+  // canMutateOrgWideGovernance before they resolve the org. The only other
+  // caller, routes/m365ConsentCallback.ts, is the Microsoft admin-consent
+  // redirect landing — it runs no authMiddleware and never reads `auth` at
+  // all (the one-time state cookie is its binding), so there is no
+  // caller-scoped auth object on that path to gate on. Verify both route
+  // files still gate before editing this file.
+  'services/m365ControlPlane/connectionService.ts':
+    'every caller-facing entry point is gated at its route — routes/m365CustomerGraphRead.ts and routes/m365CustomerGraphActions.ts both call canMutateOrgWideGovernance before invoking these functions; the remaining caller, routes/m365ConsentCallback.ts, is the Microsoft consent redirect landing with no authMiddleware and no auth object to gate on',
+
+  // A test-only seeder: it inserts a connection row directly so integration
+  // suites can start from a connected tenant. Never imported by routes,
+  // services, jobs or workers — it is reached only from *.test.ts files,
+  // which the walk itself excludes.
+  'services/m365ControlPlane/__testHelpers__/seedActionsConnection.ts':
+    'test-only fixture seeder for integration suites — inserts a connection row directly and is imported exclusively by *.test.ts files, so no caller-scoped auth ever reaches it',
+
   'modules/mcpInvites/tools/configureDefaults.ts':
     'creates the default admin-email notification channel during MCP-invite partner bootstrap — the caller is a partner-bootstrap key, not a site-restricted org-scope caller, and the target org is fixed by the bootstrap context, not caller-chosen',
+  'modules/mcpInvites/tools/configureDefaults.monitors.ts':
+    'called only by the configureDefaults bootstrap handler; routes/mcpServer.ts unconditionally rejects this fixed Tier 3 tool with MCP_APPROVAL_REQUIRED before dispatch, so site-restricted callers cannot reach these writes — require the site-ceiling gate before re-enabling bootstrap dispatch',
 };
 
 /**
@@ -213,6 +243,11 @@ describe('site-ceiling write coverage (contract-site-ceiling-gate)', () => {
   it('the ten call sites fixed by this contract carry the gate', () => {
     const fixed = [
       'routes/webhooks.ts',
+      // Identity-tenant connection surfaces (M365 / Google Workspace).
+      'routes/m365.ts',
+      'routes/google.ts',
+      'routes/m365CustomerGraphActions.ts',
+      'routes/m365CustomerGraphRead.ts',
       'routes/alerts/channels.ts',
       'routes/softwarePolicies.ts',
       'routes/softwareInventory.ts',

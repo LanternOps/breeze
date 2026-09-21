@@ -1,0 +1,389 @@
+{
+  "managed": {
+    "readOnly": "Managed by a monitor",
+    "description": "This record is generated from a monitor and can't be edited directly. Manage it from the monitor instead.",
+    "open": "Open monitor",
+    "badge": "Monitor-managed",
+    "badgeHint": "Managed by a monitor — edit it from the monitor instead.",
+    "monitorLabel": "Monitor"
+  },
+  "list": {
+    "title": "Monitors",
+    "description": "Watch a condition, respond on the device, notify, and escalate when it keeps happening.",
+    "new": "New monitor",
+    "empty": "No monitors yet.",
+    "columns": {
+      "name": "Name",
+      "kind": "Kind",
+      "severity": "Severity",
+      "deployedTo": "Deployed to",
+      "enabled": "Enabled",
+      "owner": "Owner"
+    },
+    "allOrgs": "All orgs",
+    "policiesCount_one": "{{count}} policy",
+    "policiesCount_other": "{{count}} policies",
+    "notDeployed": "Not deployed",
+    "toggleEnabled": "Enabled: {{name}}",
+    "errors": {
+      "fetch": "Failed to load monitors",
+      "delete": "Failed to delete monitor",
+      "toggle": "Failed to update monitor"
+    },
+    "deleteConfirm": "Delete monitor {{name}}? Its alert rule and response automation are removed too.",
+    "builtIn": "Built-in",
+    "builtInHint": "Provisioned by Breeze. Edit thresholds, disable it, or delete it — it will not come back."
+  },
+  "editor": {
+    "attachedToPolicy": "Monitor created and attached to the policy",
+    "titleNew": "New monitor",
+    "titleEdit": "Edit monitor",
+    "breadcrumb": {
+      "monitors": "Monitors",
+      "new": "New monitor"
+    },
+    "sections": {
+      "watch": "What to watch",
+      "noise": "Severity & noise",
+      "respond": "Respond",
+      "notify": "Notify",
+      "escalate": "Escalate to a human",
+      "deployed": "Deployed to"
+    },
+    "tabs": {
+      "settings": "Settings",
+      "activity": "Activity"
+    },
+    "fields": {
+      "match": "Match",
+      "name": "Name",
+      "description": "Description",
+      "kind": "Kind",
+      "severity": "Severity",
+      "cooldownMinutes": "Cooldown (minutes)",
+      "autoResolve": "Auto-resolve when the condition clears",
+      "deliveryMode": "Delivery",
+      "channels": "Channels",
+      "escalationPolicy": "Escalation policy",
+      "recurrenceThreshold": "Escalate after",
+      "recurrenceWindowDays": "episodes within (days)",
+      "pauseResponses": "Pause automatic responses until a person resets",
+      "aiAgent": "AI agent (enables AI triage responses)"
+    },
+    "deliveryModes": {
+      "inherit": "Use routing rules",
+      "channels": "Routing rules plus these channels",
+      "none": "Do not notify"
+    },
+    "responsesHint": "Responses run on the device that breached, in order.",
+    "recurrenceHint": "Counted in breach episodes: a new episode starts only after the condition recovered.",
+    "ownerScope": {
+      "legend": "Owner",
+      "partner": "All organizations (partner-wide)",
+      "organization": "This organization only"
+    },
+    "actions": {
+      "save": "Save monitor",
+      "saving": "Saving…",
+      "create": "Create monitor",
+      "test": "Test on a device",
+      "deploy": "Deploy to…",
+      "delete": "Delete"
+    },
+    "errors": {
+      "load": "Failed to load monitor",
+      "save": "Failed to save monitor",
+      "delete": "Failed to delete monitor",
+      "test": "Test failed",
+      "generic": "Something went wrong"
+    },
+    "saved": "Monitor saved",
+    "deleted": "Monitor deleted",
+    "detached": "Monitor detached",
+    "loading": "Loading monitor…",
+    "noAttachments": "Not deployed to any policy yet.",
+    "testResult": {
+      "triggered": "Condition met on {{device}}",
+      "notTriggered": "Condition not met on {{device}}"
+    },
+    "testDialog": {
+      "title": "Test on a device",
+      "selectDevice": "Device",
+      "run": "Run test"
+    },
+    "deliveryPreview": {
+      "selectOrg": "Select an organization to preview delivery.",
+      "failed": "Could not preview delivery.",
+      "loading": "Resolving delivery…",
+      "disabled": "{{name}} (disabled)",
+      "unavailable": "Unavailable channel",
+      "destination": "{{severity}} → {{channels}}",
+      "partnerRule": "Partner rule: {{name}}",
+      "orgRule": "Organization rule: {{name}}",
+      "partnerDefault": "Partner default: {{name}}",
+      "orgDefault": "Organization default: {{name}}",
+      "noRow": "No delivery row is configured.",
+      "monitorOverride": "Monitor override",
+      "escalation": "Escalates via {{name}}",
+      "withoutSite": "No site selected; site-specific routing rows are excluded.",
+      "testRules": "Test this rule set",
+      "kind": "Monitor kind",
+      "noKind": "No monitor kind",
+      "site": "Site",
+      "noSite": "No site",
+      "sitesFailed": "Could not load sites.",
+      "manage": "Manage delivery",
+      "draft": "Preview uses the current editor values.",
+      "skipped": "Skipped {{id}}: {{reason}}",
+      "skipReasons": {
+        "disabled": "disabled",
+        "unavailable": "unavailable"
+      }
+    }
+  },
+  "kinds": {
+    "composite": "Composite (all or any of several)",
+    "cpu": "CPU usage",
+    "memory": "Memory usage",
+    "disk": "Disk usage",
+    "offline": "Device offline",
+    "event_log": "Event log",
+    "patch_compliance": "Patch compliance",
+    "service": "Service stopped",
+    "process": "Process stopped",
+    "process_resource": "Process resource",
+    "cert_expiry": "Certificate expiry",
+    "bandwidth": "Bandwidth",
+    "disk_io": "Disk I/O",
+    "network_errors": "Network errors",
+    "antivirus": "Antivirus",
+    "software_presence": "Software presence",
+    "backup_continuity": "Backup continuity",
+    "script": "Script check",
+    "network_check": "Network check"
+  },
+  "fields": {
+    "operator": "Comparison",
+    "value": "Value",
+    "durationMinutes": "For at least (minutes)",
+    "category": "Category",
+    "level": "Level",
+    "sourcePattern": "Source matches",
+    "messagePattern": "Message matches",
+    "countThreshold": "Occurrences",
+    "windowMinutes": "Within (minutes)",
+    "serviceName": "Service name",
+    "processName": "Process name",
+    "consecutiveFailures": "Consecutive failures",
+    "resource": "Resource",
+    "withinDays": "Expires within (days)",
+    "direction": "Direction",
+    "errorType": "Error direction",
+    "interfaceName": "Interface (optional)",
+    "check": "Check",
+    "staleAfterDays": "Stale after (days)",
+    "minThreatCount": "Minimum threats",
+    "softwareName": "Software name",
+    "vendor": "Vendor (optional)",
+    "presence": "Presence",
+    "version": "Version",
+    "backupCheck": "Check",
+    "maxAgeHours": "Max age (hours)",
+    "failureCount": "Failure count",
+    "script": "Script",
+    "scriptSelectPlaceholder": "Select a script…",
+    "scriptLoadError": "Failed to load scripts",
+    "intervalMinutes": "Run every (minutes)",
+    "timeoutSeconds": "Timeout (seconds)",
+    "breachOnNonZeroExit": "Breach on non-zero exit code",
+    "checkType": "Check type",
+    "target": "Target",
+    "port": "Port",
+    "expectStatus": "Expected status code",
+    "pollingIntervalSeconds": "Poll every (seconds)",
+    "match": "Match"
+  },
+  "operators": {
+    "gt": "greater than",
+    "gte": "at least",
+    "lt": "less than",
+    "lte": "at most",
+    "eq": "equal to",
+    "neq": "not equal to"
+  },
+  "severities": {
+    "critical": "Critical",
+    "high": "High",
+    "medium": "Medium",
+    "low": "Low",
+    "info": "Info"
+  },
+  "eventCategories": {
+    "security": "Security",
+    "hardware": "Hardware",
+    "application": "Application",
+    "system": "System"
+  },
+  "eventLevels": {
+    "warning": "Warning",
+    "error": "Error",
+    "critical": "Critical"
+  },
+  "resources": {
+    "cpu": "CPU",
+    "memory": "Memory"
+  },
+  "directions": {
+    "in": "In",
+    "out": "Out",
+    "read": "Read",
+    "write": "Write",
+    "total": "Total"
+  },
+  "compositeMatch": {
+    "all": "All conditions",
+    "any": "Any condition"
+  },
+  "antivirusChecks": {
+    "not_protected": "Not protected",
+    "definitions_stale": "Definitions stale",
+    "realtime_disabled": "Real-time protection disabled",
+    "threats_present": "Threats present"
+  },
+  "presences": {
+    "installed": "Installed",
+    "not_installed": "Not installed",
+    "version_below": "Version below"
+  },
+  "backupChecks": {
+    "no_successful_backup": "No successful backup",
+    "consecutive_failures": "Consecutive failures"
+  },
+  "checkTypes": {
+    "icmp_ping": "ICMP ping",
+    "tcp_port": "TCP port",
+    "http_check": "HTTP check",
+    "dns_check": "DNS check"
+  },
+  "deploy": {
+    "title": "Deploy monitor",
+    "existingPolicy": "Attach to an existing configuration policy",
+    "newPolicy": "Create a policy for",
+    "levels": {
+      "organization": "this organization",
+      "site": "a site",
+      "device_group": "a device group"
+    },
+    "selectPolicy": "Configuration policy",
+    "selectTarget": "Target",
+    "noOrgSelected": "Select an organization to deploy to.",
+    "policyName": "Policy name",
+    "attach": "Attach",
+    "attached": "Monitor attached",
+    "cancel": "Cancel",
+    "detachConfirm": "Detach from {{policy}}?",
+    "errors": {
+      "attach": "Failed to attach monitor",
+      "detach": "Failed to detach monitor"
+    }
+  },
+  "policyTab": {
+    "title": "Monitors",
+    "description": "Monitors attached to this policy. Disabled rows switch a monitor off for this policy's scope; overrides change thresholds for it.",
+    "attachExisting": "Attach existing",
+    "createNew": "Create monitor",
+    "empty": "No monitors attached.",
+    "columns": {
+      "monitor": "Monitor",
+      "kind": "Kind",
+      "enabled": "Enabled",
+      "overrides": "Overrides",
+      "source": "Source"
+    },
+    "inherited": "Inherited from parent",
+    "overrideEditor": {
+      "title": "Override for this policy",
+      "clear": "Clear overrides"
+    },
+    "save": "Save",
+    "errors": {
+      "save": "Failed to save monitors"
+    }
+  },
+  "legacy": {
+    "title": "Legacy alert rules",
+    "description": "Standalone alert rules that are not managed by a monitor. Convert them to get responses, delivery and escalation in one place.",
+    "empty": "No legacy rules.",
+    "columns": {
+      "name": "Name",
+      "template": "Template",
+      "target": "Target",
+      "owner": "Owner",
+      "active": "Active"
+    },
+    "convert": "Convert to monitor",
+    "converted": "Converted",
+    "notConvertible": "This rule's conditions cannot be expressed as a single monitor.",
+    "errors": {
+      "fetch": "Failed to load alert rules",
+      "convert": "Failed to convert rule"
+    }
+  },
+  "devices": {
+    "title": "Devices",
+    "columns": {
+      "device": "Device",
+      "enabled": "Enabled",
+      "overrides": "Overrides",
+      "source": "Source policy"
+    },
+    "empty": "No devices are covered by this monitor yet.",
+    "errors": {
+      "fetch": "Failed to load devices"
+    }
+  },
+  "activity": {
+    "title": "Activity",
+    "columns": {
+      "device": "Device",
+      "state": "State",
+      "openSince": "Open since",
+      "episodesInWindow": "Episodes in window",
+      "escalated": "Escalated",
+      "responses": "Responses"
+    },
+    "state": {
+      "ok": "Healthy",
+      "breach": "Breach",
+      "unknown": "Unknown"
+    },
+    "responses": {
+      "active": "Active",
+      "paused": "Responses paused until reset"
+    },
+    "reset": {
+      "button": "Reset escalation",
+      "confirm": "Reset the escalation for {{device}}? This clears the recurrence counter and resumes automatic responses. It does not close the open episode or resolve the alert.",
+      "success": "Escalation reset",
+      "error": "Failed to reset escalation"
+    },
+    "empty": {
+      "title": "No activity yet",
+      "body": "This monitor hasn't evaluated any device yet."
+    },
+    "episodes": {
+      "title": "Episodes",
+      "endReason": {
+        "recovered": "Recovered",
+        "monitorDetached": "Monitor detached"
+      },
+      "outcome": {
+        "queued": "Queued",
+        "completed": "Completed",
+        "failed": "Failed",
+        "skippedPaused": "Skipped (responses paused)",
+        "skippedNoResponse": "Skipped (no response configured)"
+      }
+    }
+  }
+}

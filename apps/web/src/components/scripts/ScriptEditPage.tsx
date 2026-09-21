@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { ArrowLeft, History, Copy } from 'lucide-react';
 import ScriptForm, { type ScriptFormValues, type ScriptSubmitValues } from './ScriptForm';
 import { mappingToRows } from './ScriptFormSchema';
+import ScriptProvenancePanel from './ScriptProvenancePanel';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { ScopeBadge } from '../shared/ScopeBadge';
@@ -60,7 +61,8 @@ export default function ScriptEditPage({ scriptId }: ScriptEditPageProps) {
       setScript({
         name: scriptData.name,
         description: scriptData.description || '',
-        category: scriptData.category,
+        // Loose-file imports predating the 'Custom' default have no category.
+        category: scriptData.category || 'Custom',
         language: scriptData.language,
         osTypes: scriptData.osTypes,
         content: scriptData.content || '',
@@ -230,7 +232,7 @@ export default function ScriptEditPage({ scriptId }: ScriptEditPageProps) {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6" data-testid="script-edit-page">
       <Breadcrumbs items={[
         { label: t('scriptEditPage.breadcrumb.scripts'), href: '/scripts' },
         { label: isNew ? t('scriptEditPage.breadcrumb.new') : (script?.name || t('scriptEditPage.breadcrumb.edit')) }
@@ -282,6 +284,8 @@ export default function ScriptEditPage({ scriptId }: ScriptEditPageProps) {
           {error}
         </div>
       )}
+
+      {!isNew && scriptId && <ScriptProvenancePanel scriptId={scriptId} />}
 
       <ScriptForm
         onSubmit={handleSubmit}

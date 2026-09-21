@@ -18,7 +18,10 @@ vi.mock('./commandQueue', () => ({
     MSSQL_RESTORE: 'mssql_restore',
     MSSQL_VERIFY: 'mssql_verify',
   },
-  queueCommandForExecution: vi.fn(),
+}));
+
+vi.mock('./aiDispatch', () => ({
+  aiQueueCommandForExecution: vi.fn(),
 }));
 
 vi.mock('./featureConfigResolver', () => ({
@@ -29,7 +32,7 @@ import { db } from '../db';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { validateToolInput } from './aiToolSchemas';
-import { queueCommandForExecution } from './commandQueue';
+import { aiQueueCommandForExecution } from './aiDispatch';
 import { resolveBackupConfigForDevice } from './featureConfigResolver';
 import { registerMssqlTools } from './aiToolsMssql';
 
@@ -109,7 +112,7 @@ function setDefaultDbMocks() {
     configId: CONFIG_ID,
     featureLinkId: 'feature-1',
   } as any);
-  vi.mocked(queueCommandForExecution).mockResolvedValue({
+  vi.mocked(aiQueueCommandForExecution).mockResolvedValue({
     command: { id: 'cmd-1', status: 'queued' },
     error: null,
   } as any);
@@ -130,6 +133,7 @@ function makeAuth(): AuthContext {
     accessibleOrgIds: [ORG_ID],
     canAccessOrg: (orgId: string) => orgId === ORG_ID,
     orgCondition: vi.fn(() => undefined),
+    aiOrigin: { kind: 'ai_assistant', sessionId: 'test-session' },
   } as any;
 }
 
@@ -323,7 +327,9 @@ describe('aiToolsMssql handlers', () => {
       makeAuth()
     );
 
-    expect(queueCommandForExecution).toHaveBeenCalledWith(
+    expect(aiQueueCommandForExecution).toHaveBeenCalledWith(
+      expect.anything(),
+      'trigger_mssql_backup',
       DEVICE_ID,
       'mssql_backup',
       expect.objectContaining({
@@ -358,7 +364,7 @@ describe('aiToolsMssql handlers', () => {
     );
 
     expect(JSON.parse(result)).toEqual({ error: 'Backup destination configuration not found for this snapshot' });
-    expect(queueCommandForExecution).not.toHaveBeenCalled();
+    expect(aiQueueCommandForExecution).not.toHaveBeenCalled();
   });
 
   it('queues MSSQL restore from snapshot metadata instead of a local backup path', async () => {
@@ -369,7 +375,9 @@ describe('aiToolsMssql handlers', () => {
       makeAuth()
     );
 
-    expect(queueCommandForExecution).toHaveBeenCalledWith(
+    expect(aiQueueCommandForExecution).toHaveBeenCalledWith(
+      expect.anything(),
+      'restore_mssql_database',
       DEVICE_ID,
       'mssql_restore',
       expect.objectContaining({
@@ -410,7 +418,7 @@ describe('aiToolsMssql handlers', () => {
     );
 
     expect(JSON.parse(result).error).toMatch(/predates backup destination tracking/);
-    expect(queueCommandForExecution).not.toHaveBeenCalled();
+    expect(aiQueueCommandForExecution).not.toHaveBeenCalled();
   });
 
   it('queues MSSQL verify with the snapshot destination provider config', async () => {
@@ -421,7 +429,9 @@ describe('aiToolsMssql handlers', () => {
       makeAuth()
     );
 
-    expect(queueCommandForExecution).toHaveBeenCalledWith(
+    expect(aiQueueCommandForExecution).toHaveBeenCalledWith(
+      expect.anything(),
+      'verify_mssql_backup',
       DEVICE_ID,
       'mssql_verify',
       expect.objectContaining({

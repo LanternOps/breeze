@@ -8,6 +8,7 @@ import { requireMfa, requirePermission, requireScope } from '../../middleware/au
 import { writeRouteAudit } from '../../services/auditEvents';
 import {
   applyBackupSnapshotImmutability,
+  backupLayoutManifestKey,
   checkBackupProviderCapabilities,
 } from '../../services/backupSnapshotStorage';
 import { PERMISSIONS } from '../../services/permissions';
@@ -224,6 +225,9 @@ snapshotsRoutes.get(
     }
     if (query.configId) {
       conditions.push(eq(backupSnapshots.configId, query.configId));
+    }
+    if (query.bareMetalRestorable !== undefined) {
+      conditions.push(eq(backupSnapshots.bareMetalRestorable, query.bareMetalRestorable));
     }
 
     const rows = await db
@@ -672,6 +676,10 @@ function toSnapshotResponse(row: typeof backupSnapshots.$inferSelect) {
     backupType: row.backupType ?? 'file',
     bareMetalRestorable: row.bareMetalRestorable ?? null,
     bareMetalReasons: row.bareMetalReasons ?? [],
+    // Storage key of the disk-layout manifest (bare-metal W01), null when the
+    // run captured none. Restore-as-VM offers the rebuild engine only for
+    // snapshots that carry one (W05a); the manifest body stays off the list.
+    layoutManifestKey: row.layoutManifest ? backupLayoutManifestKey(row.snapshotId) : null,
     sizeBytes: row.size ?? null,
     fileCount: row.fileCount ?? null,
     label: row.label ?? null,

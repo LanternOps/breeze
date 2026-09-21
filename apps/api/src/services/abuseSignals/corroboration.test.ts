@@ -349,6 +349,10 @@ describe('SIGNAL_AXIS coverage', () => {
     'fraud.failed_login_cluster',
     'resource.enrollment_denied',
     'resource.volume_outlier',
+    'email.sending_domain_added',
+    'email.sending_domain_verify_failures',
+    'email.partner_lane_cap_hit',
+    'email.sending_bounce_complaint',
   ];
 
   it.each(EMITTED_KEYS)('%s is either mapped to an axis or explicitly ineligible', (key) => {

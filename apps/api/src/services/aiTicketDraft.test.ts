@@ -34,6 +34,24 @@ beforeEach(() => {
 });
 
 describe('draftTicketFromTranscript', () => {
+  it('caps both retry attempts within the reserved operation budget', async () => {
+    createMock.mockResolvedValueOnce(reply({
+      subject: 'S', problemSummary: 'P', resolutionSummary: '', wasFixed: false, suggestedTimeMinutes: 5,
+    }));
+
+    await draftTicketFromTranscript({
+      messages: transcript,
+      contextSnapshot: null,
+      elapsedMinutes: 5,
+      model: 'claude-x',
+      partnerId: 'partner-1',
+      budgetCents: 4,
+      calculateCostCents: (_inputTokens, outputTokens) => outputTokens / 100,
+    });
+
+    expect(createMock).toHaveBeenCalledWith(expect.objectContaining({ max_tokens: 200 }));
+  });
+
   it('returns a structured draft and maps wasFixed', async () => {
     createMock.mockResolvedValueOnce(reply({ subject: 'Outlook would not open', problemSummary: 'Outlook would not start.', resolutionSummary: 'Rebuilt the mail profile.', wasFixed: true, suggestedTimeMinutes: 15 }));
     const r = await draftTicketFromTranscript({ messages: transcript, contextSnapshot: null, elapsedMinutes: 25, model: 'claude-x', partnerId: 'partner-1' });

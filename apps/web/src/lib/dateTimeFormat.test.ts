@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { writeTimeFormatPreference } from './appearance';
-import { formatDateTime, formatTime, withUserTimeFormatOptions } from './dateTimeFormat';
+import { formatDateTime, formatRelativeTime, formatTime, withUserTimeFormatOptions } from './dateTimeFormat';
 
 /**
  * Simulates the browser/OS reporting a given hour cycle via
@@ -137,5 +137,27 @@ describe('dateTimeFormat', () => {
       .toEqual({ hour: '2-digit', hourCycle: 'h23' });
     expect(withUserTimeFormatOptions({ year: 'numeric', hour12: true }, '24h', 'dateTime'))
       .toEqual({ year: 'numeric', hour12: true });
+  });
+});
+
+describe('formatRelativeTime', () => {
+  const now = new Date('2026-09-08T12:00:00.000Z');
+
+  it('renders recent timestamps in minutes and hours', () => {
+    expect(formatRelativeTime('2026-09-08T11:58:00.000Z', { now, locale: 'en-US' })).toBe('2 minutes ago');
+    expect(formatRelativeTime('2026-09-08T09:00:00.000Z', { now, locale: 'en-US' })).toBe('3 hours ago');
+  });
+
+  it('renders older timestamps in days', () => {
+    expect(formatRelativeTime('2026-09-05T12:00:00.000Z', { now, locale: 'en-US' })).toBe('3 days ago');
+  });
+
+  it('treats anything under a minute as just now', () => {
+    expect(formatRelativeTime('2026-09-08T11:59:40.000Z', { now, locale: 'en-US' })).toBe('now');
+  });
+
+  it('returns the fallback for an unparseable or null value', () => {
+    expect(formatRelativeTime(null, { now, fallback: '—' })).toBe('—');
+    expect(formatRelativeTime('not a date', { now, fallback: '—' })).toBe('—');
   });
 });

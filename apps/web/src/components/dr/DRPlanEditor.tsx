@@ -8,7 +8,15 @@ import {
 } from 'lucide-react';
 import { Dialog } from '../shared/Dialog';
 import { fetchWithAuth } from '../../stores/auth';
-import DRPlanGroupCard, { type DRGroupForm } from './DRPlanGroupCard';
+import DRPlanGroupCard, {
+  DEFAULT_REBUILD_OUTPUT_DIR,
+  DEFAULT_REBUILD_WAIT_TIMEOUT_MINUTES,
+  REBUILD_WAIT_TIMEOUT_MAX,
+  REBUILD_OUTPUT_DIR_MAX_LENGTH,
+  REBUILD_WAIT_TIMEOUT_MIN,
+  isDRStepType,
+  type DRGroupForm,
+} from './DRPlanGroupCard';
 import { useTranslation } from 'react-i18next';
 import '../../lib/i18n';
 
@@ -26,14 +34,83 @@ type DRPlanDetails = {
     dependsOnGroupId: string | null;
     devices: string[];
     estimatedDurationMinutes: number | null;
+    restoreConfig?: Record<string, unknown> | null;
   }>;
 };
+
+type LoadedGroup = NonNullable<DRPlanDetails['groups']>[number];
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+/** Reads a persisted `restoreConfig` into the editable step fields. Unknown
+ *  command types fall back to '' so the operator has to pick one on save. */
+function stepFieldsFromRestoreConfig(
+  restoreConfig: unknown
+): Pick<DRGroupForm, 'stepType' | 'rebuildHostDeviceId' | 'outputDir' | 'waitTimeoutMinutes' | 'restorePayload'> {
+  const config = isRecord(restoreConfig) ? restoreConfig : {};
+  const stepType = isDRStepType(config.commandType) ? config.commandType : '';
+  return {
+    stepType,
+    rebuildHostDeviceId:
+      typeof config.rebuildHostDeviceId === 'string' && config.rebuildHostDeviceId ? config.rebuildHostDeviceId : null,
+    outputDir: typeof config.outputDir === 'string' && config.outputDir ? config.outputDir : DEFAULT_REBUILD_OUTPUT_DIR,
+    waitTimeoutMinutes:
+      typeof config.waitTimeoutMinutes === 'number' && Number.isFinite(config.waitTimeoutMinutes)
+        ? `${config.waitTimeoutMinutes}`
+        : `${DEFAULT_REBUILD_WAIT_TIMEOUT_MINUTES}`,
+    restorePayload: isRecord(config.payload) ? config.payload : undefined,
+  };
+}
+
+/** Serialises the step fields into the `restoreConfig` the API validates
+ *  (`drBareMetalRebuildConfigSchema` for the rebuild step; `{ commandType,
+ *  payload? }` for device-command steps). Caller guarantees `stepType` is set. */
+function restoreConfigFromGroup(group: DRGroupForm): Record<string, unknown> {
+  if (group.stepType === 'BARE_METAL_REBUILD') {
+    const waitTimeoutMinutes = Number(group.waitTimeoutMinutes);
+    return {
+      commandType: 'BARE_METAL_REBUILD',
+      snapshotSelection: 'latest_restorable',
+      ...(group.rebuildHostDeviceId ? { rebuildHostDeviceId: group.rebuildHostDeviceId } : {}),
+      outputDir: group.outputDir.trim() || DEFAULT_REBUILD_OUTPUT_DIR,
+      waitTimeoutMinutes: Number.isFinite(waitTimeoutMinutes) && group.waitTimeoutMinutes.trim()
+        ? waitTimeoutMinutes
+        : DEFAULT_REBUILD_WAIT_TIMEOUT_MINUTES,
+    };
+  }
+  return {
+    commandType: group.stepType,
+    ...(group.restorePayload ? { payload: group.restorePayload } : {}),
+  };
+}
+
+function loadedGroupToForm(group: LoadedGroup): DRGroupForm {
+  return {
+    localId: group.id,
+    id: group.id,
+    name: group.name,
+    deviceIds: Array.isArray(group.devices) ? group.devices : [],
+    estimatedDurationMinutes:
+      typeof group.estimatedDurationMinutes === 'number' ? `${group.estimatedDurationMinutes}` : '',
+    dependsOnGroupKey: group.dependsOnGroupId,
+    ...stepFieldsFromRestoreConfig(group.restoreConfig),
+  };
+}
 
 type DRPlanEditorProps = {
   open: boolean;
   planId: string | null;
   onClose: () => void;
   onSaved: () => void;
+  /**
+   * #6382: a save is a plan write followed by one write per group, so a group
+   * that the server rejects leaves earlier writes committed. The editor stays
+   * open on the error, but the caller's list is already stale — this asks it to
+   * refetch. Optional so existing callers keep their shape.
+   */
+  onPartialSave?: () => void;
 };
 
 function createLocalId() {
@@ -50,6 +127,10 @@ function createEmptyGroup(): DRGroupForm {
     deviceIds: [],
     estimatedDurationMinutes: '',
     dependsOnGroupKey: null,
+    stepType: '',
+    rebuildHostDeviceId: null,
+    outputDir: DEFAULT_REBUILD_OUTPUT_DIR,
+    waitTimeoutMinutes: `${DEFAULT_REBUILD_WAIT_TIMEOUT_MINUTES}`,
   };
 }
 
@@ -58,6 +139,7 @@ export default function DRPlanEditor({
   planId,
   onClose,
   onSaved,
+  onPartialSave,
 }: DRPlanEditorProps) {
   const { t } = useTranslation('backup');
   const [name, setName] = useState('');
@@ -91,19 +173,7 @@ export default function DRPlanEditor({
           const planPayload = await planResponse.json();
           const plan = (planPayload?.data ?? planPayload) as DRPlanDetails;
           const nextGroups = Array.isArray(plan.groups)
-            ? plan.groups
-                .sort((a, b) => a.sequence - b.sequence)
-                .map((group) => ({
-                  localId: group.id,
-                  id: group.id,
-                  name: group.name,
-                  deviceIds: Array.isArray(group.devices) ? group.devices : [],
-                  estimatedDurationMinutes:
-                    typeof group.estimatedDurationMinutes === 'number'
-                      ? `${group.estimatedDurationMinutes}`
-                      : '',
-                  dependsOnGroupKey: group.dependsOnGroupId,
-                }))
+            ? plan.groups.sort((a, b) => a.sequence - b.sequence).map(loadedGroupToForm)
             : [];
 
           if (!cancelled) {
@@ -181,11 +251,58 @@ export default function DRPlanEditor({
       setError('Each recovery group must include at least one device.');
       return;
     }
+    if (groups.some((group) => !group.stepType)) {
+      setError(t('dRPlanEditor.chooseAStepTypeForEachGroup'));
+      return;
+    }
+    if (
+      groups.some((group) => {
+        if (group.stepType !== 'BARE_METAL_REBUILD') return false;
+        const minutes = Number(group.waitTimeoutMinutes);
+        return (
+          !group.waitTimeoutMinutes.trim() ||
+          !Number.isInteger(minutes) ||
+          minutes < REBUILD_WAIT_TIMEOUT_MIN ||
+          minutes > REBUILD_WAIT_TIMEOUT_MAX
+        );
+      })
+    ) {
+      setError(
+        t('dRPlanEditor.rebuildWaitTimeoutOutOfRange', {
+          min: REBUILD_WAIT_TIMEOUT_MIN,
+          max: REBUILD_WAIT_TIMEOUT_MAX,
+        })
+      );
+      return;
+    }
+    // #6382: the API rejects a non-absolute (or over-long) rebuild output dir
+    // with a 400 — but only on the GROUP write, which runs after the plan write
+    // has already been committed. Mirroring the server's rule here means the
+    // save is refused before anything is written, instead of half-applied.
+    // Keep in sync with `drBareMetalRebuildConfigSchema` in
+    // apps/api/src/services/drBareMetalRebuildStep.ts.
+    if (
+      groups.some((group) => {
+        if (group.stepType !== 'BARE_METAL_REBUILD') return false;
+        const outputDir = group.outputDir.trim() || DEFAULT_REBUILD_OUTPUT_DIR;
+        return !outputDir.startsWith('/') || outputDir.length > REBUILD_OUTPUT_DIR_MAX_LENGTH;
+      })
+    ) {
+      setError(
+        t('dRPlanEditor.rebuildOutputDirMustBeAbsolute', { max: REBUILD_OUTPUT_DIR_MAX_LENGTH })
+      );
+      return;
+    }
     if (groups.some((group) => groupReadiness[group.localId] !== true)) {
       setError('Device choices are not ready. Retry or finish loading devices before saving.');
       return;
     }
 
+    // #6382: a save spans N+1 requests and cannot be rolled back from here, so
+    // track whether anything landed. On a mid-sequence failure the operator is
+    // told the save was partial and the caller refetches — the old code left the
+    // plan list showing a stale name beside a "save failed" message.
+    let wroteSomething = false;
     try {
       setSaving(true);
       let activePlanId = planId;
@@ -206,6 +323,7 @@ export default function DRPlanEditor({
           const payload = await response.json().catch(() => null);
           throw new Error(payload?.error ?? 'Failed to update plan');
         }
+        wroteSomething = true;
       } else {
         const response = await fetchWithAuth('/dr/plans', {
           method: 'POST',
@@ -217,6 +335,7 @@ export default function DRPlanEditor({
         }
         const payload = await response.json();
         activePlanId = payload?.data?.id ?? payload?.id;
+        wroteSomething = true;
       }
 
       if (!activePlanId) throw new Error('Plan ID was not returned by the server');
@@ -239,6 +358,7 @@ export default function DRPlanEditor({
           estimatedDurationMinutes: group.estimatedDurationMinutes
             ? Number(group.estimatedDurationMinutes)
             : undefined,
+          restoreConfig: restoreConfigFromGroup(group),
         };
 
         if (group.id) {
@@ -250,6 +370,7 @@ export default function DRPlanEditor({
             const payload = await response.json().catch(() => null);
             throw new Error(payload?.error ?? `Failed to update group "${group.name}"`);
           }
+          wroteSomething = true;
           persistedIds.set(group.localId, group.id);
         } else {
           const response = await fetchWithAuth(`/dr/plans/${activePlanId}/groups`, {
@@ -260,6 +381,7 @@ export default function DRPlanEditor({
             const payload = await response.json().catch(() => null);
             throw new Error(payload?.error ?? `Failed to create group "${group.name}"`);
           }
+          wroteSomething = true;
           const payload = await response.json();
           const createdId = payload?.data?.id ?? payload?.id;
           if (createdId) persistedIds.set(group.localId, createdId);
@@ -269,7 +391,10 @@ export default function DRPlanEditor({
       const removedGroups = originalGroups.filter(
         (group) => group.id && !groups.some((current) => current.id === group.id)
       );
-      await Promise.all(
+      // The removals run concurrently, so `Promise.all` would report only the
+      // first rejection and drop the rest — the operator would fix one group
+      // and be surprised by the next. Settle them all and report every failure.
+      const removalResults = await Promise.allSettled(
         removedGroups.map(async (group) => {
           const response = await fetchWithAuth(`/dr/plans/${activePlanId}/groups/${group.id}`, {
             method: 'DELETE',
@@ -278,12 +403,25 @@ export default function DRPlanEditor({
             const payload = await response.json().catch(() => null);
             throw new Error(payload?.error ?? `Failed to remove group "${group.name}"`);
           }
+          wroteSomething = true;
         })
       );
+      const removalFailures = removalResults.flatMap((result) =>
+        result.status === 'rejected'
+          ? [result.reason instanceof Error ? result.reason.message : String(result.reason)]
+          : []
+      );
+      if (removalFailures.length > 0) throw new Error(removalFailures.join(' '));
 
       onSaved();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save plan');
+      const message = err instanceof Error ? err.message : 'Failed to save plan';
+      if (wroteSomething) {
+        setError(t('dRPlanEditor.partialSaveFailure', { message }));
+        onPartialSave?.();
+      } else {
+        setError(message);
+      }
     } finally {
       setSaving(false);
     }
@@ -293,12 +431,14 @@ export default function DRPlanEditor({
     groupReadiness,
     isEdit,
     name,
+    onPartialSave,
     onSaved,
     originalGroups,
     planId,
     rpoTargetMinutes,
     rtoTargetMinutes,
     status,
+    t,
   ]);
 
   return (

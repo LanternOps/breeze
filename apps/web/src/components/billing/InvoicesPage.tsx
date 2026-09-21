@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '../../lib/i18n';
 import { fetchWithAuth } from '../../stores/auth';
+import { fetchAllSites, ListFetchError } from '@/lib/fetchAllSites';
+import { fetchAllOrganizationsFrom } from '@/lib/fetchAllOrganizations';
 import { useOrgStore } from '../../stores/orgStore';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError, ActionError } from '../../lib/runAction';
@@ -13,6 +15,7 @@ import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { showToast } from '../shared/Toast';
 import { useLegacyOrgIdHashNotice } from '@/hooks/useLegacyOrgIdHashNotice';
 import { useBulkSelection } from './bulk/useBulkSelection';
+import BillablesExportCard from './BillablesExportCard';
 import { BulkActionBar } from './bulk/BulkActionBar';
 import { SortableTh } from './shared/SortableTh';
 import { ApproximateMoneyLine } from './shared/ApproximateMoneyLine';
@@ -153,6 +156,8 @@ export function InvoicesPage({ lockedOrgId }: InvoicesPageProps = {}) {
 
   // New-invoice dialog state
   const [assembleOpen, setAssembleOpen] = useState(false);
+  // Billables export dialog state (M5) — moved here from Ticketing settings.
+  const [exportOpen, setExportOpen] = useState(false);
   const [mode, setMode] = useState<'assemble' | 'blank'>('assemble');
   const [assembleOrgId, setAssembleOrgId] = useState('');
   const [assembleSiteId, setAssembleSiteId] = useState('');
@@ -174,15 +179,18 @@ export function InvoicesPage({ lockedOrgId }: InvoicesPageProps = {}) {
   );
 
   const loadOrgs = useCallback(async () => {
-    const res = await fetchWithAuth('/orgs/organizations');
-    if (res.status === 401) return UNAUTHORIZED();
-    if (!res.ok) { handleActionError(new Error(res.statusText), t('invoicesPage.errors.loadOrganizations')); return; }
-    const body = (await res.json()) as { data?: Organization[]; organizations?: Organization[] };
-    const list = body.data ?? body.organizations ?? [];
-    // `/orgs/organizations` is a single, server-default-sized page — a
-    // partner with more orgs than that page holds can lock to one that isn't
-    // in it. Without this, the create dialog's org <select> would render its
-    // "Select organization…" placeholder (no matching <option>) while still
+    let list: Organization[];
+    try {
+      list = await fetchAllOrganizationsFrom<Organization>('/orgs/organizations');
+    } catch (err) {
+      if (err instanceof ListFetchError && err.status === 401) return UNAUTHORIZED();
+      handleActionError(err, t('invoicesPage.errors.loadOrganizations'));
+      return;
+    }
+    // Now pages through every organization the caller can see, but a
+    // partner can still lock to an org outside that set (#6412). Without
+    // this, the create dialog's org <select> would render its "Select
+    // organization…" placeholder (no matching <option>) while still
     // submitting for the correct-but-invisible locked org — silently
     // confusing, not silently wrong. Fetch that one org directly so the
     // picker always has something to show.
@@ -254,11 +262,14 @@ export function InvoicesPage({ lockedOrgId }: InvoicesPageProps = {}) {
     setAssembleSiteId('');
     setAssembleSites([]);
     if (!orgId) return;
-    const res = await fetchWithAuth(`/orgs/sites?organizationId=${orgId}`);
-    if (res.status === 401) return UNAUTHORIZED();
-    if (!res.ok) { handleActionError(new Error(res.statusText), t('invoicesPage.errors.loadSites')); return; }
-    const body = (await res.json()) as { data?: Site[]; sites?: Site[] };
-    setAssembleSites(body.data ?? body.sites ?? []);
+    try {
+      const sites = await fetchAllSites<Site>(`/orgs/sites?organizationId=${orgId}`);
+      setAssembleSites(sites);
+    } catch (err) {
+      // 401 keeps its dedicated bail (the auth redirect owns it), as before.
+      if (err instanceof ListFetchError && err.status === 401) return UNAUTHORIZED();
+      handleActionError(err, t('invoicesPage.errors.loadSites'));
+    }
   }, [t]);
 
   const openAssemble = useCallback(() => {
@@ -491,16 +502,28 @@ export function InvoicesPage({ lockedOrgId }: InvoicesPageProps = {}) {
             {t('invoicesPage.subtitle')}
           </p>
         </div>
-        {can('invoices', 'write') && (
-          <button
-            type="button"
-            onClick={openAssemble}
-            data-testid="invoices-assemble-open"
-            className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
-          >
-            {t('invoicesPage.newInvoice')}
-          </button>
-        )}
+        <div className="flex items-center gap-2">
+          {!lockedOrgId && !isOrgScoped && can('tickets', 'read') && can('time_entries', 'read') && (
+            <button
+              type="button"
+              onClick={() => setExportOpen(true)}
+              data-testid="invoices-export-billables-open"
+              className="inline-flex h-10 items-center justify-center rounded-md border px-4 text-sm font-medium hover:bg-muted/40"
+            >
+              {t('invoicesPage.exportBillables')}
+            </button>
+          )}
+          {can('invoices', 'write') && (
+            <button
+              type="button"
+              onClick={openAssemble}
+              data-testid="invoices-assemble-open"
+              className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
+            >
+              {t('invoicesPage.newInvoice')}
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Outstanding summary */}
@@ -879,6 +902,19 @@ export function InvoicesPage({ lockedOrgId }: InvoicesPageProps = {}) {
         confirmLabel={t('invoicesPage.bulk.deleteDrafts')}
         confirmTestId="invoices-bulk-delete-confirm"
       />
+
+      {/* Export billables dialog (M5) */}
+      <Dialog
+        open={exportOpen}
+        onClose={() => setExportOpen(false)}
+        title={t('invoicesPage.exportBillablesDialogTitle')}
+        labelledBy="invoices-export-billables-title"
+        maxWidth="lg"
+        className="p-6"
+      >
+        <h2 id="invoices-export-billables-title" className="sr-only">{t('invoicesPage.exportBillablesDialogTitle')}</h2>
+        <BillablesExportCard />
+      </Dialog>
 
       {/* New-invoice dialog (assemble | blank) */}
       <Dialog

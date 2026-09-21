@@ -27,7 +27,9 @@ import (
 	"github.com/breeze-rmm/agent/internal/authstate"
 	"github.com/breeze-rmm/agent/internal/backupipc"
 	"github.com/breeze-rmm/agent/internal/collectors"
+	"github.com/breeze-rmm/agent/internal/collectors/networkcontext"
 	"github.com/breeze-rmm/agent/internal/config"
+	"github.com/breeze-rmm/agent/internal/desktopfence"
 	"github.com/breeze-rmm/agent/internal/executor"
 	"github.com/breeze-rmm/agent/internal/health"
 	"github.com/breeze-rmm/agent/internal/helper"
@@ -39,6 +41,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/monitoring"
 	"github.com/breeze-rmm/agent/internal/mtls"
 	"github.com/breeze-rmm/agent/internal/netcache"
+	"github.com/breeze-rmm/agent/internal/networkdiagnostic"
 	"github.com/breeze-rmm/agent/internal/observability"
 	"github.com/breeze-rmm/agent/internal/onedrivehelper"
 	"github.com/breeze-rmm/agent/internal/pamlifetime"
@@ -81,6 +84,8 @@ const pendingActivationClockSkew = 10 * time.Minute
 const selfInitiatedRenewalLeadTime = 24 * time.Hour
 
 type HeartbeatPayload struct {
+	NetworkContextV1    *networkcontext.Report     `json:"networkContextV1,omitempty"`
+	NetworkContextReset *NetworkContextReset       `json:"networkContextReset,omitempty"`
 	Metrics             *collectors.SystemMetrics  `json:"metrics,omitempty"`
 	MetricsAvailable    *bool                      `json:"metricsAvailable,omitempty"`
 	Status              string                     `json:"status"`
@@ -158,6 +163,11 @@ type HeartbeatPayload struct {
 	// is never empty from this build.
 	AgentEdition      string `json:"agentEdition,omitempty"`
 	MigrationRequired bool   `json:"migrationRequired,omitempty"`
+	// RecoveryMarker (W04a) mirrors <dataDir>/recovery-marker.json: the
+	// bare-metal rebuild engine leaves it on the restored disk, and the agent
+	// sends it every heartbeat until the server acks the check-in. Nil
+	// (omitted) once acked or when no marker was ever found.
+	RecoveryMarker *RecoveryMarker `json:"recoveryMarker,omitempty"`
 }
 
 // migrationSignal reports the agent's build edition and whether it is a
@@ -215,8 +225,15 @@ type SecurityCapabilities struct {
 	// RevocationLeaseProtocolVersion declares that this build keeps a desktop
 	// session's revocation lease alive and stops streaming when it lapses. The
 	// API refuses to start a desktop session against an agent reporting 0.
-	RevocationLeaseProtocolVersion int                      `json:"revocationLeaseProtocolVersion,omitempty"`
-	PamReconciliation              *PamReconciliationStatus `json:"pamReconciliation,omitempty"`
+	RevocationLeaseProtocolVersion int `json:"revocationLeaseProtocolVersion,omitempty"`
+	// DesktopFenceProtocolVersion (SEC-038 W06) declares that this build keeps
+	// the durable per-session start/terminal generation fence (W04/W05): it
+	// refuses any desktop start not strictly newer than everything it has
+	// already seen, and refuses all starts after a terminal. Behind
+	// REMOTE_DESKTOP_FENCE_REQUIRED the API refuses to start a desktop session
+	// against an agent reporting 0, same shape as the revocation-lease gate.
+	DesktopFenceProtocolVersion int                      `json:"desktopFenceProtocolVersion,omitempty"`
+	PamReconciliation           *PamReconciliationStatus `json:"pamReconciliation,omitempty"`
 }
 
 type PamReconciliationStatus struct {
@@ -237,11 +254,12 @@ type DesktopAccessState struct {
 }
 
 type HeartbeatResponse struct {
-	Commands     []Command      `json:"commands"`
-	ConfigUpdate map[string]any `json:"configUpdate,omitempty"`
-	UpgradeTo    string         `json:"upgradeTo,omitempty"`
-	RenewCert    bool           `json:"renewCert,omitempty"`
-	RotateToken  bool           `json:"rotateToken,omitempty"`
+	NetworkContextReceipt *networkcontext.Receipt `json:"networkContextReceipt,omitempty"`
+	Commands              []Command               `json:"commands"`
+	ConfigUpdate          map[string]any          `json:"configUpdate,omitempty"`
+	UpgradeTo             string                  `json:"upgradeTo,omitempty"`
+	RenewCert             bool                    `json:"renewCert,omitempty"`
+	RotateToken           bool                    `json:"rotateToken,omitempty"`
 	// Issue #2621 — the server sees this agent authenticating with the STAGED
 	// credentials of an unconfirmed rotation. Finish phase two.
 	ConfirmTokenRotation   bool                   `json:"confirmTokenRotation,omitempty"`
@@ -257,6 +275,9 @@ type HeartbeatResponse struct {
 	// against the currently-pinned key it names.
 	ManifestKeyDelegations            []api.ManifestKeyDelegation `json:"manifestKeyDelegations,omitempty"`
 	AcknowledgedRollbackObservationID string                      `json:"acknowledgedRollbackObservationId,omitempty"`
+	// RecoveryMarkerAck (W04a) is true only when this beat's recoveryMarker
+	// matched — its absence means no ack yet (or no marker was sent).
+	RecoveryMarkerAck bool `json:"recoveryMarkerAck,omitempty"`
 }
 
 type HelperSettings struct {
@@ -318,18 +339,23 @@ func (h *Heartbeat) lifecycleMode() string {
 }
 
 type Heartbeat struct {
-	config                *config.Config
-	secureToken           *secmem.SecureString
-	client                *http.Client
-	clientMu              sync.RWMutex
-	stopChan              chan struct{}
-	metricsCol            *collectors.MetricsCollector
-	hardwareCol           *collectors.HardwareCollector
-	softwareCol           *collectors.SoftwareCollector
-	softwareObservationFn func() (collectors.SoftwareInventoryObservationV2, error)
-	inventoryCol          *collectors.InventoryCollector
-	vpnCol                *collectors.VPNCollector
-	changeTrackerCol      *collectors.ChangeTrackerCollector
+	topologyDiagnosticMu      sync.Mutex
+	topologyDiagnosticJournal *networkdiagnostic.Journal
+	topologyDiagnosticActive  map[string]activeTopologyDiagnostic
+	networkContextMu          sync.Mutex
+	networkContext            *networkContextManager
+	config                    *config.Config
+	secureToken               *secmem.SecureString
+	client                    *http.Client
+	clientMu                  sync.RWMutex
+	stopChan                  chan struct{}
+	metricsCol                *collectors.MetricsCollector
+	hardwareCol               *collectors.HardwareCollector
+	softwareCol               *collectors.SoftwareCollector
+	softwareObservationFn     func() (collectors.SoftwareInventoryObservationV2, error)
+	inventoryCol              *collectors.InventoryCollector
+	vpnCol                    *collectors.VPNCollector
+	changeTrackerCol          *collectors.ChangeTrackerCollector
 	// changeTrackerMu serializes the change tracker's collect → send → commit
 	// cycle. sendInventory is dispatched both on the 15-minute tick and by the
 	// "Refresh Inventory" command (handlers.go), so two cycles can genuinely
@@ -353,8 +379,12 @@ type Heartbeat struct {
 	backupBinaryPath   string
 	rollbackController rollbackController
 	rebootMgr          *patching.RebootManager
-	securityScanner    *security.SecurityScanner
-	wsClient           *websocket.Client
+	// recoveryMarkerVal (W04a) is guarded by mu like the other single-value
+	// fields above (see lifecycleMode()); read every beat by
+	// recoveryMarker() and cleared once the server acks it.
+	recoveryMarkerVal *RecoveryMarker
+	securityScanner   *security.SecurityScanner
+	wsClient          *websocket.Client
 	// backupOutbox persists terminal backup results that failed to send over
 	// the WS connection, so a transient blip doesn't orphan the job
 	// server-side. Flushed on WS reconnect (see SetWebSocketClient). Never
@@ -443,6 +473,27 @@ type Heartbeat struct {
 	// method directly) so the helper-hosted bridge is observable in tests.
 	// Defaults to requestRevocationLeaseRenew; nil is a no-op.
 	leaseRenewRequester func(sessionID string)
+
+	// desktopStartFence linearizes desktop start decisions against terminal
+	// decisions (SEC-038): a per-session high-water generation plus an
+	// absolute terminal tombstone. See desktop_fence.go. Carries its own lock
+	// and its zero value is ready to use, so it is never nil.
+	desktopStartFence desktopFence
+	// desktopFenceSyncTimeout bounds one fence resync round trip; zero means
+	// defaultDesktopFenceSyncTimeout. Tests shrink it.
+	desktopFenceSyncTimeout time.Duration
+	// leaseSyncRequester sends a nonce-correlated lease renewal for a fence
+	// resync. Defaults to requestRevocationLeaseSync; a nil requester means
+	// no control plane, which means no admission.
+	leaseSyncRequester func(sessionID, nonce string) error
+	// desktopFenceQueue serialises fence updates off the WS read pump: the
+	// hook must not block, and a fence write touches the disk.
+	desktopFenceQueue      chan websocket.RevocationLeaseMessage
+	desktopFenceWorkerOnce sync.Once
+	// helperFenceSynced records which helper sessions have acknowledged a
+	// fence seed, so the seed costs one round trip per helper rather than one
+	// per start. Cleared when the helper session ends.
+	helperFenceSynced map[string]bool
 
 	// desktopTargets maps remote desktop session id -> explicitly targeted
 	// Windows session ("" for untargeted/legacy connects) so the stop path can
@@ -1090,6 +1141,13 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 	// watchdog lives in the helper process, so its renewals arrive here as
 	// ipc.TypeDesktopLeaseRenew and are forwarded onto the command socket.
 	h.leaseRenewRequester = h.requestRevocationLeaseRenew
+	h.leaseSyncRequester = h.requestRevocationLeaseSync
+
+	// SEC-038: make the desktop start fence durable. A restart must not forget
+	// a tombstone; anything the file does not cover fails closed through the
+	// resync above.
+	h.desktopStartFence.attachStore(desktopfence.NewStore(
+		filepath.Join(config.GetDataDir(), "desktop-fence-state.json")))
 
 	// Clean up any orphaned Screen Sharing left running from a previous crash.
 	h.tunnelMgr.CleanupOrphanedVNC()
@@ -1135,6 +1193,20 @@ func (h *Heartbeat) SetWebSocketClient(ws *websocket.Client) {
 // helper that owns the session, and falls back to the direct manager otherwise.
 func (h *Heartbeat) applyRevocationLeaseAnswer(msg websocket.RevocationLeaseMessage) {
 	if msg.SessionID == "" {
+		return
+	}
+	// SEC-038: every answer feeds the durable start fence — this is also the
+	// resync channel a start for an unknown session waits on. Queued, never
+	// applied inline: this callback runs on the WS read pump and a fence write
+	// hits the disk.
+	h.enqueueDesktopFenceAnswer(msg)
+
+	// "I cannot answer right now" is not a renewal and not a revocation. It
+	// ends a session whose FIRST renewal it is (owner decision 2) and is
+	// otherwise the silence the grace window budgets for.
+	if msg.Unavailable {
+		h.desktopMgr.NoteLeaseUnavailable(msg.SessionID)
+		go h.forwardRevocationLeaseToHelper(msg)
 		return
 	}
 	// The answer must reach whichever process actually hosts the session. On a
@@ -1208,6 +1280,7 @@ func (h *Heartbeat) forwardRevocationLeaseToHelper(msg websocket.RevocationLease
 		HardDeadlineUnixMs: msg.HardDeadlineUnixMs,
 		Revoked:            msg.Revoked,
 		Reason:             msg.Reason,
+		Unavailable:        msg.Unavailable,
 	}
 	if err := owner.SendNotify("desk-lease-"+msg.SessionID, ipc.TypeDesktopLeaseUpdate, update); err != nil {
 		log.Warn("failed to forward revocation lease update to the owning helper",
@@ -1256,6 +1329,22 @@ func (h *Heartbeat) flushBackupResultOutbox() {
 // SetAuthMonitor sets the shared auth-failure monitor.
 func (h *Heartbeat) SetAuthMonitor(m *authstate.Monitor) {
 	h.authMon = m
+}
+
+// SetRecoveryMarker sets (or, passed nil, clears) the bare-metal recovery
+// marker sent on every heartbeat until the server acks it. See
+// recovery_marker.go for LoadRecoveryMarker/AcknowledgeRecoveryMarker.
+func (h *Heartbeat) SetRecoveryMarker(m *RecoveryMarker) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.recoveryMarkerVal = m
+}
+
+// recoveryMarker returns the currently-set recovery marker, or nil.
+func (h *Heartbeat) recoveryMarker() *RecoveryMarker {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.recoveryMarkerVal
 }
 
 // SetStatePath sets the path to the agent state file for heartbeat updates.
@@ -2853,6 +2942,10 @@ func (h *Heartbeat) applyConfigUpdate(update map[string]any) {
 		return
 	}
 
+	if raw, ok := update["networkContext"]; ok {
+		h.applyNetworkContextConfig(raw)
+	}
+
 	// Apply event_log_settings if present
 	elRaw, hasEL := update["event_log_settings"]
 	if !hasEL {
@@ -2913,6 +3006,22 @@ func (h *Heartbeat) applyConfigUpdate(update map[string]any) {
 	}
 	if hasOD {
 		h.applyOneDriveHelperConfig(odRaw)
+	}
+
+	// Apply warranty_settings if present (#5511 W02): permit or stop device-side
+	// HP CMSL warranty collection. The flag is stored on every OS; only the
+	// (Windows-only, W03) collector acts on it.
+	//
+	// THIS MUST STAY ABOVE THE POLICY-PROBE BLOCK BELOW. That block returns
+	// unconditionally when neither probe key is present, which is most
+	// heartbeats — a key dispatched after it is silently unreachable in
+	// production with nothing in the logs to show for it.
+	warRaw, hasWar := update["warranty_settings"]
+	if !hasWar {
+		warRaw, hasWar = update["warrantySettings"]
+	}
+	if hasWar {
+		h.applyWarrantyConfig(warRaw)
 	}
 
 	registryRaw, hasRegistry := update["policy_registry_state_probes"]
@@ -4404,6 +4513,8 @@ func (h *Heartbeat) sendHeartbeat() {
 		payload.DroppedLogs = dropped
 	}
 
+	h.attachNetworkContext(&payload)
+
 	// Attach IP history update when assignments changed since last heartbeat.
 	if ipUpdate, ipErr := h.collectIPHistory(); ipErr != nil {
 		log.Error("failed to collect ip history", "error", ipErr.Error())
@@ -4431,6 +4542,10 @@ func (h *Heartbeat) sendHeartbeat() {
 	} else if runtime.GOOS == "linux" {
 		payload.DesktopAccess = h.computeDesktopAccess(sysInfo)
 	}
+
+	// Bare-metal recovery W04a: send until the server acks (see
+	// processHeartbeatResponse, which clears it on RecoveryMarkerAck).
+	payload.RecoveryMarker = h.recoveryMarker()
 
 	if h.postHeartbeat(h.serverURL(), &payload) {
 		h.resetHeartbeatFailures()
@@ -4699,6 +4814,15 @@ func (h *Heartbeat) acknowledgeRollbackObservation(id string) {
 }
 
 func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
+	h.ackNetworkContext(response.NetworkContextReceipt)
+	// Bare-metal recovery W04a: only clear the marker once the server has
+	// actually acked it — a failed/lost beat must resend it next time.
+	if response.RecoveryMarkerAck && h.recoveryMarker() != nil {
+		if err := AcknowledgeRecoveryMarker(recoveryMarkerDataDir()); err != nil {
+			log.Warn("failed to acknowledge bare-metal recovery marker on disk; will keep resending it", "error", err.Error())
+		}
+		h.SetRecoveryMarker(nil)
+	}
 	h.acknowledgeRollbackObservation(response.AcknowledgedRollbackObservationID)
 	if len(response.ConfigUpdate) > 0 {
 		h.applyConfigUpdate(response.ConfigUpdate)
@@ -6081,7 +6205,7 @@ func (h *Heartbeat) HandleCommand(wsCmd websocket.Command) websocket.CommandResu
 
 	wsResult := toWSCommandResult(cmd.ID, result)
 
-	if result.Status != "duplicate" && !isEphemeralCommand(cmd.Type) {
+	if result.Status != "duplicate" && !isEphemeralCommand(cmd.Type) && !isWSDirectOnlyCommand(cmd.Type) {
 		go func() {
 			if err := h.submitCommandResult(cmd.ID, result); err != nil {
 				log.Error("failed to submit command result", logging.KeyCommandID, cmd.ID, "error", err.Error())
@@ -6269,10 +6393,36 @@ func (h *Heartbeat) inFlightCommandStats(now time.Time) (inFlight, overdue int) 
 // script has already finished on its own.
 func isLifecycleCommand(cmdType string) bool {
 	switch cmdType {
-	case tools.CmdScriptCancel, tools.CmdScriptListRunning:
+	case tools.CmdScriptCancel, tools.CmdScriptListRunning, tools.CmdNetworkDiagnosticCancel:
 		return true
 	}
 	return false
+}
+
+// isWSDirectOnlyCommand reports whether a command type is ONLY ever
+// dispatched WS-direct, i.e. the server never creates a device_commands row
+// for it. HandleCommand's HTTP result submission targets
+// /api/v1/agents/{id}/commands/{id}/result, which looks the command up in
+// device_commands and 404s when there is no row — so for these types the POST
+// is guaranteed-doomed log noise on every single dispatch (#5414). The WS
+// reply from HandleCommand (plus, for backup, the unsolicited terminal
+// backup_result frame and its outbox) is already the authoritative delivery
+// channel; nothing server-side reads the HTTP ack for them.
+//
+// The server exempts WS-direct commands from the 404 by testing whether the
+// command id is a non-UUID (routes/agents/commands.ts). backup_run defeats
+// that heuristic because its id IS a UUID — jobs/backupWorker.ts reuses the
+// backup_jobs row id as the command id.
+//
+// Membership is per-COMMAND-TYPE and deliberately narrow: it is not "backup
+// commands". mssql_backup and hyperv_backup ride this same rowless path from
+// backupWorker.ts, but routes/backup/mssql.ts and hyperv.ts ALSO dispatch
+// them through executeCommand -> commandQueue, which does insert a
+// device_commands row that the HTTP result legitimately acks. Suppressing
+// their submission would break that path, so they stay out. backup_run has
+// exactly one dispatch site (backupWorker.ts) and never gets a row.
+func isWSDirectOnlyCommand(cmdType string) bool {
+	return cmdType == tools.CmdBackupRun
 }
 
 func isEphemeralCommand(cmdType string) bool {
@@ -6577,6 +6727,21 @@ func (h *Heartbeat) resolvePatchInstallID(ref patchCommandRef) (string, error) {
 	if provider, local, ok := splitPatchID(ref.ID); ok && h.patchMgr.HasProvider(provider) {
 		return provider + ":" + local, nil
 	}
+	// Windows Update identities are device-observed: externalID is what THIS
+	// endpoint's own scan reported — the KB article when Windows exposes one,
+	// and the raw WUA UpdateID when it does not (driver and feature updates
+	// carry no KBArticleIDs). packageID is global catalog metadata that the API
+	// fills once and never rewrites, so it can carry a selector written by a
+	// different device, in a different tenant, for a different revision. Resolve
+	// the observed identity and fall back to packageID only when this device
+	// reported no external identity at all. WUA findUpdate matches both an exact
+	// UpdateID and a KB article against this device's currently applicable
+	// updates, so either form resolves against what is installable here.
+	if strings.EqualFold(strings.TrimSpace(ref.Source), "microsoft") && h.patchMgr.HasProvider("windows-update") {
+		if local := windowsUpdateLocalID(ref.ExternalID); local != "" {
+			return "windows-update:" + local, nil
+		}
+	}
 	if provider, local, ok := splitPatchID(ref.ExternalID); ok {
 		switch provider {
 		case "microsoft", "apple", "linux", "third_party", "custom":
@@ -6608,6 +6773,50 @@ func (h *Heartbeat) resolvePatchInstallID(ref patchCommandRef) (string, error) {
 	}
 
 	return providerID + ":" + localID, nil
+}
+
+// windowsUpdateLocalID normalizes the device-observed Windows Update selector
+// carried in a patch ref's externalID. It returns "" when externalID is empty
+// or is qualified for some other provider (e.g. "chocolatey:googlechrome") so
+// that those refs keep their existing provider routing below.
+func windowsUpdateLocalID(externalID string) string {
+	value := strings.TrimSpace(externalID)
+	if value == "" {
+		return ""
+	}
+	if provider, local, ok := splitPatchID(value); ok {
+		switch strings.ToLower(strings.TrimSpace(provider)) {
+		case "microsoft", "windows-update":
+			// A three-part "source:local:extra" externalID keeps only the local
+			// identity, matching patchLocalID's existing handling of that shape.
+			value = strings.TrimSpace(local)
+			if head, _, found := strings.Cut(value, ":"); found {
+				value = strings.TrimSpace(head)
+			}
+		default:
+			return ""
+		}
+	}
+	if value == "" {
+		return ""
+	}
+	if isWindowsKBID(value) {
+		return strings.ToUpper(value)
+	}
+	return value
+}
+
+func isWindowsKBID(value string) bool {
+	value = strings.ToUpper(strings.TrimSpace(value))
+	if !strings.HasPrefix(value, "KB") || len(value) == 2 {
+		return false
+	}
+	for _, r := range value[2:] {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func (h *Heartbeat) providerForPatchRef(ref patchCommandRef) string {
@@ -7343,5 +7552,6 @@ func compiledSecurityCapabilities() SecurityCapabilities {
 		PeripheralPolicyProtocolVersion: 2,
 		RollbackProtocolVersion:         1,
 		RevocationLeaseProtocolVersion:  1,
+		DesktopFenceProtocolVersion:     1,
 	}
 }

@@ -21,6 +21,8 @@ const rows = [
   { id: 't-pw', name: 'Partner CPU', description: null, category: 'Performance', severity: 'high', orgId: null, partnerId: 'p-1', isBuiltIn: false, autoResolve: false },
   { id: 't-org', name: 'Org Disk', description: null, category: 'Capacity', severity: 'medium', orgId: 'org-1', partnerId: 'p-1', isBuiltIn: false, autoResolve: false },
   { id: 't-bi', name: 'Built-in Down', description: null, category: 'Availability', severity: 'critical', orgId: null, partnerId: null, isBuiltIn: true, autoResolve: true },
+  // #5287 — compiled from a monitor definition.
+  { id: 't-mon', name: 'Monitor Disk', description: null, category: 'Capacity', severity: 'medium', orgId: 'org-1', partnerId: 'p-1', isBuiltIn: false, autoResolve: false, managedByMonitorId: 'monitor-1' },
 ];
 
 describe('AlertTemplateList', () => {
@@ -53,13 +55,10 @@ describe('AlertTemplateList', () => {
     expect(screen.queryByTestId('alert-template-row-t-bi')).not.toBeInTheDocument();
   });
 
-  it('navigates to the create and edit routes', async () => {
+  it('keeps existing-template editing while removing creation navigation', async () => {
     render(<AlertTemplateList />);
-    await waitFor(() => expect(screen.getByTestId('alert-template-list')).toBeInTheDocument());
-
-    fireEvent.click(screen.getByTestId('alert-template-create'));
-    expect(navMock).toHaveBeenCalledWith('/settings/alert-templates/new');
-
+    await screen.findByTestId('alert-template-list');
+    expect(screen.queryByTestId('alert-template-create')).toBeNull();
     fireEvent.click(screen.getByTestId('alert-template-edit-t-org'));
     expect(navMock).toHaveBeenCalledWith('/settings/alert-templates/t-org');
   });
@@ -76,5 +75,25 @@ describe('AlertTemplateList', () => {
       const del = fetchMock.mock.calls.find((c) => c[0] === '/alert-templates/templates/t-org' && (c[1] as RequestInit)?.method === 'DELETE');
       expect(del).toBeTruthy();
     });
+  });
+
+  // #5287 — a template compiled from a monitor is read-only like a built-in.
+  it('badges a monitor-managed template and disables its delete button', async () => {
+    render(<AlertTemplateList />);
+    await waitFor(() => expect(screen.getByTestId('alert-template-list')).toBeInTheDocument());
+
+    expect(within(screen.getByTestId('alert-template-row-t-mon')).getByTestId('alert-template-managed-badge-t-mon')).toBeInTheDocument();
+    expect(screen.getByTestId('alert-template-delete-t-mon')).toBeDisabled();
+    // The delete click handler itself must also be a no-op, not just the
+    // disabled attribute — the same guard the built-in row relies on.
+    fireEvent.click(screen.getByTestId('alert-template-delete-t-mon'));
+    expect(fetchMock.mock.calls.some((c) => c[0] === '/alert-templates/templates/t-mon')).toBe(false);
+  });
+
+  it('shows the frozen-creation notice and no New template button', async () => {
+    render(<AlertTemplateList />);
+    expect(await screen.findByTestId('alert-templates-frozen')).toHaveTextContent('New alert templates are created as monitors');
+    expect(screen.getByTestId('alert-templates-frozen-link')).toHaveAttribute('href', '/alerts/monitors');
+    expect(screen.queryByRole('button', { name: /new template/i })).toBeNull();
   });
 });

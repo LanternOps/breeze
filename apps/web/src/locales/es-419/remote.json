@@ -30,8 +30,12 @@
     "desktopUnavailable": "Escritorio no disponible",
     "dismiss": "Descartar",
     "downloadFor": "Descargar para {{platform}}",
+    "ending": {
+      "description": "La sesión anterior todavía se está cerrando en el dispositivo. Espera un momento y vuelve a intentarlo.",
+      "title": "La sesión aún se está cerrando"
+    },
     "errors": {
-      "agentUpgradeRequired": "El escritorio remoto necesita una actualización del agente en este dispositivo (compatibilidad con la concesión de revocación de sesión). El agente se actualiza automáticamente; normalmente se resuelve en un minuto. La terminal y la transferencia de archivos no se ven afectadas.",
+      "agentUpgradeRequired": "El escritorio remoto necesita una actualización del agente en este dispositivo (compatibilidad con la concesión de revocación de sesión y la barrera de inicio). El agente se actualiza automáticamente; normalmente se resuelve en un minuto. La terminal y la transferencia de archivos no se ven afectadas.",
       "connectionFailed": "La conexión falló",
       "createDesktopCode": "No se pudo crear el código de conexión al escritorio",
       "createDesktopSession": "No se pudo crear la sesión de escritorio",
@@ -63,6 +67,21 @@
     "openInBrowser": "Abrir en el navegador",
     "policyDisabled": "El escritorio remoto está deshabilitado por la política",
     "policyDisabledNamed": "El escritorio remoto está deshabilitado por la política \"{{name}}\"",
+    "revoked": {
+      "title": "Sesión revocada",
+      "setUpMfa": "Configurar MFA",
+      "reasons": {
+        "session_ended": "La sesión ya había terminado.",
+        "user_inactive": "Su cuenta ya no está activa.",
+        "epoch_baseline_missing": "No se pudieron verificar sus permisos. Intente conectarse nuevamente.",
+        "permissions_changed": "Sus permisos cambiaron después de que comenzó esta sesión. Vuelva a conectarse para continuar con su acceso actual.",
+        "membership_removed": "Ya no tiene acceso a esta organización o dispositivo.",
+        "site_scope_lost": "Este dispositivo está fuera de su alcance de sitio asignado.",
+        "mfa_required": "Ahora se requiere autenticación multifactor para el acceso de escritorio remoto.",
+        "hard_deadline": "Esta sesión alcanzó su duración máxima permitida.",
+        "default": "La sesión fue finalizada por una política de seguridad. Vuelva a intentarlo."
+      }
+    },
     "unavailable": {
       "default": "El escritorio no está disponible en este dispositivo",
       "headless": "Este dispositivo no tiene pantalla: el escritorio remoto no está disponible",
@@ -207,38 +226,9 @@
     "cancelledUploadNote": "La carga se detuvo en este navegador. Si el comando de escritura ya llegó al dispositivo, es posible que el archivo aún esté guardado allí.",
     "copyTo": "Copiar a",
     "disk": {
-      "analyze": "Analizar",
-      "baseline": "Base",
-      "candidates": "candidatos {{count}} · potencial {{size}}",
-      "captured": "Capturado: {{date}}",
-      "categories": {
-        "browser_cache": "caché del navegador",
-        "package_cache": "Caché de paquetes",
-        "temp_files": "archivos temporales",
-        "trash": "Papelera"
-      },
-      "cleanupPreview": "Vista previa de limpieza",
-      "cleanupResult": "Limpieza {{status}}: {{size}} recuperado de los objetivos {{count}}, {{failed}} falló.",
-      "data": "Datos: {{size}}",
-      "deleteFiles": "Eliminar archivos",
-      "deleteTargets": "Eliminar objetivos",
-      "deleteTargetsConfirm": "¿Eliminar los objetivos de limpieza seleccionados por {{count}}? Estos archivos se eliminarán permanentemente del dispositivo.",
-      "description": "Escaneo rápido y planificación de limpieza segura para {{path}}",
-      "execute": "Ejecutar ({{count}})",
-      "incremental": "incremental",
-      "largestDirectories": "Directorios más grandes",
-      "largestFiles": "Archivos más grandes",
-      "lowerBound": "Límite inferior",
-      "mode": "Modo: {{value}}",
-      "onDemand": "Bajo demanda",
-      "partialScan": "Escaneo parcial",
-      "previewCleanup": "Vista previa de limpieza",
-      "scanRunning": "Escaneo en ejecución ({{status}})",
-      "scanned": "Escaneado: archivos {{count}}",
-      "selected": "Seleccionado: {{count}} · {{size}}",
-      "threshold": "Límite",
-      "title": "Inteligencia de disco",
-      "trigger": "Activador: {{value}}"
+      "title": "Limpieza de disco",
+      "openTab": "Abrir limpieza de disco",
+      "openHint": "Escanee, previsualice y recupere espacio en disco desde la pestaña Limpieza de disco de este dispositivo."
     },
     "dismiss": "Descartar",
     "dropFiles": "Soltar archivos",
@@ -664,7 +654,8 @@
       "connecting": "Conectando...",
       "disconnected": "Desconectado",
       "failed": "Fallido",
-      "pending": "Pendiente"
+      "pending": "Pendiente",
+      "teardownPending": "Finalizando (esperando al dispositivo)"
     },
     "subtitle": "Registro de auditoría de acceso remoto",
     "title": "Historial de sesiones",
@@ -700,6 +691,7 @@
       "timeline": "Línea de tiempo"
     },
     "subtitle": "Ver y auditar sesiones de acceso remoto",
+    "teardownPending": "Esperando confirmación del dispositivo",
     "title": "Historial de sesiones",
     "viewDevice": "Ver dispositivo",
     "viewRecording": "Ver grabación"

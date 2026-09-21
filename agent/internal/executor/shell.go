@@ -187,26 +187,6 @@ func CleanupScript(path string) {
 	}
 }
 
-// SubstituteParameters replaces parameter placeholders in script content
-// Placeholders are in the format {{paramName}} or ${{paramName}}
-func SubstituteParameters(content string, params map[string]string) string {
-	if params == nil {
-		return content
-	}
-
-	result := content
-	for key, value := range params {
-		// Replace both {{key}} and ${{key}} formats
-		placeholder1 := fmt.Sprintf("{{%s}}", key)
-		placeholder2 := fmt.Sprintf("${{%s}}", key)
-
-		result = strings.ReplaceAll(result, placeholder1, value)
-		result = strings.ReplaceAll(result, placeholder2, value)
-	}
-
-	return result
-}
-
 // generateUniqueID creates a unique identifier for script files
 func generateUniqueID() string {
 	b := make([]byte, 8)

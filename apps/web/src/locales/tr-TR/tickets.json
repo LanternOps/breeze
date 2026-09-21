@@ -1,4 +1,13 @@
 {
+  "timesheet": {
+    "workTypeColumn": "İş türü"
+  },
+  "workType": {
+    "label": "İş türü",
+    "none": "İş türü yok",
+    "archivedSuffix": "{{name}} (arşivlendi)",
+    "loadError": "İş türleri kullanılamıyor"
+  },
   "slaChip": {
     "pausedLeft": "Duraklatıldı · {{relative}} kaldı",
     "left": "{{relative}} kaldı",
@@ -123,7 +132,9 @@
       "retry": "Yeniden dene",
       "remove": "Dosyayı kaldır",
       "tooMany": "Bir yoruma en fazla {{max}} dosya ekleyebilirsiniz.",
-      "tooLarge": "{{name}} 10 MB sınırını aşıyor."
+      "tooLarge": "{{name}} 10 MB sınırını aşıyor.",
+      "sentWithoutAttachment_one": "Not gönderildi, ancak ek eklenemedi. Yeniden deneyin veya kaldırın.",
+      "sentWithoutAttachment_other": "Not gönderildi, ancak {{count}} ek eklenemedi. Yeniden deneyin veya kaldırın."
     }
   },
   "ticketFeed": {
@@ -217,7 +228,9 @@
       "logFailed": "Zaman kaydedilemedi",
       "logged": "Kaydedilen zaman",
       "logFailedSentence": "Zaman kaydedilemedi."
-    }
+    },
+    "billedVsWorked": "{{worked}} sa çalışıldı · {{billed}} sa faturalandı",
+    "includedMinutes": "{{hours}} sa sözleşmeye dahil"
   },
   "inboundReviewQueue": {
     "title": "İnceleme kuyruğu",
@@ -460,6 +473,11 @@
       "discardFailed": "Yapay zeka taslağı silinemedi.",
       "discarded": "Taslak silindi"
     },
+    "aiProposal": {
+      "postAsNote": "Özel not olarak gönder",
+      "posted": "Özel not olarak gönderildi",
+      "postFailed": "Not gönderilemedi"
+    },
     "resolve": {
       "noteLabel": "Çözüm notu (talep sahibi tarafından görülebilir)",
       "submit": "Bileti çözümle"
@@ -509,5 +527,14 @@
       "message": "Bu, bileti tüm kuyruklardan gizler. Bir yönetici bunu Arşivlendi kuyruğundan geri yükleyebilir.",
       "confirm": "Bileti sil"
     }
+  },
+  "billingOutcome": {
+    "included": "Dahil",
+    "nonBillable": "Faturalandırılamaz",
+    "hourly": "{{rate}}/sa.",
+    "minimum": "En az {{minutes}} dk.",
+    "missingRate": "Faturalandırılabilir · ücret yapılandırılmamış",
+    "recalculated": "Kaydedildiğinde bu iş türü için faturalandırma yeniden hesaplanır.",
+    "unavailable": "Faturalandırma sonucu kullanılamıyor"
   }
 }

@@ -1,8 +1,5 @@
 ---
-import DashboardLayout from '../../../layouts/DashboardLayout.astro';
-import WebhooksPage from '../../../components/webhooks/WebhooksPage';
+// Duplicate of /integrations#webhooks (same WebhooksPage component, two URLs,
+// audit finding A6). Redirect to the one surviving entry point.
+return Astro.redirect('/integrations#webhooks', 301);
 ---
-
-<DashboardLayout title="Webhooks">
-  <WebhooksPage client:load />
-</DashboardLayout>

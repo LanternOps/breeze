@@ -27,6 +27,7 @@ const { selectMock, updateMock, deviceCommandsTable, restoreJobsTable, backupJob
     targetConfig: 'restore_jobs.target_config',
     completedAt: 'restore_jobs.completed_at',
     updatedAt: 'restore_jobs.updated_at',
+    createdAt: 'restore_jobs.created_at',
   },
   backupJobsTable: {
     id: 'backup_jobs.id',
@@ -139,7 +140,8 @@ import {
   reapStaleSoftwareDeploymentResults,
   resolveMaxReapPerRun,
   SOFTWARE_INSTALL_TIMEOUT_MS,
-  reapStaleScriptExecutions
+  reapStaleScriptExecutions,
+  reapCommandlessPendingRestores,
 } from './staleCommandReaper';
 
 function selectChain(resolvedValue: unknown) {
@@ -187,7 +189,9 @@ describe('stale command reaper', () => {
   });
 
   it('propagates timeout failures into restore jobs for all restore command types', async () => {
-    const staleCreatedAt = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    // #6415: the restore family's ceiling is now 24 h, so this fixture has to
+    // be older than a day for every row in it to be genuinely due.
+    const staleCreatedAt = new Date(Date.now() - 25 * 60 * 60 * 1000);
     selectMock.mockReturnValueOnce(selectChain([
       {
         id: 'cmd-restore',
@@ -279,6 +283,56 @@ describe('stale command reaper', () => {
       commandId: 'cmd-restore',
       terminalStatus: 'timed_out',
     }));
+  });
+
+  // #6415 — progress does not reset the reaper's clock, so the ONLY thing
+  // standing between a healthy 3-hour rebuild and a spurious "failed" is the
+  // ceiling. Pin that a restore command three hours in flight is left alone.
+  it('leaves a whole-machine restore that is 3 hours in flight alone (#6415)', async () => {
+    const executedAt = new Date(Date.now() - 3 * 60 * 60 * 1000);
+    selectMock.mockReturnValueOnce(selectChain([
+      {
+        id: 'cmd-bmr-live',
+        type: 'bare_metal_rebuild',
+        status: 'sent',
+        payload: null,
+        createdAt: executedAt,
+        executedAt,
+        deliverBy: null,
+      },
+      {
+        id: 'cmd-vm-live',
+        type: 'vm_restore_from_backup',
+        status: 'sent',
+        payload: null,
+        createdAt: executedAt,
+        executedAt,
+        deliverBy: null,
+      },
+      // The LEGACY branch (`deliver_by` NULL, never flipped to `sent`) clocks
+      // from created_at against the same per-type budget, so it regressed
+      // identically and has to be pinned separately — the two branches share
+      // nothing but `getCommandTimeoutMs`.
+      {
+        id: 'cmd-bmr-legacy',
+        type: 'bmr_recover',
+        status: 'pending',
+        payload: null,
+        createdAt: executedAt,
+        executedAt: null,
+        deliverBy: null,
+      },
+    ]));
+
+    updateMock.mockImplementation((table: unknown) => {
+      throw new Error(`Unexpected table update: ${String(table)}`);
+    });
+
+    const reaped = await reapStaleDeviceCommands();
+
+    expect(reaped).toBe(0);
+    expect(updateMock).not.toHaveBeenCalled();
+    expect(applyAutomationActionTerminalMock).not.toHaveBeenCalled();
   });
 
   // #2774 — a drain-window self_uninstall must outlive the 30-min timeout
@@ -1529,5 +1583,38 @@ describe('reapStaleScriptExecutions terminal-command guard (#3097)', () => {
     const written = execSet.mock.calls[0]![0];
     expect(written.status).toBe('timeout');
     expect(String(written.errorMessage)).toContain('no response from agent');
+  });
+});
+
+describe('reapCommandlessPendingRestores (D18 W01 §3.2 F8)', () => {
+  it('fails a commandless pending restore_jobs row older than 1h', async () => {
+    updateMock.mockImplementation(() => backupUpdateChain([{ id: 'restore-commandless-old' }]));
+
+    const reaped = await reapCommandlessPendingRestores();
+
+    expect(reaped).toBe(1);
+  });
+
+  it('does not touch a restore that already has a command_id (returns 0 rows from the DB-side WHERE)', async () => {
+    updateMock.mockImplementation(() => backupUpdateChain([]));
+
+    const reaped = await reapCommandlessPendingRestores();
+
+    expect(reaped).toBe(0);
+  });
+
+  it('sets status to failed with a distinguishing errorLog-equivalent detail', async () => {
+    let capturedSet: Record<string, unknown> | undefined;
+    updateMock.mockImplementation(() => ({
+      set: (values: Record<string, unknown>) => {
+        capturedSet = values;
+        return { where: () => ({ returning: vi.fn().mockResolvedValue([{ id: 'restore-1' }]) }) };
+      },
+    }));
+
+    await reapCommandlessPendingRestores();
+
+    expect(capturedSet?.status).toBe('failed');
+    expect(capturedSet?.completedAt).toBeInstanceOf(Date);
   });
 });

@@ -135,7 +135,14 @@ export function aiToolLabel(
   const verb = words[0];
   if (verb === undefined) return 'Tool';
 
-  const forms = isReadOnlyAction(input) ? VERB_FORMS.get : VERB_FORMS[verb.toLowerCase()];
+  const ownForms = VERB_FORMS[verb.toLowerCase()];
+  // A read-only `action` forces the `get` conjugation (#5170) — but ONLY for a
+  // tool whose leading token is a real verb. `disk_cleanup` / `system_cleanup`
+  // lead with a NOUN, so the override used to build the caption from a verb
+  // the tool never had and a subject that was half its name: both rendered
+  // "Checked cleanup". Fall through to the neutral title-case name instead,
+  // which is what an unmapped tool already gets for every other action.
+  const forms = isReadOnlyAction(input) && ownForms ? VERB_FORMS.get : ownForms;
   const subject = words.slice(1).join(' ');
   // A bare verb ("get_", "run") has no subject to attach, so "Checked" alone
   // would say nothing — fall through to the neutral name instead.

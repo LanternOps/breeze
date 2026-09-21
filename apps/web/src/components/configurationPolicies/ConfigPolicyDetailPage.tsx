@@ -20,6 +20,7 @@ import {
   Activity,
   LifeBuoy,
   Monitor,
+  Radar,
   ListChecks,
   Cloud,
   Info,
@@ -45,6 +46,7 @@ import { useFeatureLink } from './featureTabs/useFeatureLink';
 import AssignmentsTab from './AssignmentsTab';
 import PatchTab from './featureTabs/PatchTab';
 import AlertRuleTab from './featureTabs/AlertRuleTab';
+import MonitorsTab from './featureTabs/MonitorsTab';
 import BackupTab from './featureTabs/BackupTab';
 import SecurityTab from './featureTabs/SecurityTab';
 import MaintenanceTab from './featureTabs/MaintenanceTab';
@@ -108,6 +110,7 @@ const createStatusConfig = (): Record<
 const featureTabIcons: Record<FeatureType, React.ReactNode> = {
   patch: <PackageCheck className="h-4 w-4" />,
   alert_rule: <Bell className="h-4 w-4" />,
+  monitors: <Radar className="h-4 w-4" />,
   backup: <HardDrive className="h-4 w-4" />,
   security: <Shield className="h-4 w-4" />,
   maintenance: <Wrench className="h-4 w-4" />,
@@ -332,6 +335,12 @@ export default function ConfigPolicyDetailPage({
     featureLinks.find((l) => l.featureType === t);
   const parentLinkFor = (t: FeatureType) =>
     parentFeatureLinks.find((l) => l.featureType === t);
+  // Closest-wins advisory links. Monitor detection also receives the parent's
+  // attachments for cumulative resolution; existingLink still governs saves.
+  const effectiveLinks = [
+    ...featureLinks,
+    ...parentFeatureLinks.filter((link) => !linkFor(link.featureType)),
+  ];
   // Partner-wide ("all organizations") policies carry orgId === null (#1724).
   // A fixed, small set of feature types are fundamentally org-scoped (backup
   // storage credentials carry an org_id FK) and are rejected with a 400 by the
@@ -419,6 +428,8 @@ export default function ConfigPolicyDetailPage({
     const props = {
       policyId: policyId!,
       existingLink: linkFor(ft),
+      allLinks: effectiveLinks,
+      inheritedMonitorsLink: parentLinkFor('monitors'),
       onLinkChanged: handleLinkChanged,
       linkedPolicyId,
       parentLink: parentLinkFor(ft),
@@ -427,6 +438,7 @@ export default function ConfigPolicyDetailPage({
     switch (ft) {
       case 'patch': return <PatchTab {...props} />;
       case 'alert_rule': return <AlertRuleTab {...props} />;
+      case 'monitors': return <MonitorsTab {...props} />;
       case 'backup': return <BackupTab {...props} />;
       case 'security': return <SecurityTab {...props} />;
       case 'maintenance': return <MaintenanceTab {...props} />;

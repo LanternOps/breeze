@@ -94,15 +94,16 @@ const COUNTER_KEYS: AiAgentImpactCounterKey[] = [
   'fixWatchesHeld',
   'fixWatchesRecurred',
   'narrativesDelivered',
+  'fleetDesignsDelivered',
 ];
 
-/** Every counter a distinct value (base+1 .. base+10), plus llmCents = base+11. Non-uniform by construction. */
+/** Every counter a distinct value (base+1 .. base+11), plus llmCents = base+12. Non-uniform by construction. */
 function counterFields(base: number): Record<AiAgentImpactCounterKey, number> & { llmCents: number } {
   const out = {} as Record<AiAgentImpactCounterKey, number> & { llmCents: number };
   COUNTER_KEYS.forEach((key, i) => {
     out[key] = base + i + 1;
   });
-  out.llmCents = base + 11;
+  out.llmCents = base + 12;
   return out;
 }
 

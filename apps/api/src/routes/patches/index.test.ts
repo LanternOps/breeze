@@ -14,6 +14,8 @@ const DEVICE_C = 'cccccccc-cccc-cccc-cccc-cccccccccccc';
 const DEVICE_D = 'dddddddd-dddd-dddd-dddd-dddddddddddd';
 const PATCH_ID = '44444444-4444-4444-4444-444444444444';
 const RING_ID = '55555555-5555-4555-8555-555555555555';
+const REPORT_SITE_A = '66666666-6666-4666-8666-666666666666';
+const REPORT_SITE_B = '77777777-7777-4777-8777-777777777777';
 
 const mockAuthState = vi.hoisted(() => ({
   scope: 'organization' as 'organization' | 'partner' | 'system',
@@ -24,6 +26,24 @@ const mockAuthState = vi.hoisted(() => ({
   permissions: [
     { resource: '*', action: '*' }
   ] as Array<{ resource: string; action: string }>
+}));
+
+const reportAuthorityState = vi.hoisted(() => ({
+  result: {
+    ok: true as const,
+    authority: {
+      principalKind: 'user' as const,
+      scope: {
+        version: 1 as const,
+        kind: 'restricted' as const,
+        orgId: '11111111-1111-1111-1111-111111111111',
+        siteIds: ['66666666-6666-4666-8666-666666666666'],
+      },
+      principalUserId: '33333333-3333-3333-3333-333333333333',
+      capturedAt: new Date('2026-09-06T12:00:00Z'),
+      fingerprint: 'a'.repeat(64),
+    },
+  } as any,
 }));
 
 vi.mock('drizzle-orm', () => {
@@ -73,6 +93,7 @@ vi.mock('../../db/schema', () => ({
     osType: 'devices.osType'
   },
   devicePatches: {
+    id: 'devicePatches.id',
     deviceId: 'devicePatches.deviceId',
     orgId: 'devicePatches.orgId',
     patchId: 'devicePatches.patchId',
@@ -113,7 +134,14 @@ vi.mock('../../db/schema', () => ({
     startedAt: 'patchComplianceReports.startedAt',
     completedAt: 'patchComplianceReports.completedAt',
     createdAt: 'patchComplianceReports.createdAt',
-    outputPath: 'patchComplianceReports.outputPath'
+    outputPath: 'patchComplianceReports.outputPath',
+    executionScopeVersion: 'patchComplianceReports.executionScopeVersion',
+    executionScopeKind: 'patchComplianceReports.executionScopeKind',
+    executionScopeSiteIds: 'patchComplianceReports.executionScopeSiteIds',
+    executionScopeUserId: 'patchComplianceReports.executionScopeUserId',
+    executionScopeFingerprint: 'patchComplianceReports.executionScopeFingerprint',
+    executionScopeCapturedAt: 'patchComplianceReports.executionScopeCapturedAt',
+    executionScopePrincipalKind: 'patchComplianceReports.executionScopePrincipalKind',
   },
   patchRollbacks: {
     deviceId: 'patchRollbacks.deviceId',
@@ -134,6 +162,24 @@ vi.mock('../../services/auditEvents', () => ({
   writeRouteAudit: vi.fn(),
   writeAuditEvent: vi.fn()
 }));
+
+// Only `resolveRequestReportAuthority` is replaced: it is the single helper in
+// this module that needs a live database. Every decode / subset / persist call
+// below therefore runs the REAL implementation.
+//
+// A hand-written re-implementation used to stand in for `decodeSiteScope` and
+// `isSiteScopeSubset` here, and it had already drifted: its subset check
+// returned false for every `legacy_unscoped` candidate, while the real function
+// returns TRUE when the current caller is unrestricted (an org-wide reader's
+// authority does contain an unknown-scope org-wide row). A route test asserting
+// the mock's semantics would have passed while production did the opposite.
+vi.mock('../../services/siteScope', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/siteScope')>();
+  return {
+    ...actual,
+    resolveRequestReportAuthority: vi.fn(async () => reportAuthorityState.result),
+  };
+});
 
 vi.mock('../../jobs/patchComplianceReportWorker', () => ({
   enqueuePatchComplianceReport: vi.fn(async () => ({ enqueued: true, jobId: 'patch-compliance-report:test' }))
@@ -176,9 +222,31 @@ vi.mock('../../middleware/auth', () => ({
 }));
 
 import { db, withSystemDbAccessContext } from '../../db';
+import { devicePatches } from '../../db/schema';
 import { queueCommandForExecution } from '../../services/commandQueue';
 import { enqueuePatchComplianceReport } from '../../jobs/patchComplianceReportWorker';
 import { writeRouteAudit } from '../../services/auditEvents';
+// Real implementations (the mock above spreads the actual module). Fixtures
+// below must therefore carry a fingerprint the real decoder accepts.
+import {
+  persistedSiteScopeValues,
+  siteScopeFingerprint,
+  type SiteScopeV1,
+} from '../../services/siteScope';
+
+const restrictedReportScope = (orgId: string, siteIds: string[]): SiteScopeV1 =>
+  ({ version: 1, kind: 'restricted', orgId, siteIds });
+
+/** The seven persisted execution-scope columns of a user-owned report row. */
+function reportScopeColumns(scope: SiteScopeV1, userId: string, capturedAt: Date) {
+  return persistedSiteScopeValues({
+    principalKind: 'user',
+    scope,
+    principalUserId: userId,
+    capturedAt,
+    fingerprint: siteScopeFingerprint(scope),
+  });
+}
 
 function selectWhereResult(rows: unknown[]) {
   return {
@@ -193,6 +261,16 @@ function selectWhereLimitResult(rows: unknown[]) {
     from: vi.fn().mockReturnValue({
       where: vi.fn().mockReturnValue({
         limit: vi.fn().mockResolvedValue(rows)
+      })
+    })
+  };
+}
+
+function selectLeftJoinWhereResult(rows: unknown[]) {
+  return {
+    from: vi.fn().mockReturnValue({
+      leftJoin: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue(rows)
       })
     })
   };
@@ -266,6 +344,17 @@ describe('patch routes', () => {
     mockAuthState.partnerOrgAccess = null;
     mockAuthState.accessibleOrgIds = [ACCESSIBLE_ORG_ID];
     mockAuthState.permissions = [{ resource: '*', action: '*' }];
+    const defaultScope = restrictedReportScope(ACCESSIBLE_ORG_ID, [REPORT_SITE_A]);
+    reportAuthorityState.result = {
+      ok: true,
+      authority: {
+        principalKind: 'user',
+        scope: defaultScope,
+        principalUserId: USER_ID,
+        capturedAt: new Date('2026-09-06T12:00:00Z'),
+        fingerprint: siteScopeFingerprint(defaultScope),
+      },
+    };
     app = new Hono();
     app.route('/patches', patchRoutes);
   });
@@ -349,6 +438,38 @@ describe('patch routes', () => {
     const body = await res.json();
     expect(body.data).toHaveLength(1);
     expect(body.data[0].os).toBe('macos');
+  });
+
+  // GET /patches was scope-only: every sibling patch READ requires
+  // `devices:read` (compliance.ts, approvals.ts), but the list route — which
+  // returns the same patch inventory, joined per-org — required no permission
+  // at all, so a token holding NO device permission could still enumerate it.
+  it('denies the patch list without devices:read', async () => {
+    mockAuthState.permissions = [{ resource: 'reports', action: 'read' }];
+
+    const res = await app.request('/patches', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(403);
+    // Refused before any query runs.
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('allows the patch list with devices:read', async () => {
+    mockAuthState.permissions = [{ resource: 'devices', action: 'read' }];
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectPatchListResult([]) as any)
+      .mockReturnValueOnce(selectWhereResult([{ count: 0 }]) as any)
+      .mockReturnValueOnce(selectSourceCountsResult() as any);
+
+    const res = await app.request('/patches', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(200);
   });
 
   it('includes cveIds and version in the patch list response', async () => {
@@ -694,18 +815,19 @@ describe('patch routes', () => {
 
   it('queues a compliance report request and returns a persisted report id', async () => {
     const reportId = '55555555-5555-5555-5555-555555555555';
+    const values = vi.fn().mockReturnValue({
+      returning: vi.fn().mockResolvedValue([
+        {
+          id: reportId,
+          orgId: ACCESSIBLE_ORG_ID,
+          status: 'pending',
+          format: 'csv'
+        }
+      ])
+    });
 
     vi.mocked(db.insert).mockReturnValueOnce({
-      values: vi.fn().mockReturnValue({
-        returning: vi.fn().mockResolvedValue([
-          {
-            id: reportId,
-            orgId: ACCESSIBLE_ORG_ID,
-            status: 'pending',
-            format: 'csv'
-          }
-        ])
-      })
+      values,
     } as any);
 
     const res = await app.request('/patches/compliance/report?source=apple&severity=critical', {
@@ -721,6 +843,34 @@ describe('patch routes', () => {
     expect(body.source).toBe('apple');
     expect(body.severity).toBe('critical');
     expect(enqueuePatchComplianceReport).toHaveBeenCalledWith(reportId);
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({
+      orgId: ACCESSIBLE_ORG_ID,
+      requestedBy: USER_ID,
+      executionScopeVersion: 1,
+      executionScopeKind: 'restricted',
+      executionScopeSiteIds: [REPORT_SITE_A],
+      executionScopeUserId: USER_ID,
+      executionScopeFingerprint: siteScopeFingerprint(
+        restrictedReportScope(ACCESSIBLE_ORG_ID, [REPORT_SITE_A]),
+      ),
+      executionScopePrincipalKind: 'user',
+    }));
+  });
+
+  it('fails closed before persistence when exact export authority cannot be resolved', async () => {
+    reportAuthorityState.result = {
+      ok: false,
+      reason: 'empty_scope',
+    } as any;
+
+    const res = await app.request('/patches/compliance/report', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(403);
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(enqueuePatchComplianceReport).not.toHaveBeenCalled();
   });
 
   it('denies queueing a compliance report without reports export permission', async () => {
@@ -779,7 +929,12 @@ describe('patch routes', () => {
       startedAt: now,
       completedAt: now,
       createdAt: now,
-      outputPath: '/tmp/report.csv'
+      outputPath: '/tmp/report.csv',
+      ...reportScopeColumns(
+        restrictedReportScope(ACCESSIBLE_ORG_ID, [REPORT_SITE_A]),
+        USER_ID,
+        now,
+      ),
     }]) as any);
 
     const res = await app.request(`/patches/compliance/report/${reportId}`, {
@@ -790,6 +945,62 @@ describe('patch routes', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.data.id).toBe(reportId);
+  });
+
+  it('returns an opaque not-found when current read scope is narrower than the stored report scope', async () => {
+    const reportId = '55555555-5555-5555-5555-555555555555';
+    const now = new Date('2026-05-02T12:00:00Z');
+    mockAuthState.permissions = [{ resource: 'reports', action: 'read' }];
+    reportAuthorityState.result.authority.scope = {
+      version: 1,
+      kind: 'restricted',
+      orgId: ACCESSIBLE_ORG_ID,
+      siteIds: [REPORT_SITE_B],
+    };
+    vi.mocked(db.select).mockReturnValueOnce(selectWhereLimitResult([{
+      id: reportId,
+      orgId: ACCESSIBLE_ORG_ID,
+      status: 'completed',
+      format: 'csv',
+      outputPath: '/tmp/report.csv',
+      ...reportScopeColumns(
+        restrictedReportScope(ACCESSIBLE_ORG_ID, [REPORT_SITE_A]),
+        USER_ID,
+        now,
+      ),
+    }]) as any);
+
+    const res = await app.request(`/patches/compliance/report/${reportId}`, {
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Report not found' });
+  });
+
+  it('returns an opaque not-found for legacy report scope before exposing status metadata', async () => {
+    const reportId = '55555555-5555-5555-5555-555555555555';
+    mockAuthState.permissions = [{ resource: 'reports', action: 'read' }];
+    vi.mocked(db.select).mockReturnValueOnce(selectWhereLimitResult([{
+      id: reportId,
+      orgId: ACCESSIBLE_ORG_ID,
+      status: 'completed',
+      format: 'csv',
+      outputPath: '/tmp/report.csv',
+      executionScopeVersion: null,
+      executionScopeKind: null,
+      executionScopeSiteIds: null,
+      executionScopeUserId: null,
+      executionScopeFingerprint: null,
+      executionScopeCapturedAt: null,
+      executionScopePrincipalKind: null,
+    }]) as any);
+
+    const res = await app.request(`/patches/compliance/report/${reportId}`, {
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(404);
   });
 
   it('denies report status without reports read permission', async () => {
@@ -818,6 +1029,37 @@ describe('patch routes', () => {
     expect(db.select).not.toHaveBeenCalled();
   });
 
+  it('returns an opaque not-found before file access when download scope has narrowed', async () => {
+    const reportId = '55555555-5555-5555-5555-555555555555';
+    const now = new Date('2026-05-02T12:00:00Z');
+    mockAuthState.permissions = [{ resource: 'reports', action: 'export' }];
+    reportAuthorityState.result.authority.scope = {
+      version: 1,
+      kind: 'restricted',
+      orgId: ACCESSIBLE_ORG_ID,
+      siteIds: [REPORT_SITE_B],
+    };
+    vi.mocked(db.select).mockReturnValueOnce(selectWhereLimitResult([{
+      id: reportId,
+      orgId: ACCESSIBLE_ORG_ID,
+      status: 'completed',
+      format: 'csv',
+      outputPath: '/tmp/hidden-report.csv',
+      ...reportScopeColumns(
+        restrictedReportScope(ACCESSIBLE_ORG_ID, [REPORT_SITE_A]),
+        USER_ID,
+        now,
+      ),
+    }]) as any);
+
+    const res = await app.request(`/patches/compliance/report/${reportId}/download`, {
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Report not found' });
+  });
+
   it('queues rollback commands for accessible devices', async () => {
     const insertValues = vi.fn().mockResolvedValue(undefined);
     vi.mocked(db.select)
@@ -829,9 +1071,9 @@ describe('patch routes', () => {
           title: 'Example Patch'
         }
       ]) as any)
-      .mockReturnValueOnce(selectWhereResult([
-        { id: DEVICE_A, orgId: ACCESSIBLE_ORG_ID },
-        { id: DEVICE_B, orgId: BLOCKED_ORG_ID }
+      .mockReturnValueOnce(selectLeftJoinWhereResult([
+        { id: DEVICE_A, orgId: ACCESSIBLE_ORG_ID, siteId: null, observationId: 'dp-a' },
+        { id: DEVICE_B, orgId: BLOCKED_ORG_ID, siteId: null, observationId: 'dp-b' }
       ]) as any);
 
     vi.mocked(queueCommandForExecution).mockResolvedValue({
@@ -905,8 +1147,8 @@ describe('patch routes', () => {
           title: 'Example Patch'
         }
       ]) as any)
-      .mockReturnValueOnce(selectWhereResult([
-        { id: DEVICE_A, orgId: ACCESSIBLE_ORG_ID }
+      .mockReturnValueOnce(selectLeftJoinWhereResult([
+        { id: DEVICE_A, orgId: ACCESSIBLE_ORG_ID, siteId: null, observationId: 'dp-a' }
       ]) as any);
 
     vi.mocked(queueCommandForExecution).mockResolvedValue({
@@ -945,10 +1187,10 @@ describe('patch routes', () => {
           title: 'Example Patch'
         }
       ]) as any)
-      .mockReturnValueOnce(selectWhereResult([
-        { id: DEVICE_A, orgId: ACCESSIBLE_ORG_ID },
-        { id: DEVICE_C, orgId: ACCESSIBLE_ORG_ID },
-        { id: DEVICE_D, orgId: ACCESSIBLE_ORG_ID }
+      .mockReturnValueOnce(selectLeftJoinWhereResult([
+        { id: DEVICE_A, orgId: ACCESSIBLE_ORG_ID, siteId: null, observationId: 'dp-a' },
+        { id: DEVICE_C, orgId: ACCESSIBLE_ORG_ID, siteId: null, observationId: 'dp-c' },
+        { id: DEVICE_D, orgId: ACCESSIBLE_ORG_ID, siteId: null, observationId: 'dp-d' }
       ]) as any);
 
     vi.mocked(queueCommandForExecution).mockImplementation(async (deviceId: string) => {
@@ -1010,9 +1252,9 @@ describe('patch routes', () => {
           title: 'Example Patch'
         }
       ]) as any)
-      .mockReturnValueOnce(selectWhereResult([
-        { id: DEVICE_A, orgId: ACCESSIBLE_ORG_ID },
-        { id: DEVICE_C, orgId: ACCESSIBLE_ORG_ID }
+      .mockReturnValueOnce(selectLeftJoinWhereResult([
+        { id: DEVICE_A, orgId: ACCESSIBLE_ORG_ID, siteId: null, observationId: 'dp-a' },
+        { id: DEVICE_C, orgId: ACCESSIBLE_ORG_ID, siteId: null, observationId: 'dp-c' }
       ]) as any);
 
     vi.mocked(queueCommandForExecution).mockResolvedValue({
@@ -1055,6 +1297,92 @@ describe('patch routes', () => {
         })
       })
     );
+  });
+
+  it('binds explicit rollback targets to each device\'s own installed observation (#5565)', async () => {
+    const insertValues = vi.fn().mockResolvedValue(undefined);
+    const observationWhere = vi.fn().mockResolvedValue([
+      { id: DEVICE_A, orgId: ACCESSIBLE_ORG_ID, siteId: null, observationId: 'dp-a' },
+      // DEVICE_C exists and is accessible but has no `installed` observation of
+      // this patch — it must be skipped, not sent a rollback for a patch it
+      // never reported.
+      { id: DEVICE_C, orgId: ACCESSIBLE_ORG_ID, siteId: null, observationId: null },
+      // DEVICE_B is outside the caller's org and also lacks the patch: it must
+      // be reported as inaccessible, never as not-installed (no install-state
+      // disclosure for devices the caller cannot reach).
+      { id: DEVICE_B, orgId: BLOCKED_ORG_ID, siteId: null, observationId: null }
+    ]);
+    const observationLeftJoin = vi.fn().mockReturnValue({ where: observationWhere });
+    // The direct `where` member keeps this boundary test runnable against the
+    // vulnerable baseline, which selected devices without any observation join.
+    const observationFrom = vi.fn().mockReturnValue({
+      leftJoin: observationLeftJoin,
+      where: observationWhere
+    });
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectWhereLimitResult([
+        { id: PATCH_ID, source: 'apple', externalId: 'apple:example-patch', title: 'Example Patch' }
+      ]) as any)
+      .mockReturnValueOnce({ from: observationFrom } as any);
+    vi.mocked(queueCommandForExecution).mockResolvedValue({
+      command: { id: 'cmd-rollback-bound', status: 'sent' }
+    } as any);
+    vi.mocked(db.insert).mockReturnValue({ values: insertValues } as any);
+
+    const res = await app.request(`/patches/${PATCH_ID}/rollback`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        scheduleType: 'immediate',
+        deviceIds: [DEVICE_A, DEVICE_B, DEVICE_C, DEVICE_D]
+      })
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+
+    expect(observationLeftJoin).toHaveBeenCalledWith(devicePatches, expect.anything());
+    const joinOn = JSON.stringify(observationLeftJoin.mock.calls[0]?.[1]);
+    expect(joinOn).toContain(PATCH_ID);
+    expect(joinOn).toContain('installed');
+
+    expect(body.deviceCount).toBe(1);
+    expect(body.queuedCommandIds).toEqual(['cmd-rollback-bound']);
+    expect(body.skipped.notInstalledDeviceIds).toEqual([DEVICE_C]);
+    expect(body.skipped.inaccessibleDeviceIds).toEqual([DEVICE_B]);
+    expect(body.skipped.missingDeviceIds).toEqual([DEVICE_D]);
+    expect(queueCommandForExecution).toHaveBeenCalledTimes(1);
+    expect(queueCommandForExecution).toHaveBeenCalledWith(
+      DEVICE_A,
+      'rollback_patches',
+      expect.objectContaining({ patchIds: [PATCH_ID] }),
+      { userId: USER_ID, preferHeartbeat: false }
+    );
+    expect(insertValues).toHaveBeenCalledWith([
+      expect.objectContaining({ deviceId: DEVICE_A, patchId: PATCH_ID })
+    ]);
+  });
+
+  it('returns 404 when none of the requested devices has the patch installed (#5565)', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectWhereLimitResult([
+        { id: PATCH_ID, source: 'apple', externalId: 'apple:example-patch', title: 'Example Patch' }
+      ]) as any)
+      .mockReturnValueOnce(selectLeftJoinWhereResult([
+        { id: DEVICE_A, orgId: ACCESSIBLE_ORG_ID, siteId: null, observationId: null }
+      ]) as any);
+
+    const res = await app.request(`/patches/${PATCH_ID}/rollback`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scheduleType: 'immediate', deviceIds: [DEVICE_A] })
+    });
+
+    expect(res.status).toBe(404);
+    const body = await res.json();
+    expect(body.skipped.notInstalledDeviceIds).toEqual([DEVICE_A]);
+    expect(queueCommandForExecution).not.toHaveBeenCalled();
+    expect(db.insert).not.toHaveBeenCalled();
   });
 
   it('rejects scheduled rollback until scheduler support is implemented', async () => {

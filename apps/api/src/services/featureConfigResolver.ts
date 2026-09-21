@@ -7,6 +7,7 @@ import {
   configPolicyAssignments,
   configPolicyAlertRules,
   configPolicyAutomations,
+  monitorConversions,
   configPolicyComplianceRules,
   configPolicyPatchSettings,
   configPolicyMaintenanceSettings,
@@ -20,10 +21,16 @@ import {
   sites,
   softwarePolicies,
 } from '../db/schema';
-import { and, eq, ne, sql, inArray, asc, SQL } from 'drizzle-orm';
+import { and, eq, ne, sql, inArray, asc, SQL, or, isNull } from 'drizzle-orm';
 import { resolveEffectiveTimezone, canonicalizeTimezone } from '@breeze/shared';
+import {
+  MAINTENANCE_DATETIME_TIME_PATTERN,
+  MAINTENANCE_EXPLICIT_UTC_OFFSET_PATTERN,
+  MAINTENANCE_TIME_OF_DAY_PATTERN,
+} from '@breeze/shared/validators';
 import type { AuthContext } from '../middleware/auth';
 import type { TokenPayload } from './jwt';
+import type { DbExecutor } from './monitors/monitorCompiler';
 import type { AutomationAssignmentLevel } from '../jobs/queueSchemas';
 
 // ============================================
@@ -93,9 +100,9 @@ interface DeviceHierarchy {
   osType: string;
 }
 
-async function loadDeviceHierarchy(deviceId: string): Promise<DeviceHierarchy | null> {
+async function loadDeviceHierarchy(deviceId: string, executor: DbExecutor = db): Promise<DeviceHierarchy | null> {
   // 1. Load device
-  const [device] = await db
+  const [device] = await executor
     .select({ id: devices.id, orgId: devices.orgId, siteId: devices.siteId, deviceRole: devices.deviceRole, osType: devices.osType })
     .from(devices)
     .where(eq(devices.id, deviceId))
@@ -104,14 +111,14 @@ async function loadDeviceHierarchy(deviceId: string): Promise<DeviceHierarchy | 
   if (!device) return null;
 
   // 2. Load org for partnerId
-  const [org] = await db
+  const [org] = await executor
     .select({ partnerId: organizations.partnerId })
     .from(organizations)
     .where(eq(organizations.id, device.orgId))
     .limit(1);
 
   // 3. Load device group memberships
-  const groupRows = await db
+  const groupRows = await executor
     .select({ groupId: deviceGroupMemberships.groupId })
     .from(deviceGroupMemberships)
     .where(eq(deviceGroupMemberships.deviceId, deviceId));
@@ -127,14 +134,47 @@ async function loadDeviceHierarchy(deviceId: string): Promise<DeviceHierarchy | 
   };
 }
 
+export type RoleOsFilterable = {
+  roleFilter?: string[] | null;
+  osFilter?: string[] | null;
+};
+
+export type DeviceRoleOs = {
+  deviceRole?: string | null;
+  osType?: string | null;
+};
+
+/**
+ * Pure predicate matching the SQL semantics of buildRoleOsFilterConditions:
+ * - NULL or undefined filter matches all (backward compatible).
+ * - Non-empty filter matches if device's role/os is contained in the array.
+ * - Empty array filter matches none (matches Postgres `x = ANY('{}')` which is false).
+ */
+export function matchesRoleOsFilter(
+  assignment: RoleOsFilterable,
+  device: DeviceRoleOs
+): boolean {
+  if (assignment.roleFilter != null) {
+    if (!device.deviceRole || !assignment.roleFilter.includes(device.deviceRole)) {
+      return false;
+    }
+  }
+  if (assignment.osFilter != null) {
+    if (!device.osType || !assignment.osFilter.includes(device.osType)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 /**
  * Build SQL conditions that enforce roleFilter and osFilter on assignments.
  * NULL filter = match all (backward compatible).
  */
-function buildRoleOsFilterConditions(hierarchy: DeviceHierarchy): SQL[] {
+export function buildRoleOsFilterConditions(device: DeviceRoleOs): SQL[] {
   return [
-    sql`(${configPolicyAssignments.roleFilter} IS NULL OR ${sql.param(hierarchy.deviceRole)} = ANY(${configPolicyAssignments.roleFilter}))`,
-    sql`(${configPolicyAssignments.osFilter} IS NULL OR ${sql.param(hierarchy.osType)} = ANY(${configPolicyAssignments.osFilter}))`,
+    sql`(${configPolicyAssignments.roleFilter} IS NULL OR ${sql.param(device.deviceRole)} = ANY(${configPolicyAssignments.roleFilter}))`,
+    sql`(${configPolicyAssignments.osFilter} IS NULL OR ${sql.param(device.osType)} = ANY(${configPolicyAssignments.osFilter}))`,
   ];
 }
 
@@ -314,7 +354,7 @@ export async function resolveGoverningAlertRulePolicyForDevice(
     .from(configPolicyEffectiveFeatureLinks)
     .innerJoin(
       configPolicyAlertRules,
-      eq(configPolicyAlertRules.featureLinkId, configPolicyEffectiveFeatureLinks.id)
+      and(eq(configPolicyAlertRules.featureLinkId, configPolicyEffectiveFeatureLinks.id), isNull(configPolicyAlertRules.retiredAt))
     )
     .where(
       and(
@@ -385,7 +425,7 @@ export async function resolveAlertRulesForDevice(
     )
     .innerJoin(
       configPolicyAlertRules,
-      eq(configPolicyAlertRules.featureLinkId, configPolicyEffectiveFeatureLinks.id)
+      and(eq(configPolicyAlertRules.featureLinkId, configPolicyEffectiveFeatureLinks.id), isNull(configPolicyAlertRules.retiredAt))
     )
     .where(and(sql`(${sql.join(targetConditions, sql` OR `)})`, ...roleOsConditions))
     .orderBy(
@@ -424,10 +464,10 @@ export interface ResolvedDeviceAutomations {
  * assignment won. `null` when the device is unknown or nothing is assigned —
  * callers treat that as "skip this device", never as "no constraint applies".
  */
-export async function resolveAutomationsForDeviceWithPolicy(
-  deviceId: string
+export async function resolveAutomationAssignmentForDevice(
+  deviceId: string, executor: DbExecutor = db,
 ): Promise<ResolvedDeviceAutomations | null> {
-  const hierarchy = await loadDeviceHierarchy(deviceId);
+  const hierarchy = await loadDeviceHierarchy(deviceId, executor);
   if (!hierarchy) return null;
 
   const targetConditions = buildTargetConditions(hierarchy);
@@ -438,7 +478,7 @@ export async function resolveAutomationsForDeviceWithPolicy(
   // breeze_current_partner_id(). So this runs in the CALLER'S OWN context (W03
   // deleted the system-context escape). Self-tenanted by this device's own
   // hierarchy on top of RLS.
-  const rows = await db
+  const rows = await executor
     .select({
       automation: configPolicyAutomations,
       assignmentLevel: configPolicyAssignments.level,
@@ -465,7 +505,12 @@ export async function resolveAutomationsForDeviceWithPolicy(
     )
     .innerJoin(
       configPolicyAutomations,
-      eq(configPolicyAutomations.featureLinkId, configPolicyEffectiveFeatureLinks.id)
+      and(eq(configPolicyAutomations.featureLinkId, configPolicyEffectiveFeatureLinks.id),
+        or(isNull(configPolicyAutomations.retiredAt), sql`EXISTS (SELECT 1 FROM ${monitorConversions}
+          WHERE ${monitorConversions.sourceTable} = 'config_policy_automations'
+            AND ${monitorConversions.sourceId} = ${configPolicyAutomations.id}
+            AND ${monitorConversions.revertedAt} IS NULL
+            AND ${monitorConversions.sourceState}->>'workflowId' IS NOT NULL)`))
     )
     .where(and(sql`(${sql.join(targetConditions, sql` OR `)})`, ...roleOsConditions))
     .orderBy(
@@ -485,6 +530,13 @@ export async function resolveAutomationsForDeviceWithPolicy(
     configPolicyId: winner.policyId,
     automations: winning.map((r) => r.automation),
   };
+}
+
+export async function resolveAutomationsForDeviceWithPolicy(
+  deviceId: string, executor: DbExecutor = db,
+): Promise<ResolvedDeviceAutomations | null> {
+  const winner = await resolveAutomationAssignmentForDevice(deviceId, executor);
+  return winner ? { ...winner, automations: winner.automations.filter((automation) => !automation.retiredAt) } : null;
 }
 
 /**
@@ -1400,7 +1452,8 @@ export async function scanScheduledAutomations(): Promise<ScheduledAutomationWit
     .where(
       and(
         eq(configPolicyAutomations.triggerType, 'schedule'),
-        eq(configPolicyAutomations.enabled, true)
+        eq(configPolicyAutomations.enabled, true),
+        isNull(configPolicyAutomations.retiredAt)
       )
     )
     .orderBy(
@@ -1535,7 +1588,14 @@ export function backupSelectionSpecs(
   if (s.system_image?.enabled === true) {
     specs.push({
       backupMode: 'system_image',
-      targets: { includeSystemState: s.system_image.includeSystemState !== false },
+      targets: {
+        includeSystemState: s.system_image.includeSystemState !== false,
+        // #5493: wholeMachine tells resolveBackupTargets to walk the device's
+        // OS root alongside layout.json + system state, so the fan-out
+        // produces one snapshot instead of a files-only + files-less pair.
+        wholeMachine: s.system_image.wholeMachine === true,
+        excludes: Array.isArray(s.system_image.excludes) ? s.system_image.excludes : [],
+      },
     });
   }
   if (s.mssql?.enabled === true) {
@@ -1694,6 +1754,12 @@ export async function resolveAllBackupAssignedDevices(
       assignmentTargetId: configPolicyAssignments.targetId,
       assignmentPriority: configPolicyAssignments.priority,
       assignmentCreatedAt: configPolicyAssignments.createdAt,
+      // #6001: role/OS targeting, applied per expanded device below. The
+      // per-device resolver enforces the same two columns in SQL
+      // (buildRoleOsFilterConditions); this one cannot, because it expands one
+      // assignment to many devices with different roles and OSes.
+      roleFilter: configPolicyAssignments.roleFilter,
+      osFilter: configPolicyAssignments.osFilter,
     })
     .from(configPolicyEffectiveFeatureLinks)
     .innerJoin(
@@ -1744,7 +1810,10 @@ export async function resolveAllBackupAssignedDevices(
   const targetableDevice = backupTargetableDeviceCondition();
 
   for (const row of sorted) {
-    let deviceIds: string[];
+    // Candidates carry role/os so the role/OS filter can be applied per device
+    // (#6001). Selecting the two columns here costs nothing — the branch
+    // queries already read the `devices` row.
+    let candidates: { id: string; deviceRole: string | null; osType: string | null }[];
 
     // EVERY branch must re-tenant to `orgId`. A partner-wide policy is visible
     // to every org under the partner, so its assignment can name a target in a
@@ -1757,7 +1826,7 @@ export async function resolveAllBackupAssignedDevices(
     switch (row.assignmentLevel) {
       case 'device': {
         const [device] = await db
-          .select({ id: devices.id })
+          .select({ id: devices.id, deviceRole: devices.deviceRole, osType: devices.osType })
           .from(devices)
           .where(
             and(
@@ -1767,12 +1836,12 @@ export async function resolveAllBackupAssignedDevices(
             )
           )
           .limit(1);
-        deviceIds = device ? [device.id] : [];
+        candidates = device ? [device] : [];
         break;
       }
       case 'device_group': {
-        const members = await db
-          .select({ deviceId: devices.id })
+        candidates = await db
+          .select({ id: devices.id, deviceRole: devices.deviceRole, osType: devices.osType })
           .from(deviceGroupMemberships)
           .innerJoin(devices, eq(devices.id, deviceGroupMemberships.deviceId))
           .where(
@@ -1782,12 +1851,11 @@ export async function resolveAllBackupAssignedDevices(
               targetableDevice
             )
           );
-        deviceIds = members.map((m) => m.deviceId);
         break;
       }
       case 'site': {
-        const siteDevices = await db
-          .select({ id: devices.id })
+        candidates = await db
+          .select({ id: devices.id, deviceRole: devices.deviceRole, osType: devices.osType })
           .from(devices)
           .where(
             and(
@@ -1796,25 +1864,23 @@ export async function resolveAllBackupAssignedDevices(
               targetableDevice
             )
           );
-        deviceIds = siteDevices.map((d) => d.id);
         break;
       }
       case 'organization': {
         // An org-level assignment contributes devices ONLY to the org it names.
         if (row.assignmentTargetId !== orgId) {
-          deviceIds = [];
+          candidates = [];
           break;
         }
-        const orgDevices = await db
-          .select({ id: devices.id })
+        candidates = await db
+          .select({ id: devices.id, deviceRole: devices.deviceRole, osType: devices.osType })
           .from(devices)
           .where(and(eq(devices.orgId, orgId), targetableDevice));
-        deviceIds = orgDevices.map((d) => d.id);
         break;
       }
       case 'partner': {
-        const partnerDevices = await db
-          .select({ id: devices.id })
+        candidates = await db
+          .select({ id: devices.id, deviceRole: devices.deviceRole, osType: devices.osType })
           .from(devices)
           .innerJoin(organizations, eq(devices.orgId, organizations.id))
           .where(
@@ -1824,12 +1890,27 @@ export async function resolveAllBackupAssignedDevices(
               targetableDevice
             )
           );
-        deviceIds = partnerDevices.map((d) => d.id);
         break;
       }
       default:
-        deviceIds = [];
+        candidates = [];
     }
+
+    // #6001: role/OS targeting, applied with the SAME predicate the per-device
+    // resolver enforces in SQL (`matchesRoleOsFilter` mirrors
+    // `buildRoleOsFilterConditions`). Without it this resolver's candidate set
+    // was a strict SUPERSET of the manual one, so an assignment the device page
+    // excludes could outrank — and silently replace — the one it picks. Both
+    // are first-wins-by-hierarchy, so the two entry points then dispatched
+    // different links for the same device: manual backups succeeded while the
+    // nightly sweep shipped a pathless one.
+    //
+    // Filtering HERE (before `seen`) and not after is what makes the two agree:
+    // an excluded device must leave the slot open for the next assignment down
+    // the hierarchy, exactly as the manual resolver's WHERE clause does.
+    const deviceIds = candidates
+      .filter((device) => matchesRoleOsFilter(row, device))
+      .map((device) => device.id);
 
     // First assignment wins per device (sorted is already highest-priority-first)
     const profileId = row.backupSettings?.backupProfileId ?? null;
@@ -2011,16 +2092,14 @@ export interface MaintenanceWindowStatus {
   windowEndsAt: Date | null;
 }
 
-/** Bare time of day, e.g. "1:50", "01:50" or "01:50:00". */
-const TIME_OF_DAY_PATTERN = /^(\d{1,2}):(\d{2})(?::\d{2})?$/;
-/** Time component of a naive (zoneless) ISO-8601-ish datetime, e.g. "2026-03-15T02:00". */
-const DATETIME_TIME_PATTERN = /^\d{4}-\d{2}-\d{2}[T ](\d{1,2}):(\d{2})/;
-/**
- * A trailing `Z` or `±HH:MM` offset. Such a value names an *instant*, so its
- * digits are not wall-clock time in `settings.timezone` — `migrateToConfigPolicies`
- * writes exactly this shape (`toISOString()`) for migrated `once` windows.
- */
-const EXPLICIT_UTC_OFFSET_PATTERN = /(?:Z|[+-]\d{2}:?\d{2})$/i;
+// The maintenance windowStart grammar lives in @breeze/shared so the write-time
+// gate (maintenanceInlineSettingsSchema, #6312) and this evaluator cannot drift
+// apart about what a stored value means. `migrateToConfigPolicies` writes a
+// `toISOString()` (offset-bearing) value for migrated `once` windows, which is
+// why the offset form stays legal for `once` and only recurring rejects it.
+const TIME_OF_DAY_PATTERN = MAINTENANCE_TIME_OF_DAY_PATTERN;
+const DATETIME_TIME_PATTERN = MAINTENANCE_DATETIME_TIME_PATTERN;
+const EXPLICIT_UTC_OFFSET_PATTERN = MAINTENANCE_EXPLICIT_UTC_OFFSET_PATTERN;
 
 /** The anchor recurring windows used before issue #4224, and the fallback still. */
 const MIDNIGHT_ANCHOR = { hours: 0, minutes: 0 } as const;
@@ -2079,6 +2158,161 @@ function parseRecurringWindowAnchor(
  * one at or before `now` — a 23:00 daily window is still open at 00:30 the
  * next morning.
  */
+/**
+ * The wall clock in `tz` at `instant`, rendered as a Date whose LOCAL fields
+ * carry the wall-clock digits ("wall clock rendered as a Date"). Not a real
+ * instant — only comparisons and differences between values built this way
+ * are meaningful. Shared by `isInMaintenanceWindow` and the next-occurrence
+ * projector (`maintenanceWindowProjection.ts`, AI patch agent W04 #5750) so
+ * the two can never disagree about what time it is in the window's zone.
+ */
+export function maintenanceWallClock(instant: Date, timezone: string | null | undefined): Date {
+  const tz = timezone || 'UTC';
+  try {
+    const formatter = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hourCycle: 'h23',
+    });
+    const parts = formatter.formatToParts(instant);
+    const get = (type: string) => Number(parts.find((p) => p.type === type)?.value ?? '0');
+    // UTC field space, deliberately: a wall-clock Date built with the local
+    // constructor (`new Date('YYYY-MM-DDTHH:mm:ss')`) is parsed in the
+    // SERVER's zone, so on a server whose own zone has a DST gap that day
+    // (a Denver dev box on the US spring-forward Sunday) a 02:00 UTC window
+    // silently became 03:00. Every consumer reads these values back with the
+    // UTC getters, so the server's zone never enters the arithmetic.
+    return new Date(Date.UTC(get('year'), get('month') - 1, get('day'), get('hour'), get('minute'), get('second')));
+  } catch (err) {
+    console.warn(`[FeatureConfigResolver] Invalid timezone "${timezone}", falling back to UTC:`, err);
+    return instant;
+  }
+}
+
+/**
+ * A `once` window's `windowStart` as a wall-clock Date in the
+ * `maintenanceWallClock` space. A naive datetime is read digit-for-digit as
+ * wall time in the window's zone; a value carrying `Z`/an offset names an
+ * instant and is rendered into the zone first.
+ */
+function onceWindowStartWallClock(rawWindowStart: string, timezone: string | null | undefined): Date | null {
+  const value = rawWindowStart.trim();
+  if (value === '') return null;
+  if (EXPLICIT_UTC_OFFSET_PATTERN.test(value)) {
+    const instant = new Date(value);
+    return Number.isNaN(instant.getTime()) ? null : maintenanceWallClock(instant, timezone);
+  }
+  const wall = new Date(/^\d{4}-\d{2}-\d{2}$/.test(value) ? `${value}T00:00:00Z` : `${value.replace(' ', 'T')}Z`);
+  return Number.isNaN(wall.getTime()) ? null : wall;
+}
+
+/**
+ * The start of the maintenance occurrence that governs `localNow` — the most
+ * recent occurrence at or before it for a recurring window (so a 23:00 daily
+ * window is still that day's occurrence at 00:30), or the fixed start for a
+ * `once` window (which may be in the future). Both arguments and the result
+ * live in the wall-clock space of `maintenanceWallClock`. `null` when the
+ * settings describe no window at all (a `once` window with no/invalid start,
+ * or an unknown recurrence). This is THE recurrence arithmetic: the W04
+ * projector advances from this value rather than re-deriving the cadence.
+ */
+export function maintenanceOccurrenceStart(
+  settings: Pick<typeof configPolicyMaintenanceSettings.$inferSelect, 'recurrence' | 'windowStart' | 'timezone'>,
+  localNow: Date
+): Date | null {
+  // Lazily resolved so the `once` branch — which reads windowStart as a full
+  // datetime — never warns about a value that is valid for its own recurrence.
+  const resolveRecurringAnchor = (): { hours: number; minutes: number } => {
+    const anchor = parseRecurringWindowAnchor(settings.windowStart);
+    if (anchor === 'invalid') {
+      console.warn(
+        `[FeatureConfigResolver] Unparseable maintenance windowStart "${settings.windowStart}" for ` +
+          `'${settings.recurrence}' recurrence; anchoring the window to midnight`
+      );
+      return MIDNIGHT_ANCHOR;
+    }
+    return anchor;
+  };
+
+  let windowStart: Date;
+  switch (settings.recurrence) {
+    case 'once': {
+      // Window starts at the stored windowStart datetime (in the configured timezone).
+      // If no windowStart is stored, treat as inactive.
+      if (!settings.windowStart) return null;
+      return onceWindowStartWallClock(settings.windowStart, settings.timezone);
+    }
+    case 'daily': {
+      // Window starts at the configured time of day, every day. If today's
+      // occurrence has not begun yet, yesterday's may still be running.
+      const { hours, minutes } = resolveRecurringAnchor();
+      windowStart = new Date(localNow);
+      windowStart.setUTCHours(hours, minutes, 0, 0);
+      if (windowStart > localNow) {
+        windowStart.setUTCDate(windowStart.getUTCDate() - 1);
+      }
+      return windowStart;
+    }
+    case 'weekly': {
+      // Window starts at the configured time of day on Sunday. If this
+      // Sunday's occurrence has not begun yet, last Sunday's may still run.
+      const { hours, minutes } = resolveRecurringAnchor();
+      windowStart = new Date(localNow);
+      windowStart.setUTCDate(windowStart.getUTCDate() - windowStart.getUTCDay()); // 0 = Sunday
+      windowStart.setUTCHours(hours, minutes, 0, 0);
+      if (windowStart > localNow) {
+        windowStart.setUTCDate(windowStart.getUTCDate() - 7);
+      }
+      return windowStart;
+    }
+    case 'monthly': {
+      // Window starts at the configured time of day on the 1st. If this
+      // month's occurrence has not begun yet, last month's may still run.
+      const { hours, minutes } = resolveRecurringAnchor();
+      windowStart = new Date(localNow);
+      windowStart.setUTCDate(1);
+      windowStart.setUTCHours(hours, minutes, 0, 0);
+      if (windowStart > localNow) {
+        // Safe to roll the month back: the day is pinned to the 1st, so there
+        // is no short-month overflow.
+        windowStart.setUTCMonth(windowStart.getUTCMonth() - 1);
+      }
+      return windowStart;
+    }
+    default:
+      // Unknown recurrence type; treat as inactive
+      return null;
+  }
+}
+
+/**
+ * The occurrence after `occurrenceStart` for a recurring window, in the same
+ * wall-clock space; `null` for `once` (there is no next) and for unknown
+ * recurrences. The day stays pinned (every day / Sunday / the 1st at the
+ * same wall time), so a month rollover cannot overflow into a short month.
+ */
+export function maintenanceNextOccurrenceStart(recurrence: string, occurrenceStart: Date): Date | null {
+  const next = new Date(occurrenceStart);
+  switch (recurrence) {
+    case 'daily':
+      next.setUTCDate(next.getUTCDate() + 1);
+      return next;
+    case 'weekly':
+      next.setUTCDate(next.getUTCDate() + 7);
+      return next;
+    case 'monthly':
+      next.setUTCMonth(next.getUTCMonth() + 1);
+      return next;
+    default:
+      return null;
+  }
+}
+
 export function isInMaintenanceWindow(
   settings: typeof configPolicyMaintenanceSettings.$inferSelect,
   now?: Date
@@ -2094,108 +2328,16 @@ export function isInMaintenanceWindow(
   };
 
   const currentTime = now ?? new Date();
-  const tz = settings.timezone || 'UTC';
 
   // Get the current time in the maintenance window's timezone
-  let localNow: Date;
-  try {
-    const formatter = new Intl.DateTimeFormat('en-US', {
-      timeZone: tz,
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-      hourCycle: 'h23',
-    });
-    const parts = formatter.formatToParts(currentTime);
-    const get = (type: string) => parts.find((p) => p.type === type)?.value ?? '0';
-    localNow = new Date(
-      `${get('year')}-${get('month')}-${get('day')}T${get('hour')}:${get('minute')}:${get('second')}`
-    );
-  } catch (err) {
-    console.warn(`[FeatureConfigResolver] Invalid timezone "${settings.timezone}", falling back to UTC:`, err);
-    localNow = currentTime;
-  }
+  const localNow = maintenanceWallClock(currentTime, settings.timezone);
 
   const durationMs = settings.durationHours * 60 * 60 * 1000;
 
-  // Lazily resolved so the `once` branch — which reads windowStart as a full
-  // datetime — never warns about a value that is valid for its own recurrence.
-  const resolveRecurringAnchor = (): { hours: number; minutes: number } => {
-    const anchor = parseRecurringWindowAnchor(settings.windowStart);
-    if (anchor === 'invalid') {
-      console.warn(
-        `[FeatureConfigResolver] Unparseable maintenance windowStart "${settings.windowStart}" for ` +
-          `'${settings.recurrence}' recurrence; anchoring the window to midnight`
-      );
-      return MIDNIGHT_ANCHOR;
-    }
-    return anchor;
-  };
-
-  // Compute potential window start based on recurrence
-  let windowStart: Date;
-
-  switch (settings.recurrence) {
-    case 'once': {
-      // Window starts at the stored windowStart datetime (in the configured timezone).
-      // If no windowStart is stored, treat as inactive.
-      if (!settings.windowStart) {
-        return inactive;
-      }
-      try {
-        windowStart = new Date(settings.windowStart);
-        if (Number.isNaN(windowStart.getTime())) {
-          return inactive;
-        }
-      } catch {
-        return inactive;
-      }
-      break;
-    }
-    case 'daily': {
-      // Window starts at the configured time of day, every day. If today's
-      // occurrence has not begun yet, yesterday's may still be running.
-      const { hours, minutes } = resolveRecurringAnchor();
-      windowStart = new Date(localNow);
-      windowStart.setHours(hours, minutes, 0, 0);
-      if (windowStart > localNow) {
-        windowStart.setDate(windowStart.getDate() - 1);
-      }
-      break;
-    }
-    case 'weekly': {
-      // Window starts at the configured time of day on Sunday. If this
-      // Sunday's occurrence has not begun yet, last Sunday's may still run.
-      const { hours, minutes } = resolveRecurringAnchor();
-      windowStart = new Date(localNow);
-      windowStart.setDate(windowStart.getDate() - windowStart.getDay()); // 0 = Sunday
-      windowStart.setHours(hours, minutes, 0, 0);
-      if (windowStart > localNow) {
-        windowStart.setDate(windowStart.getDate() - 7);
-      }
-      break;
-    }
-    case 'monthly': {
-      // Window starts at the configured time of day on the 1st. If this
-      // month's occurrence has not begun yet, last month's may still run.
-      const { hours, minutes } = resolveRecurringAnchor();
-      windowStart = new Date(localNow);
-      windowStart.setDate(1);
-      windowStart.setHours(hours, minutes, 0, 0);
-      if (windowStart > localNow) {
-        // Safe to roll the month back: the day is pinned to the 1st, so there
-        // is no short-month overflow.
-        windowStart.setMonth(windowStart.getMonth() - 1);
-      }
-      break;
-    }
-    default: {
-      // Unknown recurrence type; treat as inactive
-      return inactive;
-    }
+  // The occurrence that governs now: shared with the next-window projector.
+  const windowStart = maintenanceOccurrenceStart(settings, localNow);
+  if (windowStart === null) {
+    return inactive;
   }
 
   const windowEnd = new Date(windowStart.getTime() + durationMs);
@@ -2224,10 +2366,10 @@ export function isInMaintenanceWindow(
  * Check if a device is currently in a maintenance window (from config policy).
  * Returns the maintenance window status, or inactive if no maintenance policy applies.
  */
-export async function checkDeviceMaintenanceWindow(deviceId: string): Promise<MaintenanceWindowStatus> {
+export async function checkDeviceMaintenanceWindow(deviceId: string, now?: Date): Promise<MaintenanceWindowStatus> {
   const settings = await resolveMaintenanceConfigForDevice(deviceId);
   if (!settings) {
     return { active: false, suppressAlerts: false, suppressPatching: false, suppressAutomations: false, suppressScripts: false, rebootIfPending: false, windowEndsAt: null };
   }
-  return isInMaintenanceWindow(settings);
+  return isInMaintenanceWindow(settings, now);
 }

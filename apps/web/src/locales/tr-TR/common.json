@@ -1,11 +1,20 @@
 {
+  "aiInitiator": {
+    "assistant": "Yapay zekâ asistanı",
+    "agent": "Yapay zekâ ajanı",
+    "originUnavailable": "Kaynak kullanılamıyor",
+    "openSession": "Görüşmeyi aç",
+    "openAgentRun": "Ajan çalıştırmasını aç",
+    "tool": "Araç: {{name}}",
+    "occurredAt": "{{time}} tarihinde gerçekleşti"
+  },
   "lists": {
     "separator": ", "
   },
   "nav": {
     "fleetPosture": "Filo Duruşu",
     "dashboard": "Kontrol Paneli",
-    "devices": "Cihazlar",
+    "devices": "Cihazlar ve Varlıklar",
     "alerts": "Uyarılar",
     "approvals": "Onaylar",
     "pendingApprovals": "{{count}} bekleyen onay",
@@ -20,6 +29,8 @@
     "oneDrive": "OneDrive",
     "aiForOffice": "Office için AI",
     "networkMonitor": "Ağ İzleyicisi",
+    "jobs": "İşler",
+    "monitoring": "İzleme",
     "networkDiscovery": "Ağ Keşfi",
     "edr": "EDR",
     "dnsSecurity": "DNS Güvenlik",
@@ -32,6 +43,7 @@
     "quotes": "Alıntılar",
     "invoices": "Faturalar",
     "contracts": "Sözleşmeler",
+    "agreements": "Anlaşmalar",
     "timesheets": "Zaman Çizelgeleri",
     "productCatalog": "Ürün Kataloğu",
     "deviceGroups": "Cihaz Grupları",
@@ -46,10 +58,13 @@
     "partner": "Ortak",
     "billing": "Faturalandırma",
     "organizations": "Organizasyonlar",
-    "aiUsageBudget": "Yapay Zeka Kullanımı ve Bütçe",
+    "aiUsage": "Yapay Zeka Kullanımı",
+    "scriptAuthoring": "Betik yazımı",
+    "toolSources": "Araç Kaynakları",
     "aiAgents": "Yapay Zeka Aracıları",
     "aiAgentRuns": "Yapay Zeka Ajan Çalıştırmaları",
     "aiImpact": "Yapay Zeka Etkisi",
+    "fleetDesign": "Filo Tasarımı",
     "customFields": "Özel Alanlar",
     "variables": "Değişkenler",
     "savedFilters": "Kayıtlı Filtreler",
@@ -80,7 +95,9 @@
     "aiRisk": "Yapay Zeka Riski",
     "deviceBackup": "Cihaz Yedekleme",
     "sectionServiceDesk": "Servis masası",
-    "serviceManagement": "Servis yönetimi"
+    "serviceManagement": "Servis yönetimi",
+    "ticketing": "Bilet Sistemi",
+    "deliverableTemplates": "Teslimat Şablonları"
   },
   "documentTitles": {
     "dashboard": "Kontrol Paneli",
@@ -713,7 +730,19 @@
         "scripts": "Komut Dosyaları",
         "alerts": "Uyarılar",
         "users": "Kullanıcılar",
-        "settings": "Ayarlar"
+        "settings": "Ayarlar",
+        "recent-devices": "Son açılan cihazlar",
+        "recent-pages": "Son ziyaret edilenler"
+      },
+      "actions": {
+        "newDevice": "Yeni cihaz",
+        "newDeviceDescription": "Filonuza bir cihaz ekleyin",
+        "runScript": "Betik çalıştır",
+        "runScriptDescription": "Cihazlarda bir betik çalıştırın",
+        "alertRules": "Uyarı kuralları",
+        "alertRulesDescription": "Yapılandırma Politikalarında uyarıları yönetin",
+        "keyboardShortcuts": "Klavye kısayolları",
+        "keyboardShortcutsDescription": "Tüm tuşlar ve tuş dizileri tek kartta"
       }
     },
     "notifications": {
@@ -753,7 +782,10 @@
       "collapse": "Kenar çubuğunu daralt",
       "expand": "Kenar çubuğunu genişlet",
       "collapseSections": "Tüm bölümleri daralt",
-      "closeMenu": "Menüyü kapat"
+      "closeMenu": "Menüyü kapat",
+      "recentDevices": "Son açılan cihazlar",
+      "hideRecentDevices": "Son açılan cihazları gizle",
+      "showRecentDevices": "Son açılan cihazları göster"
     },
     "orgRequired": {
       "title": "Bir kuruluş seçin",
@@ -764,6 +796,20 @@
       "title": "Kuruluşlarınız yüklenemedi",
       "description": "Kuruluş listeniz yüklenirken bir şeyler ters gitti. Bağlantınızı kontrol edip tekrar deneyin.",
       "retry": "Tekrar dene"
+    },
+    "shortcuts": {
+      "title": "Klavye kısayolları",
+      "general": "Genel",
+      "goTo": "Şuraya git",
+      "goToHint": "g tuşuna basın, bırakın, sonra tuşa basın.",
+      "then": "sonra",
+      "search": "Breeze'de ara",
+      "searchSlash": "Arama (bu tuşla da açılır)",
+      "cycleSidebar": "Kenar çubuğu modunu değiştir",
+      "help": "Yardım panelini aç",
+      "showThis": "Bu kartı göster",
+      "close": "Bir iletişim kutusunu veya menüyü kapat",
+      "typingNote": "Bir alana yazarken tek tuşlu kısayollar duraklatılır."
     }
   },
   "migrationBanner": {
@@ -912,7 +958,8 @@
         "fallbackTitle": "Monitör",
         "fields": {
           "interval": "Aralık (lar)",
-          "timeout": "Zaman Aşımı (s)"
+          "timeout": "Zaman Aşımı (s)",
+          "target": "Hedef URL"
         },
         "labels": {
           "lastChecked": "Son kontrol: {{time}}",
@@ -940,6 +987,20 @@
           "httpCheck": "HTTP Kontrolü",
           "icmpPing": "ICMP Ping'i",
           "tcpPort": "TCP Bağlantı Noktası"
+        },
+        "targetResetNote": "URL değiştirildiğinde TLS gözlemi sıfırlanır.",
+        "saved": "İzleyici güncellendi",
+        "certificate": {
+          "title": "Sertifika",
+          "issuer": "Veren kuruluş",
+          "expires": "Bitiş tarihi",
+          "observedHost": "Gözlemlenen ana makine",
+          "state": "Durum",
+          "states": {
+            "observed": "Gözlemlendi",
+            "handshakeFailed": "TLS el sıkışması başarısız",
+            "notTls": "TLS yok"
+          }
         }
       },
       "NetworkMonitorList": {
@@ -1651,7 +1712,8 @@
         "running": "çalışıyor",
         "editEntry": "Girişi düzenle {{id}}",
         "total": "Toplam: {{duration}}",
-        "billableTotal": "Faturalandırılabilir: {{duration}}"
+        "billableTotal": "Faturalandırılabilir: {{duration}}",
+        "billedVsWorked": "{{worked}} sa çalışıldı · {{billed}} sa faturalandı"
       },
       "sourceBadge": {
         "timer": "Zamanlayıcı",
@@ -1790,7 +1852,9 @@
         "assetsDescription": "SNMP yoklamasının ve keşfedilen varlık başına ağ kontrollerinin birleşik görünümü.",
         "table": {
           "asset": "Varlık",
-          "overall": "Genel"
+          "overall": "Genel",
+          "reachability": "Erişilebilirlik",
+          "collection": "Veri toplama"
         },
         "ip": "IP",
         "snmp": "SNMP",
@@ -1842,7 +1906,29 @@
         "disabling": "Devre dışı bırakılıyor...",
         "yesDisable": "Evet, devre dışı bırak",
         "monitoringNotActive": "Bu varlık için izleme etkin değil.",
-        "saving": "Kaydediliyor..."
+        "saving": "Kaydediliyor...",
+        "openSettings": "Ayarlar…",
+        "reachability": {
+          "responding": "Yanıt veriyor",
+          "notResponding": "Yanıt vermiyor",
+          "unverified": "Doğrulanmamış",
+          "sources": {
+            "networkCheck": "ağ denetimi",
+            "probe": "şimdi denetle",
+            "scan": "tarama",
+            "unifi": "UniFi denetleyicisi",
+            "snmp": "SNMP yoklaması"
+          }
+        },
+        "collectionState": {
+          "collecting": "Veri toplanıyor",
+          "partial": "Kısmi",
+          "no_template": "Şablon yok",
+          "failing": "Başarısız",
+          "paused": "Duraklatıldı",
+          "never_polled": "Hiç sorgulanmadı",
+          "not_configured": "Yapılandırılmamış"
+        }
       },
       "MonitoringPage": {
         "tabs": {
@@ -2443,5 +2529,15 @@
     "approximateUnavailableStale": "≈ toplam kullanılamıyor — {{codes}} için {{target}} döviz kuru çok eski",
     "approximateUnavailableMixed": "≈ toplam kullanılamıyor — {{codes}} birimi {{target}} para birimine çevrilemedi",
     "approximateUnavailableCodesOverflow": "{{codes}} ve {{more}} tane daha"
+  },
+  "mfaEnrollmentGraceBanner": {
+    "message": "Rolünüz iki faktörlü kimlik doğrulama gerektirecek. {{date}} tarihine kadar kurulumu tamamlayın.",
+    "cta": "2FA kur",
+    "dismiss": "İki faktörlü kimlik doğrulama hatırlatıcısını kapat"
+  },
+  "mfaPolicyOffBanner": {
+    "message": "Ekibiniz için çok faktörlü kimlik doğrulama zorunlu değil. Yalnızca parola ile açılan oturumlar betik çalıştırabilir, cihazları taşıyabilir ve ilkeleri değiştirebilir.",
+    "cta": "MFA'yı zorunlu kıl",
+    "dismiss": "MFA ilkesi hatırlatmasını bugünlük kapat"
   }
 }

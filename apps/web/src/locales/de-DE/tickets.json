@@ -1,4 +1,13 @@
 {
+  "timesheet": {
+    "workTypeColumn": "Arbeitsart"
+  },
+  "workType": {
+    "label": "Arbeitsart",
+    "none": "Keine Arbeitsart",
+    "archivedSuffix": "{{name}} (archiviert)",
+    "loadError": "Arbeitsarten nicht verfügbar"
+  },
   "slaChip": {
     "pausedLeft": "Pausiert · {{relative}} übrig",
     "left": "{{relative}} übrig",
@@ -123,7 +132,9 @@
       "retry": "Erneut versuchen",
       "remove": "Datei entfernen",
       "tooMany": "Sie können höchstens {{max}} Dateien an einen Kommentar anhängen.",
-      "tooLarge": "{{name}} ist größer als 10 MB."
+      "tooLarge": "{{name}} ist größer als 10 MB.",
+      "sentWithoutAttachment_one": "Notiz gepostet, aber der Anhang konnte nicht hinzugefügt werden. Wiederholen oder entfernen.",
+      "sentWithoutAttachment_other": "Notiz gepostet, aber {{count}} Anhänge konnten nicht hinzugefügt werden. Wiederholen oder entfernen."
     }
   },
   "ticketFeed": {
@@ -217,7 +228,9 @@
       "logFailed": "Protokollierung der Zeit fehlgeschlagen",
       "logged": "Zeit protokolliert",
       "logFailedSentence": "Protokollierung der Zeit fehlgeschlagen."
-    }
+    },
+    "billedVsWorked": "{{worked}} Std. gearbeitet · {{billed}} Std. abgerechnet",
+    "includedMinutes": "{{hours}} Std. im Vertrag enthalten"
   },
   "inboundReviewQueue": {
     "title": "Prüfwarteschlange",
@@ -460,6 +473,11 @@
       "discardFailed": "KI-Entwurf konnte nicht verworfen werden.",
       "discarded": "Entwurf verworfen"
     },
+    "aiProposal": {
+      "postAsNote": "Als interne Notiz posten",
+      "posted": "Als interne Notiz gepostet",
+      "postFailed": "Notiz konnte nicht gepostet werden"
+    },
     "resolve": {
       "noteLabel": "Lösungsvermerk (sichtbar für den Antragsteller)",
       "submit": "Ticket lösen"
@@ -509,5 +527,14 @@
       "message": "Dadurch wird das Ticket aus allen Warteschlangen ausgeblendet. Ein Administrator kann es aus der Warteschlange „Archiviert“ wiederherstellen.",
       "confirm": "Ticket löschen"
     }
+  },
+  "billingOutcome": {
+    "included": "Inklusive",
+    "nonBillable": "Nicht abrechenbar",
+    "hourly": "{{rate}}/Std.",
+    "minimum": "Mindestens {{minutes}} Min.",
+    "missingRate": "Abrechenbar · Stundensatz nicht konfiguriert",
+    "recalculated": "Die Abrechnung wird beim Speichern für diese Tätigkeitsart neu berechnet.",
+    "unavailable": "Abrechnungsergebnis nicht verfügbar"
   }
 }

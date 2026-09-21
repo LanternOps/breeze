@@ -16,7 +16,7 @@ vi.mock('./utils', async (importOriginal) => {
 });
 
 import './index';
-import { conditionPayloadsFrom, evaluateConditions, findRetiredConditionTypes, retiredConditionTypeError } from './index';
+import { conditionPayloadsFrom, evaluateConditions, findRetiredConditionTypes, interpolateTemplate, retiredConditionTypeError } from './index';
 import { conditionRegistry } from './registry';
 import { offlineHandler } from './handlers/offline';
 
@@ -64,6 +64,26 @@ describe('evaluateConditions context.actualValue (issue #1980)', () => {
     expect(result.context.actualValue).toBeCloseTo(92.33, 1);
     // Must not be the latest sub-threshold sample.
     expect(result.context.actualValue).not.toBe(88);
+  });
+});
+
+describe('evaluateConditions dataState (issue #5290)', () => {
+  beforeEach(() => {
+    getRecentMetricsMock.mockReset();
+    getLatestMetricMock.mockReset();
+  });
+
+  it('reports dataState "unknown" when the device has no metrics for a threshold condition', async () => {
+    getRecentMetricsMock.mockResolvedValue([]);
+    getLatestMetricMock.mockResolvedValue(undefined);
+
+    const result = await evaluateConditions(
+      [{ type: 'metric', metric: 'cpu', operator: 'gt', value: 90 }],
+      'device-with-no-metrics'
+    );
+
+    expect(result.triggered).toBe(false);
+    expect(result.dataState).toBe('unknown');
   });
 });
 
@@ -210,5 +230,13 @@ describe('retiredConditionTypeError (issue #2948)', () => {
     expect(message).toContain('custom');
     expect(message).toContain('never fire');
     expect(message).toMatch(/remove or replace/i);
+  });
+});
+
+describe('interpolateTemplate', () => {
+  it('fills {{device}} from deviceName so stored titles do not leak the placeholder', () => {
+    expect(interpolateTemplate('{{device}} offline', { deviceName: 'DESKTOP-8UG65K6' })).toBe(
+      'DESKTOP-8UG65K6 offline',
+    );
   });
 });

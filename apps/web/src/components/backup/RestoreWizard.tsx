@@ -21,6 +21,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import AlphaBadge from '../shared/AlphaBadge';
 import { useTranslation } from 'react-i18next';
 import { asList } from '@/lib/asList';
+import { ActionError, runAction } from '@/lib/runAction';
 import '../../lib/i18n';
 
 type RestoreType = 'full' | 'selective';
@@ -146,7 +147,10 @@ export default function RestoreWizard() {
   const [restoreType, setRestoreType] = useState<RestoreType>('full');
   const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set());
   const [destination, setDestination] = useState<DestinationType>('original');
-  const [alternatePath, setAlternatePath] = useState('/restore/nyc-db-14');
+  // #6349: this defaulted to the demo path '/restore/nyc-db-14'. The wizard
+  // was unreachable, so nobody saw it; now that it is mounted, a pre-filled
+  // stranger's path is a restore aimed at the wrong directory one click away.
+  const [alternatePath, setAlternatePath] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [restoreError, setRestoreError] = useState<string>();
@@ -314,22 +318,27 @@ export default function RestoreWizard() {
         targetPath: destination === 'alternate' ? alternatePath : undefined
       };
 
-      const response = await fetchWithAuth('/backup/restore', {
-        method: 'POST',
-        body: JSON.stringify(requestBody)
+      // runAction (CLAUDE.md): a failed restore must toast, not just tint a
+      // panel the operator may have scrolled past.
+      const created = await runAction<RestoreJob>({
+        request: () =>
+          fetchWithAuth('/backup/restore', {
+            method: 'POST',
+            body: JSON.stringify(requestBody)
+          }),
+        errorFallback: 'Failed to start restore',
+        parseSuccess: (data) => ((data as { data?: RestoreJob })?.data ?? data) as RestoreJob,
       });
-
-      if (!response.ok) {
-        throw new Error(await readApiError(response, 'Failed to start restore'));
-      }
-      const payload = await response.json();
-      const created = (payload?.data ?? payload) as RestoreJob;
       setRestoreJob(created);
       setRestoreSuccess(
         `Restore job ${created.id} ${created.status === 'running' ? 'started' : 'queued'} successfully.`
       );
       await fetchRestoreHistory();
     } catch (err) {
+      // 401 is handled by the auth redirect; every other ActionError was
+      // already toasted by runAction, and the inline banner keeps the detail
+      // on screen next to the wizard controls.
+      if (err instanceof ActionError && err.status === 401) return;
       setRestoreError(err instanceof Error ? err.message : 'Failed to start restore');
     } finally {
       setRestoring(false);
@@ -570,9 +579,13 @@ export default function RestoreWizard() {
                   <input
                     id="restore-alt-path"
                     className="w-full rounded-md border bg-background px-3 py-2 text-sm"
+                    placeholder={t('restoreWizard.alternatePathPlaceholder')}
                     value={alternatePath}
                     onChange={(event) => setAlternatePath(event.target.value)}
                   />
+                  {!alternatePath.trim() && (
+                    <p className="text-xs text-muted-foreground">{t('restoreWizard.alternatePathRequired')}</p>
+                  )}
                 </div>
               )}
             </div>
@@ -646,7 +659,8 @@ export default function RestoreWizard() {
                 disabled={
                   restoring ||
                   !snapshotId ||
-                  (restoreType === 'selective' && selectedFiles.size === 0)
+                  (restoreType === 'selective' && selectedFiles.size === 0) ||
+                  (destination === 'alternate' && !alternatePath.trim())
                 }
                 className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
               >

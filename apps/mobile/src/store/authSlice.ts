@@ -45,6 +45,14 @@ interface AuthState {
   approverRegistration: ApproverRegistrationStatus;
   approverRegistrationReason: string | null;
   /**
+   * #5162 (#1374 W07): whether the server accepted this device's key at an
+   * L4-trusted basis. Only meaningful when `approverRegistration === 'registered'`
+   * — `false` means registration SUCCEEDED but the key is capped below
+   * critical-tier (see `ApprovalGate`'s 'unattested' banner severity). `null`
+   * for every other status, including a registration that hasn't resolved yet.
+   */
+  approverRegistrationAttested: boolean | null;
+  /**
    * #2707: single-use approver-register grant minted at login/mfa-verify.
    * Memory-only — RootNavigator reads-and-clears it before attempting
    * registration; it must never be persisted to SecureStore (see
@@ -64,6 +72,7 @@ const initialState: AuthState = {
   pushRegistrationReason: null,
   approverRegistration: 'idle',
   approverRegistrationReason: null,
+  approverRegistrationAttested: null,
   authenticatorRegisterGrantId: null,
 };
 
@@ -205,6 +214,7 @@ const authSlice = createSlice({
       // show the next user on this phone the previous user's banner.
       state.approverRegistration = 'idle';
       state.approverRegistrationReason = null;
+      state.approverRegistrationAttested = null;
       state.authenticatorRegisterGrantId = null;
     },
     clearError: (state) => {
@@ -226,10 +236,15 @@ const authSlice = createSlice({
     },
     setApproverRegistration: (
       state,
-      action: PayloadAction<{ status: ApproverRegistrationStatus; reason?: string | null }>
+      action: PayloadAction<{
+        status: ApproverRegistrationStatus;
+        reason?: string | null;
+        attested?: boolean | null;
+      }>
     ) => {
       state.approverRegistration = action.payload.status;
       state.approverRegistrationReason = action.payload.reason ?? null;
+      state.approverRegistrationAttested = action.payload.attested ?? null;
     },
     // #2707: the grant is single-use — RootNavigator takes it (read-and-clear)
     // BEFORE the registration attempt so a re-fired effect can't replay it.
@@ -305,6 +320,7 @@ const authSlice = createSlice({
         state.pushRegistrationReason = null;
         state.approverRegistration = 'idle';
         state.approverRegistrationReason = null;
+        state.approverRegistrationAttested = null;
         state.authenticatorRegisterGrantId = null;
       })
       .addCase(logoutAsync.rejected, (state) => {
@@ -318,6 +334,7 @@ const authSlice = createSlice({
         state.pushRegistrationReason = null;
         state.approverRegistration = 'idle';
         state.approverRegistrationReason = null;
+        state.approverRegistrationAttested = null;
         state.authenticatorRegisterGrantId = null;
       });
   },

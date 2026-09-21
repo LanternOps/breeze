@@ -11,6 +11,7 @@
 // it on a number field would render the wrong widget. Every operator listed
 // here is both backend-valid and renderable by ValueInput/OperatorSelector.
 import type { FilterFieldDefinition, FilterOperator } from '@breeze/shared';
+import { DEVICE_FUNCTION_KEYS } from '@breeze/shared';
 
 const S: FilterOperator[] = ['equals', 'notEquals', 'contains', 'notContains', 'startsWith', 'endsWith', 'matches', 'in', 'notIn', 'isNull', 'isNotNull'];
 const N: FilterOperator[] = ['equals', 'notEquals', 'greaterThan', 'greaterThanOrEquals', 'lessThan', 'lessThanOrEquals', 'isNull', 'isNotNull'];
@@ -31,6 +32,9 @@ export const FILTER_FIELDS: FilterFieldDefinition[] = [
   { key: 'tags', label: 'Tags', category: 'core', type: 'array', operators: A },
   { key: 'deviceRole', label: 'Device Role', category: 'core', type: 'enum', operators: E,
     enumValues: ['workstation', 'server', 'printer', 'router', 'switch', 'firewall', 'access_point', 'phone', 'iot', 'camera', 'nas', 'unknown'] },
+  // Fleet Designer W02 (#5652): the ACTIVE device function projection; keys from the shared SSOT.
+  { key: 'deviceFunction', label: 'Device Function', category: 'core', type: 'enum', operators: E,
+    enumValues: [...DEVICE_FUNCTION_KEYS] },
   { key: 'lastUser', label: 'Last User', category: 'core', type: 'string', operators: S },
   { key: 'isHeadless', label: 'Headless', category: 'core', type: 'boolean', operators: B },
   { key: 'uptimeSeconds', label: 'Uptime (seconds)', category: 'core', type: 'number', operators: N },

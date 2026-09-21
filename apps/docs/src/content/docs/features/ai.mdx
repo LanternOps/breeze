@@ -22,17 +22,23 @@ Six capabilities extend and govern this system:
 
 The AI Risk Engine categorises every AI tool into one of four tiers that control how it executes. Navigate to it via **Security → AI Risk** in the sidebar.
 
+### AI-authored scripts
+
+You can also extend the assistant with your own tools: point Breeze at an MCP server you run and its tools appear alongside these, with the same tiers and approvals — see [Tool Sources](/features/tool-sources/).
+
+The assistant and background agents can author a script mid-conversation, have it independently reviewed, and run it once you approve — see [AI Script Authoring & Review](/features/ai-script-authoring/) for the full walkthrough. The AI Risk Dashboard's **Script Proposals** panel tracks proposals per day, unattended runs, and how often a human's decision disagrees with the independent reviewer's recommendation.
+
 ### Tool tiers
 
 | Tier | Execution | Examples |
 |---|---|---|
-| **Tier 1** | Auto-execute (read-only, no approval) | `query_devices`, `analyze_metrics`, `get_security_posture`, `get_active_users`, `disk_cleanup` (preview), `propose_action_plan`, `list_configuration_policies`, `get_effective_configuration`, `preview_configuration_change`, `get_configuration_policy`, `configuration_policy_compliance`, `manage_processes` (list), `get_service_monitoring_status`, `query_monitors`, `query_backups`, `get_backup_status`, `browse_snapshots`, `get_incident_timeline`, `generate_incident_report`, `list_playbooks`, `get_playbook_history`, `get_vulnerability_report`, `get_device_vulnerabilities`, `search_documentation` |
+| **Tier 1** | Auto-execute (read-only, no approval) | `query_devices`, `analyze_metrics`, `get_security_posture`, `get_active_users`, `disk_cleanup` (preview), `system_cleanup` (list/status), `propose_action_plan`, `list_configuration_policies`, `get_effective_configuration`, `preview_configuration_change`, `get_configuration_policy`, `configuration_policy_compliance`, `manage_processes` (list), `get_service_monitoring_status`, `query_monitors`, `query_backups`, `get_backup_status`, `browse_snapshots`, `get_incident_timeline`, `generate_incident_report`, `list_playbooks`, `get_playbook_history`, `get_vulnerability_report`, `get_device_vulnerabilities`, `search_documentation`, `propose_script`, `get_script_proposal` |
 | **Tier 2** | Auto-execute + audit logged | `manage_alerts` (acknowledge/resolve), `manage_services` (list), `set_device_context`, `resolve_device_context`, `apply_configuration_policy`, `remove_configuration_policy_assignment`, `manage_configuration_policy` (activate/deactivate), `create_incident`, `collect_evidence`, `file_operations` (list), `execute_command` (list_processes/file_list/event_logs_list) |
-| **Tier 3** | Requires human approval before execution | `execute_command` (kill_process/start_service/stop_service/restart_service/file_read/list_services/event_logs_query), `run_script`, `disk_cleanup` (execute), `network_discovery`, `security_scan` (quarantine/remove/restore), `file_operations` (read/write/delete/mkdir/rename), `manage_configuration_policy` (create/update/delete), `manage_processes` (kill), `manage_monitors` (create/update/delete), `trigger_backup`, `restore_snapshot`, `execute_containment`, `execute_playbook`, `remediate_vulnerability`, `manage_ai_agents` (authorize_supervised_key) |
+| **Tier 3** | Requires human approval before execution | `execute_command` (kill_process/start_service/stop_service/restart_service/file_read/list_services/event_logs_query), `run_script`, `disk_cleanup` (execute), `system_cleanup` (run), `network_discovery`, `security_scan` (quarantine/remove/restore), `file_operations` (read/write/delete/mkdir/rename), `manage_configuration_policy` (create/update/delete), `manage_processes` (kill), `manage_monitors` (create/update/delete), `trigger_backup`, `restore_snapshot`, `execute_containment`, `execute_playbook`, `remediate_vulnerability`, `manage_ai_agents` (authorize_supervised_key) |
 | **Tier 4** | Blocked — never executed | Cross-org operations |
 
 <Aside>
-  Tier classification is action-level, not tool-level. For example, `disk_cleanup` is Tier 1 when previewing and Tier 3 when executing; `manage_alerts` is Tier 1 for list/get and Tier 2 for acknowledge/resolve. `execute_command` resolves per `commandType`: `list_processes`, `file_list`, and `event_logs_list` are Tier 2; `list_services` and `event_logs_query` stay Tier 3 despite being reads, because they can return unredacted credential- or PII-bearing content (service binary paths, raw event-log messages); mutating types and `file_read` are Tier 3 too. The AI resolves the tier for each specific action at runtime. Within Tier 2, strictly read-only entries — the `execute_command` types above, `file_operations` (list), `manage_services` (list), and the single-purpose get/list/search catalog, contract, invoice, and quote tools — auto-execute (with the audit-trail entry) under **every** approval mode, including the default per-step mode. Tier-2 *mutations* still take a lightweight inline confirmation under per-step approval, and a paused session always confirms everything Tier 2 and above.
+  Tier classification is action-level, not tool-level. For example, `disk_cleanup` is Tier 1 when previewing and Tier 3 when executing. `system_cleanup` follows the same split — listing the OS-native cleaners a device offers and reading a run's status are Tier 1, running them is Tier 3; `manage_alerts` is Tier 1 for list/get and Tier 2 for acknowledge/resolve. `execute_command` resolves per `commandType`: `list_processes`, `file_list`, and `event_logs_list` are Tier 2; `list_services` and `event_logs_query` stay Tier 3 despite being reads, because they can return unredacted credential- or PII-bearing content (service binary paths, raw event-log messages); mutating types and `file_read` are Tier 3 too. The AI resolves the tier for each specific action at runtime. Within Tier 2, strictly read-only entries — the `execute_command` types above, `file_operations` (list), `manage_services` (list), and the single-purpose get/list/search catalog, contract, invoice, and quote tools — auto-execute (with the audit-trail entry) under **every** approval mode, including the default per-step mode. Tier-2 *mutations* still take a lightweight inline confirmation under per-step approval, and a paused session always confirms everything Tier 2 and above.
 </Aside>
 
 <Aside type="note">
@@ -94,6 +100,8 @@ When other users are eligible to approve, the inline button does not appear: som
 
 #### Who can approve
 
+Opening the assistant at all requires the **`ai_sessions:use`** permission, granted by default to Org Admin, Org Technician and Partner Technician (Partner Admin holds it through its full-access role). Roles without it do not see the assistant button. The permission opens the conversation only — each tool the assistant calls is checked against the same permission the equivalent page or API route requires.
+
 Approving or rejecting a **four-eyes** action requires the **`approvals:decide`** permission. It is granted by default to **Org Admin** (and to Partner Admin through its full-access role) and is deliberately **not** granted to Org Technician or Org Viewer. Approving a **supervised** action needs no extra permission — only the requester's own permission for the underlying action, which was already checked when the AI proposed it.
 
 To let another role approve four-eyes actions, add `approvals:decide` to it under **Settings → Users & Roles**. See [Users and Roles](/reference/users-and-roles/).
@@ -119,6 +127,7 @@ Many tools have a per-tool sliding window rate limit. Requests that exceed the l
 | `execute_command` | 10 requests | 5 min |
 | `run_script` | 5 requests | 5 min |
 | `disk_cleanup` | 3 requests | 10 min |
+| `system_cleanup` | 30 requests | 60 min |
 | `network_discovery` | 2 requests | 10 min |
 | `security_scan` | 3 requests | 10 min |
 | `file_operations` | 20 requests | 5 min |
@@ -164,6 +173,64 @@ The Risk Engine dashboard provides five views, each filterable by time range (24
 |---|---|---|
 | GET | `/ai/admin/tool-executions` | Tool execution analytics (`?since=ISO&limit=1–200, default 100`) |
 | GET | `/ai/admin/security-events` | Guardrail audit trail (`?since=ISO&limit=1–100&action=filter`) |
+
+---
+
+## AI attribution on the device page
+
+Scripts and commands that an AI assistant or an autonomous AI agent dispatches to a
+device are now recorded as such. Each `script_executions` and `device_commands` row
+carries who *decided* the work — `ai_assistant` (a person asked, in chat or over MCP)
+or `ai_agent` (an autonomous agent run decided, with no human in the loop) — plus the
+conversation or agent run it came from, and an `ai.command.executed` / `ai.script.executed`
+audit event is written alongside the dispatch.
+
+This answers a question the audit trail could not answer before: *who decided to do
+this to my machine*. It is deliberately separate from three other facts the row already
+carried — who **wrote** the script (authorship), what **scheduled** the run
+(`trigger_type`), and who the request **authenticated as** (the principal). An AI can
+start a policy-driven run, and a person can hand-run an AI-authored script, so
+collapsing them would destroy information.
+
+<Aside type="caution" title="What is not yet attributed">
+Work an AI **schedules** rather than dispatches — patch jobs, software deployments,
+automation runs, playbook executions, elevation requests and backups — is still recorded
+without an AI marker, because the device command is issued later by a background worker
+that runs under its own context. SentinelOne isolation and threat actions are performed
+through the vendor's API and never create a Breeze command, so they are unmarked too.
+</Aside>
+
+<Aside type="caution" title="Rows created before this release are unmarked">
+An unmarked row means *AI initiation was not recorded* — **never** *a human did this*.
+There is no backfill: every AI-run library script that already exists was stamped with
+the invoker's user id and a `manual` trigger, so historical AI work is indistinguishable
+from human work. The UI renders an unmarked row as the absence of a marker, not as a
+"human" badge.
+</Aside>
+
+<Aside type="caution" title="Best effort, not a guarantee">
+The AI marker on the audit event is written alongside the dispatch on a fire-and-forget
+path, so a dispatch that already succeeded is never failed by a lost audit write. A
+dropped write leaves a real action unmarked; it never marks a human action as AI.
+The columns on the command and execution rows themselves are written in the same
+statement as the row, so they are not subject to this.
+</Aside>
+
+### Tenant boundaries
+
+The origin pointers are severed whenever the row could otherwise reach across tenants:
+
+- **Device moved to another organisation** — the execution follows the device, but its
+  session and agent-run pointers are nulled (agent-run history stays with the source
+  organisation). The `ai_initiator_kind` marker is kept: the fact that an AI did the work
+  survives the move, the cross-tenant pointer does not.
+- **Organisation merge** — the execution is re-tenanted to the surviving organisation
+  with the same detach, because the originating agent run stays with the merged-away shell.
+- **Erasure** — deleting an AI session nulls the pointer on any surviving execution while
+  leaving the marker intact.
+
+All three columns are included in the tenant data export, so a customer asking "who did
+this to my machine" gets the answer in the one artifact designed to hold it.
 
 ---
 
@@ -332,10 +399,10 @@ Alerts are delivered to active users with the `billing:manage` permission, wheth
 
 The threshold ladder is configured in two places:
 
-- **Organisation**: **Settings → AI Usage** on the org's own budget configuration.
+- **Organisation**: **Org settings → AI** (v0.114.0+; previously on the AI Usage page). The **AI Usage** page itself is now usage-only, and shows a read-only **Effective budget** panel with each field's value and where it came from (Set by partner, Set by organization, or Default).
 - **Partner**: the **AI Budgets** tab of Partner Settings, which can set a value that applies across every organisation under the partner.
 
-A partner-set value locks the field on the organisation page, so the org can see it but can't override it.
+A partner-set value locks the corresponding field in **Org settings → AI**: the field is grayed out and shows a **Managed by partner** note, so the org can see the value but can't edit or submit it. If every field is locked, the org's Save button is disabled entirely. A partner-scoped user with permission to manage partner-wide policies also sees a **View partner-wide budgets** link from the locked field straight to the Partner Settings AI Budgets tab.
 
 Either field takes two kinds of input: leave it empty to inherit (the org inherits the partner value, or the 50/80/95 default when the partner sets nothing), or type an explicit ladder of up to five whole percentages, such as `60, 90`. Turning pre-cap warnings off entirely requires storing an empty list, which the UI cannot produce; do that through `PUT /ai/budget` with `"alertThresholdPercents": []`. The 100% cap-reached alert still fires regardless.
 

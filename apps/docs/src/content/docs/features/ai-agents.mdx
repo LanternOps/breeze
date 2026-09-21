@@ -10,19 +10,35 @@ An AI agent is a named, permission-scoped worker you configure once. It wakes on
 Agents are off by default and must be enabled by your operator before they appear. See [Enabling agents](#enabling-agents).
 
 <Aside type="caution" title="Act mode runs unattended — read this before enabling it">
-  An agent has three modes: **Off**, **Shadow**, and **Act** — a new agent is always created disabled, in Shadow. Shadow observes, reasons, and proposes — it never executes an action by itself. Act mode is different: for a small, fixed set of low-risk, narrowly-scoped operations it verifies and executes **without waiting for a person to approve, and without an automatic rollback if verification fails**. Everything outside that set — in every mode — still proposes and waits for a person. A separate path lets one specific operation skip that wait too, but only by earning it: once it has a long enough clean record, a **second, different person** has to pre-authorize it (see [Graduation](#graduation-feedback-loop)) — no operation is pre-authorized just because an operator typed it in. See [Act mode](#act-mode) before turning it on.
+  An agent has three modes: **Off**, **Shadow**, and **Act** — a new agent is always created disabled, in Shadow. Shadow observes, reasons, and proposes — it never executes an action by itself, but every proposal still lands in the Approvals inbox as a normal, real card: approving one executes it immediately, the same as approving any other request — shadow mode does not turn approval into a dry run. Act mode is different: for a small, fixed set of low-risk, narrowly-scoped operations it verifies and executes **without waiting for a person to approve, and without an automatic rollback if verification fails**. Everything outside that set — in every mode — still proposes and waits for a person. A separate path lets one specific operation skip that wait too, but only by earning it: once it has a long enough clean record, a **second, different person** has to pre-authorize it (see [Graduation](#graduation-feedback-loop)) — no operation is pre-authorized just because an operator typed it in. See [Act mode](#act-mode) before turning it on.
 </Aside>
 
 ## What an agent does
 
 Manage agents under **Settings → AI Agents**.
 
-An agent has a **kind**: `triage`, `patch`, or `helpdesk`. The kind decides what the agent is for and what triggers it. Triage agents accept alerts and opted-in anomaly incidents. Helpdesk agents accept newly created tickets.
+An agent has a **kind**: `triage`, `patch`, `helpdesk`, or (from v0.113.0) `designer`. The kind decides what the agent is for and what triggers it. Triage agents accept alerts and opted-in anomaly incidents. Helpdesk agents accept newly created tickets. A [Fleet designer](#fleet-designer) reads the fleet and writes a monitoring design for you to approve.
 
 Each agent carries its own limits — devices per run, concurrent runs, runs per hour, turns per run, spend per run and per day, wall-clock time, and a ceiling on the percentage of your fleet it may touch in a day. These are enforced per run, not advisory.
 
 <Aside>
   An organization can have one live agent of each kind. If you need to change an agent's configuration, edit it — you cannot create a second agent of the same kind alongside it.
+</Aside>
+
+## Fleet designer
+
+A **Fleet designer** agent (kind `designer`, v0.113.0+) reads the whole fleet and writes a justified monitoring design for a technician to approve — nothing more. It reaches every read-only tool plus one report tool, has no mutating capabilities to choose, and has no shadow mode because there is nothing to shadow — the mode picker offers only **Off** and **On** for this kind, and a new designer starts on **On** ("run and write reports").
+
+It runs when you start a Fleet Design for an organization, or on a schedule that targets a Fleet designer agent and fires at most once a month. Its evidence bundle is pinned to the organization and covers devices, software, network, posture, health, automation and the shape of the event log.
+
+Each run produces a **Fleet Design** report — the recommended device functions, monitoring watches and alert rules, with the reasoning behind them. Open the run to see the Fleet Design card (counts of functions, watches and alert rules) with **Open report** and **Download PDF**; the same report appears under Reports as the organization's single, system-managed **Fleet Design** definition. If the evidence had to be cut short, the card says so: *"The evidence was cut short — this design did not see the whole fleet."*
+
+The designer also assesses a **function** for each device — domain controller, file server, kiosk, finance workstation and so on — shown next to the billable Device Role on the device's Info tab; see [Device function](/features/devices/#device-function). A function set by hand is never overwritten by the designer.
+
+You do not have to create the agent by hand. If the organization's partner has no Fleet designer yet — or has one that is off — the **Fleet Design** page says so and offers **Enable Fleet Designer**, which creates the partner-wide designer agent on **On** with you as its recipient (or turns the existing one on). The button appears only for a partner administrator with `ai_agents:write`; an organization-scoped user sees who to ask instead.
+
+<Aside>
+  A Fleet designer resolves through the partner-wide agent, so an organization can tighten it (turn it off for one customer) but cannot create it alone. Nothing in a design is applied to the fleet automatically until a technician approves it.
 </Aside>
 
 ## Runs
@@ -65,6 +81,8 @@ Act mode is bounded by more than the operation list:
 - **A per-run action cap.** A run stops taking unattended actions once it hits its configured limit, in addition to the run-level limits (concurrency, spend, wall-clock time) every agent already has.
 - **An organization-wide exposure ledger.** Every unattended action Act mode takes is recorded against the organization it ran in, alongside the equivalent record for the separate, not-yet-generally-available policy-decide capability. This ledger is the foundation for a shared, org-wide cap on unattended activity across all of an organization's agents.
 - **Verification, not certainty.** Act mode checks the result of what it did (a service is running again, disk usage improved) and reports if that check fails — but it does not roll anything back. If verification fails, a person resolves it, the same as they would resolve any other failed run.
+
+An agent in Act mode can also author a new script when nothing in your library fits, following the same independent review and approval flow as the chat assistant — or, if your partner and organization have both opted in, the [unattended lane](/features/ai-script-authoring/#the-unattended-lane) for narrow, low-risk cases. An agent never edits or approves its own proposal.
 
 ### Turning Act mode on
 
@@ -323,6 +341,7 @@ When admission is refused, Breeze does not create a run row, so nothing new appe
 | Skip reason | Meaning | Also published as an event |
 |---|---|---|
 | `trigger_filter_mismatch` | The anomaly opt-in gate or a narrowing trigger filter did not match. | Yes |
+| `resource_scope_unverifiable` | The run's device could not be checked against the agent's site, group or tag scope (database error). The run is skipped rather than allowed; retry once the platform is healthy. | Yes |
 | `no_effective_agent` | No enabled partner baseline agent of that kind exists. | No, log only |
 | `kill_switch_off` | `BREEZE_AI_AGENTS_ENABLED` is off. | No, log only |
 

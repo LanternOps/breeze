@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import '@/lib/i18n';
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
+import { fetchAllOrganizationsFrom } from '../../lib/fetchAllOrganizations';
+import { ListFetchError } from '../../lib/fetchAllSites';
 import { runAction, ActionError } from '../../lib/runAction';
 import { navigateTo } from '@/lib/navigation';
 import { getJwtClaims, loginPathWithNext } from '../../lib/authScope';
@@ -69,23 +71,25 @@ export default function CreateTicketPage() {
     const claims = getJwtClaims();
     const isOrgScoped = claims.scope === 'organization' && !!claims.orgId;
     try {
-      const [orgRes, catRes] = await Promise.all([
-        // Org-scoped users can't list organizations (and don't need to — the org
-        // is fixed by the session); skip the call instead of dead-ending on 403.
-        isOrgScoped ? Promise.resolve(null) : fetchWithAuth('/orgs/organizations?limit=100'),
-        fetchWithAuth('/ticket-categories')
-      ]);
+      // Org-scoped users can't list organizations (and don't need to — the org
+      // is fixed by the session); skip the call instead of dead-ending on 403.
+      const orgsPromise = isOrgScoped
+        ? Promise.resolve(null)
+        : fetchAllOrganizationsFrom<{ id: string; name: string }>('/orgs/organizations').catch((err: unknown) => {
+            if (err instanceof ListFetchError) return err;
+            throw err;
+          });
+      const [orgResult, catRes] = await Promise.all([orgsPromise, fetchWithAuth('/ticket-categories')]);
       if (isOrgScoped) {
         setOrgId(claims.orgId as string);
         setOrgLocked(true);
-      } else if (orgRes && orgRes.ok) {
-        const b = await orgRes.json();
-        setOrgs((b.data ?? b.organizations ?? []).map((o: { id: string; name: string }) => ({ id: o.id, name: o.name })));
+      } else if (orgResult && !(orgResult instanceof ListFetchError)) {
+        setOrgs(orgResult.map((o) => ({ id: o.id, name: o.name })));
       } else {
         // 403 here usually means an org-scoped session whose token landed after
         // mount — re-read the claims before declaring failure.
         const late = getJwtClaims();
-        if (orgRes?.status === 403 && late.scope === 'organization' && late.orgId) {
+        if (orgResult instanceof ListFetchError && orgResult.status === 403 && late.scope === 'organization' && late.orgId) {
           setOrgId(late.orgId);
           setOrgLocked(true);
         } else {

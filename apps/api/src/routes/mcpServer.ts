@@ -21,11 +21,14 @@ import { createHash, randomBytes } from 'node:crypto';
 import { Hono, type Context, type Next } from 'hono';
 import { streamSSE } from 'hono/streaming';
 import { z } from 'zod';
-import { MCP_OAUTH_ENABLED, OAUTH_ISSUER } from '../config/env';
+import { breezeRegion, MCP_OAUTH_ENABLED, OAUTH_ISSUER } from '../config/env';
 import { apiKeyAuthMiddleware, requireApiKeyScope } from '../middleware/apiKeyAuth';
 import { bearerTokenAuthMiddleware, resolvePartnerAccessibleOrgIds } from '../middleware/bearerTokenAuth';
-import { getToolDefinitions, executeTool, getToolTier } from '../services/aiTools';
-import { checkGuardrails, checkToolPermission, checkToolRateLimit, checkPermissionRequirement, TIER3_ACTIONS } from '../services/aiGuardrails';
+import { getToolDefinitions, executeTool, getToolTier, getToolDomain } from '../services/aiTools';
+import { checkGuardrails, checkToolPermission, checkToolRateLimit, checkPermissionRequirement, checkPermissionRequirements, TIER3_ACTIONS } from '../services/aiGuardrails';
+import { isTenantToolName } from '@breeze/shared/validators';
+import type { TenantToolDescriptor } from '../services/toolSources/resolver';
+import { tenantToolPermissionRequirement, checkTenantToolRateLimit } from '../services/toolSources/guardrails';
 import { db } from '../db';
 import { readWithPartnerAxisVisibility } from '../db/partnerAxisRead';
 import { devices, alerts, scripts, automations, partners, organizations } from '../db/schema';
@@ -44,6 +47,9 @@ import { compactToolResultForChat, redactAiToolOutputText } from '../services/ai
 import { sanitizeThrownToolError } from '../services/aiToolErrors';
 import { resolveDeprecatedToolAlias } from '../services/aiToolAliases';
 import { MCP_SERVER_INSTRUCTIONS, listMcpPrompts, getMcpPrompt, hasMcpPrompt } from '../services/mcpGuidance';
+import { API_VERSION } from '../version';
+import { buildMcpToolPresentation } from '../services/mcpToolPresentation';
+import { decodeToolsListCursor, encodeToolsListCursor, mcpToolsListPageSize, negotiateMcpProtocolVersion, parseMcpProtocolVersionHeader } from '../services/mcpProtocol';
 import {
   beginMcpToolExecutionLedger,
   completeMcpToolExecutionLedger,
@@ -727,6 +733,19 @@ mcpServerRoutes.post(
     const apiKey = c.get('apiKey') as McpApiKeyWithAuthFields;
     const principalKey = mcpPrincipalKey(apiKey);
     const isInitialize = pre.body.method === 'initialize';
+    // 2025-06-18 §Protocol Version Header: clients MUST send MCP-Protocol-Version
+    // on every request after initialize; an unsupported value is a 400. Absent
+    // = assume 2025-03-26 (backwards compatibility). Initialize itself carries
+    // the version in params, so the header is not checked there.
+    if (!isInitialize) {
+      const parsed = parseMcpProtocolVersionHeader(c.req.header('MCP-Protocol-Version'));
+      if (!parsed.ok) {
+        return c.json(
+          { jsonrpc: '2.0', id: pre.body.id ?? null, error: { code: -32600, message: `Unsupported MCP-Protocol-Version: ${parsed.value}` } },
+          400,
+        );
+      }
+    }
     const redis = getRedis();
 
     let trustedSessionId: string | undefined;
@@ -870,9 +889,9 @@ mcpServerRoutes.delete('/sse', (c) => {
 // JSON-RPC Method Dispatcher
 // ============================================
 
-export function buildInitializeResult() {
+export function buildInitializeResult(requestedProtocolVersion?: unknown) {
   return {
-    protocolVersion: '2024-11-05',
+    protocolVersion: negotiateMcpProtocolVersion(requestedProtocolVersion),
     capabilities: {
       tools: { listChanged: false },
       resources: { subscribe: false, listChanged: false },
@@ -880,7 +899,8 @@ export function buildInitializeResult() {
     },
     serverInfo: {
       name: 'breeze-rmm',
-      version: '1.0.0',
+      title: 'Breeze RMM',
+      version: API_VERSION,
     },
     instructions: MCP_SERVER_INSTRUCTIONS,
   };
@@ -897,14 +917,14 @@ async function handleJsonRpc(
   try {
     switch (req.method) {
       case 'initialize':
-        return jsonRpcResult(req.id, buildInitializeResult());
+        return jsonRpcResult(req.id, buildInitializeResult((req.params as { protocolVersion?: unknown } | undefined)?.protocolVersion));
 
       case 'notifications/initialized':
         // Client acknowledgment — no response needed but return empty result
         return jsonRpcResult(req.id, {});
 
       case 'tools/list':
-        return await handleToolsList(req.id, scopes, auth);
+        return await handleToolsList(req.id, scopes, auth, req.params);
 
       case 'tools/call':
         return await handleToolsCall(req.id, req.params ?? {}, auth, scopes, apiKey, c, sessionId);
@@ -976,6 +996,12 @@ const MCP_APPROVAL_REQUIRED_ERROR = {
   code: 'MCP_APPROVAL_REQUIRED',
 } as const;
 
+// Bootstrap auth tools are destructive tenant mutations (send invites /
+// configure defaults). They live outside the main aiTools registry, so they
+// do not have a getToolTier entry, but their shared execution ledger has
+// always classified them as Tier 3.
+const BOOTSTRAP_TOOL_TIER = 3;
+
 /**
  * True when `tools/call` must deny this tool/action over MCP instead of
  * executing it: effective tier 3 (see the constant's block comment for why
@@ -1045,6 +1071,71 @@ function gatedActionsForTool(toolName: string, inputSchema: unknown): string[] {
 }
 
 // ============================================
+// Tenant (BYO MCP) tools — Task A10, live seams
+// ============================================
+
+// Dynamic import — same reason as mcpExecutionOrg.ts's `liveDeviceArgs`:
+// `toolSources/resolver.ts` touches `toolSourceTools` at MODULE-EVALUATION
+// time (its `RESOLVE_TOOL_ROW_SELECTION` object literal), and a dozen sibling
+// `mcpServer.*.test.ts` files replace `../db/schema` with a narrow object
+// literal that predates that table. A static top-level import here would
+// pull `toolSourceTools` into every one of their module graphs just from
+// importing `mcpServerRoutes` — before any of them ever exercises tools/list
+// or tools/call. Deferred to call time instead, so only a real request path
+// (or this file's own `mcpServer.test.ts`, which mocks the resolver/execute
+// modules directly) ever evaluates it.
+async function liveResolveTenantTools(auth: AuthContext): Promise<TenantToolDescriptor[]> {
+  const { resolveTenantTools } = await import('../services/toolSources/resolver');
+  return resolveTenantTools(auth);
+}
+
+async function liveResolveTenantToolByName(
+  auth: AuthContext,
+  toolName: string,
+): Promise<TenantToolDescriptor | null> {
+  const { resolveTenantToolByName } = await import('../services/toolSources/resolver');
+  return resolveTenantToolByName(auth, toolName);
+}
+
+// #6102: same lazy-import reasoning as `liveResolveTenantToolByName` above —
+// only called on that function's failure branch, so the extra module load
+// costs nothing on the hot (tool resolves) path.
+async function liveResolveTenantToolHealthByName(
+  auth: AuthContext,
+  toolName: string,
+): Promise<{ found: boolean; sourceStatus?: 'active' | 'error' | 'disabled' }> {
+  const { resolveTenantToolHealthByName } = await import('../services/toolSources/resolver');
+  return resolveTenantToolHealthByName(auth, toolName);
+}
+
+async function liveExecuteTenantTool(
+  d: TenantToolDescriptor,
+  toolInput: Record<string, unknown>,
+  auth: AuthContext,
+  opts: { surface: 'mcp'; orgId: string | null; actor?: { kind: 'api_key'; id: string } },
+): Promise<string> {
+  const { executeTenantTool } = await import('../services/toolSources/execute');
+  return executeTenantTool(d, toolInput, auth, opts);
+}
+
+/**
+ * Detailed (never-throws, `isError`-carrying) form of {@link liveExecuteTenantTool}
+ * — same lazy-import reasoning applies. `handleTenantToolCall` uses this
+ * instead of the string form so it can set `isError` on the JSON-RPC result
+ * and record the true outcome on the audit row, mirroring what the CORE
+ * (non-tenant) Tier-3 lifecycle already does via `Tier3ExecutionOutcome`.
+ */
+async function liveExecuteTenantToolDetailed(
+  d: TenantToolDescriptor,
+  toolInput: Record<string, unknown>,
+  auth: AuthContext,
+  opts: { surface: 'mcp'; orgId: string | null; actor?: { kind: 'api_key'; id: string } },
+): Promise<{ isError: boolean; text: string }> {
+  const { executeTenantToolDetailed } = await import('../services/toolSources/execute');
+  return executeTenantToolDetailed(d, toolInput, auth, opts);
+}
+
+// ============================================
 // tools/list
 // ============================================
 
@@ -1052,6 +1143,7 @@ async function handleToolsList(
   id: string | number,
   scopes: string[],
   auth: AuthContext,
+  params?: Record<string, unknown>,
 ): Promise<JsonRpcResponse> {
   const allTools = getToolDefinitions();
   const hasExecute = scopes.includes('ai:execute');
@@ -1090,35 +1182,106 @@ async function handleToolsList(
     const description = gatedActions.length > 0
       ? `${tool.description ?? ''} (Actions ${gatedActions.map((a) => `"${a}"`).join(', ')} require interactive approval and are not available over MCP — use the Breeze web app AI assistant for those.)`
       : tool.description ?? '';
+    const presentation = buildMcpToolPresentation(tool, getToolTier(tool.name), getToolDomain(tool.name));
     return {
+      ...presentation,
       name: tool.name,
       description,
       inputSchema: tool.input_schema,
     };
   });
 
-  // Surface bootstrap auth tools (send_deployment_invites, configure_defaults)
-  // to authenticated callers with the matching scope. These tools live outside
-  // the main aiTools registry but flow through the authed dispatch path below.
-  if (bootstrapModule) {
-    const authToolsEligible = hasExecute && (!requireExecuteAdmin || hasExecuteAdmin);
-    if (authToolsEligible) {
-      for (const tool of bootstrapModule.authTools) {
-        result.push({
-          name: tool.definition.name,
-          description: tool.definition.description,
-          inputSchema: zodToJsonSchema(tool.definition.inputSchema) as typeof result[number]['inputSchema'],
-        });
-      }
-    }
+  // Bootstrap auth tools (send_deployment_invites, configure_defaults) live
+  // outside the main registry and carry a FIXED Tier 3 classification, so
+  // `isMcpApprovalRequired(name, 3)` is unconditionally true for every one of
+  // them: they are NEVER advertised over MCP while this transport has no
+  // interactive approval surface. Deliberately not a filtered loop — a loop
+  // that can never push reads as if some bootstrap tool might be listed.
+  // `handleToolsCall` denies them with MCP_APPROVAL_REQUIRED to match.
+
+  // Tenant (BYO MCP) tools — Task A10. Same scope formula as the core
+  // registry above (tier 1 = ai:read; tier 2 = ai:write; tier 3 = ai:execute
+  // + the execute_admin lever), applied to each descriptor's own tier. A
+  // resolution failure (DB hiccup, etc.) degrades to no tenant tools rather
+  // than failing tools/list for the entire core registry.
+  let tenantResult: Array<Omit<(typeof result)[number], 'inputSchema'> & { inputSchema: Record<string, unknown> }> = [];
+  try {
+    const tenant = await liveResolveTenantTools(auth);
+    tenantResult = tenant
+      // #6401: tier-3 tenant descriptors are NEVER listed — same
+      // advertised-but-dead invariant as isToolWhollyGatedOverMcp enforces for
+      // the core registry above (listed ⇒ callable). handleTenantToolCall's
+      // isMcpApprovalRequired gate denies every effective tier 3 unconditionally
+      // (this transport has no interactive approval surface), so a listed
+      // tier-3 tool could never actually be called. Revisit when tier-3-over-MCP
+      // support lands (#6158) — do not widen this filter before then.
+      .filter((d) => d.tier <= 1 || (d.tier === 2 && hasWrite))
+      .map((d) => ({
+        ...buildMcpToolPresentation(d.definition, d.tier, 'integrations', { external: true }),
+        name: d.definition.name,
+        description: d.definition.description,
+        inputSchema: d.definition.input_schema,
+      }));
+  } catch (err) {
+    console.error('[MCP] Failed to resolve tenant tools for tools/list:', err);
   }
 
-  return jsonRpcResult(id, { tools: result });
+  const byName = (a: { name: string }, b: { name: string }) => a.name.localeCompare(b.name, 'en');
+  const all = [...result.sort(byName), ...tenantResult.sort(byName)];
+  const pageSize = mcpToolsListPageSize();
+  if (pageSize <= 0) return jsonRpcResult(id, { tools: all });
+  // Offsets are best-effort across changes to the principal's visible tools,
+  // including tenant-tool resolution failures that temporarily omit those tools.
+  const offset = params?.cursor === undefined ? 0 : decodeToolsListCursor(params.cursor);
+  if (offset === null) return jsonRpcError(id, -32602, 'Invalid cursor');
+  const page = all.slice(offset, offset + pageSize);
+  const next = offset + pageSize < all.length ? encodeToolsListCursor(offset + pageSize) : undefined;
+  return jsonRpcResult(id, next ? { tools: page, nextCursor: next } : { tools: page });
 }
 
 // ============================================
 // tools/call
 // ============================================
+
+/**
+ * #6408: core AI tools overwhelmingly signal failure by RETURNING
+ * `JSON.stringify({ error: '…' })` rather than throwing, so the thrown-error
+ * path below never sees them. Returns the error message when `safeText` is a
+ * PURE returned error — a top-level string `error` and no other key except the
+ * `_chat` compaction marker — and undefined otherwise.
+ *
+ * The predicate is deliberately narrow: plenty of tools return an `error`
+ * field ALONGSIDE real data (partial results, `error: null`), and those are
+ * successful calls. Only a payload whose entire content is the error is a
+ * tool-execution error.
+ */
+function pureReturnedToolError(safeText: string): string | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(safeText);
+  } catch {
+    return undefined;
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
+  const object = parsed as Record<string, unknown>;
+  if (typeof object.error !== 'string') return undefined;
+  if (!Object.keys(object).every((key) => key === 'error' || key === '_chat')) return undefined;
+  return object.error;
+}
+
+function structuredFromSafeText(safeText: string): Record<string, unknown> | undefined {
+  try {
+    const parsed: unknown = JSON.parse(safeText);
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
+    const object = parsed as Record<string, unknown>;
+    // Digests and pure returned errors are text, not successful tool data.
+    if (object.summarized === true) return undefined;
+    if (pureReturnedToolError(safeText) !== undefined) return undefined;
+    return object;
+  } catch {
+    return undefined;
+  }
+}
 
 async function handleToolsCall(
   id: string | number,
@@ -1134,6 +1297,15 @@ async function handleToolsCall(
 
   if (!requestedToolName) {
     return jsonRpcError(id, -32602, 'Missing required parameter: name');
+  }
+
+  // Tenant (BYO MCP) tools — Task A10. Named `<slug>__<name>` (never true of
+  // any core registry name — asserted by aiToolsRegistryParity.test.ts), so
+  // the dispatch is unambiguous by name shape alone. Handled by its own path
+  // entirely: it never touches getToolTier/checkGuardrails/checkToolPermission,
+  // which know nothing about tenant tools.
+  if (isTenantToolName(requestedToolName)) {
+    return handleTenantToolCall(id, requestedToolName, toolInput, auth, scopes, apiKey, c, sessionId);
   }
 
   // Resolve deprecated tool names ONCE, here, before any name-keyed gate below
@@ -1155,6 +1327,12 @@ async function handleToolsCall(
     (t) => t.definition.name === toolName,
   );
   if (bootstrapAuthTool) {
+    if (isMcpApprovalRequired(toolName, BOOTSTRAP_TOOL_TIER)) {
+      return jsonRpcResult(id, {
+        content: [{ type: 'text', text: JSON.stringify(MCP_APPROVAL_REQUIRED_ERROR) }],
+        isError: true,
+      });
+    }
     return dispatchBootstrapAuthTool(
       id,
       bootstrapAuthTool,
@@ -1290,10 +1468,54 @@ async function handleToolsCall(
   // complete + uniform audit. The callback owns executeTool + the MCP response
   // shape (including the image content-block special case) and classifies its
   // own success/failure; the wrapper owns the ledger + audit for both outcomes.
-  const execute = async (): Promise<Tier3ExecutionOutcome> => {
+  const execute = async (ledger: McpToolExecutionLedgerHandle | null): Promise<Tier3ExecutionOutcome> => {
     try {
-      const result = await executeTool(toolName, toolInput, auth);
+      // #5022 W01: the AI-surface mint site for MCP. When a Tier 3 execution
+      // ledger exists the origin comes from IT, because its `sessionId` is the
+      // persisted `ai_sessions.id` the ledger just created -- never
+      // `ctx.sessionId`, which is the MCP TRANSPORT session id and resolves to
+      // no row at all.
+      //
+      // Tiers below 3 create no ledger, and some of them still reach the
+      // device (`manage_processes` action 'list' dispatches `list_processes`).
+      // They get a kind-only origin: `ai_assistant` with NO sessionId. That is
+      // the truthful record -- an AI assistant decided, and there is no
+      // persisted conversation row to point at -- and it keeps every MCP tool
+      // attributable, which is what makes the fail-closed adapter safe to
+      // apply uniformly. A synthesised uuid here would be a pointer to
+      // nothing; `AiOriginRef.sessionId` is optional precisely for this.
+      const toolAuth = {
+        ...auth,
+        aiOrigin: ledger?.aiOrigin ?? ({ kind: 'ai_assistant' } as const),
+      };
+      const result = await executeTool(toolName, toolInput, toolAuth);
       const safeResult = compactToolResultForChat(toolName, result);
+
+      // #6408: a pure returned `{error}` is a tool-execution error, not a
+      // successful call. Mirror the tenant (BYO MCP) path — `isError: true` on
+      // the JSON-RPC result and `failure` on the ledger + audit — so clients
+      // that branch on `isError` (as MCP intends) and the execution reports
+      // both see the truth. The text block is unchanged: the client still
+      // reads the tool's own redacted message.
+      //
+      // Classify on the RAW result as well as the redacted one. Today's
+      // compaction tiers truncate an oversized error message but keep the
+      // `{error}` shape, so safeResult alone would be enough; the raw check is
+      // defence-in-depth against the `{summarized:true,…}` digest fallback,
+      // which drops the top-level `error` key and would silently turn exactly
+      // the failures with the most to say back into successes. The recorded
+      // MESSAGE always comes from the redacted side, so nothing unredacted is
+      // persisted to the ledger or the audit log.
+      const returnedError = pureReturnedToolError(result) ?? pureReturnedToolError(safeResult);
+      if (returnedError !== undefined) {
+        return {
+          status: 'failure',
+          error: new Error(pureReturnedToolError(safeResult) ?? safeResult),
+          response: jsonRpcResult(id, { content: [{ type: 'text', text: safeResult }], isError: true }),
+        };
+      }
+
+      const structured = structuredFromSafeText(safeResult);
 
       // If result contains imageBase64, return it as an MCP image content block
       // so Claude can actually see the screenshot (instead of raw base64 in JSON text)
@@ -1310,14 +1532,20 @@ async function handleToolsCall(
           }
           response = jsonRpcResult(id, { content });
         } else {
-          response = jsonRpcResult(id, { content: [{ type: 'text', text: safeResult }] });
+          response = jsonRpcResult(id, {
+            content: [{ type: 'text', text: safeResult }],
+            ...(structured ? { structuredContent: structured } : {}),
+          });
         }
       } catch (err) {
         if (!(err instanceof SyntaxError)) {
           console.error('[MCP] Unexpected error parsing vision response:', err);
         }
         // Not JSON or no imageBase64 — fall through to text
-        response = jsonRpcResult(id, { content: [{ type: 'text', text: safeResult }] });
+        response = jsonRpcResult(id, {
+          content: [{ type: 'text', text: safeResult }],
+          ...(structured ? { structuredContent: structured } : {}),
+        });
       }
 
       return { status: 'success', ledgerResult: safeResult, response };
@@ -1350,6 +1578,155 @@ async function handleToolsCall(
 }
 
 /**
+ * `tools/call` dispatch for a tenant (BYO MCP) tool — Task A10. Mirrors the
+ * core `handleToolsCall` path's ORDER of checks (resolve → MCP approval gate
+ * → scope gates → RBAC → rate limit → execution-org resolution → execute →
+ * audit), but against the tenant descriptor's own tier and the tenant
+ * (`toolSources/*`) guardrail adapters rather than the core registry's.
+ *
+ * Tier 3 external tools are denied over MCP exactly like a core Tier 3 tool
+ * (`isMcpApprovalRequired`) — this transport has no interactive approval
+ * surface; PR B's action-intents flow does not extend to MCP.
+ */
+async function handleTenantToolCall(
+  id: string | number,
+  toolName: string,
+  toolInput: Record<string, unknown>,
+  auth: AuthContext,
+  scopes: string[],
+  apiKey?: McpApiKeyContext,
+  c?: Context,
+  sessionId?: string,
+): Promise<JsonRpcResponse> {
+  const d = await liveResolveTenantToolByName(auth, toolName);
+  if (!d) {
+    // #6102: distinguish "genuinely unknown/inaccessible" (still the same
+    // -32602 below — no existence oracle for a caller without access) from
+    // "exists, caller has access, but its source isn't active right now".
+    // Never echoes the source's raw lastError text over this transport: an
+    // MCP caller (an AI agent / API key) has no guarantee of tool_sources:read
+    // the way the web Test drawer route does, so only the status token goes
+    // out, not the free-text error a healthcheck route would show a human.
+    // Same defensive shape as the permission/rate-limit/org-resolution checks
+    // below: a throwing health lookup (DB blip) must not silently fall through
+    // to the "genuinely unknown" -32602 — that would misreport an operational
+    // hiccup as "this tool doesn't exist", which is worse than the original
+    // bug for debugging. Logged with toolName, same as every sibling catch in
+    // this function.
+    let health: { found: boolean; sourceStatus?: 'active' | 'error' | 'disabled' };
+    try {
+      health = await liveResolveTenantToolHealthByName(auth, toolName);
+    } catch (err) {
+      console.error('[MCP] Tenant tool health check failed for:', toolName, err);
+      return jsonRpcError(id, -32000, 'Unable to verify tool availability');
+    }
+    if (health.found && health.sourceStatus !== 'active') {
+      return jsonRpcError(id, -32000, `Tool "${toolName}" is temporarily unavailable (source is ${health.sourceStatus}).`, {
+        code: 'tool_source_unavailable',
+        sourceStatus: health.sourceStatus,
+      });
+    }
+    return jsonRpcError(id, -32602, `Unknown tool: ${toolName}`);
+  }
+  const tier = d.tier;
+
+  // Same unconditional interactive-approval-only gate as core (see
+  // MCP_APPROVAL_REQUIRED_EXTRA_TOOLS's block comment) — checked BEFORE the
+  // scope gates below, same as core.
+  if (isMcpApprovalRequired(toolName, tier)) {
+    return jsonRpcResult(id, {
+      content: [{ type: 'text', text: JSON.stringify(MCP_APPROVAL_REQUIRED_ERROR) }],
+      isError: true,
+    });
+  }
+
+  const hasExecute = scopes.includes('ai:execute');
+  const requireExecuteAdmin = shouldRequireExecuteAdminInProd();
+  const hasExecuteAdmin = scopes.includes('ai:execute_admin');
+  const hasWrite = hasExecute || scopes.includes('ai:write');
+
+  if (tier >= 3 && !hasExecute) {
+    return jsonRpcError(id, -32603, `Tool "${toolName}" requires ai:execute scope`);
+  }
+  if (tier >= 3 && requireExecuteAdmin && !hasExecuteAdmin) {
+    return jsonRpcError(id, -32603, `Tool "${toolName}" requires ai:execute_admin scope in production`);
+  }
+  if (tier === 2 && !hasWrite) {
+    return jsonRpcError(id, -32603, `Tool "${toolName}" requires ai:write scope`);
+  }
+
+  // RBAC permission check
+  try {
+    const permError = await checkPermissionRequirements(auth, [tenantToolPermissionRequirement(tier)]);
+    if (permError) {
+      return jsonRpcError(id, -32603, permError);
+    }
+  } catch (err) {
+    console.error('[MCP] Permission check failed for tenant tool:', toolName, err);
+    return jsonRpcError(id, -32000, 'Unable to verify permissions');
+  }
+
+  // Per-source rate limit
+  try {
+    const rateLimitErr = await checkTenantToolRateLimit(d, auth.user.id);
+    if (rateLimitErr) {
+      return jsonRpcError(id, -32000, rateLimitErr);
+    }
+  } catch (err) {
+    console.error('[MCP] Tenant tool rate limit check failed for:', toolName, err);
+    return jsonRpcError(id, -32000, 'Unable to verify rate limits');
+  }
+
+  // Authoritative execution org — same resolver core tools use. Tenant tools
+  // have no `deviceArgs` of their own, so device-target resolution is a no-op
+  // and this always falls back to the attribution-only path.
+  let executionOrgId: string | null;
+  try {
+    ({ orgId: executionOrgId } = await resolveMcpExecutionContext({
+      auth,
+      apiKey: apiKey ?? null,
+      toolName,
+      toolInput,
+      deviceArgsForTool: async () => undefined,
+    }));
+  } catch (err) {
+    if (err instanceof McpExecutionOrgError) {
+      return jsonRpcError(id, -32602, 'Invalid params');
+    }
+    console.error('[MCP] Failed to resolve execution org for tenant tool:', toolName, err);
+    return jsonRpcError(id, -32000, 'Unable to resolve execution organization');
+  }
+
+  const startTime = Date.now();
+  const { isError, text: resultText } = await liveExecuteTenantToolDetailed(d, toolInput, auth, {
+    surface: 'mcp',
+    orgId: executionOrgId,
+    actor: apiKey ? { kind: 'api_key', id: apiKey.id } : undefined,
+  });
+
+  writeMcpToolAuditEvent(c, {
+    apiKey,
+    auth,
+    sessionId,
+    orgId: executionOrgId,
+    toolName,
+    tier,
+    toolInput,
+    durationMs: Date.now() - startTime,
+    status: isError ? 'failure' : 'success',
+    result: resultText,
+  });
+
+  // Tenant execution already redacts source credentials from resultText.
+  const structured = isError ? undefined : structuredFromSafeText(resultText);
+  return jsonRpcResult(id, {
+    content: [{ type: 'text', text: resultText }],
+    ...(structured ? { structuredContent: structured } : {}),
+    ...(isError ? { isError: true } : {}),
+  });
+}
+
+/**
  * Test-only direct access to the JSON-RPC `tools/list` / `tools/call`
  * handlers, bypassing the HTTP + API-key/bearer transport layer entirely.
  * Lets Task 7b's org-install-gate tests inject a controlled `AuthContext`
@@ -1358,6 +1735,17 @@ async function handleToolsCall(
  */
 export const __handleToolsListForTests = handleToolsList;
 export const __handleToolsCallForTests = handleToolsCall;
+/**
+ * Test-only direct access to the bootstrap authTool dispatcher. `tools/call`
+ * now returns MCP_APPROVAL_REQUIRED before reaching it (bootstrap tools are
+ * fixed Tier 3 and this transport has no interactive approval surface), so the
+ * dispatcher is unreachable over HTTP. Its RBAC-before-ledger ordering,
+ * fail-closed ledger and uniform-audit behaviour are still contracts worth
+ * pinning — both because the code is still shipped and because it is what an
+ * approval surface would re-attach to — so the lifecycle suite drives it here
+ * instead of through a request that can never arrive.
+ */
+export const __dispatchBootstrapAuthToolForTests = dispatchBootstrapAuthTool;
 /**
  * Test-only direct access to `handleJsonRpc` itself (rather than a single
  * handler) — needed to observe its top-level try/catch, which is what turns
@@ -1429,10 +1817,6 @@ function writeMcpToolAuditEvent(
 // Shared Tier 3 execution lifecycle (MCP-OAUTH-12)
 // ============================================
 
-// Bootstrap tools are destructive tenant mutations (send invites / configure
-// defaults) and always run through the Tier 3 ledger + uniform audit.
-const BOOTSTRAP_TOOL_TIER = 3;
-
 interface Tier3LifecycleContext {
   id: string | number;
   c: Context | undefined;
@@ -1488,7 +1872,7 @@ interface Tier3ExecutionOutcome {
  */
 async function runTier3ToolLifecycle(
   ctx: Tier3LifecycleContext,
-  execute: () => Promise<Tier3ExecutionOutcome>,
+  execute: (ledger: McpToolExecutionLedgerHandle | null) => Promise<Tier3ExecutionOutcome>,
 ): Promise<JsonRpcResponse> {
   let ledgerHandle: McpToolExecutionLedgerHandle | null = null;
   if (ctx.tier >= 3) {
@@ -1519,7 +1903,7 @@ async function runTier3ToolLifecycle(
   const startedAt = Date.now();
   let outcome: Tier3ExecutionOutcome;
   try {
-    outcome = await execute();
+    outcome = await execute(ledgerHandle);
   } catch (err) {
     // The execute callback is expected to classify its own outcome and never
     // throw. This defensive net STILL completes the ledger + audit (never skip
@@ -1733,7 +2117,7 @@ async function dispatchBootstrapAuthTool(
   const bootstrapCtx = {
     ip: requestIp(c),
     userAgent: c?.req.header('user-agent') ?? null,
-    region: ((process.env.BREEZE_REGION as 'us' | 'eu') ?? 'us') as 'us' | 'eu',
+    region: breezeRegion(),
     apiKey: {
       id: apiKey.id,
       partnerId: auth.partnerId,
@@ -1746,6 +2130,8 @@ async function dispatchBootstrapAuthTool(
   // complete + uniform `mcp.tool.<name>` audit. The handler's own business
   // audits + dedup (per-invite events, configure_defaults audit, 24h dedupe)
   // remain intact; this wraps them with the fail-closed ledger + uniform audit.
+  // The bootstrap handlers take `bootstrapCtx`, not an AuthContext, and never
+  // reach the device command queue, so they need no AI origin (#5022 W01).
   const execute = async (): Promise<Tier3ExecutionOutcome> => {
     try {
       const result = await tool.handler(parsed.data, bootstrapCtx);
@@ -2119,7 +2505,10 @@ async function handleResourcesRead(
       // Site axis (app-layer only): a site-restricted caller must not resolve a
       // device outside their allowed sites — treat as not-found. siteId is in
       // SAFE_DEVICE_RESOURCE_FIELDS so the projection already carries it.
-      if (!device || deviceSiteDenied(auth, device.siteId)) {
+      // `device.id` is load-bearing: an exact-device caller (`allowedDeviceIds`,
+      // a resource-scoped agent run) is denied by a site alone, so omitting it
+      // would deny the caller its OWN device.
+      if (!device || deviceSiteDenied(auth, device.siteId, device.id)) {
         return jsonRpcError(id, -32602, `Device not found: ${deviceId}`);
       }
 

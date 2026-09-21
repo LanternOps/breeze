@@ -29,14 +29,20 @@ On connection the server also returns an **`instructions`** string describing th
 
 ## Transport
 
-The Breeze MCP server uses the **SSE + HTTP POST** transport, which is the standard remote MCP transport for server-deployed instances.
+Breeze speaks both remote MCP transports on the **same path**, `/api/v1/mcp/sse`:
 
-| Endpoint | Method | Purpose |
-|---|---|---|
-| `/api/v1/mcp/sse` | `GET` | Opens a long-lived Server-Sent Events stream. The server sends an `endpoint` event containing the URL the client should POST messages to, then streams responses and keepalive pings. |
-| `/api/v1/mcp/message` | `POST` | Receives JSON-RPC 2.0 requests from the client. If a `sessionId` query parameter is present and matches an active SSE session, the response is delivered over SSE (HTTP 202). Otherwise the response is returned inline. |
+| Transport | How | Protocol revisions | Use it when |
+|---|---|---|---|
+| **Streamable HTTP** (recommended) | `POST /api/v1/mcp/sse` with a JSON-RPC body; the server answers inline JSON and issues an `Mcp-Session-Id` on `initialize`. Echo it on every later request, together with the negotiated `MCP-Protocol-Version` header. | 2025-03-26, 2025-06-18, 2025-11-25, and 2024-11-05 (negotiated on `initialize`) | Clients that support Streamable HTTP. |
+| HTTP + SSE (legacy) | `GET /api/v1/mcp/sse` opens the event stream; the `endpoint` event names `/api/v1/mcp/message` for `POST`s. | 2024-11-05 | Older clients that only offer an "SSE" transport option. |
 
-The SSE stream sends keepalive pings every 30 seconds to prevent proxy timeouts. The client can also call `/api/v1/mcp/message` without an SSE session for stateless, request-response usage.
+`initialize` reports the negotiated `protocolVersion`, `serverInfo.version` (the Breeze API release), and `instructions`. Every tool in `tools/list` carries a `title`, MCP `annotations` (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`) derived from Breeze's guardrail classifications, and `_meta["app.breeze/domain"]`. Annotations are hints for clients; they do not bypass permissions or approval checks.
+
+Successful object results from `tools/call` include `structuredContent` matching the redacted JSON in the `text` block. Pure error objects, non-object results (arrays, scalars, and plain text), and summarized results omit `structuredContent`. The `_chat.outputCompacted` marker identifies a shortened list; natively shaped results retain `structuredContent`.
+
+Batch requests are not supported for any negotiated protocol version. Send one JSON-RPC request per POST. `DELETE /api/v1/mcp/sse` currently returns 204 as a no-op; it does not end a session.
+
+`tools/list` returns a single page by default. Pagination is experimental and enabled only when the operator sets `MCP_TOOLS_LIST_PAGE_SIZE` to a positive value. Every connected client must follow `nextCursor` until it is absent. Cursors are offsets, so a catalog change mid-enumeration can skip tools; tenant-tool discovery failures can also change the list between pages.
 
 ---
 
@@ -48,6 +54,10 @@ Your tenant's MCP SSE endpoint is surfaced in two places in the dashboard so you
 - **Settings → Connected Apps** — a full card above the apps list with a one-click copy button, ready to paste into Claude.ai, ChatGPT, Cursor, or any other MCP-compatible client.
 
 Both cards resolve the URL from the tenant you're connecting to, so what's shown is what the AI client should use.
+
+<Aside type="note" title="Who can see and disconnect connected apps">
+  Since v0.112.0 the **Settings → Connected Apps** list needs the `connected_apps:read` permission, and disconnecting an app needs `connected_apps:manage` plus a multi-factor step-up. Both are held by Partner Admin and (after the upgrade) the built-in Org Admin only; grant them to any other role that manages OAuth/MCP clients in **Settings → Roles**. Managing connected apps also requires a partner-scope session with access to every organization.
+</Aside>
 
 ---
 
@@ -110,6 +120,17 @@ API key authentication via the `X-API-Key` header continues to work for every cl
 
 ---
 
+## Connecting Claude Code
+
+```bash
+claude mcp add --transport http breeze-rmm https://your-breeze-instance.example.com/api/v1/mcp/sse \
+  --header "X-API-Key: brz_your_api_key_here"
+```
+
+This URL is the Streamable HTTP endpoint; the client negotiates the protocol version automatically.
+
+---
+
 ## Connecting Claude Desktop
 
 <Steps>
@@ -155,6 +176,8 @@ The config file on Windows is located at `%APPDATA%\Claude\claude_desktop_config
 </TabItem>
 </Tabs>
 
+This URL is the Streamable HTTP endpoint; the client negotiates the protocol version automatically.
+
 <Aside>
   Replace `your-breeze-instance.example.com` with your actual Breeze API hostname and `brz_your_api_key_here` with the API key you created.
 </Aside>
@@ -188,6 +211,8 @@ The config file on Windows is located at `%APPDATA%\Claude\claude_desktop_config
 }
 ```
 
+This URL is the Streamable HTTP endpoint; the client negotiates the protocol version automatically.
+
 ---
 
 ## Available tools
@@ -213,6 +238,8 @@ Tools are the primary way AI clients interact with Breeze. Each tool maps to one
 |---|---|---|
 | `manage_alerts` | 1/2 | List, get, acknowledge, or resolve alerts. List/get are Tier 1; acknowledge/resolve are Tier 2. |
 | `manage_alert_rules` | 1/2/3 | Full alert rule lifecycle: list, get, create, update, delete rules; test rules; list notification channels; alert summary. Create/update are Tier 2; delete is Tier 3. |
+| `list_incidents` | 1 | List incidents by organization, status, severity, classification, assignee, or date range. |
+| `list_remediation_suggestions` | 1 | List remediation suggestions by organization, source, device, or status, limited to accessible devices. |
 
 ### Command and script execution
 
@@ -227,8 +254,17 @@ Tools are the primary way AI clients interact with Breeze. Each tool maps to one
 | Tool | Tier | Description |
 |---|---|---|
 | `file_operations` | 2/3 | List directory contents (Tier 2, auto-execute + audit). Read, write, delete, mkdir, rename (Tier 3 — reading file contents requires approval because the agent reads as root/LocalSystem). |
-| `analyze_disk_usage` | 1 | Filesystem analysis with cleanup candidate detection. Can trigger fresh scans on online devices. |
-| `disk_cleanup` | 1/3 | Preview cleanup candidates (Tier 1). Execute cleanup by deleting selected paths (Tier 3). |
+| `analyze_disk_usage` | 1 | Filesystem analysis with cleanup candidate detection, for any fixed volume on the device (`path`). Can trigger fresh scans on online devices. |
+| `disk_cleanup` | 1/3 | Preview cleanup candidates for a volume (Tier 1). Execute cleanup by deleting selected paths from a previewed run (Tier 3). |
+| `system_cleanup` | 1/3 | List the OS-native maintenance cleaners a device offers — Windows Disk Cleanup handlers and DISM component cleanup, macOS local snapshots and Homebrew, Linux package caches and journal — with an "up to" reclaim estimate (Tier 1). Run the selected actions (Tier 3); `run` returns a `cleanupRunId` immediately and `status` (Tier 1) reads the run's progress and result. |
+
+<Aside type="caution">
+  **Tier 3 actions cannot be executed over MCP at all.** This transport has no interactive approval surface, so `tools/call` answers a Tier 3 action with a structured `MCP_APPROVAL_REQUIRED` error *before* it checks scopes, RBAC, rate limits or the production allowlist — holding `ai:execute` does not change the outcome. `disk_cleanup` and `system_cleanup` stay listed because their read-only actions still work; `tools/list` appends a note to each one's description:
+
+  `(Actions "run" require interactive approval and are not available over MCP — use the Breeze web app AI assistant for those.)`
+
+  A tool whose *every* action is Tier 3 is not listed at all, because advertising a tool that can only ever answer with a refusal is worse than omitting it. The practical contract for an MCP client is therefore: `analyze_disk_usage`, `disk_cleanup` preview and `system_cleanup` list/status give you a complete read-only diagnosis, and you hand the destructive step to a technician in the Breeze web app AI assistant, where it goes through the approval workflow.
+</Aside>
 
 ### Security tools
 
@@ -249,12 +285,20 @@ Tools are the primary way AI clients interact with Breeze. Each tool maps to one
 | `manage_maintenance_windows` | 1/2/3 | Maintenance windows: list, get, check active, create, update, delete. |
 | `manage_automations` | 1/2/3 | Automation lifecycle: list, get, history, create, update, delete, enable, disable, manual run. |
 | `generate_report` | 1/2 | Reports: list, generate, get report data, create/update/delete definitions, view history. |
+| `list_org_contacts` | 1 | List an organization's contacts by site or role, respecting organization and site access. |
+| `list_sites` | 1 | List accessible sites with device counts, optionally filtered by organization or name. |
+| `get_site` | 1 | Retrieve one accessible site's details by site ID. |
+| `list_ai_agents` | 1 | List accessible AI agents and their enabled state, optionally including disabled agents. |
+| `list_ai_agent_runs` | 1 | List recent accessible AI agent runs with status, verdict, and cost, filtered by agent or organization. |
+| `get_ai_agent_run` | 1 | Retrieve one accessible AI agent run's trace by run ID. |
 
 ### Network tools
 
 | Tool | Tier | Description |
 |---|---|---|
 | `network_discovery` | 3 | Initiate a network discovery scan from a device (ping, ARP, or full). |
+| `list_network_assets` | 1 | List discovered network assets by organization, site, approval status, asset type, or linked device. |
+| `get_network_asset` | 1 | Retrieve one accessible discovered network asset's identity, addresses, linked device, and last-seen details. |
 
 ### Diagnostic tools
 
@@ -279,6 +323,9 @@ Tools are the primary way AI clients interact with Breeze. Each tool maps to one
 | Tool | Tier | Description |
 |---|---|---|
 | `manage_tickets` | 1/2/3 | Full ticket lifecycle. List/get are Tier 1. Create, comment, assign, update status, update fields (subject, description, category, priority, due date, tags, device, submitter), link/unlink alerts, create a ticket from an alert, edit/delete comments, and time tracking (log time entry, start/stop timer) are Tier 2. Moving a ticket to a different organization is Tier 3. |
+| `list_time_entries` | 1 | List logged work by ticket, user, organization, dates, billing status, or approval. Requires partner or system scope; non-admins see their own entries. |
+| `get_running_timer` | 1 | Retrieve the caller's running time entry, or null when no timer is running. Requires partner or system scope and a user principal. |
+| `get_timesheet` | 1 | Retrieve a weekly timesheet. Requires partner or system scope and a user principal; another user's timesheet requires admin access. |
 
 ### Billing tools
 
@@ -361,8 +408,8 @@ When a client calls `tools/list`, the server filters the full tool catalogue:
 
 1. **Tier 1** tools (read-only) are always included if the key has `ai:read`.
 2. **Tier 2** tools are included if the key has `ai:write` (or `ai:execute`, which implies write).
-3. **Tier 3+** tools are included if the key has `ai:execute`.
-4. In production with `MCP_REQUIRE_EXECUTE_ADMIN=true`, Tier 3+ tools additionally require `ai:execute_admin`.
+3. **Tier 3+** tools are included only when *some* action of them is below Tier 3 and the key has `ai:execute`; a wholly Tier 3 tool is never listed.
+4. A Tier 3 **action** is refused over MCP regardless of scope — see the caution above. `MCP_REQUIRE_EXECUTE_ADMIN` and `MCP_EXECUTE_TOOL_ALLOWLIST` therefore only affect which *tools* a key may see and reach, never whether a Tier 3 action executes.
 
 When a client calls `tools/call`, the server re-checks scopes before execution. Attempting to call a tool your key lacks permission for returns a JSON-RPC error:
 
@@ -412,6 +459,7 @@ Each tool has its own sliding-window rate limit, enforced per user:
 | `manage_services` | 10 | 5 min |
 | `analyze_disk_usage` | 10 | 5 min |
 | `disk_cleanup` | 3 | 10 min |
+| `system_cleanup` | 30 | 60 min |
 | `manage_configuration_policy` | 20 | 5 min |
 | `configuration_policy_compliance` | 30 | 5 min |
 | `manage_deployments` | 10 | 10 min |
@@ -516,6 +564,7 @@ All tool inputs are validated against Zod schemas before execution. Invalid inpu
 | `MCP_SSE_RATE_LIMIT_PER_MINUTE` | `30` | Maximum SSE connections per API key per minute. |
 | `MCP_MESSAGE_RATE_LIMIT_PER_MINUTE` | `120` | Maximum JSON-RPC messages per API key per minute. |
 | `MCP_MESSAGE_MAX_BODY_BYTES` | `65536` | Maximum accepted JSON-RPC request body size, in bytes (64 KB). Larger requests are rejected. |
+| `MCP_TOOLS_LIST_PAGE_SIZE` | `0` (unset) | Experimental pagination: 0/unset returns a single page. Set to e.g. `50` only when every connected client follows `nextCursor`. Cursors are offsets; a catalog change mid-enumeration can skip tools. |
 | `MCP_SESSION_TTL_SECONDS` | `660` | Idle lifetime, in seconds, of a minted streamable-HTTP session principal in Redis (11 minutes). |
 
 ### OAuth 2.1

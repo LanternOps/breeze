@@ -8,6 +8,10 @@ import { voidInvoiceSchema } from '@breeze/shared';
 import { issueInvoice, voidInvoice, requireOrgAccess, requireSiteAccess } from '../../services/invoiceService';
 import { getOrMintInvoiceLink, resetInvoiceLink, buildPublicInvoiceUrl } from '../../services/invoiceLinkToken';
 import { InvoiceServiceError } from '../../services/invoiceTypes';
+import {
+  assertInvoiceSessionsRevoked,
+  requestInvoiceSessionRevocation,
+} from '../../services/stripeSessionRevocation';
 import { db } from '../../db';
 import { invoices, invoiceDocuments } from '../../db/schema';
 import { enqueueInvoicePdfRender } from '../../jobs/invoiceWorker';
@@ -155,6 +159,16 @@ invoiceLifecycleRoutes.post('/:id/reset-link', scopes, sendPerm, zValidator('par
   const id = c.req.valid('param').id;
   try {
     const inv = await loadLinkableInvoice(id, invoiceActorFrom(c));
+    // SEC-150 FAIL-CLOSED. Reset exists precisely to kill an issued capability;
+    // a reset that leaves a payable Stripe Checkout session IS the finding. The
+    // intent is recorded and Stripe is called BEFORE the local reset, and the
+    // reset is refused (503 STRIPE_REVOCATION_PENDING) until every open session
+    // is provably dead. The intent is durable, so the sweep finishes the job and
+    // the operator retries in seconds.
+    await requestInvoiceSessionRevocation({
+      invoiceId: inv.id, reason: 'link_reset', requestedByUserId: invoiceActorFrom(c).userId,
+    });
+    await assertInvoiceSessionsRevoked(inv.id);
     const link = await resetInvoiceLink({ id: inv.id, dueDate: inv.dueDate });
     // The stored PDF prints the OLD link ("Pay online: …"), and both re-send
     // and download reuse the artifact without re-rendering — purge it so the

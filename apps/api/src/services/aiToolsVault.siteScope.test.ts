@@ -9,7 +9,10 @@ vi.mock('../db', () => ({
 
 vi.mock('./commandQueue', () => ({
   CommandTypes: { VAULT_SYNC: 'vault_sync' },
-  queueCommandForExecution: vi.fn(async () => ({ command: { id: 'c1', status: 'sent' } })),
+}));
+
+vi.mock('./aiDispatch', () => ({
+  aiQueueCommandForExecution: vi.fn(async () => ({ command: { id: 'c1', status: 'sent' } })),
 }));
 
 import { db } from '../db';
@@ -44,6 +47,7 @@ function makeAuth(allowedSiteIds?: string[]): AuthContext {
     canAccessOrg: () => true,
     allowedSiteIds,
     canAccessSite: (siteId) => (!allowedSiteIds ? true : !!siteId && allowedSiteIds.includes(siteId)),
+    aiOrigin: { kind: 'ai_assistant', sessionId: 'test-session' },
   };
 }
 
@@ -106,7 +110,7 @@ describe('trigger_vault_sync — site scoping (vault → device)', () => {
     let call = 0;
     mockDb.select.mockImplementation(() => {
       call++;
-      if (call === 1) return { from: () => ({ where: () => ({ limit: () => Promise.resolve([{ id: 'v1', deviceId: 'd1', isActive: true }]) }) }) };
+      if (call === 1) return { from: () => ({ where: () => ({ limit: () => Promise.resolve([{ id: 'v1', orgId: 'org-1', deviceId: 'd1', isActive: true }]) }) }) };
       return { from: () => ({ where: () => ({ limit: () => Promise.resolve([{ siteId: 'site-B' }]) }) }) };
     });
     mockDb.update.mockReturnValue({ set: () => ({ where: () => Promise.resolve() }) });
@@ -116,7 +120,7 @@ describe('trigger_vault_sync — site scoping (vault → device)', () => {
 
   it('unrestricted caller is unaffected', async () => {
     mockDb.select.mockReturnValue({
-      from: () => ({ where: () => ({ limit: () => Promise.resolve([{ id: 'v1', deviceId: 'd1', isActive: true }]) }) }),
+      from: () => ({ where: () => ({ limit: () => Promise.resolve([{ id: 'v1', orgId: 'org-1', deviceId: 'd1', isActive: true }]) }) }),
     });
     mockDb.update.mockReturnValue({ set: () => ({ where: () => Promise.resolve() }) });
     const result = await handlerFor('trigger_vault_sync')({ vaultId: 'v1' }, makeAuth(undefined));

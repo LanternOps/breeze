@@ -1,0 +1,389 @@
+{
+  "managed": {
+    "readOnly": "Bir monitör tarafından yönetiliyor",
+    "description": "Bu kayıt bir monitörden oluşturulur ve doğrudan düzenlenemez. Bunun yerine monitörden yönetin.",
+    "open": "Monitörü aç",
+    "badge": "Monitör tarafından yönetiliyor",
+    "badgeHint": "Bir monitör tarafından yönetiliyor — bunun yerine monitörden düzenleyin.",
+    "monitorLabel": "Monitör"
+  },
+  "list": {
+    "title": "Monitörler",
+    "description": "Bir koşulu izleyin, cihazda yanıt verin, bildirin ve tekrarlamaya devam ederse yükseltin.",
+    "new": "Yeni monitör",
+    "empty": "Henüz monitör yok.",
+    "columns": {
+      "name": "Ad",
+      "kind": "Tür",
+      "severity": "Önem",
+      "deployedTo": "Dağıtıldığı yer",
+      "enabled": "Etkin",
+      "owner": "Sorumlu"
+    },
+    "allOrgs": "Tüm kuruluşlar",
+    "policiesCount_one": "{{count}} politika",
+    "policiesCount_other": "{{count}} politika",
+    "notDeployed": "Dağıtılmadı",
+    "toggleEnabled": "Etkin: {{name}}",
+    "errors": {
+      "fetch": "Monitörler yüklenemedi",
+      "delete": "Monitör silinemedi",
+      "toggle": "Monitör güncellenemedi"
+    },
+    "deleteConfirm": "{{name}} monitörü silinsin mi? Uyarı kuralı ve yanıt otomasyonu da kaldırılır.",
+    "builtIn": "Yerleşik",
+    "builtInHint": "Breeze tarafından sağlandı. Eşikleri düzenleyin, devre dışı bırakın veya silin; geri gelmez."
+  },
+  "editor": {
+    "attachedToPolicy": "Monitör oluşturuldu ve ilkeye bağlandı",
+    "titleNew": "Yeni monitör",
+    "titleEdit": "Monitörü düzenle",
+    "breadcrumb": {
+      "monitors": "Monitörler",
+      "new": "Yeni monitör"
+    },
+    "sections": {
+      "watch": "Ne izlenecek",
+      "noise": "Önem ve gürültü",
+      "respond": "Yanıtla",
+      "notify": "Bildir",
+      "escalate": "Bir kişiye yükselt",
+      "deployed": "Dağıtıldığı yer"
+    },
+    "tabs": {
+      "settings": "Ayarlar",
+      "activity": "Etkinlik"
+    },
+    "fields": {
+      "match": "Eşleşme",
+      "name": "Ad",
+      "description": "Açıklama",
+      "kind": "Tür",
+      "severity": "Önem",
+      "cooldownMinutes": "Bekleme Süresi (dakika)",
+      "autoResolve": "Koşul normale döndüğünde otomatik olarak çözümle",
+      "deliveryMode": "Teslimat",
+      "channels": "Kanallar",
+      "escalationPolicy": "Yükseltme politikası",
+      "recurrenceThreshold": "Şu kadar sonra yükselt",
+      "recurrenceWindowDays": "olay, şu gün içinde (gün)",
+      "pauseResponses": "Bir kişi sıfırlayana kadar otomatik yanıtları duraklat",
+      "aiAgent": "Yapay zeka aracısı (yapay zeka triyaj yanıtlarını etkinleştirir)"
+    },
+    "deliveryModes": {
+      "inherit": "Yönlendirme kurallarını kullan",
+      "channels": "Yönlendirme kuralları ve bu kanallar",
+      "none": "Bildirim gönderme"
+    },
+    "responsesHint": "Yanıtlar, ihlalin gerçekleştiği cihazda sırayla çalışır.",
+    "recurrenceHint": "İhlal olaylarında sayılır: yeni bir olay yalnızca koşul düzeldikten sonra başlar.",
+    "ownerScope": {
+      "legend": "Sahip",
+      "partner": "Tüm kuruluşlar (iş ortağı çapında)",
+      "organization": "Yalnızca bu kuruluş"
+    },
+    "actions": {
+      "save": "Monitörü kaydet",
+      "saving": "Kaydediliyor…",
+      "create": "Monitör oluştur",
+      "test": "Bir cihazda test et",
+      "deploy": "Şuraya dağıt…",
+      "delete": "Sil"
+    },
+    "errors": {
+      "load": "Monitör yüklenemedi",
+      "save": "Monitör kaydedilemedi",
+      "delete": "Monitör silinemedi",
+      "test": "Test başarısız oldu",
+      "generic": "Bir şeyler ters gitti"
+    },
+    "saved": "Monitör kaydedildi",
+    "deleted": "Monitör silindi",
+    "detached": "Monitör kaldırıldı",
+    "loading": "Monitör yükleniyor…",
+    "noAttachments": "Henüz herhangi bir politikaya dağıtılmadı.",
+    "testResult": {
+      "triggered": "{{device}} üzerinde koşul karşılandı",
+      "notTriggered": "{{device}} üzerinde koşul karşılanmadı"
+    },
+    "testDialog": {
+      "title": "Bir cihazda test et",
+      "selectDevice": "Cihaz",
+      "run": "Testi çalıştır"
+    },
+    "deliveryPreview": {
+      "selectOrg": "Teslimatı önizlemek için bir kuruluş seçin.",
+      "failed": "Teslimat önizlenemedi.",
+      "loading": "Teslimat çözümleniyor…",
+      "disabled": "{{name}} (devre dışı)",
+      "unavailable": "Kanal kullanılamıyor",
+      "destination": "{{severity}} için teslimat: {{channels}}",
+      "partnerRule": "İş ortağı kuralı: {{name}}",
+      "orgRule": "Kuruluş kuralı: {{name}}",
+      "partnerDefault": "İş ortağı varsayılanı: {{name}}",
+      "orgDefault": "Kuruluş varsayılanı: {{name}}",
+      "noRow": "Teslimat satırı yapılandırılmamış.",
+      "monitorOverride": "Monitöre özel ayar",
+      "escalation": "{{name}} üzerinden yükseltilir",
+      "withoutSite": "Site seçilmedi; siteye özel kurallar uygulanmaz.",
+      "testRules": "Bu kural kümesini test et",
+      "kind": "Monitör türü",
+      "noKind": "Monitör türü yok",
+      "site": "Konum",
+      "noSite": "Site yok",
+      "sitesFailed": "Siteler yüklenemedi.",
+      "manage": "Teslimatı yönet",
+      "draft": "Önizleme düzenleyicideki güncel değerleri kullanır.",
+      "skipped": "Atlandı {{id}}: {{reason}}",
+      "skipReasons": {
+        "disabled": "devre dışı",
+        "unavailable": "kullanılamıyor"
+      }
+    }
+  },
+  "kinds": {
+    "composite": "Bileşik (birkaç koşulun tümü veya herhangi biri)",
+    "cpu": "CPU Kullanımı",
+    "memory": "Bellek Kullanımı",
+    "disk": "Disk Kullanımı",
+    "offline": "Cihaz Çevrimdışı",
+    "event_log": "Olay Günlüğü",
+    "patch_compliance": "Yama uyumluluğu",
+    "service": "Servis durdu",
+    "process": "Süreç durdu",
+    "process_resource": "Süreç kaynağı",
+    "cert_expiry": "Sertifika süresinin dolması",
+    "bandwidth": "Bant genişliği",
+    "disk_io": "Disk G/Ç",
+    "network_errors": "Ağ hataları",
+    "antivirus": "Antivirüs",
+    "software_presence": "Yazılım varlığı",
+    "backup_continuity": "Yedekleme sürekliliği",
+    "script": "Betik denetimi",
+    "network_check": "Ağ denetimi"
+  },
+  "fields": {
+    "operator": "Karşılaştırma",
+    "value": "Değer",
+    "durationMinutes": "En az (dakika) boyunca",
+    "category": "Kategori",
+    "level": "Seviye",
+    "sourcePattern": "Kaynak eşleşmesi",
+    "messagePattern": "Mesaj eşleşmesi",
+    "countThreshold": "Olaylar",
+    "windowMinutes": "Şu süre içinde (dakika)",
+    "serviceName": "Servis adı",
+    "processName": "Süreç adı",
+    "consecutiveFailures": "Ardışık hatalar",
+    "resource": "Kaynak",
+    "withinDays": "Şu gün içinde sona eriyor (gün)",
+    "direction": "Yön",
+    "errorType": "Hata yönü",
+    "interfaceName": "Arabirim (isteğe bağlı)",
+    "check": "Denetim",
+    "staleAfterDays": "Şu gün sonra eski sayılır (gün)",
+    "minThreatCount": "Asgari tehdit sayısı",
+    "softwareName": "Yazılım adı",
+    "vendor": "Sağlayıcı (isteğe bağlı)",
+    "presence": "Varlık",
+    "version": "Sürüm",
+    "backupCheck": "Denetim",
+    "maxAgeHours": "Azami yaş (saat)",
+    "failureCount": "Hata sayısı",
+    "script": "Çalıştırılacak betik",
+    "scriptSelectPlaceholder": "Bir betik seçin…",
+    "scriptLoadError": "Betikler yüklenemedi",
+    "intervalMinutes": "Şu sıklıkta çalıştır (dakika)",
+    "timeoutSeconds": "Zaman aşımı (saniye)",
+    "breachOnNonZeroExit": "Çıkış kodu sıfır değilse ihlal say",
+    "checkType": "Denetim türü",
+    "target": "Hedef",
+    "port": "Bağlantı noktası",
+    "expectStatus": "Beklenen durum kodu",
+    "pollingIntervalSeconds": "Şu sıklıkta sorgula (saniye)",
+    "match": "Eşleşme"
+  },
+  "operators": {
+    "gt": "büyüktür",
+    "gte": "en az",
+    "lt": "küçüktür",
+    "lte": "en fazla",
+    "eq": "eşittir",
+    "neq": "eşit değildir"
+  },
+  "severities": {
+    "critical": "Kritik",
+    "high": "Yüksek",
+    "medium": "Orta",
+    "low": "Düşük",
+    "info": "Bilgi"
+  },
+  "eventCategories": {
+    "security": "Güvenlik",
+    "hardware": "Donanım",
+    "application": "Başvuru",
+    "system": "Sistem"
+  },
+  "eventLevels": {
+    "warning": "Uyarı",
+    "error": "Hata",
+    "critical": "Kritik"
+  },
+  "resources": {
+    "cpu": "CPU",
+    "memory": "Bellek"
+  },
+  "directions": {
+    "in": "Gelen",
+    "out": "Giden",
+    "read": "Okuma",
+    "write": "Yazma",
+    "total": "Toplam"
+  },
+  "compositeMatch": {
+    "all": "Tüm koşullar",
+    "any": "Herhangi bir koşul"
+  },
+  "antivirusChecks": {
+    "not_protected": "Korumasız",
+    "definitions_stale": "Tanımlar eski",
+    "realtime_disabled": "Gerçek zamanlı koruma devre dışı",
+    "threats_present": "Tehdit mevcut"
+  },
+  "presences": {
+    "installed": "Yüklü",
+    "not_installed": "Yüklü değil",
+    "version_below": "Şu sürümden düşük"
+  },
+  "backupChecks": {
+    "no_successful_backup": "Başarılı yedekleme yok",
+    "consecutive_failures": "Ardışık hatalar"
+  },
+  "checkTypes": {
+    "icmp_ping": "ICMP ping testi",
+    "tcp_port": "TCP bağlantı noktası",
+    "http_check": "HTTP denetimi",
+    "dns_check": "DNS denetimi"
+  },
+  "deploy": {
+    "title": "Monitörü dağıt",
+    "existingPolicy": "Mevcut bir yapılandırma politikasına ekle",
+    "newPolicy": "Şunun için bir politika oluştur:",
+    "levels": {
+      "organization": "bu kuruluş",
+      "site": "bir site",
+      "device_group": "bir cihaz grubu"
+    },
+    "selectPolicy": "Yapılandırma politikası",
+    "selectTarget": "Hedef",
+    "noOrgSelected": "Dağıtılacak bir kuruluş seçin.",
+    "policyName": "Politika adı",
+    "attach": "Ekle",
+    "attached": "Monitör eklendi",
+    "cancel": "İptal",
+    "detachConfirm": "{{policy}} politikasından kaldırılsın mı?",
+    "errors": {
+      "attach": "Monitör eklenemedi",
+      "detach": "Monitör kaldırılamadı"
+    }
+  },
+  "policyTab": {
+    "title": "Monitörler",
+    "description": "Bu politikaya eklenen monitörler. Devre dışı bırakılan satırlar, bir monitörü bu politikanın kapsamı için kapatır; geçersiz kılmalar eşiklerini değiştirir.",
+    "attachExisting": "Mevcut olanı ekle",
+    "createNew": "Monitör oluştur",
+    "empty": "Eklenmiş monitör yok.",
+    "columns": {
+      "monitor": "Monitör",
+      "kind": "Tür",
+      "enabled": "Etkin",
+      "overrides": "Geçersiz Kılmalar",
+      "source": "Kaynak"
+    },
+    "inherited": "Üst düzeyden devralındı",
+    "overrideEditor": {
+      "title": "Bu politika için geçersiz kılma",
+      "clear": "Geçersiz kılmaları temizle"
+    },
+    "save": "Kaydet",
+    "errors": {
+      "save": "Monitörler kaydedilemedi"
+    }
+  },
+  "legacy": {
+    "title": "Eski uyarı kuralları",
+    "description": "Bir monitör tarafından yönetilmeyen bağımsız uyarı kuralları. Yanıtları, teslimatı ve yükseltmeyi bir arada almak için bunları dönüştürün.",
+    "empty": "Eski kural yok.",
+    "columns": {
+      "name": "Ad",
+      "template": "Şablon",
+      "target": "Hedef",
+      "owner": "Sorumlu",
+      "active": "Aktif"
+    },
+    "convert": "Monitöre dönüştür",
+    "converted": "Dönüştürüldü",
+    "notConvertible": "Bu kuralın koşulları tek bir monitör olarak ifade edilemez.",
+    "errors": {
+      "fetch": "Uyarı kuralları yüklenemedi",
+      "convert": "Kural dönüştürülemedi"
+    }
+  },
+  "devices": {
+    "title": "Cihazlar",
+    "columns": {
+      "device": "Cihaz",
+      "enabled": "Etkin",
+      "overrides": "Geçersiz Kılmalar",
+      "source": "Kaynak politika"
+    },
+    "empty": "Bu monitör tarafından henüz kapsanan bir cihaz yok.",
+    "errors": {
+      "fetch": "Cihazlar yüklenemedi"
+    }
+  },
+  "activity": {
+    "title": "Etkinlik",
+    "columns": {
+      "device": "Cihaz",
+      "state": "Durum",
+      "openSince": "Şu zamandan beri açık",
+      "episodesInWindow": "Pencere içindeki olaylar",
+      "escalated": "Yükseltildi",
+      "responses": "Yanıtlar"
+    },
+    "state": {
+      "ok": "Sağlıklı",
+      "breach": "İhlal",
+      "unknown": "Bilinmiyor"
+    },
+    "responses": {
+      "active": "Etkin",
+      "paused": "Sıfırlanana kadar yanıtlar duraklatıldı"
+    },
+    "reset": {
+      "button": "Yükseltmeyi sıfırla",
+      "confirm": "{{device}} için yükseltme sıfırlansın mı? Bu, tekrarlama sayacını sıfırlar ve otomatik yanıtları devam ettirir. Açık olayı kapatmaz veya uyarıyı çözmez.",
+      "success": "Yükseltme sıfırlandı",
+      "error": "Yükseltme sıfırlanamadı"
+    },
+    "empty": {
+      "title": "Henüz etkinlik yok",
+      "body": "Bu izleyici henüz hiçbir cihazı değerlendirmedi."
+    },
+    "episodes": {
+      "title": "Olaylar",
+      "endReason": {
+        "recovered": "Düzeldi",
+        "monitorDetached": "İzleyici ayrıldı"
+      },
+      "outcome": {
+        "queued": "Kuyrukta",
+        "completed": "Tamamlandı",
+        "failed": "Başarısız",
+        "skippedPaused": "Atlandı (yanıtlar duraklatıldı)",
+        "skippedNoResponse": "Atlandı (yanıt yapılandırılmadı)"
+      }
+    }
+  }
+}

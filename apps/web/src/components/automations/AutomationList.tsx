@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import {
@@ -47,6 +47,7 @@ export type Automation = {
     eventType?: string;
     webhookUrl?: string;
   };
+  actions?: { type: string; runAs?: string }[];
   enabled: boolean;
   lastRunAt?: string;
   lastRunStatus?: AutomationStatus;
@@ -57,7 +58,16 @@ export type Automation = {
   // Managed rows are read-only here: the API 409s on edit, delete, toggle and
   // manual trigger, so the UI must not offer any of the four.
   managedByAgentId?: string | null;
+  // Non-null when this automation was compiled from a monitor definition
+  // (#5287). These rows never reach this list — AutomationsPage filters them
+  // out before render, since a compiled automation is an implementation
+  // detail of its monitor, not a job an operator manages directly — but the
+  // field is declared on the shared type for completeness and so a future
+  // caller doesn't have to guess its shape.
+  managedByMonitorId?: string | null;
 };
+
+export type TriggerFilter = 'all' | 'schedule' | 'event' | 'webhook' | 'manual';
 
 type AutomationListProps = {
   automations: Automation[];
@@ -68,6 +78,9 @@ type AutomationListProps = {
   onViewHistory?: (automation: Automation) => void;
   pageSize?: number;
   timezone?: string;
+  /** #5288: when provided, the trigger filter is controlled by the parent (Jobs tabs). */
+  triggerFilter?: TriggerFilter;
+  onTriggerFilterChange?: (value: TriggerFilter) => void;
 };
 
 const triggerConfig: Record<TriggerType, { label: string; icon: typeof Clock; color: string }> = {
@@ -129,14 +142,30 @@ export default function AutomationList({
   onToggle,
   onViewHistory,
   pageSize = 10,
-  timezone = Intl.DateTimeFormat().resolvedOptions().timeZone
+  timezone = Intl.DateTimeFormat().resolvedOptions().timeZone,
+  triggerFilter: controlledTriggerFilter,
+  onTriggerFilterChange
 }: AutomationListProps) {
   const { t } = useTranslation('scripts');
   const [query, setQuery] = useState('');
-  const [triggerFilter, setTriggerFilter] = useState<string>('all');
+  const [internalTriggerFilter, setInternalTriggerFilter] = useState<TriggerFilter>('all');
+  const triggerFilter = controlledTriggerFilter ?? internalTriggerFilter;
+  const setTriggerFilter = (value: TriggerFilter) => {
+    if (onTriggerFilterChange) onTriggerFilterChange(value);
+    if (controlledTriggerFilter === undefined) setInternalTriggerFilter(value);
+  };
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [currentPage, setCurrentPage] = useState(1);
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
+
+  // Reset to page 1 whenever the resolved trigger filter changes, including
+  // when a parent drives it via the controlled prop (e.g. the Jobs tab strip)
+  // rather than this list's own <select> onChange — otherwise a page number
+  // that no longer exists in the narrowed result set strands the view on a
+  // silently-empty page (PR #5648 review).
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [triggerFilter]);
 
   const filteredAutomations = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
@@ -189,7 +218,7 @@ export default function AutomationList({
           <select
             value={triggerFilter}
             onChange={event => {
-              setTriggerFilter(event.target.value);
+              setTriggerFilter(event.target.value as TriggerFilter);
               setCurrentPage(1);
             }}
             className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-36"
@@ -255,6 +284,14 @@ export default function AutomationList({
                             >
                               <Layers className="h-3 w-3" />
                               {t('automationList.allOrgs')}
+                            </span>
+                          )}
+                          {automation.actions?.some(action => action.type === 'run_script' && action.runAs === 'elevated') && (
+                            <span
+                              className="inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-xs font-medium bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200"
+                              data-testid="automation-elevated-badge"
+                            >
+                              {t('automationList.elevated')}
                             </span>
                           )}
                           {isManaged && (
@@ -414,6 +451,7 @@ export default function AutomationList({
               type="button"
               onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
               disabled={currentPage === 1}
+              aria-label={t('common:actions.previousPage')}
               className="flex h-9 w-9 items-center justify-center rounded-md border hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
             >
               <ChevronLeft className="h-4 w-4" />
@@ -425,6 +463,7 @@ export default function AutomationList({
               type="button"
               onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
               disabled={currentPage === totalPages}
+              aria-label={t('common:actions.nextPage')}
               className="flex h-9 w-9 items-center justify-center rounded-md border hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
             >
               <ChevronRight className="h-4 w-4" />

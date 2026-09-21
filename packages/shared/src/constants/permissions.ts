@@ -80,6 +80,22 @@ export const PERMISSION_GRANTS = {
   CONTRACTS_READ: { resource: 'contracts', action: 'read' },
   CONTRACTS_WRITE: { resource: 'contracts', action: 'write' },
   CONTRACTS_MANAGE: { resource: 'contracts', action: 'manage' },
+  // Organization document library + key dates (service deliverables, spec §10).
+  // Deliberately NOT folded into `contracts`: a runbook or an onboarding
+  // baseline is org-record content that outlives any contract, and a partner
+  // may want a technician who can file documents without touching billing.
+  DOCUMENTS_READ: { resource: 'documents', action: 'read' },
+  DOCUMENTS_WRITE: { resource: 'documents', action: 'write' },
+
+  // Agreement templates + signed agreements (agreements vocabulary & IA split,
+  // spec §4). Deliberately NOT folded into `contracts`: a billing contract and
+  // the MSA a customer signs are different objects with different audiences —
+  // an MSP may want a technician who can pull up the signed MSA without
+  // touching recurring billing, and a billing clerk who runs contracts without
+  // authoring legal terms. No `manage` action: publish and archive are write
+  // operations on a template, so there is nothing left for a third verb to gate.
+  AGREEMENTS_READ: { resource: 'agreements', action: 'read' },
+  AGREEMENTS_WRITE: { resource: 'agreements', action: 'write' },
 
   // Quotes / Proposals (billing program — sub-project 4)
   QUOTES_READ: { resource: 'quotes', action: 'read' },
@@ -90,6 +106,13 @@ export const PERMISSION_GRANTS = {
   // Time entries (ticketing Phase 3)
   TIME_ENTRIES_READ: { resource: 'time_entries', action: 'read' },
   TIME_ENTRIES_WRITE: { resource: 'time_entries', action: 'write' },
+  TIME_ENTRIES_MANAGE_BILLING: { resource: 'time_entries', action: 'manage_billing' },
+
+  // Rate cards (#4628 / #4615, spec 2026-09-17 §6). One resource for work types
+  // AND billing profiles, because they are one screen (Settings → Billing →
+  // Rates) and one route file. `write` covers create/update/archive of both.
+  BILLING_PROFILES_READ: { resource: 'billing_profiles', action: 'read' },
+  BILLING_PROFILES_WRITE: { resource: 'billing_profiles', action: 'write' },
 
   // Users
   USERS_READ: { resource: 'users', action: 'read' },
@@ -154,6 +177,13 @@ export const PERMISSION_GRANTS = {
   // organizations:read and only ever return the caller's OWN sessions, so the
   // cross-user admin/audit surface must NOT be gated on organizations:read.
   AI_SESSIONS_READ_ALL: { resource: 'ai_sessions', action: 'read_all' },
+  // Open and drive your OWN chat sessions (#6396). Was organizations:write,
+  // which no seeded org-scope role holds, so org users could never reach chat.
+  // Per-tool authorization inside a session is route-parity (aiGuardrails
+  // TOOL_PERMISSIONS), so this gate only opens the conversation — it does not
+  // widen what the role can do through it. Org budget settings stay on
+  // organizations:write.
+  AI_SESSIONS_USE: { resource: 'ai_sessions', action: 'use' },
 
   // AI agents (#3821) — authoring an agent policy is what will eventually
   // authorize autonomous action on customer machines, so it gets its own
@@ -163,6 +193,13 @@ export const PERMISSION_GRANTS = {
   // by the partner who granted it. Same reasoning as AI_SESSIONS_READ_ALL.
   AI_AGENTS_READ: { resource: 'ai_agents', action: 'read' },
   AI_AGENTS_WRITE: { resource: 'ai_agents', action: 'write' },
+
+  // Tool sources (BYO MCP/OpenAPI, spec 2026-09-07 §5): manage registrations…
+  TOOL_SOURCES_READ: { resource: 'tool_sources', action: 'read' },
+  TOOL_SOURCES_WRITE: { resource: 'tool_sources', action: 'write' },
+  // …and call the tools they expose. `use` gates Tier 1, `write` gates Tier 2/3.
+  EXTERNAL_TOOLS_USE: { resource: 'external_tools', action: 'use' },
+  EXTERNAL_TOOLS_WRITE: { resource: 'external_tools', action: 'write' },
 
   // Action intents / durable approvals — gates who may decide (approve/deny) a
   // pending action-intent approval, distinct from creating/reading intents.

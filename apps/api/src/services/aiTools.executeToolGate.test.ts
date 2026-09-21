@@ -67,6 +67,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   aiTools.set(PROBE, {
     tier: 1,
+    domain: 'devices',
+    searchHint: 'probe tool for the execute gate test',
     deviceArgs: ['deviceId'],
     definition: { name: PROBE, description: 'probe', input_schema: { type: 'object', properties: {} } },
     handler,

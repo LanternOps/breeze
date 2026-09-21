@@ -1,4 +1,5 @@
 import { useId, useState } from "react";
+import { usePermissions } from "../../lib/permissions";
 
 import type { AiTicketDraft } from "@breeze/shared";
 
@@ -24,7 +25,7 @@ export interface CreateTicketFromChatModalProps {
     status: "open" | "resolved";
     resolutionNote?: string;
     timeMinutes: number;
-    billable: boolean;
+    billable?: boolean;
   }) => void;
 }
 
@@ -37,6 +38,8 @@ export default function CreateTicketFromChatModal({
   onSubmit,
 }: CreateTicketFromChatModalProps) {
   const { t } = useTranslation("ai");
+  const { can } = usePermissions();
+  const canManageBilling = can("time_entries", "manage_billing");
   const [subject, setSubject] = useState(draft?.subject ?? "");
   const [description, setDescription] = useState(draft?.problemSummary ?? "");
   const [resolutionNote, setResolutionNote] = useState(
@@ -48,7 +51,7 @@ export default function CreateTicketFromChatModal({
   const [timeMinutes, setTimeMinutes] = useState(
     String(draft?.suggestedTimeMinutes ?? 0),
   );
-  const [billable, setBillable] = useState(true);
+  const [billableOverride, setBillableOverride] = useState<boolean | undefined>(undefined);
   const titleId = useId();
 
   const resolutionMissing =
@@ -64,7 +67,7 @@ export default function CreateTicketFromChatModal({
       status,
       resolutionNote: status === "resolved" ? resolutionNote.trim() : undefined,
       timeMinutes: Math.max(0, Number.parseInt(timeMinutes, 10) || 0),
-      billable,
+      ...(canManageBilling && billableOverride !== undefined ? { billable: billableOverride } : {}),
     });
   };
 
@@ -177,14 +180,16 @@ export default function CreateTicketFromChatModal({
                 className={`${INPUT} w-24`}
               />
             </label>
-            <label className="mt-6 inline-flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                checked={billable}
-                onChange={(e) => setBillable(e.target.checked)}
-              />
-              {t("createTicketFromChatModal.billable")}
-            </label>
+            {canManageBilling && (
+              <label className="mt-6 inline-flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={billableOverride ?? true}
+                  onChange={(e) => setBillableOverride(e.target.checked)}
+                />
+                {t("createTicketFromChatModal.billable")}
+              </label>
+            )}
           </div>
         </div>
 

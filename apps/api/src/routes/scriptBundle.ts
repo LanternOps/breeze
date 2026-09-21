@@ -50,9 +50,16 @@ const bundleTargetFields = {
 };
 
 const previewBodySchema = z.object(bundleTargetFields);
+/** Import-wide tags (Fleet Designer W04 #5654): `['legacy-import']` makes a
+ *  migrated library discoverable by tag. Per-name bounds match the entry
+ *  schema's tag names; the count is deliberately small — these are labels for
+ *  a whole import, not per-script metadata. */
+export const MAX_IMPORT_WIDE_TAGS = 10;
+
 const importBodySchema = z.object({
   ...bundleTargetFields,
-  mode: z.enum(['skip', 'rename', 'new-version'])
+  mode: z.enum(['skip', 'rename', 'new-version']),
+  tags: z.array(z.string().trim().min(1).max(50)).max(MAX_IMPORT_WIDE_TAGS).optional()
 });
 
 type PartnerGateAuth = Parameters<typeof canManagePartnerWidePolicies>[0];
@@ -159,7 +166,8 @@ scriptBundleRoutes.post(
     const result = await importBundle(auth, body.bundle, {
       availability: body.availability,
       orgId: body.orgId,
-      mode: body.mode
+      mode: body.mode,
+      tags: body.tags
     });
     if ('error' in result) {
       return c.json({ error: result.error }, result.status);
@@ -182,7 +190,8 @@ scriptBundleRoutes.post(
           mode: body.mode,
           availability: body.availability,
           entryAction: entry.action,
-          ...(entry.finalName ? { originalName: entry.name } : {})
+          ...(entry.finalName ? { originalName: entry.name } : {}),
+          ...(body.tags?.length ? { importTags: body.tags } : {})
         }
       });
     }

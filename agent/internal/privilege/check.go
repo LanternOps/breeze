@@ -5,6 +5,7 @@ import "github.com/breeze-rmm/agent/internal/remote/tools"
 // elevatedCommandTypes maps command types that require elevated (root/admin)
 // privileges. Uses constants from tools package to prevent silent mismatch.
 var elevatedCommandTypes = map[string]bool{
+	tools.CmdSystemCleanupRun:         true,
 	tools.CmdReboot:                   true,
 	tools.CmdShutdown:                 true,
 	tools.CmdLock:                     true,

@@ -546,6 +546,40 @@ describe('devices/manual — manual asset CRUD + link/unlink (#4622 W02)', () =>
     expect(set).toHaveBeenCalledWith(expect.objectContaining({ retiredAt: null }));
   });
 
+  it('PATCH: purchaseDate set mirrors purchaseDateSource to "manual" (manual_assets_purchase_date_source_chk)', async () => {
+    rigSelectSequence([[baseManualRow()]]);
+    const { set } = rigUpdate(baseManualRow({ purchaseDate: '2024-01-05', purchaseDateSource: 'manual' }));
+
+    const res = await app.request(`/devices/manual/${ASSET_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer t' },
+      body: JSON.stringify({ purchaseDate: '2024-01-05' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(set).toHaveBeenCalledWith(expect.objectContaining({
+      purchaseDate: '2024-01-05',
+      purchaseDateSource: 'manual',
+    }));
+  });
+
+  it('PATCH: purchaseDate: null clears purchaseDateSource to null (never leaves a dangling source)', async () => {
+    rigSelectSequence([[baseManualRow({ purchaseDate: '2024-01-05', purchaseDateSource: 'manual' })]]);
+    const { set } = rigUpdate(baseManualRow({ purchaseDate: null, purchaseDateSource: null }));
+
+    const res = await app.request(`/devices/manual/${ASSET_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer t' },
+      body: JSON.stringify({ purchaseDate: null }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(set).toHaveBeenCalledWith(expect.objectContaining({
+      purchaseDate: null,
+      purchaseDateSource: null,
+    }));
+  });
+
   it('PATCH rejects an empty body with 400', async () => {
     const res = await app.request(`/devices/manual/${ASSET_ID}`, {
       method: 'PATCH',

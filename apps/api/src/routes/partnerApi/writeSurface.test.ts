@@ -47,6 +47,13 @@ const PARTNER_API_NON_GET_ROUTE_ALLOWLIST: readonly string[] = [
   'POST /enrollment-keys', // enrollment-keys:write; TTL cap enforced; raw key returned once
   'POST /organizations', // organizations:write; partner.maxOrganizations quota enforced
   'POST /sites', // sites:write; orgId must be in the principal's accessible set
+  // Partner API contract contents (header + lines). Line DELETE is contents,
+  // not tenancy deletion. Gated on opt-in contracts:write.
+  'POST /contracts',
+  'PATCH /contracts/:id',
+  'POST /contracts/:id/lines',
+  'PATCH /contracts/:id/lines/:lineId',
+  'DELETE /contracts/:id/lines/:lineId',
 ];
 
 describe('partner API write surface', () => {

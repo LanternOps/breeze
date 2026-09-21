@@ -147,7 +147,16 @@ const resolveEffectiveAgentSystem = vi.hoisted(() => vi.fn());
 vi.mock('./effectivePolicy', () => ({ resolveEffectiveAgentSystem }));
 
 const checkBudget = vi.hoisted(() => vi.fn());
-vi.mock('../aiCostTracker', () => ({ checkBudget }));
+// Execution plane W04 (#5715): admission reserves compute, and the
+// terminalization chokepoint releases an outstanding reservation. Both live in
+// aiCostTracker, so the module mock has to carry them or any run that holds a
+// reservation dies on "not a function" instead of exercising the release.
+const checkComputeCredits = vi.hoisted(() => vi.fn(async () => null));
+const reserveComputeCents = vi.hoisted(() => vi.fn(async () => undefined));
+const settleComputeCents = vi.hoisted(() => vi.fn(async () => undefined));
+vi.mock('../aiCostTracker', () => ({
+  checkBudget, checkComputeCredits, reserveComputeCents, settleComputeCents,
+}));
 
 const getLlmBillingSourceForOrg = vi.hoisted(() => vi.fn());
 vi.mock('../llm/llmConfigResolver', () => ({ getLlmBillingSourceForOrg }));
@@ -157,6 +166,12 @@ vi.mock('../deploymentEngine', () => ({ isDeviceInMaintenanceWindow }));
 
 const publishEvent = vi.hoisted(() => vi.fn());
 vi.mock('../eventBus', () => ({ publishEvent }));
+
+// #5381 — `skip()` now routes through this. Its own logging/throttling/
+// counting contract lives in skipVisibility.test.ts; here we only assert that
+// every skip reaches it.
+const recordAgentRunSkip = vi.hoisted(() => vi.fn());
+vi.mock('./skipVisibility', () => ({ recordAgentRunSkip }));
 
 const reconcileHungExecutions = vi.hoisted(() =>
   vi.fn<(sessionId: string) => Promise<number>>());
@@ -258,6 +273,8 @@ function seedAdmissionReads(options: {
   dailyCents?: number | null;
   agentOrgId?: string | null;
   agentPartnerId?: string | null;
+  /** Fleet Designer (W01): the `ai_agents.kind` the ownership select returns. */
+  agentKind?: string;
   orgPartnerId?: string | null;
   agentMissing?: boolean;
   /** The (device, org) ownership probe: false means the device is not in the org. */
@@ -278,6 +295,7 @@ function seedAdmissionReads(options: {
     dailyCents = 0,
     agentOrgId = null,
     agentPartnerId = PARTNER_ID,
+    agentKind = 'triage',
     orgPartnerId = PARTNER_ID,
     agentMissing = false,
     deviceInOrg = true,
@@ -297,7 +315,7 @@ function seedAdmissionReads(options: {
   dbMockState.rowQueues.ai_agents = [
     agentMissing
       ? []
-      : [{ id: AGENT_ID, orgId: agentOrgId, partnerId: agentPartnerId, name: 'Triage', kind: 'triage' }],
+      : [{ id: AGENT_ID, orgId: agentOrgId, partnerId: agentPartnerId, name: 'Triage', kind: agentKind }],
   ];
   dbMockState.rowQueues.devices = [deviceInOrg ? [{ id: DEVICE_ID }] : []];
   dbMockState.insertRows = [
@@ -360,15 +378,22 @@ describe('evaluateAgentTriggerFilters', () => {
     ['severity not in list', triggers({ alertSeverities: ['low'] }), ctx, false],
     ['empty severity list matches nothing', triggers({ alertSeverities: [] }), ctx, false],
     ['absent alertRuleIds = all rules', triggers(), ctx, true],
-    ['empty alertRuleIds = all rules', triggers({ alertRuleIds: [] }), ctx, true],
+    ['empty alertRuleIds = no rules', triggers({ alertRuleIds: [] }), ctx, false],
     ['matching alertRuleIds', triggers({ alertRuleIds: [RULE_B, RULE_A] }), ctx, true],
     ['non-matching alertRuleIds', triggers({ alertRuleIds: [RULE_B] }), ctx, false],
     ['alertRuleIds set but ruleId null', triggers({ alertRuleIds: [RULE_A] }), { ...ctx, ruleId: null }, false],
-    ['empty siteIds = all sites', triggers({ siteIds: [] }), ctx, true],
+    // AI patch agent W04 (#5750) — alertCategories, undefined = unrestricted.
+    ['absent alertCategories = all categories (category unknown)', triggers(), ctx, true],
+    ['absent alertCategories = all categories (category present)', triggers(), { ...ctx, category: 'patching' }, true],
+    ['matching alertCategories', triggers({ alertCategories: ['patching'] }), { ...ctx, category: 'patching' }, true],
+    ['non-matching alertCategories', triggers({ alertCategories: ['patching'] }), { ...ctx, category: 'monitor' }, false],
+    ['alertCategories set but category unresolved', triggers({ alertCategories: ['patching'] }), ctx, false],
+    ['alertCategories set but category null', triggers({ alertCategories: ['patching'] }), { ...ctx, category: null }, false],
+    ['empty siteIds = no sites', triggers({ siteIds: [] }), ctx, false],
     ['matching siteIds', triggers({ siteIds: [SITE_A] }), ctx, true],
     ['non-matching siteIds', triggers({ siteIds: [SITE_B] }), ctx, false],
     ['siteIds set but siteId null', triggers({ siteIds: [SITE_A] }), { ...ctx, siteId: null }, false],
-    ['empty deviceTags = all devices', triggers({ deviceTags: [] }), ctx, true],
+    ['empty deviceTags = no devices', triggers({ deviceTags: [] }), ctx, false],
     ['intersecting deviceTags', triggers({ deviceTags: ['sql', 'other'] }), ctx, true],
     ['disjoint deviceTags', triggers({ deviceTags: ['other'] }), ctx, false],
     ['deviceTags set but device untagged', triggers({ deviceTags: ['sql'] }), { ...ctx, deviceTags: [] }, false],
@@ -396,10 +421,10 @@ describe('evaluateAgentTriggerFilters', () => {
       expect(dbMockState.selects.some((s) => s.table === 'device_group_memberships')).toBe(false);
     });
 
-    it('empty deviceGroupIds = unrestricted (no membership query)', async () => {
+    it('empty deviceGroupIds = denied (no membership query)', async () => {
       expect(
         await evaluateAgentTriggerFilters(triggers({ deviceGroupIds: [] }), ctx, DEVICE_ID, ORG_ID),
-      ).toBe(true);
+      ).toBe(false);
       expect(dbMockState.selects.some((s) => s.table === 'device_group_memberships')).toBe(false);
     });
 
@@ -433,6 +458,18 @@ describe('evaluateAgentTriggerFilters', () => {
       expect(dbMockState.selects.some((s) => s.table === 'device_group_memberships')).toBe(false);
     });
 
+    // AI patch agent W04 (#5750): a reactive patch run is device-less with a
+    // focus hint; the group filter judges the FOCUS device, not "no device".
+    it('deviceId null with ctx.focusDeviceId checks the focus device', async () => {
+      dbMockState.rowQueues.device_group_memberships = [[{ groupId: GROUP_A }]];
+      expect(
+        await evaluateAgentTriggerFilters(
+          triggers({ deviceGroupIds: [GROUP_A] }), { ...ctx, focusDeviceId: DEVICE_ID }, null, ORG_ID,
+        ),
+      ).toBe(true);
+      expect(dbMockState.selects.some((s) => s.table === 'device_group_memberships')).toBe(true);
+    });
+
     it('is org-pinned: the membership query filters by device_id AND org_id', async () => {
       dbMockState.rowQueues.device_group_memberships = [[{ groupId: GROUP_A }]];
       await evaluateAgentTriggerFilters(triggers({ deviceGroupIds: [GROUP_A] }), ctx, DEVICE_ID, ORG_ID);
@@ -464,7 +501,7 @@ describe('evaluateTicketTriggerFilters', () => {
 
   const cases: Array<[string, AiAgentTriggers, TicketFilterContext, boolean]> = [
     ['absent ticketCategories = unrestricted', triggers(), ctx, true],
-    ['empty ticketCategories = unrestricted', triggers({ ticketCategories: [] }), ctx, true],
+    ['empty ticketCategories = denied', triggers({ ticketCategories: [] }), ctx, false],
     ['matching ticketCategories by name', triggers({ ticketCategories: ['hardware'] }), ctx, true],
     ['non-matching ticketCategories by name', triggers({ ticketCategories: ['software'] }), ctx, false],
     ['ticketCategories set but category null', triggers({ ticketCategories: ['hardware'] }), { ...ctx, category: null }, false],
@@ -474,7 +511,7 @@ describe('evaluateTicketTriggerFilters', () => {
     ['ticketCategories set to a UUID but categoryId null', triggers({ ticketCategories: [CATEGORY_ID] }), { ...ctx, categoryId: null }, false],
     ['mixed name+id list matches on either', triggers({ ticketCategories: ['software', CATEGORY_ID] }), ctx, true],
     ['absent ticketPriorities = unrestricted', triggers(), ctx, true],
-    ['empty ticketPriorities = unrestricted', triggers({ ticketPriorities: [] }), ctx, true],
+    ['empty ticketPriorities = denied', triggers({ ticketPriorities: [] }), ctx, false],
     ['matching ticketPriorities', triggers({ ticketPriorities: ['high', 'urgent'] }), ctx, true],
     ['non-matching ticketPriorities', triggers({ ticketPriorities: ['low', 'normal'] }), ctx, false],
     [
@@ -512,22 +549,22 @@ describe('evaluateAnomalyTriggerFilters', () => {
 
   const cases: Array<[string, AiAgentTriggers, AnomalyFilterContext, boolean]> = [
     ['absent anomalyTypes = unrestricted', triggers(), ctx, true],
-    ['empty anomalyTypes = unrestricted', triggers({ anomalyTypes: [] }), ctx, true],
+    ['empty anomalyTypes = denied', triggers({ anomalyTypes: [] }), ctx, false],
     ['matching anomalyTypes', triggers({ anomalyTypes: ['cpu_spike', 'disk_full'] }), ctx, true],
     ['non-matching anomalyTypes', triggers({ anomalyTypes: ['disk_full'] }), ctx, false],
     ['absent metricNames = unrestricted', triggers(), ctx, true],
-    ['empty metricNames = unrestricted', triggers({ metricNames: [] }), ctx, true],
+    ['empty metricNames = denied', triggers({ metricNames: [] }), ctx, false],
     ['intersecting metricNames', triggers({ metricNames: ['cpu_percent', 'other'] }), ctx, true],
     ['disjoint metricNames', triggers({ metricNames: ['other'] }), ctx, false],
     ['absent minAnomalyScore = unrestricted', triggers(), ctx, true],
     ['peakScore at the minAnomalyScore floor passes', triggers({ minAnomalyScore: 5 }), ctx, true],
     ['peakScore above the minAnomalyScore floor passes', triggers({ minAnomalyScore: 4.9 }), ctx, true],
     ['peakScore below the minAnomalyScore floor fails', triggers({ minAnomalyScore: 5.1 }), ctx, false],
-    ['empty siteIds = all sites', triggers({ siteIds: [] }), ctx, true],
+    ['empty siteIds = no sites', triggers({ siteIds: [] }), ctx, false],
     ['matching siteIds', triggers({ siteIds: [SITE_A] }), ctx, true],
     ['non-matching siteIds', triggers({ siteIds: [SITE_B] }), ctx, false],
     ['siteIds set but siteId null', triggers({ siteIds: [SITE_A] }), { ...ctx, siteId: null }, false],
-    ['empty deviceTags = all devices', triggers({ deviceTags: [] }), ctx, true],
+    ['empty deviceTags = no devices', triggers({ deviceTags: [] }), ctx, false],
     ['intersecting deviceTags', triggers({ deviceTags: ['sql', 'other'] }), ctx, true],
     ['disjoint deviceTags', triggers({ deviceTags: ['other'] }), ctx, false],
     [
@@ -568,6 +605,35 @@ describe('evaluateAnomalyTriggerFilters', () => {
       ).toBe(false);
       expect(dbMockState.selects.some((s) => s.table === 'device_group_memberships')).toBe(false);
     });
+  });
+});
+
+describe('resource scope applies to every admission path', () => {
+  it.each(['siteIds', 'deviceTags', 'deviceGroupIds'] as const)('refuses a manual org-wide run scoped by %s', async (key) => {
+    resolveEffectiveAgentSystem.mockResolvedValue(snapshot({ triggers: triggers({ [key]: ['restricted'] }) }));
+    const result = await createAndEnqueueAgentRun(input({ triggerKind: 'manual', deviceId: null }));
+    expect(result).toEqual({ created: false, skipped: 'trigger_filter_mismatch' });
+    expect(enqueueAgentRunJob).not.toHaveBeenCalled();
+  });
+
+  it('manual device run cannot bypass the configured site', async () => {
+    resolveEffectiveAgentSystem.mockResolvedValue(snapshot({ triggers: triggers({ siteIds: [SITE_A] }) }));
+    dbMockState.rowQueues.devices = [[{ siteId: SITE_B, tags: [] }]];
+    const result = await createAndEnqueueAgentRun(input({ triggerKind: 'manual' }));
+    expect(result).toEqual({ created: false, skipped: 'trigger_filter_mismatch' });
+    expect(enqueueAgentRunJob).not.toHaveBeenCalled();
+  });
+
+  // #6096 D5b — the positive control the deny cases above need: the gate must
+  // ADMIT an in-scope device, or "everything is refused" would read identical.
+  it('admits a manual device run inside the configured site', async () => {
+    resolveEffectiveAgentSystem.mockResolvedValue(snapshot({ triggers: triggers({ siteIds: [SITE_A] }) }));
+    seedAdmissionReads();
+    // The scope check's own device read comes first, then the ownership probe.
+    dbMockState.rowQueues.devices = [[{ siteId: SITE_A, tags: [] }], [{ id: DEVICE_ID }]];
+    const result = await createAndEnqueueAgentRun(input({ triggerKind: 'manual' }));
+    expect(result).toMatchObject({ created: true });
+    expect(enqueueAgentRunJob).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -843,11 +909,14 @@ describe('createAndEnqueueAgentRun skip reasons', () => {
     await expect(createAndEnqueueAgentRun(input())).rejects.toThrow('boom');
   });
 
-  it('logs every skip so a dropped trigger is observable', async () => {
+  // #5381: this used to assert a `console.info` line. Info is below the level
+  // a container's logs are actually read at, and it left no trace the UI could
+  // read — every skip now goes through `recordAgentRunSkip`, which warns
+  // (throttled per org+reason) and counts the skip for the settings page.
+  it('records every skip so a dropped trigger is observable', async () => {
     resolveEffectiveAgentSystem.mockResolvedValue(null);
     await createAndEnqueueAgentRun(input());
-    expect(console.info).toHaveBeenCalledWith(
-      '[aiAgentRunService] run skipped',
+    expect(recordAgentRunSkip).toHaveBeenCalledWith(
       expect.objectContaining({ reason: 'no_effective_agent', orgId: ORG_ID }),
     );
   });
@@ -1578,6 +1647,66 @@ describe('createAndEnqueueAgentRun — cross-kind enqueue_failed reclaim guard (
   });
 });
 
+describe('transitionRunStatus — compute reservation release (execution plane W04)', () => {
+  // The gap this closes: the two hand-picked release sites (the run loop's
+  // finally, admission's enqueue-failure path) only cover runs that got that
+  // far. A worker killed mid-run reaches `failed` through the stalled-run
+  // reaper alone, and its reservation used to stand until UTC midnight —
+  // counting against the org's daily compute ceiling (refusing that org's
+  // later analyses) and never billing the compute the provider really ran.
+  it('releases an outstanding reservation at the RESERVATION on a terminal transition', async () => {
+    dbMockState.updateRows = [{
+      id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, errorCode: 'stalled', outcome: {},
+      profile: 'analysis', computeReservedCents: 25,
+    }];
+    expect(await transitionRunStatus(RUN_ID, ['queued', 'running'], 'failed', {
+      errorCode: 'stalled',
+    })).toBe(true);
+    // Settled at the reservation, never at 0: a run we lost track of is
+    // precisely the case where the measured number is gone (spec §9).
+    expect(settleComputeCents).toHaveBeenCalledWith(ORG_ID, RUN_ID, 25, 'platform');
+  });
+
+  it('does NOT settle on a non-terminal transition', async () => {
+    dbMockState.updateRows = [{
+      id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, errorCode: null, outcome: {},
+      profile: 'analysis', computeReservedCents: 25,
+    }];
+    await transitionRunStatus(RUN_ID, 'queued', 'running');
+    expect(settleComputeCents).not.toHaveBeenCalled();
+  });
+
+  it('does NOT settle twice for a run that already released its reservation', async () => {
+    // The normal path settles inside the run loop, which NULLs the column
+    // before `finishRun` transitions — so the chokepoint must be a no-op, or
+    // the additive ai_cost_usage rollup double-counts the day.
+    dbMockState.updateRows = [{
+      id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, errorCode: null, outcome: {},
+      profile: 'analysis', computeReservedCents: null,
+    }];
+    await transitionRunStatus(RUN_ID, 'running', 'completed');
+    expect(settleComputeCents).not.toHaveBeenCalled();
+  });
+
+  it('does not settle for a non-analysis run, which never holds a reservation', async () => {
+    dbMockState.updateRows = [{
+      id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, errorCode: null, outcome: {},
+      profile: 'triage', computeReservedCents: null,
+    }];
+    await transitionRunStatus(RUN_ID, 'running', 'completed');
+    expect(settleComputeCents).not.toHaveBeenCalled();
+  });
+
+  it('a failed release does not fail the transition — the status write still wins', async () => {
+    settleComputeCents.mockRejectedValueOnce(new Error('billing down'));
+    dbMockState.updateRows = [{
+      id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, errorCode: 'stalled', outcome: {},
+      profile: 'analysis', computeReservedCents: 25,
+    }];
+    expect(await transitionRunStatus(RUN_ID, 'running', 'failed', { errorCode: 'stalled' })).toBe(true);
+  });
+});
+
 describe('transitionRunStatus', () => {
   it('returns true and applies the patch when the CAS matches', async () => {
     dbMockState.updateRows = [{ id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, errorCode: null, outcome: {} }];
@@ -2220,5 +2349,216 @@ describe('createAndEnqueueAgentRun narrative-profile admission (P2-3)', () => {
       input({ profile: 'narrative', deviceId: null, dedupeKey: 'narrative:n7' }),
     );
     expect(publishEvent).not.toHaveBeenCalled();
+  });
+});
+
+describe('createAndEnqueueAgentRun design-profile admission (Fleet Designer W01)', () => {
+  /**
+   * Design-profile runs skip the cooldown probe entirely (step 5 wraps in
+   * `profile === 'full'`), same as verdict/sweep/narrative — so this seeds
+   * only [reap, concurrency, per-window, daily spend], NOT `seedAdmissionReads`'
+   * 5-slot cooldown-inclusive queue.
+   */
+  function seedDesignAdmissionReads(options: {
+    concurrent?: number;
+    perWindow?: number;
+    dailyCents?: number | null;
+    agentKind?: string;
+  } = {}): void {
+    const { concurrent = 0, perWindow = 0, dailyCents = 0, agentKind = 'designer' } = options;
+    seedAdmissionReads({ concurrent, perHour: perWindow, dailyCents, deviceInOrg: true, agentKind });
+    dbMockState.rowQueues.ai_agent_runs = [
+      [], // 4c reap candidates
+      [{ value: concurrent }], // 6b concurrency
+      [{ value: perWindow }], // 6b rate (24h window for design)
+      [{ totalCostCents: dailyCents }], // 7 daily spend
+    ];
+  }
+
+  function designInput(over: Partial<CreateAgentRunInput> = {}): CreateAgentRunInput {
+    return input({ kind: 'designer', profile: 'design', deviceId: null, ...over });
+  }
+
+  it('max_concurrent_design_runs when queued+running design runs reach the design-only cap', async () => {
+    seedDesignAdmissionReads({ concurrent: AI_AGENT_LIMIT_DEFAULTS.maxConcurrentDesignRuns });
+    const result = await createAndEnqueueAgentRun(designInput({ dedupeKey: 'design:d1' }));
+    expect(result).toEqual({ created: false, skipped: 'max_concurrent_design_runs' });
+  });
+
+  it('rate-limits design-profile runs on maxDesignRunsPerDay with skip design_rate', async () => {
+    seedDesignAdmissionReads({ perWindow: AI_AGENT_LIMIT_DEFAULTS.maxDesignRunsPerDay });
+    const result = await createAndEnqueueAgentRun(designInput({ dedupeKey: 'design:d2' }));
+    expect(result).toEqual({ created: false, skipped: 'design_rate' });
+  });
+
+  it('a design run is not blocked by saturated full/verdict/sweep/narrative counts — its counters are its own', async () => {
+    seedDesignAdmissionReads({ concurrent: 0, perWindow: 0 });
+    const result = await createAndEnqueueAgentRun(designInput({ dedupeKey: 'design:d3' }));
+    expect(result).toMatchObject({ created: true });
+    const runSelects = dbMockState.selects.filter((s) => s.table === 'ai_agent_runs');
+    expect(compiled(runSelects[1]?.where)).toContain('"profile"');
+    expect(compiled(runSelects[2]?.where)).toContain('"profile"');
+  });
+
+  it('design and sweep caps are distinct values, so one cannot starve the other', () => {
+    expect(AI_AGENT_LIMIT_DEFAULTS.maxConcurrentDesignRuns)
+      .not.toBe(AI_AGENT_LIMIT_DEFAULTS.maxConcurrentSweepRuns);
+    expect(AI_AGENT_LIMIT_DEFAULTS.maxDesignRunsPerDay)
+      .not.toBe(AI_AGENT_LIMIT_DEFAULTS.maxSweepRunsPerHour);
+  });
+
+  it('reads the caps off the SNAPSHOT, not a hard-coded default', async () => {
+    resolveEffectiveAgentSystem.mockResolvedValue(snapshot({
+      limits: { ...AI_AGENT_LIMIT_DEFAULTS, maxConcurrentDesignRuns: 3, maxDesignRunsPerDay: 20 },
+    }));
+    seedDesignAdmissionReads({ concurrent: 2, perWindow: 9 });
+    const result = await createAndEnqueueAgentRun(designInput({ dedupeKey: 'design:d4' }));
+    expect(result).toMatchObject({ created: true });
+  });
+
+  it('falls back to the v10 defaults on a pre-v10 snapshot with no design caps at all', async () => {
+    const { maxConcurrentDesignRuns: _c, maxDesignRunsPerDay: _h, ...preV10 } = AI_AGENT_LIMIT_DEFAULTS;
+    resolveEffectiveAgentSystem.mockResolvedValue(snapshot({
+      limits: preV10 as typeof AI_AGENT_LIMIT_DEFAULTS,
+    }));
+    seedDesignAdmissionReads({ concurrent: AI_AGENT_LIMIT_DEFAULTS.maxConcurrentDesignRuns });
+    const result = await createAndEnqueueAgentRun(designInput({ dedupeKey: 'design:d5' }));
+    expect(result).toEqual({ created: false, skipped: 'max_concurrent_design_runs' });
+  });
+
+  it('skips the cooldown step entirely for a design run, even with cooldownSeconds > 0', async () => {
+    seedDesignAdmissionReads({ concurrent: 0, perWindow: 0, dailyCents: 0 });
+    const result = await createAndEnqueueAgentRun(designInput({ dedupeKey: 'design:d6' }));
+    expect(result).toMatchObject({ created: true });
+  });
+
+  it('writes profile=design and the scheduleId on the run row', async () => {
+    seedDesignAdmissionReads();
+    await createAndEnqueueAgentRun(designInput({ dedupeKey: 'design:d7', scheduleId: SCHEDULE_ID }));
+    const values = dbMockState.insertValues[0] as Record<string, unknown>;
+    expect(values).toMatchObject({ profile: 'design', scheduleId: SCHEDULE_ID });
+  });
+
+  it('does not publish max_concurrent_design_runs or design_rate — logged only, volume guards not policy events', async () => {
+    seedDesignAdmissionReads({ concurrent: AI_AGENT_LIMIT_DEFAULTS.maxConcurrentDesignRuns });
+    await createAndEnqueueAgentRun(designInput({ dedupeKey: 'design:d8' }));
+    expect(publishEvent).not.toHaveBeenCalled();
+  });
+
+  it('ownership_mismatch when a design run targets a non-designer agent', async () => {
+    seedDesignAdmissionReads({ agentKind: 'triage' });
+    const result = await createAndEnqueueAgentRun(designInput({ dedupeKey: 'design:d9' }));
+    expect(result).toEqual({ created: false, skipped: 'ownership_mismatch' });
+  });
+
+  it('ownership_mismatch when a designer agent is admitted on any profile but design', async () => {
+    // The converse of the rule above, and the one that matters for safety: the
+    // generic manual-trigger route omits `profile`, which defaults to 'full',
+    // so without this direction a designer agent would run with its own
+    // toolAllowlist and ordinary action limits — no read-only floor at all.
+    for (const profile of ['full', 'verdict', 'sweep', 'narrative', 'triage'] as const) {
+      seedDesignAdmissionReads();
+      const result = await createAndEnqueueAgentRun(
+        designInput({ dedupeKey: `design:d11:${profile}`, profile, deviceId: DEVICE_ID }),
+      );
+      expect(result, profile).toEqual({ created: false, skipped: 'ownership_mismatch' });
+    }
+  });
+
+  it('ownership_mismatch when a design run carries a deviceId', async () => {
+    seedDesignAdmissionReads();
+    const result = await createAndEnqueueAgentRun(
+      designInput({ dedupeKey: 'design:d10', deviceId: DEVICE_ID }),
+    );
+    expect(result).toEqual({ created: false, skipped: 'ownership_mismatch' });
+  });
+});
+
+describe('createAndEnqueueAgentRun patch-profile admission (AI patch agent W01)', () => {
+  // Same read order as the design arm: a non-full profile skips the cooldown
+  // probe, so only [reap, concurrency, per-window, daily spend] are read.
+  function seedPatchAdmissionReads(options: {
+    concurrent?: number;
+    perWindow?: number;
+    dailyCents?: number | null;
+    agentKind?: string;
+  } = {}): void {
+    const { concurrent = 0, perWindow = 0, dailyCents = 0, agentKind = 'patch' } = options;
+    seedAdmissionReads({ concurrent, perHour: perWindow, dailyCents, deviceInOrg: true, agentKind });
+    dbMockState.rowQueues.ai_agent_runs = [
+      [],
+      [{ value: concurrent }],
+      [{ value: perWindow }],
+      [{ totalCostCents: dailyCents }],
+    ];
+  }
+
+  function patchInput(over: Partial<CreateAgentRunInput> = {}): CreateAgentRunInput {
+    return input({ kind: 'patch', profile: 'patch', deviceId: null, ...over });
+  }
+
+  it('admits a device-less patch run on a patch agent and writes profile=patch', async () => {
+    seedPatchAdmissionReads();
+    const result = await createAndEnqueueAgentRun(patchInput({ dedupeKey: 'patch:p1', scheduleId: SCHEDULE_ID }));
+    expect(result).toMatchObject({ created: true });
+    expect(dbMockState.insertValues[0]).toMatchObject({ profile: 'patch', scheduleId: SCHEDULE_ID, deviceId: null });
+  });
+
+  it('max_concurrent_patch_runs when queued+running patch runs reach the patch-only cap', async () => {
+    seedPatchAdmissionReads({ concurrent: AI_AGENT_LIMIT_DEFAULTS.maxConcurrentPatchRuns });
+    const result = await createAndEnqueueAgentRun(patchInput({ dedupeKey: 'patch:p2' }));
+    expect(result).toEqual({ created: false, skipped: 'max_concurrent_patch_runs' });
+  });
+
+  it('rate-limits patch runs on maxPatchRunsPerDay with skip patch_rate', async () => {
+    seedPatchAdmissionReads({ perWindow: AI_AGENT_LIMIT_DEFAULTS.maxPatchRunsPerDay });
+    const result = await createAndEnqueueAgentRun(patchInput({ dedupeKey: 'patch:p3' }));
+    expect(result).toEqual({ created: false, skipped: 'patch_rate' });
+    const runSelects = dbMockState.selects.filter((s) => s.table === 'ai_agent_runs');
+    expect(compiled(runSelects[2]?.where)).toContain('"profile"');
+  });
+
+  // AI patch agent W04 (#5750) — the capacity decision: reactive alert runs
+  // share the daily patch budget, so a day holding the manual run plus four
+  // reactive alerts (5 in the window) must still admit the nightly occurrence.
+  it('admits the scheduled occurrence after a manual run plus four reactive alert runs the same day', async () => {
+    seedPatchAdmissionReads({ perWindow: 5 });
+    const result = await createAndEnqueueAgentRun(patchInput({ dedupeKey: 'patch:sched', scheduleId: SCHEDULE_ID }));
+    expect(result).toMatchObject({ created: true });
+  });
+
+  it('falls back to the v11 defaults on a pre-v11 snapshot with no patch caps at all', async () => {
+    const { maxConcurrentPatchRuns: _c, maxPatchRunsPerDay: _d, ...preV11 } = AI_AGENT_LIMIT_DEFAULTS;
+    resolveEffectiveAgentSystem.mockResolvedValue(snapshot({ limits: preV11 as typeof AI_AGENT_LIMIT_DEFAULTS }));
+    seedPatchAdmissionReads({ concurrent: AI_AGENT_LIMIT_DEFAULTS.maxConcurrentPatchRuns });
+    const result = await createAndEnqueueAgentRun(patchInput({ dedupeKey: 'patch:p4' }));
+    expect(result).toEqual({ created: false, skipped: 'max_concurrent_patch_runs' });
+  });
+
+  it('does not publish max_concurrent_patch_runs or patch_rate — volume guards, not policy events', async () => {
+    seedPatchAdmissionReads({ concurrent: AI_AGENT_LIMIT_DEFAULTS.maxConcurrentPatchRuns });
+    await createAndEnqueueAgentRun(patchInput({ dedupeKey: 'patch:p5' }));
+    expect(publishEvent).not.toHaveBeenCalled();
+  });
+
+  it('ownership_mismatch when a patch run targets a non-patch agent', async () => {
+    for (const agentKind of ['triage', 'helpdesk']) {
+      seedPatchAdmissionReads({ agentKind });
+      const result = await createAndEnqueueAgentRun(patchInput({ dedupeKey: `patch:p6:${agentKind}` }));
+      expect(result, agentKind).toEqual({ created: false, skipped: 'ownership_mismatch' });
+    }
+  });
+
+  it('ownership_mismatch when a patch run carries a deviceId', async () => {
+    seedPatchAdmissionReads();
+    const result = await createAndEnqueueAgentRun(patchInput({ dedupeKey: 'patch:p7', deviceId: DEVICE_ID }));
+    expect(result).toEqual({ created: false, skipped: 'ownership_mismatch' });
+  });
+
+  it('still admits a patch agent on the device lane with the full profile — no reverse pin', async () => {
+    seedAdmissionReads({ agentKind: 'patch' });
+    const result = await createAndEnqueueAgentRun(input({ kind: 'patch', dedupeKey: 'patch:p8' }));
+    expect(result).toMatchObject({ created: true });
+    expect(dbMockState.insertValues[0]).toMatchObject({ profile: 'full', deviceId: DEVICE_ID });
   });
 });

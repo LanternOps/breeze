@@ -51,8 +51,13 @@ var windowsCriticalServices = []string{
 // is applySystemState's error (if any) from reading that staged list — see
 // applyServiceValidation's doc comment for why this must fail validation
 // outright rather than being treated the same as "no services staged".
-func Validate(serviceUnits []string, serviceUnitsErr error) (*ValidationResult, error) {
+// state is the system-state phase's outcome; an expected-but-unapplied
+// state fails the verdict with a named check (#5412).
+func Validate(serviceUnits []string, serviceUnitsErr error, state SystemStateOutcome) (*ValidationResult, error) {
 	result := &ValidationResult{Passed: true}
+
+	// System state expected by the bootstrap must actually have landed.
+	applySystemStateValidation(result, state)
 
 	// Check network connectivity.
 	result.NetworkUp = checkNetwork()
@@ -76,9 +81,30 @@ func Validate(serviceUnits []string, serviceUnitsErr error) (*ValidationResult, 
 		"networkUp", result.NetworkUp,
 		"criticalFiles", result.CriticalFiles,
 		"servicesRunning", result.ServicesRunning,
+		"systemStateApplied", result.SystemStateApplied,
 		"failures", len(result.Failures),
 	)
 	return result, nil
+}
+
+// applySystemStateValidation records the system-state outcome into result
+// and fails the verdict when state was expected but not applied. Split out
+// (like applyServiceValidation) so it is unit-testable without Validate's
+// real network dial and OS file probes. A manifest that was found but not
+// applied without being expected does not fail here: RunRecoveryContext's
+// status derivation already keeps such a run off "completed" (see
+// stateBlocksCompletion), and validation stays about what the bootstrap
+// promised.
+func applySystemStateValidation(result *ValidationResult, state SystemStateOutcome) {
+	result.SystemStateApplied = state.Applied
+	if state.Expected && !state.Applied {
+		result.Passed = false
+		if state.ManifestFound {
+			result.Failures = append(result.Failures, "system state not applied: manifest was found but its artifacts were not applied")
+		} else {
+			result.Failures = append(result.Failures, "system state not applied: snapshot advertises system state but no manifest was found")
+		}
+	}
 }
 
 // checkNetwork tests basic network connectivity by trying to resolve
@@ -196,14 +222,131 @@ func applyServiceValidation(result *ValidationResult, serviceUnits []string, ser
 func checkServicesLinux(units []string) (bool, []string) {
 	var inactive []string
 	for _, unit := range units {
+		if isTemplateUnit(unit) {
+			// A template unit (getty@.service) is not itself startable —
+			// only its instances are — so `is-active` on it always reports
+			// inactive. Probing one can never signal a real regression, it
+			// only buries the ones that can (#5479).
+			slog.Debug("bmr: skipping template unit in service probe", "unit", unit)
+			continue
+		}
 		out, err := runServiceProbeCommand("systemctl", "is-active", unit)
 		state := strings.TrimSpace(string(out))
-		if err != nil || state != "active" {
-			inactive = append(inactive, unit)
-			slog.Warn("bmr: service not active", "unit", unit, "state", state)
+		if err == nil && state == "active" {
+			continue
 		}
+		if healthy, reason := inactiveUnitIsHealthy(unit); healthy {
+			slog.Debug("bmr: unit not active but healthy", "unit", unit, "state", state, "reason", reason)
+			continue
+		}
+		inactive = append(inactive, unit)
+		slog.Warn("bmr: service not active", "unit", unit, "state", state)
 	}
 	return len(inactive) == 0, inactive
+}
+
+// isTemplateUnit reports whether name is a systemd TEMPLATE unit — an
+// instance-less name whose prefix ends in "@", e.g. "getty@.service" or
+// "user@.service". `systemctl list-unit-files` lists these alongside
+// ordinary units, so they reach the probe through
+// parseSystemdEnabledUnits, but they describe how to build instances
+// rather than naming a runnable service. An actual instance
+// ("getty@tty1.service") has text between the "@" and the ".", so it is
+// NOT a template and is still probed normally.
+func isTemplateUnit(name string) bool {
+	base := name
+	if idx := strings.LastIndex(base, "."); idx >= 0 {
+		base = base[:idx]
+	}
+	return strings.HasSuffix(base, "@")
+}
+
+// unitProbeProperties are the systemd properties inactiveUnitIsHealthy
+// inspects for a unit that `is-active` did not report as "active". Kept as
+// one ordered slice so the command and the parse stay in step.
+var unitProbeProperties = []string{"Type", "ActiveState", "SubState", "ConditionResult", "UnitFileState"}
+
+// healthyUnitFileStates are the `systemctl show -p UnitFileState` values
+// that mean a unit is still installed and wanted after the restore. A unit
+// that is "disabled", "masked", "bad" or absent entirely (UnitFileState
+// empty / not-found) is NOT healthy no matter why it is inactive: the
+// snapshot listed it as enabled, so losing that enablement is exactly the
+// regression this probe exists to catch. "static"/"indirect"/"generated"
+// units have no enablement of their own to lose.
+var healthyUnitFileStates = map[string]bool{
+	"enabled":         true,
+	"enabled-runtime": true,
+	"static":          true,
+	"indirect":        true,
+	"generated":       true,
+	"transient":       true,
+	"alias":           true,
+}
+
+// inactiveUnitIsHealthy decides whether a unit that `systemctl is-active`
+// did not call "active" is nonetheless in an expected state for a healthy
+// system, and returns a short reason when it is (#5479). Two cases:
+//
+//   - a oneshot unit at rest: `Type=oneshot` with ActiveState
+//     inactive/active and SubState anything but "failed". Without
+//     RemainAfterExit, systemd drops such a unit back to "inactive" the
+//     moment its command exits successfully — the normal resting state of
+//     e2scrub_reap.service, dmesg.service, grub-common.service and
+//     friends. Note this deliberately does NOT try to distinguish "ran and
+//     exited 0" from "has not run yet": the probe runs straight after a
+//     restore, typically before the machine has had a boot for its oneshots
+//     to run in, so "has not run yet" is the expected state there rather
+//     than a regression. The axis that DOES carry signal for a oneshot is
+//     enablement, which is why both branches below require a healthy
+//     UnitFileState — a oneshot the restore left disabled, masked or
+//     missing is still reported.
+//   - a unit systemd deliberately skipped because its Condition*= checks
+//     did not hold (`ConditionResult=no`) — e.g. a unit gated on hardware
+//     or a file the recovered machine does not have. Also gated on a
+//     healthy UnitFileState.
+//
+// Anything else — a failed unit, an activating/deactivating one, a unit
+// left disabled/masked/missing by the restore, or a `systemctl show` that
+// errors out — stays a genuine finding.
+func inactiveUnitIsHealthy(unit string) (bool, string) {
+	args := []string{"show"}
+	for _, prop := range unitProbeProperties {
+		args = append(args, "--property="+prop)
+	}
+	args = append(args, unit)
+
+	out, err := runServiceProbeCommand("systemctl", args...)
+	if err != nil {
+		return false, ""
+	}
+	props := parseSystemctlShow(out)
+	if !healthyUnitFileStates[props["UnitFileState"]] {
+		return false, ""
+	}
+	if props["ConditionResult"] == "no" {
+		return true, "condition not met"
+	}
+	if props["Type"] == "oneshot" && props["SubState"] != "failed" &&
+		(props["ActiveState"] == "inactive" || props["ActiveState"] == "active") {
+		return true, "oneshot at rest"
+	}
+	return false, ""
+}
+
+// parseSystemctlShow turns `systemctl show --property=X ...` output
+// (KEY=VALUE, one per line) into a map. Values may legitimately contain
+// "=", so only the FIRST "=" separates key from value; lines without one
+// are ignored.
+func parseSystemctlShow(out []byte) map[string]string {
+	props := make(map[string]string)
+	for _, line := range strings.Split(string(out), "\n") {
+		key, value, found := strings.Cut(strings.TrimSpace(line), "=")
+		if !found || key == "" {
+			continue
+		}
+		props[key] = value
+	}
+	return props
 }
 
 func checkServicesWindows() (bool, []string) {
@@ -249,30 +392,4 @@ func enabledSystemdUnitsFromStaging(stagingDir string) ([]string, error) {
 		return nil, fmt.Errorf("read staged services list: %w", err)
 	}
 	return parseSystemdEnabledUnits(data), nil
-}
-
-// parseSystemdEnabledUnits extracts unit names from the output of
-// `systemctl list-unit-files --type=service`, keeping only units whose
-// STATE column reads exactly "enabled".
-//
-// KNOWN DUPLICATION (intentional, see the plan doc's Wave 2 file list and
-// Wave 5's reconciliation note): a sibling wave's restore_linux_logic.go
-// independently adds a same-purpose `parseEnabledServices` helper to drive
-// the actual service-restore step. This package cannot import or reuse that
-// helper here without editing restore_linux.go, which is out of scope for
-// this change (owned by that wave). The two parsers must be kept in sync on
-// the parsing rule (STATE column == "enabled") until a follow-up
-// consolidates them into one shared helper.
-func parseSystemdEnabledUnits(data []byte) []string {
-	var units []string
-	for _, line := range strings.Split(string(data), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) < 2 {
-			continue
-		}
-		if fields[1] == "enabled" {
-			units = append(units, fields[0])
-		}
-	}
-	return units
 }

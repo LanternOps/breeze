@@ -1,6 +1,21 @@
 import { describe, expect, it } from 'vitest';
 import { PERMISSION_GRANTS } from '@breeze/shared';
-import { resolveBootstrapAdminConfig, DEFAULT_PERMISSIONS, SYSTEM_ROLES } from './seed';
+import { resolveBootstrapAdminConfig, DEFAULT_PERMISSIONS, SYSTEM_ROLES, DEV_SEED_DEFAULT_PARTNER_SETTINGS } from './seed';
+
+it('seeds the billing_profiles read/write permissions referenced by system roles', () => {
+  const seeded = new Set(DEFAULT_PERMISSIONS.map((p) => `${p.resource}:${p.action}`));
+  expect(seeded.has('billing_profiles:read')).toBe(true);
+  expect(seeded.has('billing_profiles:write')).toBe(true);
+});
+
+it('grants billing profile read to time-entry readers and leaves write to the role editor', () => {
+  for (const role of SYSTEM_ROLES) {
+    if (role.permissions.includes('time_entries:read')) {
+      expect(role.permissions).toContain('billing_profiles:read');
+    }
+    expect(role.permissions).not.toContain('billing_profiles:write');
+  }
+});
 
 describe('resolveBootstrapAdminConfig', () => {
   it('keeps the development convenience admin when no explicit bootstrap env is set', () => {
@@ -548,6 +563,68 @@ describe('Workspace and connected-app permission defaults on upgrade (fail-close
       for (const key of newKeys) {
         expect(permissions, `${roleName} unexpectedly received ${key}`).not.toContain(key);
       }
+    }
+  });
+});
+
+describe('agreements RBAC (W02)', () => {
+  const byName = (name: string) => SYSTEM_ROLES.find((role) => role.name === name);
+
+  it('seeds both agreements permission rows', () => {
+    const keys = DEFAULT_PERMISSIONS.map((p) => `${p.resource}:${p.action}`);
+    expect(keys).toContain('agreements:read');
+    expect(keys).toContain('agreements:write');
+  });
+
+  it('Partner Billing can read and write agreements', () => {
+    expect(byName('Partner Billing')!.permissions).toEqual(
+      expect.arrayContaining(['agreements:read', 'agreements:write']),
+    );
+  });
+
+  it('Partner Billing Viewer can read agreements but not write them', () => {
+    const perms = byName('Partner Billing Viewer')!.permissions;
+    expect(perms).toContain('agreements:read');
+    expect(perms).not.toContain('agreements:write');
+  });
+
+  // Spec §4: templates are partner-scope in the UI today (partnerScopeOnly),
+  // so Org Admin's grant set is deliberately unchanged by this wave.
+  it('leaves Org Admin without an agreements grant', () => {
+    const perms = byName('Org Admin')!.permissions;
+    expect(perms).not.toContain('agreements:read');
+    expect(perms).not.toContain('agreements:write');
+  });
+});
+
+// Spec D2: docs/superpowers/specs/2026-09-18-mfa-required-default-new-partners-design.md
+// New partners default to security.requireMfa=true. The seeded dev/e2e partner
+// must OPT OUT: seeded admins log in without a factor, and a forced-enrolment
+// wall on every fresh stack is the 2026-09-08 R1 lockout replayed locally.
+// This test exists so a future "cleanup" to plain applyNewPartnerDefaultSettings()
+// fails here instead of locking every developer out.
+describe('dev seed Default Partner settings', () => {
+  it('keeps requireMfa=false while still carrying the other new-partner defaults', () => {
+    expect(DEV_SEED_DEFAULT_PARTNER_SETTINGS).toEqual({
+      ticketing: { inbound: { enabled: false } },
+      security: { requireMfa: false },
+    });
+  });
+});
+
+describe('ai_sessions:use (#6396)', () => {
+  const byName = (name: string) => SYSTEM_ROLES.find((r) => r.name === name)!;
+  it('is seeded in the permission catalog', () => {
+    expect(DEFAULT_PERMISSIONS.some((p) => p.resource === 'ai_sessions' && p.action === 'use')).toBe(true);
+  });
+  it('is granted to Org Admin, Org Technician and Partner Technician so they can open chat', () => {
+    expect(byName('Org Admin').permissions).toContain('ai_sessions:use');
+    expect(byName('Org Technician').permissions).toContain('ai_sessions:use');
+    expect(byName('Partner Technician').permissions).toContain('ai_sessions:use');
+  });
+  it('is NOT granted to viewer or billing roles', () => {
+    for (const name of ['Org Viewer', 'Partner Viewer', 'Partner Billing', 'Partner Billing Viewer']) {
+      expect(byName(name).permissions).not.toContain('ai_sessions:use');
     }
   });
 });

@@ -369,6 +369,7 @@ func (h *Heartbeat) collectIPHistory() (*IPHistoryUpdate, error) {
 			IPType:         adapter.IPType,
 			AssignmentType: determineAssignmentType(adapter.InterfaceName, adapter.IPAddress),
 			MACAddress:     adapter.MACAddress,
+			Gateway:        h.legacyContextGateway(adapter.InterfaceName, adapter.IPType),
 		})
 		if !ok {
 			continue

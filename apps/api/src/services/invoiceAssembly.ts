@@ -72,12 +72,27 @@ export function mergeAssembly(...parts: AssemblyResult[]): AssemblyResult {
 
 type TimeEntryRow = {
   id: string; ticketId: string | null; description: string | null;
-  durationMinutes: number | null; hourlyRate: string | null; isApproved: boolean;
+  durationMinutes: number | null;
+  /** Billed quantity after the card's minimum/rounding (#4628 §3.5). NULL on
+   *  pre-feature rows and rows with no card terms — then the duration bills. */
+  billableMinutes: number | null;
+  hourlyRate: string | null; isApproved: boolean;
   currencyCode?: string | null;
 };
 
-const entryHours = (r: TimeEntryRow) => ((r.durationMinutes ?? 0) / 60).toFixed(2);
-const entryDescription = (r: TimeEntryRow) => r.description?.trim() || 'Labor';
+/** Billed quantity (§3.5): COALESCE(billable_minutes, duration_minutes), hours to 2 dp. */
+const entryHours = (r: TimeEntryRow) => (((r.billableMinutes ?? r.durationMinutes) ?? 0) / 60).toFixed(2);
+/** Actual time worked, for the line note only — never for money. */
+const entryWorkedHours = (r: TimeEntryRow) => ((r.durationMinutes ?? 0) / 60).toFixed(2);
+
+/** §3.5: "When they differ the invoice line says so." One line per entry,
+ *  always — the note is a suffix on the description, never a second line. */
+const entryDescription = (r: TimeEntryRow) => {
+  const base = r.description?.trim() || 'Labor';
+  const billed = entryHours(r);
+  const worked = entryWorkedHours(r);
+  return billed === worked ? base : `${base} — ${worked} h worked, ${billed} h billed`;
+};
 
 /** Labor rule (one rule, everywhere): hours rounded to 2dp first (the numeric(10,2) quantity
  *  schema), then `lineTotal = roundToCurrency(hours2dp × rate, currencyCode)`.
@@ -144,7 +159,7 @@ export function ticketPartToLineSpec(r: {
 export async function gatherOrgTimeEntries(orgId: string, from: Date, to: Date, headerCurrency: string): Promise<AssemblyResult> {
   const rows = await db.select({
     id: timeEntries.id, ticketId: timeEntries.ticketId, description: timeEntries.description,
-    durationMinutes: timeEntries.durationMinutes, hourlyRate: timeEntries.hourlyRate, isApproved: timeEntries.isApproved,
+    durationMinutes: timeEntries.durationMinutes, billableMinutes: timeEntries.billableMinutes, hourlyRate: timeEntries.hourlyRate, isApproved: timeEntries.isApproved,
     currencyCode: timeEntries.currencyCode
   }).from(timeEntries).where(and(
     eq(timeEntries.orgId, orgId),
@@ -185,7 +200,7 @@ export async function gatherOrgParts(orgId: string, from: Date, to: Date, header
 export async function gatherTicketBillables(ticketId: string, headerCurrency: string): Promise<AssemblyResult> {
   const te = await db.select({
     id: timeEntries.id, ticketId: timeEntries.ticketId, description: timeEntries.description,
-    durationMinutes: timeEntries.durationMinutes, hourlyRate: timeEntries.hourlyRate, isApproved: timeEntries.isApproved,
+    durationMinutes: timeEntries.durationMinutes, billableMinutes: timeEntries.billableMinutes, hourlyRate: timeEntries.hourlyRate, isApproved: timeEntries.isApproved,
     currencyCode: timeEntries.currencyCode
   }).from(timeEntries).where(and(
     eq(timeEntries.ticketId, ticketId), eq(timeEntries.isBillable, true), eq(timeEntries.billingStatus, 'not_billed'),

@@ -1,3 +1,4 @@
+import { ensureDefaultProfile } from './billingProfileService';
 /**
  * AI Organization/Site Tools (issue #2366)
  *
@@ -34,11 +35,12 @@
  *    POST /orgs/sites) via the resolveWritableToolOrgId rules.
  */
 
-import { and, eq, ilike, inArray, isNull, ne, type SQL } from 'drizzle-orm';
+import { and, eq, ilike, inArray, isNull, ne, sql, type SQL } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { organizations, partners, sites } from '../db/schema';
+import { devices, organizations, partners, sites } from '../db/schema';
 // Concrete module, not the barrel — see the note in routes/orgs.ts.
 import { ORG_SLUG_UNIQUE_INDEX } from '../db/schema/orgs';
+import { PG_UUID_REGEX } from '../utils/uuid';
 import { escapeLike } from '../utils/sql';
 import { isPgUniqueViolation } from '../utils/pgErrors';
 import type { AuthContext } from '../middleware/auth';
@@ -48,10 +50,12 @@ import {
   restoreOrganizationTenantAccess,
   revokeOrganizationTenantAccess,
 } from './tenantLifecycle';
-import { abortOrganizationOffboarding } from './tenantOffboarding';
-import { createContact, ContactValidationError } from './contacts/crud';
+import { abortOrganizationOffboardingAroundStatusChange } from './tenantOffboarding';
+import { createContact, ContactValidationError, listContacts, countContacts, type ContactListFilters } from './contacts/crud';
 import { contactCreateAuditEvent } from './contacts/audit';
 import { CONTACT_ROLES } from './contacts/types';
+import { ensureOrgAccess } from '../routes/systemTools/helpers';
+import { deviceScopeCondition, siteScopeCondition } from './aiToolsSiteScope';
 
 // Mirrors the org PATCH route's status set (schema orgStatusEnum). Kept as a
 // literal array (not orgStatusEnum.enumValues) so schema mocks in tests don't
@@ -287,6 +291,7 @@ async function handleCreateOrg(
           status: organizations.status,
         });
       if (!org) throw new Error('Organization insert returned no row');
+      await ensureDefaultProfile(partnerId, partnerRow.currencyCode, db);
 
       // Default site, same invariant as partnerCreate + the QB customer
       // import — a brand-new org must be immediately usable for quoting
@@ -373,27 +378,35 @@ async function handleUpdateOrg(
   if (name !== undefined) updates.name = name.slice(0, 255);
   if (status !== undefined) updates.status = status;
 
-  const [org] = await db
-    .update(organizations)
-    .set(updates)
-    .where(and(eq(organizations.id, orgId), isNull(organizations.deletedAt)))
-    .returning({
-      id: organizations.id,
-      name: organizations.name,
-      slug: organizations.slug,
-      status: organizations.status,
-    });
-  if (!org) return jsonError('Organization not found or access denied');
+  const runUpdate = async () => {
+    const [row] = await db
+      .update(organizations)
+      .set(updates)
+      .where(and(eq(organizations.id, orgId), isNull(organizations.deletedAt)))
+      .returning({
+        id: organizations.id,
+        name: organizations.name,
+        slug: organizations.slug,
+        status: organizations.status,
+      });
+    return row;
+  };
 
   // Status-transition invariants from the org PATCH route: suspending/churning
   // severs agent tenant access; re-activating restores it. Any transition off
   // `offboarding` (#2774) first cancels in-flight drain uninstalls (no-op
-  // otherwise) so an uncollected self_uninstall can't survive a reactivation.
+  // otherwise) so an uncollected self_uninstall can't survive a reactivation —
+  // and #3996: that cancel must be locked and committed WITH the status write,
+  // because a tenant that has stopped reading as `offboarding` puts its whole
+  // fleet back on the ordinary command-claim path.
+  const org = status !== undefined
+    ? (await abortOrganizationOffboardingAroundStatusChange(orgId, runUpdate)).statusChange
+    : await runUpdate();
+  if (!org) return jsonError('Organization not found or access denied');
+
   if (status !== undefined && status !== 'active' && status !== 'trial') {
-    await abortOrganizationOffboarding(org.id);
     await revokeOrganizationTenantAccess(org.id);
   } else if (status === 'active' || status === 'trial') {
-    await abortOrganizationOffboarding(org.id);
     await restoreOrganizationTenantAccess(org.id);
   }
 
@@ -480,8 +493,14 @@ async function handleAddContact(
   // matching the list handler's allowedSiteIds confinement above. An absent
   // siteId is an org-level contact and stays allowed: the allowlist confines a
   // caller within an org, it does not narrow their org reach.
+  //
+  // Written on `allowedSiteIds`, NOT `canAccessSite?.(…) === false`: the
+  // optional-call form fails OPEN whenever the closure is absent, and a human
+  // AuthContext is only guaranteed to carry the restriction itself. A caller
+  // that is restricted but has no closure to evaluate it with is denied.
   const siteId = typeof input.siteId === 'string' ? input.siteId : undefined;
-  if (siteId !== undefined && auth.canAccessSite?.(siteId) === false) {
+  if (siteId !== undefined && auth.allowedSiteIds
+    && (!auth.canAccessSite || !auth.canAccessSite(siteId))) {
     return jsonError(
       'Access denied to that site. You can only add contacts to sites you have access to.',
       'site-access-denied'
@@ -535,9 +554,194 @@ async function handleAddContact(
   return JSON.stringify({ contact });
 }
 
+const SAFE_SITE_PROJECTION = {
+  id: sites.id,
+  orgId: sites.orgId,
+  name: sites.name,
+  timezone: sites.timezone,
+  createdAt: sites.createdAt,
+};
+
 export function registerOrgTools(aiTools: Map<string, AiTool>): void {
+  aiTools.set('list_sites', {
+    tier: 1 as AiToolTier,
+    domain: 'accounts',
+    searchHint: 'sites, locations, offices of a customer organization with device counts',
+    deviceArgs: [],
+    definition: {
+      name: 'list_sites',
+      description: 'List accessible sites with organization, name, timezone and device count. Filter by organization or site name.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          orgId: { type: 'string', description: 'Organization UUID' },
+          search: { type: 'string', description: 'Site name substring' },
+          limit: { type: 'number', description: 'Maximum rows (default 25, max 100)' },
+          offset: { type: 'number', description: 'Rows to skip (default 0)' },
+        },
+        required: [],
+      },
+    },
+    handler: async (input, auth) => {
+      try {
+        const limit = Math.min(100, Math.max(1, Math.trunc(Number(input.limit) || 25)));
+        const offset = Math.max(0, Math.trunc(Number(input.offset) || 0));
+        const empty = () => JSON.stringify({ sites: [], total: 0, limit, offset });
+        const conditions: (SQL | undefined)[] = [];
+        if (input.orgId !== undefined) {
+          if (typeof input.orgId !== 'string' || !PG_UUID_REGEX.test(input.orgId)) return jsonError('orgId must be a UUID');
+          if (!await ensureOrgAccess(input.orgId, auth)) return jsonError('Access to this organization denied');
+          conditions.push(eq(sites.orgId, input.orgId));
+        } else if (auth.scope === 'organization') {
+          if (!auth.orgId) return empty();
+          conditions.push(eq(sites.orgId, auth.orgId));
+        } else if (auth.scope === 'partner') {
+          const orgIds = auth.accessibleOrgIds ?? [];
+          if (orgIds.length === 0) return empty();
+          conditions.push(inArray(sites.orgId, orgIds));
+        }
+        if (auth.allowedSiteIds?.length === 0) return empty();
+        // Same correlated exclusion as GET /orgs/sites; no open JSONB containers.
+        conditions.push(sql`NOT EXISTS (
+    SELECT 1 FROM ${organizations} qs_org
+    WHERE qs_org.id = ${sites.orgId} AND qs_org.type = 'quick_support'
+  )`, siteScopeCondition(auth, sites.id));
+        const search = typeof input.search === 'string' ? input.search.trim() : '';
+        if (search) conditions.push(ilike(sites.name, `%${escapeLike(search)}%`));
+        const whereCondition = and(...conditions);
+        const [count] = await db.select({ count: sql<number>`count(*)` }).from(sites).where(whereCondition);
+        const rows = await db.select(SAFE_SITE_PROJECTION).from(sites).where(whereCondition)
+          .limit(limit).offset(offset).orderBy(sites.createdAt, sites.id);
+        const deviceCounts = new Map<string, number>();
+        if (rows.length > 0) {
+          const counts = await db.select({ siteId: devices.siteId, count: sql<number>`count(*)` })
+            .from(devices).where(and(
+              inArray(devices.siteId, rows.map((row) => row.id)),
+              eq(devices.isEphemeral, false), ne(devices.status, 'decommissioned'),
+              deviceScopeCondition(auth, devices.id),
+            )).groupBy(devices.siteId);
+          for (const entry of counts) deviceCounts.set(entry.siteId, Number(entry.count));
+        }
+        return JSON.stringify({
+          sites: rows.map((row) => ({ ...row, deviceCount: deviceCounts.get(row.id) ?? 0 })),
+          total: Number(count?.count ?? 0), limit, offset,
+        });
+      } catch (err) {
+        console.error('[list_sites]', err);
+        return jsonError('Operation failed. Check server logs for details.');
+      }
+    },
+  });
+
+  aiTools.set('get_site', {
+    tier: 1 as AiToolTier,
+    domain: 'accounts',
+    searchHint: 'one site by id: name, organization, timezone',
+    deviceArgs: [],
+    definition: {
+      name: 'get_site',
+      description: 'Get an accessible site by UUID, including name, organization, timezone and creation date.',
+      input_schema: {
+        type: 'object',
+        properties: { siteId: { type: 'string', description: 'Site UUID' } },
+        required: ['siteId'],
+      },
+    },
+    handler: async (input, auth) => {
+      try {
+        if (typeof input.siteId !== 'string' || !PG_UUID_REGEX.test(input.siteId)
+          || auth.allowedSiteIds?.length === 0) return jsonError('Site not found');
+        const [site] = await db.select(SAFE_SITE_PROJECTION).from(sites).where(eq(sites.id, input.siteId)).limit(1);
+        if (!site || !await ensureOrgAccess(site.orgId, auth)
+          || (auth.allowedSiteIds && !auth.allowedSiteIds.includes(site.id))) return jsonError('Site not found');
+        return JSON.stringify({ site });
+      } catch (err) {
+        console.error('[get_site]', err);
+        return jsonError('Operation failed. Check server logs for details.');
+      }
+    },
+  });
+
+  aiTools.set('list_org_contacts', {
+    tier: 1 as AiToolTier,
+    domain: 'accounts',
+    searchHint: 'customer contacts, people at an organization, primary contact, email/phone for a site',
+    deviceArgs: [],
+    definition: {
+      name: 'list_org_contacts',
+      description: 'List organization contacts with names, email, phone, roles and primary status. Filter by site or role. Internal notes are omitted.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          orgId: { type: 'string', description: 'Organization UUID' },
+          siteId: { type: 'string', description: 'Site UUID, or none for organization-level contacts' },
+          role: { type: 'string', description: 'Contact role to match (1–64 characters)' },
+          limit: { type: 'number', description: 'Max rows (default 25, max 100)' },
+          offset: { type: 'number', description: 'Rows to skip (default 0)' },
+        },
+        required: ['orgId'],
+      },
+    },
+    handler: async (input, auth) => {
+      const orgId = input.orgId;
+      if (typeof orgId !== 'string' || !PG_UUID_REGEX.test(orgId)) {
+        return jsonError('orgId must be an organization UUID');
+      }
+      if (auth.scope !== 'system' && !auth.canAccessOrg(orgId)) {
+        return jsonError('Access to this organization denied');
+      }
+      const siteId = input.siteId;
+      if (siteId !== undefined && (typeof siteId !== 'string' || (siteId !== 'none' && !PG_UUID_REGEX.test(siteId)))) {
+        return jsonError('siteId must be a site UUID or none');
+      }
+      if (siteId !== undefined && siteId !== 'none' && (
+        (auth.allowedSiteIds && !auth.allowedSiteIds.includes(siteId)) ||
+        (auth.canAccessSite && !auth.canAccessSite(siteId))
+      )) return jsonError('Access to this site denied');
+      const role = input.role;
+      if (role !== undefined && (typeof role !== 'string' || role.length < 1 || role.length > 64)) {
+        return jsonError('role must be 1–64 characters');
+      }
+      const limit = Math.min(Math.max(1, Math.floor(Number(input.limit) || 25)), 100);
+      const offset = Math.max(0, Math.floor(Number(input.offset) || 0));
+      // Stricter than REST: even org-level contacts are hidden for empty site scope.
+      if (auth.allowedSiteIds?.length === 0) {
+        return JSON.stringify({ contacts: [], total: 0, limit, offset });
+      }
+      try {
+        // Match resolveAccessibleOrg: deleted/missing organizations are not readable.
+        const [org] = await db.select({ id: organizations.id }).from(organizations)
+          .where(and(eq(organizations.id, orgId), isNull(organizations.deletedAt))).limit(1);
+        if (!org) return jsonError('Organization not found');
+        const filters: ContactListFilters = {
+          ...(siteId === undefined ? {} : { siteId: siteId === 'none' ? null : siteId }),
+          ...(role === undefined ? {} : { role }),
+          ...(auth.allowedSiteIds ? { allowedSiteIds: auth.allowedSiteIds } : {}),
+        };
+        const [contacts, total] = await Promise.all([
+          listContacts(db, orgId, filters, { limit, offset }),
+          countContacts(db, orgId, filters),
+        ]);
+        // Named projection prevents notes or future private fields entering model context.
+        const safeContacts = contacts.map((contact) => ({
+          id: contact.id, orgId: contact.orgId, siteId: contact.siteId,
+          name: contact.name, email: contact.email, phone: contact.phone,
+          mobile: contact.mobile, title: contact.title, roles: contact.roles,
+          isPrimary: contact.isPrimary, createdAt: contact.createdAt, updatedAt: contact.updatedAt,
+        }));
+        return JSON.stringify({ contacts: safeContacts, total, limit, offset });
+      } catch (err) {
+        console.error('[list_org_contacts]', err);
+        return jsonError('Operation failed. Check server logs for details.');
+      }
+    },
+  });
+
   aiTools.set('list_organizations', {
     tier: 1 as AiToolTier,
+    domain: 'core',
+    searchHint: 'organizations, customers, sites, organization IDs and site IDs by name',
+    alwaysLoad: true,
     deviceArgs: [],
     definition: {
       name: 'list_organizations',
@@ -567,6 +771,8 @@ export function registerOrgTools(aiTools: Map<string, AiTool>): void {
 
   aiTools.set('manage_organizations', {
     tier: 2 as AiToolTier,
+    domain: 'accounts',
+    searchHint: 'customer intake: create or update organizations, create sites, add contacts',
     deviceArgs: [],
     definition: {
       name: 'manage_organizations',

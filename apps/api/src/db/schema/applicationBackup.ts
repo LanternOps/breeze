@@ -12,6 +12,7 @@ import {
 import { organizations } from './orgs';
 import { devices } from './devices';
 import { backupConfigs, backupSnapshots } from './backup';
+import { sql } from 'drizzle-orm';
 
 // sql_instances: discovered SQL Server instances per device
 export const sqlInstances = pgTable(
@@ -85,5 +86,11 @@ export const backupChains = pgTable(
       table.deviceId,
       table.targetName
     ),
+    // #5421: retention's per-row "is this snapshot still an active chain's
+    // base?" lookup (jobs/backupRetention.ts). Partial on is_active, matching
+    // the query's predicate — migration 2026-10-25-090000.
+    fullSnapshotActiveIdx: index('backup_chains_full_snapshot_active_idx')
+      .on(table.fullSnapshotId)
+      .where(sql`${table.isActive}`),
   })
 );

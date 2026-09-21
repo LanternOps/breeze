@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
-import { AI_AGENT_LIMIT_DEFAULTS, type AgentRunVerdict, type AiAgentRunStatus } from '@breeze/shared';
+import { AI_AGENT_LIMIT_DEFAULTS, AI_AGENT_RUN_PROFILES, type AgentRunVerdict, type AiAgentRunStatus } from '@breeze/shared';
 
 const ORG_ID = '00000000-0000-4000-8000-0000000000c1';
 const AGENT_ID = '00000000-0000-4000-8000-0000000000c2';
@@ -261,6 +261,27 @@ describe('classifyTerminal with run profile (P2-1)', () => {
   });
 });
 
+// AI patch agent (W01). `STREAK_NEUTRAL_PROFILES` has no compile-time guard,
+// so this is a per-profile row over EVERY `AI_AGENT_RUN_PROFILES` member: a
+// new profile that is not explicitly handled fails here instead of silently
+// inheriting `full`'s reset behaviour.
+describe('classifyTerminal per profile (AI patch agent W01)', () => {
+  it.each(AI_AGENT_RUN_PROFILES)('%s completion is streak-neutral unless it is full', (profile) => {
+    expect(classifyTerminal('completed', null, 'no_action', profile)).toBe(profile === 'full' ? 'reset' : 'neutral');
+    expect(classifyTerminal('awaiting_approval', null, null, profile)).toBe(profile === 'full' ? 'reset' : 'neutral');
+  });
+
+  it('a patch plan is advice a human must accept, so even needs_attention is neutral', () => {
+    expect(classifyTerminal('completed', null, 'needs_attention', 'patch')).toBe('neutral');
+  });
+
+  it('a genuine failure still increments on a patch run', () => {
+    expect(classifyTerminal('failed', 'llm_unavailable', null, 'patch')).toBe('increment');
+    expect(classifyTerminal('failed', 'max_turns_exceeded', null, 'patch')).toBe('increment');
+    expect(classifyTerminal('failed', 'stalled', null, 'patch')).toBe('neutral');
+  });
+});
+
 // Phase 2 wave P2-2 (scheduled sweeps) — a clean sweep must NOT reset an
 // org's failure streak (design-review ruling): unlike `verdict`, a sweep's
 // job is read-only reconnaissance, not remediation, so its success says
@@ -370,6 +391,48 @@ describe('classifyTerminal with run profile (P2-4 triage)', () => {
     expect(classifyTerminal('cancelled', null, null, 'triage')).toBe('neutral');
     expect(classifyTerminal('expired', null, null, 'triage')).toBe('neutral');
     expect(classifyTerminal('skipped', null, null, 'triage')).toBe('neutral');
+  });
+
+  it('does not disturb the full profile it shares the string compare with', () => {
+    expect(classifyTerminal('completed', null, null, 'full')).toBe('reset');
+    expect(classifyTerminal('awaiting_approval', null, null, 'full')).toBe('reset');
+    expect(classifyTerminal('completed', null, 'needs_attention', 'full')).toBe('increment');
+  });
+});
+
+// Fleet Designer (W01) — same ruling as `narrative`/`triage`, and for the
+// same-shaped reason: a design run's whole input is a bounded,
+// system-assembled evidence bundle (never live tool output beyond its own
+// small read-only drill-down floor), and its output is a fleet DESIGN, not a
+// remediation attempt, so a clean completion says nothing about whether the
+// org's remediation is working. These rows ARE the guard — `classifyTerminal`
+// has no exhaustive `never` check that would fail to compile without them.
+describe('classifyTerminal with run profile (design)', () => {
+  it('a design completion never resets the streak, clean or needs_attention', () => {
+    expect(classifyTerminal('completed', null, null, 'design')).toBe('neutral');
+    expect(classifyTerminal('completed', null, 'no_action', 'design')).toBe('neutral');
+    expect(classifyTerminal('completed', null, 'needs_attention', 'design')).toBe('neutral');
+  });
+
+  it('awaiting_approval on a design run is neutral, not reset', () => {
+    expect(classifyTerminal('awaiting_approval', null, null, 'design')).toBe('neutral');
+  });
+
+  it('a genuine failure still increments on a design run', () => {
+    expect(classifyTerminal('failed', 'sdk_error', null, 'design')).toBe('increment');
+    expect(classifyTerminal('failed', 'budget_exceeded', null, 'design')).toBe('increment');
+    expect(classifyTerminal('failed', 'max_turns_exceeded', null, 'design')).toBe('increment');
+  });
+
+  it('an off-allowlist failure is still neutral on a design run', () => {
+    expect(classifyTerminal('failed', 'stalled', null, 'design')).toBe('neutral');
+    expect(classifyTerminal('failed', null, null, 'design')).toBe('neutral');
+  });
+
+  it('cancelled/expired/skipped stay neutral on a design run', () => {
+    expect(classifyTerminal('cancelled', null, null, 'design')).toBe('neutral');
+    expect(classifyTerminal('expired', null, null, 'design')).toBe('neutral');
+    expect(classifyTerminal('skipped', null, null, 'design')).toBe('neutral');
   });
 
   it('does not disturb the full profile it shares the string compare with', () => {

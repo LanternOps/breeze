@@ -16,6 +16,7 @@ import {
   legacyRuleTarget,
   persistedRuleTargets,
 } from './siteScope';
+import { managedByMonitorResponse } from '../../services/monitors/managedRowGuard';
 
 export const ruleRoutes = new Hono();
 
@@ -284,6 +285,13 @@ ruleRoutes.patch(
         return c.json({ error: 'Rule not found' }, 404);
       }
 
+      // #5289 — a rule compiled from a monitor definition must be edited only
+      // by the compiler; a side edit here would silently drift from the
+      // definition until the next compile pass overwrote it.
+      if (existing.managedByMonitorId) {
+        return managedByMonitorResponse(c, 'alert_rules', existing.managedByMonitorId);
+      }
+
       if (existing.orgId === null) {
         return c.json({ error: PARTNER_WIDE_RULE_READONLY_HERE }, 403);
       }
@@ -375,6 +383,11 @@ ruleRoutes.delete(
         return c.json({ error: 'Rule not found' }, 404);
       }
 
+      // #5289 — see the guard in PATCH above.
+      if (existing.managedByMonitorId) {
+        return managedByMonitorResponse(c, 'alert_rules', existing.managedByMonitorId);
+      }
+
       if (existing.orgId === null) {
         return c.json({ error: PARTNER_WIDE_RULE_READONLY_HERE }, 403);
       }
@@ -428,6 +441,11 @@ ruleRoutes.post(
 
       if (!existing) {
         return c.json({ error: 'Rule not found' }, 404);
+      }
+
+      // #5289 — see the guard in PATCH above.
+      if (existing.managedByMonitorId) {
+        return managedByMonitorResponse(c, 'alert_rules', existing.managedByMonitorId);
       }
 
       if (existing.orgId === null) {

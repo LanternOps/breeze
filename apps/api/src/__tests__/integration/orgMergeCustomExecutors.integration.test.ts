@@ -743,16 +743,17 @@ describe('org merge engine SQL against real Postgres', () => {
         expect(assets.moved).toBe(0);
         expect(assets.notes.join('\n')).toMatch(/re-homed its monitoring children/);
         expect(assets.notes.join('\n')).toMatch(/snmp_devices: 1/);
-        expect(assets.notes.join('\n')).toMatch(/network_monitors: 1/);
-        // Both children now point at the SURVIVOR's asset, by id — a count
-        // would pass even if they had been orphaned onto the wrong row.
+        expect(assets.notes.join('\n')).not.toMatch(/network_monitors: 1/);
+        // SNMP retains legacy dedupe, but topology-bound monitors keep old-site
+        // history and must never become active against the other site's asset.
         const rehomedChildren = (await db.execute(sql`
           SELECT 'snmp' AS kind, asset_id FROM snmp_devices WHERE id = ${ids.snmpL}::uuid
           UNION ALL
           SELECT 'mon',           asset_id FROM network_monitors WHERE id = ${ids.monitorL}::uuid`)) as unknown as Array<{
           kind: string; asset_id: string;
         }>;
-        expect(rehomedChildren.map((r) => r.asset_id)).toEqual([ids.assetS, ids.assetS]);
+        expect(rehomedChildren.map((r) => r.asset_id)).toEqual([ids.assetS, null]);
+        expect((await db.execute(sql`SELECT site_id,is_active FROM network_monitors WHERE id=${ids.monitorL}::uuid`))[0]).toMatchObject({site_id:ids.siteL,is_active:false});
         // The non-colliding loser asset is untouched by the resolve half — it
         // is the `move` half's job, and only after `sites` has moved.
         //
@@ -1187,8 +1188,8 @@ describe('org merge engine SQL against real Postgres', () => {
           VALUES (${conn}::uuid, ${P}::uuid, 'quickbooks', 'sandbox', 'connected', 'USD'),
                  (${connQ}::uuid, ${Q}::uuid, 'quickbooks', 'sandbox', 'connected', 'USD')`);
         await db.execute(sql`
-          INSERT INTO catalog_items (id, partner_id, item_type, name, unit_price, cost_currency)
-          VALUES (${item}::uuid, ${P}::uuid, 'service', 'Managed Service', 100.00, 'USD')`);
+          INSERT INTO catalog_items (id, partner_id, item_type, name, cost_currency)
+          VALUES (${item}::uuid, ${P}::uuid, 'service', 'Managed Service', 'USD')`);
 
         // A SECOND, unrelated partner (Q) with its own ALREADY-orphaned invoice
         // mapping (source invoice deleted up front, before the merge under

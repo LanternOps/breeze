@@ -119,10 +119,35 @@ const blockPayload = z.object({ block: quoteBlockInputSchema });
 const linePayload = z.object({ line: quoteLineInputSchema });
 const linePatchPayload = z.object({ patch: updateQuoteLineSchema });
 
+
+/**
+ * SCOPE PARITY WITH THE HTTP DOOR (#6110 review, finding 1).
+ *
+ * A tool must require exactly what its route requires. Every route file under `routes/quotes/` is
+ * `requireScope('partner','system')` (quotes.ts:40, lifecycle.ts:18, bulk.ts:14).
+ * An organization-scoped token therefore cannot reach this domain over HTTP at
+ * all — and an org token still carries the OWNING PARTNER's partnerId, so a
+ * bare partnerId-presence check is not a substitute. Autonomous AI-agent runs
+ * mint `scope: 'organization'` too (aiAgents/agentAuthContext.ts), so this gate
+ * refuses them as well; the `business` capability group that carries these
+ * tools already contains partner-only tools (aiToolsDeliverables.ts), so that is
+ * an existing, expected shape rather than a new one.
+ */
+function partnerScopeRefusal(auth: AuthContext): string | null {
+  if (auth.scope === 'partner' || auth.scope === 'system') return null;
+  return JSON.stringify({
+    error: 'Quote access requires a partner-scoped session; organization-scoped callers cannot reach the '
+      + 'matching HTTP routes either',
+    code: 'PARTNER_SCOPE_REQUIRED',
+  });
+}
+
 export function registerQuoteTools(aiTools: Map<string, AiTool>): void {
   aiTools.set('list_quotes', {
     tier: 2 as AiToolTier,
     deviceArgs: [],
+    domain: 'billing',
+    searchHint: 'quotes and proposals by organization or status',
     definition: {
       name: 'list_quotes',
       description:
@@ -143,6 +168,8 @@ export function registerQuoteTools(aiTools: Map<string, AiTool>): void {
       }
     },
     handler: async (input, auth) => {
+      const refusal = partnerScopeRefusal(auth);
+      if (refusal) return refusal;
       try {
         // Same schema the GET /quotes route validates with (status enum, limit
         // bounds); an out-of-range/unknown filter returns a structured
@@ -165,6 +192,8 @@ export function registerQuoteTools(aiTools: Map<string, AiTool>): void {
   aiTools.set('get_quote', {
     tier: 2 as AiToolTier,
     deviceArgs: [],
+    domain: 'billing',
+    searchHint: 'quote details, content blocks, line items, totals, deposits and category breakdown',
     definition: {
       name: 'get_quote',
       description:
@@ -189,6 +218,8 @@ export function registerQuoteTools(aiTools: Map<string, AiTool>): void {
       }
     },
     handler: async (input, auth) => {
+      const refusal = partnerScopeRefusal(auth);
+      if (refusal) return refusal;
       if (input.quoteId == null) {
         return validationErrorJson('Missing required parameter: quoteId');
       }
@@ -232,6 +263,8 @@ export function registerQuoteTools(aiTools: Map<string, AiTool>): void {
   aiTools.set('manage_quotes', {
     tier: 2 as AiToolTier,
     deviceArgs: [],
+    domain: 'billing',
+    searchHint: 'quotes: create, edit drafts, blocks and lines, send, decline, create pay links',
     definition: {
       name: 'manage_quotes',
       description:
@@ -363,6 +396,8 @@ export function registerQuoteTools(aiTools: Map<string, AiTool>): void {
       },
     },
     handler: async (input, auth) => {
+      const refusal = partnerScopeRefusal(auth);
+      if (refusal) return refusal;
       const actor = actorFromAuth(auth);
       const s = (k: string) => (input[k] == null ? undefined : String(input[k]));
 

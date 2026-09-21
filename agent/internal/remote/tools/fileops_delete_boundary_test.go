@@ -204,3 +204,25 @@ func TestDeleteFile_RecursiveTopLevelStillDenied(t *testing.T) {
 		t.Fatalf("expected the top-level guard to fire, got: %s", result.Error)
 	}
 }
+
+// Spec §6.3 / §11: the recycle-bin semantics depend on exactly this boundary.
+// The bin ROOT is depth 1 and must stay refused — which is why the old
+// C:\$Recycle.Bin candidate could never be deleted — while a per-SID directory
+// is depth 2 and its contents are reachable through contentsOnly.
+func TestIsRecursiveDeleteBoundary_RecycleBin(t *testing.T) {
+	cases := []struct {
+		path string
+		want bool
+	}{
+		{`C:\$Recycle.Bin`, true},
+		{`D:\$Recycle.Bin`, true},
+		{`C:\$Recycle.Bin\S-1-5-21-1`, false},
+		{`D:\$Recycle.Bin\S-1-5-18`, false},
+		{`C:\$Recycle.Bin\S-1-5-21-1\$RABCDEF.txt`, false},
+	}
+	for _, c := range cases {
+		if got := isRecursiveDeleteBoundaryFor(c.path, true); got != c.want {
+			t.Errorf("isRecursiveDeleteBoundaryFor(%q, windows) = %v, want %v", c.path, got, c.want)
+		}
+	}
+}

@@ -17,7 +17,8 @@ import {
 import { eq, and, desc, asc, inArray, gte, sql, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
-import { resolveSiteAllowedDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
+import { deviceScopeCondition, resolveSiteAllowedDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
+import { slaDefinitionOutOfScope, slaScopeNarrowed } from './slaSiteScope';
 
 type AnalyticsHandler = (input: Record<string, unknown>, auth: AuthContext) => Promise<string>;
 
@@ -33,6 +34,47 @@ function capacityRollupMetricName(metricType: string): string {
   if (metricType === 'cpu') return 'cpu_percent';
   if (metricType === 'memory') return 'ram_percent';
   return 'disk_percent';
+}
+
+/**
+ * Drop SLA rows whose definition targets sites or devices a narrowed caller
+ * cannot reach (audit §1.1). Site is app-layer only — RLS does not defend it.
+ * Unrestricted callers pay nothing: no filtering, and no device-resolution
+ * query.
+ */
+async function filterSlaRows<T extends { targetType: string | null; targetIds: string[] | null }>(
+  auth: AuthContext,
+  rows: T[],
+): Promise<T[]> {
+  if (!slaScopeNarrowed(auth) || rows.length === 0) return rows;
+  // Only an organization-scope principal can be narrowed, so a single org id.
+  const orgId = auth.orgId;
+  const needsDeviceAxis = rows.some((r) => (r.targetType ?? '').toLowerCase() === 'device');
+  // `null` and `[]` are NOT interchangeable here: `null` means "not resolved"
+  // and `[]` means "resolved to nothing". A narrowed caller with no orgId
+  // cannot resolve a device set at all, so it gets `[]` (deny) — passing
+  // `null` used to read as "unrestricted" downstream (review #6110).
+  const allowedDeviceIds = needsDeviceAxis
+    ? (orgId ? (await resolveSiteAllowedDeviceIds(orgId, auth)) ?? [] : [])
+    : null;
+  return rows.filter((r) => !slaDefinitionOutOfScope(auth, r, allowedDeviceIds));
+}
+
+/**
+ * Annotation for an SLA page a narrowed caller had rows removed from. The
+ * site gate runs AFTER the SQL LIMIT, so without it a short or empty page is
+ * indistinguishable from "this organization tracks no SLAs".
+ */
+const SLA_SCOPE_PARTIAL_NOTE =
+  'Some SLA records were withheld because they target sites or devices outside your site access — this list may be incomplete.';
+
+/**
+ * Widen the SQL page for a narrowed caller so the post-LIMIT site filter still
+ * has enough rows to fill `limit`. Same shape as `manage_maintenance_windows`
+ * in aiToolsFleet.ts. Unrestricted callers scan exactly `limit`.
+ */
+function slaScanLimit(auth: AuthContext, limit: number): number {
+  return slaScopeNarrowed(auth) ? Math.min(Math.max(limit * 5, 100), 500) : limit;
 }
 
 function clampPercent(value: number): number {
@@ -131,6 +173,8 @@ export function registerAnalyticsTools(aiTools: Map<string, AiTool>): void {
   registerTool({
     tier: 1,
     deviceArgs: ['deviceId'],
+    domain: 'monitoring',
+    searchHint: 'SLA compliance, capacity predictions and service level definitions',
     definition: {
       name: 'query_analytics',
       description: 'Query analytics data including SLA compliance, capacity predictions, and SLA definitions.',
@@ -196,14 +240,29 @@ export function registerAnalyticsTools(aiTools: Map<string, AiTool>): void {
             excludedMinutes: slaCompliance.excludedMinutes,
             details: slaCompliance.details,
             calculatedAt: slaCompliance.calculatedAt,
+            // Gating inputs only — stripped from the payload below. A
+            // definition may target specific sites or devices, and its
+            // compliance figures aggregate across all of them (audit §1.1).
+            targetType: slaDefinitions.targetType,
+            targetIds: slaDefinitions.targetIds,
           })
           .from(slaCompliance)
           .innerJoin(slaDefinitions, eq(slaCompliance.slaId, slaDefinitions.id))
           .where(conditions.length > 0 ? and(...conditions) : undefined)
           .orderBy(desc(slaCompliance.periodEnd))
-          .limit(limit);
+          .limit(slaScanLimit(auth, limit));
 
-        return JSON.stringify({ slaCompliance: rows, showing: rows.length });
+        const filteredCompliance = await filterSlaRows(auth, rows);
+        const visibleCompliance = filteredCompliance.slice(0, limit);
+        const payload = visibleCompliance.map(({ targetType: _t, targetIds: _i, ...rest }) => rest);
+        const complianceNarrowed = slaScopeNarrowed(auth)
+          && (filteredCompliance.length < rows.length || payload.length === 0);
+
+        return JSON.stringify({
+          slaCompliance: payload,
+          showing: payload.length,
+          ...(complianceNarrowed ? { scopeNote: SLA_SCOPE_PARTIAL_NOTE } : {}),
+        });
       }
 
       if (action === 'capacity_predictions') {
@@ -233,6 +292,12 @@ export function registerAnalyticsTools(aiTools: Map<string, AiTool>): void {
           }
           conditions.push(inArray(capacityPredictions.deviceId, allowed));
         }
+
+        // Exact-device axis, applied independently of the site axis: a
+        // device-LESS analysis run carries `allowedDeviceIds` with NO
+        // `allowedSiteIds`, so the branch above no-ops for it (#6086).
+        const predictionDeviceCondition = deviceScopeCondition(auth, capacityPredictions.deviceId);
+        if (predictionDeviceCondition) conditions.push(predictionDeviceCondition);
 
         const rows = await db
           .select({
@@ -288,6 +353,11 @@ export function registerAnalyticsTools(aiTools: Map<string, AiTool>): void {
           rollupConditions.push(inArray(metricRollups.deviceId, allowed));
         }
 
+        // Same exact-device axis for the rollup fallback — it is device-
+        // attributable data reached without naming a device.
+        const rollupDeviceCondition = deviceScopeCondition(auth, metricRollups.deviceId);
+        if (rollupDeviceCondition) rollupConditions.push(rollupDeviceCondition);
+
         const rollupRows = await db
           .select({
             timestamp: metricRollups.bucketStart,
@@ -331,9 +401,18 @@ export function registerAnalyticsTools(aiTools: Map<string, AiTool>): void {
           .from(slaDefinitions)
           .where(conditions.length > 0 ? and(...conditions) : undefined)
           .orderBy(desc(slaDefinitions.createdAt))
-          .limit(limit);
+          .limit(slaScanLimit(auth, limit));
 
-        return JSON.stringify({ slaDefinitions: rows, showing: rows.length });
+        const filteredDefs = await filterSlaRows(auth, rows);
+        const visibleDefs = filteredDefs.slice(0, limit);
+        const defsNarrowed = slaScopeNarrowed(auth)
+          && (filteredDefs.length < rows.length || visibleDefs.length === 0);
+
+        return JSON.stringify({
+          slaDefinitions: visibleDefs,
+          showing: visibleDefs.length,
+          ...(defsNarrowed ? { scopeNote: SLA_SCOPE_PARTIAL_NOTE } : {}),
+        });
       }
 
       return JSON.stringify({ error: `Unknown action: ${action}. Use sla_compliance, capacity_predictions, or sla_definitions.` });
@@ -346,6 +425,8 @@ export function registerAnalyticsTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'monitoring',
+    searchHint: 'executive summary of device health, alert trends, patch compliance and SLA statistics',
     definition: {
       name: 'get_executive_summary',
       description: 'Get the latest executive summary with device health, alert trends, patch compliance, and SLA statistics.',
@@ -362,6 +443,16 @@ export function registerAnalyticsTools(aiTools: Map<string, AiTool>): void {
     },
     handler: safeHandler('get_executive_summary', async (input, auth) => {
       const periodType = typeof input.periodType === 'string' ? input.periodType : 'weekly';
+
+      // Executive summaries are ORG-WIDE aggregates (device health, alert
+      // trends, patch compliance, SLA stats across the whole tenant). They
+      // cannot be attributed to, or narrowed to, a single device, so a
+      // device-scoped run must not read them at all (#6086).
+      if (auth.allowedDeviceIds) {
+        return JSON.stringify({
+          error: 'Executive summaries are org-wide aggregates covering every device in the organization, so they are not available to a device-scoped run. Use the device-level tools (device details, metrics, alerts, patch status) for the device(s) this run is scoped to.',
+        });
+      }
 
       const conditions: SQL[] = [];
       const oc = orgWhere(auth, executiveSummaries.orgId);

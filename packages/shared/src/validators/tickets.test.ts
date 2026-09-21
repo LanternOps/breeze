@@ -224,9 +224,17 @@ describe('ticket validators', () => {
     expect(ticketCategoryInputSchema.safeParse({ name: 'Hardware', color: 'teal' }).success).toBe(false);
   });
 
-  it('category strips client-supplied rateCurrency', () => {
-    const parsed = ticketCategoryInputSchema.parse({ name: 'a', rateCurrency: 'EUR' });
-    expect(parsed).not.toHaveProperty('rateCurrency');
+  // #6472: retired pricing fields are rejected, never silently stripped.
+  it.each(['defaultBillable', 'defaultHourlyRate', 'rateCurrency'])('category rejects retired %s with an actionable message', (field) => {
+    const result = ticketCategoryInputSchema.safeParse({ name: 'a', [field]: 'ignored' });
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    const issue = result.error.issues.find((i) => i.path[0] === field);
+    expect(issue?.message).toContain(field);
+    expect(issue?.message).toContain('billing profile');
+  });
+  it('category update (partial) still rejects a retired pricing field', () => {
+    expect(ticketCategoryInputSchema.partial().safeParse({ defaultHourlyRate: 90 }).success).toBe(false);
   });
 
   describe('bulkTicketActionSchema', () => {
@@ -345,5 +353,39 @@ describe('addTicketCommentSchema attachmentIds (W08)', () => {
   it('caps attachmentIds at 5 and rejects non-uuids', () => {
     expect(addTicketCommentSchema.safeParse({ content: 'x', attachmentIds: [1, 2, 3, 4, 5, 6].map(uuid) }).success).toBe(false);
     expect(addTicketCommentSchema.safeParse({ content: 'x', attachmentIds: ['nope'] }).success).toBe(false);
+  });
+});
+
+describe('ticket category default time entry minutes', () => {
+  describe.each([
+    ['create', ticketCategoryInputSchema, { name: 'Hardware' }],
+    ['update', ticketCategoryInputSchema.partial(), {}]
+  ] as const)('%s', (_operation, schema, base) => {
+    it.each([1, 30, 1440, null])('preserves %s', (defaultTimeEntryMinutes) => {
+      expect(schema.parse({ ...base, defaultTimeEntryMinutes }))
+        .toHaveProperty('defaultTimeEntryMinutes', defaultTimeEntryMinutes);
+    });
+
+    it('allows omission without injecting a default', () => {
+      expect(schema.parse(base)).not.toHaveProperty('defaultTimeEntryMinutes');
+    });
+
+    it.each([0, -1, 1441, 1.5, '30', true])('rejects %s', (defaultTimeEntryMinutes) => {
+      expect(schema.safeParse({ ...base, defaultTimeEntryMinutes }).success).toBe(false);
+    });
+  });
+});
+
+describe('createTicketFromChatSchema billing defaults', () => {
+  const payload = { subject: 'Printer repair', status: 'open', timeMinutes: 15 };
+  it('omits billable so the card determines billing', () => {
+    const parsed = createTicketFromChatSchema.parse(payload);
+    expect(parsed).not.toHaveProperty('billable');
+  });
+  it.each([true, false])('preserves an explicit billable override of %s', (billable) => {
+    expect(createTicketFromChatSchema.parse({ ...payload, billable }).billable).toBe(billable);
+  });
+  it('rejects a non-boolean override', () => {
+    expect(createTicketFromChatSchema.safeParse({ ...payload, billable: 'true' }).success).toBe(false);
   });
 });

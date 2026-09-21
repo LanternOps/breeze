@@ -31,7 +31,14 @@ import {
 } from '../../services/streamingSessionManager';
 import { settleBlockedTurnForNewMessage } from '../../services/aiAgentSdk';
 import { writeAuditEvent } from '../../services/auditEvents';
+import { captureException } from '../../services/sentry';
 import { checkBillingCredits } from '../../services/aiCostTracker';
+import {
+  isAiBudgetLockTimeout,
+  releaseUnusedAiBudgetReservation,
+  reserveAiBudget,
+  type ReserveAiBudgetResult,
+} from '../../services/aiBudgetReservations';
 import {
   checkClientBudget,
   getRemainingClientBudgetUsd,
@@ -171,8 +178,21 @@ async function ensureActiveClientSession(
   auth: ClientAiAuthContext,
   policy: ClientAiOrgPolicy,
   resolvedConfig?: UsableLlmConfig,
+  /**
+   * #5557: this turn's atomic budget hold. Absent on the /events reattach
+   * path, which only materialises the session and dispatches nothing.
+   */
+  turnBudget?: { reservationId: string; maxBudgetUsd?: number },
 ): Promise<ActiveSession> {
-  const maxBudgetUsd = await getRemainingClientBudgetUsd(policy);
+  // With a reservation the ceiling comes from what was actually HELD, which is
+  // already the tighter of the org cap and the client sub-cap. Falling back to
+  // the advisory read-then-spend remainder is reserved for the no-dispatch
+  // reattach path. NOTE: the SDK ceiling is immutable on a reused query, so it
+  // binds the turn that created the session; the durable fence is the
+  // reservation, not this number.
+  const maxBudgetUsd = turnBudget
+    ? turnBudget.maxBudgetUsd
+    : await getRemainingClientBudgetUsd(policy);
   const resolved = resolvedConfig ?? await resolveClientLlmConfig(sessionRow.orgId);
   if (resolved.source === 'unavailable') throw new LlmUnavailableError();
 
@@ -213,6 +233,8 @@ async function ensureActiveClientSession(
       server: createClientWorkbookMcpServer(host, getSession),
       name: clientMcpServerName(host),
     }),
+    // The reservation is NOT handed to getOrCreate: it is attached atomically
+    // with the turn-slot claim in tryTransitionToProcessing (see #5557 there).
     { injectApprovalModeInstructions: false },
   );
 
@@ -604,10 +626,66 @@ clientAiSessionRoutes.post(
       modelContent += `\n\n[Workbook context — ${label}]\n${contextBody}`;
     }
 
+    // ── #5557: atomic admission, immediately before dispatch ──────────────
+    // runClientPreflight above is a READ. Two concurrent add-in turns both pass
+    // it and both reach the provider, so a capped org could overspend its
+    // client budget by an unbounded multiple. Take the durable hold here —
+    // after DLP (a blocked prompt must not burn capacity) and before the
+    // session is materialised, so the reservation can be handed to the settle
+    // path that already runs for client turns.
+    //
+    // No stable per-message identity reaches this route, so the idempotency key
+    // is random per dispatch: the (org_id, idempotency_key) unique index is a
+    // structural guarantee that two dispatches never share a row, NOT a replay
+    // guard. Same convention as routes/ai.ts.
+    let reservation: ReserveAiBudgetResult;
+    try {
+      reservation = await reserveAiBudget({
+        orgId: auth.orgId,
+        idempotencyKey: `client-ai:${sessionId}:${crypto.randomUUID()}`,
+        billingSource: resolved.source === 'partner' ? 'partner_key' : 'platform',
+        sessionId,
+        namespace: 'client',
+        clientBudget: {
+          dailyBudgetCents: policy.dailyBudgetCents,
+          monthlyBudgetCents: policy.monthlyBudgetCents,
+        },
+      });
+    } catch (err) {
+      // Contention on the org row is a retryable 503, not a 500 — same answer
+      // every other admission site gives.
+      if (isAiBudgetLockTimeout(err)) return c.json({ error: 'ai_budget_lock_timeout' }, 503);
+      throw err;
+    }
+    if (reservation.kind === 'denied') {
+      return c.json({ error: reservation.message }, 402);
+    }
+    const turnBudget = {
+      reservationId: reservation.reservationId,
+      ...(reservation.kind === 'reserved'
+        ? { maxBudgetUsd: reservation.reservedCostCents / 100 }
+        : {}),
+    };
+    // Proven pre-dispatch failure: nothing was sent to the provider, so the
+    // hold is released rather than left to expire holding the org's cap.
+    const releaseTurnBudget = () =>
+      releaseUnusedAiBudgetReservation({
+        orgId: auth.orgId,
+        reservationId: turnBudget.reservationId,
+      }).catch((err) => {
+        // A failed release leaves the hold `active`, holding the org's cap
+        // until the sweep — a tenant locked out of its own budget. Every
+        // equivalent path in routes/ai.ts reports this, so this one does too:
+        // console alone makes it invisible outside a stdout grep.
+        captureException(err);
+        console.error('[client-ai] Failed to release unused budget reservation:', err);
+      });
+
     let activeSession: ActiveSession;
     try {
-      activeSession = await ensureActiveClientSession(c, session, auth, policy, resolved);
+      activeSession = await ensureActiveClientSession(c, session, auth, policy, resolved, turnBudget);
     } catch (err) {
+      await releaseTurnBudget();
       if (err instanceof ClientHostUnsupportedError) {
         return c.json({ error: 'unsupported_host' }, 400);
       }
@@ -620,9 +698,13 @@ clientAiSessionRoutes.post(
     // Concurrent message guard — atomic check-and-set (ai.ts convention). If
     // the turn is blocked only on pending approval waits, settle them so the
     // assistant can conclude and answer this message (#3089 — shared helper).
-    if (!streamingSessionManager.tryTransitionToProcessing(activeSession)) {
+    if (!streamingSessionManager.tryTransitionToProcessing(activeSession, turnBudget.reservationId)) {
       const settle = await settleBlockedTurnForNewMessage(activeSession);
-      if (settle !== 'concluded' || !streamingSessionManager.tryTransitionToProcessing(activeSession)) {
+      if (settle !== 'concluded'
+        || !streamingSessionManager.tryTransitionToProcessing(activeSession, turnBudget.reservationId)) {
+        // A turn is already in flight and owns the session's reservation slot;
+        // ours was never attached, so release it.
+        await releaseTurnBudget();
         return c.json({
           error: settle === 'not_blocked_on_approvals'
             ? 'A message is already being processed for this session'
@@ -659,6 +741,8 @@ clientAiSessionRoutes.post(
     } catch (err) {
       console.error('[client-ai] Failed to save user message:', err);
       activeSession.state = 'idle';
+      activeSession.budgetReservationId = undefined;
+      await releaseTurnBudget();
       return c.json({ error: 'Failed to save message' }, 500);
     }
 

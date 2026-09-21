@@ -27,7 +27,7 @@ ticketExportRoutes.get(
       return c.json({ error: 'Access to this organization denied' }, 403);
     }
     const { rows } = await listBillables(q.from, q.to, q.orgId, auth.accessibleOrgIds);
-    const lines = [CSV_HEADERS.join(',')];
+    const lines = [csvRow(CSV_HEADERS)];
     for (const r of rows) {
       lines.push(csvRow([
         r.kind, r.date.toISOString(), r.orgName ?? '', r.ticketNumber ?? '',

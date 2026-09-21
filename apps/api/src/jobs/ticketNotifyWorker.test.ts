@@ -63,6 +63,12 @@ vi.mock('../services/ticketMailbox/graphReplySender', () => ({
   sendThreadedReply: vi.fn(async () => {}),
   sendNewMail: vi.fn(async () => {})
 }));
+vi.mock('../services/inboundEmail/commentNotificationPortalHref', () => ({
+  resolveCommentNotificationPortalHref: vi.fn(async () => ({
+    href: 'https://example.test/portal/tickets/t-1',
+    hasPortalUser: false,
+  })),
+}));
 
 // ── W07 (#3901): push fan-out collaborators ────────────────────────────────
 const push = vi.hoisted(() => ({
@@ -70,7 +76,23 @@ const push = vi.hoisted(() => ({
   loadUserCandidate: vi.fn(async (id: string) => ({ userId: id, partnerId: 'p-1', status: 'active', email: 'tech@msp.example' })),
   loadTicketPushPrefs: vi.fn(async () => ({ assignedEnabled: true, slaScope: 'owned' as 'off' | 'owned' | 'any' })),
   listAnySlaSubscribers: vi.fn(async () => ({ users: [] as unknown[], truncated: false })),
-  isAuthorisedForTicket: vi.fn(async () => true),
+  isAuthorisedForTicket: vi.fn(async (_userId: string, _partnerId: string, _orgId: string, _deviceId?: string | null) => true),
+  // The worker's gate is the canonical `isEligibleTicketRecipient`. `../db` is
+  // mocked in this suite, so the real predicate cannot run here: this seam
+  // delegates its permission arm to the `isAuthorisedForTicket` mock the suite
+  // already steers, so every existing knob and assertion keeps its meaning.
+  // The predicate's OWN contract (active status, same partner, current
+  // device-site ceiling) is proven against real code in
+  // services/ticketPush.test.ts and end-to-end against Postgres in
+  // __tests__/integration/ticketPushFanout.integration.test.ts.
+  isEligibleTicketRecipient: vi.fn(async (
+    c: { userId: string; partnerId: string; status: string },
+    partnerId: string,
+    orgId: string,
+    deviceId?: string | null
+  ) => c.status === 'active'
+    && c.partnerId === partnerId
+    && await push.isAuthorisedForTicket(c.userId, partnerId, orgId, deviceId)),
   admitPush: vi.fn(async (pending: { userId: string; spec: unknown }[]) => pending),
   resolvePushJobs: vi.fn(async (pending: { userId: string; spec: unknown }[]) =>
     pending.map((p) => ({ tokens: [{ token: 'tok', platform: 'ios', provider: 'apns' }], spec: p.spec }))),
@@ -86,6 +108,7 @@ vi.mock('../services/ticketPush', async (orig) => {
     loadTicketPushPrefs: push.loadTicketPushPrefs,
     listAnySlaSubscribers: push.listAnySlaSubscribers,
     isAuthorisedForTicket: push.isAuthorisedForTicket,
+    isEligibleTicketRecipient: push.isEligibleTicketRecipient,
     admitPush: (...a: [never]) => { push.order.push('admit'); return push.admitPush(...a); },
     resolvePushJobs: (...a: [never]) => { push.order.push('tokens'); return push.resolvePushJobs(...a); },
   };
@@ -98,6 +121,7 @@ vi.mock('../services/expoPush', async (orig) => {
   };
 });
 
+import { resolveCommentNotificationPortalHref } from '../services/inboundEmail/commentNotificationPortalHref';
 import { handleTicketEvent } from './ticketNotifyWorker';
 
 describe('handleTicketEvent', () => {
@@ -135,7 +159,11 @@ describe('handleTicketEvent', () => {
     expect(push.createNotification).toHaveBeenCalledWith(expect.objectContaining({
       userId: 'u-2', type: 'ticket', link: '/tickets#T-2026-0042'
     }));
-    expect(sendEmailMock).toHaveBeenCalled();
+    // Spec §8.2: mail to the assignee (a TECHNICIAN) is platform-lane — staff
+    // mailboxes usually live on the very domain being sent from.
+    expect(sendEmailMock).toHaveBeenCalledWith(expect.objectContaining({
+      purpose: 'ticket.staff_notification'
+    }));
   });
 
   it('skips self-assignment notifications', async () => {
@@ -147,15 +175,39 @@ describe('handleTicketEvent', () => {
   });
 
   it('public comment emails the requester', async () => {
-    selectMock.mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', internalNumber: 'T-2026-0042', subject: 'Printer', submitterEmail: 'enduser@acme.example' }]);
+    selectMock
+      .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', internalNumber: 'T-2026-0042', subject: 'Printer', submitterEmail: 'enduser@acme.example' }])
+      // A ticket row carrying partnerId makes collectRequesterEmail read the
+      // partner for its inbound slug/override, which the FIFO must supply.
+      .mockResolvedValueOnce([{ slug: 'acme', settings: null }]);
     await handleTicketEvent({
       type: 'ticket.commented', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
       actorUserId: 'u-1', eventId: 'evt-4', payload: { commentId: 'c-1', isPublic: true }
     });
+    // Spec §8.2: mail to the REQUESTER (a customer) is the partner's `support`
+    // stream.
     expect(sendEmailMock).toHaveBeenCalledWith(expect.objectContaining({
       to: 'enduser@acme.example',
-      subject: expect.stringContaining('T-2026-0042')
+      subject: expect.stringContaining('T-2026-0042'),
+      purpose: 'ticket.customer_notification'
     }));
+    // W04 is the wave where a null partnerId would actually cost something: it
+    // is the ticket row's OWN partner_id (no new read), and a regression to
+    // null would silently switch the `support` stream off for every ticket.
+    // Folded into this case rather than a trailing one because the file's
+    // beforeEach clears sendEmailMock between cases.
+    const arg = sendEmailMock.mock.calls[0]![0] as { partnerId?: string | null; headers?: Record<string, string> };
+    expect(arg.partnerId).toBe('p-1');
+    // Spec §8.5: threading is decided by TICKETS_INBOUND_DOMAIN and nothing
+    // else. If a From change could ever move the Message-ID, an inbound reply
+    // would stop matching its ticket — the failure mode that loses a customer's
+    // reply. (The exact anchors are pinned by the threading cases below; this
+    // asserts the domain is untouched by the partner lane.)
+    for (const key of ['Message-ID', 'In-Reply-To', 'References']) {
+      const value = arg.headers?.[key];
+      if (value === undefined) continue;
+      expect(value).toContain('@tickets.example.com>');
+    }
   });
 
   it('internal comment sends nothing to the requester', async () => {
@@ -188,6 +240,119 @@ describe('handleTicketEvent', () => {
     expect(sendEmailMock).toHaveBeenCalledWith(expect.objectContaining({
       to: 'enduser@acme.example'
     }));
+  });
+
+  it('public comment html is laid out with portal path, default sentence, and no SECRET', async () => {
+    selectMock
+      .mockResolvedValueOnce([{
+        id: 't-1', orgId: 'o-1', partnerId: 'p-1', internalNumber: 'T-2026-0042',
+        subject: 'Printer', submitterEmail: 'enduser@acme.example', submitterName: 'Ada',
+      }])
+      .mockResolvedValueOnce([{ slug: 'acme', name: 'Acme MSP', settings: {} }])
+      .mockResolvedValueOnce([{ name: 'Ada Co' }]);
+
+    await handleTicketEvent({
+      type: 'ticket.commented', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
+      actorUserId: 'u-1', eventId: 'evt-html-1', payload: { commentId: 'c-1', isPublic: true },
+    });
+
+    expect(sendEmailMock).toHaveBeenCalledTimes(1);
+    const arg = sendEmailMock.mock.calls[0]![0] as { html: string; subject: string };
+    expect(arg.html).toContain('<!doctype html>');
+    expect(arg.html).toContain('/tickets/');
+    expect(arg.html).toContain('Your ticket has a new reply. Sign in to the portal to view it.');
+    expect(arg.html).not.toContain('SECRET');
+    expect(arg.subject).not.toContain('SECRET');
+  });
+
+  it('uses custom ticket_comment_notification html and never includes SECRET', async () => {
+    selectMock
+      .mockResolvedValueOnce([{
+        id: 't-1', orgId: 'o-1', partnerId: 'p-1', internalNumber: 'T-9',
+        subject: 'Printer', submitterEmail: 'enduser@acme.example',
+      }])
+      .mockResolvedValueOnce([{
+        slug: 'acme',
+        name: 'Acme MSP',
+        settings: {
+          emailTemplates: {
+            ticket_comment_notification: {
+              subject: null,
+              heading: null,
+              buttonLabel: null,
+              html: 'Hi {{ticket_number}}',
+            },
+          },
+        },
+      }])
+      .mockResolvedValueOnce([{ name: 'Ada Co' }]);
+
+    await handleTicketEvent({
+      type: 'ticket.commented', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
+      actorUserId: 'u-1', eventId: 'evt-html-2', payload: { commentId: 'c-1', isPublic: true },
+    });
+
+    const arg = sendEmailMock.mock.calls[0]![0] as { html: string };
+    expect(arg.html).toContain('Hi T-9');
+    expect(arg.html).toContain('<!doctype html>');
+    expect(arg.html).not.toContain('SECRET');
+  });
+
+  it('comment event with no EmailService and no mailbox resolves without sending', async () => {
+    getEmailServiceMock.mockReturnValue(null);
+    selectMock
+      .mockResolvedValueOnce([{
+        id: 't-1', orgId: 'o-1', partnerId: 'p-1', internalNumber: 'T-1',
+        subject: 'Printer', submitterEmail: 'enduser@acme.example',
+      }])
+      .mockResolvedValueOnce([{ slug: 'acme', name: 'Acme', settings: {} }])
+      .mockResolvedValueOnce([{ name: 'Org' }]);
+
+    await expect(handleTicketEvent({
+      type: 'ticket.commented', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
+      actorUserId: 'u-1', eventId: 'evt-html-3', payload: { commentId: 'c-1', isPublic: true },
+    })).resolves.toBeUndefined();
+
+    expect(sendEmailMock).not.toHaveBeenCalled();
+  });
+
+  it('resolved customer email uses layout and includes the resolution note', async () => {
+    selectMock
+      .mockResolvedValueOnce([{
+        id: 't-1', orgId: 'o-1', partnerId: 'p-1', internalNumber: 'T-2026-0099',
+        subject: 'Slow VPN', submitterEmail: 'user@acme.example',
+        resolutionNote: 'Replaced NIC', status: 'resolved',
+      }])
+      .mockResolvedValueOnce([{ slug: 'acme', name: 'Acme', settings: {} }])
+      .mockResolvedValueOnce([{ name: 'Ada Co' }]);
+
+    await handleTicketEvent({
+      type: 'ticket.status_changed', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
+      actorUserId: 'u-1', eventId: 'evt-html-4', payload: { from: 'open', to: 'resolved' },
+    });
+
+    const arg = sendEmailMock.mock.calls[0]![0] as { html: string };
+    expect(arg.html).toContain('<!doctype html>');
+    expect(arg.html).toContain('Replaced NIC');
+  });
+
+  it('autoresponse customer email uses layout', async () => {
+    selectMock
+      .mockResolvedValueOnce([{
+        id: 't-1', orgId: 'o-1', partnerId: 'p-1', internalNumber: 'T-2026-0001',
+        subject: 'printer down', submitterEmail: 'jane@x.com', emailThreadKey: null,
+      }])
+      .mockResolvedValueOnce([{ slug: 'acme', name: 'Acme MSP', settings: {} }])
+      .mockResolvedValueOnce([{ name: 'Jane Co' }]);
+
+    await handleTicketEvent({
+      type: 'ticket.autoresponse', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
+      actorUserId: null, eventId: 'evt-html-5',
+      payload: { to: 'jane@x.com', internalNumber: 'T-2026-0001', subject: 'printer down' },
+    });
+
+    const arg = sendEmailMock.mock.calls[0]![0] as { html: string };
+    expect(arg.html).toContain('<!doctype html>');
   });
 
   it('threads the outbound public-comment reply (Message-ID/In-Reply-To/Reply-To + subject token)', async () => {
@@ -482,6 +647,28 @@ describe('handleTicketEvent', () => {
     expect(call.html).not.toContain('<script>');
   });
 
+  it('sends resolved mail without a portal button when the portal URL is unusable', async () => {
+    vi.mocked(resolveCommentNotificationPortalHref).mockRejectedValueOnce(
+      new Error('Invalid portal ticket URL'),
+    );
+    selectMock.mockResolvedValueOnce([{
+      id: 't-1', orgId: 'o-1', internalNumber: 'T-2026-0099', subject: 'Slow VPN',
+      submitterEmail: 'user@acme.example', resolutionNote: 'Fixed', status: 'resolved',
+    }]);
+
+    await handleTicketEvent({
+      type: 'ticket.status_changed', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
+      actorUserId: 'u-1', eventId: 'evt-portal-fallback', payload: { from: 'open', to: 'resolved' },
+    });
+
+    expect(sendEmailMock).toHaveBeenCalledTimes(1);
+    const html = (sendEmailMock.mock.calls[0]![0] as { html: string }).html;
+    expect(html).toContain('Your ticket has been resolved.');
+    expect(html).toContain('Fixed');
+    expect(html).not.toContain('href="https://example.test/portal/tickets/t-1"');
+    expect(html).not.toMatch(/%%BREEZE_CTA_/);
+  });
+
   it('ticket.updated is an explicit no-op — no ticket lookup, no insert, no email', async () => {
     await handleTicketEvent({
       type: 'ticket.updated', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
@@ -588,7 +775,7 @@ describe('handleTicketEvent', () => {
 // W07 (#3901): ticket push fan-out
 // ---------------------------------------------------------------------------
 
-const TICKET = { id: 't-1', orgId: 'o-1', internalNumber: 'T-2026-0042', subject: 'Printer', submitterEmail: null };
+const TICKET = { id: 't-1', orgId: 'o-1', partnerId: 'p-1', deviceId: null, assignedTo: 'u-2', deletedAt: null, internalNumber: 'T-2026-0042', subject: 'Printer', submitterEmail: null };
 
 const assigned = (over: Record<string, unknown> = {}) => ({
   type: 'ticket.assigned' as const, ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1', actorUserId: 'u-1',
@@ -604,6 +791,14 @@ function resetPushMocks(): void {
   push.loadTicketPushPrefs.mockResolvedValue({ assignedEnabled: true, slaScope: 'owned' });
   push.listAnySlaSubscribers.mockResolvedValue({ users: [], truncated: false });
   push.isAuthorisedForTicket.mockResolvedValue(true);
+  push.isEligibleTicketRecipient.mockImplementation(async (
+    c: { userId: string; partnerId: string; status: string },
+    partnerId: string,
+    orgId: string,
+    deviceId?: string | null
+  ) => c.status === 'active'
+    && c.partnerId === partnerId
+    && await push.isAuthorisedForTicket(c.userId, partnerId, orgId, deviceId));
   push.admitPush.mockImplementation(async (pending: { userId: string; spec: unknown }[]) => pending);
   push.resolvePushJobs.mockImplementation(async (pending: { userId: string; spec: unknown }[]) =>
     pending.map((p) => ({ tokens: [{ token: 'tok', platform: 'ios', provider: 'apns' }], spec: p.spec })));
@@ -670,10 +865,11 @@ describe('ticket push fan-out (W07)', () => {
     expect(push.admitPush).toHaveBeenCalledWith([]);
   });
 
-  it('assignee lacking org access is not pushed (row still written)', async () => {
+  it('assignee lacking current ticket access receives no row, email, or push', async () => {
     push.isAuthorisedForTicket.mockResolvedValueOnce(false);
     await handleTicketEvent(assigned() as never);
-    expect(push.createNotification).toHaveBeenCalled();
+    expect(push.createNotification).not.toHaveBeenCalled();
+    expect(sendEmailMock).not.toHaveBeenCalled();
     expect(push.admitPush).toHaveBeenCalledWith([]);
   });
 
@@ -684,11 +880,11 @@ describe('ticket push fan-out (W07)', () => {
    * unconditionally. Account status is a PUSH precondition (a device cannot be
    * registered without a login), never a reason to withhold the inbox row.
    */
-  it('invited assignee still gets the in-app row and the email — only the push is gated', async () => {
+  it('invited assignee receives no subject-bearing notification channel', async () => {
     push.loadUserCandidate.mockResolvedValueOnce({ userId: 'u-2', partnerId: 'p-1', status: 'invited', email: 'invited@msp.example' });
     await handleTicketEvent(assigned() as never);
-    expect(push.createNotification).toHaveBeenCalledWith(expect.objectContaining({ userId: 'u-2' }));
-    expect(sendEmailMock).toHaveBeenCalledTimes(1);
+    expect(push.createNotification).not.toHaveBeenCalled();
+    expect(sendEmailMock).not.toHaveBeenCalled();
     expect(push.dispatchPushToTokens).not.toHaveBeenCalled();
   });
 
@@ -701,14 +897,23 @@ describe('ticket push fan-out (W07)', () => {
    * framed as a forgery signal. A missing event partner gates the PUSH (already
    * conditional on event.partnerId) — never the row or the email.
    */
-  it('legacy ticket with a null event partner: row + email still written, push withheld, nothing reported', async () => {
+  it('legacy null event partner is resolved from the current ticket before every channel', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     await handleTicketEvent({ ...assigned(), partnerId: null } as never);
     expect(push.createNotification).toHaveBeenCalledWith(expect.objectContaining({ userId: 'u-2' }));
     expect(sendEmailMock).toHaveBeenCalledTimes(1);
-    expect(push.dispatchPushToTokens).not.toHaveBeenCalled();
+    expect(push.isAuthorisedForTicket).toHaveBeenCalledWith('u-2', 'p-1', 'o-1', null);
     expect(sentry.captureException).not.toHaveBeenCalled();
     warn.mockRestore();
+  });
+
+  it('stale assignment event cannot notify a user who is no longer assigned', async () => {
+    selectMock.mockReset();
+    selectMock.mockResolvedValueOnce([{ ...TICKET, assignedTo: 'u-3' }]);
+    await handleTicketEvent(assigned() as never);
+    expect(push.loadUserCandidate).not.toHaveBeenCalled();
+    expect(push.createNotification).not.toHaveBeenCalled();
+    expect(sendEmailMock).not.toHaveBeenCalled();
   });
 
   /**
@@ -759,14 +964,15 @@ describe('sla_breached fan-out (W07)', () => {
     expect(sendEmailMock).toHaveBeenCalledTimes(1);
     expect(push.admitPush).toHaveBeenCalledWith([]);
     expect(push.dispatchPushToTokens).not.toHaveBeenCalled();
-    // Short-circuit: 'off' must not cost a permission round-trip.
-    expect(push.isAuthorisedForTicket).not.toHaveBeenCalled();
+    // Channel preference is evaluated only after the security boundary.
+    expect(push.isAuthorisedForTicket).toHaveBeenCalledWith('u-2', 'p-1', 'o-1', null);
   });
 
-  it('owner who cannot access the org keeps the row but is not pushed', async () => {
+  it('owner who cannot access the current ticket receives no SLA channel', async () => {
     push.isAuthorisedForTicket.mockResolvedValueOnce(false);
     await handleTicketEvent(breach('u-2') as never);
-    expect(push.createNotification).toHaveBeenCalledTimes(1);
+    expect(push.createNotification).not.toHaveBeenCalled();
+    expect(sendEmailMock).not.toHaveBeenCalled();
     expect(push.admitPush).toHaveBeenCalledWith([]);
   });
 
@@ -818,20 +1024,20 @@ describe('sla_breached fan-out (W07)', () => {
     expect(push.dispatchPushToTokens).not.toHaveBeenCalled();
   });
 
-  it('invited owner keeps the in-app row and the SLA email; only the push is gated', async () => {
+  it('invited owner receives no subject-bearing SLA channel', async () => {
     push.loadUserCandidate.mockResolvedValueOnce({ userId: 'u-2', partnerId: 'p-1', status: 'invited', email: 'tech@msp.example' });
     await handleTicketEvent(breach('u-2') as never);
-    expect(push.createNotification).toHaveBeenCalledWith(expect.objectContaining({ userId: 'u-2' }));
-    expect(sendEmailMock).toHaveBeenCalledTimes(1);
+    expect(push.createNotification).not.toHaveBeenCalled();
+    expect(sendEmailMock).not.toHaveBeenCalled();
     expect(push.dispatchPushToTokens).not.toHaveBeenCalled();
   });
 
-  it('null event partner: the owner still gets the SLA row and email, push withheld, nothing reported', async () => {
+  it('null event partner: current ticket partner authorizes every SLA channel', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     await handleTicketEvent({ ...breach('u-2'), partnerId: null } as never);
     expect(push.createNotification).toHaveBeenCalledWith(expect.objectContaining({ userId: 'u-2' }));
     expect(sendEmailMock).toHaveBeenCalledTimes(1);
-    expect(push.dispatchPushToTokens).not.toHaveBeenCalled();
+    expect(push.dispatchPushToTokens).toHaveBeenCalledTimes(1);
     expect(sentry.captureException).not.toHaveBeenCalled();
     warn.mockRestore();
   });

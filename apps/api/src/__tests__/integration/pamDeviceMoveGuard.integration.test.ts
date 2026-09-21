@@ -7,6 +7,7 @@ import postgres, { type Sql } from 'postgres';
 import { describe, expect, it } from 'vitest';
 import { moveOrgRoutes } from '../../routes/devices/moveOrg';
 import { createAccessToken } from '../../services/jwt';
+import { withMoveOrgStepUpGrant } from './moveOrgStepUpFixture';
 import {
   createOrganization,
   createPartner,
@@ -272,10 +273,13 @@ async function createRouteFixture(): Promise<RouteFixture> {
     sourceSiteId: sourceSite.id,
     targetOrgId: targetOrg.id,
     targetSiteId: targetSite.id,
-    postMove: () => app.request(`/devices/${fixture.deviceId}/move-org`, {
+    // Move-org step-up (spec 2026-09-18 W01): the route requires a fresh grant; mint one for exactly this request.
+    postMove: async () => app.request(`/devices/${fixture.deviceId}/move-org`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ orgId: targetOrg.id, siteId: targetSite.id }),
+      body: JSON.stringify(
+        await withMoveOrgStepUpGrant(token, fixture.deviceId, { orgId: targetOrg.id, siteId: targetSite.id }),
+      ),
     }),
   };
 }
@@ -496,5 +500,21 @@ describe('PAM device organization-move database guard', () => {
     await replayMigration('2026-09-17-pam-device-move-guard.sql');
 
     expect(await readPamGrants()).toEqual(before);
+  });
+
+  it('replaying this file leaves breeze_cascade_device_org_id() at its newest shipped body', async () => {
+    // Second-order trap (#5788, CI shard 4): re-applying
+    // 2026-10-14-100000-ai-operator-thin-slice.sql (a later definer of
+    // breeze_device_child_orgid_tables) ALSO redefines
+    // breeze_cascade_device_org_id(), which 2026-10-16-182100 later extends
+    // with the script_executions AI-pointer detach. replayMigration must
+    // chase that name transitively, or the detach silently disappears for
+    // every suite that runs after this one in the same process.
+    await replayMigration('2026-09-17-pam-device-move-guard.sql');
+
+    const [row] = await getTestDb().execute<{ def: string }>(sql`
+      SELECT pg_get_functiondef('public.breeze_cascade_device_org_id'::regproc) AS def
+    `);
+    expect(row?.def ?? '').toContain('SET ai_session_id = NULL, ai_agent_run_id = NULL');
   });
 });

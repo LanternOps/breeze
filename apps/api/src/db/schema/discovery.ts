@@ -179,6 +179,18 @@ export const discoveredAssets = pgTable('discovered_assets', {
   detectedTypeSource: discoveredAssetDetectionSourceEnum('detected_type_source'),
   firstSeenAt: timestamp('first_seen_at').defaultNow().notNull(),
   lastSeenAt: timestamp('last_seen_at'),
+  // W01 (spec §4.3) — WHEN the is_online verdict above was taken and by WHOM.
+  // `is_online` / `last_seen_at` keep their existing meanings; these two exist
+  // so services/assetReachability.ts can date and rank the scan/UniFi claim
+  // against SNMP, network checks and probes instead of trusting it blind.
+  statusObservedAt: timestamp('status_observed_at', { withTimezone: true }),
+  statusSource: varchar('status_source', { length: 16 }).$type<'scan' | 'unifi'>(),
+  // W01 (spec §5) — the manual "Check now" probe. last_probe_ref is the agent
+  // command id the result handler compare-and-swaps against.
+  lastProbeAt: timestamp('last_probe_at', { withTimezone: true }),
+  lastProbeStatus: varchar('last_probe_status', { length: 12 }).$type<'pending' | 'ok' | 'failed'>(),
+  lastProbeResponseMs: integer('last_probe_response_ms'),
+  lastProbeRef: varchar('last_probe_ref', { length: 80 }),
   lastJobId: uuid('last_job_id').references(() => discoveryJobs.id),
   discoveryMethods: discoveryMethodEnum('discovery_methods').array().default([]),
   notes: text('notes'),
@@ -195,6 +207,7 @@ export const discoveredAssets = pgTable('discovered_assets', {
   // PARTIAL as of #5213 — many IP-less manual rows may coexist in one org, but a
   // non-NULL IP is still unique per org. Every upsert onto this index must
   // repeat the predicate via `targetWhere`, or Postgres cannot infer it (42P10).
+  idOrgSiteUnique: uniqueIndex('discovered_assets_id_org_id_site_id_uniq').on(table.id, table.orgId, table.siteId),
   orgIpUnique: uniqueIndex('discovered_assets_org_ip_unique')
     .on(table.orgId, table.ipAddress)
     .where(sql`${table.ipAddress} is not null`)
@@ -378,5 +391,6 @@ export const topologyManualNodes = pgTable('topology_manual_nodes', {
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull()
 }, (table) => ({
+  idOrgSiteUnique: uniqueIndex('topology_manual_nodes_id_org_id_site_id_uniq').on(table.id, table.orgId, table.siteId),
   orgSiteIdx: index('topology_manual_nodes_org_site_idx').on(table.orgId, table.siteId)
 }));

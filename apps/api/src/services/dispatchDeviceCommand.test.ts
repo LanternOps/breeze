@@ -28,6 +28,7 @@ vi.mock('../db', () => ({
   db: { select: (...a: unknown[]) => selectMock(...(a as [])) },
   runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  getCurrentDbAccessContext: vi.fn(),
 }));
 vi.mock('../db/schema', () => ({ devices: { id: 'devices.id' } }));
 vi.mock('./commandQueue', () => ({
@@ -65,7 +66,8 @@ vi.mock('./partnerTrust.commands', () => ({
   },
 }));
 
-import { dispatchDeviceCommand } from './dispatchDeviceCommand';
+import { dispatchDeviceCommand, dispatchDeviceCommandWithSystemPrecheck } from './dispatchDeviceCommand';
+import { getCurrentDbAccessContext, withSystemDbAccessContext } from '../db';
 
 const DEVICE = '11111111-1111-4111-8111-111111111111';
 const ORG = '22222222-2222-4222-8222-222222222222';
@@ -81,7 +83,7 @@ function selectReturning(row: unknown) {
 describe('dispatchDeviceCommand (#5128 W1)', () => {
   beforeEach(() => {
     vi.resetAllMocks();
-    vi.stubEnv('DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED', 'true');
+    vi.mocked(withSystemDbAccessContext).mockImplementation(async (fn) => fn());
     assertAllowedMock.mockResolvedValue(undefined);
     refreshMock.mockImplementation(async (_t: string, p: unknown) => p);
     inFlightMock.mockResolvedValue(0);
@@ -93,6 +95,64 @@ describe('dispatchDeviceCommand (#5128 W1)', () => {
       deliverBy: opts?.deliverBy,
       submittedOrgId: opts?.submittedOrgId,
     }));
+  });
+
+  it('system precheck commits the queued command before claiming or pushing', async () => {
+    let depth = 0;
+    vi.mocked(withSystemDbAccessContext).mockImplementation(async (fn) => {
+      depth++;
+      try { return await fn(); } finally { depth--; }
+    });
+    selectMock.mockImplementation(() => {
+      expect(depth).toBe(1);
+      return { from: () => ({ where: () => ({ limit: async () => [deviceRow('online')] }) }) };
+    });
+    assertAllowedMock.mockImplementation(async () => { expect(depth).toBe(1); });
+    queueCommandMock.mockImplementation(async () => {
+      expect(depth).toBe(1);
+      return { id: 'cmd-1', status: 'pending' };
+    });
+    claimMock.mockImplementation(async () => {
+      expect(depth).toBe(0);
+      return { id: 'cmd-1', executedAt: new Date() };
+    });
+    sendMock.mockImplementation(() => { expect(depth).toBe(0); return true; });
+    const result = await dispatchDeviceCommandWithSystemPrecheck({
+      deviceId: DEVICE, type: 'system_cleanup_run', expectedOrgId: ORG,
+    });
+    expect(result.ok && result.delivery).toBe('delivered');
+    expect(sendMock).toHaveBeenCalledOnce();
+  });
+
+  it('system precheck preserves the persisted command when post-commit claiming fails', async () => {
+    selectReturning(deviceRow('online'));
+    const failure = new Error('claim connection lost');
+    claimMock.mockRejectedValue(failure);
+    const result = await dispatchDeviceCommandWithSystemPrecheck({
+      deviceId: DEVICE, type: 'system_cleanup_run', expectedOrgId: ORG,
+    });
+    expect(result).toMatchObject({ ok: true, command: { id: 'cmd-1' }, delivery: 'queued_live' });
+    expect(result.ok && result.deliverBy).toBeInstanceOf(Date);
+    expect(captureExceptionMock).toHaveBeenCalledWith(failure);
+    expect(sendMock).not.toHaveBeenCalled();
+  });
+
+  it('system precheck rejects a cross-org device without queueing', async () => {
+    selectReturning(deviceRow('online'));
+    const result = await dispatchDeviceCommandWithSystemPrecheck({
+      deviceId: DEVICE, type: 'system_cleanup_run', expectedOrgId: OTHER_ORG,
+    });
+    expect(result).toMatchObject({ ok: false, code: 'device_not_found' });
+    expect(queueCommandMock).not.toHaveBeenCalled();
+  });
+
+  it('system precheck refuses a held transaction before lookup or transport', async () => {
+    vi.mocked(getCurrentDbAccessContext).mockReturnValue({ scope: 'system', orgId: null, accessibleOrgIds: [], userId: null });
+    await expect(dispatchDeviceCommandWithSystemPrecheck({
+      deviceId: DEVICE, type: 'system_cleanup_run', expectedOrgId: ORG,
+    })).rejects.toThrow('requires no ambient DB context');
+    expect(selectMock).not.toHaveBeenCalled();
+    expect(sendMock).not.toHaveBeenCalled();
   });
 
   it('offline device + queue policy → row persisted with deliver_by and submitted_org_id, delivery=queued_offline', async () => {
@@ -255,22 +315,19 @@ describe('dispatchDeviceCommand (#5128 W1)', () => {
     expect((queueCommandMock.mock.calls[0]![4] as { deliverBy: Date | null }).deliverBy).toBeNull();
   });
 
-  it('flag off keeps a previouslyRejected caller rejecting an offline device', async () => {
-    vi.stubEnv('DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED', 'false');
+  it('queues patch installs against an offline device', async () => {
     selectReturning(deviceRow('offline'));
     const res = await dispatchDeviceCommand({
       deviceId: DEVICE,
       type: 'install_patches',
-      previouslyRejected: true,
     });
-    expect(res).toMatchObject({ ok: false, code: 'device_offline' });
-    expect(queueCommandMock).not.toHaveBeenCalled();
+    expect(res).toMatchObject({ ok: true, delivery: 'queued_offline' });
+    expect(queueCommandMock).toHaveBeenCalledTimes(1);
   });
 
-  it('flag off does NOT gate a caller that already queued today', async () => {
-    vi.stubEnv('DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED', 'false');
+  it('queues scripts against an offline device', async () => {
     selectReturning(deviceRow('offline'));
-    const res = await dispatchDeviceCommand({ deviceId: DEVICE, type: 'script', previouslyRejected: false });
+    const res = await dispatchDeviceCommand({ deviceId: DEVICE, type: 'script' });
     expect(res.ok && res.delivery).toBe('queued_offline');
   });
 

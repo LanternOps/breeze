@@ -239,6 +239,52 @@ func TestRunBackupContext_StopPreservesRemotePrefixAndJournal(t *testing.T) {
 	}
 }
 
+// TestRunBackupContext_ExcludesOwnCheckpointJournal proves #5581's third
+// fix directly through the full manager wiring: a run whose configured
+// backup path is an ANCESTOR of its own checkpoint-journal directory
+// (StagingDir) must never upload the journal file it is itself writing to
+// as ordinary backup content — that file grows across the run by
+// construction (Record appends an entry per uploaded file), which is
+// exactly the #5581 "manifest describes stale bytes" failure mode, and it
+// is the agent's own internal state, not anything the operator asked to
+// back up.
+func TestRunBackupContext_ExcludesOwnCheckpointJournal(t *testing.T) {
+	provider := newMockProvider()
+	dataDir := t.TempDir()
+	journalDir := pathpkg.Join(dataDir, "backup-journal")
+	if err := os.MkdirAll(journalDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	createTempFile(t, dataDir, "real.txt", "keep me")
+	// Seed a PRE-EXISTING journal file under journalDir (a different
+	// destination identity, so this run's own openSnapshotJournal call
+	// leaves it untouched) — this run's own journal file is created,
+	// written to, and then DELETED again by journal.Complete() on a
+	// successful run, so asserting against it would only prove "the file
+	// happened not to exist by the time we looked," not that the walker
+	// actually skips the directory. This seeded file survives the whole
+	// run and gives the test something durable to catch a regression with.
+	createTempFile(t, journalDir, "backup-journal-deadbeefdeadbeef.jsonl", "{\"snapshotId\":\"stale\"}\n")
+
+	mgr := NewBackupManager(BackupConfig{Provider: provider, Paths: []string{dataDir}, StagingDir: journalDir})
+
+	job, err := mgr.RunBackupContext(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("RunBackupContext failed: %v", err)
+	}
+	if job.Snapshot == nil {
+		t.Fatal("expected a snapshot")
+	}
+	if len(job.Snapshot.Files) != 1 || job.Snapshot.Files[0].SourcePath != pathpkg.Join(dataDir, "real.txt") {
+		t.Fatalf("expected only real.txt in the snapshot, got %+v", job.Snapshot.Files)
+	}
+	for _, call := range provider.uploadCalls {
+		if strings.Contains(call.localPath, "backup-journal") {
+			t.Errorf("must never upload a file from the checkpoint-journal directory, got upload of %q", call.localPath)
+		}
+	}
+}
+
 // TestRunBackupContext_StaleJournalDiscardedWithoutRemoteCleanup proves the
 // D18 §3.5 fix directly: a journal older than journalMaxAge is discarded
 // and the run proceeds fresh with a brand new snapshot ID, but the STALE
@@ -1916,5 +1962,84 @@ func TestRunBackup_FileOnlyRunNeverCollectsLayout(t *testing.T) {
 	}
 	if called || job.LayoutManifest != nil || job.BareMetal != nil {
 		t.Fatalf("file-only run touched layout: called=%v job=%+v", called, job)
+	}
+}
+
+// TestRunBackup_SystemStateOnlyFailureDoesNotDuplicateReason covers #5415: on a
+// state-only run the collection failure becomes the job's fatal Error, and the
+// server concatenates Error and Warning into errorLog with exact-string dedup
+// only. Leaving the "system state was not collected: <reason>" warning in place
+// therefore printed the same reason twice. The warning is redundant once the
+// same failure is the terminal error, so it must be withdrawn.
+func TestRunBackup_SystemStateOnlyFailureDoesNotDuplicateReason(t *testing.T) {
+	collectErr := fmt.Errorf(`reg save failed for hive(s) [SYSTEM]: exit status 1`)
+	stubCollectSystemState(t, func() (*systemstate.SystemStateManifest, string, error) {
+		return nil, "", collectErr
+	})
+
+	mgr := NewBackupManager(BackupConfig{
+		Provider:           newMockProvider(),
+		SystemStateEnabled: true,
+	})
+	job, err := mgr.RunBackup()
+	if err == nil {
+		t.Fatal("a state-only run that collected nothing must fail loud")
+	}
+	if job.Status != jobStatusFailed {
+		t.Fatalf("status = %q, want failed", job.Status)
+	}
+	if !strings.Contains(job.Error.Error(), "SYSTEM") {
+		t.Errorf("the fatal error must name the failing hive; error = %q", job.Error)
+	}
+	if job.Warning != "" {
+		t.Errorf("the collection-failure note is already the fatal error; warning must not repeat it, got %q", job.Warning)
+	}
+	// What the server ultimately stores in backup_jobs.error_log: error and
+	// warning joined, exact-string dedup only. The framing must survive, and
+	// the reason must appear exactly once.
+	errorLog := strings.TrimSuffix(job.Error.Error()+"; "+job.Warning, "; ")
+	if !strings.Contains(errorLog, "system state was not collected") {
+		t.Errorf("the operator still needs to be told what the failure cost the backup; errorLog = %q", errorLog)
+	}
+	if n := strings.Count(errorLog, "reg save failed"); n != 1 {
+		t.Errorf("the reason must appear exactly once, appeared %d times; errorLog = %q", n, errorLog)
+	}
+	if !errors.Is(job.Error, collectErr) {
+		t.Errorf("wrapping must preserve the collector's error for errors.Is callers; error = %q", job.Error)
+	}
+}
+
+func TestRemoveWarning(t *testing.T) {
+	cases := []struct {
+		name     string
+		warning  string
+		fragment string
+		want     string
+	}{
+		{"only fragment", "a", "a", ""},
+		{"leading fragment", "a; b", "a", "b"},
+		{"middle fragment", "a; b; c", "b", "a; c"},
+		{"trailing fragment", "a; b", "b", "a"},
+		{"absent fragment", "a; b", "zzz", "a; b"},
+		{"empty fragment is a no-op", "a; b", "", "a; b"},
+		// A fragment may carry the separator itself when a collector joins
+		// several sub-reasons; splitting on "; " would shred it and the
+		// removal would silently no-op (#5415 regressing).
+		{"fragment containing the separator", "a; x; y; b", "x; y", "a; b"},
+		{"separator-bearing fragment at the head", "x; y; b", "x; y", "b"},
+		{"separator-bearing fragment at the tail", "a; x; y", "x; y", "a"},
+		// Boundary-anchored: a fragment that is only a mid-token substring of
+		// a neighbour must not match.
+		{"substring of another fragment is not a match", "xa; b", "a", "xa; b"},
+		{"only the first occurrence is removed", "a; b; a", "a", "b; a"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			job := &BackupJob{Warning: tc.warning}
+			removeWarning(job, tc.fragment)
+			if job.Warning != tc.want {
+				t.Errorf("warning = %q, want %q", job.Warning, tc.want)
+			}
+		})
 	}
 }

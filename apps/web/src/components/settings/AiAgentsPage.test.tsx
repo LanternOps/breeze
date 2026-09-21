@@ -1,7 +1,14 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+vi.mock('../../stores/auth', () => ({
+  fetchWithAuth: vi.fn(),
+  // #4442 W04: AiAgentSchedulesSection now reads the partner-wide capability
+  // off the auth store to gate the act-mode arm switch, so this mock has to
+  // carry it too. `undefined` user = the absent-means-capable default the
+  // component (and CustomFieldsPage) already assume; the server gates for real.
+  useAuthStore: (selector: (s: { user: undefined }) => unknown) => selector({ user: undefined }),
+}));
 
 // Partner scope comes from the JWT claims and the org context from the org
 // store — the same pair `useDefaultOwnerScope` reads (#1724 / #2126).
@@ -26,6 +33,11 @@ vi.mock('@/lib/authScope', async () => {
 vi.mock('../../stores/orgStore', () => ({
   useOrgStore: (sel?: (s: typeof orgState.current) => unknown) => (sel ? sel(orgState.current) : orgState.current),
 }));
+// Resolved relative to THIS file, the same module runAction.ts reaches via
+// '../components/shared/Toast', so this intercepts runAction's own import too
+// (established pattern: AiAgentSchedulesSection.test.tsx).
+const showToast = vi.hoisted(() => vi.fn());
+vi.mock('../shared/Toast', () => ({ showToast: (...args: unknown[]) => showToast(...args) }));
 
 import AiAgentsPage from './AiAgentsPage';
 import { fetchWithAuth } from '../../stores/auth';
@@ -86,7 +98,17 @@ const PARTNER_HELPDESK_AGENT = {
   name: 'Partner helpdesk',
 };
 
-function mockEndpoints(agents: unknown[] = [PARTNER_AGENT]) {
+/** #5380 — both kill switches clear, the shape the page sees on a healthy
+ *  server. Override per test to model a disabled subsystem. */
+const SYSTEM_ENABLED = {
+  enabled: true,
+  envFlagEnabled: true,
+  envFlagName: 'BREEZE_AI_AGENTS_ENABLED',
+  killSwitchEngaged: false,
+  skips: null,
+};
+
+function mockEndpoints(agents: unknown[] = [PARTNER_AGENT], system: unknown = SYSTEM_ENABLED) {
   fetchMock.mockImplementation((url: string) => {
     // Registered BEFORE the generic '/ai/agents' prefix check below — that
     // check's startsWith would otherwise swallow this literal path too and
@@ -98,7 +120,7 @@ function mockEndpoints(agents: unknown[] = [PARTNER_AGENT]) {
     // '/ai/agents/schedules?agentId=…'.startsWith('/ai/agents') is true, so
     // without this the editor was handed the AGENTS list as its schedules.
     if (url.startsWith('/ai/agents/schedules')) return Promise.resolve(json({ data: [] }));
-    if (url.startsWith('/ai/agents')) return Promise.resolve(json({ data: agents }));
+    if (url.startsWith('/ai/agents')) return Promise.resolve(json({ data: agents, system }));
     // The real route answers { data }, not { roles } — mocking the dead branch
     // is how the production branch stayed untested.
     if (url === '/roles') return Promise.resolve(json({ data: [{ id: 'r-1', name: 'Org Admin' }] }));
@@ -126,6 +148,7 @@ async function openCreateForm(): Promise<void> {
 
 beforeEach(() => {
   fetchMock.mockReset();
+  showToast.mockReset();
   getJwtClaimsMock.mockReturnValue({ scope: 'partner', partnerId: 'p-1', orgId: null });
   orgState.current = {
     currentOrgId: null,
@@ -134,6 +157,105 @@ beforeEach(() => {
     organizationsLoaded: true,
     organizations: [{ id: 'org-1', name: 'Acme' }],
   };
+});
+
+// ---------------------------------------------------------------------------
+// AI patch agent W01 (#5747), Task 12 — the next-occurrence cell and "Run now".
+//
+// "Enabled, shadow, last run yesterday" says nothing about whether the agent
+// is going to run again; the occurrence the list route computes is what does.
+// Run now posts through `runAction`, so a declined admission (HTTP 200
+// `{success:false}`) surfaces as a failure toast rather than as silence.
+// ---------------------------------------------------------------------------
+describe('AiAgentsPage — patch agent next occurrence and Run now', () => {
+  const PATCH_AGENT = {
+    ...PARTNER_AGENT,
+    id: 'p-agent',
+    kind: 'patch' as const,
+    name: 'Patcher',
+    nextOccurrenceAt: '2026-09-15T02:00:00.000Z',
+  };
+
+  function selectOrg(orgId: string | null) {
+    orgState.current = { ...orgState.current, currentOrgId: orgId, allOrgs: orgId === null };
+  }
+
+  it('shows the next occurrence beside the last run', async () => {
+    mockEndpoints([PATCH_AGENT]);
+    render(<AiAgentsPage />);
+
+    const cell = await screen.findByTestId('ai-agent-next-occurrence-p-agent');
+    expect(cell).toHaveTextContent('2026');
+  });
+
+  it('renders an em dash when the agent has no next occurrence', async () => {
+    mockEndpoints([{ ...PATCH_AGENT, nextOccurrenceAt: null }]);
+    render(<AiAgentsPage />);
+
+    expect(await screen.findByTestId('ai-agent-next-occurrence-p-agent')).toHaveTextContent('—');
+  });
+
+  it('offers Run now only for a patch agent', async () => {
+    mockEndpoints([PATCH_AGENT, PARTNER_AGENT]);
+    selectOrg('org-1');
+    render(<AiAgentsPage />);
+
+    expect(await screen.findByTestId('ai-agent-run-now-p-agent')).toBeInTheDocument();
+    expect(screen.queryByTestId(`ai-agent-run-now-${PARTNER_AGENT.id}`)).toBeNull();
+  });
+
+  it('posts the selected org through runAction and toasts success', async () => {
+    mockEndpoints([PATCH_AGENT]);
+    selectOrg('org-1');
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === '/ai/patch-plan/runs') return Promise.resolve(json({ runId: 'r-1' }, true, 202));
+      if (url === '/ai/agents/policy-decidable-keys') return Promise.resolve(json({ data: [] }));
+      if (url.startsWith('/ai/agents/schedules')) return Promise.resolve(json({ data: [] }));
+      if (url.startsWith('/ai/agents')) return Promise.resolve(json({ data: [PATCH_AGENT] }));
+      void init;
+      return Promise.resolve(json({ data: [] }));
+    });
+    render(<AiAgentsPage />);
+
+    fireEvent.click(await screen.findByTestId('ai-agent-run-now-p-agent'));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      '/ai/patch-plan/runs',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({ orgId: 'org-1' }) }),
+    ));
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'success' }),
+    ));
+  });
+
+  it('surfaces a declined admission as a failure toast, not silence', async () => {
+    selectOrg('org-1');
+    fetchMock.mockImplementation((url: string) => {
+      // The route's own "nothing was queued, here is why" shape.
+      if (url === '/ai/patch-plan/runs') return Promise.resolve(json({ success: false, skipped: 'mode_off' }, true, 200));
+      if (url === '/ai/agents/policy-decidable-keys') return Promise.resolve(json({ data: [] }));
+      if (url.startsWith('/ai/agents/schedules')) return Promise.resolve(json({ data: [] }));
+      if (url.startsWith('/ai/agents')) return Promise.resolve(json({ data: [PATCH_AGENT] }));
+      return Promise.resolve(json({ data: [] }));
+    });
+    render(<AiAgentsPage />);
+
+    fireEvent.click(await screen.findByTestId('ai-agent-run-now-p-agent'));
+
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'error' }),
+    ));
+  });
+
+  it('disables Run now — rather than guessing an org — when the page is on All organizations', async () => {
+    mockEndpoints([PATCH_AGENT]);
+    selectOrg(null);
+    render(<AiAgentsPage />);
+
+    const button = await screen.findByTestId('ai-agent-run-now-p-agent');
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute('title');
+  });
 });
 
 describe('AiAgentsPage', () => {
@@ -1415,6 +1537,31 @@ describe('AiAgentsPage running-state badge (#4187 UI critique 3)', () => {
     expect(await screen.findByTestId('ai-agent-running-badge-a1')).toHaveTextContent('Running');
   });
 
+  // Paper cut 22 (2026-09-19 sweep): when the row's own on/off badge and the
+  // last-run outcome badge both read "Running" (an enabled agent with an
+  // in-flight run), the row printed "Running | Running" with nothing visibly
+  // distinguishing the two concepts — only an aria-label told them apart.
+  it('visibly labels the on/off badge and the last-run badge when both happen to read "Running"', async () => {
+    mockEndpoints([{
+      ...PARTNER_AGENT,
+      lastRunAt: '2026-08-30T12:00:00.000Z',
+      lastRunStatus: 'running',
+    }]);
+    render(<AiAgentsPage />);
+
+    const row = await screen.findByTestId('ai-agent-row-a1');
+    expect(within(row).getByTestId('ai-agent-running-badge-a1')).toHaveTextContent('Running');
+    expect(within(row).getByTestId('ai-agent-lastrun-a1')).toHaveTextContent('Running');
+
+    // A sighted user must see two DIFFERENT visible labels next to the two
+    // "Running" badges, not just an aria-label a screen reader alone hears.
+    const runningLabel = within(row).getByTestId('ai-agent-running-badge-label-a1');
+    const lastRunLabel = within(row).getByTestId('ai-agent-lastrun-badge-label-a1');
+    expect(runningLabel).toBeVisible();
+    expect(lastRunLabel).toBeVisible();
+    expect(runningLabel.textContent).not.toBe(lastRunLabel.textContent);
+  });
+
   it('shows a one-time "switched off, review its policy" note on the row a Re-enable just restored', async () => {
     // A STATEFUL mock, unlike `mockEnableEndpoints` (whose list fetch always
     // replays the same static fixture): the reload `reenable()` triggers
@@ -1579,5 +1726,121 @@ describe('AiAgentsPage create/edit wiring (Task 13, #5051)', () => {
 
     await waitFor(() => expect(screen.queryByTestId('agent-create-flow')).toBeNull());
     expect(await screen.findByTestId('ai-agent-row-new-agent')).toBeInTheDocument();
+  });
+});
+
+/**
+ * #5380 — on US prod two agents read "Running" for hours while
+ * `BREEZE_AI_AGENTS_ENABLED` was unset, so every trigger was a silent no-op
+ * and there was nothing to watch. The badge reported a config bit; the page
+ * had no idea whether the subsystem was even on.
+ */
+describe('AiAgentsPage — subsystem disabled (#5380)', () => {
+  const SYSTEM_OFF = {
+    enabled: false,
+    envFlagEnabled: false,
+    envFlagName: 'BREEZE_AI_AGENTS_ENABLED',
+    killSwitchEngaged: false,
+    skips: null,
+  };
+
+  it('shows no subsystem banner when the subsystem is enabled', async () => {
+    mockEndpoints([PARTNER_AGENT]);
+    render(<AiAgentsPage />);
+
+    await screen.findByTestId('ai-agents-list');
+    expect(screen.queryByTestId('ai-agents-subsystem-disabled')).toBeNull();
+  });
+
+  it('banners the disabled subsystem and names the env var a self-hoster must set', async () => {
+    mockEndpoints([PARTNER_AGENT], SYSTEM_OFF);
+    render(<AiAgentsPage />);
+
+    const banner = await screen.findByTestId('ai-agents-subsystem-disabled');
+    expect(banner.textContent).toContain('BREEZE_AI_AGENTS_ENABLED');
+  });
+
+  it('does NOT render an enabled agent as "Running" while the subsystem is off', async () => {
+    mockEndpoints([PARTNER_AGENT], SYSTEM_OFF);
+    render(<AiAgentsPage />);
+
+    await screen.findByTestId('ai-agents-list');
+    const badge = screen.getByTestId(`ai-agent-running-badge-${PARTNER_AGENT.id}`);
+    // The row is still enabled — the badge must say so without claiming the
+    // agent is live.
+    expect(badge.textContent).not.toBe('Running');
+    expect(badge.textContent).toContain('inactive');
+  });
+
+  it('still says "Running" for an enabled agent when the subsystem is on', async () => {
+    mockEndpoints([PARTNER_AGENT]);
+    render(<AiAgentsPage />);
+
+    await screen.findByTestId('ai-agents-list');
+    expect(screen.getByTestId(`ai-agent-running-badge-${PARTNER_AGENT.id}`).textContent).toBe('Running');
+  });
+
+  it('attributes the outage to the admin kill switch when that is what is engaged', async () => {
+    mockEndpoints([PARTNER_AGENT], { ...SYSTEM_OFF, envFlagEnabled: true, killSwitchEngaged: true });
+    render(<AiAgentsPage />);
+
+    const banner = await screen.findByTestId('ai-agents-subsystem-disabled');
+    // The env var is set here, so telling the operator to set it would send
+    // them down the wrong path.
+    expect(banner.textContent).not.toContain('BREEZE_AI_AGENTS_ENABLED');
+    expect(screen.getByTestId('ai-agents-subsystem-killswitch')).toBeInTheDocument();
+  });
+
+  // #5381 — the skip trace. Without it the banner says the subsystem is off
+  // but not that anything was actually dropped because of it.
+  it('reports how many triggers were skipped, and for what reason', async () => {
+    mockEndpoints([PARTNER_AGENT], {
+      ...SYSTEM_OFF,
+      skips: {
+        retentionHours: 48,
+        total: 17,
+        reasons: [
+          { reason: 'kill_switch_off', count: 15, firstAt: null, lastAt: '2026-09-09T12:00:00.000Z' },
+          { reason: 'cooldown', count: 2, firstAt: null, lastAt: '2026-09-09T11:00:00.000Z' },
+        ],
+      },
+    });
+    render(<AiAgentsPage />);
+
+    const skips = await screen.findByTestId('ai-agents-skip-trace');
+    expect(skips.textContent).toContain('17');
+    expect(skips.textContent).toContain('kill_switch_off');
+    expect(skips.textContent).toContain('15');
+  });
+
+  it('renders no skip trace when the counter store could not answer', async () => {
+    mockEndpoints([PARTNER_AGENT], { ...SYSTEM_OFF, skips: null });
+    render(<AiAgentsPage />);
+
+    await screen.findByTestId('ai-agents-subsystem-disabled');
+    // `null` is UNKNOWN, not zero — inventing "0 skipped" would be the same
+    // false reassurance the issue is about.
+    expect(screen.queryByTestId('ai-agents-skip-trace')).toBeNull();
+  });
+
+  it('ignores a malformed system block rather than mis-rendering one', async () => {
+    // `enabled` is the field every branch reads. A block that does not answer
+    // it is "not reported" — guessing from a partial shape would be its own
+    // false alarm.
+    mockEndpoints([PARTNER_AGENT], { envFlagEnabled: false, envFlagName: 'X', skips: null });
+    render(<AiAgentsPage />);
+
+    await screen.findByTestId('ai-agents-list');
+    expect(screen.queryByTestId('ai-agents-subsystem-disabled')).toBeNull();
+    expect(screen.getByTestId(`ai-agent-running-badge-${PARTNER_AGENT.id}`).textContent).toBe('Running');
+  });
+
+  it('survives an older API that does not return the system block at all', async () => {
+    mockEndpoints([PARTNER_AGENT], undefined);
+    render(<AiAgentsPage />);
+
+    await screen.findByTestId('ai-agents-list');
+    expect(screen.queryByTestId('ai-agents-subsystem-disabled')).toBeNull();
+    expect(screen.getByTestId(`ai-agent-running-badge-${PARTNER_AGENT.id}`).textContent).toBe('Running');
   });
 });

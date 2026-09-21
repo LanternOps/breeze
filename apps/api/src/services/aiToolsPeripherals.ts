@@ -27,7 +27,11 @@ import {
   resolvePeripheralPolicyDeviceIds,
   schedulePeripheralPolicyDevices,
 } from '../jobs/peripheralJobs';
-import { resolveSiteAllowedDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
+import {
+  deviceScopeCondition,
+  resolveSiteAllowedDeviceIds,
+  SITE_SCOPE_EMPTY_NOTE,
+} from './aiToolsSiteScope';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -87,6 +91,8 @@ export function registerPeripheralTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'security',
+    searchHint: 'USB and peripheral connection events, device control enforcement activity',
     deviceArgs: ['device_id'],
     definition: {
       name: 'get_peripheral_activity',
@@ -167,6 +173,12 @@ export function registerPeripheralTools(aiTools: Map<string, AiTool>): void {
         conditions.push(inArray(peripheralEvents.deviceId, allowed));
       }
 
+      // Exact-device axis, applied independently of the site axis: a device-LESS
+      // analysis run carries `allowedDeviceIds` with NO `allowedSiteIds`, so the
+      // branch above no-ops for it and the tool read the whole org (#6086).
+      const peripheralDeviceCondition = deviceScopeCondition(auth, peripheralEvents.deviceId);
+      if (peripheralDeviceCondition) conditions.push(peripheralDeviceCondition);
+
       const limit = Math.min(Math.max(1, Number(input.limit) || 100), 500);
       const rows = await db
         .select()
@@ -199,6 +211,8 @@ export function registerPeripheralTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 3,
+    domain: 'security',
+    searchHint: 'USB and peripheral control policies: create, update, disable, add or remove exceptions',
     definition: {
       name: 'manage_peripheral_policy',
       description: 'Create, update, disable, and manage exceptions for USB/peripheral control policies. When removing exceptions, all specified match fields must match (unspecified fields act as wildcards). Tier 3: requires human approval.',

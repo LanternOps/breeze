@@ -7,7 +7,7 @@
 
 import { Queue, Worker, Job } from 'bullmq';
 import * as dbModule from '../db';
-import { snmpDevices, snmpMetrics, snmpTemplates, devices } from '../db/schema';
+import { discoveredAssets, snmpDevices, snmpMetrics, snmpTemplates, devices } from '../db/schema';
 import { eq, and, or, sql } from 'drizzle-orm';
 import { getBullMQConnection } from '../services/redis';
 import { createInstrumentedQueue } from '../services/bullmqQueue';
@@ -16,6 +16,7 @@ import { attachWorkerObservability } from './workerObservability';
 import { dispatchCommandToAgent, isAgentConnectedAnywhere } from '../services/agentCommandRelay';
 import type { AgentCommand } from '../routes/agentWs';
 import { decryptSnmpSecret } from '../services/snmpSecrets';
+import { buildOidSpecs, selectOidSpecsForSeq, POLL_LIMITS, type OidSpec } from '../services/snmpOidSpecs';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -48,6 +49,80 @@ const MAX_BACKOFF_SECONDS = 3600; // sub-hour intervals never stretch past an ho
  * as needing attention.
  */
 const FAILURE_STATUS_THRESHOLD = 3;
+
+/**
+ * `snmp_devices.last_status` values for the three site-authority refusals below.
+ *
+ * These are NOT the same class of event as "the org has no online agent". That
+ * one is a transient Breeze-side condition — an MSP's only agent host rebooting
+ * — and `markPollDispatched` deliberately refuses to count it, so a healthy
+ * switch is not marked offline for an hour every reboot.
+ *
+ * A site-authority refusal is different: nothing else will poll this device.
+ * Before asset-site authority existed, any online agent in the org picked the
+ * poll up, so these devices kept reporting. Now they do not, and leaving
+ * `last_status` at its last-known value would show a green switch that has not
+ * been polled since the asset moved — silent monitoring loss. Each cause gets
+ * its own value (rather than the generic 'offline') so the dashboard can say
+ * WHY, and `consecutive_failures` is incremented so the existing backoff and
+ * failure/alert path treats it like any other sustained polling failure. A
+ * genuine successful poll clears both.
+ *
+ * All three fit `last_status varchar(20)`.
+ */
+const SITE_AUTHORITY_STATUS = {
+  assetMissing: 'asset_missing',
+  assetNoSite: 'asset_no_site',
+  noAgentInSite: 'no_agent_in_site',
+} as const;
+
+/**
+ * Record a site-authority refusal durably against the SNMP device.
+ *
+ * Runs in its own short system DB context: phase 1's context has already closed
+ * by the time the outcome switch runs, and phase 2 deliberately holds no
+ * context across the agent socket. This path is a failure path only, so the
+ * extra connection acquisition is not on the hot poll.
+ */
+async function recordSiteAuthorityFailure(
+  deviceId: string,
+  status: (typeof SITE_AUTHORITY_STATUS)[keyof typeof SITE_AUTHORITY_STATUS],
+): Promise<void> {
+  await runWithSystemDbAccess(() =>
+    db
+      .update(snmpDevices)
+      .set({
+        consecutiveFailures: sql`${snmpDevices.consecutiveFailures} + 1`,
+        lastStatus: status,
+      })
+      .where(eq(snmpDevices.id, deviceId))
+  );
+}
+
+/**
+ * Spec §6.1 (F2) — the device is configured for SNMP but has no template, so
+ * `buildSnmpPollCommand` would carry zero OIDs and the poll would ask the
+ * device nothing. Before this, that logged a console.warn and left
+ * `last_status` NULL forever: every page said "SNMP monitoring: Enabled" about
+ * a device that had never collected a single value.
+ *
+ * Deliberately NOT routed through recordSiteAuthorityFailure: this must not
+ * touch `consecutive_failures`. The poll never left the building, so counting
+ * it would multiply the polling interval by 2^n and eventually stamp 'offline'
+ * on a device nobody ever asked anything — and it would break the #3217
+ * scheduler contract that snmpWorkerScheduler.test.ts pins.
+ *
+ * A later successful poll clears it like any other status (processPollResults
+ * sets last_status = 'online' unconditionally on success).
+ */
+async function recordNoTemplate(deviceId: string): Promise<void> {
+  await runWithSystemDbAccess(() =>
+    db
+      .update(snmpDevices)
+      .set({ lastStatus: 'no_template', lastPollAttemptedAt: new Date() })
+      .where(eq(snmpDevices.id, deviceId))
+  );
+}
 
 let snmpQueue: Queue | null = null;
 
@@ -90,17 +165,45 @@ interface PollDeviceJobData {
   orgId: string;
 }
 
+/**
+ * One metric from an agent poll.
+ *
+ * Fields beyond `oid`/`name`/`value`/`timestamp` are protocol 2 (spec §7.2,
+ * shipped by W02 agents). A payload without them is legacy and is normalised on
+ * the way in: baseOid = oid, instance = ''. There is deliberately no version
+ * discriminator on the ROW — `protocol: 2` rides the result envelope, and every
+ * field here is independently optional, so a partially-upgraded fleet needs no
+ * branch.
+ */
 export interface SnmpMetricResult {
   oid: string;
   name: string;
   value: unknown;
   timestamp: string;
+  baseOid?: string;
+  instance?: string;
+  error?: string;
+}
+
+/**
+ * The closed set of per-OID failure codes (spec §7.2). Anything else an agent
+ * sends is stored as 'unknown': `snmp_metrics.error` is varchar(32) and is
+ * classified `included` in the tenant export, so it must never become a channel
+ * for arbitrary agent-supplied text.
+ */
+export const SNMP_ERROR_CODES = ['noSuchObject', 'noSuchInstance', 'endOfMib', 'timeout', 'truncated', 'snmpError', 'walkFailed'] as const;
+const SNMP_ERROR_CODE_SET: ReadonlySet<string> = new Set(SNMP_ERROR_CODES);
+
+function normalizeSnmpError(error: unknown): string | null {
+  if (typeof error !== 'string' || error.length === 0) return null;
+  return SNMP_ERROR_CODE_SET.has(error) ? error : 'unknown';
 }
 
 interface ProcessPollResultsJobData {
   type: 'process-poll-results';
   deviceId: string;
   pollId?: string;
+  protocol?: number;
   metrics: SnmpMetricResult[];
 }
 
@@ -196,6 +299,9 @@ async function markPollDispatched(deviceId: string): Promise<void> {
     .update(snmpDevices)
     .set({
       consecutiveFailures: nextFailures,
+      // Advance cadence with the dispatch counter so early returns do not
+      // rotate a device past its slow specs without sending a poll.
+      pollSeq: sql`${snmpDevices.pollSeq} + 1`,
       // Only surface 'offline' once the device has failed repeatedly; leave the
       // existing status alone before that so one slow poll doesn't flap the UI.
       lastStatus: sql`CASE WHEN ${nextFailures} >= ${FAILURE_STATUS_THRESHOLD} THEN 'offline' ELSE ${snmpDevices.lastStatus} END`
@@ -219,11 +325,14 @@ type PollDispatchInputs =
   | { status: 'device-missing' }
   | { status: 'org-mismatch'; payloadOrgId: string; deviceOrgId: string }
   | { status: 'no-oids' }
-  | { status: 'no-agent'; orgId: string }
+  | { status: 'asset-missing'; assetId: string; orgId: string }
+  | { status: 'asset-site-missing'; assetId: string; orgId: string }
+  | { status: 'no-agent'; orgId: string; siteId: string | null }
   | {
       status: 'ok';
       device: typeof snmpDevices.$inferSelect;
       oids: string[];
+      oidSpecs: OidSpec[];
       agentId: string;
     };
 
@@ -272,6 +381,7 @@ async function loadPollDispatchInputs(data: PollDeviceJobData): Promise<PollDisp
 
   // Load template OIDs if device has a template
   let oids: string[] = [];
+  let oidSpecs: OidSpec[] = [];
   if (device.templateId) {
     const [template] = await db
       .select({ oids: snmpTemplates.oids })
@@ -284,6 +394,7 @@ async function loadPollDispatchInputs(data: PollDeviceJobData): Promise<PollDisp
 
     if (template && Array.isArray(template.oids)) {
       oids = (template.oids as Array<{ oid: string }>).map((o) => o.oid);
+      oidSpecs = buildOidSpecs(template.oids);
     }
   }
 
@@ -291,32 +402,66 @@ async function loadPollDispatchInputs(data: PollDeviceJobData): Promise<PollDisp
     return { status: 'no-oids' };
   }
 
-  // Find an online agent for this org — `device.orgId`, the live row, never the
-  // job payload (#3226).
+  // Asset-bound SNMP polls are a site-scoped operation. Resolve and lock the
+  // CURRENT asset row before selecting an executor so a concurrent site move
+  // cannot split the authorization read from the agent-selection read. The
+  // lock is released with this short phase-1 DB context, before connectivity,
+  // credential decryption, or WebSocket dispatch.
+  //
+  // Legacy SNMP rows without an assetId predate discovered-asset binding and
+  // retain their established org-wide executor selection. New route-created
+  // rows are always asset-bound.
+  let executionSiteId: string | null = null;
+  if (device.assetId) {
+    const assetRows = await db
+      .select({ siteId: discoveredAssets.siteId })
+      .from(discoveredAssets)
+      .where(and(
+        eq(discoveredAssets.id, device.assetId),
+        eq(discoveredAssets.orgId, device.orgId),
+      ))
+      .for('update');
+    const asset = assetRows[0];
+    if (!asset) {
+      return { status: 'asset-missing', assetId: device.assetId, orgId: device.orgId };
+    }
+    if (typeof asset.siteId !== 'string') {
+      return { status: 'asset-site-missing', assetId: device.assetId, orgId: device.orgId };
+    }
+    executionSiteId = asset.siteId;
+  }
+
+  // Find an online agent for this org — and, for asset-bound rows, the current
+  // asset site. `device.orgId` is the live row, never the job payload (#3226).
   //
   // Quick Support exclusion: ephemeral devices (`devices.isEphemeral`) live in
   // the hidden per-partner 'quick_support' org and are a stranger's personal
   // machine borrowed for one ~20-minute session. That org stays inside
   // technicians' accessibleOrgIds for RLS reasons, so a bare "any online device
   // in this org" pick could conscript a home PC into polling SNMP targets.
+  const agentConditions = [
+    eq(devices.orgId, device.orgId),
+    eq(devices.isEphemeral, false),
+    eq(devices.status, 'online'),
+  ];
+  // Strict null check, not truthiness: `executionSiteId` is `string | null`,
+  // and an empty-string site (unreachable today since site_id is a UUID FK,
+  // but not guaranteed forever) must still scope the agent lookup rather than
+  // falling back to an org-wide pick (#5777).
+  if (executionSiteId !== null) agentConditions.push(eq(devices.siteId, executionSiteId));
+
   const [onlineAgent] = await db
     .select({ agentId: devices.agentId })
     .from(devices)
-    .where(
-      and(
-        eq(devices.orgId, device.orgId),
-        eq(devices.isEphemeral, false),
-        eq(devices.status, 'online')
-      )
-    )
+    .where(and(...agentConditions))
     .limit(1);
 
   const agentId = onlineAgent?.agentId ?? null;
   if (!agentId) {
-    return { status: 'no-agent', orgId: device.orgId };
+    return { status: 'no-agent', orgId: device.orgId, siteId: executionSiteId };
   }
 
-  return { status: 'ok', device, oids, agentId };
+  return { status: 'ok', device, oids, oidSpecs, agentId };
 }
 
 /**
@@ -384,13 +529,30 @@ async function processPollDevice(data: PollDeviceJobData): Promise<{
     }
     case 'no-oids':
       console.warn(`[SnmpWorker] No OIDs configured for device ${data.deviceId}`);
+      await recordNoTemplate(data.deviceId);
+      return { dispatched: false, agentId: null };
+    case 'asset-missing':
+      console.warn(`[SnmpWorker] Asset ${inputs.assetId} not found in org ${inputs.orgId}; refusing asset-bound SNMP poll`);
+      await recordSiteAuthorityFailure(data.deviceId, SITE_AUTHORITY_STATUS.assetMissing);
+      return { dispatched: false, agentId: null };
+    case 'asset-site-missing':
+      console.warn(`[SnmpWorker] Asset ${inputs.assetId} has no site in org ${inputs.orgId}; refusing asset-bound SNMP poll`);
+      await recordSiteAuthorityFailure(data.deviceId, SITE_AUTHORITY_STATUS.assetNoSite);
       return { dispatched: false, agentId: null };
     case 'no-agent':
-      console.warn(`[SnmpWorker] No online agent for org ${inputs.orgId}`);
+      console.warn(inputs.siteId
+        ? `[SnmpWorker] No online agent for org ${inputs.orgId} in site ${inputs.siteId}`
+        : `[SnmpWorker] No online agent for org ${inputs.orgId}`);
+      // Site-scoped only. The org-wide branch keeps its established
+      // don't-count-it behaviour (see SITE_AUTHORITY_STATUS above): that is a
+      // transient Breeze-side condition, not a device that nothing will poll.
+      if (inputs.siteId) {
+        await recordSiteAuthorityFailure(data.deviceId, SITE_AUTHORITY_STATUS.noAgentInSite);
+      }
       return { dispatched: false, agentId: null };
   }
 
-  const { device, oids, agentId } = inputs;
+  const { device, oids, oidSpecs, agentId } = inputs;
 
   if (!(await isAgentConnectedAnywhere(agentId))) {
     console.warn(`[SnmpWorker] No online agent for org ${device.orgId}`);
@@ -407,8 +569,12 @@ async function processPollDevice(data: PollDeviceJobData): Promise<{
   // UPDATE per genuinely-dispatched poll is the cost of keeping both.
   await runWithSystemDbAccess(() => markPollDispatched(data.deviceId));
 
-  // Build and send the command payload
-  const command = buildSnmpPollCommand(data.deviceId, device, oids);
+  // Gate on the PRE-increment value loaded in phase 1, independent of the
+  // stored counter that markPollDispatched has already advanced above.
+  const command = buildSnmpPollCommand(data.deviceId, device, oids, 'snmp', {
+    oidSpecs,
+    pollSeq: device.pollSeq ?? 0,
+  });
   const outcome = await dispatchCommandToAgent(agentId, command, { priority: 'probe' });
   if (outcome.status !== 'sent') {
     console.error(`[SnmpWorker] Poll dispatch ${outcome.status} for agent ${agentId}`);
@@ -418,6 +584,51 @@ async function processPollDevice(data: PollDeviceJobData): Promise<{
   console.log(`[SnmpWorker] Poll dispatched to agent ${agentId} for device ${data.deviceId} (${outcome.via})`);
   return { dispatched: true, agentId };
 }
+
+/**
+ * `snmp_metrics` varchar widths, mirroring apps/api/src/db/schema/snmp.ts.
+ *
+ * #6108: a poll is persisted as ONE multi-row INSERT, so a single value wider
+ * than its column aborts the whole statement with 22001 and the entire poll is
+ * lost. `oid`, `base_oid` and `instance` identify the row — a clipped instance
+ * suffix would silently merge two distinct rows of a walked table — so an
+ * over-long one drops that metric alone and is reported on the device.
+ */
+const SNMP_METRIC_IDENTITY_LIMITS = { oid: 200, baseOid: 200, instance: 200 } as const;
+const SNMP_METRIC_NAME_LIMIT = 100;
+const SNMP_DROP_SAMPLE_LIMIT = 3;
+
+interface SnmpMetricInsertRow {
+  deviceId: string;
+  orgId: string;
+  oid: string;
+  baseOid: string;
+  instance: string;
+  name: string;
+  value: string | null;
+  valueType: string;
+  error: string | null;
+  timestamp: Date;
+}
+
+function clipToColumn(value: string, limit: number): string {
+  return value.length > limit ? value.slice(0, limit) : value;
+}
+
+function findOverLongIdentityColumn(
+  row: SnmpMetricInsertRow
+): { field: string; value: string; length: number; limit: number } | null {
+  for (const [field, limit] of Object.entries(SNMP_METRIC_IDENTITY_LIMITS)) {
+    const value = row[field as keyof typeof SNMP_METRIC_IDENTITY_LIMITS];
+    if (typeof value === 'string' && value.length > limit) {
+      return { field, value, length: value.length, limit };
+    }
+  }
+  return null;
+}
+
+const legacyWalkWarningAt = new Map<string, number>();
+const LEGACY_WALK_WARNING_INTERVAL_MS = 60 * 60 * 1000;
 
 /**
  * Process SNMP poll results — write metrics to DB
@@ -431,7 +642,7 @@ async function processPollResults(data: ProcessPollResultsJobData): Promise<{
   // for RLS. Its own short context, which then closes.
   const [snmpDevice] = await runWithSystemDbAccess(() =>
     db
-      .select({ orgId: snmpDevices.orgId })
+      .select({ orgId: snmpDevices.orgId, templateId: snmpDevices.templateId })
       .from(snmpDevices)
       .where(eq(snmpDevices.id, data.deviceId))
       .limit(1)
@@ -442,18 +653,82 @@ async function processPollResults(data: ProcessPollResultsJobData): Promise<{
     return { metricsWritten: 0 };
   }
 
+  const lastWarning = legacyWalkWarningAt.get(data.deviceId);
+  if ((data.protocol === undefined || data.protocol < 2) && snmpDevice.templateId &&
+      (lastWarning === undefined || now.getTime() - lastWarning >= LEGACY_WALK_WARNING_INTERVAL_MS)) {
+    const [template] = await runWithSystemDbAccess(() => db
+      .select({ oids: snmpTemplates.oids })
+      .from(snmpTemplates)
+      .where(and(
+        eq(snmpTemplates.id, snmpDevice.templateId!),
+        or(eq(snmpTemplates.isBuiltIn, true), eq(snmpTemplates.orgId, snmpDevice.orgId))!
+      ))
+      .limit(1));
+    if (buildOidSpecs(template?.oids).some((spec) => spec.mode === 'walk')) {
+      // Recheck after the DB await so simultaneous results do not both warn.
+      const latestWarning = legacyWalkWarningAt.get(data.deviceId);
+      if (latestWarning === undefined || now.getTime() - latestWarning >= LEGACY_WALK_WARNING_INTERVAL_MS) {
+        legacyWalkWarningAt.set(data.deviceId, now.getTime());
+        console.warn('[SnmpWorker] legacy agent result for a walk template', {
+          deviceId: data.deviceId, orgId: snmpDevice.orgId,
+        });
+      }
+    }
+  }
+
   // Phase 2 — parse/shape the agent-supplied metrics with NO DB context open.
   // An agent can return thousands of OIDs; this is pure CPU work and must not
   // run while a pooled connection sits idle-in-transaction (#1105).
-  const rows = data.metrics.map((metric) => ({
-    deviceId: data.deviceId,
-    orgId: snmpDevice.orgId,
-    oid: metric.oid,
-    name: metric.name || metric.oid,
-    value: metric.value != null ? String(metric.value) : null,
-    valueType: resolveValueType(metric.value),
-    timestamp: metric.timestamp ? new Date(metric.timestamp) : now
-  }));
+  let nonErrorRows = 0;
+  let droppedRows = 0;
+  const dropSamples: string[] = [];
+  const rows: SnmpMetricInsertRow[] = [];
+
+  for (const metric of data.metrics) {
+    const error = normalizeSnmpError(metric.error);
+    const row: SnmpMetricInsertRow = {
+      deviceId: data.deviceId,
+      orgId: snmpDevice.orgId,
+      oid: metric.oid,
+      // Spec §7.3 — a legacy row IS its own base OID with no instance suffix.
+      // Normalising here (rather than COALESCEing at every read) keeps the
+      // §6.2 derivation and the §6.3 history query from each inventing a rule.
+      baseOid: typeof metric.baseOid === 'string' && metric.baseOid.length > 0 ? metric.baseOid : metric.oid,
+      instance: typeof metric.instance === 'string' ? metric.instance : '',
+      // Display text, not identity — clipping it loses nothing that would make
+      // two rows indistinguishable, so it never costs a row.
+      name: clipToColumn(metric.name || metric.oid, SNMP_METRIC_NAME_LIMIT),
+      value: error ? null : (metric.value != null ? String(metric.value) : null),
+      valueType: error ? 'error' : resolveValueType(metric.value),
+      error,
+      timestamp: metric.timestamp ? new Date(metric.timestamp) : now
+    };
+
+    const overLong = findOverLongIdentityColumn(row);
+    if (overLong) {
+      droppedRows++;
+      if (dropSamples.length < SNMP_DROP_SAMPLE_LIMIT) {
+        dropSamples.push(`${overLong.field} is ${overLong.length} chars (max ${overLong.limit}): ${overLong.value.slice(0, 60)}…`);
+      }
+      continue;
+    }
+
+    if (!error) nonErrorRows++;
+    rows.push(row);
+  }
+
+  // #6108 — the insert below is ONE multi-row statement, so before this guard a
+  // single unstorable row aborted it with 22001 and every metric from the poll
+  // was lost with no user-visible trace (the agent had reported success, so
+  // #6066's last_error never fired). Report the loss on the device instead.
+  const dropNotice = droppedRows > 0
+    ? `Dropped ${droppedRows} unstorable metric row(s) from this poll — ${dropSamples.join('; ')}`.slice(0, 500)
+    : null;
+  if (dropNotice) {
+    console.warn('[SnmpWorker] dropped unstorable metric rows', {
+      deviceId: data.deviceId, orgId: snmpDevice.orgId, droppedRows, kept: rows.length,
+    });
+  }
 
   // Phase 3 — the writes, in one context so the metric insert and the device
   // status stamp commit together.
@@ -462,22 +737,35 @@ async function processPollResults(data: ProcessPollResultsJobData): Promise<{
       await db.insert(snmpMetrics).values(rows);
     }
 
-    // Update device lastPolled and status. Clearing consecutiveFailures here is
-    // the only thing that cancels the backoff started at dispatch (#3217) — it
-    // must stay after the metric insert, and inside the same context, so a
-    // persistence failure rolls back the clear and keeps the count.
-    await db
-      .update(snmpDevices)
-      .set({
-        lastPolled: now,
-        lastPollAttemptedAt: now,
-        lastStatus: 'online',
-        consecutiveFailures: 0
-      })
-      .where(eq(snmpDevices.id, data.deviceId));
+    if (nonErrorRows > 0) {
+      // At least one real value arrived. Clearing consecutiveFailures here is
+      // the only thing that cancels the backoff started at dispatch (#3217) —
+      // it must stay after the metric insert, and inside the same context, so a
+      // persistence failure rolls back the clear and keeps the count.
+      await db
+        .update(snmpDevices)
+        .set({
+          lastPolled: now, lastPollAttemptedAt: now, lastStatus: 'online', consecutiveFailures: 0,
+          ...(dropNotice ? { lastError: dropNotice, lastErrorAt: now } : {}),
+        })
+        .where(eq(snmpDevices.id, data.deviceId));
+    } else {
+      // Spec §7.3 — every row was an error (or there were none at all). The
+      // device ANSWERED, so this is not 'offline'; but nothing was collected,
+      // so `last_polled` must not move and the backoff must not be cleared.
+      // 'warning' is the existing value the Redis-unavailable path already
+      // uses for "we heard from it but stored nothing".
+      await db
+        .update(snmpDevices)
+        .set({
+          lastPollAttemptedAt: now, lastStatus: 'warning',
+          ...(dropNotice ? { lastError: dropNotice, lastErrorAt: now } : {}),
+        })
+        .where(eq(snmpDevices.id, data.deviceId));
+    }
   });
 
-  console.log(`[SnmpWorker] Wrote ${rows.length} metrics for device ${data.deviceId}`);
+  console.log(`[SnmpWorker] Wrote ${rows.length} metrics (${nonErrorRows} with values, ${droppedRows} dropped) for device ${data.deviceId}`);
   return { metricsWritten: rows.length };
 }
 
@@ -489,9 +777,18 @@ function resolveValueType(value: unknown): string {
 }
 
 /**
- * Build an SNMP poll command payload from device config and OIDs.
- * Shared between the worker poll flow and the test endpoint in routes.
+ * Extra, purely additive poll-command inputs (spec §7.1).
+ *
+ * Separate from the positional parameters so the existing call sites — and
+ * `snmpQueue.test.ts`, which passes `idPrefix` positionally — keep compiling.
  */
+export interface SnmpPollCommandExtras {
+  /** Acquisition specs from the device's template; empty means "legacy only". */
+  oidSpecs?: OidSpec[];
+  /** Pre-increment `snmp_devices.poll_seq`, gating the `slow` specs. */
+  pollSeq?: number;
+}
+
 export function buildSnmpPollCommand(
   deviceId: string,
   device: {
@@ -504,10 +801,21 @@ export function buildSnmpPollCommand(
     authPassword: string | null;
     privProtocol: string | null;
     privPassword: string | null;
+    consecutiveFailures?: number | null;
   },
   oids: string[],
-  idPrefix = 'snmp'
+  idPrefix = 'snmp',
+  extras: SnmpPollCommandExtras = {}
 ): AgentCommand {
+  const specs = extras.oidSpecs ?? [];
+  // Only devices with template entries get the new fields. Without them the
+  // payload is byte-for-byte what it has always been, which is what the poll
+  // `/test` route and every agent released before this wave expect.
+  // Retry slow specs after a failure, even if dispatch advanced past their slot.
+  const dispatchSpecs = (device.consecutiveFailures ?? 0) > 0
+    ? specs
+    : selectOidSpecsForSeq(specs, extras.pollSeq ?? 0);
+
   return {
     id: `${idPrefix}-${deviceId}-${Date.now()}`,
     type: 'snmp_poll',
@@ -522,7 +830,10 @@ export function buildSnmpPollCommand(
       authPassword: decryptSnmpSecret(device.authPassword, { table: 'snmp_devices', column: 'auth_password' }) ?? '',
       privProtocol: device.privProtocol ?? '',
       privPassword: decryptSnmpSecret(device.privPassword, { table: 'snmp_devices', column: 'priv_password' }) ?? '',
-      oids
+      // NEVER cadence-gated and never reordered: this is the only field an
+      // agent released before W02 reads (`tools.GetPayloadStringSlice`).
+      oids,
+      ...(dispatchSpecs.length > 0 ? { oidSpecs: dispatchSpecs, limits: { ...POLL_LIMITS } } : {})
     }
   };
 }
@@ -618,6 +929,7 @@ export async function enqueueSnmpPollResults(
   deviceId: string,
   metrics: SnmpMetricResult[],
   pollId?: string,
+  protocol?: number,
 ): Promise<string> {
   const queue = getSnmpQueue();
   // '-' separator, not ':', so BullMQ does not reject the custom jobId (see enqueueSnmpPoll).
@@ -640,7 +952,8 @@ export async function enqueueSnmpPollResults(
       type: 'process-poll-results',
       deviceId,
       pollId,
-      metrics
+      metrics,
+      ...(protocol !== undefined ? { protocol } : {}),
     },
     {
       ...(stableJobId ? { jobId: stableJobId } : {}),

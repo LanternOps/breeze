@@ -79,6 +79,23 @@ describe('filterEngine input hardening (#1044)', () => {
 const dialect = new PgDialect();
 const render = (cond: FilterCondition): string => dialect.sqlToQuery(buildConditionSQL(cond)).sql;
 
+describe('filterEngine deviceFunction field (Fleet Designer W02, #5652)', () => {
+  it('validates deviceFunction as a core enum field over the shared SSOT keys', () => {
+    const res = validateFilter({ field: 'deviceFunction', operator: 'equals', value: 'file_server' } as FilterCondition);
+    expect(res.valid).toBe(true);
+  });
+
+  it('resolves to the devices.device_function projection column', () => {
+    const sql = render({ field: 'deviceFunction', operator: 'equals', value: 'file_server' });
+    expect(sql).toMatch(/"device_function" = /);
+  });
+
+  it('accepts a custom:<slug> key through the in operator', () => {
+    const sql = render({ field: 'deviceFunction', operator: 'in', value: ['custom:pos', 'kiosk'] });
+    expect(sql).toMatch(/"device_function"/);
+  });
+});
+
 describe('filterEngine virtual EXISTS fields (#968)', () => {
   describe('boolean predicates', () => {
     it('patches.pending equals yes → EXISTS against device_patches WHERE status pending', () => {

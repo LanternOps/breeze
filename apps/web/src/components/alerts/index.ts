@@ -23,7 +23,6 @@ export { default as AlertTemplateList } from './AlertTemplateList';
 export { default as AlertTemplateEditor } from './AlertTemplateEditor';
 
 // Alert Rule Editor
-export { default as AlertRuleEditor } from './AlertRuleEditor';
 
 // Alert Correlation
 export { default as AlertCorrelationView } from './AlertCorrelationView';
@@ -41,5 +40,4 @@ export { default as AlertsSummary, AlertsSummaryCompact } from './AlertsSummary'
 
 // Page Components
 export { default as AlertsPage } from './AlertsPage';
-export { default as AlertRuleEditPage } from './AlertRuleEditPage';
-export { default as NotificationChannelsPage } from './NotificationChannelsPage';
+export { default as DeliveryPage } from './DeliveryPage';

@@ -9,6 +9,7 @@ import { loadScriptFindings, computeScriptSignals, loadScriptIndicators } from '
 import { loadBillingIdentityAggregates, computeBillingIdentitySignals } from './billingIdentity';
 import { syncEndpointFingerprints, loadRecidivistMatches, computeRecidivistSignals } from './recidivistEndpoint';
 import { loadOriginIpAggregates, computeOriginIpSignals } from './originIp';
+import { loadSendingDomainAggregates, computeSendingDomainSignals } from './sendingDomains';
 import { computeCorroborationSignals } from './corroboration';
 import { persistSignals, markDelivered } from './persistence';
 import type { ComputedSignal } from './types';
@@ -50,7 +51,7 @@ export async function runAbuseSweep(): Promise<{ fired: number; notified: number
   const cfg = loadSignalConfig();
   const now = new Date();
 
-  const { invariants, aggregates, scriptFindings, billingIdentity, recidivist, originIp } = await runSystemDbCompute(
+  const { invariants, aggregates, scriptFindings, billingIdentity, recidivist, originIp, sendingDomains } = await runSystemDbCompute(
     async () => {
       // syncEndpointFingerprints refreshes the corpus before the correlation
       // read below runs, same ordering scriptContent uses for its own scan.
@@ -62,6 +63,7 @@ export async function runAbuseSweep(): Promise<{ fired: number; notified: number
         billingIdentity: await loadBillingIdentityAggregates(),
         recidivist: await loadRecidivistMatches(),
         originIp: await loadOriginIpAggregates(),
+        sendingDomains: await loadSendingDomainAggregates(now),
       };
     },
   );
@@ -87,6 +89,10 @@ export async function runAbuseSweep(): Promise<{ fired: number; notified: number
     // account sits dormant for weeks by design, so weighting it by account age
     // would silence it exactly when it matures into a live operator.
     ...computeOriginIpSignals(originIp.aggregates, originIp.corpus, cfg, now),
+    // Sending-domain signals are likewise never age-decayed — the scorer takes
+    // no clock at all. A lookalike sending domain and a bounce storm say what
+    // the account is DOING; account age is not evidence either way.
+    ...computeSendingDomainSignals(sendingDomains.aggregates, cfg),
   ];
   // Corroboration runs LAST and reads only what the detectors above produced —
   // no extra queries. It promotes a partner whose evidence spans two or more
@@ -106,6 +112,7 @@ export async function runAbuseSweep(): Promise<{ fired: number; notified: number
     ...billingIdentity.scannedPartnerIds,
     ...recidivist.scannedPartnerIds,
     ...originIp.scannedPartnerIds,
+    ...sendingDomains.scannedPartnerIds,
   ]);
   const { toNotify } = await runSystemDbCompute(() => persistSignals(computed, now, evaluatedPartnerIds));
 

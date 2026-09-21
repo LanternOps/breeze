@@ -1,12 +1,17 @@
 ---
 import '../styles/globals.css';
 import { ClientRouter } from 'astro:transitions';
+import { tServer } from '../lib/i18n/server';
 
 interface Props {
-  title: string;
+  title?: string;
+  titleKey?: string;
 }
 
-const { title } = Astro.props;
+const { title, titleKey } = Astro.props;
+const pageTitle = titleKey ? tServer(Astro.locals.locale, titleKey) : title;
+const metaDescription = tServer(Astro.locals.locale, 'layout.metaDescriptionSetup');
+const setupTagline = tServer(Astro.locals.locale, 'titles.setup');
 ---
 
 <!DOCTYPE html>
@@ -14,9 +19,9 @@ const { title } = Astro.props;
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="description" content="Breeze RMM - Initial Setup" />
+    <meta name="description" content={metaDescription} />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <title>{title} | Breeze RMM</title>
+    <title>{pageTitle} | Breeze RMM</title>
     <ClientRouter />
   </head>
   <body class="min-h-screen bg-background antialiased">
@@ -31,7 +36,7 @@ const { title } = Astro.props;
             </svg>
           </div>
           <h1 class="mt-3 text-xl font-bold tracking-tight">Breeze</h1>
-          <p class="mt-1 text-sm text-muted-foreground">Initial Setup</p>
+          <p class="mt-1 text-sm text-muted-foreground">{setupTagline}</p>
         </div>
 
         <slot />

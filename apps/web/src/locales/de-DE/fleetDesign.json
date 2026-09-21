@@ -1,0 +1,174 @@
+{
+  "page": {
+    "title": "Flottendesign",
+    "description": "Ein KI-erstelltes Design für die Flotte dieser Organisation: wofür jedes Gerät da ist, was überwacht werden soll und was sich geändert hat.",
+    "orgLabel": "Organisation",
+    "selectOrgPlaceholder": "Keine Organisationen verfügbar",
+    "siteLabel": "Standort (optional)",
+    "allSites": "Alle Standorte",
+    "startButton": "Flottendesign starten",
+    "startError": "Der Flottendesign-Lauf konnte nicht gestartet werden.",
+    "startSuccess": "Flottendesign-Lauf gestartet.",
+    "running": "Flottendesign läuft…",
+    "empty": "Für diese Organisation gibt es noch keine Flottendesigns.",
+    "loadError": "Flottendesigns konnten nicht geladen werden.",
+    "detailLoadError": "Dieses Flottendesign konnte nicht geladen werden.",
+    "loadingDesign": "Design wird geladen …",
+    "downloadPdf": "PDF herunterladen",
+    "downloadFailed": "Das PDF konnte nicht heruntergeladen werden.",
+    "reviewApply": "Prüfen & anwenden",
+    "listColumns": {
+      "generated": "Erstellt",
+      "functions": "Funktionen",
+      "watches": "Überwachungen",
+      "rules": "Regeln",
+      "applied": "Angewendet"
+    },
+    "startSkipped": {
+      "modeOff": "Der Design-Agent ist für diese Organisation deaktiviert.",
+      "killSwitchOff": "KI-Agenten sind derzeit plattformweit deaktiviert.",
+      "agentDisabled": "Der Design-Agent ist für diese Organisation deaktiviert.",
+      "noEffectiveAgent": "Für diese Organisation ist kein Design-Agent konfiguriert.",
+      "orgBudgetExceeded": "Das KI-Budget dieser Organisation ist für diesen Zeitraum aufgebraucht.",
+      "agentDailyBudgetExceeded": "Das Tagesbudget des Design-Agenten ist aufgebraucht.",
+      "maxConcurrentDesignRuns": "Für diese Organisation läuft bereits ein Flottendesign-Lauf.",
+      "designRate": "Diese Organisation hat ihr aktuelles Limit für Flottendesign-Läufe erreicht.",
+      "duplicate": "Ein passender Flottendesign-Lauf wurde bereits angefordert.",
+      "generic": "Der Lauf wurde nicht gestartet ({{reason}}).",
+      "noDesignerAgent": "Für den Partner dieser Organisation gibt es noch keinen Fleet-Designer-Agenten."
+    },
+    "fileAsDocument": "Als Dokument ablegen",
+    "fileAsDocumentSuccess": "Design in der Dokumentbibliothek abgelegt.",
+    "fileAsDocumentError": "Das Design konnte nicht als Dokument abgelegt werden.",
+    "designerSetup": {
+      "status": {
+        "missing": "Es gibt noch keinen Fleet-Designer-Agenten.",
+        "off": "Der Fleet-Designer-Agent ist ausgeschaltet.",
+        "disabled": "Der Fleet-Designer-Agent ist deaktiviert.",
+        "killSwitchOff": "KI-Agenten sind derzeit plattformweit ausgeschaltet."
+      },
+      "enableHint": "Hier aktivieren. Der Designer liest nur Ihre Flotte und schreibt ein Design; er ändert nie ein Gerät.",
+      "askPartnerAdmin": "Bitten Sie einen Partner-Administrator, den Fleet-Designer-Agenten unter Einstellungen → KI-Agenten zu aktivieren.",
+      "killSwitchHint": "Das ist eine Plattformeinstellung; nichts auf dieser Seite kann sie ändern.",
+      "enableButton": "Fleet Designer aktivieren",
+      "enableSuccess": "Fleet Designer aktiviert.",
+      "enableError": "Fleet Designer konnte nicht aktiviert werden.",
+      "errors": {
+        "partnerScopeRequired": "Nur ein Partner-Administrator kann den Fleet-Designer-Agenten aktivieren.",
+        "partnerAdminRequired": "Nur ein Partner-Administrator kann den Fleet-Designer-Agenten aktivieren.",
+        "killSwitchOff": "KI-Agenten sind derzeit plattformweit ausgeschaltet.",
+        "agentKindExists": "Ein Designer-Agent existiert bereits. Aktualisieren Sie die Seite und versuchen Sie es erneut.",
+        "actPrerequisitesNotMet": "Der Designer-Agent braucht einen Empfänger, bevor er laufen kann. Fügen Sie einen unter Einstellungen → KI-Agenten hinzu.",
+        "invalidRecipients": "Ihr Konto konnte nicht als Empfänger des Designers gesetzt werden. Fügen Sie einen unter Einstellungen → KI-Agenten hinzu."
+      }
+    }
+  },
+  "sections": {
+    "found": "Was gefunden wurde",
+    "functions": "Wofür jedes Gerät da ist",
+    "monitoring": "Was überwacht werden soll, und warum",
+    "retired": "Was nicht übernommen wird",
+    "automation": "Automatisierung",
+    "legacy": "Bestand an Altskripten",
+    "baseline": "Ausgangswerte und Vorboten",
+    "unsure": "Wo sich der Designer unsicher ist"
+  },
+  "items": {
+    "none": "Hier gibt es nichts.",
+    "applied": "Angewendet",
+    "findingCount": "{{title}} — {{count}} Geräte",
+    "functionMeta": "{{count}} Geräte · {{pct}}% Konfidenz",
+    "roleCorrectionLabel": "{{from}} → {{to}}"
+  },
+  "automation": {
+    "showContent": "Skriptinhalt anzeigen"
+  },
+  "legacy": {
+    "columns": {
+      "script": "Skript",
+      "bucket": "Kategorie",
+      "coveredBy": "Abgedeckt durch",
+      "intent": "Zweck",
+      "notes": "Notizen"
+    },
+    "bucket": {
+      "obsolete": "Veraltet",
+      "covered": "Abgedeckt",
+      "needed": "Benötigt"
+    }
+  },
+  "drawer": {
+    "title": "Flottendesign anwenden",
+    "loadingPreview": "Es wird geprüft, was dies bewirkt …",
+    "nothingSelected": "Wählen Sie mindestens ein Element zum Anwenden aus.",
+    "creates": "Erstellt",
+    "createsScripts": "Erstellt Skripte",
+    "scriptRenamed": "ein Skript mit diesem Namen existiert bereits — das neue erhält eine nummerierte Erweiterung",
+    "scriptsNote": "Wird in der Skriptbibliothek dieser Organisation erstellt und mit „fleet-design\" markiert. Nichts wird ausgeführt, bis es jemand startet; ein Rollback entfernt die Markierung und behält das Skript.",
+    "watchAndRuleCount": "{{watches}} Überwachungen, {{rules}} Regeln",
+    "retires": "Entfernt",
+    "displaces": "Verdrängt",
+    "displacesCount": "{{count}} Geräte",
+    "acceptDisplacement": "Verdrängung akzeptieren",
+    "roleCorrections": "Rollenkorrekturen",
+    "billingWarning": "Rollenänderungen können sich auf die Abrechnung auswirken.",
+    "alreadyApplied": "Bereits angewendet",
+    "blockers": "Blockierende Punkte",
+    "cancel": "Abbrechen",
+    "confirm": "Bestätigen",
+    "applyingCloseBlocked": "Wird angewendet — bitte warten Sie, bis dies abgeschlossen ist.",
+    "rollingBackCloseBlocked": "Wird zurückgesetzt — bitte warten Sie, bis dies abgeschlossen ist."
+  },
+  "result": {
+    "applied": "{{count}} Element(e) angewendet.",
+    "skipped": "{{count}} bereits angewendete Element(e) übersprungen.",
+    "partial": "Teilweise angewendet — Fehler bei Schritt {{step}}: {{reason}}",
+    "rollback": "Angewendete Änderungen zurücksetzen",
+    "rollbackDone": "{{count}} Element(e) zurückgesetzt.",
+    "rollbackRefused": "Einige Elemente konnten nicht zurückgesetzt werden:",
+    "close": "Schließen"
+  },
+  "errors": {
+    "genericPreview": "Die Vorschau dieses Flottendesigns ist fehlgeschlagen.",
+    "genericApply": "Dieses Flottendesign konnte nicht angewendet werden.",
+    "genericRollback": "Dieses Flottendesign konnte nicht zurückgesetzt werden.",
+    "blocked": "Dieses Design kann noch nicht angewendet werden — beheben Sie die blockierenden Punkte und versuchen Sie es erneut.",
+    "site_restricted": "Standortbeschränkte Konten können ein Flottendesign weder anwenden noch zurücksetzen.",
+    "no_designer_agent": "Für diese Organisation ist kein Design-Agent konfiguriert.",
+    "not_found": "Dieses Flottendesign wurde nicht gefunden.",
+    "scripts_write_required": "Zum Erstellen von Skripten wird die Schreibberechtigung für Skripte benötigt. Heben Sie die Auswahl der vorgeschlagenen Skripte auf oder wenden Sie sich an einen Administrator."
+  },
+  "drift": {
+    "banner": "Abweichung seit dem am {{date}} angewendeten Design: {{missing}} fehlend, {{extra}} zusätzlich, {{changed}} geändert.",
+    "deviceCount_one": "{{count}} Gerät",
+    "deviceCount_other": "{{count}} Geräte",
+    "rows": {
+      "missing": "Fehlt",
+      "extra": "Zusätzlich",
+      "changed": "Geändert"
+    },
+    "columns": {
+      "drift": "Abweichung",
+      "kind": "Art",
+      "item": "Element",
+      "scope": "Funktion / Richtlinie",
+      "detail": "Einzelheit"
+    }
+  },
+  "evidence": {
+    "notMeasured": "Nicht gemessen",
+    "org": "Organisationsdaten",
+    "devices": "Geräte",
+    "software": "Softwareinventar",
+    "services": "Systemdienste",
+    "network": "Netzwerkdaten",
+    "posture": "Sicherheitslage",
+    "health": "Flottenzustand",
+    "configuration": "Konfiguration",
+    "automation": "Automatisierungsdaten",
+    "logs": "Ereignisprotokolle",
+    "counts": "Aktivitätszahlen",
+    "precursors": "Frühwarnindikatoren",
+    "drift": "Abweichungen vom genehmigten Entwurf"
+  }
+}

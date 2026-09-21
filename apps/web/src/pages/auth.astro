@@ -1,14 +1,15 @@
 ---
 import AuthShellBranded from '../layouts/AuthShellBranded.astro';
 import AuthPage from '../components/auth/AuthPage';
+import { tServer } from '../lib/i18n/server';
 
 const next = Astro.url.searchParams.get('next') ?? undefined;
 ---
 
 <AuthShellBranded
-  title="Sign in or create account"
-  description="Breeze RMM - Sign in or create your account"
-  tagline="Sign in or create your account to get started."
+  titleKey="titles.auth"
+  description={tServer(Astro.locals.locale, 'authPage.description')}
+  tagline={tServer(Astro.locals.locale, 'authPage.tagline')}
 >
   <AuthPage client:load next={next} />
 </AuthShellBranded>

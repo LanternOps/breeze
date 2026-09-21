@@ -835,6 +835,23 @@
         "openAlertsFeature": "Alarme öffnen",
         "legacyAlertRulesMovedToAlerts": "{{count}} ältere Alarmregel(n) von diesem Tab wurden in die Alarm-Funktion dieser Richtlinie verschoben. Die Überwachung speichert sie nicht mehr."
       },
+      "monitorsTab": {
+        "attachMonitor": "Überwachung hinzufügen",
+        "loadingMonitors": "Überwachungen werden geladen…",
+        "noMoreMonitorsToAttach": "Keine weiteren Überwachungen zum Hinzufügen verfügbar",
+        "selectAMonitorToAttach": "Überwachung zum Hinzufügen auswählen…",
+        "noMonitorsAttached": "Dieser Richtlinie sind noch keine Überwachungen zugeordnet.",
+        "inherited": "Geerbt",
+        "overrideValue": "Überschreibungswert",
+        "overridesLabel": "Überschreibungen:",
+        "failedToLoadMonitors": "Überwachungen konnten nicht geladen werden",
+        "createMonitor": "Monitor erstellen",
+        "recommended": {
+          "title": "Empfohlene Monitore",
+          "body": "Breeze liefert integrierte Monitore für CPU, Arbeitsspeicher, Datenträger und Patch-Compliance. Keiner ist dieser Richtlinie bisher zugeordnet.",
+          "action": "Alle integrierten Monitore anhängen"
+        }
+      },
       "pamTab": {
         "captureWindowsUACElevationPrompts": "Windows-UAC-Aufforderungen zur Rechteerhöhung erfassen",
         "theAgentObservesUACConsentPromptsAnd": "Der Agent erkennt UAC-Zustimmungsaufforderungen und zeichnet sie als Rechteerhöhungsanfragen für die PAM-Prüfung auf. Die Erfassung ist standardmäßig deaktiviert; hier kann der Gerätebereich für PAM aktiviert werden.",
@@ -1175,7 +1192,30 @@
         "generateACriticalAlertWhenWarrantyExpires": "Generieren Sie eine kritische Warnung, wenn die Garantie innerhalb dieser Anzahl von Tagen abläuft.",
         "enabled": "aktiviert",
         "warnDays": "warnDays",
-        "criticalDays": "kritischeTage"
+        "criticalDays": "kritischeTage",
+        "collectHpWarrantyFromTheDevice": "HP-Garantiedaten auf dem Gerät erfassen",
+        "hpCmslConsentExplainer": "HP-Garantiedaten werden auf dem Gerät mit der Client Management Script Library von HP gelesen. Mit diesem Kontrollkästchen akzeptieren Sie die HP-Lizenz im Namen dieses Kunden, und HP darf technische Informationen vom Gerät erfassen, einschließlich der IP-Adresse. Bleibt es leer, behalten HP-Geräte den Garantiestatus, den sie bereits haben.",
+        "hpCmslNoAcceptanceRecordedYet": "Noch keine Zustimmung erfasst. Beim Speichern mit gesetztem Kontrollkästchen werden Ihr Benutzer und die Serverzeit erfasst.",
+        "hpCmslAcceptedByOn": "Akzeptiert von {{user}} am {{date}}",
+        "hpCmslTermsChangedSaveAgain": "HP hat seine Lizenzbedingungen seit dieser Zustimmung geändert. Speichern Sie erneut, um erneut zuzustimmen.",
+        "hpCmslInheritanceReplacesTheWholeLink": "Diese Richtlinie ersetzt die geerbten Garantieeinstellungen vollständig, ohne feldweise Zusammenführung. Wird sie mit deaktivierter Erfassung gespeichert, endet die HP-Garantieerfassung auf jedem Gerät, das diese Richtlinie erreicht."
+      },
+      "rationale": {
+        "label": "Begründung",
+        "edit": "Begründung bearbeiten",
+        "placeholder": "Warum dieses Element existiert …",
+        "save": "Speichern",
+        "cancel": "Abbrechen",
+        "none": "Keine Begründung hinterlegt."
+      },
+      "legacyFreeze": {
+        "title": "Neue Regeln werden als Monitore erstellt",
+        "body": "Bestehende Regeln bleiben hier bearbeitbar und werden im nächsten Release in Monitore umgewandelt.",
+        "link": "Monitore-Tab öffnen"
+      },
+      "duplicate": {
+        "title": "Geräte in dieser Richtlinie melden doppelt",
+        "body": "Diese Bedingungen existieren sowohl als angehängter Monitor als auch als Alt-Regel oder -Überwachung: {{names}}"
       }
     }
   },
@@ -1310,6 +1350,8 @@
       "readyToDeployStandalone": "Bereit zum Einsatz."
     },
     "complianceDashboard": {
+      "autoInstallArmed": "Automatische Installation aktiviert",
+      "complianceCheckQueued": "Konformitätsprüfung eingereiht",
       "failedToLoadSoftwarePolicyData": "Das Laden der Softwarerichtliniendaten ist fehlgeschlagen",
       "couldNotLoadLatestPolicyDetailsShowing": "Die neuesten Richtliniendetails konnten nicht geladen werden. Zwischengespeicherte Daten werden angezeigt.",
       "couldNotLoadPolicyDetailsShowingCached": "Richtliniendetails konnten nicht geladen werden. Zwischengespeicherte Daten werden angezeigt.",
@@ -1349,7 +1391,19 @@
       "failedToUpdatePolicy": "Die Richtlinie konnte nicht aktualisiert werden",
       "failedToCreatePolicy": "Richtlinie konnte nicht erstellt werden",
       "policyUpdated": "Richtlinie erfolgreich aktualisiert",
-      "policyCreated": "Richtlinie erfolgreich erstellt"
+      "policyCreated": "Richtlinie erfolgreich erstellt",
+      "armInstallRequiresMfa": "Die Aktivierung der automatischen Installation erfordert Multi-Faktor-Authentifizierung. Schließen Sie die MFA ab und versuchen Sie es erneut.",
+      "armInstallRequiresPermission": "Die Aktivierung der automatischen Installation erfordert die Berechtigung devices.execute. Bitten Sie einen Administrator, sie zu erteilen, und versuchen Sie es dann erneut.",
+      "installStatusPending": "Installation eingereiht",
+      "installStatusInProgress": "Wird installiert…",
+      "installStatusCompleted": "Installiert",
+      "installStatusFailed": "Installation fehlgeschlagen",
+      "installStatusGaveUp": "Nach wiederholten Fehlschlägen aufgegeben",
+      "installStatusSkipped": "Diesen Durchlauf übersprungen",
+      "installSkippedNoCatalog": "Eine erforderliche Regel hat keinen verknüpften Katalogeintrag, daher gibt es nichts zu installieren. Fügen Sie im Richtlinien-Editor eine Katalogverknüpfung hinzu, um dies zu beheben.",
+      "installSkippedCapOrPlatform": "Kein Fehler — entweder wurde die Installationsobergrenze pro Durchlauf erreicht, oder für die Plattform dieses Geräts gibt es keine Installationsmethode für die Software. Wird eventuell im nächsten Durchlauf erneut versucht.",
+      "installAttempts": "{{count}} Versuch(e)",
+      "installLastAttempt": "Letzter Installationsversuch: "
     },
     "deploymentList": {
       "running": "Wird ausgeführt",
@@ -1387,7 +1441,9 @@
       "noDeploymentsYet": "Es wurden noch keine Bereitstellungen erstellt.",
       "failedToCancelDeployment": "Bereitstellung konnte nicht abgebrochen werden",
       "deploymentCancelled": "Bereitstellung abgebrochen",
-      "pageOf": "Seite {{page}} von {{pages}}"
+      "pageOf": "Seite {{page}} von {{pages}}",
+      "policyOwned": "Richtliniengesteuert",
+      "policyOwnedTooltip": "Automatisch erstellt durch die Auto-Installations-Remediation einer Softwarerichtlinie"
     },
     "deploymentProgress": {
       "queued": "In der Warteschlange",
@@ -1571,6 +1627,9 @@
       "s": "s"
     },
     "policyForm": {
+      "dryRunUnassigned": "0 Geräte — meist, weil diese Richtlinie noch keinem Gerät zugewiesen ist; eine vollständig konforme Flotte oder eine leere Standort-Freigabeliste ergibt ebenfalls 0",
+      "manageAssignments": "Zuweisungen von Konfigurationsrichtlinien verwalten",
+      "gracePeriodHelp": "Wird beim nächsten Konformitätsprüflauf angewendet",
       "scope": "Umfang",
       "allOrganizations": "Alle Organisationen",
       "partnerWideTemplate": "(partnerweite Vorlage)",
@@ -1615,7 +1674,16 @@
       "autoUninstall2": "autoUninstall",
       "gracePeriod": "grace-period",
       "gracePeriod2": "Gnadenfrist",
-      "saving": "Speichern..."
+      "saving": "Speichern...",
+      "catalogLink": "Verknüpfter Katalogeintrag",
+      "catalogLinkNone": "Keiner — nicht verknüpft",
+      "autoInstall": "Fehlende Software automatisch installieren",
+      "autoInstallCatalogWarning": "{{count}} von {{total}} Regel(n) haben keinen verknüpften Katalogeintrag und werden als fehlend erkannt, aber nie installiert.",
+      "dryRunLoading": "Wird geprüft, wie viele Geräte betroffen sind...",
+      "dryRunResult": "Dies installiert fehlende Software auf etwa {{count}} Gerät(en).",
+      "dryRunUnavailable": "Die Geräteanzahl-Vorschau ist noch nicht verfügbar. Die Aktivierung wirkt trotzdem beim nächsten Compliance-Durchlauf.",
+      "dryRunNewPolicy": "Dies ist eine neue Richtlinie — die Auswirkung auf Geräte ist erst nach dem ersten Compliance-Durchlauf nach dem Speichern bekannt.",
+      "catalogUnavailable": "Der Softwarekatalog konnte nicht geladen werden, daher sind die Katalogverknüpfungs-Auswahlfelder unten leer. Das ist nicht dasselbe wie „keine Katalogeinträge vorhanden“ — laden Sie die Seite neu, bevor Sie annehmen, dass eine Regel nicht verknüpft werden kann."
     },
     "softwareCatalog": {
       "ready": "Bereit",

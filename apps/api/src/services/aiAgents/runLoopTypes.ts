@@ -1,3 +1,4 @@
+import type { AnalysisOutcome, RemediationTriggerKind } from '@breeze/shared';
 /**
  * The run loop's internal shape contracts, split out of `runLoop.ts` (issue
  * #4451) so the loop itself and its per-profile finalizers (`runFinalizers.ts`)
@@ -20,6 +21,8 @@ import type {
   AiAgentTriggerKind,
   AiSweepKind,
   AlertVerdictOutcome,
+  FleetDesignOutcome,
+  PatchPlanOutcome,
   NarrativeOutcome,
   SweepFindingsOutcome,
   TicketTriageProposal,
@@ -29,10 +32,14 @@ import type {
 import type { AuthContext } from '../../middleware/auth';
 import type { AlertVerdictIntentInfo } from './alertVerdicts';
 import type { AnomalyRunContext } from './anomalyContext';
+import type { DesignEvidence } from './designEvidence';
 import type { NarrativeContext } from './narrativeContext';
+import type { PatchEvidence } from './patchEvidence';
 import type { SweepEvidence } from './sweepEvidence';
 import type { SweepProposalRecord } from './sweepFindings';
 import type { TicketRunContext } from './ticketContext';
+import type { WorkspaceService } from '../workspace/workspaceService';
+import type { AiAgentRunStagedInputs } from '../../db/schema/aiAgents';
 
 export interface OutcomeProposedAction {
   tool: string;
@@ -61,6 +68,10 @@ export interface OutcomeProposedAction {
 }
 
 export interface OutcomeExecutedAction {
+  /** Creation-time cause; optional for historical outcome JSON. */
+  triggerKind?: RemediationTriggerKind;
+  triggerRefId?: string;
+  triggerKey?: string;
   tool: string;
   action?: string;
   /**
@@ -245,6 +256,70 @@ export interface AgentRunOutcome {
    * alone of the weekly context, on the run row.
    */
   narrativeReport?: { reportId: string; reportRunId: string };
+  /**
+   * #4248 W03 — TRUE when `resolveRecipientUserIds` threw while the narrative
+   * finalizer was working out who should receive the email, so the artifact
+   * was persisted with ZERO delivery rows.
+   *
+   * Load-bearing for honesty, not for behaviour: without it, "the recipient
+   * lookup failed and nobody was emailed" and "this org deliberately has no
+   * recipients" are the same observable state (no delivery rows, so no
+   * delivery summary), and the weekly report silently reaches nobody. The
+   * run-detail surface reads this to say which one happened.
+   */
+  narrativeRecipientsUnresolved?: boolean;
+  /**
+   * Fleet Designer W01 (#5651) — the validated, server-built design,
+   * captured by the post-tool-use hook on a `design`-profile run. Set at
+   * most once (the outcome tool's description and the design task turn both
+   * tell the model to call it exactly once); absent for every other profile,
+   * which never has the design outcome tool exposed at all.
+   *
+   * NOT the raw tool input, same split as `narrative` above: the model
+   * submits a `FleetDesignSubmission` and the SERVER attaches every
+   * `itemRef`, computes `baseline.numbers` and derives the markdown
+   * (`fleetDesignOutcomeFromSubmission`, reached through
+   * `validateOutcomeToolInput`).
+   *
+   * `finalizeFleetDesign` persists it as a system-authored report artifact
+   * and links `ai_agent_runs.report_run_id` — NOTHING here executes.
+   */
+  fleetDesign?: FleetDesignOutcome;
+  /**
+   * Fleet Designer W01 (#5651) — the report the design was materialised
+   * into, written by `finalizeFleetDesign` once `persistFleetDesignReport`'s
+   * transaction committed. Absent for every other profile, for a design run
+   * that produced nothing, and for one whose persistence lost the CAS (in
+   * which case the run's `error_code` says so).
+   *
+   * TWO ids and nothing else — same shape and same reasoning as
+   * `narrativeReport` above.
+   */
+  fleetDesignReport?: { reportId: string; reportRunId: string };
+  /**
+   * AI patch agent W01 (#5747) — the validated, SERVER-BUILT patch plan
+   * captured by the post-tool-use hook on a `patch`-profile run (never the
+   * raw tool input). `finalizePatchPlan` re-validates every item against the
+   * run's evidence and fills `dispositions`. NOTHING here executes and no
+   * action intent is minted in W01.
+   */
+  patchPlan?: PatchPlanOutcome;
+  /**
+   * Execution plane W04 — the validated `submit_analysis` input on an
+   * `analysis`-profile run. `proposedActions` inside it are PROPOSALS the
+   * run page renders for a technician; nothing in the loop converts them to
+   * intents (unlike sweep/triage), because an analysis run is device-LESS
+   * and `maxActionsPerRun` is 0.
+   */
+  analysis?: AnalysisOutcome;
+  /** Sandbox compute charged to this run, in cents (spec §5.6). */
+  computeCents?: number;
+  /**
+   * True when the provider could not report usage and the run settled at its
+   * RESERVATION rather than at measured usage (spec §9). Surfaced so a
+   * reviewer can tell a measured 12¢ from a worst-case 25¢.
+   */
+  computeUsageEstimated?: boolean;
 }
 
 export interface RunRow {
@@ -283,6 +358,18 @@ export interface RunRow {
   taskId: string | null;
   taskStepKey: string | null;
   taskAttemptOrdinal: number | null;
+  /**
+   * Execution plane W04 — the admission-frozen inputs of an `analysis` run
+   * (`ai_agent_runs.staged_inputs`), `null` for every other profile. jsonb:
+   * read DEFENSIVELY.
+   */
+  stagedInputs: AiAgentRunStagedInputs | null;
+  /**
+   * Execution plane W04 — the compute reservation admission took, in cents.
+   * `null` once settled and for every non-analysis run. It is what the
+   * workspace finalizer settles at when provider usage is unavailable.
+   */
+  computeReservedCents: number | null;
 }
 
 export interface AgentRow {
@@ -358,6 +445,39 @@ export interface RunContext {
     context: NarrativeContext;
   } | null;
   /**
+   * Fleet Designer W01 (#5651) — the schedule occurrence (or manual trigger)
+   * and the bounded, system-assembled fleet evidence a `design`-profile run
+   * writes about. Set only for `profile: 'design'`; `null` everywhere else.
+   *
+   * `scheduleId` is `null` for a manually triggered design run — unlike
+   * `narrative`'s `''` sentinel, `finalizeFleetDesign` treats a missing
+   * schedule as a perfectly normal case (manual runs persist too), so there
+   * is no analogous "no schedule" error code here.
+   */
+  design: {
+    scheduleId: string | null;
+    occurrenceKey: string | null;
+    siteId: string | null;
+    evidence: DesignEvidence;
+  } | null;
+  /**
+   * AI patch agent W01 (#5747) — the schedule occurrence (or manual trigger)
+   * and the bounded, org-pinned patch evidence a `patch`-profile run plans
+   * from. Set only for `profile: 'patch'`. Optional (absent ≡ null) so every
+   * pre-existing RunContext literal stays valid. `scheduleId` is null for a
+   * manual "Run now".
+   */
+  patch?: {
+    scheduleId: string | null;
+    occurrenceKey: string | null;
+    evidence: PatchEvidence;
+    /**
+     * W04 (#5750): `triggerRef.focusDeviceId` of a reactive (alert-routed)
+     * run — a prompt hint only; the run stays device-less.
+     */
+    focusDeviceId?: string | null;
+  } | null;
+  /**
    * The execution-ledger `ai_sessions` row for this run (Task 1/2). Set once,
    * inside `driveSdkLoop`, right after the model is resolved — `null` until
    * then, and stays `null` for the lifetime of the run if session creation
@@ -365,6 +485,14 @@ export interface RunContext {
    * it back to reconcile/close the session.
    */
   sessionId: string | null;
+  /**
+   * Execution plane W04 — the per-run sandbox workspace, for an
+   * `analysis`-profile run that has one. Constructed by `driveSdkLoop` (the
+   * sandbox itself is created lazily on the first `workspace_*` call) and
+   * torn down by `finalizeWorkspaceForRun` in `executeAgentRun`'s `finally`.
+   * `null` for every other profile and after teardown.
+   */
+  workspace: WorkspaceService | null;
 }
 
 export interface LoopResult {

@@ -4,6 +4,7 @@ import { useOrgStore, type Site } from '../../stores/orgStore';
 import { fallbackInstallerFilename, filenameFromContentDisposition } from '@/lib/downloadFilename';
 import { extractApiError } from '@/lib/apiError';
 import { navigateTo } from '@/lib/navigation';
+import { fetchAllSites } from '@/lib/fetchAllSites';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { showToast } from '../shared/Toast';
 import { runAction, ActionError } from '../../lib/runAction';
@@ -167,15 +168,9 @@ export default function EnrollmentKeyManager() {
     setFormSites([]);
     setSitesError(false);
     setSitesLoading(true);
-    fetchWithAuth(`/orgs/sites?organizationId=${formOrgId}`)
-      .then((res) => (res.ok ? res.json() : Promise.reject(res)))
-      .then((data) => {
+    fetchAllSites<Site>(`/orgs/sites?organizationId=${formOrgId}`)
+      .then((list) => {
         if (cancelled) return;
-        const list: Site[] = Array.isArray(data?.data)
-          ? data.data
-          : Array.isArray(data?.sites)
-            ? data.sites
-            : [];
         setFormSites(list);
       })
       .catch(() => {
@@ -873,7 +868,7 @@ export default function EnrollmentKeyManager() {
                   <div className="mt-1 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-300">
                     {t('enrollmentKeys.noSitesForOrg')}{' '}
                     <a
-                      href="/settings/organizations"
+                      href="/organizations"
                       className="font-medium underline hover:no-underline"
                     >
                       {t('enrollmentKeys.createASite')}

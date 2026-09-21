@@ -88,6 +88,8 @@ Bundle format (v1):
 }
 ```
 
+Moving a component library from Datto RMM? [Migrating scripts from Datto RMM](/migration/scripts-from-datto/) maps input variables, site variables and UDF reads/writes onto parameters, variables and custom fields before you import.
+
 Categories and tags travel by name and are created in the importing tenant when missing. An unknown `bundleVersion` is rejected. Bundles are capped at 200 scripts and 20&nbsp;MB, script content at 256&nbsp;KB, `parameters` at 64&nbsp;KB (with a nesting depth of 8), and 20 tags per script.
 
 ### Creating a script
@@ -109,7 +111,7 @@ Categories and tags travel by name and are created in the importing tenant when 
 </Steps>
 
 <Aside type="caution">
-  Creating and updating scripts requires MFA verification. The save action returns an error if the authenticated session has not completed MFA.
+  Creating and updating scripts requires an MFA-assured session: if your organization or partner MFA policy requires MFA, or your account has a factor enrolled, the save action returns an error until the session has completed MFA. Accounts without an enrolled factor in a tenant that does not require MFA are admitted with a password alone.
 </Aside>
 
 ### Duplicating a script
@@ -121,6 +123,8 @@ This is the way to adapt a script from the system library without waiting for pe
 ### Version history and rollback
 
 When you edit a script's content, the version number increments automatically. From the script editor, click **Execution History** to navigate to the script's execution page, or view the **Version History** panel to compare changes between versions using a side-by-side diff view. You can roll back to a previous version by clicking the **Rollback** button next to any earlier version.
+
+Each script's detail page also shows a **Provenance panel**: whether it was written by a person, by the AI assistant (as a reviewed proposal), imported, or shipped as a system script, plus — for AI-authored scripts — the reviewer's summary, risk tier, and who approved it. The scripts list has a matching **Origin** column and filter, with a "Reviewed" / "Edited since review" badge; editing an AI-authored script by hand clears the review badge, since what was reviewed is no longer exactly what would run. See [AI Script Authoring & Review](/features/ai-script-authoring/).
 
 ---
 
@@ -389,14 +393,14 @@ Every parameter has a **source** that decides where its value comes from. By def
 
 ### Using parameters in script content
 
-The agent substitutes parameter placeholders before execution. Two placeholder formats are supported:
+Parameter values are delivered to your script as **data, never as script text**. Every parameter is exported into the script's environment as `BREEZE_PARAM_<KEY>` (the key upper-cased, `-` becomes `_`), and the agent rewrites each placeholder into a reference to that variable in the script's own language before the script runs. A value containing quotes, `$`, `&` or a newline is therefore just a value — it cannot become another command.
 
 | Format | Example |
 |--------|---------|
 | `{{paramName}}` | `echo "Threshold is {{threshold}}"` |
 | `${{paramName}}` | `echo "Threshold is ${{threshold}}"` |
 
-Both formats are replaced with the parameter value. Parameters are also injected as environment variables with the prefix `BREEZE_PARAM_`:
+Both formats work in every script type, inside or outside quotes, and both are equivalent to reading the environment variable yourself:
 
 ```bash
 # These are equivalent inside a script:
@@ -404,8 +408,48 @@ echo "Threshold is {{threshold}}"
 echo "Threshold is $BREEZE_PARAM_THRESHOLD"
 ```
 
-<Aside type="caution">
-  Parameter substitution happens **before** security validation. The agent's security validator scans the fully-resolved script content for dangerous patterns. A parameter value that injects a dangerous command will be caught and rejected.
+```powershell
+Write-Output "Threshold is {{threshold}}"
+Write-Output "Threshold is $env:BREEZE_PARAM_THRESHOLD"
+```
+
+```python
+print(f"Threshold is {{threshold}}")
+print("Threshold is " + os.environ["BREEZE_PARAM_THRESHOLD"])
+```
+
+A placeholder whose name is not a parameter of the script is left in the script exactly as written.
+
+#### Contexts a placeholder cannot be used in
+
+A few places re-interpret the *contents* of a variable as code, so no reference can carry a value there safely. The agent fails the run before executing anything and names the parameter and the context. Reference the environment variable directly instead (`$BREEZE_PARAM_KEY`, `$env:BREEZE_PARAM_KEY`, `os.environ["BREEZE_PARAM_KEY"]`, `%BREEZE_PARAM_KEY%`), or assign it to your own variable first.
+
+| Script type | Rejected context | Use instead |
+|---|---|---|
+| Bash | Arithmetic and subscripts — `$(( ))`, `(( ))`, `$[ ]`, `let`, `declare -i`, an assignment subscript (`arr[…]=`, `arr=( [.]=v )`), `${name:offset}`, `${name[…]}`, and `[[ … -eq … ]]` operands — unless the value is a plain integer. These apply inside an unquoted heredoc body too, which still expands them | A plain-integer parameter, or `$(( BREEZE_PARAM_N ))` after validating it yourself |
+| Bash | A quoted heredoc (`<<'EOF'`), where nothing expands | An unquoted heredoc (`<<EOF`) with `$BREEZE_PARAM_KEY` in the body |
+| Bash | `eval`, `trap` and `alias` command lines — however the word is spelled (`\eval`, `ev\al`, `"let"`, `command eval`, `builtin eval`) | Restructure so the value is an argument, not code |
+| Bash | Variable-name positions (`read`, `unset`, `printf -v`, `for NAME in`, `declare -n`) unless the value is a valid identifier | A parameter restricted to identifiers |
+| PowerShell | A literal here-string (`@' … '@`), where nothing expands | An expanding here-string (`@" … "@`) with `$env:BREEZE_PARAM_KEY` |
+| PowerShell | `Invoke-Expression` / `iex` statements | Call the command directly with the value as an argument |
+| Python | A raw string literal (`r"…"`) when the value contains a backslash or the literal's quote character | A normal literal, or `os.environ[...]` |
+| Python | A bytes literal (`b"…"`) when the value is not ASCII | A text literal, or encode it yourself |
+| Python | An f-string replacement field — the expression between `{` and `}`, e.g. `f"{ {{n}} }"` or a nested format spec `f"{x:{{w}}}"` | `f"{os.environ['BREEZE_PARAM_N']}"`, or put the placeholder in the literal's text instead |
+| cmd | Values containing a line break; a `call` statement (only the statement the placeholder is in — `call foo & echo {{p}}` is fine); a `for /f … in ( )` clause | `%BREEZE_PARAM_KEY%` read into a variable first |
+
+A single-quoted string is fine in both bash and PowerShell: the agent rewrites the quoting so the value still arrives as one literal datum.
+
+#### A placeholder is always exactly one word
+
+Because the value is passed by reference, a placeholder renders as a **single** quoted word. Four consequences are worth knowing:
+
+- **A parameter holding several flags no longer splits.** `rsync {{flags}}` with `flags` set to `-a --delete` passes one argument `-a --delete`, not two. If you want the value split into words, read the variable unquoted — `rsync $BREEZE_PARAM_FLAGS` — and accept that the split is then driven by the technician's data, not by the script author. Cleaner still: take the options as an array in the script (`read -ra opts <<<"$BREEZE_PARAM_FLAGS"`) or as separate parameters.
+- **Bash pattern matching is literal.** `[[ $x == {{pat}} ]]` and `[[ $x =~ {{re}} ]]` now compare against the value as a literal string. For glob or regex semantics, write the variable unquoted: `[[ $x == $BREEZE_PARAM_PAT ]]`, `[[ $x =~ $BREEZE_PARAM_RE ]]`.
+- **A placeholder in command position selects the binary.** `{{tool}} --version` runs one program named by the whole value; it cannot carry its own arguments. Put arguments in their own parameters.
+- **`runAs` via sudo needs `--preserve-env`.** The agent passes `sudo -n --preserve-env=BREEZE_PARAM_…` so the referenced variables survive. The sudoers rule must allow it (the `SETENV` tag, which an `ALL` command rule implies). On a host whose policy refuses `--preserve-env`, the run fails with sudo's own message instead of running with empty parameters — grant `SETENV` on the rule the agent uses.
+
+<Aside>
+  Because values are no longer part of the script text, the agent's security validator scans what the script *author* wrote. It is a guardrail against dangerous operations in the script itself, not an injection filter for parameter values — those can no longer be executed as code. Scripts with parameters are also syntax-checked (`bash -n`) after the rewrite, and cmd scripts run with delayed expansion (`/V:ON`) enabled, which consumes a literal `!` in the script's own text.
 </Aside>
 
 ---
@@ -429,6 +473,8 @@ Each variable has:
 | **Secret** | Store the value write-once and masked. See [Secret variables](#secret-variables). |
 
 An organization-scoped variable overrides a partner-wide one with the same key, so you can set a sensible default for everyone and special-case individual customers.
+
+Switching the variables list to **All Organizations** lists partner-wide variables only, with a column naming the organization each row belongs to — org-scoped variables aren't shown there; open a specific organization to see or manage those.
 
 ### Using variables in a script
 
@@ -632,7 +678,7 @@ Read-only script operations (searching the library, viewing script details, chec
 
 ### MFA enforcement
 
-All script write and execute operations require MFA verification, whether triggered by a user directly or approved through the AI workflow. If the current session has not completed MFA, the API returns a `403` error. Complete MFA verification in your account settings before approving or executing scripts.
+All script write and execute operations require an MFA-assured session, whether triggered by a user directly or approved through the AI workflow. A session is MFA-assured when it has completed MFA, or when the account has no factor enrolled and the effective MFA policy (organization or partner **Require MFA** setting, or a role that forces MFA) does not require one. If the session is not assured, the API returns a `403` error with code `MFA_REQUIRED`. To make MFA mandatory for script execution across a tenant, turn on **Require MFA** in the organization or partner security settings; users without a factor are then routed to enrollment before they can run scripts. The partner-wide **Require MFA** setting (Settings → Partner → Security) is on by default for partners created after 2026-09-18, so users without an enrolled factor are routed to enrolment at sign-in.
 
 ### Viewing approval history
 
@@ -659,7 +705,7 @@ All script endpoints require authentication and the appropriate permission scope
 | POST | `/scripts/executions/:id/cancel` | `scripts:execute` | Cancel a pending, queued, or running execution |
 
 <Aside>
-  All write and execute endpoints require MFA verification. The API enforces multi-tenant access control -- organization-scope users see only their org's scripts, partner-scope users see scripts across their managed organizations, and system-scope users see everything.
+  All write and execute endpoints require an MFA-assured session (see [MFA enforcement](#mfa-enforcement)). The API enforces multi-tenant access control -- organization-scope users see only their org's scripts, partner-scope users see scripts across their managed organizations, and system-scope users see everything.
 </Aside>
 
 ---

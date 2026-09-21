@@ -100,6 +100,8 @@ function toDto(r: typeof manualAssets.$inferSelect) {
     assetTag: r.assetTag ?? null,
     location: r.location ?? null,
     assignedContactId: r.assignedContactId ?? null,
+    purchaseDate: r.purchaseDate ?? null,
+    purchaseDateSource: r.purchaseDateSource ?? null,
     // Everything an agent or a scanner supplies is null here.
     ipAddress: null, macAddress: null, agentId: null, agentVersion: null,
     watchdogVersion: null, osType: null, osVersion: null, osBuild: null,
@@ -297,6 +299,8 @@ manualRoutes.post(
         assignedContactId: data.assignedContactId ?? null,
         notes: data.notes ?? null,
         tags: data.tags ?? [],
+        purchaseDate: data.purchaseDate ?? null,
+        purchaseDateSource: data.purchaseDate ? 'manual' : null,
         createdBy: auth.user.id,
         updatedBy: auth.user.id,
       }).returning();
@@ -390,6 +394,11 @@ manualRoutes.patch(
     if (data.tags !== undefined) updates.tags = data.tags;
     if (data.retiredAt !== undefined) {
       updates.retiredAt = data.retiredAt === null ? null : new Date(data.retiredAt);
+    }
+    if (data.purchaseDate !== undefined) {
+      // Both NULL or both set — manual_assets_purchase_date_source_chk.
+      updates.purchaseDate = data.purchaseDate ?? null;
+      updates.purchaseDateSource = data.purchaseDate ? 'manual' : null;
     }
 
     let updated: typeof manualAssets.$inferSelect | undefined;

@@ -1,0 +1,236 @@
+{
+  "section": {
+    "title": "Service deliverables",
+    "empty": "No deliverables yet. Add the recurring reports and reviews this customer is owed."
+  },
+  "table": {
+    "name": "Deliverable",
+    "cadence": "Cadence",
+    "nextDue": "Next due",
+    "lastDelivered": "Last delivered",
+    "status": "Status",
+    "portal": "Portal"
+  },
+  "cadence": {
+    "monthly": "Monthly",
+    "quarterly": "Quarterly",
+    "semiannual": "Every six months",
+    "annual": "Annually",
+    "one_time": "One time"
+  },
+  "status": {
+    "on_track": "On track",
+    "due_soon": "Due soon",
+    "late": "Late",
+    "missed": "Missed",
+    "inactive": "Inactive"
+  },
+  "occurrence": {
+    "status": {
+      "scheduled": "Scheduled",
+      "open": "Open",
+      "awaiting_evidence": "Awaiting evidence",
+      "delivered": "Delivered",
+      "missed": "Missed",
+      "waived": "Waived"
+    }
+  },
+  "actions": {
+    "add": "Add deliverable",
+    "edit": "Edit",
+    "deactivate": "Deactivate",
+    "deliver": "Mark delivered",
+    "waive": "Waive",
+    "reopen": "Reopen",
+    "reschedule": "Reschedule",
+    "addEvidence": "Add evidence",
+    "removeEvidence": "Remove evidence",
+    "save": "Save",
+    "cancel": "Cancel"
+  },
+  "form": {
+    "name": "Name",
+    "description": "Description",
+    "contract": "Contract",
+    "noContract": "Not tied to a contract",
+    "contractsUnavailable": "Could not load this organization's contracts. Reload the page before saving.",
+    "cadence": "Cadence",
+    "anchorDueDate": "First due date",
+    "effectiveFrom": "Effective from",
+    "effectiveUntil": "Effective until",
+    "leadDays": "Lead time (days)",
+    "graceDays": "Grace period (days)",
+    "artifactRequired": "Evidence required before marking delivered",
+    "completionMode": {
+      "label": "Completion",
+      "explicit": "Marked delivered by a technician",
+      "on_ticket_resolve": "Delivered when the linked ticket resolves"
+    },
+    "autoEvidenceReport": "Attach report runs as evidence",
+    "autoEvidenceNone": "None",
+    "autoEvidenceHelp": "Evidence is generated on the due day and becomes visible to the customer when the occurrence is delivered.",
+    "autoEvidenceEmpty": "No managed evidence report types are available yet.",
+    "owner": "Owner",
+    "ticketCategory": "Ticket category",
+    "portalVisible": "Show in customer portal",
+    "sortOrder": "Sort order",
+    "instructions": "Internal instructions",
+    "instructionsHint": "Internal — never shown to the customer.",
+    "checklistTemplate": "Checklist template",
+    "checklistTemplateNone": "None",
+    "checklistTemplateAllOrgs": "All orgs",
+    "checklistTemplateManage": "Manage checklist templates"
+  },
+  "drawer": {
+    "title": "Occurrences",
+    "empty_one": "No occurrences yet. The first one is planned {{count}} day before its due date.",
+    "empty_other": "No occurrences yet. The first one is planned {{count}} days before its due date.",
+    "emptyWithDate_one": "No occurrences yet. The first one is planned {{count}} day before its due date ({{date}}).",
+    "emptyWithDate_other": "No occurrences yet. The first one is planned {{count}} days before its due date ({{date}}).",
+    "evidence": "Evidence",
+    "noEvidence": "No evidence attached",
+    "late": "Late",
+    "rescheduledFrom": "Rescheduled from {{date}}",
+    "deliveryNote": "Delivery note",
+    "waivedReason": "Reason for waiving",
+    "newDueDate": "New due date",
+    "uploadEvidence": "Upload a file as evidence",
+    "uploadEvidenceHint": "PDF, JPEG, PNG or WebP, up to 10 MB. The file is filed in this organization’s document library.",
+    "evidenceDocument": "Document",
+    "upload": "Upload",
+    "checklistProgress": "{{done}} / {{total}}",
+    "showChecklist": "Show checklist",
+    "hideChecklist": "Hide checklist"
+  },
+  "evidence": {
+    "reportRun": "Report run",
+    "document": "Document",
+    "reportRunId": "Report run ID"
+  },
+  "upcoming": {
+    "title": "Upcoming 90 days",
+    "empty": "Nothing due in the next 90 days."
+  },
+  "group": {
+    "noContract": "No contract"
+  },
+  "errors": {
+    "evidenceRequired": "Attach evidence before marking this occurrence delivered.",
+    "duplicateName": "A deliverable with this name already exists for this organization.",
+    "loadFailed": "Could not load deliverables.",
+    "saveFailed": "Could not save the deliverable.",
+    "actionFailed": "Could not update the occurrence.",
+    "uploadFailed": "Could not upload the evidence file.",
+    "tooLarge": "That file is larger than 10 MB.",
+    "unsupportedType": "Only PDF, JPEG, PNG and WebP files can be attached.",
+    "storageUnavailable": "Document storage is unavailable right now. Try again shortly."
+  },
+  "confirm": {
+    "deactivate": "Deactivate {{name}}? Open occurrences will be closed and no new ones will be scheduled.",
+    "deleteKeyDate": "Delete the key date {{label}}?"
+  },
+  "keyDates": {
+    "title": "Key dates",
+    "empty": "No key dates recorded.",
+    "add": "Add key date",
+    "label": "Label",
+    "kind": {
+      "label": "Type",
+      "insurance_renewal": "Insurance renewal",
+      "vendor_contract_end": "Vendor contract end",
+      "compliance_deadline": "Compliance deadline",
+      "audit": "Audit",
+      "other": "Other"
+    },
+    "date": "Date",
+    "recursAnnually": "Repeats every year",
+    "remindDaysBefore": "Remind (days before)",
+    "portalVisible": "Show in customer portal",
+    "contractEnd": "Contract end",
+    "notes": "Notes",
+    "owner": "Owner",
+    "edit": "Edit key date",
+    "delete": "Delete",
+    "errors": {
+      "loadFailed": "Could not load key dates.",
+      "saveFailed": "Could not save the key date."
+    },
+    "toast": {
+      "saved": "Key date saved",
+      "deleted": "Key date deleted"
+    }
+  },
+  "toast": {
+    "saved": "Deliverable saved",
+    "delivered": "Marked as delivered",
+    "waived": "Occurrence waived",
+    "reopened": "Occurrence reopened",
+    "rescheduled": "Occurrence rescheduled",
+    "evidenceAdded": "Evidence added",
+    "evidenceRemoved": "Evidence removed",
+    "deactivated": "Deliverable deactivated",
+    "evidenceUploaded": "Evidence uploaded"
+  },
+  "templates": {
+    "pageTitle": "Deliverable templates",
+    "pageDescription": "Define a service tier once and apply it to any customer. Partner-wide sets are available to every organization you manage.",
+    "empty": "No template sets yet. Create one to define a reusable service tier for your customers.",
+    "allOrganizations": "All orgs",
+    "actions": {
+      "newSet": "New template set",
+      "addItem": "Add deliverable",
+      "apply": "Apply template set",
+      "edit": "Edit",
+      "delete": "Delete",
+      "save": "Save",
+      "cancel": "Cancel"
+    },
+    "form": {
+      "name": "Set name",
+      "description": "Description",
+      "itemName": "Deliverable name",
+      "cadence": "Cadence",
+      "leadDays": "Open this many days before due",
+      "graceDays": "Mark missed this many days after due",
+      "artifactRequired": "Artifact required",
+      "completionMode": "Completion",
+      "autoEvidenceReportType": "Evidence report type"
+    },
+    "ownerScope": {
+      "legend": "Who is this set for?",
+      "allOrganizations": "All organizations (partner-wide)",
+      "thisOrganizationOnly": "This organization only"
+    },
+    "apply": {
+      "title": "Apply template set",
+      "set": "Template set",
+      "contract": "Contract (optional)",
+      "noContract": "No contract",
+      "effectiveFrom": "Effective from",
+      "owner": "Owner (optional)",
+      "submit": "Apply",
+      "created_one": "Created {{count}} deliverable",
+      "created_other": "Created {{count}} deliverables",
+      "skipped": "Skipped (already present): {{names}}"
+    },
+    "errors": {
+      "collision": "These deliverables already exist on the target: {{names}}",
+      "duplicateSetName": "A template set with this name already exists.",
+      "duplicateItemName": "An item with this name already exists in the set.",
+      "partnerWideDenied": "Managing partner-wide templates requires full partner organization access.",
+      "loadFailed": "Could not load template sets.",
+      "saveFailed": "Could not save the template set.",
+      "deleteFailed": "Could not delete the template set.",
+      "itemSaveFailed": "Could not save the deliverable.",
+      "itemDeleteFailed": "Could not remove the deliverable.",
+      "applyFailed": "Could not apply the template set."
+    },
+    "toast": {
+      "setSaved": "Template set saved",
+      "setDeleted": "Template set deleted",
+      "itemSaved": "Deliverable saved",
+      "itemDeleted": "Deliverable removed",
+      "applied": "Template set applied"
+    }
+  }
+}

@@ -66,6 +66,10 @@ function makeAuth(allowedSiteIds: string[] | undefined) {
   return {
     user: { id: 'user-1', email: 'test@example.com', name: 'Test User' },
     scope: 'organization',
+    // The MFA boundary (SEC-107) runs before the site-ceiling check, mirroring
+    // requireMfa() ahead of the handler on the HTTP routes. Satisfy it here so
+    // these cases still exercise the site-ceiling gate specifically.
+    token: { mfa: true },
     orgId: ORG_ID,
     accessibleOrgIds: [ORG_ID],
     allowedSiteIds,

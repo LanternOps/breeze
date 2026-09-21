@@ -215,10 +215,37 @@ function sanitizeDistributorProductForAi(p: TdSynnexEcProduct, auth: AuthContext
   return out;
 }
 
+
+/**
+ * SCOPE PARITY WITH THE HTTP DOOR (#6110 review, finding 1).
+ *
+ * A tool must require exactly what its route requires. Every route file under `routes/catalog/` is
+ * `requireScope('partner','system')` (catalog.ts:21, pricing.ts:20, bundles.ts:15,
+ * distributors.ts:51, enrich.ts:14). The catalog is the PARTNER's price book:
+ * its costs, margins and per-customer overrides are seller-side data.
+ * An organization-scoped token therefore cannot reach this domain over HTTP at
+ * all — and an org token still carries the OWNING PARTNER's partnerId, so a
+ * bare partnerId-presence check is not a substitute. Autonomous AI-agent runs
+ * mint `scope: 'organization'` too (aiAgents/agentAuthContext.ts), so this gate
+ * refuses them as well; the `business` capability group that carries these
+ * tools already contains partner-only tools (aiToolsDeliverables.ts), so that is
+ * an existing, expected shape rather than a new one.
+ */
+function partnerScopeRefusal(auth: AuthContext): string | null {
+  if (auth.scope === 'partner' || auth.scope === 'system') return null;
+  return JSON.stringify({
+    error: 'Catalog access requires a partner-scoped session; organization-scoped callers cannot reach the '
+      + 'matching HTTP routes either',
+    code: 'PARTNER_SCOPE_REQUIRED',
+  });
+}
+
 export function registerCatalogTools(aiTools: Map<string, AiTool>): void {
   aiTools.set('search_catalog', {
     tier: 2 as AiToolTier,
     deviceArgs: [],
+    domain: 'billing',
+    searchHint: 'product catalog search by name, SKU or distributor part number, hardware, software, services and bundles',
     definition: {
       name: 'search_catalog',
       description:
@@ -249,6 +276,8 @@ export function registerCatalogTools(aiTools: Map<string, AiTool>): void {
       }
     },
     handler: async (input, auth) => {
+      const refusal = partnerScopeRefusal(auth);
+      if (refusal) return refusal;
       const partnerId = auth.partnerId;
       if (!partnerId) {
         return JSON.stringify({ error: 'Catalog is partner-scoped; no partner in context' });
@@ -302,6 +331,8 @@ export function registerCatalogTools(aiTools: Map<string, AiTool>): void {
   aiTools.set('lookup_distributor_product', {
     tier: 2 as AiToolTier,
     deviceArgs: [],
+    domain: 'billing',
+    searchHint: 'TD SYNNEX live price and stock availability for one SKU or manufacturer part number outside the catalog',
     definition: {
       name: 'lookup_distributor_product',
       description:
@@ -357,6 +388,8 @@ export function registerCatalogTools(aiTools: Map<string, AiTool>): void {
   aiTools.set('get_catalog_item', {
     tier: 2 as AiToolTier,
     deviceArgs: [],
+    domain: 'billing',
+    searchHint: 'catalog item details, currency prices and bundle components',
     definition: {
       name: 'get_catalog_item',
       description:
@@ -370,6 +403,8 @@ export function registerCatalogTools(aiTools: Map<string, AiTool>): void {
       }
     },
     handler: async (input, auth) => {
+      const refusal = partnerScopeRefusal(auth);
+      if (refusal) return refusal;
       const partnerId = auth.partnerId;
       if (!partnerId) {
         return JSON.stringify({ error: 'Catalog is partner-scoped; no partner in context' });
@@ -434,6 +469,8 @@ export function registerCatalogTools(aiTools: Map<string, AiTool>): void {
   aiTools.set('manage_catalog', {
     tier: 2 as AiToolTier,
     deviceArgs: [],
+    domain: 'billing',
+    searchHint: 'product catalog: create, update items, set/remove currency prices, manage organization overrides and bundles',
     definition: {
       name: 'manage_catalog',
       description:
@@ -474,6 +511,8 @@ export function registerCatalogTools(aiTools: Map<string, AiTool>): void {
       },
     },
     handler: async (input, auth) => {
+      const refusal = partnerScopeRefusal(auth);
+      if (refusal) return refusal;
       const actor = actorFromAuth(auth);
 
       const action = String(input.action);

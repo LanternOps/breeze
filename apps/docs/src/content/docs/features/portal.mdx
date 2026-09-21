@@ -19,6 +19,10 @@ The portal is served under the `/portal` path on your Breeze domain — for exam
 You can configure a per-organization custom domain in branding (`customDomain`, e.g. `support.acme.com`), but **serving the portal on a custom domain is not available yet** — for now all organizations reach the portal at `https://<your-breeze-domain>/portal`. The branding for an organization still applies once a user signs in.
 </Aside>
 
+### Portal invite email
+
+Inviting a customer from **Settings → Organizations → [organization] → Customer Portal** sends a laid-out email with a **Set your password** button. Partners edit that mail under **Settings → Partner → Email templates** (Portal invite) -- subject, heading, button label, and HTML body. Merge variables: `{{requester_name}}` (the inviter), `{{partner_name}}`, `{{org_name}}`, and `{{invite_url}}`. The button always uses the server invite link; partners cannot point it somewhere else. The invite expires in 7 days. This does not change the email card's accent bar or pull colors from the Branding tab.
+
 ## Key Concepts
 
 ### Portal Feature Toggles
@@ -34,15 +38,19 @@ Each organization can enable or disable portal features independently through th
 
 ### Visibility settings
 
-The service-insight sections — Dashboard, Security, Backups, Reports, and support usage — are controlled separately, per organization, and every one of them starts **off**. You decide which customers get to see what.
+The service-insight sections — Dashboard, Security, Backups, Reports, support usage, and (from v0.113.0) Service and Documents — are controlled separately, per organization, and every one of them starts **off**. You decide which customers get to see what.
 
 | Toggle | Default | What the customer sees |
 |--------|---------|------------------------|
 | **Dashboard** | Off | A service-health summary when they sign in |
+| **Devices** | Off (v0.114.0+) | The devices page — see [Devices](#devices) below |
 | **Security** | Off | Security posture, protection, threats, and vulnerabilities |
 | **Backups** | Off | Backup coverage, verification, restore tests, and readiness |
 | **Reports** | Off | The ability to generate and download approved reports |
 | **Support usage** | Off | Month-to-date billable support-time totals, and SLA badges in the ticket list |
+| **Service** | Off | Scheduled deliverables, what was delivered, and key dates (v0.113.0+) |
+| **Documents** | Off | The documents you have shared with them, for download (v0.113.0+) |
+| **Hardware lifecycle** | Off | The live replacement plan for the customer's machines — see [Hardware Lifecycle](#hardware-lifecycle) below |
 
 To change them:
 
@@ -52,7 +60,7 @@ To change them:
 
 2. Open the **Customer Portal** tab (under **Portal & Branding**).
 
-3. In the **Visibility** panel, turn on the sections this customer should see. **Enable all visibility** turns on all five at once.
+3. In the **Visibility** panel, turn on the sections this customer should see. **Enable all visibility** turns them all on at once.
 
 4. Save. The customer's next page load reflects the change.
 
@@ -176,7 +184,7 @@ The device list shows what the customer's own devices are doing, in plain langua
 
 **Export CSV** downloads the same list for a customer who wants it in a spreadsheet — for an insurance questionnaire, an asset register, or their own auditor.
 
-The device list is governed by the existing **Self-service** feature toggle, not by the visibility settings.
+The device list is controlled by its own **Devices** visibility toggle (v0.114.0+), off by default and included in **Enable all visibility**. Organizations that already had **Self-service** turned on before this change kept portal access to their device list — Self-service still grants it as an alternate path, so you don't need to also turn on Devices for those customers unless you've since turned Self-service off.
 
 ---
 
@@ -207,6 +215,30 @@ With Reports off, a customer who navigates to the reports URL is redirected to t
 
 ---
 
+## Hardware Lifecycle
+
+With **Hardware lifecycle** visibility on, the customer sees a live replacement plan for the machines you manage for them: a status bar and schedule summary, then plan tables broken out by **Workstations and laptops** and, if the customer has any, **Servers**. Each table lists every device with its operating system, age, purchase date, warranty status, current status, and replacement timeline, color-coded (Replace now / Due soon / On track / Unknown) and with risk tags on devices whose OS has stopped or is about to stop receiving security updates. Below the tables, a **What we recommend** section calls out specific actions, and **Other equipment we manage** lists devices that aren't on a replacement timeline.
+
+A **Refresh** button regenerates the plan on demand. Device names link back to the device's entry in the portal's device list only when **Devices** visibility (or Self-service) is also on for that organization.
+
+---
+
+## Service
+
+With **Service** visibility on, the customer sees the [service deliverables](/features/contracts/#service-deliverables) you have marked **Show in customer portal**: what is scheduled, what was delivered and when, and the organization's upcoming key dates. It is the "what am I paying you for" view at the level of individual commitments — the monthly patch report, the quarterly review — rather than a dashboard summary.
+
+Deliverables and key dates without **Show in customer portal** stay internal even when the section is on. With Service off, a customer who navigates to the service URL is redirected to their proposals.
+
+---
+
+## Documents
+
+With **Documents** visibility on, the customer can download the files in the organization's document library that you have marked **Visible in the customer portal** — runbooks, baselines, policies, and evidence attached to delivered work.
+
+The library itself lives on the organization's **Documents** tab in the Breeze dashboard (`Organizations → (organization) → Documents`), gated by the `documents:read` / `documents:write` permissions. Upload a PDF, JPEG, PNG or WebP up to 10 MB, categorise it (Baseline, Runbook, Policy, Evidence, Report, Export or Other), and decide per file whether it is portal-visible. Replacing a file keeps the earlier version as downloadable history; superseded versions can no longer be replaced or deleted. Evidence attached to a service deliverable is filed here automatically.
+
+---
+
 ## Tickets
 
 Portal users can submit support tickets, track their status, and add comments to ongoing conversations. Tickets submitted through the portal land directly in the technician [Tickets queue](/features/ticketing/) in the Breeze dashboard, where technicians triage, assign, and respond to them.
@@ -227,6 +259,14 @@ Tickets are automatically associated with the submitter's portal user account an
 Both portal users and technicians can add comments to tickets. When a technician sends a public reply from the [Tickets queue](/features/ticketing/), it appears in the portal user's ticket conversation. Portal users only see public comments (`isPublic: true`). Internal notes added by technicians with `isPublic: false` are never shown in the portal view.
 
 Files a technician attaches to a public reply appear beneath it in the portal conversation — images inline, other files as download links. Attachments on internal notes are never exposed. Portal users cannot upload attachments of their own.
+
+### Email notice for a public reply
+
+A public technician reply also emails a notice. **View ticket** opens `/portal/tickets/:id`. Signed-out visitors land on login with a `next` back to that ticket. `next` is limited to known portal paths, so it cannot send someone off-site.
+
+The email does **not** include the reply text, and there is no magic link that shows the ticket without signing in.
+
+Requesters who only ever email you (no portal login) should **reply to the email**. The portal page still requires an account.
 
 ### SLA badges and support usage
 

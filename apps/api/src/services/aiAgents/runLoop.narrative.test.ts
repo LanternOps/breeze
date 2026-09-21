@@ -255,6 +255,9 @@ vi.mock('../streamingSessionManager', () => ({ buildClaudeSdkChildEnv }));
 const recordSessionlessSdkUsage = vi.hoisted(() => vi.fn<(...args: unknown[]) => Promise<void>>(async () => undefined));
 const calculateCostCents = vi.hoisted(() => vi.fn<(...args: unknown[]) => number>(() => 0));
 vi.mock('../aiCostTracker', () => ({ recordSessionlessSdkUsage, calculateCostCents }));
+const reserveAiBudget = vi.hoisted(() => vi.fn());
+const markAiBudgetReservationIndeterminate = vi.hoisted(() => vi.fn());
+vi.mock('../aiBudgetReservations', () => ({ reserveAiBudget, markAiBudgetReservationIndeterminate }));
 
 import { createAgentRunPostToolUse, createAgentRunPreToolUse, executeAgentRun } from './runLoop';
 import type { AgentRunOutcome } from './runLoop';
@@ -473,6 +476,13 @@ const VALID_VERDICT = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  reserveAiBudget.mockResolvedValue({
+    kind: 'unlimited', reservationId: '00000000-0000-4000-8000-0000000000e1',
+    dailyPeriodKey: '2026-09-06', monthlyPeriodKey: '2026-09-01', status: 'active',
+  });
+  markAiBudgetReservationIndeterminate.mockResolvedValue({
+    kind: 'indeterminate', reservationId: '00000000-0000-4000-8000-0000000000e1',
+  });
   vi.stubEnv('BREEZE_AI_AGENTS_ENABLED', 'true');
   dbMockState.rowQueues = {};
   dbMockState.lastRow = {};
@@ -554,7 +564,7 @@ describe('narrative profile outcome-tool gating (P2-3)', () => {
   it('pre-hook allows submit_narrative on a narrative run and denies it on every other profile', async () => {
     const narrativeOutcome = emptyOutcome();
     const pre = createAgentRunPreToolUse(preArgs('narrative', narrativeOutcome) as never);
-    expect(await pre('submit_narrative', VALID_SUBMISSION)).toEqual({ allowed: true });
+    expect(await pre('submit_narrative', VALID_SUBMISSION)).toMatchObject({ allowed: true });
 
     for (const profile of ['full', 'verdict', 'sweep'] as const) {
       const outcome = emptyOutcome();
@@ -907,6 +917,56 @@ describe('finalizeNarrative (P2-3, task A7)', () => {
     expect(createNotification).toHaveBeenCalledTimes(1);
     expect(persistNarrativeReport.mock.invocationCallOrder[0]!)
       .toBeLessThan(createNotification.mock.invocationCallOrder[0]!);
+  });
+
+  // #4248 W03 (Task 6): the email recipients are resolved BEFORE persisting so
+  // the delivery rows are created atomically with the artifact.
+  it('resolves the email recipients from the run snapshot and hands them to persistNarrativeReport', async () => {
+    seedRows();
+    submittedRun();
+    resolveRecipientUserIds.mockResolvedValue([USER_A]);
+
+    await executeAgentRun(RUN_ID);
+
+    const input = persistNarrativeReport.mock.calls[0]![0] as { emailRecipientUserIds: string[] };
+    expect(input.emailRecipientUserIds).toEqual([USER_A]);
+    // Resolved against the RUN org with the agent's ownership axis, before the persist.
+    expect(resolveRecipientUserIds).toHaveBeenCalledWith(
+      expect.objectContaining({ orgId: null, partnerId: PARTNER_ID }),
+      ORG_ID,
+    );
+    expect(resolveRecipientUserIds.mock.invocationCallOrder[0]!)
+      .toBeLessThan(persistNarrativeReport.mock.invocationCallOrder[0]!);
+  });
+
+  it('still persists the artifact (with zero deliveries) when recipient resolution throws — the document must not be lost', async () => {
+    seedRows();
+    submittedRun();
+    resolveRecipientUserIds.mockRejectedValueOnce(new Error('membership lookup timed out'));
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await executeAgentRun(RUN_ID);
+
+    expect(persistNarrativeReport).toHaveBeenCalledTimes(1);
+    const input = persistNarrativeReport.mock.calls[0]![0] as { emailRecipientUserIds: string[] };
+    expect(input.emailRecipientUserIds).toEqual([]);
+    expect(error.mock.calls.flat().join(' ')).toMatch(/email recipients/i);
+    expect(finalTransition()!.patch.errorCode).toBeUndefined();
+    // The failure is recorded on the OUTCOME, not just in the log: with zero
+    // delivery rows this is otherwise indistinguishable from "this org has no
+    // recipients", and the run detail would show nothing at all.
+    expect((finalTransition()!.patch.outcome as AgentRunOutcome).narrativeRecipientsUnresolved).toBe(true);
+  });
+
+  it('does NOT flag recipientsUnresolved when the lookup legitimately returns nobody', async () => {
+    seedRows();
+    submittedRun();
+    resolveRecipientUserIds.mockResolvedValue([]);
+
+    await executeAgentRun(RUN_ID);
+
+    const outcome = finalTransition()!.patch.outcome as AgentRunOutcome;
+    expect(outcome.narrativeRecipientsUnresolved).toBeUndefined();
   });
 
   it('reports narrative_missing when the run reached a normal finish with no narrative', async () => {

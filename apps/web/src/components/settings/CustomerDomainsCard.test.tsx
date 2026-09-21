@@ -43,7 +43,7 @@ describe('CustomerDomainsCard', () => {
           }),
         );
       }
-      if (url === '/orgs/organizations?limit=100') {
+      if (url === '/orgs/organizations?page=1&limit=100') {
         return Promise.resolve(jsonRes({ data: [{ id: 'o-1', name: 'ACME' }] }));
       }
       return Promise.resolve(jsonRes({ data: [] }));

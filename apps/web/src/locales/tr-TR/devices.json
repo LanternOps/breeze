@@ -1,4 +1,9 @@
 {
+  "aiActivity": {
+    "title": "Yapay zekâ etkinliği",
+    "count": "Son {{days}} günde {{count}} eylem gönderildi",
+    "tooltip": "Bu cihazda kaydedilen yapay zekâ tarafından gönderilen komut dosyalarını ve komutları sayar. İptal işlemi kendi başına bir eylem olarak sayılır. En iyi çaba esasına göre kaydedilir."
+  },
   "deviceChangeHistoryTab": {
     "title": "Değişiklik Geçmişi",
     "loading": "Değişiklik geçmişi yükleniyor…",
@@ -249,6 +254,7 @@
     "deploySoftware": "Yazılımı Dağıtın",
     "clearSessions": "Oturumları Temizle",
     "changeSite": "Siteyi Değiştir",
+    "moveOrg": "Kuruluşa taşı",
     "exitMaintenance": "Bakımdan Çık",
     "enterMaintenance": "Bakıma Girin",
     "decommission": "Çıkar",
@@ -278,7 +284,21 @@
     "loadMore": "Daha fazlasını yükle",
     "couldnTLoadMore": "Daha fazlası yüklenemedi.",
     "viewAllActivity2": "Tüm etkinlikleri görüntüle",
-    "text": "→"
+    "text": "→",
+    "viewProposal": "Öneriyi görüntüle",
+    "trigger": {
+      "manual": "Elle başlatma",
+      "schedule": "Zamanlama",
+      "sweep_finding": "Tarama bulgusu",
+      "alert": "Uyarı",
+      "monitor": "İzleme",
+      "fleet_finding": "Cihaz filosu bulgusu",
+      "policy": "İlke",
+      "automation": "Otomasyon",
+      "ticket": "Destek talebi",
+      "anomaly": "Anormallik",
+      "api": "API çağrısı"
+    }
   },
   "deviceAlertHistory": {
     "failedToFetchAlertHistory": "Uyarı geçmişi getirilemedi",
@@ -553,9 +573,11 @@
     "lastChecked": "Son Kontrol Edildi",
     "noComplianceResultsReportedAssignA": "Uyumluluk sonucu bildirilmedi. Bu cihaza uyumluluk kurallarını içeren bir Yapılandırma Politikası atayın veya bir sonraki değerlendirmeyi bekleyin.",
     "text": "—",
-    "s": "s"
+    "s": "s",
+    "assignPolicy": "Bir yapılandırma ilkesi atayın"
   },
   "deviceDetailPage": {
+    "movedToOrg": "{{hostname}} {{orgName}} kuruluşuna taşındı",
     "failedToFetchDevice": "Cihaz getirilemedi",
     "online": "çevrimiçi",
     "offline": "çevrimdışı",
@@ -645,7 +667,14 @@
     "networkAsset": "Ağ varlığı",
     "networkAssets": "Ağ varlıkları",
     "operatorTasks": "Operatör Görevleri",
-    "operatorTasksForThisDevice": "Bu cihaz için Operatör görevleri"
+    "operatorTasksForThisDevice": "Bu cihaz için Operatör görevleri",
+    "tabGroups": {
+      "monitoring": "İzleme",
+      "inventory": "Envanter",
+      "management": "Yönetim",
+      "history": "Geçmiş ve Ağ",
+      "extensions": "Uzantılar"
+    }
   },
   "deviceEdrPanel": {
     "failedToIsolateDevice": "Cihaz yalıtılamadı",
@@ -725,7 +754,70 @@
     "of": "arasında",
     "noMoreActivity": "Başka etkinlik yok"
   },
+  "systemCleanupPanel": {
+    "title": "Sistem temizliği",
+    "description": "Dosya taramasının göremediği alanı geri kazanan yerleşik bakım araçları. Tahminler, gerçekte boşaltılan alandan farklı olabilir.",
+    "checkActions": "Kullanılabilir işlemleri denetle",
+    "checking": "Denetleniyor…",
+    "run": "Seçilenleri çalıştır",
+    "running": "Çalışıyor… {{minutes}} dk {{seconds}} sn geçti",
+    "noActions": "Bu cihazda kullanılabilir sistem temizliği işlemi yok.",
+    "estimateUpTo": "en çok {{size}}",
+    "estimateUnknown": "boyut bilinmiyor",
+    "listFailed": "Bu cihazdaki temizlik işlemleri okunamadı.",
+    "listTimedOut": "Cihaz zamanında yanıt vermedi. Birkaç dakika sonra yeniden deneyin.",
+    "runFailed": "Temizlik tamamlanamadı.",
+    "runTimedOut": "Temizlik hâlâ sürüyor. Sonucu görmek için bu sekmeyi daha sonra yeniden açın.",
+    "agentUpdateRequired": "Sistem temizliği çalıştırmak için bu cihazın aracısını {{version}} veya sonraki bir sürüme güncelleyin.",
+    "confirmTitle": "Sistem temizliği çalıştırılsın mı?",
+    "confirmMessage": "Bu cihazda {{count}} işlem çalıştırılacak. Bazıları 90 dakikaya kadar sürebilir ve geri alınamaz.",
+    "confirmIrreversible": "Bu değişikliklerin geri alınamayacağını anlıyorum.",
+    "freed": "{{size}} boşaltıldı",
+    "volumeFreed": "{{mount}}: {{size}} boşaltıldı",
+    "risk": {
+      "long_running": "uzun sürebilir",
+      "may_require_reboot": "alan yeniden başlatmadan sonra boşalır",
+      "may_require_reboot_free_state": "alanın bir kısmı yeniden başlatmadan sonra boşalır",
+      "removes_driver_rollback": "sürücü geri almayı kaldırır",
+      "removes_packages": "paketleri kaldırır",
+      "removes_os_rollback": "Windows geri almayı bitirir",
+      "removes_recovery_points": "geri yükleme noktalarını kaldırır"
+    },
+    "status": {
+      "completed": "tamamlandı",
+      "failed": "başarısız",
+      "timed_out": "zaman aşımı",
+      "unavailable": "kullanılamıyor",
+      "busy": "başlatılmadı — cihaz meşguldü",
+      "not_started": "başlatılmadı — süre doldu"
+    },
+    "runInProgress": "Bu cihazda zaten bir sistem temizliği çalışıyor. Bitmesini bekleyin.",
+    "consequence": {
+      "removes_driver_rollback": "Bu cihaz kaldırılan sürücüleri artık önceki sürümlerine geri alamayacak.",
+      "removes_packages": "Artık gerekmeyen paketler kaldırılacak.",
+      "removes_os_rollback": "Bu cihaz artık önceki Windows sürümüne geri dönemeyecek.",
+      "removes_recovery_points": "Yerel anlık görüntüler silinir. Time Machine diski bağlı değilse bu cihazın başka geri yükleme noktası kalmaz."
+    }
+  },
   "deviceFilesystemTab": {
+    "resultPartial": "Kısmen tamamlandı",
+    "resultSkippedLinks": "Atlanan bağlantılar: {{count}}",
+    "errorAgentUpdateRequired": "Temizliği çalıştırmak için aracıyı {{minAgentVersion}} veya sonraki bir sürüme güncelleyin.",
+    "errorCleanupRunRequired": "Temizliği çalıştırmadan önce temizlik önizlemesini çalıştırın.",
+    "errorVolumeRequired": "Temizliği çalıştırmadan önce bir birim seçin.",
+    "volumes": "Birimler",
+    "volumesLoading": "Birimler yükleniyor...",
+    "volumesEmpty": "Bu cihaz için taranabilir birim bildirilmedi.",
+    "failedToFetchVolumes": "Birimler alınamadı",
+    "volumeOsBadge": "İS",
+    "volumeUsedOfTotal": "{{total}} biriminin {{used}} kadarı kullanımda",
+    "volumeCapacityUnknown": "Kapasite bilinmiyor",
+    "volumeNeverScanned": "Hiç taranmadı",
+    "volumeLastScanned": "{{when}} tarihinde tarandı",
+    "volumeSelectAria": "{{mountPoint}} birimini seç",
+    "scanCommandNotFound": "Tarama komutu bulunamadı",
+    "scanCommandNotQueued": "Tarama komutu sıraya alınmadı",
+    "scanStillRunning": "Dosya sistemi taraması hâlâ çalışıyor. Birkaç dakika sonra Yenile’ye tıklayın.",
     "failedToFetchFilesystemStatus": "Dosya sistemi durumu getirilemedi",
     "failedToFetchCommandHistory": "Komut geçmişi getirilemedi",
     "failedToLoadFilesystemStatus": "Dosya sistemi durumu yüklenemedi",
@@ -733,14 +825,14 @@
     "filesystemScanFailed": "Dosya sistemi taraması başarısız oldu",
     "cleanupPreviewFailed": "Temizleme önizlemesi başarısız oldu",
     "loadingDiskIntelligence": "Disk bilgileri yükleniyor...",
-    "be1DiskCleanupIntelligence": "BE-1: Disk Temizleme Zekası",
+    "title": "Disk Temizleme",
     "analyzeNow": "Şimdi Analiz Edin",
     "cleanupPreview": "Temizleme Önizlemesi",
     "refresh": "Yenile",
     "openFileManager": "Dosya Yöneticisini Aç",
-    "scanRunning": "Tarama çalışıyor (",
+    "scanRunning": "Tarama çalışıyor ({{status}})",
     "partialScanResult": "Kısmi tarama sonucu",
-    "noFilesystemSnapshotYetRunAnalyze": "Henüz dosya sistemi anlık görüntüsü yok. BE-1 verilerini toplamak için Şimdi Analiz Et'i çalıştırın.",
+    "noFilesystemSnapshotYetRunAnalyze": "Bu birim için henüz anlık görüntü yok. Taramak için Şimdi Analiz Edin'i çalıştırın.",
     "lastScan": "Son Tarama",
     "trigger": "Tetikleyici",
     "threshold": "Eşik",
@@ -769,15 +861,63 @@
     "largestDirectories": "En Büyük Dizinler",
     "indicatesLowerBoundSizeFromPartial": "kısmi geçişten alt sınır boyutunu belirtir.",
     "noDirectoryDataAvailable": "Dizin verisi yok.",
-    "text": ">=",
     "latestCleanupPreview": "En Son Temizleme Önizlemesi",
     "estimatedRecovery": "Tahmini İyileşme",
     "candidateCount": "Aday Sayısı",
-    "categories": "Kategoriler",
     "byCategory": "Kategoriye göre",
     "noSafeCleanupCategoriesFound": "Güvenli temizleme kategorisi bulunamadı.",
     "topCandidates": "En İyi Adaylar",
-    "noCandidatesAvailable": "Aday mevcut değil."
+    "noCandidatesAvailable": "Aday mevcut değil.",
+    "categoriesLabel": "Kategoriler",
+    "confirmContentsNote": "Çöp kutusu hedefleri, önizlemede listeleneni değil, çalıştırma anındaki içeriği siler.",
+    "errorPreviewExpired": "Bu temizleme önizlemesi 24 saatten eski. Temizleme Önizlemesi'ni yeniden çalıştırın.",
+    "errorRunNotPreviewed": "Bu temizleme zaten yürütüldü veya hâlâ çalışıyor. Temizleme Önizlemesi'ni yeniden çalıştırın.",
+    "cleanupTitle": "Nelerin temizleneceğini seçin",
+    "cleanupPreviewRequired": "Neyin silineceğini seçmek için Temizleme Önizlemesi'ni çalıştırın.",
+    "categories": {
+      "temp_files": "Geçici dosyalar",
+      "browser_cache": "Tarayıcı önbelleği",
+      "package_cache": "Paket önbelleği",
+      "trash": "Çöp kutusu"
+    },
+    "selectAllInCategory": "Tümünü seç",
+    "clearCategory": "Seçimi temizle",
+    "columnPath": "Yol",
+    "columnSize": "Boyut",
+    "selectionSummary": "{{count}} seçildi · {{size}}",
+    "executeSelected": "Seçilenleri sil ({{count}})",
+    "confirmTitle": "Temizleme hedeflerini kalıcı olarak sil",
+    "confirmMessage": "{{volume}} biriminden toplam {{size}} boyutundaki {{count}} öğe silinsin mi? Bu işlem çöp kutusunu atlar ve geri alınamaz.",
+    "confirmPathsHeading": "{{total}} yoldan ilk {{shown}} tanesi",
+    "confirmLabel": "Kalıcı olarak sil",
+    "cleanupFailed": "Temizleme başarısız oldu",
+    "cleanupFinished": "Temizleme tamamlandı — {{size}} geri kazanıldı",
+    "resultTitle": "Temizleme sonucu",
+    "resultReclaimed": "Geri kazanılan",
+    "resultCompleted": "Silindi",
+    "resultSkippedLocked": "Kilitli (atlandı)",
+    "resultRejected": "Reddedildi",
+    "resultSkippedBudget": "Ulaşılamadı (süre sınırı)",
+    "resultFailures": "Hatalar",
+    "tempAccumulation": "Geçici Birikim",
+    "noTempAccumulationData": "Geçici birikim verisi yok.",
+    "historyTitle": "Temizleme geçmişi",
+    "historyEmpty": "Henüz kayıtlı temizleme çalıştırması yok.",
+    "historyLoadMore": "Daha fazla yükle",
+    "historyFailed": "Temizleme geçmişi yüklenemedi",
+    "historyKindFiles": "Dosya temizliği",
+    "historyKindSystem": "Sistem temizliği",
+    "historyReclaimed": "{{size}} geri kazanıldı",
+    "historyCandidates": "{{count}} aday",
+    "status": {
+      "previewed": "Önizlendi",
+      "running": "Çalışıyor",
+      "executed": "Yürütüldü",
+      "failed": "Başarısız"
+    },
+    "previewSummary": "{{count}} aday · {{size}} geri kazanılabilir",
+    "historyReclaimable": "{{size}} geri kazanılabilir",
+    "filesystemScanFinished": "Dosya sistemi taraması tamamlandı"
   },
   "deviceFilterToolbar": {
     "searchDevices": "Cihazları arayın",
@@ -930,6 +1070,23 @@
     "role": "Rol",
     "changeRole": "Rolü değiştir",
     "source": "Kaynak",
+    "function": "İşlev",
+    "changeFunction": "İşlevi değiştir",
+    "functionNone": "Değerlendirilmedi",
+    "functionSource": {
+      "ai": "Yapay Zeka",
+      "manual": "Manuel"
+    },
+    "functionConfidence": "{{pct}}% güven",
+    "functionEvidence": "Tasarımcı neden böyle düşünüyor",
+    "functionEvidenceUnavailable": "Değerlendirme ayrıntıları yüklenemedi.",
+    "functionCustom": "Özel…",
+    "functionCustomSlug": "özel anahtar (a-z, 0-9, -)",
+    "functionCustomLabel": "Etiket",
+    "functionClear": "Temizle",
+    "functionSaved": "Cihaz işlevi kaydedildi",
+    "functionCleared": "Cihaz işlevi temizlendi",
+    "functionSaveFailed": "Cihaz işlevi kaydedilemedi",
     "operatingSystem": "İşletim Sistemi",
     "osType": "İşletim Sistemi Türü",
     "osVersion": "İşletim Sistemi Sürümü",
@@ -1269,6 +1426,9 @@
     "tenantId": "Kiracı Kimliği:",
     "mdmEnrollment": "MDM Kaydı:",
     "detectionSource": "Algılama kaynağı:",
+    "identityDetectionUnsupported": "Katılım algılama desteklenmiyor",
+    "identityDetectionUnsupportedHint": "Breeze bu cihazın işletim sisteminde dizin veya Intune/Entra kaydını henüz denetlemiyor; bu nedenle katılım durumu bilinmiyor — katılmamış olduğu doğrulanmadı.",
+    "flagUnknown": "{{label}}: Bilinmiyor",
     "detectedManagementTools": "Algılanan Yönetim Araçları",
     "tool": "aracı",
     "s": "s",
@@ -1311,7 +1471,8 @@
       "status": "Durum",
       "type": "Tür"
     },
-    "title": "Hizmet ve Süreç İzleme"
+    "title": "Hizmet ve Süreç İzleme",
+    "assignPolicy": "Bir yapılandırma ilkesi atayın"
   },
   "deviceNetworkConnections": {
     "allProtocols": "Tüm Protokoller",
@@ -1676,7 +1837,10 @@
     "saveChanges": "Değişiklikleri Kaydet",
     "site": "Sitesi",
     "tags": "Etiketler",
-    "title": "Cihaz Ayarları"
+    "title": "Cihaz Ayarları",
+    "purchaseDate": "Satın alma tarihi",
+    "purchaseDateHelp": "Donanım Yaşam Döngüsü raporu değiştirmeyi planlamak için kullanır.",
+    "purchaseDateVendorHint": "Üreticinin sevk tarihinden alındı. Üzerine yazmak için bir tarih girin."
   },
   "deviceSoftwareInventory": {
     "actions": {
@@ -1880,7 +2044,7 @@
     "refresh": "Yenile",
     "selectedOrganization": "seçilen kuruluş",
     "subtitle": "Filonuzu yönetin ve izleyin.",
-    "title": "Cihazlar",
+    "title": "Cihazlar ve Varlıklar",
     "toasts": {
       "actionFailed": "{{action}}, {{hostname}} üzerinde başarısız oldu",
       "advancedFilterFailed": "Gelişmiş filtre yüklenemedi — hiçbir cihaz gösterilmiyor. Yeniden denemek için filtreyi düzenleyin veya temizleyin.",
@@ -2270,19 +2434,57 @@
     "cancel": "İptal",
     "genericError": "Bakım modu başlatılamadı."
   },
+  "moveDeviceOrgDialog": {
+    "title": "Başka bir kuruluşa taşı",
+    "description": "{{hostname}} cihazını {{orgName}} kuruluşundan çıkarır. Geçmişi, biletleri ve ilkeleri onunla birlikte taşınır ve aracı yeni kuruluş altında yeniden bağlanır.",
+    "targetOrgLabel": "Hedef kuruluş",
+    "targetOrgPlaceholder": "Bir kuruluş seçin",
+    "targetSiteLabel": "Hedef konum",
+    "targetSitePlaceholder": "Bir konum seçin",
+    "loadingSites": "Konumlar yükleniyor…",
+    "noOtherOrgs": "Bu cihazın taşınabileceği başka bir etkin kuruluş yok.",
+    "noSites": "Seçilen kuruluşun henüz konumu yok. Önce bir konum ekleyin.",
+    "currencyMismatchHeading": "Başka bir para biriminde faturalandırılmamış iş",
+    "currencyMismatchDetail": "{{sourceCurrency}} → {{targetCurrency}}: {{timeEntries}} faturalandırılmamış zaman girişi ve {{parts}} faturalandırılmamış parça, taşımadan sonra orijinal para birimini korur.",
+    "currencyMismatchAccept": "Anladım — cihazı taşı ve bu satırları orijinal para biriminde bırak",
+    "currencyMismatchNoPermission": "Bunu kabul etmek için fatura yazma izni gerekir. Önce bir faturalama yöneticisinden açık işi faturalandırmasını veya temizlemesini isteyin.",
+    "stepUpHeading": "Siz olduğunuzu doğrulayın",
+    "stepUpIntro": "Bir cihazı kuruluşlar arasında taşımak ikinci bir faktör gerektirir.",
+    "stepUpCodeLabel": "Kimlik doğrulayıcı kodu",
+    "stepUpPasskeyNote": "Geçiş anahtarınızla doğrulayacaksınız.",
+    "noStepUpFactor": "Cihazları kuruluşlar arasında taşımadan önce hesabınıza bir kimlik doğrulayıcı uygulaması veya geçiş anahtarı ekleyin.",
+    "mfaRequired": "Önce MFA oturum açmayı tamamlayın, sonra yeniden deneyin.",
+    "stepUpRetry": "Bu doğrulama kullanılamadı. Yeni bir kod girip tekrar deneyin.",
+    "submit": "Cihazı taşı",
+    "submitStepUp": "Doğrula ve taşı",
+    "submitting": "İşleniyor…",
+    "cancel": "İptal",
+    "genericError": "Cihaz taşınamadı."
+  },
   "networkDeviceDetailPage": {
+    "approval": {
+      "pendingBanner": "Onay bekleniyor: henüz hiçbir şey izlenmiyor.",
+      "dismissedBanner": "Yok sayıldı: cihaz listelerinde gizli.",
+      "approve": "Onayla",
+      "dismiss": "Yok say",
+      "approvedAnnouncement": "Varlık onaylandı",
+      "dismissedAnnouncement": "Varlık yok sayıldı"
+    },
     "backToDevices": "Cihazlara geri dön",
-    "configurePrefix": "SNMP yoklama ve ağ monitörlerini yapılandırma",
     "confirmUnlink": "Bu cihazın bağlantısı kaldırılsın mı?",
     "confirmUnlinkMessage": "Keşfedilen varlık ile yönetilen cihaz ayrı öğeler olarak gösterilecek. Bu varlığı tekrar bağlayana kadar otomatik bağlama devre dışı kalacak.",
     "connecting": "Bağlanılıyor",
-    "discoveryAssetView": "keşif varlık görünümü",
     "emptyPorts": "Son taramada açık bağlantı noktası bulunamadı.",
     "emptySnmp": "SNMP verisi toplanmadı — cihaz yanıt vermemiş olabilir veya SNMP incelenmemiş olabilir. SNMP yönteminin etkinleştirildiğini ve topluluk dizesinin keşif profilinde ayarlandığını kontrol edin.",
     "errors": {
+      "unexpected": "Bir sorun oluştu. Lütfen tekrar deneyin.",
       "load": "Bu ağ cihazı yüklenemedi. Bağlantınızı kontrol edip tekrar deneyin.",
       "malformed": "Sunucu bu ağ cihazı için beklenmeyen bir yanıt döndürdü. Tekrar deneyin, sorun devam ederse destek ekibiyle iletişime geçin.",
-      "notFound": "Ağ cihazı bulunamadı"
+      "notFound": "Ağ cihazı bulunamadı",
+      "monitoringLoad": "Bu cihazın izleme verileri yüklenemedi. Tekrar deneyin.",
+      "checksLoad": "Ağ kontrolleri yüklenemedi.",
+      "thresholdsLoad": "Eşik uyarıları yüklenemedi.",
+      "templateLoad": "SNMP şablonu yüklenemedi."
     },
     "fields": {
       "assetType": "Tür",
@@ -2301,7 +2503,20 @@
       "ping": "Ping",
       "snmpMonitoring": "SNMP izleme",
       "status": "Durum",
-      "tags": "Etiketler"
+      "tags": "Etiketler",
+      "bridgingAgent": "Köprü aracısı",
+      "ipAddress": "IP adresi",
+      "macAddress": "MAC adresi",
+      "nicVendor": "Ağ kartı üreticisi",
+      "nicVendorHint": "MAC adresinin kayıtlı üreticisi; ağ kartı başka bir şirket tarafından üretilmişse cihaz üreticisinden farklıdır.",
+      "site": "Konum",
+      "sysObjectId": "sysObjectID (ham)",
+      "legacyScanVerdict": "Son tarama sonucu",
+      "legacyScanVerdictHint": "— son alt ağ taramasının kaydettiği sonuç; anlık erişilebilirlik değil",
+      "pollStatus": "Sorgulama durumu",
+      "template": "Şablon",
+      "pollingInterval": "Sorgulama aralığı",
+      "snmpTransport": "SNMP aktarımı"
     },
     "goBack": "Geri dön",
     "live": {
@@ -2309,7 +2524,6 @@
       "refreshed": "Cihaz ayrıntıları yenilendi"
     },
     "loading": "Ağ cihazı yükleniyor...",
-    "manageInDiscovery": "Discovery'de yönetin",
     "manuallySet": "Manüel olarak ayarlandı",
     "manuallySetWithDetected": "Manuel olarak ayarlandı · tarama algılandı {{type}}",
     "networkDevice": "Ağ Cihazı",
@@ -2335,17 +2549,43 @@
       "agentListFailed": "Temsilci listesi yüklenemedi. Yeniden deneyin."
     },
     "resetToAutoDetected": "Otomatik algılamaya sıfırla",
-    "savingType": "Kaydediliyor…",
-    "resettingType": "Sıfırlanıyor…",
     "sections": {
       "discovery": "Keşif",
       "identity": "Kimlik",
       "monitoringStatus": "İzleme durumu",
       "openPorts": "Açık bağlantı noktaları",
-      "snmpData": "SNMP verisi"
+      "snmpData": "SNMP verisi",
+      "reachability": "Erişilebilirlik",
+      "collection": "Veri toplama",
+      "printerHealth": "Yazıcı durumu",
+      "scanDetails": "Tüm tarama ayrıntıları",
+      "pollConfiguration": "Sorgulama yapılandırması",
+      "oids": "OID’ler",
+      "networkChecks": "Ağ kontrolleri",
+      "thresholds": "SNMP eşik uyarıları",
+      "history": "Geçmiş",
+      "deviceHealth": "Cihaz sağlığı"
     },
     "stats": {
-      "asOf": "{{time}} itibarıyla"
+      "asOf": "{{time}} itibarıyla",
+      "lowestSupply": "En düşük sarf malzemesi seviyesi",
+      "portsUp": "Etkin bağlantı noktaları",
+      "portsUpValue": "{{total}} bağlantı noktasından {{up}} etkin",
+      "reachability": "Erişilebilirlik",
+      "lastPoll": "Son sorgulama"
+    },
+    "probe": {
+      "checkNow": "Şimdi kontrol et",
+      "checking": "Kontrol ediliyor…",
+      "errors": {
+        "noAgentInSite": "Bu konumdaki hiçbir çevrimiçi ajan cihaza erişemiyor. Bu konumda bir ajanı çevrimiçi yapıp tekrar deneyin.",
+        "inFlight": "Bu cihaz için zaten bir kontrol yürütülüyor.",
+        "noIp": "Bu varlığın kontrol edilecek bir IP adresi yok.",
+        "timedOut": "Ajan bir dakika içinde yanıt vermedi. Çevrimdışı veya meşgul olabilir.",
+        "unknown": "Bu cihaz şu anda kontrol edilemedi.",
+        "noSite": "Bu varlık bir sahaya atanmamış. Bir sahaya atayıp tekrar deneyin.",
+        "refreshFailed": "Kaydedildi, ancak sayfa sonucu okuyamadı. Sayfayı yeniden yükleyin."
+      }
     },
     "tabs": {
       "overview": "Genel Bakış",
@@ -2387,7 +2627,320 @@
       "sysName": "Sistem adı",
       "sysDescr": "Açıklama",
       "sysObjectId": "Nesne kimliği (OID)"
-    }
+    },
+    "settings": {
+      "title": "{{name}} ayarları",
+      "subtitle": "Her bölümü ayrı ayrı yönetin.",
+      "navLabel": "Varlık ayarları bölümleri",
+      "unsavedChanges": "Kaydedilmemiş değişiklikler",
+      "refreshFailed": "Kaydedildi, ancak sayfa yenilenemedi. Değişikliği görmek için sayfayı yeniden yükleyin.",
+      "sections": {
+        "identity": "Kimlik",
+        "monitoring": "İzleme",
+        "link": "Bağlantı",
+        "danger": "Tehlikeli işlemler"
+      },
+      "identity": {
+        "description": "Bu varlığın nasıl tanımlanacağını seçin.",
+        "displayName": "Görünen ad",
+        "type": "Cihaz türü",
+        "typeFixed": "Kaydedilen bu tür yeniden seçilemez. Farklı bir tür seçebilirsiniz.",
+        "typeDetected": "Algılanan: {{type}}",
+        "typeConsequence": "Önerilen SNMP şablonunu ve cihaz görünümünü değiştirir.",
+        "resetToDetected": "Algılanan türe sıfırla",
+        "tags": "Etiketler",
+        "tagsHint": "Etiketleri virgülle ayırın.",
+        "notes": "Notlar",
+        "conflict": "Bu varlık başka bir yerde değiştirildi. Yeniden kaydetmeden önce en güncel değerleri gözden geçirin.",
+        "typeGroups": {
+          "endpoints": "Uç noktalar",
+          "networkGear": "Ağ cihazları",
+          "peripherals": "Çevre birimleri",
+          "other": "Diğer"
+        }
+      },
+      "monitoring": {
+        "description": "SNMP veri toplamayı ve ağ kontrollerini yapılandırın.",
+        "loadFailed": "İzleme ayarları yüklenemedi. Tekrar deneyin.",
+        "checksLoadFailed": "Ağ kontrolleri yüklenemedi. Tekrar deneyin.",
+        "conflict": "İzleme ayarları başka bir yerde değiştirildi. Yeniden kaydetmeden önce en güncel değerleri gözden geçirin.",
+        "communityRequired": "SNMP v1 veya v2c’yi etkinleştirmek için bir topluluk dizesi girin.",
+        "usernameRequired": "SNMP v3’ü etkinleştirmek için bir kullanıcı adı girin.",
+        "invalidInterval": "Yoklama aralığı 30 ile 86400 saniye arasında bir tam sayı olmalıdır.",
+        "invalidPort": "Bağlantı noktası 1 ile 65535 arasında bir tam sayı olmalıdır.",
+        "pause": "Yoklamayı duraklat",
+        "resume": "Yoklamayı sürdür",
+        "disable": "Tüm izlemeyi devre dışı bırak",
+        "disableTitle": "Tüm izleme devre dışı bırakılsın mı?",
+        "disableMessage": "Bu varlığın SNMP yoklaması ve ağ kontrolleri devre dışı bırakılacak.",
+        "checksTitle": "Ağ kontrolleri",
+        "noChecks": "Yapılandırılmış ağ kontrolü yok.",
+        "addCheck": "Kontrol ekle",
+        "removeCheck": "Kontrolü kaldır",
+        "removeCheckTitle": "Ağ kontrolü kaldırılsın mı?",
+        "removeCheckMessage": "“{{name}}” ağ kontrolü kaldırılsın mı? Bu işlem geri alınamaz.",
+        "never": "hiçbir zaman",
+        "leaveBlankToKeep": "Kayıtlı — mevcut değeri korumak için boş bırakın",
+        "snmpVersion": "SNMP sürümü",
+        "pollingInterval": "Yoklama aralığı (saniye)",
+        "community": "Topluluk dizesi",
+        "username": "Kullanıcı adı",
+        "authProtocol": "Kimlik doğrulama protokolü",
+        "authPassword": "Kimlik doğrulama parolası",
+        "privacyProtocol": "Gizlilik protokolü",
+        "privacyPassword": "Gizlilik parolası",
+        "port": "SNMP bağlantı noktası",
+        "template": "SNMP şablonu",
+        "templatesUnavailable": "Şablonlar yüklenemedi. Mevcut şablon korunacak.",
+        "suggestionsUnavailable": "Öneriler kullanılamıyor",
+        "noTemplate": "Şablon yok",
+        "suggestion": "Öneri: {{template}} — {{reason}}",
+        "useSuggestion": "Öneriyi kullan",
+        "noTemplateWarning": "Şablon atanmadığından hiçbir veri yoklanmıyor.",
+        "collectionStatus": {
+          "ok": "Veri toplanıyor",
+          "failing": "Veri toplama başarısız",
+          "no_template": "Şablon atanmadığından hiçbir veri yoklanmıyor",
+          "no_agent": "Bu sitede kullanılabilir aracı yok",
+          "asset_moved": "Varlık başka bir siteye taşındı",
+          "never_polled": "Hiç yoklanmadı",
+          "paused": "Yoklama duraklatıldı",
+          "warning": "Kısmi veri toplama",
+          "offline": "Yoklamaya yanıt yok",
+          "unknown": "Veri toplama durumu bilinmiyor"
+        },
+        "checkState": {
+          "responding": "Yanıt veriyor",
+          "degraded": "Performansı düşük",
+          "notResponding": "Yanıt vermiyor",
+          "paused": "Duraklatıldı",
+          "unverified": "Doğrulanmadı"
+        },
+        "checkSource": {
+          "icmp_ping": "ping testi",
+          "tcp_port": "TCP bağlantı noktası",
+          "http_check": "HTTP kontrolü",
+          "dns_check": "DNS kontrolü"
+        }
+      },
+      "link": {
+        "description": "Keşfedilen bu varlığı, aynı makineye karşılık gelen yönetilen cihaza bağlayın.",
+        "unlinkHint": "Bağlantıyı kaldırmak, otomatik bağlamanın bir sonraki taramada bu bağlantıyı yeniden oluşturmasını da engeller."
+      },
+      "danger": {
+        "description": "Onay durumu ve kalıcı silme.",
+        "approvalTitle": "Onay",
+        "approvedExplainer": "Bu varlık onaylandı ve cihaz listelerinde görünüyor.",
+        "pendingExplainer": "Onay bekleniyor: henüz hiçbir şey izlenmiyor.",
+        "dismissedExplainer": "Yok sayıldı: cihaz listelerinde gizli.",
+        "approve": "Onayla",
+        "dismiss": "Yok say",
+        "deleteTitle": "Varlığı sil",
+        "deleteDescription": "Varlığı ve onun için toplanan tüm verileri kaldırır. Cihaz hâlâ ağdaysa keşif, bir sonraki taramada varlığı yeniden oluşturur.",
+        "deleteAsset": "Varlığı sil",
+        "deleteConfirmTitle": "Bu varlık silinsin mi?",
+        "deleteConfirmMessage": "\"{{name}}\" ve aşağıdaki her şey kaldırılacak. Bu işlem geri alınamaz.",
+        "deleteConfirmPrompt": "Onaylamak için {{name}} yazın",
+        "cascade": {
+          "snmp": "SNMP sorgulama yapılandırması",
+          "metrics": "Toplanan tüm metrikler",
+          "thresholds": "SNMP uyarı eşikleri",
+          "checks": "Bu varlığa bağlı tüm ağ kontrolleri",
+          "topology": "Topoloji haritasındaki kayıtlı konumu"
+        }
+      },
+      "openMonitoringSettings": "İzleme ayarlarını düzenle",
+      "openLinkSettings": "Bu bağlantıyı yönet",
+      "toasts": {
+        "identitySaved": "Kimlik bilgileri kaydedildi",
+        "identitySaveFailed": "Kimlik değişiklikleri kaydedilemedi",
+        "approved": "Varlık onaylandı",
+        "approveFailed": "Varlık onaylanamadı",
+        "dismissed": "Varlık yok sayıldı",
+        "dismissFailed": "Varlık yok sayılamadı",
+        "assetDeleted": "Varlık silindi",
+        "assetDeleteFailed": "Varlık silinemedi",
+        "snmpSaved": "SNMP ayarları kaydedildi",
+        "snmpSaveFailed": "SNMP ayarları kaydedilemedi",
+        "pollingPaused": "SNMP yoklaması duraklatıldı",
+        "pollingResumed": "SNMP yoklaması sürdürüldü",
+        "monitoringDisabled": "Bu varlık için izleme devre dışı bırakıldı",
+        "monitoringDisableFailed": "İzleme devre dışı bırakılamadı",
+        "checkCreated": "Ağ kontrolü eklendi",
+        "checkCreateFailed": "Ağ kontrolü eklenemedi",
+        "checkRemoved": "Ağ kontrolü kaldırıldı",
+        "checkRemoveFailed": "Ağ kontrolü kaldırılamadı"
+      }
+    },
+    "header": {
+      "lastError": "Son hata: {{error}}",
+      "settings": "Ayarlar"
+    },
+    "editInSettings": "Ayarlarda düzenle",
+    "reachability": {
+      "state": {
+        "responding": "Yanıt veriyor",
+        "notResponding": "Yanıt vermiyor",
+        "unverified": "Doğrulanmadı"
+      },
+      "source": {
+        "networkCheck": "Ağ kontrolü",
+        "probe": "Yoklama",
+        "scan": "Tarama",
+        "unifi": "UniFi",
+        "snmp": "SNMP"
+      },
+      "lastSeenBy": "son gözlem: {{source}}, {{relative}}",
+      "neverObserved": "hiç gözlemlenmedi",
+      "detail": {
+        "check": {
+          "online": "Çevrimiçi",
+          "degraded": "Performansı düşmüş",
+          "offline": "Çevrimdışı"
+        },
+        "probe": {
+          "ok": "Yanıt alındı",
+          "failed": "Yanıt yok",
+          "pending": "Aracı bekleniyor"
+        },
+        "snmp": {
+          "ok": "Sorgulanıyor",
+          "failing": "Başarısız",
+          "no_template": "Şablon yok",
+          "no_agent": "Sitede aracı yok",
+          "asset_moved": "Varlık taşındı",
+          "never_polled": "Hiç sorgulanmadı"
+        },
+        "snmpFailures": "Art arda {{count}} başarısızlık",
+        "snmpNote": "Bir SNMP hatası cihazdan ziyade köprü aracısını işaret edebilir — başarısızlıklar sorgu gönderildiğinde sayılır.",
+        "scan": {
+          "seen": "Görüldü",
+          "missed": "Görülmedi"
+        },
+        "emptyTitle": "Bu cihaz hakkında henüz rapor yok",
+        "emptyDescription": "Henüz hiçbir tarama, kontrol, sorgu veya elle başlatılan yoklama bir gözlem üretmedi."
+      }
+    },
+    "collection": {
+      "status": {
+        "ok": "Sorgulanıyor",
+        "failing": "Başarısız",
+        "noTemplate": "Şablon yok",
+        "noAgent": "Sitede aracı yok",
+        "assetMoved": "Varlık taşındı",
+        "neverPolled": "Hiç sorgulanmadı",
+        "paused": "Duraklatıldı",
+        "notConfigured": "Yapılandırılmadı"
+      },
+      "count": {
+        "collecting": "{{count}} için veri toplanıyor",
+        "unsupported": "{{count}} desteklenmiyor",
+        "stale": "{{count}} güncel değil",
+        "unknown": "{{count}} bilinmiyor",
+        "neverPolled": "{{count}} hiç sorgulanmadı",
+        "noOids": "Bu şablonda OID yok"
+      },
+      "viewOids": "OID’leri görüntüle",
+      "oidState": {
+        "collecting": "Toplanıyor",
+        "unsupported": "Desteklenmiyor",
+        "stale": "Güncel değil",
+        "neverPolled": "Hiç sorgulanmadı",
+        "unknown": "Bilinmiyor"
+      },
+      "unknownNeedsAgentUpdate": "Bu ajan sürümü tablo değerlerini okuyamıyor. Köprü cihazındaki ajanı güncelleyin.",
+      "partialRows": "Kısmi sonuç: tarama satır sınırına ulaştı.",
+      "unsupportedWithCode": "Cihaz {{code}} yanıtını verdi — bu OID cihazda uygulanmamış."
+    },
+    "health": {
+      "empty": {
+        "title": "Henüz hiçbir şey izlenmiyor",
+        "action": "İzlemeyi ayarla",
+        "benefit": {
+          "printer": "Toner ve mürekkep seviyelerini, kağıt tepsilerini, sayfa sayaçlarını ve yazıcı hatalarını görmek için SNMP’yi açın.",
+          "switch": "Arayüz durumunu, bağlantı noktası başına aktarım hızını ve çalışma süresini görmek için SNMP’yi açın.",
+          "generic": "Bu cihazdan sağlık verileri toplamak için SNMP’yi açın veya bir ping ya da bağlantı noktası denetimi ekleyin."
+        }
+      },
+      "noTemplate": "SNMP açık, ancak bir şablon atanmamış; bu nedenle hiçbir şey sorgulanmıyor.",
+      "pickTemplate": "Şablon seç",
+      "viewAllOids": "{{count}} OID’nin tümünü görüntüle"
+    },
+    "printer": {
+      "low": "Düşük",
+      "supplyFallback": "Sarf malzemesi {{instance}}",
+      "pageCount": "Toplam sayfa",
+      "sinceYesterday": "Dünden beri {{count}}",
+      "sinceLastWeek": "Son haftada {{count}}",
+      "notCollectedYet": "Yazıcı durum verileri henüz toplanmadı.",
+      "status": {
+        "other": "Diğer",
+        "unknown": "Bilinmiyor",
+        "idle": "Boşta",
+        "printing": "Yazdırılıyor",
+        "warmup": "Isınıyor"
+      },
+      "deviceStatus": {
+        "unknown": "Bilinmiyor",
+        "running": "Çalışıyor",
+        "warning": "Uyarı",
+        "testing": "Test ediliyor",
+        "down": "Devre dışı"
+      },
+      "errors": {
+        "lowPaper": "Kağıt az",
+        "noPaper": "Kağıt bitti",
+        "lowToner": "Toner az",
+        "noToner": "Toner bitti",
+        "doorOpen": "Kapak açık",
+        "jammed": "Kağıt sıkışması",
+        "offline": "Çevrimdışı",
+        "serviceRequested": "Servis gerekiyor",
+        "inputTrayMissing": "Giriş tepsisi eksik",
+        "outputTrayMissing": "Çıkış tepsisi eksik",
+        "markerSupplyMissing": "Sarf malzemesi eksik",
+        "outputNearFull": "Çıkış tepsisi dolmak üzere",
+        "outputFull": "Çıkış tepsisi dolu",
+        "inputTrayEmpty": "Giriş tepsisi boş",
+        "overduePreventMaint": "Bakım gecikti"
+      }
+    },
+    "charts": {
+      "loadFailed": "Bu metriğin geçmişi yüklenemedi.",
+      "pickOids": "Grafik",
+      "cap": "En fazla {{count}} grafik gösteriliyor. Başka bir grafik eklemek için birinin seçimini kaldırın.",
+      "perBucket": "{{bucket}} başına değişim",
+      "bucket": {
+        "fiveMinutes": "5 dakika",
+        "hour": "saat",
+        "day": "gün"
+      },
+      "emptyTitle": "Henüz hiçbir OID için değer toplanmıyor",
+      "emptyDescription": "En az bir OID için sorgu bir değer döndürdüğünde geçmiş görünür.",
+      "truncated": "Yalnızca ilk 64 örnek serisi gösterilir."
+    },
+    "poll": {
+      "everySeconds": "her {{count}} sn.",
+      "everyMinutes": "her {{count}} dk.",
+      "everyHours": "her {{count}} sa."
+    },
+    "checks": {
+      "emptyTitle": "Bu cihazda ağ kontrolü yok",
+      "emptyDescription": "Ping veya bağlantı noktası kontrolü, keşif taramasından bağımsız olarak bu cihazın erişilebilirliğini belirler.",
+      "add": "Kontrol ekle",
+      "paused": "Duraklatıldı",
+      "status": {
+        "online": "Çevrimiçi",
+        "degraded": "Performansı düşük",
+        "offline": "Çevrimdışı",
+        "never": "Hiç kontrol edilmedi"
+      }
+    },
+    "thresholds": {
+      "emptyTitle": "Yapılandırılmış SNMP eşik uyarısı yok",
+      "emptyDescription": "Bu cihazda sorgulanan değerler henüz herhangi bir uyarı oluşturmayacak."
+    },
+    "loadingMonitoring": "İzleme verileri yükleniyor…"
   },
   "osIcons": {
     "linux": "Linux",
@@ -2769,7 +3322,8 @@
       "assignedContactPlaceholder": "Kişi ara…",
       "tags": "Etiketler",
       "tagsPlaceholder": "Virgülle ayrılmış",
-      "notes": "Notlar"
+      "notes": "Notlar",
+      "purchaseDate": "Satın alma tarihi"
     }
   },
   "addNetworkAssetModal": {

@@ -12,10 +12,12 @@ import ScriptPickerModal, {
   type ScriptRunAsSelection,
 } from "./ScriptPickerModal";
 import MaintenanceModeDialog from "./MaintenanceModeDialog";
+import MoveDeviceOrgDialog from "./MoveDeviceOrgDialog";
 import { isInMaintenance } from "../../lib/maintenanceResource";
 import type { Device, DeviceStatus, OSType } from "./DeviceList";
 import type { DeviceActionOptions } from "./DeviceActions";
 import { fetchWithAuth } from "../../stores/auth";
+import { useRecentsStore } from "../../stores/recentsStore";
 import {
   sendDeviceCommand,
   executeScript,
@@ -64,6 +66,7 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
   const [changeSiteOpen, setChangeSiteOpen] = useState(false);
   const [scriptPickerOpen, setScriptPickerOpen] = useState(false);
   const [maintenanceDialogOpen, setMaintenanceDialogOpen] = useState(false);
+  const [moveOrgDialogOpen, setMoveOrgDialogOpen] = useState(false);
 
   // Track every in-flight wake watcher so that navigating away aborts the
   // long-running poll loop. Without this, watchWakeOutcome keeps polling
@@ -89,6 +92,8 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
       const response = await fetchWithAuth(`/devices/${deviceId}`);
       if (!response.ok) {
         if (response.status === 404) {
+          // Gone for good — drop it from the sidebar's recent devices.
+          useRecentsStore.getState().forgetDevice(deviceId);
           throw new Error("Device not found");
         }
         throw new Error("Failed to fetch device");
@@ -272,6 +277,9 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
         type: "device",
         id: device.id,
         hostname: device.hostname,
+        // Lets the AI store notice that an open chat belongs to another tenant
+        // and start a session anchored to THIS device's org instead (#5684).
+        orgId: device.orgId || undefined,
         os: device.os,
         status: device.status,
         ip: undefined,
@@ -279,6 +287,18 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
     }
     return () => setPageContext(null);
   }, [device, setPageContext]);
+
+  // Remember this device for the sidebar's recent-devices rows and Cmd+K.
+  // `recentsUserId` is a dependency on purpose: on a direct page load the
+  // device fetch can resolve before GlobalShortcuts has hydrated the store for
+  // the signed-in user (recordDevice no-ops until then), so re-run once it has.
+  const recordRecentDevice = useRecentsStore((s) => s.recordDevice);
+  const recentsUserId = useRecentsStore((s) => s.userId);
+  const recentName = device ? device.displayName || device.hostname : null;
+  useEffect(() => {
+    if (!device || !recentName || !recentsUserId) return;
+    recordRecentDevice({ id: device.id, name: recentName, orgId: device.orgId });
+  }, [device?.id, device?.orgId, recentName, recentsUserId, recordRecentDevice]);
 
   const handleBack = () => {
     void navigateTo("/devices");
@@ -438,6 +458,13 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
 
         case "change-site":
           setChangeSiteOpen(true);
+          return;
+
+        case "move-org":
+          // Spec 2026-09-18 device-move-org D5: the move needs a target org,
+          // a target site and possibly a step-up factor, so it opens a dialog
+          // instead of firing a request here.
+          setMoveOrgDialogOpen(true);
           return;
 
         case "install-homebrew": {
@@ -741,6 +768,20 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
             type: "success",
             message: `${device.hostname} ${t("deviceDetailPage.putInto")} maintenance mode`,
           });
+          void fetchDevice();
+        }}
+      />
+      <MoveDeviceOrgDialog
+        open={moveOrgDialogOpen}
+        device={{ id: device.id, hostname: device.hostname, orgId: device.orgId, orgName: device.orgName }}
+        onClose={() => setMoveOrgDialogOpen(false)}
+        onCompleted={({ targetOrgName }) => {
+          showToast({
+            type: "success",
+            message: t("deviceDetailPage.movedToOrg", { hostname: device.hostname, orgName: targetOrgName }),
+          });
+          // Refetch rather than trust the echoed row: the route disconnects
+          // the agent after commit, so status and org fields settle server-side.
           void fetchDevice();
         }}
       />

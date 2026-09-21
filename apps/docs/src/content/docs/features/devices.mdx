@@ -3,7 +3,7 @@ title: Devices
 description: Work with the device list and device Info tab — customizable columns, filters, VPN presence, battery status, and manual (hand-entered) assets.
 ---
 
-import { Aside } from '@astrojs/starlight/components';
+import { Aside, Steps } from '@astrojs/starlight/components';
 
 The **Devices** page is the home view for every managed endpoint — servers, workstations, laptops, discovered network devices, and hand-entered manual assets across all the organizations you can access. This page covers the device list itself (columns and filters) and the device detail **Info** tab, including VPN presence and battery status.
 
@@ -128,6 +128,34 @@ Selecting several removed devices at once in the device list adds bulk equivalen
 
 ---
 
+## Moving a Device to Another Organization
+
+A partner technician can relocate a device -- with its history, tickets, custom-field values and policy assignments -- to a different organization of the same partner. Open the device page, choose **Move to Organization** from the **…** menu, pick the target organization and one of its sites, and confirm.
+
+### What moving requires
+
+<Steps>
+1. **Partner or system scope, with `devices:write` and `organizations:write`.** Organization-scoped users do not see the action; the API refuses them.
+
+2. **A signed-in technician.** API keys, MCP tools and other machine principals cannot move devices. The route requires an interactive user session whether or not two-factor authentication is enabled for the deployment.
+
+3. **A fresh second factor.** An assured session is not enough on its own -- the technician re-verifies with an authenticator app code or a passkey at the moment of the move. A technician whose only second factor is SMS must add an authenticator app or a passkey first. The verification is bound to the exact device, target organization and target site chosen, so it cannot be replayed for a different move.
+</Steps>
+
+### Unbilled work in another currency
+
+If the device's tickets carry unbilled time or parts in a currency other than the target organization's, the move is refused with an explanation. A technician who also holds `invoices:write` may accept the mismatch, in which case those rows keep their original currency after the move; anyone else is asked to have the open work billed or cleared first.
+
+### What happens after the move
+
+The agent is disconnected and reconnects under the new organization within its normal heartbeat interval. The device page refreshes to the new organization and site. Two audit events are written, one in each organization's trail (`device.move_org.source` and `device.move_org.target`).
+
+<Aside type="note">
+Moving is refused while durable PAM lifecycle evidence exists for the device, and while any of its tickets is pinned to a service deliverable. Both refusals leave the device untouched.
+</Aside>
+
+---
+
 ## Billing Coverage
 
 The device **Overview** tab carries a **Billing** card answering "which contract line bills this device?". It needs **Contracts read** access and a partner-scoped login, so techs without billing access do not see it at all. It shows one of four things:
@@ -229,6 +257,7 @@ Opening a device and selecting **Info** shows the device's identity and inventor
 |---------|----------|
 | **System** | Hostname, display name (editable), serial number, manufacturer, model. |
 | **Device Role** | The device's assigned role and how it was determined. |
+| **Function** | What the device is *for* (domain controller, kiosk, finance workstation, …), assessed by the AI Fleet designer or set by hand — see [Device function](#device-function) below. |
 | **Operating System** | OS type, version, build, and architecture. |
 | **Hardware Summary** | CPU model, cores/threads, RAM, disk, GPU, motherboard, BIOS version. |
 | **Power** | Battery and power status (portable devices only — see above). |
@@ -236,6 +265,14 @@ Opening a device and selecting **Info** shows the device's identity and inventor
 | **Agent** | Agent and watchdog versions, status, last seen, enrollment date, system uptime, logged-in user. |
 | **Desktop Access** | macOS remote-desktop readiness (macOS devices only). |
 | **Tags** and **Custom Fields** | Organizational metadata, when present. |
+
+### Device function
+
+**Function** (v0.113.0+) records what a device is *for*, as distinct from the billable **Device Role**. The built-in functions are Domain controller, File server, Print server, Hypervisor, Database server, Line-of-business workstation, Finance workstation, Executive workstation, Shared workstation, Conference room, Kiosk, Core switch, Edge firewall, Backup target and Unknown; **Custom…** lets you enter your own short label.
+
+A function is either assessed by the [Fleet designer](/features/ai-agents/#fleet-designer) AI agent — badged **AI**, with a confidence percentage and a **Why the designer thinks so** explanation — or set by a technician with **Change function**, badged **Manual**. A manual assessment supersedes the AI one and the designer never overwrites it; **Clear** removes the assessment and the field reads **Not assessed**. Changing or clearing a function needs `devices:write` and a fresh MFA check.
+
+Function is also available as the **Device Function** field in the device catalog filters and saved filters.
 
 ---
 

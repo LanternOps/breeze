@@ -91,6 +91,8 @@ export const WORKER_FAILURE_REASONS = [
   'desktop_intent_already_released',
   /** aiBudgetAlertDelivery: the event row is not committed/visible yet (#4388). */
   'ai_budget_alert_event_not_visible',
+  /** m365SyncWorker: Graph throttled or the executor was at its sync in-flight cap. */
+  'm365_sync_throttled',
 ] as const;
 
 export type WorkerFailureReason = (typeof WORKER_FAILURE_REASONS)[number];

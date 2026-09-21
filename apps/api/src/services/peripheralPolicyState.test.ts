@@ -265,6 +265,7 @@ describe('reconcilePeripheralPolicyDevice trust gate', () => {
                 id: identity.deviceId,
                 orgId: identity.orgId,
                 peripheralPolicyProtocolVersion: 2,
+                status: 'active',
               }]),
             }),
           }),
@@ -276,6 +277,31 @@ describe('reconcilePeripheralPolicyDevice trust gate', () => {
         }),
       });
     loadEffectivePolicyMock.mockResolvedValue({ identity, effectivePolicies });
+  });
+
+  it('treats a decommissioned device as incompatible without consulting partner trust', async () => {
+    txMock.select.mockReset();
+    txMock.select.mockReturnValueOnce({
+      from: () => ({
+        where: () => ({
+          limit: () => ({
+            for: () => Promise.resolve([{
+              id: identity.deviceId,
+              orgId: identity.orgId,
+              peripheralPolicyProtocolVersion: 2,
+              status: 'decommissioned',
+            }]),
+          }),
+        }),
+      }),
+    });
+
+    await expect(reconcilePeripheralPolicyDevice(identity.deviceId, 'periodic_drift'))
+      .resolves.toBe('incompatible');
+
+    expect(assertDeviceExecuteAllowedMock).not.toHaveBeenCalled();
+    expect(txMock.insert).not.toHaveBeenCalled();
+    expect(txMock.update).not.toHaveBeenCalled();
   });
 
   it('warns and skips all writes when partner trust denies the policy push', async () => {

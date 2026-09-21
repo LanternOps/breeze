@@ -77,3 +77,57 @@ describe('get_contract line shape (#3205 W03)', () => {
     expect(out.lines[0]).toMatchObject({ site: { id: 'site-1', name: 'HQ' }, deviceGroup: null });
   });
 });
+
+/**
+ * #6110 finding 1 — SCOPE PARITY. Every route file under `routes/contracts/` is
+ * `requireScope('partner','system')` (contracts.ts:16, bulk.ts:11, lines.ts:18,
+ * lifecycle.ts:13), so an org-scoped caller cannot touch a contract over HTTP.
+ * The tool is a second door onto the same services and must require the same.
+ */
+describe('contract tools refuse organization scope (#6110 finding 1)', () => {
+  const orgAuth = { ...auth, scope: 'organization' as const, orgId: 'org-1' };
+
+  it.each(['list_contracts', 'get_contract', 'manage_contracts'] as const)(
+    '%s refuses an organization-scoped caller with PARTNER_SCOPE_REQUIRED',
+    async (name) => {
+      const out = await getTool(name).handler(
+        { contractId: 'c-1', action: 'cancel' }, orgAuth as AuthContext,
+      );
+      expect(JSON.parse(out)).toMatchObject({ code: 'PARTNER_SCOPE_REQUIRED' });
+    },
+  );
+
+  it('refuses BEFORE reaching the service layer', async () => {
+    vi.mocked(getContract).mockClear();
+    await getTool('get_contract').handler({ contractId: 'c-1' }, orgAuth as AuthContext);
+    expect(getContract).not.toHaveBeenCalled();
+  });
+
+  it.each(['partner', 'system'] as const)('still admits a %s-scoped caller', async (scope) => {
+    vi.mocked(getContract).mockClear();
+    vi.mocked(getContract).mockResolvedValue({ contract: { id: 'c-1' }, lines: [], periods: [] } as never);
+    const out = await getTool('get_contract').handler(
+      { contractId: 'c-1' }, { ...auth, scope } as AuthContext,
+    );
+    expect(JSON.parse(out)).not.toMatchObject({ code: 'PARTNER_SCOPE_REQUIRED' });
+    expect(getContract).toHaveBeenCalled();
+  });
+});
+
+describe('list_contracts site-scope annotation (#6110 finding 2)', () => {
+  it('annotates the page for a site-restricted caller so a short page is not read as "all there is"', async () => {
+    const { listContracts } = await import('./contractService');
+    vi.mocked(listContracts).mockResolvedValue([] as never);
+    const out = await getTool('list_contracts').handler(
+      {}, { ...auth, allowedSiteIds: ['site-1'] } as AuthContext,
+    );
+    expect(JSON.parse(out).scopeNote).toContain('site access');
+  });
+
+  it('adds no note for an unrestricted caller', async () => {
+    const { listContracts } = await import('./contractService');
+    vi.mocked(listContracts).mockResolvedValue([] as never);
+    const out = await getTool('list_contracts').handler({}, auth);
+    expect(JSON.parse(out)).not.toHaveProperty('scopeNote');
+  });
+});

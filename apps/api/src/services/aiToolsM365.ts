@@ -38,6 +38,7 @@ import { m365ReadActionSchema, type M365ReadAction } from '@breeze/shared/m365';
 import { executeM365ReadAction, type M365ReadActionServiceResult } from './m365ControlPlane/readActionService';
 import type { AiTool } from './aiTools';
 import type { SecretToolResult } from './actionIntents/secretBearingTools';
+import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from './siteCeilingAccess';
 
 const env = {
   DELEGANT_BASE_URL, DELEGANT_SERVICE_TOKEN, DELEGANT_PRINCIPAL_SIGNING_KEY, DELEGANT_PRINCIPAL_KID,
@@ -49,6 +50,15 @@ export const m365ToolTiers: Record<string, 1 | 3> = {
   m365_list_group_memberships: 1,
   m365_disable_user: 3,
   m365_reset_password: 3,
+};
+
+/** One-line tool-search hints for session-aware M365 tools. Keys mirror m365ToolTiers. */
+export const m365ToolSearchHints: Readonly<Record<string, string>> = {
+  m365_lookup_user: 'Find a Microsoft 365 user by email, account enabled state, licenses and MFA status',
+  m365_recent_signins: 'Recent Entra sign-in events, failed logins and conditional access outcomes for a user',
+  m365_list_group_memberships: 'Microsoft 365 group memberships for a user, security groups and distribution lists',
+  m365_disable_user: 'Disable a Microsoft 365 user account and block sign-in',
+  m365_reset_password: 'Reset a Microsoft 365 user password and require a password change at next sign-in',
 };
 
 // v1 single-customer seeding: every action is attributed to one static acting
@@ -157,6 +167,25 @@ function requireString(input: Record<string, unknown>, key: string): string | nu
   return typeof v === 'string' && v.length > 0 ? v : null;
 }
 
+/**
+ * Site/exact-device ceiling for the MUTATING helpdesk tools.
+ *
+ * Every m365_* write is gated on `organizations:write` (aiGuardrails.ts), which
+ * a site-restricted technician can legitimately hold — so after the permission
+ * remap they could disable a user or reset a password through chat. These Graph
+ * operations act on the WHOLE customer tenant: there is no per-site slice of a
+ * directory account to narrow to, so they fail closed exactly as every other
+ * org-wide governance object does (`canMutateOrgWideGovernance`). Reads are
+ * unaffected — they are already narrowed by the control plane's authz ladder.
+ *
+ * Returns the denial string to hand straight back, or `null` to proceed.
+ */
+function siteCeilingDenied(auth: AuthContext): string | null {
+  return canMutateOrgWideGovernance(auth)
+    ? null
+    : errorString('site_scope_denied', SITE_CEILING_WRITE_DENIED_MESSAGE);
+}
+
 export async function m365LookupUserHandler(
   input: Record<string, unknown>,
   auth: AuthContext,
@@ -219,6 +248,8 @@ export async function m365DisableUserHandler(
   auth: AuthContext,
   sessionId: string,
 ): Promise<string> {
+  const ceiling = siteCeilingDenied(auth);
+  if (ceiling) return ceiling;
   const reason = requireString(input, 'reason');
   if (!reason) return errorString('missing_reason', 'A reason is required for this action.');
 
@@ -247,6 +278,8 @@ export async function m365ResetPasswordHandler(
   auth: AuthContext,
   sessionId: string,
 ): Promise<SecretToolResult> {
+  const ceiling = siteCeilingDenied(auth);
+  if (ceiling) return { kind: 'error', llmText: ceiling };
   const reason = requireString(input, 'reason');
   if (!reason) return { kind: 'error', llmText: errorString('missing_reason', 'A reason is required for this action.') };
 
@@ -371,6 +404,8 @@ export function registerM365Tools(aiTools: Map<string, AiTool>): void {
   // ============================================
   registerTool({
     tier: 1,
+    domain: 'integrations',
+    searchHint: 'Microsoft 365 users: list or get directory accounts and enabled state',
     definition: {
       name: 'm365_query_users',
       description: 'Query Microsoft 365 users (list or get one). Returns up to 50 users per page, max 4 pages (200 users). Data is read live from the customer\'s Microsoft 365 tenant.',
@@ -407,6 +442,8 @@ export function registerM365Tools(aiTools: Map<string, AiTool>): void {
   // ============================================
   registerTool({
     tier: 1,
+    domain: 'integrations',
+    searchHint: 'Microsoft 365 Entra sign-in activity, failed logins and conditional access outcomes',
     definition: {
       name: 'm365_query_signins',
       description: 'Query recent Microsoft 365 sign-in activity, optionally filtered to one user. Returns up to 50 sign-ins per page, max 2 pages (100 sign-ins), covering up to the last 168 hours. Data is read live from the customer\'s Microsoft 365 tenant. Requires the tenant to have Entra ID P1/P2.',
@@ -437,6 +474,8 @@ export function registerM365Tools(aiTools: Map<string, AiTool>): void {
   // ============================================
   registerTool({
     tier: 1,
+    domain: 'integrations',
+    searchHint: 'Microsoft Intune managed devices: list or get device inventory and compliance',
     definition: {
       name: 'm365_query_intune_devices',
       description: 'Query Intune-managed devices (list or get one). Returns up to 50 devices per page, max 4 pages (200 devices). Data is read live from the customer\'s Microsoft 365 tenant.',
@@ -476,6 +515,8 @@ export function registerM365Tools(aiTools: Map<string, AiTool>): void {
   // ============================================
   registerTool({
     tier: 1,
+    domain: 'integrations',
+    searchHint: 'Microsoft 365 groups: list, get and view group members',
     definition: {
       name: 'm365_query_groups',
       description: 'Query Microsoft 365 groups (list, get one, or list a group\'s members). Returns up to 50 groups or 100 members per page, max 4 pages (200 groups, 400 members). Data is read live from the customer\'s Microsoft 365 tenant.',
@@ -510,6 +551,8 @@ export function registerM365Tools(aiTools: Map<string, AiTool>): void {
   // ============================================
   registerTool({
     tier: 1,
+    domain: 'integrations',
+    searchHint: 'Microsoft 365 tenant organization profile and license SKU inventory',
     definition: {
       name: 'm365_query_org',
       description: 'Get the Microsoft 365 tenant\'s organization profile or its license/SKU inventory. Each call returns a single organization record or the full SKU list (no client-settable limit). Data is read live from the customer\'s Microsoft 365 tenant.',
@@ -535,6 +578,8 @@ export function registerM365Tools(aiTools: Map<string, AiTool>): void {
   // ============================================
   registerTool({
     tier: 1,
+    domain: 'integrations',
+    searchHint: 'Microsoft SharePoint sites: search or get site details',
     definition: {
       name: 'm365_query_sites',
       description: 'Query SharePoint sites (search or get one). List mode returns a single page of results with no client-settable limit. Data is read live from the customer\'s Microsoft 365 tenant.',

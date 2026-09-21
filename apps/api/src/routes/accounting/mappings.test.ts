@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 
 const {
+  enqueueMappingMock,
   listMappingProposalsMock,
   listRemoteIncomeAccountsForPartnerMock,
   saveMappingDecisionMock,
@@ -11,6 +12,7 @@ const {
   AccountingMappingError,
   authState,
 } = vi.hoisted(() => {
+  const enqueueMappingMock = vi.fn().mockResolvedValue(true);
   const listMappingProposalsMock = vi.fn();
   const listRemoteIncomeAccountsForPartnerMock = vi.fn();
   const saveMappingDecisionMock = vi.fn();
@@ -34,6 +36,7 @@ const {
     mfa: true,
   };
   return {
+    enqueueMappingMock,
     listMappingProposalsMock,
     listRemoteIncomeAccountsForPartnerMock,
     saveMappingDecisionMock,
@@ -44,6 +47,11 @@ const {
     authState,
   };
 });
+
+vi.mock('../../jobs/accountingSyncWorker', () => ({
+  enqueueAccountingInvoicePush: vi.fn(),
+  enqueueAccountingMappingSync: enqueueMappingMock,
+}));
 
 vi.mock('../../services/accounting/accountingMappingService', () => ({
   listMappingProposals: listMappingProposalsMock,
@@ -132,6 +140,8 @@ function fullMappingRow(overrides: Record<string, unknown> = {}) {
     remoteEntityType: 'Customer',
     remoteEntityId: 'qb-1',
     remoteSyncToken: 'qb-sync-token-42',
+    confidence: 'existing_link',
+    proposedRemoteName: 'Acme QBO',
     linkStatus: 'confirmed',
     syncStatus: 'pending',
     lastSyncedAt: null,
@@ -352,6 +362,8 @@ describe('PUT /accounting/:provider/mappings', () => {
       breezeEntityId: VALID_ORG_ID,
       remoteEntityType: 'Customer',
       remoteEntityId: 'qb-1',
+      confidence: 'existing_link',
+      proposedRemoteName: 'Acme QBO',
       linkStatus: 'confirmed',
       syncStatus: 'pending',
       lastSyncedAt: null,
@@ -360,6 +372,38 @@ describe('PUT /accounting/:provider/mappings', () => {
     for (const field of INTERNAL_MAPPING_FIELDS) {
       expect(body.data).not.toHaveProperty(field);
     }
+  });
+
+  it.each(['confirmed', 'create_new'])('enqueues %s after the decision commits', async (decision) => {
+    let committed = false;
+    saveMappingDecisionMock.mockImplementationOnce(async (_input, run) => {
+      await run(async () => { committed = true; });
+      return fullMappingRow({ linkStatus: decision });
+    });
+    enqueueMappingMock.mockImplementationOnce(async () => {
+      expect(committed).toBe(true);
+      return true;
+    });
+    const res = await putMapping({ breezeEntityType: 'org', breezeEntityId: VALID_ORG_ID,
+      decision, ...(decision === 'confirmed' ? { remoteEntityId: 'qb-1' } : {}) });
+    expect(res.status).toBe(200);
+    expect(enqueueMappingMock).toHaveBeenCalledWith('org', VALID_ORG_ID, 'p1');
+    expect(writeRouteAuditMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not enqueue an unlink', async () => {
+    saveMappingDecisionMock.mockResolvedValueOnce(fullMappingRow({ linkStatus: 'unlinked' }));
+    const res = await putMapping({ breezeEntityType: 'org', breezeEntityId: VALID_ORG_ID, decision: 'unlinked' });
+    expect(res.status).toBe(200);
+    expect(enqueueMappingMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps the committed decision successful when Redis is unavailable', async () => {
+    saveMappingDecisionMock.mockResolvedValueOnce(fullMappingRow());
+    enqueueMappingMock.mockResolvedValueOnce(false);
+    const res = await putMapping({ breezeEntityType: 'org', breezeEntityId: VALID_ORG_ID, decision: 'create_new' });
+    expect(res.status).toBe(200);
+    expect(enqueueMappingMock).toHaveBeenCalledTimes(1);
   });
 
   it('requires MFA (403) before calling the service, even with sufficient permissions', async () => {
@@ -528,6 +572,8 @@ describe('POST /accounting/:provider/mappings/sync', () => {
       breezeEntityId: VALID_ORG_ID,
       remoteEntityType: 'Customer',
       remoteEntityId: 'qb-1',
+      confidence: 'existing_link',
+      proposedRemoteName: 'Acme QBO',
       linkStatus: 'confirmed',
       syncStatus: 'synced',
       lastSyncedAt: null,

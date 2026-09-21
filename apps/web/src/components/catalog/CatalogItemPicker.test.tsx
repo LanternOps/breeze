@@ -7,7 +7,7 @@ import type { CatalogItem } from '../../lib/api/catalog';
 function item(over: Partial<CatalogItem> = {}): CatalogItem {
   return {
     id: 'cat-1', partnerId: 'p1', itemType: 'hardware', name: 'NVMe 1TB', sku: 'NV-1', description: null,
-    billingType: 'one_time', unitPrice: '999.00', costBasis: null, costCurrency: 'USD', markupPercent: null,
+    billingType: 'one_time', costBasis: null, costCurrency: 'USD', markupPercent: null,
     unitOfMeasure: 'each', taxable: false, taxCategory: null, isBundle: false, isActive: true,
     createdAt: '', updatedAt: '', prices: [{ currencyCode: 'EUR', unitPrice: '120.00' }],
     ...over,
@@ -15,7 +15,7 @@ function item(over: Partial<CatalogItem> = {}): CatalogItem {
 }
 
 describe('CatalogItemPicker (multi-currency #3775)', () => {
-  it('shows the price-book row in the document currency — never the unitPrice mirror', async () => {
+  it('shows the price-book row in the document currency — never any other price', async () => {
     render(<CatalogItemPicker items={[item()]} onSelect={vi.fn()} currencyCode="EUR" />);
     fireEvent.change(screen.getByTestId('catalog-picker-input'), { target: { value: 'NV' } });
     const price = await screen.findByTestId('catalog-picker-price-cat-1');

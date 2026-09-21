@@ -22,11 +22,12 @@ import {
 import { eq, and, desc, sql, gte, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
-import { CommandTypes, queueCommandForExecution } from './commandQueue';
+import { CommandTypes } from './commandQueue';
+import { aiQueueCommandForExecution } from './aiDispatch';
 import { resolveBackupProviderConfig, resolveBackupDestinationError } from './backupProviderConfig';
 import { createManualBackupJobIfIdle } from './backupJobCreation';
 import { enqueueBackupDispatch } from '../jobs/backupEnqueue';
-import { deviceSiteDenied, resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
+import { deviceScopeCondition, deviceSiteDenied, resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
 import { loadSnapshotWithSiteAccess } from './aiToolsBackupShared';
 import { backupJobHistoryOrderBy, latestBackupRunOrderBy } from './backupJobOrdering';
 import { inArray } from 'drizzle-orm';
@@ -139,6 +140,8 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'backup',
+    searchHint: 'backup configurations, jobs, policies: list and filter by device or job status',
     deviceArgs: ['deviceId'],
     definition: {
       name: 'query_backups',
@@ -198,8 +201,15 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
         // Site axis (app-layer only; RLS does NOT enforce it). backupJobs are
         // device-keyed; a site-restricted caller may only see jobs for devices
         // in their allowed sites. Narrow to that set (query_vaults pattern).
+        // Exact-device axis first: it is independent of the org lookup below and
+        // of `allowedSiteIds`, which a device-less analysis run does not carry
+        // (#6086 finding 9b). Without this, such a run read every sibling
+        // device's backup jobs.
+        const jobDeviceCond = deviceScopeCondition(auth, backupJobs.deviceId);
+        if (jobDeviceCond) conditions.push(jobDeviceCond);
+
         const orgId = getOrgId(auth);
-        if (auth.allowedSiteIds && orgId) {
+        if ((auth.allowedSiteIds || auth.allowedDeviceIds) && orgId) {
           const allowed = await resolveSiteAllowedDeviceIds(orgId, auth);
           if (!allowed || allowed.length === 0) {
             return JSON.stringify({ jobs: [], showing: 0 });
@@ -282,6 +292,8 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'backup',
+    searchHint: 'backup health, recent jobs and storage summary for a device or organization',
     deviceArgs: ['deviceId'],
     definition: {
       name: 'get_backup_status',
@@ -297,6 +309,20 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
     handler: safeHandler('get_backup_status', async (input, auth) => {
       const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
 
+      // The org-level branch below aggregates configs, jobs and snapshot storage
+      // across the WHOLE org. `backup_configs` has no device column at all, so
+      // those aggregates cannot be attributed to a device set and cannot be
+      // narrowed — a scope-restricted caller must name a device instead of
+      // receiving fleet-wide totals (#6086 finding 9a). Gated on EITHER axis:
+      // a device-less analysis run carries `allowedDeviceIds` with no
+      // `allowedSiteIds`.
+      if (typeof input.deviceId !== 'string'
+        && (auth.allowedDeviceIds || auth.allowedSiteIds)) {
+        return JSON.stringify({
+          error: 'A deviceId is required: org-wide backup totals cannot be attributed to individual devices, and your access is limited to specific devices or sites.',
+        });
+      }
+
       if (typeof input.deviceId === 'string') {
         const deviceId = input.deviceId as string;
 
@@ -308,7 +334,7 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
           .where(and(...deviceConditions)).limit(1);
         if (!device) return JSON.stringify({ error: 'Device not found or access denied' });
         // Site axis (app-layer only; RLS does NOT enforce it).
-        if (deviceSiteDenied(auth, device.siteId)) return JSON.stringify({ error: 'Device not found or access denied' });
+        if (deviceSiteDenied(auth, device.siteId, device.id)) return JSON.stringify({ error: 'Device not found or access denied' });
 
         // Latest backup job for device
         const jobOrgCond = orgWhere(auth, backupJobs.orgId);
@@ -416,6 +442,8 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'backup',
+    searchHint: 'backup snapshots, available restore points for one device',
     deviceArgs: ['deviceId'],
     definition: {
       name: 'browse_snapshots',
@@ -442,7 +470,7 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
         .where(and(...deviceConditions))
         .limit(1);
       if (!device) return JSON.stringify({ error: 'Device not found or access denied' });
-      if (deviceSiteDenied(auth, device.siteId)) return JSON.stringify({ error: 'Device not found or access denied' });
+      if (deviceSiteDenied(auth, device.siteId, device.id)) return JSON.stringify({ error: 'Device not found or access denied' });
 
       const limit = Math.min(Math.max(1, Number(input.limit) || 25), 100);
       const snapshotOrgCond = orgWhere(auth, backupSnapshots.orgId);
@@ -484,6 +512,8 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 3,
+    domain: 'backup',
+    searchHint: 'on-demand backup job for a device using a backup configuration',
     deviceArgs: ['deviceId'],
     definition: {
       name: 'trigger_backup',
@@ -512,7 +542,7 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
       const [device] = await db.select({ id: devices.id, status: devices.status, siteId: devices.siteId }).from(devices)
         .where(and(...deviceConditions)).limit(1);
       if (!device) return JSON.stringify({ error: 'Device not found or access denied' });
-      if (deviceSiteDenied(auth, device.siteId)) return JSON.stringify({ error: 'Device not found or access denied' });
+      if (deviceSiteDenied(auth, device.siteId, device.id)) return JSON.stringify({ error: 'Device not found or access denied' });
       if (device.status !== 'online') {
         return JSON.stringify({ error: `Device is ${device.status}, cannot execute backup` });
       }
@@ -576,6 +606,8 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 3,
+    domain: 'backup',
+    searchHint: 'backup snapshot recovery, full or selected file paths to a target device',
     deviceArgs: ['deviceId'],
     definition: {
       name: 'restore_snapshot',
@@ -610,7 +642,7 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
       const [device] = await db.select({ id: devices.id, siteId: devices.siteId }).from(devices)
         .where(and(...deviceConditions)).limit(1);
       if (!device) return JSON.stringify({ error: 'Device not found or access denied' });
-      if (deviceSiteDenied(auth, device.siteId)) return JSON.stringify({ error: 'Device not found or access denied' });
+      if (deviceSiteDenied(auth, device.siteId, device.id)) return JSON.stringify({ error: 'Device not found or access denied' });
 
       // Verify the snapshot under the caller's org AND site scope: the source
       // snapshot's device must be within the caller's site scope, not just the
@@ -683,7 +715,9 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
       if (!restoreJob) return JSON.stringify({ error: 'Failed to create restore job' });
 
       try {
-        const { command, error } = await queueCommandForExecution(
+        const { command, error } = await aiQueueCommandForExecution(
+          auth,
+          'restore_snapshot',
           restoreJob.deviceId,
           CommandTypes.BACKUP_RESTORE,
           {

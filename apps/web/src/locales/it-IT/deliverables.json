@@ -1,0 +1,236 @@
+{
+  "section": {
+    "title": "Deliverable del servizio",
+    "empty": "Nessun deliverable ancora. Aggiungi i report e le revisioni periodiche dovuti a questo cliente."
+  },
+  "table": {
+    "name": "Deliverable",
+    "cadence": "Cadenza",
+    "nextDue": "Prossima scadenza",
+    "lastDelivered": "Ultima consegna",
+    "status": "Stato",
+    "portal": "Portale"
+  },
+  "cadence": {
+    "monthly": "Mensile",
+    "quarterly": "Trimestrale",
+    "semiannual": "Semestrale",
+    "annual": "Annuale",
+    "one_time": "Una tantum"
+  },
+  "status": {
+    "on_track": "In linea",
+    "due_soon": "In scadenza",
+    "late": "In ritardo",
+    "missed": "Mancato",
+    "inactive": "Inattivo"
+  },
+  "occurrence": {
+    "status": {
+      "scheduled": "Pianificata",
+      "open": "Aperta",
+      "awaiting_evidence": "In attesa di evidenza",
+      "delivered": "Consegnata",
+      "missed": "Mancata",
+      "waived": "Esonerata"
+    }
+  },
+  "actions": {
+    "add": "Aggiungi deliverable",
+    "edit": "Modifica",
+    "deactivate": "Disattiva",
+    "deliver": "Segna come consegnato",
+    "waive": "Esonera",
+    "reopen": "Riapri",
+    "reschedule": "Ripianifica",
+    "addEvidence": "Aggiungi evidenza",
+    "removeEvidence": "Rimuovi evidenza",
+    "save": "Salva",
+    "cancel": "Annulla"
+  },
+  "form": {
+    "name": "Nome",
+    "description": "Descrizione",
+    "contract": "Contratto",
+    "noContract": "Non collegato a un contratto",
+    "contractsUnavailable": "Impossibile caricare i contratti di questa organizzazione. Ricarica la pagina prima di salvare.",
+    "cadence": "Cadenza",
+    "anchorDueDate": "Prima scadenza",
+    "effectiveFrom": "Valido dal",
+    "effectiveUntil": "Valido fino al",
+    "leadDays": "Preavviso (giorni)",
+    "graceDays": "Periodo di tolleranza (giorni)",
+    "artifactRequired": "Evidenza richiesta prima di segnare come consegnato",
+    "completionMode": {
+      "label": "Completamento",
+      "explicit": "Segnato come consegnato da un tecnico",
+      "on_ticket_resolve": "Consegnato alla risoluzione del ticket collegato"
+    },
+    "autoEvidenceReport": "Allega le esecuzioni del report come evidenza",
+    "autoEvidenceNone": "Nessuno",
+    "autoEvidenceHelp": "L'evidenza viene generata il giorno di scadenza e diventa visibile al cliente quando l'occorrenza viene consegnata.",
+    "autoEvidenceEmpty": "Non sono ancora disponibili tipi di report di evidenza gestiti.",
+    "owner": "Responsabile",
+    "ticketCategory": "Categoria del ticket",
+    "portalVisible": "Mostra nel portale clienti",
+    "sortOrder": "Ordinamento",
+    "instructions": "Istruzioni interne",
+    "instructionsHint": "Interno — mai mostrato al cliente.",
+    "checklistTemplate": "Modello di checklist",
+    "checklistTemplateNone": "Nessuno",
+    "checklistTemplateAllOrgs": "Tutte le org",
+    "checklistTemplateManage": "Gestisci i modelli di checklist"
+  },
+  "drawer": {
+    "title": "Occorrenze",
+    "empty_one": "Nessuna occorrenza per ora. La prima viene pianificata {{count}} giorno prima della scadenza.",
+    "empty_other": "Nessuna occorrenza per ora. La prima viene pianificata {{count}} giorni prima della scadenza.",
+    "emptyWithDate_one": "Nessuna occorrenza per ora. La prima viene pianificata {{count}} giorno prima della scadenza ({{date}}).",
+    "emptyWithDate_other": "Nessuna occorrenza per ora. La prima viene pianificata {{count}} giorni prima della scadenza ({{date}}).",
+    "evidence": "Evidenze",
+    "noEvidence": "Nessuna evidenza allegata",
+    "late": "In ritardo",
+    "rescheduledFrom": "Ripianificata dal {{date}}",
+    "deliveryNote": "Nota di consegna",
+    "waivedReason": "Motivo dell'esonero",
+    "newDueDate": "Nuova scadenza",
+    "uploadEvidence": "Carica un file come evidenza",
+    "uploadEvidenceHint": "PDF, JPEG, PNG o WebP, fino a 10 MB. Il file viene archiviato nella libreria documenti di questa organizzazione.",
+    "evidenceDocument": "Documento",
+    "upload": "Carica",
+    "checklistProgress": "{{done}} / {{total}}",
+    "showChecklist": "Mostra checklist",
+    "hideChecklist": "Nascondi checklist"
+  },
+  "evidence": {
+    "reportRun": "Esecuzione del report",
+    "document": "Documento",
+    "reportRunId": "ID dell'esecuzione del report"
+  },
+  "upcoming": {
+    "title": "Prossimi 90 giorni",
+    "empty": "Nessuna scadenza nei prossimi 90 giorni."
+  },
+  "group": {
+    "noContract": "Nessun contratto"
+  },
+  "errors": {
+    "evidenceRequired": "Allega un'evidenza prima di segnare questa occorrenza come consegnata.",
+    "duplicateName": "Esiste già un deliverable con questo nome per questa organizzazione.",
+    "loadFailed": "Impossibile caricare i deliverable.",
+    "saveFailed": "Impossibile salvare il deliverable.",
+    "actionFailed": "Impossibile aggiornare l'occorrenza.",
+    "uploadFailed": "Impossibile caricare il file di evidenza.",
+    "tooLarge": "Questo file supera i 10 MB.",
+    "unsupportedType": "È possibile allegare solo file PDF, JPEG, PNG e WebP.",
+    "storageUnavailable": "Lo storage dei documenti non è al momento disponibile. Riprova a breve."
+  },
+  "confirm": {
+    "deactivate": "Disattivare {{name}}? Le occorrenze aperte verranno chiuse e non ne verranno pianificate di nuove.",
+    "deleteKeyDate": "Eliminare la data chiave {{label}}?"
+  },
+  "keyDates": {
+    "title": "Date chiave",
+    "empty": "Nessuna data chiave registrata.",
+    "add": "Aggiungi data chiave",
+    "label": "Etichetta",
+    "kind": {
+      "label": "Tipo",
+      "insurance_renewal": "Rinnovo assicurativo",
+      "vendor_contract_end": "Fine del contratto con il fornitore",
+      "compliance_deadline": "Scadenza di conformità",
+      "audit": "Audit",
+      "other": "Altro"
+    },
+    "date": "Data",
+    "recursAnnually": "Si ripete ogni anno",
+    "remindDaysBefore": "Promemoria (giorni prima)",
+    "portalVisible": "Mostra nel portale clienti",
+    "contractEnd": "Fine del contratto",
+    "notes": "Note",
+    "owner": "Responsabile",
+    "edit": "Modifica data chiave",
+    "delete": "Elimina",
+    "errors": {
+      "loadFailed": "Impossibile caricare le date chiave.",
+      "saveFailed": "Impossibile salvare la data chiave."
+    },
+    "toast": {
+      "saved": "Data chiave salvata",
+      "deleted": "Data chiave eliminata"
+    }
+  },
+  "toast": {
+    "saved": "Deliverable salvato",
+    "delivered": "Segnato come consegnato",
+    "waived": "Occorrenza esonerata",
+    "reopened": "Occorrenza riaperta",
+    "rescheduled": "Occorrenza ripianificata",
+    "evidenceAdded": "Evidenza aggiunta",
+    "evidenceRemoved": "Evidenza rimossa",
+    "deactivated": "Deliverable disattivato",
+    "evidenceUploaded": "Evidenza caricata"
+  },
+  "templates": {
+    "pageTitle": "Modelli di deliverable",
+    "pageDescription": "Definisci un livello di servizio una volta sola e applicalo a qualsiasi cliente. I set validi per tutto il partner sono disponibili per ogni organizzazione che gestisci.",
+    "empty": "Nessun set di modelli ancora. Creane uno per definire un livello di servizio riutilizzabile per i tuoi clienti.",
+    "allOrganizations": "Tutte le org",
+    "actions": {
+      "newSet": "Nuovo set di modelli",
+      "addItem": "Aggiungi deliverable",
+      "apply": "Applica set di modelli",
+      "edit": "Modifica",
+      "delete": "Elimina",
+      "save": "Salva",
+      "cancel": "Annulla"
+    },
+    "form": {
+      "name": "Nome del set",
+      "description": "Descrizione",
+      "itemName": "Nome del deliverable",
+      "cadence": "Cadenza",
+      "leadDays": "Apri questo numero di giorni prima della scadenza",
+      "graceDays": "Segna come mancato questo numero di giorni dopo la scadenza",
+      "artifactRequired": "Evidenza richiesta",
+      "completionMode": "Completamento",
+      "autoEvidenceReportType": "Tipo di report di evidenza"
+    },
+    "ownerScope": {
+      "legend": "Per chi è questo set?",
+      "allOrganizations": "Tutte le organizzazioni (valido per tutto il partner)",
+      "thisOrganizationOnly": "Solo questa organizzazione"
+    },
+    "apply": {
+      "title": "Applica set di modelli",
+      "set": "Set di modelli",
+      "contract": "Contratto (facoltativo)",
+      "noContract": "Nessun contratto",
+      "effectiveFrom": "Valido dal",
+      "owner": "Responsabile (facoltativo)",
+      "submit": "Applica",
+      "created_one": "Creato {{count}} deliverable",
+      "created_other": "Creati {{count}} deliverable",
+      "skipped": "Saltati (già presenti): {{names}}"
+    },
+    "errors": {
+      "collision": "Questi deliverable esistono già sulla destinazione: {{names}}",
+      "duplicateSetName": "Esiste già un set di modelli con questo nome.",
+      "duplicateItemName": "Esiste già un elemento con questo nome nel set.",
+      "partnerWideDenied": "La gestione dei modelli validi per tutto il partner richiede l'accesso completo all'organizzazione partner.",
+      "loadFailed": "Impossibile caricare i set di modelli.",
+      "saveFailed": "Impossibile salvare il set di modelli.",
+      "deleteFailed": "Impossibile eliminare il set di modelli.",
+      "itemSaveFailed": "Impossibile salvare il deliverable.",
+      "itemDeleteFailed": "Impossibile rimuovere il deliverable.",
+      "applyFailed": "Impossibile applicare il set di modelli."
+    },
+    "toast": {
+      "setSaved": "Set di modelli salvato",
+      "setDeleted": "Set di modelli eliminato",
+      "itemSaved": "Deliverable salvato",
+      "itemDeleted": "Deliverable rimosso",
+      "applied": "Set di modelli applicato"
+    }
+  }
+}

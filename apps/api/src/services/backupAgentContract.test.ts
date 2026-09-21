@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import { backupCommandResultSchema } from '../routes/backup/resultSchemas';
-import { BACKUP_GC_MANIFESTLESS_PREFIX_MAX_AGE_MS } from '../jobs/backupRetention';
+import { resolveBackupManifestlessPrefixMaxAgeMs } from '../jobs/backupRetention';
 import { sanitizeVssMetadata } from './backupResultPersistence';
 import {
   BACKUP_SNAPSHOT_ROOT_DIR,
@@ -293,9 +293,11 @@ describe('backup Go<->TS contract — D18 server-owned base payload fields', () 
     const agentSrc = readRepoFile('agent/internal/backup/snapshot.go');
     expect(agentSrc).toMatch(/uploadLeaseInterval\s*=\s*15\s*\*\s*time\.Minute/);
     const FIFTEEN_MIN_MS = 15 * 60 * 1000;
-    // Real comparison against the imported constant (currently 9 days:
-    // journalMaxAge 7d + BACKUP_GC_GRACE_MS 48h) — not two independent
-    // literals that happen to agree today.
-    expect(FIFTEEN_MIN_MS).toBeLessThan(BACKUP_GC_MANIFESTLESS_PREFIX_MAX_AGE_MS / 100);
+    // Real comparison against the per-run resolver's default output
+    // (currently 9 days: journalMaxAge 7d + BACKUP_GC_GRACE_MS 48h) — not two
+    // independent literals that happen to agree today. D18 W02 moved this
+    // constant off module load (per-run env override support), so it's read
+    // via the resolver function rather than a static import.
+    expect(FIFTEEN_MIN_MS).toBeLessThan(resolveBackupManifestlessPrefixMaxAgeMs() / 100);
   });
 });

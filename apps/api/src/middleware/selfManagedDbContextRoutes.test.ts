@@ -8,6 +8,9 @@ import { isSelfManagedDbContextRoute } from './selfManagedDbContextRoutes';
 // fails to match re-pins a pooled connection across the network call.
 describe('isSelfManagedDbContextRoute', () => {
   const MATCH: ReadonlyArray<[string, string]> = [
+    ['POST', '/api/v1/devices/abc-123/filesystem/cleanup-execute'],
+    ['POST', '/api/v1/devices/abc-123/filesystem/cleanup-execute/'],
+    ['post', '/api/v1/devices/abc-123/filesystem/cleanup-execute'],
     ['POST', '/api/v1/invoices/abc-123/pay-link'],
     ['POST', '/api/v1/invoices/abc-123/pay-link/'], // optional trailing slash
     ['post', '/api/v1/invoices/abc-123/pay-link'], // method is case-insensitive
@@ -142,9 +145,25 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/quotes/abc-123/resend'],
     ['POST', '/api/v1/quotes/abc-123/resend/'],
     ['post', '/api/v1/quotes/abc-123/resend'], // method is case-insensitive
+    // Task A9 — the tool test-call route dispatches a real outbound MCP call.
+    ['POST', '/api/v1/tool-sources'],
+    ['PATCH', '/api/v1/tool-sources/src-1'],
+    ['POST', '/api/v1/tool-sources/src-1/discover'],
+    ['POST', '/api/v1/tool-sources/src-1/tools/tool-1/test'],
+    ['POST', '/api/v1/tool-sources/src-1/tools/tool-1/test/'],
+    ['post', '/api/v1/tool-sources/src-1/tools/tool-1/test'], // method is case-insensitive
+    // #6098 — POST /agent-versions/sync-github fetches the GitHub release +
+    // manifest (RELEASE_FETCH_TIMEOUT_MS=30s) inside the handler; binarySync's
+    // writes now manage their own short withSystemDbAccessContext blocks, so
+    // the ambient request transaction must not be held across the fetch.
+    ['POST', '/api/v1/agent-versions/sync-github'],
+    ['POST', '/api/v1/agent-versions/sync-github/'],
+    ['post', '/api/v1/agent-versions/sync-github'], // method is case-insensitive
   ];
 
   const NO_MATCH: ReadonlyArray<[string, string, string]> = [
+    ['POST', '/api/v1/devices/abc-123/filesystem/cleanup-preview', 'preview keeps ambient tx'],
+    ['GET', '/api/v1/devices/abc-123/filesystem/cleanup-runs', 'history keeps ambient tx'],
     // #3905 — the /send pattern must not swallow its siblings. Losing the
     // ambient transaction on a route whose handler does NOT manage its own
     // contexts means every db call there lands on the bare pool with no RLS
@@ -171,6 +190,11 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/portal/quotes/def-456/pay/confirm', 'deeper portal quote path must not match'],
     ['POST', '/api/v1/invoices', 'collection route'],
     ['DELETE', '/api/v1/partner/stripe-connect', 'disconnect is DB-only and keeps the ambient transaction'],
+    ['GET', '/api/v1/tool-sources/src-1/tools/tool-1/test', 'test-call is POST-only'],
+    ['POST', '/api/v1/tool-sources/src-1/tools/tool-1', 'PATCH tool route has no outbound call and keeps the ambient tx'],
+    ['POST', '/api/v1/tool-sources/src-1/tools/tool-1/test/extra', 'extra path segment must not match'],
+    ['POST', '/api/v1/tool-sources//tools/tool-1/test', 'empty source id segment must not match'],
+    ['POST', '/api/v1/tool-sources/src-1/tools//test', 'empty tool id segment must not match'],
     ['GET', '/api/v1/accounting/quickbooks', 'accounting status route does only DB work — keep ambient tx'],
     ['POST', '/api/v1/accounting/quickbooks/customers', 'POST to the list route (only GET + /customers/import opt out)'],
     ['GET', '/api/v1/accounting/quickbooks/customers/import', 'import is POST-only'],
@@ -285,7 +309,31 @@ describe('isSelfManagedDbContextRoute', () => {
     ['GET', '/api/v1/admin/llm-provider-catalog/revisions/rev-1/verify', 'verify is POST-only'],
     ['POST', '/api/v1/admin/llm-provider-catalog/revisions//verify', 'empty revision id must not match'],
     ['POST', '/api/v1/admin/llm-provider-catalog/revisions/rev-1/verify/extra', 'extra segment must not match'],
+    // #6098 — the other agent-versions routes are DB-only (or, for /pinnable,
+    // the whole point is a cheap tenant-scoped read) and must keep the
+    // ambient RLS transaction.
+    ['GET', '/api/v1/agent-versions/sync-github', 'sync-github is POST-only'],
+    ['POST', '/api/v1/agent-versions/sync-github/extra', 'extra segment must not match'],
+    ['POST', '/api/v1/agent-versions', 'plain upload route is DB-only'],
+    ['GET', '/api/v1/agent-versions/pinnable', 'pinnable listing is DB-only'],
+    // #6337 — only the SNMP config writes enqueue a poll; the other monitoring
+    // asset routes are DB-only and keep the ambient RLS transaction.
+    ['GET', '/api/v1/monitoring/assets/11111111-1111-4111-8111-111111111111/snmp', 'snmp read is DB-only'],
+    ['DELETE', '/api/v1/monitoring/assets/11111111-1111-4111-8111-111111111111/snmp', 'snmp delete is DB-only'],
+    ['PUT', '/api/v1/monitoring/assets/11111111-1111-4111-8111-111111111111', 'asset update is DB-only'],
+    ['PUT', '/api/v1/monitoring/assets/11111111-1111-4111-8111-111111111111/snmp/extra', 'extra segment must not match'],
   ];
+
+  const SNMP_MATCH: ReadonlyArray<[string, string]> = [
+    // #6337 — both SNMP config writes enqueue an immediate poll after their
+    // own short DB context closes, so they must not inherit an ambient tx.
+    ['PUT', '/api/v1/monitoring/assets/11111111-1111-4111-8111-111111111111/snmp'],
+    ['PATCH', '/api/v1/monitoring/assets/11111111-1111-4111-8111-111111111111/snmp'],
+  ];
+
+  it.each(SNMP_MATCH)('opts out (#6337): %s %s', (method, path) => {
+    expect(isSelfManagedDbContextRoute(method, path)).toBe(true);
+  });
 
   it.each(MATCH)('opts out: %s %s', (method, path) => {
     expect(isSelfManagedDbContextRoute(method, path)).toBe(true);
@@ -295,3 +343,13 @@ describe('isSelfManagedDbContextRoute', () => {
     expect(isSelfManagedDbContextRoute(method, path)).toBe(false);
   });
 });
+
+  it('opts the two system-cleanup POSTs out of the ambient transaction, and nothing else', () => {
+    expect(isSelfManagedDbContextRoute('POST', '/api/v1/devices/22222222-2222-4222-8222-222222222222/filesystem/system-cleanup/run')).toBe(true);
+    expect(isSelfManagedDbContextRoute('POST', '/api/v1/devices/22222222-2222-4222-8222-222222222222/filesystem/system-cleanup/list')).toBe(true);
+    // The polls are plain reads — they must keep the request transaction.
+    expect(isSelfManagedDbContextRoute('GET', '/api/v1/devices/22222222-2222-4222-8222-222222222222/filesystem/system-cleanup/run/44444444-4444-4444-8444-444444444444')).toBe(false);
+    expect(isSelfManagedDbContextRoute('GET', '/api/v1/devices/22222222-2222-4222-8222-222222222222/filesystem/system-cleanup/list/33333333-3333-4333-8333-333333333333')).toBe(false);
+    // And the file engine's routes are untouched.
+    expect(isSelfManagedDbContextRoute('POST', '/api/v1/devices/22222222-2222-4222-8222-222222222222/filesystem/scan')).toBe(false);
+  });

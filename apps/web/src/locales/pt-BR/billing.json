@@ -70,7 +70,8 @@
         "autoIssue": "Emissão automática",
         "renewal": "Renovação",
         "estimatedPerPeriod": "Estim. / período",
-        "notes": "Observações"
+        "notes": "Observações",
+        "invoiceNote": "Observação na fatura"
       },
       "values": {
         "noDrafts": "Não (rascunhos)"
@@ -147,7 +148,8 @@
         "confirm": "Excluir rascunho"
       },
       "documents": {
-        "title": "Documentos executados",
+        "title": "Acordos assinados",
+        "subtitle": "Aceitos junto com o orçamento e fixados na versão do modelo que o cliente viu.",
         "columns": {
           "template": "Modelo",
           "signer": "Signatário",
@@ -155,8 +157,8 @@
           "quote": "Orçamento"
         },
         "templateVersion": "{{name}} — v{{number}}",
-        "empty": "Ainda não há documentos executados.",
-        "loadError": "Não foi possível carregar os documentos executados.",
+        "empty": "Ainda não há acordos assinados.",
+        "loadError": "Não foi possível carregar os acordos assinados.",
         "downloadError": "Não foi possível baixar o PDF.",
         "download": "Baixar PDF",
         "preparing": "Preparando…",
@@ -218,8 +220,8 @@
       },
       "content": {
         "title": "Conteúdo",
-        "notesOptional": "Observações (opcional)",
-        "termsOptional": "Termos (opcional, exibidos na fatura)",
+        "notesOptional": "Observações (opcional, adicionadas ao bloco Observações das faturas geradas)",
+        "termsOptional": "Observação na fatura (opcional, adicionada ao bloco Observações das faturas geradas)",
         "termsPlaceholder": "ex.: 30 dias líquidos. Renova automaticamente salvo cancelamento 30 dias antes."
       },
       "lines": {
@@ -316,6 +318,11 @@
       "estimateExcluded": "Exclui {{count}} contrato(s) cuja estimativa está indisponível"
     },
     "contractsList": {
+      "currencyBanner": {
+        "count": "{{count}} contratos são faturados em uma moeda diferente da moeda da organização.",
+        "countPlus": "{{count}}+ contratos são faturados em uma moeda diferente da moeda da organização.",
+        "review": "Revisar"
+      },
       "title": "Contratos",
       "description": "Acordos recorrentes que geram automaticamente faturas em rascunho conforme uma cadência.",
       "newContract": "Novo contrato",
@@ -397,8 +404,8 @@
     },
     "tabs": {
       "contracts": "Contratos",
-      "templates": "Modelos",
-      "documents": "Documentos",
+      "templates": "Modelos de acordo",
+      "documents": "Acordos assinados",
       "currencyMismatches": "Divergências de moeda"
     },
     "currencyMismatches": {
@@ -459,16 +466,16 @@
       }
     },
     "templatesTab": {
-      "title": "Modelos de contrato",
-      "description": "Documentos de contrato reutilizáveis que você pode anexar a orçamentos aceitos.",
-      "newTemplate": "Novo modelo",
+      "title": "Modelos de acordo",
+      "description": "Seu contrato mestre e seus termos padrão. Adicione um a um orçamento e o cliente o assina junto com a proposta; a cópia assinada fica arquivada no contrato que esse orçamento cria.",
+      "newTemplate": "Novo modelo de acordo",
       "includeArchived": "Mostrar arquivados",
       "allOrgs": "Todas as orgs",
       "ownerOrg": "Organização",
       "noVersions": "Ainda sem versões",
       "versionLabel": "v{{number}} · {{status}}",
       "archive": "Arquivar",
-      "loadError": "Falha ao carregar os modelos de contrato",
+      "loadError": "Falha ao carregar os modelos de acordo",
       "createError": "Falha ao criar o modelo",
       "created": "Modelo criado",
       "archiveError": "Falha ao arquivar o modelo",
@@ -484,11 +491,11 @@
         "archived": "Arquivado"
       },
       "empty": {
-        "title": "Ainda não há modelos",
-        "description": "Crie seu primeiro modelo de contrato para começar."
+        "title": "Ainda não há modelos de acordo",
+        "description": "Adicione seu contrato mestre ou seus termos padrão uma única vez e depois inclua-os em qualquer orçamento. Os clientes assinam ao aceitar."
       },
       "createDialog": {
-        "title": "Novo modelo de contrato",
+        "title": "Novo modelo de acordo",
         "name": "Nome",
         "namePlaceholder": "ex. Contrato mestre de serviços",
         "description": "Descrição",
@@ -502,18 +509,18 @@
         "orgRequired": "Selecione uma organização para um modelo de propriedade da organização.",
         "nameRequired": "Informe um nome de modelo.",
         "cancel": "Cancelar",
-        "create": "Criar modelo",
+        "create": "Criar modelo de acordo",
         "creating": "Criando…"
       }
     },
     "documentsTab": {
-      "title": "Documentos",
-      "description": "Documentos de contrato executados ainda não vinculados a um contrato.",
+      "title": "Acordos assinados",
+      "description": "Acordos assinados ainda não vinculados a um contrato. Vincule cada um para que apareça no contrato que ele rege.",
       "empty": {
-        "title": "Nenhum documento não vinculado",
-        "description": "Os documentos executados aparecem aqui até serem vinculados a um contrato."
+        "title": "Nenhum acordo assinado sem vínculo",
+        "description": "Os acordos assinados aparecem aqui até serem vinculados a um contrato."
       },
-      "loadError": "Não foi possível carregar os documentos.",
+      "loadError": "Não foi possível carregar os acordos assinados.",
       "columns": {
         "template": "Modelo",
         "signer": "Signatário",
@@ -535,8 +542,8 @@
         "confirm": "Vincular",
         "linking": "Vinculando…"
       },
-      "linkSuccess": "Documento vinculado ao contrato.",
-      "linkError": "Não foi possível vincular o documento a esse contrato."
+      "linkSuccess": "Acordo assinado vinculado ao contrato.",
+      "linkError": "Não foi possível vincular o acordo assinado a esse contrato."
     },
     "templateEditor": {
       "back": "Voltar",
@@ -562,7 +569,7 @@
       "publish": "Publicar",
       "publishDirtyHint": "Salve seu rascunho antes de publicar",
       "body": "Corpo",
-      "bodyAria": "Corpo do modelo de contrato",
+      "bodyAria": "Corpo do modelo de acordo",
       "preview": "Pré-visualização",
       "edit": "Editar",
       "saveDraft": "Salvar rascunho",
@@ -579,28 +586,96 @@
       "publishError": "Falha ao publicar a versão",
       "publishSuccess": "Versão publicada",
       "warnings": {
-        "markupRemoved": "Salvo, mas foi removida formatação não suportada: {{tags}}. O corpo dos contratos oferece suporte a títulos, negrito, itálico, sublinhado, listas e links."
+        "markupRemoved": "Salvo, mas foi removida formatação não suportada: {{tags}}. O corpo dos acordos oferece suporte a títulos, negrito, itálico, sublinhado, listas e links."
       }
+    }
+  },
+  "agreements": {
+    "tabs": {
+      "templates": "Modelos de acordo",
+      "signed": "Acordos assinados"
+    },
+    "signedPage": {
+      "title": "Acordos assinados",
+      "description": "Todos os acordos que seus clientes assinaram. Vincule um a um contrato para que apareça no contrato que ele rege.",
+      "unlinkedOnly": "Somente sem vínculo",
+      "empty": {
+        "title": "Nenhum acordo assinado ainda",
+        "description": "Um acordo é assinado quando o cliente aceita um orçamento que o contém."
+      },
+      "emptyUnlinked": {
+        "title": "Nenhum acordo assinado sem vínculo",
+        "description": "Todos os acordos assinados já estão arquivados em um contrato."
+      },
+      "columns": {
+        "contract": "Contrato"
+      },
+      "viewContract": "Ver contrato",
+      "notLinked": "Sem vínculo",
+      "rowSubtitle": "Aceito com o orçamento {{quoteNumber}} por {{signer}} em {{date}}",
+      "rowSubtitleNoQuote": "Assinado por {{signer}} em {{date}}"
+    },
+    "templateEditor": {
+      "usage": "Usado em {{quotes}} orçamentos · {{signed}} acordos assinados",
+      "usageUnavailable": "Uso indisponível",
+      "backToTemplates": "Voltar aos modelos de acordo",
+      "archiveConfirm": {
+        "title": "Arquivar este modelo de acordo?",
+        "message": "Usado em {{quotes}} orçamentos · {{signed}} acordos assinados. Os orçamentos já fixados nele continuam funcionando, mas não será possível adicionar novas seções de acordo.",
+        "messageUnknownUsage": "Não foi possível verificar onde este modelo é usado. Os orçamentos já fixados nele continuam funcionando, mas não será possível adicionar novas seções de acordo.",
+        "confirm": "Arquivar modelo"
+      }
+    },
+    "contractPill": {
+      "under": "Sob {{template}} v{{n}}"
     }
   },
   "quotes": {
     "deviceSet": {
       "roleNoun": {
-        "workstation": "estações de trabalho", "server": "servidores", "printer": "impressoras", "router": "roteadores", "switch": "comutadores de rede", "firewall": "firewalls de rede",
-        "access_point": "pontos de acesso", "phone": "telefones", "iot": "dispositivos IoT", "camera": "câmeras", "nas": "dispositivos NAS"
+        "workstation": "estações de trabalho",
+        "server": "servidores",
+        "printer": "impressoras",
+        "router": "roteadores",
+        "switch": "comutadores de rede",
+        "firewall": "firewalls de rede",
+        "access_point": "pontos de acesso",
+        "phone": "telefones",
+        "iot": "dispositivos IoT",
+        "camera": "câmeras",
+        "nas": "dispositivos NAS"
       }
     },
     "editor": {
       "deviceSet": {
-        "toggle": "Cobrar por conjunto de dispositivos", "typeLabel": "Conjunto de dispositivos",
-        "types": { "per_device": "Por dispositivo", "per_device_role": "Por função de dispositivo", "per_device_group": "Por grupo de dispositivos", "per_seat": "Por licença" },
-        "rolesLabel": "Funções de dispositivo", "groupLabel": "Grupo de dispositivos", "siteLabel": "Site (opcional)", "allSites": "Todos os sites",
-        "quantityAuto": "A quantidade é contada automaticamente", "autoSummary": "Quantidade automática · {{count}} {{set}} · estimada",
-        "driftChip": "contagem alterada: {{stored}} → {{live}}", "refresh": "Atualizar contagens", "estimateError": "Não foi possível verificar a contagem atual de dispositivos.", "pickerError": "Não foi possível carregar os grupos de dispositivos ou os locais. Atualize a página e tente novamente.",
-        "groupDeleted": "O grupo de dispositivos “{{name}}” foi excluído — escolha outro", "siteDeleted": "O site “{{name}}” foi excluído — escolha outro",
+        "toggle": "Cobrar por conjunto de dispositivos",
+        "typeLabel": "Conjunto de dispositivos",
+        "types": {
+          "per_device": "Por dispositivo",
+          "per_device_role": "Por função de dispositivo",
+          "per_device_group": "Por grupo de dispositivos",
+          "per_seat": "Por licença"
+        },
+        "rolesLabel": "Funções de dispositivo",
+        "groupLabel": "Grupo de dispositivos",
+        "siteLabel": "Site (opcional)",
+        "allSites": "Todos os sites",
+        "quantityAuto": "A quantidade é contada automaticamente",
+        "autoSummary": "Quantidade automática · {{count}} {{set}} · estimada",
+        "driftChip": "contagem alterada: {{stored}} → {{live}}",
+        "refresh": "Atualizar contagens",
+        "estimateError": "Não foi possível verificar a contagem atual de dispositivos.",
+        "pickerError": "Não foi possível carregar os grupos de dispositivos ou os locais. Atualize a página e tente novamente.",
+        "groupDeleted": "O grupo de dispositivos “{{name}}” foi excluído — escolha outro",
+        "siteDeleted": "O site “{{name}}” foi excluído — escolha outro",
         "typeLocked": "Um conjunto de dispositivos não pode ser alterado após a criação da linha — remova a linha e adicione-a novamente.",
-        "allowanceGroupLabel": "Franquia de quantidade", "allowanceToggle": "Incluir uma quantidade fixa e tratar os excedentes",
-        "includedLabel": "Quantidade incluída", "overageModeLabel": "Acima da franquia", "overageBill": "Cobrar cada unidade adicional", "overageFlag": "Reportar para revisão", "overagePriceLabel": "Preço de excedente",
+        "allowanceGroupLabel": "Franquia de quantidade",
+        "allowanceToggle": "Incluir uma quantidade fixa e tratar os excedentes",
+        "includedLabel": "Quantidade incluída",
+        "overageModeLabel": "Acima da franquia",
+        "overageBill": "Cobrar cada unidade adicional",
+        "overageFlag": "Reportar para revisão",
+        "overagePriceLabel": "Preço de excedente",
         "driftToast": "{{count}} linha(s) não correspondem mais à contagem atual de dispositivos: {{lines}}",
         "retargetToast": "{{count}} linha(s) precisam que um grupo de dispositivos ou site seja escolhido novamente para esta organização"
       },
@@ -684,7 +759,7 @@
         "image": "Imagem",
         "pricingTable": "Tabela de preços",
         "richText": "Texto rico",
-        "contract": "Contrato",
+        "contract": "Acordo / termos",
         "table": "Tabela",
         "callout": "Destaque"
       },
@@ -755,7 +830,7 @@
       "emptyBlocks": "Ainda não há conteúdo. Adicione um título, rich text ou uma tabela de preços abaixo.",
       "errors": {
         "addCatalogItem": "Não foi possível adicionar o item do catálogo.",
-        "addContractSection": "Não foi possível adicionar a seção de contrato",
+        "addContractSection": "Não foi possível adicionar a seção de acordo",
         "addDistributorItem": "Não foi possível adicionar o item do distribuidor.",
         "addImageSection": "Não foi possível adicionar a seção de imagem.",
         "addLine": "Não foi possível adicionar a linha.",
@@ -770,7 +845,7 @@
         "importPax8Product": "Não foi possível importar o produto Pax8.",
         "lineAddedCatalogSaveFailed": "Linha adicionada, mas o salvamento no catálogo falhou.",
         "lineNeedsNameOrDescription": "Uma linha precisa de um nome ou uma descrição.",
-        "loadContractTemplates": "Não foi possível carregar os modelos de contrato",
+        "loadContractTemplates": "Não foi possível carregar os modelos de acordo",
         "moveLine": "Não foi possível mover a linha.",
         "quantityWholeGreaterThanZero": "Informe uma quantidade inteira maior que 0.",
         "removeLine": "Não foi possível remover a linha.",
@@ -875,7 +950,7 @@
         "savedToCatalog": "Salvo no catálogo",
         "sectionAdded": "Seção adicionada",
         "sectionRemoved": "Seção removida",
-        "contractSectionAdded": "Seção de contrato adicionada"
+        "contractSectionAdded": "Seção de acordo adicionada"
       },
       "symbols": {
         "check": "✓",
@@ -921,8 +996,9 @@
         "reshapedWarning": "Esta tabela excedia o limite de {{columns}} colunas x {{rows}} linhas e foi ajustada. Salvar substitui a tabela armazenada pela exibida aqui."
       },
       "terms": {
-        "placeholder": "Termos de pagamento, cláusulas de garantia, etc.",
-        "title": "Termos e Condições"
+        "placeholder": "Condições de pagamento, observações de entrega, etc.",
+        "title": "Termos e Condições (texto simples)",
+        "helper": "Para termos jurídicos reutilizáveis, adicione uma seção Acordo / termos — o cliente a assina junto com a proposta."
       },
       "tidyAll": {
         "complete": "{{count}} descrição(ões) revisada(s).",
@@ -941,10 +1017,10 @@
         "perYear": "/ano"
       },
       "contract": {
-        "templateLabel": "Modelo de contrato",
+        "templateLabel": "Modelo de acordo",
         "templatePlaceholder": "Selecione um modelo…",
-        "noTemplates": "Ainda não há modelos de contrato. Crie um em Contratos → Modelos.",
-        "noPublishedVersion": "Este modelo ainda não tem uma versão publicada. Publique-a antes de anexar.",
+        "noTemplates": "Ainda não há modelos de acordo. <templatesLink>Crie um</templatesLink> em Contratos → Modelos de acordo.",
+        "noPublishedVersion": "Este modelo ainda não tem uma versão publicada. Publique-a antes de adicioná-lo a um orçamento.",
         "pinnedVersion": "Fixado na v{{version}}",
         "autoVariablesTitle": "Preenchido automaticamente a partir do orçamento",
         "autoHint": "Esses valores são resolvidos a partir do orçamento quando a proposta é enviada.",
@@ -953,7 +1029,7 @@
         "labelPlaceholder": "Rótulo opcional (por exemplo, Contrato mestre de serviços)",
         "variableRequired": "Insira um valor",
         "variableUnresolved": "Esta variável ainda não foi resolvida",
-        "untitledTemplate": "Contrato",
+        "untitledTemplate": "Acordo",
         "readOnlyHint": "Remova e adicione novamente esta seção para alterar o modelo, a versão ou as variáveis.",
         "updateToVersion": "Atualizar para v{{version}}",
         "saveVariables": "Salvar variáveis",
@@ -1285,16 +1361,20 @@
     },
     "document": {
       "deviceSet": {
-        "badge": "Est.", "estimate": "Quantidade estimada — cobrada pelo número real de {{set}} em cada período de faturamento.",
-        "setDevices": "dispositivos", "setSeats": "licenças", "setGroup": "dispositivos em “{{name}}”", "atSite": "{{set}} em {{site}}",
+        "badge": "Est.",
+        "estimate": "Quantidade estimada — cobrada pelo número real de {{set}} em cada período de faturamento.",
+        "setDevices": "dispositivos",
+        "setSeats": "licenças",
+        "setGroup": "dispositivos em “{{name}}”",
+        "atSite": "{{set}} em {{site}}",
         "allowanceBill": "Inclui {{included}}; unidades adicionais são cobradas a {{price}} cada.",
         "allowanceFlag": "Inclui {{included}}; unidades adicionais são reportadas para revisão, não cobradas automaticamente."
       },
       "additionalItems": "Itens adicionais",
       "contract": {
-        "download": "Baixar contrato",
-        "previewTitle": "Documento do contrato {{name}}",
-        "unavailable": "Arquivo do contrato indisponível",
+        "download": "Baixar acordo",
+        "previewTitle": "Acordo {{name}}",
+        "unavailable": "Arquivo do acordo indisponível",
         "versionFooter": "{{name}} — versão {{version}}"
       },
       "draft": "Rascunho",
@@ -1574,6 +1654,7 @@
     },
     "summary": {
       "noTaxRate": "Há linhas marcadas como tributáveis, mas nenhuma alíquota foi definida.",
+      "inheritedTaxRate": "O imposto ainda não está neste rascunho — ao emitir, aplica-se a alíquota herdada de {{rate}}, somando {{tax}} para um total de {{total}}.",
       "setTaxRate": "Defina uma nas configurações de cobrança",
       "subtotal": "Subtotal",
       "tax": "Imposto",
@@ -1780,6 +1861,7 @@
       },
       "reverseError": "Não foi possível estornar o pagamento.",
       "reverseSuccess": "Pagamento estornado",
+      "reverseInQuickbooksToo": "Estorne este pagamento também no QuickBooks",
       "sendLink": "Enviar link de pagamento",
       "setUp": "Configurar",
       "shareLinkPrompt": "Compartilhe este link de pagamento com o cliente:",
@@ -1991,7 +2073,9 @@
       "total": "Total"
     },
     "title": "Faturas",
-    "tryAgain": "Tentar novamente"
+    "tryAgain": "Tentar novamente",
+    "exportBillables": "Exportar itens faturáveis",
+    "exportBillablesDialogTitle": "Exportar itens faturáveis"
   },
   "orgBillingSettings": {
     "address": {
@@ -2056,6 +2140,7 @@
     "saveSuccess": "Configurações de cobrança da organização salvas",
     "tax": {
       "partnerDefault": "Padrão do parceiro",
+      "partnerDefaultWithValue": "{{pct}}% (padrão do parceiro)",
       "taxExempt": "Isento de impostos",
       "taxId": "ID fiscal",
       "taxRate": "Alíquota de imposto (%)",
@@ -2124,5 +2209,78 @@
     "statusPill": {
       "prefix": "Status:"
     }
+  },
+  "partnerBillingSettingsTabs": {
+    "defaults": "Padrões",
+    "documents": "Documentos",
+    "connections": "Conexões",
+    "rates": "Tarifas"
+  },
+  "billingConnectionsTab": {
+    "accounting": {
+      "title": "Contabilidade",
+      "description": "Stripe e QuickBooks se conectam em Integrações — gerencie-os lá.",
+      "cta": "Gerenciar conexões contábeis →"
+    },
+    "catalog": {
+      "title": "Catálogo e distribuidores",
+      "description": "O catálogo de produtos e as conexões de distribuidores (Pax8, TD SYNNEX) ficam em dois lugares — alterne entre eles aqui.",
+      "catalogCta": "Abrir catálogo de produtos →",
+      "distributorsCta": "Abrir distribuidores →"
+    }
+  },
+  "orgBillingProfile": {
+    "label": "Perfil de faturamento",
+    "inherit": "{{name}} (padrão do parceiro)",
+    "noProfile": "Nenhum perfil de faturamento",
+    "unavailable": "Perfil atribuído indisponível",
+    "resolved": "Tarifas de {{name}}",
+    "allOtherWork": "Todos os outros trabalhos",
+    "billable": "Faturável a {{rate}}/h",
+    "included": "Incluído",
+    "nonBillable": "Não faturável",
+    "noRate": "Faturável — tarifa não configurada",
+    "minimum": "{{outcome}} · mínimo de {{minutes}} min",
+    "rounding": "Arredondar para {{minutes}} minutos",
+    "archivedWorkType": "Tipo de trabalho arquivado",
+    "mismatch": "O perfil de faturamento atribuído está inativo ou usa outra moeda. O perfil padrão do parceiro na moeda correspondente será aplicado.",
+    "currencyWarning": "O perfil de faturamento atribuído usa {{currency}}. Após esta alteração, o perfil padrão do parceiro na moeda correspondente será aplicado.",
+    "loadError": "Não foi possível carregar os perfis de faturamento.",
+    "saveError": "Não foi possível salvar o perfil de faturamento.",
+    "partialSave": "O perfil de faturamento foi salvo, mas as outras configurações de faturamento não. Salve novamente para concluir."
+  },
+  "rates": {
+    "title": "Tarifas",
+    "description": "Defina tarifas de mão de obra por perfil de faturamento e tipo de trabalho. As alterações se aplicam aos novos registros de tempo.",
+    "create": "Adicionar perfil de faturamento",
+    "loadError": "Não foi possível carregar os perfis de faturamento. Tente novamente.",
+    "saveError": "Não foi possível salvar o perfil de faturamento.",
+    "saved": "Perfil de faturamento salvo.",
+    "empty": "Adicione um perfil de faturamento para configurar as tarifas de mão de obra.",
+    "profile": "Perfil de faturamento",
+    "allOtherWork": "Todos os outros trabalhos",
+    "actions": "Ações",
+    "default": "Padrão",
+    "clone": "Duplicar perfil de faturamento",
+    "setDefault": "Definir como padrão",
+    "archive": "Arquivar",
+    "usageUnavailable": "O uso por organizações não está disponível.",
+    "edit": "Editar perfil de faturamento",
+    "name": "Nome",
+    "currency": "Moeda",
+    "rounding": "Arredondamento (minutos)",
+    "notes": "Notas",
+    "coverage": "Resultado do faturamento",
+    "hourlyRate": "Tarifa por hora",
+    "minimum": "Mínimo (minutos)",
+    "billable": "Faturável",
+    "included": "Incluído",
+    "nonBillable": "Não faturável",
+    "noRate": "Faturável · sem tarifa definida",
+    "billableAt": "Faturável a {{rate}}/h",
+    "minimumSummary": "Mínimo de {{minutes}} min",
+    "roundingSummary": "Arredondar para {{minutes}} min",
+    "inherits": "Usa Todos os outros trabalhos",
+    "currencyHelp": "Não é possível alterar a moeda de um perfil padrão ou com tarifas. Deixe o arredondamento vazio para não arredondar."
   }
 }

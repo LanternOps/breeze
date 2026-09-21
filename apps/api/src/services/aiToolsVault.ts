@@ -11,8 +11,15 @@ import { devices, localVaults } from '../db/schema';
 import { eq, and, desc, inArray, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
-import { CommandTypes, queueCommandForExecution } from './commandQueue';
-import { deviceSiteDenied, deviceIdSiteDenied, resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
+import { CommandTypes } from './commandQueue';
+import { aiQueueCommandForExecution } from './aiDispatch';
+import {
+  deviceScopeCondition,
+  deviceSiteDenied,
+  deviceIdSiteDenied,
+  resolveSiteAllowedDeviceIds,
+  runFrozenDeviceIds,
+} from './aiToolsSiteScope';
 
 type VaultHandler = (input: Record<string, unknown>, auth: AuthContext) => Promise<string>;
 
@@ -60,6 +67,8 @@ export function registerVaultTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'backup',
+    searchHint: 'local backup vault inventory, configuration and synchronization status',
     deviceArgs: ['deviceId'],
     definition: {
       name: 'query_vaults',
@@ -97,6 +106,16 @@ export function registerVaultTools(aiTools: Map<string, AiTool>): void {
         conditions.push(inArray(localVaults.deviceId, allowed));
       }
 
+      // Exact-device axis, applied independently of the site axis: a device-LESS
+      // analysis run carries `allowedDeviceIds` with NO `allowedSiteIds`, so the
+      // branch above no-ops for it and the tool read the whole org (#6086).
+      const frozenDeviceIds = runFrozenDeviceIds(auth);
+      if (frozenDeviceIds && typeof input.deviceId === 'string' && !frozenDeviceIds.includes(input.deviceId)) {
+        return JSON.stringify({ vaults: [], showing: 0 });
+      }
+      const vaultDeviceCondition = deviceScopeCondition(auth, localVaults.deviceId);
+      if (vaultDeviceCondition) conditions.push(vaultDeviceCondition);
+
       const limit = clampLimit(input.limit);
       const rows = await db
         .select({
@@ -131,6 +150,8 @@ export function registerVaultTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'backup',
+    searchHint: 'local backup vault details and synchronization summaries for one device',
     deviceArgs: ['deviceId'],
     definition: {
       name: 'get_vault_status',
@@ -164,7 +185,7 @@ export function registerVaultTools(aiTools: Map<string, AiTool>): void {
       if (!device) return JSON.stringify({ error: 'Device not found or access denied' });
       // Site axis (app-layer only; RLS does NOT enforce it): deny vault/secret
       // reads for devices outside a site-restricted caller's allowlist.
-      if (deviceSiteDenied(auth, device.siteId)) {
+      if (deviceSiteDenied(auth, device.siteId, device.id)) {
         return JSON.stringify({ error: 'Device not found or access denied' });
       }
 
@@ -220,6 +241,8 @@ export function registerVaultTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 2,
+    domain: 'backup',
+    searchHint: 'local backup vault synchronization for a vault or selected snapshot',
     definition: {
       name: 'trigger_vault_sync',
       description: 'Dispatch a vault sync command for a specific local vault.',
@@ -242,6 +265,7 @@ export function registerVaultTools(aiTools: Map<string, AiTool>): void {
       const [vault] = await db
         .select({
           id: localVaults.id,
+          orgId: localVaults.orgId,
           deviceId: localVaults.deviceId,
           isActive: localVaults.isActive,
         })
@@ -257,6 +281,9 @@ export function registerVaultTools(aiTools: Map<string, AiTool>): void {
         return JSON.stringify({ error: 'Vault not found or access denied' });
       }
 
+      // Repeat the tenant and device axes the checks above authorized: the
+      // vault was read in a separate statement, so `id` alone would leave a
+      // check-then-act window.
       await db
         .update(localVaults)
         .set({
@@ -264,16 +291,22 @@ export function registerVaultTools(aiTools: Map<string, AiTool>): void {
           lastSyncSnapshotId: typeof input.snapshotId === 'string' ? input.snapshotId : null,
           updatedAt: new Date(),
         })
-        .where(eq(localVaults.id, vault.id));
+        .where(and(
+          eq(localVaults.id, vault.id),
+          eq(localVaults.orgId, vault.orgId),
+          eq(localVaults.deviceId, vault.deviceId),
+        ));
 
-      const { command, error } = await queueCommandForExecution(
+      const { command, error } = await aiQueueCommandForExecution(
+        auth,
+        'trigger_vault_sync',
         vault.deviceId,
         CommandTypes.VAULT_SYNC,
         {
           vaultId: vault.id,
           snapshotId: typeof input.snapshotId === 'string' ? input.snapshotId : undefined,
         },
-        { userId: auth.user?.id }
+        { userId: auth.user?.id, expectedOrgId: vault.orgId }
       );
 
       if (error) {
@@ -283,7 +316,11 @@ export function registerVaultTools(aiTools: Map<string, AiTool>): void {
             lastSyncStatus: 'failed',
             updatedAt: new Date(),
           })
-          .where(eq(localVaults.id, vault.id));
+          .where(and(
+            eq(localVaults.id, vault.id),
+            eq(localVaults.orgId, vault.orgId),
+            eq(localVaults.deviceId, vault.deviceId),
+          ));
         return JSON.stringify({ error });
       }
 
@@ -303,6 +340,8 @@ export function registerVaultTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 2,
+    domain: 'backup',
+    searchHint: 'local backup vault configuration: create, update path, storage type and retention',
     deviceArgs: ['deviceId'],
     definition: {
       name: 'configure_vault',
@@ -354,7 +393,7 @@ export function registerVaultTools(aiTools: Map<string, AiTool>): void {
 
         if (!device) return JSON.stringify({ error: 'Device not found or access denied' });
         // Site axis: deny creating a vault on a device outside the caller's sites.
-        if (deviceSiteDenied(auth, device.siteId)) {
+        if (deviceSiteDenied(auth, device.siteId, device.id)) {
           return JSON.stringify({ error: 'Device not found or access denied' });
         }
 
@@ -384,7 +423,7 @@ export function registerVaultTools(aiTools: Map<string, AiTool>): void {
         const vc = orgWhere(auth, localVaults.orgId);
         if (vc) vaultConditions.push(vc);
         const [existing] = await db
-          .select({ id: localVaults.id, deviceId: localVaults.deviceId })
+          .select({ id: localVaults.id, orgId: localVaults.orgId, deviceId: localVaults.deviceId })
           .from(localVaults)
           .where(and(...vaultConditions))
           .limit(1);
@@ -404,7 +443,11 @@ export function registerVaultTools(aiTools: Map<string, AiTool>): void {
         const [vault] = await db
           .update(localVaults)
           .set(updateData)
-          .where(eq(localVaults.id, vaultId))
+          .where(and(
+            eq(localVaults.id, vaultId),
+            eq(localVaults.orgId, existing.orgId),
+            eq(localVaults.deviceId, existing.deviceId),
+          ))
           .returning();
 
         return JSON.stringify({ success: true, vault });

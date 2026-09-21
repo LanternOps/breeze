@@ -71,6 +71,23 @@ const SSO_REAUTH_ERROR_KEYS: Record<string, string> = {
   email_unverified: 'profilePage.ssoReauthEmailUnverified',
 };
 
+/**
+ * #4050: `enroll_first_factor` SSO re-auth grants live 300s, which a
+ * scan-QR-then-type-the-code flow can outlive. The API answers that one
+ * failure with a distinct `enrollment_grant_expired` code (see
+ * ENROLLMENT_GRANT_EXPIRED_CODE in apps/api/src/routes/auth/helpers.ts)
+ * instead of the opaque `invalid_credentials` every other step-up rejection
+ * shares, so the panel can say "start over" rather than leaving the user
+ * re-typing a code that was never the problem.
+ *
+ * Mapped to the page's own already-translated copy rather than rendered from
+ * the response: the API message is English-only, and this page is shipped in
+ * eight locales. Any OTHER code still falls through to the server's string,
+ * which is deliberate — those messages (throttles, step-up rejections) carry
+ * detail the client cannot reconstruct (#4746).
+ */
+const ENROLLMENT_GRANT_EXPIRED_CODE = 'enrollment_grant_expired';
+
 /** Reads and CONSUMES `?ssoReauthError=<code>` from the query string.
  *
  *  Stripping is not cosmetic: `showToast` has no dedupe by design, so a handler
@@ -293,6 +310,8 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
         name: values.name.trim(),
       };
 
+      // runaction-exempt: inline-feedback handler. The catch below routes every failure into
+      // `profileError`, rendered as a banner directly above this form.
       const response = await fetchWithAuth('/users/me', {
         method: 'PATCH',
         body: JSON.stringify(payload)
@@ -372,6 +391,8 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       form.append('file', avatarFile);
       // fetchWithAuth skips its default JSON content-type for FormData bodies so
       // the browser can set multipart/form-data with the correct boundary.
+      // runaction-exempt: inline-feedback handler. Failures land in `avatarError`,
+      // rendered next to the avatar picker along with the local validation errors.
       const response = await fetchWithAuth('/users/me/avatar', {
         method: 'POST',
         body: form,
@@ -402,6 +423,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
     clearAvatarMessages();
     try {
       setIsDeletingAvatar(true);
+      // runaction-exempt: inline-feedback handler — same `avatarError` banner as the upload above.
       const response = await fetchWithAuth('/users/me/avatar', { method: 'DELETE' });
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
@@ -448,6 +470,9 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
     setPasswordSuccess(undefined);
     try {
       setIsChangingPassword(true);
+      // runaction-exempt: inline-feedback handler. Failures land in `passwordError`, which the
+      // password card renders verbatim (server `message` first) so throttles and
+      // step-up rejections stay distinguishable from a mistyped password (#4746).
       const response = await fetchWithAuth('/auth/change-password', {
         method: 'POST',
         body: JSON.stringify({
@@ -479,6 +504,8 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       setQrCodeDataUrl(undefined);
       try {
         setMfaLoading(true);
+        // runaction-exempt: inline-feedback handler. Failures land in `mfaError` and the QR code is
+        // cleared, so a failed setup can never leave a stale secret on screen.
         const response = await fetchWithAuth('/auth/mfa/setup', {
           method: 'POST',
           body: JSON.stringify(proof)
@@ -486,6 +513,19 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
 
         if (!response.ok) {
           const errorData = await response.json().catch(() => ({}));
+          if (errorData.code === ENROLLMENT_GRANT_EXPIRED_CODE) {
+            // #4050: the grant the server just rejected is dead. Dropping it is what
+          // turns the API's `reauthUrl` affordance into a button the user can
+          // actually press: `hasSsoReauthGrant` gates MFASettings'
+          // `mfa-sso-reauth-retry` and the passkey card's `passkey-sso-reauth`,
+          // so without this the banner says "verify again" while the only
+          // visible control replays the same dead proof — a worse dead end than
+          // the "Invalid credentials" copy this code replaced. Deliberately NOT
+          // clearing `ssoSetupReady`: the enrollment view should stay put and
+          // swap its submit button, not collapse to the status card.
+            setSsoReauthGrantId(null);
+            throw new Error(t('profilePage.ssoReauthProofExpired'));
+          }
           throw new Error(
             errorData.error ?? errorData.message ?? t('profilePage.failedToStartMfaHttp', { status: response.status })
           );
@@ -675,6 +715,9 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
         : ssoReauthGrantId
           ? { ssoReauthGrantId }
           : {};
+      // runaction-exempt: inline-feedback handler. Failures land in `mfaError`; the caller
+      // (MFASettings) also keys off the returned boolean, so a toast would double
+      // up on the banner the enrollment step already shows.
       const response = await fetchWithAuth('/auth/mfa/enable', {
         method: 'POST',
         // #4470 landed the durable API-side fix the #4413 stopgap was waiting
@@ -687,6 +730,11 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
+        if (errorData.code === ENROLLMENT_GRANT_EXPIRED_CODE) {
+          // See requestMfaSetup — same dead-grant handling on the terminal write.
+          setSsoReauthGrantId(null);
+          throw new Error(t('profilePage.ssoReauthProofExpired'));
+        }
         throw new Error(
           errorData.error ?? errorData.message ?? t('profilePage.failedToEnableMfaHttp', { status: response.status })
         );
@@ -732,6 +780,9 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
     const generation = useAuthStore.getState().sessionGeneration;
     try {
       setMfaLoading(true);
+      // runaction-exempt: inline-feedback handler. Failures land in `mfaError`. Success is NOT a
+      // plain toast either: it may carry a re-issued session, so the message is
+      // composed by withReauthNotice above.
       const response = await fetchWithAuth('/auth/mfa/disable', {
         method: 'POST',
         body: JSON.stringify({ code, currentPassword })
@@ -778,6 +829,8 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
    */
   const handleSendRecoveryStepUpCode = async (): Promise<boolean> => {
     try {
+      // runaction-exempt: inline-feedback handler. Failures land in `mfaError` and the boolean
+      // return withholds the code entry step.
       const response = await fetchWithAuth('/auth/mfa/step-up/sms/send', { method: 'POST' });
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
@@ -808,6 +861,9 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       const method = user?.mfaMethod ?? 'totp';
       let stepUpBody: Record<string, unknown>;
       if (method === 'passkey') {
+        // runaction-exempt: inline-feedback handler, step 1 of 3 (options -> step-up -> rotate).
+        // A failure of ANY step throws into the single catch that sets `mfaError`;
+        // per-step toasts would report the same rotation failing three times.
         const optionsResponse = await fetchWithAuth('/auth/mfa/step-up/options', { method: 'POST' });
         if (!optionsResponse.ok) {
           const errorData = await optionsResponse.json().catch(() => ({}));
@@ -827,6 +883,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
         }));
       }
 
+      // runaction-exempt: inline-feedback handler, step 2 of 3 — see the options call above.
       const stepUpResponse = await fetchWithAuth('/auth/mfa/step-up', {
         method: 'POST',
         body: JSON.stringify(stepUpBody),
@@ -844,6 +901,9 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
         }));
       }
 
+      // runaction-exempt: inline-feedback handler, step 3 of 3 — see the options call above. The
+      // boolean return is what gates revealing the new codes, so a failure here
+      // can never re-display the previous set as though it were the new one.
       const response = await fetchWithAuth('/auth/mfa/recovery-codes', {
         method: 'POST',
         body: JSON.stringify({ currentPassword, stepUpGrantId: stepUpData.stepUpGrantId })
@@ -898,6 +958,31 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       return t('profilePage.passkeyStepUpVerificationExpired');
     }
     return err instanceof Error ? err.message : t('profilePage.failedToAddPasskey');
+  };
+
+  /**
+   * Sweep paper cut #3: a passkey registration 500 (e.g. a WebAuthn origin
+   * mismatch that isn't a `PasskeyChallengeError` on the API side) falls
+   * through to the API's generic `app.onError` handler, whose JSON body is
+   * always `{ error: 'Internal Server Error' }` in production — that literal
+   * string used to be echoed verbatim as `passkeyError`. A 4xx from this pair
+   * of routes DOES carry a meaningful `error`/`message` (bad password, expired
+   * challenge, etc.) and should still be shown; a 5xx never does, so show a
+   * translated "try again" message instead of the raw status text.
+   */
+  const resolvePasskeyRegistrationError = (
+    data: { error?: unknown; message?: unknown },
+    status: number,
+    fallbackKey: string
+  ): string => {
+    if (status >= 500) {
+      return t('profilePage.passkeyRegistrationServerError');
+    }
+    return (
+      (typeof data.error === 'string' && data.error) ||
+      (typeof data.message === 'string' && data.message) ||
+      t(/* i18n-dynamic */ fallbackKey, { status })
+    );
   };
 
   const handleAddPasskey = async () => {
@@ -975,6 +1060,10 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       // answer a rejected step-up password (or a stale registration challenge)
       // with 400 + a stable `code`, so these calls need no 401 opt-out — a 401
       // from them now means only that the bearer expired, which SHOULD refresh.
+      // runaction-exempt: inline-feedback handler, step 1 of 2 (options -> verify). Failures land
+      // in `passkeyError`, and the `existing_factor_step_up_required` branch below
+      // is a UI state transition rather than an error at all — runAction would
+      // toast it as a failure.
       const optionsResponse = await fetchWithAuth('/auth/passkeys/register/options', {
         method: 'POST',
         body: JSON.stringify({
@@ -1002,13 +1091,20 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
           setPasskeyError(t('profilePage.passkeyStepUpVerificationExpired'));
           return;
         }
+        if (optionsData.code === ENROLLMENT_GRANT_EXPIRED_CODE) {
+          // The passkey road calls the SAME resolveEnrollmentStepUp as the TOTP
+          // road above, so it can receive this code too — see requestMfaSetup.
+          setSsoReauthGrantId(null);
+          throw new Error(t('profilePage.ssoReauthProofExpired'));
+        }
         throw new Error(
-          optionsData.error ?? optionsData.message ?? t('profilePage.failedToStartPasskeyHttp', { status: optionsResponse.status })
+          resolvePasskeyRegistrationError(optionsData, optionsResponse.status, 'profilePage.failedToStartPasskeyHttp')
         );
       }
 
       const optionsJSON = (optionsData.options ?? optionsData.optionsJSON) as PasskeyRegistrationOptions;
       const credential = await createPasskeyCredential(optionsJSON);
+      // runaction-exempt: inline-feedback handler, step 2 of 2 — see the options call above.
       const verifyResponse = await fetchWithAuth('/auth/passkeys/register/verify', {
         method: 'POST',
         body: JSON.stringify({
@@ -1021,8 +1117,13 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
 
       const verifyData = await verifyResponse.json().catch(() => ({}));
       if (!verifyResponse.ok) {
+        if (verifyData.code === ENROLLMENT_GRANT_EXPIRED_CODE) {
+          // See requestMfaSetup — same dead-grant handling on the terminal write.
+          setSsoReauthGrantId(null);
+          throw new Error(t('profilePage.ssoReauthProofExpired'));
+        }
         throw new Error(
-          verifyData.error ?? verifyData.message ?? t('profilePage.failedToSavePasskeyHttp', { status: verifyResponse.status })
+          resolvePasskeyRegistrationError(verifyData, verifyResponse.status, 'profilePage.failedToSavePasskeyHttp')
         );
       }
 
@@ -1039,7 +1140,11 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       if (registerReplacementAdopted) {
         useAuthStore.getState().commitReissuedSessionIfCurrent(generation, verifyData.tokens);
       }
-      setUser(prev => (prev ? { ...prev, mfaEnabled: true } : null));
+      // G4-14: a first-factor enrollment (`prev.mfaMethod` unset) makes this the
+      // account's MFA method. Leave an existing method alone for a second
+      // passkey added to an already-enrolled account. MFASettings reads this to
+      // decide whether the recovery-codes panel below just became relevant.
+      setUser(prev => (prev ? { ...prev, mfaEnabled: true, mfaMethod: prev.mfaMethod ?? 'passkey' } : null));
       setPasskeyName('');
       setPasskeyPassword('');
       // register/verify is the terminal write that BURNS the grant. Drop it so
@@ -1072,6 +1177,8 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
     setPasskeySuccess(undefined);
     try {
       setMutatingPasskeyId(passkeyId);
+      // runaction-exempt: inline-feedback handler. Failures land in `passkeyError`, rendered in
+      // the passkey list above the row being renamed.
       const response = await fetchWithAuth(`/auth/passkeys/${encodeURIComponent(passkeyId)}`, {
         method: 'PATCH',
         body: JSON.stringify({ name })
@@ -1114,6 +1221,8 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       setMutatingPasskeyId(passkeyId);
       let stepUpBody: Record<string, unknown>;
       if (method === 'passkey') {
+        // runaction-exempt: inline-feedback handler, step 1 of 3 (options -> step-up -> delete).
+        // Same single-catch shape as the recovery-code rotation above.
         const optionsResponse = await fetchWithAuth('/auth/mfa/step-up/options', { method: 'POST' });
         const optionsData = await optionsResponse.json().catch(() => ({}));
         if (!optionsResponse.ok) {
@@ -1132,6 +1241,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
         }));
       }
 
+      // runaction-exempt: inline-feedback handler, step 2 of 3 — see the options call above.
       const stepUpResponse = await fetchWithAuth('/auth/mfa/step-up', {
         method: 'POST',
         body: JSON.stringify(stepUpBody),
@@ -1143,6 +1253,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
         }));
       }
 
+      // runaction-exempt: inline-feedback handler, step 3 of 3 — see the options call above.
       const response = await fetchWithAuth(`/auth/passkeys/${encodeURIComponent(passkeyId)}`, {
         method: 'DELETE',
         body: JSON.stringify({ currentPassword: passkeyPassword, stepUpGrantId: stepUpData.stepUpGrantId })
@@ -1468,6 +1579,50 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
           )}
         </div>
 
+        {/* sweep paper cut #13: this field proves the account's existing MFA
+            factor for the DELETE flow only (see handleDeletePasskey) — it has
+            no effect whatsoever on handleAddPasskey / the Add passkey button
+            below, which is gated purely by `passkeyStepUpCode` in the
+            separate SR2-20 step-up block. Rendering it inside the "Add a
+            passkey" card made it look like part of that flow, so a code typed
+            here left Add permanently (and inexplicably) disabled. Giving it
+            its own section, clearly scoped to deleting, removes the
+            ambiguity without touching either ceremony. */}
+        {!isPasswordless && (user?.mfaMethod === 'totp' || user?.mfaMethod === 'sms') && (
+          <div className="space-y-2 rounded-md border p-4">
+            <div className="space-y-1">
+              <h3 className="text-sm font-medium">{t('profilePage.deletePasskeyVerifyHeading')}</h3>
+              <p className="text-xs text-muted-foreground">
+                {t('profilePage.deletePasskeyVerifyHint')}
+              </p>
+            </div>
+            <label className="text-sm font-medium" htmlFor="passkey-factor-code">
+              {t('mFASettings.currentMfaCode', { defaultValue: 'Current MFA code' })}
+            </label>
+            <div className="flex gap-2">
+              <input
+                id="passkey-factor-code"
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                value={passkeyFactorCode}
+                onChange={event => setPasskeyFactorCode(event.target.value)}
+                className="h-10 min-w-0 flex-1 rounded-md border bg-background px-3 text-sm"
+                disabled={isAddingPasskey || !!mutatingPasskeyId}
+              />
+              {user.mfaMethod === 'sms' && (
+                <button
+                  type="button"
+                  onClick={() => { void handleSendRecoveryStepUpCode(); }}
+                  disabled={isAddingPasskey || !!mutatingPasskeyId}
+                  className="h-10 rounded-md border px-3 text-sm font-medium"
+                >
+                  {t('mFASettings.sendCode', { defaultValue: 'Send code' })}
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
         <div className="space-y-4 rounded-md border p-4">
           <div className="space-y-1">
             <h3 className="text-sm font-medium">{t('profilePage.addPasskey')}</h3>
@@ -1551,34 +1706,6 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
                   {t('profilePage.passkeyStepUpNoUsableFactor')}
                 </p>
               )}
-            </div>
-          )}
-          {!isPasswordless && (user?.mfaMethod === 'totp' || user?.mfaMethod === 'sms') && (
-            <div className="space-y-2">
-              <label className="text-sm font-medium" htmlFor="passkey-factor-code">
-                {t('mFASettings.currentMfaCode', { defaultValue: 'Current MFA code' })}
-              </label>
-              <div className="flex gap-2">
-                <input
-                  id="passkey-factor-code"
-                  inputMode="numeric"
-                  autoComplete="one-time-code"
-                  value={passkeyFactorCode}
-                  onChange={event => setPasskeyFactorCode(event.target.value)}
-                  className="h-10 min-w-0 flex-1 rounded-md border bg-background px-3 text-sm"
-                  disabled={isAddingPasskey || !!mutatingPasskeyId}
-                />
-                {user.mfaMethod === 'sms' && (
-                  <button
-                    type="button"
-                    onClick={() => { void handleSendRecoveryStepUpCode(); }}
-                    disabled={isAddingPasskey || !!mutatingPasskeyId}
-                    className="h-10 rounded-md border px-3 text-sm font-medium"
-                  >
-                    {t('mFASettings.sendCode', { defaultValue: 'Send code' })}
-                  </button>
-                )}
-              </div>
             </div>
           )}
           {isPasswordless && !hasSsoReauthGrant ? (

@@ -1,93 +1,147 @@
 ---
 title: Filesystem Analysis & Disk Cleanup
-description: Deep filesystem scanning, disk usage analysis, and automated cleanup of temporary files, caches, and large files.
+description: Per-volume filesystem scanning, a preview-then-execute file cleanup pinned to what was previewed, and a closed catalog of OS-native cleaners (Windows Disk Cleanup, DISM, Time Machine snapshots, Homebrew, package caches, the journal).
 ---
 
 import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
-Filesystem Analysis & Disk Cleanup provides deep visibility into what is consuming disk space across your fleet and gives you safe, auditable tools to reclaim it. The system combines a parallel-scanning agent worker pool, resumable scan state, and a preview-before-execute cleanup workflow to help administrators identify and resolve disk space issues at scale -- without risking accidental data loss.
-
-The feature operates in two phases: **analysis** (scan the filesystem and build a snapshot of what is consuming space) and **cleanup** (preview safe candidates, then execute deletion of approved items). Both phases are available through the REST API, the dashboard UI, and the AI assistant.
+Filesystem Analysis & Disk Cleanup shows what is consuming disk space on a device and gives you safe, auditable ways to reclaim it. Three things work together: a **scan** that builds a per-volume snapshot, a **file cleanup** that previews candidates and then deletes exactly the paths you approved, and a set of **OS-native cleaners** that reclaim the space a file scanner structurally cannot see -- the Windows component store, `Windows.old`, APFS local snapshots, the systemd journal.
 
 <Aside>
-  Filesystem analysis endpoints require authentication with a role that includes the `devices.read` permission for viewing snapshots and `devices.execute` for triggering scans and executing cleanup. All operations are audit-logged with the action type, path, scan mode, and byte counts.
+  Viewing snapshots, volumes and run history requires `devices.read`. Starting a scan, previewing or executing a file cleanup, and listing or running the OS-native cleaners require `devices.execute` **and** an MFA-verified session. Every mutation is audit-logged with the volume, the paths or action ids, per-item status and byte counts.
 </Aside>
 
 ---
 
 ## Overview
 
-Disk space exhaustion is one of the most common and disruptive issues in managed fleets. A single device running out of disk can cause application crashes, failed updates, corrupted databases, and user complaints. Across a fleet of thousands of devices, the problem multiplies -- temp files accumulate silently, browser caches grow unchecked, old downloads pile up, and log files go unrotated.
+Disk exhaustion is one of the most common and disruptive problems in a managed fleet: application crashes, failed updates, corrupted databases. Breeze answers it in three layers, each feeding the next:
 
-Filesystem Analysis addresses this by:
+1. **Analysis** -- a parallel, resumable scan of one volume produces a snapshot: largest files and directories, temp accumulation, old downloads, unrotated logs, trash usage, duplicate candidates and the list of *cleanup candidates*.
+2. **File cleanup** -- a preview turns the snapshot's candidates into a pinned plan; execute deletes only paths from that plan, permanently, and reports what actually happened to each one.
+3. **OS-native cleaners** -- a closed catalog of vetted maintenance tools (Windows Disk Cleanup handlers, DISM, `tmutil`, `brew`, `apt-get`/`dnf`, `journalctl`) that is listed with estimates, then run with explicit confirmation.
 
-- **Scanning deeply** with a parallel worker pool that can traverse millions of filesystem entries efficiently.
-- **Resuming interrupted scans** so that long-running analysis on large volumes is not lost if the agent restarts or the connection drops.
-- **Categorizing disk usage** into actionable groups: largest files, largest directories, temp file accumulation, old downloads, unrotated logs, trash usage, and duplicate candidates.
-- **Providing safe cleanup** with a strict preview-then-execute workflow that only targets known-safe categories.
+**One concept, one home.** All three live in the device's **Disk Cleanup** tab (`/devices/:id#filesystem`). The File Manager no longer carries its own inline cleanup section; its **Disk Cleanup** button navigates to this tab. Everything is also available through the REST API and the AI assistant.
+
+---
+
+## Volumes
+
+A scan targets one **volume** at a time. `GET /devices/:id/filesystem/volumes` lists the volumes a device can scan and clean, derived from the disk inventory the agent already reports:
+
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "mountPoint": "C:\\",
+      "scanPath": "C:\\",
+      "fsType": "NTFS",
+      "totalGb": 476.9,
+      "usedGb": 401.2,
+      "freeGb": 75.7,
+      "usedPercent": 84.1,
+      "isOsRoot": true,
+      "scanState": {
+        "lastRunMode": "incremental",
+        "lastBaselineCompletedAt": "2026-10-18T02:14:00.000Z",
+        "hasCheckpoint": false
+      },
+      "latestSnapshot": {
+        "id": "8f2b...",
+        "capturedAt": "2026-10-20T09:31:00.000Z",
+        "partial": false,
+        "cleanupEstimateBytes": 12884901888
+      }
+    }
+  ]
+}
+```
+
+| Field | Description |
+|---|---|
+| `mountPoint` | Exactly what the agent reported, so the UI can show the operator's own string. |
+| `scanPath` | The normalised key (see below). This is what `scan_path` stores and what `POST /scan` sends. |
+| `fsType`, `totalGb`, `usedGb`, `freeGb`, `usedPercent` | From the disk inventory. `null` (never `0`) when no disk row backs the volume. |
+| `isOsRoot` | `true` for the OS volume (`C:\` on Windows, `/` elsewhere). |
+| `scanState` | The volume's own last run mode, last baseline time and whether a resumable checkpoint exists; `null` if it has never been scanned. |
+| `latestSnapshot` | The newest snapshot **for this volume**, with its cleanup estimate; `null` if none. |
+
+Only **fixed local volumes** are offered. The following filesystem types are never listed (`NON_SCANNABLE_FS_TYPES`): read-only media `cdfs`, `udf`, `iso9660`, `squashfs`; memory filesystems `tmpfs`, `devtmpfs`; kernel filesystems `proc`, `sysfs`; container and network mounts `overlay`, `nfs`, `nfs4`, `cifs`, `smbfs`, `9p`, `autofs` and every `fuse*` variant. Windows UNC paths (`\\server\share`) are excluded as well. Deleting through a network mount frees space on a machine that is not the one being cleaned, which is the cross-volume mistake this design exists to stop. A volume whose `fsType` is blank is still offered, because the agent reported a real mount point. At most 24 volumes are listed per device.
+
+The device's OS volume is always listed, even on a device that has not yet reported a disk inventory, so a fresh endpoint can still be scanned.
+
+In the tab, the volumes appear as **chips** at the top (used/free bar, last-scan age, an **OS** badge). Selecting a chip re-keys every panel below it -- scan controls, snapshot panels and the file-cleanup panel all show that volume's state. The chip selection is component state, not part of the URL.
+
+<Aside type="caution">
+  **Every volume keeps its own state.** Scan checkpoints, the incremental baseline, the hot-directory list and the "latest snapshot" a cleanup preview reads are all keyed on `(device, scan path)`. A scan of `D:\` neither resets nor is read by anything belonging to `C:\`.
+</Aside>
+
+### Scan paths are normalised
+
+The volume key is a normalised path (`normalizeScanPath` in `@breeze/shared`). It is what `scan_path` stores, what `?path=` expects, and what the agent receives in the `filesystem_analysis` command:
+
+- **Windows** -- separators become `\`, repeats collapse, the drive letter is upper-cased, and a trailing `\` survives only on a volume root. `c:/Users//Todd/` and `C:\Users\Todd` are the same path; `c:\`, `C:/` and `C:` are all `C:\`. A UNC path keeps its two leading separators so the volumes filter can recognise and refuse it.
+- **macOS and Linux** -- repeats collapse, `.` and `..` resolve, and a trailing `/` survives only on `/` itself. Case below the root is preserved: `/Users` and `/users` are different directories on a case-sensitive volume, and folding them would silently merge two scans.
+
+Requests may send any of these forms; the API normalises before reading or writing. This is why `c:\` and `C:\` are the same volume and resume the same checkpoint, and why every response that concerns one volume echoes the normalised `scanPath` it used.
 
 ---
 
 ## Deep Filesystem Scan
 
-### How Scanning Works
+A scan is started with a `POST` to the scan endpoint naming a volume (or a directory inside one). The API queues a `filesystem_analysis` command to the agent over WebSocket (preferred) or the command queue. The agent walks the tree with a **worker pool** -- several goroutines each process a subtree and report to a coordinator -- so a volume with millions of entries completes in minutes rather than hours.
 
-A filesystem scan is initiated by sending a `POST` request to the scan endpoint with a target path and optional configuration. The API queues a `filesystem_analysis` command to the agent via WebSocket (preferred for immediate dispatch) or the command queue.
+### Scan strategies
 
-The agent-side scanner uses a **worker pool** to parallelize directory traversal. Multiple goroutines walk the filesystem concurrently, each processing a subtree and reporting results back to a coordinator. This is critical for scanning large volumes -- a serial scan of a 2TB disk with millions of files can take over an hour, while a parallelized scan with 8-16 workers can complete in minutes.
-
-### Scan Strategies
-
-The system supports three scan strategies that control how much of the filesystem is traversed:
-
-| Strategy | Behavior | When to Use |
+| Strategy | Behavior | When to use |
 |----------|----------|-------------|
-| `baseline` | Full recursive scan from the specified path. Scans every directory up to `maxDepth`. | First scan on a device, or when disk usage has changed significantly. |
-| `incremental` | Scans only "hot directories" -- directories that changed significantly since the last baseline. | Routine follow-up scans to detect new accumulation without rescanning the entire volume. |
-| `auto` | The API automatically selects `baseline` or `incremental` based on scan state. | Default. Recommended for most use cases. |
+| `baseline` | Full recursive scan from the path, up to `maxDepth`. | First scan of a volume, or after a large change in usage. |
+| `incremental` | Scans only the "hot directories" that changed significantly since the last baseline. | Routine follow-ups to detect new accumulation. |
+| `auto` | The API picks `baseline` or `incremental` from the volume's scan state. | Default. |
 
-When using `auto` strategy, the API evaluates the following conditions to determine the scan mode:
+With `auto`, the API decides in this order:
 
 <Steps>
 
-1. If the scan targets a non-root path (not `C:\` or `/`), a `baseline` scan is always used.
+1. If the normalised path is **not** one of the device's volume scan paths (a subdirectory), a `baseline` scan is always used.
 
-2. If a previous scan was interrupted and checkpoint data exists, a `baseline` scan resumes from the checkpoint.
+2. If a previous scan of this volume was interrupted and checkpoint data exists, a `baseline` scan resumes from the checkpoint.
 
-3. If no baseline has ever been completed for this device, a `baseline` scan is started.
+3. If no baseline has ever completed for this volume, a `baseline` scan is started.
 
-4. If the current disk usage percentage has changed by more than 3% since the last baseline, a `baseline` scan is triggered.
+4. If the volume's disk usage has changed by more than 3% since its last baseline, a `baseline` scan is triggered.
 
-5. If hot directories exist from the previous scan, an `incremental` scan targets only those directories.
+5. Otherwise, if hot directories exist from the previous scan, an `incremental` scan targets only those.
 
 </Steps>
 
-### Resumable State
+Scan state is keyed by **(device, scan path)**. Scanning `D:\` no longer resets the `C:\` baseline, pollutes its hot-directory list, or becomes the snapshot a `C:\` preview would delete from.
 
-Long-running baseline scans store checkpoint data in the `device_filesystem_scan_state` table. The checkpoint records which directories have been scanned and which are still pending. If a scan is interrupted (agent restart, network drop, timeout), the next scan with `auto` or `baseline` strategy will automatically resume from the checkpoint rather than starting over.
+### Resumable state
 
-The scan state table tracks:
+Long baseline scans checkpoint into `device_filesystem_scan_state`: which directories are done and which are pending. If the scan is interrupted (agent restart, network drop, timeout), the next `auto` or `baseline` scan of the **same volume** resumes from the checkpoint rather than starting over.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `deviceId` | UUID | Primary key. One state record per device. |
+| `deviceId` | UUID | First half of the primary key. |
+| `scanPath` | text | Normalised volume path. Second half of the primary key -- one state record per volume. |
+| `scanGeneration` | UUID | The command that owns the current scan; results from a superseded command are rejected. |
 | `lastRunMode` | string | `baseline` or `incremental`. |
-| `lastBaselineCompletedAt` | timestamp | When the last full baseline scan finished. |
-| `lastDiskUsedPercent` | real | Disk usage percentage at the time of the last baseline. Used to decide when a full rescan is needed. |
+| `lastBaselineCompletedAt` | timestamp | When the last full baseline finished. |
+| `lastDiskUsedPercent` | real | Usage at the last baseline, used for the 3% rescan rule. |
 | `checkpoint` | JSONB | Pending directories and depth information for resume. |
-| `aggregate` | JSONB | Accumulated scan results from completed subtrees. |
-| `hotDirectories` | JSONB | Directories identified as high-churn for incremental scans (up to 24). |
+| `aggregate` | JSONB | Accumulated results from completed subtrees. |
+| `hotDirectories` | JSONB | High-churn directories for incremental scans (up to 24). |
 
-### Scan Configuration
-
-The scan endpoint accepts the following parameters:
+### Scan configuration
 
 ```bash
 POST /api/v1/devices/:deviceId/filesystem/scan
 Content-Type: application/json
 
 {
-  "path": "C:\\",
+  "path": "D:\\",
   "strategy": "auto",
   "maxDepth": 32,
   "topFiles": 50,
@@ -101,17 +155,19 @@ Content-Type: application/json
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `path` | string | -- | Absolute path to scan. Required. Max 2048 characters. |
-| `strategy` | enum | `auto` | Scan strategy: `auto`, `baseline`, or `incremental`. |
-| `maxDepth` | number | -- | Maximum directory depth to traverse (1-64). |
-| `topFiles` | number | -- | Number of largest files to return (1-500). |
-| `topDirs` | number | -- | Number of largest directories to return (1-200). |
-| `maxEntries` | number | -- | Maximum filesystem entries to scan (1,000 to 25,000,000). |
-| `workers` | number | -- | Number of parallel scan workers (1-32). |
-| `timeoutSeconds` | number | 300 (baseline) / 120 (incremental) | Scan timeout in seconds (5-900). |
-| `followSymlinks` | boolean | -- | Whether to follow symbolic links during traversal. |
+| `path` | string | OS volume | Volume or directory to scan. Normalised server-side. Max 2048 characters. |
+| `strategy` | enum | `auto` | `auto`, `baseline`, or `incremental`. |
+| `maxDepth` | number | -- | Maximum directory depth (1-64). |
+| `topFiles` | number | -- | Largest files to keep (1-500). |
+| `topDirs` | number | -- | Largest directories to keep (1-200). |
+| `maxEntries` | number | -- | Hard traversal cap (1,000 to 25,000,000). |
+| `workers` | number | -- | Parallel scan workers (1-32). |
+| `timeoutSeconds` | number | 300 (baseline) / 120 (incremental) | Scan timeout (5-900). |
+| `followSymlinks` | boolean | -- | Follow symbolic links during traversal. |
 
-The response returns a `202 Accepted` with the command ID and scan mode:
+"Root-scoped" means *the normalised path equals one of the device's volume scan paths* -- not a string compare against `C:\`. A scan of `D:\` on a two-drive machine is root-scoped for `D:\`.
+
+The response is `202 Accepted` with the command id and the chosen mode:
 
 ```json
 {
@@ -121,7 +177,8 @@ The response returns a `202 Accepted` with the command ID and scan mode:
     "status": "queued",
     "createdAt": "2026-02-20T14:30:00.000Z",
     "scanMode": "baseline",
-    "strategy": "auto"
+    "strategy": "auto",
+    "scanPath": "D:\\"
   }
 }
 ```
@@ -130,302 +187,269 @@ The response returns a `202 Accepted` with the command ID and scan mode:
 
 ## Filesystem Snapshots
 
-When a scan completes, the results are saved as a **filesystem snapshot** in the `device_filesystem_snapshots` table. Snapshots are immutable records of the filesystem state at a point in time.
-
-### Snapshot Contents
+When a scan completes, the result is saved as an immutable **snapshot** in `device_filesystem_snapshots`.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `id` | UUID | Unique snapshot identifier. |
+| `id` | UUID | Snapshot identifier. |
 | `deviceId` | UUID | The device that was scanned. |
+| `scanPath` | text | The normalised volume or path this snapshot covers. |
 | `capturedAt` | timestamp | When the snapshot was created. |
 | `trigger` | enum | `on_demand` (user-initiated) or `threshold` (automatic). |
 | `partial` | boolean | `true` if the scan was interrupted or incomplete. |
-| `summary` | JSONB | Aggregate statistics (files scanned, dirs scanned, bytes scanned, max depth, permission denied count). |
-| `largestFiles` | JSONB | Top largest files by size (up to 50). |
-| `largestDirs` | JSONB | Top largest directories by size (up to 30). |
-| `tempAccumulation` | JSONB | Temporary file accumulation by category (bytes per category). |
-| `oldDownloads` | JSONB | Files in download directories that have not been accessed recently (up to 200). |
-| `unrotatedLogs` | JSONB | Log files that have grown large without rotation (up to 200). |
-| `trashUsage` | JSONB | Files in trash/recycle bin (up to 16). |
-| `duplicateCandidates` | JSONB | Files that appear to be duplicates based on size and name (up to 200). |
-| `cleanupCandidates` | JSONB | All items eligible for safe cleanup (up to 1,000). |
-| `errors` | JSONB | Errors encountered during scanning (permission denied, etc., up to 200). |
+| `summary` | JSONB | Files, directories and bytes scanned, max depth, permission-denied count. |
+| `largestFiles` | JSONB | Largest files by size (up to 50). |
+| `largestDirs` | JSONB | Largest directories (up to 30). |
+| `tempAccumulation` | JSONB | Temp accumulation by category (bytes per category). |
+| `oldDownloads` | JSONB | Download-directory files not accessed recently (up to 200). |
+| `unrotatedLogs` | JSONB | Large log files that have not rotated (up to 200). |
+| `trashUsage` | JSONB | Trash / recycle bin contents (up to 16). |
+| `duplicateCandidates` | JSONB | Likely duplicates by size and name (up to 200). |
+| `cleanupCandidates` | JSONB | Everything eligible for safe cleanup (up to 1,000). |
+| `errors` | JSONB | Scan errors, permission denied and the like (up to 200). |
 
-### Viewing the Latest Snapshot
+"Latest snapshot" is always **per scan path**. `GET /devices/:id/filesystem?path=` returns the newest snapshot for that volume (default: the OS volume) and echoes the `scanPath` it resolved; a scan of another volume never changes the answer.
 
 ```bash
-GET /api/v1/devices/:deviceId/filesystem
+GET /api/v1/devices/:deviceId/filesystem?path=D:\
 ```
-
-Returns the most recent snapshot for the device. The response restructures the snapshot data for readability:
 
 ```json
 {
+  "success": true,
   "data": {
     "id": "snapshot-uuid",
     "deviceId": "device-uuid",
+    "scanPath": "D:\\",
     "capturedAt": "2026-02-20T14:35:00.000Z",
     "trigger": "on_demand",
     "partial": false,
     "scanMode": "baseline",
-    "path": "C:\\",
-    "summary": {
-      "filesScanned": 1250000,
-      "dirsScanned": 85000,
-      "bytesScanned": 450000000000,
-      "maxDepthReached": 24,
-      "permissionDeniedCount": 12
-    },
-    "topLargestFiles": [...],
-    "topLargestDirectories": [...],
-    "tempAccumulation": [
-      { "category": "browser_cache", "bytes": 2500000000 },
-      { "category": "temp_files", "bytes": 1800000000 }
-    ],
-    "oldDownloads": [...],
-    "unrotatedLogs": [...],
-    "trashUsage": [...],
-    "duplicateCandidates": [...],
-    "cleanupCandidates": [...],
+    "path": "D:\\",
+    "summary": { "filesScanned": 1250000, "dirsScanned": 85000, "bytesScanned": 450000000000, "maxDepthReached": 24, "permissionDeniedCount": 12 },
+    "topLargestFiles": [],
+    "topLargestDirectories": [],
+    "tempAccumulation": [ { "category": "browser_cache", "bytes": 2500000000 } ],
+    "oldDownloads": [],
+    "unrotatedLogs": [],
+    "trashUsage": [],
+    "duplicateCandidates": [],
+    "cleanupCandidates": [],
     "errors": []
   }
 }
 ```
 
-### Snapshot Merging
+### Snapshot merging
 
-When incremental scans run after a baseline, the results are merged with the existing snapshot data. The merge logic:
-
-- **Accumulates** summary counts (files scanned, dirs scanned, bytes scanned, permission denied count).
-- **Takes the maximum** for max depth reached.
-- **Deduplicates** largest files and directories by path, keeping the entry with the larger size.
-- **Merges** temp accumulation by category, summing byte counts.
-- **Deduplicates** cleanup candidates, old downloads, unrotated logs, and trash entries by path.
-- **Concatenates** error lists up to a cap of 200.
+An incremental scan is merged into the volume's existing snapshot: summary counts accumulate, max depth takes the maximum, largest files and directories deduplicate by path keeping the larger size, temp accumulation sums per category, cleanup candidates, old downloads, unrotated logs and trash entries deduplicate by path, and error lists concatenate up to 200.
 
 ---
 
 ## Disk Cleanup
 
-Disk cleanup follows a strict two-phase workflow: **preview** first, then **execute**. This ensures that no files are deleted without explicit review.
+File cleanup is **select → confirm → execute → result**, inside the tab:
+
+1. The **Cleanup panel** shows category cards with byte totals and a candidate table sorted by size, with per-row checkboxes and "select all in category". The panel reads the selected volume's latest snapshot.
+2. **Execute** opens a destructive confirmation naming the volume, the count and bytes, and the first paths. Recycle-bin and trash rows carry a note that their *contents* are deleted, not the folder.
+3. The request is pinned to the preview's `cleanupRunId`. The result panel reports reclaimed bytes and the `completed / skipped_locked / rejected / skipped_budget` counts; failures are listed in an amber list, never a green box.
 
 <Aside type="note">
-  Starting a filesystem scan and both cleanup phases below (preview and execute) all require an MFA-verified session. If your account has MFA enrolled, you may be prompted to step up before the action completes.
+  Starting a scan, previewing and executing all require an MFA-verified session. If your account has MFA enrolled you may be prompted to step up.
 </Aside>
 
-### Safe Cleanup Categories
+### What gets cleaned
 
-Only items in the following categories are eligible for automated cleanup:
+Candidates are classified by a **rooted rule table** shared byte-for-byte by the agent, the API and the web app (`packages/shared/src/utils/cleanupRules.json`, embedded into the agent binary). Rules match **path components from the volume root**, never substrings: a directory that merely happens to be *named* `tmp` or `Caches` -- `/opt/myapp/tmp`, `/System/Library/Caches` -- is not in scope. Patterns are lower-cased, `/`-separated, and start at `<vol>` (the scanned volume root) on Windows or `/` on POSIX; `*` matches exactly one component and `**` the subtree.
 
-| Category | Description | Examples |
-|----------|-------------|----------|
-| `temp_files` | Operating system and application temporary files. | `%TEMP%`, `/tmp`, app-specific temp directories. |
-| `browser_cache` | Web browser cache files. | Chrome, Firefox, Edge, Safari cache directories. |
-| `package_cache` | Package manager caches. | npm, pip, Homebrew, Chocolatey, NuGet cache directories. |
-| `trash` | Files in the trash or recycle bin. | Windows Recycle Bin, macOS Trash, Linux trash directories. |
+| Category | OS | Matches | Excludes | Min age |
+|---|---|---|---|---|
+| `temp_files` | Windows | `<vol>/windows/temp/**`, `<vol>/users/*/appdata/local/temp/**` | -- | 24 h |
+| `temp_files` | macOS | `/tmp/**`, `/private/tmp/**`, `/private/var/tmp/**`, `/private/var/folders/*/*/t/**` | -- | 24 h |
+| `temp_files` | Linux | `/tmp/**`, `/var/tmp/**` | `/tmp/.X11-unix/**`, `/tmp/.ICE-unix/**`, `/tmp/systemd-private-*/**` | 24 h |
+| `browser_cache` | Windows | Chrome, Edge, Brave and Chromium `User Data/*/{Cache, Code Cache, GPUCache, DawnCache, GraphiteDawnCache, ShaderCache}` and `Service Worker/{CacheStorage, ScriptCache}`; Firefox `profiles/*/{cache2, startupCache, shader-cache}` | -- | -- |
+| `browser_cache` | macOS | `/users/*/library/caches/**`, `/library/caches/**` | Homebrew (goes to `package_cache`), `com.apple.bird`, `CloudKit`, `com.apple.icloud*` | -- |
+| `browser_cache` | Linux | `/home/*/.cache/**`, `/root/.cache/**` | `pip` (goes to `package_cache`) | -- |
+| `package_cache` | Linux | apt archives, `dnf`, `yum`, pip and npm caches | `apt/archives/lock`, `apt/archives/partial/**` | -- |
+| `package_cache` | macOS | Homebrew cache, npm `_cacache`, pip, NuGet `*.nupkg` | -- | -- |
+| `package_cache` | Windows | pip, `npm-cache/_cacache`, Chocolatey cache, NuGet `*.nupkg`, UWP `AC/INetCache`, `AC/Temp`, `TempState` | -- | -- |
+| `trash` | Windows | `<vol>/$recycle.bin/*` (each SID directory; only when the scan root is the volume root) | -- | -- |
+| `trash` | macOS | `/users/*/.trash` | -- | -- |
+| `trash` | Linux | `/home/*/.local/share/Trash`, `/root/.local/share/Trash` | -- | -- |
 
-<Aside type="caution">
-  Items outside these four categories are never included in cleanup operations, even if they appear in the snapshot's `cleanupCandidates` list. Each candidate must have both `safe: true` and belong to a recognized safe category to be eligible.
-</Aside>
+Temp files younger than 24 hours are never candidates. Trash rules have **contents** granularity: the candidate is the bin directory, and execute deletes its children while the directory itself (and `desktop.ini`, which Explorer needs) survives.
 
-### Preview Phase
+**Never candidates**, whatever the snapshot says: Chrome, Edge and Firefox `Bookmarks`, `History`, `Cookies`, `Login Data` and `places.sqlite` (they are not under a cache pattern), and anything under a **cleanup-denied root**, which is rejected even when a rule matched: `<vol>/windows/system32`, `<vol>/windows/winsxs`, `<vol>/program files`, `<vol>/program files (x86)` on Windows; `/system`, `/usr`, `/bin`, `/sbin`, `/etc`, `/private/var/db`, `/library/apple` on macOS; `/usr`, `/bin`, `/sbin`, `/etc` on Linux.
 
-The preview builds a cleanup plan from the latest filesystem snapshot without touching any files on the device.
+Rules are enforced **twice**: at execute the API re-filters the pinned candidates through the shared table (so a snapshot captured by an older agent cannot be executed against), and the agent re-checks each path under `cleanupGuard` before deleting.
+
+The scanner also reports **old downloads**, **unrotated logs**, **duplicate candidates** and the **largest files**. These are informational and are never auto-cleaned.
+
+### Preview
+
+The preview builds a plan from the volume's latest snapshot without touching the device.
 
 ```bash
 POST /api/v1/devices/:deviceId/filesystem/cleanup-preview
 Content-Type: application/json
 
-{
-  "categories": ["temp_files", "browser_cache"]
-}
+{ "path": "D:\\", "categories": ["temp_files", "browser_cache"] }
 ```
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `categories` | array | No | Filter to specific categories. If omitted, all safe categories are included. Max 10 entries. |
+| `path` | string | No | Volume to preview. Defaults to the OS volume. Normalised server-side. |
+| `categories` | array | No | Restrict to specific categories. Default: all four. Max 10 entries. |
 
-The response includes the preview plan and creates a cleanup run record with status `previewed`:
+The response creates a cleanup run with status `previewed` and pins **both** the `snapshotId` and the `scanPath` into the run's plan; the `cleanupRunId` is what execute must present:
 
 ```json
 {
   "success": true,
   "data": {
     "cleanupRunId": "run-uuid",
+    "scanPath": "D:\\",
     "snapshotId": "snapshot-uuid",
     "estimatedBytes": 4300000000,
     "candidateCount": 156,
-    "categories": [
-      { "category": "temp_files", "count": 89, "estimatedBytes": 1800000000 },
-      { "category": "browser_cache", "count": 67, "estimatedBytes": 2500000000 }
-    ],
+    "categories": [ { "category": "temp_files", "count": 89, "estimatedBytes": 1800000000 } ],
     "candidates": [
-      {
-        "path": "C:\\Users\\admin\\AppData\\Local\\Temp\\old_installer.exe",
-        "category": "temp_files",
-        "sizeBytes": 450000000,
-        "safe": true,
-        "reason": "Temporary file older than 30 days",
-        "modifiedAt": "2026-01-15T10:00:00.000Z"
-      }
+      { "path": "D:\\Temp\\old_installer.exe", "category": "temp_files", "sizeBytes": 450000000, "safe": true, "reason": "Temporary file older than 24 hours", "modifiedAt": "2026-01-15T10:00:00.000Z" }
     ]
   }
 }
 ```
 
-### Execute Phase
-
-After reviewing the preview, submit the specific paths you want to delete. Only paths that appear in the latest preview as safe candidates are accepted.
+### Execute
 
 ```bash
 POST /api/v1/devices/:deviceId/filesystem/cleanup-execute
 Content-Type: application/json
 
 {
-  "paths": [
-    "C:\\Users\\admin\\AppData\\Local\\Temp\\old_installer.exe",
-    "C:\\Users\\admin\\AppData\\Local\\Google\\Chrome\\User Data\\Default\\Cache"
-  ]
+  "cleanupRunId": "run-uuid",
+  "paths": ["D:\\Temp\\old_installer.exe", "D:\\$Recycle.Bin\\S-1-5-21-..."]
 }
 ```
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `paths` | array | Yes | Paths to delete. Must be from the latest previewable candidates. Min 1, max 200 entries. Max 4096 characters per path. |
+| `cleanupRunId` | UUID | **Yes** | The `previewed` run to execute. There is no "latest snapshot" fallback. |
+| `paths` | array | Yes | Paths to delete. Min 1, max 200, max 4096 characters each. |
 
-The API validates each path against the current snapshot's safe cleanup candidates. Paths not present in the candidate list are silently excluded. For each valid path, a `file_delete` command is dispatched to the agent with `recursive: true`.
+What execute guarantees:
 
-The response reports per-path results:
+- **Nothing is deleted that was not previewed.** A path outside the pinned plan is reported in `rejectedPaths` (and as an action with `status: "rejected"`) and is never dispatched. If *every* path is screened out, the request fails with `400 No valid cleanup paths selected from latest previewable candidates` and the body still carries `rejectedPaths` so you can see why.
+- **Deletion is permanent.** The agent is sent `permanent: true` and `cleanupGuard: true`. There is no trash move -- that is what makes the bytes actually free (a trash move on the same volume frees nothing, and across volumes it copied files onto the OS drive).
+- **Symlinks and reparse points are refused**, at the target and among the children of a contents-granularity delete. The agent uses `Lstat` throughout and never follows a link.
+- **Locked files are never forced.** A Windows sharing violation reports `skipped_locked`.
+- **Bins are deleted by contents.** A recycle-bin or trash candidate deletes its current children; the directory and `desktop.ini` survive.
+- **A 4-minute budget** bounds the request. Deletes are sequential with a 30-second command timeout each; paths not reached are `skipped_budget`, the run is recorded `executed` with `partial: true`, and you re-run for the rest.
+- **Run state is claimed.** The run flips `previewed → running` for the duration and lands as `executed` or `failed`; a second execute against the same run answers `409 run_not_previewed` with its current status.
+
+Per-path `status` is one of `completed`, `partial` (something was removed but the target is not clear -- some children failed, or were held back as links or as changed since the preview), `failed`, `skipped_locked`, `rejected`, `skipped_budget`. "Emptied most of the bin, three children failed" is `partial`, never `completed`. The response:
 
 ```json
 {
   "success": true,
   "data": {
     "cleanupRunId": "run-uuid",
+    "scanPath": "D:\\",
     "status": "executed",
     "bytesReclaimed": 4100000000,
     "selectedCount": 2,
     "failedCount": 0,
+    "counts": { "completed": 2, "partial": 0, "failed": 0, "skipped_locked": 0, "rejected": 1, "skipped_budget": 0 },
+    "rejectedPaths": ["D:\\Projects\\notes.txt"],
+    "partial": false,
+    "budgetMs": 240000,
     "actions": [
-      {
-        "path": "C:\\Users\\admin\\AppData\\Local\\Temp\\old_installer.exe",
-        "category": "temp_files",
-        "sizeBytes": 450000000,
-        "status": "completed"
-      },
-      {
-        "path": "C:\\Users\\admin\\AppData\\Local\\Google\\Chrome\\User Data\\Default\\Cache",
-        "category": "browser_cache",
-        "sizeBytes": 3650000000,
-        "status": "completed"
-      }
+      { "path": "D:\\Temp\\old_installer.exe", "category": "temp_files", "sizeBytes": 450000000, "status": "completed", "bytesFreed": 450000000 }
     ]
   }
 }
 ```
 
-If all cleanup actions fail, the run status is `failed`. If at least one succeeds, the status is `executed`.
+`bytesFreed` on an action is the agent's sum of `Lstat` sizes actually removed -- *logical* bytes. If every dispatched path fails the run is `failed` (HTTP 500 with the same body); if at least one completes it is `executed`.
+
+### Run history
+
+- `GET /devices/:id/filesystem/cleanup-runs?limit=&cursor=` -- paginated (default 20, max 100), newest first, **both kinds** (`files` and `system`). An invalid cursor is `400 invalid_cursor` rather than silently page 1.
+- `GET /devices/:id/filesystem/cleanup-runs/:runId` -- one run with its plan, executed actions and error.
+
+The tab's **Run history** panel reads these. Retention is a background job: `previewed` runs are deleted after **7 days** (an abandoned preview has no value), and the pinned `plan.candidates` list is trimmed from finished runs after **90 days** while the summary, status, byte count and executed actions stay. Both windows are configurable (`FILESYSTEM_CLEANUP_PREVIEW_RETENTION_DAYS`, `FILESYSTEM_CLEANUP_PLAN_RETENTION_DAYS`).
+
+---
+
+## OS-Native Cleaners
+
+The file scanner can only reclaim what it can enumerate. A component store, `Windows.old`, an APFS local snapshot and a systemd journal are invisible to it -- the operating system manages them through its own tools. Breeze runs those tools as a **second cleanup engine** on the same tab, in the **System cleanup** panel below the file cleanup.
+
+The native engine has no itemised preview to check a selection against, so instead it is constrained by a **closed catalog**: a fixed list of vetted actions, every command line built from constants inside the agent, binaries by absolute path, no shell, timeouts and output caps on every process. The only client input is a list of action ids and one bounded integer.
+
+The flow is two steps:
+
+1. **List** -- `POST /devices/:id/filesystem/system-cleanup/list` queues a `system_cleanup_list` command (`202` with a `commandId`); poll `GET .../system-cleanup/list/:commandId` until `status: "completed"` returns the device's `catalog`: each action with its label, description, availability (and `unavailableReason`), an **"up to"** estimate or *size unknown*, its risk flags and the volumes it affects, plus `volumesBefore` free-space readings. Estimation runs with a 3-minute cap; an estimate that times out reports `estimateKnown: false`.
+2. **Run** -- `POST /devices/:id/filesystem/system-cleanup/run` with `{ actionIds, params? }` records a `kind: "system"` cleanup run and queues `system_cleanup_run` (`202` with `cleanupRunId` and `commandId`); poll `GET .../system-cleanup/run/:cleanupRunId`. Actions run **sequentially** in catalog order (cleanmgr and DISM must not overlap); one failing does not stop the next. Each action reports `completed | failed | timed_out | unavailable | busy | not_started`, its exit code, duration and output tail.
+
+On an agent older than the minimum version both POSTs answer `409 agent_update_required` with `minAgentVersion`; the panel shows an update banner and disables **Run**. A device runs **one** OS cleanup at a time -- a second run while one is in flight is `409 run_in_progress` with the running `cleanupRunId`, because Windows Disk Cleanup is driven by a shared on-disk selection profile and two overlapping runs would each execute whatever the other wrote last. Each run's deadline is the sum of its selected actions' timeouts plus 10 minutes of slack, capped at 3 hours; a run past its deadline is failed as `run_expired` and its command cancelled.
+
+`freedBytes` on the result is **measured**: the agent samples free space per volume before and after the whole run and reports the delta (`volumes[].freeBefore` / `freeAfter`). That figure, not the estimate, is what the run achieved. Note that **Windows Update cleanup** releases its space only after the next reboot, so its bytes are not in `freedBytes`.
+
+### Catalog
+
+| Action id | Platform | What it runs | Timeout |
+|---|---|---|---|
+| `win_cleanmgr` (or `win_cleanmgr:<handler>`) | Windows | Sets `StateFlags5555` on the selected built-in Disk Cleanup handlers and runs `cleanmgr.exe /sagerun:5555`. The bare id means "every allowlisted handler present on this device"; a `:<slug>` sub-id selects one. Allowlisted handlers: `update_cleanup`, `delivery_optimization_files`, `device_driver_packages`, `previous_installations`, `upgrade_discarded_files`, `windows_upgrade_log_files`, `setup_log_files`, `temporary_setup_files`, `service_pack_cleanup`, `system_error_memory_dump_files`, `system_error_minidump_files`, `windows_error_reporting_files`, `windows_error_reporting_system_archive_files`, `windows_error_reporting_system_queue_files`, `temporary_files`, `windows_defender`, `old_chkdsk_files`, `diagnostic_data_viewer_database_files`, `branchcache`, `content_indexer_cleaner`. Handlers absent on the device's Windows build are simply not offered. | 60 min |
+| `win_dism_component_cleanup` | Windows | `dism.exe /Online /Cleanup-Image /StartComponentCleanup` -- removes superseded components from WinSxS. Never `/ResetBase`, so installed updates stay removable. | 90 min |
+| `mac_tm_local_snapshots` | macOS | `tmutil listlocalsnapshots /`, then `tmutil deletelocalsnapshots <date>` for each listed snapshot. Backups on the Time Machine destination are untouched. | 10 min |
+| `mac_brew_cleanup` | macOS | `brew cleanup --prune=all`. Installed software stays at its current version. | 10 min |
+| `linux_pkg_cache_clean` | Linux | `apt-get clean` / `dnf clean all` / `yum clean all` (first present). Removed archives are re-downloadable. | 5 min |
+| `linux_pkg_autoremove` | Linux | `apt-get -y autoremove` / `dnf -y autoremove`. **Uninstalls packages.** | 15 min |
+| `linux_journal_vacuum` | Linux | `journalctl --vacuum-size=<bytes>`. `params.journalVacuumBytes` sets the target: 64 MiB - 4 GiB, default 256 MiB. Archived journals only; the active journal is preserved. | 5 min |
+
+### Risk flags
+
+Every action declares zero or more risk flags. The panel renders them as badges, and the confirmation dialog names the specific loss rather than asking a generic "are you sure":
+
+| Flag | Carried by | What it means for the customer |
+|---|---|---|
+| `long_running` | `win_cleanmgr`, `win_dism_component_cleanup` | Can hold the device for up to 60 or 90 minutes. |
+| `may_require_reboot` | `win_cleanmgr:update_cleanup` | The space is released only after the next restart. |
+| `may_require_reboot_free_state` | `win_dism_component_cleanup` | Some of the space is released after the next restart. |
+| `removes_driver_rollback` | `win_cleanmgr:device_driver_packages` | Older driver packages are deleted; you can no longer roll a driver back to a previous version. |
+| `removes_packages` | `linux_pkg_autoremove` | Software is **uninstalled** (whatever the package manager considers orphaned). |
+| `removes_os_rollback` | `win_cleanmgr:previous_installations`, `win_cleanmgr:upgrade_discarded_files` | Deletes `Windows.old` / `$WINDOWS.~BT` / `$WINDOWS.~WS` -- the path back to the previous Windows build. **Irreversible.** |
+| `removes_recovery_points` | `mac_tm_local_snapshots` | Deletes the only on-disk restore points a Mac has when its Time Machine destination is not attached. No in-place rollback remains. |
+
+Selecting any action that carries `removes_packages`, `removes_driver_rollback`, `removes_os_rollback` or `removes_recovery_points` arms the destructive dialog's **second checkbox**; the run button stays disabled until it is ticked.
+
+### What is deliberately excluded
+
+These are excluded **in code, not configuration** -- the catalog is an `as const` list pinned by tests on both sides of the Go/TypeScript boundary, and an id outside it is rejected before anything is queued:
+
+- DISM `/ResetBase` (makes every installed update permanent).
+- The `DownloadsFolder` handler (user data).
+- `Windows ESD installation files` (breaks *Reset this PC*).
+- `Language Pack` (uninstalls installed languages).
+- Every per-user cleanmgr handler (`Recycle Bin`, `Thumbnail Cache`, `Temporary Internet Files` and the rest): under the SYSTEM service account they operate on the SYSTEM profile, and the file engine already covers user bins.
+- Docker prune, Storage Sense and `snap` revision pruning.
 
 ---
 
 ## AI Integration
 
-The AI assistant provides two tools for filesystem analysis and cleanup.
+The AI assistant has three tools. Tiers and rate limits are the ones enforced by the guardrails (see [AI Assistant](/features/ai/)).
 
-### analyze_disk_usage (Tier 1)
+| Tool | Tier | What changed |
+|---|---|---|
+| `analyze_disk_usage` | 1 | Gains `path` (normalised server-side; default OS root). `refresh: true` scans that path; the returned snapshot is the latest **for that path**. |
+| `disk_cleanup` | 1 for `preview` / 3 for `execute` | Gains `path`. `preview` returns a `cleanupRunId`, which the tool remembers; `execute` runs against that run, or against an explicit `cleanupRunId` -- without either it answers `cleanup_run_required`. Same pinning, expiry, `rejectedPaths` and permanent-delete semantics as the route. |
+| `system_cleanup` | 1 for `list` and `status` / 3 for `run` | New. Three actions, used in order. `list` queues a catalog request and waits up to 60 seconds for the device; if the device has not answered by then it returns `status: "pending"` with a `commandId`, and calling `list` again with that `commandId` re-checks the same request instead of starting a new one. `run` requires `actionIds` from the shared allowlist (plus optional `params.journalVacuumBytes`), starts the run and returns **immediately** with a `cleanupRunId`, the `commandId` and the run's stored `deadlineAt` -- it never waits, because a run can take hours (DISM alone is capped at 90 minutes). `status` takes that `cleanupRunId` and returns the persisted state of the run -- `running`, `executed` or `failed` -- with `freedBytes`, per-action status and volume deltas once the agent has reported; it is the same code path as the web panel's poll, including the lazy deadline timeout that finalises a run the device never answered. A run whose every action failed reports `failed`. `run` is supervised Tier 3: it always takes human approval. The per-tool rate limit is **30 calls per hour** across all three actions; the single-run-per-device claim, not the rate limit, is what stops a second run starting while one is in flight. |
 
-A read-only tool that retrieves the latest filesystem snapshot for a device and explains what is consuming disk space. It can optionally trigger a fresh scan.
+All three refuse an agent below the minimum version with `agent_update_required` and the required version.
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `deviceId` | string (UUID) | The device to analyze. Required. |
-| `refresh` | boolean | If `true`, trigger a new scan before returning results. |
-| `path` | string | Root path to scan (default: OS root). |
-| `maxDepth` | number | Maximum scan depth (1-64). |
-| `topFiles` | number | Number of largest files to return (1-500). |
-| `topDirs` | number | Number of largest directories to return (1-200). |
-| `maxEntries` | number | Maximum filesystem entries to scan (1,000-25,000,000). |
-| `workers` | number | Number of parallel scan workers (1-32). |
-| `timeoutSeconds` | number | Scan timeout (5-900 seconds). |
-| `maxCandidates` | number | Maximum cleanup candidates to return (1-200). |
-
-The AI uses this tool to answer questions like "What is using disk space on this device?", "Why is the C: drive full?", and "Show me the largest files on device X."
-
-### disk_cleanup (Tier 1 preview / Tier 3 execute)
-
-A dual-tier tool. Preview mode is Tier 1 (auto-executed, read-only). Execute mode is Tier 3 (requires human approval before deleting files).
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `deviceId` | string (UUID) | The device to clean up. Required. |
-| `action` | enum | `preview` or `execute`. Required. |
-| `categories` | array | Filter cleanup to specific categories. Optional. |
-| `paths` | array | Specific paths to delete (required for `execute`). Min 1, max 200. |
-| `maxCandidates` | number | Maximum candidates to return in preview (1-200). |
-
-<Aside type="tip">
-  The AI automatically chains these tools: it first calls `analyze_disk_usage` to understand the problem, then uses `disk_cleanup` with `action: "preview"` to show what can be cleaned, and finally (with user approval) calls `disk_cleanup` with `action: "execute"` to perform the cleanup. You can ask it to do this in a single conversation turn.
-</Aside>
-
----
-
-## Cleanup Targets
-
-The filesystem scanner identifies several categories of reclaimable space. Here is what each category covers and where the scanner looks.
-
-### Temporary Files (`temp_files`)
-
-<Tabs>
-  <TabItem label="Windows">
-    - `%TEMP%` (user temp directory)
-    - `C:\Windows\Temp` (system temp directory)
-    - `C:\Windows\Prefetch` (prefetch cache)
-    - Application-specific temp directories
-  </TabItem>
-  <TabItem label="macOS">
-    - `/tmp` and `/private/tmp`
-    - `~/Library/Caches` (per-user caches)
-    - `/Library/Caches` (system caches)
-  </TabItem>
-  <TabItem label="Linux">
-    - `/tmp` and `/var/tmp`
-    - Application-specific temp directories in `/var/cache`
-  </TabItem>
-</Tabs>
-
-### Browser Caches (`browser_cache`)
-
-Cache directories for all major browsers:
-- **Chrome**: `User Data/Default/Cache`, `Code Cache`, `Service Worker`
-- **Firefox**: `cache2` directory in profile
-- **Edge**: Same structure as Chrome (Chromium-based)
-- **Safari**: `~/Library/Caches/com.apple.Safari`
-
-### Package Manager Caches (`package_cache`)
-
-- **npm**: `~/.npm/_cacache`
-- **pip**: `~/.cache/pip` (Linux/macOS) or `%LOCALAPPDATA%\pip\cache` (Windows)
-- **Homebrew**: `~/Library/Caches/Homebrew`
-- **Chocolatey**: `C:\ProgramData\chocolatey\cache`
-- **NuGet**: `~/.nuget/packages`
-
-### Trash and Recycle Bin (`trash`)
-
-- **Windows**: `C:\$Recycle.Bin` per-user directories
-- **macOS**: `~/.Trash`
-- **Linux**: `~/.local/share/Trash`
-
-### Additional Detected Items (Not Auto-Cleaned)
-
-The scanner also detects the following, which appear in the snapshot but are not eligible for automated cleanup:
-
-- **Old downloads**: Files in download directories older than a configurable threshold.
-- **Unrotated logs**: Log files that have grown beyond expected sizes.
-- **Duplicate candidates**: Files with matching sizes and names in different locations.
-- **Large files**: The top N largest individual files on the volume.
-
-These items require manual review and are surfaced in the snapshot for informational purposes.
+**Over MCP**, a Tier 3 action is refused outright -- there is no interactive approval surface on that transport -- so an MCP client can diagnose with `analyze_disk_usage`, `disk_cleanup preview`, `system_cleanup list` and `system_cleanup status`, and a technician executes in the Breeze web app. See [MCP Server](/features/mcp-server/).
 
 ---
 
@@ -439,22 +463,15 @@ Table: `device_filesystem_snapshots`
 |--------|------|-------------|
 | `id` | UUID | Primary key. |
 | `device_id` | UUID | Foreign key to `devices`. |
+| `org_id` | UUID | Foreign key to `organizations`. |
+| `scan_path` | text, NOT NULL | The normalised volume or path this snapshot covers. One snapshot stream per volume. |
 | `captured_at` | timestamp | When the snapshot was created. |
 | `trigger` | enum | `on_demand` or `threshold`. |
 | `partial` | boolean | Whether the scan was incomplete. |
-| `summary` | JSONB | Aggregate scan statistics. |
-| `largest_files` | JSONB | Top largest files. |
-| `largest_dirs` | JSONB | Top largest directories. |
-| `temp_accumulation` | JSONB | Temp file accumulation by category. |
-| `old_downloads` | JSONB | Old files in download directories. |
-| `unrotated_logs` | JSONB | Large unrotated log files. |
-| `trash_usage` | JSONB | Trash/recycle bin contents. |
-| `duplicate_candidates` | JSONB | Potential duplicate files. |
-| `cleanup_candidates` | JSONB | All safe cleanup candidates. |
-| `errors` | JSONB | Scan errors. |
+| `summary`, `largest_files`, `largest_dirs`, `temp_accumulation`, `old_downloads`, `unrotated_logs`, `trash_usage`, `duplicate_candidates`, `cleanup_candidates`, `errors` | JSONB | The snapshot sections described above. |
 | `raw_payload` | JSONB | Complete raw agent response. |
 
-Indexed on `(device_id, captured_at)` for efficient latest-snapshot queries.
+Indexed on `(device_id, scan_path, captured_at DESC)` for latest-snapshot-per-volume reads.
 
 ### Cleanup Runs
 
@@ -464,16 +481,20 @@ Table: `device_filesystem_cleanup_runs`
 |--------|------|-------------|
 | `id` | UUID | Primary key. |
 | `device_id` | UUID | Foreign key to `devices`. |
-| `requested_by` | UUID | Foreign key to `users` (who initiated the cleanup). |
-| `requested_at` | timestamp | When the cleanup was requested. |
-| `approved_at` | timestamp | When the cleanup was approved for execution (null for preview-only runs). |
-| `plan` | JSONB | The cleanup plan (snapshot ID, categories, preview data). |
-| `executed_actions` | JSONB | Per-path execution results. |
-| `bytes_reclaimed` | bigint | Total bytes reclaimed by the cleanup. |
-| `status` | enum | `previewed`, `executed`, or `failed`. |
-| `error` | text | Error message if the run failed. |
+| `org_id` | UUID | Foreign key to `organizations`. |
+| `scan_path` | text, nullable | The volume a `files` run covers. `NULL` for a `system` run, which cleans the machine rather than a path. |
+| `kind` | text | `files` (the itemised file engine) or `system` (OS-native cleaners). Default `files`. |
+| `command_id` | UUID, nullable | The queued `system_cleanup_run` command for `kind = 'system'` runs. |
+| `requested_by` | UUID | Foreign key to `users`. |
+| `requested_at` | timestamp | When the preview (or system run) was requested. |
+| `approved_at` | timestamp | When execution was approved; null for preview-only runs. |
+| `plan` | JSONB | Files: `snapshotId`, `scanPath`, `categories`, the preview. System: `actionIds`, `params`, `deadlineAt`. |
+| `executed_actions` | JSONB | Per-path or per-action results. |
+| `bytes_reclaimed` | bigint | Bytes reclaimed. |
+| `status` | enum | `previewed`, `running`, `executed`, or `failed`. |
+| `error` | text | Error if the run failed. |
 
-Indexed on `(device_id, requested_at)` for history queries.
+Indexed on `(device_id, requested_at)` for history.
 
 ### Scan State
 
@@ -481,26 +502,64 @@ Table: `device_filesystem_scan_state`
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `device_id` | UUID | Primary key. Foreign key to `devices`. One row per device. |
+| `device_id` | UUID | Foreign key to `devices`. First half of the primary key. |
+| `scan_path` | text, NOT NULL | The normalised volume. Second half of the primary key -- one checkpoint and baseline per volume. |
+| `org_id` | UUID | Foreign key to `organizations`. |
+| `scan_generation` | UUID | Command id owning the current scan; superseded or duplicate results are rejected. |
+| `last_applied_command_id` | UUID | The last command whose results were applied. |
 | `last_run_mode` | text | `baseline` or `incremental`. |
 | `last_baseline_completed_at` | timestamp | When the last full baseline finished. |
-| `last_disk_used_percent` | real | Disk usage at last baseline (for delta detection). |
-| `checkpoint` | JSONB | Pending directories for scan resume. |
+| `last_disk_used_percent` | real | Usage at the last baseline. |
+| `checkpoint` | JSONB | Pending directories for resume. |
 | `aggregate` | JSONB | Accumulated partial results. |
 | `hot_directories` | JSONB | High-churn directories for incremental scans. |
+
+### Preview expiry and the pinned run
+
+Two properties of a pinned run a technician has to know before approving:
+
+- **A preview expires after 24 hours.** An execute against an older run is refused with `409 preview_expired` (the body carries `requestedAt` and `ttlHours`), and the technician previews again. A day-old plan is a guess about a machine nobody has looked at since.
+- **A bin is live.** Pinning a recycle-bin or trash path pins the *path*, not its contents: execute deletes whatever is in the bin **at the moment it runs**, not the files the preview enumerated. The same is true of a temp file replaced between preview and execute. The confirmation dialog says so on those rows.
+
+A run is single-use: once it has left `previewed` it cannot be executed again (`409 run_not_previewed`).
+
+### Agent version requirements
+
+- **Permanent file cleanup** requires an agent at **`0.115.0`** (`MIN_AGENT_VERSION_CLEANUP_GUARD`) or newer. Execute sends `permanent: true` with `cleanupGuard: true`; an older agent has no guard and would perform an unguarded recursive permanent delete, so both the route and the AI tool **refuse** an older agent with `409 agent_update_required` before anything is dispatched. The body carries `minAgentVersion` and the device's current `agentVersion`; the panel renders the required version in its error.
+- **OS-native cleaners** require **`0.115.0`** (`MIN_AGENT_VERSION_SYSTEM_CLEANUP`) or newer and answer `409 agent_update_required` below it. The gate compares the core version only, so a release candidate of the gate release counts. As a defence in depth, an agent that reports a new-enough version but answers `unknown command type:` resolves to the same 409 on poll.
+
+Both gates fail **closed**: an empty or unparseable `agent_version` is treated as too old.
+
+### How to read an estimate
+
+Every reclaim figure shown before a run is **heuristic and an upper bound**:
+
+- The file engine's candidate totals are the snapshot's sizes at scan time; a locked file, a link, a changed bin or the 4-minute budget can all leave part of it in place.
+- Native-cleaner estimates are labelled **"up to X"**, **heuristic**, or **size unknown**. "Up to" is a genuine ceiling such as a cache directory's current size. Heuristic figures are reliable only to an order of magnitude: DISM's `/AnalyzeComponentStore` fields are component-store *overhead*, and `StartComponentCleanup` frees an amount related to but not equal to them; `journalctl --vacuum-size` only removes *archived* journals, so the estimate is usage minus target, floored at zero; `autoremove`'s figure is the packages' installed size, which over-counts shared files. Time Machine local snapshots report a **count** only -- their byte size is unknown. *Unknown* is never rendered as *0*, because a confident zero reads as "nothing to reclaim", which is a different and possibly wrong claim.
+
+Contrast `freedBytes`, which is **measured** from the free-space delta either side of the run. When the two disagree, the measured figure is the truth.
 
 ---
 
 ## API Reference
 
-All filesystem endpoints are prefixed with `/api/v1/devices/:deviceId`. Replace `:deviceId` with a valid device UUID.
+All endpoints are prefixed with `/api/v1/devices/:deviceId`.
 
 | Method | Path | Description | Permission |
 |--------|------|-------------|------------|
-| `GET` | `/devices/:id/filesystem` | Get latest filesystem analysis snapshot | `devices.read` |
-| `POST` | `/devices/:id/filesystem/scan` | Trigger a filesystem scan | `devices.execute` |
-| `POST` | `/devices/:id/filesystem/cleanup-preview` | Preview safe cleanup candidates | `devices.execute` |
-| `POST` | `/devices/:id/filesystem/cleanup-execute` | Execute cleanup on approved paths | `devices.execute` |
+| `GET` | `/devices/:id/filesystem/volumes` | List the volumes this device can scan and clean | `devices.read` |
+| `GET` | `/devices/:id/filesystem?path=` | Latest snapshot for a volume (default: OS volume) | `devices.read` |
+| `POST` | `/devices/:id/filesystem/scan` | Trigger a scan of a volume or directory | `devices.execute` + MFA |
+| `POST` | `/devices/:id/filesystem/cleanup-preview` | Preview safe candidates for a volume; returns `cleanupRunId` | `devices.execute` + MFA |
+| `POST` | `/devices/:id/filesystem/cleanup-execute` | Execute the pinned run on the selected paths | `devices.execute` + MFA |
+| `GET` | `/devices/:id/filesystem/cleanup-runs` | Paginated run history, both kinds | `devices.read` |
+| `GET` | `/devices/:id/filesystem/cleanup-runs/:runId` | One cleanup run | `devices.read` |
+| `POST` | `/devices/:id/filesystem/system-cleanup/list` | Queue a catalog request; returns a `commandId` | `devices.execute` + MFA |
+| `GET` | `/devices/:id/filesystem/system-cleanup/list/:commandId` | Poll the catalog request | `devices.read` |
+| `POST` | `/devices/:id/filesystem/system-cleanup/run` | Run selected actions; returns a `cleanupRunId`, or `409 run_in_progress` | `devices.execute` + MFA |
+| `GET` | `/devices/:id/filesystem/system-cleanup/run/:cleanupRunId` | Poll the run | `devices.read` |
+
+Audit actions: `device.filesystem.cleanup.preview`, `device.filesystem.cleanup.execute`, `device.filesystem.system_cleanup.list`, `device.filesystem.system_cleanup.queue`, `device.filesystem.system_cleanup.run`.
 
 ---
 
@@ -508,57 +567,56 @@ All filesystem endpoints are prefixed with `/api/v1/devices/:deviceId`. Replace 
 
 ### "No filesystem analysis available yet" (404)
 
-No snapshot exists for this device. The device has not been scanned yet. Trigger a scan with `POST /devices/:id/filesystem/scan` and wait for it to complete before querying the snapshot.
+No snapshot exists for **this volume**. Run `POST /devices/:id/filesystem/scan` with the volume's `path` and wait for it to complete. Scanning another volume does not help -- snapshots are per scan path.
 
 ### "No filesystem snapshot available. Run a scan first." (404 on cleanup-preview)
 
-The cleanup preview requires an existing snapshot to build the candidate list from. Run a filesystem scan first, then retry the preview.
+The preview needs a snapshot of the requested volume to build candidates from. Scan that volume first.
 
 ### Scan command returns 502 or times out
 
-Large filesystem scans can exceed the default command timeout. Try:
-
-- Increasing `timeoutSeconds` (up to 900 seconds / 15 minutes).
-- Reducing `maxEntries` to limit the scan scope.
-- Reducing `maxDepth` to avoid deeply nested directory trees.
-- Scanning a subdirectory instead of the root path.
-
-The scan uses resumable state, so a timed-out baseline scan will resume from its checkpoint on the next attempt.
+Large scans can exceed the command timeout. Increase `timeoutSeconds` (up to 900), reduce `maxEntries` or `maxDepth`, or scan a subdirectory. A timed-out baseline resumes from its checkpoint on the next attempt of the same volume.
 
 ### Cleanup preview returns zero candidates
 
-The preview filters candidates by two criteria: the `safe` flag must be `true` AND the category must be one of the four safe categories (`temp_files`, `browser_cache`, `package_cache`, `trash`). If the snapshot contains cleanup candidates but the preview returns none, the candidates may be in non-safe categories (e.g., old downloads, unrotated logs) that require manual review.
-
-Also verify that the `categories` filter in your request matches the categories present in the snapshot's candidates.
+Only candidates that matched a rule in the shared table (`safe: true`) in one of the four categories are previewed. If the snapshot lists candidates but the preview is empty, they are informational items (old downloads, unrotated logs, duplicates), temp files younger than 24 hours, or under a cleanup-denied root. Also check that your `categories` filter matches what the snapshot contains.
 
 ### "No valid cleanup paths selected from latest previewable candidates" (400)
 
-The paths submitted to the execute endpoint do not match any current safe cleanup candidates. This can happen if:
+Every path in the request was screened out before dispatch. The body's `rejectedPaths` and `actions` say which and why: `not_in_plan` (the path is not in the pinned run -- copied from a different preview, hand-typed, or the wrong volume), `rule_rejected` (it no longer matches a cleanup rule) or `denied_root`. Preview again and submit paths from that response.
 
-- A new scan ran between the preview and execute, changing the candidate list.
-- The paths were manually constructed rather than copied from a preview response.
-- The candidates' `safe` flag was `false` (items outside safe categories are excluded).
+### Execute returns `run_not_previewed`, `preview_expired` or "Cleanup run not found"
 
-Re-run the preview and use paths from the fresh response.
+The pinned run was already consumed (it is single-use), is older than 24 hours, or belongs to another device. Preview again -- the plan is cheap, the mistake is not.
+
+### Execute returns `agent_update_required` (409)
+
+The device's agent is older than `0.115.0` and lacks `cleanupGuard`; cleanup is refused rather than degraded, because an unguarded permanent delete is worse than no delete. The body carries `minAgentVersion` and the device's `agentVersion`. Update the agent and retry.
+
+### Cleanup reported success but no space was freed
+
+Check the run's per-path results: `skipped_locked` and `partial` entries kept their bytes, and `bytesReclaimed` counts only what was removed. On a device whose agent predates the `cleanupGuard` gate, earlier releases moved files to the agent's own trash directory instead of deleting them; current releases refuse such agents with `409 agent_update_required`, so a "success" that freed nothing on a current API means the bytes are still held by locked or skipped paths. For OS-native cleaners, `Windows Update cleanup` and DISM release their space after a reboot, and `freedBytes` is measured at the moment the run ends.
+
+### A native cleaner reports `unavailable`
+
+The catalog row's `unavailableReason` says why: the binary is absent (`cleanmgr.exe` is not present on Server Core), or the agent's sandbox denies writes to the cache path (`/var/cache/apt`, `/var/log/journal`) on a hardened systemd unit. `busy` means another maintenance operation (a concurrent run, a patch job's Homebrew cleanup, DISM) held the agent's process-wide lock -- nothing was attempted and a retry is right; `not_started` means the run's overall budget expired before that action's turn, as opposed to `timed_out`, where the action itself ran and overran its own cap.
+
+### System cleanup returns `run_in_progress` (409)
+
+One OS cleanup runs per device at a time. Wait for the running `cleanupRunId` to finish (poll it), or for it to pass its deadline, then retry.
 
 ### Cleanup actions partially failed
 
-The cleanup execute response reports per-path status. Individual paths can fail if:
-
-- The file was already deleted between preview and execute.
-- The agent does not have permission to delete the file (e.g., a file locked by a running process).
-- The path is on a read-only filesystem.
-
-The overall run status is `executed` if at least one path succeeded, or `failed` if every path failed. The `bytesReclaimed` field reflects only the successfully deleted paths.
+Per-path status explains it: the file was already gone, it is locked by a running process (`skipped_locked`), it is a link (`rejected`), or the 4-minute budget ran out (`skipped_budget`). The run is `executed` if at least one path completed and `failed` if every dispatched path failed; `bytesReclaimed` reflects only removed paths.
 
 ### Incremental scan returns minimal results
 
-Incremental scans only traverse hot directories identified by the previous baseline. If no hot directories were detected (the disk is relatively stable), the incremental scan has little to scan. This is expected behavior. Run a `baseline` scan to get a comprehensive view.
+Incremental scans traverse only the hot directories the previous baseline identified for that volume. If the disk is stable there is little to scan. Run a `baseline` scan for a full view.
 
 ### Scan shows "partial: true" in the snapshot
 
-The scan was interrupted before completing. This can be caused by agent restart, network disconnection, or timeout. The partial snapshot contains valid data for the portions that were scanned. Run another scan to resume from the checkpoint -- the system will merge results with the partial data.
+The scan was interrupted (agent restart, disconnect, timeout). The partial snapshot is valid for what was scanned; the next scan of the same volume resumes from the checkpoint and merges.
 
 ### Permission denied errors in scan results
 
-The agent process may not have permission to read certain directories (e.g., other users' home directories, system-protected paths). These are logged in the snapshot's `errors` array with the path and error type. Running the agent as root/SYSTEM reduces permission errors but is not always necessary -- the most valuable disk usage data is typically in user-accessible directories.
+Directories the agent cannot read are recorded in the snapshot's `errors` array with the path and error type. Running the agent as root/SYSTEM reduces these but is not always necessary.

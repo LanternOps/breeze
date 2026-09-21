@@ -1,3 +1,6 @@
+import { runAction, ActionError } from '@/lib/runAction';
+import { navigateTo } from '@/lib/navigation';
+import { i18n } from '@/lib/i18n';
 import { useState, useCallback } from 'react';
 import { fetchWithAuth } from '../../../stores/auth';
 import { extractApiError } from '@/lib/apiError';
@@ -33,20 +36,16 @@ export function useFeatureLink(policyId: string) {
         }
         if (payload.inlineSettings) body.inlineSettings = payload.inlineSettings;
 
-        const response = await fetchWithAuth(url, {
-          method,
-          body: JSON.stringify(body),
+        return await runAction<FeatureLink>({
+          request: () => fetchWithAuth(url, { method, body: JSON.stringify(body) }),
+          errorFallback: i18n.t('common:states.error'),
+          successMessage: i18n.t('common:states.saved'),
+          onUnauthorized: () => void navigateTo('/login', { replace: true }),
         });
-
-        if (!response.ok) {
-          const data = await response.json().catch(() => null);
-          throw new Error(extractApiError(data, `Failed to ${existingLinkId ? 'update' : 'create'} feature link`));
-        }
-
-        const result = await response.json();
-        return result;
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'An error occurred');
+        if (err instanceof ActionError && err.status === 401) return null;
+        // runAction already toasted request/API failures; preserve the shell's inline error.
+        setError(err instanceof Error ? err.message : i18n.t('common:states.error'));
         return null;
       } finally {
         setSaving(false);

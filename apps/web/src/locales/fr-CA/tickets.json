@@ -1,4 +1,13 @@
 {
+  "timesheet": {
+    "workTypeColumn": "Type de travail"
+  },
+  "workType": {
+    "label": "Type de travail",
+    "none": "Aucun type de travail",
+    "archivedSuffix": "{{name}} (archivé)",
+    "loadError": "Types de travail indisponibles"
+  },
   "slaChip": {
     "pausedLeft": "En pause · temps restant : {{relative}}",
     "left": "Temps restant : {{relative}}",
@@ -123,7 +132,9 @@
       "retry": "Réessayer",
       "remove": "Retirer le fichier",
       "tooMany": "Vous pouvez joindre au plus {{max}} fichiers à un commentaire.",
-      "tooLarge": "{{name}} dépasse 10 Mo."
+      "tooLarge": "{{name}} dépasse 10 Mo.",
+      "sentWithoutAttachment_one": "Note publiée, mais la pièce jointe n'a pas pu être ajoutée. Réessayez ou retirez-la.",
+      "sentWithoutAttachment_other": "Note publiée, mais {{count}} pièces jointes n'ont pas pu être ajoutées. Réessayez ou retirez-les."
     }
   },
   "ticketFeed": {
@@ -217,7 +228,9 @@
       "logFailed": "Impossible d’enregistrer le temps",
       "logged": "Temps enregistré",
       "logFailedSentence": "Impossible de noter le temps."
-    }
+    },
+    "billedVsWorked": "{{worked}} h travaillées · {{billed}} h facturées",
+    "includedMinutes": "{{hours}} h incluses au contrat"
   },
   "inboundReviewQueue": {
     "title": "File de révision",
@@ -460,6 +473,11 @@
       "discardFailed": "Impossible de rejeter le brouillon de l’IA.",
       "discarded": "Brouillon rejeté"
     },
+    "aiProposal": {
+      "postAsNote": "Publier comme note privée",
+      "posted": "Publié comme note privée",
+      "postFailed": "Impossible de publier la note"
+    },
     "resolve": {
       "noteLabel": "Note de résolution (visible pour le demandeur)",
       "submit": "Résoudre le billet"
@@ -509,5 +527,14 @@
       "message": "Cela masque le billet de toutes les files d’attente. Un administrateur peut le restaurer depuis la file d’attente Archivée.",
       "confirm": "Supprimer le billet"
     }
+  },
+  "billingOutcome": {
+    "included": "Inclus",
+    "nonBillable": "Non facturable",
+    "hourly": "{{rate}} par heure",
+    "minimum": "Minimum de {{minutes}} min",
+    "missingRate": "Facturable · tarif non configuré",
+    "recalculated": "La facturation est recalculée pour ce type de travail à l’enregistrement.",
+    "unavailable": "Résultat de facturation indisponible"
   }
 }

@@ -184,6 +184,34 @@ describe('createAiSessionSchema', () => {
     });
     expect(result.success).toBe(false);
   });
+
+  // #5684: the device page context carries the device's org so the web client
+  // can rebind an open chat when the tech navigates to another tenant. It is a
+  // client hint only — the API still derives the session org from the device row.
+  it('should accept a device page context carrying the device org', () => {
+    const result = createAiSessionSchema.safeParse({
+      pageContext: {
+        type: 'device',
+        id: VALID_UUID,
+        hostname: 'server-01',
+        orgId: VALID_UUID,
+      },
+    });
+    expect(result.success).toBe(true);
+    expect(result.success && (result.data.pageContext as { orgId?: string }).orgId).toBe(VALID_UUID);
+  });
+
+  it('should reject a device page context whose org is not a uuid', () => {
+    const result = createAiSessionSchema.safeParse({
+      pageContext: {
+        type: 'device',
+        id: VALID_UUID,
+        hostname: 'server-01',
+        orgId: 'org-1',
+      },
+    });
+    expect(result.success).toBe(false);
+  });
 });
 
 describe('sendAiMessageSchema', () => {

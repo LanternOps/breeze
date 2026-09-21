@@ -11,9 +11,10 @@ import { backupJobs, devices, hypervVms } from '../db/schema';
 import { eq, and, desc, inArray, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
-import { CommandTypes, queueCommandForExecution } from './commandQueue';
+import { CommandTypes } from './commandQueue';
+import { aiQueueCommandForExecution } from './aiDispatch';
 import { resolveBackupConfigForDevice } from './featureConfigResolver';
-import { deviceSiteDenied, deviceIdSiteDenied, resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
+import { deviceSiteDenied, deviceIdSiteDenied, resolveSiteAllowedDeviceIds, runFrozenDeviceIds } from './aiToolsSiteScope';
 import { loadSnapshotWithSiteAccess } from './aiToolsBackupShared';
 import {
   resolveBackupWriteCommandDestination,
@@ -92,6 +93,8 @@ export function registerHypervTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'backup',
+    searchHint: 'Hyper-V virtual machine inventory, host and power state filters',
     deviceArgs: ['deviceId'],
     definition: {
       name: 'query_hyperv_vms',
@@ -115,8 +118,14 @@ export function registerHypervTools(aiTools: Map<string, AiTool>): void {
 
       // Site axis: narrow to host devices in the caller's allowed sites.
       const vmsOrgId = getOrgId(auth);
-      if (auth.allowedSiteIds && vmsOrgId) {
-        const allowed = await resolveSiteAllowedDeviceIds(vmsOrgId, auth);
+      // EITHER axis narrows: a device-LESS analysis run carries `allowedDeviceIds`
+      // and no site axis, so an `&&`-gated check no-ops and the list reads
+      // org-wide (#6096 RC3). Without a resolvable org there is no device scan to
+      // do — fall back to the frozen device set rather than skipping narrowing.
+      if (auth.allowedSiteIds || auth.allowedDeviceIds) {
+        const allowed = vmsOrgId
+          ? await resolveSiteAllowedDeviceIds(vmsOrgId, auth)
+          : runFrozenDeviceIds(auth);
         if (!allowed || allowed.length === 0) return JSON.stringify({ vms: [], showing: 0 });
         if (typeof input.deviceId === 'string' && !allowed.includes(input.deviceId)) return JSON.stringify({ vms: [], showing: 0 });
         conditions.push(inArray(hypervVms.deviceId, allowed));
@@ -162,6 +171,8 @@ export function registerHypervTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'backup',
+    searchHint: 'Hyper-V virtual machine details for one VM record',
     definition: {
       name: 'get_hyperv_vm_details',
       description: 'Get detailed Hyper-V VM information for a specific VM record.',
@@ -227,6 +238,8 @@ export function registerHypervTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 3,
+    domain: 'backup',
+    searchHint: 'Hyper-V virtual machine power: start, stop, force stop, pause, resume, save',
     definition: {
       name: 'manage_hyperv_vm',
       description: 'Dispatch a Hyper-V VM state command such as start, stop, pause, or resume.',
@@ -251,7 +264,9 @@ export function registerHypervTools(aiTools: Map<string, AiTool>): void {
       const vm = await loadVmWithAccess(vmId, auth);
       if (!vm) return JSON.stringify({ error: 'VM not found or access denied' });
 
-      const { command, error } = await queueCommandForExecution(
+      const { command, error } = await aiQueueCommandForExecution(
+        auth,
+        'manage_hyperv_vm',
         vm.deviceId,
         CommandTypes.HYPERV_VM_STATE,
         { vmName: vm.vmName, targetState: action },
@@ -278,6 +293,8 @@ export function registerHypervTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 3,
+    domain: 'backup',
+    searchHint: 'Hyper-V virtual machine backup with application or crash consistency',
     definition: {
       name: 'trigger_hyperv_backup',
       description: 'Dispatch a Hyper-V VM backup command to provider-backed snapshot storage for a specific VM.',
@@ -334,7 +351,9 @@ export function registerHypervTools(aiTools: Map<string, AiTool>): void {
         })
         .returning({ id: backupJobs.id });
 
-      const { command, error } = await queueCommandForExecution(
+      const { command, error } = await aiQueueCommandForExecution(
+        auth,
+        'trigger_hyperv_backup',
         vm.deviceId,
         CommandTypes.HYPERV_BACKUP,
         {
@@ -383,6 +402,8 @@ export function registerHypervTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 3,
+    domain: 'backup',
+    searchHint: 'Hyper-V virtual machine recovery and import from a backup snapshot to a host',
     deviceArgs: ['deviceId'],
     definition: {
       name: 'restore_hyperv_vm',
@@ -412,7 +433,7 @@ export function registerHypervTools(aiTools: Map<string, AiTool>): void {
         .where(and(...deviceConditions))
         .limit(1);
       if (!device) return JSON.stringify({ error: 'Device not found or access denied' });
-      if (deviceSiteDenied(auth, device.siteId)) return JSON.stringify({ error: 'Device not found or access denied' });
+      if (deviceSiteDenied(auth, device.siteId, device.id)) return JSON.stringify({ error: 'Device not found or access denied' });
 
       // Load the snapshot under org AND site scope (source device site gated),
       // so a site-restricted caller cannot import a cross-site snapshot onto a
@@ -441,7 +462,9 @@ export function registerHypervTools(aiTools: Map<string, AiTool>): void {
         return JSON.stringify({ error: message });
       }
 
-      const { command, error } = await queueCommandForExecution(
+      const { command, error } = await aiQueueCommandForExecution(
+        auth,
+        'restore_hyperv_vm',
         deviceId,
         CommandTypes.HYPERV_RESTORE,
         {
@@ -476,6 +499,8 @@ export function registerHypervTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 2,
+    domain: 'backup',
+    searchHint: 'Hyper-V virtual machine checkpoints: create, delete, apply',
     definition: {
       name: 'manage_hyperv_checkpoints',
       description: 'Dispatch a Hyper-V checkpoint create, delete, or apply command for a specific VM.',
@@ -501,7 +526,9 @@ export function registerHypervTools(aiTools: Map<string, AiTool>): void {
       const vm = await loadVmWithAccess(vmId, auth);
       if (!vm) return JSON.stringify({ error: 'VM not found or access denied' });
 
-      const { command, error } = await queueCommandForExecution(
+      const { command, error } = await aiQueueCommandForExecution(
+        auth,
+        'manage_hyperv_checkpoints',
         vm.deviceId,
         CommandTypes.HYPERV_CHECKPOINT,
         {

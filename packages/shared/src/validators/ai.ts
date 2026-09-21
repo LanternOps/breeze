@@ -10,6 +10,9 @@ export const aiPageContextSchema = z.discriminatedUnion('type', [
     type: z.literal('device'),
     id: z.string().guid(),
     hostname: z.string(),
+    // Client-side tenant hint only (#5684) — see AiPageContext. Never used for
+    // authorization: createSession resolves the org from the device row.
+    orgId: z.string().guid().optional(),
     os: z.string().optional(),
     status: z.string().optional(),
     ip: z.string().optional()
@@ -87,7 +90,9 @@ export const scriptBuilderContextSchema = z.object({
     description: z.string().max(2000).optional(),
     language: z.enum(['powershell', 'bash', 'python', 'cmd']).optional(),
     osTypes: z.array(z.enum(['windows', 'macos', 'linux'])).optional(),
-    category: z.string().max(100).optional(),
+    // Scripts imported from loose .ps1/.sh files (and older rows) carry a NULL
+    // category; the editor echoes it verbatim, so accept null and drop it.
+    category: z.string().max(100).nullish().transform((v) => v ?? undefined),
     // The one definition schema (#3409 PR3). The 50-item cap is kept as it
     // was — it is narrower than the shared MAX_SCRIPT_PARAMETERS (64) because
     // this snapshot is echoed into an LLM context window, not because the

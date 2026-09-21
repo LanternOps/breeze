@@ -1,4 +1,9 @@
 {
+  "aiActivity": {
+    "title": "Attività IA",
+    "count": "{{count}} azioni inviate negli ultimi {{days}} giorni",
+    "tooltip": "Conta gli script e i comandi inviati dall'IA registrati su questo dispositivo. Un annullamento conta come azione a sé stante. Registrato con impegno ragionevole, senza garanzia di completezza."
+  },
   "deviceChangeHistoryTab": {
     "title": "Cronologia modifiche",
     "loading": "Caricamento della cronologia modifiche…",
@@ -245,6 +250,7 @@
     "deploySoftware": "Distribuisci software",
     "clearSessions": "Cancella sessioni",
     "changeSite": "Cambia sito",
+    "moveOrg": "Sposta in un'organizzazione",
     "exitMaintenance": "Esci dalla manutenzione",
     "enterMaintenance": "Entra in manutenzione",
     "decommission": "Rimuovi",
@@ -278,7 +284,21 @@
     "loadMore": "Carica altro",
     "couldnTLoadMore": "Impossibile caricare altri elementi.",
     "viewAllActivity2": "Visualizza tutta l'attività",
-    "text": "→"
+    "text": "→",
+    "viewProposal": "Visualizza proposta",
+    "trigger": {
+      "manual": "Avvio manuale",
+      "schedule": "Pianificazione",
+      "sweep_finding": "Riscontro della scansione",
+      "alert": "Avviso",
+      "monitor": "Monitoraggio",
+      "fleet_finding": "Riscontro del parco dispositivi",
+      "policy": "Criterio",
+      "automation": "Automazione",
+      "ticket": "Richiesta di assistenza",
+      "anomaly": "Anomalia",
+      "api": "Chiamata API"
+    }
   },
   "deviceAlertHistory": {
     "failedToFetchAlertHistory": "Impossibile recuperare la cronologia degli avvisi",
@@ -553,9 +573,11 @@
     "lastChecked": "Ultimo controllo",
     "noComplianceResultsReportedAssignA": "Nessun risultato di conformità segnalato. Assegna a questo dispositivo una Configuration Policy con regole di conformità oppure attendi la prossima valutazione.",
     "text": "—",
-    "s": "s"
+    "s": "s",
+    "assignPolicy": "Assegna un criterio di configurazione"
   },
   "deviceDetailPage": {
+    "movedToOrg": "{{hostname}} è stato spostato in {{orgName}}",
     "failedToFetchDevice": "Impossibile recuperare il dispositivo",
     "online": "online",
     "offline": "offline",
@@ -645,7 +667,14 @@
     "networkAsset": "Asset di rete",
     "networkAssets": "Asset di rete (elenco)",
     "operatorTasks": "Attività dell'operatore",
-    "operatorTasksForThisDevice": "Attività dell'operatore IA per questo dispositivo"
+    "operatorTasksForThisDevice": "Attività dell'operatore IA per questo dispositivo",
+    "tabGroups": {
+      "monitoring": "Monitoraggio",
+      "inventory": "Inventario",
+      "management": "Gestione",
+      "history": "Cronologia e rete",
+      "extensions": "Estensioni"
+    }
   },
   "deviceEdrPanel": {
     "failedToIsolateDevice": "Impossibile isolare il dispositivo",
@@ -725,7 +754,70 @@
     "of": "di",
     "noMoreActivity": "Nessun’altra attività"
   },
+  "systemCleanupPanel": {
+    "title": "Pulizia del sistema",
+    "description": "Strumenti di manutenzione integrati che recuperano spazio che la scansione dei file non può vedere. Le stime possono differire dallo spazio effettivamente liberato.",
+    "checkActions": "Verifica le azioni disponibili",
+    "checking": "Verifica in corso…",
+    "run": "Esegui selezione",
+    "running": "In esecuzione… {{minutes}} min {{seconds}} s trascorsi",
+    "noActions": "Nessuna azione di pulizia del sistema è disponibile su questo dispositivo.",
+    "estimateUpTo": "fino a {{size}}",
+    "estimateUnknown": "dimensione sconosciuta",
+    "listFailed": "Impossibile leggere le azioni di pulizia disponibili su questo dispositivo.",
+    "listTimedOut": "Il dispositivo non ha risposto in tempo. Riprova tra qualche minuto.",
+    "runFailed": "Non è stato possibile completare la pulizia.",
+    "runTimedOut": "La pulizia è ancora in corso. Riapri questa scheda più tardi per vedere il risultato.",
+    "agentUpdateRequired": "Aggiorna l'agente di questo dispositivo alla versione {{version}} o successiva per eseguire le pulizie di sistema.",
+    "confirmTitle": "Eseguire la pulizia del sistema?",
+    "confirmMessage": "Verranno eseguite {{count}} azione/i su questo dispositivo. Alcune possono richiedere fino a 90 minuti e non sono reversibili.",
+    "confirmIrreversible": "Ho capito che queste modifiche non sono reversibili.",
+    "freed": "Liberati {{size}}",
+    "volumeFreed": "{{mount}}: {{size}} liberati",
+    "risk": {
+      "long_running": "può richiedere tempo",
+      "may_require_reboot": "spazio liberato dopo il riavvio",
+      "may_require_reboot_free_state": "parte dello spazio è liberata dopo il riavvio",
+      "removes_driver_rollback": "rimuove il ripristino dei driver",
+      "removes_packages": "disinstalla pacchetti",
+      "removes_os_rollback": "fine del rollback di Windows",
+      "removes_recovery_points": "rimuove i punti di ripristino"
+    },
+    "status": {
+      "completed": "completata",
+      "failed": "non riuscita",
+      "timed_out": "tempo scaduto",
+      "unavailable": "non disponibile",
+      "busy": "non avviata — dispositivo occupato",
+      "not_started": "non avviata — tempo esaurito"
+    },
+    "runInProgress": "Una pulizia del sistema è già in corso su questo dispositivo. Attendi che finisca.",
+    "consequence": {
+      "removes_driver_rollback": "Questo dispositivo non potrà più ripristinare i driver rimossi alle versioni precedenti.",
+      "removes_packages": "I pacchetti non più necessari verranno disinstallati.",
+      "removes_os_rollback": "Questo dispositivo non potrà più tornare alla versione precedente di Windows.",
+      "removes_recovery_points": "Le istantanee locali vengono eliminate. Se il disco Time Machine non è collegato, questo dispositivo non ha altri punti di ripristino."
+    }
+  },
   "deviceFilesystemTab": {
+    "resultPartial": "Completato parzialmente",
+    "resultSkippedLinks": "Collegamenti ignorati: {{count}}",
+    "errorAgentUpdateRequired": "Aggiorna l’agente alla versione {{minAgentVersion}} o successiva per eseguire la pulizia.",
+    "errorCleanupRunRequired": "Esegui un’anteprima prima di avviare la pulizia.",
+    "errorVolumeRequired": "Seleziona un volume prima di avviare la pulizia.",
+    "volumes": "Volumi",
+    "volumesLoading": "Caricamento volumi...",
+    "volumesEmpty": "Nessun volume analizzabile segnalato per questo dispositivo.",
+    "failedToFetchVolumes": "Impossibile recuperare i volumi",
+    "volumeOsBadge": "SO",
+    "volumeUsedOfTotal": "{{used}} di {{total}} in uso",
+    "volumeCapacityUnknown": "Capacità sconosciuta",
+    "volumeNeverScanned": "Mai scansionato",
+    "volumeLastScanned": "Scansionato {{when}}",
+    "volumeSelectAria": "Seleziona il volume {{mountPoint}}",
+    "scanCommandNotFound": "Comando di scansione non trovato",
+    "scanCommandNotQueued": "Comando di scansione non accodato",
+    "scanStillRunning": "La scansione del filesystem è ancora in corso. Fai clic su Aggiorna tra qualche istante.",
     "failedToFetchFilesystemStatus": "Impossibile recuperare lo stato del filesystem",
     "failedToFetchCommandHistory": "Impossibile recuperare la cronologia dei comandi",
     "failedToLoadFilesystemStatus": "Impossibile caricare lo stato del filesystem",
@@ -733,14 +825,14 @@
     "filesystemScanFailed": "Scansione del filesystem non riuscita",
     "cleanupPreviewFailed": "Anteprima pulizia non riuscita",
     "loadingDiskIntelligence": "Caricamento intelligence disco...",
-    "be1DiskCleanupIntelligence": "BE-1: intelligence per la pulizia del disco",
+    "title": "Pulizia del disco",
     "analyzeNow": "Analizza ora",
     "cleanupPreview": "Anteprima pulizia",
     "refresh": "Aggiorna",
     "openFileManager": "Apri file manager",
-    "scanRunning": "Scansione in corso (",
+    "scanRunning": "Scansione in corso ({{status}})",
     "partialScanResult": "Risultato parziale della scansione",
-    "noFilesystemSnapshotYetRunAnalyze": "Nessuno snapshot del filesystem disponibile. Esegui Analizza ora per raccogliere i dati BE-1.",
+    "noFilesystemSnapshotYetRunAnalyze": "Nessuna istantanea per questo volume. Esegui Analizza ora per scansionarlo.",
     "lastScan": "Ultima scansione",
     "trigger": "Attivazione",
     "threshold": "Soglia",
@@ -769,15 +861,63 @@
     "largestDirectories": "Directory più grandi",
     "indicatesLowerBoundSizeFromPartial": "indica una dimensione minima stimata da un attraversamento parziale.",
     "noDirectoryDataAvailable": "Nessun dato sulle directory disponibile.",
-    "text": ">=",
     "latestCleanupPreview": "Ultima anteprima pulizia",
     "estimatedRecovery": "Recupero stimato",
     "candidateCount": "Numero candidati",
-    "categories": "Categorie",
     "byCategory": "Per categoria",
     "noSafeCleanupCategoriesFound": "Nessuna categoria di pulizia sicura trovata.",
     "topCandidates": "Candidati principali",
-    "noCandidatesAvailable": "Nessun candidato disponibile."
+    "noCandidatesAvailable": "Nessun candidato disponibile.",
+    "categoriesLabel": "Categorie",
+    "confirmContentsNote": "Gli elementi del cestino eliminano ciò che contengono al momento dell'esecuzione, non quanto elencato nell'anteprima.",
+    "errorPreviewExpired": "Questa anteprima di pulizia ha più di 24 ore. Esegui di nuovo l'anteprima pulizia.",
+    "errorRunNotPreviewed": "Questa pulizia è già stata eseguita o è ancora in corso. Esegui di nuovo l'anteprima pulizia.",
+    "cleanupTitle": "Seleziona cosa pulire",
+    "cleanupPreviewRequired": "Esegui l'anteprima pulizia per scegliere cosa eliminare.",
+    "categories": {
+      "temp_files": "File temporanei",
+      "browser_cache": "Cache del browser",
+      "package_cache": "Cache dei pacchetti",
+      "trash": "Cestino"
+    },
+    "selectAllInCategory": "Seleziona tutto",
+    "clearCategory": "Azzera selezione",
+    "columnPath": "Percorso",
+    "columnSize": "Dimensione",
+    "selectionSummary": "{{count}} selezionati · {{size}}",
+    "executeSelected": "Elimina selezionati ({{count}})",
+    "confirmTitle": "Elimina definitivamente gli elementi di pulizia",
+    "confirmMessage": "Eliminare {{count}} elemento/i per un totale di {{size}} da {{volume}}? L'operazione ignora il cestino ed è irreversibile.",
+    "confirmPathsHeading": "Primi {{shown}} percorsi su {{total}}",
+    "confirmLabel": "Elimina definitivamente",
+    "cleanupFailed": "Pulizia non riuscita",
+    "cleanupFinished": "Pulizia completata — {{size}} recuperati",
+    "resultTitle": "Esito della pulizia",
+    "resultReclaimed": "Recuperato",
+    "resultCompleted": "Eliminato",
+    "resultSkippedLocked": "Bloccato (saltato)",
+    "resultRejected": "Rifiutato",
+    "resultSkippedBudget": "Non raggiunto (limite di tempo)",
+    "resultFailures": "Errori",
+    "tempAccumulation": "Accumulo temporaneo",
+    "noTempAccumulationData": "Nessun dato di accumulo temporaneo.",
+    "historyTitle": "Cronologia pulizie",
+    "historyEmpty": "Nessuna pulizia registrata finora.",
+    "historyLoadMore": "Carica altro",
+    "historyFailed": "Impossibile caricare la cronologia delle pulizie",
+    "historyKindFiles": "Pulizia file",
+    "historyKindSystem": "Pulizia di sistema",
+    "historyReclaimed": "{{size}} recuperati",
+    "historyCandidates": "{{count}} candidati",
+    "status": {
+      "previewed": "Anteprima",
+      "running": "In corso",
+      "executed": "Eseguita",
+      "failed": "Non riuscita"
+    },
+    "previewSummary": "{{count}} candidati · {{size}} recuperabili",
+    "historyReclaimable": "{{size}} recuperabili",
+    "filesystemScanFinished": "Analisi del file system completata"
   },
   "deviceFilterToolbar": {
     "searchDevices": "Cerca dispositivi",
@@ -930,6 +1070,23 @@
     "role": "Ruolo",
     "changeRole": "Cambia ruolo",
     "source": "Origine",
+    "function": "Funzione",
+    "changeFunction": "Cambia funzione",
+    "functionNone": "Non valutata",
+    "functionSource": {
+      "ai": "IA",
+      "manual": "Manuale"
+    },
+    "functionConfidence": "{{pct}}% di confidenza",
+    "functionEvidence": "Perché il progettista lo pensa",
+    "functionEvidenceUnavailable": "Impossibile caricare i dettagli della valutazione.",
+    "functionCustom": "Personalizzato…",
+    "functionCustomSlug": "chiave personalizzata (a-z, 0-9, -)",
+    "functionCustomLabel": "Etichetta",
+    "functionClear": "Cancella",
+    "functionSaved": "Funzione del dispositivo salvata",
+    "functionCleared": "Funzione del dispositivo cancellata",
+    "functionSaveFailed": "Impossibile salvare la funzione del dispositivo",
     "operatingSystem": "Sistema operativo",
     "osType": "Tipo di sistema operativo",
     "osVersion": "Versione OS",
@@ -1269,6 +1426,9 @@
     "tenantId": "ID tenant:",
     "mdmEnrollment": "Registrazione MDM:",
     "detectionSource": "Fonte di rilevamento:",
+    "identityDetectionUnsupported": "Rilevamento aggiunta non supportato",
+    "identityDetectionUnsupportedHint": "Breeze non verifica ancora la directory né la registrazione Intune/Entra sul sistema operativo di questo dispositivo, quindi lo stato di aggiunta è sconosciuto: non è stato confermato come non aggiunto.",
+    "flagUnknown": "{{label}}: Sconosciuto",
     "detectedManagementTools": "Strumenti di gestione rilevati",
     "tool": "strumenti",
     "s": "",
@@ -1311,7 +1471,8 @@
       "status": "Stato",
       "type": "Tipo"
     },
-    "title": "Monitoraggio di servizi e processi"
+    "title": "Monitoraggio di servizi e processi",
+    "assignPolicy": "Assegna un criterio di configurazione"
   },
   "deviceNetworkConnections": {
     "allProtocols": "Tutti i protocolli",
@@ -1676,7 +1837,10 @@
     "saveChanges": "Salva modifiche",
     "site": "Sito",
     "tags": "Tag",
-    "title": "Impostazioni del dispositivo"
+    "title": "Impostazioni del dispositivo",
+    "purchaseDate": "Data di acquisto",
+    "purchaseDateHelp": "Usata dal report ciclo di vita dell’hardware per pianificare la sostituzione.",
+    "purchaseDateVendorHint": "Ricavata dalla data di spedizione del produttore. Inserisci una data per sovrascriverla."
   },
   "deviceSoftwareInventory": {
     "actions": {
@@ -1880,7 +2044,7 @@
     "refresh": "Aggiorna",
     "selectedOrganization": "l'organizzazione selezionata",
     "subtitle": "Gestisci e monitora la tua flotta.",
-    "title": "Dispositivi",
+    "title": "Dispositivi e asset",
     "toasts": {
       "actionFailed": "{{action}} non riuscito su {{hostname}}",
       "advancedFilterFailed": "Impossibile caricare il filtro avanzato: nessun dispositivo visualizzato. Modifica o cancella il filtro per riprovare.",
@@ -2270,19 +2434,57 @@
     "cancel": "Annulla",
     "genericError": "Impossibile avviare la modalità manutenzione."
   },
+  "moveDeviceOrgDialog": {
+    "title": "Sposta in un'altra organizzazione",
+    "description": "Sposta {{hostname}} fuori da {{orgName}}. Cronologia, ticket e criteri lo seguono e l'agente si riconnette sotto la nuova organizzazione.",
+    "targetOrgLabel": "Organizzazione di destinazione",
+    "targetOrgPlaceholder": "Scegli un'organizzazione",
+    "targetSiteLabel": "Sede di destinazione",
+    "targetSitePlaceholder": "Scegli una sede",
+    "loadingSites": "Caricamento delle sedi…",
+    "noOtherOrgs": "Non esiste un'altra organizzazione attiva in cui spostare questo dispositivo.",
+    "noSites": "L'organizzazione scelta non ha ancora sedi. Aggiungine prima una.",
+    "currencyMismatchHeading": "Lavoro non fatturato in un'altra valuta",
+    "currencyMismatchDetail": "{{sourceCurrency}} → {{targetCurrency}}: {{timeEntries}} registrazioni di tempo non fatturate e {{parts}} parti non fatturate mantengono la valuta originale dopo lo spostamento.",
+    "currencyMismatchAccept": "Ho capito: sposta il dispositivo e mantieni quelle righe nella valuta originale",
+    "currencyMismatchNoPermission": "Per accettare serve il permesso di scrittura delle fatture. Chiedi a un amministratore della fatturazione di fatturare o chiudere prima il lavoro aperto.",
+    "stepUpHeading": "Conferma la tua identità",
+    "stepUpIntro": "Spostare un dispositivo tra organizzazioni richiede un secondo fattore.",
+    "stepUpCodeLabel": "Codice dell'app di autenticazione",
+    "stepUpPasskeyNote": "Confermerai con la tua passkey.",
+    "noStepUpFactor": "Aggiungi un'app di autenticazione o una passkey al tuo account prima di spostare dispositivi tra organizzazioni.",
+    "mfaRequired": "Completa prima l'accesso MFA, poi riprova.",
+    "stepUpRetry": "Non è stato possibile usare questa verifica. Inserisci un nuovo codice e riprova.",
+    "submit": "Sposta dispositivo",
+    "submitStepUp": "Verifica e sposta",
+    "submitting": "In corso…",
+    "cancel": "Annulla",
+    "genericError": "Impossibile spostare il dispositivo."
+  },
   "networkDeviceDetailPage": {
+    "approval": {
+      "pendingBanner": "In attesa di approvazione: il monitoraggio non è ancora attivo.",
+      "dismissedBanner": "Ignorata: nascosta dagli elenchi dei dispositivi.",
+      "approve": "Approva",
+      "dismiss": "Ignora",
+      "approvedAnnouncement": "Risorsa approvata",
+      "dismissedAnnouncement": "Risorsa ignorata"
+    },
     "backToDevices": "Torna ai dispositivi",
-    "configurePrefix": "Configura il polling SNMP e i monitor di rete da",
     "confirmUnlink": "Scollegare questo dispositivo?",
     "confirmUnlinkMessage": "L'asset rilevato e il dispositivo gestito verranno mostrati come elementi separati. Il collegamento automatico resterà disattivato per questo asset finché non lo colleghi di nuovo.",
     "connecting": "Connessione in corso",
-    "discoveryAssetView": "vista asset di rilevamento",
     "emptyPorts": "Nessuna porta aperta trovata nell'ultima scansione.",
     "emptySnmp": "Non è stato raccolto alcun dato SNMP — il dispositivo potrebbe non aver risposto oppure il controllo SNMP potrebbe non essere stato eseguito. Verifica che il metodo SNMP sia abilitato e che la community string sia impostata nel profilo di rilevamento.",
     "errors": {
+      "unexpected": "Si è verificato un errore. Riprova.",
       "load": "Impossibile caricare questo dispositivo di rete. Controlla la connessione e riprova.",
       "malformed": "Il server ha restituito una risposta imprevista per questo dispositivo di rete. Riprova e, se il problema persiste, contatta l'assistenza.",
-      "notFound": "Dispositivo di rete non trovato"
+      "notFound": "Dispositivo di rete non trovato",
+      "monitoringLoad": "Impossibile caricare i dati di monitoraggio di questo dispositivo. Riprova.",
+      "checksLoad": "Impossibile caricare i controlli di rete.",
+      "thresholdsLoad": "Impossibile caricare gli avvisi di soglia.",
+      "templateLoad": "Impossibile caricare il modello SNMP."
     },
     "fields": {
       "assetType": "Tipo",
@@ -2301,7 +2503,20 @@
       "ping": "Ping",
       "snmpMonitoring": "Monitoraggio SNMP",
       "status": "Stato",
-      "tags": "Tag"
+      "tags": "Tag",
+      "bridgingAgent": "Agente di collegamento",
+      "ipAddress": "Indirizzo IP",
+      "macAddress": "Indirizzo MAC",
+      "nicVendor": "Produttore della scheda di rete",
+      "nicVendorHint": "Il produttore registrato per l’indirizzo MAC, diverso dal produttore del dispositivo quando la scheda di rete è realizzata da un’altra azienda.",
+      "site": "Sede",
+      "sysObjectId": "sysObjectID (grezzo)",
+      "legacyScanVerdict": "Esito dell’ultima scansione",
+      "legacyScanVerdictHint": "— quanto registrato dall’ultima scansione della sottorete, non la raggiungibilità in tempo reale",
+      "pollStatus": "Stato delle interrogazioni",
+      "template": "Modello",
+      "pollingInterval": "Intervallo di interrogazione",
+      "snmpTransport": "Trasporto SNMP"
     },
     "goBack": "Torna indietro",
     "live": {
@@ -2309,7 +2524,6 @@
       "refreshed": "Dettagli del dispositivo aggiornati"
     },
     "loading": "Caricamento del dispositivo di rete...",
-    "manageInDiscovery": "Gestisci nel rilevamento",
     "manuallySet": "Impostato manualmente",
     "manuallySetWithDetected": "Impostato manualmente · scansione: {{type}}",
     "networkDevice": "Dispositivo di rete",
@@ -2335,17 +2549,43 @@
       "agentListFailed": "Impossibile caricare l'elenco degli agenti. Riprova."
     },
     "resetToAutoDetected": "Ripristina rilevamento automatico",
-    "savingType": "Salvataggio in corso…",
-    "resettingType": "Ripristino in corso…",
     "sections": {
       "discovery": "Rilevamento",
       "identity": "Identità",
       "monitoringStatus": "Stato monitoraggio",
       "openPorts": "Porte aperte",
-      "snmpData": "Dati SNMP"
+      "snmpData": "Dati SNMP",
+      "reachability": "Raggiungibilità",
+      "collection": "Raccolta",
+      "printerHealth": "Stato della stampante",
+      "scanDetails": "Tutti i dettagli della scansione",
+      "pollConfiguration": "Configurazione delle interrogazioni",
+      "oids": "OID",
+      "networkChecks": "Controlli di rete",
+      "thresholds": "Avvisi di soglia SNMP",
+      "history": "Cronologia",
+      "deviceHealth": "Stato del dispositivo"
     },
     "stats": {
-      "asOf": "aggiornato al {{time}}"
+      "asOf": "aggiornato al {{time}}",
+      "lowestSupply": "Materiale di consumo più basso",
+      "portsUp": "Porte attive",
+      "portsUpValue": "{{up}} su {{total}}",
+      "reachability": "Raggiungibilità",
+      "lastPoll": "Ultima interrogazione"
+    },
+    "probe": {
+      "checkNow": "Verifica ora",
+      "checking": "Verifica in corso…",
+      "errors": {
+        "noAgentInSite": "Nessun agente online in questo sito può raggiungere il dispositivo. Connetti un agente in questo sito, quindi riprova.",
+        "inFlight": "È già in corso una verifica per questo dispositivo.",
+        "noIp": "Questa risorsa non ha un indirizzo IP da verificare.",
+        "timedOut": "L’agente non ha risposto entro un minuto. Potrebbe essere offline o occupato.",
+        "unknown": "Impossibile verificare questo dispositivo al momento.",
+        "noSite": "Questa risorsa non è assegnata a un sito. Assegnala a un sito e riprova.",
+        "refreshFailed": "Salvato, ma la pagina non ha potuto leggere il risultato. Ricarica la pagina."
+      }
     },
     "tabs": {
       "overview": "Panoramica",
@@ -2387,7 +2627,320 @@
       "sysName": "Nome sistema",
       "sysDescr": "Descrizione",
       "sysObjectId": "ID oggetto (OID)"
-    }
+    },
+    "settings": {
+      "title": "Impostazioni di {{name}}",
+      "subtitle": "Gestisci ogni sezione separatamente.",
+      "navLabel": "Sezioni delle impostazioni della risorsa",
+      "unsavedChanges": "Modifiche non salvate",
+      "refreshFailed": "Salvato, ma non è stato possibile aggiornare la pagina. Ricaricala per vedere la modifica.",
+      "sections": {
+        "identity": "Identità",
+        "monitoring": "Monitoraggio",
+        "link": "Collegamento",
+        "danger": "Zona di pericolo"
+      },
+      "identity": {
+        "description": "Scegli come identificare questa risorsa.",
+        "displayName": "Nome visualizzato",
+        "type": "Tipo di dispositivo",
+        "typeFixed": "Questo tipo salvato non può essere selezionato di nuovo. Puoi scegliere un altro tipo.",
+        "typeDetected": "Rilevato: {{type}}",
+        "typeConsequence": "Modifica il modello SNMP suggerito e la vista del dispositivo.",
+        "resetToDetected": "Ripristina il tipo rilevato",
+        "tags": "Etichette",
+        "tagsHint": "Separa le etichette con virgole.",
+        "notes": "Annotazioni",
+        "conflict": "Questa risorsa è stata modificata altrove. Controlla i valori più recenti prima di salvare di nuovo.",
+        "typeGroups": {
+          "endpoints": "Dispositivi terminali",
+          "networkGear": "Apparati di rete",
+          "peripherals": "Periferiche",
+          "other": "Altro"
+        }
+      },
+      "monitoring": {
+        "description": "Configura la raccolta SNMP e i controlli di rete.",
+        "loadFailed": "Impossibile caricare le impostazioni di monitoraggio. Riprova.",
+        "checksLoadFailed": "Impossibile caricare i controlli di rete. Riprova.",
+        "conflict": "Le impostazioni di monitoraggio sono state modificate altrove. Controlla i valori più recenti prima di salvare di nuovo.",
+        "communityRequired": "Inserisci una stringa di comunità per abilitare SNMP v1 o v2c.",
+        "usernameRequired": "Inserisci un nome utente per abilitare SNMP v3.",
+        "invalidInterval": "L’intervallo di polling deve essere un numero intero tra 30 e 86400 secondi.",
+        "invalidPort": "La porta deve essere un numero intero tra 1 e 65535.",
+        "pause": "Sospendi polling",
+        "resume": "Riprendi polling",
+        "disable": "Disabilita tutto il monitoraggio",
+        "disableTitle": "Disabilitare tutto il monitoraggio?",
+        "disableMessage": "Il polling SNMP e i controlli di rete per questa risorsa verranno disabilitati.",
+        "checksTitle": "Controlli di rete",
+        "noChecks": "Nessun controllo di rete configurato.",
+        "addCheck": "Aggiungi controllo",
+        "removeCheck": "Rimuovi controllo",
+        "removeCheckTitle": "Rimuovere il controllo di rete?",
+        "removeCheckMessage": "Rimuovere il controllo di rete “{{name}}”? Questa azione non può essere annullata.",
+        "never": "mai",
+        "leaveBlankToKeep": "Memorizzato — lascia vuoto per mantenere il valore attuale",
+        "snmpVersion": "Versione SNMP",
+        "pollingInterval": "Intervallo di polling (secondi)",
+        "community": "Stringa di comunità",
+        "username": "Nome utente",
+        "authProtocol": "Protocollo di autenticazione",
+        "authPassword": "Password di autenticazione",
+        "privacyProtocol": "Protocollo di riservatezza",
+        "privacyPassword": "Password di riservatezza",
+        "port": "Porta SNMP",
+        "template": "Modello SNMP",
+        "templatesUnavailable": "Impossibile caricare i modelli. Verrà mantenuto il modello attuale.",
+        "suggestionsUnavailable": "Suggerimenti non disponibili",
+        "noTemplate": "Nessun modello",
+        "suggestion": "Suggerimento: {{template}} — {{reason}}",
+        "useSuggestion": "Usa suggerimento",
+        "noTemplateWarning": "Nessun modello assegnato, quindi non viene eseguito alcun polling.",
+        "collectionStatus": {
+          "ok": "Raccolta in corso",
+          "failing": "Raccolta non riuscita",
+          "no_template": "Nessun modello assegnato, quindi non viene eseguito alcun polling",
+          "no_agent": "Nessun agente disponibile in questa sede",
+          "asset_moved": "Risorsa spostata in un’altra sede",
+          "never_polled": "Mai interrogato",
+          "paused": "Polling sospeso",
+          "warning": "Raccolta parziale",
+          "offline": "Nessuna risposta al polling",
+          "unknown": "Stato della raccolta sconosciuto"
+        },
+        "checkState": {
+          "responding": "Risponde",
+          "degraded": "Degradato",
+          "notResponding": "Non risponde",
+          "paused": "Sospeso",
+          "unverified": "Non verificato"
+        },
+        "checkSource": {
+          "icmp_ping": "test ping",
+          "tcp_port": "porta TCP",
+          "http_check": "controllo HTTP",
+          "dns_check": "controllo DNS"
+        }
+      },
+      "link": {
+        "description": "Collega questa risorsa rilevata al dispositivo gestito che corrisponde alla stessa macchina.",
+        "unlinkHint": "La rimozione del collegamento impedisce anche al collegamento automatico di ricrearlo alla prossima scansione."
+      },
+      "danger": {
+        "description": "Stato di approvazione ed eliminazione definitiva.",
+        "approvalTitle": "Approvazione",
+        "approvedExplainer": "Questa risorsa è approvata e compare negli elenchi dei dispositivi.",
+        "pendingExplainer": "In attesa di approvazione: il monitoraggio non è ancora attivo.",
+        "dismissedExplainer": "Ignorata: nascosta dagli elenchi dei dispositivi.",
+        "approve": "Approva",
+        "dismiss": "Ignora",
+        "deleteTitle": "Elimina risorsa",
+        "deleteDescription": "Rimuove la risorsa e tutti i dati raccolti per essa. Il rilevamento la ricreerà alla prossima scansione se il dispositivo è ancora sulla rete.",
+        "deleteAsset": "Elimina risorsa",
+        "deleteConfirmTitle": "Eliminare questa risorsa?",
+        "deleteConfirmMessage": "\"{{name}}\" e tutti gli elementi seguenti verranno rimossi. Questa operazione non può essere annullata.",
+        "deleteConfirmPrompt": "Digita {{name}} per confermare",
+        "cascade": {
+          "snmp": "La sua configurazione di polling SNMP",
+          "metrics": "Tutte le metriche raccolte",
+          "thresholds": "Le sue soglie di avviso SNMP",
+          "checks": "Tutti i controlli di rete associati a questa risorsa",
+          "topology": "La sua posizione salvata sulla mappa della topologia"
+        }
+      },
+      "openMonitoringSettings": "Modifica le impostazioni di monitoraggio",
+      "openLinkSettings": "Gestisci questo collegamento",
+      "toasts": {
+        "identitySaved": "Identità salvata",
+        "identitySaveFailed": "Impossibile salvare le modifiche all’identità",
+        "approved": "Risorsa approvata",
+        "approveFailed": "Impossibile approvare la risorsa",
+        "dismissed": "Risorsa ignorata",
+        "dismissFailed": "Impossibile ignorare la risorsa",
+        "assetDeleted": "Risorsa eliminata",
+        "assetDeleteFailed": "Impossibile eliminare la risorsa",
+        "snmpSaved": "Impostazioni SNMP salvate",
+        "snmpSaveFailed": "Impossibile salvare le impostazioni SNMP",
+        "pollingPaused": "Polling SNMP sospeso",
+        "pollingResumed": "Polling SNMP ripreso",
+        "monitoringDisabled": "Monitoraggio disabilitato per questa risorsa",
+        "monitoringDisableFailed": "Impossibile disabilitare il monitoraggio",
+        "checkCreated": "Controllo di rete aggiunto",
+        "checkCreateFailed": "Impossibile aggiungere il controllo di rete",
+        "checkRemoved": "Controllo di rete rimosso",
+        "checkRemoveFailed": "Impossibile rimuovere il controllo di rete"
+      }
+    },
+    "header": {
+      "lastError": "Ultimo errore: {{error}}",
+      "settings": "Impostazioni"
+    },
+    "editInSettings": "Modifica nelle impostazioni",
+    "reachability": {
+      "detail": {
+        "check": {
+          "online": "In linea",
+          "degraded": "Degradato",
+          "offline": "Non in linea"
+        },
+        "probe": {
+          "ok": "Risposta ricevuta",
+          "failed": "Nessuna risposta",
+          "pending": "In attesa dell’agente"
+        },
+        "snmp": {
+          "ok": "Interrogazione in corso",
+          "failing": "In errore",
+          "no_template": "Nessun modello",
+          "no_agent": "Nessun agente nella sede",
+          "asset_moved": "Risorsa spostata",
+          "never_polled": "Mai interrogato"
+        },
+        "snmpFailures": "{{count}} errori consecutivi",
+        "snmpNote": "Un errore SNMP può riguardare l’agente di collegamento anziché il dispositivo — gli errori vengono conteggiati quando viene inviata l’interrogazione.",
+        "scan": {
+          "seen": "Rilevato",
+          "missed": "Non rilevato"
+        },
+        "emptyTitle": "Nessuna segnalazione per questo dispositivo",
+        "emptyDescription": "Nessuna scansione, verifica, interrogazione o sonda manuale ha ancora prodotto un’osservazione."
+      },
+      "state": {
+        "responding": "Risponde",
+        "notResponding": "Non risponde",
+        "unverified": "Non verificato"
+      },
+      "source": {
+        "networkCheck": "Verifica di rete",
+        "probe": "Sonda",
+        "scan": "Scansione",
+        "unifi": "UniFi",
+        "snmp": "SNMP"
+      },
+      "lastSeenBy": "ultima rilevazione tramite {{source}} {{relative}}",
+      "neverObserved": "mai osservato"
+    },
+    "collection": {
+      "viewOids": "Visualizza OID",
+      "oidState": {
+        "collecting": "Raccolta in corso",
+        "unsupported": "Non supportato",
+        "stale": "Obsoleto",
+        "neverPolled": "Mai interrogato",
+        "unknown": "Sconosciuto"
+      },
+      "unknownNeedsAgentUpdate": "Questa versione dell’agente non può leggere i valori delle tabelle. Aggiorna l’agente sul dispositivo ponte.",
+      "partialRows": "Risultati parziali: la scansione ha raggiunto il limite di righe.",
+      "unsupportedWithCode": "Il dispositivo ha risposto {{code}} — questo OID non è implementato sul dispositivo.",
+      "status": {
+        "ok": "Interrogazione in corso",
+        "failing": "In errore",
+        "noTemplate": "Nessun modello",
+        "noAgent": "Nessun agente nella sede",
+        "assetMoved": "Risorsa spostata",
+        "neverPolled": "Mai interrogato",
+        "paused": "In pausa",
+        "notConfigured": "Non configurato"
+      },
+      "count": {
+        "collecting": "{{count}} in raccolta",
+        "unsupported": "{{count}} non supportati",
+        "stale": "{{count}} obsoleti",
+        "unknown": "{{count}} sconosciuti",
+        "neverPolled": "{{count}} mai interrogati",
+        "noOids": "Nessun OID in questo modello"
+      }
+    },
+    "health": {
+      "empty": {
+        "title": "Non è ancora attivo alcun monitoraggio",
+        "action": "Configura il monitoraggio",
+        "benefit": {
+          "printer": "Attiva SNMP per visualizzare i livelli di toner e inchiostro, i vassoi della carta, i contatori delle pagine e gli errori della stampante.",
+          "switch": "Attiva SNMP per visualizzare lo stato delle interfacce, il traffico per porta e il tempo di attività.",
+          "generic": "Attiva SNMP per raccogliere dati sullo stato di questo dispositivo oppure aggiungi un controllo ping o di porta."
+        }
+      },
+      "noTemplate": "SNMP è attivo, ma non è assegnato alcun modello, quindi non viene interrogato nulla.",
+      "pickTemplate": "Scegli un modello",
+      "viewAllOids": "Visualizza tutti i {{count}} OID"
+    },
+    "printer": {
+      "low": "Basso",
+      "supplyFallback": "Materiale di consumo {{instance}}",
+      "pageCount": "Pagine totali",
+      "sinceYesterday": "{{count}} da ieri",
+      "sinceLastWeek": "{{count}} nell’ultima settimana",
+      "notCollectedYet": "I dati sullo stato della stampante non sono ancora stati raccolti.",
+      "status": {
+        "other": "Altro",
+        "unknown": "Sconosciuto",
+        "idle": "In attesa",
+        "printing": "Stampa in corso",
+        "warmup": "Riscaldamento"
+      },
+      "deviceStatus": {
+        "unknown": "Sconosciuto",
+        "running": "In funzione",
+        "warning": "Avviso",
+        "testing": "Test in corso",
+        "down": "Fuori servizio"
+      },
+      "errors": {
+        "lowPaper": "Carta in esaurimento",
+        "noPaper": "Carta esaurita",
+        "lowToner": "Toner in esaurimento",
+        "noToner": "Toner esaurito",
+        "doorOpen": "Sportello aperto",
+        "jammed": "Carta inceppata",
+        "offline": "Non in linea",
+        "serviceRequested": "Assistenza necessaria",
+        "inputTrayMissing": "Vassoio di alimentazione mancante",
+        "outputTrayMissing": "Vassoio di uscita mancante",
+        "markerSupplyMissing": "Materiale di consumo mancante",
+        "outputNearFull": "Vassoio di uscita quasi pieno",
+        "outputFull": "Vassoio di uscita pieno",
+        "inputTrayEmpty": "Vassoio di alimentazione vuoto",
+        "overduePreventMaint": "Manutenzione scaduta"
+      }
+    },
+    "charts": {
+      "loadFailed": "Impossibile caricare la cronologia di questa metrica.",
+      "pickOids": "Grafico",
+      "cap": "È visualizzato il massimo di {{count}} grafici. Deselezionane uno per aggiungerne un altro.",
+      "perBucket": "Variazione per {{bucket}}",
+      "bucket": {
+        "fiveMinutes": "5 minuti",
+        "hour": "ora",
+        "day": "giorno"
+      },
+      "emptyTitle": "Nessun OID sta ancora raccogliendo valori",
+      "emptyDescription": "La cronologia appare quando un polling restituisce un valore per almeno un OID.",
+      "truncated": "Vengono mostrate solo le prime 64 serie di istanze."
+    },
+    "poll": {
+      "everySeconds": "ogni {{count}} s",
+      "everyMinutes": "ogni {{count}} min",
+      "everyHours": "ogni {{count}} h"
+    },
+    "checks": {
+      "emptyTitle": "Nessun controllo di rete per questo dispositivo",
+      "emptyDescription": "Un controllo ping o di porta determina la raggiungibilità di questo dispositivo indipendentemente dalla scansione di rilevamento.",
+      "add": "Aggiungi un controllo",
+      "paused": "In pausa",
+      "status": {
+        "online": "In linea",
+        "degraded": "Degradato",
+        "offline": "Non in linea",
+        "never": "Mai controllato"
+      }
+    },
+    "thresholds": {
+      "emptyTitle": "Nessun avviso di soglia SNMP configurato",
+      "emptyDescription": "I valori rilevati su questo dispositivo non genereranno ancora alcun avviso."
+    },
+    "loadingMonitoring": "Caricamento dei dati di monitoraggio…"
   },
   "osIcons": {
     "linux": "Linux",
@@ -2769,7 +3322,8 @@
       "assignedContactPlaceholder": "Cerca contatti…",
       "tags": "Tag",
       "tagsPlaceholder": "Separati da virgole",
-      "notes": "Note"
+      "notes": "Note",
+      "purchaseDate": "Data di acquisto"
     }
   },
   "addNetworkAssetModal": {

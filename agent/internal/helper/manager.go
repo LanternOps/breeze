@@ -743,6 +743,17 @@ func (m *Manager) installedVersionLocked() string {
 			return status.Version
 		}
 	}
+	// Fallback to legacy root helper_status.yaml in baseDir only if no per-session
+	// state exists on disk. Once the sessions/ directory exists, per-session status
+	// is authoritative and the legacy root file must not be read (otherwise a stale
+	// root status from an older helper could re-drive updates repeatedly).
+	// We pass helper_config.yaml because ReadStatus derives helper_status.yaml from it.
+	if m.baseDir != "" && !m.hasResidualState() {
+		legacyConfig := m.legacyConfigPath()
+		if status, err := ReadStatus(legacyConfig); err == nil && status.Version != "" {
+			return status.Version
+		}
+	}
 	return ""
 }
 

@@ -12,6 +12,8 @@ import {
   Unplug,
 } from "lucide-react";
 import { fetchWithAuth } from "../../stores/auth";
+import { fetchAllOrganizationsFrom } from "../../lib/fetchAllOrganizations";
+import { ListFetchError } from "../../lib/fetchAllSites";
 import { runAction, handleActionError, ActionError } from "../../lib/runAction";
 import { navigateTo } from "@/lib/navigation";
 import { getJwtClaims, loginPathWithNext } from "../../lib/authScope";
@@ -221,16 +223,15 @@ export default function SecurityIntegration() {
 
   const fetchOrgs = useCallback(async () => {
     if (!isPartnerAdmin) return;
-    const res = await fetchWithAuth("/orgs/organizations");
-    const json = await res.json().catch(() => ({}));
-    if (!res.ok) {
+    try {
+      const orgs = await fetchAllOrganizationsFrom<Organization>("/orgs/organizations");
+      setOrgOptions(orgs);
+    } catch (err) {
+      const status = err instanceof ListFetchError ? err.status : "unknown";
       console.error(
-        `[SecurityIntegration] Organizations fetch failed: HTTP ${res.status}`,
+        `[SecurityIntegration] Organizations fetch failed: HTTP ${status}`,
       );
-      return;
     }
-    const data = (json as { data?: Organization[] }).data;
-    setOrgOptions(Array.isArray(data) ? data : []);
   }, [isPartnerAdmin]);
 
   const load = useCallback(async () => {

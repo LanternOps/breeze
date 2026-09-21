@@ -618,8 +618,77 @@
     "tabs": {
       "alerts": "Avvisi",
       "correlations": "Correlazioni",
+      "monitors": "Monitor",
       "rules": "Regole",
-      "channels": "Canali"
+      "delivery": "Consegna"
+    }
+  },
+  "deliveryPage": {
+    "loading": "Caricamento delle impostazioni di consegna…",
+    "loadFailed": "Impossibile caricare le impostazioni di consegna.",
+    "title": "Consegna",
+    "subtitle": "Chi viene avvisato e come.",
+    "precedence": "L'impostazione di notifica del monitor ha la precedenza; altrimenti vale la prima riga corrispondente dall'alto.",
+    "sections": {
+      "channels": "Canali",
+      "routing": "Instradamento",
+      "escalation": "Criteri di escalation"
+    },
+    "routing": {
+      "everythingElse": "Tutto il resto",
+      "everythingElseHint": "Cattura ogni avviso che nessuna riga sopra intercetta. Svuota i canali per «solo posta in arrivo».",
+      "inboxOnly": "Solo posta in arrivo",
+      "partnerRowHint": "Appartiene al tuo partner; qui è in sola lettura.",
+      "customizeForOrg": "Personalizza per questa organizzazione",
+      "matchAll": "Tutti gli avvisi",
+      "severities": "Gravità",
+      "monitorKinds": "Tipi di monitor",
+      "sites": "Sedi",
+      "sendTo": "Invia a",
+      "escalateVia": "Escalation tramite",
+      "noEscalation": "Nessuna escalation",
+      "addRule": "Aggiungi regola di instradamento",
+      "editRule": "Modifica regola di instradamento",
+      "newRule": "Nuova regola di instradamento",
+      "editDefault": "Modifica «Tutto il resto»",
+      "priority": "Priorità (la più bassa viene eseguita per prima)",
+      "leaveEmptyForAll": "Lascia vuoto per corrispondere a tutto",
+      "defaultSaved": "Riga «Tutto il resto» salvata",
+      "failedToSaveDefault": "Impossibile salvare la riga «Tutto il resto»",
+      "deleteConfirm": "Eliminare la regola di instradamento «{{name}}»?",
+      "usePartnerDefault": "Usa le impostazioni predefinite del partner",
+      "usePartnerDefaultConfirm": "Questa organizzazione tornerà a usare la riga «Tutto il resto» del partner.",
+      "usePartnerDefaultInboxConfirm": "Non esiste una configurazione predefinita del partner. Gli avvisi che non corrispondono ad alcuna riga saranno solo nella posta in arrivo.",
+      "customizeForOrgHint": "La personalizzazione smette di seguire le modifiche alle impostazioni predefinite del partner. La configurazione specifica di questa organizzazione può essere rimossa in seguito.",
+      "sitesLoadFailed": "Impossibile caricare i siti. Riprova."
+    },
+    "escalation": {
+      "occurrenceLimit": "Una policy può inviare al massimo 50 notifiche.",
+      "new": "Nuovo criterio di escalation",
+      "edit": "Modifica criterio di escalation",
+      "empty": "Nessun criterio di escalation. Un criterio invia notifiche di follow-up finché un avviso resta non riconosciuto.",
+      "steps": "Passaggi",
+      "addStep": "Aggiungi passaggio",
+      "removeStep": "Rimuovi passaggio",
+      "delayMinutes": "Dopo (minuti)",
+      "notifyChannels": "Notifica",
+      "notifyUsers": "Notifica utenti (nell’app)",
+      "repeat": "Ripeti",
+      "everyMinutes": "Ogni (minuti)",
+      "maxTimes": "Invii aggiuntivi",
+      "stepCount_one": "{{count}} passaggio",
+      "stepCount_other": "{{count}} passaggi",
+      "created": "Criterio di escalation creato",
+      "saved": "Criterio di escalation salvato",
+      "deleted": "Criterio di escalation eliminato",
+      "failedToSave": "Impossibile salvare il criterio di escalation",
+      "failedToDelete": "Impossibile eliminare il criterio di escalation",
+      "deleteConfirm": "Eliminare il criterio di escalation «{{name}}»? I monitor e le righe di instradamento che vi fanno riferimento smetteranno di eseguire l'escalation.",
+      "legacyRepaired": "La policy salvata conteneva passaggi non conformi al formato attuale, che sono stati adattati.",
+      "delayRange": "Inserisci un numero intero da 1 a 10080 minuti (7 giorni).",
+      "minutesRange": "Inserisci un numero intero da 1 a 1440 minuti.",
+      "timesRange": "Inserisci un numero intero da 1 a 10 ripetizioni.",
+      "targetRequired": "Seleziona almeno un canale o un utente per passaggio."
     }
   },
   "correlatedAlertGroups": {
@@ -904,7 +973,7 @@
     "notificationRoutingRules": "Regole di instradamento notifiche",
     "routeAlertsToSpecificChannelsBasedOn": "Instrada gli avvisi a canali specifici in base alla gravità. Vince la prima regola corrispondente.",
     "rule": "regola",
-    "noRoutingRulesConfiguredAllAlertsGo": "Nessuna regola di instradamento configurata. Tutti gli avvisi vengono inviati a tutti i canali abilitati.",
+    "newChannelsRequireRouting": "I nuovi canali non inviano avvisi finché non vengono selezionati in una regola di instradamento o nella riga «Tutto il resto».",
     "addRoutingRule": "Aggiungi regola di instradamento",
     "partnerWideRuleRoutesAlertsFromEvery": "Regola a livello di partner - instrada gli avvisi da ogni organizzazione",
     "allOrgs": "A livello di partner",
@@ -975,5 +1044,12 @@
     "forever": "Per sempre",
     "cancel": "Annulla",
     "suppress": "Sopprimi"
+  },
+  "templates": {
+    "frozen": {
+      "title": "I nuovi modelli di avviso vengono creati come monitor",
+      "body": "I modelli esistenti restano modificabili qui e verranno convertiti nella prossima versione.",
+      "link": "Apri Monitor"
+    }
   }
 }

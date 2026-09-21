@@ -18,9 +18,10 @@ import {
 import { eq, and, desc, inArray, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
-import { CommandTypes, queueCommandForExecution } from './commandQueue';
+import { CommandTypes } from './commandQueue';
+import { aiQueueCommandForExecution } from './aiDispatch';
 import { resolveBackupConfigForDevice } from './featureConfigResolver';
-import { deviceSiteDenied, deviceIdSiteDenied, resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
+import { deviceSiteDenied, deviceIdSiteDenied, resolveSiteAllowedDeviceIds, runFrozenDeviceIds } from './aiToolsSiteScope';
 import { loadSnapshotWithSiteAccess } from './aiToolsBackupShared';
 import {
   resolveBackupWriteCommandDestination,
@@ -80,6 +81,8 @@ export function registerMssqlTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'backup',
+    searchHint: 'Microsoft SQL Server instances and database inventory by device or discovery status',
     deviceArgs: ['deviceId'],
     definition: {
       name: 'query_mssql_instances',
@@ -103,8 +106,14 @@ export function registerMssqlTools(aiTools: Map<string, AiTool>): void {
 
       // Site axis: narrow to devices in the caller's allowed sites.
       const instOrgId = getOrgId(auth);
-      if (auth.allowedSiteIds && instOrgId) {
-        const allowed = await resolveSiteAllowedDeviceIds(instOrgId, auth);
+      // EITHER axis narrows: a device-LESS analysis run carries `allowedDeviceIds`
+      // and no site axis, so an `&&`-gated check no-ops and the list reads
+      // org-wide (#6096 RC3). Without a resolvable org there is no device scan to
+      // do — fall back to the frozen device set rather than skipping narrowing.
+      if (auth.allowedSiteIds || auth.allowedDeviceIds) {
+        const allowed = instOrgId
+          ? await resolveSiteAllowedDeviceIds(instOrgId, auth)
+          : runFrozenDeviceIds(auth);
         if (!allowed || allowed.length === 0) return JSON.stringify({ instances: [], showing: 0 });
         if (typeof input.deviceId === 'string' && !allowed.includes(input.deviceId)) return JSON.stringify({ instances: [], showing: 0 });
         conditions.push(inArray(sqlInstances.deviceId, allowed));
@@ -149,6 +158,8 @@ export function registerMssqlTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'backup',
+    searchHint: 'Microsoft SQL Server backup chains, active chain metadata and latest full database snapshots',
     deviceArgs: ['deviceId'],
     definition: {
       name: 'get_mssql_backup_status',
@@ -172,8 +183,14 @@ export function registerMssqlTools(aiTools: Map<string, AiTool>): void {
 
       // Site axis: narrow to devices in the caller's allowed sites.
       const chainOrgId = getOrgId(auth);
-      if (auth.allowedSiteIds && chainOrgId) {
-        const allowed = await resolveSiteAllowedDeviceIds(chainOrgId, auth);
+      // EITHER axis narrows: a device-LESS analysis run carries `allowedDeviceIds`
+      // and no site axis, so an `&&`-gated check no-ops and the list reads
+      // org-wide (#6096 RC3). Without a resolvable org there is no device scan to
+      // do — fall back to the frozen device set rather than skipping narrowing.
+      if (auth.allowedSiteIds || auth.allowedDeviceIds) {
+        const allowed = chainOrgId
+          ? await resolveSiteAllowedDeviceIds(chainOrgId, auth)
+          : runFrozenDeviceIds(auth);
         if (!allowed || allowed.length === 0) return JSON.stringify({ chains: [], showing: 0 });
         if (typeof input.deviceId === 'string' && !allowed.includes(input.deviceId)) return JSON.stringify({ chains: [], showing: 0 });
         conditions.push(inArray(backupChains.deviceId, allowed));
@@ -248,6 +265,8 @@ export function registerMssqlTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 3,
+    domain: 'backup',
+    searchHint: 'Microsoft SQL Server database backup: full, differential, transaction log',
     deviceArgs: ['deviceId'],
     definition: {
       name: 'trigger_mssql_backup',
@@ -290,7 +309,7 @@ export function registerMssqlTools(aiTools: Map<string, AiTool>): void {
         .limit(1);
       if (!device) return JSON.stringify({ error: 'Device not found or access denied' });
       // Site axis (app-layer only; RLS does NOT enforce it).
-      if (deviceSiteDenied(auth, device.siteId)) return JSON.stringify({ error: 'Device not found or access denied' });
+      if (deviceSiteDenied(auth, device.siteId, device.id)) return JSON.stringify({ error: 'Device not found or access denied' });
 
       const resolvedConfig = await resolveBackupConfigForDevice(deviceId);
       if (!resolvedConfig?.configId) {
@@ -324,7 +343,9 @@ export function registerMssqlTools(aiTools: Map<string, AiTool>): void {
         })
         .returning({ id: backupJobs.id });
 
-      const { command, error } = await queueCommandForExecution(
+      const { command, error } = await aiQueueCommandForExecution(
+        auth,
+        'trigger_mssql_backup',
         deviceId,
         CommandTypes.MSSQL_BACKUP,
         {
@@ -374,6 +395,8 @@ export function registerMssqlTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 3,
+    domain: 'backup',
+    searchHint: 'Microsoft SQL Server database recovery from a backup snapshot to a target database',
     deviceArgs: ['deviceId'],
     definition: {
       name: 'restore_mssql_database',
@@ -416,7 +439,7 @@ export function registerMssqlTools(aiTools: Map<string, AiTool>): void {
         .where(and(...deviceConditions))
         .limit(1);
       if (!device) return JSON.stringify({ error: 'Device not found or access denied' });
-      if (deviceSiteDenied(auth, device.siteId)) return JSON.stringify({ error: 'Device not found or access denied' });
+      if (deviceSiteDenied(auth, device.siteId, device.id)) return JSON.stringify({ error: 'Device not found or access denied' });
 
       // Load the snapshot under the caller's org AND site scope: the source
       // snapshot must be within the caller's site scope, not just the target
@@ -455,7 +478,9 @@ export function registerMssqlTools(aiTools: Map<string, AiTool>): void {
         return JSON.stringify({ error: message });
       }
 
-      const { command, error } = await queueCommandForExecution(
+      const { command, error } = await aiQueueCommandForExecution(
+        auth,
+        'restore_mssql_database',
         deviceId,
         CommandTypes.MSSQL_RESTORE,
         {
@@ -498,6 +523,8 @@ export function registerMssqlTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 2,
+    domain: 'backup',
+    searchHint: 'Microsoft SQL Server backup snapshot verification',
     definition: {
       name: 'verify_mssql_backup',
       description: 'Dispatch an MSSQL backup verification command for a provider-backed MSSQL snapshot.',
@@ -568,7 +595,9 @@ export function registerMssqlTools(aiTools: Map<string, AiTool>): void {
         return JSON.stringify({ error: message });
       }
 
-      const { command, error } = await queueCommandForExecution(
+      const { command, error } = await aiQueueCommandForExecution(
+        auth,
+        'verify_mssql_backup',
         snapshot.deviceId,
         CommandTypes.MSSQL_VERIFY,
         {

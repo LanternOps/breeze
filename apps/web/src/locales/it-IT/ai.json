@@ -30,6 +30,7 @@
     "contentChanged": "I dettagli di questa richiesta sono cambiati dopo la creazione, quindi non può più essere approvata.",
     "expired": "Questa richiesta è scaduta prima di poter essere decisa.",
     "notSoleApprover": "Ora è richiesto un altro approvatore — non puoi più approvare la tua stessa richiesta.",
+    "siteCeiling": "Questa approvazione concede un'autorità a livello di intera organizzazione. Il tuo accesso è limitato a siti specifici — un altro approvatore deve decidere questa richiesta.",
     "noApproverDevice": "Approvare la tua stessa richiesta richiede Touch ID / Windows Hello.",
     "registerDevice": "Registra questo dispositivo",
     "decideFailed": "Invio della decisione non riuscito",
@@ -82,7 +83,8 @@
         "label": "Attività recente",
         "prompt": "Mostrami le voci del registro di controllo più recenti — quali azioni sono state eseguite nelle ultime ore?"
       }
-    }
+    },
+    "unattendedRelease": "Verificato dal revisore di script dell'IA e rilasciato senza una scheda di approvazione."
   },
   "aiChatSidebar": {
     "history": "Cronologia",
@@ -127,6 +129,8 @@
   "aiToolCallCard": {
     "running": "In esecuzione...",
     "approvedRunning": "Approvato · in esecuzione",
+    "approvedFailed": "Approvato · non riuscito",
+    "approvedCompleted": "Approvato · completato",
     "input": "Input:",
     "error": "Errore:",
     "output": "Output:"
@@ -137,7 +141,7 @@
     "tabs": {
       "orgs": "Organizzazioni",
       "sessions": "Sessioni",
-      "usage": "Utilizzo",
+      "usage": "Utilizzo del componente aggiuntivo di Office",
       "templates": "Template"
     }
   },
@@ -453,5 +457,52 @@
     "timeMinutesAria": "Tempo (minuti)",
     "billable": "Fatturabile",
     "createTicket": "Crea ticket"
+  },
+  "scriptProposal": {
+    "title": "Script creato dall'IA",
+    "goal": "Obiettivo",
+    "expectedEffect": "Effetto previsto",
+    "verificationClaim": "Come verrà verificato",
+    "rollback": "Ripristino",
+    "findings": "Rilievi del revisore",
+    "blastRadius": "Ambito di impatto (indicativo)",
+    "touches": "Interessa",
+    "devices": "Dispositivi di destinazione",
+    "showCode": "Mostra script",
+    "hideCode": "Nascondi script",
+    "acknowledgeTitle": "Conferma i modelli pericolosi",
+    "acknowledgeRequirement": "La conferma richiede il permesso di scrittura degli script e un accesso MFA recente.",
+    "acknowledgeIncomplete": "Conferma ogni modello per approvare.",
+    "expiresIn": "Scade tra {{duration}}",
+    "requestChanges": "Richiedi modifiche",
+    "notePlaceholder": "Che cosa deve cambiare l'autore?",
+    "noteRequired": "È obbligatoria una nota.",
+    "sendBack": "Rinvia all'autore",
+    "severityInfo": "Informazione",
+    "severityWarning": "Avviso",
+    "severityBlocking": "Bloccante",
+    "saveToLibrary": "Salva nella libreria",
+    "verificationPending": "Verifica in sospeso",
+    "verified": "Verificato",
+    "verificationFailed": "Verifica non riuscita",
+    "verificationUnknown": "Impossibile verificare",
+    "promoteDescription": "Descrizione (facoltativa)",
+    "ownerScopeOrganization": "Solo questa organizzazione",
+    "ownerScopePartner": "Tutte le organizzazioni di questo partner",
+    "nameRequired": "È obbligatorio un nome."
+  },
+  "aiRunCard": {
+    "title": "Esecuzione dell’analisi",
+    "openRun": "Apri l’esecuzione completa",
+    "resultOnRunPage": "Il processo è terminato dopo che la conversazione è proseguita: il risultato completo resta disponibile nella pagina dell’esecuzione.",
+    "status": {
+      "queued": "in coda",
+      "running": "in corso",
+      "completed": "completato",
+      "failed": "non riuscito",
+      "cancelled": "annullato",
+      "expired": "scaduto",
+      "skipped": "saltato"
+    }
   }
 }

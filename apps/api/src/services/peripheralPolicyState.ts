@@ -16,6 +16,19 @@ import {
   peripheralPolicyDeviceStates,
 } from '../db/schema';
 import { assertDeviceExecuteAllowed, TrustDeniedError } from './partnerTrust.commands';
+// The insert chokepoint, from its LEAF module -- never from `commandQueue.ts`,
+// which statically imports `routes/agentWs.ts`. This module sits in the import
+// closure of `jobs/peripheralJobs.ts` -> `services/groupMembership.ts` ->
+// `contractQuantities` -> the quote and contract workers, so an edge to
+// `commandQueue.ts` from here drags the live agent-socket registry into two
+// `global`-placement worker processes -- which
+// `workerEntrypointClosure.contract.test.ts` (#4086) forbids, and which a lazy
+// `await import()` would NOT fix (its per-entry check follows dynamic edges).
+import { insertQueuedCommandInTransaction } from './commandQueueInsert';
+import type { CommandPayload } from './commandQueue';
+import { CommandTypes } from './commandTypes';
+import { randomUUID } from 'node:crypto';
+import type { AiOriginRef } from '@breeze/shared';
 
 export type PeripheralReconcileReason =
   | 'policy_changed'
@@ -174,6 +187,12 @@ function stateSnapshot(
 export async function reconcilePeripheralPolicyDevice(
   deviceId: string,
   reason: PeripheralReconcileReason,
+  /**
+   * #5022 W01 -- who DECIDED this reconciliation, when an AI surface did.
+   * Undefined on every caller today (this always runs from a BullMQ job); see
+   * the comment at the command insert below.
+   */
+  aiOrigin?: AiOriginRef,
 ): Promise<'coalesced' | 'queued' | 'incompatible'> {
   return runOutsideDbContext(() => withSystemDbAccessContext(() => db.transaction(async (tx) => {
     const [device] = await tx
@@ -181,11 +200,17 @@ export async function reconcilePeripheralPolicyDevice(
         id: devices.id,
         orgId: devices.orgId,
         peripheralPolicyProtocolVersion: devices.peripheralPolicyProtocolVersion,
+        status: devices.status,
       })
       .from(devices)
       .where(eq(devices.id, deviceId))
       .limit(1)
       .for('update');
+    // A decommissioned device can never execute a command, and reconciling it
+    // would reach the partner-trust gate below and spam capability_denied audit
+    // rows every sweep (issue #5590). Bail before any trust check or write.
+    if (device?.status === 'decommissioned') return 'incompatible';
+
     const resolved = device
       ? await loadAndResolveEffectivePeripheralPolicySetInCurrentDbContext(deviceId)
       : null;
@@ -253,13 +278,26 @@ export async function reconcilePeripheralPolicyDevice(
       });
     }
 
-    const [command] = await tx.insert(deviceCommands).values({
+    // #5022 W01: was a raw transaction-scoped insert straight into the
+    // device_commands table, with no `createdBy` at all, which bypassed the queue chokepoint entirely -- so nothing here
+    // could ever stamp an AI origin, and `aiDispatch.contract.test.ts` would
+    // have had a permanent hole. Routed through the chokepoint instead.
+    //
+    // `aiOrigin` is threaded in from the caller and is undefined on every
+    // path today: this reconciliation is always reached through a BullMQ job
+    // (jobs/peripheralJobs.ts), i.e. one of the INDIRECT lanes that W01
+    // deliberately leaves unattributed (spec OD-3 B). The parameter exists so
+    // the indirect-lane follow-up has a seam to land on rather than a raw
+    // insert to re-discover.
+    const command = await insertQueuedCommandInTransaction(tx, {
+      id: randomUUID(),
       deviceId,
-      type: 'peripheral_policy_sync_v2',
-      payload: plan.envelope,
-      status: 'pending',
+      type: CommandTypes.PERIPHERAL_POLICY_SYNC_V2,
+      payload: plan.envelope as unknown as CommandPayload,
+      createdBy: null,
       targetRole: 'agent',
-    }).returning({ id: deviceCommands.id });
+      ...(aiOrigin ? { aiOrigin } : {}),
+    });
     if (!command) throw new Error('Failed to create peripheral policy v2 command');
 
     await tx.insert(peripheralPolicyDeliveryEvents).values({

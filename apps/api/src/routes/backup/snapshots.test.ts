@@ -84,6 +84,7 @@ const checkBackupProviderCapabilitiesMock = vi.fn();
 vi.mock('../../services/backupSnapshotStorage', () => ({
   applyBackupSnapshotImmutability: (...args: unknown[]) => applyBackupSnapshotImmutabilityMock(...(args as [])),
   checkBackupProviderCapabilities: (...args: unknown[]) => checkBackupProviderCapabilitiesMock(...(args as [])),
+  backupLayoutManifestKey: (snapshotId: string) => `backups/${snapshotId}/layout.json`,
 }));
 
 const writeRouteAuditMock = vi.fn();
@@ -198,6 +199,22 @@ describe('snapshot routes', () => {
     const body = await res.json();
     expect(body.data.map((row: any) => row.deviceId)).toEqual(['device-in']);
     expect(selectMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('filters to bare-metal-restorable snapshots when requested (W04a)', async () => {
+    const chain = chainMock([makeSnapshot({ bareMetalRestorable: true })]);
+    selectMock.mockReturnValueOnce(chain);
+
+    const res = await app.request('/backup/snapshots?bareMetalRestorable=true', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).data).toHaveLength(1);
+    // and(...conditions) is called once with every pushed condition — the
+    // bare-metal filter must be among them, not silently dropped.
+    expect(chain.where).toHaveBeenCalledTimes(1);
   });
 
   it('keeps unrestricted snapshot list behavior unchanged', async () => {
@@ -390,6 +407,25 @@ describe('snapshot routes', () => {
       bareMetalRestorable: false,
       bareMetalReasons: ['LVM volumes are not supported'],
     });
+  });
+
+  it('exposes the layout manifest storage key so Restore-as-VM can offer the rebuild engine', async () => {
+    selectMock.mockReturnValueOnce(chainMock([
+      makeSnapshot({ snapshotId: 'snap-ext-9', layoutManifest: { disks: [] }, bareMetalRestorable: true }),
+      makeSnapshot({ id: 'snapshot-2', snapshotId: 'snap-ext-10', layoutManifest: null, bareMetalRestorable: true }),
+    ]));
+
+    const res = await app.request('/backup/snapshots', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data[0].layoutManifestKey).toBe('backups/snap-ext-9/layout.json');
+    expect(body.data[1].layoutManifestKey).toBeNull();
+    // the manifest body itself is not shipped on the list
+    expect(body.data[0].layoutManifest).toBeUndefined();
   });
 
   it('returns a null bare-metal verdict (never assessed) as null + empty reasons, not false', async () => {

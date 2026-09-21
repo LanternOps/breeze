@@ -8,6 +8,7 @@
  * patch compliance, cert expiry, and compound AND/OR logic.
  */
 
+import { interpolateAlertTemplate } from '@breeze/shared';
 import { conditionRegistry } from './registry';
 import { getLatestMetric, normalizeMetricName, getOperatorDisplay } from './utils';
 
@@ -23,6 +24,12 @@ import { diskIoHighHandler } from './handlers/diskIoHigh';
 import { networkErrorsHandler } from './handlers/networkErrors';
 import { patchComplianceHandler } from './handlers/patchCompliance';
 import { certExpiryHandler } from './handlers/certExpiry';
+// W04 coverage kinds (#5287 / #5291).
+import { antivirusHandler } from './handlers/antivirus';
+import { softwarePresenceHandler } from './handlers/softwarePresence';
+import { backupContinuityHandler } from './handlers/backupContinuity';
+import { scriptMonitorHandler } from './handlers/scriptMonitor';
+import { networkCheckHandler } from './handlers/networkCheck';
 
 conditionRegistry.register(thresholdHandler);
 conditionRegistry.register(offlineHandler);
@@ -36,6 +43,11 @@ conditionRegistry.register(diskIoHighHandler);
 conditionRegistry.register(networkErrorsHandler);
 conditionRegistry.register(patchComplianceHandler);
 conditionRegistry.register(certExpiryHandler);
+conditionRegistry.register(antivirusHandler);
+conditionRegistry.register(softwarePresenceHandler);
+conditionRegistry.register(backupContinuityHandler);
+conditionRegistry.register(scriptMonitorHandler);
+conditionRegistry.register(networkCheckHandler);
 
 // Re-export types for backward compatibility
 export type {
@@ -52,6 +64,11 @@ export type {
   NetworkErrorsCondition,
   PatchComplianceCondition,
   CertExpiryCondition,
+  AntivirusCondition,
+  SoftwarePresenceCondition,
+  BackupContinuityCondition,
+  ScriptMonitorCondition,
+  NetworkCheckCondition,
   AlertCondition,
   ConditionGroup,
   RootCondition,
@@ -79,7 +96,7 @@ function isConditionGroup(condition: RootCondition): condition is ConditionGroup
 async function evaluateConditionRecursive(
   condition: RootCondition,
   deviceId: string,
-  results: { met: string[]; notMet: string[]; primaryActualValue?: number }
+  results: { met: string[]; notMet: string[]; primaryActualValue?: number; sawUnknown?: boolean }
 ): Promise<boolean> {
   if (isConditionGroup(condition)) {
     const evaluations = await Promise.all(
@@ -97,6 +114,10 @@ async function evaluateConditionRecursive(
       condition as { type: string },
       deviceId
     );
+
+    if (result.dataAvailable === false) {
+      results.sawUnknown = true;
+    }
 
     if (result.passed) {
       results.met.push(result.description);
@@ -139,6 +160,7 @@ export async function evaluateConditions(
       triggered: false,
       conditionsMet: [],
       conditionsNotMet: ['No conditions defined'],
+      dataState: 'unknown',
       context: { deviceId, evaluatedAt }
     };
   }
@@ -157,6 +179,7 @@ export async function evaluateConditions(
       triggered: false,
       conditionsMet: [],
       conditionsNotMet: ['Invalid conditions format'],
+      dataState: 'unknown',
       context: { deviceId, evaluatedAt }
     };
   }
@@ -165,6 +188,7 @@ export async function evaluateConditions(
     met: string[];
     notMet: string[];
     primaryActualValue?: number;
+    sawUnknown?: boolean;
   };
   const triggered = await evaluateConditionRecursive(rootCondition, deviceId, results);
 
@@ -204,6 +228,7 @@ export async function evaluateConditions(
     triggered,
     conditionsMet: results.met,
     conditionsNotMet: results.notMet,
+    dataState: results.sawUnknown ? 'unknown' : 'ok',
     context
   };
 }
@@ -430,17 +455,11 @@ export function retiredConditionTypeError(conditions: unknown): string | null {
 
 /**
  * Interpolate template strings with context values
- * Supports {{variable}} syntax
+ * Supports {{variable}} syntax. `{{device}}` fills from deviceName/hostname.
  */
 export function interpolateTemplate(
   template: string,
   context: Record<string, unknown>
 ): string {
-  return template.replace(/\{\{(\w+)\}\}/g, (match, key) => {
-    const value = context[key];
-    if (value === undefined || value === null) {
-      return match;
-    }
-    return String(value);
-  });
+  return interpolateAlertTemplate(template, context);
 }

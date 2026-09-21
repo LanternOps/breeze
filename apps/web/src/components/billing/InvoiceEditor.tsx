@@ -16,7 +16,7 @@ import {
   lineTitle,
   computeInvoiceProfit,
 } from './invoiceTypes';
-import { toCents, fromCents } from '@breeze/shared';
+import { toCents, fromCents, roundToCurrency } from '@breeze/shared';
 import CatalogItemPicker from '../catalog/CatalogItemPicker';
 import PolishButton from '../catalog/PolishButton';
 import { listCatalog, type CatalogItem } from '../../lib/api/catalog';
@@ -79,7 +79,7 @@ export default function InvoiceEditor({ detail, onChanged, onPendingEditsChange,
   const canSeeMargin = can('invoices', 'read');
   const [fallbackShowMargin] = useShowMargin();
   const effectiveShowMargin = showMargin ?? fallbackShowMargin;
-  const { invoice, lines: serverLines } = detail;
+  const { invoice, lines: serverLines, billToEmail, effectiveTaxRate } = detail;
   const currency = invoice.currencyCode;
 
   // ---- undo-able deletion (deferred DELETE + grace window) -----------------
@@ -606,6 +606,30 @@ export default function InvoiceEditor({ detail, onChanged, onPendingEditsChange,
   // with no obvious cause — point the operator at where the rate actually lives.
   const hasTaxableLine = lines.some((l) => l.taxable);
   const noTaxRate = !invoice.taxRate || Number(invoice.taxRate) <= 0;
+  // #6338: "no tax rate is set" was a lie whenever the partner default was
+  // waiting to be applied at issue — the draft's own rate is org-level only,
+  // so a blank org rate read as $0.00 tax and the $200.00 total the tech
+  // approved issued at $215.00. When the API tells us a rate WILL apply,
+  // preview it here instead of warning. The Subtotal/Tax/Total rows keep
+  // showing what is actually committed on the draft; only the hint looks ahead.
+  const inheritedTaxPreview = useMemo(() => {
+    const rate = effectiveTaxRate ? Number(effectiveTaxRate) : 0;
+    if (!(rate > 0) || !noTaxRate || !hasTaxableLine) return null;
+    let taxableCents = 0;
+    for (const l of lines) {
+      if (!l.customerVisible || !l.taxable) continue;
+      taxableCents += toCents(l.lineTotal);
+    }
+    // Mirrors computeInvoiceTotals step for step, so the preview settles to
+    // exactly what issuing produces: round half-up at the classic cent boundary
+    // FIRST (rounding the major-unit float instead loses ties to FP noise), then
+    // let the CURRENCY decide each figure's final boundary — JPY rounds to whole
+    // units, so a preview built on 2-decimal `fromCents` alone would promise a
+    // fractional yen that issueInvoice will never produce.
+    const taxCents = Math.floor(taxableCents * rate + 0.5);
+    const tax = roundToCurrency(taxCents / 100, currency);
+    return { rate, tax, total: roundToCurrency(Number(railSubtotal) + Number(tax), currency) };
+  }, [effectiveTaxRate, noTaxRate, hasTaxableLine, lines, railSubtotal, currency]);
 
   return (
     <div className="space-y-6" data-testid="invoice-editor">
@@ -822,7 +846,16 @@ export default function InvoiceEditor({ detail, onChanged, onPendingEditsChange,
               <div className="flex justify-between"><dt className="text-muted-foreground">{t('invoiceEditor.summary.tax')}{!noTaxRate ? ` (${formatPercent(Number(invoice.taxRate), { minimumFractionDigits: 2, maximumFractionDigits: 2 })})` : ''}</dt><dd data-testid="invoice-tax">{formatMoney(railTax, currency)}</dd></div>
               <div className="flex justify-between border-t pt-1 font-semibold"><dt>{t('invoiceEditor.summary.total')}</dt><dd data-testid="invoice-total">{formatMoney(railTotal, currency)}</dd></div>
             </dl>
-            {hasTaxableLine && noTaxRate && (
+            {inheritedTaxPreview && (
+              <p className="mt-3 text-xs text-muted-foreground" data-testid="invoice-tax-inherited-hint">
+                {t('invoiceEditor.summary.inheritedTaxRate', {
+                  rate: formatPercent(inheritedTaxPreview.rate, { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
+                  tax: formatMoney(inheritedTaxPreview.tax, currency),
+                  total: formatMoney(inheritedTaxPreview.total, currency),
+                })}
+              </p>
+            )}
+            {hasTaxableLine && noTaxRate && !inheritedTaxPreview && (
               <p className="mt-3 text-xs text-muted-foreground" data-testid="invoice-tax-rate-hint">
                 {t('invoiceEditor.summary.noTaxRate')}{' '}
                 <a href="/settings/billing" className="underline hover:text-foreground">{t('invoiceEditor.summary.setTaxRate')}</a>.
@@ -838,15 +871,23 @@ export default function InvoiceEditor({ detail, onChanged, onPendingEditsChange,
           <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="invoice-bill-to">
             <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('invoiceEditor.billTo.title')}</h3>
             {invoice.billToName ? (
-              <p className="text-sm">
-                <a href={`/organizations/${encodeURIComponent(invoice.orgId)}`} data-testid="org-record-link" className="hover:underline">
-                  {invoice.billToName}
-                </a>
-              </p>
+              <>
+                <p className="text-sm">
+                  <a href={`/organizations/${encodeURIComponent(invoice.orgId)}`} data-testid="org-record-link" className="hover:underline">
+                    {invoice.billToName}
+                  </a>
+                </p>
+                {/* Draft-only fallback (sweep paper cut #16): set by the API
+                    ONLY alongside a fallen-back billToName — see invoiceTypes.
+                    InvoiceDetail.billToEmail. */}
+                {billToEmail && (
+                  <p className="text-sm text-muted-foreground" data-testid="invoice-bill-to-email">{billToEmail}</p>
+                )}
+              </>
             ) : (
               <p className="text-sm text-muted-foreground">
                 {t('invoiceEditor.billTo.noContact')}{' '}
-                <a href="/settings/organizations" className="underline hover:text-foreground">{t('invoiceEditor.billTo.addInSettings')}</a>.
+                <a href="/organizations" className="underline hover:text-foreground">{t('invoiceEditor.billTo.addInSettings')}</a>.
               </p>
             )}
           </div>

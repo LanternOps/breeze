@@ -1,3 +1,4 @@
+import { PgDialect } from 'drizzle-orm/pg-core';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 
@@ -61,12 +62,17 @@ vi.mock('../../db', () => {
   };
   return {
     db: {
+      // Emulate a partner-only eligible user; service SQL controls visibility.
+      execute: async (query: any) => new PgDialect().sqlToQuery(query).sql.includes('partner_users')
+        ? [{ id: 'aaaaaaaa-0000-4000-8000-000000000001', name: 'MSP technician' },
+          { id: 'aaaaaaaa-0000-4000-8000-000000000002', name: 'Other technician' }] : [],
       insert: () => builder,
       update: () => builder,
       delete: () => ({ where: () => Promise.resolve(undefined) }),
     },
   };
 });
+vi.mock('../../services/delivery/railOwnership', () => ({ partnerIdForOrg: vi.fn(async () => '99999999-9999-4999-8999-999999999999') }));
 vi.mock('../../db/schema', () => ({ escalationPolicies: {} }));
 vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: vi.fn() }));
 vi.mock('./helpers', () => ({
@@ -172,7 +178,7 @@ describe('partner-wide escalation policies (#2130)', () => {
     const res = await makeApp().request('/alerts/policies', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ownerScope: 'partner', name: 'Fleet escalation', steps: [] }),
+      body: JSON.stringify({ ownerScope: 'partner', name: 'Fleet escalation', steps: [{ delayMinutes: 5, channelIds: ['9a8b7c6d-2222-4333-8444-555566667777'] }] }),
     });
     expect(res.status).toBe(403);
     expect(((await res.json()) as any).error).toMatch(/full partner org access/);
@@ -184,7 +190,7 @@ describe('partner-wide escalation policies (#2130)', () => {
     const res = await makeApp().request('/alerts/policies', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ownerScope: 'partner', name: 'Fleet escalation', steps: [] }),
+      body: JSON.stringify({ ownerScope: 'partner', name: 'Fleet escalation', steps: [{ delayMinutes: 5, channelIds: ['9a8b7c6d-2222-4333-8444-555566667777'] }] }),
     });
     expect(res.status).toBe(201);
     expect(insertedRef.current?.orgId).toBeNull();
@@ -240,5 +246,55 @@ describe('partner-wide escalation policies (#2130)', () => {
 
     const res = await makeApp().request(`/alerts/policies/${POLICY_ID}`, { method: 'DELETE' });
     expect(res.status).toBe(200);
+  });
+});
+
+describe('caller scope for escalation user targets', () => {
+  const ORG = '11111111-1111-4111-8111-111111111111';
+  const USER = 'aaaaaaaa-0000-4000-8000-000000000001';
+  const NEW_USER = 'aaaaaaaa-0000-4000-8000-000000000002';
+  const steps = [{ delayMinutes: 5, channelIds: [], userIds: [USER] }];
+  beforeEach(() => {
+    vi.clearAllMocks();
+    insertedRef.current = undefined;
+    updateSetRef.current = undefined;
+    grantedRef.current = new Set([ALERTS_WRITE]);
+    authRef.current = { scope: 'organization', orgId: ORG, partnerId: null,
+      user: { id: 'u-1', name: 'Org admin', email: 'admin@org.example' },
+      accessibleOrgIds: [ORG], canAccessOrg: id => id === ORG };
+    vi.mocked(helpers.getEscalationPolicyWithOrgCheck).mockResolvedValue({
+      id: POLICY_ID, orgId: ORG, partnerId: null, name: 'Existing', steps,
+    } as never);
+  });
+  it.each(['organization', 'partner', 'system'])('checks partner user targets on create for %s callers', async scope => {
+    authRef.current.scope = scope;
+    const res = await makeApp().request('/alerts/policies', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ orgId: ORG, name: 'On-call', steps }),
+    });
+    expect(res.status).toBe(scope === 'organization' ? 400 : 201);
+    if (scope === 'organization') expect(insertedRef.current).toBeUndefined();
+    else expect(insertedRef.current?.steps).toEqual(steps);
+  });
+  it.each([false, true])('preserves previously configured partner users on org updates (steps included=%s)', async includeSteps => {
+    const res = await makeApp().request(`/alerts/policies/${POLICY_ID}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Renamed', ...(includeSteps ? { steps } : {}) }),
+    });
+    expect(res.status).toBe(200);
+    expect(updateSetRef.current?.name).toBe('Renamed');
+    if (includeSteps) expect(updateSetRef.current?.steps).toEqual(steps);
+  });
+  it('rejects newly added partner users on org updates before writing', async () => {
+    vi.mocked(helpers.getEscalationPolicyWithOrgCheck).mockResolvedValue({
+      id: POLICY_ID, orgId: ORG, partnerId: null, name: 'Existing',
+      steps: [{ ...steps[0], userIds: [NEW_USER] }],
+    } as never);
+    const res = await makeApp().request(`/alerts/policies/${POLICY_ID}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ steps: [{ ...steps[0], userIds: [NEW_USER, USER] }] }),
+    });
+    expect(res.status).toBe(400);
+    expect(updateSetRef.current).toBeUndefined();
   });
 });

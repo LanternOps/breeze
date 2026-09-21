@@ -123,6 +123,67 @@ describe('TicketDetails — who wrote it', () => {
     expect(byAuthor.team).toContain('Your IT team');
     expect(byAuthor.portal).not.toContain('Your IT team');
   });
+
+  it('labels an email-authored reply from a resolved portal sender as customer email', () => {
+    render(<TicketDetails ticket={ticket({
+      comments: [{
+        id: 'c-email',
+        authorName: 'Maya',
+        authorType: 'email',
+        senderPortalUserId: 'pu-maya',
+        content: 'Reply sent by email',
+        createdAt: '2026-08-03T00:00:00Z',
+      }],
+    })} />);
+
+    const item = screen.getByTestId('ticket-comment').textContent ?? '';
+    expect(item).toContain('Customer email');
+    expect(item).not.toContain('Your IT team');
+  });
+
+  /**
+   * The other direction. A technician's own reply linked through the Outlook
+   * add-in is inserted by insertEmailAuthoredComment (emailComments.ts), which
+   * hardcodes author_type 'email' and leaves portal_user_id null. Keying the
+   * badge on author_type alone showed the customer their IT team's reply as
+   * "Customer email" — the inverse of the impersonation this label exists to
+   * stop.
+   */
+  it('labels an add-in linked technician reply (author_type email, no sender) as the IT team', () => {
+    render(<TicketDetails ticket={ticket({
+      comments: [{
+        id: 'c-addin',
+        authorName: 'Tech',
+        authorType: 'email',
+        senderPortalUserId: null,
+        content: 'Linked from Outlook',
+        createdAt: '2026-08-03T00:00:00Z',
+      }],
+    })} />);
+
+    const item = screen.getByTestId('ticket-comment').textContent ?? '';
+    expect(item).toContain('Your IT team');
+    expect(item).not.toContain('Customer email');
+  });
+
+  // A portal-authored reply carries portal_user_id too; the customer's own
+  // reply must stay unlabelled rather than picking up the email badge.
+  it('leaves a portal reply unlabelled even though it carries a portal sender id', () => {
+    render(<TicketDetails ticket={ticket({
+      comments: [{
+        id: 'c-portal',
+        authorName: 'Maya',
+        authorType: 'portal',
+        senderPortalUserId: 'pu-maya',
+        content: 'Typed in the portal',
+        createdAt: '2026-08-03T00:00:00Z',
+      }],
+    })} />);
+
+    const item = screen.getByTestId('ticket-comment').textContent ?? '';
+    expect(item).not.toContain('Customer email');
+    expect(item).not.toContain('Your IT team');
+  });
 });
 
 describe('ReplyComposer — draft survives a dead session', () => {
@@ -184,5 +245,14 @@ describe('TicketDetails — comment attachments (W08 #3902)', () => {
   it('renders nothing extra for a comment with no attachments', () => {
     render(<TicketDetails ticket={ticket()} />);
     expect(screen.queryByTestId('ticket-attachment-list')).toBeNull();
+  });
+});
+
+describe('TicketDetails — column sits against the sheet edge', () => {
+  it('keeps a reading measure but does not centre itself inside the sheet', async () => {
+    const { readFileSync } = await import('node:fs');
+    const src = readFileSync('src/components/portal/TicketDetails.tsx', 'utf8');
+    expect(src).toMatch(/max-w-3xl/);
+    expect(src).not.toMatch(/mx-auto max-w-3xl|max-w-3xl mx-auto/);
   });
 });

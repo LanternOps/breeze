@@ -38,6 +38,10 @@ export type ParentPolicySummary = {
 export type FeatureTabProps = {
   policyId: string;
   existingLink: FeatureLink | undefined;
+  /** Own-or-parent links for advisory duplicate detection; monitors additionally include inheritedMonitorsLink. */
+  allLinks?: FeatureLink[];
+  /** Parent monitor attachments for cumulative advisory detection; never used for saves. */
+  inheritedMonitorsLink?: FeatureLink;
   onLinkChanged: (link: FeatureLink | null, featureType: FeatureType) => void;
   /** Shared linked Configuration Policy ID (set at the policy level, not per-tab) */
   linkedPolicyId: string | null;
@@ -59,6 +63,7 @@ export const FEATURE_META: Record<FeatureType, {
 }> = {
   patch:        { label: 'Patches',      fetchUrl: '/update-rings',        description: 'Patch management settings' },
   alert_rule:   { label: 'Alerts',       fetchUrl: '/alerts/rules',        description: 'Server-evaluated alert rules: CPU/RAM/disk thresholds, offline detection, event log alerts' },
+  monitors:     { label: 'Monitors',     fetchUrl: '/monitor-definitions', description: 'Monitors attached to this policy: condition, response, delivery and escalation in one object' },
   backup:       { label: 'Backup',       fetchUrl: '/backup/configs',      description: 'Backup schedule and retention' },
   security:     { label: 'Security',     fetchUrl: '/security/policies',   description: 'Security policy settings' },
   monitoring:   { label: 'Service & Process Monitoring', fetchUrl: '/monitoring', description: 'Agent-side watches: service/process stop detection, auto-restart, resource limits per process' },

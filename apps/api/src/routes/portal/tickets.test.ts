@@ -812,6 +812,7 @@ describe('POST /tickets/:id/comments', () => {
     id: 'cccccccc-1111-2222-3333-444455556666',
     authorName: PORTAL_USER.name,
     authorType: 'portal',
+    senderPortalUserId: PORTAL_USER.id,
     content: 'Still happening',
     createdAt: new Date('2026-09-08T00:00:00.000Z'),
   };
@@ -860,6 +861,26 @@ describe('POST /tickets/:id/comments', () => {
     expect(res.status).toBe(201);
     const body = await res.json() as { comment: Record<string, unknown> };
     expect(body.comment).toHaveProperty('authorType', 'portal');
+  });
+
+  /**
+   * author_type alone cannot tell a customer's emailed reply from a
+   * technician's own reply linked through the Outlook add-in — both are stored
+   * as 'email' (services/inboundEmail/emailComments.ts hardcodes it). Only the
+   * resolved portal sender separates them, so the portal's "Customer email"
+   * badge keys on this column. Dropping it from the projection would silently
+   * relabel the IT team's reply as the customer's.
+   */
+  it('includes senderPortalUserId in the immediate response', async () => {
+    const res = await app.request(`/tickets/${TICKET_ID}/comments`, {
+      method: 'POST',
+      headers: portalJsonHeaders,
+      body: JSON.stringify({ content: 'Still happening' }),
+    });
+
+    expect(res.status).toBe(201);
+    const body = await res.json() as { comment: Record<string, unknown> };
+    expect(body.comment).toHaveProperty('senderPortalUserId', PORTAL_USER.id);
   });
 
   it('still returns id, authorName, content, createdAt (no regression)', async () => {
@@ -1451,6 +1472,49 @@ describe('portal ticket attachments (W08 #3902)', () => {
     expect(res.headers.get('Content-Type')).toBe('image/png');
     expect(res.headers.get('ETag')).toBe(`"${SHA}"`);
     expect(res.headers.get('Content-Disposition')).toBe(`inline; filename="photo.png"; filename*=UTF-8''photo.png`);
+  });
+
+  // Execution plane W05 (#5716, spec §6.3) — an artifact-backed attachment is
+  // the whole point of the attach-to-ticket flow: a technician puts a finding in
+  // front of a CUSTOMER. This route serves that customer.
+  it('serves an artifact-backed attachment, passing the attachment org to openBytes', async () => {
+    // Without `artifactId` and `orgId` in the projection, openBytes reads both
+    // as undefined and raises AttachmentExpiredError unconditionally — so every
+    // artifact download 503s at the customer while the file is perfectly alive.
+    rigContent([TICKET_ROW], [{
+      attachment: attRow({
+        storageBackend: 'artifact',
+        storageKey: null,
+        data: null,
+        artifactId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        orgId: 'o-1',
+      }),
+    }]);
+    const res = await app.request(`/tickets/${TICKET_ID}/attachments/${ATT_ID}/content`, {
+      headers: { Authorization: 'Bearer t' },
+    });
+    expect(res.status).toBe(200);
+    expect(openBytesMock).toHaveBeenCalledWith(
+      expect.objectContaining({ storageBackend: 'artifact', artifactId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' }),
+      { orgId: 'o-1' },
+    );
+  });
+
+  it('answers 410, not 503, when the attachment artifact has expired', async () => {
+    // A 503 tells the customer to retry something that will never work, and
+    // fires a Sentry exception on every attempt. An expired file is a 410.
+    const { AttachmentExpiredError } = await import('../../services/ticketAttachmentStorage');
+    openBytesMock.mockRejectedValue(new AttachmentExpiredError());
+    rigContent([TICKET_ROW], [{
+      attachment: attRow({
+        storageBackend: 'artifact', storageKey: null, data: null, artifactId: null, orgId: 'o-1',
+      }),
+    }]);
+    const res = await app.request(`/tickets/${TICKET_ID}/attachments/${ATT_ID}/content`, {
+      headers: { Authorization: 'Bearer t' },
+    });
+    expect(res.status).toBe(410);
+    expect((await res.json()).error).toMatch(/expired/i);
   });
 
   it('304s on a matching If-None-Match without fetching the bytes', async () => {

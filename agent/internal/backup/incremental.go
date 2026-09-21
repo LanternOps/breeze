@@ -245,6 +245,7 @@ func referenceEntry(f backupFile, prevEntry SnapshotFile) SnapshotFile {
 		Mode:         uint32(f.mode.Perm()),
 		ModeBits:     f.modeBits,
 		Owner:        f.owner,
+		WinAttrs:     f.winAttrs,
 	}
 }
 

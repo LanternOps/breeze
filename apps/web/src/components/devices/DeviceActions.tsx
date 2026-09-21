@@ -16,6 +16,7 @@ import {
   MapPin,
   Zap,
   ChevronDown,
+  ArrowRightLeft,
 } from "lucide-react";
 import type { Device, DeviceStatus } from "./DeviceList";
 import ConnectDesktopButton from "../remote/ConnectDesktopButton";
@@ -23,6 +24,7 @@ import { ConfirmDialog } from "../shared/ConfirmDialog";
 import RemoveDeviceDialog from "./RemoveDeviceDialog";
 import { DelegateToOperatorButton } from "../aiOperator/DelegateToOperatorButton";
 import { isInMaintenance } from "../../lib/maintenanceResource";
+import { useCanMoveDeviceOrg } from "@/lib/moveOrgCapability";
 import { useTranslation } from "react-i18next";
 import "../../lib/i18n";
 
@@ -217,6 +219,7 @@ export default function DeviceActions({
   compact = false,
 }: DeviceActionsProps) {
   const { t } = useTranslation("devices");
+  const canMoveOrg = useCanMoveDeviceOrg();
   const [menuOpen, setMenuOpen] = useState(false);
   const [powerMenuOpen, setPowerMenuOpen] = useState(false);
   const [modalType, setModalType] = useState<ModalType>("none");
@@ -701,6 +704,19 @@ export default function DeviceActions({
                 <MapPin className="h-4 w-4" />
                 {t("deviceActions.changeSite")}{" "}
               </button>
+              {/* Full menu only: DeviceDetailPage is the one host that handles
+                  "move-org"; the compact variant has no consumer that would. */}
+              {canMoveOrg && (
+                <button
+                  type="button"
+                  data-testid="device-action-move-org"
+                  onClick={() => handleAction("move-org")}
+                  className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
+                >
+                  <ArrowRightLeft className="h-4 w-4" />
+                  {t("deviceActions.moveOrg")}{" "}
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => handleAction("settings")}

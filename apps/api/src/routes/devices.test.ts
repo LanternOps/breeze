@@ -99,7 +99,11 @@ vi.mock('drizzle-orm', () => {
   // drizzle-orm's `sql` is a callable tag with attached statics (sql.join,
   // sql.raw, etc.). The /devices LATERAL query uses sql.join() to build a
   // VALUES tuple list, so the mock has to expose that as a function.
-  const sqlTag: any = vi.fn(() => ({ as: vi.fn(() => 'latestTimestamp') }));
+  const sqlTag: any = vi.fn(() => ({
+    as: vi.fn(() => 'latestTimestamp'),
+    // Cleanup history maps its module-level SQL aggregates to numbers.
+    mapWith: vi.fn().mockReturnThis(),
+  }));
   sqlTag.join = vi.fn((parts: unknown[]) => ({ join: parts }));
   sqlTag.raw = vi.fn((s: unknown) => ({ raw: s }));
   return {
@@ -219,6 +223,13 @@ vi.mock('../db/schema', async (importOriginal) => ({
   deviceGroups: { id: 'id', name: 'name' },
   deviceGroupMemberships: { deviceId: 'deviceId', groupId: 'groupId' },
   deviceCommands: { id: 'id', deviceId: 'deviceId', type: 'type', status: 'status', createdAt: 'createdAt' },
+  deviceDisks: { deviceId: 'deviceId', mountPoint: 'mountPoint', fsType: 'fsType', totalGb: 'totalGb', usedGb: 'usedGb', freeGb: 'freeGb', usedPercent: 'usedPercent' },
+  // filesystemCleanupRuns builds module-level SQL fragments from these columns.
+  deviceFilesystemCleanupRuns: {
+    id: 'id', deviceId: 'deviceId', kind: 'kind', status: 'status', scanPath: 'scanPath',
+    requestedAt: 'requestedAt', approvedAt: 'approvedAt', bytesReclaimed: 'bytesReclaimed',
+    error: 'error', plan: 'plan', executedActions: 'executedActions',
+  },
   sites: { id: 'id', orgId: 'orgId' },
   organizations: { id: 'id' },
   enrollmentKeys: { id: 'id', key: 'key', orgId: 'orgId' },
@@ -264,7 +275,11 @@ vi.mock('../middleware/auth', () => ({
     });
     return next();
   }),
-  requireMfa: vi.fn(() => async (_c: any, next: any) => next())
+  requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
+  // Stubbed like the other gates: this suite's auth context carries no
+  // principal. The real gate is covered in middleware/auth.test.ts and
+  // routes/devices/{commands,moveOrg}.test.ts.
+  requireInteractiveSession: vi.fn(() => async (_c: any, next: any) => next())
 }));
 
 import { db } from '../db';

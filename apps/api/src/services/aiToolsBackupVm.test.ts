@@ -17,20 +17,31 @@ vi.mock('./commandQueue', () => ({
     VM_RESTORE_FROM_BACKUP: 'vm_restore_from_backup',
     VM_INSTANT_BOOT: 'vm_instant_boot',
   },
-  queueCommandForExecution: vi.fn(),
+}));
+
+vi.mock('./aiDispatch', () => ({
+  aiQueueCommandForExecution: vi.fn(),
+}));
+
+vi.mock('./vmRestoreRebuildEngine', () => ({
+  startRebuildEngineVmRestore: vi.fn(),
 }));
 
 import { db } from '../db';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { validateToolInput } from './aiToolSchemas';
-import { queueCommandForExecution } from './commandQueue';
+import { aiQueueCommandForExecution } from './aiDispatch';
 import { registerBackupVmTools } from './aiToolsBackupVm';
+import { startRebuildEngineVmRestore } from './vmRestoreRebuildEngine';
 
 const ORG_ID = '11111111-1111-1111-1111-111111111111';
 const SNAPSHOT_ID = '22222222-2222-2222-2222-222222222222';
 const DEVICE_ID = '33333333-3333-3333-3333-333333333333';
 const RESTORE_JOB_ID = '44444444-4444-4444-4444-444444444444';
+const HOST_ID = '55555555-5555-4555-8555-555555555555';
+const RECOVERY_ID = '66666666-6666-4666-8666-666666666666';
+const COMMAND_ID = '77777777-7777-4777-8777-777777777777';
 const GB = 1024 * 1024 * 1024;
 
 const EXPECTED_TOOLS = [
@@ -90,7 +101,7 @@ function setDefaultDbMocks() {
   vi.mocked(db.insert).mockImplementation(() => createInsertChain([]) as any);
   vi.mocked(db.update).mockImplementation(() => createUpdateChain([]) as any);
   vi.mocked(db.delete).mockImplementation(() => createDeleteChain([]) as any);
-  vi.mocked(queueCommandForExecution).mockResolvedValue({
+  vi.mocked(aiQueueCommandForExecution).mockResolvedValue({
     command: { id: 'cmd-1', status: 'queued' },
     error: null,
   } as any);
@@ -116,6 +127,7 @@ function makeAuth(): AuthContext {
     accessibleOrgIds: [ORG_ID],
     canAccessOrg: (orgId: string) => orgId === ORG_ID,
     orgCondition: vi.fn(() => undefined),
+    aiOrigin: { kind: 'ai_assistant', sessionId: 'test-session' },
   } as any;
 }
 
@@ -227,5 +239,89 @@ describe('aiToolsBackupVm handlers', () => {
     const parsed = JSON.parse(result);
 
     expect(parsed).toEqual({ error: 'Operation failed. Check server logs for details.' });
+  });
+});
+
+describe('restore_as_vm — rebuild engine (W05a)', () => {
+  let toolMap: Map<string, AiTool>;
+
+  const rebuildInput = {
+    engine: 'rebuild',
+    snapshotId: SNAPSHOT_ID,
+    rebuildHostDeviceId: HOST_ID,
+    outputPath: '/srv/rebuild/dev-1.vhdx',
+    imageSizeGb: 60,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setDefaultDbMocks();
+    toolMap = buildToolMap();
+  });
+
+  it('declares the rebuild host as a device arg so the central gate covers it', () => {
+    expect(toolMap.get('restore_as_vm')!.deviceArgs).toEqual(expect.arrayContaining(['targetDeviceId', 'rebuildHostDeviceId']));
+  });
+
+  it('validates the rebuild variant and rejects an identity override', () => {
+    expect(validateToolInput('restore_as_vm', rebuildInput)).toEqual({ success: true });
+    expect(validateToolInput('restore_as_vm', { ...rebuildInput, identity: 'original' }).success).toBe(false);
+    expect(validateToolInput('restore_as_vm', { ...rebuildInput, outputPath: '/srv/out.img' }).success).toBe(false);
+    expect(validateToolInput('restore_as_vm', { engine: 'rebuild', snapshotId: SNAPSHOT_ID, outputPath: '/srv/out.vhdx' }).success).toBe(false);
+    // legacy Hyper-V input still validates without an engine
+    expect(validateToolInput('restore_as_vm', { snapshotId: SNAPSHOT_ID, targetDeviceId: DEVICE_ID, hypervisor: 'hyperv', vmName: 'VM' })).toEqual({ success: true });
+  });
+
+  it('starts the rebuild-engine restore through the shared service with identity forced server-side', async () => {
+    prepareHandlerMocks('restore_as_vm');
+    vi.mocked(startRebuildEngineVmRestore).mockResolvedValue({
+      ok: true,
+      jobId: RESTORE_JOB_ID,
+      recoveryId: RECOVERY_ID,
+      commandId: COMMAND_ID,
+      status: 'queued',
+    });
+
+    const result = JSON.parse(await toolMap.get('restore_as_vm')!.handler({ ...rebuildInput, identity: 'original' } as Record<string, unknown>, makeAuth()));
+
+    expect(startRebuildEngineVmRestore).toHaveBeenCalledWith(
+      expect.objectContaining({
+        orgId: ORG_ID,
+        snapshotId: SNAPSHOT_ID,
+        rebuildHostDeviceId: HOST_ID,
+        outputPath: '/srv/rebuild/dev-1.vhdx',
+        imageSizeGb: 60,
+        userId: 'user-1',
+      })
+    );
+    expect(startRebuildEngineVmRestore).not.toHaveBeenCalledWith(expect.objectContaining({ identity: expect.anything() }));
+    expect(result).toMatchObject({
+      success: true,
+      engine: 'rebuild',
+      restoreJobId: RESTORE_JOB_ID,
+      recoveryId: RECOVERY_ID,
+      commandId: COMMAND_ID,
+      rebuildHostDeviceId: HOST_ID,
+    });
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it('returns the service error verbatim when the snapshot is not rebuildable', async () => {
+    prepareHandlerMocks('restore_as_vm');
+    vi.mocked(startRebuildEngineVmRestore).mockResolvedValue({
+      ok: false,
+      status: 409,
+      error: 'snapshot_not_bare_metal_restorable',
+    });
+
+    const result = JSON.parse(await toolMap.get('restore_as_vm')!.handler(rebuildInput as Record<string, unknown>, makeAuth()));
+    expect(result).toEqual({ error: 'snapshot_not_bare_metal_restorable' });
+  });
+
+  it('denies a cross-site snapshot before touching the rebuild service', async () => {
+    mockSelectSequence([[]]);
+    const result = JSON.parse(await toolMap.get('restore_as_vm')!.handler(rebuildInput as Record<string, unknown>, makeAuth()));
+    expect(result.error).toBeTruthy();
+    expect(startRebuildEngineVmRestore).not.toHaveBeenCalled();
   });
 });

@@ -1,0 +1,267 @@
+name: Promote Release Images
+
+# Out-of-band twin of release.yml's `promote-signed-release-images` job.
+#
+# In release.yml, version tags (`:X.Y.Z`, `:X.Y`, `:X`, `:latest`) are applied to
+# the container images only after `create-release` succeeds. That job signs the
+# image inventory and THEN uploads ~50 release assets; when an asset upload
+# stalls or GitHub's upload service returns 5xx (v0.114.0: three consecutive
+# attempts), the inventory is signed and the images are pushed by digest, but
+# promotion is skipped and no deploy can pull the release.
+#
+# This workflow applies the same tags from the same signed inventory, with the
+# same verification, without re-running the asset upload. It never builds or
+# pushes image bytes: it retags the exact digests the release pipeline signed.
+#
+# What actually holds the line (enforced by check-release-lineage.test.mjs):
+#   - the manifest signature is verified against the official release key, and
+#     the manifest must name this exact tag and repository;
+#   - the inventory artifact comes from a Release run whose head SHA is the
+#     tag's commit, and the manifest's own `sourceCommit` must match it too;
+#   - moving channels (`:X.Y`, `:X`, `:latest`) move ONLY when the tag is the
+#     newest stable release. release.yml cannot walk a channel backwards
+#     because it only runs at tag-push time; a hand dispatch could (a typo'd
+#     old tag), so an older or pre-release tag gets its exact tags only;
+#   - the image matrix mirrors release.yml exactly, in both directions.
+#
+# The main-only check below is a FOOTGUN GUARD, not a trust boundary: a
+# workflow_dispatch runs the workflow file from the dispatched ref, so anyone
+# who can push a branch can dispatch their own edited copy. The controls above
+# do not depend on it — nobody without the release signing key can produce an
+# inventory this workflow (or any copy of its verify step) would accept for a
+# digest the release pipeline did not sign. Branch/tag rulesets are what limit
+# who can dispatch with packages:write at all.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Exact existing release tag whose signed images to promote (e.g. v0.114.0)
+        required: true
+        type: string
+      run_id:
+        description: Release workflow run id holding the signed-release-image-manifest artifact (blank = newest Release run for the tag)
+        required: false
+        type: string
+        default: ''
+
+permissions: {}
+
+concurrency:
+  group: promote-release-images-${{ inputs.tag }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  resolve:
+    name: Resolve release run for ${{ inputs.tag }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      run_id: ${{ steps.resolve.outputs.run_id }}
+      tag_sha: ${{ steps.resolve.outputs.tag_sha }}
+      newest_stable: ${{ steps.resolve.outputs.newest_stable }}
+    steps:
+      - name: Refuse a dispatch from any ref but main
+        env:
+          DISPATCH_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          # A step that FAILS, not a job-level `if:` — a skipped job reports
+          # success, and a green run that promoted nothing is worse than a red one.
+          if [[ "$DISPATCH_REF" != "refs/heads/main" ]]; then
+            echo "dispatch this workflow from main (got ${DISPATCH_REF}): the verifier must be main's" >&2
+            exit 1
+          fi
+
+      - name: Resolve the tag commit and the Release run that signed its images
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          REQUESTED_RUN_ID: ${{ inputs.run_id }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo "tag must be an exact semver release tag (vX.Y.Z)" >&2
+            exit 1
+          fi
+          if [[ -n "$REQUESTED_RUN_ID" && ! "$REQUESTED_RUN_ID" =~ ^[0-9]+$ ]]; then
+            echo "run_id must be numeric" >&2
+            exit 1
+          fi
+
+          # The commit the TAG points at. Resolved through refs/tags explicitly
+          # (not commits/{ref}, which a same-named branch would make ambiguous);
+          # an annotated tag object is dereferenced to its commit.
+          ref_json="$(gh api "repos/${REPOSITORY}/git/ref/tags/${RELEASE_TAG}")"
+          tag_sha="$(jq -r .object.sha <<<"$ref_json")"
+          if [[ "$(jq -r .object.type <<<"$ref_json")" == "tag" ]]; then
+            tag_sha="$(gh api "repos/${REPOSITORY}/git/tags/${tag_sha}" --jq .object.sha)"
+          fi
+          if [[ ! "$tag_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "could not resolve ${RELEASE_TAG} to a commit" >&2
+            exit 1
+          fi
+
+          if [[ -n "$REQUESTED_RUN_ID" ]]; then
+            run_id="$REQUESTED_RUN_ID"
+          else
+            run_id="$(gh run list --repo "$REPOSITORY" --workflow release.yml \
+              --branch "$RELEASE_TAG" --event push --limit 1 \
+              --json databaseId --jq '.[0].databaseId // empty')"
+          fi
+          if [[ -z "$run_id" ]]; then
+            echo "no Release workflow run found for ${RELEASE_TAG}" >&2
+            exit 1
+          fi
+
+          # Bind the run to the tag: it must be release.yml, triggered by the
+          # tag push, at the tag's commit. A run id for another ref is refused.
+          run_json="$(gh run view "$run_id" --repo "$REPOSITORY" \
+            --json headSha,headBranch,event,workflowName)"
+          headSha="$(jq -r .headSha <<<"$run_json")"
+          headBranch="$(jq -r .headBranch <<<"$run_json")"
+          event="$(jq -r .event <<<"$run_json")"
+          workflowName="$(jq -r .workflowName <<<"$run_json")"
+          if [[ "$headSha" != "$tag_sha" || "$headBranch" != "$RELEASE_TAG" \
+                || "$event" != "push" || "$workflowName" != "Release" ]]; then
+            echo "run ${run_id} is not the tag-push Release run for ${RELEASE_TAG}" >&2
+            echo "  headSha=${headSha} (tag ${tag_sha}) headBranch=${headBranch} event=${event} workflow=${workflowName}" >&2
+            exit 1
+          fi
+
+          # Moving channels may only move FORWARD. They follow this tag only
+          # when it is a stable release and no higher stable tag exists.
+          newest_stable=false
+          if [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            highest="$(gh api --paginate "repos/${REPOSITORY}/git/matching-refs/tags/v" \
+              --jq '.[].ref | sub("^refs/tags/"; "")' \
+              | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1)"
+            if [[ "$highest" == "$RELEASE_TAG" ]]; then
+              newest_stable=true
+            else
+              echo "::warning::${RELEASE_TAG} is not the newest stable release (${highest} is): exact tags only, moving channels untouched"
+            fi
+          else
+            echo "::warning::${RELEASE_TAG} is a pre-release: exact tags only, moving channels untouched"
+          fi
+
+          {
+            echo "run_id=${run_id}"
+            echo "tag_sha=${tag_sha}"
+            echo "newest_stable=${newest_stable}"
+          } >> "$GITHUB_OUTPUT"
+          echo "Promoting ${RELEASE_TAG} (${tag_sha}) from Release run ${run_id}"
+
+  promote:
+    name: Promote signed ${{ matrix.image.name }} image
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [resolve]
+    permissions:
+      contents: read
+      actions: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - { name: api, moving_channels: true }
+          - { name: web, moving_channels: true }
+          - { name: portal, moving_channels: true }
+          - { name: binaries, moving_channels: true }
+          - { name: m365-graph-read-executor, moving_channels: false }
+          - { name: m365-graph-actions-executor, moving_channels: false }
+          - { name: m365-communications-executor, moving_channels: false }
+    steps:
+      - name: Checkout verifier
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Download signed release image manifest
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: signed-release-image-manifest
+          path: signed-release-image-manifest
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Verify signed image inventory and select exact digest
+        env:
+          RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: ${{ secrets.RELEASE_MANIFEST_ED25519_PUBLIC_KEY }}
+          IMAGE_NAME: ${{ matrix.image.name }}
+          EXPECTED_REPOSITORY: ${{ github.repository }}
+          EXPECTED_RELEASE: ${{ inputs.tag }}
+          EXPECTED_SOURCE_COMMIT: ${{ needs.resolve.outputs.tag_sha }}
+        run: |
+          set -euo pipefail
+          manifest="signed-release-image-manifest/release-artifact-manifest.json"
+          signature="signed-release-image-manifest/release-artifact-manifest.json.ed25519"
+          node scripts/release/release-image-manifest.mjs verify \
+            --manifest "$manifest" --signature "$signature" \
+            --expected-repository "$EXPECTED_REPOSITORY" \
+            --expected-release "$EXPECTED_RELEASE"
+          node - "$manifest" "$IMAGE_NAME" "$GITHUB_ENV" "$EXPECTED_SOURCE_COMMIT" <<'NODE'
+          const { readFileSync, appendFileSync } = require('node:fs');
+          const [manifestPath, imageName, githubEnv, expectedSourceCommit] = process.argv.slice(2);
+          const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+          // The signature proves the release pipeline wrote this inventory; this
+          // proves it is the inventory for the commit the tag points at today.
+          if (manifest.sourceCommit !== expectedSourceCommit) {
+            throw new Error(`manifest sourceCommit ${manifest.sourceCommit} is not the tag commit ${expectedSourceCommit}`);
+          }
+          const image = manifest.images.find((entry) => entry.name === imageName);
+          if (!image) throw new Error(`signed image ${imageName} is missing`);
+          if (!/^sha256:[0-9a-f]{64}$/.test(image.digest)) throw new Error(`signed image ${imageName} has no exact digest`);
+          appendFileSync(githubEnv, `SIGNED_IMAGE_REPOSITORY=${image.repository}\nSIGNED_IMAGE_DIGEST=${image.digest}\n`);
+          NODE
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Promote exact signed digest
+        env:
+          RELEASE_REF_NAME: ${{ inputs.tag }}
+          RELEASE_SHA: ${{ needs.resolve.outputs.tag_sha }}
+          MOVING_CHANNELS: ${{ matrix.image.moving_channels }}
+          NEWEST_STABLE: ${{ needs.resolve.outputs.newest_stable }}
+        run: |
+          set -euo pipefail
+          VERSION="${RELEASE_REF_NAME#v}"
+          SHORT_SHA="${RELEASE_SHA::7}"
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo "Image promotion requires an exact semver release tag" >&2
+            exit 1
+          fi
+          tags=(
+            --tag "${SIGNED_IMAGE_REPOSITORY}:${VERSION}"
+            --tag "${SIGNED_IMAGE_REPOSITORY}:sha-${SHORT_SHA}"
+          )
+          if [[ "$MOVING_CHANNELS" == "true" && "$NEWEST_STABLE" == "true" ]]; then
+            MAJOR="${VERSION%%.*}"
+            remainder="${VERSION#*.}"
+            MINOR="${remainder%%.*}"
+            tags+=(--tag "${SIGNED_IMAGE_REPOSITORY}:${MAJOR}.${MINOR}")
+            tags+=(--tag "${SIGNED_IMAGE_REPOSITORY}:${MAJOR}")
+            if [[ "$VERSION" != *-* ]]; then
+              tags+=(--tag "${SIGNED_IMAGE_REPOSITORY}:latest")
+            fi
+          fi
+          docker buildx imagetools create \
+            "${tags[@]}" \
+            "${SIGNED_IMAGE_REPOSITORY}@${SIGNED_IMAGE_DIGEST}"

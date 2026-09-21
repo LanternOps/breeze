@@ -84,6 +84,11 @@ describe('agentToolCatalog contract', () => {
     }
   });
 
+  it('the designer preset is empty: it reaches reads by the guardrail rule and one outcome tool', () => {
+    expect(AGENT_KIND_PRESETS.designer).toEqual([]);
+    expect(buildAgentToolCatalog().presets.designer).toEqual([]);
+  });
+
   it('operations carry tiers from checkGuardrails and flags from the registries', () => {
     const catalog = buildAgentToolCatalog();
     const services = catalog.tools.find((t) => t.name === 'manage_services')!;
@@ -141,4 +146,11 @@ describe('agentToolCatalog contract', () => {
       if (tool.operations.length === 1 && first && first.action === null) expect(first.key).toBe(tool.name);
     }
   });
+});
+
+it('makes delivery reachable without changing prior frozen gaps', () => {
+  expect(TOOL_CAPABILITY.manage_delivery).toBe('alerts_monitoring');
+  expect(listAgentReachableTools()).toContain('manage_delivery');
+  expect(listUnreachableRegisteredTools()).not.toContain('manage_delivery');
+  expect(listUnreachableRegisteredTools()).toContain('manage_notification_channels');
 });

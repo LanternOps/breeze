@@ -8,11 +8,21 @@
 
 import { db } from '../db';
 import { drExecutions, drPlanGroups, drPlans } from '../db/schema';
-import { eq, and, asc, desc, inArray, sql, SQL } from 'drizzle-orm';
+import { eq, and, asc, desc, lt, or, sql, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { createDrExecutionAndEnqueue } from './drExecutionService';
+import { drRestoreConfigSchema, isBareMetalRebuildConfig } from './drBareMetalRebuildStep';
+import { verifyDeviceAccess } from './aiTools';
 import { resolveSiteDevicePartition } from './aiToolsSiteScope';
+import {
+  collectReadableDrRows,
+  drGroupsReadable,
+  drReadSiteCeiling,
+  drReadUnrestricted,
+  filterReadableDrExecutions,
+  filterReadableDrPlans,
+} from './drReadAuthorization';
 
 /**
  * Deny a group mutation whose STORED membership reaches outside the caller's
@@ -73,6 +83,34 @@ async function planStoredDevicesDenied(
 
 type DRHandler = (input: Record<string, unknown>, auth: AuthContext) => Promise<string>;
 
+/**
+ * W05b: `restoreConfig` goes through the same schema the HTTP routes use, so a
+ * BARE_METAL_REBUILD config is stored normalised or rejected. The central
+ * `deviceArgs` gate only sees top-level input properties, so the rebuild host
+ * nested in the config is gated here with the very same check
+ * (`verifyDeviceAccess`: org + device-exact + site axes).
+ */
+function parseRestoreConfigInput(
+  input: unknown,
+): { config: Record<string, unknown> } | { error: string } {
+  if (typeof input !== 'object' || input === null || Array.isArray(input)) {
+    return { error: 'Invalid restoreConfig: expected an object' };
+  }
+  const parsed = drRestoreConfigSchema.safeParse(input);
+  if (!parsed.success) {
+    const first = parsed.error.issues[0];
+    const where = first?.path?.length ? ` at ${first.path.join('.')}` : '';
+    return { error: `Invalid restoreConfig${where}: ${first?.message ?? 'invalid'}` };
+  }
+  return { config: parsed.data };
+}
+
+async function rebuildHostDenied(config: Record<string, unknown>, auth: AuthContext): Promise<string | null> {
+  if (!isBareMetalRebuildConfig(config) || typeof config.rebuildHostDeviceId !== 'string') return null;
+  const access = await verifyDeviceAccess(config.rebuildHostDeviceId, auth);
+  return 'error' in access ? access.error : null;
+}
+
 // ============================================
 // Helpers
 // ============================================
@@ -131,6 +169,8 @@ export function registerDRTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'backup',
+    searchHint: 'disaster recovery plans, status, RPO/RTO targets and recovery group counts',
     definition: {
       name: 'query_dr_plans',
       description: 'List disaster recovery plans with plan status, RPO/RTO targets, and plan-group counts.',
@@ -150,72 +190,50 @@ export function registerDRTools(aiTools: Map<string, AiTool>): void {
       if (typeof input.status === 'string') conditions.push(eq(drPlans.status, input.status));
 
       const limit = clampLimit(input.limit);
-      const rows = await db
-        .select({
-          id: drPlans.id,
-          name: drPlans.name,
-          description: drPlans.description,
-          status: drPlans.status,
-          rpoTargetMinutes: drPlans.rpoTargetMinutes,
-          rtoTargetMinutes: drPlans.rtoTargetMinutes,
-          createdBy: drPlans.createdBy,
-          createdAt: drPlans.createdAt,
-          updatedAt: drPlans.updatedAt,
-          groupCount: sql<number>`count(${drPlanGroups.id})::int`,
-        })
-        .from(drPlans)
-        .leftJoin(
-          drPlanGroups,
-          and(eq(drPlanGroups.planId, drPlans.id), eq(drPlanGroups.orgId, drPlans.orgId))
-        )
-        .where(conditions.length > 0 ? and(...conditions) : undefined)
-        .groupBy(
-          drPlans.id,
-          drPlans.name,
-          drPlans.description,
-          drPlans.status,
-          drPlans.rpoTargetMinutes,
-          drPlans.rtoTargetMinutes,
-          drPlans.createdBy,
-          drPlans.createdAt,
-          drPlans.updatedAt
-        )
-        .orderBy(desc(drPlans.createdAt))
-        .limit(limit);
-
-      // Site axis (app-layer only; RLS enforces org, NOT site). Hide plans that
-      // are ENTIRELY outside a site-restricted caller's scope so they cannot
-      // enumerate foreign plans/devices. No-op for unrestricted callers.
-      const orgId = getOrgId(auth);
-      const partition = orgId ? await resolveSiteDevicePartition(orgId, auth) : null;
-      if (partition && rows.length > 0) {
-        const allowed = new Set(partition.allowed);
-        const planIds = rows.map((row) => row.id);
-        const groupRows = await db
-          .select({ planId: drPlanGroups.planId, devices: drPlanGroups.devices })
-          .from(drPlanGroups)
-          .where(inArray(drPlanGroups.planId, planIds));
-        const deviceIdsByPlan = new Map<string, string[]>();
-        for (const group of groupRows) {
-          const list = deviceIdsByPlan.get(group.planId) ?? [];
-          if (Array.isArray(group.devices)) {
-            for (const deviceId of group.devices) {
-              if (typeof deviceId === 'string') list.push(deviceId);
-            }
-          }
-          deviceIdsByPlan.set(group.planId, list);
+      // Site axis (app-layer only; RLS enforces org, NOT site). Hide any plan
+      // a site-restricted caller cannot see in full, so they cannot enumerate
+      // foreign plans/devices. No-op for unrestricted callers.
+      const siteCeiling = drReadSiteCeiling(auth);
+      if (siteCeiling?.length === 0) return JSON.stringify({ plans: [], showing: 0 });
+      const load = (cursor: { createdAt: Date; id: string } | undefined, pageSize: number) => {
+        const pageConditions = [...conditions];
+        if (cursor) {
+          pageConditions.push(or(
+            lt(drPlans.createdAt, cursor.createdAt),
+            and(eq(drPlans.createdAt, cursor.createdAt), lt(drPlans.id, cursor.id)),
+          )!);
         }
-        const visible = rows.filter((row) => {
-          const ids = deviceIdsByPlan.get(row.id) ?? [];
-          // A plan with no assigned devices carries nothing site-sensitive.
-          if (ids.length === 0) return true;
-          // Otherwise require at least one device in an accessible site.
-          return ids.some((id) => allowed.has(id));
-        });
-        return JSON.stringify({ plans: visible, showing: visible.length });
+        return db.select({
+          id: drPlans.id, name: drPlans.name, description: drPlans.description,
+          status: drPlans.status, rpoTargetMinutes: drPlans.rpoTargetMinutes,
+          rtoTargetMinutes: drPlans.rtoTargetMinutes, createdBy: drPlans.createdBy,
+          createdAt: drPlans.createdAt, updatedAt: drPlans.updatedAt,
+          groupCount: sql<number>`count(${drPlanGroups.id})::int`,
+        }).from(drPlans).leftJoin(
+          drPlanGroups,
+          and(eq(drPlanGroups.planId, drPlans.id), eq(drPlanGroups.orgId, drPlans.orgId)),
+        ).where(pageConditions.length > 0 ? and(...pageConditions) : undefined)
+          .groupBy(
+            drPlans.id, drPlans.name, drPlans.description, drPlans.status,
+            drPlans.rpoTargetMinutes, drPlans.rtoTargetMinutes, drPlans.createdBy,
+            drPlans.createdAt, drPlans.updatedAt,
+          ).orderBy(desc(drPlans.createdAt), desc(drPlans.id)).limit(pageSize);
+      };
+      // Unrestricted and system callers keep the original single-query path.
+      // Only the restricted branch needs a concrete org to resolve device
+      // sites; a restricted caller whose org cannot be resolved fails CLOSED.
+      if (drReadUnrestricted(auth)) {
+        const rows = await load(undefined, limit);
+        return JSON.stringify({ plans: rows, showing: rows.length });
       }
-
-      return JSON.stringify({ plans: rows, showing: rows.length });
+      const orgId = getOrgId(auth);
+      if (!orgId) return JSON.stringify({ plans: [], showing: 0 });
+      const visible = await collectReadableDrRows({
+        limit,
+        load,
+        filter: (rows) => filterReadableDrPlans(rows, auth, orgId),
+      });
+      return JSON.stringify({ plans: visible, showing: visible.length });
     }),
   });
 
@@ -225,6 +243,8 @@ export function registerDRTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'backup',
+    searchHint: 'disaster recovery plan details, recovery groups and restore configuration',
     definition: {
       name: 'get_dr_plan_details',
       description: 'Get a disaster recovery plan with all plan groups and restore configuration details.',
@@ -252,6 +272,10 @@ export function registerDRTools(aiTools: Map<string, AiTool>): void {
         .where(and(...groupConditions))
         .orderBy(asc(drPlanGroups.sequence));
 
+      if (!await drGroupsReadable(groups, auth, plan.orgId)) {
+        return JSON.stringify({ error: 'Plan not found or access denied' });
+      }
+
       return JSON.stringify({
         ...plan,
         groups,
@@ -266,6 +290,8 @@ export function registerDRTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'backup',
+    searchHint: 'disaster recovery execution status, plan run history and execution details',
     definition: {
       name: 'get_dr_execution_status',
       description: 'Get DR execution details for a specific execution or list executions for a plan.',
@@ -303,9 +329,19 @@ export function registerDRTools(aiTools: Map<string, AiTool>): void {
               .orderBy(asc(drPlanGroups.sequence))
           : [];
 
+        // Authorize against the execution's OWN org: it is already org-gated by
+        // `orgWhere` above, and unlike `getOrgId(auth)` it resolves for a
+        // system-scope session too. Both helpers no-op for an unrestricted
+        // ceiling, so this costs such a caller nothing.
+        const [visible] = await filterReadableDrExecutions([execution], auth, execution.orgId);
+        if (!visible || !await drGroupsReadable(groups, auth, plan?.orgId ?? execution.orgId)) {
+          return JSON.stringify({ error: 'Execution not found or access denied' });
+        }
+        // A missing plan is a dangling reference, not an authorization failure —
+        // mirrors the HTTP twin in routes/dr.ts, which returns `plan: null`.
         return JSON.stringify({
           ...execution,
-          plan,
+          plan: plan ?? null,
           groups,
         });
       }
@@ -317,26 +353,41 @@ export function registerDRTools(aiTools: Map<string, AiTool>): void {
       if (typeof input.status === 'string') conditions.push(eq(drExecutions.status, input.status));
 
       const limit = clampLimit(input.limit);
-      const executions = await db
-        .select({
-          id: drExecutions.id,
-          planId: drExecutions.planId,
-          planName: drPlans.name,
-          executionType: drExecutions.executionType,
-          status: drExecutions.status,
-          startedAt: drExecutions.startedAt,
-          completedAt: drExecutions.completedAt,
-          initiatedBy: drExecutions.initiatedBy,
-          results: drExecutions.results,
+      const siteCeiling = drReadSiteCeiling(auth);
+      if (siteCeiling?.length === 0) return JSON.stringify({ executions: [], showing: 0 });
+      const load = (cursor: { createdAt: Date; id: string } | undefined, pageSize: number) => {
+        const pageConditions = [...conditions];
+        if (cursor) {
+          pageConditions.push(or(
+            lt(drExecutions.createdAt, cursor.createdAt),
+            and(eq(drExecutions.createdAt, cursor.createdAt), lt(drExecutions.id, cursor.id)),
+          )!);
+        }
+        return db.select({
+          id: drExecutions.id, planId: drExecutions.planId, planName: drPlans.name,
+          executionType: drExecutions.executionType, status: drExecutions.status,
+          startedAt: drExecutions.startedAt, completedAt: drExecutions.completedAt,
+          initiatedBy: drExecutions.initiatedBy, results: drExecutions.results,
           createdAt: drExecutions.createdAt,
-        })
-        .from(drExecutions)
-        .leftJoin(drPlans, eq(drExecutions.planId, drPlans.id))
-        .where(conditions.length > 0 ? and(...conditions) : undefined)
-        .orderBy(desc(drExecutions.createdAt))
-        .limit(limit);
-
-      return JSON.stringify({ executions, showing: executions.length });
+        }).from(drExecutions).leftJoin(drPlans, eq(drExecutions.planId, drPlans.id))
+          .where(pageConditions.length > 0 ? and(...pageConditions) : undefined)
+          .orderBy(desc(drExecutions.createdAt), desc(drExecutions.id)).limit(pageSize);
+      };
+      // See query_dr_plans: unrestricted/system keeps the single-query path;
+      // only the restricted branch needs a concrete org, and fails closed
+      // without one.
+      if (drReadUnrestricted(auth)) {
+        const rows = await load(undefined, limit);
+        return JSON.stringify({ executions: rows, showing: rows.length });
+      }
+      const orgId = getOrgId(auth);
+      if (!orgId) return JSON.stringify({ executions: [], showing: 0 });
+      const visible = await collectReadableDrRows({
+        limit,
+        load,
+        filter: (rows) => filterReadableDrExecutions(rows, auth, orgId),
+      });
+      return JSON.stringify({ executions: visible, showing: visible.length });
     }),
   });
 
@@ -346,6 +397,8 @@ export function registerDRTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 3,
+    domain: 'backup',
+    searchHint: 'disaster recovery plan execution: rehearsal, failover, failback',
     definition: {
       name: 'execute_dr_plan',
       description: 'Create a DR execution record and queue the execution manifest for failover, failback, or rehearsal.',
@@ -370,6 +423,13 @@ export function registerDRTools(aiTools: Map<string, AiTool>): void {
       const plan = await loadPlanWithAccess(planId, auth);
       if (!plan) return JSON.stringify({ error: 'Plan not found or access denied' });
       if (plan.status === 'archived') return JSON.stringify({ error: 'Cannot execute an archived plan' });
+      // Executing a plan restores/fails over every device its STORED groups
+      // name — none of which the caller had to submit, so the declarative
+      // `deviceArgs` gate never saw them (#6096 #2). Same helper the plan-level
+      // mutations use; a no-op for unrestricted callers.
+      if (await planStoredDevicesDenied(auth, plan.orgId, plan.id)) {
+        return JSON.stringify({ error: 'Plan not found or access denied' });
+      }
 
       const groupConditions: SQL[] = [eq(drPlanGroups.planId, plan.id)];
       const gc = orgWhere(auth, drPlanGroups.orgId);
@@ -415,6 +475,8 @@ export function registerDRTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 2,
+    domain: 'backup',
+    searchHint: 'disaster recovery plans: create, update; recovery groups: add, update, delete',
     deviceArgs: ['devices'],
     definition: {
       name: 'manage_dr_plan',
@@ -518,8 +580,19 @@ export function registerDRTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({ error: 'name is required for add_group' });
         }
 
+        const restoreConfig = parseRestoreConfigInput(input.restoreConfig ?? {});
+        if ('error' in restoreConfig) return JSON.stringify({ error: restoreConfig.error });
+
         const plan = await loadPlanWithAccess(planId, auth);
         if (!plan) return JSON.stringify({ error: 'Plan not found or access denied' });
+        // The submitted `devices` are gated by `deviceArgs`, but the PLAN being
+        // extended is not: attaching a group is a control-plane write over every
+        // site/device the plan already reaches (#6096 #2).
+        if (await planStoredDevicesDenied(auth, plan.orgId, plan.id)) {
+          return JSON.stringify({ error: 'Plan not found or access denied' });
+        }
+        const hostDenied = await rebuildHostDenied(restoreConfig.config, auth);
+        if (hostDenied) return JSON.stringify({ error: hostDenied });
 
         const [group] = await db
           .insert(drPlanGroups)
@@ -530,10 +603,7 @@ export function registerDRTools(aiTools: Map<string, AiTool>): void {
             sequence: input.sequence !== undefined ? Number(input.sequence) : 0,
             dependsOnGroupId: typeof input.dependsOnGroupId === 'string' ? input.dependsOnGroupId : null,
             devices: Array.isArray(input.devices) ? input.devices : [],
-            restoreConfig:
-              input.restoreConfig && typeof input.restoreConfig === 'object'
-                ? input.restoreConfig as Record<string, unknown>
-                : {},
+            restoreConfig: restoreConfig.config,
             estimatedDurationMinutes:
               input.estimatedDurationMinutes !== undefined
                 ? Number(input.estimatedDurationMinutes)
@@ -573,8 +643,12 @@ export function registerDRTools(aiTools: Map<string, AiTool>): void {
             typeof input.dependsOnGroupId === 'string' ? input.dependsOnGroupId : null;
         }
         if (Array.isArray(input.devices)) updateData.devices = input.devices;
-        if (input.restoreConfig !== undefined && typeof input.restoreConfig === 'object') {
-          updateData.restoreConfig = input.restoreConfig as Record<string, unknown>;
+        if (input.restoreConfig !== undefined) {
+          const restoreConfig = parseRestoreConfigInput(input.restoreConfig);
+          if ('error' in restoreConfig) return JSON.stringify({ error: restoreConfig.error });
+          const hostDenied = await rebuildHostDenied(restoreConfig.config, auth);
+          if (hostDenied) return JSON.stringify({ error: hostDenied });
+          updateData.restoreConfig = restoreConfig.config;
         }
         if (input.estimatedDurationMinutes !== undefined) {
           updateData.estimatedDurationMinutes = Number(input.estimatedDurationMinutes);

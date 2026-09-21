@@ -66,5 +66,19 @@
     "heading": "Scheduled report",
     "body": "Your scheduled report {{reportName}} is attached.",
     "button": "View report"
+  },
+  "mfaEnrollmentNotice": {
+    "subject": "Action required: set up two-factor authentication by {{deadline}}",
+    "preheader": "Your role requires two-factor authentication. Enrol by {{deadline}}.",
+    "heading": "Two-factor authentication required",
+    "body": "Hi {{name}}, your role requires two-factor authentication (2FA) on your Breeze account. Enrol by {{deadline}} — after that date you will be prompted to enrol before you can continue using Breeze.",
+    "button": "Set up two-factor authentication"
+  },
+  "mfaEnrollmentReminder": {
+    "subject": "3 days left to set up two-factor authentication",
+    "preheader": "Your two-factor authentication enrolment window closes {{deadline}}.",
+    "heading": "Two-factor authentication enrolment closes soon",
+    "body": "Hi {{name}}, your role requires two-factor authentication (2FA) on your Breeze account, and your enrolment window closes {{deadline}}. Enrol now — after that date you will be prompted to enrol before you can continue using Breeze.",
+    "button": "Set up two-factor authentication"
   }
 }

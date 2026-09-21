@@ -1,7 +1,7 @@
 {
   "name": "@breeze/e2e-tests",
   "version": "2.0.0",
-  "description": "End-to-end tests for Breeze RMM — Playwright Test (TypeScript) suite, data-testid based",
+  "description": "End-to-end tests for Breeze RMM \u2014 Playwright Test (TypeScript) suite, data-testid based",
   "type": "module",
   "scripts": {
     "test": "playwright test",
@@ -15,19 +15,22 @@
     "dotenv": "^17.4.2"
   },
   "devDependencies": {
-    "@playwright/test": "^1.62.1",
-    "@types/node": "^26.4.1",
+    "@playwright/test": "^1.63.0",
+    "@types/node": "^26.6.1",
     "@types/pg": "^8.23.1",
     "pg": "^8.23.0",
-    "playwright": "^1.62.1",
+    "playwright": "^1.63.0",
     "tsx": "^4.23.13",
     "typescript": "^7.0.2",
-    "vitest": "^5.0.0",
+    "vitest": "^5.0.1",
     "werift": "^0.24.4"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
       "esbuild"
     ]
+  },
+  "overrides": {
+    "esbuild": ">=0.28.1"
   }
 }

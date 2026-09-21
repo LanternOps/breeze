@@ -52,6 +52,14 @@ export async function writeTrust(
   }, 'partnerTrust.writeTrust'));
 }
 
+export async function partnerForOrg(orgId: string): Promise<string | null> {
+  return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+    const [row] = await db.select({ partnerId: organizations.partnerId }).from(organizations)
+      .where(eq(organizations.id, orgId)).limit(1);
+    return row?.partnerId ?? null;
+  }, 'partnerTrust.partnerForOrg'));
+}
+
 export async function partnerForDevice(deviceId: string): Promise<string | null> {
   return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
     const [row] = await db.select({ partnerId: organizations.partnerId }).from(devices)

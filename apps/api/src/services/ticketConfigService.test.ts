@@ -1,5 +1,4 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { SQL } from 'drizzle-orm';
 
 const { dbMocks } = vi.hoisted(() => ({
   dbMocks: {
@@ -136,8 +135,7 @@ vi.mock('../db/schema', () => ({
   },
   orgTicketSettings: {
     id: 'id', orgId: 'orgId', slaOverrides: 'slaOverrides',
-    defaultHourlyRate: 'defaultHourlyRate', defaultBillable: 'defaultBillable',
-    rateCurrency: 'rateCurrency', updatedAt: 'updatedAt',
+    updatedAt: 'updatedAt',
   },
   partners: {
     id: 'id', slug: 'slug', settings: 'settings', currencyCode: 'partnerCurrencyCode',
@@ -158,7 +156,12 @@ vi.mock('../db/schema', () => ({
 }));
 
 // ticketStatusEnum is read at module load for CoreTicketStatus type/values.
-vi.mock('../db/schema/portal', () => ({
+// Spread the real module and override only the enum this suite reads: other
+// schema modules (db/schema/tickets, and through it the deliverable tables)
+// import real pgEnum builders from here at module-eval time, so a
+// replace-everything mock breaks them.
+vi.mock('../db/schema/portal', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../db/schema/portal')>()),
   ticketStatusEnum: { enumValues: ['new', 'open', 'pending', 'on_hold', 'resolved', 'closed'] },
 }));
 
@@ -231,17 +234,6 @@ function whereHasInArray(predicate: unknown, column: string, expected: string[])
       (c.values as unknown[]).length === expected.length &&
       expected.every((v) => (c.values as unknown[]).includes(v)),
   );
-}
-
-function sqlText(fragment: SQL): string {
-  return fragment.queryChunks.map((chunk: unknown) => {
-    if (chunk && typeof chunk === 'object' && 'value' in chunk) {
-      const value = (chunk as { value: unknown }).value;
-      if (Array.isArray(value)) return value.join('');
-    }
-    if (chunk instanceof SQL) return sqlText(chunk);
-    return String(chunk);
-  }).join('');
 }
 
 describe('getTicketConfig', () => {
@@ -513,18 +505,12 @@ describe('getOrgTicketSettings', () => {
       partnerId: 'p-1',
       orgCurrency: 'USD',
       slaOverrides: null,
-      defaultHourlyRate: null,
-      defaultBillable: null,
-      rateCurrency: null,
     }]); // (1) organizations ⟕ org_ticket_settings (caller RLS)
     dbMocks.selectResults.push([{ currencyCode: 'USD' }]); // (2) partners (system context)
     const res = await getOrgTicketSettings(ORG);
     expect(res).toEqual({
       orgId: ORG,
       slaOverrides: {},
-      defaultHourlyRate: null,
-      defaultBillable: null,
-      rateCurrency: null,
       orgCurrency: 'USD',
       partnerCurrency: 'USD',
     });
@@ -535,13 +521,10 @@ describe('getOrgTicketSettings', () => {
       partnerId: 'p-1',
       orgCurrency: 'EUR',
       slaOverrides: {},
-      defaultHourlyRate: '100.00',
-      defaultBillable: true,
-      rateCurrency: 'USD',
     }]);
     dbMocks.selectResults.push([{ currencyCode: 'USD' }]);
     const res = await getOrgTicketSettings(ORG);
-    expect(res).toMatchObject({ rateCurrency: 'USD', orgCurrency: 'EUR', partnerCurrency: 'USD' });
+    expect(res).toMatchObject({ orgCurrency: 'EUR', partnerCurrency: 'USD' });
     // The partner lookup is keyed by the org's partner id, not by the caller's
     // accessible-partner list (org-scoped tokens have none).
     expect(JSON.stringify(dbMocks.whereArgs.at(-1))).toContain('p-1');
@@ -549,85 +532,39 @@ describe('getOrgTicketSettings', () => {
 });
 
 describe('upsertOrgTicketSettings', () => {
-  it('stamps the org currency and restamps it on conflict only when the stored rate changes', async () => {
-    dbMocks.insertResult = [{
-      slaOverrides: { high: { responseMinutes: 30 } },
-      defaultHourlyRate: '125.50',
-      defaultBillable: true,
-      rateCurrency: 'EUR',
-    }];
-    dbMocks.selectResults.push([{ currencyCode: 'EUR' }]); // org SHARE barrier read
-    const res = await upsertOrgTicketSettings(ORG, {
-      slaOverrides: { high: { responseMinutes: 30 } },
-      defaultHourlyRate: 125.5,
-      defaultBillable: true,
-    });
-    const vals = dbMocks.insertedValues[0]!;
-    expect(vals.slaOverrides).toEqual({ high: { responseMinutes: 30 } });
-    expect(vals.defaultHourlyRate).toBe('125.5');
-    expect(vals.defaultBillable).toBe(true);
-    expect(vals.rateCurrency).toBe('EUR');
-    const conflict = dbMocks.conflictArgs[0]!;
-    expect(conflict.target).toBe('orgId');
-    const set = conflict.set as Record<string, unknown>;
-    expect(set.slaOverrides).toEqual({ high: { responseMinutes: 30 } });
-    expect(set.updatedAt).toBeInstanceOf(Date);
-    expect(set.rateCurrency).toBeInstanceOf(SQL);
-    expect(sqlText(set.rateCurrency as SQL)).toContain('IS DISTINCT FROM excluded.default_hourly_rate');
-    expect(res).toEqual({
-      orgId: ORG,
-      slaOverrides: { high: { responseMinutes: 30 } },
-      defaultHourlyRate: '125.50',
-      defaultBillable: true,
-      rateCurrency: 'EUR',
-    });
-  });
-
-  it('does not include rateCurrency in the conflict update when the rate is omitted', async () => {
-    dbMocks.insertResult = [{
-      slaOverrides: {},
-      defaultHourlyRate: null,
-      defaultBillable: true,
-      rateCurrency: 'EUR',
-    }];
+  it('replaces the SLA map on conflict and returns only ticket settings', async () => {
+    const slaOverrides = { high: { responseMinutes: 30 } };
+    dbMocks.insertResult = [{ slaOverrides }];
     dbMocks.selectResults.push([{ currencyCode: 'EUR' }]);
-    await upsertOrgTicketSettings(ORG, { defaultBillable: true });
-    expect(dbMocks.insertedValues[0]!.rateCurrency).toBe('EUR');
-    expect(dbMocks.conflictArgs[0]!.set).not.toHaveProperty('rateCurrency');
+    const res = await upsertOrgTicketSettings(ORG, { slaOverrides });
+    expect(dbMocks.insertedValues[0]).toEqual({ orgId: ORG, slaOverrides });
+    expect(dbMocks.conflictArgs[0]).toEqual({
+      target: 'orgId', set: { slaOverrides, updatedAt: expect.any(Date) },
+    });
+    expect(res).toEqual({ orgId: ORG, slaOverrides });
   });
 
-  it('passes null through for an explicitly cleared rate', async () => {
-    dbMocks.insertResult = [{ slaOverrides: {}, defaultHourlyRate: null, defaultBillable: null, rateCurrency: 'USD' }];
-    dbMocks.selectResults.push([{ currencyCode: 'USD' }]);
-    await upsertOrgTicketSettings(ORG, { defaultHourlyRate: null });
-    expect(dbMocks.insertedValues[0]!.defaultHourlyRate).toBeNull();
-    // slaOverrides not provided => not in values
-    expect(dbMocks.insertedValues[0]!).not.toHaveProperty('slaOverrides');
+  it('preserves the SLA map when no supported setting is provided', async () => {
+    dbMocks.insertResult = [{ slaOverrides: { high: { responseMinutes: 30 } } }];
+    dbMocks.selectResults.push([{ currencyCode: 'EUR' }]);
+    await upsertOrgTicketSettings(ORG, {});
+    expect(dbMocks.insertedValues[0]).toEqual({ orgId: ORG });
+    expect(dbMocks.conflictArgs[0]!.set).toEqual({ updatedAt: expect.any(Date) });
   });
 
-  // Wave-6 release gate (W6-G4-1): the rate is stamped with `orgCurrencyCode`,
-  // so it must be representable in it. The shared validator's multipleOf(0.01)
-  // is only the outer bound — the currency exponent is knowable only here.
-  it('rejects a fractional rate under a zero-decimal org currency (RATE_NOT_REPRESENTABLE 400)', async () => {
+  it('allows explicitly clearing all SLA overrides', async () => {
+    dbMocks.insertResult = [{ slaOverrides: {} }];
     dbMocks.selectResults.push([{ currencyCode: 'JPY' }]);
-    await expect(upsertOrgTicketSettings(ORG, { defaultHourlyRate: 100.5 }))
-      .rejects.toMatchObject({ code: 'RATE_NOT_REPRESENTABLE', status: 400 });
-    expect(dbMocks.insertedValues.length).toBe(0);
+    expect(await upsertOrgTicketSettings(ORG, { slaOverrides: {} }))
+      .toEqual({ orgId: ORG, slaOverrides: {} });
+    expect(dbMocks.insertedValues[0]).toEqual({ orgId: ORG, slaOverrides: {} });
   });
 
-  it('accepts a whole-unit rate under a zero-decimal org currency', async () => {
-    dbMocks.insertResult = [{ slaOverrides: {}, defaultHourlyRate: '100.00', defaultBillable: null, rateCurrency: 'JPY' }];
-    dbMocks.selectResults.push([{ currencyCode: 'JPY' }]);
-    await upsertOrgTicketSettings(ORG, { defaultHourlyRate: 100 });
-    expect(dbMocks.insertedValues[0]!.defaultHourlyRate).toBe('100');
-    expect(dbMocks.insertedValues[0]!.rateCurrency).toBe('JPY');
-  });
-
-  it('leaves a 2-decimal currency unchanged — 100.50 USD is accepted', async () => {
-    dbMocks.insertResult = [{ slaOverrides: {}, defaultHourlyRate: '100.50', defaultBillable: null, rateCurrency: 'USD' }];
-    dbMocks.selectResults.push([{ currencyCode: 'USD' }]);
-    await upsertOrgTicketSettings(ORG, { defaultHourlyRate: 100.5 });
-    expect(dbMocks.insertedValues[0]!.defaultHourlyRate).toBe('100.5');
+  it('maps an inaccessible or missing org to 404 before writing', async () => {
+    dbMocks.selectResults.push([]);
+    await expect(upsertOrgTicketSettings(ORG, { slaOverrides: {} }))
+      .rejects.toMatchObject({ code: 'ORG_NOT_FOUND', status: 404 });
+    expect(dbMocks.insertedValues).toEqual([]);
   });
 });
 

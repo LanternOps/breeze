@@ -110,7 +110,7 @@ describe('MonitoringTab alert-rule consolidation', () => {
     });
   });
 
-  it('renders no metric-rule or event-log-rule editor, only a pointer to the Alerts feature', () => {
+  it('renders no metric-rule or event-log-rule editor, only a pointer to the Monitors tab', () => {
     renderTab();
 
     expect(screen.queryByText('Metric & Status Alert Rules')).toBeNull();
@@ -120,7 +120,7 @@ describe('MonitoringTab alert-rule consolidation', () => {
     // The surviving agent-side section is untouched.
     expect(screen.getByText('Service & Process Watches')).toBeTruthy();
     expect(screen.getByTestId('monitoring-alerts-pointer').textContent).toContain(
-      'configured in the Alerts feature',
+      'Existing rules stay editable here and convert to monitors in the next release.',
     );
   });
 
@@ -180,7 +180,7 @@ describe('MonitoringTab alert-rule consolidation', () => {
     expect(screen.queryByTestId('monitoring-legacy-alert-rules-notice')).toBeNull();
   });
 
-  it('navigates to the Alerts tab from the legacy notice', () => {
+  it('navigates to the Monitors tab from the legacy notice', () => {
     render(
       <MonitoringTab
         policyId="policy-1"
@@ -192,7 +192,7 @@ describe('MonitoringTab alert-rule consolidation', () => {
 
     window.location.hash = '';
     fireEvent.click(screen.getByTestId('monitoring-legacy-alert-rules-link'));
-    expect(window.location.hash).toBe('#alert_rule');
+    expect(window.location.hash).toBe('#monitors');
   });
 });
 
@@ -249,21 +249,12 @@ describe('MonitoringTab disclosure keyboard toggle (issue #1932)', () => {
     expect(header.getAttribute('aria-expanded')).toBe('true');
   });
 
-  it('does not toggle when the keydown originates from a nested action button', () => {
+  it('keeps the disclosure usable with no Add Watch action', () => {
     renderTab();
-
+    expect(screen.queryByRole('button', { name: /^Add Watch$/i })).toBeNull();
     const header = sectionHeader('Service & Process Watches');
-    expect(header.getAttribute('aria-expanded')).toBe('false');
-
-    // The "Add Watch" button lives inside the header; a keydown on it has
-    // event.target !== event.currentTarget and must be ignored by the guard.
-    // Exact name avoids matching the header role="button", whose accessible
-    // name also contains the nested "Add Watch" button text.
-    const addButton = screen.getByRole('button', { name: 'Add Watch' });
-    fireEvent.keyDown(addButton, { key: 'Enter' });
-
-    expect(header.getAttribute('aria-expanded')).toBe('false');
-    expect(screen.queryByText(/No watches configured yet/i)).toBeNull();
+    fireEvent.keyDown(header, { key: 'Enter' });
+    expect(header).toHaveAttribute('aria-expanded', 'true');
   });
 
   it('ignores keys other than Enter and Space', () => {
@@ -280,16 +271,16 @@ describe('MonitoringTab disclosure keyboard toggle (issue #1932)', () => {
 });
 
 // The feature-tab strip in ConfigPolicyDetailPage is hash-driven (useHashTab),
-// so the pointer switches tabs by writing `#alert_rule` — exactly what the
+// so the pointer switches tabs by writing `#monitors` — exactly what the
 // strip's own buttons do.
-describe('MonitoringTab pointer to the Alerts feature', () => {
+describe('MonitoringTab pointer to the Monitors tab', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     fetchMock.mockResolvedValue(makeJsonResponse({ data: [] }));
     window.location.hash = '#monitoring';
   });
 
-  it('navigates to the alert_rule tab when the pointer link is clicked', () => {
+  it('navigates to the monitors tab when the pointer link is clicked', () => {
     renderTab();
 
     const link = screen.getByTestId('monitoring-alerts-pointer-link');
@@ -299,15 +290,15 @@ describe('MonitoringTab pointer to the Alerts feature', () => {
 
     fireEvent.click(link);
 
-    expect(window.location.hash).toBe('#alert_rule');
+    expect(window.location.hash).toBe('#monitors');
   });
 
   it('keeps the explanatory sentence alongside the link', () => {
     renderTab();
 
     const pointer = screen.getByTestId('monitoring-alerts-pointer');
-    expect(pointer.textContent).toContain('configured in the Alerts feature');
-    expect(pointer.textContent).toContain('Open Alerts');
+    expect(pointer.textContent).toContain('Existing rules stay editable here and convert to monitors in the next release.');
+    expect(pointer.textContent).toContain('Open the Monitors tab');
   });
 });
 
@@ -332,5 +323,107 @@ describe('MonitoringTab — featurePolicyId payload (#5080)', () => {
     await waitFor(() => expect(saveMock).toHaveBeenCalled());
     const [, payload] = saveMock.mock.calls[0] as [string | null, { featurePolicyId: string | null }];
     expect(payload.featurePolicyId).toBeNull();
+  });
+});
+
+// Fleet Designer W03 (#5653): a Fleet Design writes `rationale` on each watch
+// it creates. The tab must display it read-only, offer an edit affordance,
+// and round-trip an edited value through the tab's existing save payload.
+describe('MonitoringTab rationale (#5653)', () => {
+  const linkWithRationale = {
+    id: 'link-1',
+    featureType: 'monitoring' as const,
+    featurePolicyId: null,
+    inlineSettings: {
+      checkIntervalSeconds: 60,
+      watches: [
+        {
+          watchType: 'service',
+          name: 'nginx',
+          enabled: true,
+          alertOnStop: true,
+          alertAfterConsecutiveFailures: 2,
+          alertSeverity: 'high',
+          thresholdDurationSeconds: 300,
+          autoRestart: false,
+          maxRestartAttempts: 3,
+          restartCooldownSeconds: 300,
+          rationale: 'nginx serves customer traffic on this device function.',
+        },
+      ],
+    },
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    fetchMock.mockResolvedValue(makeJsonResponse({ data: [] }));
+    saveMock.mockResolvedValue({
+      id: 'link-1',
+      featureType: 'monitoring',
+      featurePolicyId: null,
+      inlineSettings: {},
+    });
+  });
+
+  function renderWithRationale() {
+    return render(
+      <MonitoringTab
+        policyId="policy-1"
+        existingLink={linkWithRationale}
+        linkedPolicyId={null}
+        onLinkChanged={vi.fn()}
+      />,
+    );
+  }
+
+  it('displays the rationale read-only when the watch is expanded', () => {
+    renderWithRationale();
+    fireEvent.click(screen.getByText('nginx'));
+
+    expect(screen.getByTestId('watch-rationale-0').textContent).toContain(
+      'nginx serves customer traffic on this device function.',
+    );
+  });
+
+  it('says so when a watch carries no rationale', () => {
+    render(<MonitoringTab policyId="policy-1" linkedPolicyId={null} onLinkChanged={vi.fn()}
+      existingLink={{ ...linkWithRationale, inlineSettings: {
+        ...linkWithRationale.inlineSettings,
+        watches: linkWithRationale.inlineSettings.watches.map((watch) => ({ ...watch, rationale: null })),
+      } }} />);
+    fireEvent.click(screen.getByText('nginx'));
+
+    expect(screen.getByTestId('watch-rationale-0').textContent).toContain('No rationale recorded.');
+  });
+
+  it('edits the rationale and carries it through the save payload', async () => {
+    renderWithRationale();
+    fireEvent.click(screen.getByText('nginx'));
+
+    fireEvent.click(screen.getByTestId('watch-rationale-0-edit'));
+    const textarea = screen.getByTestId('watch-rationale-0-textarea');
+    fireEvent.change(textarea, { target: { value: 'Updated by the technician.' } });
+    fireEvent.click(screen.getByTestId('watch-rationale-0-save'));
+
+    // The editor closes and the new text renders read-only again.
+    expect(screen.getByTestId('watch-rationale-0').textContent).toContain('Updated by the technician.');
+
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
+    await waitFor(() => expect(saveMock).toHaveBeenCalled());
+    const settings = saveMock.mock.calls.at(-1)![1].inlineSettings as { watches: Array<{ rationale?: string | null }> };
+    expect(settings.watches[0]!.rationale).toBe('Updated by the technician.');
+  });
+
+  it('discards the draft on cancel', () => {
+    renderWithRationale();
+    fireEvent.click(screen.getByText('nginx'));
+
+    fireEvent.click(screen.getByTestId('watch-rationale-0-edit'));
+    fireEvent.change(screen.getByTestId('watch-rationale-0-textarea'), { target: { value: 'discard me' } });
+    fireEvent.click(screen.getByTestId('watch-rationale-0-cancel'));
+
+    expect(screen.getByTestId('watch-rationale-0').textContent).toContain(
+      'nginx serves customer traffic on this device function.',
+    );
   });
 });

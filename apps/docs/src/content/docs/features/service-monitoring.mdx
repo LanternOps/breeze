@@ -7,6 +7,10 @@ sidebar:
 
 import { Steps, Aside } from '@astrojs/starlight/components';
 
+:::note[Creation is frozen]
+New service and process watches are created as **Monitors** (kind *Service* or *Process*) under **Alerts → Monitors** and attached to a policy on its **Monitors** tab. Existing watches stay editable here and are converted in the next release.
+:::
+
 ## Overview
 
 Service monitoring has two sides. You **define** what an agent should watch inside the **Monitoring** feature of a [configuration policy](/features/configuration-policies/), and you **read** the results on each device's **Monitoring** tab. The agent evaluates the policy on a fixed interval, reports the status of every watched service and process, and can restart one that stops.
@@ -18,6 +22,10 @@ A Monitoring feature covers one thing: **service & process watches** — service
 </Aside>
 
 Because Monitoring is a configuration-policy feature, it can be owned by a single organization or made **partner-wide** to apply the same watches across every organization you manage. See [Configuration Policies](/features/configuration-policies/) for how ownership and the cascade work.
+
+<Aside type="note">
+  The **Service stopped**, **Process stopped**, and **Process resource** kinds on a [Monitor](/features/monitors/) still read their watch list from this tab -- creating one of those monitor kinds doesn't add a watch by itself, the name also has to be configured here until a future wave unifies the two.
+</Aside>
 
 ## Define monitors in a configuration policy
 

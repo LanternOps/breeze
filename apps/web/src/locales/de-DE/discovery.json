@@ -1,35 +1,12 @@
 {
   "assetDetailModal": {
-    "actions": {
-      "connect": "Verbinden",
-      "connecting": "Verbinden...",
-      "deleteAsset": "Asset löschen",
-      "deleting": "Löschen...",
-      "enabling": "Aktivieren...",
-      "linkAsset": "Asset verknüpfen",
-      "linking": "Verlinkung...",
-      "resetType": "Auf „Automatisch erkannt“ zurücksetzen",
-      "unlink": "Verknüpfung aufheben",
-      "working": "Arbeiten..."
-    },
     "assetInfoTitle": "Asset-Info",
-    "confirmDelete": "Erkanntes Asset „{{name}}“ löschen?",
     "confirmUnlink": "Verknüpfung dieses Geräts aufheben?",
-    "deleteDescription": "Entfernen Sie dieses Asset aus den Erkennungsergebnissen.",
     "detailsUnavailableDescription": "Der Datensatz dieses Geräts konnte nicht geladen werden. Möglicherweise wurde es entfernt oder Sie haben keinen Zugriff darauf.",
     "detailsUnavailableTitle": "Details nicht verfügbar",
     "deviceDetailsTitle": "Gerätedetails",
     "errors": {
-      "createAllowlist": "Fehler beim Erstellen des Zulassungslisteneintrags",
-      "createProxyTunnel": "Proxy-Tunnel konnte nicht erstellt werden",
-      "createTunnel": "Tunnel konnte nicht erstellt werden",
-      "delete": "Asset konnte nicht gelöscht werden",
-      "generic": "Es ist ein Fehler aufgetreten",
-      "link": "Das Asset konnte nicht verknüpft werden",
-      "resetType": "Typ konnte nicht zurückgesetzt werden",
-      "saveInfo": "Asset-Informationen konnten nicht gespeichert werden",
-      "selectDeviceToLink": "Wählen Sie ein Gerät zum Verknüpfen aus.",
-      "unlink": "Die Verknüpfung des Assets konnte nicht aufgehoben werden"
+      "generic": "Es ist ein Fehler aufgetreten"
     },
     "fields": {
       "assetType": "Asset-Typ",
@@ -41,23 +18,10 @@
     },
     "lastSeen": "Zuletzt gesehen {{time}}",
     "loadingDetails": "Gerätedetails werden geladen…",
-    "messages": {
-      "linked": "Asset verknüpft. Es ist nun als genehmigt gekennzeichnet.",
-      "linkedToDevice": "Asset mit {{device}} verknüpft. Es ist nun als genehmigt gekennzeichnet.",
-      "unlinked": "Gerät nicht verknüpft."
-    },
     "networkDetailsTitle": "Netzwerkdetails",
     "noOpenPorts": "Keine offenen Ports erkannt.",
     "noSnmpData": "Es wurden keine SNMP-Daten erfasst – das Gerät hat möglicherweise nicht reagiert oder SNMP wurde nicht geprüft. Überprüfen Sie, ob die SNMP-Methode aktiviert ist und der Community-String im Erkennungsprofil festgelegt ist.",
     "openPorts": "Offene Ports",
-    "options": {
-      "selectManagedDevice": "Wählen Sie ein verwaltetes Gerät aus"
-    },
-    "placeholders": {
-      "displayName": "z. B. Core-Switch",
-      "notes": "z.B. Befindet sich im Schrank A, 2. Etage",
-      "tags": "z.B. kritisch, Etage 2, Networking"
-    },
     "proxy": {
       "manageOnDevicePage": "Proxy-Zugriff auf der Netzwerkgeräteseite verwalten",
       "title": "Proxy-Zugriff"
@@ -67,41 +31,27 @@
       "systemName": "Systemname",
       "objectId": "Objekt-ID"
     },
-    "sameDeviceAs": "Dasselbe Gerät wie {{name}}"
-  },
-  "assetMonitoringSection": {
-    "actions": {
-      "addUpdate": "Überwachung hinzufügen/aktualisieren",
-      "disableActive": "Deaktivieren Sie die aktive Überwachung",
-      "disabling": "Deaktivieren...",
-      "enable": "Überwachung aktivieren",
-      "open": "Öffnen Sie die Überwachung"
-    },
-    "activeChecks": "{{active}}/{{total}} Netzwerkprüfungen aktiv",
-    "errors": {
-      "disable": "Die Überwachung konnte nicht deaktiviert werden",
-      "loadMonitors": "Netzwerkmonitore konnten nicht geladen werden",
-      "loadStatus": "Der Überwachungsstatus konnte nicht geladen werden"
-    },
-    "loading": "Überwachungsstatus wird geladen...",
-    "monitorTypes": {
-      "icmp_ping": "ICMP Ping",
-      "tcp_port": "TCP-Port",
-      "http_check": "HTTP Prüfen",
-      "dns_check": "DNS Prüfen"
-    },
-    "networkMonitorsTitle": "Netzwerkmonitore ({{count}})",
-    "noChecks": "Keine Netzwerkprüfungen konfiguriert",
-    "snmpSummary": "{{version}} · alle {{seconds}}s",
-    "snmpTitle": "SNMP Gerätemonitor",
-    "state": {
-      "active": "Aktiv",
-      "configuredPaused": "Konfiguriert (Pausiert)",
-      "paused": "Angehalten",
-      "notConfigured": "Nicht konfiguriert"
-    },
-    "title": "Überwachung",
-    "lastPolled": "• zuletzt abgefragt {{time}}"
+    "sameDeviceAs": "Dasselbe Gerät wie {{name}}",
+    "peek": {
+      "manageTitle": "Dieses Asset verwalten",
+      "manageDescription": "Identität, Überwachung, Verknüpfung und Entfernung werden auf der Geräteseite verwaltet.",
+      "openDevicePage": "Geräteseite öffnen",
+      "settings": "Einstellungen…",
+      "reachabilityLine": "{{state}} · {{source}} {{age}}",
+      "lastSeenLine": "Zuletzt gesehen · {{source}} {{age}}",
+      "state": {
+        "responding": "Antwortet",
+        "notResponding": "Antwortet nicht",
+        "unverified": "Nicht verifiziert"
+      },
+      "source": {
+        "networkCheck": "Netzwerkprüfung",
+        "probe": "Jetzt prüfen",
+        "scan": "Scan",
+        "unifi": "UniFi",
+        "snmp": "SNMP"
+      }
+    }
   },
   "discoveredAssetList": {
     "actions": {
@@ -117,7 +67,8 @@
       "selectAllVisible": "Wählen Sie alle sichtbaren aus",
       "selectAllVisibleAssets": "Wählen Sie alle sichtbaren Assets aus",
       "selectAsset": "Asset {{asset}} auswählen",
-      "viewDetails": "Details anzeigen"
+      "viewDetails": "Details anzeigen",
+      "settings": "Einstellungen…"
     },
     "columns": {
       "approval": "Zustimmung",
@@ -241,6 +192,7 @@
     },
     "tabs": {
       "assets": "Assets",
+      "baselines": "Baselines",
       "changes": "Änderungen",
       "jobs": "Jobs",
       "profiles": "Profile",
@@ -340,7 +292,7 @@
     },
     "methods": {
       "ping": "ICMP Ping",
-      "arp": "ARP Sweep",
+      "arp": "ARP-Suche",
       "snmp": "SNMP Sonde",
       "portScan": "TCP Port-Scan"
     }
@@ -376,39 +328,6 @@
     },
     "title": "Entdeckungsprofile",
     "tryAgain": "Versuchen Sie es erneut"
-  },
-  "enableMonitoringForm": {
-    "actions": {
-      "addNetworkMonitor": "Netzwerkmonitor hinzufügen",
-      "enableSnmp": "Aktivieren Sie die SNMP-Überwachung",
-      "enabling": "Aktivieren..."
-    },
-    "description": "Die Überwachung unterstützt SNMP-Abfragen und Netzwerkprüfungen (Ping/TCP/HTTP/DNS). Sie können eine oder beide Funktionen konfigurieren.",
-    "errors": {
-      "communityRequired": "Für SNMP v1/v2c ist ein Community-String erforderlich",
-      "enable": "Die Überwachung konnte nicht aktiviert werden",
-      "generic": "Es ist ein Fehler aufgetreten",
-      "loadTemplates": "Vorlagen konnten nicht geladen werden",
-      "usernameRequired": "Für SNMP v3 ist ein Benutzername erforderlich"
-    },
-    "fields": {
-      "authPassword": "Auth-Passwort",
-      "authProtocol": "Auth-Protokoll",
-      "community": "Community-String",
-      "pollingInterval": "Abfrageintervall (Sekunden)",
-      "privacyPassword": "Datenschutzpasswort",
-      "privacyProtocol": "Datenschutzprotokoll",
-      "snmpVersion": "SNMP-Version",
-      "template": "Vorlage",
-      "username": "Benutzername"
-    },
-    "networkChecksDescription": "Fügen Sie Ping-, TCP-, HTTP- oder DNS-Monitore für dieses Asset hinzu.",
-    "networkChecksTitle": "Netzwerkprüfungen",
-    "noTemplate": "Keine Vorlage",
-    "placeholders": {
-      "community": "öffentlich"
-    },
-    "snmpTitle": "SNMP Geräteüberwachung"
   },
   "networkBaselinesPanel": {
     "actions": {
@@ -536,7 +455,7 @@
   },
   "networkChangesPanel": {
     "actions": {
-      "ack": "Ack",
+      "ack": "Bestätigen",
       "acknowledgeSelected": "Ausgewählte bestätigen",
       "acknowledging": "Anerkennung...",
       "details": "Details",

@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import PartnerSettingsPage, { runPartnerSave } from './PartnerSettingsPage';
+import { PARTNER_SETTINGS_SAVED_EVENT } from '../auth/MfaPolicyOffBanner';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { showToast } from '../shared/Toast';
@@ -29,16 +30,8 @@ vi.mock('@/lib/navigation', () => ({
   navigateTo: vi.fn(),
 }));
 
-// Stub the embedded ticketing sub-tab group — we only assert that the Partner
-// hub mounts it on the Ticketing tab, not the (separately tested) sub-tab
-// behaviour. The stub records the `syncHash` prop so we can assert the hub
-// disables hash-sync to avoid colliding with its own top-level tab hash.
-const ticketingTabsProps: Array<{ syncHash?: boolean }> = [];
-vi.mock('./TicketingSettingsTabs', () => ({
-  default: (props: { syncHash?: boolean }) => {
-    ticketingTabsProps.push(props);
-    return <div data-testid="stub-ticketing-settings-tabs">TicketingTabsStub</div>;
-  },
+vi.mock('./EmailTemplatesTab', () => ({
+  default: () => <div data-testid="stub-email-templates-tab">EmailTemplatesStub</div>,
 }));
 
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
@@ -347,6 +340,43 @@ describe('PartnerSettingsPage Company tab', () => {
     expect(body.settings.address.city).toBe('Denver');
   });
 
+  // Spec 2026-09-18 D4: MfaPolicyOffBanner (a layout island) re-checks the
+  // partner's requireMfa when this event fires, so turning MFA on here clears
+  // the banner without a navigation.
+  it('dispatches the partner-settings-saved event after a successful save', async () => {
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: [] }));
+    fetchWithAuthMock.mockResolvedValueOnce(
+      makeJsonResponse({
+        id: 'partner-1',
+        name: 'Acme MSP',
+        slug: 'acme',
+        type: 'partner',
+        plan: 'pro',
+        createdAt: '2026-02-09T00:00:00.000Z',
+        settings: { timezone: 'UTC', contact: {}, address: {} },
+      })
+    );
+    fetchWithAuthMock.mockResolvedValueOnce(
+      makeJsonResponse({ id: 'partner-1', name: 'Acme MSP Inc.', settings: {} })
+    );
+    const onSaved = vi.fn();
+    window.addEventListener(PARTNER_SETTINGS_SAVED_EVENT, onSaved);
+    try {
+      render(<PartnerSettingsPage />);
+      const nameInput = await screen.findByLabelText(/company name/i) as HTMLInputElement;
+      const user = userEvent.setup();
+      await user.clear(nameInput);
+      await user.type(nameInput, 'Acme MSP Inc.');
+      expect(onSaved).not.toHaveBeenCalled();
+
+      await user.click(screen.getByRole('button', { name: /save settings/i }));
+
+      await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1));
+    } finally {
+      window.removeEventListener(PARTNER_SETTINGS_SAVED_EVENT, onSaved);
+    }
+  });
+
   // #3430 — the Website field reached the API unvalidated. handleSave now blocks
   // the round-trip so the user gets a reason instead of a raw server 400.
   describe('website scheme guard blocks the save', () => {
@@ -499,7 +529,6 @@ describe('PartnerSettingsPage Ticketing tab', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     window.location.hash = '';
-    ticketingTabsProps.length = 0;
     useOrgStoreMock.mockReturnValue({ currentPartnerId: 'partner-1', isLoading: false } as never);
   });
 
@@ -510,12 +539,12 @@ describe('PartnerSettingsPage Ticketing tab', () => {
     render(<PartnerSettingsPage />);
 
     await screen.findByText('Partner Settings');
-    expect(screen.getByRole('link', { name: /^ticketing$/i })).not.toBeNull();
-    // Not the active tab by default, so the embedded tabs are not mounted yet.
-    expect(screen.queryByTestId('stub-ticketing-settings-tabs')).toBeNull();
+    expect(screen.getByTestId('partner-settings-tab-ticketing')).not.toBeNull();
+    // Not the active tab by default, so the link-out panel is not mounted yet.
+    expect(screen.queryByTestId('partner-settings-ticketing-link')).toBeNull();
   });
 
-  it('mounts the ticketing sub-tabs (hash-sync disabled) when the tab is clicked', async () => {
+  it('the Ticketing tab is a link to /settings/ticketing, not an embedded tab group', async () => {
     fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: [] }));
     fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse(partnerResponse));
 
@@ -523,25 +552,90 @@ describe('PartnerSettingsPage Ticketing tab', () => {
 
     await screen.findByText('Partner Settings');
     const user = userEvent.setup();
-    await user.click(screen.getByRole('link', { name: /^ticketing$/i }));
+    await user.click(screen.getByTestId('partner-settings-tab-ticketing'));
 
-    expect(screen.getByTestId('stub-ticketing-settings-tabs')).not.toBeNull();
-    // The hub owns the top-level tab hash, so the embedded group must NOT sync it.
-    expect(ticketingTabsProps.at(-1)).toMatchObject({ syncHash: false });
+    const link = await screen.findByTestId('partner-settings-ticketing-link');
+    expect(link).toHaveAttribute('href', '/settings/ticketing');
+    expect(screen.queryByTestId('ticketing-settings-tabs')).not.toBeInTheDocument();
     // Clicking the tab keeps the URL deep-linkable.
     expect(window.location.hash).toBe('#ticketing');
     // The inheritance banner is partner-config-only and must be hidden here.
     expect(screen.queryByText(/enforced across all organizations/i)).toBeNull();
   });
 
-  it('deep-links #ticketing straight to the Ticketing tab on mount', async () => {
+  it('deep-links #ticketing straight to the Ticketing tab panel on mount', async () => {
     window.location.hash = '#ticketing';
     fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: [] }));
     fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse(partnerResponse));
 
     render(<PartnerSettingsPage />);
 
-    expect(await screen.findByTestId('stub-ticketing-settings-tabs')).not.toBeNull();
+    expect(await screen.findByTestId('partner-settings-ticketing-link')).not.toBeNull();
+  });
+});
+
+describe('PartnerSettingsPage Email templates tab', () => {
+  const partnerResponse = {
+    id: 'partner-1',
+    name: 'Acme MSP',
+    slug: 'acme',
+    type: 'partner',
+    plan: 'pro',
+    createdAt: '2026-02-09T00:00:00.000Z',
+    settings: {
+      timezone: 'UTC',
+      dateFormat: 'MM/DD/YYYY',
+      timeFormat: '12h',
+      language: 'en',
+      businessHours: { preset: 'business' },
+      contact: {},
+      address: {},
+    },
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    window.location.hash = '';
+    useOrgStoreMock.mockReturnValue({ currentPartnerId: 'partner-1', isLoading: false } as never);
+  });
+
+  it('exposes an Email templates tab immediately after Ticketing', async () => {
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: [] }));
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse(partnerResponse));
+
+    render(<PartnerSettingsPage />);
+
+    await screen.findByText('Partner Settings');
+    expect(screen.getByRole('link', { name: /^email templates$/i })).not.toBeNull();
+    expect(screen.queryByTestId('stub-email-templates-tab')).toBeNull();
+    expect(screen.queryByText('Customer ticket emails')).toBeNull();
+    expect(screen.getByText(/quotes, invoices, invites/i)).not.toBeNull();
+  });
+
+  it('mounts the email templates tab as self-saving with hash #email-templates', async () => {
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: [] }));
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse(partnerResponse));
+
+    render(<PartnerSettingsPage />);
+
+    await screen.findByText('Partner Settings');
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('link', { name: /^email templates$/i }));
+
+    expect(screen.getByTestId('stub-email-templates-tab')).not.toBeNull();
+    expect(window.location.hash).toBe('#email-templates');
+    expect(screen.queryByRole('button', { name: /save settings/i })).toBeNull();
+    expect(screen.getByText('This section saves its own changes.')).not.toBeNull();
+  });
+
+  it('deep-links #email-templates straight to the Email templates tab on mount', async () => {
+    window.location.hash = '#email-templates';
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: [] }));
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse(partnerResponse));
+
+    render(<PartnerSettingsPage />);
+
+    expect(await screen.findByTestId('stub-email-templates-tab')).not.toBeNull();
   });
 });
 

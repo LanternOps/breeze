@@ -1,3 +1,5 @@
+const { ensureDefaultProfile } = vi.hoisted(() => ({ ensureDefaultProfile: vi.fn(async () => ({ id: 'default-profile' })) }));
+vi.mock('../services/billingProfileService', () => ({ ensureDefaultProfile }));
 vi.mock('../services/mfaPolicyActivation', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../services/mfaPolicyActivation')>()),
   lockMfaPolicySettings: vi.fn().mockResolvedValue(undefined),
@@ -9,6 +11,10 @@ import { orgRoutes } from './orgs';
 
 vi.mock('../services', () => ({}));
 
+vi.mock('../services/monitors/builtInMonitors', () => ({
+  ensureBuiltInMonitorsForPartner: vi.fn(async () => ({ provisioned: true, monitorIds: [] })),
+  ensureBuiltInMonitorsForAllPartners: vi.fn(async () => ({ provisioned: 0, skipped: 0, failed: 0 })),
+}));
 vi.mock('../db', () => {
   const db: Record<string, unknown> = {
     select: vi.fn(() => ({
@@ -35,7 +41,13 @@ vi.mock('../db', () => {
     })),
     delete: vi.fn(() => ({
       where: vi.fn(() => Promise.resolve())
-    }))
+    })),
+    // #3996 — the abort bounds its lock waits with tightenLockTimeout /
+    // tightenStatementTimeout (db/lockTimeout.ts), which are raw
+    // `db.execute(sql\`...\`)` statements. An empty result reads back as "prior
+    // value unknown", so the helpers leave the tighter bound in force and skip
+    // the restore — the right shape for a transactionless double.
+    execute: vi.fn(async () => [])
   };
   // POST /orgs/partners wraps insert + status seeding in db.transaction; the tx
   // delegates to the same mock so per-test db.insert overrides flow through.
@@ -54,6 +66,23 @@ vi.mock('../db', () => {
     SYSTEM_DB_ACCESS_CONTEXT: { scope: 'system', orgId: null, accessibleOrgIds: null }
   };
 });
+
+/**
+ * A select double that satisfies every shape the real `tenantOffboarding`
+ * abort path builds — including `.limit(n).for('update')` and a bare
+ * `.where(...)` that resolves. #3996 gave the DELETE handlers a lock phase
+ * (`SELECT ... FOR UPDATE` on the tenant row, then on its non-terminal
+ * `self_uninstall` rows) that runs BEFORE the status write, and this file
+ * drives the real service rather than mocking it, so a `where`-only stub makes
+ * those routes 500.
+ */
+function selectChainReturning(rows: unknown[] = []) {
+  const chain: Record<string, any> = {};
+  for (const method of ['from', 'innerJoin', 'where', 'orderBy', 'limit', 'for']) {
+    chain[method] = vi.fn(() => Object.assign(Promise.resolve(rows), chain));
+  }
+  return chain;
+}
 
 vi.mock('../db/schema', () => ({
   ticketStatuses: {},
@@ -169,7 +198,7 @@ describe('organization routes', () => {
       });
 
       const partners = [
-        { id: 'partner-1', name: 'Acme', slug: 'acme' },
+        { id: 'partner-1', name: 'Acme', slug: 'acme', currencyCode: 'USD' },
         { id: 'partner-2', name: 'Globex', slug: 'globex' }
       ];
 
@@ -217,7 +246,7 @@ describe('organization routes', () => {
       vi.mocked(db.insert).mockReturnValue({
         values: vi.fn().mockReturnValue({
           returning: vi.fn().mockResolvedValue([
-            { id: 'partner-1', name: 'Acme', slug: 'acme' }
+            { id: 'partner-1', name: 'Acme', slug: 'acme', currencyCode: 'USD' }
           ])
         })
       } as any);
@@ -234,6 +263,7 @@ describe('organization routes', () => {
       expect(res.status).toBe(201);
       const body = await res.json();
       expect(body.id).toBe('partner-1');
+      expect(ensureDefaultProfile).toHaveBeenCalledWith('partner-1', 'USD', db);
     });
 
     it('should update a partner tenant', async () => {
@@ -283,11 +313,7 @@ describe('organization routes', () => {
 
       // tenantLifecycle queries organizations / partnerUsers / organizationUsers
       // via db.select(...).from(...).where(...) and expects an array result.
-      vi.mocked(db.select).mockReturnValue({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockResolvedValue([])
-        })
-      } as any);
+      vi.mocked(db.select).mockReturnValue(selectChainReturning() as any);
 
       vi.mocked(db.update).mockReturnValue({
         set: vi.fn().mockReturnValue({
@@ -402,6 +428,7 @@ describe('organization routes', () => {
       const body = await res.json();
       expect(body.id).toBe('org-1');
       expect(values).toHaveBeenCalledWith(expect.objectContaining({ currencyCode: 'CAD' }));
+      expect(ensureDefaultProfile).toHaveBeenCalledWith('partner-123', 'CAD', db);
     });
 
     it('should fetch an organization by id', async () => {
@@ -453,11 +480,7 @@ describe('organization routes', () => {
     it('should delete an organization', async () => {
       // tenantLifecycle queries organizationUsers via db.select(...).from(...).where(...)
       // and expects an array result.
-      vi.mocked(db.select).mockReturnValue({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockResolvedValue([])
-        })
-      } as any);
+      vi.mocked(db.select).mockReturnValue(selectChainReturning() as any);
 
       vi.mocked(db.update).mockReturnValue({
         set: vi.fn().mockReturnValue({

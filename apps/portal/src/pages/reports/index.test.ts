@@ -29,6 +29,24 @@ describe('reports page structure', () => {
   });
 });
 
+describe('reports page hardware lifecycle card (W02)', () => {
+  it('loads branding and gates the card on enableLifecycle', () => {
+    expect(pageSource).toContain('loadPortalBranding(Astro.request)');
+    expect(pageSource).toMatch(/branding\.enableLifecycle/);
+  });
+
+  it('hands ReportRunList the lifecycle link (devices tab, or the standalone page when Self-service is off)', () => {
+    // The link renders INSIDE ReportRunList, under the page title, as a ruled
+    // row — a boxed card above the H1 read as a banner and put the page's
+    // name second. /reports/lifecycle stays for orgs whose /devices bounces
+    // home (#4932, #5880).
+    expect(pageSource).toMatch(/lifecycleHref=\{[\s\S]*withBase\([^)]*'\/devices#lifecycle'[^)]*'\/reports\/lifecycle'\)/);
+    expect(pageSource).toMatch(/branding\.enableSelfService !== false/);
+    expect(pageSource).toMatch(/branding\.enableLifecycle/);
+    expect(pageSource).not.toContain('data-testid="reports-lifecycle-card"');
+  });
+});
+
 describe('reports page visibility gate', () => {
   it('bounces through the shared helper', () => {
     expect(pageSource).toContain('isPortalPageDisabled(response)');

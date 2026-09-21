@@ -1,4 +1,6 @@
+import { ensureDefaultProfile } from '../services/billingProfileService';
 import { lockMfaPolicySettings, countMfaPolicyLockouts, mfaPolicyLockoutResponse } from '../services/mfaPolicyActivation';
+import { MFA_ENROLLMENT_GRACE_DAYS_MAX } from '../services/mfaEnrollmentGrace';
 import { isDeepStrictEqual } from 'node:util';
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
@@ -7,6 +9,7 @@ import { zValidator } from '../lib/validation';
 import { z } from 'zod';
 import { and, eq, ilike, inArray, isNull, ne, not, notInArray, or, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { resolveAuditOrgIdForPartner } from '../services/auditOrgResolver';
 import { partners, organizations, sites, devices, agentVersions, partnerUsers } from '../db/schema';
 // Imported from the CONCRETE schema module, not the '../db/schema' barrel:
 // several suites mock that barrel with a non-partial factory, and a plain
@@ -32,8 +35,8 @@ import {
   revokePartnerTenantAccess,
 } from '../services/tenantLifecycle';
 import {
-  abortOrganizationOffboarding,
-  abortPartnerOffboarding,
+  abortOrganizationOffboardingAroundStatusChange,
+  abortPartnerOffboardingAroundStatusChange,
   beginOrganizationOffboarding,
   beginPartnerOffboarding,
 } from '../services/tenantOffboarding';
@@ -54,13 +57,19 @@ import { syncBillingContactRow, syncSiteContactRow } from '../services/contacts/
 import { escapeLike } from '../utils/sql';
 import { PG_UUID_REGEX } from '../utils/uuid';
 import { isPgUniqueViolation } from '../utils/pgErrors';
-import { isAllowedLauncherScheme, isValidIanaTimezone, canonicalizeTimezone, isValidMaintenanceWindow, MAINTENANCE_WINDOW_ERROR_MESSAGE, normalizeVersionPin, PINNABLE_COMPONENTS, agentVersionPinsSchema, enrollmentDefaultsSchema, httpUrlValue, httpUrlField, SUPPORTED_LOCALES } from '@breeze/shared';
+import { isAllowedLauncherScheme, isValidIanaTimezone, canonicalizeTimezone, isValidMaintenanceWindow, MAINTENANCE_WINDOW_ERROR_MESSAGE, normalizeVersionPin, PINNABLE_COMPONENTS, agentVersionPinsSchema, enrollmentDefaultsSchema, httpUrlValue, httpUrlField, SUPPORTED_LOCALES, ticketingInboundSettingsSchema, timeTrackingSessionSuggestionsSchema, EMAIL_TEMPLATE_IDS, isBlankEmailTemplateHtml } from '@breeze/shared';
 import type { IpAllowlistStatus, ResolvedEnrollmentDefaults, SupportedLocale } from '@breeze/shared';
 import { getEnrollmentDefaultsForOrg } from '../services/enrollmentDefaults';
 import { isValidIpOrCidr } from '../services/ipMatch';
 import { applyNewPartnerDefaultSettings } from '../services/partnerDefaultSettings';
 import { seedSystemTicketStatuses } from '../services/ticketConfigService';
+import { ensureBuiltInMonitorsForPartner } from '../services/monitors/builtInMonitors';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
+import {
+  richTextStripWarning,
+  sanitizeRichTextHtmlWithReport,
+  type RichTextStripWarning,
+} from '../services/richTextSanitize';
 import {
   canManagePartnerWidePolicies,
   PARTNER_WIDE_WRITE_DENIED_MESSAGE,
@@ -74,6 +83,7 @@ import { registerOrgContactsRoutes } from './orgContacts';
 import { registerOrgPortalSettingsRoutes } from './orgPortalSettings';
 import { registerOrgPortalUsersRoutes } from './orgPortalUsers';
 import { registerOrgTicketSettingsRoutes } from './orgTicketSettings';
+import { registerOrgBillingProfileRoutes } from './orgBillingProfile';
 import { registerOrgAuditRetentionSettingsRoutes } from './orgAuditRetentionSettings';
 
 /**
@@ -95,6 +105,55 @@ function foldAllowedMfaMethodsAlias(settings: unknown): unknown {
     delete sec.allowedMfaMethods;
   }
   return settings;
+}
+
+const emailTemplateOverrideSchema = z.object({
+  subject: z.string().max(200).nullable().optional(),
+  heading: z.string().max(200).nullable().optional(),
+  buttonLabel: z.string().max(80).nullable().optional(),
+  html: z.string().max(20_000).nullable().optional(),
+}).strict();
+
+function blankToNull(value: string | null | undefined): string | null {
+  if (value == null) return null;
+  const trimmed = value.trim();
+  return trimmed === '' ? null : trimmed;
+}
+
+function normalizePartnerEmailTemplates(
+  incoming: Partial<Record<string, z.infer<typeof emailTemplateOverrideSchema>>>,
+): {
+  templates: Record<string, {
+    subject: string | null;
+    heading: string | null;
+    buttonLabel: string | null;
+    html: string | null;
+  }>;
+  warnings: RichTextStripWarning[];
+} {
+  const templates: Record<string, {
+    subject: string | null;
+    heading: string | null;
+    buttonLabel: string | null;
+    html: string | null;
+  }> = {};
+  const warnings: RichTextStripWarning[] = [];
+  for (const [id, raw] of Object.entries(incoming)) {
+    if (raw == null) continue;
+    const subject = blankToNull(raw.subject);
+    const heading = blankToNull(raw.heading);
+    const buttonLabel = blankToNull(raw.buttonLabel);
+    let html = blankToNull(raw.html);
+    if (html != null) {
+      const report = sanitizeRichTextHtmlWithReport(html);
+      html = blankToNull(report.html);
+      if (html && isBlankEmailTemplateHtml(html)) html = null;
+      const warning = richTextStripWarning(`emailTemplates.${id}.html`, report);
+      if (warning) warnings.push(warning);
+    }
+    templates[id] = { subject, heading, buttonLabel, html };
+  }
+  return { templates, warnings };
 }
 
 export const orgRoutes = new Hono();
@@ -228,6 +287,10 @@ export const createOrganizationSchema = z.object({
 // makes no sense, so the create schema keeps the original set.
 export const updateOrganizationSchema = createOrganizationSchema.partial().omit({ partnerId: true }).extend({
   status: z.enum(['active', 'suspended', 'trial', 'churned', 'offboarding']).optional(),
+  // Execution plane W05 (spec §8). Consent for sandboxed analysis to run on
+  // rented compute. Settable on UPDATE only — an org is never created already
+  // consenting, and the create schema deliberately stays as it was.
+  aiExternalProcessing: z.boolean().optional(),
 });
 
 // #3967 — `organizations.slug` is unique PER PARTNER, case-insensitively, and
@@ -350,31 +413,6 @@ async function ensureOrgAccess(
   return true;
 }
 
-async function resolveAuditOrgIdForPartner(partnerId: string | null): Promise<string | null> {
-  if (!partnerId) {
-    return null;
-  }
-
-  try {
-    const [org] = await db
-      .select({ id: organizations.id })
-      .from(organizations)
-      // The hidden 'quick_support' org is a real row under the partner and could
-      // easily be the oldest — never let it become the audit fallback org.
-      .where(and(
-        eq(organizations.partnerId, partnerId),
-        ne(organizations.type, 'quick_support'),
-        isNull(organizations.deletedAt),
-      ))
-      .orderBy(organizations.createdAt)
-      .limit(1);
-
-    return org?.id ?? null;
-  } catch (err) {
-    console.error('[audit] Failed to resolve orgId for partner:', partnerId, err);
-    return null;
-  }
-}
 
 orgRoutes.use('*', authMiddleware);
 
@@ -531,7 +569,11 @@ orgRoutes.post('/partners', requireScope('system'), requireOrgWrite, requireMfa(
       })
       .returning(partnerPublicColumns());
     if (newPartner) {
+      await ensureDefaultProfile(newPartner.id, newPartner.currencyCode, tx);
       await seedSystemTicketStatuses(tx, newPartner.id);
+      // createdBy stays NULL: the platform admin creating this partner is a
+      // foreign tenant identifier here, and users.id has no ON DELETE on this FK.
+      await ensureBuiltInMonitorsForPartner(newPartner.id, { createdBy: null, exec: tx });
     }
     return [newPartner];
   });
@@ -626,6 +668,19 @@ const partnerSettingsSchema = z.object({
     complexity: z.enum(['standard', 'strict', 'passphrase']).optional(),
     expirationDays: z.number().int().min(0).optional(),
     requireMfa: z.boolean().optional(),
+    // #5306 — how long a user whose ROLE forces MFA (roles.force_mfa) may keep
+    // working before enrolment is enforced. Optional on purpose: a PATCH that
+    // omits it must not overwrite a configured window with the default. 0 means
+    // enforce immediately; the 30-day ceiling is deliberate — a longer standing
+    // exception is a policy decision, not a grace period. Lowering it SHORTENS
+    // windows already granted (services/mfaEnrollmentGrace.ts takes the min);
+    // raising it only affects grants made afterwards.
+    mfaEnrollmentGraceDays: z
+      .number()
+      .int()
+      .min(0)
+      .max(MFA_ENROLLMENT_GRACE_DAYS_MAX)
+      .optional(),
     allowedMethods: z.object({ totp: z.boolean().optional(), sms: z.boolean().optional() }).optional(),
     // Legacy input alias. Accepted so older clients don't 400, folded into
     // `allowedMethods` at write time (foldAllowedMfaMethodsAlias) and never
@@ -781,16 +836,10 @@ const partnerSettingsSchema = z.object({
   // W06 (#3900): partner-wide time-tracking suggestion flags. Deep-merged one
   // level in the PATCH handler so the location spec's sibling
   // `timeTracking.locationSuggestions` survives a save that only carries this key.
-  // `.strict()` on the inner object so a typo ("enabledd") is a 400 rather than a
-  // silently stored no-op; `.passthrough()` on the wrapper so the sibling block
-  // this wave does not own is neither rejected nor stripped.
-  timeTracking: z.object({
-    sessionSuggestions: z.object({
-      enabled: z.boolean().optional(),
-      minSessionSeconds: z.number().int().min(30).max(3600).optional(),
-      mergeGapMinutes: z.number().int().min(0).max(120).optional()
-    }).strict().optional()
-  }).passthrough().optional(),
+  // Schema promoted to @breeze/shared (W02-API / M14) so the reads in
+  // timeSuggestionSettings.ts validate against the same contract this write
+  // boundary enforces; its `.strict()`/`.passthrough()` rationale lives there.
+  timeTracking: timeTrackingSessionSuggestionsSchema.optional(),
 
   // PATCH /partners/me deep-merges `ticketing` one level (see the handler), so a
   // future sibling like `ticketing.outbound` survives — but the `inbound` sub-object
@@ -798,25 +847,12 @@ const partnerSettingsSchema = z.object({
   // object each time (incl. the `address` self-hosted override read back via
   // getTicketConfig).
   ticketing: z.object({
-    inbound: z.object({
-      enabled: z.boolean().optional(),
-      address: z.string().email().optional().or(z.literal('')),
-      defaultTriageOrgId: z.string().guid().nullable().optional(),
-      autoresponderEnabled: z.boolean().optional(),
-      // Unknown-sender routing. `unknownSenderMode` is the current 3-way control;
-      // `triageUnknownSenders` is the legacy boolean still accepted for back-compat
-      // (loadPartnerInboundPolicy maps it true→'triage'). The card now sends
-      // `unknownSenderMode`, which retires the legacy key on the next save (the
-      // inbound sub-object is replaced wholesale).
-      unknownSenderMode: z.enum(['quarantine', 'triage', 'drop']).optional(),
-      triageUnknownSenders: z.boolean().optional(),
-      // When true, senders failing the SPF/DKIM/DMARC gate are dropped silently
-      // instead of quarantined. Default-off; applies to all unverified senders.
-      dropUnverifiedSenders: z.boolean().optional(),
-      autoresponseSubject: z.string().max(200).nullable().optional(),
-      autoresponseBody: z.string().max(5000).nullable().optional(),
-    }).optional(),
+    // Schema promoted to @breeze/shared (W02-API / M14) so the three read
+    // sites validate against the same contract this write boundary enforces.
+    inbound: ticketingInboundSettingsSchema.optional(),
   }).optional(),
+  // One-level merge by template id (see PATCH /partners/me). Unknown ids 400.
+  emailTemplates: z.partialRecord(z.enum(EMAIL_TEMPLATE_IDS), emailTemplateOverrideSchema).optional(),
 });
 
 const updatePartnerSettingsSchema = z.object({
@@ -961,6 +997,16 @@ orgRoutes.patch(
     newSettings.timeTracking = {
       ...((currentSettings.timeTracking as Record<string, unknown> | undefined) ?? {}),
       ...body.settings.timeTracking,
+    };
+  }
+
+  let emailTemplateWarnings: RichTextStripWarning[] = [];
+  if (body.settings?.emailTemplates) {
+    const { templates, warnings } = normalizePartnerEmailTemplates(body.settings.emailTemplates);
+    emailTemplateWarnings = warnings;
+    newSettings.emailTemplates = {
+      ...((currentSettings.emailTemplates as Record<string, unknown> | undefined) ?? {}),
+      ...templates,
     };
   }
 
@@ -1147,6 +1193,9 @@ orgRoutes.patch(
     details: { changedFields: Object.keys(body) }
   });
 
+  if (emailTemplateWarnings.length > 0) {
+    return c.json({ ...partner, warnings: emailTemplateWarnings });
+  }
   return c.json(partner);
 });
 
@@ -1256,11 +1305,27 @@ orgRoutes.patch('/partners/:id', requireScope('system'), requireOrgWrite, requir
     updates.settings = encryptColumnValueForWrite('partners', 'settings', updates.settings);
   }
 
-  const [partner] = await db
-    .update(partners)
-    .set(updates)
-    .where(and(eq(partners.id, id), isNull(partners.deletedAt)))
-    .returning(partnerPublicColumns());
+  const runPartnerUpdate = async () => {
+    const [row] = await db
+      .update(partners)
+      .set(updates)
+      .where(and(eq(partners.id, id), isNull(partners.deletedAt)))
+      .returning(partnerPublicColumns());
+    return row;
+  };
+
+  // #3996 — same ordering contract as the org route: a status write that ends
+  // a partner drain locks and cancels the queued uninstalls in its OWN
+  // transaction, because the moment the partner stops reading as `offboarding`
+  // every agent under every one of its orgs is back on the ordinary claim
+  // path. Scoped to exactly the statuses that abort below (`pending` is
+  // deliberately not one of them — see the branch comments).
+  const statusEndsPartnerDrain =
+    'status' in data
+    && (data.status === 'suspended' || data.status === 'churned' || data.status === 'active');
+  const partner = statusEndsPartnerDrain
+    ? (await abortPartnerOffboardingAroundStatusChange(id, runPartnerUpdate)).statusChange
+    : await runPartnerUpdate();
 
   if (!partner) {
     return c.json({ error: 'Partner not found' }, 404);
@@ -1283,14 +1348,12 @@ orgRoutes.patch('/partners/:id', requireScope('system'), requireOrgWrite, requir
     // drain reaper severs and flips to churned.
     await beginPartnerOffboarding(partner.id, auth.user?.id ?? null);
   } else if ('status' in data && (data.status === 'suspended' || data.status === 'churned')) {
-    // Cancel in-flight drain uninstalls first (no-op unless offboarding) —
-    // an uncollected self_uninstall must not survive into a later
-    // reactivation of a suspended partner.
-    await abortPartnerOffboarding(partner.id);
+    // In-flight drain uninstalls were cancelled with the status write above
+    // (#3996; no-op unless offboarding) — an uncollected self_uninstall must
+    // not survive into a later reactivation of a suspended partner.
     await revokePartnerTenantAccess(partner.id);
   } else if ('status' in data && data.status === 'active') {
     // Reactivation: restore agent tokens this partner's revoke suspended.
-    await abortPartnerOffboarding(partner.id);
     await restorePartnerTenantAccess(partner.id);
   }
 
@@ -1315,19 +1378,25 @@ orgRoutes.delete('/partners/:id', requireScope('system'), requireOrgWrite, requi
   const auth = c.get('auth');
   const id = c.req.param('id')!;
 
-  const [partner] = await db
-    .update(partners)
-    .set({ status: 'churned', deletedAt: new Date(), updatedAt: new Date() })
-    .where(and(eq(partners.id, id), isNull(partners.deletedAt)))
-    .returning();
+  // Hard delete keeps the immediate-sever semantics; if a drain was in
+  // progress, cancel its uninstalls so nothing lingers (no-op otherwise) —
+  // locked and committed with the status write, never after it (#3996).
+  const { statusChange: partner } = await abortPartnerOffboardingAroundStatusChange(
+    id,
+    async () => {
+      const [row] = await db
+        .update(partners)
+        .set({ status: 'churned', deletedAt: new Date(), updatedAt: new Date() })
+        .where(and(eq(partners.id, id), isNull(partners.deletedAt)))
+        .returning();
+      return row;
+    }
+  );
 
   if (!partner) {
     return c.json({ error: 'Partner not found' }, 404);
   }
 
-  // Hard delete keeps the immediate-sever semantics; if a drain was in
-  // progress, cancel its uninstalls so nothing lingers (no-op otherwise).
-  await abortPartnerOffboarding(partner.id);
   await revokePartnerTenantAccess(partner.id);
 
   const auditOrgId = auth.orgId ?? await resolveAuditOrgIdForPartner(id);
@@ -1784,6 +1853,7 @@ orgRoutes.post('/organizations', requireScope('partner', 'system'), requireOrgWr
   const insertOrganization = () => runOutsideDbContext(() =>
     withSystemDbAccessContext(async () => {
       const created = await db.insert(organizations).values(insertValues).returning();
+      if (created[0]) await ensureDefaultProfile(insertValues.partnerId, partnerRow.currencyCode, db);
       // The `contacts` mirror is written inside this SAME system-scoped context,
       // for the same reason the insert above needs one: the new org's id is not
       // in the caller's accessible_org_ids yet, so breeze_has_org_access(org_id)
@@ -1946,11 +2016,23 @@ orgRoutes.get('/organizations/:id', requireScope('partner', 'system'), requireOr
   // get one shape regardless of who asked — including the `offboarding` half of
   // an archive drain (#4166), which the list route now serves flagged for both
   // scopes.
+  // Additive field for the org billing settings screen's inherited tax-rate
+  // control (settings consolidation, W02-WEB / M10). Read in the AMBIENT
+  // request context — no escalation: this route already requires `partner` or
+  // `system` scope, and `partners` RLS grants a partner-scoped actor its own
+  // partner row, so `readWithPartnerAxisVisibility` would buy nothing here.
+  const [partnerRow] = await db
+    .select({ defaultTaxRate: partners.defaultTaxRate })
+    .from(partners)
+    .where(eq(partners.id, organization.partnerId))
+    .limit(1);
+  const partnerDefaultTaxRate = partnerRow?.defaultTaxRate ?? null;
+
   if (isArchiveLifecycleRow(organization)) {
-    return c.json({ ...organization, archived: true as const });
+    return c.json({ ...organization, archived: true as const, partnerDefaultTaxRate });
   }
 
-  return c.json(organization);
+  return c.json({ ...organization, partnerDefaultTaxRate });
 });
 
 orgRoutes.get('/organizations/:id/effective-settings',
@@ -2263,6 +2345,12 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWriteOrPl
   if (data.slug !== undefined) updates.slug = data.slug;
   if (data.type !== undefined) updates.type = data.type;
   if (data.status !== undefined) updates.status = data.status;
+  // Execution plane W05 (spec §8). The handler's writeRouteAudit already
+  // records `changedFields: Object.keys(data)`, so flipping this is attributable
+  // with no further change — which is the point for a consent flag.
+  if (data.aiExternalProcessing !== undefined) {
+    updates.aiExternalProcessing = data.aiExternalProcessing;
+  }
   if (data.settings !== undefined) {
     const count = await countMfaPolicyLockouts({ kind: 'organization', id }, data.settings);
     if (count) return c.json(mfaPolicyLockoutResponse(count), 409);
@@ -2362,11 +2450,35 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWriteOrPl
   // transaction (matching the create path) instead of adding statements after
   // this catch. The suspendedLifecycleOverride branch is already immune: it
   // opens a fresh system-scoped tx of its own.
+  // #3996 — a status write that ENDS a drain must not become visible before
+  // the drain's queued `self_uninstall` rows are locked and cancelled: the
+  // instant the tenant stops reading as `offboarding`, every agent under it
+  // authenticates on the ordinary path where that row is an ordinary
+  // claimable command. `abortOrganizationOffboardingAroundStatusChange` locks
+  // the rows, runs this UPDATE, and cancels — all in one transaction, which on
+  // the #2879 override branch replaces the two-transaction split that made the
+  // intermediate state committed and observable. It supplies that branch's
+  // system context itself (the suspended org is outside the request's
+  // accessible set, so `inCallerOrSystemDbContext` falls through to a fresh
+  // system context — exactly the context `runUpdate` needs), and reuses the
+  // request transaction on every other path.
+  //
+  // The branch condition must stay in lockstep with the abort branches below:
+  // every defined status other than `offboarding` ends a drain.
+  const statusEndsDrain = data.status !== undefined && data.status !== 'offboarding';
   let organization: Awaited<ReturnType<typeof runUpdate>>[number] | undefined;
   try {
-    [organization] = suspendedLifecycleOverride
-      ? await runOutsideDbContext(() => withSystemDbAccessContext(runUpdate))
-      : await runUpdate();
+    if (statusEndsDrain) {
+      const composed = await abortOrganizationOffboardingAroundStatusChange(
+        id,
+        async () => (await runUpdate())[0]
+      );
+      organization = composed.statusChange;
+    } else {
+      [organization] = suspendedLifecycleOverride
+        ? await runOutsideDbContext(() => withSystemDbAccessContext(runUpdate))
+        : await runUpdate();
+    }
   } catch (error) {
     if (isPgUniqueViolation(error, ORG_SLUG_UNIQUE_INDEX)) {
       // Only reachable when a concurrent write claimed the slug between the
@@ -2405,13 +2517,12 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWriteOrPl
   } else if (data.status !== undefined && data.status !== 'active' && data.status !== 'trial') {
     // Leaving a drain for suspended/churned must not leave uncollected
     // self_uninstalls behind: a later reactivation would deliver them to the
-    // reinstated fleet. No-op when the org wasn't offboarding.
-    await abortOrganizationOffboarding(organization.id);
+    // reinstated fleet. The cancel already ran in the same transaction as the
+    // status UPDATE above (#3996) — no-op when the org wasn't offboarding.
     await revokeOrganizationTenantAccess(organization.id);
   } else if (data.status === 'active' || data.status === 'trial') {
-    // Reactivation: cancel any in-flight drain uninstalls (see above), then
-    // restore agent tokens this org's revoke suspended.
-    await abortOrganizationOffboarding(organization.id);
+    // Reactivation: the in-flight drain uninstalls were cancelled with the
+    // status write (#3996); restore agent tokens this org's revoke suspended.
     await restoreOrganizationTenantAccess(organization.id);
   }
 
@@ -2441,6 +2552,7 @@ registerOrgPortalSettingsRoutes(orgRoutes);
 registerOrgPortalUsersRoutes(orgRoutes);
 // Org ticketing overrides (org_ticket_settings) — see routes/orgTicketSettings.ts
 registerOrgTicketSettingsRoutes(orgRoutes);
+registerOrgBillingProfileRoutes(orgRoutes);
 // Audit-log retention policy (audit_retention_policies) — see routes/orgAuditRetentionSettings.ts
 registerOrgAuditRetentionSettingsRoutes(orgRoutes);
 // First-class contacts (contacts + the dedicated importer) — see routes/orgContacts.ts
@@ -2456,19 +2568,26 @@ orgRoutes.delete('/organizations/:id', requireScope('partner', 'system'), requir
 
   const conditions = and(eq(organizations.id, id), isNull(organizations.deletedAt));
 
-  const [organization] = await db
-    .update(organizations)
-    .set({ status: 'churned', deletedAt: new Date(), updatedAt: new Date() })
-    .where(conditions)
-    .returning();
+  // Hard delete keeps the immediate-sever semantics; if a drain was in
+  // progress, cancel its uninstalls so nothing lingers (no-op otherwise).
+  // #3996 — `churned` is not a draining status either, so the cancel has to be
+  // locked and committed with the status write, not after it.
+  const { statusChange: organization } = await abortOrganizationOffboardingAroundStatusChange(
+    id,
+    async () => {
+      const [row] = await db
+        .update(organizations)
+        .set({ status: 'churned', deletedAt: new Date(), updatedAt: new Date() })
+        .where(conditions)
+        .returning();
+      return row;
+    }
+  );
 
   if (!organization) {
     return c.json({ error: 'Organization not found' }, 404);
   }
 
-  // Hard delete keeps the immediate-sever semantics; if a drain was in
-  // progress, cancel its uninstalls so nothing lingers (no-op otherwise).
-  await abortOrganizationOffboarding(organization.id);
   await revokeOrganizationTenantAccess(organization.id);
 
   writeRouteAudit(c, {

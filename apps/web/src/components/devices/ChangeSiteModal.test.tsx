@@ -52,8 +52,11 @@ describe('ChangeSiteModal', () => {
     );
 
     await waitFor(() => {
+      // `fetchAllSites` (#6412) pages to exhaustion, so the request also
+      // carries explicit `page`/`limit` params and an (undefined) init arg.
       expect(fetchWithAuthMock).toHaveBeenCalledWith(
-        `/orgs/sites?organizationId=${device.orgId}`
+        `/orgs/sites?organizationId=${device.orgId}&page=1&limit=100`,
+        undefined,
       );
     });
   });

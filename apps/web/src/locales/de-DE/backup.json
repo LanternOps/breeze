@@ -405,8 +405,7 @@
     "signedAt": "Unterzeichnet bei:",
     "noRecoveryBundlesHaveBeenCreatedForThis": "Für dieses Token wurden noch keine Wiederherstellungspakete erstellt.",
     "bootableRecoveryMedia": "Bootfähiges Wiederherstellungsmedium",
-    "buildASignedLinuxAmd64RecoveryIsoFrom": "Erstellen Sie aus dem neuesten signierten Wiederherstellungspaket eine signierte Linux/amd64-Wiederherstellungs-ISO.",
-    "createIso": "ISO erstellen",
+    "bootableRecoveryMediaDescription": "Signierte Breeze-Wiederherstellungs-ISOs, mit jedem Release erstellt und veröffentlicht. Schreiben Sie eine auf einen USB-Stick oder hängen Sie sie als virtuelles Medium ein, um die geführte Wiederherstellungskonsole zu starten.",
     "downloadIso": "ISO herunterladen",
     "via": "über",
     "noBootableRecoveryMediaHasBeenCreatedFor": "Für dieses Token wurde noch kein bootfähiges Wiederherstellungsmedium erstellt.",
@@ -466,9 +465,7 @@
     "failedToCopyToClipboard": "Kopieren in die Zwischenablage fehlgeschlagen.",
     "failedToCreateRecoveryBundle": "Wiederherstellungspaket konnte nicht erstellt werden",
     "failedToDownloadRecoveryBundle": "Das Wiederherstellungspaket konnte nicht heruntergeladen werden",
-    "failedToCreateBootableRecoveryMedia": "Es konnte kein bootfähiges Wiederherstellungsmedium erstellt werden",
     "failedToDownloadRecoveryBundleSignature": "Die Signatur des Wiederherstellungspakets konnte nicht heruntergeladen werden",
-    "failedToDownloadBootMediaSignature": "Das Herunterladen der Boot-Mediensignatur ist fehlgeschlagen",
     "failedToDownloadBootableRecoveryMedia": "Das Herunterladen des bootfähigen Wiederherstellungsmediums ist fehlgeschlagen",
     "copied": "Kopiert",
     "copyCommand": "Befehl kopieren",
@@ -498,6 +495,8 @@
     "originalLocation": "Ursprünglicher Standort",
     "restoreFilesInPlace": "Dateien an Ort und Stelle wiederherstellen.",
     "alternatePath": "Alternativer Pfad",
+    "alternatePathPlaceholder": "z. B. D:\\Restored oder /var/restore",
+    "alternatePathRequired": "Geben Sie einen Zielpfad ein, um fortzufahren.",
     "restoreToANewFolder": "In einem neuen Ordner wiederherstellen.",
     "reviewConfirm": "Überprüfen und bestätigen",
     "confirmTheRestoreSummaryBeforeStarting": "Bestätigen Sie die Wiederherstellungszusammenfassung, bevor Sie beginnen.",
@@ -620,7 +619,12 @@
     "cpu": "CPU,",
     "mbRam": "MB RAM,",
     "gbDisk": "GB-Festplatte",
-    "mode": "Modus"
+    "mode": "Modus",
+    "rebuildHost": "Rebuild-Host",
+    "outputPath": "Ausgabepfad",
+    "rebuildEngine": "Rebuild-Engine (Linux)",
+    "manualAttachNote": "Hängen Sie die VHDX-Datei manuell an eine Hyper-V-VM an; die automatische VM-Erstellung für Linux-Gäste kommt mit der Windows-Engine.",
+    "newIdentityNote": "Das umgebaute Abbild erhält immer eine neue Maschinenidentität und übernimmt nie die Identität des ursprünglichen Geräts."
   },
   "vMRestoreSpecsStep": {
     "vmSpecifications": "VM-Spezifikationen",
@@ -658,7 +662,16 @@
     "bootsTheVmDirectlyFromTheBackupStorage": "Startet die VM direkt vom Backup-Speicher. In Sekundenschnelle fertig. Bei der Hintergrundmigration werden Daten auf den Host kopiert.",
     "back": "Zurück",
     "continue": "Weiter",
-    "starting": "Beginnt..."
+    "starting": "Beginnt...",
+    "rebuildEngineLinux": "Rebuild-Engine (Linux)",
+    "rebuildEngineDescription": "Baut diesen Linux-Ganzmaschinen-Snapshot auf einem Linux-Gerät mit dem Breeze-Helper zu einem Hyper-V-VHDX-Datenträgerabbild um. Das Abbild erhält immer eine neue Maschinenidentität.",
+    "selectRebuildHost": "Linux-Rebuild-Host auswählen",
+    "chooseALinuxDeviceWithQemuUtils": "Wählen Sie ein Linux-Gerät, das online ist, qemu-utils installiert hat und genügend freien Speicher für das Abbild bietet.",
+    "outputPath": "Ausgabepfad",
+    "outputPathHint": "Absoluter Pfad auf dem Rebuild-Host, der auf .vhdx endet.",
+    "outputPathInvalid": "Geben Sie einen absoluten Pfad ein, der auf .vhdx endet.",
+    "startRebuild": "Rebuild starten",
+    "rebuildStarted": "Rebuild gestartet. Die VHDX-Datei erscheint auf dem Rebuild-Host, sobald der Rebuild abgeschlossen ist."
   },
   "vaultConfigDialog": {
     "device": "Gerät",
@@ -719,7 +732,15 @@
     "launchExecution": "Ausführung starten",
     "startANewDrRunFor": "Starten Sie einen neuen DR-Lauf für",
     "cancel": "Abbrechen",
-    "startExecution": "Ausführung starten"
+    "startExecution": "Ausführung starten",
+    "executeErrorFallback": "Ausführung konnte nicht gestartet werden.",
+    "executeErrorNoRestorableSnapshot": "Start nicht möglich: Ein Gerät in einer Bare-Metal-Neuaufbau-Gruppe hat keinen wiederherstellbaren Sicherungs-Snapshot. Führen Sie zuerst für jedes Gerät dieser Gruppe eine erfolgreiche Sicherung aus.",
+    "executeErrorNoRecoverySource": "Start nicht möglich: Eine Wiederherstellungsgruppe nennt keine Wiederherstellungsquelle. Fügen Sie der Gruppe einen Snapshot, einen Wiederherstellungsauftrag oder ein Wiederherstellungstoken hinzu.",
+    "executeErrorGroupHasNoValidDevices": "Start nicht möglich: Eine Wiederherstellungsgruppe enthält keine gültigen Geräte. Bearbeiten Sie den Plan und fügen Sie jeder Gruppe mindestens ein Gerät hinzu.",
+    "executeErrorInvalidSourceReference": "Start nicht möglich: Eine Wiederherstellungsgruppe verweist auf eine Wiederherstellungsquelle, die keine gültige Kennung ist. Bearbeiten Sie die Gruppe und wählen Sie die Quelle erneut aus.",
+    "executeErrorInvalidStepConfig": "Start nicht möglich: Eine Wiederherstellungsgruppe hat eine ungültige Schrittkonfiguration. Bearbeiten Sie die Gruppe und korrigieren Sie ihre Einstellungen.",
+    "executeErrorResourceNotFound": "Start nicht möglich: Ein von diesem Plan referenzierter Snapshot existiert nicht mehr. Bearbeiten Sie die betroffene Gruppe und wählen Sie einen aktuellen Snapshot.",
+    "executeErrorBackupWriteRequired": "Start nicht möglich: Dieser Plan enthält eine Bare-Metal-Neuaufbau-Gruppe, die die Schreibberechtigung für Sicherungen erfordert."
   },
   "dRExecutionView": {
     "executionDetails": "Ausführungsdetails",
@@ -742,7 +763,28 @@
     "executionDetailsAreUnavailable": "Ausführungsdetails sind nicht verfügbar.",
     "abortDisasterRecoveryExecution": "Ausführung der Notfallwiederherstellung abbrechen?",
     "deviceCount_one": "{{count}} Gerät",
-    "deviceCount_other": "{{count}} Geräte"
+    "deviceCount_other": "{{count}} Geräte",
+    "recoveryStatus": {
+      "created": "Code ausgestellt",
+      "media_booted": "Medium gestartet",
+      "planned": "Geplant",
+      "restoring": "Wiederherstellung läuft",
+      "validated": "Validiert",
+      "rebooted": "Neu gestartet",
+      "checked_in": "Angemeldet",
+      "completed": "Abgeschlossen",
+      "failed": "Fehlgeschlagen",
+      "refused": "Abgelehnt",
+      "unknown": "Wiederherstellung ausstehend"
+    },
+    "reissueCode": "Code neu ausstellen",
+    "reissueCodeFailed": "Der Wiederherstellungscode konnte nicht neu ausgestellt werden",
+    "cancelRecovery": "Wiederherstellung abbrechen",
+    "cancelRecoveryFailed": "Die Wiederherstellung konnte nicht abgebrochen werden",
+    "recoveryCancelled": "Wiederherstellung abgebrochen",
+    "codeShownOnce": "Dieser Code wird nur einmal angezeigt und läuft in 15 Minuten ab. Geben Sie ihn an der Eingabeaufforderung des Wiederherstellungsmediums ein.",
+    "copyCode": "Code kopieren",
+    "copied": "Kopiert"
   },
   "dRPlanEditor": {
     "defineRecoveryObjectivesSequenceGroupsAndAssignDevices": "Definieren Sie Wiederherstellungsziele, ordnen Sie Gruppen zu und weisen Sie Geräte in der Wiederherstellungsreihenfolge zu.",
@@ -772,7 +814,11 @@
     "groupCount_one": "{{count}} Gruppe",
     "groupCount_other": "{{count}} Gruppen",
     "uniqueDeviceCount_one": "{{count}} einzigartiges Gerät",
-    "uniqueDeviceCount_other": "{{count}} einzigartige Geräte"
+    "uniqueDeviceCount_other": "{{count}} einzigartige Geräte",
+    "chooseAStepTypeForEachGroup": "Wählen Sie für jede Wiederherstellungsgruppe einen Schritttyp.",
+    "rebuildWaitTimeoutOutOfRange": "Das Wartezeitlimit für den Bare-Metal-Neuaufbau muss eine ganze Zahl zwischen {{min}} und {{max}} Minuten sein.",
+    "rebuildOutputDirMustBeAbsolute": "Das Ausgabeverzeichnis für den Bare-Metal-Neuaufbau muss ein absoluter Pfad sein, der mit \"/\" beginnt, und darf höchstens {{max}} Zeichen lang sein.",
+    "partialSaveFailure": "Ein Teil dieses Plans wurde vor dem Fehler gespeichert, daher können Plan und Liste jetzt voneinander abweichen. Beheben Sie das Problem und speichern Sie erneut. Server meldet: {{message}}"
   },
   "dRPlanGroupCard": {
     "device": "Gerät",
@@ -787,7 +833,23 @@
     "deviceSelection": "Geräteauswahl",
     "noDevicesAvailableToAssign": "Es sind keine Geräte zum Zuweisen verfügbar.",
     "deviceCount_one": "{{count}} Gerät",
-    "deviceCount_other": "{{count}} Geräte"
+    "deviceCount_other": "{{count}} Geräte",
+    "stepType": "Schritttyp",
+    "chooseAStepType": "Schritttyp wählen",
+    "stepTypes": {
+      "vmRestoreFromBackup": "VM aus Backup wiederherstellen",
+      "vmInstantBoot": "VM-Sofortstart",
+      "hypervRestore": "Hyper-V-Wiederherstellung",
+      "mssqlRestore": "SQL-Server-Wiederherstellung",
+      "bmrRecover": "Bare-Metal-Wiederherstellung (Startmedium)",
+      "bareMetalRebuild": "Bare-Metal-Neuaufbau (Rebuild-Engine)"
+    },
+    "rebuildHost": "Rebuild-Host",
+    "rebuildHostHint": "Linux-Gerät mit qemu-utils, das Proben ausführt. Beim Failover wird stattdessen auf jedem Gerät das Wiederherstellungsmedium gestartet.",
+    "outputDir": "Ausgabeverzeichnis",
+    "outputDirHint": "Verzeichnis auf dem Rebuild-Host, das pro Gerät ein VHDX-Image erhält.",
+    "waitTimeout": "Wartezeitlimit (Min.)",
+    "waitTimeoutHint": "Minuten, die auf die Anmeldung jedes Geräts gewartet wird, bevor der Schritt fehlschlägt."
   },
   "profiles": {
     "title": "Sicherungsprofile",
@@ -801,6 +863,7 @@
     "inUseCount_other": "Verwendet von {{count}} Richtlinien",
     "sourceFile": "Dateien",
     "sourceSystemState": "Systemstatus",
+    "sourceWholeMachine": "Gesamtes System",
     "sourceSql": "SQL Server",
     "sourceHyperv": "Hyper-V",
     "templateTitle": "Neues Sicherungsprofil",
@@ -871,5 +934,31 @@
     "deleteConfirmBody": "„{{name}}\" löschen? Dies kann nicht rückgängig gemacht werden.",
     "deleteInUse_one": "Dieses Profil wird von {{count}} Konfigurationsrichtlinie verwendet. Heben Sie die Verknüpfung dort zuerst auf.",
     "deleteInUse_other": "Dieses Profil wird von {{count}} Konfigurationsrichtlinien verwendet. Heben Sie die Verknüpfung dort zuerst auf."
+  },
+  "bareMetalRecovery": {
+    "title": "Bare-Metal-Wiederherstellung",
+    "description": "Erstellen Sie einen einmaligen Wiederherstellungscode, um einen kompletten Rechner aus einem Snapshot auf neuer oder reparierter Hardware wiederherzustellen.",
+    "snapshotLabel": "Snapshot",
+    "selectSnapshotPlaceholder": "Snapshot auswählen…",
+    "selectSnapshotFirst": "Wählen Sie zuerst einen Snapshot aus.",
+    "identityLabel": "Geräteidentität",
+    "identityOriginal": "Ursprüngliches Gerät (Identität dieses Geräts fortsetzen)",
+    "identityNew": "Neues Gerät (als neues Gerät registrieren)",
+    "createButton": "Wiederherstellungscode erstellen",
+    "createFailed": "Die Wiederherstellung konnte nicht erstellt werden.",
+    "codeInstructions": "Geben Sie diesen Code ein, wenn Sie von den Breeze-Wiederherstellungsmedien dazu aufgefordert werden. Er läuft in 15 Minuten ab und kann nur einmal verwendet werden.",
+    "codeExpires": "Läuft ab um {{time}}",
+    "overdueNotice": "Noch keine Rückmeldung — prüfen Sie die Wiederherstellungskonsole.",
+    "statusFailed": "Wiederherstellung fehlgeschlagen",
+    "statusRefused": "Wiederherstellung abgelehnt",
+    "status": {
+      "created": "Erstellt",
+      "media_booted": "Medium gestartet",
+      "planned": "Geplant",
+      "restoring": "Wird wiederhergestellt",
+      "validated": "Validiert",
+      "rebooted": "Neu gestartet",
+      "checked_in": "Angemeldet"
+    }
   }
 }

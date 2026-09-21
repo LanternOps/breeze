@@ -94,7 +94,7 @@ export function TimeSuggestionsScreen({ route }: Props): React.JSX.Element {
       try {
         await dismissSuggestion(signals);
       } catch (err) {
-        const outcome = classifyDrainOutcome((err as { status?: number }).status);
+        const outcome = classifyDrainOutcome((err as { status?: number }).status, (err as { code?: string }).code);
         if (outcome === 'retry') {
           // Offline: hand it to the queue rather than losing the intent. The
           // row stays hidden — the technician has decided.

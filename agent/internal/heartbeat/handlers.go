@@ -87,6 +87,10 @@ var handlerRegistry = map[string]CommandHandler{
 	tools.CmdFilesystemAnalysis: handleFilesystemAnalysis,
 	tools.CmdFileListDrives:     handleFileListDrives,
 
+	// OS-native disk cleanup (Disk Cleanup v2 W04)
+	tools.CmdSystemCleanupList: handleSystemCleanupList,
+	tools.CmdSystemCleanupRun:  handleSystemCleanupRun,
+
 	// Terminal commands
 	tools.CmdTerminalStart:  handleTerminalStart,
 	tools.CmdTerminalData:   handleTerminalData,
