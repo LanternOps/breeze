@@ -619,6 +619,17 @@ export async function handleSecurityCommandResult(
     const completedAt = new Date();
     const durationSeconds = Math.max(0, Math.round((resultData.durationMs ?? 0) / 1000));
 
+    const timedOut = resultJson?.timedOut === true;
+    const filesScannedRaw = resultJson?.filesScanned;
+    const itemsScanned = typeof filesScannedRaw === 'number' && Number.isFinite(filesScannedRaw)
+      ? Math.max(0, Math.floor(filesScannedRaw))
+      : null;
+    // #6263 W01: a scan that hit its policy deadline is an outcome, not an
+    // error — the threats it did find are real and are ingested below.
+    const scanStatus = resultData.status !== 'completed'
+      ? 'failed'
+      : timedOut ? 'timed_out' : 'completed';
+
     let existingScan: { id: string } | undefined;
     if (isUuid(scanRecordId)) {
       [existingScan] = await db
@@ -632,10 +643,11 @@ export async function handleSecurityCommandResult(
       await db
         .update(securityScans)
         .set({
-          status: resultData.status === 'completed' ? 'completed' : 'failed',
+          status: scanStatus,
           completedAt,
           duration: durationSeconds,
-          threatsFound
+          threatsFound,
+          itemsScanned
         })
         .where(eq(securityScans.id, existingScan.id));
     } else {
@@ -644,11 +656,12 @@ export async function handleSecurityCommandResult(
         deviceId: command.deviceId,
         orgId,
         scanType,
-        status: resultData.status === 'completed' ? 'completed' : 'failed',
+        status: scanStatus,
         startedAt: command.createdAt ?? new Date(),
         completedAt,
         threatsFound,
-        duration: durationSeconds
+        duration: durationSeconds,
+        itemsScanned
       });
     }
 
@@ -658,6 +671,7 @@ export async function handleSecurityCommandResult(
 
       for (const threat of threatsValue) {
         if (!isObject(threat)) continue;
+        const quarantinedTo = asString(threat.quarantinedTo) ?? '';
         inserts.push({
           deviceId: command.deviceId,
           orgId,
@@ -665,14 +679,19 @@ export async function handleSecurityCommandResult(
           threatName: asString(threat.name) ?? asString(threat.threatName) ?? 'Unknown Threat',
           threatType: asString(threat.type) ?? asString(threat.threatType) ?? asString(threat.category) ?? null,
           severity: normalizeSeverity(threat.severity),
-          status: 'detected',
+          // The agent auto-quarantined this one during the walk (payload
+          // autoQuarantine). Recording it as 'detected' would show the tech a
+          // live threat and offer them a Quarantine button for a file that is
+          // already encoded away.
+          status: quarantinedTo ? 'quarantined' : 'detected',
           filePath: asString(threat.path) ?? asString(threat.filePath) ?? null,
           processName: asString(threat.processName) ?? null,
           detectedAt: completedAt,
           // #2434: `threat` is the raw agent/AV threat object parsed out of
           // stdout (stdout is deliberately NOT redacted at the ingest
           // chokepoint). AV records routinely embed the offending command line
-          // or script fragment, so redact every string in the blob.
+          // or script fragment, so redact every string in the blob. quarantinedTo
+          // is a local path and belongs in the details blob too.
           details: redactSecretsDeep(threat)
         });
       }
