@@ -19,6 +19,20 @@
 -- historical evidence that already carries its own title/message/context;
 -- losing the now-defunct rule pointer is not losing information the alert
 -- needs.
+-- alerts is a hot/large table (see 2026-05-17-b-alerts-scale-indexes.sql), so
+-- the ADD CONSTRAINT below is split NOT VALID + VALIDATE CONSTRAINT: adding
+-- with NOT VALID only takes the brief ACCESS EXCLUSIVE lock needed to record
+-- the constraint, skipping the full-table scan; VALIDATE CONSTRAINT then does
+-- that scan under SHARE UPDATE EXCLUSIVE, which does not block concurrent
+-- reads/writes. A single ADD CONSTRAINT here (no NOT VALID) would instead
+-- scan the whole table under ACCESS EXCLUSIVE and block writes for the
+-- duration — on `alerts` that's an unacceptable boot-time stall.
 ALTER TABLE alerts DROP CONSTRAINT IF EXISTS alerts_rule_id_alert_rules_id_fk;
-ALTER TABLE alerts ADD CONSTRAINT alerts_rule_id_alert_rules_id_fk
-  FOREIGN KEY (rule_id) REFERENCES alert_rules(id) ON DELETE SET NULL;
+DO $$
+BEGIN
+  ALTER TABLE alerts ADD CONSTRAINT alerts_rule_id_alert_rules_id_fk
+    FOREIGN KEY (rule_id) REFERENCES alert_rules(id) ON DELETE SET NULL
+    NOT VALID;
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+ALTER TABLE alerts VALIDATE CONSTRAINT alerts_rule_id_alert_rules_id_fk;

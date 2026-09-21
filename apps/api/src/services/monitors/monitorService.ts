@@ -13,7 +13,7 @@ import { normalizeAutomationActions } from '../automationRuntime';
 import type { AutomationAction } from '../automationRuntime';
 import { getMonitorKindSpec, MonitorValidationError } from './kinds';
 import { compileMonitorInTx, type CompileOptions, type DbExecutor } from './monitorCompiler';
-import { isPgForeignKeyViolation } from '../../utils/pgErrors';
+import { isPgForeignKeyViolation, pgErrorConstraint } from '../../utils/pgErrors';
 import type {
   CreateMonitorDefinitionInput,
   MonitorKind,
@@ -46,8 +46,8 @@ export class MonitorOwnershipError extends Error {
  * postgres constraint-violation message leaking to the client.
  */
 export class MonitorHasDependentsError extends Error {
-  constructor(id: string) {
-    super(`Monitor definition ${id} still has rows referencing it that cannot be cascaded`);
+  constructor(id: string, options?: ErrorOptions) {
+    super(`Monitor definition ${id} still has rows referencing it that cannot be cascaded`, options);
     this.name = 'MonitorHasDependentsError';
   }
 }
@@ -418,7 +418,20 @@ export async function deleteMonitorDefinition(id: string, auth: AuthContext, exe
   try {
     await executor.delete(monitorDefinitions).where(eq(monitorDefinitions.id, id));
   } catch (error) {
-    if (isPgForeignKeyViolation(error)) throw new MonitorHasDependentsError(id);
+    if (isPgForeignKeyViolation(error)) {
+      // Belt-and-braces catch-all (see MonitorHasDependentsError's doc
+      // comment) — it maps ANY residual FK violation the cascade hits to the
+      // same clean 409, which is deliberately the right client behavior but
+      // would otherwise discard the one thing that tells an operator WHICH
+      // constraint fired if it's ever something other than the known,
+      // already-fixed alerts.rule_id case. Log the constraint name and keep
+      // the original error as `cause` so Sentry/logs still have it.
+      console.error(
+        `[deleteMonitorDefinition] ${id} blocked by FK ${pgErrorConstraint(error) ?? '(unknown constraint)'}`,
+        error,
+      );
+      throw new MonitorHasDependentsError(id, { cause: error });
+    }
     throw error;
   }
 }

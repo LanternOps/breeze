@@ -84,7 +84,18 @@ function errorResponse(error: unknown): { body: Record<string, unknown>; status:
   if (error instanceof MonitorHasDependentsError) {
     // #6509 — a clean, non-leaking 409 in place of the raw postgres FK
     // constraint-violation text this used to fall through and surface as a 500.
-    return { body: { error: 'MONITOR_HAS_DEPENDENTS' }, status: 409 };
+    // This is expected to be unreachable in the ordinary case (the known
+    // alerts.rule_id cascade is fixed at the DB level, migration
+    // 2026-10-25-130200) — it's a belt-and-braces map for any other/future FK
+    // the cascade hits, so the message stays generic rather than naming the
+    // specific (now-fixed) alerts case.
+    return {
+      body: {
+        error: 'MONITOR_HAS_DEPENDENTS',
+        details: 'This monitor still has rows referencing it that cannot be automatically cleared. Try again or contact support.',
+      },
+      status: 409,
+    };
   }
   return null;
 }

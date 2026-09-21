@@ -424,7 +424,10 @@ describe('DELETE /monitor-definitions/:id', () => {
     const res = await jsonRequest(buildApp(), 'DELETE', `/${MONITOR_ID}`);
 
     expect(res.status).toBe(409);
-    expect(await res.json()).toEqual({ error: 'MONITOR_HAS_DEPENDENTS' });
+    expect(await res.json()).toEqual({
+      error: 'MONITOR_HAS_DEPENDENTS',
+      details: expect.any(String),
+    });
   });
 });
 
