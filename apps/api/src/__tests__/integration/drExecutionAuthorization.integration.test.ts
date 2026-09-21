@@ -12,7 +12,7 @@ import {
   drPlanGroups,
   drPlans,
 } from '../../db/schema';
-import { reconcileDrExecution } from '../../services/drExecutionService';
+import { persistDrAuthorizationDenial, reconcileDrExecution } from '../../services/drExecutionService';
 import { resolveLatestRestorableSnapshotId } from '../../services/drBareMetalRebuildStep';
 import { handleDrCommandResult } from '../../routes/backup/drResultHandler';
 import { createOrganization, createPartner, createSite } from './db-utils';
@@ -66,6 +66,54 @@ describe('DR reconciliation authorization against real PostgreSQL', () => {
       where payload ->> 'drExecutionId' = ${execution.id}
     `);
     expect(commands).toHaveLength(0);
+  });
+
+  // #6457: an operator abort landing between the denial check and the write
+  // must win — persistDrAuthorizationDenial must not resurrect a row another
+  // writer has already made terminal back to 'failed'.
+  runDb('does not clobber a concurrent operator abort with a denial write', async () => {
+    const testDb = getTestDb();
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const [plan] = await testDb.insert(drPlans).values({
+      orgId: org.id,
+      name: `DR denial CAS integration ${crypto.randomUUID()}`,
+    }).returning({ id: drPlans.id });
+    if (!plan) throw new Error('DR plan fixture insert failed');
+
+    const [execution] = await testDb.insert(drExecutions).values({
+      planId: plan.id,
+      orgId: org.id,
+      executionType: 'rehearsal',
+      status: 'pending',
+      authorizationPrincipalKind: 'api_key',
+      authorizationPrincipalId: crypto.randomUUID(),
+      authorizationGrantRevision: 'grant',
+      authorizationState: 'authorized',
+      authorizationCheckedAt: new Date(),
+    }).returning();
+    if (!execution) throw new Error('DR execution fixture insert failed');
+
+    // Simulate the race: an operator abort lands between the point the
+    // reconcile tick read `execution` (status: 'pending', captured above) and
+    // the denial write below.
+    await withSystemDbAccessContext(() => testDb
+      .update(drExecutions)
+      .set({ status: 'aborted', completedAt: new Date() })
+      .where(eq(drExecutions.id, execution.id)));
+
+    const result = await withSystemDbAccessContext(() => persistDrAuthorizationDenial(
+      execution,
+      'authorization_denied_test',
+      new Date(),
+    ));
+
+    // The abort must win: status stays 'aborted', never regressed to 'failed'.
+    expect(result.status).toBe('aborted');
+
+    const [current] = await testDb.select().from(drExecutions).where(eq(drExecutions.id, execution.id));
+    expect(current).toMatchObject({ status: 'aborted' });
+    expect(current?.authorizationState).not.toBe('denied');
   });
 
   runDb('preserves the durable subject when an agent result wakes reconciliation', async () => {

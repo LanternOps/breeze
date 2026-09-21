@@ -987,7 +987,7 @@ function isKnownAuthorizationDenial(error: unknown): error is Error & { retriabl
     && (error as { retriable?: unknown }).retriable === false;
 }
 
-async function persistDrAuthorizationDenial(
+export async function persistDrAuthorizationDenial(
   execution: DrExecutionRecord,
   code: string,
   checkedAt: Date,
@@ -995,6 +995,10 @@ async function persistDrAuthorizationDenial(
   const currentResults = asRecord(execution.results);
   const legacyUnknown = execution.authorizationPrincipalKind === 'unknown'
     || execution.authorizationState === 'quarantined_authorization_unknown';
+  // Compare-and-swap: only a still-non-terminal row may be moved. Mirrors the
+  // write-back guard in reconcileDrExecution (#6322/#6451) — without it, an
+  // operator abort landing between the denial check and this write gets
+  // silently overwritten back to 'failed' (#6457).
   const [updated] = await db
     .update(drExecutions)
     .set({
@@ -1011,9 +1015,33 @@ async function persistDrAuthorizationDenial(
       authorizationDenialCode: legacyUnknown ? 'authorization_subject_unknown' : code,
       authorizationCheckedAt: checkedAt,
     })
-    .where(eq(drExecutions.id, execution.id))
+    .where(and(
+      eq(drExecutions.id, execution.id),
+      notInArray(drExecutions.status, [...DR_EXECUTION_TERMINAL]),
+    ))
     .returning();
-  return updated ?? execution;
+
+  if (updated) return updated;
+
+  // Another writer terminalised the row between our read and this write. Its
+  // state wins — report what is actually in the database rather than the
+  // stale row this call started from, and never resurrect it to 'failed'.
+  const [current] = await db
+    .select()
+    .from(drExecutions)
+    .where(eq(drExecutions.id, execution.id))
+    .limit(1);
+  if (current) {
+    console.warn(
+      `[drExecutionService] persistDrAuthorizationDenial ${execution.id} lost the write-back race; `
+      + `another writer left it ${current.status}`,
+    );
+    return current;
+  }
+  // Not an expected outcome — dr_executions rows are not deleted under a live
+  // reconcile. Loud, because it means the row vanished mid-tick.
+  console.error(`[drExecutionService] persistDrAuthorizationDenial ${execution.id}: execution row disappeared mid-tick`);
+  return execution;
 }
 
 async function authorizeDrGroup(execution: DrExecutionRecord, group: DrPlanGroupRecord): Promise<Date> {
