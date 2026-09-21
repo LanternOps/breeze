@@ -540,6 +540,37 @@ describe('bmr routes', () => {
     expect(insertMock).not.toHaveBeenCalled();
   });
 
+  // A never-assessed snapshot (bareMetalReasons null) falls back to a
+  // generic reason string, and the restorability guard runs BEFORE the
+  // referencedFiles/storageIdentity preflight — an unknown storage identity
+  // on a non-restorable snapshot must still surface the restorability
+  // refusal, not the (unreached) storage-identity one.
+  it('POST /bmr/tokens bare_metal: never-assessed snapshot with unknown storage identity is refused for restorability first, with the fallback reason', async () => {
+    selectMock.mockReturnValueOnce(chainMock([
+      {
+        id: SNAPSHOT_ID,
+        orgId: ORG_ID,
+        deviceId: DEVICE_ID,
+        referencedFiles: 98411,
+        storageIdentity: null,
+        bareMetalRestorable: false,
+        bareMetalReasons: null,
+      },
+    ]));
+
+    const res = await app.request('/backup/bmr/tokens', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({ snapshotId: SNAPSHOT_ID, restoreType: 'bare_metal', expiresInHours: 24 }),
+    });
+
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.error).toBe('snapshot_not_bare_metal_restorable');
+    expect(body.reasons).toEqual(['snapshot was not assessed for bare-metal restore']);
+    expect(insertMock).not.toHaveBeenCalled();
+  });
+
   it('POST /bmr/tokens bare_metal: a restorable snapshot still mints a token', async () => {
     selectMock.mockReturnValueOnce(chainMock([
       {
