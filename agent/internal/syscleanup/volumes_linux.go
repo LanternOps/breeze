@@ -19,7 +19,7 @@ func syncMount(mount string) {
 		log.Debug("could not open mount to sync during cleanup settle", "mount", mount, "error", err.Error())
 		return
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }() // read-only handle; nothing to report on close
 	// Not fatal — settleVolumes' retry loop is the fallback if the commit
 	// hasn't landed by the time this returns — but a syncfs that fails
 	// systematically (sandboxed agent, seccomp, degraded array) would
