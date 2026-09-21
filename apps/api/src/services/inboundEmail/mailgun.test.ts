@@ -99,6 +99,36 @@ describe('MailgunInboundProvider.parse', () => {
     expect(n.providerMessageId).toBe('<msg-2@customer.com>');
   });
 
+  it('reads a null Return-Path header as the bounce marker', async () => {
+    const n = await provider.parse({ parseBody: async () => ({
+      ...fields,
+      'message-headers': '[["Return-Path","<>"]]'
+    }) } as any);
+    expect(n.returnPath).toBe('<>');
+  });
+
+  it('derives <> from a null envelope sender when the Return-Path header is absent', async () => {
+    // A bounce/NDR uses a null SMTP MAIL FROM, which Mailgun surfaces as an empty
+    // `sender` form field; with no Return-Path header this is the only bounce signal.
+    const empty = await provider.parse({ parseBody: async () => ({
+      ...fields, sender: '', 'message-headers': '[["Auto-Submitted","no"]]'
+    }) } as any);
+    expect(empty.returnPath).toBe('<>');
+    const literal = await provider.parse({ parseBody: async () => ({
+      ...fields, sender: '<>', 'message-headers': '[["Auto-Submitted","no"]]'
+    }) } as any);
+    expect(literal.returnPath).toBe('<>');
+  });
+
+  it('does NOT treat an ordinary envelope sender as a bounce', async () => {
+    // Normal mail: real MAIL FROM, no Return-Path header -> returnPath undefined,
+    // so ticketCreationLoopReason never suppresses it as a null-return-path bounce.
+    const n = await provider.parse({ parseBody: async () => ({
+      ...fields, 'message-headers': '[["Auto-Submitted","no"]]'
+    }) } as any);
+    expect(n.returnPath).toBeUndefined();
+  });
+
   it('reads Mailgun SPF/DKIM/DMARC verdicts and marks an aligned-pass sender verified', async () => {
     const n = await provider.parse({ parseBody: async () => ({
       ...fields,

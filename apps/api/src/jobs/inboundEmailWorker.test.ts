@@ -11,13 +11,19 @@ const { processInboundEmailMock, runOutsideDbContextMock, withSystemDbAccessCont
 });
 
 vi.mock('bullmq', () => {
+  const workerCtorArgs: unknown[][] = [];
   class MockWorker {
+    constructor(...args: unknown[]) { workerCtorArgs.push(args); }
     on() { return this; }
     async close() { return undefined; }
   }
   return {
     Queue: vi.fn(() => ({ add: vi.fn() })),
-    Worker: MockWorker
+    Worker: MockWorker,
+    // Test-only: every Worker construction's positional args, so a test can assert
+    // the flood-backpressure limiter is actually installed (finding: a mock that
+    // discards ctor args lets the limiter be removed with the test still green).
+    __workerCtorArgs: workerCtorArgs,
   };
 });
 vi.mock('../services/redis', () => ({ getBullMQConnection: vi.fn(() => ({})) }));
@@ -127,6 +133,22 @@ describe('inboundEmailWorker exports', () => {
 
   it('initializeInboundEmailWorker resolves without throwing', async () => {
     await expect(workerModule.initializeInboundEmailWorker()).resolves.toBeUndefined();
+  });
+
+  it('installs the flood-backpressure rate limiter on the Worker', async () => {
+    const bullmq = (await import('bullmq')) as unknown as { __workerCtorArgs: unknown[][] };
+    const { inboundQueueMaxPerSec } = await import('../config/env');
+    // Force a fresh Worker construction (the module holds a singleton) and capture
+    // the options it is built with.
+    await workerModule.shutdownInboundEmailWorker();
+    bullmq.__workerCtorArgs.length = 0;
+    await workerModule.initializeInboundEmailWorker();
+
+    const args = bullmq.__workerCtorArgs.at(-1);
+    expect(args, 'a Worker was constructed').toBeTruthy();
+    const opts = args![2] as { limiter?: { max: number; duration: number }; concurrency?: number };
+    expect(opts.limiter).toEqual({ max: inboundQueueMaxPerSec(), duration: 1000 });
+    await workerModule.shutdownInboundEmailWorker();
   });
 
   it('shutdownInboundEmailWorker resolves without throwing', async () => {

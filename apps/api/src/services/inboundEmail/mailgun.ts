@@ -46,6 +46,17 @@ export class MailgunInboundProvider implements InboundEmailProvider {
     const fallbackId = `sha256:${createHash('sha256')
       .update(`${from}\n${b.subject ?? ''}\n${b['stripped-text'] ?? b['body-plain'] ?? ''}`)
       .digest('hex')}`;
+    // Return-Path for ingest-level bounce/loop suppression. Mailgun records the
+    // envelope MAIL FROM twice: as the `Return-Path` MIME header the receiving MTA
+    // stamps, and as the top-level `sender` form field (per Mailgun's routes docs,
+    // `sender` is MAIL FROM, distinct from the `from` header). A bounce/NDR — and an
+    // RFC 3834 auto-reply — uses a null envelope, surfaced as an empty `sender` or
+    // `<>`. Trust the header first; fall back to the envelope ONLY when it is
+    // unambiguously the null form, so (a) an ordinary address is never read as a
+    // bounce, and (b) a missing Return-Path header no longer hides a real bounce.
+    const returnPathHeader = parseHeader(b['message-headers'], 'Return-Path');
+    const envelopeNull = b.sender !== undefined && ['', '<>'].includes(b.sender.trim());
+    const returnPath = returnPathHeader ?? (envelopeNull ? '<>' : undefined);
     return {
       provider: this.name,
       providerMessageId: messageId || fallbackId,
@@ -61,11 +72,9 @@ export class MailgunInboundProvider implements InboundEmailProvider {
       autoSubmitted: parseHeader(b['message-headers'], 'Auto-Submitted'),
       precedence: parseHeader(b['message-headers'], 'Precedence'),
       outboundMarker: parseHeader(b['message-headers'], BREEZE_OUTBOUND_HEADER),
-      // Loop/bounce signals (ingest-level loop suppression). Only the actual
-      // Return-Path header is trusted for the null-path (`<>`) bounce marker — the
-      // `sender` form field carries a normal address and must NOT be conflated
-      // with a bounce, so there is no fallback to it here.
-      returnPath: parseHeader(b['message-headers'], 'Return-Path'),
+      // Loop/bounce signals (ingest-level loop suppression). returnPath computed
+      // above: Return-Path header, else a null envelope (`sender` empty/`<>`).
+      returnPath,
       xLoop: parseHeader(b['message-headers'], 'X-Loop'),
       senderAuth: extractSenderAuth(b),
       senderAuthDiagnostic: senderAuthGap(b['message-headers']),
