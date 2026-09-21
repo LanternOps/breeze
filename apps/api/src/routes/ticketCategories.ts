@@ -1,6 +1,5 @@
 import { Hono, type Context, type Next } from 'hono';
 import { zValidator } from '../lib/validation';
-import { legacyBillingDeprecationWarnings } from '../lib/legacyBillingDeprecation';
 import { z } from 'zod';
 import { and, asc, eq, inArray, type SQL } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
@@ -213,7 +212,6 @@ ticketCategoriesRoutes.post(
       return c.json({ error: 'Partner context required' }, 403);
     }
     const body = c.req.valid('json');
-    const deprecationWarnings = legacyBillingDeprecationWarnings(await c.req.json());
 
     // Tenant guard: a parent category must exist within the same partner.
     // The DB composite FK (parent_id, partner_id) backs this; checking here
@@ -246,7 +244,7 @@ ticketCategoriesRoutes.post(
       resourceName: row.name,
       details: { partnerId: auth.partnerId, changedFields: Object.keys(body) }
     });
-    return c.json({ data: row, ...(deprecationWarnings.length ? { deprecationWarnings } : {}) }, 201);
+    return c.json({ data: row }, 201);
   }
 );
 
@@ -265,7 +263,6 @@ ticketCategoriesRoutes.patch(
     }
     const { id } = c.req.valid('param');
     const body = c.req.valid('json');
-    const deprecationWarnings = legacyBillingDeprecationWarnings(await c.req.json());
 
     if (typeof body.parentId === 'string') {
       if (body.parentId === id) {
@@ -332,7 +329,7 @@ ticketCategoriesRoutes.patch(
       resourceName: row.name,
       details: { partnerId: row.partnerId, changedFields: Object.keys(body) }
     });
-    return c.json({ data: row, ...(deprecationWarnings.length ? { deprecationWarnings } : {}) });
+    return c.json({ data: row });
   }
 );
 

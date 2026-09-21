@@ -26,9 +26,9 @@
  */
 
 import { Worker, type Job } from 'bullmq';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import * as dbModule from '../db';
-import { organizations, partners, tickets } from '../db/schema';
+import { organizations, partners, tickets, ticketComments } from '../db/schema';
 import { getEmailService } from '../services/email';
 import { escapeHtml } from '../services/emailLayout';
 import { renderPartnerEmail, type PartnerEmailCustom } from '../services/emailTemplates/renderPartnerEmail';
@@ -111,6 +111,11 @@ type PartnerSettings = {
       address?: string;
       autoresponseSubject?: string | null;
       autoresponseBody?: string | null;
+      // When true, a public tech reply emails the customer the actual comment
+      // text (for MSPs that do not run the client portal). Default/absent keeps
+      // the portal-notification email and the leak guard. See the shared
+      // ticketingInboundSettingsSchema (@breeze/shared).
+      fullMessageReply?: boolean;
     };
   };
   emailTemplates?: {
@@ -169,7 +174,7 @@ function asPartnerEmailCustom(raw: unknown): PartnerEmailCustom | null {
 async function composeLaidOutRequesterMail(
   ticket: TicketRow,
   id: 'ticket_comment_notification' | 'ticket_resolved',
-): Promise<{ html: string; subject: string; replyTo: string | undefined }> {
+): Promise<{ html: string; subject: string; replyTo: string | undefined; fullMessageReply: boolean }> {
   let href = '';
   let hasPortalUser = false;
   try {
@@ -204,7 +209,12 @@ async function composeLaidOutRequesterMail(
     internalNumber: ticket.internalNumber,
     ticketSubject: ticket.subject,
   });
-  return { html: rendered.html, subject: rendered.subject, replyTo: partner.replyTo };
+  return {
+    html: rendered.html,
+    subject: rendered.subject,
+    replyTo: partner.replyTo,
+    fullMessageReply: partner.inbound?.fullMessageReply === true,
+  };
 }
 
 async function resolveCurrentTicketPartner(
@@ -358,6 +368,60 @@ async function collectRequesterEmail(
 
   const composed = await composeLaidOutRequesterMail(ticket, 'ticket_comment_notification');
 
+  // Reply-content mode (per-partner). By DEFAULT the customer gets the portal
+  // "you have a new reply, sign in" notification and the comment text never
+  // leaves the platform (leak guard). A partner that does NOT run the client
+  // portal can opt in to `fullMessageReply`, which appends the actual public
+  // comment text to the email so email becomes a real back-and-forth. Only the
+  // just-posted PUBLIC comment is included; internal notes never reach this path
+  // (the worker gates on event.payload.isPublic before calling here).
+  let html = composed.html;
+  // Full message text is appended ONLY on the platform EmailService path (which
+  // sends to the resolved requester address, `ticket.submitterEmail`). On the
+  // connected-M365 path the reply is a Graph createReply against the latest
+  // inbound message, whose recipients can include an external Reply-To/CC we did
+  // not validate; putting the actual comment text there would widen a possible
+  // mis-routed reply from a bare portal notice to real content. Until that
+  // recipient set is validated, M365-mailbox partners keep the notification.
+  // (composed.fullMessageReply comes from the partner bits compose already loaded
+  // — no second partner read here.)
+  if (composed.fullMessageReply && !graphMailbox) {
+    // Bound to THIS ticket (never another ticket's comment). deletedAt is SELECTED
+    // (not filtered) so we can tell a soft-deleted comment (row present, deletedAt
+    // set — terminal, skip the body) apart from a not-yet-committed one (no row —
+    // transient, retry).
+    const rows = await db
+      .select({
+        content: ticketComments.content,
+        isPublic: ticketComments.isPublic,
+        deletedAt: ticketComments.deletedAt,
+      })
+      .from(ticketComments)
+      .where(and(eq(ticketComments.id, commentId), eq(ticketComments.ticketId, ticket.id)))
+      .limit(1);
+    const comment = rows[0];
+    if (!comment) {
+      // Pre-commit emission: the comment row may not be visible yet (the event is
+      // emitted inside the posting transaction). Throw to retry — same contract as
+      // the missing-ticket guard above — so the real reply eventually sends rather
+      // than silently degrading to a portal-only notice for a no-portal partner.
+      throw new Error(`Comment not found (likely uncommitted): ${commentId}`);
+    }
+    // Append the body only for a live, public comment on a LIVE ticket. A
+    // soft-deleted comment (comment.deletedAt) or a soft-deleted ticket
+    // (ticket.deletedAt) must NOT have its text emailed — it is no longer visible
+    // in the product (the portal 404s a deleted ticket, routes/portal/tickets.ts
+    // requires isNull(tickets.deletedAt)), so emailing the comment would disclose
+    // content the customer can no longer see. Fall through to the portal
+    // notification without the body. The staff (collectAssigneeNotification) and
+    // SLA paths already skip deleted tickets; this mirrors that boundary at the one
+    // point comment TEXT would leave the platform. Defense in depth on isPublic:
+    // the emitter's gate is the authority; this is a second check.
+    if (!ticket.deletedAt && !comment.deletedAt && comment.isPublic && comment.content.trim()) {
+      html = appendFullReplyBody(html, comment.content);
+    }
+  }
+
   const built = buildThreadingHeaders({ ticketId: ticket.id, commentId });
   const headers = Object.keys(built).length > 0 ? built : undefined;
 
@@ -371,7 +435,7 @@ async function collectRequesterEmail(
   return [{
     to: ticket.submitterEmail,
     subject: subjectOverride ?? composed.subject,
-    html: composed.html,
+    html,
     replyTo: composed.replyTo,
     headers,
     graphMailbox,
@@ -381,9 +445,30 @@ async function collectRequesterEmail(
 }
 
 /**
+ * Append the actual reply text to a comment-notification email (fullMessageReply
+ * partners only). The body is HTML-escaped and newline-preserved, wrapped in a
+ * quoted block below the rendered notification. Kept deliberately simple — the
+ * comment `content` is plain text authored by a technician.
+ */
+function appendFullReplyBody(html: string, body: string): string {
+  const safe = escapeHtml(body).replace(/\r?\n/g, '<br>');
+  const block =
+    '<div style="margin-top:16px;padding:12px 16px;border-left:3px solid #d1d5db;'
+    + 'color:#374151;font-size:14px;line-height:1.5;white-space:normal;">'
+    + `${safe}</div>`;
+  // Splice the block INSIDE the rendered document, immediately before the closing
+  // </body>, so the reply text sits within the email body. Concatenating after
+  // </html> would place it outside the document, where some mail clients strip or
+  // hide trailing content. Fall back to a plain append only if no </body> exists.
+  const idx = html.toLowerCase().lastIndexOf('</body>');
+  if (idx === -1) return `${html}${block}`;
+  return `${html.slice(0, idx)}${block}${html.slice(idx)}`;
+}
+
+/**
  * One-time autoresponse acknowledgement (spec §5). The autoresponder gate
- * (inboundEmail/autoresponder.ts) already applied loop-prevention + the per-sender
- * cap before emitting; here we just compose + send. Custom html comes from
+ * (inboundEmail/autoresponder.ts) already applied loop-prevention before
+ * emitting; here we just compose + send. Custom html comes from
  * settings.emailTemplates.ticket_autoresponse when set; otherwise inbound
  * autoresponseSubject/Body (plain text); otherwise the hardcoded ack. Loop
  * hygiene: stamp Auto-Submitted: auto-replied and set the ticket thread anchor
@@ -573,9 +658,11 @@ export async function handleTicketEvent(event: TicketEvent, jobId?: string): Pro
         // Payload-trust contract: the worker TRUSTS event.payload.isPublic — the
         // EMITTER is the sole authority on visibility. inboundEmailService always
         // emits isPublic:true for an inbound customer comment; an internal note never
-        // emits a public ticket.commented event. The composer is TEMPLATE-ONLY: it
-        // never loads ticket_comments, so the comment's content is structurally
-        // unreachable from any outbound body/subject (see ticketNotifyWorker.leak.test.ts).
+        // emits a public ticket.commented event. The DEFAULT notification is
+        // template-only (no comment content). The one path that loads ticket_comments
+        // is the explicit per-partner fullMessageReply opt-in (see collectRequesterEmail),
+        // gated on isPublic + not-deleted + non-graph and HTML-escaped; every other
+        // outbound body/subject stays content-free (see ticketNotifyWorker.leak.test.ts).
         // Skip requester email for inbound comments — the comment originated FROM the
         // requester's email, so echoing it back would create a mail loop.
         if (event.payload.isPublic && !event.payload.inbound) {

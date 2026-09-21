@@ -148,17 +148,28 @@ describe('orgTicketSettingsSchema', () => {
   it('rejects an empty object', () => {
     expect(orgTicketSettingsSchema.safeParse({}).success).toBe(false);
   });
+  // #6472: the retired pricing fields were silently discarded in the W02 cut-over
+  // (200 + no write). A meaningful write must fail loudly and name its replacement.
   it.each([
     { defaultHourlyRate: null }, { defaultHourlyRate: -1 },
-    { defaultHourlyRate: 10.001 }, { defaultBillable: true },
+    { defaultHourlyRate: 10.001 }, { defaultHourlyRate: 150 }, { defaultBillable: true },
     { defaultBillable: 'ignored' }, { rateCurrency: 'EUR' },
-  ])('ignores deprecated pricing values: %j', (input) => {
-    expect(orgTicketSettingsSchema.parse(input)).toEqual({});
+  ])('rejects retired pricing field with an actionable message: %j', (input) => {
+    const [field] = Object.keys(input);
+    const result = orgTicketSettingsSchema.safeParse(input);
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    const issue = result.error.issues.find((i) => i.path[0] === field);
+    expect(issue?.message).toContain(field);
+    expect(issue?.message).toContain('billing profile');
   });
-  it('preserves SLA overrides while stripping deprecated pricing and unknown fields', () => {
+  it('rejects the whole request when a retired field accompanies a valid SLA override', () => {
     const slaOverrides = { normal: { resolutionMinutes: 480 } };
-    expect(orgTicketSettingsSchema.parse({ slaOverrides, defaultHourlyRate: 10, extra: true }))
-      .toEqual({ slaOverrides });
+    expect(orgTicketSettingsSchema.safeParse({ slaOverrides, defaultHourlyRate: 10 }).success).toBe(false);
+  });
+  it('preserves SLA overrides while stripping unknown fields', () => {
+    const slaOverrides = { normal: { resolutionMinutes: 480 } };
+    expect(orgTicketSettingsSchema.parse({ slaOverrides, extra: true })).toEqual({ slaOverrides });
   });
   it('rejects unknown-only patches', () => {
     expect(orgTicketSettingsSchema.safeParse({ extra: true }).success).toBe(false);

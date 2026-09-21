@@ -24,6 +24,10 @@ interface InboundConfig {
   dropUnverifiedSenders: boolean;
   autoresponseSubject: string | null;
   autoresponseBody: string | null;
+  // Reply-content mode. Not yet edited by this card, but carried through so a save
+  // preserves a value set via the API (the PATCH route replaces the inbound
+  // sub-object wholesale — an omitted field is destroyed).
+  fullMessageReply: boolean;
   slug: string;
   domainConfigured: boolean;
   // Connected M365 shared mailboxes (status 'connected'). Absent on an older
@@ -129,6 +133,9 @@ export default function InboundEmailCard() {
         dropUnverifiedSenders: next.dropUnverifiedSenders,
         autoresponseSubject: next.autoresponseSubject,
         autoresponseBody: next.autoresponseBody,
+        // Preserve reply mode across a wholesale-replace save, even though this
+        // card does not edit it yet.
+        ...(next.fullMessageReply ? { fullMessageReply: true } : {}),
       };
       if (next.addressOverride) inbound.address = next.addressOverride;
       setSaving(true);

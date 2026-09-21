@@ -384,8 +384,10 @@ Partner scope only; `authMiddleware` first.
 - Time entries: `workTypeId` on create / start / update; `minimumMinutes` and
   `resetBilling` on update (gated). `GET /tickets/:id/time-entry-defaults?workTypeId=`
   returns the resolved row and **stays on `time_entries:read`**.
-- Category and org-ticket-settings APIs stop accepting the six removed fields (ignored with
-  a deprecation warning for one release, then rejected).
+- Category and org-ticket-settings APIs stop accepting the six removed fields: rejected with an
+  actionable 400 naming the replacement, from v0.115. *(Amended 2026-09-20 per #6472 — the
+  originally planned "ignore with a warning for one release" never preserved behaviour, so it
+  was a silent no-op, not a grace period.)*
 - AI / MCP: time tools accept `workType` (id or name); read-only `list_work_types`. The
   service-level gate covers the tool path by construction. No AI writes to cards.
 

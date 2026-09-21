@@ -1,6 +1,5 @@
 import type { Hono } from 'hono';
 import { zValidator } from '../lib/validation';
-import { legacyBillingDeprecationWarnings } from '../lib/legacyBillingDeprecation';
 import { and, eq, isNull } from 'drizzle-orm';
 import { db } from '../db';
 import { organizations } from '../db/schema';
@@ -57,7 +56,6 @@ export function registerOrgTicketSettingsRoutes(orgRoutes: Hono) {
     zValidator('json', orgTicketSettingsSchema),
     async (c) => {
       const body = c.req.valid('json');
-      const deprecationWarnings = legacyBillingDeprecationWarnings(await c.req.json());
       const org = await resolveAccessibleOrg(c);
       if (org instanceof Response) return org;
 
@@ -71,7 +69,7 @@ export function registerOrgTicketSettingsRoutes(orgRoutes: Hono) {
         details: { changedFields: Object.keys(body) }
       });
 
-      return c.json({ data, ...(deprecationWarnings.length ? { deprecationWarnings } : {}) });
+      return c.json({ data });
     }
   );
 }

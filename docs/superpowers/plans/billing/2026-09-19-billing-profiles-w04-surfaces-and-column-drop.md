@@ -25,6 +25,8 @@ blast_radius: medium
 
 W01, W02 **and W03** are merged, and **W02 has been in a shipped release** — §3.6: "The resolver stops reading the columns the day the conversion runs; the columns are dropped one release later." §6: the category and org-ticket-settings APIs "stop accepting the six removed fields (ignored with a deprecation warning for one release, then rejected)" — **this wave is that release**, so Task 7 flips ignore→reject.
 
+> **Amended 2026-09-20 (#6472):** the ignore→reject flip that Task 7 was going to make shipped early, in the #6472 fix PR. The "grace release" never preserved behaviour — the retired writes were already discarded behind a 200 — so the category and org-ticket-settings APIs reject the three retired input fields from v0.115. "W02 has been in a shipped release" is therefore **not** the gate for this wave. Parts A–C can proceed once W03 is merged. Part D (the drop) is gated on the explicit checks in #6472 instead: no remaining reader of the six columns (Task 7 Step 1), conversion invariants verified on production data, an archive-or-refuse step for legacy rows the conversion skipped (off-list currency orgs; rates whose `rate_currency` differs from the org currency — see `2026-10-24-200200-labour-pricing-conversion.sql` lines 203 and 209-210), and a rollback note that states tenant export fails on the previous image once the columns are gone (`tenantExportPolicy.ts` rejects registry/live column mismatches).
+
 | Artifact | Spec reference | Status |
 |---|---|---|
 | `work_types` table + `GET /work-types` | §4.2, §6 | `NOT VERIFIED: confirm against merged W01` — route path and response field names |

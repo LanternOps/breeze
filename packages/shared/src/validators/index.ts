@@ -1047,6 +1047,7 @@ export * from './queryParams';
 export * from './timeEntries';
 export * from './portal';
 export * from './ticketConfig';
+export * from './retiredLabourPricing';
 export * from './partnerTicketingSettings';
 export * from './auditRetention';
 export * from './ticketPushPreferences';
