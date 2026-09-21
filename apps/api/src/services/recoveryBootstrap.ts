@@ -467,7 +467,12 @@ export function buildAuthenticatedBootstrapPayload(args: {
     restoreType: args.restoreType,
     targetConfig: args.targetConfig ?? null,
     device: args.device,
-    snapshot: args.snapshot,
+    // W09a Task 7 fix: the outer envelope's own `snapshot` field must carry
+    // `fileIndex` too, not only the nested `bootstrap.snapshot` — Part 0 §1's
+    // wire contract puts `fileIndex` on "the existing bootstrap object"'s
+    // `snapshot`, and callers (agent + this integration test) read it off
+    // the top-level response, not the doubly-nested `bootstrap.bootstrap`.
+    snapshot: args.fileIndex && args.snapshot ? { ...args.snapshot, fileIndex: args.fileIndex } : args.snapshot,
     authenticatedAt: args.authenticatedAt.toISOString(),
     bootstrap,
   };
