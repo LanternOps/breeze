@@ -138,13 +138,13 @@ importers:
         version: 9.0.0
       '@hono/node-server':
         specifier: ^2.1.1
-        version: 2.1.1(hono@4.13.5)
+        version: 2.1.1(hono@4.13.8)
       '@hono/node-ws':
         specifier: ^1.3.1
-        version: 1.3.1(@hono/node-server@2.1.1(hono@4.13.5))(hono@4.13.5)
+        version: 1.3.1(@hono/node-server@2.1.1(hono@4.13.8))(hono@4.13.8)
       '@hono/zod-validator':
         specifier: ^0.9.1
-        version: 0.9.1(hono@4.13.5)(zod@4.4.3)
+        version: 0.9.1(hono@4.13.8)(zod@4.4.3)
       '@levischuck/tiny-cbor':
         specifier: ^0.2.11
         version: 0.2.11
@@ -203,8 +203,8 @@ importers:
         specifier: ^11.0.2
         version: 11.0.2
       hono:
-        specifier: ^4.13.5
-        version: 4.13.5
+        specifier: ^4.13.8
+        version: 4.13.8
       i18next:
         specifier: ^26.3.6
         version: 26.3.6(typescript@5.9.3)
@@ -508,10 +508,10 @@ importers:
         version: link:../../packages/shared
       '@hono/node-server':
         specifier: ^2.1.1
-        version: 2.1.1(hono@4.13.5)
+        version: 2.1.1(hono@4.13.8)
       hono:
-        specifier: ^4.13.5
-        version: 4.13.5
+        specifier: ^4.13.8
+        version: 4.13.8
       jose:
         specifier: ^6.2.3
         version: 6.2.4
@@ -551,10 +551,10 @@ importers:
         version: link:../../packages/shared
       '@hono/node-server':
         specifier: ^2.1.1
-        version: 2.1.1(hono@4.13.5)
+        version: 2.1.1(hono@4.13.8)
       hono:
-        specifier: ^4.13.5
-        version: 4.13.5
+        specifier: ^4.13.8
+        version: 4.13.8
       jose:
         specifier: ^6.2.3
         version: 6.2.3
@@ -591,10 +591,10 @@ importers:
         version: link:../../packages/shared
       '@hono/node-server':
         specifier: ^2.1.1
-        version: 2.1.1(hono@4.13.5)
+        version: 2.1.1(hono@4.13.8)
       hono:
-        specifier: ^4.13.5
-        version: 4.13.5
+        specifier: ^4.13.8
+        version: 4.13.8
       jose:
         specifier: ^6.2.3
         version: 6.2.3
@@ -1273,8 +1273,8 @@ importers:
         specifier: 0.45.2
         version: 0.45.2(@opentelemetry/api@1.9.1)(@types/pg@8.21.0)(gel@2.2.0)(pg@8.22.0)(postgres@3.4.9(patch_hash=d73fec0fc4be4034390ba6d0f8ee47d8b0a2e1b83c199be823c4a8bbd0ab0e1d))
       hono:
-        specifier: 4.13.5
-        version: 4.13.5
+        specifier: 4.13.8
+        version: 4.13.8
       mailparser:
         specifier: ^3.9.14
         version: 3.9.15
@@ -1329,8 +1329,8 @@ importers:
         specifier: ^7.8.0
         version: 7.8.0
       hono:
-        specifier: ^4.13.5
-        version: 4.13.5
+        specifier: ^4.13.8
+        version: 4.13.8
       typescript:
         specifier: ^5.7.2
         version: 5.9.3
@@ -1347,8 +1347,8 @@ importers:
         specifier: workspace:*
         version: link:../extension-web-sdk
       hono:
-        specifier: ^4.13.5
-        version: 4.13.5
+        specifier: ^4.13.8
+        version: 4.13.8
     devDependencies:
       happy-dom:
         specifier: ^20.11.1
@@ -1957,6 +1957,11 @@ packages:
     engines: {node: '>=6.0.0'}
     hasBin: true
 
+  '@babel/parser@7.29.9':
+    resolution: {integrity: sha512-CjXrNHTnvqBVqHgdBysY3vk2T8tpJHb5/RMeHJBTyVa9xgugCB0CJTx/3oO8RV2QRQP391RWpB7D6hLjm8V9uA==}
+    engines: {node: '>=6.0.0'}
+    hasBin: true
+
   '@babel/plugin-proposal-decorators@7.29.7':
     resolution: {integrity: sha512-EtU0Hi3GvrTqD56xKmZvV/uCXK2ZbwVNPNLAquVItcAZpUhkXwWlo3Fmj0c2LxgSf2I8IDULeAepwNP1OefLXg==}
     engines: {node: '>=6.9.0'}
@@ -2202,6 +2207,12 @@ packages:
 
   '@babel/plugin-transform-typescript@7.29.7':
     resolution: {integrity: sha512-jK52h8LaLc7JarhQV2ofeFMts4H7vnOXnqZNA6fYglBTZewRBE51KWt3BUltW1P+KoPsYkHoJeXePuz4zo2LMw==}
+    engines: {node: '>=6.9.0'}
+    peerDependencies:
+      '@babel/core': '>=7.29.6 <8.0.0'
+
+  '@babel/plugin-transform-typescript@7.29.9':
+    resolution: {integrity: sha512-FFwIwzU+7SCOuxxV4YtJql6T9981ZVTm+FHO5GhVsRqCTdy0WwrEZh3l42ARpXruJUDGOptdduHW6Zr7pNPLNg==}
     engines: {node: '>=6.9.0'}
     peerDependencies:
       '@babel/core': '>=7.29.6 <8.0.0'
@@ -8357,10 +8368,6 @@ packages:
   hoist-non-react-statics@3.3.2:
     resolution: {integrity: sha512-/gGivxi8JPKWNm/W0jSmzcMPpfpPLc3dY/6GxhX2hQ9iGj3aDfklV4ET7NjKpSinLpJ5vafa9iiGIEZg10SfBw==}
 
-  hono@4.13.5:
-    resolution: {integrity: sha512-O6+/eCYRkzzzy0rPWwKLiGBR1nFuUPZynnwjxN1MBA62NNqbT0wQEzQyK2gSO5yDIDB336sXQleAhOHrzlYyKw==}
-    engines: {node: '>=16.9.0'}
-
   hono@4.13.8:
     resolution: {integrity: sha512-/Gng7NfoykZl2pjukW5Z6+8Yxm3BPRf86GTbQnt0SbySkvax4fyL4H3HhY1cCpBGmiW9XDRFzRV+CXK2W8QudQ==}
     engines: {node: '>=16.9.0'}
@@ -13034,6 +13041,10 @@ snapshots:
     dependencies:
       '@babel/types': 7.29.8
 
+  '@babel/parser@7.29.9':
+    dependencies:
+      '@babel/types': 7.29.8
+
   '@babel/plugin-proposal-decorators@7.29.7(@babel/core@7.29.7)':
     dependencies:
       '@babel/core': 7.29.7
@@ -13308,6 +13319,17 @@ snapshots:
       '@babel/helper-plugin-utils': 7.29.7
 
   '@babel/plugin-transform-typescript@7.29.7(@babel/core@7.29.7)':
+    dependencies:
+      '@babel/core': 7.29.7
+      '@babel/helper-annotate-as-pure': 7.29.7
+      '@babel/helper-create-class-features-plugin': 7.29.7(@babel/core@7.29.7)
+      '@babel/helper-plugin-utils': 7.29.7
+      '@babel/helper-skip-transparent-expression-wrappers': 7.29.7
+      '@babel/plugin-syntax-typescript': 7.29.7(@babel/core@7.29.7)
+    transitivePeerDependencies:
+      - supports-color
+
+  '@babel/plugin-transform-typescript@7.29.9(@babel/core@7.29.7)':
     dependencies:
       '@babel/core': 7.29.7
       '@babel/helper-annotate-as-pure': 7.29.7
@@ -14282,22 +14304,22 @@ snapshots:
     dependencies:
       hono: 4.13.8
 
-  '@hono/node-server@2.1.1(hono@4.13.5)':
+  '@hono/node-server@2.1.1(hono@4.13.8)':
     dependencies:
-      hono: 4.13.5
+      hono: 4.13.8
 
-  '@hono/node-ws@1.3.1(@hono/node-server@2.1.1(hono@4.13.5))(hono@4.13.5)':
+  '@hono/node-ws@1.3.1(@hono/node-server@2.1.1(hono@4.13.8))(hono@4.13.8)':
     dependencies:
-      '@hono/node-server': 2.1.1(hono@4.13.5)
-      hono: 4.13.5
+      '@hono/node-server': 2.1.1(hono@4.13.8)
+      hono: 4.13.8
       ws: 8.21.0
     transitivePeerDependencies:
       - bufferutil
       - utf-8-validate
 
-  '@hono/zod-validator@0.9.1(hono@4.13.5)(zod@4.4.3)':
+  '@hono/zod-validator@0.9.1(hono@4.13.8)(zod@4.4.3)':
     dependencies:
-      hono: 4.13.5
+      hono: 4.13.8
       zod: 4.4.3
 
   '@hookform/resolvers@5.4.0(react-hook-form@7.81.0(react@19.2.8))':
@@ -15642,7 +15664,7 @@ snapshots:
       '@babel/plugin-transform-react-jsx-source': 7.29.7(@babel/core@7.29.7)
       '@babel/plugin-transform-regenerator': 7.29.8(@babel/core@7.29.7)
       '@babel/plugin-transform-runtime': 7.29.7(@babel/core@7.29.7)
-      '@babel/plugin-transform-typescript': 7.29.7(@babel/core@7.29.7)
+      '@babel/plugin-transform-typescript': 7.29.9(@babel/core@7.29.7)
       '@babel/plugin-transform-unicode-regex': 7.29.7(@babel/core@7.29.7)
       '@react-native/babel-plugin-codegen': 0.86.3(@babel/core@7.29.7)
       babel-plugin-syntax-hermes-parser: 0.36.0
@@ -20216,8 +20238,6 @@ snapshots:
     dependencies:
       react-is: 16.13.1
 
-  hono@4.13.5: {}
-
   hono@4.13.8: {}
 
   hookified@1.15.1: {}
@@ -21501,7 +21521,7 @@ snapshots:
     dependencies:
       '@babel/core': 7.29.7
       '@babel/generator': 7.29.8
-      '@babel/parser': 7.29.8
+      '@babel/parser': 7.29.9
       '@babel/types': 7.29.8
       flow-enums-runtime: 0.0.6
       metro: 0.84.6
@@ -21567,7 +21587,7 @@ snapshots:
       '@babel/code-frame': 7.29.7
       '@babel/core': 7.29.7
       '@babel/generator': 7.29.8
-      '@babel/parser': 7.29.8
+      '@babel/parser': 7.29.9
       '@babel/template': 7.29.7
       '@babel/traverse': 7.29.8
       '@babel/types': 7.29.8
