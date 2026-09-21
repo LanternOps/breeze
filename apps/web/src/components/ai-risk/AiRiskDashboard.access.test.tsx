@@ -45,6 +45,38 @@ describe('AiRiskDashboard - 403 access state (#6498)', () => {
     expect(screen.queryByTestId('ai-risk-access-denied')).not.toBeInTheDocument();
   });
 
+  it('does NOT claim access-denied when a 403 arrives alongside a real server error', async () => {
+    // A 403 on one read next to a 500 on another used to render the permission
+    // panel over a genuine fault, sending whoever debugs it to RBAC.
+    fetchWithAuthMock
+      .mockResolvedValueOnce(res(500, { error: 'boom' }))
+      .mockResolvedValueOnce(res(403, { error: 'Forbidden' }))
+      .mockResolvedValueOnce(res(403, { error: 'Forbidden' }));
+    render(<AiRiskDashboard />);
+
+    fireEvent.click(screen.getByRole('button', { name: /analytics/i }));
+
+    await waitFor(() => expect(screen.getByText(/failed to load tool executions/i)).toBeInTheDocument());
+    expect(screen.queryByTestId('ai-risk-access-denied')).not.toBeInTheDocument();
+  });
+
+  it('does NOT claim access-denied when a 403 arrives alongside a rejected fetch', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    fetchWithAuthMock
+      .mockResolvedValueOnce(res(403, { error: 'Forbidden' }))
+      .mockRejectedValueOnce(new Error('network down'))
+      .mockResolvedValueOnce(res(403, { error: 'Forbidden' }));
+    render(<AiRiskDashboard />);
+
+    fireEvent.click(screen.getByRole('button', { name: /analytics/i }));
+
+    await waitFor(() => expect(screen.getByText(/failed to load tool executions/i)).toBeInTheDocument());
+    expect(screen.queryByTestId('ai-risk-access-denied')).not.toBeInTheDocument();
+    // The dropped rejection reason is logged rather than discarded.
+    expect(err).toHaveBeenCalledWith('[ai-risk] admin read failed', expect.any(Error));
+    err.mockRestore();
+  });
+
   it('still renders the data panels when the reads succeed', async () => {
     fetchWithAuthMock.mockResolvedValue(
       res(200, { summary: { total: 0, byStatus: {}, byTool: [] }, timeSeries: [], executions: [], data: [] }),

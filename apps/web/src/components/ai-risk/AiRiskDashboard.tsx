@@ -144,9 +144,19 @@ export default function AiRiskDashboard() {
         fetchWithAuth(`/ai/admin/security-events?since=${since}&limit=100`),
         fetchWithAuth(`/ai/admin/script-proposals-metrics?since=${since}`),
       ]);
-      const forbidden = [execResult, secResult, scriptResult].some(
-        (r) => r.status === "fulfilled" && r.value.status === 403,
-      );
+      // All three reads carry the same organizations:read gate, so a 403 on any
+      // of them is the permission answer for the whole dashboard. Only claim
+      // that when NOTHING ELSE failed, though: a 403 here next to a 500 or a
+      // rejected fetch there would otherwise render "you lack permission" over
+      // a real server/network fault and send whoever debugs it to RBAC.
+      const results = [execResult, secResult, scriptResult];
+      for (const r of results) {
+        if (r.status === "rejected") console.error("[ai-risk] admin read failed", r.reason);
+      }
+      const failures = results.filter((r) => r.status !== "fulfilled" || !r.value.ok);
+      const forbidden =
+        failures.length > 0 &&
+        failures.every((r) => r.status === "fulfilled" && r.value.status === 403);
       if (forbidden) {
         setAccessDenied(true);
         setExecData(null);
@@ -154,6 +164,9 @@ export default function AiRiskDashboard() {
         setScriptMetrics(null);
         return;
       }
+      // A mixed outcome (some 403, some 5xx/rejected) falls through to the
+      // ordinary error handling below, which surfaces a load failure rather
+      // than a permission claim.
       setAccessDenied(false);
       if (execResult.status === "fulfilled" && execResult.value.ok) {
         setExecData(await execResult.value.json());
