@@ -11,7 +11,10 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/config"
+	"github.com/breeze-rmm/agent/internal/logging"
 )
+
+var log = logging.L("security")
 
 // SecurityScanner coordinates security scans on the local system.
 type SecurityScanner struct {
@@ -128,7 +131,13 @@ func (s *SecurityScanner) ScanWithContext(ctx context.Context, scanType string, 
 			dest, qErr := QuarantineThreat(threats[i], dir)
 			if qErr != nil {
 				// A file we could not quarantine is still a real detection: report
-				// it undecorated rather than dropping it or failing the scan.
+				// it undecorated rather than dropping it or failing the scan. But
+				// silently doing so would make "quarantined", "auto-quarantine
+				// off" and "attempted and failed" all report QuarantinedTo == ""
+				// and be indistinguishable server-side, so log it and flag the
+				// threat so the server can tell the three apart.
+				log.Warn("auto-quarantine failed", "path", threats[i].Path, "name", threats[i].Name, "error", qErr.Error())
+				threats[i].QuarantineFailed = true
 				continue
 			}
 			threats[i].QuarantinedTo = dest

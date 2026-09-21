@@ -23,6 +23,12 @@ type Threat struct {
 	Severity      string `json:"severity"`
 	Path          string `json:"path"`
 	QuarantinedTo string `json:"quarantinedTo,omitempty"`
+	// QuarantineFailed distinguishes "auto-quarantine attempted and failed"
+	// from "quarantined" (QuarantinedTo set) and "auto-quarantine off"
+	// (neither set) — all three would otherwise report QuarantinedTo == ""
+	// and be indistinguishable to the server. Set only when AutoQuarantine
+	// was on and QuarantineThreat returned an error for this threat.
+	QuarantineFailed bool `json:"quarantineFailed,omitempty"`
 }
 
 const (
