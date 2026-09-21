@@ -5,7 +5,7 @@ import { Worker } from 'bullmq';
 import { eq, sql } from 'drizzle-orm';
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import { closeDb, db, withDbAccessContext } from '../../db';
-import { alerts, alertRules, alertTemplates, devices } from '../../db/schema';
+import { alerts, alertRules, alertTemplates, devices, offlineTransitionEffects } from '../../db/schema';
 import { createOrganization, createPartner, createSite } from './db-utils';
 import { getAppDb, getTestDb } from './setup';
 import { findDueOfflineEffects } from '../../services/offlineEffectsStore';
@@ -18,6 +18,7 @@ import {
   processDetectOffline,
   processMarkOffline,
   shutdownOfflineDetector,
+  transitionDeviceOffline,
   type MarkOfflineJobData,
 } from '../../jobs/offlineDetector';
 
@@ -146,5 +147,64 @@ describe('offline detector recovery (real Postgres RLS and Redis)', () => {
     } finally {
       release();
     }
+  });
+});
+
+// #6503 follow-up: transitionDeviceOffline is called from inside the agent WS
+// handlers' already-open ORG-scoped withDbAccessContext (routes/agentWs.ts's
+// runWithAgentDbAccess), not from a bare BullMQ job like processMarkOffline
+// above. CI caught what the mocked unit suite could not: under real RLS, the
+// offline_transition_effects INSERT was denied (42501) from inside that
+// ambient org context, and — because the denial happened inside the caller's
+// open transaction — the very next statement on the same connection failed
+// with "current transaction is aborted". A negative control here (asserting
+// the ambient-context call would fail WITHOUT the runOutsideDbContext +
+// withSystemDbAccessContext escape) would require reverting the fix in this
+// test file, so instead this proves the fix's actual contract: called from
+// inside that same ambient org context, the transition still lands.
+describe('transitionDeviceOffline from inside an ambient org-scoped context (#6503)', () => {
+  function withSimulatedAgentWsContext<T>(orgId: string, fn: () => Promise<T>): Promise<T> {
+    // Mirrors runWithAgentOrgDbAccess exactly (routes/agentWs.ts) — the WS
+    // handlers never carry a userId or partner-axis access.
+    return withDbAccessContext(
+      { scope: 'organization', orgId, accessibleOrgIds: [orgId], accessiblePartnerIds: [], userId: null },
+      fn,
+    );
+  }
+
+  it('persists the offline transition and flips device status, called from inside an org-scoped context', async () => {
+    const { org, device } = await fixture();
+
+    const result = await withSimulatedAgentWsContext(org.id, () =>
+      transitionDeviceOffline(device.agentId!, ['online']),
+    );
+
+    expect(result).toEqual({ transitioned: true });
+    const [current] = await getTestDb().select().from(devices).where(eq(devices.id, device.id));
+    expect(current!.status).toBe('offline');
+    // The negative control the offlineDetectorRecovery suite above already
+    // runs as breeze_app with no context: proves this row is genuinely
+    // RLS-visible, not just present because the test helper bypasses RLS.
+    const effects = await getTestDb().select().from(offlineTransitionEffects).where(eq(offlineTransitionEffects.deviceId, device.id));
+    expect(effects.length).toBeGreaterThan(0);
+    expect(effects.every((e) => e.orgId === org.id)).toBe(true);
+  });
+
+  it('does not transition (and does not poison the caller context) when the device is not online', async () => {
+    const { org, device } = await fixture();
+    await getTestDb().update(devices).set({ status: 'maintenance' }).where(eq(devices.id, device.id));
+
+    const result = await withSimulatedAgentWsContext(org.id, () =>
+      transitionDeviceOffline(device.agentId!, ['online']),
+    );
+    expect(result).toEqual({ transitioned: false });
+
+    // Prove the caller's ambient context survived intact — a subsequent read
+    // in the SAME simulated context must not hit "current transaction is
+    // aborted" from a poisoned connection.
+    const stillReadable = await withSimulatedAgentWsContext(org.id, () =>
+      db.select().from(devices).where(eq(devices.id, device.id)),
+    );
+    expect(stillReadable[0]?.status).toBe('maintenance');
   });
 });

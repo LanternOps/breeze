@@ -30,6 +30,24 @@ const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
   return typeof withSystem === 'function' ? withSystem(fn) : fn();
 };
 
+// #6503 follow-up: unlike processMarkOffline (a BullMQ job with no ambient
+// context to begin with), transitionDeviceOffline is also called from inside
+// the agent WS handlers' already-open ORG-scoped withDbAccessContext. A bare
+// nested withSystemDbAccessContext would silently no-op there (withDbAccessContext
+// refuses to nest — see its doc comment) and the offline_transition_effects
+// insert would run under the org-scoped RLS context instead, which denies it
+// (that table's policy does not grant agent-connection-scoped writes) — the
+// exact heartbeat probe-config pattern from #1105 (see
+// routes/agents/heartbeat.ts's maybeDispatchEditionMigration call). Exiting
+// the ambient context first genuinely opens a fresh system-scoped transaction,
+// so a failure in here cannot poison the caller's (still-open) org transaction
+// either.
+const runSystemDbAccessOutsideAmbientContext = async <T>(fn: () => Promise<T>): Promise<T> => {
+  const runOutside = dbModule.runOutsideDbContext;
+  const runInSystemContext = () => runWithSystemDbAccess(fn);
+  return typeof runOutside === 'function' ? runOutside(runInSystemContext) : runInSystemContext();
+};
+
 // Queue name
 const OFFLINE_QUEUE = 'offline-detection';
 const ON_DEMAND_OFFLINE_DEDUPE_WINDOW_MS = 30 * 1000;
@@ -476,11 +494,19 @@ export async function processMarkOffline(data: MarkOfflineJobData): Promise<{
  * effects are keyed identically whether the offline observation ends up
  * being noticed by the sweep or by a live WS disconnect.
  *
- * Unlike `processMarkOffline`, this does NOT open its own DB access context —
- * callers (currently only the agent WS handlers) already run inside an
- * ambient org-scoped `withDbAccessContext` for the device's own org, and
- * nesting `withSystemDbAccessContext` inside that would silently no-op (see
- * `runWithAgentOrgDbAccess`'s doc comment) rather than genuinely re-scope.
+ * Like `processMarkOffline`, this opens its OWN system DB access context —
+ * but unlike it, callers (currently only the agent WS handlers) may already
+ * be running inside an ambient ORG-scoped `withDbAccessContext` for the
+ * device's own org. A bare nested `withSystemDbAccessContext` would silently
+ * no-op there (`withDbAccessContext` refuses to nest), running the
+ * `offline_transition_effects` insert under org-scoped RLS instead of system
+ * scope — which that table's policy denies, surfacing as `42501` from
+ * Postgres and then poisoning the rest of the caller's transaction ("current
+ * transaction is aborted"). This function instead exits the ambient context
+ * first via `runOutsideDbContext`, exactly like the heartbeat probe-config /
+ * edition-migration dispatch pattern from #1105 (`routes/agents/heartbeat.ts`),
+ * so it always opens a genuinely fresh system transaction — a failure inside
+ * it cannot poison whatever transaction the caller had open.
  *
  * `fromStatuses` intentionally does NOT default to every non-terminal status
  * the old `updateDeviceStatus(agentId, 'offline')` used to write over
@@ -496,27 +522,39 @@ export async function transitionDeviceOffline(
   agentId: string,
   fromStatuses: readonly ('online' | 'updating')[] = ['online'],
 ): Promise<{ transitioned: boolean }> {
-  const [current] = await db
-    .select()
-    .from(devices)
-    .where(and(eq(devices.agentId, agentId), inArray(devices.status, fromStatuses)))
-    .limit(1);
-  if (!current) return { transitioned: false };
+  // The SELECT, the CAS UPDATE, and persistOfflineTransition's
+  // offline_transition_effects INSERT all share this one system-scoped
+  // transaction — see the doc comment above for why a bare ambient (org-scoped)
+  // context would deny the insert under RLS.
+  const effectIds = await runSystemDbAccessOutsideAmbientContext(async () => {
+    const [current] = await db
+      .select()
+      .from(devices)
+      .where(and(eq(devices.agentId, agentId), inArray(devices.status, fromStatuses)))
+      .limit(1);
+    if (!current) return [];
 
-  const observedLastSeenAt = canonicalTimestamp(current.lastSeenAt?.toISOString() || '', 'observedLastSeenAt');
-  const transitionId = offlineTransitionId(current.orgId, current.id, observedLastSeenAt);
+    const observedLastSeenAt = canonicalTimestamp(current.lastSeenAt?.toISOString() || '', 'observedLastSeenAt');
+    const transitionId = offlineTransitionId(current.orgId, current.id, observedLastSeenAt);
 
-  const [device] = await db.update(devices).set({ status: 'offline', updatedAt: new Date() }).where(and(
-    eq(devices.id, current.id), eq(devices.orgId, current.orgId),
-    inArray(devices.status, fromStatuses),
-    // Same ms-precision CAS guard as processMarkOffline (#6024): the write
-    // must be against the exact heartbeat observation just read.
-    sql`date_trunc('milliseconds', ${devices.lastSeenAt}) = ${observedLastSeenAt}`,
-  )).returning();
-  if (!device) return { transitioned: false };
+    const [device] = await db.update(devices).set({ status: 'offline', updatedAt: new Date() }).where(and(
+      eq(devices.id, current.id), eq(devices.orgId, current.orgId),
+      inArray(devices.status, fromStatuses),
+      // Same ms-precision CAS guard as processMarkOffline (#6024): the write
+      // must be against the exact heartbeat observation just read.
+      sql`date_trunc('milliseconds', ${devices.lastSeenAt}) = ${observedLastSeenAt}`,
+    )).returning();
+    if (!device) return [];
 
-  const effectIds = await persistOfflineTransition(device, transitionId, observedLastSeenAt);
-  if (effectIds.length) await enqueueOfflineEffects(effectIds);
+    return persistOfflineTransition(device, transitionId, observedLastSeenAt);
+  });
+  if (!effectIds.length) return { transitioned: false };
+
+  // The database has already admitted the work durably (same as
+  // processMarkOffline) — fan-out happens outside the DB context since
+  // getOfflineQueue()/addBulk talks to Redis, not Postgres, and a failed
+  // immediate enqueue is retried by the independent periodic recovery scan.
+  await enqueueOfflineEffects(effectIds);
   return { transitioned: true };
 }
 
