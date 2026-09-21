@@ -109,6 +109,13 @@ func TestFixedVolumesDedupesBindMountsOfTheSameDevice(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("fixedVolumes() returned %d mounts, want 2 (one per distinct device) — got %v", len(got), got)
 	}
+	// Identity, not just count: the /dev/sda2 group must be represented by
+	// the FIRST mount seen for that device ("/"), and /data must survive as
+	// its own distinct device. A regression that instead kept the LAST bind
+	// mount seen for /dev/sda2 would still pass a count-only assertion.
+	if got[0] != "/" || got[1] != "/data" {
+		t.Fatalf("fixedVolumes() = %v, want [\"/\" \"/data\"]", got)
+	}
 }
 
 // A partition with no Device (some virtual/synthetic mounts report an empty
@@ -128,5 +135,26 @@ func TestFixedVolumesKeepsDistinctMountsWithoutADevice(t *testing.T) {
 	got := fixedVolumes()
 	if len(got) != 2 {
 		t.Fatalf("fixedVolumes() = %v, want both no-device mounts kept", got)
+	}
+}
+
+// A non-measurable partition (e.g. an overlay/tmpfs mount) sharing a Device
+// with a later, measurable partition must not "use up" that device: the
+// skip check happens before the device is recorded as seen, so the
+// measurable mount on the same device is still reported.
+func TestFixedVolumesSkippedFsTypeDoesNotBlockLaterSameDeviceMount(t *testing.T) {
+	original := partitionsFn
+	t.Cleanup(func() { partitionsFn = original })
+
+	partitionsFn = func(all bool) ([]disk.PartitionStat, error) {
+		return []disk.PartitionStat{
+			{Device: "/dev/sda2", Mountpoint: "/var/lib/docker/overlay2/abc/merged", Fstype: "overlay"},
+			{Device: "/dev/sda2", Mountpoint: "/", Fstype: "ext4"},
+		}, nil
+	}
+
+	got := fixedVolumes()
+	if len(got) != 1 || got[0] != "/" {
+		t.Fatalf("fixedVolumes() = %v, want [\"/\"] (the overlay mount must be skipped, not consume the device)", got)
 	}
 }
