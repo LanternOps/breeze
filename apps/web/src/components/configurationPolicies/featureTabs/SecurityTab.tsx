@@ -6,34 +6,17 @@ import { useFeatureLink } from "./useFeatureLink";
 import FeatureTabShell from "./FeatureTabShell";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
-type SecuritySettings = {
-  realTimeProtection: boolean;
-  behavioralMonitoring: boolean;
-  cloudLookup: boolean;
-  scheduledScans: boolean;
-  scanMinute: string;
-  scanHour: string;
-  scanDayOfMonth: string;
-  scanDayOfWeek: string;
-  autoQuarantine: boolean;
-  notifyUser: boolean;
-  blockUntrustedUsb: boolean;
-  exclusions: string[];
-};
-const defaults: SecuritySettings = {
-  realTimeProtection: true,
-  behavioralMonitoring: true,
-  cloudLookup: true,
-  scheduledScans: true,
-  scanMinute: "0",
-  scanHour: "2",
-  scanDayOfMonth: "*",
-  scanDayOfWeek: "*",
-  autoQuarantine: true,
-  notifyUser: true,
-  blockUntrustedUsb: false,
-  exclusions: [],
-};
+import {
+  SECURITY_SCAN_TYPES,
+  type SecurityScanSettings,
+  SECURITY_SCAN_SETTINGS_DEFAULTS,
+  parseSecurityScanSettings,
+  SECURITY_SCAN_MINUTE_OPTIONS,
+  SECURITY_SCAN_HOUR_OPTIONS,
+  SECURITY_SCAN_DAY_OF_MONTH_OPTIONS,
+  SECURITY_SCAN_MAX_FILE_SIZE_MB_RANGE,
+  SECURITY_SCAN_TIMEOUT_MINUTES_RANGE,
+} from "@breeze/shared";
 function ToggleRow({
   label,
   description,
@@ -63,9 +46,6 @@ function ToggleRow({
     </div>
   );
 }
-const minuteOptions = ["0", "15", "30", "45"];
-const hourOptions = ["0", "2", "6", "12", "18"];
-const dayOfMonthOptions = ["*", "1", "15"];
 const createDayOfWeekOptions = () => [
   {
     label: i18n.t("policies:configurationPolicies.featureTabs.securityTab.any"),
@@ -100,6 +80,8 @@ const createDayOfWeekOptions = () => [
     value: "0",
   },
 ];
+const clamp = (value: number, [min, max]: readonly [number, number]): number =>
+  Math.min(max, Math.max(min, value));
 export default function SecurityTab({
   policyId,
   existingLink,
@@ -115,34 +97,20 @@ export default function SecurityTab({
   // whenever isInherited is true.
   const isInherited = !!parentLink && !existingLink;
   const effectiveLink = existingLink ?? parentLink;
-  const [settings, setSettings] = useState<SecuritySettings>(() => {
-    const stored = effectiveLink?.inlineSettings as
-      | Partial<SecuritySettings>
-      | undefined;
-    const merged = { ...defaults, ...stored };
-    if (!Array.isArray(merged.exclusions))
-      merged.exclusions = [...defaults.exclusions];
-    return merged;
-  });
+  const [settings, setSettings] = useState<SecurityScanSettings>(() =>
+    parseSecurityScanSettings(effectiveLink?.inlineSettings),
+  );
   const [newExclusion, setNewExclusion] = useState("");
   useEffect(() => {
     const link = existingLink ?? parentLink;
     if (link?.inlineSettings) {
-      setSettings((prev) => {
-        const merged = {
-          ...prev,
-          ...(link.inlineSettings as Partial<SecuritySettings>),
-        };
-        if (!Array.isArray(merged.exclusions))
-          merged.exclusions = [...defaults.exclusions];
-        return merged;
-      });
+      setSettings(parseSecurityScanSettings(link.inlineSettings));
     }
   }, [existingLink, parentLink]);
   const meta = FEATURE_META.security;
-  const update = <K extends keyof SecuritySettings>(
+  const update = <K extends keyof SecurityScanSettings>(
     key: K,
-    value: SecuritySettings[K],
+    value: SecurityScanSettings[K],
   ) => setSettings((prev) => ({ ...prev, [key]: value }));
   const handleAddExclusion = () => {
     const trimmed = newExclusion.trim();
@@ -201,43 +169,88 @@ export default function SecurityTab({
       }
     >
       <div className="grid gap-6 lg:grid-cols-2">
-        {/* Protection toggles */}
+        {/* Scan settings */}
         <div className="space-y-3">
           <h3 className="text-sm font-semibold">
             {i18n.t(
-              "policies:configurationPolicies.featureTabs.securityTab.realTimeProtection",
+              "policies:configurationPolicies.featureTabs.securityTab.scanSettings",
             )}
           </h3>
-          <ToggleRow
-            label={i18n.t(
-              "policies:configurationPolicies.featureTabs.securityTab.realTimeFileMonitoring",
-            )}
-            description={i18n.t(
-              "policies:configurationPolicies.featureTabs.securityTab.scanNewAndModifiedFilesContinuously",
-            )}
-            checked={settings.realTimeProtection}
-            onChange={(v) => update("realTimeProtection", v)}
-          />
-          <ToggleRow
-            label={i18n.t(
-              "policies:configurationPolicies.featureTabs.securityTab.behavioralMonitoring",
-            )}
-            description={i18n.t(
-              "policies:configurationPolicies.featureTabs.securityTab.detectSuspiciousProcessBehaviorAndScripts",
-            )}
-            checked={settings.behavioralMonitoring}
-            onChange={(v) => update("behavioralMonitoring", v)}
-          />
-          <ToggleRow
-            label={i18n.t(
-              "policies:configurationPolicies.featureTabs.securityTab.cloudThreatLookup",
-            )}
-            description={i18n.t(
-              "policies:configurationPolicies.featureTabs.securityTab.useCloudReputationForNewIndicators",
-            )}
-            checked={settings.cloudLookup}
-            onChange={(v) => update("cloudLookup", v)}
-          />
+          <div>
+            <label className="text-xs uppercase text-muted-foreground">
+              {i18n.t(
+                "policies:configurationPolicies.featureTabs.securityTab.scanType",
+              )}
+            </label>
+            <select
+              data-testid="security-scan-type"
+              value={settings.scanType}
+              onChange={(e) =>
+                update("scanType", e.target.value as SecurityScanSettings["scanType"])
+              }
+              className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
+            >
+              {SECURITY_SCAN_TYPES.map((type) => (
+                <option key={type} value={type}>
+                  {type === "quick"
+                    ? i18n.t(
+                        "policies:configurationPolicies.featureTabs.securityTab.quickScan",
+                      )
+                    : i18n.t(
+                        "policies:configurationPolicies.featureTabs.securityTab.fullScan",
+                      )}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="text-xs uppercase text-muted-foreground">
+              {i18n.t(
+                "policies:configurationPolicies.featureTabs.securityTab.maxFileSizeMb",
+              )}
+            </label>
+            <input
+              type="number"
+              data-testid="security-max-file-size-mb"
+              value={settings.maxFileSizeMb}
+              min={SECURITY_SCAN_MAX_FILE_SIZE_MB_RANGE[0]}
+              max={SECURITY_SCAN_MAX_FILE_SIZE_MB_RANGE[1]}
+              onChange={(e) =>
+                update(
+                  "maxFileSizeMb",
+                  clamp(
+                    Number.parseInt(e.target.value, 10) || SECURITY_SCAN_SETTINGS_DEFAULTS.maxFileSizeMb,
+                    SECURITY_SCAN_MAX_FILE_SIZE_MB_RANGE,
+                  ),
+                )
+              }
+              className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
+            />
+          </div>
+          <div>
+            <label className="text-xs uppercase text-muted-foreground">
+              {i18n.t(
+                "policies:configurationPolicies.featureTabs.securityTab.scanTimeoutMinutes",
+              )}
+            </label>
+            <input
+              type="number"
+              data-testid="security-scan-timeout-minutes"
+              value={settings.scanTimeoutMinutes}
+              min={SECURITY_SCAN_TIMEOUT_MINUTES_RANGE[0]}
+              max={SECURITY_SCAN_TIMEOUT_MINUTES_RANGE[1]}
+              onChange={(e) =>
+                update(
+                  "scanTimeoutMinutes",
+                  clamp(
+                    Number.parseInt(e.target.value, 10) || SECURITY_SCAN_SETTINGS_DEFAULTS.scanTimeoutMinutes,
+                    SECURITY_SCAN_TIMEOUT_MINUTES_RANGE,
+                  ),
+                )
+              }
+              className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
+            />
+          </div>
         </div>
 
         {/* Actions */}
@@ -254,26 +267,6 @@ export default function SecurityTab({
             )}
             checked={settings.autoQuarantine}
             onChange={(v) => update("autoQuarantine", v)}
-          />
-          <ToggleRow
-            label={i18n.t(
-              "policies:configurationPolicies.featureTabs.securityTab.notifyUserOnDetection",
-            )}
-            description={i18n.t(
-              "policies:configurationPolicies.featureTabs.securityTab.sendDeviceNotificationsWhenThreatsAreFound",
-            )}
-            checked={settings.notifyUser}
-            onChange={(v) => update("notifyUser", v)}
-          />
-          <ToggleRow
-            label={i18n.t(
-              "policies:configurationPolicies.featureTabs.securityTab.blockUntrustedUSBDevices",
-            )}
-            description={i18n.t(
-              "policies:configurationPolicies.featureTabs.securityTab.preventUnknownRemovableMedia",
-            )}
-            checked={settings.blockUntrustedUsb}
-            onChange={(v) => update("blockUntrustedUsb", v)}
           />
         </div>
       </div>
@@ -296,6 +289,11 @@ export default function SecurityTab({
               : i18n.t("common:states.disabled")}
           </button>
         </div>
+        <p className="mt-2 text-xs text-muted-foreground">
+          {i18n.t(
+            "policies:configurationPolicies.featureTabs.securityTab.scanRunsServerSideDescription",
+          )}
+        </p>
         <div
           className={`mt-3 grid gap-3 sm:grid-cols-4 ${settings.scheduledScans ? "" : "opacity-50 pointer-events-none"}`}
         >
@@ -310,7 +308,7 @@ export default function SecurityTab({
               onChange={(e) => update("scanMinute", e.target.value)}
               className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
             >
-              {minuteOptions.map((o) => (
+              {SECURITY_SCAN_MINUTE_OPTIONS.map((o) => (
                 <option key={o} value={o}>
                   {o}
                 </option>
@@ -328,7 +326,7 @@ export default function SecurityTab({
               onChange={(e) => update("scanHour", e.target.value)}
               className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
             >
-              {hourOptions.map((o) => (
+              {SECURITY_SCAN_HOUR_OPTIONS.map((o) => (
                 <option key={o} value={o}>
                   {o.padStart(2, "0")}:00
                 </option>
@@ -346,7 +344,7 @@ export default function SecurityTab({
               onChange={(e) => update("scanDayOfMonth", e.target.value)}
               className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
             >
-              {dayOfMonthOptions.map((o) => (
+              {SECURITY_SCAN_DAY_OF_MONTH_OPTIONS.map((o) => (
                 <option key={o} value={o}>
                   {o}
                 </option>
