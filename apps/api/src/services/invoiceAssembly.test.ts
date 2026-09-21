@@ -1,8 +1,27 @@
 import { describe, it, expect } from 'vitest';
 import {
   timeEntryToLineSpec, ticketPartToLineSpec, partitionByCurrency, partitionTimeEntries, mergeAssembly,
-  UNKNOWN_CURRENCY_KEY, type DraftLineSpec
+  isMissingRateGap, UNKNOWN_CURRENCY_KEY, type DraftLineSpec
 } from './invoiceAssembly';
+
+// #6461: single source of truth for "is this row a gap" shared with
+// timeEntryService.listBillables, which sees every billing_status (unlike
+// the not_billed-only queries that feed partitionTimeEntries above).
+describe('isMissingRateGap', () => {
+  it('a null rate on a not_billed row is a gap', () => {
+    expect(isMissingRateGap(null, 'not_billed')).toBe(true);
+  });
+
+  it('a null rate on a contract or no_charge row is intentional, not a gap', () => {
+    expect(isMissingRateGap(null, 'contract')).toBe(false);
+    expect(isMissingRateGap(null, 'no_charge')).toBe(false);
+  });
+
+  it('a resolved rate is never a gap, regardless of billing status', () => {
+    expect(isMissingRateGap('0.00', 'not_billed')).toBe(false);
+    expect(isMissingRateGap('50.00', 'billed')).toBe(false);
+  });
+});
 
 describe('timeEntryToLineSpec', () => {
   it('converts minutes to hours and computes line total; flags unapproved; non-taxable', () => {

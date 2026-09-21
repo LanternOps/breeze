@@ -417,6 +417,27 @@ describe('GET /export/billables.csv', () => {
     });
   });
 
+  // #6461: a missingRate row must render as an explicit gap marker in the CSV,
+  // never as a fabricated $0.00 amount, and must not appear in totalsByCurrency.
+  it('renders a missingRate row as MISSING_RATE, never a $0.00 amount', async () => {
+    timeServiceMocks.listBillables.mockResolvedValue({
+      rows: [{
+        kind: 'time', date: new Date('2026-06-10T10:00:00Z'), orgName: 'Acme',
+        ticketNumber: 'T-2026-0002', description: 'no rate set', technician: 'Tess',
+        quantity: '0.50', rate: null, amount: null, missingRate: true,
+        currencyCode: 'USD',
+        billingStatus: 'not_billed', isApproved: true
+      }],
+      totalsByCurrency: []
+    });
+    const res = await ticketsRoutes.request('/export/billables.csv?from=2026-06-01&to=2026-06-30');
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    const dataLine = body.split('\n')[1]?.replaceAll('"', '');
+    expect(dataLine).toContain(',MISSING_RATE,USD,not_billed,');
+    expect(body).not.toContain(',0.00,USD,');
+  });
+
   it('rejects missing date params with 400', async () => {
     const res = await ticketsRoutes.request('/export/billables.csv');
     expect(res.status).toBe(400);

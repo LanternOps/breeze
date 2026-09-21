@@ -44,6 +44,18 @@ export interface AssemblyResult {
 /** Defensive bucket for a time entry with a null snapshot (impossible while the CHECK holds). */
 export const UNKNOWN_CURRENCY_KEY = 'UNKNOWN';
 
+/** True when a billable row has an unresolved rate that is a genuine assembly
+ *  gap — hours (or quantity) worked but nothing to bill it at — never a
+ *  fabricated $0.00 line (#6461). A `contract`/`no_charge` billing status
+ *  means the null rate is intentional (the work is covered or comped), so it
+ *  is a real zero, not a gap. Single source of truth for this rule: both
+ *  `partitionTimeEntries` below and `timeEntryService.listBillables` (which
+ *  sees every billing_status, unlike the `not_billed`-only queries here) call
+ *  through this instead of re-deriving the null check. */
+export function isMissingRateGap(rate: string | number | null, billingStatus: string): boolean {
+  return rate == null && billingStatus !== 'contract' && billingStatus !== 'no_charge';
+}
+
 /** Split rows into header-currency specs and per-currency blocked groups. No conversion, ever:
  *  a mismatched row is reported under its own currency, never recomputed into the header's.
  *  Blocked specs are built with the row's OWN currency so their `lineTotal` rounds honestly
@@ -123,7 +135,10 @@ export function partitionTimeEntries(rows: TimeEntryRow[], headerCurrency: strin
   const rated: TimeEntryRow[] = [];
   const missingRate: MissingRateSpec[] = [];
   for (const r of rows) {
-    if (r.hourlyRate == null) {
+    // Callers of this function pre-filter to billing_status = 'not_billed'
+    // (see gatherOrgTimeEntries etc.), so the literal here is exact, not a
+    // guess — routed through isMissingRateGap for a single source of truth.
+    if (isMissingRateGap(r.hourlyRate, 'not_billed')) {
       missingRate.push({
         sourceType: 'time_entry', sourceId: r.id, ticketId: r.ticketId,
         description: entryDescription(r), quantity: entryHours(r), currencyCode: r.currencyCode ?? null

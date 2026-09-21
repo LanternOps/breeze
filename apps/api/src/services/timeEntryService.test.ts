@@ -1248,7 +1248,12 @@ describe('query helpers', () => {
       }
     ]);
     const result = await listBillables(new Date('2026-06-01T00:00:00Z'), new Date('2026-06-30T00:00:00Z'));
-    expect(result.rows.map((r) => r.amount)).toEqual(['0.00', '0.00']);
+    // The corrupt time row (`not_billed`, unresolvable rate) is a missingRate
+    // gap, not a fabricated $0.00 line (#6461). The corrupt part row has no
+    // such concept (ticket_parts.unit_price is NOT NULL) and keeps its
+    // defensive '0.00' fallback.
+    expect(result.rows[0]).toMatchObject({ kind: 'time', amount: null, missingRate: true });
+    expect(result.rows[1]).toMatchObject({ kind: 'part', amount: '0.00', missingRate: false });
     expect(result.rows.map((r) => r.amount)).not.toContain('NaN');
     expect(consoleSpy).toHaveBeenCalledTimes(2);
     consoleSpy.mockRestore();
@@ -2404,6 +2409,29 @@ describe('money readers read COALESCE(billable_minutes, duration_minutes) (#4628
     // Pre-existing behaviour, re-pinned here: a rate-less row still carries its
     // snapshot currency, so the currency appears with a ZERO total. It adds no
     // money, which is the §3.5 property; it is not absent from the list.
+    expect(totalsByCurrency).toEqual([{ currencyCode: 'USD', amount: '0.00' }]);
+  });
+
+  // #6461: a `not_billed` time entry with no resolvable hourly rate is a genuine
+  // assembly gap — the same row invoiceAssembly.partitionTimeEntries would route
+  // to `missingRate` rather than throw on — and must never render as a real
+  // $0.00 line or feed totalsByCurrency.
+  it('a NOT_BILLED entry with no rate is a missingRate gap, not a $0.00 line', async () => {
+    dbMocks.selectResults.push([billableRow({
+      minutes: 30, billableMinutes: 30, rate: null, billingStatus: 'not_billed',
+    })], []);
+    const { rows, totalsByCurrency } = await listBillables(FROM, TO);
+    expect(rows[0]).toMatchObject({ quantity: '0.50', amount: null, missingRate: true });
+    // A gap contributes no money at all — not even a zero entry under its currency.
+    expect(totalsByCurrency).toEqual([]);
+  });
+
+  it('a NO_CHARGE entry with no rate stays an intentional $0.00 line, not a gap', async () => {
+    dbMocks.selectResults.push([billableRow({
+      minutes: 30, billableMinutes: 30, rate: null, billingStatus: 'no_charge',
+    })], []);
+    const { rows, totalsByCurrency } = await listBillables(FROM, TO);
+    expect(rows[0]).toMatchObject({ quantity: '0.50', amount: '0.00', missingRate: false });
     expect(totalsByCurrency).toEqual([{ currencyCode: 'USD', amount: '0.00' }]);
   });
 
