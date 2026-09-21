@@ -295,4 +295,64 @@ describe('resolveAllSecurityScanScheduledDevices', () => {
     expect(entries[0]).toHaveProperty('orgId');
     expect(entries[0]).toHaveProperty('partnerId');
   });
+
+  it('a single partner-wide policy fans out to devices in more than one org', async () => {
+    const policyId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+    const partnerId = 'partner-1';
+    const orgA = 'org-a';
+    const orgB = 'org-b';
+    const deviceA = 'device-a';
+    const deviceB = 'device-b';
+
+    // 1. links query — one partner-wide link (orgId NULL, partnerId set).
+    selectMock.mockReturnValueOnce(
+      makeChain([
+        { configPolicyId: policyId, inlineSettings: { scheduledScans: true }, orgId: null, partnerId },
+      ]),
+    );
+    // 2. assignments query — assigned at the partner level.
+    selectMock.mockReturnValueOnce(
+      makeChain([{ configPolicyId: policyId, level: 'partner', targetId: partnerId }]),
+    );
+    // 3. resolveAssignmentDeviceIds('partner', partnerId) — the partner owns
+    // two DISTINCT orgs, this is the cross-org fan-out under test.
+    selectMock.mockReturnValueOnce(makeChain([{ id: orgA }, { id: orgB }]));
+    // 4. devices query scoped to those two orgs — one device per org.
+    selectMock.mockReturnValueOnce(makeChain([{ id: deviceA }, { id: deviceB }]));
+
+    // Verification runs deviceA and deviceB CONCURRENTLY (Promise.all inside
+    // the resolver's batch loop): both devices run loadDeviceHierarchy +
+    // the winner-join read in lockstep, one `await` apart, so the two
+    // devices' selects interleave COLUMN BY COLUMN (deviceA's device-select,
+    // deviceB's device-select, deviceA's org-select, deviceB's org-select,
+    // ...) rather than device-by-device. Content is identical for both
+    // devices (same generic hierarchy, same winning policy), so pushing two
+    // copies of each shape in query-position order is correct regardless of
+    // which physical device consumes which copy.
+    const winnerRow = {
+      configPolicyId: policyId,
+      assignmentLevel: 'partner',
+      assignmentPriority: 0,
+      assignmentCreatedAt: new Date('2026-01-01T00:00:00Z'),
+    };
+    selectMock
+      .mockReturnValueOnce(makeChain([DEVICE])) // deviceA: device select
+      .mockReturnValueOnce(makeChain([DEVICE])) // deviceB: device select
+      .mockReturnValueOnce(makeChain([{ partnerId: null }])) // deviceA: org select
+      .mockReturnValueOnce(makeChain([{ partnerId: null }])) // deviceB: org select
+      .mockReturnValueOnce(makeChain([])) // deviceA: device-group memberships
+      .mockReturnValueOnce(makeChain([])) // deviceB: device-group memberships
+      .mockReturnValueOnce(makeChain([winnerRow])) // deviceA: winner-join
+      .mockReturnValueOnce(makeChain([winnerRow])); // deviceB: winner-join
+
+    const entries = await resolveAllSecurityScanScheduledDevices();
+    expect(entries).toHaveLength(1);
+    const entry = entries[0]!;
+    expect(entry.configPolicyId).toBe(policyId);
+    expect(entry.orgId).toBeNull();
+    expect(entry.partnerId).toBe(partnerId);
+    // The discriminating assertion: deviceIds must span BOTH orgs the
+    // partner-wide policy fanned out to, not merely exist as a non-empty list.
+    expect(new Set(entry.deviceIds)).toEqual(new Set([deviceA, deviceB]));
+  });
 });
