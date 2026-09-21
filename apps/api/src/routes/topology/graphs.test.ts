@@ -58,6 +58,19 @@ describe('passive topology routes', () => {
     expect((await app().request(base + path)).status).toBe(400);
     expect(mocks.graph).not.toHaveBeenCalled(); expect(mocks.list).not.toHaveBeenCalled(); expect(mocks.health).not.toHaveBeenCalled(); expect(mocks.evidence).not.toHaveBeenCalled();
   });
+  // The web client's fetchWithAuth appends `?orgId=<ambient org>` to every
+  // /api/v1 call. A site-scoped read must tolerate the key when it names the
+  // site's own org (it is redundant, not a scope override) and still refuse a
+  // different org — otherwise the whole topology UI is unreachable (pass-3 G4-5).
+  it.each(['/graph', '/nodes', `/relationships/${REL}/evidence`, `/groups/${NODE}/members`, `/health?nodeIds=${NODE}&`])('accepts the ambient orgId on %s', async (path) => {
+    const sep = path.includes('?') ? '' : '?';
+    const res = await app().request(`${base}${path}${sep}orgId=10000000-0000-4000-8000-000000000001`);
+    expect(res.status).toBe(200);
+  });
+  it.each(['/nodes?orgId=10000000-0000-4000-8000-000000000002', `/health?nodeIds=${NODE}&orgId=10000000-0000-4000-8000-000000000002`])('still rejects a foreign orgId on %s', async (path) => {
+    expect((await app().request(base + path)).status).toBe(400);
+    expect(mocks.list).not.toHaveBeenCalled(); expect(mocks.health).not.toHaveBeenCalled();
+  });
   it.each([401, 403, 404])('blocks unauthorized reads with %s', async (status) => {
     mocks.status = status; expect((await app().request(`${base}/graph`)).status).toBe(status); expect(mocks.graph).not.toHaveBeenCalled();
   });
