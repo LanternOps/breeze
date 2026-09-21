@@ -708,3 +708,103 @@ func TestRecoveryDownloadProviderFailsOnRedirectLoopBeyondCap(t *testing.T) {
 		t.Fatalf("error = %v, want it to mention redirects", err)
 	}
 }
+
+// TestRecoveryDownloadProvider_OwnPrefixAlwaysAllowed proves that a key
+// under the token's own snapshot prefix is always downloadable, whether or
+// not the descriptor negotiated snapshot-file-membership-v1 (Task 9).
+func TestRecoveryDownloadProvider_OwnPrefixAlwaysAllowed(t *testing.T) {
+	var requested int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&requested, 1)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data"))
+	}))
+	defer server.Close()
+
+	p := newRecoveryDownloadProvider(context.Background(), server.URL, "tok", &AuthenticatedDownloadDescriptor{
+		Type: "breeze_proxy", Method: http.MethodGet, URL: server.URL + "/download",
+		PathQueryParam: "path", PathPrefix: "snapshots/gen-2",
+	})
+	dest := filepath.Join(t.TempDir(), "out")
+	if err := p.Download("snapshots/gen-2/files/a.gz", dest); err != nil {
+		t.Fatalf("Download: %v", err)
+	}
+	if got := atomic.LoadInt32(&requested); got != 1 {
+		t.Fatalf("requested = %d, want 1", got)
+	}
+}
+
+// TestRecoveryDownloadProvider_ExternalKeyRefusedWithoutAdmission proves an
+// external key is refused before any HTTP request when it has never been
+// added to the admissible set (Task 9).
+func TestRecoveryDownloadProvider_ExternalKeyRefusedWithoutAdmission(t *testing.T) {
+	var requested int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&requested, 1)
+	}))
+	defer server.Close()
+
+	p := newRecoveryDownloadProvider(context.Background(), server.URL, "tok", &AuthenticatedDownloadDescriptor{
+		Type: "breeze_proxy", Method: http.MethodGet, URL: server.URL + "/download",
+		PathQueryParam: "path", PathPrefix: "snapshots/gen-2",
+	})
+	err := p.Download("snapshots/gen-1/files/a.gz", filepath.Join(t.TempDir(), "out"))
+	if err == nil {
+		t.Fatal("expected an error for an external key never admitted")
+	}
+	if got := atomic.LoadInt32(&requested); got != 0 {
+		t.Fatalf("requested = %d, want 0 (no HTTP request for a key outside the admissible set)", got)
+	}
+}
+
+// TestRecoveryDownloadProvider_ExternalKeyAllowedOnceAdmittedWithMembership
+// proves an external key becomes downloadable once ExtendAdmissible has
+// widened the set AND the descriptor granted the membership capability
+// (Task 9).
+func TestRecoveryDownloadProvider_ExternalKeyAllowedOnceAdmittedWithMembership(t *testing.T) {
+	var requested int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&requested, 1)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data"))
+	}))
+	defer server.Close()
+
+	p := newRecoveryDownloadProvider(context.Background(), server.URL, "tok", &AuthenticatedDownloadDescriptor{
+		Type: "breeze_proxy", Method: http.MethodGet, URL: server.URL + "/download",
+		PathQueryParam: "path", PathPrefix: "snapshots/gen-2",
+		Capabilities: []string{CapabilitySnapshotFileMembershipV1},
+	})
+	if !p.MembershipNegotiated() {
+		t.Fatal("MembershipNegotiated() = false, want true")
+	}
+	p.ExtendAdmissible([]string{"snapshots/gen-1/files/a.gz"})
+	if !p.Admits("snapshots/gen-1/files/a.gz") {
+		t.Fatal("Admits() = false for a key just widened into scope")
+	}
+	if err := p.Download("snapshots/gen-1/files/a.gz", filepath.Join(t.TempDir(), "out")); err != nil {
+		t.Fatalf("Download: %v", err)
+	}
+	if got := atomic.LoadInt32(&requested); got != 1 {
+		t.Fatalf("requested = %d, want 1", got)
+	}
+}
+
+// TestRecoveryDownloadProvider_ExternalKeyRefusedWithoutMembershipEvenIfListed
+// is the belt-and-braces case: a key must never be admitted from
+// ExtendAdmissible alone if the descriptor never granted the capability —
+// this defends against a future caller widening the set without checking
+// MembershipNegotiated() first (Task 9).
+func TestRecoveryDownloadProvider_ExternalKeyRefusedWithoutMembershipEvenIfListed(t *testing.T) {
+	p := newRecoveryDownloadProvider(context.Background(), "http://example.invalid", "tok", &AuthenticatedDownloadDescriptor{
+		Type: "breeze_proxy", Method: http.MethodGet, URL: "http://example.invalid/download",
+		PathQueryParam: "path", PathPrefix: "snapshots/gen-2",
+	})
+	p.ExtendAdmissible([]string{"snapshots/gen-1/files/a.gz"})
+	if p.MembershipNegotiated() {
+		t.Fatal("MembershipNegotiated() = true, want false (descriptor never granted the capability)")
+	}
+	if p.Admits("snapshots/gen-1/files/a.gz") {
+		t.Fatal("Admits() = true, want false: ExtendAdmissible alone must never grant access without membership")
+	}
+}

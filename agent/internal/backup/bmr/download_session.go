@@ -119,9 +119,21 @@ func (p *recoveryDownloadProvider) authenticateAndSwap() error {
 		return errRefreshMissingDescriptor
 	}
 	descriptor := rewriteDescriptorOrigin(p.serverURL, bootstrap.Download)
+
+	// --- inserted (Task 9): compute the fresh capability and refuse the
+	// swap outright if it drops a capability the provider already relies
+	// on — keep the previous descriptor and generation, never shrink or
+	// drop the admissible set.
+	newMembership := descriptor != nil && HasCapability(descriptor.Capabilities, CapabilitySnapshotFileMembershipV1)
+
 	p.mu.Lock()
+	if p.membership && !newMembership {
+		p.mu.Unlock()
+		return ErrCapabilityDowngrade
+	}
 	p.descriptor = descriptor
 	p.generation++
+	p.membership = newMembership // inserted (Task 9), alongside the existing generation bump
 	p.mu.Unlock()
 	p.lastAuthAt = p.now()
 	p.authNotBefore = time.Time{}

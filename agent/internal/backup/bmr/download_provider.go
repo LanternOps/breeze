@@ -233,19 +233,73 @@ type recoveryDownloadProvider struct {
 
 	// now is the clock seam for tests.
 	now func() time.Time
+
+	// admissible holds exact external object keys widened into scope by
+	// bmr.ApplyManifestScope (scope.go, Task 10) after the manifest is
+	// downloaded. Guarded by mu, same as descriptor/generation. Keys are
+	// never removed — only ever added — for the life of the provider.
+	admissible map[string]struct{}
+	// membership mirrors HasCapability(descriptor.Capabilities,
+	// CapabilitySnapshotFileMembershipV1) at construction/last swap time.
+	membership bool
 }
 
 func newRecoveryDownloadProvider(ctx context.Context, serverURL, token string, descriptor *AuthenticatedDownloadDescriptor) *recoveryDownloadProvider {
+	d := rewriteDescriptorOrigin(serverURL, descriptor)
 	return &recoveryDownloadProvider{
 		ctx:        ctx,
 		serverURL:  serverURL,
 		token:      token,
-		descriptor: rewriteDescriptorOrigin(serverURL, descriptor),
+		descriptor: d,
 		// The bootstrap carrying descriptor was authenticated just before
 		// the provider is built (authenticate or exchange).
 		lastAuthAt: time.Now(),
 		now:        time.Now,
+		admissible: make(map[string]struct{}),
+		membership: d != nil && HasCapability(d.Capabilities, CapabilitySnapshotFileMembershipV1),
 	}
+}
+
+// ErrCapabilityDowngrade is returned by authenticateAndSwap when a session
+// refresh's fresh descriptor no longer grants
+// CapabilitySnapshotFileMembershipV1 but the provider had already negotiated
+// it — the admissible set built from the old descriptor could then admit
+// keys the server no longer authorizes. The previous descriptor is kept in
+// place; the caller (bmr.go / rebuild_cmd.go) treats this as a hard refusal.
+var ErrCapabilityDowngrade = errors.New("bmr: server dropped snapshot-file-membership-v1 on session refresh")
+
+// MembershipNegotiated reports whether the current descriptor grants
+// CapabilitySnapshotFileMembershipV1.
+func (p *recoveryDownloadProvider) MembershipNegotiated() bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.membership
+}
+
+// ExtendAdmissible widens the admissible set with exact external object
+// keys. It does not itself check MembershipNegotiated — downloadOnce and
+// Admits are the enforcement points, so a caller that widens the set on a
+// non-membership provider still cannot download anything through it.
+func (p *recoveryDownloadProvider) ExtendAdmissible(keys []string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, k := range keys {
+		p.admissible[k] = struct{}{}
+	}
+}
+
+// Admits reports whether key is a member of the admissible set under an
+// active membership grant. It is the exact predicate downloadOnce uses for
+// external keys and must be called while NOT already holding p.mu (it
+// acquires its own read lock).
+func (p *recoveryDownloadProvider) Admits(key string) bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if !p.membership {
+		return false
+	}
+	_, ok := p.admissible[key]
+	return ok
 }
 
 // rewriteDescriptorOrigin makes the download descriptor's URL target the
@@ -453,8 +507,11 @@ func (p *recoveryDownloadProvider) downloadOnce(remotePath, localPath string) er
 
 	normalizedRemotePath := strings.TrimLeft(pathClean(remotePath), "/")
 	normalizedPrefix := strings.Trim(descriptor.PathPrefix, "/")
-	if normalizedRemotePath != normalizedPrefix && !strings.HasPrefix(normalizedRemotePath, normalizedPrefix+"/") {
-		return fmt.Errorf("bmr: requested path %q is outside allowed prefix %q", remotePath, descriptor.PathPrefix)
+	ownPrefix := normalizedPrefix + "/"
+	if normalizedRemotePath != normalizedPrefix && !strings.HasPrefix(normalizedRemotePath, ownPrefix) {
+		if !p.Admits(remotePath) {
+			return fmt.Errorf("bmr: requested path %q is not an authorized object of snapshot %q", remotePath, normalizedPrefix)
+		}
 	}
 
 	requestURL, err := url.Parse(descriptor.URL)
