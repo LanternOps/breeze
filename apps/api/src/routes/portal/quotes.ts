@@ -92,7 +92,7 @@ quoteRoutes.get('/quotes/:id', zValidator('param', idParam), async (c) => {
       .select({ origin: quoteAcceptances.origin })
       .from(quoteAcceptances)
       .where(and(eq(quoteAcceptances.quoteId, id), eq(quoteAcceptances.orgId, auth.user.orgId)))
-      .orderBy(quoteAcceptances.signedAt)
+      .orderBy(desc(quoteAcceptances.signedAt))
       .limit(1);
     return c.json({ data: { quote: { ...quote, supersededByQuoteId: successor?.id ?? null, acceptanceOrigin: acceptance?.origin ?? null, dueOnAcceptanceTotal: totals.dueOnAcceptanceTotal, depositDueTotal: totals.depositDueTotal, categoryBreakdown: totals.categoryBreakdown }, blocks, lines: serializedLines, branding: {
       partnerName: partner?.name ?? 'Proposal', logoUrl: brand?.logoUrl ?? null, primaryColor: brand?.primaryColor ?? null,

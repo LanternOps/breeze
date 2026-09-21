@@ -40,17 +40,38 @@ vi.mock('../../services/quotePdf', () => ({ renderQuotePdf: vi.fn() }));
 // db mock: select().from().leftJoin().where().orderBy()/.limit() resolves the
 // next queued rows array. leftJoin is a no-op passthrough on the chain — the
 // acceptance query is the only caller that uses it in this route.
+//
+// orderBy's direction is made observable: it inspects the drizzle `desc()`/
+// `asc()` SQL wrapper (its `queryChunks` contain a trailing " desc" value
+// chunk) and, if descending, sorts the queued rows by `signedAt` before
+// resolving — so a test that queues rows in ascending signedAt order and
+// asserts the LATEST one wins actually exercises the route's `desc(...)` call
+// rather than trusting insertion order.
+const isDescOrderBy = (arg: unknown): boolean => {
+  const chunks = (arg as { queryChunks?: unknown[] })?.queryChunks;
+  if (!Array.isArray(chunks)) return false;
+  return chunks.some((chunk) => {
+    const value = (chunk as { value?: unknown })?.value;
+    return Array.isArray(value) && value.some((v) => typeof v === 'string' && v.includes('desc'));
+  });
+};
 const dbRows = vi.hoisted(() => ({ next: [] as any[][], i: 0 }));
 vi.mock('../../db', () => {
   const builder = () => {
+    let descending = false;
     const chain: any = {
       from: () => chain,
       leftJoin: () => chain,
       where: () => chain,
-      orderBy: () => chain,
+      orderBy: (arg: unknown) => { descending = isDescOrderBy(arg); return chain; },
       limit: () => chain,
-      then: (resolve: (v: unknown) => unknown, reject?: (e: unknown) => unknown) =>
-        Promise.resolve(dbRows.next[dbRows.i++] ?? []).then(resolve, reject),
+      then: (resolve: (v: unknown) => unknown, reject?: (e: unknown) => unknown) => {
+        const rows = dbRows.next[dbRows.i++] ?? [];
+        const ordered = descending && rows.every((r) => 'signedAt' in r)
+          ? [...rows].sort((a, b) => (a.signedAt < b.signedAt ? 1 : a.signedAt > b.signedAt ? -1 : 0))
+          : rows;
+        return Promise.resolve(ordered).then(resolve, reject);
+      },
     };
     return chain;
   };
@@ -140,5 +161,32 @@ describe('GET /:id acceptance record', () => {
     const res = await app().request(`/${QUOTE_ID}`, { method: 'GET' });
     const body = await res.json();
     expect(body.data.acceptance.recordedBy).toBeNull();
+  });
+
+  it('picks the LATEST acceptance by signedAt when more than one row exists', async () => {
+    // Queued in ascending signedAt order (earliest first) — a wrong (ascending)
+    // orderBy would hand back the earlier row's id. The mock only sorts
+    // descending when it observes the route's actual `desc(...)` SQL wrapper,
+    // so this proves the query itself, not the test's row order.
+    dbRows.next = [
+      [], // resolveQuoteBranding: partners
+      [], // resolveQuoteBranding: portalBranding
+      [], // recipients
+      [
+        {
+          id: 'earlier-acceptance', signerName: 'First Buyer', signerEmail: 'first@example.test',
+          signedAt: '2026-09-19T00:00:00.000Z', origin: 'customer', method: null, reference: null,
+          recordedByUserId: null, recordedByName: null,
+        },
+        {
+          id: ACCEPTANCE_ID, signerName: 'Dana Buyer', signerEmail: 'dana@example.test',
+          signedAt: '2026-09-20T00:00:00.000Z', origin: 'on_behalf', method: 'purchase_order', reference: 'PO 4471',
+          recordedByUserId: 'tech-1', recordedByName: 'Sam Tech',
+        },
+      ],
+    ];
+    const res = await app().request(`/${QUOTE_ID}`, { method: 'GET' });
+    const body = await res.json();
+    expect(body.data.acceptance.id).toBe(ACCEPTANCE_ID);
   });
 });

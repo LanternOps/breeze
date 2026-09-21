@@ -3,14 +3,34 @@ import { Hono } from 'hono';
 
 // DB mock: select().from().where().limit()/orderBy() resolves to the next queued
 // row set, consumed FIFO in call order. Mirrors quotes.test.ts.
+//
+// orderBy's direction is made observable: it inspects the drizzle `desc()`
+// SQL wrapper (its `queryChunks` contain a trailing " desc" value chunk) and,
+// if descending, sorts the queued rows about to resolve by `signedAt` — so a
+// test that queues acceptance rows in ascending signedAt order and asserts the
+// LATEST one wins actually exercises the route's `desc(...)` call.
+const isDescOrderBy = (arg: unknown): boolean => {
+  const chunks = (arg as { queryChunks?: unknown[] })?.queryChunks;
+  if (!Array.isArray(chunks)) return false;
+  return chunks.some((chunk) => {
+    const value = (chunk as { value?: unknown })?.value;
+    return Array.isArray(value) && value.some((v) => typeof v === 'string' && v.includes('desc'));
+  });
+};
 const { dbResults } = vi.hoisted(() => ({ dbResults: [] as unknown[][] }));
 vi.mock('../../db', () => {
+  let descending = false;
   const makeChain = () => {
     const chain: Record<string, unknown> = {};
-    for (const m of ['select', 'from', 'orderBy', 'limit', 'where']) chain[m] = vi.fn(() => chain);
+    for (const m of ['select', 'from', 'limit', 'where']) chain[m] = vi.fn(() => chain);
+    chain.orderBy = vi.fn((arg: unknown) => { descending = isDescOrderBy(arg); return chain; });
     (chain as { then: unknown }).then = (resolve: (v: unknown) => unknown) => {
       const rows = dbResults.shift() ?? [];
-      return Promise.resolve(rows).then(resolve);
+      const ordered = descending && (rows as any[]).every((r) => 'signedAt' in r)
+        ? [...(rows as any[])].sort((a, b) => (a.signedAt < b.signedAt ? 1 : a.signedAt > b.signedAt ? -1 : 0))
+        : rows;
+      descending = false;
+      return Promise.resolve(ordered).then(resolve);
     };
     return chain;
   };
@@ -100,6 +120,21 @@ describe('portal GET /quotes/:id acceptanceOrigin', () => {
     // to the customer's portal would publish free text a tech wrote about them.
     expect(JSON.stringify(body.data)).not.toContain('PO 4471');
     expect(JSON.stringify(body.data)).not.toContain('purchase_order');
+  });
+
+  it('picks the LATEST acceptance by signedAt when more than one row exists', async () => {
+    queueDetailReads();
+    dbResults.push([]); // successor SELECT
+    // Queued in ascending signedAt order (earliest first) — a wrong (ascending)
+    // orderBy would hand back 'customer' (the earlier row's origin) instead.
+    dbResults.push([
+      { origin: 'customer', signedAt: '2026-09-19T00:00:00.000Z' },
+      { origin: 'on_behalf', signedAt: '2026-09-20T00:00:00.000Z' },
+    ]);
+
+    const res = await app().request(`/quotes/${QUOTE_ID}`, { method: 'GET' });
+    const body = await res.json();
+    expect(body.data.quote.acceptanceOrigin).toBe('on_behalf');
   });
 
   it('reports null acceptanceOrigin when nobody has accepted', async () => {

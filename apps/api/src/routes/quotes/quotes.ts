@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
-import { and, eq } from 'drizzle-orm';
+import { and, desc, eq } from 'drizzle-orm';
 import { requireScope, requirePermission, type AuthContext } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import {
@@ -198,7 +198,7 @@ quoteCrudRoutes.get('/:id', scopes, readPerm, zValidator('param', idParam), asyn
       .from(quoteAcceptances)
       .leftJoin(users, eq(users.id, quoteAcceptances.recordedByUserId))
       .where(eq(quoteAcceptances.quoteId, id))
-      .orderBy(quoteAcceptances.signedAt)
+      .orderBy(desc(quoteAcceptances.signedAt))
       .limit(1);
     const acceptance = acceptanceRow
       ? {
