@@ -1270,8 +1270,13 @@ async function deleteNormalizedRows(
 
 /**
  * Assemble inlineSettings from normalized per-feature table rows.
- * Returns the reconstructed settings object, or null if the feature type
- * has no normalized table or no rows exist.
+ * Returns the reconstructed settings object, or null if the feature type has
+ * no normalized table. Most normalized-table feature types also return null
+ * when no rows exist, so the caller falls back to the link's JSONB mirror —
+ * `monitors` is the one exception (#6493): it always returns its assembled
+ * result, even when empty, since config_policy_monitors is the sole source
+ * of truth for attachments and a monitor-delete cascade can legitimately
+ * empty it out from under a link without the mirror ever being told.
  */
 async function assembleInlineSettings(
   featureType: ConfigFeatureType,

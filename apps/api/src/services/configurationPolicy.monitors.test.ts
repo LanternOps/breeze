@@ -321,7 +321,7 @@ describe("assembleInlineSettings via listFeatureLinks — 'monitors'", () => {
     const result = await listFeatureLinks('policy-1');
     const settings = result[0]!.inlineSettings as { items: unknown[] };
 
-    expect(settings.items).toEqual([]);
+    expect(settings).toEqual({ items: [], inheritance: 'cumulative' });
     expect(JSON.stringify(settings)).not.toContain(deletedMonitorId);
   });
 });
