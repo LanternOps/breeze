@@ -78,7 +78,7 @@ describe('enqueueSnapshotFileIndexHydration', () => {
     expect(addMock).toHaveBeenCalledWith(
       expect.any(String),
       expect.objectContaining({ snapshotDbId: 'snap-db-1', reason: 'result' }),
-      expect.objectContaining({ jobId: 'hydrate:snap-db-1', attempts: 3 }),
+      expect.objectContaining({ jobId: 'hydrate-snap-db-1', attempts: 3 }),
     );
   });
 
@@ -103,7 +103,7 @@ describe('enqueueSnapshotFileIndexHydration', () => {
     await enqueueSnapshotFileIndexHydration('snap-db-1', 'authenticate');
     expect(removeMock).toHaveBeenCalledTimes(1);
     expect(addMock).toHaveBeenCalledTimes(1);
-    expect(addMock.mock.calls[0]?.[2]).toMatchObject({ jobId: 'hydrate:snap-db-1' });
+    expect(addMock.mock.calls[0]?.[2]).toMatchObject({ jobId: 'hydrate-snap-db-1' });
   });
 });
 
