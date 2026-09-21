@@ -51,7 +51,14 @@ export function resolveStepKind(
 ): AiOperatorStepKind {
   const recipe = getRecipe(workflowKey, workflowVersion);
   const kind = recipe?.steps?.[stepKey]?.kind;
-  return (kind as AiOperatorStepKind | undefined) ?? 'reason';
+  if (kind) return kind as AiOperatorStepKind;
+  // Degrade, but never silently: a step key its recipe does not define means
+  // the recipe and the coordinator have drifted, and every row written under
+  // the fallback carries a wrong kind that nothing else would surface.
+  console.warn('[aiOperator] resolveStepKind: step key not in recipe; recording step_kind=reason', {
+    workflowKey, workflowVersion, stepKey,
+  });
+  return 'reason';
 }
 
 export interface OpenStepInput {

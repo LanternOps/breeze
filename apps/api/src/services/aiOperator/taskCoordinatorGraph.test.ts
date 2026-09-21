@@ -41,6 +41,13 @@ vi.mock('./stepService', () => ({
   resolveStepKind: vi.fn(() => 'probe'),
 }));
 vi.mock('./eventService', () => ({ appendTaskEvent: vi.fn(async () => 1) }));
+vi.mock('../../config/env', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  aiOperatorTasksEnabled: () => true,
+}));
+vi.mock('../aiAgents/runService', () => ({
+  createAndEnqueueAgentRun: vi.fn(async () => ({ created: true, run: { id: 'run-2' } })),
+}));
 
 import { markStepWaiting, openStep, settleStep } from './stepService';
 import { appendTaskEvent } from './eventService';
@@ -142,5 +149,50 @@ describe('taskCoordinator writes the task graph alongside the task row', () => {
     expect(settleStep).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       stepKey: 'execute', state: 'failed',
     }));
+  });
+
+  it('admitReasoningRun on a failed criterion settles verify as failed, records the bump, and opens the new attempt', async () => {
+    const verifyTask = {
+      id: 'task-1', orgId: 'org-1', revision: 3, leaseEpoch: 4, attemptOrdinal: 0,
+      state: 'running', workflowKey: 'service_recovery', workflowVersion: 1,
+      currentStepKey: 'verify', agentKind: 'triage', agentId: 'agent-1', originKind: 'manual',
+      deviceId: 'device-1',
+    } as never;
+    const result = await __testOnly.admitReasoningRun({
+      task: verifyTask, leaseEpoch: 4,
+      checkpoint: { recipeInput: { triggeringAlertId: null } } as never,
+      stepKey: 'investigate', bumpPlanRevision: true, recipe,
+    });
+    expect(result.admitted).toBe(true);
+    // The step being left did not achieve its criterion.
+    expect(settleStep).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      stepKey: 'verify', attemptOrdinal: 0, state: 'failed',
+    }));
+    expect(appendTaskEvent).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      eventType: 'plan_revision_bumped', stepKey: 'investigate',
+    }));
+    // The new attempt's step opens under the NEW identity and revision.
+    expect(openStep).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      stepKey: 'investigate', attemptOrdinal: 1, planRevision: 4, actor: { kind: 'coordinator' },
+    }));
+    // The wait that follows is on that same step and attempt, not a second
+    // step change (no second openStep, no settle of 'investigate').
+    expect(openStep).toHaveBeenCalledTimes(1);
+    expect(markStepWaiting).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      stepKey: 'investigate', attemptOrdinal: 1, dependencyKind: 'run', dependencyId: 'run-2',
+    }));
+  });
+
+  it('admitReasoningRun writes nothing to the graph when its stamp CAS is lost', async () => {
+    dbState.casRows = [];
+    const result = await __testOnly.admitReasoningRun({
+      task: { ...(task as object), currentStepKey: 'verify', agentKind: 'triage' } as never,
+      leaseEpoch: 4, checkpoint: { recipeInput: { triggeringAlertId: null } } as never,
+      stepKey: 'investigate', bumpPlanRevision: true, recipe,
+    });
+    expect(result.admitted).toBe(false);
+    expect(openStep).not.toHaveBeenCalled();
+    expect(settleStep).not.toHaveBeenCalled();
+    expect(appendTaskEvent).not.toHaveBeenCalled();
   });
 });

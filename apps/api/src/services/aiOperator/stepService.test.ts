@@ -74,4 +74,20 @@ describe('stepService (Operator spec §11, recipe spec §5.3)', () => {
     // recording it with a conservative kind.
     expect(resolveStepKind('service_recovery', 1, 'not_a_step')).toBe('reason');
   });
+
+  it('logs the fallback, so recipe/step-key drift is visible rather than silently mis-kinded', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      resolveStepKind('service_recovery', 1, 'not_a_step');
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('resolveStepKind'),
+        expect.objectContaining({ workflowKey: 'service_recovery', workflowVersion: 1, stepKey: 'not_a_step' }),
+      );
+      warn.mockClear();
+      resolveStepKind('service_recovery', 1, 'execute');
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
 });

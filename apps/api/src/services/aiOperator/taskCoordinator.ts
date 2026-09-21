@@ -1299,4 +1299,4 @@ export async function handleTaskWake(args: {
  *  writers, and the test that pins their task-graph writes needs to call them
  *  directly — the alternative is a test that drives `advanceTask` through a
  *  fake DB, which would assert the fake and not the wiring. */
-export const __testOnly = { writeLeasedStep, yieldToWait, settle };
+export const __testOnly = { writeLeasedStep, yieldToWait, settle, admitReasoningRun };
