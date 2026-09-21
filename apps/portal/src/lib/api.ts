@@ -667,6 +667,12 @@ export interface QuoteDetail {
      *  draft successors on purpose — a customer must not learn a revision is
      *  being prepared for them. */
     supersededByQuoteId?: string | null;
+    /** When the quote was accepted (either by the customer or on their behalf). */
+    acceptedAt?: string | null;
+    /** Who recorded the acceptance. The method and reference behind an
+     *  'on_behalf' acceptance are the MSP's internal evidence trail and are
+     *  never sent to the portal — only the origin is. */
+    acceptanceOrigin?: 'customer' | 'on_behalf' | null;
   };
   blocks: QuoteBlock[];
   lines: QuoteLine[];
