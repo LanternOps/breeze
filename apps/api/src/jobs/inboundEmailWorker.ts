@@ -30,6 +30,7 @@ import {
   resolveInboundThrottleChecks,
 } from '../services/inboundEmail/inboundEmailService';
 import { peekInboundThrottle, chargeInboundTickets } from '../services/inboundEmail/inboundRateLimit';
+import type { InboundCapCheck } from '../services/inboundEmail/inboundRateLimit';
 import { getRedis } from '../services/redis';
 import { inboundQueueMaxPerSec } from '../config/env';
 import { attachWorkerObservability } from './workerObservability';
@@ -43,31 +44,39 @@ function unwrapJob(data: InboundEmailQueueJob): InboundEmailJobData {
 export async function handleInboundEmail(job: Job<InboundEmailQueueJob>): Promise<void> {
   const { email, mailboxGeneration } = unwrapJob(job.data);
 
-  // FLOOD CAP — all Redis happens OUTSIDE the pipeline's held transaction (#1105).
-  // A Redis round-trip made while withSystemDbAccessContext is held would pin the
-  // pooled Postgres connection idle-in-transaction, so the flow is three phases:
+  // FLOOD CAP — the flood cap's OWN Redis runs entirely OUTSIDE the pipeline's held
+  // transaction (#1105). (The autoresponder still makes its own per-sender Redis
+  // call from inside the pipeline; that is a separate, pre-existing accepted
+  // warn-only #1105 tolerance this code does not change.) A Redis round-trip made
+  // while withSystemDbAccessContext is held would pin the pooled Postgres
+  // connection idle-in-transaction, so the flood-cap flow is:
   //
   //   1. Resolve the cap windows for this message in a SHORT DB context (reads
   //      only), which is CLOSED before any Redis touches the wire.
-  //   2. PEEK the windows read-only (ZCOUNT), entirely outside any DB context. A
-  //      peek never mutates, so a message that is peeked but creates no ticket
-  //      charges nothing.
+  //   2. PEEK those windows read-only (ZCOUNT), entirely outside any DB context — a
+  //      best-effort pre-gate. A peek never mutates, so a peeked message that
+  //      creates no ticket charges nothing.
   //   3. Run the pipeline in its own held transaction; it consults the peeked
   //      verdict only at its create paths (a reply that appends to an existing
-  //      ticket is never throttled) and touches no Redis. AFTER the transaction
-  //      commits, charge the windows — and ONLY when a ticket was actually created
-  //      (onTicketCreated) — so no window is charged for mail that made no ticket.
-  const checks = await dbModule.runOutsideDbContext(() =>
+  //      ticket is never throttled) and makes no flood-cap Redis call. On a real
+  //      creation it hands back, via onTicketCreated, the windows computed from the
+  //      partner + policy it AUTHORITATIVELY resolved in-transaction.
+  //   4. AFTER the transaction commits, charge exactly those authoritative windows.
+  //      Charging the pipeline's windows (not the phase-1 snapshot) keeps the charge
+  //      correct even if partner routing or cap settings changed between the peek
+  //      and the creation; the peek can then be at most one message stale, which is
+  //      the same accepted, self-healing class as the documented overshoot.
+  const peekChecks = await dbModule.runOutsideDbContext(() =>
     dbModule.withSystemDbAccessContext(() => resolveInboundThrottleChecks(email, mailboxGeneration)),
   );
-  const throttle = await peekInboundThrottle(getRedis(), checks);
+  const throttle = await peekInboundThrottle(getRedis(), peekChecks);
 
-  let createdTicket = false;
+  let chargeChecks: InboundCapCheck[] = [];
   await dbModule.runOutsideDbContext(() =>
     dbModule.withSystemDbAccessContext(() =>
       processInboundEmail(email, mailboxGeneration, {
-        onTicketCreated: () => {
-          createdTicket = true;
+        onTicketCreated: (checks) => {
+          chargeChecks = checks;
         },
       }, throttle),
     ),
@@ -75,8 +84,9 @@ export async function handleInboundEmail(job: Job<InboundEmailQueueJob>): Promis
 
   // Reaching here means the pipeline transaction committed (processInboundEmail
   // swallows its own errors; a commit failure would have thrown and skipped this).
-  if (createdTicket && checks.length > 0) {
-    await chargeInboundTickets(getRedis(), checks, email.providerMessageId);
+  // A non-empty chargeChecks means a ticket was created; charge its authoritative windows.
+  if (chargeChecks.length > 0) {
+    await chargeInboundTickets(getRedis(), chargeChecks, email.providerMessageId);
   }
 }
 

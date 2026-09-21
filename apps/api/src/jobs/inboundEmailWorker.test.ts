@@ -130,21 +130,26 @@ describe('inboundEmailWorker', () => {
     expect(order).toEqual(['peek', 'process']);
   });
 
-  it('CHARGES the windows after commit ONLY when a ticket was created', async () => {
-    const checks = [{ bucket: 'sender' as const, key: 'inbound:tix:sender:p1:jane@acme.com', limit: 30 }];
-    resolveChecksMock.mockResolvedValue(checks);
-    // The pipeline signals a creation via the onTicketCreated callback.
+  it('CHARGES the AUTHORITATIVE windows the pipeline reports, NOT the phase-1 peek snapshot', async () => {
+    // Codex review (option A) F1: partner routing / cap settings can change between
+    // the pre-pipeline peek and the creation. The peek used one snapshot; the
+    // pipeline resolves the ticket's real partner + policy and reports THOSE windows
+    // via onTicketCreated. The worker must charge the pipeline's windows.
+    const peekSnapshot = [{ bucket: 'sender' as const, key: 'inbound:tix:sender:pA:jane@acme.com', limit: 30 }];
+    const authoritative = [{ bucket: 'partner' as const, key: 'inbound:tix:partner:pB', limit: 5 }];
+    resolveChecksMock.mockResolvedValue(peekSnapshot);
     processInboundEmailMock.mockImplementation(async (_e: unknown, _g: unknown, deps: any) => {
-      deps?.onTicketCreated?.();
+      deps?.onTicketCreated?.(authoritative);
     });
 
     const email = makeEmail({ providerMessageId: 'mg-created-1' });
     await workerModule.handleInboundEmail({ data: { email } } as any);
 
-    expect(chargeMock).toHaveBeenCalledWith({}, checks, 'mg-created-1');
+    // Charged the pipeline's authoritative windows (pB), not the peek snapshot (pA).
+    expect(chargeMock).toHaveBeenCalledWith({}, authoritative, 'mg-created-1');
   });
 
-  it('does NOT charge when no ticket was created (peek/pipeline made none)', async () => {
+  it('does NOT charge when no ticket was created (onTicketCreated never fires)', async () => {
     resolveChecksMock.mockResolvedValue([{ bucket: 'sender' as const, key: 'k', limit: 30 }]);
     processInboundEmailMock.mockResolvedValue(undefined); // never calls onTicketCreated
 
@@ -153,10 +158,10 @@ describe('inboundEmailWorker', () => {
     expect(chargeMock).not.toHaveBeenCalled();
   });
 
-  it('does NOT charge when there are no cap windows, even if a ticket was created', async () => {
-    resolveChecksMock.mockResolvedValue([]); // caps unlimited / partner unresolved
+  it('does NOT charge when the created ticket reports no cap windows (all unlimited)', async () => {
+    resolveChecksMock.mockResolvedValue([]);
     processInboundEmailMock.mockImplementation(async (_e: unknown, _g: unknown, deps: any) => {
-      deps?.onTicketCreated?.();
+      deps?.onTicketCreated?.([]); // ticket created, but no windows to charge
     });
 
     await workerModule.handleInboundEmail({ data: { email: makeEmail() } } as any);

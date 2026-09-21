@@ -139,12 +139,16 @@ export interface ProcessInboundEmailDependencies {
   /** Test-only observation point after a subject-token matcher pins the ticket. */
   afterTicketMatchLock?: (ticketId: string) => Promise<void>;
   /**
-   * Invoked exactly once, synchronously, when this message creates a ticket
-   * (any of the four create paths). The worker uses it to charge the flood
-   * windows AFTER the transaction commits and OUTSIDE the held DB context, so no
-   * Redis runs inside the pipeline (#1105) and only real creations are counted.
+   * Invoked exactly once, synchronously, when this message creates a ticket (any
+   * of the four create paths), with the flood-cap windows computed from the
+   * pipeline's OWN authoritative partner + policy resolution at that create path.
+   * The worker charges exactly THESE windows after the transaction commits and
+   * outside the held DB context. Passing the authoritative checks back (rather than
+   * charging the worker's pre-pipeline snapshot) means the charge always lands on
+   * the ticket's real partner under the current policy, even if partner routing or
+   * cap settings changed between the worker's pre-gate peek and this creation.
    */
-  onTicketCreated?: () => void;
+  onTicketCreated?: (checks: InboundCapCheck[]) => void;
 }
 
 /**
@@ -481,22 +485,39 @@ export async function processInboundEmail(
     // NEVER throttled), and — at the mapped-domain site — ahead of contact
     // auto-creation, so an over-cap message creates NEITHER a ticket NOR a contact.
     //
-    // NO REDIS RUNS HERE (#1105). The pipeline is one held withSystemDbAccessContext
-    // transaction; a Redis round-trip inside it would pin the pooled connection
-    // idle-in-transaction. So the WORKER peeks the flood windows (read-only, ZCOUNT)
-    // BEFORE opening this transaction and passes the verdict in; this helper only
-    // consults that cached verdict. The matching CHARGE is recorded by the worker
-    // AFTER the transaction commits and only when a ticket was created (via the
-    // onTicketCreated callback), so no window is charged for mail that made no
-    // ticket. Returns true when over cap (caller must quarantine + return).
+    // THE FLOOD-CAP REDIS DOES NOT RUN HERE (#1105). The pipeline is one held
+    // withSystemDbAccessContext transaction; a Redis round-trip inside it would pin
+    // the pooled connection idle-in-transaction. So the WORKER peeks the flood
+    // windows (read-only, ZCOUNT) BEFORE opening this transaction and passes the
+    // verdict in; this helper only consults that cached verdict. The matching CHARGE
+    // is recorded by the worker AFTER the transaction commits, only when a ticket
+    // was created, and against the windows this create path reports via
+    // onTicketCreated. (Note: the AUTORESPONDER's own per-sender Redis cap DOES still
+    // run inside this transaction, from createFromEmail -> maybeSendAutoresponse;
+    // that is a pre-existing, accepted warn-only #1105 tolerance, unchanged by this
+    // work.) Returns true when over cap (caller must quarantine + return).
     const capExceeded = async (): Promise<boolean> => {
       if (!throttle?.throttled) return false;
       await logInbound(n, partnerId, 'quarantined', null, `rate-limited: ${throttle.bucket ?? 'inbound'} cap exceeded`);
       return true;
     };
-    // Signal the worker that this attempt created a ticket, so it charges the
-    // flood windows outside the held transaction. Call it right after logCreated.
-    const markTicketCreated = () => dependencies.onTicketCreated?.();
+    // Signal the worker that this attempt created a ticket, handing it the flood-cap
+    // windows computed from the AUTHORITATIVE partner + policy resolved in THIS
+    // transaction (not the worker's pre-pipeline snapshot), so the charge always
+    // matches the ticket's real partner under the current policy. Call it right
+    // after logCreated. partnerId is non-null on every create path (past the early
+    // `if (!partnerId) return`).
+    const capPartnerId = partnerId;
+    const markTicketCreated = () => {
+      // Recompute the windows from the policy loaded in THIS transaction, so the
+      // charge tracks the ticket's authoritative partner + current caps.
+      const checks = buildInboundCapChecks(capPartnerId, n.from, resolveInboundCapLimits({
+        maxTicketsPerSenderPerHour: policy.maxTicketsPerSenderPerHour,
+        maxTicketsPerDomainPerHour: policy.maxTicketsPerDomainPerHour,
+        maxTicketsPerPartnerPerHour: policy.maxTicketsPerPartnerPerHour,
+      }));
+      dependencies.onTicketCreated?.(checks);
+    };
 
     // No LIVE thread match. A reply to a CLOSED ticket is immutable -> create a NEW
     // linked ticket carrying the original thread key. This lookup is intentionally
