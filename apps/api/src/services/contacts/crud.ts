@@ -23,11 +23,20 @@ import { organizations, sites } from '../../db/schema/orgs';
 import { pgErrorCode } from '../../utils/pgErrors';
 import { replaceBillingContact, replaceSiteContact, type ContactExecutor } from './compat';
 import { CONTACT_ROLES, type ContactRole } from './types';
+import { recordDestinationChangeWithExecutor } from '../callerVerification/destinations';
+import type { DestinationSource } from '../callerVerification/types';
 
 export type { ContactExecutor } from './compat';
 
 export interface ContactActor {
   userId: string | null;
+  /**
+   * Caller-verification destination provenance (#6354). Which kind of
+   * principal produced this email/mobile value. Defaults to 'technician'
+   * (a human typed it); automated writers (import, inbound email, AI tools)
+   * MUST say so — only human-sourced destinations can ever establish.
+   */
+  destinationSource?: DestinationSource;
 }
 
 export interface ContactListFilters {
@@ -503,6 +512,15 @@ export async function createContact(
     })
     .returning(contactColumns());
 
+  if (created) {
+    for (const kind of ['email', 'mobile'] as const) {
+      await recordDestinationChangeWithExecutor(exec, {
+        orgId: input.orgId, contactId: (created as ContactRecord).id, kind,
+        value: (created as ContactRecord)[kind], source: actor.destinationSource ?? 'technician', userId: actor.userId,
+      });
+    }
+  }
+
   if (isPrimary) await reprojectPrimaryContact(exec, input.orgId, siteId, actor.userId);
   return created as ContactRecord;
 }
@@ -624,6 +642,14 @@ export async function updateContact(
   // re-projecting after it would write a jsonb change with no row change
   // behind it, on a call the route answers 404.
   if (!updated) return null;
+
+  // Provenance is keyed on the normalized value, so an unrelated-field patch
+  // (or the same address re-saved) never renews a destination's age.
+  for (const kind of ['email', 'mobile'] as const) {
+    await recordDestinationChangeWithExecutor(exec, {
+      orgId, contactId, kind, value: updated[kind], source: actor.destinationSource ?? 'technician', userId: actor.userId,
+    });
+  }
 
   for (const scope of scopes) await reprojectPrimaryContact(exec, orgId, scope, actor.userId);
 

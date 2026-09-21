@@ -10,6 +10,7 @@ const { selectMock, insertMock, updateMock, systemContextCalls } = vi.hoisted(()
   systemContextCalls: { count: 0 },
 }));
 
+vi.mock('../callerVerification/destinations', () => ({ recordDestinationChangeWithExecutor: vi.fn().mockResolvedValue(undefined) }));
 vi.mock('../../db', () => ({
   db: { select: selectMock, insert: insertMock, update: updateMock },
   runOutsideDbContext: (fn: () => unknown) => fn(),
@@ -24,6 +25,7 @@ vi.mock('../../db', () => ({
 }));
 
 import { commitContactImport, previewContactImport } from './import';
+import { recordDestinationChangeWithExecutor } from '../callerVerification/destinations';
 import { MAX_IMPORT_ROWS } from './types';
 import type { CommitContactRowInput, ContactImportRow } from './types';
 import { contacts, contactExternalLinks } from '../../db/schema/contacts';
@@ -509,6 +511,11 @@ describe('commitContactImport', () => {
       orgId: ORG, system: 'datto_rmm', externalId: 'CT-9', createdBy: ACTOR.userId,
     });
     expect(summary.errors).toEqual([]);
+    // Caller-verification provenance (#6354): an import is never human-sourced.
+    expect(recordDestinationChangeWithExecutor).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ orgId: ORG, kind: 'email', value: 'jane@acme.example', source: 'import' }),
+    );
   });
 
   it('round-trips an emailless, phone-only contact', async () => {

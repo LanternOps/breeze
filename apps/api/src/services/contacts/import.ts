@@ -48,6 +48,7 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { contacts, contactExternalLinks } from '../../db/schema/contacts';
 import { organizations, sites } from '../../db/schema/orgs';
 import { isPgUniqueViolation, pgErrorCode, pgErrorNode, retryOnTransientLockError } from '../../utils/pgErrors';
+import { recordDestinationChangeWithExecutor } from '../callerVerification/destinations';
 import {
   ContactValidationError,
   normalizeContactEmail,
@@ -861,6 +862,9 @@ async function createImportedContact(
     }).returning({ id: contacts.id });
 
     const contactId = (created as { id: string }).id;
+    for (const kind of ['email', 'mobile'] as const) {
+      await recordDestinationChangeWithExecutor(db, { orgId, contactId, kind, value: r[kind], source: 'import', userId: null });
+    }
     const createdLink = await attachLink(r, orgId, contactId, actor);
     return {
       contactId,
@@ -895,7 +899,7 @@ async function applyMatchedContact(
   // acknowledgement left to persist.
   const alreadyLinked = resolution.annotation === 'link-match';
   return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
-    const updated = await updateContact(db, matched.id, orgId, patch, { userId: actor.userId });
+    const updated = await updateContact(db, matched.id, orgId, patch, { userId: actor.userId, destinationSource: 'import' });
     // Only reachable if the contact was deleted between the snapshot and now.
     if (!updated) throw new Error('Matched contact no longer exists');
 

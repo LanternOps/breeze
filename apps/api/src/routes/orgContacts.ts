@@ -16,6 +16,7 @@ import {
   findContactScope,
   listContacts,
   updateContact,
+  type ContactActor,
 } from '../services/contacts/crud';
 import { getPagination } from '../utils/pagination';
 import { commitContactImport, previewContactImport } from '../services/contacts/import';
@@ -163,8 +164,9 @@ function resolveImportContext(
   };
 }
 
-function actorFrom(c: any): { userId: string | null } {
-  return { userId: (c.get('auth') as AuthContext).user?.id ?? null };
+function actorFrom(c: any): ContactActor {
+  // A technician typed it: human-sourced destination provenance (#6354).
+  return { userId: (c.get('auth') as AuthContext).user?.id ?? null, destinationSource: 'technician' };
 }
 
 /** A service refusal is the caller's fault, so it is a 400 rather than a 500. */
