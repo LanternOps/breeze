@@ -735,11 +735,34 @@ export class StreamingSessionManager {
    * Rejects only true concurrent work and teardown/closed sessions.
    * Returns true if successful, false if session is not in a valid state.
    */
-  tryTransitionToProcessing(session: ActiveSession): boolean {
+  /**
+   * Claim the session's single turn slot, and — atomically with that claim —
+   * attach the reservation that turn will settle.
+   *
+   * #5557: `budgetReservationId` used to be assigned only when the session was
+   * CREATED, so from the second message onward on a warm in-memory session the
+   * reservation the route had just taken never reached the settle path: the
+   * turn's spend was recorded unsettled and the hold — the org's ENTIRE
+   * remaining cap — sat until the 30-minute sweep, locking the tenant out of
+   * its own budget.
+   *
+   * The attach belongs HERE and not in `getOrCreate` because `getOrCreate`
+   * awaits (`loadApprovalMode`) before returning, so two concurrent callers can
+   * attach and then return in the opposite order: the winner of the slot would
+   * be left carrying the LOSER's reservation, and the loser would release it —
+   * out from under a live dispatch — on its 409 path. This method has no
+   * awaits, so the claim and the attach cannot interleave: whoever takes the
+   * slot attaches their own reservation, and every loser releases a reservation
+   * that was never attached to anything.
+   */
+  tryTransitionToProcessing(session: ActiveSession, budgetReservationId?: string): boolean {
     if (session.state === 'processing' || session.state === 'closing' || session.state === 'closed') {
       return false;
     }
     session.state = 'processing';
+    if (budgetReservationId !== undefined) {
+      session.budgetReservationId = budgetReservationId;
+    }
     // The state and its staleness clock move together: eviction reads
     // lastActivityAt to tell a live turn from a wedged one, and before this the
     // stamp was refreshed only in getOrCreate() — so a session that had been
@@ -1604,6 +1627,48 @@ export class StreamingSessionManager {
               });
             }
 
+            // Per-user usage hook (AI for Office): runs alongside the org-level
+            // recordUsageFromSdkResult below, never instead of it.
+            //
+            // #5557: it runs BEFORE that call, and the order is load-bearing.
+            // Settling the reservation frees the org's held capacity, while the
+            // client sub-cap is read from `client_ai_usage` — so writing this
+            // ledger after the settle would leave a window in which a turn's
+            // spend was counted by neither the hold nor the ledger, and a
+            // concurrent add-in turn could be admitted against capacity that is
+            // really gone. Writing it first double-counts for a moment instead,
+            // which is the conservative direction.
+            // Catalog sessions price from the revision snapshot, matching what
+            // recordUsageFromSdkResult wrote to the ledger — otherwise the
+            // per-user buckets and the client's turn summary would quote
+            // Anthropic list pricing for third-party traffic.
+            const turnCostCents = session.catalogPricing
+              ? calculateCatalogCostCents(
+                  session.catalogPricing,
+                  usageData.usage.input_tokens,
+                  usageData.usage.output_tokens,
+                  usageData.usage.cache_read_input_tokens,
+                  usageData.usage.cache_creation_input_tokens,
+                )
+              : Math.round(usageData.total_cost_usd * 100 * 100) / 100;
+            // Cache-read and cache-creation tokens are input tokens — they are
+            // split out for PRICING only. Reporting the uncached slice alone made
+            // per-user ledgers and the client's turn summary read near-zero on
+            // any cached (i.e. any multi-turn) session. See sumInputTokens.
+            const turnInputTokens = sumInputTokens(usageData.usage);
+            if (session.recordExtraUsage) {
+              try {
+                await session.recordExtraUsage({
+                  inputTokens: turnInputTokens,
+                  outputTokens: usageData.usage.output_tokens,
+                  costCents: turnCostCents,
+                });
+              } catch (err) {
+                captureException(err);
+                console.error('[StreamingSessionManager] recordExtraUsage failed:', err);
+              }
+            }
+
             if (resultMsg.subtype === 'success') {
               try {
                 await withDbAccessContext(
@@ -1656,39 +1721,6 @@ export class StreamingSessionManager {
               } catch (err) {
                 captureException(err);
                 console.error('[StreamingSessionManager] Failed to record SDK usage on error:', err);
-              }
-            }
-
-            // Per-user usage hook (AI for Office): runs alongside the org-level
-            // recordUsageFromSdkResult above, never instead of it.
-            // Catalog sessions price from the revision snapshot, matching what
-            // recordUsageFromSdkResult wrote to the ledger — otherwise the
-            // per-user buckets and the client's turn summary would quote
-            // Anthropic list pricing for third-party traffic.
-            const turnCostCents = session.catalogPricing
-              ? calculateCatalogCostCents(
-                  session.catalogPricing,
-                  usageData.usage.input_tokens,
-                  usageData.usage.output_tokens,
-                  usageData.usage.cache_read_input_tokens,
-                  usageData.usage.cache_creation_input_tokens,
-                )
-              : Math.round(usageData.total_cost_usd * 100 * 100) / 100;
-            // Cache-read and cache-creation tokens are input tokens — they are
-            // split out for PRICING only. Reporting the uncached slice alone made
-            // per-user ledgers and the client's turn summary read near-zero on
-            // any cached (i.e. any multi-turn) session. See sumInputTokens.
-            const turnInputTokens = sumInputTokens(usageData.usage);
-            if (session.recordExtraUsage) {
-              try {
-                await session.recordExtraUsage({
-                  inputTokens: turnInputTokens,
-                  outputTokens: usageData.usage.output_tokens,
-                  costCents: turnCostCents,
-                });
-              } catch (err) {
-                captureException(err);
-                console.error('[StreamingSessionManager] recordExtraUsage failed:', err);
               }
             }
 

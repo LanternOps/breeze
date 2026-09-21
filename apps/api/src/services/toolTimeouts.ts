@@ -17,6 +17,13 @@ const TOOL_TIMEOUT_OVERRIDES: Record<string, number> = {
   // Disk operations — can scan large filesystems
   analyze_disk_usage: 90_000,
   disk_cleanup: 90_000,
+  // OS-native cleaners (Disk Cleanup v2 §5.3). `run` dispatches and returns
+  // immediately (the run row carries its own stored deadline; `status` applies
+  // it), and `list` waits at most 60 s before answering `pending` — so the
+  // outer guard sits just above that wait, like disk_cleanup's. It must NOT
+  // be the run ceiling: the SDK holds a per-tool DB context for the whole
+  // call (#1105).
+  system_cleanup: 90_000,
   // Security scans — multi-step agent operations
   security_scan: 120_000,
   apply_cis_remediation: 120_000,

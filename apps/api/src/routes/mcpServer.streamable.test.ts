@@ -716,10 +716,13 @@ describe('Streamable HTTP transport (POST /sse)', () => {
       expect(r.content[0]).toEqual({ type: 'text', text: JSON.stringify({ devices: [{ id: 'd1' }], showing: 1 }) });
       expect(r.structuredContent).toEqual({ devices: [{ id: 'd1' }], showing: 1 });
     });
-    it.each([{ error: 'device not found' }, { error: 'device not found', _chat: { outputCompacted: true } }])('omits pure returned errors without changing text or isError: %j', async (value) => {
+    // #6408 changed the isError half of this: a pure returned error is now
+    // flagged as a tool-execution error. structuredContent stays omitted, and
+    // the text block is still the tool's own message.
+    it.each([{ error: 'device not found' }, { error: 'device not found', _chat: { outputCompacted: true } }])('omits structuredContent for pure returned errors and flags them isError: %j', async (value) => {
       const { result: r } = await call(JSON.stringify(value));
       expect(r.content).toEqual([{ type: 'text', text: JSON.stringify(value) }]);
-      expect(r.isError).toBeUndefined();
+      expect(r.isError).toBe(true);
       expect(r.structuredContent).toBeUndefined();
     });
     it.each([{ devices: [{ id: 'd1' }], error: null }, { items: [1], error: 'partial' }])('preserves data alongside error: %j', async (value) => {

@@ -525,6 +525,52 @@ function sanitizeToolPayloadValue(
   return output;
 }
 
+const MAX_SYSTEM_CLEANUP_ACTIONS = 40;
+const MAX_SYSTEM_CLEANUP_OUTPUT_TAIL = 2_000;
+
+/**
+ * `system_cleanup` has two result shapes behind one tool name: the `list`
+ * catalog (`{ catalog: { actions: [...] } }`) and the `run` report
+ * (`{ actions: [{ outputTail }], volumes, freedBytes }`). Both are pruned here;
+ * the numbers an answer is actually built from — freedBytes, status, exitCode,
+ * estimates — are never dropped, only the prose is.
+ */
+function compactSystemCleanupPayload(payload: Record<string, unknown>, stats: CompactStats): Record<string, unknown> {
+  const output = { ...payload };
+
+  const catalog = isRecord(output.catalog) ? { ...output.catalog } : null;
+  if (catalog) {
+    const actions = asArray(catalog.actions);
+    const { items, dropped } = pruneLargeList(actions, MAX_SYSTEM_CLEANUP_ACTIONS);
+    catalog.actions = items;
+    catalog.returnedActionCount = items.length;
+    catalog.totalActionCount = actions.length;
+    catalog.truncatedActionCount = Math.max(0, dropped);
+    if (dropped > 0) {
+      stats.arraysTruncated += 1;
+      stats.arrayItemsDropped += dropped;
+    }
+    output.catalog = catalog;
+  }
+
+  const runActions = asArray(output.actions);
+  if (runActions.length > 0) {
+    output.actions = runActions.map((entry) => {
+      if (!isRecord(entry)) return entry;
+      const tail = entry.outputTail;
+      if (typeof tail !== 'string' || tail.length <= MAX_SYSTEM_CLEANUP_OUTPUT_TAIL) return entry;
+      stats.arrayItemsDropped += 1;
+      return {
+        ...entry,
+        outputTail: tail.slice(-MAX_SYSTEM_CLEANUP_OUTPUT_TAIL),
+        outputTailTruncated: true,
+      };
+    });
+  }
+
+  return output;
+}
+
 function applyToolSpecificCompaction(
   toolName: string,
   parsed: unknown,
@@ -539,6 +585,10 @@ function applyToolSpecificCompaction(
 
   if (toolName === 'disk_cleanup') {
     return compactDiskCleanupPayload(parsed, stats);
+  }
+
+  if (toolName === 'system_cleanup') {
+    return compactSystemCleanupPayload(parsed, stats);
   }
 
   const looksLikeCommandResult = (

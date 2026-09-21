@@ -1654,6 +1654,7 @@
     },
     "summary": {
       "noTaxRate": "Há linhas marcadas como tributáveis, mas nenhuma alíquota foi definida.",
+      "inheritedTaxRate": "O imposto ainda não está neste rascunho — ao emitir, aplica-se a alíquota herdada de {{rate}}, somando {{tax}} para um total de {{total}}.",
       "setTaxRate": "Defina uma nas configurações de cobrança",
       "subtotal": "Subtotal",
       "tax": "Imposto",

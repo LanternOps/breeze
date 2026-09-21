@@ -189,7 +189,9 @@ describe('stale command reaper', () => {
   });
 
   it('propagates timeout failures into restore jobs for all restore command types', async () => {
-    const staleCreatedAt = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    // #6415: the restore family's ceiling is now 24 h, so this fixture has to
+    // be older than a day for every row in it to be genuinely due.
+    const staleCreatedAt = new Date(Date.now() - 25 * 60 * 60 * 1000);
     selectMock.mockReturnValueOnce(selectChain([
       {
         id: 'cmd-restore',
@@ -281,6 +283,56 @@ describe('stale command reaper', () => {
       commandId: 'cmd-restore',
       terminalStatus: 'timed_out',
     }));
+  });
+
+  // #6415 — progress does not reset the reaper's clock, so the ONLY thing
+  // standing between a healthy 3-hour rebuild and a spurious "failed" is the
+  // ceiling. Pin that a restore command three hours in flight is left alone.
+  it('leaves a whole-machine restore that is 3 hours in flight alone (#6415)', async () => {
+    const executedAt = new Date(Date.now() - 3 * 60 * 60 * 1000);
+    selectMock.mockReturnValueOnce(selectChain([
+      {
+        id: 'cmd-bmr-live',
+        type: 'bare_metal_rebuild',
+        status: 'sent',
+        payload: null,
+        createdAt: executedAt,
+        executedAt,
+        deliverBy: null,
+      },
+      {
+        id: 'cmd-vm-live',
+        type: 'vm_restore_from_backup',
+        status: 'sent',
+        payload: null,
+        createdAt: executedAt,
+        executedAt,
+        deliverBy: null,
+      },
+      // The LEGACY branch (`deliver_by` NULL, never flipped to `sent`) clocks
+      // from created_at against the same per-type budget, so it regressed
+      // identically and has to be pinned separately — the two branches share
+      // nothing but `getCommandTimeoutMs`.
+      {
+        id: 'cmd-bmr-legacy',
+        type: 'bmr_recover',
+        status: 'pending',
+        payload: null,
+        createdAt: executedAt,
+        executedAt: null,
+        deliverBy: null,
+      },
+    ]));
+
+    updateMock.mockImplementation((table: unknown) => {
+      throw new Error(`Unexpected table update: ${String(table)}`);
+    });
+
+    const reaped = await reapStaleDeviceCommands();
+
+    expect(reaped).toBe(0);
+    expect(updateMock).not.toHaveBeenCalled();
+    expect(applyAutomationActionTerminalMock).not.toHaveBeenCalled();
   });
 
   // #2774 — a drain-window self_uninstall must outlive the 30-min timeout

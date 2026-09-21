@@ -23,6 +23,11 @@ import {
 } from '../db/schema';
 import { and, eq, ne, sql, inArray, asc, SQL, or, isNull } from 'drizzle-orm';
 import { resolveEffectiveTimezone, canonicalizeTimezone } from '@breeze/shared';
+import {
+  MAINTENANCE_DATETIME_TIME_PATTERN,
+  MAINTENANCE_EXPLICIT_UTC_OFFSET_PATTERN,
+  MAINTENANCE_TIME_OF_DAY_PATTERN,
+} from '@breeze/shared/validators';
 import type { AuthContext } from '../middleware/auth';
 import type { TokenPayload } from './jwt';
 import type { DbExecutor } from './monitors/monitorCompiler';
@@ -2087,16 +2092,14 @@ export interface MaintenanceWindowStatus {
   windowEndsAt: Date | null;
 }
 
-/** Bare time of day, e.g. "1:50", "01:50" or "01:50:00". */
-const TIME_OF_DAY_PATTERN = /^(\d{1,2}):(\d{2})(?::\d{2})?$/;
-/** Time component of a naive (zoneless) ISO-8601-ish datetime, e.g. "2026-03-15T02:00". */
-const DATETIME_TIME_PATTERN = /^\d{4}-\d{2}-\d{2}[T ](\d{1,2}):(\d{2})/;
-/**
- * A trailing `Z` or `±HH:MM` offset. Such a value names an *instant*, so its
- * digits are not wall-clock time in `settings.timezone` — `migrateToConfigPolicies`
- * writes exactly this shape (`toISOString()`) for migrated `once` windows.
- */
-const EXPLICIT_UTC_OFFSET_PATTERN = /(?:Z|[+-]\d{2}:?\d{2})$/i;
+// The maintenance windowStart grammar lives in @breeze/shared so the write-time
+// gate (maintenanceInlineSettingsSchema, #6312) and this evaluator cannot drift
+// apart about what a stored value means. `migrateToConfigPolicies` writes a
+// `toISOString()` (offset-bearing) value for migrated `once` windows, which is
+// why the offset form stays legal for `once` and only recurring rejects it.
+const TIME_OF_DAY_PATTERN = MAINTENANCE_TIME_OF_DAY_PATTERN;
+const DATETIME_TIME_PATTERN = MAINTENANCE_DATETIME_TIME_PATTERN;
+const EXPLICIT_UTC_OFFSET_PATTERN = MAINTENANCE_EXPLICIT_UTC_OFFSET_PATTERN;
 
 /** The anchor recurring windows used before issue #4224, and the fallback still. */
 const MIDNIGHT_ANCHOR = { hours: 0, minutes: 0 } as const;

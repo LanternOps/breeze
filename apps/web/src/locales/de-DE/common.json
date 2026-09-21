@@ -1712,7 +1712,8 @@
         "running": "läuft",
         "editEntry": "Eintrag {{id}} bearbeiten",
         "total": "Gesamt: {{duration}}",
-        "billableTotal": "Abrechnungsfähig: {{duration}}"
+        "billableTotal": "Abrechnungsfähig: {{duration}}",
+        "billedVsWorked": "{{worked}} Std. gearbeitet · {{billed}} Std. abgerechnet"
       },
       "sourceBadge": {
         "timer": "Timer",

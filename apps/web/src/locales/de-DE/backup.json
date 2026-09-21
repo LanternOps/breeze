@@ -495,6 +495,8 @@
     "originalLocation": "Ursprünglicher Standort",
     "restoreFilesInPlace": "Dateien an Ort und Stelle wiederherstellen.",
     "alternatePath": "Alternativer Pfad",
+    "alternatePathPlaceholder": "z. B. D:\\Restored oder /var/restore",
+    "alternatePathRequired": "Geben Sie einen Zielpfad ein, um fortzufahren.",
     "restoreToANewFolder": "In einem neuen Ordner wiederherstellen.",
     "reviewConfirm": "Überprüfen und bestätigen",
     "confirmTheRestoreSummaryBeforeStarting": "Bestätigen Sie die Wiederherstellungszusammenfassung, bevor Sie beginnen.",
@@ -730,7 +732,15 @@
     "launchExecution": "Ausführung starten",
     "startANewDrRunFor": "Starten Sie einen neuen DR-Lauf für",
     "cancel": "Abbrechen",
-    "startExecution": "Ausführung starten"
+    "startExecution": "Ausführung starten",
+    "executeErrorFallback": "Ausführung konnte nicht gestartet werden.",
+    "executeErrorNoRestorableSnapshot": "Start nicht möglich: Ein Gerät in einer Bare-Metal-Neuaufbau-Gruppe hat keinen wiederherstellbaren Sicherungs-Snapshot. Führen Sie zuerst für jedes Gerät dieser Gruppe eine erfolgreiche Sicherung aus.",
+    "executeErrorNoRecoverySource": "Start nicht möglich: Eine Wiederherstellungsgruppe nennt keine Wiederherstellungsquelle. Fügen Sie der Gruppe einen Snapshot, einen Wiederherstellungsauftrag oder ein Wiederherstellungstoken hinzu.",
+    "executeErrorGroupHasNoValidDevices": "Start nicht möglich: Eine Wiederherstellungsgruppe enthält keine gültigen Geräte. Bearbeiten Sie den Plan und fügen Sie jeder Gruppe mindestens ein Gerät hinzu.",
+    "executeErrorInvalidSourceReference": "Start nicht möglich: Eine Wiederherstellungsgruppe verweist auf eine Wiederherstellungsquelle, die keine gültige Kennung ist. Bearbeiten Sie die Gruppe und wählen Sie die Quelle erneut aus.",
+    "executeErrorInvalidStepConfig": "Start nicht möglich: Eine Wiederherstellungsgruppe hat eine ungültige Schrittkonfiguration. Bearbeiten Sie die Gruppe und korrigieren Sie ihre Einstellungen.",
+    "executeErrorResourceNotFound": "Start nicht möglich: Ein von diesem Plan referenzierter Snapshot existiert nicht mehr. Bearbeiten Sie die betroffene Gruppe und wählen Sie einen aktuellen Snapshot.",
+    "executeErrorBackupWriteRequired": "Start nicht möglich: Dieser Plan enthält eine Bare-Metal-Neuaufbau-Gruppe, die die Schreibberechtigung für Sicherungen erfordert."
   },
   "dRExecutionView": {
     "executionDetails": "Ausführungsdetails",
@@ -806,7 +816,9 @@
     "uniqueDeviceCount_one": "{{count}} einzigartiges Gerät",
     "uniqueDeviceCount_other": "{{count}} einzigartige Geräte",
     "chooseAStepTypeForEachGroup": "Wählen Sie für jede Wiederherstellungsgruppe einen Schritttyp.",
-    "rebuildWaitTimeoutOutOfRange": "Das Wartezeitlimit für den Bare-Metal-Neuaufbau muss eine ganze Zahl zwischen {{min}} und {{max}} Minuten sein."
+    "rebuildWaitTimeoutOutOfRange": "Das Wartezeitlimit für den Bare-Metal-Neuaufbau muss eine ganze Zahl zwischen {{min}} und {{max}} Minuten sein.",
+    "rebuildOutputDirMustBeAbsolute": "Das Ausgabeverzeichnis für den Bare-Metal-Neuaufbau muss ein absoluter Pfad sein, der mit \"/\" beginnt, und darf höchstens {{max}} Zeichen lang sein.",
+    "partialSaveFailure": "Ein Teil dieses Plans wurde vor dem Fehler gespeichert, daher können Plan und Liste jetzt voneinander abweichen. Beheben Sie das Problem und speichern Sie erneut. Server meldet: {{message}}"
   },
   "dRPlanGroupCard": {
     "device": "Gerät",

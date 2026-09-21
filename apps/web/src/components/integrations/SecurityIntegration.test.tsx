@@ -113,7 +113,7 @@ function mockPartnerLoad(
         data: sites,
         integrationId: integration?.id ?? null,
       });
-    if (url === "/orgs/organizations")
+    if (url.startsWith("/orgs/organizations"))
       return jsonResponse({ data: [breezeOrg] });
     return jsonResponse({}, 404);
   });
@@ -174,7 +174,7 @@ describe("SecurityIntegration", () => {
 
     expect(fetchWithAuth).toHaveBeenCalledWith("/s1/integration");
     expect(fetchWithAuth).toHaveBeenCalledWith("/s1/sites");
-    expect(fetchWithAuth).toHaveBeenCalledWith("/orgs/organizations");
+    expect(fetchWithAuth).toHaveBeenCalledWith("/orgs/organizations?page=1&limit=100", undefined);
   });
 
   it("renders the config UI for a partner admin during the transient pre-hydration null org", async () => {
@@ -275,7 +275,7 @@ describe("SecurityIntegration", () => {
     expect(screen.getByTestId("s1-coverage")).toBeInTheDocument();
     // Partner-only endpoints are not called in org scope.
     expect(fetchWithAuth).not.toHaveBeenCalledWith("/s1/sites");
-    expect(fetchWithAuth).not.toHaveBeenCalledWith("/orgs/organizations");
+    expect(fetchWithAuth).not.toHaveBeenCalledWith(expect.stringContaining("/orgs/organizations"), expect.anything());
   });
 
   it("never renders the config UI for an org-scope token, even with no org selected", async () => {
@@ -298,7 +298,7 @@ describe("SecurityIntegration", () => {
     expect(screen.queryByTestId("s1-name")).not.toBeInTheDocument();
     expect(screen.queryByText("Site mapping")).not.toBeInTheDocument();
     expect(fetchWithAuth).not.toHaveBeenCalledWith("/s1/sites");
-    expect(fetchWithAuth).not.toHaveBeenCalledWith("/orgs/organizations");
+    expect(fetchWithAuth).not.toHaveBeenCalledWith(expect.stringContaining("/orgs/organizations"), expect.anything());
   });
 
   it('renders the amber "not mapped" notice in org view when unmapped (not a switch-scope prompt)', async () => {
@@ -415,7 +415,7 @@ describe("SecurityIntegration", () => {
         if (url === "/s1/integration") return jsonResponse({ data: null });
         if (url === "/s1/status") return jsonResponse({ summary: null });
         if (url === "/s1/sites") return jsonResponse({ data: [] });
-        if (url === "/orgs/organizations")
+        if (url.startsWith("/orgs/organizations"))
           return jsonResponse({ data: [breezeOrg] });
         return jsonResponse({}, 404);
       },

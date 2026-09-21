@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { AlertTriangle, ListChecks, Plus } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
+import { fetchAllSites } from '../../lib/fetchAllSites';
 import { usePermissions } from '../../lib/permissions';
 import { runAction, ActionError } from '../../lib/runAction';
 import { navigateTo } from '@/lib/navigation';
@@ -70,11 +71,8 @@ export default function PamRulesTab({ liveTick = 0 }: { liveTick?: number }) {
   const [savingDefault, setSavingDefault] = useState(false);
 
   useEffect(() => {
-    fetchWithAuth('/orgs/sites?limit=100')
-      .then(async (res) => {
-        if (!res.ok) return;
-        const data = await res.json();
-        const list = (asList(data, 'sites')) as Array<{ id: string; name: string }>;
+    fetchAllSites<{ id: string; name: string }>('/orgs/sites')
+      .then((list) => {
         setSiteNames(Object.fromEntries(list.map((s) => [s.id, s.name])));
       })
       .catch(() => {});

@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '../../lib/i18n';
 import { fetchWithAuth } from '../../stores/auth';
+import { fetchAllSites, ListFetchError } from '@/lib/fetchAllSites';
+import { fetchAllOrganizationsFrom } from '@/lib/fetchAllOrganizations';
 import { useOrgStore } from '../../stores/orgStore';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError, ActionError } from '../../lib/runAction';
@@ -177,15 +179,18 @@ export function InvoicesPage({ lockedOrgId }: InvoicesPageProps = {}) {
   );
 
   const loadOrgs = useCallback(async () => {
-    const res = await fetchWithAuth('/orgs/organizations');
-    if (res.status === 401) return UNAUTHORIZED();
-    if (!res.ok) { handleActionError(new Error(res.statusText), t('invoicesPage.errors.loadOrganizations')); return; }
-    const body = (await res.json()) as { data?: Organization[]; organizations?: Organization[] };
-    const list = body.data ?? body.organizations ?? [];
-    // `/orgs/organizations` is a single, server-default-sized page — a
-    // partner with more orgs than that page holds can lock to one that isn't
-    // in it. Without this, the create dialog's org <select> would render its
-    // "Select organization…" placeholder (no matching <option>) while still
+    let list: Organization[];
+    try {
+      list = await fetchAllOrganizationsFrom<Organization>('/orgs/organizations');
+    } catch (err) {
+      if (err instanceof ListFetchError && err.status === 401) return UNAUTHORIZED();
+      handleActionError(err, t('invoicesPage.errors.loadOrganizations'));
+      return;
+    }
+    // Now pages through every organization the caller can see, but a
+    // partner can still lock to an org outside that set (#6412). Without
+    // this, the create dialog's org <select> would render its "Select
+    // organization…" placeholder (no matching <option>) while still
     // submitting for the correct-but-invisible locked org — silently
     // confusing, not silently wrong. Fetch that one org directly so the
     // picker always has something to show.
@@ -257,11 +262,14 @@ export function InvoicesPage({ lockedOrgId }: InvoicesPageProps = {}) {
     setAssembleSiteId('');
     setAssembleSites([]);
     if (!orgId) return;
-    const res = await fetchWithAuth(`/orgs/sites?organizationId=${orgId}`);
-    if (res.status === 401) return UNAUTHORIZED();
-    if (!res.ok) { handleActionError(new Error(res.statusText), t('invoicesPage.errors.loadSites')); return; }
-    const body = (await res.json()) as { data?: Site[]; sites?: Site[] };
-    setAssembleSites(body.data ?? body.sites ?? []);
+    try {
+      const sites = await fetchAllSites<Site>(`/orgs/sites?organizationId=${orgId}`);
+      setAssembleSites(sites);
+    } catch (err) {
+      // 401 keeps its dedicated bail (the auth redirect owns it), as before.
+      if (err instanceof ListFetchError && err.status === 401) return UNAUTHORIZED();
+      handleActionError(err, t('invoicesPage.errors.loadSites'));
+    }
   }, [t]);
 
   const openAssemble = useCallback(() => {

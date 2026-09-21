@@ -36,6 +36,7 @@ import {
 import { fetchWithAuth, handleSessionExpired } from '../../stores/auth';
 import { runAction } from '../../lib/runAction';
 import { fetchAllDevices, fetchAllNetworkDevices, fetchAllManualAssets } from '../../lib/devicesFetch';
+import { fetchAllSites } from '@/lib/fetchAllSites';
 import { useOrgStore } from '../../stores/orgStore';
 import { useOrgScope } from '@/hooks/useOrgScope';
 import { OrgLoadFailedState } from '../shared/OrgLoadFailedState';
@@ -638,7 +639,7 @@ export default function DevicesPage() {
       // `signal` is wired by the mount useEffect's AbortController so a
       // navigate-away mid-walk stops the next page request and prevents
       // setState on an unmounted component (#778 review).
-      const [devicesResult, networkResult, manualResult, orgsResponse, sitesResponse, groupsResponse] = await Promise.all([
+      const [devicesResult, networkResult, manualResult, orgsResponse, sitesResult, groupsResponse] = await Promise.all([
         fetchAllDevices({
           includeDecommissioned: true,
           signal,
@@ -685,7 +686,16 @@ export default function DevicesPage() {
           return { data: [], total: 0, pagesWalked: 0 };
         }),
         fetchWithAuth('/orgs', { signal }),
-        fetchWithAuth('/orgs/sites', { signal }),
+        // `fetchAllSites` (#6412) pages to exhaustion instead of the route's
+        // default 50-row page, and throws on a non-OK response rather than
+        // returning a Response — matched below by warning + falling back to
+        // [] on anything but an abort, same degrade-to-empty contract this
+        // arm always had.
+        fetchAllSites<Site>('/orgs/sites', { signal }).catch((err) => {
+          if (err instanceof Error && err.name === 'AbortError') throw err;
+          console.warn('Failed to fetch sites:', err);
+          return [] as Site[];
+        }),
         fetchWithAuth('/device-groups?includeMemberships=true', { signal }).catch((err) => {
           // AbortError on unmount is expected — bubble it up so the outer
           // catch can short-circuit cleanly; don't log it as a real failure.
@@ -882,13 +892,7 @@ export default function DevicesPage() {
       }
 
       // Fetch sites for site name lookup
-      let sitesList: Site[] = [];
-      if (sitesResponse.ok) {
-        const sitesData = await sitesResponse.json();
-        sitesList = asList(sitesData, 'sites');
-      } else {
-        console.warn('Failed to fetch sites:', sitesResponse.status);
-      }
+      const sitesList: Site[] = sitesResult;
 
       // Create lookup maps
       const orgMap = new Map(orgsList.map((o: Org) => [o.id, o.name]));

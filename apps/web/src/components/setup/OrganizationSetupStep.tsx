@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react';
 import { Building2, MapPin, Loader2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
+import { fetchAllSites, ListFetchError } from '@/lib/fetchAllSites';
+import { fetchAllOrganizationsFrom } from '@/lib/fetchAllOrganizations';
 import { extractApiError } from '@/lib/apiError';
 
 interface OrgData {
@@ -52,27 +54,31 @@ export default function OrganizationSetupStep({ onNext }: OrganizationSetupStepP
       }
 
       // Fetch organizations
-      const orgsRes = await fetchWithAuth('/orgs/organizations');
+      // `strictShape` keeps this screen's load-vs-parse distinction: without
+      // it an unreadable 200 body unwraps to `[]` and first-run setup silently
+      // shows "no organizations" with no warning at all.
       let organizations: OrgData['organizations'] = [];
-      if (orgsRes.ok) {
-        try {
-          const orgsData = await orgsRes.json();
-          organizations = orgsData.data || orgsData || [];
-        } catch { warnings.push(t('setup.organization.warnings.parseOrganizationsFailed')); }
-      } else {
-        warnings.push(t('setup.organization.warnings.loadOrganizationsFailed'));
+      try {
+        organizations = await fetchAllOrganizationsFrom('/orgs/organizations', undefined, { strictShape: true });
+      } catch (err) {
+        warnings.push(
+          err instanceof ListFetchError
+            ? t('setup.organization.warnings.loadOrganizationsFailed')
+            : t('setup.organization.warnings.parseOrganizationsFailed'),
+        );
       }
 
-      // Fetch sites
-      const sitesRes = await fetchWithAuth('/orgs/sites');
+      // Fetch sites. `fetchAllSites` (#6412) pages to exhaustion; same
+      // strict-shape reasoning as the organizations read above.
       let sites: OrgData['sites'] = [];
-      if (sitesRes.ok) {
-        try {
-          const sitesData = await sitesRes.json();
-          sites = sitesData.data || sitesData || [];
-        } catch { warnings.push(t('setup.organization.warnings.parseSitesFailed')); }
-      } else {
-        warnings.push(t('setup.organization.warnings.loadSitesFailed'));
+      try {
+        sites = await fetchAllSites('/orgs/sites', undefined, { strictShape: true });
+      } catch (err) {
+        warnings.push(
+          err instanceof ListFetchError
+            ? t('setup.organization.warnings.loadSitesFailed')
+            : t('setup.organization.warnings.parseSitesFailed'),
+        );
       }
 
       if (warnings.length > 0) {

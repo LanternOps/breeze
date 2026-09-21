@@ -1,42 +1,44 @@
-export const ORGANIZATIONS_PAGE_SIZE = 100; // the server's hard ceiling — fewest round-trips
-export const ORGANIZATIONS_MAX_PAGES = 100; // 10k orgs; a stop so a bad `total` cannot spin
+import { fetchWithAuth, type FetchWithAuthOptions } from '../stores/auth';
+import { fetchAllPages, ListFetchError, LIST_MAX_PAGES, LIST_PAGE_SIZE } from './fetchAllPages';
+
+// Re-exported for callers that import it next to this helper.
+export { ListFetchError };
+
+
+export const ORGANIZATIONS_PAGE_SIZE = LIST_PAGE_SIZE;
+export const ORGANIZATIONS_MAX_PAGES = LIST_MAX_PAGES;
 
 /**
- * Walks every page of `GET /orgs/organizations` (#3446). The server clamps
- * `limit` to 100, so any single request silently truncates past 100 orgs —
- * every reader that wants "all organizations" must page. Lives in lib/ because
- * the org switcher store needs it too and a store cannot import from a page
- * component without a cycle (OrganizationsPage imports the store).
+ * Walks every page of `GET /orgs/organizations` (#3446). Thin wrapper over the
+ * shared {@link fetchAllPages} walker (#6412) — kept as a named export because
+ * the org switcher store and the board page both call it, and because
+ * `organizations` is this route's legacy envelope key.
  */
 export async function fetchAllOrganizations<T = unknown>(
   fetchPage: (page: number, limit: number) => Promise<unknown>,
+  options: { strictShape?: boolean } = {},
 ): Promise<T[] | null> {
-  const all: T[] = [];
+  return fetchAllPages<T>(fetchPage, { aliasKeys: ['organizations'], strictShape: options.strictShape });
+}
 
-  for (let page = 1; page <= ORGANIZATIONS_MAX_PAGES; page += 1) {
-    const data = (await fetchPage(page, ORGANIZATIONS_PAGE_SIZE)) as
-      | { data?: unknown; organizations?: unknown; pagination?: { total?: unknown } }
-      | unknown[]
-      | null;
-    if (data === null) return null;
-
-    const body = data as { data?: unknown; organizations?: unknown; pagination?: { total?: unknown } };
-    const batch: T[] = Array.isArray(body?.data)
-      ? (body.data as T[])
-      : Array.isArray(body?.organizations)
-        ? (body.organizations as T[])
-        : Array.isArray(data)
-          ? (data as T[])
-          : [];
-    all.push(...batch);
-
-    // Stop on a short page rather than trusting `total` alone: a legacy or
-    // unpaginated response is a bare array with no pagination block and must
-    // still terminate.
-    const total = typeof body?.pagination?.total === 'number' ? body.pagination.total : undefined;
-    if (batch.length < ORGANIZATIONS_PAGE_SIZE) break;
-    if (total !== undefined && all.length >= total) break;
-  }
-
-  return all;
+/**
+ * Convenience wrapper for the many org pickers that just want "every org I can
+ * see" (#6412). `path` is the route plus any filters, WITHOUT `page`/`limit`.
+ * Throws on a non-OK response so callers keep their existing error branch.
+ */
+export async function fetchAllOrganizationsFrom<T = any>(
+  path: string,
+  init?: FetchWithAuthOptions,
+  options: { strictShape?: boolean } = {},
+): Promise<T[]> {
+  const separator = path.includes('?') ? '&' : '?';
+  const orgs = await fetchAllOrganizations<T>(async (page, limit) => {
+    const response = await fetchWithAuth(`${path}${separator}page=${page}&limit=${limit}`, init);
+    if (!response.ok) {
+      throw new ListFetchError(response.status, `Failed to fetch organizations (status ${response.status})`);
+    }
+    return response.json();
+  }, { strictShape: options.strictShape });
+  // Only a null page body yields null, which the fetcher above cannot produce.
+  return orgs ?? [];
 }

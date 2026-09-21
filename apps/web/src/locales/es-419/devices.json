@@ -914,7 +914,10 @@
       "running": "En ejecución",
       "executed": "Ejecutado",
       "failed": "Fallido"
-    }
+    },
+    "previewSummary": "{{count}} candidatos · {{size}} recuperables",
+    "historyReclaimable": "{{size}} recuperables",
+    "filesystemScanFinished": "Análisis del sistema de archivos finalizado"
   },
   "deviceFilterToolbar": {
     "searchDevices": "Buscar dispositivos",

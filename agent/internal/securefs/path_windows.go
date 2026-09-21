@@ -374,7 +374,7 @@ func ensureDir(path string, mode os.FileMode, private bool) error {
 	return verifyPrivateDirDACLProtected(chain.leaf())
 }
 
-func installFile(base, relative, source string, mode os.FileMode, modTime time.Time, owner *Owner) ([]error, error) {
+func installFile(base, relative, source string, mode os.FileMode, modTime time.Time, owner *Owner, winAttrs uint32) ([]error, error) {
 	parent := base
 	if dir := filepath.Dir(relative); dir != "." {
 		parent = filepath.Join(base, dir)
@@ -412,6 +412,12 @@ func installFile(base, relative, source string, mode os.FileMode, modTime time.T
 		}
 	}()
 
+	// FSCTL_SET_SPARSE must be issued on the EMPTY temporary, before any
+	// content is copied in: NTFS only treats a file as sparse from the point
+	// the flag is set, so a post-copy ioctl would restore the attribute but
+	// nothing else. Failure is a fidelity warning, never a failed restore.
+	sparseWarn := maybeSetSparse(tempHandle, winAttrs)
+
 	src, err := os.Open(source)
 	if err != nil {
 		return nil, fmt.Errorf("open staging file: %w", err)
@@ -426,14 +432,33 @@ func installFile(base, relative, source string, mode os.FileMode, modTime time.T
 	}
 
 	var warnings []error
+	if sparseWarn != nil {
+		warnings = append(warnings, sparseWarn)
+	}
 	if owner != nil {
 		// Unix uid/gid has no Windows meaning. #5520's walker never records an
 		// Owner on Windows, so this only happens for a manifest captured
 		// elsewhere; say so rather than silently dropping it.
 		warnings = append(warnings, errors.New("unix ownership is not applied on Windows"))
 	}
+	// The manifest's captured attributes (#5407) win over the mode-derived
+	// guess: Hidden/System/Temporary/NotContentIndexed have no Unix mode
+	// equivalent at all, and ReadOnly is recorded directly rather than
+	// inferred from the owner-write bit. SPARSE_FILE is excluded here — it is
+	// not settable through a basic-information write and was already applied
+	// via FSCTL_SET_SPARSE above. When winAttrs is 0 (a non-Windows backup or
+	// any pre-#5407 manifest) the previous mode-derived behavior is preserved
+	// byte for byte.
+	settable := winAttrs & installableWinAttrs
 	basic := fileBasicInfo{FileAttributes: windows.FILE_ATTRIBUTE_NORMAL}
-	if mode != 0 && mode.Perm()&0o200 == 0 {
+	switch {
+	case settable != 0:
+		// FILE_ATTRIBUTE_NORMAL is only valid when it stands alone.
+		basic.FileAttributes = settable
+		if mode != 0 && mode.Perm()&0o200 == 0 {
+			basic.FileAttributes |= windows.FILE_ATTRIBUTE_READONLY
+		}
+	case mode != 0 && mode.Perm()&0o200 == 0:
 		basic.FileAttributes = windows.FILE_ATTRIBUTE_READONLY
 	}
 	if !modTime.IsZero() {
@@ -1028,6 +1053,41 @@ func installDir(base, relative string, mode os.FileMode, applyMode bool, owner *
 		if err := setBasicInfo(chain.leaf(), &basic); err != nil {
 			return fmt.Errorf("apply directory modification time: %w", err)
 		}
+	}
+	return nil
+}
+
+// installableWinAttrs is the subset of the backup manifest's captured Windows
+// attributes (#5407) that a basic-information write can set on the pinned
+// temporary. It is applied as a mask so a corrupt or hostile manifest cannot
+// smuggle in an attribute the restore never intended to honor (DIRECTORY,
+// REPARSE_POINT, and friends). SPARSE_FILE is preserved too but goes through
+// maybeSetSparse instead — see its comment.
+const installableWinAttrs = uint32(
+	windows.FILE_ATTRIBUTE_READONLY |
+		windows.FILE_ATTRIBUTE_HIDDEN |
+		windows.FILE_ATTRIBUTE_SYSTEM |
+		windows.FILE_ATTRIBUTE_TEMPORARY |
+		windows.FILE_ATTRIBUTE_NOT_CONTENT_INDEXED)
+
+// maybeSetSparse marks handle's file sparse when the manifest recorded
+// FILE_ATTRIBUTE_SPARSE_FILE. Returns a warning (never a hard error) so a
+// filesystem that does not support sparse files — FAT32, exFAT, a network
+// redirector — degrades to a fully-allocated restore instead of failing it.
+//
+// Caveat worth stating plainly: this restores the file's SPARSENESS, not its
+// original hole map. The manifest records no allocated-range list, so the
+// bytes the restore writes are written for real; a run of zeroes that was a
+// hole on the source lands as allocated zeroes here. The file is sparse and
+// can be punched thereafter, which is what #5407 asked for.
+func maybeSetSparse(handle windows.Handle, winAttrs uint32) error {
+	if winAttrs&windows.FILE_ATTRIBUTE_SPARSE_FILE == 0 {
+		return nil
+	}
+	var returned uint32
+	if err := windows.DeviceIoControl(handle, windows.FSCTL_SET_SPARSE,
+		nil, 0, nil, 0, &returned, nil); err != nil {
+		return fmt.Errorf("mark restored file sparse: %w", err)
 	}
 	return nil
 }

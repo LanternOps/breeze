@@ -160,18 +160,41 @@ services:
     profiles:
       - turn
     network_mode: host
-    command: >
-      turnserver
-      --listening-port=3478
-      --tls-listening-port=5349
-      --fingerprint
-      --use-auth-secret
-      --relay-threads=4
-      --log-file=stdout
-      --verbose
-      --min-port=49152
-      --max-port=65535
-      --no-cli
-      --static-auth-secret=${TURN_SECRET:-dev-turn-secret}
-      --realm=${TURN_REALM:-breeze.local}
-      --external-ip=${TURN_HOST:-127.0.0.1}
+    volumes:
+      # #6163 — same opt-in TURN-over-TLS wiring as the base stack, so the dev
+      # override does not silently keep the advertised-but-dead 5349 listener.
+      - ${TURN_TLS_DIR:-./deploy/coturn/tls-placeholder}:/etc/coturn/tls:ro
+    entrypoint: ['/bin/sh', '-ec']
+    command:
+      - |
+        if [ -r /etc/coturn/tls/cert.pem ] && [ -r /etc/coturn/tls/privkey.pem ]; then
+          echo 'coturn: TLS certificate found — TURNS will listen on 5349.' >&2
+          # Readability is checked as the uid this shell runs as, which is the
+          # uid the server process inherits — so `-r` is exactly the right test.
+          # Expiry is not fatal (coturn still binds), but it must not pass
+          # silently: an expired certificate fails every handshake and the only
+          # symptom is a client that cannot connect (#6163).
+          if command -v openssl >/dev/null 2>&1 && \
+             ! openssl x509 -checkend 0 -noout -in /etc/coturn/tls/cert.pem >/dev/null 2>&1; then
+            echo 'coturn: WARNING — /etc/coturn/tls/cert.pem is EXPIRED (or unparseable). TURNS handshakes will fail until it is renewed and coturn restarted.' >&2
+          fi
+          set -- "$$@" --cert=/etc/coturn/tls/cert.pem --pkey=/etc/coturn/tls/privkey.pem
+        else
+          echo 'coturn: no readable certificate at /etc/coturn/tls — TURNS (5349) is disabled; only 3478 will listen.' >&2
+          echo 'Set TURN_TLS_DIR to a directory holding cert.pem + privkey.pem readable by the container uid. See /deploy/turn-server/.' >&2
+        fi
+        exec turnserver "$$@"
+      - turnserver
+      - --listening-port=3478
+      - --tls-listening-port=5349
+      - --fingerprint
+      - --use-auth-secret
+      - --relay-threads=4
+      - --log-file=stdout
+      - --verbose
+      - --min-port=49152
+      - --max-port=65535
+      - --no-cli
+      - --static-auth-secret=${TURN_SECRET:-dev-turn-secret}
+      - --realm=${TURN_REALM:-breeze.local}
+      - --external-ip=${TURN_HOST:-127.0.0.1}

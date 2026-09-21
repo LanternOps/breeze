@@ -914,7 +914,10 @@
       "running": "Läuft",
       "executed": "Ausgeführt",
       "failed": "Fehlgeschlagen"
-    }
+    },
+    "previewSummary": "{{count}} Kandidaten · {{size}} freigebbar",
+    "historyReclaimable": "{{size}} freigebbar",
+    "filesystemScanFinished": "Dateisystem-Scan abgeschlossen"
   },
   "deviceFilterToolbar": {
     "searchDevices": "Geräte suchen",

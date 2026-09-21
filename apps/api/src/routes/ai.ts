@@ -870,7 +870,7 @@ aiRoutes.post(
       throw err;
     }
 
-    if (!streamingSessionManager.tryTransitionToProcessing(activeSession)) {
+    if (!streamingSessionManager.tryTransitionToProcessing(activeSession, budgetDispatch.reservationId)) {
       await releaseUnusedTurn(dbSession.orgId, budgetDispatch);
       return c.json({ error: 'A message is already being processed for this session' }, 409);
     }

@@ -228,7 +228,9 @@
       "logFailed": "Protokollierung der Zeit fehlgeschlagen",
       "logged": "Zeit protokolliert",
       "logFailedSentence": "Protokollierung der Zeit fehlgeschlagen."
-    }
+    },
+    "billedVsWorked": "{{worked}} Std. gearbeitet · {{billed}} Std. abgerechnet",
+    "includedMinutes": "{{hours}} Std. im Vertrag enthalten"
   },
   "inboundReviewQueue": {
     "title": "Prüfwarteschlange",

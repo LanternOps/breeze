@@ -19,11 +19,10 @@ import { and, eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { zValidator } from '../../lib/validation';
 import { db } from '../../db';
-import { deviceCommands, deviceFilesystemCleanupRuns } from '../../db/schema';
+import { deviceCommands } from '../../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, withAuthDbAccessContext } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import { CommandTypes } from '../../services/commandTypes';
-import { SYSTEM_CLEANUP_RUN_MAX_TIMEOUT_MS } from '../../services/commandTimeouts';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { systemCleanupRunBodySchema } from '@breeze/shared/validators';
 // Queueing lives in the shared service; command types here only scope polls.
@@ -32,8 +31,8 @@ import {
   MIN_AGENT_VERSION_SYSTEM_CLEANUP,
   isUnknownCommandTypeError,
   parseAgentJson,
-  failSystemCleanupRunAndCancelCommand,
   queueSystemCleanupList,
+  resolveSystemCleanupRunStatus,
   startSystemCleanupRun,
   systemCleanupCatalogSchema,
 } from '../../services/systemCleanup';
@@ -220,67 +219,24 @@ filesystemSystemCleanupRoutes.get(
     if (device === SITE_ACCESS_DENIED) return c.json({ success: false, error: 'Access to this site denied' }, 403);
     if (!device) return c.json({ success: false, error: 'Device not found' }, 404);
 
-    const [run] = await db
-      .select()
-      .from(deviceFilesystemCleanupRuns)
-      .where(and(
-        eq(deviceFilesystemCleanupRuns.id, cleanupRunId),
-        eq(deviceFilesystemCleanupRuns.deviceId, deviceId),
-        eq(deviceFilesystemCleanupRuns.kind, 'system'),
-      ))
-      .limit(1);
-    if (!run) return c.json({ success: false, error: 'Cleanup run not found' }, 404);
-
-    if (isUnknownCommandTypeError(run.error)) return agentUpdateRequired(c);
-    if (run.commandId) {
-      const [command] = await db.select().from(deviceCommands).where(and(
-        eq(deviceCommands.id, run.commandId), eq(deviceCommands.deviceId, deviceId),
-        eq(deviceCommands.type, CommandTypes.SYSTEM_CLEANUP_RUN),
-      )).limit(1);
-      if (isUnknownCommandTypeError(readCommandResult(command?.result).error)) return agentUpdateRequired(c);
+    // The whole projection — lookup, the unknown-command-type 409, the lazy
+    // deadline timeout — lives in `resolveSystemCleanupRunStatus`, shared with
+    // the AI tool's `status` action so the two lanes cannot drift.
+    const resolved = await resolveSystemCleanupRunStatus({ device: { id: deviceId, orgId: device.orgId }, cleanupRunId });
+    if (!resolved.ok) {
+      if (resolved.status === 409) return agentUpdateRequired(c);
+      return c.json({ success: false, error: 'Cleanup run not found' }, 404);
     }
-
-    let status = run.status;
-    let error = run.error;
-
-    // Lazy timeout. Nothing else transitions a `running` system run: the stale
-    // command reaper terminalises the COMMAND, not this row, so a device that
-    // never answers would otherwise leave the panel spinning indefinitely.
-    //
-    // The deadline is the one STORED on the row at claim time (spec §13 #14),
-    // not a constant and not a recomputation: the budget depends on what was
-    // selected, and two places deriving it independently is how they drift.
-    // A row written before this field existed falls back to the maximum,
-    // which is the conservative direction.
-    const plan = (run.plan ?? {}) as { deadlineAt?: unknown };
-    const deadlineAt = typeof plan.deadlineAt === 'string'
-      ? new Date(plan.deadlineAt).getTime()
-      : new Date(run.requestedAt).getTime() + SYSTEM_CLEANUP_RUN_MAX_TIMEOUT_MS;
-
-    if (status === 'running' && Number.isFinite(deadlineAt) && Date.now() > deadlineAt) {
-      // Cancelling the command and failing the row are ONE transaction
-      // (spec §13 #6/#13): telling the operator a run failed while its command
-      // is still deliverable is the hazard the live_only TTL narrows but does
-      // not close.
-      const finalised = await failSystemCleanupRunAndCancelCommand({
-        runId: run.id, deviceId, orgId: device.orgId, error: 'timed out',
-      });
-      if (finalised) {
-        status = 'failed';
-        error = 'timed out';
-      }
-    }
-
-    const executed = (run.executedActions ?? {}) as { actions?: unknown[]; volumes?: unknown[] };
+    const { run } = resolved;
     return c.json({
       success: true,
       data: {
-        cleanupRunId: run.id,
-        status,
-        error: error ?? null,
-        freedBytes: run.bytesReclaimed ?? 0,
-        actions: Array.isArray(executed.actions) ? executed.actions : [],
-        volumes: Array.isArray(executed.volumes) ? executed.volumes : [],
+        cleanupRunId: run.cleanupRunId,
+        status: run.status,
+        error: run.error,
+        freedBytes: run.freedBytes,
+        actions: run.actions,
+        volumes: run.volumes,
         requestedAt: run.requestedAt,
       },
     });

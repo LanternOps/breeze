@@ -99,6 +99,10 @@ vi.mock('../services/monitors/monitorResolver', () => ({
   resolveMonitorsForDevice: vi.fn(),
 }));
 
+vi.mock('../services/monitors/ruleConversionService', () => ({
+  convertRuleToMonitor: vi.fn(),
+}));
+
 vi.mock('../services/alertConditions', () => ({
   evaluateConditions: vi.fn(),
 }));
@@ -698,4 +702,15 @@ describe('site scope on device-reading monitor routes', () => {
       expect(evaluateConditionsMock).toHaveBeenCalledTimes(1);
     });
   });
+});
+
+vi.mock('./monitorDefinitions.conversion', async () => {
+  const { Hono } = await import('hono');
+  return { monitorConversionRoutes: new Hono().get('/pending', (c) => c.json({ data: { policies: 0, rows: 0 } })) };
+});
+it('mounts the literal conversion resource before monitor ids', async () => {
+  const response = await jsonRequest(buildApp(), 'GET', '/conversion/pending');
+  expect(response.status).toBe(200);
+  expect(await response.json()).toEqual({ data: { policies: 0, rows: 0 } });
+  expect(getMonitorDefinitionMock).not.toHaveBeenCalled();
 });

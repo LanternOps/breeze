@@ -4,7 +4,6 @@ import { Hono } from 'hono';
 const {
   selectMock, insertMock, updateMock,
   queueCommandForExecutionMock, getDeviceWithOrgAndSiteCheckMock, writeRouteAuditMock,
-  failRunAndCancelMock,
 } = vi.hoisted(() => ({
   selectMock: vi.fn(),
   insertMock: vi.fn(),
@@ -12,12 +11,12 @@ const {
   queueCommandForExecutionMock: vi.fn(),
   getDeviceWithOrgAndSiteCheckMock: vi.fn(),
   writeRouteAuditMock: vi.fn(),
-  failRunAndCancelMock: vi.fn(),
 }));
 
 vi.mock('drizzle-orm', () => ({
   and: (...conditions: unknown[]) => ({ type: 'and', conditions }),
   eq: (left: unknown, right: unknown) => ({ type: 'eq', left, right }),
+  sql: (strings: TemplateStringsArray, ...values: unknown[]) => ({ type: 'sql', strings: [...strings], values }),
 }));
 
 vi.mock('../../db', () => ({
@@ -35,12 +34,23 @@ vi.mock('../../db', () => ({
 
 vi.mock('../../db/schema', () => ({
   devices: { id: 'devices.id', orgId: 'devices.orgId' },
-  deviceCommands: { id: 'deviceCommands.id', deviceId: 'deviceCommands.deviceId', type: 'deviceCommands.type' },
+  deviceCommands: { id: 'deviceCommands.id', deviceId: 'deviceCommands.deviceId', type: 'deviceCommands.type', status: 'deviceCommands.status', payload: 'deviceCommands.payload' },
   deviceFilesystemCleanupRuns: {
     id: 'runs.id', deviceId: 'runs.deviceId', orgId: 'runs.orgId', kind: 'runs.kind',
     status: 'runs.status', commandId: 'runs.commandId', requestedAt: 'runs.requestedAt',
   },
 }));
+
+/** The rows the CAS `UPDATE … WHERE status = 'running' RETURNING` yields, then every later update's. */
+function updateReturning(...perCall: unknown[][]) {
+  const queue = [...perCall];
+  updateMock.mockImplementation(() => ({
+    set: (values: Record<string, unknown>) => ({
+      where: () => Object.assign(Promise.resolve([]), { returning: async () => queue.shift() ?? [] }),
+      _set: values,
+    }),
+  }));
+}
 
 vi.mock('../../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
@@ -64,13 +74,9 @@ vi.mock('../../services/commandQueue', () => ({
 
 vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: writeRouteAuditMock }));
 
-// Partial mock: the gate, the schemas and the queue/start seam run for real
-// against the mocked db above, but `failSystemCleanupRunAndCancelCommand`
-// opens its own transaction and is asserted on directly.
-vi.mock('../../services/systemCleanup', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../services/systemCleanup')>()),
-  failSystemCleanupRunAndCancelCommand: (...args: unknown[]) => failRunAndCancelMock(...(args as [never])),
-}));
+// No mock of services/systemCleanup: the gate, the schemas, the queue/start
+// seam and the shared run-status resolver (with its cancel-and-fail
+// transaction) all run for real against the mocked db above.
 
 vi.mock('./helpers', () => ({
   SITE_ACCESS_DENIED: Symbol.for('site-access-denied'),
@@ -302,14 +308,15 @@ describe('GET /devices/:id/filesystem/system-cleanup/run/:cleanupRunId', () => {
       plan: { actionIds: ['linux_pkg_cache_clean'], deadlineAt: new Date(Date.now() - 60_000).toISOString() },
       executedActions: [],
     }]));
-    failRunAndCancelMock.mockResolvedValue(true);
+    updateReturning([{ id: RUN_ID, commandId: COMMAND_ID }], [{ id: COMMAND_ID }]);
 
     const res = await app().request(`/devices/${DEVICE_ID}/filesystem/system-cleanup/run/${RUN_ID}`);
     expect(res.status).toBe(200);
     await expect(res.json()).resolves.toMatchObject({ data: { status: 'failed', error: 'timed out' } });
-    expect(failRunAndCancelMock).toHaveBeenCalledWith(
-      expect.objectContaining({ runId: RUN_ID, deviceId: DEVICE_ID, error: 'timed out' }),
-    );
+    // runs CAS-failed, then the pending command cancelled — in that order.
+    expect(updateMock).toHaveBeenCalledTimes(2);
+    expect(updateMock.mock.calls[0]![0]).toMatchObject({ id: 'runs.id' });
+    expect(updateMock.mock.calls[1]![0]).toMatchObject({ id: 'deviceCommands.id' });
   });
 
   // The deadline is per-selection: a 20-minute-old run of a 160-minute
@@ -324,7 +331,7 @@ describe('GET /devices/:id/filesystem/system-cleanup/run/:cleanupRunId', () => {
     }]));
     const res = await app().request(`/devices/${DEVICE_ID}/filesystem/system-cleanup/run/${RUN_ID}`);
     await expect(res.json()).resolves.toMatchObject({ data: { status: 'running' } });
-    expect(failRunAndCancelMock).not.toHaveBeenCalled();
+    expect(updateMock).not.toHaveBeenCalled();
   });
 
   // A row written before plan.deadlineAt existed falls back to the ceiling,
@@ -336,7 +343,7 @@ describe('GET /devices/:id/filesystem/system-cleanup/run/:cleanupRunId', () => {
       plan: { actionIds: ['linux_pkg_cache_clean'] }, executedActions: [],
     }]));
     await app().request(`/devices/${DEVICE_ID}/filesystem/system-cleanup/run/${RUN_ID}`);
-    expect(failRunAndCancelMock).not.toHaveBeenCalled();
+    expect(updateMock).not.toHaveBeenCalled();
   });
 
   it('404s a file-kind run — this projection is for system runs only', async () => {

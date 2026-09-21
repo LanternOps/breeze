@@ -2803,6 +2803,7 @@
         "set_agent_log_level": "Aracı günlük düzeyini ayarla",
         "set_device_context": "Cihaz bağlamını ayarla",
         "sync_huntress_data": "Huntress verilerini eşitle",
+        "system_cleanup": "Sistem temizliği",
         "take_screenshot": "Ekran görüntüsü al"
       },
       "actions": {
@@ -3050,6 +3051,11 @@
           "scan": "Bir güvenlik taraması çalıştır",
           "status": "Güvenlik taraması durumu",
           "vulnerabilities": "Güvenlik açığı tara"
+        },
+        "system_cleanup": {
+          "list": "Sistem temizleme eylemlerini listele",
+          "run": "Sistem temizliğini çalıştır",
+          "status": "Sistem temizliği durumu"
         }
       },
       "alwaysOnCount_one": "{{count}} salt okunur araç",

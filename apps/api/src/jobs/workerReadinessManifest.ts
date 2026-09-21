@@ -48,6 +48,7 @@ const consumers = (
 
 export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification[] = [
   consumers('alertWorkers', ['alertWorker']),
+  consumers('monitorConversionPreviewWorker'),
   consumers('alertCorrelationWorker'),
   consumers('metricRollupsWorker'),
   consumers('metricRollupMaintenance'),

@@ -53,6 +53,7 @@ import {
   configFeatureInlineSettingsSchema,
   deviceLifecycleInlineSettingsSchema,
   eventLogInlineSettingsSchema,
+  maintenanceInlineSettingsSchema,
   monitoringInlineSettingsSchema,
   monitorsInlineSettingsSchema,
   monitorsInheritanceSchema,
@@ -859,20 +860,14 @@ async function decomposeInlineSettings(
     }
 
     case 'maintenance': {
+      // #6312: was a `typeof` coercion that substituted a default for any
+      // wrong-typed field and passed any string/number straight through. The
+      // schema is now the authority on both paths (route + this service-level
+      // backstop, which is what the AI manage_policy_feature_link tool hits).
+      const parsed = maintenanceInlineSettingsSchema.parse(s);
       await tx.insert(configPolicyMaintenanceSettings).values({
         featureLinkId: linkId,
-        recurrence: typeof s.recurrence === 'string' ? s.recurrence : 'weekly',
-        durationHours: typeof s.durationHours === 'number' ? s.durationHours : 2,
-        timezone: typeof s.timezone === 'string' ? s.timezone : 'UTC',
-        windowStart: typeof s.windowStart === 'string' ? s.windowStart : null,
-        suppressAlerts: typeof s.suppressAlerts === 'boolean' ? s.suppressAlerts : true,
-        suppressPatching: typeof s.suppressPatching === 'boolean' ? s.suppressPatching : false,
-        suppressAutomations: typeof s.suppressAutomations === 'boolean' ? s.suppressAutomations : false,
-        suppressScripts: typeof s.suppressScripts === 'boolean' ? s.suppressScripts : false,
-        rebootIfPending: typeof s.rebootIfPending === 'boolean' ? s.rebootIfPending : false,
-        notifyBeforeMinutes: typeof s.notifyBeforeMinutes === 'number' ? s.notifyBeforeMinutes : 15,
-        notifyOnStart: typeof s.notifyOnStart === 'boolean' ? s.notifyOnStart : true,
-        notifyOnEnd: typeof s.notifyOnEnd === 'boolean' ? s.notifyOnEnd : true,
+        ...parsed,
       });
       break;
     }
@@ -1171,6 +1166,9 @@ function assertDecomposableInlineSettings(featureType: ConfigFeatureType, settin
       break;
     case 'event_log':
       eventLogInlineSettingsSchema.parse(settings);
+      break;
+    case 'maintenance':
+      maintenanceInlineSettingsSchema.parse(settings);
       break;
     case 'monitoring':
       monitoringInlineSettingsSchema.parse(settings);

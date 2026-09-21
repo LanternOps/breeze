@@ -495,6 +495,8 @@
     "originalLocation": "Posizione originale",
     "restoreFilesInPlace": "Ripristina i file nella posizione originale.",
     "alternatePath": "Percorso alternativo",
+    "alternatePathPlaceholder": "ad es. D:\\Restored o /var/restore",
+    "alternatePathRequired": "Inserisci un percorso di destinazione per continuare.",
     "restoreToANewFolder": "Ripristina in una nuova cartella.",
     "reviewConfirm": "Rivedi e conferma",
     "confirmTheRestoreSummaryBeforeStarting": "Conferma il riepilogo del ripristino prima di iniziare.",
@@ -730,7 +732,15 @@
     "launchExecution": "Avvia esecuzione",
     "startANewDrRunFor": "Avvia una nuova esecuzione DR per",
     "cancel": "Annulla",
-    "startExecution": "Avvia esecuzione"
+    "startExecution": "Avvia esecuzione",
+    "executeErrorFallback": "Impossibile avviare l'esecuzione.",
+    "executeErrorNoRestorableSnapshot": "Avvio non riuscito: un dispositivo di un gruppo di ricostruzione bare-metal non ha snapshot di backup ripristinabili. Esegui prima un backup riuscito per ogni dispositivo di quel gruppo.",
+    "executeErrorNoRecoverySource": "Avvio non riuscito: un gruppo di ripristino non indica alcuna origine di ripristino. Aggiungi al gruppo uno snapshot, un processo di ripristino o un token di ripristino.",
+    "executeErrorGroupHasNoValidDevices": "Avvio non riuscito: un gruppo di ripristino non ha dispositivi validi. Modifica il piano e aggiungi almeno un dispositivo a ogni gruppo.",
+    "executeErrorInvalidSourceReference": "Avvio non riuscito: un gruppo di ripristino fa riferimento a un'origine di ripristino con un identificatore non valido. Modifica il gruppo e riseleziona l'origine.",
+    "executeErrorInvalidStepConfig": "Avvio non riuscito: un gruppo di ripristino ha una configurazione del passaggio non valida. Modifica il gruppo e correggi le impostazioni.",
+    "executeErrorResourceNotFound": "Avvio non riuscito: uno snapshot a cui questo piano fa riferimento non esiste più. Modifica il gruppo interessato e scegli uno snapshot attuale.",
+    "executeErrorBackupWriteRequired": "Avvio non riuscito: questo piano contiene un gruppo di ricostruzione bare-metal, che richiede l'autorizzazione di scrittura dei backup."
   },
   "dRExecutionView": {
     "executionDetails": "Dettagli esecuzione",
@@ -806,7 +816,9 @@
     "uniqueDeviceCount_one": "{{count}} dispositivo univoco",
     "uniqueDeviceCount_other": "{{count}} dispositivi univoci",
     "chooseAStepTypeForEachGroup": "Scegli un tipo di passaggio per ogni gruppo di ripristino.",
-    "rebuildWaitTimeoutOutOfRange": "Il timeout di attesa della ricostruzione bare-metal deve essere un numero intero compreso tra {{min}} e {{max}} minuti."
+    "rebuildWaitTimeoutOutOfRange": "Il timeout di attesa della ricostruzione bare-metal deve essere un numero intero compreso tra {{min}} e {{max}} minuti.",
+    "rebuildOutputDirMustBeAbsolute": "La directory di output della ricostruzione bare-metal deve essere un percorso assoluto che inizia con \"/\" e non superare {{max}} caratteri.",
+    "partialSaveFailure": "Parte di questo piano è stata salvata prima dell'errore, quindi il piano e l'elenco potrebbero non coincidere. Risolvi il problema e salva di nuovo. Il server segnala: {{message}}"
   },
   "dRPlanGroupCard": {
     "device": "dispositivo",

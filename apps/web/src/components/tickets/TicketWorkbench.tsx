@@ -5,6 +5,7 @@ import { ExternalLink, Sparkles } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { TicketTemplateVars } from '@breeze/shared';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
+import { fetchAllOrganizationsFrom } from '../../lib/fetchAllOrganizations';
 import { listCannedResponses, type CannedResponse } from '../../lib/ticketResponseTemplatesApi';
 import { runAction, ActionError } from '../../lib/runAction';
 import { navigateTo } from '@/lib/navigation';
@@ -504,15 +505,11 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
   // the picker just won't show any options (degrade to empty select).
   useEffect(() => {
     let cancelled = false;
-    void fetchWithAuth('/orgs/organizations?limit=100')
-      .then(async (r) => (r.ok ? r.json() : null))
-      .then((body) => {
-        if (cancelled || !body) return;
-        type OrgRow = { id: string; name: string; currencyCode?: string };
-        const rows = (body as { data?: OrgRow[]; organizations?: OrgRow[] }).data
-          ?? (body as { data?: OrgRow[]; organizations?: OrgRow[] }).organizations
-          ?? [];
-        if (Array.isArray(rows)) setOrgs((rows as OrgRow[]).filter((o) => o.id && o.name));
+    type OrgRow = { id: string; name: string; currencyCode?: string };
+    void fetchAllOrganizationsFrom<OrgRow>('/orgs/organizations')
+      .then((rows) => {
+        if (cancelled) return;
+        setOrgs(rows.filter((o) => o.id && o.name));
       })
       .catch(() => { /* degrade gracefully */ });
     return () => { cancelled = true; };

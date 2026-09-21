@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, or, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, notInArray, or } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import {
   BARE_METAL_RECOVERY_TERMINAL,
@@ -426,6 +426,24 @@ export class DrRecoveryAuthorizationDeniedError extends Error {
   }
 }
 
+/**
+ * Denial codes that mean "a prerequisite resource is missing", which the route
+ * renders as 404. Every other `DrRecoveryAuthorizationDeniedError` code is a
+ * malformed plan/step configuration — a 400.
+ *
+ * #6382: these codes reach the operator verbatim in the DR dashboard, so a
+ * single overloaded `resource_not_found` was unactionable ("what is missing —
+ * the snapshot? the host? the device?"). Each refusal now names its own
+ * prerequisite so the console can print a sentence for it. `resource_not_found`
+ * is retained only for a snapshot reference that resolves to nothing, which is
+ * the one case where it is literally accurate.
+ */
+export const DR_MISSING_PREREQUISITE_DENIAL_CODES: ReadonlySet<string> = new Set([
+  'resource_not_found',
+  'no_restorable_snapshot',
+  'no_recovery_source',
+]);
+
 export type DrExecutionAuthorizationFailure = {
   status: 400 | 403 | 404 | 503;
   code: string;
@@ -460,7 +478,7 @@ export function classifyDrExecutionAuthorizationError(
   }
   if (error instanceof DrRecoveryAuthorizationDeniedError) {
     return {
-      status: error.code === 'resource_not_found' ? 404 : 400,
+      status: DR_MISSING_PREREQUISITE_DENIAL_CODES.has(error.code) ? 404 : 400,
       code: error.code,
     };
   }
@@ -535,7 +553,7 @@ export async function resolveDrGroupAuthorizationRefs(
     rawDeviceIds.length === 0
     || rawDeviceIds.some((value) => typeof value !== 'string' || !UUID_PATTERN.test(value))
   ) {
-    throw new DrRecoveryAuthorizationDeniedError('resource_not_found');
+    throw new DrRecoveryAuthorizationDeniedError('group_has_no_valid_devices');
   }
   const deviceIds = [...new Set(rawDeviceIds as string[])];
 
@@ -569,7 +587,7 @@ export async function resolveDrGroupAuthorizationRefs(
     for (const deviceId of deviceIds) {
       const snapshotId = await resolveLatest(orgId, deviceId);
       if (!snapshotId) {
-        throw new DrRecoveryAuthorizationDeniedError('resource_not_found');
+        throw new DrRecoveryAuthorizationDeniedError('no_restorable_snapshot');
       }
       addSource('snapshot', snapshotId);
     }
@@ -580,7 +598,7 @@ export async function resolveDrGroupAuthorizationRefs(
       const value = container[field];
       if (value === undefined) continue;
       if (typeof value !== 'string' || !UUID_PATTERN.test(value)) {
-        throw new DrRecoveryAuthorizationDeniedError('resource_not_found');
+        throw new DrRecoveryAuthorizationDeniedError('invalid_recovery_source_reference');
       }
       addSource(kind, value);
     }
@@ -588,13 +606,13 @@ export async function resolveDrGroupAuthorizationRefs(
 
   if (payload.snapshotId !== undefined) {
     if (typeof payload.snapshotId !== 'string' || !payload.snapshotId.trim()) {
-      throw new DrRecoveryAuthorizationDeniedError('resource_not_found');
+      throw new DrRecoveryAuthorizationDeniedError('invalid_recovery_source_reference');
     }
     addSource('snapshot', await deps.resolveProviderSnapshotId(orgId, payload.snapshotId));
   }
 
   if (sourceKeys.size === 0) {
-    throw new DrRecoveryAuthorizationDeniedError('resource_not_found');
+    throw new DrRecoveryAuthorizationDeniedError('no_recovery_source');
   }
   return refs;
 }
@@ -1009,15 +1027,40 @@ async function authorizeDrGroup(execution: DrExecutionRecord, group: DrPlanGroup
   return new Date();
 }
 
+/**
+ * Terminal execution statuses: once a row reaches one of these no reconcile
+ * tick may move it again.
+ */
+const DR_EXECUTION_TERMINAL = ['completed', 'failed', 'aborted'] as const;
+
+/**
+ * Reconcile one DR execution.
+ *
+ * **Serialisation contract (#6322).** BullMQ's stable `jobId`
+ * (`dr-execution-<id>`) keeps a second *queued* tick for the same execution
+ * from being added, which covers the common case — but it is not mutual
+ * exclusion: the id is reusable once the job completes, and the worker runs
+ * with `concurrency: 4` (see jobs/drExecutionWorker.ts). The real guard is the
+ * compare-and-swap write-back at the end of this function.
+ *
+ * This function used to open with a bare
+ * `SELECT id FROM dr_executions ... FOR UPDATE` outside `db.transaction(...)`,
+ * which auto-committed and released the lock on the spot — it read as mutual
+ * exclusion while providing none. It is not re-added inside a transaction
+ * because the body performs external side effects (authorization checks,
+ * command dispatch, recovery creation) that must not run with a row lock held
+ * open. The compare-and-swap refuses to resurrect an execution another writer
+ * has already made terminal, so a second tick that slips through is a no-op
+ * rather than a state regression.
+ */
 export async function reconcileDrExecution(executionId: string): Promise<DrReconcileOutcome> {
-  await db.execute(sql`SELECT id FROM dr_executions WHERE id = ${executionId} FOR UPDATE`);
   const [execution] = await db
     .select()
     .from(drExecutions)
     .where(eq(drExecutions.id, executionId))
     .limit(1);
 
-  if (!execution || ['completed', 'failed', 'aborted'].includes(execution.status)) {
+  if (!execution || (DR_EXECUTION_TERMINAL as readonly string[]).includes(execution.status)) {
     return { execution: execution ?? null, nextDelayMs: null };
   }
 
@@ -1162,6 +1205,8 @@ export async function reconcileDrExecution(executionId: string): Promise<DrRecon
     results.activeGroupId = results.groupResults.find((group) => group.status === 'running')?.groupId ?? null;
   }
 
+  // Compare-and-swap: only a still-non-terminal row may be moved. See the
+  // serialisation contract on this function (#6322).
   const [updated] = await db
     .update(drExecutions)
     .set({
@@ -1174,10 +1219,37 @@ export async function reconcileDrExecution(executionId: string): Promise<DrRecon
         authorizationCheckedAt,
       } : {}),
     })
-    .where(eq(drExecutions.id, execution.id))
+    .where(and(
+      eq(drExecutions.id, execution.id),
+      notInArray(drExecutions.status, [...DR_EXECUTION_TERMINAL]),
+    ))
     .returning();
 
-  const finalExecution = updated ?? execution;
+  if (!updated) {
+    // Another writer terminalised (or deleted) the row between our read and
+    // this write. Its state wins — report what is actually in the database
+    // rather than the stale row this tick started from, and stop ticking.
+    const [current] = await db
+      .select()
+      .from(drExecutions)
+      .where(eq(drExecutions.id, executionId))
+      .limit(1);
+    if (current) {
+      // Expected under a duplicate tick, but never silent: a rising rate here
+      // means ticks are overlapping more than the queue is supposed to allow.
+      console.warn(
+        `[drExecutionService] reconcile ${executionId} lost the write-back race; `
+        + `another writer left it ${current.status}`,
+      );
+    } else {
+      // Not an expected outcome — dr_executions rows are not deleted under a
+      // live reconcile. Loud, because it means the row vanished mid-tick.
+      console.error(`[drExecutionService] reconcile ${executionId}: execution row disappeared mid-tick`);
+    }
+    return { execution: current ?? null, nextDelayMs: null };
+  }
+
+  const finalExecution = updated;
   return {
     execution: finalExecution,
     nextDelayMs: ['pending', 'running'].includes(finalExecution.status)

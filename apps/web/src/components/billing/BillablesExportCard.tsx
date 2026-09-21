@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import { fetchWithAuth } from '../../stores/auth';
+import { fetchAllOrganizationsFrom } from '@/lib/fetchAllOrganizations';
 import { showToast } from '../shared/Toast';
 
 function localDateStr(d: Date): string {
@@ -24,9 +25,8 @@ export default function BillablesExportCard() {
   const [downloading, setDownloading] = useState(false);
 
   useEffect(() => {
-    void fetchWithAuth('/orgs/organizations?limit=100')
-      .then((r) => (r.ok ? r.json() : null))
-      .then((b) => { if (b?.data) setOrgs(b.data); })
+    void fetchAllOrganizationsFrom<{ id: string; name: string }>('/orgs/organizations')
+      .then((list) => setOrgs(list))
       .catch(() => {});
   }, []);
 

@@ -15,6 +15,7 @@ import {
 import { DEVICE_ROLES } from './deviceRoles';
 import { alertRuleConditionSchema } from './alertRuleConditions';
 import { automationActionSchema, automationTriggerSchema } from './automationActions';
+import { canonicalizeTimezone, isValidIanaTimezone, UTC_TIMEZONE } from '../utils/timezone';
 
 // #5289 — moved to a leaf module to break a barrel cycle; see that file's header.
 export * from './automationActions';
@@ -1186,3 +1187,136 @@ export * from './topologyDiagnostics';
 export { canonicalizeTopologyContext, canonicalizeTopologySection } from './topologyCollectionCanonical';
 
 export * from './billingProfiles';
+
+/**
+ * `maintenance` inline settings (issue #6312).
+ *
+ * The maintenance link is the canonical suppression source — `isInMaintenanceWindow`
+ * feeds every alert/patch/script/reboot consumer — and its evaluator
+ * (`featureConfigResolver.maintenanceOccurrenceStart`) DEGRADES rather than
+ * rejects: an unknown recurrence returns `null` (window never opens), an
+ * invalid timezone falls back to UTC with a console.warn, an unparseable
+ * `windowStart` anchors to midnight, and a non-positive `durationHours` makes
+ * `windowEnd <= windowStart` so the window is never active. Each of those
+ * leaves the operator with a 2xx and a policy that looks configured but
+ * suppresses nothing, visible only in server logs at evaluation time. This
+ * schema is the write-time gate that turns all four into a 400.
+ *
+ * Every field is optional with the default the pre-#6312 `typeof` coercion in
+ * `decomposeInlineSettings` applied, so a partial payload keeps behaving as it
+ * did; what changes is that a WRONG-TYPED or out-of-range value is now
+ * rejected instead of silently replaced by that default.
+ *
+ * `.strict()` so an unknown key is rejected rather than persisted-and-echoed
+ * from the JSONB mirror as if it took effect (same posture as
+ * device_lifecycle / remote_access).
+ */
+
+/** Bare time of day, e.g. "1:50", "01:50" or "01:50:00". */
+export const MAINTENANCE_TIME_OF_DAY_PATTERN = /^(\d{1,2}):(\d{2})(?::\d{2})?$/;
+/** Time component of a naive (zoneless) ISO-8601-ish datetime, e.g. "2026-03-15T02:00". */
+export const MAINTENANCE_DATETIME_TIME_PATTERN = /^\d{4}-\d{2}-\d{2}[T ](\d{1,2}):(\d{2})/;
+/** Date-only form accepted for a `once` window, e.g. "2026-03-15". */
+export const MAINTENANCE_DATE_ONLY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+/**
+ * A trailing `Z` or `±HH:MM` offset. Such a value names an *instant*, so its
+ * digits are not wall-clock time in the window's timezone. Legal for `once`
+ * (the evaluator renders it into the zone); rejected for a recurring cadence,
+ * where `parseRecurringWindowAnchor` treats it as unparseable.
+ *
+ * These four patterns are the single source of truth: `featureConfigResolver`
+ * imports them rather than keeping its own copies, so the write gate and the
+ * evaluator can never drift apart about what a stored value means.
+ */
+export const MAINTENANCE_EXPLICIT_UTC_OFFSET_PATTERN = /(?:Z|[+-]\d{2}:?\d{2})$/i;
+
+export const MAINTENANCE_RECURRENCES = ['once', 'daily', 'weekly', 'monthly'] as const;
+
+/** True when `value` is a time-of-day a recurring window can be anchored to. */
+function isRecurringWindowAnchor(value: string): boolean {
+  if (MAINTENANCE_EXPLICIT_UTC_OFFSET_PATTERN.test(value)) return false;
+  const match =
+    MAINTENANCE_TIME_OF_DAY_PATTERN.exec(value) ?? MAINTENANCE_DATETIME_TIME_PATTERN.exec(value);
+  if (!match) return false;
+  return Number(match[1]) <= 23 && Number(match[2]) <= 59;
+}
+
+/** True when `value` is a start a `once` window can actually be anchored to. */
+function isOnceWindowStart(value: string): boolean {
+  if (MAINTENANCE_EXPLICIT_UTC_OFFSET_PATTERN.test(value)) {
+    return !Number.isNaN(new Date(value).getTime());
+  }
+  if (MAINTENANCE_DATE_ONLY_PATTERN.test(value)) {
+    return !Number.isNaN(new Date(`${value}T00:00:00Z`).getTime());
+  }
+  if (!MAINTENANCE_DATETIME_TIME_PATTERN.test(value)) return false;
+  return !Number.isNaN(new Date(`${value.replace(' ', 'T')}Z`).getTime());
+}
+
+export const maintenanceInlineSettingsSchema = z
+  .object({
+    recurrence: z.enum(MAINTENANCE_RECURRENCES).default('weekly'),
+    // Nullable AND empty-string-able: every pre-#4224 recurring row stored NULL
+    // and the web form posts "" for "no explicit anchor". Both normalize to
+    // null, which the evaluator reads as midnight.
+    // 30 = the config_policy_maintenance_settings.window_start varchar width;
+    // a longer value would otherwise reach Postgres and raise 22001 as a 500.
+    windowStart: z.string().max(30).nullish(),
+    // 72h ceiling matches the documented AI-tool contract; the floor is 1
+    // because a zero/negative duration yields a window that never opens.
+    durationHours: z.number().int().min(1).max(72).default(2),
+    timezone: z
+      .string()
+      .min(1)
+      .refine(isValidIanaTimezone, { message: 'Must be a valid IANA timezone (e.g. America/New_York)' })
+      // The refine above has already rejected anything canonicalizeTimezone
+      // would return null for, so the `??` is defensive-only and never a
+      // silent fallback on bad input — a non-IANA zone is a 400, not a UTC.
+      .transform((tz) => canonicalizeTimezone(tz) ?? UTC_TIMEZONE)
+      .default(UTC_TIMEZONE),
+    suppressAlerts: z.boolean().default(true),
+    suppressPatching: z.boolean().default(false),
+    suppressAutomations: z.boolean().default(false),
+    suppressScripts: z.boolean().default(false),
+    rebootIfPending: z.boolean().default(false),
+    // 1440 = one day of lead time; beyond that the notice precedes the previous
+    // occurrence of a daily window.
+    notifyBeforeMinutes: z.number().int().min(0).max(1440).default(15),
+    notifyOnStart: z.boolean().default(true),
+    notifyOnEnd: z.boolean().default(true),
+  })
+  .strict()
+  .transform((settings) => ({
+    ...settings,
+    windowStart: (settings.windowStart ?? '').trim() === '' ? null : settings.windowStart!.trim(),
+  }))
+  .superRefine((settings, ctx) => {
+    if (settings.recurrence === 'once') {
+      if (settings.windowStart === null) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['windowStart'],
+          message: "A 'once' maintenance window requires a windowStart; without one the window never opens",
+        });
+        return;
+      }
+      if (!isOnceWindowStart(settings.windowStart)) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['windowStart'],
+          message: "windowStart for a 'once' window must be a datetime, e.g. 2026-03-15T02:00",
+        });
+      }
+      return;
+    }
+    if (settings.windowStart !== null && !isRecurringWindowAnchor(settings.windowStart)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['windowStart'],
+        message:
+          "windowStart for a recurring window must be an HH:MM local time of day (no 'Z' or UTC offset)",
+      });
+    }
+  });
+
+export type MaintenanceInlineSettings = z.infer<typeof maintenanceInlineSettingsSchema>;

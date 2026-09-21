@@ -769,7 +769,7 @@ It uses the same isolation model as Graph-read: the Entra certificate and Key Va
 |---|---|---|
 | `BREEZE_VERSION` | `latest` | Breeze release tag for Docker images (e.g. `0.50.0`). Also used by GitHub redirect mode for agent binary downloads. |
 | `DOCKER_PLATFORM` | `linux/amd64` | Container platform. GHCR images are amd64 only. On Apple Silicon, use `docker-compose.override.yml.local-build` to build native arm64 images instead. |
-| `REDIS_MAXMEMORY` | `256mb` | Maximum memory Redis is allowed to use. Redis runs with `noeviction` policy so BullMQ jobs are never silently dropped. |
+| `REDIS_MAXMEMORY` | `256mb` | Maximum memory Redis is allowed to use. Redis runs with `noeviction` policy so BullMQ jobs are never silently dropped — which also means a Redis that reaches this ceiling starts rejecting writes and **stays full across a restart**, because the AOF replays the same over-cap dataset. Raise this value before you get there; see [Redis memory growing](/reference/troubleshooting/#redis-memory-growing-and-oom-errors-that-survive-a-restart). |
 
 ## Billing
 

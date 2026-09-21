@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { ArrowLeft } from 'lucide-react';
 import PolicyForm, { type PolicyFormValues } from './PolicyForm';
 import { fetchWithAuth } from '../../stores/auth';
+import { fetchAllSites } from '@/lib/fetchAllSites';
 import { navigateTo } from '@/lib/navigation';
 import Breadcrumbs from '../layout/Breadcrumbs';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
@@ -64,11 +65,7 @@ export default function PolicyEditPage({ policyId, isNew = false }: PolicyEditPa
 
   const fetchSites = useCallback(async () => {
     try {
-      const response = await fetchWithAuth('/orgs/sites');
-      if (response.ok) {
-        const data = await response.json();
-        setSites(data.data ?? data.sites ?? []);
-      }
+      setSites(await fetchAllSites<Site>('/orgs/sites'));
     } catch {
       // Silently fail
     }

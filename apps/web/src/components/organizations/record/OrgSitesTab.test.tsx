@@ -38,7 +38,9 @@ describe('OrgSitesTab', () => {
     await waitFor(() => expect(screen.getAllByText('Downtown Office').length).toBeGreaterThan(0));
 
     const [url, init] = fetchMock.mock.calls[0];
-    expect(String(url)).toBe(`/orgs/sites?organizationId=${RECORD_ORG}`);
+    // `fetchAllSites` (#6412) pages to exhaustion, so the request carries
+    // explicit page/limit rather than riding the server default of 50.
+    expect(String(url)).toBe(`/orgs/sites?organizationId=${RECORD_ORG}&page=1&limit=100`);
     expect((init as { orgIdOverride?: string })?.orgIdOverride).toBe(RECORD_ORG);
   });
 

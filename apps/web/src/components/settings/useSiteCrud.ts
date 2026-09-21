@@ -1,6 +1,7 @@
 import { useCallback, useState } from 'react';
 import type { TFunction } from 'i18next';
 import { fetchWithAuth } from '../../stores/auth';
+import { fetchAllSites } from '@/lib/fetchAllSites';
 import { runAction, ActionError } from '@/lib/runAction';
 import { showToast } from '../shared/Toast';
 import type { Site } from './SiteList';
@@ -111,27 +112,15 @@ export function useSiteCrud(orgId: string | null, opts: UseSiteCrudOptions): Use
       setSitesLoading(true);
       setSitesFailed(false);
       try {
-        const response = await fetchWithAuth(`/orgs/sites?organizationId=${targetOrgId}`, {
-          orgIdOverride: targetOrgId,
-        });
-        if (!response.ok) throw new Error(`Failed to fetch sites (status ${response.status})`);
-        const data = await response.json();
-        const siteList = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : null;
-        if (siteList === null) {
-          // 200 OK but the body isn't a parseable array of sites — fail closed so
-          // callers suppress the first-site nag rather than treat this as
-          // confirmed zero, AND flag the failure so a caller like `OrgSitesTab`
-          // can show a real error instead of "No sites yet".
-          setSites([]);
-          setSitesFailed(true);
-          // Message text is pinned by `OrganizationsPage.firstSite.test.tsx`,
-          // which predates this hook's extraction — kept verbatim (including
-          // the `[OrganizationsPage]` prefix) rather than renamed to
-          // `[useSiteCrud]`, since this IS still that page's first-site
-          // detection path, only relocated.
-          console.warn('[OrganizationsPage] sites response was ok but not a parseable array for org', targetOrgId, data);
-          return null;
-        }
+        // `strictShape`: a 200 OK body that isn't a parseable list throws
+        // instead of failing closed to `[]`, so the catch below still sets
+        // `sitesFailed` and callers keep suppressing the first-site nag rather
+        // than treating an unreadable response as a confirmed zero.
+        const siteList = await fetchAllSites<Site>(
+          `/orgs/sites?organizationId=${targetOrgId}`,
+          { orgIdOverride: targetOrgId },
+          { strictShape: true },
+        );
         setSites(siteList);
         return siteList;
       } catch (err) {

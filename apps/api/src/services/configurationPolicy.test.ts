@@ -2210,3 +2210,142 @@ describe('listConfigPolicies feature links', () => {
     expect(vi.mocked(db.select)).toHaveBeenCalledTimes(2);
   });
 });
+
+// ============================================================
+// #6312 — maintenance inlineSettings service-layer validation
+// ============================================================
+
+describe('addFeatureLink — maintenance inlineSettings service-layer validation', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  // Only satisfies the first (feature link) insert — decompose's schema.parse()
+  // throws before the config_policy_maintenance_settings insert is attempted.
+  function txForFeatureLinkInsertOnly() {
+    return {
+      insert: vi.fn(() => ({
+        values: vi.fn((v: any) => ({
+          onConflictDoNothing: vi.fn(() => ({
+            returning: vi.fn(() =>
+              Promise.resolve([
+                {
+                  id: 'link-maint',
+                  configPolicyId: 'policy-1',
+                  featureType: 'maintenance',
+                  featurePolicyId: null,
+                  inlineSettings: v.inlineSettings,
+                },
+              ])
+            ),
+          })),
+        })),
+      })),
+    };
+  }
+
+  // The route is a pre-check, not the enforcement boundary: the AI
+  // manage_policy_feature_link tool and any other direct caller reach
+  // addFeatureLink without passing through it.
+  it.each([
+    ['an unknown recurrence', { recurrence: 'fortnightly' }],
+    ['a negative durationHours', { durationHours: -5 }],
+    ['a non-IANA timezone', { timezone: 'Nowhere/Nope' }],
+    ['an unparseable recurring windowStart', { recurrence: 'daily', windowStart: 'banana' }],
+    ["a 'once' window with no start", { recurrence: 'once', windowStart: '' }],
+  ])('refuses maintenance inlineSettings with %s', async (_label, inlineSettings) => {
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(txForFeatureLinkInsertOnly()));
+
+    await expect(
+      addFeatureLink('policy-1', 'maintenance', null, inlineSettings)
+    ).rejects.toThrow();
+  });
+
+  it('writes the parsed settings — not the old typeof-coerced defaults — to the normalized row', async () => {
+    let normalizedRowValues: any;
+    let insertCall = 0;
+    const tx = {
+      insert: vi.fn(() => ({
+        values: vi.fn((v: any) => {
+          insertCall += 1;
+          if (insertCall === 1) {
+            return {
+              onConflictDoNothing: vi.fn(() => ({
+                returning: vi.fn(() =>
+                  Promise.resolve([
+                    {
+                      id: 'link-maint',
+                      configPolicyId: 'policy-1',
+                      featureType: 'maintenance',
+                      featurePolicyId: null,
+                      inlineSettings: v.inlineSettings,
+                    },
+                  ])
+                ),
+              })),
+            };
+          }
+          normalizedRowValues = v;
+          return Promise.resolve([]);
+        }),
+      })),
+    };
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+
+    const link = await addFeatureLink('policy-1', 'maintenance', null, {
+      recurrence: 'daily',
+      windowStart: '02:30',
+      durationHours: 4,
+      timezone: 'America/New_York',
+    });
+
+    expect(link).not.toBeNull();
+    expect(normalizedRowValues).toMatchObject({
+      featureLinkId: 'link-maint',
+      recurrence: 'daily',
+      windowStart: '02:30',
+      durationHours: 4,
+      timezone: 'America/New_York',
+      // Schema defaults, identical to what the old coercion produced for the
+      // fields the caller omitted.
+      suppressAlerts: true,
+      suppressPatching: false,
+      suppressAutomations: false,
+      suppressScripts: false,
+      rebootIfPending: false,
+      notifyBeforeMinutes: 15,
+      notifyOnStart: true,
+      notifyOnEnd: true,
+    });
+  });
+
+  it('normalizes an empty recurring windowStart to null (the midnight anchor)', async () => {
+    let normalizedRowValues: any;
+    let insertCall = 0;
+    const tx = {
+      insert: vi.fn(() => ({
+        values: vi.fn((v: any) => {
+          insertCall += 1;
+          if (insertCall === 1) {
+            return {
+              onConflictDoNothing: vi.fn(() => ({
+                returning: vi.fn(() =>
+                  Promise.resolve([
+                    { id: 'link-maint', configPolicyId: 'policy-1', featureType: 'maintenance', featurePolicyId: null, inlineSettings: v.inlineSettings },
+                  ])
+                ),
+              })),
+            };
+          }
+          normalizedRowValues = v;
+          return Promise.resolve([]);
+        }),
+      })),
+    };
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+
+    await addFeatureLink('policy-1', 'maintenance', null, { recurrence: 'weekly', windowStart: '' });
+
+    expect(normalizedRowValues.windowStart).toBeNull();
+  });
+});

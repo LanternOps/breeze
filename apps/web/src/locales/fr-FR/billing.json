@@ -1654,6 +1654,7 @@
     },
     "summary": {
       "noTaxRate": "Des lignes sont marquées taxables, mais aucun taux de taxe n'est défini.",
+      "inheritedTaxRate": "La taxe n'est pas encore sur ce brouillon — le taux hérité de {{rate}} s'applique à l'émission, ajoutant {{tax}} pour un total de {{total}}.",
       "setTaxRate": "Définissez-en un dans les paramètres de facturation",
       "subtotal": "Sous-total",
       "tax": "Taxe",

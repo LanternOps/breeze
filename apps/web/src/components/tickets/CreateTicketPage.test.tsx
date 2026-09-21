@@ -40,7 +40,7 @@ const emptyDeviceOptionsResponse = () => makeJsonResponse({
 function mockOptionsApi() {
   fetchMock.mockImplementation(async (input, init) => {
     const url = String(input);
-    if (url === '/orgs/organizations?limit=100') {
+    if (url === '/orgs/organizations?page=1&limit=100') {
       return makeJsonResponse({ data: [{ id: 'org-a', name: 'Org A' }, { id: 'org-b', name: 'Org B' }] });
     }
     if (url === '/ticket-categories') {
@@ -167,7 +167,7 @@ describe('CreateTicketPage', () => {
   it('shows the load-error retry state when the org fetch fails, and recovers on retry', async () => {
     fetchMock.mockImplementation(async (input) => {
       const url = String(input);
-      if (url === '/orgs/organizations?limit=100') return makeJsonResponse({ error: 'boom' }, false, 500);
+      if (url === '/orgs/organizations?page=1&limit=100') return makeJsonResponse({ error: 'boom' }, false, 500);
       if (url === '/ticket-categories') return makeJsonResponse({ data: [] });
       return makeJsonResponse({ error: 'unexpected' }, false, 404);
     });
@@ -264,7 +264,7 @@ describe('CreateTicketPage', () => {
       // stay on "None" rather than invisibly attaching an unseen category.
       fetchMock.mockImplementation(async (input, init) => {
         const url = String(input);
-        if (url === '/orgs/organizations?limit=100') return makeJsonResponse({ data: [{ id: 'org-a', name: 'Org A' }] });
+        if (url === '/orgs/organizations?page=1&limit=100') return makeJsonResponse({ data: [{ id: 'org-a', name: 'Org A' }] });
         if (url === '/ticket-categories') return makeJsonResponse({ data: [{ id: 'cat-1', name: 'Hardware', isActive: true }] });
         if (url.startsWith('/devices/options?')) return emptyDeviceOptionsResponse();
         if (url.startsWith('/tickets/requesters?orgId=')) return makeJsonResponse({ data: [] });
@@ -320,7 +320,7 @@ describe('CreateTicketPage', () => {
       mockGetJwtClaims.mockReturnValue({ scope: 'organization', orgId: 'org-1', partnerId: null });
       fetchMock.mockImplementation(async (input, init) => {
         const url = String(input);
-        if (url === '/orgs/organizations?limit=100') return makeJsonResponse({ data: [] });
+        if (url === '/orgs/organizations?page=1&limit=100') return makeJsonResponse({ data: [] });
         if (url === '/ticket-categories') return makeJsonResponse({ data: [{ id: 'cat-1', name: 'Hardware', isActive: true }] });
         if (url.startsWith('/devices/options?')) return makeJsonResponse({
           data: [{ id: 'dev-1', hostname: 'PC-1', displayName: 'PC-1', osType: 'windows', status: 'online', siteId: null, siteName: null }],
@@ -408,7 +408,7 @@ describe('CreateTicketPage', () => {
 
       fetchMock.mockImplementation(async (input) => {
         const url = String(input);
-        if (url === '/orgs/organizations?limit=100') return makeJsonResponse({ error: 'Forbidden' }, false, 403);
+        if (url === '/orgs/organizations?page=1&limit=100') return makeJsonResponse({ error: 'Forbidden' }, false, 403);
         if (url === '/ticket-categories') return makeJsonResponse({ data: [{ id: 'cat-1', name: 'Hardware', isActive: true }] });
         if (url.startsWith('/devices/options?')) return emptyDeviceOptionsResponse();
         return makeJsonResponse({ error: 'unexpected' }, false, 404);
@@ -428,7 +428,7 @@ describe('CreateTicketPage', () => {
       // Override categories to include a parent+child pair.
       fetchMock.mockImplementation(async (input, init) => {
         const url = String(input);
-        if (url === '/orgs/organizations?limit=100') return makeJsonResponse({ data: [{ id: 'org-a', name: 'Org A' }, { id: 'org-b', name: 'Org B' }] });
+        if (url === '/orgs/organizations?page=1&limit=100') return makeJsonResponse({ data: [{ id: 'org-a', name: 'Org A' }, { id: 'org-b', name: 'Org B' }] });
         if (url === '/ticket-categories') {
           return makeJsonResponse({
             data: [

@@ -97,10 +97,16 @@ export default function SnapshotPanels({ snapshot, thresholdEvents }: Props) {
           <p className="text-xs text-muted-foreground">{t('deviceFilesystemTab.scannedDataInPath')}</p>
           <p className="mt-1 text-sm font-medium">{formatBytes(summary.bytesScanned)}</p>
         </div>
-        <div className="rounded-md border bg-muted/20 p-3">
+        <div className="rounded-md border bg-muted/20 p-3" data-testid="filesystem-cleanup-candidates-tile">
           <p className="text-xs text-muted-foreground">{t('deviceFilesystemTab.cleanupCandidates')}</p>
+          {/* Issue #6376: a bare count left the operator with no idea whether
+              cleaning was worth doing. The bytes are already in the snapshot. */}
           <p className="mt-1 text-sm font-medium">
             {formatNumber(snapshot.cleanupCandidates?.length ?? 0)}
+            {' · '}
+            {formatBytes(
+              (snapshot.cleanupCandidates ?? []).reduce((sum, candidate) => sum + (candidate.sizeBytes ?? 0), 0),
+            )}
           </p>
         </div>
       </div>

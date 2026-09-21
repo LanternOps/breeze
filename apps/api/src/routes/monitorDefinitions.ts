@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { monitorConversionRoutes } from './monitorDefinitions.conversion';
 import { z } from 'zod';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { zValidator } from '../lib/validation';
@@ -169,6 +170,9 @@ monitorDefinitionRoutes.post(
     }
   },
 );
+
+// Literal conversion resource must be registered before parameterized ids.
+monitorDefinitionRoutes.route('/conversion', monitorConversionRoutes);
 
 // GET /monitors/:id
 monitorDefinitionRoutes.get('/:id', requireScope('organization', 'partner', 'system'), requireAlertRead, async (c) => {

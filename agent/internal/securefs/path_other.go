@@ -121,7 +121,7 @@ func rejectLinkedPath(base, relative string, create bool) error {
 	return nil
 }
 
-func installFile(base, relative, source string, mode os.FileMode, modTime time.Time, owner *Owner) ([]error, error) {
+func installFile(base, relative, source string, mode os.FileMode, modTime time.Time, owner *Owner, _ uint32) ([]error, error) {
 	if err := rejectLinkedPath(base, filepath.Dir(relative), true); err != nil {
 		return nil, err
 	}

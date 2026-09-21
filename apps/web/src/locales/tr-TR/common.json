@@ -1712,7 +1712,8 @@
         "running": "çalışıyor",
         "editEntry": "Girişi düzenle {{id}}",
         "total": "Toplam: {{duration}}",
-        "billableTotal": "Faturalandırılabilir: {{duration}}"
+        "billableTotal": "Faturalandırılabilir: {{duration}}",
+        "billedVsWorked": "{{worked}} sa çalışıldı · {{billed}} sa faturalandı"
       },
       "sourceBadge": {
         "timer": "Zamanlayıcı",

@@ -33,6 +33,7 @@ import {
 import { CONFIG_FEATURE_TYPES } from './configFeatureTypes';
 import { CONTACT_ROLES } from './contacts/types';
 import { ACTOR_TYPES, AI_AGENT_KINDS, INVOICE_STATUSES } from '@breeze/shared';
+import { JOURNAL_VACUUM_MAX_BYTES, JOURNAL_VACUUM_MIN_BYTES, SYSTEM_CLEANUP_ACTION_IDS } from '@breeze/shared/validators';
 import { getToolTimeout, withToolTimeout } from './toolTimeouts';
 import { aiRunContextInputShape } from './scriptRunRequest';
 import { deliveryToolShape } from './aiToolSchemas';
@@ -214,6 +215,7 @@ export const TOOL_TIERS = {
   file_operations: 1, // Base tier; write/delete/mkdir/rename escalated to 3 in guardrails
   analyze_disk_usage: 1,
   disk_cleanup: 1, // Base tier; execute escalated to 3 in guardrails
+  system_cleanup: 1, // Base tier; run escalated to 3 in guardrails
   query_audit_log: 1,
   query_change_log: 1,
   network_discovery: 3,
@@ -1837,6 +1839,27 @@ export function buildBreezeSdkTools(
         maxCandidates: z.number().int().min(1).max(200).optional(),
       },
       makeHandler('disk_cleanup', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'system_cleanup',
+      'List, run or check OS-native maintenance cleaners on a device (Windows Disk Cleanup handlers and DISM component cleanup, macOS local snapshots and Homebrew, Linux package caches and journal). list is read-only (re-check a "pending" answer with its commandId). run requires approval, starts the selected catalog actions and returns a cleanupRunId immediately; poll status with it until executed or failed.',
+      {
+        deviceId: uuid,
+        action: z.enum(['list', 'run', 'status']),
+        actionIds: z
+          .array(z.enum(SYSTEM_CLEANUP_ACTION_IDS))
+          .min(1)
+          .optional(),
+        params: z
+          .object({
+            journalVacuumBytes: z.number().int().min(JOURNAL_VACUUM_MIN_BYTES).max(JOURNAL_VACUUM_MAX_BYTES).optional(),
+          })
+          .optional(),
+        cleanupRunId: uuid.optional(),
+        commandId: uuid.optional(),
+      },
+      makeHandler('system_cleanup', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(

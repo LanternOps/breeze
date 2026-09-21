@@ -97,6 +97,11 @@ export const backupVerificationStructuredResultSchema = z.object({
   restorePath: z.string().max(4096).optional(),
   cleanedUp: z.boolean().optional(),
   failedFiles: z.array(z.string().min(1).max(4096)).max(1000).optional(),
+  // #6350: files the BACKUP run never uploaded. They are absent from the
+  // manifest, so verification cannot observe them — the agent reads the count
+  // off the manifest and refuses `passed` when it is non-zero.
+  filesIncomplete: z.number().int().nonnegative().optional(),
+  warnings: warningListSchema.optional(),
   error: z.string().max(10_000).optional(),
 }).passthrough();
 

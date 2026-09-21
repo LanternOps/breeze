@@ -21,7 +21,14 @@ vi.mock('../services/automationRuntime', async () => ({
   executeConfigPolicyAutomationRun: vi.fn(),
   formatScheduleTriggerKey: vi.fn(),
 }));
-vi.mock('../services/featureConfigResolver', () => ({}));
+vi.mock('../services/featureConfigResolver', () => ({
+  resolveAutomationsForDeviceWithPolicy: vi.fn(),
+  resolveMaintenanceConfigForDevice: vi.fn(),
+  isInMaintenanceWindow: vi.fn(),
+}));
+vi.mock('../services/monitors/conversion/workflows', () => ({ policyWorkflowApplies: vi.fn() }));
+import { policyWorkflowApplies } from '../services/monitors/conversion/workflows';
+import { resolveAutomationsForDeviceWithPolicy, resolveMaintenanceConfigForDevice, isInMaintenanceWindow } from '../services/featureConfigResolver';
 vi.mock('../services/monitors/episodeService', () => ({ recordEpisodeResponse: vi.fn() }));
 vi.mock('../services/redis', () => ({
   getBullMQConnection: vi.fn(() => ({})),
@@ -36,6 +43,7 @@ vi.mock('bullmq', () => ({
 }));
 import {
   __testOnly,
+  queueEventTriggers,
   collectDueConfigPolicyScheduleDispatches,
   shouldTriggerEventAutomation,
   shouldTriggerScheduleAutomation,
@@ -240,6 +248,64 @@ describe('processTriggerEvent device binding', () => {
   it('preserves the managed missing-device skip', async () => {
     selectRows([{ ...automation, managedByAgentId: 'agent-1' }]);
     expect(await __testOnly.processTriggerEvent(event({}))).toEqual({ skipped: 'managed_automation_event_has_no_device' });
+    expect(createRunMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('rehomed policy workflow events', () => {
+  const workflow = { id: 'workflow', orgId: 'org', partnerId: null, trigger: {
+    type: 'event', eventType: 'alert.triggered', filter: {
+      severity: 'critical', _policyWorkflow: { policyId: 'policy', sourceId: 'source' },
+    },
+  } };
+  const payload = { deviceId: 'device', ruleId: 'unrelated-rule', severity: 'critical' };
+  const event = { id: 'event', orgId: 'org', type: 'alert.triggered', payload, metadata: { timestamp: '2026-09-20T00:00:00Z' } };
+  const job = { type: 'trigger-event' as const, automationId: workflow.id, eventType: event.type, eventId: event.id, eventPayload: payload, eventTimestamp: event.metadata.timestamp };
+  function rows(result: unknown[]) {
+    const q: any = { from: vi.fn().mockReturnThis(), innerJoin: vi.fn().mockReturnThis(), where: vi.fn().mockReturnThis(), limit: vi.fn().mockResolvedValue(result), then: (yes: any, no: any) => Promise.resolve(result).then(yes, no) };
+    selectMock.mockReturnValueOnce(q);
+  }
+  beforeEach(() => {
+    vi.clearAllMocks(); selectMock.mockReset();
+    vi.mocked(policyWorkflowApplies).mockResolvedValue(true);
+    vi.mocked(resolveMaintenanceConfigForDevice).mockResolvedValue(null);
+    vi.mocked(resolveAutomationsForDeviceWithPolicy).mockResolvedValue({ configPolicyId: 'policy', automations: [{ id: 'source', enabled: true, retiredAt: new Date(), triggerType: 'event', eventType: event.type } as never] });
+    createRunMock.mockResolvedValue({ run: { id: 'run' }, targetDeviceIds: ['device'] });
+  });
+  it('queues unrelated-rule alerts once, excludes retired policy jobs, and rechecks reassignment', async () => {
+    rows([{ partnerId: 'partner' }]); rows([workflow]);
+    await queueEventTriggers(event as never);
+    expect(addMock).toHaveBeenCalledTimes(1);
+    expect(addMock).toHaveBeenCalledWith('trigger-event', expect.objectContaining({ automationId: 'workflow', eventPayload: payload }), expect.objectContaining({ jobId: 'automation-event-workflow-event' }));
+    addMock.mockClear();
+    vi.mocked(policyWorkflowApplies).mockResolvedValue(false);
+    rows([{ partnerId: 'partner' }]); rows([workflow]);
+    await queueEventTriggers(event as never);
+    expect(addMock).not.toHaveBeenCalled();
+    rows([workflow]);
+    expect(await __testOnly.processTriggerEvent(job)).toEqual({ skipped: 'policy_workflow_not_assigned' });
+    expect(createRunMock).not.toHaveBeenCalled();
+  });
+  it('executes on the triggering device after removing only assignment metadata', async () => {
+    rows([workflow]); rows([{ orgId: 'org', partnerId: 'partner' }]);
+    expect(await __testOnly.processTriggerEvent(job)).toEqual({ runId: 'run' });
+    expect(createRunMock).toHaveBeenCalledWith(expect.objectContaining({ boundDeviceIds: ['device'] }));
+    rows([workflow]);
+    expect(await __testOnly.processTriggerEvent({ ...job, eventPayload: { ...payload, severity: 'low' } })).toEqual({ skipped: 'filter_mismatch' });
+  });
+  it.each(['maintenance', 'lookup failure', 'missing device'])('suppresses queue and execution for %s', async (reason) => {
+    if (reason === 'maintenance') {
+      vi.mocked(resolveMaintenanceConfigForDevice).mockResolvedValue({} as never);
+      vi.mocked(isInMaintenanceWindow).mockReturnValue({ active: true, suppressAutomations: true } as never);
+    } else if (reason === 'lookup failure') {
+      vi.mocked(resolveMaintenanceConfigForDevice).mockRejectedValue(new Error('unavailable'));
+    }
+    const p = reason === 'missing device' ? { severity: 'critical' } : payload;
+    rows([{ partnerId: 'partner' }]); rows([workflow]);
+    await queueEventTriggers({ ...event, payload: p } as never);
+    expect(addMock).not.toHaveBeenCalled();
+    rows([workflow]);
+    expect(await __testOnly.processTriggerEvent({ ...job, eventPayload: p })).toHaveProperty('skipped');
     expect(createRunMock).not.toHaveBeenCalled();
   });
 });

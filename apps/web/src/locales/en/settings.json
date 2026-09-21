@@ -2803,6 +2803,7 @@
         "set_agent_log_level": "Set agent log level",
         "set_device_context": "Set device context",
         "sync_huntress_data": "Sync Huntress data",
+        "system_cleanup": "System cleanup",
         "take_screenshot": "Take a screenshot"
       },
       "actions": {
@@ -3050,6 +3051,11 @@
           "scan": "Run a security scan",
           "status": "Security scan status",
           "vulnerabilities": "Scan for vulnerabilities"
+        },
+        "system_cleanup": {
+          "list": "List system cleanup actions",
+          "run": "Run system cleanup",
+          "status": "System cleanup run status"
         }
       },
       "alwaysOnCount_one": "{{count}} read-only tool",

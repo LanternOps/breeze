@@ -10,7 +10,7 @@ const VALID_RECOVERY_TOKEN = `brz_rec_${'a'.repeat(64)}`;
 
 function chainMock(resolvedValue: unknown = []) {
   const chain: Record<string, any> = {};
-  for (const method of ['from', 'where', 'limit', 'returning', 'values', 'set', 'orderBy', 'offset']) {
+  for (const method of ['from', 'where', 'limit', 'returning', 'values', 'set', 'orderBy', 'offset', 'leftJoin', 'innerJoin']) {
     chain[method] = vi.fn(() => Object.assign(Promise.resolve(resolvedValue), chain));
   }
   return Object.assign(Promise.resolve(resolvedValue), chain);
@@ -75,6 +75,10 @@ vi.mock('../../db/schema', () => ({
     rebootedAt: 'bare_metal_recoveries.rebooted_at',
     checkedInAt: 'bare_metal_recoveries.checked_in_at',
     completedAt: 'bare_metal_recoveries.completed_at',
+  },
+  backupJobs: {
+    id: 'backup_jobs.id',
+    referencedFiles: 'backup_jobs.referenced_files',
   },
   backupSnapshots: {
     id: 'backup_snapshots.id',

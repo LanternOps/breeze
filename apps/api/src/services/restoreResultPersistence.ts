@@ -155,7 +155,24 @@ export async function updateRestoreJobFromResult(
 
   const restoreData = extractRestoreData(result);
   const nextTargetConfig = normalizeTargetConfig(restoreJob.targetConfig);
-  nextTargetConfig.result = buildRestoreResultMetadata(commandType, result, restoreData);
+  const metadata = buildRestoreResultMetadata(commandType, result, restoreData);
+  nextTargetConfig.result = metadata;
+
+  // #6415 — the TOP-LEVEL `error` key is owned by the sweep that guessed, not
+  // by the device: `propagateTimedOutDeviceCommand` stamps it alongside
+  // `result.timedOutBy = 'server'` (jobs/staleCommandReaper.ts). `result` above
+  // is rebuilt from scratch, but the spread carried the stale top-level string
+  // through untouched, so a restore that finished successfully after the
+  // server had already given up kept "Server-side timeout: no response from
+  // agent after 60 minutes" forever — and `toRestoreResponse`
+  // (routes/backup/restore.ts) falls back to exactly that key for its
+  // `errorSummary` when the fresh result carries no error, surfacing a timeout
+  // banner on a completed recovery. The device's own outcome is authoritative
+  // now, so the sweep's guess is dropped unconditionally. Nothing is lost when
+  // the device DID report a failure: `metadata.error` carries it inside
+  // `result`, which both `toRestoreResponse` and `isServerTimedOutRestoreJob`
+  // read in preference to the top-level key.
+  delete nextTargetConfig.error;
 
   const restoredSize =
     typeof restoreData.bytesRestored === 'number' ? restoreData.bytesRestored : null;

@@ -22,6 +22,11 @@ vi.mock('./VMRestoreWizard', () => ({
 vi.mock('./InstantBootStatus', () => ({
   default: () => <div>Instant Boot Status Stub</div>,
 }));
+// #6349: the file RestoreWizard shipped fully built but was never mounted, so
+// file restores were API-only. This stub proves the Restore tab reaches it.
+vi.mock('./RestoreWizard', () => ({
+  default: () => <div>File Restore Wizard Stub</div>,
+}));
 
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
 
@@ -128,6 +133,51 @@ describe('BackupDashboard usage history chart', () => {
     render(<BackupDashboard />);
 
     expect(await screen.findByRole('button', { name: /Recovery Bootstrap/i })).toBeTruthy();
+  });
+
+  it('mounts the file restore wizard on the Restore tab (#6349)', async () => {
+    fetchWithAuthMock.mockImplementation(async (input) => {
+      const url = String(input);
+
+      if (url === '/backup/dashboard') {
+        return makeJsonResponse({ data: { stats: [], recentJobs: [], storageProviders: [], attentionItems: [] } });
+      }
+
+      if (url === '/backup/usage-history?days=14') {
+        return makeJsonResponse({ data: { points: [] } });
+      }
+
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<BackupDashboard />);
+
+    const restoreTab = (await screen.findByText('Restore')).closest('button');
+    fireEvent.click(restoreTab!);
+
+    expect(await screen.findByText('File Restore Wizard Stub')).toBeTruthy();
+    expect(window.location.hash).toBe('#restore');
+  });
+
+  it('deep-links to the Restore tab from the #restore hash (#6349)', async () => {
+    window.location.hash = '#restore';
+    fetchWithAuthMock.mockImplementation(async (input) => {
+      const url = String(input);
+
+      if (url === '/backup/dashboard') {
+        return makeJsonResponse({ data: { stats: [], recentJobs: [], storageProviders: [], attentionItems: [] } });
+      }
+
+      if (url === '/backup/usage-history?days=14') {
+        return makeJsonResponse({ data: { points: [] } });
+      }
+
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<BackupDashboard />);
+
+    expect(await screen.findByText('File Restore Wizard Stub')).toBeTruthy();
   });
 
   it('mounts VM restore and instant boot status within the Hyper-V tab', async () => {

@@ -6,6 +6,7 @@ import { emitTimeEntryEvent } from './timeEntryEvents';
 import { loadCardsForOrg } from './billingProfileService';
 import { resolveBillingRule, type BillingRule } from './billingRuleResolver';
 import { getActiveWorkType } from './workTypeService';
+import { computeBillableMinutes, billableMinutesSql } from './billableMinutes';
 import { readOrgStampingDefaults } from './orgCurrencyCore';
 import { CURRENCY_CODES, isZeroDecimal, isRepresentableInCurrency, minorUnitExponent, roundToCurrency, multiplyToCurrency, toMinorUnits, fromMinorUnits } from '@breeze/shared';
 import type { CreateTimeEntryInput, UpdateTimeEntryInput, TicketPartInput, BillingStatus, TimeEntrySource } from '@breeze/shared';
@@ -589,6 +590,13 @@ export async function createTimeEntry(
       startedAt: input.startedAt,
       endedAt: input.endedAt,
       durationMinutes: computeDurationMinutes(input.startedAt, input.endedAt),
+      // Spec §3.5 — the billed quantity, from the SAME terms this row stamps
+      // (the applied stamp, so a manager's override drives it too).
+      billableMinutes: computeBillableMinutes({
+        durationMinutes: computeDurationMinutes(input.startedAt, input.endedAt),
+        minimumMinutes: stamp.minimumMinutes,
+        roundingIncrementMinutes: stamp.roundingIncrementMinutes,
+      }),
       description: input.description ?? null,
       ...stamp,
       // Snapshot (spec §7): null only for standalone, money-less entries; never restamped.
@@ -661,11 +669,26 @@ async function stopRunningEntry(
   }
   // CAS on ended_at IS NULL: two concurrent stops -> one winner, one no-op.
   // Duration computed in SQL from the row's own started_at (avoids a pre-select round-trip).
+  // Built ONCE and inlined by billableMinutesSql in both of its branches: the
+  // column is being assigned in this same UPDATE, so a `duration_minutes`
+  // reference inside the fragment would read the OLD (NULL) value and the
+  // CHECK would reject the row (23514). For the same reason, a stop that also
+  // rewrites the terms must hand billableMinutesSql the NEW ones — SET reads
+  // the old row, the CHECK validates the new one.
+  const durationExpr = sql`FLOOR(EXTRACT(EPOCH FROM (${now.toISOString()}::timestamp - ${timeEntries.startedAt})) / 60)::int`;
   const rows = await db
     .update(timeEntries)
     .set({
       endedAt: now,
-      durationMinutes: sql`FLOOR(EXTRACT(EPOCH FROM (${now.toISOString()}::timestamp - ${timeEntries.startedAt})) / 60)::int`,
+      durationMinutes: durationExpr,
+      // Spec §3.5 — same arithmetic as computeBillableMinutes(), pinned by
+      // time_entries_billable_minutes_chk.
+      billableMinutes: billableMinutesSql(durationExpr, billingOverride
+        ? {
+          minimumMinutes: billingOverride.minimumMinutes,
+          roundingIncrementMinutes: billingOverride.roundingIncrementMinutes,
+        }
+        : {}),
       ...(overrides.description !== undefined ? { description: overrides.description } : {}),
       ...(billingOverride ?? {})
     })
@@ -731,6 +754,8 @@ export async function startTimer(input: { ticketId?: string; description?: strin
         startedAt: new Date(),
         endedAt: null,
         durationMinutes: null,
+        // A running timer has no billed quantity yet; stopRunningEntry lands it.
+        billableMinutes: null,
         description: input.description ?? null,
         ...billing,
         billingOverridden: false,
@@ -926,6 +951,29 @@ export async function updateTimeEntry(id: string, input: UpdateTimeEntryInput, a
   if ((input.startedAt !== undefined || input.endedAt !== undefined) && endedAt) {
     set.durationMinutes = computeDurationMinutes(startedAt, endedAt);
     changed.push('durationMinutes');
+  }
+  // Spec §3.5 — recompute the billed quantity whenever EITHER the duration or
+  // the card terms on this row move. Mobile replays a stop as PATCH { endedAt }
+  // (apps/mobile/src/services/timeEntryReplay.test.ts), so this branch — not
+  // just stopRunningEntry — is a real stop path. Placed after the re-price and
+  // override blocks so a re-price and a duration change in one PATCH both feed
+  // the same recompute.
+  if (
+    set.durationMinutes !== undefined ||
+    set.minimumMinutes !== undefined ||
+    set.roundingIncrementMinutes !== undefined
+  ) {
+    const nextDuration = (set.durationMinutes as number | undefined) ?? entry.durationMinutes;
+    const nextMinimum = set.minimumMinutes !== undefined
+      ? (set.minimumMinutes as number | null) : entry.minimumMinutes;
+    const nextIncrement = set.roundingIncrementMinutes !== undefined
+      ? (set.roundingIncrementMinutes as number | null) : entry.roundingIncrementMinutes;
+    set.billableMinutes = computeBillableMinutes({
+      durationMinutes: nextDuration ?? null,
+      minimumMinutes: nextMinimum ?? null,
+      roundingIncrementMinutes: nextIncrement ?? null,
+    });
+    changed.push('billableMinutes');
   }
 
   // W6-G4-2: validate the rate against the currency this row will actually carry
@@ -1207,6 +1255,9 @@ function entrySelection() {
     billingOverridden: timeEntries.billingOverridden,
     minimumMinutes: timeEntries.minimumMinutes,
     roundingIncrementMinutes: timeEntries.roundingIncrementMinutes,
+    // §3.5 billed quantity. Read by the timesheet money loop and by the web
+    // "worked vs billed" line; day totals deliberately stay on durationMinutes.
+    billableMinutes: timeEntries.billableMinutes,
     // Keep archived labels on historical entries. The correlated read preserves
     // entry cardinality and stays in the ambient partner RLS context.
     workType: sql<{ id: string; name: string; isActive: boolean } | null>`(
@@ -1340,7 +1391,9 @@ export async function getTimesheet(userId: string, weekStart: Date, accessibleOr
     // rounded rows equals the invoice total (never "round the sum"). The product
     // is exact decimal (review #2: 0.02 × 7.25 = 0.145 → 0.15, same as the SQL
     // summary) and rows are summed as integer minor units, never as floats.
-    const hours = ((entry.durationMinutes ?? 0) / 60).toFixed(2);
+    // Only the minutes source moved to the billed quantity (§3.5). The day-total
+    // loop above deliberately keeps ACTUAL minutes — that figure is utilization.
+    const hours = (((entry.billableMinutes ?? entry.durationMinutes) ?? 0) / 60).toFixed(2);
     const amount = multiplyToCurrency(hours, entry.hourlyRate, entry.currencyCode);
     money.set(entry.currencyCode, (money.get(entry.currencyCode) ?? 0) + toMinorUnits(amount, entry.currencyCode));
   }
@@ -1362,9 +1415,18 @@ export async function getTimesheet(userId: string, weekStart: Date, accessibleOr
 export async function getTicketBillingSummary(ticketId: string) {
   const timeRows = await db
     .select({
+      // §3.4 contract-covered time, in ACTUAL minutes. The W03 plan proposed
+      // COALESCE here "for uniformity, not for effect", on the premise that an
+      // included row never carries card terms. It can: resolveBillingRule()
+      // stamps roundingIncrementMinutes from the card regardless of coverage,
+      // so COALESCE would have moved this number — and would then disagree with
+      // the portal's coveredByContract bucket, which §3.5 keeps on actual
+      // minutes. W02's timeEntryMoneyReaders.test.ts pins this form.
       includedMinutes: sql<number>`COALESCE(SUM(${timeEntries.durationMinutes}) FILTER (WHERE ${timeEntries.coverage} = 'included'), 0)::int`,
+      // Utilization figure — ACTUAL minutes worked (§3.5). Not the billed quantity.
       totalMinutes: sql<number>`COALESCE(SUM(${timeEntries.durationMinutes}), 0)::int`,
-      billableMinutes: sql<number>`COALESCE(SUM(${timeEntries.durationMinutes}) FILTER (WHERE ${timeEntries.isBillable}), 0)::int`
+      // Billed quantity (§3.5): the minimum/rounding result when the row has one.
+      billableMinutes: sql<number>`COALESCE(SUM(COALESCE(${timeEntries.billableMinutes}, ${timeEntries.durationMinutes})) FILTER (WHERE ${timeEntries.isBillable}), 0)::int`
     })
     .from(timeEntries)
     .where(eq(timeEntries.ticketId, ticketId));
@@ -1373,9 +1435,10 @@ export async function getTicketBillingSummary(ticketId: string) {
   const timeMoney = await db
     .select({
       currencyCode: timeEntries.currencyCode,
-      // Labor rule: round hours to 2 dp first, then × rate, then ONE round per
-      // row at the currency's minor unit (the invoice-line figure) before summing.
-      amount: sql<string>`COALESCE(SUM(ROUND(ROUND(${timeEntries.durationMinutes}::numeric / 60, 2) * ${timeEntries.hourlyRate}, ${minorUnitScaleSql(timeEntries.currencyCode)})), 0)::numeric(12,2)`
+      // Labor rule unchanged: round hours to 2 dp first, then × rate, then ONE
+      // round per row at the currency's minor unit (the invoice-line figure)
+      // before summing. Only the MINUTES source changed (§3.5).
+      amount: sql<string>`COALESCE(SUM(ROUND(ROUND(COALESCE(${timeEntries.billableMinutes}, ${timeEntries.durationMinutes})::numeric / 60, 2) * ${timeEntries.hourlyRate}, ${minorUnitScaleSql(timeEntries.currencyCode)})), 0)::numeric(12,2)`
     })
     .from(timeEntries)
     .where(and(
@@ -1483,6 +1546,7 @@ export async function listBillables(
       description: timeEntries.description,
       technician: users.name,
       minutes: timeEntries.durationMinutes,
+      billableMinutes: timeEntries.billableMinutes,
       rate: timeEntries.hourlyRate,
       currencyCode: timeEntries.currencyCode,
       billingStatus: timeEntries.billingStatus,
@@ -1527,7 +1591,9 @@ export async function listBillables(
 
   const rows: BillableRow[] = [];
   for (const r of timeRows) {
-    const hours = ((r.minutes ?? 0) / 60).toFixed(2);
+    // Billed quantity (§3.5). NULL billable_minutes = pre-feature row or a row
+    // with no card terms — bill the actual duration.
+    const hours = (((r.billableMinutes ?? r.minutes) ?? 0) / 60).toFixed(2);
     const rate = toFinite(r.rate);
     rows.push({
       kind: 'time',

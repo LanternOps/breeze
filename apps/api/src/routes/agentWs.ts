@@ -1751,6 +1751,7 @@ export async function processOrphanedCommandResult(
             referencedFiles: backupData?.referencedFiles,
             referencedBytes: backupData?.referencedBytes,
             backupType: backupData?.backupType,
+            metadata: backupData?.metadata,
             systemStateManifest: backupData?.systemStateManifest,
             layoutManifest: backupData?.layoutManifest,
             bareMetal: backupData?.bareMetal,
@@ -1784,6 +1785,55 @@ export async function processOrphanedCommandResult(
     } catch (err) {
       console.error(`[AgentWs] Failed to process backup results for ${agentId}:`, err);
       captureException(err);
+      // Scope note: this catches a ZodError from ANY strict schema on the
+      // enqueue path (backupQueueJobDataSchema wraps the actor meta and the
+      // job keys too), not only the backup-result fields. That breadth is
+      // deliberate — every one of them is a deterministic server-side
+      // rejection, and describeZodIssues names which field failed.
+      if (err instanceof z.ZodError) {
+        // #5413 lesson (a): a schema rejection is DETERMINISTIC — the strict
+        // queue schema (jobs/queueSchemas.ts) refused a payload the route
+        // schema already accepted, and every retry of the identical result
+        // will be refused again. Re-recording the expectation here is what
+        // left three Windows file jobs `running` forever with the device
+        // online, no snapshot row and no reaper rule covering "result
+        // rejected". Fail the job loudly instead so the class fails fast.
+        const detail = describeZodIssues(err);
+        console.error(
+          `[AgentWs] Backup result for job ${backupJob.id} was REJECTED by the queue schema ` +
+            `(${detail}) — failing the job instead of dropping the result. This is a ` +
+            'server-side schema gap: a field accepted by routes/backup/resultSchemas.ts must ' +
+            'also be declared in jobs/queueSchemas.ts (#5413).'
+        );
+        try {
+          const failed = await applyBackupCommandResultToJob({
+            jobId: backupJob.id,
+            orgId: backupJob.orgId,
+            deviceId: backupJob.deviceId,
+            resultStatus: 'failed',
+            result: {
+              error: `Backup result rejected by the server queue-result schema: ${detail}`,
+            },
+          });
+          if (!failed.applied) {
+            // Guarded no-op (job already terminal/cancelled). Say so, or the
+            // log above reads as "job failed" while the row was untouched.
+            console.warn(
+              `[AgentWs] Backup job ${backupJob.id} was already terminal — schema-rejection failure not applied`
+            );
+          }
+        } catch (failErr) {
+          console.error(`[AgentWs] Failed to fail backup job ${backupJob.id} after a schema rejection:`, failErr);
+          captureException(failErr);
+          // The fail-write itself broke (transient DB/Redis). Without this the
+          // job would be left running with its expectation already consumed —
+          // the very state this branch exists to prevent. Re-arm so a
+          // legitimate agent retry can still be accepted; it will land in this
+          // same branch and get another chance to fail the job.
+          await recordDispatchedExpectation('backup', backupJob.deviceId, backupJob.id);
+        }
+        return;
+      }
       // We already consumed the dispatch expectation but persistence failed
       // (e.g. transient BullMQ/DB error). Re-record it so a legitimate agent
       // retry of this same result can be accepted instead of being permanently

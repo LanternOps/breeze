@@ -21,7 +21,11 @@ import { getTestDb } from './setup';
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
 describe('DR reconciliation authorization against real PostgreSQL', () => {
-  runDb('serializes the execution row and quarantines legacy authority with zero commands', async () => {
+  // #6322 removed the no-op `SELECT ... FOR UPDATE` this case was named for
+  // (it auto-committed outside a transaction and locked nothing). What it
+  // actually proves — concurrent ticks converge on one quarantined outcome
+  // and dispatch nothing — still holds, now via the guarded write-back.
+  runDb('converges concurrent ticks on the legacy-authority quarantine with zero commands', async () => {
     const testDb = getTestDb();
     const partner = await createPartner();
     const org = await createOrganization({ partnerId: partner.id });
@@ -152,7 +156,7 @@ describe('BARE_METAL_REBUILD step against real PostgreSQL', () => {
     ).resolves.toBe(newestRestorable);
   });
 
-  runDb('denies (resource_not_found) and creates no recovery when a group device has no restorable snapshot', async () => {
+  runDb('denies (no_restorable_snapshot) and creates no recovery when a group device has no restorable snapshot', async () => {
     const testDb = getTestDb();
     const partner = await createPartner();
     const org = await createOrganization({ partnerId: partner.id });
@@ -175,7 +179,7 @@ describe('BARE_METAL_REBUILD step against real PostgreSQL', () => {
     const outcome = await withSystemDbAccessContext(() => reconcileDrExecution(execution!.id));
 
     expect(outcome.nextDelayMs).toBeNull();
-    expect(outcome.execution).toMatchObject({ status: 'failed', authorizationState: 'denied', authorizationDenialCode: 'resource_not_found' });
+    expect(outcome.execution).toMatchObject({ status: 'failed', authorizationState: 'denied', authorizationDenialCode: 'no_restorable_snapshot' });
     const recoveries = await testDb.execute(sql`select id from bare_metal_recoveries where dr_execution_id = ${execution!.id}`);
     expect(recoveries).toHaveLength(0);
   });

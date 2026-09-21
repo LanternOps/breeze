@@ -28,6 +28,8 @@ export type DRStepType = (typeof DR_STEP_TYPES)[number];
 
 export const DEFAULT_REBUILD_OUTPUT_DIR = '/var/lib/breeze/rebuild/out';
 export const DEFAULT_REBUILD_WAIT_TIMEOUT_MINUTES = 240;
+/** Mirrors `drBareMetalRebuildConfigSchema.outputDir.max` on the API (#6382). */
+export const REBUILD_OUTPUT_DIR_MAX_LENGTH = 1024;
 export const REBUILD_WAIT_TIMEOUT_MIN = 5;
 export const REBUILD_WAIT_TIMEOUT_MAX = 1440;
 

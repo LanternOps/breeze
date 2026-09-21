@@ -19,7 +19,13 @@ interface CurrencyAmount {
 }
 
 interface BillingSummary {
-  time: { totalMinutes: number; billableMinutes: number; billableAmounts: CurrencyAmount[] };
+  time: {
+    totalMinutes: number;
+    billableMinutes: number;
+    /** #4628 §3.5 contract-covered time; absent on an API predating W03. */
+    includedMinutes?: number;
+    billableAmounts: CurrencyAmount[];
+  };
   parts: { partsCount: number; billableTotals: CurrencyAmount[] };
   defaults?: (BillingOutcomeStamp & { workTypeId?: string | null }) | null;
 }
@@ -27,12 +33,28 @@ interface BillingSummary {
 interface EntryRow {
   id: string;
   durationMinutes: number | null;
+  /** #4628 §3.5 billed quantity after the card's minimum/rounding. Absent or
+   *  null on a pre-feature row — then the duration is what bills. */
+  billableMinutes?: number | null;
   description: string | null;
   isBillable: boolean;
   userName: string | null;
   endedAt: string | null;
   /** W06 (#3900) server-stamped provenance; absent on an older API. */
   source?: string | null;
+}
+
+/** #4628 §3.5 — one line naming the worked time whenever a minimum or the
+ *  card's rounding moved the billed quantity. Returns null when they agree. */
+function billedVsWorked(
+  t: (key: string, options?: Record<string, unknown>) => string,
+  durationMinutes: number | null,
+  billableMinutes: number | null | undefined
+): string | null {
+  const worked = ((durationMinutes ?? 0) / 60).toFixed(2);
+  const billed = (((billableMinutes ?? durationMinutes) ?? 0) / 60).toFixed(2);
+  if (worked === billed) return null;
+  return t('ticketTimeBilling.billedVsWorked', { worked, billed });
 }
 
 /** One chip per currency; an empty list renders a dash rather than a zero in
@@ -218,6 +240,11 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
             <dt className="text-muted-foreground">{t('ticketTimeBilling.billable')}</dt>
             <dd data-testid="ticket-billing-time-billable">{formatMinutes(summary.time.billableMinutes)}</dd>
           </div>
+          {(summary.time.includedMinutes ?? 0) > 0 && (
+            <div className="flex justify-end text-xs text-muted-foreground" data-testid="ticket-billing-included">
+              {t('ticketTimeBilling.includedMinutes', { hours: ((summary.time.includedMinutes ?? 0) / 60).toFixed(2) })}
+            </div>
+          )}
           <div className="flex justify-between text-xs">
             <dt className="text-muted-foreground">{t('ticketTimeBilling.timeAmount')}</dt>
             <dd data-testid="ticket-billing-amount">
@@ -361,8 +388,13 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
                   </span>
                 )}
               </span>
-              <span className="shrink-0">
+              <span className="shrink-0 text-right">
                 {entry.endedAt == null ? t('ticketTimeBilling.running') : formatMinutes(entry.durationMinutes)}
+                {entry.endedAt != null && billedVsWorked(t, entry.durationMinutes, entry.billableMinutes) && (
+                  <span className="block text-[10px] text-muted-foreground" data-testid={`time-entry-billed-vs-worked-${entry.id}`}>
+                    {billedVsWorked(t, entry.durationMinutes, entry.billableMinutes)}
+                  </span>
+                )}
               </span>
             </li>
           ))}

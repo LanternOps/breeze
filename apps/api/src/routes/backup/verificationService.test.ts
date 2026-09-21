@@ -515,6 +515,55 @@ describe('processBackupVerificationResult', () => {
     expect(passedEvents[0]![1]).toBe(TEST_ORG_ID);
   });
 
+  it('persists filesIncomplete and warnings from a partial agent result (#6350)', async () => {
+    const testCommandId = `cmd-test-incomplete-${Date.now()}`;
+    const verificationId = `verify-proc-incomplete-${Date.now()}`;
+
+    backupVerifications.push({
+      id: verificationId,
+      orgId: TEST_ORG_ID,
+      deviceId: 'dev-001',
+      backupJobId: 'job-001',
+      snapshotId: 'snap-001',
+      verificationType: 'integrity',
+      status: 'pending',
+      startedAt: new Date().toISOString(),
+      completedAt: null,
+      filesVerified: 0,
+      filesFailed: 0,
+      details: { source: 'test', commandId: testCommandId },
+      createdAt: new Date().toISOString(),
+    });
+    verificationOrgById.set(verificationId, TEST_ORG_ID);
+
+    await processBackupVerificationResult(testCommandId, {
+      status: 'completed',
+      stdout: JSON.stringify({
+        status: 'partial',
+        filesVerified: 347,
+        // Every stored object verified — the 2 missing files never reached the
+        // bucket, so they cannot show up as verification failures.
+        filesFailed: 0,
+        filesIncomplete: 2,
+        warnings: ['2 file(s) never uploaded during the backup run and are absent from this snapshot: /srv/big.bin'],
+      }),
+    });
+
+    const updated = backupVerifications.find((v) => v.id === verificationId);
+    expect(updated?.status).toBe('partial');
+    expect(updated?.filesFailed).toBe(0);
+    const details = updated?.details as Record<string, unknown>;
+    expect(details.filesIncomplete).toBe(2);
+    expect(details.warnings).toEqual([
+      '2 file(s) never uploaded during the backup run and are absent from this snapshot: /srv/big.bin',
+    ]);
+
+    const failedEvents = publishEventMock.mock.calls.filter(
+      (call) => call[0] === 'backup.verification_failed'
+    );
+    expect(failedEvents.length).toBe(1);
+  });
+
   it('marks verification as failed on failed agent command', async () => {
     const testCommandId = `cmd-test-fail-${Date.now()}`;
     const verificationId = `verify-proc-fail-${Date.now()}`;

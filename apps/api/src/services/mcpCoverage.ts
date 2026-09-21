@@ -18,7 +18,16 @@ export type McpExemptReason =
   | 'addin_surface'
   | 'device_helper'
   | 'mcp_transport'
-  | 'internal_plumbing';
+  | 'internal_plumbing'
+  /**
+   * A one-time, irreversible-by-default migration an operator runs by hand.
+   * Deliberately NOT agent-reachable: the spec gives conversion no AI tool
+   * (docs/superpowers/specs/monitoring/2026-09-19-alerting-consolidation-design.md
+   * §AI / MCP tools lists no conversion row), the routes are MFA- and
+   * governance-gated, and a preview must be read by a human before the
+   * matching convert call is made.
+   */
+  | 'human_only_migration';
 
 export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'accessReviews.ts': { gap: '#6141' },
@@ -254,6 +263,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'mcpServer.ts': { exempt: 'mcp_transport' },
   'metrics.ts': { exempt: 'internal_plumbing' },
   'mobile.ts': { gap: '#6141' },
+  'monitorDefinitions.conversion.ts': { exempt: 'human_only_migration', note: 'Legacy-to-monitor conversion (#6370): preview/convert/revert/retire are MFA- and governance-gated one-time migration actions a technician runs from the UI; the spec assigns them no AI tool.' },
   'monitorDefinitions.ts': { tools: ['list_monitors', 'get_monitor', 'get_monitor_activity', 'reset_monitor_escalation', 'manage_monitor_definitions'] },
   'monitoring.ts': { tools: ['query_monitors', 'get_service_monitoring_status'] },
   'monitoringAssetMetrics.ts': { gap: '#6141' },

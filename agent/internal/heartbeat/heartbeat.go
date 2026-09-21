@@ -6205,7 +6205,7 @@ func (h *Heartbeat) HandleCommand(wsCmd websocket.Command) websocket.CommandResu
 
 	wsResult := toWSCommandResult(cmd.ID, result)
 
-	if result.Status != "duplicate" && !isEphemeralCommand(cmd.Type) {
+	if result.Status != "duplicate" && !isEphemeralCommand(cmd.Type) && !isWSDirectOnlyCommand(cmd.Type) {
 		go func() {
 			if err := h.submitCommandResult(cmd.ID, result); err != nil {
 				log.Error("failed to submit command result", logging.KeyCommandID, cmd.ID, "error", err.Error())
@@ -6397,6 +6397,32 @@ func isLifecycleCommand(cmdType string) bool {
 		return true
 	}
 	return false
+}
+
+// isWSDirectOnlyCommand reports whether a command type is ONLY ever
+// dispatched WS-direct, i.e. the server never creates a device_commands row
+// for it. HandleCommand's HTTP result submission targets
+// /api/v1/agents/{id}/commands/{id}/result, which looks the command up in
+// device_commands and 404s when there is no row — so for these types the POST
+// is guaranteed-doomed log noise on every single dispatch (#5414). The WS
+// reply from HandleCommand (plus, for backup, the unsolicited terminal
+// backup_result frame and its outbox) is already the authoritative delivery
+// channel; nothing server-side reads the HTTP ack for them.
+//
+// The server exempts WS-direct commands from the 404 by testing whether the
+// command id is a non-UUID (routes/agents/commands.ts). backup_run defeats
+// that heuristic because its id IS a UUID — jobs/backupWorker.ts reuses the
+// backup_jobs row id as the command id.
+//
+// Membership is per-COMMAND-TYPE and deliberately narrow: it is not "backup
+// commands". mssql_backup and hyperv_backup ride this same rowless path from
+// backupWorker.ts, but routes/backup/mssql.ts and hyperv.ts ALSO dispatch
+// them through executeCommand -> commandQueue, which does insert a
+// device_commands row that the HTTP result legitimately acks. Suppressing
+// their submission would break that path, so they stay out. backup_run has
+// exactly one dispatch site (backupWorker.ts) and never gets a row.
+func isWSDirectOnlyCommand(cmdType string) bool {
+	return cmdType == tools.CmdBackupRun
 }
 
 func isEphemeralCommand(cmdType string) bool {

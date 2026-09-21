@@ -248,6 +248,8 @@ x-api-env: &api-env
   TURN_PORT: ${TURN_PORT:-3478}
   TURN_SECRET: ${TURN_SECRET:-}
   TURN_CREDENTIAL_TTL_SECONDS: ${TURN_CREDENTIAL_TTL_SECONDS:-600}
+  TURN_TLS_HOST: ${TURN_TLS_HOST:-}
+  TURN_TLS_PORT: ${TURN_TLS_PORT:-5349}
   # Built-in extensions ship inside the API image but load only when the
   # deployment switches them on (default off, and value-strict: only the
   # exact string "true"). Workspace additionally requires pgvector to be
@@ -693,6 +695,15 @@ services:
     network_mode: host
     secrets:
       - turn_secret
+    volumes:
+      # #6163 — TURN over TLS is opt-in. coturn skips the 5349 listener SILENTLY
+      # when it has no --cert/--pkey, so the flags were advertised but dead. A
+      # static `command:` list cannot make a flag conditional, so the pair is
+      # mounted here and the entrypoint wrapper below appends the flags only
+      # when the certificate is actually readable by `nobody` (65534).
+      # Unset TURN_TLS_DIR mounts an empty in-repo placeholder => today's
+      # behaviour, minus the silence.
+      - ${TURN_TLS_DIR:-./coturn/tls-placeholder}:/etc/coturn/tls:ro
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=1m
     entrypoint: ['/bin/sh', '-ec']
@@ -706,6 +717,22 @@ services:
         fi
         umask 077
         printf 'static-auth-secret=%s\n' "$$(cat /run/secrets/turn_secret)" > /tmp/turn-secret.conf
+        if [ -r /etc/coturn/tls/cert.pem ] && [ -r /etc/coturn/tls/privkey.pem ]; then
+          echo 'coturn: TLS certificate found — TURNS will listen on 5349.' >&2
+          # Readability is checked as the uid this shell runs as, which is the
+          # uid the server process inherits — so `-r` is exactly the right test.
+          # Expiry is not fatal (coturn still binds), but it must not pass
+          # silently: an expired certificate fails every handshake and the only
+          # symptom is a client that cannot connect (#6163).
+          if command -v openssl >/dev/null 2>&1 && \
+             ! openssl x509 -checkend 0 -noout -in /etc/coturn/tls/cert.pem >/dev/null 2>&1; then
+            echo 'coturn: WARNING — /etc/coturn/tls/cert.pem is EXPIRED (or unparseable). TURNS handshakes will fail until it is renewed and coturn restarted.' >&2
+          fi
+          set -- "$$@" --cert=/etc/coturn/tls/cert.pem --pkey=/etc/coturn/tls/privkey.pem
+        else
+          echo 'coturn: no readable certificate at /etc/coturn/tls — TURNS (5349) is disabled; only 3478 will listen.' >&2
+          echo 'Set TURN_TLS_DIR to a directory holding cert.pem + privkey.pem readable by uid 65534 (nobody). See /deploy/turn-server/.' >&2
+        fi
         exec turnserver -c /tmp/turn-secret.conf "$$@"
       - turnserver
       - --listening-port=3478

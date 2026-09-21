@@ -105,6 +105,14 @@ export default function DeviceFilesystemTab({
       if (!isCurrent()) return;
       await scanPoll.poll(commandId, Math.max(120_000, (SCAN_TIMEOUT_SECONDS + 90) * 1000));
       if (!isCurrent()) return;
+      // Issue #6376: Analyze Now toasted on failure only, so a completed scan
+      // was indistinguishable from one that silently did nothing. The toast
+      // fires here, the moment the poll confirms the scan finished, and NOT
+      // after the two reloads below: both hooks swallow their own fetch
+      // errors and resolve regardless, so a toast placed after them would
+      // claim success while the refresh banner reported a failure. This
+      // placement keeps the claim to what was actually established.
+      showToast({ type: 'success', message: t('deviceFilesystemTab.filesystemScanFinished') });
       setPreview(null);
       await snapshotState.reload({ silent: true });
       if (!isCurrent()) return;

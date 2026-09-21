@@ -228,7 +228,9 @@
       "logFailed": "Impossibile registrare il tempo",
       "logged": "Tempo registrato",
       "logFailedSentence": "Impossibile registrare il tempo."
-    }
+    },
+    "billedVsWorked": "{{worked}} h lavorate · {{billed}} h fatturate",
+    "includedMinutes": "{{hours}} h incluse nel contratto"
   },
   "inboundReviewQueue": {
     "title": "Coda di revisione",

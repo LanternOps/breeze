@@ -289,7 +289,7 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 		if file.ModeBits != 0 {
 			mode = os.FileMode(file.ModeBits)
 		}
-		installWarnings, err := securefs.InstallFile(targetBase, relativeTarget, stagingFile, mode, file.ModTime, entryOwner(file, applyOwnership))
+		installWarnings, err := securefs.InstallFileWithAttrs(targetBase, relativeTarget, stagingFile, mode, file.ModTime, entryOwner(file, applyOwnership), file.WinAttrs)
 		if err != nil {
 			result.FilesFailed++
 			result.FailedFiles = append(result.FailedFiles, displayPath)
@@ -378,6 +378,18 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 					mode &^= os.ModeSetuid
 				}
 				entryErr = securefs.InstallDir(targetBase, relativeEntry, mode, entry.ModeBits != 0, entryOwner(entry, applyOwnership), entry.ModTime)
+				if entryErr == nil {
+					// The walker records a Windows directory entry only when
+					// the directory is empty, but when it does, a Hidden or
+					// System folder must come back Hidden/System rather than
+					// plain (#5407, review finding). Applied last and
+					// best-effort: losing a directory attribute is a fidelity
+					// warning, never a failed restore.
+					if attrErr := applyWinAttrs(filepath.Join(targetBase, relativeEntry), entry.WinAttrs); attrErr != nil {
+						result.Warnings = append(result.Warnings,
+							fmt.Sprintf("recreated %s with reduced fidelity: could not reapply windows attributes: %v", displayPath, attrErr))
+					}
+				}
 			}
 		default:
 			entryErr = fmt.Errorf("entry %s has content; use the file path", displayPath)
@@ -797,6 +809,11 @@ func applyEntryMetadata(targetPath string, entry SnapshotFile, applyOwnership bo
 			warnings = append(warnings, fmt.Sprintf("could not reapply mtime to %s: %v", entry.SourcePath, err))
 		}
 	}
+	// Windows attributes go LAST (#5407): FILE_ATTRIBUTE_READONLY makes the
+	// chmod/chtimes above fail, so they must already have run.
+	if err := applyWinAttrs(targetPath, entry.WinAttrs); err != nil {
+		warnings = append(warnings, fmt.Sprintf("could not reapply windows attributes to %s: %v", entry.SourcePath, err))
+	}
 	return warnings
 }
 
@@ -857,6 +874,13 @@ func RestoreContentlessEntry(targetPath string, entry SnapshotFile, applyOwnersh
 			if err := os.Chmod(targetPath, mode); err != nil {
 				return err
 			}
+		}
+		// Windows attributes last (#5407, review finding) — see the matching
+		// call in RestoreFromSnapshotContext's KindDir pass. A Hidden/System
+		// directory that is only recorded when empty still has to come back
+		// Hidden/System.
+		if err := applyWinAttrs(targetPath, entry.WinAttrs); err != nil {
+			return err
 		}
 	default:
 		return fmt.Errorf("entry %s has content; use the file path", entry.SourcePath)

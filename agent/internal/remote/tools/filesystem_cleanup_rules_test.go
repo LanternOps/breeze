@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -191,6 +192,7 @@ func TestCleanupRuleAnchorIsTheLiteralPrefix(t *testing.T) {
 		{"darwin", "/Users/alice/Library/Caches/com.example/x", "/Users", true},
 		{"windows", `C:\Users\alice\AppData\Local\Temp\x`, `C:\Users`, true},
 		{"windows", `D:\$Recycle.Bin\S-1-5-21-1`, `D:\$Recycle.Bin`, true},
+		{"linux", "/root/.local/share/Trash", "/root/.local/share", true}, // fully literal: anchor steps up (#6375)
 		{"linux", "/home/bob/Documents/taxes.pdf", "", false},
 	}
 	for _, c := range cases {
@@ -224,5 +226,57 @@ func TestCleanupBraceExpansion(t *testing.T) {
 		if _, err := compileCleanupPatterns([]string{pattern}); err == nil {
 			t.Errorf("compileCleanupPatterns(%q) accepted malformed braces", pattern)
 		}
+	}
+}
+
+// TestFullyLiteralPatternsAnchorAboveTheTarget pins the fix for #6375. A
+// pattern with no wildcard at all (`/root/.local/share/Trash`) has a literal
+// prefix as long as the pattern itself, so anchoring ON the literal prefix
+// made the anchor the target — and openCleanupTarget rejects `rel == "."`,
+// meaning preview offered the path forever and execute could never touch it.
+// The anchor must stay a rule-author-fixed directory, but a STRICT ancestor.
+func TestFullyLiteralPatternsAnchorAboveTheTarget(t *testing.T) {
+	table, err := loadCleanupRules()
+	if err != nil || table == nil {
+		t.Fatalf("loadCleanupRules: %v", err)
+	}
+	checked := 0
+	for goos, rules := range table.byOS {
+		separator := "/"
+		if goos == "windows" {
+			separator = "\\"
+		}
+		for _, rule := range rules {
+			for _, pattern := range rule.patterns {
+				if literalPrefixLen(pattern) != len(pattern) {
+					continue // has a wildcard; anchor is already a strict ancestor
+				}
+				concrete := pattern
+				prefix := "/"
+				if goos == "windows" {
+					if concrete[0] != "<vol>" {
+						t.Fatalf("%s: windows pattern %v does not start with <vol>", goos, pattern)
+					}
+					concrete = concrete[1:]
+					prefix = "C:" + separator
+				}
+				path := prefix + strings.Join(concrete, separator)
+				checked++
+				anchor, ok := cleanupRuleAnchorFor(goos, path)
+				if !ok {
+					t.Errorf("cleanupRuleAnchorFor(%q, %q) = !ok; a literal rule path must still anchor", goos, path)
+					continue
+				}
+				if anchor == path {
+					t.Errorf("cleanupRuleAnchorFor(%q, %q) anchored on the target itself; the execute guard rejects rel == \".\"", goos, path)
+				}
+				if !strings.HasPrefix(path, strings.TrimSuffix(anchor, separator)+separator) {
+					t.Errorf("cleanupRuleAnchorFor(%q, %q) = %q; anchor must be an ancestor of the target", goos, path, anchor)
+				}
+			}
+		}
+	}
+	if checked == 0 {
+		t.Skip("no fully-literal patterns in the rule table")
 	}
 }

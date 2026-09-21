@@ -27,6 +27,7 @@ const TIER3_TOOLS = new Set([
   "security_scan",
   "file_operations",
   "disk_cleanup",
+  "system_cleanup",
   "create_automation",
   "network_discovery",
   "m365_reset_password",

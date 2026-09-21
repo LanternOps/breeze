@@ -11,7 +11,7 @@ const TOKEN_ID = '99999999-9999-4999-8999-999999999999';
 
 function chainMock(resolvedValue: unknown = []) {
   const chain: Record<string, any> = {};
-  for (const method of ['from', 'where', 'limit', 'returning', 'values', 'set', 'orderBy', 'offset']) {
+  for (const method of ['from', 'where', 'limit', 'returning', 'values', 'set', 'orderBy', 'offset', 'leftJoin', 'innerJoin']) {
     chain[method] = vi.fn(() => Object.assign(Promise.resolve(resolvedValue), chain));
   }
   return Object.assign(Promise.resolve(resolvedValue), chain);
@@ -61,7 +61,7 @@ function recoveryRow(overrides: Record<string, unknown> = {}) {
   };
 }
 
-const restorableSnapshot = { id: SNAPSHOT_ID, deviceId: DEVICE_ID, orgId: ORG_ID, bareMetalRestorable: true, bareMetalReasons: [] };
+const restorableSnapshot = { id: SNAPSHOT_ID, deviceId: DEVICE_ID, orgId: ORG_ID, bareMetalRestorable: true, bareMetalReasons: [], referencedFiles: null };
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -79,6 +79,35 @@ async function expectRecoveryError(promise: Promise<unknown>, code: string, stat
 }
 
 describe('createBareMetalRecovery', () => {
+  // #6403 interim guard: an incremental snapshot's manifest references objects
+  // under an OLDER snapshot's prefix, and token-mode recovery is confined to
+  // one prefix — so the restore fails AFTER the target has been partitioned
+  // and formatted. Refuse at creation instead, before any disk is touched.
+  it('refuses a snapshot whose backup referenced objects from older snapshots (409), before any write', async () => {
+    selectMock.mockReturnValueOnce(chainMock([{ ...restorableSnapshot, referencedFiles: 98411 }]));
+    const err = await expectRecoveryError(
+      createBareMetalRecovery({ orgId: ORG_ID, snapshotId: SNAPSHOT_ID, identity: 'original', createdBy: USER_ID, source: 'dr' }),
+      'snapshot_has_external_references', 409,
+    );
+    expect(err.details).toMatchObject({ referencedFiles: 98411, snapshotId: SNAPSHOT_ID });
+    // The existing UI renders `reasons`; without it the operator sees only a code.
+    expect((err.details as { reasons: string[] }).reasons[0]).toContain('98,411');
+    expect(insertMock).not.toHaveBeenCalled();
+  });
+
+  // referenced_files is NULL for every self-contained snapshot: the agent's
+  // `referencedFiles,omitempty` drops a zero, and the API only writes the
+  // column when the field is present. Refusing NULL would refuse every full
+  // backup, so NULL and 0 must both be allowed.
+  it.each([[null], [0]])('allows a self-contained snapshot (referencedFiles=%s)', async (referencedFiles) => {
+    selectMock.mockReturnValueOnce(chainMock([{ ...restorableSnapshot, referencedFiles }]));
+    selectMock.mockReturnValueOnce(chainMock([]));
+    insertMock.mockReturnValueOnce(chainMock([recoveryRow()]));
+    const { row } = await createBareMetalRecovery({ orgId: ORG_ID, snapshotId: SNAPSHOT_ID, identity: 'original', createdBy: USER_ID, source: 'route' });
+    expect(row.id).toBe(RECOVERY_ID);
+    expect(insertMock).toHaveBeenCalled();
+  });
+
   it('refuses a snapshot the guard marked non-restorable (409) naming the reasons', async () => {
     selectMock.mockReturnValueOnce(chainMock([{ ...restorableSnapshot, bareMetalRestorable: false, bareMetalReasons: ['LVM volumes are not supported'] }]));
     const err = await expectRecoveryError(
@@ -131,6 +160,67 @@ describe('createBareMetalRecovery', () => {
     const expiresIn = (inserted.codeExpiresAt as Date).getTime() - Date.now();
     expect(expiresIn).toBeGreaterThan(RECOVERY_CODE_TTL_MS - 5_000);
     expect(expiresIn).toBeLessThanOrEqual(RECOVERY_CODE_TTL_MS);
+  });
+
+  // #6322: the SELECT-then-INSERT pre-check loses the race between two
+  // concurrent creators. The partial unique index is the arbiter; the loser's
+  // 23505 must surface as the same `recovery_in_progress` 409, not a 500.
+  it('maps the one-in-flight unique violation to recovery_in_progress (409) naming the winner', async () => {
+    selectMock
+      .mockReturnValueOnce(chainMock([restorableSnapshot]))
+      // Pre-check sees nothing — both creators got this far.
+      .mockReturnValueOnce(chainMock([]))
+      // Re-read after the 23505 finds the row that won.
+      .mockReturnValueOnce(chainMock([{ id: 'rec-winner', status: 'created' }]));
+    insertMock.mockImplementationOnce(() => {
+      throw Object.assign(new Error('duplicate key value violates unique constraint'), {
+        code: '23505',
+        constraint_name: 'bare_metal_recoveries_device_in_flight_idx',
+      });
+    });
+
+    const err = await expectRecoveryError(
+      createBareMetalRecovery({ orgId: ORG_ID, snapshotId: SNAPSHOT_ID, identity: 'original', createdBy: USER_ID, source: 'route' }),
+      'recovery_in_progress', 409,
+    );
+    expect(err.details).toEqual({ recoveryId: 'rec-winner', status: 'created' });
+  });
+
+  it('still reports recovery_in_progress when the winner terminalised before the re-read', async () => {
+    selectMock
+      .mockReturnValueOnce(chainMock([restorableSnapshot]))
+      .mockReturnValueOnce(chainMock([]))
+      .mockReturnValueOnce(chainMock([]));
+    insertMock.mockImplementationOnce(() => {
+      throw Object.assign(new Error('duplicate key value violates unique constraint'), {
+        code: '23505',
+        constraint_name: 'bare_metal_recoveries_device_in_flight_idx',
+      });
+    });
+
+    const err = await expectRecoveryError(
+      createBareMetalRecovery({ orgId: ORG_ID, snapshotId: SNAPSHOT_ID, identity: 'original', createdBy: USER_ID, source: 'route' }),
+      'recovery_in_progress', 409,
+    );
+    expect(err.details).toEqual({ recoveryId: null, status: null });
+  });
+
+  it('lets an unrelated unique violation escape instead of masking it as recovery_in_progress', async () => {
+    selectMock
+      .mockReturnValueOnce(chainMock([restorableSnapshot]))
+      .mockReturnValueOnce(chainMock([]));
+    insertMock.mockImplementationOnce(() => {
+      throw Object.assign(new Error('duplicate key value violates unique constraint'), {
+        code: '23505',
+        constraint_name: 'bare_metal_recoveries_code_hash_idx',
+      });
+    });
+
+    const err = await createBareMetalRecovery({
+      orgId: ORG_ID, snapshotId: SNAPSHOT_ID, identity: 'original', createdBy: USER_ID, source: 'route',
+    }).then(() => null, (e: unknown) => e);
+    expect(err).not.toBeInstanceOf(BareMetalRecoveryError);
+    expect((err as { code?: string }).code).toBe('23505');
   });
 
   it('writes the DR linkage and rebuild host onto the row (W05b Task 6)', async () => {

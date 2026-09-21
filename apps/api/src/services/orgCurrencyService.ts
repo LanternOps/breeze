@@ -112,14 +112,16 @@ function emptyGroup(currencyCode: string): OrgCurrencyImpactGroup {
 }
 
 /** The labor rule of `invoiceAssembly.timeEntryToLineSpec`, expressed in SQL so
- *  the preflight never pulls a row into JS (review 4): hours rounded to 2dp
+ *  the preflight never pulls a row into JS (review 4): the BILLED minutes
+ *  (§3.5, #4628 W03 — `billable_minutes` falling back to `duration_minutes` for
+ *  rows stamped before that wave, exactly as `entryHours` does), hours to 2dp
  *  FIRST (the numeric(10,2) quantity schema), then ONE half-up round at the
  *  currency's minor unit — 20 min x 1,000 JPY = 0.33 x 1000 = 330, never 333.
  *  `exp` is the minor-unit exponent; both variants are summed in the same pass
  *  and the caller picks the one matching each group's currency, which keeps the
  *  whole preflight to a single aggregate query per source table. */
 function laborSumSql(exp: 0 | 2) {
-  return sql<string>`coalesce(sum(round(round(coalesce(${timeEntries.durationMinutes}, 0) / 60.0, 2) * ${timeEntries.hourlyRate}, ${exp})), 0)`;
+  return sql<string>`coalesce(sum(round(round(coalesce(${timeEntries.billableMinutes}, ${timeEntries.durationMinutes}, 0) / 60.0, 2) * ${timeEntries.hourlyRate}, ${exp})), 0)`;
 }
 
 function partSumSql(exp: 0 | 2) {

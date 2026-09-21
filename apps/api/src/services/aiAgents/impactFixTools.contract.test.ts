@@ -32,4 +32,12 @@ describe('IMPACT_FIX_TOOLS is the pinned union of the two closed registries', ()
     expect(Object.isFrozen(IMPACT_FIX_TOOLS)).toBe(true);
     expect([...IMPACT_FIX_TOOLS]).toEqual([...IMPACT_FIX_TOOLS].sort());
   });
+
+  // Disk Cleanup v2 W05, spec §9.3 item 9 — recorded as a decision.
+  // `system_cleanup` reports MEASURED freed bytes on its own run row; counting
+  // it again in the impact rollup would double-count the same reclaimed space
+  // against a "fix" the customer never asked to be framed as remediation.
+  it('does not count system_cleanup as a fix', () => {
+    expect(IMPACT_FIX_TOOLS).not.toContain('system_cleanup');
+  });
 });

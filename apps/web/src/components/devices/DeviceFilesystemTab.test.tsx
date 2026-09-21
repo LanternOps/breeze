@@ -126,6 +126,28 @@ describe('DeviceFilesystemTab', () => {
     expect(signal?.aborted).toBe(true);
   });
 
+  it('confirms a finished scan with a success toast', async () => {
+    // Issue #6376: Analyze Now reported failure but never success, so a scan
+    // that completed looked identical to one that silently did nothing.
+    routeFetch((url, init) => {
+      if (init?.method === 'POST' && url.includes('/filesystem/scan')) {
+        return jsonResponse({ success: true, data: { commandId: 'cmd-ok', status: 'pending' } }, true, 202);
+      }
+      if (url.includes('/commands/cmd-ok')) return jsonResponse({ data: { id: 'cmd-ok', status: 'completed' } });
+      if (url.includes('/filesystem')) return jsonResponse({ data: SNAPSHOT });
+      return jsonResponse({ data: [] });
+    });
+
+    render(<DeviceFilesystemTab deviceId={DEVICE_ID} osType="linux" />);
+    fireEvent.click(await screen.findByTestId('filesystem-analyze-button'));
+
+    await waitFor(() => {
+      expect(showToast).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'success', message: 'Filesystem scan finished' }),
+      );
+    });
+  });
+
   it('renders a row whose path is missing without a duplicate React key', async () => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     routeFetch((url) => {

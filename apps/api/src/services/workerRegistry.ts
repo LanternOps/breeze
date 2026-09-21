@@ -129,6 +129,14 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    name: 'monitorConversionPreviewWorker',
+    placement: 'socket-owner',
+    load: async () => {
+      const m = await import('../jobs/monitorConversionPreviewWorker');
+      return { init: m.initializeMonitorConversionPreviewWorker, shutdown: m.shutdownMonitorConversionPreviewWorker };
+    },
+  },
+  {
     name: 'alertCorrelationWorker',
     placement: 'global',
     load: async () => {

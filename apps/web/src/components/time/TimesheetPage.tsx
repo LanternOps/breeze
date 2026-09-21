@@ -29,6 +29,9 @@ interface TsEntry extends BillingOutcomeStamp {
   startedAt: string;
   endedAt: string | null;
   durationMinutes: number;
+  /** #4628 §3.5 billed quantity after the card's minimum/rounding. Absent or
+   *  null on a pre-feature row — then the duration is what bills. */
+  billableMinutes?: number | null;
   description: string | null;
   isBillable: boolean;
   hourlyRate: string | null;
@@ -45,6 +48,21 @@ interface TsEntry extends BillingOutcomeStamp {
   ticketNumber: string;
   ticketSubject: string;
   userName: string;
+}
+
+/** #4628 §3.5 — one line naming the worked time whenever a minimum or the
+ *  card's rounding moved the billed quantity. Returns null when they agree.
+ *  Duplicated locally from TicketTimeBilling: a two-line helper, per the
+ *  repo's file guidance. */
+function billedVsWorked(
+  t: (key: string, options?: Record<string, unknown>) => string,
+  durationMinutes: number | null,
+  billableMinutes: number | null | undefined
+): string | null {
+  const worked = ((durationMinutes ?? 0) / 60).toFixed(2);
+  const billed = (((billableMinutes ?? durationMinutes) ?? 0) / 60).toFixed(2);
+  if (worked === billed) return null;
+  return t('longTail.time.TimesheetPage.billedVsWorked', { worked, billed });
 }
 
 interface TsDay {
@@ -602,8 +620,13 @@ export default function TimesheetPage() {
                           </div>
                           <div className="flex flex-wrap items-center gap-2">
                             <BillingOutcome stamp={entry} testId={`timesheet-outcome-${entry.id}`} />
-                            <span className="text-sm tabular-nums text-muted-foreground">
+                            <span className="text-right text-sm tabular-nums text-muted-foreground">
                               {entry.endedAt ? formatMinutes(entry.durationMinutes) : t('longTail.time.TimesheetPage.running')}
+                              {entry.endedAt && billedVsWorked(t, entry.durationMinutes, entry.billableMinutes) && (
+                                <span className="block text-xs" data-testid={`timesheet-billed-vs-worked-${entry.id}`}>
+                                  {billedVsWorked(t, entry.durationMinutes, entry.billableMinutes)}
+                                </span>
+                              )}
                             </span>
                             {/* Rate in its stamped currency only — a rate without a currency
                                 cannot exist server-side, and guessing USD would relabel money. */}

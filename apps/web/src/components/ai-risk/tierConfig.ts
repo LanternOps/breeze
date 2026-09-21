@@ -94,6 +94,8 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       // Files, Disk & Registry
       { name: 'analyze_disk_usage', description: 'Filesystem analysis', category: 'Files, Disk & Registry' },
       { name: 'disk_cleanup (preview)', description: 'Preview cleanup candidates', category: 'Files, Disk & Registry' },
+      { name: 'system_cleanup (list)', description: 'List OS-native cleaners and their estimated reclaim', category: 'Files, Disk & Registry' },
+      { name: 'system_cleanup (status)', description: 'Read the progress and result of a native cleanup run', category: 'Files, Disk & Registry' },
       // Logs & Audit
       { name: 'query_audit_log', description: 'Search audit logs', category: 'Logs & Audit' },
       { name: 'query_change_log', description: 'Device change log search', category: 'Logs & Audit' },
@@ -256,6 +258,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       // Files, Disk & Registry
       { name: 'file_operations (read/write/delete/mkdir/rename)', description: 'Read or mutate files on device', category: 'Files, Disk & Registry' },
       { name: 'disk_cleanup (execute)', description: 'Execute disk cleanup', category: 'Files, Disk & Registry' },
+      { name: 'system_cleanup (run)', description: 'Run OS-native cleaners (Windows Disk Cleanup/DISM, macOS snapshots/Homebrew, Linux caches/journal)', category: 'Files, Disk & Registry' },
       { name: 'registry_operations (set_value/create_key/delete_key)', description: 'Modify Windows registry', category: 'Files, Disk & Registry' },
       // Network & DNS
       { name: 'network_discovery', description: 'Network discovery scan', category: 'Network & DNS' },
@@ -334,6 +337,7 @@ export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   { toolName: 'file_operations', limit: 20, windowSeconds: 300, tier: 3, permission: 'devices.execute', category: 'Files, Disk & Registry' },
   { toolName: 'analyze_disk_usage', limit: 10, windowSeconds: 300, tier: 1, permission: 'devices.read', category: 'Files, Disk & Registry' },
   { toolName: 'disk_cleanup', limit: 3, windowSeconds: 600, tier: 3, permission: 'devices.execute', category: 'Files, Disk & Registry' },
+  { toolName: 'system_cleanup', limit: 30, windowSeconds: 3600, tier: 3, permission: 'devices.execute', category: 'Files, Disk & Registry' },
   { toolName: 'registry_operations', limit: 15, windowSeconds: 300, tier: 2, permission: 'devices.execute', category: 'Files, Disk & Registry' },
   // Network & DNS
   { toolName: 'network_discovery', limit: 2, windowSeconds: 600, tier: 3, permission: 'devices.execute', category: 'Network & DNS' },
@@ -418,6 +422,7 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
   get_security_posture: 'devices.read',
   // Files & disk
   disk_cleanup: { preview: 'devices.read', execute: 'devices.execute' },
+  system_cleanup: { list: 'devices.read', run: 'devices.execute', status: 'devices.read' },
   file_operations: { list: 'devices.read', read: 'devices.read', write: 'devices.execute', delete: 'devices.execute', mkdir: 'devices.execute', rename: 'devices.execute' },
   // Registry
   registry_operations: { read_key: 'devices.execute', get_value: 'devices.execute', set_value: 'devices.execute', create_key: 'devices.execute', delete_key: 'devices.execute' },

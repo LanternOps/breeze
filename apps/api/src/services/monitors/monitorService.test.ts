@@ -31,6 +31,7 @@ import {
   createMonitorDefinition,
   updateMonitorDefinition,
   deleteMonitorDefinition,
+  getMonitorDefinition,
   MonitorOwnershipError,
   MonitorValidationError,
 } from './monitorService';
@@ -433,4 +434,22 @@ it('creates a system monitor with a null actor using the supplied executor throu
   } finally {
     compile.mockRestore();
   }
+});
+
+
+describe('conversion executor propagation', () => {
+  it('reads and deletes only through the caller executor', async () => {
+    const row = existingRow();
+    const where = vi.fn(async () => undefined);
+    const executor = {
+      select: vi.fn(() => ({ from: () => ({ where: () => ({ limit: async () => [row] }) }) })),
+      delete: vi.fn(() => ({ where })),
+    };
+    expect(await getMonitorDefinition('monitor-1', auth(), executor as never)).toEqual(row);
+    await deleteMonitorDefinition('monitor-1', auth(), executor as never);
+    expect(executor.select).toHaveBeenCalledTimes(2);
+    expect(executor.delete).toHaveBeenCalledTimes(1);
+    expect(dbMock.select).not.toHaveBeenCalled();
+    expect(dbMock.delete).not.toHaveBeenCalled();
+  });
 });

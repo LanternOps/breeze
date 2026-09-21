@@ -59,7 +59,7 @@ const CFG: CfgShape = {
 function routeFetch(cfg: CfgShape = CFG) {
   fetchWithAuth.mockImplementation((url: string) => {
     if (url === '/ticket-config') return Promise.resolve(jsonRes({ data: { inbound: cfg } }));
-    if (url === '/orgs/organizations?limit=100')
+    if (url === '/orgs/organizations?page=1&limit=100')
       return Promise.resolve(jsonRes({ data: [{ id: 'o-1', name: 'Acme Org' }] }));
     if (url === '/orgs/partners/me') return Promise.resolve(jsonRes({ id: 'p-1' }));
     return Promise.resolve(jsonRes({ data: [] }));

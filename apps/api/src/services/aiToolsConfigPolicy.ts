@@ -6,6 +6,7 @@ import { hasSatisfiedMfa, type AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import {
   alertRuleInlineSettingsSchema,
+  maintenanceInlineSettingsSchema,
   monitoringInlineSettingsSchema,
   onedriveHelperInlineSettingsSchema,
   warrantyInlineSettingsSchema,
@@ -102,6 +103,10 @@ const VALIDATED_INLINE_SETTINGS: Record<string, { schema: { safeParse: (raw: unk
   onedrive_helper: { schema: onedriveHelperInlineSettingsSchema, normalize: true },
   alert_rule: { schema: alertRuleInlineSettingsSchema, normalize: true },
   monitoring: { schema: monitoringInlineSettingsSchema, normalize: false },
+  // #6312: without this entry a malformed maintenance payload throws out of
+  // decomposeInlineSettings and reaches the model as GENERIC_TOOL_ERROR_MESSAGE,
+  // so it cannot learn that (say) its recurrence value is not one of the four.
+  maintenance: { schema: maintenanceInlineSettingsSchema, normalize: true },
   // #5511 W02: the CLIENT schema, so an assistant that invents an hpCmsl
   // consent object is told which field is wrong. It still cannot ENABLE
   // collection — addFeatureLink refuses without an authenticated actor, and

@@ -7,6 +7,9 @@ const { dbMocks, emitMock, workTypeMocks, cardMocks } = vi.hoisted(() => {
   const dbMocks = {
     // queue of results for successive db.select()...where()/limit() terminals
     selectResults: [] as unknown[][],
+    // Projection objects handed to db.select(), so a test can assert on the
+    // SQL fragments a reader builds (COALESCE vs. bare duration_minutes).
+    selectArgs: [] as Array<Record<string, unknown> | undefined>,
     insertResult: [] as unknown[],
     // Per-call insert results (shifted before falling back to insertResult) —
     // lets a test give the first timeEntries insert a conflict (empty array via
@@ -48,8 +51,9 @@ vi.mock('../db', () => ({
   runOutsideDbContext: (fn: () => unknown) => fn(),
   withSystemDbAccessContext: (fn: () => unknown) => fn(),
   db: {
-    select: vi.fn(() => ({
+    select: vi.fn((projection?: Record<string, unknown>) => ({
       from: vi.fn(() => {
+        dbMocks.selectArgs.push(projection);
         const chain: any = {
           leftJoin: vi.fn(() => chain),
           where: vi.fn((arg: unknown) => {
@@ -134,6 +138,7 @@ vi.mock('../db/schema', () => ({
     source: 'source', workTypeId: 'workTypeId',
     billingProfileId: 'billingProfileId', coverage: 'coverage', billingOverridden: 'billingOverridden',
     minimumMinutes: 'minimumMinutes', roundingIncrementMinutes: 'roundingIncrementMinutes',
+    billableMinutes: 'billableMinutes',
     isApproved: 'isApproved', approvedBy: 'approvedBy', approvedAt: 'approvedAt',
     createdAt: 'createdAt', updatedAt: 'updatedAt'
   },
@@ -197,6 +202,7 @@ const mockCard = (baseHourlyRate: string | null = null, currencyCode = 'USD', ba
 
 beforeEach(() => {
   dbMocks.selectResults.length = 0;
+  dbMocks.selectArgs.length = 0;
   dbMocks.insertedValues.length = 0;
   dbMocks.updateSetArgs.length = 0;
   dbMocks.insertErrors.length = 0;
@@ -2178,5 +2184,257 @@ describe('billing profile stamps and service override gate', () => {
     dbMocks.selectResults.push([{ ...entry, billingStatus: 'billed' }]);
     await expect(updateTimeEntry('te-1', { [field]: field === 'resetBilling' ? true : null }, manager))
       .rejects.toMatchObject({ status: 409, code: 'ENTRY_BILLED' });
+  });
+});
+
+describe('billable_minutes write paths (#4628 W03)', () => {
+  const span = { startedAt: new Date('2026-03-03T09:00:00Z'), endedAt: new Date('2026-03-03T09:20:00Z') };
+  const tech = { ...ACTOR, manageBilling: false };
+  const card = (baseMinimumMinutes: number | null, roundingIncrementMinutes: number | null) => ({
+    id: 'profile-1', currencyCode: 'USD', baseCoverage: 'billable', baseHourlyRate: '225.00',
+    baseMinimumMinutes, roundingIncrementMinutes, rules: [],
+  });
+  const seedLink = (ticketId = 't-1', orgId = 'o-1') => {
+    dbMocks.selectResults.push(
+      [{ id: ticketId, partnerId: 'p-1', orgId, categoryId: 'cat-1' }],
+      [{ partnerId: 'p-1', currencyCode: 'USD' }],
+      [{ defaultWorkTypeId: null, defaultWorkTypeIsActive: false }],
+      [{ currencyCode: 'USD' }], [{ id: ticketId, orgId }],
+    );
+  };
+  beforeEach(() => { dbMocks.insertResult = [{ id: 'te-1' }]; });
+
+  describe('create and timer start', () => {
+    it('createTimeEntry stamps billable_minutes from the resolved minimum and increment', async () => {
+      cardMocks.loadCardsForOrg.mockResolvedValue({ assignedCard: card(60, 15), partnerDefaultCard: null });
+      seedLink();
+      // 20 worked minutes against a 60-minute minimum bills an hour.
+      await createTimeEntry({ ticketId: 't-1', ...span }, tech);
+      expect(dbMocks.insertedValues[0]).toMatchObject({ durationMinutes: 20, billableMinutes: 60 });
+    });
+
+    it('createTimeEntry rounds up to the card increment when there is no minimum', async () => {
+      cardMocks.loadCardsForOrg.mockResolvedValue({ assignedCard: card(null, 15), partnerDefaultCard: null });
+      seedLink();
+      await createTimeEntry({ ticketId: 't-1', startedAt: span.startedAt, endedAt: new Date('2026-03-03T09:31:00Z') }, tech);
+      expect(dbMocks.insertedValues[0]).toMatchObject({ durationMinutes: 31, billableMinutes: 45 });
+    });
+
+    it('createTimeEntry with no card terms stamps billable_minutes equal to the duration', async () => {
+      cardMocks.loadCardsForOrg.mockResolvedValue({ assignedCard: card(null, null), partnerDefaultCard: null });
+      seedLink();
+      await createTimeEntry({ ticketId: 't-1', startedAt: span.startedAt, endedAt: new Date('2026-03-03T09:37:00Z') }, tech);
+      expect(dbMocks.insertedValues[0]).toMatchObject({ durationMinutes: 37, billableMinutes: 37 });
+    });
+
+    it('a manager-overridden minimum drives the stamp, not the card minimum', async () => {
+      cardMocks.loadCardsForOrg.mockResolvedValue({ assignedCard: card(30, null), partnerDefaultCard: null });
+      seedLink();
+      await createTimeEntry({ ticketId: 't-1', ...span, minimumMinutes: 90 }, { ...tech, manageBilling: true });
+      expect(dbMocks.insertedValues[0]).toMatchObject({ minimumMinutes: 90, billableMinutes: 90 });
+    });
+
+    it('startTimer leaves billable_minutes NULL — an unfinished entry has no billable quantity', async () => {
+      cardMocks.loadCardsForOrg.mockResolvedValue({ assignedCard: card(60, 15), partnerDefaultCard: null });
+      seedLink();
+      await startTimer({ ticketId: 't-1' }, tech);
+      expect(dbMocks.insertedValues[0]!.durationMinutes).toBeNull();
+      expect(dbMocks.insertedValues[0]!.billableMinutes).toBeNull();
+    });
+  });
+});
+
+describe('both stop paths land billable_minutes (#4628 W03)', () => {
+  const span = { startedAt: new Date('2026-03-03T09:00:00Z'), endedAt: new Date('2026-03-03T09:20:00Z') };
+  const tech = { ...ACTOR, manageBilling: false };
+  const manager = { ...tech, manageBilling: true };
+  const card = { id: 'profile-1', currencyCode: 'USD', baseCoverage: 'billable', baseHourlyRate: '225.00',
+    baseMinimumMinutes: 60, roundingIncrementMinutes: 15, rules: [] };
+  const entry = { id: 'te-1', partnerId: 'p-1', orgId: 'o-1', ticketId: 't-1', userId: ACTOR.userId,
+    startedAt: span.startedAt, endedAt: span.endedAt, durationMinutes: 20, isApproved: false,
+    currencyCode: 'USD', workTypeId: null, billingProfileId: 'profile-1', coverage: 'billable',
+    isBillable: true, hourlyRate: '225.00', minimumMinutes: 60, roundingIncrementMinutes: 15,
+    billingStatus: 'not_billed', billingOverridden: false };
+
+  /** Flatten a drizzle SQL fragment into its literal text chunks. */
+  const chunkText = (node: unknown): string => {
+    if (node == null || typeof node !== 'object') return '';
+    const n = node as Record<string, unknown>;
+    if (Array.isArray(n.queryChunks)) return (n.queryChunks as unknown[]).map(chunkText).join('');
+    if (Array.isArray(n.value) && (n.value as unknown[]).every((v) => typeof v === 'string')) {
+      return (n.value as string[]).join('');
+    }
+    return '';
+  };
+  /** Every real column the fragment references, by its SQL name. */
+  const columnNames = (node: unknown): string[] => {
+    if (node == null || typeof node !== 'object') return [];
+    const n = node as Record<string, unknown>;
+    if (Array.isArray(n.queryChunks)) return (n.queryChunks as unknown[]).flatMap(columnNames);
+    if (typeof n.name === 'string' && n.table !== undefined) return [n.name];
+    return [];
+  };
+
+  beforeEach(() => { cardMocks.loadCardsForOrg.mockResolvedValue({ assignedCard: card, partnerDefaultCard: null }); });
+
+  it('stopRunningEntry (CAS) sets billable_minutes in the SAME statement, from an inlined duration expression', async () => {
+    dbMocks.updateResult = [entry];
+    await stopTimer({}, tech);
+    const fragment = dbMocks.updateSetArgs[0]!.billableMinutes;
+    const text = chunkText(fragment);
+    expect(text).toContain('GREATEST');
+    expect(text).toContain('CEIL');
+    // The duration expression is INLINED. The CAS assigns duration_minutes in
+    // this same UPDATE, so a column reference would read the OLD (NULL) value
+    // and the CHECK would reject the row (23514).
+    expect(text).toContain('FLOOR(EXTRACT(EPOCH');
+    expect(columnNames(fragment)).not.toContain('duration_minutes');
+    expect(columnNames(fragment)).toEqual(
+      expect.arrayContaining(['minimum_minutes', 'rounding_increment_minutes'])
+    );
+  });
+
+  it('a stop that OVERRIDES the terms computes from the override, not the stale columns', async () => {
+    // The CAS evaluates SET expressions against the OLD row, but the CHECK
+    // validates the NEW one. A manager stop that clears the minimum must not
+    // leave billable_minutes derived from the minimum it just removed, or the
+    // row is rejected with 23514.
+    dbMocks.selectResults.push([{ ...entry, endedAt: null, durationMinutes: null }]);
+    dbMocks.updateResult = [entry];
+    await stopTimer({ isBillable: false }, manager);
+    const set = dbMocks.updateSetArgs[0]!;
+    expect(set.minimumMinutes).toBeNull();
+    expect(set.billableMinutes).toBeDefined();
+    expect(columnNames(set.billableMinutes)).not.toContain('minimum_minutes');
+  });
+
+  it('updateTimeEntry recomputes billable_minutes whenever it recomputes durationMinutes', async () => {
+    dbMocks.selectResults.push([{ ...entry, endedAt: null, durationMinutes: null }]);
+    await updateTimeEntry('te-1', { endedAt: span.endedAt }, tech);
+    expect(dbMocks.updateSetArgs[0]).toMatchObject({ durationMinutes: 20, billableMinutes: 60 });
+  });
+
+  it('updateTimeEntry does NOT touch billable_minutes when neither timestamp nor terms changed', async () => {
+    dbMocks.selectResults.push([entry]);
+    await updateTimeEntry('te-1', { description: 'typo fix' }, tech);
+    expect(dbMocks.updateSetArgs[0]).not.toHaveProperty('billableMinutes');
+  });
+
+  it('updateTimeEntry re-derives billable_minutes when a re-price changes the minimum', async () => {
+    // Spec §3.7: an entry is re-priced when its own workTypeId changes.
+    dbMocks.selectResults.push([{ ...entry, minimumMinutes: null, roundingIncrementMinutes: null }]);
+    await updateTimeEntry('te-1', { workTypeId: 'wt-onsite' }, tech);
+    expect(dbMocks.updateSetArgs[0]).toMatchObject({ minimumMinutes: 60, billableMinutes: 60 });
+  });
+
+  it('a manager raising the minimum re-derives the billed quantity', async () => {
+    dbMocks.selectResults.push([entry]);
+    await updateTimeEntry('te-1', { minimumMinutes: 90 }, manager);
+    expect(dbMocks.updateSetArgs[0]).toMatchObject({ minimumMinutes: 90, billableMinutes: 90 });
+  });
+
+  it('a billed entry cannot be re-timed, so its billed quantity can never move', async () => {
+    dbMocks.selectResults.push([{ ...entry, billingStatus: 'billed' }]);
+    await expect(updateTimeEntry('te-1', { endedAt: new Date('2026-03-03T10:20:00Z') }, manager))
+      .rejects.toMatchObject({ code: 'ENTRY_BILLED', status: 409 });
+    expect(dbMocks.updateSetArgs).toHaveLength(0);
+  });
+});
+
+describe('money readers read COALESCE(billable_minutes, duration_minutes) (#4628 W03)', () => {
+  const FROM = new Date('2026-03-01T00:00:00Z');
+  const TO = new Date('2026-03-31T00:00:00Z');
+  const render = (fragment: unknown) => inspect(fragment, { depth: 12 });
+
+  it('getTicketBillingSummary money SQL uses COALESCE, and totalMinutes stays actual', async () => {
+    dbMocks.selectResults.push([], [], [], []);
+    await getTicketBillingSummary('t-1');
+    const aggregates = dbMocks.selectArgs[0] as Record<string, unknown>;
+    const money = dbMocks.selectArgs[1] as Record<string, unknown>;
+    expect(render(money.amount)).toContain('COALESCE');
+    expect(render(money.amount)).toContain('billableMinutes');
+    expect(render(aggregates.billableMinutes)).toContain('billableMinutes');
+    // Utilization figure — actual minutes, never the billed quantity (§3.5).
+    expect(render(aggregates.totalMinutes)).not.toContain('billableMinutes');
+    // includedMinutes stays on ACTUAL minutes, matching the portal's
+    // coveredByContract bucket. An included row CAN carry the card's rounding
+    // increment, so a COALESCE here would move the number, not just tidy it.
+    expect(render(aggregates.includedMinutes)).not.toContain('billableMinutes');
+  });
+
+  it('getTicketBillingSummary returns includedMinutes for contract-covered entries', async () => {
+    dbMocks.selectResults.push([{ totalMinutes: 90, billableMinutes: 60, includedMinutes: 30 }], [], [{ partsCount: 0 }], []);
+    const result = await getTicketBillingSummary('t-1');
+    expect(result.time.includedMinutes).toBe(30);
+  });
+
+  it('an INCLUDED entry adds no money to the ticket summary', async () => {
+    // coverage 'included' => billing_status 'contract', hourly_rate NULL, so
+    // the hourly_rate IS NOT NULL predicate excludes it from the money query.
+    dbMocks.selectResults.push([{ totalMinutes: 45, billableMinutes: 0, includedMinutes: 45 }], [], [{ partsCount: 0 }], []);
+    const result = await getTicketBillingSummary('t-1');
+    expect(result.time.billableAmounts).toEqual([]);
+  });
+
+  const billableRow = (over: Record<string, unknown>) => ({
+    date: new Date('2026-03-03T09:00:00Z'), orgName: 'Acme', ticketNumber: 'T-1',
+    description: 'On-site', technician: 'Pat', currencyCode: 'USD',
+    billingStatus: 'not_billed', isApproved: true, ...over,
+  });
+
+  it('listBillables bills the MINIMUM, not the worked minutes', async () => {
+    dbMocks.selectResults.push([billableRow({ minutes: 20, billableMinutes: 60, rate: '225.00' })], []);
+    const { rows, totalsByCurrency } = await listBillables(FROM, TO);
+    expect(rows[0]).toMatchObject({ quantity: '1.00', amount: '225.00' }); // 60 min, not 0.33
+    expect(totalsByCurrency).toEqual([{ currencyCode: 'USD', amount: '225.00' }]);
+  });
+
+  it('listBillables falls back to duration_minutes on a pre-feature row', async () => {
+    dbMocks.selectResults.push([billableRow({ minutes: 30, billableMinutes: null, rate: '100.00' })], []);
+    const { rows } = await listBillables(FROM, TO);
+    expect(rows[0]).toMatchObject({ quantity: '0.50', amount: '50.00' });
+  });
+
+  it('an INCLUDED entry appears in listBillables with no money', async () => {
+    dbMocks.selectResults.push([billableRow({
+      minutes: 45, billableMinutes: 45, rate: null, billingStatus: 'contract',
+    })], []);
+    const { rows, totalsByCurrency } = await listBillables(FROM, TO);
+    expect(rows[0]).toMatchObject({ quantity: '0.75', amount: '0.00' });
+    // Pre-existing behaviour, re-pinned here: a rate-less row still carries its
+    // snapshot currency, so the currency appears with a ZERO total. It adds no
+    // money, which is the §3.5 property; it is not absent from the list.
+    expect(totalsByCurrency).toEqual([{ currencyCode: 'USD', amount: '0.00' }]);
+  });
+
+  it('the timesheet bills the minimum but reports ACTUAL minutes in day totals', async () => {
+    dbMocks.selectResults.push([{
+      id: 'te-1', startedAt: new Date('2026-03-03T09:00:00Z'),
+      durationMinutes: 20, billableMinutes: 60,
+      isBillable: true, hourlyRate: '225.00', currencyCode: 'USD',
+    }]);
+    const sheet = await getTimesheet('u-1', new Date('2026-03-02T00:00:00Z'));
+    expect(sheet.totals.billableAmounts).toEqual([{ currencyCode: 'USD', amount: '225.00' }]);
+    // Utilization is about time WORKED (§3.5).
+    expect(sheet.totals.totalMinutes).toBe(20);
+    expect(sheet.totals.billableMinutes).toBe(20);
+    expect(sheet.days[1]!.totalMinutes).toBe(20);
+  });
+
+  it('the timesheet selection carries billable_minutes to the client', async () => {
+    dbMocks.selectResults.push([]);
+    await getTimesheet('u-1', new Date('2026-03-02T00:00:00Z'));
+    expect(dbMocks.selectArgs[0]).toHaveProperty('billableMinutes', 'billableMinutes');
+  });
+
+  it('an INCLUDED entry adds no money to the timesheet', async () => {
+    dbMocks.selectResults.push([{
+      id: 'te-1', startedAt: new Date('2026-03-03T09:00:00Z'),
+      durationMinutes: 45, billableMinutes: 45,
+      isBillable: true, hourlyRate: null, currencyCode: 'USD',
+    }]);
+    const sheet = await getTimesheet('u-1', new Date('2026-03-02T00:00:00Z'));
+    expect(sheet.totals.billableAmounts).toEqual([]);
+    expect(sheet.totals.billableMinutes).toBe(45);
   });
 });

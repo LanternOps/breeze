@@ -115,6 +115,13 @@ EOF
 
 Replace `YOUR_TURN_SECRET_HERE` and `YOUR_PUBLIC_IP_HERE` with your actual values.
 
+`tls-listening-port=5349` above does nothing on its own: coturn skips the TLS
+listener without complaint unless you also add `cert=` and `pkey=` pointing at
+a certificate readable by the user coturn runs as, open TCP 5349 in the
+firewall, and set `TURN_TLS_HOST` (the hostname on that certificate) in
+Breeze's `.env` so the API advertises `turns:`. Remember that coturn does not
+reload the certificate — restart it on every renewal.
+
 Start the service:
 
 ```bash
@@ -228,7 +235,64 @@ You can also set `COMPOSE_PROFILES=turn` in your `.env` file so `docker compose 
 The bundled coturn runs with `network_mode: host`, so it needs direct access to the network — no port mapping is required, but the host firewall must allow:
 
 - **TCP+UDP 3478** — TURN listening port (TCP is required for clients behind restrictive firewalls)
+- **TCP 5349** — TURN over TLS (`turns:`), only once you have configured a certificate (see below)
 - **TCP+UDP 49152–65535** — relay port range (default, can be tightened in `docker/turnserver.conf`)
+
+### TURN over TLS (`turns:`)
+
+The bundled coturn is started with `--tls-listening-port=5349`, but coturn
+**silently skips the TLS listener when it has no certificate** — so out of the
+box only 3478 listens. TURNS matters for reachability, not confidentiality
+(WebRTC media is already end-to-end encrypted with DTLS-SRTP): `turns:` over
+TCP/5349 is what gets through customer networks that block UDP or allow only a
+short list of TCP ports.
+
+To enable it, set in `.env`:
+
+```bash
+# Directory on the host containing cert.pem and privkey.pem
+TURN_TLS_DIR=/opt/breeze/coturn-tls
+# The hostname ON that certificate (not the bare IP in TURN_HOST)
+TURN_TLS_HOST=turn.your-domain.example.com
+# TURN_TLS_PORT=5349
+```
+
+`TURN_TLS_DIR` is bind-mounted read-only at `/etc/coturn/tls`, and coturn is
+given `--cert`/`--pkey` only when both files are readable. Leave `TURN_TLS_DIR`
+unset and nothing changes — except that the container now logs *why* 5349 is
+not listening instead of saying nothing. An expired or unparseable certificate
+still enables the listener (coturn binds it either way) but logs a loud
+`WARNING` at startup, since every handshake against it will fail.
+
+The API also warns at startup when only one half is configured — a
+`TURN_TLS_HOST` with no `TURN_TLS_DIR` advertises a `turns:` URL that nothing
+is listening for, and a `TURN_TLS_DIR` with no `TURN_TLS_HOST` brings up a
+listener no client is ever told about.
+
+The API advertises `turns:` only when `TURN_TLS_HOST` is set, because a
+certificate cannot validate against the bare public IP that `TURN_HOST` holds.
+Point that hostname's DNS at the TURN server.
+
+<Aside type="caution">
+  **Two things that are easy to get wrong.**
+
+  1. **Ownership.** coturn drops to uid `65534` (`nobody`), while Caddy writes
+     its certificate and key as `0600 root`. Bind-mounting Caddy's certificate
+     directory therefore does not work, and loosening the mode at the source
+     does not survive renewal — Caddy rewrites both files. Copy the pair to a
+     staging directory instead, at mode `0640` with a group `nobody` can read.
+  2. **Renewal.** coturn reads the certificate once at startup and never
+     reloads it. Without a restart or `SIGHUP` when the certificate is renewed,
+     TURNS breaks silently roughly 60 days after deployment, and nothing
+     surfaces it until a customer cannot connect. Drive the copy and the
+     restart from the same hook or timer that watches the certificate:
+
+  ```bash
+  install -o root -g nogroup -m 0640 /path/to/cert.pem /opt/breeze/coturn-tls/cert.pem
+  install -o root -g nogroup -m 0640 /path/to/privkey.pem /opt/breeze/coturn-tls/privkey.pem
+  docker compose restart coturn
+  ```
+</Aside>
 
 ---
 

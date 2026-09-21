@@ -169,21 +169,21 @@ const DEFAULT_ROW = {
 };
 
 describe('processAlertNotifications config-policy delivery overrides (#5289 Task 9, on resolveDelivery since W05b)', () => {
-  it('documents the converter dependency for alerts queued before retirement', () => {
+  it('documents why a retired source still answers for older alerts', () => {
     const source = readFileSync(new URL('./notificationDispatcher.ts', import.meta.url), 'utf8');
-    expect(source).toContain('PR 3 open-alert carry-over');
+    expect(source).toContain('alerts that fired BEFORE it was retired');
   });
 
-  it.each(['rule', 'policy'] as const)('queued %s dispatch excludes a source retired after enqueue', async (axis) => {
+  it.each(['rule', 'policy'] as const)('queued %s dispatch falls back to default routing when the source is gone', async (axis) => {
     resolveDeliveryMock.mockResolvedValueOnce({ channelIds: [], skippedChannelIds: [], escalationPolicyId: null, source: 'none' });
     selectQueue.push(
       [makeAlert(axis === 'rule' ? { ruleId: 'old-rule' } : { configPolicyId: 'old-policy-rule' })],
       [{ id: 'device-1', siteId: 'site-1' }],
-      [], // Live-only source lookup: source has been retired.
+      [], // Source lookup returns nothing (deleted, or retired before the alert).
     );
     await processAlertNotifications({ type: 'process-alert', alertId: 'alert-1' });
     const sql = predicates.map((predicate) => new PgDialect().sqlToQuery(predicate).sql).join('\n');
-    expect(sql).toContain(`"${axis === 'rule' ? 'alert_rules' : 'config_policy_alert_rules'}"."retired_at" is null`);
+    expect(sql).toContain(`"${axis === 'rule' ? 'alert_rules' : 'config_policy_alert_rules'}"."retired_at"`);
     expect(resolveDeliveryMock).toHaveBeenCalledExactlyOnceWith({
       orgId: 'org-1',
       severity: 'high',
@@ -191,6 +191,31 @@ describe('processAlertNotifications config-policy delivery overrides (#5289 Task
       siteId: 'site-1',
       legacyOverride: null,
     });
+  });
+
+  it.each(['rule', 'policy'] as const)('a %s retired AFTER the alert fired still supplies its overrides', async (axis) => {
+    // retireSource (an unconvertible source) has no monitor to carry alerts to,
+    // so an alert that fired BEFORE the retirement would otherwise fall to
+    // default routing and silently lose its escalation policy and channels.
+    // The source stays readable for alerts older than its retired_at.
+    selectQueue.push(
+      [makeAlert(axis === 'rule'
+        ? { ruleId: 'old-rule', configPolicyId: null }
+        : { ruleId: null, configPolicyId: 'old-policy-rule' })],
+      [{ id: 'device-1', siteId: 'site-1' }],
+      axis === 'rule'
+        ? [{ overrideSettings: { escalationPolicyId: 'e9', notificationChannelIds: ['aaaaaaaa-0000-4000-8000-000000000012'] }, managedByMonitorId: null }]
+        : [{ escalationPolicyId: 'e9', notificationChannelIds: ['aaaaaaaa-0000-4000-8000-000000000012'] }],
+    );
+    await processAlertNotifications({ type: 'process-alert', alertId: 'alert-1' });
+    const sql = predicates.map((predicate) => new PgDialect().sqlToQuery(predicate).sql).join('\n');
+    // Control: the predicate is the retired-OR-older-than-retirement form, not
+    // a plain `retired_at is null` and not an unfiltered read.
+    expect(sql).toContain('retired_at');
+    expect(sql).toMatch(/retired_at" is null or .*retired_at" >/s);
+    expect(resolveDeliveryMock).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      legacyOverride: { channelIds: ['aaaaaaaa-0000-4000-8000-000000000012'], escalationPolicyId: 'e9' },
+    }));
   });
 
   it('routes to the config-policy rule channels and schedules its escalation policy (transitional legacy override)', async () => {

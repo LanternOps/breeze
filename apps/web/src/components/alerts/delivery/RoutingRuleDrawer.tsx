@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { MONITOR_KINDS } from '@breeze/shared';
 import { Drawer } from '../../shared/Drawer';
 import { fetchWithAuth } from '../../../stores/auth';
-import { asList } from '@/lib/asList';
+import { fetchAllSites } from '@/lib/fetchAllSites';
 import type { ChannelChoice } from './useDeliveryResource';
 import { isPartnerRail, type EscalationPolicy, type EditableRoutingRule } from './deliveryActions';
 
@@ -46,12 +46,8 @@ export default function RoutingRuleDrawer({ open, mode, rule, initialChannelIds,
     setSitesError(false);
     if (!open || mode !== 'rule' || values.ownerScope !== 'organization' || !orgId) return;
     let cancelled = false;
-    fetchWithAuth(`/orgs/sites?organizationId=${orgId}&limit=100`)
-      .then(async (r) => {
-        if (!r.ok) throw new Error('Sites request failed');
-        return asList(await r.json(), 'sites');
-      })
-      .then((list) => { if (!cancelled) setSites(list as Array<{ id: string; name: string }>); })
+    fetchAllSites<{ id: string; name: string }>(`/orgs/sites?organizationId=${orgId}`)
+      .then((list) => { if (!cancelled) setSites(list); })
       .catch(() => { if (!cancelled) setSitesError(true); });
     return () => { cancelled = true; };
   }, [open, mode, values.ownerScope, orgId, sitesAttempt]);

@@ -8,6 +8,7 @@
  * - Interpolate template strings
  */
 
+import type { MonitorKind } from '@breeze/shared';
 import { db } from '../db';
 import {
   alerts,
@@ -55,6 +56,7 @@ export interface CreateAlertParams {
    * (the compiled rule is an implementation detail they never see).
    */
   monitorId?: string | null;
+  kind?: MonitorKind | null;
   /** #5290 — the breach episode this alert belongs to. */
   episodeId?: string | null;
   /**
@@ -146,6 +148,14 @@ async function publishAlertTriggeredOrRollback(opts: {
   }
 }
 
+async function monitorEventFields(monitorId: string | null | undefined, kind?: MonitorKind | null): Promise<{ monitorId: string | null; kind: MonitorKind | null }> {
+  if (!monitorId) return { monitorId: null, kind: null };
+  if (kind) return { monitorId, kind };
+  const [definition] = await db.select({ kind: monitorDefinitions.kind })
+    .from(monitorDefinitions).where(eq(monitorDefinitions.id, monitorId)).limit(1);
+  return { monitorId, kind: definition?.kind ?? null };
+}
+
 /**
  * Create a new alert
  * - Checks cooldown to prevent duplicates
@@ -223,6 +233,8 @@ export async function createAlert(params: CreateAlertParams): Promise<string | n
   // Record state transition for flapping detection
   await recordStateTransition(ruleId, deviceId, 'triggered');
 
+  const monitorFields = await monitorEventFields(monitorId ?? rule.managedByMonitorId, params.kind);
+
   // Create the alert
   const [newAlert] = await db
     .insert(alerts)
@@ -234,7 +246,7 @@ export async function createAlert(params: CreateAlertParams): Promise<string | n
       title,
       message,
       context: context ?? {},
-      monitorId: monitorId ?? null,
+      monitorId: monitorFields.monitorId,
       episodeId: episodeId ?? null,
       requiresHuman: requiresHuman ?? false,
       status: 'active',
@@ -263,7 +275,8 @@ export async function createAlert(params: CreateAlertParams): Promise<string | n
       deviceId,
       severity,
       title,
-      message
+      message,
+      ...monitorFields
     },
     publisher: 'alert-service',
     siteId
@@ -317,6 +330,7 @@ export interface CreateSourcedAlertParams {
    * channels and escalation policy from the monitor via this id.
    */
   monitorId?: string | null;
+  kind?: MonitorKind | null;
   /** #5290 — the breach episode this alert belongs to. */
   episodeId?: string | null;
   /**
@@ -348,6 +362,7 @@ export interface CreateSourcedAlertParams {
  */
 export async function createSourcedAlert(params: CreateSourcedAlertParams): Promise<string | null> {
   const { deviceId, orgId, severity, title, message, context, publisher, eventPayload, triggeredAt } = params;
+  const monitorFields = await monitorEventFields(params.monitorId, params.kind);
 
   const [newAlert] = await db
     .insert(alerts)
@@ -396,6 +411,7 @@ export async function createSourcedAlert(params: CreateSourcedAlertParams): Prom
       // `source` last so it is always the one persisted in context — a caller
       // cannot accidentally publish a source that disagrees with the row.
       ...eventPayload,
+      ...monitorFields,
       source: context.source
     },
     publisher,
@@ -1162,6 +1178,7 @@ async function evaluateDeviceAlertsInMode(deviceId: string, mode: DeviceEvaluati
           // #5289 — provenance, so the alert links to the authored monitor
           // rather than to the compiled rule the technician never sees.
           monitorId: rule.managedByMonitorId ?? null,
+          kind: monitor?.kind ?? null,
           episodeId,
           context: {
             ...result.context,

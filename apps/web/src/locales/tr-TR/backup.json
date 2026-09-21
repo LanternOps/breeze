@@ -495,6 +495,8 @@
     "originalLocation": "Orijinal konum",
     "restoreFilesInPlace": "Dosyaları yerine geri yükleyin.",
     "alternatePath": "Alternatif yol",
+    "alternatePathPlaceholder": "örn. D:\\Restored veya /var/restore",
+    "alternatePathRequired": "Devam etmek için bir hedef yol girin.",
     "restoreToANewFolder": "Yeni bir klasöre geri yükleyin.",
     "reviewConfirm": "İncele ve onayla",
     "confirmTheRestoreSummaryBeforeStarting": "Başlamadan önce geri yükleme özetini onaylayın.",
@@ -730,7 +732,15 @@
     "launchExecution": "Yürütmeyi başlat",
     "startANewDrRunFor": "için yeni bir DR çalıştırması başlatın",
     "cancel": "İptal",
-    "startExecution": "Yürütmeyi başlat"
+    "startExecution": "Yürütmeyi başlat",
+    "executeErrorFallback": "Yürütme başlatılamadı.",
+    "executeErrorNoRestorableSnapshot": "Başlatılamıyor: bare-metal yeniden oluşturma grubundaki bir cihazın geri yüklenebilir yedek anlık görüntüsü yok. Önce o gruptaki her cihaz için başarılı bir yedekleme çalıştırın.",
+    "executeErrorNoRecoverySource": "Başlatılamıyor: bir kurtarma grubu hiçbir kurtarma kaynağı belirtmiyor. Gruba bir anlık görüntü, geri yükleme işi veya kurtarma belirteci ekleyin.",
+    "executeErrorGroupHasNoValidDevices": "Başlatılamıyor: bir kurtarma grubunda geçerli cihaz yok. Planı düzenleyip her gruba en az bir cihaz ekleyin.",
+    "executeErrorInvalidSourceReference": "Başlatılamıyor: bir kurtarma grubu geçersiz tanımlayıcıya sahip bir kurtarma kaynağına başvuruyor. Grubu düzenleyip kaynağını yeniden seçin.",
+    "executeErrorInvalidStepConfig": "Başlatılamıyor: bir kurtarma grubunun adım yapılandırması geçersiz. Grubu düzenleyip ayarlarını düzeltin.",
+    "executeErrorResourceNotFound": "Başlatılamıyor: bu planın başvurduğu bir anlık görüntü artık mevcut değil. Etkilenen grubu düzenleyip güncel bir anlık görüntü seçin.",
+    "executeErrorBackupWriteRequired": "Başlatılamıyor: bu plan, yedek yazma iznini gerektiren bir bare-metal yeniden oluşturma grubu içeriyor."
   },
   "dRExecutionView": {
     "executionDetails": "Yürütme ayrıntıları",
@@ -806,7 +816,9 @@
     "uniqueDeviceCount_one": "{{count}} benzersiz cihaz",
     "uniqueDeviceCount_other": "{{count}} benzersiz cihazlar",
     "chooseAStepTypeForEachGroup": "Her kurtarma grubu için bir adım türü seçin.",
-    "rebuildWaitTimeoutOutOfRange": "Bare-metal yeniden oluşturma bekleme süresi {{min}} ile {{max}} dakika arasında bir tam sayı olmalıdır."
+    "rebuildWaitTimeoutOutOfRange": "Bare-metal yeniden oluşturma bekleme süresi {{min}} ile {{max}} dakika arasında bir tam sayı olmalıdır.",
+    "rebuildOutputDirMustBeAbsolute": "Bare-metal yeniden oluşturma çıktı dizini \"/\" ile başlayan mutlak bir yol olmalı ve en fazla {{max}} karakter içermelidir.",
+    "partialSaveFailure": "Bu planın bir bölümü hatadan önce kaydedildi; bu nedenle plan ile liste artık farklı olabilir. Sorunu giderip yeniden kaydedin. Sunucunun yanıtı: {{message}}"
   },
   "dRPlanGroupCard": {
     "device": "cihaz",

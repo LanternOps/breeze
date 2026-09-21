@@ -45,6 +45,19 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   { method: 'POST', pattern: /^\/api\/v1\/tool-sources\/?$/ },
   { method: 'PATCH', pattern: /^\/api\/v1\/tool-sources\/[^/]+\/?$/ },
   { method: 'POST', pattern: /^\/api\/v1\/tool-sources\/[^/]+\/discover\/?$/ },
+  // Monitor conversion (W05c1): every entry point runs its own serializable /
+  // repeatable-read transaction through inCallerTransaction, which opens a
+  // second pooled connection. With the request's ambient transaction still
+  // held that deadlocks the pool at concurrency >= pool size, so these routes
+  // own their context and write their audit after the conversion commits.
+  // Only the entry points that open their OWN isolated transaction. /ledger and
+  // /pending are ordinary reads and must keep the request's context.
+  { method: 'GET', pattern: /^\/api\/v1\/monitor-definitions\/conversion\/policies\/[^/]+\/preview\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/monitor-definitions\/conversion\/partner\/preview\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/monitor-definitions\/conversion\/partner\/convert-all\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/monitor-definitions\/conversion\/policies\/[^/]+\/convert\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/monitor-definitions\/conversion\/retire\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/monitor-definitions\/conversion\/[^/]+\/revert\/?$/ },
   // Partner-initiated "Send payment link" — createInvoicePayLink.
   { method: 'POST', pattern: /^\/api\/v1\/invoices\/[^/]+\/pay-link\/?$/ },
   // Customer-portal "Pay invoice online".
@@ -295,6 +308,19 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // The handler opens its own short `withAuthDbAccessContext` blocks around the
   // claim and the finalise, and runs the dispatch between them.
   { method: 'POST', pattern: /^\/api\/v1\/devices\/[^/]+\/filesystem\/cleanup-execute\/?$/ },
+  // #6337 — SNMP monitoring config save/patch. Both handlers enqueue an
+  // immediate poll (`enqueueSnmpPoll` → bullmq `Queue.add`, up to three Redis
+  // round-trips) once the template changes. Under the ambient request
+  // transaction that enqueue STARTED inside the held context even when left
+  // unawaited, tripping the #1105 held-transaction tripwire on every template
+  // save (and failing the request under DB_CONTEXT_TRIPWIRE_STRICT).
+  // `runOutsideDbContext` would only silence the warning — it cannot close the
+  // middleware's outer transaction. The handlers now wrap all their DB work in
+  // one short `withAuthDbAccessContext` block and enqueue after it commits,
+  // which also means the queued poll can no longer read a row that is still
+  // uncommitted.
+  { method: 'PUT', pattern: /^\/api\/v1\/monitoring\/assets\/[^/]+\/snmp\/?$/ },
+  { method: 'PATCH', pattern: /^\/api\/v1\/monitoring\/assets\/[^/]+\/snmp\/?$/ },
 ];
 
 /**

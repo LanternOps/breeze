@@ -1712,7 +1712,8 @@
         "running": "in esecuzione",
         "editEntry": "Modifica voce {{id}}",
         "total": "Totale: {{duration}}",
-        "billableTotal": "Fatturabile: {{duration}}"
+        "billableTotal": "Fatturabile: {{duration}}",
+        "billedVsWorked": "{{worked}} h lavorate · {{billed}} h fatturate"
       },
       "sourceBadge": {
         "timer": "Timer",

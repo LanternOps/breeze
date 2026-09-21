@@ -1780,6 +1780,19 @@ func TestCreateSnapshot_PartialFailureRecordsUploadFailures(t *testing.T) {
 	if strings.Contains(string(data), `"UploadFailures":`) || strings.Contains(string(data), `"uploadFailures":`) {
 		t.Fatalf("UploadFailures must not serialize into the manifest: %s", data)
 	}
+	// ...but the COUNT must, or a later verify walks a manifest that lists only
+	// what uploaded and reports a clean pass on an incomplete restore point
+	// (#6350). This asserts the real CreateSnapshot wiring, not just the
+	// recordIncompleteFiles helper.
+	if snapshot.IncompleteFiles != 1 {
+		t.Errorf("IncompleteFiles = %d, want 1", snapshot.IncompleteFiles)
+	}
+	if len(snapshot.IncompleteFilePaths) != 1 || !strings.Contains(snapshot.IncompleteFilePaths[0], "missing.txt") {
+		t.Errorf("IncompleteFilePaths = %v, want it to name missing.txt", snapshot.IncompleteFilePaths)
+	}
+	if !strings.Contains(string(data), `"incompleteFiles":1`) {
+		t.Errorf("incompleteFiles must serialize into the manifest: %s", data)
+	}
 }
 
 // TestCreateSnapshotWithProgress_IncrementalTwoRun_ReferencesUnchangedFiles

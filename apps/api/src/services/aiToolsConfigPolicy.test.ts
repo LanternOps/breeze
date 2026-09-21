@@ -1432,3 +1432,89 @@ describe('manage_policy_feature_link describe action (A-W03)', () => {
     expect(definition.description).toMatch(/irreversible/i);
   });
 });
+
+// ============================================================
+// #6312 — maintenance inlineSettings reach the model as a field-level error
+// ============================================================
+
+describe('manage_policy_feature_link maintenance inlineSettings validation (#6312)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(db.select).mockReset();
+    vi.mocked(getConfigPolicy).mockReset();
+    vi.mocked(addFeatureLink).mockReset();
+    vi.mocked(updateFeatureLink).mockReset();
+    canManagePartnerWidePoliciesMock.mockReset().mockReturnValue(true);
+    policyAccessConditionMock.mockReset().mockReturnValue(undefined);
+    enable2faState.value = true;
+  });
+
+  function toolsWithPolicy() {
+    vi.mocked(getConfigPolicy).mockResolvedValue({ id: POLICY_ID, orgId: ORG_ID, partnerId: null, name: 'Org policy' } as any);
+    const tools = new Map<string, any>();
+    registerConfigPolicyTools(tools);
+    return tools;
+  }
+
+  it('returns a field-level error for an unknown recurrence, not the generic tool error', async () => {
+    // Without the VALIDATED_INLINE_SETTINGS entry the ZodError escapes
+    // decomposeInlineSettings and safeHandler's sanitizeThrownToolError
+    // replaces it with GENERIC_TOOL_ERROR_MESSAGE, so the model never learns
+    // which field it got wrong.
+    vi.mocked(addFeatureLink).mockResolvedValue({ id: 'link-1', featureType: 'maintenance' } as any);
+
+    const output = await toolsWithPolicy().get('manage_policy_feature_link')!.handler({
+      action: 'add',
+      configPolicyId: POLICY_ID,
+      featureType: 'maintenance',
+      inlineSettings: { recurrence: 'fortnightly', durationHours: 2, timezone: 'UTC' },
+    }, makeAuth());
+
+    const parsed = JSON.parse(output);
+    expect(parsed.error).toMatch(/recurrence/i);
+    // Armed above, so an ungated tool would have completed the write.
+    expect(vi.mocked(addFeatureLink)).not.toHaveBeenCalled();
+  });
+
+  it('refuses a negative durationHours on update', async () => {
+    const tools = toolsWithPolicy();
+    mockSelectRows([{ featureType: 'maintenance' }]);
+    vi.mocked(updateFeatureLink).mockResolvedValue({ id: 'link-1', featureType: 'maintenance' } as any);
+
+    const output = await tools.get('manage_policy_feature_link')!.handler({
+      action: 'update',
+      configPolicyId: POLICY_ID,
+      featureLinkId: 'link-1',
+      featureType: 'maintenance',
+      inlineSettings: { recurrence: 'daily', durationHours: -5, timezone: 'UTC' },
+    }, makeAuth());
+
+    expect(JSON.parse(output).error).toMatch(/durationHours/i);
+    expect(vi.mocked(updateFeatureLink)).not.toHaveBeenCalled();
+  });
+
+  it('normalizes a valid payload so the stored JSONB mirror carries the schema defaults', async () => {
+    vi.mocked(addFeatureLink).mockResolvedValue({ id: 'link-1', featureType: 'maintenance' } as any);
+
+    await toolsWithPolicy().get('manage_policy_feature_link')!.handler({
+      action: 'add',
+      configPolicyId: POLICY_ID,
+      featureType: 'maintenance',
+      inlineSettings: { recurrence: 'daily', windowStart: '02:30', durationHours: 4, timezone: 'America/New_York' },
+    }, makeAuth());
+
+    expect(vi.mocked(addFeatureLink)).toHaveBeenCalledWith(
+      POLICY_ID,
+      'maintenance',
+      null,
+      expect.objectContaining({
+        recurrence: 'daily',
+        windowStart: '02:30',
+        durationHours: 4,
+        timezone: 'America/New_York',
+        suppressAlerts: true,
+        notifyBeforeMinutes: 15,
+      }),
+    );
+  });
+});

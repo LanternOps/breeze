@@ -316,7 +316,24 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/agent-versions/sync-github/extra', 'extra segment must not match'],
     ['POST', '/api/v1/agent-versions', 'plain upload route is DB-only'],
     ['GET', '/api/v1/agent-versions/pinnable', 'pinnable listing is DB-only'],
+    // #6337 — only the SNMP config writes enqueue a poll; the other monitoring
+    // asset routes are DB-only and keep the ambient RLS transaction.
+    ['GET', '/api/v1/monitoring/assets/11111111-1111-4111-8111-111111111111/snmp', 'snmp read is DB-only'],
+    ['DELETE', '/api/v1/monitoring/assets/11111111-1111-4111-8111-111111111111/snmp', 'snmp delete is DB-only'],
+    ['PUT', '/api/v1/monitoring/assets/11111111-1111-4111-8111-111111111111', 'asset update is DB-only'],
+    ['PUT', '/api/v1/monitoring/assets/11111111-1111-4111-8111-111111111111/snmp/extra', 'extra segment must not match'],
   ];
+
+  const SNMP_MATCH: ReadonlyArray<[string, string]> = [
+    // #6337 — both SNMP config writes enqueue an immediate poll after their
+    // own short DB context closes, so they must not inherit an ambient tx.
+    ['PUT', '/api/v1/monitoring/assets/11111111-1111-4111-8111-111111111111/snmp'],
+    ['PATCH', '/api/v1/monitoring/assets/11111111-1111-4111-8111-111111111111/snmp'],
+  ];
+
+  it.each(SNMP_MATCH)('opts out (#6337): %s %s', (method, path) => {
+    expect(isSelfManagedDbContextRoute(method, path)).toBe(true);
+  });
 
   it.each(MATCH)('opts out: %s %s', (method, path) => {
     expect(isSelfManagedDbContextRoute(method, path)).toBe(true);

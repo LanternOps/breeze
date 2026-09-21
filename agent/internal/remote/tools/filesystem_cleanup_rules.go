@@ -318,7 +318,18 @@ func cleanupRuleAnchorFor(goos, path string) (string, bool) {
 	if match == nil || match.LiteralPrefix == 0 {
 		return "", false
 	}
-	return concreteAnchor(goos, path, match.LiteralPrefix)
+	n := match.LiteralPrefix
+	// A FULLY LITERAL pattern (`/root/.local/share/Trash`) has a literal prefix
+	// as long as the pattern, so anchoring on it makes the anchor the target
+	// itself — and openCleanupTarget refuses `rel == "."`, which left root's
+	// Trash previewed forever and never deletable (#6375). Step up one
+	// component: still a directory the rule author fixed, and the target stays
+	// a named entry resolved through the Root, so the leaf symlink/identity
+	// checks all still run. Everything else keeps the literal-prefix anchor.
+	if components := splitCleanupComponents(normalizeCleanupPathFor(goos, path)); n >= len(components) {
+		n = len(components) - 1
+	}
+	return concreteAnchor(goos, path, n)
 }
 
 // concreteAnchor rebuilds the first n normalised components of path as a real,

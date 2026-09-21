@@ -57,6 +57,18 @@ export const bareMetalRecoveries = pgTable('bare_metal_recoveries', {
   codeHashIdx: uniqueIndex('bare_metal_recoveries_code_hash_idx').on(t.codeHash),
   orgIdx: index('bare_metal_recoveries_org_idx').on(t.orgId),
   deviceIdx: index('bare_metal_recoveries_device_idx').on(t.deviceId, t.createdAt),
+  /**
+   * One non-terminal recovery per device (#6322). The service pre-checks this
+   * too, but SELECT-then-INSERT loses the race between two concurrent
+   * creators; the index is the arbiter and its 23505 maps to the
+   * `recovery_in_progress` 409. Terminal list mirrors
+   * BARE_METAL_RECOVERY_TERMINAL above — changing that set needs a migration
+   * that rebuilds this index.
+   * Migration: apps/api/migrations/2026-10-25-120000-bare-metal-recoveries-in-flight-unique.sql
+   */
+  deviceInFlightIdx: uniqueIndex('bare_metal_recoveries_device_in_flight_idx')
+    .on(t.deviceId)
+    .where(sql`status NOT IN ('checked_in', 'completed', 'failed', 'refused')`),
   tokenIdx: index('bare_metal_recoveries_token_idx').on(t.recoveryTokenId),
   drExecutionIdx: index('bare_metal_recoveries_dr_execution_idx').on(t.drExecutionId).where(sql`dr_execution_id IS NOT NULL`),
 }));

@@ -354,9 +354,12 @@ describe('system-cleanup queue/start service seam', () => {
       expect(writes[0]?.values).toMatchObject({ kind: 'system', status: 'running' });
       return { command: { id: SEAM_COMMAND_ID } };
     });
-    await expect(startSystemCleanupRun(seamArgs)).resolves.toEqual({ ok: true, commandId: SEAM_COMMAND_ID, cleanupRunId: SEAM_RUN_ID });
+    const started = await startSystemCleanupRun(seamArgs);
+    expect(started).toEqual({ ok: true, commandId: SEAM_COMMAND_ID, cleanupRunId: SEAM_RUN_ID, deadlineAt: expect.any(String) });
     expect(seam.lock).toHaveBeenCalledWith('update');
     const plan = writes[0]?.values.plan as { deadlineAt: string };
+    // The deadline the caller is told is the one STORED on the row — one number.
+    expect((started as { deadlineAt: string }).deadlineAt).toBe(plan.deadlineAt);
     expect(new Date(plan.deadlineAt).getTime() - Date.now()).toBeGreaterThan(14 * 60_000);
     expect(new Date(plan.deadlineAt).getTime() - Date.now()).toBeLessThanOrEqual(15 * 60_000);
     expect(writes.at(-1)?.values).toMatchObject({ commandId: SEAM_COMMAND_ID });

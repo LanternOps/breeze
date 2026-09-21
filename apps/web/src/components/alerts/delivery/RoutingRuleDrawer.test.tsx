@@ -39,7 +39,11 @@ describe('routing sites loading', () => {
 
   it('does not show an error or Retry for an organization with no sites', async () => {
     renderDrawer();
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/orgs/sites?organizationId=org-1&limit=100'));
+    // `fetchAllSites` (#6412) pages to exhaustion, so the request also
+    // carries explicit `page`/`limit` params and an (undefined) init arg.
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith('/orgs/sites?organizationId=org-1&page=1&limit=100', undefined),
+    );
     expect(screen.queryByTestId('routing-sites-error')).toBeNull();
     expect(screen.queryByTestId('routing-sites-retry')).toBeNull();
   });

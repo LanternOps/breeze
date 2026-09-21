@@ -90,7 +90,7 @@ W01 (`work_types` + `work_type_id` + dry-run report) and W02 (profile tables, Ra
 
 Why one module with both: the CHECK constraint is the only thing that makes drift between the two representations *visible*, and the constraint name has to be shared by the migration and the integration test. Putting the TS function, the SQL fragment and the constraint name in one file means a reviewer looking at any change sees all three at once.
 
-- [ ] **Step 0: Precondition check — stop if W02 has not merged**
+- [x] **Step 0: Precondition check — stop if W02 has not merged**
 
 ```bash
 cd /path/to/worktree
@@ -101,7 +101,7 @@ ls apps/api/src/services/billingRuleResolver.ts
 
 All three must succeed. If any fails, **stop** and report: "#4628 W02 has not merged; W03 cannot start." Then open `apps/api/src/services/billingRuleResolver.ts` and record the **exact** field names the resolved rule uses for the minimum and the rounding increment — every `NOT VERIFIED: confirm against merged W02` marker in this plan resolves to those names.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```ts
 // apps/api/src/services/billableMinutes.test.ts
@@ -156,14 +156,14 @@ describe('computeBillableMinutes', () => {
 });
 ```
 
-- [ ] **Step 2: Run the test and watch it fail**
+- [x] **Step 2: Run the test and watch it fail**
 
 ```bash
 cd apps/api && npx vitest run src/services/billableMinutes.test.ts
 ```
 Expected: FAIL — `Failed to resolve import "./billableMinutes"`.
 
-- [ ] **Step 3: Write the module**
+- [x] **Step 3: Write the module**
 
 ```ts
 // apps/api/src/services/billableMinutes.ts
@@ -226,14 +226,14 @@ export function billableMinutesSql(durationExpr: SQL | number): SQL<number> {
 
 > `NOT VERIFIED: confirm against merged W02` — `timeEntries.minimumMinutes` and `timeEntries.roundingIncrementMinutes` are the Drizzle property names W02 is expected to use for `minimum_minutes` / `rounding_increment_minutes`. If W02 named them differently, fix the two references here and nowhere else — every other file in this plan goes through this module.
 
-- [ ] **Step 4: Run the test and watch it pass**
+- [x] **Step 4: Run the test and watch it pass**
 
 ```bash
 cd apps/api && npx vitest run src/services/billableMinutes.test.ts
 ```
 Expected: PASS, 17 tests.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/api/src/services/billableMinutes.ts apps/api/src/services/billableMinutes.test.ts
@@ -261,14 +261,14 @@ git commit -m "feat(billing): one billable-minutes arithmetic in TS and SQL (#46
 
 `time_entries` is a hot table, so the backfill is a `ctid` batch loop, not one `UPDATE`.
 
-- [ ] **Step 1: Check the filename still sorts last**
+- [x] **Step 1: Check the filename still sorts last**
 
 ```bash
 ls apps/api/migrations | sort | tail -5
 ```
 The new file must sort **after** every line printed. If it does not, rename it (keep `YYYY-MM-DD-HHMMSS-<slug>.sql`; never an epoch prefix; never a `2026-08-06-g-` infix).
 
-- [ ] **Step 2: Write the migration**
+- [x] **Step 2: Write the migration**
 
 ```sql
 -- apps/api/migrations/2026-10-23-090000-time-entries-billable-minutes.sql
@@ -360,7 +360,7 @@ END $$;
 ALTER TABLE time_entries VALIDATE CONSTRAINT time_entries_billable_minutes_chk;
 ```
 
-- [ ] **Step 3: Add the column to the Drizzle schema**
+- [x] **Step 3: Add the column to the Drizzle schema**
 
 In `apps/api/src/db/schema/timeTracking.ts`, in the `timeEntries` table definition, immediately after the W02 `roundingIncrementMinutes` line:
 
@@ -373,7 +373,7 @@ In `apps/api/src/db/schema/timeTracking.ts`, in the `timeEntries` table definiti
 
 > `NOT VERIFIED: confirm against merged W02` — the anchor line. If W02 put the minute columns elsewhere in the table, place `billableMinutes` beside them.
 
-- [ ] **Step 4: Register the column in the export policy**
+- [x] **Step 4: Register the column in the export policy**
 
 `apps/api/src/services/tenantExportPolicyRegistry.ts:662` — append `"billable_minutes"` to `time_entries`' `included` array. It is a monotonic integer, not a container, and not a credential, so `included` is the right bucket. **This is not optional**: CLAUDE.md's export-policy row is the one registration that fires on a new *column*, and the suite that catches it is integration-only, so a unit-green PR reddens main.
 
@@ -383,7 +383,7 @@ In `apps/api/src/db/schema/timeTracking.ts`, in the `timeEntries` table definiti
 
 > `NOT VERIFIED: confirm against merged W02` — W02 adds `work_type_id`, `billing_profile_id`, `coverage`, `billing_overridden`, `minimum_minutes`, `rounding_increment_minutes` to this same array. Do not delete them; insert `billable_minutes` next to `duration_minutes` and leave the rest alone.
 
-- [ ] **Step 5: Apply the migration and check for drift**
+- [x] **Step 5: Apply the migration and check for drift**
 
 ```bash
 pnpm test-stack up
@@ -394,7 +394,7 @@ cd apps/api && npx vitest run src/db/autoMigrate.test.ts src/db/migrationRlsScop
 ```
 Expected: migration applies; `db:check-drift` reports no drift; both DB tests PASS. `migrationRlsScope.test.ts` must pass **without** adding this file to its baseline — the `SELECT set_config(...)` before the first write is what satisfies it.
 
-- [ ] **Step 6: Run the export-policy contract suites (integration-only)**
+- [x] **Step 6: Run the export-policy contract suites (integration-only)**
 
 ```bash
 cd apps/api && npx vitest run --config vitest.integration.config.ts \
@@ -403,7 +403,7 @@ cd apps/api && npx vitest run --config vitest.integration.config.ts \
 ```
 Expected: PASS. If you skip this step and `billable_minutes` is unclassified, CI goes red in **Integration Tests** shard, not in Test API.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add apps/api/migrations/2026-10-23-090000-time-entries-billable-minutes.sql \
@@ -424,7 +424,7 @@ git commit -m "feat(billing): time_entries.billable_minutes + pinning CHECK + ex
 - Consumes: `computeBillableMinutes` (Task 1); the W02 resolved rule's `minimumMinutes` / `roundingIncrementMinutes`.
 - Produces: `time_entries.billable_minutes` populated on every created, already-closed entry; `NULL` on a started timer.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `apps/api/src/services/timeEntryService.test.ts`:
 
@@ -462,14 +462,14 @@ describe('billable_minutes on create/start (#4628 W03)', () => {
 
 > `NOT VERIFIED: confirm against merged W02` — `captureCreateInsertValues` / `captureStartTimerInsertValues` are helpers you write against W02's existing mock harness in this file (the file already mocks `db.insert(...).values(...)`; reuse that pattern and return the captured `values` object). The `resolvedRule` shape must match what W02's `resolveBillingRule()` returns.
 
-- [ ] **Step 2: Run and watch them fail**
+- [x] **Step 2: Run and watch them fail**
 
 ```bash
 cd apps/api && npx vitest run src/services/timeEntryService.test.ts -t "billable_minutes on create/start"
 ```
 Expected: FAIL — `billableMinutes` is `undefined` in the captured insert values.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `createTimeEntry` (`apps/api/src/services/timeEntryService.ts`, the `.values({ … })` block around `:509`), beside the existing `durationMinutes: computeDurationMinutes(input.startedAt, input.endedAt),`:
 
@@ -499,14 +499,14 @@ import { computeBillableMinutes, billableMinutesSql } from './billableMinutes';
 
 > `NOT VERIFIED: confirm against merged W02` — `minimumMinutes` / `roundingIncrementMinutes` are the locals W02's stamping code already holds in `createTimeEntry` (it writes them to the row). Reuse those locals; do not re-resolve the rule.
 
-- [ ] **Step 4: Run and watch them pass**
+- [x] **Step 4: Run and watch them pass**
 
 ```bash
 cd apps/api && npx vitest run src/services/timeEntryService.test.ts
 ```
 Expected: PASS (whole file, so W02's stamping cases stay green too).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/api/src/services/timeEntryService.ts apps/api/src/services/timeEntryService.test.ts
@@ -527,7 +527,7 @@ git commit -m "feat(billing): stamp billable_minutes on entry create; NULL on ti
 
 **Why both.** Spec §3.7: `stopRunningEntry` is a single-statement lock-free CAS, and **mobile replays a stop as `PATCH { endedAt }`** (`apps/mobile/src/services/timeEntryReplay.test.ts:144` pins exactly that). If only the CAS wrote the column, every mobile-replayed stop would produce a row with a stamped minimum and no billable quantity — billing at actual duration and contradicting its own stamp. The CAS computes duration in SQL, so it must use the SQL fragment with the duration expression inlined; the PATCH path has the numbers in TypeScript, so it uses the TS function. That is precisely the drift the CHECK exists to catch.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```ts
 describe('both stop paths land billable_minutes (#4628 W03)', () => {
@@ -604,14 +604,14 @@ describe('both stop paths land billable_minutes (#4628 W03)', () => {
 
 > `NOT VERIFIED: confirm against merged W02` — `captureUpdateSet`'s `resolvedRule` plumbing and the re-price trigger for `workTypeId` are W02's; if W02 exposed the re-price through a differently named helper, drive it through that instead. The last case only re-pins existing behaviour (`endedAt` is already in `BILLED_LOCKED_ENTRY_FIELDS`, `timeEntryService.ts:375`) — it must pass unchanged.
 
-- [ ] **Step 2: Run and watch them fail**
+- [x] **Step 2: Run and watch them fail**
 
 ```bash
 cd apps/api && npx vitest run src/services/timeEntryService.test.ts -t "both stop paths land billable_minutes"
 ```
 Expected: FAIL — `set.billableMinutes` undefined; the CAS test fails on `String(undefined)`.
 
-- [ ] **Step 3: Implement the CAS**
+- [x] **Step 3: Implement the CAS**
 
 Replace the `.set({...})` in `stopRunningEntry` (`apps/api/src/services/timeEntryService.ts:572-579`) with:
 
@@ -636,7 +636,7 @@ Replace the `.set({...})` in `stopRunningEntry` (`apps/api/src/services/timeEntr
     .returning();
 ```
 
-- [ ] **Step 4: Implement the PATCH path**
+- [x] **Step 4: Implement the PATCH path**
 
 In `updateTimeEntry` (`apps/api/src/services/timeEntryService.ts:811-814`), replace the duration recompute block with:
 
@@ -668,7 +668,7 @@ In `updateTimeEntry` (`apps/api/src/services/timeEntryService.ts:811-814`), repl
 
 > `NOT VERIFIED: confirm against merged W02` — `set.minimumMinutes` / `set.roundingIncrementMinutes` are set by W02's re-price branch earlier in this function. Place this block **after** that branch so a re-price and a duration change in one PATCH both feed the same recompute.
 
-- [ ] **Step 5: Gate a hand-set `minimumMinutes` on `manage_billing`**
+- [x] **Step 5: Gate a hand-set `minimumMinutes` on `manage_billing`**
 
 Spec §3.7: `minimumMinutes` is one of the three fields that require `time_entries:manage_billing` to deviate from the card. W02 implements the gate; confirm `minimumMinutes` is in its field list, and if not, add it there (service-level, via `actor.manageBilling` — **not** a route gate, because the AI tool at `aiToolsTicketing.ts:1005-1013`, the Office add-in (`apps/api/src/routes/officeAddin/time.ts`) and `intentReleaseWorker` pass billing fields straight through and would bypass one).
 
@@ -678,14 +678,14 @@ grep -n "manageBilling" apps/api/src/services/timeEntryService.ts
 Expected: the override check names `hourlyRate`, `billingStatus` **and** `minimumMinutes`.
 > `NOT VERIFIED: confirm against merged W02`.
 
-- [ ] **Step 6: Run and watch them pass**
+- [x] **Step 6: Run and watch them pass**
 
 ```bash
 cd apps/api && npx vitest run src/services/timeEntryService.test.ts
 ```
 Expected: PASS, whole file.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add apps/api/src/services/timeEntryService.ts apps/api/src/services/timeEntryService.test.ts
@@ -714,7 +714,7 @@ git commit -m "feat(billing): stop-via-CAS and stop-via-PATCH both land billable
 
 An **included** entry (coverage `included` → `billing_status = 'contract'`, `hourly_rate` NULL) must add **no money** in all three. That already falls out of the `hourly_rate IS NOT NULL` predicate in the first, and `toFinite(null) → '0.00'` in `listBillables` (`timeEntryService.ts:1301-1308`); this task pins it with tests so a later change cannot quietly break it.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```ts
 describe('money readers read COALESCE(billable_minutes, duration_minutes) (#4628 W03)', () => {
@@ -804,14 +804,14 @@ describe('money readers read COALESCE(billable_minutes, duration_minutes) (#4628
 
 > `NOT VERIFIED: confirm against merged W02` — `captureTicketSummarySql`, `queueSummaryRows`, `queueBillableTimeRows`, `queueTimesheetEntries` are helpers over this file's existing `db.select` mock harness (see the existing `getTicketBillingSummary` case at `timeEntryService.test.ts:1195` for the pattern). Write them against whatever harness W02 left in place.
 
-- [ ] **Step 2: Run and watch them fail**
+- [x] **Step 2: Run and watch them fail**
 
 ```bash
 cd apps/api && npx vitest run src/services/timeEntryService.test.ts -t "money readers read COALESCE"
 ```
 Expected: FAIL — `includedMinutes` undefined, `quantity` `'0.33'` instead of `'1.00'`.
 
-- [ ] **Step 3: `getTicketBillingSummary`**
+- [x] **Step 3: `getTicketBillingSummary`**
 
 `apps/api/src/services/timeEntryService.ts:1234-1252`:
 
@@ -846,7 +846,7 @@ and in the returned object, the default when `timeRows[0]` is absent:
       ...(timeRows[0] ?? { totalMinutes: 0, billableMinutes: 0, includedMinutes: 0 }),
 ```
 
-- [ ] **Step 4: `listBillables`**
+- [x] **Step 4: `listBillables`**
 
 `apps/api/src/services/timeEntryService.ts:1345` — add to the select projection, beside `minutes: timeEntries.durationMinutes,`:
 
@@ -864,7 +864,7 @@ and at `:1301` change the hours derivation:
     const hours = (((r.billableMinutes ?? r.minutes) ?? 0) / 60).toFixed(2);
 ```
 
-- [ ] **Step 5: `getTimesheet`**
+- [x] **Step 5: `getTimesheet`**
 
 The selection at `entrySelection()` must carry `billableMinutes` (it is used by the money loop and by the web display in Task 9). Find `entrySelection()` in this file and add `billableMinutes: timeEntries.billableMinutes,`. Then, in the money loop (`:1206-1214`) — and **only** there:
 
@@ -879,14 +879,14 @@ The selection at `entrySelection()` must carry `billableMinutes` (it is used by 
 
 Leave the day-total loop at `:1199-1203` **exactly as it is** — `day.totalMinutes` and `day.billableMinutes` are utilization.
 
-- [ ] **Step 6: Run and watch them pass**
+- [x] **Step 6: Run and watch them pass**
 
 ```bash
 cd apps/api && npx vitest run src/services/timeEntryService.test.ts src/routes/tickets/parts.test.ts src/routes/tickets/export.test.ts
 ```
 Expected: PASS. `parts.test.ts:313` mocks `getTicketBillingSummary`'s return value — add `includedMinutes: 0` to those four mocks (`:313`, `:336`, `:352`, `:375`) if the route now reads it.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add apps/api/src/services/timeEntryService.ts apps/api/src/services/timeEntryService.test.ts apps/api/src/routes/tickets/parts.test.ts
@@ -907,7 +907,7 @@ git commit -m "feat(billing): ticket summary, billables and timesheet bill the m
 
 Spec §3.5 names the portal's **billed / unbilled buckets** explicitly, with the reason: *"so a customer's hours match their invoice."* The contract-covered bucket is already the `contract` branch (`supportUsage.ts:116-124`) and the portal already renders it that way (§3.4).
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `apps/api/src/services/portal/supportUsage.test.ts`:
 
@@ -946,14 +946,14 @@ it('pendingReview and coveredByContract stay ACTUAL minutes (#4628 W03 scope pin
 
 > `NOT VERIFIED:` the queued-row variable name and row field names in the existing test file — copy them from the first test in `supportUsage.test.ts` rather than from this snippet.
 
-- [ ] **Step 2: Run and watch it fail**
+- [x] **Step 2: Run and watch it fail**
 
 ```bash
 cd apps/api && npx vitest run src/services/portal/supportUsage.test.ts
 ```
 Expected: FAIL — billed reports `0.33`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 `apps/api/src/services/portal/supportUsage.ts` — add to the row type at `:20`:
 
@@ -982,14 +982,14 @@ and at `:105`:
 
 Then use `billedQuantity` in exactly the `billed` and `toBeBilled` branches (and the per-ticket `billedMinutes` accumulator) at `:116-130`; leave the `contract` and unapproved branches on `minutes`. The scope-pin test from Step 1 goes red if `billedQuantity` leaks into the other two buckets.
 
-- [ ] **Step 4: Run and watch it pass**
+- [x] **Step 4: Run and watch it pass**
 
 ```bash
 cd apps/api && npx vitest run src/services/portal/supportUsage.test.ts
 ```
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/api/src/services/portal/supportUsage.ts apps/api/src/services/portal/supportUsage.test.ts
@@ -1008,7 +1008,7 @@ git commit -m "feat(portal): support usage buckets read the billed quantity (#46
 - Consumes: `time_entries.billable_minutes`.
 - Produces: `TimeEntryRow` gains `billableMinutes: number | null`. `timeEntryToLineSpec` and `partitionTimeEntries` bill `COALESCE(billable_minutes, duration_minutes)`. Line descriptions gain the §3.5 note when the two differ. **Lines stay one per entry** (§3.5) — no second line, no surcharge.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```ts
 // apps/api/src/services/invoiceAssembly.test.ts
@@ -1082,14 +1082,14 @@ describe('minimums and rounding on invoice lines (#4628 W03)', () => {
 });
 ```
 
-- [ ] **Step 2: Run and watch it fail**
+- [x] **Step 2: Run and watch it fail**
 
 ```bash
 cd apps/api && npx vitest run src/services/invoiceAssembly.test.ts -t "minimums and rounding on invoice lines"
 ```
 Expected: FAIL — `quantity` is `'0.50'`; no description note.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 `apps/api/src/services/invoiceAssembly.ts:73-84`:
 
@@ -1121,14 +1121,14 @@ const entryDescription = (r: TimeEntryRow) => {
 
 Both select projections (`:147` and `:188`) gain `billableMinutes: timeEntries.billableMinutes,` beside their existing `durationMinutes:` line. `timeEntryToLineSpec` and `partitionTimeEntries` need no other change — they already route through `entryHours` and `entryDescription`.
 
-- [ ] **Step 4: Run and watch it pass**
+- [x] **Step 4: Run and watch it pass**
 
 ```bash
 cd apps/api && npx vitest run src/services/invoiceAssembly.test.ts src/services/invoiceService.test.ts
 ```
 Expected: PASS. Existing assembly cases that construct a `TimeEntryRow` literal now need `billableMinutes: null` — add it; `null` reproduces today's behaviour exactly, which is the point.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/api/src/services/invoiceAssembly.ts apps/api/src/services/invoiceAssembly.test.ts
@@ -1148,7 +1148,7 @@ git commit -m "feat(billing): invoice lines bill the minimum and name the worked
 
 This test is what makes "the CHECK turns drift into a constraint violation" (§3.5) a fact rather than a claim. It must live under `apps/api/src/__tests__/integration/` — a file placed anywhere else runs zero tests under the integration config and reads green.
 
-- [ ] **Step 1: Write the test**
+- [x] **Step 1: Write the test**
 
 ```ts
 // apps/api/src/__tests__/integration/billableMinutesAgreement.integration.test.ts
@@ -1238,7 +1238,7 @@ describe('billable_minutes: TS, SQL and the CHECK all agree (#4628 W03 §3.5)', 
 Write `seedClosedTimeEntry`, `seedRunningTimer`, `seedRunningTimerForActor`, `setBillableMinutes` and `readBillableMinutes` as local helpers in this file, following the seed pattern used by `apps/api/src/__tests__/integration/time-entries-rls.integration.test.ts`.
 > `NOT VERIFIED: confirm against merged W02` — the seed helpers must set the W02 columns (`coverage`, `billing_profile_id`, `work_type_id`) to values that satisfy W02's own constraints; copy from W02's `billingProfilesPartnerRls.integration.test.ts`.
 
-- [ ] **Step 2: Run it**
+- [x] **Step 2: Run it**
 
 ```bash
 pnpm test-stack up
@@ -1246,7 +1246,7 @@ cd apps/api && npx vitest run --config vitest.integration.config.ts src/__tests_
 ```
 Expected: PASS, 7 tests. If the grid test fails on one row, the TS and SQL forms have drifted — fix `billableMinutes.ts`, **not** the grid.
 
-- [ ] **Step 3: Verify the constraint by hand as `breeze_app`**
+- [x] **Step 3: Verify the constraint by hand as `breeze_app`**
 
 ```bash
 docker exec -it breeze-postgres psql -U breeze_app -d breeze -c \
@@ -1254,7 +1254,7 @@ docker exec -it breeze-postgres psql -U breeze_app -d breeze -c \
 ```
 Expected: `ERROR: new row for relation "time_entries" violates check constraint "time_entries_billable_minutes_chk"` (or a zero-row RLS no-op if no context is set — in that case set `breeze.scope` first, per CLAUDE.md).
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add apps/api/src/__tests__/integration/billableMinutesAgreement.integration.test.ts
@@ -1277,7 +1277,7 @@ git commit -m "test(billing): billable_minutes TS/SQL/CHECK agreement + both sto
 
 **This task includes the MOUNT step.** A wave that builds a component and never composes it into the page is the failure mode this repo has hit before: the last step here is a *page-level* test proving the new text renders from the real component tree, not from a unit render of a sub-component.
 
-- [ ] **Step 1: Add the locale keys, with real translations in all eight files**
+- [x] **Step 1: Add the locale keys, with real translations in all eight files**
 
 `apps/web/src/locales/en/tickets.json`, inside `"ticketTimeBilling"` (the object begins at `:195`):
 
@@ -1300,7 +1300,7 @@ The other seven files get real translations — not the English string copied:
 | `pt-BR` | `"{{worked}} h trabalhadas · {{billed}} h faturadas"` | `"{{hours}} h incluídas no contrato"` |
 | `tr-TR` | `"{{worked}} sa çalışıldı · {{billed}} sa faturalandı"` | `"{{hours}} sa sözleşmeye dahil"` |
 
-- [ ] **Step 2: Write the failing component tests**
+- [x] **Step 2: Write the failing component tests**
 
 ```tsx
 // apps/web/src/components/tickets/TicketTimeBilling.test.tsx (append)
@@ -1354,14 +1354,14 @@ it('day totals still report ACTUAL minutes, not the billed quantity (#4628 W03 �
 
 > `NOT VERIFIED: confirm against merged W02` — `renderTicketTimeBilling` / `renderTimesheetPage` are the existing harnesses in these two test files; match their current prop/fetch-mock shape. The `data-testid` on the day total may not exist yet — add it in Step 3 if so.
 
-- [ ] **Step 3: Run and watch them fail**
+- [x] **Step 3: Run and watch them fail**
 
 ```bash
 cd apps/web && npx vitest run src/components/tickets/TicketTimeBilling.test.tsx src/components/tickets/TimesheetPage.test.tsx
 ```
 Expected: FAIL — the strings are not rendered.
 
-- [ ] **Step 4: Implement the display in both components**
+- [x] **Step 4: Implement the display in both components**
 
 Add a shared local helper at the top of each component file (duplicated locally rather than extracted — CLAUDE.md's file guidance allows this for a two-line helper):
 
@@ -1384,7 +1384,7 @@ function billedVsWorked(
 
 Render it under each entry row's duration, and in `TicketTimeBilling.tsx`'s summary block render `t('ticketTimeBilling.includedMinutes', { hours: (summary.time.includedMinutes / 60).toFixed(2) })` when `includedMinutes > 0`.
 
-- [ ] **Step 5: MOUNT — prove it renders from the real page tree**
+- [x] **Step 5: MOUNT — prove it renders from the real page tree**
 
 Both components are already mounted (`TicketTimeBilling` inside the ticket detail island, `TimesheetPage` as its own island), so the mount work here is **verifying the data actually reaches them**: the new `billableMinutes` / `includedMinutes` fields must survive whatever type or projection sits between the API response and the component's props.
 
@@ -1416,7 +1416,7 @@ it('MOUNT: the worked/billed line reaches the screen from a real API payload, no
 
 > `NOT VERIFIED: confirm against merged W02` — the two endpoint paths and `mockFetchJson`'s name; read the top of `TicketTimeBilling.test.tsx` for the file's existing fetch-mock convention and use that.
 
-- [ ] **Step 6: Run the web suites and the i18n contracts**
+- [x] **Step 6: Run the web suites and the i18n contracts**
 
 ```bash
 cd apps/web && npx vitest run \
@@ -1426,7 +1426,7 @@ cd apps/web && npx vitest run \
 ```
 Expected: PASS, including `localeParity`, `translationCoverage` and `keyUsage`.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add apps/web/src/components/tickets/TicketTimeBilling.tsx \
@@ -1450,7 +1450,7 @@ git commit -m "feat(web): show worked vs billed hours and contract-included time
 
 Block hours (#4547) is approved and unplanned; its drawdown will read `COALESCE(billable_minutes, duration_minutes)` (§5). W03 cannot implement drawdown, but it can make the contract impossible to break silently: a test that names the formula, and a comment on the column that names the consumer.
 
-- [ ] **Step 1: Write the contract test**
+- [x] **Step 1: Write the contract test**
 
 ```ts
 // apps/api/src/services/billableMinutes.test.ts (append)
@@ -1485,14 +1485,14 @@ describe('cross-spec contract with block hours (#4547) — spec §5', () => {
 });
 ```
 
-- [ ] **Step 2: Run it**
+- [x] **Step 2: Run it**
 
 ```bash
 cd apps/api && npx vitest run src/services/billableMinutes.test.ts
 ```
 Expected: PASS.
 
-- [ ] **Step 3: Confirm the block-hours spec carries the same amendments**
+- [x] **Step 3: Confirm the block-hours spec carries the same amendments**
 
 ```bash
 git log --oneline --all -- docs/superpowers/specs/billing/ | head
@@ -1501,7 +1501,7 @@ git show origin/spec/4547-block-hours:docs/superpowers/specs/billing/*block-hour
 §10 records that both §5 amendments were "accepted and applied to the block-hours spec on `spec/4547-block-hours`". If the grep finds nothing, **do not amend that spec from this wave** — report it as an open item in the PR body instead.
 > `NOT VERIFIED: confirm the block-hours spec amendments actually landed on `spec/4547-block-hours`.`
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add apps/api/src/services/billableMinutes.test.ts
@@ -1514,7 +1514,7 @@ git commit -m "test(billing): pin the block-hours drawdown contract (#4628 W03, 
 
 **Files:** none — this task only runs things.
 
-- [ ] **Step 1: Typecheck and unit suites**
+- [x] **Step 1: Typecheck and unit suites**
 
 ```bash
 pnpm --filter @breeze/shared build
@@ -1525,7 +1525,7 @@ pnpm --filter @breeze/web test --run
 ```
 Expected: PASS. (Note the missing `--` — see the Global Constraints.) If `tsc` on the API OOMs, that is the known 8 GB-ceiling flake, not this change.
 
-- [ ] **Step 2: The contract suites this wave can break (integration-only)**
+- [x] **Step 2: The contract suites this wave can break (integration-only)**
 
 ```bash
 pnpm test-stack up
@@ -1541,7 +1541,7 @@ cd apps/api && npx vitest run --config vitest.integration.config.ts \
 ```
 Expected: all PASS. `rls-coverage`, `tenantCascade` and `orgLifecycleFoundations` should be untouched by this wave (no new table) — a failure there means a column landed somewhere unexpected.
 
-- [ ] **Step 3: Tear the stack down**
+- [x] **Step 3: Tear the stack down**
 
 ```bash
 pnpm test-stack down
@@ -1549,7 +1549,7 @@ docker compose ls -a --format json | jq -r '.[] | select(.ConfigFiles|test("bree
 ```
 Nothing from this session may be left running.
 
-- [ ] **Step 4: Open the PR**
+- [x] **Step 4: Open the PR**
 
 Body must call out, for the reviewer:
 - the two representations of the §3.5 arithmetic and the CHECK that pins them;
@@ -1567,3 +1567,44 @@ Body must call out, for the reviewer:
 **Not in this wave, by the spec's own wave list:** the work-type pickers on mobile and the Office add-in, report/CSV dimensions, docs, and the drop of the six legacy columns — all W04.
 
 **Known spec-vs-code note for the reviewer.** §3.5 says the timesheet's *amounts* read `COALESCE(...)` while "timesheet durations keep actual minutes". `getTimesheet` returns `totals.billableMinutes`, which is a *duration* aggregate (`timeEntryService.ts:1203`), not money — so it stays actual. `getTicketBillingSummary.time.billableMinutes` is the ticket's *billed quantity* line and does move to `COALESCE`. The two fields share a name and now mean different things; Task 5's tests pin both so a future reader cannot conflate them.
+
+---
+
+## Execution notes (W03, 2026-09-20)
+
+Deviations from the plan as written, all verified against the merged W02 code:
+
+1. **Migration filename** is `2026-10-24-210000-time-entries-billable-minutes.sql`.
+   The plan's `2026-10-23-090000-` would have sorted before W02's shipped
+   `2026-10-24-2004xx-` files.
+2. **Schema file** is `apps/api/src/db/schema/timeTracking.ts`, not `tickets.ts`
+   (the plan's Step 0 grep targets and Task 2 Step 7 `git add` named `tickets.ts`).
+3. **`TimesheetPage`** lives at `apps/web/src/components/time/TimesheetPage.tsx`,
+   not `components/tickets/`, and reads the `common` namespace
+   (`longTail.time.TimesheetPage.billedVsWorked`), not `tickets`.
+4. **`billableMinutesSql()` gained a `terms` argument.** An UPDATE's SET
+   expressions are evaluated against the OLD row while the CHECK validates the
+   NEW one, so `stopRunningEntry`'s manager-override branch — which rewrites
+   `minimum_minutes` in the same statement — must pass the new terms in. Without
+   this, every stop-with-override would have aborted with 23514. Pinned by
+   "a stop that OVERRIDES the terms computes from the override, not the stale
+   columns".
+5. **`includedMinutes` stays on actual `duration_minutes`**, against Task 5
+   Step 3. The plan's rationale ("a minimum can only sit on a billable row, so
+   COALESCE is the duration") overlooked that `resolveBillingRule()` stamps
+   `roundingIncrementMinutes` from the card regardless of coverage — so COALESCE
+   would have moved the number and diverged from the portal's
+   `coveredByContract`, which Task 6 keeps actual. W02's
+   `timeEntryMoneyReaders.test.ts` already pinned the actual-minutes form.
+6. **`listBillables` totals for a rate-less row**: the plan expected
+   `totalsByCurrency` to be `[]`; the shipped behaviour is a zero-amount entry
+   for the row's snapshot currency. Pre-existing and unchanged by this wave; the
+   test pins the real behaviour.
+7. **Task 4 Step 5** needed no change — `applyBillingInput()` already gates a
+   deviating `minimumMinutes` on `assertManageBilling()`.
+8. **Task 5 Step 6** named `src/routes/tickets/export.test.ts`; no such file
+   exists. `parts.test.ts` needed no `includedMinutes` edit (the route passes the
+   summary through).
+9. **Task 10 Step 3** verified: the block-hours spec amendments are on
+   `spec/4547-block-hours` (commit `fed359f3dd`), including
+   "Drawdown reads COALESCE(billable_minutes, duration_minutes)".

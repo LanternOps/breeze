@@ -17,6 +17,7 @@ import { snapshotCost } from './catalogPricing';
 import { formatInvoiceNumber } from './invoiceNumbers';
 import { emitInvoiceEvent } from './invoiceEvents';
 import { resolveInvoiceFooter, resolveDraftBillTo } from './invoicePdf';
+import { resolveOrgTaxRate, OrgNotVisibleForTaxError } from './taxRateResolver';
 import { enqueueInvoicePdfRender } from '../jobs/invoiceWorker';
 import {
   enqueueAccountingInvoicePush, enqueueAccountingInvoiceVoid,
@@ -744,11 +745,51 @@ export async function getInvoice(invoiceId: string, actor: InvoiceActor) {
     displayInvoice = { ...inv, billToName: resolved.billToName };
     billToEmail = resolved.billToEmail;
   }
+  // #6338: a DRAFT's committed tax_rate is ORG-level only (effectiveRateForOrg
+  // passes partnerRate: null), so a draft for an org whose own rate is blank
+  // shows $0.00 tax while issueInvoice applies the PARTNER default — the tech
+  // approves $200.00 and issues $215.00, and the summary meanwhile claims "no
+  // tax rate is set" when one plainly is. Surface the rate that WILL apply at
+  // issue, READ-ONLY: `invoice.taxRate`, recomputeInvoiceTotals and the
+  // issue-time math are all untouched (routing draft totals through the shared
+  // resolver is still M18's job — see taxRateResolver's docstring).
+  //
+  // Resolved by the ONE shared resolver, so tax_exempt and an org-level rate
+  // win over the partner default exactly as they will at issue. Drafts only:
+  // an issued invoice's rate is already committed on the row.
+  //
+  // Best-effort like the Stripe and accounting lookups above — a resolution
+  // failure degrades to null and NEVER to the partner rate, keeping
+  // resolveOrgTaxRate's fail-closed contract (OrgNotVisibleForTaxError must not
+  // silently tax an invisible, possibly exempt, org at the partner default).
+  //
+  // Deliberately NOT quoteService's mapping of that error to a 404: there the
+  // rate is being COMMITTED to a row, so an invisible org must stop the write.
+  // Here it decorates a read of an invoice the caller has already been granted
+  // (requireInvoiceAccess passed above) — 404-ing the whole detail load because
+  // the org went archived/suspended would break opening the very invoices that
+  // still need collecting. Dropping the preview is the proportionate response.
+  // Every OTHER error is unexpected (DB connectivity, a timeout) and would
+  // otherwise vanish without a trace on a money surface, so it gets a line.
+  let effectiveTaxRate: string | null = null;
+  if (inv.status === 'draft') {
+    try {
+      effectiveTaxRate = await resolveOrgTaxRate({ orgId: inv.orgId, partnerId: inv.partnerId });
+    } catch (err) {
+      if (!(err instanceof OrgNotVisibleForTaxError)) {
+        console.error('[invoiceService] EFFECTIVE_TAX_RATE_PREVIEW_FAILED', {
+          invoiceId, orgId: inv.orgId, error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      effectiveTaxRate = null;
+    }
+  }
   // Multi-currency (#3777, spec §10): surface the CACHED account currency and a
   // warn-don't-block mismatch so the detail page can flag the FX spread before
   // the partner sends a pay link. Cached columns only — no Stripe call here.
   return {
     invoice: displayInvoice, lines: linesWithDeviceCount, stripeConnected: connected, // accounting view (all lines)
+    effectiveTaxRate,
     stripeAccountCurrency: connected ? conn.defaultCurrency ?? null : null,
     currencyWarning: connected ? buildStripeCurrencyWarning(inv.currencyCode, conn.defaultCurrency) : null,
     accountingSync,

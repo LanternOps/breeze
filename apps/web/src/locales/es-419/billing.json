@@ -1654,6 +1654,7 @@
     },
     "summary": {
       "noTaxRate": "Las líneas están marcadas como sujetas a impuestos, pero no se establece ninguna tasa impositiva.",
+      "inheritedTaxRate": "El impuesto aún no está en este borrador: al emitirlo se aplica la tasa heredada de {{rate}}, que agrega {{tax}} para un total de {{total}}.",
       "setTaxRate": "Establecer uno en la configuración de facturación",
       "subtotal": "Total parcial",
       "tax": "Impuesto",

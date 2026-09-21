@@ -1,15 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-/**
- * Every scenario below fails BEFORE `db.transaction` is reached (rule lookup,
- * visibility, ownership, and convertibility checks all run first), so the
- * transaction mock is a trap: any test that reaches it is exercising a path
- * this suite does not cover.
- *
- * `../configurationPolicy` is mocked per the module's own doc comment — the
- * real module pulls a far larger graph in than this unit needs, and is never
- * called on the failure paths tested here.
- */
+// Failure paths must stop before the group writer. Successful adapter tests
+// mock its transaction boundary and verify the group scope and selected output.
 const { dbMock, resultsQueue } = vi.hoisted(() => {
   const resultsQueue: unknown[][] = [];
   return {
@@ -38,6 +30,11 @@ vi.mock('../configurationPolicy', () => ({
   addFeatureLink: vi.fn(),
   assignPolicy: vi.fn(),
   createConfigPolicy: vi.fn(),
+}));
+
+const { previewGroup, convertGroup } = vi.hoisted(() => ({ previewGroup: vi.fn(), convertGroup: vi.fn() }));
+vi.mock('./conversion/convert', () => ({
+  previewTemplateGroup: previewGroup, convertTemplateGroup: convertGroup,
 }));
 
 import { convertRuleToMonitor } from './ruleConversionService';
@@ -81,6 +78,7 @@ function ruleRow(overrides: Record<string, unknown> = {}) {
 function templateRow(overrides: Record<string, unknown> = {}) {
   return {
     id: 'template-1',
+    orgId: ORG, partnerId: null,
     conditions: { type: 'threshold', metric: 'cpuPercent', operator: 'gt', value: 90 },
     severity: 'high',
     cooldownMinutes: 5,
@@ -92,6 +90,8 @@ function templateRow(overrides: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   resultsQueue.length = 0;
+  vi.clearAllMocks();
+  previewGroup.mockResolvedValue({ previewHash: 'group-hash' });
 });
 
 describe('convertRuleToMonitor (#5289)', () => {
@@ -112,7 +112,7 @@ describe('convertRuleToMonitor (#5289)', () => {
     expect(result).toEqual({ ok: false, failure: { kind: 'already_managed' } });
   });
 
-  it('not_convertible for a condition GROUP (no single-monitor representation)', async () => {
+  it('not_convertible for an empty condition group', async () => {
     resultsQueue.push([ruleRow()]);
     resultsQueue.push([templateRow({ conditions: { logic: 'and', conditions: [] } })]);
 
@@ -166,5 +166,39 @@ describe('convertRuleToMonitor (#5289)', () => {
     const result = await convertRuleToMonitor('rule-1', auth());
 
     expect(result).toEqual({ ok: false, failure: { kind: 'template_not_found' } });
+  });
+});
+
+
+describe('template group conversion adapter', () => {
+  it('previews the whole group and returns the selected primary plus all converted ids', async () => {
+    resultsQueue.push([ruleRow()], [templateRow()]);
+    convertGroup.mockResolvedValue({ conversionId: 'ledger-1', convertedRuleIds: ['rule-1', 'rule-2'], outputs: [
+      { sourceRuleId: 'rule-2', role: 'primary', monitorId: 'monitor-2', policyId: 'policy-2' },
+      { sourceRuleId: 'rule-1', role: 'primary', monitorId: 'monitor-1', policyId: 'policy-1' },
+    ] });
+    const caller = auth();
+    expect(await convertRuleToMonitor('rule-1', caller)).toEqual({ ok: true, data: {
+      monitorId: 'monitor-1', configPolicyId: 'policy-1', ruleName: 'CPU rule', ruleOrgId: ORG,
+      conversionId: 'ledger-1', convertedRuleIds: ['rule-1', 'rule-2'],
+    } });
+    expect(previewGroup).toHaveBeenCalledWith('template-1', caller, dbMock);
+    expect(convertGroup).toHaveBeenCalledWith('template-1', 'group-hash', caller, dbMock);
+    expect(previewGroup.mock.invocationCallOrder[0]).toBeLessThan(convertGroup.mock.invocationCallOrder[0]!);
+  });
+
+  it('refuses the whole group when a sibling cannot convert', async () => {
+    resultsQueue.push([ruleRow()], [templateRow()]);
+    previewGroup.mockResolvedValue({ previewHash: 'group-hash', blockedBy: 'unconvertible' });
+    expect(await convertRuleToMonitor('rule-1', auth())).toEqual({ ok: false, failure: { kind: 'not_convertible' } });
+    expect(convertGroup).not.toHaveBeenCalled();
+  });
+
+  it('uses the supplied caller transaction for all lookups and group operations', async () => {
+    const executor = { select: vi.fn(() => ({ from: () => ({ where: () => ({ limit: async () => [ruleRow()] }) }) })) };
+    previewGroup.mockResolvedValue({ previewHash: 'group-hash', blockedBy: 'unconvertible' });
+    await convertRuleToMonitor('rule-1', auth(), executor as never);
+    expect(executor.select).toHaveBeenCalled();
+    expect(dbMock.select).not.toHaveBeenCalled();
   });
 });

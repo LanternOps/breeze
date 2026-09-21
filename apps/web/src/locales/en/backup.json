@@ -495,6 +495,8 @@
     "originalLocation": "Original location",
     "restoreFilesInPlace": "Restore files in place.",
     "alternatePath": "Alternate path",
+    "alternatePathPlaceholder": "e.g. D:\\Restored or /var/restore",
+    "alternatePathRequired": "Enter a destination path to continue.",
     "restoreToANewFolder": "Restore to a new folder.",
     "reviewConfirm": "Review & confirm",
     "confirmTheRestoreSummaryBeforeStarting": "Confirm the restore summary before starting.",
@@ -730,7 +732,15 @@
     "launchExecution": "Launch execution",
     "startANewDrRunFor": "Start a new DR run for",
     "cancel": "Cancel",
-    "startExecution": "Start execution"
+    "startExecution": "Start execution",
+    "executeErrorFallback": "Failed to start execution.",
+    "executeErrorNoRestorableSnapshot": "Cannot start: a device in a bare-metal rebuild group has no restorable backup snapshot. Run a successful backup for every device in that group first.",
+    "executeErrorNoRecoverySource": "Cannot start: a recovery group names no recovery source. Add a snapshot, restore job, or recovery token to the group.",
+    "executeErrorGroupHasNoValidDevices": "Cannot start: a recovery group has no valid devices. Edit the plan and add at least one device to every group.",
+    "executeErrorInvalidSourceReference": "Cannot start: a recovery group references a recovery source that is not a valid identifier. Edit the group and reselect its source.",
+    "executeErrorInvalidStepConfig": "Cannot start: a recovery group has an invalid step configuration. Edit the group and correct its settings.",
+    "executeErrorResourceNotFound": "Cannot start: a snapshot this plan references no longer exists. Edit the affected group and choose a current snapshot.",
+    "executeErrorBackupWriteRequired": "Cannot start: this plan contains a bare-metal rebuild group, which needs the backup write permission."
   },
   "dRExecutionView": {
     "executionDetails": "Execution details",
@@ -806,7 +816,9 @@
     "uniqueDeviceCount_one": "{{count}} unique device",
     "uniqueDeviceCount_other": "{{count}} unique devices",
     "chooseAStepTypeForEachGroup": "Choose a step type for each recovery group.",
-    "rebuildWaitTimeoutOutOfRange": "Bare-metal rebuild wait timeout must be a whole number between {{min}} and {{max}} minutes."
+    "rebuildWaitTimeoutOutOfRange": "Bare-metal rebuild wait timeout must be a whole number between {{min}} and {{max}} minutes.",
+    "rebuildOutputDirMustBeAbsolute": "Bare-metal rebuild output directory must be an absolute path starting with \"/\" and at most {{max}} characters.",
+    "partialSaveFailure": "Part of this plan was saved before the error, so the plan and the list may now disagree. Fix the problem and save again. Server said: {{message}}"
   },
   "dRPlanGroupCard": {
     "device": "device",

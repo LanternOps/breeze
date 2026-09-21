@@ -80,6 +80,19 @@ describe('ACT_MANIFEST frozen key set', () => {
     expect(resolveActOperation('manage_processes', { action: 'kill', processId: '4242', processName: 'notepad.exe' })).toBeNull();
     expect(resolveActOperation('manage_processes', { action: 'kill' })).toBeNull();
   });
+
+  // Disk Cleanup v2 W05, spec §9.3 item 8. `system_cleanup run` is NEVER
+  // unattended-eligible: the catalog contains irreversible handlers (Previous
+  // Installations deletes Windows.old, which IS the rollback path) and its
+  // postcondition is a free-space delta that only materialises after a reboot,
+  // so there is no read-back an act-mode verify could make at dispatch time.
+  // This is a decision, recorded as a test, not an omission.
+  it('has no entry for system_cleanup', () => {
+    expect(ACT_MANIFEST.some((op) => op.toolName === 'system_cleanup')).toBe(false);
+    expect(ACT_MANIFEST.some((op) => op.key.startsWith('system_cleanup'))).toBe(false);
+    expect(resolveActOperation('system_cleanup', { action: 'run' })).toBeNull();
+    expect([...ACT_ELIGIBLE_TOOL_NAMES]).not.toContain('system_cleanup');
+  });
 });
 
 describe('resolveActOperation — manage_services', () => {

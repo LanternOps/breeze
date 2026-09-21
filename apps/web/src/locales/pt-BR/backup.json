@@ -495,6 +495,8 @@
     "originalLocation": "Local original",
     "restoreFilesInPlace": "Restaurar arquivos no local.",
     "alternatePath": "Caminho alternativo",
+    "alternatePathPlaceholder": "ex.: D:\\Restored ou /var/restore",
+    "alternatePathRequired": "Informe um caminho de destino para continuar.",
     "restoreToANewFolder": "Restaurar para uma nova pasta.",
     "reviewConfirm": "Revisar e confirmar",
     "confirmTheRestoreSummaryBeforeStarting": "Confirme o resumo da restauração antes de iniciar.",
@@ -730,7 +732,15 @@
     "launchExecution": "Iniciar execução",
     "startANewDrRunFor": "Iniciar uma nova execução de DR para",
     "cancel": "Cancelar",
-    "startExecution": "Iniciar execução"
+    "startExecution": "Iniciar execução",
+    "executeErrorFallback": "Não foi possível iniciar a execução.",
+    "executeErrorNoRestorableSnapshot": "Não é possível iniciar: um dispositivo de um grupo de reconstrução bare-metal não tem snapshot de backup restaurável. Execute primeiro um backup bem-sucedido para cada dispositivo desse grupo.",
+    "executeErrorNoRecoverySource": "Não é possível iniciar: um grupo de recuperação não indica nenhuma origem de recuperação. Adicione ao grupo um snapshot, um trabalho de restauração ou um token de recuperação.",
+    "executeErrorGroupHasNoValidDevices": "Não é possível iniciar: um grupo de recuperação não tem dispositivos válidos. Edite o plano e adicione pelo menos um dispositivo a cada grupo.",
+    "executeErrorInvalidSourceReference": "Não é possível iniciar: um grupo de recuperação referencia uma origem de recuperação com identificador inválido. Edite o grupo e selecione a origem novamente.",
+    "executeErrorInvalidStepConfig": "Não é possível iniciar: um grupo de recuperação tem configuração de etapa inválida. Edite o grupo e corrija as configurações.",
+    "executeErrorResourceNotFound": "Não é possível iniciar: um snapshot referenciado por este plano não existe mais. Edite o grupo afetado e escolha um snapshot atual.",
+    "executeErrorBackupWriteRequired": "Não é possível iniciar: este plano contém um grupo de reconstrução bare-metal, que exige a permissão de gravação de backups."
   },
   "dRExecutionView": {
     "executionDetails": "Detalhes da execução",
@@ -806,7 +816,9 @@
     "uniqueDeviceCount_one": "{{count}} dispositivo único",
     "uniqueDeviceCount_other": "{{count}} dispositivos únicos",
     "chooseAStepTypeForEachGroup": "Escolha um tipo de etapa para cada grupo de recuperação.",
-    "rebuildWaitTimeoutOutOfRange": "O tempo limite de espera da reconstrução bare-metal deve ser um número inteiro entre {{min}} e {{max}} minutos."
+    "rebuildWaitTimeoutOutOfRange": "O tempo limite de espera da reconstrução bare-metal deve ser um número inteiro entre {{min}} e {{max}} minutos.",
+    "rebuildOutputDirMustBeAbsolute": "O diretório de saída da reconstrução bare-metal deve ser um caminho absoluto iniciado por \"/\" e ter no máximo {{max}} caracteres.",
+    "partialSaveFailure": "Parte deste plano foi salva antes do erro, então o plano e a lista podem divergir. Corrija o problema e salve novamente. O servidor informou: {{message}}"
   },
   "dRPlanGroupCard": {
     "device": "dispositivo",

@@ -6,10 +6,19 @@ import { CommandTypes } from './commandQueue';
 describe('command timeouts', () => {
   it('uses the restore-specific timeout policy', () => {
     expect(getCommandTimeoutMs(CommandTypes.BACKUP_RESTORE)).toBe(30 * 60 * 1000);
-    expect(getCommandTimeoutMs(CommandTypes.VM_RESTORE_FROM_BACKUP)).toBe(60 * 60 * 1000);
-    expect(getCommandTimeoutMs(CommandTypes.VM_INSTANT_BOOT)).toBe(60 * 60 * 1000);
-    expect(getCommandTimeoutMs(CommandTypes.BMR_RECOVER)).toBe(60 * 60 * 1000);
-    expect(getCommandTimeoutMs(CommandTypes.BARE_METAL_REBUILD)).toBe(60 * 60 * 1000);
+    // #6415: whole-machine restores measured 1 h 57 m / 2 h 41 m / 3 h 15 m in
+    // the #5498 lab run, so the old flat 60 min reaped healthy rebuilds a third
+    // of the way through. These six carry the 24 h ceiling instead.
+    const DAY = 24 * 60 * 60 * 1000;
+    expect(getCommandTimeoutMs(CommandTypes.VM_RESTORE_FROM_BACKUP)).toBe(DAY);
+    expect(getCommandTimeoutMs(CommandTypes.VM_INSTANT_BOOT)).toBe(DAY);
+    expect(getCommandTimeoutMs(CommandTypes.BMR_RECOVER)).toBe(DAY);
+    expect(getCommandTimeoutMs(CommandTypes.BARE_METAL_REBUILD)).toBe(DAY);
+    expect(getCommandTimeoutMs(CommandTypes.MSSQL_RESTORE)).toBe(DAY);
+    expect(getCommandTimeoutMs(CommandTypes.HYPERV_RESTORE)).toBe(DAY);
+    // A restore that is 3 h in flight is still inside its budget — the exact
+    // case #6415 reported as spuriously failed.
+    expect(getCommandTimeoutMs(CommandTypes.BARE_METAL_REBUILD)).toBeGreaterThan(3 * 60 * 60 * 1000);
   });
 
   it('gives a claimed software install a two-hour execution budget (#5128)', () => {

@@ -202,6 +202,18 @@ type Snapshot struct {
 	// as a green job with zero errors (an incomplete restore point that looks
 	// complete).
 	UploadFailures []error `json:"-"`
+	// IncompleteFiles is how many files this run intended to back up but could
+	// not upload. Unlike UploadFailures it IS serialized into the manifest,
+	// because the manifest is the only thing a later reader has: a file that
+	// failed to upload is simply absent from Files, so a verification that
+	// walks Files alone finds every object it lists and reports `passed` with
+	// zero failures on a demonstrably incomplete restore point (#6350).
+	// VerifyIntegrityContext reads this to refuse `passed`.
+	IncompleteFiles int `json:"incompleteFiles,omitempty"`
+	// IncompleteFilePaths names the files counted by IncompleteFiles, capped
+	// at maxManifestIncompletePaths — the full list can be thousands of
+	// entries and the manifest is downloaded on every verify/restore.
+	IncompleteFilePaths []string `json:"incompleteFilePaths,omitempty"`
 	// VolatileFiles counts this run's entries recorded with Volatile: true
 	// (see that field). In-memory only, like UploadFailures — RunBackupContext
 	// folds it into a job Warning so a run with volatile files is visible
@@ -301,6 +313,14 @@ type SnapshotFile struct {
 	// symlink. Omitted (false) for every manifest written before this field
 	// existed, keeping them byte-identical.
 	Placeholder bool `json:"placeholder,omitempty"`
+	// WinAttrs is the file's preserved Windows file attributes (#5407) —
+	// Hidden, System, ReadOnly, Temporary, NotContentIndexed and SparseFile.
+	// 0 means "unknown" (a non-Windows backup, or any manifest written
+	// before this field existed) → restore leaves whatever the fresh write
+	// produced, so pre-existing manifests stay byte-identical and behave
+	// exactly as before. Archive is deliberately not captured — see
+	// securefs.PreservedWinAttrs.
+	WinAttrs uint32 `json:"winAttrs,omitempty"`
 }
 
 // HasContent reports whether the entry has an uploaded object at BackupPath.
@@ -329,6 +349,7 @@ func contentlessEntry(f backupFile) SnapshotFile {
 		ModeBits:     f.modeBits,
 		Owner:        f.owner,
 		Placeholder:  f.placeholder,
+		WinAttrs:     f.winAttrs,
 	}
 }
 
@@ -680,6 +701,9 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 	}
 
 	var errs []error
+	// Source paths behind errs, kept alongside it so the published manifest can
+	// name what is missing (#6350) without re-parsing error strings.
+	var failedSources []string
 	var volatileCount int
 
 	var bytesTotal int64
@@ -890,6 +914,12 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 			return nil, detail
 		}
 		snapshot.UploadFailures = errs
+		// The run stopped early, so the files never even ATTEMPTED are missing
+		// from the manifest exactly like the ones that failed outright — count
+		// them all, or the warning understates the hole by everything after the
+		// abort point (500 intended, 100 stored, 5 errored would otherwise be
+		// stamped "5 missing" rather than 400).
+		recordIncompleteFilesOfTotal(snapshot, errs, failedSources, filesTotal)
 		if pubErr := publishSnapshotManifest(ctx, provider, snapshot, prefix); pubErr != nil {
 			// Deliberately NOT followed by cleanupSnapshotPrefix. Deletion is
 			// irreversible and this is a data-protection product: retained
@@ -1076,6 +1106,7 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 			}
 			err := fmt.Errorf("failed to upload %s: %w", file.sourcePath, uploadErr)
 			errs = append(errs, err)
+			failedSources = append(failedSources, file.sourcePath)
 			// This is skip-and-continue: the file is dropped from the backup
 			// but the job carries on. Warn so it is visible without debug
 			// shipping, and count it so the summary at the end is trustworthy.
@@ -1170,6 +1201,7 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 			ModeBits:     file.modeBits,
 			Owner:        file.owner,
 			Volatile:     volatile,
+			WinAttrs:     file.winAttrs,
 		}
 		snapshot.Files = append(snapshot.Files, entry)
 		snapshot.Size += entry.Size
@@ -1205,6 +1237,7 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 	// silently dropping them here (they used to be returned only when ZERO
 	// files uploaded).
 	snapshot.UploadFailures = errs
+	recordIncompleteFiles(snapshot, errs, failedSources)
 	snapshot.VolatileFiles = volatileCount
 
 	if err := ctx.Err(); err != nil {
@@ -1854,4 +1887,49 @@ func newID(prefix string) string {
 	random := make([]byte, 4)
 	_, _ = rand.Read(random)
 	return fmt.Sprintf("%s-%s-%x", prefix, time.Now().UTC().Format("20060102T150405Z"), random)
+}
+
+// maxManifestIncompletePaths caps how many failed source paths are written to
+// Snapshot.IncompleteFilePaths. The count (IncompleteFiles) is always exact;
+// only the names are truncated, because a run can fail thousands of files and
+// the manifest is downloaded whole on every verify and every restore.
+const maxManifestIncompletePaths = 100
+
+// recordIncompleteFiles stamps the run's upload failures onto the manifest so a
+// later reader can tell an incomplete restore point from a complete one
+// (#6350). failedSources may be shorter than failures (a failure recorded
+// without a known source path); the COUNT always comes from failures, so a
+// missing path never under-reports incompleteness.
+func recordIncompleteFiles(snapshot *Snapshot, failures []error, failedSources []string) {
+	if snapshot == nil {
+		return
+	}
+	recordIncompleteFilesOfTotal(snapshot, failures, failedSources, len(snapshot.Files)+len(failures))
+}
+
+// recordIncompleteFilesOfTotal is recordIncompleteFiles for a run that stopped
+// before attempting every file. filesTotal is how many files the run INTENDED
+// to store; anything the manifest does not list is missing from the restore
+// point whether it failed outright or was never reached, so the count is the
+// larger of the explicit failures and (filesTotal - stored). Only the failures
+// have known paths, so IncompleteFilePaths can name fewer files than the
+// count — the count, not the list, is the authority on how much is missing.
+func recordIncompleteFilesOfTotal(snapshot *Snapshot, failures []error, failedSources []string, filesTotal int) {
+	if snapshot == nil {
+		return
+	}
+	incomplete := len(failures)
+	if unattempted := filesTotal - len(snapshot.Files); unattempted > incomplete {
+		incomplete = unattempted
+	}
+	if incomplete <= 0 {
+		return
+	}
+	snapshot.IncompleteFiles = incomplete
+	if len(failedSources) > maxManifestIncompletePaths {
+		failedSources = failedSources[:maxManifestIncompletePaths]
+	}
+	if len(failedSources) > 0 {
+		snapshot.IncompleteFilePaths = append([]string(nil), failedSources...)
+	}
 }

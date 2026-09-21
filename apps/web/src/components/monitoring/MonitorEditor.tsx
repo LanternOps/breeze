@@ -24,6 +24,7 @@ import { extractApiError } from '@/lib/apiError';
 import { asList } from '@/lib/asList';
 import { runAction, handleActionError, ActionError } from '@/lib/runAction';
 import { useDefaultOwnerScope } from '@/hooks/useDefaultOwnerScope';
+import { useHydrated } from '@/hooks/useHydrated';
 import { BuiltInBadge } from './BuiltInBadge';
 import { ScopeBadge } from '../shared/ScopeBadge';
 import ActionsEditor, {
@@ -191,6 +192,11 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
   const currentPartnerId = jwt.status === 'resolved' ? jwt.claims.partnerId : null;
   const createdEditorUrl = useRef<string | undefined>(undefined);
   const { isPartnerScope, defaultOwnerScope } = useDefaultOwnerScope();
+  // `isPartnerScope` decodes the access token, which the server never has, so
+  // the owner-scope block would otherwise appear only on the client and make
+  // the hydration pass structurally disagree with the SSR markup (#6391).
+  // Markup only — the submit path keeps reading `isPartnerScope` directly.
+  const hydrated = useHydrated();
   const currentOrgId = useOrgStore((s) => s.currentOrgId);
 
   const [loading, setLoading] = useState(!isNew);
@@ -671,7 +677,7 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
         )}
 
         <form onSubmit={handleSubmit(onSubmit)} className="space-y-6 rounded-lg border bg-card p-6 shadow-xs">
-          {isNew && isPartnerScope && (
+          {isNew && hydrated && isPartnerScope && (
             <fieldset className="space-y-2 rounded-md border p-4" data-testid="monitor-editor-owner-scope">
               <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">
                 {t('monitoring:editor.ownerScope.legend')}

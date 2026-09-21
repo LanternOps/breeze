@@ -639,10 +639,36 @@ function reportHeldContextIfNeeded(input: {
   }
 }
 
+/**
+ * An explicit isolation level forces a NEW top-level transaction, because
+ * Drizzle savepoints ignore isolation options. That takes a SECOND pooled
+ * connection, so it must never be opened while this request already holds one:
+ * at concurrency >= pool size every request would hold connection #1 while
+ * waiting for connection #2 and the pool deadlocks (#1105, #2417). The calling
+ * route must be listed in SELF_MANAGED_DB_CONTEXT_ROUTES so it carries no
+ * ambient context. Exported for the regression test.
+ */
+export function assertIsolationNotNested(contextHeld: boolean): void {
+  if (!contextHeld) return;
+  throw new Error(
+    'withDbAccessContext: an isolationLevel opens a second pooled connection and a DB context is already held — '
+    + 'add this route to SELF_MANAGED_DB_CONTEXT_ROUTES instead of nesting transactions',
+  );
+}
+
 export async function withDbAccessContext<T>(
   context: DbAccessContext,
-  fn: () => Promise<T>
+  fn: () => Promise<T>,
+  options?: { isolationLevel: 'repeatable read' | 'serializable' }
 ): Promise<T> {
+  // An explicit isolation level requires a new top-level transaction: Drizzle
+  // savepoints ignore isolation options, and our GUC SELECTs already took a
+  // snapshot. Keep the ambient caller's permissions even on this new connection.
+  // This transaction is independent of any outer writes; callers must pass all writes through it.
+  if (options) {
+    assertIsolationNotNested(!!dbContextStorage.getStore());
+    context = dbContextMetaStorage.getStore() ?? context;
+  }
   if (dbContextStorage.getStore()) {
     return fn();
   }
@@ -694,7 +720,7 @@ export async function withDbAccessContext<T>(
           warnMs,
         });
       }
-    }),
+    }, options),
   );
 }
 

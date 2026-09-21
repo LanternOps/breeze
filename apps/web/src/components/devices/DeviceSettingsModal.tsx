@@ -4,8 +4,8 @@ import { useTranslation } from 'react-i18next';
 import type { Device } from './DeviceList';
 import { Dialog } from '../shared/Dialog';
 import { fetchWithAuth } from '../../stores/auth';
+import { fetchAllSites } from '@/lib/fetchAllSites';
 import { extractApiError } from '@/lib/apiError';
-import { asList } from '@/lib/asList';
 import UninstallStateBadge from './UninstallStateBadge';
 
 type Site = {
@@ -44,9 +44,8 @@ export default function DeviceSettingsModal({ device, isOpen, onClose, onSaved, 
 
     // Scope to the device's org — the PATCH endpoint rejects cross-org moves,
     // so showing other orgs' sites would just surface invalid choices.
-    fetchWithAuth(`/orgs/sites?organizationId=${device.orgId}`)
-      .then(res => res.ok ? res.json() : Promise.reject(new Error(t('deviceSettingsModal.errors.loadSites'))))
-      .then(data => setSites(asList(data, 'sites')))
+    fetchAllSites<Site>(`/orgs/sites?organizationId=${device.orgId}`)
+      .then(list => setSites(list))
       .catch(() => setSites([]));
   }, [isOpen, device]);
 
