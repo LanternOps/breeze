@@ -24,6 +24,14 @@
 
 import { z } from 'zod';
 import { buildTaskOperationKey } from '../operationKey';
+import { validateRecipeNextStep } from './validateNextStep';
+import type {
+  CrossCheckResult,
+  DiscoveryFacts,
+  NextStepValidation as RecipeNextStepValidation,
+  PlannedEffect,
+  RecipeDefinition,
+} from './types';
 import {
   serviceRecoveryInputSchema,
   taskCriterionSchema,
@@ -156,9 +164,38 @@ export function buildServiceRecoveryCriterion(input: ServiceRecoveryInput): Task
   });
 }
 
-export type NextStepValidation =
-  | { ok: true; key: ServiceRecoveryStepKey; inputs: Record<string, unknown> }
-  | { ok: false; reason: 'unsupported_step' | 'step_not_permitted' | 'invalid_inputs'; detail: string };
+/**
+ * Re-exported from `./types` so the recipe keeps its published surface while
+ * the type itself has exactly one definition. The old shape narrowed `key` to
+ * `ServiceRecoveryStepKey`; the generic one widens it to `string`, which is
+ * strictly more permissive for CALLERS and is what makes one validator serve
+ * every recipe. The coordinator never indexes a recipe-specific table with it
+ * (it indexes `recipe.steps`), so nothing downstream needed the narrowing.
+ */
+export type NextStepValidation = RecipeNextStepValidation;
+
+/**
+ * Cross-check an `execute` proposal against the FROZEN admission input.
+ *
+ * The model proposing a different service name is not a typo to fix, it is an
+ * attempt (however accidental) to act outside the approved scope — Operator
+ * spec §7.1: "Existing approvals only authorize their pinned arguments."
+ */
+function crossCheckServiceRecoveryInputs(
+  stepKey: string,
+  inputs: Record<string, unknown>,
+  frozen: ServiceRecoveryInput,
+): CrossCheckResult {
+  if (stepKey !== 'execute') return { ok: true };
+  const serviceName = (inputs as { serviceName?: unknown }).serviceName;
+  if (serviceName !== frozen.serviceName) {
+    return {
+      ok: false,
+      detail: `serviceName '${String(serviceName)}' does not match the service frozen at admission`,
+    };
+  }
+  return { ok: true };
+}
 
 /**
  * Validate a `submit_task_step` `nextStep` of kind `'step'` against this
@@ -166,66 +203,18 @@ export type NextStepValidation =
  * inputs that do not parse are ALL classified failures that end the run and
  * hand the task off (spec §6.2) — never a silent coercion onto some other
  * step, and never a widening of what the model may do.
+ *
+ * Kept as an exported function with its original signature: it is the shape
+ * the shipped unit suite and the coordinator's call site were written against,
+ * and E1 is a refactor, not a behaviour change. The logic itself now lives
+ * once, in `validateRecipeNextStep`.
  */
 export function validateNextStep(
   currentStepKey: string,
   proposed: { key: string; inputs: Record<string, unknown> },
   frozen: ServiceRecoveryInput,
 ): NextStepValidation {
-  if (!isServiceRecoveryStepKey(proposed.key)) {
-    return {
-      ok: false,
-      reason: 'unsupported_step',
-      detail: `'${proposed.key}' is not a step of ${SERVICE_RECOVERY_WORKFLOW_KEY}`,
-    };
-  }
-  if (!isServiceRecoveryStepKey(currentStepKey)) {
-    return {
-      ok: false,
-      reason: 'unsupported_step',
-      detail: `current step '${currentStepKey}' is not a step of ${SERVICE_RECOVERY_WORKFLOW_KEY}`,
-    };
-  }
-
-  const permitted = SERVICE_RECOVERY_PERMITTED_NEXT_STEPS[currentStepKey];
-  if (!permitted.includes(proposed.key)) {
-    return {
-      ok: false,
-      reason: 'step_not_permitted',
-      detail: `'${proposed.key}' is not reachable from '${currentStepKey}'`,
-    };
-  }
-
-  const schema = (SERVICE_RECOVERY_STEP_INPUT_SCHEMAS as Record<string, z.ZodTypeAny | undefined>)[proposed.key];
-  if (!schema) {
-    return { ok: true, key: proposed.key, inputs: {} };
-  }
-
-  const parsed = schema.safeParse(proposed.inputs);
-  if (!parsed.success) {
-    return {
-      ok: false,
-      reason: 'invalid_inputs',
-      detail: parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ').slice(0, 400),
-    };
-  }
-
-  // Cross-check against the FROZEN admission input. The model proposing a
-  // different service name is not a typo to fix, it is an attempt (however
-  // accidental) to act outside the approved scope — spec §7.1: "Existing
-  // approvals only authorize their pinned arguments."
-  if (proposed.key === 'execute') {
-    const inputs = parsed.data as { serviceName: string };
-    if (inputs.serviceName !== frozen.serviceName) {
-      return {
-        ok: false,
-        reason: 'invalid_inputs',
-        detail: `serviceName '${inputs.serviceName}' does not match the service frozen at admission`,
-      };
-    }
-  }
-
-  return { ok: true, key: proposed.key, inputs: parsed.data as Record<string, unknown> };
+  return validateRecipeNextStep(serviceRecoveryRecipe, currentStepKey, proposed, frozen);
 }
 
 /**
@@ -272,3 +261,78 @@ export function serviceRecoveryOperationKey(args: {
 export function taskRunDedupeKey(taskId: string, stepKey: string, attemptOrdinal: number): string {
   return `operator-task:${taskId}:${stepKey}:${attemptOrdinal}`;
 }
+
+/**
+ * `service_recovery` as a `RecipeDefinition` (Recipe Library spec §6.1, wave
+ * E1). Every field reuses the module constant above it BY IDENTITY rather than
+ * re-stating a value: a second copy of `deadlineMs` or of the permitted-step
+ * table is how the registry and the constants would drift, and the whole
+ * point of the port is that there is now exactly one source for each.
+ *
+ * `gateClass` is `model_chooses_effect` (spec §9): the model chooses whether to
+ * propose `execute` at all, so this recipe is graded by the Operator spec §13
+ * evaluation gate, not by the deterministic contract-test gate.
+ */
+export const serviceRecoveryRecipe: RecipeDefinition<ServiceRecoveryInput> = {
+  key: SERVICE_RECOVERY_WORKFLOW_KEY,
+  version: SERVICE_RECOVERY_WORKFLOW_VERSION,
+  promptVersion: SERVICE_RECOVERY_PROMPT_VERSION,
+  gateClass: 'model_chooses_effect',
+  targetKinds: ['device'],
+  // Nothing beyond the agent's own allowlist: the effect is a Breeze device
+  // command, not a third-party provider call. Readiness for this recipe is the
+  // feature flag, which is a deployment gate and not a per-org capability.
+  requires: [],
+  inputSchema: serviceRecoveryInputSchema,
+  steps: {
+    investigate: {
+      kind: 'reason',
+      phase: 'investigate',
+    },
+    execute: {
+      kind: 'effect',
+      phase: 'execute',
+      inputSchema: SERVICE_RECOVERY_STEP_INPUT_SCHEMAS.execute,
+    },
+    // `observe` reads the dispatched device command back through the
+    // authorized adapter — a probe, not a wait: it can conclude.
+    observe: { kind: 'probe', phase: 'execute' },
+    verify: { kind: 'probe', phase: 'verify' },
+    document: { kind: 'document', phase: 'document', terminal: true },
+  },
+  permittedNextSteps: SERVICE_RECOVERY_PERMITTED_NEXT_STEPS,
+  bounds: SERVICE_RECOVERY_BOUNDS,
+  /**
+   * One effect: restart the frozen service on the frozen device. `facts` is
+   * unused — this recipe has no discovery step (R1's identity recipes do).
+   *
+   * A NEW array every call: a shared array would let one caller's mutation
+   * become another task's plan.
+   */
+  buildPlan(input: ServiceRecoveryInput, _facts: DiscoveryFacts): PlannedEffect[] {
+    return [
+      {
+        ordinal: 0,
+        toolName: 'manage_services',
+        provider: 'breeze',
+        targetId: input.deviceId,
+        accountExternalId: null,
+        canonicalArguments: {
+          deviceId: input.deviceId,
+          action: 'restart',
+          serviceName: input.serviceName,
+        },
+      },
+    ];
+  },
+  operationKey(args) {
+    return serviceRecoveryOperationKey({
+      stepKey: args.stepKey as ServiceRecoveryStepKey,
+      // `buildTaskOperationKey` already substitutes `'none'` for a null target.
+      deviceId: args.targetId ?? 'none',
+      planRevision: args.planRevision,
+      ordinal: args.ordinal,
+    });
+  },
+  crossCheckStepInputs: crossCheckServiceRecoveryInputs,
+};
