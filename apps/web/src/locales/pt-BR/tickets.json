@@ -230,7 +230,9 @@
       "logFailedSentence": "Falha ao registrar tempo."
     },
     "billedVsWorked": "{{worked}} h trabalhadas · {{billed}} h faturadas",
-    "includedMinutes": "{{hours}} h incluídas no contrato"
+    "includedMinutes": "{{hours}} h incluídas no contrato",
+    "missingRateCount_one": "1 lançamento não tem tarifa por hora — não incluído no valor acima",
+    "missingRateCount_other": "{{count}} lançamentos não têm tarifa por hora — não incluídos no valor acima"
   },
   "inboundReviewQueue": {
     "title": "Fila de revisão",

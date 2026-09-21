@@ -1,9 +1,9 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
-import { eq } from 'drizzle-orm';
+import { and, count, eq, isNull } from 'drizzle-orm';
 import { db } from '../../db';
-import { ticketParts } from '../../db/schema';
+import { ticketParts, timeEntries } from '../../db/schema';
 import { requireScope, requirePermission } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import { ticketPartSchema, updateTicketPartSchema, listTimeEntriesQuerySchema } from '@breeze/shared';
@@ -96,6 +96,21 @@ ticketPartsRoutes.get('/:id/billing-summary', scopes, readPerm, zValidator('para
   const ticket = await getScopedTicketOr404(auth, c.req.valid('param').id);
   if (!ticket) return c.json({ error: 'Ticket not found' }, 404);
   const summary = await getTicketBillingSummary(ticket.id);
+  // #6466: getTicketBillingSummary's billableMinutes counts every billable row
+  // (COALESCE(billable_minutes, duration_minutes) FILTER (WHERE is_billable)),
+  // but the money aggregate beside it additionally filters hourlyRate IS NOT
+  // NULL — so a rate-less billable entry inflates the hours next to a blank
+  // amount with no explanation. This is a route-local read-only count (not a
+  // change to timeEntryService.ts, owned separately by #6568) so the panel can
+  // show an explicit "N entries have no rate" indicator instead.
+  const [missingRateRow] = await db
+    .select({ n: count() })
+    .from(timeEntries)
+    .where(and(eq(timeEntries.ticketId, ticket.id), eq(timeEntries.isBillable, true), isNull(timeEntries.hourlyRate)));
+  const summaryWithMissingRate = {
+    ...summary,
+    time: { ...summary.time, missingRateCount: missingRateRow?.n ?? 0 }
+  };
   // `defaults` (#5321) is what the server would stamp on a new entry for this
   // ticket. The quick-add prefills its rate from it and warns when it is null —
   // a rate-less billable entry is only refused much later, at invoice assembly
@@ -114,5 +129,5 @@ ticketPartsRoutes.get('/:id/billing-summary', scopes, readPerm, zValidator('para
     if (!(err instanceof TimeEntryServiceError)) throw err;
     console.error('[tickets.billing-summary] time-entry defaults unavailable', ticket.id, err.code, err.message);
   }
-  return c.json({ data: { ...summary, defaults } });
+  return c.json({ data: { ...summaryWithMissingRate, defaults } });
 });

@@ -61,6 +61,32 @@ describe('TicketTimeBilling', () => {
     expect(screen.queryByTestId('time-entry-source-e3')).toBeNull();
   });
 
+  // #6466: a billable entry with no hourly rate still counts toward
+  // billableMinutes (the minimum/rounding SQL doesn't filter on rate), but the
+  // money aggregate does — so the panel must not show inflated billable hours
+  // beside a blank amount with no explanation. missingRateCount says why.
+  it('shows a no-rate indicator when billable minutes have no hourly rate', async () => {
+    fetchWithAuth.mockImplementation(async (url: string) => {
+      if (url.startsWith('/tickets/tk-1/billing-summary')) {
+        return { ok: true, status: 200, json: async () => ({ data: {
+          time: { totalMinutes: 90, billableMinutes: 30, billableAmounts: [], missingRateCount: 1 },
+          parts: { partsCount: 0, billableTotals: [] },
+        } }) } as Response;
+      }
+      return route(url);
+    });
+    render(<TicketTimeBilling ticketId="tk-1" />);
+    expect((await screen.findByTestId('ticket-billing-time-billable')).textContent).toContain('30m');
+    const indicator = await screen.findByTestId('ticket-billing-missing-rate');
+    expect(indicator.textContent).toContain('1');
+  });
+
+  it('renders no missing-rate indicator when every billable entry has a rate', async () => {
+    render(<TicketTimeBilling ticketId="tk-1" />);
+    await screen.findByTestId('ticket-billing-time-billable');
+    expect(screen.queryByTestId('ticket-billing-missing-rate')).toBeNull();
+  });
+
   it('renders a dash (not $0.00) when a summary carries no money', async () => {
     fetchWithAuth.mockImplementation(async (url: string) => {
       if (url.startsWith('/tickets/tk-1/billing-summary')) {
