@@ -186,6 +186,7 @@
       "failedToAssignOrg": "Kuruluş atanamadı",
       "organizations": "Kuruluşlar",
       "thisPartnerLibraryPolicyAppliesOnlyTo": "Bu ortak kütüphane politikası yalnızca seçtiğiniz kuruluşlar için geçerlidir.",
+      "filtersApplyOnAssign": "Bu filtreler aşağıda atama yaptığınızda geçerli olur. Boş, her rol ve her işletim sistemi anlamına gelir. Bir atamanın filtrelerini değiştirmek için kapatıp yeniden açın.",
       "allOrganizationsPartnerWide": "Tüm kuruluşlar (iş ortağı çapında)",
       "allOrganizationsPartnerWide2": "Tüm kuruluşlar (iş ortağı çapında)",
       "assigned": "Atandı",

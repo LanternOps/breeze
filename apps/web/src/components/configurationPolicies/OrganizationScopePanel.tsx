@@ -160,6 +160,11 @@ export default function OrganizationScopePanel({ policyId, partnerId }: Props) {
   };
   const partnerAssignment = assignments.find((a) => a.level === "partner");
   const allOrgs = !!partnerAssignment;
+  // Chips are the next assign payload. Saved rows may seed them until the
+  // user edits one. After that, a refetch must not restore the saved set:
+  // unassigning one of several orgs that share a filter would snap the chips
+  // back, and turning the org on again would post the old filters.
+  const filtersTouchedRef = useRef(false);
   const orgAssignmentByOrgId = useMemo(() => {
     const m = new Map<string, Assignment>();
     assignments
@@ -168,6 +173,10 @@ export default function OrganizationScopePanel({ policyId, partnerId }: Props) {
     return m;
   }, [assignments]);
   useEffect(() => {
+    filtersTouchedRef.current = false;
+  }, [policyId]);
+  useEffect(() => {
+    if (filtersTouchedRef.current) return;
     if (assignmentsLoading) return;
     if (partnerAssignment) {
       setRoleFilter([...(partnerAssignment.roleFilter ?? [])]);
@@ -382,8 +391,14 @@ export default function OrganizationScopePanel({ policyId, partnerId }: Props) {
           <AssignmentRoleOsFilters
             roleFilter={roleFilter}
             osFilter={osFilter}
-            onRoleFilterChange={setRoleFilter}
-            onOsFilterChange={setOsFilter}
+            onRoleFilterChange={(next) => {
+              filtersTouchedRef.current = true;
+              setRoleFilter(next);
+            }}
+            onOsFilterChange={(next) => {
+              filtersTouchedRef.current = true;
+              setOsFilter(next);
+            }}
             disabled={rowsDisabled}
           />
           <p className="mt-2 text-xs text-muted-foreground">

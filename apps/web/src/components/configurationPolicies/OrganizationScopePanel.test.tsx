@@ -31,6 +31,10 @@ function orgsPageRes(orgs: Array<{ id: string; name: string }>, total?: number, 
 // Helper: find a POST/DELETE call by URL substring + method, regardless of
 // exact call index — the panel now fires an extra org-list fetch alongside
 // the assignments fetch, so index-based assertions would be brittle.
+function chipIsSelected(name: string): boolean {
+  return screen.getByRole('button', { name }).className.includes('bg-primary/10');
+}
+
 function findCall(urlIncludes: string, method?: string) {
   return fetchWithAuthMock.mock.calls.find((c) => {
     const url = String(c[0]);
@@ -358,5 +362,48 @@ describe('OrganizationScopePanel', () => {
     render(<OrganizationScopePanel policyId="p1" partnerId={PARTNER_ID} />);
     expect(await screen.findByRole('checkbox', { name: /Acme Corp/i })).toBeChecked();
     expect(screen.getAllByText('Linux')).toHaveLength(2);
+  });
+
+  it('posts the edited filters when one of two shared-filter orgs is turned off and back on', async () => {
+    fetchWithAuthMock
+      .mockImplementationOnce(() => assignmentsRes([
+        { id: 'a1', level: 'organization', targetId: 'org-acme', priority: 0, roleFilter: ['server'] },
+        { id: 'a2', level: 'organization', targetId: 'org-contoso', priority: 0, roleFilter: ['server'] },
+      ]))
+      .mockImplementationOnce(() => orgsPageRes([
+        { id: 'org-acme', name: 'Acme Corp' },
+        { id: 'org-contoso', name: 'Contoso Ltd' },
+      ]))
+      .mockImplementationOnce(() => jsonRes({}))
+      .mockImplementationOnce(() => assignmentsRes([
+        { id: 'a2', level: 'organization', targetId: 'org-contoso', priority: 0, roleFilter: ['server'] },
+      ]));
+
+    render(<OrganizationScopePanel policyId="p1" partnerId={PARTNER_ID} />);
+
+    await waitFor(() => expect(chipIsSelected('Server')).toBe(true));
+    fireEvent.click(screen.getByRole('button', { name: 'Workstation' }));
+    expect(chipIsSelected('Workstation')).toBe(true);
+
+    fireEvent.click(screen.getByRole('checkbox', { name: /Acme Corp/i }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('checkbox', { name: /Acme Corp/i })).not.toBeChecked();
+      expect(screen.getByRole('checkbox', { name: /Contoso Ltd/i })).toBeChecked();
+    });
+    expect(chipIsSelected('Workstation')).toBe(true);
+    expect(chipIsSelected('Server')).toBe(true);
+
+    fireEvent.click(screen.getByRole('checkbox', { name: /Acme Corp/i }));
+
+    await waitFor(() => expect(findCall('/configuration-policies/p1/assignments', 'POST')).toBeTruthy());
+    const post = findCall('/configuration-policies/p1/assignments', 'POST')!;
+    const body = JSON.parse((post[1] as RequestInit).body as string);
+    expect(body).toMatchObject({
+      level: 'organization',
+      targetId: 'org-acme',
+      priority: 0,
+      roleFilter: ['server', 'workstation'],
+    });
   });
 });
