@@ -225,14 +225,34 @@ describe('network_check compiles to a managed network_monitors row (#5291 W04)',
       expectedConfig: { port: 8080 }, // agent: tools.GetPayloadInt(payload, "port", 443)
     },
     {
-      label: 'http_check with expectStatus set',
-      condition: { checkType: 'http_check', target: 'https://example.com', expectStatus: 301, pollingIntervalSeconds: 60, timeoutSeconds: 5, consecutiveFailures: 2 },
-      expectedConfig: { expectedStatus: 301 }, // agent: tools.GetPayloadInt(payload, "expectedStatus", 200)
+      label: 'http_check with expectStatus set (2xx)',
+      condition: { checkType: 'http_check', target: 'https://example.com', expectStatus: 200, pollingIntervalSeconds: 60, timeoutSeconds: 5, consecutiveFailures: 2 },
+      expectedConfig: { expectedStatus: 200 }, // agent: tools.GetPayloadInt(payload, "expectedStatus", 200)
     },
     {
       label: 'http_check with expectStatus omitted',
       condition: { checkType: 'http_check', target: 'https://example.com', pollingIntervalSeconds: 60, timeoutSeconds: 5, consecutiveFailures: 2 },
       expectedConfig: {}, // expectStatus omitted -> agent falls back to its own default (200)
+    },
+    {
+      // #6510: a 3xx expectation can never be observed while the agent follows
+      // the redirect (default true) — it would evaluate the FINAL hop's status
+      // instead. The compiler must turn `followRedirects` off by default
+      // whenever `expectStatus` is itself a 3xx, or the check can never go
+      // healthy.
+      label: 'http_check with a 3xx expectStatus (redirect expectation)',
+      condition: { checkType: 'http_check', target: 'https://example.com', expectStatus: 301, pollingIntervalSeconds: 60, timeoutSeconds: 5, consecutiveFailures: 2 },
+      expectedConfig: { expectedStatus: 301, followRedirects: false },
+    },
+    {
+      label: 'http_check with a 3xx expectStatus but followRedirects explicitly true',
+      condition: { checkType: 'http_check', target: 'https://example.com', expectStatus: 301, followRedirects: true, pollingIntervalSeconds: 60, timeoutSeconds: 5, consecutiveFailures: 2 },
+      expectedConfig: { expectedStatus: 301 }, // explicit true == agent's own default, no need to send it
+    },
+    {
+      label: 'http_check with a 2xx expectStatus but followRedirects explicitly false',
+      condition: { checkType: 'http_check', target: 'https://example.com', expectStatus: 200, followRedirects: false, pollingIntervalSeconds: 60, timeoutSeconds: 5, consecutiveFailures: 2 },
+      expectedConfig: { expectedStatus: 200, followRedirects: false },
     },
     {
       label: 'icmp_ping',
