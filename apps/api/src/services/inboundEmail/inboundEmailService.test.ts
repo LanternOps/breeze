@@ -397,6 +397,20 @@ describe('processInboundEmail', () => {
     expect(state.inserts.filter((i) => i.table === 'ticket_comments')).toHaveLength(0);
   });
 
+  it('dedup precedes loop/bounce suppression: a redelivered loop message logs nothing', async () => {
+    // Regression: the loop/bounce, self-loop and own-outbound suppression checks log an
+    // 'ignored' audit row and return. They used to run BEFORE the dedup SELECT, so a
+    // REDELIVERY re-inserted that row and collided with the
+    // (partner_id, provider_message_id) unique index (23505), failing the job. Dedup now
+    // runs first, so a duplicate returns before any second audit insert.
+    resolveMock.mockResolvedValue('p-1');
+    state.selectRows['ticket_email_inbound'] = [{ id: 'existing' }]; // already logged on first delivery
+    await processInboundEmail(email({ autoSubmitted: 'auto-replied' })); // a loop/bounce message
+
+    expect(inboundOf()).toHaveLength(0); // no second audit row -> no unique-index collision
+    expect(createTicketMock).not.toHaveBeenCalled();
+  });
+
   it('appends a public comment + reopens a resolved ticket on a threaded reply', async () => {
     resolveMock.mockResolvedValue('p-1');
     state.selectRows['ticket_email_inbound'] = []; // no dup

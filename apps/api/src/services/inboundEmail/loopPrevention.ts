@@ -6,7 +6,7 @@ const BULK_PRECEDENCE = new Set(['bulk', 'list', 'junk']);
 /**
  * Synchronous loop-prevention rules (spec §5). Returns a reason string when an
  * autoresponse MUST be suppressed for this inbound mail, or null when it's safe
- * to autorespond. The Redis per-sender rate cap is applied separately (Task 6).
+ * to autorespond.
  *
  * @param inboundDomain TICKETS_INBOUND_DOMAIN (undefined when unconfigured)
  */
