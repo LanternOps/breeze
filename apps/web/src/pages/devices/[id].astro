@@ -3,6 +3,21 @@ import DashboardLayout from '../../layouts/DashboardLayout.astro';
 import DeviceDetailPage from '../../components/devices/DeviceDetailPage';
 
 const { id } = Astro.params;
+
+// #6501: `devices/network/` is a directory (holding `[id].astro` for a single
+// network asset), not a page, so it has no `index.astro`/`network.astro` of
+// its own. A bare `/devices/network` — a natural URL to type, or to land on
+// by truncating `/devices/network/<assetId>` — therefore falls through to
+// THIS catch-all route with id="network", which then fetches
+// `GET /devices/network`. That path is also matched by the network-asset
+// LIST endpoint (mounted ahead of the device `/:id` route on the API), so
+// the request resolves 200 with a list envelope instead of 404 — see the
+// defensive payload-shape guard in DeviceDetailPage for the client-side half
+// of this fix. Redirect the bare path to what the URL actually meant: the
+// network segment of the unified devices list.
+if (id === 'network') {
+  return Astro.redirect('/devices#deviceClass=network');
+}
 ---
 
 <DashboardLayout titleKey="titles.devicesDetail">
