@@ -951,6 +951,11 @@ const envObjectSchema = z
     // instead of silently staying on the safe default.
     LLM_PROVIDER_CATALOG_ENABLED: z.enum(['true', 'false']).default('false'),
 
+    // Caller verification (anti-vishing, #6354 W01). Exact-string contract:
+    // only 'true' enables; '' === unset. No generic boolean superRefine —
+    // '1'/'yes'/'on' are refused at boot rather than silently accepted.
+    CALLER_VERIFICATION_ENABLED: z.enum(['true', 'false', '']).optional(),
+
     // Security remediation Wave 6, Task 9 (approved plan deviation D1) — the
     // managed-software destination gate (services/managedSoftwareDispatchPolicy.ts).
     //   compat (default): a private destination still requires agent
