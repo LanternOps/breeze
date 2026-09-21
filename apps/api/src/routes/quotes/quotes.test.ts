@@ -67,20 +67,23 @@ vi.mock('../../services/quotePdf', () => ({
   renderQuotePdf: (...args: any[]) => pdf.render(...args)
 }));
 
-// Mock the `db` proxy the route uses for branding (partners / portal_branding)
-// and the image loader. Each select(...).from(...).where(...).limit(1) chain
-// resolves to a mutable rows array a test can preset. Default: empty rows.
+// Mock the `db` proxy the route uses for branding (partners / portal_branding),
+// the image loader, and the acceptance record (Task 9). The chain is thenable
+// at every step, so it resolves to the next preset rows array whichever method
+// a caller awaits last — recipients ends in `orderBy`, branding ends in
+// `limit`, and the acceptance read is `leftJoin().where().orderBy().limit()`.
+// Default: empty rows.
 const dbRows = vi.hoisted(() => ({ next: [] as any[][], i: 0 }));
 vi.mock('../../db', () => {
   const builder = () => {
-    // Terminal steps (`limit`, `orderBy`) both resolve the next preset rows
-    // array — the recipients read on GET /:id ends in orderBy, not limit.
-    const resolve = () => Promise.resolve(dbRows.next[dbRows.i++] ?? []);
     const chain: any = {
       from: () => chain,
+      leftJoin: () => chain,
       where: () => chain,
-      orderBy: resolve,
-      limit: resolve
+      orderBy: () => chain,
+      limit: () => chain,
+      then: (resolve: (v: unknown) => unknown, reject?: (e: unknown) => unknown) =>
+        Promise.resolve(dbRows.next[dbRows.i++] ?? []).then(resolve, reject),
     };
     return chain;
   };

@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { zValidator } from '../../lib/validation';
 import { and, desc, eq, ne } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
-import { quotes, quoteBlocks, quoteLines, quoteRecipients } from '../../db/schema/quotes';
+import { quotes, quoteBlocks, quoteLines, quoteRecipients, quoteAcceptances } from '../../db/schema/quotes';
 import { partners } from '../../db/schema/orgs';
 import { portalBranding } from '../../db/schema/portal';
 import { acceptQuoteSchema, declineQuoteSchema } from '@breeze/shared';
@@ -85,7 +85,16 @@ quoteRoutes.get('/quotes/:id', zValidator('param', idParam), async (c) => {
     // revision is still being prepared for them.
     const [successor] = await db.select({ id: quotes.id }).from(quotes)
       .where(and(eq(quotes.revisionOfQuoteId, quote.id), ne(quotes.status, 'draft'))).limit(1);
-    return c.json({ data: { quote: { ...quote, supersededByQuoteId: successor?.id ?? null, dueOnAcceptanceTotal: totals.dueOnAcceptanceTotal, depositDueTotal: totals.depositDueTotal, categoryBreakdown: totals.categoryBreakdown }, blocks, lines: serializedLines, branding: {
+    // Origin ONLY. The method and the reference are the MSP's internal evidence
+    // trail — free text a tech wrote about this customer — and publishing them
+    // in the customer's own portal would be a disclosure, not a courtesy.
+    const [acceptance] = await db
+      .select({ origin: quoteAcceptances.origin })
+      .from(quoteAcceptances)
+      .where(and(eq(quoteAcceptances.quoteId, id), eq(quoteAcceptances.orgId, auth.user.orgId)))
+      .orderBy(quoteAcceptances.signedAt)
+      .limit(1);
+    return c.json({ data: { quote: { ...quote, supersededByQuoteId: successor?.id ?? null, acceptanceOrigin: acceptance?.origin ?? null, dueOnAcceptanceTotal: totals.dueOnAcceptanceTotal, depositDueTotal: totals.depositDueTotal, categoryBreakdown: totals.categoryBreakdown }, blocks, lines: serializedLines, branding: {
       partnerName: partner?.name ?? 'Proposal', logoUrl: brand?.logoUrl ?? null, primaryColor: brand?.primaryColor ?? null,
       supportEmail: brand?.supportEmail ?? null, supportPhone: brand?.supportPhone ?? null,
       theme, pageSize,

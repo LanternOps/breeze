@@ -20,7 +20,8 @@ import {
 import { createQuoteOrder, updateQuoteOrder, updateQuoteOrderLine } from '../../services/quoteOrderService';
 import { QuoteServiceError, type QuoteActor } from '../../services/quoteTypes';
 import { db } from '../../db';
-import { quoteImages } from '../../db/schema/quotes';
+import { quoteImages, quoteAcceptances } from '../../db/schema/quotes';
+import { users } from '../../db/schema/users';
 import { readCatalogItemImage } from '../../services/catalogImageStorage';
 import { safeContentDispositionFilename } from '../../utils/httpHeaders';
 import { resolveQuoteBranding } from '../../services/quoteBranding';
@@ -176,8 +177,46 @@ quoteCrudRoutes.get('/:id', scopes, readPerm, zValidator('param', idParam), asyn
     // explicitly so web doesn't have to depend on QuoteBranding growing new
     // fields to pick up theme/pageSize (Task 12).
     const presentation = { theme: branding.theme, pageSize: branding.pageSize };
+    // The acceptance record. Not previously returned at all: an accepted quote
+    // showed only a bare `Accepted` lifecycle stamp, with no signer, no method
+    // and — once accept-on-behalf exists — no way to tell an MSP-recorded
+    // acceptance from a customer click. Left-joined to `users` so a recorder
+    // deleted since (ON DELETE SET NULL) reads as "unknown" rather than
+    // dropping the whole row.
+    const [acceptanceRow] = await db
+      .select({
+        id: quoteAcceptances.id,
+        signerName: quoteAcceptances.signerName,
+        signerEmail: quoteAcceptances.signerEmail,
+        signedAt: quoteAcceptances.signedAt,
+        origin: quoteAcceptances.origin,
+        method: quoteAcceptances.method,
+        reference: quoteAcceptances.reference,
+        recordedByUserId: quoteAcceptances.recordedByUserId,
+        recordedByName: users.name,
+      })
+      .from(quoteAcceptances)
+      .leftJoin(users, eq(users.id, quoteAcceptances.recordedByUserId))
+      .where(eq(quoteAcceptances.quoteId, id))
+      .orderBy(quoteAcceptances.signedAt)
+      .limit(1);
+    const acceptance = acceptanceRow
+      ? {
+          id: acceptanceRow.id,
+          signerName: acceptanceRow.signerName,
+          signerEmail: acceptanceRow.signerEmail,
+          signedAt: acceptanceRow.signedAt,
+          origin: acceptanceRow.origin,
+          method: acceptanceRow.method,
+          reference: acceptanceRow.reference,
+          recordedBy: acceptanceRow.recordedByUserId
+            ? { id: acceptanceRow.recordedByUserId, name: acceptanceRow.recordedByName ?? null }
+            : null,
+        }
+      : null;
     return c.json({ data: {
       ...detail, quote: quoteForClient, blocks: blocksForEditor, branding, presentation, recipients,
+      acceptance,
       stripeConnected, stripeAccountCurrency, currencyWarning,
     } });
   } catch (err) { return handleServiceError(c, err); }
