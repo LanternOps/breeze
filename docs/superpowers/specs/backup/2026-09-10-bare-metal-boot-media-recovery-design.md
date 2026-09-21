@@ -114,6 +114,25 @@ The restored agent authenticates with the restored credentials. Hardware changes
 ### 8.4 UI and docs
 Recovery bootstrap tab gains "Bare-metal recovery" (pick snapshot → code → live status); boot-media page lists release media (Linux) and builder results (Windows); device page shows recovery history; `bare-metal-recovery.mdx` rewritten around this flow with reinstall-then-recover as the fallback mode.
 
+### 8.5 Download scope and cross-snapshot references (W09)
+An incremental snapshot's manifest can name objects stored under an OLDER
+snapshot's prefix. A recovery token is authorized to download exactly the
+objects its snapshot's manifest names — including those under older
+prefixes — never a wider "same device" or "same bucket" grant. The client
+negotiates `snapshot-file-membership-v1` at `/bmr/recover/authenticate` and
+`/bmr/recover/exchange`; the server hydrates a verified-complete per-file
+index by reading the snapshot's own `manifest.json` (never trusting the
+agent-reported index, which is dropped above a size cap) and records
+provenance for every referenced origin snapshot in `backup_snapshot_origins`,
+captured while the origin's live row or retirement record still exists.
+Authorization for an external key requires the negotiated capability, a
+`complete` index, exact membership, and matching origin org/device/storage
+identity — fail closed on any NULL or drifted identity. Every refusal this
+introduces fires at exchange/authenticate (server) or before the target disk
+is provisioned (agent) — never during `PhaseRestore`, and never after
+`provision` has run. See `docs/superpowers/plans/backup/_w09-part0.md` for
+the full wire contract, data model and refusal matrix.
+
 ## 9. Safety and failure handling
 
 - Nothing is written before preflight passes; refusals name the feature/disk/size.
@@ -139,6 +158,7 @@ Recovery bootstrap tab gains "Bare-metal recovery" (pick snapshot → code → l
 6. Windows engine: offline hives, `bcdboot`, DISM injection, `vhdx` target with tests.
 7. Windows media builder (WinPE) + console; lab proof on KIT via WIN-A.
 8. Docs, UI polish, recovery readiness fed from real results.
+9. Token-mode recovery follows cross-snapshot object references (§8.5): server-verified file index, provenance tracking, refuse-before-provision on both client and server.
 
 ## 12. Out of scope (first release)
 

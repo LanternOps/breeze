@@ -949,6 +949,7 @@
     "codeInstructions": "Geben Sie diesen Code ein, wenn Sie von den Breeze-Wiederherstellungsmedien dazu aufgefordert werden. Er läuft in 15 Minuten ab und kann nur einmal verwendet werden.",
     "codeExpires": "Läuft ab um {{time}}",
     "overdueNotice": "Noch keine Rückmeldung — prüfen Sie die Wiederherstellungskonsole.",
+    "fileIndexPreparing": "Dateiindex für snapshot-übergreifende Verweise wird vorbereitet…",
     "statusFailed": "Wiederherstellung fehlgeschlagen",
     "statusRefused": "Wiederherstellung abgelehnt",
     "status": {

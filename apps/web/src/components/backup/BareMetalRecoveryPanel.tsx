@@ -48,6 +48,7 @@ interface RecoverySummary {
   overdue: boolean;
   codeExpiresAt: string;
   failureReason: string | null;
+  fileIndexStatus: 'none' | 'agent' | 'hydrating' | 'complete' | 'failed' | null;
 }
 
 interface CreatedRecovery extends RecoverySummary {
@@ -90,6 +91,10 @@ function parseRecoverySummary(payload: unknown): RecoverySummary | null {
     overdue: payload.overdue === true,
     codeExpiresAt: toText(payload.codeExpiresAt) ?? '',
     failureReason: toText(payload.failureReason),
+    fileIndexStatus:
+      typeof payload.fileIndexStatus === 'string'
+        ? (payload.fileIndexStatus as RecoverySummary['fileIndexStatus'])
+        : null,
   };
 }
 
@@ -341,6 +346,16 @@ export default function BareMetalRecoveryPanel({ orgId }: BareMetalRecoveryPanel
             >
               <AlertTriangle className="h-4 w-4 shrink-0" />
               <span>{t('bareMetalRecovery.overdueNotice')}</span>
+            </div>
+          )}
+
+          {active.fileIndexStatus && active.fileIndexStatus !== 'complete' && !isFailedOrRefused && (
+            <div
+              className="flex items-center gap-2 rounded border border-muted bg-muted/40 px-3 py-2 text-sm text-muted-foreground"
+              data-testid="bare-metal-recovery-file-index-status"
+            >
+              <Loader2 className="h-4 w-4 shrink-0 animate-spin" />
+              <span>{t('bareMetalRecovery.fileIndexPreparing')}</span>
             </div>
           )}
 

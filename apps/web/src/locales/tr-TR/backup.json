@@ -949,6 +949,7 @@
     "codeInstructions": "Breeze kurtarma ortamı sorduğunda bu kodu girin. Kod 15 dakika içinde sona erer ve yalnızca bir kez kullanılabilir.",
     "codeExpires": "Şu saatte sona erer: {{time}}",
     "overdueNotice": "Henüz bir onay yok — kurtarma konsoluna bakın.",
+    "fileIndexPreparing": "Anlık görüntüler arası referanslar için dosya dizini hazırlanıyor…",
     "statusFailed": "Kurtarma başarısız oldu",
     "statusRefused": "Kurtarma reddedildi",
     "status": {

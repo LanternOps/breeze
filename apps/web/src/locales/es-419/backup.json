@@ -949,6 +949,7 @@
     "codeInstructions": "Ingrese este código cuando el medio de recuperación de Breeze se lo solicite. Caduca en 15 minutos y solo puede usarse una vez.",
     "codeExpires": "Caduca a las {{time}}",
     "overdueNotice": "Aún sin confirmación — revise la consola de recuperación.",
+    "fileIndexPreparing": "Preparando el índice de archivos para referencias entre instantáneas…",
     "statusFailed": "La recuperación falló",
     "statusRefused": "Recuperación rechazada",
     "status": {

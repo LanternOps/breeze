@@ -949,6 +949,7 @@
     "codeInstructions": "Inserisci questo codice quando richiesto dal supporto di ripristino Breeze. Scade tra 15 minuti e può essere usato una sola volta.",
     "codeExpires": "Scade alle {{time}}",
     "overdueNotice": "Nessun check-in ancora — controlla la console di ripristino.",
+    "fileIndexPreparing": "Preparazione dell'indice dei file per i riferimenti tra snapshot…",
     "statusFailed": "Ripristino non riuscito",
     "statusRefused": "Ripristino rifiutato",
     "status": {

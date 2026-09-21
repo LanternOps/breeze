@@ -179,4 +179,80 @@ describe('BareMetalRecoveryPanel', () => {
     });
     expect(fetchMock.mock.calls.length).toBe(callCountAfterLoad);
   });
+
+  it('shows the file-index preparing status while fileIndex is not complete', async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init as RequestInit | undefined)?.method ?? 'GET';
+      if (url.startsWith('/backup/snapshots?') && method === 'GET') {
+        return makeJsonResponse({ data: [{ id: SNAPSHOT_ID, deviceId: 'device-1', label: 'Nightly', createdAt: '2026-03-28T10:00:00Z' }] });
+      }
+      if (url.startsWith('/backup/bmr/recoveries?') && method === 'GET' && url.includes('limit=20')) {
+        return makeJsonResponse({
+          data: [{
+            id: RECOVERY_ID, deviceId: 'device-1', snapshotId: SNAPSHOT_ID, identity: 'original',
+            status: 'media_booted', overdue: false, codeExpiresAt: '2026-03-28T10:15:00Z',
+            failureReason: null, fileIndexStatus: 'hydrating',
+          }],
+        });
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<BareMetalRecoveryPanel />);
+    await flush();
+
+    expect(screen.getByTestId('bare-metal-recovery-file-index-status')).toHaveTextContent(
+      'Preparing file index for cross-snapshot references\u2026',
+    );
+  });
+
+  it('does not show the file-index status once fileIndexStatus is complete', async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init as RequestInit | undefined)?.method ?? 'GET';
+      if (url.startsWith('/backup/snapshots?') && method === 'GET') return makeJsonResponse({ data: [] });
+      if (url.startsWith('/backup/bmr/recoveries?') && method === 'GET' && url.includes('limit=20')) {
+        return makeJsonResponse({
+          data: [{
+            id: RECOVERY_ID, deviceId: 'device-1', snapshotId: SNAPSHOT_ID, identity: 'original',
+            status: 'restoring', overdue: false, codeExpiresAt: '2026-03-28T10:15:00Z',
+            failureReason: null, fileIndexStatus: 'complete',
+          }],
+        });
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<BareMetalRecoveryPanel />);
+    await flush();
+
+    expect(screen.queryByTestId('bare-metal-recovery-file-index-status')).not.toBeInTheDocument();
+  });
+
+  it('renders a snapshot_storage_identity_unknown create refusal reason', async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init as RequestInit | undefined)?.method ?? 'GET';
+      if (url.startsWith('/backup/snapshots?') && method === 'GET') {
+        return makeJsonResponse({ data: [{ id: SNAPSHOT_ID, deviceId: 'device-1', label: 'Nightly', createdAt: '2026-03-28T10:00:00Z' }] });
+      }
+      if (url.startsWith('/backup/bmr/recoveries?') && method === 'GET') return makeJsonResponse({ data: [] });
+      if (url.startsWith('/backup/bmr/recoveries?') && method === 'POST') {
+        return makeJsonResponse({
+          error: 'snapshot_storage_identity_unknown',
+          reasons: ["Breeze has not yet verified where this snapshot's files are stored. Wait for the next retention run or choose a newer full backup."],
+        }, false, 409);
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<BareMetalRecoveryPanel />);
+    await flush();
+    fireEvent.change(screen.getByLabelText('Snapshot'), { target: { value: SNAPSHOT_ID } });
+    fireEvent.click(screen.getByText('Create recovery code'));
+    await flush();
+
+    expect(screen.getByText(/has not yet verified where this snapshot's files are stored/)).toBeInTheDocument();
+  });
 });

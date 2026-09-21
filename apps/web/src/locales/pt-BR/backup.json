@@ -949,6 +949,7 @@
     "codeInstructions": "Digite este código quando solicitado pela mídia de recuperação da Breeze. Ele expira em 15 minutos e só pode ser usado uma vez.",
     "codeExpires": "Expira às {{time}}",
     "overdueNotice": "Ainda sem confirmação — verifique o console de recuperação.",
+    "fileIndexPreparing": "Preparando o índice de arquivos para referências entre snapshots…",
     "statusFailed": "Falha na recuperação",
     "statusRefused": "Recuperação recusada",
     "status": {

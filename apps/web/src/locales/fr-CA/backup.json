@@ -949,6 +949,7 @@
     "codeInstructions": "Entrez ce code lorsque le support de récupération Breeze vous le demande. Il expire dans 15 minutes et ne peut être utilisé qu'une seule fois.",
     "codeExpires": "Expire à {{time}}",
     "overdueNotice": "Aucune confirmation pour l'instant — consultez la console de récupération.",
+    "fileIndexPreparing": "Préparation de l'index des fichiers pour les références entre instantanés…",
     "statusFailed": "Échec de la récupération",
     "statusRefused": "Récupération refusée",
     "status": {

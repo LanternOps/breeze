@@ -47,6 +47,23 @@ The media is a Debian live system with the `breeze-backup` binary and nothing el
   One recovery at a time per device. While a recovery is anywhere between `created` and `rebooted`, creating another for the same device is refused with `recovery_in_progress`; it clears once the recovery reaches a terminal state (`checked_in`, `completed`, `failed` or `refused`).
 </Aside>
 
+<Aside type="note">
+  **Recovery media too old.** If this snapshot's files reference objects
+  stored under an earlier snapshot, the console needs recovery media that
+  supports cross-snapshot references. An older ISO is refused with a
+  message telling you to download the current recovery media and boot
+  again — the target disk is never touched.
+</Aside>
+
+<Aside type="note">
+  **Preparing file index.** The first time you recover from an incremental
+  snapshot, Breeze may need a few seconds to a few minutes to verify which
+  older-snapshot objects it references. The console retries automatically
+  and shows "Breeze is preparing the file index for this snapshot…" while
+  it waits — this is expected and does not consume one of your three code
+  attempts.
+</Aside>
+
 ### 3. Boot and follow the console
 
 <Steps>

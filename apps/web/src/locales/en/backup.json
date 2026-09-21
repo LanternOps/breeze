@@ -949,6 +949,7 @@
     "codeInstructions": "Enter this code when prompted by the Breeze recovery media. It expires in 15 minutes and can only be used once.",
     "codeExpires": "Expires at {{time}}",
     "overdueNotice": "No check-in yet — look at the recovery console.",
+    "fileIndexPreparing": "Preparing file index for cross-snapshot references…",
     "statusFailed": "Recovery failed",
     "statusRefused": "Recovery refused",
     "status": {
