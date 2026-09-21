@@ -151,6 +151,10 @@ export async function processDispatchScan(data: DispatchScanJobData): Promise<{
   // The device may have moved org between creation and dispatch. A scan row
   // pointing at a stranger's org is a tenancy defect, not a retryable one.
   if (scan.deviceOrgId !== scan.orgId) {
+    console.warn(
+      `[SecurityScanJobs] scan ${scan.id} aborted: device ${scan.deviceId} org ${scan.deviceOrgId} ` +
+        `does not match scan org ${scan.orgId}`
+    );
     await db.update(securityScans)
       .set({ status: 'failed', completedAt: new Date() })
       .where(eq(securityScans.id, scan.id));
