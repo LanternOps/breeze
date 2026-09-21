@@ -39,7 +39,95 @@ func (e *ProgressConflictError) Error() string {
 const (
 	progressMaxRetries  = 3
 	progressRequestPath = "/api/v1/backup/bmr/recover/progress"
+
+	// Caps mirror the server schema (apps/api/src/routes/backup/schemas.ts
+	// bmrProgressSchema) and w09-part0.md's Global Constraint "Bounded
+	// reporting": warnings <= 64 entries x 2000 chars, reason <= 2000
+	// chars, failedFilesSample <= 50 entries, serialized body <= 768 KiB
+	// (server body limit is 1 MiB).
+	maxProgressReasonRunes  = 2000
+	maxProgressWarnings     = 64
+	maxProgressWarningRunes = 2000
+	maxProgressFailedSample = 50
+	maxProgressBodyBytes    = 768 * 1024
 )
+
+// boundedFailures lets BoundProgressUpdate trim a typed Result (e.g.
+// *rebuild.Result) without bmr importing rebuild — rebuild already imports
+// bmr, so the reverse import would be a cycle. rebuild.Result implements
+// this via FailedFilesLen/CloneWithTrimmedFailedFiles.
+type boundedFailures interface {
+	FailedFilesLen() int
+	CloneWithTrimmedFailedFiles(max int) any
+}
+
+func truncateRunes(s string, max int) string {
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max])
+}
+
+// BoundProgressUpdate applies the caps this wave's Global Constraints
+// require (warnings <= 64 x 2000 chars, reason <= 2000 chars,
+// failedFilesSample <= 50 entries, serialized body <= 768 KiB) before a
+// ProgressUpdate is posted. It never mutates the caller's u.
+func BoundProgressUpdate(u ProgressUpdate) ProgressUpdate {
+	bounded := u
+	bounded.Reason = truncateRunes(u.Reason, maxProgressReasonRunes)
+
+	if len(u.Warnings) > 0 {
+		n := len(u.Warnings)
+		if n > maxProgressWarnings {
+			n = maxProgressWarnings
+		}
+		warnings := make([]string, n)
+		for i := 0; i < n; i++ {
+			warnings[i] = truncateRunes(u.Warnings[i], maxProgressWarningRunes)
+		}
+		bounded.Warnings = warnings
+	}
+
+	// Every real production call site passes a typed *rebuild.Result, never
+	// a map[string]any — the map branch below only covers the legacy path.
+	// Trim on a COPY, never the caller's pointer.
+	switch v := u.Result.(type) {
+	case boundedFailures:
+		if v.FailedFilesLen() > maxProgressFailedSample {
+			bounded.Result = v.CloneWithTrimmedFailedFiles(maxProgressFailedSample)
+		}
+	case map[string]any:
+		if sample, ok := v["failedFilesSample"].([]string); ok && len(sample) > maxProgressFailedSample {
+			trimmed := make(map[string]any, len(v))
+			for k, val := range v {
+				trimmed[k] = val
+			}
+			trimmed["failedFilesSample"] = sample[:maxProgressFailedSample]
+			bounded.Result = trimmed
+		}
+	}
+
+	body, err := json.Marshal(bounded)
+	if err == nil && len(body) <= maxProgressBodyBytes {
+		return bounded
+	}
+
+	// Still too large (e.g. the failedFilesSample entries themselves are
+	// individually huge, or Result carries something else bulky) — fall
+	// back to a minimal, always-small summary rather than posting an
+	// oversized body the 1 MiB server limit would reject outright.
+	summary := map[string]any{"status": bounded.Status, "truncated": true}
+	if m, ok := u.Result.(map[string]any); ok {
+		for _, k := range []string{"status", "error", "refusal", "filesFailed"} {
+			if v, present := m[k]; present {
+				summary[k] = v
+			}
+		}
+	}
+	bounded.Result = summary
+	return bounded
+}
 
 // progressRetryDelay is a var (not const) so tests can shrink it to 0 —
 // see setProgressRetryDelayForTest in progress_test.go.
@@ -58,7 +146,7 @@ func PostRecoveryProgress(ctx context.Context, serverURL, token string, u Progre
 	body := struct {
 		Token string `json:"token"`
 		ProgressUpdate
-	}{Token: token, ProgressUpdate: u}
+	}{Token: token, ProgressUpdate: BoundProgressUpdate(u)}
 
 	payload, err := json.Marshal(body)
 	if err != nil {

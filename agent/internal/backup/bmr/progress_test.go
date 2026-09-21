@@ -3,8 +3,10 @@ package bmr
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -97,5 +99,76 @@ func TestPostRecoveryProgress_RetriesOnServerErrorThenSucceeds(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&calls); got != 3 {
 		t.Fatalf("expected 3 calls (2 failures + 1 success), got %d", got)
+	}
+}
+
+func TestBoundProgressUpdate_TruncatesWarningsAndFailedFilesSample(t *testing.T) {
+	sample := make([]string, 200)
+	for i := range sample {
+		sample[i] = fmt.Sprintf("/src/%d", i)
+	}
+	warnings := make([]string, 100)
+	for i := range warnings {
+		warnings[i] = strings.Repeat("w", 3000)
+	}
+	u := ProgressUpdate{
+		Status:   "failed",
+		Reason:   strings.Repeat("r", 5000),
+		Warnings: warnings,
+		Result:   map[string]any{"failedFilesSample": sample, "filesFailed": 98411},
+	}
+	bounded := BoundProgressUpdate(u)
+
+	if got := len([]rune(bounded.Reason)); got > 2000 {
+		t.Errorf("Reason = %d runes, want <= 2000", got)
+	}
+	if got := len(bounded.Warnings); got > 64 {
+		t.Errorf("len(Warnings) = %d, want <= 64", got)
+	}
+	for i, w := range bounded.Warnings {
+		if got := len([]rune(w)); got > 2000 {
+			t.Errorf("Warnings[%d] = %d runes, want <= 2000", i, got)
+		}
+	}
+	body, err := json.Marshal(bounded)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if len(body) >= 768*1024 {
+		t.Errorf("serialized body = %d bytes, want < 768 KiB", len(body))
+	}
+
+	// The original u must not be mutated.
+	if len(u.Warnings) != 100 || len([]rune(u.Reason)) != 5000 {
+		t.Fatalf("BoundProgressUpdate mutated its input: warnings=%d reasonRunes=%d", len(u.Warnings), len([]rune(u.Reason)))
+	}
+}
+
+func TestBoundProgressUpdate_ExtremeBodyFallsBackToTruncatedSummary(t *testing.T) {
+	// 50 entries of ~20 KiB each — the sample trim to 50 entries runs
+	// BEFORE the size check, so a naive huge-count sample never reaches
+	// the fallback branch. Making each of the (already-trimmed) 50
+	// entries individually large is what pushes the serialized body over
+	// 768 KiB (50 x 20 KiB > 768 KiB) and forces the fallback to fire
+	// deterministically.
+	sample := make([]string, 50)
+	for i := range sample {
+		sample[i] = strings.Repeat("x", 20*1024)
+	}
+	u := ProgressUpdate{Status: "failed", Result: map[string]any{"failedFilesSample": sample, "filesFailed": 200000}}
+	bounded := BoundProgressUpdate(u)
+	body, err := json.Marshal(bounded)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if len(body) >= 768*1024 {
+		t.Errorf("serialized body = %d bytes, want < 768 KiB", len(body))
+	}
+	m, ok := bounded.Result.(map[string]any)
+	if !ok {
+		t.Fatalf("Result = %T, want map[string]any", bounded.Result)
+	}
+	if m["truncated"] != true {
+		t.Errorf(`Result["truncated"] = %v, want true`, m["truncated"])
 	}
 }

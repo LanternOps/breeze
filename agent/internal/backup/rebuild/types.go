@@ -190,6 +190,15 @@ type Result struct {
 	BytesRestored int64         `json:"bytesRestored"`
 	DurationMs    int64         `json:"durationMs"`
 	Resumed       bool          `json:"resumed"`
+	// FilesFailed is the total count of files the restore phase could not
+	// place. FailedFilesSample is a deterministic (sorted) prefix of those
+	// paths, capped at 50 entries so a mass-failure run never balloons the
+	// reported result; FailedFilesOmitted is how many more there were
+	// beyond the sample. The agent's internal failedFiles set (used by
+	// validate.go) is never truncated — only this reported summary is.
+	FilesFailed        int      `json:"filesFailed"`
+	FailedFilesSample  []string `json:"failedFilesSample,omitempty"`
+	FailedFilesOmitted int      `json:"failedFilesOmitted,omitempty"`
 	// StateManifestFound is true once preflight downloaded and verified
 	// system-state/manifest.json; StateApplied only once
 	// bmr.RestoreSystemStateOffline returned nil for it (persisted across
@@ -197,6 +206,37 @@ type Result struct {
 	// "completed" while StateApplied is false (#5412).
 	StateManifestFound bool `json:"stateManifestFound"`
 	StateApplied       bool `json:"stateApplied"`
+}
+
+// FailedFilesLen and CloneWithTrimmedFailedFiles satisfy bmr's
+// boundedFailures interface (bmr/progress.go) so BoundProgressUpdate can
+// trim a *Result's FailedFilesSample before posting progress, without bmr
+// importing rebuild (rebuild already imports bmr, so the reverse would be
+// a cycle). Both have nil-receiver-safe guards: a ProgressUpdate.Result
+// can carry a typed nil *Result (e.g. a caller passes a *Result variable
+// that was never assigned), and Go's type switch matches the concrete
+// type regardless of a nil pointer value, so BoundProgressUpdate's
+// `case boundedFailures:` branch would otherwise call these on a nil
+// receiver and panic (caught by cmd/breeze-backup's rebuild_cmd_test.go).
+func (r *Result) FailedFilesLen() int {
+	if r == nil {
+		return 0
+	}
+	return len(r.FailedFilesSample)
+}
+
+// CloneWithTrimmedFailedFiles returns a shallow copy of r with
+// FailedFilesSample trimmed to max entries and FailedFilesOmitted
+// increased to account for the newly-trimmed entries. r itself is never
+// mutated. A nil receiver returns nil unchanged (nothing to trim).
+func (r *Result) CloneWithTrimmedFailedFiles(max int) any {
+	if r == nil {
+		return r
+	}
+	clone := *r
+	clone.FailedFilesOmitted += len(clone.FailedFilesSample) - max
+	clone.FailedFilesSample = append([]string(nil), clone.FailedFilesSample[:max]...)
+	return &clone
 }
 
 // ObjectAdmission is implemented by a token-mode recovery provider

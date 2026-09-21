@@ -77,14 +77,32 @@ func restoreTree(ctx context.Context, r *run) error {
 	r.result.FilesRestored, r.result.BytesRestored = res.FilesRestored, res.BytesRestored
 	r.warnings = append(r.warnings, res.Warnings...)
 	if res.FilesFailed > 0 {
-		msg := fmt.Sprintf("%d file(s) failed to restore: %s", res.FilesFailed, strings.Join(res.FailedFiles, ", "))
-		if !r.opts.AllowPartialRestore {
-			return errors.New(msg)
-		}
-		r.warn("%s", msg)
+		// The internal failedFiles map is never truncated — validate.go
+		// (which consumes it) must see every failed source path even
+		// though the reported message/sample below is bounded.
 		r.failedFiles = make(map[string]bool, len(res.FailedFiles))
 		for _, f := range res.FailedFiles {
 			r.failedFiles[f] = true
+		}
+
+		const maxFailedFilesSample = 50
+		sample := make([]string, 0, len(r.failedFiles))
+		for f := range r.failedFiles {
+			sample = append(sample, f)
+		}
+		sort.Strings(sample) // deterministic "first N" — map iteration order is not
+		r.result.FilesFailed = len(sample)
+		if len(sample) > maxFailedFilesSample {
+			r.result.FailedFilesSample = sample[:maxFailedFilesSample]
+			r.result.FailedFilesOmitted = len(sample) - maxFailedFilesSample
+		} else {
+			r.result.FailedFilesSample = sample
+		}
+
+		msg := fmt.Sprintf("%d file(s) failed to restore (first %d shown): %s", len(sample), len(r.result.FailedFilesSample), strings.Join(r.result.FailedFilesSample, ", "))
+		r.warn("%s", msg)
+		if !r.opts.AllowPartialRestore {
+			return errors.New(msg)
 		}
 	}
 	// Belt-and-braces (#5493): run this even when boot() will be skipped
