@@ -214,9 +214,11 @@ vi.mock('../services/passkeys', () => ({
   },
   PasskeyVerificationError: class PasskeyVerificationError extends Error {
     readonly detail: string;
-    constructor(_purpose: string, cause: unknown) {
+    readonly purpose: string;
+    constructor(purpose: string, cause: unknown) {
       super('Passkey verification failed');
       this.name = 'PasskeyVerificationError';
+      this.purpose = purpose;
       this.detail = cause instanceof Error ? cause.message : String(cause);
       this.cause = cause;
     }
@@ -466,6 +468,7 @@ import { withSystemDbAccessContext } from '../db';
 import { getEffectiveMfaPolicy } from '../services/mfaPolicy';
 import { validateStepUpGrant, consumeStepUpGrant } from '../services/mfaStepUpGrant';
 import { finalizeSsoPendingLink } from './auth/ssoLinkCompletion';
+import { verifyStepUpPasskeyAssertion } from './auth/passkeys';
 import { enforceIpAllowlist } from '../services/ipAllowlist';
 
 const user = {
@@ -881,6 +884,34 @@ describe('passkey MFA auth routes', () => {
     expect(await res.json()).toMatchObject({ error: expect.stringMatching(/challenge|expired|invalid/i) });
   });
 
+  // #6499: the SR2-20 step-up helper is the third path that used to let a
+  // library rejection escape as a 500. It must fail CLOSED (false), never
+  // throw — `mfa.ts` turns `false` into a generic rejected-factor response.
+  it('verifyStepUpPasskeyAssertion returns false — not a throw — on a rejected assertion', async () => {
+    dbState.selectQueue.push([insertedPasskeyRow]);
+    passkeyMocks.verifyPasskeyAuthentication.mockRejectedValueOnce(
+      new PasskeyVerificationError(
+        'authentication',
+        new Error('Unexpected authentication response origin "http://localhost:33032", expected "http://localhost:32902"'),
+      ),
+    );
+
+    await expect(
+      verifyStepUpPasskeyAssertion('user-123', { id: 'credential-1' }),
+    ).resolves.toBe(false);
+    // A rejected proof must not advance the stored signature counter.
+    expect(dbState.updateSets).toHaveLength(0);
+  });
+
+  it('verifyStepUpPasskeyAssertion still rethrows an unrecognized error', async () => {
+    dbState.selectQueue.push([insertedPasskeyRow]);
+    passkeyMocks.verifyPasskeyAuthentication.mockRejectedValueOnce(new Error('redis exploded'));
+
+    await expect(
+      verifyStepUpPasskeyAssertion('user-123', { id: 'credential-1' }),
+    ).rejects.toThrow('redis exploded');
+  });
+
   // #6499: a WebAuthn origin/RP-ID mismatch used to escape the route as a 500
   // whose body echoed the server's configured expected origin.
   it('maps a passkey registration verification rejection to 400 without echoing the expected origin', async () => {
@@ -942,6 +973,10 @@ describe('passkey MFA auth routes', () => {
     const body = await res.text();
     expect(body).not.toMatch(/localhost|expected|origin|rp_?id/i);
     expect(createTokenPair).not.toHaveBeenCalled();
+    // The admitted auth-issuance lease must be released on a rejected proof,
+    // exactly as the sibling `verified: false` branch does — otherwise every
+    // origin-mismatch attempt strands one.
+    expect(cancelAuthIssuance).toHaveBeenCalledOnce();
   });
 
   it('returns passkey MFA state after password login for passkey-enrolled users', async () => {

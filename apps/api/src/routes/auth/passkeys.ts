@@ -593,9 +593,17 @@ export async function verifyStepUpPasskeyAssertion(userId: string, credential: {
       passkey: toStoredCredential(passkey)
     });
   } catch (err) {
-    // #6499: a rejected assertion (origin/RP-ID/challenge/signature mismatch)
-    // is a failed step-up proof, not a server fault.
-    if (err instanceof PasskeyChallengeError || err instanceof PasskeyVerificationError) return false;
+    if (err instanceof PasskeyChallengeError) return false;
+    if (err instanceof PasskeyVerificationError) {
+      // #6499: a rejected assertion (origin/RP-ID/challenge/signature mismatch)
+      // is a failed step-up proof, not a server fault. Report it anyway — the
+      // caller collapses this to a generic `invalid_factor` audit reason, so
+      // without this an unexpected throw (corrupt stored credential, library
+      // bug) would be indistinguishable from routine wrong-device noise. No
+      // Hono context is available here; `captureException` accepts that.
+      captureException(err);
+      return false;
+    }
     throw err;
   }
   if (!verification.verified) return false;

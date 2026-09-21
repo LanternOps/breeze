@@ -137,7 +137,12 @@ async function runVerification<T>(purpose: PasskeyPurpose, verify: () => Promise
     return await verify();
   } catch (err) {
     const wrapped = new PasskeyVerificationError(purpose, err);
-    console.warn(`[passkeys] ${purpose} verification rejected: ${wrapped.detail}`);
+    // Log the ORIGINAL error object, not just its message: an expected
+    // mismatch is self-describing, but an unexpected throw (a decode failure
+    // on a corrupt stored credential, a library bug) is often uninformative
+    // without its stack — and self-hosted instances have no Sentry DSN, so
+    // stdout is the only place that detail can land.
+    console.warn('[passkeys] %s verification rejected:', purpose, err);
     throw wrapped;
   }
 }
