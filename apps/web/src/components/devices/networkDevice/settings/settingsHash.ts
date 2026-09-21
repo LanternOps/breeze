@@ -1,6 +1,6 @@
 // The network device page's URL fragment grammar: `#<tab>[/settings/<section>]`.
 // Both halves are parsed here so the page, the header button, and the two
-// launcher surfaces (Discovery rows, /monitoring/network rows) can never
+// launcher surfaces (Discovery rows, /monitoring rows) can never
 // disagree about what a hash means. Tab-only hashes are unchanged from before
 // W04, so every pre-existing deep link keeps working.
 

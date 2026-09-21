@@ -146,11 +146,12 @@ export function registerQuoteTools(aiTools: Map<string, AiTool>): void {
   aiTools.set('list_quotes', {
     tier: 2 as AiToolTier,
     deviceArgs: [],
+    domain: 'billing',
+    searchHint: 'quotes and proposals by organization or status',
     definition: {
       name: 'list_quotes',
       description:
-        'List quotes/proposals for the orgs the caller can access, newest first. Optionally filter by org or status. Read-only.' +
-        ' Every document carries a 3-letter currencyCode and all of its amounts (subtotal, tax, total, balance, line totals) are in that currency. NEVER add amounts from documents with different currencyCode values — group by currencyCode first and report one total per currency.',
+        "List accessible quotes/proposals newest first, filtered by org or status. All amounts use each quote currencyCode; never sum across currencies; group by currencyCode for totals.",
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -190,15 +191,12 @@ export function registerQuoteTools(aiTools: Map<string, AiTool>): void {
   aiTools.set('get_quote', {
     tier: 2 as AiToolTier,
     deviceArgs: [],
+    domain: 'billing',
+    searchHint: 'quote details, content blocks, line items, totals, deposits and category breakdown',
     definition: {
       name: 'get_quote',
       description:
-        'Get the full view of one quote/proposal by id: header (with derived totals, deposit and category ' +
-        'breakdown), content blocks, and line items — the same view the web UI shows. Read-only. ' +
-        'Large quotes can exceed the output limit: page the content blocks with blocksOffset/blocksLimit, ' +
-        'or pass includeBlockContent:false first for a lightweight block overview (types + order, no content). ' +
-        'A blocksPagination object reports total/returned/hasMore.' +
-        ' Every document carries a 3-letter currencyCode and all of its amounts (subtotal, tax, total, balance, line totals) are in that currency. NEVER add amounts from documents with different currencyCode values — group by currencyCode first and report one total per currency.',
+        "Get a quote header, totals, deposit, category breakdown, paginated content blocks and lines. blocksPagination reports total/returned/hasMore. All amounts use quote currencyCode; never sum across currencies; group by currencyCode for totals.",
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -259,19 +257,12 @@ export function registerQuoteTools(aiTools: Map<string, AiTool>): void {
   aiTools.set('manage_quotes', {
     tier: 2 as AiToolTier,
     deviceArgs: [],
+    domain: 'billing',
+    searchHint: 'quotes: create, edit drafts, blocks and lines, send, decline, create pay links',
     definition: {
       name: 'manage_quotes',
       description:
-        'Create and manage quotes/proposals for orgs the caller can access: draft header edits, blocks, lines, ' +
-        'send/decline lifecycle actions, and accepted-quote pay links. Sending a quote requires approval. ' +
-        'Read-only access: use list_quotes / get_quote. ' +
-        'Required params per action — create_draft: input; update: quoteId, patch; delete_draft/send/decline/' +
-        'create_pay_link: quoteId; add_block: quoteId, block; update_block: quoteId, blockId, block; delete_block: ' +
-        'quoteId, blockId; reorder_blocks: quoteId, blockIds; add_manual_line: quoteId, line; add_catalog_line: ' +
-        'quoteId, catalogItemId, quantity (blockId optional); update_line: quoteId, lineId, patch; remove_line: ' +
-        'quoteId, lineId; move_line: quoteId, lineId, blockId (the TARGET line_items block); ' +
-        'reorder_lines: quoteId, blockId, lineIds.' +
-        ' Money inputs (line unitPrice) are in the quote\'s currencyCode; totals in the response are in that currency.',
+        "Manage quotes. Read: list_quotes/get_quote. send needs approval. Money: quote currencyCode. Actions: create_draft,update,delete_draft,add_block,update_block,delete_block,reorder_blocks,add_manual_line,add_catalog_line,update_line,remove_line,move_line,reorder_lines,send,decline,create_pay_link.",
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -313,9 +304,7 @@ export function registerQuoteTools(aiTools: Map<string, AiTool>): void {
           quantity: {
             type: 'number',
             description:
-              'Line quantity (> 0) — required for add_catalog_line. add_catalog_line prices the line from the ' +
-              'catalog price book in the QUOTE\'s currency and fails with NO_PRICE_FOR_CURRENCY (409) when the ' +
-              'item has no price in that currency — never converted. Add a manual line (add_manual_line) instead.',
+              "Quantity >0; required for add_catalog_line. Prices use quote currency; missing catalog price returns NO_PRICE_FOR_CURRENCY (409), never converted.",
           },
           partNumber: {
             type: 'string',
@@ -327,23 +316,12 @@ export function registerQuoteTools(aiTools: Map<string, AiTool>): void {
           input: {
             type: 'object',
             description:
-              'Create-quote payload (create_draft). Required: orgId (UUID). Optional: siteId (UUID), ' +
-              'title, currencyCode (3-letter; defaults to the organization\'s currency), expiryDate (YYYY-MM-DD), introNotes, terms, ' +
-              'termsAndConditions.',
+              "Create: orgId required; siteId, title, currencyCode (3-letter; default org currency), expiryDate (YYYY-MM-DD), introNotes, terms, termsAndConditions optional.",
           },
           patch: {
             type: 'object',
             description:
-              'Quote header or line patch fields. Header (update): depositType (\'none\'|\'percent\'|\'selected_lines\', ' +
-              'omit to leave unchanged), depositPercent (0-100 exclusive, 2dp; null clears — only used when depositType ' +
-              'is \'percent\'); coverPage (null clears a previously-set cover page; omit to leave untouched) — ' +
-              '{enabled (boolean), title?, coverImageId? (quote image UUID, or null to clear — must be an image on ' +
-              'this SAME quote), preparedForName?, showPreparedBy? (default true)}. Line (update_line): ' +
-              'depositEligible (boolean; whether this line counts toward the deposit-due calculation when ' +
-              'depositType is \'selected_lines\'). On an existing recurring device-set line, deviceRoles, ' +
-              'deviceGroupId, siteId, includedQuantity, overageMode and overageUnitPrice may be patched, but ' +
-              'quantity is server-derived and contractLineType cannot be changed; remove and re-add the line ' +
-              'to change its device-set type.',
+              "Header/line patch. coverImageId must belong to this quote. Recurring device-set quantity is derived; contractLineType immutable. Null clears; omit keeps.",
             properties: {
               depositType: { type: 'string', enum: ['none', 'percent', 'selected_lines'] },
               depositPercent: { type: ['number', 'null'] },
@@ -353,35 +331,12 @@ export function registerQuoteTools(aiTools: Map<string, AiTool>): void {
           block: {
             type: 'object',
             description:
-              'Quote block input (add_block/update_block). Required: blockType (\'heading\'|\'rich_text\'|\'image\'|' +
-              '\'line_items\'|\'contract\'|\'table\'|\'callout\') plus a matching content object — heading: {text, ' +
-              'level? (1-3)}; rich_text: {html}; image: {imageId (quote image UUID), caption?, width?}; line_items: ' +
-              '{label?}; contract: {templateId (contract template UUID), templateVersionId (must be a PUBLISHED ' +
-              'version of that template, visible to the quote\'s org/partner — otherwise rejected with ' +
-              'INVALID_CONTRACT_TEMPLATE), variableValues? (manual fill-ins keyed by variable name), label?}; ' +
-              'table: {columns (1-8, each {label, align?, weight?}), rows (1-100, each {cells: string[] matching ' +
-              'columns.length}), caption?, zebra?, headerStyle? (\'accent\'|\'plain\')}; callout: {variant ' +
-              '(\'info\'|\'accent\'|\'warn\'), title?, html}. update_block must restate the existing blockType ' +
-              '(the type itself cannot change).',
+              "Block input: blockType + content. update keeps type. Contract templateVersionId must be published and visible to quote org/partner; otherwise rejected.",
           },
           line: {
             type: 'object',
             description:
-              'Manual quote line fields (add_manual_line). Required: sourceType (\'manual\'|\'catalog\'|\'bundle\' — ' +
-              'use \'manual\' for a hand-entered line), unitPrice (in the quote\'s currencyCode), taxable (boolean), and at least ' +
-              'one of name/description. Optional: name, description, customerVisible (default true), recurrence ' +
-              '(\'one_time\'|\'monthly\'|\'annual\', default \'one_time\'), termMonths, billingFrequency ' +
-              '(\'monthly\'|\'annual\'), unitCost, sku, partNumber, depositEligible (default false), blockId (UUID), ' +
-              'catalogItemId (UUID). Quantity (> 0) is required for an ordinary line. A recurring line may instead ' +
-              'bill a device set: set contractLineType to per_device, per_device_role, per_device_group or per_seat ' +
-              'and omit quantity — the server counts the organization\'s devices (or seats) itself and re-counts ' +
-              'every billing period once the quote is accepted. per_device_role requires deviceRoles; ' +
-              'per_device_group requires deviceGroupId; per_device and per_device_role may take a siteId. Any of ' +
-              'the four may carry includedQuantity + overageMode (bill needs overageUnitPrice, in the quote\'s ' +
-              'currency), which bills the included quantity every period even when the live count is lower. The ' +
-              'quantity shown on the quote is an estimate, labelled as such on the customer\'s document; the ' +
-              'contract bills the actual count. A device set cannot be added to a one-time line, changed after the ' +
-              'line is created (remove and re-add), or set on a bundle component.',
+              "Line: sourceType, unitPrice (in the quote's currencyCode), taxable, name/description. Quantity >0 unless recurring device set. Allowances bill includedQuantity.",
           },
           blockIds: { type: 'array', items: { type: 'string' }, description: 'Ordered block UUIDs' },
           lineIds: { type: 'array', items: { type: 'string' }, description: 'Ordered line UUIDs' },

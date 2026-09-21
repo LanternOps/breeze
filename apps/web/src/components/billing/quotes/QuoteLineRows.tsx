@@ -6,6 +6,7 @@ import { useTranslation } from 'react-i18next';
 import { AlertTriangle, ChevronRight, GripVertical, Loader2, MoreHorizontal, Sparkles } from 'lucide-react';
 import '../../../lib/i18n';
 import { fetchWithAuth } from '../../../stores/auth';
+import { fetchAllSites } from '../../../lib/fetchAllSites';
 import { runAction, handleActionError } from '../../../lib/runAction';
 import { formatPercent } from '@/lib/i18n/format';
 import { uploadQuoteImage, addQuoteImageFromUrl, quoteImageUrl } from '../../../lib/api/quotes';
@@ -309,10 +310,7 @@ function DeviceSetEditorSummary({ line, quoteId, editable, onEdit }: {
         if (!r?.ok) throw new Error('device-group picker load failed');
         return (await r.json()).data ?? [];
       }),
-      Promise.resolve(fetchWithAuth(`/orgs/sites?organizationId=${line.orgId}`)).then(async (r) => {
-        if (!r?.ok) throw new Error('site picker load failed');
-        return (await r.json()).data ?? [];
-      }),
+      fetchAllSites(`/orgs/sites?organizationId=${line.orgId}`),
     ]).then(([nextGroups, nextSites]) => {
       if (alive) { setGroups(nextGroups); setSites(nextSites); }
     }).catch(() => {

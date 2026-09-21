@@ -262,6 +262,22 @@ func (s *S3Provider) getClient() (*s3.Client, error) {
 	options := []func(*awscfg.LoadOptions) error{
 		awscfg.WithRegion(s.Region),
 		awscfg.WithHTTPClient(httpClient),
+		// #6350: the SDK default (WhenSupported) makes every HTTPS PutObject
+		// carry a CRC32 trailer via `aws-chunked` transfer encoding, and when
+		// the body length is known with no explicit ChunkLength the SDK emits
+		// the WHOLE body as ONE chunk. MinIO caps a chunk at 16 MiB
+		// (maxChunkSize in cmd/streaming-signature-v4.go) and rejects anything
+		// larger with HTTP 400 "chunk too big" — so over HTTPS every file
+		// between 16 MiB and multipartUploadThreshold silently failed to
+		// upload. (The same trap returns above ~160 GiB, where the multipart
+		// manager's computed part size grows past 16 MiB again.)
+		//
+		// WhenRequired keeps checksums for operations that mandate them and
+		// drops the chunked trailer otherwise. Content integrity is unaffected
+		// in practice: the transport is TLS + SigV4-signed, and the agent
+		// writes a per-file SHA-256 into the manifest that VerifyIntegrity
+		// re-checks against the downloaded object.
+		awscfg.WithRequestChecksumCalculation(aws.RequestChecksumCalculationWhenRequired),
 	}
 	if s.endpoint != "" {
 		options = append(options, awscfg.WithEndpointResolverWithOptions(

@@ -1266,7 +1266,7 @@ describe('executeAgentRun', () => {
         const op = args.op as { key: string };
         const target = op.key === 'manage_services.restart'
           ? { kind: 'service' as const, serviceName: 'Spooler' }
-          : { kind: 'disk_cleanup' as const, paths: ['C:\\Temp'] };
+          : { kind: 'disk_cleanup' as const, cleanupRunId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', paths: ['C:\\Temp'] };
         return { ok: true, pin: { op, target } };
       });
       verifyActExecution.mockImplementation(async (args: Record<string, unknown>) => {
@@ -1301,7 +1301,7 @@ describe('executeAgentRun', () => {
       seedActRun();
       scheduleFixWatch.mockResolvedValueOnce('watch-1');
       revalidateActExecution.mockImplementation(async (args: Record<string, unknown>) => ({
-        ok: true, pin: { op: args.op, target: { kind: 'disk_cleanup' as const, paths: ['C:\\Temp'] } },
+        ok: true, pin: { op: args.op, target: { kind: 'disk_cleanup' as const, cleanupRunId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', paths: ['C:\\Temp'] } },
       }));
       verifyActExecution.mockResolvedValue({
         execution: 'succeeded', verification: 'failed', verifyDetail: 'disk usage did not improve',

@@ -72,6 +72,8 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'analyze_boot_performance', description: 'Boot performance analysis', category: 'Devices & Hardware' },
       { name: 'get_device_context', description: 'Brain device context lookup', category: 'Devices & Hardware' },
       // Network & DNS
+      { name: 'list_network_assets', description: 'List network assets', category: 'Network & DNS' },
+      { name: 'get_network_asset', description: 'Get network asset details', category: 'Network & DNS' },
       { name: 'get_network_changes', description: 'Network change detection', category: 'Network & DNS' },
       { name: 'get_ip_history', description: 'IP address history', category: 'Network & DNS' },
       { name: 'get_network_asset_reachability', description: 'Network asset reachability with source and age', category: 'Network & DNS' },
@@ -83,12 +85,17 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'query_compliance_policies', description: 'List compliance policies', category: 'Security & Compliance' },
       { name: 'get_compliance_status', description: 'Device-level compliance status', category: 'Security & Compliance' },
       // Alerts & Notifications
+      { name: 'list_incidents', description: 'List incidents', category: 'Alerts & Notifications' },
+      { name: 'list_remediation_suggestions', description: 'List remediation suggestions', category: 'Alerts & Notifications' },
       { name: 'manage_alerts (list/get)', description: 'View alerts', category: 'Alerts & Notifications' },
+      { name: 'manage_delivery (resolve/list_routing/list_escalation)', description: 'Preview alert delivery and view routing rules and escalation policies', category: 'Alerts & Notifications' },
       { name: 'manage_notification_channels (list)', description: 'List notification channels', category: 'Alerts & Notifications' },
       { name: 'manage_alert_rules (list_rules/get_rule/test_rule)', description: 'View alert rules', category: 'Alerts & Notifications' },
       // Files, Disk & Registry
       { name: 'analyze_disk_usage', description: 'Filesystem analysis', category: 'Files, Disk & Registry' },
       { name: 'disk_cleanup (preview)', description: 'Preview cleanup candidates', category: 'Files, Disk & Registry' },
+      { name: 'system_cleanup (list)', description: 'List OS-native cleaners and their estimated reclaim', category: 'Files, Disk & Registry' },
+      { name: 'system_cleanup (status)', description: 'Read the progress and result of a native cleanup run', category: 'Files, Disk & Registry' },
       // Logs & Audit
       { name: 'query_audit_log', description: 'Search audit logs', category: 'Logs & Audit' },
       { name: 'query_change_log', description: 'Device change log search', category: 'Logs & Audit' },
@@ -140,9 +147,20 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       // Remote Access & Control
       { name: 'list_remote_sessions', description: 'List remote sessions', category: 'Remote Access & Control' },
       // Integrations
+      { name: 'list_org_contacts', description: 'List organization contacts', category: 'Integrations' },
+      { name: 'list_sites', description: 'List organization sites', category: 'Integrations' },
+      { name: 'get_site', description: 'Get site details', category: 'Integrations' },
       { name: 'query_webhooks', description: 'List webhooks and delivery status', category: 'Integrations' },
       { name: 'query_psa_status', description: 'PSA connection status', category: 'Integrations' },
       { name: 'query_agent_versions', description: 'Agent versions and upgrade status', category: 'Integrations' },
+      // Ticketing
+      { name: 'list_time_entries', description: 'List tracked time entries', category: 'Ticketing' },
+      { name: 'get_running_timer', description: 'Get the current running timer', category: 'Ticketing' },
+      { name: 'get_timesheet', description: 'Get a timesheet summary', category: 'Ticketing' },
+      // AI Governance
+      { name: 'list_ai_agents', description: 'List AI agents', category: 'AI Governance' },
+      { name: 'list_ai_agent_runs', description: 'List AI agent runs', category: 'AI Governance' },
+      { name: 'get_ai_agent_run', description: 'Get AI agent run details', category: 'AI Governance' },
       // Other
       { name: 'query_custom_fields', description: 'Custom field definitions and values', category: 'Other' },
       { name: 'manage_tags (list)', description: 'List all device tags', category: 'Other' },
@@ -240,6 +258,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       // Files, Disk & Registry
       { name: 'file_operations (read/write/delete/mkdir/rename)', description: 'Read or mutate files on device', category: 'Files, Disk & Registry' },
       { name: 'disk_cleanup (execute)', description: 'Execute disk cleanup', category: 'Files, Disk & Registry' },
+      { name: 'system_cleanup (run)', description: 'Run OS-native cleaners (Windows Disk Cleanup/DISM, macOS snapshots/Homebrew, Linux caches/journal)', category: 'Files, Disk & Registry' },
       { name: 'registry_operations (set_value/create_key/delete_key)', description: 'Modify Windows registry', category: 'Files, Disk & Registry' },
       // Network & DNS
       { name: 'network_discovery', description: 'Network discovery scan', category: 'Network & DNS' },
@@ -250,6 +269,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'restore_snapshot', description: 'Restore a backup snapshot', category: 'Backup & Recovery' },
       // Monitoring & Analytics
       { name: 'manage_monitors (create/update/delete)', description: 'Create, update, or delete monitors', category: 'Monitoring & Analytics' },
+      { name: 'manage_delivery (create_routing/update_routing/delete_routing/set_default/create_escalation/update_escalation/delete_escalation)', description: 'Manage alert routing, default destinations, and escalation policies (requires approval)', category: 'Alerts & Notifications' },
       // Monitor definitions (#5289 Task 8): ordinary config-object CRUD
       // (create/update/delete/enable/disable/attach/detach) — supervised, same
       // class as the software/browser/peripheral policy tools.
@@ -317,6 +337,7 @@ export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   { toolName: 'file_operations', limit: 20, windowSeconds: 300, tier: 3, permission: 'devices.execute', category: 'Files, Disk & Registry' },
   { toolName: 'analyze_disk_usage', limit: 10, windowSeconds: 300, tier: 1, permission: 'devices.read', category: 'Files, Disk & Registry' },
   { toolName: 'disk_cleanup', limit: 3, windowSeconds: 600, tier: 3, permission: 'devices.execute', category: 'Files, Disk & Registry' },
+  { toolName: 'system_cleanup', limit: 30, windowSeconds: 3600, tier: 3, permission: 'devices.execute', category: 'Files, Disk & Registry' },
   { toolName: 'registry_operations', limit: 15, windowSeconds: 300, tier: 2, permission: 'devices.execute', category: 'Files, Disk & Registry' },
   // Network & DNS
   { toolName: 'network_discovery', limit: 2, windowSeconds: 600, tier: 3, permission: 'devices.execute', category: 'Network & DNS' },
@@ -401,6 +422,7 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
   get_security_posture: 'devices.read',
   // Files & disk
   disk_cleanup: { preview: 'devices.read', execute: 'devices.execute' },
+  system_cleanup: { list: 'devices.read', run: 'devices.execute', status: 'devices.read' },
   file_operations: { list: 'devices.read', read: 'devices.read', write: 'devices.execute', delete: 'devices.execute', mkdir: 'devices.execute', rename: 'devices.execute' },
   // Registry
   registry_operations: { read_key: 'devices.execute', get_value: 'devices.execute', set_value: 'devices.execute', create_key: 'devices.execute', delete_key: 'devices.execute' },

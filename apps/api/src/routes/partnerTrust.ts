@@ -5,6 +5,7 @@ import { partners } from '../db/schema';
 import { authMiddleware, requireScope } from '../middleware/auth';
 import { createAuditLog } from '../services/auditService';
 import { sendEvidenceCard } from '../services/partnerTrustEvidenceCard';
+import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
 
 export const partnerTrustRoutes = new Hono();
 
@@ -17,6 +18,9 @@ partnerTrustRoutes.post('/request-review', async (c) => {
   const auth = c.get('auth');
   const partnerId = auth.partnerId;
   if (!partnerId) return c.json({ error: 'partner context required' }, 403);
+  if (!canManagePartnerWidePolicies(auth)) {
+    return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+  }
 
   const requestedAt = new Date();
   const cutoff = new Date(requestedAt.getTime() - REVIEW_COOLDOWN_MS);

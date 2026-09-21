@@ -6,6 +6,7 @@
  */
 
 import type Anthropic from '@anthropic-ai/sdk';
+import type { AiToolDomain } from '@breeze/shared';
 import { db } from '../db';
 import { devices } from '../db/schema';
 import { eq, and, SQL } from 'drizzle-orm';
@@ -66,6 +67,8 @@ import { registerCisBenchmarkTools } from './aiToolsCisBenchmark';
 import { registerComplianceTools } from './aiToolsCompliance';
 import { registerPlaybookTools } from './aiToolsPlaybooks';
 import { registerAlertTools } from './aiToolsAlerts';
+import { registerDeliveryTools } from './aiToolsDelivery';
+import { registerRemediationTools } from './aiToolsRemediation';
 import { registerIncidentTools } from './aiToolsIncident';
 import { registerPerformanceTools } from './aiToolsPerformance';
 import { registerUserRiskTools } from './aiToolsUserRisk';
@@ -93,8 +96,8 @@ import { registerExportTools } from './aiToolsExport';
 // so they are NOT registered in the `aiTools` execution registry — they run via
 // makeSessionAwareHandler in the SDK server. Their tiers still must be visible to
 // getToolTier so checkGuardrails can gate them; import the tier tables for fallback.
-import { m365ToolTiers, registerM365Tools } from './aiToolsM365';
-import { googleToolTiers } from './aiToolsGoogle';
+import { m365ToolSearchHints, m365ToolTiers, registerM365Tools } from './aiToolsM365';
+import { googleToolSearchHints, googleToolTiers } from './aiToolsGoogle';
 // ============================================
 // Shared Types
 // ============================================
@@ -104,6 +107,12 @@ export type AiToolTier = 1 | 2 | 3 | 4;
 export interface AiTool {
   definition: Anthropic.Tool;
   tier: AiToolTier;
+  /** Exactly one closed domain (spec 2026-09-17). Drives the prompt index, tool search grouping, MCP _meta, and per-grant domains. */
+  domain: AiToolDomain;
+  /** ≤ 120 chars, one line. What a user would say when they need this tool — synonyms, not workflow. Forwarded to the Agent SDK as `_meta['anthropic/searchHint']`. */
+  searchHint: string;
+  /** Never deferred behind tool search. Only `core` tools may set this; A-W04 owns the final set. */
+  alwaysLoad?: boolean;
   /**
    * `context` carries material a release path already verified against the
    * approval's pinned effect digest (see `toolExecutionContext.ts`). It is
@@ -316,6 +325,7 @@ registerCisBenchmarkTools(aiTools);
 registerComplianceTools(aiTools);
 registerPlaybookTools(aiTools);
 registerAlertTools(aiTools);
+registerDeliveryTools(aiTools);
 registerTicketingTools(aiTools);
 registerCatalogTools(aiTools);
 registerBillingTools(aiTools);
@@ -323,6 +333,7 @@ registerContractTools(aiTools);
 registerDeliverableTools(aiTools);
 registerQuoteTools(aiTools);
 registerOrgTools(aiTools);
+registerRemediationTools(aiTools);
 registerIncidentTools(aiTools);
 registerPerformanceTools(aiTools);
 registerUserRiskTools(aiTools);
@@ -431,6 +442,29 @@ export function getAllRegisteredToolNames(): string[] {
     ...Object.keys(m365ToolTiers),
     ...Object.keys(googleToolTiers),
   ];
+}
+
+const SESSION_AWARE_DOMAIN: AiToolDomain = 'integrations';
+
+export function getToolDomain(toolName: string): AiToolDomain | undefined {
+  const registered = aiTools.get(toolName);
+  if (registered) return registered.domain;
+  if (toolName in m365ToolTiers || toolName in googleToolTiers) return SESSION_AWARE_DOMAIN;
+  return undefined;
+}
+
+export function getToolSearchHint(toolName: string): string | undefined {
+  // This chat-only tool executes inline in the SDK bridge, outside aiTools.
+  if (toolName === 'propose_action_plan') {
+    return 'Propose a multi-step action plan for user approval before execution';
+  }
+  return aiTools.get(toolName)?.searchHint
+    ?? m365ToolSearchHints[toolName]
+    ?? googleToolSearchHints[toolName];
+}
+
+export function getToolAlwaysLoad(toolName: string): boolean {
+  return aiTools.get(toolName)?.alwaysLoad === true;
 }
 
 /**

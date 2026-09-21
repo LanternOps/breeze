@@ -78,7 +78,7 @@ curl -X POST https://breeze.yourdomain.com/api/v1/auth/refresh \
 | `GET` | `/devices` | List devices (paginated, filterable; supports keyset cursor) |
 | `GET` | `/devices/:id` | Get device details |
 | `POST` | `/devices/provision` | Pre-create a device row before any agent has enrolled. Returns a single-use enrollment payload. |
-| `POST` | `/devices/:id/move-org` | Relocate a device to a different organization within the same partner. Requires an interactive user session (API keys are refused), an MFA-assured session, and — when two-factor authentication is enabled — a single-use step-up grant for operation `device_move_org` (`POST /auth/mfa/step-up`) bound to the exact device, destination and currency acknowledgement; otherwise `403 STEP_UP_REQUIRED`. |
+| `POST` | `/devices/:id/move-org` | Relocate a device to a different organization within the same partner. Requires an interactive user session (API keys are refused), an MFA-assured session, and — when two-factor authentication is enabled — a single-use step-up grant for operation `device_move_org` (`POST /auth/mfa/step-up`) bound to the exact device, destination and currency acknowledgement; otherwise `403 STEP_UP_REQUIRED`. See [Moving a Device to Another Organization](/features/devices/#moving-a-device-to-another-organization). |
 | `POST` | `/devices/:id/commands` | Send command to device. Rejects a duplicate `refresh_inventory` with `409 ALREADY_PENDING`. |
 | `POST` | `/devices/bulk/commands` | Send the same command to many devices. Returns `commands`, `skipped`, and `failed` arrays. |
 | `GET` | `/devices/:id/billing` | Which contract line, if any, bills this device. Requires **partner or system scope** plus both `devices:read` and `contracts:read`. Returns the covering contract and line with how it matched (organization-wide, site, role, or group), or a reason the device is not billable. A device-group evaluation failure is reported as an error rather than as "not covered". |
@@ -214,10 +214,17 @@ Each route requires the listed scope on the principal.
 | `POST` | `/partner-api/organizations` | `organizations:write` | Create an organization under the principal's partner. Enforces the partner's `maxOrganizations` cap (409 when reached). Body: `name`, `slug`, `type?`, `status?` (`active`/`trial`). |
 | `POST` | `/partner-api/sites` | `sites:write` | Create a site. `orgId` must be in the principal's accessible organizations (403 otherwise). Body: `orgId`, `name`, `timezone?`, `address?`, `contact?`. |
 | `POST` | `/partner-api/enrollment-keys` | `enrollment-keys:write` | Create an enrollment key. Body: `orgId`, `name`, `siteId?`, `maxUsage?`, `issueEnrollmentSecret?`, and `ttlMinutes` **or** `expiresAt` (never both). The raw key is returned once in the 201 body. `issueEnrollmentSecret: true` additionally mints a per-key `enrollmentSecret`, returned once; omitted, the key enrolls with the global `AGENT_ENROLLMENT_SECRET`. Supports `X-Idempotency-Key`. |
+| `POST` | `/partner-api/contracts` | `contracts:write` | Create a draft contract. `orgId` must be in the principal's accessible organizations. |
+| `GET` | `/partner-api/contracts/:id` | `contracts:write` | Read one contract and its lines. |
+| `PATCH` | `/partner-api/contracts/:id` | `contracts:write` | Update header fields. Schedule fields (`billingTiming`, `intervalMonths`, `startDate`) are draft-only. |
+| `POST` | `/partner-api/contracts/:id/lines` | `contracts:write` | Add a line. Same field rules as the human editor. |
+| `PATCH` | `/partner-api/contracts/:id/lines/:lineId` | `contracts:write` | Patch a line, including `manualQuantity`. |
+| `DELETE` | `/partner-api/contracts/:id/lines/:lineId` | `contracts:write` | Remove a line. This is contract contents, not tenancy deletion. |
 
-Provisioning is deliberately **create-only**: there are no `DELETE` routes on
-this surface, and organization deletion remains a human, MFA-gated action on
-the main API. `partnerId` never appears in any write body — it always comes
+Tenancy provisioning is deliberately **create-only**: there are no `DELETE` routes
+for organizations, sites, or enrollment keys, and organization deletion remains
+a human, MFA-gated action on the main API. Contract line `DELETE` is contents
+only. `partnerId` never appears in any write body — it always comes
 from the authenticated principal. Writes share the principal's hourly rate
 limit but are additionally capped by a tighter per-principal write budget
 (120/hour), and every write is attributed to the service principal in the
@@ -567,7 +574,50 @@ A rule matches an elevation candidate on one or more of these fields (`POST`/`PA
 | `POST` | `/discovery/assets/:id/disable-monitoring` | Disable monitoring |
 | `GET` | `/discovery/assets/:id/monitoring` | Get monitoring config |
 | `PATCH` | `/discovery/assets/:id/monitoring` | Update monitoring config |
-| `GET` | `/discovery/topology` | Network topology map |
+| `GET` | `/discovery/topology` | Network topology map (classic view) |
+
+## Site Map (Network Topology)
+
+Endpoints for the next-generation, per-site logical topology map (site coverage, shared configuration templates, on-demand diagnostics). All are scoped under `/topology/sites/:siteId/...` unless noted.
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/topology/sites/:siteId/graph` | Get the site's graph (overview/logical/physical) |
+| `GET` | `/topology/sites/:siteId/nodes` | Search/list graph nodes |
+| `GET` | `/topology/sites/:siteId/nodes/:nodeId` | Get a node |
+| `GET` | `/topology/sites/:siteId/relationships/:relationshipId` | Get a connection |
+| `GET` | `/topology/sites/:siteId/relationships/:relationshipId/evidence` | Get connection evidence |
+| `GET` | `/topology/sites/:siteId/health` | Get node/relationship health |
+| `PATCH` | `/topology/sites/:siteId/layouts/:view` | Save node layout positions |
+| `POST` | `/topology/sites/:siteId/manual-nodes` | Add a manual placeholder node |
+| `PATCH` | `/topology/sites/:siteId/manual-nodes/:nodeId` | Update a manual node |
+| `DELETE` | `/topology/sites/:siteId/manual-nodes/:nodeId` | Remove a manual node |
+| `POST` | `/topology/sites/:siteId/manual-relationships` | Draw a manual connection |
+| `DELETE` | `/topology/sites/:siteId/manual-relationships/:relationshipId` | Remove a manual connection |
+| `GET` | `/topology/sites/:siteId/settings` | Read resolved site configuration |
+| `PATCH` | `/topology/sites/:siteId/settings` | Override site configuration |
+| `GET` | `/topology/sites/:siteId/targets` | List diagnostic targets |
+| `POST` | `/topology/sites/:siteId/targets` | Add diagnostic target |
+| `PATCH` | `/topology/sites/:siteId/targets/:id` | Update diagnostic target |
+| `DELETE` | `/topology/sites/:siteId/targets/:id` | Remove diagnostic target |
+| `GET` | `/topology/sites/:siteId/policies` | List monitoring policies |
+| `POST` | `/topology/sites/:siteId/policies` | Add monitoring policy |
+| `PATCH` | `/topology/sites/:siteId/policies/:id` | Update monitoring policy |
+| `DELETE` | `/topology/sites/:siteId/policies/:id` | Remove monitoring policy |
+| `GET` | `/topology/sites/:siteId/collectors` | List agents eligible to run a diagnostic |
+| `POST` | `/topology/sites/:siteId/diagnostic-runs` | Start an on-demand diagnostic run |
+| `GET` | `/topology/sites/:siteId/diagnostic-runs/:runId` | Get diagnostic run status/results |
+| `POST` | `/topology/sites/:siteId/diagnostic-runs/:runId/cancel` | Cancel a diagnostic run |
+| `GET` | `/topology/sites/:siteId/template-options` | List template versions eligible for this site |
+| `GET` | `/topology/templates` | List configuration templates |
+| `POST` | `/topology/templates` | Create a template |
+| `PATCH` | `/topology/templates/:templateId` | Update a template |
+| `GET` | `/topology/templates/:templateId/versions` | List template versions |
+| `POST` | `/topology/templates/:templateId/versions` | Create a draft version |
+| `POST` | `/topology/templates/:templateId/versions/:versionId/publish` | Publish a draft version |
+| `POST` | `/topology/template-applications/preview` | Preview a template apply across sites |
+| `POST` | `/topology/template-applications` | Apply a previewed template change |
+| `GET` | `/topology/template-applications/:operationId` | Get template apply status |
 
 ## SNMP
 

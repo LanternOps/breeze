@@ -146,6 +146,14 @@ export function toolSourcesEnabled(): boolean {
   return envFlag('TOOL_SOURCES_ENABLED', false);
 }
 
+// Topology rollout deployment kill switch. Partner and organization flags are
+// still resolved for ordinary rollouts; setting this optional switch forces
+// every effective topology feature off. Read at call time so rollback does not
+// require a module reload and tests can change it per case.
+export function topologyGloballyDisabled(): boolean {
+  return envFlag('TOPOLOGY_DISABLED', false);
+}
+
 // Task A7. Sub-flag of toolSourcesEnabled(): whether a tool source's outbound
 // fetch may target a private/loopback/link-local address. Default OFF, and
 // refused outright on the hosted platform (validate.ts superRefine) — a
@@ -300,6 +308,18 @@ export function m365SyncMaxBacklog(): number {
 /** Rows claimed per tick (spec §5.2 step 3, §5.9 — this is the capacity dial). */
 export function m365SyncTickBatch(): number {
   return positiveIntEnv('M365_SYNC_TICK_BATCH', 200, 1, 5_000);
+}
+
+// Inbound email-to-ticket flood protection. The global BullMQ inbound-queue
+// processing ceiling (jobs per second) is backpressure: it bounds the RATE of
+// ticket creation across all senders, NOT the total. Over-rate jobs are delayed
+// (never dropped) and still processed, so a sustained flood is slowed, not
+// capped. (Per-sender/domain/partner sliding-window caps were considered but
+// deferred: no implementation can be both exact and avoid a held-transaction
+// Redis call under #1105; the rate ceiling here is the protection that ships.)
+/** Global BullMQ inbound-queue processing ceiling (jobs per second). */
+export function inboundQueueMaxPerSec(): number {
+  return positiveIntEnv('INBOUND_QUEUE_MAX_PER_SEC', 20, 1, 5_000);
 }
 
 // Breeze AI for Office (Excel add-in / client AI). The Entra application

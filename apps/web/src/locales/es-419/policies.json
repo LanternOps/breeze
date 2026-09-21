@@ -186,6 +186,7 @@
       "failedToAssignOrg": "No se pudo asignar la organización",
       "organizations": "Organizaciones",
       "thisPartnerLibraryPolicyAppliesOnlyTo": "Esta política de biblioteca asociada se aplica solo a las organizaciones que seleccione.",
+      "filtersApplyOnAssign": "Estos filtros se aplican al asignar abajo. Vacío significa todos los roles y sistemas operativos. Para cambiar los filtros de una asignación, desactívela y vuelva a activarla.",
       "allOrganizationsPartnerWide": "Todas las organizaciones (en todo el socio)",
       "allOrganizationsPartnerWide2": "Todas las organizaciones (en todo el socio)",
       "assigned": "Asignado",
@@ -844,7 +845,13 @@
         "inherited": "Heredado",
         "overrideValue": "Valor de anulación",
         "overridesLabel": "Anulaciones:",
-        "failedToLoadMonitors": "Error al cargar los monitores"
+        "failedToLoadMonitors": "Error al cargar los monitores",
+        "createMonitor": "Crear monitor",
+        "recommended": {
+          "title": "Monitores recomendados",
+          "body": "Breeze incluye monitores integrados de CPU, memoria, disco y cumplimiento de parches. Ninguno está adjunto a esta política todavía.",
+          "action": "Adjuntar todos los monitores integrados"
+        }
       },
       "pamTab": {
         "captureWindowsUACElevationPrompts": "Capture indicaciones de elevación Windows UAC",
@@ -1201,6 +1208,15 @@
         "save": "Guardar",
         "cancel": "Cancelar",
         "none": "No hay justificación registrada."
+      },
+      "legacyFreeze": {
+        "title": "Las reglas nuevas se crean como monitores",
+        "body": "Las reglas existentes siguen siendo editables aquí y se convertirán en monitores en la próxima versión.",
+        "link": "Abrir la pestaña Monitores"
+      },
+      "duplicate": {
+        "title": "Los dispositivos de esta política alertarán dos veces",
+        "body": "Estas condiciones existen como monitor adjunto y también como regla o vigilancia heredada: {{names}}"
       }
     }
   },

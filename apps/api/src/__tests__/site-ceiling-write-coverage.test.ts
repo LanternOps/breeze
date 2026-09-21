@@ -120,6 +120,8 @@ const ALLOWED_WITHOUT_CEILING_CHECK: Record<string, string> = {
 
   'modules/mcpInvites/tools/configureDefaults.ts':
     'creates the default admin-email notification channel during MCP-invite partner bootstrap — the caller is a partner-bootstrap key, not a site-restricted org-scope caller, and the target org is fixed by the bootstrap context, not caller-chosen',
+  'modules/mcpInvites/tools/configureDefaults.monitors.ts':
+    'called only by the configureDefaults bootstrap handler; routes/mcpServer.ts unconditionally rejects this fixed Tier 3 tool with MCP_APPROVAL_REQUIRED before dispatch, so site-restricted callers cannot reach these writes — require the site-ceiling gate before re-enabling bootstrap dispatch',
 };
 
 /**

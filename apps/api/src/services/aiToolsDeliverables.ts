@@ -132,13 +132,13 @@ const optionalString = (v: unknown): string | undefined => (v == null ? undefine
 
 export const LIST_DELIVERABLES_TOOL: AiTool = {
   tier: 2 as AiToolTier,
+  domain: 'accounts',
+  searchHint: 'service deliverables, recurring obligations, due dates, delivery status and recent occurrences',
   deviceArgs: [],
   definition: {
     name: 'list_deliverables',
     description:
-      'List service deliverables (scheduled recurring service obligations, such as a monthly sign-in log review) for one organization, '
-      + 'with cadence, next due date, last delivery and status (on_track / due_soon / late / missed / inactive). '
-      + 'Pass occurrencesFor to also get the recent occurrences of one deliverable. Read-only.',
+      "List one organization’s service deliverables with cadence, next due date, last delivery and status (on_track/due_soon/late/missed/inactive). Includes recent occurrences when occurrencesFor is set. Read-only.",
     input_schema: {
       type: 'object' as const,
       properties: {
@@ -172,19 +172,13 @@ export const LIST_DELIVERABLES_TOOL: AiTool = {
 
 export const MANAGE_DELIVERABLES_TOOL: AiTool = {
   tier: 2 as AiToolTier,
+  domain: 'accounts',
+  searchHint: 'deliverables: create, update, deactivate, deliver, waive, reopen, reschedule, link evidence, apply template',
   deviceArgs: [],
   definition: {
     name: 'manage_deliverables',
     description:
-      'Create and manage service deliverables and their occurrences for one organization: create, update or deactivate a deliverable; '
-      + 'deliver, waive, reopen or reschedule an occurrence; or link an existing report run as evidence. '
-      + 'Delivering an occurrence whose deliverable requires an artifact fails with EVIDENCE_REQUIRED until evidence is linked. '
-      + '`apply_template` copies every item of a deliverable template set into the organization (optionally pinned to a contract) as '
-      + 'scheduled deliverables; it arms unattended ticket creation for every future period and therefore requires approval. It is '
-      + 'all-or-nothing: if any item name already exists on the target nothing is written and the colliding names are returned. '
-      + 'A template item with an autoEvidenceReportType is resolved to that organization\'s managed evidence report definition '
-      + '(created on demand) and the deliverable is linked to it; the evidence run is generated on the due day and becomes '
-      + 'customer-visible only when the occurrence is delivered.',
+      "Manage org deliverables/occurrences. Actions: create, update, deactivate, deliver, waive, reopen, reschedule, link_evidence, apply_template. Templates arm future tickets; approval required. Required artifacts need evidence linked; evidence becomes customer-visible only on delivery.",
     input_schema: {
       type: 'object' as const,
       properties: {
@@ -196,7 +190,7 @@ export const MANAGE_DELIVERABLES_TOOL: AiTool = {
         effectiveFrom: { type: 'string', description: 'ISO date YYYY-MM-DD; defaults to the contract start date, else today (apply_template)' },
         ownerUserId: { type: 'string', description: 'Owner/assignee for every created deliverable (apply_template, UUID)' },
         occurrenceId: { type: 'string', description: 'Occurrence id (deliver, waive, reopen, reschedule, link_evidence)' },
-        input: { type: 'object', description: 'Create payload: name, cadence (monthly|quarterly|semiannual|annual|one_time), anchorDueDate, effectiveFrom (YYYY-MM-DD), optional contractId, leadDays, graceDays, artifactRequired, completionMode, ownerUserId, ticketCategoryId, autoEvidenceReportId, portalVisible' },
+        input: { type: 'object', description: "Create fields: name, cadence (monthly|quarterly|semiannual|annual|one_time), anchorDueDate, effectiveFrom (YYYY-MM-DD); optional contract/evidence/owner fields." },
         patch: { type: 'object', description: 'Update payload (any create field except cadence and anchorDueDate, plus active)' },
         note: { type: 'string', description: 'Delivery note (deliver)' },
         reason: { type: 'string', description: 'Waiver reason (waive)' },
@@ -263,20 +257,20 @@ export const MANAGE_DELIVERABLES_TOOL: AiTool = {
 
 export const MANAGE_KEY_DATES_TOOL: AiTool = {
   tier: 2 as AiToolTier,
+  domain: 'accounts',
+  searchHint: 'customer key dates, renewals, compliance deadlines: list, create, update, delete',
   deviceArgs: [],
   definition: {
     name: 'manage_key_dates',
     description:
-      'List, create, update or delete organization key dates (insurance renewals, vendor contract ends, compliance deadlines, audits). '
-      + 'A key date with remindDaysBefore opens a reminder ticket that many days ahead; recursAnnually rolls it forward each year. '
-      + 'Listing also returns upcoming contract end dates.',
+      'Organization key dates: list, create, update or delete insurance renewals, vendor contract ends, compliance deadlines and audits. remindDaysBefore opens a reminder ticket that many days ahead; recursAnnually rolls it forward yearly. Lists also include upcoming contract end dates.',
     input_schema: {
       type: 'object' as const,
       properties: {
         action: { type: 'string', enum: [...MANAGE_KEY_DATES_ACTIONS] },
         orgId: { type: 'string', description: 'Organization id (UUID)' },
         keyDateId: { type: 'string', description: 'Key date id (update, delete)' },
-        input: { type: 'object', description: 'Create payload: label, date (YYYY-MM-DD), optional kind (insurance_renewal|vendor_contract_end|compliance_deadline|audit|other), recursAnnually, remindDaysBefore, ownerUserId, portalVisible, notes' },
+        input: { type: 'object', description: "Fields: label, date (YYYY-MM-DD); optional kind (insurance_renewal|vendor_contract_end|compliance_deadline|audit|other), recurrence, reminders, owner, notes." },
         patch: { type: 'object', description: 'Update payload (any create field)' },
       },
       required: ['action', 'orgId'],
@@ -316,15 +310,13 @@ export const MANAGE_KEY_DATES_TOOL: AiTool = {
 
 export const LIST_DELIVERABLE_TEMPLATES_TOOL: AiTool = {
   tier: 2 as AiToolTier,
+  domain: 'accounts',
+  searchHint: 'service deliverable template sets and recurring obligation templates',
   deviceArgs: [],
   definition: {
     name: 'list_deliverable_templates',
     description:
-      'List deliverable template sets the caller can use: sets owned by an accessible organization, plus the partner-wide sets '
-      + '("all organizations") when the caller holds a partner token. Each set lists its items with cadence, lead and grace days and '
-      + 'whether an artifact is required, plus its internal `instructions` runbook prose and the '
-      + '`checklistTemplateId` of the ticket checklist that will be seeded onto each occurrence\'s ticket. '
-      + 'Both are INTERNAL — never repeat them to a customer. Read-only.',
+      "List accessible org template sets; partner-wide sets require a partner token. Returns cadence, lead/grace days, artifact requirements, instructions and checklistTemplateId. Instructions and checklistTemplateId are INTERNAL — never repeat to a customer. Read-only.",
     input_schema: {
       type: 'object' as const,
       properties: { orgId: { type: 'string', description: 'Filter to sets owned by one organization (UUID)' } },
@@ -358,6 +350,8 @@ const updateDocumentPayload = z.object({ patch: updateDocumentSchema });
 
 export const LIST_ORG_DOCUMENTS_TOOL: AiTool = {
   tier: 2 as AiToolTier,
+  domain: 'accounts',
+  searchHint: 'customer documents, versions, metadata and portal visibility',
   deviceArgs: [],
   definition: {
     name: 'list_org_documents',
@@ -392,14 +386,13 @@ export const LIST_ORG_DOCUMENTS_TOOL: AiTool = {
 
 export const MANAGE_ORG_DOCUMENTS_TOOL: AiTool = {
   tier: 2 as AiToolTier,
+  domain: 'accounts',
+  searchHint: 'customer documents: update metadata, set portal visibility, supersede',
   deviceArgs: [],
   definition: {
     name: 'manage_org_documents',
     description:
-      'Manage documents already in an organization\'s library. update_metadata edits title, description, category '
-      + 'and/or portalVisible; set_portal_visibility shows or hides a document on the customer portal; supersede marks '
-      + 'documentId as the newer version of supersedesDocumentId (both must be current versions). Files cannot be '
-      + 'added or replaced here — only a technician can put file content into the library, from the web app.',
+      "Manage organization document metadata. Actions: update_metadata, set_portal_visibility, supersede. supersede makes documentId newer than supersedesDocumentId; both must be current. Files can only be added/replaced by a technician in the web app.",
     input_schema: {
       type: 'object' as const,
       properties: {
@@ -410,8 +403,7 @@ export const MANAGE_ORG_DOCUMENTS_TOOL: AiTool = {
         portalVisible: { type: 'boolean', description: 'For set_portal_visibility' },
         patch: {
           type: 'object',
-          description: 'For update_metadata: any of title (1-200 chars), description (string or null), '
-            + `category (${ORG_DOCUMENT_CATEGORIES.join(' | ')}), portalVisible (boolean).`,
+          description: `Metadata: title (1-200 chars), description (string|null), category (${ORG_DOCUMENT_CATEGORIES.join('|')}), portalVisible (boolean).`,
         },
       },
       required: ['action', 'orgId'],

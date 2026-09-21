@@ -11,7 +11,7 @@ Under the hood, Breeze compiles a monitor into the alert template, alert rule, a
 
 ## Monitor kinds
 
-Every monitor has one **kind**, which determines the shape of its condition. Thirteen kinds are available:
+Every monitor has one **kind**, which determines the shape of its condition. Fourteen kinds are available:
 
 | Kind | Watches for | Default severity | Evaluated by |
 |---|---|---|---|
@@ -28,11 +28,22 @@ Every monitor has one **kind**, which determines the shape of its condition. Thi
 | Bandwidth | Network bandwidth (in/out/total) above/below a threshold | Medium | Server |
 | Disk I/O | Disk read/write/total I/O above/below a threshold | Medium | Server |
 | Network errors | Network interface errors (in/out/total) above/below a threshold | Medium | Server |
+| Composite | Two to ten of the server-evaluated kinds above, combined with ALL or ANY logic | High | Server |
 
 "Evaluated by **Agent**" means the condition is checked on the endpoint itself, the same way it's checked today for a service or process watch. Every other kind is evaluated by the server-side alert sweep against collected device metrics.
 
 <Aside type="note">
   **Service stopped**, **Process stopped**, and **Process resource** monitors still read their watch list from the same place [Service & Process Monitoring](/features/service-monitoring/) does -- the policy's **Monitoring** tab. Creating one of these monitor kinds doesn't add a new watch by itself; the service or process name also has to exist as a watch on that tab until a future wave unifies the two. See that page's [Overview](/features/service-monitoring/#overview) for how watches are defined today.
+</Aside>
+
+### Composite: combine conditions with ALL/ANY
+
+A **composite** monitor doesn't watch anything on its own -- it combines two to ten other monitor conditions and fires only when the combination logic is satisfied. Choose **Match all** to require every child condition to be true at once (for example, alert only when CPU is high *and* disk space is low, rather than getting two separate noisy alerts), or **Match any** to fire when the first of several conditions trips (for example, treat "certificate expiring soon" and "disk nearly full" as the same "this device needs attention" alert).
+
+A composite's children can only be drawn from the server-evaluated kinds in the table above -- CPU usage, memory usage, disk usage, device offline, event log, patch compliance, certificate expiry, bandwidth, disk I/O, and network errors. Agent-evaluated kinds (service stopped, process stopped, process resource) can't be used as a composite child, and a composite can't contain another composite -- no nesting.
+
+<Aside type="note">
+  As of v0.115.0, picking **Composite** as a monitor's kind and choosing **Match all** / **Match any** works in the console, but the editor for adding and configuring its two-to-ten child conditions is not live yet -- that's coming in a follow-up release. Composite monitors are fully supported end to end once built (for example, through the API).
 </Aside>
 
 ## Ownership: organization vs. partner-wide
@@ -46,9 +57,9 @@ A configuration policy can only attach a monitor it's compatible with: an org-ow
 <Steps>
 
 1. Go to **Alerts → Monitors** in the sidebar (`/alerts/monitors`). Click **New monitor**.
-   (Before v0.114.0 this lived under **Fleet Management → Monitoring**; the old `/monitoring/monitors` links redirect here.)
+   (Before v0.114.0 this lived under **Fleet Management → Monitoring**.)
 
-2. **What to watch.** Pick the monitor's **kind** from the thirteen listed above, then fill in its condition -- a metric operator and threshold for a usage kind, category/level/pattern for an event log, a service or process name for the agent-evaluated kinds, and so on. The fields shown depend on the kind you picked.
+2. **What to watch.** Pick the monitor's **kind** from the fourteen listed above, then fill in its condition -- a metric operator and threshold for a usage kind, category/level/pattern for an event log, a service or process name for the agent-evaluated kinds, and so on. The fields shown depend on the kind you picked. **Service stopped** and **Process stopped** monitors have an optional **consecutive failures** field (1-100) that requires more than one failed check in a row before the monitor fires -- raise it to ride out a flaky check without lowering the monitor's severity.
 
 3. **Severity & noise.** Choose a **severity** (`critical`, `high`, `medium`, `low`, or `info`), a **cooldown** (minimum minutes between repeated firings for the same device), and whether to **auto-resolve** the alert once the condition clears.
 
@@ -100,6 +111,10 @@ What *is* closest-wins is the **per-monitor** attachment: if the same monitor is
 On the policy's **Monitors** tab, each attached monitor shows as a card with its name, kind, and severity. A monitor whose attachment came from a [baseline policy](/features/configuration-policies/#baseline-policies-inheritance) shows an **Inherited** badge. Toggle a card's enabled switch to turn that monitor off for this policy's scope, or set an **Override value** to adjust the condition's threshold for this policy's scope only -- without editing the monitor definition or affecting any other policy it's attached to.
 
 Open the monitor's **Deployed to** section and its **Devices** list to see exactly which devices it currently resolves to, and what enabled state and overrides each one is getting and from which policy.
+
+### Advanced: making a closer policy replace its parent's monitors
+
+The cumulative behavior above -- a site's monitors adding to its organization's, never dropping them -- is the default and covers almost every fleet. For the rare case where a site or device group genuinely needs a clean slate (none of the parent policy's monitors should reach it, not even with overrides), a policy's monitor attachments can instead be set to **replace** its parent's for that branch of the hierarchy, rather than add to them. A replace policy contributes only its own monitor attachments -- even an empty set -- and shadows everything its parent would otherwise have contributed; every other policy still combines cumulatively as usual. This is available today through the API; a console control for it is planned for a future release.
 
 ## Converting a legacy alert rule
 

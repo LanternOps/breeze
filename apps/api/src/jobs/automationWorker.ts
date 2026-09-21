@@ -45,6 +45,7 @@ import { isReusableState } from '../services/bullmqUtils';
 import { assertQueueJobName, parseQueueJobData } from '../services/bullmqValidation';
 import { automationQueueJobDataSchema, type AutomationAssignmentLevel, type AutomationQueueJobData } from './queueSchemas';
 import { attachWorkerObservability } from './workerObservability';
+import { policyWorkflowApplies } from '../services/monitors/conversion/workflows';
 import { recordEpisodeResponse } from '../services/monitors/episodeService';
 
 const { db } = dbModule;
@@ -491,11 +492,24 @@ async function processTriggerSchedule(data: TriggerScheduleJobData): Promise<{ r
   return { runId: run.id };
 }
 
+/** Recheck maintenance at both boundaries; a failed lookup must not run a workflow. */
+async function policyWorkflowMaintenanceSuppressed(deviceId: string): Promise<boolean> {
+  try {
+    const settings = await resolveMaintenanceConfigForDevice(deviceId);
+    if (!settings) return false;
+    const window = isInMaintenanceWindow(settings);
+    return window.active && window.suppressAutomations;
+  } catch (error) {
+    console.warn(`[AutomationWorker] Maintenance check failed for workflow device ${deviceId}, skipping:`, error);
+    return true;
+  }
+}
+
 async function processTriggerEvent(data: TriggerEventJobData): Promise<{ runId?: string; skipped?: string }> {
   const [automation] = await db
     .select()
     .from(automations)
-    .where(and(eq(automations.id, data.automationId), eq(automations.enabled, true)))
+    .where(and(eq(automations.id, data.automationId), eq(automations.enabled, true), isNull(automations.retiredAt)))
     .limit(1);
 
   if (!automation) {
@@ -514,6 +528,17 @@ async function processTriggerEvent(data: TriggerEventJobData): Promise<{ runId?:
   }
 
   const payload = normalizePayload(data.eventPayload);
+  if (trigger.filter?._policyWorkflow) {
+    const deviceId = typeof payload.deviceId === 'string' ? payload.deviceId : undefined;
+    if (!deviceId || !await policyWorkflowApplies(automation, deviceId, db)) {
+      return { skipped: 'policy_workflow_not_assigned' };
+    }
+    if (await policyWorkflowMaintenanceSuppressed(deviceId)) {
+      return { skipped: 'maintenance_window' };
+    }
+    const { _policyWorkflow, ...filter } = trigger.filter!;
+    trigger = { ...trigger, filter };
+  }
   if (!shouldTriggerEventAutomation(trigger, data.eventType, payload)) {
     return { skipped: 'filter_mismatch' };
   }
@@ -846,7 +871,7 @@ async function processTriggerConfigPolicySchedule(
   const [cpAutomation] = await db
     .select()
     .from(configPolicyAutomations)
-    .where(and(eq(configPolicyAutomations.id, data.configPolicyAutomationId), eq(configPolicyAutomations.enabled, true)))
+    .where(and(eq(configPolicyAutomations.id, data.configPolicyAutomationId), eq(configPolicyAutomations.enabled, true), isNull(configPolicyAutomations.retiredAt)))
     .limit(1);
 
   if (!cpAutomation) {
@@ -1019,7 +1044,7 @@ async function processTriggerConfigPolicySchedule(
       targetDeviceIds: winners.sort(),
       triggeredBy: `schedule:${data.slotKey}`,
     },
-    `cp-automation-run:${cpAutomation.id}:${assignedPolicyId}:${data.slotKey}`,
+    `cp-automation-run-${cpAutomation.id}-${assignedPolicyId}-${data.slotKey}`,
   );
 
   return { devicesQueued: winners.length };
@@ -1171,7 +1196,7 @@ export async function queueEventTriggers(event: BreezeEvent<Record<string, unkno
   const candidates = await db
     .select()
     .from(automations)
-    .where(and(ownershipCondition, eq(automations.enabled, true)));
+    .where(and(ownershipCondition, eq(automations.enabled, true), isNull(automations.retiredAt)));
 
   const payload = normalizePayload(event.payload);
 
@@ -1185,6 +1210,14 @@ export async function queueEventTriggers(event: BreezeEvent<Record<string, unkno
 
     if (trigger.type !== 'event') {
       continue;
+    }
+
+    if (trigger.filter?._policyWorkflow) {
+      const deviceId = typeof payload.deviceId === 'string' ? payload.deviceId : undefined;
+      if (!deviceId || !await policyWorkflowApplies(automation, deviceId, db)) continue;
+      if (await policyWorkflowMaintenanceSuppressed(deviceId)) continue;
+      const { _policyWorkflow, ...filter } = trigger.filter!;
+      trigger = { ...trigger, filter };
     }
 
     if (!shouldTriggerEventAutomation(trigger, event.type, payload)) {
@@ -1226,7 +1259,7 @@ export async function queueEventTriggers(event: BreezeEvent<Record<string, unkno
       const { configPolicyId: cpAssignedPolicyId, automations: cpAutomations } = resolved;
 
       for (const cpAutomation of cpAutomations) {
-        if (!cpAutomation.enabled) continue;
+        if (!cpAutomation.enabled || cpAutomation.retiredAt) continue;
         if (cpAutomation.triggerType !== 'event') continue;
         if (cpAutomation.eventType !== event.type) continue;
 

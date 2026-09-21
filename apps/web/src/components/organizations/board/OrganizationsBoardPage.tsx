@@ -191,7 +191,7 @@ export default function OrganizationsBoardPage() {
             throw new Error(t('orgBoard.errors.fetchOrganizations'));
           }
           return response.json();
-        });
+        }, { order: 'server' });
         if (list === null) return;
         setOrganizations(list);
       } catch (err) {

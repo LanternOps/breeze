@@ -3,12 +3,13 @@ import { zValidator } from '../lib/validation';
 import { z } from 'zod';
 import { and, asc, eq, inArray, type SQL } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { ticketCategories, organizations, partners } from '../db/schema';
+import { ticketCategories, organizations } from '../db/schema';
 import { authMiddleware, requireScope, requirePermission } from '../middleware/auth';
 import { PERMISSIONS } from '../services/permissions';
 import { ticketCategoryInputSchema } from '@breeze/shared';
 import type { AuthContext } from '../middleware/auth';
 import { canManagePartnerWidePolicies } from '../services/partnerWideAccess';
+import { getActiveWorkType } from '../services/workTypeService';
 import { writeRouteAudit } from '../services/auditEvents';
 
 export const ticketCategoriesRoutes = new Hono();
@@ -27,11 +28,44 @@ const requirePartnerGlobalAccess = async (c: Context, next: Next) => {
   return next();
 };
 
-async function partnerCurrency(partnerId: string): Promise<string | null> {
-  const rows = await db.select({ currencyCode: partners.currencyCode })
-    .from(partners).where(eq(partners.id, partnerId)).limit(1);
-  return rows[0]?.currencyCode ?? null;
+/**
+ * Tenant guard for the category's default work type, mirroring the parentId
+ * guard above: `(default_work_type_id, partner_id) -> work_types(id, partner_id)`
+ * is a composite FK, and a 23503 from it fires INSIDE the request transaction —
+ * which aborts it, so nothing downstream can turn that into a clean 400. An
+ * archived work type is refused too: it may stay stamped on history, but it
+ * must not become the default for new entries.
+ *
+ * Returns an error message, or null when there is nothing to check (`undefined`
+ * = field omitted, `null` = explicitly cleared).
+ */
+async function invalidDefaultWorkType(
+  defaultWorkTypeId: string | null | undefined,
+  partnerId: string,
+): Promise<string | null> {
+  if (defaultWorkTypeId == null) return null;
+  return (await getActiveWorkType(defaultWorkTypeId, partnerId))
+    ? null
+    : 'Default work type not found';
 }
+
+// Explicit projection: legacy pricing columns remain in storage until W04.
+const categoryProjection = {
+  id: ticketCategories.id,
+  partnerId: ticketCategories.partnerId,
+  name: ticketCategories.name,
+  color: ticketCategories.color,
+  parentId: ticketCategories.parentId,
+  defaultPriority: ticketCategories.defaultPriority,
+  responseSlaMinutes: ticketCategories.responseSlaMinutes,
+  resolutionSlaMinutes: ticketCategories.resolutionSlaMinutes,
+  defaultWorkTypeId: ticketCategories.defaultWorkTypeId,
+  defaultTimeEntryMinutes: ticketCategories.defaultTimeEntryMinutes,
+  sortOrder: ticketCategories.sortOrder,
+  isActive: ticketCategories.isActive,
+  createdAt: ticketCategories.createdAt,
+  updatedAt: ticketCategories.updatedAt,
+};
 
 // GET /ticket-categories — list categories visible to the caller
 // RLS is the primary isolation; this adds defense-in-depth app-layer scoping.
@@ -48,7 +82,7 @@ ticketCategoriesRoutes.get(
       }
       if (!auth.partnerId) return c.json({ error: 'Partner context required' }, 403);
       const data = await db
-        .select()
+        .select(categoryProjection)
         .from(ticketCategories)
         .where(eq(ticketCategories.partnerId, auth.partnerId))
         .orderBy(asc(ticketCategories.sortOrder), asc(ticketCategories.name));
@@ -73,8 +107,7 @@ ticketCategoriesRoutes.get(
       // ticketService.assertCategoryInPartner. Org users get read-only visibility
       // of their MSP's categories; the write routes below remain partner/system.
       // The column projection + isActive filter are deliberate: org users get the
-      // selectable catalog only — never the MSP's billing defaults
-      // (defaultHourlyRate/defaultBillable) or retired categories.
+      // selectable catalog only, excluding retired categories.
       const data = await runOutsideDbContext(() =>
         withSystemDbAccessContext(() =>
           db
@@ -84,6 +117,7 @@ ticketCategoriesRoutes.get(
               color: ticketCategories.color,
               parentId: ticketCategories.parentId,
               defaultPriority: ticketCategories.defaultPriority,
+              defaultWorkTypeId: ticketCategories.defaultWorkTypeId,
               sortOrder: ticketCategories.sortOrder,
               isActive: ticketCategories.isActive
             })
@@ -97,7 +131,7 @@ ticketCategoriesRoutes.get(
 
     // system scope: unrestricted
     const data = await db
-      .select()
+      .select(categoryProjection)
       .from(ticketCategories)
       .orderBy(asc(ticketCategories.sortOrder), asc(ticketCategories.name));
     return c.json({ data });
@@ -194,20 +228,13 @@ ticketCategoriesRoutes.post(
       }
     }
 
-    let rateCurrency: string | null = null;
-    if (body.defaultHourlyRate != null) {
-      rateCurrency = await partnerCurrency(auth.partnerId);
-      if (!rateCurrency) return c.json({ error: 'Partner not found' }, 404);
-    }
+    const workTypeError = await invalidDefaultWorkType(body.defaultWorkTypeId, auth.partnerId);
+    if (workTypeError) return c.json({ error: workTypeError }, 400);
+
     const inserted = await db.insert(ticketCategories).values({
       ...body,
-      // numeric column requires string; Drizzle's numeric type maps to string at runtime
-      defaultHourlyRate: body.defaultHourlyRate != null ? String(body.defaultHourlyRate) : null,
-      // Snapshot of the partner currency the rate was entered under (spec §7);
-      // a later partner-currency change must not reinterpret this number.
-      rateCurrency,
       partnerId: auth.partnerId
-    }).returning();
+    }).returning(categoryProjection);
     const row = inserted[0]!;
     writeRouteAudit(c, {
       orgId: null,
@@ -269,40 +296,29 @@ ticketCategoriesRoutes.patch(
       conditions.push(eq(ticketCategories.partnerId, auth.partnerId));
     }
 
-    const set: Record<string, unknown> = {
-      ...body,
-      defaultHourlyRate: body.defaultHourlyRate != null
-        ? String(body.defaultHourlyRate)
-        : body.defaultHourlyRate === null ? null : undefined,
-      updatedAt: new Date()
-    };
-
-    if (body.defaultHourlyRate !== undefined) {
-      const [existing] = await db
-        .select({ partnerId: ticketCategories.partnerId, defaultHourlyRate: ticketCategories.defaultHourlyRate })
-        .from(ticketCategories).where(eq(ticketCategories.id, id)).limit(1);
-      if (!existing) return c.json({ error: 'Category not found' }, 404);
-      if (body.defaultHourlyRate === null) {
-        set.rateCurrency = null;
-      } else if (
-        existing.defaultHourlyRate == null ||
-        // Compare at the column's numeric(10,2) scale — what the DB will actually store.
-        Number(existing.defaultHourlyRate).toFixed(2) !== body.defaultHourlyRate.toFixed(2)
-      ) {
-        // Snapshot rule: restamp ONLY when the number itself changes. The
-        // editor resends the rate on every save (name/colour/SLA edits), and a
-        // same-value resend after a partner currency change must not
-        // reinterpret the historical rate.
-        const cur = await partnerCurrency(existing.partnerId);
-        if (!cur) return c.json({ error: 'Partner not found' }, 404);
-        set.rateCurrency = cur;
+    if (body.defaultWorkTypeId != null) {
+      // Partner scope: the caller's partner is authoritative. System scope:
+      // resolve the target category's partner first (same shape as parentId).
+      let targetPartnerId: string | null = auth.scope === 'partner' ? (auth.partnerId ?? null) : null;
+      if (!targetPartnerId) {
+        const catRows = await db
+          .select({ partnerId: ticketCategories.partnerId })
+          .from(ticketCategories)
+          .where(eq(ticketCategories.id, id))
+          .limit(1);
+        targetPartnerId = catRows[0]?.partnerId ?? null;
+        if (!targetPartnerId) return c.json({ error: 'Category not found' }, 404);
       }
+      const workTypeError = await invalidDefaultWorkType(body.defaultWorkTypeId, targetPartnerId);
+      if (workTypeError) return c.json({ error: workTypeError }, 400);
     }
+
+    const set = { ...body, updatedAt: new Date() };
 
     const updated = await db.update(ticketCategories)
       .set(set)
       .where(and(...conditions))
-      .returning();
+      .returning(categoryProjection);
     if (!updated[0]) return c.json({ error: 'Category not found' }, 404);
     const row = updated[0];
     writeRouteAudit(c, {
@@ -339,7 +355,7 @@ ticketCategoriesRoutes.delete(
     const updated = await db.update(ticketCategories)
       .set({ isActive: false, updatedAt: new Date() })
       .where(and(...conditions))
-      .returning();
+      .returning(categoryProjection);
     if (!updated[0]) return c.json({ error: 'Category not found' }, 404);
     const row = updated[0];
     writeRouteAudit(c, {

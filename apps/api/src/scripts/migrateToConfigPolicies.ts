@@ -29,13 +29,16 @@
  * Atomic: uses db.transaction() per org.
  */
 
-import { eq, and, like } from 'drizzle-orm';
-import { db, closeDb } from '../db';
+import { pathToFileURL } from 'node:url';
+import { eq, and, like, isNull } from 'drizzle-orm';
+import { db, closeDb, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import type { AuthContext } from '../middleware/auth';
+import { createSystemAuthContext } from '../services/featureConfigResolver';
+import { convertRuleToMonitor } from '../services/monitors/ruleConversionService';
 import {
   // Source tables
   organizations,
   alertRules,
-  alertTemplates,
   automations,
   automationPolicies,
   patchPolicies,
@@ -44,7 +47,6 @@ import {
   configurationPolicies,
   configPolicyFeatureLinks,
   configPolicyAssignments,
-  configPolicyAlertRules,
   configPolicyAutomations,
   configPolicyComplianceRules,
   configPolicyPatchSettings,
@@ -54,16 +56,6 @@ import {
 // ---------------------------------------------------------------------------
 // Types for JSONB blobs we destructure from legacy tables
 // ---------------------------------------------------------------------------
-
-interface AlertOverrideSettings {
-  severity?: string;
-  conditions?: unknown;
-  cooldownMinutes?: number;
-  autoResolve?: boolean;
-  autoResolveConditions?: unknown;
-  titleTemplate?: string;
-  messageTemplate?: string;
-}
 
 interface AutomationTrigger {
   type?: string;
@@ -107,26 +99,6 @@ const DRY_RUN = process.argv.includes('--dry-run');
 function log(msg: string) {
   const prefix = DRY_RUN ? '[DRY-RUN] ' : '';
   console.log(`${prefix}${msg}`);
-}
-
-const VALID_SEVERITIES = ['critical', 'high', 'medium', 'low', 'info'] as const;
-type AlertSeverity = (typeof VALID_SEVERITIES)[number];
-
-/** Map legacy targetType to configAssignmentLevelEnum value. */
-function mapTargetType(
-  targetType: string,
-): 'organization' | 'site' | 'device' {
-  switch (targetType) {
-    case 'org':
-    case 'organization':
-      return 'organization';
-    case 'site':
-      return 'site';
-    case 'device':
-      return 'device';
-    default:
-      return 'organization';
-  }
 }
 
 /** Safely interpret an unknown JSONB value as a record. */
@@ -173,7 +145,7 @@ const summary = {
 // Main migration
 // ---------------------------------------------------------------------------
 
-async function migrate() {
+async function migrate(auth: AuthContext) {
   log('Starting configuration policy migration...');
   if (DRY_RUN) {
     log('Dry-run mode enabled -- no data will be written.\n');
@@ -219,7 +191,7 @@ async function migrate() {
     if (DRY_RUN) {
       await migrateOrgDryRun(orgId);
     } else {
-      await migrateOrgLive(orgId);
+      await migrateOrgLive(orgId, auth);
     }
   }
 
@@ -272,7 +244,7 @@ async function alreadyMigrated(orgId: string): Promise<boolean> {
 // Live migration (writes data inside a transaction)
 // ---------------------------------------------------------------------------
 
-async function migrateOrgLive(orgId: string) {
+async function migrateOrgLive(orgId: string, auth: AuthContext) {
   const org = await loadOrg(orgId);
   if (!org) {
     log(`  [WARN] Org ${orgId} not found in organizations table -- skipping.`);
@@ -323,7 +295,9 @@ async function migrateOrgLive(orgId: string) {
     };
 
     // ---- Alert Rules ----
-    await migrateAlertRulesLive(tx, orgId, policyId, createAssignment);
+    const convertedAlerts = await migrateAlertRulesLive(tx, orgId, auth);
+    summary.alertRulesCreated += convertedAlerts;
+    log(`    Alert monitors: ${convertedAlerts} converted with original target assignments`);
 
     // ---- Automations ----
     await migrateAutomationsLive(tx, orgId, policyId, createAssignment);
@@ -346,74 +320,20 @@ async function migrateOrgLive(orgId: string) {
 // Per-feature live migration functions
 // ---------------------------------------------------------------------------
 
-async function migrateAlertRulesLive(
-  tx: Tx,
-  orgId: string,
-  policyId: string,
-  createAssignment: (level: 'partner' | 'organization' | 'site' | 'device_group' | 'device', targetId: string) => Promise<void>,
-) {
-  const legacyRules = await tx.select().from(alertRules).where(eq(alertRules.orgId, orgId));
-  if (legacyRules.length === 0) return;
-
-  // Build a template lookup for extracting conditions/severity/etc.
-  const allTemplates = await tx.select().from(alertTemplates);
-  const templateMap = new Map(allTemplates.map((t) => [t.id, t]));
-
-  const [featureLink] = await tx
-    .insert(configPolicyFeatureLinks)
-    .values({ configPolicyId: policyId, featureType: 'alert_rule' })
-    .returning({ id: configPolicyFeatureLinks.id });
-  if (!featureLink) throw new Error('Failed to create alert_rule feature link');
-  summary.featureLinksCreated++;
-
-  for (let i = 0; i < legacyRules.length; i++) {
-    const rule = legacyRules[i]!;
-    const template = templateMap.get(rule.templateId);
-    const overrides = asObj<AlertOverrideSettings>(rule.overrideSettings);
-
-    // Severity: override -> template -> default 'medium'
-    const rawSeverity = overrides?.severity ?? template?.severity ?? 'medium';
-    const severity: AlertSeverity = VALID_SEVERITIES.includes(rawSeverity as AlertSeverity)
-      ? (rawSeverity as AlertSeverity)
-      : 'medium';
-
-    // Conditions: override -> template -> empty object
-    const conditions = overrides?.conditions ?? template?.conditions ?? {};
-
-    // Other fields with fallback chain
-    const cooldownMinutes = overrides?.cooldownMinutes ?? template?.cooldownMinutes ?? 5;
-    const autoResolve = overrides?.autoResolve ?? template?.autoResolve ?? false;
-    const autoResolveConditions =
-      overrides?.autoResolveConditions ?? template?.autoResolveConditions ?? null;
-    const titleTemplate =
-      overrides?.titleTemplate ??
-      template?.titleTemplate ??
-      '{{ruleName}} triggered on {{deviceName}}';
-    const messageTemplate =
-      overrides?.messageTemplate ??
-      template?.messageTemplate ??
-      '{{ruleName}} condition met';
-
-    await tx.insert(configPolicyAlertRules).values({
-      featureLinkId: featureLink.id,
-      name: rule.name,
-      severity,
-      conditions,
-      cooldownMinutes,
-      autoResolve,
-      autoResolveConditions,
-      titleTemplate,
-      messageTemplate,
-      sortOrder: i,
-    });
-    summary.alertRulesCreated++;
-
-    // Create assignment based on the rule's targetType/targetId.
-    const level = mapTargetType(rule.targetType);
-    await createAssignment(level, rule.targetId);
+export async function migrateAlertRulesLive(tx: Tx, orgId: string, auth: AuthContext): Promise<number> {
+  const rules = await tx.select({ id: alertRules.id, templateId: alertRules.templateId }).from(alertRules).where(and(
+    eq(alertRules.orgId, orgId), isNull(alertRules.managedByMonitorId), isNull(alertRules.retiredAt),
+  ));
+  let converted = 0;
+  const templates = new Set<string>();
+  for (const rule of rules) {
+    if (templates.has(rule.templateId)) continue;
+    templates.add(rule.templateId);
+    const result = await convertRuleToMonitor(rule.id, auth, tx);
+    if (!result.ok) throw new Error(`${rule.id}: ${result.failure.kind}`);
+    converted += result.data.convertedRuleIds.length;
   }
-
-  log(`    Alert rules: ${legacyRules.length} migrated`);
+  return converted;
 }
 
 async function migrateAutomationsLive(
@@ -631,7 +551,9 @@ async function migrateOrgDryRun(orgId: string) {
 
   const [legacyAlerts, legacyAutos, legacyPatches, legacyMaint, legacyComp] =
     await Promise.all([
-      db.select().from(alertRules).where(eq(alertRules.orgId, orgId)),
+      db.select().from(alertRules).where(and(
+        eq(alertRules.orgId, orgId), isNull(alertRules.managedByMonitorId), isNull(alertRules.retiredAt),
+      )),
       db.select().from(automations).where(eq(automations.orgId, orgId)),
       orgPartnerId
         ? db.select().from(patchPolicies).where(eq(patchPolicies.partnerId, orgPartnerId))
@@ -645,14 +567,7 @@ async function migrateOrgDryRun(orgId: string) {
   const parts: string[] = [];
 
   if (legacyAlerts.length > 0) {
-    parts.push(`${legacyAlerts.length} alert rule(s)`);
-    summary.alertRulesCreated += legacyAlerts.length;
-    summary.featureLinksCreated++;
-    // Count unique assignments from alert rules.
-    const uniqueAssignments = new Set(
-      legacyAlerts.map((r) => `${mapTargetType(r.targetType)}:${r.targetId}`),
-    );
-    summary.assignmentsCreated += uniqueAssignments.size;
+    parts.push(`${legacyAlerts.length} candidate monitor conversion(s), each retaining its original target; equivalence/convertibility not checked in this historical dry-run`);
   }
 
   if (legacyAutos.length > 0) {
@@ -691,13 +606,20 @@ async function migrateOrgDryRun(orgId: string) {
 // Entry point
 // ---------------------------------------------------------------------------
 
-migrate()
-  .then(() => {
-    log('Migration complete.');
-    return closeDb();
-  })
-  .then(() => process.exit(0))
-  .catch((err) => {
-    console.error('Migration failed:', err);
-    closeDb().finally(() => process.exit(1));
-  });
+async function runHistoricalMigration() {
+  return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+    const base = createSystemAuthContext();
+    if (DRY_RUN) return migrate(base);
+    return migrate(base); // system writes persist null actors through the shared converter
+  }, 'historical-config-policy-migration'));
+}
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  runHistoricalMigration()
+    .then(() => { log('Migration complete.'); return closeDb(); })
+    .then(() => { process.exitCode = 0; })
+    .catch(async (error) => {
+      console.error('Migration failed:', error);
+      process.exitCode = 1;
+      await closeDb();
+    });
+}

@@ -1,6 +1,17 @@
-import { and, eq, inArray, or, sql, type SQL } from 'drizzle-orm';
+import { and, eq, inArray, notInArray, or, sql, type SQL } from 'drizzle-orm';
 import { deviceCommands } from '../db/schema';
-import { QUEUED_BACKUP_WORKLOAD_COMMAND_TYPES } from './commandTypes';
+import { CommandTypes, QUEUED_BACKUP_WORKLOAD_COMMAND_TYPES } from './commandTypes';
+
+/**
+ * Types excluded from the #3607 provisional-timeout reopen below. A
+ * `network_diagnostic` result is only meaningful while the plan it was issued
+ * under is still live: once the server has timed the command out, the plan's
+ * absolute expiry has passed too, so a late frame is an expired authority
+ * writing tenant evidence, not a rescued result.
+ */
+export const TIMEOUT_REOPEN_EXCLUDED_COMMAND_TYPES = [
+  CommandTypes.NETWORK_DIAGNOSTIC,
+] as const;
 
 /**
  * #3607 — which `device_commands` rows may still accept a result from the agent.
@@ -75,6 +86,7 @@ export function commandAcceptsAgentResultCondition(): SQL {
     inArray(deviceCommands.status, [...ACCEPTED_COMMAND_RESULT_STATUSES]),
     and(
       eq(deviceCommands.status, 'failed'),
+      notInArray(deviceCommands.type, [...TIMEOUT_REOPEN_EXCLUDED_COMMAND_TYPES]),
       sql`${deviceCommands.result}->>'status' = ${SERVER_TIMEOUT_RESULT_STATUS}`,
     ),
     and(
@@ -101,7 +113,13 @@ export function commandAcceptsAgentResult(
   if (!status) return true;
   if ((ACCEPTED_COMMAND_RESULT_STATUSES as readonly string[]).includes(status)) return true;
   const resultStatus = (result as Record<string, unknown> | null | undefined)?.status;
-  if (status === 'failed' && resultStatus === SERVER_TIMEOUT_RESULT_STATUS) return true;
+  if (
+    status === 'failed' &&
+    resultStatus === SERVER_TIMEOUT_RESULT_STATUS &&
+    !(TIMEOUT_REOPEN_EXCLUDED_COMMAND_TYPES as readonly string[]).includes(type ?? '')
+  ) {
+    return true;
+  }
   if (
     status === 'completed' &&
     resultStatus === BACKUP_QUEUE_ACK_RESULT_STATUS &&

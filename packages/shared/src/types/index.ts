@@ -2,6 +2,8 @@
 // Auth Types
 // ============================================
 
+import type { EmailTemplateId } from '../utils/emailTemplates';
+
 export * from './auth';
 export * from './deviceOptions';
 export * from './agentHealth';
@@ -779,6 +781,12 @@ export interface PartnerSettings {
   // (newly created or stale entries) are appended in createdAt order.
   organizationOrder?: string[];
   remoteAccessProviders?: InheritableRemoteAccessSettings;
+  emailTemplates?: Partial<Record<EmailTemplateId, {
+    subject?: string | null;
+    heading?: string | null;
+    buttonLabel?: string | null;
+    html?: string | null;
+  }>>;
 }
 
 // ============================================
@@ -808,6 +816,7 @@ export * from './aiAgents';
 export * from './aiAgentGraduation';
 export * from './aiAgentRuns';
 export * from './aiAgentSchedules';
+export * from './aiToolDomains';
 export * from './aiOperator';
 export * from './aiOrigin';
 export * from './orgNarrativeReport';
@@ -896,3 +905,12 @@ export * from './aiArtifacts';
 // ============================================
 
 export * from './toolSources';
+
+// Intelligent network topology canonical wire contracts (#5996)
+export * from './topology';
+
+export * from './topologyCollection';
+
+export * from './topologyConfiguration';
+
+export * from './topologyDiagnostics';

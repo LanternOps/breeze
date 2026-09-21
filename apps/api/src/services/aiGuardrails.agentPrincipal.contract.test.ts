@@ -182,6 +182,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'configuration_policy_compliance',
   'export_dataset',
   'get_active_users',
+  'get_ai_agent_run', // A-W06 Tier-1 read
   'get_catalog_item',
   'get_cis_compliance',
   'get_cis_device_report',
@@ -199,11 +200,13 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'get_invite_funnel',
   'get_invoice',
   'get_log_trends',
+  'get_network_asset', // A-W06 Tier-1 read
   // W01 (spec §4.4) — read-only reachability for a discovered network asset.
   // Tier 1, reads nothing outside the caller's tenant, mutates nothing.
   'get_network_asset_reachability',
   'get_playbook_history',
   'get_quote',
+  'get_running_timer', // A-W06 Tier-1 read
   'get_s1_status',
   'get_s1_threats',
   'get_script_details',
@@ -215,6 +218,8 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'get_script_proposal',
   'get_security_posture',
   'get_service_monitoring_status',
+  'get_site', // A-W06 Tier-1 read
+  'get_timesheet', // A-W06 Tier-1 read
   'get_user_experience_metrics',
   'get_vulnerability_report',
   'google_email_report',
@@ -222,18 +227,26 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'google_list_user_groups',
   'google_lookup_user',
   'google_security_drift',
+  'list_ai_agent_runs', // A-W06 Tier-1 read
+  'list_ai_agents', // A-W06 Tier-1 read
   'list_configuration_policies',
   'list_contracts',
   'list_deliverable_templates',
+  'list_incidents', // A-W06 Tier-1 read
   'list_invoices',
+  'list_network_assets', // A-W06 Tier-1 read
+  'list_org_contacts', // A-W06 Tier-1 read
   // W03: read-only document METADATA, same admission shape as the sibling
   // business-object list tools; bytes are not reachable from any tool.
   'list_org_documents',
   'list_organizations',
   'list_playbooks',
   'list_quotes',
+  'list_remediation_suggestions', // A-W06 Tier-1 read
   'list_script_templates',
   'list_scripts',
+  'list_sites', // A-W06 Tier-1 read
+  'list_time_entries', // A-W06 Tier-1 read
   'lookup_distributor_product',
   'm365_list_group_memberships',
   'm365_lookup_user',
@@ -255,6 +268,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'query_monitors',
   'search_agent_logs',
   'search_catalog',
+  'search_documentation', // A-W02 Task 5 declared it on the chat server (Tier 1 read)
   'search_logs',
 ];
 

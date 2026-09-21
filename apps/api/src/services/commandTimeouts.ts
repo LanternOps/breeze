@@ -3,8 +3,9 @@ import { CommandTypes } from './commandTypes';
 // ── Timeout tiers (milliseconds) ──────────────────────────────────
 const FIVE_MINUTES = 5 * 60 * 1000;
 const THIRTY_MINUTES = 30 * 60 * 1000;
-const SIXTY_MINUTES = 60 * 60 * 1000;
 const TWO_HOURS = 2 * 60 * 60 * 1000;
+const THREE_HOURS = 3 * 60 * 60 * 1000;
+const TWENTY_FOUR_HOURS = 24 * 60 * 60 * 1000;
 const DEFAULT_TIMEOUT_MS = THIRTY_MINUTES;
 // Extra buffer on top of a script's own timeout, so the agent-side timeout
 // always fires first. Exported because the stale reaper needs it as the floor
@@ -75,6 +76,7 @@ const MEDIUM_TIMEOUT_TYPES = new Set<string>([
   CommandTypes.PATCH_SCAN,
   CommandTypes.SOFTWARE_UNINSTALL,
   CommandTypes.FILESYSTEM_ANALYSIS,
+  CommandTypes.SYSTEM_CLEANUP_LIST,
   CommandTypes.REBOOT_SAFE_MODE,
   CommandTypes.SELF_UNINSTALL,
   CommandTypes.COLLECT_EVIDENCE,
@@ -89,10 +91,53 @@ const MEDIUM_TIMEOUT_TYPES = new Set<string>([
   CommandTypes.BACKUP_RESTORE,
 ]);
 
+/**
+ * A diagnostic plan's own lifetime ceiling (120s, topologyDiagnosticLimitsSchema)
+ * plus a delivery grace. Deliberately shorter than every other tier: an
+ * accepted-but-delayed diagnostic must EXPIRE, never acquire a fresh execution
+ * budget when the agent reconnects.
+ */
+export const NETWORK_DIAGNOSTIC_TIMEOUT_MS = 150 * 1000;
+
+/**
+ * #6415 — WHOLE-MACHINE restores. These six used to share a flat 60 minutes
+ * measured from `executed_at`, and the reaper has no progress term
+ * (`jobs/staleCommandReaper.ts`: `due = now - executedAt >= timeoutMs`), so a
+ * healthy rebuild was terminalised a third of the way through: the #5498 lab
+ * run measured 1 h 57 m, 2 h 41 m and 3 h 15 m for a ~106k-file Linux root.
+ * The restore loop is latency-bound (one presign hop + one object GET per
+ * file, ~10 files/s), so a cloud provider's RTT makes this slower, not faster
+ * — **every** realistic whole-machine restore exceeds 60 minutes.
+ *
+ * Why a ceiling and not a stall clock. `backup_jobs` can use a 15-minute stall
+ * window because the agent streams `backup_progress` continuously into
+ * `last_progress_at`. Nothing equivalent exists here: `device_commands` has no
+ * progress column, four of these six types report nothing at all mid-flight,
+ * and the BMR pair's only mid-flight signal is a PHASE transition posted to
+ * `/bmr/recover/progress` — the whole 3-hour restore sits inside a single
+ * `restoring` phase. A stall clock keyed on that signal would reap healthy
+ * restores EARLIER than the bug being fixed here. Until a real per-command
+ * progress channel exists, the ceiling is the honest control, and 24 h mirrors
+ * `BACKUP_ABSOLUTE_TIMEOUT_MS`, which the backup reaper applies for exactly
+ * the same reason ("legacy agents: no progress signal exists").
+ *
+ * Cost of the wider ceiling: a genuinely dead restore holds its `sent` row (and
+ * its snapshot pin) for up to 24 h instead of 1 h. That is the deliberate
+ * trade — a disconnect mid-restore is not evidence of failure here, and the
+ * previous setting produced a false "failed" on every real recovery.
+ *
+ * NOT in scope of this constant: `/mssql/restore` and `/hyperv/restore` also
+ * wait synchronously on `executeCommand(..., { timeoutMs: 600000 })`, which
+ * terminalises those two REST flows after 10 minutes regardless of what the
+ * reaper does. Making them asynchronous is separate work.
+ */
+export const WHOLE_MACHINE_RESTORE_TIMEOUT_MS = TWENTY_FOUR_HOURS;
+
 const RESTORE_TIMEOUT_TYPES = new Set<string>([
   CommandTypes.VM_RESTORE_FROM_BACKUP,
   CommandTypes.VM_INSTANT_BOOT,
   CommandTypes.BMR_RECOVER,
+  CommandTypes.BARE_METAL_REBUILD,
   CommandTypes.MSSQL_RESTORE,
   CommandTypes.HYPERV_RESTORE,
 ]);
@@ -142,12 +187,39 @@ export function getCommandTimeoutMs(
         : DEFAULT_SCRIPT_TIMEOUT_S;
     return timeoutSeconds * 1000 + SCRIPT_GRACE_BUFFER_MS;
   }
+  if (
+    commandType === CommandTypes.NETWORK_DIAGNOSTIC ||
+    commandType === CommandTypes.NETWORK_DIAGNOSTIC_CANCEL
+  )
+    return NETWORK_DIAGNOSTIC_TIMEOUT_MS;
   if (SHORT_TIMEOUT_TYPES.has(commandType)) return FIVE_MINUTES;
   if (MEDIUM_TIMEOUT_TYPES.has(commandType)) return THIRTY_MINUTES;
-  if (RESTORE_TIMEOUT_TYPES.has(commandType)) return SIXTY_MINUTES;
+  if (RESTORE_TIMEOUT_TYPES.has(commandType)) return WHOLE_MACHINE_RESTORE_TIMEOUT_MS;
+  // Disk Cleanup v2: a native run's real budget is per-selection and lives on
+  // the row; this is the ceiling that keeps the reaper from terminalising a
+  // command whose run is still inside it.
+  if (commandType === CommandTypes.SYSTEM_CLEANUP_RUN) return THREE_HOURS;
   if (LONG_TIMEOUT_TYPES.has(commandType)) return TWO_HOURS;
   if (!EXCLUDED_COMMAND_TYPES.has(commandType)) {
     console.warn(`[commandTimeouts] Unknown command type "${commandType}" using default ${DEFAULT_TIMEOUT_MS / 60000}min timeout`);
   }
   return DEFAULT_TIMEOUT_MS;
 }
+
+/**
+ * The CEILING for one native cleanup run's command row (Disk Cleanup v2 §5.3,
+ * §13 #14).
+ *
+ * It is not the run's budget. The budget is a function of the SELECTION —
+ * `systemCleanupRunBudgetMs` in `@breeze/shared/validators`, Σ the chosen
+ * actions' own timeouts + 10 minutes — and is computed once at queue time and
+ * **stored on the row** as `plan.deadlineAt`. Both clocks that matter read
+ * that stored value: the route's lazy `running → failed ('timed out')`
+ * transition and, through it, the operator's view.
+ *
+ * This constant exists only because `getCommandTimeoutMs` is keyed by TYPE and
+ * cannot see a selection. Three hours is the same cap the budget function
+ * applies, so the reaper can never terminalise a command row while its run is
+ * still legitimately inside its own budget.
+ */
+export const SYSTEM_CLEANUP_RUN_MAX_TIMEOUT_MS = THREE_HOURS;

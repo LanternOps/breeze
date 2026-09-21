@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { getJwtClaims } from "../../lib/authScope";
 import { fetchWithAuth, resolveApiOrigin } from "../../stores/auth";
+import { fetchAllOrganizationsFrom } from "../../lib/fetchAllOrganizations";
 import { type Organization, useOrgStore } from "../../stores/orgStore";
 import { formatDateTime } from "@/lib/dateTimeFormat";
 import { useTranslation } from "react-i18next";
@@ -380,9 +381,9 @@ export default function HuntressIntegration() {
 
   const fetchMappings = useCallback(async () => {
     if (!isPartnerAdmin) return;
-    const [mappingRes, orgRes] = await Promise.all([
+    const [mappingRes, orgs] = await Promise.all([
       fetchWithAuth("/huntress/organizations"),
-      fetchWithAuth("/orgs/organizations"),
+      fetchAllOrganizationsFrom<Organization>("/orgs/organizations"),
     ]);
     const mappingJson = await mappingRes.json().catch(() => ({}));
     if (!mappingRes.ok)
@@ -392,22 +393,10 @@ export default function HuntressIntegration() {
           `Failed to load Huntress organizations (${mappingRes.status})`,
         ),
       );
-    const orgJson = await orgRes.json().catch(() => ({}));
-    if (!orgRes.ok)
-      throw new Error(
-        readError(
-          orgJson,
-          `Failed to load Breeze organizations (${orgRes.status})`,
-        ),
-      );
     setHuntressOrgs(
       (mappingJson as { data?: HuntressOrgMapping[] }).data ?? [],
     );
-    setOrgOptions(
-      Array.isArray((orgJson as { data?: unknown }).data)
-        ? (orgJson as { data: Organization[] }).data
-        : [],
-    );
+    setOrgOptions(orgs);
   }, [isPartnerAdmin]);
 
   const load = useCallback(async () => {

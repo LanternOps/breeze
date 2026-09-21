@@ -5,6 +5,12 @@ import { WORKER_READINESS_MANIFEST, declareExpectedConsumers } from './workerRea
 const NON_CONSUMERS = [
   'desktopSessionOrphanRecovery',
   'oauthRevocationRetryWorker',
+  'topologyOutboxWorker',
+  'topologyReconcileWorker',
+  'topologyCollectionRetentionWorker',
+  'topologyTemplateApplyWorker',
+  'topologyDiagnosticWorker',
+  'topologyDiagnosticSweeper',
   'incidentCorrelationWorker',
   'incidentTimelineEnricher',
   'incidentSlaMonitor',

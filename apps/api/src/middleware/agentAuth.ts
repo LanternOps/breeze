@@ -9,7 +9,11 @@ import { type AgentTokenSuspendReason } from '../services/agentTokenSuspension';
 import { enforceAgentCertificateBinding, readAgentCertificateAssertion } from '../services/agentCertificateBinding';
 import { createAuditLogAsync } from '../services/auditService';
 import { getTrustedClientIp, rateLimitIpKey } from '../services/clientIp';
-import { getAgentTenantState } from '../services/tenantStatus';
+import {
+  checkDeviceStatus,
+  checkDeviceTenantState,
+  checkDeviceTokenSuspension,
+} from './deviceCredentialLifecycle';
 import { isDeviceUninstallDraining } from '../services/deviceUninstallDrain';
 import {
   AGENT_ORG_RATE_WINDOW_SECONDS,
@@ -610,7 +614,7 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
   // Task 18: suspended tokens fail closed. We do NOT leak the suspension
   // reason in the response — a compromised agent should see the same 401
   // as a stale token.
-  if (device.agentTokenSuspendedAt) {
+  if (checkDeviceTokenSuspension(device)) {
     throw new HTTPException(401, { message: 'Invalid agent credentials' });
   }
 
@@ -681,14 +685,18 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
     deviceUninstallDraining =
       match.role === 'agent'
       && (await withSystemDbAccessContext(() => isDeviceUninstallDraining(device.id)));
-
-    if (!deviceUninstallDraining) {
-      throw new HTTPException(403, { message: 'Device has been decommissioned' });
-    }
   }
 
-  if (device.status === 'quarantined') {
-    throw new HTTPException(403, { message: 'Device is quarantined pending admin approval' });
+  // Shared predicates (middleware/deviceCredentialLifecycle.ts); the error
+  // shapes below stay this ingress's own.
+  const statusDenial = checkDeviceStatus(device, { allowDecommissioned: deviceUninstallDraining });
+  if (statusDenial) {
+    throw new HTTPException(403, {
+      message:
+        statusDenial.reason === 'decommissioned'
+          ? 'Device has been decommissioned'
+          : 'Device is quarantined pending admin approval',
+    });
   }
 
   const redis = getRedis();
@@ -861,10 +869,11 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
   // an explicit 403 (distinct from the opaque 401: the tenant state is not a
   // secret from its own fleet, and the agent must not treat this as an auth
   // failure and back off its heartbeat).
-  const tenantState = await getAgentTenantState(device.orgId);
-  if (!tenantState) {
+  const tenantVerdict = await checkDeviceTenantState(device.orgId, { allowDraining: true });
+  if (tenantVerdict.denied) {
     throw new HTTPException(401, { message: 'Invalid agent credentials' });
   }
+  const tenantState = tenantVerdict.tenantState;
 
   const pathSegments = (c.req.path ?? '').split('/').filter(Boolean);
   // #3986 Layer 2 — a DEVICE drain narrows the route surface exactly as a

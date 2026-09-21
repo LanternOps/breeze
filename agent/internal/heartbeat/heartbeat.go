@@ -27,6 +27,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/authstate"
 	"github.com/breeze-rmm/agent/internal/backupipc"
 	"github.com/breeze-rmm/agent/internal/collectors"
+	"github.com/breeze-rmm/agent/internal/collectors/networkcontext"
 	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/desktopfence"
 	"github.com/breeze-rmm/agent/internal/executor"
@@ -40,6 +41,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/monitoring"
 	"github.com/breeze-rmm/agent/internal/mtls"
 	"github.com/breeze-rmm/agent/internal/netcache"
+	"github.com/breeze-rmm/agent/internal/networkdiagnostic"
 	"github.com/breeze-rmm/agent/internal/observability"
 	"github.com/breeze-rmm/agent/internal/onedrivehelper"
 	"github.com/breeze-rmm/agent/internal/pamlifetime"
@@ -82,6 +84,8 @@ const pendingActivationClockSkew = 10 * time.Minute
 const selfInitiatedRenewalLeadTime = 24 * time.Hour
 
 type HeartbeatPayload struct {
+	NetworkContextV1    *networkcontext.Report     `json:"networkContextV1,omitempty"`
+	NetworkContextReset *NetworkContextReset       `json:"networkContextReset,omitempty"`
 	Metrics             *collectors.SystemMetrics  `json:"metrics,omitempty"`
 	MetricsAvailable    *bool                      `json:"metricsAvailable,omitempty"`
 	Status              string                     `json:"status"`
@@ -250,11 +254,12 @@ type DesktopAccessState struct {
 }
 
 type HeartbeatResponse struct {
-	Commands     []Command      `json:"commands"`
-	ConfigUpdate map[string]any `json:"configUpdate,omitempty"`
-	UpgradeTo    string         `json:"upgradeTo,omitempty"`
-	RenewCert    bool           `json:"renewCert,omitempty"`
-	RotateToken  bool           `json:"rotateToken,omitempty"`
+	NetworkContextReceipt *networkcontext.Receipt `json:"networkContextReceipt,omitempty"`
+	Commands              []Command               `json:"commands"`
+	ConfigUpdate          map[string]any          `json:"configUpdate,omitempty"`
+	UpgradeTo             string                  `json:"upgradeTo,omitempty"`
+	RenewCert             bool                    `json:"renewCert,omitempty"`
+	RotateToken           bool                    `json:"rotateToken,omitempty"`
 	// Issue #2621 — the server sees this agent authenticating with the STAGED
 	// credentials of an unconfirmed rotation. Finish phase two.
 	ConfirmTokenRotation   bool                   `json:"confirmTokenRotation,omitempty"`
@@ -334,18 +339,23 @@ func (h *Heartbeat) lifecycleMode() string {
 }
 
 type Heartbeat struct {
-	config                *config.Config
-	secureToken           *secmem.SecureString
-	client                *http.Client
-	clientMu              sync.RWMutex
-	stopChan              chan struct{}
-	metricsCol            *collectors.MetricsCollector
-	hardwareCol           *collectors.HardwareCollector
-	softwareCol           *collectors.SoftwareCollector
-	softwareObservationFn func() (collectors.SoftwareInventoryObservationV2, error)
-	inventoryCol          *collectors.InventoryCollector
-	vpnCol                *collectors.VPNCollector
-	changeTrackerCol      *collectors.ChangeTrackerCollector
+	topologyDiagnosticMu      sync.Mutex
+	topologyDiagnosticJournal *networkdiagnostic.Journal
+	topologyDiagnosticActive  map[string]activeTopologyDiagnostic
+	networkContextMu          sync.Mutex
+	networkContext            *networkContextManager
+	config                    *config.Config
+	secureToken               *secmem.SecureString
+	client                    *http.Client
+	clientMu                  sync.RWMutex
+	stopChan                  chan struct{}
+	metricsCol                *collectors.MetricsCollector
+	hardwareCol               *collectors.HardwareCollector
+	softwareCol               *collectors.SoftwareCollector
+	softwareObservationFn     func() (collectors.SoftwareInventoryObservationV2, error)
+	inventoryCol              *collectors.InventoryCollector
+	vpnCol                    *collectors.VPNCollector
+	changeTrackerCol          *collectors.ChangeTrackerCollector
 	// changeTrackerMu serializes the change tracker's collect → send → commit
 	// cycle. sendInventory is dispatched both on the 15-minute tick and by the
 	// "Refresh Inventory" command (handlers.go), so two cycles can genuinely
@@ -2932,6 +2942,10 @@ func (h *Heartbeat) applyConfigUpdate(update map[string]any) {
 		return
 	}
 
+	if raw, ok := update["networkContext"]; ok {
+		h.applyNetworkContextConfig(raw)
+	}
+
 	// Apply event_log_settings if present
 	elRaw, hasEL := update["event_log_settings"]
 	if !hasEL {
@@ -4499,6 +4513,8 @@ func (h *Heartbeat) sendHeartbeat() {
 		payload.DroppedLogs = dropped
 	}
 
+	h.attachNetworkContext(&payload)
+
 	// Attach IP history update when assignments changed since last heartbeat.
 	if ipUpdate, ipErr := h.collectIPHistory(); ipErr != nil {
 		log.Error("failed to collect ip history", "error", ipErr.Error())
@@ -4798,6 +4814,7 @@ func (h *Heartbeat) acknowledgeRollbackObservation(id string) {
 }
 
 func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
+	h.ackNetworkContext(response.NetworkContextReceipt)
 	// Bare-metal recovery W04a: only clear the marker once the server has
 	// actually acked it — a failed/lost beat must resend it next time.
 	if response.RecoveryMarkerAck && h.recoveryMarker() != nil {
@@ -6188,7 +6205,7 @@ func (h *Heartbeat) HandleCommand(wsCmd websocket.Command) websocket.CommandResu
 
 	wsResult := toWSCommandResult(cmd.ID, result)
 
-	if result.Status != "duplicate" && !isEphemeralCommand(cmd.Type) {
+	if result.Status != "duplicate" && !isEphemeralCommand(cmd.Type) && !isWSDirectOnlyCommand(cmd.Type) {
 		go func() {
 			if err := h.submitCommandResult(cmd.ID, result); err != nil {
 				log.Error("failed to submit command result", logging.KeyCommandID, cmd.ID, "error", err.Error())
@@ -6376,10 +6393,36 @@ func (h *Heartbeat) inFlightCommandStats(now time.Time) (inFlight, overdue int) 
 // script has already finished on its own.
 func isLifecycleCommand(cmdType string) bool {
 	switch cmdType {
-	case tools.CmdScriptCancel, tools.CmdScriptListRunning:
+	case tools.CmdScriptCancel, tools.CmdScriptListRunning, tools.CmdNetworkDiagnosticCancel:
 		return true
 	}
 	return false
+}
+
+// isWSDirectOnlyCommand reports whether a command type is ONLY ever
+// dispatched WS-direct, i.e. the server never creates a device_commands row
+// for it. HandleCommand's HTTP result submission targets
+// /api/v1/agents/{id}/commands/{id}/result, which looks the command up in
+// device_commands and 404s when there is no row — so for these types the POST
+// is guaranteed-doomed log noise on every single dispatch (#5414). The WS
+// reply from HandleCommand (plus, for backup, the unsolicited terminal
+// backup_result frame and its outbox) is already the authoritative delivery
+// channel; nothing server-side reads the HTTP ack for them.
+//
+// The server exempts WS-direct commands from the 404 by testing whether the
+// command id is a non-UUID (routes/agents/commands.ts). backup_run defeats
+// that heuristic because its id IS a UUID — jobs/backupWorker.ts reuses the
+// backup_jobs row id as the command id.
+//
+// Membership is per-COMMAND-TYPE and deliberately narrow: it is not "backup
+// commands". mssql_backup and hyperv_backup ride this same rowless path from
+// backupWorker.ts, but routes/backup/mssql.ts and hyperv.ts ALSO dispatch
+// them through executeCommand -> commandQueue, which does insert a
+// device_commands row that the HTTP result legitimately acks. Suppressing
+// their submission would break that path, so they stay out. backup_run has
+// exactly one dispatch site (backupWorker.ts) and never gets a row.
+func isWSDirectOnlyCommand(cmdType string) bool {
+	return cmdType == tools.CmdBackupRun
 }
 
 func isEphemeralCommand(cmdType string) bool {

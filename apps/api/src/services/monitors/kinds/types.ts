@@ -1,6 +1,6 @@
 import type { z } from 'zod';
 import type { MonitorKind } from '@breeze/shared';
-import type { AlertCondition } from '../../alertConditions/types';
+import type { RootCondition } from '../../alertConditions/types';
 
 /**
  * A monitor kind's registration: the AUTHORING condition shape (`conditionSchema`,
@@ -35,14 +35,13 @@ export interface MonitorKindSpec<C = Record<string, unknown>> {
   overridableKeys: readonly (keyof C & string)[];
   defaultSeverity: 'critical' | 'high' | 'medium' | 'low' | 'info';
   /**
-   * Compiles the authored condition into the handler-shaped object `alertConditions`
-   * evaluates, including its `type`. Typed as `AlertCondition` (a leaf), not the
-   * broader `RootCondition` union — every kind compiles to exactly one leaf
-   * condition, never an `{logic, conditions[]}` group, and callers (the test in
-   * this package included) read `.type` off the result, which `ConditionGroup`
-   * does not have.
+   * Compiles the authored condition into the handler-shaped object
+   * `alertConditions` evaluates. Every leaf kind returns ONE `AlertCondition`;
+   * `composite` (W05c1) returns a `{ logic, conditions }` group, which
+   * `evaluateConditionRecursive` already walks. Callers that need `.type`
+   * must narrow (`'type' in compiled`).
    */
-  toAlertCondition(condition: C, ctx: MonitorCompileContext): AlertCondition;
+  toAlertCondition(condition: C, ctx: MonitorCompileContext): RootCondition;
   titleTemplate: string;
   messageTemplate: string;
   /**

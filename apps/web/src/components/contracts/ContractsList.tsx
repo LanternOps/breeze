@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { BULK_ID_LIMIT } from '@breeze/shared';
 import { fetchWithAuth } from '../../stores/auth';
+import { fetchAllOrganizationsFrom } from '../../lib/fetchAllOrganizations';
+import { ListFetchError } from '../../lib/fetchAllSites';
 import { navigateTo } from '@/lib/navigation';
 import '@/lib/i18n';
 import { runAction, handleActionError } from '../../lib/runAction';
@@ -127,12 +129,12 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
   );
 
   const loadOrgs = useCallback(async () => {
-    const res = await fetchWithAuth('/orgs/organizations');
-    if (res.status === 401) return UNAUTHORIZED();
-    if (!res.ok) { handleActionError(new Error(res.statusText), t('contracts.contractsList.errors.loadOrganizations')); return; }
-    const body = (await res.json().catch(() => null)) as { data?: Organization[]; organizations?: Organization[] } | null;
-    if (!body) return;
-    setOrgs(body.data ?? body.organizations ?? []);
+    try {
+      setOrgs(await fetchAllOrganizationsFrom<Organization>('/orgs/organizations'));
+    } catch (err) {
+      if (err instanceof ListFetchError && err.status === 401) return UNAUTHORIZED();
+      handleActionError(err, t('contracts.contractsList.errors.loadOrganizations'));
+    }
   }, [t]);
 
   const loadContracts = useCallback(async (f: Filters) => {

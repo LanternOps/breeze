@@ -10,14 +10,10 @@ import { useHashTab } from '../../lib/useHashState';
 import BillingDefaultsTab from './BillingDefaultsTab';
 import BillingDocumentsTab from './BillingDocumentsTab';
 import BillingConnectionsTab from './BillingConnectionsTab';
+import BillingRatesTab from './BillingRatesTab';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
-// `rates` is NOT in BILLING_TABS: it is a reserved slot in the TABS config
-// below (a typed entry with no button and no panel), not a selectable/hash
-// -addressable tab yet. #4628 W02 adds the Rates panel and flips that one
-// entry's `reserved` flag — it does not re-order or re-lay-out this page. Do
-// not add 'rates' to this array or to activeTab's type until #4628 W02 does.
-const BILLING_TABS = ['defaults', 'documents', 'connections'] as const;
+const BILLING_TABS = ['defaults', 'documents', 'rates', 'connections'] as const;
 type BillingTab = (typeof BILLING_TABS)[number];
 
 interface PartnerBilling {
@@ -151,21 +147,14 @@ export default function PartnerBillingSettingsPage() {
     );
   }
 
-  // Tab order is Defaults · Documents · Rates (reserved) · Connections — the
-  // audit's target layout (§4). `rates` is a typed, unrendered placeholder so
-  // #4628 W02 can add the real tab as a one-entry diff (flip `reserved` off,
-  // supply a real labelKey) instead of re-laying-out this array. Never remove
-  // or reorder this entry.
-  const TABS: Array<{ id: BillingTab | 'rates'; labelKey: string; reserved?: true }> = [
+  // Preserve the settings tab order; future slots may be reserved.
+  const TABS: Array<{ id: BillingTab; labelKey: string; reserved?: true }> = [
     { id: 'defaults', labelKey: 'partnerBillingSettingsTabs.defaults' },
     { id: 'documents', labelKey: 'partnerBillingSettingsTabs.documents' },
-    { id: 'rates', labelKey: 'partnerBillingSettingsTabs.rates', reserved: true },
+    { id: 'rates', labelKey: 'partnerBillingSettingsTabs.rates' },
     { id: 'connections', labelKey: 'partnerBillingSettingsTabs.connections' },
   ];
-  // Cast is safe: filtering out `reserved` entries leaves only real BillingTab
-  // ids, but TS can't narrow a `.filter()` predicate without a type guard —
-  // a plain cast here is simpler than one and this array is tiny and local.
-  const renderedTabs = TABS.filter((tab) => !tab.reserved) as Array<{ id: BillingTab; labelKey: string }>;
+  const renderedTabs = TABS.filter((tab) => !tab.reserved);
 
   return (
     <div className="space-y-6" data-testid="partner-billing-settings">
@@ -206,9 +195,10 @@ export default function PartnerBillingSettingsPage() {
           terms={terms} setTerms={setTerms}
         />
       )}
+      {activeTab === 'rates' && <BillingRatesTab currencyCode={currencyCode} />}
       {activeTab === 'connections' && <BillingConnectionsTab />}
 
-      <div className="flex justify-end">
+      {activeTab !== 'rates' && <div className="flex justify-end">
         <button
           type="button" onClick={() => void save()} disabled={saving || websiteInvalid}
           data-testid="partner-billing-save"
@@ -216,7 +206,7 @@ export default function PartnerBillingSettingsPage() {
         >
           {saving ? t('common:states.saving') : t('partnerBillingSettings.saveButton')}
         </button>
-      </div>
+      </div>}
     </div>
   );
 }

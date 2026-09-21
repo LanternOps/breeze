@@ -108,13 +108,45 @@ Before upgrading a proxy-fronted deployment to **v0.103.0 or later**, verify tha
 
 ## Version-specific notes
 
+### v0.115.0 — billing profiles replace per-organization labour rates
+
+**Breaking API change: `defaultHourlyRate`, `defaultBillable` and `rateCurrency`
+are rejected.** Labour pricing moved from per-organization ticket settings and
+per-category defaults to partner-level **billing profiles** (rate cards) with
+per-work-type rows. The conversion migration builds the profiles from your
+existing rates and assigns one to every organization, so nothing needs
+re-entering. From this release `PATCH /organizations/:id/ticket-settings`,
+`POST /ticket-categories` and `PATCH /ticket-categories/:id` return **400** when
+the request carries any of the three retired fields, and the whole request is
+rejected — a rename sent alongside a retired field does not land either. The
+error names the field and its replacement. Update any integration or script
+that writes these fields: assign a profile with
+`PUT /organizations/:id/billing-profile`, edit rates under
+**Settings → Billing → Rates**, and point a category at a work type via
+`defaultWorkTypeId`. `GET` responses no longer return the retired fields.
+Breeze's own web, mobile and add-in clients never send them.
+
+<Aside type="note">
+  Why there is no grace period: the cut-over already stopped honouring these
+  writes, so a request that "succeeded" with 200 was silently discarding a rate
+  change — an integration raising a rate would have kept billing at the old
+  one. A loud 400 is the safer failure. Background and the resulting
+  deprecation policy: LanternOps/breeze#6472.
+</Aside>
+
+The six underlying database columns are still present in this release; the
+release that drops them will carry its own rollback note. **Back up your
+database before upgrading** all the same.
+
 ### v0.114.0 — evidence reports, network device page, account board
 
-**Navigation moved, nothing removed.** The Fleet Management entry **Monitoring** is
+**Navigation moved; old URLs removed.** The Fleet Management entry **Monitoring** is
 now **Network Monitor** and holds only network assets, checks and SNMP templates.
 Device monitors (CPU, memory, disk, service, process, custom) moved to
-**Alerts → Monitors** (`/alerts/monitors`). Old `/monitoring/monitors` links
-redirect. If a technician reports that "Monitors disappeared", this is where they
+**Alerts → Monitors** (`/alerts/monitors`). The pre-v0.114 URLs `/monitoring/monitors`,
+`/monitoring/rules`, `/monitoring/delivery`, and `/monitoring/network` were removed
+and now return 404. Update bookmarks to `/alerts/monitors`, `/alerts/rules`,
+`/alerts/channels`, and `/monitoring`, respectively. If a technician reports that "Monitors disappeared", this is where they
 went.
 
 **`catalog_items.unit_price` is dropped.** Catalog sell prices have lived in

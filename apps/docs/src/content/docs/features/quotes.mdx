@@ -156,6 +156,8 @@ Vendor cost figures are the quote's own snapshot of each line at the time it was
 
 The **Send** dialog accepts an optional **personal message**. When you add one, it renders in the email above the accept link, so you can add a short note to the customer without leaving the quote. Leave it blank to send the standard email.
 
+Partners edit the proposal email under **Settings → Partner → Email templates** (Quote / proposal) -- subject, heading, button label, and HTML body. Merge variables: `{{quote_number}}`, `{{partner_name}}`, `{{total}}`, `{{expiry_date}}`, and `{{accept_url}}`. The **Review & accept** button always uses the server accept link; partners cannot point it somewhere else. A personal message from the send dialog and your email signature still appear around that body. Leave it on the default to keep the built-in wording. This does not change the email card's accent bar or pull colors from the Branding tab.
+
 After you click Send, the quote shows a brief **"Sending in Ns — Undo"** countdown (about 30 seconds) before the email actually leaves. Click **Undo** during that window and nothing is sent — the quote stays a draft and you can keep editing. Once the countdown finishes the email goes out and the quote moves to **Sent**.
 
 <Aside type="caution" title="Who can accept a quote from the customer portal">

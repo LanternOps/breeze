@@ -154,15 +154,58 @@ tag on the error (`event-loop-starvation`, `connectivity`, or `unknown`), with a
 CPU-bound request path or a burst of agent traffic. Raising `connect_timeout`
 alone only lengthens the failing request; it does not unstall the loop.
 
-### Redis memory growing
+### Redis memory growing (and OOM errors that survive a restart)
 
-**Check**: prod Redis requires auth (`requirepass`), so pass the password from the mounted secret:
+Breeze runs Redis with **`maxmemory-policy noeviction`** and a `256mb` default
+`maxmemory` (see [`REDIS_MAXMEMORY`](/deploy/environment/#docker-deployment)).
+That is deliberate: BullMQ job hashes and remote-session lease records must
+never be evicted out from under a running job, so Redis refuses new writes
+rather than silently discarding data. Both the remote-WS topology monitor and
+`scripts/prod/deploy.sh` enforce the policy — do not switch it to an LRU policy.
+
+The trade-off is that a full Redis **does not self-heal**. Once `used_memory`
+reaches `maxmemory`, writes fail with `OOM command not allowed when used memory
+> 'maxmemory'`, which surfaces as failing logins, stalled queues, and generic
+"network error" banners in the UI. Because AOF persistence replays the same
+over-cap dataset on startup, `docker compose restart redis` comes straight back
+up full. Raising the ceiling is the fix — not restarting.
+
+**Check** how close you are. Prod Redis requires auth (`requirepass`), so pass
+the password from the mounted secret:
+
 ```bash
 docker compose -f deploy/docker-compose.prod.yml --env-file .env.prod exec -T redis \
-  sh -ec 'redis-cli --no-auth-warning -a "$(cat /run/secrets/redis_password)" info memory'
+  sh -ec 'redis-cli --no-auth-warning -a "$(cat /run/secrets/redis_password)" \
+    info memory' | grep -E '^(used_memory_human|maxmemory_human):'
 ```
 
-**Fix**: Adjust `REDIS_MAXMEMORY` in `.env.prod`. Redis uses `allkeys-lru` eviction by default.
+**Fix**: raise `REDIS_MAXMEMORY` in `.env.prod` (e.g. `1gb`) and recreate the
+container so the new ceiling is written into the generated config:
+
+```bash
+docker compose -f deploy/docker-compose.prod.yml --env-file .env.prod up -d --force-recreate redis
+```
+
+Redis comes back with the larger ceiling, the AOF replays, and queued work
+resumes. To confirm the new value took effect:
+
+```bash
+docker compose -f deploy/docker-compose.prod.yml --env-file .env.prod exec -T redis \
+  sh -ec 'redis-cli --no-auth-warning -a "$(cat /run/secrets/redis_password)" \
+    config get maxmemory maxmemory-policy'
+```
+
+<Aside type="caution" title="Don't delete the Redis volume">
+  `docker volume rm breeze_redis_data` clears the OOM condition, but it also
+  throws away every queued BullMQ job, scheduled task state, and in-flight
+  session record. Raise `REDIS_MAXMEMORY` instead; keep wiping the volume as a
+  last resort when Redis will not start at all.
+</Aside>
+
+If memory keeps climbing after a raise, that is a leak rather than a sizing
+problem — capture `info keyspace` and the largest keys
+(`redis-cli --no-auth-warning -a … --bigkeys`) and
+[open an issue](https://github.com/LanternOps/breeze/issues/new).
 
 ### Disk space running low
 

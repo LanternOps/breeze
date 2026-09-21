@@ -14,13 +14,14 @@ import {
   drExecutionTriggerSchema,
   drExecutionsQuerySchema,
 } from './backup/schemas';
-import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
+import { PERMISSIONS, canAccessSite, hasPermission, type UserPermissions } from '../services/permissions';
 import type { AuthContext } from '../middleware/auth';
 import { isSiteRestrictedPrincipalKind } from '../services/resilienceSiteAuthorization';
 import {
   classifyDrExecutionAuthorizationError,
   createDrExecutionAndEnqueue,
 } from '../services/drExecutionService';
+import { isBareMetalRebuildConfig } from '../services/drBareMetalRebuildStep';
 import {
   collectReadableDrRows,
   drGroupsReadable,
@@ -574,6 +575,20 @@ drRoutes.post(
 
     if (plan.status === 'archived') {
       return c.json({ error: 'Cannot execute an archived plan' }, 400);
+    }
+
+    // W05b: a BARE_METAL_REBUILD step creates bare-metal recoveries, which is
+    // the same act as POST /bmr/recoveries — so it carries the same bar
+    // (backup:write) on top of devices:execute + MFA.
+    const groupsForGate = await db
+      .select({ restoreConfig: drPlanGroups.restoreConfig })
+      .from(drPlanGroups)
+      .where(and(eq(drPlanGroups.planId, planId), eq(drPlanGroups.orgId, orgId)));
+    if (groupsForGate.some((group) => isBareMetalRebuildConfig(group.restoreConfig))) {
+      const perms = c.get('permissions') as UserPermissions | undefined;
+      if (!perms || !hasPermission(perms, PERMISSIONS.BACKUP_WRITE.resource, PERMISSIONS.BACKUP_WRITE.action)) {
+        return c.json({ error: 'backup_write_required' }, 403);
+      }
     }
 
     // createDrExecutionAndEnqueue authorizes every group device against the

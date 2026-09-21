@@ -41,11 +41,21 @@ type Owner struct {
 // it and owner are applied to the PINNED temporary before publication, never
 // by a pathname operation on the published file.
 func InstallFile(base, relative, source string, mode os.FileMode, modTime time.Time, owner *Owner) ([]error, error) {
+	return InstallFileWithAttrs(base, relative, source, mode, modTime, owner, 0)
+}
+
+// InstallFileWithAttrs is InstallFile plus winAttrs — the Windows file
+// attributes (Hidden/System/ReadOnly/Temporary/NotContentIndexed/SparseFile)
+// the backup manifest captured for this file (#5407). They are applied to the
+// PINNED temporary before publication, exactly like mode/mtime/owner, so the
+// published file never needs a pathname attribute call. 0 means "unknown" and
+// reproduces InstallFile's previous behavior exactly. Ignored off Windows.
+func InstallFileWithAttrs(base, relative, source string, mode os.FileMode, modTime time.Time, owner *Owner, winAttrs uint32) ([]error, error) {
 	clean, err := CleanRelative(relative)
 	if err != nil {
 		return nil, err
 	}
-	return installFile(base, clean, source, mode, modTime, owner)
+	return installFile(base, clean, source, mode, modTime, owner, winAttrs)
 }
 
 // InstallSymlink recreates a symbolic link beneath base, relative to the pinned

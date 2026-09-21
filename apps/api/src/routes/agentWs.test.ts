@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 import { createHash } from 'node:crypto';
 
 // #3409 PR4a: sealing a secret envelope requires v3 (AAD-bound) encryption,
@@ -7,6 +8,7 @@ import { createHash } from 'node:crypto';
 process.env.APP_ENCRYPTION_KEY_ID = 'current';
 process.env.APP_ENCRYPTION_KEYRING = JSON.stringify({ current: 'current-key-material' });
 import { and, eq, notInArray } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 const updateRestoreJobFromResultMock = vi.fn().mockResolvedValue(true);
 const applyCommandAutomationTerminalMock = vi.fn().mockResolvedValue(true);
@@ -420,6 +422,7 @@ import { revokeViewerSession } from '../services/viewerTokenRevocation';
 import { publishEvent } from '../services/eventBus';
 import {
   consumeDispatchedExpectation,
+  recordDispatchedExpectation,
   refreshDispatchedExpectation,
 } from '../services/agentWorkExpectation';
 import { applyBackupCommandResultToJob } from '../services/backupResultPersistence';
@@ -2774,6 +2777,78 @@ describe('backup command_result non-terminal guards (guard ordering integration)
       expect.objectContaining({ status: 'completed', agentStatus: 'partial' }),
       expect.anything()
     );
+  });
+
+  // #5413 lesson (a). The strict queue schema (jobs/queueSchemas.ts) validates
+  // the SAME payload the route schema already accepted. When the two drift —
+  // as they did over `originalPath` on VSS-backed Windows runs — the enqueue
+  // throws a ZodError AFTER the dispatch expectation was consumed, and the old
+  // catch just re-recorded the expectation and dropped the result. That left
+  // three Windows file jobs `running` forever with the device online, a full
+  // transferredSize, a snapshotId, no snapshot row and no reaper rule covering
+  // "result rejected". A schema rejection is deterministic — retrying the same
+  // result can only be rejected again — so it must fail the job loudly.
+  it('fails the backup job loudly when the strict queue schema rejects the result (#5413)', async () => {
+    vi.mocked(isRedisAvailable).mockReturnValue(true);
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { handlers, ws } = await connectedAgent('agent-123', preValidatedAgent);
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectOwnedCommandResult([]) as any)
+      .mockReturnValueOnce(selectAgentDevice([]) as any)
+      .mockReturnValueOnce(selectWithInnerJoin([backupJobRow]) as any);
+
+    vi.mocked(consumeDispatchedExpectation).mockResolvedValue({ ok: true });
+    vi.mocked(applyBackupCommandResultToJob).mockResolvedValue({
+      applied: true,
+      snapshotDbId: null,
+      providerSnapshotId: null,
+    });
+    // Reproduce the real failure: the queue-side parse refuses an unmodeled key.
+    vi.mocked(enqueueBackupResults).mockImplementationOnce(async () => {
+      throw new z.ZodError([
+        {
+          code: 'unrecognized_keys',
+          keys: ['originalPath'],
+          path: ['result', 'snapshot', 'files', 0],
+          message: 'Unrecognized key: "originalPath"',
+        } as never,
+      ]);
+    });
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: jobId,
+        status: 'completed',
+        result: JSON.stringify({
+          snapshotId: 'snap-1',
+          status: 'completed',
+          filesBackedUp: 1,
+          snapshot: {
+            id: 'snap-1',
+            files: [{ sourcePath: '\\\\?\\GLOBALROOT\\x', originalPath: 'C:\\x', backupPath: 'o/1' }],
+          },
+        }),
+      })
+    } as any, ws as any);
+
+    // The job is driven terminal with a diagnosable error rather than left running.
+    expect(applyBackupCommandResultToJob).toHaveBeenCalledWith(
+      expect.objectContaining({
+        jobId,
+        orgId: 'org-123',
+        deviceId: 'device-123',
+        resultStatus: 'failed',
+        result: expect.objectContaining({
+          error: expect.stringContaining('rejected by the server queue-result schema'),
+        }),
+      })
+    );
+    // And the expectation is NOT re-armed — a retry of the identical payload
+    // would be rejected identically, so re-arming only re-hangs the job.
+    expect(recordDispatchedExpectation).not.toHaveBeenCalled();
+
+    errorSpy.mockRestore();
   });
 });
 
@@ -5283,5 +5358,32 @@ describe('orphaned SNMP poll outcomes (#6021)', () => {
       type: 'command_result', commandId, status: 'failed', error: 'forged', result: { deviceId },
     });
     expect(set).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('cleanup supplemental command results', () => {
+  beforeEach(() => { vi.resetAllMocks(); });
+  it.each(['cancelled', 'completed', 'failed'])('records a %s cleanup result without changing the command', async (status) => {
+    const { commandResultHandlers } = await import('../services/commandResultHandlers');
+    const handler = vi.spyOn(commandResultHandlers, 'file_delete').mockResolvedValue(undefined);
+    try {
+      const { handlers, ws } = await connectedAgent('agent-cleanup-late', {
+        deviceId: 'device-cleanup', orgId: 'org-cleanup', partnerId: 'partner-cleanup',
+      });
+      const commandId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+      const command = { id: commandId, deviceId: 'device-cleanup', type: 'file_delete', status, targetRole: 'agent',
+        payload: { cleanupRunId: 'stored-run', path: '/tmp/a' }, result: { status } };
+      const where = vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([command]) });
+      vi.mocked(db.select).mockReturnValue({ from: vi.fn().mockReturnValue({ where }) } as never);
+      await handlers.onMessage({ data: JSON.stringify({ type: 'command_result', commandId, status: 'failed', error: 'password=secret-value' }) } as never, ws as never);
+      const lookup = new PgDialect().sqlToQuery(where.mock.calls[0]![0]);
+      expect(lookup.params).toEqual(expect.arrayContaining([commandId, 'device-cleanup', 'agent', 'file_delete']));
+      expect(lookup.sql).toContain("? 'cleanupRunId'");
+      expect(handler).toHaveBeenCalledWith(expect.objectContaining({
+        command, result: expect.objectContaining({ status: 'failed', error: expect.not.stringContaining('secret-value') }),
+      }));
+      expect(db.update).not.toHaveBeenCalled();
+    } finally { handler.mockRestore(); }
   });
 });

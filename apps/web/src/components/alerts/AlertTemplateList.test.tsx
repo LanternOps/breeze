@@ -55,13 +55,10 @@ describe('AlertTemplateList', () => {
     expect(screen.queryByTestId('alert-template-row-t-bi')).not.toBeInTheDocument();
   });
 
-  it('navigates to the create and edit routes', async () => {
+  it('keeps existing-template editing while removing creation navigation', async () => {
     render(<AlertTemplateList />);
-    await waitFor(() => expect(screen.getByTestId('alert-template-list')).toBeInTheDocument());
-
-    fireEvent.click(screen.getByTestId('alert-template-create'));
-    expect(navMock).toHaveBeenCalledWith('/settings/alert-templates/new');
-
+    await screen.findByTestId('alert-template-list');
+    expect(screen.queryByTestId('alert-template-create')).toBeNull();
     fireEvent.click(screen.getByTestId('alert-template-edit-t-org'));
     expect(navMock).toHaveBeenCalledWith('/settings/alert-templates/t-org');
   });
@@ -91,5 +88,12 @@ describe('AlertTemplateList', () => {
     // disabled attribute — the same guard the built-in row relies on.
     fireEvent.click(screen.getByTestId('alert-template-delete-t-mon'));
     expect(fetchMock.mock.calls.some((c) => c[0] === '/alert-templates/templates/t-mon')).toBe(false);
+  });
+
+  it('shows the frozen-creation notice and no New template button', async () => {
+    render(<AlertTemplateList />);
+    expect(await screen.findByTestId('alert-templates-frozen')).toHaveTextContent('New alert templates are created as monitors');
+    expect(screen.getByTestId('alert-templates-frozen-link')).toHaveAttribute('href', '/alerts/monitors');
+    expect(screen.queryByRole('button', { name: /new template/i })).toBeNull();
   });
 });

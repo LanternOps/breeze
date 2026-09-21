@@ -12,7 +12,7 @@ import {
 import { normalizeAutomationActions } from '../automationRuntime';
 import type { AutomationAction } from '../automationRuntime';
 import { getMonitorKindSpec, MonitorValidationError } from './kinds';
-import { compileMonitorInTx } from './monitorCompiler';
+import { compileMonitorInTx, type CompileOptions, type DbExecutor } from './monitorCompiler';
 import type {
   CreateMonitorDefinitionInput,
   MonitorKind,
@@ -119,10 +119,11 @@ function resolveOwnerForCreate(input: CreateMonitorDefinitionInput, auth: AuthCo
 async function assertEscalationPolicyCompatible(
   escalationPolicyId: string | null,
   owner: MonitorOwner,
+  executor: DbExecutor = db,
 ): Promise<void> {
   if (!escalationPolicyId) return;
 
-  const [policy] = await db
+  const [policy] = await executor
     .select({ orgId: escalationPolicies.orgId, partnerId: escalationPolicies.partnerId })
     .from(escalationPolicies)
     .where(eq(escalationPolicies.id, escalationPolicyId))
@@ -140,7 +141,7 @@ async function assertEscalationPolicyCompatible(
 
   if (policy.orgId === owner.orgId) return;
   if (policy.orgId === null) {
-    const [org] = await db
+    const [org] = await executor
       .select({ partnerId: organizations.partnerId })
       .from(organizations)
       .where(eq(organizations.id, owner.orgId!))
@@ -226,9 +227,10 @@ export async function listMonitorDefinitions(
 export async function getMonitorDefinition(
   id: string,
   auth: AuthContext,
+  executor: DbExecutor = db,
 ): Promise<MonitorDefinitionRow | null> {
   const read = monitorReadCondition(auth);
-  const [row] = await db
+  const [row] = await executor
     .select()
     .from(monitorDefinitions)
     .where(read ? and(eq(monitorDefinitions.id, id), read) : eq(monitorDefinitions.id, id))
@@ -239,9 +241,11 @@ export async function getMonitorDefinition(
 export async function createMonitorDefinition(
   input: CreateMonitorDefinitionInput,
   auth: AuthContext,
+  options: CompileOptions = {},
+  executor: DbExecutor = db,
 ): Promise<MonitorDefinitionRow> {
   const owner = resolveOwnerForCreate(input, auth);
-  await assertEscalationPolicyCompatible(input.escalationPolicyId ?? null, owner);
+  await assertEscalationPolicyCompatible(input.escalationPolicyId ?? null, owner, executor);
   const shape = validateDefinitionShape({
     kind: input.kind,
     condition: input.condition,
@@ -250,7 +254,15 @@ export async function createMonitorDefinition(
     aiAgentId: input.aiAgentId ?? null,
   });
 
-  return db.transaction(async (tx) => {
+  return createValidatedMonitorInTx(input, auth, owner, shape, options, executor);
+}
+
+async function createValidatedMonitorInTx(
+  input: CreateMonitorDefinitionInput, auth: AuthContext,
+  owner: ReturnType<typeof resolveOwnerForCreate>, shape: ReturnType<typeof validateDefinitionShape>,
+  _options: CompileOptions, executor: DbExecutor,
+): Promise<MonitorDefinitionRow> {
+  return executor.transaction(async (tx) => {
     const [created] = await tx
       .insert(monitorDefinitions)
       .values({
@@ -274,7 +286,7 @@ export async function createMonitorDefinition(
         recurrenceActions: shape.recurrenceActions as unknown as Array<Record<string, unknown>>,
         pauseResponsesOnEscalation: input.pauseResponsesOnEscalation,
         aiAgentId: input.aiAgentId ?? null,
-        createdBy: auth.user.id,
+        createdBy: auth.scope === 'system' ? null : auth.user.id,
       })
       .returning();
     if (!created) throw new Error('Failed to create monitor definition');
@@ -379,14 +391,14 @@ export async function updateMonitorDefinition(
   });
 }
 
-export async function deleteMonitorDefinition(id: string, auth: AuthContext): Promise<void> {
-  const existing = await getMonitorDefinition(id, auth);
+export async function deleteMonitorDefinition(id: string, auth: AuthContext, executor: DbExecutor = db): Promise<void> {
+  const existing = await getMonitorDefinition(id, auth, executor);
   if (!existing) throw new MonitorNotFoundError(id);
   assertCanWrite(auth, { orgId: existing.orgId, partnerId: existing.partnerId });
   // The compiled template/rule/automation rows and every policy attachment go
   // with it through ON DELETE CASCADE; alerts keep their history with
   // monitor_id set to NULL.
-  await db.delete(monitorDefinitions).where(eq(monitorDefinitions.id, id));
+  await executor.delete(monitorDefinitions).where(eq(monitorDefinitions.id, id));
 }
 
 /** Count of policy attachments per monitor, for the list view. */

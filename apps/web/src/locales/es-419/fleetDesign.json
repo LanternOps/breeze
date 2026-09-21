@@ -9,6 +9,7 @@
     "startButton": "Iniciar un diseño de flota",
     "startError": "No se pudo iniciar la ejecución del diseño de flota.",
     "startSuccess": "Se inició la ejecución del diseño de flota.",
+    "running": "Diseño de flota en ejecución…",
     "empty": "Todavía no hay diseños de flota para esta organización.",
     "loadError": "No se pudieron cargar los diseños de flota.",
     "detailLoadError": "No se pudo cargar este diseño de flota.",

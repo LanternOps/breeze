@@ -8,6 +8,7 @@ import { ResponsiveTable, DataCard, CardField, CardActions } from '../shared/Res
 import { ScopeBadge } from '../shared/ScopeBadge';
 import { BuiltInBadge } from './BuiltInBadge';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
+import { Switch } from '../pam/ui';
 import AlertsTabStrip from '../alerts/AlertsTabStrip';
 import type { MonitorKind } from '@breeze/shared';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
@@ -122,16 +123,12 @@ export default function MonitorsListPage() {
   );
 
   const renderEnabledToggle = (row: MonitorRow) => (
-    <button
-      type="button"
-      data-testid={`monitors-list-enabled-${row.id}`}
-      onClick={() => void handleToggleEnabled(row)}
-      className={`relative inline-flex h-6 w-11 items-center rounded-full border transition ${row.enabled ? 'bg-emerald-500/80' : 'bg-muted'}`}
-    >
-      <span
-        className={`inline-block h-5 w-5 rounded-full bg-white transition ${row.enabled ? 'translate-x-5' : 'translate-x-1'}`}
-      />
-    </button>
+    <Switch
+      checked={row.enabled}
+      onToggle={() => void handleToggleEnabled(row)}
+      testId={`monitors-list-enabled-${row.id}`}
+      ariaLabel={t('monitoring:list.toggleEnabled', { name: row.name })}
+    />
   );
 
   return (

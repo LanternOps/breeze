@@ -91,17 +91,17 @@ function resetAuth(overrides: Partial<typeof DEFAULT_AUTH> = {}) {
 }
 
 describe('GET /organizations/:id/ticket-settings', () => {
-  beforeEach(() => { vi.clearAllMocks(); resetAuth(); });
+  beforeEach(() => { vi.clearAllMocks(); dbSelectResult.mockReset(); resetAuth(); });
 
   it('returns the org ticket settings', async () => {
     dbSelectResult.mockResolvedValueOnce([{ id: ORG_ID, currencyCode: 'CAD' }]);
     serviceMocks.getOrgTicketSettings.mockResolvedValue({
-      orgId: ORG_ID, slaOverrides: { high: { responseMinutes: 30 } }, defaultHourlyRate: '125.00', defaultBillable: true,
+      orgId: ORG_ID, slaOverrides: { high: { responseMinutes: 30 } },
     });
     const res = await makeApp().request(`/organizations/${ORG_ID}/ticket-settings`);
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.data).toMatchObject({ orgId: ORG_ID, defaultHourlyRate: '125.00', defaultBillable: true });
+    expect(body.data).toMatchObject({ orgId: ORG_ID });
     expect(serviceMocks.getOrgTicketSettings).toHaveBeenCalledWith(ORG_ID);
   });
 
@@ -126,7 +126,7 @@ describe('GET /organizations/:id/ticket-settings', () => {
 });
 
 describe('PATCH /organizations/:id/ticket-settings', () => {
-  beforeEach(() => { vi.clearAllMocks(); resetAuth(); });
+  beforeEach(() => { vi.clearAllMocks(); dbSelectResult.mockReset(); resetAuth(); });
 
   const patch = (body: unknown) =>
     makeApp().request(`/organizations/${ORG_ID}/ticket-settings`, {
@@ -135,26 +135,47 @@ describe('PATCH /organizations/:id/ticket-settings', () => {
       body: JSON.stringify(body),
     });
 
+  // #6472: a retired pricing field is a 400 that names the field and its
+  // replacement — never a 200 that discards the write.
+  it.each(['defaultHourlyRate', 'defaultBillable', 'rateCurrency'])('rejects a legacy-only %s patch with 400 and writes nothing', async (field) => {
+    dbSelectResult.mockResolvedValueOnce([{ id: ORG_ID }]);
+    const res = await patch({ [field]: 150 });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toContain(field);
+    expect(body.error).toContain('billing profile');
+    expect(body).not.toHaveProperty('deprecationWarnings');
+    expect(serviceMocks.upsertOrgTicketSettings).not.toHaveBeenCalled();
+    expect(auditSpy).not.toHaveBeenCalled();
+  });
+
+  it('rejects the whole request when a retired field rides along with a valid SLA override', async () => {
+    dbSelectResult.mockResolvedValueOnce([{ id: ORG_ID }]);
+    const res = await patch({ slaOverrides: { high: { responseMinutes: 30 } }, defaultHourlyRate: 150 });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toContain('defaultHourlyRate');
+    expect(serviceMocks.upsertOrgTicketSettings).not.toHaveBeenCalled();
+    expect(auditSpy).not.toHaveBeenCalled();
+  });
+
   it('upserts and fires an audit event', async () => {
     dbSelectResult.mockResolvedValueOnce([{ id: ORG_ID, currencyCode: 'CAD' }]);
     serviceMocks.upsertOrgTicketSettings.mockResolvedValue({
-      orgId: ORG_ID, slaOverrides: {}, defaultHourlyRate: '90.00', defaultBillable: true,
+      orgId: ORG_ID, slaOverrides: {},
     });
-    const res = await patch({ defaultHourlyRate: 90, defaultBillable: true });
+    const res = await patch({ slaOverrides: {} });
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.data.orgId).toBe(ORG_ID);
-    // #3778: the route no longer passes a currency — the service resolves it
-    // inside its own transaction, under the org SHARE barrier.
     expect(serviceMocks.upsertOrgTicketSettings).toHaveBeenCalledWith(
       ORG_ID,
-      expect.objectContaining({ defaultHourlyRate: 90, defaultBillable: true }),
+      expect.objectContaining({ slaOverrides: {} }),
     );
     expect(auditSpy).toHaveBeenCalledTimes(1);
     const event = auditSpy.mock.calls[0]?.[1];
     expect(event.action).toBe('organization.ticket_settings.update');
     expect(event.orgId).toBe(ORG_ID);
-    expect(event.details.changedFields).toEqual(['defaultHourlyRate', 'defaultBillable']);
+    expect(event.details.changedFields).toEqual(['slaOverrides']);
   });
 
   it('400 on an empty body (schema refine)', async () => {
@@ -164,19 +185,19 @@ describe('PATCH /organizations/:id/ticket-settings', () => {
 
   it('404 when the org does not exist', async () => {
     dbSelectResult.mockResolvedValueOnce([]);
-    const res = await patch({ defaultBillable: false });
+    const res = await patch({ slaOverrides: {} });
     expect(res.status).toBe(404);
   });
 
   it('404 when partner scope cannot access the org', async () => {
     resetAuth({ canAccessOrg: () => false });
-    const res = await patch({ defaultBillable: false });
+    const res = await patch({ slaOverrides: {} });
     expect(res.status).toBe(404);
   });
 
   it('401 when unauthenticated', async () => {
     authRef.current = null as unknown as typeof authRef.current;
-    const res = await patch({ defaultBillable: true });
+    const res = await patch({ slaOverrides: {} });
     expect(res.status).toBe(401);
   });
 });

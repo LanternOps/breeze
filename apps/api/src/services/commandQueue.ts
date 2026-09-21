@@ -24,7 +24,7 @@ import { recordCommandDispatch } from './anomalyMetrics';
 // #5128. `dispatchDeviceCommand` imports back from this module; both uses are
 // function-level (neither evaluates the other's exports at module load), so the
 // ESM cycle resolves.
-import { dispatchDeviceCommand } from './dispatchDeviceCommand';
+import { dispatchDeviceCommand, dispatchDeviceCommandWithSystemPrecheck } from './dispatchDeviceCommand';
 import { deliverByFor, type OfflinePolicy } from './commandOfflinePolicy';
 import {
   decryptCommandForDelivery,
@@ -295,7 +295,7 @@ export async function rearmIdempotentCommandForDelivery(input: {
 const BACKUP_COMMAND_TYPES = new Set([
   'backup_run', 'backup_stop', 'backup_restore', 'backup_verify',
   'backup_test_restore', 'backup_cleanup', 'vm_restore_from_backup',
-  'vm_instant_boot', 'bmr_recover', 'mssql_backup', 'mssql_restore',
+  'vm_instant_boot', 'bmr_recover', 'bare_metal_rebuild', 'mssql_backup', 'mssql_restore',
   'hyperv_backup', 'hyperv_restore',
 ]);
 
@@ -386,6 +386,7 @@ const AUDITED_COMMANDS: Set<string> = new Set([
   CommandTypes.VM_RESTORE_FROM_BACKUP,
   CommandTypes.VM_INSTANT_BOOT,
   CommandTypes.BMR_RECOVER,
+  CommandTypes.BARE_METAL_REBUILD,
   // Vault
   CommandTypes.VAULT_SYNC,
   CommandTypes.VAULT_CONFIGURE,
@@ -817,6 +818,7 @@ export async function waitForCommandResult(
       || timedOutType === CommandTypes.VM_RESTORE_FROM_BACKUP
       || timedOutType === CommandTypes.VM_INSTANT_BOOT
       || timedOutType === CommandTypes.BMR_RECOVER
+      || timedOutType === CommandTypes.BARE_METAL_REBUILD
     ) {
       recordRestoreTimeout(timedOutType);
     }
@@ -871,6 +873,22 @@ export async function queueCommandForExecution(
   return { command: res.command, delivery: res.delivery, deliverBy: res.deliverBy };
 }
 
+/** Queue without holding a database transaction across socket delivery. */
+export async function queueCommandForExecutionWithSystemPrecheck(
+  deviceId: string,
+  type: CommandType | string,
+  payload: CommandPayload = {},
+  options: NonNullable<Parameters<typeof queueCommandForExecution>[3]> & { expectedOrgId: string },
+): Promise<QueueCommandForExecutionResult> {
+  const res = await dispatchDeviceCommandWithSystemPrecheck({ deviceId, type, payload, ...options });
+  if (!res.ok) {
+    return res.code === 'trust_denied' && res.trust
+      ? { error: res.error, trust: res.trust }
+      : { error: res.error };
+  }
+  return { command: res.command, delivery: res.delivery, deliverBy: res.deliverBy };
+}
+
 export async function queueBackupStopCommand(
   deviceId: string,
   options: {
@@ -914,6 +932,8 @@ export async function queueBackupStopCommand(
 }
 
 export interface ExecuteCommandOptions {
+  /** Preallocated ID for callers that must commit result-handler state before dispatch. */
+  commandId?: string;
   userId?: string;
   timeoutMs?: number;
   preferHeartbeat?: boolean;
@@ -1304,6 +1324,7 @@ async function dispatchPreparedCommand(
           deviceId,
           type,
           payload: payloadWithBudget,
+          ...(options.commandId ? { id: options.commandId } : {}),
           status: 'pending',
           createdBy: safeUserId,
           targetRole,

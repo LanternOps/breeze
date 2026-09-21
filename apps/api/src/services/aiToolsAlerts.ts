@@ -82,6 +82,8 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
   registerTool({
     tier: 1 as AiToolTier, // Base tier; acknowledge/resolve/suppress checked at runtime in guardrails
     deviceArgs: ['deviceId'],
+    domain: 'monitoring',
+    searchHint: 'alerts: list, get, acknowledge, resolve, suppress',
     definition: {
       name: 'manage_alerts',
       description: 'Query, view, acknowledge, resolve, or suppress alerts. Use action "list" to search alerts, "get" for details, "acknowledge" to mark as seen, "resolve" to close, or "suppress" to temporarily silence an alert.',
@@ -428,9 +430,11 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1 as AiToolTier,
+    domain: 'integrations',
+    searchHint: 'alert delivery channels: list, test, create, update, delete; email, Slack, Teams, webhook, PagerDuty, SMS',
     definition: {
       name: 'manage_notification_channels',
-      description: 'Manage notification channels for alert delivery. List channels, test connectivity, or create/update/delete channels. Channel types: email, slack, teams, webhook, pagerduty, sms.',
+      description: "Manage alert notification channels: email, slack, teams, webhook, pagerduty, sms. Actions: list, test, create, update, delete.",
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -454,7 +458,7 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
           },
           config: {
             type: 'object',
-            description: 'Channel-specific config. email: { recipients: ["a@b.com"] }. slack: { webhookUrl: "https://..." }. teams: { webhookUrl: "https://..." }. webhook: { url: "https://...", headers?: {} }. pagerduty: { routingKey: "..." }. sms: { phoneNumbers: ["+1..."] }',
+            description: 'Config by type: email recipients[]; slack/teams webhookUrl; webhook url and optional headers; pagerduty routingKey; sms phoneNumbers[].',
           },
           enabled: {
             type: 'boolean',

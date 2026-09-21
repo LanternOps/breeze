@@ -26,16 +26,16 @@
  */
 
 import { Worker, type Job } from 'bullmq';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import * as dbModule from '../db';
-import { organizations, partners, tickets } from '../db/schema';
+import { organizations, partners, tickets, ticketComments } from '../db/schema';
 import { getEmailService } from '../services/email';
 import { escapeHtml } from '../services/emailLayout';
+import { renderPartnerEmail, type PartnerEmailCustom } from '../services/emailTemplates/renderPartnerEmail';
+import { resolveCommentNotificationPortalHref } from '../services/inboundEmail/commentNotificationPortalHref';
 import { buildThreadingHeaders, partnerInboundAddress, ticketThreadAnchor } from '../services/inboundEmail/outboundThreading';
-import { buildAutoresponseEmail } from '../services/inboundEmail/autoresponseTemplate';
 import { resolveOutboundMailbox } from '../services/ticketMailbox/resolveOutboundMailbox';
 import { sendThreadedReply, sendNewMail } from '../services/ticketMailbox/graphReplySender';
-import type { TicketTemplateVars } from '@breeze/shared';
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
 import { TICKET_EVENTS_QUEUE, type TicketEvent } from '../services/ticketEvents';
@@ -98,7 +98,123 @@ async function getTicket(ticketId: string) {
 
 async function getOrgName(orgId: string): Promise<string> {
   const rows = await db.select({ name: organizations.name }).from(organizations).where(eq(organizations.id, orgId)).limit(1);
-  return rows[0]?.name ?? '';
+  return rows?.[0]?.name ?? '';
+}
+
+const EMAIL_ONLY_HINT = 'If you do not have a portal account, reply to this email instead.';
+
+type TicketRow = NonNullable<Awaited<ReturnType<typeof getTicket>>>;
+
+type PartnerSettings = {
+  ticketing?: {
+    inbound?: {
+      address?: string;
+      autoresponseSubject?: string | null;
+      autoresponseBody?: string | null;
+      // When true, a public tech reply emails the customer the actual comment
+      // text (for MSPs that do not run the client portal). Default/absent keeps
+      // the portal-notification email and the leak guard. See the shared
+      // ticketingInboundSettingsSchema (@breeze/shared).
+      fullMessageReply?: boolean;
+    };
+  };
+  emailTemplates?: {
+    ticket_comment_notification?: unknown;
+    ticket_autoresponse?: unknown;
+    ticket_resolved?: unknown;
+  };
+};
+
+interface PartnerMailBits {
+  name: string;
+  replyTo: string | undefined;
+  emailTemplates: PartnerSettings['emailTemplates'];
+  inbound: NonNullable<PartnerSettings['ticketing']>['inbound'];
+}
+
+async function loadPartnerMailBits(partnerId: string | null | undefined): Promise<PartnerMailBits> {
+  const empty: PartnerMailBits = { name: '', replyTo: undefined, emailTemplates: undefined, inbound: undefined };
+  if (!partnerId) return empty;
+  const partnerRows = await db
+    .select({
+      slug: partners.slug,
+      name: partners.name,
+      inboundLocalPart: partners.inboundLocalPart,
+      settings: partners.settings,
+    })
+    .from(partners)
+    .where(eq(partners.id, partnerId))
+    .limit(1);
+  const row = partnerRows?.[0];
+  if (!row) return empty;
+  const settings = row.settings as PartnerSettings | undefined;
+  const inbound = settings?.ticketing?.inbound;
+  const replyTo = row.slug
+    ? partnerInboundAddress(row.inboundLocalPart ?? row.slug, inbound?.address) ?? undefined
+    : undefined;
+  return {
+    name: row.name ?? '',
+    replyTo,
+    emailTemplates: settings?.emailTemplates,
+    inbound,
+  };
+}
+
+function asPartnerEmailCustom(raw: unknown): PartnerEmailCustom | null {
+  if (raw == null || typeof raw !== 'object') return null;
+  const o = raw as Record<string, unknown>;
+  return {
+    subject: typeof o.subject === 'string' ? o.subject : null,
+    heading: typeof o.heading === 'string' ? o.heading : null,
+    buttonLabel: typeof o.buttonLabel === 'string' ? o.buttonLabel : null,
+    html: typeof o.html === 'string' ? o.html : null,
+  };
+}
+
+async function composeLaidOutRequesterMail(
+  ticket: TicketRow,
+  id: 'ticket_comment_notification' | 'ticket_resolved',
+): Promise<{ html: string; subject: string; replyTo: string | undefined; fullMessageReply: boolean }> {
+  let href = '';
+  let hasPortalUser = false;
+  try {
+    const resolved = await resolveCommentNotificationPortalHref({
+      ticketId: ticket.id,
+      orgId: ticket.orgId,
+      submitterEmail: ticket.submitterEmail ?? '',
+    });
+    href = resolved.href;
+    hasPortalUser = resolved.hasPortalUser;
+  } catch (err) {
+    console.error('[TicketNotify] portal href unavailable; sending without CTA', err);
+  }
+  const partner = await loadPartnerMailBits(ticket.partnerId);
+  const orgName = ticket.orgId ? await getOrgName(ticket.orgId) : '';
+  const rendered = renderPartnerEmail({
+    id,
+    custom: asPartnerEmailCustom(partner.emailTemplates?.[id]),
+    vars: {
+      ticket_number: ticket.internalNumber ?? '',
+      ticket_subject: ticket.subject ?? '',
+      requester_name: ticket.submitterName ?? '',
+      requester_email: ticket.submitterEmail ?? '',
+      org_name: orgName,
+      partner_name: partner.name,
+      portal_url: href,
+      email_only_hint: hasPortalUser ? '' : EMAIL_ONLY_HINT,
+      ...(id === 'ticket_resolved' ? { resolution_note: ticket.resolutionNote ?? '' } : {}),
+    },
+    ctaUrl: href || undefined,
+    brandName: partner.name,
+    internalNumber: ticket.internalNumber,
+    ticketSubject: ticket.subject,
+  });
+  return {
+    html: rendered.html,
+    subject: rendered.subject,
+    replyTo: partner.replyTo,
+    fullMessageReply: partner.inbound?.fullMessageReply === true,
+  };
 }
 
 async function resolveCurrentTicketPartner(
@@ -207,65 +323,103 @@ async function collectAssigneeNotification(
  * Returns collected email payloads (does not send).
  *
  * Threading is OPT-IN per call (Phase 4 §5): pass a `commentId` to thread the
- * email (technician public-comment reply). When `commentId` is absent (e.g. the
- * `ticket.status_changed` 'Resolved' email) the function behaves exactly as
- * before — no Reply-To, no headers, no anchor stamp. This keeps the Resolved
- * email from emitting a bare-anchor Message-ID that would collide with the
- * autoresponse's Message-ID and confuse the requester's mail client + PR1's
- * thread-key resolver.
+ * email (technician public-comment reply). When `commentId` is absent (the
+ * `ticket.status_changed` 'Resolved' email) there is no Reply-To, no headers,
+ * no anchor stamp — that keeps Resolved from emitting a bare-anchor Message-ID
+ * that would collide with the autoresponse.
  *
- * `bodyHtml` accepts a plain string OR a builder `(ticket) => string` (#3828
- * wave-6-3 task 2). The builder form exists so the Resolved-email caller can
- * compose its body from `ticket.resolutionNote` — fetched here from the DB —
- * instead of from the event payload, which no longer carries that field.
+ * `beforeSend` is only for side effects (resolved freshness guard).
+ * Customer html/subject come from renderPartnerEmail. `subjectOverride` replaces
+ * the renderer subject when a caller needs to; comment/resolved pass the
+ * renderer subject by default. Assignee mail never enters here.
  */
 async function collectRequesterEmail(
   event: TicketEvent,
-  bodyHtml: string | ((ticket: NonNullable<Awaited<ReturnType<typeof getTicket>>>) => string),
-  subjectPrefix: string,
-  commentId?: string
+  commentId?: string,
+  beforeSend?: (ticket: TicketRow) => void,
+  subjectOverride?: string,
 ): Promise<EmailPayload[]> {
   // Pre-commit emission contract: ticket may not be visible yet — throw to trigger retry.
   const ticket = await getTicket(event.ticketId);
   if (!ticket) {
     throw new Error(`Ticket not found (likely uncommitted): ${event.ticketId}`);
   }
+  // Run the guard first so the resolved freshness check retries even when we
+  // later skip send (missing submitterEmail).
+  beforeSend?.(ticket);
   if (!ticket.submitterEmail) return [];
-
-  const html = typeof bodyHtml === 'function' ? bodyHtml(ticket) : bodyHtml;
-  const label = ticket.internalNumber ?? ticket.ticketNumber ?? ticket.id;
 
   // Customer-facing reply routing: if this partner has a connected M365 mailbox, send
   // FROM that mailbox via Graph (native threading). Tech/assignee notifications never
   // call collectRequesterEmail, so they never carry graphMailbox.
   const graphMailbox = (await resolveOutboundMailbox(ticket.id, ticket.partnerId)) ?? undefined;
 
-  // Un-threaded path (e.g. ticket.status_changed 'Resolved'): unchanged from before.
   if (!commentId) {
+    const composed = await composeLaidOutRequesterMail(ticket, 'ticket_resolved');
     return [{
       to: ticket.submitterEmail,
-      subject: `[${label}] ${subjectPrefix}: ${ticket.subject}`,
-      html,
+      subject: subjectOverride ?? composed.subject,
+      html: composed.html,
       graphMailbox,
       purpose: 'ticket.customer_notification',
       partnerId: ticket.partnerId ?? null
     }];
   }
 
-  // Threaded path (Phase 4 §5): partner inbound address as Reply-To + deterministic
-  // Message-ID/In-Reply-To/References so the requester's client threads the reply.
-  let replyTo: string | undefined;
-  if (ticket.partnerId) {
-    const partnerRows = await db
-      .select({ slug: partners.slug, inboundLocalPart: partners.inboundLocalPart, settings: partners.settings })
-      .from(partners)
-      .where(eq(partners.id, ticket.partnerId))
+  const composed = await composeLaidOutRequesterMail(ticket, 'ticket_comment_notification');
+
+  // Reply-content mode (per-partner). By DEFAULT the customer gets the portal
+  // "you have a new reply, sign in" notification and the comment text never
+  // leaves the platform (leak guard). A partner that does NOT run the client
+  // portal can opt in to `fullMessageReply`, which appends the actual public
+  // comment text to the email so email becomes a real back-and-forth. Only the
+  // just-posted PUBLIC comment is included; internal notes never reach this path
+  // (the worker gates on event.payload.isPublic before calling here).
+  let html = composed.html;
+  // Full message text is appended ONLY on the platform EmailService path (which
+  // sends to the resolved requester address, `ticket.submitterEmail`). On the
+  // connected-M365 path the reply is a Graph createReply against the latest
+  // inbound message, whose recipients can include an external Reply-To/CC we did
+  // not validate; putting the actual comment text there would widen a possible
+  // mis-routed reply from a bare portal notice to real content. Until that
+  // recipient set is validated, M365-mailbox partners keep the notification.
+  // (composed.fullMessageReply comes from the partner bits compose already loaded
+  // — no second partner read here.)
+  if (composed.fullMessageReply && !graphMailbox) {
+    // Bound to THIS ticket (never another ticket's comment). deletedAt is SELECTED
+    // (not filtered) so we can tell a soft-deleted comment (row present, deletedAt
+    // set — terminal, skip the body) apart from a not-yet-committed one (no row —
+    // transient, retry).
+    const rows = await db
+      .select({
+        content: ticketComments.content,
+        isPublic: ticketComments.isPublic,
+        deletedAt: ticketComments.deletedAt,
+      })
+      .from(ticketComments)
+      .where(and(eq(ticketComments.id, commentId), eq(ticketComments.ticketId, ticket.id)))
       .limit(1);
-    const slug = partnerRows[0]?.slug;
-    const override = (partnerRows[0]?.settings as
-      | { ticketing?: { inbound?: { address?: string } } }
-      | undefined)?.ticketing?.inbound?.address;
-    if (slug) replyTo = partnerInboundAddress(partnerRows[0]?.inboundLocalPart ?? slug, override) ?? undefined;
+    const comment = rows[0];
+    if (!comment) {
+      // Pre-commit emission: the comment row may not be visible yet (the event is
+      // emitted inside the posting transaction). Throw to retry — same contract as
+      // the missing-ticket guard above — so the real reply eventually sends rather
+      // than silently degrading to a portal-only notice for a no-portal partner.
+      throw new Error(`Comment not found (likely uncommitted): ${commentId}`);
+    }
+    // Append the body only for a live, public comment on a LIVE ticket. A
+    // soft-deleted comment (comment.deletedAt) or a soft-deleted ticket
+    // (ticket.deletedAt) must NOT have its text emailed — it is no longer visible
+    // in the product (the portal 404s a deleted ticket, routes/portal/tickets.ts
+    // requires isNull(tickets.deletedAt)), so emailing the comment would disclose
+    // content the customer can no longer see. Fall through to the portal
+    // notification without the body. The staff (collectAssigneeNotification) and
+    // SLA paths already skip deleted tickets; this mirrors that boundary at the one
+    // point comment TEXT would leave the platform. Defense in depth on isPublic:
+    // the emitter's gate is the authority; this is a second check.
+    if (!ticket.deletedAt && !comment.deletedAt && comment.isPublic && comment.content.trim()) {
+      html = appendFullReplyBody(html, comment.content);
+    }
   }
 
   const built = buildThreadingHeaders({ ticketId: ticket.id, commentId });
@@ -280,9 +434,9 @@ async function collectRequesterEmail(
 
   return [{
     to: ticket.submitterEmail,
-    subject: `[${label}] ${subjectPrefix}: ${ticket.subject}`,
+    subject: subjectOverride ?? composed.subject,
     html,
-    replyTo,
+    replyTo: composed.replyTo,
     headers,
     graphMailbox,
     purpose: 'ticket.customer_notification',
@@ -291,14 +445,35 @@ async function collectRequesterEmail(
 }
 
 /**
+ * Append the actual reply text to a comment-notification email (fullMessageReply
+ * partners only). The body is HTML-escaped and newline-preserved, wrapped in a
+ * quoted block below the rendered notification. Kept deliberately simple — the
+ * comment `content` is plain text authored by a technician.
+ */
+function appendFullReplyBody(html: string, body: string): string {
+  const safe = escapeHtml(body).replace(/\r?\n/g, '<br>');
+  const block =
+    '<div style="margin-top:16px;padding:12px 16px;border-left:3px solid #d1d5db;'
+    + 'color:#374151;font-size:14px;line-height:1.5;white-space:normal;">'
+    + `${safe}</div>`;
+  // Splice the block INSIDE the rendered document, immediately before the closing
+  // </body>, so the reply text sits within the email body. Concatenating after
+  // </html> would place it outside the document, where some mail clients strip or
+  // hide trailing content. Fall back to a plain append only if no </body> exists.
+  const idx = html.toLowerCase().lastIndexOf('</body>');
+  if (idx === -1) return `${html}${block}`;
+  return `${html.slice(0, idx)}${block}${html.slice(idx)}`;
+}
+
+/**
  * One-time autoresponse acknowledgement (spec §5). The autoresponder gate
- * (inboundEmail/autoresponder.ts) already applied loop-prevention + the per-sender
- * cap before emitting; here we just compose + send. The body is the partner's
- * customized auto-reply template when set (settings.ticketing.inbound.autoresponse
- * {Subject,Body}, rendered with the ticket's merge variables), otherwise the default
- * acknowledgement — see buildAutoresponseEmail. Loop hygiene: stamp Auto-Submitted: auto-replied and set
- * the ticket thread anchor as Message-ID so the requester's reply threads. Reply-To
- * is the partner inbound address (self-hosted override honored).
+ * (inboundEmail/autoresponder.ts) already applied loop-prevention before
+ * emitting; here we just compose + send. Custom html comes from
+ * settings.emailTemplates.ticket_autoresponse when set; otherwise inbound
+ * autoresponseSubject/Body (plain text); otherwise the hardcoded ack. Loop
+ * hygiene: stamp Auto-Submitted: auto-replied and set the ticket thread anchor
+ * as Message-ID so the requester's reply threads. Reply-To is the partner
+ * inbound address (self-hosted override honored).
  */
 async function collectAutoresponse(
   event: Extract<TicketEvent, { type: 'ticket.autoresponse' }>
@@ -307,48 +482,27 @@ async function collectAutoresponse(
   if (!ticket) {
     throw new Error(`Ticket not found (likely uncommitted): ${event.ticketId}`);
   }
-  let replyTo: string | undefined;
-  let custom: { subject: string | null; body: string | null } | undefined;
-  let partnerName = '';
-  if (ticket.partnerId) {
-    const partnerRows = await db
-      .select({ slug: partners.slug, name: partners.name, inboundLocalPart: partners.inboundLocalPart, settings: partners.settings })
-      .from(partners)
-      .where(eq(partners.id, ticket.partnerId))
-      .limit(1);
-    const slug = partnerRows[0]?.slug;
-    partnerName = partnerRows[0]?.name ?? '';
-    const inbound = (partnerRows[0]?.settings as
-      | { ticketing?: { inbound?: { address?: string; autoresponseSubject?: string | null; autoresponseBody?: string | null } } }
-      | undefined)?.ticketing?.inbound;
-    if (slug) replyTo = partnerInboundAddress(partnerRows[0]?.inboundLocalPart ?? slug, inbound?.address) ?? undefined;
-    custom = { subject: inbound?.autoresponseSubject ?? null, body: inbound?.autoresponseBody ?? null };
-  }
+  const partner = await loadPartnerMailBits(ticket.partnerId);
+  const orgName = ticket.orgId ? await getOrgName(ticket.orgId) : '';
 
-  let orgName = '';
-  if (ticket.orgId) {
-    const orgRows = await db
-      .select({ name: organizations.name })
-      .from(organizations)
-      .where(eq(organizations.id, ticket.orgId))
-      .limit(1);
-    orgName = orgRows[0]?.name ?? '';
-  }
-
-  const vars: TicketTemplateVars = {
-    ticket_number: ticket.internalNumber ?? '',
-    ticket_subject: ticket.subject ?? event.payload.subject,
-    requester_name: ticket.submitterName ?? '',
-    requester_email: event.payload.to,
-    org_name: orgName,
-    partner_name: partnerName,
-  };
-
-  const tpl = buildAutoresponseEmail({
+  const tpl = renderPartnerEmail({
+    id: 'ticket_autoresponse',
+    custom: asPartnerEmailCustom(partner.emailTemplates?.ticket_autoresponse),
+    inboundAutoresponseFallback: {
+      subject: partner.inbound?.autoresponseSubject ?? null,
+      body: partner.inbound?.autoresponseBody ?? null,
+    },
+    vars: {
+      ticket_number: ticket.internalNumber ?? '',
+      ticket_subject: ticket.subject ?? event.payload.subject,
+      requester_name: ticket.submitterName ?? '',
+      requester_email: event.payload.to,
+      org_name: orgName,
+      partner_name: partner.name,
+    },
+    brandName: partner.name,
     internalNumber: event.payload.internalNumber,
-    subject: event.payload.subject,
-    custom,
-    vars,
+    ticketSubject: event.payload.subject,
   });
 
   const headers: Record<string, string> = { 'Auto-Submitted': 'auto-replied' };
@@ -360,7 +514,17 @@ async function collectAutoresponse(
   // are only used on the EmailService fallback path).
   const graphMailbox = (await resolveOutboundMailbox(ticket.id, ticket.partnerId)) ?? undefined;
 
-  return [{ to: event.payload.to, subject: tpl.subject, html: tpl.html, replyTo, headers, bestEffort: true, graphMailbox, purpose: 'ticket.customer_notification', partnerId: ticket.partnerId ?? null }];
+  return [{
+    to: event.payload.to,
+    subject: tpl.subject,
+    html: tpl.html,
+    replyTo: partner.replyTo,
+    headers,
+    bestEffort: true,
+    graphMailbox,
+    purpose: 'ticket.customer_notification',
+    partnerId: ticket.partnerId ?? null,
+  }];
 }
 
 async function collectSlaBreachNotification(
@@ -494,18 +658,15 @@ export async function handleTicketEvent(event: TicketEvent, jobId?: string): Pro
         // Payload-trust contract: the worker TRUSTS event.payload.isPublic — the
         // EMITTER is the sole authority on visibility. inboundEmailService always
         // emits isPublic:true for an inbound customer comment; an internal note never
-        // emits a public ticket.commented event. The composer is TEMPLATE-ONLY: it
-        // never loads ticket_comments, so the comment's content is structurally
-        // unreachable from any outbound body/subject (see ticketNotifyWorker.leak.test.ts).
+        // emits a public ticket.commented event. The DEFAULT notification is
+        // template-only (no comment content). The one path that loads ticket_comments
+        // is the explicit per-partner fullMessageReply opt-in (see collectRequesterEmail),
+        // gated on isPublic + not-deleted + non-graph and HTML-escaped; every other
+        // outbound body/subject stays content-free (see ticketNotifyWorker.leak.test.ts).
         // Skip requester email for inbound comments — the comment originated FROM the
         // requester's email, so echoing it back would create a mail loop.
         if (event.payload.isPublic && !event.payload.inbound) {
-          emailPayloads = await collectRequesterEmail(
-            event,
-            '<p>Your ticket has a new reply. Sign in to the portal to view it.</p>',
-            'New reply',
-            event.payload.commentId
-          );
+          emailPayloads = await collectRequesterEmail(event, event.payload.commentId);
         }
         return;
       }
@@ -525,6 +686,7 @@ export async function handleTicketEvent(event: TicketEvent, jobId?: string): Pro
         if (event.payload.to === 'resolved') {
           emailPayloads = await collectRequesterEmail(
             event,
+            undefined,
             (ticket) => {
               // Freshness guard (read-your-own-write race): the ticket row fetched
               // here can be STALE relative to the status_changed event that queued
@@ -549,10 +711,7 @@ export async function handleTicketEvent(event: TicketEvent, jobId?: string): Pro
                   `Ticket transition not yet visible (likely uncommitted): ${ticket.id}`
                 );
               }
-              const note = ticket.resolutionNote ?? '';
-              return `<p>Your ticket has been resolved.</p>${note ? `<p>${escapeHtml(note)}</p>` : ''}`;
             },
-            'Resolved'
           );
         }
         return;

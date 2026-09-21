@@ -8,7 +8,7 @@ const TICKET_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 const ENTRY_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
 const PRIOR_ENTRY_ID = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
 
-type AuthState = { accessibleOrgIds: string[] | null };
+type AuthState = { accessibleOrgIds: string[] | null; manageBilling?: boolean };
 
 const { authRef, hoisted } = vi.hoisted(() => ({
   authRef: { current: { accessibleOrgIds: null as string[] | null } as AuthState },
@@ -31,7 +31,7 @@ vi.mock('../../middleware/officeAddinTechAuth', () => ({
       user: { email: 'tech@partner.example', name: 'Tech Person' },
       accessibleOrgIds,
       partnerOrgAccess: accessibleOrgIds === null ? 'all' : 'selected',
-      permissions: {},
+      permissions: { permissions: authRef.current.manageBilling ? [{ resource: 'time_entries', action: 'manage_billing' }] : [] },
       canAccessOrg: (orgId: string) => accessibleOrgIds === null || accessibleOrgIds.includes(orgId),
       canAccessSite: () => true,
     });
@@ -313,5 +313,21 @@ describe('router surface', () => {
 
     const listRes = await app.request('/time');
     expect(listRes.status).toBe(404);
+  });
+});
+
+
+describe('billing override actor plumbing', () => {
+  it.each([false, true])('refuses add-in billing overrides even with manage_billing=%s and strips forged rates', async manageBilling => {
+    authRef.current.manageBilling = manageBilling;
+    hoisted.createTimeEntry.mockResolvedValue({ id: ENTRY_ID, ticketId: TICKET_ID });
+    const res = await makeApp().request('/time/log', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ticketId: TICKET_ID, startedAt: '2026-06-11T09:00:00Z',
+        endedAt: '2026-06-11T09:30:00Z', description: 'Repair', hourlyRate: 999 }),
+    });
+    expect(res.status).toBe(201);
+    expect(hoisted.createTimeEntry.mock.calls[0]?.[0]).not.toHaveProperty('hourlyRate');
+    expect(hoisted.createTimeEntry.mock.calls[0]?.[1]).toMatchObject({ manageBilling: false, manageAll: false });
   });
 });

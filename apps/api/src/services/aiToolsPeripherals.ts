@@ -91,6 +91,8 @@ export function registerPeripheralTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'security',
+    searchHint: 'USB and peripheral connection events, device control enforcement activity',
     deviceArgs: ['device_id'],
     definition: {
       name: 'get_peripheral_activity',
@@ -209,9 +211,11 @@ export function registerPeripheralTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 3,
+    domain: 'security',
+    searchHint: 'USB and peripheral control policies: create, update, disable, add or remove exceptions',
     definition: {
       name: 'manage_peripheral_policy',
-      description: 'Create, update, disable, and manage exceptions for USB/peripheral control policies. When removing exceptions, all specified match fields must match (unspecified fields act as wildcards). Tier 3: requires human approval.',
+      description: 'Create, update, disable, and manage exceptions for USB/peripheral control policies. When removing exceptions, all specified match fields must match (unspecified fields act as wildcards). Tier 3: requires human approval. Actions: create, update, disable, add_exception, remove_exception.',
       input_schema: {
         type: 'object' as const,
         properties: {

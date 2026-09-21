@@ -62,6 +62,11 @@ vi.mock('./AssetDetailModal', () => ({
 }));
 
 vi.mock('./NetworkTopologyMap', () => ({
+  default: () => null
+}));
+
+// The topology tab mounts the site explorer entry, which owns the legacy map.
+vi.mock('../topology/TopologyEntry', () => ({
   default: () => <div>Topology tab</div>
 }));
 

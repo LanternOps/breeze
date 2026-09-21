@@ -13,14 +13,12 @@ import {
   notificationChannels,
   alertNotifications,
   escalationPolicies,
-  notificationRoutingRules,
   devices,
   organizations,
   partners,
-  configPolicyAlertRules,
-  monitorDefinitions
+  configPolicyAlertRules
 } from '../db/schema';
-import { eq, and, ne, inArray, asc, isNull, or, type SQL, type Column } from 'drizzle-orm';
+import { eq, and, ne, inArray, isNull, or, gt, type SQL } from 'drizzle-orm';
 import { getRedis, getBullMQConnection, isRedisAvailable } from './redis';
 import { rateLimiter } from './rate-limit';
 import { checkNotificationThrottle } from './notificationThrottle';
@@ -44,6 +42,10 @@ import { sendSmsNotification, type SmsChannelConfig } from './notificationSender
 import type { BreezeEvent } from './eventBus';
 import { decryptNotificationChannelConfig } from './notificationChannelSecrets';
 import { attachWorkerObservability } from '../jobs/workerObservability';
+import { escalationStepSchema, type EscalationStep } from './delivery/escalationSteps';
+import { escalationOccurrences, listEscalationUsers, processUserEscalation, type UserEscalationJob } from './delivery/escalationExecution';
+import { resolveDelivery } from './delivery/resolveDelivery';
+import { partnerIdForOrg, railOwnershipCondition } from './delivery/railOwnership';
 
 const { db } = dbModule;
 
@@ -90,7 +92,7 @@ interface ProcessAlertJobData {
   alertId: string;
 }
 
-type NotificationJobData = SendNotificationJobData | ProcessAlertJobData;
+type NotificationJobData = SendNotificationJobData | ProcessAlertJobData | UserEscalationJob;
 
 /**
  * Create the notification worker
@@ -108,6 +110,12 @@ export function createNotificationWorker(): Worker<NotificationJobData> {
           // pooled connection held idle-in-transaction for the full send
           // duration, on every alert notification fleet-wide.
           return await processSendNotification(job.data);
+
+        case 'escalation-user': {
+          // Background entry point establishes the same context as process-alert.
+          const userJob = job.data;
+          return runWithSystemDbAccess(() => processUserEscalation(userJob));
+        }
 
         case 'process-alert': {
           // processAlertNotifications only does DB reads/writes plus fast
@@ -128,38 +136,6 @@ export function createNotificationWorker(): Worker<NotificationJobData> {
       concurrency: 5
     }
   );
-}
-
-/**
- * Delivery rails are dual-owned (#2130): a channel / routing rule /
- * escalation policy is org-owned (org_id set) OR partner-wide (org_id NULL,
- * partner_id set). Every dispatcher lookup must match the alert org's own
- * rows OR partner-wide rows owned by that org's partner — a plain
- * eq(orgId, alert.orgId) silently never matches partner-wide rows (the #1724
- * trap; the worker runs under system context, so RLS is not the filter here).
- */
-async function partnerIdForOrg(orgId: string): Promise<string | null> {
-  const [org] = await db
-    .select({ partnerId: organizations.partnerId })
-    .from(organizations)
-    .where(eq(organizations.id, orgId))
-    .limit(1);
-  return org?.partnerId ?? null;
-}
-
-function railOwnershipCondition(
-  orgCol: Column,
-  partnerCol: Column,
-  orgId: string,
-  orgPartnerId: string | null
-): SQL {
-  if (!orgPartnerId) {
-    return eq(orgCol, orgId);
-  }
-  return or(
-    eq(orgCol, orgId),
-    and(isNull(orgCol), eq(partnerCol, orgPartnerId))
-  ) as SQL;
 }
 
 /**
@@ -261,144 +237,115 @@ export async function processAlertNotifications(data: ProcessAlertJobData): Prom
     console.error('[NotificationDispatcher] Failed to send in-app notifications:', error);
   }
 
-  // Get notification channels — from rule overrides or org defaults
-  let channelIds: string[] = [];
-  let ruleOverrides: Record<string, unknown> | null = null;
-  // #5290 — set only by a monitor whose delivery_mode is 'none'.
-  let suppressChannelFallback = false;
+  // ONE delivery decision (W05b, spec §Delivery resolution). resolveDelivery is
+  // shared with GET /alerts/delivery/resolve, so what the monitor editor
+  // previews is what fires here. The all-enabled-channels fallback is gone: the
+  // "Everything else" routing row is the default a technician can read.
+  let monitorId: string | null = alert.monitorId ?? null;
+  let legacyOverride: { channelIds?: string[] | null; escalationPolicyId?: string | null } | null = null;
 
+  // Conversion re-keys open alerts to their monitor in the same transaction as
+  // the retirement (W05c1 convert), so a converted source needs no special
+  // case here. `retireSource` is the other path: an UNCONVERTIBLE source has no
+  // monitor to carry its open alerts to, so a retired row must still answer for
+  // alerts that fired BEFORE it was retired — otherwise those alerts fall to
+  // default routing and silently lose their channels and escalation policy.
+  // Newer alerts never reach a retired source. W05d deletes both branches.
   if (alert.ruleId) {
     const [rule] = await db
-      .select()
+      .select({ overrideSettings: alertRules.overrideSettings, managedByMonitorId: alertRules.managedByMonitorId })
       .from(alertRules)
-      .where(eq(alertRules.id, alert.ruleId))
+      .where(and(
+        eq(alertRules.id, alert.ruleId),
+        or(isNull(alertRules.retiredAt), gt(alertRules.retiredAt, alert.createdAt)),
+      ))
       .limit(1);
-
     if (rule) {
-      ruleOverrides = rule.overrideSettings as Record<string, unknown> | null;
-      channelIds = (ruleOverrides?.notificationChannelIds as string[]) || [];
+      monitorId = monitorId ?? rule.managedByMonitorId ?? null;
+      if (!rule.managedByMonitorId) {
+        // Transitional (spec §Delivery resolution "Transitional", W05b → W05d):
+        // an UNMANAGED legacy rule keeps its own channel/escalation overrides
+        // until it is converted. Retired sources are excluded; queued alerts
+        // depend on the transactional carry-over described above.
+        // W05d deletes the branch. A MANAGED (monitor-compiled) rule is never
+        // read for delivery — the monitor definition is the source of truth.
+        const overrides = (rule.overrideSettings ?? {}) as Record<string, unknown>;
+        legacyOverride = {
+          channelIds: Array.isArray(overrides.notificationChannelIds) ? (overrides.notificationChannelIds as string[]) : null,
+          escalationPolicyId: typeof overrides.escalationPolicyId === 'string' ? overrides.escalationPolicyId : null,
+        };
+      }
     }
   } else if (alert.configPolicyId) {
-    // Delivery parity for config-policy alerts (#5289 Task 9, spec
-    // §Delivery): a config-policy-sourced alert has `ruleId: null` and
-    // `configPolicyId` set to the `config_policy_alert_rules` row id (the
-    // column name is historical). That row can carry its own
-    // escalation/channel overrides, same shape as `alertRules.overrideSettings`
-    // above, so the fallbacks below (routing rules, then org default
-    // channels) and the escalation scheduling at the bottom of this function
-    // work unchanged whether the alert came from a standalone rule or a
-    // config policy.
+    // Config-policy inline rule (#5289 Task 9): `configPolicyId` holds the
+    // config_policy_alert_rules row id (historical column name). Same
+    // transitional treatment as an unmanaged alert_rules row, including the
+    // retired-but-older-than-the-alert case described above.
     const [cpRule] = await db
       .select({
         escalationPolicyId: configPolicyAlertRules.escalationPolicyId,
         notificationChannelIds: configPolicyAlertRules.notificationChannelIds
       })
       .from(configPolicyAlertRules)
-      .where(eq(configPolicyAlertRules.id, alert.configPolicyId))
+      .where(and(
+        eq(configPolicyAlertRules.id, alert.configPolicyId),
+        or(isNull(configPolicyAlertRules.retiredAt), gt(configPolicyAlertRules.retiredAt, alert.createdAt)),
+      ))
       .limit(1);
-
     if (cpRule) {
-      ruleOverrides = {
-        escalationPolicyId: cpRule.escalationPolicyId ?? undefined,
-        notificationChannelIds: cpRule.notificationChannelIds ?? []
-      };
-      channelIds = cpRule.notificationChannelIds ?? [];
-    }
-  } else if (alert.monitorId) {
-    // #5290 — a rule-less MONITOR alert (the recurrence escalation) has no
-    // alert_rules row to read overrideSettings from, so it sources delivery
-    // straight from the monitor definition the technician authored. Without
-    // this branch a requires-human alert would fall through to the org's
-    // default channels and ignore the monitor's escalation policy entirely.
-    const [monitor] = await db
-      .select({
-        deliveryMode: monitorDefinitions.deliveryMode,
-        deliveryChannelIds: monitorDefinitions.deliveryChannelIds,
-        escalationPolicyId: monitorDefinitions.escalationPolicyId
-      })
-      .from(monitorDefinitions)
-      .where(eq(monitorDefinitions.id, alert.monitorId))
-      .limit(1);
-
-    if (monitor) {
-      // delivery_mode 'none' means "inbox only": suppress channel sends but
-      // leave the alert visible. It must also skip the routing-rule and
-      // org-default fallbacks below, which is what `suppressChannelFallback`
-      // does — those fallbacks exist for alerts with no delivery opinion, and
-      // 'none' IS an opinion.
-      suppressChannelFallback = monitor.deliveryMode === 'none';
-      ruleOverrides = {
-        escalationPolicyId: monitor.escalationPolicyId ?? undefined,
-        notificationChannelIds: monitor.deliveryMode === 'channels'
-          ? (monitor.deliveryChannelIds ?? [])
-          : []
-      };
-      channelIds = (ruleOverrides.notificationChannelIds as string[]) ?? [];
+      legacyOverride = { channelIds: cpRule.notificationChannelIds ?? null, escalationPolicyId: cpRule.escalationPolicyId ?? null };
     }
   }
 
-  // Dual-axis rail resolution (#2130): resolve the alert org's partner once,
-  // so routing/channel/escalation lookups can match partner-wide rows too.
+  // Dual-axis rail resolution (#2130): the alert org's partner, for the
+  // channel validation and escalation lookups below.
   const orgPartnerId = await partnerIdForOrg(alert.orgId);
 
-  // Phase 5: Notification routing rules. Site-restricted rules fail closed if
-  // the firing device or its site cannot be resolved.
-  // Check routing rules before falling back to all channels
-  if (channelIds.length === 0 && !suppressChannelFallback) {
-    const routedChannelIds = await resolveRoutingRules(
-      alert.orgId,
-      alert.severity,
-      orgPartnerId,
-      device?.siteId ?? null
-    );
-    if (routedChannelIds.length > 0) {
-      channelIds = routedChannelIds;
+  const resolved = await resolveDelivery({
+    orgId: alert.orgId,
+    severity: alert.severity as AlertSeverity,
+    monitorId,
+    siteId: device?.siteId ?? null,
+    legacyOverride
+  });
+
+  // Escalation resolves independently of channels (spec): "inbox now, page
+  // on-call in 30 minutes" is a valid configuration, so schedule it whether or
+  // not a baseline send goes out.
+  const scheduleResolvedEscalation = async () => {
+    if (resolved.escalationPolicyId) {
+      await scheduleEscalation(data.alertId, resolved.escalationPolicyId, alert.orgId, orgPartnerId);
     }
-  }
+  };
 
-  // For config policy alerts (no ruleId) or rules without channel overrides and no routing rules,
-  // fall back to all enabled channels for the org — including the partner's
-  // partner-wide channels, which are active for every member org by design.
-  if (channelIds.length === 0 && !suppressChannelFallback) {
-    const orgChannels = await db
-      .select({ id: notificationChannels.id })
-      .from(notificationChannels)
-      .where(
-        and(
-          railOwnershipCondition(notificationChannels.orgId, notificationChannels.partnerId, alert.orgId, orgPartnerId),
-          eq(notificationChannels.enabled, true)
-        )
-      );
-    channelIds = orgChannels.map(c => c.id);
+  if (resolved.skippedChannelIds.length > 0) {
+    console.warn(`[NotificationDispatcher] Skipped delivery channels for alert ${data.alertId} ${JSON.stringify({
+      orgId: alert.orgId, source: resolved.source, routingRuleId: resolved.routingRuleId,
+      routingRuleName: resolved.routingRuleName, skippedChannelIds: resolved.skippedChannelIds,
+    })}`);
   }
-
+  const inboxOnly = async () => {
+    console.log(`[NotificationDispatcher] Delivery for alert ${data.alertId} resolved to inbox only (source=${resolved.source})`);
+    await scheduleResolvedEscalation();
+    return { queued: 0, inAppSent, durationMs: Date.now() - startTime };
+  };
+  const channelIds = resolved.channelIds;
   if (channelIds.length === 0) {
-    console.log(`[NotificationDispatcher] No additional channels configured for alert ${data.alertId}`);
-    return { queued: 0, inAppSent, durationMs: Date.now() - startTime };
+    return inboxOnly();
   }
 
-  const requestedChannelIds = [...new Set(channelIds.filter(Boolean))];
-  if (requestedChannelIds.length === 0) {
-    console.log(`[NotificationDispatcher] No valid channel IDs configured for alert ${data.alertId}`);
-    return { queued: 0, inAppSent, durationMs: Date.now() - startTime };
+  const channelOptions = await db.select({ id: notificationChannels.id, type: notificationChannels.type, config: notificationChannels.config })
+    .from(notificationChannels).where(inArray(notificationChannels.id, channelIds));
+  const optionsById = new Map(channelOptions.map(channel => [channel.id, channel]));
+  const missingChannelIds = channelIds.filter(id => !optionsById.has(id));
+  if (missingChannelIds.length > 0) {
+    console.warn(`[NotificationDispatcher] Missing transport options for alert ${data.alertId} — dropped channel ids=${JSON.stringify(missingChannelIds)}`);
   }
-
-  const validChannels = await db
-    .select({ id: notificationChannels.id, type: notificationChannels.type, config: notificationChannels.config })
-    .from(notificationChannels)
-    .where(
-      and(
-        railOwnershipCondition(notificationChannels.orgId, notificationChannels.partnerId, alert.orgId, orgPartnerId),
-        eq(notificationChannels.enabled, true),
-        inArray(notificationChannels.id, requestedChannelIds)
-      )
-    );
-  channelIds = validChannels.map((channel) => channel.id);
-
-  if (channelIds.length === 0) {
-    console.log(`[NotificationDispatcher] No valid channels in alert org or its partner for alert ${data.alertId}`);
-    return { queued: 0, inAppSent, durationMs: Date.now() - startTime };
-  }
+  const validChannels = channelIds.flatMap(id => {
+    const channel = optionsById.get(id);
+    return channel ? [channel] : [];
+  });
+  if (validChannels.length === 0) return inboxOnly();
 
   // Queue notification jobs for each channel with retry + exponential backoff (Phase 4a)
   const queue = getNotificationQueue();
@@ -438,12 +385,7 @@ export async function processAlertNotifications(data: ProcessAlertJobData): Prom
     addedJobs.map((job) => retryIfFailedJob(job, `alert ${data.alertId} baseline send`))
   );
 
-  // Check for escalation policy — sourced from either the alert rule's or
-  // the config-policy alert rule's overrides (#5289 Task 9).
-  const escalationPolicyId = ruleOverrides?.escalationPolicyId as string | undefined;
-  if (escalationPolicyId) {
-    await scheduleEscalation(data.alertId, escalationPolicyId, alert.orgId, orgPartnerId);
-  }
+  await scheduleResolvedEscalation();
 
   return {
     queued: jobs.length,
@@ -811,7 +753,9 @@ export async function processSendNotification(data: SendNotificationJobData): Pr
       severity: alert.severity,
       message: alert.message || '',
       deviceId: alert.deviceId,
+      device: device?.displayName || device?.hostname || '',
       deviceName: device?.displayName || device?.hostname || '',
+      hostname: device?.hostname || '',
       orgName: org?.name || '',
       triggeredAt: alert.triggeredAt.toISOString(),
     });
@@ -1243,64 +1187,6 @@ async function sendPushoverChannelNotification(
 }
 
 /**
- * Phase 5: Resolve notification routing rules for an alert.
- * Returns channel IDs from the first matching routing rule (by priority).
- * Returns empty array if no routing rules match (falls through to default behavior).
- */
-export async function resolveRoutingRules(
-  orgId: string,
-  severity: string,
-  orgPartnerId: string | null,
-  deviceSiteId: string | null
-): Promise<string[]> {
-  // Dual-axis (#2130): the org's own rules AND its partner's partner-wide
-  // rules compete in one priority ordering; the first match wins regardless
-  // of axis, so an org can pre-empt a partner-wide rule with a
-  // higher-priority org rule.
-  const rules = await db
-    .select()
-    .from(notificationRoutingRules)
-    .where(
-      and(
-        railOwnershipCondition(notificationRoutingRules.orgId, notificationRoutingRules.partnerId, orgId, orgPartnerId),
-        eq(notificationRoutingRules.enabled, true)
-      )
-    )
-    .orderBy(asc(notificationRoutingRules.priority));
-
-  for (const rule of rules) {
-    const conditions = rule.conditions as {
-      severities?: string[];
-      conditionTypes?: string[];
-      deviceTags?: string[];
-      siteIds?: string[];
-    };
-
-    // Check severity match
-    if (conditions.severities && conditions.severities.length > 0) {
-      if (!conditions.severities.includes(severity)) {
-        continue;
-      }
-    }
-
-    if (conditions.siteIds && conditions.siteIds.length > 0) {
-      if (!deviceSiteId || !conditions.siteIds.includes(deviceSiteId)) {
-        continue;
-      }
-    }
-
-    // First matching rule wins
-    const channelIds = rule.channelIds;
-    if (channelIds && channelIds.length > 0) {
-      console.log(`[NotificationDispatcher] Routing rule "${rule.name}" matched for severity=${severity}`);
-      return channelIds;
-    }
-  }
-
-  return [];
-}
-
-/**
  * Schedule escalation steps based on policy
  */
 async function scheduleEscalation(alertId: string, policyId: string, orgId: string, orgPartnerId: string | null): Promise<void> {
@@ -1326,17 +1212,27 @@ async function scheduleEscalation(alertId: string, policyId: string, orgId: stri
     return;
   }
 
-  const steps = policy.steps as Array<{
-    delayMinutes: number;
-    channelIds: string[];
-  }>;
-
-  if (!Array.isArray(steps) || steps.length === 0) {
-    console.warn(
-      `[NotificationDispatcher] Escalation policy ${policyId} has no steps for alert ${alertId} — escalation skipped`
-    );
-    return;
+  const parsed = escalationStepSchema.array().min(1).max(10).safeParse(policy.steps);
+  const steps: EscalationStep[] = [];
+  const originalIndexes: number[] = [];
+  const droppedIndexes: number[] = [];
+  if (Array.isArray(policy.steps)) {
+    policy.steps.forEach((step, index) => {
+      const result = escalationStepSchema.safeParse(step);
+      // The occurrence id reserves ten positions per repetition.
+      if (index < 10 && result.success) {
+        steps.push(result.data);
+        originalIndexes.push(index);
+      } else {
+        droppedIndexes.push(index);
+      }
+    });
   }
+  if (!parsed.success) {
+    console.warn(`[NotificationDispatcher] Invalid escalation policy ${policyId} for alert ${alertId} `
+      + `— dropped indexes=${JSON.stringify(droppedIndexes)}, first issue=${JSON.stringify(parsed.error.issues[0])}`);
+  }
+  if (steps.length === 0) return;
 
   const queue = getNotificationQueue();
   const requestedChannelIds = [...new Set(
@@ -1357,44 +1253,25 @@ async function scheduleEscalation(alertId: string, policyId: string, orgId: stri
   const validChannelIdSet = new Set(validChannels.map((channel) => channel.id));
   const validChannelById = new Map(validChannels.map((channel) => [channel.id, channel]));
 
-  for (let i = 0; i < steps.length; i++) {
-    const step = steps[i];
-    if (!step) continue;
-
-    const delayMs = step.delayMinutes * 60 * 1000;
-
-    const stepChannelIds = (step.channelIds || []).filter((channelId) => validChannelIdSet.has(channelId));
-
-    for (const channelId of stepChannelIds) {
+  const requestedUsers = steps.some(step => step.userIds.length > 0);
+  const eligibleUsers = new Set(requestedUsers
+    ? (await listEscalationUsers({ orgId, partnerId: null })).map(user => user.id) : []);
+  for (const step of escalationOccurrences(steps, originalIndexes, alertId)) {
+    for (const channelId of [...new Set(step.channelIds)].filter(id => validChannelIdSet.has(id))) {
       const channel = validChannelById.get(channelId)!;
-      const job = await queue.add(
-        'send',
-        {
-          type: 'send',
-          alertId,
-          channelId,
-          escalationStep: i + 1
-        },
-        {
-          delay: delayMs,
-          jobId: `escalation-${alertId}-step${i + 1}-${channelId}`,
-          // Carried from the Task 8 review (#4085): now that a transport
-          // failure in processSendNotification THROWS (so BullMQ's
-          // attempts+backoff can actually retry it), a failing escalation
-          // send with no `attempts`/`removeOnFail` of its own becomes a
-          // permanently-retained failed job hash with ZERO retries — the
-          // stable jobId then stays occupied forever and nothing ever
-          // re-fires that escalation step.
-          attempts: notificationJobAttempts(channel.type, channel.config),
-          backoff: { type: 'exponential', delay: 30_000 },
-          removeOnComplete: true,
-          removeOnFail: { age: 3600 }
-        }
-      );
-      // Same exposure as the baseline sends above: a duplicate add against a
-      // failed escalation-step hash would otherwise silently no-op for the
-      // whole 1-hour removeOnFail window.
-      await retryIfFailedJob(job, `alert ${alertId} escalation step ${i + 1}`);
+      const job = await queue.add('send', { type: 'send', alertId, channelId, escalationStep: step.escalationStep }, {
+        delay: step.delayMs, jobId: `escalation-${alertId}-step${step.escalationStep}-${channelId}`,
+        attempts: notificationJobAttempts(channel.type, channel.config),
+        backoff: { type: 'exponential', delay: 30000 }, removeOnComplete: true, removeOnFail: { age: 3600 },
+      });
+      await retryIfFailedJob(job, `alert ${alertId} escalation step ${step.escalationStep}`);
+    }
+    for (const userId of [...new Set(step.userIds)].filter(id => eligibleUsers.has(id))) {
+      const job = await queue.add('escalation-user', { type: 'escalation-user', alertId, userId, escalationStep: step.escalationStep }, {
+        delay: step.delayMs, jobId: `escalation-${alertId}-step${step.escalationStep}-user-${userId}`,
+        attempts: 3, backoff: { type: 'exponential', delay: 30000 }, removeOnComplete: true, removeOnFail: { age: 3600 },
+      });
+      await retryIfFailedJob(job, `alert ${alertId} user escalation ${step.escalationStep}`);
     }
   }
 
@@ -1410,7 +1287,7 @@ export async function cancelAlertEscalations(alertId: string): Promise<number> {
 
   let cancelled = 0;
   for (const job of delayed) {
-    if (job.data.type === 'send' &&
+    if ((job.data.type === 'send' || job.data.type === 'escalation-user') &&
         job.data.alertId === alertId &&
         job.data.escalationStep) {
       await job.remove();

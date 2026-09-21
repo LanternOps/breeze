@@ -1,3 +1,4 @@
+import type { BillingOutcomeStamp } from '../components/time/BillingOutcome';
 import { fetchWithAuth } from '../stores/auth';
 import { runAction } from './runAction';
 
@@ -14,7 +15,7 @@ export function onBillingChanged(cb: () => void): () => void {
   return () => window.removeEventListener(BILLING_CHANGED_EVENT, cb);
 }
 
-export interface RunningTimer {
+export interface RunningTimer extends BillingOutcomeStamp {
   id: string;
   ticketId: string | null;
   startedAt: string;
@@ -55,7 +56,7 @@ export function onTimerChanged(cb: () => void): () => void {
  * @throws {ActionError} Failures are already toasted by runAction — callers should swallow
  * ActionError (return early on 401) and only toast non-ActionError.
  */
-export async function startTimerAction(input: { ticketId?: string; description?: string } = {}): Promise<void> {
+export async function startTimerAction(input: { ticketId?: string; description?: string; workTypeId?: string | null } = {}): Promise<void> {
   await runAction({
     request: () => fetchWithAuth('/time-entries/start', { method: 'POST', body: JSON.stringify(input) }),
     errorFallback: 'Failed to start timer',

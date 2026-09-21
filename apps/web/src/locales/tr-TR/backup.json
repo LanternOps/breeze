@@ -495,6 +495,8 @@
     "originalLocation": "Orijinal konum",
     "restoreFilesInPlace": "Dosyaları yerine geri yükleyin.",
     "alternatePath": "Alternatif yol",
+    "alternatePathPlaceholder": "örn. D:\\Restored veya /var/restore",
+    "alternatePathRequired": "Devam etmek için bir hedef yol girin.",
     "restoreToANewFolder": "Yeni bir klasöre geri yükleyin.",
     "reviewConfirm": "İncele ve onayla",
     "confirmTheRestoreSummaryBeforeStarting": "Başlamadan önce geri yükleme özetini onaylayın.",
@@ -617,7 +619,12 @@
     "cpu": "CPU,",
     "mbRam": "MB RAM'i,",
     "gbDisk": "GB Disk",
-    "mode": "Modu"
+    "mode": "Modu",
+    "rebuildHost": "Yeniden oluşturma ana bilgisayarı",
+    "outputPath": "Çıktı yolu",
+    "rebuildEngine": "Yeniden oluşturma motoru (Linux)",
+    "manualAttachNote": "VHDX'i bir Hyper-V sanal makinesine elle bağlayın; Linux konuklar için otomatik sanal makine oluşturma Windows motoruyla gelecek.",
+    "newIdentityNote": "Yeniden oluşturulan görüntü her zaman yeni bir makine kimliği alır ve asla özgün cihazın kimliğini devralmaz."
   },
   "vMRestoreSpecsStep": {
     "vmSpecifications": "VM özellikleri",
@@ -655,7 +662,16 @@
     "bootsTheVmDirectlyFromTheBackupStorage": "VM'yi doğrudan yedekleme deposundan önyükler. Saniyeler içinde hazır. Arka planda geçiş, verileri ana bilgisayara kopyalar.",
     "back": "Geri",
     "continue": "Devam et",
-    "starting": "Başlıyor..."
+    "starting": "Başlıyor...",
+    "rebuildEngineLinux": "Yeniden oluşturma motoru (Linux)",
+    "rebuildEngineDescription": "Bu Linux tam makine anlık görüntüsünü, Breeze yardımcısını çalıştıran bir Linux cihazında Hyper-V VHDX disk görüntüsüne dönüştürür. Görüntü her zaman yeni bir makine kimliği alır.",
+    "selectRebuildHost": "Linux yeniden oluşturma ana bilgisayarını seçin",
+    "chooseALinuxDeviceWithQemuUtils": "qemu-utils yüklü, çevrimiçi ve görüntü için yeterli boş alana sahip bir Linux cihazı seçin.",
+    "outputPath": "Çıktı yolu",
+    "outputPathHint": "Yeniden oluşturma ana bilgisayarında .vhdx ile biten mutlak yol.",
+    "outputPathInvalid": ".vhdx ile biten mutlak bir yol girin.",
+    "startRebuild": "Yeniden oluşturmayı başlat",
+    "rebuildStarted": "Yeniden oluşturma başlatıldı. VHDX, işlem tamamlandığında yeniden oluşturma ana bilgisayarında görünecek."
   },
   "vaultConfigDialog": {
     "device": "Cihaz",
@@ -716,7 +732,15 @@
     "launchExecution": "Yürütmeyi başlat",
     "startANewDrRunFor": "için yeni bir DR çalıştırması başlatın",
     "cancel": "İptal",
-    "startExecution": "Yürütmeyi başlat"
+    "startExecution": "Yürütmeyi başlat",
+    "executeErrorFallback": "Yürütme başlatılamadı.",
+    "executeErrorNoRestorableSnapshot": "Başlatılamıyor: bare-metal yeniden oluşturma grubundaki bir cihazın geri yüklenebilir yedek anlık görüntüsü yok. Önce o gruptaki her cihaz için başarılı bir yedekleme çalıştırın.",
+    "executeErrorNoRecoverySource": "Başlatılamıyor: bir kurtarma grubu hiçbir kurtarma kaynağı belirtmiyor. Gruba bir anlık görüntü, geri yükleme işi veya kurtarma belirteci ekleyin.",
+    "executeErrorGroupHasNoValidDevices": "Başlatılamıyor: bir kurtarma grubunda geçerli cihaz yok. Planı düzenleyip her gruba en az bir cihaz ekleyin.",
+    "executeErrorInvalidSourceReference": "Başlatılamıyor: bir kurtarma grubu geçersiz tanımlayıcıya sahip bir kurtarma kaynağına başvuruyor. Grubu düzenleyip kaynağını yeniden seçin.",
+    "executeErrorInvalidStepConfig": "Başlatılamıyor: bir kurtarma grubunun adım yapılandırması geçersiz. Grubu düzenleyip ayarlarını düzeltin.",
+    "executeErrorResourceNotFound": "Başlatılamıyor: bu planın başvurduğu bir anlık görüntü artık mevcut değil. Etkilenen grubu düzenleyip güncel bir anlık görüntü seçin.",
+    "executeErrorBackupWriteRequired": "Başlatılamıyor: bu plan, yedek yazma iznini gerektiren bir bare-metal yeniden oluşturma grubu içeriyor."
   },
   "dRExecutionView": {
     "executionDetails": "Yürütme ayrıntıları",
@@ -739,7 +763,28 @@
     "executionDetailsAreUnavailable": "Yürütme ayrıntıları mevcut değil.",
     "abortDisasterRecoveryExecution": "Olağanüstü durum kurtarma işlemi iptal edilsin mi?",
     "deviceCount_one": "{{count}} cihaz",
-    "deviceCount_other": "{{count}} cihazlar"
+    "deviceCount_other": "{{count}} cihazlar",
+    "recoveryStatus": {
+      "created": "Kod verildi",
+      "media_booted": "Ortam başlatıldı",
+      "planned": "Planlandı",
+      "restoring": "Geri yükleniyor",
+      "validated": "Doğrulandı",
+      "rebooted": "Yeniden başlatıldı",
+      "checked_in": "Kaydoldu",
+      "completed": "Tamamlandı",
+      "failed": "Başarısız",
+      "refused": "Reddedildi",
+      "unknown": "Kurtarma bekliyor"
+    },
+    "reissueCode": "Kodu yeniden ver",
+    "reissueCodeFailed": "Kurtarma kodu yeniden verilemedi",
+    "cancelRecovery": "Kurtarmayı iptal et",
+    "cancelRecoveryFailed": "Kurtarma iptal edilemedi",
+    "recoveryCancelled": "Kurtarma iptal edildi",
+    "codeShownOnce": "Bu kod yalnızca bir kez gösterilir ve 15 dakika içinde geçerliliğini yitirir. Kurtarma ortamı istemine girin.",
+    "copyCode": "Kodu kopyala",
+    "copied": "Kopyalandı"
   },
   "dRPlanEditor": {
     "defineRecoveryObjectivesSequenceGroupsAndAssignDevices": "Kurtarma hedeflerini, sıra gruplarını tanımlayın ve cihazları geri yükleme sırasına göre atayın.",
@@ -769,7 +814,11 @@
     "groupCount_one": "{{count}} grubu",
     "groupCount_other": "{{count}} grup",
     "uniqueDeviceCount_one": "{{count}} benzersiz cihaz",
-    "uniqueDeviceCount_other": "{{count}} benzersiz cihazlar"
+    "uniqueDeviceCount_other": "{{count}} benzersiz cihazlar",
+    "chooseAStepTypeForEachGroup": "Her kurtarma grubu için bir adım türü seçin.",
+    "rebuildWaitTimeoutOutOfRange": "Bare-metal yeniden oluşturma bekleme süresi {{min}} ile {{max}} dakika arasında bir tam sayı olmalıdır.",
+    "rebuildOutputDirMustBeAbsolute": "Bare-metal yeniden oluşturma çıktı dizini \"/\" ile başlayan mutlak bir yol olmalı ve en fazla {{max}} karakter içermelidir.",
+    "partialSaveFailure": "Bu planın bir bölümü hatadan önce kaydedildi; bu nedenle plan ile liste artık farklı olabilir. Sorunu giderip yeniden kaydedin. Sunucunun yanıtı: {{message}}"
   },
   "dRPlanGroupCard": {
     "device": "cihaz",
@@ -784,7 +833,23 @@
     "deviceSelection": "Cihaz seçimi",
     "noDevicesAvailableToAssign": "Atanabilecek cihaz yok.",
     "deviceCount_one": "{{count}} cihaz",
-    "deviceCount_other": "{{count}} cihazlar"
+    "deviceCount_other": "{{count}} cihazlar",
+    "stepType": "Adım türü",
+    "chooseAStepType": "Bir adım türü seçin",
+    "stepTypes": {
+      "vmRestoreFromBackup": "Yedekten VM geri yükleme",
+      "vmInstantBoot": "Anında VM önyüklemesi",
+      "hypervRestore": "Hyper-V geri yükleme",
+      "mssqlRestore": "SQL Server geri yükleme",
+      "bmrRecover": "Bare-metal kurtarma (önyükleme ortamı)",
+      "bareMetalRebuild": "Bare-metal yeniden oluşturma (yeniden oluşturma motoru)"
+    },
+    "rebuildHost": "Yeniden oluşturma ana bilgisayarı",
+    "rebuildHostHint": "Provaları çalıştıran, qemu-utils yüklü Linux cihazı. Yük devretmede ise her cihaz kurtarma ortamını başlatır.",
+    "outputDir": "Çıktı dizini",
+    "outputDirHint": "Yeniden oluşturma ana bilgisayarında cihaz başına bir VHDX görüntüsü alan dizin.",
+    "waitTimeout": "Bekleme süresi (dk)",
+    "waitTimeoutHint": "Adım başarısız sayılmadan önce her cihazın kaydolması için beklenecek dakika."
   },
   "profiles": {
     "title": "Yedekleme Profilleri",

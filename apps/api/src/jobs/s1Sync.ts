@@ -939,7 +939,7 @@ async function processSyncAll(syncAgents: boolean, syncThreats: boolean) {
         syncAgents,
         syncThreats
       },
-      `s1-sync-integration:${integration.id}:${syncAgents ? 'agents' : 'none'}:${syncThreats ? 'threats' : 'none'}`,
+      `s1-sync-integration-${integration.id}-${syncAgents ? 'agents' : 'none'}-${syncThreats ? 'threats' : 'none'}`,
       { removeOnComplete: true, removeOnFail: true }
     ))
   );
@@ -1307,7 +1307,7 @@ export async function scheduleS1Sync(integrationId?: string): Promise<string> {
         syncAgents: true,
         syncThreats: true
       },
-      `s1-sync-integration:${integrationId}:full`,
+      `s1-sync-integration-${integrationId}-full`,
       { removeOnComplete: true, removeOnFail: true }
     );
   }

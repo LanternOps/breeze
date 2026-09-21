@@ -179,7 +179,7 @@ function invoiceActor(f: Fixture): InvoiceActor {
   return { userId: f.userId, partnerId: f.partnerId, accessibleOrgIds: [f.orgId, f.eurOrgId] };
 }
 function timeActor(f: Fixture): TimeEntryActor {
-  return { userId: f.userId, partnerId: f.partnerId, manageAll: true, accessibleOrgIds: [f.orgId, f.eurOrgId] };
+  return { userId: f.userId, partnerId: f.partnerId, manageAll: true, manageBilling: true, accessibleOrgIds: [f.orgId, f.eurOrgId] };
 }
 function ctx(f: Fixture): DbAccessContext {
   return {

@@ -181,8 +181,12 @@ describe('ci-success gating contract', () => {
     // docs-check is gated on the `docs` output instead; build-mobile-ios inherits the gate
     // through mobile-native-changes (its two lines are pinned by mobile-native-ci.test.mjs);
     // recovery-media-e2e carries a compound gate (code AND agent), asserted below instead.
+    // topology-browser-gate is gated on the narrower `topology_browser` output, which the
+    // classifier only ever sets on a non-docs path — so it is already skipped on a docs-only
+    // PR. Its two lines are pinned by classify-pr-paths.test.mjs.
     const exempt = new Set([
       'changes', 'docs-check', 'ci-success', 'main-red-alert', 'build-mobile-ios', 'recovery-media-e2e',
+      'topology-browser-gate',
     ]);
     // lint/security-audit validate CI plumbing itself and must keep running on a
     // tooling-only PR, so they stay gated on `code` alone — never additionally on `app`.

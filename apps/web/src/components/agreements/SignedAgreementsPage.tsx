@@ -5,6 +5,7 @@ import '@/lib/i18n';
 import { navigateTo } from '@/lib/navigation';
 import { useHashState } from '@/lib/useHashState';
 import { fetchWithAuth } from '../../stores/auth';
+import { fetchAllOrganizationsFrom } from '../../lib/fetchAllOrganizations';
 import { runAction, handleActionError } from '../../lib/runAction';
 import { listContractDocuments, contractDocumentPdfPath, linkContractDocument, type ContractDocument } from '../../lib/api/contractDocuments';
 import { listContracts, type ContractSummary } from '../../lib/api/contracts';
@@ -119,12 +120,7 @@ export default function SignedAgreementsPage({
   useEffect(() => {
     void (async () => {
       try {
-        const res = await fetchWithAuth('/orgs/organizations');
-        if (!res.ok) return;
-        const body = (await res.json().catch(() => null)) as
-          | { data?: Organization[]; organizations?: Organization[] }
-          | null;
-        const list = body?.data ?? body?.organizations ?? [];
+        const list = await fetchAllOrganizationsFrom<Organization>('/orgs/organizations');
         setOrgNames(Object.fromEntries(list.map((o) => [o.id, o.name])));
       } catch {
         // Cosmetic org-name enrichment only — a failed GET just leaves the

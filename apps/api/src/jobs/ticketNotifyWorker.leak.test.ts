@@ -52,6 +52,12 @@ vi.mock('../services/sentry', () => ({ captureException: vi.fn() }));
 vi.mock('../services/ticketMailbox/resolveOutboundMailbox', () => ({
   resolveOutboundMailbox: vi.fn(async () => null)
 }));
+vi.mock('../services/inboundEmail/commentNotificationPortalHref', () => ({
+  resolveCommentNotificationPortalHref: vi.fn(async () => ({
+    href: 'https://example.test/portal/tickets/t-1',
+    hasPortalUser: false,
+  })),
+}));
 // outboundThreading.ts reads TICKETS_INBOUND_DOMAIN via getConfig(). Specifier
 // from jobs/ is '../config/validate' — the same as ticketNotifyWorker.test.ts.
 vi.mock('../config/validate', () => ({ getConfig: () => ({ TICKETS_INBOUND_DOMAIN: 'tickets.example.com' }) }));
@@ -212,7 +218,7 @@ describe('outbound composer never leaks an internal note (spec §6/§9)', () => 
       payload: { commentId: 'c-secret', isPublic: true }
     } as never);
 
-    // Branch 2: ticket resolved (un-threaded; no partner lookup)
+    // Branch 2: ticket resolved (layout; partner/org for templates, never comments)
     selectMock.mockReset();
     selectMock
       .mockResolvedValueOnce([TICKET_ROW])
@@ -266,5 +272,100 @@ describe('outbound composer never leaks an internal note (spec §6/§9)', () => 
         expect(args.subject).not.toContain(SECRET);
       }
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// fullMessageReply ON — the actual comment text is emailed to the requester,
+// but ONLY for a live, PUBLIC comment on the EmailService (non-Graph) path.
+// ---------------------------------------------------------------------------
+describe('fullMessageReply: public comment body reaches the requester email; private/deleted never do', () => {
+  const PUBLIC_TEXT = 'Hi Jane, your printer driver has been reinstalled remotely. Please test.';
+  const PARTNER_ROW_FMR = { slug: 'acme', name: 'Acme', settings: { ticketing: { inbound: { fullMessageReply: true } } } };
+  const ORG_ROW = { name: 'Acme Org' };
+  const publicComment = { id: 'c-pub', ticketId: 't-1', isPublic: true, deletedAt: null, content: PUBLIC_TEXT };
+
+  function commentedEvent() {
+    return {
+      type: 'ticket.commented',
+      ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1', actorUserId: 'u-1',
+      payload: { commentId: 'c-pub', isPublic: true },
+    } as never;
+  }
+
+  it('appends a live public comment body to the outbound email', async () => {
+    selectMock.mockReset();
+    selectMock
+      .mockResolvedValueOnce([TICKET_ROW])        // getTicket
+      .mockResolvedValueOnce([PARTNER_ROW_FMR])   // compose: partner (fullMessageReply on)
+      .mockResolvedValueOnce([ORG_ROW])           // compose: getOrgName
+      .mockResolvedValue([publicComment]);        // comment lookup
+
+    await handleTicketEvent(commentedEvent());
+
+    expect(sendEmailMock).toHaveBeenCalledTimes(1);
+    const html = (sendEmailMock.mock.calls[0]![0] as { html: string }).html;
+    expect(html).toContain('printer driver has been reinstalled');
+    // The reply body must sit INSIDE the document (before </body>), not after
+    // </html> where mail clients may strip it.
+    const closeBody = html.toLowerCase().lastIndexOf('</body>');
+    expect(closeBody).toBeGreaterThan(-1);
+    expect(html.indexOf('printer driver has been reinstalled')).toBeLessThan(closeBody);
+  });
+
+  it('does NOT append a public comment body when the TICKET is soft-deleted (disclosure guard)', async () => {
+    // A soft-deleted ticket is 404 in the portal, so its comment text must not be
+    // emailed to the customer even with fullMessageReply on.
+    selectMock.mockReset();
+    selectMock
+      .mockResolvedValueOnce([{ ...TICKET_ROW, deletedAt: new Date('2026-09-20T00:00:00Z') }]) // getTicket: deleted
+      .mockResolvedValueOnce([PARTNER_ROW_FMR])   // compose: partner (fullMessageReply on)
+      .mockResolvedValueOnce([ORG_ROW])           // compose: getOrgName
+      .mockResolvedValue([publicComment]);        // comment lookup (live, public)
+
+    await handleTicketEvent(commentedEvent());
+
+    const html = (sendEmailMock.mock.calls[0]?.[0] as { html: string } | undefined)?.html ?? '';
+    expect(html).not.toContain('printer driver has been reinstalled');
+  });
+
+  it('does NOT append a private comment even with fullMessageReply on (isPublic guard)', async () => {
+    selectMock.mockReset();
+    selectMock
+      .mockResolvedValueOnce([TICKET_ROW])
+      .mockResolvedValueOnce([PARTNER_ROW_FMR])
+      .mockResolvedValueOnce([ORG_ROW])
+      .mockResolvedValue([{ ...publicComment, isPublic: false, content: SECRET }]);
+
+    await handleTicketEvent(commentedEvent());
+
+    const html = (sendEmailMock.mock.calls[0]![0] as { html: string }).html;
+    expect(html).not.toContain(SECRET);
+  });
+
+  it('does NOT append a soft-deleted comment (deletedAt guard)', async () => {
+    selectMock.mockReset();
+    selectMock
+      .mockResolvedValueOnce([TICKET_ROW])
+      .mockResolvedValueOnce([PARTNER_ROW_FMR])
+      .mockResolvedValueOnce([ORG_ROW])
+      .mockResolvedValue([{ ...publicComment, deletedAt: new Date(), content: SECRET }]);
+
+    await handleTicketEvent(commentedEvent());
+
+    const html = (sendEmailMock.mock.calls[0]![0] as { html: string }).html;
+    expect(html).not.toContain(SECRET);
+  });
+
+  it('throws to retry when the comment row is not yet visible (pre-commit)', async () => {
+    selectMock.mockReset();
+    selectMock
+      .mockResolvedValueOnce([TICKET_ROW])
+      .mockResolvedValueOnce([PARTNER_ROW_FMR])
+      .mockResolvedValueOnce([ORG_ROW])
+      .mockResolvedValue([]); // comment not committed yet
+
+    await expect(handleTicketEvent(commentedEvent())).rejects.toThrow(/Comment not found/);
+    expect(sendEmailMock).not.toHaveBeenCalled();
   });
 });

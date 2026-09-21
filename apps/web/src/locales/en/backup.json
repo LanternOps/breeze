@@ -495,6 +495,8 @@
     "originalLocation": "Original location",
     "restoreFilesInPlace": "Restore files in place.",
     "alternatePath": "Alternate path",
+    "alternatePathPlaceholder": "e.g. D:\\Restored or /var/restore",
+    "alternatePathRequired": "Enter a destination path to continue.",
     "restoreToANewFolder": "Restore to a new folder.",
     "reviewConfirm": "Review & confirm",
     "confirmTheRestoreSummaryBeforeStarting": "Confirm the restore summary before starting.",
@@ -617,7 +619,12 @@
     "cpu": "CPU,",
     "mbRam": "MB RAM,",
     "gbDisk": "GB Disk",
-    "mode": "Mode"
+    "mode": "Mode",
+    "rebuildHost": "Rebuild host",
+    "outputPath": "Output path",
+    "rebuildEngine": "Rebuild engine (Linux)",
+    "manualAttachNote": "Attach the VHDX to a Hyper-V VM manually; automatic VM creation for Linux guests arrives with the Windows engine.",
+    "newIdentityNote": "The rebuilt image always receives a new machine identity and never resumes the original device's identity."
   },
   "vMRestoreSpecsStep": {
     "vmSpecifications": "VM specifications",
@@ -655,7 +662,16 @@
     "bootsTheVmDirectlyFromTheBackupStorage": "Boots the VM directly from the backup storage. Ready in seconds. Background migration copies data to the host.",
     "back": "Back",
     "continue": "Continue",
-    "starting": "Starting..."
+    "starting": "Starting...",
+    "rebuildEngineLinux": "Rebuild engine (Linux)",
+    "rebuildEngineDescription": "Rebuilds this whole-machine Linux snapshot into a Hyper-V VHDX disk image on a Linux device running the Breeze helper. The image always receives a new machine identity.",
+    "selectRebuildHost": "Select Linux rebuild host",
+    "chooseALinuxDeviceWithQemuUtils": "Choose an online Linux device with qemu-utils installed and enough free space for the image.",
+    "outputPath": "Output path",
+    "outputPathHint": "Absolute path on the rebuild host ending in .vhdx.",
+    "outputPathInvalid": "Enter an absolute path that ends in .vhdx.",
+    "startRebuild": "Start Rebuild",
+    "rebuildStarted": "Rebuild started. The VHDX will appear on the rebuild host when the rebuild completes."
   },
   "vaultConfigDialog": {
     "device": "Device",
@@ -716,7 +732,15 @@
     "launchExecution": "Launch execution",
     "startANewDrRunFor": "Start a new DR run for",
     "cancel": "Cancel",
-    "startExecution": "Start execution"
+    "startExecution": "Start execution",
+    "executeErrorFallback": "Failed to start execution.",
+    "executeErrorNoRestorableSnapshot": "Cannot start: a device in a bare-metal rebuild group has no restorable backup snapshot. Run a successful backup for every device in that group first.",
+    "executeErrorNoRecoverySource": "Cannot start: a recovery group names no recovery source. Add a snapshot, restore job, or recovery token to the group.",
+    "executeErrorGroupHasNoValidDevices": "Cannot start: a recovery group has no valid devices. Edit the plan and add at least one device to every group.",
+    "executeErrorInvalidSourceReference": "Cannot start: a recovery group references a recovery source that is not a valid identifier. Edit the group and reselect its source.",
+    "executeErrorInvalidStepConfig": "Cannot start: a recovery group has an invalid step configuration. Edit the group and correct its settings.",
+    "executeErrorResourceNotFound": "Cannot start: a snapshot this plan references no longer exists. Edit the affected group and choose a current snapshot.",
+    "executeErrorBackupWriteRequired": "Cannot start: this plan contains a bare-metal rebuild group, which needs the backup write permission."
   },
   "dRExecutionView": {
     "executionDetails": "Execution details",
@@ -739,7 +763,28 @@
     "executionDetailsAreUnavailable": "Execution details are unavailable.",
     "abortDisasterRecoveryExecution": "Abort disaster recovery execution?",
     "deviceCount_one": "{{count}} device",
-    "deviceCount_other": "{{count}} devices"
+    "deviceCount_other": "{{count}} devices",
+    "recoveryStatus": {
+      "created": "Code issued",
+      "media_booted": "Media booted",
+      "planned": "Planned",
+      "restoring": "Restoring",
+      "validated": "Validated",
+      "rebooted": "Rebooted",
+      "checked_in": "Checked in",
+      "completed": "Completed",
+      "failed": "Failed",
+      "refused": "Refused",
+      "unknown": "Recovery pending"
+    },
+    "reissueCode": "Reissue code",
+    "reissueCodeFailed": "Could not reissue the recovery code",
+    "cancelRecovery": "Cancel recovery",
+    "cancelRecoveryFailed": "Could not cancel the recovery",
+    "recoveryCancelled": "Recovery cancelled",
+    "codeShownOnce": "This code is shown once and expires in 15 minutes. Type it at the recovery media prompt.",
+    "copyCode": "Copy code",
+    "copied": "Copied"
   },
   "dRPlanEditor": {
     "defineRecoveryObjectivesSequenceGroupsAndAssignDevices": "Define recovery objectives, sequence groups, and assign devices in restore order.",
@@ -769,7 +814,11 @@
     "groupCount_one": "{{count}} group",
     "groupCount_other": "{{count}} groups",
     "uniqueDeviceCount_one": "{{count}} unique device",
-    "uniqueDeviceCount_other": "{{count}} unique devices"
+    "uniqueDeviceCount_other": "{{count}} unique devices",
+    "chooseAStepTypeForEachGroup": "Choose a step type for each recovery group.",
+    "rebuildWaitTimeoutOutOfRange": "Bare-metal rebuild wait timeout must be a whole number between {{min}} and {{max}} minutes.",
+    "rebuildOutputDirMustBeAbsolute": "Bare-metal rebuild output directory must be an absolute path starting with \"/\" and at most {{max}} characters.",
+    "partialSaveFailure": "Part of this plan was saved before the error, so the plan and the list may now disagree. Fix the problem and save again. Server said: {{message}}"
   },
   "dRPlanGroupCard": {
     "device": "device",
@@ -784,7 +833,23 @@
     "deviceSelection": "Device selection",
     "noDevicesAvailableToAssign": "No devices available to assign.",
     "deviceCount_one": "{{count}} device",
-    "deviceCount_other": "{{count}} devices"
+    "deviceCount_other": "{{count}} devices",
+    "stepType": "Step type",
+    "chooseAStepType": "Choose a step type",
+    "stepTypes": {
+      "vmRestoreFromBackup": "VM restore from backup",
+      "vmInstantBoot": "VM instant boot",
+      "hypervRestore": "Hyper-V restore",
+      "mssqlRestore": "SQL Server restore",
+      "bmrRecover": "Bare-metal recover (boot media)",
+      "bareMetalRebuild": "Bare-metal rebuild (rebuild engine)"
+    },
+    "rebuildHost": "Rebuild host",
+    "rebuildHostHint": "Linux device with qemu-utils that runs rehearsals. Failover boots recovery media on each device instead.",
+    "outputDir": "Output directory",
+    "outputDirHint": "Directory on the rebuild host that receives one VHDX image per device.",
+    "waitTimeout": "Wait timeout (min)",
+    "waitTimeoutHint": "Minutes to wait for each device to check in before the step fails."
   },
   "profiles": {
     "title": "Backup Profiles",

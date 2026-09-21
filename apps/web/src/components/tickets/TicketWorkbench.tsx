@@ -5,6 +5,7 @@ import { ExternalLink, Sparkles } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { TicketTemplateVars } from '@breeze/shared';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
+import { fetchAllOrganizationsFrom } from '../../lib/fetchAllOrganizations';
 import { listCannedResponses, type CannedResponse } from '../../lib/ticketResponseTemplatesApi';
 import { runAction, ActionError } from '../../lib/runAction';
 import { navigateTo } from '@/lib/navigation';
@@ -504,15 +505,11 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
   // the picker just won't show any options (degrade to empty select).
   useEffect(() => {
     let cancelled = false;
-    void fetchWithAuth('/orgs/organizations?limit=100')
-      .then(async (r) => (r.ok ? r.json() : null))
-      .then((body) => {
-        if (cancelled || !body) return;
-        type OrgRow = { id: string; name: string; currencyCode?: string };
-        const rows = (body as { data?: OrgRow[]; organizations?: OrgRow[] }).data
-          ?? (body as { data?: OrgRow[]; organizations?: OrgRow[] }).organizations
-          ?? [];
-        if (Array.isArray(rows)) setOrgs((rows as OrgRow[]).filter((o) => o.id && o.name));
+    type OrgRow = { id: string; name: string; currencyCode?: string };
+    void fetchAllOrganizationsFrom<OrgRow>('/orgs/organizations')
+      .then((rows) => {
+        if (cancelled) return;
+        setOrgs(rows.filter((o) => o.id && o.name));
       })
       .catch(() => { /* degrade gracefully */ });
     return () => { cancelled = true; };
@@ -1064,6 +1061,13 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
     ? (config.statuses.find((s) => s.coreStatus === ticket.status && s.isActive && ticket.statusName && s.name === ticket.statusName)
         ?? config.statuses.find((s) => s.coreStatus === ticket.status && s.isSystem))?.id ?? null
     : null;
+  // While the resolve/pending inline confirmation form is open, keep the
+  // select showing the status the user just picked instead of snapping back
+  // to ticket.status — otherwise the control reads as though the click did
+  // nothing (paper cut: it fired no request and visibly reverted). Reverts
+  // to the real status only when the form is cancelled (both cancel buttons
+  // clear pendingOpen/pendingStatusId).
+  const pendingDisplayStatus: TicketStatus | null = pendingOpen ?? (resolveOpen ? 'resolved' : null);
   const headerStatusColor = ticket.statusColor ?? config?.statuses.find((s) => s.id === selectedStatusId)?.color ?? null;
   const suggestedCategoryName = triageSuggestion?.categoryId
     ? (categories.find((category) => category.id === triageSuggestion.categoryId)?.name ?? triageSuggestion.categoryName ?? t('ticketWorkbench.triage.suggestedCategory'))
@@ -1133,7 +1137,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
             // ticket's custom status name within its core state, falling back to
             // the system row for that core state.
             <select
-              value={selectedStatusId ?? ''}
+              value={pendingDisplayStatus ? (pendingStatusId ?? selectedStatusId ?? '') : (selectedStatusId ?? '')}
               onChange={(e) => void onCustomStatusChange(e.target.value)}
               className={cn('rounded-md border border-l-4 px-2 py-1 text-xs font-medium', statusConfig[ticket.status].color)}
               style={headerStatusColor ? { borderLeftColor: headerStatusColor } : undefined}
@@ -1150,7 +1154,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
             </select>
           ) : (
             <select
-              value={ticket.status}
+              value={pendingDisplayStatus ?? ticket.status}
               onChange={(e) => void onStatusChange(e.target.value as TicketStatus)}
               className={cn('rounded-md border px-2 py-1 text-xs font-medium', statusConfig[ticket.status].color)}
               data-testid="ticket-workbench-status"

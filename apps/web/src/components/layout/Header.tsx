@@ -34,6 +34,7 @@ import {
   fetchWithAuth,
 } from '../../stores/auth';
 import { useAiStore } from '../../stores/aiStore';
+import { usePermissions } from '../../lib/permissions';
 import { useHelpStore } from '../../stores/helpStore';
 import { useUiStore } from '../../stores/uiStore';
 import { useFeaturesStore } from '../../stores/featuresStore';
@@ -97,6 +98,10 @@ export default function Header() {
   // paths return a blob: URL that <img> can render. External URLs pass through.
   const resolvedAvatarUrl = useAvatarBlobUrl(user?.avatarUrl ?? null);
   const { isOpen: isAiOpen, toggle: toggleAi } = useAiStore();
+  // #6396: POST /ai/sessions requires ai_sessions:use — don't show a button
+  // that can only 403 for roles without it (UX only; the route re-checks).
+  const { can } = usePermissions();
+  const canUseAi = can('ai_sessions', 'use');
   const { isOpen: isHelpOpen, toggle: toggleHelp } = useHelpStore();
   const { toggleMobileMenu } = useUiStore();
 
@@ -399,7 +404,7 @@ export default function Header() {
 
       <div className={`flex shrink-0 items-center gap-1 transition-opacity duration-150 sm:gap-2 ${mounted ? 'opacity-100' : 'opacity-0'}`}>
         {/* AI Assistant */}
-        {mounted && isAuthenticated && (
+        {mounted && isAuthenticated && canUseAi && (
           <button
             type="button"
             data-tour="ai-assistant"

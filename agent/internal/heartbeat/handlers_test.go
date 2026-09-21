@@ -2,6 +2,7 @@ package heartbeat
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/breeze-rmm/agent/internal/remote/desktop"
@@ -36,6 +37,7 @@ var allCommandTypes = []string{
 	tools.CmdFileCopy, tools.CmdFileListDrives,
 	tools.CmdFileTrashList, tools.CmdFileTrashRestore, tools.CmdFileTrashPurge,
 	tools.CmdFilesystemAnalysis,
+	tools.CmdSystemCleanupList, tools.CmdSystemCleanupRun,
 	tools.CmdTerminalStart, tools.CmdTerminalData,
 	tools.CmdTerminalResize, tools.CmdTerminalStop,
 
@@ -55,6 +57,7 @@ var allCommandTypes = []string{
 
 	// handlers_network.go init()
 	tools.CmdNetworkDiscovery, tools.CmdSnmpPoll,
+	tools.CmdNetworkDiagnostic, tools.CmdNetworkDiagnosticCancel,
 	tools.CmdNetworkPing, tools.CmdNetworkTcpCheck,
 	tools.CmdNetworkHttpCheck, tools.CmdNetworkDnsCheck,
 
@@ -86,6 +89,7 @@ var allCommandTypes = []string{
 
 	// handlers_bmr_forward.go init()
 	tools.CmdVMRestoreEstimate, tools.CmdVMRestoreFromBackup, tools.CmdBMRRecover,
+	tools.CmdBareMetalRebuild,
 
 	// handlers_user.go init()
 	CmdNotifyUser, CmdTrayUpdate,
@@ -243,5 +247,75 @@ func TestNetworkDiscoveryResultIncludesAdjacencyKey(t *testing.T) {
 	}
 	if _, present := data["adjacency"]; !present {
 		t.Fatalf("expected 'adjacency' key in discovery result payload, got keys: %v", data)
+	}
+}
+
+// Disk Cleanup v2 W04. The registry-completeness tests above already fail if
+// either type is unregistered; these pin the wire strings, which the API's
+// CommandTypes table, COMMAND_OFFLINE_POLICY_REGISTRY, partnerTrust
+// GATED_COMMAND_TYPES and commandTimeouts all mirror.
+func TestSystemCleanupCommandTypeStrings(t *testing.T) {
+	if tools.CmdSystemCleanupList != "system_cleanup_list" {
+		t.Fatalf("CmdSystemCleanupList = %q", tools.CmdSystemCleanupList)
+	}
+	if tools.CmdSystemCleanupRun != "system_cleanup_run" {
+		t.Fatalf("CmdSystemCleanupRun = %q", tools.CmdSystemCleanupRun)
+	}
+}
+
+func TestSystemCleanupListReturnsAParseableCatalogue(t *testing.T) {
+	h := &Heartbeat{}
+	result, handled := h.dispatchCommand(Command{ID: "c1", Type: tools.CmdSystemCleanupList, Payload: map[string]any{}})
+	if !handled {
+		t.Fatal("system_cleanup_list has no handler")
+	}
+	if result.Status != "completed" {
+		t.Fatalf("status = %q, error = %q", result.Status, result.Error)
+	}
+	var payload struct {
+		CatalogVersion int `json:"catalogVersion"`
+		Actions        []struct {
+			ID            string `json:"id"`
+			EstimateKnown bool   `json:"estimateKnown"`
+		} `json:"actions"`
+		VolumesBefore []struct {
+			Mount string `json:"mount"`
+		} `json:"volumesBefore"`
+	}
+	if err := json.Unmarshal([]byte(result.Stdout), &payload); err != nil {
+		t.Fatalf("catalogue stdout is not JSON: %v", err)
+	}
+	if payload.CatalogVersion != 1 {
+		t.Fatalf("catalogVersion = %d, want 1", payload.CatalogVersion)
+	}
+}
+
+// A run with no runId is a programming error on the server, not something to
+// execute against a customer's machine with an unattributable result.
+func TestSystemCleanupRunRequiresARunID(t *testing.T) {
+	h := &Heartbeat{}
+	result, handled := h.dispatchCommand(Command{
+		ID:      "c2",
+		Type:    tools.CmdSystemCleanupRun,
+		Payload: map[string]any{"actionIds": []any{"linux_journal_vacuum"}},
+	})
+	if !handled {
+		t.Fatal("system_cleanup_run has no handler")
+	}
+	if result.Status != "failed" || !strings.Contains(result.Error, "runId") {
+		t.Fatalf("result = %+v, want a failure naming runId", result)
+	}
+}
+
+// An empty selection must not be treated as "run everything".
+func TestSystemCleanupRunRejectsAnEmptySelection(t *testing.T) {
+	h := &Heartbeat{}
+	result, _ := h.dispatchCommand(Command{
+		ID:      "c3",
+		Type:    tools.CmdSystemCleanupRun,
+		Payload: map[string]any{"runId": "11111111-1111-4111-8111-111111111111", "actionIds": []any{}},
+	})
+	if result.Status != "failed" || !strings.Contains(result.Error, "actionIds") {
+		t.Fatalf("result = %+v, want a failure naming actionIds", result)
 	}
 }

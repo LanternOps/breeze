@@ -7,16 +7,6 @@
     "badgeHint": "Gerenciado por um monitor — edite-o a partir do monitor.",
     "monitorLabel": "Monitor"
   },
-  "hub": {
-    "title": "Monitoramento e automação",
-    "tabs": {
-      "monitors": "Monitores",
-      "network": "Rede",
-      "delivery": "Entrega",
-      "legacyRules": "Regras legadas"
-    },
-    "ariaLabel": "Seções de monitoramento"
-  },
   "list": {
     "title": "Monitores",
     "description": "Observe uma condição, responda no dispositivo, notifique e escalone quando ela continuar ocorrendo.",
@@ -34,6 +24,7 @@
     "policiesCount_one": "{{count}} política",
     "policiesCount_other": "{{count}} políticas",
     "notDeployed": "Não implantado",
+    "toggleEnabled": "Ativado: {{name}}",
     "errors": {
       "fetch": "Falha ao carregar os monitores",
       "delete": "Falha ao excluir o monitor",
@@ -44,6 +35,7 @@
     "builtInHint": "Provisionado pelo Breeze. Edite os limites, desative ou exclua — ele não voltará."
   },
   "editor": {
+    "attachedToPolicy": "Monitor criado e anexado à política",
     "titleNew": "Novo monitor",
     "titleEdit": "Editar monitor",
     "breadcrumb": {
@@ -63,6 +55,7 @@
       "activity": "Atividade"
     },
     "fields": {
+      "match": "Correspondência",
       "name": "Nome",
       "description": "Descrição",
       "kind": "Tipo",
@@ -82,7 +75,6 @@
       "channels": "Regras de roteamento mais estes canais",
       "none": "Não notificar"
     },
-    "agentDeliveredHint": "Essa observação é executada no dispositivo e também deve existir na aba Monitoramento de Serviços e Processos da política, até que isso seja unificado.",
     "responsesHint": "As respostas são executadas em ordem no dispositivo que sofreu a violação.",
     "recurrenceHint": "Contado em episódios de violação: um novo episódio só começa depois que a condição se recuperar.",
     "ownerScope": {
@@ -118,9 +110,39 @@
       "title": "Testar em um dispositivo",
       "selectDevice": "Dispositivo",
       "run": "Executar teste"
+    },
+    "deliveryPreview": {
+      "selectOrg": "Selecione uma organização para visualizar a entrega.",
+      "failed": "Não foi possível visualizar a entrega.",
+      "loading": "Resolvendo a entrega…",
+      "disabled": "{{name}} (desativado)",
+      "unavailable": "Canal indisponível",
+      "destination": "Entrega para {{severity}}: {{channels}}",
+      "partnerRule": "Regra do parceiro: {{name}}",
+      "orgRule": "Regra da organização: {{name}}",
+      "partnerDefault": "Padrão do parceiro: {{name}}",
+      "orgDefault": "Padrão da organização: {{name}}",
+      "noRow": "Nenhuma linha de entrega configurada.",
+      "monitorOverride": "Configuração própria do monitor",
+      "escalation": "Escalona via {{name}}",
+      "withoutSite": "Nenhum local selecionado; regras específicas de local são excluídas.",
+      "testRules": "Testar este conjunto de regras",
+      "kind": "Tipo de monitor",
+      "noKind": "Sem tipo de monitor",
+      "site": "Local",
+      "noSite": "Sem local",
+      "sitesFailed": "Não foi possível carregar os locais.",
+      "manage": "Gerenciar entrega",
+      "draft": "A prévia usa os valores atuais do editor.",
+      "skipped": "Ignorado {{id}}: {{reason}}",
+      "skipReasons": {
+        "disabled": "desativado",
+        "unavailable": "indisponível"
+      }
     }
   },
   "kinds": {
+    "composite": "Composto (todas ou alguma de várias)",
     "cpu": "Uso de CPU",
     "memory": "Uso de memória",
     "disk": "Uso de disco",
@@ -178,7 +200,8 @@
     "target": "Destino",
     "port": "Porta",
     "expectStatus": "Código de status esperado",
-    "pollingIntervalSeconds": "Consultar a cada (segundos)"
+    "pollingIntervalSeconds": "Consultar a cada (segundos)",
+    "match": "Correspondência"
   },
   "operators": {
     "gt": "maior que",
@@ -216,6 +239,10 @@
     "read": "Leitura",
     "write": "Escrita",
     "total": "Total"
+  },
+  "compositeMatch": {
+    "all": "Todas as condições",
+    "any": "Qualquer condição"
   },
   "antivirusChecks": {
     "not_protected": "Não protegido",

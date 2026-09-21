@@ -1,3 +1,4 @@
+import { AI_AGENT_RUN_STATUSES } from '@breeze/shared';
 /**
  * AI Tool Input Schemas
  *
@@ -9,7 +10,14 @@
 import { z } from 'zod';
 import { isIP } from 'node:net';
 import { ACTOR_TYPES, AI_AGENT_KINDS, INVOICE_STATUSES, currencyCodeSchema, monitorKindSchema } from '@breeze/shared';
-import { backupProfileSelectionsSchema, proposeScriptInputSchema, ringAutoApproveSchema } from '@breeze/shared/validators';
+import {
+  backupProfileSelectionsSchema,
+  proposeScriptInputSchema,
+  ringAutoApproveSchema,
+  JOURNAL_VACUUM_MAX_BYTES,
+  JOURNAL_VACUUM_MIN_BYTES,
+  SYSTEM_CLEANUP_ACTION_IDS,
+} from '@breeze/shared/validators';
 import { aiRunContextInputShape } from './scriptRunRequest';
 import { fleetToolInputSchemas } from './aiToolSchemasFleet';
 import { backupToolSchemas } from './aiToolSchemasBackup';
@@ -19,7 +27,7 @@ import {
   peripheralPolicyActionEnum,
   peripheralPolicyTargetTypeEnum,
   peripheralEventTypeEnum
-} from '../db/schema';
+} from '../db/schema/peripheralControl';
 import { CONFIG_FEATURE_TYPES } from './configFeatureTypes';
 import { CONTACT_ROLES } from './contacts/types';
 
@@ -96,8 +104,35 @@ const cleanupPath = z.string().max(4096).refine(
   { message: 'Path traversal (..) not allowed' }
 );
 
+export const deliveryToolShape = {
+  action: z.enum(['resolve','list_routing','create_routing','update_routing','delete_routing','set_default','list_escalation','create_escalation','update_escalation','delete_escalation']),
+  orgId: uuid.optional(), ownerScope: z.enum(['organization', 'partner']).optional(), id: uuid.optional(),
+  severity: z.enum(['critical','high','medium','low','info']).optional(), kind: monitorKindSchema.optional(),
+  siteId: uuid.optional(), monitorId: uuid.optional(), data: z.record(z.string(), z.unknown()).optional(),
+};
+export const deliveryToolSchema = z.object(deliveryToolShape).strict().superRefine((v, ctx) => {
+  if (v.action === 'resolve' && (!v.severity || !v.orgId)) ctx.addIssue({ code: 'custom', message: 'orgId and severity are required for resolve' });
+  if (/^(update|delete)_/.test(v.action) && !v.id) ctx.addIssue({ code: 'custom', path: ['id'], message: 'id is required for update/delete' });
+  if ((/^(create|update)_/.test(v.action) || v.action === 'set_default') && !v.data) ctx.addIssue({ code: 'custom', path: ['data'], message: 'data is required for writes' });
+});
+
 // Tool schemas
 export const toolInputSchemas: Record<string, z.ZodType> = {
+  list_time_entries: z.object({
+    orgId: uuid.optional(),
+    ticketId: uuid.optional(),
+    userId: uuid.optional(),
+    from: z.string().optional(),
+    to: z.string().optional(),
+    running: z.boolean().optional(),
+    billingStatus: z.enum(['not_billed', 'billed', 'no_charge', 'contract']).optional(),
+    approved: z.boolean().optional(),
+    limit: z.number().int().min(1).max(200).optional(),
+    offset: z.number().int().min(0).optional(),
+  }),
+  get_running_timer: z.object({}),
+  get_timesheet: z.object({ weekStart: z.string(), userId: uuid.optional() }),
+
   query_devices: z.object({
     status: z.enum(['online', 'offline', 'maintenance', 'decommissioned']).optional(),
     osType: z.enum(['windows', 'macos', 'linux']).optional(),
@@ -156,6 +191,15 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     limit: z.number().int().min(1).optional(),
   }),
 
+  list_network_assets: z.object({
+    orgId: z.string().guid().optional(),
+    siteId: z.string().guid().optional(),
+    approvalStatus: z.enum(['pending', 'approved', 'dismissed']).optional(),
+    assetType: z.enum(['workstation', 'server', 'printer', 'router', 'switch', 'firewall', 'access_point', 'phone', 'iot', 'camera', 'nas', 'unknown', 'website', 'service']).optional(),
+    linkedDeviceId: z.string().guid().optional(),
+    limit: z.number().int().min(1).max(200).optional(),
+  }),
+  get_network_asset: z.object({ assetId: z.string().guid() }),
   get_network_asset_reachability: z.object({
     asset_id: uuid,
   }),
@@ -214,6 +258,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
       'comment',
       'assign',
       'update_status',
+      'list_work_types',
       'log_time_entry',
       'start_timer',
       'stop_timer',
@@ -261,6 +306,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     startedAt: z.string().datetime().optional(),
     endedAt: z.string().datetime().optional(),
     isBillable: z.boolean().optional(),
+    workType: z.string().optional(),
     // Interpreted in the ticket org's currency (spec §9); the entry snapshots that currency.
     hourlyRate: z.number().nonnegative().optional(),
     fields: z.object({
@@ -358,6 +404,50 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     blocksOffset: z.number().int().min(0).optional(),
     blocksLimit: z.number().int().min(1).max(100).optional(),
     includeBlockContent: z.boolean().optional(),
+  }),
+
+  list_remediation_suggestions: z.object({
+    orgId: z.string().guid().optional(),
+    sourceType: z.enum(['alert', 'anomaly', 'correlation', 'rca']).optional(),
+    sourceId: z.string().min(1).max(255).optional(),
+    deviceId: z.string().guid().optional(),
+    status: z.enum(['all', 'suggested', 'accepted', 'edited', 'rejected', 'executed', 'failed']).optional(),
+    limit: z.number().int().min(1).max(100).optional(),
+  }),
+
+  list_incidents: z.object({
+    orgId: z.string().guid().optional(),
+    status: z.enum(['detected', 'analyzing', 'contained', 'recovering', 'closed']).optional(),
+    severity: z.enum(['p1', 'p2', 'p3', 'p4']).optional(),
+    classification: z.string().max(40).optional(),
+    assignedTo: z.string().guid().optional(),
+    startDate: z.string().datetime({ offset: true }).optional(),
+    endDate: z.string().datetime({ offset: true }).optional(),
+    limit: z.number().int().min(1).max(100).optional(),
+    offset: z.number().int().min(0).optional(),
+  }),
+
+  list_ai_agents: z.object({ includeDisabled: z.boolean().optional() }),
+  list_ai_agent_runs: z.object({
+    agentId: z.string().guid().optional(), orgId: z.string().guid().optional(),
+    status: z.enum(AI_AGENT_RUN_STATUSES).optional(),
+    limit: z.number().int().min(1).max(50).optional(),
+  }),
+  get_ai_agent_run: z.object({ runId: z.string().guid() }),
+  list_sites: z.object({
+    orgId: z.string().guid().optional(),
+    search: z.string().max(255).optional(),
+    limit: z.number().int().min(1).max(100).optional(),
+    offset: z.number().int().min(0).optional(),
+  }),
+  get_site: z.object({ siteId: z.string().guid() }),
+
+  list_org_contacts: z.object({
+    orgId: z.string().guid(),
+    siteId: z.union([z.literal('none'), z.string().guid()]).optional(),
+    role: z.string().min(1).max(64).optional(),
+    limit: z.number().int().min(1).max(100).optional(),
+    offset: z.number().int().min(0).optional(),
   }),
 
   list_organizations: z.object({
@@ -998,13 +1088,53 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   disk_cleanup: z.object({
     deviceId: uuid,
     action: z.enum(['preview', 'execute']),
+    // The volume to preview/clean. Normalised server-side; defaults to the
+    // device's OS root. `safePath` (not `cleanupPath`) so the blocked-prefix
+    // list applies — a scan ROOT is never /proc, /sys or /dev.
+    path: safePath.optional(),
     categories: z.array(z.enum(['temp_files', 'browser_cache', 'package_cache', 'trash'])).max(10).optional(),
     paths: z.array(cleanupPath).min(1).max(200).optional(),
+    // Execute needs an explicit id or the run remembered by this tool's preview.
+    // The handler enforces the latter because it is process-local state.
+    cleanupRunId: uuid.optional(),
     maxCandidates: z.number().int().min(1).max(200).optional(),
   }).refine(
     (data) => data.action === 'preview' || (data.action === 'execute' && Array.isArray(data.paths) && data.paths.length > 0),
     { message: 'paths are required for execute action' }
   ),
+
+  /**
+   * OS-native cleaners (Disk Cleanup v2 §5.3, §7.2). Client input that reaches
+   * an argv is exactly two things: a membership-checked action id and one
+   * bounded integer. Everything else about the command line is a constant in
+   * the agent's own catalog.
+   *
+   * Deliberately NOT `.refine()`d — see the registry-parity test: a ZodEffects
+   * has no `.shape`, and `toolActionEnum` reads the action enum out of it. The
+   * "actionIds required for run" rule lives in the handler, exactly where
+   * disk_cleanup's "paths required for execute" rule also lives.
+   */
+  system_cleanup: z.object({
+    deviceId: uuid,
+    action: z.enum(['list', 'run', 'status']),
+    actionIds: z
+      .array(z.enum(SYSTEM_CLEANUP_ACTION_IDS))
+      .min(1)
+      .max(SYSTEM_CLEANUP_ACTION_IDS.length)
+      .optional(),
+    params: z
+      .object({
+        // journalctl --vacuum-size, bounded 64 MiB … 4 GiB (§7.2) — the same
+        // constants the route body schema uses.
+        journalVacuumBytes: z.number().int().min(JOURNAL_VACUUM_MIN_BYTES).max(JOURNAL_VACUUM_MAX_BYTES).optional(),
+      })
+      .strict()
+      .optional(),
+    /** run's handle, for `status`. */
+    cleanupRunId: uuid.optional(),
+    /** A pending catalog request's id, for a `list` re-check. */
+    commandId: uuid.optional(),
+  }),
 
   query_audit_log: z.object({
     action: z.string().max(100).optional(),
@@ -1375,8 +1505,8 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   }),
 
   manage_policy_feature_link: z.object({
-    action: z.enum(['add', 'update', 'remove', 'list']),
-    configPolicyId: uuid,
+    action: z.enum(['add', 'update', 'remove', 'list', 'describe']),
+    configPolicyId: uuid.optional(),
     featureLinkId: uuid.optional(),
     // Derived from the canonical list, never hand-copied: this enum had drifted
     // four values behind `configFeatureTypeEnum` and behind the enum the tool's
@@ -1386,6 +1516,9 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     featureType: z.enum(CONFIG_FEATURE_TYPES).optional(),
     featurePolicyId: uuid.optional().nullable(),
     inlineSettings: z.record(z.string(), z.unknown()).optional().nullable(),
+  }).superRefine((input, ctx) => {
+    const field = input.action === 'describe' ? 'featureType' : 'configPolicyId';
+    if (!input[field]) ctx.addIssue({ code: z.ZodIssueCode.custom, path: [field], message: `${field} is required for ${input.action}` });
   }),
 
   // Monitor definition tools (#5289 Task 8). `definition` is deep-validated by
@@ -1576,6 +1709,8 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   test_webhook: z.object({
     webhookId: uuid,
   }),
+
+  manage_delivery: deliveryToolSchema,
 
   manage_notification_channels: z.object({
     action: z.enum(['list', 'test', 'create', 'update', 'delete']),

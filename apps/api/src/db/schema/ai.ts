@@ -142,7 +142,8 @@ export const aiToolExecutions = pgTable('ai_tool_executions', {
   completedAt: timestamp('completed_at')
 }, (table) => ({
   sessionIdIdx: index('ai_tool_executions_session_id_idx').on(table.sessionId),
-  statusIdx: index('ai_tool_executions_status_idx').on(table.status)
+  statusIdx: index('ai_tool_executions_status_idx').on(table.status),
+  createdAtIdx: index('ai_tool_executions_created_at_idx').on(table.createdAt)
 }));
 
 // ============================================
@@ -204,6 +205,12 @@ export const aiBudgetReservations = pgTable('ai_budget_reservations', {
   idempotencyKey: varchar('idempotency_key', { length: 200 }).notNull(),
   sessionId: uuid('session_id'),
   billingSource: text('billing_source', { enum: ['platform', 'partner_key'] }).notNull(),
+  // #5557: which cap this hold was admitted against. 'technician' is every
+  // operator-facing surface; 'client' is the Office add-in, which also carries
+  // the client_ai_org_policies sub-cap. The ORG cap stays global (settled
+  // client spend already lands in ai_cost_usage), so only the client sub-cap's
+  // in-flight sum is namespace-filtered.
+  namespace: text('namespace', { enum: ['technician', 'client'] }).notNull().default('technician'),
   dailyPeriodKey: varchar('daily_period_key', { length: 10 }).notNull(),
   monthlyPeriodKey: varchar('monthly_period_key', { length: 7 }).notNull(),
   uncapped: boolean('uncapped').notNull().default(false),
@@ -233,6 +240,8 @@ export const aiBudgetReservations = pgTable('ai_budget_reservations', {
     .on(table.orgId, table.idempotencyKey),
   activePeriodIdx: index('ai_budget_reservations_active_period_idx')
     .on(table.orgId, table.dailyPeriodKey, table.monthlyPeriodKey, table.status),
+  namespacePeriodIdx: index('ai_budget_reservations_namespace_period_idx')
+    .on(table.orgId, table.namespace, table.dailyPeriodKey, table.monthlyPeriodKey, table.status),
   // Partial index created via SQL migration
   // (ai_budget_reservations_expiry_sweep_idx, WHERE status IN ('active','indeterminate')).
   // Composite (session_id, org_id) FK is SQL-only because Drizzle cannot

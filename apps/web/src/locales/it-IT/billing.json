@@ -1654,6 +1654,7 @@
     },
     "summary": {
       "noTaxRate": "Le righe sono contrassegnate come imponibili, ma non è impostata alcuna aliquota fiscale.",
+      "inheritedTaxRate": "L'imposta non è ancora su questa bozza: all'emissione si applica l'aliquota ereditata del {{rate}}, che aggiunge {{tax}} per un totale di {{total}}.",
       "setTaxRate": "Impostane una in Impostazioni fatturazione",
       "subtotal": "Subtotale",
       "tax": "Imposta",
@@ -2139,6 +2140,7 @@
     "saveSuccess": "Impostazioni di fatturazione dell'organizzazione salvate",
     "tax": {
       "partnerDefault": "Predefinito partner",
+      "partnerDefaultWithValue": "{{pct}}% (predefinito partner)",
       "taxExempt": "Esente da imposta",
       "taxId": "ID fiscale",
       "taxRate": "Aliquota fiscale (%)",
@@ -2211,7 +2213,8 @@
   "partnerBillingSettingsTabs": {
     "defaults": "Predefiniti",
     "documents": "Documenti",
-    "connections": "Connessioni"
+    "connections": "Connessioni",
+    "rates": "Tariffe"
   },
   "billingConnectionsTab": {
     "accounting": {
@@ -2225,5 +2228,59 @@
       "catalogCta": "Apri catalogo prodotti →",
       "distributorsCta": "Apri distributori →"
     }
+  },
+  "orgBillingProfile": {
+    "label": "Profilo di fatturazione",
+    "inherit": "{{name}} (predefinito del partner)",
+    "noProfile": "Nessun profilo di fatturazione",
+    "unavailable": "Profilo assegnato non disponibile",
+    "resolved": "Tariffe di {{name}}",
+    "allOtherWork": "Tutti gli altri lavori",
+    "billable": "Fatturabile a {{rate}}/h",
+    "included": "Incluso",
+    "nonBillable": "Non fatturabile",
+    "noRate": "Fatturabile — tariffa non configurata",
+    "minimum": "{{outcome}} · minimo {{minutes}} min",
+    "rounding": "Arrotonda a {{minutes}} minuti",
+    "archivedWorkType": "Tipo di lavoro archiviato",
+    "mismatch": "Il profilo di fatturazione assegnato è inattivo o usa un’altra valuta. Si applica il profilo predefinito del partner nella valuta corrispondente.",
+    "currencyWarning": "Il profilo di fatturazione assegnato usa {{currency}}. Dopo questa modifica si applicherà il profilo predefinito del partner nella valuta corrispondente.",
+    "loadError": "Impossibile caricare i profili di fatturazione.",
+    "saveError": "Impossibile salvare il profilo di fatturazione.",
+    "partialSave": "Il profilo di fatturazione è stato salvato, ma le altre impostazioni di fatturazione no. Salva di nuovo per completare."
+  },
+  "rates": {
+    "title": "Tariffe",
+    "description": "Imposta le tariffe della manodopera per profilo di fatturazione e tipo di lavoro. Le modifiche si applicano alle nuove registrazioni di tempo.",
+    "create": "Aggiungi profilo di fatturazione",
+    "loadError": "Impossibile caricare i profili di fatturazione. Riprova.",
+    "saveError": "Impossibile salvare il profilo di fatturazione.",
+    "saved": "Profilo di fatturazione salvato.",
+    "empty": "Aggiungi un profilo di fatturazione per configurare le tariffe della manodopera.",
+    "profile": "Profilo di fatturazione",
+    "allOtherWork": "Tutti gli altri lavori",
+    "actions": "Azioni",
+    "default": "Predefinito",
+    "clone": "Duplica profilo di fatturazione",
+    "setDefault": "Imposta come predefinito",
+    "archive": "Archivia",
+    "usageUnavailable": "L’utilizzo da parte delle organizzazioni non è disponibile.",
+    "edit": "Modifica profilo di fatturazione",
+    "name": "Nome",
+    "currency": "Valuta",
+    "rounding": "Arrotondamento (minuti)",
+    "notes": "Note",
+    "coverage": "Esito di fatturazione",
+    "hourlyRate": "Tariffa oraria",
+    "minimum": "Minimo (minuti)",
+    "billable": "Fatturabile",
+    "included": "Incluso",
+    "nonBillable": "Non fatturabile",
+    "noRate": "Fatturabile · tariffa non impostata",
+    "billableAt": "Fatturabile a {{rate}}/h",
+    "minimumSummary": "Minimo {{minutes}} min",
+    "roundingSummary": "Arrotonda a {{minutes}} min",
+    "inherits": "Usa Tutti gli altri lavori",
+    "currencyHelp": "Non è possibile cambiare la valuta di un profilo predefinito o con tariffe. Un arrotondamento vuoto significa nessun arrotondamento."
   }
 }

@@ -31,9 +31,11 @@ import {
   createMonitorDefinition,
   updateMonitorDefinition,
   deleteMonitorDefinition,
+  getMonitorDefinition,
   MonitorOwnershipError,
   MonitorValidationError,
 } from './monitorService';
+import * as monitorCompiler from './monitorCompiler';
 import type { AuthContext } from '../../middleware/auth';
 import type { CreateMonitorDefinitionInput, UpdateMonitorDefinitionInput } from '@breeze/shared';
 
@@ -397,5 +399,57 @@ describe('updateMonitorDefinition / deleteMonitorDefinition run for real (#5289 
         auth(),
       ),
     ).resolves.toBe('ok');
+  });
+});
+
+
+it('creates a system monitor with a null actor using the supplied executor throughout', async () => {
+  const created = existingRow({ createdBy: null });
+  const values = vi.fn().mockReturnValue({ returning: async () => [created] });
+  const tx = { insert: vi.fn().mockReturnValue({ values }) };
+  const from = vi.fn()
+    .mockReturnValueOnce({ where: () => ({ limit: async () => [{ orgId: null, partnerId: PARTNER }] }) })
+    .mockReturnValueOnce({ where: () => ({ limit: async () => [{ partnerId: PARTNER }] }) });
+  const executor = {
+    select: vi.fn().mockReturnValue({ from }),
+    transaction: vi.fn(async (callback: (transaction: typeof tx) => unknown) => callback(tx)),
+  };
+  const compile = vi.spyOn(monitorCompiler, 'compileMonitorInTx').mockResolvedValue({
+    alertTemplateId: 'template-1', alertRuleId: 'rule-1', automationId: 'automation-1', hash: 'hash',
+  });
+  try {
+    const result = await createMonitorDefinition(
+      input({ escalationPolicyId: ESCALATION_POLICY }), auth({ scope: 'system' }), {},
+      executor as unknown as monitorCompiler.DbExecutor,
+    );
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({ createdBy: null, orgId: ORG, partnerId: null }));
+    expect(executor.select).toHaveBeenCalledTimes(2);
+    expect(executor.transaction).toHaveBeenCalledTimes(1);
+    expect(tx.insert).toHaveBeenCalledTimes(1);
+    expect(compile).toHaveBeenCalledWith(tx, created);
+    expect(result).toMatchObject({ createdBy: null, compiledAlertRuleId: 'rule-1' });
+    expect(dbMock.select).not.toHaveBeenCalled();
+    expect(dbMock.transaction).not.toHaveBeenCalled();
+    expect(dbMock.insert).not.toHaveBeenCalled();
+  } finally {
+    compile.mockRestore();
+  }
+});
+
+
+describe('conversion executor propagation', () => {
+  it('reads and deletes only through the caller executor', async () => {
+    const row = existingRow();
+    const where = vi.fn(async () => undefined);
+    const executor = {
+      select: vi.fn(() => ({ from: () => ({ where: () => ({ limit: async () => [row] }) }) })),
+      delete: vi.fn(() => ({ where })),
+    };
+    expect(await getMonitorDefinition('monitor-1', auth(), executor as never)).toEqual(row);
+    await deleteMonitorDefinition('monitor-1', auth(), executor as never);
+    expect(executor.select).toHaveBeenCalledTimes(2);
+    expect(executor.delete).toHaveBeenCalledTimes(1);
+    expect(dbMock.select).not.toHaveBeenCalled();
+    expect(dbMock.delete).not.toHaveBeenCalled();
   });
 });

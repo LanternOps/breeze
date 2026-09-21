@@ -11,6 +11,7 @@ import { loginPathWithNext } from '../../lib/authScope';
 import { handleActionError } from '../../lib/runAction';
 import { dispatchTrustDenied } from '../../lib/trustProbation';
 import { showToast } from '../shared/Toast';
+import { ConfirmDialog } from '../shared/ConfirmDialog';
 import {
   createSendingDomain,
   deleteSenderIdentity,
@@ -54,6 +55,7 @@ export default function PartnerSendingDomainTab() {
   const [busy, setBusy] = useState(false);
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [inbound, setInbound] = useState<InboundState>({ configured: false, address: null });
+  const [confirmRemove, setConfirmRemove] = useState<SendingDomainDto | null>(null);
 
   const load = useCallback(async (showSpinner: boolean) => {
     if (showSpinner) setLoading(true);
@@ -145,12 +147,13 @@ export default function PartnerSendingDomainTab() {
   const handleCheck = (domainId: string) =>
     run(() => requestSendingDomainCheck({ domainId, maxDomains, onUnauthorized: UNAUTHORIZED }), 'errorCheckFailed');
 
-  const handleRemove = (domain: SendingDomainDto) => {
-    const message = domain.providerManaged
-      ? t('partnerSendingDomains.removeConfirm', { domain: domain.domain })
-      : t('partnerSendingDomains.removeConfirmUnmanaged', { domain: domain.domain });
-    if (!window.confirm(message)) return Promise.resolve();
-    return run(
+  const handleRemove = (domain: SendingDomainDto) => setConfirmRemove(domain);
+
+  const confirmRemoveDomain = () => {
+    if (!confirmRemove) return;
+    const domain = confirmRemove;
+    setConfirmRemove(null);
+    void run(
       () => removeSendingDomain({ domainId: domain.id, maxDomains, onUnauthorized: UNAUTHORIZED }),
       'errorRemoveFailed',
     );
@@ -274,6 +277,24 @@ export default function PartnerSendingDomainTab() {
           />
         </>
       )}
+
+      <ConfirmDialog
+        open={confirmRemove !== null}
+        onClose={() => setConfirmRemove(null)}
+        onConfirm={confirmRemoveDomain}
+        title={t('partnerSendingDomains.removeTitle')}
+        message={
+          confirmRemove
+            ? (confirmRemove.providerManaged
+                ? t('partnerSendingDomains.removeConfirm', { domain: confirmRemove.domain })
+                : t('partnerSendingDomains.removeConfirmUnmanaged', { domain: confirmRemove.domain }))
+            : ''
+        }
+        confirmLabel={t('common:actions.remove')}
+        variant="destructive"
+        isLoading={busy}
+        confirmTestId="sending-domains-remove-confirm"
+      />
     </div>
   );
 }

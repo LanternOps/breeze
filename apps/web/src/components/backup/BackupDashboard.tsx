@@ -30,17 +30,19 @@ const SLADashboard = lazy(() => import('./SLADashboard'));
 const EncryptionKeyList = lazy(() => import('./EncryptionKeyList'));
 const RecoveryBootstrapTab = lazy(() => import('./RecoveryBootstrapTab'));
 const SnapshotBrowser = lazy(() => import('./SnapshotBrowser'));
+const RestoreWizard = lazy(() => import('./RestoreWizard'));
 const BackupProfilesTab = lazy(() => import('./BackupProfilesTab'));
 
-type BackupTab = 'overview' | 'verification' | 'profiles' | 'snapshots' | 'mssql' | 'hyperv' | 'vault' | 'sla' | 'encryption' | 'recovery-bootstrap';
+type BackupTab = 'overview' | 'verification' | 'profiles' | 'snapshots' | 'restore' | 'mssql' | 'hyperv' | 'vault' | 'sla' | 'encryption' | 'recovery-bootstrap';
 
-const ALL_TABS: BackupTab[] = ['overview', 'verification', 'profiles', 'snapshots', 'mssql', 'hyperv', 'vault', 'sla', 'encryption', 'recovery-bootstrap'];
+const ALL_TABS: BackupTab[] = ['overview', 'verification', 'profiles', 'snapshots', 'restore', 'mssql', 'hyperv', 'vault', 'sla', 'encryption', 'recovery-bootstrap'];
 
 const TAB_LABELS: Record<BackupTab, string> = {
   overview: 'Overview',
   verification: 'Verification',
   profiles: 'Profiles',
   snapshots: 'Snapshots',
+  restore: 'Restore',
   mssql: 'SQL Server',
   hyperv: 'Hyper-V',
   vault: 'Vault',
@@ -422,6 +424,12 @@ function BackupDashboardInner() {
       {activeTab === 'snapshots' && (
         <Suspense fallback={<TabFallback />}>
           <SnapshotBrowser />
+        </Suspense>
+      )}
+
+      {activeTab === 'restore' && (
+        <Suspense fallback={<TabFallback />}>
+          <RestoreWizard />
         </Suspense>
       )}
 

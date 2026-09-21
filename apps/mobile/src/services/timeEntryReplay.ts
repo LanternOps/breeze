@@ -146,6 +146,7 @@ export function makeReplaySender(senders: ReplaySenders): (write: QueuedWrite) =
             endedAt: optionalString(write.payload, 'endedAt'),
             ticketId: optionalString(write.payload, 'ticketId'),
             description: optionalString(write.payload, 'description'),
+            isBillable: optionalBoolean(write.payload, 'isBillable'),
           }) as ConfirmSuggestionInput
         );
         return;

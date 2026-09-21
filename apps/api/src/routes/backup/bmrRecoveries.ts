@@ -6,48 +6,60 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '../../lib/validation';
-import { and, desc, eq, gt, isNull, notInArray } from 'drizzle-orm';
+import { and, desc, eq, gt, isNull } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
 import {
-  BARE_METAL_RECOVERY_TERMINAL,
-  bareMetalRecoveries,
   backupSnapshots,
+  bareMetalRecoveries,
   devices,
   recoveryTokens,
   type BareMetalRecoveryStatus,
 } from '../../db/schema';
 import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
-import { writeAuditEvent, writeRouteAudit } from '../../services/auditEvents';
+import { writeAuditEvent } from '../../services/auditEvents';
 import { PERMISSIONS } from '../../services/permissions';
 import { resolveScopedOrgId } from './helpers';
 import { authorizeRouteResilienceResources } from './resilienceAuthorization';
 import {
   canTransition,
-  formatRecoveryCode,
-  generateRecoveryCode,
   generateRecoveryNonce,
   hashRecoveryCode,
   hashRecoveryNonce,
   isOverdue,
   normalizeRecoveryCode,
-  RECOVERY_CODE_TTL_MS,
 } from '../../services/bareMetalRecoveryCodes';
 import {
+  BareMetalRecoveryError,
+  cancelBareMetalRecovery,
+  createBareMetalRecovery,
+  reissueRecoveryCode,
+} from '../../services/bareMetalRecoveryService';
+import {
+  asRecord,
   buildAuthenticatedBootstrapPayload,
   generateRecoveryToken,
   hashRecoveryToken,
   isValidRecoveryTokenFormat,
   resolveSnapshotProviderConfig,
 } from '../../services/recoveryBootstrap';
+import { negotiateRecoveryCapabilities } from '../../services/recoveryCapabilities';
+import { readSnapshotFileIndexState } from '../../services/backupSnapshotFileIndex';
+import { enqueueSnapshotFileIndexHydration } from '../../jobs/backupSnapshotFileIndexWorker';
+import { normalizeStorageIdentity } from '../../jobs/backupRetention';
 import { enforcePublicRateLimit, enforceTokenRateLimit, runInRecoveryOrgContext } from './bmr';
 import {
   bmrExchangeSchema,
   bmrProgressSchema,
+  bmrRecoveryCancelSchema,
   bmrRecoveryCreateSchema,
   bmrRecoveryListSchema,
 } from './schemas';
 
 const idParamSchema = z.object({ id: z.string().guid() });
+
+function recoveryErrorResponse(c: { json: (body: unknown, status: 404 | 409) => Response }, err: BareMetalRecoveryError): Response {
+  return c.json({ error: err.code, ...(err.details ?? {}) }, err.status);
+}
 
 // Bare-metal recovery W04a review fix: thrown from inside the exchange
 // transaction when the conditional one-time-claim UPDATE matches 0 rows
@@ -78,6 +90,9 @@ export function toRecoverySummary(row: BareMetalRecoveryRow) {
     recoveryTokenId: row.recoveryTokenId,
     identity: row.identity,
     status: row.status,
+    executingDeviceId: row.executingDeviceId ?? null,
+    drExecutionId: row.drExecutionId ?? null,
+    drGroupId: row.drGroupId ?? null,
     overdue: isOverdue(row.status, row.rebootedAt),
     codeExpiresAt: row.codeExpiresAt.toISOString(),
     codeUsedAt: iso(row.codeUsedAt),
@@ -122,71 +137,119 @@ bmrRecoveryRoutes.post(
     );
     if (!authorization.ok) return authorization.response;
 
-    const [snapshot] = await db
-      .select()
-      .from(backupSnapshots)
-      .where(and(eq(backupSnapshots.id, payload.snapshotId), eq(backupSnapshots.orgId, orgId)))
-      .limit(1);
-    if (!snapshot) {
-      return c.json({ error: 'Snapshot not found' }, 404);
-    }
-    if (snapshot.bareMetalRestorable !== true) {
-      return c.json(
-        {
-          error: 'snapshot_not_bare_metal_restorable',
-          reasons: snapshot.bareMetalReasons ?? ['snapshot was not assessed for bare-metal restore'],
-        },
-        409
-      );
-    }
-
-    const [inProgress] = await db
-      .select({ id: bareMetalRecoveries.id, status: bareMetalRecoveries.status })
-      .from(bareMetalRecoveries)
-      .where(
-        and(
-          eq(bareMetalRecoveries.deviceId, snapshot.deviceId),
-          eq(bareMetalRecoveries.orgId, orgId),
-          notInArray(bareMetalRecoveries.status, [...BARE_METAL_RECOVERY_TERMINAL])
-        )
-      )
-      .limit(1);
-    if (inProgress) {
-      return c.json({ error: 'recovery_in_progress', recoveryId: inProgress.id, status: inProgress.status }, 409);
-    }
-
-    const code = generateRecoveryCode();
-    const [row] = await db
-      .insert(bareMetalRecoveries)
-      .values({
+    // W05a: the body lives in bareMetalRecoveryService so DR and Restore-as-VM
+    // create recoveries without HTTP; the service audits `bmr.recovery.create`.
+    try {
+      const { row, code } = await createBareMetalRecovery({
         orgId,
-        deviceId: snapshot.deviceId,
-        snapshotId: snapshot.id,
+        snapshotId: payload.snapshotId,
         identity: payload.identity,
-        codeHash: hashRecoveryCode(code),
-        codeExpiresAt: new Date(Date.now() + RECOVERY_CODE_TTL_MS),
-        // Placeholder until exchange, which generates and discloses the real
-        // nonce exactly once — the column is NOT NULL so create needs some
-        // hash here, but nothing in the system knows this placeholder's
-        // preimage, so it authenticates nothing on its own.
-        nonceHash: hashRecoveryNonce(generateRecoveryNonce()),
-        status: 'created',
         createdBy: auth.user?.id ?? null,
-      })
-      .returning();
-    if (!row) {
-      return c.json({ error: 'Failed to create recovery' }, 500);
+        source: 'route',
+      });
+      const indexState = row.snapshotId ? await readSnapshotFileIndexState(row.snapshotId) : null;
+      return c.json({ ...toRecoverySummary(row), code, fileIndex: { status: indexState?.status ?? 'none' } }, 201);
+    } catch (err) {
+      if (err instanceof BareMetalRecoveryError) {
+        if (err.code === 'snapshot_not_found') return c.json({ error: 'Snapshot not found' }, 404);
+        return recoveryErrorResponse(c, err);
+      }
+      throw err;
     }
+  }
+);
 
-    writeRouteAudit(c, {
-      orgId,
-      action: 'bmr.recovery.create',
-      resourceType: 'bare_metal_recovery',
-      resourceId: row.id,
-      details: { snapshotId: snapshot.id, deviceId: snapshot.deviceId, identity: payload.identity },
-    });
+// ── Session-authed: cancel / reissue-code (W05a) ────────────────────
 
-    return c.json({ ...toRecoverySummary(row), code: formatRecoveryCode(code) }, 201);
+async function loadAuthorizedRecovery(
+  c: Parameters<typeof authorizeRouteResilienceResources>[0],
+  orgId: string,
+  id: string,
+  operation: 'revoke' | 'token',
+): Promise<{ ok: true; row: BareMetalRecoveryRow } | { ok: false; response: Response }> {
+  const [row] = await db
+    .select()
+    .from(bareMetalRecoveries)
+    .where(and(eq(bareMetalRecoveries.id, id), eq(bareMetalRecoveries.orgId, orgId)))
+    .limit(1);
+  if (!row) {
+    return { ok: false, response: c.json({ error: 'Recovery not found' }, 404) };
+  }
+  // Site lineage runs through the device being recovered, exactly as the
+  // by-ID token routes authorize through their token's device.
+  const authorization = await authorizeRouteResilienceResources(
+    c,
+    orgId,
+    [{ kind: 'device', id: row.deviceId, role: 'target' }],
+    operation,
+  );
+  if (!authorization.ok) return { ok: false, response: authorization.response };
+  return { ok: true, row };
+}
+
+bmrRecoveryRoutes.post(
+  '/bmr/recoveries/:id/cancel',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.BACKUP_WRITE.resource, PERMISSIONS.BACKUP_WRITE.action),
+  requireMfa(),
+  zValidator('param', idParamSchema),
+  zValidator('json', bmrRecoveryCancelSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
+    if (!orgId) {
+      return c.json({ error: 'orgId is required for this scope' }, 400);
+    }
+    const { id } = c.req.valid('param');
+    const { reason } = c.req.valid('json');
+
+    const loaded = await loadAuthorizedRecovery(c, orgId, id, 'revoke');
+    if (!loaded.ok) return loaded.response;
+
+    try {
+      const row = await cancelBareMetalRecovery({
+        recoveryId: id,
+        orgId,
+        userId: auth.user?.id ?? null,
+        ...(reason ? { reason } : {}),
+      });
+      return c.json(toRecoverySummary(row));
+    } catch (err) {
+      if (err instanceof BareMetalRecoveryError) return recoveryErrorResponse(c, err);
+      throw err;
+    }
+  }
+);
+
+bmrRecoveryRoutes.post(
+  '/bmr/recoveries/:id/reissue-code',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.BACKUP_WRITE.resource, PERMISSIONS.BACKUP_WRITE.action),
+  requireMfa(),
+  zValidator('param', idParamSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
+    if (!orgId) {
+      return c.json({ error: 'orgId is required for this scope' }, 400);
+    }
+    const { id } = c.req.valid('param');
+
+    const loaded = await loadAuthorizedRecovery(c, orgId, id, 'token');
+    if (!loaded.ok) return loaded.response;
+
+    // Codes are never stored in plaintext anywhere; each reveal rotates the
+    // hash, so a reveal loop is bounded per recovery.
+    const limited = await enforceTokenRateLimit(c, 'reissue', id, 5, 3600);
+    if (limited) return limited;
+
+    try {
+      const { row, code } = await reissueRecoveryCode({ recoveryId: id, orgId, userId: auth.user?.id ?? null });
+      return c.json({ ...toRecoverySummary(row), code });
+    } catch (err) {
+      if (err instanceof BareMetalRecoveryError) return recoveryErrorResponse(c, err);
+      throw err;
+    }
   }
 );
 
@@ -202,9 +265,14 @@ bmrRecoveryRoutes.get(
     }
     const query = c.req.valid('query');
 
+    // W09 (#6464): the web panel shows "preparing file index" while the
+    // token snapshot's server-side index is not yet complete, so each
+    // summary carries the snapshot's file_index_status (null once the
+    // snapshot row is gone — the FK is ON DELETE SET NULL).
     const rows = await db
-      .select()
+      .select({ row: bareMetalRecoveries, fileIndexStatus: backupSnapshots.fileIndexStatus })
       .from(bareMetalRecoveries)
+      .leftJoin(backupSnapshots, eq(backupSnapshots.id, bareMetalRecoveries.snapshotId))
       .where(
         and(
           eq(bareMetalRecoveries.orgId, orgId),
@@ -214,7 +282,9 @@ bmrRecoveryRoutes.get(
       .orderBy(desc(bareMetalRecoveries.createdAt))
       .limit(query.limit);
 
-    return c.json({ data: rows.map(toRecoverySummary) });
+    return c.json({
+      data: rows.map(({ row, fileIndexStatus }) => ({ ...toRecoverySummary(row), fileIndexStatus: fileIndexStatus ?? null })),
+    });
   }
 );
 
@@ -256,9 +326,17 @@ async function buildRecoveryExchangeBootstrap(
     expiresAt: Date;
     authenticatedAt: Date | null;
   },
-  recovery: { id: string; identity: 'original' | 'new'; deviceId: string; snapshotId: string | null; nonce: string }
+  recovery: { id: string; identity: 'original' | 'new'; deviceId: string; snapshotId: string | null; nonce: string },
+  negotiated?: {
+    grantedCapabilities: string[];
+    fileIndex: { status: 'complete'; manifestSha256: string; externalCount: number; originSnapshotIds: string[] } | null;
+  },
+  // W09 (#6464) Task 5: the exchange handler already resolved this once for
+  // capability negotiation — pass it through so this function doesn't issue
+  // a SECOND resolveSnapshotProviderConfig call for the same snapshot.
+  preResolvedSnapshot?: Awaited<ReturnType<typeof resolveSnapshotProviderConfig>>
 ) {
-  const resolvedSnapshot = await resolveSnapshotProviderConfig(tokenRow.snapshotId);
+  const resolvedSnapshot = preResolvedSnapshot !== undefined ? preResolvedSnapshot : await resolveSnapshotProviderConfig(tokenRow.snapshotId);
   const snapshot = resolvedSnapshot?.snapshot ?? null;
   const config = resolvedSnapshot?.config ?? null;
   if (!snapshot) {
@@ -328,6 +406,8 @@ async function buildRecoveryExchangeBootstrap(
     requestUrl: c.req.url,
     tokenExpiresAt: tokenRow.expiresAt,
     recovery,
+    grantedCapabilities: negotiated?.grantedCapabilities,
+    fileIndex: negotiated?.fileIndex,
   });
 }
 
@@ -375,7 +455,61 @@ bmrRecoveryPublicRoutes.post(
       return c.json({ error: 'code_invalid' }, 404);
     }
 
+    const { capabilities: clientCapabilities } = c.req.valid('json');
+
     return runInRecoveryOrgContext(rec.orgId, async () => {
+      // W09 (#6464) Task 5: capability negotiation runs BEFORE the code is
+      // claimed (the db.transaction() below) — an incompatible or
+      // not-yet-ready client is refused here, before codeUsedAt is written
+      // and before any recoveryTokens row is minted.
+      const indexState = rec.snapshotId ? await readSnapshotFileIndexState(rec.snapshotId) : null;
+      const resolvedSnapshot = rec.snapshotId ? await resolveSnapshotProviderConfig(rec.snapshotId) : null;
+      // Same rationale as bmr.ts's authenticate handler: use
+      // resolvedSnapshot.providerConfig directly, not a second independent
+      // read through resolvedSnapshot.config?.providerConfig — the two
+      // identity gates (authenticate vs. exchange) must never be able to
+      // disagree.
+      const resolvedIdentity = resolvedSnapshot?.providerType
+        ? normalizeStorageIdentity(resolvedSnapshot.providerType, asRecord(resolvedSnapshot.providerConfig))
+        : null;
+      const negotiation = negotiateRecoveryCapabilities({
+        clientCapabilities,
+        previouslyNegotiated: null, // exchange always mints a FRESH token — nothing to downgrade from
+        referencedFiles: indexState?.referencedFiles ?? null,
+        storageIdentity: resolvedSnapshot?.snapshot.storageIdentity ?? null,
+        resolvedProviderIdentity: resolvedIdentity,
+        fileIndex: {
+          status: indexState?.status ?? 'none',
+          manifestSha256: indexState?.manifestSha256 ?? null,
+          externalCount: indexState?.externalCount ?? null,
+          originSnapshotIds: indexState?.originSnapshotIds ?? [],
+          error: indexState?.error ?? null,
+          retryable: indexState?.retryable ?? false,
+        },
+      });
+      if (negotiation.enqueueHydration && rec.snapshotId) {
+        await enqueueSnapshotFileIndexHydration(rec.snapshotId, 'exchange');
+      }
+      if (!negotiation.ok) {
+        writeAuditEvent(c, {
+          orgId: rec.orgId,
+          action: 'bmr.recovery.exchange',
+          resourceType: 'bare_metal_recovery',
+          resourceId: rec.id,
+          result: 'failure',
+          details: { reason: negotiation.error },
+        });
+        return c.json(
+          {
+            error: negotiation.error,
+            message: negotiation.message,
+            ...(negotiation.retryAfterSeconds !== undefined ? { retryAfterSeconds: negotiation.retryAfterSeconds } : {}),
+            ...(negotiation.details ? { details: negotiation.details } : {}),
+          },
+          409
+        );
+      }
+
       const plainToken = generateRecoveryToken();
       const tokenHash = hashRecoveryToken(plainToken);
       const nonce = generateRecoveryNonce();
@@ -407,6 +541,7 @@ bmrRecoveryPublicRoutes.post(
               authenticatedAt: now,
               createdBy: rec.createdBy,
               expiresAt: new Date(now.getTime() + 24 * 3600 * 1000),
+              ...(negotiation.granted.length > 0 ? { negotiatedCapabilities: negotiation.granted } : {}),
             })
             .returning();
           if (!t) {
@@ -452,13 +587,19 @@ bmrRecoveryPublicRoutes.post(
         throw err;
       }
 
-      const bootstrap = await buildRecoveryExchangeBootstrap(c, tokenRow!, {
-        id: rec.id,
-        identity: rec.identity as 'original' | 'new',
-        deviceId: rec.deviceId,
-        snapshotId: rec.snapshotId,
-        nonce,
-      });
+      const bootstrap = await buildRecoveryExchangeBootstrap(
+        c,
+        tokenRow!,
+        {
+          id: rec.id,
+          identity: rec.identity as 'original' | 'new',
+          deviceId: rec.deviceId,
+          snapshotId: rec.snapshotId,
+          nonce,
+        },
+        { grantedCapabilities: negotiation.granted, fileIndex: negotiation.fileIndex },
+        resolvedSnapshot
+      );
       if ('error' in bootstrap) {
         return c.json(bootstrap, 409);
       }

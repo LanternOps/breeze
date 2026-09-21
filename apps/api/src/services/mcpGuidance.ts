@@ -5,7 +5,7 @@ import { BREEZE_AI_GUARDRAILS_CORE } from './aiAgentSystemPrompt';
 // module stays decoupled from the heavy tool registry — mcpGuidancePromptTools
 // .test.ts asserts it stays within tolerance of the live count and fails loudly
 // if the two drift apart.
-export const MCP_TOOL_COUNT_APPROX = 200;
+export const MCP_TOOL_COUNT_APPROX = 220;
 
 export const MCP_SERVER_INSTRUCTIONS = `You are connected to Breeze RMM — a multi-tenant Remote Monitoring and Management platform for MSPs. This server exposes ~${MCP_TOOL_COUNT_APPROX} tools for managing devices, alerts, patches, backups, security, tickets, and configuration policies.
 
@@ -65,9 +65,10 @@ This is a read-only investigation — do not run commands or mutations without e
     referencedTools: ['resolve_device_context', 'query_devices', 'manage_patches'],
     render: (a) => `Help the technician safely patch "${a.target ?? '(unspecified)'}". Steps:
 1. Resolve the target (device, site, or org) and ECHO the resolved target + organization back to the user.
-2. Scan for missing patches: manage_patches (action=scan). Present the gaps.
+2. Scan for missing patches: manage_patches (action=scan, deviceIds required), then read action=list for the resolved deviceId and present the gaps.
 3. STOP and ask the user to explicitly CONFIRM before applying — installing patches is a destructive, approval-gated (Tier-3) operation.
-4. Only after explicit confirmation, apply: manage_patches (action=install). Never patch beyond the confirmed target.
+4. Only after explicit confirmation, approve the selected patches: manage_patches (action=approve, patchId or patchName; use ringId for a specific update ring). Omit ringId only for an explicitly confirmed partner-wide blanket approval. Approval changes eligibility; it does not install patches.
+5. Install the approved selection: manage_patches (action=install) requires BOTH patchIds and deviceIds. Never patch beyond the confirmed target.
 If the server rejects a call, surface the rejection rather than retrying.`,
   },
   {
@@ -89,12 +90,14 @@ If the user wants customer-facing tracking, open or link a ticket with manage_ti
     name: 'breeze-turnkey-setup',
     description: 'Opinionated baseline configuration wizard — partner-wide by default.',
     arguments: [{ name: 'scope', description: 'partner (all orgs) or a specific org; defaults to partner-wide', required: false }],
-    referencedTools: ['manage_configuration_policy', 'manage_update_rings', 'manage_backup_configs', 'manage_peripheral_policies', 'manage_dns_policy', 'manage_policy_feature_link', 'apply_configuration_policy'],
+    referencedTools: ['manage_configuration_policy', 'manage_update_rings', 'manage_backup_configs', 'manage_backup_profiles', 'manage_software_policies', 'manage_peripheral_policies', 'manage_dns_policy', 'manage_policy_feature_link', 'apply_configuration_policy'],
     render: (a) => `Set up a recommended baseline configuration in Breeze RMM${a.scope ? ` for ${a.scope}` : ''}. DEFAULT to partner-wide ownership (ownerScope=partner) so one policy applies to all of the MSP's organizations — ECHO the resolved organization/partner scope back to the user, CONFIRM the ownerScope=partner default, and PREVIEW each policy before applying it.
+
+Before authoring settings, call manage_policy_feature_link (action=describe, featureType) — no existing policy ID is needed. For a link-only feature, create the standalone policy first (manage_software_policies or manage_peripheral_policies), then link its returned UUID as featurePolicyId. Create patch rings with manage_update_rings before linking their IDs. For backup, create the selection profile with manage_backup_profiles and use its ID as featurePolicyId; create storage with manage_backup_configs and put its ID in inlineSettings.destinationConfigId. Backup cadence and retention use nested inlineSettings.schedule and inlineSettings.retention. A partner-owned configuration policy applies to no organizations until assigned.
 
 Walk through these categories, creating each via a Configuration Policy (manage_configuration_policy) with the appropriate prerequisite policy + feature link (manage_policy_feature_link), then assign with apply_configuration_policy:
 1. Patch rings/cadence (manage_update_rings): pilot ring patches on release; production ring 7-day deferral; security/critical auto-approve at 3-day deferral; feature updates deferred 30 days; reboots in an off-hours maintenance window.
-2. Backup SLA (manage_backup_configs): daily backup, RPO 24h, retention 30 days, alert if no successful backup in 48h.
+2. Backup SLA (manage_backup_profiles and manage_backup_configs): daily backup, RPO 24h, retention 30 days, alert if no successful backup in 48h.
 3. DNS security (manage_dns_policy): enable filtering; block malware/phishing/C2/newly-registered-domain categories.
 4. Peripheral policy (manage_peripheral_policies): block unauthorized USB mass-storage by default; allow HID.
 5. Config/CIS baseline: apply CIS Level 1 baseline for the device OS via the policy's security/compliance feature (inlineSettings).

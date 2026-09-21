@@ -464,6 +464,29 @@ const envObjectSchema = z
         'Explicit unprivileged request DB connection. If unset, Breeze derives the breeze_app URL using BREEZE_APP_DB_PASSWORD or POSTGRES_PASSWORD; production refuses direct DATABASE_URL fallback.',
       ),
 
+    // -- TURN over TLS (#6163) ----------------------------------------------
+    // Declared so collectWarnings() may read them; all three are optional and
+    // unvalidated beyond being strings — the pairing warnings below do the work.
+    TURN_HOST: z
+      .string()
+      .optional()
+      .describe('Public IP of the TURN server. Without it the API advertises no TURN server at all.'),
+
+    TURN_TLS_DIR: z
+      .string()
+      .optional()
+      .describe('Host directory holding cert.pem + privkey.pem, mounted read-only into the bundled coturn at /etc/coturn/tls. Unset disables TURNS.'),
+
+    TURN_TLS_HOST: z
+      .string()
+      .optional()
+      .describe('Hostname ON the TURN TLS certificate. The API advertises a turns: URL only when this is set (TURN_HOST is a bare IP and would fail certificate validation).'),
+
+    TURN_TLS_PORT: z
+      .string()
+      .optional()
+      .describe('Port for the advertised turns: URL. Defaults to 5349.'),
+
     BREEZE_APP_DB_PASSWORD: z
       .string()
       .optional()
@@ -2458,6 +2481,43 @@ function collectWarnings(env: Record<string, string | undefined>): ConfigWarning
         'ENABLE_2FA=false disables ALL requireMfa() step-up gates (admin/abuse, ' +
         'tenant export/erasure, remote access, API keys, SSO, backups) — not just ' +
         'the /auth/mfa endpoints. Strongly discouraged in production.',
+    });
+  }
+
+  // #6163 — TURN over TLS needs BOTH halves: the bundled coturn only binds 5349
+  // when TURN_TLS_DIR holds a readable certificate, and the API only advertises
+  // `turns:` when TURN_TLS_HOST is set. Setting one without the other is silent
+  // in production — either a listener nobody is told about, or a `turns:` URL
+  // pointing at a port that never came up. coturn cannot warn about the API's
+  // half and the API cannot see coturn's, so warn here, where both are visible.
+  const turnTlsHost = (env.TURN_TLS_HOST ?? '').trim();
+  const turnTlsDir = (env.TURN_TLS_DIR ?? '').trim();
+  if (turnTlsHost && !turnTlsDir) {
+    warnings.push({
+      key: 'TURN_TLS_HOST',
+      message:
+        'TURN_TLS_HOST is set but TURN_TLS_DIR is not. The API will advertise a ' +
+        'turns: URL, but the bundled coturn has no certificate and will not bind ' +
+        '5349 — clients get a TURN candidate that never completes a TLS handshake. ' +
+        'Set TURN_TLS_DIR, or unset TURN_TLS_HOST. (Ignore this if TLS is ' +
+        'terminated by an EXTERNAL TURN server.)',
+    });
+  }
+  if (turnTlsDir && !turnTlsHost) {
+    warnings.push({
+      key: 'TURN_TLS_DIR',
+      message:
+        'TURN_TLS_DIR is set but TURN_TLS_HOST is not. coturn will serve TURNS on ' +
+        '5349, but the API never advertises a turns: URL, so no client will ever ' +
+        'use it. Set TURN_TLS_HOST to the hostname on the certificate.',
+    });
+  }
+  if (turnTlsHost && !(env.TURN_HOST ?? '').trim()) {
+    warnings.push({
+      key: 'TURN_TLS_HOST',
+      message:
+        'TURN_TLS_HOST is set but TURN_HOST is empty. getIceServers() advertises no ' +
+        'TURN server at all without TURN_HOST, so turns: will never be offered.',
     });
   }
 

@@ -125,13 +125,15 @@ A four-phase workflow that frees disk space safely:
 
 1. **Capture baseline disk usage** -- Runs the `analyze_disk_usage` tool to collect current disk utilization and identify cleanup candidates.
 
-2. **Preview safe cleanup candidates** -- Runs `disk_cleanup` in preview mode against safe categories: temporary files, browser cache, package cache, and trash. No files are deleted in this step.
+2. **Preview safe cleanup candidates** -- Runs `disk_cleanup` in preview mode against safe categories: temporary files, browser cache, package cache, and trash. No files are deleted in this step. The preview returns a `cleanupRunId`, which the executor carries into the next step.
 
-3. **Execute cleanup** -- Runs `disk_cleanup` in execute mode, deleting the files identified in the preview step.
+3. **Execute cleanup** -- Runs `disk_cleanup` in execute mode, pinned to the `cleanupRunId` from step 2. Only paths inside that previewed run are deleted; anything else in the request is reported as rejected rather than removed.
 
 4. **Wait for filesystem metrics** -- Pauses for 30 seconds to allow disk metrics to refresh.
 
 5. **Verify disk usage improved** -- Runs `analyze_disk_usage` again and checks that `disk_usage_percent` is below 90%. If verification fails, execution stops.
+
+6. **Report available OS-native cleaners** -- Runs `system_cleanup` in list mode. This step is **reporting only**: it shows what Windows Disk Cleanup, DISM, Homebrew, the package caches or the journal could still reclaim, and never runs any of them. Running a native cleaner is always a separate, explicitly approved action.
 
 </Steps>
 

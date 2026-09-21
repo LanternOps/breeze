@@ -18,6 +18,8 @@ type UsageRow = {
   ticketNumber: string;
   title: string | null;
   durationMinutes: number | null;
+  /** Billed quantity after the card's minimum/rounding (#4628 §3.5); NULL on pre-feature rows. */
+  billableMinutes: number | null;
   billingStatus:
     | 'not_billed'
     | 'billed'
@@ -68,6 +70,7 @@ export async function supportUsageForOrg(args: {
             END
           `,
           durationMinutes: timeEntries.durationMinutes,
+          billableMinutes: timeEntries.billableMinutes,
           billingStatus: timeEntries.billingStatus,
           isApproved: timeEntries.isApproved,
         })
@@ -102,7 +105,12 @@ export async function supportUsageForOrg(args: {
   >();
 
   for (const row of rows) {
+    // Actual stopwatch minutes — still what pendingReview and coveredByContract report.
     const minutes = row.durationMinutes ?? 0;
+    // Billed quantity (§3.5) — ONLY the billed / toBeBilled buckets and the
+    // per-ticket accumulators for them use it, so a customer's hours match
+    // their invoice.
+    const billedQuantity = row.billableMinutes ?? minutes;
     const ticket = ticketsByNumber.get(row.ticketNumber) ?? {
       ticketNumber: row.ticketNumber,
       title: row.title,
@@ -120,14 +128,14 @@ export async function supportUsageForOrg(args: {
       pendingReview += minutes;
       ticket.pendingReviewMinutes += minutes;
     } else if (row.billingStatus === 'billed') {
-      billed += minutes;
-      ticket.billedMinutes += minutes;
+      billed += billedQuantity;
+      ticket.billedMinutes += billedQuantity;
     } else if (row.billingStatus === 'contract') {
       coveredByContract += minutes;
       ticket.coveredByContractMinutes += minutes;
     } else {
-      toBeBilled += minutes;
-      ticket.toBeBilledMinutes += minutes;
+      toBeBilled += billedQuantity;
+      ticket.toBeBilledMinutes += billedQuantity;
     }
 
     ticketsByNumber.set(row.ticketNumber, ticket);

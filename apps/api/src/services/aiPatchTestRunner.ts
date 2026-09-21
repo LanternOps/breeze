@@ -86,6 +86,19 @@ async function runOnVm(
   }
 }
 
+/**
+ * #5557 — DELIBERATELY UNMETERED against the tenant AI budget.
+ *
+ * Patch-test analysis runs on the AMBIENT platform key from a worker, not from
+ * a tenant request: there is no operator turn to charge, and the work is
+ * enqueued by Breeze's own patch pipeline rather than initiated by the
+ * organization. Admitting it against the org's `ai_budget_reservations` cap
+ * would let a background job exhaust a technician's interactive budget — the
+ * opposite of what the SEC-142 fence is for.
+ *
+ * Like the workspace embedder, metering this belongs to a platform/system
+ * budget that does not exist yet. Recorded as an accepted exemption on #5557.
+ */
 async function analyzeWithClaude(input: {
   packageId: string;
   version: string;

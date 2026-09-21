@@ -1,3 +1,5 @@
+import { ensureOrgAccess } from '../../services/delivery/railContracts';
+export { ensureOrgAccess, resolveWriteOrgId, getEscalationPolicyWithOrgCheck } from '../../services/delivery/railContracts';
 import { and, eq, inArray, isNull, or } from 'drizzle-orm';
 import type { NotificationChannelType } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
@@ -49,10 +51,6 @@ export type AlertRuleOverrides = {
 
 export { getPagination } from '../../utils/pagination';
 
-export function ensureOrgAccess(orgId: string, auth: { canAccessOrg: (orgId: string) => boolean }) {
-  return auth.canAccessOrg(orgId);
-}
-
 /** Device-bound alerts follow current device site; deviceless alerts are org-wide.
  * Callers applying this predicate must left-join devices. */
 export function alertSiteScopeCondition(allowedSiteIds: string[] | undefined) {
@@ -60,55 +58,6 @@ export function alertSiteScopeCondition(allowedSiteIds: string[] | undefined) {
   return allowedSiteIds.length === 0
     ? isNull(alerts.deviceId)
     : or(isNull(alerts.deviceId), inArray(devices.siteId, allowedSiteIds));
-}
-
-/**
- * Resolve the org a mutating alerts request should write to, honouring an
- * explicit (query-param) orgId for partner/system callers.
- *
- * Org-scoped callers are pinned to their own org (an explicit orgId that
- * disagrees is rejected). Partner/system callers select via the request orgId,
- * which is access-checked; with no orgId, a partner with exactly one accessible
- * org is disambiguated to it, otherwise the request is genuinely ambiguous (400)
- * — and an org-scoped caller with no org context is 403. Tenant isolation is
- * unchanged: the resolved orgId is always canAccessOrg-checked and RLS still
- * backstops.
- */
-export function resolveWriteOrgId(
-  auth: {
-    scope: 'system' | 'partner' | 'organization';
-    orgId: string | null;
-    accessibleOrgIds: string[] | null;
-    canAccessOrg: (orgId: string) => boolean;
-  },
-  requestedOrgId?: string
-): { orgId?: string; error?: string; status?: 400 | 403 } {
-  if (auth.scope === 'organization') {
-    if (!auth.orgId) {
-      return { error: 'Organization context required', status: 403 };
-    }
-    if (requestedOrgId && requestedOrgId !== auth.orgId) {
-      return { error: 'Access to this organization denied', status: 403 };
-    }
-    return { orgId: auth.orgId };
-  }
-
-  if (requestedOrgId) {
-    if (!ensureOrgAccess(requestedOrgId, auth)) {
-      return { error: 'Access to this organization denied', status: 403 };
-    }
-    return { orgId: requestedOrgId };
-  }
-
-  if (auth.orgId) {
-    return { orgId: auth.orgId };
-  }
-
-  if (auth.accessibleOrgIds && auth.accessibleOrgIds.length === 1) {
-    return { orgId: auth.accessibleOrgIds[0] };
-  }
-
-  return { error: 'orgId is required when the caller can access multiple organizations', status: 400 };
 }
 
 export async function getAlertRuleWithOrgCheck(
@@ -231,31 +180,6 @@ export async function getNotificationChannelWithOrgCheck(
   }
 
   return channel;
-}
-
-export async function getEscalationPolicyWithOrgCheck(
-  policyId: string,
-  auth: { canAccessOrg: (orgId: string) => boolean; scope?: string; partnerId?: string | null }
-) {
-  const [policy] = await db
-    .select()
-    .from(escalationPolicies)
-    .where(eq(escalationPolicies.id, policyId))
-    .limit(1);
-
-  if (!policy) {
-    return null;
-  }
-
-  // Dual-axis access (#2130) — see getNotificationChannelWithOrgCheck.
-  const hasAccess = policy.orgId !== null
-    ? ensureOrgAccess(policy.orgId, auth)
-    : canReadPartnerWideRows({ scope: auth.scope ?? '', partnerId: auth.partnerId ?? null }, policy.partnerId);
-  if (!hasAccess) {
-    return null;
-  }
-
-  return policy;
 }
 
 export function isRecord(value: unknown): value is Record<string, unknown> {

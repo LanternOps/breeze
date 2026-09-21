@@ -62,6 +62,10 @@ The storage configuration wizard walks you through four steps:
      If a device's Breeze backup helper predates version 0.112.0, storage reclamation beyond an expired
      snapshot's own row stays deferred on that device's destination until every device sharing it has
      upgraded — update the agent to enable full reclamation.
+
+     Deleting a device or an organization also reclaims its backups: the underlying restore points are
+     removed immediately, and the storage sweep collects their now-unreferenced data once it has sat
+     idle for 9 days.
    </Aside>
 </Steps>
 

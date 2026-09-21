@@ -28,10 +28,36 @@ interface SelfManagedRoute {
 }
 
 const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
+  // Disk Cleanup v2 W04 (spec §13 #5). `startSystemCleanupRun` claims the run
+  // in a SHORT COMMITTED transaction, dispatches the command outside any
+  // transaction, and finalises in a second one. Under the auth middleware's
+  // ambient request transaction none of that works: the `running` row a
+  // concurrent request just wrote is invisible (so the single-run-per-device
+  // check passes twice), a crash after the agent began deleting rolls the
+  // claim away, and the websocket push happens before the commit — the agent
+  // can answer a run row that does not exist yet.
+  { method: 'POST', pattern: /^\/api\/v1\/devices\/[^/]+\/filesystem\/system-cleanup\/run\/?$/ },
+  // Same reasoning, smaller blast radius: the list route queues a command
+  // (and therefore pushes over the socket) and writes only an audit, which
+  // manages its own context.
+  { method: 'POST', pattern: /^\/api\/v1\/devices\/[^/]+\/filesystem\/system-cleanup\/list\/?$/ },
   // Commit source changes and record the audit before enqueueing discovery.
   { method: 'POST', pattern: /^\/api\/v1\/tool-sources\/?$/ },
   { method: 'PATCH', pattern: /^\/api\/v1\/tool-sources\/[^/]+\/?$/ },
   { method: 'POST', pattern: /^\/api\/v1\/tool-sources\/[^/]+\/discover\/?$/ },
+  // Monitor conversion (W05c1): every entry point runs its own serializable /
+  // repeatable-read transaction through inCallerTransaction, which opens a
+  // second pooled connection. With the request's ambient transaction still
+  // held that deadlocks the pool at concurrency >= pool size, so these routes
+  // own their context and write their audit after the conversion commits.
+  // Only the entry points that open their OWN isolated transaction. /ledger and
+  // /pending are ordinary reads and must keep the request's context.
+  { method: 'GET', pattern: /^\/api\/v1\/monitor-definitions\/conversion\/policies\/[^/]+\/preview\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/monitor-definitions\/conversion\/partner\/preview\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/monitor-definitions\/conversion\/partner\/convert-all\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/monitor-definitions\/conversion\/policies\/[^/]+\/convert\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/monitor-definitions\/conversion\/retire\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/monitor-definitions\/conversion\/[^/]+\/revert\/?$/ },
   // Partner-initiated "Send payment link" — createInvoicePayLink.
   { method: 'POST', pattern: /^\/api\/v1\/invoices\/[^/]+\/pay-link\/?$/ },
   // Customer-portal "Pay invoice online".
@@ -273,6 +299,33 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // ambient context; writeRouteAudit already manages its own (via
   // createAuditLogAsync's runOutsideDbContext + withSystemDbAccessContext).
   { method: 'POST', pattern: /^\/api\/v1\/agent-versions\/sync-github\/?$/ },
+  // Disk Cleanup v2 W03 (spec §13 #5). `cleanup-execute` claims its pinned run
+  // (`UPDATE … WHERE status='previewed' RETURNING`) and must COMMIT that claim
+  // before dispatching, for two reasons the ambient request transaction defeats:
+  //   - a concurrent execute on the same run must see `running` and get a 409,
+  //     which it cannot while the claim is uncommitted in another transaction;
+  //   - a crash between the deletes and the finalise must leave the row
+  //     `running`, not roll it back to `previewed` — the files are already gone,
+  //     and re-offering that candidate set is a lie about the device's state.
+  // The dispatch itself is an agent round-trip bounded by
+  // CLEANUP_EXECUTE_BUDGET_MS (240s); holding a pooled connection
+  // idle-in-transaction across it is the #1105 pool-poison class on its own.
+  // The handler opens its own short `withAuthDbAccessContext` blocks around the
+  // claim and the finalise, and runs the dispatch between them.
+  { method: 'POST', pattern: /^\/api\/v1\/devices\/[^/]+\/filesystem\/cleanup-execute\/?$/ },
+  // #6337 — SNMP monitoring config save/patch. Both handlers enqueue an
+  // immediate poll (`enqueueSnmpPoll` → bullmq `Queue.add`, up to three Redis
+  // round-trips) once the template changes. Under the ambient request
+  // transaction that enqueue STARTED inside the held context even when left
+  // unawaited, tripping the #1105 held-transaction tripwire on every template
+  // save (and failing the request under DB_CONTEXT_TRIPWIRE_STRICT).
+  // `runOutsideDbContext` would only silence the warning — it cannot close the
+  // middleware's outer transaction. The handlers now wrap all their DB work in
+  // one short `withAuthDbAccessContext` block and enqueue after it commits,
+  // which also means the queued poll can no longer read a row that is still
+  // uncommitted.
+  { method: 'PUT', pattern: /^\/api\/v1\/monitoring\/assets\/[^/]+\/snmp\/?$/ },
+  { method: 'PATCH', pattern: /^\/api\/v1\/monitoring\/assets\/[^/]+\/snmp\/?$/ },
 ];
 
 /**

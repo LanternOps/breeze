@@ -65,6 +65,9 @@ Before going live, verify every item:
 - [ ] Cross-tenant probe detection enabled — if an agent token is used to access a device in another tenant, the token is automatically suspended and re-enrollment is blocked until an admin reviews the device.
 - [ ] Source-IP tracking active — every heartbeat records the agent's source IP, and an `agent.source.ip.changed` audit event fires when it shifts, surfacing token theft or NAT changes.
 - [ ] Consider enabling [Cloudflare mTLS](/security/mtls/) for zero-trust agent auth
+- [ ] Helper (device) authentication now enforces the full device-credential lifecycle — a suspended agent token, a decommissioned or quarantined device, or a suspended/severed tenant all deny a Helper session with the same opaque response a stale token would get. The Helper's database access context also no longer carries partner-axis write access; it is scoped to its own organization only.
+- [ ] Partner trust review requests require partner-wide manage access (`canManagePartnerWidePolicies`) — an org-scoped caller can no longer request a review on the partner's behalf.
+- [ ] Script parameter values are rendered as data, never code, consistently across bash, PowerShell, and Python interpreter frames on the agent — including nested constructs such as command substitutions, heredocs, and f-string fields. See [Scripts](/features/scripts/) for the full contract, including the contexts a placeholder cannot be used in.
 
 ### Outbound Request Safety (SSRF)
 

@@ -185,7 +185,8 @@ describe('createSourcedAlert (#5241 — rule-less alert sources publish alert.tr
         title: 'Edge Ping offline',
         message: 'Monitor Edge Ping is offline',
         source: 'network_monitor',
-        monitorId: 'monitor-1',
+        monitorId: null,
+        kind: null,
       }),
       'monitor-worker',
       { siteId: 'site-1' },
@@ -355,5 +356,48 @@ describe('evaluateDeviceAlertsFromPolicy publish rollback (#5325)', () => {
     // Marking the cooldown would suppress the retry for cooldownMinutes.
     expect(vi.mocked(markConfigPolicyRuleCooldown)).not.toHaveBeenCalled();
     expect(enqueueAlertCorrelationMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('alert.triggered monitor identity and kind', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dbMock._selectResults.length = 0;
+    dbMock._insertReturnResults.length = 0;
+    dbMock._insertReturnResults.push([{ id: 'alert-kind' }]);
+  });
+  const input = { deviceId: 'device-1', orgId: 'org-1', severity: 'high' as const, title: 'CPU', message: 'High CPU' };
+  it('publishes the supplied compiled-monitor kind and keeps ruleId', async () => {
+    dbMock._selectResults.push(
+      [{ id: 'rule-1', templateId: 'template-1', managedByMonitorId: 'monitor-1' }],
+      [{ cooldownMinutes: 5 }], [],
+    );
+    await createAlert({ ...input, ruleId: 'rule-1', monitorId: 'monitor-1', kind: 'cpu' });
+    expect(publishEvent).toHaveBeenCalledWith('alert.triggered', 'org-1',
+      expect.objectContaining({ ruleId: 'rule-1', monitorId: 'monitor-1', kind: 'cpu' }),
+      'alert-service', { siteId: 'site-1' });
+  });
+  it('resolves a sourced monitor kind when the recurrence producer only knows its id', async () => {
+    dbMock._selectResults.push([{ kind: 'disk' }]);
+    await createSourcedAlert({ ...input, monitorId: 'monitor-1', context: { source: 'monitor_recurrence' }, publisher: 'monitor-escalation' });
+    expect(publishEvent).toHaveBeenCalledWith('alert.triggered', 'org-1',
+      expect.objectContaining({ ruleId: null, monitorId: 'monitor-1', kind: 'disk' }),
+      'monitor-escalation', { siteId: 'site-1' });
+  });
+  it('sourced payload extras cannot replace canonical monitor identity', async () => {
+    await createSourcedAlert({ ...input, monitorId: 'monitor-1', kind: 'memory',
+      context: { source: 'monitor_recurrence' }, publisher: 'monitor-escalation',
+      eventPayload: { monitorId: 'wrong', kind: 'cpu' } });
+    expect(publishEvent).toHaveBeenCalledWith('alert.triggered', 'org-1',
+      expect.objectContaining({ monitorId: 'monitor-1', kind: 'memory' }),
+      'monitor-escalation', { siteId: 'site-1' });
+  });
+  it('feature-sourced alerts have explicit nulls and retain source-specific context', async () => {
+    await createSourcedAlert({ ...input, context: { source: 'network_monitor', monitorId: 'legacy-check' },
+      publisher: 'monitor-worker', eventPayload: { monitorId: 'legacy-check' } });
+    expect(publishEvent).toHaveBeenCalledWith('alert.triggered', 'org-1',
+      expect.objectContaining({ monitorId: null, kind: null, source: 'network_monitor' }),
+      'monitor-worker', { siteId: 'site-1' });
+    expect(dbMock.select).not.toHaveBeenCalled();
   });
 });

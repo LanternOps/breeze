@@ -671,6 +671,12 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 
 	// System state collection: gather OS config, hardware profile, etc.
 	var systemStateErr error
+	// The exact warning fragment recorded for a failed collection, so the
+	// state-only failure branch below can withdraw it when the same error
+	// becomes the job's fatal Error (#5415) — otherwise the server's
+	// errorLog, which joins Error and Warning with exact-string dedup only,
+	// prints the same reason twice in slightly different wrappings.
+	var systemStateWarning string
 	// systemStateStagingIdx is always noStagingIdx now: the staging dir is
 	// published separately (see publishSystemState) rather than appended to
 	// backupPaths, so there is never an entry in backupPaths for the VSS
@@ -695,7 +701,8 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 			// absent — the same silent outcome as #3026, reached by a different
 			// route. CollectSystemState only errors when a REQUIRED class
 			// failed, i.e. the capture would not boot at restore time.
-			appendWarning(job, "system state was not collected: "+ssErr.Error())
+			systemStateWarning = systemStateNotCollectedPrefix + ": " + ssErr.Error()
+			appendWarning(job, systemStateWarning)
 		} else {
 			manifest.CollectorVersion = m.config.AgentVersion
 			job.SystemStateManifest = manifest
@@ -927,8 +934,23 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 			// Nothing to publish (collection failed, or produced a manifest
 			// with zero artifacts) is a hard failure — a green empty
 			// snapshot would silently protect nothing.
-			runErr := systemStateErr
-			if runErr == nil {
+			var runErr error
+			if systemStateErr != nil {
+				// The collection failure is the terminal error here, so the
+				// warning raised for it upstream is a duplicate: the server
+				// concatenates error and warning into
+				// backup_jobs.error_log and dedupes exact string matches
+				// only, so "<reason>; system state was not collected:
+				// <reason>" survived as two copies of the same sentence
+				// (#5415). Withdraw the note and carry its framing on the
+				// error instead — dropping the warning outright would have
+				// left the operator with a bare "reg save failed for
+				// hive(s) [SYSTEM]: …" and no statement of what that cost
+				// the backup. Wrapped with %w so callers matching on the
+				// collector's error still do.
+				runErr = fmt.Errorf("%s: %w", systemStateNotCollectedPrefix, systemStateErr)
+				removeWarning(job, systemStateWarning)
+			} else {
 				runErr = errors.New("system state collection produced no artifacts")
 			}
 			job.Status = jobStatusFailed
@@ -1332,6 +1354,43 @@ func vssCreationFailureWarning(vssErr error) string {
 		"where in-use files can be skipped or captured torn: " + vssErr.Error()
 }
 
+// removeWarning withdraws a previously appended fragment from job.Warning,
+// repairing the "; " separators so the remaining notes read unchanged. Used
+// when a note that was raised as a degradation warning is later promoted to
+// the job's fatal error and would otherwise be reported twice (#5415).
+// systemStateNotCollectedPrefix frames a failed system-state collection for
+// the operator. It is shared by the degradation warning (mixed runs, where the
+// run still completes) and the fatal error (state-only runs) so the two say
+// the same thing and the reason is reported exactly once — see #5415.
+const systemStateNotCollectedPrefix = "system state was not collected"
+
+func removeWarning(job *BackupJob, fragment string) {
+	if fragment == "" || job.Warning == "" {
+		return
+	}
+	const sep = "; "
+	w := job.Warning
+	// Boundary-anchored, NOT strings.Split(w, sep): a fragment may itself
+	// contain the separator (a collector that joins several sub-reasons with
+	// "; " is exactly the shape most likely to appear), and splitting shreds
+	// it into pieces that no longer equal the fragment, so the removal
+	// silently no-ops and #5415 regresses. Anchoring on the separator also
+	// stops a fragment that is a mid-word substring of a neighbour from
+	// matching. Exactly one occurrence is removed.
+	switch {
+	case w == fragment:
+		job.Warning = ""
+	case strings.HasPrefix(w, fragment+sep):
+		job.Warning = w[len(fragment)+len(sep):]
+	case strings.HasSuffix(w, sep+fragment):
+		job.Warning = w[:len(w)-len(sep)-len(fragment)]
+	default:
+		if i := strings.Index(w, sep+fragment+sep); i >= 0 {
+			job.Warning = w[:i] + w[i+len(sep)+len(fragment):]
+		}
+	}
+}
+
 func appendWarning(job *BackupJob, fragment string) {
 	if fragment == "" {
 		return
@@ -1446,6 +1505,9 @@ type backupFile struct {
 	linkTarget string
 	modeBits   uint32
 	owner      *FileOwner
+	// winAttrs mirrors SnapshotFile.WinAttrs — the preserved Windows file
+	// attributes (#5407); 0 off Windows.
+	winAttrs uint32
 	// placeholder mirrors SnapshotFile.Placeholder — see that field's doc
 	// comment (snapshot.go). Set only via contentlessEntry for a KindDir
 	// entry the walker force-recorded because the directory matched an
@@ -1589,6 +1651,7 @@ func (m *BackupManager) collectBackupFilesFromPaths(ctx context.Context, paths [
 				mode:         info.Mode(),
 				modeBits:     fullModeBits(info.Mode()),
 				owner:        fileOwner(info),
+				winAttrs:     winFileAttrs(info),
 			})
 			continue
 		}
@@ -1705,7 +1768,7 @@ func (m *BackupManager) collectBackupFilesFromPaths(ctx context.Context, paths [
 				seen[snapshotPath] = struct{}{}
 				files = append(files, backupFile{
 					sourcePath: path, snapshotPath: snapshotPath, modTime: info.ModTime(), mode: info.Mode(),
-					kind: KindSymlink, linkTarget: target, owner: fileOwner(info),
+					kind: KindSymlink, linkTarget: target, owner: fileOwner(info), winAttrs: winFileAttrs(info),
 				})
 				return nil
 			}
@@ -1721,6 +1784,7 @@ func (m *BackupManager) collectBackupFilesFromPaths(ctx context.Context, paths [
 				mode:         info.Mode(),
 				modeBits:     fullModeBits(info.Mode()),
 				owner:        fileOwner(info),
+				winAttrs:     winFileAttrs(info),
 			})
 			return nil
 		})
@@ -1759,6 +1823,7 @@ func (m *BackupManager) collectBackupFilesFromPaths(ctx context.Context, paths [
 			files = append(files, backupFile{
 				sourcePath: d.path, snapshotPath: snapshotPath, modTime: info.ModTime(), mode: info.Mode(),
 				kind: KindDir, modeBits: fullModeBits(info.Mode()), owner: owner, placeholder: d.forced,
+				winAttrs: winFileAttrs(info),
 			})
 		}
 	}

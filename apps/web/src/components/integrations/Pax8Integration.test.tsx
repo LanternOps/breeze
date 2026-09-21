@@ -96,7 +96,7 @@ function mockLoad(
       return jsonResponse({ data: options.companies ?? [] });
     if (url.startsWith("/pax8/subscriptions"))
       return jsonResponse({ data: options.subscriptions ?? [] });
-    if (url === "/orgs/organizations")
+    if (url.startsWith("/orgs/organizations"))
       return jsonResponse({ data: [breezeOrg] });
     return jsonResponse({}, 404);
   });
@@ -157,7 +157,7 @@ describe("Pax8Integration", () => {
         if (url === "/pax8/companies") return jsonResponse({ data: [] });
         if (url.startsWith("/pax8/subscriptions"))
           return jsonResponse({ data: [] });
-        if (url === "/orgs/organizations")
+        if (url.startsWith("/orgs/organizations"))
           return jsonResponse({ data: [breezeOrg] });
         return jsonResponse({}, 404);
       },
@@ -205,7 +205,7 @@ describe("Pax8Integration", () => {
         if (url === "/pax8/companies") return jsonResponse({ data: [] });
         if (url.startsWith("/pax8/subscriptions"))
           return jsonResponse({ data: [] });
-        if (url === "/orgs/organizations")
+        if (url.startsWith("/orgs/organizations"))
           return jsonResponse({ data: [breezeOrg] });
         return jsonResponse({}, 404);
       },
@@ -245,7 +245,7 @@ describe("Pax8Integration", () => {
         if (url === "/pax8/companies") return jsonResponse({ data: [] });
         if (url.startsWith("/pax8/subscriptions"))
           return jsonResponse({ data: [] });
-        if (url === "/orgs/organizations")
+        if (url.startsWith("/orgs/organizations"))
           return jsonResponse({ data: [breezeOrg] });
         return jsonResponse({}, 404);
       },
@@ -277,7 +277,7 @@ describe("Pax8Integration", () => {
         if (url === "/pax8/companies") return jsonResponse({ data: [] });
         if (url.startsWith("/pax8/subscriptions"))
           return jsonResponse({ data: [] });
-        if (url === "/orgs/organizations")
+        if (url.startsWith("/orgs/organizations"))
           return jsonResponse({ data: [breezeOrg] });
         return jsonResponse({}, 404);
       },
@@ -307,7 +307,7 @@ describe("Pax8Integration", () => {
         if (url === "/pax8/companies") return jsonResponse({ data: [] });
         if (url.startsWith("/pax8/subscriptions"))
           return jsonResponse({ data: [] });
-        if (url === "/orgs/organizations")
+        if (url.startsWith("/orgs/organizations"))
           return jsonResponse({ data: [breezeOrg] });
         return jsonResponse({}, 404);
       },
@@ -346,7 +346,7 @@ describe("Pax8Integration", () => {
         if (url === "/pax8/companies") return jsonResponse({ data: [company] });
         if (url.startsWith("/pax8/subscriptions"))
           return jsonResponse({ data: [] });
-        if (url === "/orgs/organizations")
+        if (url.startsWith("/orgs/organizations"))
           return jsonResponse({ data: [breezeOrg] });
         return jsonResponse({}, 404);
       },

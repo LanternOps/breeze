@@ -248,7 +248,10 @@ func ensureDir(path string, mode os.FileMode, private bool) error {
 	return nil
 }
 
-func installFile(base, relative, source string, mode os.FileMode, modTime time.Time, owner *Owner) ([]error, error) {
+// winAttrs is accepted and ignored here: Windows file attributes have no
+// Unix equivalent, so a Windows manifest restored onto Linux/macOS simply
+// drops them (the same way Owner is dropped in the other direction).
+func installFile(base, relative, source string, mode os.FileMode, modTime time.Time, owner *Owner, _ uint32) ([]error, error) {
 	baseFD, err := openAbsoluteDir(base, true, 0o755)
 	if err != nil {
 		return nil, fmt.Errorf("open target base: %w", err)

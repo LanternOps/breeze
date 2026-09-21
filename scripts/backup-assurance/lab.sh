@@ -35,8 +35,12 @@ state_get() { [ -f "$LAB_STATE" ] && jq -r ".$1 // empty" "$LAB_STATE" || true; 
 state_set() { local tmp; tmp=$(mktemp); { [ -f "$LAB_STATE" ] && cat "$LAB_STATE" || echo '{}'; } | jq --arg k "$1" --arg v "$2" '.[$k]=$v' > "$tmp"; mv "$tmp" "$LAB_STATE"; }
 
 login() {
-  local resp tok
-  resp=$(curl -sS -X POST "$LAB_API/auth/login" -H 'content-type: application/json' \
+  local resp tok jar origin
+  # Session-issuing routes 428 (auth_binding_rotation_required) without a breeze_auth_binding
+  # cookie; seed one the way a browser does (routes/auth/binding.ts) and reuse the jar.
+  jar="${LAB_STATE%.json}.cookies"; origin=${LAB_ORIGIN:-${LAB_API%/api/v1}}
+  curl -sS -o /dev/null -c "$jar" -X POST "$LAB_API/auth/browser-binding/bootstrap" -H "Origin: $origin"
+  resp=$(curl -sS -b "$jar" -c "$jar" -X POST "$LAB_API/auth/login" -H 'content-type: application/json' -H "Origin: $origin" \
     -d "$(jq -cn --arg e "$LAB_EMAIL" --arg p "$LAB_PASSWORD" '{email:$e,password:$p}')")
   tok=$(echo "$resp" | jq -r '.tokens.accessToken // empty')
   [ -n "$tok" ] || { echo "login failed: $resp" >&2; return 1; }

@@ -33,16 +33,30 @@ const FIXTURE_ROOT = resolve(__dirname, 'fixtures/no-silent-mutations/src');
 // WS-A "targeted set": files that have ADOPTED runAction and must not regress
 // to silent mutations. Grows as more handlers migrate (see the backlog).
 const TARGET_GLOBS = [
+  // Disk Cleanup v2 W01: scan and cleanup-preview failures must surface.
+  'src/components/devices/DeviceFilesystemTab.tsx',
+  // Disk Cleanup v2 W03: cleanup-execute moved into this panel.
+  'src/components/devices/filesystem/CleanupPanel.tsx',
+  // Disk Cleanup v2 W04: both native-cleanup mutations (queue the catalog,
+  // queue the run) go through runAction. This file is in the targeted set
+  // from birth rather than added to the migration backlog — a silent failure
+  // here is a tech believing a 90-minute DISM run started when it never did.
+  'src/components/devices/filesystem/SystemCleanupPanel.tsx',
   // Network device "Check now" (#5988 W05): the probe reads liveness outside
   // W04's settings writer and must surface every mutation outcome.
   'src/components/devices/networkDevice/useAssetProbe.ts',
-  'src/components/alerts/NotificationChannelsPage.tsx',
+  'src/components/alerts/delivery/deliveryActions.ts',
   'src/components/alerts/AlertsPage.tsx',
   'src/components/alerts/AlertDetailPage.tsx',
   // Alert verdict feedback (P2-1 Task 15): submitVerdictFeedback is the one
   // runAction-wrapped POST both the list row and the detail page call — a
   // future bare mutation added here would ship unguarded to both.
   'src/components/alerts/AlertVerdictBadge.tsx',
+  // Work types (#4628 W01): create/rename/archive all mutate partner-wide
+  // billing configuration, and archiving also rewrites ticket-category
+  // defaults -- a silent failure here leaves the tech believing a work type is
+  // gone when it is still being stamped.
+  'src/components/settings/WorkTypesCard.tsx',
   'src/components/settings/PartnerSettingsPage.tsx',
   'src/components/settings/PartnerAiProviderTab.tsx',
   'src/components/settings/OrgSettingsPage.tsx',
@@ -124,6 +138,8 @@ const TARGET_GLOBS = [
   'src/components/settings/TicketStatusesTab.tsx',
   'src/components/settings/TicketPrioritiesTab.tsx',
   'src/components/settings/InboundEmailCard.tsx',
+  'src/components/settings/EmailTemplatesTab.tsx',
+  'src/components/settings/EmailTemplateEditor.tsx',
   'src/components/settings/M365MailboxCard.tsx',
   'src/components/settings/OrgPortalSettingsEditor.tsx',
   'src/components/settings/OrgTicketSettingsEditor.tsx',
@@ -148,6 +164,8 @@ const TARGET_GLOBS = [
   // its first commit rather than after the first regression.
   'src/components/billing/AccountingSyncCard.tsx',
   'src/components/billing/PartnerBillingSettingsPage.tsx',
+  'src/components/billing/BillingRatesTab.tsx',
+  'src/components/billing/OrgBillingProfile.tsx',
   'src/components/billing/OrgBillingSettings.tsx',
   'src/components/contracts/ContractEditor.tsx',
   'src/components/contracts/ContractDetail.tsx',
@@ -345,6 +363,11 @@ const TARGET_GLOBS = [
   // above — and is listed so a future direct mutation cannot be added here
   // without CI noticing. TARGET_GLOBS is a literal file list, not directory-wide.
   'src/components/settings/PartnerSendingDomainTab.tsx',
+  // Restore-as-VM wizard (bare-metal W05a): the one POST now fans out to three
+  // engines (Hyper-V full, instant boot, Linux rebuild → VHDX) through
+  // runAction; a bare fetchWithAuth added for a fourth would silently swallow
+  // a restore that never started.
+  'src/components/backup/VMRestoreWizard.tsx',
 ];
 
 const absoluteFiles: string[] = TARGET_GLOBS.map((rel) => resolve(WEB_ROOT, '..', rel));
@@ -690,7 +713,15 @@ describe('no silent mutations in targeted set', () => {
     // W01 settings consolidation (#6224): PartnerBillingSettings.tsx ->
     // PartnerBillingSettingsPage.tsx (net 0) then + CatalogDefaultsCard.tsx:
     // 145 → 146.
-    expect(absoluteFiles.length).toBe(146);
+    // Bare-metal W05a adds backup/VMRestoreWizard.tsx (rebuild engine): 146 → 147.
+    // Outbound email templates (PR1 settings UI) add EmailTemplatesTab.tsx
+    // and EmailTemplateEditor.tsx: 147 → 149.
+    // Disk Cleanup v2 W01 adds DeviceFilesystemTab.tsx: 149 → 150.
+    // Work types (#4628 W01) add WorkTypesCard.tsx: 150 → 151.
+    // Disk Cleanup v2 W03 adds filesystem/CleanupPanel.tsx: 151 → 152.
+    // Disk Cleanup v2 W04 adds filesystem/SystemCleanupPanel.tsx: 152 → 153.
+    // Billing profiles W02 adds Rates and the org assignment writer: 153 → 155.
+    expect(absoluteFiles.length).toBe(155);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

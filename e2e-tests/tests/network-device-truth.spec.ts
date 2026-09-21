@@ -102,7 +102,7 @@ test.describe('network device page truth', () => {
     await expect(page.settingsModal()).toBeVisible();
     await expect(authedPage).toHaveURL(/#overview\/settings\/identity$/);
 
-    // Deep-linking straight to a section is how Discovery and /monitoring/network
+    // Deep-linking straight to a section is how Discovery and /monitoring
     // hand off to this page.
     await page.goto(id, '#overview/settings/monitoring');
     await expect(page.settingsModal()).toBeVisible();

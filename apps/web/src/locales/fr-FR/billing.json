@@ -1654,6 +1654,7 @@
     },
     "summary": {
       "noTaxRate": "Des lignes sont marquées taxables, mais aucun taux de taxe n'est défini.",
+      "inheritedTaxRate": "La taxe n'est pas encore sur ce brouillon — le taux hérité de {{rate}} s'applique à l'émission, ajoutant {{tax}} pour un total de {{total}}.",
       "setTaxRate": "Définissez-en un dans les paramètres de facturation",
       "subtotal": "Sous-total",
       "tax": "Taxe",
@@ -2139,6 +2140,7 @@
     "saveSuccess": "Paramètres de facturation de l'organisation enregistrés",
     "tax": {
       "partnerDefault": "Valeur par défaut du partenaire",
+      "partnerDefaultWithValue": "{{pct}} % (valeur par défaut du partenaire)",
       "taxExempt": "Exonéré de taxe",
       "taxId": "Identifiant fiscal",
       "taxRate": "Taux de taxe (%)",
@@ -2211,7 +2213,8 @@
   "partnerBillingSettingsTabs": {
     "defaults": "Valeurs par défaut",
     "documents": "Documents",
-    "connections": "Connexions"
+    "connections": "Connexions",
+    "rates": "Tarifs"
   },
   "billingConnectionsTab": {
     "accounting": {
@@ -2225,5 +2228,59 @@
       "catalogCta": "Ouvrir le catalogue produits →",
       "distributorsCta": "Ouvrir les distributeurs →"
     }
+  },
+  "orgBillingProfile": {
+    "label": "Profil de facturation",
+    "inherit": "{{name}} (valeur par défaut du partenaire)",
+    "noProfile": "Aucun profil de facturation",
+    "unavailable": "Profil attribué indisponible",
+    "resolved": "Tarifs de {{name}}",
+    "allOtherWork": "Tous les autres travaux",
+    "billable": "Facturable à {{rate}}/h",
+    "included": "Inclus",
+    "nonBillable": "Non facturable",
+    "noRate": "Facturable — tarif non configuré",
+    "minimum": "{{outcome}} · minimum de {{minutes}} min",
+    "rounding": "Arrondir à {{minutes}} minutes",
+    "archivedWorkType": "Type de travail archivé",
+    "mismatch": "Le profil de facturation attribué est inactif ou utilise une autre devise. Le profil par défaut du partenaire dans la devise correspondante s’applique.",
+    "currencyWarning": "Le profil de facturation attribué utilise {{currency}}. Après ce changement, le profil par défaut du partenaire dans la devise correspondante s’appliquera.",
+    "loadError": "Impossible de charger les profils de facturation.",
+    "saveError": "Impossible d’enregistrer le profil de facturation.",
+    "partialSave": "Le profil de facturation a été enregistré, mais pas les autres paramètres de facturation. Réessayez d’enregistrer pour terminer."
+  },
+  "rates": {
+    "title": "Tarifs",
+    "description": "Définissez les tarifs de main-d’œuvre par profil de facturation et type de travail. Les modifications s’appliquent aux nouvelles saisies de temps.",
+    "create": "Ajouter un profil de facturation",
+    "loadError": "Impossible de charger les profils de facturation. Réessayez.",
+    "saveError": "Impossible d’enregistrer le profil de facturation.",
+    "saved": "Profil de facturation enregistré.",
+    "empty": "Ajoutez un profil de facturation pour configurer les tarifs de main-d’œuvre.",
+    "profile": "Profil de facturation",
+    "allOtherWork": "Tous les autres travaux",
+    "actions": "Actions du profil",
+    "default": "Par défaut",
+    "clone": "Dupliquer le profil de facturation",
+    "setDefault": "Définir par défaut",
+    "archive": "Archiver",
+    "usageUnavailable": "L’utilisation par les organisations n’est pas disponible.",
+    "edit": "Modifier le profil de facturation",
+    "name": "Nom",
+    "currency": "Devise",
+    "rounding": "Arrondi (minutes)",
+    "notes": "Remarques",
+    "coverage": "Résultat de facturation",
+    "hourlyRate": "Taux horaire",
+    "minimum": "Durée minimale (minutes)",
+    "billable": "Facturable",
+    "included": "Inclus",
+    "nonBillable": "Non facturable",
+    "noRate": "Facturable · aucun tarif défini",
+    "billableAt": "Facturable à {{rate}}/h",
+    "minimumSummary": "Minimum de {{minutes}} min",
+    "roundingSummary": "Arrondir à {{minutes}} min",
+    "inherits": "Utilise Tous les autres travaux",
+    "currencyHelp": "La devise d’un profil par défaut ou comportant des tarifs ne peut pas être modifiée. Laissez l’arrondi vide pour ne pas arrondir."
   }
 }

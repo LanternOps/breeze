@@ -95,7 +95,7 @@
     "loading": "Chargement des principaux de service…",
     "loadFailed": "Échec du chargement des principaux de service.",
     "retry": "Réessayer",
-    "empty": "Aucun principal de service pour le moment.",
+    "empty": "Aucun principal de service pour le moment. Créez-en un pour commencer.",
     "name": "Nom",
     "principalDescription": "Description",
     "scopes": "Portées",
@@ -551,7 +551,14 @@
         "description": "Statuts, ERS, catégories, formulaires",
         "linkCta": "Gérer les paramètres de billetterie →"
       },
-      "sendingDomains": { "label": "Adresses d'envoi", "description": "Envoyez vos courriels à partir de votre propre domaine" },
+      "emailTemplates": {
+        "label": "Modèles de courriel",
+        "description": "Billets, soumissions, factures, invitations"
+      },
+      "sendingDomains": {
+        "label": "Adresses d'envoi",
+        "description": "Envoyez vos courriels à partir de votre propre domaine"
+      },
       "aiBudgets": {
         "label": "Budgets IA",
         "description": "Limites de dépenses en IA"
@@ -701,7 +708,8 @@
     "errorCheckFailed": "Impossible de lancer la vérification DNS.",
     "errorRemoveFailed": "Impossible de retirer le domaine.",
     "errorIdentityFailed": "Impossible d'enregistrer l'adresse d'expéditeur.",
-    "errorTestFailed": "Impossible d'envoyer le courriel d'essai."
+    "errorTestFailed": "Impossible d'envoyer le courriel d'essai.",
+    "removeTitle": "Retirer le domaine d'envoi?"
   },
   "loginBranding": {
     "saved": "Enregistrement de la marque enregistrée",
@@ -841,6 +849,45 @@
     "deleteExpiredTitle": "Supprimer les clés d’inscription expirées",
     "deleteExpiredConfirm": "Supprimer toutes les clés d’inscription expirées ? Les clés qui alimentent encore un lien de téléchargement d’installateur actif sont conservées. Cela ne peut pas être annulé."
   },
+  "emailTemplates": {
+    "title": "Modèles de courriel",
+    "description": "Personnalisez les courriels que les clients reçoivent pour les billets, soumissions, factures et invitations au portail. L'avis de réponse n'inclut jamais le texte de la réponse.",
+    "usingDefault": "Par défaut",
+    "custom": "Personnalisé",
+    "subject": "Objet",
+    "heading": "Titre",
+    "buttonLabel": "Libellé du bouton",
+    "html": "Corps HTML",
+    "htmlAria": "Corps HTML du courriel",
+    "insert": "Insérer :",
+    "preview": "Aperçu",
+    "save": "Enregistrer le modèle",
+    "reset": "Réinitialiser",
+    "saved": "Modèle de courriel enregistré",
+    "saveFailed": "Échec de l'enregistrement du modèle de courriel",
+    "loadFailed": "Échec du chargement des modèles de courriel.",
+    "back": "Retour à la liste",
+    "markupRemoved": "Une partie du balisage a été retirée : {{tags}}",
+    "variables": {
+      "ticket_number": "Numéro de billet",
+      "ticket_subject": "Objet du billet",
+      "requester_name": "Nom du demandeur",
+      "requester_email": "Courriel du demandeur",
+      "org_name": "Nom de l'organisation",
+      "partner_name": "Nom de l'entreprise",
+      "portal_url": "URL du portail",
+      "email_only_hint": "Indication courriel uniquement",
+      "resolution_note": "Note de résolution",
+      "quote_number": "Numéro de soumission",
+      "total": "Total",
+      "expiry_date": "Date d'expiration",
+      "accept_url": "URL d'acceptation",
+      "invoice_number": "Numéro de facture",
+      "due_date": "Date d'échéance",
+      "invite_url": "URL d'invitation",
+      "cta_button": "Bouton"
+    }
+  },
   "inboundEmail": {
     "saveError": "Impossible d’enregistrer les paramètres des courriels entrants : votre session peut nécessiter une nouvelle vérification MFA. Réessayez.",
     "orgNotAccessible": "Cette organisation n’est pas disponible sous le nom de votre partenaire.",
@@ -871,6 +918,8 @@
     "dropUnverified": "Envoi de courrier qui échoue à l’authentification de l’expéditeur (SPF/DKIM/DMARC)",
     "dropUnverifiedDescription": "Lorsque cette option est désactivée, les courriels non vérifiés sont mis en quarantaine pour examen. Lorsqu’elle est activée, ils sont supprimés silencieusement. Cela s’applique à <all>tous</all> les expéditeurs non vérifiés, y compris les clients associés dont le message échoue à la vérification.",
     "enableAutoresponse": "Envoyez une réponse automatique pour accuser réceptionné des nouveaux billets par courriel",
+    "editEmailTemplates": "Le courriel d'accusé de réception s'édite sous Modèles de courriel.",
+    "editEmailTemplatesLink": "Modifier les modèles de courriel",
     "autoresponseMessage": "Message d’autoréponse",
     "subject": "Sujet",
     "subjectPlaceholder": "Nous avons reçu votre demande : {{ticket_subject}}",
@@ -2758,6 +2807,7 @@
         "set_agent_log_level": "Définir le niveau de journalisation de l'agent",
         "set_device_context": "Définir le contexte de l'appareil",
         "sync_huntress_data": "Synchroniser les données Huntress",
+        "system_cleanup": "Nettoyage du système",
         "take_screenshot": "Prendre une capture d'écran"
       },
       "actions": {
@@ -3005,6 +3055,11 @@
           "scan": "Lancer une analyse de sécurité",
           "status": "État de l'analyse de sécurité",
           "vulnerabilities": "Rechercher des vulnérabilités"
+        },
+        "system_cleanup": {
+          "list": "Lister les actions de nettoyage du système",
+          "run": "Exécuter le nettoyage du système",
+          "status": "État du nettoyage du système"
         }
       },
       "alwaysOnCount_one": "{{count}} outil en lecture seule",
@@ -3785,7 +3840,10 @@
     "passkeyStepUpNoUsableFactor": "Le facteur actuel de votre compte ne peut pas être confirmé ici. Contactez un administrateur pour ajouter une clé d'accès.",
     "passkeyStepUpIncorrectCode": "Code incorrect. Veuillez réessayer.",
     "passkeyStepUpTooManyAttempts": "Trop de tentatives. Veuillez réessayer dans quelques minutes.",
-    "passkeyStepUpVerificationExpired": "La vérification a expiré. Veuillez vérifier à nouveau."
+    "passkeyStepUpVerificationExpired": "La vérification a expiré. Veuillez vérifier à nouveau.",
+    "passkeyRegistrationServerError": "L'inscription de la clé d'accès a échoué. Veuillez réessayer.",
+    "deletePasskeyVerifyHeading": "Vérifier pour supprimer une clé d'accès",
+    "deletePasskeyVerifyHint": "Saisissez ici un code MFA actuel avant de supprimer l'une des clés d'accès ci-dessus. Ce code n'a aucun effet sur l'ajout d'une nouvelle clé d'accès."
   },
   "roleManager": {
     "roles": "Rôles",
@@ -4253,7 +4311,6 @@
     "responseSLAMinutes": "Réponse SLA (minutes)",
     "resolutionSLAMinutes": "Résolution SLA (minutes)",
     "billableByDefault": "Facturable par défaut",
-    "defaultHourlyRate": "Taux horaire par défaut ({{currency}})",
     "save": "Enregistrer",
     "cancel": "Annuler",
     "responseMinutes": "{{count}}m réponse",
@@ -4268,7 +4325,8 @@
     "active": "Actif",
     "inactive": "Inactif",
     "deactivate": "Désactiver",
-    "activate": "Activez"
+    "activate": "Activez",
+    "slaMinutesMustBeNumbers": "Les minutes du SLA doivent être des nombres."
   },
   "ticketPrioritiesTab": {
     "prioritiesAndSLAsSaved": "Priorités et SLA sauvés",
@@ -5745,5 +5803,25 @@
     "saveError": "Échec de l'enregistrement des valeurs par défaut du catalogue",
     "saveSuccess": "Valeurs par défaut du catalogue enregistrées",
     "saveButton": "Enregistrer"
+  },
+  "workTypes": {
+    "title": "Types de travail",
+    "description": "Identifiez le travail effectué dans les saisies de temps. Les valeurs par défaut des catégories aident les techniciens à choisir un type de travail.",
+    "newName": "Nouveau type de travail",
+    "create": "Ajouter un type de travail",
+    "archive": "Archiver",
+    "archived": "Archivé",
+    "archivedClearedDefaults_one": "Archivé. Retiré comme valeur par défaut de {{count}} catégorie.",
+    "archivedClearedDefaults_other": "Archivé. Retiré comme valeur par défaut de {{count}} catégories.",
+    "saveError": "Impossible d’enregistrer le type de travail. Veuillez réessayer.",
+    "saveSuccess": "Type de travail enregistré.",
+    "nameTaken": "Un type de travail portant ce nom existe déjà.",
+    "rename": "Renommer",
+    "loadError": "Impossible de charger les types de travail.",
+    "empty": "Aucun type de travail pour le moment. Ajoutez votre premier type de travail ci-dessus."
+  },
+  "ticketCategories": {
+    "defaultWorkType": "Type de travail par défaut",
+    "defaultWorkTypeHelp": "Utilisé lorsque du temps est enregistré pour cette catégorie sans type de travail."
   }
 }

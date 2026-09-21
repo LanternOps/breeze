@@ -5,6 +5,7 @@ import { authMiddleware, requireMfa, requireScope, requirePermission } from '../
 import { PERMISSIONS } from '../../services/permissions';
 import { partnerBillingSettingsSchema, orgBillingSettingsSchema, orgCurrencyImpactQuerySchema, reportingTotalsQuerySchema } from '@breeze/shared';
 import { updatePartnerBillingSettings, updateOrgBillingSettings } from '../../services/invoiceService';
+import { BillingProfileServiceError } from '../../services/billingProfileService';
 import { getOrgCurrencyImpact } from '../../services/orgCurrencyService';
 import { computeReportingTotal, parseGroupsParam, resolvePartnerReportingCurrency } from '../../services/reportingTotals';
 import { ExchangeRateServiceError } from '../../services/exchangeRateService';
@@ -13,6 +14,8 @@ import {
   PARTNER_WIDE_WRITE_DENIED_MESSAGE,
   canManagePartnerWidePolicies,
 } from '../../services/partnerWideAccess';
+import { writeRouteAudit, type AuthContext as AuditAuthContext } from '../../services/auditEvents';
+import { resolveAuditOrgIdForPartner } from '../../services/auditOrgResolver';
 
 // Mounted at the api root (not under the /invoices hub) so the paths read
 // /api/v1/partner/billing-settings and /api/v1/orgs/:orgId/billing-settings.
@@ -21,6 +24,7 @@ import {
 // (the #1383 regression). authMiddleware leads each route's middleware chain.
 export const invoiceSettingsRoutes = new Hono();
 const scopes = requireScope('partner', 'system');
+const profileWritePerm = requirePermission(PERMISSIONS.BILLING_PROFILES_WRITE.resource, PERMISSIONS.BILLING_PROFILES_WRITE.action);
 const writePerm = requirePermission(PERMISSIONS.INVOICES_WRITE.resource, PERMISSIONS.INVOICES_WRITE.action);
 const requirePartnerWideBillingAdmin = async (c: Context, next: Next) => {
   if (!canManagePartnerWidePolicies(c.get('auth'))) {
@@ -32,16 +36,45 @@ const requirePartnerWideBillingAdmin = async (c: Context, next: Next) => {
 invoiceSettingsRoutes.patch('/partner/billing-settings', authMiddleware, scopes, writePerm, requireMfa(), requirePartnerWideBillingAdmin,
   zValidator('json', partnerBillingSettingsSchema),
   async (c) => {
-    try { return c.json({ data: await updatePartnerBillingSettings(c.req.valid('json'), invoiceActorFrom(c)) }); }
+    try {
+      const actor = invoiceActorFrom(c);
+      const body = c.req.valid('json');
+      const updated = await updatePartnerBillingSettings(body, actor);
+      // Sweep paper cut #4: this is a partner-WIDE write with no orgId of its
+      // own, so the generic route-derived audit fallback in index.ts silently
+      // skips it for most partner admins (resolveFallbackOrgId requires an
+      // org-scoped token or exactly one accessibleOrgIds entry — false for
+      // any partner with more than one org). Write the same semantic audit
+      // shape /settings/partner's PATCH uses (writeRouteAudit +
+      // resolveAuditOrgIdForPartner), so a save here is never silent.
+      const auditOrgId = await resolveAuditOrgIdForPartner(actor.partnerId);
+      writeRouteAudit(c as unknown as AuditAuthContext, {
+        orgId: auditOrgId,
+        action: 'partner.billing_settings.update',
+        resourceType: 'partner',
+        resourceId: actor.partnerId,
+        details: { changedFields: Object.keys(body) },
+      });
+      return c.json({ data: updated });
+    }
     catch (err) { return handleServiceError(c, err); }
   });
 
 invoiceSettingsRoutes.patch('/orgs/:orgId/billing-settings', authMiddleware, scopes, writePerm,
   zValidator('param', z.object({ orgId: z.string().guid() })),
   zValidator('json', orgBillingSettingsSchema),
+  async (c, next) => {
+    if (c.req.valid('json').billingProfileId !== undefined) return profileWritePerm(c, next);
+    await next();
+  },
   async (c) => {
     try { return c.json({ data: await updateOrgBillingSettings(c.req.valid('param').orgId, c.req.valid('json'), invoiceActorFrom(c)) }); }
-    catch (err) { return handleServiceError(c, err); }
+    catch (err) {
+      if (err instanceof BillingProfileServiceError) {
+        return c.json({ error: err.message, code: err.code }, err.status as 400);
+      }
+      return handleServiceError(c, err);
+    }
   });
 
 // Multi-currency wave 6 (#3778): ADVISORY, read-only preview of what a currency

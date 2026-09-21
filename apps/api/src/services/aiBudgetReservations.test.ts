@@ -327,3 +327,175 @@ describe('settleAiBudgetReservationDurably', () => {
     expect(hoisted.tightenLockTimeout).toHaveBeenCalledTimes(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #5557 — the /client-ai (Office add-in) namespace.
+//
+// The add-in surface used to admit turns with a READ (checkClientBudget against
+// client_ai_usage) and then spend, so two concurrent turns both passed. These
+// assert the sub-cap arithmetic that replaces that read: a client reservation
+// is the tighter of the ORGANIZATION cap (global — settled client spend already
+// lands in ai_cost_usage) and the CLIENT sub-cap (whose in-flight side counts
+// client-namespace holds only).
+// ---------------------------------------------------------------------------
+
+/**
+ * Pull the interpolated values out of a Drizzle `sql` template. The literal SQL
+ * arrives as StringChunk objects; anything interpolated with `${}` that is not
+ * itself a SQL wrapper sits in `queryChunks` as the raw primitive.
+ */
+function sqlParamValues(query: unknown): unknown[] {
+  const chunks = (query as { queryChunks?: unknown[] } | undefined)?.queryChunks ?? [];
+  return chunks.filter((chunk) => chunk === null || typeof chunk !== 'object');
+}
+
+function usageRow(overrides: Record<string, unknown> = {}) {
+  return {
+    daily_usage: '0',
+    monthly_usage: '0',
+    daily_reserved: '0',
+    monthly_reserved: '0',
+    client_daily_usage: '0',
+    client_monthly_usage: '0',
+    client_daily_reserved: '0',
+    client_monthly_reserved: '0',
+    ...overrides,
+  };
+}
+
+describe('reserveAiBudget — client namespace sub-cap (#5557)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // clearAllMocks does NOT drain a queued mockResolvedValueOnce chain, and a
+    // leftover response from the previous case silently answers the next one's
+    // first query — which reads as a passing assertion about the wrong call.
+    dbMock.execute.mockReset();
+    hoisted.runOutsideDbContext.mockImplementation((fn: () => unknown) => fn());
+    hoisted.withSystemDbAccessContext.mockImplementation((fn: () => unknown) => fn());
+    hoisted.withDbAccessContext.mockImplementation((_ctx: unknown, fn: () => unknown) => fn());
+    // Organization itself is uncapped: the ONLY fence in these cases is the
+    // client sub-cap, which is precisely the gap #5557 reported.
+    hoisted.getEffectiveAiBudget.mockResolvedValue({
+      enabled: true, dailyBudgetCents: null, monthlyBudgetCents: null,
+    });
+  });
+
+  /** lock → existing-reservation lookup → usage/held read → INSERT RETURNING. */
+  function primeAdmission(usage: Record<string, unknown>, inserted: Record<string, unknown> = {}) {
+    dbMock.execute
+      .mockResolvedValueOnce([{ id: ORG_ID }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([usageRow(usage)])
+      .mockResolvedValueOnce([reservationRow({
+        namespace: 'client', uncapped: false, reserved_cost_cents: '0.000000', ...inserted,
+      })]);
+  }
+
+  const clientInput = (clientBudget: { dailyBudgetCents: number | null; monthlyBudgetCents: number | null }) => ({
+    orgId: ORG_ID,
+    idempotencyKey: 'client-ai:key-1',
+    billingSource: 'platform' as const,
+    namespace: 'client' as const,
+    clientBudget,
+  });
+
+  it('reserves the client sub-cap remainder even when the organization budget is unlimited', async () => {
+    primeAdmission(
+      { client_daily_usage: '400', client_daily_reserved: '100' },
+      { reserved_cost_cents: '500.000000' },
+    );
+
+    const result = await reserveAiBudget(
+      clientInput({ dailyBudgetCents: 1000, monthlyBudgetCents: null }),
+    );
+
+    expect(result).toMatchObject({ kind: 'reserved', reservedCostCents: 500 });
+    // The amount actually written is the arithmetic under test, not the row the
+    // mock hands back: 1000 cap − 400 settled − 100 held.
+    const insertParams = sqlParamValues(dbMock.execute.mock.calls[3]?.[0]);
+    expect(insertParams).toContain('client');
+    expect(insertParams).toContain('500.000000');
+  });
+
+  it('denies a second concurrent add-in turn while the first still holds the sub-cap', async () => {
+    primeAdmission({ client_daily_usage: '0', client_daily_reserved: '1000' });
+
+    const result = await reserveAiBudget(
+      clientInput({ dailyBudgetCents: 1000, monthlyBudgetCents: null }),
+    );
+
+    // An in-flight hold is NOT exhaustion — the caller retries, it does not go
+    // to its IT provider.
+    expect(result).toMatchObject({ kind: 'denied', reason: 'client_daily_budget_in_flight' });
+    // Nothing inserted: lock, lookup, usage read only.
+    expect(dbMock.execute).toHaveBeenCalledTimes(3);
+  });
+
+  it('denies with the exhausted reason when the sub-cap is spent, not merely held', async () => {
+    primeAdmission({ client_monthly_usage: '5000' });
+
+    const result = await reserveAiBudget(
+      clientInput({ dailyBudgetCents: null, monthlyBudgetCents: 5000 }),
+    );
+
+    expect(result).toMatchObject({ kind: 'denied', reason: 'client_monthly_budget' });
+    expect((result as { message: string }).message).toContain('$50.00');
+  });
+
+  it('never widens past the organization cap — the tighter of the two wins', async () => {
+    hoisted.getEffectiveAiBudget.mockResolvedValue({
+      enabled: true, dailyBudgetCents: 200, monthlyBudgetCents: null,
+    });
+    primeAdmission({}, { reserved_cost_cents: '200.000000' });
+
+    const result = await reserveAiBudget(
+      clientInput({ dailyBudgetCents: 100000, monthlyBudgetCents: null }),
+    );
+
+    expect(result).toMatchObject({ kind: 'reserved', reservedCostCents: 200 });
+    expect(sqlParamValues(dbMock.execute.mock.calls[3]?.[0])).toContain('200.000000');
+  });
+
+  it('defaults to the technician namespace so every pre-#5557 call site is unchanged', async () => {
+    dbMock.execute
+      .mockResolvedValueOnce([{ id: ORG_ID }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([reservationRow({ namespace: 'technician' })]);
+
+    const result = await reserveAiBudget({
+      orgId: ORG_ID, idempotencyKey: 'key-1', billingSource: 'platform',
+    });
+
+    expect(result).toMatchObject({ kind: 'unlimited' });
+    expect(sqlParamValues(dbMock.execute.mock.calls[2]?.[0])).toContain('technician');
+  });
+
+  it('refuses a client reservation with no sub-cap supplied rather than admitting on the org cap alone', async () => {
+    await expect(reserveAiBudget({
+      orgId: ORG_ID,
+      idempotencyKey: 'client-ai:key-1',
+      billingSource: 'platform',
+      namespace: 'client',
+    })).rejects.toThrow(/clientBudget is required/);
+    expect(dbMock.execute).not.toHaveBeenCalled();
+  });
+
+  it('refuses a sub-cap on a technician reservation, where nothing would enforce it', async () => {
+    await expect(reserveAiBudget({
+      orgId: ORG_ID,
+      idempotencyKey: 'key-1',
+      billingSource: 'platform',
+      clientBudget: { dailyBudgetCents: 100, monthlyBudgetCents: null },
+    })).rejects.toThrow(/only meaningful/);
+  });
+
+  it('rejects an idempotency-key replay that arrives under a different namespace', async () => {
+    dbMock.execute
+      .mockResolvedValueOnce([{ id: ORG_ID }])
+      .mockResolvedValueOnce([reservationRow({ namespace: 'technician' })]);
+
+    await expect(reserveAiBudget(
+      clientInput({ dailyBudgetCents: 1000, monthlyBudgetCents: null }),
+    )).rejects.toThrow(/conflicts with another dispatch/);
+  });
+});

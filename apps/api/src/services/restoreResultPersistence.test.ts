@@ -33,6 +33,7 @@ vi.mock('../db/schema', () => ({
 
 import {
   buildRestoreResultMetadata,
+  deriveRestoreStatus,
   updateRestoreJobFromResult,
 } from './restoreResultPersistence';
 
@@ -178,5 +179,85 @@ describe('restore result persistence', () => {
         },
       },
     }));
+  });
+  it('clears the stale server-timeout error when a late genuine success lands (#6415)', async () => {
+    const returning = vi.fn().mockResolvedValue([{ id: 'restore-1' }]);
+    const where = vi.fn().mockReturnValue({ returning });
+    const set = vi.fn().mockReturnValue({ where });
+    updateMock.mockReturnValue({ set });
+
+    const applied = await updateRestoreJobFromResult(
+      {
+        id: 'restore-1',
+        status: 'failed',
+        targetConfig: {
+          existing: true,
+          error: 'Server-side timeout: no response from agent after 60 minutes',
+          result: {
+            status: 'failed',
+            error: 'Server-side timeout: no response from agent after 60 minutes',
+            timedOutBy: 'server',
+          },
+        },
+      },
+      'bmr_recover',
+      {
+        status: 'completed',
+        result: { status: 'completed', filesRestored: 105_946, bytesRestored: 2_660_000_000 },
+      }
+    );
+
+    expect(applied).toBe(true);
+    expect(set).toHaveBeenCalledTimes(1);
+    const persisted = set.mock.calls[0]?.[0] as { status: string; targetConfig: Record<string, unknown> };
+    expect(persisted.status).toBe('completed');
+    expect(persisted.targetConfig).not.toHaveProperty('error');
+    expect(persisted.targetConfig.existing).toBe(true);
+    expect(persisted.targetConfig.result).toMatchObject({ status: 'completed', filesRestored: 105_946 });
+  });
+
+  it('drops the sweep-owned top-level error even when the genuine outcome is a failure (#6415)', async () => {
+    const returning = vi.fn().mockResolvedValue([{ id: 'restore-1' }]);
+    const where = vi.fn().mockReturnValue({ returning });
+    const set = vi.fn().mockReturnValue({ where });
+    updateMock.mockReturnValue({ set });
+
+    await updateRestoreJobFromResult(
+      {
+        id: 'restore-1',
+        status: 'failed',
+        targetConfig: {
+          error: 'Server-side timeout: no response from agent after 60 minutes',
+          result: { status: 'failed', timedOutBy: 'server' },
+        },
+      },
+      'bmr_recover',
+      { status: 'completed', result: { status: 'failed', error: 'disk too small' } }
+    );
+
+    expect(set).toHaveBeenCalledTimes(1);
+    const persisted = set.mock.calls[0]?.[0] as { status: string; targetConfig: Record<string, unknown> };
+    expect(persisted.status).toBe('failed');
+    // The sweep's guess is gone; the device's own reason is authoritative and
+    // lives inside `result`, which every reader prefers.
+    expect(persisted.targetConfig).not.toHaveProperty('error');
+    expect(persisted.targetConfig.result).toMatchObject({ error: 'disk too small' });
+  });
+});
+
+// The rebuild engine reports a preflight refusal as a COMPLETED command whose
+// payload status is 'refused' (nothing was written). It must never surface in
+// restore_jobs as a successful restore.
+describe('deriveRestoreStatus', () => {
+  it.each([
+    ['completed', 'refused', 'failed'],
+    ['completed', 'failed', 'failed'],
+    ['completed', 'partial', 'partial'],
+    ['completed', 'degraded', 'partial'],
+    ['completed', 'completed', 'completed'],
+    ['completed', undefined, 'completed'],
+    ['failed', 'completed', 'failed'],
+  ] as const)('command %s + payload %s → %s', (command, payload, want) => {
+    expect(deriveRestoreStatus(command, payload)).toBe(want);
   });
 });

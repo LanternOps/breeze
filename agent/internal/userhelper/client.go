@@ -805,8 +805,8 @@ func (c *Client) executeScript(cmd ipc.IPCCommand) ipc.IPCCommandResult {
 	// site does not is silently lost for every runAs=user run.
 	//
 	// #4882: ScriptID and Parameters were exactly that. Without Parameters,
-	// buildEnvironment emitted no BREEZE_PARAM_* and SubstituteParameters had
-	// nothing to substitute, so a parameterised script failed with its own
+	// buildEnvironment emitted no BREEZE_PARAM_* and the placeholder renderer had
+	// nothing to rewrite, so a parameterised script failed with its own
 	// "parameter is required" error in user context while the identical run in
 	// SYSTEM context succeeded. ParametersFromPayload is the one decoder both
 	// sites now use.

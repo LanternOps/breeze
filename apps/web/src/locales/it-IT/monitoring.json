@@ -7,16 +7,6 @@
     "badgeHint": "Gestito da un monitor: modificalo invece dal monitor.",
     "monitorLabel": "Monitor"
   },
-  "hub": {
-    "title": "Monitoraggio e automazione",
-    "tabs": {
-      "monitors": "Monitor",
-      "network": "Rete",
-      "delivery": "Consegna",
-      "legacyRules": "Regole legacy"
-    },
-    "ariaLabel": "Sezioni di monitoraggio"
-  },
   "list": {
     "title": "Monitor",
     "description": "Osserva una condizione, rispondi sul dispositivo, notifica ed esegui l'escalation quando continua a verificarsi.",
@@ -34,6 +24,7 @@
     "policiesCount_one": "{{count}} criterio",
     "policiesCount_other": "{{count}} criteri",
     "notDeployed": "Non distribuito",
+    "toggleEnabled": "Abilitato: {{name}}",
     "errors": {
       "fetch": "Impossibile caricare i monitor",
       "delete": "Impossibile eliminare il monitor",
@@ -44,6 +35,7 @@
     "builtInHint": "Fornito da Breeze. Modifica le soglie, disattivalo o eliminalo: non tornerà."
   },
   "editor": {
+    "attachedToPolicy": "Monitor creato e collegato alla policy",
     "titleNew": "Nuovo monitor",
     "titleEdit": "Modifica monitor",
     "breadcrumb": {
@@ -63,6 +55,7 @@
       "activity": "Attività"
     },
     "fields": {
+      "match": "Corrispondenza",
       "name": "Nome",
       "description": "Descrizione",
       "kind": "Tipo",
@@ -82,7 +75,6 @@
       "channels": "Regole di instradamento più questi canali",
       "none": "Non notificare"
     },
-    "agentDeliveredHint": "Questa osservazione viene eseguita sul dispositivo e deve esistere anche nella scheda Monitoraggio di servizi e processi del criterio, finché ciò non viene unificato.",
     "responsesHint": "Le risposte vengono eseguite in ordine sul dispositivo che ha violato la condizione.",
     "recurrenceHint": "Conteggiato in episodi di violazione: un nuovo episodio inizia solo dopo che la condizione si è ripristinata.",
     "ownerScope": {
@@ -118,9 +110,39 @@
       "title": "Prova su un dispositivo",
       "selectDevice": "Dispositivo",
       "run": "Esegui prova"
+    },
+    "deliveryPreview": {
+      "selectOrg": "Seleziona un’organizzazione per visualizzare la consegna.",
+      "failed": "Impossibile visualizzare l’anteprima.",
+      "loading": "Risoluzione della consegna…",
+      "disabled": "{{name}} (disabilitato)",
+      "unavailable": "Canale non disponibile",
+      "destination": "Consegna per {{severity}}: {{channels}}",
+      "partnerRule": "Regola del partner: {{name}}",
+      "orgRule": "Regola dell’organizzazione: {{name}}",
+      "partnerDefault": "Impostazione predefinita del partner: {{name}}",
+      "orgDefault": "Impostazione predefinita dell’organizzazione: {{name}}",
+      "noRow": "Nessuna riga di consegna configurata.",
+      "monitorOverride": "Impostazione propria del monitor",
+      "escalation": "Escalation tramite {{name}}",
+      "withoutSite": "Nessuna sede selezionata; le regole specifiche della sede sono escluse.",
+      "testRules": "Prova questo insieme di regole",
+      "kind": "Tipo di monitor",
+      "noKind": "Nessun tipo di monitor",
+      "site": "Sede",
+      "noSite": "Nessuna sede",
+      "sitesFailed": "Impossibile caricare le sedi.",
+      "manage": "Gestisci la consegna",
+      "draft": "L’anteprima usa i valori attuali dell’editor.",
+      "skipped": "Ignorato {{id}}: {{reason}}",
+      "skipReasons": {
+        "disabled": "disabilitato",
+        "unavailable": "non disponibile"
+      }
     }
   },
   "kinds": {
+    "composite": "Composito (tutte o una di più condizioni)",
     "cpu": "Utilizzo CPU",
     "memory": "Utilizzo memoria",
     "disk": "Utilizzo disco",
@@ -178,7 +200,8 @@
     "target": "Destinazione",
     "port": "Numero di porta",
     "expectStatus": "Codice di stato previsto",
-    "pollingIntervalSeconds": "Interroga ogni (secondi)"
+    "pollingIntervalSeconds": "Interroga ogni (secondi)",
+    "match": "Corrispondenza"
   },
   "operators": {
     "gt": "maggiore di",
@@ -216,6 +239,10 @@
     "read": "Lettura",
     "write": "Scrittura",
     "total": "Totale"
+  },
+  "compositeMatch": {
+    "all": "Tutte le condizioni",
+    "any": "Qualsiasi condizione"
   },
   "antivirusChecks": {
     "not_protected": "Non protetto",

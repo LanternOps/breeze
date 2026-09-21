@@ -186,6 +186,7 @@
       "failedToAssignOrg": "Impossibile assegnare l'org",
       "organizations": "Organizzazioni",
       "thisPartnerLibraryPolicyAppliesOnlyTo": "Questo criterio della libreria partner si applica solo alle organizzazioni selezionate.",
+      "filtersApplyOnAssign": "Questi filtri si applicano quando assegni sotto. Vuoto significa ogni ruolo e ogni sistema operativo. Per cambiare i filtri di un'assegnazione, disattivala e riattivala.",
       "allOrganizationsPartnerWide": "Tutte le organizzazioni (a livello di partner)",
       "allOrganizationsPartnerWide2": "Tutte le organizzazioni (a livello di partner)",
       "assigned": "Assegnata",
@@ -844,7 +845,13 @@
         "inherited": "Ereditato",
         "overrideValue": "Valore di override",
         "overridesLabel": "Override:",
-        "failedToLoadMonitors": "Impossibile caricare i monitor"
+        "failedToLoadMonitors": "Impossibile caricare i monitor",
+        "createMonitor": "Crea monitor",
+        "recommended": {
+          "title": "Monitor consigliati",
+          "body": "Breeze include monitor integrati per CPU, memoria, disco e conformità delle patch. Nessuno è ancora collegato a questa policy.",
+          "action": "Collega tutti i monitor integrati"
+        }
       },
       "pamTab": {
         "captureWindowsUACElevationPrompts": "Acquisisci prompt di elevazione UAC di Windows",
@@ -1201,6 +1208,15 @@
         "save": "Salva",
         "cancel": "Annulla",
         "none": "Nessuna motivazione registrata."
+      },
+      "legacyFreeze": {
+        "title": "Le nuove regole vengono create come monitor",
+        "body": "Le regole esistenti restano modificabili qui e verranno convertite in monitor nella prossima versione.",
+        "link": "Apri la scheda Monitor"
+      },
+      "duplicate": {
+        "title": "I dispositivi di questa policy genereranno avvisi doppi",
+        "body": "Queste condizioni esistono sia come monitor collegato sia come regola o controllo legacy: {{names}}"
       }
     }
   },

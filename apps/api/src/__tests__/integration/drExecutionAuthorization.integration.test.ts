@@ -3,16 +3,29 @@ import './setup';
 import { eq, sql } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 import { withSystemDbAccessContext } from '../../db';
-import { drExecutions, drPlans } from '../../db/schema';
+import {
+  backupConfigs,
+  backupJobs,
+  backupSnapshots,
+  devices,
+  drExecutions,
+  drPlanGroups,
+  drPlans,
+} from '../../db/schema';
 import { reconcileDrExecution } from '../../services/drExecutionService';
+import { resolveLatestRestorableSnapshotId } from '../../services/drBareMetalRebuildStep';
 import { handleDrCommandResult } from '../../routes/backup/drResultHandler';
-import { createOrganization, createPartner } from './db-utils';
+import { createOrganization, createPartner, createSite } from './db-utils';
 import { getTestDb } from './setup';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
 describe('DR reconciliation authorization against real PostgreSQL', () => {
-  runDb('serializes the execution row and quarantines legacy authority with zero commands', async () => {
+  // #6322 removed the no-op `SELECT ... FOR UPDATE` this case was named for
+  // (it auto-committed outside a transaction and locked nothing). What it
+  // actually proves — concurrent ticks converge on one quarantined outcome
+  // and dispatch nothing — still holds, now via the guarded write-back.
+  runDb('converges concurrent ticks on the legacy-authority quarantine with zero commands', async () => {
     const testDb = getTestDb();
     const partner = await createPartner();
     const org = await createOrganization({ partnerId: partner.id });
@@ -99,5 +112,75 @@ describe('DR reconciliation authorization against real PostgreSQL', () => {
       authorizationGrantRevision: 'durable-grant-revision',
       authorizationState: 'authorized',
     });
+  });
+});
+
+// ── W05b Task 7: BARE_METAL_REBUILD source resolution ────────────────────────
+describe('BARE_METAL_REBUILD step against real PostgreSQL', () => {
+  async function seedDeviceWithSnapshots(orgId: string, siteId: string, sfx: string) {
+    const testDb = getTestDb();
+    const [device] = await testDb.insert(devices).values({
+      orgId, siteId, agentId: `bmr-${sfx}`, hostname: `bmr-${sfx}`, osType: 'linux', osVersion: '24.04',
+      architecture: 'x86_64', agentVersion: '0.0.0-test',
+    }).returning({ id: devices.id });
+    const [cfg] = await testDb.insert(backupConfigs).values({
+      orgId, name: `bmr-${sfx}`, type: 'file', provider: 'local', providerConfig: {},
+    }).returning({ id: backupConfigs.id });
+    const [job] = await testDb.insert(backupJobs).values({
+      orgId, configId: cfg!.id, deviceId: device!.id, status: 'completed',
+    }).returning({ id: backupJobs.id });
+    const insertSnapshot = async (label: string, timestamp: Date, restorable: boolean | null) => {
+      const [row] = await testDb.insert(backupSnapshots).values({
+        orgId, jobId: job!.id, deviceId: device!.id, snapshotId: `${label}-${sfx}`, timestamp,
+        bareMetalRestorable: restorable,
+      }).returning({ id: backupSnapshots.id });
+      return row!.id;
+    };
+    return { deviceId: device!.id, insertSnapshot };
+  }
+
+  runDb('resolves the NEWEST restorable snapshot, skipping newer non-restorable ones', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const site = await createSite({ orgId: org.id });
+    const sfx = crypto.randomUUID().slice(0, 8);
+    const { deviceId, insertSnapshot } = await seedDeviceWithSnapshots(org.id, site.id, sfx);
+
+    await insertSnapshot('old-ok', new Date('2026-09-01T00:00:00Z'), true);
+    const newestRestorable = await insertSnapshot('new-ok', new Date('2026-09-02T00:00:00Z'), true);
+    await insertSnapshot('newest-bad', new Date('2026-09-03T00:00:00Z'), false);
+    await insertSnapshot('newest-unassessed', new Date('2026-09-04T00:00:00Z'), null);
+
+    await expect(
+      withSystemDbAccessContext(() => resolveLatestRestorableSnapshotId(org.id, deviceId)),
+    ).resolves.toBe(newestRestorable);
+  });
+
+  runDb('denies (no_restorable_snapshot) and creates no recovery when a group device has no restorable snapshot', async () => {
+    const testDb = getTestDb();
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const site = await createSite({ orgId: org.id });
+    const sfx = crypto.randomUUID().slice(0, 8);
+    const { deviceId, insertSnapshot } = await seedDeviceWithSnapshots(org.id, site.id, sfx);
+    await insertSnapshot('bad', new Date('2026-09-01T00:00:00Z'), false);
+
+    const [plan] = await testDb.insert(drPlans).values({ orgId: org.id, name: `BMR plan ${sfx}` }).returning({ id: drPlans.id });
+    await testDb.insert(drPlanGroups).values({
+      planId: plan!.id, orgId: org.id, name: 'Tier 1', sequence: 1, devices: [deviceId],
+      restoreConfig: { commandType: 'BARE_METAL_REBUILD', snapshotSelection: 'latest_restorable', outputDir: '/var/lib/breeze/rebuild/out', waitTimeoutMinutes: 60 },
+    });
+    const [execution] = await testDb.insert(drExecutions).values({
+      planId: plan!.id, orgId: org.id, executionType: 'failover', status: 'pending',
+      authorizationPrincipalKind: 'api_key', authorizationPrincipalId: crypto.randomUUID(),
+      authorizationGrantRevision: 'grant', authorizationState: 'authorized', authorizationCheckedAt: new Date(),
+    }).returning({ id: drExecutions.id });
+
+    const outcome = await withSystemDbAccessContext(() => reconcileDrExecution(execution!.id));
+
+    expect(outcome.nextDelayMs).toBeNull();
+    expect(outcome.execution).toMatchObject({ status: 'failed', authorizationState: 'denied', authorizationDenialCode: 'no_restorable_snapshot' });
+    const recoveries = await testDb.execute(sql`select id from bare_metal_recoveries where dr_execution_id = ${execution!.id}`);
+    expect(recoveries).toHaveLength(0);
   });
 });

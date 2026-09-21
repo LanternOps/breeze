@@ -8,6 +8,7 @@
  * patch compliance, cert expiry, and compound AND/OR logic.
  */
 
+import { interpolateAlertTemplate } from '@breeze/shared';
 import { conditionRegistry } from './registry';
 import { getLatestMetric, normalizeMetricName, getOperatorDisplay } from './utils';
 
@@ -454,17 +455,11 @@ export function retiredConditionTypeError(conditions: unknown): string | null {
 
 /**
  * Interpolate template strings with context values
- * Supports {{variable}} syntax
+ * Supports {{variable}} syntax. `{{device}}` fills from deviceName/hostname.
  */
 export function interpolateTemplate(
   template: string,
   context: Record<string, unknown>
 ): string {
-  return template.replace(/\{\{(\w+)\}\}/g, (match, key) => {
-    const value = context[key];
-    if (value === undefined || value === null) {
-      return match;
-    }
-    return String(value);
-  });
+  return interpolateAlertTemplate(template, context);
 }

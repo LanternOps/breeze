@@ -19,7 +19,7 @@ import type { NormalizedInboundEmail, InboundParseStatus } from './types';
 import type { M365MailboxGenerationContext } from '../inboundEmailQueue';
 import { TICKET_TOKEN_RE, findTicketInPartner, findClosedTicketInPartner, type SenderResolver } from './threadMatcher';
 import { claimMessageLink, findLinkByMessageId, normalizeMessageId } from '../ticketEmailLinks';
-import { ownOutboundReason } from './loopPrevention';
+import { ownOutboundReason, ticketCreationLoopReason } from './loopPrevention';
 
 // Synthetic actor for the inbound pipeline. Only ever written to audit_logs.actor_id
 // (NOT NULL, but no FK to users — same pattern as auditEvents.ANONYMOUS_ACTOR_ID /
@@ -176,6 +176,28 @@ export async function processInboundEmail(
       return;
     }
 
+    // (1a.5) Idempotency — provider retries / at-least-once delivery, scoped to the
+    // partner. Runs BEFORE the suppression/audit checks below (partner-status,
+    // self-loop, own-outbound, loop/bounce) so a REDELIVERY of an already-logged
+    // message returns here instead of re-running one of those checks and issuing a
+    // SECOND logInbound insert — which would collide with the
+    // `(partner_id, provider_message_id)` unique index (23505) and fail the job into
+    // a retry storm. This SELECT alone is NOT the exactly-once guarantee: under
+    // CONCURRENT delivery two workers can both miss here and race to insert;
+    // exactly-once is enforced by that same unique index inside the surrounding
+    // `withSystemDbAccessContext` transaction — the losing insert hits 23505, its
+    // transaction rolls back, BullMQ retries, and the retry's dedup SELECT then finds
+    // the committed row. This SELECT is the fast path; the index is the lock.
+    const dup = await db
+      .select({ id: ticketEmailInbound.id })
+      .from(ticketEmailInbound)
+      .where(and(
+        eq(ticketEmailInbound.partnerId, partnerId),
+        eq(ticketEmailInbound.providerMessageId, n.providerMessageId)
+      ))
+      .limit(1);
+    if (dup[0]) return;
+
     // (1b) Gate ingestion on partner status = active. A suspended/pending/churned
     // partner must not generate or mutate tickets, but we STILL log the inbound row
     // (parse_status: 'skipped') to preserve the audit trail.
@@ -223,24 +245,26 @@ export async function processInboundEmail(
       return;
     }
 
-    // (2) Idempotency — provider retries / at-least-once delivery. Scoped to the partner.
-    // This SELECT alone is NOT the exactly-once guarantee: under CONCURRENT delivery two
-    // workers can both miss the dup here and race to insert. Exactly-once is enforced by the
-    // `(partner_id, provider_message_id)` UNIQUE index combined with the surrounding
-    // `withSystemDbAccessContext` transaction — the losing insert hits 23505, its transaction
-    // rolls back, BullMQ retries the job, and the retry's dedup SELECT then finds the row the
-    // winner committed and returns early. This SELECT is the fast path; the index is the lock.
-    const dup = await db
-      .select({ id: ticketEmailInbound.id })
-      .from(ticketEmailInbound)
-      .where(and(
-        eq(ticketEmailInbound.partnerId, partnerId),
-        eq(ticketEmailInbound.providerMessageId, n.providerMessageId)
-      ))
-      .limit(1);
-    if (dup[0]) return;
+    // (1e) MAIL LOOP / BOUNCE. Suppress ticket creation for the two unambiguous
+    // loop/bounce signals — Auto-Submitted: auto-replied and a null Return-Path
+    // (`<>`) — so an auto-responder war or a bounce storm cannot manufacture
+    // tickets. Deliberately NARROW: a device notification (`Auto-Submitted:
+    // auto-generated`, no-reply@ copier/monitoring) is NOT suppressed here — those
+    // are legitimate tickets. X-Loop is NOT a creation-suppression signal (we never
+    // set X-Loop outbound, so it does not evidence a Breeze loop) — it, together with
+    // Precedence/system-sender, suppresses only the auto-REPLY
+    // (autoresponseSuppressionReason), not the ticket. X-Auto-Response-Suppress and
+    // List-Id are not parsed or acted on at all (types.ts): they mark "do not
+    // auto-reply"/list mail that legitimate device and distribution-list senders set,
+    // so keying anything off them would drop real support mail. Logged 'ignored' with
+    // the reason for the audit trail.
+    const loopReason = ticketCreationLoopReason(n);
+    if (loopReason) {
+      await logInbound(n, partnerId, 'ignored', null, `loop/bounce suppressed: ${loopReason}`);
+      return;
+    }
 
-    // (2b) Master switch (#3597). `settings.ticketing.inbound.enabled` used to be
+    // (2) Master switch (#3597). `settings.ticketing.inbound.enabled` used to be
     // display-only: the card persisted and re-rendered it while nothing in this
     // pipeline read it, so a partner who turned the feature OFF kept getting tickets
     // (and autoresponses) with no in-product way to stop it. Gate here — after the

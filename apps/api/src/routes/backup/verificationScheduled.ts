@@ -372,6 +372,13 @@ export async function processBackupVerificationResult(
   pending.restoreTimeSeconds = (agentResult.restoreTimeSeconds as number) ?? null;
   const details = pending.details as Record<string, unknown>;
   details.failedFiles = agentResult.failedFiles || [];
+  // #6350: `filesIncomplete` counts files the backup run never uploaded. They
+  // are missing from the snapshot manifest, so filesFailed (a count of objects
+  // that failed verification) is legitimately 0 while the restore point is
+  // incomplete — persist the count and the agent's warnings so the reason is
+  // visible instead of only the downgraded status.
+  details.filesIncomplete = (agentResult.filesIncomplete as number) ?? 0;
+  details.warnings = agentResult.warnings || [];
   details.cleanedUp = agentResult.cleanedUp;
   details.restorePath = agentResult.restorePath;
 

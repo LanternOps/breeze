@@ -1,0 +1,87 @@
+[
+  {
+    "osType": "windows",
+    "input": "D:",
+    "expected": "D:\\"
+  },
+  {
+    "osType": "windows",
+    "input": "c:",
+    "expected": "C:\\"
+  },
+  {
+    "osType": "windows",
+    "input": "C:foo",
+    "expected": "C:\\foo"
+  },
+  {
+    "osType": "windows",
+    "input": "c:foo/bar/",
+    "expected": "C:\\foo\\bar"
+  },
+  {
+    "osType": "windows",
+    "input": "C:.",
+    "expected": "C:."
+  },
+  {
+    "osType": "windows",
+    "input": "C:..",
+    "expected": "C:.."
+  },
+  {
+    "osType": "windows",
+    "input": "\\\\server\\share",
+    "expected": "\\\\server\\share"
+  },
+  {
+    "osType": "windows",
+    "input": "//server///share/",
+    "expected": "\\\\server\\share"
+  },
+  {
+    "osType": "windows",
+    "input": "\\\\",
+    "expected": "\\\\"
+  },
+  {
+    "osType": "windows",
+    "input": "c:/Users//Todd/",
+    "expected": "C:\\Users\\Todd"
+  },
+  {
+    "osType": "windows",
+    "input": "d:/",
+    "expected": "D:\\"
+  },
+  {
+    "osType": "windows",
+    "input": "  ",
+    "expected": "C:\\"
+  },
+  {
+    "osType": "windows",
+    "input": "\\",
+    "expected": "\\"
+  },
+  {
+    "osType": "linux",
+    "input": "//var//tmp/",
+    "expected": "/var/tmp"
+  },
+  {
+    "osType": "linux",
+    "input": "/",
+    "expected": "/"
+  },
+  {
+    "osType": "linux",
+    "input": "",
+    "expected": "/"
+  },
+  {
+    "osType": "macos",
+    "input": "/Volumes/Backup Drive/",
+    "expected": "/Volumes/Backup Drive"
+  }
+]

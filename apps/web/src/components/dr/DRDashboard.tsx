@@ -16,6 +16,7 @@ import { formatDateTime } from '@/lib/dateTimeFormat';
 import { useHashState } from '@/lib/useHashState';
 import { Dialog } from '../shared/Dialog';
 import { fetchWithAuth } from '../../stores/auth';
+import { runAction, ActionError } from '@/lib/runAction';
 import DRExecutionView from './DRExecutionView';
 import DRPlanEditor from './DRPlanEditor';
 import AlphaBadge from '../shared/AlphaBadge';
@@ -81,6 +82,23 @@ function statusBadge(status: string) {
   }
   return <span className="rounded-full bg-muted px-2.5 py-1 text-xs font-medium text-muted-foreground">{status}</span>;
 }
+
+/**
+ * #6382: the execute route answers a refusal as a bare machine token
+ * (`{ error: 'no_restorable_snapshot' }`). Executing a recovery plan is the
+ * highest-stakes button on this page, so every refusal it can raise gets a
+ * sentence naming the missing prerequisite instead of the token. Unmapped
+ * codes fall through to runAction's own message.
+ */
+const EXECUTE_ERROR_KEYS: Record<string, string> = {
+  no_restorable_snapshot: 'dRDashboard.executeErrorNoRestorableSnapshot',
+  no_recovery_source: 'dRDashboard.executeErrorNoRecoverySource',
+  group_has_no_valid_devices: 'dRDashboard.executeErrorGroupHasNoValidDevices',
+  invalid_recovery_source_reference: 'dRDashboard.executeErrorInvalidSourceReference',
+  invalid_step_config: 'dRDashboard.executeErrorInvalidStepConfig',
+  resource_not_found: 'dRDashboard.executeErrorResourceNotFound',
+  backup_write_required: 'dRDashboard.executeErrorBackupWriteRequired',
+};
 
 function DRDashboardInner() {
   const { t } = useTranslation('backup');
@@ -369,6 +387,11 @@ function DRDashboardInner() {
           setEditingPlanId(null);
           void refreshAll();
         }}
+        // #6382: a partially-applied save keeps the editor open, but the list
+        // behind it already holds stale values — refetch without closing.
+        onPartialSave={() => {
+          void refreshAll();
+        }}
       />
 
       <DRExecutionView
@@ -447,15 +470,20 @@ function DRDashboardInner() {
               try {
                 setStartingExecution(true);
                 setError(undefined);
-                const response = await fetchWithAuth(`/dr/plans/${executionPlan.id}/execute`, {
-                  method: 'POST',
-                  body: JSON.stringify({ executionType }),
+                const payload = await runAction<{ data?: { id?: string }; id?: string } | null>({
+                  request: () =>
+                    fetchWithAuth(`/dr/plans/${executionPlan.id}/execute`, {
+                      method: 'POST',
+                      body: JSON.stringify({ executionType }),
+                    }),
+                  errorFallback: t('dRDashboard.executeErrorFallback'),
+                  // #6382: name the missing prerequisite rather than echoing the
+                  // server's machine token at the operator.
+                  friendly: (code) => {
+                    const key = EXECUTE_ERROR_KEYS[code];
+                    return key ? t(/* i18n-dynamic */ key) : undefined;
+                  },
                 });
-                if (!response.ok) {
-                  const payload = await response.json().catch(() => null);
-                  throw new Error(payload?.error ?? 'Failed to start execution');
-                }
-                const payload = await response.json();
                 const executionId = payload?.data?.id ?? payload?.id ?? null;
                 setExecutionPlan(null);
                 setActiveTab('executions');
@@ -463,7 +491,12 @@ function DRDashboardInner() {
                 await fetchExecutions();
                 if (executionId) setExecutionViewId(executionId);
               } catch (err) {
-                setError(err instanceof Error ? err.message : 'Failed to start execution');
+                if (err instanceof ActionError && err.status === 401) return;
+                // A non-401 ActionError was already toasted by runAction; the
+                // inline banner repeats it beside the button that failed.
+                setError(
+                  err instanceof Error ? err.message : t('dRDashboard.executeErrorFallback')
+                );
               } finally {
                 setStartingExecution(false);
               }

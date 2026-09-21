@@ -209,10 +209,12 @@ export async function computeInviteFunnel(auth: AuthContext): Promise<InviteFunn
 export function registerFleetStatusTools(aiTools: Map<string, AiTool>): void {
   aiTools.set('get_invite_funnel', {
     tier: 1 as AiToolTier,
+    domain: 'admin',
+    searchHint: 'deployment invites sent, clicked and enrolled, recent enrollments and online conversions',
     definition: {
       name: 'get_invite_funnel',
       description:
-        'Deployment-invite funnel only (invites sent/clicked/enrolled). NOT a fleet overview: for device counts or online/offline status use query_devices or get_fleet_health. Reports how many deployment invites were sent, clicked, enrolled as devices, and are currently online, plus up to 10 most-recent enrollments (device_id, hostname, os, invited_email, enrolled_at). A tenant whose devices were enrolled without invites correctly reports zeros here — that does NOT mean the fleet is empty. Use during MCP bootstrap to answer \"how many of my invites turned into working agents?\".',
+        "Return deployment invites sent/clicked/enrolled/online and 10 recent enrollments. NOT a fleet overview: use query_devices or get_fleet_health for fleet counts/status. Devices enrolled without invites yield zeros here; this does NOT mean the fleet is empty.",
       input_schema: {
         type: 'object' as const,
         properties: {},

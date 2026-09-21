@@ -11,13 +11,19 @@ const { processInboundEmailMock, runOutsideDbContextMock, withSystemDbAccessCont
 });
 
 vi.mock('bullmq', () => {
+  const workerCtorArgs: unknown[][] = [];
   class MockWorker {
+    constructor(...args: unknown[]) { workerCtorArgs.push(args); }
     on() { return this; }
     async close() { return undefined; }
   }
   return {
     Queue: vi.fn(() => ({ add: vi.fn() })),
-    Worker: MockWorker
+    Worker: MockWorker,
+    // Test-only: every Worker construction's positional args, so a test can assert
+    // the flood-backpressure limiter is actually installed (finding: a mock that
+    // discards ctor args lets the limiter be removed with the test still green).
+    __workerCtorArgs: workerCtorArgs,
   };
 });
 vi.mock('../services/redis', () => ({ getBullMQConnection: vi.fn(() => ({})) }));
@@ -56,12 +62,11 @@ describe('inboundEmailWorker', () => {
     processInboundEmailMock.mockResolvedValue(undefined);
   });
 
-  // TEST 1: drive the REAL exported handleInboundEmail and verify the
+  // Drive the REAL exported handleInboundEmail and verify the
   // runOutsideDbContext → withSystemDbAccessContext → processInboundEmail ordering
   // (the #1105 pool-poison guard).
-  it('real handleInboundEmail: calls runOutsideDbContext before withSystemDbAccessContext before processInboundEmail', async () => {
+  it('real handleInboundEmail: runOutsideDbContext before withSystemDbAccessContext before processInboundEmail', async () => {
     const callOrder: string[] = [];
-
     runOutsideDbContextMock.mockImplementation(<T>(fn: () => T): T => {
       callOrder.push('runOutsideDbContext');
       return fn();
@@ -75,16 +80,11 @@ describe('inboundEmailWorker', () => {
     });
 
     const email = makeEmail();
-    // Call the REAL exported handler (not the mocks directly)
     await workerModule.handleInboundEmail({ data: { email } } as any);
 
-    // (a) runOutsideDbContext was called
     expect(runOutsideDbContextMock).toHaveBeenCalledTimes(1);
-    // (b) withSystemDbAccessContext was called INSIDE runOutsideDbContext
     expect(withSystemDbAccessContextMock).toHaveBeenCalledTimes(1);
-    // (c) processInboundEmail received job.data
     expect(processInboundEmailMock).toHaveBeenCalledWith(email, undefined);
-    // Ordering assertion: runOutsideDbContext must come before withSystemDbAccessContext
     expect(callOrder.indexOf('runOutsideDbContext')).toBeLessThan(callOrder.indexOf('withSystemDbAccessContext'));
     expect(callOrder.indexOf('withSystemDbAccessContext')).toBeLessThan(callOrder.indexOf('processInboundEmail'));
   });
@@ -118,7 +118,6 @@ describe('inboundEmailWorker', () => {
   });
 });
 
-// Test that initializeInboundEmailWorker and shutdownInboundEmailWorker are exported
 describe('inboundEmailWorker exports', () => {
   it('exports initializeInboundEmailWorker', () => {
     expect(typeof workerModule.initializeInboundEmailWorker).toBe('function');
@@ -136,8 +135,23 @@ describe('inboundEmailWorker exports', () => {
     await expect(workerModule.initializeInboundEmailWorker()).resolves.toBeUndefined();
   });
 
+  it('installs the flood-backpressure rate limiter on the Worker', async () => {
+    const bullmq = (await import('bullmq')) as unknown as { __workerCtorArgs: unknown[][] };
+    const { inboundQueueMaxPerSec } = await import('../config/env');
+    // Force a fresh Worker construction (the module holds a singleton) and capture
+    // the options it is built with.
+    await workerModule.shutdownInboundEmailWorker();
+    bullmq.__workerCtorArgs.length = 0;
+    await workerModule.initializeInboundEmailWorker();
+
+    const args = bullmq.__workerCtorArgs.at(-1);
+    expect(args, 'a Worker was constructed').toBeTruthy();
+    const opts = args![2] as { limiter?: { max: number; duration: number }; concurrency?: number };
+    expect(opts.limiter).toEqual({ max: inboundQueueMaxPerSec(), duration: 1000 });
+    await workerModule.shutdownInboundEmailWorker();
+  });
+
   it('shutdownInboundEmailWorker resolves without throwing', async () => {
-    // Initialize first (creates the worker), then shut down
     await workerModule.initializeInboundEmailWorker();
     await expect(workerModule.shutdownInboundEmailWorker()).resolves.toBeUndefined();
   });

@@ -1,13 +1,13 @@
 /** Offline-only durable alert admission. DB preparation and admission never await Redis. */
-import { and, eq, inArray, or, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../db';
 import { alerts, alertRules, alertTemplates, configPolicyAlertRules, devices, offlineTransitionEffects as effects, type OfflineEffect } from '../db/schema';
-import { alertRuleOwnershipConditionForOrg, getApplicableRulesFromPolicy } from './alertService';
+import { alertRuleOwnershipConditionForOrg, getApplicableRules, getApplicableRulesFromPolicy } from './alertService';
 import { evaluateConditions, interpolateTemplate } from './alertConditions';
 import { resolveMaintenanceConfigForDevice, isInMaintenanceWindow } from './featureConfigResolver';
 import { getRedisConnection } from './redis';
 import { enqueueAlertCorrelation } from '../jobs/alertCorrelation';
-import { finishOfflineEffect, insertOfflineEffect, lockCurrentOfflineObservation, offlineEffectId, withOfflineEffectLease } from './offlineEffectsStore';
+import { finishOfflineEffect, insertOfflineEffect, liveLease, lockCurrentOfflineObservation, offlineEffectId, withOfflineEffectLease } from './offlineEffectsStore';
 import type { OfflineObservation, OfflineRulePlan } from './offlineEffectsTypes';
 import { applyOfflineAlertPostprocess, readOfflineAlertRedisSuppression } from './offlineAlertPostprocess';
 
@@ -17,6 +17,20 @@ function hasOfflineCondition(value: unknown): boolean {
   const v = value as Record<string, unknown>;
   return v.type === 'offline' || (Array.isArray(v.conditions) && v.conditions.some(hasOfflineCondition));
 }
+
+function offlineMonitorDeadline(observation: OfflineObservation, rule: OfflineRulePlan): Date {
+  const { durationMinutes } = rule.conditions as { durationMinutes: number };
+  if (!Number.isFinite(durationMinutes) || durationMinutes <= 0) throw new Error('Invalid offline monitor duration');
+  return new Date(new Date(observation.observedLastSeenAt).getTime() + durationMinutes * 60_000 + 1);
+}
+
+/**
+ * Proof-of-presence for the conversion prerequisite check (W05c1). True only
+ * because getApplicableRules resolves monitors for the offline device (#6342);
+ * conversion/prerequisites.test.ts pins that call here and its delegation to
+ * resolveMonitorsForDevice in alertService.
+ */
+export const OFFLINE_EFFECTS_RESOLVE_MONITORS = true;
 
 export async function expandOfflineAlertPlan(effect: OfflineEffect): Promise<string[]> {
   const payload = effect.payload;
@@ -28,7 +42,7 @@ export async function expandOfflineAlertPlan(effect: OfflineEffect): Promise<str
     const ownership = await alertRuleOwnershipConditionForOrg(device.orgId);
     const rules = await db.select({ rule: alertRules, template: alertTemplates }).from(alertRules)
       .innerJoin(alertTemplates, eq(alertRules.templateId, alertTemplates.id))
-      .where(and(ownership, eq(alertRules.isActive, true), or(
+      .where(and(ownership, eq(alertRules.isActive, true), isNull(alertRules.retiredAt), or(
         eq(alertRules.targetType, 'all'),
         and(eq(alertRules.targetType, 'org'), eq(alertRules.targetId, device.orgId)),
         and(eq(alertRules.targetType, 'site'), eq(alertRules.targetId, device.siteId)),
@@ -44,6 +58,17 @@ export async function expandOfflineAlertPlan(effect: OfflineEffect): Promise<str
         conditions, severity: (overrides?.severity as OfflineRulePlan['severity']) ?? template.severity,
         titleTemplate: template.titleTemplate, messageTemplate: template.messageTemplate,
         cooldownMinutes: (overrides?.cooldownMinutes as number) ?? template.cooldownMinutes,
+      });
+    }
+    // Reuse effective monitor resolution, including disabled attachments,
+    // tenant ownership, and per-device duration/severity overrides.
+    const applicable = await getApplicableRules(device.id);
+    for (const { rule, template, monitor, effectiveConditions, effectiveSeverity, effectiveCooldownMinutes } of applicable) {
+      if (rule.targetType !== 'monitor' || monitor?.kind !== 'offline') continue;
+      plans.push({
+        ruleId: rule.id, monitorId: monitor.id, policy: false, name: rule.name, templateId: template.id,
+        conditions: effectiveConditions, severity: effectiveSeverity, cooldownMinutes: effectiveCooldownMinutes,
+        titleTemplate: template.titleTemplate, messageTemplate: template.messageTemplate,
       });
     }
     const policyRules = await getApplicableRulesFromPolicy(device.id);
@@ -62,8 +87,25 @@ async function prepareRule(observation: OfflineObservation, rule: OfflineRulePla
     if (!sourceDevice) return null;
     // Read current eligibility without holding a device lock across Redis work.
     const table = rule.policy ? configPolicyAlertRules : alertRules;
-    const [exists] = await db.select({ id: table.id }).from(table).where(eq(table.id, rule.ruleId));
+    const [exists] = await db.select({ id: table.id }).from(table).where(and(eq(table.id, rule.ruleId), isNull(table.retiredAt)));
     if (!exists) return null;
+    if (rule.monitorId) {
+      // A delayed effect must not fire a monitor that was detached or disabled.
+      const applicable = await getApplicableRules(observation.deviceId);
+      if (!applicable.some((entry) => entry.rule.id === rule.ruleId && entry.monitor?.id === rule.monitorId && entry.monitor?.kind === 'offline')) return null;
+      // Maintenance may end before this monitor is due. Do not consume the
+      // pending effect based on the maintenance state at the initial transition.
+      if (Date.now() >= offlineMonitorDeadline(observation, rule).getTime()) {
+        const maintenance = await resolveMaintenanceConfigForDevice(observation.deviceId);
+        const status = maintenance ? isInMaintenanceWindow(maintenance) : null;
+        if (status?.active && status.suppressAlerts) return null;
+      }
+      const { durationMinutes } = rule.conditions as { durationMinutes: number };
+      return {
+        triggered: true, conditionsMet: [`Device offline for ${durationMinutes}min`], conditionsNotMet: [],
+        context: { durationMinutes },
+      };
+    }
     if (rule.policy) {
       const maintenance = await resolveMaintenanceConfigForDevice(observation.deviceId);
       const status = maintenance ? isInMaintenanceWindow(maintenance) : null;
@@ -116,6 +158,17 @@ export async function admitOfflineAlertRule(effect: OfflineEffect): Promise<stri
   await withOfflineEffectLease(effect, async () => {
     const device = await lockCurrentOfflineObservation(observation);
     if (!device || !prepared) return finishOfflineEffect(effect);
+    if (rule.monitorId) {
+      // The handler uses a strict older-than comparison. Keep this effect
+      // pending until that instant; the durable due-work sweep will reclaim it.
+      const availableAt = offlineMonitorDeadline(observation, rule);
+      if (Date.now() < availableAt.getTime()) {
+        const updated = await db.update(effects).set({ availableAt, leaseToken: null, leaseUntil: null })
+          .where(liveLease(effect)).returning({ id: effects.id });
+        if (!updated.length) throw new Error('Offline effect lease expired before deferral');
+        return;
+      }
+    }
     const table = rule.policy ? configPolicyAlertRules : alertRules;
     const [exists] = await db.select({ id: table.id }).from(table).where(eq(table.id, rule.ruleId));
     if (!exists) return finishOfflineEffect(effect);
@@ -141,6 +194,7 @@ export async function admitOfflineAlertRule(effect: OfflineEffect): Promise<stri
       const message = interpolateTemplate(rule.messageTemplate, context);
       const [inserted] = await db.insert(alerts).values({
         id: alertId, ruleId: rule.policy ? null : rule.ruleId,
+        ...(rule.monitorId ? { monitorId: rule.monitorId } : {}),
         configPolicyId: rule.policy ? rule.ruleId : null, configItemName: rule.policy ? rule.name : null,
         deviceId: device.id, orgId: device.orgId, severity: rule.severity, title, message,
         status: 'active', triggeredAt: new Date(occurredAt),

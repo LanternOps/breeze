@@ -367,6 +367,40 @@ function resolvePlaybookSteps(
   });
 }
 
+/**
+ * Variables a completed step contributes to the ones that follow it.
+ *
+ * Deliberately a CLOSED allowlist, not "merge the whole JSON result": a step's
+ * output is model-adjacent data, and letting it introduce arbitrary variables
+ * would let a tool result rewrite a later step's `deviceId` — the exact attack
+ * the #3826 hardening below closes at the other end. Today exactly one key is
+ * harvested, from exactly one tool.
+ */
+export function harvestStepVariables(step: PlaybookStep, output: string | undefined): Record<string, unknown> {
+  if (step.tool !== 'disk_cleanup') return {};
+  const parsed = parseJsonObject(output);
+  const runId = parsed && typeof parsed.cleanupRunId === 'string' ? parsed.cleanupRunId : null;
+  return runId ? { cleanupRunId: runId } : {};
+}
+
+/** The same substitution `resolvePlaybookSteps` does, for ONE step, late. */
+export function resolveStepLate(
+  step: PlaybookStep,
+  variables: Record<string, unknown>,
+  deviceId: string,
+): PlaybookStep {
+  const allVariables: Record<string, unknown> = { ...variables, deviceId };
+  const resolvedInput = step.toolInput
+    ? (resolveVariable(step.toolInput, allVariables) as Record<string, unknown>)
+    : step.toolInput;
+  // #3826: the post-substitution force runs again here, or the late pass would
+  // be a second, unhardened path to the same field.
+  if (resolvedInput && 'deviceId' in resolvedInput) {
+    resolvedInput.deviceId = deviceId;
+  }
+  return { ...step, toolInput: resolvedInput };
+}
+
 // ---------------------------------------------------------------------------
 // Step execution helpers
 // ---------------------------------------------------------------------------
@@ -596,8 +630,10 @@ interface RunStepsOutcome {
  * contract. Exported for direct unit coverage without needing to go through
  * `executeBuiltInPlaybookForRun`'s DB read/write wrapper.
  */
-export async function runPlaybookSteps(steps: PlaybookStep[], ctx: StepCtx): Promise<RunStepsOutcome> {
+export async function runPlaybookSteps(steps: PlaybookStep[], ctx: StepCtx, variables: Record<string, unknown> = {}): Promise<RunStepsOutcome> {
   const results: PlaybookStepResult[] = [];
+  // Only completed steps can contribute variables to subsequent steps.
+  const producedVariables: Record<string, unknown> = {};
   let sawVerifyFailed = false;
   let sawVerifyInconclusive = false;
   let sawVerifyPassed = false;
@@ -606,7 +642,11 @@ export async function runPlaybookSteps(steps: PlaybookStep[], ctx: StepCtx): Pro
   let stop = false;
 
   for (let i = 0; i < steps.length && !stop; i++) {
-    const step = steps[i]!;
+    // Resolve the original template each time: caller substitutions must not
+    // erase tokens before the preview produces its authoritative run id.
+    const step = resolvePlaybookSteps(
+      [steps[i]!], { ...variables, ...producedVariables }, ctx.run.deviceId,
+    )[0]!;
     const startedAt = new Date();
 
     if (Date.now() >= ctx.deadlineMs) {
@@ -629,6 +669,7 @@ export async function runPlaybookSteps(steps: PlaybookStep[], ctx: StepCtx): Pro
         const output = await withAgentToolDbContext(ctx.agentAuth, () =>
           ctx.deps.executeToolFn(step.tool ?? '', step.toolInput ?? {}, ctx.agentAuth));
         results.push(stepResult(i, step, 'completed', output, startedAt));
+        Object.assign(producedVariables, harvestStepVariables(step, output));
       } else if (step.type === 'act') {
         const stepInput = step.toolInput ?? {};
         const op = resolveActOperation(step.tool ?? '', stepInput);
@@ -662,6 +703,9 @@ export async function runPlaybookSteps(steps: PlaybookStep[], ctx: StepCtx): Pro
             ));
             const stepExec = classifyMutatingStepExecution(step.tool!, output);
             results.push(stepResult(i, step, stepExec === 'succeeded' ? 'completed' : 'failed', output, startedAt));
+            if (stepExec === 'succeeded') {
+              Object.assign(producedVariables, harvestStepVariables(step, output));
+            }
             if (stepExec !== 'succeeded') {
               execution = stepExec;
               detail = `mutating step "${step.name}" reported ${stepExec}`;
@@ -672,6 +716,7 @@ export async function runPlaybookSteps(steps: PlaybookStep[], ctx: StepCtx): Pro
           const output = await withAgentToolDbContext(ctx.agentAuth, () =>
             ctx.deps.executeToolFn(step.tool ?? '', stepInput, ctx.agentAuth));
           results.push(stepResult(i, step, 'completed', output, startedAt));
+          Object.assign(producedVariables, harvestStepVariables(step, output));
         } else {
           const reason = `act step "${step.name}" (${step.tool ?? 'unknown tool'}) is not a manifest-admitted `
             + 'mutation or a recognized safe read';
@@ -802,10 +847,9 @@ export async function executeBuiltInPlaybookForRun(args: PlaybookExecutorArgs): 
   const { row } = reloaded;
 
   const executionId = await insertPlaybookExecutionRow(run, agentAuth.user.id, row.id, variables);
-  const resolvedSteps = resolvePlaybookSteps(row.steps, variables, run.deviceId);
   const stepCtx: StepCtx = { run, agentAuth, deps, reserved, deadlineMs };
 
-  const outcome = await runPlaybookSteps(resolvedSteps, stepCtx);
+  const outcome = await runPlaybookSteps(row.steps, stepCtx, variables);
 
   await finalizePlaybookExecutionRow(
     executionId,

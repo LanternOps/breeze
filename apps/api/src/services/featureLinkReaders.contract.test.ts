@@ -40,6 +40,17 @@ const DIRECT_READ_ALLOWLIST = new Set([
   // that should switch to the view.
   'services/aiToolsMonitors.ts',
 
+  // #6370 W05c1 — conversion operates on the policy's OWN authored rows: it
+  // retires them and re-homes their alerts. The effective view would hand back
+  // a PARENT policy's link for a feature the child does not override, and
+  // retiring that would silently convert a sibling policy's sources. Preview,
+  // equivalence and scope read the same authored set so the preview hash covers
+  // exactly what convert will retire.
+  'services/monitors/conversion/convert.ts',
+  'services/monitors/conversion/equivalence.ts',
+  'services/monitors/conversion/loadSources.ts',
+  'services/monitors/conversion/previewScope.ts',
+
   // Authored link CRUD + listFeatureLinks (the editor's own-links view). This
   // file's own effective-config resolver imports the view instead.
   'services/configurationPolicy.ts',

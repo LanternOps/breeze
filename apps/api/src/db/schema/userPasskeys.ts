@@ -1,7 +1,12 @@
 import { pgTable, uuid, varchar, text, timestamp, bigint, boolean, jsonb, index } from 'drizzle-orm/pg-core';
 import { users } from './users';
 
-export type PasskeyTransport = 'ble' | 'cable' | 'hybrid' | 'internal' | 'nfc' | 'smart-card' | 'usb';
+// Widened to `string` (was a 7-value literal union) — WebAuthn transport
+// values are relaying-party-opaque strings, and the write path
+// (services/passkeys.ts) now passes through whatever the authenticator
+// reports, including values this list doesn't enumerate, rather than
+// filtering unrecognized ones out.
+export type PasskeyTransport = string;
 
 export const userPasskeys = pgTable(
   'user_passkeys',

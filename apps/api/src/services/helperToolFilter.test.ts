@@ -124,4 +124,18 @@ describe('helper governed tool sets (finding A, Phase 1)', () => {
       }
     }
   });
+
+  // Disk Cleanup v2 W05, spec §9.3 item 10. The Helper runs in front of an END
+  // USER, not a technician. `system_cleanup run` executes vetted maintenance
+  // binaries as LocalSystem for up to 90 minutes and some handlers are
+  // irreversible — that is not an end-user self-service action at any
+  // permission level, and it has no HELPER_TOOL_SCOPING entry, so the
+  // executeTool gate denies it even if a whitelist later named it.
+  it('system_cleanup is denied to the Helper at every level', () => {
+    for (const level of ['basic', 'standard', 'extended'] as const) {
+      expect(getHelperAllowedTools(level)).not.toContain('system_cleanup');
+      expect(validateHelperToolAccess('system_cleanup', level)).toContain('not available');
+    }
+    expect(HELPER_TOOL_SCOPING.system_cleanup).toBeUndefined();
+  });
 });

@@ -68,9 +68,11 @@ export function registerDnsTools(aiTools: Map<string, AiTool>): void {
   registerTool({
     tier: 1,
     deviceArgs: ['deviceId'],
+    domain: 'network',
+    searchHint: 'DNS security statistics, blocked domains, threat categories and top offending devices',
     definition: {
       name: 'get_dns_security',
-      description: 'Get DNS security statistics including blocked domains, threat categories, and top offending devices.',
+      description: 'Get DNS security statistics including blocked domains, threat categories, and top offending devices. Actions: blocked, allowed, redirected.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -390,9 +392,11 @@ export function registerDnsTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 2,
+    domain: 'network',
+    searchHint: 'DNS domain blocklist and allowlist: add, remove, synchronize provider',
     definition: {
       name: 'manage_dns_policy',
-      description: 'Add or remove domains from DNS blocklist/allowlist and schedule provider synchronization.',
+      description: 'Add or remove domains from DNS blocklist/allowlist and schedule provider synchronization. Actions: add_block, remove_block, add_allow, remove_allow.',
       input_schema: {
         type: 'object' as const,
         properties: {

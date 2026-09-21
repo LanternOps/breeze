@@ -36,7 +36,7 @@ function routeFetch(rows: unknown[]) {
   fetchWithAuth.mockImplementation((url: string) => {
     if (url.startsWith('/ticket-config/email-inbound?'))
       return Promise.resolve(jsonRes({ data: rows, pagination: { page: 1, limit: 50, total: rows.length } }));
-    if (url === '/orgs/organizations?limit=100')
+    if (url === '/orgs/organizations?page=1&limit=100')
       return Promise.resolve(jsonRes({ data: [{ id: 'o-1', name: 'Acme Org' }] }));
     if (url.includes('/convert')) return Promise.resolve(jsonRes({ data: { id: 'r-1', parseStatus: 'created' } }));
     if (url.includes('/dismiss')) return Promise.resolve(jsonRes({ data: { id: 'r-1', parseStatus: 'ignored' } }));
@@ -105,7 +105,7 @@ describe('InboundReviewQueue', () => {
   it('renders the admin-only notice when the queue fetch 403s', async () => {
     fetchWithAuth.mockImplementation((url: string) => {
       if (url.startsWith('/ticket-config/email-inbound?')) return Promise.resolve(jsonRes({ error: 'admin' }, false, 403));
-      if (url === '/orgs/organizations?limit=100') return Promise.resolve(jsonRes({ data: [] }));
+      if (url === '/orgs/organizations?page=1&limit=100') return Promise.resolve(jsonRes({ data: [] }));
       return Promise.resolve(jsonRes({ data: [] }));
     });
     render(<InboundReviewQueue />);

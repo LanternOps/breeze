@@ -21,6 +21,7 @@ import {
   devices,
 } from '../db/schema';
 import { recoveryTokens } from '../db/schema/recoveryTokens';
+import { backupChains } from '../db/schema/applicationBackup';
 import { eq, and, or, lt, gt, gte, desc, inArray, isNull, isNotNull, sql } from 'drizzle-orm';
 import {
   resolveMsKnob,
@@ -190,6 +191,12 @@ export type RetentionCleanupResult = {
   // self-heal). Counted separately from skippedPinned so operators can see
   // "how many rows are stuck on identity resolution" distinctly.
   skippedUnresolved: number;
+  // #5421: a row still anchoring an ACTIVE backup_chains row as its
+  // full_snapshot_id. Counted separately from skippedPinned so an operator
+  // can tell "held by a live chain base" (releases when the next FULL backup
+  // runs) apart from "held by an in-flight job/restore/recovery" (releases in
+  // minutes). Like every other pin, it is a retry, never a permanent skip.
+  skippedChainBase: number;
   prunedByMaxVersions: number;
   // D17: a row whose DELETE was rejected by the DB (most commonly a
   // NO-ACTION FK still pointing at it from a history table -- restore_jobs,
@@ -200,7 +207,7 @@ export type RetentionCleanupResult = {
   failed: number;
 };
 
-type DeleteSnapshotOutcome = 'deleted' | 'pinned' | 'legalHold' | 'immutable' | 'unresolved';
+type DeleteSnapshotOutcome = 'deleted' | 'pinned' | 'chainBase' | 'legalHold' | 'immutable' | 'unresolved';
 
 /**
  * Deletes a `backup_snapshots` ROW ONLY, after RE-READING legal hold /
@@ -347,6 +354,33 @@ async function deleteSnapshotRow(params: {
     .limit(1);
   if (recoveryPin) return 'pinned';
 
+  // Chain-base pin (#5421): an ACTIVE backup_chains row whose full_snapshot_id
+  // points at this snapshot is still depending on it -- every differential /
+  // log snapshot in that chain restores only on top of this full. D17 made
+  // that FK `ON DELETE SET NULL` so retention could stop aborting on 23503,
+  // which removed the accidental protection the NO-ACTION FK used to give:
+  // the delete now silently succeeds, nulls the pointer, and leaves the chain
+  // reporting `active`/healthy until the NEXT differential runs and
+  // backupResultPersistence marks it `broken`/`missing_full_backup`. Between
+  // those two events an operator sees a healthy chain whose base is gone.
+  //
+  // A chain base is not "expired" while dependants exist, so treat the
+  // pointer as a retention hold. The hold is bounded and self-releasing: the
+  // chain row is one-per-(device, config, target) and every new FULL backup
+  // re-points `full_snapshot_id` at the new snapshot, releasing the previous
+  // full on the very next run; a chain that goes `is_active = false` (a new
+  // chain type, a broken chain, a removed target) stops holding immediately.
+  // Deliberately NOT scoped by orgId: a hold must be maximal. The snapshot's
+  // own org already bounds which rows this pass considers, and if a chain row
+  // ever carried a mismatched org (data bug, mid-flight org move) the safe
+  // outcome is still "hold", not "delete the base out from under it".
+  const [chainPin] = await db
+    .select({ id: backupChains.id })
+    .from(backupChains)
+    .where(and(eq(backupChains.fullSnapshotId, params.id), eq(backupChains.isActive, true)))
+    .limit(1);
+  if (chainPin) return 'chainBase';
+
   await db.insert(backupSnapshotRetirements).values({
     orgId: params.orgId,
     configId: params.configId,
@@ -414,6 +448,7 @@ function applyDeleteOutcome(result: RetentionCleanupResult, outcome: DeleteSnaps
   switch (outcome) {
     case 'deleted': result.deleted++; break;
     case 'pinned': result.skippedPinned++; break;
+    case 'chainBase': result.skippedChainBase++; break;
     case 'legalHold': result.skippedLegalHold++; break;
     case 'immutable': result.skippedImmutable++; break;
     case 'unresolved': result.skippedUnresolved++; break;
@@ -439,6 +474,7 @@ export async function cleanupExpiredSnapshots(
     skippedImmutable: 0,
     skippedPinned: 0,
     skippedUnresolved: 0,
+    skippedChainBase: 0,
     prunedByMaxVersions: 0,
     failed: 0,
   };
@@ -538,12 +574,14 @@ export async function cleanupExpiredSnapshots(
 
   if (
     result.deleted > 0 || result.skippedLegalHold > 0 || result.skippedImmutable > 0 ||
-    result.skippedPinned > 0 || result.skippedUnresolved > 0 || result.prunedByMaxVersions > 0 || result.failed > 0
+    result.skippedPinned > 0 || result.skippedUnresolved > 0 || result.skippedChainBase > 0 ||
+    result.prunedByMaxVersions > 0 || result.failed > 0
   ) {
     console.log(
       `[BackupRetention] Org ${orgId}: deleted ${result.deleted}, ` +
       `skipped ${result.skippedLegalHold} (legal hold), ${result.skippedImmutable} (immutable), ` +
       `${result.skippedPinned} (pinned), ${result.skippedUnresolved} (unresolved identity), ` +
+      `${result.skippedChainBase} (active chain base), ` +
       `pruned ${result.prunedByMaxVersions} by maxVersions` +
       (result.failed > 0 ? `, FAILED ${result.failed} delete(s) (see prior per-row errors -- will retry next run)` : '')
     );

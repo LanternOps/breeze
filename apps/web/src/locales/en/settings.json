@@ -95,7 +95,7 @@
     "loading": "Loading service principals…",
     "loadFailed": "Failed to load service principals.",
     "retry": "Try again",
-    "empty": "No service principals yet.",
+    "empty": "No service principals yet. Create one to get started.",
     "name": "Name",
     "principalDescription": "Description",
     "scopes": "Scopes",
@@ -551,7 +551,14 @@
         "description": "Statuses, SLAs, categories, forms",
         "linkCta": "Manage ticketing settings →"
       },
-      "sendingDomains": { "label": "Sender Addresses", "description": "Send email from your own domain" },
+      "emailTemplates": {
+        "label": "Email templates",
+        "description": "Tickets, quotes, invoices, invites"
+      },
+      "sendingDomains": {
+        "label": "Sender Addresses",
+        "description": "Send email from your own domain"
+      },
       "aiBudgets": {
         "label": "AI Budgets",
         "description": "AI spending limits"
@@ -652,6 +659,7 @@
     "failedDnsRemoved": "The DNS records were removed.",
     "failedUnknown": "Verification did not finish.",
     "retry": "Try again",
+    "removeTitle": "Remove sending domain?",
     "removeConfirm": "Remove {{domain}}? Email for it goes back to the standard Breeze sender.",
     "removeConfirmUnmanaged": "Remove {{domain}} from Breeze? The domain stays in your email provider account — Breeze never deletes a domain it did not create.",
     "removeStarted": "Removing the domain.",
@@ -841,6 +849,45 @@
     "deleteExpiredTitle": "Delete expired enrollment keys",
     "deleteExpiredConfirm": "Delete all expired enrollment keys? Keys still backing a live installer download link are kept. This cannot be undone."
   },
+  "emailTemplates": {
+    "title": "Email templates",
+    "description": "Customize the emails customers receive for tickets, quotes, invoices, and portal invites. The ticket reply notice never includes the reply text.",
+    "usingDefault": "Using default",
+    "custom": "Custom",
+    "subject": "Subject",
+    "heading": "Heading",
+    "buttonLabel": "Button label",
+    "html": "HTML body",
+    "htmlAria": "Email HTML body",
+    "insert": "Insert:",
+    "preview": "Preview",
+    "save": "Save template",
+    "reset": "Reset to default",
+    "saved": "Email template saved",
+    "saveFailed": "Failed to save email template",
+    "loadFailed": "Failed to load email templates.",
+    "back": "Back to list",
+    "markupRemoved": "Some markup was removed: {{tags}}",
+    "variables": {
+      "ticket_number": "Ticket number",
+      "ticket_subject": "Ticket subject",
+      "requester_name": "Requester name",
+      "requester_email": "Requester email",
+      "org_name": "Organization name",
+      "partner_name": "Company name",
+      "portal_url": "Portal URL",
+      "email_only_hint": "Email-only hint",
+      "resolution_note": "Resolution note",
+      "quote_number": "Quote number",
+      "total": "Total",
+      "expiry_date": "Expiry date",
+      "accept_url": "Accept URL",
+      "invoice_number": "Invoice number",
+      "due_date": "Due date",
+      "invite_url": "Invite URL",
+      "cta_button": "Button"
+    }
+  },
   "inboundEmail": {
     "saveError": "Could not save inbound email settings — your session may need MFA re-verification. Retry.",
     "orgNotAccessible": "That organization is not available under your partner.",
@@ -871,6 +918,8 @@
     "dropUnverified": "Drop mail that fails sender authentication (SPF/DKIM/DMARC)",
     "dropUnverifiedDescription": "When off, unverified mail is quarantined for review. When on, it's dropped silently. This applies to <all>all</all> unverified senders — including mapped customers whose individual message fails the check.",
     "enableAutoresponse": "Send an autoresponse acknowledging new email tickets",
+    "editEmailTemplates": "The acknowledgement email is edited under Email templates.",
+    "editEmailTemplatesLink": "Edit email templates",
     "autoresponseMessage": "Autoresponse message",
     "subject": "Subject",
     "subjectPlaceholder": "We received your request: {{ticket_subject}}",
@@ -2758,6 +2807,7 @@
         "set_agent_log_level": "Set agent log level",
         "set_device_context": "Set device context",
         "sync_huntress_data": "Sync Huntress data",
+        "system_cleanup": "System cleanup",
         "take_screenshot": "Take a screenshot"
       },
       "actions": {
@@ -3005,6 +3055,11 @@
           "scan": "Run a security scan",
           "status": "Security scan status",
           "vulnerabilities": "Scan for vulnerabilities"
+        },
+        "system_cleanup": {
+          "list": "List system cleanup actions",
+          "run": "Run system cleanup",
+          "status": "System cleanup run status"
         }
       },
       "alwaysOnCount_one": "{{count}} read-only tool",
@@ -3790,7 +3845,10 @@
     "passkeyStepUpNoUsableFactor": "Your account's current factor can't be confirmed here. Contact an administrator for help adding a passkey.",
     "passkeyStepUpIncorrectCode": "Incorrect code. Please try again.",
     "passkeyStepUpTooManyAttempts": "Too many attempts. Please try again in a few minutes.",
-    "passkeyStepUpVerificationExpired": "Verification expired. Please verify again."
+    "passkeyStepUpVerificationExpired": "Verification expired. Please verify again.",
+    "passkeyRegistrationServerError": "Passkey registration failed. Please try again.",
+    "deletePasskeyVerifyHeading": "Verify to delete a passkey",
+    "deletePasskeyVerifyHint": "Enter a current MFA code here before removing one of the passkeys above. This code has no effect on adding a new passkey."
   },
   "roleManager": {
     "roles": "Roles",
@@ -4258,7 +4316,6 @@
     "responseSLAMinutes": "Response SLA (minutes)",
     "resolutionSLAMinutes": "Resolution SLA (minutes)",
     "billableByDefault": "Billable by default",
-    "defaultHourlyRate": "Default hourly rate ({{currency}})",
     "save": "Save",
     "cancel": "Cancel",
     "responseMinutes": "{{count}}m response",
@@ -4273,7 +4330,8 @@
     "active": "Active",
     "inactive": "Inactive",
     "deactivate": "Deactivate",
-    "activate": "Activate"
+    "activate": "Activate",
+    "slaMinutesMustBeNumbers": "SLA minutes must be numbers."
   },
   "ticketPrioritiesTab": {
     "prioritiesAndSLAsSaved": "Priorities and SLAs saved",
@@ -5745,5 +5803,25 @@
     "saveError": "Failed to save catalog defaults",
     "saveSuccess": "Catalog defaults saved",
     "saveButton": "Save"
+  },
+  "workTypes": {
+    "title": "Work types",
+    "description": "Label the work performed on time entries. Category defaults help technicians choose a work type.",
+    "newName": "New work type",
+    "create": "Add work type",
+    "archive": "Archive",
+    "archived": "Archived",
+    "archivedClearedDefaults_one": "Archived. Cleared as the default on {{count}} category.",
+    "archivedClearedDefaults_other": "Archived. Cleared as the default on {{count}} categories.",
+    "saveError": "Could not save the work type. Please try again.",
+    "saveSuccess": "Work type saved.",
+    "nameTaken": "A work type with this name already exists.",
+    "rename": "Rename",
+    "loadError": "Could not load work types.",
+    "empty": "No work types yet. Add your first work type above."
+  },
+  "ticketCategories": {
+    "defaultWorkType": "Default work type",
+    "defaultWorkTypeHelp": "Used when time is logged for this category without a work type."
   }
 }

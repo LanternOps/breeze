@@ -79,3 +79,20 @@ describe('every pages/settings/** page is reachable (M9)', () => {
     ).toBe(true);
   });
 });
+
+describe('billing Rates has one settings home', () => {
+  it('mounts the Rates panel under the existing Billing route', () => {
+    const page = readFileSync(join(WEB_SRC, 'components/billing/PartnerBillingSettingsPage.tsx'), 'utf-8');
+    expect(page).toContain("id: 'rates', labelKey: 'partnerBillingSettingsTabs.rates' }");
+    expect(page).toContain("activeTab === 'rates' && <BillingRatesTab");
+    expect(page).toContain('useHashTab');
+    expect(readFileSync(join(SETTINGS_PAGES_DIR, 'billing.astro'), 'utf-8')).toContain('PartnerBillingSettingsPage');
+  });
+
+  it('keeps work type management in Rates and out of Categories', () => {
+    const rates = readFileSync(join(WEB_SRC, 'components/billing/BillingRatesTab.tsx'), 'utf-8');
+    const categories = readFileSync(join(WEB_SRC, 'components/settings/TicketCategoriesPage.tsx'), 'utf-8');
+    expect(rates).toContain('<WorkTypesCard');
+    expect(categories).not.toContain('<WorkTypesCard');
+  });
+});

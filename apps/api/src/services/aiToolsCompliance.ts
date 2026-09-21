@@ -83,6 +83,8 @@ export function registerComplianceTools(aiTools: Map<string, AiTool>): void {
 
 registerTool({
   tier: 1,
+  domain: 'patching',
+  searchHint: 'software compliance, unauthorized installations, missing required software and policy violations',
   deviceArgs: ['deviceIds'],
   definition: {
     name: 'get_software_compliance',
@@ -180,9 +182,11 @@ registerTool({
 
 registerTool({
   tier: 3,
+  domain: 'patching',
+  searchHint: 'software allowlist, blocklist and audit policies: create, update, disable, list, get',
   definition: {
     name: 'manage_software_policy',
-    description: 'Create, update, disable (soft-delete), list, or fetch software policies (allowlist/blocklist/audit).',
+    description: 'Create, update, disable (soft-delete), list, or fetch software policies (allowlist/blocklist/audit). Actions: create, update, delete, list, get.',
     input_schema: {
       type: 'object' as const,
       properties: {
@@ -213,7 +217,7 @@ registerTool({
         priority: { type: 'number', description: 'Policy priority (0-100)' },
         enforceMode: { type: 'boolean', description: 'Auto-remediate violations' },
         isActive: { type: 'boolean', description: 'Enable/disable policy' },
-        remediationOptions: { type: 'object', description: 'Remediation behavior options: { autoUninstall?: boolean, notifyUser?: boolean, gracePeriod?: number, cooldownMinutes?: number, maintenanceWindowOnly?: boolean }. autoInstall is NOT settable here — arming software installation requires a human operator with devices.execute and MFA.' },
+        remediationOptions: { type: 'object', description: "Options: autoUninstall, notifyUser, gracePeriod, cooldownMinutes, maintenanceWindowOnly. autoInstall is forbidden here; arming installs needs a human with MFA." },
         limit: { type: 'number', description: 'List limit (default 50)' },
       },
       required: ['action'],
@@ -494,6 +498,8 @@ registerTool({
 
 registerTool({
   tier: 3,
+  domain: 'patching',
+  searchHint: 'software policy violations, queue uninstall remediation for unauthorized software',
   deviceArgs: ['deviceIds'],
   definition: {
     name: 'remediate_software_violation',
@@ -642,6 +648,8 @@ registerTool({
 
 registerTool({
   tier: 1,
+  domain: 'security',
+  searchHint: 'compliance policies and enforcement status',
   definition: {
     name: 'query_compliance_policies',
     description: 'List compliance policies and their enforcement status.',
@@ -713,6 +721,8 @@ registerTool({
 
 registerTool({
   tier: 1,
+  domain: 'security',
+  searchHint: 'device compliance status for a specific policy',
   deviceArgs: ['deviceId'],
   definition: {
     name: 'get_compliance_status',

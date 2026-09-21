@@ -4,6 +4,8 @@ import { persist } from 'zustand/middleware';
 import { fetchWithAuth, registerOrgIdProvider } from './auth';
 import { isGlobalScopeRoute } from '../lib/routeScope';
 import { fetchAllOrganizations } from '../lib/fetchAllOrganizations';
+import { fetchAllPages } from '../lib/fetchAllPages';
+import { sortByDisplayName } from '../lib/sortByDisplayName';
 
 export interface Partner {
   id: string;
@@ -322,27 +324,38 @@ export const useOrgStore = create<OrgState>()(
           // first, and GET /orgs/sites is called from several places — see the
           // pool-exhaustion note at the route. This store is the only consumer
           // of `enrollmentDefaults`, so it is the only caller that asks.
-          const response = await fetchWithAuth(
-            `/orgs/sites?organizationId=${currentOrgId}&includeEnrollmentDefaults=1`,
-          );
-          if (!response.ok) {
-            throw new Error('Failed to fetch sites');
-          }
-          const data = await response.json();
-          const sites = Array.isArray(data?.data)
-            ? data.data
-            : Array.isArray(data?.sites)
-              ? data.sites
-              : Array.isArray(data)
-                ? data
-                : [];
           // #2776: the API rides the org's resolved enrollment defaults along
-          // on this response. Absent when the settings read soft-failed server
-          // side — keep the previous value rather than blanking a good one.
-          const enrollmentDefaults = (data?.enrollmentDefaults ??
+          // on the FIRST page's response body. Captured via closure since
+          // `fetchAllPages` only hands back the flattened site list.
+          let rawEnrollmentDefaults: ResolvedEnrollmentDefaults | null | undefined;
+          const sites = await fetchAllPages<Site>(async (page, limit) => {
+            // Only page 1 asks for the defaults: the flag costs a second
+            // pooled connection per request, and pages 2+ would pay it to have
+            // the answer discarded below.
+            const defaultsParam = page === 1 ? '&includeEnrollmentDefaults=1' : '';
+            const response = await fetchWithAuth(
+              `/orgs/sites?organizationId=${currentOrgId}${defaultsParam}&page=${page}&limit=${limit}`,
+            );
+            if (!response.ok) {
+              throw new Error('Failed to fetch sites');
+            }
+            const body = await response.json();
+            if (page === 1) {
+              rawEnrollmentDefaults = body?.enrollmentDefaults;
+            }
+            return body;
+          }, { aliasKeys: ['sites'] }) ?? [];
+          // The server orders by created_at,id, never by name (G2-2, #6459) —
+          // this fetch bypasses fetchAllSites (it needs the enrollmentDefaults
+          // side channel above), so it must sort independently rather than
+          // inherit the shared helper's sort.
+          const sortedSites = sortByDisplayName(sites);
+          // Absent when the settings read soft-failed server side — keep the
+          // previous value rather than blanking a good one.
+          const enrollmentDefaults = (rawEnrollmentDefaults ??
             get().enrollmentDefaults) as ResolvedEnrollmentDefaults | null;
           set({
-            sites,
+            sites: sortedSites,
             enrollmentDefaults,
             isLoading: false
           });

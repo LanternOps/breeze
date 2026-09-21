@@ -20,7 +20,7 @@ import (
 // Environment, deliberately, and NOT parameter substitution: the substituted
 // script is written to a temp file on the customer's disk (shell.go
 // WriteScriptFile), so a substituted secret becomes a file on their filesystem.
-// SecretEnv values must therefore never reach SubstituteParameters or
+// SecretEnv values must therefore never reach RenderParameterReferences or
 // validateScript.
 const (
 	// SecretEnvPayloadKey is the wire field name on a `script` command payload.

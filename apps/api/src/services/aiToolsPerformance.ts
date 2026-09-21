@@ -225,6 +225,8 @@ export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1 as AiToolTier,
+    domain: 'devices',
+    searchHint: 'device CPU, RAM, disk and network metrics over time, time ranges and aggregation',
     deviceArgs: ['deviceId'],
     definition: {
       name: 'analyze_metrics',
@@ -331,9 +333,11 @@ export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1 as AiToolTier,
+    domain: 'devices',
+    searchHint: 'fleet CPU, RAM and disk trends, per-device averages, peaks and ranked resource usage',
     definition: {
       name: 'analyze_fleet_metrics',
-      description: 'Aggregate a metric (CPU/RAM/disk percent) across the fleet from pre-computed rollups: per-device avg / peak-p95 / max over a time window, ranked by peak p95 descending, plus a fleet-wide summary. The fleet summary\'s p95 (p95ApproxAvgOfDevicePeaks) is an approximation — the average of each device\'s peak per-bucket p95, not a true recomputed fleet-wide percentile. Read-only.',
+      description: "Return fleet CPU/RAM/disk rollup averages, peak-p95 and maxima, ranked by device peak p95. Fleet p95ApproxAvgOfDevicePeaks is an approximation averaging device peak bucket p95s, not a true fleet percentile. Read-only.",
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -497,6 +501,8 @@ export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1 as AiToolTier,
+    domain: 'devices',
+    searchHint: 'active user sessions, logged-in users and reboot safety on a device or across the fleet',
     deviceArgs: ['deviceId'],
     definition: {
       name: 'get_active_users',
@@ -622,6 +628,8 @@ export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1 as AiToolTier,
+    domain: 'devices',
+    searchHint: 'user experience, login performance and session behavior trends by device or user',
     deviceArgs: ['deviceId'],
     definition: {
       name: 'get_user_experience_metrics',
@@ -757,6 +765,8 @@ export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1 as AiToolTier,
+    domain: 'devices',
+    searchHint: 'slow boot, startup impact, boot time history and optimization recommendations',
     deviceArgs: ['deviceId'],
     definition: {
       name: 'analyze_boot_performance',
@@ -900,10 +910,12 @@ export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 3 as AiToolTier,
+    domain: 'devices',
+    searchHint: 'device startup items: disable, enable',
     deviceArgs: ['deviceId'],
     definition: {
       name: 'manage_startup_items',
-      description: 'Disable or enable startup items on a device. Device must be online. Item must exist in the most recent boot performance record. Requires user approval. Use analyze_boot_performance first to identify high-impact items.',
+      description: 'Disable or enable startup items on a device. Device must be online. Item must exist in the most recent boot performance record. Requires user approval. Use analyze_boot_performance first to identify high-impact items. Actions: disable, enable.',
       input_schema: {
         type: 'object' as const,
         properties: {

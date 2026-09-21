@@ -1,12 +1,15 @@
 ---
 title: Monitoring & Automation unification (monitors as the authoring object)
-status: approved
+status: superseded
+superseded_by: docs/superpowers/specs/monitoring/2026-09-19-alerting-consolidation-design.md
 date: 2026-09-08
 tracking_issue: LanternOps/breeze#5287
 origin: "#4984 community proposal (feature tracker #5287, waves #5288–#5291) (Discord, MSP migrating from Datto RMM); escalation counter #4672"
 ---
 
 # Monitoring & Automation unification
+
+> **Superseded (2026-09-19)** by the [alerting consolidation design](2026-09-19-alerting-consolidation-design.md) (feature #6367). This document's decision D1 treated Monitoring as a peer domain to Alerts and deferred retiring the legacy authoring surfaces; the consolidation reverses that: Alerts is one domain with three facets (Monitors · Inbox · Delivery) and every legacy surface is converted and removed. Kept for the history of #5287; do not plan new work from it.
 
 ## Problem
 

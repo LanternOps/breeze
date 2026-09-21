@@ -12,6 +12,7 @@ import { writeRouteAudit } from '../../services/auditEvents';
 import { recordBackupDispatchFailure } from '../../services/backupMetrics';
 import { queueCommandForExecution, CommandTypes } from '../../services/commandQueue';
 import { PERMISSIONS } from '../../services/permissions';
+import { startRebuildEngineVmRestore } from '../../services/vmRestoreRebuildEngine';
 import { resolveScopedOrgId } from './helpers';
 import {
   bmrVmRestoreSchema,
@@ -129,6 +130,52 @@ vmRestoreRoutes.post(
 
     const payload = c.req.valid('json');
 
+    // ── Rebuild engine (W05a): Linux whole-machine snapshot → VHDX on a Linux host ──
+    if (payload.engine === 'rebuild') {
+      const authorization = await authorizeRouteResilienceResources(c, orgId, [
+        { kind: 'snapshot', id: payload.snapshotId, role: 'source' },
+        { kind: 'device', id: payload.rebuildHostDeviceId, role: 'target' },
+      ], 'restore');
+      if (!authorization.ok) return authorization.response;
+
+      const result = await runInOrg(orgId, () =>
+        startRebuildEngineVmRestore({
+          orgId,
+          snapshotId: payload.snapshotId,
+          rebuildHostDeviceId: payload.rebuildHostDeviceId,
+          outputPath: payload.outputPath,
+          ...(payload.imageSizeGb !== undefined ? { imageSizeGb: payload.imageSizeGb } : {}),
+          userId: auth.user?.id ?? null,
+          requestUrl: c.req.url,
+        })
+      );
+
+      if (!result.ok) {
+        return c.json({ error: result.error, ...(result.details ? { details: result.details } : {}) }, result.status);
+      }
+
+      writeRouteAudit(c, {
+        orgId,
+        action: 'bmr.vm_restore.create',
+        resourceType: 'restore_job',
+        resourceId: result.jobId,
+        details: {
+          engine: 'rebuild',
+          snapshotId: payload.snapshotId,
+          rebuildHostDeviceId: payload.rebuildHostDeviceId,
+          recoveryId: result.recoveryId,
+          commandId: result.commandId,
+          outputPath: payload.outputPath,
+          identity: 'new',
+        },
+      });
+
+      return c.json(
+        { jobId: result.jobId, recoveryId: result.recoveryId, commandId: result.commandId, status: result.status },
+        202
+      );
+    }
+
     const authorization = await authorizeRouteResilienceResources(c, orgId, [
       { kind: 'snapshot', id: payload.snapshotId, role: 'source' },
       { kind: 'device', id: payload.targetDeviceId, role: 'target' },
@@ -244,6 +291,7 @@ vmRestoreRoutes.post(
       resourceType: 'restore_job',
       resourceId: restoreJob.id,
       details: {
+        engine: 'hyperv',
         snapshotId: snapshot.id,
         targetDeviceId: payload.targetDeviceId,
         hypervisor: payload.hypervisor,

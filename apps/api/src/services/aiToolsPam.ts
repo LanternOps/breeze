@@ -166,6 +166,8 @@ export function registerPamTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 3,
+    domain: 'security',
+    searchHint: 'temporary PAM elevation, administrator privileges for a device user account',
     deviceArgs: ['deviceId'],
     definition: {
       name: 'request_elevation',
@@ -308,6 +310,8 @@ export function registerPamTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 2,
+    domain: 'security',
+    searchHint: 'active PAM elevation revocation, temporary administrator access removal',
     definition: {
       name: 'revoke_elevation',
       description: 'Revoke an active PAM elevation request.',
@@ -418,6 +422,8 @@ export function registerPamTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'security',
+    searchHint: 'PAM elevation history, recent privilege requests by device, status and flow type',
     deviceArgs: ['deviceId'],
     definition: {
       name: 'get_elevation_history',

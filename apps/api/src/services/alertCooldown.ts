@@ -6,6 +6,7 @@
  * from triggering again for the same device/rule combination.
  */
 
+import type Redis from 'ioredis';
 import { getRedis, isRedisAvailable } from './redis';
 
 // Key pattern for cooldown tracking
@@ -362,6 +363,44 @@ export async function markConfigPolicyRuleCooldown(
   await redis.setex(key, ttlSeconds, Date.now().toString());
 
   console.log(`[AlertCooldown] Set config policy cooldown for cpar=${ruleId} device=${deviceId} for ${cooldownMinutes}min`);
+}
+
+async function moveCooldownKeys(redis: Redis, fromPattern: string, toKey: (deviceId: string) => string): Promise<number> {
+  let cursor = '0'; let moved = 0;
+  do {
+    const [next, keys] = await redis.scan(cursor, 'MATCH', fromPattern, 'COUNT', 200);
+    cursor = next;
+    for (const key of keys) {
+      const deviceId = key.slice(key.lastIndexOf(':') + 1);
+      const ttl = await redis.pttl(key);
+      // pttl: -1 = persistent, -2 = the key expired mid-scan. Deleting a
+      // persistent key without recreating it would silently drop that
+      // cooldown, so carry it over without a TTL and only skip the -2 race.
+      if (ttl > 0) await redis.set(toKey(deviceId), Date.now().toString(), 'PX', ttl);
+      else if (ttl === -1) await redis.set(toKey(deviceId), Date.now().toString());
+      if (ttl !== -2) { await redis.del(key); moved++; }
+    }
+  } while (cursor !== '0');
+  return moved;
+}
+/**
+ * `<fromRule>:<device>` → `<toRule>:<device>`. A converted alert TEMPLATE
+ * retires standalone `alert_rules`, whose cooldown keys already use the plain
+ * rule prefix — without this the compiled rule starts with no cooldown state
+ * and re-fires immediately for devices that were still suppressed.
+ */
+export async function rekeyRuleCooldowns(fromRuleId: string, toRuleId: string): Promise<number> {
+  const redis = getRedis(); if (!redis) return 0;
+  return moveCooldownKeys(redis, `${COOLDOWN_PREFIX}:${fromRuleId}:*`, (d) => buildCooldownKey(toRuleId, d));
+}
+/** `cpar:<source>:<device>` → `<compiledRule>:<device>` (W05c1 §Open alerts). */
+export async function rekeyConfigPolicyCooldowns(sourceRuleId: string, compiledRuleId: string): Promise<number> {
+  const redis = getRedis(); if (!redis) return 0;
+  return moveCooldownKeys(redis, `${CONFIG_POLICY_COOLDOWN_PREFIX}:${sourceRuleId}:*`, (d) => buildCooldownKey(compiledRuleId, d));
+}
+export async function rekeyCooldownsBackToConfigPolicy(compiledRuleId: string, sourceRuleId: string): Promise<number> {
+  const redis = getRedis(); if (!redis) return 0;
+  return moveCooldownKeys(redis, `${COOLDOWN_PREFIX}:${compiledRuleId}:*`, (d) => buildConfigPolicyCooldownKey(sourceRuleId, d));
 }
 
 // ============================================

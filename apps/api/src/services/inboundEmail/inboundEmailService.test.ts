@@ -224,6 +224,9 @@ vi.mock('../ticketEvents', () => ({ emitTicketEvent: emitMock }));
 // that a ticket was created + the inbound row logged.
 const { maybeSendAutoresponseMock } = vi.hoisted(() => ({ maybeSendAutoresponseMock: vi.fn() }));
 vi.mock('./autoresponder', () => ({ maybeSendAutoresponse: maybeSendAutoresponseMock }));
+// Flood protection is the global BullMQ per-second queue limiter configured on the
+// worker (INBOUND_QUEUE_MAX_PER_SEC); there is no per-sender Redis cap in the
+// pipeline, so nothing flood-cap-related is mocked here.
 
 // Task 4: pipeline calls claimMessageLink() to record link rows after a matched
 // append and after a create. Mocked as a collaborator (like resolveOrg/ticketService
@@ -394,6 +397,37 @@ describe('processInboundEmail', () => {
     expect(state.inserts.filter((i) => i.table === 'ticket_comments')).toHaveLength(0);
   });
 
+  it('dedup precedes loop/bounce suppression: a redelivered loop message logs nothing', async () => {
+    // Regression: the loop/bounce, self-loop and own-outbound suppression checks log an
+    // 'ignored' audit row and return. They used to run BEFORE the dedup SELECT, so a
+    // REDELIVERY re-inserted that row and collided with the
+    // (partner_id, provider_message_id) unique index (23505), failing the job. Dedup now
+    // runs first, so a duplicate returns before any second audit insert.
+    resolveMock.mockResolvedValue('p-1');
+    state.selectRows['ticket_email_inbound'] = [{ id: 'existing' }]; // already logged on first delivery
+    await processInboundEmail(email({ autoSubmitted: 'auto-replied' })); // a loop/bounce message
+
+    expect(inboundOf()).toHaveLength(0); // no second audit row -> no unique-index collision
+    expect(createTicketMock).not.toHaveBeenCalled();
+  });
+
+  it('suppresses a FIRST-delivery loop/bounce (Auto-Submitted: auto-replied): logs ignored, no ticket', async () => {
+    // Exercises the first-delivery suppression BRANCH itself (no dup row, so dedup does
+    // NOT short-circuit): ticketCreationLoopReason fires, logs an 'ignored' audit row
+    // with the reason, and creates no ticket. The dedup-precedes test above only covers
+    // the redelivery/dup path, so without this the suppression branch could be removed
+    // and the suite would stay green.
+    resolveMock.mockResolvedValue('p-1');
+    state.selectRows['ticket_email_inbound'] = []; // first delivery, no dup
+    await processInboundEmail(email({ autoSubmitted: 'auto-replied' }));
+    const rows = inboundOf();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.parseStatus).toBe('ignored');
+    expect(String(rows[0]!.error)).toContain('loop/bounce suppressed');
+    expect(createTicketMock).not.toHaveBeenCalled();
+    expect(state.inserts.filter((i) => i.table === 'ticket_comments')).toHaveLength(0);
+  });
+
   it('appends a public comment + reopens a resolved ticket on a threaded reply', async () => {
     resolveMock.mockResolvedValue('p-1');
     state.selectRows['ticket_email_inbound'] = []; // no dup
@@ -551,6 +585,23 @@ describe('processInboundEmail', () => {
     expect(gatedPartner).toBe('p-1');
     expect((gatedTicket as { id: string; partnerId: string }).id).toBe('t-created');
     expect((gatedTicket as { partnerId: string }).partnerId).toBe('p-1');
+  });
+
+  it('drops an unknown sender under the drop policy — no ticket, logged ignored', async () => {
+    resolveMock.mockResolvedValue('p-1');
+    state.selectRows['ticket_email_inbound'] = [];
+    state.selectRows['tickets'] = [];
+    state.selectRows['portal_users'] = [];        // no portal user
+    resolveOrgMock.mockResolvedValue(null);       // no mapped domain
+    loadPolicyMock.mockResolvedValue({ enabled: true, unknownSenderMode: 'drop', defaultTriageOrgId: null, dropUnverifiedSenders: false });
+
+    await processInboundEmail(email({ from: 'stranger@nowhere.example', subject: 'unmapped' }));
+
+    expect(createTicketMock).not.toHaveBeenCalled();
+    const log = inboundOf();
+    expect(log).toHaveLength(1);
+    expect(log[0]!.parseStatus).toBe('ignored');
+    expect(String(log[0]!.error ?? '')).toContain('drop');
   });
 
   it('does NOT fire the autoresponder on the closed-continuation path (no submittedBy)', async () => {

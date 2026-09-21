@@ -6,6 +6,15 @@ import { sites, topologyManualNodes, networkTopology, topologyLayout } from '../
 
 vi.mock('../services', () => ({}));
 
+// The service's authorization, real transaction/replay and cross-site node
+// checks are exercised in topology-compatible-writes.integration.test.ts.
+// Here preserve each legacy handler's payload and SQL-contract assertions.
+vi.mock('../services/topology/writes', async (importOriginal) => ({ ...await importOriginal<typeof import('../services/topology/writes')>(), lockLegacyTopologySourceRows: vi.fn(async () => {}) }));
+vi.mock('../services/topology/legacyWrites', () => ({
+  withLegacyTopologyWrite: vi.fn(async (auth: any, permissions: any, scope: any, work: any) => work({ auth, permissions, scope })),
+  requireLegacyLayoutNodes: vi.fn(async () => {}),
+}));
+
 vi.mock('../services/auditEvents', () => ({
   requestLikeFromSnapshot: vi.fn(() => ({ req: { header: () => undefined } })),
   writeAuditEvent: vi.fn(),

@@ -1,5 +1,6 @@
 import '@/lib/i18n';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { renderToString } from 'react-dom/server';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import MonitorEditor from './MonitorEditor';
 import { fetchWithAuth } from '../../stores/auth';
@@ -12,6 +13,10 @@ vi.mock('../../stores/orgStore', () => ({
 }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
+
+vi.mock('../../lib/authScope', () => ({
+  useJwtClaims: () => ({ status: 'resolved', claims: { scope: 'partner', orgId: null, partnerId: 'partner-1' } }),
+}));
 
 const toastMock = vi.mocked(showToast);
 vi.mock('@/hooks/useDefaultOwnerScope', () => ({
@@ -31,8 +36,10 @@ const KINDS = [
 function defaultFetchImpl(input: string) {
   if (input.startsWith('/monitor-definitions/kinds')) return json({ data: KINDS });
   if (input.startsWith('/scripts')) return json({ data: [] });
-  if (input.startsWith('/alerts/channels')) return json({ data: [] });
-  if (input.startsWith('/alerts/policies')) return json({ data: [] });
+  if (input.startsWith('/alerts/delivery/rails?rail=channels')) return json({ data: [], inherited: [] });
+  if (input.startsWith('/alerts/delivery/rails?rail=escalation')) return json({ data: [] });
+if (input.startsWith('/alerts/delivery/resolve')) return json({ skippedChannelIds: [], channelIds: [],
+  escalationPolicyId: null, source: 'none', description: { channels: [], escalationPolicy: null, owner: null } });
   if (input.startsWith('/ai/agents')) return json({ data: [] });
   if (input.startsWith('/software/catalog')) return json({ data: [] });
   return json({ data: [] });
@@ -62,7 +69,84 @@ const MONITOR_M1_FIXTURE = {
   attachments: [],
 };
 
+describe('MonitorEditor owner scope hydration (#6391)', () => {
+  it('omits the owner-scope block from the server markup so hydration matches', () => {
+    // `isPartnerScope` is browser-only (it decodes the access token), so the
+    // block must not appear until after hydration — otherwise the client's
+    // <fieldset> lands where the server emitted the next <section> and React
+    // discards the editor subtree.
+    window.history.replaceState(null, '', '/alerts/monitors/new');
+    const html = renderToString(<MonitorEditor />);
+    expect(html).not.toContain('monitor-editor-owner-scope');
+  });
+
+  it('renders the owner-scope block for a partner-scope session in the browser', async () => {
+    window.history.replaceState(null, '', '/alerts/monitors/new');
+    fetchMock.mockImplementation(async (input: string) => defaultFetchImpl(input));
+    render(<MonitorEditor />);
+    expect(await screen.findByTestId('monitor-editor-owner-scope')).toBeTruthy();
+  });
+});
+
 describe('MonitorEditor (#5289)', () => {
+  it('creates and attaches to the policy selected in the hash', async () => {
+    const policyId = '10000000-0000-4000-8000-000000000009';
+    const id = '20000000-0000-4000-8000-000000000001';
+    window.history.replaceState(null, '', `/alerts/monitors/new#policy=${policyId}`);
+    fetchMock.mockImplementation(async (input: string, init?: RequestInit) => {
+      if (input === '/monitor-definitions' && init?.method === 'POST') return json({ data: { id } }, true, 201);
+      if (input === `/monitor-definitions/${id}/attachments`) return json({ data: {} });
+      return defaultFetchImpl(input);
+    });
+    try {
+      render(<MonitorEditor />);
+      fireEvent.change(await screen.findByTestId('monitor-editor-name'), { target: { value: 'CPU high' } });
+      fireEvent.click(screen.getByTestId('monitor-editor-save'));
+      await waitFor(() => expect(navMock).toHaveBeenCalledWith(`/configuration-policies/${policyId}#monitors`));
+      expect(fetchMock).toHaveBeenCalledWith(`/monitor-definitions/${id}/attachments`, {
+        method: 'POST', body: JSON.stringify({ configPolicyId: policyId }),
+      });
+    } finally { window.history.replaceState(null, '', '/'); }
+  });
+
+  it('leaves create mode after attachment failure and never creates twice', async () => {
+    const policyId = '10000000-0000-4000-8000-000000000009';
+    const id = '20000000-0000-4000-8000-000000000001';
+    window.history.replaceState(null, '', `/alerts/monitors/new#policy=${policyId}`);
+    fetchMock.mockImplementation(async (input: string, init?: RequestInit) => {
+      if (input === '/monitor-definitions' && init?.method === 'POST') return json({ data: { id } }, true, 201);
+      if (input === `/monitor-definitions/${id}/attachments`) return json({ error: 'Attach failed' }, false, 500);
+      return defaultFetchImpl(input);
+    });
+    try {
+      render(<MonitorEditor />);
+      fireEvent.change(await screen.findByTestId('monitor-editor-name'), { target: { value: 'CPU high' } });
+      fireEvent.click(screen.getByTestId('monitor-editor-save'));
+      await waitFor(() => expect(navMock).toHaveBeenCalledWith(`/alerts/monitors/${id}#policy=${policyId}`));
+      fireEvent.submit(screen.getByTestId('monitor-editor-save').closest('form')!);
+      await waitFor(() => expect(navMock).toHaveBeenCalledTimes(2));
+      expect(fetchMock.mock.calls.filter(([url, init]) => url === '/monitor-definitions' && init?.method === 'POST')).toHaveLength(1);
+      const errors = toastMock.mock.calls.filter(([toast]) => toast.type === 'error');
+      expect(errors).toHaveLength(1);
+      expect(errors[0][0].message).toContain('Monitor saved');
+      expect(errors[0][0].message).toContain('Failed to attach');
+    } finally { window.history.replaceState(null, '', '/'); }
+  });
+
+  it('preserves the policy hash through actual editor tab clicks', async () => {
+    const policyId = '10000000-0000-4000-8000-000000000009';
+    window.history.replaceState(null, '', `/alerts/monitors/m1#policy=${policyId}`);
+    fetchMock.mockImplementation(async (input: string) => input === '/monitor-definitions/m1'
+      ? json({ data: MONITOR_M1_FIXTURE }) : defaultFetchImpl(input));
+    try {
+      render(<MonitorEditor monitorId="m1" />);
+      await screen.findByTestId('monitor-editor-tab-activity');
+      fireEvent.click(screen.getByTestId('monitor-editor-tab-activity'));
+      expect(new URLSearchParams(window.location.hash.slice(1)).get('policy')).toBe(policyId);
+      fireEvent.click(screen.getByTestId('monitor-editor-tab-settings'));
+      expect(new URLSearchParams(window.location.hash.slice(1)).get('policy')).toBe(policyId);
+    } finally { window.history.replaceState(null, '', '/'); }
+  });
   beforeEach(() => {
     vi.clearAllMocks();
     fetchMock.mockImplementation(async (input: string) => defaultFetchImpl(input));
@@ -93,18 +177,18 @@ describe('MonitorEditor (#5289)', () => {
   ])('offers only owner-compatible escalation policies for a saved monitor ($orgId, $partnerId)', async ({ orgId, partnerId, expected }) => {
     fetchMock.mockImplementation(async (input: string) => {
       if (input === '/monitor-definitions/m1') return json({ data: { ...MONITOR_M1_FIXTURE, orgId, partnerId } });
-      if (input === '/alerts/policies') return json({ data: escalationPolicies });
+      if (input.startsWith('/alerts/delivery/rails?rail=escalation')) return json({ data: escalationPolicies });
       return defaultFetchImpl(input);
     });
     render(<MonitorEditor monitorId="m1" />);
     await waitFor(() => expect(screen.getByTestId('monitor-editor-name')).toHaveValue('Disk full'));
     const picker = screen.getByTestId('monitor-editor-escalation-policy') as HTMLSelectElement;
-    expect(Array.from(picker.options, (option) => option.value)).toEqual(expected);
+    await waitFor(() => expect(Array.from(picker.options, (option) => option.value)).toEqual(expected));
   });
 
   it('clears an incompatible escalation policy when a new monitor switches to partner ownership', async () => {
     fetchMock.mockImplementation(async (input: string, init?: RequestInit) => {
-      if (input === '/alerts/policies') return json({ data: escalationPolicies });
+      if (input.startsWith('/alerts/delivery/rails?rail=escalation')) return json({ data: escalationPolicies });
       if (input === '/monitor-definitions' && init?.method === 'POST') return json({ data: { id: 'new-1' } });
       return defaultFetchImpl(input);
     });
@@ -481,7 +565,7 @@ describe('MonitorEditor (#5289)', () => {
   it('reaches the delivery-mode radio choice in the submitted payload, and reveals the channel picker only for "channels"', async () => {
     fetchMock.mockImplementation(async (input: string, init?: RequestInit) => {
       if (init?.method === 'POST' && input === '/monitor-definitions') return json({ data: { id: 'new-1' } }, true, 201);
-      if (input.startsWith('/alerts/channels')) return json({ data: [{ id: 'chan-1', name: 'Ops', type: 'email' }] });
+      if (input.startsWith('/alerts/delivery/rails?rail=channels')) return json({ data: [{ id: 'chan-1', name: 'Ops', type: 'email' }] });
       return defaultFetchImpl(input);
     });
     render(<MonitorEditor />);
@@ -592,4 +676,90 @@ describe('MonitorEditor (#5289)', () => {
     const patchBody = JSON.parse((patchCall![1] as RequestInit).body as string);
     expect(patchBody.condition.scriptId).toBe('11111111-2222-4333-8444-555555555555');
   });
+  it('previews unsaved Inherit instead of the saved channels mode, and keeps delivery configuration at its home', async () => {
+    fetchMock.mockImplementation(async input => {
+      if (input === '/monitor-definitions/m1') return json({ data: { ...MONITOR_M1_FIXTURE, deliveryMode: 'channels', deliveryChannelIds: ['ch'] } });
+      if (input.startsWith('/alerts/delivery/resolve')) return json({ skippedChannelIds: [], channelIds: ['ch'], escalationPolicyId: null,
+        source: 'default_row', routingRuleName: 'Everything else', description: {
+          channels: [{ id: 'ch', name: 'NOC', enabled: true }], escalationPolicy: null, owner: 'partner' } });
+      return defaultFetchImpl(input);
+    });
+    render(<MonitorEditor monitorId="m1" />);
+    await screen.findByDisplayValue('Disk full');
+    fireEvent.click(screen.getByTestId('monitor-editor-delivery-inherit'));
+    expect(await screen.findByTestId('delivery-preview-result')).toHaveTextContent('NOC');
+    const calls = fetchMock.mock.calls.filter(([url]) => url.startsWith('/alerts/delivery/resolve'));
+    expect(calls.length).toBeGreaterThan(0);
+    expect(calls.every(([url]) => !url.includes('monitorId='))).toBe(true);
+    expect(screen.getByTestId('monitor-editor-delivery-home')).toHaveAttribute('href', '/alerts/delivery');
+    fireEvent.click(screen.getByTestId('monitor-editor-delivery-none'));
+    expect(screen.queryByTestId('delivery-preview-result')).toBeNull();
+    expect(screen.queryByTestId('monitor-editor-escalation-policy')).toBeNull();
+  });
+
+  it.each(['create', 'edit'] as const)('%s selects inherited channels and escalation and saves their IDs', async mode => {
+    const inheritedChannel = { id: 'partner-channel', name: 'Partner NOC', type: 'slack', enabled: true, inherited: true };
+    const inheritedPolicy = { id: 'partner-policy', name: 'Partner escalation', stepCount: 1, inherited: true };
+    const saved = { ...MONITOR_M1_FIXTURE, deliveryMode: 'channels',
+      deliveryChannelIds: [inheritedChannel.id], escalationPolicyId: inheritedPolicy.id };
+    fetchMock.mockImplementation(async (input: string, init?: RequestInit) => {
+      if (input.startsWith('/alerts/delivery/rails?rail=channels')) return json({
+        data: [{ id: 'org-channel', name: 'Org email', type: 'email', config: {} }], inherited: [inheritedChannel],
+      });
+      if (input.startsWith('/alerts/delivery/rails?rail=escalation')) return json({ data: [inheritedPolicy] });
+      if (input === '/monitor-definitions/m1') return json({ data: saved });
+      if (input === '/monitor-definitions' && init?.method === 'POST') return json({ data: { id: 'new-1' } }, true, 201);
+      return defaultFetchImpl(input);
+    });
+    render(<MonitorEditor monitorId={mode === 'edit' ? 'm1' : undefined} />);
+    await screen.findByTestId('monitor-editor-name');
+    if (mode === 'create') {
+      fireEvent.change(screen.getByTestId('monitor-editor-name'), { target: { value: 'Disk full' } });
+      fireEvent.click(screen.getByTestId('monitor-editor-delivery-channels'));
+    }
+    await screen.findByRole('option', { name: 'Partner NOC (slack)' });
+    await screen.findByRole('option', { name: 'Partner escalation' });
+    const channelPicker = screen.getByTestId('monitor-editor-channels') as HTMLSelectElement;
+    const policyPicker = screen.getByTestId('monitor-editor-escalation-policy');
+    expect(Array.from(channelPicker.options, option => option.value)).toEqual(['org-channel', 'partner-channel']);
+    if (mode === 'create') {
+      for (const option of channelPicker.options) option.selected = option.value === inheritedChannel.id;
+      fireEvent.change(channelPicker);
+      fireEvent.change(policyPicker, { target: { value: inheritedPolicy.id } });
+    }
+    expect(channelPicker).toHaveValue([inheritedChannel.id]);
+    expect(policyPicker).toHaveValue(inheritedPolicy.id);
+    fireEvent.click(screen.getByTestId('monitor-editor-save'));
+    const method = mode === 'edit' ? 'PATCH' : 'POST';
+    await waitFor(() => expect(fetchMock.mock.calls.some(([, init]) => init?.method === method)).toBe(true));
+    const [, init] = fetchMock.mock.calls.find(([, init]) => init?.method === method)!;
+    expect(JSON.parse(init!.body as string)).toMatchObject({ deliveryMode: 'channels',
+      deliveryChannelIds: [inheritedChannel.id], escalationPolicyId: inheritedPolicy.id });
+    const rails = fetchMock.mock.calls.filter(([url]) => url.startsWith('/alerts/delivery/rails'));
+    expect(rails.some(([url]) => url === '/alerts/delivery/rails?rail=channels&orgId=org-1')).toBe(true);
+    expect(rails.some(([url]) => url === '/alerts/delivery/rails?rail=escalation&orgId=org-1')).toBe(true);
+    expect(fetchMock.mock.calls.some(([url]) => url.startsWith('/alerts/channels') || url.startsWith('/alerts/policies'))).toBe(false);
+  });
+  it('late inherited choices do not refetch the monitor or overwrite unsaved edits', async () => {
+    let finishChannels!: (response: Response) => void;
+    fetchMock.mockImplementation(async (input: string) => {
+      if (input === '/monitor-definitions/m1') return json({ data: { ...MONITOR_M1_FIXTURE,
+        deliveryMode: 'channels', deliveryChannelIds: ['partner-channel'], escalationPolicyId: 'partner-policy' } });
+      if (input.startsWith('/alerts/delivery/rails?rail=channels')) return new Promise<Response>(resolve => { finishChannels = resolve; });
+      if (input.startsWith('/alerts/delivery/rails?rail=escalation')) return json({ data: [
+        { id: 'partner-policy', name: 'Partner escalation', stepCount: 1, inherited: true },
+      ] });
+      return defaultFetchImpl(input);
+    });
+    render(<MonitorEditor monitorId="m1" />);
+    await screen.findByDisplayValue('Disk full');
+    fireEvent.change(screen.getByTestId('monitor-editor-name'), { target: { value: 'Draft name' } });
+    await act(async () => finishChannels(json({ data: [], inherited: [{ id: 'partner-channel', name: 'Partner NOC', type: 'slack', enabled: true, inherited: true }] })));
+    expect(await screen.findByRole('option', { name: 'Partner NOC (slack)' })).toBeInTheDocument();
+    expect(screen.getByTestId('monitor-editor-channels')).toHaveValue(['partner-channel']);
+    expect(screen.getByTestId('monitor-editor-escalation-policy')).toHaveValue('partner-policy');
+    expect(screen.getByTestId('monitor-editor-name')).toHaveValue('Draft name');
+    expect(fetchMock.mock.calls.filter(([url]) => url === '/monitor-definitions/m1')).toHaveLength(1);
+  });
+
 });

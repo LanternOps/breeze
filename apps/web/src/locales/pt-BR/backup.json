@@ -495,6 +495,8 @@
     "originalLocation": "Local original",
     "restoreFilesInPlace": "Restaurar arquivos no local.",
     "alternatePath": "Caminho alternativo",
+    "alternatePathPlaceholder": "ex.: D:\\Restored ou /var/restore",
+    "alternatePathRequired": "Informe um caminho de destino para continuar.",
     "restoreToANewFolder": "Restaurar para uma nova pasta.",
     "reviewConfirm": "Revisar e confirmar",
     "confirmTheRestoreSummaryBeforeStarting": "Confirme o resumo da restauração antes de iniciar.",
@@ -617,7 +619,12 @@
     "cpu": "CPU,",
     "mbRam": "MB de RAM,",
     "gbDisk": "GB de disco",
-    "mode": "Modo"
+    "mode": "Modo",
+    "rebuildHost": "Host de reconstrução",
+    "outputPath": "Caminho de saída",
+    "rebuildEngine": "Mecanismo de reconstrução (Linux)",
+    "manualAttachNote": "Anexe o VHDX a uma VM do Hyper-V manualmente; a criação automática de VM para convidados Linux chegará com o mecanismo do Windows.",
+    "newIdentityNote": "A imagem reconstruída sempre recebe uma nova identidade de máquina e nunca retoma a identidade do dispositivo original."
   },
   "vMRestoreSpecsStep": {
     "vmSpecifications": "Especificações da VM",
@@ -655,7 +662,16 @@
     "bootsTheVmDirectlyFromTheBackupStorage": "Inicializa a VM diretamente do armazenamento de backup. Pronta em segundos. A migração em segundo plano copia os dados para o host.",
     "back": "Voltar",
     "continue": "Continuar",
-    "starting": "Iniciando..."
+    "starting": "Iniciando...",
+    "rebuildEngineLinux": "Mecanismo de reconstrução (Linux)",
+    "rebuildEngineDescription": "Reconstrói este snapshot de máquina completa Linux em uma imagem de disco VHDX do Hyper-V em um dispositivo Linux que executa o assistente Breeze. A imagem sempre recebe uma nova identidade de máquina.",
+    "selectRebuildHost": "Selecionar host de reconstrução Linux",
+    "chooseALinuxDeviceWithQemuUtils": "Escolha um dispositivo Linux online com qemu-utils instalado e espaço livre suficiente para a imagem.",
+    "outputPath": "Caminho de saída",
+    "outputPathHint": "Caminho absoluto no host de reconstrução terminando em .vhdx.",
+    "outputPathInvalid": "Informe um caminho absoluto que termine em .vhdx.",
+    "startRebuild": "Iniciar reconstrução",
+    "rebuildStarted": "Reconstrução iniciada. O VHDX aparecerá no host de reconstrução quando ela for concluída."
   },
   "vaultConfigDialog": {
     "device": "Dispositivo",
@@ -716,7 +732,15 @@
     "launchExecution": "Iniciar execução",
     "startANewDrRunFor": "Iniciar uma nova execução de DR para",
     "cancel": "Cancelar",
-    "startExecution": "Iniciar execução"
+    "startExecution": "Iniciar execução",
+    "executeErrorFallback": "Não foi possível iniciar a execução.",
+    "executeErrorNoRestorableSnapshot": "Não é possível iniciar: um dispositivo de um grupo de reconstrução bare-metal não tem snapshot de backup restaurável. Execute primeiro um backup bem-sucedido para cada dispositivo desse grupo.",
+    "executeErrorNoRecoverySource": "Não é possível iniciar: um grupo de recuperação não indica nenhuma origem de recuperação. Adicione ao grupo um snapshot, um trabalho de restauração ou um token de recuperação.",
+    "executeErrorGroupHasNoValidDevices": "Não é possível iniciar: um grupo de recuperação não tem dispositivos válidos. Edite o plano e adicione pelo menos um dispositivo a cada grupo.",
+    "executeErrorInvalidSourceReference": "Não é possível iniciar: um grupo de recuperação referencia uma origem de recuperação com identificador inválido. Edite o grupo e selecione a origem novamente.",
+    "executeErrorInvalidStepConfig": "Não é possível iniciar: um grupo de recuperação tem configuração de etapa inválida. Edite o grupo e corrija as configurações.",
+    "executeErrorResourceNotFound": "Não é possível iniciar: um snapshot referenciado por este plano não existe mais. Edite o grupo afetado e escolha um snapshot atual.",
+    "executeErrorBackupWriteRequired": "Não é possível iniciar: este plano contém um grupo de reconstrução bare-metal, que exige a permissão de gravação de backups."
   },
   "dRExecutionView": {
     "executionDetails": "Detalhes da execução",
@@ -739,7 +763,28 @@
     "executionDetailsAreUnavailable": "Os detalhes da execução estão indisponíveis.",
     "abortDisasterRecoveryExecution": "Abortar execução de recuperação de desastre?",
     "deviceCount_one": "{{count}} dispositivo",
-    "deviceCount_other": "{{count}} dispositivos"
+    "deviceCount_other": "{{count}} dispositivos",
+    "recoveryStatus": {
+      "created": "Código emitido",
+      "media_booted": "Mídia iniciada",
+      "planned": "Planejado",
+      "restoring": "Restaurando",
+      "validated": "Validado",
+      "rebooted": "Reiniciado",
+      "checked_in": "Registrado",
+      "completed": "Concluído",
+      "failed": "Falhou",
+      "refused": "Recusado",
+      "unknown": "Recuperação pendente"
+    },
+    "reissueCode": "Reemitir código",
+    "reissueCodeFailed": "Não foi possível reemitir o código de recuperação",
+    "cancelRecovery": "Cancelar recuperação",
+    "cancelRecoveryFailed": "Não foi possível cancelar a recuperação",
+    "recoveryCancelled": "Recuperação cancelada",
+    "codeShownOnce": "Este código é exibido apenas uma vez e expira em 15 minutos. Digite-o no prompt da mídia de recuperação.",
+    "copyCode": "Copiar código",
+    "copied": "Copiado"
   },
   "dRPlanEditor": {
     "defineRecoveryObjectivesSequenceGroupsAndAssignDevices": "Defina objetivos de recuperação, sequencie grupos e atribua dispositivos na ordem de restauração.",
@@ -769,7 +814,11 @@
     "groupCount_one": "{{count}} grupo",
     "groupCount_other": "{{count}} grupos",
     "uniqueDeviceCount_one": "{{count}} dispositivo único",
-    "uniqueDeviceCount_other": "{{count}} dispositivos únicos"
+    "uniqueDeviceCount_other": "{{count}} dispositivos únicos",
+    "chooseAStepTypeForEachGroup": "Escolha um tipo de etapa para cada grupo de recuperação.",
+    "rebuildWaitTimeoutOutOfRange": "O tempo limite de espera da reconstrução bare-metal deve ser um número inteiro entre {{min}} e {{max}} minutos.",
+    "rebuildOutputDirMustBeAbsolute": "O diretório de saída da reconstrução bare-metal deve ser um caminho absoluto iniciado por \"/\" e ter no máximo {{max}} caracteres.",
+    "partialSaveFailure": "Parte deste plano foi salva antes do erro, então o plano e a lista podem divergir. Corrija o problema e salve novamente. O servidor informou: {{message}}"
   },
   "dRPlanGroupCard": {
     "device": "dispositivo",
@@ -784,7 +833,23 @@
     "deviceSelection": "Seleção de dispositivos",
     "noDevicesAvailableToAssign": "Nenhum dispositivo disponível para atribuir.",
     "deviceCount_one": "{{count}} dispositivo",
-    "deviceCount_other": "{{count}} dispositivos"
+    "deviceCount_other": "{{count}} dispositivos",
+    "stepType": "Tipo de etapa",
+    "chooseAStepType": "Escolher um tipo de etapa",
+    "stepTypes": {
+      "vmRestoreFromBackup": "Restaurar VM a partir do backup",
+      "vmInstantBoot": "Inicialização instantânea de VM",
+      "hypervRestore": "Restauração do Hyper-V",
+      "mssqlRestore": "Restauração do SQL Server",
+      "bmrRecover": "Recuperação bare-metal (mídia de inicialização)",
+      "bareMetalRebuild": "Reconstrução bare-metal (mecanismo de reconstrução)"
+    },
+    "rebuildHost": "Host de reconstrução",
+    "rebuildHostHint": "Dispositivo Linux com qemu-utils que executa os ensaios. No failover, cada dispositivo inicializa a mídia de recuperação.",
+    "outputDir": "Diretório de saída",
+    "outputDirHint": "Diretório no host de reconstrução que recebe uma imagem VHDX por dispositivo.",
+    "waitTimeout": "Tempo limite de espera (min)",
+    "waitTimeoutHint": "Minutos de espera pelo registro de cada dispositivo antes que a etapa falhe."
   },
   "profiles": {
     "title": "Perfis de Backup",

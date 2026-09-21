@@ -11,7 +11,7 @@ Integrated AI agent allowing IT technicians to manage devices, troubleshoot issu
 
 ```
  External Clients (Claude Desktop, Cursor)
-          |  MCP over SSE/HTTP
+          |  MCP over Streamable HTTP (legacy SSE kept)
           v
  +---------------------------+
  | Breeze MCP Server         |  /api/v1/mcp/*  (API Key auth)
@@ -27,13 +27,8 @@ Integrated AI agent allowing IT technicians to manage devices, troubleshoot issu
  |  |         AI Agent Service (aiAgent.ts)             |            |
  |  |  Anthropic SDK + In-Process Tool Execution        |            |
  |  |                                                   |            |
- |  |  12 Custom Tools (aiTools.ts):                    |            |
- |  |   query_devices, get_device_details,              |            |
- |  |   execute_command, run_script, manage_alerts,     |            |
- |  |   security_scan, analyze_metrics,                 |            |
- |  |   manage_services, file_operations,               |            |
- |  |   create_automation, query_audit_log,             |            |
- |  |   network_discovery                               |            |
+ |  |  AI tool registry (aiTools*.ts)                   |            |
+ |  |  getToolDefinitions() supplies the current tools |            |
  |  +--------------------------------------------------+            |
  |       |                    |                    |                  |
  |  Existing Services    commandQueue.ts     Event Bus (Redis)       |
@@ -50,7 +45,7 @@ Integrated AI agent allowing IT technicians to manage devices, troubleshoot issu
 |------|---------|
 | `apps/api/src/db/schema/ai.ts` | 5 tables: `aiSessions`, `aiMessages`, `aiToolExecutions`, `aiCostUsage`, `aiBudgets` |
 | `apps/api/src/services/aiAgent.ts` | Core agent service — session lifecycle, Anthropic API calls, SSE streaming, tool dispatch, approval polling |
-| `apps/api/src/services/aiTools.ts` | 12 MCP tool implementations with Zod schemas, org-scoped access via `AuthContext.orgCondition()` |
+| `apps/api/src/services/aiTools.ts` | The AI tool registry (~200 tools across `aiTools*.ts`; `getToolDefinitions()` is the count), with Zod schemas and org-scoped access via `AuthContext.orgCondition()` |
 | `apps/api/src/services/aiGuardrails.ts` | 4-tier permission system: auto-execute, audit, approval-required, blocked |
 | `apps/api/src/services/aiCostTracker.ts` | Token/cost tracking, budget enforcement, rate limiting, usage summaries |
 | `apps/api/src/routes/ai.ts` | REST + SSE chat endpoints (`/api/v1/ai/*`) |
@@ -134,22 +129,9 @@ type AiStreamEvent =
   | { type: 'done' };
 ```
 
-## 12 MCP Tools
+## MCP tools
 
-| Tool | Tier | Description |
-|------|------|-------------|
-| `query_devices` | 1 | Filter devices by status, OS, site, tags, hostname |
-| `get_device_details` | 1 | Full device profile (hardware, network, metrics) |
-| `analyze_metrics` | 1 | Time-series CPU/RAM/disk/network with aggregation |
-| `manage_alerts` | 1-2 | List/get (T1), acknowledge/resolve (T2) |
-| `query_audit_log` | 1 | Search audit logs with org scoping |
-| `execute_command` | 3 | Run device commands (requires approval) |
-| `run_script` | 3 | Execute scripts on devices (requires approval) |
-| `manage_services` | 1-3 | List (T1), start/stop/restart (T3) |
-| `security_scan` | 1-3 | Status check (T1), quarantine/remove (T3) |
-| `file_operations` | 1-3 | List/read (T1), write/delete (T3) |
-| `create_automation` | 3 | Create automation rules (requires approval) |
-| `network_discovery` | 3 | Subnet scanning (requires approval) |
+Use the registry in `apps/api/src/services/aiTools.ts` (`getToolDefinitions()`) for the current tools and count, and the generated prompt index `renderToolIndexByDomain(listChatSurfaceToolNames())` composed in `apps/api/src/services/aiAgent.ts` for the tools registered on the chat surface.
 
 ### Helper Functions in aiTools.ts
 
@@ -259,11 +241,9 @@ Context is injected into the system prompt and sent with each message. The `AiCo
 ## Connecting External Clients
 
 ```bash
-# Claude Desktop / Cursor MCP connection
-claude mcp add breeze-rmm \
-  --transport sse \
-  --url https://your-api/api/v1/mcp/sse \
-  --header "X-API-Key: brz_..."
+# Claude Code MCP connection
+claude mcp add --transport http breeze-rmm https://your-breeze-instance.example.com/api/v1/mcp/sse \
+  --header "X-API-Key: brz_your_api_key_here"
 ```
 
 API key needs `ai:read`, `ai:write`, or `ai:execute` scopes.

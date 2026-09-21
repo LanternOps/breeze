@@ -35,14 +35,23 @@ func withServiceProbeCommand(t *testing.T, fn func(name string, args ...string) 
 func TestCheckServicesLinux_InactiveUnitFailsAndIsNamed(t *testing.T) {
 	withGOOS(t, "linux")
 	withServiceProbeCommand(t, func(name string, args ...string) ([]byte, error) {
-		if name != "systemctl" || len(args) != 2 || args[0] != "is-active" {
+		if name != "systemctl" || len(args) == 0 {
 			t.Fatalf("unexpected command: %s %v", name, args)
 		}
-		unit := args[1]
-		if unit == "sshd" {
-			return []byte("inactive\n"), errors.New("exit status 3")
+		switch args[0] {
+		case "is-active":
+			if args[len(args)-1] == "sshd" {
+				return []byte("inactive\n"), errors.New("exit status 3")
+			}
+			return []byte("active\n"), nil
+		case "show":
+			// sshd is an ordinary simple service whose conditions held, so
+			// the #5479 healthy-inactive escape hatch must not rescue it.
+			return []byte("Type=simple\nActiveState=inactive\nSubState=dead\nConditionResult=yes\n"), nil
+		default:
+			t.Fatalf("unexpected command: %s %v", name, args)
+			return nil, nil
 		}
-		return []byte("active\n"), nil
 	})
 
 	ok, inactive := checkServices([]string{"cron", "sshd", "networking"})
@@ -324,5 +333,162 @@ func TestValidate_StateExpectedNotApplied_Fails(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("failures = %v, want 'system state not applied'", result.Failures)
+	}
+}
+
+// simpleInactiveProbe is a runServiceProbeCommand stand-in for the #5479
+// tests: every unit reports inactive to `is-active`, and `systemctl show`
+// answers from props (keyed by unit name), defaulting to an ordinary
+// simple service whose conditions held — i.e. a genuine finding.
+func simpleInactiveProbe(t *testing.T, props map[string]string) func(string, ...string) ([]byte, error) {
+	t.Helper()
+	return func(name string, args ...string) ([]byte, error) {
+		if name != "systemctl" || len(args) == 0 {
+			t.Fatalf("unexpected command: %s %v", name, args)
+		}
+		unit := args[len(args)-1]
+		switch args[0] {
+		case "is-active":
+			return []byte("inactive\n"), errors.New("exit status 3")
+		case "show":
+			if out, ok := props[unit]; ok {
+				return []byte(out), nil
+			}
+			return []byte("Type=simple\nActiveState=inactive\nSubState=dead\nConditionResult=yes\nUnitFileState=enabled\n"), nil
+		default:
+			t.Fatalf("unexpected command: %s %v", name, args)
+			return nil, nil
+		}
+	}
+}
+
+// TestCheckServicesLinux_SkipsTemplateUnits proves the probe never reports a
+// systemd TEMPLATE unit (getty@.service) as a finding — a template is not
+// startable, so `is-active` on it is always inactive and naming it only
+// buries real regressions (#5479). An actual INSTANCE (getty@tty1.service)
+// is still probed and still fails.
+func TestCheckServicesLinux_SkipsTemplateUnits(t *testing.T) {
+	withGOOS(t, "linux")
+	var probed []string
+	withServiceProbeCommand(t, func(name string, args ...string) ([]byte, error) {
+		if args[0] == "is-active" {
+			probed = append(probed, args[len(args)-1])
+		}
+		return simpleInactiveProbe(t, nil)(name, args...)
+	})
+
+	ok, inactive := checkServices([]string{"getty@.service", "user@.service", "getty@tty1.service"})
+	if ok {
+		t.Fatal("expected the real instance unit to fail the probe")
+	}
+	if len(inactive) != 1 || inactive[0] != "getty@tty1.service" {
+		t.Fatalf("inactive = %v, want exactly [getty@tty1.service]", inactive)
+	}
+	if len(probed) != 1 || probed[0] != "getty@tty1.service" {
+		t.Fatalf("is-active probed %v, want only the instance unit", probed)
+	}
+}
+
+// TestCheckServicesLinux_OneshotExitedIsHealthy proves a completed oneshot
+// unit (grub-common.service and friends, which rest at inactive/dead after
+// running successfully) is not reported as a finding, while a FAILED
+// oneshot still is (#5479).
+func TestCheckServicesLinux_OneshotExitedIsHealthy(t *testing.T) {
+	withGOOS(t, "linux")
+	withServiceProbeCommand(t, simpleInactiveProbe(t, map[string]string{
+		"grub-common.service":    "Type=oneshot\nActiveState=inactive\nSubState=dead\nConditionResult=yes\nUnitFileState=enabled\n",
+		"e2scrub_reap.service":   "Type=oneshot\nActiveState=active\nSubState=exited\nConditionResult=yes\nUnitFileState=enabled\n",
+		"broken-oneshot.service": "Type=oneshot\nActiveState=failed\nSubState=failed\nConditionResult=yes\nUnitFileState=enabled\n",
+	}))
+
+	ok, inactive := checkServices([]string{"grub-common.service", "e2scrub_reap.service", "broken-oneshot.service"})
+	if ok {
+		t.Fatal("expected the failed oneshot to fail the probe")
+	}
+	if len(inactive) != 1 || inactive[0] != "broken-oneshot.service" {
+		t.Fatalf("inactive = %v, want exactly [broken-oneshot.service]", inactive)
+	}
+}
+
+// TestCheckServicesLinux_ConditionNotMetIsHealthy proves a unit systemd
+// deliberately skipped because its Condition*= checks did not hold is not a
+// finding (#5479).
+func TestCheckServicesLinux_ConditionNotMetIsHealthy(t *testing.T) {
+	withGOOS(t, "linux")
+	withServiceProbeCommand(t, simpleInactiveProbe(t, map[string]string{
+		"dmesg.service": "Type=simple\nActiveState=inactive\nSubState=dead\nConditionResult=no\nUnitFileState=enabled\n",
+	}))
+
+	ok, inactive := checkServices([]string{"dmesg.service"})
+	if !ok || len(inactive) != 0 {
+		t.Fatalf("checkServices = (%v, %v), want (true, [])", ok, inactive)
+	}
+}
+
+// TestCheckServicesLinux_ShowFailureStaysAFinding proves the escape hatch
+// fails CLOSED: if `systemctl show` itself errors, the inactive unit is
+// still reported rather than being assumed healthy (#5479).
+func TestCheckServicesLinux_ShowFailureStaysAFinding(t *testing.T) {
+	withGOOS(t, "linux")
+	withServiceProbeCommand(t, func(name string, args ...string) ([]byte, error) {
+		if args[0] == "show" {
+			return nil, errors.New("exit status 1")
+		}
+		return []byte("inactive\n"), errors.New("exit status 3")
+	})
+
+	ok, inactive := checkServices([]string{"cron.service"})
+	if ok || len(inactive) != 1 || inactive[0] != "cron.service" {
+		t.Fatalf("checkServices = (%v, %v), want (false, [cron.service])", ok, inactive)
+	}
+}
+
+// TestParseSystemctlShow_ValueContainingEquals proves only the first "=" is
+// treated as the separator, so a property value that itself contains "="
+// survives intact.
+func TestParseSystemctlShow_ValueContainingEquals(t *testing.T) {
+	props := parseSystemctlShow([]byte("Type=oneshot\nExecStart=/bin/sh -c x=1\nnotaproperty\n"))
+	if props["Type"] != "oneshot" {
+		t.Fatalf("Type = %q, want oneshot", props["Type"])
+	}
+	if props["ExecStart"] != "/bin/sh -c x=1" {
+		t.Fatalf("ExecStart = %q", props["ExecStart"])
+	}
+	if _, ok := props["notaproperty"]; ok {
+		t.Fatal("line without = must be ignored")
+	}
+}
+
+// TestCheckServicesLinux_DisabledOrMissingUnitStaysAFinding proves the
+// oneshot / condition-not-met exemptions do NOT extend to a unit the
+// restore left disabled, masked, or gone entirely: the snapshot listed
+// these units as enabled, so losing that enablement is precisely the
+// regression the probe exists to catch (#5479).
+func TestCheckServicesLinux_DisabledOrMissingUnitStaysAFinding(t *testing.T) {
+	withGOOS(t, "linux")
+	withServiceProbeCommand(t, simpleInactiveProbe(t, map[string]string{
+		// A oneshot that would otherwise be excused, but is now disabled.
+		"disabled-oneshot.service": "Type=oneshot\nActiveState=inactive\nSubState=dead\nConditionResult=yes\nUnitFileState=disabled\n",
+		// A condition-skipped unit that has been masked.
+		"masked.service": "Type=simple\nActiveState=inactive\nSubState=dead\nConditionResult=no\nUnitFileState=masked\n",
+		// A unit that no longer exists: `systemctl show` on an unknown name
+		// answers with empty properties rather than failing.
+		"vanished.service": "Type=\nActiveState=inactive\nSubState=dead\nConditionResult=yes\nUnitFileState=\n",
+		// The control: still enabled and a resting oneshot, so still excused.
+		"healthy-oneshot.service": "Type=oneshot\nActiveState=inactive\nSubState=dead\nConditionResult=yes\nUnitFileState=enabled\n",
+	}))
+
+	ok, inactive := checkServices([]string{"disabled-oneshot.service", "masked.service", "vanished.service", "healthy-oneshot.service"})
+	if ok {
+		t.Fatal("expected the disabled/masked/missing units to fail the probe")
+	}
+	want := []string{"disabled-oneshot.service", "masked.service", "vanished.service"}
+	if len(inactive) != len(want) {
+		t.Fatalf("inactive = %v, want %v", inactive, want)
+	}
+	for i, unit := range want {
+		if inactive[i] != unit {
+			t.Fatalf("inactive = %v, want %v", inactive, want)
+		}
 	}
 }

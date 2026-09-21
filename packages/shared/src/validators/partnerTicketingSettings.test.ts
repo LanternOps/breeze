@@ -49,6 +49,11 @@ describe('ticketingInboundSettingsSchema', () => {
     expect(ticketingInboundSettingsSchema.safeParse({ defaultTriageOrgId: '11111111-1111-4111-8111-111111111111' }).success).toBe(true);
     expect(ticketingInboundSettingsSchema.safeParse({ defaultTriageOrgId: 'nope' }).success).toBe(false);
   });
+
+  it('accepts the fullMessageReply toggle and rejects a non-boolean', () => {
+    expect(ticketingInboundSettingsSchema.safeParse({ fullMessageReply: true }).success).toBe(true);
+    expect(ticketingInboundSettingsSchema.safeParse({ fullMessageReply: 'yes' }).success).toBe(false);
+  });
 });
 
 describe('timeTrackingSessionSuggestionsSchema', () => {

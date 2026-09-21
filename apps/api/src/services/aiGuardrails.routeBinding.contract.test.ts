@@ -219,6 +219,46 @@ interface Binding {
  * comments in `aiGuardrails.ts` beside each mapping.
  */
 const BINDINGS: readonly Binding[] = [
+  { tool: 'list_ai_agents', routeFile: 'aiAgents.ts', method: 'get', path: '/' },
+  {
+    tool: 'list_ai_agent_runs', routeFile: 'aiAgents.ts', method: 'get', path: '/runs',
+    toolOnly: { extra: [], reason: 'Exact-device callers only see runs for allowed devices; the REST list applies no device gate.' },
+  },
+  {
+    tool: 'get_ai_agent_run', routeFile: 'aiAgents.ts', method: 'get', path: '/runs/:runId',
+    toolOnly: { extra: [], reason: 'Exact-device callers only see runs for allowed devices, and intent summaries are narrowed to devices allowed within the run\'s own org; the REST read applies no device gate.' },
+  },
+  { tool: 'list_sites', routeFile: 'orgs.ts', method: 'get', path: '/sites', toolOnly: { extra: [], reason: 'Device counts are additionally narrowed to exact-device scope.' } },
+  { tool: 'get_site', routeFile: 'orgs.ts', method: 'get', path: '/sites/:id', toolOnly: { extra: [], reason: 'Requires a site UUID and conceals inaccessible sites as not found.' } },
+  {
+    tool: 'list_remediation_suggestions', routeFile: 'remediationSuggestions.ts', method: 'get', path: '/',
+    toolOnly: { extra: [], reason: 'Explicit orgId requires organization access; exact-device scope also narrows device rows; empty site access returns no rows, including device-less suggestions.' },
+  },
+  // Exact-device scope additionally limits these reads to linked assets.
+  { tool: 'list_network_assets', routeFile: 'discovery.ts', method: 'get', path: '/assets', toolOnly: { extra: [], reason: 'Exact-device callers only see assets linked to allowed devices.' } },
+  { tool: 'get_network_asset', routeFile: 'discovery.ts', method: 'get', path: '/assets/:id', toolOnly: { extra: [], reason: 'Exact-device callers only see assets linked to allowed devices.' } },
+  {
+    tool: 'list_incidents', routeFile: 'incidents.ts', method: 'get', path: '/',
+    toolOnly: { extra: [], reason: 'Site/device-bound callers only see incidents with a reachable affected device; REST list has no site/device gate.' },
+  },
+  {
+    tool: 'list_org_contacts', routeFile: 'orgContacts.ts', method: 'get', path: '/organizations/:id/contacts',
+    toolOnly: { extra: [], reason: 'An empty site allowlist hides all contacts; REST visibility is org-level only.' },
+  },
+  // Time reads narrow other-user access to platform admins (route also accepts *:* grants).
+  {
+    tool: 'list_time_entries', routeFile: 'timeEntries/timeEntries.ts', method: 'get', path: '/',
+    toolOnly: { extra: [], reason: 'Cross-user reads are restricted to platform admins; the route also accepts *:* grants.' },
+  },
+  {
+    tool: 'get_running_timer', routeFile: 'timeEntries/timeEntries.ts', method: 'get', path: '/running',
+    toolOnly: { extra: [], reason: 'Cross-user reads are restricted to platform admins; the route also accepts *:* grants.' },
+  },
+  {
+    tool: 'get_timesheet', routeFile: 'timeEntries/timeEntries.ts', method: 'get', path: '/timesheet',
+    toolOnly: { extra: [], reason: 'Cross-user reads are restricted to platform admins; the route also accepts *:* grants.' },
+  },
+
   // §2.5 — report generation is an EXPORT, not a report read.
   { tool: 'generate_report', action: 'generate', routeFile: 'reports/generate.ts', method: 'post', path: '/generate' },
 

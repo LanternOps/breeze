@@ -1,3 +1,4 @@
+import { ensureDefaultProfile } from './billingProfileService';
 import { and, eq, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { organizations, partners, sites } from '../db/schema';
@@ -37,6 +38,8 @@ export async function getOrCreateQuickSupportOrg(
         .where(eq(partners.id, partnerId))
         .limit(1);
       if (!partnerRow) throw new Error('quick support partner not found');
+
+      await ensureDefaultProfile(partnerId, partnerRow.currencyCode, db);
 
       // onConflictDoNothing + re-select rather than catching a 23505: postgres.js
       // rethrows errors handled inside begin(), so relying on transaction-abort

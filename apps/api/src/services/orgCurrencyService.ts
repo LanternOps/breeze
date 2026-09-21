@@ -1,3 +1,4 @@
+import { ensureDefaultProfile } from './billingProfileService';
 /**
  * Org currency change (multi-currency wave 6, #3778) — spec §5.
  *
@@ -27,8 +28,8 @@
 import { and, count, eq, inArray, isNull, isNotNull, ne, sql } from 'drizzle-orm';
 import { db } from '../db';
 import {
-  catalogItemOrgPricing, contracts, invoices, organizations, orgTicketSettings,
-  quotes, ticketCategories, ticketParts, timeEntries
+  billingProfiles, orgBillingProfileAssignments, catalogItemOrgPricing, contracts, invoices, organizations,
+  quotes, ticketParts, timeEntries
 } from '../db/schema';
 import { InvoiceServiceError, type InvoiceActor } from './invoiceTypes';
 import { UNKNOWN_CURRENCY_KEY } from './invoiceAssembly';
@@ -59,8 +60,7 @@ export interface OrgCurrencyImpact {
   changeRequired: boolean;
   impactsByCurrency: OrgCurrencyImpactGroup[];
   configurationWarnings: {
-    orgDefaultRate: { configured: boolean; rateCurrency: string | null; willStopApplying: boolean };
-    categoryRatesSkipped: number;
+    assignedBillingProfile: { id: string | null; currencyCode: string | null; currencyMismatch: boolean };
     orgCatalogOverridesSkipped: number;
     /** Unbilled time with hours but NO hourly rate, stamped in the TARGET
      *  currency or not stamped at all (review 6). These are not stranded by the
@@ -112,14 +112,16 @@ function emptyGroup(currencyCode: string): OrgCurrencyImpactGroup {
 }
 
 /** The labor rule of `invoiceAssembly.timeEntryToLineSpec`, expressed in SQL so
- *  the preflight never pulls a row into JS (review 4): hours rounded to 2dp
+ *  the preflight never pulls a row into JS (review 4): the BILLED minutes
+ *  (§3.5, #4628 W03 — `billable_minutes` falling back to `duration_minutes` for
+ *  rows stamped before that wave, exactly as `entryHours` does), hours to 2dp
  *  FIRST (the numeric(10,2) quantity schema), then ONE half-up round at the
  *  currency's minor unit — 20 min x 1,000 JPY = 0.33 x 1000 = 330, never 333.
  *  `exp` is the minor-unit exponent; both variants are summed in the same pass
  *  and the caller picks the one matching each group's currency, which keeps the
  *  whole preflight to a single aggregate query per source table. */
 function laborSumSql(exp: 0 | 2) {
-  return sql<string>`coalesce(sum(round(round(coalesce(${timeEntries.durationMinutes}, 0) / 60.0, 2) * ${timeEntries.hourlyRate}, ${exp})), 0)`;
+  return sql<string>`coalesce(sum(round(round(coalesce(${timeEntries.billableMinutes}, ${timeEntries.durationMinutes}, 0) / 60.0, 2) * ${timeEntries.hourlyRate}, ${exp})), 0)`;
 }
 
 function partSumSql(exp: 0 | 2) {
@@ -290,22 +292,19 @@ export async function getOrgCurrencyImpact(
   }
 
   // --- configuration warnings ---------------------------------------------
-  // Match-or-skip (timeEntryService.resolveDefaultRate): a default rate applies
-  // ONLY when it was entered under the org's currency. A rate in another
-  // currency is silently skipped — surface that BEFORE the change, not after.
-  const [rateSettings] = await dbc
-    .select({ defaultHourlyRate: orgTicketSettings.defaultHourlyRate, rateCurrency: orgTicketSettings.rateCurrency })
-    .from(orgTicketSettings).where(eq(orgTicketSettings.orgId, orgId)).limit(1);
-  const rateConfigured = !!rateSettings && rateSettings.defaultHourlyRate !== null;
-
-  const [categorySkipped] = await dbc
-    .select({ n: count() })
-    .from(ticketCategories)
+  // The assignment stays in place after a currency change. A mismatched card
+  // is skipped by the resolver in favour of the new currency's default card.
+  const [assignedProfile] = await dbc
+    .select({ id: billingProfiles.id, currencyCode: billingProfiles.currencyCode })
+    .from(orgBillingProfileAssignments)
+    .innerJoin(billingProfiles, and(
+      eq(billingProfiles.id, orgBillingProfileAssignments.billingProfileId),
+      eq(billingProfiles.partnerId, orgBillingProfileAssignments.partnerId)
+    ))
     .where(and(
-      eq(ticketCategories.partnerId, org.partnerId),
-      isNotNull(ticketCategories.defaultHourlyRate),
-      sql`${ticketCategories.rateCurrency} IS DISTINCT FROM ${target}`
-    ));
+      eq(orgBillingProfileAssignments.orgId, orgId),
+      eq(orgBillingProfileAssignments.partnerId, org.partnerId)
+    )).limit(1);
 
   const [overridesSkipped] = await dbc
     .select({ n: count() })
@@ -326,12 +325,11 @@ export async function getOrgCurrencyImpact(
       .filter((g) => g.currencyCode !== target && g.currencyCode !== UNKNOWN_CURRENCY_KEY)
       .sort((a, b) => a.currencyCode.localeCompare(b.currencyCode)),
     configurationWarnings: {
-      orgDefaultRate: {
-        configured: rateConfigured,
-        rateCurrency: rateSettings?.rateCurrency ?? null,
-        willStopApplying: rateConfigured && rateSettings!.rateCurrency !== target
+      assignedBillingProfile: {
+        id: assignedProfile?.id ?? null,
+        currencyCode: assignedProfile?.currencyCode ?? null,
+        currencyMismatch: !!assignedProfile && assignedProfile.currencyCode !== target
       },
-      categoryRatesSkipped: Number(categorySkipped?.n ?? 0),
       orgCatalogOverridesSkipped: Number(overridesSkipped?.n ?? 0),
       rateLessTimeEntries
     }
@@ -380,7 +378,7 @@ export async function changeOrgCurrency(
   // any billable table.
   const outcome = await db.transaction(async (tx) => {
     const [locked] = await tx
-      .select({ id: organizations.id, currencyCode: organizations.currencyCode })
+      .select({ id: organizations.id, partnerId: organizations.partnerId, currencyCode: organizations.currencyCode })
       .from(organizations).where(eq(organizations.id, orgId)).limit(1).for('update');
     if (!locked) throw new InvoiceServiceError('Organization not found', 404, 'ORG_NOT_FOUND');
     requireOrg(actor, locked.id);
@@ -401,6 +399,7 @@ export async function changeOrgCurrency(
       );
     }
 
+    await ensureDefaultProfile(locked.partnerId, input.currencyCode, tx);
     await tx.update(organizations)
       .set({ currencyCode: input.currencyCode, updatedAt: new Date() })
       .where(eq(organizations.id, orgId));

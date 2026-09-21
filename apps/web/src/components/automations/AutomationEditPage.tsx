@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { ArrowLeft, Bot, Link2 } from 'lucide-react';
 import AutomationForm, { type ActionFormValues, type AutomationFormValues } from './AutomationForm';
 import { fetchWithAuth } from '../../stores/auth';
+import { fetchAllSites } from '@/lib/fetchAllSites';
 import { useOrgStore } from '../../stores/orgStore';
 import { useDefaultOwnerScope } from '@/hooks/useDefaultOwnerScope';
 import type { DeploymentTargetConfig } from '@breeze/shared';
@@ -253,11 +254,7 @@ export default function AutomationEditPage({ automationId, isNew = false }: Auto
 
   const fetchSites = useCallback(async () => {
     try {
-      const response = await fetchWithAuth('/orgs/sites');
-      if (response.ok) {
-        const data = await response.json();
-        setSites(data.data ?? data.sites ?? []);
-      }
+      setSites(await fetchAllSites<Site>('/orgs/sites'));
     } catch {
       // Silently fail
     }

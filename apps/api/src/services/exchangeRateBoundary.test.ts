@@ -60,6 +60,7 @@ const FX_TOKENS = [...FX_MODULES, ...FX_SYMBOLS];
 // and job surfaces only — never a document, line, payment, PDF, accounting or
 // portal path.
 const FX_IMPORT_ALLOWLIST: Record<string, string> = {
+  'apps/api/src/services/mcpCoverage.ts': 'route-path registry with no FX behaviour',
   'apps/api/src/services/exchangeRateService.ts': 'the FX service itself',
   'apps/api/src/services/frankfurterClient.ts': 'the feed client itself',
   'apps/api/src/services/reportingTotals.ts': 'reporting-only conversion + totalling',

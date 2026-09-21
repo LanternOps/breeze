@@ -63,6 +63,13 @@ vi.mock('../db', () => {
 });
 let ambientScope: 'system' | 'partner' | 'organization' = 'partner';
 
+vi.mock('./billingProfileService', () => ({
+  assignProfileToOrg: vi.fn().mockResolvedValue(undefined),
+  clearOrgAssignment: vi.fn().mockResolvedValue(undefined),
+}));
+import { assignProfileToOrg, clearOrgAssignment } from './billingProfileService';
+import * as orgCurrencyService from './orgCurrencyService';
+
 // The compat service owns the jsonb merge now; its own suite proves the SQL
 // shape. Here it is stubbed so these tests assert delegation, not re-assert it.
 vi.mock('./contacts/compat', () => ({
@@ -701,6 +708,93 @@ describe('invoiceService guards', () => {
     await expect(
       svc.updateOrgBillingSettings('org1', { taxExempt: true }, actor)
     ).rejects.toMatchObject({ code: 'ORG_DENIED', status: 403 });
+  });
+
+  it.each(['profile1', null])('saves profile %s and billing fields in the same transaction', async billingProfileId => {
+    queueResult([{ id: 'org1' }]); // org UPDATE lock
+    queueResult([{ id: 'org1' }]);
+    queueResult([{ id: 'org1', taxExempt: true }]);
+    const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
+    await svc.updateOrgBillingSettings('org1', { billingProfileId, taxExempt: true, billingContactName: 'AP' }, actor);
+    expect(db.transaction).toHaveBeenCalledTimes(1);
+    expect((db as any).for).toHaveBeenCalledWith('update');
+    const assignment = billingProfileId === null ? clearOrgAssignment : assignProfileToOrg;
+    expect(vi.mocked((db as any).for).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(assignment).mock.invocationCallOrder[0]!);
+    if (billingProfileId === null) {
+      expect(clearOrgAssignment).toHaveBeenCalledWith('org1', 'p1', db);
+      expect(assignProfileToOrg).not.toHaveBeenCalled();
+    } else {
+      expect(assignProfileToOrg).toHaveBeenCalledWith('org1', 'p1', billingProfileId, 'u1', db);
+      expect(clearOrgAssignment).not.toHaveBeenCalled();
+    }
+    expect(mergeBillingContact).toHaveBeenCalledWith(db, 'org1', { name: 'AP' }, 'u1');
+  });
+
+  it.each(['profile1', null])('rejects a missing or cross-partner org before changing profile %s', async billingProfileId => {
+    queueResult([]);
+    await expect(svc.updateOrgBillingSettings('org1', { billingProfileId, taxExempt: true },
+      { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] })).rejects.toMatchObject({ status: 404, code: 'ORG_NOT_FOUND' });
+    expect(assignProfileToOrg).not.toHaveBeenCalled();
+    expect(clearOrgAssignment).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it('does not change assignments when billingProfileId is omitted', async () => {
+    queueResult([{ id: 'org1' }]);
+    await svc.updateOrgBillingSettings('org1', { taxExempt: true }, { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] });
+    expect(assignProfileToOrg).not.toHaveBeenCalled();
+    expect(clearOrgAssignment).not.toHaveBeenCalled();
+  });
+
+  it('rejects a denied org before changing its profile', async () => {
+    await expect(svc.updateOrgBillingSettings('org1', { billingProfileId: 'profile1' },
+      { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['other'] })).rejects.toMatchObject({ status: 403 });
+    expect(assignProfileToOrg).not.toHaveBeenCalled();
+    expect(db.transaction).not.toHaveBeenCalled();
+  });
+
+  it.each(['profile1', null])('rejects mixing currency changes with profile %s before any writes', async billingProfileId => {
+    await expect(svc.updateOrgBillingSettings('org1', { billingProfileId, currencyCode: 'EUR', expectedCurrentCurrencyCode: 'USD' },
+      { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] })).rejects.toMatchObject({ code: 'INVALID_STATE' });
+    expect(db.transaction).not.toHaveBeenCalled();
+    expect(assignProfileToOrg).not.toHaveBeenCalled();
+    expect(clearOrgAssignment).not.toHaveBeenCalled();
+  });
+
+  it('preserves currency-only delegation without touching profile assignments', async () => {
+    const change = { previousCurrencyCode: 'USD', currencyCode: 'EUR' };
+    const changeCurrency = vi.spyOn(orgCurrencyService, 'changeOrgCurrency').mockResolvedValueOnce(change as any);
+    const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
+    const patch = { currencyCode: 'EUR', expectedCurrentCurrencyCode: 'USD', confirmSnapshotRetention: true };
+    queueResult([{ id: 'org1', currencyCode: 'EUR' }]);
+    try {
+      await expect(svc.updateOrgBillingSettings('org1', patch, actor)).resolves.toMatchObject({ currencyCode: 'EUR', currencyChange: change });
+      expect(changeCurrency).toHaveBeenCalledWith('org1', patch, actor);
+      expect(assignProfileToOrg).not.toHaveBeenCalled();
+      expect(clearOrgAssignment).not.toHaveBeenCalled();
+      expect(db.transaction).not.toHaveBeenCalled();
+    } finally {
+      changeCurrency.mockRestore();
+    }
+  });
+
+  it('aborts the settings transaction on assignment failure', async () => {
+    queueResult([{ id: 'org1' }]); // org UPDATE lock
+    vi.mocked(assignProfileToOrg).mockRejectedValueOnce(new Error('assignment failed'));
+    await expect(svc.updateOrgBillingSettings('org1', { billingProfileId: 'profile1', taxExempt: true, billingContactName: 'AP' },
+      { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] })).rejects.toThrow('assignment failed');
+    expect(mergeBillingContact).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it('rejects the shared transaction if billing settings fail after assignment', async () => {
+    queueResult([{ id: 'org1' }]); // org UPDATE lock
+    queueResult([]); // failed settings update
+    await expect(svc.updateOrgBillingSettings('org1', { billingProfileId: 'profile1', taxExempt: true },
+      { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] })).rejects.toMatchObject({ status: 404 });
+    expect(assignProfileToOrg).toHaveBeenCalledWith('org1', 'p1', 'profile1', 'u1', db);
+    // The rejection must occur INSIDE the callback so the assignment rolls back.
+    await expect(vi.mocked(db.transaction).mock.results[0]!.value).rejects.toMatchObject({ status: 404 });
   });
 
   it('updateOrgBillingSettings writes the org row and returns it', async () => {
@@ -1662,6 +1756,54 @@ describe('getInvoice — accountingSync (QuickBooks Phase C, Task 5)', () => {
   });
 });
 
+// Sweep paper cut #16: a draft has no bill-to snapshot yet, so the detail
+// card must fall back to the live org's name (+ billing contact email)
+// instead of showing "No billing contact set" for an org that plainly has
+// one. An issued invoice's own frozen billToName must never be touched.
+describe('getInvoice — draft BILL TO fallback (sweep paper cut #16)', () => {
+  beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
+  const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
+
+  it('falls back to the org name + billing contact email on a draft with a blank billToName', async () => {
+    queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD', billToName: null }]);
+    queueResult([]); // lines
+    queueResult([]); // evidence counts
+    queueResult([]); // Stripe connection
+    queueResult([]); // accounting sync
+    queueResult([{ name: 'Sweep Org B', billingContact: { email: 'ap@sweeporgb.example' } }]); // org read for the fallback
+
+    const detail = await svc.getInvoice('i1', actor);
+    expect(detail.invoice.billToName).toBe('Sweep Org B');
+    expect(detail.billToEmail).toBe('ap@sweeporgb.example');
+  });
+
+  it('does not touch billToName or read the org when the draft already has its own bill-to name', async () => {
+    queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD', billToName: 'Custom Bill-To' }]);
+    queueResult([]); // lines
+    queueResult([]); // evidence counts
+    queueResult([]); // Stripe connection
+    queueResult([]); // accounting sync
+    // No queued org row — a fallback read here would consume a result meant
+    // for nothing and this test would fail with a confusing downstream error.
+
+    const detail = await svc.getInvoice('i1', actor);
+    expect(detail.invoice.billToName).toBe('Custom Bill-To');
+    expect(detail.billToEmail).toBeNull();
+  });
+
+  it('never falls back on an issued invoice, even with a null billToName', async () => {
+    queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD', billToName: null }]);
+    queueResult([]); // lines
+    queueResult([]); // evidence counts
+    queueResult([]); // Stripe connection
+    queueResult([]); // accounting sync
+
+    const detail = await svc.getInvoice('i1', actor);
+    expect(detail.invoice.billToName).toBeNull();
+    expect(detail.billToEmail).toBeNull();
+  });
+});
+
 describe('getInvoice — billing evidence counts (#3205 W07)', () => {
   beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
 
@@ -2458,5 +2600,63 @@ describe('voidInvoice refuses an invoice with applied payments (#5180)', () => {
 
     await expect(svc.voidInvoice('i1', 'duplicate', {}, actor))
       .rejects.toMatchObject({ code: 'INVOICE_HAS_PAYMENTS' });
+  });
+});
+
+describe('getInvoice — effectiveTaxRate on drafts (#6338)', () => {
+  beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
+  const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
+  const draftInvoice = { id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD', taxRate: null, billToName: 'Acme' };
+
+  function queueDetailPreamble(inv: Record<string, unknown>) {
+    queueResult([inv]); // owned invoice
+    queueResult([]);    // lines
+    queueResult([]);    // grouped evidence counts
+    queueResult([]);    // stripe connection (not connected)
+    queueResult([]);    // accounting mapping
+  }
+
+  it('surfaces the PARTNER default as the rate that will apply at issue when the org rate is blank', async () => {
+    queueDetailPreamble(draftInvoice);
+    queueResult([{ taxExempt: false, taxRate: null }]);   // taxRateResolver: organizations
+    queueResult([{ defaultTaxRate: '0.07500' }]);          // taxRateResolver: partners
+    const out = await svc.getInvoice('i1', actor);
+    expect(out.invoice.taxRate).toBeNull(); // the stored draft rate is NOT rewritten
+    expect(out.effectiveTaxRate).toBe('0.07500');
+  });
+
+  it('a tax-exempt org resolves to null even when the partner has a default', async () => {
+    queueDetailPreamble(draftInvoice);
+    queueResult([{ taxExempt: true, taxRate: null }]);
+    queueResult([{ defaultTaxRate: '0.07500' }]);
+    const out = await svc.getInvoice('i1', actor);
+    expect(out.effectiveTaxRate).toBeNull();
+  });
+
+  it('the org rate wins over the partner default', async () => {
+    queueDetailPreamble(draftInvoice);
+    queueResult([{ taxExempt: false, taxRate: '0.09000' }]);
+    queueResult([{ defaultTaxRate: '0.07500' }]);
+    const out = await svc.getInvoice('i1', actor);
+    expect(out.effectiveTaxRate).toBe('0.09000');
+  });
+
+  it('degrades to null (never the partner default) when the org row is not RLS-visible', async () => {
+    queueDetailPreamble(draftInvoice);
+    queueResult([]); // organizations: no visible row -> OrgNotVisibleForTaxError
+    const out = await svc.getInvoice('i1', actor);
+    expect(out.effectiveTaxRate).toBeNull();
+  });
+
+  it('is null for an issued invoice — its rate is already committed on the row', async () => {
+    queueDetailPreamble({ ...draftInvoice, status: 'sent', taxRate: '0.07500' });
+    // Queue rows that WOULD resolve to 7.5%, so this discriminates the
+    // `status === 'draft'` guard itself. Without them the resolver would throw
+    // OrgNotVisibleForTaxError on an empty org read and degrade to null anyway,
+    // and the assertion would pass whether the guard existed or not.
+    queueResult([{ taxExempt: false, taxRate: null }]);
+    queueResult([{ defaultTaxRate: '0.07500' }]);
+    const out = await svc.getInvoice('i1', actor);
+    expect(out.effectiveTaxRate).toBeNull();
   });
 });

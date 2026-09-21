@@ -28,7 +28,14 @@ import {
 // to catch drift between the plan's documented contract and the actual
 // registry, so it must not import the list from the module under test.
 const EXPECTED_WORKER_NAMES = [
-  'alertWorkers', 'alertCorrelationWorker', 'metricRollupsWorker', 'metricRollupMaintenance',
+  'topologyReconcileWorker',
+  'topologyCollectionRetentionWorker',
+  'topologyOutboxWorker',
+  'topologyTemplateApplyWorker',
+  // M1 Task 18 — durable diagnostic dispatch and its expiry sweeper.
+  'topologyDiagnosticWorker',
+  'topologyDiagnosticSweeper',
+  'alertWorkers', 'monitorConversionPreviewWorker', 'alertCorrelationWorker', 'metricRollupsWorker', 'metricRollupMaintenance',
   'metricAnomaliesWorker', 'aiBudgetAlertDeliveryWorker', 'aiArtifactSweeper', 'fleetFindingsWorker', 'fleetRemediationDispatchWorker', 'mlOutputRetention',
   'offlineDetector', 'notificationDispatcher', 'webhookDelivery', 'webhookDeliveryRecovery',
   'policyEvaluationWorker', 'softwareComplianceWorker', 'softwareRemediationWorker', 'aiAgentRunner',
@@ -39,7 +46,10 @@ const EXPECTED_WORKER_NAMES = [
   'ticketOutboxRetention', 'intentOutboxRetention', 'metricAnomalyIncidentRetention',
   'ipHistoryRetention', 'reliabilityRetention', 'processSampleRetention', 'deviceMetricsRetention',
   'm365SyncRetention',
-  'serviceProcessCheckRetention', 'changeLogRetention', 'oauthCleanup', 'authBrowserTransitionCleanup', 'stripeAccountCacheRefresh',
+  'serviceProcessCheckRetention', 'changeLogRetention',
+  // Disk Cleanup v2 W03 (#6329) — daily sweep of the cleanup-run table.
+  'filesystemCleanupRunRetention',
+  'oauthCleanup', 'authBrowserTransitionCleanup', 'stripeAccountCacheRefresh',
   'exchangeRateSync', 'oauthRevocationRetryWorker', 'mtlsCertificateRevocationWorker', 'authEmailWorker',
   'quoteSendWorker', 'enrollmentKeyCleanup', 'quickSupportReaper', 'softwareUploadSessionCleanup',
   'softwareRemediationRequestCleanup', 'auditRetention', 'auditChainVerify', 'auditChainAnchor',
@@ -51,7 +61,7 @@ const EXPECTED_WORKER_NAMES = [
   'reportScheduleWorker', 'cveEnrichmentWorker', 'wingetIndexSyncWorker', 'vulnerabilityJobs',
   'dnsSyncWorker', 's1SyncWorker', 'huntressSyncWorker', 'm365SyncWorker', 'pax8SyncWorker',
   'tdSynnexSftpSyncWorker', 'logForwardingWorker', 'patchJobWorker', 'patchSchedulerWorker',
-  'maintenanceRebootWorker', 'backupWorker', 'sensitiveDataWorker', 'peripheralJobs',
+  'maintenanceRebootWorker', 'backupWorker', 'backupSnapshotFileIndexWorker', 'sensitiveDataWorker', 'peripheralJobs',
   'deviceGroupJobs',
   'browserSecurityWorker', 'c2cBackupWorker', 'backupSlaWorker', 'drExecutionWorker',
   'recoveryMediaWorker', 'warrantyWorker', 'ssoDomainRecheckWorker',
@@ -88,7 +98,7 @@ describe('workerRegistry: losslessness', () => {
   });
 
   it('has exactly the expected number of entries', () => {
-    expect(WORKER_REGISTRY.length).toBe(142);
+    expect(WORKER_REGISTRY.length).toBe(EXPECTED_WORKER_NAMES.length);
   });
 
   it('registers the m365 sync retention worker as global placement', async () => {
@@ -130,14 +140,14 @@ describe('workerRegistry: losslessness', () => {
 
 describe('workerRegistry: selectWorkers', () => {
   it("'all' selects every entry", () => {
-    expect(selectWorkers('all').length).toBe(142);
+    expect(selectWorkers('all').length).toBe(EXPECTED_WORKER_NAMES.length);
     expect(selectWorkers('all')).toEqual(WORKER_REGISTRY);
   });
 
   it("'api' and 'worker' partition the set with no overlap and no loss", () => {
     const api = selectWorkers('api');
     const worker = selectWorkers('worker');
-    expect(api.length + worker.length).toBe(142);
+    expect(api.length + worker.length).toBe(EXPECTED_WORKER_NAMES.length);
 
     const apiNames = new Set(api.map((e) => e.name));
     const workerNames = new Set(worker.map((e) => e.name));
@@ -145,7 +155,7 @@ describe('workerRegistry: selectWorkers', () => {
       expect(workerNames.has(name)).toBe(false);
     }
     const union = new Set([...apiNames, ...workerNames]);
-    expect(union.size).toBe(142);
+    expect(union.size).toBe(EXPECTED_WORKER_NAMES.length);
   });
 
   it("'api' selects only socket-owner placements", () => {

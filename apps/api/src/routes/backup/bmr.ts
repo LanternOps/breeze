@@ -5,6 +5,7 @@ import { zValidator } from '../../lib/validation';
 import { and, desc, eq, inArray } from 'drizzle-orm';
 import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import {
+  backupJobs,
   backupSnapshots,
   bareMetalRecoveries,
   devices,
@@ -17,6 +18,11 @@ import { requireMfa, requirePermission, requireScope } from '../../middleware/au
 import { writeAuditEvent, writeRouteAudit } from '../../services/auditEvents';
 import { enqueueRecoveryMediaBuild } from '../../jobs/recoveryMediaWorker';
 import { PERMISSIONS } from '../../services/permissions';
+import { externalReferencePreflight } from '../../services/bareMetalRecoveryService';
+import { negotiateRecoveryCapabilities } from '../../services/recoveryCapabilities';
+import { readSnapshotFileIndexState } from '../../services/backupSnapshotFileIndex';
+import { enqueueSnapshotFileIndexHydration } from '../../jobs/backupSnapshotFileIndexWorker';
+import { normalizeStorageIdentity } from '../../jobs/backupRetention';
 import {
   getBinarySource,
   getGithubReleaseArtifactManifestUrl,
@@ -326,7 +332,7 @@ export async function enforcePublicRateLimit(
 
 export async function enforceTokenRateLimit(
   c: any,
-  action: 'authenticate' | 'download' | 'exchange' | 'progress',
+  action: 'authenticate' | 'download' | 'exchange' | 'progress' | 'reissue',
   tokenHash: string,
   limit: number,
   windowSeconds: number
@@ -444,13 +450,36 @@ bmrRoutes.post(
     if (!authorization.ok) return authorization.response;
 
     const [snapshot] = await db
-      .select()
+      .select({
+        id: backupSnapshots.id,
+        deviceId: backupSnapshots.deviceId,
+        referencedFiles: backupJobs.referencedFiles,
+        storageIdentity: backupSnapshots.storageIdentity,
+      })
       .from(backupSnapshots)
+      .leftJoin(backupJobs, eq(backupJobs.id, backupSnapshots.jobId))
       .where(and(eq(backupSnapshots.id, payload.snapshotId), eq(backupSnapshots.orgId, orgId)))
       .limit(1);
 
     if (!snapshot) {
       return c.json({ error: 'Snapshot not found' }, 404);
+    }
+
+    // W09 (#6464): this route mints a token directly, without going through
+    // createBareMetalRecovery, so it carries the same preflight. Only
+    // bare-metal restores are confined to a single snapshot prefix —
+    // file-level restores resolve objects through the provider and are
+    // unaffected. A referenced snapshot with a known storage identity is
+    // allowed; hydration is enqueued in the background (see Task 3/4).
+    if (payload.restoreType === 'bare_metal') {
+      const preflight = await externalReferencePreflight({
+        referencedFiles: snapshot.referencedFiles,
+        snapshotDbId: snapshot.id,
+        storageIdentity: snapshot.storageIdentity ?? null,
+      });
+      if (preflight) {
+        return c.json({ error: preflight.code, ...(preflight.details ?? {}) }, preflight.status);
+      }
     }
 
     const plainToken = generateRecoveryToken();
@@ -1125,6 +1154,64 @@ bmrPublicRoutes.post(
       // and the run was dead. Sliding is bounded by the token's own
       // expires_at (24 h for exchange-minted tokens) and by the per-token
       // authenticate rate limit above.
+      // W09 (#6464) Task 5: capability negotiation runs BEFORE the status
+      // flips below. An incompatible or not-yet-ready client is refused
+      // here, before authenticatedAt/status are ever written.
+      const { capabilities: clientCapabilities } = c.req.valid('json');
+      // readSnapshotFileIndexState already resolves referencedFiles via the
+      // snapshot's owning job (backupSnapshotFileIndex.ts loadReferencedFiles),
+      // so a separate backupJobs query here would be redundant.
+      const indexState = await readSnapshotFileIndexState(snapshot.id);
+      // Use resolvedSnapshot.providerConfig directly — resolveSnapshotProviderConfig
+      // already applies the live-config-first fallback (config row over
+      // snapshot-pinned metadata), same as hydration
+      // (backupSnapshotFileIndex.ts). Reaching through `config?.providerConfig`
+      // here was a second, independent read of the same underlying data that
+      // could silently diverge from the canonical resolution if that
+      // fallback logic ever changes — the two identity gates (creation
+      // preflight vs. hydration) must never be able to disagree.
+      const resolvedIdentity = resolvedSnapshot?.providerType
+        ? normalizeStorageIdentity(resolvedSnapshot.providerType, asRecord(resolvedSnapshot?.providerConfig))
+        : null;
+      const negotiation = negotiateRecoveryCapabilities({
+        clientCapabilities,
+        previouslyNegotiated: row.negotiatedCapabilities ?? null,
+        referencedFiles: indexState?.referencedFiles ?? null,
+        storageIdentity: snapshot.storageIdentity ?? null,
+        resolvedProviderIdentity: resolvedIdentity,
+        fileIndex: {
+          status: indexState?.status ?? 'none',
+          manifestSha256: indexState?.manifestSha256 ?? null,
+          externalCount: indexState?.externalCount ?? null,
+          originSnapshotIds: indexState?.originSnapshotIds ?? [],
+          error: indexState?.error ?? null,
+          retryable: indexState?.retryable ?? false,
+        },
+      });
+      if (negotiation.enqueueHydration) {
+        await enqueueSnapshotFileIndexHydration(snapshot.id, 'authenticate');
+      }
+      if (!negotiation.ok) {
+        writeAuditEvent(c, {
+          orgId: row.orgId,
+          action: 'bmr.recovery.authenticate',
+          resourceType: 'recovery_token',
+          resourceId: row.id,
+          details: { snapshotId: row.snapshotId, reason: negotiation.error },
+          result: 'failure',
+          errorMessage: negotiation.error,
+        });
+        return c.json(
+          {
+            error: negotiation.error,
+            message: negotiation.message,
+            ...(negotiation.retryAfterSeconds !== undefined ? { retryAfterSeconds: negotiation.retryAfterSeconds } : {}),
+            ...(negotiation.details ? { details: negotiation.details } : {}),
+          },
+          409
+        );
+      }
+
       const authenticatedAt = new Date();
       const nextStatus = row.status === 'active' || (row.status === 'used' && !row.completedAt)
         ? 'authenticated'
@@ -1135,6 +1222,7 @@ bmrPublicRoutes.post(
         .set({
           status: nextStatus,
           authenticatedAt,
+          ...(negotiation.granted.length > 0 ? { negotiatedCapabilities: negotiation.granted } : {}),
         })
         .where(eq(recoveryTokens.id, row.id));
 
@@ -1266,6 +1354,8 @@ bmrPublicRoutes.post(
               snapshotId: recoveryBinding.snapshotId,
             }
           : null,
+        grantedCapabilities: negotiation.granted,
+        fileIndex: negotiation.fileIndex,
       });
 
       return c.json(authenticatedPayload);
@@ -1354,6 +1444,7 @@ bmrPublicRoutes.get(
           status: recoveryTokens.status,
           authenticatedAt: recoveryTokens.authenticatedAt,
           expiresAt: recoveryTokens.expiresAt,
+          negotiatedCapabilities: recoveryTokens.negotiatedCapabilities,
         })
         .from(recoveryTokens)
         .where(eq(recoveryTokens.tokenHash, tokenHash))

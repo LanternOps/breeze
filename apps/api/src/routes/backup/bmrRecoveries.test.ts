@@ -10,7 +10,7 @@ const VALID_RECOVERY_TOKEN = `brz_rec_${'a'.repeat(64)}`;
 
 function chainMock(resolvedValue: unknown = []) {
   const chain: Record<string, any> = {};
-  for (const method of ['from', 'where', 'limit', 'returning', 'values', 'set', 'orderBy', 'offset']) {
+  for (const method of ['from', 'where', 'limit', 'returning', 'values', 'set', 'orderBy', 'offset', 'leftJoin', 'innerJoin']) {
     chain[method] = vi.fn(() => Object.assign(Promise.resolve(resolvedValue), chain));
   }
   return Object.assign(Promise.resolve(resolvedValue), chain);
@@ -48,6 +48,24 @@ vi.mock('../../db', () => ({
 
 vi.mock('../../db/schema', () => ({
   BARE_METAL_RECOVERY_TERMINAL: new Set(['checked_in', 'completed', 'failed', 'refused']),
+  backupSnapshotOrigins: {
+    snapshotDbId: 'backup_snapshot_origins.snapshot_db_id',
+    originSnapshotId: 'backup_snapshot_origins.origin_snapshot_id',
+    originOrgId: 'backup_snapshot_origins.origin_org_id',
+    originDeviceId: 'backup_snapshot_origins.origin_device_id',
+    originStorageIdentity: 'backup_snapshot_origins.origin_storage_identity',
+  },
+  backupSnapshotFiles: {
+    id: 'backup_snapshot_files.id',
+    snapshotDbId: 'backup_snapshot_files.snapshot_db_id',
+    backupPath: 'backup_snapshot_files.backup_path',
+  },
+  backupSnapshotRetirements: {
+    orgId: 'backup_snapshot_retirements.org_id',
+    deviceId: 'backup_snapshot_retirements.device_id',
+    snapshotId: 'backup_snapshot_retirements.snapshot_id',
+    storageIdentity: 'backup_snapshot_retirements.storage_identity',
+  },
   bareMetalRecoveries: {
     id: 'bare_metal_recoveries.id',
     orgId: 'bare_metal_recoveries.org_id',
@@ -76,6 +94,10 @@ vi.mock('../../db/schema', () => ({
     checkedInAt: 'bare_metal_recoveries.checked_in_at',
     completedAt: 'bare_metal_recoveries.completed_at',
   },
+  backupJobs: {
+    id: 'backup_jobs.id',
+    referencedFiles: 'backup_jobs.referenced_files',
+  },
   backupSnapshots: {
     id: 'backup_snapshots.id',
     orgId: 'backup_snapshots.org_id',
@@ -85,6 +107,11 @@ vi.mock('../../db/schema', () => ({
     snapshotId: 'backup_snapshots.snapshot_id',
     bareMetalRestorable: 'backup_snapshots.bare_metal_restorable',
     bareMetalReasons: 'backup_snapshots.bare_metal_reasons',
+    storageIdentity: 'backup_snapshots.storage_identity',
+    fileIndexStatus: 'backup_snapshots.file_index_status',
+    fileIndexManifestSha256: 'backup_snapshots.file_index_manifest_sha256',
+    fileIndexExternalCount: 'backup_snapshots.file_index_external_count',
+    fileIndexError: 'backup_snapshots.file_index_error',
   },
   devices: {
     id: 'devices.id',
@@ -105,19 +132,25 @@ vi.mock('../../db/schema', () => ({
     createdAt: 'recovery_tokens.created_at',
     expiresAt: 'recovery_tokens.expires_at',
     authenticatedAt: 'recovery_tokens.authenticated_at',
+    negotiatedCapabilities: 'recovery_tokens.negotiated_capabilities',
   },
 }));
 
+// W05a: the cancel / reissue-code routes are asserted to sit behind MFA and
+// BACKUP_WRITE, so the middleware mocks are switchable per test.
+let mfaSatisfied = true;
+let deniedPermission: string | null = null;
 vi.mock('../../middleware/auth', () => ({
   requireScope: vi.fn(() => (c: any, next: any) => {
     c.set('auth', authState);
     return next();
   }),
-  requirePermission: vi.fn(() => (c: any, next: any) => {
+  requirePermission: vi.fn((resource: string, action: string) => (c: any, next: any) => {
     c.set('auth', authState);
+    if (deniedPermission === `${resource}:${action}`) return c.json({ error: 'forbidden' }, 403);
     return next();
   }),
-  requireMfa: vi.fn(() => (c: any, next: any) => next()),
+  requireMfa: vi.fn(() => (c: any, next: any) => (mfaSatisfied ? next() : c.json({ error: 'mfa_required' }, 403))),
 }));
 
 const writeRouteAuditMock = vi.fn();
@@ -125,6 +158,12 @@ const writeAuditEventMock = vi.fn();
 vi.mock('../../services/auditEvents', () => ({
   writeRouteAudit: (...args: unknown[]) => writeRouteAuditMock(...(args as [])),
   writeAuditEvent: (...args: unknown[]) => writeAuditEventMock(...(args as [])),
+}));
+// W05a: create/cancel/reissue audits are written by bareMetalRecoveryService
+// through createAuditLogAsync (no Hono context in the DR / Restore-as-VM callers).
+const createAuditLogAsyncMock = vi.fn(async () => undefined);
+vi.mock('../../services/auditService', () => ({
+  createAuditLogAsync: (...args: unknown[]) => createAuditLogAsyncMock(...(args as [])),
 }));
 
 const authorizeResilienceResourcesMock = vi.fn(async () => ({ ok: true, authorization: { resources: [] } }));
@@ -149,6 +188,11 @@ vi.mock('../../services/recoveryBootstrap', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../services/recoveryBootstrap')>();
   return { ...actual };
 });
+
+const enqueueSnapshotFileIndexHydrationMock = vi.fn(async (..._args: unknown[]) => 'job-1');
+vi.mock('../../jobs/backupSnapshotFileIndexWorker', () => ({
+  enqueueSnapshotFileIndexHydration: (...args: unknown[]) => enqueueSnapshotFileIndexHydrationMock(...(args as [])),
+}));
 
 import { bmrRecoveryRoutes, bmrRecoveryPublicRoutes } from './bmrRecoveries';
 
@@ -179,6 +223,8 @@ describe('bare-metal recoveries routes', () => {
       token: { sub: 'user-123' },
     };
     authorizeResilienceResourcesMock.mockResolvedValue({ ok: true, authorization: { resources: [] } });
+    mfaSatisfied = true;
+    deniedPermission = null;
     enforcePublicRateLimitMock.mockResolvedValue(null);
     enforceTokenRateLimitMock.mockResolvedValue(null);
     runInRecoveryOrgContextMock.mockImplementation((_orgId: string, fn: () => any) => fn());
@@ -192,6 +238,26 @@ describe('bare-metal recoveries routes', () => {
 
     publicApp = new Hono();
     publicApp.route('/backup', bmrRecoveryPublicRoutes);
+  });
+
+  describe('GET /backup/bmr/recoveries (W09, #6464)', () => {
+    it('exposes the token snapshot file-index status on each summary', async () => {
+      const row = {
+        id: RECOVERY_ID, deviceId: DEVICE_ID, snapshotId: SNAPSHOT_ID, recoveryTokenId: null, identity: 'original',
+        status: 'created', codeExpiresAt: new Date(), codeUsedAt: null, nonceHash: 'x'.repeat(64),
+        target: null, plan: null, result: null, failureReason: null, warnings: null,
+        createdAt: new Date(), updatedAt: new Date(), mediaBootedAt: null, plannedAt: null, restoringAt: null,
+        validatedAt: null, rebootedAt: null, checkedInAt: null, completedAt: null,
+      };
+      selectMock.mockReturnValueOnce(chainMock([{ row, fileIndexStatus: 'hydrating' }]));
+
+      const res = await app.request('/backup/bmr/recoveries', { method: 'GET' });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toHaveLength(1);
+      expect(body.data[0]).toMatchObject({ id: RECOVERY_ID, fileIndexStatus: 'hydrating' });
+    });
   });
 
   describe('POST /backup/bmr/recoveries', () => {
@@ -217,11 +283,17 @@ describe('bare-metal recoveries routes', () => {
       const body = await res.json();
       expect(body.code).toMatch(/^[A-Z2-9]{3}-[A-Z2-9]{3}-[A-Z2-9]{3}$/);
       expect(body).not.toHaveProperty('codeHash');
+      // W05b Task 6: the summary exposes the DR linkage and rebuild host (null for boot media).
+      expect(body).toMatchObject({ executingDeviceId: null, drExecutionId: null, drGroupId: null });
       const inserted = insertMock.mock.results[0]!.value.values.mock.calls[0][0];
       expect(inserted.codeHash).toMatch(/^[0-9a-f]{64}$/);
       expect(inserted.nonceHash).toMatch(/^[0-9a-f]{64}$/);
       expect(inserted).not.toHaveProperty('nonce');
-      expect(writeRouteAuditMock).toHaveBeenCalled();
+      expect(createAuditLogAsyncMock).toHaveBeenCalledWith(expect.objectContaining({
+        action: 'bmr.recovery.create',
+        actorId: 'user-123',
+        details: expect.objectContaining({ source: 'route', identity: 'original' }),
+      }));
     });
 
     it('refuses a snapshot the guard marked non-restorable, naming the reasons', async () => {
@@ -249,6 +321,109 @@ describe('bare-metal recoveries routes', () => {
     });
   });
 
+  function fullRecoveryRow(overrides: Record<string, unknown> = {}) {
+    return {
+      id: RECOVERY_ID, orgId: ORG_ID, deviceId: DEVICE_ID, snapshotId: SNAPSHOT_ID, recoveryTokenId: null, identity: 'new',
+      status: 'created', codeHash: 'a'.repeat(64), codeExpiresAt: new Date(), codeUsedAt: null, nonceHash: 'x'.repeat(64),
+      target: null, plan: null, result: null, failureReason: null, warnings: null, createdBy: 'user-123',
+      createdAt: new Date(), updatedAt: new Date(), mediaBootedAt: null, plannedAt: null, restoringAt: null,
+      validatedAt: null, rebootedAt: null, checkedInAt: null, completedAt: null,
+      ...overrides,
+    };
+  }
+
+  describe('POST /backup/bmr/recoveries/:id/cancel', () => {
+    it('cancels a non-terminal recovery, authorizes the device, and audits bmr.recovery.cancel', async () => {
+      selectMock.mockReturnValue(chainMock([fullRecoveryRow({ status: 'restoring' })]));
+      updateMock.mockReturnValueOnce(chainMock([fullRecoveryRow({ status: 'failed', failureReason: 'cancelled' })]));
+
+      const res = await app.request(`/backup/bmr/recoveries/${RECOVERY_ID}/cancel`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reason: 'stuck rehearsal' }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ id: RECOVERY_ID, status: 'failed', failureReason: 'cancelled' });
+      expect(authorizeResilienceResourcesMock).toHaveBeenCalledWith(
+        expect.anything(), ORG_ID, [{ kind: 'device', id: DEVICE_ID, role: 'target' }], 'revoke',
+      );
+      expect(createAuditLogAsyncMock).toHaveBeenCalledWith(expect.objectContaining({ action: 'bmr.recovery.cancel', resourceId: RECOVERY_ID }));
+    });
+
+    it('409s invalid_state for a terminal recovery', async () => {
+      selectMock.mockReturnValue(chainMock([fullRecoveryRow({ status: 'completed' })]));
+      const res = await app.request(`/backup/bmr/recoveries/${RECOVERY_ID}/cancel`, { method: 'POST' });
+      expect(res.status).toBe(409);
+      expect(await res.json()).toMatchObject({ error: 'invalid_state' });
+      expect(updateMock).not.toHaveBeenCalled();
+    });
+
+    it('404s an unknown recovery before any authorization side effect', async () => {
+      selectMock.mockReturnValueOnce(chainMock([]));
+      const res = await app.request(`/backup/bmr/recoveries/${RECOVERY_ID}/cancel`, { method: 'POST' });
+      expect(res.status).toBe(404);
+    });
+
+    it('requires MFA', async () => {
+      mfaSatisfied = false;
+      const res = await app.request(`/backup/bmr/recoveries/${RECOVERY_ID}/cancel`, { method: 'POST' });
+      expect(res.status).toBe(403);
+      expect(selectMock).not.toHaveBeenCalled();
+    });
+
+    it('requires backup:write', async () => {
+      deniedPermission = 'backup:write';
+      const res = await app.request(`/backup/bmr/recoveries/${RECOVERY_ID}/cancel`, { method: 'POST' });
+      expect(res.status).toBe(403);
+      expect(selectMock).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('POST /backup/bmr/recoveries/:id/reissue-code', () => {
+    it('rotates the code, rate-limits per recovery, and returns the new code once', async () => {
+      selectMock.mockReturnValue(chainMock([fullRecoveryRow({ status: 'media_booted' })]));
+      updateMock.mockReturnValueOnce(chainMock([fullRecoveryRow({ status: 'media_booted' })]));
+
+      const res = await app.request(`/backup/bmr/recoveries/${RECOVERY_ID}/reissue-code`, { method: 'POST' });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.code).toMatch(/^[A-Z2-9]{3}-[A-Z2-9]{3}-[A-Z2-9]{3}$/);
+      expect(body).not.toHaveProperty('codeHash');
+      expect(enforceTokenRateLimitMock).toHaveBeenCalledWith(expect.anything(), 'reissue', RECOVERY_ID, 5, 3600);
+      expect(authorizeResilienceResourcesMock).toHaveBeenCalledWith(
+        expect.anything(), ORG_ID, [{ kind: 'device', id: DEVICE_ID, role: 'target' }], 'token',
+      );
+      const set = updateMock.mock.results[0]!.value.set.mock.calls[0][0];
+      expect(set.codeHash).toMatch(/^[0-9a-f]{64}$/);
+      expect(set.codeHash).not.toBe('a'.repeat(64));
+      expect(createAuditLogAsyncMock).toHaveBeenCalledWith(expect.objectContaining({ action: 'bmr.recovery.reissue_code', resourceId: RECOVERY_ID }));
+    });
+
+    it('returns the rate-limit response without touching the row', async () => {
+      enforceTokenRateLimitMock.mockResolvedValueOnce(new Response(JSON.stringify({ error: 'rate_limited' }), { status: 429 }) as never);
+      selectMock.mockReturnValue(chainMock([fullRecoveryRow({ status: 'created' })]));
+      const res = await app.request(`/backup/bmr/recoveries/${RECOVERY_ID}/reissue-code`, { method: 'POST' });
+      expect(res.status).toBe(429);
+      expect(updateMock).not.toHaveBeenCalled();
+    });
+
+    it('409s invalid_state once the helper has moved past media_booted', async () => {
+      selectMock.mockReturnValue(chainMock([fullRecoveryRow({ status: 'planned' })]));
+      const res = await app.request(`/backup/bmr/recoveries/${RECOVERY_ID}/reissue-code`, { method: 'POST' });
+      expect(res.status).toBe(409);
+      expect(await res.json()).toMatchObject({ error: 'invalid_state' });
+    });
+
+    it('requires MFA and backup:write', async () => {
+      mfaSatisfied = false;
+      expect((await app.request(`/backup/bmr/recoveries/${RECOVERY_ID}/reissue-code`, { method: 'POST' })).status).toBe(403);
+      mfaSatisfied = true;
+      deniedPermission = 'backup:write';
+      expect((await app.request(`/backup/bmr/recoveries/${RECOVERY_ID}/reissue-code`, { method: 'POST' })).status).toBe(403);
+      expect(selectMock).not.toHaveBeenCalled();
+    });
+  });
+
   describe('POST /bmr/recover/exchange', () => {
     it('exchanges a valid code once: mints a token, marks media_booted, returns bootstrap with nonce', async () => {
       const code = 'ABCDEFGHJ';
@@ -258,10 +433,18 @@ describe('bare-metal recoveries routes', () => {
           status: 'created', codeHash: hashRecoveryCode(code), codeExpiresAt: new Date(Date.now() + 60_000),
           codeUsedAt: null, nonceHash: 'x'.repeat(64), createdBy: 'user-123',
         }]))
+        // readSnapshotFileIndexState (negotiation, called first): self-contained
+        // snapshot (jobId null -> referencedFiles null) short-circuits to "not needed".
+        .mockReturnValueOnce(chainMock([{
+          status: 'none', manifestSha256: null, externalCount: null, error: null, jobId: null, storageIdentity: null,
+        }]))
+        // resolveSnapshotProviderConfig (negotiation, called second, and its
+        // result is reused for the bootstrap — no second call).
         .mockReturnValueOnce(chainMock([{
           id: SNAPSHOT_ID, orgId: ORG_ID, deviceId: DEVICE_ID, jobId: null, configId: null, snapshotId: 'snap-ext-1',
           label: null, location: null, timestamp: new Date(), size: 1, fileCount: 1, metadata: {},
           hardwareProfile: null, systemStateManifest: null, backupType: 'full', isIncremental: false,
+          storageIdentity: null,
         }]))
         .mockReturnValueOnce(chainMock([{ id: DEVICE_ID, hostname: 'rig-01', osType: 'linux', architecture: 'x86_64', displayName: null }]));
       insertMock.mockReturnValueOnce(chainMock([{ id: 'token-1', orgId: ORG_ID, deviceId: DEVICE_ID, snapshotId: SNAPSHOT_ID, restoreType: 'bare_metal', targetConfig: {}, expiresAt: new Date(Date.now() + 86_400_000), authenticatedAt: new Date() }]));
@@ -292,6 +475,108 @@ describe('bare-metal recoveries routes', () => {
       expect(updateCall.nonceHash).toBe(hashRecoveryNonce(body.bootstrap.bootstrap.recovery.nonce));
       expect(updateCall.status).toBe('media_booted');
       expect(updateCall.codeUsedAt).toBeInstanceOf(Date);
+    });
+
+    it('exchange R2: referenced snapshot, legacy client — 409, code NOT consumed, no token row inserted', async () => {
+      const code = 'ABCDEFGHJ';
+      selectMock
+        .mockReturnValueOnce(chainMock([{
+          id: RECOVERY_ID, orgId: ORG_ID, deviceId: DEVICE_ID, snapshotId: SNAPSHOT_ID, identity: 'original',
+          status: 'created', codeHash: hashRecoveryCode(code), codeExpiresAt: new Date(Date.now() + 60_000),
+          codeUsedAt: null, nonceHash: 'x'.repeat(64), createdBy: 'user-123',
+        }]))
+        .mockReturnValueOnce(chainMock([{
+          status: 'complete', manifestSha256: 'a'.repeat(64), externalCount: 3, error: null,
+          jobId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', storageIdentity: 's3::::my-bucket',
+        }]))
+        .mockReturnValueOnce(chainMock([{ referencedFiles: 8 }]))
+        .mockReturnValueOnce(chainMock([{ originSnapshotId: 'older' }]));
+
+      const res = await publicApp.request('/backup/bmr/recover/exchange', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: 'abc-def-ghj' }),
+      });
+
+      expect(res.status).toBe(409);
+      expect((await res.json()).error).toBe('client_capability_required');
+      expect(insertMock).not.toHaveBeenCalled();
+      expect(updateMock.mock.calls.some((c: any[]) => c[0]?.codeUsedAt)).toBe(false);
+    });
+
+    it('exchange R3: referenced snapshot, index pending — 409 snapshot_index_pending, enqueues hydration, code not consumed', async () => {
+      const code = 'ABCDEFGHJ';
+      selectMock
+        .mockReturnValueOnce(chainMock([{
+          id: RECOVERY_ID, orgId: ORG_ID, deviceId: DEVICE_ID, snapshotId: SNAPSHOT_ID, identity: 'original',
+          status: 'created', codeHash: hashRecoveryCode(code), codeExpiresAt: new Date(Date.now() + 60_000),
+          codeUsedAt: null, nonceHash: 'x'.repeat(64), createdBy: 'user-123',
+        }]))
+        .mockReturnValueOnce(chainMock([{
+          status: 'none', manifestSha256: null, externalCount: null, error: null,
+          jobId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', storageIdentity: 's3::::my-bucket',
+        }]))
+        .mockReturnValueOnce(chainMock([{ referencedFiles: 8 }]))
+        .mockReturnValueOnce(chainMock([{
+          id: SNAPSHOT_ID, orgId: ORG_ID, deviceId: DEVICE_ID, jobId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+          configId: null, snapshotId: 'snap-ext-1', label: null, location: null, timestamp: new Date(),
+          size: 1, fileCount: 1, metadata: { providerType: 's3', providerConfig: { bucket: 'my-bucket' } },
+          hardwareProfile: null, systemStateManifest: null, backupType: 'full', isIncremental: true,
+          storageIdentity: 's3::::my-bucket',
+        }]));
+
+      const res = await publicApp.request('/backup/bmr/recover/exchange', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: 'abc-def-ghj', capabilities: ['snapshot-file-membership-v1'] }),
+      });
+
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.error).toBe('snapshot_index_pending');
+      expect(body.retryAfterSeconds).toBe(30);
+      expect(enqueueSnapshotFileIndexHydrationMock).toHaveBeenCalledWith(SNAPSHOT_ID, 'exchange');
+      expect(insertMock).not.toHaveBeenCalled();
+    });
+
+    it('exchange R4: complete index + capability — mints token with negotiatedCapabilities persisted, returns fileIndex', async () => {
+      const code = 'ABCDEFGHJ';
+      selectMock
+        .mockReturnValueOnce(chainMock([{
+          id: RECOVERY_ID, orgId: ORG_ID, deviceId: DEVICE_ID, snapshotId: SNAPSHOT_ID, identity: 'original',
+          status: 'created', codeHash: hashRecoveryCode(code), codeExpiresAt: new Date(Date.now() + 60_000),
+          codeUsedAt: null, nonceHash: 'x'.repeat(64), createdBy: 'user-123',
+        }]))
+        .mockReturnValueOnce(chainMock([{
+          status: 'complete', manifestSha256: 'a'.repeat(64), externalCount: 3, error: null,
+          jobId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', storageIdentity: 's3::::my-bucket',
+        }]))
+        .mockReturnValueOnce(chainMock([{ referencedFiles: 8 }]))
+        .mockReturnValueOnce(chainMock([{ originSnapshotId: 'older' }]))
+        .mockReturnValueOnce(chainMock([{
+          id: SNAPSHOT_ID, orgId: ORG_ID, deviceId: DEVICE_ID, jobId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+          configId: null, snapshotId: 'snap-ext-1', label: null, location: null, timestamp: new Date(),
+          size: 1, fileCount: 1, metadata: { providerType: 's3', providerConfig: { bucket: 'my-bucket' } },
+          hardwareProfile: null, systemStateManifest: null, backupType: 'full', isIncremental: true,
+          storageIdentity: 's3::::my-bucket',
+        }]))
+        .mockReturnValueOnce(chainMock([{ id: DEVICE_ID, hostname: 'rig-01', osType: 'linux', architecture: 'x86_64', displayName: null }]));
+      insertMock.mockReturnValueOnce(chainMock([{
+        id: 'token-1', orgId: ORG_ID, deviceId: DEVICE_ID, snapshotId: SNAPSHOT_ID, restoreType: 'bare_metal',
+        targetConfig: {}, expiresAt: new Date(Date.now() + 86_400_000), authenticatedAt: new Date(),
+      }]));
+      updateMock.mockReturnValueOnce(chainMock([{ id: RECOVERY_ID, status: 'media_booted' }]));
+
+      const res = await publicApp.request('/backup/bmr/recover/exchange', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: 'abc-def-ghj', capabilities: ['snapshot-file-membership-v1'] }),
+      });
+
+      expect(res.status).toBe(200);
+      const inserted = insertMock.mock.results.find((r) => r.value?.values)?.value.values.mock.calls[0]?.[0];
+      expect(inserted).toMatchObject({ negotiatedCapabilities: ['snapshot-file-membership-v1'] });
+      expect((await res.json()).bootstrap.bootstrap.snapshot.fileIndex.status).toBe('complete');
     });
 
     it('returns 404 code_invalid for unknown, expired and already-used codes alike', async () => {
@@ -406,6 +691,39 @@ describe('bare-metal recoveries routes', () => {
       expect(res.status).toBe(200);
       const set = updateMock.mock.results[0]!.value.set.mock.calls[0][0];
       expect(set.failureReason).toBe('grub-install: no such device');
+    });
+
+    it('progress: a failedFilesSample over 50 entries is rejected by the schema (400), never reaches the handler', async () => {
+      const sample = Array.from({ length: 98411 }, (_, i) => `file-${i}.gz`);
+      const res = await publicApp.request('/backup/bmr/recover/progress', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: VALID_RECOVERY_TOKEN, status: 'failed', result: { failedFilesSample: sample } }),
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it('progress: a 50-entry failedFilesSample is accepted and the failed status persists', async () => {
+      selectMock
+        .mockReturnValueOnce(chainMock([{ id: 'token-1', orgId: ORG_ID, status: 'authenticated', expiresAt: new Date(Date.now() + 60_000) }]))
+        .mockReturnValueOnce(chainMock([{ id: RECOVERY_ID, orgId: ORG_ID, deviceId: DEVICE_ID, identity: 'original', status: 'restoring', rebootedAt: null, validatedAt: null }]));
+      const sample = Array.from({ length: 50 }, (_, i) => `file-${i}.gz`);
+      const res = await publicApp.request('/backup/bmr/recover/progress', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: VALID_RECOVERY_TOKEN, status: 'failed', result: { failedFilesSample: sample, error: '98,411 files refused' } }),
+      });
+      expect(res.status).toBe(200);
+    });
+
+    it('progress: an oversized result payload (>768KB serialized) is rejected by the schema', async () => {
+      const huge = { blob: 'x'.repeat(800 * 1024) };
+      const res = await publicApp.request('/backup/bmr/recover/progress', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: VALID_RECOVERY_TOKEN, status: 'restoring', result: huge }),
+      });
+      expect(res.status).toBe(400);
     });
   });
 });

@@ -20,6 +20,11 @@ import { isReusableState } from '../services/bullmqUtils';
 import { createInstrumentedQueue } from '../services/bullmqQueue';
 import { attachWorkerObservability } from './workerObservability';
 import { envInt } from '../utils/envInt';
+import { captureException } from '../services/sentry';
+import {
+  evaluateNetworkCheckAlertsForOrg,
+  selectNetworkCheckOrgIds,
+} from '../services/monitors/networkCheckAlertSweep';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -76,7 +81,21 @@ interface AutoResolveJobData {
   orgId?: string;
 }
 
-type AlertJobData = EvaluateAllJobData | EvaluateDeviceJobData | AutoResolveJobData;
+/**
+ * #6353 — one per org that runs at least one managed `network_check`. A
+ * network check has ONE verdict per org, evaluated on its alert device whether
+ * that device is online or not, so it cannot ride the per-device fan-out.
+ */
+interface EvaluateNetworkChecksJobData {
+  type: 'evaluate-network-checks';
+  orgId: string;
+}
+
+type AlertJobData =
+  | EvaluateAllJobData
+  | EvaluateDeviceJobData
+  | AutoResolveJobData
+  | EvaluateNetworkChecksJobData;
 
 /**
  * Create the alert evaluation worker
@@ -103,6 +122,11 @@ export function createAlertWorker(): Worker<AlertJobData> {
 
         case 'auto-resolve':
           return await runWithSystemDbAccess(() => processAutoResolve(data));
+
+        case 'evaluate-network-checks':
+          // Same wrapper as evaluate-device: reads AND writes (alerts, episodes),
+          // no Redis I/O inside.
+          return await runWithSystemDbAccess(() => processEvaluateNetworkChecks(data));
 
         default:
           throw new Error(`Unknown job type: ${(data as { type: string }).type}`);
@@ -140,6 +164,8 @@ export function createAlertWorker(): Worker<AlertJobData> {
 export async function processEvaluateAll(data: EvaluateAllJobData): Promise<{
   queued: number;
   skipped: number;
+  /** #6353 — orgs handed to the device-independent network_check sweep. */
+  networkCheckOrgsQueued: number;
   durationMs: number;
 }> {
   const startTime = Date.now();
@@ -168,7 +194,7 @@ export async function processEvaluateAll(data: EvaluateAllJobData): Promise<{
   );
 
   if (orgs.length === 0) {
-    return { queued: 0, skipped: 0, durationMs: Date.now() - startTime };
+    return { queued: 0, skipped: 0, networkCheckOrgsQueued: 0, durationMs: Date.now() - startTime };
   }
 
   const orgIds = orgs.map(o => o.id);
@@ -235,11 +261,87 @@ export async function processEvaluateAll(data: EvaluateAllJobData): Promise<{
     console.log(`[AlertWorker] Queued ${totalQueued} device evaluations`);
   }
 
+  // #6353 — the device-independent network_check sweep: one job per org that
+  // runs a managed check, regardless of how many (or whether any) of its
+  // devices are online. Same #1105 shape as the pages above: the read in its
+  // own short system context, the enqueue after it closes. Two extra reads per
+  // evaluate-all tick (managed rows, their orgs) when any managed check exists;
+  // one when none does.
+  //
+  // Isolated from the device fan-out above, which has already been enqueued: a
+  // failure here must not fail the whole evaluate-all job and have BullMQ
+  // re-run (and re-enqueue) the fleet's device evaluations on retry.
+  let networkCheckOrgsQueued = 0;
+  try {
+    const networkCheckOrgIds = await runWithSystemDbAccess(() => selectNetworkCheckOrgIds());
+    if (networkCheckOrgIds.length > 0) {
+      await queue.addBulk(
+        networkCheckOrgIds.map((orgId) => ({
+          name: 'evaluate-network-checks',
+          data: { type: 'evaluate-network-checks' as const, orgId },
+        }))
+      );
+      console.log(`[AlertWorker] Queued ${networkCheckOrgIds.length} network-check org evaluations`);
+    }
+    networkCheckOrgsQueued = networkCheckOrgIds.length;
+  } catch (error) {
+    console.error('[AlertWorker] Failed to queue network-check org evaluations; they will be retried next tick:', error);
+    captureException(error, undefined, { area: 'monitors', issue: 'network_check_sweep_enqueue_failed' });
+  }
+
   return {
     queued: totalQueued,
     skipped: 0,
+    networkCheckOrgsQueued,
     durationMs: Date.now() - startTime
   };
+}
+
+/**
+ * Process evaluate-network-checks job (#6353)
+ * Evaluates every managed network_check running for one org, once each, on
+ * the check's alert device — online or not.
+ */
+async function processEvaluateNetworkChecks(data: EvaluateNetworkChecksJobData): Promise<{
+  orgId: string;
+  checks: number;
+  devicesEvaluated: number;
+  alertsCreated: number;
+  durationMs: number;
+}> {
+  const startTime = Date.now();
+
+  try {
+    const outcome = await evaluateNetworkCheckAlertsForOrg(data.orgId);
+
+    if (outcome.alertIds.length > 0) {
+      console.log(
+        `[AlertWorker] Created ${outcome.alertIds.length} network-check alerts for org ${data.orgId} ` +
+        `(checks=${outcome.checks}, devices=${outcome.devicesEvaluated}, withoutDevice=${outcome.checksWithoutDevice})`
+      );
+    }
+    // A short run is a health signal even when it created nothing: each
+    // failure was already reported to Sentry individually, this is the per-tick
+    // summary an operator can grep for.
+    if (outcome.checksFailed > 0 || outcome.devicesFailed > 0) {
+      console.warn(
+        `[AlertWorker] Network-check sweep for org ${data.orgId} ran short: ` +
+        `checks=${outcome.checks}, checksFailed=${outcome.checksFailed}, devicesFailed=${outcome.devicesFailed}, ` +
+        `devicesEvaluated=${outcome.devicesEvaluated}, withoutDevice=${outcome.checksWithoutDevice}`
+      );
+    }
+
+    return {
+      orgId: data.orgId,
+      checks: outcome.checks,
+      devicesEvaluated: outcome.devicesEvaluated,
+      alertsCreated: outcome.alertIds.length,
+      durationMs: Date.now() - startTime
+    };
+  } catch (error) {
+    console.error(`[AlertWorker] Error evaluating network checks for org ${data.orgId}:`, error);
+    throw error;
+  }
 }
 
 /**

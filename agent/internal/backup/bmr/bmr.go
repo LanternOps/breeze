@@ -17,6 +17,7 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/backup/providers"
 	"github.com/breeze-rmm/agent/internal/backup/systemstate"
+	"github.com/breeze-rmm/agent/internal/securefs"
 )
 
 const (
@@ -41,7 +42,11 @@ const (
 var (
 	chmodFile   = os.Chmod
 	chtimesFile = os.Chtimes
-	lchownFile  = os.Lchown
+	// applyWinAttrsFile reapplies the manifest's captured Windows file
+	// attributes (#5407). A var, like its neighbours, so tests can force a
+	// deterministic failure.
+	applyWinAttrsFile = securefs.ApplyWinAttrs
+	lchownFile        = os.Lchown
 	// symlinkFile is a seam over os.Symlink (used by applySystemState's
 	// symlink-artifact branch) so tests can force a deterministic
 	// symlink-creation failure without depending on filesystem permission
@@ -98,7 +103,7 @@ func RunRecoveryContext(ctx context.Context, cfg RecoveryConfig, provider provid
 		if ctx == nil || ctx.Err() == nil {
 			return false
 		}
-		result.Error = fmt.Sprintf("operation cancelled: %v", ctx.Err())
+		appendRecoveryError(result, fmt.Sprintf("operation cancelled: %v", ctx.Err()))
 		if result.FilesRestored > 0 || result.StateApplied {
 			result.Status = "partial"
 			return true
@@ -138,6 +143,18 @@ func RunRecoveryContext(ctx context.Context, cfg RecoveryConfig, provider provid
 	stateErr := stateResult.err
 	if stateErr != nil {
 		slog.Warn("bmr: system state restore had errors", "error", stateErr.Error())
+		appendRecoveryError(result, fmt.Sprintf("system state restore failed: %s", stateErr.Error()))
+	} else if stateResult.manifestFound && !stateResult.applied {
+		// The state phase returned no fatal error but did not fully apply —
+		// every cause of that is a per-artifact failure already recorded in
+		// warnings. Promote the FIRST one to a terminal error so the reason
+		// survives to the server and the console instead of living only in
+		// the warning list (#5479).
+		detail := stateResult.firstArtifactFailure
+		if detail == "" {
+			detail = "no artifact failure was recorded"
+		}
+		appendRecoveryError(result, fmt.Sprintf("system state not applied: %s", detail))
 	}
 	if checkCancelled() {
 		return result, ctx.Err()
@@ -153,7 +170,7 @@ func RunRecoveryContext(ctx context.Context, cfg RecoveryConfig, provider provid
 	result.FailedFiles = failedFiles
 	result.Warnings = append(result.Warnings, fileWarnings...)
 	if filesErr != nil {
-		result.Error = fmt.Sprintf("file restore errors: %s", filesErr.Error())
+		appendRecoveryError(result, fmt.Sprintf("file restore errors: %s", filesErr.Error()))
 	}
 	if checkCancelled() {
 		return result, ctx.Err()
@@ -198,6 +215,24 @@ func RunRecoveryContext(ctx context.Context, cfg RecoveryConfig, provider provid
 		result.Status = "failed"
 	}
 
+	// Backstop for the #5479 invariant: a run that did not reach
+	// "completed" must always carry SOME terminal reason, or the server
+	// persists a failed/partial restore with an empty error and the console
+	// is back to showing bare "failed". Today this is unreachable by
+	// construction — each of the three conditions that keeps the switch
+	// above off "completed" (filesErr, stateErr, stateBlocksCompletion)
+	// already set an error earlier — and it is kept deliberately so a
+	// future phase that introduces a fourth way to miss "completed" cannot
+	// silently reintroduce the empty-error bug. The invariant itself is
+	// asserted by TestRunRecoveryContext_NotCompleted_NeverHasEmptyError.
+	// Deliberately gated on status: a "completed" run
+	// whose validation merely flagged something (e.g. a network probe that
+	// cannot succeed on an isolated recovery network) keeps that in
+	// Warnings and must NOT be presented as a failure reason.
+	if result.Status != "completed" && result.Error == "" && valErr == nil && validation != nil && !validation.Passed && len(validation.Failures) > 0 {
+		appendRecoveryError(result, fmt.Sprintf("post-restore validation failed: %s", validation.Failures[0]))
+	}
+
 	slog.Info("bmr: recovery complete",
 		"status", result.Status,
 		"filesRestored", result.FilesRestored,
@@ -208,6 +243,24 @@ func RunRecoveryContext(ctx context.Context, cfg RecoveryConfig, provider provid
 	)
 
 	return result, nil
+}
+
+// appendRecoveryError records a terminal failure reason on result. The
+// FIRST reason wins the head of the string and later ones are appended
+// after "; " rather than overwriting it, so a recovery that failed for
+// several reasons keeps the earliest (most causal) one up front while
+// still reporting the rest — RecoveryResult.Error is what the server
+// persists onto the restore job and the console renders, so losing a
+// reason here means the console can only say "failed" (#5479).
+func appendRecoveryError(result *RecoveryResult, reason string) {
+	if reason == "" {
+		return
+	}
+	if result.Error == "" {
+		result.Error = reason
+		return
+	}
+	result.Error += "; " + reason
 }
 
 // snapshotManifest matches the backup.Snapshot structure for deserialization.
@@ -251,6 +304,12 @@ type manifestFile struct {
 	LinkTarget string             `json:"linkTarget,omitempty"`
 	ModeBits   uint32             `json:"modeBits,omitempty"`
 	Owner      *manifestFileOwner `json:"owner,omitempty"`
+	// WinAttrs mirrors backup.SnapshotFile.WinAttrs (#5407) — the preserved
+	// Windows file attributes. Same deliberately-independent-mirror
+	// rationale as the fields above; without it restoreFiles would silently
+	// drop Hidden/System/Sparse on decode, exactly the way it once dropped
+	// Mode/ModTime (O20).
+	WinAttrs uint32 `json:"winAttrs,omitempty"`
 	// Placeholder mirrors backup.SnapshotFile.Placeholder — same
 	// deliberately-independent-mirror rationale as the fields above. True
 	// only for a "dir" entry the walker force-recorded because the
@@ -364,6 +423,15 @@ type systemStateResult struct {
 	// outright (Validate, validate.go) rather than silently treating an
 	// unreadable list the same as an empty one.
 	serviceUnitsErr error
+	// firstArtifactFailure is the first per-artifact failure message
+	// recorded while staging system state (a rejected path, a failed
+	// mkdir/symlink, a failed download, or a checksum/size verification
+	// discard) — the same string that also lands in warnings. It exists so
+	// RunRecoveryContext can promote the FIRST cause of a non-applied
+	// state into a terminal RecoveryResult.Error, which is what the server
+	// persists and the console shows; before this, the reason lived only
+	// in warnings and the console could say nothing but "failed" (#5479).
+	firstArtifactFailure string
 }
 
 // resolveStagingArtifactPath validates artifact.Path — an untrusted,
@@ -547,10 +615,21 @@ func applySystemState(ctx context.Context, cfg RecoveryConfig, provider provider
 	defer os.RemoveAll(stagingDir)
 
 	verificationFailed := false
+	firstFailure := ""
+	// recordFailure logs a per-artifact failure as a warning (unchanged
+	// behaviour) AND remembers the first one so it can be promoted to a
+	// terminal error by the caller (#5479).
+	recordFailure := func(msg string) {
+		warnings = append(warnings, msg)
+		verificationFailed = true
+		if firstFailure == "" {
+			firstFailure = msg
+		}
+	}
 	for _, artifact := range stateManifest.Artifacts {
 		if ctx != nil && ctx.Err() != nil {
 			units, unitsErr := enabledSystemdUnitsFromStaging(stagingDir)
-			return systemStateResult{manifestFound: true, warnings: warnings, serviceUnits: units, serviceUnitsErr: unitsErr}
+			return systemStateResult{manifestFound: true, warnings: warnings, serviceUnits: units, serviceUnitsErr: unitsErr, firstArtifactFailure: firstFailure}
 		}
 
 		// artifact.Path (and, for a symlink artifact, LinkTarget) is
@@ -561,13 +640,11 @@ func applySystemState(ctx context.Context, cfg RecoveryConfig, provider provider
 		// touches the filesystem with it.
 		localPath, pathErr := resolveStagingArtifactPath(stagingDir, artifact.Path)
 		if pathErr != nil {
-			warnings = append(warnings, fmt.Sprintf("artifact %s rejected: %s", artifact.Name, pathErr.Error()))
-			verificationFailed = true
+			recordFailure(fmt.Sprintf("artifact %s rejected: %s", artifact.Name, pathErr.Error()))
 			continue
 		}
 		if mkErr := os.MkdirAll(filepath.Dir(localPath), 0o750); mkErr != nil {
-			warnings = append(warnings, fmt.Sprintf("failed to create dir for %s: %s", artifact.Name, mkErr.Error()))
-			verificationFailed = true
+			recordFailure(fmt.Sprintf("failed to create dir for %s: %s", artifact.Name, mkErr.Error()))
 			continue
 		}
 
@@ -589,13 +666,11 @@ func applySystemState(ctx context.Context, cfg RecoveryConfig, provider provider
 			// resolveStagingArtifactPath's doc comment), not this target
 			// value itself.
 			if rmErr := os.Remove(localPath); rmErr != nil && !os.IsNotExist(rmErr) {
-				warnings = append(warnings, fmt.Sprintf("failed to clear existing path before creating symlink %s: %s", artifact.Name, rmErr.Error()))
-				verificationFailed = true
+				recordFailure(fmt.Sprintf("failed to clear existing path before creating symlink %s: %s", artifact.Name, rmErr.Error()))
 				continue
 			}
 			if symErr := symlinkFile(artifact.LinkTarget, localPath); symErr != nil {
-				warnings = append(warnings, fmt.Sprintf("failed to create symlink %s -> %s: %s", artifact.Name, artifact.LinkTarget, symErr.Error()))
-				verificationFailed = true
+				recordFailure(fmt.Sprintf("failed to create symlink %s -> %s: %s", artifact.Name, artifact.LinkTarget, symErr.Error()))
 				continue
 			}
 			continue
@@ -603,12 +678,11 @@ func applySystemState(ctx context.Context, cfg RecoveryConfig, provider provider
 
 		remoteKey := path.Join(snapshotRootDir, cfg.SnapshotID, systemStatePath, artifact.Path)
 		if dlErr := provider.Download(remoteKey, localPath); dlErr != nil {
-			warnings = append(warnings, fmt.Sprintf("failed to download %s: %s", artifact.Name, dlErr.Error()))
+			recordFailure(fmt.Sprintf("failed to download %s: %s", artifact.Name, dlErr.Error()))
 			// The provider may have written partial content before
 			// failing — never let that reach the restorer as if it were a
 			// complete, verified file.
 			_ = os.Remove(localPath)
-			verificationFailed = true
 			if errors.Is(dlErr, ErrRecoverySessionLost) {
 				// Every remaining artifact would fail the same way (#5635).
 				break
@@ -616,9 +690,8 @@ func applySystemState(ctx context.Context, cfg RecoveryConfig, provider provider
 			continue
 		}
 		if verifyErr := verifyArtifactIntegrity(localPath, artifact); verifyErr != nil {
-			warnings = append(warnings, fmt.Sprintf("artifact %s failed verification, discarding: %s", artifact.Name, verifyErr.Error()))
+			recordFailure(fmt.Sprintf("artifact %s failed verification, discarding: %s", artifact.Name, verifyErr.Error()))
 			_ = os.Remove(localPath)
-			verificationFailed = true
 			continue
 		}
 		if artifact.Checksum == "" {
@@ -639,11 +712,12 @@ func applySystemState(ctx context.Context, cfg RecoveryConfig, provider provider
 	restorer := newRestorerFunc()
 	if restoreErr := restorer.RestoreSystemState(stagingDir); restoreErr != nil {
 		return systemStateResult{
-			manifestFound:   true,
-			warnings:        warnings,
-			err:             fmt.Errorf("bmr: restore system state: %w", restoreErr),
-			serviceUnits:    serviceUnits,
-			serviceUnitsErr: serviceUnitsErr,
+			manifestFound:        true,
+			warnings:             warnings,
+			err:                  fmt.Errorf("bmr: restore system state: %w", restoreErr),
+			serviceUnits:         serviceUnits,
+			serviceUnitsErr:      serviceUnitsErr,
+			firstArtifactFailure: firstFailure,
 		}
 	}
 
@@ -658,12 +732,13 @@ func applySystemState(ctx context.Context, cfg RecoveryConfig, provider provider
 	}
 
 	return systemStateResult{
-		applied:         !verificationFailed,
-		drivers:         drivers,
-		warnings:        warnings,
-		manifestFound:   true,
-		serviceUnits:    serviceUnits,
-		serviceUnitsErr: serviceUnitsErr,
+		applied:              !verificationFailed,
+		drivers:              drivers,
+		warnings:             warnings,
+		manifestFound:        true,
+		serviceUnits:         serviceUnits,
+		serviceUnitsErr:      serviceUnitsErr,
+		firstArtifactFailure: firstFailure,
 	}
 }
 
@@ -982,6 +1057,15 @@ func restoreFiles(
 					"target", targetPath, "error", chtimesErr.Error())
 			}
 		}
+		// Windows attributes last (#5407): FILE_ATTRIBUTE_READONLY would make
+		// the chmod/chtimes above fail, so they have to have run already.
+		// WinAttrs==0 (non-Windows backup, or a pre-#5407 manifest) is a
+		// no-op, keeping every existing BMR restore byte-identical.
+		if winErr := applyWinAttrsFile(targetPath, file.WinAttrs); winErr != nil {
+			addFidelityFailure("could not reapply windows attributes to %s: %s", origPath, winErr.Error())
+			slog.Warn("bmr: failed to reapply windows file attributes on restore",
+				"target", targetPath, "winAttrs", file.WinAttrs, "error", winErr.Error())
+		}
 
 		filesRestored++
 		bytesRestored += file.Size
@@ -1169,9 +1253,14 @@ func restoreContentlessEntry(targetPath string, file manifestFile) error {
 			return mkErr
 		}
 		if file.ModeBits != 0 {
-			return chmodFile(targetPath, os.FileMode(file.ModeBits)&^os.ModeSetuid)
+			if err := chmodFile(targetPath, os.FileMode(file.ModeBits)&^os.ModeSetuid); err != nil {
+				return err
+			}
 		}
-		return nil
+		// Windows attributes last (#5407, review finding): a Hidden/System
+		// directory must come back Hidden/System here too, and ReadOnly would
+		// block the chmod above if it were applied first.
+		return applyWinAttrsFile(targetPath, file.WinAttrs)
 	default:
 		return fmt.Errorf("entry %s has content; use the download path", file.SourcePath)
 	}

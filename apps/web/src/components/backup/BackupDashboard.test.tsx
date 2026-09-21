@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import BackupDashboard from './BackupDashboard';
 import { fetchWithAuth } from '../../stores/auth';
+import { installAstroClientRouterStandIn, type ClientRouterStandIn } from '../../__tests__/astroClientRouterStandIn';
 
 // Org scope, so the fleet-view gate stays open and the data paths under test run.
 vi.mock('@/hooks/useOrgScope', () => ({
@@ -21,6 +22,11 @@ vi.mock('./VMRestoreWizard', () => ({
 }));
 vi.mock('./InstantBootStatus', () => ({
   default: () => <div>Instant Boot Status Stub</div>,
+}));
+// #6349: the file RestoreWizard shipped fully built but was never mounted, so
+// file restores were API-only. This stub proves the Restore tab reaches it.
+vi.mock('./RestoreWizard', () => ({
+  default: () => <div>File Restore Wizard Stub</div>,
 }));
 
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
@@ -128,6 +134,115 @@ describe('BackupDashboard usage history chart', () => {
     render(<BackupDashboard />);
 
     expect(await screen.findByRole('button', { name: /Recovery Bootstrap/i })).toBeTruthy();
+  });
+
+  it('mounts the file restore wizard on the Restore tab (#6349)', async () => {
+    fetchWithAuthMock.mockImplementation(async (input) => {
+      const url = String(input);
+
+      if (url === '/backup/dashboard') {
+        return makeJsonResponse({ data: { stats: [], recentJobs: [], storageProviders: [], attentionItems: [] } });
+      }
+
+      if (url === '/backup/usage-history?days=14') {
+        return makeJsonResponse({ data: { points: [] } });
+      }
+
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<BackupDashboard />);
+
+    const restoreTab = (await screen.findByText('Restore')).closest('button');
+    fireEvent.click(restoreTab!);
+
+    expect(await screen.findByText('File Restore Wizard Stub')).toBeTruthy();
+    expect(window.location.hash).toBe('#restore');
+  });
+
+  it('deep-links to the Restore tab from the #restore hash (#6349)', async () => {
+    window.location.hash = '#restore';
+    fetchWithAuthMock.mockImplementation(async (input) => {
+      const url = String(input);
+
+      if (url === '/backup/dashboard') {
+        return makeJsonResponse({ data: { stats: [], recentJobs: [], storageProviders: [], attentionItems: [] } });
+      }
+
+      if (url === '/backup/usage-history?days=14') {
+        return makeJsonResponse({ data: { points: [] } });
+      }
+
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<BackupDashboard />);
+
+    expect(await screen.findByText('File Restore Wizard Stub')).toBeTruthy();
+  });
+
+  it('follows the Snapshots tab restore link to the Restore tab under Astro (G3-2)', async () => {
+    // jsdom has no Astro runtime, so a naive fireEvent.click would follow the
+    // browser default (hash updated, hashchange fired) even if the app were
+    // broken in production. This stand-in reproduces Astro's ClientRouter
+    // anchor interception so the test fails for the same reason the real
+    // click does. See astroClientRouterStandIn.ts and shared/HashLink.tsx.
+    const router: ClientRouterStandIn = installAstroClientRouterStandIn();
+    window.location.hash = '#snapshots';
+
+    fetchWithAuthMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init as RequestInit | undefined)?.method ?? 'GET';
+
+      if (url === '/backup/dashboard') {
+        return makeJsonResponse({ data: { stats: [], recentJobs: [], storageProviders: [], attentionItems: [] } });
+      }
+
+      if (url === '/backup/usage-history?days=14') {
+        return makeJsonResponse({ data: { points: [] } });
+      }
+
+      if (url === '/backup/snapshots' && method === 'GET') {
+        return makeJsonResponse({
+          data: [
+            {
+              id: 'snap-1',
+              label: 'Nightly Snapshot',
+              createdAt: '2026-03-31T00:00:00Z',
+              sizeBytes: 1048576,
+              fileCount: 5,
+              location: 'snapshots/provider-snap-1',
+              expiresAt: '2026-04-30T00:00:00Z',
+              legalHold: false,
+              legalHoldReason: null,
+              isImmutable: false,
+              immutableUntil: null,
+              immutabilityEnforcement: null,
+              requestedImmutabilityEnforcement: null,
+              immutabilityFallbackReason: null
+            }
+          ]
+        });
+      }
+
+      if (url === '/backup/snapshots/snap-1/browse' && method === 'GET') {
+        return makeJsonResponse({ data: [] });
+      }
+
+      return makeJsonResponse({}, false, 404);
+    });
+
+    try {
+      render(<BackupDashboard />);
+
+      const link = await screen.findByTestId('snapshot-browser-restore-link');
+      fireEvent.click(link);
+
+      expect(await screen.findByText('File Restore Wizard Stub')).toBeTruthy();
+      expect(window.location.hash).toBe('#restore');
+    } finally {
+      router.uninstall();
+    }
   });
 
   it('mounts VM restore and instant boot status within the Hyper-V tab', async () => {

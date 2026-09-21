@@ -20,6 +20,7 @@ import { softwarePresenceKind } from './softwarePresence';
 import { backupContinuityKind } from './backupContinuity';
 import { scriptKind } from './script';
 import { networkCheckKind } from './networkCheck';
+import { compositeKind } from './composite';
 
 export type { MonitorKindSpec, MonitorCompileContext } from './types';
 export { MonitorValidationError } from './types';
@@ -55,6 +56,8 @@ export const MONITOR_KIND_SPECS: Record<MonitorKind, MonitorKindSpec<any>> = {
   backup_continuity: backupContinuityKind,
   script: scriptKind,
   network_check: networkCheckKind,
+  // Defer the circular import read when composite.ts is the entry module.
+  get composite() { return compositeKind; },
 };
 
 export function getMonitorKindSpec(kind: string): MonitorKindSpec {

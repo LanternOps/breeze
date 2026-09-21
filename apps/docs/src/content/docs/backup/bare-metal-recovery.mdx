@@ -17,6 +17,10 @@ Both modes share the same rebuild engine, [`breeze-backup rebuild`](#rebuilding-
 
 A recovery token is scoped to **one snapshot**. A `file`-mode snapshot recovers data; a `system_image`-mode snapshot applies OS state. To recover both for one machine, generate two tokens (one per snapshot) and run `bmr-recover` twice, or back the machine up with a [Whole machine profile](/backup/profiles/#whole-machine-templates) so one snapshot carries both — a whole-machine profile is a single `system_image` selection that also walks the OS root, so it produces exactly one snapshot with files, layout, and system state together, not a separate file snapshot plus a files-less `system_image` snapshot.
 
+<Aside type="tip">
+  Recovering from an **incremental** snapshot — one that reuses files unchanged since an earlier snapshot instead of re-uploading them — works the same as recovering from a full snapshot, in every mode on this page. Breeze resolves those cross-snapshot references automatically at recovery time.
+</Aside>
+
 ---
 
 ## Recover from Breeze recovery media
@@ -189,7 +193,7 @@ The badge governs only the `rebuild` path below. A snapshot marked *not* restora
 `breeze-backup rebuild` is the from-scratch counterpart to `bmr-recover`: instead of restoring onto an OS you installed, it takes a **blank disk (or a raw image file)**, provisions the partitions recorded in the snapshot's layout manifest, restores a whole-machine snapshot into them, applies the system state offline, installs GRUB and validates the result. It ships in the same `breeze-backup` binary as the recovery bundle.
 
 <Aside type="note" title="Scope">
-  Linux hosts and Linux snapshots only, run from a booted Linux environment; the snapshot must be marked **Bare-metal restorable** and the target must be UEFI/GPT. The [recovery media](#recover-from-breeze-recovery-media) runs it for you; the command below is for scripted or unusual recoveries and does not appear in the device's command history. Restore-as-VM is later work built on this engine.
+  Linux hosts and Linux snapshots only, run from a booted Linux environment; the snapshot must be marked **Bare-metal restorable** and the target must be UEFI/GPT. The [recovery media](#recover-from-breeze-recovery-media) runs it for you; the command below is for scripted or unusual recoveries and does not appear in the device's command history. [Restore as VM](#restore-as-vm) and [DR bare-metal rebuild steps](/backup/disaster-recovery/#bare-metal-rebuild-step) also run this engine, targeting a VHDX image instead of a disk.
 </Aside>
 
 ```
@@ -225,6 +229,27 @@ The rebuild runs seven phases in order — **preflight → provision → restore
 The result JSON carries `stateManifestFound` and `stateApplied` alongside `status`; a rebuild is never `completed` unless `stateApplied` is `true` whenever system state was expected.
 
 Progress is checkpointed to `<state-dir>/rebuild-<snapshot>-<target>.json` after every phase. If a run is interrupted, re-running the same command **resumes**: phases already completed are skipped, the partitions are re-attached rather than re-created, and the state file is removed only on success.
+
+---
+
+## Restore as VM
+
+The **VM Restore Wizard**'s **Rebuild engine (Linux)** option runs the same [rebuild engine](#rebuilding-a-linux-disk-from-scratch-breeze-backup-rebuild) described above, but writes the result straight to a **VHDX** disk image instead of a physical disk — a Hyper-V-ready virtual disk built from a Linux whole-machine snapshot. It's offered alongside **Full Restore** and **Instant Boot** whenever the selected snapshot carries a layout manifest (the same **Bare-metal restorable** Linux snapshots the recovery media uses).
+
+<Steps>
+1. Open the restore workflow for the device and choose **Restore as VM**.
+2. Select the backup snapshot to restore.
+3. On the **Restore mode** step, choose **Rebuild engine (Linux)**.
+4. Pick a **rebuild host** — an online Linux device running the Breeze helper with `qemu-utils` installed and enough free disk space for the image. Preflight refuses the run if either requirement isn't met.
+5. Enter an absolute **output path** on the rebuild host ending in `.vhdx`.
+6. Click **Start Rebuild**. The VHDX appears at that path on the rebuild host once the rebuild completes; attach it to a Hyper-V VM the same way you would any other virtual disk.
+</Steps>
+
+The rebuilt image always gets a **new machine identity** — a new machine ID, a `-restored` hostname, and no agent enrollment — since it's building a standalone copy, not reclaiming the original device.
+
+<Aside type="note">
+  Breeze does not yet create the Hyper-V VM from the VHDX automatically — attach the image to a VM yourself once the rebuild finishes.
+</Aside>
 
 ---
 

@@ -1375,3 +1375,146 @@ describe('manage_policy_feature_link machine-principal denial (RMM-QA-176 D9.3)'
     expect(parsed.success).toBe(true);
   });
 });
+
+
+describe('manage_policy_feature_link describe action (A-W03)', () => {
+  function tool() {
+    const registered = new Map<string, any>();
+    registerConfigPolicyTools(registered);
+    return registered.get('manage_policy_feature_link')!;
+  }
+
+  it('has a reference for every canonical feature type', async () => {
+    const { CONFIG_FEATURE_TYPES } = await import('@breeze/shared/constants');
+    const reference = (await import('./aiToolsConfigPolicy')).POLICY_FEATURE_INLINE_SETTINGS_REFERENCE;
+    expect(Object.keys(reference).sort()).toEqual([...CONFIG_FEATURE_TYPES].sort());
+    expect(tool().definition.input_schema.properties.featureType.enum).toEqual([...CONFIG_FEATURE_TYPES]);
+  });
+
+  it('returns the backup reference without a policy or DB access', async () => {
+    vi.clearAllMocks();
+    const out = JSON.parse(await tool().handler({ action: 'describe', featureType: 'backup' }, {} as never));
+    expect(out).toMatchObject({ featureType: 'backup', linkOnly: false });
+    expect(out.inlineSettings).toContain('schedule:');
+    expect(out.inlineSettings).toContain('retention:');
+    expect(out.inlineSettings).not.toContain('scheduleFrequency');
+    expect(out.featurePolicyIdHint).toContain('backup PROFILE');
+    expect(db.select).not.toHaveBeenCalled();
+    expect(getConfigPolicy).not.toHaveBeenCalled();
+  });
+
+  it('returns each reference and identifies only the link-only types without DB access', async () => {
+    const { CONFIG_FEATURE_TYPES } = await import('@breeze/shared/constants');
+    vi.clearAllMocks();
+    for (const featureType of CONFIG_FEATURE_TYPES) {
+      const out = JSON.parse(await tool().handler({ action: 'describe', featureType }, {} as never));
+      expect(out.featureType).toBe(featureType);
+      expect(out.inlineSettings).toBeTruthy();
+      expect(out.linkOnly).toBe(['software_policy', 'peripheral_control'].includes(featureType));
+    }
+    expect(db.select).not.toHaveBeenCalled();
+    expect(getConfigPolicy).not.toHaveBeenCalled();
+  });
+
+  it.each(['nope', 'toString', '__proto__', undefined])('rejects invalid feature type %s', async (featureType) => {
+    const out = JSON.parse(await tool().handler({ action: 'describe', featureType }, {} as never));
+    expect(out.error).toMatch(/featureType/);
+  });
+
+  it('keeps the description on budget with actions, reference and purge warning', () => {
+    const definition = tool().definition;
+    expect(definition.description.length).toBeLessThanOrEqual(300);
+    for (const action of ['add', 'update', 'remove', 'list', 'describe']) {
+      expect(definition.input_schema.properties.action.enum).toContain(action);
+      expect(definition.description).toContain(action);
+    }
+    expect(definition.description).toContain('featurePolicyId');
+    expect(definition.description).toMatch(/irreversible/i);
+  });
+});
+
+// ============================================================
+// #6312 — maintenance inlineSettings reach the model as a field-level error
+// ============================================================
+
+describe('manage_policy_feature_link maintenance inlineSettings validation (#6312)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(db.select).mockReset();
+    vi.mocked(getConfigPolicy).mockReset();
+    vi.mocked(addFeatureLink).mockReset();
+    vi.mocked(updateFeatureLink).mockReset();
+    canManagePartnerWidePoliciesMock.mockReset().mockReturnValue(true);
+    policyAccessConditionMock.mockReset().mockReturnValue(undefined);
+    enable2faState.value = true;
+  });
+
+  function toolsWithPolicy() {
+    vi.mocked(getConfigPolicy).mockResolvedValue({ id: POLICY_ID, orgId: ORG_ID, partnerId: null, name: 'Org policy' } as any);
+    const tools = new Map<string, any>();
+    registerConfigPolicyTools(tools);
+    return tools;
+  }
+
+  it('returns a field-level error for an unknown recurrence, not the generic tool error', async () => {
+    // Without the VALIDATED_INLINE_SETTINGS entry the ZodError escapes
+    // decomposeInlineSettings and safeHandler's sanitizeThrownToolError
+    // replaces it with GENERIC_TOOL_ERROR_MESSAGE, so the model never learns
+    // which field it got wrong.
+    vi.mocked(addFeatureLink).mockResolvedValue({ id: 'link-1', featureType: 'maintenance' } as any);
+
+    const output = await toolsWithPolicy().get('manage_policy_feature_link')!.handler({
+      action: 'add',
+      configPolicyId: POLICY_ID,
+      featureType: 'maintenance',
+      inlineSettings: { recurrence: 'fortnightly', durationHours: 2, timezone: 'UTC' },
+    }, makeAuth());
+
+    const parsed = JSON.parse(output);
+    expect(parsed.error).toMatch(/recurrence/i);
+    // Armed above, so an ungated tool would have completed the write.
+    expect(vi.mocked(addFeatureLink)).not.toHaveBeenCalled();
+  });
+
+  it('refuses a negative durationHours on update', async () => {
+    const tools = toolsWithPolicy();
+    mockSelectRows([{ featureType: 'maintenance' }]);
+    vi.mocked(updateFeatureLink).mockResolvedValue({ id: 'link-1', featureType: 'maintenance' } as any);
+
+    const output = await tools.get('manage_policy_feature_link')!.handler({
+      action: 'update',
+      configPolicyId: POLICY_ID,
+      featureLinkId: 'link-1',
+      featureType: 'maintenance',
+      inlineSettings: { recurrence: 'daily', durationHours: -5, timezone: 'UTC' },
+    }, makeAuth());
+
+    expect(JSON.parse(output).error).toMatch(/durationHours/i);
+    expect(vi.mocked(updateFeatureLink)).not.toHaveBeenCalled();
+  });
+
+  it('normalizes a valid payload so the stored JSONB mirror carries the schema defaults', async () => {
+    vi.mocked(addFeatureLink).mockResolvedValue({ id: 'link-1', featureType: 'maintenance' } as any);
+
+    await toolsWithPolicy().get('manage_policy_feature_link')!.handler({
+      action: 'add',
+      configPolicyId: POLICY_ID,
+      featureType: 'maintenance',
+      inlineSettings: { recurrence: 'daily', windowStart: '02:30', durationHours: 4, timezone: 'America/New_York' },
+    }, makeAuth());
+
+    expect(vi.mocked(addFeatureLink)).toHaveBeenCalledWith(
+      POLICY_ID,
+      'maintenance',
+      null,
+      expect.objectContaining({
+        recurrence: 'daily',
+        windowStart: '02:30',
+        durationHours: 4,
+        timezone: 'America/New_York',
+        suppressAlerts: true,
+        notifyBeforeMinutes: 15,
+      }),
+    );
+  });
+});

@@ -73,6 +73,8 @@ export function registerC2CTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'integrations',
+    searchHint: 'Breeze cloud-to-cloud backup connections, providers and connection status',
     definition: {
       name: 'query_c2c_connections',
       description: 'List cloud-to-cloud connections with sensitive credential fields masked.',
@@ -128,6 +130,8 @@ export function registerC2CTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'integrations',
+    searchHint: 'Breeze cloud-to-cloud backup jobs, sync status and processing statistics',
     definition: {
       name: 'query_c2c_jobs',
       description: 'List C2C backup jobs with config and provider context plus processing statistics.',
@@ -198,6 +202,8 @@ export function registerC2CTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'integrations',
+    searchHint: 'Breeze cloud-to-cloud backup items by user, type, keyword or backup configuration',
     definition: {
       name: 'search_c2c_items',
       description: 'Search cloud-to-cloud backup items by config, user, item type, or keyword.',
@@ -287,6 +293,8 @@ export function registerC2CTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 2,
+    domain: 'integrations',
+    searchHint: 'Breeze cloud-to-cloud backups: start an immediate sync for a backup configuration',
     definition: {
       name: 'trigger_c2c_sync',
       description: 'Trigger an immediate cloud-to-cloud sync job for a C2C backup config.',
@@ -349,6 +357,8 @@ export function registerC2CTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 3,
+    domain: 'integrations',
+    searchHint: 'Breeze cloud-to-cloud backups: restore protected items to a destination connection',
     definition: {
       name: 'restore_c2c_items',
       description: 'Trigger a cloud-to-cloud item restore job for one or more protected items.',

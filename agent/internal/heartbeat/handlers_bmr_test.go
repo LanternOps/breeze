@@ -12,6 +12,7 @@ func TestBMRHandlersRegistered(t *testing.T) {
 		tools.CmdVMRestoreEstimate,
 		tools.CmdVMRestoreFromBackup,
 		tools.CmdBMRRecover,
+		tools.CmdBareMetalRebuild,
 	}
 	for _, cmd := range cmds {
 		if _, ok := handlerRegistry[cmd]; !ok {
@@ -44,6 +45,22 @@ func TestHandleBMRRecover_NilBroker(t *testing.T) {
 		Payload: map[string]any{"snapshotId": "snap-123"},
 	}
 	result := handleBMRRecover(h, cmd)
+	if result.Status != "failed" {
+		t.Errorf("expected failed, got %s", result.Status)
+	}
+	if !strings.Contains(result.Error, "session broker") {
+		t.Errorf("expected session broker error, got %q", result.Error)
+	}
+}
+
+func TestHandleBareMetalRebuild_NilBroker(t *testing.T) {
+	h := &Heartbeat{}
+	cmd := Command{
+		ID:      "test-bmr-rebuild-1",
+		Type:    tools.CmdBareMetalRebuild,
+		Payload: map[string]any{"recoveryId": "rec-1"},
+	}
+	result := handleBareMetalRebuild(h, cmd)
 	if result.Status != "failed" {
 		t.Errorf("expected failed, got %s", result.Status)
 	}

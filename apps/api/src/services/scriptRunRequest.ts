@@ -98,11 +98,7 @@ export const aiRunContextInputShape = {
     .enum(['system', 'user'])
     .optional()
     .describe(
-      "Run context override. 'system' runs with full machine privileges (LocalSystem / root); " +
-        "'user' runs inside the logged-in user's desktop session, which is required for anything " +
-        'that touches the user profile, mapped drives, or the interactive desktop. Omit to use the ' +
-        "script's saved default. This does not bypass approval — the run still needs the same " +
-        'approval any script run needs, and the approver is shown the context you chose.'
+      'Run context: system (LocalSystem/root) or user (logged-in desktop, profiles and mapped drives). Default: saved script context. Approval still required.'
     ),
   targetSessionId: z
     .number()
@@ -111,8 +107,7 @@ export const aiRunContextInputShape = {
     .max(65535)
     .optional()
     .describe(
-      "Windows session id to run a runAs='user' script in (RDS / multi-session hosts). Only valid " +
-        "together with runAs='user' and exactly one device; omit to use the active interactive session."
+      'Windows session ID (1–65535) for runAs=user on exactly one device. Default: active interactive session.'
     ),
 };
 
@@ -126,9 +121,7 @@ export const AI_RUN_CONTEXT_JSON_SCHEMA_PROPERTIES = {
     type: 'string' as const,
     enum: ['system', 'user'],
     description:
-      "Run context override: 'system' (full machine privileges) or 'user' (the logged-in user's " +
-      "desktop session). Omit to use the script's saved default. Still requires the same approval " +
-      'as any script run, and the approver is shown the context you chose.',
+      "Run context: system (LocalSystem/root) or user (logged-in desktop, profiles and mapped drives). Default: saved script context. Approval still required.",
   },
   targetSessionId: {
     type: 'number' as const,

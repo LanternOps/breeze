@@ -1,4 +1,13 @@
 {
+  "timesheet": {
+    "workTypeColumn": "Tipo de trabalho"
+  },
+  "workType": {
+    "label": "Tipo de trabalho",
+    "none": "Nenhum tipo de trabalho",
+    "archivedSuffix": "{{name}} (arquivado)",
+    "loadError": "Tipos de trabalho indisponíveis"
+  },
   "slaChip": {
     "pausedLeft": "Pausado · restam {{relative}}",
     "left": "restam {{relative}}",
@@ -123,7 +132,9 @@
       "retry": "Tentar novamente",
       "remove": "Remover arquivo",
       "tooMany": "Você pode anexar no máximo {{max}} arquivos a um comentário.",
-      "tooLarge": "{{name}} é maior que 10 MB."
+      "tooLarge": "{{name}} é maior que 10 MB.",
+      "sentWithoutAttachment_one": "Nota publicada, mas não foi possível adicionar o anexo. Tente novamente ou remova-o.",
+      "sentWithoutAttachment_other": "Nota publicada, mas não foi possível adicionar {{count}} anexos. Tente novamente ou remova-os."
     }
   },
   "ticketFeed": {
@@ -217,7 +228,9 @@
       "logFailed": "Falha ao registrar tempo",
       "logged": "Tempo registrado",
       "logFailedSentence": "Falha ao registrar tempo."
-    }
+    },
+    "billedVsWorked": "{{worked}} h trabalhadas · {{billed}} h faturadas",
+    "includedMinutes": "{{hours}} h incluídas no contrato"
   },
   "inboundReviewQueue": {
     "title": "Fila de revisão",
@@ -514,5 +527,14 @@
       "message": "Isso oculta o chamado de todas as filas. Um administrador pode restaurá-lo na fila Arquivados.",
       "confirm": "Excluir chamado"
     }
+  },
+  "billingOutcome": {
+    "included": "Incluído",
+    "nonBillable": "Não faturável",
+    "hourly": "{{rate}} por hora",
+    "minimum": "Mínimo de {{minutes}} min",
+    "missingRate": "Faturável · tarifa não configurada",
+    "recalculated": "O faturamento é recalculado para este tipo de trabalho ao salvar.",
+    "unavailable": "Resultado do faturamento indisponível"
   }
 }

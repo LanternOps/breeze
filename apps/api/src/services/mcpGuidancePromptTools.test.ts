@@ -1,5 +1,8 @@
 // apps/api/src/services/mcpGuidancePromptTools.test.ts
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { AI_TOOL_DOMAINS, AI_TOOL_DOMAIN_LABELS } from '@breeze/shared';
+import { POLICY_FEATURE_INLINE_SETTINGS_REFERENCE } from './aiToolsConfigPolicy';
 import { MCP_PROMPTS, MCP_SERVER_INSTRUCTIONS, MCP_TOOL_COUNT_APPROX } from './mcpGuidance';
 import { aiTools } from './aiTools';
 
@@ -61,5 +64,34 @@ describe('prompt guidance references only real tools', () => {
   // MCP_TOOL_COUNT_APPROX to the nearest ten.
   it('the advertised approximate tool count stays within tolerance of the registry', () => {
     expect(Math.abs(registered.size - MCP_TOOL_COUNT_APPROX)).toBeLessThanOrEqual(10);
+  });
+});
+
+
+describe('moved workflow guidance (A-W03)', () => {
+  it('confirms the patch scope, approves patches, then installs them', () => {
+    const text = MCP_PROMPTS.find(p => p.name === 'breeze-patch-remediate')!.render({ target: 'pilot' });
+    expect(text).toMatch(/CONFIRM[\s\S]*action=approve[\s\S]*action=install/);
+    expect(text).toContain('patchIds and deviceIds');
+  });
+
+  it('describes settings before creating standalone prerequisites and linking their IDs', () => {
+    const text = MCP_PROMPTS.find(p => p.name === 'breeze-turnkey-setup')!.render({});
+    expect(text).toMatch(/action=describe[\s\S]*featurePolicyId/);
+    expect(text).toContain('manage_backup_profiles');
+    expect(text).toContain('inlineSettings.destinationConfigId');
+    expect(text).toMatch(/create the standalone policy[\s\S]*then link/);
+  });
+
+  it('publishes every domain and the full per-feature settings reference', () => {
+    const page = readFileSync(new URL('../../../docs/src/content/docs/features/ai-tools.mdx', import.meta.url), 'utf8');
+    expect(page).toContain('title: AI tools reference');
+    expect(page.match(/^## .+$/gm)).toEqual(AI_TOOL_DOMAINS.map(domain => `## ${AI_TOOL_DOMAIN_LABELS[domain]}`));
+    for (const [feature, reference] of Object.entries(POLICY_FEATURE_INLINE_SETTINGS_REFERENCE)) {
+      expect(page).toContain(`| \`${feature}\` |`);
+      expect(page).toContain(reference.replaceAll('|', '\\|'));
+    }
+    const index = JSON.parse(readFileSync(new URL('../data/docsIndex.json', import.meta.url), 'utf8'));
+    expect(index).toContainEqual(expect.objectContaining({ path: '/features/ai-tools/', title: 'AI tools reference' }));
   });
 });

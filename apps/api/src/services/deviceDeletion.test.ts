@@ -107,6 +107,21 @@ describe('deleteDeviceCascade lock ordering', () => {
     expect(lockIndex).toBe(1);
   });
 
+  it('detaches topology using the locked stored scope after asset detachment and before binding deletion', async () => {
+    const { tx, statements } = captureTx();
+    await deleteDeviceCascade(tx, 'device-1');
+    const detach = statements.findIndex(statement => statement.includes('breeze_detach_topology_inventory_binding'));
+    expect(detach).toBeGreaterThan(2); // Parent lock and timeout restore still precede it.
+    expect(statements.filter(statement => statement.includes('breeze_detach_topology_inventory_binding'))).toHaveLength(1);
+    expect(statements[detach]).toContain("'device', d.id, d.org_id, d.site_id");
+    expect(statements[detach]).toContain('FROM devices d WHERE d.id = ');
+    const assetDetach = statements.findIndex(statement => statement.includes('UPDATE') && statement.includes('discovered_assets') && statement.includes('linked_device_id'));
+    expect(assetDetach).toBeGreaterThan(2);
+    expect(detach).toBeGreaterThan(assetDetach);
+    const bindingDelete = statements.findIndex(statement => statement.includes('DELETE FROM') && statement.includes('topology_node_bindings'));
+    expect(bindingDelete).toBeGreaterThan(detach); // Required registry entry remains as a no-op.
+  });
+
   it('restores the caller lock_timeout immediately after taking the lock', async () => {
     // set_config(..., true) is TRANSACTION-local, not statement-local, and both
     // callers run inside an outer transaction (withDbAccessContext) where a

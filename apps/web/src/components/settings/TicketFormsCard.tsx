@@ -8,6 +8,7 @@ import {
   type TicketFormFieldType
 } from '@breeze/shared';
 import { fetchWithAuth } from '../../stores/auth';
+import { fetchAllOrganizationsFrom } from '../../lib/fetchAllOrganizations';
 import { runAction, ActionError } from '@/lib/runAction';
 import { navigateTo } from '@/lib/navigation';
 import { loginPathWithNext } from '../../lib/authScope';
@@ -210,7 +211,7 @@ export default function TicketFormsCard() {
     const [formsR, catsR, orgsR] = await Promise.allSettled([
       fetchWithAuth('/ticket-forms'),
       fetchWithAuth('/ticket-categories'),
-      fetchWithAuth('/orgs/organizations?limit=100')
+      fetchAllOrganizationsFrom<OrgOption>('/orgs/organizations')
     ]);
     // The forms list is the critical resource — a rejection OR non-ok is a hard error.
     if (formsR.status !== 'fulfilled' || !formsR.value.ok) {
@@ -232,13 +233,12 @@ export default function TicketFormsCard() {
       );
       setCategories([]);
     }
-    if (orgsR.status === 'fulfilled' && orgsR.value.ok) {
-      const b = (await orgsR.value.json()) as { data?: OrgOption[] };
-      setOrgs(b.data ?? []);
+    if (orgsR.status === 'fulfilled') {
+      setOrgs(orgsR.value);
     } else {
       console.warn(
         '[ticket-forms] organizations failed to load; org-scoped form creation is blocked',
-        orgsR.status === 'rejected' ? orgsR.reason : orgsR.value.status
+        orgsR.reason
       );
       setOrgs([]);
       setOrgsLoadFailed(true);

@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { useAiStore } from '@/stores/aiStore';
+import { usePermissions } from '@/lib/permissions';
 import type { AiInitiatorKind, AiOriginSummaryDto } from '@breeze/shared';
 
 /**
@@ -53,6 +54,9 @@ export function AiInitiatorChip({
   const [loading, setLoading] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [summary, setSummary] = useState<AiOriginSummaryDto | null>(null);
+  // #6396: "open session" drives the assistant sidebar, which is unmounted
+  // for roles without ai_sessions:use — hide the link rather than dead-click.
+  const canUseAi = usePermissions().can('ai_sessions', 'use');
 
   if (kind === null) return null;
 
@@ -119,7 +123,7 @@ export function AiInitiatorChip({
                   {t('aiInitiator.tool', { name: summary.toolName })}
                 </p>
               )}
-              {summary.resolvable && summary.session ? (
+              {summary.resolvable && summary.session && canUseAi ? (
                 <button
                   type="button"
                   data-testid="ai-origin-open-session"

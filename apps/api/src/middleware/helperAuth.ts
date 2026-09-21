@@ -13,6 +13,7 @@ import { db, withSystemDbAccessContext, withDbAccessContext } from '../db';
 import { devices, organizations } from '../db/schema';
 import type { AuthContext } from './auth';
 import { matchAgentTokenHash } from './agentAuth';
+import { evaluateDeviceCredentialLifecycle } from './deviceCredentialLifecycle';
 
 export interface HelperDevice {
   id: string;
@@ -66,6 +67,7 @@ export const helperAuth: MiddlewareHandler = async (c, next) => {
         pendingHelperTokenHash: devices.pendingHelperTokenHash,
         pendingTokenExpiresAt: devices.pendingTokenExpiresAt,
         status: devices.status,
+        agentTokenSuspendedAt: devices.agentTokenSuspendedAt,
         partnerId: organizations.partnerId,
       })
       .from(devices)
@@ -98,12 +100,25 @@ export const helperAuth: MiddlewareHandler = async (c, next) => {
     return c.json({ error: 'Invalid agent credentials' }, 401);
   }
 
-  if (device.status === 'decommissioned') {
-    return c.json({ error: 'Device has been decommissioned' }, 403);
-  }
-
-  if (device.status === 'quarantined') {
-    return c.json({ error: 'Device is quarantined pending admin approval' }, 403);
+  // Shared device-credential lifecycle gate (middleware/deviceCredentialLifecycle.ts)
+  // — the same predicates the agent REST middleware and the WS upgrade run.
+  // Helper sessions are NOT an uninstall-delivery path (no drain surface, and no
+  // decommissioned exception), so `allowDraining: false`: only a fully active
+  // tenant keeps an interactive AI/remote Helper session, mirroring the WS
+  // upgrade's refusal of a draining tenant.
+  const lifecycle = await evaluateDeviceCredentialLifecycle(device, { allowDraining: false });
+  if (lifecycle.denied) {
+    switch (lifecycle.reason) {
+      case 'decommissioned':
+        return c.json({ error: 'Device has been decommissioned' }, 403);
+      case 'quarantined':
+        return c.json({ error: 'Device is quarantined pending admin approval' }, 403);
+      // A suspended token and an inactive/severed tenant both return the SAME
+      // opaque 401 as a stale credential (mirrors agentAuth): the Helper must
+      // not be able to distinguish suspension from a bad token.
+      default:
+        return c.json({ error: 'Invalid agent credentials' }, 401);
+    }
   }
 
   c.set('helperDevice', {
@@ -158,7 +173,15 @@ export const helperAuth: MiddlewareHandler = async (c, next) => {
       scope: 'organization',
       orgId: device.orgId,
       accessibleOrgIds: [device.orgId],
-      accessiblePartnerIds: [device.partnerId],
+      // Helper tokens have NO partner-AXIS access. This array gates
+      // `breeze_has_partner_access`, which admits WRITES to partner-owned rows;
+      // it stays empty, exactly as the agent sibling keeps it (agentAuth.ts) and
+      // as the AuthContext design note requires (`helperDevicePartnerId` in
+      // middleware/auth.ts: Helper tokens must never activate partner-wide RLS
+      // branches). `currentPartnerId` below is a strictly separate, read-only
+      // axis — do not merge the two. The partner-LLM BYOK read that needs the
+      // partner runs under its own system context.
+      accessiblePartnerIds: [],
       // Own partner — read-visibility of partner-wide catalog rows.
       currentPartnerId: device.partnerId ?? null,
     },

@@ -88,12 +88,27 @@ vi.mock('../services/configurationPolicy', () => ({
 vi.mock('../services/monitors/monitorAttachability', () => ({
   isMonitorAttachableToPolicy: vi.fn(async () => true),
 }));
-vi.mock('../services/auditEvents', () => ({ writeRouteAudit: writeRouteAuditMock }));
+// Partial mock: the route module graph now also reaches `requestLikeFromSnapshot`
+// (agentWs, via the conversion routes mounted on monitorDefinitions), so the
+// real module's other exports must survive.
+vi.mock('../services/auditEvents', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/auditEvents')>()),
+  writeRouteAudit: writeRouteAuditMock,
+}));
 vi.mock('./devices/helpers', () => ({
   getDeviceWithOrgAndSiteCheck: getDeviceWithOrgAndSiteCheckMock,
   SITE_ACCESS_DENIED,
 }));
-vi.mock('../db', () => ({ db: { select: selectMock } }));
+// Stubs, not importOriginal: the real `../db` opens a pool at import time.
+// The conversion routes mounted on monitorDefinitions pull these in; no test
+// here exercises a path that calls them.
+vi.mock('../db', () => ({
+  db: { select: selectMock },
+  runOutsideDbContext: <T>(fn: () => T) => fn(),
+  withDbAccessContext: <T>(_ctx: unknown, fn: () => T) => fn(),
+  withSystemDbAccessContext: <T>(fn: () => T) => fn(),
+  getCurrentDbAccessContext: () => null,
+}));
 
 import { monitorDefinitionRoutes } from './monitorDefinitions';
 

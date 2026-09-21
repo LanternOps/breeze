@@ -149,6 +149,8 @@ const MUST_BE_EMPTY_UNDER_LOSER: readonly string[] = [
   'sites',
   'snmp_devices',
   'tenant_variables',
+  'topology_change_outbox',
+  'topology_site_state',
   'users',
 ];
 
@@ -451,9 +453,9 @@ async function seedFixture(): Promise<Fixture> {
         (${f.brandingL}::uuid, ${f.loser}::uuid),
         (${f.brandingS}::uuid, ${f.survivor}::uuid)`);
     await db.execute(sql`
-      INSERT INTO org_ticket_settings (id, org_id, rate_currency) VALUES
-        (${f.ticketSettingsL}::uuid, ${f.loser}::uuid, 'USD'),
-        (${f.ticketSettingsS}::uuid, ${f.survivor}::uuid, 'USD')`);
+      INSERT INTO org_ticket_settings (id, org_id) VALUES
+        (${f.ticketSettingsL}::uuid, ${f.loser}::uuid),
+        (${f.ticketSettingsS}::uuid, ${f.survivor}::uuid)`);
     await db.execute(sql`
       INSERT INTO ai_budgets (id, org_id) VALUES (${f.aiBudgetL}::uuid, ${f.loser}::uuid)`);
 
@@ -872,6 +874,10 @@ describe('executeOrgMerge end-to-end against real Postgres', () => {
       users: { moved: 1, dropped: 0 },
       roles: { moved: 1, dropped: 0 },
       sites: { moved: 2, dropped: 0 },
+      // Inventory capture creates three source events; collision resolution
+      // captures the asset deletion. Prepare also fences the second site.
+      topology_change_outbox: { moved: 4, dropped: 0 },
+      topology_site_state: { moved: 2, dropped: 0 },
       device_groups: { moved: 1, dropped: 0 },
       // `devices` is deliberately ABSENT: it is itself a cascade child of
       // `sites` (devices_site_org_fk ON UPDATE CASCADE), so repointing the
@@ -883,6 +889,7 @@ describe('executeOrgMerge end-to-end against real Postgres', () => {
     });
     // `summary` is documented as an alias of `tables`, not a second object.
     expect(result.summary).toBe(result.tables);
+    expect(result.topology).toEqual({ rekeyed: 0, fenced: 2 });
 
     // -----------------------------------------------------------------------
     // 2. Composite-FK chain: ids preserved, org_id moved, chain still joins.
@@ -1228,7 +1235,7 @@ describe('executeOrgMerge end-to-end against real Postgres', () => {
     // -----------------------------------------------------------------------
     const events = await query<{
       id: string; partner_id: string; loser_org_id: string; loser_org_name: string;
-      survivor_org_id: string; actor_user_id: string; summary: { tables: unknown; warnings: unknown };
+      survivor_org_id: string; actor_user_id: string; summary: { tables: unknown; warnings: unknown; topology: unknown };
     }>(sql`SELECT * FROM org_merge_events`);
     expect(events).toHaveLength(1);
     expect(events[0]!.id).toBe(result.mergeEventId);
@@ -1237,11 +1244,12 @@ describe('executeOrgMerge end-to-end against real Postgres', () => {
     expect(events[0]!.loser_org_name).toBe('Loser Co');
     expect(events[0]!.survivor_org_id).toBe(f.survivor);
     expect(events[0]!.actor_user_id).toBe(f.actor);
-    // The persisted summary is exactly the {tables, warnings} shape the job,
+    // The persisted summary is exactly the {tables, warnings, topology} shape the job,
     // the status route and the UI consume — no extra keys, nothing dropped.
-    expect(Object.keys(events[0]!.summary).sort()).toEqual(['tables', 'warnings']);
+    expect(Object.keys(events[0]!.summary).sort()).toEqual(['tables', 'topology', 'warnings']);
     expect(events[0]!.summary.tables).toEqual(result.tables);
     expect(events[0]!.summary.warnings).toEqual(result.warnings);
+    expect(events[0]!.summary.topology).toEqual(result.topology);
 
     // -----------------------------------------------------------------------
     // 10. The loser is a terminal shell, and it is EMPTY except for the

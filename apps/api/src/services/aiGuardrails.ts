@@ -49,6 +49,7 @@ export const TOOL_ACTION_INPUT_KEYS: Record<string, string> = {
 // tierConfig.ts parity guard, issue #2686). Not part of the runtime API —
 // resolution always goes through checkGuardrails().
 export const TIER2_ACTIONS: Record<string, string[]> = {
+  manage_policy_feature_link: ['describe'],
   manage_alerts: ['acknowledge', 'resolve', 'suppress'],
   manage_tickets: [
     'create',
@@ -159,6 +160,7 @@ export const TIER2_ACTIONS: Record<string, string[]> = {
 // entry does not belong here; leaving a read out only costs one lightweight
 // prompt.
 export const TIER2_READONLY_ACTIONS: Record<string, string[]> = {
+  manage_policy_feature_link: ['describe'],
   execute_command: ['event_logs_list', 'file_list', 'list_processes'],
   file_operations: ['list'],
   manage_services: ['list'],
@@ -223,6 +225,12 @@ export const TIER3_ACTIONS: Record<string, string[]> = {
   manage_deliverables: ['apply_template'],
   security_scan: ['quarantine', 'remove', 'restore'],
   disk_cleanup: ['execute'],
+  // OS-native cleaners (Disk Cleanup v2 §7). `list` is a read-only catalog
+  // probe; `run` executes vetted maintenance binaries (cleanmgr, DISM,
+  // apt-get/dnf, journalctl, tmutil, brew) as root/LocalSystem with a 90-minute
+  // ceiling, and some of its handlers cannot be undone (`Previous
+  // Installations` deletes Windows.old, which is the rollback path).
+  system_cleanup: ['run'],
   manage_startup_items: ['disable', 'enable'],
   manage_scheduled_tasks: ['run', 'disable', 'enable'],
   // Fleet tools — Tier 3 actions (require user approval)
@@ -288,6 +296,7 @@ export const TIER3_ACTIONS: Record<string, string[]> = {
   manage_hyperv_checkpoints: ['delete', 'apply'],
   // Monitoring tools — Tier 3 actions (require user approval)
   manage_monitors: ['create', 'update', 'delete'],
+  manage_delivery: ['create_routing','update_routing','delete_routing','set_default','create_escalation','update_escalation','delete_escalation'],
   // Ticketing — move_org is a tenant-shape mutation and requires approval.
   // log_time_entry/start_timer/stop_timer downgraded to Tier 2 (2026-07-20).
   manage_tickets: ['move_org'],
@@ -487,6 +496,11 @@ export const TIER3_SUPERVISED_ACTIONS: Record<string, string[]> = {
   // classified in TIER1_ACTIONS and never reaches tier 3 at all.)
   security_scan: ['quarantine', 'remove', 'restore', 'scan', 'status'],
   disk_cleanup: ['execute'],
+  // Supervised, not four_eyes: the actions are a closed, vetted catalog of
+  // maintenance operations a tech could run by hand on the box, and nothing in
+  // it is externally binding or financial. Its irreversibility (Windows.old)
+  // is a property of the ACTION the tech picked, not of the approval class.
+  system_cleanup: ['run'],
   manage_startup_items: ['disable', 'enable'],
   manage_scheduled_tasks: ['run', 'disable', 'enable'],
   manage_configuration_policy: ['create', 'update', 'delete'],
@@ -514,6 +528,7 @@ export const TIER3_SUPERVISED_ACTIONS: Record<string, string[]> = {
   manage_peripheral_policies: ['create', 'update'],
   manage_dr_plan: ['delete_group'],
   manage_monitors: ['create', 'update', 'delete'],
+  manage_delivery: ['create_routing','update_routing','delete_routing','set_default','create_escalation','update_escalation','delete_escalation'],
   manage_contracts: ['pause', 'resume'],
   // create_site adds a location within an existing org, not a new tenant —
   // spec §3.2's tenant-shape bullet names only create_org/update_org.
@@ -714,6 +729,9 @@ export function resolveApprovalScope(
 
 // RBAC permission map: tool → { resource, action } (or action-based overrides)
 export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string } | Record<string, { resource: string; action: string }>> = {
+  list_time_entries: { resource: 'time_entries', action: 'read' },
+  get_running_timer: { resource: 'time_entries', action: 'read' },
+  get_timesheet: { resource: 'time_entries', action: 'read' },
   query_devices: { resource: 'devices', action: 'read' },
   get_device_details: { resource: 'devices', action: 'read' },
   get_vulnerability_report: { resource: 'devices', action: 'read' },
@@ -873,6 +891,16 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     decline: { resource: 'quotes', action: 'write' },
     create_pay_link: { resource: 'quotes', action: 'write' },
   },
+  // GET orgContacts.ts /organizations/:id/contacts: PERMISSIONS.ORGS_READ.
+  // GET remediationSuggestions.ts /: PERMISSIONS.DEVICES_READ.
+  list_remediation_suggestions: { resource: 'devices', action: 'read' },
+  list_incidents: { resource: 'alerts', action: 'read' },
+  list_ai_agents: { resource: 'ai_agents', action: 'read' },
+  list_ai_agent_runs: { resource: 'ai_agents', action: 'read' },
+  get_ai_agent_run: { resource: 'ai_agents', action: 'read' },
+  list_sites: { resource: 'sites', action: 'read' },
+  get_site: { resource: 'sites', action: 'read' },
+  list_org_contacts: { resource: 'organizations', action: 'read' },
   list_organizations: { resource: 'organizations', action: 'read' },
   manage_organizations: {
     create_org: { resource: 'organizations', action: 'write' },
@@ -897,6 +925,11 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   disk_cleanup: {
     preview: { resource: 'devices', action: 'read' },
     execute: { resource: 'devices', action: 'execute' },
+  },
+  system_cleanup: {
+    list: { resource: 'devices', action: 'read' },
+    run: { resource: 'devices', action: 'execute' },
+    status: { resource: 'devices', action: 'read' },
   },
   file_operations: {
     // SR5-01: read/list require devices.execute (not devices.read). Reading an
@@ -1092,6 +1125,7 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   get_effective_configuration: { resource: 'devices', action: 'read' },
   preview_configuration_change: { resource: 'devices', action: 'read' },
   manage_policy_feature_link: {
+    describe: { resource: 'devices', action: 'read' },
     list: { resource: 'devices', action: 'read' },
     add: { resource: 'devices', action: 'write' },
     update: { resource: 'devices', action: 'write' },
@@ -1175,10 +1209,12 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   // Documentation tools
   // `general` was never a catalog resource. The documentation index is
   // static product content, not tenant data, and the only surface that
-  // reaches this tool is the AI chat route, which already requires
-  // ORGS_READ (routes/ai.ts:167) — so mirroring that is exactly "what the
-  // route requires" and nothing weaker.
-  search_documentation: { resource: 'organizations', action: 'read' },
+  // reaches this tool is the AI chat route, which requires ai_sessions:use
+  // (routes/ai.ts, #6396) — so mirroring that is exactly "what the route
+  // requires" and nothing weaker. It used to mirror organizations:read, which
+  // the seeded Org Admin / Org Technician roles do NOT hold: chat would open
+  // and the first docs lookup would be denied.
+  search_documentation: { resource: 'ai_sessions', action: 'use' },
   // Script library tools
   search_script_library: { resource: 'scripts', action: 'read' },
   list_scripts: { resource: 'scripts', action: 'read' },
@@ -1260,6 +1296,18 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   query_compliance_policies: { resource: 'devices', action: 'read' },
   get_compliance_status: { resource: 'devices', action: 'read' },
   // Notification channel tools
+  manage_delivery: {
+    resolve: { resource: 'alerts', action: 'read' },
+    list_routing: { resource: 'alerts', action: 'read' },
+    list_escalation: { resource: 'alerts', action: 'read' },
+    create_routing: { resource: 'alerts', action: 'write' },
+    update_routing: { resource: 'alerts', action: 'write' },
+    delete_routing: { resource: 'alerts', action: 'write' },
+    set_default: { resource: 'alerts', action: 'write' },
+    create_escalation: { resource: 'alerts', action: 'write' },
+    update_escalation: { resource: 'alerts', action: 'write' },
+    delete_escalation: { resource: 'alerts', action: 'write' },
+  },
   manage_notification_channels: {
     list: { resource: 'alerts', action: 'read' },
     test: { resource: 'alerts', action: 'write' },
@@ -1433,6 +1481,8 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   // Network (mirror backing REST routes: networkChanges.ts uses devices:read + alerts:acknowledge;
   // networkBaselines.ts uses devices:write)
   get_network_changes: { resource: 'devices', action: 'read' },
+  list_network_assets: { resource: 'devices', action: 'read' },
+  get_network_asset: { resource: 'devices', action: 'read' },
   get_network_asset_reachability: { resource: 'devices', action: 'read' },
   acknowledge_network_device: { resource: 'alerts', action: 'acknowledge' },
   configure_network_baseline: { resource: 'devices', action: 'write' },
@@ -1524,7 +1574,7 @@ export const TOOL_ACTION_EXTRA_PERMISSIONS: Record<
 };
 
 // Per-tool rate limits: { limit, windowSeconds }
-const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: number }> = {
+export const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: number }> = {
   execute_command: { limit: 10, windowSeconds: 300 },
   run_script: { limit: 5, windowSeconds: 300 },
   // Deliberately looser than run_script: a stop is the safe direction, and a
@@ -1539,6 +1589,14 @@ const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: number }>
   s1_threat_action: { limit: 5, windowSeconds: 600 },
   analyze_disk_usage: { limit: 10, windowSeconds: 300 },
   disk_cleanup: { limit: 3, windowSeconds: 600 },
+  // Per TOOL, not per action (checkToolRateLimit keys on the tool name), and
+  // `run` returns immediately while the model polls `status` on this same
+  // counter — spec §9.1's "2 per hour" would exhaust after the first poll and
+  // lock the model out of the run it just started. 30/h leaves room for a
+  // catalog, a run and a poll every few minutes. The safety on `run` is the
+  // Tier 3 supervised approval; the single-run-per-device claim in
+  // startSystemCleanupRun refuses a second run while one is in flight.
+  system_cleanup: { limit: 30, windowSeconds: 3600 },
   manage_startup_items: { limit: 5, windowSeconds: 600 },
   manage_scheduled_tasks: { limit: 10, windowSeconds: 300 },
   take_screenshot: { limit: 10, windowSeconds: 300 },
@@ -1610,6 +1668,7 @@ const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: number }>
   trigger_agent_restart: { limit: 5, windowSeconds: 600 },
   create_remote_session: { limit: 10, windowSeconds: 300 },
   // Notification channel & saved filter tools
+  manage_delivery: { limit: 10, windowSeconds: 300 },
   manage_notification_channels: { limit: 10, windowSeconds: 300 },
   manage_saved_filters: { limit: 15, windowSeconds: 300 },
   // CIS hardening tools

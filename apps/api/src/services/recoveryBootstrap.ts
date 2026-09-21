@@ -87,6 +87,7 @@ export function buildRecoveryDownloadDescriptor(args: {
   providerSnapshotId: string;
   authenticatedAt?: Date | string | null;
   tokenExpiresAt?: Date | string | null;
+  capabilities?: string[];
 }) {
   const serverUrl = resolveServerUrl(args.requestUrl);
   const expiresAt = computeRecoveryDownloadExpiry(args.authenticatedAt, args.tokenExpiresAt);
@@ -105,6 +106,7 @@ export function buildRecoveryDownloadDescriptor(args: {
     requiresAuthentication: true,
     pathPrefix: `snapshots/${args.providerSnapshotId}`,
     expiresAt: expiresAt?.toISOString() ?? null,
+    ...(args.capabilities && args.capabilities.length > 0 ? { capabilities: args.capabilities } : {}),
   };
 }
 
@@ -185,6 +187,7 @@ export async function resolveSnapshotProviderConfig(snapshotDbId: string | null 
       hardwareProfile: backupSnapshots.hardwareProfile,
       systemStateManifest: backupSnapshots.systemStateManifest,
       isIncremental: backupSnapshots.isIncremental,
+      storageIdentity: backupSnapshots.storageIdentity,
     })
     .from(backupSnapshots)
     .where(eq(backupSnapshots.id, snapshotDbId))
@@ -419,15 +422,26 @@ export function buildAuthenticatedBootstrapPayload(args: {
   requestUrl?: string;
   tokenExpiresAt?: Date | string | null;
   recovery?: AuthenticatedBootstrapRecovery | null;
+  grantedCapabilities?: string[];
+  fileIndex?: { status: 'complete'; manifestSha256: string; externalCount: number; originSnapshotIds: string[] } | null;
 }) {
   const providerSnapshotId =
     getStringValue(asNullableRecord(args.snapshot), 'snapshotId') ?? args.snapshotId;
+  const download = providerSnapshotId
+    ? buildRecoveryDownloadDescriptor({
+        requestUrl: args.requestUrl,
+        providerSnapshotId,
+        authenticatedAt: args.authenticatedAt,
+        tokenExpiresAt: args.tokenExpiresAt,
+        capabilities: args.grantedCapabilities,
+      })
+    : null;
   const bootstrap = {
     version: BMR_BOOTSTRAP_VERSION,
     minHelperVersion: BMR_MIN_HELPER_VERSION,
     tokenId: args.tokenId,
     device: args.device,
-    snapshot: args.snapshot,
+    snapshot: args.fileIndex && args.snapshot ? { ...args.snapshot, fileIndex: args.fileIndex } : args.snapshot,
     restoreType: args.restoreType,
     targetConfig: args.targetConfig ?? null,
     providerType: args.providerType ?? null,
@@ -440,14 +454,7 @@ export function buildAuthenticatedBootstrapPayload(args: {
           isActive: args.config.isActive ?? null,
         }
       : null,
-    download: providerSnapshotId
-      ? buildRecoveryDownloadDescriptor({
-          requestUrl: args.requestUrl,
-          providerSnapshotId,
-          authenticatedAt: args.authenticatedAt,
-          tokenExpiresAt: args.tokenExpiresAt,
-        })
-      : null,
+    download,
     ...(args.recovery ? { recovery: args.recovery } : {}),
   };
 
@@ -460,7 +467,12 @@ export function buildAuthenticatedBootstrapPayload(args: {
     restoreType: args.restoreType,
     targetConfig: args.targetConfig ?? null,
     device: args.device,
-    snapshot: args.snapshot,
+    // W09a Task 7 fix: the outer envelope's own `snapshot` field must carry
+    // `fileIndex` too, not only the nested `bootstrap.snapshot` — Part 0 §1's
+    // wire contract puts `fileIndex` on "the existing bootstrap object"'s
+    // `snapshot`, and callers (agent + this integration test) read it off
+    // the top-level response, not the doubly-nested `bootstrap.bootstrap`.
+    snapshot: args.fileIndex && args.snapshot ? { ...args.snapshot, fileIndex: args.fileIndex } : args.snapshot,
     authenticatedAt: args.authenticatedAt.toISOString(),
     bootstrap,
   };

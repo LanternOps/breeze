@@ -1,30 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-/**
- * Delivery from a rule-less MONITOR alert (#5290).
- *
- * A monitor-sourced alert (the breach-episode / recurrence-escalation path)
- * has `ruleId: null` and `configPolicyId: null`, with `monitorId` set to the
- * `monitor_definitions` row id. Unlike a config-policy alert, there is no
- * `alert_rules`/`config_policy_alert_rules` row to read overrideSettings
- * from, so `processAlertNotifications` sources delivery straight from the
- * monitor definition's own `deliveryMode`:
- *   - 'channels' -> channelIds = monitor.deliveryChannelIds, escalation from
- *     monitor.escalationPolicyId
- *   - 'none' -> inbox-only: suppressChannelFallback skips BOTH the
- *     routing-rule lookup and the org-default-channels fallback
- *   - 'inherit' -> empty channelIds, so the existing routing-rule /
- *     org-default fallbacks run unchanged
- *
- * Mocking preamble and helper style cloned from the sibling
- * `notificationDispatcher.configPolicyOverrides.test.ts` (same `selectQueue`
- * harness, same vi.mock block, same `makeAlert` / `makeJobStub` helpers, same
- * beforeEach).
- */
+/** Monitor delivery, default-row routing, and independent escalation through resolveDelivery. */
 
-const { selectQueue, queueAddBulkMock, queueAddMock } = vi.hoisted(() => ({
+const { channelEligibilityMock, selectQueue, queueAddBulkMock, queueAddMock, queueDelayedMock } = vi.hoisted(() => ({
+  channelEligibilityMock: vi.fn(),
   selectQueue: [] as unknown[][],
   queueAddBulkMock: vi.fn(),
+  queueDelayedMock: vi.fn(),
   queueAddMock: vi.fn()
 }));
 
@@ -41,7 +23,12 @@ vi.mock('../db', () => {
     return chain;
   };
   return {
-    db: { select: vi.fn(() => makeSelect()) },
+    db: { execute: vi.fn(async () => selectQueue.shift() ?? []), select: vi.fn((fields?: Record<string, unknown>) => {
+      if (fields && 'enabled' in fields && 'orgId' in fields && 'partnerId' in fields) {
+        return { from: () => ({ where: () => channelEligibilityMock() }) };
+      }
+      return makeSelect();
+    }) },
     withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
     runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn())
   };
@@ -51,7 +38,7 @@ vi.mock('bullmq', () => ({
   Queue: class {
     addBulk = queueAddBulkMock;
     add = queueAddMock;
-    getDelayed = async () => [];
+    getDelayed = queueDelayedMock;
   },
   Worker: class {},
   Job: class {}
@@ -100,7 +87,7 @@ vi.mock('./notificationSenders/smsSender', () => ({
   sendSmsNotification: vi.fn()
 }));
 
-import { processAlertNotifications } from './notificationDispatcher';
+import { processAlertNotifications, cancelAlertEscalations } from './notificationDispatcher';
 
 function makeAlert(overrides: Record<string, unknown> = {}) {
   return {
@@ -136,6 +123,11 @@ function makeJobStub(id: string, state: string = 'waiting') {
 
 beforeEach(() => {
   selectQueue.length = 0;
+  queueDelayedMock.mockReset().mockResolvedValue([]);
+  channelEligibilityMock.mockReset().mockResolvedValue(
+    ['aaaaaaaa-0000-4000-8000-000000000011', 'aaaaaaaa-0000-4000-8000-000000000012', 'aaaaaaaa-0000-4000-8000-000000000013', 'aaaaaaaa-0000-4000-8000-000000000014']
+      .map(id => ({ id, orgId: 'org-1', partnerId: null, enabled: true })),
+  );
   queueAddBulkMock.mockReset().mockImplementation(async (jobs: unknown[]) =>
     jobs.map((_, i) => makeJobStub(`bulk-job-${i}`))
   );
@@ -144,100 +136,251 @@ beforeEach(() => {
   webhookTotalAttemptsMock.mockReset().mockReturnValue(3);
 });
 
-describe('processAlertNotifications monitor delivery (#5290)', () => {
+const ORG_LOOKUP = [{ partnerId: null }];
+const DEFAULT_ROW = {
+  id: 'default-row', orgId: 'org-1', partnerId: null, name: 'Everything else', priority: 1000000,
+  conditions: {}, channelIds: ['aaaaaaaa-0000-4000-8000-000000000014'], enabled: true, escalationPolicyId: null, isDefault: true,
+};
+
+describe('processAlertNotifications monitor delivery (#5290, on resolveDelivery since W05b)', () => {
   it("routes a rule-less monitor alert to the monitor's own channels and schedules its escalation policy", async () => {
     selectQueue.push(
-      [makeAlert({ ruleId: null, configPolicyId: null, monitorId: 'monitor-1' })], // alert
-      [{ id: 'device-1', displayName: 'Server-1' }], // device
-      [{ deliveryMode: 'channels', deliveryChannelIds: ['mc1'], escalationPolicyId: 'ep1' }], // monitor_definitions row
-      [{ partnerId: null }], // org (partnerIdForOrg)
-      // channelIds came from the monitor (['mc1']) so no routing-rule lookup
-      // and no org-default-channels fallback query happens here.
-      [{ id: 'mc1' }], // validChannels (baseline)
-      [{ id: 'ep1', orgId: 'org-1', partnerId: null, steps: [{ delayMinutes: 5, channelIds: ['mc1'] }] }], // escalation policy
-      [{ id: 'mc1' }] // validChannels (escalation)
+      [makeAlert({ ruleId: null, configPolicyId: null, monitorId: 'monitor-1' })], // 1 alert
+      [{ id: 'device-1', displayName: 'Server-1' }], // 2 device
+      ORG_LOOKUP, // 4 org (dispatcher)
+      ORG_LOOKUP, // 5 org (resolver)
+      [{ kind: 'cpu', deliveryMode: 'channels', deliveryChannelIds: ['aaaaaaaa-0000-4000-8000-000000000011'], escalationPolicyId: 'ep1' }], // 6 monitor
+      [{ id: 'aaaaaaaa-0000-4000-8000-000000000011' }], // 8 validChannels (baseline)
+      [{ id: 'ep1', orgId: 'org-1', partnerId: null, steps: [{ delayMinutes: 5, channelIds: ['aaaaaaaa-0000-4000-8000-000000000011'] }] }], // 9 escalation policy
+      [{ id: 'aaaaaaaa-0000-4000-8000-000000000011' }] // 9 validChannels (escalation)
     );
-
     const result = await processAlertNotifications({ type: 'process-alert', alertId: 'alert-1' });
-
     expect(result.queued).toBe(1);
-    expect(queueAddBulkMock).toHaveBeenCalledTimes(1);
     const bulkJobs = queueAddBulkMock.mock.calls[0]![0] as Array<{ data: { channelId: string } }>;
-    expect(bulkJobs.map((j) => j.data.channelId)).toEqual(['mc1']);
-
-    // scheduleEscalation is not exported — observe it through its effect:
-    // it looks up the escalation policy by id and then schedules a step via
-    // queue.add (baseline sends always go through addBulk, never add()).
+    expect(bulkJobs.map((j) => j.data.channelId)).toEqual(['aaaaaaaa-0000-4000-8000-000000000011']);
     expect(queueAddMock).toHaveBeenCalledTimes(1);
-    const [name, data] = queueAddMock.mock.calls[0]!;
-    expect(name).toBe('send');
-    expect(data).toEqual({ type: 'send', alertId: 'alert-1', channelId: 'mc1', escalationStep: 1 });
+    expect(queueAddMock.mock.calls[0]![1]).toEqual({ type: 'send', alertId: 'alert-1', channelId: 'aaaaaaaa-0000-4000-8000-000000000011', escalationStep: 1 });
   });
 
-  it('delivery_mode none suppresses every channel send and never falls back to org defaults', async () => {
+  it('delivery_mode none is inbox only: no channel send, no routing lookup, no escalation', async () => {
     selectQueue.push(
-      [makeAlert({ ruleId: null, configPolicyId: null, monitorId: 'monitor-1' })], // alert
-      [{ id: 'device-1', displayName: 'Server-1' }], // device
-      [{ deliveryMode: 'none', deliveryChannelIds: [], escalationPolicyId: null }], // monitor_definitions row
-      [{ partnerId: null }], // org (partnerIdForOrg)
-      // Poison entries: a real org-default channel primed behind the
-      // fallback queries `suppressChannelFallback` must skip. If it
-      // regressed to `false`, the routing-rule lookup (empty, no match)
-      // and then the org-default-channels lookup below WOULD be reached,
-      // consuming these two entries and picking up 'should-not-be-used',
-      // which would then resolve through validChannels and get queued —
-      // an observable `result.queued === 1` instead of `0`. Under the
-      // correct (suppressed) behavior these three entries are never
-      // consumed and sit inert in `selectQueue`.
-      [], // routing rules — would be consumed only on a regression
-      [{ id: 'should-not-be-used' }], // org channels fallback — must never be reached
-      [{ id: 'should-not-be-used' }] // validChannels — must never be reached
+      [makeAlert({ ruleId: null, configPolicyId: null, monitorId: 'monitor-1' })],
+      [{ id: 'device-1', displayName: 'Server-1' }],
+      ORG_LOOKUP, ORG_LOOKUP,
+      [{ kind: 'cpu', deliveryMode: 'none', deliveryChannelIds: [], escalationPolicyId: 'ep1' }],
+      // Poison: consumed only on a regression (routing rows, validChannels).
+      [DEFAULT_ROW],
+      [{ id: 'should-not-be-used' }]
     );
-
     const result = await processAlertNotifications({ type: 'process-alert', alertId: 'alert-1' });
+    expect(result.queued).toBe(0);
+    expect(result.inAppSent).toBe(true);
+    expect(queueAddBulkMock).not.toHaveBeenCalled();
+    expect(queueAddMock).not.toHaveBeenCalled(); // 'none' drops the monitor's escalation too
+    expect(selectQueue).toHaveLength(2);
+  });
 
+  it('delivery_mode inherit resolves through routing rows and ends at the Everything else row', async () => {
+    selectQueue.push(
+      [makeAlert({ ruleId: null, configPolicyId: null, monitorId: 'monitor-1' })],
+      [{ id: 'device-1', displayName: 'Server-1' }],
+      ORG_LOOKUP, ORG_LOOKUP,
+      [{ kind: 'cpu', deliveryMode: 'inherit', deliveryChannelIds: [], escalationPolicyId: null }],
+      [DEFAULT_ROW], // 7 routing rows: only the default row
+      [{ id: 'aaaaaaaa-0000-4000-8000-000000000014' }] // 8 validChannels
+    );
+    const result = await processAlertNotifications({ type: 'process-alert', alertId: 'alert-1' });
+    expect(result.queued).toBe(1);
+    const bulkJobs = queueAddBulkMock.mock.calls[0]![0] as Array<{ data: { channelId: string } }>;
+    expect(bulkJobs.map((j) => j.data.channelId)).toEqual(['aaaaaaaa-0000-4000-8000-000000000014']);
+    expect(queueAddMock).not.toHaveBeenCalled();
+  });
+
+  it('inherit with no routing rows and no Everything else row is inbox only — the all-channels fallback is gone', async () => {
+    selectQueue.push(
+      [makeAlert({ ruleId: null, configPolicyId: null, monitorId: 'monitor-1' })],
+      [{ id: 'device-1', displayName: 'Server-1' }],
+      ORG_LOOKUP, ORG_LOOKUP,
+      [{ kind: 'cpu', deliveryMode: 'inherit', deliveryChannelIds: [], escalationPolicyId: null }],
+      [], // routing rows
+      [{ id: 'should-not-be-used' }] // poison: the old fallback query
+    );
+    const result = await processAlertNotifications({ type: 'process-alert', alertId: 'alert-1' });
     expect(result.queued).toBe(0);
     expect(queueAddBulkMock).not.toHaveBeenCalled();
-    expect(result.inAppSent).toBe(true);
+    expect(selectQueue).toHaveLength(1);
   });
 
-  it('delivery_mode inherit falls back to routing / org default channels', async () => {
+  it('inherit + monitor escalation policy schedules escalation even when delivery is inbox only', async () => {
     selectQueue.push(
-      [makeAlert({ ruleId: null, configPolicyId: null, monitorId: 'monitor-1' })], // alert
-      [{ id: 'device-1', displayName: 'Server-1' }], // device
-      [{ deliveryMode: 'inherit', deliveryChannelIds: [], escalationPolicyId: null }], // monitor_definitions row
-      [{ partnerId: null }], // org (partnerIdForOrg)
-      [], // routing rules (no match)
-      [{ id: 'org-default-channel' }], // org channels fallback
-      [{ id: 'org-default-channel' }] // validChannels
+      [makeAlert({ ruleId: null, configPolicyId: null, monitorId: 'monitor-1' })],
+      [{ id: 'device-1', displayName: 'Server-1' }],
+      ORG_LOOKUP, ORG_LOOKUP,
+      [{ kind: 'cpu', deliveryMode: 'inherit', deliveryChannelIds: [], escalationPolicyId: 'ep1' }],
+      [], // routing rows → source 'none'
+      [{ id: 'ep1', orgId: 'org-1', partnerId: null, steps: [{ delayMinutes: 5, channelIds: ['aaaaaaaa-0000-4000-8000-000000000011'] }] }], // escalation policy
+      [{ id: 'aaaaaaaa-0000-4000-8000-000000000011' }] // validChannels (escalation)
     );
-
     const result = await processAlertNotifications({ type: 'process-alert', alertId: 'alert-1' });
+    expect(result.queued).toBe(0);
+    expect(queueAddBulkMock).not.toHaveBeenCalled();
+    expect(queueAddMock).toHaveBeenCalledTimes(1);
+  });
 
+  it('an alert with both ruleId and monitorId resolves from the MONITOR, not the compiled rule\'s overrideSettings', async () => {
+    selectQueue.push(
+      [makeAlert({ ruleId: 'rule-1', monitorId: 'monitor-1' })],
+      [{ id: 'device-1', displayName: 'Server-1' }],
+      [{ overrideSettings: { notificationChannelIds: ['stale-compiled'] }, managedByMonitorId: 'monitor-1' }], // 3 rule (managed)
+      ORG_LOOKUP, ORG_LOOKUP,
+      [{ kind: 'cpu', deliveryMode: 'channels', deliveryChannelIds: ['aaaaaaaa-0000-4000-8000-000000000011'], escalationPolicyId: null }],
+      [{ id: 'aaaaaaaa-0000-4000-8000-000000000011' }]
+    );
+    const result = await processAlertNotifications({ type: 'process-alert', alertId: 'alert-1' });
     expect(result.queued).toBe(1);
     const bulkJobs = queueAddBulkMock.mock.calls[0]![0] as Array<{ data: { channelId: string } }>;
-    expect(bulkJobs.map((j) => j.data.channelId)).toEqual(['org-default-channel']);
-
-    // No escalationPolicyId → scheduleEscalation must never run.
-    expect(queueAddMock).not.toHaveBeenCalled();
+    expect(bulkJobs.map((j) => j.data.channelId)).toEqual(['aaaaaaaa-0000-4000-8000-000000000011']);
   });
 
-  it('an alert with a ruleId is unaffected by the monitor branch', async () => {
+  it('an UNMANAGED rule keeps its overrideSettings (transitional legacy override, W05b → W05d)', async () => {
     selectQueue.push(
-      [makeAlert({ ruleId: 'rule-1', monitorId: 'monitor-1' })], // alert
-      [{ id: 'device-1', displayName: 'Server-1' }], // device
-      [{ overrideSettings: { notificationChannelIds: ['channel-1'] } }], // rule — the monitorId is never read
-      [{ partnerId: null }], // org (partnerIdForOrg)
-      [{ id: 'channel-1' }] // validChannels (baseline)
+      [makeAlert({ ruleId: 'rule-1', monitorId: null })],
+      [{ id: 'device-1', displayName: 'Server-1' }],
+      [{ overrideSettings: { notificationChannelIds: ['aaaaaaaa-0000-4000-8000-000000000013'] }, managedByMonitorId: null }],
+      ORG_LOOKUP, ORG_LOOKUP,
+      [{ id: 'aaaaaaaa-0000-4000-8000-000000000013' }] // validChannels — no monitor read, no routing read
     );
-
     const result = await processAlertNotifications({ type: 'process-alert', alertId: 'alert-1' });
-
     expect(result.queued).toBe(1);
-    const bulkJobs = queueAddBulkMock.mock.calls[0]![0] as Array<{ data: { channelId: string } }>;
-    expect(bulkJobs.map((j) => j.data.channelId)).toEqual(['channel-1']);
-
-    // No escalationPolicyId on the rule's overrideSettings → no escalation.
     expect(queueAddMock).not.toHaveBeenCalled();
+    expect(selectQueue).toHaveLength(0);
   });
+
+  it('inherit escalation survives filtering all disabled baseline channels', async () => {
+    channelEligibilityMock.mockResolvedValueOnce([{ id: 'aaaaaaaa-0000-4000-8000-000000000014', orgId: 'org-1', partnerId: null, enabled: false }]);
+    selectQueue.push(
+      [makeAlert({ ruleId: null, configPolicyId: null, monitorId: 'monitor-1' })],
+      [{ id: 'device-1', displayName: 'Server-1' }], ORG_LOOKUP, ORG_LOOKUP,
+      [{ kind: 'cpu', deliveryMode: 'inherit', deliveryChannelIds: [], escalationPolicyId: 'ep1' }],
+      [DEFAULT_ROW],
+      [{ id: 'ep1', orgId: 'org-1', partnerId: null, steps: [{ delayMinutes: 5, channelIds: ['aaaaaaaa-0000-4000-8000-000000000011'] }] }],
+      [{ id: 'aaaaaaaa-0000-4000-8000-000000000011' }],
+    );
+    const result = await processAlertNotifications({ type: 'process-alert', alertId: 'alert-1' });
+    expect(result.queued).toBe(0);
+    expect(queueAddBulkMock).not.toHaveBeenCalled();
+    expect(queueAddMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+it('cancels channel and user repetitions but leaves baseline jobs alone', async () => {
+  const jobs = [
+    { type: 'send', alertId: 'alert-1', channelId: 'c', escalationStep: 11 },
+    { type: 'escalation-user', alertId: 'alert-1', userId: 'u', escalationStep: 21 },
+    { type: 'send', alertId: 'alert-1', channelId: 'c' },
+  ].map(data => ({ data, remove: vi.fn(async () => {}) }));
+  queueDelayedMock.mockResolvedValue(jobs);
+  expect(await cancelAlertEscalations('alert-1')).toBe(2);
+  expect(jobs[2]!.remove).not.toHaveBeenCalled();
+});
+
+const REVIEW_CHANNEL = 'aaaaaaaa-0000-4000-8000-000000000011';
+const REVIEW_STEP = { delayMinutes: 5, channelIds: [REVIEW_CHANNEL] };
+function queueReviewPolicy(steps: unknown) {
+  selectQueue.push(
+    [makeAlert({ monitorId: 'monitor-1' })], [{ id: 'device-1' }], ORG_LOOKUP, ORG_LOOKUP,
+    [{ kind: 'cpu', deliveryMode: 'channels', deliveryChannelIds: [REVIEW_CHANNEL], escalationPolicyId: 'ep1' }],
+    [{ id: REVIEW_CHANNEL }], [{ id: 'ep1', steps }], [{ id: REVIEW_CHANNEL }],
+  );
+}
+describe('legacy escalation policy recovery (F1)', () => {
+  it.each([
+    ['empty', []],
+    ['no targets', [{ delayMinutes: 5, channelIds: [] }]],
+    ['zero delay', [{ ...REVIEW_STEP, delayMinutes: 0 }]],
+    ['extra key', [{ ...REVIEW_STEP, obsolete: true }]],
+    ['eleven steps', Array.from({ length: 11 }, () => REVIEW_STEP)],
+  ])('keeps baseline delivery for %s', async (_name, steps) => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    queueReviewPolicy(steps);
+    try {
+      await expect(processAlertNotifications({ type: 'process-alert', alertId: 'alert-1' })).resolves.toMatchObject({ queued: 1 });
+      expect(queueAddBulkMock).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]![0]).toEqual(expect.stringContaining('alert-1'));
+      expect(warn.mock.calls[0]![0]).toEqual(expect.stringContaining('ep1'));
+      expect(warn.mock.calls[0]![0]).toContain('first issue=');
+      expect(queueAddMock).toHaveBeenCalledTimes(_name === 'eleven steps' ? 10 : 0);
+    } finally { warn.mockRestore(); }
+  });
+  it('salvages mixed steps with original occurrence ids', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    queueReviewPolicy([{ delayMinutes: 0 }, { ...REVIEW_STEP, renotify: { everyMinutes: 5, maxTimes: 1 } }]);
+    try {
+      await expect(processAlertNotifications({ type: 'process-alert', alertId: 'alert-1' })).resolves.toMatchObject({ queued: 1 });
+      expect(queueAddMock.mock.calls.map(call => call[1].escalationStep)).toEqual([2, 12]);
+      expect(queueAddMock.mock.calls.map(call => call[2].jobId)).toEqual([
+        `escalation-alert-1-step2-${REVIEW_CHANNEL}`, `escalation-alert-1-step12-${REVIEW_CHANNEL}`,
+      ]);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]![0]).toContain('dropped indexes=[0]');
+    } finally { warn.mockRestore(); }
+  });
+});
+
+describe('dispatch destination diagnostics', () => {
+  it.each([false, true])('warns once for disabled routing destinations, allSkipped=%s (F2)', async allSkipped => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const disabledId = DEFAULT_ROW.channelIds[0]!;
+    channelEligibilityMock.mockResolvedValueOnce([
+      { id: REVIEW_CHANNEL, orgId: 'org-1', partnerId: null, enabled: true },
+      { id: disabledId, orgId: 'org-1', partnerId: null, enabled: false },
+    ]);
+    selectQueue.push([makeAlert()], [{ id: 'device-1' }], ORG_LOOKUP, ORG_LOOKUP,
+      [{ ...DEFAULT_ROW, isDefault: false, channelIds: allSkipped ? [disabledId] : [REVIEW_CHANNEL, disabledId] }]);
+    if (!allSkipped) selectQueue.push([{ id: REVIEW_CHANNEL }]);
+    try {
+      expect(await processAlertNotifications({ type: 'process-alert', alertId: 'alert-1' })).toMatchObject({ queued: allSkipped ? 0 : 1, inAppSent: true });
+      expect(warn).toHaveBeenCalledTimes(1);
+      const line = warn.mock.calls[0]![0];
+      for (const value of ['alert-1', 'org-1', 'routing_rule', 'default-row', 'Everything else', disabledId, 'disabled']) expect(line).toContain(value);
+      expect(queueAddBulkMock).toHaveBeenCalledTimes(allSkipped ? 0 : 1);
+    } finally { warn.mockRestore(); }
+  });
+  it('drops a destination missing transport options and logs inbox only (F4)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    selectQueue.push([makeAlert()], [{ id: 'device-1' }], ORG_LOOKUP, ORG_LOOKUP, [DEFAULT_ROW], []);
+    try {
+      expect(await processAlertNotifications({ type: 'process-alert', alertId: 'alert-1' })).toMatchObject({ queued: 0, inAppSent: true });
+      expect(queueAddBulkMock).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining(DEFAULT_ROW.channelIds[0]!));
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('alert-1'));
+      expect(log).toHaveBeenCalledWith(expect.stringContaining('alert alert-1 resolved to inbox only'));
+    } finally { warn.mockRestore(); log.mockRestore(); }
+  });
+});
+
+
+it('enqueues channel and user occurrences as one-shot jobs without domain repeat data', async () => {
+  const userId = 'aaaaaaaa-0000-4000-8000-000000000021';
+  queueReviewPolicy([{ ...REVIEW_STEP, userIds: [userId], renotify: { everyMinutes: 10, maxTimes: 2 } }]);
+  selectQueue.push(ORG_LOOKUP, [{ id: userId, name: 'Alex' }]);
+  await processAlertNotifications({ type: 'process-alert', alertId: 'alert-1' });
+  expect(queueAddMock).toHaveBeenCalledTimes(6);
+  expect(queueAddMock.mock.calls.map(([name]) => name)).toEqual([
+    'send', 'escalation-user', 'send', 'escalation-user', 'send', 'escalation-user',
+  ]);
+  expect(queueAddMock.mock.calls.map(([, , options]) => options.delay)).toEqual([
+    300000, 300000, 900000, 900000, 1500000, 1500000,
+  ]);
+  for (const [name, data, options] of queueAddMock.mock.calls) {
+    expect(options).not.toHaveProperty('repeat');
+    expect(data).not.toHaveProperty('repeat');
+    expect(data).not.toHaveProperty('renotify');
+    expect(data).toEqual({
+      type: name, alertId: 'alert-1', escalationStep: expect.any(Number),
+      ...(name === 'send' ? { channelId: REVIEW_CHANNEL } : { userId }),
+    });
+  }
 });

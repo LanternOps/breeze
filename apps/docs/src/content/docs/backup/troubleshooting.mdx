@@ -179,6 +179,46 @@ Breeze does not create simulated verification records or silent pending restores
 
 ---
 
+## Whole-machine restore looks stuck for a long time
+
+**Symptom:** A bare-metal rebuild, bare-metal recovery, VM restore, or SQL Server restore is still "in progress" after an hour or more.
+
+**Cause:** These restores download and verify one object at a time, so real hardware and large disks commonly take one to several hours — that alone isn't a failure. Breeze allows up to **24 hours** before treating a whole-machine restore as stalled.
+
+**Fix:** Let it continue; check the recovery's timeline (or the device's command history) for phase progress. If it's genuinely stuck, it's automatically marked failed once it exceeds 24 hours — investigate storage throughput or network connectivity to the target at that point.
+
+---
+
+## DR plan execution or save fails with a generic error
+
+**Symptom:** Running a DR plan fails immediately, or saving a plan reports failure without saying what's wrong.
+
+**Cause:** A recovery group is missing a prerequisite — commonly a bare-metal rebuild group with no bare-metal-restorable snapshot, no valid rebuild host, or a device reference that no longer resolves to anything, or a rebuild step's output directory isn't a valid absolute path.
+
+**Fix:** The execution error now names the specific missing prerequisite (for example "no restorable snapshot") instead of a generic error — resolve that and retry. Saving a plan now validates group configuration before writing anything, so an invalid step is refused with nothing changed; if a save still fails partway through a multi-group plan, Breeze reports it as a **partial save** and refreshes the plan list automatically rather than leaving it out of sync with the server.
+
+---
+
+## Bare-metal recovery fails with no reason shown
+
+**Symptom:** A bare-metal recovery (boot media or rebuild engine) reports **Failed**, but the recovery details in the **Recovery Bootstrap** tab show nothing beyond "failed."
+
+**Cause:** Older agents didn't always report *why* a system-state artifact failed to apply during recovery.
+
+**Fix:** Current agents record the specific failure reason (for example, which artifact failed verification) and show it directly on the recovery. If you still see a blank reason, update the recovering agent and retry.
+
+---
+
+## Post-restore validation flags healthy services as failed
+
+**Symptom:** After a bare-metal recovery, the post-restore validation probe lists a template-style unit (e.g. `getty@.service`) or a one-shot systemd unit as unhealthy, even though the recovered system is fine.
+
+**Cause:** Earlier validation probes checked template and one-shot units the same way as regular long-running services, even though those are never continuously "running" on a healthy system.
+
+**Fix:** This is fixed in current agents — the probe now skips template units and evaluates one-shot units by their actual state, so only real regressions are flagged. Update the agent if you still see this.
+
+---
+
 ## Recovery token not working
 
 **Symptom:** Bare metal recovery agent rejects the recovery token.

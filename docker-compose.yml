@@ -140,6 +140,12 @@ x-api-env: &api-env
   RECOVERY_MEDIA_WORK_DIR: ${RECOVERY_MEDIA_WORK_DIR:-/data/recovery-work}
   # Backup GC per-object grace (ms). Lab/test knob only; leave unset in production (48h).
   BACKUP_GC_GRACE_MS: ${BACKUP_GC_GRACE_MS:-}
+  # Backup storage reclamation (D18, #5429). All optional; unset = default. Production floors apply.
+  BACKUP_BASE_LEASE_MS: ${BACKUP_BASE_LEASE_MS:-}
+  BACKUP_PUBLISH_MARGIN_MS: ${BACKUP_PUBLISH_MARGIN_MS:-}
+  BACKUP_RESTORE_PIN_LINGER_MS: ${BACKUP_RESTORE_PIN_LINGER_MS:-}
+  BACKUP_GC_ORPHAN_MANIFEST_MAX_AGE_MS: ${BACKUP_GC_ORPHAN_MANIFEST_MAX_AGE_MS:-}
+  BACKUP_GC_MANIFESTLESS_PREFIX_MAX_AGE_MS: ${BACKUP_GC_MANIFESTLESS_PREFIX_MAX_AGE_MS:-}
   LOG_LEVEL: ${LOG_LEVEL:-info}
   LOG_JSON: ${LOG_JSON:-true}
   # Agent diagnostic log retention (worker role; all optional, see .env.example).
@@ -280,6 +286,8 @@ x-api-env: &api-env
   TURN_PORT: ${TURN_PORT:-3478}
   TURN_SECRET: ${TURN_SECRET:-}
   TURN_CREDENTIAL_TTL_SECONDS: ${TURN_CREDENTIAL_TTL_SECONDS:-600}
+  TURN_TLS_HOST: ${TURN_TLS_HOST:-}
+  TURN_TLS_PORT: ${TURN_TLS_PORT:-5349}
   E2E_MODE: ${E2E_MODE:-}
   # Built-in extensions ship inside the API image but load only when the
   # deployment switches them on (default off). Workspace additionally needs
@@ -434,6 +442,7 @@ x-api-env: &api-env
   # Inbound email-to-ticket (native address; separate from the M365 mailbox path)
   TICKETS_INBOUND_DOMAIN: ${TICKETS_INBOUND_DOMAIN:-}
   MAILGUN_INBOUND_SIGNING_KEY: ${MAILGUN_INBOUND_SIGNING_KEY:-}
+  INBOUND_QUEUE_MAX_PER_SEC: ${INBOUND_QUEUE_MAX_PER_SEC:-20}
   # SMS MFA + alert notifications (Twilio)
   TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:-}
   TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:-}
@@ -500,6 +509,7 @@ x-api-env: &api-env
   MCP_SSE_RATE_LIMIT_PER_MINUTE: ${MCP_SSE_RATE_LIMIT_PER_MINUTE:-}
   MCP_MESSAGE_RATE_LIMIT_PER_MINUTE: ${MCP_MESSAGE_RATE_LIMIT_PER_MINUTE:-}
   MCP_MAX_SSE_SESSIONS_PER_KEY: ${MCP_MAX_SSE_SESSIONS_PER_KEY:-}
+  MCP_TOOLS_LIST_PAGE_SIZE: ${MCP_TOOLS_LIST_PAGE_SIZE:-}
   # AI provider overrides (ANTHROPIC_API_KEY is mapped further up)
   ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-}
   ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL:-}
@@ -842,6 +852,15 @@ services:
     network_mode: host
     secrets:
       - turn_secret
+    volumes:
+      # #6163 — TURN over TLS is opt-in. coturn skips the 5349 listener SILENTLY
+      # when it has no --cert/--pkey, so the flags were advertised but dead. A
+      # static `command:` list cannot make a flag conditional, so the pair is
+      # mounted here and the entrypoint wrapper below appends the flags only
+      # when the certificate is actually readable by `nobody` (65534).
+      # Unset TURN_TLS_DIR mounts an empty in-repo placeholder => today's
+      # behaviour, minus the silence.
+      - ${TURN_TLS_DIR:-./deploy/coturn/tls-placeholder}:/etc/coturn/tls:ro
     tmpfs:
       # Writable home for the generated 0600 secret config. noexec/nosuid, tiny,
       # and gone when the container stops.
@@ -859,6 +878,22 @@ services:
         fi
         umask 077
         printf 'static-auth-secret=%s\n' "$$(cat /run/secrets/turn_secret)" > /tmp/turn-secret.conf
+        if [ -r /etc/coturn/tls/cert.pem ] && [ -r /etc/coturn/tls/privkey.pem ]; then
+          echo 'coturn: TLS certificate found — TURNS will listen on 5349.' >&2
+          # Readability is checked as the uid this shell runs as, which is the
+          # uid the server process inherits — so `-r` is exactly the right test.
+          # Expiry is not fatal (coturn still binds), but it must not pass
+          # silently: an expired certificate fails every handshake and the only
+          # symptom is a client that cannot connect (#6163).
+          if command -v openssl >/dev/null 2>&1 && \
+             ! openssl x509 -checkend 0 -noout -in /etc/coturn/tls/cert.pem >/dev/null 2>&1; then
+            echo 'coturn: WARNING — /etc/coturn/tls/cert.pem is EXPIRED (or unparseable). TURNS handshakes will fail until it is renewed and coturn restarted.' >&2
+          fi
+          set -- "$$@" --cert=/etc/coturn/tls/cert.pem --pkey=/etc/coturn/tls/privkey.pem
+        else
+          echo 'coturn: no readable certificate at /etc/coturn/tls — TURNS (5349) is disabled; only 3478 will listen.' >&2
+          echo 'Set TURN_TLS_DIR to a directory holding cert.pem + privkey.pem readable by uid 65534 (nobody). See /deploy/turn-server/.' >&2
+        fi
         exec turnserver -c /tmp/turn-secret.conf "$$@"
       - turnserver
       - --listening-port=3478

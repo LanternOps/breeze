@@ -1184,6 +1184,99 @@ describe('featureLinks routes', () => {
   });
 
   // ============================================================
+  // #6312 — maintenance inlineSettings are schema-validated on both sites
+  // ============================================================
+
+  describe('maintenance inlineSettings validation', () => {
+    const STUB_POLICY_WITH_MAINTENANCE_LINK = {
+      ...STUB_POLICY,
+      featureLinks: [{ id: LINK_ID, featureType: 'maintenance', inlineSettings: {} }],
+    };
+
+    beforeEach(() => {
+      mfaState.satisfied = true;
+      getConfigPolicyMock.mockResolvedValue(STUB_POLICY);
+      // Armed so an UNVALIDATED route would actually COMPLETE the write — the
+      // red is "garbage was persisted", not merely "a status differed".
+      addFeatureLinkMock.mockResolvedValue({ id: LINK_ID, featureType: 'maintenance' });
+      updateFeatureLinkMock.mockResolvedValue({ id: LINK_ID, featureType: 'maintenance' });
+    });
+
+    const GARBAGE = {
+      recurrence: 'fortnightly',
+      durationHours: -5,
+      timezone: 'Nowhere/Nope',
+      windowStart: 'banana',
+    };
+
+    it('rejects a malformed maintenance payload on ADD instead of writing it', async () => {
+      const res = await buildApp().request(`/${POLICY_ID}/features`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ featureType: 'maintenance', inlineSettings: GARBAGE }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ error: 'Invalid maintenance settings' });
+      expect(addFeatureLinkMock).not.toHaveBeenCalled();
+    });
+
+    it('rejects a malformed maintenance payload on UPDATE instead of writing it', async () => {
+      getConfigPolicyMock.mockResolvedValue(STUB_POLICY_WITH_MAINTENANCE_LINK);
+
+      const res = await buildApp().request(`/${POLICY_ID}/features/${LINK_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ inlineSettings: GARBAGE }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ error: 'Invalid maintenance settings' });
+      expect(updateFeatureLinkMock).not.toHaveBeenCalled();
+    });
+
+    it("rejects a 'once' window with no start — it could never open", async () => {
+      const res = await buildApp().request(`/${POLICY_ID}/features`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ featureType: 'maintenance', inlineSettings: { recurrence: 'once', windowStart: '' } }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(addFeatureLinkMock).not.toHaveBeenCalled();
+    });
+
+    it('accepts a well-formed window and persists the normalized settings', async () => {
+      const res = await buildApp().request(`/${POLICY_ID}/features`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          featureType: 'maintenance',
+          inlineSettings: { recurrence: 'daily', windowStart: '02:30', durationHours: 4, timezone: 'America/New_York' },
+        }),
+      });
+
+      expect(res.status).toBe(201);
+      expect(addFeatureLinkMock).toHaveBeenCalledWith(
+        POLICY_ID,
+        'maintenance',
+        undefined,
+        expect.objectContaining({
+          recurrence: 'daily',
+          windowStart: '02:30',
+          durationHours: 4,
+          timezone: 'America/New_York',
+          // Defaults filled in by the schema, so the stored JSONB mirror and
+          // the normalized row cannot disagree about what was configured.
+          suppressAlerts: true,
+          notifyBeforeMinutes: 15,
+        }),
+        expect.anything(),
+      );
+    });
+  });
+
+  // ============================================================
   // #5511 W02 — warranty hpCmsl block, server-stamped consent (D3)
   // ============================================================
 
@@ -1461,5 +1554,18 @@ describe('featureLinks routes', () => {
       expect(res.status).toBe(201);
       expect(addFeatureLinkMock).toHaveBeenCalled();
     });
+  });
+});
+
+describe('retired feature history response', () => {
+  it('reports that removal emptied a retained feature link', async () => {
+    mfaState.satisfied = true;
+    permState.permissions = { permissions: [{ resource: '*', action: '*' }] } as any;
+    getConfigPolicyMock.mockResolvedValue({ ...STUB_POLICY, featureLinks: [{ id: LINK_ID, featureType: 'alert_rule' }] });
+    removeFeatureLinkMock.mockResolvedValue({ id: LINK_ID, featureType: 'alert_rule', kept: true, reason: 'retired_history' });
+    const response = await buildApp().request(`/${POLICY_ID}/features/${LINK_ID}`, { method: 'DELETE' });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ success: true, kept: true, reason: 'retired_history' });
+    expect(removeFeatureLinkMock).toHaveBeenCalledWith(LINK_ID, POLICY_ID);
   });
 });

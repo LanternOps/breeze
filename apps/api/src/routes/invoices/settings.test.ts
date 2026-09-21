@@ -12,6 +12,15 @@ vi.mock('../../services/invoiceService', () => ({
   updateOrgBillingSettings: vi.fn()
 }));
 
+// Sweep paper cut #4: PATCH /partner/billing-settings must write the same
+// semantic audit shape /settings/partner's PATCH does (`partner.settings.update`
+// via writeRouteAudit) — the generic route-derived fallback in index.ts silently
+// skips a multi-org partner (resolveFallbackOrgId requires exactly one
+// accessibleOrgIds entry or an org-scoped token), so without an explicit
+// semantic audit here most partner admins get NO audit_logs row at all.
+vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: vi.fn() }));
+vi.mock('../../services/auditOrgResolver', () => ({ resolveAuditOrgIdForPartner: vi.fn(async () => 'audit-org-1') }));
+
 // Multi-currency wave 7 (#3779): the reporting-totals route is thin — the money
 // math lives in the service and is proven in reportingTotals.test.ts.
 vi.mock('../../services/reportingTotals', async () => {
@@ -41,7 +50,10 @@ vi.mock('../../middleware/auth', () => ({
     await next();
   },
   requireScope: () => async (_c: any, next: any) => next(),
-  requirePermission: () => async (_c: any, next: any) => next(),
+  requirePermission: (resource: string) => async (c: any, next: any) => {
+    if (resource === 'billing_profiles' && authState.value.profileWriteDenied) return c.json({ error: 'Permission denied' }, 403);
+    await next();
+  },
   requireMfa: () => async (c: any, next: any) => {
     if ((c.get('auth') as any)?.token?.mfa !== true) {
       return c.json({ error: 'MFA required', code: 'MFA_REQUIRED' }, 403);
@@ -54,8 +66,11 @@ import { invoiceSettingsRoutes } from './settings';
 import * as reporting from '../../services/reportingTotals';
 import { ExchangeRateServiceError } from '../../services/exchangeRateService';
 import * as svc from '../../services/invoiceService';
+import { BillingProfileServiceError } from '../../services/billingProfileService';
 import { InvoiceServiceError } from '../../services/invoiceTypes';
 import { PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../../services/partnerWideAccess';
+import * as auditEvents from '../../services/auditEvents';
+import * as orgsModule from '../../services/auditOrgResolver';
 
 const ORG_ID = '22222222-2222-2222-2222-222222222222';
 
@@ -92,6 +107,36 @@ describe('billing settings routes', () => {
       expect.objectContaining({ currencyCode: 'EUR', invoiceNumberPrefix: 'EU', invoiceTermsDays: 14 }),
       expect.objectContaining({ partnerId: 'p1' })
     );
+  });
+
+  // Sweep paper cut #4: a successful save must write an audit_logs row, the
+  // same way /settings/partner's PATCH does (writeRouteAudit +
+  // resolveAuditOrgIdForPartner, action 'partner.settings.update').
+  it('PATCH /partner/billing-settings writes a semantic audit row on success', async () => {
+    (svc.updatePartnerBillingSettings as any).mockResolvedValue({
+      currencyCode: 'EUR', defaultTaxRate: '0.200', invoiceNumberPrefix: 'EU', invoiceTermsDays: 14, invoiceFooter: 'Thanks'
+    });
+    const res = await invoiceSettingsRoutes.request('/partner/billing-settings', jsonBody({
+      currencyCode: 'EUR', defaultTaxRate: 0.2, invoiceNumberPrefix: 'EU', invoiceTermsDays: 14, invoiceFooter: 'Thanks'
+    }));
+    expect(res.status).toBe(200);
+    expect(orgsModule.resolveAuditOrgIdForPartner).toHaveBeenCalledWith('p1');
+    expect(auditEvents.writeRouteAudit).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        orgId: 'audit-org-1',
+        action: 'partner.billing_settings.update',
+        resourceType: 'partner',
+      }),
+    );
+  });
+
+  it('PATCH /partner/billing-settings does NOT write an audit row when the service call fails validation (→ 400)', async () => {
+    const res = await invoiceSettingsRoutes.request('/partner/billing-settings', jsonBody({
+      currencyCode: 'not-valid',
+    }));
+    expect(res.status).toBe(400);
+    expect(auditEvents.writeRouteAudit).not.toHaveBeenCalled();
   });
 
   it.each(['selected', 'none'] as const)(
@@ -237,6 +282,42 @@ describe('billing settings routes', () => {
       expect.objectContaining({ taxId: 'GB123', taxExempt: true, billingAddressCountry: 'GB' }),
       expect.objectContaining({ partnerId: 'p1' })
     );
+  });
+
+  it.each(['33333333-3333-4333-8333-333333333333', null])('accepts billingProfileId %s alongside settings', async billingProfileId => {
+    vi.mocked(svc.updateOrgBillingSettings).mockResolvedValue({ id: ORG_ID } as any);
+    const res = await invoiceSettingsRoutes.request(`/orgs/${ORG_ID}/billing-settings`, jsonBody({ billingProfileId, taxExempt: true }));
+    expect(res.status).toBe(200);
+    expect(svc.updateOrgBillingSettings).toHaveBeenCalledWith(ORG_ID, { billingProfileId, taxExempt: true }, expect.anything());
+  });
+
+  it('requires profile write permission when changing the assignment', async () => {
+    authState.value.profileWriteDenied = true;
+    const res = await invoiceSettingsRoutes.request(`/orgs/${ORG_ID}/billing-settings`, jsonBody({ billingProfileId: null, taxExempt: true }));
+    expect(res.status).toBe(403);
+    expect(svc.updateOrgBillingSettings).not.toHaveBeenCalled();
+  });
+
+  it('keeps settings-only patches available without profile write permission', async () => {
+    authState.value.profileWriteDenied = true;
+    vi.mocked(svc.updateOrgBillingSettings).mockResolvedValue({ id: ORG_ID } as any);
+    const res = await invoiceSettingsRoutes.request(`/orgs/${ORG_ID}/billing-settings`, jsonBody({ taxExempt: true }));
+    expect(res.status).toBe(200);
+  });
+
+  it.each([
+    [404, 'PROFILE_NOT_FOUND'], [404, 'ORG_NOT_FOUND'], [409, 'PROFILE_CURRENCY_MISMATCH'],
+  ])('maps assignment errors to %s %s', async (status, code) => {
+    vi.mocked(svc.updateOrgBillingSettings).mockRejectedValueOnce(new BillingProfileServiceError('Invalid assignment', status as number, code as string));
+    const res = await invoiceSettingsRoutes.request(`/orgs/${ORG_ID}/billing-settings`, jsonBody({ billingProfileId: '33333333-3333-4333-8333-333333333333' }));
+    expect(res.status).toBe(status);
+    expect(await res.json()).toMatchObject({ code });
+  });
+
+  it.each(['bad-id', 123, {}])('rejects invalid billingProfileId %j', async billingProfileId => {
+    const res = await invoiceSettingsRoutes.request(`/orgs/${ORG_ID}/billing-settings`, jsonBody({ billingProfileId }));
+    expect(res.status).toBe(400);
+    expect(svc.updateOrgBillingSettings).not.toHaveBeenCalled();
   });
 
   it('PATCH /orgs/:orgId/billing-settings rejects a non-UUID orgId (→ 400, no service call)', async () => {

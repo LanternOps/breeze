@@ -7,6 +7,8 @@ import { partners, organizations } from './orgs';
 import { users } from './users';
 import { tickets } from './portal';
 import { catalogItems } from './catalog';
+import { workTypes } from './workTypes';
+import { billingProfiles } from './billingProfiles';
 
 export const billingStatusEnum = pgEnum('billing_status', ['not_billed', 'billed', 'no_charge', 'contract']);
 
@@ -51,6 +53,28 @@ export const timeEntries = pgTable('time_entries', {
   // (2026-08-30-ticketing-currency.sql). Never restamped.
   currencyCode: char('currency_code', { length: 3 }),
   billingStatus: billingStatusEnum('billing_status').notNull().default('not_billed'),
+  // #4615 / spec §4.3: WHAT the labour was. Declared as a plain single-column
+  // reference; the real constraint is the COMPOSITE
+  // time_entries_work_type_partner_fk (work_type_id, partner_id) ->
+  // work_types (id, partner_id), SQL-migration-only in
+  // 2026-10-21-100100-time-entries-work-type.sql (same convention as the
+  // org/partner and ticket/org FKs documented above). NOT DEFERRABLE on
+  // purpose: it references partner_id, not org_id.
+  //
+  // In W01 this column is inert with respect to money -- nothing prices an
+  // entry from it. W02's resolveBillingRule() is what gives it meaning.
+  workTypeId: uuid('work_type_id').references(() => workTypes.id),
+  // SQL owns the NO ACTION (billing_profile_id, partner_id) composite FK.
+  // These are billing snapshots; configuration edits never restamp entries.
+  billingProfileId: uuid('billing_profile_id').references(() => billingProfiles.id),
+  coverage: text('coverage').$type<'billable' | 'included' | 'non_billable'>(),
+  billingOverridden: boolean('billing_overridden').notNull().default(false),
+  minimumMinutes: integer('minimum_minutes'),
+  roundingIncrementMinutes: integer('rounding_increment_minutes'),
+  // Spec §3.5: minutes actually billed after the card's minimum and rounding.
+  // Written by the service, pinned by time_entries_billable_minutes_chk. NULL
+  // while a timer runs and on pre-feature rows — money readers COALESCE.
+  billableMinutes: integer('billable_minutes'),
   // W06 (#3900) provenance. Server-stamped only — no public zod schema accepts it.
   // Values enforced by CHECK time_entries_source_chk in SQL:
   // 'manual' | 'timer' | 'location' | 'remote_session' | 'support_session' |

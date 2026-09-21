@@ -9,6 +9,7 @@
     "startButton": "Start a Fleet Design",
     "startError": "Could not start a Fleet Design run.",
     "startSuccess": "Fleet Design run started.",
+    "running": "Fleet Design running…",
     "empty": "No Fleet Designs yet for this organization.",
     "loadError": "Failed to load Fleet Designs.",
     "detailLoadError": "Failed to load this Fleet Design.",

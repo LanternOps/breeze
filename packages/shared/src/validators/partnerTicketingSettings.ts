@@ -35,6 +35,19 @@ export const ticketingInboundSettingsSchema = z.object({
   dropUnverifiedSenders: z.boolean().optional(),
   autoresponseSubject: z.string().max(200).nullable().optional(),
   autoresponseBody: z.string().max(5000).nullable().optional(),
+  // Reply-to-client content mode. Default (false/absent) keeps the existing
+  // portal-notification email ("you have a new reply, sign in"). When true, a
+  // public tech reply emails the customer the actual comment text (threaded) —
+  // for MSPs that do not run the client portal.
+  //
+  // Transport caveat: this applies to replies sent through the platform email
+  // service. Partners whose ticket mailbox is a CONNECTED Microsoft 365 mailbox
+  // keep receiving the portal notification even with this enabled — the M365
+  // reply is a Graph createReply against the last inbound message and its
+  // recipient set (external Reply-To/CC) is not yet validated, so the comment
+  // text is withheld from that path until it is, rather than risk sending real
+  // content to an unvalidated recipient.
+  fullMessageReply: z.boolean().optional(),
 });
 export type TicketingInboundSettings = z.infer<typeof ticketingInboundSettingsSchema>;
 

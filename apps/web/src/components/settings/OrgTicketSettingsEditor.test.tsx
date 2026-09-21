@@ -25,11 +25,6 @@ const SETTINGS = {
     urgent: { responseMinutes: 15, resolutionMinutes: 60 },
     high: { responseMinutes: 60, resolutionMinutes: 240 }
   },
-  defaultHourlyRate: '125.00',
-  defaultBillable: true,
-  rateCurrency: 'USD',
-  orgCurrency: 'USD',
-  partnerCurrency: 'USD'
 };
 
 const PARTNER_CONFIG = {
@@ -92,9 +87,8 @@ describe('OrgTicketSettingsEditor', () => {
     expect((screen.getByTestId('org-ticket-sla-normal-response') as HTMLInputElement).value).toBe('');
     expect((screen.getByTestId('org-ticket-sla-low-response') as HTMLInputElement).value).toBe('');
 
-    // Billing defaults
-    expect((screen.getByTestId('org-ticket-rate') as HTMLInputElement).value).toBe('125.00');
-    expect((screen.getByTestId('org-ticket-billable') as HTMLSelectElement).value).toBe('true');
+    expect(screen.queryByTestId('org-ticket-rate')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('org-ticket-billable')).not.toBeInTheDocument();
   });
 
   it('renders partner default values as placeholders when config is available', async () => {
@@ -131,13 +125,11 @@ describe('OrgTicketSettingsEditor', () => {
     expect((screen.getByTestId('org-ticket-sla-urgent-response') as HTMLInputElement).placeholder).toBe('Partner default');
   });
 
-  it('sends wholesale slaOverrides (all non-blank cells), rate as number, billable correctly on save', async () => {
+  it('sends only wholesale SLA overrides, with no legacy billing fields', async () => {
     mockApi({
       orgId: ORG_ID,
       slaOverrides: {},
-      defaultHourlyRate: null,
-      defaultBillable: null
-    });
+            });
     render(<OrgTicketSettingsEditor orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);
     await waitFor(() => expect(screen.getByTestId('org-ticket-save')).toBeInTheDocument());
 
@@ -145,8 +137,6 @@ describe('OrgTicketSettingsEditor', () => {
     fireEvent.change(screen.getByTestId('org-ticket-sla-urgent-resolution'), { target: { value: '60' } });
     fireEvent.change(screen.getByTestId('org-ticket-sla-high-response'), { target: { value: '120' } });
     // high resolution left blank — key absent from urgent's object
-    fireEvent.change(screen.getByTestId('org-ticket-rate'), { target: { value: '150' } });
-    fireEvent.change(screen.getByTestId('org-ticket-billable'), { target: { value: 'false' } });
 
     fireEvent.click(screen.getByTestId('org-ticket-save'));
 
@@ -161,46 +151,7 @@ describe('OrgTicketSettingsEditor', () => {
       high: { responseMinutes: 120 }
     });
 
-    // defaultHourlyRate is sent as a number, not string
-    expect(body.defaultHourlyRate).toBe(150);
-    expect(typeof body.defaultHourlyRate).toBe('number');
-
-    // defaultBillable is boolean false
-    expect(body.defaultBillable).toBe(false);
-  });
-
-  it('sends null defaultHourlyRate when hourly rate field is blank', async () => {
-    mockApi({
-      orgId: ORG_ID,
-      slaOverrides: {},
-      defaultHourlyRate: null,
-      defaultBillable: null
-    });
-    render(<OrgTicketSettingsEditor orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);
-    await waitFor(() => expect(screen.getByTestId('org-ticket-save')).toBeInTheDocument());
-
-    fireEvent.click(screen.getByTestId('org-ticket-save'));
-
-    await waitFor(() => expect(onSave).toHaveBeenCalled());
-    const patchCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'PATCH');
-    const body = JSON.parse(String(patchCall![1]!.body));
-    // Rate unchanged (null → blank) — the dirty-field rule omits it entirely
-    expect('defaultHourlyRate' in body).toBe(false);
-    expect(body.defaultBillable).toBeNull();
-    expect(body.slaOverrides).toEqual({});
-  });
-
-  it('clears the rate (sends null) when a loaded rate is blanked out', async () => {
-    mockApi();
-    render(<OrgTicketSettingsEditor orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);
-    await waitFor(() => expect(screen.getByTestId('org-ticket-save')).toBeInTheDocument());
-    fireEvent.change(screen.getByTestId('org-ticket-rate'), { target: { value: '' } });
-    fireEvent.click(screen.getByTestId('org-ticket-save'));
-    await waitFor(() => expect(onSave).toHaveBeenCalled());
-    const patchCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'PATCH');
-    const body = JSON.parse(String(patchCall![1]!.body));
-    expect('defaultHourlyRate' in body).toBe(true);
-    expect(body.defaultHourlyRate).toBeNull();
+    expect(Object.keys(body)).toEqual(['slaOverrides']);
   });
 
   it('sends empty slaOverrides object when all cells are blank (clears all overrides)', async () => {
@@ -279,61 +230,4 @@ describe('OrgTicketSettingsEditor', () => {
     await waitFor(() => expect(onSave).toHaveBeenCalled());
   });
 
-  describe('multi-currency (#3776)', () => {
-    it('renders the currency nudge when the org currency differs from the partner currency', async () => {
-      mockApi({ ...SETTINGS, rateCurrency: 'EUR', orgCurrency: 'EUR', partnerCurrency: 'USD' });
-      render(<OrgTicketSettingsEditor orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);
-      await waitFor(() => expect(screen.getByTestId('org-ticket-settings')).toBeInTheDocument());
-      const nudge = screen.getByTestId('org-ticket-currency-nudge');
-      expect(nudge.textContent).toContain('EUR');
-      expect(nudge.textContent).toContain('USD');
-      // The rate label names the org currency, never the partner's
-      expect(screen.getByText(/Default hourly rate \(EUR\)/)).toBeInTheDocument();
-    });
-
-    it('does not render the nudge when org and partner currencies match', async () => {
-      mockApi();
-      render(<OrgTicketSettingsEditor orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);
-      await waitFor(() => expect(screen.getByTestId('org-ticket-settings')).toBeInTheDocument());
-      expect(screen.queryByTestId('org-ticket-currency-nudge')).toBeNull();
-      expect(screen.getByText(/Default hourly rate \(USD\)/)).toBeInTheDocument();
-    });
-
-    it('omits defaultHourlyRate from the PATCH when only an SLA field changed', async () => {
-      mockApi({ ...SETTINGS, defaultHourlyRate: '100.00' });
-      render(<OrgTicketSettingsEditor orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);
-      await waitFor(() => expect(screen.getByTestId('org-ticket-save')).toBeInTheDocument());
-      fireEvent.change(screen.getByTestId('org-ticket-sla-normal-response'), { target: { value: '240' } });
-      fireEvent.click(screen.getByTestId('org-ticket-save'));
-      await waitFor(() => expect(onSave).toHaveBeenCalled());
-      const patchCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'PATCH');
-      const body = JSON.parse(String(patchCall![1]!.body));
-      expect('defaultHourlyRate' in body).toBe(false);
-      expect(body.slaOverrides.normal).toEqual({ responseMinutes: 240 });
-    });
-
-    it('omits defaultHourlyRate when the same value is re-entered in a different textual form', async () => {
-      mockApi({ ...SETTINGS, defaultHourlyRate: '100.00' });
-      render(<OrgTicketSettingsEditor orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);
-      await waitFor(() => expect(screen.getByTestId('org-ticket-save')).toBeInTheDocument());
-      fireEvent.change(screen.getByTestId('org-ticket-rate'), { target: { value: '100' } });
-      fireEvent.click(screen.getByTestId('org-ticket-save'));
-      await waitFor(() => expect(onSave).toHaveBeenCalled());
-      const patchCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'PATCH');
-      const body = JSON.parse(String(patchCall![1]!.body));
-      expect('defaultHourlyRate' in body).toBe(false);
-    });
-
-    it('includes defaultHourlyRate in the PATCH when the rate actually changed', async () => {
-      mockApi({ ...SETTINGS, defaultHourlyRate: '100.00' });
-      render(<OrgTicketSettingsEditor orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);
-      await waitFor(() => expect(screen.getByTestId('org-ticket-save')).toBeInTheDocument());
-      fireEvent.change(screen.getByTestId('org-ticket-rate'), { target: { value: '120' } });
-      fireEvent.click(screen.getByTestId('org-ticket-save'));
-      await waitFor(() => expect(onSave).toHaveBeenCalled());
-      const patchCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'PATCH');
-      const body = JSON.parse(String(patchCall![1]!.body));
-      expect(body.defaultHourlyRate).toBe(120);
-    });
-  });
 });

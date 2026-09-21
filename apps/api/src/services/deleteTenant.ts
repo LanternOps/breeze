@@ -128,10 +128,12 @@ export async function runDeleteTenant(
 export function registerDeleteTenantTool(aiTools: Map<string, AiTool>): void {
   aiTools.set('delete_tenant', {
     tier: 3 as AiToolTier,
+    domain: 'admin',
+    searchHint: 'tenant deletion with a 30-day restore window',
     definition: {
       name: 'delete_tenant',
       description:
-        'Soft-delete this tenant with a 30-day restore window. The confirmation_phrase must exactly equal "delete <tenant_name> permanently" (lowercase, trimmed). Can ONLY delete the tenant this API key belongs to — cross-tenant deletion is blocked. After deletion, all devices, users, and data remain intact for 30 days and can be restored by contacting support. After 30 days, data is permanently removed.',
+        "Soft-delete only the tenant this API key belongs to; cross-tenant deletion is blocked. Data is restorable via support for 30 days, then permanently removed. confirmation_phrase must equal \"delete <tenant_name> permanently\" (lowercase, trimmed).",
       input_schema: {
         type: 'object' as const,
         properties: {

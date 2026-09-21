@@ -4,6 +4,7 @@
 // Browser rendering of the subset lives in apps/web (Tailwind `prose`) and
 // apps/portal (`.quote-rich-text` rules in its globals.css); both need styling
 // for any structural tag added here.
+import { canonicalizeHrefForSchemeCheck } from '@breeze/shared';
 import sanitizeHtml from 'sanitize-html';
 
 const RICH_TEXT_FLOW_TAGS = ['p', 'br', 'strong', 'em', 'u', 'h3', 'h4', 'ul', 'ol', 'li', 'a'] as const;
@@ -33,7 +34,7 @@ const ALLOWED_SCHEMES = ['http', 'https'];
 // href is still present when this transform sees it. Check the scheme
 // ourselves so we don't force rel/target onto a link we're about to strip.
 function hasAllowedScheme(href: string): boolean {
-  const trimmed = href.trim();
+  const trimmed = canonicalizeHrefForSchemeCheck(href);
   // Protocol-relative (`//evil.example`) has no scheme but still navigates
   // off-origin under the page's own scheme — treat it as disallowed (paired
   // with allowProtocolRelative: false below, which strips the attribute).

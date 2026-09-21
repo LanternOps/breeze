@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { Hono } from 'hono';
 
 const mocks = vi.hoisted(() => ({
@@ -6,7 +6,7 @@ const mocks = vi.hoisted(() => ({
   bearerTokenAuthMiddleware: vi.fn(),
   apiKeyAuthMiddleware: vi.fn(),
   executeTool: vi.fn(),
-  getToolDefinitions: vi.fn(() => []),
+  getToolDefinitions: vi.fn<typeof import('../services/aiTools').getToolDefinitions>(() => []),
   getToolTier: vi.fn((_: string): number | undefined => undefined),
   writeAuditEvent: vi.fn(),
   rateLimiter: vi.fn(),
@@ -105,9 +105,13 @@ vi.mock('../services/permissions', async (importOriginal) => {
     getUserPermissions: vi.fn(async () => ({
       permissions: [
         { resource: 'devices', action: 'read' },
+        { resource: 'devices', action: 'write' },
         { resource: 'alerts', action: 'read' },
+        { resource: 'alerts', action: 'write' },
         { resource: 'scripts', action: 'read' },
+        { resource: 'scripts', action: 'write' },
         { resource: 'automations', action: 'read' },
+        { resource: 'automations', action: 'write' },
       ],
       partnerId: null,
       orgId: 'org-1',
@@ -118,12 +122,15 @@ vi.mock('../services/permissions', async (importOriginal) => {
 });
 
 vi.mock('../services/aiTools', () => ({
+  aiTools: new Map(),
   getToolDefinitions: mocks.getToolDefinitions,
   executeTool: mocks.executeTool,
   getToolTier: mocks.getToolTier,
+  getToolDomain: vi.fn(() => 'devices'),
 }));
 
-vi.mock('../services/aiGuardrails', () => ({
+vi.mock('../services/aiGuardrails', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../services/aiGuardrails')>(),
   checkGuardrails: () => ({ allowed: true, tier: 1 }),
   checkToolPermission: async () => null,
   checkToolRateLimit: async () => null,
@@ -639,5 +646,113 @@ describe('Streamable HTTP transport (POST /sse)', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body).toMatchObject({ jsonrpc: '2.0', id: 1 });
+  });
+
+  describe('tools/list presentation + ordering + pagination (B-W01)', () => {
+    const tools: ReturnType<typeof import('../services/aiTools').getToolDefinitions> = [
+      { name: 'query_devices', description: 'd', input_schema: { type: 'object', properties: {} } },
+      { name: 'manage_services', description: 'd', input_schema: { type: 'object', properties: { action: { type: 'string', enum: ['list', 'restart'] } } } },
+      { name: 'get_backup_status', description: 'd', input_schema: { type: 'object', properties: {} } },
+    ];
+    beforeEach(() => {
+      mocks.apiKeyAuthMiddleware.mockImplementation(async (c: any, next: any) => {
+        setApiKeyContext(c, ['ai:read', 'ai:write']);
+        return next();
+      });
+      vi.stubEnv('MCP_TOOLS_LIST_PAGE_SIZE', '0');
+      mocks.getToolDefinitions.mockReturnValue(tools);
+      mocks.getToolTier.mockImplementation((n: string) => (n === 'manage_services' ? 2 : 1));
+    });
+
+    afterEach(() => vi.unstubAllEnvs());
+
+    async function listWith(params?: Record<string, unknown>) {
+      const app = appWithMcpRoutes();
+      const init = await app.request('/mcp/sse', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-API-Key': 'k' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18' } }) });
+      const sid = init.headers.get('Mcp-Session-Id')!;
+      const res = await app.request('/mcp/sse', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-API-Key': 'k', 'Mcp-Session-Id': sid, 'MCP-Protocol-Version': '2025-06-18' }, body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list', params }) });
+      return (await res.json()).result as { tools: Array<Record<string, unknown>>; nextCursor?: string };
+    }
+
+    it('sorts by name and decorates every tool with title, annotations and _meta', async () => {
+      const { tools: listed, nextCursor } = await listWith();
+      expect(listed.map((t) => t.name)).toEqual(['get_backup_status', 'manage_services', 'query_devices']);
+      expect(nextCursor).toBeUndefined();
+      expect(listed[0]).toMatchObject({ title: 'Get backup status', annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }, _meta: { 'app.breeze/domain': expect.any(String) } });
+      expect(listed[1]!.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: true });
+      expect(listed[1]!.inputSchema).toBeDefined();
+    });
+
+    it('paginates when MCP_TOOLS_LIST_PAGE_SIZE is set and rejects a bad cursor', async () => {
+      vi.stubEnv('MCP_TOOLS_LIST_PAGE_SIZE', '2');
+      try {
+        const page1 = await listWith();
+        expect(page1.tools.map((t) => t.name)).toEqual(['get_backup_status', 'manage_services']);
+        expect(page1.nextCursor).toEqual(expect.any(String));
+        const page2 = await listWith({ cursor: page1.nextCursor });
+        expect(page2.tools.map((t) => t.name)).toEqual(['query_devices']);
+        expect(page2.nextCursor).toBeUndefined();
+        const app = appWithMcpRoutes();
+        const init = await app.request('/mcp/sse', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-API-Key': 'k' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize' }) });
+        const bad = await app.request('/mcp/sse', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-API-Key': 'k', 'Mcp-Session-Id': init.headers.get('Mcp-Session-Id')! }, body: JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'tools/list', params: { cursor: '!!' } }) });
+        expect((await bad.json()).error.code).toBe(-32602);
+      } finally { vi.unstubAllEnvs(); }
+    });
+  });
+
+  describe('tools/call structuredContent (B-W01)', () => {
+    async function call(resultText: string) {
+      mocks.getToolDefinitions.mockReturnValue([{ name: 'query_devices', description: 'd', input_schema: { type: 'object', properties: {} } }]);
+      mocks.getToolTier.mockReturnValue(1);
+      mocks.executeTool.mockResolvedValue(resultText);
+      const app = appWithMcpRoutes();
+      const init = await app.request('/mcp/sse', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-API-Key': 'k' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize' }) });
+      const res = await app.request('/mcp/sse', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-API-Key': 'k', 'Mcp-Session-Id': init.headers.get('Mcp-Session-Id')! }, body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'query_devices', arguments: {} } }) });
+      const body = await res.json();
+      return body as { result: { content: Array<{ type: string; text?: string }>; structuredContent?: unknown; isError?: boolean } };
+    }
+    it('mirrors an object result into structuredContent and keeps the text block', async () => {
+      const { result: r } = await call(JSON.stringify({ devices: [{ id: 'd1' }], showing: 1 }));
+      expect(r.content[0]).toEqual({ type: 'text', text: JSON.stringify({ devices: [{ id: 'd1' }], showing: 1 }) });
+      expect(r.structuredContent).toEqual({ devices: [{ id: 'd1' }], showing: 1 });
+    });
+    // #6408 changed the isError half of this: a pure returned error is now
+    // flagged as a tool-execution error. structuredContent stays omitted, and
+    // the text block is still the tool's own message.
+    it.each([{ error: 'device not found' }, { error: 'device not found', _chat: { outputCompacted: true } }])('omits structuredContent for pure returned errors and flags them isError: %j', async (value) => {
+      const { result: r } = await call(JSON.stringify(value));
+      expect(r.content).toEqual([{ type: 'text', text: JSON.stringify(value) }]);
+      expect(r.isError).toBe(true);
+      expect(r.structuredContent).toBeUndefined();
+    });
+    it.each([{ devices: [{ id: 'd1' }], error: null }, { items: [1], error: 'partial' }])('preserves data alongside error: %j', async (value) => {
+      expect((await call(JSON.stringify(value))).result.structuredContent).toEqual(value);
+    });
+    it('omits summarized digests', async () => {
+      const { result: r } = await call(JSON.stringify({ summarized: true, _chat: { outputCompacted: true }, preview: 'slice' }));
+      expect(r.content[0]!.type).toBe('text');
+      expect(r.structuredContent).toBeUndefined();
+    });
+    it('preserves shortened native results', async () => {
+      const value = { devices: [{ id: 'd1' }], _chat: { outputCompacted: true } };
+      expect((await call(JSON.stringify(value))).result.structuredContent).toEqual(value);
+    });
+    it('omits structuredContent for image responses', async () => {
+      const { result: r } = await call(JSON.stringify({ imageBase64: 'aW1hZ2U=', format: 'png' }));
+      expect(r.content[0]).toMatchObject({ type: 'image' });
+      expect(r.structuredContent).toBeUndefined();
+    });
+    it('omits structuredContent for non-object results (arrays, scalars, plain text)', async () => {
+      expect((await call('[1,2]')).result.structuredContent).toBeUndefined();
+      expect((await call('plain text')).result.structuredContent).toBeUndefined();
+      expect((await call('"str"')).result.structuredContent).toBeUndefined();
+    });
+    it('builds structuredContent from the redacted text, not the raw result', async () => {
+      const body = await call(JSON.stringify({ apiToken: 'secret-value', ok: true }));
+      expect(JSON.stringify(body)).not.toContain('secret-value');
+      const r = body.result;
+      // compactToolResultForChat/redactAiToolOutputText replaces token-shaped values; whatever the text block shows, structuredContent must equal it.
+      expect(r.structuredContent).toEqual(JSON.parse(r.content[0]!.text!));
+    });
   });
 });

@@ -99,6 +99,10 @@ vi.mock('../services/monitors/monitorResolver', () => ({
   resolveMonitorsForDevice: vi.fn(),
 }));
 
+vi.mock('../services/monitors/ruleConversionService', () => ({
+  convertRuleToMonitor: vi.fn(),
+}));
+
 vi.mock('../services/alertConditions', () => ({
   evaluateConditions: vi.fn(),
 }));
@@ -276,14 +280,14 @@ describe('GET /monitor-definitions', () => {
 });
 
 describe('GET /monitor-definitions/kinds', () => {
-  it('returns one entry per monitor kind (18 after W04) with kind/overridableKeys/defaultSeverity/agentDelivered', async () => {
+  it('returns one entry per monitor kind (19 after W05c1) with kind/overridableKeys/defaultSeverity/agentDelivered', async () => {
     const res = await jsonRequest(buildApp(), 'GET', '/kinds');
 
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
       data: Array<{ kind: string; overridableKeys: string[]; defaultSeverity: string; agentDelivered: boolean }>;
     };
-    expect(body.data).toHaveLength(18);
+    expect(body.data).toHaveLength(19);
     expect(body.data).toHaveLength(MONITOR_KINDS.length);
     expect(new Set(body.data.map((d) => d.kind))).toEqual(new Set(MONITOR_KINDS));
     for (const entry of body.data) {
@@ -698,4 +702,15 @@ describe('site scope on device-reading monitor routes', () => {
       expect(evaluateConditionsMock).toHaveBeenCalledTimes(1);
     });
   });
+});
+
+vi.mock('./monitorDefinitions.conversion', async () => {
+  const { Hono } = await import('hono');
+  return { monitorConversionRoutes: new Hono().get('/pending', (c) => c.json({ data: { policies: 0, rows: 0 } })) };
+});
+it('mounts the literal conversion resource before monitor ids', async () => {
+  const response = await jsonRequest(buildApp(), 'GET', '/conversion/pending');
+  expect(response.status).toBe(200);
+  expect(await response.json()).toEqual({ data: { policies: 0, rows: 0 } });
+  expect(getMonitorDefinitionMock).not.toHaveBeenCalled();
 });

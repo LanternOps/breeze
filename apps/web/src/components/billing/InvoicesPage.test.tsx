@@ -468,7 +468,7 @@ describe('InvoicesPage', () => {
     it('fetches the locked org directly and shows it in the create dialog when it falls outside the default org-list page', async () => {
       fetchMock.mockImplementation(async (input: string) => {
         // Deliberately excludes 'org-3' — the locked org — from the paginated list.
-        if (input === '/orgs/organizations') return json({ data: ORGS });
+        if (input.startsWith('/orgs/organizations?')) return json({ data: ORGS });
         if (input === '/orgs/organizations/org-3') return json({ id: 'org-3', name: 'Off-Page Org' });
         if (input.startsWith('/invoices')) return json({ data: [] });
         return json({}, false, 404);

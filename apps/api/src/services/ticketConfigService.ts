@@ -37,7 +37,7 @@ import type {
   CreateCustomerEmailDomainInput, UpdateCustomerEmailDomainInput
 } from '@breeze/shared';
 import type { TicketSlaPriority } from './ticketSla';
-import { isRepresentableInCurrency, minorUnitExponent, readTicketingInboundSettings } from '@breeze/shared';
+import { readTicketingInboundSettings } from '@breeze/shared';
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -184,32 +184,6 @@ export async function getSystemStatusId(
     )
   );
   return rows[0]?.id ?? null;
-}
-
-/**
- * Per-org billing defaults from org_ticket_settings.
- * System-context read — returns null when no row exists; never throws.
- * D6: org defaults win over category defaults in the time-entry chain.
- */
-export async function getOrgBillingDefaults(orgId: string): Promise<{
-  defaultHourlyRate: string | null;
-  rateCurrency: string;
-  defaultBillable: boolean | null;
-} | null> {
-  const rows = await runOutsideDbContext(() =>
-    withSystemDbAccessContext(() =>
-      db
-        .select({
-          defaultHourlyRate: orgTicketSettings.defaultHourlyRate,
-          rateCurrency: orgTicketSettings.rateCurrency,
-          defaultBillable: orgTicketSettings.defaultBillable,
-        })
-        .from(orgTicketSettings)
-        .where(eq(orgTicketSettings.orgId, orgId))
-        .limit(1)
-    )
-  );
-  return rows[0] ?? null;
 }
 
 /**
@@ -447,6 +421,10 @@ export async function getTicketConfig(partnerId: string) {
     dropUnverifiedSenders: inboundCfg.dropUnverifiedSenders ?? false,
     autoresponseSubject: inboundCfg.autoresponseSubject ?? null,
     autoresponseBody: inboundCfg.autoresponseBody ?? null,
+    // Reply-content mode. Emitted (default false) so the card can read it back and
+    // PRESERVE it on save — the PATCH route replaces the inbound sub-object
+    // wholesale, so a field the card omits is destroyed.
+    fullMessageReply: inboundCfg.fullMessageReply ?? false,
     slug,
     inboundLocalPart,
     domainConfigured,
@@ -621,16 +599,10 @@ export async function upsertPrioritySettings(partnerId: string, input: PriorityS
 
 function toOrgTicketSettingsResponse(orgId: string, row?: {
   slaOverrides?: unknown;
-  defaultHourlyRate?: string | null;
-  defaultBillable?: boolean | null;
-  rateCurrency?: string | null;
 }) {
   return {
     orgId,
     slaOverrides: (row?.slaOverrides ?? {}) as Record<string, unknown>,
-    defaultHourlyRate: row?.defaultHourlyRate ?? null,
-    defaultBillable: row?.defaultBillable ?? null,
-    rateCurrency: row?.rateCurrency ?? null,
   };
 }
 
@@ -646,9 +618,6 @@ export async function getOrgTicketSettings(orgId: string) {
       partnerId: organizations.partnerId,
       orgCurrency: organizations.currencyCode,
       slaOverrides: orgTicketSettings.slaOverrides,
-      defaultHourlyRate: orgTicketSettings.defaultHourlyRate,
-      defaultBillable: orgTicketSettings.defaultBillable,
-      rateCurrency: orgTicketSettings.rateCurrency,
     })
     .from(organizations)
     .leftJoin(orgTicketSettings, eq(orgTicketSettings.orgId, organizations.id))
@@ -677,61 +646,27 @@ export async function getOrgTicketSettings(orgId: string) {
 /**
  * Upsert org-level ticket settings on the org_id unique index. slaOverrides is
  * REPLACED WHOLESALE when provided (not merged) — the client sends the full
- * desired override map. defaultHourlyRate is a numeric column, so Drizzle wants
- * a string; we convert with String() (null stays null).
+ * desired override map. Labour pricing is managed through billing profiles.
  */
 export async function upsertOrgTicketSettings(
   orgId: string,
   input: OrgTicketSettingsInput,
 ) {
-  // #3778: the org currency is resolved INSIDE this transaction, under the
-  // SHARE barrier, as its first statement — the route used to resolve it in a
-  // separate pre-transaction read (`resolveAccessibleOrg`), which let a
-  // concurrent changeOrgCurrency stamp `rate_currency` with a stale code.
   return db.transaction(async (tx) => {
-  const orgCurrencyCode = (await lockOrgStampingDefaults(tx, orgId)).currencyCode;
-  const fields: Record<string, unknown> = {};
-  if (input.slaOverrides !== undefined) fields.slaOverrides = input.slaOverrides;
-  if (input.defaultHourlyRate !== undefined) {
-    if (input.defaultHourlyRate == null) {
-      fields.defaultHourlyRate = null;
-    } else {
-      const rate = String(input.defaultHourlyRate);
-      // W6-G4-1: the rate is stamped with `orgCurrencyCode` below, so it must be
-      // representable in it. The validator's multipleOf(0.01) is only the outer
-      // bound — the currency-specific exponent is knowable only here.
-      if (!isRepresentableInCurrency(rate, orgCurrencyCode)) {
-        throw new TicketConfigServiceError(
-          `${rate} is not representable in ${orgCurrencyCode} — this currency has ${minorUnitExponent(orgCurrencyCode)} decimal place(s)`,
-          400, 'RATE_NOT_REPRESENTABLE'
-        );
-      }
-      fields.defaultHourlyRate = rate;
-    }
-  }
-  if (input.defaultBillable !== undefined) fields.defaultBillable = input.defaultBillable;
+    // Preserve the org existence check and SHARE barrier for concurrent deletion.
+    await lockOrgStampingDefaults(tx, orgId);
+    const fields: Record<string, unknown> = {};
+    if (input.slaOverrides !== undefined) fields.slaOverrides = input.slaOverrides;
 
-  // rate_currency is a snapshot of the org currency the rate was entered under
-  // (spec §7). Stamped on insert; restamped on conflict ONLY when the stored
-  // rate actually changes — the editor resends the rate on every save, so a
-  // same-value PATCH (SLA/billability edit after an org currency change) must
-  // leave the historical pair intact. Decided in SQL so it is race-free.
-  const restamp = input.defaultHourlyRate !== undefined
-    ? {
-        rateCurrency: sql`CASE WHEN ${orgTicketSettings.defaultHourlyRate} IS DISTINCT FROM excluded.default_hourly_rate
-                               THEN excluded.rate_currency ELSE ${orgTicketSettings.rateCurrency} END`,
-      }
-    : {};
-
-  const [row] = await tx
-    .insert(orgTicketSettings)
-    .values({ orgId, rateCurrency: orgCurrencyCode, ...fields })
-    .onConflictDoUpdate({
-      target: orgTicketSettings.orgId,
-      set: { ...fields, ...restamp, updatedAt: new Date() },
-    })
-    .returning();
-  return toOrgTicketSettingsResponse(orgId, row);
+    const [row] = await tx
+      .insert(orgTicketSettings)
+      .values({ orgId, ...fields })
+      .onConflictDoUpdate({
+        target: orgTicketSettings.orgId,
+        set: { ...fields, updatedAt: new Date() },
+      })
+      .returning({ slaOverrides: orgTicketSettings.slaOverrides });
+    return toOrgTicketSettingsResponse(orgId, row);
   });
 }
 

@@ -85,6 +85,8 @@ export function registerAgentLogTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1 as AiToolTier,
+    domain: 'admin',
+    searchHint: 'agent diagnostic logs by device, level, component, time range or message text',
     deviceArgs: ['deviceIds'],
     definition: {
       name: 'search_agent_logs',
@@ -190,6 +192,8 @@ export function registerAgentLogTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 2 as AiToolTier,
+    domain: 'admin',
+    searchHint: 'agent log shipping verbosity: temporarily change the logging level for debugging',
     deviceArgs: ['deviceId'],
     definition: {
       name: 'set_agent_log_level',
@@ -275,11 +279,13 @@ export function registerAgentLogTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 2 as AiToolTier,
+    domain: 'admin',
+    searchHint: 'agent Go runtime pprof profiles, heap memory growth and goroutine leaks',
     deviceArgs: ['deviceId'],
     definition: {
       name: 'capture_agent_pprof',
       description:
-        "Capture Go runtime pprof profiles (heap and/or goroutine) from a device's Breeze agent process, for diagnosing agent memory growth or goroutine leaks. Returns profile metadata only (byte sizes, capture time, runtime gauges including goroutine count) — the raw profiles are stored on the command result and can be downloaded from the device command API for analysis with `go tool pprof`. Requires approval.",
+        "Capture agent heap/goroutine pprof profiles to diagnose memory growth or leaks; return sizes, capture time and runtime gauges. Raw profiles remain in the command result for download. Requires approval.",
       input_schema: {
         type: 'object' as const,
         properties: {

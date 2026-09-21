@@ -1,4 +1,13 @@
 {
+  "timesheet": {
+    "workTypeColumn": "Tipo de trabajo"
+  },
+  "workType": {
+    "label": "Tipo de trabajo",
+    "none": "Sin tipo de trabajo",
+    "archivedSuffix": "{{name}} (archivado)",
+    "loadError": "Tipos de trabajo no disponibles"
+  },
   "slaChip": {
     "pausedLeft": "En pausa · quedan {{relative}}",
     "left": "Quedan {{relative}}",
@@ -123,7 +132,9 @@
       "retry": "Reintentar",
       "remove": "Quitar archivo",
       "tooMany": "Puedes adjuntar como máximo {{max}} archivos a un comentario.",
-      "tooLarge": "{{name}} supera los 10 MB."
+      "tooLarge": "{{name}} supera los 10 MB.",
+      "sentWithoutAttachment_one": "Nota publicada, pero no se pudo agregar el archivo adjunto. Reinténtalo o quítalo.",
+      "sentWithoutAttachment_other": "Nota publicada, pero no se pudieron agregar {{count}} archivos adjuntos. Reinténtalo o quítalos."
     }
   },
   "ticketFeed": {
@@ -217,7 +228,9 @@
       "logFailed": "No se pudo registrar el tiempo",
       "logged": "Tiempo registrado",
       "logFailedSentence": "No se pudo registrar el tiempo."
-    }
+    },
+    "billedVsWorked": "{{worked}} h trabajadas · {{billed}} h facturadas",
+    "includedMinutes": "{{hours}} h incluidas en el contrato"
   },
   "inboundReviewQueue": {
     "title": "Cola de revisión",
@@ -514,5 +527,14 @@
       "message": "Esto oculta el ticket de todas las colas. Un administrador puede restaurarlo desde la cola Archivado.",
       "confirm": "Eliminar ticket"
     }
+  },
+  "billingOutcome": {
+    "included": "Incluido",
+    "nonBillable": "No facturable",
+    "hourly": "{{rate}} por hora",
+    "minimum": "Mínimo de {{minutes}} min",
+    "missingRate": "Facturable · tarifa no configurada",
+    "recalculated": "La facturación se recalcula para este tipo de trabajo al guardar.",
+    "unavailable": "Resultado de facturación no disponible"
   }
 }

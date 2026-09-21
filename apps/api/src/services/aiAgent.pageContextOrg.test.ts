@@ -38,7 +38,9 @@ vi.mock('../db/schema', () => ({
   devices: { id: 'devices.id', orgId: 'devices.orgId', siteId: 'devices.siteId' },
 }));
 
-vi.mock('./aiAgentSystemPrompt', () => ({ AI_SYSTEM_PROMPT_BASE: 'base' }));
+vi.mock('./aiAgentSystemPrompt', () => ({ AI_SYSTEM_PROMPT_BASE: 'base', AI_SYSTEM_PROMPT_TAIL: 'tail' }));
+vi.mock('./aiToolIndex', () => ({ composeStaticSystemPrompt: () => 'base\nindex\ntail' }));
+vi.mock('./aiAgentSdkTools', () => ({ listChatSurfaceToolNames: () => [] }));
 vi.mock('./brainDeviceContext', () => ({ getActiveDeviceContext: vi.fn().mockResolvedValue([]) }));
 vi.mock('./llm/llmConfigResolver', () => ({
   LlmUnavailableError: class LlmUnavailableError extends Error {},

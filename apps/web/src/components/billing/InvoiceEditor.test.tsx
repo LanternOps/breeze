@@ -81,6 +81,23 @@ describe('InvoiceEditor', () => {
     expect(link).toHaveTextContent('Globex Inc');
   });
 
+  // Sweep paper cut #16: the API falls back invoice.billToName to the org's
+  // name for a draft with no bill-to name of its own, and surfaces the org's
+  // billing contact email alongside it (billToEmail) — the card must show
+  // both, not just the name link.
+  it('shows the fallback billing-contact email under the Bill To name (sweep paper cut #16)', async () => {
+    const detail = draft([manualLine], { orgId: 'org-9', billToName: 'Sweep Org B' });
+    render(<InvoiceEditor detail={{ ...detail, billToEmail: 'ap@sweeporgb.example' }} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
+    expect(screen.getByTestId('invoice-bill-to')).toHaveTextContent('ap@sweeporgb.example');
+  });
+
+  it('does not show a billing-contact email line when billToEmail is absent', async () => {
+    render(<InvoiceEditor detail={draft([manualLine], { orgId: 'org-9', billToName: 'Globex Inc' })} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
+    expect(screen.queryByTestId('invoice-bill-to-email')).not.toBeInTheDocument();
+  });
+
   it('characterizes a contract overage sibling as editable while a bundle child is read-only (#3205 W04)', async () => {
     const overage = {
       ...manualLine, id: 'over', sourceType: 'contract' as const, parentLineId: null,
@@ -108,6 +125,55 @@ describe('InvoiceEditor', () => {
 
     // Once a real rate exists the hint disappears (and the Tax row shows the percent).
     rerender(<InvoiceEditor detail={draft([taxable], { taxRate: '0.07', taxTotal: '7.00' })} onChanged={vi.fn()} />);
+    expect(screen.queryByTestId('invoice-tax-rate-hint')).not.toBeInTheDocument();
+  });
+
+  it('says the inherited rate will apply at issue instead of falsely claiming none is set (#6338)', async () => {
+    // Draft carries no committed rate of its own, but the API resolved a 7.5%
+    // partner default that issueInvoice WILL apply — the old copy told the
+    // tech "no tax rate is set" and the $100.00 total they approved issued at
+    // $107.50.
+    const taxable = { ...manualLine, taxable: true };
+    const detail = { ...draft([taxable], { subtotal: '100.00' }), effectiveTaxRate: '0.07500' };
+    render(<InvoiceEditor detail={detail} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
+
+    expect(screen.queryByTestId('invoice-tax-rate-hint')).not.toBeInTheDocument();
+    const hint = screen.getByTestId('invoice-tax-inherited-hint');
+    expect(hint).toHaveTextContent('7.50%');
+    // Estimated tax on the $100.00 taxable basis, and the total it issues at.
+    expect(hint).toHaveTextContent('$7.50');
+    expect(hint).toHaveTextContent('$107.50');
+  });
+
+  it('excludes internal (non customer-visible) taxable lines from the preview (#6338)', async () => {
+    const visible = { ...manualLine, id: 'vis', taxable: true };
+    const internal = { ...manualLine, id: 'int', taxable: true, customerVisible: false, lineTotal: '40.00' };
+    render(
+      <InvoiceEditor
+        detail={{ ...draft([visible, internal], { subtotal: '100.00' }), effectiveTaxRate: '0.07500' }}
+        onChanged={vi.fn()}
+      />,
+    );
+    await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
+    const hint = screen.getByTestId('invoice-tax-inherited-hint');
+    // 7.5% of the $100.00 CUSTOMER-VISIBLE basis only — never $140.00 ($10.50).
+    expect(hint).toHaveTextContent('$7.50');
+    expect(hint).not.toHaveTextContent('$10.50');
+  });
+
+  it('still warns when neither the invoice nor the inherited rate has one (#6338)', async () => {
+    const taxable = { ...manualLine, taxable: true };
+    render(<InvoiceEditor detail={{ ...draft([taxable]), effectiveTaxRate: null }} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
+    expect(screen.getByTestId('invoice-tax-rate-hint')).toHaveTextContent('no tax rate is set');
+    expect(screen.queryByTestId('invoice-tax-inherited-hint')).not.toBeInTheDocument();
+  });
+
+  it('shows neither hint when no line is taxable, inherited rate or not (#6338)', async () => {
+    render(<InvoiceEditor detail={{ ...draft([manualLine]), effectiveTaxRate: '0.07500' }} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
+    expect(screen.queryByTestId('invoice-tax-inherited-hint')).not.toBeInTheDocument();
     expect(screen.queryByTestId('invoice-tax-rate-hint')).not.toBeInTheDocument();
   });
 

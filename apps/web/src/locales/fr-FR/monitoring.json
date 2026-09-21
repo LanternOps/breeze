@@ -7,16 +7,6 @@
     "badgeHint": "Géré par un moniteur — modifiez-le plutôt depuis le moniteur.",
     "monitorLabel": "Moniteur"
   },
-  "hub": {
-    "title": "Supervision et automatisation",
-    "tabs": {
-      "monitors": "Moniteurs",
-      "network": "Réseau",
-      "delivery": "Diffusion",
-      "legacyRules": "Règles héritées"
-    },
-    "ariaLabel": "Sections de supervision"
-  },
   "list": {
     "title": "Moniteurs",
     "description": "Surveillez une condition, réagissez sur l’appareil, notifiez et escaladez lorsqu’elle persiste.",
@@ -34,6 +24,7 @@
     "policiesCount_one": "{{count}} politique",
     "policiesCount_other": "{{count}} politiques",
     "notDeployed": "Non déployé",
+    "toggleEnabled": "Activé : {{name}}",
     "errors": {
       "fetch": "Impossible de charger les moniteurs",
       "delete": "Impossible de supprimer le moniteur",
@@ -44,6 +35,7 @@
     "builtInHint": "Fourni par Breeze. Modifiez les seuils, désactivez-le ou supprimez-le – il ne reviendra pas."
   },
   "editor": {
+    "attachedToPolicy": "Moniteur créé et attaché à la politique",
     "titleNew": "Nouveau moniteur",
     "titleEdit": "Modifier le moniteur",
     "breadcrumb": {
@@ -63,6 +55,7 @@
       "activity": "Activité"
     },
     "fields": {
+      "match": "Correspondance",
       "name": "Nom",
       "description": "Description",
       "kind": "Type",
@@ -82,7 +75,6 @@
       "channels": "Règles de routage plus ces chaînes",
       "none": "Ne pas notifier"
     },
-    "agentDeliveredHint": "Cette surveillance s’exécute sur l’appareil et doit aussi exister dans l’onglet Supervision des services et des processus de la politique, jusqu’à ce que ce soit unifié.",
     "responsesHint": "Les réponses s’exécutent dans l’ordre sur l’appareil qui a enfreint la condition.",
     "recurrenceHint": "Compté en épisodes de manquement : un nouvel épisode ne commence qu’après le rétablissement de la condition.",
     "ownerScope": {
@@ -118,9 +110,39 @@
       "title": "Tester sur un appareil",
       "selectDevice": "Appareil",
       "run": "Exécuter le test"
+    },
+    "deliveryPreview": {
+      "selectOrg": "Sélectionnez une organisation pour prévisualiser la livraison.",
+      "failed": "Impossible de prévisualiser la livraison.",
+      "loading": "Résolution de la livraison…",
+      "disabled": "{{name}} (désactivé)",
+      "unavailable": "Canal indisponible",
+      "destination": "Livraison pour {{severity}} : {{channels}}",
+      "partnerRule": "Règle du partenaire : {{name}}",
+      "orgRule": "Règle de l’organisation : {{name}}",
+      "partnerDefault": "Valeur par défaut du partenaire : {{name}}",
+      "orgDefault": "Valeur par défaut de l’organisation : {{name}}",
+      "noRow": "Aucune ligne de livraison n’est configurée.",
+      "monitorOverride": "Réglage propre au moniteur",
+      "escalation": "Escalade via {{name}}",
+      "withoutSite": "Aucun site sélectionné ; les règles propres à un site sont exclues.",
+      "testRules": "Tester cet ensemble de règles",
+      "kind": "Type de moniteur",
+      "noKind": "Aucun type de moniteur",
+      "site": "Site concerné",
+      "noSite": "Aucun site",
+      "sitesFailed": "Impossible de charger les sites.",
+      "manage": "Gérer la livraison",
+      "draft": "L’aperçu utilise les valeurs actuelles de l’éditeur.",
+      "skipped": "Ignoré {{id}} : {{reason}}",
+      "skipReasons": {
+        "disabled": "désactivé",
+        "unavailable": "indisponible"
+      }
     }
   },
   "kinds": {
+    "composite": "Composite (toutes ou une parmi plusieurs)",
     "cpu": "Utilisation du CPU",
     "memory": "Utilisation de la mémoire",
     "disk": "Utilisation du disque",
@@ -178,7 +200,8 @@
     "target": "Cible",
     "port": "Numéro de port",
     "expectStatus": "Code de statut attendu",
-    "pollingIntervalSeconds": "Interroger toutes les (secondes)"
+    "pollingIntervalSeconds": "Interroger toutes les (secondes)",
+    "match": "Correspondance"
   },
   "operators": {
     "gt": "supérieur à",
@@ -216,6 +239,10 @@
     "read": "Lecture",
     "write": "Écriture",
     "total": "Total"
+  },
+  "compositeMatch": {
+    "all": "Toutes les conditions",
+    "any": "N’importe quelle condition"
   },
   "antivirusChecks": {
     "not_protected": "Non protégé",

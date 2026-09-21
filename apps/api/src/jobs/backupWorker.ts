@@ -776,6 +776,118 @@ type BackupDispatchPrepare =
     };
 
 /**
+ * #6351: why a dispatched file/system_image backup is about to upload a FULL
+ * copy instead of deduping against a base. Emitted on every fallback so the
+ * condition is visible in the API log rather than only by counting objects in
+ * the bucket.
+ */
+export type FullBackupFallbackReason =
+  | 'no_prior_snapshot'
+  | 'base_expired'
+  | 'storage_identity_changed'
+  | 'backup_type_mismatch'
+  | 'base_job_not_completed'
+  | 'base_retired'
+  | 'base_deleted_race'
+  | 'base_retired_race';
+
+/**
+ * The newest snapshot for this device+config ignoring EVERY eligibility
+ * filter, used only to explain a fallback. `null` means there is none at all.
+ */
+export interface BaseCandidateProbe {
+  expiresAt: Date | null;
+  storageIdentity: string | null;
+  backupType: string | null;
+  jobStatus: string | null;
+  retired: boolean;
+}
+
+/**
+ * Pure classifier for the "no eligible base" fallback — mirrors the candidate
+ * query's WHERE clause, in the same order, so the reason it reports is the
+ * first filter the newest snapshot actually fails.
+ */
+export function classifyMissingBaseReason(
+  probe: BaseCandidateProbe | null,
+  ctx: { storageIdentity: string; mode: 'file' | 'system_image'; now: Date },
+): FullBackupFallbackReason {
+  if (!probe) return 'no_prior_snapshot';
+  if (probe.storageIdentity !== ctx.storageIdentity) return 'storage_identity_changed';
+  const typeMatches =
+    ctx.mode === 'system_image'
+      ? probe.backupType === 'system_image'
+      : probe.backupType === 'file' || probe.backupType === null;
+  if (!typeMatches) return 'backup_type_mismatch';
+  if (probe.expiresAt !== null && probe.expiresAt <= ctx.now) return 'base_expired';
+  if (probe.jobStatus !== 'completed') return 'base_job_not_completed';
+  if (probe.retired) return 'base_retired';
+  // Every mirrored filter passed, so the newest snapshot was not the blocker
+  // (e.g. it belongs to a different device row than the one queried). Report
+  // the generic case rather than inventing a cause.
+  return 'no_prior_snapshot';
+}
+
+/**
+ * #6351: the newest snapshot for this device+config with EVERY eligibility
+ * filter dropped, so `classifyMissingBaseReason` can name the first filter it
+ * fails. Read-only and diagnostic — run after the dispatch transaction has
+ * committed, never inside it.
+ *
+ * Deliberately NOT scoped by storage identity: when the newest snapshot sits
+ * under a different bucket/path than this dispatch, "the config was
+ * re-pointed" is the answer an operator wants first. The cost is that an
+ * older, same-identity row's own rejection reason stays unreported in that
+ * case — acceptable for a log line, and never consulted by the fallback
+ * decision itself.
+ */
+async function readBaseCandidateProbe(
+  deviceId: string,
+  configId: string,
+): Promise<BaseCandidateProbe | null> {
+  const [row] = await db
+    .select({
+      expiresAt: backupSnapshots.expiresAt,
+      storageIdentity: backupSnapshots.storageIdentity,
+      backupType: backupSnapshots.backupType,
+      jobStatus: backupJobs.status,
+      retirementId: backupSnapshotRetirements.id,
+    })
+    .from(backupSnapshots)
+    .innerJoin(backupJobs, eq(backupSnapshots.jobId, backupJobs.id))
+    .leftJoin(
+      backupSnapshotRetirements,
+      and(
+        eq(backupSnapshotRetirements.storageIdentity, backupSnapshots.storageIdentity),
+        eq(backupSnapshotRetirements.snapshotId, backupSnapshots.snapshotId),
+      ),
+    )
+    .where(and(eq(backupSnapshots.deviceId, deviceId), eq(backupSnapshots.configId, configId)))
+    .orderBy(desc(backupSnapshots.timestamp))
+    .limit(1);
+
+  if (!row) return null;
+  return {
+    expiresAt: row.expiresAt ?? null,
+    storageIdentity: row.storageIdentity ?? null,
+    backupType: row.backupType ?? null,
+    jobStatus: row.jobStatus ?? null,
+    retired: row.retirementId != null,
+  };
+}
+
+function logFullBackupFallback(
+  reason: FullBackupFallbackReason,
+  params: { jobId: string; deviceId: string; configId: string; storageIdentity: string },
+): void {
+  console.warn(
+    `[BackupWorker] Job ${params.jobId} (device ${params.deviceId}, config ${params.configId}) ` +
+      `has no incremental base and will upload a FULL copy — reason=${reason}, ` +
+      `storage_identity=${params.storageIdentity}`,
+  );
+}
+
+/**
  * D18 §3.1/§3.6: stamps this job's storage_identity (from the providerConfig
  * actually placed in the dispatch payload) on EVERY dispatched target —
  * including `hyperv_backup`/`mssql_backup` (review fix: GC must be able to
@@ -821,9 +933,18 @@ async function stampDispatchPinAndIdentity(params: {
   const mode = params.mode;
 
   const leaseMs = resolveBackupBaseLeaseMs();
-  const publishLeaseExpiresAt = new Date(Date.now() + leaseMs);
+  const dispatchedAt = new Date();
+  const publishLeaseExpiresAt = new Date(dispatchedAt.getTime() + leaseMs);
 
-  return db.transaction(async (tx) => {
+  // #6351 review fix: the fallback-reason diagnosis runs AFTER the
+  // transaction commits, never inside it. A failure in a purely explanatory
+  // query must not roll back the job-row stamp and turn an accepted
+  // full-copy dispatch into a failed backup (and in Postgres a statement
+  // error aborts the surrounding transaction outright, so catching it inside
+  // would not help).
+  let pendingFallback: FullBackupFallbackReason | 'diagnose' | null = null;
+
+  const outcome = await db.transaction(async (tx) => {
     // Review fix (spec §3.1 selection criteria): "no retirement row" is part
     // of the SELECTION itself, not a post-hoc check on whatever sorted first
     // — a LEFT JOIN + IS NULL here means a retired newest snapshot simply
@@ -856,7 +977,23 @@ async function stampDispatchPinAndIdentity(params: {
           mode === 'system_image'
             ? eq(backupSnapshots.backupType, 'system_image')
             : or(eq(backupSnapshots.backupType, 'file'), isNull(backupSnapshots.backupType)),
-          or(isNull(backupSnapshots.expiresAt), gt(backupSnapshots.expiresAt, publishLeaseExpiresAt)),
+          // #6351: the candidate must merely be UNEXPIRED RIGHT NOW — not
+          // survive the whole publish lease. Requiring
+          // `expiresAt > publishLeaseExpiresAt` was unsatisfiable for the
+          // default configuration: an ordinary daily snapshot expires at
+          // `taken + keepDaily` (7 days) while the lease runs to `now + 7
+          // days`, so the newest snapshot always fell short by exactly the
+          // gap between the two runs and EVERY backup fell back to a full
+          // copy. Survival across the lease is what the PIN is for:
+          // backupRetention.ts's `deleteSnapshotRow` returns 'pinned' for any
+          // snapshot named by an in-flight job's base_snapshot_id or by a
+          // still-live publish lease, regardless of expires_at (proved by
+          // backupRetentionPins.integration.test.ts's "skips an expired
+          // snapshot pinned as a running job's base"). Once the child
+          // publishes, the parent's objects stay reachable through the
+          // child's own manifest in the mark-and-sweep root set, so letting
+          // the parent ROW expire on schedule is safe.
+          or(isNull(backupSnapshots.expiresAt), gt(backupSnapshots.expiresAt, dispatchedAt)),
           eq(backupJobs.status, 'completed'),
           isNull(backupSnapshotRetirements.id),
         ),
@@ -876,6 +1013,7 @@ async function stampDispatchPinAndIdentity(params: {
       .where(eq(backupJobs.id, params.jobId));
 
     if (!candidate) {
+      pendingFallback = 'diagnose';
       return { baseSnapshotId: '', publishLeaseExpiresAt };
     }
 
@@ -890,6 +1028,7 @@ async function stampDispatchPinAndIdentity(params: {
     if (!locked) {
       // Row already gone — a concurrent retention delete won the race.
       await tx.update(backupJobs).set({ baseSnapshotId: null }).where(eq(backupJobs.id, params.jobId));
+      pendingFallback = 'base_deleted_race';
       return { baseSnapshotId: '', publishLeaseExpiresAt };
     }
 
@@ -906,11 +1045,40 @@ async function stampDispatchPinAndIdentity(params: {
 
     if (retirement) {
       await tx.update(backupJobs).set({ baseSnapshotId: null }).where(eq(backupJobs.id, params.jobId));
+      pendingFallback = 'base_retired_race';
       return { baseSnapshotId: '', publishLeaseExpiresAt };
     }
 
     return { baseSnapshotId: candidate.snapshotId, publishLeaseExpiresAt };
   });
+
+  if (pendingFallback !== null) {
+    const logParams = {
+      jobId: params.jobId,
+      deviceId: params.deviceId,
+      configId: params.configId,
+      storageIdentity,
+    };
+    if (pendingFallback !== 'diagnose') {
+      logFullBackupFallback(pendingFallback, logParams);
+    } else {
+      try {
+        const probe = await readBaseCandidateProbe(params.deviceId, params.configId);
+        logFullBackupFallback(
+          classifyMissingBaseReason(probe, { storageIdentity, mode, now: dispatchedAt }),
+          logParams,
+        );
+      } catch (err) {
+        // Diagnosis only — the dispatch itself already committed.
+        console.warn(
+          `[BackupWorker] Job ${params.jobId} has no incremental base and will upload a FULL copy; ` +
+            `the reason probe failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+  }
+
+  return outcome;
 }
 
 /**

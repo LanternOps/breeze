@@ -93,6 +93,8 @@ export function registerHypervTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'backup',
+    searchHint: 'Hyper-V virtual machine inventory, host and power state filters',
     deviceArgs: ['deviceId'],
     definition: {
       name: 'query_hyperv_vms',
@@ -169,6 +171,8 @@ export function registerHypervTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'backup',
+    searchHint: 'Hyper-V virtual machine details for one VM record',
     definition: {
       name: 'get_hyperv_vm_details',
       description: 'Get detailed Hyper-V VM information for a specific VM record.',
@@ -234,9 +238,11 @@ export function registerHypervTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 3,
+    domain: 'backup',
+    searchHint: 'Hyper-V virtual machine power: start, stop, force stop, pause, resume, save',
     definition: {
       name: 'manage_hyperv_vm',
-      description: 'Dispatch a Hyper-V VM state command such as start, stop, pause, or resume.',
+      description: 'Dispatch a Hyper-V VM state command such as start, stop, pause, or resume. Actions: start, stop, force_stop, pause, resume, save.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -287,6 +293,8 @@ export function registerHypervTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 3,
+    domain: 'backup',
+    searchHint: 'Hyper-V virtual machine backup with application or crash consistency',
     definition: {
       name: 'trigger_hyperv_backup',
       description: 'Dispatch a Hyper-V VM backup command to provider-backed snapshot storage for a specific VM.',
@@ -394,6 +402,8 @@ export function registerHypervTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 3,
+    domain: 'backup',
+    searchHint: 'Hyper-V virtual machine recovery and import from a backup snapshot to a host',
     deviceArgs: ['deviceId'],
     definition: {
       name: 'restore_hyperv_vm',
@@ -489,6 +499,8 @@ export function registerHypervTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 2,
+    domain: 'backup',
+    searchHint: 'Hyper-V virtual machine checkpoints: create, delete, apply',
     definition: {
       name: 'manage_hyperv_checkpoints',
       description: 'Dispatch a Hyper-V checkpoint create, delete, or apply command for a specific VM.',

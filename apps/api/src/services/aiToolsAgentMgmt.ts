@@ -54,9 +54,11 @@ export function registerAgentMgmtTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1 as AiToolTier,
+    domain: 'admin',
+    searchHint: 'agent versions: list releases and check devices for available upgrades',
     definition: {
       name: 'query_agent_versions',
-      description: 'List available agent versions and check which devices need upgrades.',
+      description: 'List available agent versions and check which devices need upgrades. Actions: list_versions, check_upgrades.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -214,6 +216,8 @@ export function registerAgentMgmtTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 3 as AiToolTier,
+    domain: 'admin',
+    searchHint: 'agent software upgrades: queue a target version for devices',
     deviceArgs: ['deviceIds'],
     definition: {
       name: 'trigger_agent_upgrade',
@@ -464,11 +468,13 @@ export function registerAgentMgmtTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 3 as AiToolTier,
+    domain: 'admin',
+    searchHint: 'silent or unresponsive agent recovery: request a restart through the watchdog',
     deviceArgs: ['deviceIds'],
     definition: {
       name: 'trigger_agent_restart',
       description:
-        'Ask the breeze-watchdog to restart the main agent on a device — recovers a wedged or silent agent (the "Agent silent · watchdog OK" state). Targets the watchdog, not the agent, so it works even when the agent itself is unresponsive. The watchdog acts on this when it is supervising/failing over the agent; a healthy agent is left untouched.',
+        "Request a watchdog restart of a silent or wedged agent, even when the agent is unresponsive. The watchdog acts only when supervising/failing over the agent; healthy agents remain untouched.",
       input_schema: {
         type: 'object' as const,
         properties: {

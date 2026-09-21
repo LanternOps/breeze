@@ -960,6 +960,31 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
     return err instanceof Error ? err.message : t('profilePage.failedToAddPasskey');
   };
 
+  /**
+   * Sweep paper cut #3: a passkey registration 500 (e.g. a WebAuthn origin
+   * mismatch that isn't a `PasskeyChallengeError` on the API side) falls
+   * through to the API's generic `app.onError` handler, whose JSON body is
+   * always `{ error: 'Internal Server Error' }` in production — that literal
+   * string used to be echoed verbatim as `passkeyError`. A 4xx from this pair
+   * of routes DOES carry a meaningful `error`/`message` (bad password, expired
+   * challenge, etc.) and should still be shown; a 5xx never does, so show a
+   * translated "try again" message instead of the raw status text.
+   */
+  const resolvePasskeyRegistrationError = (
+    data: { error?: unknown; message?: unknown },
+    status: number,
+    fallbackKey: string
+  ): string => {
+    if (status >= 500) {
+      return t('profilePage.passkeyRegistrationServerError');
+    }
+    return (
+      (typeof data.error === 'string' && data.error) ||
+      (typeof data.message === 'string' && data.message) ||
+      t(/* i18n-dynamic */ fallbackKey, { status })
+    );
+  };
+
   const handleAddPasskey = async () => {
     if (isAddingPasskey) return;
     // #4018: a passwordless SSO account proves identity with a fresh forced IdP
@@ -1073,7 +1098,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
           throw new Error(t('profilePage.ssoReauthProofExpired'));
         }
         throw new Error(
-          optionsData.error ?? optionsData.message ?? t('profilePage.failedToStartPasskeyHttp', { status: optionsResponse.status })
+          resolvePasskeyRegistrationError(optionsData, optionsResponse.status, 'profilePage.failedToStartPasskeyHttp')
         );
       }
 
@@ -1098,7 +1123,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
           throw new Error(t('profilePage.ssoReauthProofExpired'));
         }
         throw new Error(
-          verifyData.error ?? verifyData.message ?? t('profilePage.failedToSavePasskeyHttp', { status: verifyResponse.status })
+          resolvePasskeyRegistrationError(verifyData, verifyResponse.status, 'profilePage.failedToSavePasskeyHttp')
         );
       }
 
@@ -1115,7 +1140,11 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       if (registerReplacementAdopted) {
         useAuthStore.getState().commitReissuedSessionIfCurrent(generation, verifyData.tokens);
       }
-      setUser(prev => (prev ? { ...prev, mfaEnabled: true } : null));
+      // G4-14: a first-factor enrollment (`prev.mfaMethod` unset) makes this the
+      // account's MFA method. Leave an existing method alone for a second
+      // passkey added to an already-enrolled account. MFASettings reads this to
+      // decide whether the recovery-codes panel below just became relevant.
+      setUser(prev => (prev ? { ...prev, mfaEnabled: true, mfaMethod: prev.mfaMethod ?? 'passkey' } : null));
       setPasskeyName('');
       setPasskeyPassword('');
       // register/verify is the terminal write that BURNS the grant. Drop it so
@@ -1550,6 +1579,50 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
           )}
         </div>
 
+        {/* sweep paper cut #13: this field proves the account's existing MFA
+            factor for the DELETE flow only (see handleDeletePasskey) — it has
+            no effect whatsoever on handleAddPasskey / the Add passkey button
+            below, which is gated purely by `passkeyStepUpCode` in the
+            separate SR2-20 step-up block. Rendering it inside the "Add a
+            passkey" card made it look like part of that flow, so a code typed
+            here left Add permanently (and inexplicably) disabled. Giving it
+            its own section, clearly scoped to deleting, removes the
+            ambiguity without touching either ceremony. */}
+        {!isPasswordless && (user?.mfaMethod === 'totp' || user?.mfaMethod === 'sms') && (
+          <div className="space-y-2 rounded-md border p-4">
+            <div className="space-y-1">
+              <h3 className="text-sm font-medium">{t('profilePage.deletePasskeyVerifyHeading')}</h3>
+              <p className="text-xs text-muted-foreground">
+                {t('profilePage.deletePasskeyVerifyHint')}
+              </p>
+            </div>
+            <label className="text-sm font-medium" htmlFor="passkey-factor-code">
+              {t('mFASettings.currentMfaCode', { defaultValue: 'Current MFA code' })}
+            </label>
+            <div className="flex gap-2">
+              <input
+                id="passkey-factor-code"
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                value={passkeyFactorCode}
+                onChange={event => setPasskeyFactorCode(event.target.value)}
+                className="h-10 min-w-0 flex-1 rounded-md border bg-background px-3 text-sm"
+                disabled={isAddingPasskey || !!mutatingPasskeyId}
+              />
+              {user.mfaMethod === 'sms' && (
+                <button
+                  type="button"
+                  onClick={() => { void handleSendRecoveryStepUpCode(); }}
+                  disabled={isAddingPasskey || !!mutatingPasskeyId}
+                  className="h-10 rounded-md border px-3 text-sm font-medium"
+                >
+                  {t('mFASettings.sendCode', { defaultValue: 'Send code' })}
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
         <div className="space-y-4 rounded-md border p-4">
           <div className="space-y-1">
             <h3 className="text-sm font-medium">{t('profilePage.addPasskey')}</h3>
@@ -1633,34 +1706,6 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
                   {t('profilePage.passkeyStepUpNoUsableFactor')}
                 </p>
               )}
-            </div>
-          )}
-          {!isPasswordless && (user?.mfaMethod === 'totp' || user?.mfaMethod === 'sms') && (
-            <div className="space-y-2">
-              <label className="text-sm font-medium" htmlFor="passkey-factor-code">
-                {t('mFASettings.currentMfaCode', { defaultValue: 'Current MFA code' })}
-              </label>
-              <div className="flex gap-2">
-                <input
-                  id="passkey-factor-code"
-                  inputMode="numeric"
-                  autoComplete="one-time-code"
-                  value={passkeyFactorCode}
-                  onChange={event => setPasskeyFactorCode(event.target.value)}
-                  className="h-10 min-w-0 flex-1 rounded-md border bg-background px-3 text-sm"
-                  disabled={isAddingPasskey || !!mutatingPasskeyId}
-                />
-                {user.mfaMethod === 'sms' && (
-                  <button
-                    type="button"
-                    onClick={() => { void handleSendRecoveryStepUpCode(); }}
-                    disabled={isAddingPasskey || !!mutatingPasskeyId}
-                    className="h-10 rounded-md border px-3 text-sm font-medium"
-                  >
-                    {t('mFASettings.sendCode', { defaultValue: 'Send code' })}
-                  </button>
-                )}
-              </div>
             </div>
           )}
           {isPasswordless && !hasSsoReauthGrant ? (
