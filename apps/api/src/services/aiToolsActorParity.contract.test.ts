@@ -226,6 +226,11 @@ const ACTORS_WITHOUT_SITE_AXIS: Readonly<Record<string, string>> = {
   // `catalog_items` / prices / org overrides are partner- and org-owned; no
   // site column anywhere in the catalog schema.
   CatalogActor: 'catalog is partner/org-owned — no site_id in the schema',
+  // #6008 W01. backup_provider_customers is partner-axis with a mapped
+  // org_id; neither it nor backup_provider_devices carries a site column
+  // (the device link points at devices.id, whose own site scope is
+  // enforced on that table, not here).
+  RemapCustomerActor: 'backup provider customers are partner/org-owned — no site_id in the schema',
   // Spend attribution only (`userId`/`orgId`/`partnerId`), never a read filter.
   EnrichmentActor: 'AI-spend attribution struct, not an authorization actor',
   // `service_deliverables` and their evidence are org-keyed; no site column.
