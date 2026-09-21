@@ -212,6 +212,12 @@ const TARGET_GLOBS = [
   'src/components/agreements/SignedAgreementsPage.tsx',
   'src/components/agreements/TemplatesPage.tsx',
   'src/components/settings/PartnerCompanyTab.tsx',
+  // DR plan create/edit + BMR token create (#6495): the DR plan editor's
+  // multi-request save (plan write + per-group writes/removals) and the BMR
+  // recovery token create both closed silently on success and toasted nothing
+  // on failure beyond an inline banner the operator could miss.
+  'src/components/dr/DRPlanEditor.tsx',
+  'src/components/backup/RecoveryBootstrapTab.tsx',
   // Invoice/quote money-moment hosts (issue / send / delete / title / line
   // mutations): every mutation already routes through runAction, but the files
   // sat outside the guarded set — a future bare mutation on the highest-stakes
@@ -721,7 +727,9 @@ describe('no silent mutations in targeted set', () => {
     // Disk Cleanup v2 W03 adds filesystem/CleanupPanel.tsx: 151 → 152.
     // Disk Cleanup v2 W04 adds filesystem/SystemCleanupPanel.tsx: 152 → 153.
     // Billing profiles W02 adds Rates and the org assignment writer: 153 → 155.
-    expect(absoluteFiles.length).toBe(155);
+    // DR plan / BMR token create (#6495) adds DRPlanEditor.tsx and
+    // RecoveryBootstrapTab.tsx: 155 → 157.
+    expect(absoluteFiles.length).toBe(157);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }
