@@ -1200,7 +1200,8 @@
         "consequenceDraft": "Questo preventivo non è mai stato inviato. La prima cosa che il cliente ne vedrà sarà la fattura.",
         "submit": "Accetta ed emetti fattura",
         "success": "Preventivo accettato. Fattura {{number}} emessa.",
-        "error": "Impossibile registrare l'accettazione."
+        "error": "Impossibile registrare l'accettazione.",
+        "successDraftInvoice": "Preventivo accettato. Fattura creata in bozza."
       }
     },
     "detail": {

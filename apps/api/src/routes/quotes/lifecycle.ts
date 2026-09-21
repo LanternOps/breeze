@@ -204,6 +204,13 @@ quoteLifecycleRoutes.post('/:id/accept-on-behalf',
         quote: res.quote,
         invoiceId: res.invoiceId,
         invoiceIssued: res.invoiceIssued,
+        // The number the accept ALLOCATED — same value the audit event carries,
+        // and the only number the UI may put in "Invoice … issued". Without it
+        // the web toast reached for res.quote.quoteNumber and named the quote's
+        // own number, i.e. a document that does not exist. null when no number
+        // was allocated (a recurring-only quote leaves the invoice in draft),
+        // which the caller must word differently rather than print as blank.
+        invoiceNumber: res.invoiceNumber,
         contractIds: res.contractIds,
         payUrl,
       } });

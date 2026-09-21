@@ -805,6 +805,30 @@ describe('POST /:id/accept-on-behalf', () => {
     expect(body.data.quote.status).toBe('converted');
   });
 
+  // The UI's success toast says "Invoice <number> issued". Without the ALLOCATED
+  // invoice number in the response the web layer reached for quote.quoteNumber
+  // and named a document that does not exist.
+  it('returns the allocated invoice number, distinct from the quote number', async () => {
+    const res = await appWith('partner', ['quotes:accept']).request(`/${QUOTE_ID}/accept-on-behalf`, jsonReq(BODY));
+    const body = await res.json();
+    expect(body.data.invoiceNumber).toBe('INV-2026-0007');
+    expect(body.data.invoiceNumber).not.toBe(body.data.quote.quoteNumber);
+  });
+
+  // A recurring-only quote leaves the invoice in draft with no number
+  // allocated. null must reach the caller as null so it can say so, rather than
+  // being papered over with a blank in "Invoice  issued".
+  it('returns a null invoice number when the accept allocated none', async () => {
+    const { acceptQuote } = await import('../../services/quoteAcceptService');
+    vi.mocked(acceptQuote).mockResolvedValueOnce({
+      quote: { id: QUOTE_ID, orgId: 'org1', status: 'converted', quoteNumber: 'Q-2026-0001' },
+      acceptanceId: 'acc1', invoiceId: 'inv1', invoiceIssued: false, invoiceNumber: null,
+      contractIds: ['c1'], superseded: null,
+    } as never);
+    const res = await appWith('partner', ['quotes:accept']).request(`/${QUOTE_ID}/accept-on-behalf`, jsonReq(BODY));
+    expect((await res.json()).data.invoiceNumber).toBeNull();
+  });
+
   // runOutsideDbContext only re-points the ALS db proxy — the middleware's
   // outer transaction would still be held across the accept, pinning a second
   // pooled connection (#1105 class).

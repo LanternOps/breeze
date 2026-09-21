@@ -1200,7 +1200,8 @@
         "consequenceDraft": "Esta propuesta nunca se envió. Lo primero que el cliente verá de ella será la factura.",
         "submit": "Aceptar y emitir factura",
         "success": "Propuesta aceptada. Factura {{number}} emitida.",
-        "error": "No se pudo registrar la aceptación."
+        "error": "No se pudo registrar la aceptación.",
+        "successDraftInvoice": "Propuesta aceptada. Factura creada como borrador."
       }
     },
     "detail": {

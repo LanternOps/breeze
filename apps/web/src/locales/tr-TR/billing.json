@@ -1200,7 +1200,8 @@
         "consequenceDraft": "Bu teklif hiç gönderilmedi. Müşterinin onu ilk görüşü fatura olacak.",
         "submit": "Kabul et ve fatura oluştur",
         "success": "Teklif kabul edildi. {{number}} numaralı fatura oluşturuldu.",
-        "error": "Kabul kaydedilemedi."
+        "error": "Kabul kaydedilemedi.",
+        "successDraftInvoice": "Teklif kabul edildi. Fatura taslak olarak oluşturuldu."
       }
     },
     "detail": {

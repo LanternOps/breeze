@@ -1200,7 +1200,8 @@
         "consequenceDraft": "Cette proposition n'a jamais été envoyée. La facture sera la première chose que le client en verra.",
         "submit": "Accepter et émettre la facture",
         "success": "Proposition acceptée. Facture {{number}} émise.",
-        "error": "Impossible d'enregistrer l'acceptation."
+        "error": "Impossible d'enregistrer l'acceptation.",
+        "successDraftInvoice": "Proposition acceptée. Facture créée en brouillon."
       }
     },
     "detail": {

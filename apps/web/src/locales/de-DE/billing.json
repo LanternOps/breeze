@@ -1200,7 +1200,8 @@
         "consequenceDraft": "Dieses Angebot wurde nie versendet. Der Kunde sieht es zum ersten Mal als Rechnung.",
         "submit": "Annehmen und Rechnung stellen",
         "success": "Angebot angenommen. Rechnung {{number}} erstellt.",
-        "error": "Die Annahme konnte nicht erfasst werden."
+        "error": "Die Annahme konnte nicht erfasst werden.",
+        "successDraftInvoice": "Angebot angenommen. Rechnung als Entwurf erstellt."
       }
     },
     "detail": {

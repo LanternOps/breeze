@@ -1200,7 +1200,8 @@
         "consequenceDraft": "This quote was never sent. The customer's first sight of it will be the invoice.",
         "submit": "Accept and issue invoice",
         "success": "Quote accepted. Invoice {{number}} issued.",
-        "error": "Could not record the acceptance."
+        "error": "Could not record the acceptance.",
+        "successDraftInvoice": "Quote accepted. Invoice created as a draft."
       }
     },
     "detail": {

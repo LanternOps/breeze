@@ -189,6 +189,69 @@ describe('Accept on behalf', () => {
     await waitFor(() => expect(screen.queryByTestId('accept-on-behalf-consequence-email')).toBeNull());
   });
 
+  // The toast names a document the tech will go looking for. Reading the
+  // QUOTE's number here (the shape this replaced) sent them hunting for an
+  // invoice that does not exist. Asserted through the real runAction options
+  // rather than the passthrough mock, so the formatter itself is under test.
+  describe('the success toast names the INVOICE, never the quote', () => {
+    function toastFor(responseBody: unknown): string {
+      const opts = runAction.mock.calls.at(-1)?.[0] as unknown as {
+        parseSuccess: (d: unknown) => unknown;
+        successMessage: (d: unknown) => string;
+      };
+      return opts.successMessage(opts.parseSuccess(responseBody));
+    }
+
+    async function submit(): Promise<void> {
+      render(<QuoteActions detail={sent()} variant="header" onChanged={vi.fn()} />);
+      fireEvent.click(screen.getByTestId('quote-accept-on-behalf'));
+      fireEvent.change(screen.getByTestId('accept-on-behalf-reference'), { target: { value: 'PO 4471' } });
+      fireEvent.click(screen.getByTestId('accept-on-behalf-submit'));
+      await waitFor(() => expect(runAction).toHaveBeenCalled());
+    }
+
+    it('uses the allocated invoice number', async () => {
+      await submit();
+      const msg = toastFor({ data: { invoiceId: 'inv-1', invoiceNumber: 'INV-2026-0007', quote: { quoteNumber: 'Q-2026-0001' } } });
+      expect(msg).toBe('Quote accepted. Invoice INV-2026-0007 issued.');
+      expect(msg).not.toContain('Q-2026-0001');
+    });
+
+    // A recurring-only quote leaves the invoice in draft with no number. The
+    // old wording would have rendered "Invoice  issued." with a hole in it.
+    it('says the invoice is a draft when no number was allocated', async () => {
+      await submit();
+      const msg = toastFor({ data: { invoiceId: 'inv-1', invoiceNumber: null, quote: { quoteNumber: 'Q-2026-0001' } } });
+      expect(msg).toBe('Quote accepted. Invoice created as a draft.');
+      expect(msg).not.toContain('Q-2026-0001');
+    });
+  });
+
+  it('closes itself once the accept succeeds', async () => {
+    render(<QuoteActions detail={sent()} variant="header" onChanged={vi.fn()} />);
+    fireEvent.click(screen.getByTestId('quote-accept-on-behalf'));
+    fireEvent.change(screen.getByTestId('accept-on-behalf-reference'), { target: { value: 'PO 4471' } });
+    fireEvent.click(screen.getByTestId('accept-on-behalf-submit'));
+    await waitFor(() => expect(screen.queryByTestId('accept-on-behalf-submit')).toBeNull());
+  });
+
+  // An expired session is handled by the redirect runAction already triggered.
+  // A toast on top of a navigation is noise, and the accept never happened, so
+  // nothing may be treated as accepted.
+  it('neither toasts nor reports success on a 401', async () => {
+    const refresh = vi.fn();
+    const { ActionError } = await import('../../../lib/runAction');
+    runAction.mockRejectedValueOnce(new ActionError('Unauthorized', 401));
+    render(<QuoteActions detail={sent()} variant="header" onChanged={refresh} />);
+    fireEvent.click(screen.getByTestId('quote-accept-on-behalf'));
+    fireEvent.change(screen.getByTestId('accept-on-behalf-reference'), { target: { value: 'PO 4471' } });
+    fireEvent.click(screen.getByTestId('accept-on-behalf-submit'));
+    await waitFor(() => expect(runAction).toHaveBeenCalled());
+    expect(showToast).not.toHaveBeenCalled();
+    expect(refresh).not.toHaveBeenCalled();
+    expect(screen.getByTestId('accept-on-behalf-submit')).toBeTruthy();
+  });
+
   // A failure must not leave the tech believing the deal is closed: the dialog
   // stays open and nothing is refreshed away underneath them.
   it('does not refresh or close when the accept fails', async () => {

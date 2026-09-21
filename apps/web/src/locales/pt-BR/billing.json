@@ -1200,7 +1200,8 @@
         "consequenceDraft": "Esta proposta nunca foi enviada. O primeiro contato do cliente com ela será a fatura.",
         "submit": "Aceitar e emitir fatura",
         "success": "Proposta aceita. Fatura {{number}} emitida.",
-        "error": "Não foi possível registrar o aceite."
+        "error": "Não foi possível registrar o aceite.",
+        "successDraftInvoice": "Proposta aceita. Fatura criada como rascunho."
       }
     },
     "detail": {

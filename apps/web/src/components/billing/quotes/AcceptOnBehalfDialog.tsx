@@ -62,6 +62,9 @@ export default function AcceptOnBehalfDialog({ open, onClose, quote, lines, reci
     setSignerName(quote.billToName ?? '');
     setSignerEmail(recipients[0] ?? '');
     setSubmitting(false);
+    // Back to "not known yet" — a reopen must not show last time's email
+    // promise for the moments before the refetch lands.
+    setAutoEmail(null);
   }, [open, quote.billToName, recipients]);
 
   // The partner's auto-email setting, read on open from the same endpoint the
@@ -102,10 +105,16 @@ export default function AcceptOnBehalfDialog({ open, onClose, quote, lines, reci
           signerEmail: signerEmail.trim() || null,
         }),
         errorFallback: t('quotes.actions.acceptOnBehalf.error'),
-        parseSuccess: (data) => (data as { data: { invoiceId: string; quote: { quoteNumber: string | null } } }).data,
-        successMessage: (data) => t('quotes.actions.acceptOnBehalf.success', {
-          number: data.quote.quoteNumber ?? '',
-        }),
+        // `invoiceNumber` is the number the ACCEPT allocated. Never
+        // `quote.quoteNumber`: that is the quote's own number, and naming it in
+        // "Invoice … issued" tells the tech a document exists that does not.
+        parseSuccess: (data) => (data as { data: { invoiceId: string; invoiceNumber: string | null } }).data,
+        // A recurring-only quote leaves the invoice in draft with no number
+        // allocated, so there is no number to name — say what actually happened
+        // rather than printing a blank where a number belongs.
+        successMessage: (data) => (data.invoiceNumber
+          ? t('quotes.actions.acceptOnBehalf.success', { number: data.invoiceNumber })
+          : t('quotes.actions.acceptOnBehalf.successDraftInvoice')),
         onUnauthorized: UNAUTHORIZED,
       });
       onAccepted();
