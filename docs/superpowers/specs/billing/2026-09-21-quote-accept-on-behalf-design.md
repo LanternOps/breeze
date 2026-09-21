@@ -2,6 +2,7 @@
 
 **Date:** 2026-09-21
 **Status:** approved (Todd, in-session), single PR, no feature-lifecycle registration
+**Plan:** `docs/superpowers/plans/2026-09-21-quote-accept-on-behalf.md` (records six code-vs-spec deviations resolved at planning time; the plan wins where they differ)
 **Builds on:** `2026-06-16-quotes-proposals-design.md` (state machine, accept→convert),
 `2026-08-21-quote-decline-completion-design.md` (`source: 'msp'` outcome attribution),
 `2026-08-17-quote-revisions-design.md` (supersede rules)
@@ -166,7 +167,7 @@ sorts last), idempotent, no inner transaction.
 | `origin` | `text NOT NULL DEFAULT 'customer'` | CHECK `origin IN ('customer','on_behalf')` |
 | `method` | `varchar(32) NULL` | customer rows back-filled to `'typed-signature'` (the only provider that has ever run); on-behalf rows hold the request enum |
 | `reference` | `text NULL` | required at the API for on-behalf; CHECK `(origin = 'customer') OR (reference IS NOT NULL)` |
-| `recorded_by_user_id` | `uuid NULL REFERENCES users(id) ON DELETE SET NULL` | the tech; CHECK `(origin = 'customer') = (recorded_by_user_id IS NULL)` |
+| `recorded_by_user_id` | `uuid NULL REFERENCES users(id) ON DELETE SET NULL` | the tech; CHECK `(origin = 'on_behalf' OR recorded_by_user_id IS NULL)`. One-directional on purpose: `SET NULL` on tech deletion must not trip a CHECK during org erasure. |
 
 The back-fill `UPDATE` elects system scope first
 (`PERFORM set_config('breeze.scope','system',true)`) and reports its row count
