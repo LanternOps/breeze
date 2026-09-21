@@ -40,6 +40,15 @@ vi.mock('../services/securityPosture', () => ({
   getSecurityPostureTrend: vi.fn()
 }));
 
+// #6263 W01: the manual scan route now resolves the device's effective
+// security policy settings before queuing a scan (scans.ts:91). This file's
+// db mock predates that and has no hierarchy-query shape for
+// resolveSecurityScanSettingsForDevice to walk, so it must be mocked directly
+// here too — the same way src/routes/security/scans.test.ts already does.
+vi.mock('../services/featureConfigResolver', () => ({
+  resolveSecurityScanSettingsForDevice: vi.fn(async () => null),
+}));
+
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', {
