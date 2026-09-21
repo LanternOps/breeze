@@ -3,6 +3,8 @@ package syscleanup
 import (
 	"errors"
 	"testing"
+
+	"github.com/shirou/gopsutil/v3/disk"
 )
 
 // Freed bytes are MEASURED, never estimated (spec §7.1): the sum over affected
@@ -71,5 +73,60 @@ func TestSampleVolumesSkipsUnreadableMounts(t *testing.T) {
 	}
 	if got[0].Mount != "/" || got[1].Mount != "/data" || got[0].FreeBytes != 42 {
 		t.Fatalf("sampleVolumes() = %+v", got)
+	}
+}
+
+// A btrfs host commonly bind-mounts many subvolumes of the SAME backing
+// device (e.g. an OrbStack Ubuntu VM observed 228 such mounts — issue #6483).
+// Each bind mount is a distinct Mountpoint but shares one Device, so counting
+// every mountpoint blows the API's 64-volume cap and the catalog comes back
+// as a 502 "unreadable" on the panel. fixedVolumes must collapse repeats of
+// the same device down to a single representative mount.
+func TestFixedVolumesDedupesBindMountsOfTheSameDevice(t *testing.T) {
+	original := partitionsFn
+	t.Cleanup(func() { partitionsFn = original })
+
+	partitions := []disk.PartitionStat{
+		{Device: "/dev/sda2", Mountpoint: "/", Fstype: "btrfs"},
+	}
+	// 227 additional bind mounts of the same backing device under distinct
+	// subvolume paths, as btrfs bind-mounts subvolumes.
+	for i := 0; i < 227; i++ {
+		partitions = append(partitions, disk.PartitionStat{
+			Device:     "/dev/sda2",
+			Mountpoint: "/var/lib/docker/btrfs/subvolumes/vol" + string(rune('a'+i%26)) + string(rune('0'+i/26)),
+			Fstype:     "btrfs",
+		})
+	}
+	// A genuinely distinct volume must still be reported.
+	partitions = append(partitions, disk.PartitionStat{Device: "/dev/sdb1", Mountpoint: "/data", Fstype: "ext4"})
+
+	partitionsFn = func(all bool) ([]disk.PartitionStat, error) {
+		return partitions, nil
+	}
+
+	got := fixedVolumes()
+	if len(got) != 2 {
+		t.Fatalf("fixedVolumes() returned %d mounts, want 2 (one per distinct device) — got %v", len(got), got)
+	}
+}
+
+// A partition with no Device (some virtual/synthetic mounts report an empty
+// string) must not collapse into other empty-Device mounts — dedupe only
+// applies when we have a real device identity to key on.
+func TestFixedVolumesKeepsDistinctMountsWithoutADevice(t *testing.T) {
+	original := partitionsFn
+	t.Cleanup(func() { partitionsFn = original })
+
+	partitionsFn = func(all bool) ([]disk.PartitionStat, error) {
+		return []disk.PartitionStat{
+			{Device: "", Mountpoint: "/mnt/a", Fstype: "ext4"},
+			{Device: "", Mountpoint: "/mnt/b", Fstype: "ext4"},
+		}, nil
+	}
+
+	got := fixedVolumes()
+	if len(got) != 2 {
+		t.Fatalf("fixedVolumes() = %v, want both no-device mounts kept", got)
 	}
 }

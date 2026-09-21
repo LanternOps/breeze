@@ -47,16 +47,26 @@ var nonMeasurableFsTypes = []string{
 // warnings aggregate (an empty card reader is enough to populate it), so
 // treating any error as fatal would report zero volumes on a healthy machine —
 // the same trap CollectDisks documents.
+//
+// Bind-mounted filesystems collapse to one representative mount per backing
+// Device (issue #6483): a btrfs host commonly exposes one subvolume per bind
+// mount under the SAME block device — an OrbStack Ubuntu VM observed 228 of
+// them — and every one measures identical free space. Reporting each as a
+// distinct volume both wastes syscalls and can blow past the API's fixed
+// volume-count cap, turning the whole cleanup catalog into a 502. A partition
+// with no Device (some virtual/synthetic mounts) is never deduped against
+// another empty-Device partition, since there is no real identity to key on.
 func fixedVolumes() []string {
 	partitions, err := partitionsFn(false)
 	if err != nil && len(partitions) == 0 {
 		log.Warn("could not enumerate volumes for cleanup measurement", "error", err.Error())
 		return nil
 	}
-	seen := make(map[string]bool, len(partitions))
+	seenMounts := make(map[string]bool, len(partitions))
+	seenDevices := make(map[string]bool, len(partitions))
 	mounts := make([]string, 0, len(partitions))
 	for _, partition := range partitions {
-		if partition.Mountpoint == "" || seen[partition.Mountpoint] {
+		if partition.Mountpoint == "" || seenMounts[partition.Mountpoint] {
 			continue
 		}
 		skip := false
@@ -69,7 +79,13 @@ func fixedVolumes() []string {
 		if skip {
 			continue
 		}
-		seen[partition.Mountpoint] = true
+		if partition.Device != "" {
+			if seenDevices[partition.Device] {
+				continue
+			}
+			seenDevices[partition.Device] = true
+		}
+		seenMounts[partition.Mountpoint] = true
 		mounts = append(mounts, partition.Mountpoint)
 	}
 	sort.Strings(mounts)
