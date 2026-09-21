@@ -40,8 +40,8 @@ three post-commit side effects — is untouched.
 - **Migration naming.** The newest committed migration is
   `apps/api/migrations/2026-10-25-130100-recovery-tokens-negotiated-capabilities.sql`.
   The two new files are therefore
-  `2026-10-26-100000-quote-acceptances-on-behalf.sql` and
-  `2026-10-26-100100-quotes-accept-permission.sql` — `localeCompare` order puts
+  `2026-10-27-100000-quote-acceptances-on-behalf.sql` and
+  `2026-10-27-100100-quotes-accept-permission.sql` — `localeCompare` order puts
   them after everything shipped. **Re-check with
   `ls apps/api/migrations/*.sql | xargs -n1 basename | sort | tail -1` before
   committing**: the pre-push hook re-runs `check-migration-naming.sh
@@ -186,7 +186,7 @@ import { DEFAULT_PERMISSIONS, DEFAULT_ROLES } from './seed';
  * The no-regression rule from the 2026-09-21 accept-on-behalf spec §7: every
  * seeded role that may SEND a quote may also RECORD an acceptance for it.
  * A fresh install seeds from DEFAULT_ROLES; an upgrade back-fills from
- * 2026-10-26-100100-quotes-accept-permission.sql. If these two disagree, two
+ * 2026-10-27-100100-quotes-accept-permission.sql. If these two disagree, two
  * databases disagree about who can convert a quote.
  */
 describe('quotes:accept seeding', () => {
@@ -278,7 +278,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ### Task 2: Migration A — `quote_acceptances` provenance columns + Drizzle schema + export policy
 
 **Files:**
-- Create: `apps/api/migrations/2026-10-26-100000-quote-acceptances-on-behalf.sql`
+- Create: `apps/api/migrations/2026-10-27-100000-quote-acceptances-on-behalf.sql`
 - Modify: `apps/api/src/db/schema/quotes.ts` — the `quoteAcceptances` table at
   line 239, new columns after `renderLocale`
 - Modify: `apps/api/src/services/tenantExportPolicyRegistry.ts:485` — the
@@ -349,7 +349,7 @@ cd apps/api && npx vitest run src/services/tenantExportPolicyQuoteAcceptances.te
   rather than inventing one.)
 
 - [ ] **Step 3: Write the migration**
-      `apps/api/migrations/2026-10-26-100000-quote-acceptances-on-behalf.sql`:
+      `apps/api/migrations/2026-10-27-100000-quote-acceptances-on-behalf.sql`:
 
 ```sql
 -- Quote acceptance on behalf of a customer (spec 2026-09-21 §6). A tech who
@@ -444,7 +444,7 @@ COMMENT ON COLUMN quote_acceptances.reference IS
   // Acceptance provenance (spec 2026-09-21 §6). `origin` distinguishes a
   // customer click from an MSP-recorded acceptance; the other three are the
   // evidence trail for the latter. CHECK constraints in
-  // 2026-10-26-100000-quote-acceptances-on-behalf.sql are the real invariant —
+  // 2026-10-27-100000-quote-acceptances-on-behalf.sql are the real invariant —
   // Drizzle types cannot express "required when origin = on_behalf".
   origin: text('origin').notNull().default('customer'),
   // 'typed-signature' for every customer row (the only provider that has ever
@@ -495,7 +495,7 @@ pnpm db:migrate && pnpm db:check-drift
 - [ ] **Step 8: Commit.**
 
 ```bash
-git add apps/api/migrations/2026-10-26-100000-quote-acceptances-on-behalf.sql apps/api/src/db/schema/quotes.ts apps/api/src/services/tenantExportPolicyRegistry.ts apps/api/src/services/tenantExportPolicyQuoteAcceptances.test.ts
+git add apps/api/migrations/2026-10-27-100000-quote-acceptances-on-behalf.sql apps/api/src/db/schema/quotes.ts apps/api/src/services/tenantExportPolicyRegistry.ts apps/api/src/services/tenantExportPolicyQuoteAcceptances.test.ts
 git commit -m "feat(quotes): record acceptance provenance on quote_acceptances
 
 origin/method/reference/recorded_by_user_id, back-filling method to
@@ -516,7 +516,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ### Task 3: Migration B — back-fill `quotes:accept` to existing roles
 
 **Files:**
-- Create: `apps/api/migrations/2026-10-26-100100-quotes-accept-permission.sql`
+- Create: `apps/api/migrations/2026-10-27-100100-quotes-accept-permission.sql`
   (modelled on `apps/api/migrations/2026-10-16-190000-agreements-permission.sql`)
 - Test: `apps/api/src/db/migrationRlsScope.test.ts` and
   `apps/api/src/db/autoMigrate.test.ts` (existing, must stay green)
@@ -539,7 +539,7 @@ import path from 'node:path';
 import { DEFAULT_PERMISSIONS } from './seed';
 
 const FILE = path.resolve(
-  __dirname, '../../migrations/2026-10-26-100100-quotes-accept-permission.sql',
+  __dirname, '../../migrations/2026-10-27-100100-quotes-accept-permission.sql',
 );
 
 /**
@@ -548,7 +548,7 @@ const FILE = path.resolve(
  * from here). A divergence means two databases disagree about what the
  * permission claims to do — the exact trap the agreements migration called out.
  */
-describe('2026-10-26-100100-quotes-accept-permission.sql', () => {
+describe('2026-10-27-100100-quotes-accept-permission.sql', () => {
   const sql = readFileSync(FILE, 'utf8');
 
   it('elects system scope before any write', () => {
@@ -699,7 +699,7 @@ psql "$DATABASE_URL" -c "SELECT count(*) FROM role_permissions rp JOIN permissio
 - [ ] **Step 6: Commit.**
 
 ```bash
-git add apps/api/migrations/2026-10-26-100100-quotes-accept-permission.sql apps/api/src/db/quotesAcceptPermissionMigration.test.ts
+git add apps/api/migrations/2026-10-27-100100-quotes-accept-permission.sql apps/api/src/db/quotesAcceptPermissionMigration.test.ts
 git commit -m "feat(quotes): back-fill quotes:accept to every role holding quotes:send
 
 Matches on the existing grant, never on a role name, so system templates,

@@ -4,7 +4,7 @@ import path from 'node:path';
 import { DEFAULT_PERMISSIONS } from './seed';
 
 const FILE = path.resolve(
-  __dirname, '../../migrations/2026-10-26-100100-quotes-accept-permission.sql',
+  __dirname, '../../migrations/2026-10-27-100100-quotes-accept-permission.sql',
 );
 
 /**
@@ -13,7 +13,7 @@ const FILE = path.resolve(
  * from here). A divergence means two databases disagree about what the
  * permission claims to do — the exact trap the agreements migration called out.
  */
-describe('2026-10-26-100100-quotes-accept-permission.sql', () => {
+describe('2026-10-27-100100-quotes-accept-permission.sql', () => {
   const sql = readFileSync(FILE, 'utf8');
 
   it('elects system scope before any write', () => {

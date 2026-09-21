@@ -258,7 +258,7 @@ export const quoteAcceptances = pgTable('quote_acceptances', {
   // Acceptance provenance (spec 2026-09-21 §6). `origin` distinguishes a
   // customer click from an MSP-recorded acceptance; the other three are the
   // evidence trail for the latter. CHECK constraints in
-  // 2026-10-26-100000-quote-acceptances-on-behalf.sql are the real invariant —
+  // 2026-10-27-100000-quote-acceptances-on-behalf.sql are the real invariant —
   // Drizzle types cannot express "required when origin = on_behalf".
   origin: text('origin').notNull().default('customer'),
   // 'typed-signature' for every customer row (the only provider that has ever
