@@ -5,7 +5,7 @@ tracking_issue: LanternOps/breeze#5215
 # Tool Catalog + Flows — Wave Roadmap
 
 **Spec:** `docs/superpowers/specs/ai-mcp/2026-09-07-tool-catalog-and-flows-design.md` (approved in dialogue 2026-09-07; Codex xhigh quorum folded in, §11).
-**Detailed plans:** one per wave, written when the wave starts (W1: `2026-09-07-tool-catalog-w1-tool-sources-mcp.md`). Each later plan is written against the as-built code of the waves before it, not against this roadmap.
+**Detailed plans:** one per wave, written when the wave starts (W1: `2026-09-07-tool-catalog-w1-tool-sources-mcp.md`; W2: `2026-09-21-tool-catalog-w2-openapi-source-kind.md`). Each later plan is written against the as-built code of the waves before it, not against this roadmap.
 
 ## Dependency graph
 
@@ -23,7 +23,7 @@ Sub-issues: W01 #5216, W02 #5217, W03 #5218, W04 #5219, W05 #5220, W06 #5221 (pa
 | key | title | scope (spec §) | proves | PR shape |
 |---|---|---|---|---|
 | W01 | Tool sources (MCP): tables, discovery, resolver, chat + MCP bridge, external Tier 3 via intents, UI | §5, §8 | an MSP connects an MCP server and uses its tools in chat with correct tiers and approvals | PR A API core, PR B external Tier 3, PR C web |
-| W02 | OpenAPI source kind | §5.3 (OpenAPI), §5.5 executor | vendors with only a REST API are reachable | one PR (parser/generator/executor + fixtures + UI kind toggle) |
+| W02 | OpenAPI source kind | §5.3 (OpenAPI), §5.5 executor | vendors with only a REST API are reachable | one PR (parser/generator/executor + fixtures + UI kind toggle) — plan: `2026-09-21-tool-catalog-w2-openapi-source-kind.md` |
 | W03 | Flow document, expression grammar, validator, `flows` table, draft/validate/get tools, Flow card, read-only Flows UI | §6.1–6.4 (flows table only), §6.8 authoring | the AI produces a valid, reviewable flow from a sentence | PR A shared grammar + API, PR B web |
 | W04 | `flow_runs`/`flow_run_steps`, runner, manual + schedule + event triggers, approval pause/resume with drift checks, pre-approval rule, runs UI, run/explain tools | §6.5–6.7 | a flow runs end to end with a human tap on the sensitive step | PR A runner + tables, PR B triggers, PR C web |
 | W05 | Webhook trigger with org resolver, `flow.<slug>` as tool, for-each concurrency, `ai` and `http_request` steps, budgets and caps, `action_intents.requesting_flow_run_id` | §6.1 triggers, §6.6, §6.7, §8 | cross-system and external-event flows; agents can call flows | PR A + PR B |

@@ -19,7 +19,7 @@ Design specs for these plans live under `../specs/` in the same domain folders.
 | Folder | Plans | Covers |
 |---|---|---|
 | `agent/` | 13 | Go agent lifecycle: watchdog, autostart, auth backoff, systemd, diagnostics, change detection |
-| `ai-mcp/` | 26 | AI agent tools & site-scoping, MCP server/OAuth, action-intents, AI-for-Office, ML, M365 graph tools |
+| `ai-mcp/` | 27 | AI agent tools & site-scoping, MCP server/OAuth, action-intents, AI-for-Office, ML, M365 graph tools |
 | `backup/` | 8 | Backup & recovery, certification, incremental, key escrow |
 | `billing/` | 26 | Invoicing, quotes, contracts, catalog, payments, and distributor/accounting connectors (Pax8, TD SYNNEX, QuickBooks) |
 | `installer-enrollment/` | 11 | MSI/CLI installers, enrollment tokens/keys, macOS installer app, installer downloads, device approval |
