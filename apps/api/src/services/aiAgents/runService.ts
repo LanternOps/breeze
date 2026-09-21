@@ -181,6 +181,22 @@ import { closeAgentRunSession, reconcileHungExecutions } from './executionLedger
  *                            W05): an extra bar, on top of promoteThreshold,
  *                            over verified evidence from SWEEP-minted
  *                            intents only. Merged with max.
+ *  - taskDeadlineHours     — AI Operator admission (taskService.ts
+ *                            admitServiceRecoveryTask via taskDeadline.ts,
+ *                            recipe library E2 #6167): caps the recipe's
+ *                            deadline and any requested one. Merged with min.
+ *  - taskMaxReasoningRuns  — DEFERRED to Operator P3-3 (#6590): the
+ *                            coordinator's admitReasoningRun caps on the
+ *                            recipe's bounds.maxReasoningRuns only today.
+ *  - taskMaxMutationAttemptsPerTarget — DEFERRED to P3-3 (#6590): same, via
+ *                            the recipe's bounds.maxMutationAttempts.
+ *  - taskMaxBudgetCents    — DEFERRED to P3-3 (#6590): the per-task budget
+ *                            rollup does not exist yet; per-run and per-day
+ *                            caps above still bound every run a task admits.
+ *  - taskMaxActiveTargets  — DEFERRED to the fleet waves (#6590): admission
+ *                            writes exactly one target today.
+ *  - taskMaxPendingPerOrg  — DEFERRED to P3-3 (#6590): admission capacity
+ *                            (spec §12's 429) is not built yet.
  */
 
 export interface CreateAgentRunInput {
