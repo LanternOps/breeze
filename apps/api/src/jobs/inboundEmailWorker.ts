@@ -16,7 +16,6 @@
  * is started in a context that already holds a DB context open.
  */
 
-import { randomUUID } from 'node:crypto';
 import { Worker, type Job } from 'bullmq';
 import * as dbModule from '../db';
 import { getBullMQConnection } from '../services/redis';
@@ -30,7 +29,7 @@ import {
   processInboundEmail,
   resolveInboundThrottleChecks,
 } from '../services/inboundEmail/inboundEmailService';
-import { admitInboundTicket, releaseInboundCharges } from '../services/inboundEmail/inboundRateLimit';
+import { peekInboundThrottle, chargeInboundTickets } from '../services/inboundEmail/inboundRateLimit';
 import { getRedis } from '../services/redis';
 import { inboundQueueMaxPerSec } from '../config/env';
 import { attachWorkerObservability } from './workerObservability';
@@ -46,49 +45,38 @@ export async function handleInboundEmail(job: Job<InboundEmailQueueJob>): Promis
 
   // FLOOD CAP — all Redis happens OUTSIDE the pipeline's held transaction (#1105).
   // A Redis round-trip made while withSystemDbAccessContext is held would pin the
-  // pooled Postgres connection idle-in-transaction, so the flow is admit/settle:
+  // pooled Postgres connection idle-in-transaction, so the flow is three phases:
   //
   //   1. Resolve the cap windows for this message in a SHORT DB context (reads
   //      only), which is CLOSED before any Redis touches the wire.
-  //   2. ADMIT: atomically charge-and-check the windows (ZADD+ZCARD MULTI, outside
-  //      any DB context) under a reservation token UNIQUE to this delivery attempt,
-  //      so the limit holds exactly under concurrency AND a later refund can only
-  //      remove this attempt's own slot (never a prior accepted delivery's).
-  //   3. Run the pipeline in its own held transaction; it consults the admission
+  //   2. PEEK the windows read-only (ZCOUNT), entirely outside any DB context. A
+  //      peek never mutates, so a message that is peeked but creates no ticket
+  //      charges nothing.
+  //   3. Run the pipeline in its own held transaction; it consults the peeked
   //      verdict only at its create paths (a reply that appends to an existing
-  //      ticket is never throttled) and touches no Redis.
-  //   4. SETTLE: keep the reservation ONLY when a ticket was actually created AND
-  //      its transaction committed; otherwise (throttled, reply-append, drop,
-  //      dedup, quarantine, or a rolled-back/failed transaction) refund it — so
-  //      each window counts real, committed creations only. The refund is in a
-  //      `finally` so a commit failure cannot leave a phantom charge.
-  const reservationMember = randomUUID();
+  //      ticket is never throttled) and touches no Redis. AFTER the transaction
+  //      commits, charge the windows — and ONLY when a ticket was actually created
+  //      (onTicketCreated) — so no window is charged for mail that made no ticket.
   const checks = await dbModule.runOutsideDbContext(() =>
     dbModule.withSystemDbAccessContext(() => resolveInboundThrottleChecks(email, mailboxGeneration)),
   );
-  const { verdict, chargedKeys } = await admitInboundTicket(getRedis(), checks, reservationMember);
+  const throttle = await peekInboundThrottle(getRedis(), checks);
 
-  // `created` is set inside the transaction (after logCreated); `committed` flips
-  // true only once withSystemDbAccessContext resolves, i.e. the transaction
-  // actually committed. A create path whose commit then fails leaves created=true
-  // but committed=false, so the reservation is refunded (the ticket rolled back).
-  let created = false;
-  let committed = false;
-  try {
-    await dbModule.runOutsideDbContext(() =>
-      dbModule.withSystemDbAccessContext(() =>
-        processInboundEmail(email, mailboxGeneration, {
-          onTicketCreated: () => {
-            created = true;
-          },
-        }, verdict),
-      ),
-    );
-    committed = true;
-  } finally {
-    if (!(committed && created)) {
-      await releaseInboundCharges(getRedis(), chargedKeys, reservationMember);
-    }
+  let createdTicket = false;
+  await dbModule.runOutsideDbContext(() =>
+    dbModule.withSystemDbAccessContext(() =>
+      processInboundEmail(email, mailboxGeneration, {
+        onTicketCreated: () => {
+          createdTicket = true;
+        },
+      }, throttle),
+    ),
+  );
+
+  // Reaching here means the pipeline transaction committed (processInboundEmail
+  // swallows its own errors; a commit failure would have thrown and skipped this).
+  if (createdTicket && checks.length > 0) {
+    await chargeInboundTickets(getRedis(), checks, email.providerMessageId);
   }
 }
 

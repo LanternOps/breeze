@@ -9,47 +9,53 @@
  * `withSystemDbAccessContext` transaction, and a Redis round-trip made while
  * that context is held pins the pooled Postgres connection idle-in-transaction
  * (#1105). So NO Redis happens inside the pipeline. Instead the worker
- * (jobs/inboundEmailWorker.ts) drives an admit/settle flow, all outside the
- * pipeline's DB context:
+ * (jobs/inboundEmailWorker.ts) drives a two-phase, all-outside-the-context flow:
  *
- *   1. ADMIT BEFORE opening the pipeline transaction: `admitInboundTicket`
- *      charges each window and checks it in ONE atomic Redis step (ZADD then
- *      ZCARD in a MULTI, via the shared `rateLimiter`). Because the charge and the
- *      count are atomic per window, two concurrent workers cannot both pass the
- *      same slot — the limit is EXACT under concurrency, not merely advisory (the
- *      race a read-only peek-then-charge would have allowed).
+ *   1. PEEK (read-only) BEFORE opening the pipeline transaction: is any window
+ *      already at its limit? `peekInboundThrottle` uses ZCOUNT and never mutates,
+ *      so peeking a message that never creates a ticket charges nothing.
  *   2. The pipeline consults that cached verdict at its four create paths only
- *      (never on a reply that appends to an existing ticket — those are never
+ *      (never on a reply that appends to an existing ticket — those must never be
  *      throttled), with no Redis of its own.
- *   3. SETTLE AFTER the transaction commits: if the message did NOT create a
- *      ticket (throttled, a reply-append, a drop, a dedup, or a quarantine),
- *      `releaseInboundCharges` refunds every window this admission charged. So
- *      each window ends up counting REAL creations only — a message rejected by a
- *      broader window leaves NO residual charge in a narrower one.
+ *   3. CHARGE AFTER the transaction commits, and ONLY when a ticket was actually
+ *      created (`chargeInboundTickets`). Because a charge is recorded solely for a
+ *      real creation, a message rejected by a broader window leaves NO residual
+ *      charge in a narrower one — the over-count that a charge-then-check inside
+ *      the pipeline produced is gone by construction.
  *
- * THE ADMISSION MEMBER IS UNIQUE PER DELIVERY ATTEMPT (a fresh token minted by the
- * worker for each handleInboundEmail run), NOT the provider message id. This is
- * load-bearing for correctness: the refund removes exactly THIS attempt's member,
- * so a redelivery of an already-created message (which the pipeline dedups without
- * creating, then refunds) removes only its own transient slot and CANNOT free the
- * original ticket's live charge — the shared-member refund hazard that
- * `rate-limit.ts` warns about. A redelivery therefore transiently occupies a
- * second slot for the duration of its (dedup-only) pipeline run, then releases it;
- * the original's charge is untouched.
+ * The charge is idempotent per provider-message-id, so an at-least-once
+ * redelivery of the SAME message occupies one slot, not N (a re-charge of the
+ * same member is a no-op — and because nothing is ever refunded, a redelivery can
+ * never free the original's slot). Peek and charge both fail OPEN when Redis is
+ * unavailable (a Redis blip must not quarantine every inbound ticket; the global
+ * BullMQ queue limiter still caps total throughput and an attacker cannot force
+ * Redis offline). This module is pure Redis — no DB import — so it holds no
+ * connection of its own and cannot trip the #1105 guard. Over-cap mail is
+ * quarantined (visible, recoverable), never dropped.
  *
- * Admission fails OPEN when Redis is entirely unavailable (a null client ⇒ no
- * charge, not throttled: a Redis blip must not quarantine every inbound ticket;
- * the global BullMQ queue limiter still bounds total throughput and an attacker
- * cannot force Redis offline), but a present-but-erroring Redis fails CLOSED via
- * `rateLimiter`. This module is pure Redis — no DB import — so it holds no
- * connection of its own, and because the worker calls it OUTSIDE the pipeline
- * context the #1105 tripwire inside `rateLimiter` passes (and guards against a
- * future in-context regression). Over-cap mail is quarantined (visible,
- * recoverable), never dropped.
+ * DELIBERATE, BOUNDED OVERSHOOT (design decision, Billy 2026-09-20, option A).
+ * Because the peek (a read) and the charge (a later write, after the pipeline
+ * commits) are NOT one atomic step, concurrent workers can each peek an
+ * under-limit window and each go on to create a ticket, so a window can exceed its
+ * configured limit by up to the number of in-flight creations for the same
+ * sender/domain/partner — bounded by the worker concurrency (5) times the number
+ * of API replicas. This is chosen ON PURPOSE over the two alternatives, both of
+ * which are worse: (a) an atomic reserve-before-the-pipeline would let a
+ * NON-creating in-flight delivery (a dedup, a reply, an unknown-sender drop)
+ * transiently quarantine a concurrent LEGITIMATE creation — punishing real
+ * customer mail — and, if the reservation were keyed by message-id, a redelivery's
+ * refund would free the original ticket's charge (a cap bypass); (b) making the
+ * check-and-charge atomic inside the pipeline would require a Redis round-trip
+ * inside the held DB transaction (#1105), the very thing this design exists to
+ * avoid. For a flood cap whose job is to stop bursts of THOUSANDS, tripping a
+ * 200/hour window at ~205 under a simultaneous burst is immaterial, and the global
+ * BullMQ queue limiter (INBOUND_QUEUE_MAX_PER_SEC) is the hard throughput bound
+ * regardless. The trade accepted here is: the cap is approximate under
+ * concurrency, and in exchange it NEVER quarantines a legitimate creation and has
+ * no redelivery cap-bypass.
  */
 
 import type { Redis } from 'ioredis';
-import { rateLimiter } from '../rate-limit';
 import {
   inboundMaxPerSenderPerHour,
   inboundMaxPerDomainPerHour,
@@ -134,79 +140,74 @@ export function buildInboundCapChecks(
   return checks;
 }
 
-export interface InboundAdmission {
-  verdict: InboundThrottleVerdict;
-  /**
-   * The window keys this call actually charged (ZADDed the message into), in
-   * charge order. The worker passes these to `releaseInboundCharges` when the
-   * message does not go on to create a ticket, so nothing but real creations
-   * remains counted. Empty when Redis was unavailable (fail-open, nothing charged).
-   */
-  chargedKeys: string[];
-}
-
 /**
- * Atomically admit ONE would-be ticket creation against every enabled window,
- * tightest (sender) → broadest (partner). Each window is charged-and-checked in a
- * single atomic `rateLimiter` step (ZADD then ZCARD in a MULTI), so concurrent
- * workers serialise on Redis and the limit holds exactly — no two can pass the
- * same slot. Stops at the first window that rejects and reports its bucket.
+ * READ-ONLY flood peek. Returns the tightest window that is already at its limit
+ * (so admitting one more would exceed it), or `{ throttled: false }` when every
+ * window has room. Uses ZCOUNT over the live window and NEVER mutates Redis, so a
+ * message that is peeked but never creates a ticket charges nothing.
  *
- * `reservationMember` MUST be unique to this delivery attempt (see the module
- * header): it is the member added to each window and the exact member
- * `releaseInboundCharges` later removes, so uniqueness is what makes a refund
- * remove only THIS attempt's slot and never a prior accepted delivery's.
- *
- * Fails OPEN only when Redis is entirely absent (null client ⇒ nothing charged,
- * not throttled). A present-but-erroring Redis fails CLOSED inside `rateLimiter`
- * (denies), which surfaces here as throttled — the safe direction for a flood cap.
- *
- * Runs OUTSIDE any DB context (the worker admits before opening the pipeline
- * transaction), so it holds no pooled connection and the #1105 tripwire passes.
- * The caller MUST release the returned `chargedKeys` if the message ends up NOT
- * creating a ticket, or those charges wrongly persist as phantom creations.
+ * Fails OPEN: a null client or any Redis error yields "not throttled" — a Redis
+ * blip must not quarantine legitimate mail (the global BullMQ queue limiter still
+ * bounds total throughput). Runs OUTSIDE any DB context (the worker peeks before
+ * opening the pipeline transaction), so it holds no pooled connection.
  */
-export async function admitInboundTicket(
+export async function peekInboundThrottle(
   redis: Redis | null,
   checks: InboundCapCheck[],
-  reservationMember: string,
-): Promise<InboundAdmission> {
-  if (!redis || checks.length === 0) return { verdict: { throttled: false, bucket: null }, chargedKeys: [] };
-  const chargedKeys: string[] = [];
-  for (const c of checks) {
-    // Atomic charge-and-check (rateLimiter uses a MULTI: ZADD then ZCARD). The
-    // member is added before the count is read, so this window's own charge is
-    // included in the decision and concurrent admissions cannot both pass.
-    const res = await rateLimiter(redis, c.key, c.limit, WINDOW_SECONDS, 1, { dedupeMember: reservationMember });
-    chargedKeys.push(c.key);
-    if (!res.allowed) return { verdict: { throttled: true, bucket: c.bucket }, chargedKeys };
+  nowMs: number = Date.now(),
+): Promise<InboundThrottleVerdict> {
+  if (!redis || checks.length === 0) return { throttled: false, bucket: null };
+  const windowStart = nowMs - WINDOW_SECONDS * 1000;
+  try {
+    for (const c of checks) {
+      // Count only members inside the live window; stale ones (trimmed lazily on
+      // the next charge) are excluded here so the peek reflects the true rate.
+      const count = await redis.zcount(c.key, windowStart, '+inf');
+      // At or above the limit ⇒ no room for one more ⇒ throttle this creation.
+      if (count >= c.limit) return { throttled: true, bucket: c.bucket };
+    }
+  } catch (err) {
+    // Fail OPEN — never block a ticket on a Redis read error.
+    console.warn('[InboundEmail] flood peek failed (open)', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return { throttled: false, bucket: null };
   }
-  return { verdict: { throttled: false, bucket: null }, chargedKeys };
+  return { throttled: false, bucket: null };
 }
 
 /**
- * Refund an admission: remove THIS ATTEMPT's reservation member from each window
- * it charged. The worker calls it when the message did NOT create a (committed)
- * ticket — throttled, a reply-append, a drop, a dedup, a quarantine, or a rolled
- * back transaction — so a window counts only real creations and a message rejected
- * by a broader window leaves no residual charge in a narrower one. Because
- * `reservationMember` is unique to this attempt, the ZREM can only remove this
- * attempt's own slot, never a prior accepted delivery's. Idempotent (ZREM of an
- * absent member is a no-op) and best-effort: a failed refund only leaves a slot
- * that expires at the window edge, never blocks a created ticket.
+ * Record ONE ticket creation against every enabled window. Called by the worker
+ * AFTER the pipeline transaction commits and ONLY when a ticket was created, so
+ * the windows count real creations and nothing else. Idempotent per
+ * `dedupeMember` (the provider message id): a redelivery of the same message
+ * re-adds the SAME ZSET member, refreshing its score rather than double-counting.
+ *
+ * Best-effort and fails OPEN: a null client or a Redis error is swallowed (the
+ * worst case is a single uncounted creation — an under-count that never blocks
+ * legitimate mail). Runs OUTSIDE any DB context, so it holds no pooled connection.
  */
-export async function releaseInboundCharges(
+export async function chargeInboundTickets(
   redis: Redis | null,
-  chargedKeys: string[],
-  reservationMember: string,
+  checks: InboundCapCheck[],
+  dedupeMember: string,
+  nowMs: number = Date.now(),
 ): Promise<void> {
-  if (!redis || chargedKeys.length === 0) return;
+  if (!redis || checks.length === 0) return;
+  const windowStart = nowMs - WINDOW_SECONDS * 1000;
   await Promise.all(
-    chargedKeys.map(async (key) => {
+    checks.map(async (c) => {
       try {
-        await redis.zrem(key, reservationMember);
+        await redis
+          .multi()
+          .zremrangebyscore(c.key, '-inf', windowStart) // trim expired members
+          .zadd(c.key, nowMs, dedupeMember)             // idempotent: one slot per message
+          .expire(c.key, WINDOW_SECONDS)
+          .exec();
       } catch (err) {
-        console.warn('[InboundEmail] flood charge refund failed (skipped)', {
+        // Under-count on error, never over-count; never block a created ticket.
+        console.warn('[InboundEmail] flood charge failed (skipped)', {
+          bucket: c.bucket,
           error: err instanceof Error ? err.message : String(err),
         });
       }

@@ -140,23 +140,21 @@ export interface ProcessInboundEmailDependencies {
   afterTicketMatchLock?: (ticketId: string) => Promise<void>;
   /**
    * Invoked exactly once, synchronously, when this message creates a ticket
-   * (any of the four create paths). The worker admitted (atomically charged) the
-   * flood windows before this transaction; this signal tells it to KEEP that
-   * reservation once the transaction commits, and otherwise to refund it — so no
-   * Redis runs inside the pipeline (#1105) and only real, committed creations are
-   * counted.
+   * (any of the four create paths). The worker uses it to charge the flood
+   * windows AFTER the transaction commits and OUTSIDE the held DB context, so no
+   * Redis runs inside the pipeline (#1105) and only real creations are counted.
    */
   onTicketCreated?: () => void;
 }
 
 /**
  * Resolve the flood-cap windows for a message WITHOUT touching Redis, so the
- * worker can admit/settle them outside the pipeline's held transaction (#1105).
+ * worker can peek/charge them outside the pipeline's held transaction (#1105).
  * Mirrors the pipeline's recipient-only partner resolution and honours the
  * master switch and per-partner overrides. Returns [] (⇒ never throttle, and the
  * worker skips Redis entirely) when the partner can't be resolved, inbound is
  * disabled, or every window is unlimited. Must be called inside a DB context;
- * the caller then closes that context BEFORE the Redis admission.
+ * the caller then closes that context BEFORE peeking Redis.
  */
 export async function resolveInboundThrottleChecks(
   n: NormalizedInboundEmail,
@@ -164,8 +162,8 @@ export async function resolveInboundThrottleChecks(
 ): Promise<InboundCapCheck[]> {
   let partnerId: string | null;
   if (mailboxGeneration) {
-    // The pipeline fails m365 closed without a generation; for the flood-cap
-    // resolve just decline to throttle rather than resolve a partner a different way.
+    // The pipeline fails m365 closed without a generation; for a read-only peek
+    // just decline to throttle rather than resolve a partner a different way.
     if (n.provider !== 'm365') return [];
     partnerId = mailboxGeneration.partnerId;
   } else {
@@ -187,9 +185,8 @@ export async function processInboundEmail(
   mailboxGeneration?: M365MailboxGenerationContext,
   dependencies: ProcessInboundEmailDependencies = {},
   /**
-   * Flood-cap verdict from the worker's admission (atomic charge-and-check) before
-   * this transaction was opened (undefined ⇒ no caps apply / not evaluated ⇒ never
-   * throttle).
+   * Read-only flood-cap verdict peeked by the worker before this transaction was
+   * opened (undefined ⇒ no caps apply / not evaluated ⇒ never throttle).
    */
   throttle?: InboundThrottleVerdict,
 ): Promise<void> {
@@ -340,12 +337,11 @@ export async function processInboundEmail(
       return;
     }
 
-    // Flood caps: the worker resolved the effective limits and ADMITTED them
-    // (atomic charge-and-check) outside this held transaction (see
-    // jobs/inboundEmailWorker.ts and inboundRateLimit.ts); `throttle` is that
-    // admission verdict. Enforcement happens only at the create paths
-    // (capExceeded); the worker KEEPS the admission charge only when a ticket is
-    // committed and refunds it otherwise — so forged/unverified mail (quarantined
+    // Flood caps: the effective limits are resolved and PEEKED by the worker
+    // outside this held transaction (see jobs/inboundEmailWorker.ts and
+    // inboundRateLimit.ts); `throttle` is that read-only verdict. Enforcement
+    // happens only at the create paths (capExceeded), and the matching charge is
+    // recorded by the worker after commit — so forged/unverified mail (quarantined
     // by the R4 gate below), duplicates (provider dedup), already-claimed messages
     // (the ledger consult) and replies that append to an existing ticket never
     // consume a sender's budget.
@@ -487,21 +483,19 @@ export async function processInboundEmail(
     //
     // NO REDIS RUNS HERE (#1105). The pipeline is one held withSystemDbAccessContext
     // transaction; a Redis round-trip inside it would pin the pooled connection
-    // idle-in-transaction. So the WORKER ADMITS the flood windows (atomic
-    // charge-and-check under a per-attempt reservation) BEFORE opening this
-    // transaction and passes the verdict in; this helper only consults that cached
-    // verdict. The worker then KEEPS that charge only when a ticket is committed
-    // (signalled via onTicketCreated) and refunds it otherwise, so no window ends
-    // up counting mail that made no ticket. Returns true when over cap (caller must
-    // quarantine + return).
+    // idle-in-transaction. So the WORKER peeks the flood windows (read-only, ZCOUNT)
+    // BEFORE opening this transaction and passes the verdict in; this helper only
+    // consults that cached verdict. The matching CHARGE is recorded by the worker
+    // AFTER the transaction commits and only when a ticket was created (via the
+    // onTicketCreated callback), so no window is charged for mail that made no
+    // ticket. Returns true when over cap (caller must quarantine + return).
     const capExceeded = async (): Promise<boolean> => {
       if (!throttle?.throttled) return false;
       await logInbound(n, partnerId, 'quarantined', null, `rate-limited: ${throttle.bucket ?? 'inbound'} cap exceeded`);
       return true;
     };
-    // Signal the worker that this attempt created a ticket, so it KEEPS the
-    // admission charge (rather than refunding it) once the transaction commits.
-    // Call it right after logCreated.
+    // Signal the worker that this attempt created a ticket, so it charges the
+    // flood windows outside the held transaction. Call it right after logCreated.
     const markTicketCreated = () => dependencies.onTicketCreated?.();
 
     // No LIVE thread match. A reply to a CLOSED ticket is immutable -> create a NEW
