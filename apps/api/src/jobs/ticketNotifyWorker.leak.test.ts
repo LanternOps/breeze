@@ -313,6 +313,22 @@ describe('fullMessageReply: public comment body reaches the requester email; pri
     expect(html.indexOf('printer driver has been reinstalled')).toBeLessThan(closeBody);
   });
 
+  it('does NOT append a public comment body when the TICKET is soft-deleted (disclosure guard)', async () => {
+    // A soft-deleted ticket is 404 in the portal, so its comment text must not be
+    // emailed to the customer even with fullMessageReply on.
+    selectMock.mockReset();
+    selectMock
+      .mockResolvedValueOnce([{ ...TICKET_ROW, deletedAt: new Date('2026-09-20T00:00:00Z') }]) // getTicket: deleted
+      .mockResolvedValueOnce([PARTNER_ROW_FMR])   // compose: partner (fullMessageReply on)
+      .mockResolvedValueOnce([ORG_ROW])           // compose: getOrgName
+      .mockResolvedValue([publicComment]);        // comment lookup (live, public)
+
+    await handleTicketEvent(commentedEvent());
+
+    const html = (sendEmailMock.mock.calls[0]?.[0] as { html: string } | undefined)?.html ?? '';
+    expect(html).not.toContain('printer driver has been reinstalled');
+  });
+
   it('does NOT append a private comment even with fullMessageReply on (isPublic guard)', async () => {
     selectMock.mockReset();
     selectMock

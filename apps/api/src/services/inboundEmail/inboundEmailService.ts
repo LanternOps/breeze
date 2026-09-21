@@ -250,11 +250,14 @@ export async function processInboundEmail(
     // (`<>`) — so an auto-responder war or a bounce storm cannot manufacture
     // tickets. Deliberately NARROW: a device notification (`Auto-Submitted:
     // auto-generated`, no-reply@ copier/monitoring) is NOT suppressed here — those
-    // are legitimate tickets. X-Loop, X-Auto-Response-Suppress and List-Id are NOT
-    // creation-suppression signals (we never set X-Loop outbound, so it does not
-    // evidence a Breeze loop); together with Precedence/system-sender they suppress
-    // only the auto-REPLY (autoresponseSuppressionReason), not the ticket. Logged
-    // 'ignored' with the reason for the audit trail.
+    // are legitimate tickets. X-Loop is NOT a creation-suppression signal (we never
+    // set X-Loop outbound, so it does not evidence a Breeze loop) — it, together with
+    // Precedence/system-sender, suppresses only the auto-REPLY
+    // (autoresponseSuppressionReason), not the ticket. X-Auto-Response-Suppress and
+    // List-Id are not parsed or acted on at all (types.ts): they mark "do not
+    // auto-reply"/list mail that legitimate device and distribution-list senders set,
+    // so keying anything off them would drop real support mail. Logged 'ignored' with
+    // the reason for the audit trail.
     const loopReason = ticketCreationLoopReason(n);
     if (loopReason) {
       await logInbound(n, partnerId, 'ignored', null, `loop/bounce suppressed: ${loopReason}`);

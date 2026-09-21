@@ -62,9 +62,10 @@ export function autoresponseSuppressionReason(
  * auto-generated` from `no-reply@` addresses and OFTEN set
  * `X-Auto-Response-Suppress: All` (it means "do not auto-REPLY to me", not "I am
  * a loop"). A genuine request can also arrive via a customer distribution list
- * (`List-Id`). Suppressing on those would silently drop real support mail, so
- * they are NOT ticket-suppression signals here — they only ever gate our own
- * auto-REPLY. Only two unambiguous loop/bounce signals suppress creation:
+ * (`List-Id`). Suppressing on those would silently drop real support mail, so they
+ * are not parsed or acted on at all (types.ts) — neither here nor in
+ * autoresponseSuppressionReason. Only two unambiguous loop/bounce signals suppress
+ * creation:
  *
  *   - Auto-Submitted: auto-replied — an automatic REPLY to our mail (RFC 3834).
  *     `auto-generated` (a device notification) is explicitly NOT suppressed.

@@ -407,12 +407,17 @@ async function collectRequesterEmail(
       // than silently degrading to a portal-only notice for a no-portal partner.
       throw new Error(`Comment not found (likely uncommitted): ${commentId}`);
     }
-    // Append the body only for a live, public comment. A soft-deleted comment
-    // (deletedAt set) must NOT be emailed — its text is no longer visible in the
-    // ticket — so fall through to the portal notification without the body.
-    // Defense in depth on isPublic: the emitter's gate is the authority; this is
-    // a second check at the point the text would leave the platform.
-    if (!comment.deletedAt && comment.isPublic && comment.content.trim()) {
+    // Append the body only for a live, public comment on a LIVE ticket. A
+    // soft-deleted comment (comment.deletedAt) or a soft-deleted ticket
+    // (ticket.deletedAt) must NOT have its text emailed — it is no longer visible
+    // in the product (the portal 404s a deleted ticket, routes/portal/tickets.ts
+    // requires isNull(tickets.deletedAt)), so emailing the comment would disclose
+    // content the customer can no longer see. Fall through to the portal
+    // notification without the body. The staff (collectAssigneeNotification) and
+    // SLA paths already skip deleted tickets; this mirrors that boundary at the one
+    // point comment TEXT would leave the platform. Defense in depth on isPublic:
+    // the emitter's gate is the authority; this is a second check.
+    if (!ticket.deletedAt && !comment.deletedAt && comment.isPublic && comment.content.trim()) {
       html = appendFullReplyBody(html, comment.content);
     }
   }
