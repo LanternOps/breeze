@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { bmrCompleteSchema, bmrVmRestoreSchema } from './schemas';
+import { bmrCompleteSchema, bmrVmRestoreSchema, canonicalizeS3CredentialFields } from './schemas';
 
 // D14: a bare-metal recovery completion report was answering "Request body
 // too large" for a payload carrying ~9,900 unbounded `warnings` strings (the
@@ -107,5 +107,46 @@ describe('bmrVmRestoreSchema — engine discriminated union (W05a)', () => {
 
   it('rejects an unknown engine', () => {
     expect(bmrVmRestoreSchema.safeParse({ engine: 'vmware', snapshotId: SNAP, targetDeviceId: DEV, hypervisor: 'hyperv', vmName: 'VM' }).success).toBe(false);
+  });
+});
+
+// #6511: direct unit coverage for canonicalizeS3CredentialFields — the
+// indirect coverage through configs.ts/backupProviderConfig.ts proves the
+// end-to-end regression is fixed, but doesn't pin down this function's own
+// precedence rule (review finding: no test anywhere exercised both
+// spellings present at once on the API side, even though the equivalent Go
+// agent case is table-tested).
+describe('canonicalizeS3CredentialFields', () => {
+  it('canonical spelling wins when both spellings are present', () => {
+    const details: Record<string, unknown> = {
+      accessKey: 'AK', secretKey: 'SK',
+      accessKeyId: 'AKID', secretAccessKey: 'SAK',
+    };
+    canonicalizeS3CredentialFields(details);
+    expect(details.accessKey).toBe('AK');
+    expect(details.secretKey).toBe('SK');
+    expect(details.accessKeyId).toBeUndefined();
+    expect(details.secretAccessKey).toBeUndefined();
+  });
+
+  it('falls back to the AWS-idiomatic spelling when canonical is absent', () => {
+    const details: Record<string, unknown> = { accessKeyId: 'AKID', secretAccessKey: 'SAK' };
+    canonicalizeS3CredentialFields(details);
+    expect(details.accessKey).toBe('AKID');
+    expect(details.secretKey).toBe('SAK');
+    expect(details.accessKeyId).toBeUndefined();
+    expect(details.secretAccessKey).toBeUndefined();
+  });
+
+  it('is a no-op when neither spelling is present', () => {
+    const details: Record<string, unknown> = { bucket: 'backups', region: 'us-east-1' };
+    canonicalizeS3CredentialFields(details);
+    expect(details).toEqual({ bucket: 'backups', region: 'us-east-1' });
+  });
+
+  it('leaves an already-canonical config untouched', () => {
+    const details: Record<string, unknown> = { accessKey: 'AK', secretKey: 'SK' };
+    canonicalizeS3CredentialFields(details);
+    expect(details).toEqual({ accessKey: 'AK', secretKey: 'SK' });
   });
 });

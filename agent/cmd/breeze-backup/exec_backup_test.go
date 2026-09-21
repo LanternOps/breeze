@@ -705,6 +705,66 @@ func TestManagerFromBackupRunPayload_CarriesHelperAgentID(t *testing.T) {
 	}
 }
 
+// TestRestoreProviderFromPayload_S3CredentialsAWSSpelling covers the SECOND
+// call site fixed for #6511 (restore/verify/test-restore, and — via
+// rebuild_cmd.go — bare-metal rebuild). managerFromBackupRunPayload's own
+// AWS-spelling test only proves the backup_run dispatch path; this proves
+// restoreProviderFromPayload independently routes through the same
+// credentials() fallback rather than reading the raw AccessKey/SecretKey
+// fields directly.
+func TestRestoreProviderFromPayload_S3CredentialsAWSSpelling(t *testing.T) {
+	payload := `{"provider":"s3","providerConfig":{"bucket":"my-bucket","region":"us-east-1","accessKeyId":"AKID","secretAccessKey":"SAK"}}`
+	provider, err := restoreProviderFromPayload(json.RawMessage(payload))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	s3p, ok := provider.(*providers.S3Provider)
+	if !ok {
+		t.Fatalf("provider type = %T, want *providers.S3Provider", provider)
+	}
+	if s3p.Bucket != "my-bucket" {
+		t.Errorf("bucket = %q, want %q", s3p.Bucket, "my-bucket")
+	}
+}
+
+// TestManagerFromBackupRunPayload_S3RejectsEmptyCredentials and its restore
+// counterpart below cover the silent-failure-hunter finding on #6511: an S3
+// provider config that resolves to empty credentials under BOTH spellings
+// must be rejected loudly here, rather than constructed and left to fall
+// through to the AWS SDK's default credential chain — the exact "upload
+// stalled" opaque-IMDS/DNS-timeout symptom this issue was filed for.
+func TestManagerFromBackupRunPayload_S3RejectsEmptyCredentials(t *testing.T) {
+	payload := `{"provider":"s3","providerConfig":{"bucket":"my-bucket","region":"us-east-1"},"paths":["/data"]}`
+	mgr, err := managerFromBackupRunPayload(json.RawMessage(payload))
+	if err == nil {
+		t.Fatal("expected an error rejecting an s3 config with no credentials under either spelling")
+	}
+	if mgr != nil {
+		t.Fatal("expected a nil manager on rejection")
+	}
+}
+
+func TestRestoreProviderFromPayload_S3RejectsEmptyCredentials(t *testing.T) {
+	payload := `{"provider":"s3","providerConfig":{"bucket":"my-bucket","region":"us-east-1"}}`
+	provider, err := restoreProviderFromPayload(json.RawMessage(payload))
+	if err == nil {
+		t.Fatal("expected an error rejecting an s3 config with no credentials under either spelling")
+	}
+	if provider != nil {
+		t.Fatal("expected a nil provider on rejection")
+	}
+}
+
+func TestRestoreProviderFromPayload_EmptyPayloadFallsBack(t *testing.T) {
+	provider, err := restoreProviderFromPayload(json.RawMessage(""))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if provider != nil {
+		t.Fatalf("expected nil provider (fallback), got %+v", provider)
+	}
+}
+
 func strPtr(s string) *string { return &s }
 
 // TestManagerFromBackupRunPayload_RejectsServerOwnedModeWithoutLease is the

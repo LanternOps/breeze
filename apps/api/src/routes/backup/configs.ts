@@ -412,31 +412,42 @@ configsRoutes.patch(
     if (payload.isDefault !== undefined) updateData.isDefault = payload.isDefault;
 
     if (payload.details !== undefined || payload.encryption !== undefined) {
-      // #6511: canonicalize BOTH sides to accessKey/secretKey before the
-      // secret-preserving merge below. Without this, a payload that renames
-      // credentials from accessKey/secretKey to accessKeyId/secretAccessKey
-      // (or vice versa) would leave preserveSecretFields treating them as
-      // two unrelated fields — it fills the now-omitted old field name back
-      // in from `current`, silently reviving the STALE credential value
-      // alongside the new one, and canonicalizing afterward would then favor
-      // that stale "canonical" field over the real update.
+      // #6511: canonicalize the INCOMING payload only (not `current.providerConfig`)
+      // to accessKey/secretKey before the secret-preserving merge below. This
+      // makes a payload that renames credentials from accessKey/secretKey to
+      // accessKeyId/secretAccessKey (or vice versa) land on the same field
+      // name preserveSecretFields already uses for "this is a real update,
+      // not an omission" — so the new value wins outright instead of being
+      // shadowed by whatever the existing config happens to be keyed under.
+      //
+      // Deliberately does NOT also canonicalize `current.providerConfig`
+      // here (a review finding caught this): a config stored under the
+      // legacy accessKeyId/secretAccessKey spelling with no migration yet
+      // MUST keep surfacing its real secret under ITS ORIGINAL field name
+      // through this merge, because the web UI does not yet recognize that
+      // legacy spelling when redacting the GET response — it has no way to
+      // show the field as "already set" and initializes it blank. If we
+      // canonicalized `current.providerConfig`'s field name to match the
+      // incoming blank `accessKey` here, preserveSecretFields would see the
+      // SAME key on both sides, take the "incoming wins" branch, and
+      // silently overwrite the only copy of the real credential with an
+      // empty string — an unrecoverable data-loss regression this fix must
+      // not introduce. Leaving `current.providerConfig` untouched preserves
+      // preserveSecretFields' fallback loop (restores any secret field
+      // present in `existing` but absent from `merged`), which is exactly
+      // what recovers a legacy-keyed secret when the incoming payload never
+      // mentions it. The post-merge canonicalizeS3CredentialFields call
+      // below then migrates whatever survived the merge to the canonical
+      // name for persistence.
       let incomingDetails: unknown = payload.details;
-      let priorProviderConfig: unknown = current.providerConfig;
-      if (current.provider === 's3') {
-        if (incomingDetails !== undefined && isRecord(incomingDetails)) {
-          const canonicalizedIncoming: Record<string, unknown> = { ...incomingDetails };
-          canonicalizeS3CredentialFields(canonicalizedIncoming);
-          incomingDetails = canonicalizedIncoming;
-        }
-        if (isRecord(priorProviderConfig)) {
-          const canonicalizedPrior: Record<string, unknown> = { ...priorProviderConfig };
-          canonicalizeS3CredentialFields(canonicalizedPrior);
-          priorProviderConfig = canonicalizedPrior;
-        }
+      if (current.provider === 's3' && incomingDetails !== undefined && isRecord(incomingDetails)) {
+        const canonicalizedIncoming: Record<string, unknown> = { ...incomingDetails };
+        canonicalizeS3CredentialFields(canonicalizedIncoming);
+        incomingDetails = canonicalizedIncoming;
       }
       const nextProviderConfig = incomingDetails !== undefined
-        ? preserveSecretFields(incomingDetails, priorProviderConfig)
-        : priorProviderConfig;
+        ? preserveSecretFields(incomingDetails, current.providerConfig)
+        : current.providerConfig;
       if (payload.details !== undefined && current.provider === 's3' && isRecord(nextProviderConfig)) {
         // NOTE: configUpdateSchema has no superRefine (it cannot — `provider`
         // is not part of an update payload, so the schema can't tell an s3
@@ -458,7 +469,15 @@ configsRoutes.patch(
           // (Sentry BREEZE-P residual gap).
           delete nextProviderConfig.endpoint;
         }
-        // #6511: canonicalize accessKeyId/secretAccessKey to accessKey/secretKey.
+        // #6511: canonicalize whatever field names survived the merge above
+        // to accessKey/secretKey before persisting. This is load-bearing,
+        // not just tidy-up: `current.providerConfig` is deliberately left
+        // uncanonicalized going into the merge (see the comment above), so
+        // a legacy accessKeyId/secretAccessKey secret the merge restored
+        // via its "existing but omitted from incoming" fallback still needs
+        // migrating to the canonical name here, once it's safe to do so
+        // (the merge has already resolved which value — incoming or prior —
+        // wins).
         canonicalizeS3CredentialFields(nextProviderConfig);
       }
       const nextEncryption = payload.encryption ?? current.encryption;

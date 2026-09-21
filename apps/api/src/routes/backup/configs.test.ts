@@ -731,6 +731,45 @@ describe('backup config routes', () => {
     expect(persistedConfig.secretAccessKey).toBeUndefined();
   });
 
+  // Review finding on this PR: a legacy config stored under ONLY
+  // accessKeyId/secretAccessKey (no accessKey/secretKey, no backfill
+  // migration) predates this fix and predates the web UI recognizing that
+  // spelling in its redacted GET response — so an edit to an unrelated
+  // field (e.g. bucket) submits a blank `accessKey: ''` the UI has no way
+  // to know is meaningless. The real secret MUST survive that PATCH under
+  // its original field name (matching pre-fix behavior) and end up
+  // migrated to the canonical name in what gets persisted — never silently
+  // wiped to an empty string, which would be unrecoverable.
+  it('does not wipe a legacy accessKeyId/secretAccessKey secret when a PATCH sends a blank canonical field', async () => {
+    selectMock.mockReturnValueOnce(chainMock([makeConfig({
+      providerConfig: {
+        bucket: 'backups',
+        region: 'us-east-1',
+        accessKeyId: 'REAL_LEGACY_ACCESS_KEY',
+        secretAccessKey: 'REAL_LEGACY_SECRET_KEY',
+      },
+    })]));
+    updateMock.mockReturnValueOnce(chainMock([makeConfig()]));
+
+    const res = await app.request(`/backup/configs/${CONFIG_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({
+        // Mirrors what a form unaware of the legacy field names would send:
+        // bucket/region carried through, credentials blank (not the masked
+        // "********" sentinel, since the UI never detected a stored secret).
+        details: { bucket: 'archive-renamed', region: 'us-east-1', accessKey: '', secretKey: '' },
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const updateSet = updateMock.mock.results[0]?.value?.set;
+    const persistedConfig = updateSet.mock.calls[0]?.[0]?.providerConfig;
+    expect(persistedConfig.accessKey).toBe('REAL_LEGACY_ACCESS_KEY');
+    expect(persistedConfig.secretKey).toBe('REAL_LEGACY_SECRET_KEY');
+    expect(persistedConfig.bucket).toBe('archive-renamed');
+  });
+
   // The connectivity-test probe must tolerate a config that was already
   // stored under the AWS spelling BEFORE this fix shipped (no backfill
   // migration) — it reads directly off the stored row, not through the

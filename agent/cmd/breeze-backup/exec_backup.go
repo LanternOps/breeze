@@ -218,6 +218,17 @@ func managerFromBackupRunPayload(payload json.RawMessage) (*backup.BackupManager
 	switch p.Provider {
 	case "s3":
 		accessKey, secretKey := p.ProviderConfig.credentials()
+		// #6511: fail loudly here rather than let an S3Provider with empty
+		// credentials fall through to the AWS SDK's default credential
+		// chain, which is exactly the "upload stalled" symptom (opaque
+		// IMDS/DNS timeout, mislabelled by attemptFileUpload) this issue was
+		// filed for. This is now a rarer trigger — BOTH spellings missing —
+		// since credentials() already covers the common "config saved under
+		// the wrong spelling" case, but it's a cheap, direct guard against
+		// the same failure mode recurring for any other reason.
+		if accessKey == "" || secretKey == "" {
+			return nil, fmt.Errorf("s3 backup provider config is missing accessKey/secretKey (and accessKeyId/secretAccessKey)")
+		}
 		provider = providers.NewS3ProviderWithEndpoint(
 			p.ProviderConfig.Bucket, p.ProviderConfig.Region, p.ProviderConfig.Endpoint,
 			accessKey, secretKey, "")
@@ -317,6 +328,12 @@ func restoreProviderFromPayload(payload json.RawMessage) (providers.BackupProvid
 	switch p.Provider {
 	case "s3":
 		accessKey, secretKey := p.ProviderConfig.credentials()
+		// #6511: same fail-loud guard as managerFromBackupRunPayload — see
+		// its comment for why this must not fall through to the AWS SDK's
+		// default credential chain.
+		if accessKey == "" || secretKey == "" {
+			return nil, fmt.Errorf("s3 backup provider config is missing accessKey/secretKey (and accessKeyId/secretAccessKey)")
+		}
 		return providers.NewS3ProviderWithEndpoint(
 			p.ProviderConfig.Bucket, p.ProviderConfig.Region, p.ProviderConfig.Endpoint,
 			accessKey, secretKey, ""), nil
