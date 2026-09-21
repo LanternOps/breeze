@@ -130,8 +130,9 @@ export interface SendQuoteResult {
   deliverEmail: DeferredQuoteEmail;
 }
 
-/** What the draft→sent claim froze, for the caller to reuse without re-reading. */
-export interface ClaimQuoteSentResult {
+/** The values the draft→sent claim freezes onto the quote, computed by
+ *  {@link freezeQuoteSentSnapshot} and written by {@link applyQuoteSentClaim}. */
+export interface QuoteSentSnapshot {
   quoteNumber: string;
   issueDate: string;
   billToName: string | null;
@@ -144,47 +145,30 @@ export interface ClaimQuoteSentResult {
   terms: string | null;
   partnerRow: typeof partners.$inferSelect | undefined;
   org: { name: string | null; billingContact: unknown; taxId: string | null } | undefined;
+}
+
+export interface ClaimQuoteSentResult extends QuoteSentSnapshot {
   superseded?: QuoteSupersedeResult;
 }
 
 /**
- * The draft→sent claim, WITHOUT delivery.
+ * Phase 1 of the delivery-free draft→sent claim: the READS and derivations.
  *
- * Everything `sendQuote` does to freeze a quote and bind it to a customer —
- * allocate the number if a legacy draft lacks one, freeze the bill-to snapshot
- * from the org's Billing settings, stamp the seller snapshot, presentation and
- * render locale, set issueDate/sentAt, retire a revision's parent — and NOTHING
- * that puts a live credential in a customer's hands: no quote_recipients rows,
- * no accept token, no public-link columns, no email.
+ * Allocates the number if a legacy draft lacks one, then freezes the bill-to
+ * snapshot from the org's Billing settings and derives the seller, presentation
+ * and render-locale stamps. Writes nothing — {@link applyQuoteSentClaim} does
+ * that — so a caller can interleave its own pre-claim statement (sendQuote reads
+ * the parent quote's recipients) between the two without either copy drifting.
  *
- * Extracted so the on-behalf accept (spec 2026-09-21 §5) can claim a draft
- * inline without a second, drifting copy of this logic. `sendQuote` passes the
- * token identity columns it minted; the on-behalf caller passes none, which is
- * what makes the resulting `sent` quote honest — `sent` means "frozen and
- * customer-bound", and the acceptance row's origin tells anyone who needs to
- * know that the customer never received a link.
- *
- * MUST run inside the caller's transaction: the conditional
- * `WHERE status = 'draft'` predicate is what makes two concurrent claims safe
- * (the loser matches 0 rows and 409s), and the parent supersede below has to
- * commit or roll back with it.
+ * MUST run inside the caller's transaction: the values it returns are only
+ * meaningful if the claim that writes them commits or rolls back with the reads
+ * they were derived from.
  */
-export async function claimQuoteSent(
+export async function freezeQuoteSentSnapshot(
   quote: QuoteRow,
-  opts: {
-    now: Date;
-    /** Accept-token identity columns to stamp atomically with the flip.
-     *  sendQuote passes them; the on-behalf accept passes nothing. */
-    acceptTokenColumns?: Record<string, unknown>;
-    /** Already locked + validated by the caller (sendQuote does this under
-     *  FOR UPDATE before reading content). */
-    parentToSupersede?: { id: string; status: SupersedableStatus } | null;
-    /** Runs after the partner/org reads and BEFORE the conditional claim, so a
-     *  caller can keep a pre-claim statement in its original position within
-     *  its transaction (sendQuote reads the parent's recipients here). */
-    beforeClaim?: (context: { org: { billingContact: unknown } | undefined }) => Promise<void>;
-  },
-): Promise<ClaimQuoteSentResult> {
+  opts: { now: Date },
+): Promise<QuoteSentSnapshot> {
+  assertInTransaction('freezeQuoteSentSnapshot');
   const now = opts.now;
   // Quotes are numbered at creation now; keep that number on issue. Only legacy
   // drafts created before number-at-creation still allocate here.
@@ -249,29 +233,69 @@ export async function claimQuoteSent(
   const termsAndConditions = quote.termsAndConditions ?? partnerRow?.billingTermsAndConditions ?? null;
   const terms = quote.terms ?? partnerRow?.invoiceFooter ?? null;
 
-  if (opts.beforeClaim) await opts.beforeClaim({ org });
+  return {
+    quoteNumber, issueDate, billToName, billToAddress, billToTaxId,
+    sellerSnapshot, presentationSnapshot, documentLocale,
+    termsAndConditions, terms, partnerRow, org,
+  };
+}
 
+/**
+ * Phase 2 of the delivery-free draft→sent claim: the WRITES.
+ *
+ * The conditional `WHERE status = 'draft'` flip that stamps
+ * {@link freezeQuoteSentSnapshot}'s values, plus — on a revision — retiring the
+ * parent to 'superseded'. Writes NOTHING that puts a live credential in a
+ * customer's hands: no quote_recipients rows, no accept token of its own, no
+ * public-link columns, no email. `sendQuote` passes the token identity columns
+ * it minted; the on-behalf accept passes none, which is what makes the resulting
+ * `sent` quote honest — `sent` means "frozen and customer-bound", and the
+ * acceptance row's origin tells anyone who needs to know that the customer never
+ * received a link.
+ *
+ * MUST run inside the caller's transaction: the conditional predicate is what
+ * makes two concurrent claims safe (the loser matches 0 rows and 409s), and the
+ * parent supersede has to commit or roll back with it.
+ */
+export async function applyQuoteSentClaim(
+  quote: QuoteRow,
+  frozen: QuoteSentSnapshot,
+  opts: {
+    now: Date;
+    /** Accept-token identity columns to stamp atomically with the flip.
+     *  sendQuote passes them; the on-behalf accept passes nothing. */
+    acceptTokenColumns?: Record<string, unknown>;
+    /** Already locked + validated by the caller (sendQuote does this under
+     *  FOR UPDATE before reading content). */
+    parentToSupersede?: { id: string; status: SupersedableStatus } | null;
+  },
+): Promise<QuoteSupersedeResult | undefined> {
+  assertInTransaction('applyQuoteSentClaim');
+  const now = opts.now;
   // Conditional on status='draft' so two concurrent claims can't both flip the
   // quote (the second matches 0 rows and 409s). Counter gaps from the losing
   // claim are acceptable, per allocateQuoteCounter's contract (C3).
   const claimed = await db
     .update(quotes)
     .set({
-      status: 'sent', quoteNumber, issueDate, sentAt: now, updatedAt: now,
+      status: 'sent',
+      quoteNumber: frozen.quoteNumber,
+      issueDate: frozen.issueDate,
+      sentAt: now, updatedAt: now,
       ...(opts.acceptTokenColumns ?? {}),
       // Retire any schedule state atomically with the flip: a scheduled-send
       // claim, a stale failure marker from an earlier attempt, or a pending
       // window must not survive onto a sent quote (a leftover send_email_reason
       // would render a false "no email was delivered" banner).
       sendScheduledAt: null, sendJobId: null, sendEmailReason: null,
-      billToName,
-      billToAddress,
-      billToTaxId,
-      sellerSnapshot: buildSellerSnapshot(partnerRow),
-      termsAndConditions,
-      terms,
-      presentationSnapshot,
-      documentLocale,
+      billToName: frozen.billToName,
+      billToAddress: frozen.billToAddress,
+      billToTaxId: frozen.billToTaxId,
+      sellerSnapshot: buildSellerSnapshot(frozen.partnerRow),
+      termsAndConditions: frozen.termsAndConditions,
+      terms: frozen.terms,
+      presentationSnapshot: frozen.presentationSnapshot,
+      documentLocale: frozen.documentLocale,
     })
     .where(and(eq(quotes.id, quote.id), eq(quotes.status, 'draft')))
     .returning({ id: quotes.id });
@@ -288,27 +312,45 @@ export async function claimQuoteSent(
   // publicLinkRevokedAt; closing that gap is W04's asset-closure scope.
   // Columns left untouched on purpose: declinedAt, declineReason, expiryDate,
   // viewedAt are the parent's historical record.
-  let superseded: QuoteSupersedeResult | undefined;
-  if (opts.parentToSupersede) {
-    const flipped = await db.update(quotes)
-      .set({ status: 'superseded', publicLinkRevokedAt: now, updatedAt: now })
-      .where(and(
-        eq(quotes.id, opts.parentToSupersede.id),
-        eq(quotes.orgId, quote.orgId),
-        inArray(quotes.status, [...REVISABLE_STATUSES]),
-      ))
-      .returning({ id: quotes.id });
-    if (flipped.length === 0) {
-      throw new QuoteServiceError('The original quote settled while sending the revision', 409, 'PARENT_CONVERTED');
-    }
-    superseded = { parentQuoteId: opts.parentToSupersede.id, previousStatus: opts.parentToSupersede.status };
+  if (!opts.parentToSupersede) return undefined;
+  const flipped = await db.update(quotes)
+    .set({ status: 'superseded', publicLinkRevokedAt: now, updatedAt: now })
+    .where(and(
+      eq(quotes.id, opts.parentToSupersede.id),
+      eq(quotes.orgId, quote.orgId),
+      inArray(quotes.status, [...REVISABLE_STATUSES]),
+    ))
+    .returning({ id: quotes.id });
+  if (flipped.length === 0) {
+    throw new QuoteServiceError('The original quote settled while sending the revision', 409, 'PARENT_CONVERTED');
   }
+  return { parentQuoteId: opts.parentToSupersede.id, previousStatus: opts.parentToSupersede.status };
+}
 
-  return {
-    quoteNumber, issueDate, billToName, billToAddress, billToTaxId,
-    sellerSnapshot, presentationSnapshot, documentLocale,
-    termsAndConditions, terms, partnerRow, org, superseded,
-  };
+/**
+ * The draft→sent claim, WITHOUT delivery: {@link freezeQuoteSentSnapshot} then
+ * {@link applyQuoteSentClaim}, back to back.
+ *
+ * Everything `sendQuote` does to freeze a quote and bind it to a customer, and
+ * nothing that puts a live credential in a customer's hands. This is the entry
+ * point for the on-behalf accept (spec 2026-09-21 §5), which claims a draft
+ * inline with `claimQuoteSent(quote, { now })` rather than carrying a second,
+ * drifting copy of the logic. `sendQuote` calls the two phases separately so its
+ * parent-recipients read keeps its position between them.
+ *
+ * MUST run inside the caller's transaction (both phases assert it).
+ */
+export async function claimQuoteSent(
+  quote: QuoteRow,
+  opts: {
+    now: Date;
+    acceptTokenColumns?: Record<string, unknown>;
+    parentToSupersede?: { id: string; status: SupersedableStatus } | null;
+  },
+): Promise<ClaimQuoteSentResult> {
+  const frozen = await freezeQuoteSentSnapshot(quote, { now: opts.now });
+  const superseded = await applyQuoteSentClaim(quote, frozen, opts);
+  return { ...frozen, superseded };
 }
 
 /**
@@ -470,43 +512,39 @@ export async function sendQuote(
   });
   const acceptUrl = buildPublicQuoteAcceptUrl(token);
 
+  // Phase 1 of the claim: the reads + derivations. Split from the write phase
+  // so the parent-recipients read below keeps its original position in this
+  // transaction — between the org read and the draft→sent flip.
+  const frozen = await freezeQuoteSentSnapshot(quote, { now });
+  const { quoteNumber, partnerRow, org, billToName, billToAddress, billToTaxId, sellerSnapshot, presentationSnapshot, documentLocale } = frozen;
+
   // The addressed recipients are also the authenticated portal identities
   // allowed to accept/decline this quote. Persist a canonical set at send time;
   // CC recipients are informational and intentionally do not gain signer power.
-  // Computed in the claim's beforeClaim hook so the parent-recipients read keeps
-  // its original position — before the draft→sent claim — in this transaction.
-  const delivery: { billingRecipient: string | null; recipientEmails: string[] } = {
-    billingRecipient: null,
-    recipientEmails: [],
-  };
-  const claim = await claimQuoteSent(quote, {
+  const billingRecipient = resolveBillingEmail(org?.billingContact);
+  // A revision goes back to whoever received the original, not to the org's
+  // billing contact — the people already in the conversation. Explicitly
+  // org-filtered: this also runs under the send worker's SYSTEM context, where
+  // getQuoteRecipients' unfiltered read would be cross-tenant.
+  const parentRecipients = parentToSupersede
+    ? (await db.select({ email: quoteRecipients.email }).from(quoteRecipients)
+        .where(and(eq(quoteRecipients.quoteId, parentToSupersede.id), eq(quoteRecipients.orgId, quote.orgId)))
+        .orderBy(quoteRecipients.createdAt)).map((r) => r.email)
+    : [];
+  const recipientEmails = Array.from(new Set(
+    (opts.to && opts.to.length > 0 ? opts.to
+      : parentRecipients.length > 0 ? parentRecipients
+      : (billingRecipient ? [billingRecipient] : []))
+      .map((email) => email.trim().toLowerCase())
+      .filter((email) => email.length > 0),
+  ));
+
+  // Phase 2: the conditional draft→sent flip + the revision parent supersede.
+  const supersededResult = await applyQuoteSentClaim(quote, frozen, {
     now,
     acceptTokenColumns: acceptTokenIdentityColumns(identity),
     parentToSupersede,
-    beforeClaim: async ({ org }) => {
-      const billingRecipient = resolveBillingEmail(org?.billingContact);
-      delivery.billingRecipient = billingRecipient;
-      // A revision goes back to whoever received the original, not to the org's
-      // billing contact — the people already in the conversation. Explicitly
-      // org-filtered: this also runs under the send worker's SYSTEM context,
-      // where getQuoteRecipients' unfiltered read would be cross-tenant.
-      const parentRecipients = parentToSupersede
-        ? (await db.select({ email: quoteRecipients.email }).from(quoteRecipients)
-            .where(and(eq(quoteRecipients.quoteId, parentToSupersede.id), eq(quoteRecipients.orgId, quote.orgId)))
-            .orderBy(quoteRecipients.createdAt)).map((r) => r.email)
-        : [];
-      delivery.recipientEmails = Array.from(new Set(
-        (opts.to && opts.to.length > 0 ? opts.to
-          : parentRecipients.length > 0 ? parentRecipients
-          : (billingRecipient ? [billingRecipient] : []))
-          .map((email) => email.trim().toLowerCase())
-          .filter((email) => email.length > 0),
-      ));
-    },
   });
-  const { quoteNumber, partnerRow, billToName, billToAddress, billToTaxId, sellerSnapshot, presentationSnapshot, documentLocale } = claim;
-  const supersededResult = claim.superseded;
-  const { billingRecipient, recipientEmails } = delivery;
 
   if (recipientEmails.length > 0) {
     await db.insert(quoteRecipients).values(

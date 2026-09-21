@@ -27,7 +27,10 @@ vi.mock('../db', () => {
 import { claimQuoteSent } from './quoteLifecycle';
 import { db } from '../db';
 
-type Chain = { set: { mock: { calls: unknown[][] } } };
+type Chain = {
+  set: { mock: { calls: unknown[][] } };
+  insert: { mock: { calls: unknown[][] } };
+};
 
 const draft = {
   id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft',
@@ -54,6 +57,9 @@ describe('claimQuoteSent', () => {
     for (const key of Object.keys(claim)) {
       expect(key, `claimQuoteSent must not write ${key}`).not.toMatch(/^(publicLink|acceptToken|publicToken|publicResponse)/);
     }
+    // The other half of "no recipients": the helper must never INSERT at all —
+    // a quote_recipients row is a portal signer identity, which is delivery.
+    expect((db as unknown as Chain).insert.mock.calls).toHaveLength(0);
   });
 
   it('409s when the row is no longer a draft (the conditional claim matched 0 rows)', async () => {
