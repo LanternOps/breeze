@@ -69,4 +69,24 @@ describe('fetchAllOrganizations (#3446)', () => {
     });
     await expect(fetchAllOrganizations(fetchPage)).rejects.toThrow('boom');
   });
+
+  it('sorts the concatenated result across pages by display name (G2-2, #6459)', async () => {
+    // The server orders by created_at,id, not name — page 1 must be a FULL
+    // page (100) so the walk continues to page 2; padding entries sort after
+    // everything else so the interesting five stay first once sorted.
+    const filler = Array.from({ length: 98 }, (_, i) => ({
+      id: `filler-${i}`,
+      name: `Zz Filler ${String(i).padStart(3, '0')}`,
+    }));
+    const fetchPage = vi.fn(async (p: number) =>
+      p === 1
+        ? { data: [{ id: 'o1', name: 'Zeta' }, { id: 'o2', name: 'alpha' }, ...filler], pagination: { total: 103 } }
+        : { data: [{ id: 'o3', name: 'Beta' }, { id: 'o4', name: 'Org 10' }, { id: 'o5', name: 'Org 2' }], pagination: { total: 103 } },
+    );
+
+    const all = await fetchAllOrganizations<{ id: string; name: string }>(fetchPage);
+
+    expect(all).toHaveLength(103);
+    expect((all ?? []).slice(0, 5).map((o) => o.name)).toEqual(['alpha', 'Beta', 'Org 2', 'Org 10', 'Zeta']);
+  });
 });

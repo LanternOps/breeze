@@ -71,4 +71,29 @@ describe('fetchAllSites (#6412)', () => {
     await fetchAllSites('/orgs/sites');
     expect(fetchWithAuth).toHaveBeenCalledTimes(1);
   });
+
+  it('sorts the concatenated result across pages by display name (G2-2, #6459)', async () => {
+    // Page 1 must be a FULL page (100) so the walk continues to page 2;
+    // filler entries sort after everything else so the interesting five stay
+    // first once sorted.
+    const filler = Array.from({ length: 98 }, (_, i) => ({
+      id: `filler-${i}`,
+      name: `Zz Filler ${String(i).padStart(3, '0')}`,
+    }));
+    fetchWithAuth
+      .mockResolvedValueOnce(
+        ok({ data: [{ id: 's1', name: 'Zeta' }, { id: 's2', name: 'alpha' }, ...filler], pagination: { total: 103 } }),
+      )
+      .mockResolvedValueOnce(
+        ok({
+          data: [{ id: 's3', name: 'Beta' }, { id: 's4', name: 'Org 10' }, { id: 's5', name: 'Org 2' }],
+          pagination: { total: 103 },
+        }),
+      );
+
+    const sites = await fetchAllSites<{ id: string; name: string }>('/orgs/sites?organizationId=o1');
+
+    expect(sites).toHaveLength(103);
+    expect(sites.slice(0, 5).map((s) => s.name)).toEqual(['alpha', 'Beta', 'Org 2', 'Org 10', 'Zeta']);
+  });
 });
