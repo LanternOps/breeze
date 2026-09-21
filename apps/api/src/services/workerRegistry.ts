@@ -849,6 +849,18 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // Backup provider integration W02 (#6008 / #6010). 'global': its runtime
+    // import closure reaches alertService + eventBus but no socket-local
+    // dispatch — the same shape as monitorWorker and warrantyWorker, both
+    // 'global'. Verified mechanically by workerEntrypointClosure.contract.test.ts.
+    name: 'backupProviderSyncWorker',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/backupProviderSync');
+      return { init: m.initializeBackupProviderSyncJob, shutdown: m.shutdownBackupProviderSyncJob };
+    },
+  },
+  {
     // socket-owner, not global: its runtime import closure reaches
     // routes/agentWs.ts — jobs/m365SyncWorker.ts -> services/m365Sync/run.ts
     // -> services/m365ControlPlane/readActionService.ts ->
