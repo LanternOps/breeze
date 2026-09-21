@@ -65,4 +65,15 @@ describe('DeviceDetailPage payload-shape guard (#6501)', () => {
     expect(screen.queryByTestId('device-details')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /wake/i })).not.toBeInTheDocument();
   });
+
+  it('treats an empty-string device id the same as a missing one', async () => {
+    vi.mocked(fetchWithAuth).mockResolvedValue(
+      new Response(JSON.stringify({ id: '', hostname: 'switch-1' }), { status: 200 }),
+    );
+
+    render(<DeviceDetailPage deviceId={DEVICE_ID} />);
+
+    expect(await screen.findByText(/device not found/i)).toBeInTheDocument();
+    expect(screen.queryByTestId('device-details')).not.toBeInTheDocument();
+  });
 });

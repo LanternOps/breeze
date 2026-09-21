@@ -114,6 +114,15 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
       // device that was never actually fetched. A real device row always
       // carries its own `id`; treat anything else as not-found.
       if (typeof data?.id !== "string" || data.id.length === 0) {
+        // Log which shape we actually got: a list envelope (the #6501 route
+        // collision) looks different from a genuinely malformed device row,
+        // and both would otherwise render an identical "Device not found"
+        // with nothing in the console to tell a future regression apart
+        // from an expected reserved-path collision.
+        console.error(
+          `[DeviceDetailPage] GET /devices/${deviceId} returned 200 with no device id`,
+          { looksLikeListEnvelope: Array.isArray(data?.data), keys: data && typeof data === "object" ? Object.keys(data) : typeof data },
+        );
         useRecentsStore.getState().forgetDevice(deviceId);
         throw new Error("Device not found");
       }
