@@ -128,14 +128,7 @@ describe('OrgTicketSettingsEditor', () => {
     expect(screen.getAllByText(/no partner default configured/i).length).toBeGreaterThan(0);
   });
 
-  it('states that a ticket category SLA overrides this org-level SLA', async () => {
-    mockApi();
-    render(<OrgTicketSettingsEditor orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);
-    await waitFor(() => expect(screen.getByTestId('org-ticket-settings')).toBeInTheDocument());
-    expect(screen.getByTestId('org-ticket-sla-direction-note')).toBeInTheDocument();
-  });
-
-  it('renders InheritedField SLA cells and the direction note together', async () => {
+  it('states that a ticket category SLA overrides this org-level SLA, alongside the InheritedField SLA cells', async () => {
     mockApi();
     render(<OrgTicketSettingsEditor orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);
     await waitFor(() => expect(screen.getByTestId('org-ticket-settings')).toBeInTheDocument());

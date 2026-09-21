@@ -84,6 +84,14 @@ describe('InboundEmailCard', () => {
     const toggles = screen.getByTestId('inbound-toggles-section');
     const addressForm = screen.getByTestId('inbound-address-section');
     expect(toggles.closest('section')).not.toBe(addressForm.closest('section'));
+
+    // Load-bearing check: the explicit-Save address controls live INSIDE the
+    // address section, not the autosaving toggles section, and the enable
+    // toggle (an autosaving control) is NOT inside the address section.
+    expect(addressForm.querySelector('[data-testid="inbound-localpart-save"]')).not.toBeNull();
+    expect(toggles.querySelector('[data-testid="inbound-enabled-toggle"]')).not.toBeNull();
+    expect(addressForm.querySelector('[data-testid="inbound-enabled-toggle"]')).toBeNull();
+    expect(toggles.querySelector('[data-testid="inbound-localpart-save"]')).toBeNull();
   });
 
   it('renders the inbound address and the unknown-sender mode control', async () => {

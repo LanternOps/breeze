@@ -2543,6 +2543,7 @@
   "inheritedField": {
     "inheritsFrom": "{{source}} değerinden devralır",
     "noneConfigured": "Yapılandırılmış {{source}} yok",
-    "overriding": "{{source}} değerini geçersiz kılıyor"
+    "overriding": "{{source}} değerini geçersiz kılıyor",
+    "overridingWithValue": "{{source}} değerini geçersiz kılıyor ({{value}})"
   }
 }

@@ -2,6 +2,10 @@ import { useTranslation } from 'react-i18next';
 
 interface InheritedFieldProps {
   id: string;
+  /** The accessible name. When hideLabel is set, this is REQUIRED to be a
+   *  real, non-empty description (e.g. "Urgent — response SLA") — it still
+   *  drives aria-label, so an empty string leaves the input with no
+   *  accessible name at all. */
   label: string;
   /** The org's own override value, or '' when blank (= inherit). */
   value: string;
@@ -18,8 +22,12 @@ interface InheritedFieldProps {
   step?: string;
   /** Skip rendering the visible <label> (e.g. inside a compact table cell that
    *  already carries a row label) while keeping the association for a11y via
-   *  aria-label. */
+   *  aria-label={label} — callers MUST pass a real, non-empty `label` when
+   *  using this, not ''. */
   hideLabel?: boolean;
+  /** Override the default full-width input sizing (e.g. 'w-28' for a compact
+   *  table cell). Defaults to 'w-full'. */
+  inputWidthClassName?: string;
   'data-testid'?: string;
 }
 
@@ -41,6 +49,7 @@ export default function InheritedField({
   max,
   step,
   hideLabel,
+  inputWidthClassName = 'w-full',
   ...rest
 }: InheritedFieldProps) {
   const { t } = useTranslation('common');
@@ -64,9 +73,9 @@ export default function InheritedField({
         disabled={disabled}
         onChange={(e) => onChange(e.target.value)}
         placeholder={inheritedValue ?? undefined}
-        aria-label={hideLabel ? label || undefined : undefined}
+        aria-label={hideLabel ? label : undefined}
         data-testid={testId}
-        className="mt-1 w-full rounded-md border bg-background px-3 py-1.5 text-sm disabled:opacity-50"
+        className={`mt-1 ${inputWidthClassName} rounded-md border bg-background px-3 py-1.5 text-sm disabled:opacity-50`}
       />
       {isInheriting ? (
         inheritedValue !== null ? (
@@ -78,6 +87,10 @@ export default function InheritedField({
             {t('inheritedField.noneConfigured', { source: inheritedSource })}
           </p>
         )
+      ) : inheritedValue !== null ? (
+        <p className="mt-1 text-xs text-muted-foreground">
+          {t('inheritedField.overridingWithValue', { source: inheritedSource, value: inheritedValue })}
+        </p>
       ) : (
         <p className="mt-1 text-xs text-muted-foreground">
           {t('inheritedField.overriding', { source: inheritedSource })}

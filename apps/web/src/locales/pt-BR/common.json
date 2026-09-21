@@ -2543,6 +2543,7 @@
   "inheritedField": {
     "inheritsFrom": "Herda de {{source}}",
     "noneConfigured": "Nenhum {{source}} configurado",
-    "overriding": "Substitui {{source}}"
+    "overriding": "Substitui {{source}}",
+    "overridingWithValue": "Substitui {{source}} ({{value}})"
   }
 }

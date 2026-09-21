@@ -2543,6 +2543,7 @@
   "inheritedField": {
     "inheritsFrom": "Hereda de {{source}}",
     "noneConfigured": "No hay {{source}} configurado",
-    "overriding": "Anula {{source}}"
+    "overriding": "Anula {{source}}",
+    "overridingWithValue": "Anula {{source}} ({{value}})"
   }
 }

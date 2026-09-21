@@ -182,7 +182,7 @@ export default function OrgTicketSettingsEditor({ orgId, onDirty, onSave }: OrgT
                   <td className="py-1.5 pr-4">
                     <InheritedField
                       id={`org-ticket-sla-${p}-response`}
-                      label=""
+                      label={`${priorityLabel(partnerConfig, p)} ${t('orgTicketSettingsEditor.sla.response')}`}
                       hideLabel
                       value={slaRows[p].responseMinutes}
                       onChange={(v) => updateSlaRow(p, 'responseMinutes', v)}
@@ -190,13 +190,14 @@ export default function OrgTicketSettingsEditor({ orgId, onDirty, onSave }: OrgT
                       inheritedSource={t('orgTicketSettingsEditor.partnerDefault')}
                       type="number"
                       min={1}
+                      inputWidthClassName="w-28"
                       data-testid={`org-ticket-sla-${p}-response`}
                     />
                   </td>
                   <td className="py-1.5">
                     <InheritedField
                       id={`org-ticket-sla-${p}-resolution`}
-                      label=""
+                      label={`${priorityLabel(partnerConfig, p)} ${t('orgTicketSettingsEditor.sla.resolution')}`}
                       hideLabel
                       value={slaRows[p].resolutionMinutes}
                       onChange={(v) => updateSlaRow(p, 'resolutionMinutes', v)}
@@ -204,6 +205,7 @@ export default function OrgTicketSettingsEditor({ orgId, onDirty, onSave }: OrgT
                       inheritedSource={t('orgTicketSettingsEditor.partnerDefault')}
                       type="number"
                       min={1}
+                      inputWidthClassName="w-28"
                       data-testid={`org-ticket-sla-${p}-resolution`}
                     />
                   </td>
