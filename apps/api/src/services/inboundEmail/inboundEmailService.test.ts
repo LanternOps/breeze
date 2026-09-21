@@ -583,6 +583,29 @@ describe('processInboundEmail', () => {
     expect(String(log[0]!.error ?? '')).toContain('rate-limited');
   });
 
+  it('does NOT charge the cap for an unknown-sender DROP message (drop policy preserved)', async () => {
+    // Regression guard (Codex review #3): the cap must only meter ticket-CREATING
+    // paths. An unknown sender under 'drop' never creates a ticket, so it must not
+    // consume the budget — and must stay dropped, not become quarantined.
+    resolveMock.mockResolvedValue('p-1');
+    state.selectRows['ticket_email_inbound'] = [];
+    state.selectRows['tickets'] = [];
+    state.selectRows['portal_users'] = [];        // no portal user
+    resolveOrgMock.mockResolvedValue(null);       // no mapped domain
+    loadPolicyMock.mockResolvedValue({ enabled: true, unknownSenderMode: 'drop', defaultTriageOrgId: null, dropUnverifiedSenders: false });
+    evaluateInboundThrottleMock.mockClear();
+
+    await processInboundEmail(email({ from: 'stranger@nowhere.example', subject: 'unmapped' }));
+
+    // The cap was never consulted, and the message is dropped ('ignored'), not quarantined.
+    expect(evaluateInboundThrottleMock).not.toHaveBeenCalled();
+    expect(createTicketMock).not.toHaveBeenCalled();
+    const log = inboundOf();
+    expect(log).toHaveLength(1);
+    expect(log[0]!.parseStatus).toBe('ignored');
+    expect(String(log[0]!.error ?? '')).toContain('drop');
+  });
+
   it('does NOT fire the autoresponder on the closed-continuation path (no submittedBy)', async () => {
     resolveMock.mockResolvedValue('p-1');
     state.selectRows['ticket_email_inbound'] = [];

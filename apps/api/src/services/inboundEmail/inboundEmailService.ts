@@ -429,31 +429,38 @@ export async function processInboundEmail(
       return;
     }
 
-    // FLOOD CAP — the single choke for NEW ticket creation. Placed HERE, after
-    // the R4 sender-auth gate, provider dedup, the claim-ledger consult, AND the
-    // live-thread append path above (which returned), and BEFORE every create
-    // path below (closed-continuation, portal user, mapped domain, triage). So:
-    //   - only authenticated, non-duplicate, unclaimed, non-append mail is metered
-    //     (a forged/unauthenticated flood can never charge a victim's budget);
-    //   - the charge sits ahead of the mapped-domain path's contact auto-creation,
-    //     so an over-cap message creates NEITHER a ticket NOR a contact;
-    //   - the charge is idempotent per provider-message-id, so an at-least-once
-    //     redelivery / transaction retry counts once, not N times.
-    // Over-cap ⇒ quarantine for review (recoverable), never dropped. The Redis
-    // round-trip runs in the held tx (warn-only #1105, as the autoresponder does)
-    // but only for genuine creation candidates. rateLimiter fails CLOSED on Redis
-    // error (→ quarantine); a fully-absent Redis fails OPEN in evaluateInboundThrottle.
-    const throttle = await evaluateInboundThrottle({
-      redis: getRedis(),
-      from: n.from,
-      partnerId,
-      limits: capLimits,
-      dedupeMember: n.providerMessageId,
-    });
-    if (throttle.throttled) {
-      await logInbound(n, partnerId, 'quarantined', null, `rate-limited: ${throttle.bucket ?? 'inbound'} cap exceeded`);
-      return;
-    }
+    // FLOOD CAP — charged ONLY on a path that actually creates a ticket. This
+    // helper is invoked at the entry of each create path below (closed
+    // continuation, portal user, mapped domain, triage) and NOT on the
+    // unknown-sender drop/quarantine paths, which never mint a ticket — charging
+    // those would let unmapped spam consume a partner's ticket budget and, worse,
+    // would turn a `drop`-policy message into a quarantine once over cap
+    // (a policy bypass). Each message takes exactly one path (they return), so at
+    // most one charge happens; the charge is idempotent per provider-message-id,
+    // so an at-least-once redelivery / transaction retry counts once. It sits
+    // after the R4 sender-auth gate, provider dedup, the claim-ledger consult and
+    // the live-thread append, and — at the mapped-domain site — ahead of contact
+    // auto-creation, so an over-cap message creates NEITHER a ticket NOR a contact.
+    // Returns true when over cap (caller must quarantine + return). rateLimiter
+    // fails CLOSED on a Redis error (→ quarantine); a fully-absent Redis fails
+    // OPEN in evaluateInboundThrottle. Redis round-trip runs in the held tx
+    // (warn-only #1105, as the autoresponder does) but only for real creations.
+    // Capture partnerId as a const so the closure sees the narrowed `string`
+    // (the outer `let partnerId: string | null` is re-widened inside a closure;
+    // it is non-null here, past the early `if (!partnerId) return`).
+    const capPartnerId = partnerId;
+    const capExceeded = async (): Promise<boolean> => {
+      const verdict = await evaluateInboundThrottle({
+        redis: getRedis(),
+        from: n.from,
+        partnerId: capPartnerId,
+        limits: capLimits,
+        dedupeMember: n.providerMessageId,
+      });
+      if (!verdict.throttled) return false;
+      await logInbound(n, partnerId, 'quarantined', null, `rate-limited: ${verdict.bucket ?? 'inbound'} cap exceeded`);
+      return true;
+    };
 
     // No LIVE thread match. A reply to a CLOSED ticket is immutable -> create a NEW
     // linked ticket carrying the original thread key. This lookup is intentionally
@@ -463,6 +470,7 @@ export async function processInboundEmail(
     const closedOriginal = await findClosedTicketInPartner(n, partnerId, senderResolver);
     if (closedOriginal) {
       await dependencies.afterTicketMatchLock?.(closedOriginal.id);
+      if (await capExceeded()) return;
       // No requester and NO acknowledgement: a reply to a closed ticket spawns a
       // linked ticket, it is not a fresh submission (spec §5).
       const t = await createFromEmail(n, partnerId, closedOriginal.orgId, closedOriginal.emailThreadKey, closedOriginal.internalNumber, null, false);
@@ -475,6 +483,7 @@ export async function processInboundEmail(
     // broader domain mapping).
     const sender = await senderResolver.portalUser();
     if (sender) {
+      if (await capExceeded()) return;
       // A portal LOGIN. createTicket derives the person from its contact_id —
       // the inbound path must not resolve a second candidate by address.
       const t = await createFromEmail(n, partnerId, sender.orgId, null, null, { kind: 'portal', portalUserId: sender.id }, true);
@@ -497,6 +506,7 @@ export async function processInboundEmail(
     // above, so a forged From: @customer.com can't file into the customer's org.
     const domainMatch = await senderResolver.domainOrg();
     if (domainMatch) {
+      if (await capExceeded()) return;
       // `autoCreateContact` is the partner's "onboard people from this domain"
       // switch. When it is on the sender is an ACCEPTED known sender — which is
       // what the acknowledgement is gated on — even when the address resolves to
@@ -533,6 +543,7 @@ export async function processInboundEmail(
     // 'triage' — auto-create in the partner's default triage org (only when one
     // is configured; otherwise fall through to quarantine).
     if (policy.unknownSenderMode === 'triage' && policy.defaultTriageOrgId) {
+      if (await capExceeded()) return;
       // Unknown sender: no requester and no acknowledgement (we would be
       // replying to an address the partner never vetted).
       const t = await createFromEmail(n, partnerId, policy.defaultTriageOrgId, null, null, null, false);

@@ -62,12 +62,36 @@ export function autoresponseSuppressionReason(
  * `autoresponseSuppressionReason`: it only withholds our auto-REPLY, while still
  * letting the mail become a ticket — correct for device/notification senders.
  */
+/**
+ * The Auto-Submitted keyword (RFC 3834 §5.1), lowercased, or null. Strips leading
+ * CFWS — whitespace and parenthesized comments, iterated to handle a leading
+ * comment before the keyword and simple nesting — then returns the keyword as a
+ * whole token, delimited by whitespace, `;` (parameters) or `(` (a trailing
+ * comment). Compared EXACTLY by the caller, so `auto-replied2`/`auto-replied.x`
+ * are their own tokens and do not match the `auto-replied` keyword.
+ */
+function autoSubmittedKeyword(raw: string | undefined): string | null {
+  if (!raw) return null;
+  let v = raw.toLowerCase();
+  // Strip leading whitespace and comments until neither remains. The comment
+  // pattern consumes one level of nesting; iterating handles a few more.
+  for (let prev = ''; v !== prev; ) {
+    prev = v;
+    v = v.replace(/^\s+/, '').replace(/^\((?:[^()]|\([^()]*\))*\)/, '');
+  }
+  const token = v.match(/^[^\s;(]+/)?.[0];
+  return token && token.length > 0 ? token : null;
+}
+
 export function ticketCreationLoopReason(n: NormalizedInboundEmail): string | null {
-  // RFC 3834 allows optional parameters (`auto-replied; foo=bar`) and RFC 5322
-  // comments (`auto-replied (vacation)`) after the keyword. Extract the leading
-  // keyword token only — the run of keyword characters at the start — so neither
-  // a parameter nor a parenthesized comment can hide it.
-  const autoSubmitted = n.autoSubmitted?.trim().toLowerCase().match(/^[a-z][a-z-]*/)?.[0];
+  // RFC 3834 §5.1: the keyword may be preceded by CFWS (leading whitespace and
+  // parenthesized comments, e.g. `(vacation) auto-replied`) and followed by
+  // optional `; params` or trailing CFWS. Strip leading comments/whitespace, then
+  // take the whole keyword token up to the first delimiter (space, `;`, `(`) and
+  // compare it EXACTLY — so `auto-replied (vacation)`, `(a (nested)) auto-replied`
+  // and `auto-replied; x=y` all match, while `auto-replied2` / `auto-replied.foo`
+  // do NOT (they are different tokens, not the `auto-replied` keyword).
+  const autoSubmitted = autoSubmittedKeyword(n.autoSubmitted);
   if (autoSubmitted === 'auto-replied') return 'auto-replied';
 
   // A true null return path is EXACTLY `<>` (optionally whitespace) — an empty

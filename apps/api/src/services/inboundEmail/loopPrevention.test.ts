@@ -130,9 +130,20 @@ describe('ticketCreationLoopReason', () => {
     expect(ticketCreationLoopReason(email({ autoSubmitted: 'Auto-Replied' }))).toBe('auto-replied');
     // Parameterized header must still match the keyword (finding 8)...
     expect(ticketCreationLoopReason(email({ autoSubmitted: 'auto-replied; x-foo=bar' }))).toBe('auto-replied');
-    // ...as must an RFC 5322 comment after the keyword (finding 8, re-review).
+    // ...a trailing RFC 5322 comment...
     expect(ticketCreationLoopReason(email({ autoSubmitted: 'auto-replied (vacation)' }))).toBe('auto-replied');
     expect(ticketCreationLoopReason(email({ autoSubmitted: 'auto-replied (out of office); x=y' }))).toBe('auto-replied');
+    // ...and a LEADING comment / CFWS (finding 8, re-review #3), incl. nesting.
+    expect(ticketCreationLoopReason(email({ autoSubmitted: '(vacation) auto-replied' }))).toBe('auto-replied');
+    expect(ticketCreationLoopReason(email({ autoSubmitted: '  (a (nested)) auto-replied; foo=bar' }))).toBe('auto-replied');
+  });
+
+  it('does NOT treat a different token as auto-replied (exact keyword only)', () => {
+    // Guards the bounded-token match: these are distinct tokens, not the keyword.
+    expect(ticketCreationLoopReason(email({ autoSubmitted: 'auto-replied2' }))).toBeNull();
+    expect(ticketCreationLoopReason(email({ autoSubmitted: 'auto-replied.foo' }))).toBeNull();
+    expect(ticketCreationLoopReason(email({ autoSubmitted: 'auto-generated' }))).toBeNull();
+    expect(ticketCreationLoopReason(email({ autoSubmitted: 'no' }))).toBeNull();
   });
 
   it('does NOT suppress Auto-Submitted: auto-generated (device/copier notifications are real tickets)', () => {

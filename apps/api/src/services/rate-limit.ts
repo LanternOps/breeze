@@ -182,7 +182,13 @@ export async function rateLimiter(
     // below reflects the true post-refund state rather than always the
     // pre-refund `count` — see the `remaining` comment (#3984).
     let refunded = false;
-    if (!allowed && options.refundOnReject) {
+    // `dedupeMember` and `refundOnReject` are mutually exclusive by construction:
+    // the refund removes "the member this call added", but with a stable dedupe
+    // member that member may be a slot an EARLIER accepted call is relying on, so
+    // refunding it would wrongly free another request's charge. dedupe is for
+    // idempotent event-charging, refund is for punitive credential limiters —
+    // never both. Guard here so a future caller cannot combine them by mistake.
+    if (!allowed && options.refundOnReject && !options.dedupeMember) {
       // Remove exactly the members this call added. Best-effort: a failure here
       // only means the caller is treated the old (punitive) way, never that a
       // request is wrongly allowed — `allowed` was already decided above.
