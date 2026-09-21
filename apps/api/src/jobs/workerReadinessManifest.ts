@@ -148,6 +148,7 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('backupWorker'),
   consumers('backupSnapshotFileIndexWorker'),
   consumers('sensitiveDataWorker'),
+  consumers('securityScanWorker'),
   consumers('peripheralJobs', ['peripheralAnomalyWorker', 'peripheralPolicyDistributionWorker']),
   consumers('browserSecurityWorker', ['browserSecurityEvalWorker']),
   consumers('c2cBackupWorker'),

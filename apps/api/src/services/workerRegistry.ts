@@ -936,6 +936,18 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // #6263 W01. socket-owner, not global: the dispatch path imports
+    // services/commandQueue, whose closure reaches routes/agentWs.ts — the same
+    // reason sensitiveDataWorker above is socket-owner. Verified by
+    // workerEntrypointClosure.contract.test.ts, not by guessing.
+    name: 'securityScanWorker',
+    placement: 'socket-owner',
+    load: async () => {
+      const m = await import('../jobs/securityScanJobs');
+      return { init: m.initializeSecurityScanWorkers, shutdown: m.shutdownSecurityScanWorkers };
+    },
+  },
+  {
     name: 'peripheralJobs',
     placement: 'socket-owner',
     load: async () => {
