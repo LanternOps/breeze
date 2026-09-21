@@ -75,4 +75,31 @@ describe('useScrollToError (#6494)', () => {
 
     expect(scrollIntoView).toHaveBeenCalledTimes(2);
   });
+
+  it('scrolls again when a different error replaces the current one with no intervening clear', () => {
+    // Regression guard: a caller that goes straight from one truthy error
+    // string to a different truthy error string in the same handler (e.g.
+    // two sequential validation checks that each call setError and return,
+    // never routing through undefined) still must re-trigger the scroll —
+    // React batches same-tick setState calls, so this can't rely on a
+    // falsy->truthy boolean transition ever being observed.
+    const { rerender } = render(<Probe error={undefined} />);
+    rerender(<Probe error="A reason is required." />);
+    expect(scrollIntoView).toHaveBeenCalledTimes(1);
+
+    rerender(<Probe error="Immutable days must be at least 1." />);
+
+    expect(scrollIntoView).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not scroll on an identical error value even if re-set', () => {
+    const { rerender } = render(<Probe error={undefined} />);
+    rerender(<Probe error="Name is required" />);
+    expect(scrollIntoView).toHaveBeenCalledTimes(1);
+
+    // Same string value (e.g. a new render triggered by unrelated state).
+    rerender(<Probe error="Name is required" />);
+
+    expect(scrollIntoView).toHaveBeenCalledTimes(1);
+  });
 });
