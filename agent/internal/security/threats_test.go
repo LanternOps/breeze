@@ -1,6 +1,9 @@
 package security
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -208,5 +211,80 @@ func TestDetectThreatsCleanFile(t *testing.T) {
 	}
 	if len(threats) != 0 {
 		t.Fatalf("got %d threats on clean dir, want 0: %+v", len(threats), threats)
+	}
+}
+
+func TestDetectThreatsHonoursCallerExclusions(t *testing.T) {
+	root := t.TempDir()
+	skipped := filepath.Join(root, "skipme")
+	if err := os.MkdirAll(skipped, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skipped, avTestToken()+".com"), []byte(avTestContent()), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	options := scanOptionsForTest()
+	options.ExcludePaths = []string{skipped}
+	threats, _, err := detectThreatsCtx(context.Background(), []string{root}, options)
+	if err != nil {
+		t.Fatalf("detectThreatsCtx: %v", err)
+	}
+	if len(threats) != 0 {
+		t.Fatalf("expected the excluded directory to be skipped, got %d threat(s)", len(threats))
+	}
+}
+
+func TestDetectThreatsCountsFilesScanned(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"a.txt", "b.txt", "c.txt"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte("clean"), 0o600); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+	_, scanned, err := detectThreatsCtx(context.Background(), []string{root}, scanOptionsForTest())
+	if err != nil {
+		t.Fatalf("detectThreatsCtx: %v", err)
+	}
+	if scanned != 3 {
+		t.Fatalf("filesScanned = %d, want 3", scanned)
+	}
+}
+
+func TestDetectThreatsStopsOnCancelledContext(t *testing.T) {
+	root := t.TempDir()
+	for i := 0; i < 50; i++ {
+		if err := os.WriteFile(filepath.Join(root, fmt.Sprintf("f%d.txt", i)), []byte("clean"), 0o600); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, scanned, err := detectThreatsCtx(ctx, []string{root}, scanOptionsForTest())
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if scanned > 1 {
+		t.Fatalf("filesScanned = %d, want the walk to stop immediately", scanned)
+	}
+}
+
+func TestDetectThreatsSkipsOversizeFilesWithoutReading(t *testing.T) {
+	root := t.TempDir()
+	big := filepath.Join(root, avTestToken()+".com")
+	if err := os.WriteFile(big, []byte(avTestContent()), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	options := scanOptionsForTest()
+	options.MaxFileSize = 1 // every file is oversize
+	threats, _, err := detectThreatsCtx(context.Background(), []string{root}, options)
+	if err != nil {
+		t.Fatalf("detectThreatsCtx: %v", err)
+	}
+	// The filename signature still matches — only the CONTENT read is skipped.
+	for _, th := range threats {
+		if th.Type == "content" {
+			t.Fatalf("content signature matched on an oversize file: %+v", th)
+		}
 	}
 }

@@ -2,6 +2,7 @@ package security
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -18,10 +19,11 @@ import (
 
 // Threat represents a detected security threat.
 type Threat struct {
-	Name     string `json:"name"`
-	Type     string `json:"type"`
-	Severity string `json:"severity"`
-	Path     string `json:"path"`
+	Name          string `json:"name"`
+	Type          string `json:"type"`
+	Severity      string `json:"severity"`
+	Path          string `json:"path"`
+	QuarantinedTo string `json:"quarantinedTo,omitempty"`
 }
 
 const (
@@ -138,13 +140,43 @@ func DetectThreats(paths []string) ([]Threat, error) {
 	return detectThreats(paths, defaultThreatScanOptions())
 }
 
+// detectThreats keeps its signature for the existing callers and tests.
 func detectThreats(paths []string, options threatScanOptions) ([]Threat, error) {
+	threats, _, err := detectThreatsCtx(context.Background(), paths, options)
+	return threats, err
+}
+
+// detectThreatsCtx is detectThreats with a deadline and a scanned-file counter.
+// A cancelled context returns what was found so far plus ctx.Err(); callers
+// decide whether that is a timeout (partial results, reported) or a real error.
+//
+// Deliberately still single-goroutine: the legacy signature table is cheap and
+// the walk is IO-bound. W02 replaces the matcher with YARA-X and lifts the
+// worker pool from tools.ScanSensitiveData at the same time — splitting those
+// two changes keeps this wave's blast radius on scheduling, not throughput.
+func detectThreatsCtx(ctx context.Context, paths []string, options threatScanOptions) ([]Threat, int, error) {
 	cleanPaths := uniquePaths(paths)
 	var threats []Threat
 	seen := make(map[string]struct{})
 	var errs []error
+	filesScanned := 0
 
+	checkCtx := func() error {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+			return nil
+		}
+	}
+
+pathLoop:
 	for _, path := range cleanPaths {
+		if err := checkCtx(); err != nil {
+			errs = append(errs, err)
+			break
+		}
+
 		if path == "" {
 			continue
 		}
@@ -165,7 +197,11 @@ func detectThreats(paths []string, options threatScanOptions) ([]Threat, error) 
 		}
 
 		if info.IsDir() {
-			err := filepath.WalkDir(path, func(current string, entry fs.DirEntry, walkErr error) error {
+			walkErr := filepath.WalkDir(path, func(current string, entry fs.DirEntry, walkErr error) error {
+				if err := checkCtx(); err != nil {
+					return err
+				}
+
 				if walkErr != nil {
 					if os.IsPermission(walkErr) {
 						return fs.SkipDir
@@ -205,6 +241,8 @@ func detectThreats(paths []string, options threatScanOptions) ([]Threat, error) 
 					return nil
 				}
 
+				filesScanned++
+
 				found, err := scanFileForThreats(current, info, options)
 				if err != nil {
 					if !os.IsPermission(err) {
@@ -224,13 +262,21 @@ func detectThreats(paths []string, options threatScanOptions) ([]Threat, error) 
 
 				return nil
 			})
-			if err != nil && !os.IsPermission(err) {
-				errs = append(errs, err)
+			if walkErr != nil {
+				if errors.Is(walkErr, context.Canceled) || errors.Is(walkErr, context.DeadlineExceeded) {
+					errs = append(errs, walkErr)
+					break pathLoop
+				}
+				if !os.IsPermission(walkErr) {
+					errs = append(errs, walkErr)
+				}
 			}
 			continue
 		}
 
 		if info.Mode().IsRegular() {
+			filesScanned++
+
 			found, err := scanFileForThreats(path, info, options)
 			if err != nil {
 				if !os.IsPermission(err) {
@@ -249,7 +295,7 @@ func detectThreats(paths []string, options threatScanOptions) ([]Threat, error) 
 		}
 	}
 
-	return threats, errors.Join(errs...)
+	return threats, filesScanned, errors.Join(errs...)
 }
 
 // QuarantineThreat moves a detected threat to a quarantine directory.

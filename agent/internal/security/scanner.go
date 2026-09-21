@@ -1,7 +1,9 @@
 package security
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -17,6 +19,13 @@ type SecurityScanner struct {
 	MaxFileSize   int64
 	MaxReadBytes  int64
 	Config        *config.Config
+
+	// #6263 W01 — delivered per scan in the command payload, resolved from the
+	// device's effective security config policy. Zero values mean "agent
+	// defaults", which is what an unmanaged device gets.
+	Exclusions     []string
+	Timeout        time.Duration
+	AutoQuarantine bool
 }
 
 // ScanResult captures the output of a security scan.
@@ -26,23 +35,63 @@ type ScanResult struct {
 	Duration time.Duration  `json:"duration"`
 }
 
+// ScanOutcome is the richer result of ScanWithContext: everything ScanResult
+// carries, plus how much of the scan actually completed.
+type ScanOutcome struct {
+	Threats      []Threat
+	Status       SecurityStatus
+	Duration     time.Duration
+	FilesScanned int
+	TimedOut     bool
+	Partial      bool
+}
+
 // QuickScan performs a fast scan of common threat locations.
 func (s *SecurityScanner) QuickScan() (ScanResult, error) {
-	return s.scanPaths(defaultQuickPaths())
+	outcome, err := s.ScanWithContext(context.Background(), "quick", nil)
+	return outcome.toScanResult(), err
 }
 
 // FullScan performs a comprehensive scan of system locations.
 func (s *SecurityScanner) FullScan() (ScanResult, error) {
-	return s.scanPaths(defaultFullPaths())
+	outcome, err := s.ScanWithContext(context.Background(), "full", nil)
+	return outcome.toScanResult(), err
 }
 
 // CustomScan scans the provided paths.
 func (s *SecurityScanner) CustomScan(paths []string) (ScanResult, error) {
-	return s.scanPaths(paths)
+	outcome, err := s.ScanWithContext(context.Background(), "custom", paths)
+	return outcome.toScanResult(), err
 }
 
-func (s *SecurityScanner) scanPaths(paths []string) (ScanResult, error) {
-	start := time.Now()
+func (o ScanOutcome) toScanResult() ScanResult {
+	return ScanResult{
+		Threats:  o.Threats,
+		Status:   o.Status,
+		Duration: o.Duration,
+	}
+}
+
+// ScanWithContext runs a scan honouring the scanner's Exclusions, MaxFileSize
+// and Timeout. A deadline is reported as an outcome (TimedOut/Partial with
+// the threats found so far), never as an error — see DECISION 4 in the W01
+// plan: a 2-hour full scan that hits its deadline has usually done useful
+// work, and discarding it would make the timeout setting user-hostile.
+func (s *SecurityScanner) ScanWithContext(ctx context.Context, scanType string, paths []string) (ScanOutcome, error) {
+	var targets []string
+	switch strings.ToLower(scanType) {
+	case "quick":
+		targets = defaultQuickPaths()
+	case "full":
+		targets = defaultFullPaths()
+	case "custom":
+		if len(paths) == 0 {
+			return ScanOutcome{}, fmt.Errorf("custom scan requires one or more paths")
+		}
+		targets = filterExistingPaths(paths)
+	default:
+		return ScanOutcome{}, fmt.Errorf("unsupported scanType: %s", scanType)
+	}
 
 	options := defaultThreatScanOptions()
 	if s.MaxFileSize > 0 {
@@ -51,28 +100,54 @@ func (s *SecurityScanner) scanPaths(paths []string) (ScanResult, error) {
 	if s.MaxReadBytes > 0 {
 		options.MaxReadBytes = s.MaxReadBytes
 	}
+	if dir := s.quarantineDir(); dir != "" {
+		options.ExcludePaths = append(options.ExcludePaths, dir)
+	}
+	// Caller exclusions are ADDITIVE to the agent's built-ins: a policy may
+	// widen the skip set, never narrow it. /proc, /sys and the Defender
+	// quarantine stay excluded whatever the policy says.
+	options.ExcludePaths = append(options.ExcludePaths, s.Exclusions...)
 
-	quarantineDir := s.quarantineDir()
-	if quarantineDir != "" {
-		options.ExcludePaths = append(options.ExcludePaths, quarantineDir)
+	scanCtx := ctx
+	cancel := func() {}
+	if s.Timeout > 0 {
+		scanCtx, cancel = context.WithTimeout(ctx, s.Timeout)
+	}
+	defer cancel()
+
+	started := time.Now()
+	threats, filesScanned, scanErr := detectThreatsCtx(scanCtx, targets, options)
+	timedOut := errors.Is(scanErr, context.DeadlineExceeded) || errors.Is(scanErr, context.Canceled)
+	if timedOut {
+		scanErr = nil // a deadline is an outcome, reported through TimedOut
 	}
 
-	threats, scanErr := detectThreats(paths, options)
-	status, statusErr := CollectStatus(s.Config)
+	if s.AutoQuarantine && len(threats) > 0 {
+		dir := s.quarantineDir()
+		for i := range threats {
+			dest, qErr := QuarantineThreat(threats[i], dir)
+			if qErr != nil {
+				// A file we could not quarantine is still a real detection: report
+				// it undecorated rather than dropping it or failing the scan.
+				continue
+			}
+			threats[i].QuarantinedTo = dest
+		}
+	}
 
+	status, statusErr := CollectStatus(s.Config)
 	status.ThreatCount = len(threats)
 	status.LastScanAt = time.Now().UTC().Format(time.RFC3339)
-	if status.LastScanType == "" {
-		status.LastScanType = "custom"
-	}
+	status.LastScanType = strings.ToLower(scanType)
 
-	result := ScanResult{
-		Threats:  threats,
-		Status:   status,
-		Duration: time.Since(start),
-	}
-
-	return result, errors.Join(scanErr, statusErr)
+	return ScanOutcome{
+		Threats:      threats,
+		Status:       status,
+		Duration:     time.Since(started),
+		FilesScanned: filesScanned,
+		TimedOut:     timedOut,
+		Partial:      timedOut,
+	}, errors.Join(scanErr, statusErr)
 }
 
 func (s *SecurityScanner) quarantineDir() string {
