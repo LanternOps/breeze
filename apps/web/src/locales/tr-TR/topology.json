@@ -136,7 +136,24 @@
   },
   "chooseSite": "Bir site seçin",
   "chooseSiteExplanation": "Ağını ve tanılamasını ayrı tutmak için yetkili bir site seçin.",
-  "disabled": "Yeni topoloji görünümü bu site için etkin değil.",
   "reloadConfiguration": "Taslağı at ve mevcut yapılandırmayı yeniden yükle",
-  "applyToSites": "Seçilen sürümleri yetkili sitelere uygula"
+  "applyToSites": "Seçilen sürümleri yetkili sitelere uygula",
+  "emptyState": {
+    "off": {
+      "title": "Ağ topolojisi kapalı",
+      "body": "Breeze, agent ve SNMP verilerinden bu sitenin ağının canlı bir haritasını oluşturabilir.",
+      "partnerNextStep": "Bir partner yöneticisi bunu Ayarlar \u2192 Modüller altından açabilir.",
+      "orgNextStep": "Etkinleştirmesi için MSP'nize başvurun.",
+      "openModules": "Modül ayarlarını aç"
+    },
+    "preparing": {
+      "title": "Topoloji haritası oluşturuluyor",
+      "body": "Breeze bu site için ağ verilerini topluyor. Bu işlem, özellik etkinleştirildikten sonra genellikle birkaç dakika içinde tamamlanır."
+    },
+    "unavailable": {
+      "title": "Topoloji kullanılamıyor",
+      "body": "Topoloji görünümü şu anda bu site için gösterilemiyor. Daha sonra tekrar deneyin veya sorun devam ederse destek ekibiyle iletişime geçin.",
+      "details": "Teknik ayrıntılar"
+    }
+  }
 }

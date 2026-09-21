@@ -577,7 +577,7 @@
       },
       "modules": {
         "label": "Modules",
-        "description": "Bureau de service et facturation activés/désactivés"
+        "description": "Bureau de service, facturation et topologie activés/désactivés"
       }
     },
     "saved": "Paramètres partenaires enregistrés",
@@ -605,6 +605,18 @@
       "offLabel": "Désactivé — RMM seulement",
       "offDescription": "Masque les sections Centre de services et Facturation ainsi que les onglets Billets et Facturation de la fiche client. Les billets existants restent consultables; aucun nouveau ne peut être créé.",
       "externalNote": "Ce partenaire utilise un PSA externe. Ce choix ne peut pas encore être modifié ici.",
+      "topologyTitle": "Topologie réseau",
+      "topologyBeta": "Bêta",
+      "topologyDescription": "Construit une carte en direct du réseau de chaque site à partir des données de l'agent et SNMP et ajoute un onglet Topologie aux appareils. Désactivé par défaut pendant la bêta.",
+      "topologyOnLabel": "Activer la topologie réseau",
+      "topologyPhysicalLabel": "Topologie physique",
+      "topologyPhysicalDescription": "Afficher les liens de ports de commutateur et de câblage entre les appareils, pas seulement les voisins logiques.",
+      "topologyInterfaceHealthLabel": "État des interfaces",
+      "topologyInterfaceHealthDescription": "Interroger l'état et les erreurs des interfaces via SNMP et colorer les liens selon leur état.",
+      "topologyDiagnosticsLabel": "Outils de diagnostic",
+      "topologyDiagnosticsDescription": "Lancer des vérifications de chemin et de joignabilité depuis la carte pour expliquer pourquoi un appareil est injoignable.",
+      "topologyAiLabel": "Analyses IA",
+      "topologyAiDescription": "Laisser Breeze AI résumer la carte et signaler les changements inhabituels dans la topologie d'un site.",
       "saved": "Modules mis à jour",
       "saveFailed": "Échec de la mise à jour des modules"
     }

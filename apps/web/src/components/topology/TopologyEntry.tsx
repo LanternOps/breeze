@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { useHashState } from '../../lib/useHashState';
 import { parseTopologyHash, writeTopologyHash } from './topologyHash';
 import { topologyApi, topologyNodeListSchema, topologyRead, type TopologySettings } from './topologyApi';
+import TopologyEmptyState from './TopologyEmptyState';
 const TopologyExplorer = lazy(() => import('./TopologyExplorer'));
 export default function TopologyEntry({ siteId, sites = [], deviceId, assetId, legacy }: {
   siteId?: string | null; sites?: { id: string; name: string }[]; deviceId?: string; assetId?: string; legacy?: ReactNode;
@@ -32,7 +33,7 @@ export default function TopologyEntry({ siteId, sites = [], deviceId, assetId, l
     {!selectedSite && <p className="text-sm text-muted-foreground">{t('chooseSiteExplanation')}</p>}
     {error && <p role="alert" className="text-destructive">{error}</p>}
     {selectedSite && !settings && !error && <p role="status">{t('loading')}</p>}
-    {settings && !settings.capabilities.ui.available && (legacy ?? <p>{t('disabled')} · {settings.capabilities.ui.reason}</p>)}
+    {settings && !settings.capabilities.ui.available && (legacy ?? <TopologyEmptyState reason={settings.capabilities.ui.reason} />)}
     {settings?.capabilities.ui.available && bindingResolved && selectedSite && <Suspense fallback={<p role="status">{t('loading')}</p>}><TopologyExplorer key={`${selectedSite}/${focus ?? ''}`} siteId={selectedSite} focusNodeId={focus} settings={settings} /></Suspense>}
   </div>;
 }

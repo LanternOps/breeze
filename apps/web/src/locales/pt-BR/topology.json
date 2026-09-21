@@ -136,7 +136,24 @@
   },
   "chooseSite": "Escolher um site",
   "chooseSiteExplanation": "Selecione um site autorizado para manter sua rede e diagnósticos separados.",
-  "disabled": "A nova visualização de topologia não está habilitada para este site.",
   "reloadConfiguration": "Descartar rascunho e recarregar configuração atual",
-  "applyToSites": "Aplicar as versões selecionadas aos sites autorizados"
+  "applyToSites": "Aplicar as versões selecionadas aos sites autorizados",
+  "emptyState": {
+    "off": {
+      "title": "A topologia de rede está desativada",
+      "body": "O Breeze pode criar um mapa ao vivo da rede deste site a partir de dados de agentes e SNMP.",
+      "partnerNextStep": "Um administrador do parceiro pode ativá-la em Configurações \u2192 Módulos.",
+      "orgNextStep": "Peça ao seu MSP para ativá-la.",
+      "openModules": "Abrir configurações de módulos"
+    },
+    "preparing": {
+      "title": "Criando o mapa de topologia",
+      "body": "O Breeze está coletando dados de rede deste site. Isso normalmente leva poucos minutos após ativar o recurso."
+    },
+    "unavailable": {
+      "title": "Topologia indisponível",
+      "body": "A visualização de topologia não pode ser exibida para este site no momento. Tente novamente mais tarde ou contate o suporte se o problema persistir.",
+      "details": "Detalhes técnicos"
+    }
+  }
 }

@@ -136,7 +136,24 @@
   },
   "chooseSite": "Standort wählen",
   "chooseSiteExplanation": "Wählen Sie einen autorisierten Standort, um dessen Netzwerk und Diagnosen getrennt zu halten.",
-  "disabled": "Die neue Topologieansicht ist für diesen Standort nicht aktiviert.",
   "reloadConfiguration": "Entwurf verwerfen und aktuelle Konfiguration neu laden",
-  "applyToSites": "Ausgewählte Versionen auf autorisierte Standorte anwenden"
+  "applyToSites": "Ausgewählte Versionen auf autorisierte Standorte anwenden",
+  "emptyState": {
+    "off": {
+      "title": "Netzwerktopologie ist deaktiviert",
+      "body": "Breeze kann aus Agent- und SNMP-Daten eine Live-Karte des Netzwerks dieses Standorts erstellen.",
+      "partnerNextStep": "Ein Partner-Administrator kann sie unter Einstellungen \u2192 Module aktivieren.",
+      "orgNextStep": "Bitten Sie Ihren MSP, sie zu aktivieren.",
+      "openModules": "Moduleinstellungen öffnen"
+    },
+    "preparing": {
+      "title": "Topologiekarte wird erstellt",
+      "body": "Breeze sammelt Netzwerkdaten für diesen Standort. Das dauert nach dem Aktivieren der Funktion in der Regel nur wenige Minuten."
+    },
+    "unavailable": {
+      "title": "Topologie nicht verfügbar",
+      "body": "Die Topologieansicht kann für diesen Standort derzeit nicht angezeigt werden. Versuchen Sie es später erneut oder wenden Sie sich an den Support, falls das Problem bestehen bleibt.",
+      "details": "Technische Details"
+    }
+  }
 }

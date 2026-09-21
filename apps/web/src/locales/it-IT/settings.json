@@ -577,7 +577,7 @@
       },
       "modules": {
         "label": "Moduli",
-        "description": "Service desk e fatturazione on/off"
+        "description": "Service desk, fatturazione e topologia on/off"
       }
     },
     "saved": "Impostazioni partner salvate",
@@ -605,6 +605,18 @@
       "offLabel": "Disattivato — solo RMM",
       "offDescription": "Nasconde le sezioni Service desk e Fatturazione e le schede Ticket e Fatturazione della scheda cliente. I ticket esistenti restano consultabili; non è possibile crearne di nuovi.",
       "externalNote": "Questo partner utilizza un PSA esterno. La modifica non è ancora disponibile qui.",
+      "topologyTitle": "Topologia di rete",
+      "topologyBeta": "Versione beta",
+      "topologyDescription": "Crea una mappa in tempo reale della rete di ogni sito dai dati dell'agente e SNMP e aggiunge una scheda Topologia ai dispositivi. Disattivata per impostazione predefinita durante la beta.",
+      "topologyOnLabel": "Abilita topologia di rete",
+      "topologyPhysicalLabel": "Topologia fisica",
+      "topologyPhysicalDescription": "Mostra i collegamenti di porte switch e cablaggio tra i dispositivi, non solo i vicini logici.",
+      "topologyInterfaceHealthLabel": "Stato delle interfacce",
+      "topologyInterfaceHealthDescription": "Interroga stato ed errori delle interfacce via SNMP e colora i collegamenti in base al loro stato.",
+      "topologyDiagnosticsLabel": "Diagnostica",
+      "topologyDiagnosticsDescription": "Esegui verifiche di percorso e raggiungibilità dalla mappa per spiegare perché un dispositivo non è raggiungibile.",
+      "topologyAiLabel": "Analisi IA",
+      "topologyAiDescription": "Consenti a Breeze AI di riassumere la mappa e segnalare cambiamenti insoliti nella topologia di un sito.",
       "saved": "Moduli aggiornati",
       "saveFailed": "Impossibile aggiornare i moduli"
     }

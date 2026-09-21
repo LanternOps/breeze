@@ -87,4 +87,91 @@ describe('PartnerModulesCard', () => {
     expect(screen.getByTestId('partner-modules-mode-native')).toBeChecked();
     expect(screen.getByTestId('partner-modules-mode-off')).not.toBeChecked();
   });
+  describe('network topology (beta) switch', () => {
+    const allOff = { materialization: false, ui: false, physical: false, interfaceHealth: false, diagnostics: false, ai: false };
+    const allOn = { materialization: true, ui: true, physical: false, interfaceHealth: false, diagnostics: false, ai: false };
+
+    it('renders off (no sub-flags) until both materialization and ui are stored true', () => {
+      render(<PartnerModulesCard serviceManagementMode="native" topologyFeatureFlags={{ ...allOff, materialization: true }} />);
+      expect(screen.getByTestId('partner-modules-topology').getAttribute('aria-checked')).toBe('false');
+      expect(screen.queryByTestId('partner-modules-topology-physical')).toBeNull();
+    });
+
+    it('renders on with the four sub-flags when both gate flags are stored true', () => {
+      render(<PartnerModulesCard serviceManagementMode="native" topologyFeatureFlags={{ ...allOn, diagnostics: true }} />);
+      expect(screen.getByTestId('partner-modules-topology').getAttribute('aria-checked')).toBe('true');
+      expect(screen.getByTestId('partner-modules-topology-physical')).not.toBeChecked();
+      expect(screen.getByTestId('partner-modules-topology-interfaceHealth')).not.toBeChecked();
+      expect(screen.getByTestId('partner-modules-topology-diagnostics')).toBeChecked();
+      expect(screen.getByTestId('partner-modules-topology-ai')).not.toBeChecked();
+    });
+
+    it('switching on PATCHes only the materialization + ui gate flags and reveals the sub-flags', async () => {
+      fetchMock.mockResolvedValueOnce(jsonResponse({ settings: { topologyFeatureFlags: allOn } }));
+      render(<PartnerModulesCard serviceManagementMode="native" topologyFeatureFlags={allOff} />);
+
+      fireEvent.click(screen.getByTestId('partner-modules-topology'));
+
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      const [url, init] = fetchMock.mock.calls[0];
+      expect(url).toBe('/orgs/partners/me');
+      expect((init as RequestInit).method).toBe('PATCH');
+      expect(JSON.parse(String((init as RequestInit).body))).toEqual({
+        settings: { topologyFeatureFlags: { materialization: true, ui: true } },
+      });
+      await waitFor(() => expect(screen.getByTestId('partner-modules-topology').getAttribute('aria-checked')).toBe('true'));
+      expect(screen.getByTestId('partner-modules-topology-physical')).toBeTruthy();
+      expect(toastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+    });
+
+    it('switching off PATCHes both gate flags false', async () => {
+      fetchMock.mockResolvedValueOnce(jsonResponse({ settings: { topologyFeatureFlags: allOff } }));
+      render(<PartnerModulesCard serviceManagementMode="native" topologyFeatureFlags={allOn} />);
+
+      fireEvent.click(screen.getByTestId('partner-modules-topology'));
+
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      expect(JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body))).toEqual({
+        settings: { topologyFeatureFlags: { materialization: false, ui: false } },
+      });
+      await waitFor(() => expect(screen.getByTestId('partner-modules-topology').getAttribute('aria-checked')).toBe('false'));
+      expect(screen.queryByTestId('partner-modules-topology-physical')).toBeNull();
+    });
+
+    it('a sub-flag PATCHes only its own key', async () => {
+      fetchMock.mockResolvedValueOnce(jsonResponse({ settings: { topologyFeatureFlags: { ...allOn, interfaceHealth: true } } }));
+      render(<PartnerModulesCard serviceManagementMode="native" topologyFeatureFlags={allOn} />);
+
+      fireEvent.click(screen.getByTestId('partner-modules-topology-interfaceHealth'));
+
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      expect(JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body))).toEqual({
+        settings: { topologyFeatureFlags: { interfaceHealth: true } },
+      });
+      await waitFor(() => expect(screen.getByTestId('partner-modules-topology-interfaceHealth')).toBeChecked());
+    });
+
+    it('reverts the main switch when the PATCH fails', async () => {
+      fetchMock.mockResolvedValueOnce(jsonResponse({ error: 'boom' }, false, 500));
+      render(<PartnerModulesCard serviceManagementMode="native" topologyFeatureFlags={allOff} />);
+
+      fireEvent.click(screen.getByTestId('partner-modules-topology'));
+
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(toastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+      await waitFor(() => expect(screen.getByTestId('partner-modules-topology').getAttribute('aria-checked')).toBe('false'));
+      expect(screen.queryByTestId('partner-modules-topology-physical')).toBeNull();
+    });
+
+    it('reverts a sub-flag when the PATCH fails', async () => {
+      fetchMock.mockResolvedValueOnce(jsonResponse({ error: 'boom' }, false, 500));
+      render(<PartnerModulesCard serviceManagementMode="native" topologyFeatureFlags={allOn} />);
+
+      fireEvent.click(screen.getByTestId('partner-modules-topology-ai'));
+
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(toastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+      await waitFor(() => expect(screen.getByTestId('partner-modules-topology-ai')).not.toBeChecked());
+    });
+  });
 });

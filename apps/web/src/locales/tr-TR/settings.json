@@ -577,7 +577,7 @@
       },
       "modules": {
         "label": "Modüller",
-        "description": "Servis masası ve faturalandırma açık/kapalı"
+        "description": "Servis masası, faturalandırma ve topoloji açık/kapalı"
       }
     },
     "saved": "İş ortağı ayarları kaydedildi",
@@ -605,6 +605,18 @@
       "offLabel": "Kapalı — yalnızca RMM",
       "offDescription": "Servis masası ve Faturalandırma bölümlerini, ayrıca müşteri kaydındaki Talepler ve Faturalandırma sekmelerini gizler. Mevcut talepler okunabilir kalır; yenileri oluşturulamaz.",
       "externalNote": "Bu iş ortağı harici bir PSA kullanıyor. Bu seçim buradan henüz değiştirilemez.",
+      "topologyTitle": "Ağ topolojisi",
+      "topologyBeta": "Beta sürümü",
+      "topologyDescription": "Agent ve SNMP verilerinden her lokasyonun ağının canlı bir haritasını oluşturur ve cihazlara bir Topoloji sekmesi ekler. Beta süresince varsayılan olarak kapalıdır.",
+      "topologyOnLabel": "Ağ topolojisini etkinleştir",
+      "topologyPhysicalLabel": "Fiziksel topoloji",
+      "topologyPhysicalDescription": "Yalnızca mantıksal komşuları değil, cihazlar arasındaki switch portu ve kablolama bağlantılarını da göster.",
+      "topologyInterfaceHealthLabel": "Arayüz sağlığı",
+      "topologyInterfaceHealthDescription": "Arayüz durumunu ve hatalarını SNMP üzerinden sorgula ve bağlantıları sağlık durumuna göre renklendir.",
+      "topologyDiagnosticsLabel": "Tanılama",
+      "topologyDiagnosticsDescription": "Bir cihaza neden erişilemediğini açıklamak için haritadan yol ve erişilebilirlik denetimleri çalıştır.",
+      "topologyAiLabel": "Yapay zeka içgörüleri",
+      "topologyAiDescription": "Breeze AI'nın haritayı özetlemesine ve bir lokasyonun topolojisindeki olağandışı değişiklikleri işaretlemesine izin ver.",
       "saved": "Modüller güncellendi",
       "saveFailed": "Modüller güncellenemedi"
     }

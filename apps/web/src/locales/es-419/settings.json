@@ -577,7 +577,7 @@
       },
       "modules": {
         "label": "Módulos",
-        "description": "Mesa de servicio y facturación activadas/desactivadas"
+        "description": "Mesa de servicio, facturación y topología activadas/desactivadas"
       }
     },
     "saved": "Configuración de socio guardada",
@@ -605,6 +605,18 @@
       "offLabel": "Desactivado: solo RMM",
       "offDescription": "Oculta las secciones Mesa de servicio y Facturación y las pestañas Tickets y Facturación del registro del cliente. Los tickets existentes siguen siendo visibles; no se pueden crear nuevos.",
       "externalNote": "Este socio usa un PSA externo. Todavía no se puede cambiar desde aquí.",
+      "topologyTitle": "Topología de red",
+      "topologyBeta": "Versión beta",
+      "topologyDescription": "Crea un mapa en vivo de la red de cada sitio a partir de datos del agente y SNMP y agrega una pestaña Topología a los dispositivos. Desactivado de forma predeterminada durante la beta.",
+      "topologyOnLabel": "Habilitar topología de red",
+      "topologyPhysicalLabel": "Topología física",
+      "topologyPhysicalDescription": "Mostrar los enlaces de puertos de conmutador y cableado entre dispositivos, no solo los vecinos lógicos.",
+      "topologyInterfaceHealthLabel": "Estado de interfaces",
+      "topologyInterfaceHealthDescription": "Consultar el estado y los errores de las interfaces por SNMP y colorear los enlaces según su estado.",
+      "topologyDiagnosticsLabel": "Diagnósticos",
+      "topologyDiagnosticsDescription": "Ejecutar comprobaciones de ruta y accesibilidad desde el mapa para explicar por qué un dispositivo no es accesible.",
+      "topologyAiLabel": "Información de IA",
+      "topologyAiDescription": "Permitir que Breeze AI resuma el mapa y señale cambios inusuales en la topología de un sitio.",
       "saved": "Módulos actualizados",
       "saveFailed": "No se pudieron actualizar los módulos"
     }
