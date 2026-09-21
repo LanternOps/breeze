@@ -263,6 +263,14 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   // #6008 W01. The scanner is file-local; both gates are one import away.
   'routes/backup/providers.ts': 'every connection write calls requireProviderPartnerAdmin (routes/backup/providerAccess.ts), which calls canManagePartnerWidePolicies and returns 403 + PARTNER_WIDE_WRITE_DENIED_MESSAGE',
   'services/backupProviders/mapping.ts': 'remapCustomer has one caller, PUT /backup/providers/customers/:id/mapping, which passes requireProviderPartnerAdmin (→ canManagePartnerWidePolicies) before it is reached',
+  // #6008 W02. persistVendorSnapshot has exactly one caller, syncConnectionById
+  // (jobs/backupProviderSync.ts), invoked only from the backup-provider-sync
+  // BullMQ worker under system DB context with no caller and no auth context —
+  // it takes a connection id from a job payload/advisory lock, not from a
+  // request, and every backupProviderCustomers row it writes takes the
+  // connection's OWN partner_id (never a caller-supplied one). The one
+  // caller-facing write to this table, remapCustomer, is the entry above.
+  'services/backupProviders/persist.ts': 'persistVendorSnapshot runs only inside the backup-provider-sync worker under system context, invoked from a job payload with no caller to gate; it writes each row under the syncing connection\'s own partner_id',
   // W01a (#5612). cutScriptVersion's only write to `scripts` is
   // `.set({ version, updatedAt })` on a row it just located by id and locked
   // FOR UPDATE — it never reads or writes org_id/partner_id, so it can neither
