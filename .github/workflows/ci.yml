@@ -1999,13 +1999,18 @@ jobs:
         run: go test -race ./internal/sessionbroker ./internal/eventlog ./internal/ipc ./internal/state ./internal/watchdog ./cmd/breeze-watchdog
 
   # Bare-metal recovery media end-to-end proof (W04b Task 4): builds the
-  # recovery ISO from the current tree, seeds a real (mmdebstrap-built,
-  # bootable) Debian snapshot, boots the ISO in QEMU against a fake
-  # recovery server in CI-unattended mode (breeze.ci=1), lets the console +
-  # rebuild engine partition/restore/reboot a fresh disk image, asserts
-  # every expected progress phase was reported, then boots that disk alone
-  # and asserts it reaches a login prompt. This is the assurance gate for
-  # the whole recovery-media surface — required, not continue-on-error.
+  # recovery ISO from the current tree, seeds three generations (e2e-1,
+  # e2e-2, e2e-3) with cross-snapshot references, per W09 (a real,
+  # mmdebstrap-built, bootable Debian snapshot plus two incremental
+  # generations layered on top of it), boots the ISO in QEMU against a
+  # fake recovery server in CI-unattended mode (breeze.ci=1), lets the
+  # console + rebuild engine partition/restore/reboot a fresh disk image
+  # from the newest generation (e2e-3, which references objects stored
+  # under both e2e-1 and e2e-2), asserts every expected progress phase was
+  # reported and that the fake server refused a download for an
+  # unreferenced object, then boots that disk alone and asserts it reaches
+  # a login prompt. This is the assurance gate for the whole recovery-media
+  # surface — required, not continue-on-error.
   recovery-media-e2e:
     name: Recovery media E2E (QEMU)
     needs: [changes]

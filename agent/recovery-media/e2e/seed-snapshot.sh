@@ -124,4 +124,76 @@ cat > "$layout_path" <<JSON
 }
 JSON
 
-echo "seed-snapshot: done — $layout_path"
+OUT="$store_dir"
+
+# e2e-2: one changed file (uploaded fresh under e2e-2), everything else
+# references e2e-1 verbatim (backupPath unchanged from e2e-1's manifest).
+# snapshot-dir has no diffing/"--only-changed" mode (it emits one full
+# manifest per invocation) — hand-write e2e-2/manifest.json instead
+# (simpler and matches how layout.json is already hand-written by this
+# script): copy e2e-1/manifest.json, change "id" to "e2e-2", and for
+# exactly one file entry (etc/debian_version — base-files guarantees this
+# file in an mmdebstrap minbase chroot, unlike /etc/motd) recompute its
+# backupPath under snapshots/e2e-2/files/<sha256 of sourcePath> and
+# re-upload that one file's bytes to that key; every other file entry's
+# backupPath stays "snapshots/e2e-1/files/...".
+python3 - "$OUT" <<'PYEOF'
+import json, hashlib, os, sys, shutil
+
+out = sys.argv[1]
+with open(f"{out}/snapshots/e2e-1/manifest.json") as f:
+    gen1 = json.load(f)
+
+gen2 = json.loads(json.dumps(gen1))
+gen2["id"] = "e2e-2"
+for entry in gen2["files"]:
+    if entry.get("sourcePath") == "/etc/debian_version":
+        key = "snapshots/e2e-2/files/" + hashlib.sha256(entry["sourcePath"].encode()).hexdigest()
+        entry["backupPath"] = key
+        os.makedirs(os.path.dirname(f"{out}/{key}"), exist_ok=True)
+        with open(f"{out}/{key}", "wb") as fh:
+            fh.write(b"e2e-2-changed-debian-version\n")
+        break
+else:
+    raise SystemExit("expected /etc/debian_version in the e2e-1 manifest to mark as changed in e2e-2")
+
+os.makedirs(f"{out}/snapshots/e2e-2", exist_ok=True)
+with open(f"{out}/snapshots/e2e-2/manifest.json", "w") as f:
+    json.dump(gen2, f, indent=2)
+shutil.copy(f"{out}/layout.json", f"{out}/snapshots/e2e-2/layout.json") if os.path.exists(f"{out}/layout.json") else None
+PYEOF
+
+# e2e-3: references into BOTH e2e-1 (unchanged files) and e2e-2 (the
+# changed /etc/debian_version), plus its own newly changed file (/etc/hostname).
+python3 - "$OUT" <<'PYEOF'
+import json, hashlib, os, sys
+
+out = sys.argv[1]
+with open(f"{out}/snapshots/e2e-2/manifest.json") as f:
+    gen2 = json.load(f)
+
+gen3 = json.loads(json.dumps(gen2))
+gen3["id"] = "e2e-3"
+for entry in gen3["files"]:
+    if entry.get("sourcePath") == "/etc/hostname":
+        key = "snapshots/e2e-3/files/" + hashlib.sha256(entry["sourcePath"].encode()).hexdigest()
+        entry["backupPath"] = key
+        os.makedirs(os.path.dirname(f"{out}/{key}"), exist_ok=True)
+        with open(f"{out}/{key}", "wb") as fh:
+            fh.write(b"e2e-3-changed-hostname\n")
+        break
+else:
+    raise SystemExit("expected /etc/hostname in the manifest to mark as changed in e2e-3")
+
+os.makedirs(f"{out}/snapshots/e2e-3", exist_ok=True)
+with open(f"{out}/snapshots/e2e-3/manifest.json", "w") as f:
+    json.dump(gen3, f, indent=2)
+PYEOF
+
+# One unrelated, unreferenced object under e2e-1's own prefix, so the fake
+# server's refusal path (handleDownload / not_authorized) is exercised by
+# a real request during the run — R7/R8 in Part 0 §4.
+mkdir -p "$OUT/snapshots/e2e-1/files"
+echo "not part of any manifest" > "$OUT/snapshots/e2e-1/files/not-referenced.gz"
+
+echo "seed-snapshot: done — $layout_path (plus e2e-2, e2e-3 generations and one unreferenced object)"

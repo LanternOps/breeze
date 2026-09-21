@@ -740,3 +740,83 @@ func TestConsole_ExpectSystemStateFollowsBootstrap(t *testing.T) {
 		})
 	}
 }
+
+func TestConsole_SnapshotIndexPendingAutoRetries(t *testing.T) {
+	calls := 0
+	deps := &fakeDeps{
+		exchangeFn: func(ctx context.Context, server, code string) (string, *bmr.BootstrapResponse, error) {
+			calls++
+			if calls < 3 {
+				return "", nil, &bmr.RecoveryNegotiationError{
+					Code:              "snapshot_index_pending",
+					Message:           "Breeze is preparing the file index for this snapshot (3 files reference earlier snapshots). Retry in 30 seconds.",
+					RetryAfterSeconds: 0, // zeroed for the test's fast clock
+				}
+			}
+			return "recv-token", &bmr.BootstrapResponse{SnapshotID: "gen-3"}, nil
+		},
+	}
+	io := &fakeIO{}
+	c := &Console{
+		IO:   io,
+		Deps: deps.build("0.111.1"),
+		sleep: func(time.Duration) <-chan time.Time {
+			ch := make(chan time.Time, 1)
+			ch <- time.Now()
+			return ch
+		},
+	}
+	token, bs, err := c.promptCodeAndExchange(context.Background(), true, Answers{Code: "ABCDEFGHJ"}, "https://example.invalid")
+	if err != nil {
+		t.Fatalf("promptCodeAndExchange() error = %v", err)
+	}
+	if token != "recv-token" {
+		t.Fatalf("token = %q, want recv-token", token)
+	}
+	if bs == nil {
+		t.Fatalf("bootstrap = nil, want non-nil")
+	}
+	if calls != 3 {
+		t.Fatalf("Exchange calls = %d, want 3", calls)
+	}
+}
+
+func TestConsole_ClientCapabilityRequiredReturnsToCodePromptWithMessage(t *testing.T) {
+	deps := &fakeDeps{
+		exchangeFn: func(ctx context.Context, server, code string) (string, *bmr.BootstrapResponse, error) {
+			return "", nil, &bmr.RecoveryNegotiationError{
+				Code:    "client_capability_required",
+				Message: "This backup references files stored with earlier snapshots. The recovery media you booted is too old to read them — download the current recovery media from Breeze and boot again.",
+			}
+		},
+	}
+	io := &fakeIO{}
+	c := &Console{IO: io, Deps: deps.build("0.111.1")}
+	_, _, err := c.promptCodeAndExchange(context.Background(), true, Answers{Code: "ABCDEFGHJ"}, "https://example.invalid")
+	if err == nil {
+		t.Fatalf("promptCodeAndExchange() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "too old to read them") {
+		t.Fatalf("error = %q, want it to contain %q", err.Error(), "too old to read them")
+	}
+}
+
+func TestConsole_StorageIdentityDriftShowsMessageVerbatim(t *testing.T) {
+	deps := &fakeDeps{
+		exchangeFn: func(ctx context.Context, server, code string) (string, *bmr.BootstrapResponse, error) {
+			return "", nil, &bmr.RecoveryNegotiationError{
+				Code:    "storage_identity_drift",
+				Message: "The backup destination for this device has changed since this snapshot was written. Restore the previous destination settings or choose a snapshot written to the current destination.",
+			}
+		},
+	}
+	io := &fakeIO{}
+	c := &Console{IO: io, Deps: deps.build("0.111.1")}
+	_, _, err := c.promptCodeAndExchange(context.Background(), true, Answers{Code: "ABCDEFGHJ"}, "https://example.invalid")
+	if err == nil {
+		t.Fatalf("promptCodeAndExchange() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "destination for this device has changed") {
+		t.Fatalf("error = %q, want it to contain %q", err.Error(), "destination for this device has changed")
+	}
+}

@@ -174,6 +174,16 @@ func ExchangeRecoveryCode(ctx context.Context, serverURL, code string) (string, 
 	if resp.StatusCode == http.StatusNotFound {
 		return "", nil, ErrCodeInvalid
 	}
+	if resp.StatusCode == http.StatusConflict {
+		var body struct {
+			Error             string `json:"error"`
+			Message           string `json:"message"`
+			RetryAfterSeconds int    `json:"retryAfterSeconds"`
+		}
+		if json.Unmarshal(data, &body) == nil && body.Error != "" {
+			return "", nil, &RecoveryNegotiationError{Code: body.Error, Message: body.Message, RetryAfterSeconds: body.RetryAfterSeconds}
+		}
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		var errorBody map[string]any
 		if err := json.Unmarshal(data, &errorBody); err == nil {
@@ -280,6 +290,16 @@ func authenticateRecoverySessionContext(ctx context.Context, serverURL, token st
 		return nil, fmt.Errorf("bmr: read authenticate response: %w", err)
 	}
 
+	if resp.StatusCode == http.StatusConflict {
+		var body struct {
+			Error             string `json:"error"`
+			Message           string `json:"message"`
+			RetryAfterSeconds int    `json:"retryAfterSeconds"`
+		}
+		if json.Unmarshal(data, &body) == nil && body.Error != "" {
+			return nil, &RecoveryNegotiationError{Code: body.Error, Message: body.Message, RetryAfterSeconds: body.RetryAfterSeconds}
+		}
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		statusErr := &authenticateStatusError{
 			statusCode: resp.StatusCode,

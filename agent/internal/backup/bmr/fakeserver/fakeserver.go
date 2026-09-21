@@ -13,6 +13,7 @@ package fakeserver
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -24,6 +25,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/backup/bmr"
 )
 
 // Config configures one fake recovery server instance.
@@ -45,6 +48,11 @@ type Config struct {
 	RecoveryID string
 	Nonce      string
 	Identity   string
+	// ProbeToken, when set, is pre-registered as an authenticated download
+	// token so an out-of-band client (run-qemu.sh on the host) can issue
+	// real /recover/download requests and prove the scope refusal fires over
+	// the wire. Fake server only — never mirrored by the real API.
+	ProbeToken string
 	// MinHelperVersion is echoed on BootstrapResponse.MinHelperVersion —
 	// the console's version gate compares its own version against this.
 	MinHelperVersion string
@@ -53,6 +61,18 @@ type Config struct {
 	// this back (as a JSON array of `status` values) to assert the console
 	// drove the recovery through every expected phase.
 	ProgressLogPath string
+	// Capabilities are the capability strings this fake server GRANTS when
+	// the client requests them (subset semantics, mirroring the real
+	// server's negotiateRecoveryCapabilities). Empty means "grants
+	// nothing" — a client that needs the membership capability (because
+	// ReferencedSnapshotIDs is non-empty) is refused.
+	Capabilities []string
+	// ReferencedSnapshotIDs, when non-empty, makes bootstrapFor emit a
+	// "complete" fileIndex computed from the manifest.json this fake
+	// server already has on disk for SnapshotID, and makes
+	// handleAuthenticate/handleExchange require the membership capability
+	// from the client (409 client_capability_required otherwise).
+	ReferencedSnapshotIDs []string
 }
 
 // Server is the fake recovery server. Create with New, then serve its
@@ -61,6 +81,9 @@ type Server struct {
 	cfg    Config
 	mu     sync.Mutex
 	tokens map[string]bool // minted, not-yet-expired tokens
+
+	manifestOnce sync.Once
+	manifestSet  map[string]struct{} // backupPath set of the token snapshot's manifest
 }
 
 // New builds a Server for cfg. Panics on an unusable config (test-only code
@@ -79,7 +102,11 @@ func New(cfg Config) *Server {
 	if cfg.RecoveryID == "" {
 		cfg.RecoveryID = "e2e-recovery-1"
 	}
-	return &Server{cfg: cfg, tokens: map[string]bool{}}
+	srv := &Server{cfg: cfg, tokens: map[string]bool{}}
+	if cfg.ProbeToken != "" {
+		srv.tokens[cfg.ProbeToken] = true
+	}
+	return srv
 }
 
 // Handler returns the http.Handler serving every route this fake
@@ -139,7 +166,47 @@ func (s *Server) newToken() string {
 	return "e2e_tok_" + hex.EncodeToString(buf)
 }
 
-func (s *Server) bootstrapFor(tokenID string) bootstrapPayload {
+// computeFileIndex reads the seeded manifest.json for s.cfg.SnapshotID and
+// returns its sha256 (hex) plus a count of file entries whose backupPath
+// points outside this snapshot's own prefix (the fake server's stand-in
+// for the real server's hydrated fileIndex.externalCount).
+func (s *Server) computeFileIndex() (sha string, externalCount int, err error) {
+	data, err := os.ReadFile(filepath.Join(s.cfg.StoreDir, "snapshots", s.cfg.SnapshotID, "manifest.json"))
+	if err != nil {
+		return "", 0, err
+	}
+	sum := sha256.Sum256(data)
+	var m struct {
+		Files []struct {
+			BackupPath string `json:"backupPath"`
+		} `json:"files"`
+	}
+	if err := json.Unmarshal(data, &m); err != nil {
+		return "", 0, err
+	}
+	own := "snapshots/" + s.cfg.SnapshotID + "/"
+	for _, f := range m.Files {
+		if f.BackupPath != "" && !strings.HasPrefix(f.BackupPath, own) {
+			externalCount++
+		}
+	}
+	return hex.EncodeToString(sum[:]), externalCount, nil
+}
+
+// intersectCapabilities returns the capability strings present in both
+// client and granted (order follows granted, mirroring "what the server is
+// willing to give, filtered by what the client asked for").
+func intersectCapabilities(client, granted []string) []string {
+	var out []string
+	for _, g := range granted {
+		if bmr.HasCapability(client, g) {
+			out = append(out, g)
+		}
+	}
+	return out
+}
+
+func (s *Server) bootstrapFor(tokenID string, clientCapabilities []string) bootstrapPayload {
 	recovery := map[string]any{
 		"id":         s.cfg.RecoveryID,
 		"identity":   s.cfg.Identity,
@@ -149,6 +216,39 @@ func (s *Server) bootstrapFor(tokenID string) bootstrapPayload {
 	if s.cfg.Identity == "original" {
 		recovery["nonce"] = s.cfg.Nonce
 	}
+
+	granted := intersectCapabilities(clientCapabilities, s.cfg.Capabilities)
+	download := map[string]any{
+		"type":                   "http",
+		"method":                 "GET",
+		"url":                    "/api/v1/backup/bmr/recover/download",
+		"tokenQueryParam":        "token",
+		"pathQueryParam":         "path",
+		"requiresAuthentication": true,
+		"pathPrefix":             "snapshots/" + s.cfg.SnapshotID,
+		"expiresAt":              "",
+		"capabilities":           granted,
+	}
+	snapshot := map[string]any{
+		"id":         s.cfg.SnapshotID,
+		"snapshotId": s.cfg.SnapshotID,
+		"size":       0,
+		"fileCount":  0,
+	}
+	if len(s.cfg.ReferencedSnapshotIDs) > 0 && bmr.HasCapability(granted, bmr.CapabilitySnapshotFileMembershipV1) {
+		sha, externalCount, err := s.computeFileIndex()
+		if err == nil {
+			snapshot["fileIndex"] = map[string]any{
+				"status":            "complete",
+				"manifestSha256":    sha,
+				"externalCount":     externalCount,
+				"originSnapshotIds": s.cfg.ReferencedSnapshotIDs,
+			}
+		} else {
+			log.Printf("fakeserver: computeFileIndex: %v", err)
+		}
+	}
+
 	return bootstrapPayload{
 		Version:          1,
 		MinHelperVersion: s.cfg.MinHelperVersion,
@@ -162,22 +262,8 @@ func (s *Server) bootstrapFor(tokenID string) bootstrapPayload {
 			"hostname": "e2e-source",
 			"osType":   "linux",
 		},
-		Snapshot: map[string]any{
-			"id":         s.cfg.SnapshotID,
-			"snapshotId": s.cfg.SnapshotID,
-			"size":       0,
-			"fileCount":  0,
-		},
-		Download: map[string]any{
-			"type":                   "http",
-			"method":                 "GET",
-			"url":                    "/api/v1/backup/bmr/recover/download",
-			"tokenQueryParam":        "token",
-			"pathQueryParam":         "path",
-			"requiresAuthentication": true,
-			"pathPrefix":             "snapshots/" + s.cfg.SnapshotID,
-			"expiresAt":              "",
-		},
+		Snapshot:        snapshot,
+		Download:        download,
 		AuthenticatedAt: nowRFC3339(),
 		Recovery:        recovery,
 	}
@@ -197,7 +283,8 @@ func (s *Server) handleExchange(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Code string `json:"code"`
+		Code         string   `json:"code"`
+		Capabilities []string `json:"capabilities,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_body")
@@ -205,6 +292,12 @@ func (s *Server) handleExchange(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.TrimSpace(body.Code) != s.cfg.Code {
 		writeError(w, http.StatusNotFound, "code_invalid")
+		return
+	}
+	// Refuse before the code is consumed / token minted, matching Part 0
+	// §1's "code NOT consumed" requirement for R2.
+	if len(s.cfg.ReferencedSnapshotIDs) > 0 && !bmr.HasCapability(body.Capabilities, bmr.CapabilitySnapshotFileMembershipV1) {
+		writeError(w, http.StatusConflict, "client_capability_required")
 		return
 	}
 
@@ -221,7 +314,7 @@ func (s *Server) handleExchange(w http.ResponseWriter, r *http.Request) {
 	// `bootstrap` that carries download/recovery. The e2e previously sent the
 	// inner object directly, which hid the console's envelope-decoding bug
 	// until the first run against a real API.
-	inner := s.bootstrapFor("e2e-token-1")
+	inner := s.bootstrapFor("e2e-token-1", body.Capabilities)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"token": token,
 		"bootstrap": map[string]any{
@@ -254,7 +347,8 @@ func (s *Server) handleAuthenticate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Token string `json:"token"`
+		Token        string   `json:"token"`
+		Capabilities []string `json:"capabilities,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_body")
@@ -267,7 +361,11 @@ func (s *Server) handleAuthenticate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "invalid_token")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"bootstrap": s.bootstrapFor("e2e-token-1")})
+	if len(s.cfg.ReferencedSnapshotIDs) > 0 && !bmr.HasCapability(body.Capabilities, bmr.CapabilitySnapshotFileMembershipV1) {
+		writeError(w, http.StatusConflict, "client_capability_required")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"bootstrap": s.bootstrapFor("e2e-token-1", body.Capabilities)})
 }
 
 type progressRecord struct {
@@ -330,8 +428,11 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	key := r.URL.Query().Get("path")
 	prefix := "snapshots/" + s.cfg.SnapshotID
 	if key != prefix && !strings.HasPrefix(key, prefix+"/") {
-		writeError(w, http.StatusForbidden, "outside_prefix")
-		return
+		if !s.externalKeyReferenced(key) {
+			log.Printf("fakeserver: download refused (not_authorized): %s", key)
+			writeError(w, http.StatusConflict, "not_authorized")
+			return
+		}
 	}
 
 	full, err := containedPath(s.cfg.StoreDir, key)
@@ -353,6 +454,58 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	if _, err := io.Copy(w, f); err != nil {
 		log.Printf("fakeserver: download %s: copy failed: %v", key, err)
 	}
+}
+
+// externalKeyReferenced reports whether key belongs to one of the seeded
+// ReferencedSnapshotIDs generations — the fake server's stand-in for the
+// real server's backup_snapshot_files/backup_snapshot_origins membership
+// check.
+func (s *Server) externalKeyReferenced(key string) bool {
+	// Exact membership, never prefix widening (Part 0 Global Constraints):
+	// an external key is admissible only if the token snapshot's own
+	// manifest names it verbatim AND it lives under one of the configured
+	// origin ids. A sibling object under a referenced origin's prefix that
+	// no manifest entry names (e2e's not-referenced.gz) must be refused.
+	underOrigin := false
+	for _, id := range s.cfg.ReferencedSnapshotIDs {
+		if strings.HasPrefix(key, "snapshots/"+id+"/") {
+			underOrigin = true
+			break
+		}
+	}
+	if !underOrigin {
+		return false
+	}
+	_, ok := s.manifestKeys()[key]
+	return ok
+}
+
+// manifestKeys returns the set of backupPath values in the token
+// snapshot's manifest (loaded once; the store is immutable for a run).
+func (s *Server) manifestKeys() map[string]struct{} {
+	s.manifestOnce.Do(func() {
+		s.manifestSet = map[string]struct{}{}
+		data, err := os.ReadFile(filepath.Join(s.cfg.StoreDir, "snapshots", s.cfg.SnapshotID, "manifest.json"))
+		if err != nil {
+			log.Printf("fakeserver: manifest for membership check unavailable: %v", err)
+			return
+		}
+		var m struct {
+			Files []struct {
+				BackupPath string `json:"backupPath"`
+			} `json:"files"`
+		}
+		if err := json.Unmarshal(data, &m); err != nil {
+			log.Printf("fakeserver: manifest for membership check invalid: %v", err)
+			return
+		}
+		for _, f := range m.Files {
+			if f.BackupPath != "" {
+				s.manifestSet[f.BackupPath] = struct{}{}
+			}
+		}
+	})
+	return s.manifestSet
 }
 
 // appendProgress appends one status to ProgressLogPath as a JSON array,
