@@ -75,8 +75,16 @@ export async function resolveProviderAlertsForProviderDevices(
   note = 'Backup provider device row removed',
 ): Promise<number> {
   if (providerDeviceIds.length === 0) return 0;
+  // Each id is bound as an individual text literal inside an explicit
+  // ARRAY[...]::text[]. Embedding the JS array directly (`= ANY(${ids})`)
+  // makes drizzle expand it to a TUPLE — `= ANY(($1))` — which postgres.js
+  // then hands Postgres as a single text[] parameter holding a bare uuid,
+  // and the query dies with 22P02 `malformed array literal`. Same trap and
+  // same fix as `extensions/tenancyTripwire.ts:223-228`. Caught by
+  // backupProviderRls.integration.test.ts, never by the mocked unit suite.
+  const idArray = sql`ARRAY[${sql.join(providerDeviceIds.map((id) => sql`${id}`), sql`, `)}]::text[]`;
   const ids = await openProviderAlertIds(
-    sql`${alerts.context}->>'providerDeviceId' = ANY(${providerDeviceIds})`,
+    sql`${alerts.context}->>'providerDeviceId' = ANY(${idArray})`,
   );
   return resolveEach(ids, note);
 }
