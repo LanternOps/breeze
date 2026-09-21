@@ -76,3 +76,10 @@ describe('agreements permission (agreements vocabulary + IA split, W02)', () => 
     expect(agreementKeys.sort()).toEqual(['AGREEMENTS_READ', 'AGREEMENTS_WRITE']);
   });
 });
+
+describe('quotes:accept permission (accept-on-behalf, 2026-09-21 spec §7)', () => {
+  it('declares a dedicated accept capability, distinct from quotes:send', () => {
+    expect(PERMISSION_GRANTS.QUOTES_ACCEPT).toEqual({ resource: 'quotes', action: 'accept' });
+    expect(PERMISSION_GRANTS.QUOTES_ACCEPT).not.toEqual(PERMISSION_GRANTS.QUOTES_SEND);
+  });
+});
