@@ -116,6 +116,7 @@ export const encryptedColumnRegistry: EncryptedColumnSpec[] = [
   { table: 'tenant_variables', column: 'value', kind: 'text', aadBinding: 'row', description: 'tenant variable value (#3409) — AAD bound to the row id' },
   { table: 'invoices', column: 'public_link_token_ct', kind: 'text', aadBinding: 'row', description: 'public invoice-link bearer token (row-bound: swapping ciphertext between invoices would move a live credential across tenants)' },
   { table: 'tool_sources', column: 'auth_config_encrypted', kind: 'text', aadBinding: 'row', description: 'external tool source credential JSON (#5216, spec 2026-09-07 §5.2) — AAD bound to the row id' },
+  { table: 'backup_provider_connections', column: 'credentials_encrypted', kind: 'text', aadBinding: 'row', description: 'external backup provider console credentials JSON (#6008 W01) — AAD bound to the row id, so a blob pasted into another partner\'s connection does not decrypt' },
 ];
 
 const SECRET_JSON_KEYS = new Set([

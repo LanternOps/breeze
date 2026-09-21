@@ -362,6 +362,17 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'backup_jobs',
   'backup_policies',
   'backup_profiles',
+  // Backup Provider Integration W01 (#6008). Three org_id tables; the fourth
+  // (backup_provider_connections) is partner-axis with no org_id and is erased
+  // by cascadeDeletePartner's information_schema partner_id sweep instead.
+  // Alphabetical by localeCompare puts device_history before devices ('_' <
+  // 's'), which also happens to be children-before-parents — but the real
+  // DELETE order comes from topologicalCascadeOrder()'s live pg_constraint
+  // read, and every FK among these three carries an explicit ON DELETE
+  // CASCADE, so position here is determinism, not correctness.
+  'backup_provider_customers',
+  'backup_provider_device_history',
+  'backup_provider_devices',
   'backup_sla_configs',
   'backup_sla_events',
   'backup_snapshot_retirements',
