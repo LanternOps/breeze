@@ -1140,7 +1140,11 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       if (registerReplacementAdopted) {
         useAuthStore.getState().commitReissuedSessionIfCurrent(generation, verifyData.tokens);
       }
-      setUser(prev => (prev ? { ...prev, mfaEnabled: true } : null));
+      // G4-14: a first-factor enrollment (`prev.mfaMethod` unset) makes this the
+      // account's MFA method. Leave an existing method alone for a second
+      // passkey added to an already-enrolled account. MFASettings reads this to
+      // decide whether the recovery-codes panel below just became relevant.
+      setUser(prev => (prev ? { ...prev, mfaEnabled: true, mfaMethod: prev.mfaMethod ?? 'passkey' } : null));
       setPasskeyName('');
       setPasskeyPassword('');
       // register/verify is the terminal write that BURNS the grant. Drop it so
