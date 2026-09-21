@@ -112,6 +112,33 @@ describe('MonitorsTab', () => {
     ]);
   });
 
+  // Regression for #6493: deleting a monitor definition that's attached to a
+  // policy used to leave the Monitors tab rendering the orphaned item as a
+  // bare UUID with no indication anything was wrong. Once the catalog fetch
+  // finishes and an attached monitorId isn't in it, the row must render as an
+  // explicit "deleted" state (not a bare UUID) with a working remove action.
+  it('renders an attached monitor no longer in the catalog as deleted, not a bare UUID', async () => {
+    const deletedMonitorId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    const existingLink = {
+      id: 'link-1',
+      featureType: 'monitors' as const,
+      featurePolicyId: null,
+      inlineSettings: { items: [{ monitorId: deletedMonitorId, enabled: true, sortOrder: 0 }] },
+    };
+    render(<MonitorsTab {...baseProps} existingLink={existingLink} />);
+
+    const row = await screen.findByTestId(`monitors-tab-item-${deletedMonitorId}`);
+    // The bug: the row used to fall back to rendering the raw UUID as its title.
+    expect(row.textContent).not.toContain(deletedMonitorId);
+    expect(row.textContent).toContain('Monitor deleted');
+    expect(screen.getByTestId(`monitors-tab-item-deleted-${deletedMonitorId}`)).toBeTruthy();
+
+    // Still removable via the existing detach control.
+    fireEvent.click(screen.getByTestId(`monitors-tab-item-detach-${deletedMonitorId}`));
+    clickSave();
+    await waitFor(() => expect(removeMock).toHaveBeenCalledWith('link-1'));
+  });
+
   it('detaching the only attached monitor and saving removes the feature link', async () => {
     const existingLink = {
       id: 'link-1',

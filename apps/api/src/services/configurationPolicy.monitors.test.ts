@@ -271,7 +271,7 @@ describe("assembleInlineSettings via listFeatureLinks — 'monitors'", () => {
     ]);
   });
 
-  it('returns null (no items) when no rows exist', async () => {
+  it('returns an empty items array (never the stale mirror) when no normalized rows exist', async () => {
     const link = {
       id: 'link-mon',
       configPolicyId: 'policy-1',
@@ -286,9 +286,43 @@ describe("assembleInlineSettings via listFeatureLinks — 'monitors'", () => {
       .mockReturnValueOnce(selectLimitRows([link]) as any);
 
     const result = await listFeatureLinks('policy-1');
-    // No normalized rows → assembleInlineSettings returns null → the link
-    // falls back to whatever's on the JSONB mirror (here, an empty items array).
-    expect(result[0]!.inlineSettings).toEqual({ items: [] });
+    // No normalized rows → assembleInlineSettings assembles straight from
+    // config_policy_monitors (empty) rather than falling back to the link's
+    // JSONB mirror.
+    expect(result[0]!.inlineSettings).toEqual({ items: [], inheritance: 'cumulative' });
+  });
+
+  // Regression for #6493: deleting a monitor definition cascades (ON DELETE
+  // CASCADE on config_policy_monitors.monitor_id) and empties the normalized
+  // row out from under the feature link WITHOUT ever touching the link's
+  // JSONB mirror, which still names the now-deleted monitor. Before the fix,
+  // assembleInlineSettings returned null whenever no normalized rows existed
+  // (the "cumulative" default), and listFeatureLinks then fell back to that
+  // stale mirror — so the policy's Monitors tab kept rendering a row for a
+  // monitor that no longer existed (a bare UUID, since the live monitor
+  // catalog no longer has a name for it).
+  it('does not resurrect a stale monitorId from the JSONB mirror once its config_policy_monitors row is gone (#6493)', async () => {
+    const deletedMonitorId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    const link = {
+      id: 'link-mon',
+      configPolicyId: 'policy-1',
+      featureType: 'monitors',
+      featurePolicyId: null,
+      // Stale write-time mirror: still names the monitor that was later
+      // deleted and cascade-removed from config_policy_monitors.
+      inlineSettings: { items: [{ monitorId: deletedMonitorId, enabled: true, sortOrder: 0 }] },
+    };
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectWhereRows([link]) as any) // links query
+      .mockReturnValueOnce(selectOrderByRows([]) as any) // config_policy_monitors — cascade-emptied
+      .mockReturnValueOnce(selectLimitRows([link]) as any); // link.inlineSettings re-read for `inheritance`
+
+    const result = await listFeatureLinks('policy-1');
+    const settings = result[0]!.inlineSettings as { items: unknown[] };
+
+    expect(settings.items).toEqual([]);
+    expect(JSON.stringify(settings)).not.toContain(deletedMonitorId);
   });
 });
 

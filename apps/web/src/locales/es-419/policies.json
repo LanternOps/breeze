@@ -847,6 +847,7 @@
         "overridesLabel": "Anulaciones:",
         "failedToLoadMonitors": "Error al cargar los monitores",
         "createMonitor": "Crear monitor",
+        "monitorDeleted": "Monitor eliminado",
         "recommended": {
           "title": "Monitores recomendados",
           "body": "Breeze incluye monitores integrados de CPU, memoria, disco y cumplimiento de parches. Ninguno está adjunto a esta política todavía.",

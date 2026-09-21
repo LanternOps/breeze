@@ -847,6 +847,7 @@
         "overridesLabel": "Remplacements :",
         "failedToLoadMonitors": "Échec du chargement des moniteurs",
         "createMonitor": "Créer un moniteur",
+        "monitorDeleted": "Moniteur supprimé",
         "recommended": {
           "title": "Moniteurs recommandés",
           "body": "Breeze fournit des moniteurs intégrés pour le processeur, la mémoire, le disque et la conformité des correctifs. Aucun n'est encore attaché à cette politique.",
