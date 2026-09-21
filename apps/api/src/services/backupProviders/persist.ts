@@ -91,14 +91,6 @@ function utcDay(now: Date): string {
 }
 
 /**
- * Use ONLY if W01 declared selected_bytes / used_bytes as `bigint({ mode: 'bigint' })`.
- * Delete it (and the two call sites) when the schema uses `mode: 'number'`.
- */
-export function toBigintOrNull(value: number | null): bigint | null {
-  return value === null || value === undefined ? null : BigInt(value);
-}
-
-/**
  * Persist one complete vendor snapshot inside the caller's transaction.
  *
  * The caller has already taken the per-connection advisory lock and re-read the

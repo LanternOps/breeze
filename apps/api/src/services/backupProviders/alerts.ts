@@ -389,6 +389,13 @@ export async function evaluateProviderAlerts(
           `[BackupProviderSync] failed to create the ${condition} alert for provider device `
           + `${row.id}; the next sync retries`,
         );
+        captureException(new Error(`failed to create the ${condition} backup provider alert`), undefined, {
+          service: 'backupProviders',
+          operation: 'createSourcedAlert',
+          connectionId,
+          providerDeviceId: row.id,
+          condition,
+        });
       }
     }
 

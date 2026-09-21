@@ -7,6 +7,7 @@ import {
   organizations,
 } from '../../db/schema';
 import { enqueueBackupProviderSync } from '../../jobs/backupProviderSync';
+import { captureException } from '../sentry';
 import { resolveProviderAlertsForCustomer } from './alertsResolve';
 import type { ProviderSyncTx } from './persist';
 
@@ -165,6 +166,12 @@ export async function remapCustomer(
       `[backupProvider] remap of customer ${customerId} committed, but the follow-up sync could not be queued:`,
       error instanceof Error ? error.message : error,
     );
+    captureException(error instanceof Error ? error : new Error(String(error)), undefined, {
+      service: 'backupProviders',
+      operation: 'remapCustomer.enqueueSync',
+      customerId,
+      connectionId: outcome.connectionId,
+    });
   }
 
   return {
