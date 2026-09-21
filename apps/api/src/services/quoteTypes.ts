@@ -82,6 +82,16 @@ export type QuoteServiceErrorCode =
   // public serializer refuses it (publicQuoteDto) and the public route turns
   // this into a 410 rather than rendering a stale document.
   | 'QUOTE_SUPERSEDED'
+  // On-behalf accept (spec 2026-09-21, quoteAcceptService): the quote is
+  // 'expired' or 'declined' — terminal for this action, where a bare
+  // INVALID_STATE would leave the tech with no next step. The message names
+  // Revise as the way forward. Customer-origin accepts keep INVALID_STATE.
+  | 'QUOTE_NOT_ACCEPTABLE'
+  // On-behalf accept: a blank signer name. The acceptance row is a permanent
+  // legal record, so the service refuses one naming nobody rather than relying
+  // on the route schema alone (TypedSignatureProvider refuses the same thing on
+  // the customer path).
+  | 'INVALID_SIGNER_NAME'
   // Share-link resolution lost a race and could not reproduce the winner's
   // token either (quoteLifecycle.resolveAcceptUrl). Retryable: returning an
   // unrecorded credential instead would leave a live link nobody can revoke.
