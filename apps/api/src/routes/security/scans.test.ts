@@ -38,7 +38,9 @@ vi.mock('../../services/commandQueue', () => ({
 }));
 
 const { resolveSecurityScanSettingsForDeviceMock } = vi.hoisted(() => ({
-  resolveSecurityScanSettingsForDeviceMock: vi.fn(async () => null),
+  resolveSecurityScanSettingsForDeviceMock: vi.fn(
+    async (): Promise<import('@breeze/shared').SecurityScanSettings | null> => null,
+  ),
 }));
 
 vi.mock('../../services/featureConfigResolver', () => ({
