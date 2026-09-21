@@ -169,7 +169,7 @@ PYEOF
 # e2e-3: references into BOTH e2e-1 (unchanged files) and e2e-2 (the
 # changed /etc/debian_version), plus its own newly changed file (/etc/hostname).
 python3 - "$OUT" <<'PYEOF'
-import json, hashlib, os, sys
+import json, hashlib, os, sys, shutil
 
 out = sys.argv[1]
 with open(f"{out}/snapshots/e2e-2/manifest.json") as f:
