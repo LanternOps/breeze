@@ -237,5 +237,27 @@ describe('AiToolCallCard', () => {
       );
       expect(queryByTestId('ai-tool-failed-reason')).toBeNull();
     });
+
+    it('defers to the #6022 handoff reason when a payload carries both shapes', () => {
+      // A handoff-failed output could in principle also carry a plain `error`
+      // field. The handoff message must win — one reason line, not two.
+      const { queryByTestId, getByTestId } = render(
+        <AiToolCallCard
+          toolName="manage_software_policies"
+          handoff="approved_failed"
+          output={{
+            status: 'approved_failed',
+            message: 'Approved, but the action FAILED.',
+            error: 'ignored plain-shape error',
+          }}
+          isError
+        />,
+      );
+      expect(getByTestId('ai-tool-approved-failed-reason').textContent).toContain(
+        'Approved, but the action FAILED.',
+      );
+      expect(queryByTestId('ai-tool-failed-reason')).toBeNull();
+      expect(queryByTestId('ai-tool-failed')).toBeNull();
+    });
   });
 });
