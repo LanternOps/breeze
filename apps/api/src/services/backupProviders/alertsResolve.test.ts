@@ -86,4 +86,65 @@ describe('resolveProviderAlertsForConnection', () => {
     resolveAlertMock.mockRejectedValueOnce(new Error('boom')).mockResolvedValueOnce(true);
     await expect(resolveProviderAlertsForConnection('conn-1')).resolves.toBe(1);
   });
+
+  describe('array binding of provider device ids', () => {
+    // The real 22P02 failure this guards: binding the JS array directly as
+    // `= ANY(${providerDeviceIds})` makes drizzle expand it to a TUPLE param
+    // — postgres.js then hands Postgres a single text[] parameter holding a
+    // bare uuid, and the query dies with "malformed array literal". The fix
+    // binds each id as its own param inside an explicit `ARRAY[...]::text[]`
+    // literal. See the comment in alertsResolve.ts.
+
+    /** True if `target` (or an array equal to it) appears anywhere in the SQL tree as a single bound param — the raw-array-binding shape. */
+    function containsArrayParam(node: unknown, target: string[]): boolean {
+      if (Array.isArray(node)) {
+        if (node.length === target.length && node.every((v, i) => v === target[i])) return true;
+        return node.some((child) => containsArrayParam(child, target));
+      }
+      if (node && typeof node === 'object' && Array.isArray((node as { queryChunks?: unknown[] }).queryChunks)) {
+        return (node as { queryChunks: unknown[] }).queryChunks.some((child) => containsArrayParam(child, target));
+      }
+      return false;
+    }
+
+    /** Flattens the SQL tree's literal text chunks (StringChunk `.value` arrays), ignoring bound params. */
+    function flattenSqlText(node: unknown): string {
+      if (node && typeof node === 'object') {
+        const asValue = node as { value?: unknown };
+        if (Array.isArray(asValue.value)) return (asValue.value as unknown[]).join('');
+        const asChunks = node as { queryChunks?: unknown[] };
+        if (Array.isArray(asChunks.queryChunks)) return asChunks.queryChunks.map(flattenSqlText).join('');
+      }
+      return '';
+    }
+
+    it('binds each provider device id inside an explicit ARRAY[...]::text[] literal, not as a raw array param', async () => {
+      const ids = ['pd-1111', 'pd-2222'];
+      dbState.rows = [];
+      await resolveProviderAlertsForProviderDevices(ids);
+
+      expect(dbState.capturedWhere).toHaveLength(1);
+      const captured = dbState.capturedWhere[0];
+
+      // Discriminating: this is exactly what would be TRUE if the code
+      // reverted to `= ANY(${providerDeviceIds})` — see the "reverted" test
+      // below for the live demonstration.
+      expect(containsArrayParam(captured, ids)).toBe(false);
+
+      const text = flattenSqlText(captured);
+      expect(text).toContain('ARRAY[');
+      expect(text).toContain('::text[]');
+    });
+
+    it('reverting to the raw-array form makes the assertion above fail (proves it is discriminating)', async () => {
+      // Reproduce the exact shape `= ANY(${providerDeviceIds})` would produce,
+      // using the same drizzle `sql` tagged template the module uses — this is
+      // not a hand-rolled fixture, it is what a revert of alertsResolve.ts
+      // would actually build.
+      const { sql } = await import('drizzle-orm');
+      const ids = ['pd-1111', 'pd-2222'];
+      const reverted = sql`x = ANY(${ids})`;
+      expect(containsArrayParam(reverted, ids)).toBe(true);
+    });
+  });
 });

@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
+import { eq } from 'drizzle-orm';
 
 const { authState, gates, dbState } = vi.hoisted(() => ({
   authState: {
@@ -16,8 +17,23 @@ const { authState, gates, dbState } = vi.hoisted(() => ({
     updated: [] as Array<Record<string, unknown>>,
     orgConditions: [] as unknown[],
     throwOnUpdate: null as null | { code: string },
+    // Defense-in-depth: this mock's list `.where()` ignores the condition it's
+    // given and returns every seeded row regardless, so deleting the
+    // `orgCondition`/explicit-`orgId` tenant clause from the route would keep
+    // the whole mocked suite green. RLS is the real backstop; this captures
+    // the built condition so a test can assert the org column is referenced.
+    capturedListWhere: [] as unknown[],
   },
 }));
+
+/** True if the drizzle condition's SQL tree references a leaf equal to `marker` (a mocked schema column is a plain string, e.g. 'org_id'). */
+function referencesColumn(node: unknown, marker: string): boolean {
+  if (node === marker) return true;
+  if (node && typeof node === 'object' && Array.isArray((node as { queryChunks?: unknown[] }).queryChunks)) {
+    return (node as { queryChunks: unknown[] }).queryChunks.some((c) => referencesColumn(c, marker));
+  }
+  return false;
+}
 
 vi.mock('../../db', () => ({
   db: {
@@ -30,7 +46,10 @@ vi.mock('../../db', () => ({
           orderBy: vi.fn(async () => dbState.rows),
         })),
         leftJoin: vi.fn(() => ({
-          where: vi.fn(() => ({ orderBy: vi.fn(async () => dbState.rows) })),
+          where: vi.fn((cond: unknown) => {
+            dbState.capturedListWhere.push(cond);
+            return { orderBy: vi.fn(async () => dbState.rows) };
+          }),
         })),
       })),
     })),
@@ -65,6 +84,20 @@ vi.mock('../../db/schema', () => ({
     deviceMatchSource: 'device_match_source', updatedAt: 'updated_at',
   },
   backupProviderCustomers: { id: 'id', vendorCustomerName: 'vendor_customer_name' },
+  // providerDevices.ts now imports `pgErrorCode` from `./providerAccess`,
+  // which computes `CONNECTION_PUBLIC_SELECT` eagerly at module load and
+  // needs this export to exist, even though this route file never uses it.
+  backupProviderConnections: {
+    id: 'id', partnerId: 'partner_id', provider: 'provider', name: 'name', baseUrl: 'base_url',
+    credentialsEncrypted: 'credentials_encrypted', vendorRootId: 'vendor_root_id',
+    vendorRootName: 'vendor_root_name', isActive: 'is_active', status: 'status',
+    syncIntervalMinutes: 'sync_interval_minutes', showProviderNameInPortal: 'show_provider_name_in_portal',
+    lastSyncAt: 'last_sync_at', lastSyncStatus: 'last_sync_status', lastSyncError: 'last_sync_error',
+    lastSyncCustomers: 'last_sync_customers', lastSyncUnmappedCustomers: 'last_sync_unmapped_customers',
+    lastSyncDevices: 'last_sync_devices', lastSyncUnmappedDevices: 'last_sync_unmapped_devices',
+    lastSyncLinkedDevices: 'last_sync_linked_devices', lastSyncAmbiguousDevices: 'last_sync_ambiguous_devices',
+    createdBy: 'created_by', createdAt: 'created_at', updatedAt: 'updated_at',
+  },
   devices: { id: 'id', orgId: 'org_id', hostname: 'hostname', displayName: 'display_name' },
 }));
 
@@ -105,6 +138,7 @@ describe('backup provider device routes', () => {
     dbState.updated = [];
     dbState.orgConditions = [];
     dbState.throwOnUpdate = null;
+    dbState.capturedListWhere = [];
     app = new Hono();
     app.use('*', async (c, next) => {
       c.set('auth', {
@@ -114,7 +148,19 @@ describe('backup provider device routes', () => {
         partnerId: authState.partnerId,
         accessibleOrgIds: authState.accessibleOrgIds,
         canAccessOrg: (id: string) => authState.accessibleOrgIds.includes(id),
-        orgCondition: vi.fn((col: unknown) => { dbState.orgConditions.push(col); return undefined; }),
+        // Returns a REAL scoping condition (not `undefined`, as a no-op mock
+        // would) so the "does the returned condition actually reach the
+        // query" defense-in-depth test below has something to find.
+        orgCondition: vi.fn((col: unknown) => {
+          dbState.orgConditions.push(col);
+          // Returns a REAL scoping condition (not `undefined`, as a no-op
+          // mock would) so the "does the returned condition actually reach
+          // the query" defense-in-depth test below has something to find. The
+          // mocked schema column is a plain string ('org_id'), which `eq`
+          // isn't typed to accept — cast through `unknown`, same as the
+          // string-keyed schema mocks elsewhere in this file.
+          return eq('org_id' as unknown as Parameters<typeof eq>[0], '__scoped__');
+        }),
         user: { id: '99999999-9999-4999-8999-999999999999', email: 't@example.com', name: 'Test Tech', isPlatformAdmin: false },
         token: null,
       });
@@ -128,11 +174,20 @@ describe('backup provider device routes', () => {
       const res = await app.request('/backup/providers/devices');
       expect(res.status).toBe(200);
       expect(dbState.orgConditions).toHaveLength(1);
+      // Defense-in-depth: prove the condition orgCondition() RETURNED actually
+      // flows into the query, not just that the function was called.
+      expect(dbState.capturedListWhere).toHaveLength(1);
+      expect(referencesColumn(dbState.capturedListWhere[0], 'org_id')).toBe(true);
     });
 
     it('honours an explicit accessible ?orgId', async () => {
       const res = await app.request(`/backup/providers/devices?orgId=${ORG_ID}`);
       expect(res.status).toBe(200);
+      // Defense-in-depth: the explicit-orgId path builds its OWN condition
+      // (`eq(backupProviderDevices.orgId, query.orgId)`) rather than calling
+      // auth.orgCondition — prove that one reaches the query too.
+      expect(dbState.capturedListWhere).toHaveLength(1);
+      expect(referencesColumn(dbState.capturedListWhere[0], 'org_id')).toBe(true);
     });
 
     it('refuses an ?orgId the caller cannot access', async () => {

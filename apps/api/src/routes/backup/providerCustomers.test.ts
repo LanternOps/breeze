@@ -10,18 +10,39 @@ const { authState, gates, dbState, remapState } = vi.hoisted(() => ({
     accessibleOrgIds: [] as string[],
   },
   gates: { permission: false, mfa: false },
-  dbState: { connections: [] as unknown[], customers: [] as unknown[] },
+  dbState: {
+    connections: [] as unknown[],
+    customers: [] as unknown[],
+    // Defense-in-depth: this mock's `.where()` ignores the condition and
+    // returns the fixture regardless, so deleting a tenant-scoping
+    // `eq(...partnerId...)` from the route would keep the whole mocked suite
+    // green. RLS is the real backstop; this captures the built condition so a
+    // test can assert the partner column is actually referenced.
+    capturedSelectWheres: [] as unknown[],
+  },
   remapState: { result: null as unknown, error: null as null | { code: string; message: string } },
 }));
+
+/** True if the drizzle condition's SQL tree references a leaf equal to `marker` (a mocked schema column is a plain string, e.g. 'partner_id'). */
+function referencesColumn(node: unknown, marker: string): boolean {
+  if (node === marker) return true;
+  if (node && typeof node === 'object' && Array.isArray((node as { queryChunks?: unknown[] }).queryChunks)) {
+    return (node as { queryChunks: unknown[] }).queryChunks.some((c) => referencesColumn(c, marker));
+  }
+  return false;
+}
 
 vi.mock('../../db', () => ({
   db: {
     select: vi.fn(() => ({
       from: vi.fn(() => ({
-        where: vi.fn(() => ({
-          limit: vi.fn(async () => dbState.connections),
-          orderBy: vi.fn(async () => dbState.customers),
-        })),
+        where: vi.fn((cond: unknown) => {
+          dbState.capturedSelectWheres.push(cond);
+          return {
+            limit: vi.fn(async () => dbState.connections),
+            orderBy: vi.fn(async () => dbState.customers),
+          };
+        }),
         leftJoin: vi.fn(() => ({
           where: vi.fn(() => ({ orderBy: vi.fn(async () => dbState.customers) })),
         })),
@@ -102,6 +123,7 @@ describe('backup provider customer routes', () => {
     authState.partnerOrgAccess = 'all';
     dbState.connections = [{ id: CONNECTION_ID, partnerId: authState.partnerId, name: 'OliveTech Cove' }];
     dbState.customers = [];
+    dbState.capturedSelectWheres = [];
     remapState.error = null;
     remapState.result = {
       customerId: CUSTOMER_ID, connectionId: CONNECTION_ID, orgId: ORG_ID,
@@ -152,6 +174,12 @@ describe('backup provider customer routes', () => {
       authState.orgId = ORG_ID;
       const res = await app.request(`/backup/providers/connections/${CONNECTION_ID}/customers`);
       expect(res.status).toBe(403);
+    });
+
+    it('scopes the connection-ownership pre-check to the caller partner (defense-in-depth)', async () => {
+      await app.request(`/backup/providers/connections/${CONNECTION_ID}/customers`);
+      expect(dbState.capturedSelectWheres).toHaveLength(1);
+      expect(referencesColumn(dbState.capturedSelectWheres[0], 'partner_id')).toBe(true);
     });
   });
 

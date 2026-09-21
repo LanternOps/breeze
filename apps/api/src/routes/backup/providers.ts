@@ -22,6 +22,7 @@ import {
   assertHttpsBaseUrl,
   CONNECTION_PUBLIC_SELECT,
   isGateFailure,
+  pgErrorCode,
   requireProviderPartnerAdmin,
   resolveProviderPartnerId,
 } from './providerAccess';
@@ -145,28 +146,45 @@ connectionRoutes.post(
       return c.json({ success: false, error: test.error, reauth: test.reauth }, 422);
     }
 
-    const created = await withAuthDbAccessContext(auth, async () => {
-      const [row] = await db
-        .insert(backupProviderConnections)
-        .values({
-          id: connectionId,
-          partnerId: gate.partnerId,
-          provider: adapter.key,
-          name: body.name,
-          baseUrl,
-          credentialsEncrypted: encryptProviderCredentials(connectionId, creds.data),
-          vendorRootId: test.rootId,
-          vendorRootName: test.rootName,
-          isActive: true,
-          status: 'connected',
-          syncIntervalMinutes: body.syncIntervalMinutes ?? 30,
-          showProviderNameInPortal: body.showProviderNameInPortal ?? false,
-          createdBy: auth.user?.id ?? null,
-        })
-        .returning({ id: backupProviderConnections.id });
-      if (!row) return null;
-      return loadConnection(row.id, gate.partnerId);
-    });
+    let created;
+    try {
+      created = await withAuthDbAccessContext(auth, async () => {
+        const [row] = await db
+          .insert(backupProviderConnections)
+          .values({
+            id: connectionId,
+            partnerId: gate.partnerId,
+            provider: adapter.key,
+            name: body.name,
+            baseUrl,
+            credentialsEncrypted: encryptProviderCredentials(connectionId, creds.data),
+            vendorRootId: test.rootId,
+            vendorRootName: test.rootName,
+            isActive: true,
+            status: 'connected',
+            syncIntervalMinutes: body.syncIntervalMinutes ?? 30,
+            showProviderNameInPortal: body.showProviderNameInPortal ?? false,
+            createdBy: auth.user?.id ?? null,
+          })
+          .returning({ id: backupProviderConnections.id });
+        if (!row) return null;
+        return loadConnection(row.id, gate.partnerId);
+      });
+    } catch (error) {
+      // The live Cove login above already succeeded by the time this insert
+      // races the `(partner_id, provider, name)` unique index — a friendly
+      // 409 naming the conflict, not an unhandled 500 after a real vendor
+      // round-trip. This `withAuthDbAccessContext` call opens its OWN short
+      // top-level transaction (SELF_MANAGED_DB_CONTEXT_ROUTES), so catching
+      // outside it rolls back cleanly with no ambient transaction to poison.
+      if (pgErrorCode(error) === '23505') {
+        return c.json({
+          error: `A connection named "${body.name}" already exists for this provider.`,
+          code: 'DUPLICATE_CONNECTION_NAME',
+        }, 409);
+      }
+      throw error;
+    }
 
     if (!created) {
       return c.json({ error: 'Failed to store the backup provider connection' }, 500);
@@ -257,31 +275,47 @@ connectionRoutes.patch(
       updates.lastSyncError = null;
     }
 
-    const updated = await withAuthDbAccessContext(auth, () => db.transaction(async (tx) => {
-      const [row] = await tx
-        .update(backupProviderConnections)
-        .set(updates)
-        .where(and(
-          eq(backupProviderConnections.id, id),
-          eq(backupProviderConnections.partnerId, gate.partnerId),
-        ))
-        .returning({ id: backupProviderConnections.id });
-      if (!row) return null;
+    let updated;
+    try {
+      // The inner `db.transaction` is a SAVEPOINT inside the outer
+      // `withAuthDbAccessContext` transaction (same convention as
+      // `providerDevices.ts`): a 23505 raised inside it rolls back only to the
+      // savepoint, leaving the ambient context usable so the mapped 409
+      // actually reaches the client instead of poisoning the whole request.
+      updated = await withAuthDbAccessContext(auth, () => db.transaction(async (tx) => {
+        const [row] = await tx
+          .update(backupProviderConnections)
+          .set(updates)
+          .where(and(
+            eq(backupProviderConnections.id, id),
+            eq(backupProviderConnections.partnerId, gate.partnerId),
+          ))
+          .returning({ id: backupProviderConnections.id });
+        if (!row) return null;
 
-      // The portal reads its label off the DENORMALIZED column on the device
-      // rows (an org token cannot read the partner-axis connection table at
-      // all), so the flag has to be mirrored in the SAME transaction — a
-      // half-applied toggle would keep showing the vendor name to a customer
-      // after the MSP turned it off.
-      if (body.showProviderNameInPortal !== undefined) {
-        await tx.execute(sql`
-          UPDATE backup_provider_devices
-          SET portal_show_provider_name = ${body.showProviderNameInPortal}, updated_at = now()
-          WHERE connection_id = ${id}::uuid
-        `);
+        // The portal reads its label off the DENORMALIZED column on the device
+        // rows (an org token cannot read the partner-axis connection table at
+        // all), so the flag has to be mirrored in the SAME transaction — a
+        // half-applied toggle would keep showing the vendor name to a customer
+        // after the MSP turned it off.
+        if (body.showProviderNameInPortal !== undefined) {
+          await tx.execute(sql`
+            UPDATE backup_provider_devices
+            SET portal_show_provider_name = ${body.showProviderNameInPortal}, updated_at = now()
+            WHERE connection_id = ${id}::uuid
+          `);
+        }
+        return loadConnection(id, gate.partnerId);
+      }));
+    } catch (error) {
+      if (pgErrorCode(error) === '23505') {
+        return c.json({
+          error: `A connection named "${body.name}" already exists for this provider.`,
+          code: 'DUPLICATE_CONNECTION_NAME',
+        }, 409);
       }
-      return loadConnection(id, gate.partnerId);
-    }));
+      throw error;
+    }
 
     if (!updated) return c.json({ error: 'Backup provider connection not found' }, 404);
 

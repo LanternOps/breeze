@@ -19,8 +19,26 @@ const { authState, gates, adapterState, dbState } = vi.hoisted(() => ({
     updated: [] as Array<Record<string, unknown>>,
     deleted: 0,
     executed: [] as string[],
+    // Defense-in-depth: the hand-rolled mock below ignores the drizzle
+    // condition it's given (ANY where clause returns every seeded row), so
+    // deleting a tenant-scoping `eq(...partnerId...)` from a route query
+    // would keep this whole suite green. RLS is the real backstop; these
+    // capture the built condition so a route-level test can assert the
+    // partner column is actually referenced.
+    capturedSelectWheres: [] as unknown[],
+    capturedUpdateWheres: [] as unknown[],
+    capturedDeleteWheres: [] as unknown[],
   },
 }));
+
+/** True if the drizzle condition's SQL tree references a leaf equal to `marker` (a mocked schema column is a plain string, e.g. 'partner_id'). */
+function referencesColumn(node: unknown, marker: string): boolean {
+  if (node === marker) return true;
+  if (node && typeof node === 'object' && Array.isArray((node as { queryChunks?: unknown[] }).queryChunks)) {
+    return (node as { queryChunks: unknown[] }).queryChunks.some((c) => referencesColumn(c, marker));
+  }
+  return false;
+}
 
 // The real `db.select(COLUMNS)` (drizzle) projects to exactly the requested
 // columns, computing `hasCredentials` in SQL from `credentialsEncrypted`. This
@@ -46,6 +64,7 @@ vi.mock('../../db', () => ({
     select: vi.fn((columns?: Record<string, unknown>) => ({
       from: vi.fn(() => ({
         where: vi.fn((..._a: unknown[]) => {
+          dbState.capturedSelectWheres.push(_a[0]);
           const rows = dbState.connections.map((row) => projectRow(columns, row));
           const chain = { limit: vi.fn(async () => rows), orderBy: vi.fn(async () => rows) };
           return Object.assign(Promise.resolve(rows), chain);
@@ -55,6 +74,15 @@ vi.mock('../../db', () => ({
     })),
     insert: vi.fn(() => ({
       values: vi.fn((v: Record<string, unknown>) => {
+        // Mirror the real `backup_provider_connections_partner_provider_name_uniq`
+        // unique index: a live Postgres would raise 23505 here.
+        const dupe = dbState.connections.some((row) =>
+          row.partnerId === v.partnerId && row.provider === v.provider && row.name === v.name);
+        if (dupe) {
+          const err = new Error('duplicate key value violates unique constraint');
+          (err as unknown as { cause: unknown }).cause = { code: '23505' };
+          return { returning: vi.fn(async () => { throw err; }) };
+        }
         dbState.inserted.push(v);
         // Simulate the row now existing in the table, so a subsequent
         // `loadConnection()` re-select (POST/PATCH) can find it — the real
@@ -66,17 +94,43 @@ vi.mock('../../db', () => ({
     update: vi.fn(() => ({
       set: vi.fn((v: Record<string, unknown>) => {
         dbState.updated.push(v);
-        return { where: vi.fn(() => ({ returning: vi.fn(async () => [{ id: CONNECTION_ID, ...v }]) })) };
+        return {
+          where: vi.fn((cond: unknown) => {
+            dbState.capturedUpdateWheres.push(cond);
+            return { returning: vi.fn(async () => [{ id: CONNECTION_ID, ...v }]) };
+          }),
+        };
       }),
     })),
     delete: vi.fn(() => ({
-      where: vi.fn(async () => { dbState.deleted += 1; return []; }),
+      where: vi.fn(async (cond: unknown) => { dbState.capturedDeleteWheres.push(cond); dbState.deleted += 1; return []; }),
     })),
     transaction: vi.fn(async (cb: (tx: unknown) => Promise<unknown>) => cb({
       update: vi.fn(() => ({
         set: vi.fn((v: Record<string, unknown>) => {
+          // Same duplicate-name simulation for the PATCH rename path, which
+          // updates through the nested (savepointed) transaction.
+          const renamedTo = typeof v.name === 'string' ? v.name : undefined;
+          const dupe = renamedTo !== undefined && dbState.connections.some((row) =>
+            row.id !== CONNECTION_ID && row.partnerId === PARTNER_ID
+            && row.provider === 'cove' && row.name === renamedTo);
+          if (dupe) {
+            const err = new Error('duplicate key value violates unique constraint');
+            (err as unknown as { cause: unknown }).cause = { code: '23505' };
+            return {
+              where: vi.fn((cond: unknown) => {
+                dbState.capturedUpdateWheres.push(cond);
+                return { returning: vi.fn(async () => { throw err; }) };
+              }),
+            };
+          }
           dbState.updated.push(v);
-          return { where: vi.fn(() => ({ returning: vi.fn(async () => [{ id: CONNECTION_ID, ...v }]) })) };
+          return {
+            where: vi.fn((cond: unknown) => {
+              dbState.capturedUpdateWheres.push(cond);
+              return { returning: vi.fn(async () => [{ id: CONNECTION_ID, ...v }]) };
+            }),
+          };
         }),
       })),
       // drizzle's `sql` tagged template produces an `SQL` instance whose
@@ -243,6 +297,9 @@ describe('backup provider connection routes', () => {
     dbState.updated = [];
     dbState.deleted = 0;
     dbState.executed = [];
+    dbState.capturedSelectWheres = [];
+    dbState.capturedUpdateWheres = [];
+    dbState.capturedDeleteWheres = [];
     enqueueMock.mockResolvedValue('job-1');
     resolveAlertsMock.mockResolvedValue(3);
     app = new Hono();
@@ -369,6 +426,23 @@ describe('backup provider connection routes', () => {
       expect(dbState.inserted).toHaveLength(0);
     });
 
+    it('maps a racing 23505 on the (partner, provider, name) unique index to 409', async () => {
+      // Already has a live Cove login round-trip behind it by the time the
+      // insert runs — the point of this test is that the duplicate name is
+      // reported cleanly, not as an unhandled 500.
+      dbState.connections = [connectionRow({ name: 'OliveTech Cove' })];
+      const res = await app.request('/backup/providers/connections', {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+      });
+      expect(res.status).toBe(409);
+      expect(await res.json()).toMatchObject({
+        error: 'A connection named "OliveTech Cove" already exists for this provider.',
+      });
+      // Only the pre-existing seeded row — nothing new was stored.
+      expect(dbState.inserted).toHaveLength(0);
+      expect(enqueueMock).not.toHaveBeenCalled();
+    });
+
     it('still creates the connection when the initial sync cannot be queued', async () => {
       enqueueMock.mockRejectedValue(new Error('redis down'));
       const res = await app.request('/backup/providers/connections', {
@@ -448,6 +522,21 @@ describe('backup provider connection routes', () => {
         body: JSON.stringify({ name: 'Renamed' }),
       });
       expect(res.status).toBe(404);
+    });
+
+    it('maps a racing 23505 on rename onto an existing name to 409', async () => {
+      dbState.connections = [
+        connectionRow(),
+        connectionRow({ id: '44444444-4444-4444-8444-444444444444', name: 'Taken Name' }),
+      ];
+      const res = await app.request(`/backup/providers/connections/${CONNECTION_ID}`, {
+        method: 'PATCH', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'Taken Name' }),
+      });
+      expect(res.status).toBe(409);
+      expect(await res.json()).toMatchObject({
+        error: 'A connection named "Taken Name" already exists for this provider.',
+      });
     });
 
     it('rejects an empty patch rather than writing an empty UPDATE', async () => {
@@ -533,6 +622,46 @@ describe('backup provider connection routes', () => {
       expect(res.status).toBe(404);
       expect(dbState.deleted).toBe(0);
       expect(resolveAlertsMock).not.toHaveBeenCalled();
+    });
+  });
+
+  // Defense-in-depth, not the live backstop (RLS is): this mock's `.where()`
+  // ignores the condition it's given and returns every seeded row regardless,
+  // so a query that dropped its `eq(...partnerId...)` clause would still pass
+  // every other test in this file. These assert the built condition actually
+  // references the partner column.
+  describe('tenant scoping (defense-in-depth on the mocked condition)', () => {
+    beforeEach(() => { dbState.connections = [connectionRow()]; });
+
+    it('GET /connections scopes the list select to the caller partner', async () => {
+      await app.request('/backup/providers/connections');
+      expect(dbState.capturedSelectWheres).toHaveLength(1);
+      expect(referencesColumn(dbState.capturedSelectWheres[0], 'partner_id')).toBe(true);
+    });
+
+    it('POST /connections scopes the post-insert loadConnection select to the caller partner', async () => {
+      dbState.connections = [];
+      await app.request('/backup/providers/connections', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ provider: 'cove', name: 'OliveTech Cove', credentials: CREDS }),
+      });
+      expect(dbState.capturedSelectWheres.length).toBeGreaterThan(0);
+      expect(dbState.capturedSelectWheres.some((c) => referencesColumn(c, 'partner_id'))).toBe(true);
+    });
+
+    it('PATCH /connections/:id scopes both the pre-check select and the update to the caller partner', async () => {
+      await app.request(`/backup/providers/connections/${CONNECTION_ID}`, {
+        method: 'PATCH', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'Renamed' }),
+      });
+      expect(dbState.capturedSelectWheres.some((c) => referencesColumn(c, 'partner_id'))).toBe(true);
+      expect(dbState.capturedUpdateWheres.some((c) => referencesColumn(c, 'partner_id'))).toBe(true);
+    });
+
+    it('DELETE /connections/:id scopes both the pre-check select and the delete to the caller partner', async () => {
+      await app.request(`/backup/providers/connections/${CONNECTION_ID}`, { method: 'DELETE' });
+      expect(dbState.capturedSelectWheres.some((c) => referencesColumn(c, 'partner_id'))).toBe(true);
+      expect(dbState.capturedDeleteWheres.some((c) => referencesColumn(c, 'partner_id'))).toBe(true);
     });
   });
 });

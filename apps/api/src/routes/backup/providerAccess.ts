@@ -53,6 +53,15 @@ export function isGateFailure(value: unknown): value is GateFailure {
   return !!value && typeof value === 'object' && 'error' in (value as Record<string, unknown>);
 }
 
+/** The Postgres error code of a caught driver error, however postgres.js wrapped it. */
+export function pgErrorCode(error: unknown): string | null {
+  if (!error || typeof error !== 'object') return null;
+  const direct = (error as { code?: unknown }).code;
+  if (typeof direct === 'string') return direct;
+  const cause = (error as { cause?: { code?: unknown } }).cause;
+  return typeof cause?.code === 'string' ? cause.code : null;
+}
+
 /**
  * The ONLY column set any route selects from `backup_provider_connections`.
  *

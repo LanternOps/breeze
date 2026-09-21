@@ -7,6 +7,7 @@ import { backupProviderCustomers, backupProviderDevices, devices } from '../../d
 import { requirePermission, requireScope } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { pgErrorCode } from './providerAccess';
 
 export const backupProviderDeviceRoutes = new Hono();
 
@@ -23,15 +24,6 @@ const listQuerySchema = z.object({
 const rowIdParamSchema = z.object({ id: z.string().guid() });
 /** `deviceId` is a required KEY with a nullable VALUE — `{}` must not unlink. */
 const linkSchema = z.object({ deviceId: z.string().guid().nullable() });
-
-/** The Postgres error code of a caught driver error, however postgres.js wrapped it. */
-function pgErrorCode(error: unknown): string | null {
-  if (!error || typeof error !== 'object') return null;
-  const direct = (error as { code?: unknown }).code;
-  if (typeof direct === 'string') return direct;
-  const cause = (error as { cause?: { code?: unknown } }).cause;
-  return typeof cause?.code === 'string' ? cause.code : null;
-}
 
 // ---------------------------------------------------------------------------
 // GET /backup/providers/devices
