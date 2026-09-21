@@ -12,7 +12,6 @@ import (
 	"runtime"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/breeze-rmm/agent/internal/obfuscate"
 )
@@ -298,34 +297,10 @@ pathLoop:
 	return threats, filesScanned, errors.Join(errs...)
 }
 
-// QuarantineThreat moves a detected threat to a quarantine directory.
-func QuarantineThreat(threat Threat, quarantineDir string) (string, error) {
-	if threat.Path == "" {
-		return "", fmt.Errorf("threat path is empty")
-	}
-	if quarantineDir == "" {
-		return "", fmt.Errorf("quarantine directory is required")
-	}
-
-	if err := os.MkdirAll(quarantineDir, 0700); err != nil {
-		return "", fmt.Errorf("failed to create quarantine directory: %w", err)
-	}
-
-	base := filepath.Base(threat.Path)
-	dest := filepath.Join(quarantineDir, fmt.Sprintf("%s-%d", base, time.Now().UnixNano()))
-
-	if err := os.Rename(threat.Path, dest); err != nil {
-		if copyErr := copyFile(threat.Path, dest); copyErr != nil {
-			return "", fmt.Errorf("failed to quarantine threat: %w", err)
-		}
-		if removeErr := os.Remove(threat.Path); removeErr != nil {
-			return "", fmt.Errorf("failed to remove original threat after copy: %w", removeErr)
-		}
-		return dest, nil
-	}
-
-	return dest, nil
-}
+// QuarantineThreat neutralizes a detected threat and moves it into the
+// quarantine directory. See quarantine.go for the implementation (#6263 W01
+// / spec D6) — this signature is kept exactly as callers (handlers_security.go)
+// expect.
 
 // RemoveThreat deletes the threat file from disk.
 func RemoveThreat(threat Threat) error {

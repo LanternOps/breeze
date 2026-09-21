@@ -3,7 +3,6 @@ package heartbeat
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -195,10 +194,7 @@ func handleSecurityThreatRestore(_ *Heartbeat, cmd Command) tools.CommandResult 
 		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
 	}
 
-	if err := os.MkdirAll(filepath.Dir(cleanOriginal), 0755); err != nil {
-		return tools.NewErrorResult(fmt.Errorf("failed to create restore directory: %w", err), time.Since(start).Milliseconds())
-	}
-	if err := os.Rename(cleanSource, cleanOriginal); err != nil {
+	if _, err := security.RestoreQuarantined(cleanSource, cleanOriginal); err != nil {
 		return tools.NewErrorResult(fmt.Errorf("failed to restore file: %w", err), time.Since(start).Milliseconds())
 	}
 	return tools.NewSuccessResult(map[string]any{
