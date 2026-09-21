@@ -1,7 +1,7 @@
 import type { NetworkOverviewDto } from '@breeze/shared';
 import { eq } from 'drizzle-orm';
 import { Hono } from 'hono';
-import { db } from '../../db';
+import { db, withDbAccessContext, type DbAccessContext } from '../../db';
 import { portalBranding } from '../../db/schema';
 import { networkOverview } from '../../services/portal/networkVisibilityReadModel';
 import {
@@ -20,6 +20,20 @@ const NOT_ENABLED: NetworkOverviewDto = {
   snmpDevicesPolling: null,
   monitorsDown: null,
 };
+
+function portalOrgContext(
+  orgId: string,
+  currentPartnerId: string | null,
+): DbAccessContext {
+  return {
+    scope: 'organization',
+    orgId,
+    accessibleOrgIds: [orgId],
+    accessiblePartnerIds: [],
+    userId: null,
+    currentPartnerId,
+  };
+}
 
 function cached(
   c: Parameters<typeof applyPortalCacheHeaders>[0],
@@ -58,17 +72,36 @@ portalNetworkRoutes.get('/network/overview', async (c) => {
     return c.json({ error: 'Authentication required' }, 401);
   }
 
-  const [settings] = await db
-    .select({
-      enableNetworkVisibility: portalBranding.enableNetworkVisibility,
-    })
-    .from(portalBranding)
-    .where(eq(portalBranding.orgId, auth.user.orgId))
-    .limit(1);
+  const orgId = auth.user.orgId;
+  const partnerId = auth.partnerId;
 
-  if (settings?.enableNetworkVisibility !== true) {
-    return cached(c, NOT_ENABLED);
+  // Normal authenticated portal requests reach this route only after
+  // portalAuthMiddleware resolves the active organization and its owning
+  // partner. Keep a defensive guard for synthetic/legacy contexts.
+  if (!partnerId) {
+    return c.json({ error: 'Organization is not available' }, 403);
   }
 
-  return cached(c, await networkOverview(auth.user.orgId));
+  // This route is self-managed, so portal auth does not hold an outer request
+  // transaction. Use one organization-scoped context for the entire DB read.
+  // currentPartnerId enables SELECT-only partner-wide network_monitors access;
+  // accessiblePartnerIds remains empty, preserving partner-axis write denial.
+  return withDbAccessContext(
+    portalOrgContext(orgId, partnerId),
+    async () => {
+      const [settings] = await db
+        .select({
+          enableNetworkVisibility: portalBranding.enableNetworkVisibility,
+        })
+        .from(portalBranding)
+        .where(eq(portalBranding.orgId, orgId))
+        .limit(1);
+
+      if (settings?.enableNetworkVisibility !== true) {
+        return cached(c, NOT_ENABLED);
+      }
+
+      return cached(c, await networkOverview(orgId));
+    },
+  );
 });

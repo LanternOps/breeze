@@ -1,15 +1,10 @@
 import type { NetworkOverviewDto } from '@breeze/shared';
 import { and, desc, eq, gte } from 'drizzle-orm';
-import {
-  db,
-  runOutsideDbContext,
-  withDbAccessContext,
-} from '../../db';
+import { db } from '../../db';
 import {
   discoveredAssets,
   networkMonitorResults,
   networkMonitors,
-  organizations,
 } from '../../db/schema';
 import { MIN_NETWORK_CHECK_FRESHNESS_MS } from '../assetReachability';
 import { loadReachability } from '../assetReachabilityLoader';
@@ -53,79 +48,43 @@ export async function networkOverview(
     now.getTime() - NETWORK_MONITOR_RESULT_LOOKBACK_MS,
   );
 
-  const [assetRows, orgRows] = await Promise.all([
-    db
-      .select({
-        id: discoveredAssets.id,
-      })
-      .from(discoveredAssets)
-      .where(eq(discoveredAssets.orgId, orgId)),
+  const assetRows = await db
+    .select({
+      id: discoveredAssets.id,
+    })
+    .from(discoveredAssets)
+    .where(eq(discoveredAssets.orgId, orgId));
 
-    // Resolve the partner through the caller's existing org-scoped RLS
-    // context. A cross-org orgId therefore resolves to no row and never gains
-    // partner-wide visibility below.
-    db
-      .select({
-        partnerId: organizations.partnerId,
-      })
-      .from(organizations)
-      .where(eq(organizations.id, orgId))
-      .limit(1),
-  ]);
-
-  const org = orgRows[0];
-
-  // Portal auth deliberately carries currentPartnerId=null. network_monitors
-  // has a read-only partner-wide SELECT branch keyed by currentPartnerId, so a
-  // direct JOIN from the ambient portal transaction would hide partner-wide
-  // definitions even though their org-scoped result rows are visible.
-  //
-  // Re-establish the SAME organization scope with currentPartnerId derived
-  // from the RLS-visible organization row. accessiblePartnerIds stays empty:
-  // this grants the SELECT-only partner-wide branch without granting partner
-  // write authority.
-  const latestMonitorRows = org
-    ? await runOutsideDbContext(() =>
-        withDbAccessContext(
-          {
-            scope: 'organization',
-            orgId,
-            accessibleOrgIds: [orgId],
-            accessiblePartnerIds: [],
-            userId: null,
-            currentPartnerId: org.partnerId,
-          },
-          () =>
-            db
-              .selectDistinctOn([networkMonitorResults.monitorId], {
-                monitorId: networkMonitorResults.monitorId,
-                status: networkMonitorResults.status,
-                timestamp: networkMonitorResults.timestamp,
-                pollingInterval: networkMonitors.pollingInterval,
-              })
-              .from(networkMonitorResults)
-              .innerJoin(
-                networkMonitors,
-                eq(networkMonitorResults.monitorId, networkMonitors.id),
-              )
-              .where(
-                and(
-                  eq(networkMonitorResults.orgId, orgId),
-                  eq(networkMonitors.isActive, true),
-                  gte(
-                    networkMonitorResults.timestamp,
-                    monitorResultLowerBound,
-                  ),
-                ),
-              )
-              .orderBy(
-                networkMonitorResults.monitorId,
-                desc(networkMonitorResults.timestamp),
-                desc(networkMonitorResults.id),
-              ),
+  // The caller supplies an organization-scoped context with currentPartnerId
+  // populated. This exposes the SELECT-only partner-wide monitor definitions
+  // while network_monitor_results remains organization-scoped by RLS.
+  const latestMonitorRows = await db
+    .selectDistinctOn([networkMonitorResults.monitorId], {
+      monitorId: networkMonitorResults.monitorId,
+      status: networkMonitorResults.status,
+      timestamp: networkMonitorResults.timestamp,
+      pollingInterval: networkMonitors.pollingInterval,
+    })
+    .from(networkMonitorResults)
+    .innerJoin(
+      networkMonitors,
+      eq(networkMonitorResults.monitorId, networkMonitors.id),
+    )
+    .where(
+      and(
+        eq(networkMonitorResults.orgId, orgId),
+        eq(networkMonitors.isActive, true),
+        gte(
+          networkMonitorResults.timestamp,
+          monitorResultLowerBound,
         ),
-      )
-    : [];
+      ),
+    )
+    .orderBy(
+      networkMonitorResults.monitorId,
+      desc(networkMonitorResults.timestamp),
+      desc(networkMonitorResults.id),
+    );
 
   const assetIds = assetRows.map((row) => row.id);
 

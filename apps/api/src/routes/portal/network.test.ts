@@ -3,11 +3,13 @@ import { Hono } from 'hono';
 import type { SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 
-const { dbState, networkOverviewMock } = vi.hoisted(() => ({
+const { dbState, dbAccessContexts, networkOverviewMock } = vi.hoisted(() => ({
   dbState: {
     rows: [] as unknown[],
     where: undefined as unknown,
+    contextDepth: 0,
   },
+  dbAccessContexts: [] as unknown[],
   networkOverviewMock: vi.fn(),
 }));
 
@@ -30,6 +32,23 @@ vi.mock('../../db', () => {
 
   return {
     db: chain,
+    withDbAccessContext: async <T>(
+      context: unknown,
+      fn: () => Promise<T> | T,
+    ): Promise<T> => {
+      if (dbState.contextDepth !== 0) {
+        throw new Error('nested withDbAccessContext detected');
+      }
+
+      dbAccessContexts.push(context);
+      dbState.contextDepth += 1;
+
+      try {
+        return await fn();
+      } finally {
+        dbState.contextDepth -= 1;
+      }
+    },
     runOutsideDbContext: <T>(fn: () => T): T => fn(),
     withSystemDbAccessContext: <T>(
       fn: () => Promise<T>,
@@ -44,6 +63,7 @@ vi.mock('../../services/portal/networkVisibilityReadModel', () => ({
 import { portalNetworkRoutes } from './network';
 
 const ORG_ID = '22222222-2222-2222-2222-222222222222';
+const PARTNER_ID = '33333333-3333-3333-3333-333333333333';
 
 const OK_OVERVIEW = {
   dataStatus: 'ok' as const,
@@ -80,6 +100,7 @@ function makeApp(withAuth = true) {
         },
         token: 't',
         authMethod: 'bearer',
+        partnerId: PARTNER_ID,
         timezone: 'UTC',
       });
       await next();
@@ -95,11 +116,16 @@ describe('GET /network/overview (#5861)', () => {
     vi.clearAllMocks();
     dbState.rows = [];
     dbState.where = undefined;
+    dbState.contextDepth = 0;
+    dbAccessContexts.length = 0;
     networkOverviewMock.mockResolvedValue(OK_OVERVIEW);
   });
 
   it('returns not_enabled with null metrics when the flag is false', async () => {
-    dbState.rows = [{ enableNetworkVisibility: false }];
+    dbState.rows = [{
+      enableNetworkVisibility: false,
+      partnerId: PARTNER_ID,
+    }];
 
     const response = await makeApp().request('/network/overview');
 
@@ -119,7 +145,10 @@ describe('GET /network/overview (#5861)', () => {
   });
 
   it('returns the org-scoped overview when the flag is true', async () => {
-    dbState.rows = [{ enableNetworkVisibility: true }];
+    dbState.rows = [{
+      enableNetworkVisibility: true,
+      partnerId: PARTNER_ID,
+    }];
 
     const response = await makeApp().request('/network/overview');
 
@@ -128,13 +157,27 @@ describe('GET /network/overview (#5861)', () => {
     expect(networkOverviewMock).toHaveBeenCalledTimes(1);
     expect(networkOverviewMock).toHaveBeenCalledWith(ORG_ID);
 
+    expect(dbAccessContexts).toEqual([
+      {
+        scope: 'organization',
+        orgId: ORG_ID,
+        accessibleOrgIds: [ORG_ID],
+        accessiblePartnerIds: [],
+        userId: null,
+        currentPartnerId: PARTNER_ID,
+      },
+    ]);
+
     const query = new PgDialect().sqlToQuery(dbState.where as SQL);
     expect(query.sql).toContain('"portal_branding"."org_id" = $1');
     expect(query.params).toEqual([ORG_ID]);
   });
 
   it('passes no_data through unchanged when visibility is enabled', async () => {
-    dbState.rows = [{ enableNetworkVisibility: true }];
+    dbState.rows = [{
+      enableNetworkVisibility: true,
+      partnerId: PARTNER_ID,
+    }];
     networkOverviewMock.mockResolvedValue({
       dataStatus: 'no_data',
       totalAssets: null,

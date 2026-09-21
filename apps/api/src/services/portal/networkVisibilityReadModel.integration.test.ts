@@ -26,14 +26,14 @@ const NO_DATA = {
   monitorsDown: null,
 } as const;
 
-function orgContext(orgId: string): DbAccessContext {
+function orgContext(orgId: string, partnerId: string): DbAccessContext {
   return {
     scope: 'organization',
     orgId,
     accessibleOrgIds: [orgId],
     accessiblePartnerIds: [],
     userId: null,
-    currentPartnerId: null,
+    currentPartnerId: partnerId,
   };
 }
 
@@ -189,22 +189,22 @@ describe('networkVisibilityReadModel (#5861)', () => {
     ]);
 
     const overviewA = await withDbAccessContext(
-      orgContext(orgA.id),
+      orgContext(orgA.id, partner.id),
       () => networkOverview(orgA.id, NOW),
     );
 
     const overviewB = await withDbAccessContext(
-      orgContext(orgB.id),
+      orgContext(orgB.id, partner.id),
       () => networkOverview(orgB.id, NOW),
     );
 
     const orgAReadingOrgB = await withDbAccessContext(
-      orgContext(orgA.id),
+      orgContext(orgA.id, partner.id),
       () => networkOverview(orgB.id, NOW),
     );
 
     const orgBReadingOrgA = await withDbAccessContext(
-      orgContext(orgB.id),
+      orgContext(orgB.id, partner.id),
       () => networkOverview(orgA.id, NOW),
     );
 
@@ -294,7 +294,7 @@ describe('networkVisibilityReadModel (#5861)', () => {
     ]);
 
     const overview = await withDbAccessContext(
-      orgContext(org.id),
+      orgContext(org.id, partner.id),
       () => networkOverview(org.id, NOW),
     );
 
@@ -316,7 +316,7 @@ describe('networkVisibilityReadModel (#5861)', () => {
     const emptyOrg = await createOrganization({ partnerId: partner.id });
 
     const overview = await withDbAccessContext(
-      orgContext(emptyOrg.id),
+      orgContext(emptyOrg.id, partner.id),
       () => networkOverview(emptyOrg.id, NOW),
     );
 
