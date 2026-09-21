@@ -66,19 +66,22 @@ export async function handleInboundEmail(job: Job<InboundEmailQueueJob>): Promis
   //      correct even if partner routing or cap settings changed between the peek
   //      and the creation; the peek can then be at most one message stale, which is
   //      the same accepted, self-healing class as the documented overshoot.
-  const peekChecks = await dbModule.runOutsideDbContext(() =>
+  const plan = await dbModule.runOutsideDbContext(() =>
     dbModule.withSystemDbAccessContext(() => resolveInboundThrottleChecks(email, mailboxGeneration)),
   );
-  const throttle = await peekInboundThrottle(getRedis(), peekChecks);
+  const throttle = await peekInboundThrottle(getRedis(), plan.checks);
 
   let chargeChecks: InboundCapCheck[] = [];
   await dbModule.runOutsideDbContext(() =>
     dbModule.withSystemDbAccessContext(() =>
+      // Pass the plan's partnerId so the pipeline only ENFORCES the verdict when it
+      // matches the partner it authoritatively resolves (a routing change between
+      // the peek and now must not quarantine under the wrong tenant).
       processInboundEmail(email, mailboxGeneration, {
         onTicketCreated: (checks) => {
           chargeChecks = checks;
         },
-      }, throttle),
+      }, throttle, plan.partnerId),
     ),
   );
 

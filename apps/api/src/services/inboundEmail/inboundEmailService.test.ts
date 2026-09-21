@@ -588,6 +588,57 @@ describe('processInboundEmail', () => {
     expect(String(log[0]!.error ?? '')).toContain('rate-limited');
   });
 
+  it('does NOT enforce an over-cap verdict resolved for a DIFFERENT partner (routing changed) — fails open', async () => {
+    // Codex review (option A) F1: the peek verdict is only honoured when it belongs
+    // to the partner the pipeline authoritatively resolves. Here the pipeline resolves
+    // p-1 but the throttle verdict was peeked for p-OTHER (recipient→partner routing
+    // changed between the peek and now), so the stale verdict is NOT applied: the
+    // ticket is created rather than quarantined under the wrong tenant.
+    resolveMock.mockResolvedValue('p-1');
+    state.selectRows['ticket_email_inbound'] = [];
+    state.selectRows['tickets'] = [];
+    state.selectRows['portal_users'] = [{ id: 'pu-1', orgId: 'o-1' }];
+    state.selectRows['organizations'] = [{ id: 'o-1' }];
+    createTicketMock.mockResolvedValue({ id: 't-created', internalNumber: 'T-2026-0012' });
+    const onTicketCreated = vi.fn();
+
+    await processInboundEmail(
+      email({ subject: 'routing changed' }),
+      undefined,
+      { onTicketCreated },
+      { throttled: true, bucket: 'sender' },
+      'p-OTHER', // verdict was resolved for a different partner
+    );
+
+    // Stale verdict ignored: ticket created, not quarantined.
+    expect(createTicketMock).toHaveBeenCalledTimes(1);
+    expect(onTicketCreated).toHaveBeenCalledTimes(1);
+    const log = inboundOf();
+    expect(log[0]!.parseStatus).not.toBe('quarantined');
+  });
+
+  it('DOES enforce an over-cap verdict resolved for the SAME partner the pipeline uses', async () => {
+    resolveMock.mockResolvedValue('p-1');
+    state.selectRows['ticket_email_inbound'] = [];
+    state.selectRows['tickets'] = [];
+    state.selectRows['portal_users'] = [{ id: 'pu-1', orgId: 'o-1' }];
+    state.selectRows['organizations'] = [{ id: 'o-1' }];
+    createTicketMock.mockResolvedValue({ id: 't-created', internalNumber: 'T-2026-0013' });
+    const onTicketCreated = vi.fn();
+
+    await processInboundEmail(
+      email({ subject: 'same partner over cap' }),
+      undefined,
+      { onTicketCreated },
+      { throttled: true, bucket: 'sender' },
+      'p-1', // verdict matches the pipeline's partner
+    );
+
+    expect(createTicketMock).not.toHaveBeenCalled();
+    expect(onTicketCreated).not.toHaveBeenCalled();
+    expect(inboundOf()[0]!.parseStatus).toBe('quarantined');
+  });
+
   it('signals onTicketCreated on a create path (so the worker charges only real creations)', async () => {
     resolveMock.mockResolvedValue('p-1');
     state.selectRows['ticket_email_inbound'] = [];

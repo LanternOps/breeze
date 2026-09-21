@@ -13,7 +13,7 @@ const {
   const runOutsideDbContextMock = vi.fn(<T>(fn: () => T) => fn());
   return {
     processInboundEmailMock: vi.fn().mockResolvedValue(undefined),
-    resolveChecksMock: vi.fn().mockResolvedValue([]),
+    resolveChecksMock: vi.fn().mockResolvedValue({ partnerId: null, checks: [] }),
     peekMock: vi.fn().mockResolvedValue({ throttled: false, bucket: null }),
     chargeMock: vi.fn().mockResolvedValue(undefined),
     getRedisMock: vi.fn(() => ({})),
@@ -71,7 +71,7 @@ describe('inboundEmailWorker', () => {
     withSystemDbAccessContextMock.mockImplementation(<T>(fn: () => Promise<T>) => fn());
     runOutsideDbContextMock.mockImplementation(<T>(fn: () => T) => fn());
     processInboundEmailMock.mockResolvedValue(undefined);
-    resolveChecksMock.mockResolvedValue([]);
+    resolveChecksMock.mockResolvedValue({ partnerId: null, checks: [] });
     peekMock.mockResolvedValue({ throttled: false, bucket: null });
     chargeMock.mockResolvedValue(undefined);
     getRedisMock.mockReturnValue({});
@@ -109,6 +109,7 @@ describe('inboundEmailWorker', () => {
       undefined,
       expect.objectContaining({ onTicketCreated: expect.any(Function) }),
       { throttled: false, bucket: null },
+      null,
     );
     // Every runOutsideDbContext precedes its withSystemDbAccessContext, which
     // precedes the pipeline work.
@@ -118,7 +119,7 @@ describe('inboundEmailWorker', () => {
 
   it('PEEKS the resolved windows before running the pipeline (Redis outside the held tx)', async () => {
     const checks = [{ bucket: 'sender' as const, key: 'inbound:tix:sender:p1:jane@acme.com', limit: 30 }];
-    resolveChecksMock.mockResolvedValue(checks);
+    resolveChecksMock.mockResolvedValue({ partnerId: 'p1', checks });
     const order: string[] = [];
     peekMock.mockImplementation(async () => { order.push('peek'); return { throttled: false, bucket: null }; });
     processInboundEmailMock.mockImplementation(async () => { order.push('process'); });
@@ -137,7 +138,7 @@ describe('inboundEmailWorker', () => {
     // via onTicketCreated. The worker must charge the pipeline's windows.
     const peekSnapshot = [{ bucket: 'sender' as const, key: 'inbound:tix:sender:pA:jane@acme.com', limit: 30 }];
     const authoritative = [{ bucket: 'partner' as const, key: 'inbound:tix:partner:pB', limit: 5 }];
-    resolveChecksMock.mockResolvedValue(peekSnapshot);
+    resolveChecksMock.mockResolvedValue({ partnerId: 'pA', checks: peekSnapshot });
     processInboundEmailMock.mockImplementation(async (_e: unknown, _g: unknown, deps: any) => {
       deps?.onTicketCreated?.(authoritative);
     });
@@ -150,7 +151,7 @@ describe('inboundEmailWorker', () => {
   });
 
   it('does NOT charge when no ticket was created (onTicketCreated never fires)', async () => {
-    resolveChecksMock.mockResolvedValue([{ bucket: 'sender' as const, key: 'k', limit: 30 }]);
+    resolveChecksMock.mockResolvedValue({ partnerId: 'p1', checks: [{ bucket: 'sender' as const, key: 'k', limit: 30 }] });
     processInboundEmailMock.mockResolvedValue(undefined); // never calls onTicketCreated
 
     await workerModule.handleInboundEmail({ data: { email: makeEmail() } } as any);
@@ -159,7 +160,7 @@ describe('inboundEmailWorker', () => {
   });
 
   it('does NOT charge when the created ticket reports no cap windows (all unlimited)', async () => {
-    resolveChecksMock.mockResolvedValue([]);
+    resolveChecksMock.mockResolvedValue({ partnerId: null, checks: [] });
     processInboundEmailMock.mockImplementation(async (_e: unknown, _g: unknown, deps: any) => {
       deps?.onTicketCreated?.([]); // ticket created, but no windows to charge
     });
@@ -186,6 +187,7 @@ describe('inboundEmailWorker', () => {
       mailboxGeneration,
       expect.objectContaining({ onTicketCreated: expect.any(Function) }),
       { throttled: false, bucket: null },
+      null,
     );
   });
 
@@ -199,6 +201,7 @@ describe('inboundEmailWorker', () => {
       undefined,
       expect.objectContaining({ onTicketCreated: expect.any(Function) }),
       { throttled: false, bucket: null },
+      null,
     );
   });
 });

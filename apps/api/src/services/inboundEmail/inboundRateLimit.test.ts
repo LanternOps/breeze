@@ -264,16 +264,18 @@ describe('bounded overshoot is accepted under concurrency (design decision, opti
     expect((await peekInboundThrottle(asRedis(r), checks(), now)).throttled).toBe(true);
   });
 
-  it('a redelivery cannot free the original charge (charge is idempotent, nothing is ever refunded)', async () => {
+  it('charge is idempotent per member: a repeat charge of the same message id is a no-op', async () => {
+    // NB (option A): in production a REDELIVERY never reaches this function — the
+    // pipeline dedups it and onTicketCreated never fires, so the worker charges
+    // nothing (see the worker test "does NOT charge when no ticket was created").
+    // This asserts only the primitive's own idempotency: charging the same
+    // provider-message-id member twice leaves one slot, so even a hypothetical
+    // double-charge cannot inflate a window. Nothing here is ever refunded.
     const r = new FakeRedis();
     const now = Date.now();
     const checks = buildInboundCapChecks('p1', 'jane@acme.com', LIMITS);
-    // First delivery creates a ticket → charged. Redelivery of the SAME message is
-    // dedup'd by the pipeline (no create), so the worker charges again with the SAME
-    // provider-message-id member — a no-op — and NEVER refunds. The original slot
-    // survives (no cap-bypass, unlike a message-id-keyed refund scheme).
-    await chargeInboundTickets(asRedis(r), checks, 'msg-42', now); // first delivery (created)
-    await chargeInboundTickets(asRedis(r), checks, 'msg-42', now); // redelivery (dedup'd; re-charge is a no-op)
+    await chargeInboundTickets(asRedis(r), checks, 'msg-42', now);
+    await chargeInboundTickets(asRedis(r), checks, 'msg-42', now); // same member ⇒ no-op
     for (const c of checks) expect(r.countInWindow(c.key, now - 60 * 60 * 1000)).toBe(1);
   });
 });

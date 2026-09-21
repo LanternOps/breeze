@@ -51,8 +51,14 @@
  * 200/hour window at ~205 under a simultaneous burst is immaterial, and the global
  * BullMQ queue limiter (INBOUND_QUEUE_MAX_PER_SEC) is the hard throughput bound
  * regardless. The trade accepted here is: the cap is approximate under
- * concurrency, and in exchange it NEVER quarantines a legitimate creation and has
- * no redelivery cap-bypass.
+ * concurrency, and in exchange it does not quarantine a legitimate creation on the
+ * common path and has no redelivery cap-bypass. (The one edge where a legitimate
+ * creation could be affected is a recipient→partner ROUTING change in the sub-ms
+ * window between the pre-gate peek and the pipeline transaction; the pipeline
+ * guards even that by enforcing the peek verdict ONLY when it belongs to the
+ * partner it authoritatively resolves — see processInboundEmail's throttlePartnerId
+ * — so a stale verdict for a different tenant fails open to create rather than
+ * quarantining under the wrong partner.)
  */
 
 import type { Redis } from 'ioredis';
