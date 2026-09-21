@@ -448,6 +448,41 @@ moveOrgRoutes.post(
                 AND org_id = ${sourceOrgId}::uuid`,
         );
 
+        // #6008 W01 (Backup Provider Integration, spec "Data model" D11) —
+        // backup_provider_devices links a Breeze device to its external backup
+        // vendor record via the composite FK (breeze_device_id, org_id) ->
+        // devices(id, org_id). Once the device leaves the org that link is not
+        // merely stale but unrepresentable, so null it. The ROW survives: it is
+        // the SOURCE org's provider inventory, its org_id comes from the
+        // CUSTOMER MAPPING (not from this device), and the 28-day health ledger
+        // hanging off it is evidence nobody should lose because a device moved.
+        // The next provider sync re-links the device in the NEW org if that
+        // org's customer mapping covers it.
+        //
+        // device_match_source is cleared WITH the link: a row carrying
+        // 'auto_hostname' with no breeze_device_id would read as an unmatched
+        // auto link, but leaving 'manual' behind would make W02's matcher skip
+        // the row forever (manual links are never re-matched).
+        //
+        // Placement is load-bearing, exactly as for manual_assets and
+        // m365_intune_devices above: the FK is DEFERRABLE INITIALLY IMMEDIATE,
+        // so its check fires at the end of the `UPDATE devices SET org_id`
+        // statement immediately below, and there is no trigger-side mirror —
+        // breeze_device_child_orgid_tables() requires a column literally named
+        // `device_id` and this one is `breeze_device_id`. This statement is the
+        // only detach on any path.
+        //
+        // Scoped to the SOURCE org as well as the device. An org MERGE never
+        // reaches this route: it re-points backup_provider_devices wholesale
+        // (services/orgMergeRegistry.ts REPOINT_TABLES) under SET CONSTRAINTS
+        // ALL DEFERRED, keeping the link valid inside the survivor org.
+        await tx.execute(
+          sql`UPDATE backup_provider_devices
+              SET breeze_device_id = NULL, device_match_source = NULL
+              WHERE breeze_device_id = ${deviceId}::uuid
+                AND org_id = ${sourceOrgId}::uuid`,
+        );
+
         // Flip the device row first so any concurrent agent heartbeat
         // after this point resolves the new org_id.
         const [row] = await tx
