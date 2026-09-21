@@ -29,7 +29,7 @@ import {
   processInboundEmail,
   resolveInboundThrottleChecks,
 } from '../services/inboundEmail/inboundEmailService';
-import { peekInboundThrottle, chargeInboundTickets } from '../services/inboundEmail/inboundRateLimit';
+import { admitInboundTicket, releaseInboundCharges } from '../services/inboundEmail/inboundRateLimit';
 import { getRedis } from '../services/redis';
 import { inboundQueueMaxPerSec } from '../config/env';
 import { attachWorkerObservability } from './workerObservability';
@@ -45,22 +45,22 @@ export async function handleInboundEmail(job: Job<InboundEmailQueueJob>): Promis
 
   // FLOOD CAP — all Redis happens OUTSIDE the pipeline's held transaction (#1105).
   // A Redis round-trip made while withSystemDbAccessContext is held would pin the
-  // pooled Postgres connection idle-in-transaction, so the flow is three phases:
+  // pooled Postgres connection idle-in-transaction, so the flow is admit/settle:
   //
   //   1. Resolve the cap windows for this message in a SHORT DB context (reads
   //      only), which is CLOSED before any Redis touches the wire.
-  //   2. PEEK the windows read-only (ZCOUNT), entirely outside any DB context. A
-  //      peek never mutates, so a message that is peeked but creates no ticket
-  //      charges nothing.
-  //   3. Run the pipeline in its own held transaction; it consults the peeked
+  //   2. ADMIT: atomically charge-and-check the windows (ZADD+ZCARD MULTI, outside
+  //      any DB context) so the limit holds exactly under concurrency.
+  //   3. Run the pipeline in its own held transaction; it consults the admission
   //      verdict only at its create paths (a reply that appends to an existing
-  //      ticket is never throttled) and touches no Redis. AFTER the transaction
-  //      commits, charge the windows — and ONLY when a ticket was actually created
-  //      (onTicketCreated) — so no window is charged for mail that made no ticket.
+  //      ticket is never throttled) and touches no Redis.
+  //   4. SETTLE: if the message did NOT create a ticket (throttled, reply-append,
+  //      drop, dedup, quarantine), refund the admission charges — so each window
+  //      counts real creations only.
   const checks = await dbModule.runOutsideDbContext(() =>
     dbModule.withSystemDbAccessContext(() => resolveInboundThrottleChecks(email, mailboxGeneration)),
   );
-  const throttle = await peekInboundThrottle(getRedis(), checks);
+  const { verdict, chargedKeys } = await admitInboundTicket(getRedis(), checks, email.providerMessageId);
 
   let createdTicket = false;
   await dbModule.runOutsideDbContext(() =>
@@ -69,14 +69,15 @@ export async function handleInboundEmail(job: Job<InboundEmailQueueJob>): Promis
         onTicketCreated: () => {
           createdTicket = true;
         },
-      }, throttle),
+      }, verdict),
     ),
   );
 
   // Reaching here means the pipeline transaction committed (processInboundEmail
   // swallows its own errors; a commit failure would have thrown and skipped this).
-  if (createdTicket && checks.length > 0) {
-    await chargeInboundTickets(getRedis(), checks, email.providerMessageId);
+  // Refund the admission unless a ticket was actually created.
+  if (!createdTicket) {
+    await releaseInboundCharges(getRedis(), chargedKeys, email.providerMessageId);
   }
 }
 

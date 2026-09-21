@@ -3,8 +3,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const {
   processInboundEmailMock,
   resolveChecksMock,
-  peekMock,
-  chargeMock,
+  admitMock,
+  releaseMock,
   getRedisMock,
   runOutsideDbContextMock,
   withSystemDbAccessContextMock,
@@ -14,8 +14,8 @@ const {
   return {
     processInboundEmailMock: vi.fn().mockResolvedValue(undefined),
     resolveChecksMock: vi.fn().mockResolvedValue([]),
-    peekMock: vi.fn().mockResolvedValue({ throttled: false, bucket: null }),
-    chargeMock: vi.fn().mockResolvedValue(undefined),
+    admitMock: vi.fn().mockResolvedValue({ verdict: { throttled: false, bucket: null }, chargedKeys: [] }),
+    releaseMock: vi.fn().mockResolvedValue(undefined),
     getRedisMock: vi.fn(() => ({})),
     withSystemDbAccessContextMock,
     runOutsideDbContextMock
@@ -43,8 +43,8 @@ vi.mock('../services/inboundEmail/inboundEmailService', () => ({
   resolveInboundThrottleChecks: resolveChecksMock
 }));
 vi.mock('../services/inboundEmail/inboundRateLimit', () => ({
-  peekInboundThrottle: peekMock,
-  chargeInboundTickets: chargeMock
+  admitInboundTicket: admitMock,
+  releaseInboundCharges: releaseMock
 }));
 vi.mock('../services/inboundEmailQueue', () => ({
   INBOUND_EMAIL_QUEUE: 'inbound-email'
@@ -72,8 +72,8 @@ describe('inboundEmailWorker', () => {
     runOutsideDbContextMock.mockImplementation(<T>(fn: () => T) => fn());
     processInboundEmailMock.mockResolvedValue(undefined);
     resolveChecksMock.mockResolvedValue([]);
-    peekMock.mockResolvedValue({ throttled: false, bucket: null });
-    chargeMock.mockResolvedValue(undefined);
+    admitMock.mockResolvedValue({ verdict: { throttled: false, bucket: null }, chargedKeys: [] });
+    releaseMock.mockResolvedValue(undefined);
     getRedisMock.mockReturnValue({});
   });
 
@@ -116,52 +116,54 @@ describe('inboundEmailWorker', () => {
     expect(callOrder.indexOf('withSystemDbAccessContext')).toBeLessThan(callOrder.indexOf('processInboundEmail'));
   });
 
-  it('PEEKS the resolved windows before running the pipeline (Redis outside the held tx)', async () => {
+  it('ADMITS the resolved windows before running the pipeline (Redis outside the held tx)', async () => {
     const checks = [{ bucket: 'sender' as const, key: 'inbound:tix:sender:p1:jane@acme.com', limit: 30 }];
     resolveChecksMock.mockResolvedValue(checks);
     const order: string[] = [];
-    peekMock.mockImplementation(async () => { order.push('peek'); return { throttled: false, bucket: null }; });
+    admitMock.mockImplementation(async () => { order.push('admit'); return { verdict: { throttled: false, bucket: null }, chargedKeys: ['k'] }; });
     processInboundEmailMock.mockImplementation(async () => { order.push('process'); });
 
-    await workerModule.handleInboundEmail({ data: { email: makeEmail() } } as any);
+    await workerModule.handleInboundEmail({ data: { email: makeEmail({ providerMessageId: 'mg-1' }) } } as any);
 
-    // Peek is called with the real Redis client and the resolved checks, before the pipeline.
-    expect(peekMock).toHaveBeenCalledWith({}, checks);
-    expect(order).toEqual(['peek', 'process']);
+    // Admit is called with the real Redis client, the resolved checks, and the message id — before the pipeline.
+    expect(admitMock).toHaveBeenCalledWith({}, checks, 'mg-1');
+    expect(order).toEqual(['admit', 'process']);
   });
 
-  it('CHARGES the windows after commit ONLY when a ticket was created', async () => {
-    const checks = [{ bucket: 'sender' as const, key: 'inbound:tix:sender:p1:jane@acme.com', limit: 30 }];
-    resolveChecksMock.mockResolvedValue(checks);
+  it('KEEPS the admission (no refund) when a ticket was created', async () => {
+    resolveChecksMock.mockResolvedValue([{ bucket: 'sender' as const, key: 'k', limit: 30 }]);
+    admitMock.mockResolvedValue({ verdict: { throttled: false, bucket: null }, chargedKeys: ['k'] });
     // The pipeline signals a creation via the onTicketCreated callback.
     processInboundEmailMock.mockImplementation(async (_e: unknown, _g: unknown, deps: any) => {
       deps?.onTicketCreated?.();
     });
 
-    const email = makeEmail({ providerMessageId: 'mg-created-1' });
-    await workerModule.handleInboundEmail({ data: { email } } as any);
+    await workerModule.handleInboundEmail({ data: { email: makeEmail() } } as any);
 
-    expect(chargeMock).toHaveBeenCalledWith({}, checks, 'mg-created-1');
+    expect(releaseMock).not.toHaveBeenCalled();
   });
 
-  it('does NOT charge when no ticket was created (peek/pipeline made none)', async () => {
+  it('REFUNDS the admission when no ticket was created', async () => {
     resolveChecksMock.mockResolvedValue([{ bucket: 'sender' as const, key: 'k', limit: 30 }]);
+    admitMock.mockResolvedValue({ verdict: { throttled: true, bucket: 'sender' }, chargedKeys: ['k'] });
     processInboundEmailMock.mockResolvedValue(undefined); // never calls onTicketCreated
 
-    await workerModule.handleInboundEmail({ data: { email: makeEmail() } } as any);
+    const email = makeEmail({ providerMessageId: 'mg-refund-1' });
+    await workerModule.handleInboundEmail({ data: { email } } as any);
 
-    expect(chargeMock).not.toHaveBeenCalled();
+    expect(releaseMock).toHaveBeenCalledWith({}, ['k'], 'mg-refund-1');
   });
 
-  it('does NOT charge when there are no cap windows, even if a ticket was created', async () => {
-    resolveChecksMock.mockResolvedValue([]); // caps unlimited / partner unresolved
-    processInboundEmailMock.mockImplementation(async (_e: unknown, _g: unknown, deps: any) => {
-      deps?.onTicketCreated?.();
-    });
+  it('refunds an empty charge set harmlessly when there were no cap windows', async () => {
+    resolveChecksMock.mockResolvedValue([]);
+    admitMock.mockResolvedValue({ verdict: { throttled: false, bucket: null }, chargedKeys: [] });
+    processInboundEmailMock.mockResolvedValue(undefined); // no creation
 
-    await workerModule.handleInboundEmail({ data: { email: makeEmail() } } as any);
+    const email = makeEmail({ providerMessageId: 'mg-none' });
+    await workerModule.handleInboundEmail({ data: { email } } as any);
 
-    expect(chargeMock).not.toHaveBeenCalled();
+    // releaseInboundCharges is still called, but with an empty key list (a no-op).
+    expect(releaseMock).toHaveBeenCalledWith({}, [], 'mg-none');
   });
 
   it('passes an exact M365 mailbox generation to both the throttle resolve and the pipeline', async () => {

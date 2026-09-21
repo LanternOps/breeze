@@ -3,94 +3,75 @@ import type { Redis } from 'ioredis';
 import {
   resolveInboundCapLimits,
   buildInboundCapChecks,
-  peekInboundThrottle,
-  chargeInboundTickets,
+  admitInboundTicket,
+  releaseInboundCharges,
   type InboundCapLimits,
 } from './inboundRateLimit';
 
 // ---------------------------------------------------------------------------
-// A faithful in-memory ZSET fake, enough to exercise the real peek/charge code
-// against genuine sorted-set semantics: zadd (member→score), zcount over a
-// score range, zremrangebyscore, expire, and a multi() that queues + applies.
-// This lets the tests observe RESIDUAL STATE — the exact thing the mocked-primitive
-// tests could not (Codex review #6, finding 1).
+// A faithful in-memory ZSET fake — enough to run the REAL shared `rateLimiter`
+// (services/rate-limit.ts) against genuine sorted-set semantics, including its
+// MULTI [zremrangebyscore, zadd, zcard, zrange WITHSCORES, expire]. This lets the
+// tests prove the atomic-admission property (limit holds exactly under back-to-
+// back admits) and the refund path (Codex review #7, finding 1) against real code
+// rather than a mocked primitive.
 // ---------------------------------------------------------------------------
 function parseScore(v: number | string): number {
   if (typeof v === 'number') return v;
-  if (v === '-inf' || v === '-Infinity') return -Infinity;
-  if (v === '+inf' || v === '+Infinity' || v === 'inf') return Infinity;
+  if (v === '-inf') return -Infinity;
+  if (v === '+inf' || v === 'inf') return Infinity;
   return Number(v);
 }
 
 class FakeRedis {
-  private sets = new Map<string, Map<string, number>>();
-  throwOnce = false;
-
-  private zset(key: string): Map<string, number> {
-    let z = this.sets.get(key);
-    if (!z) { z = new Map(); this.sets.set(key, z); }
-    return z;
+  sets = new Map<string, Map<string, number>>();
+  private z(key: string): Map<string, number> {
+    let s = this.sets.get(key);
+    if (!s) { s = new Map(); this.sets.set(key, s); }
+    return s;
   }
-
   async zadd(key: string, score: number, member: string): Promise<number> {
-    const z = this.zset(key);
-    const isNew = !z.has(member);
-    z.set(member, score);
-    return isNew ? 1 : 0;
+    const s = this.z(key); const isNew = !s.has(member); s.set(member, score); return isNew ? 1 : 0;
   }
-
+  async zcard(key: string): Promise<number> { return this.sets.get(key)?.size ?? 0; }
   async zcount(key: string, min: number | string, max: number | string): Promise<number> {
-    if (this.throwOnce) { this.throwOnce = false; throw new Error('redis boom'); }
-    const lo = parseScore(min);
-    const hi = parseScore(max);
-    const z = this.sets.get(key);
-    if (!z) return 0;
-    let n = 0;
-    for (const s of z.values()) if (s >= lo && s <= hi) n += 1;
-    return n;
+    const lo = parseScore(min); const hi = parseScore(max); const s = this.sets.get(key);
+    if (!s) return 0; let n = 0; for (const v of s.values()) if (v >= lo && v <= hi) n += 1; return n;
   }
-
   async zremrangebyscore(key: string, min: number | string, max: number | string): Promise<number> {
-    const lo = parseScore(min);
-    const hi = parseScore(max);
-    const z = this.sets.get(key);
-    if (!z) return 0;
-    let removed = 0;
-    for (const [m, s] of [...z.entries()]) {
-      if (s >= lo && s <= hi) { z.delete(m); removed += 1; }
-    }
+    const lo = parseScore(min); const hi = parseScore(max); const s = this.sets.get(key);
+    if (!s) return 0; let removed = 0;
+    for (const [m, v] of [...s.entries()]) if (v >= lo && v <= hi) { s.delete(m); removed += 1; }
     return removed;
   }
-
+  async zrem(key: string, member: string): Promise<number> {
+    const s = this.sets.get(key); if (!s) return 0; return s.delete(member) ? 1 : 0;
+  }
+  // zrange(key, 0, 0, 'WITHSCORES') → [lowestMember, scoreString]
+  async zrange(key: string, start: number, stop: number, withScores?: string): Promise<string[]> {
+    const s = this.sets.get(key); if (!s) return [];
+    const sorted = [...s.entries()].sort((a, b) => a[1] - b[1]);
+    const slice = sorted.slice(start, stop < 0 ? undefined : stop + 1);
+    if (withScores) return slice.flatMap(([m, sc]) => [m, String(sc)]);
+    return slice.map(([m]) => m);
+  }
   async expire(): Promise<number> { return 1; }
-
   multi(): FakeMulti { return new FakeMulti(this); }
-
-  /** Test helper: number of members currently inside [windowStart, +inf). */
   countInWindow(key: string, windowStart: number): number {
-    const z = this.sets.get(key);
-    if (!z) return 0;
-    let n = 0;
-    for (const s of z.values()) if (s >= windowStart) n += 1;
-    return n;
+    const s = this.sets.get(key); if (!s) return 0;
+    let n = 0; for (const v of s.values()) if (v >= windowStart) n += 1; return n;
   }
 }
 
 class FakeMulti {
   private ops: Array<() => Promise<unknown>> = [];
-  constructor(private redis: FakeRedis) {}
-  zremrangebyscore(key: string, min: number | string, max: number | string): this {
-    this.ops.push(() => this.redis.zremrangebyscore(key, min, max)); return this;
-  }
-  zadd(key: string, score: number, member: string): this {
-    this.ops.push(() => this.redis.zadd(key, score, member)); return this;
-  }
-  expire(): this { this.ops.push(() => this.redis.expire()); return this; }
-  async exec(): Promise<unknown[]> {
-    const out: unknown[] = [];
-    for (const op of this.ops) out.push([null, await op()]);
-    return out;
-  }
+  constructor(private r: FakeRedis) {}
+  zremrangebyscore(k: string, a: number | string, b: number | string): this { this.ops.push(() => this.r.zremrangebyscore(k, a, b)); return this; }
+  zadd(k: string, score: number, member: string): this { this.ops.push(() => this.r.zadd(k, score, member)); return this; }
+  zcard(k: string): this { this.ops.push(() => this.r.zcard(k)); return this; }
+  zrange(k: string, a: number, b: number, ws?: string): this { this.ops.push(() => this.r.zrange(k, a, b, ws)); return this; }
+  expire(): this { this.ops.push(() => this.r.expire()); return this; }
+  async exec(): Promise<unknown[]> { const out: unknown[] = []; for (const op of this.ops) out.push([null, await op()]); return out; }
 }
 
 const asRedis = (f: FakeRedis) => f as unknown as Redis;
@@ -126,115 +107,106 @@ describe('buildInboundCapChecks', () => {
       'inbound:tix:partner:p1',
     ]);
   });
-
   it('skips a window whose limit is 0 (unlimited)', () => {
-    const checks = buildInboundCapChecks('p1', 'jane@acme.com', { perSenderPerHour: 0, perDomainPerHour: 0, perPartnerPerHour: 1000 });
-    expect(checks.map((c) => c.bucket)).toEqual(['partner']);
+    expect(buildInboundCapChecks('p1', 'jane@acme.com', { perSenderPerHour: 0, perDomainPerHour: 0, perPartnerPerHour: 1000 }).map((c) => c.bucket)).toEqual(['partner']);
   });
-
   it('skips the domain window when the sender address has no parseable domain', () => {
     expect(buildInboundCapChecks('p1', 'not-an-address', LIMITS).map((c) => c.bucket)).toEqual(['sender', 'partner']);
   });
-
   it('returns [] when every window is unlimited (caller then skips Redis)', () => {
     expect(buildInboundCapChecks('p1', 'jane@acme.com', { perSenderPerHour: 0, perDomainPerHour: 0, perPartnerPerHour: 0 })).toEqual([]);
   });
 });
 
-describe('peekInboundThrottle (read-only)', () => {
-  it('passes when every window has room, and mutates nothing', async () => {
+describe('admitInboundTicket', () => {
+  it('admits when every window has room and reports the charged keys', async () => {
     const r = new FakeRedis();
     const checks = buildInboundCapChecks('p1', 'jane@acme.com', LIMITS);
-    const v = await peekInboundThrottle(asRedis(r), checks);
-    expect(v).toEqual({ throttled: false, bucket: null });
-    // A peek must never create members.
-    for (const c of checks) expect(r.countInWindow(c.key, 0)).toBe(0);
+    const { verdict, chargedKeys } = await admitInboundTicket(asRedis(r), checks, 'msg-1');
+    expect(verdict).toEqual({ throttled: false, bucket: null });
+    expect(chargedKeys).toEqual(checks.map((c) => c.key));
+    for (const c of checks) expect(r.countInWindow(c.key, 0)).toBe(1);
   });
 
-  it('throttles on the tightest full window (sender) first', async () => {
+  it('is idempotent per dedupeMember: a redelivery re-occupies its one slot', async () => {
     const r = new FakeRedis();
-    const now = Date.now();
-    // Fill the sender window to its limit of 1.
     const checks = buildInboundCapChecks('p1', 'jane@acme.com', { perSenderPerHour: 1, perDomainPerHour: 200, perPartnerPerHour: 1000 });
-    await chargeInboundTickets(asRedis(r), checks, 'seed', now);
-    const v = await peekInboundThrottle(asRedis(r), checks, now);
-    expect(v).toEqual({ throttled: true, bucket: 'sender' });
+    const a = await admitInboundTicket(asRedis(r), checks, 'same-msg');
+    const b = await admitInboundTicket(asRedis(r), checks, 'same-msg'); // SAME message id
+    expect(a.verdict.throttled).toBe(false);
+    expect(b.verdict.throttled).toBe(false); // not a new slot, so not over the limit of 1
+    expect(r.countInWindow(checks[0]!.key, 0)).toBe(1);
   });
 
-  it('reports the partner window when only it is full', async () => {
+  it('throttles at the tightest full window and stops there', async () => {
     const r = new FakeRedis();
-    const now = Date.now();
-    const partnerKey = 'inbound:tix:partner:p1';
-    await r.zadd(partnerKey, now, 'x'); // partner window has 1, limit 1
-    const checks = buildInboundCapChecks('p1', 'jane@acme.com', { perSenderPerHour: 30, perDomainPerHour: 200, perPartnerPerHour: 1 });
-    expect(await peekInboundThrottle(asRedis(r), checks, now)).toEqual({ throttled: true, bucket: 'partner' });
-  });
-
-  it('ignores members outside the 1h window (uses the live count)', async () => {
-    const r = new FakeRedis();
-    const now = Date.now();
     const checks = buildInboundCapChecks('p1', 'jane@acme.com', { perSenderPerHour: 1, perDomainPerHour: 200, perPartnerPerHour: 1000 });
-    // A stale member two hours old must NOT count toward the window.
-    await r.zadd(checks[0]!.key, now - 2 * 60 * 60 * 1000, 'stale');
-    expect(await peekInboundThrottle(asRedis(r), checks, now)).toEqual({ throttled: false, bucket: null });
+    await admitInboundTicket(asRedis(r), checks, 'a'); // fills the sender window (limit 1)
+    const { verdict, chargedKeys } = await admitInboundTicket(asRedis(r), checks, 'b');
+    expect(verdict).toEqual({ throttled: true, bucket: 'sender' });
+    // Short-circuits at sender: only the sender window was charged (then to be refunded).
+    expect(chargedKeys).toEqual(['inbound:tix:sender:p1:jane@acme.com']);
   });
 
-  it('fails OPEN on empty checks or a null client, doing no Redis work', async () => {
-    expect(await peekInboundThrottle(null, buildInboundCapChecks('p1', 'jane@acme.com', LIMITS))).toEqual({ throttled: false, bucket: null });
-    expect(await peekInboundThrottle(asRedis(new FakeRedis()), [])).toEqual({ throttled: false, bucket: null });
+  it('fails OPEN with a null client (nothing charged, not throttled)', async () => {
+    const { verdict, chargedKeys } = await admitInboundTicket(null, buildInboundCapChecks('p1', 'jane@acme.com', LIMITS), 'm');
+    expect(verdict).toEqual({ throttled: false, bucket: null });
+    expect(chargedKeys).toEqual([]);
   });
 
-  it('fails OPEN (not throttled) when the Redis read throws', async () => {
-    const r = new FakeRedis();
-    r.throwOnce = true;
-    const checks = buildInboundCapChecks('p1', 'jane@acme.com', LIMITS);
-    expect(await peekInboundThrottle(asRedis(r), checks)).toEqual({ throttled: false, bucket: null });
+  it('is a no-op with empty checks', async () => {
+    const { verdict, chargedKeys } = await admitInboundTicket(asRedis(new FakeRedis()), [], 'm');
+    expect(verdict).toEqual({ throttled: false, bucket: null });
+    expect(chargedKeys).toEqual([]);
   });
 });
 
-describe('chargeInboundTickets', () => {
-  it('records one member per window and is idempotent per dedupeMember', async () => {
+describe('exact under concurrency (Codex review #7, finding 1)', () => {
+  it('a limit of 1 admits exactly ONE of two back-to-back messages', async () => {
     const r = new FakeRedis();
-    const now = Date.now();
-    const checks = buildInboundCapChecks('p1', 'jane@acme.com', LIMITS);
-    await chargeInboundTickets(asRedis(r), checks, 'pmid-1', now);
-    await chargeInboundTickets(asRedis(r), checks, 'pmid-1', now); // redelivery of SAME message
-    for (const c of checks) expect(r.countInWindow(c.key, now - 60 * 60 * 1000)).toBe(1);
-  });
-
-  it('is a no-op with a null client or empty checks', async () => {
-    await expect(chargeInboundTickets(null, buildInboundCapChecks('p1', 'jane@acme.com', LIMITS), 'm')).resolves.toBeUndefined();
-    await expect(chargeInboundTickets(asRedis(new FakeRedis()), [], 'm')).resolves.toBeUndefined();
-  });
-});
-
-describe('no residual charge across buckets (Codex review #6, finding 1)', () => {
-  it('a message quarantined by the partner window leaves NO charge in the sender/domain windows', async () => {
-    const r = new FakeRedis();
-    const now = Date.now();
-    // partner=1 (the binding window); sender/domain generous.
     const limits: InboundCapLimits = { perSenderPerHour: 30, perDomainPerHour: 200, perPartnerPerHour: 1 };
-    const checksA = buildInboundCapChecks('p1', 'jane@acme.com', limits);
+    const checks = () => buildInboundCapChecks('p1', 'jane@acme.com', limits);
 
-    // Message A: peek OK, ticket created, so the worker charges all three windows.
-    expect((await peekInboundThrottle(asRedis(r), checksA, now)).throttled).toBe(false);
-    await chargeInboundTickets(asRedis(r), checksA, 'A', now);
+    // Two DIFFERENT messages competing for the single partner slot. Because admit
+    // charges-and-checks atomically (ZADD then ZCARD in one MULTI), the second sees
+    // its own charge in the count and is rejected — no over-admission.
+    const a = await admitInboundTicket(asRedis(r), checks(), 'A');
+    const b = await admitInboundTicket(asRedis(r), checks(), 'B');
+    expect(a.verdict.throttled).toBe(false);
+    expect(b.verdict).toEqual({ throttled: true, bucket: 'partner' });
+  });
 
-    // Message B (same sender/domain/partner): peek now sees the partner window full.
-    const checksB = buildInboundCapChecks('p1', 'jane@acme.com', limits);
-    const verdictB = await peekInboundThrottle(asRedis(r), checksB, now);
-    expect(verdictB).toEqual({ throttled: true, bucket: 'partner' });
-    // B is throttled ⇒ the worker records NO charge for it. The OLD charge-then-check
-    // design left B's member in the sender + domain windows even though B made no
-    // ticket; here those windows still hold ONLY A.
+  it('refunding a non-creating message frees the slot (no residual charge)', async () => {
+    const r = new FakeRedis();
+    const limits: InboundCapLimits = { perSenderPerHour: 30, perDomainPerHour: 200, perPartnerPerHour: 1 };
     const senderKey = 'inbound:tix:sender:p1:jane@acme.com';
-    const domainKey = 'inbound:tix:sdom:p1:acme.com';
-    expect(r.countInWindow(senderKey, now - 60 * 60 * 1000)).toBe(1);
-    expect(r.countInWindow(domainKey, now - 60 * 60 * 1000)).toBe(1);
 
-    // And once partner capacity frees up, Jane's sender window is not polluted:
-    // draining the partner window lets a fresh peek pass again.
+    // A admits and creates a ticket (kept). B admits, is throttled by partner, and
+    // is refunded because it created nothing — the sender/domain windows it touched
+    // before the partner window must NOT retain B.
+    await admitInboundTicket(asRedis(r), buildInboundCapChecks('p1', 'jane@acme.com', limits), 'A');
+    const b = await admitInboundTicket(asRedis(r), buildInboundCapChecks('p1', 'jane@acme.com', limits), 'B');
+    expect(b.verdict.throttled).toBe(true);
+    await releaseInboundCharges(asRedis(r), b.chargedKeys, 'B'); // worker refunds non-creations
+
+    // Only A remains in the sender window; B left no residual.
+    expect(r.countInWindow(senderKey, 0)).toBe(1);
+
+    // Drain the partner window (A's ticket aged out) and a fresh message admits again.
     await r.zremrangebyscore('inbound:tix:partner:p1', '-inf', '+inf');
-    expect((await peekInboundThrottle(asRedis(r), buildInboundCapChecks('p1', 'jane@acme.com', limits), now)).throttled).toBe(false);
+    const c = await admitInboundTicket(asRedis(r), buildInboundCapChecks('p1', 'jane@acme.com', limits), 'C');
+    expect(c.verdict.throttled).toBe(false);
+  });
+});
+
+describe('releaseInboundCharges', () => {
+  it('removes the message from each charged window and is a no-op when empty/null', async () => {
+    const r = new FakeRedis();
+    const checks = buildInboundCapChecks('p1', 'jane@acme.com', LIMITS);
+    const { chargedKeys } = await admitInboundTicket(asRedis(r), checks, 'm1');
+    await releaseInboundCharges(asRedis(r), chargedKeys, 'm1');
+    for (const c of checks) expect(r.countInWindow(c.key, 0)).toBe(0);
+    await expect(releaseInboundCharges(null, chargedKeys, 'm1')).resolves.toBeUndefined();
+    await expect(releaseInboundCharges(asRedis(r), [], 'm1')).resolves.toBeUndefined();
   });
 });
