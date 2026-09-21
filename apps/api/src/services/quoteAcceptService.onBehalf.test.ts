@@ -256,4 +256,71 @@ describe('acceptQuote — origin on_behalf', () => {
     expect(res.invoiceIssued).toBe(true);
     expect(res.invoiceNumber).toMatch(/^INV-\d{4}-0001$/);
   });
+
+  // The whole point of the post-claim overlay: a draft carries NO customer
+  // identity (bill-to is frozen from the org's Billing settings at the claim,
+  // not before it). Issuing the invoice from the stale pre-claim row would put
+  // a blank//wrong bill-to and the wrong locale on a document the customer pays
+  // — and the invoice is the artifact that leaves the building.
+  it('issues the invoice from the CLAIM\'s frozen values, not the stale draft', async () => {
+    queueAcceptHappyPath({
+      status: 'draft',
+      quoteNumber: 'Q-DRAFT-STALE',
+      billToName: 'Stale Draft Co',
+      billToAddress: { line1: '0 Stale Street' },
+      billToTaxId: 'STALE-TAX-0',
+      sellerSnapshot: { name: 'Stale Seller' },
+      documentLocale: 'en',
+      termsAndConditions: 'stale terms and conditions',
+      terms: 'stale terms',
+    });
+    claimQuoteSentMock.mockResolvedValue({
+      quoteNumber: 'Q-2026-0042',
+      issueDate: '2026-09-21',
+      billToName: 'Frozen Buyer Ltd',
+      billToAddress: { line1: '1 Frozen Way' },
+      billToTaxId: 'FROZEN-TAX-9',
+      sellerSnapshot: { name: 'Frozen Seller' },
+      presentationSnapshot: { theme: 'slate' },
+      documentLocale: 'fr',
+      termsAndConditions: 'frozen terms and conditions',
+      terms: 'frozen terms',
+      superseded: undefined,
+    });
+
+    await acceptQuote(onBehalfParams);
+
+    // set() call 0 is the invoice issue update; call 1 is the quote→converted flip.
+    const issueFields = (db as unknown as Chain).set.mock.calls[0]![0] as Record<string, unknown>;
+    expect(issueFields).toMatchObject({
+      status: 'sent',
+      billToName: 'Frozen Buyer Ltd',
+      billToAddress: { line1: '1 Frozen Way' },
+      billToTaxId: 'FROZEN-TAX-9',
+      sellerSnapshot: { name: 'Frozen Seller' },
+      documentLocale: 'fr',
+      termsAndConditions: 'frozen terms and conditions',
+      terms: 'frozen terms',
+    });
+    // Explicitly: none of the stale draft values survived onto the invoice.
+    expect(issueFields.billToName).not.toBe('Stale Draft Co');
+    expect(issueFields.billToTaxId).not.toBe('STALE-TAX-0');
+    expect(issueFields.documentLocale).not.toBe('en');
+
+    // …and the acceptance row + the invoice's provenance note carry the
+    // claim-allocated number, not the draft's placeholder.
+    const acceptanceInsert = (db as unknown as Chain).values.mock.calls[0]![0] as Record<string, unknown>;
+    expect(acceptanceInsert.renderLocale).toBe('fr');
+    const invoiceInsert = (db as unknown as Chain).values.mock.calls[1]![0] as Record<string, unknown>;
+    expect(invoiceInsert.notes).toBe('Converted from quote Q-2026-0042');
+  });
+
+  it('refuses a blank signer name rather than recording a nameless acceptance', async () => {
+    queueAcceptHappyPath();
+    await expect(acceptQuote({ ...onBehalfParams, signerName: '   ' })).rejects.toMatchObject({
+      status: 400, code: 'INVALID_SIGNER_NAME',
+    });
+    // Nothing was written: the refusal lands before the acceptance insert.
+    expect((db as unknown as Chain).insert.mock.calls.length).toBe(0);
+  });
 });

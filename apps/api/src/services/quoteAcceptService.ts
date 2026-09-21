@@ -348,20 +348,37 @@ export async function acceptQuote(
   // THE CUSTOMER SIGNED; an MSP-recorded acceptance is not a signature, and
   // labelling it 'typed-signature' would put a claim the customer never made
   // into the permanent record.
-  const captured = origin === 'on_behalf'
-    ? {
-        signerName: params.signerName.trim(),
-        signerEmail: params.signerEmail?.trim() || null,
-        method: params.method ?? 'other',
-      }
-    : await getAcceptanceProvider().capture({
-        quoteId: quote.id,
-        signerName: params.signerName,
-        signerEmail: params.signerEmail,
-        ipAddress: params.ipAddress,
-        userAgent: params.userAgent,
-        acceptanceTokenJti: params.acceptanceTokenJti,
-      });
+  let captured: { signerName: string; signerEmail: string | null; method: string };
+  if (origin === 'on_behalf') {
+    // The route schema validates this too, but it must not be the ONLY guard:
+    // the acceptance row is a permanent legal record and a blank signer names
+    // nobody as having agreed. TypedSignatureProvider refuses exactly this on
+    // the customer path, so the direct capture cannot be laxer. A
+    // QuoteServiceError (not the provider's bare Error) so the route reports a
+    // 400 rather than a 500. Inside the transaction, so a draft claimed just
+    // above rolls back with it and stays a draft.
+    const signerName = params.signerName.trim();
+    if (!signerName) {
+      throw new QuoteServiceError(
+        'A signer name is required to record an acceptance', 400, 'INVALID_SIGNER_NAME',
+      );
+    }
+    const signerEmail = params.signerEmail?.trim();
+    captured = {
+      signerName,
+      signerEmail: signerEmail && signerEmail.length > 0 ? signerEmail : null,
+      method: params.method ?? 'other',
+    };
+  } else {
+    captured = await getAcceptanceProvider().capture({
+      quoteId: quote.id,
+      signerName: params.signerName,
+      signerEmail: params.signerEmail,
+      ipAddress: params.ipAddress,
+      userAgent: params.userAgent,
+      acceptanceTokenJti: params.acceptanceTokenJti,
+    });
+  }
 
   // 1. Record the acceptance.
   const [acceptance] = await db
