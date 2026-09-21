@@ -8,7 +8,7 @@ vi.mock('astro:transitions/client', () => ({
   navigate: (...args: unknown[]) => navigateMock(...args),
 }));
 
-import { navigateTo } from './navigation';
+import { navigateTo, navigateToMicrosoftLogin } from './navigation';
 
 describe('navigateTo same-origin guard', () => {
   beforeEach(() => {
@@ -99,6 +99,46 @@ describe('navigateTo same-origin guard', () => {
       await navigateTo('//evil.com', { replace: true });
       expect(replaceSpy).toHaveBeenCalledWith('/');
     });
+  });
+});
+
+describe('navigateToMicrosoftLogin', () => {
+  const originalLocation = window.location;
+  let assignSpy: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    assignSpy = vi.fn();
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { assign: assignSpy } as unknown as Location,
+    });
+  });
+
+  afterEach(() => {
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: originalLocation,
+    });
+  });
+
+  it('performs a full-page navigation to the pinned Microsoft login origin', () => {
+    navigateToMicrosoftLogin(
+      'https://login.microsoftonline.com/common/adminconsent?client_id=example',
+    );
+    expect(assignSpy).toHaveBeenCalledWith(
+      'https://login.microsoftonline.com/common/adminconsent?client_id=example',
+    );
+  });
+
+  it.each([
+    'http://login.microsoftonline.com/common/adminconsent',
+    'https://login.microsoftonline.com.evil.example/common/adminconsent',
+    'https://login.microsoftonline.com:444/common/adminconsent',
+    'https://user:password@login.microsoftonline.com/common/adminconsent',
+    'not-a-url',
+  ])('rejects an untrusted external destination: %s', (url) => {
+    expect(() => navigateToMicrosoftLogin(url)).toThrow('Invalid Microsoft login URL');
+    expect(assignSpy).not.toHaveBeenCalled();
   });
 });
 
