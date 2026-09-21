@@ -61,7 +61,7 @@ export function useArchivedOrganizations({ enabled, search }: { enabled: boolean
           // that never looked must not overwrite a `true` from an earlier page.
           if (typeof body?.archivedTruncated === 'boolean') wasTruncated = body.archivedTruncated;
           return body;
-        });
+        }, { order: 'server' });
         if (requestId !== requestIdRef.current || all === null) return;
         setArchivedOrgs(all.filter((org) => org.archived === true));
         setTruncated(wasTruncated);

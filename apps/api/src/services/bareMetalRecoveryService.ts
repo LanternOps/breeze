@@ -26,6 +26,7 @@ import {
   RECOVERY_CODE_TTL_MS,
 } from './bareMetalRecoveryCodes';
 import { generateRecoveryToken, hashRecoveryToken } from './recoveryBootstrap';
+import { RECOVERY_REFUSAL_MESSAGES } from './recoveryCapabilities';
 
 export type BareMetalRecoveryRow = typeof bareMetalRecoveries.$inferSelect;
 
@@ -43,7 +44,7 @@ export type BareMetalRecoverySource = 'route' | 'dr' | 'vm_restore';
 export type BareMetalRecoveryErrorCode =
   | 'snapshot_not_found'
   | 'snapshot_not_bare_metal_restorable'
-  | 'snapshot_has_external_references'
+  | 'snapshot_storage_identity_unknown'
   | 'recovery_in_progress'
   | 'recovery_not_found'
   | 'invalid_state';
@@ -99,42 +100,35 @@ async function loadRecovery(tx: DrDb, recoveryId: string, orgId: string): Promis
 }
 
 /**
- * #6403 interim guard, shared by every entry point that can start a bare-metal
- * restore. An incremental backup satisfies unchanged files by REFERENCING the
- * object an older snapshot uploaded, so its manifest carries
- * `snapshots/<older-id>/files/...` paths — while token-mode recovery confines
- * downloads to the selected snapshot's own prefix. Every referenced file is
- * refused, and because that happens per file during the restore phase, the
- * target has already been partitioned and formatted by then (proven in the
- * #5498 lab run: 98,411 of 105,953 files refused, after provisioning). Refuse
- * before any disk is touched or token minted.
- *
- * `referenced_files` is an exact predicate, not a heuristic: the agent derives
- * it with the same `isReferenceEntry` rule ("backupPath is not under this
- * snapshot's own prefix") that the download check enforces from the other side.
- *
- * NULL and 0 both mean self-contained and are allowed — the agent's
- * `referencedFiles,omitempty` drops a zero and the API only writes the column
- * when the field is present, so NULL is the NORMAL state for a full backup and
- * refusing it would refuse every restore that works today.
- *
- * Returns the error to throw, or null when the snapshot is safe. Remove when
- * W09 (#6464) teaches token-mode recovery to follow references.
+ * W09 (#6464) preflight, replacing the #6469 hard refusal. A referenced
+ * snapshot (referenced_files > 0) is no longer refused outright at creation
+ * — token-mode recovery CAN follow cross-snapshot references once the server
+ * has a verified-complete file index (Task 3/5). The only thing still
+ * refused HERE, before any row is written, is a snapshot whose storage
+ * identity is unknown (fail closed — Part 0 §0 "storage identity"): without
+ * it hydration cannot even verify which physical bucket/path the referenced
+ * objects live under. A known identity enqueues hydration (idempotent,
+ * dedupe-keyed) and lets creation proceed; the ACTUAL authorization gate is
+ * the authenticate/exchange negotiation (recoveryCapabilities.ts) and the
+ * per-object download check (recoveryDownloadService.ts, Task 6) — this
+ * function only prevents starting a recovery that can NEVER succeed.
  */
-export function externalReferenceRefusal(
-  referencedFiles: number | null | undefined,
-  snapshotId: string,
-): BareMetalRecoveryError | null {
-  if (typeof referencedFiles !== 'number' || referencedFiles <= 0) return null;
-  return new BareMetalRecoveryError('snapshot_has_external_references', 409, {
-    referencedFiles,
-    snapshotId,
-    // `reasons` reuses the shape the non-restorable refusal already uses, so
-    // the existing UI renders this explanation instead of a bare code.
-    reasons: [
-      `This backup stores ${referencedFiles.toLocaleString('en-US')} file(s) as references to earlier snapshots, and recovery media cannot read files outside the snapshot it was given. Choose a snapshot that contains all of its own data (a full backup).`,
-    ],
-  });
+export async function externalReferencePreflight(input: {
+  referencedFiles: number | null | undefined;
+  snapshotDbId: string;
+  storageIdentity?: string | null;
+}): Promise<BareMetalRecoveryError | null> {
+  if (typeof input.referencedFiles !== 'number' || input.referencedFiles <= 0) return null;
+  if (!input.storageIdentity) {
+    return new BareMetalRecoveryError('snapshot_storage_identity_unknown', 409, {
+      referencedFiles: input.referencedFiles,
+      snapshotId: input.snapshotDbId,
+      reasons: [RECOVERY_REFUSAL_MESSAGES.snapshot_storage_identity_unknown],
+    });
+  }
+  const { enqueueSnapshotFileIndexHydration } = await import('../jobs/backupSnapshotFileIndexWorker');
+  await enqueueSnapshotFileIndexHydration(input.snapshotDbId, 'recovery_create');
+  return null;
 }
 
 /** The device's current non-terminal recovery, if any. */
@@ -233,6 +227,7 @@ export async function createBareMetalRecovery(input: {
       bareMetalRestorable: backupSnapshots.bareMetalRestorable,
       bareMetalReasons: backupSnapshots.bareMetalReasons,
       referencedFiles: backupJobs.referencedFiles,
+      storageIdentity: backupSnapshots.storageIdentity,
     })
     .from(backupSnapshots)
     .leftJoin(backupJobs, eq(backupJobs.id, backupSnapshots.jobId))
@@ -247,8 +242,12 @@ export async function createBareMetalRecovery(input: {
     });
   }
 
-  const externalRefs = externalReferenceRefusal(snapshot.referencedFiles, snapshot.id);
-  if (externalRefs) throw externalRefs;
+  const preflight = await externalReferencePreflight({
+    referencedFiles: snapshot.referencedFiles,
+    snapshotDbId: snapshot.id,
+    storageIdentity: snapshot.storageIdentity ?? null,
+  });
+  if (preflight) throw preflight;
 
   // One non-terminal recovery per device (W04a). DR dispatch records this as
   // a failedDispatches entry rather than throwing past the group.

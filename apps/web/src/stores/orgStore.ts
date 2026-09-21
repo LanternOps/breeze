@@ -5,6 +5,7 @@ import { fetchWithAuth, registerOrgIdProvider } from './auth';
 import { isGlobalScopeRoute } from '../lib/routeScope';
 import { fetchAllOrganizations } from '../lib/fetchAllOrganizations';
 import { fetchAllPages } from '../lib/fetchAllPages';
+import { sortByDisplayName } from '../lib/sortByDisplayName';
 
 export interface Partner {
   id: string;
@@ -344,12 +345,17 @@ export const useOrgStore = create<OrgState>()(
             }
             return body;
           }, { aliasKeys: ['sites'] }) ?? [];
+          // The server orders by created_at,id, never by name (G2-2, #6459) —
+          // this fetch bypasses fetchAllSites (it needs the enrollmentDefaults
+          // side channel above), so it must sort independently rather than
+          // inherit the shared helper's sort.
+          const sortedSites = sortByDisplayName(sites);
           // Absent when the settings read soft-failed server side — keep the
           // previous value rather than blanking a good one.
           const enrollmentDefaults = (rawEnrollmentDefaults ??
             get().enrollmentDefaults) as ResolvedEnrollmentDefaults | null;
           set({
-            sites,
+            sites: sortedSites,
             enrollmentDefaults,
             isLoading: false
           });

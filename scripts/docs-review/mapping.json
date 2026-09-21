@@ -420,7 +420,8 @@
     {
       "pattern": "apps/api/src/jobs/staleCommandReaper.ts",
       "docs": [
-        "agents/commands.mdx"
+        "agents/commands.mdx",
+        "backup/troubleshooting.mdx"
       ]
     },
     {
@@ -2965,6 +2966,49 @@
       ]
     },
     {
+      "pattern": "apps/web/src/components/backup/VMRestoreWizard.tsx",
+      "docs": [
+        "backup/bare-metal-recovery.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/bareMetalRecoveryService.ts",
+      "docs": [
+        "backup/bare-metal-recovery.mdx",
+        "backup/disaster-recovery.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/drBareMetalRebuildStep.ts",
+      "docs": [
+        "backup/disaster-recovery.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/backupObjectKey.ts",
+      "docs": [
+        "backup/bare-metal-recovery.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/backupSnapshotFileIndex.ts",
+      "docs": [
+        "backup/bare-metal-recovery.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/recoveryCapabilities.ts",
+      "docs": [
+        "backup/bare-metal-recovery.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/recoveryDownloadService.ts",
+      "docs": [
+        "backup/bare-metal-recovery.mdx"
+      ]
+    },
+    {
       "pattern": "apps/api/src/routes/backup/encryption.ts",
       "docs": [
         "backup/encryption.mdx"
@@ -4111,6 +4155,57 @@
       "pattern": "apps/api/src/services/snmpOidSpecs.ts",
       "docs": [
         "features/discovery.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/topology/**",
+      "docs": [
+        "features/discovery.mdx",
+        "reference/api.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/topology/**",
+      "docs": [
+        "features/discovery.mdx",
+        "reference/api.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/topology/**",
+      "docs": [
+        "features/discovery.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/collectors/networkcontext/**",
+      "docs": [
+        "features/discovery.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/networkdiagnostic/**",
+      "docs": [
+        "features/discovery.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/monitorDefinitions*.ts",
+      "docs": [
+        "features/monitors.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/monitors/**",
+      "docs": [
+        "features/monitors.mdx",
+        "features/alerts.mdx"
+      ]
+    },
+    {
+      "pattern": "packages/shared/src/validators/monitors.ts",
+      "docs": [
+        "features/monitors.mdx"
       ]
     }
   ]

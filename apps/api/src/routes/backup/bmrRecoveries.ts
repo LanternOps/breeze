@@ -9,6 +9,7 @@ import { zValidator } from '../../lib/validation';
 import { and, desc, eq, gt, isNull } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
 import {
+  backupSnapshots,
   bareMetalRecoveries,
   devices,
   recoveryTokens,
@@ -34,12 +35,17 @@ import {
   reissueRecoveryCode,
 } from '../../services/bareMetalRecoveryService';
 import {
+  asRecord,
   buildAuthenticatedBootstrapPayload,
   generateRecoveryToken,
   hashRecoveryToken,
   isValidRecoveryTokenFormat,
   resolveSnapshotProviderConfig,
 } from '../../services/recoveryBootstrap';
+import { negotiateRecoveryCapabilities } from '../../services/recoveryCapabilities';
+import { readSnapshotFileIndexState } from '../../services/backupSnapshotFileIndex';
+import { enqueueSnapshotFileIndexHydration } from '../../jobs/backupSnapshotFileIndexWorker';
+import { normalizeStorageIdentity } from '../../jobs/backupRetention';
 import { enforcePublicRateLimit, enforceTokenRateLimit, runInRecoveryOrgContext } from './bmr';
 import {
   bmrExchangeSchema,
@@ -141,7 +147,8 @@ bmrRecoveryRoutes.post(
         createdBy: auth.user?.id ?? null,
         source: 'route',
       });
-      return c.json({ ...toRecoverySummary(row), code }, 201);
+      const indexState = row.snapshotId ? await readSnapshotFileIndexState(row.snapshotId) : null;
+      return c.json({ ...toRecoverySummary(row), code, fileIndex: { status: indexState?.status ?? 'none' } }, 201);
     } catch (err) {
       if (err instanceof BareMetalRecoveryError) {
         if (err.code === 'snapshot_not_found') return c.json({ error: 'Snapshot not found' }, 404);
@@ -258,9 +265,14 @@ bmrRecoveryRoutes.get(
     }
     const query = c.req.valid('query');
 
+    // W09 (#6464): the web panel shows "preparing file index" while the
+    // token snapshot's server-side index is not yet complete, so each
+    // summary carries the snapshot's file_index_status (null once the
+    // snapshot row is gone — the FK is ON DELETE SET NULL).
     const rows = await db
-      .select()
+      .select({ row: bareMetalRecoveries, fileIndexStatus: backupSnapshots.fileIndexStatus })
       .from(bareMetalRecoveries)
+      .leftJoin(backupSnapshots, eq(backupSnapshots.id, bareMetalRecoveries.snapshotId))
       .where(
         and(
           eq(bareMetalRecoveries.orgId, orgId),
@@ -270,7 +282,9 @@ bmrRecoveryRoutes.get(
       .orderBy(desc(bareMetalRecoveries.createdAt))
       .limit(query.limit);
 
-    return c.json({ data: rows.map(toRecoverySummary) });
+    return c.json({
+      data: rows.map(({ row, fileIndexStatus }) => ({ ...toRecoverySummary(row), fileIndexStatus: fileIndexStatus ?? null })),
+    });
   }
 );
 
@@ -312,9 +326,17 @@ async function buildRecoveryExchangeBootstrap(
     expiresAt: Date;
     authenticatedAt: Date | null;
   },
-  recovery: { id: string; identity: 'original' | 'new'; deviceId: string; snapshotId: string | null; nonce: string }
+  recovery: { id: string; identity: 'original' | 'new'; deviceId: string; snapshotId: string | null; nonce: string },
+  negotiated?: {
+    grantedCapabilities: string[];
+    fileIndex: { status: 'complete'; manifestSha256: string; externalCount: number; originSnapshotIds: string[] } | null;
+  },
+  // W09 (#6464) Task 5: the exchange handler already resolved this once for
+  // capability negotiation — pass it through so this function doesn't issue
+  // a SECOND resolveSnapshotProviderConfig call for the same snapshot.
+  preResolvedSnapshot?: Awaited<ReturnType<typeof resolveSnapshotProviderConfig>>
 ) {
-  const resolvedSnapshot = await resolveSnapshotProviderConfig(tokenRow.snapshotId);
+  const resolvedSnapshot = preResolvedSnapshot !== undefined ? preResolvedSnapshot : await resolveSnapshotProviderConfig(tokenRow.snapshotId);
   const snapshot = resolvedSnapshot?.snapshot ?? null;
   const config = resolvedSnapshot?.config ?? null;
   if (!snapshot) {
@@ -384,6 +406,8 @@ async function buildRecoveryExchangeBootstrap(
     requestUrl: c.req.url,
     tokenExpiresAt: tokenRow.expiresAt,
     recovery,
+    grantedCapabilities: negotiated?.grantedCapabilities,
+    fileIndex: negotiated?.fileIndex,
   });
 }
 
@@ -431,7 +455,61 @@ bmrRecoveryPublicRoutes.post(
       return c.json({ error: 'code_invalid' }, 404);
     }
 
+    const { capabilities: clientCapabilities } = c.req.valid('json');
+
     return runInRecoveryOrgContext(rec.orgId, async () => {
+      // W09 (#6464) Task 5: capability negotiation runs BEFORE the code is
+      // claimed (the db.transaction() below) — an incompatible or
+      // not-yet-ready client is refused here, before codeUsedAt is written
+      // and before any recoveryTokens row is minted.
+      const indexState = rec.snapshotId ? await readSnapshotFileIndexState(rec.snapshotId) : null;
+      const resolvedSnapshot = rec.snapshotId ? await resolveSnapshotProviderConfig(rec.snapshotId) : null;
+      // Same rationale as bmr.ts's authenticate handler: use
+      // resolvedSnapshot.providerConfig directly, not a second independent
+      // read through resolvedSnapshot.config?.providerConfig — the two
+      // identity gates (authenticate vs. exchange) must never be able to
+      // disagree.
+      const resolvedIdentity = resolvedSnapshot?.providerType
+        ? normalizeStorageIdentity(resolvedSnapshot.providerType, asRecord(resolvedSnapshot.providerConfig))
+        : null;
+      const negotiation = negotiateRecoveryCapabilities({
+        clientCapabilities,
+        previouslyNegotiated: null, // exchange always mints a FRESH token — nothing to downgrade from
+        referencedFiles: indexState?.referencedFiles ?? null,
+        storageIdentity: resolvedSnapshot?.snapshot.storageIdentity ?? null,
+        resolvedProviderIdentity: resolvedIdentity,
+        fileIndex: {
+          status: indexState?.status ?? 'none',
+          manifestSha256: indexState?.manifestSha256 ?? null,
+          externalCount: indexState?.externalCount ?? null,
+          originSnapshotIds: indexState?.originSnapshotIds ?? [],
+          error: indexState?.error ?? null,
+          retryable: indexState?.retryable ?? false,
+        },
+      });
+      if (negotiation.enqueueHydration && rec.snapshotId) {
+        await enqueueSnapshotFileIndexHydration(rec.snapshotId, 'exchange');
+      }
+      if (!negotiation.ok) {
+        writeAuditEvent(c, {
+          orgId: rec.orgId,
+          action: 'bmr.recovery.exchange',
+          resourceType: 'bare_metal_recovery',
+          resourceId: rec.id,
+          result: 'failure',
+          details: { reason: negotiation.error },
+        });
+        return c.json(
+          {
+            error: negotiation.error,
+            message: negotiation.message,
+            ...(negotiation.retryAfterSeconds !== undefined ? { retryAfterSeconds: negotiation.retryAfterSeconds } : {}),
+            ...(negotiation.details ? { details: negotiation.details } : {}),
+          },
+          409
+        );
+      }
+
       const plainToken = generateRecoveryToken();
       const tokenHash = hashRecoveryToken(plainToken);
       const nonce = generateRecoveryNonce();
@@ -463,6 +541,7 @@ bmrRecoveryPublicRoutes.post(
               authenticatedAt: now,
               createdBy: rec.createdBy,
               expiresAt: new Date(now.getTime() + 24 * 3600 * 1000),
+              ...(negotiation.granted.length > 0 ? { negotiatedCapabilities: negotiation.granted } : {}),
             })
             .returning();
           if (!t) {
@@ -508,13 +587,19 @@ bmrRecoveryPublicRoutes.post(
         throw err;
       }
 
-      const bootstrap = await buildRecoveryExchangeBootstrap(c, tokenRow!, {
-        id: rec.id,
-        identity: rec.identity as 'original' | 'new',
-        deviceId: rec.deviceId,
-        snapshotId: rec.snapshotId,
-        nonce,
-      });
+      const bootstrap = await buildRecoveryExchangeBootstrap(
+        c,
+        tokenRow!,
+        {
+          id: rec.id,
+          identity: rec.identity as 'original' | 'new',
+          deviceId: rec.deviceId,
+          snapshotId: rec.snapshotId,
+          nonce,
+        },
+        { grantedCapabilities: negotiation.granted, fileIndex: negotiation.fileIndex },
+        resolvedSnapshot
+      );
       if ('error' in bootstrap) {
         return c.json(bootstrap, 409);
       }

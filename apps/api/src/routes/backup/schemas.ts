@@ -291,6 +291,7 @@ export const bmrCreateTokenSchema = z.object({
 
 export const bmrAuthenticateSchema = z.object({
   token: z.string().min(1),
+  capabilities: z.array(z.string().min(1).max(64)).max(16).optional(),
 });
 
 export const bmrRecoveryDownloadSchema = z.object({
@@ -320,14 +321,38 @@ export const bmrRecoveryListSchema = z.object({
 // case), so this schema only needs to keep the request body itself small.
 export const bmrExchangeSchema = z.object({
   code: z.string().min(1).max(32),
+  capabilities: z.array(z.string().min(1).max(64)).max(16).optional(),
 });
+
+// W09a (#6464) Task 6: bound the agent-reported `result` payload so an
+// unbounded or malformed report never reaches the handler. 768 KiB matches
+// the agent's own total-body bound (see Part 0 "Bounded reporting") so a
+// maximally-sized agent report is never rejected by the server, while
+// `failedFilesSample` is capped independently at 50 entries — the agent
+// itself only ever samples up to that many, so a larger array indicates a
+// non-conforming or malicious client.
+const bmrProgressResultSchema = z
+  .any()
+  .superRefine((value, ctx) => {
+    if (JSON.stringify(value ?? null).length > 768 * 1024) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'result payload too large (max 768KB serialized)' });
+    }
+  })
+  .refine(
+    (value) => {
+      if (!value || typeof value !== 'object' || !('failedFilesSample' in value)) return true;
+      const sample = (value as Record<string, unknown>).failedFilesSample;
+      return Array.isArray(sample) && sample.length <= 50 && sample.every((entry) => typeof entry === 'string' && entry.length <= 4096);
+    },
+    { message: 'failedFilesSample must be at most 50 string entries of at most 4096 characters each' },
+  );
 
 export const bmrProgressSchema = z.object({
   token: z.string().min(1),
   status: z.enum(['media_booted', 'planned', 'restoring', 'validated', 'rebooted', 'failed', 'refused']),
   target: z.record(z.string(), z.any()).optional(),
   plan: z.any().optional(),
-  result: z.any().optional(),
+  result: bmrProgressResultSchema.optional(),
   reason: z.string().max(2000).optional(),
   warnings: z.array(z.string().max(2000)).max(64).optional(),
 });

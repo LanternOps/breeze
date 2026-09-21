@@ -277,6 +277,24 @@ describe('SystemCleanupPanel', () => {
     expect(screen.getByTestId('system-cleanup-run')).toBeDisabled();
   });
 
+  // G3-1 (v0.114.0->main pass-3 paper cut): the initial POST that queues the
+  // catalog check can itself 409 agent_update_required (before there is ever
+  // a commandId to poll), which goes through runAction — the toast must say
+  // the same human-readable thing as the banner, not the raw error token.
+  it('toasts the human-readable agent-update copy, not the raw error code, on Check available actions', async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      json({ success: false, error: 'agent_update_required', minAgentVersion: '0.115.0' }, 409),
+    );
+    render(<SystemCleanupPanel deviceId={DEVICE} />);
+    fireEvent.click(screen.getByTestId('system-cleanup-check'));
+
+    await screen.findByTestId('system-cleanup-agent-update');
+    expect(showToast).toHaveBeenCalled();
+    const toastArg = showToast.mock.calls[0][0] as { message: string };
+    expect(toastArg.message).not.toContain('agent_update_required');
+    expect(toastArg.message).toContain("Update this device's agent to version 0.115.0 or later");
+  });
+
   // runAction toasts every non-401 failure; the panel must not swallow it.
   it('surfaces a failed list request', async () => {
     fetchWithAuthMock.mockResolvedValue(json({ success: false, error: 'Device is offline' }, 500));

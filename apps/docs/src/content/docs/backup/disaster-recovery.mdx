@@ -37,11 +37,36 @@ Recovery groups define which devices to recover and in what order. Groups execut
 3. Configure the group:
    - **Name** — e.g., "Domain Controllers", "Database Servers", "Application Tier"
    - **Devices** — select which devices belong to this group
-   - **Restore configuration** — how to restore each device (snapshot, target path, etc.)
+   - **Step type** — how to restore each device in the group; see [Step Types](#step-types) below
    - **Sequence order** — execution priority (lower numbers run first)
    - **Dependencies** — optionally set a group to depend on another group completing first
 4. Repeat for each recovery tier.
 </Steps>
+
+### Step Types
+
+Every recovery group has one step type, which determines how its devices are restored:
+
+| Step type | What it does |
+|---|---|
+| VM restore from backup | Restores the snapshot as a new Hyper-V virtual machine. |
+| VM instant boot | Boots a VM directly from backup storage while data migrates to the host in the background. |
+| Hyper-V restore | Restores a Hyper-V export/backup back onto a Hyper-V host. |
+| SQL Server restore | Restores a SQL Server backup chain. |
+| Bare-metal recover (boot media) | Boots the device from [Breeze recovery media](/backup/bare-metal-recovery/#recover-from-breeze-recovery-media) and enters a recovery code. |
+| Bare-metal rebuild (rebuild engine) | Runs the [rebuild engine](/backup/bare-metal-recovery/#rebuilding-a-linux-disk-from-scratch-breeze-backup-rebuild) against a Linux rebuild host. See [Bare-metal rebuild step](#bare-metal-rebuild-step) below. |
+
+#### Bare-metal rebuild step
+
+The **bare-metal rebuild** step type behaves differently depending on the execution type:
+
+- **Rehearsal** — rebuilds each group device's latest **bare-metal restorable** snapshot into a VHDX image on a rebuild host, without touching production hardware. Configure:
+  - **Rebuild host** — the online Linux device (with `qemu-utils` installed) that runs the rehearsal rebuilds.
+  - **Output directory** — where the rebuild host writes one VHDX image per device.
+  - **Wait timeout (minutes)** — how long to wait for each device's rebuild to check in before the step is marked failed.
+- **Failover** and **Failback** — boot each group device from Breeze recovery media instead, restoring it in place with its original device identity. The rebuild host and output directory settings are only used for rehearsals.
+
+Each device recovers from its own latest snapshot marked **Bare-metal restorable**; a device with no such snapshot fails the step with a specific "no restorable snapshot" error rather than a generic one. During execution, the per-device recovery status is shown in the execution view, where you can also **Reissue code** (rotate an unused recovery code) or **Cancel recovery** for a device that's in progress.
 
 ### Example Recovery Order
 
@@ -77,6 +102,8 @@ Recovery groups define which devices to recover and in what order. Groups execut
 4. Recovery groups execute in sequence order. Track progress in the execution detail view.
 5. To stop a running execution, click **Abort**.
 </Steps>
+
+If a group can't start, the execution error names the specific missing prerequisite — for example, no restorable snapshot for a device, or no valid recovery source — instead of a generic error, so you know exactly what to fix before retrying.
 
 ### Viewing Execution History
 

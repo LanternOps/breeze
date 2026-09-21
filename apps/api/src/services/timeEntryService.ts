@@ -1380,7 +1380,10 @@ export async function getTimesheet(userId: string, weekStart: Date, accessibleOr
     day.entries.push(entry);
     const minutes = entry.durationMinutes ?? 0;
     day.totalMinutes += minutes;
-    if (entry.isBillable) day.billableMinutes += minutes;
+    // Billed quantity (§3.5): COALESCE(billable_minutes, duration_minutes),
+    // same rule as the money loop below — NOT actual duration. totalMinutes
+    // above deliberately stays on actual minutes (utilization).
+    if (entry.isBillable) day.billableMinutes += (entry.billableMinutes ?? entry.durationMinutes) ?? 0;
   }
   const allDays = [...days.values()];
   const money = new Map<string, number>();

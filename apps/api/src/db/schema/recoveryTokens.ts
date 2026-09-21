@@ -2,6 +2,7 @@ import {
   pgTable,
   uuid,
   varchar,
+  text,
   timestamp,
   jsonb,
   index,
@@ -43,6 +44,10 @@ export const recoveryTokens = pgTable(
     authenticatedAt: timestamp('authenticated_at'),
     completedAt: timestamp('completed_at'),
     usedAt: timestamp('used_at'),
+    // W09 (#6464): capabilities the server GRANTED this token at
+    // authenticate/exchange (services/recoveryCapabilities.ts). NULL for a
+    // legacy token or a negotiation that granted nothing.
+    negotiatedCapabilities: text('negotiated_capabilities').array(),
     ...recoveryAuthorizationSubjectColumns(),
   },
   (table) => ({

@@ -2407,7 +2407,7 @@ describe('money readers read COALESCE(billable_minutes, duration_minutes) (#4628
     expect(totalsByCurrency).toEqual([{ currencyCode: 'USD', amount: '0.00' }]);
   });
 
-  it('the timesheet bills the minimum but reports ACTUAL minutes in day totals', async () => {
+  it('the timesheet bills the minimum, reporting ACTUAL minutes for totalMinutes and the BILLED quantity for billableMinutes', async () => {
     dbMocks.selectResults.push([{
       id: 'te-1', startedAt: new Date('2026-03-03T09:00:00Z'),
       durationMinutes: 20, billableMinutes: 60,
@@ -2417,8 +2417,9 @@ describe('money readers read COALESCE(billable_minutes, duration_minutes) (#4628
     expect(sheet.totals.billableAmounts).toEqual([{ currencyCode: 'USD', amount: '225.00' }]);
     // Utilization is about time WORKED (§3.5).
     expect(sheet.totals.totalMinutes).toBe(20);
-    expect(sheet.totals.billableMinutes).toBe(20);
     expect(sheet.days[1]!.totalMinutes).toBe(20);
+    // billableMinutes is the BILLED quantity (G2-1 fix) — matches the money loop.
+    expect(sheet.totals.billableMinutes).toBe(60);
   });
 
   it('the timesheet selection carries billable_minutes to the client', async () => {
@@ -2436,5 +2437,28 @@ describe('money readers read COALESCE(billable_minutes, duration_minutes) (#4628
     const sheet = await getTimesheet('u-1', new Date('2026-03-02T00:00:00Z'));
     expect(sheet.totals.billableAmounts).toEqual([]);
     expect(sheet.totals.billableMinutes).toBe(45);
+  });
+
+  it('the day/week billableMinutes aggregate sums the BILLED quantity, not actual duration (G2-1)', async () => {
+    dbMocks.selectResults.push([
+      {
+        id: 'te-1', startedAt: new Date('2026-03-03T09:00:00Z'),
+        durationMinutes: 10, billableMinutes: 30,
+        isBillable: true, hourlyRate: null, currencyCode: 'USD',
+      },
+      {
+        id: 'te-2', startedAt: new Date('2026-03-03T11:00:00Z'),
+        durationMinutes: 40, billableMinutes: 45,
+        isBillable: true, hourlyRate: null, currencyCode: 'USD',
+      },
+    ]);
+    const sheet = await getTimesheet('u-1', new Date('2026-03-02T00:00:00Z'));
+    // Utilization stays on actual minutes worked.
+    expect(sheet.totals.totalMinutes).toBe(50);
+    expect(sheet.days[1]!.totalMinutes).toBe(50);
+    // Billed quantity: 30 + 45 = 75, matching the same COALESCE(billable_minutes,
+    // duration_minutes) rule the money loop already uses — not 10 + 40 = 50.
+    expect(sheet.totals.billableMinutes).toBe(75);
+    expect(sheet.days[1]!.billableMinutes).toBe(75);
   });
 });

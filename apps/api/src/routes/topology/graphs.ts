@@ -7,6 +7,7 @@ import {
   getTopologyHealth, getTopologyReadEtag, evidenceQuerySchema, healthQuerySchema,
 } from '../../services/topology/graph';
 import { requireTopologySiteCapability } from './middleware';
+import { siteScopedQuery } from './query';
 
 export const topologyGraphRoutes = new Hono();
 function read(handler: (c: Context) => Promise<object>, sensitive = false) {
@@ -32,20 +33,21 @@ function parse<T>(schema: { safeParse(value: unknown): { success: true; data: T 
   if (!result.success) throw new GraphReadError('invalid_topology_query', 400, 'Invalid topology query');
   return result.data;
 }
+const scopedQuery = (c: Context) => siteScopedQuery(c, (message) => new GraphReadError('invalid_topology_query', 400, message));
 const base = '/sites/:siteId';
 const authorized = requireTopologySiteCapability('read');
-topologyGraphRoutes.get(`${base}/graph`, authorized, read((c) => getTopologyGraph(c.get('topologyContext'), parse(graphQuerySchema, c.req.query()))));
-topologyGraphRoutes.get(`${base}/nodes`, authorized, read((c) => listTopologyNodes(c.get('topologyContext'), parse(nodeListQuerySchema, c.req.query()))));
+topologyGraphRoutes.get(`${base}/graph`, authorized, read((c) => getTopologyGraph(c.get('topologyContext'), parse(graphQuerySchema, scopedQuery(c)))));
+topologyGraphRoutes.get(`${base}/nodes`, authorized, read((c) => listTopologyNodes(c.get('topologyContext'), parse(nodeListQuerySchema, scopedQuery(c)))));
 topologyGraphRoutes.get(`${base}/nodes/:nodeId`, authorized, read((c) => getTopologyNode(c.get('topologyContext'), c.req.param('nodeId') ?? '')));
 topologyGraphRoutes.get(`${base}/relationships/:relationshipId`, authorized, read((c) => getTopologyRelationship(c.get('topologyContext'), c.req.param('relationshipId') ?? '')));
-topologyGraphRoutes.get(`${base}/relationships/:relationshipId/evidence`, authorized, read((c) => getTopologyRelationshipEvidence(c.get('topologyContext'), c.req.param('relationshipId') ?? '', parse(evidenceQuerySchema, c.req.query())), true));
+topologyGraphRoutes.get(`${base}/relationships/:relationshipId/evidence`, authorized, read((c) => getTopologyRelationshipEvidence(c.get('topologyContext'), c.req.param('relationshipId') ?? '', parse(evidenceQuerySchema, scopedQuery(c))), true));
 topologyGraphRoutes.get(`${base}/groups/:nodeId/members`, authorized, read((c) => {
-  const { cursor, ...query } = c.req.query();
+  const { cursor, ...query } = scopedQuery(c);
   return getTopologyGroupMembers(c.get('topologyContext'), c.req.param('nodeId') ?? '', parse(graphQuerySchema, query), cursor);
 }));
 topologyGraphRoutes.get(`${base}/expansions/:token`, authorized, read((c) => expandTopologyGraph(c.get('topologyContext'), c.req.param('token') ?? '')));
 topologyGraphRoutes.get(`${base}/health`, authorized, read((c) => {
-  const query = c.req.query();
+  const query = scopedQuery(c);
   const keys = Object.keys(query);
   if (keys.some((key) => !['nodeIds', 'relationshipIds', 'graphRevision'].includes(key))) throw new GraphReadError('invalid_topology_query', 400, 'Invalid topology query');
   return getTopologyHealth(c.get('topologyContext'), parse(healthQuerySchema, {

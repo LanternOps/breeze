@@ -177,6 +177,39 @@ export default function MFASettings({
     if (ssoSetupReady) setView('setup');
   }, [ssoSetupReady]);
 
+  // G4-14: registering the FIRST passkey (first-factor enrollment) is driven
+  // entirely from outside this component — ProfilePage's own passkey card —
+  // and the API hands back one-time recovery codes on that write exactly like
+  // /mfa/enable does. But this component only ever reveals codes through a
+  // `view` transition ITS OWN handlers drive (handleEnableSubmit,
+  // handleEnableSms, handleRegenerateCodes); nothing here ever heard about the
+  // passkey write, so the codes arrived in the `recoveryCodes` prop and were
+  // never shown — a lockout risk if the authenticator is later lost.
+  //
+  // Mirror the TOTP/SMS enable contract: the moment a NEW, non-empty
+  // `recoveryCodes` array shows up for a passkey-first-factor account while
+  // this panel is otherwise idle, show it once, the same way the codes are
+  // shown here everywhere else. Keyed on array identity (`recoveryCodesRef`)
+  // so navigating back to `status` afterwards — or a second passkey add that
+  // returns no codes — never re-triggers it.
+  const recoveryCodesRef = useRef(recoveryCodes);
+  useEffect(() => {
+    if (
+      recoveryCodes?.length
+      && recoveryCodes !== recoveryCodesRef.current
+      && view === 'status'
+      && currentMethod === 'passkey'
+    ) {
+      setShowCodes(true);
+      setView('recovery');
+      // Advance the ref only when the codes were actually shown. Advancing it
+      // on every run would record codes that arrived while the guard failed
+      // (panel on another view, method not yet 'passkey') as "seen" and never
+      // render them — the same lockout this effect exists to prevent.
+      recoveryCodesRef.current = recoveryCodes;
+    }
+  }, [recoveryCodes, view, currentMethod]);
+
   const resetDigits = () => {
     setDigits(Array(DIGIT_COUNT).fill(''));
   };

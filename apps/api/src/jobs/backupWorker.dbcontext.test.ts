@@ -156,6 +156,10 @@ describe('processDispatchBackup DB-context scoping (final-review fix, #4084/#110
         // no eligible base for these depth-scoping tests (irrelevant to what
         // this file asserts).
         rows = []; label = 'baseCandidateSelect';
+      } else if (keys.includes('retirementId')) {
+        // #6351: fallback-reason probe -- runs in the same transaction as the
+        // (empty) candidate select and only feeds the log line.
+        rows = []; label = 'baseFallbackProbeSelect';
       } else if (keys.length === 1 && keys[0] === 'id') {
         rows = []; label = 'baseLockOrRetirementSelect';
       } else {
@@ -238,6 +242,7 @@ describe('processDispatchBackup DB-context scoping (final-review fix, #4084/#110
       // context (no eligible base -> one candidate select, one update).
       'baseCandidateSelect@depth1',
       'update@depth1',
+      'baseFallbackProbeSelect@depth1',
       'recordExpectation@depth1',
       'ctx:exit',
       // Phase 4: the actual send, NO context held. This is the #1105 fix —
@@ -328,6 +333,7 @@ describe('processDispatchBackup DB-context scoping (final-review fix, #4084/#110
       // context (no eligible base -> one candidate select, one update).
       'baseCandidateSelect@depth1',
       'update@depth1',
+      'baseFallbackProbeSelect@depth1',
       'recordExpectation@depth1',
       'ctx:exit',
       'ctx:enter',

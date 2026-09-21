@@ -15,7 +15,12 @@ export class PartnerSendingDomainsPage extends BasePage {
   url = '/settings/partner#sending-domains';
 
   root = () => this.page.getByTestId('partner-sending-domains-tab');
-  navTab = () => this.page.getByTestId('settings-nav-tab-sending-domains');
+  // `SettingsSectionNav` emits `<testIdPrefix>-tab-<key>`, and PartnerSettingsPage
+  // passes testIdPrefix="partner-settings" with the camelCase TabKey — so the id
+  // is `partner-settings-tab-sendingDomains`, NOT the hash-cased spelling. The
+  // old `settings-nav-tab-sending-domains` existed nowhere in the app, so this
+  // assertion could never pass and the spec timed out on every CI run.
+  navTab = () => this.page.getByTestId('partner-settings-tab-sendingDomains');
 
   addInput = () => this.page.getByTestId('sending-domains-add-input');
   addSubmit = () => this.page.getByTestId('sending-domains-add-submit');
@@ -31,6 +36,12 @@ export class PartnerSendingDomainsPage extends BasePage {
   checkNow = (id: string) => this.page.getByTestId(`sending-domain-${id}-check`);
   retry = (id: string) => this.page.getByTestId(`sending-domain-${id}-retry`);
   remove = (id: string) => this.page.getByTestId(`sending-domain-${id}-remove`);
+  /**
+   * Removal confirms through the app's OWN modal, not a native `confirm()` —
+   * so a `page.on('dialog')` handler never fires and the DELETE is never sent.
+   * Click this after `remove()`.
+   */
+  removeConfirm = () => this.page.getByTestId('sending-domains-remove-confirm');
   failedReason = (id: string) => this.page.getByTestId(`sending-domain-${id}-failed`);
   testSubmit = (id: string) => this.page.getByTestId(`sending-domain-${id}-test-submit`);
   testResult = (id: string) => this.page.getByTestId(`sending-domain-${id}-test-result`);

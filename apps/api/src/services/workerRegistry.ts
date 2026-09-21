@@ -920,6 +920,14 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    name: 'backupSnapshotFileIndexWorker',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/backupSnapshotFileIndexWorker');
+      return { init: m.initializeBackupSnapshotFileIndexWorker, shutdown: m.shutdownBackupSnapshotFileIndexWorker };
+    },
+  },
+  {
     name: 'sensitiveDataWorker',
     placement: 'socket-owner',
     load: async () => {

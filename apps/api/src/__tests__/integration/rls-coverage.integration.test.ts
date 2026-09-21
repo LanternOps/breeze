@@ -896,6 +896,7 @@ const PARENT_FK_JOIN_POLICY_TABLES: ReadonlyMap<string, readonly string[]> = new
   ['config_policy_event_log_settings', ['configuration_policies']],
   ['dashboard_widgets', ['analytics_dashboards']],
   ['backup_snapshot_files', ['backup_snapshots']],
+  ['backup_snapshot_origins', ['backup_snapshots']],
   // psa_ticket_mappings already shipped a correct single-table-join policy
   // (2026-04-11-bucket-c-dead-cleanup-rls.sql) but had no org_id column and was
   // never allowlisted, so the contract test couldn't see it. Register it so a

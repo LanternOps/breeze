@@ -34,7 +34,10 @@ vi.mock('../../db/schema', () => ({
     helperTokenHash: 'devices.helperTokenHash',
     previousHelperTokenHash: 'devices.previousHelperTokenHash',
     previousHelperTokenExpiresAt: 'devices.previousHelperTokenExpiresAt',
+    pendingHelperTokenHash: 'devices.pendingHelperTokenHash',
+    pendingTokenExpiresAt: 'devices.pendingTokenExpiresAt',
     status: 'devices.status',
+    agentTokenSuspendedAt: 'devices.agentTokenSuspendedAt',
   },
   organizations: {
     id: 'organizations.id',
@@ -53,6 +56,14 @@ vi.mock('drizzle-orm', () => ({
 
 vi.mock('../../middleware/agentAuth', () => ({
   matchAgentTokenHash: vi.fn(() => true),
+}));
+
+// helperAuth now runs the shared device-credential lifecycle gate, whose tenant
+// check hits the real `services/tenantStatus` (and therefore the mocked db).
+// Stub it as an active tenant; the lifecycle denials are covered by
+// middleware/helperAuth.test.ts and helperAuthLifecycle.integration.test.ts.
+vi.mock('../../services/tenantStatus', () => ({
+  getAgentTenantState: vi.fn(async () => 'active'),
 }));
 
 vi.mock('../../services/helperPermissions', () => ({
