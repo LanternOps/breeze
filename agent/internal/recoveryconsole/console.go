@@ -35,8 +35,14 @@ type Deps struct {
 	MediaSources func() ([]string, error)
 	Rebuild      func(ctx context.Context, opts rebuild.Options) (*rebuild.Result, error)
 	Provider     func(ctx context.Context, server, token string, bs *bmr.BootstrapResponse) (providers.BackupProvider, error)
-	Progress     func(ctx context.Context, server, token string, u bmr.ProgressUpdate) error
-	Power        func(action string) error // "reboot" | "poweroff"
+	// WidenScope (W09, #6464) runs once after Provider and BEFORE the
+	// DryRun: it downloads the manifest, verifies the server's file index
+	// and widens the provider's admissible set with the exact external
+	// keys — or returns *bmr.ScopeRefusalError, which the console posts
+	// as `refused` before any target write. nil = no scope gate (tests).
+	WidenScope func(ctx context.Context, provider providers.BackupProvider, bs *bmr.BootstrapResponse) error
+	Progress   func(ctx context.Context, server, token string, u bmr.ProgressUpdate) error
+	Power      func(action string) error // "reboot" | "poweroff"
 	// Shell drops the operator into a root shell (the "[s]hell" failure
 	// option). Not part of the plan's published Deps table (it lists only
 	// the seams the console_test.go table exercises), but a real Console
@@ -236,6 +242,24 @@ func (c *Console) Run(ctx context.Context) error {
 	provider, err := c.Deps.Provider(ctx, server, token, bs)
 	if err != nil {
 		return fmt.Errorf("configure backup provider: %w", err)
+	}
+	if c.Deps.WidenScope != nil {
+		if err := c.Deps.WidenScope(ctx, provider, bs); err != nil {
+			var scopeErr *bmr.ScopeRefusalError
+			if errors.As(err, &scopeErr) {
+				c.postProgress(ctx, server, token, bmr.ProgressUpdate{Status: "refused", Reason: scopeErr.Error()})
+				c.IO.Print("Recovery cannot proceed: %s\n", scopeErr.Error())
+				action, err := c.offerFailureOptions(ci)
+				if err != nil {
+					return err
+				}
+				if action == "poweroff" {
+					return powerAndHold("poweroff")
+				}
+				return scopeErr
+			}
+			return fmt.Errorf("verify download scope: %w", err)
+		}
 	}
 
 	baseOpts := rebuild.Options{

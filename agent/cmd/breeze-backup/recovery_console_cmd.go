@@ -203,6 +203,7 @@ func newRecoveryConsoleCommand() *cobra.Command {
 					MediaSources: sys.RootSources,
 					Rebuild:      rebuild.Run,
 					Provider:     bmr.NewRecoveryProvider,
+					WidenScope:   bmr.WidenScopeFromManifest,
 					Progress:     bmr.PostRecoveryProgress,
 					Shell:        runRecoveryShell,
 					AcquireLock: func(ctx context.Context) (func(), error) {

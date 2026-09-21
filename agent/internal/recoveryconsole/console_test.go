@@ -68,6 +68,7 @@ type fakeDeps struct {
 	collectFn  func(ctx context.Context) (*layout.Manifest, error)
 	mediaFn    func() ([]string, error)
 	rebuildFn  func(ctx context.Context, opts rebuild.Options) (*rebuild.Result, error)
+	widenFn    func(ctx context.Context, provider providers.BackupProvider, bs *bmr.BootstrapResponse) error
 
 	rebuildCalls  []rebuild.Options
 	progressCalls []bmr.ProgressUpdate
@@ -92,6 +93,7 @@ func (f *fakeDeps) build(version string) Deps {
 		Provider: func(ctx context.Context, server, token string, bs *bmr.BootstrapResponse) (providers.BackupProvider, error) {
 			return nil, nil
 		},
+		WidenScope: f.widenFn,
 		Progress: func(ctx context.Context, server, token string, u bmr.ProgressUpdate) error {
 			f.progressCalls = append(f.progressCalls, u)
 			return f.progressErr
@@ -878,5 +880,64 @@ func TestConsole_StorageIdentityDriftShowsMessageVerbatim(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "destination for this device has changed") {
 		t.Fatalf("error = %q, want it to contain %q", err.Error(), "destination for this device has changed")
+	}
+}
+
+// W09 (#6464): the console gates on the download scope BEFORE the DryRun —
+// a ScopeRefusalError from WidenScope posts `refused`, never calls
+// Rebuild (no target write), and offers the failure menu.
+func TestConsole_ScopeRefusalPostsRefusedBeforeRebuild(t *testing.T) {
+	io := &fakeIO{Answers: []string{"https://breeze.example", "abc-def-ghj", "p"}}
+	deps := &fakeDeps{
+		exchangeFn: happyExchange(t),
+		collectFn:  func(ctx context.Context) (*layout.Manifest, error) { return singleDiskLayout(), nil },
+		rebuildFn: func(ctx context.Context, opts rebuild.Options) (*rebuild.Result, error) {
+			t.Fatal("Rebuild must not run after a scope refusal")
+			return nil, nil
+		},
+		widenFn: func(ctx context.Context, provider providers.BackupProvider, bs *bmr.BootstrapResponse) error {
+			return &bmr.ScopeRefusalError{Reason: "this backup references 3 file(s) stored with earlier snapshots and the server did not grant cross-snapshot downloads", External: 3}
+		},
+	}
+	c := &Console{IO: io, Deps: deps.build("0.111.1"), Cmdline: "breeze.media=1"}
+
+	if err := c.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(deps.rebuildCalls) != 0 {
+		t.Fatalf("rebuild calls = %d, want 0", len(deps.rebuildCalls))
+	}
+	if len(deps.progressCalls) != 1 || deps.progressCalls[0].Status != "refused" || !strings.Contains(deps.progressCalls[0].Reason, "earlier snapshots") {
+		t.Errorf("progress calls = %+v, want one 'refused' naming earlier snapshots", deps.progressCalls)
+	}
+	if strings.Join(deps.powerCalls, ",") != "poweroff" {
+		t.Errorf("power calls = %v, want [poweroff]", deps.powerCalls)
+	}
+}
+
+// A WidenScope success must leave the normal flow untouched (called once,
+// before the DryRun).
+func TestConsole_WidenScopeRunsBeforeDryRun(t *testing.T) {
+	io := &fakeIO{Answers: []string{"https://breeze.example", "abc-def-ghj", "ERASE"}}
+	order := []string{}
+	deps := &fakeDeps{
+		exchangeFn: happyExchange(t),
+		collectFn:  func(ctx context.Context) (*layout.Manifest, error) { return singleDiskLayout(), nil },
+		rebuildFn: func(ctx context.Context, opts rebuild.Options) (*rebuild.Result, error) {
+			order = append(order, "rebuild")
+			return &rebuild.Result{Status: "validated"}, nil
+		},
+		widenFn: func(ctx context.Context, provider providers.BackupProvider, bs *bmr.BootstrapResponse) error {
+			order = append(order, "widen")
+			return nil
+		},
+	}
+	c := &Console{IO: io, Deps: deps.build("0.111.1"), Cmdline: "breeze.media=1"}
+	_ = c.Run(context.Background())
+	if len(order) < 2 || order[0] != "widen" || order[1] != "rebuild" {
+		t.Fatalf("call order = %v, want widen before the first rebuild", order)
+	}
+	if strings.Count(strings.Join(order, ","), "widen") != 1 {
+		t.Fatalf("widen called %d times, want 1", strings.Count(strings.Join(order, ","), "widen"))
 	}
 }
