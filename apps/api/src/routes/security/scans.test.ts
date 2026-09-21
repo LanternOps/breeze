@@ -37,6 +37,14 @@ vi.mock('../../services/commandQueue', () => ({
   queueCommand: vi.fn(async () => undefined),
 }));
 
+const { resolveSecurityScanSettingsForDeviceMock } = vi.hoisted(() => ({
+  resolveSecurityScanSettingsForDeviceMock: vi.fn(async () => null),
+}));
+
+vi.mock('../../services/featureConfigResolver', () => ({
+  resolveSecurityScanSettingsForDevice: resolveSecurityScanSettingsForDeviceMock,
+}));
+
 const { getUserPermissionsMock } = vi.hoisted(() => ({
   getUserPermissionsMock: vi.fn(),
 }));
@@ -60,7 +68,9 @@ vi.mock('../../middleware/auth', async () => {
 });
 
 import { db } from '../../db';
+import { queueCommand } from '../../services/commandQueue';
 import { scansRoutes } from './scans';
+import { SECURITY_SCAN_SETTINGS_DEFAULTS } from '@breeze/shared';
 
 const ORG_ID = '11111111-1111-1111-1111-111111111111';
 const DEVICE_ID = '22222222-2222-2222-2222-222222222222';
@@ -229,5 +239,83 @@ describe('GET /scans/:deviceId — site-scope gate', () => {
 
     // Site gate passed — must not be 403
     expect(res.status).not.toBe(403);
+  });
+});
+
+describe('POST /scan/:deviceId — attaches the device\'s resolved policy settings', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getUserPermissionsMock.mockResolvedValue({
+      permissions: [{ resource: 'devices', action: 'execute' }],
+      allowedSiteIds: undefined,
+    });
+    mockDeviceSelect();
+    vi.mocked(db.insert).mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) } as any);
+  });
+
+  it('attaches the device\'s resolved policy settings to the queued command', async () => {
+    resolveSecurityScanSettingsForDeviceMock.mockResolvedValue({
+      ...SECURITY_SCAN_SETTINGS_DEFAULTS,
+      exclusions: ['C:\\Backups'],
+      maxFileSizeMb: 64,
+      scanTimeoutMinutes: 30,
+      autoQuarantine: false,
+    });
+
+    const res = await app().request(`/security/scan/${DEVICE_ID}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scanType: 'quick' }),
+    });
+
+    expect(res.status).toBe(202);
+    expect(queueCommand).toHaveBeenCalledWith(
+      DEVICE_ID,
+      'security_scan',
+      expect.objectContaining({
+        exclusions: ['C:\\Backups'],
+        maxFileSizeMb: 64,
+        timeoutMinutes: 30,
+        autoQuarantine: false,
+      }),
+      expect.any(String),
+    );
+  });
+
+  it('omits the settings keys entirely when no policy governs the device', async () => {
+    resolveSecurityScanSettingsForDeviceMock.mockResolvedValue(null);
+
+    await app().request(`/security/scan/${DEVICE_ID}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scanType: 'quick' }),
+    });
+
+    const payload = vi.mocked(queueCommand).mock.calls.at(-1)![2];
+    expect(payload).not.toHaveProperty('exclusions');
+    expect(payload).not.toHaveProperty('autoQuarantine');
+  });
+
+  function app(): Hono {
+    return buildApp();
+  }
+});
+
+describe('GET /scans/:deviceId — timed_out filter', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getUserPermissionsMock.mockResolvedValue({
+      permissions: [{ resource: 'devices', action: 'read' }],
+      allowedSiteIds: undefined,
+    });
+  });
+
+  it('accepts timed_out as a scan list filter', async () => {
+    mockDeviceSelect();
+    mockScansSelect();
+    const res = await buildApp().request(`/security/scans/${DEVICE_ID}?status=timed_out`, {
+      method: 'GET',
+    });
+    expect(res.status).not.toBe(400);
   });
 });

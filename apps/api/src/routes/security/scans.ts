@@ -12,6 +12,8 @@ import type { AuthContext } from '../../middleware/auth';
 import type { Context } from 'hono';
 import { deviceIdParamSchema, scanRequestSchema, listScansQuerySchema } from './schemas';
 import { getPagination, paginate, parseDateRange, matchDateRange } from './helpers';
+import { resolveSecurityScanSettingsForDevice } from '../../services/featureConfigResolver';
+import { buildSecurityScanPayload } from '../../jobs/securityScanJobs';
 
 /**
  * Site-scope gate: partner-scope users restricted via `allowedSiteIds` must
@@ -83,15 +85,15 @@ scansRoutes.post(
       initiatedBy: auth.user.id
     });
 
+    // #6263 W01: the effective security policy — resolved in the CALLER'S OWN
+    // RLS context, self-tenanted by the device's hierarchy. `null` means no
+    // policy governs this device, and the agent then uses its own defaults.
+    const settings = await resolveSecurityScanSettingsForDevice(device.id);
+
     await queueCommand(
       device.id,
       CommandTypes.SECURITY_SCAN,
-      {
-        scanRecordId: scanId,
-        scanType: payload.scanType,
-        paths: payload.paths,
-        triggerDefender: true
-      },
+      buildSecurityScanPayload(scanId, payload.scanType, settings, payload.paths),
       auth.user.id
     );
 
