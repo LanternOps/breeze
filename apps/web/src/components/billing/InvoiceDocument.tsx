@@ -12,12 +12,14 @@ import {
   lineTaxAmount,
   lineTitle,
   lineBlurb,
+  lineWorkedVsBilledNote,
   pctFromFraction,
   sellerLines,
 } from './invoiceTypes';
 import { StatusPill } from './shared/StatusPill';
 
 function LineRow({ line, currency, taxRate, showTax }: { line: InvoiceLine; currency: string; taxRate: string | null; showTax: boolean }) {
+  const { t } = useTranslation();
   const child = !!line.parentLineId;
   const tax = showTax ? lineTaxAmount(line.lineTotal, line.taxable, taxRate) : null;
   return (
@@ -25,6 +27,13 @@ function LineRow({ line, currency, taxRate, showTax }: { line: InvoiceLine; curr
       <td className={`px-4 py-3 sm:px-5 ${child ? 'pl-8 text-muted-foreground' : 'text-foreground'}`}>
         <span className={child ? '' : 'font-medium'}>{child ? <span aria-hidden="true">↳ </span> : ''}{lineTitle(line)}</span>
         {lineBlurb(line) && <p className="mt-0.5 text-xs text-muted-foreground">{lineBlurb(line)}</p>}
+        {/* #6467: worked-vs-billed disclosure, sourced from workedMinutes — never
+            from `description`, so editing the description can't erase it. */}
+        {lineWorkedVsBilledNote(line, t) && (
+          <p className="mt-0.5 text-xs text-muted-foreground" data-testid={`invoice-document-line-worked-vs-billed-${line.id}`}>
+            {lineWorkedVsBilledNote(line, t)}
+          </p>
+        )}
       </td>
       <td className="whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground">{line.quantity}</td>
       <td className="whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground">{formatMoney(line.unitPrice, currency)}</td>

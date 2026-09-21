@@ -323,7 +323,9 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
                "device_role","site_id","counted_as","created_at"],
     reviewedIncluded: [], excludedSensitive: [], excludedOpen: [],
   }),
-  "invoice_lines": tablePolicy("org_id", {"included":["id","invoice_id","org_id","source_type","source_id","source_contract_id","catalog_item_id","parent_line_id","ticket_id","name","description","quantity","unit_price","cost_basis","revenue_allocation","taxable","customer_visible","line_total","is_unapproved_time","sort_order","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
+  // worked_minutes (#6467): ordinary numeric fact (worked time for the
+  // worked-vs-billed disclosure) — included, same bucket as quantity.
+  "invoice_lines": tablePolicy("org_id", {"included":["id","invoice_id","org_id","source_type","source_id","source_contract_id","catalog_item_id","parent_line_id","ticket_id","name","description","quantity","unit_price","cost_basis","revenue_allocation","taxable","customer_visible","line_total","is_unapproved_time","worked_minutes","sort_order","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   "invoice_payments": tablePolicy("org_id", {"included":["id","invoice_id","org_id","amount","method","reference","received_at","recorded_by","note","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   // SEC-150 revocation columns. All scalars (enum/text/timestamptz/int/uuid) —
   // no open container, so none is forced into excludedOpen.

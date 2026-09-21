@@ -812,6 +812,10 @@ export type CustomerInvoiceLine = {
   unitPrice: string;
   taxable: boolean;
   lineTotal: string;
+  /** #6467: worked minutes for a time_entry line — the portal renders the
+   *  worked-vs-billed note from this, never from `description`. Null for
+   *  non-time-entry lines and legacy rows predating the column. */
+  workedMinutes: number | null;
 };
 
 type InvoiceRow = typeof invoices.$inferSelect;
@@ -844,6 +848,7 @@ type CustomerInvoiceLineSource = {
   unitPrice: string;
   taxable: boolean;
   lineTotal: string;
+  workedMinutes?: number | null;
 };
 
 /** Explicit serialization boundary: never spread an invoice_lines row here. */
@@ -860,6 +865,7 @@ export function toCustomerInvoiceLine(line: CustomerInvoiceLineSource): Customer
     unitPrice: line.unitPrice,
     taxable: line.taxable,
     lineTotal: line.lineTotal,
+    workedMinutes: line.workedMinutes ?? null,
   };
 }
 
@@ -901,6 +907,7 @@ export async function getCustomerInvoice(
     unitPrice: invoiceLines.unitPrice,
     taxable: invoiceLines.taxable,
     lineTotal: invoiceLines.lineTotal,
+    workedMinutes: invoiceLines.workedMinutes,
   }).from(invoiceLines).leftJoin(tickets, and(
     eq(tickets.id, invoiceLines.ticketId),
     eq(tickets.orgId, inv.orgId),
@@ -1150,7 +1157,7 @@ async function materializeLines(invoiceId: string, orgId: string, specs: DraftLi
     invoiceId, orgId, sourceType: s.sourceType, sourceId: s.sourceId, catalogItemId: s.catalogItemId,
     parentLineId: null, ticketId: s.ticketId, description: s.description, quantity: s.quantity,
     unitPrice: s.unitPrice, costBasis: s.costBasis, taxable: s.taxable, customerVisible: s.customerVisible,
-    lineTotal: s.lineTotal, isUnapprovedTime: s.isUnapprovedTime, sortOrder: sort++
+    lineTotal: s.lineTotal, isUnapprovedTime: s.isUnapprovedTime, workedMinutes: s.workedMinutes, sortOrder: sort++
   })));
 }
 
@@ -2204,7 +2211,7 @@ export async function voidInvoice(invoiceId: string, reason: string, opts: { rei
       sourceContractId: l.sourceContractId,
       parentLineId, ticketId: l.ticketId, name: l.name, description: l.description, quantity: l.quantity, unitPrice: l.unitPrice,
       costBasis: l.costBasis, revenueAllocation: l.revenueAllocation, taxable: l.taxable, customerVisible: l.customerVisible,
-      lineTotal: l.lineTotal, isUnapprovedTime: l.isUnapprovedTime, sortOrder: l.sortOrder
+      lineTotal: l.lineTotal, isUnapprovedTime: l.isUnapprovedTime, workedMinutes: l.workedMinutes, sortOrder: l.sortOrder
     });
     // Mint every new line id UP FRONT — parents AND children — so the map is
     // complete and order-independent before a single row is written.

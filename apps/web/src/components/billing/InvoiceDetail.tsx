@@ -21,6 +21,7 @@ import {
   lineTaxAmount,
   lineTitle,
   lineBlurb,
+  lineWorkedVsBilledNote,
   pctFromFraction,
   sellerLines,
   computeInvoiceProfit,
@@ -425,6 +426,11 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
                       </span>
                       {internalView && !l.customerVisible ? t('invoiceDetail.lines.hiddenMarker') : ''}
                       {lineBlurb(l) && <div className="text-xs text-muted-foreground">{lineBlurb(l)}</div>}
+                      {lineWorkedVsBilledNote(l, t) && (
+                        <div className="text-xs text-muted-foreground" data-testid={`invoice-detail-line-worked-vs-billed-${l.id}`}>
+                          {lineWorkedVsBilledNote(l, t)}
+                        </div>
+                      )}
                       <InvoiceLineDevices invoiceId={invoice.id} line={l} />
                     </td>
                     <td className="px-3 py-2 text-right">{l.quantity}</td>

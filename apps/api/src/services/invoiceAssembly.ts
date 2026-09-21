@@ -17,6 +17,11 @@ export interface DraftLineSpec {
   customerVisible: boolean;
   lineTotal: string;
   isUnapprovedTime: boolean;
+  /** #6467: actual time worked (minutes), for the worked-vs-billed disclosure
+   *  note only — never for money. NULL for non-time-entry lines. Rendered at
+   *  display time, never baked into `description` (a description edit must
+   *  never erase the §3.5 disclosure). */
+  workedMinutes: number | null;
 }
 
 /** A billable time entry that has NO hourly rate (match-or-skip found no rate in
@@ -82,17 +87,13 @@ type TimeEntryRow = {
 
 /** Billed quantity (§3.5): COALESCE(billable_minutes, duration_minutes), hours to 2 dp. */
 const entryHours = (r: TimeEntryRow) => (((r.billableMinutes ?? r.durationMinutes) ?? 0) / 60).toFixed(2);
-/** Actual time worked, for the line note only — never for money. */
-const entryWorkedHours = (r: TimeEntryRow) => ((r.durationMinutes ?? 0) / 60).toFixed(2);
 
-/** §3.5: "When they differ the invoice line says so." One line per entry,
- *  always — the note is a suffix on the description, never a second line. */
-const entryDescription = (r: TimeEntryRow) => {
-  const base = r.description?.trim() || 'Labor';
-  const billed = entryHours(r);
-  const worked = entryWorkedHours(r);
-  return billed === worked ? base : `${base} — ${worked} h worked, ${billed} h billed`;
-};
+/** Base line description — never carries the worked-vs-billed disclosure
+ *  (#6467). The §3.5 "when they differ the invoice line says so" note is
+ *  carried as structured data (`DraftLineSpec.workedMinutes`) and rendered at
+ *  display time, in the viewer's locale — never baked into this string, so a
+ *  later edit to the description can never erase it. */
+const entryDescription = (r: TimeEntryRow) => r.description?.trim() || 'Labor';
 
 /** Labor rule (one rule, everywhere): hours rounded to 2dp first (the numeric(10,2) quantity
  *  schema), then `lineTotal = roundToCurrency(hours2dp × rate, currencyCode)`.
@@ -110,7 +111,11 @@ export function timeEntryToLineSpec(r: TimeEntryRow, currencyCode: string): Draf
     sourceType: 'time_entry', sourceId: r.id, catalogItemId: null, ticketId: r.ticketId,
     description: entryDescription(r),
     quantity: hours, unitPrice, costBasis: null, taxable: false, customerVisible: true,
-    lineTotal: computeLineTotal(hours, unitPrice, currencyCode), isUnapprovedTime: !r.isApproved
+    lineTotal: computeLineTotal(hours, unitPrice, currencyCode), isUnapprovedTime: !r.isApproved,
+    // #6467: always carry the worked minutes for a time_entry line — renderers
+    // decide whether to show the note (only when it differs from the billed
+    // quantity), the same condition the old description suffix used.
+    workedMinutes: r.durationMinutes ?? null
   };
 }
 
@@ -147,7 +152,8 @@ export function ticketPartToLineSpec(r: {
     description: r.description,
     quantity: r.quantity, unitPrice: r.unitPrice, costBasis: r.costBasis ?? null,
     taxable: true, customerVisible: true,
-    lineTotal: computeLineTotal(r.quantity, r.unitPrice, currencyCode), isUnapprovedTime: false
+    lineTotal: computeLineTotal(r.quantity, r.unitPrice, currencyCode), isUnapprovedTime: false,
+    workedMinutes: null
   };
 }
 

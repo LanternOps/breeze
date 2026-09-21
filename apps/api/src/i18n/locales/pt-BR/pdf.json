@@ -17,7 +17,8 @@
     "amountPaid": "Valor pago",
     "depositDue": "Depósito devido",
     "ticketWork": "Trabalho de ticket",
-    "payOnline": "Pagar on-line:"
+    "payOnline": "Pagar on-line:",
+    "billedVsWorked": "{{worked}} h trabalhadas · {{billed}} h faturadas"
   },
   "quote": {
     "title": "COTAÇÃO",

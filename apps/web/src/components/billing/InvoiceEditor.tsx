@@ -14,6 +14,7 @@ import {
   type InvoiceLine,
   formatMoney,
   lineTitle,
+  lineWorkedVsBilledNote,
   computeInvoiceProfit,
 } from './invoiceTypes';
 import { toCents, fromCents, roundToCurrency } from '@breeze/shared';
@@ -1206,6 +1207,14 @@ function LineRow({
             className={`min-h-8 w-full resize-y overflow-hidden rounded-md border bg-background px-2 py-1 text-sm text-muted-foreground transition-colors focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${fieldRing(descDirty, saved)}`}
           />
           <UnsavedFieldHint id={unsavedHintId('invoice-line', line.id, 'desc')} show={descDirty} />
+          {/* #6467: worked-vs-billed disclosure, read-only here — it is
+              structured data (`workedMinutes`), not part of this description,
+              so editing the text above can never erase it. */}
+          {lineWorkedVsBilledNote(line, t) && (
+            <p className="mt-1 text-xs text-muted-foreground" data-testid={`invoice-line-worked-vs-billed-${line.id}`}>
+              {lineWorkedVsBilledNote(line, t)}
+            </p>
+          )}
         </td>
       </tr>
       {children.map((ch) => (
