@@ -545,6 +545,34 @@ describe('backup provider connection routes', () => {
       });
       expect(res.status).toBe(400);
     });
+
+    it("resolves the connection's open provider alerts when it is deactivated", async () => {
+      const res = await app.request(`/backup/providers/connections/${CONNECTION_ID}`, {
+        method: 'PATCH', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ isActive: false }),
+      });
+      expect(res.status).toBe(200);
+      expect(resolveAlertsMock).toHaveBeenCalledWith(CONNECTION_ID);
+    });
+
+    it('does NOT resolve provider alerts on an unrelated PATCH', async () => {
+      const res = await app.request(`/backup/providers/connections/${CONNECTION_ID}`, {
+        method: 'PATCH', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'Renamed' }),
+      });
+      expect(res.status).toBe(200);
+      expect(resolveAlertsMock).not.toHaveBeenCalled();
+    });
+
+    it('does NOT resolve provider alerts when re-activating', async () => {
+      dbState.connections = [connectionRow({ isActive: false })];
+      const res = await app.request(`/backup/providers/connections/${CONNECTION_ID}`, {
+        method: 'PATCH', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ isActive: true }),
+      });
+      expect(res.status).toBe(200);
+      expect(resolveAlertsMock).not.toHaveBeenCalled();
+    });
   });
 
   describe('POST /backup/providers/connections/:id/test', () => {
