@@ -121,7 +121,7 @@ describe('static + EMAIL_PROVIDER=resend', () => {
     await sendInvoice();
     expect(resendSendMock).toHaveBeenCalledTimes(2);
     const fallback = resendSendMock.mock.calls[1]![0];
-    expect(fallback.from).toBe('"Acme MSP via Breeze" <helpdesk@acme.test>');
+    expect(fallback.from).toBe('"Acme MSP" <helpdesk@acme.test>');
     expect(fallback.headers?.['X-Breeze-Outbound']).toBeUndefined();
   });
 });
@@ -151,7 +151,7 @@ describe('static + EMAIL_PROVIDER=smtp', () => {
     await sendInvoice();
     expect(smtpSendMailMock).toHaveBeenCalledTimes(2);
     const fallback = smtpSendMailMock.mock.calls[1]![0];
-    expect(fallback.from).toBe('"Acme MSP via Breeze" <helpdesk@acme.test>');
+    expect(fallback.from).toBe('"Acme MSP" <helpdesk@acme.test>');
     expect(fallback.headers?.['X-Breeze-Outbound']).toBeUndefined();
   });
 
@@ -198,7 +198,7 @@ describe('static + EMAIL_PROVIDER=mailgun', () => {
       .mockResolvedValueOnce({ ok: true, status: 200, text: vi.fn().mockResolvedValue('ok') });
     await sendInvoice();
     expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(bodyOf(1).get('from')).toBe('"Acme MSP via Breeze" <helpdesk@acme.test>');
+    expect(bodyOf(1).get('from')).toBe('"Acme MSP" <helpdesk@acme.test>');
     expect(bodyOf(1).get('h:X-Breeze-Outbound')).toBeNull();
   });
 });
@@ -213,6 +213,6 @@ describe('static with the domain delisted', () => {
     lookupMock.mockResolvedValue({ ok: false, reason: 'domain_not_sendable' });
     await sendInvoice();
     expect(resendSendMock).toHaveBeenCalledTimes(1);
-    expect(resendSendMock.mock.calls[0]![0].from).toBe('"Acme MSP via Breeze" <helpdesk@acme.test>');
+    expect(resendSendMock.mock.calls[0]![0].from).toBe('"Acme MSP" <helpdesk@acme.test>');
   });
 });

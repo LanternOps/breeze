@@ -30,12 +30,13 @@ export type MailPurposePolicy =
       lane: 'partner';
       stream: PartnerMailStream;
       /**
-       * The From used when no partner identity applies — which in W01 is
-       * ALWAYS. It preserves what each send site does TODAY:
+       * The From used when no partner sending identity applies.
        *   'default'              → the bare EMAIL_FROM.
-       *   'partner_display_name' → `"<Partner> via Breeze" <EMAIL_FROM address>`.
-       * Only quote.sent and invoice.sent, plus quote.acceptance_recorded
-       * (#6635) — the customer notice that rides alongside the same quote.
+       *   'partner_display_name' → `"<Partner name>" <EMAIL_FROM address>`
+       *                            (EMAIL_FROM's own display name, if set, wins).
+       * Every customer purpose uses the company name except billing.notice
+       * (autopay notices, which kept the bare EMAIL_FROM when they shipped).
+       * Staff and security mail stays on the platform lane and is not listed here.
        */
       fallbackFrom: 'default' | 'partner_display_name';
     };
@@ -77,9 +78,9 @@ export const MAIL_PURPOSES = {
   'ticket.staff_notification': { lane: 'platform' },
 
   // ---- partner lane -------------------------------------------------------
-  'ticket.customer_notification': { lane: 'partner', stream: 'support', fallbackFrom: 'default' },
-  'portal.invite': { lane: 'partner', stream: 'support', fallbackFrom: 'default' },
-  'portal.password_reset': { lane: 'partner', stream: 'support', fallbackFrom: 'default' },
+  'ticket.customer_notification': { lane: 'partner', stream: 'support', fallbackFrom: 'partner_display_name' },
+  'portal.invite': { lane: 'partner', stream: 'support', fallbackFrom: 'partner_display_name' },
+  'portal.password_reset': { lane: 'partner', stream: 'support', fallbackFrom: 'partner_display_name' },
   'quote.sent': { lane: 'partner', stream: 'billing', fallbackFrom: 'partner_display_name' },
   // #6635: "your provider recorded your acceptance" — sent to the customer
   // when a tech accepts on their behalf. Same envelope as the quote itself;
@@ -87,7 +88,7 @@ export const MAIL_PURPOSES = {
   'quote.acceptance_recorded': { lane: 'partner', stream: 'billing', fallbackFrom: 'partner_display_name' },
   'billing.notice': { lane: 'partner', stream: 'billing', fallbackFrom: 'default' },
   'invoice.sent': { lane: 'partner', stream: 'billing', fallbackFrom: 'partner_display_name' },
-  'report.delivery': { lane: 'partner', stream: 'general', fallbackFrom: 'default' },
+  'report.delivery': { lane: 'partner', stream: 'general', fallbackFrom: 'partner_display_name' },
 } as const satisfies Record<string, MailPurposePolicy>;
 
 export type MailPurpose = keyof typeof MAIL_PURPOSES;

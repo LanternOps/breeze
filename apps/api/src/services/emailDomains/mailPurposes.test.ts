@@ -59,28 +59,31 @@ describe('MAIL_PURPOSES registry (spec §8.1, §8.2)', () => {
       'staff.access_review_notice': { lane: 'platform' },
       'deployment.invite': { lane: 'platform' },
       'ticket.staff_notification': { lane: 'platform' },
-      'ticket.customer_notification': { lane: 'partner', stream: 'support', fallbackFrom: 'default' },
-      'portal.invite': { lane: 'partner', stream: 'support', fallbackFrom: 'default' },
-      'portal.password_reset': { lane: 'partner', stream: 'support', fallbackFrom: 'default' },
+      'ticket.customer_notification': { lane: 'partner', stream: 'support', fallbackFrom: 'partner_display_name' },
+      'portal.invite': { lane: 'partner', stream: 'support', fallbackFrom: 'partner_display_name' },
+      'portal.password_reset': { lane: 'partner', stream: 'support', fallbackFrom: 'partner_display_name' },
       'quote.sent': { lane: 'partner', stream: 'billing', fallbackFrom: 'partner_display_name' },
       'quote.acceptance_recorded': { lane: 'partner', stream: 'billing', fallbackFrom: 'partner_display_name' },
       'billing.notice': { lane: 'partner', stream: 'billing', fallbackFrom: 'default' },
       'invoice.sent': { lane: 'partner', stream: 'billing', fallbackFrom: 'partner_display_name' },
-      'report.delivery': { lane: 'partner', stream: 'general', fallbackFrom: 'default' },
+      'report.delivery': { lane: 'partner', stream: 'general', fallbackFrom: 'partner_display_name' },
     });
   });
 
-  // Spec §8.3: the display-name From is what quote and invoice sends produce
-  // TODAY, and nothing else. Extending it to more purposes is a separate
-  // product change, so it must not happen by accident in a later wave.
-  // #6635 added quote.acceptance_recorded deliberately: the customer notice
-  // on an on-behalf acceptance must arrive in the same envelope as the quote.
-  it('uses the partner_display_name fallback only for the quote/invoice customer documents', () => {
+  it('uses the company name for every customer purpose', () => {
     const branded = ALL_PURPOSES.filter((p) => {
       const policy = mailPurposePolicy(p);
       return policy.lane === 'partner' && policy.fallbackFrom === 'partner_display_name';
     });
-    expect(branded.sort()).toEqual(['invoice.sent', 'quote.acceptance_recorded', 'quote.sent']);
+    expect(branded.sort()).toEqual([
+      'invoice.sent',
+      'portal.invite',
+      'portal.password_reset',
+      'quote.acceptance_recorded',
+      'quote.sent',
+      'report.delivery',
+      'ticket.customer_notification',
+    ]);
   });
 
   // Index amendment 5: the test send bypasses sendEmail entirely, so its
