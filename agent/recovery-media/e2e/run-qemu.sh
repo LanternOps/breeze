@@ -316,8 +316,8 @@ fi
 # content rather than an ancestor generation's — R20 in Part 0 §4. This
 # script has no host-side mount of target.img (boot 2 only ever exercises
 # it through QEMU), so the serial banner is the only observation point.
-if ! grep -q "e2e-3-changed-hostname login:" "$serial2_log"; then
-  echo "run-qemu: FAIL — expected the restored guest's login banner to read 'e2e-3-changed-hostname login:' (proving the e2e-3 generation's own content was restored, not an ancestor's); see serial-2.log" >&2
+if ! grep -q "e2e-3-changed-hostname-restored login:" "$serial2_log"; then
+  echo "run-qemu: FAIL — expected the restored guest's login banner to read 'e2e-3-changed-hostname-restored login:' (proving the e2e-3 generation's own content was restored, not an ancestor's); see serial-2.log" >&2
   exit 1
 fi
 echo "run-qemu: PASS — restored guest hostname matches e2e-3's changed value"
