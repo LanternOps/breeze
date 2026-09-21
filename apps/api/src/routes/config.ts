@@ -6,6 +6,7 @@ import { envFlag } from '../utils/envFlag';
 import { isS3Configured } from '../services/s3Storage';
 import { authMiddleware, requireScope, type AuthContext } from '../middleware/auth';
 import { resolveAllMlFeatureFlagsForOrg } from '../services/mlFeatureFlags';
+import { isCallerVerificationEnabled } from '../services/callerVerification/gate';
 
 export const configRoutes = new Hono();
 
@@ -29,6 +30,9 @@ configRoutes.get('/', (c) => {
       // Task A7 (tool-catalog W1) — platform kill switch for tool sources.
       toolSources: toolSourcesEnabled(),
       aiAgentsSweepAct: sweepActEnabled(),
+      // Caller verification (#6354): W04's UI reads this before showing any
+      // verification surface. Exact-'true' contract via the real getter.
+      callerVerification: isCallerVerificationEnabled(),
     },
     cfAccessLogin: {
       enabled: cfAccessTrustEnabled(),

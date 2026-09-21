@@ -108,7 +108,7 @@ async function resolveAccessibleOrg(c: any): Promise<{ id: string } | Response> 
  * allowlist confines a caller WITHIN an org rather than narrowing their org
  * reach, and an org-level contact belongs to the org, not to any site.
  */
-function canReachContactSite(auth: AuthContext, siteId: string | null | undefined): boolean {
+export function canReachContactSite(auth: AuthContext, siteId: string | null | undefined): boolean {
   if (siteId === null || siteId === undefined) return true;
   return auth.canAccessSite?.(siteId) ?? true;
 }

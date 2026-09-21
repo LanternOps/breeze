@@ -299,9 +299,10 @@ export async function start(actor: CallerVerificationActor, input: StartInput): 
     if (!requesterAuthorized(input.actionScope, currentR, currentT, currentRequester, p.disableUserAuthorizerRoles)) {
       throw new Invalid('requester_not_authorized', 'Requester changed');
     }
-    const [{ count }] = await db.select({ count: sql<number>`count(*)::int` }).from(v)
+    const [attempts] = await db.select({ count: sql<number>`count(*)::int` }).from(v)
       .where(and(eq(v.orgId, orgId), eq(v.contactId, contactId), sql`${v.createdAt}>now()-interval '1 hour'`));
-    if (count! >= p.maxAttemptsPerHour) throw new Invalid('attempt_cap', 'Contact attempt limit reached');
+    const count = Number(attempts?.count ?? 0);
+    if (count >= p.maxAttemptsPerHour) throw new Invalid('attempt_cap', 'Contact attempt limit reached');
     const dest = input.method === 'sms' || input.method === 'email' ? await currentDestination(orgId, contactId, input.method === 'sms' ? 'mobile' : 'email') : null;
     // The clear token exists only in memory for the delivery port; the row keeps its hash.
     const token = dest ? randomBytes(32).toString('base64url') : null;
@@ -320,7 +321,7 @@ export async function start(actor: CallerVerificationActor, input: StartInput): 
       destinationId: dest?.id ?? null, destinationRedacted: dest?.valueRedacted ?? null,
       workstationDeviceRef: device?.id ?? null, deviceHostname: device?.hostname ?? null, osUsername: input.username ?? null,
       ticketRef: ticket?.id ?? null, ticketNumber: (ticket?.internalNumber ?? ticket?.ticketNumber)?.slice(0, 32) ?? null,
-      attemptNo: count! + 1, expiresAt: new Date(now.getTime() + expiresMs), attestationNote: input.note ?? null,
+      attemptNo: count + 1, expiresAt: new Date(now.getTime() + expiresMs), attestationNote: input.note ?? null,
     }).returning();
     if (input.method !== 'callback_attestation') await ports.prepare(row!, token);
     await recordEffect(row!, 'started', actor.userId);
@@ -351,9 +352,10 @@ export async function createAdministrative(
     if (await fencedUntil(input.orgId, target.id, p)) throw new Invalid('contact_fenced', 'Target is fenced');
     const current = (await bindingsForContact(input.orgId, target.id)).find((r) => r.id === binding.id);
     if (!current || current.entraOid !== binding.entraOid || current.entraTenantId !== binding.entraTenantId) throw new Invalid('target_rebound', 'Target binding changed');
-    const [{ count }] = await db.select({ count: sql<number>`count(*)::int` }).from(v)
+    const [attempts] = await db.select({ count: sql<number>`count(*)::int` }).from(v)
       .where(and(eq(v.orgId, input.orgId), eq(v.contactId, target.id), sql`${v.createdAt}>now()-interval '1 hour'`));
-    if (count! >= p.maxAttemptsPerHour) throw new Invalid('attempt_cap', 'Contact attempt limit reached');
+    const count = Number(attempts?.count ?? 0);
+    if (count >= p.maxAttemptsPerHour) throw new Invalid('attempt_cap', 'Contact attempt limit reached');
     const proof = await ports.consumeStepUp(actor, {
       orgId: input.orgId, target: { entraTenantId: binding.entraTenantId!, entraOid: binding.entraOid! },
       reason: input.reason.trim(), stepUpGrantId: input.stepUpGrantId,
@@ -366,7 +368,7 @@ export async function createAdministrative(
       targetLabel: binding.upnSnapshot ?? target.name, method: 'administrative_stepup', reason: input.reason.trim(),
       stepupSessionId: proof.sid, stepupAuthEpoch: proof.authEpoch, stepupMfaEpoch: proof.mfaEpoch, stepupVerifiedAt: now,
       status: 'verified', tier: 3, tierReason: 'administrative', ...challengeSecrets(),
-      attemptNo: count! + 1, decidedAt: now, expiresAt: new Date(now.getTime() + p.verificationTtlMinutes * 60000),
+      attemptNo: count + 1, decidedAt: now, expiresAt: new Date(now.getTime() + p.verificationTtlMinutes * 60000),
     }).returning();
     await recordEffect(row!, 'administrative_created', actor.userId);
     return projectVerification(row!, actor.userId, target.id);

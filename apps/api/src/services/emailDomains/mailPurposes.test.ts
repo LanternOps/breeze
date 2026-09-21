@@ -43,6 +43,7 @@ describe('MAIL_PURPOSES registry (spec §8.1, §8.2)', () => {
       'auth.staff_invite': { lane: 'platform' },
       'auth.account_locked': { lane: 'platform' },
       'security.mfa_enrollment': { lane: 'platform' },
+      'security.caller_rejection': { lane: 'platform' },
       'account.deletion_requested': { lane: 'platform' },
       'account.deletion_declined': { lane: 'platform' },
       'account.purge_warning': { lane: 'platform' },

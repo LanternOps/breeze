@@ -49,6 +49,9 @@ export const MAIL_PURPOSES = {
   'auth.staff_invite': { lane: 'platform' },
   'auth.account_locked': { lane: 'platform' },
   'security.mfa_enrollment': { lane: 'platform' },
+  // Caller verification (#6354): a caller answered "This is not me" —
+  // security reviewers of the org are told to review the incident.
+  'security.caller_rejection': { lane: 'platform' },
   'account.deletion_requested': { lane: 'platform' },
   'account.deletion_declined': { lane: 'platform' },
   'account.purge_warning': { lane: 'platform' },

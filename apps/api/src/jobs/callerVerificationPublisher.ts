@@ -74,6 +74,7 @@ export async function publishCallerVerificationEffects(): Promise<void> {
         html: '<p>A caller rejected an identity-change request. Open Breeze security incidents to review the subject fence and related actions.</p>',
         text: 'A caller rejected an identity-change request. Open Breeze security incidents to review.',
         headers: { 'Message-ID': `<caller-${row.id}-${person.id}@notifications.invalid>` },
+        purpose: 'security.caller_rejection',
       });
     }
     await scoped(() => db.update(v).set({ rejectionNotifiedAt: new Date() }).where(eq(v.id, row.id)));

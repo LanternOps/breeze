@@ -353,3 +353,18 @@ describe('isSelfManagedDbContextRoute', () => {
     // And the file engine's routes are untouched.
     expect(isSelfManagedDbContextRoute('POST', '/api/v1/devices/22222222-2222-4222-8222-222222222222/filesystem/scan')).toBe(false);
   });
+
+// Caller verification (#6354 W01): only the three Graph-backed operations own
+// their DB context; every other verification route keeps the ambient tx.
+it.each([['GET', 'caller-verification-directory-users'], ['POST', 'caller-verification-directory-sync']])('self-manages %s %s', (method, path) => {
+  expect(isSelfManagedDbContextRoute(method, `/api/v1/orgs/o/${path}`)).toBe(true);
+  expect(isSelfManagedDbContextRoute(method === 'GET' ? 'POST' : 'GET', `/api/v1/orgs/o/${path}`)).toBe(false);
+});
+
+it('self-manages the Graph binding POST but not ordinary verification writes', () => {
+  const path = '/api/v1/orgs/o/contacts/c/caller-verification-bindings';
+  expect(isSelfManagedDbContextRoute('POST', path)).toBe(true);
+  expect(isSelfManagedDbContextRoute('DELETE', `${path}/b`)).toBe(false);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/orgs/o/caller-verifications')).toBe(false);
+  expect(isSelfManagedDbContextRoute('PUT', '/api/v1/orgs/o/caller-verification-policy')).toBe(false);
+});

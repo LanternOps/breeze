@@ -321,6 +321,14 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // uncommitted.
   { method: 'PUT', pattern: /^\/api\/v1\/monitoring\/assets\/[^/]+\/snmp\/?$/ },
   { method: 'PATCH', pattern: /^\/api\/v1\/monitoring\/assets\/[^/]+\/snmp\/?$/ },
+  // Caller verification (#6354 W01): the three Graph-backed operations
+  // (directory picker search, authoritative sync, manual binding) each open
+  // short `withAuthDbAccessContext` phases around a Microsoft Graph read, so
+  // no request transaction is held across the outbound call. Ordinary
+  // verification reads/writes keep the ambient transaction.
+  { method: 'GET', pattern: /^\/api\/v1\/orgs\/[^/]+\/caller-verification-directory-users\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/orgs\/[^/]+\/caller-verification-directory-sync\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/orgs\/[^/]+\/contacts\/[^/]+\/caller-verification-bindings\/?$/ },
 ];
 
 /**

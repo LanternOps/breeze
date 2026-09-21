@@ -103,7 +103,7 @@ describe('PUT /agents/:id/sessions', () => {
     app = new Hono();
     // agentAuth sets this in production; the route refuses a token whose
     // device/org do not match the URL before trusting any identity evidence.
-    app.use('*', async (c, next) => { c.set('agent', { agentId: AGENT_ID, orgId: 'org-1' }); await next(); });
+    app.use('*', async (c, next) => { c.set('agent', { agentId: AGENT_ID, orgId: 'org-1' } as never); await next(); });
     app.route('/agents', sessionsRoutes);
     mockTransaction();
   });
@@ -131,7 +131,7 @@ describe('PUT /agents/:id/sessions', () => {
 
   it('refuses a token from another org before observation', async () => {
     const foreign = new Hono();
-    foreign.use('*', async (c, next) => { c.set('agent', { agentId: AGENT_ID, orgId: 'org-2' }); await next(); });
+    foreign.use('*', async (c, next) => { c.set('agent', { agentId: AGENT_ID, orgId: 'org-2' } as never); await next(); });
     foreign.route('/agents', sessionsRoutes);
     mockDeviceLookup();
     const response = await foreign.request(`/agents/${AGENT_ID}/sessions`, {

@@ -8,3 +8,16 @@ it.each([undefined, '', 'false', '1', 'yes', 'TRUE', 'true'])('exact readiness v
   else vi.stubEnv('CALLER_VERIFICATION_ENABLED', value);
   expect(callerVerificationEnabled()).toBe(value === 'true');
 });
+
+it('exports every fixed cross-wave service entry point', async () => {
+  const api = await import('./index');
+  for (const name of [
+    'resolveEffectivePolicy', 'getEffectivePolicy', 'resolveTargetBinding', 'bindingsForContact', 'upsertDirectorySyncBinding',
+    'attestBinding', 'observeLogin', 'revokeBinding', 'recordDestinationChange', 'currentDestination', 'isEstablished',
+    'attestDestination', 'computeTier', 'start', 'createAdministrative', 'cancel', 'attest', 'get', 'listForContact',
+    'methodsForContact', 'freshForTicket', 'applyDecision', 'requireCallerVerification', 'isCallerVerificationEnabled',
+    'handleRejection', 'fenceOverride', 'withSubjectLocks',
+  ]) {
+    expect(typeof api[name as keyof typeof api], name).toBe('function');
+  }
+});
