@@ -41,7 +41,13 @@ const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
 // routes/agents/heartbeat.ts's maybeDispatchEditionMigration call). Exiting
 // the ambient context first genuinely opens a fresh system-scoped transaction,
 // so a failure in here cannot poison the caller's (still-open) org transaction
-// either.
+// either. Cost: for the duration of this call the process briefly holds TWO
+// pooled connections (the caller's still-open org transaction plus this one) —
+// the same #1105-class tradeoff already accepted for the other short
+// ambient-context wraps in routes/agentWs.ts (monitor-result / discovery-
+// result / orphaned-command branches). Acceptable here because the nested
+// work is DB-only and short-lived (no Redis round-trip inside the system
+// context).
 const runSystemDbAccessOutsideAmbientContext = async <T>(fn: () => Promise<T>): Promise<T> => {
   const runOutside = dbModule.runOutsideDbContext;
   const runInSystemContext = () => runWithSystemDbAccess(fn);

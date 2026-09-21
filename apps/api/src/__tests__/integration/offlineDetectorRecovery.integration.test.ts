@@ -190,21 +190,71 @@ describe('transitionDeviceOffline from inside an ambient org-scoped context (#65
     expect(effects.every((e) => e.orgId === org.id)).toBe(true);
   });
 
-  it('does not transition (and does not poison the caller context) when the device is not online', async () => {
+  it("does NOT poison the caller's ambient transaction after a real offline_transition_effects INSERT", async () => {
+    const { org, device } = await fixture();
+
+    // The real bug (pre-fix, head 95d9629a): the INSERT inside
+    // persistOfflineTransition ran under the caller's org-scoped RLS context,
+    // got denied with 42501, and — because that happened inside the caller's
+    // OPEN transaction — every subsequent statement on the same connection
+    // failed with "current transaction is aborted". Reproducing that requires
+    // the transition to actually REACH the insert (unlike an early-return
+    // no-op), and the follow-up read must happen in the SAME ambient
+    // transaction the WS handlers actually share between their pre-check
+    // select and the transitionDeviceOffline call — a fresh
+    // withSimulatedAgentWsContext call per operation would open a NEW
+    // connection/transaction each time and could not observe poisoning even
+    // if it were still there.
+    const { result, afterRead } = await withSimulatedAgentWsContext(org.id, async () => {
+      const transitionResult = await transitionDeviceOffline(device.agentId!, ['online']);
+      // Same connection, same still-open org transaction as the transition
+      // call above — this is exactly the statement that failed with "current
+      // transaction is aborted" pre-fix.
+      const rows = await db.select().from(devices).where(eq(devices.id, device.id));
+      return { result: transitionResult, afterRead: rows };
+    });
+
+    expect(result).toEqual({ transitioned: true });
+    expect(afterRead[0]?.status).toBe('offline');
+  });
+
+  it('does not transition when the device is not online, and leaves the ambient context usable', async () => {
     const { org, device } = await fixture();
     await getTestDb().update(devices).set({ status: 'maintenance' }).where(eq(devices.id, device.id));
+
+    // Unlike the sibling test above, this path returns early (device isn't
+    // 'online') before ever reaching the offline_transition_effects INSERT —
+    // it cannot exercise transaction-poisoning by RLS denial. It only proves
+    // the no-op path itself doesn't leave the ambient context unusable.
+    const { result, afterRead } = await withSimulatedAgentWsContext(org.id, async () => {
+      const transitionResult = await transitionDeviceOffline(device.agentId!, ['online']);
+      const rows = await db.select().from(devices).where(eq(devices.id, device.id));
+      return { result: transitionResult, afterRead: rows };
+    });
+
+    expect(result).toEqual({ transitioned: false });
+    expect(afterRead[0]?.status).toBe('maintenance');
+  });
+
+  it('does not leak an offline_transition_effects row across orgs', async () => {
+    const { org, device } = await fixture();
+    const otherOrg = await createOrganization({ partnerId: org.partnerId! });
 
     const result = await withSimulatedAgentWsContext(org.id, () =>
       transitionDeviceOffline(device.agentId!, ['online']),
     );
-    expect(result).toEqual({ transitioned: false });
+    expect(result).toEqual({ transitioned: true });
 
-    // Prove the caller's ambient context survived intact — a subsequent read
-    // in the SAME simulated context must not hit "current transaction is
-    // aborted" from a poisoned connection.
-    const stillReadable = await withSimulatedAgentWsContext(org.id, () =>
-      db.select().from(devices).where(eq(devices.id, device.id)),
+    // Same shape as the cross-org negative control in the suite above: an
+    // unrelated org's ambient context must see nothing for this device.
+    const crossOrgEffects = await withSimulatedAgentWsContext(otherOrg.id, () =>
+      db.select().from(offlineTransitionEffects).where(eq(offlineTransitionEffects.deviceId, device.id)),
     );
-    expect(stillReadable[0]?.status).toBe('maintenance');
+    expect(crossOrgEffects).toEqual([]);
+
+    const ownOrgEffects = await withSimulatedAgentWsContext(org.id, () =>
+      db.select().from(offlineTransitionEffects).where(eq(offlineTransitionEffects.deviceId, device.id)),
+    );
+    expect(ownOrgEffects.length).toBeGreaterThan(0);
   });
 });
