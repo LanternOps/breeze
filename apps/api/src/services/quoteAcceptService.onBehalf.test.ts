@@ -25,10 +25,16 @@ const { claimQuoteSentMock, resolveParentToSupersedeMock } = vi.hoisted(() => ({
   claimQuoteSentMock: vi.fn(),
   resolveParentToSupersedeMock: vi.fn(),
 }));
-vi.mock('./quoteLifecycle', () => ({
-  claimQuoteSent: claimQuoteSentMock,
-  resolveParentToSupersede: resolveParentToSupersedeMock,
-}));
+// assertQuoteSendGates is deliberately NOT mocked: the on-behalf draft branch
+// owes sendQuote's real send-time gates, so the suite exercises the real ones.
+vi.mock('./quoteLifecycle', async (importActual) => {
+  const actual = await importActual<typeof import('./quoteLifecycle')>();
+  return {
+    ...actual,
+    claimQuoteSent: claimQuoteSentMock,
+    resolveParentToSupersede: resolveParentToSupersedeMock,
+  };
+});
 
 // Controllable Drizzle chain mock — same harness as quoteAcceptService.test.ts.
 const results: unknown[][] = [];
@@ -313,6 +319,86 @@ describe('acceptQuote — origin on_behalf', () => {
     expect(acceptanceInsert.renderLocale).toBe('fr');
     const invoiceInsert = (db as unknown as Chain).values.mock.calls[1]![0] as Record<string, unknown>;
     expect(invoiceInsert.notes).toBe('Converted from quote Q-2026-0042');
+  });
+
+  // ---- Send-time gates on the draft claim -------------------------------
+  // The on-behalf branch claims a DRAFT with sendQuote's own helper, so it owes
+  // sendQuote's own gates. Without them the executed contract document renders
+  // an unresolved variable as '' (contractDocumentService), and an unsatisfiable
+  // deposit is snapshotted onto the issued invoice.
+
+  /** A draft carrying one contract block with one unresolved declared variable. */
+  function queueDraftWithContractBlock(declaredVariables: unknown[], variableValues: Record<string, string> = {}) {
+    const quote = {
+      id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft',
+      expiryDate: null, quoteNumber: null, taxRate: null,
+      currencyCode: 'USD', siteId: null, title: 'Managed services',
+      billToName: null, billToAddress: null, billToTaxId: null,
+      sellerSnapshot: null, termsAndConditions: null, terms: null,
+      documentLocale: 'en',
+      oneTimeTotal: '1000.00', monthlyRecurringTotal: '0.00',
+      annualRecurringTotal: '0.00', total: '1000.00',
+      depositType: 'none', depositPercent: null, depositAmount: null,
+    };
+    queueResult([quote]);                                        // 1 quote FOR UPDATE
+    queueResult([{ id: 'b1', quoteId: 'q1', blockType: 'contract', sortOrder: 0, content: { templateId: 't1', variableValues } }]); // 2 blocks
+    queueResult([{                                               // 3 lines
+      id: 'l1', quoteId: 'q1', recurrence: 'one_time', customerVisible: true,
+      taxable: true, quantity: '1', unitPrice: '1000.00', catalogItemId: null,
+      description: 'Widget', name: 'Widget', termMonths: null, sortOrder: 0,
+      contractLineType: null,
+    }]);
+    return {
+      contractRenderData: [{
+        blockId: 'b1', templateId: 't1', templateVersionId: 'tv1',
+        sourceType: 'authored' as const, bodyHtml: '<p>{{client.signatory}}</p>',
+        fileData: null, versionSha256: 'sha', declaredVariables,
+        templateName: 'MSA', versionNumber: 1,
+      }],
+    };
+  }
+
+  it('refuses a draft whose contract variables are unresolved, before the claim', async () => {
+    const { contractRenderData } = queueDraftWithContractBlock([
+      { name: 'client.signatory', kind: 'manual', label: 'Signatory' },
+    ]);
+    await expect(acceptQuote({ ...onBehalfParams, contractRenderData: contractRenderData as never }))
+      .rejects.toMatchObject({ status: 422, code: 'CONTRACT_VARIABLES_UNRESOLVED' });
+    // Nothing was claimed and nothing was written: the quote is still a draft.
+    expect(claimQuoteSentMock).not.toHaveBeenCalled();
+    expect((db as unknown as Chain).insert.mock.calls.length).toBe(0);
+  });
+
+  it('accepts the same draft once the manual variable has a value', async () => {
+    const { contractRenderData } = queueDraftWithContractBlock(
+      [{ name: 'client.signatory', kind: 'manual', label: 'Signatory' }],
+      { 'client.signatory': 'Dana Buyer' },
+    );
+    // …the rest of the happy-path queue, picking up after quote/blocks/lines.
+    queueResult([{ prefix: 'INV', termsDays: 30, settings: {} }]); // partners
+    queueResult([{ id: 'acc1' }]);                                 // acceptance insert
+    queueResult([{ id: 'inv1' }]);                                 // invoice insert
+    queueResult([]);                                               // invoiceLines insert
+    queueResult([{ counter: 1 }]);                                 // counter upsert
+    queueResult([]);                                               // invoices update
+    queueResult([]);                                               // quotes update
+    queueResult([{ id: 'q1', status: 'converted' }]);              // final re-select
+    await acceptQuote({ ...onBehalfParams, contractRenderData: contractRenderData as never });
+    expect(claimQuoteSentMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses a draft whose deposit config is unsatisfiable, before the claim', async () => {
+    // 100% deposit on a purely RECURRING quote: nothing is due on acceptance,
+    // so validateQuoteDeposit cannot produce a deposit and the send gate 409s.
+    queueAcceptHappyPath(
+      { status: 'draft', depositType: 'percent', depositPercent: '100' },
+      { recurrence: 'monthly' },
+    );
+    await expect(acceptQuote(onBehalfParams)).rejects.toMatchObject({
+      status: 409, code: 'DEPOSIT_INVALID',
+    });
+    expect(claimQuoteSentMock).not.toHaveBeenCalled();
+    expect((db as unknown as Chain).insert.mock.calls.length).toBe(0);
   });
 
   it('refuses a blank signer name rather than recording a nameless acceptance', async () => {

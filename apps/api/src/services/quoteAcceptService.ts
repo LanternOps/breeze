@@ -28,10 +28,12 @@ import {
 // One-way import: quoteLifecycle does NOT import this module, so there is no
 // cycle (verify with `grep -n quoteAcceptService services/quoteLifecycle.ts`).
 import {
+  assertQuoteSendGates,
   claimQuoteSent,
   resolveParentToSupersede,
   type QuoteSupersedeResult,
 } from './quoteLifecycle';
+import type { QuoteLineForMath } from './quoteMath';
 
 export interface AcceptQuoteParams {
   quoteId: string;
@@ -232,12 +234,33 @@ export async function acceptQuote(
   const now = new Date();
   const effectiveDate = now.toISOString().slice(0, 10);
 
-  // Draft claim (spec §5). Runs BEFORE the content reads so the blocks and
-  // lines this accept hashes are read from a quote already frozen and
-  // customer-bound — the same order sendQuote establishes. Inside the caller's
-  // transaction, so a later failure rolls the claim back with everything else.
+  // Content reads. The quote row has been held FOR UPDATE since the top and
+  // every draft edit path takes that same lock, so no concurrent edit can land
+  // between these reads and the claim below; the claim itself writes only the
+  // quotes row. That is what lets the send-time gates below inspect the real
+  // blocks and lines BEFORE anything is written.
+  const blocks = await db
+    .select()
+    .from(quoteBlocks)
+    .where(eq(quoteBlocks.quoteId, quote.id))
+    .orderBy(quoteBlocks.sortOrder);
+  const lines = await db
+    .select()
+    .from(quoteLines)
+    .where(eq(quoteLines.quoteId, quote.id))
+    .orderBy(quoteLines.sortOrder);
+
+  // Draft claim (spec §5). Inside the caller's transaction, so a later failure
+  // rolls the claim back with everything else.
   let supersededByClaim: QuoteSupersedeResult | undefined;
   if (origin === 'on_behalf' && quote.status === 'draft') {
+    // This path claims the draft to 'sent' with sendQuote's own helper, so it
+    // owes sendQuote's own send-time gates — and they run BEFORE the claim so a
+    // refusal writes nothing. Without them an on-behalf accept could execute a
+    // contract document whose declared variables are unresolved (the renderer
+    // substitutes '' and reports an "unreachable" Sentry capture), or convert a
+    // quote whose deposit terms became unsatisfiable while it was drafted.
+    assertQuoteSendGates(quote, blocks, lines as QuoteLineForMath[], params.contractRenderData ?? [], 'accept');
     // Same helper, same lock order as sendQuote. On a revision the parent is
     // retired, so a customer still holding the PARENT's link cannot accept it
     // after the tech accepted the child.
@@ -262,17 +285,6 @@ export async function acceptQuote(
       terms: claim.terms,
     });
   }
-
-  const blocks = await db
-    .select()
-    .from(quoteBlocks)
-    .where(eq(quoteBlocks.quoteId, quote.id))
-    .orderBy(quoteBlocks.sortOrder);
-  const lines = await db
-    .select()
-    .from(quoteLines)
-    .where(eq(quoteLines.quoteId, quote.id))
-    .orderBy(quoteLines.sortOrder);
 
   // Contract legal snapshot (Task 15): a quote that embeds contract blocks must
   // carry its pre-fetched render data. Guard BEFORE computing the hash / recording
@@ -520,8 +532,10 @@ export async function acceptQuote(
     issueFields.termsAndConditions = quote.termsAndConditions ?? null;
     issueFields.terms = quote.terms ?? null;
     // Deposit terms travel from the signed quote onto the issued invoice.
-    // depositAmount was validated < dueOnAcceptanceTotal at send and the quote
-    // is locked since, so it is safe to snapshot verbatim. Guard on a POSITIVE
+    // depositAmount was validated < dueOnAcceptanceTotal by assertQuoteSendGates
+    // — at send for a quote that was sent, and inline above (before the claim)
+    // for a draft accepted on behalf — and the quote row has been locked since,
+    // so it is safe to snapshot verbatim. Guard on a POSITIVE
     // amount, not just non-null: a $0.00 deposit is "no deposit" and must never
     // be snapshotted. (computeQuoteTotals now persists null for a zero deposit;
     // this is belt-and-suspenders against any legacy/foreign write that stored "0.00".)

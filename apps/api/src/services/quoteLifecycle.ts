@@ -36,7 +36,7 @@ import { isQuoteExpired } from './quoteExpiry';
 import { buildSellerSnapshot, buildBillToAddress } from './sellerSnapshot';
 import { resolveThemeId, resolvePageSize } from './documentThemes';
 import { resolvePartnerDocumentLocale } from './documentLocale';
-import { loadContractBlockRenderData, resolveAutoVariables, findUnresolvedVariables, loadContractPdfInputs } from './contractTemplateRender';
+import { loadContractBlockRenderData, resolveAutoVariables, findUnresolvedVariables, loadContractPdfInputs, type ContractBlockRenderData } from './contractTemplateRender';
 import { portalBase } from './portalUrl';
 import { emitQuoteEvent } from './quoteEvents';
 import { notifyQuoteOutcome } from './quoteOutcomeNotify';
@@ -291,6 +291,11 @@ export async function applyQuoteSentClaim(
       billToName: frozen.billToName,
       billToAddress: frozen.billToAddress,
       billToTaxId: frozen.billToTaxId,
+      // Built fresh from the partner row rather than taken from
+      // `frozen.sellerSnapshot`, which the freeze phase resolves as
+      // `quote.sellerSnapshot ?? build(partnerRow)`. Not a divergence: only a
+      // DRAFT reaches this claim and clone/revise null the column, so the two
+      // always agree here. `frozen.sellerSnapshot` is deliberately unused.
       sellerSnapshot: buildSellerSnapshot(frozen.partnerRow),
       termsAndConditions: frozen.termsAndConditions,
       terms: frozen.terms,
@@ -394,6 +399,67 @@ export async function resolveParentToSupersede(
 }
 
 /**
+ * The two hard gates a DRAFT must clear before it is claimed to 'sent'.
+ *
+ * ONE copy, shared by `sendQuote` and by the on-behalf accept of a draft
+ * (spec 2026-09-21 §5) — that path claims the draft with the same
+ * `claimQuoteSent`, so it must clear exactly what a real send clears. Skipping
+ * them there would let an MSP tech execute a contract document with blanked
+ * variables, or convert a quote whose deposit terms are unsatisfiable.
+ *
+ * Pure and read-only: the caller supplies the already-loaded blocks, lines and
+ * pinned contract render data, and MUST call this BEFORE the draft→sent claim
+ * so a rejection leaves the quote untouched.
+ *
+ * `action` only names the verb in the deposit message; both errors keep the
+ * codes `sendQuote` has always thrown (CONTRACT_VARIABLES_UNRESOLVED / 422,
+ * DEPOSIT_INVALID / 409).
+ */
+export function assertQuoteSendGates(
+  quote: QuoteRow,
+  blocks: readonly { id: string; content: unknown }[],
+  lines: readonly QuoteLineForMath[],
+  contractRenderData: readonly ContractBlockRenderData[],
+  action: 'send' | 'accept' = 'send',
+): void {
+  // Contract-variable gate (Task 12): a contract block's declared variables
+  // (auto or manual) can be left unresolved — issuing would ship a raw
+  // `{{token}}` placeholder into a legal document, or (on the accept path)
+  // execute it with the variable substituted as an empty string.
+  if (contractRenderData.length > 0) {
+    const autoValues = resolveAutoVariables(quote);
+    const contentByBlockId = new Map(blocks.map((b) => [b.id, b.content as { variableValues?: Record<string, string> } | null]));
+    const unresolved = new Set<string>();
+    for (const data of contractRenderData) {
+      const variableValues = contentByBlockId.get(data.blockId)?.variableValues ?? {};
+      for (const name of findUnresolvedVariables(data, variableValues, autoValues)) unresolved.add(name);
+    }
+    if (unresolved.size > 0) {
+      throw new QuoteServiceError(
+        `Contract variables unresolved: ${[...unresolved].sort().join(', ')}`,
+        422,
+        'CONTRACT_VARIABLES_UNRESOLVED',
+      );
+    }
+  }
+
+  // A deposit config can silently become unsatisfiable while drafting (e.g. the
+  // last one-time line was deleted after the deposit was set) — recompute stores
+  // NULL then, and this hard gate stops the quote going out with broken terms.
+  if (quote.depositType && quote.depositType !== 'none') {
+    const check = validateQuoteDeposit(
+      lines as QuoteLineForMath[],
+      quote.taxRate ? parseFloat(quote.taxRate) : null,
+      toQuoteDepositConfig(quote.depositType, quote.depositPercent),
+      quote.currencyCode,
+    );
+    if (!check.ok) {
+      throw new QuoteServiceError(`Cannot ${action}: ${check.message}`, 409, 'DEPOSIT_INVALID');
+    }
+  }
+}
+
+/**
  * Issue (if draft) + send: assign number, status→sent, sentAt, mint token.
  * When the quote is a revision, its parent is retired to 'superseded'
  * atomically with the draft→sent claim.
@@ -445,47 +511,17 @@ export async function sendQuote(
   // paths take the same locks in the same order.
   const parentToSupersede = await resolveParentToSupersede(quote, 'sent');
 
-  // Send-time contract-variable gate (Task 12): a contract block's declared
-  // variables (auto or manual) can be left unresolved — sending would ship a
-  // raw `{{token}}` placeholder straight into a legal document. Read-only and
-  // MUST run before any org-scoped write below: loadContractBlockRenderData
+  // Send-time gate inputs (Task 12). Read-only and MUST be resolved before any
+  // org-scoped write below: loadContractBlockRenderData
   // is a system-context read that escapes the ambient request transaction via
   // runOutsideDbContext (contract_templates/contract_template_versions are
   // dual-axis and invisible under this org-scoped RLS context — same contract
   // as Task 10), and pinned version content is immutable, so this early read
   // can never race a template edit happening concurrently.
   const contractRenderData = await loadContractBlockRenderData(blocks);
-  if (contractRenderData.length > 0) {
-    const autoValues = resolveAutoVariables(quote);
-    const contentByBlockId = new Map(blocks.map((b) => [b.id, b.content as { variableValues?: Record<string, string> } | null]));
-    const unresolved = new Set<string>();
-    for (const data of contractRenderData) {
-      const variableValues = contentByBlockId.get(data.blockId)?.variableValues ?? {};
-      for (const name of findUnresolvedVariables(data, variableValues, autoValues)) unresolved.add(name);
-    }
-    if (unresolved.size > 0) {
-      throw new QuoteServiceError(
-        `Contract variables unresolved: ${[...unresolved].sort().join(', ')}`,
-        422,
-        'CONTRACT_VARIABLES_UNRESOLVED',
-      );
-    }
-  }
-
-  // A deposit config can silently become unsatisfiable while drafting (e.g. the
-  // last one-time line was deleted after the deposit was set) — recompute stores
-  // NULL then, and this hard gate stops the quote going out with broken terms.
-  if (quote.depositType && quote.depositType !== 'none') {
-    const check = validateQuoteDeposit(
-      lines as QuoteLineForMath[],
-      quote.taxRate ? parseFloat(quote.taxRate) : null,
-      toQuoteDepositConfig(quote.depositType, quote.depositPercent),
-      quote.currencyCode,
-    );
-    if (!check.ok) {
-      throw new QuoteServiceError(`Cannot send: ${check.message}`, 409, 'DEPOSIT_INVALID');
-    }
-  }
+  // Both send-time gates (contract variables 422, deposit validity 409) live in
+  // assertQuoteSendGates so the on-behalf accept of a draft runs the same two.
+  assertQuoteSendGates(quote, blocks, lines as QuoteLineForMath[], contractRenderData, 'send');
 
   // #3205 W05 decision 12: send REPORTS drift, it never fixes it. A
   // scheduled/undo-window send fires hours later, so refreshing here would
