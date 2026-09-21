@@ -248,6 +248,11 @@ const ACTORS_WITHOUT_SITE_AXIS: Readonly<Record<string, string>> = {
   // scope is enforced on the ticket query.
   TimeEntryActor: 'time entries are ticket-keyed — no site_id',
   SuggestionActor: 'extends TimeEntryActor — same reason',
+  // Recipe library E2 (#6167). Not an authorization actor at all: it is the
+  // `actor_kind` (+ user id for a human) recorded on an append-only AI
+  // Operator task event. Every writer runs under the coordinator's system
+  // context or inside task admission, never as a scoped caller.
+  TaskEventActor: 'event attribution stamp on ai_operator_task_events — no allowlist of any axis, written under system context',
   // Pure `{ userId }` provenance stamps: who performed the write, recorded on
   // the row. They carry no allowlist of any axis — not even the org one — so
   // their services take the scope from the caller's DB context / route gate,
