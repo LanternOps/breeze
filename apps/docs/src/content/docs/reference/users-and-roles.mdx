@@ -400,6 +400,7 @@ The authoritative list of assignable permissions is also available at runtime vi
 | `access` | Start a remote access session |
 | `export` | Export data (audit logs, reports, invoices) |
 | `send` | Send an invoice or quote to a customer |
+| `accept` | Record a customer's acceptance on their behalf (phone, email, signed PO) and convert the quote to an invoice. Granted automatically to every role that already held `send` when upgrading; revoke it if you want acceptance narrower than sending. |
 | `fulfill` | Mark a quote fulfilled |
 | `admin` | Full administration of a resource (SSO, ticket mailbox) |
 | `accept_risk` | Accept a vulnerability finding's risk |
@@ -466,6 +467,7 @@ The following named permission constants (`packages/shared/src/constants/permiss
 | `QUOTES_READ` | `quotes` | `read` |
 | `QUOTES_WRITE` | `quotes` | `write` |
 | `QUOTES_SEND` | `quotes` | `send` |
+| `QUOTES_ACCEPT` | `quotes` | `accept` |
 | `QUOTES_FULFILL` | `quotes` | `fulfill` |
 | `TIME_ENTRIES_READ` | `time_entries` | `read` |
 | `TIME_ENTRIES_WRITE` | `time_entries` | `write` |

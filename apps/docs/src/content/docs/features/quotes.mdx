@@ -180,6 +180,29 @@ A sent quote can be **re-sent** without rebuilding it — useful when a contact 
 
 A customer can decline from the quote page and leave a short note explaining why. Breeze emails the technician who created the quote (falling back to your billing address), and the quote detail shows a **Declined** banner with the date and the customer's own words -- so the reason lives with the quote instead of in someone's inbox. From there, **Duplicate & revise** builds a follow-up proposal from the declined quote. A quote you decline yourself on the customer's behalf is attributed to your team and sends no email.
 
+### Accepting on Behalf of a Customer
+
+Sometimes a customer accepts over the phone, by email reply, or with a signed purchase order instead of clicking the quote's own accept link. On a quote in **draft**, **sent**, or **viewed** status, use **Accept on behalf** (on the quote's actions) to record that acceptance yourself.
+
+The dialog asks for:
+
+- **Method** -- verbal, email, signed document, purchase order, or other.
+- **Reference** -- required. This is where a reviewer would go to find the customer's agreement (for example, "PO 4471" or a link to the email thread). Because there's no click-through consent trail for an on-behalf acceptance, the reference is what stands in for it if the acceptance is ever disputed.
+- **Signer name** -- who agreed to the quote.
+- **Signer email** -- optional.
+
+Accepting on behalf does exactly what a customer clicking Accept does: the quote moves to **converted**, an invoice is issued and numbered immediately at the quote's frozen totals and tax, and any recurring lines become draft contracts (see [What Happens on Acceptance](#what-happens-on-acceptance) above). If your **"email the invoice on quote accept"** setting (**Settings → Billing**) is on, the invoice is emailed to the customer just as it would be for a normal acceptance.
+
+<Aside type="caution">
+  A **draft** quote has never been sent -- no customer email, no public accept link. Accepting it on behalf still freezes and numbers it, but the customer's first sight of it will be the invoice, not the proposal. The dialog repeats this warning before you confirm.
+</Aside>
+
+**Expired** and **declined** quotes cannot be accepted on behalf -- use **Duplicate & revise** to build a follow-up proposal instead.
+
+There is no undo. The resulting invoice can be voided like any other invoice, but the contracts it created and any Pax8 order it staged are not unwound by voiding the invoice.
+
+The quote detail shows the provenance of an on-behalf acceptance: **"Accepted on behalf of &lt;signer&gt; by &lt;tech&gt; on &lt;date&gt; · &lt;method&gt; · &lt;reference&gt;."** The customer's own portal view shows only **"Accepted on your behalf by &lt;provider&gt; on &lt;date&gt;"** -- the method and reference stay internal. Every on-behalf acceptance also writes a `quote.accepted_on_behalf` [audit log](/features/approval-security/) entry recording the tech, method, reference, signer, and resulting invoice number.
+
 ### Quotes and currency
 
 A quote is priced in the customer organization's billing currency, which it inherits from your partner currency when the organization is created. Retargeting a draft or a clone to an organization that bills in a different currency is refused rather than silently re-pricing the lines -- build the quote in the right organization instead.
@@ -244,7 +267,7 @@ While a quote is still a **draft**, you can move it to a different customer with
 
 ## Permissions
 
-Quote access is governed by role permissions: viewing requires quote read access, creating and editing drafts requires quote write access, and sending requires quote send access. Financially binding actions are gated accordingly. Assign these through **Settings → Users & Roles**.
+Quote access is governed by role permissions: viewing requires quote read access, creating and editing drafts requires quote write access, and sending requires quote send access. **Accept on behalf** requires the separate quote **accept** permission, which was granted automatically to every role that already held **send** when this action shipped -- revoke it on a role if you want acceptance to be narrower than sending. Financially binding actions are gated accordingly. Assign these through **Settings → Users & Roles**.
 
 ## Related
 
