@@ -255,6 +255,20 @@ export const quoteAcceptances = pgTable('quote_acceptances', {
   // for a pre-stamp quote. NULL only on rows older than the backfill
   // (2026-09-01-b) — read through acceptanceRenderLocale(), never directly.
   renderLocale: varchar('render_locale', { length: 16 }),
+  // Acceptance provenance (spec 2026-09-21 §6). `origin` distinguishes a
+  // customer click from an MSP-recorded acceptance; the other three are the
+  // evidence trail for the latter. CHECK constraints in
+  // 2026-10-26-100000-quote-acceptances-on-behalf.sql are the real invariant —
+  // Drizzle types cannot express "required when origin = on_behalf".
+  origin: text('origin').notNull().default('customer'),
+  // 'typed-signature' for every customer row (the only provider that has ever
+  // run); one of verbal|email|signed_document|purchase_order|other for an
+  // on-behalf row.
+  method: varchar('method', { length: 32 }),
+  reference: text('reference'),
+  // The tech who recorded it. NULL on customer rows, and NULL again on an
+  // on-behalf row whose recorder was later deleted (ON DELETE SET NULL).
+  recordedByUserId: uuid('recorded_by_user_id').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at').defaultNow().notNull()
 }, (t) => [
   index('quote_acceptances_quote_idx').on(t.quoteId),

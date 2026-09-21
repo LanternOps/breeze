@@ -503,7 +503,13 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   // partner-owned connection never appears in a customer's export — correct:
   // it is the MSP's credential, not the customer's data.
   "psa_connections": tablePolicy("org_id", {"included":["id","org_id","partner_id","provider","name","enabled","last_sync_at","last_sync_status","last_sync_error","created_by","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["credentials","settings","sync_settings"]}),
-  "quote_acceptances": tablePolicy("org_id", {"included":["id","quote_id","org_id","signer_name","signer_email","signed_at","ip_address","user_agent","quote_sha256","render_locale","created_at"],"reviewedIncluded":["hash_version"],"excludedSensitive":["acceptance_token_jti"],"excludedOpen":[]}),
+  // origin / method / reference / recorded_by_user_id (accept-on-behalf, spec
+  // 2026-09-21 §6): the provenance of an acceptance. All four are plain
+  // scalars — no json/jsonb/bytea open container, no SUSPICIOUS_NAME_PARTS
+  // match, no credential material — so they are ordinary customer data the
+  // tenant is entitled to export. `reference` is free text the tech typed
+  // about the customer's own agreement; it belongs to the tenant.
+  "quote_acceptances": tablePolicy("org_id", {"included":["id","quote_id","org_id","signer_name","signer_email","signed_at","ip_address","user_agent","quote_sha256","render_locale","origin","method","reference","recorded_by_user_id","created_at"],"reviewedIncluded":["hash_version"],"excludedSensitive":["acceptance_token_jti"],"excludedOpen":[]}),
   "quote_blocks": tablePolicy("org_id", {"included":["id","quote_id","org_id","block_type","sort_order","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["content"]}),
   "quote_images": tablePolicy("org_id", {"included":["id","quote_id","org_id","mime","byte_size","sha256","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["image_data"]}),
   "quote_lines": tablePolicy("org_id", {"included":["id","quote_id","block_id","org_id","source_type","catalog_item_id","parent_line_id","name","description","quantity","unit_price","taxable","customer_visible","line_total","recurrence","term_months","billing_frequency","unit_cost","deposit_eligible","item_type","sku","part_number","procurement_source","vendor_sku","manufacturer","image_id","sort_order","contract_line_type","device_roles","device_group_id","device_group_name","site_id","site_name","included_quantity","overage_mode","overage_unit_price","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
