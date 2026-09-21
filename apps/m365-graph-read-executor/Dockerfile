@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # Build only the isolated executor workspace from the frozen monorepo lockfile.
-FROM node:24-alpine@sha256:50c8e8ca1d27439048670df5883f32d57cf81cff6233222c893fd0d9884cbd81 AS build
+FROM node:24-alpine@sha256:ebfe2f90462722a7a4de65e91990e97fe0d401c70e0e762c5b53302f905ec1c1 AS build
 RUN npm install -g pnpm@10.34.5
 WORKDIR /app
 
@@ -20,7 +20,7 @@ RUN pnpm --filter=@breeze/m365-graph-read-executor build && \
 # The runner contains the compiled entrypoint and production dependencies only.
 # Credentials, identity tokens, JWKs, and tenant descriptors are injected by the
 # identity-capable deployment environment at runtime; none enter this image.
-FROM node:24-alpine@sha256:50c8e8ca1d27439048670df5883f32d57cf81cff6233222c893fd0d9884cbd81 AS runner
+FROM node:24-alpine@sha256:ebfe2f90462722a7a4de65e91990e97fe0d401c70e0e762c5b53302f905ec1c1 AS runner
 WORKDIR /app
 ENV NODE_ENV=production
 ENV M365_GRAPH_READ_EXECUTOR_AUTOSTART=1
