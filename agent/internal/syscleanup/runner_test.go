@@ -297,8 +297,11 @@ func TestRunProcessIdleStopsAWedgedTreeWithoutCallingItATimeout(t *testing.T) {
 	if res.TimedOut {
 		t.Fatal("an idle-stopped tree must NOT be reported as a timeout — it never reached its cap")
 	}
-	if res.Err == nil || !strings.Contains(res.Err.Error(), "never exited") {
-		t.Fatalf("Err = %v, want it to explain that the tree stopped using CPU and never exited", res.Err)
+	// Err stays free for a GENUINE failure. Overwriting it with a synthetic
+	// "went idle" message would bury a teardown error under a result the
+	// caller reports as completed.
+	if res.Err != nil {
+		t.Fatalf("Err = %v, want nil: going idle is how a session-0 cleanmgr ends, not an error", res.Err)
 	}
 	if elapsed := time.Since(start); elapsed > 10*time.Second {
 		t.Fatalf("the idle watchdog took %s to fire; the whole point is not to wait for the cap", elapsed)
@@ -329,5 +332,71 @@ func TestRunProcessIdleLeavesUnmeasurableTreesAlone(t *testing.T) {
 	}
 	if !res.TimedOut {
 		t.Fatal("with the watchdog disabled the run must still hit its cap")
+	}
+}
+
+// The boundaries are inclusive on purpose and nothing else pins them: a `>=`
+// flipped to `>` silently adds a whole sample interval to every wedged run.
+func TestIdleTrackerBoundariesAreExact(t *testing.T) {
+	base := time.Unix(0, 0)
+	tracker := newIdleTracker(base, 60*time.Second, 30*time.Second, 250*time.Millisecond)
+	tracker.observe(base, 0)
+
+	// Exactly at minRun, with the flat window (60s) already past idleAfter.
+	if !tracker.observe(base.Add(60*time.Second), 0) {
+		t.Fatal("minRun is inclusive: a tree flat since t=0 is idle AT the minimum run, not one sample later")
+	}
+
+	// And idleAfter measured exactly, with minRun long past.
+	exact := newIdleTracker(base, time.Second, 30*time.Second, 250*time.Millisecond)
+	exact.observe(base, 0)
+	exact.observe(base.Add(10*time.Second), time.Minute) // CPU moved at t=10s
+	if exact.observe(base.Add(39*time.Second), time.Minute) {
+		t.Fatal("29s after the last CPU movement is not yet idle")
+	}
+	if !exact.observe(base.Add(40*time.Second), time.Minute) {
+		t.Fatal("idleAfter is inclusive: exactly 30s after the last CPU movement is idle")
+	}
+}
+
+// A job object should never report a DECREASING total, but if one ever did it
+// must not read as fresh work — that would re-arm the watchdog on every bogus
+// sample and hand a wedged tree the full 60-minute cap back.
+func TestIdleTrackerTreatsADecreasingCPUReadingAsFlat(t *testing.T) {
+	base := time.Unix(0, 0)
+	tracker := newIdleTracker(base, time.Second, 30*time.Second, 250*time.Millisecond)
+	tracker.observe(base, 10*time.Second)
+
+	if tracker.observe(base.Add(10*time.Second), time.Second) {
+		t.Fatal("too early to be idle")
+	}
+	if !tracker.observe(base.Add(31*time.Second), 0) {
+		t.Fatal("a decreasing CPU reading must count as flat, not as a reset")
+	}
+}
+
+// A teardown failure around an idle kill must survive: the caller turns
+// IdleStopped into a `completed` action, so an Err swallowed here would be a
+// real failure reported as success.
+func TestRunProcessIdleKeepsAGenuineDrainErrorAlongsideIdleStopped(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell fixture")
+	}
+	sh, ok := resolveBinary("/bin/sh")
+	if !ok {
+		t.Skip("/bin/sh not present")
+	}
+	tree := &cpuTree{ok: true, killed: make(chan struct{})}
+	tree.drainErr = errors.New("query cleaner job accounting: the handle is invalid")
+
+	res := runProcessWithTreeIdle(context.Background(), 30*time.Second,
+		idleLimits{sample: 10 * time.Millisecond, minRun: 20 * time.Millisecond, idleAfter: 30 * time.Millisecond, noise: 250 * time.Millisecond},
+		tree, sh, "-c", "sleep 25")
+
+	if !res.IdleStopped {
+		t.Fatalf("IdleStopped = false, want true: %+v", res)
+	}
+	if res.Err == nil || !strings.Contains(res.Err.Error(), "handle is invalid") {
+		t.Fatalf("Err = %v, want the drain failure preserved for the caller to report", res.Err)
 	}
 }

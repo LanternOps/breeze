@@ -291,6 +291,13 @@ func runProcessWithTreeIdle(ctx context.Context, timeout time.Duration, limits i
 						// This platform (or a host where the job object could
 						// not be created) cannot measure tree CPU. Disable the
 						// watchdog rather than guess — the cap still applies.
+						//
+						// Logged because it is the difference between a run
+						// that ends in minutes and one that holds the device
+						// for the full cap, and the constructor's own warnings
+						// do not fire when the measurement fails MID-run.
+						log.Warn("cleaner idle watchdog disabled: process tree CPU is not measurable; the run can only end at its timeout",
+							"binary", filepath.Base(path), "timeout", timeout.String())
 						return
 					}
 					if tracker.observe(now, cpu) {
@@ -345,9 +352,13 @@ func runProcessWithTreeIdle(ctx context.Context, timeout time.Duration, limits i
 			filepath.Base(path), timeout)
 	case idleStopped.Load():
 		result.IdleStopped = true
-		result.Err = fmt.Errorf(
-			"%s stopped using CPU for %s and never exited; its process tree was terminated",
-			filepath.Base(path), limits.idleAfter)
+		// Err is deliberately NOT overwritten here. Being idle-stopped is not
+		// itself an error — it is how a session-0 cleanmgr ends — but the
+		// teardown around it still can be (a failed job-accounting query comes
+		// back as drainErr above). Writing a synthetic message over it would
+		// bury the only evidence that teardown went wrong, and the caller
+		// would then have an IdleStopped result it reports as `completed`
+		// with a genuine failure invisible underneath it.
 	}
 	return result
 }

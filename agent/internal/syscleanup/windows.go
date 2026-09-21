@@ -459,9 +459,22 @@ func (a winCleanmgrAction) Run(ctx context.Context, _ Params) ActionResult {
 		selectedSet[handler.keyName] = true
 	}
 
+	// subActions stamps every selected handler with the run's outcome and
+	// carries the retired ones through unchanged. Used on the abort paths too:
+	// a result that names no sub-action loses both the BUG-3 honesty rule and
+	// the retirement reason the caller asked about.
+	subActions := func(status string) []SubActionRun {
+		out := make([]SubActionRun, 0, len(selected)+len(retired))
+		for _, handler := range selected {
+			out = append(out, SubActionRun{ID: "win_cleanmgr:" + handler.slug, Status: status})
+		}
+		return append(out, retired...)
+	}
+
 	present, err := presentVolumeCaches()
 	if err != nil {
 		return ActionResult{ID: a.ID(), Status: StatusFailed, ExitCode: 1,
+			SubActions: subActions(StatusFailed),
 			DurationMs: time.Since(started).Milliseconds(),
 			Error:      fmt.Sprintf("could not enumerate the Disk Cleanup handlers: %v", err)}
 	}
@@ -480,8 +493,10 @@ func (a winCleanmgrAction) Run(ctx context.Context, _ Params) ActionResult {
 			return ActionResult{
 				ID:         a.ID(),
 				Status:     StatusFailed,
+				SubActions: subActions(StatusFailed),
 				ExitCode:   1,
 				DurationMs: time.Since(started).Milliseconds(),
+				OutputTail: strings.Join(retiredReasons, "\n"),
 				Error: fmt.Sprintf(
 					"could not set %s on %q (%v); aborted before running cleanmgr so no unintended handler could execute",
 					stateFlagsValue, keyName, err),
@@ -506,31 +521,36 @@ func (a winCleanmgrAction) Run(ctx context.Context, _ Params) ActionResult {
 	switch {
 	case proc.TimedOut:
 		status, runErr = StatusTimedOut, proc.Err.Error()
+	case proc.Err != nil:
+		// Checked BEFORE IdleStopped on purpose: the runner leaves Err set for
+		// a genuine teardown failure even on an idle-stopped run, and an
+		// unqualified `completed` would bury it.
+		status, runErr = StatusFailed, proc.Err.Error()
+		if proc.IdleStopped {
+			notes = append(notes, cleanmgrIdleNote)
+		}
 	case proc.IdleStopped:
 		// NOT a timeout and not a failure: the tree stopped doing work, which
 		// for cleanmgr means the selected handlers are done and only its
 		// unreachable progress window is left (#6482).
 		notes = append(notes, cleanmgrIdleNote)
-	case proc.Err != nil:
-		status, runErr = StatusFailed, proc.Err.Error()
 	default:
 		// Exit code is informational only — see the session-0 caveat above.
 	}
 
-	subResults := make([]SubActionRun, 0, len(selected)+len(retired))
-	for _, handler := range selected {
-		subResults = append(subResults, SubActionRun{ID: "win_cleanmgr:" + handler.slug, Status: status})
-	}
-	subResults = append(subResults, retired...)
-
 	return ActionResult{
 		ID:         a.ID(),
-		SubActions: subResults,
+		SubActions: subActions(status),
 		Status:     status,
 		Error:      runErr,
 		ExitCode:   proc.ExitCode,
 		DurationMs: time.Since(started).Milliseconds(),
-		OutputTail: capOutput([]byte(strings.Join(append(notes, proc.Stdout, proc.Stderr), "\n"))),
+		// The notes are capped SEPARATELY from the process's own output and
+		// prepended afterwards. capOutput keeps the tail, so folding them into
+		// one string lets a chatty cleanmgr push the notes — including the
+		// only explanation of why a force-terminated tree is reported as
+		// completed — off the front with no trace.
+		OutputTail: strings.Join(append(notes, capOutput([]byte(proc.Stdout+"\n"+proc.Stderr))), "\n"),
 	}
 }
 
