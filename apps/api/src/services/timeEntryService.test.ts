@@ -1551,6 +1551,16 @@ describe('currency snapshots (wave 4 / Task 7)', () => {
   });
 });
 
+describe('updateTicketPart zero-row race (#6568)', () => {
+  it('rejects with 409 PART_UPDATE_LOST when UPDATE RETURNING yields no mutated row, instead of echoing the stale part', async () => {
+    dbMocks.selectResults.push([{ id: 'part-1', billingStatus: 'not_billed', currencyCode: 'USD' }]);
+    dbMocks.updateResult = [];
+
+    await expect(updateTicketPart('part-1', { description: 'lost race' }, ACTOR))
+      .rejects.toMatchObject({ status: 409, code: 'PART_UPDATE_LOST' });
+  });
+});
+
 // Wave-6 release gate (W6-G4-2 / W6-G4-3): money persisted on a time entry or a
 // ticket part must be representable in that row's OWN currency snapshot — a JPY
 // org cannot end up holding a fractional-yen rate or part price.

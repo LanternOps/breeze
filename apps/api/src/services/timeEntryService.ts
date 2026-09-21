@@ -53,7 +53,9 @@ export type TimeEntryServiceErrorCode =
   | 'RATE_REQUIRES_BILLABLE'
   | 'MANAGE_BILLING_REQUIRED'
   /** 409 — UPDATE ... RETURNING matched zero rows (entry re-pointed/deleted between the read and the write). */
-  | 'ENTRY_UPDATE_LOST';
+  | 'ENTRY_UPDATE_LOST'
+  /** 409 — UPDATE ... RETURNING matched zero rows (part re-pointed/deleted between the read and the write). */
+  | 'PART_UPDATE_LOST';
 
 export class TimeEntryServiceError extends Error {
   constructor(
@@ -1205,7 +1207,21 @@ export async function updateTicketPart(id: string, input: Partial<TicketPartInpu
   if (input.billingStatus !== undefined) set.billingStatus = input.billingStatus;
   if (input.notes !== undefined) set.notes = input.notes;
   const rows = await db.update(ticketParts).set(set).where(eq(ticketParts.id, id)).returning();
-  return rows[0] ?? part;
+  const mutated = rows[0];
+  if (!mutated) {
+    // The part existed at the top of this call (getPartOr404) but the UPDATE
+    // matched zero rows — it was re-pointed or deleted in between (org move,
+    // RLS context change, concurrent delete). Returning the stale pre-update
+    // part here would tell the caller the write succeeded when it did not,
+    // and unlike updateTimeEntry there's no audit/event call to skip either —
+    // the write loss would otherwise be purely silent.
+    throw new TimeEntryServiceError(
+      'Part could not be updated — reload and retry',
+      409,
+      'PART_UPDATE_LOST'
+    );
+  }
+  return mutated;
 }
 
 export async function deleteTicketPart(id: string, _actor: TimeEntryActor) {
