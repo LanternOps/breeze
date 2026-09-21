@@ -1,4 +1,4 @@
-import { and, eq, or, sql } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import {
   alerts,
@@ -8,6 +8,7 @@ import {
 } from '../../db/schema';
 import { createSourcedAlert, resolveAlert } from '../alertService';
 import { EVENT_TYPES, publishEvent } from '../eventBus';
+import { captureException } from '../sentry';
 // Package ROOT — deriveBackupHealth is a VALUE import (see Global Constraints).
 import { deriveBackupHealth, type BackupProviderAlertCondition, type ExternalBackupStatus } from '@breeze/shared';
 import { getBackupProvider } from './registry';
@@ -226,56 +227,41 @@ export async function evaluateProviderAlerts(
       })
       .from(alerts)
       .where(and(
+        inArray(alerts.status, ['active', 'acknowledged', 'suppressed']),
         sql`${alerts.context}->>'source' = ${BACKUP_PROVIDER_ALERT_SOURCE}`,
         sql`${alerts.context}->>'connectionId' = ${connectionId}`,
-        or(eq(alerts.status, 'active'), eq(alerts.status, 'acknowledged'), eq(alerts.status, 'suppressed')),
       ))) as OpenProviderAlert[];
 
-    const openByProviderDeviceId = new Map<string, OpenProviderAlert>();
-    for (const alert of openAlerts) {
-      if (alert.providerDeviceId) openByProviderDeviceId.set(alert.providerDeviceId, alert);
-    }
+    const openByKey = new Set(
+      openAlerts.map((a) => `${a.providerDeviceId ?? ''}|${a.condition ?? ''}`),
+    );
 
-    let raised = 0;
-    let resolved = 0;
-    const rowIds = new Set(rows.map((r) => r.id));
-    const pendingUpdates: Array<{ id: string; pendingCondition: string | null }> = [];
+    const pendingWrites: Array<{ id: string; value: string | null }> = [];
+    const toRaise: Array<{ row: ProviderAlertRow; condition: BackupProviderAlertCondition }> = [];
+    const pendingEvents: Array<{ type: typeof EVENT_TYPES.BACKUP_PROVIDER_DEVICE_UNHEALTHY | typeof EVENT_TYPES.BACKUP_PROVIDER_DEVICE_RECOVERED; orgId: string; payload: Record<string, unknown> }> = [];
+    /** "<providerDeviceId>|<condition>" pairs that must SURVIVE this pass. */
+    const keep = new Set<string>();
 
     for (const row of rows) {
-      const prev = decodeConditionState(row.pendingCondition);
       const computed = computeProviderCondition(row, now);
+      const prev = decodeConditionState(row.pendingCondition);
       const { next, raise, recoveredFrom } = nextConditionState(prev, computed);
 
-      if (encodeConditionState(next) !== row.pendingCondition) {
-        pendingUpdates.push({ id: row.id, pendingCondition: encodeConditionState(next) });
-      }
+      const encoded = encodeConditionState(next);
+      if (encoded !== row.pendingCondition) pendingWrites.push({ id: row.id, value: encoded });
 
-      if (raise && next.phase === 'raised') {
-        const meta = PROVIDER_CONDITION_META[next.condition];
-        const label = deviceLabel(row);
-        if (row.breezeDeviceId) {
-          const alertId = await createSourcedAlert({
-            deviceId: row.breezeDeviceId,
-            orgId: row.orgId,
-            severity: meta.severity,
-            title: meta.title(label).slice(0, 500),
-            message: `${providerLabel(row.provider)} backup for ${label}${row.customerName ? ` (${row.customerName})` : ''} is reporting: ${meta.title(label)}.`,
-            context: {
-              source: BACKUP_PROVIDER_ALERT_SOURCE,
-              connectionId,
-              providerDeviceId: row.id,
-              condition: next.condition,
-              provider: row.provider,
-            },
-            publisher: BACKUP_PROVIDER_ALERT_PUBLISHER,
-            configItemName: PROVIDER_ALERT_CONFIG_ITEM,
-          });
-          if (alertId) raised += 1;
-        }
-        await publishEvent(
-          EVENT_TYPES.BACKUP_PROVIDER_DEVICE_UNHEALTHY,
-          row.orgId,
-          {
+      const { health } = deriveBackupHealth({
+        status: row.status,
+        lastSuccessAt: row.lastSuccessAt,
+        errorsCount: row.errorsCount,
+        now,
+      });
+
+      if (recoveredFrom) {
+        pendingEvents.push({
+          type: EVENT_TYPES.BACKUP_PROVIDER_DEVICE_RECOVERED,
+          orgId: row.orgId,
+          payload: {
             connectionId,
             providerKey: row.provider,
             providerDeviceId: row.id,
@@ -283,64 +269,145 @@ export async function evaluateProviderAlerts(
             deviceId: row.breezeDeviceId,
             vendorDeviceName: row.vendorDeviceName,
             status: row.status,
-            health: 'unhealthy',
-            condition: next.condition,
-          },
-          BACKUP_PROVIDER_ALERT_PUBLISHER,
-        );
-      } else if (recoveredFrom) {
-        const openAlert = openByProviderDeviceId.get(row.id);
-        if (openAlert && !(openAlert.status === 'suppressed' && openAlert.suppressedUntil === null)) {
-          const didResolve = await resolveAlert(openAlert.id, PROVIDER_ALERT_RESOLUTION_NOTE);
-          if (didResolve) resolved += 1;
-        }
-        await publishEvent(
-          EVENT_TYPES.BACKUP_PROVIDER_DEVICE_RECOVERED,
-          row.orgId,
-          {
-            connectionId,
-            providerKey: row.provider,
-            providerDeviceId: row.id,
-            orgId: row.orgId,
-            deviceId: row.breezeDeviceId,
-            vendorDeviceName: row.vendorDeviceName,
-            status: row.status,
-            health: 'healthy',
+            health,
             condition: recoveredFrom,
           },
-          BACKUP_PROVIDER_ALERT_PUBLISHER,
-        );
+        });
+      }
+
+      if (raise) {
+        pendingEvents.push({
+          type: EVENT_TYPES.BACKUP_PROVIDER_DEVICE_UNHEALTHY,
+          orgId: row.orgId,
+          payload: {
+            connectionId,
+            providerKey: row.provider,
+            providerDeviceId: row.id,
+            orgId: row.orgId,
+            deviceId: row.breezeDeviceId,
+            vendorDeviceName: row.vendorDeviceName,
+            status: row.status,
+            health,
+            condition: next.phase === 'raised' ? next.condition : null,
+          },
+        });
+      }
+
+      // Alerts require a device (D3): an unlinked row gets the events above and
+      // nothing else. A LINKED row in the raised phase keeps (or gets) exactly
+      // one alert for its current condition.
+      if (next.phase !== 'raised' || !row.breezeDeviceId) continue;
+      keep.add(`${row.id}|${next.condition}`);
+      if (!openByKey.has(`${row.id}|${next.condition}`)) {
+        toRaise.push({ row, condition: next.condition });
       }
     }
 
-    // Resolve alerts whose provider device row no longer exists at all (deleted,
-    // unlinked, or the connection was removed) — the spec's third resolve case.
-    for (const alert of openAlerts) {
-      if (alert.providerDeviceId && rowIds.has(alert.providerDeviceId)) continue;
-      if (alert.status === 'suppressed' && alert.suppressedUntil === null) continue;
-      const didResolve = await resolveAlert(alert.id, PROVIDER_ALERT_RESOLUTION_NOTE);
-      if (didResolve) resolved += 1;
-    }
-
-    for (const batch of chunkUpdates(pendingUpdates, 500)) {
+    // ---- persist the hysteresis state -----------------------------------
+    if (pendingWrites.length > 0) {
       const values = sql.join(
-        batch.map((u) => sql`(${u.id}::uuid, ${u.pendingCondition})`),
+        pendingWrites.map((w) => sql`(${w.id}::uuid, ${w.value}::varchar)`),
         sql`, `,
       );
       await db.execute(sql`
         UPDATE backup_provider_devices AS p
-        SET pending_condition = v.pending_condition
+        SET pending_condition = v.pending_condition, updated_at = now()
         FROM (VALUES ${values}) AS v(id, pending_condition)
-        WHERE p.id = v.id
+        WHERE p.id = v.id AND p.connection_id = ${connectionId}::uuid
       `);
     }
 
-    return { raised, resolved };
-  }, `backup-provider-alerts:${connectionId}`));
-}
+    // ---- resolve what no longer holds -----------------------------------
+    // An indefinitely-suppressed alert ("Forever") is left alone: auto-resolving
+    // it destroys the mute, because the next recurrence then creates a brand-new
+    // ACTIVE alert (warrantyAlertEvaluator.ts:227-252, #2110). Timed
+    // suppressions still resolve.
+    const resolvable = openAlerts.filter((alert) => {
+      if (keep.has(`${alert.providerDeviceId ?? ''}|${alert.condition ?? ''}`)) return false;
+      if (alert.status === 'suppressed' && alert.suppressedUntil === null) return false;
+      return true;
+    });
 
-function chunkUpdates<T>(items: T[], size: number): T[][] {
-  const out: T[][] = [];
-  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
-  return out;
+    let resolved = 0;
+    for (const alert of resolvable) {
+      if (await resolveAlert(alert.id, PROVIDER_ALERT_RESOLUTION_NOTE)) resolved += 1;
+    }
+    // Losing an individual compare-and-swap is normal (a technician got there
+    // first). Losing EVERY candidate is the shape an RLS write-policy divergence
+    // takes, and under `breeze_app` such a write raises no error at all — so one
+    // aggregate line per invocation gives that failure somewhere to show up.
+    if (resolvable.length > 0 && resolved === 0) {
+      console.warn(
+        `[BackupProviderSync] alert resolve transitioned 0 of ${resolvable.length} open provider `
+        + `alert(s) for connection ${connectionId}; every compare-and-swap matched no rows.`,
+      );
+    }
+
+    // ---- raise ------------------------------------------------------------
+    let raised = 0;
+    for (const { row, condition } of toRaise) {
+      const meta = PROVIDER_CONDITION_META[condition];
+      const name = deviceLabel(row);
+      const label = providerLabel(row.provider);
+      const lastSuccess = row.lastSuccessAt ? row.lastSuccessAt.toISOString() : 'never';
+      const alertId = await createSourcedAlert({
+        deviceId: row.breezeDeviceId!,
+        // The provider row's org IS the linked device's org: the composite FK
+        // (breeze_device_id, org_id) -> devices(id, org_id) enforces it.
+        orgId: row.orgId,
+        severity: meta.severity,
+        title: meta.title(name).slice(0, 500),
+        message:
+          `${label} reports status "${row.status}" for ${row.vendorDeviceName}`
+          + `${row.customerName ? ` (customer ${row.customerName})` : ''}. `
+          + `Last successful backup: ${lastSuccess}. Errors in the last session: ${row.errorsCount}.`,
+        context: {
+          source: BACKUP_PROVIDER_ALERT_SOURCE,
+          connectionId,
+          providerKey: row.provider,
+          providerDeviceId: row.id,
+          vendorDeviceId: row.vendorDeviceId,
+          condition,
+        },
+        configItemName: PROVIDER_ALERT_CONFIG_ITEM,
+        publisher: BACKUP_PROVIDER_ALERT_PUBLISHER,
+        eventPayload: {
+          connectionId,
+          providerKey: row.provider,
+          providerDeviceId: row.id,
+          condition,
+        },
+      });
+      if (alertId) {
+        raised += 1;
+      } else {
+        // The insert produced no row or the publish rolled it back, so nothing
+        // was announced. The row still sits in the `raised` phase, and the next
+        // sync's dedupe finds no open alert and retries — which is why the
+        // hysteresis state is NOT rolled back here.
+        console.error(
+          `[BackupProviderSync] failed to create the ${condition} alert for provider device `
+          + `${row.id}; the next sync retries`,
+        );
+      }
+    }
+
+    // ---- publish the transition events ------------------------------------
+    // Last, so a publish failure cannot leave an alert unraised. Each publish is
+    // individually guarded: the event stream is best-effort, the alert is not.
+    for (const event of pendingEvents) {
+      try {
+        await publishEvent(event.type, event.orgId, event.payload, BACKUP_PROVIDER_ALERT_PUBLISHER);
+      } catch (error) {
+        console.error(`[BackupProviderSync] failed to publish ${event.type}:`, error);
+        captureException(error instanceof Error ? error : new Error(String(error)), undefined, {
+          service: 'backupProviders',
+          operation: 'evaluateProviderAlerts',
+          connectionId,
+        });
+      }
+    }
+
+    return { raised, resolved };
+  }, 'backupProviderSync.alerts'));
 }
