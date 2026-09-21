@@ -7,12 +7,14 @@ const {
   checkBudgetMock,
   reserveAiBudgetMock,
   releaseUnusedAiBudgetMock,
+  getEffectiveAiBudgetMock,
 } = vi.hoisted(() => ({
   captureExceptionMock: vi.fn(),
   resolveLlmConfigMock: vi.fn(),
   checkBudgetMock: vi.fn(),
   reserveAiBudgetMock: vi.fn(),
   releaseUnusedAiBudgetMock: vi.fn(),
+  getEffectiveAiBudgetMock: vi.fn().mockResolvedValue({ maxTurnsPerSession: 50 }),
 }));
 
 vi.mock('../../db', () => ({
@@ -107,6 +109,10 @@ vi.mock('../../services/screenshotStorage', () => ({
 vi.mock('../../services/aiCostTracker', () => ({
   checkBudget: (...args: unknown[]) => checkBudgetMock(...args),
   getRemainingBudgetUsd: vi.fn(),
+}));
+
+vi.mock('../../services/effectiveSettings', () => ({
+  getEffectiveAiBudget: (...args: unknown[]) => getEffectiveAiBudgetMock(...args),
 }));
 
 vi.mock('../../services/aiBudgetReservations', () => ({
@@ -250,6 +256,33 @@ describe('helper routes permission derivation', () => {
     expect((insertedValues?.contextSnapshot as Record<string, unknown>).permissionLevel).toBe('standard');
     expect(insertedValues?.model).toBe('claude-opus-4-6');
     expect(resolveLlmConfigMock).toHaveBeenCalledWith('partner-1');
+  });
+
+  // #6473 — Helper-originated sessions were the third createSession-shaped
+  // call site left silently pinned to the ai_sessions schema default (50).
+  it('sets maxTurns from the effective org/partner budget, not the schema default', async () => {
+    mockHelperAuthDevice();
+    getEffectiveAiBudgetMock.mockResolvedValueOnce({ maxTurnsPerSession: 100 });
+
+    let insertedValues: Record<string, unknown> | undefined;
+    vi.mocked(db.insert).mockReturnValueOnce({
+      values: vi.fn((values: Record<string, unknown>) => {
+        insertedValues = values;
+        return {
+          returning: vi.fn().mockResolvedValue([{ id: 'session-1' }]),
+        };
+      }),
+    } as never);
+
+    const res = await app.request('/helper/chat/sessions', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer brz_agent_token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+
+    expect(res.status).toBe(201);
+    expect(getEffectiveAiBudgetMock).toHaveBeenCalledWith('org-1');
+    expect(insertedValues?.maxTurns).toBe(100);
   });
 
   it('returns ai_unavailable as 503 before inserting a helper session', async () => {
