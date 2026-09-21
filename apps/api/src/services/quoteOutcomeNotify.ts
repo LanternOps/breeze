@@ -32,6 +32,10 @@ export async function notifyQuoteOutcome(input: {
   outcome: 'accepted' | 'declined';
   source: 'customer' | 'msp';
   signerName?: string | null;
+  /** Rides onto the bus event so an integration can distinguish an
+   *  MSP-recorded acceptance (spec 2026-09-21 §5). */
+  origin?: 'customer' | 'on_behalf';
+  actorUserId?: string | null;
 }): Promise<void> {
   try {
     // Phase 1 — everything that touches the database, in one short context.
@@ -46,6 +50,8 @@ export async function notifyQuoteOutcome(input: {
       await emitQuoteEvent({
         type: input.outcome === 'accepted' ? 'quote.accepted' : 'quote.declined',
         quoteId: input.quoteId, orgId: q.orgId, partnerId: q.partnerId,
+        ...(input.origin ? { origin: input.origin } : {}),
+        ...(input.actorUserId !== undefined ? { actorUserId: input.actorUserId } : {}),
       });
       if (input.source !== 'customer') return null; // event only — no email for a self-inflicted outcome
 

@@ -354,6 +354,46 @@ export async function claimQuoteSent(
 }
 
 /**
+ * Lock + validate the quote a revision replaces, ready to hand to
+ * {@link applyQuoteSentClaim}'s `parentToSupersede`. Returns null when the quote
+ * is not a revision.
+ *
+ * ONE copy, shared by `sendQuote` and the on-behalf accept, so the lock ordering
+ * (child row already held → parent by id, org-scoped) stays identical on both
+ * paths. The revision chain is acyclic and each path locks the child before its
+ * parent, so concurrent send/accept operations serialize without a cycle.
+ *
+ * `action` only names the verb in the PARENT_CONVERTED message — the customer
+ * needs to be told which operation just lost the race, not a generic state code.
+ *
+ * MUST run inside the caller's transaction: the FOR UPDATE below is what keeps
+ * the parent from settling between this check and the claim that retires it.
+ */
+export async function resolveParentToSupersede(
+  quote: { id: string; orgId: string; revisionOfQuoteId: string | null },
+  action: 'sent' | 'accepted',
+): Promise<{ id: string; status: SupersedableStatus } | null> {
+  if (!quote.revisionOfQuoteId) return null;
+  const [parent] = await db.select({ id: quotes.id, status: quotes.status })
+    .from(quotes)
+    .where(and(eq(quotes.id, quote.revisionOfQuoteId), eq(quotes.orgId, quote.orgId)))
+    .limit(1)
+    .for('update');
+  if (!parent) throw new QuoteServiceError('Original quote not found', 409, 'INVALID_STATE');
+  if (parent.status === 'converted' || parent.status === 'accepted') {
+    throw new QuoteServiceError(
+      `The original quote was accepted while this revision was being drafted — it can no longer be ${action}`,
+      409, 'PARENT_CONVERTED');
+  }
+  // Parent statuses a revision may retire deliberately exclude the settled
+  // accepted/converted outcomes with an invoice or contract behind them.
+  if (!isSupersedable(parent.status)) {
+    throw new QuoteServiceError(`Cannot supersede a quote in status ${parent.status}`, 409, 'INVALID_STATE');
+  }
+  return { id: parent.id, status: parent.status };
+}
+
+/**
  * Issue (if draft) + send: assign number, status→sent, sentAt, mint token.
  * When the quote is a revision, its parent is retired to 'superseded'
  * atomically with the draft→sent claim.
@@ -401,27 +441,9 @@ export async function sendQuote(
   // the child's draft→sent claim commit or roll back together. This locks the
   // child first and then its parent; acceptQuote locks exactly one row, and the
   // revision chain is acyclic, so concurrent accept/send operations serialize
-  // without forming a lock cycle.
-  let parentToSupersede: { id: string; status: SupersedableStatus } | null = null;
-  if (quote.revisionOfQuoteId) {
-    const [parent] = await db.select({ id: quotes.id, status: quotes.status })
-      .from(quotes)
-      .where(and(eq(quotes.id, quote.revisionOfQuoteId), eq(quotes.orgId, quote.orgId)))
-      .limit(1)
-      .for('update');
-    if (!parent) throw new QuoteServiceError('Original quote not found', 409, 'INVALID_STATE');
-    if (parent.status === 'converted' || parent.status === 'accepted') {
-      throw new QuoteServiceError(
-        'The original quote was accepted while this revision was being drafted — it can no longer be sent',
-        409, 'PARENT_CONVERTED');
-    }
-    // Parent statuses a revision send may retire deliberately exclude the
-    // settled accepted/converted outcomes with an invoice or contract behind them.
-    if (!isSupersedable(parent.status)) {
-      throw new QuoteServiceError(`Cannot supersede a quote in status ${parent.status}`, 409, 'INVALID_STATE');
-    }
-    parentToSupersede = { id: parent.id, status: parent.status };
-  }
+  // without forming a lock cycle. Shared with the on-behalf accept so both
+  // paths take the same locks in the same order.
+  const parentToSupersede = await resolveParentToSupersede(quote, 'sent');
 
   // Send-time contract-variable gate (Task 12): a contract block's declared
   // variables (auto or manual) can be left unresolved — sending would ship a

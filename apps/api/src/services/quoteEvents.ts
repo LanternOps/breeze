@@ -14,6 +14,12 @@ export interface QuoteEvent {
   quoteId: string;
   orgId: string;
   partnerId: string;
+  /** For an accept: who produced it. Absent on older emitters. An integration
+   *  consuming this bus must be able to tell an MSP-recorded acceptance from a
+   *  customer click without re-reading the acceptance row. */
+  origin?: 'customer' | 'on_behalf';
+  /** The tech who recorded an on-behalf acceptance. Null for a customer one. */
+  actorUserId?: string | null;
 }
 
 let queue: Queue | null = null;
