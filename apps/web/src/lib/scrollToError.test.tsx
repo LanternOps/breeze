@@ -36,44 +36,45 @@ function Probe({ error }: { error: string | undefined }) {
 }
 
 describe('useScrollToError (#6494)', () => {
-  let scrollIntoView: ReturnType<typeof vi.fn>;
-
+  // jsdom has no scrollIntoView implementation; stub it on the prototype so
+  // every element created during these tests has one. Assigning inline (not
+  // through a separately-typed variable) keeps the prototype's own call
+  // signature — otherwise astro check's ts(2322) flags the assignment.
   beforeEach(() => {
-    scrollIntoView = vi.fn();
-    // jsdom has no scrollIntoView implementation; stub it on the prototype so
-    // every element created during these tests has one.
-    HTMLElement.prototype.scrollIntoView = scrollIntoView;
+    HTMLElement.prototype.scrollIntoView = vi.fn();
   });
+
+  const scrollIntoView = () => HTMLElement.prototype.scrollIntoView as unknown as ReturnType<typeof vi.fn>;
 
   it('scrolls the ref element into view when the error first appears', () => {
     const { rerender } = render(<Probe error={undefined} />);
-    expect(scrollIntoView).not.toHaveBeenCalled();
+    expect(scrollIntoView()).not.toHaveBeenCalled();
 
     rerender(<Probe error="Name is required" />);
 
-    expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'center' });
-    expect(scrollIntoView).toHaveBeenCalledTimes(1);
+    expect(scrollIntoView()).toHaveBeenCalledWith({ behavior: 'smooth', block: 'center' });
+    expect(scrollIntoView()).toHaveBeenCalledTimes(1);
   });
 
   it('does not scroll again on re-render while the error stays truthy', () => {
     const { rerender } = render(<Probe error={undefined} />);
     rerender(<Probe error="Name is required" />);
-    expect(scrollIntoView).toHaveBeenCalledTimes(1);
+    expect(scrollIntoView()).toHaveBeenCalledTimes(1);
 
     rerender(<Probe error="Name is required" />);
 
-    expect(scrollIntoView).toHaveBeenCalledTimes(1);
+    expect(scrollIntoView()).toHaveBeenCalledTimes(1);
   });
 
   it('scrolls again if the error clears and a new one appears', () => {
     const { rerender } = render(<Probe error={undefined} />);
     rerender(<Probe error="Name is required" />);
-    expect(scrollIntoView).toHaveBeenCalledTimes(1);
+    expect(scrollIntoView()).toHaveBeenCalledTimes(1);
 
     rerender(<Probe error={undefined} />);
     rerender(<Probe error="Sources are required" />);
 
-    expect(scrollIntoView).toHaveBeenCalledTimes(2);
+    expect(scrollIntoView()).toHaveBeenCalledTimes(2);
   });
 
   it('scrolls again when a different error replaces the current one with no intervening clear', () => {
@@ -85,21 +86,21 @@ describe('useScrollToError (#6494)', () => {
     // falsy->truthy boolean transition ever being observed.
     const { rerender } = render(<Probe error={undefined} />);
     rerender(<Probe error="A reason is required." />);
-    expect(scrollIntoView).toHaveBeenCalledTimes(1);
+    expect(scrollIntoView()).toHaveBeenCalledTimes(1);
 
     rerender(<Probe error="Immutable days must be at least 1." />);
 
-    expect(scrollIntoView).toHaveBeenCalledTimes(2);
+    expect(scrollIntoView()).toHaveBeenCalledTimes(2);
   });
 
   it('does not scroll on an identical error value even if re-set', () => {
     const { rerender } = render(<Probe error={undefined} />);
     rerender(<Probe error="Name is required" />);
-    expect(scrollIntoView).toHaveBeenCalledTimes(1);
+    expect(scrollIntoView()).toHaveBeenCalledTimes(1);
 
     // Same string value (e.g. a new render triggered by unrelated state).
     rerender(<Probe error="Name is required" />);
 
-    expect(scrollIntoView).toHaveBeenCalledTimes(1);
+    expect(scrollIntoView()).toHaveBeenCalledTimes(1);
   });
 });

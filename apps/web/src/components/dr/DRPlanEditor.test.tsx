@@ -233,8 +233,10 @@ describe('DRPlanEditor save atomicity (#6382)', () => {
       return makeJsonResponse({}, false, 404);
     });
 
-    const scrollIntoView = vi.fn();
-    HTMLElement.prototype.scrollIntoView = scrollIntoView;
+    // jsdom has no scrollIntoView implementation; stub it inline (not
+    // through a separately-typed variable, which loses the prototype's own
+    // call signature and fails astro check's ts(2322)).
+    HTMLElement.prototype.scrollIntoView = vi.fn();
 
     const { save } = await renderEditor();
     fireEvent.change(screen.getByLabelText('Plan name'), { target: { value: 'Renamed plan' } });
@@ -244,7 +246,9 @@ describe('DRPlanEditor save atomicity (#6382)', () => {
     fireEvent.click(save);
 
     const banner = await screen.findByText(/output directory must be an absolute path/i);
-    await waitFor(() => expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'center' }));
+    await waitFor(() =>
+      expect(HTMLElement.prototype.scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'center' })
+    );
     await waitFor(() => expect(banner).toHaveFocus());
   });
 

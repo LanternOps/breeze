@@ -19,14 +19,16 @@ const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500):
   }) as unknown as Response;
 
 describe('BackupProfilesTab validation scroll (#6494)', () => {
-  let scrollIntoView: ReturnType<typeof vi.fn>;
-
   beforeEach(() => {
     vi.clearAllMocks();
-    scrollIntoView = vi.fn();
-    HTMLElement.prototype.scrollIntoView = scrollIntoView;
+    // jsdom has no layout and so no scrollIntoView implementation; stub it
+    // inline so the assignment keeps the prototype's own call signature
+    // (assigning a separately-typed `ReturnType<typeof vi.fn>` variable here
+    // loses that contextual typing and fails astro check's ts(2322)).
+    HTMLElement.prototype.scrollIntoView = vi.fn();
 
-    fetchMock.mockImplementation(async (input) => {
+    fetchMock.mockImplementation(async (input, init) => {
+      void init;
       const url = String(input);
       if (url === '/backup/profiles?includeInactive=true') {
         return makeJsonResponse({ data: [] });
@@ -49,8 +51,10 @@ describe('BackupProfilesTab validation scroll (#6494)', () => {
     // first, so the scroll must target the name field, not the sources
     // section further down.
     expect(await screen.findByText('Profile name is required')).toBeInTheDocument();
-    await waitFor(() => expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'center' }));
-    expect(scrollIntoView).toHaveBeenCalledTimes(1);
+    await waitFor(() =>
+      expect(HTMLElement.prototype.scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'center' })
+    );
+    expect(HTMLElement.prototype.scrollIntoView).toHaveBeenCalledTimes(1);
   });
 
   it('scrolls to the sources section when only the source selection is invalid', async () => {
@@ -65,7 +69,9 @@ describe('BackupProfilesTab validation scroll (#6494)', () => {
     fireEvent.click(screen.getByText('Save'));
 
     expect(await screen.findByText('Enable at least one data source')).toBeInTheDocument();
-    await waitFor(() => expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'center' }));
-    expect(scrollIntoView).toHaveBeenCalledTimes(1);
+    await waitFor(() =>
+      expect(HTMLElement.prototype.scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'center' })
+    );
+    expect(HTMLElement.prototype.scrollIntoView).toHaveBeenCalledTimes(1);
   });
 });
