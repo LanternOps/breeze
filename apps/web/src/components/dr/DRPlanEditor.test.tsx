@@ -224,6 +224,30 @@ describe('DRPlanEditor save atomicity (#6382)', () => {
     ).toBe(false);
   });
 
+  it('scrolls the error banner into view and focuses it on validation failure (#6494)', async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init as RequestInit | undefined)?.method ?? 'GET';
+      if (url.startsWith('/devices/options')) return makeJsonResponse(deviceOptionsPayload);
+      if (url === '/dr/plans/plan-1' && method === 'GET') return makeJsonResponse(editablePlanPayload);
+      return makeJsonResponse({}, false, 404);
+    });
+
+    const scrollIntoView = vi.fn();
+    HTMLElement.prototype.scrollIntoView = scrollIntoView;
+
+    const { save } = await renderEditor();
+    fireEvent.change(screen.getByLabelText('Plan name'), { target: { value: 'Renamed plan' } });
+    fireEvent.change(screen.getByTestId('dr-group-rebuild-output-dir'), {
+      target: { value: 'relative/out' },
+    });
+    fireEvent.click(save);
+
+    const banner = await screen.findByText(/output directory must be an absolute path/i);
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'center' }));
+    await waitFor(() => expect(banner).toHaveFocus());
+  });
+
   it('refuses an over-long rebuild output dir before issuing any write', async () => {
     fetchMock.mockImplementation(async (input, init) => {
       const url = String(input);

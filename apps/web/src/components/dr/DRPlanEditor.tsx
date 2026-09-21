@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 import { Dialog } from '../shared/Dialog';
 import { fetchWithAuth } from '../../stores/auth';
+import { useScrollToError } from '../../lib/scrollToError';
 import DRPlanGroupCard, {
   DEFAULT_REBUILD_OUTPUT_DIR,
   DEFAULT_REBUILD_WAIT_TIMEOUT_MINUTES,
@@ -153,6 +154,7 @@ export default function DRPlanEditor({
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string>();
+  const errorRef = useScrollToError<HTMLDivElement>(error);
 
   const isEdit = !!planId;
 
@@ -465,7 +467,10 @@ export default function DRPlanEditor({
 
       <div className="space-y-6 overflow-y-auto p-6">
         {error && (
-          <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          <div
+            ref={errorRef}
+            className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+          >
             {error}
           </div>
         )}
