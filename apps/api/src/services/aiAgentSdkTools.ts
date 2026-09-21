@@ -1843,7 +1843,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'system_cleanup',
-      'List, run or check OS-native maintenance cleaners on a device (Windows Disk Cleanup handlers and DISM component cleanup, macOS local snapshots and Homebrew, Linux package caches and journal). list is read-only (re-check a "pending" answer with its commandId). run requires approval, starts the selected catalog actions and returns a cleanupRunId immediately; poll status with it until executed or failed.',
+      registryDescription('system_cleanup'),
       {
         deviceId: uuid,
         action: z.enum(['list', 'run', 'status']),
