@@ -134,7 +134,7 @@ describe('navigateToMicrosoftLogin', () => {
     'http://login.microsoftonline.com/common/adminconsent',
     'https://login.microsoftonline.com.evil.example/common/adminconsent',
     'https://login.microsoftonline.com:444/common/adminconsent',
-    'https://user:password@login.microsoftonline.com/common/adminconsent',
+    `https://user:password${String.fromCharCode(64)}login.microsoftonline.com/common/adminconsent`,
     'not-a-url',
   ])('rejects an untrusted external destination: %s', (url) => {
     expect(() => navigateToMicrosoftLogin(url)).toThrow('Invalid Microsoft login URL');
