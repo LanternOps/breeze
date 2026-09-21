@@ -192,9 +192,18 @@ describe('ticketCreationLoopReason', () => {
   it('suppresses ONLY an explicit null Return-Path (<>), not empty/ordinary paths', () => {
     expect(ticketCreationLoopReason(email({ returnPath: '<>' }))).toBe('null-return-path');
     expect(ticketCreationLoopReason(email({ returnPath: '  <>  ' }))).toBe('null-return-path');
+    // CFWS around/inside the angle-addr (RFC 5322) is still the null path.
+    expect(ticketCreationLoopReason(email({ returnPath: '< >' }))).toBe('null-return-path');
+    expect(ticketCreationLoopReason(email({ returnPath: '<> (auto-generated)' }))).toBe('null-return-path');
+    expect(ticketCreationLoopReason(email({ returnPath: '(bounce) <>' }))).toBe('null-return-path');
+    expect(ticketCreationLoopReason(email({ returnPath: '(a \\(nested) <>' }))).toBe('null-return-path');
     // Empty string is NOT treated as a bounce (avoids false positives on a stripped header).
     expect(ticketCreationLoopReason(email({ returnPath: '' }))).toBeNull();
+    // A comment-only header strips to '' and must NOT be read as a bounce.
+    expect(ticketCreationLoopReason(email({ returnPath: '(bounce)' }))).toBeNull();
     expect(ticketCreationLoopReason(email({ returnPath: '<bob@customer.com>' }))).toBeNull();
+    // A real address decorated with CFWS must NOT match the null path.
+    expect(ticketCreationLoopReason(email({ returnPath: '<bob@customer.com> (sales)' }))).toBeNull();
     expect(ticketCreationLoopReason(email({ returnPath: undefined }))).toBeNull();
     expect(ticketCreationLoopReason(email({ returnPath: null }))).toBeNull();
   });

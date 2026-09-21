@@ -120,6 +120,29 @@ function autoSubmittedKeyword(raw: string | undefined): string | null {
   return token.length > 0 ? token : null;
 }
 
+/**
+ * Is this Return-Path header a null return path (`<>`, an empty envelope sender = a
+ * bounce)? RFC 5322 permits CFWS (nestable comments and folding whitespace) around
+ * and inside the angle-addr, so `<>`, `< >`, `<> (auto)`, `(bounce) <>` and ` <> `
+ * are all the null path. Strip nestable comments and ALL whitespace, then compare to
+ * `<>`. A real address like `<user@x.com>` strips to `<user@x.com>` and does not
+ * match. An empty/blank/comment-only header strips to '' and is NOT a null path (a
+ * stripped header must not be read as a bounce). A backslash escapes the next char
+ * (RFC 5322 quoted-pair) so `\(` / `\)` are literals, not comment delimiters.
+ */
+function isNullReturnPath(raw: string): boolean {
+  let out = '';
+  let depth = 0;
+  for (let i = 0; i < raw.length; i += 1) {
+    const c = raw.charAt(i);
+    if (c === '\\') { i += 1; continue; }        // escaped pair: skip both chars
+    if (c === '(') { depth += 1; continue; }
+    if (c === ')') { if (depth > 0) depth -= 1; continue; }
+    if (depth === 0 && !/\s/.test(c)) out += c;
+  }
+  return out === '<>';
+}
+
 export function ticketCreationLoopReason(n: NormalizedInboundEmail): string | null {
   // RFC 3834 §5.1: the keyword may be preceded by CFWS (leading whitespace and
   // parenthesized comments, e.g. `(vacation) auto-replied`) and followed by
@@ -131,12 +154,15 @@ export function ticketCreationLoopReason(n: NormalizedInboundEmail): string | nu
   const autoSubmitted = autoSubmittedKeyword(n.autoSubmitted);
   if (autoSubmitted === 'auto-replied') return 'auto-replied';
 
-  // A true null return path is EXACTLY `<>` (optionally whitespace) — an empty
-  // envelope sender, i.e. a bounce. Absent (undefined) is not a null path (many
-  // legit messages omit Return-Path at the API boundary), and an empty string is
-  // NOT treated as `<>` — providers surface a real bounce as the literal `<>`,
-  // and treating `''` as a bounce risks a false positive on a stripped header.
-  if (n.returnPath != null && n.returnPath.trim() === '<>') return 'null-return-path';
+  // A true null return path is `<>` — an empty envelope sender, i.e. a bounce.
+  // RFC 5322 allows CFWS (comments and folding whitespace) around and inside the
+  // angle-addr, so `<>`, `< >`, `<> (auto)`, `(bounce) <>` and ` <> ` are all the
+  // null path; isNullReturnPath strips comments + whitespace before comparing, so a
+  // CFWS-decorated bounce is not missed. Absent (undefined) is not a null path (many
+  // legit messages omit Return-Path at the API boundary), and an empty/blank header
+  // strips to '' and is NOT treated as `<>` — treating a stripped header as a bounce
+  // would be a false positive that drops real mail.
+  if (n.returnPath != null && isNullReturnPath(n.returnPath)) return 'null-return-path';
 
   // NB: X-Loop is deliberately NOT a ticket-suppression signal. We never set
   // X-Loop on our own outbound, so an inbound X-Loop only tells us the SENDER
