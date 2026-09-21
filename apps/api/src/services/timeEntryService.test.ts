@@ -787,7 +787,7 @@ describe('time-entry audit mutation recording', () => {
     });
   });
 
-  it('does not record an update when UPDATE RETURNING yields no mutated row', async () => {
+  it('rejects with 409 ENTRY_UPDATE_LOST when UPDATE RETURNING yields no mutated row, instead of echoing the stale row', async () => {
     const update = actorWithRecorder();
     const existing = {
       id: 'te-raced',
@@ -803,7 +803,8 @@ describe('time-entry audit mutation recording', () => {
     dbMocks.selectResults.push([existing]);
     dbMocks.updateResult = [];
 
-    await updateTimeEntry('te-raced', { description: 'lost race' }, update.actor);
+    await expect(updateTimeEntry('te-raced', { description: 'lost race' }, update.actor))
+      .rejects.toMatchObject({ status: 409, code: 'ENTRY_UPDATE_LOST' });
 
     expect(update.recordAuditMutation).not.toHaveBeenCalled();
   });
@@ -2058,6 +2059,7 @@ describe('billing profile stamps and service override gate', () => {
   });
   it('changing work type re-prices an unbilled entry and clears approval', async () => {
     dbMocks.selectResults.push([entry]);
+    dbMocks.updateResult = [entry];
     await updateTimeEntry('te-1', { workTypeId: 'included' }, tech);
     expect(dbMocks.updateSetArgs[0]).toMatchObject({ workTypeId: 'included', billingProfileId: 'profile-1',
       coverage: 'included', hourlyRate: null, billingStatus: 'contract', isApproved: false, approvedBy: null, approvedAt: null });
@@ -2065,18 +2067,21 @@ describe('billing profile stamps and service override gate', () => {
   it('relink prices the new org card and applies its category default', async () => {
     seedLink('retired', 't-2', 'o-2');
     dbMocks.selectResults.push([entry]);
+    dbMocks.updateResult = [entry];
     await updateTimeEntry('te-1', { ticketId: 't-2' }, tech);
     expect(cardMocks.loadCardsForOrg).toHaveBeenCalledWith('o-2', 'p-1', 'USD');
     expect(dbMocks.updateSetArgs[0]).toMatchObject({ ticketId: 't-2', orgId: 'o-2', hourlyRate: '175.00', workTypeId: 'retired' });
   });
   it('an overridden entry retains its terms on a work type edit', async () => {
     dbMocks.selectResults.push([{ ...entry, billingOverridden: true }]);
+    dbMocks.updateResult = [entry];
     await updateTimeEntry('te-1', { workTypeId: 'included' }, tech);
     expect(dbMocks.updateSetArgs[0]).not.toHaveProperty('hourlyRate');
     expect(dbMocks.updateSetArgs[0]).not.toHaveProperty('coverage');
   });
   it('ordinary edits never load current cards or rewrite stamps', async () => {
     dbMocks.selectResults.push([entry]);
+    dbMocks.updateResult = [entry];
     await updateTimeEntry('te-1', { description: 'Corrected' }, tech);
     expect(cardMocks.loadCardsForOrg).not.toHaveBeenCalled();
     expect(dbMocks.updateSetArgs[0]).not.toHaveProperty('hourlyRate');
@@ -2087,6 +2092,7 @@ describe('billing profile stamps and service override gate', () => {
   });
   it('reset replaces all stamps and clears the override', async () => {
     dbMocks.selectResults.push([{ ...entry, billingOverridden: true }]);
+    dbMocks.updateResult = [entry];
     await updateTimeEntry('te-1', { resetBilling: true }, manager);
     expect(dbMocks.updateSetArgs[0]).toMatchObject({ hourlyRate: '225.00', minimumMinutes: 30,
       roundingIncrementMinutes: 15, billingProfileId: 'profile-1', billingOverridden: false });
@@ -2098,6 +2104,7 @@ describe('billing profile stamps and service override gate', () => {
   });
   it('echoes the existing stamp after a card edit without re-pricing', async () => {
     dbMocks.selectResults.push([entry]);
+    dbMocks.updateResult = [entry];
     await updateTimeEntry('te-1', { hourlyRate: 100 }, tech);
     expect(dbMocks.updateSetArgs[0]).toMatchObject({ hourlyRate: '100.00', billingOverridden: false });
     expect(cardMocks.loadCardsForOrg).not.toHaveBeenCalled();
@@ -2108,6 +2115,7 @@ describe('billing profile stamps and service override gate', () => {
       await createTimeEntry({ ticketId: 't-1', ...span, billingStatus: 'contract' }, manager);
     } else {
       dbMocks.selectResults.push([{ ...entry, minimumMinutes: 30 }]);
+      dbMocks.updateResult = [entry];
       await updateTimeEntry('te-1', { billingStatus: 'contract' }, manager);
     }
     const stamp = mode === 'create' ? dbMocks.insertedValues[0] : dbMocks.updateSetArgs[0];
@@ -2116,6 +2124,7 @@ describe('billing profile stamps and service override gate', () => {
   });
   it('a manager bills formerly included work by marking it out of scope', async () => {
     dbMocks.selectResults.push([{ ...entry, coverage: 'included', hourlyRate: null, billingStatus: 'contract' }]);
+    dbMocks.updateResult = [entry];
     await updateTimeEntry('te-1', { hourlyRate: 300 }, manager);
     expect(dbMocks.updateSetArgs[0]).toMatchObject({ hourlyRate: '300.00', billingStatus: 'not_billed',
       coverage: 'billable', billingOverridden: true });
@@ -2123,6 +2132,7 @@ describe('billing profile stamps and service override gate', () => {
   it.each([null, '50.00', '75.00'])('persists an explicit standalone rate over %s and marks it billable', async hourlyRate => {
     dbMocks.selectResults.push([{ ...entry, orgId: null, ticketId: null, billingProfileId: null,
       coverage: 'non_billable', isBillable: false, hourlyRate }]);
+    dbMocks.updateResult = [entry];
     await updateTimeEntry('te-1', { hourlyRate: 75 }, manager);
     expect(dbMocks.updateSetArgs[0]).toMatchObject({ hourlyRate: '75.00', coverage: 'billable',
       isBillable: true, billingStatus: 'not_billed', billingOverridden: true });
@@ -2310,12 +2320,14 @@ describe('both stop paths land billable_minutes (#4628 W03)', () => {
 
   it('updateTimeEntry recomputes billable_minutes whenever it recomputes durationMinutes', async () => {
     dbMocks.selectResults.push([{ ...entry, endedAt: null, durationMinutes: null }]);
+    dbMocks.updateResult = [entry];
     await updateTimeEntry('te-1', { endedAt: span.endedAt }, tech);
     expect(dbMocks.updateSetArgs[0]).toMatchObject({ durationMinutes: 20, billableMinutes: 60 });
   });
 
   it('updateTimeEntry does NOT touch billable_minutes when neither timestamp nor terms changed', async () => {
     dbMocks.selectResults.push([entry]);
+    dbMocks.updateResult = [entry];
     await updateTimeEntry('te-1', { description: 'typo fix' }, tech);
     expect(dbMocks.updateSetArgs[0]).not.toHaveProperty('billableMinutes');
   });
@@ -2323,12 +2335,14 @@ describe('both stop paths land billable_minutes (#4628 W03)', () => {
   it('updateTimeEntry re-derives billable_minutes when a re-price changes the minimum', async () => {
     // Spec §3.7: an entry is re-priced when its own workTypeId changes.
     dbMocks.selectResults.push([{ ...entry, minimumMinutes: null, roundingIncrementMinutes: null }]);
+    dbMocks.updateResult = [entry];
     await updateTimeEntry('te-1', { workTypeId: 'wt-onsite' }, tech);
     expect(dbMocks.updateSetArgs[0]).toMatchObject({ minimumMinutes: 60, billableMinutes: 60 });
   });
 
   it('a manager raising the minimum re-derives the billed quantity', async () => {
     dbMocks.selectResults.push([entry]);
+    dbMocks.updateResult = [entry];
     await updateTimeEntry('te-1', { minimumMinutes: 90 }, manager);
     expect(dbMocks.updateSetArgs[0]).toMatchObject({ minimumMinutes: 90, billableMinutes: 90 });
   });

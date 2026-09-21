@@ -51,7 +51,9 @@ export type TimeEntryServiceErrorCode =
   /** 400 — a caller-supplied work_type_id that is not an ACTIVE row of the acting partner. */
   | 'WORK_TYPE_NOT_FOUND'
   | 'RATE_REQUIRES_BILLABLE'
-  | 'MANAGE_BILLING_REQUIRED';
+  | 'MANAGE_BILLING_REQUIRED'
+  /** 409 — UPDATE ... RETURNING matched zero rows (entry re-pointed/deleted between the read and the write). */
+  | 'ENTRY_UPDATE_LOST';
 
 export class TimeEntryServiceError extends Error {
   constructor(
@@ -993,20 +995,29 @@ export async function updateTimeEntry(id: string, input: UpdateTimeEntryInput, a
 
   const rows = await db.update(timeEntries).set(set).where(eq(timeEntries.id, id)).returning();
   const mutated = rows[0];
-  const updated = mutated ?? entry;
-
-  if (mutated) {
-    recordAuditMutation(actor, 'time_entry.updated', mutated);
+  if (!mutated) {
+    // The row existed at the top of this call (getEntryOr404) but the UPDATE
+    // matched zero rows — it was re-pointed or deleted in between (org move,
+    // RLS context change, concurrent delete). Returning the stale pre-update
+    // row here would tell the caller (including mobile's stop-timer replay,
+    // see the recompute comment above) that the write succeeded when it did not.
+    throw new TimeEntryServiceError(
+      'Entry could not be updated — reload and retry',
+      409,
+      'ENTRY_UPDATE_LOST'
+    );
   }
+
+  recordAuditMutation(actor, 'time_entry.updated', mutated);
   await emitTimeEntryEvent({
     type: 'time_entry.updated',
     timeEntryId: id,
     partnerId: entry.partnerId,
-    ticketId: (updated as typeof entry).ticketId ?? entry.ticketId,
+    ticketId: mutated.ticketId ?? entry.ticketId,
     actorUserId: actor.userId,
     payload: { changed }
   });
-  return updated;
+  return mutated;
 }
 
 export async function deleteTimeEntry(id: string, actor: TimeEntryActor) {
