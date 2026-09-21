@@ -10,8 +10,13 @@ export interface GraphSendTarget { tenantId: string; mailbox: string; }
 // ingest side already reads this header (normalizeGraphMessage -> outboundMarker
 // -> loopPrevention.ownOutboundReason); the send side must stamp it. Graph only
 // accepts custom internet headers at message CREATION and requires an `x-` prefix
-// (see the message resource docs), so this goes in the sendMail message object and
-// the createReply POST body — never a post-send PATCH, which Graph rejects.
+// ("Add custom headers only when creating a message, and name them starting with
+// 'x-'. After the message is sent, you cannot modify the headers." —
+// learn.microsoft.com/graph/api/resources/message), so this goes in the sendMail
+// message object and the createReply POST body (both create the message), never a
+// post-send PATCH, which Graph rejects. The round-trip (this exact header shape is
+// what the ingest normalizer reads and ownOutboundReason suppresses on) is covered
+// by a seam test in normalizeGraphMessage.test.ts.
 const OUTBOUND_INTERNET_HEADERS = [{ name: BREEZE_OUTBOUND_HEADER, value: BREEZE_OUTBOUND_HEADER_VALUE }];
 
 async function gfetch(url: string, token: string, init: RequestInit): Promise<Response> {

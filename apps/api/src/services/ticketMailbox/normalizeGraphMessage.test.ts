@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { normalizeGraphMessage } from './normalizeGraphMessage';
 import type { GraphMessage } from './graphMailClient';
+import { ownOutboundReason } from '../inboundEmail/loopPrevention';
+import { BREEZE_OUTBOUND_HEADER, BREEZE_OUTBOUND_HEADER_VALUE } from '../emailDomains/outboundMarker';
 
 const msg: GraphMessage = {
   id: 'AAA-graph-id',
@@ -33,6 +35,25 @@ describe('normalizeGraphMessage', () => {
     expect(n.inReplyTo).toBe('<prev@mail.x.com>');
     expect(n.references).toEqual(['<root@mail.x.com>', '<prev@mail.x.com>']);
     expect(n.html).toBe('<p>help</p>');
+  });
+
+  // Seam test for the M365 Graph self-loop closure. graphReplySender stamps
+  // { name: BREEZE_OUTBOUND_HEADER, value: BREEZE_OUTBOUND_HEADER_VALUE } on the
+  // outbound message; if a copy loops back into the monitored mailbox, the SAME
+  // constants must be what normalizeGraphMessage reads and what ownOutboundReason
+  // suppresses on. This proves send-shape == ingest-shape (a rename of the header
+  // that only touched one side would fail here), independent of a fetch mock.
+  it('recognizes its own Graph-sent mail looping back via the outbound marker', () => {
+    const loopedBack: GraphMessage = {
+      ...msg,
+      internetMessageHeaders: [
+        ...(msg.internetMessageHeaders ?? []),
+        { name: BREEZE_OUTBOUND_HEADER, value: BREEZE_OUTBOUND_HEADER_VALUE },
+      ],
+    };
+    const n = normalizeGraphMessage(loopedBack, 'partner-9', 'support@a.com');
+    expect(n.outboundMarker).toBe(BREEZE_OUTBOUND_HEADER_VALUE);
+    expect(ownOutboundReason(n, 'a.com')).toBe('outbound-marker');
   });
 
   it('preserves CC participants in the inbound audit metadata', () => {
