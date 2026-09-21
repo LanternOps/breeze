@@ -21,6 +21,7 @@ import { enqueueDiscoveryResults, type DiscoveredHostResult, type DeviceAdjacenc
 import { enqueueBackupResults } from '../jobs/backupWorker';
 import { enqueueSnmpPollResults, type SnmpMetricResult } from '../jobs/snmpWorker';
 import { enqueueMonitorCheckResult, recordMonitorCheckResult, type MonitorCheckResult } from '../jobs/monitorWorker';
+import { transitionDeviceOffline } from '../jobs/offlineDetector';
 import { getRedis, isRedisAvailable } from '../services/redis';
 import { isIP } from 'node:net';
 import { processDeviceIPHistoryUpdate } from '../services/deviceIpHistory';
@@ -3486,7 +3487,7 @@ onClose: async (_event: unknown, ws: WSContext) => {
                 console.log(`[AgentWs] Preserving 'updating' status for agent ${agentId} on disconnect`);
                 return;
               }
-              await updateDeviceStatus(agentId, 'offline');
+              await transitionDeviceOffline(agentId, ['online']);
               publishEvent('device.offline', agentDb.orgId, {
                 deviceId: current.id,
                 hostname: current.hostname,
@@ -3496,7 +3497,9 @@ onClose: async (_event: unknown, ws: WSContext) => {
               });
             } catch (err) {
               console.error(`[AgentWs] Failed to check status for ${agentId} on disconnect, falling back to offline:`, err);
-              await updateDeviceStatus(agentId, 'offline');
+              await transitionDeviceOffline(agentId, ['online']).catch(fallbackErr => {
+                console.error(`[AgentWs] Failed to transition ${agentId} offline on fallback:`, fallbackErr);
+              });
               publishEvent('device.offline', agentDb.orgId, {
                 deviceId: agentId,
                 hostname: '',
@@ -3547,7 +3550,7 @@ if (activeConnections.get(agentId)?.ws === ws) {
           } catch (err) {
             console.error(`[AgentWs] Failed to check status for ${agentId} on error disconnect, falling back to offline:`, err);
           }
-          await updateDeviceStatus(agentId, 'offline');
+          await transitionDeviceOffline(agentId, ['online']);
         }).catch((err) => {
           console.error(`[AgentWs] Failed to mark agent ${agentId} offline after error:`, err);
         });

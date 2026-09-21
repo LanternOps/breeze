@@ -455,6 +455,61 @@ export async function processMarkOffline(data: MarkOfflineJobData): Promise<{
 
 }
 
+/**
+ * Atomically transition a device from `online` (or `updating`, if the caller
+ * opts in) to `offline` and persist the same durable
+ * `offline_transition_effects` rows the sweep-driven `processMarkOffline`
+ * produces — including the ones that fan out to compiled monitor rules via
+ * `expandOfflineAlertPlan`.
+ *
+ * #6503: the agent WebSocket close/error handlers used to call a bare
+ * `updateDeviceStatus(agentId, 'offline')` that set BOTH `status='offline'`
+ * AND `last_seen_at=now()` directly, with no transition-effects row. That
+ * simultaneously falsified both predicates the sweep's detect query relies on
+ * (`status IN ('online','updating') AND last_seen_at < threshold`), so the
+ * sweep never saw the device as a transition candidate — offline-kind monitor
+ * rules never fired for an agent that closed its WebSocket, clean or dirty.
+ * This function reuses the sweep's own CAS + `persistOfflineTransition`
+ * pairing instead, and deliberately leaves `last_seen_at` untouched (it
+ * already holds the last real heartbeat, which the CAS's
+ * `date_trunc('milliseconds', ...)` guard keys off of) so the transition
+ * effects are keyed identically whether the offline observation ends up
+ * being noticed by the sweep or by a live WS disconnect.
+ *
+ * Unlike `processMarkOffline`, this does NOT open its own DB access context —
+ * callers (currently only the agent WS handlers) already run inside an
+ * ambient org-scoped `withDbAccessContext` for the device's own org, and
+ * nesting `withSystemDbAccessContext` inside that would silently no-op (see
+ * `runWithAgentOrgDbAccess`'s doc comment) rather than genuinely re-scope.
+ */
+export async function transitionDeviceOffline(
+  agentId: string,
+  fromStatuses: readonly ('online' | 'updating')[] = ['online'],
+): Promise<{ transitioned: boolean }> {
+  const [current] = await db
+    .select()
+    .from(devices)
+    .where(and(eq(devices.agentId, agentId), inArray(devices.status, fromStatuses)))
+    .limit(1);
+  if (!current) return { transitioned: false };
+
+  const observedLastSeenAt = canonicalTimestamp(current.lastSeenAt?.toISOString() || '', 'observedLastSeenAt');
+  const transitionId = offlineTransitionId(current.orgId, current.id, observedLastSeenAt);
+
+  const [device] = await db.update(devices).set({ status: 'offline', updatedAt: new Date() }).where(and(
+    eq(devices.id, current.id), eq(devices.orgId, current.orgId),
+    inArray(devices.status, fromStatuses),
+    // Same ms-precision CAS guard as processMarkOffline (#6024): the write
+    // must be against the exact heartbeat observation just read.
+    sql`date_trunc('milliseconds', ${devices.lastSeenAt}) = ${observedLastSeenAt}`,
+  )).returning();
+  if (!device) return { transitioned: false };
+
+  const effectIds = await persistOfflineTransition(device, transitionId, observedLastSeenAt);
+  if (effectIds.length) await enqueueOfflineEffects(effectIds);
+  return { transitioned: true };
+}
+
 async function enqueueOfflineEffects(ids: string[]): Promise<void> {
   if (!ids.length) return;
   await getOfflineQueue().addBulk(ids.map((effectId) => ({
