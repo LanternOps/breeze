@@ -88,32 +88,24 @@ describe('fromWithDisplayName (moved verbatim off EmailService, spec §0.3)', ()
 });
 
 describe('platformFallbackFrom (spec §8.3)', () => {
-  it('returns the bare default for every purpose except quote.sent and invoice.sent', () => {
-    for (const purpose of ALL_PURPOSES) {
-      if (purpose === 'quote.sent' || purpose === 'invoice.sent') continue;
+  it('leaves staff and security mail on the plain sender', () => {
+    for (const purpose of PLATFORM_PURPOSES) {
       expect(platformFallbackFrom(purpose, DEFAULT_FROM, 'Acme MSP')).toBe(DEFAULT_FROM);
     }
   });
 
-  it('brands quote.sent and invoice.sent with "<Partner> via Breeze"', () => {
-    expect(platformFallbackFrom('quote.sent', DEFAULT_FROM, 'Acme MSP'))
-      .toBe('"Acme MSP via Breeze" <no-reply@2breeze.app>');
-    expect(platformFallbackFrom('invoice.sent', DEFAULT_FROM, 'Acme MSP'))
-      .toBe('"Acme MSP via Breeze" <no-reply@2breeze.app>');
+  it('uses the company name for every customer purpose', () => {
+    for (const purpose of PARTNER_PURPOSES) {
+      expect(platformFallbackFrom(purpose, DEFAULT_FROM, 'Acme MSP'))
+        .toBe('"Acme MSP" <no-reply@2breeze.app>');
+    }
   });
 
-  // Byte-identity with the pre-W01 call sites, which read
-  // `partnerName ? fromWithDisplayName(...) : undefined` — a falsy name meant
-  // the bare default, and an all-whitespace name did NOT.
-  it('falls back to the bare default when the partner name is missing or empty', () => {
+  it('falls back to the bare default when the partner name is missing or blank', () => {
     expect(platformFallbackFrom('quote.sent', DEFAULT_FROM, null)).toBe(DEFAULT_FROM);
     expect(platformFallbackFrom('quote.sent', DEFAULT_FROM, undefined)).toBe(DEFAULT_FROM);
     expect(platformFallbackFrom('quote.sent', DEFAULT_FROM, '')).toBe(DEFAULT_FROM);
-  });
-
-  it('keeps an all-whitespace partner name branded, exactly as the old call sites did', () => {
-    expect(platformFallbackFrom('quote.sent', DEFAULT_FROM, '   '))
-      .toBe('"via Breeze" <no-reply@2breeze.app>');
+    expect(platformFallbackFrom('ticket.customer_notification', DEFAULT_FROM, '   ')).toBe(DEFAULT_FROM);
   });
 });
 
@@ -155,12 +147,12 @@ describe('resolveSender (W01: always the platform lane)', () => {
     const branded = await resolveSender({
       purpose: 'invoice.sent', partnerId: 'partner-1', partnerName: 'Acme MSP', defaultFrom: DEFAULT_FROM,
     });
-    expect(branded.from).toBe('"Acme MSP via Breeze" <no-reply@2breeze.app>');
+    expect(branded.from).toBe('"Acme MSP" <no-reply@2breeze.app>');
 
-    const plain = await resolveSender({
+    const ticket = await resolveSender({
       purpose: 'ticket.customer_notification', partnerId: 'partner-1', partnerName: 'Acme MSP', defaultFrom: DEFAULT_FROM,
     });
-    expect(plain.from).toBe(DEFAULT_FROM);
+    expect(ticket.from).toBe('"Acme MSP" <no-reply@2breeze.app>');
   });
 
   // A purpose outside the registry can only reach here by bypassing TypeScript
@@ -220,7 +212,7 @@ describe('resolveSender — the partner branch (spec §8.3)', () => {
   it('returns lane_unconfigured, before any lookup, when the lane is off', async () => {
     laneConfigured.mockReturnValue(false);
     const resolved = await resolveSender({ purpose: 'quote.sent', partnerId: 'p1', partnerName: 'Acme MSP', defaultFrom: DEFAULT_FROM });
-    expect(resolved).toEqual({ lane: 'platform', from: '"Acme MSP via Breeze" <no-reply@2breeze.app>', reason: 'lane_unconfigured' });
+    expect(resolved).toEqual({ lane: 'platform', from: '"Acme MSP" <no-reply@2breeze.app>', reason: 'lane_unconfigured' });
     expect(lookup).not.toHaveBeenCalled();
     expect(cap).not.toHaveBeenCalled();
   });
@@ -256,7 +248,7 @@ describe('resolveSender — the partner branch (spec §8.3)', () => {
   it('returns over_cap when the cap refuses, with the purpose fallback From', async () => {
     cap.mockResolvedValue(false);
     const resolved = await resolveSender({ purpose: 'invoice.sent', partnerId: 'p1', partnerName: 'Acme MSP', defaultFrom: DEFAULT_FROM });
-    expect(resolved).toEqual({ lane: 'platform', from: '"Acme MSP via Breeze" <no-reply@2breeze.app>', reason: 'over_cap' });
+    expect(resolved).toEqual({ lane: 'platform', from: '"Acme MSP" <no-reply@2breeze.app>', reason: 'over_cap' });
   });
 
   it('builds the From from the identity display name, else the partner name', async () => {
@@ -293,7 +285,7 @@ describe('resolveSender — the partner branch (spec §8.3)', () => {
       expect(resolved).toEqual({ lane: 'platform', from: DEFAULT_FROM, reason: 'platform_purpose' });
     }
     const nullPartner = await resolveSender({ purpose: 'quote.sent', partnerId: null, partnerName: 'Acme MSP', defaultFrom: DEFAULT_FROM });
-    expect(nullPartner).toEqual({ lane: 'platform', from: '"Acme MSP via Breeze" <no-reply@2breeze.app>', reason: 'no_partner' });
+    expect(nullPartner).toEqual({ lane: 'platform', from: '"Acme MSP" <no-reply@2breeze.app>', reason: 'no_partner' });
     expect(lookup).not.toHaveBeenCalled();
     expect(laneConfigured).not.toHaveBeenCalled();
   });
@@ -333,7 +325,7 @@ describe('resolveSender — the db tripwire against the real lookup', () => {
   it('never touches the db module for a partner purpose with no partner', async () => {
     const resolve = await realResolveSender();
     await expect(resolve({ purpose: 'quote.sent', partnerId: null, partnerName: 'Acme MSP', defaultFrom: DEFAULT_FROM }))
-      .resolves.toEqual({ lane: 'platform', from: '"Acme MSP via Breeze" <no-reply@2breeze.app>', reason: 'no_partner' });
+      .resolves.toEqual({ lane: 'platform', from: '"Acme MSP" <no-reply@2breeze.app>', reason: 'no_partner' });
   });
 
   // The control: with the lane ON and a partner supplied, the resolver DOES

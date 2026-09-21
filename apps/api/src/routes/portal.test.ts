@@ -113,6 +113,7 @@ vi.mock('../db/schema', () => ({
   discoveredAssetTypeEnum: { enumValues: [] },
   huntressAgents: {},
   organizations: {},
+  partners: { id: 'partners.id', name: 'partners.name' },
   portalBranding: {},
   portalUsers: {},
   recoveryReadiness: {},
@@ -341,7 +342,8 @@ describe('portal routes', () => {
             email: 'portal@example.com',
             orgId: 'f1b0c8a6-45d1-4f84-8b8b-0ad0ce620001',
             authMethod: 'password',
-            partnerId: 'f1b0c8a6-45d1-4f84-8b8b-0ad0ce620777'
+            partnerId: 'f1b0c8a6-45d1-4f84-8b8b-0ad0ce620777',
+            partnerName: 'CloudWise',
           }
         ]) as any)
         .mockReturnValueOnce(mockSelectLimit([]) as any); // password reset defaults enabled
@@ -365,7 +367,8 @@ describe('portal routes', () => {
         to: 'portal@example.com',
         resetUrl: 'http://localhost:4321/portal/reset-password?token=nanoid-token&orgId=f1b0c8a6-45d1-4f84-8b8b-0ad0ce620001',
         purpose: 'portal.password_reset',
-        partnerId: 'f1b0c8a6-45d1-4f84-8b8b-0ad0ce620777'
+        partnerId: 'f1b0c8a6-45d1-4f84-8b8b-0ad0ce620777',
+        partnerName: 'CloudWise',
       });
     });
 

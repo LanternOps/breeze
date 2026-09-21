@@ -106,6 +106,26 @@ describe('InvoiceActions — re-send', () => {
     expect(screen.queryByTestId('invoice-resend')).not.toBeInTheDocument();
   });
 
+  it('shows the saved invoice subject as the subject hint', async () => {
+    fetchMock.mockImplementation(async (input: string) => {
+      if (input.startsWith('/orgs/organizations/')) return json({ billingContact: { email: 'ap@acme.test' } });
+      if (input === '/orgs/partners/me') return json({
+        name: 'CloudWise',
+        emailSignature: null,
+        settings: { emailTemplates: { invoice_send: { subject: 'Please pay {{invoice_number}} from {{partner_name}}' } } },
+      });
+      return json({ data: {} });
+    });
+    render(<InvoiceActions detail={detail()} variant="header" />);
+    await openComposer();
+    await waitFor(() => {
+      expect(screen.getByTestId('invoice-send-subject')).toHaveAttribute(
+        'placeholder',
+        'Please pay INV-0007 from CloudWise',
+      );
+    });
+  });
+
   it('prefills To from the org billing contact and previews the partner signature', async () => {
     render(<InvoiceActions detail={detail()} variant="header" />);
     await openComposer();

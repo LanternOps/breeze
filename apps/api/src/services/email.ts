@@ -143,7 +143,7 @@ export type PasswordResetEmailParams = {
   supportEmail?: string;
 } & (
   | { purpose: 'auth.password_reset' }
-  | { purpose: 'portal.password_reset'; partnerId: string | null }
+  | { purpose: 'portal.password_reset'; partnerId: string | null; partnerName?: string | null }
 );
 
 export interface PortalInviteEmailParams {
@@ -526,7 +526,8 @@ export class EmailService {
         html: template.html,
         text: template.text,
         purpose: 'portal.password_reset',
-        partnerId: params.partnerId
+        partnerId: params.partnerId,
+        partnerName: params.partnerName ?? null,
       });
       return;
     }
@@ -613,7 +614,8 @@ export class EmailService {
       html: template.html,
       text: template.text,
       purpose: 'portal.invite',
-      partnerId: params.partnerId
+      partnerId: params.partnerId,
+      partnerName: params.partnerName ?? null,
     });
   }
 }

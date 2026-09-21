@@ -331,9 +331,10 @@ describe('handleTicketEvent', () => {
       actorUserId: 'u-1', eventId: 'evt-html-4', payload: { from: 'open', to: 'resolved' },
     });
 
-    const arg = sendEmailMock.mock.calls[0]![0] as { html: string };
+    const arg = sendEmailMock.mock.calls[0]![0] as { html: string; partnerName?: string | null };
     expect(arg.html).toContain('<!doctype html>');
     expect(arg.html).toContain('Replaced NIC');
+    expect(arg.partnerName).toBe('Acme');
   });
 
   it('autoresponse customer email uses layout', async () => {
@@ -452,8 +453,9 @@ describe('handleTicketEvent', () => {
     } as never);
 
     expect(sendEmailMock).toHaveBeenCalledTimes(1);
-    const arg = sendEmailMock.mock.calls[0]![0] as { to: string; subject: string; replyTo?: string; headers?: Record<string, string> };
+    const arg = sendEmailMock.mock.calls[0]![0] as { to: string; subject: string; replyTo?: string; headers?: Record<string, string>; partnerName?: string | null };
     expect(arg.to).toBe('jane@x.com');
+    expect(arg.partnerName).toBe('Acme MSP');
     expect(arg.subject).toBe('[T-2026-0001] We received your request: printer down');
     expect(arg.replyTo).toBe('acme@tickets.example.com');
     expect(arg.headers!['Auto-Submitted']).toBe('auto-replied');

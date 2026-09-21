@@ -569,6 +569,12 @@ export default function InvoiceActions({ detail, onChanged, variant, savePending
         onSend={(opts) => isDraft ? void issue(true, opts) : void resend(opts)}
         orgId={invoice.orgId}
         invoiceNumber={invoice.invoiceNumber}
+        dueDate={invoice.dueDate}
+        currencyCode={currency}
+        amountPaid={invoice.amountPaid}
+        balance={invoice.balance}
+        depositDue={invoice.depositDue ?? null}
+        documentLocale={invoice.documentLocale ?? null}
         isDraft={isDraft}
         title={isDraft
           ? t('invoiceActions.issueSendConfirm.title')

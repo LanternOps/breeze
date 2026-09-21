@@ -1,10 +1,53 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
+import {
+  computeChargeNow,
+  emailTemplateFieldDefaults,
+  formatMoney,
+  isSupportedLocale,
+  renderTemplate,
+  type TicketTemplateVars,
+} from '@breeze/shared';
 import '../../lib/i18n';
 import { fetchWithAuth } from '../../stores/auth';
 import { getJwtClaims } from '../../lib/authScope';
 import { Dialog } from '../shared/Dialog';
 import { parseAddressList, MAX_RECIPIENTS } from './shared/addressList';
+
+/** Same date glyphs the invoice email uses (`invoicePdf.formatDate`). */
+function emailDueDate(value: string | null | undefined): string {
+  if (!value) return '';
+  const d = new Date(value.length === 10 ? `${value}T00:00:00Z` : value);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: '2-digit', timeZone: 'UTC' });
+}
+
+function tidySubject(value: string): string {
+  return value
+    .replace(/[\r\n]+/g, ' ')
+    .replace(/^\[\]\s*/, '')
+    .replace(/\s{2,}/g, ' ')
+    .replace(/\s+([,.])/g, '$1')
+    .trim();
+}
+
+/** The subject the email will use when the composer subject box is left blank. */
+export function invoiceEmailSubjectPreview(input: {
+  templateSubject: string | null | undefined;
+  invoiceNumber: string | null;
+  partnerName: string | null | undefined;
+  total: string;
+  dueDate: string;
+}): string {
+  const template = input.templateSubject?.trim() || emailTemplateFieldDefaults('invoice_send').subject;
+  return tidySubject(renderTemplate(template, {
+    invoice_number: input.invoiceNumber ?? '',
+    partner_name: input.partnerName?.trim() || 'your provider',
+    total: input.total,
+    due_date: input.dueDate,
+    portal_url: '',
+  } as TicketTemplateVars));
+}
 
 /** The composed envelope, shaped for `POST /invoices/:id/{send,resend}`. Only
  *  non-default fields are populated, so the server's own defaults (billing
@@ -40,6 +83,13 @@ interface Props {
   sendingLabel: string;
   /** Draft-time partner default. Issued composers never expose an override. */
   partnerDeviceAppendix?: boolean;
+  /** Money and date fields so the subject hint matches the email template. */
+  dueDate?: string | null;
+  currencyCode?: string;
+  amountPaid?: string;
+  balance?: string;
+  depositDue?: string | null;
+  documentLocale?: string | null;
   /** Allows the draft Issue & Send flow to retain its established action id. */
   confirmTestId?: string;
 }
@@ -63,6 +113,7 @@ interface Props {
 export default function InvoiceSendComposer({
   open, onClose, sending, onSend, orgId, invoiceNumber, title, intro, confirmLabel, sendingLabel,
   isDraft = invoiceNumber === null, partnerDeviceAppendix = false, confirmTestId = 'invoice-send-confirm',
+  dueDate = null, currencyCode = 'USD', amountPaid = '0', balance, depositDue = null, documentLocale = null,
 }: Props) {
   const { t } = useTranslation('billing');
   const [to, setTo] = useState('');
@@ -73,6 +124,7 @@ export default function InvoiceSendComposer({
   const [includePdf, setIncludePdf] = useState(true);
   const [includeDeviceAppendix, setIncludeDeviceAppendix] = useState(partnerDeviceAppendix);
   const [signature, setSignature] = useState<string | null>(null);
+  const [subjectHint, setSubjectHint] = useState<string | null>(null);
   // Set when a Send click finds no valid recipient — an inline reason under the
   // To field beats a silently dead button.
   const [toMissing, setToMissing] = useState(false);
@@ -89,7 +141,7 @@ export default function InvoiceSendComposer({
     if (!open) return;
     setTo(''); setCc(''); setCcOpen(false); setSubject(''); setMessage('');
     setIncludePdf(true); setIncludeDeviceAppendix(partnerDeviceAppendix);
-    setSignature(null); setToMissing(false); setToPrefillMissing(false);
+    setSignature(null); setSubjectHint(null); setToMissing(false); setToPrefillMissing(false);
     let canceled = false;
     void (async () => {
       try {
@@ -110,13 +162,42 @@ export default function InvoiceSendComposer({
         try {
           const res = await fetchWithAuth('/orgs/partners/me');
           if (!res.ok || canceled) return;
-          const partner = (await res.json()) as { emailSignature?: string | null };
+          const partner = (await res.json()) as {
+            name?: string | null;
+            emailSignature?: string | null;
+            settings?: {
+              language?: unknown;
+              emailTemplates?: { invoice_send?: { subject?: string | null } | null };
+            } | null;
+          };
           setSignature(partner.emailSignature?.trim() || null);
+          const language = partner.settings?.language;
+          const locale = isSupportedLocale(documentLocale)
+            ? documentLocale
+            : isSupportedLocale(language) ? language : 'en';
+          const amountDue = balance == null
+            ? ''
+            : formatMoney(
+              computeChargeNow({
+                depositDue: depositDue ?? null,
+                amountPaid,
+                balance,
+              }, currencyCode).amount,
+              currencyCode,
+              locale,
+            );
+          setSubjectHint(invoiceEmailSubjectPreview({
+            templateSubject: partner.settings?.emailTemplates?.invoice_send?.subject,
+            invoiceNumber,
+            partnerName: partner.name,
+            total: amountDue,
+            dueDate: emailDueDate(dueDate),
+          }));
         } catch { /* no preview — the server still appends the signature */ }
       })();
     }
     return () => { canceled = true; };
-  }, [open, orgId, partnerDeviceAppendix]);
+  }, [open, orgId, partnerDeviceAppendix, invoiceNumber, dueDate, currencyCode, amountPaid, balance, depositDue, documentLocale]);
 
   const toParsed = useMemo(() => parseAddressList(to), [to]);
   const ccParsed = useMemo(() => parseAddressList(cc), [cc]);
@@ -226,12 +307,13 @@ export default function InvoiceSendComposer({
             maxLength={200}
             onChange={(e) => setSubject(e.target.value)}
             disabled={sending}
-            // The placeholder mirrors the server default so leaving the field
-            // blank is a visible, deliberate choice — not a missing subject.
+            // Blank sends the saved template subject. The hint is that subject
+            // with this invoice's number, company, amount, and due date filled in.
             placeholder={
-              invoiceNumber
-                ? t('invoiceActions.composer.subjectPlaceholder', { number: invoiceNumber })
-                : t('invoiceActions.composer.subjectPlaceholderNoNumber')
+              subjectHint
+                ?? (invoiceNumber
+                  ? t('invoiceActions.composer.subjectPlaceholder', { number: invoiceNumber })
+                  : t('invoiceActions.composer.subjectPlaceholderNoNumber'))
             }
             data-testid="invoice-send-subject"
             className="min-w-0 flex-1 rounded-sm border-0 bg-transparent py-2 text-sm focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"

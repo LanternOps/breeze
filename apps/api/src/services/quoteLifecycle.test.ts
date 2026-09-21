@@ -645,7 +645,7 @@ describe('sendQuote email delivery status', () => {
     await (await sendQuote('q1', actor)).deliverEmail();
 
     // The From itself is now decided inside EmailService and pinned by
-    // email.golden.test.ts ('"Acme MSP via Breeze" <EMAIL_FROM address>' for
+    // email.golden.test.ts ('"Acme MSP" <EMAIL_FROM address>' for
     // quote.sent). What THIS site is responsible for is naming the purpose and
     // handing over the partner it already read.
     expect(sendEmailMock).toHaveBeenCalledWith(expect.objectContaining({

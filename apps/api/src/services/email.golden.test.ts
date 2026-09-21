@@ -29,7 +29,7 @@ vi.mock('nodemailer', () => ({
 }));
 
 const DEFAULT_FROM = 'Breeze <no-reply@2breeze.app>';
-const BRANDED_FROM = '"Acme MSP via Breeze" <no-reply@2breeze.app>';
+const BRANDED_FROM = '"Acme MSP" <no-reply@2breeze.app>';
 const PARTNER_ID = '11111111-1111-1111-1111-111111111111';
 
 const MESSAGE: SendEmailBase = {
@@ -64,11 +64,11 @@ const GOLDEN: Array<{ name: string; params: SendEmailParams; expectedFrom: strin
   { name: 'staff.sending_domain_status', params: { ...MESSAGE, purpose: 'staff.sending_domain_status' }, expectedFrom: DEFAULT_FROM },
   { name: 'deployment.invite', params: { ...MESSAGE, purpose: 'deployment.invite' }, expectedFrom: DEFAULT_FROM },
   { name: 'ticket.staff_notification', params: { ...MESSAGE, purpose: 'ticket.staff_notification' }, expectedFrom: DEFAULT_FROM },
-  { name: 'ticket.customer_notification (with partner)', params: { ...MESSAGE, purpose: 'ticket.customer_notification', partnerId: PARTNER_ID }, expectedFrom: DEFAULT_FROM },
+  { name: 'ticket.customer_notification (with partner)', params: { ...MESSAGE, purpose: 'ticket.customer_notification', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
   { name: 'ticket.customer_notification (no partner)', params: { ...MESSAGE, purpose: 'ticket.customer_notification', partnerId: null }, expectedFrom: DEFAULT_FROM },
-  { name: 'portal.invite', params: { ...MESSAGE, purpose: 'portal.invite', partnerId: PARTNER_ID }, expectedFrom: DEFAULT_FROM },
-  { name: 'portal.password_reset', params: { ...MESSAGE, purpose: 'portal.password_reset', partnerId: null }, expectedFrom: DEFAULT_FROM },
-  { name: 'report.delivery', params: { ...MESSAGE, purpose: 'report.delivery', partnerId: null }, expectedFrom: DEFAULT_FROM },
+  { name: 'portal.invite', params: { ...MESSAGE, purpose: 'portal.invite', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
+  { name: 'portal.password_reset', params: { ...MESSAGE, purpose: 'portal.password_reset', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
+  { name: 'report.delivery', params: { ...MESSAGE, purpose: 'report.delivery', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
   { name: 'quote.sent (partner named)', params: { ...MESSAGE, purpose: 'quote.sent', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
   { name: 'quote.sent (no partner name)', params: { ...MESSAGE, purpose: 'quote.sent', partnerId: PARTNER_ID, partnerName: null }, expectedFrom: DEFAULT_FROM },
   { name: 'invoice.sent (partner named)', params: { ...MESSAGE, purpose: 'invoice.sent', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
@@ -221,9 +221,12 @@ describe('named helpers carry their purpose to the transport (spec §8.1)', () =
     const spy = vi.spyOn(svc, 'sendEmail');
     await svc.sendPasswordReset({
       to: 'buyer@customer.test', resetUrl: 'https://portal.test/r',
-      purpose: 'portal.password_reset', partnerId: PARTNER_ID,
+      purpose: 'portal.password_reset', partnerId: PARTNER_ID, partnerName: 'Acme MSP',
     });
-    expect(spy.mock.calls[0]![0]).toMatchObject({ purpose: 'portal.password_reset', partnerId: PARTNER_ID });
+    expect(spy.mock.calls[0]![0]).toMatchObject({
+      purpose: 'portal.password_reset', partnerId: PARTNER_ID, partnerName: 'Acme MSP',
+    });
+    expect(resendSendMock.mock.calls[0]![0].from).toBe(BRANDED_FROM);
   });
 
   it('sendVerificationEmail carries whichever verification purpose it was given', async () => {
@@ -236,8 +239,13 @@ describe('named helpers carry their purpose to the transport (spec §8.1)', () =
   it('sendPortalInvite is a partner-stream send carrying the partner', async () => {
     const svc = await service();
     const spy = vi.spyOn(svc, 'sendEmail');
-    await svc.sendPortalInvite({ to: 'buyer@customer.test', inviteUrl: 'https://portal.test/i', partnerId: PARTNER_ID });
-    expect(spy.mock.calls[0]![0]).toMatchObject({ purpose: 'portal.invite', partnerId: PARTNER_ID });
+    await svc.sendPortalInvite({
+      to: 'buyer@customer.test', inviteUrl: 'https://portal.test/i', partnerId: PARTNER_ID, partnerName: 'Acme MSP',
+    });
+    expect(spy.mock.calls[0]![0]).toMatchObject({
+      purpose: 'portal.invite', partnerId: PARTNER_ID, partnerName: 'Acme MSP',
+    });
+    expect(resendSendMock.mock.calls[0]![0].from).toBe(BRANDED_FROM);
   });
 
   it('the single-audience helpers hard-code their purpose', async () => {

@@ -971,7 +971,7 @@ async function deliverInvoiceEmail(
       to: recipients,
       cc: cc.length > 0 ? cc : undefined,
       // MSP-branded envelope, mirroring the quote send path: the registry's
-      // `partner_display_name` fallback renders "<Partner> via Breeze" on the
+      // `partner_display_name` fallback renders the company name on the
       // platform address (SPF/DKIM stays aligned), replies routed to the MSP's
       // billing inbox. Both values come from rows read above (spec §8.1).
       purpose: 'invoice.sent',
