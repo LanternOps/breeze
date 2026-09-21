@@ -89,4 +89,13 @@ describe('fetchAllOrganizations (#3446)', () => {
     expect(all).toHaveLength(103);
     expect((all ?? []).slice(0, 5).map((o) => o.name)).toEqual(['alpha', 'Beta', 'Org 2', 'Org 10', 'Zeta']);
   });
+
+  it("keeps the server's order when a caller asks for it (the organizations board's manual sort_order)", async () => {
+    const fetchPage = vi.fn(async () => ({
+      data: [{ id: 'o1', name: 'Zeta' }, { id: 'o2', name: 'alpha' }, { id: 'o3', name: 'Beta' }],
+      pagination: { total: 3 },
+    }));
+    const all = await fetchAllOrganizations<{ id: string; name: string }>(fetchPage, { order: 'server' });
+    expect((all ?? []).map((o) => o.name)).toEqual(['Zeta', 'alpha', 'Beta']);
+  });
 });

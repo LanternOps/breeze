@@ -17,14 +17,17 @@ export const ORGANIZATIONS_MAX_PAGES = LIST_MAX_PAGES;
  *
  * The server orders by `created_at, id`, never by name, so the concatenated
  * result is sorted here by display name (G2-2, #6459) — every `<select>`
- * caller inherits it instead of re-sorting independently.
+ * caller inherits it instead of re-sorting independently. The organizations
+ * BOARD is the one caller whose order is meaningful (a persisted manual
+ * `sort_order` the server already applied): it passes `order: 'server'`.
  */
 export async function fetchAllOrganizations<T = unknown>(
   fetchPage: (page: number, limit: number) => Promise<unknown>,
-  options: { strictShape?: boolean } = {},
+  options: { strictShape?: boolean; order?: 'name' | 'server' } = {},
 ): Promise<T[] | null> {
   const all = await fetchAllPages<T>(fetchPage, { aliasKeys: ['organizations'], strictShape: options.strictShape });
-  return all === null ? null : sortByDisplayName(all as Array<T & { name?: string | null }>);
+  if (all === null) return null;
+  return options.order === 'server' ? all : sortByDisplayName(all as Array<T & { name?: string | null }>);
 }
 
 /**

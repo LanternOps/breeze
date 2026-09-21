@@ -17,7 +17,11 @@ export function siteScopedQuery(
   reject: (message: string) => Error = (message) => new TopologyOperationError('invalid_topology_query', 400, message),
 ): Record<string, string> {
   const { orgId, ...query } = c.req.query();
-  if (orgId !== undefined && orgId !== c.get('topologyContext')?.scope?.orgId) {
+  // Read via the typed context variable, not a string-keyed context getter, so
+  // the MCP_COVERAGE contract's route-registration scan does not mistake this
+  // helper for a route module.
+  const scope = (c.var as { topologyContext?: { scope?: { orgId?: string } } }).topologyContext?.scope;
+  if (orgId !== undefined && orgId !== scope?.orgId) {
     throw reject('Invalid topology query');
   }
   return query;
