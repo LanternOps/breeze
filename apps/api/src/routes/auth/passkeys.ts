@@ -30,6 +30,7 @@ import {
 } from '../../services';
 import {
   PasskeyChallengeError,
+  PasskeyVerificationError,
   authenticationInfoToPasskeyUpdateFields,
   generatePasskeyAuthenticationOptions,
   generatePasskeyRegistrationOptions,
@@ -275,6 +276,26 @@ passkeyRoutes.post('/passkeys/register/verify', authMiddleware, zValidator('json
       // shared the old 401 too) and is left for a follow-up — 400 at least
       // keeps the user signed in where 401 did not.
       return rejectProof(c, err.message, MFA_PROOF_INVALID, PASSKEY_PROOF_REJECTION_STATUS);
+    }
+    if (err instanceof PasskeyVerificationError) {
+      // #6499: @simplewebauthn rejects an origin / RP-ID / challenge / signature
+      // mismatch by throwing, and its message embeds THIS server's configured
+      // expected origin and RP ID. That escaped as a 500 that handed the caller
+      // our WebAuthn configuration. It is a rejected proof like any other, so
+      // it takes the same 400 + `mfa_proof_invalid` contract; the library
+      // detail is logged server-side by the service and reported to Sentry
+      // here, never returned in the body.
+      captureException(err, c);
+      writeAuthAudit(c, {
+        orgId: auth.orgId ?? undefined,
+        action: 'auth.mfa.passkey.register.failed',
+        result: 'failure',
+        reason: 'passkey_verification_rejected',
+        userId: auth.user.id,
+        email: auth.user.email,
+        details: { method: 'passkey' }
+      });
+      return rejectProof(c, 'Passkey registration failed', MFA_PROOF_INVALID, PASSKEY_PROOF_REJECTION_STATUS);
     }
     throw err;
   }
@@ -572,7 +593,9 @@ export async function verifyStepUpPasskeyAssertion(userId: string, credential: {
       passkey: toStoredCredential(passkey)
     });
   } catch (err) {
-    if (err instanceof PasskeyChallengeError) return false;
+    // #6499: a rejected assertion (origin/RP-ID/challenge/signature mismatch)
+    // is a failed step-up proof, not a server fault.
+    if (err instanceof PasskeyChallengeError || err instanceof PasskeyVerificationError) return false;
     throw err;
   }
   if (!verification.verified) return false;
@@ -744,6 +767,13 @@ passkeyRoutes.post('/mfa/passkey/verify', zValidator('json', passkeyMfaVerifySch
     if (capability) await cancelAuthIssuance(capability).catch(() => undefined);
     if (err instanceof PasskeyChallengeError) {
       return c.json({ error: err.message }, 401);
+    }
+    if (err instanceof PasskeyVerificationError) {
+      // #6499: same rejection class as above — generic body, detail logged
+      // server-side only. This route's clients key on 401 for a rejected
+      // login proof, matching the `verification.verified === false` branch.
+      captureException(err, c);
+      return c.json({ error: 'Passkey verification failed' }, 401);
     }
     throw err;
   }

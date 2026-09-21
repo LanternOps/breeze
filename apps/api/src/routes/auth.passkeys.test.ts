@@ -212,6 +212,15 @@ vi.mock('../services/passkeys', () => ({
       this.name = 'PasskeyChallengeError';
     }
   },
+  PasskeyVerificationError: class PasskeyVerificationError extends Error {
+    readonly detail: string;
+    constructor(_purpose: string, cause: unknown) {
+      super('Passkey verification failed');
+      this.name = 'PasskeyVerificationError';
+      this.detail = cause instanceof Error ? cause.message : String(cause);
+      this.cause = cause;
+    }
+  },
   ...passkeyMocks,
 }));
 
@@ -451,7 +460,7 @@ import {
   rateLimiter,
   verifyPassword,
 } from '../services';
-import { PasskeyChallengeError } from '../services/passkeys';
+import { PasskeyChallengeError, PasskeyVerificationError } from '../services/passkeys';
 import { authMiddleware } from '../middleware/auth';
 import { withSystemDbAccessContext } from '../db';
 import { getEffectiveMfaPolicy } from '../services/mfaPolicy';
@@ -870,6 +879,69 @@ describe('passkey MFA auth routes', () => {
 
     expect(res.status).toBe(400);
     expect(await res.json()).toMatchObject({ error: expect.stringMatching(/challenge|expired|invalid/i) });
+  });
+
+  // #6499: a WebAuthn origin/RP-ID mismatch used to escape the route as a 500
+  // whose body echoed the server's configured expected origin.
+  it('maps a passkey registration verification rejection to 400 without echoing the expected origin', async () => {
+    passkeyMocks.verifyPasskeyRegistration.mockRejectedValueOnce(
+      new PasskeyVerificationError(
+        'registration',
+        new Error('Unexpected registration response origin "http://localhost:33032", expected "http://localhost:32902"'),
+      ),
+    );
+
+    const res = await app.request('/auth/passkeys/register/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer access-token' },
+      body: JSON.stringify({
+        credential: { id: 'credential-1', response: {} },
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = await res.text();
+    expect(body).not.toMatch(/localhost|expected|origin|rp_?id/i);
+    expect(JSON.parse(body)).toMatchObject({ code: 'mfa_proof_invalid' });
+  });
+
+  it('maps a passkey MFA verification rejection to 401 without echoing the expected origin', async () => {
+    redisMock.get.mockResolvedValueOnce(pendingMfaJson({
+      mfaMethod: 'passkey',
+      allowedMethods: { totp: false, sms: false, passkey: true },
+    }));
+    dbState.selectQueue.push(
+      [user],
+      [{
+        id: 'credential-row-1',
+        userId: 'user-123',
+        credentialId: 'credential-1',
+        publicKey: 'public-key',
+        counter: 0,
+        transports: ['internal'],
+        disabledAt: null,
+      }],
+    );
+    passkeyMocks.verifyPasskeyAuthentication.mockRejectedValueOnce(
+      new PasskeyVerificationError(
+        'authentication',
+        new Error('Unexpected authentication response origin "http://localhost:33032", expected "http://localhost:32902"'),
+      ),
+    );
+
+    const res = await app.request('/auth/mfa/passkey/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        tempToken: 'temp-token',
+        credential: { id: 'credential-1', response: {} },
+      }),
+    });
+
+    expect(res.status).toBe(401);
+    const body = await res.text();
+    expect(body).not.toMatch(/localhost|expected|origin|rp_?id/i);
+    expect(createTokenPair).not.toHaveBeenCalled();
   });
 
   it('returns passkey MFA state after password login for passkey-enrolled users', async () => {
