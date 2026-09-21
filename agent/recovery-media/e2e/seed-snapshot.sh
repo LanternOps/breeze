@@ -160,7 +160,10 @@ else:
 os.makedirs(f"{out}/snapshots/e2e-2", exist_ok=True)
 with open(f"{out}/snapshots/e2e-2/manifest.json", "w") as f:
     json.dump(gen2, f, indent=2)
-shutil.copy(f"{out}/layout.json", f"{out}/snapshots/e2e-2/layout.json") if os.path.exists(f"{out}/layout.json") else None
+# The console refuses without a captured disk layout ("no disk layout was
+# captured for snapshot ..."), so every generation carries the same
+# synthetic layout.json as e2e-1 (a hard copy, not optional).
+shutil.copy(f"{out}/snapshots/e2e-1/layout.json", f"{out}/snapshots/e2e-2/layout.json")
 PYEOF
 
 # e2e-3: references into BOTH e2e-1 (unchanged files) and e2e-2 (the
@@ -188,6 +191,7 @@ else:
 os.makedirs(f"{out}/snapshots/e2e-3", exist_ok=True)
 with open(f"{out}/snapshots/e2e-3/manifest.json", "w") as f:
     json.dump(gen3, f, indent=2)
+shutil.copy(f"{out}/snapshots/e2e-1/layout.json", f"{out}/snapshots/e2e-3/layout.json")
 PYEOF
 
 # One unrelated, unreferenced object under e2e-1's own prefix, so the fake
