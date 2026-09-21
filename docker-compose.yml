@@ -440,6 +440,7 @@ x-api-env: &api-env
   # Inbound email-to-ticket (native address; separate from the M365 mailbox path)
   TICKETS_INBOUND_DOMAIN: ${TICKETS_INBOUND_DOMAIN:-}
   MAILGUN_INBOUND_SIGNING_KEY: ${MAILGUN_INBOUND_SIGNING_KEY:-}
+  INBOUND_QUEUE_MAX_PER_SEC: ${INBOUND_QUEUE_MAX_PER_SEC:-20}
   # SMS MFA + alert notifications (Twilio)
   TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:-}
   TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:-}
