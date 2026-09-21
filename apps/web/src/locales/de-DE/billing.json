@@ -1178,7 +1178,30 @@
       "shareLinkNewLinkOriginalLive": "NEUEN Link kopiert. Dieses Angebot stammt aus der Zeit vor der Linkverfolgung, daher konnte der bisherige Link des Kunden nicht wiederverwendet werden; er funktioniert weiterhin parallel zu diesem.",
       "shareLinkNewLinkOriginalDead": "NEUEN Link kopiert. Der bisherige Link lässt sich nicht mehr öffnen; wer ihn hat, muss diesen verwenden.",
       "currencyMismatch": "Dieses Angebot lautet auf {{documentCurrency}}, Ihr Stripe-Konto rechnet jedoch in {{accountCurrency}} ab. Stripe zeigt dem Kunden {{documentCurrency}} an und rechnet bei der Auszahlung um – Wechselkursspanne und etwaige Umrechnungsgebühren tragen Sie.",
-      "currencyUnknown": "Die Abrechnungswährung Ihres Stripe-Kontos ist noch nicht zwischengespeichert, daher konnte sie nicht mit diesem Angebot in {{documentCurrency}} abgeglichen werden. Aktualisieren Sie die Stripe-Kontodaten unter Einstellungen → Integrationen, um die Prüfung zu aktivieren."
+      "currencyUnknown": "Die Abrechnungswährung Ihres Stripe-Kontos ist noch nicht zwischengespeichert, daher konnte sie nicht mit diesem Angebot in {{documentCurrency}} abgeglichen werden. Aktualisieren Sie die Stripe-Kontodaten unter Einstellungen → Integrationen, um die Prüfung zu aktivieren.",
+      "acceptOnBehalf": {
+        "button": "Im Namen des Kunden annehmen",
+        "title": "Annahme des Kunden erfassen",
+        "methodLabel": "Wie hat der Kunde zugestimmt?",
+        "method": {
+          "verbal": "Mündlich / telefonisch",
+          "email": "Per E-Mail",
+          "signed_document": "Unterzeichnetes Dokument",
+          "purchase_order": "Bestellung",
+          "other": "Sonstiges"
+        },
+        "referenceLabel": "Referenz",
+        "referenceHelp": "Wo ein Prüfer die Zustimmung des Kunden findet — eine Bestellnummer, eine E-Mail mit Datum oder ein Ticket.",
+        "signerNameLabel": "Wer zugestimmt hat",
+        "signerEmailLabel": "E-Mail-Adresse (optional)",
+        "consequenceInvoice": "Eine Rechnung über {{amount}} wird jetzt erstellt und nummeriert.",
+        "consequenceContracts": "Wiederkehrende Positionen werden zu Vertragsentwürfen, die Sie später aktivieren.",
+        "consequenceEmail": "Die Rechnung wird per E-Mail an den Kunden gesendet.",
+        "consequenceDraft": "Dieses Angebot wurde nie versendet. Der Kunde sieht es zum ersten Mal als Rechnung.",
+        "submit": "Annehmen und Rechnung stellen",
+        "success": "Angebot angenommen. Rechnung {{number}} erstellt.",
+        "error": "Die Annahme konnte nicht erfasst werden."
+      }
     },
     "detail": {
       "addContentInEditor": "Fügen Sie Inhalte im Editor hinzu",
@@ -1303,7 +1326,9 @@
         "inProgressTitle": "Eine Überarbeitung dieses Angebots wird erstellt – beim Senden wird dieses Angebot ersetzt und der Kundenlink deaktiviert:",
         "revisionOfTitle": "Überarbeitung von",
         "untitled": "eine neuere Version"
-      }
+      },
+      "acceptedOnBehalf": "Im Namen von {{signer}} angenommen durch {{recorder}} am {{date}} · {{method}} · {{reference}}",
+      "deletedUser": "ein gelöschter Benutzer"
     },
     "currency": {
       "actions": {

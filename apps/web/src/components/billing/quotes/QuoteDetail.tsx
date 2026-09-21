@@ -278,6 +278,25 @@ export default function QuoteDetail({ detail, onChanged, actionsInHeader }: Prop
                 {quote.declinedAt && <LifecycleStage label={t('quotes.detail.lifecycle.declined')} date={quote.declinedAt} first={!quote.sentAt && !quote.viewedAt && !quote.acceptedAt} danger testId="quote-detail-lifecycle-declined" />}
               </dl>
             )}
+            {/* Provenance for an MSP-recorded acceptance. A customer click
+                needs no line — the lifecycle stamp above says all there is to
+                say. An on-behalf record must name who recorded it and against
+                what, or the audit trail lives only in the audit log. */}
+            {detail.acceptance?.origin === 'on_behalf' && (
+              <p className="mt-2 text-xs text-muted-foreground" data-testid="quote-acceptance-provenance">
+                {t('quotes.detail.acceptedOnBehalf', {
+                  signer: detail.acceptance.signerName,
+                  // The recorder can be gone (ON DELETE SET NULL) — never render
+                  // a blank where a person's name belongs.
+                  recorder: detail.acceptance.recordedBy?.name ?? t('quotes.detail.deletedUser'),
+                  date: formatDate(detail.acceptance.signedAt),
+                  // i18n-dynamic: the method comes from the acceptance record.
+                  method: t(/* i18n-dynamic */ `quotes.actions.acceptOnBehalf.method.${detail.acceptance.method}`,
+                    { defaultValue: detail.acceptance.method }),
+                  reference: detail.acceptance.reference ?? '',
+                })}
+              </p>
+            )}
             {/* Who the quote actually went to. Recorded at send but previously
                 invisible to the tech who sent it. Rendered only when we have
                 addresses: an ABSENT `recipients` (older payload) and an EMPTY

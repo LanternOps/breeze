@@ -205,6 +205,10 @@ const TARGET_GLOBS = [
   // routes through runAction (or a typed API wrapper), but these files were
   // never guarded, so a future bare mutation would ship with no CI signal.
   'src/components/billing/quotes/QuoteActions.tsx',
+  // Accept on behalf (spec 2026-09-21): the dialog lives in its own file
+  // because QuoteActions.tsx is already 1551 lines. It issues an invoice — a
+  // silent failure here is a tech who believes a deal is closed and is not.
+  'src/components/billing/quotes/AcceptOnBehalfDialog.tsx',
   'src/components/billing/quotes/QuoteDocument.tsx',
   // W03 moved these three into the /agreements area; ContractDocumentsSection
   // was deleted (contract detail now embeds SignedAgreementsPage).
@@ -721,7 +725,8 @@ describe('no silent mutations in targeted set', () => {
     // Disk Cleanup v2 W03 adds filesystem/CleanupPanel.tsx: 151 → 152.
     // Disk Cleanup v2 W04 adds filesystem/SystemCleanupPanel.tsx: 152 → 153.
     // Billing profiles W02 adds Rates and the org assignment writer: 153 → 155.
-    expect(absoluteFiles.length).toBe(155);
+    // Accept on behalf adds quotes/AcceptOnBehalfDialog.tsx: 155 → 156.
+    expect(absoluteFiles.length).toBe(156);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

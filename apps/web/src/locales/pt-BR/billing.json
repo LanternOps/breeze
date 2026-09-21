@@ -1178,7 +1178,30 @@
       "shareLinkNewLinkOriginalLive": "Um link NOVO foi copiado. Esta proposta é anterior ao rastreamento de links, então o link que o cliente já tinha não pôde ser reutilizado; ele continua funcionando junto com este.",
       "shareLinkNewLinkOriginalDead": "Um link NOVO foi copiado. O link anterior não pode mais ser aberto, então quem o tiver precisa usar este.",
       "currencyMismatch": "Este orçamento está em {{documentCurrency}}, mas sua conta Stripe liquida em {{accountCurrency}}. O Stripe apresentará {{documentCurrency}} ao cliente e converterá na liquidação — o spread cambial e qualquer taxa de conversão ficam por sua conta.",
-      "currencyUnknown": "A moeda de liquidação da sua conta Stripe ainda não foi armazenada em cache, então não foi possível compará-la com este orçamento em {{documentCurrency}}. Atualize os dados da conta Stripe em Configurações → Integrações para habilitar a verificação."
+      "currencyUnknown": "A moeda de liquidação da sua conta Stripe ainda não foi armazenada em cache, então não foi possível compará-la com este orçamento em {{documentCurrency}}. Atualize os dados da conta Stripe em Configurações → Integrações para habilitar a verificação.",
+      "acceptOnBehalf": {
+        "button": "Aceitar em nome do cliente",
+        "title": "Registrar o aceite do cliente",
+        "methodLabel": "Como o cliente concordou?",
+        "method": {
+          "verbal": "Verbalmente / por telefone",
+          "email": "Por e-mail",
+          "signed_document": "Documento assinado",
+          "purchase_order": "Ordem de compra",
+          "other": "Outro"
+        },
+        "referenceLabel": "Referência",
+        "referenceHelp": "Onde um revisor encontraria a concordância do cliente — um número de ordem de compra, um e-mail com data, ou um chamado.",
+        "signerNameLabel": "Quem concordou",
+        "signerEmailLabel": "E-mail dessa pessoa (opcional)",
+        "consequenceInvoice": "Uma fatura de {{amount}} será emitida e numerada agora.",
+        "consequenceContracts": "Linhas recorrentes viram contratos em rascunho que você ativa depois.",
+        "consequenceEmail": "A fatura será enviada por e-mail ao cliente.",
+        "consequenceDraft": "Esta proposta nunca foi enviada. O primeiro contato do cliente com ela será a fatura.",
+        "submit": "Aceitar e emitir fatura",
+        "success": "Proposta aceita. Fatura {{number}} emitida.",
+        "error": "Não foi possível registrar o aceite."
+      }
     },
     "detail": {
       "addContentInEditor": "Adicionar conteúdo no Editor",
@@ -1303,7 +1326,9 @@
         "inProgressTitle": "Uma revisão deste orçamento está sendo preparada — enviá-la substituirá este orçamento e desativará o link do cliente:",
         "revisionOfTitle": "Revisão de",
         "untitled": "uma versão mais recente"
-      }
+      },
+      "acceptedOnBehalf": "Aceito em nome de {{signer}} por {{recorder}} em {{date}} · {{method}} · {{reference}}",
+      "deletedUser": "um usuário excluído"
     },
     "currency": {
       "actions": {

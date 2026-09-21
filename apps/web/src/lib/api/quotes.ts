@@ -19,6 +19,7 @@
 
 import { fetchWithAuth } from '../../stores/auth';
 import type {
+  AcceptQuoteOnBehalfInput,
   CreateQuoteInput,
   CreateQuoteOrderInput,
   UpdateQuoteInput,
@@ -375,6 +376,19 @@ export function resendQuote(id: string, opts: SendQuoteOptions = {}): Promise<Re
   return fetchWithAuth(`/quotes/${id}/resend`, {
     method: 'POST',
     ...(Object.keys(body).length > 0 ? { headers: JSON_HEADERS, body: JSON.stringify(body) } : {}),
+  });
+}
+
+/** Record a customer's acceptance on their behalf (POST
+ *  /quotes/:id/accept-on-behalf). Gated server-side on quotes:accept. This
+ *  runs the full conversion: the invoice is numbered and issued now, recurring
+ *  lines become draft contracts, and the partner's auto-email flag is honoured.
+ *  Callers MUST wrap this in `runAction` — see the module header. */
+export function acceptQuoteOnBehalf(id: string, body: AcceptQuoteOnBehalfInput): Promise<Response> {
+  return fetchWithAuth(`/quotes/${id}/accept-on-behalf`, {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify(body),
   });
 }
 

@@ -1178,7 +1178,30 @@
       "shareLinkNewLinkOriginalLive": "Copied a NEW link. This proposal predates link tracking, so the link the customer already had could not be reused; it still works alongside this one.",
       "shareLinkNewLinkOriginalDead": "Copied a NEW link. The previous link can no longer be opened, so anyone holding it must use this one.",
       "currencyMismatch": "This quote is in {{documentCurrency}} but your Stripe account settles in {{accountCurrency}}. Stripe will present {{documentCurrency}} to the customer and convert it on settlement — you bear the FX spread and any conversion fee.",
-      "currencyUnknown": "Your Stripe account's settlement currency hasn't been cached, so it couldn't be checked against this {{documentCurrency}} quote. Refresh your Stripe account details under Settings → Integrations to enable the mismatch check."
+      "currencyUnknown": "Your Stripe account's settlement currency hasn't been cached, so it couldn't be checked against this {{documentCurrency}} quote. Refresh your Stripe account details under Settings → Integrations to enable the mismatch check.",
+      "acceptOnBehalf": {
+        "button": "Accept on behalf",
+        "title": "Record the customer's acceptance",
+        "methodLabel": "How did they agree?",
+        "method": {
+          "verbal": "Verbally / by phone",
+          "email": "By email",
+          "signed_document": "Signed document",
+          "purchase_order": "Purchase order",
+          "other": "Other"
+        },
+        "referenceLabel": "Reference",
+        "referenceHelp": "Where a reviewer would find the customer's agreement — a PO number, an email and date, or a ticket.",
+        "signerNameLabel": "Who agreed",
+        "signerEmailLabel": "Their email (optional)",
+        "consequenceInvoice": "An invoice for {{amount}} will be issued and numbered now.",
+        "consequenceContracts": "Recurring lines become draft contracts you activate later.",
+        "consequenceEmail": "The invoice will be emailed to the customer.",
+        "consequenceDraft": "This quote was never sent. The customer's first sight of it will be the invoice.",
+        "submit": "Accept and issue invoice",
+        "success": "Quote accepted. Invoice {{number}} issued.",
+        "error": "Could not record the acceptance."
+      }
     },
     "detail": {
       "addContentInEditor": "Add content in the Editor",
@@ -1303,7 +1326,9 @@
         "inProgressTitle": "A revision of this quote is being drafted — sending it will replace this quote and disable the customer’s link:",
         "revisionOfTitle": "Revision of",
         "untitled": "a newer version"
-      }
+      },
+      "acceptedOnBehalf": "Accepted on behalf of {{signer}} by {{recorder}} on {{date}} · {{method}} · {{reference}}",
+      "deletedUser": "a deleted user"
     },
     "currency": {
       "actions": {

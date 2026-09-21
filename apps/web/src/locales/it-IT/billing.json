@@ -1178,7 +1178,30 @@
       "shareLinkNewLinkOriginalLive": "Copiato un link NUOVO. Questa proposta precede il tracciamento dei link, quindi non è stato possibile riutilizzare quello che il cliente aveva già; continua a funzionare insieme a questo.",
       "shareLinkNewLinkOriginalDead": "Copiato un link NUOVO. Il link precedente non può più essere aperto: chi lo possiede deve usare questo.",
       "currencyMismatch": "Questo preventivo è in {{documentCurrency}}, ma il tuo account Stripe regola in {{accountCurrency}}. Stripe presenterà {{documentCurrency}} al cliente e convertirà al momento del regolamento: lo spread di cambio ed eventuali commissioni di conversione sono a tuo carico.",
-      "currencyUnknown": "La valuta di regolamento del tuo account Stripe non è ancora in cache, quindi non è stato possibile confrontarla con questo preventivo in {{documentCurrency}}. Aggiorna i dettagli dell'account Stripe in Impostazioni → Integrazioni per abilitare il controllo."
+      "currencyUnknown": "La valuta di regolamento del tuo account Stripe non è ancora in cache, quindi non è stato possibile confrontarla con questo preventivo in {{documentCurrency}}. Aggiorna i dettagli dell'account Stripe in Impostazioni → Integrazioni per abilitare il controllo.",
+      "acceptOnBehalf": {
+        "button": "Accetta per conto del cliente",
+        "title": "Registra l'accettazione del cliente",
+        "methodLabel": "Come ha dato il suo assenso?",
+        "method": {
+          "verbal": "A voce / per telefono",
+          "email": "Via e-mail",
+          "signed_document": "Documento firmato",
+          "purchase_order": "Ordine di acquisto",
+          "other": "Altro"
+        },
+        "referenceLabel": "Riferimento",
+        "referenceHelp": "Dove un revisore troverebbe l'assenso del cliente: un numero d'ordine, un'e-mail con data o un ticket.",
+        "signerNameLabel": "Chi ha dato l'assenso",
+        "signerEmailLabel": "La sua e-mail (facoltativa)",
+        "consequenceInvoice": "Verrà emessa e numerata subito una fattura di {{amount}}.",
+        "consequenceContracts": "Le righe ricorrenti diventano contratti in bozza da attivare in seguito.",
+        "consequenceEmail": "La fattura verrà inviata via e-mail al cliente.",
+        "consequenceDraft": "Questo preventivo non è mai stato inviato. La prima cosa che il cliente ne vedrà sarà la fattura.",
+        "submit": "Accetta ed emetti fattura",
+        "success": "Preventivo accettato. Fattura {{number}} emessa.",
+        "error": "Impossibile registrare l'accettazione."
+      }
     },
     "detail": {
       "addContentInEditor": "Aggiungi contenuto nell'Editor",
@@ -1303,7 +1326,9 @@
         "inProgressTitle": "È in preparazione una revisione di questo preventivo: inviarla sostituirà questo preventivo e disattiverà il link del cliente:",
         "revisionOfTitle": "Revisione di",
         "untitled": "una versione più recente"
-      }
+      },
+      "acceptedOnBehalf": "Accettato per conto di {{signer}} da {{recorder}} il {{date}} · {{method}} · {{reference}}",
+      "deletedUser": "un utente eliminato"
     },
     "currency": {
       "actions": {

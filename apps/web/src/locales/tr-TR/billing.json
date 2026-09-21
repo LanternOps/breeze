@@ -1178,7 +1178,30 @@
       "shareLinkNewLinkOriginalLive": "YENİ bir bağlantı kopyalandı. Bu teklif bağlantı izleme özelliğinden önce oluşturulduğu için müşterinin mevcut bağlantısı yeniden kullanılamadı; eski bağlantı bununla birlikte çalışmaya devam eder.",
       "shareLinkNewLinkOriginalDead": "YENİ bir bağlantı kopyalandı. Önceki bağlantı artık açılamaz; bağlantıya sahip olan herkes bu bağlantıyı kullanmalıdır.",
       "currencyMismatch": "Bu teklif {{documentCurrency}} cinsinden, ancak Stripe hesabınız {{accountCurrency}} olarak ödeme yapıyor. Stripe müşteriye {{documentCurrency}} gösterecek ve ödeme sırasında dönüştürecek — kur farkı ve varsa dönüştürme ücreti size aittir.",
-      "currencyUnknown": "Stripe hesabınızın ödeme para birimi henüz önbelleğe alınmadığından bu {{documentCurrency}} teklifle karşılaştırılamadı. Uyuşmazlık kontrolünü etkinleştirmek için Ayarlar → Entegrasyonlar altından Stripe hesap bilgilerinizi yenileyin."
+      "currencyUnknown": "Stripe hesabınızın ödeme para birimi henüz önbelleğe alınmadığından bu {{documentCurrency}} teklifle karşılaştırılamadı. Uyuşmazlık kontrolünü etkinleştirmek için Ayarlar → Entegrasyonlar altından Stripe hesap bilgilerinizi yenileyin.",
+      "acceptOnBehalf": {
+        "button": "Müşteri adına kabul et",
+        "title": "Müşterinin kabulünü kaydedin",
+        "methodLabel": "Müşteri nasıl onay verdi?",
+        "method": {
+          "verbal": "Sözlü / telefonla",
+          "email": "E-postayla",
+          "signed_document": "İmzalı belge",
+          "purchase_order": "Satın alma siparişi",
+          "other": "Diğer"
+        },
+        "referenceLabel": "Referans",
+        "referenceHelp": "Bir denetçinin müşterinin onayını nerede bulacağı — bir sipariş numarası, tarihli bir e-posta ya da bir kayıt.",
+        "signerNameLabel": "Onayı veren kişi",
+        "signerEmailLabel": "E-posta adresi (isteğe bağlı)",
+        "consequenceInvoice": "{{amount}} tutarında bir fatura şimdi oluşturulup numaralandırılacak.",
+        "consequenceContracts": "Yinelenen satırlar, sonradan etkinleştireceğiniz taslak sözleşmelere dönüşür.",
+        "consequenceEmail": "Fatura müşteriye e-postayla gönderilecek.",
+        "consequenceDraft": "Bu teklif hiç gönderilmedi. Müşterinin onu ilk görüşü fatura olacak.",
+        "submit": "Kabul et ve fatura oluştur",
+        "success": "Teklif kabul edildi. {{number}} numaralı fatura oluşturuldu.",
+        "error": "Kabul kaydedilemedi."
+      }
     },
     "detail": {
       "addContentInEditor": "Editör'e içerik ekleyin",
@@ -1303,7 +1326,9 @@
         "inProgressTitle": "Bu teklifin bir revizyonu hazırlanıyor — gönderildiğinde bu teklifin yerini alacak ve müşteri bağlantısını devre dışı bırakacak:",
         "revisionOfTitle": "Şu teklifin revizyonu:",
         "untitled": "daha yeni bir sürüm"
-      }
+      },
+      "acceptedOnBehalf": "{{signer}} adına {{recorder}} tarafından {{date}} tarihinde kabul edildi · {{method}} · {{reference}}",
+      "deletedUser": "silinmiş bir kullanıcı"
     },
     "currency": {
       "actions": {

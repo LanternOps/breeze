@@ -1178,7 +1178,30 @@
       "shareLinkNewLinkOriginalLive": "Un NOUVEAU lien a été copié. Cette proposition est antérieure au suivi des liens : celui que le client possédait n'a pas pu être réutilisé; il fonctionne toujours en parallèle de celui-ci.",
       "shareLinkNewLinkOriginalDead": "Un NOUVEAU lien a été copié. Le lien précédent ne peut plus être ouvert; toute personne qui le détient doit utiliser celui-ci.",
       "currencyMismatch": "Cette soumission est en {{documentCurrency}}, mais votre compte Stripe règle en {{accountCurrency}}. Stripe présentera {{documentCurrency}} au client et convertira au règlement — l'écart de change et les frais de conversion sont à votre charge.",
-      "currencyUnknown": "La devise de règlement de votre compte Stripe n'est pas encore en cache; elle n'a donc pas pu être comparée à cette soumission en {{documentCurrency}}. Actualisez les détails de votre compte Stripe dans Paramètres → Intégrations pour activer la vérification."
+      "currencyUnknown": "La devise de règlement de votre compte Stripe n'est pas encore en cache; elle n'a donc pas pu être comparée à cette soumission en {{documentCurrency}}. Actualisez les détails de votre compte Stripe dans Paramètres → Intégrations pour activer la vérification.",
+      "acceptOnBehalf": {
+        "button": "Accepter au nom du client",
+        "title": "Enregistrer l'acceptation du client",
+        "methodLabel": "Comment le client a-t-il donné son accord?",
+        "method": {
+          "verbal": "Verbalement / par téléphone",
+          "email": "Par courriel",
+          "signed_document": "Document signé",
+          "purchase_order": "Bon de commande",
+          "other": "Autre"
+        },
+        "referenceLabel": "Référence",
+        "referenceHelp": "Où un réviseur trouverait l'accord du client — un numéro de bon de commande, un courriel daté ou un billet.",
+        "signerNameLabel": "Qui a donné son accord",
+        "signerEmailLabel": "Son courriel (facultatif)",
+        "consequenceInvoice": "Une facture de {{amount}} sera émise et numérotée maintenant.",
+        "consequenceContracts": "Les lignes récurrentes deviennent des contrats en brouillon que vous activez plus tard.",
+        "consequenceEmail": "La facture sera envoyée par courriel au client.",
+        "consequenceDraft": "Cette proposition n'a jamais été envoyée. La facture sera la première chose que le client en verra.",
+        "submit": "Accepter et émettre la facture",
+        "success": "Proposition acceptée. Facture {{number}} émise.",
+        "error": "Impossible d'enregistrer l'acceptation."
+      }
     },
     "detail": {
       "addContentInEditor": "Ajouter du contenu dans l'Éditeur",
@@ -1303,7 +1326,9 @@
         "inProgressTitle": "Une révision de cette soumission est en préparation — l'envoyer remplacera cette soumission et désactivera le lien du client :",
         "revisionOfTitle": "Révision de",
         "untitled": "une version plus récente"
-      }
+      },
+      "acceptedOnBehalf": "Accepté au nom de {{signer}} par {{recorder}} le {{date}} · {{method}} · {{reference}}",
+      "deletedUser": "un utilisateur supprimé"
     },
     "currency": {
       "actions": {

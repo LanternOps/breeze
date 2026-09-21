@@ -15,6 +15,7 @@ import { getJwtClaims } from '../../../lib/authScope';
 import { cloneQuote, reviseQuote, deleteQuote, sendQuote, resendQuote, getQuoteShareLink, type SendQuoteOptions, type QuoteSendEmailReason, type QuoteAcceptUrlOrigin } from '../../../lib/api/quotes';
 import { ConfirmDialog } from '../../shared/ConfirmDialog';
 import { Dialog } from '../../shared/Dialog';
+import AcceptOnBehalfDialog from './AcceptOnBehalfDialog';
 import { OrgCombobox, orgComboboxOptions } from '../shared/OrgCombobox';
 import { useShowMargin } from '../billingUi';
 import { useReviseQuote, isRevisable } from './useReviseQuote';
@@ -282,6 +283,7 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
   const [deleting, setDeleting] = useState(false);
   const [cloning, setCloning] = useState(false);
   const [cloneOpen, setCloneOpen] = useState(false);
+  const [acceptOpen, setAcceptOpen] = useState(false);
   const [cloneOrgId, setCloneOrgId] = useState(quote.orgId);
   const [cloneTitle, setCloneTitle] = useState('');
   // Header-variant overflow menu (Clone / Delete) so the header cluster stays a
@@ -885,6 +887,12 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
     : 'inline-flex w-full items-center justify-center rounded-md px-4 py-2 text-sm font-medium';
 
   const canSend = can('quotes', 'send') && isDraft;
+  // Accepting on a customer's behalf is offered for exactly the statuses the
+  // server will accept (services/quoteAcceptService.ts): a draft is claimed to
+  // sent inline, an expired or declined quote needs Revise instead. Hidden —
+  // not disabled — without the permission, matching the other quote actions.
+  const canAcceptOnBehalf = can('quotes', 'accept')
+    && (quote.status === 'draft' || quote.status === 'sent' || quote.status === 'viewed');
   const canClone = can('quotes', 'write');
   // Exactly the statuses the server will supersede (SUPERSEDABLE in
   // services/quoteLifecycle.ts). A draft has nothing to replace; accepted and
@@ -897,7 +905,7 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
   const canResend = canShareLink;
 
   // Nothing to show (e.g. a viewer on an issued quote) — render no empty container.
-  if (!canSend && !can('quotes', 'read') && !canClone && !canDelete && !canResend) return null;
+  if (!canSend && !can('quotes', 'read') && !canClone && !canDelete && !canResend && !canAcceptOnBehalf) return null;
 
   return (
     <>
@@ -997,6 +1005,20 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
             <span className={sending || queued !== null ? 'opacity-30' : ''}>
               {t('quotes.actions.sendProposal')}
             </span>
+          </button>
+        )}
+        {/* Record an agreement that arrived outside the portal. Secondary
+            styling beside Send: it is the path taken when the customer said yes
+            by phone or on a PO, not the everyday one — and it issues an invoice
+            on the spot, so it must never be the button reached for by reflex. */}
+        {canAcceptOnBehalf && (
+          <button
+            type="button"
+            onClick={() => setAcceptOpen(true)}
+            data-testid="quote-accept-on-behalf"
+            className={`${btnBase} border hover:bg-muted disabled:opacity-50`}
+          >
+            {t('quotes.actions.acceptOnBehalf.button')}
           </button>
         )}
         {/* Re-send is the primary action on an already-sent quote — the slot the
@@ -1460,6 +1482,18 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
           </button>
         </div>
       </Dialog>
+      {/* Mounted only when the action is offered, so a viewer without
+          quotes:accept never carries the dialog's partner-settings fetch. */}
+      {canAcceptOnBehalf && (
+        <AcceptOnBehalfDialog
+          open={acceptOpen}
+          onClose={() => setAcceptOpen(false)}
+          quote={quote}
+          lines={lines}
+          recipients={recipients}
+          onAccepted={() => { setAcceptOpen(false); refresh(); }}
+        />
+      )}
       <ConfirmDialog
         open={delOpen}
         onClose={() => setDelOpen(false)}
