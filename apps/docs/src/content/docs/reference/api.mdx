@@ -574,7 +574,50 @@ A rule matches an elevation candidate on one or more of these fields (`POST`/`PA
 | `POST` | `/discovery/assets/:id/disable-monitoring` | Disable monitoring |
 | `GET` | `/discovery/assets/:id/monitoring` | Get monitoring config |
 | `PATCH` | `/discovery/assets/:id/monitoring` | Update monitoring config |
-| `GET` | `/discovery/topology` | Network topology map |
+| `GET` | `/discovery/topology` | Network topology map (classic view) |
+
+## Site Map (Network Topology)
+
+Endpoints for the next-generation, per-site logical topology map (site coverage, shared configuration templates, on-demand diagnostics). All are scoped under `/topology/sites/:siteId/...` unless noted.
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/topology/sites/:siteId/graph` | Get the site's graph (overview/logical/physical) |
+| `GET` | `/topology/sites/:siteId/nodes` | Search/list graph nodes |
+| `GET` | `/topology/sites/:siteId/nodes/:nodeId` | Get a node |
+| `GET` | `/topology/sites/:siteId/relationships/:relationshipId` | Get a connection |
+| `GET` | `/topology/sites/:siteId/relationships/:relationshipId/evidence` | Get connection evidence |
+| `GET` | `/topology/sites/:siteId/health` | Get node/relationship health |
+| `PATCH` | `/topology/sites/:siteId/layouts/:view` | Save node layout positions |
+| `POST` | `/topology/sites/:siteId/manual-nodes` | Add a manual placeholder node |
+| `PATCH` | `/topology/sites/:siteId/manual-nodes/:nodeId` | Update a manual node |
+| `DELETE` | `/topology/sites/:siteId/manual-nodes/:nodeId` | Remove a manual node |
+| `POST` | `/topology/sites/:siteId/manual-relationships` | Draw a manual connection |
+| `DELETE` | `/topology/sites/:siteId/manual-relationships/:relationshipId` | Remove a manual connection |
+| `GET` | `/topology/sites/:siteId/settings` | Read resolved site configuration |
+| `PATCH` | `/topology/sites/:siteId/settings` | Override site configuration |
+| `GET` | `/topology/sites/:siteId/targets` | List diagnostic targets |
+| `POST` | `/topology/sites/:siteId/targets` | Add diagnostic target |
+| `PATCH` | `/topology/sites/:siteId/targets/:id` | Update diagnostic target |
+| `DELETE` | `/topology/sites/:siteId/targets/:id` | Remove diagnostic target |
+| `GET` | `/topology/sites/:siteId/policies` | List monitoring policies |
+| `POST` | `/topology/sites/:siteId/policies` | Add monitoring policy |
+| `PATCH` | `/topology/sites/:siteId/policies/:id` | Update monitoring policy |
+| `DELETE` | `/topology/sites/:siteId/policies/:id` | Remove monitoring policy |
+| `GET` | `/topology/sites/:siteId/collectors` | List agents eligible to run a diagnostic |
+| `POST` | `/topology/sites/:siteId/diagnostic-runs` | Start an on-demand diagnostic run |
+| `GET` | `/topology/sites/:siteId/diagnostic-runs/:runId` | Get diagnostic run status/results |
+| `POST` | `/topology/sites/:siteId/diagnostic-runs/:runId/cancel` | Cancel a diagnostic run |
+| `GET` | `/topology/sites/:siteId/template-options` | List template versions eligible for this site |
+| `GET` | `/topology/templates` | List configuration templates |
+| `POST` | `/topology/templates` | Create a template |
+| `PATCH` | `/topology/templates/:templateId` | Update a template |
+| `GET` | `/topology/templates/:templateId/versions` | List template versions |
+| `POST` | `/topology/templates/:templateId/versions` | Create a draft version |
+| `POST` | `/topology/templates/:templateId/versions/:versionId/publish` | Publish a draft version |
+| `POST` | `/topology/template-applications/preview` | Preview a template apply across sites |
+| `POST` | `/topology/template-applications` | Apply a previewed template change |
+| `GET` | `/topology/template-applications/:operationId` | Get template apply status |
 
 ## SNMP
 

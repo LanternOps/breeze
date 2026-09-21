@@ -177,6 +177,19 @@ The verdict is the rule's real evaluation result against that device's current d
 
 A partner-scoped user with access to every organization can create the **Configuration Policy** itself as **partner-wide** ("All organizations") instead of scoping it to one org, so every Alert Rule on that policy applies fleet-wide across every organization the partner manages. The owner scope is chosen when the Configuration Policy is created -- it applies to the whole policy, not to individual rules, and can't be changed afterward. Alert Rules on a partner-wide policy show an **All orgs** badge.
 
+## Migrating a whole policy's legacy rules at once
+
+Converting one rule at a time from the **Legacy rules** tab (see [Converting a legacy alert rule](/features/monitors/#converting-a-legacy-alert-rule)) works well for a handful of rules, but a policy with dozens of legacy rules -- or a partner managing the same legacy rules across every organization -- needs a way to move them all together without guessing whether anything will behave differently afterward. Breeze has a policy-wide conversion path built for that:
+
+1. **Preview.** Request a preview for a policy (or, for partner-wide legacy rules, for the whole partner). Breeze proposes the monitor each eligible rule would become, without changing anything yet.
+2. **Equivalence check.** Before anything converts, Breeze checks the proposed monitors against the current rules across every device in scope, so you know up front whether the conversion would change what fires and where -- not just that it compiled successfully.
+3. **Convert.** Once the preview looks right, convert the policy (or, for a partner, every organization's legacy rules at once). The original rules stop firing on their own, the same way a single-rule conversion works, and Breeze keeps a record of every conversion so it can be reviewed or undone later.
+4. **Revert or retire.** A conversion can be reverted, which restores the original rule to active duty and removes the monitor it produced. A source that isn't going to be converted (for example, one judged not worth converting) can instead be retired on its own, which stops it from showing up as pending without converting it. Any alerts already open against a retired or converted source keep their notification channels and escalation policy -- migrating a rule never drops an in-flight alert's delivery.
+
+<Aside type="note">
+  As of v0.115.0 this whole-policy path is available through the API -- converting, reverting, and retiring each require MFA, the same as a single-rule conversion, though requesting a preview does not; a guided console workflow for it is planned for a later release. Converting one rule at a time from the **Legacy rules** tab is fully available in the console today.
+</Aside>
+
 ## Notification Channels
 
 Notification channels are the delivery endpoints where alert notifications are sent. Each channel belongs to an organization.

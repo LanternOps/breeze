@@ -1,5 +1,5 @@
 {
-  "lastReviewedRef": "v0.114.0",
-  "reviewedAt": "2026-09-18",
-  "notes": "v0.114.0 release sync (docs/v0.114.0-technical-docs): four evidence report types identity_access_review/vulnerability_management/endpoint_management_review/threat_detection_review + scheduled auto-evidence (reports, contracts), Network Device Detail Page redesign — reachability header, Health/Reachability cards, Monitoring tab OID table + history, SNMPv1 fix (discovery), portal Devices visibility toggle fix + Hardware Lifecycle page (portal), AI budget editor moved to Org settings -> AI (ai), Variables All Organizations partner-only listing (scripts), Organizations account board (reference/organizations-and-sites), new DB_ACCESS_CONTEXT_PROLOGUE_TIMEOUT_MS / DB_WEDGED_BACKEND_* / TOOL_SOURCES_* / WEBAUTHN_* / BREEZE_AI_AGENTS_SWEEP_ACT_ENABLED env vars (environment), catalog_items.unit_price drop (upgrades), AI patch agent retry/escalate/reboot-planning (patch-management), Partner Admin MFA revocation fix (remote-access)."
+  "lastReviewedRef": "c3f059006",
+  "reviewedAt": "2026-09-21",
+  "notes": "v0.115.0 diff sweep (v0.114.0..origin/main): topology M1 site map (flag-gated) + classic topology relabel (discovery, reference/api), composite monitor kind + consecutiveFailures 100 + cumulative/replace policy-link inheritance + legacy-rule-to-monitor converter (backend-only, monitors/alerts), billing profile rounding+minimum stamping on time entries (ticketing), bare-metal Restore-as-VM VHDX + DR BARE_METAL_REBUILD step + 24h restore ceiling + specific failure reasons (backup/*), helper device-credential-lifecycle enforcement + partner trust review partner-wide-manage gate + script-parameter-as-data hardening (security/hardening, agents/helper)."
 }
