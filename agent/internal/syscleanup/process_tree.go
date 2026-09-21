@@ -3,6 +3,7 @@ package syscleanup
 import (
 	"context"
 	"os/exec"
+	"time"
 )
 
 // processTree groups a cleaner with the descendants it spawns so a deadline
@@ -23,6 +24,11 @@ type processTree interface {
 	kill(cmd *exec.Cmd)
 	// drain waits for all assigned workers to exit, terminating them on cancellation.
 	drain(ctx context.Context) error
+	// cpuTime reports the CPU consumed by every process in the tree so far.
+	// ok is false where the platform cannot measure it (POSIX, or a Windows
+	// host where the job object could not be created), which DISABLES the
+	// session-0 idle watchdog rather than letting it guess (#6482).
+	cpuTime() (time.Duration, bool)
 	// release drops the tree's OS resources WITHOUT terminating anything.
 	release()
 }

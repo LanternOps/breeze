@@ -162,7 +162,8 @@ func (t *drainingTestTree) drain(context.Context) error {
 	t.events = append(t.events, "drain")
 	return t.drainErr
 }
-func (t *drainingTestTree) release() { t.events = append(t.events, "release") }
+func (t *drainingTestTree) release()                       { t.events = append(t.events, "release") }
+func (t *drainingTestTree) cpuTime() (time.Duration, bool) { return 0, false }
 
 func TestRunProcessDrainsAssignedTreeBeforeRelease(t *testing.T) {
 	if runtime.GOOS == "windows" {
@@ -196,5 +197,137 @@ func TestRunProcessDrainsAssignedTreeBeforeRelease(t *testing.T) {
 				t.Fatal("drain failure must be reported")
 			}
 		})
+	}
+}
+
+// --- #6482: session-0 idle watchdog ----------------------------------------
+//
+// cleanmgr.exe /sagerun under the SYSTEM service executes its handlers and
+// then never exits (lab: 3/3 runs wedged at ~0.2 s CPU for the whole 60-minute
+// cap). The only signal that distinguishes "still working" from "wedged" is
+// the process TREE's CPU accounting, which the Windows job object already
+// reports. idleTracker is the pure decision half so the rule is executed on
+// the Linux CI runner.
+
+func TestIdleTrackerDeclaresIdleOnlyAfterTheMinimumRunAndAFlatCPUWindow(t *testing.T) {
+	base := time.Unix(0, 0)
+	tracker := newIdleTracker(base, 60*time.Second, 30*time.Second, 250*time.Millisecond)
+
+	// The first sample only primes the baseline.
+	if tracker.observe(base, 200*time.Millisecond) {
+		t.Fatal("the priming sample must never declare idle")
+	}
+	// Flat CPU, but the minimum run has not elapsed yet.
+	if tracker.observe(base.Add(45*time.Second), 200*time.Millisecond) {
+		t.Fatal("declared idle before the minimum run elapsed")
+	}
+	// 90s in: past the minimum run and CPU has not moved since t=0.
+	if !tracker.observe(base.Add(90*time.Second), 200*time.Millisecond) {
+		t.Fatal("a tree with a flat CPU window past the minimum run must be declared idle")
+	}
+}
+
+func TestIdleTrackerResetsWhenTheTreeConsumesCPU(t *testing.T) {
+	base := time.Unix(0, 0)
+	tracker := newIdleTracker(base, time.Second, 30*time.Second, 250*time.Millisecond)
+	tracker.observe(base, 0)
+
+	// Real work at t=60s resets the flat window even though minRun has passed.
+	if tracker.observe(base.Add(60*time.Second), 10*time.Second) {
+		t.Fatal("a tree that consumed CPU must not be declared idle")
+	}
+	if tracker.observe(base.Add(80*time.Second), 10*time.Second) {
+		t.Fatal("the flat window must restart from the last CPU movement")
+	}
+	if !tracker.observe(base.Add(95*time.Second), 10*time.Second) {
+		t.Fatal("30s after the last CPU movement the tree is idle")
+	}
+}
+
+// Sub-second jitter is not work: scheduler noise must not hold a wedged tree
+// open for the full hour.
+func TestIdleTrackerIgnoresSubNoiseCPUJitter(t *testing.T) {
+	base := time.Unix(0, 0)
+	tracker := newIdleTracker(base, time.Second, 30*time.Second, 250*time.Millisecond)
+	tracker.observe(base, 0)
+	tracker.observe(base.Add(10*time.Second), 100*time.Millisecond)
+	if !tracker.observe(base.Add(40*time.Second), 200*time.Millisecond) {
+		t.Fatal("CPU growth below the noise floor must not reset the flat window")
+	}
+}
+
+// cpuTree reports a caller-supplied CPU reading so the watchdog is exercised
+// without a Windows job object.
+type cpuTree struct {
+	drainingTestTree
+	cpu    time.Duration
+	ok     bool
+	killed chan struct{}
+}
+
+func (t *cpuTree) cpuTime() (time.Duration, bool) { return t.cpu, t.ok }
+func (t *cpuTree) kill(cmd *exec.Cmd) {
+	select {
+	case <-t.killed:
+	default:
+		close(t.killed)
+	}
+	if cmd != nil && cmd.Process != nil {
+		_ = cmd.Process.Kill()
+	}
+}
+
+func TestRunProcessIdleStopsAWedgedTreeWithoutCallingItATimeout(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell fixture")
+	}
+	sh, ok := resolveBinary("/bin/sh")
+	if !ok {
+		t.Skip("/bin/sh not present")
+	}
+	tree := &cpuTree{ok: true, killed: make(chan struct{})}
+	start := time.Now()
+	res := runProcessWithTreeIdle(context.Background(), 30*time.Second,
+		idleLimits{sample: 10 * time.Millisecond, minRun: 20 * time.Millisecond, idleAfter: 30 * time.Millisecond, noise: 250 * time.Millisecond},
+		tree, sh, "-c", "sleep 25")
+
+	if !res.IdleStopped {
+		t.Fatalf("IdleStopped = false; a tree that stopped using CPU must be reported as idle-stopped: %+v", res)
+	}
+	if res.TimedOut {
+		t.Fatal("an idle-stopped tree must NOT be reported as a timeout — it never reached its cap")
+	}
+	if res.Err == nil || !strings.Contains(res.Err.Error(), "never exited") {
+		t.Fatalf("Err = %v, want it to explain that the tree stopped using CPU and never exited", res.Err)
+	}
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Fatalf("the idle watchdog took %s to fire; the whole point is not to wait for the cap", elapsed)
+	}
+	select {
+	case <-tree.killed:
+	default:
+		t.Fatal("the idle watchdog must terminate the process TREE, not just the leader")
+	}
+}
+
+// A platform that cannot measure tree CPU disables the watchdog rather than
+// guessing: the run still ends at its cap, reported as a timeout.
+func TestRunProcessIdleLeavesUnmeasurableTreesAlone(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell fixture")
+	}
+	sh, ok := resolveBinary("/bin/sh")
+	if !ok {
+		t.Skip("/bin/sh not present")
+	}
+	limits := idleLimits{sample: 10 * time.Millisecond, minRun: 10 * time.Millisecond, idleAfter: 50 * time.Millisecond, noise: time.Millisecond}
+
+	unmeasurable := &cpuTree{ok: false, killed: make(chan struct{})}
+	res := runProcessWithTreeIdle(context.Background(), 300*time.Millisecond, limits, unmeasurable, sh, "-c", "sleep 20")
+	if res.IdleStopped {
+		t.Fatal("a tree whose CPU cannot be measured must not be idle-stopped")
+	}
+	if !res.TimedOut {
+		t.Fatal("with the watchdog disabled the run must still hit its cap")
 	}
 }
