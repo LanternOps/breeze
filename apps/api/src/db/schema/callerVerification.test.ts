@@ -1,5 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
+import { getTableConfig } from 'drizzle-orm/pg-core';
+import * as cv from './callerVerification';
 
 const read = (name: string) =>
   readFileSync(new URL(`../../../migrations/${name}`, import.meta.url), 'utf8');
@@ -28,5 +30,22 @@ describe('caller verification migration', () => {
     const firstStatement = b.replace(/^(\s*--[^\n]*\n)+/, '').trimStart();
     expect(firstStatement.startsWith("SELECT set_config('breeze.scope','system',true);")).toBe(true);
     expect(b).toContain('RAISE WARNING');
+  });
+
+  it('exports all four tables without walker-discovered snapshot columns', () => {
+    for (const table of [
+      cv.callerVerifications,
+      cv.callerVerificationSubjectBindings,
+      cv.callerVerificationDestinations,
+      cv.callerVerificationPolicies,
+    ]) {
+      const names = getTableConfig(table).columns.map((c) => c.name);
+      expect(names).not.toContain('device_id');
+      expect(names).not.toContain('ticket_id');
+    }
+    const names = getTableConfig(cv.callerVerifications).columns.map((c) => c.name);
+    expect(names).toEqual(
+      expect.arrayContaining(['stepup_auth_epoch', 'consumed_at', 'fence_override_until', 'ticket_ref', 'workstation_device_ref']),
+    );
   });
 });

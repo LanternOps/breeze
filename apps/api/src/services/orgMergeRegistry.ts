@@ -124,6 +124,18 @@ function buildFollowsParentEntries(): Record<string, OrgMergePolicy> {
 const SPECIAL: Record<string, OrgMergePolicy> = {
   organizations: { kind: 'loser-shell' },
 
+  // Caller verification (#6354 W01). Bindings are canonical per org: the
+  // partial unique indexes cv_bindings_entra_active_uq / cv_bindings_os_active_uq
+  // would 23505 on a plain repoint whenever both orgs bound the same Entra OID
+  // or OS principal. The resolve-phase executor revokes BOTH colliding sides
+  // (an ambiguous identity is no identity), the move-phase executor repoints,
+  // and orgMerge.ts calls finishBindingMerge afterwards to expire loser
+  // pending challenges and revoke unconsumed grants whose binding was revoked.
+  // See services/callerVerification/merge.ts.
+  caller_verification_subject_bindings: { kind: 'custom', note: 'Revoke both colliding identities before repoint; expire loser grants after move.' },
+  // One policy row per org (cv_policy_org_uq); survivor's floors win.
+  caller_verification_policies: { kind: 'keep-survivor' },
+
   // Track A durable authorization bindings copy both the automation owner and
   // the resource owner observed at admission. A plain org_id repoint leaves
   // expected_resource_org_id naming the loser and the deferred
@@ -678,6 +690,8 @@ const REPOINT_TABLES: readonly string[] = [
   "c2c_backup_jobs",
   "c2c_connections",
   "c2c_consent_sessions",
+  "caller_verification_destinations",
+  "caller_verifications",
   "capacity_predictions",
   "capacity_thresholds",
   "cis_baseline_results",
