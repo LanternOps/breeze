@@ -262,7 +262,7 @@ describe('config policy inheritance — automation execution identity (live DB)'
       `cp-automation-run-${automationId}-${childA}-${SLOT_KEY}`,
       `cp-automation-run-${automationId}-${childB}-${SLOT_KEY}`,
     ].sort());
-    expect(jobIds.every((jobId) => !jobId.includes(':'))).toBe(true);
+    expect(jobIds.every((jobId) => jobId !== undefined && !jobId.includes(':'))).toBe(true);
 
     // Each run carries its own assigned policy and only its own org's device.
     const byPolicy = new Map(runJobs.map((j) => [j.data.configPolicyId as string, j.data]));
