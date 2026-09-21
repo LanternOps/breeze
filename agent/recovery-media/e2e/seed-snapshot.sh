@@ -151,8 +151,13 @@ for entry in gen2["files"]:
         key = "snapshots/e2e-2/files/" + hashlib.sha256(entry["sourcePath"].encode()).hexdigest()
         entry["backupPath"] = key
         os.makedirs(os.path.dirname(f"{out}/{key}"), exist_ok=True)
+        body = b"e2e-2-changed-debian-version\n"
         with open(f"{out}/{key}", "wb") as fh:
-            fh.write(b"e2e-2-changed-debian-version\n")
+            fh.write(body)
+        # The manifest's checksum/size describe the bytes at the key
+        # (restore verifies them — a stale e2e-1 checksum fails the file).
+        entry["checksum"] = hashlib.sha256(body).hexdigest()
+        entry["size"] = len(body)
         break
 else:
     raise SystemExit("expected /etc/debian_version in the e2e-1 manifest to mark as changed in e2e-2")
@@ -182,8 +187,11 @@ for entry in gen3["files"]:
         key = "snapshots/e2e-3/files/" + hashlib.sha256(entry["sourcePath"].encode()).hexdigest()
         entry["backupPath"] = key
         os.makedirs(os.path.dirname(f"{out}/{key}"), exist_ok=True)
+        body = b"e2e-3-changed-hostname\n"
         with open(f"{out}/{key}", "wb") as fh:
-            fh.write(b"e2e-3-changed-hostname\n")
+            fh.write(body)
+        entry["checksum"] = hashlib.sha256(body).hexdigest()
+        entry["size"] = len(body)
         break
 else:
     raise SystemExit("expected /etc/hostname in the manifest to mark as changed in e2e-3")
