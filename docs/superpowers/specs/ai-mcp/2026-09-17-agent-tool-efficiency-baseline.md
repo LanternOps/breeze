@@ -99,6 +99,19 @@ Run: `pnpm --filter @breeze/api ai:tool-eval -- --out tool-eval-report.json --su
 
 Note the dominant miss pattern is **not** wrong-domain confusion: the model very often calls `query_devices` or `list_organizations` as an exploratory first step (get context, then act) rather than jumping straight to the specific action tool the golden case names — e.g. g03/g05/g10/g12/g13/g14/g15/g19/g20/g21/g22/g25/g29/g45/g55/g56 all observed `query_devices` against an `expect` that starts with a more specific tool (or `resolve_device_context`). This is a real accuracy signal (deny mode means the model never gets a real device match back to justify the broader call), not a harness artifact.
 
+### 2026-09-21 — A-W03 Task 7: re-measured baseline + after (production-prompt harness)
+
+The numbers above (31.7%/19-60, measured 2026-09-19) predate PR #6405, which fixed the harness to send each surface's real production system prompt (`composeStaticSystemPrompt`) instead of `AI_SYSTEM_PROMPT_BASE` alone. That changed what the model actually sees, so the old row is not a valid comparison point for A-W03's "accuracy did not drop" gate. Both rows below were produced with the **same**, post-#6405 harness (`ai:tool-eval`, `chat` surface, `--tool-search default`, `claude-sonnet-4-6`, all 60 golden cases, deny mode, `GITHUB_ACTIONS`/`AI_TOOL_EVAL_KEY` via `.github/workflows/ai-tool-eval.yml`, `workflow_dispatch`), so they are directly comparable to each other even though they are not directly comparable to the 2026-09-19 row.
+
+| Branch | Run | Commit | Hits/Total | Accuracy | `systemPromptBytes` |
+|---|---|---|---|---|---|
+| `main` (pre-A-W03 descriptions) | [run 35633528749](https://github.com/LanternOps/breeze/actions/runs/35633528749) | `main` @ dispatch time 2026-09-21 | 18/60 | 30.0% | 11347 |
+| `feature/6147-agent-tool-efficiency/wave-6150` (A-W03 description diet) | [run 35633521176](https://github.com/LanternOps/breeze/actions/runs/35633521176) | `21926244d` | 20/60 | 33.3% | 10906 |
+
+**Gate: accuracy must not drop vs. the same-harness baseline.** 33.3% (20/60) ≥ 30.0% (18/60) → **PASS** (+2 hits). `systemPromptBytes` also dropped 441 bytes (11347 → 10906), consistent with the description diet shrinking the static prompt while the moved disambiguation prose lands in the generated tool index (included in `systemPromptBytes` on both runs, since both are measured via the same `composeStaticSystemPrompt` path).
+
+Full miss tables for both runs are in the workflow run artifacts (`tool-eval-report.json`, `tool-eval-summary.md`; 90-day retention) linked above; not reproduced here as the per-case rows are identical in method to §3's table above and add no new information beyond the summary row.
+
 ## 4. Hot/cold (90 days, EU + US)
 
 `not run: no production database access in this environment.` The reporting endpoint (`GET /api/v1/admin/ai/tool-usage?days=90`, `apps/api/src/routes/admin/aiToolUsage.ts`) and the operator SQL this plan calls for (`docs/superpowers/specs/ai-mcp/sql/2026-09-17-ai-tool-usage-90d.sql`) exist in the codebase, but running either requires either a live deployed API with real `ai_tool_executions` history or Todd's direct psql access to the EU/US production databases — neither is available from this worktree/session. Top-20-by-executions, the cold list, and the Helper-vs-chat split are all `not run: <reason above>` and remain open for Todd to fill (per the plan's Step 2 instruction that a row of `not run` is acceptable, a row of invented numbers is not).
@@ -121,6 +134,8 @@ Note the dominant miss pattern is **not** wrong-domain confusion: the model very
 | System prompt bytes | **12265 bytes** (`AI_SYSTEM_PROMPT_BASE`, `Buffer.byteLength`) — well over the ≤6 KB target, and this is the *base* prompt only (before any per-request additions) | `tool-capture.jsonl` `systemPromptBytes` field (every row); `tool-eval-report.json` `systemPromptBytes`; `apps/api/src/services/aiAgentSystemPrompt.ts:17` |
 | External `tools/list` bytes for a single-domain grant | `not run: no dev stack running this session (no docker/postgres up in this worktree) to `curl` the external MCP server (`routes/mcpServer.ts`) with a live `ai:read` key.` | — |
 | Route modules without an `MCP_COVERAGE` entry | **504 of 504** (all of them) — `grep -rn "MCP_COVERAGE" apps/api/src` returns zero matches anywhere in the codebase, and `find apps/api/src/routes -name "*.ts" ! -name "*.test.ts"` counts 504 non-test route module files | ad hoc grep/find this session; the contract this measure refers to (`MCP_COVERAGE`) does not exist until A-W06 |
+| Golden eval first-call accuracy (2026-09-21, A-W03 Task 7, post-#6405 harness) | `main` (same-harness baseline): **30.0%** (18/60); `wave-6150` (after description diet): **33.3%** (20/60) — gate PASS, +2 hits | Workflow runs [35633528749](https://github.com/LanternOps/breeze/actions/runs/35633528749) (main) and [35633521176](https://github.com/LanternOps/breeze/actions/runs/35633521176) (`21926244d`); §3 above |
+| System prompt bytes (2026-09-21, post-#6405 production-prompt harness) | `main`: **11347 bytes**; `wave-6150`: **10906 bytes** (−441 bytes) | Same two runs, `tool-eval-report.json` `systemPromptBytes`; not comparable to the 12265-byte `AI_SYSTEM_PROMPT_BASE`-only row above, which predates #6405 and measured a different (smaller) prompt surface |
 
 ## Appendix: raw capture rows (from `tool-capture.jsonl`, this session)
 

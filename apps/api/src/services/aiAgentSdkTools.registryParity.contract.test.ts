@@ -27,7 +27,8 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 
-import { TOOL_TIERS, attachRegistryMeta, buildBreezeSdkTools } from './aiAgentSdkTools';
+import { aiTools } from './aiToolNames';
+import { TOOL_TIERS, SESSION_TOOL_DESCRIPTIONS, attachRegistryMeta, buildBreezeSdkTools } from './aiAgentSdkTools';
 import { getAllRegisteredToolNames, getToolTier, getToolAlwaysLoad, getToolSearchHint } from './aiTools';
 
 /**
@@ -292,5 +293,51 @@ describe('manage_delivery has every registration', () => {
   it('fails closed on unknown actions', () => {
     expect(requiredPermissionsForTool('manage_delivery', { action: 'unknown' })).toBeNull();
     expect(validateToolInput('manage_delivery', { action: 'unknown' }).success).toBe(false);
+  });
+});
+
+
+describe('SDK declarations use the registry description (A-W03, one description surface)', () => {
+  const configurations = [
+    { M365_ENABLED: 'false', GOOGLE_WORKSPACE_ENABLED: 'false', BREEZE_AI_SCRIPT_AUTHORING_ENABLED: 'false', DELEGANT_BASE_URL: '' },
+    { M365_ENABLED: 'true', GOOGLE_WORKSPACE_ENABLED: 'true', BREEZE_AI_SCRIPT_AUTHORING_ENABLED: 'true', DELEGANT_BASE_URL: '' },
+    { M365_ENABLED: 'false', GOOGLE_WORKSPACE_ENABLED: 'false', BREEZE_AI_SCRIPT_AUTHORING_ENABLED: 'false', DELEGANT_BASE_URL: 'https://delegant.example.com' },
+  ];
+
+  it.each(configurations)('every emitted tool uses its canonical description (%j)', config => {
+    for (const [key, value] of Object.entries(config)) vi.stubEnv(key, value);
+    try {
+      const declared = buildBreezeSdkTools(() => { throw new Error('no handlers'); });
+      const drift = declared
+        .filter(t => t.description !== (aiTools.get(t.name)?.definition.description
+          ?? SESSION_TOOL_DESCRIPTIONS[t.name as keyof typeof SESSION_TOOL_DESCRIPTIONS]))
+        .map(t => t.name);
+      expect(drift, 'declarations with their own description literal').toEqual([]);
+      if (config.M365_ENABLED === 'true') {
+        expect(declared.filter(t => !aiTools.has(t.name)).map(t => t.name).sort())
+          .toEqual(Object.keys(SESSION_TOOL_DESCRIPTIONS).sort());
+      }
+    } finally { vi.unstubAllEnvs(); }
+  });
+});
+
+describe('registry description reconciliation', () => {
+  it.each(['s1_isolate_device', 's1_threat_action', 'execute_playbook'])('preserves approval guidance for %s', name => {
+    expect(aiTools.get(name)!.definition.description).toMatch(/Requires user approval/);
+  });
+
+  it('fails server construction for an unknown registry name', () => {
+    const original = aiTools.get('query_devices')!;
+    aiTools.delete('query_devices');
+    try {
+      expect(() => buildBreezeSdkTools(() => { throw new Error('no handlers'); }))
+        .toThrow('No aiTools registry description for tool "query_devices"');
+    } finally { aiTools.set('query_devices', original); }
+  });
+
+  it('keeps session descriptors on budget', () => {
+    for (const description of Object.values(SESSION_TOOL_DESCRIPTIONS)) {
+      expect(description.length).toBeLessThanOrEqual(300);
+    }
   });
 });

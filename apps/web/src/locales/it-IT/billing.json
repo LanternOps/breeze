@@ -2140,7 +2140,6 @@
     "saveSuccess": "Impostazioni di fatturazione dell'organizzazione salvate",
     "tax": {
       "partnerDefault": "Predefinito partner",
-      "partnerDefaultWithValue": "{{pct}}% (predefinito partner)",
       "taxExempt": "Esente da imposta",
       "taxId": "ID fiscale",
       "taxRate": "Aliquota fiscale (%)",

@@ -785,22 +785,15 @@ export async function authMiddleware(c: Context, next: Next): Promise<void | Res
   // every organization belongs to a partner, and the live users.partner_id is
   // constrained to that same owner by the users (org_id, partner_id) FK. Bind
   // the guard to that current owner without widening the request DB context.
-  const runGuardedHandler = () => ipAllowlistGuard(c, next, {
-    partnerId: user.partnerId,
-    isPlatformAdmin: user.isPlatformAdmin === true,
-    actorId: user.id,
-    actorEmail: user.email,
-  });
-
   // #1448 — a small set of routes (the Stripe pay routes) opt OUT of the auto
   // request-transaction so a slow outbound HTTP call isn't made inside a held
   // transaction (pinning a pooled connection idle-in-transaction, the #1105
   // class). They run with NO ambient context and manage their own short DB
   // access contexts; auth is still set above so requireScope/requirePermission
   // and the handler's actor still work.
-  const dispatch = () => {
+  const runScopedHandler = () => {
     if (isSelfManagedDbContextRoute(c.req.method, c.req.path)) {
-      return runGuardedHandler();
+      return next();
     }
     // Built via buildDbAccessContext (the single source of truth) so the
     // request context can never drift from the one bulk handlers re-enter
@@ -815,9 +808,19 @@ export async function authMiddleware(c: Context, next: Next): Promise<void | Res
         partnerId: payload.partnerId,
         userId: user.id
       }),
-      runGuardedHandler
+      next
     );
   };
+
+  // The allowlist read uses its own short system transaction. Run it before
+  // entering the request transaction so concurrent authenticated requests do
+  // not each hold one pooled connection while waiting to borrow another.
+  const dispatch = () => ipAllowlistGuard(c, runScopedHandler, {
+    partnerId: user.partnerId,
+    isPlatformAdmin: user.isPlatformAdmin === true,
+    actorId: user.id,
+    actorEmail: user.email,
+  });
 
   // #1379 B2 — run the entire downstream dispatch inside an explicit Sentry
   // isolation scope so tenant tags are confined to THIS request's

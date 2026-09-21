@@ -91,7 +91,7 @@ describe('OrgTicketSettingsEditor', () => {
     expect(screen.queryByTestId('org-ticket-billable')).not.toBeInTheDocument();
   });
 
-  it('renders partner default values as placeholders when config is available', async () => {
+  it('shows the partner SLA number as the placeholder and a standard "inherits from" helper', async () => {
     mockApi();
     render(<OrgTicketSettingsEditor orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);
     await waitFor(() => expect(screen.getByTestId('org-ticket-settings')).toBeInTheDocument());
@@ -99,13 +99,15 @@ describe('OrgTicketSettingsEditor', () => {
     // Partner config provides values — should show numbers as placeholders
     expect((screen.getByTestId('org-ticket-sla-urgent-response') as HTMLInputElement).placeholder).toBe('30');
     expect((screen.getByTestId('org-ticket-sla-urgent-resolution') as HTMLInputElement).placeholder).toBe('120');
+    expect(screen.getAllByText(/inherits from partner default/i).length).toBeGreaterThan(0);
 
-    // Low priority has null SLA in partner config — should show "Partner default"
-    expect((screen.getByTestId('org-ticket-sla-low-response') as HTMLInputElement).placeholder).toBe('Partner default');
-    expect((screen.getByTestId('org-ticket-sla-low-resolution') as HTMLInputElement).placeholder).toBe('Partner default');
+    // Low priority has null SLA in partner config — no inherited value at all
+    expect((screen.getByTestId('org-ticket-sla-low-response') as HTMLInputElement).placeholder).toBe('');
+    expect((screen.getByTestId('org-ticket-sla-low-resolution') as HTMLInputElement).placeholder).toBe('');
+    expect(screen.getAllByText(/no partner default configured/i).length).toBeGreaterThan(0);
   });
 
-  it('shows "Partner default" placeholder when no partner config is available', async () => {
+  it('shows "no partner default configured" when no partner config is available', async () => {
     fetchMock.mockImplementation(async (input, init) => {
       const url = String(input);
       if (url === `/orgs/organizations/${ORG_ID}/ticket-settings` && !init?.method) {
@@ -122,7 +124,16 @@ describe('OrgTicketSettingsEditor', () => {
 
     render(<OrgTicketSettingsEditor orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);
     await waitFor(() => expect(screen.getByTestId('org-ticket-settings')).toBeInTheDocument());
-    expect((screen.getByTestId('org-ticket-sla-urgent-response') as HTMLInputElement).placeholder).toBe('Partner default');
+    expect((screen.getByTestId('org-ticket-sla-urgent-response') as HTMLInputElement).placeholder).toBe('');
+    expect(screen.getAllByText(/no partner default configured/i).length).toBeGreaterThan(0);
+  });
+
+  it('states that a ticket category SLA overrides this org-level SLA, alongside the InheritedField SLA cells', async () => {
+    mockApi();
+    render(<OrgTicketSettingsEditor orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);
+    await waitFor(() => expect(screen.getByTestId('org-ticket-settings')).toBeInTheDocument());
+    expect(screen.getByTestId('org-ticket-sla-low-response')).toBeInTheDocument();
+    expect(screen.getByTestId('org-ticket-sla-direction-note')).toBeInTheDocument();
   });
 
   it('sends only wholesale SLA overrides, with no legacy billing fields', async () => {

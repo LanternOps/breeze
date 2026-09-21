@@ -186,6 +186,7 @@
       "failedToAssignOrg": "Impossible d’assigner l’organisation",
       "organizations": "Organisations",
       "thisPartnerLibraryPolicyAppliesOnlyTo": "Cette politique de bibliothèque partenaire ne s’applique qu’aux organisations que vous sélectionnez.",
+      "filtersApplyOnAssign": "Ces filtres s’appliquent quand vous assignez plus bas. Vide signifie chaque rôle et chaque système d’exploitation. Pour changer les filtres d’une assignation, décochez-la puis cochez-la de nouveau.",
       "allOrganizationsPartnerWide": "Toutes les organisations (à l’échelle des partenaires)",
       "allOrganizationsPartnerWide2": "Toutes les organisations (à l’échelle des partenaires)",
       "assigned": "Assigné",

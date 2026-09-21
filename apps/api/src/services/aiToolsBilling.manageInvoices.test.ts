@@ -129,8 +129,10 @@ describe('manage_invoices', () => {
     const tool = getTool();
     const properties = tool.definition.input_schema.properties as Record<string, { description?: string }>;
 
-    expect(tool.definition.description).toContain('currencyCode');
-    expect(tool.definition.description).toContain('CURRENCY_DIFFERS_FROM_STRIPE_ACCOUNT');
+    expect(properties.currencyCode?.description).toContain('currencyCode');
+    expect(properties.action?.description).toContain('CURRENCY_DIFFERS_FROM_STRIPE_ACCOUNT');
+    expect(properties.action?.description).toMatch(/relay.*to the user/i);
+    expect(properties.action?.description).toContain('does not block');
     expect(properties.payment?.description).toContain("invoice's currencyCode");
   });
 

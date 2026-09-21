@@ -186,6 +186,7 @@
       "failedToAssignOrg": "Failed to assign org",
       "organizations": "Organizations",
       "thisPartnerLibraryPolicyAppliesOnlyTo": "This partner library policy applies only to the organizations you select.",
+      "filtersApplyOnAssign": "These filters apply when you assign below. Empty means every role and OS. To change filters on an assignment, turn it off and on again.",
       "allOrganizationsPartnerWide": "All organizations (partner-wide)",
       "allOrganizationsPartnerWide2": "All organizations (partner-wide)",
       "assigned": "Assigned",

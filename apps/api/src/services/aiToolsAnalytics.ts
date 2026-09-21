@@ -177,7 +177,7 @@ export function registerAnalyticsTools(aiTools: Map<string, AiTool>): void {
     searchHint: 'SLA compliance, capacity predictions and service level definitions',
     definition: {
       name: 'query_analytics',
-      description: 'Query analytics data including SLA compliance, capacity predictions, and SLA definitions.',
+      description: 'Query analytics data including SLA compliance, capacity predictions, and SLA definitions. Actions: sla_compliance, capacity_predictions, sla_definitions.',
       input_schema: {
         type: 'object' as const,
         properties: {

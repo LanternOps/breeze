@@ -285,7 +285,7 @@ export function registerAgentLogTools(aiTools: Map<string, AiTool>): void {
     definition: {
       name: 'capture_agent_pprof',
       description:
-        "Capture Go runtime pprof profiles (heap and/or goroutine) from a device's Breeze agent process, for diagnosing agent memory growth or goroutine leaks. Returns profile metadata only (byte sizes, capture time, runtime gauges including goroutine count) — the raw profiles are stored on the command result and can be downloaded from the device command API for analysis with `go tool pprof`. Requires approval.",
+        "Capture agent heap/goroutine pprof profiles to diagnose memory growth or leaks; return sizes, capture time and runtime gauges. Raw profiles remain in the command result for download. Requires approval.",
       input_schema: {
         type: 'object' as const,
         properties: {

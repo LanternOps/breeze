@@ -160,9 +160,7 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
     definition: {
       name: 'list_invoices',
       description:
-        'List invoices for the orgs the caller can access, newest first. Optionally filter by org or status. ' +
-        'Each invoice includes depositDue and, when a deposit is configured, a derived depositPaid boolean. Read-only.' +
-        ' Every document carries a 3-letter currencyCode and all of its amounts (subtotal, tax, total, balance, line totals) are in that currency. NEVER add amounts from documents with different currencyCode values — group by currencyCode first and report one total per currency.',
+        "List accessible invoices newest first, with depositDue and depositPaid when configured. All amounts use each invoice currencyCode; never sum across currencies; group by currencyCode for totals.",
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -207,9 +205,7 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
     definition: {
       name: 'get_invoice',
       description:
-        'Get the full accounting view of one invoice (header plus all lines) by id. Includes depositDue and, ' +
-        'when a deposit is configured, a derived depositPaid boolean. Read-only.' +
-        ' Every document carries a 3-letter currencyCode and all of its amounts (subtotal, tax, total, balance, line totals) are in that currency. NEVER add amounts from documents with different currencyCode values — group by currencyCode first and report one total per currency.',
+        "Get an invoice header and all lines, including depositDue and depositPaid when configured. All amounts use its currencyCode; never sum across currencies; group by currencyCode for totals.",
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -240,25 +236,13 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
     definition: {
       name: 'manage_invoices',
       description:
-        'Create and manage invoices for orgs the caller can access: build drafts, add/edit/remove lines, ' +
-        'issue (finalize), void, record or void payments, and create a Stripe pay link. Issue/void/payment ' +
-        'actions finalize financial state and require approval. Assembly responses carry `blockedByCurrency` ' +
-        'listing unbilled work in other currencies — assemble a separate draft with `currencyCode` set; never ' +
-        'sum across currencies.' +
-        ' Money inputs (line unitPrice, payment amount) are in the invoice\'s currencyCode. create_pay_link may return a `warning` (code CURRENCY_DIFFERS_FROM_STRIPE_ACCOUNT) when the invoice currency differs from the partner\'s Stripe account currency — relay it to the user; it does not block the link.' +
-        ' Catalog/bundle lines are priced from the ' +
-        'catalog price book in the INVOICE\'s currency — never converted: add_catalog_line fails with ' +
-        'NO_PRICE_FOR_CURRENCY (409) when the item has no price in that currency, add_bundle_line with ' +
-        'NO_PRICE_FOR_CURRENCY (bundle headline missing) or PRICE_BOOK_INCOMPLETE (409, a component is ' +
-        'missing a price). Use add_manual_line instead, or fill the price book. add_contract_line returns ' +
-        '{ line, pricedFrom, overages }; pricedFrom "contract_snapshot" on a catalog line means the price book had a ' +
-        'gap and the contract line\'s stamped price was billed. overages reports bill/flag allowance overages and ' +
-        'the bill-mode sibling invoiceLineId.',
+        "Invoices; issue/void/payments need approval. Never sum currencies. Actions:create_draft,add_manual_line,add_catalog_line,add_bundle_line,add_contract_line,update_line,remove_line,update_header,delete_draft,assemble_from_org,assemble_from_ticket,issue,void,record_payment,void_payment,create_pay_link.",
       input_schema: {
         type: 'object' as const,
         properties: {
           action: {
             type: 'string',
+            description: 'Relay create_pay_link warning CURRENCY_DIFFERS_FROM_STRIPE_ACCOUNT to the user; it does not block the link.',
             enum: [
               'create_draft', 'add_manual_line', 'add_catalog_line', 'add_bundle_line', 'add_contract_line',
               'update_line', 'remove_line', 'update_header', 'delete_draft',
@@ -283,7 +267,7 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
           reissue: { type: 'boolean' },
           from: { type: 'string', description: 'ISO date (assemble_from_org)' },
           to: { type: 'string', description: 'ISO date (assemble_from_org)' },
-          currencyCode: { type: 'string', description: 'Header currency override for assemble_from_org / assemble_from_ticket (ISO 4217). Defaults to the org currency; set it to assemble a separate draft for work snapshotted in another currency' },
+          currencyCode: { type: 'string', description: "ISO-4217 header currency for assemble_from_org / assemble_from_ticket; default org currency. Money inputs use invoice currencyCode." },
           line: { type: 'object', description: 'Manual line fields for add_manual_line' },
           patch: { type: 'object', description: 'Line or header patch fields' },
           payment: { type: 'object', description: 'Payment fields (amount in the invoice\'s currencyCode, method, ...)' },

@@ -3,6 +3,7 @@ import type { AuthContext } from '../../../middleware/auth';
 import type { PolicySources } from './loadSources';
 const m = vi.hoisted(() => ({
   context: vi.fn(async (_context: unknown, fn: () => unknown) => fn()),
+  currentContext: vi.fn(() => undefined),
   authorize: vi.fn(),
   freshness: vi.fn(),
   sources: vi.fn(),
@@ -33,7 +34,10 @@ vi.mock('../../../db', () => ({
     transaction: m.transaction
   },
   withDbAccessContext: m.context,
-  runOutsideDbContext: m.outside
+  runOutsideDbContext: m.outside,
+  // The conversion routes are self-managed (D30): pre-transaction reads take
+  // the caller's own context, and only reuse one when it is already open.
+  getCurrentDbAccessContext: m.currentContext
 }));
 vi.mock('./previewScope', () => ({
   authorizePreview: m.authorize,

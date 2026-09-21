@@ -62,7 +62,7 @@ export function registerSecurityTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceId'],
     definition: {
       name: 'security_scan',
-      description: 'Run security scans on a device, manage detected threats (quarantine, remove, restore), or query vulnerability data.',
+      description: 'Run security scans on a device, manage detected threats (quarantine, remove, restore), or query vulnerability data. Actions: scan, status, quarantine, remove, restore, vulnerabilities.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -171,7 +171,7 @@ export function registerSecurityTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceId'],
     definition: {
       name: 'get_security_posture',
-      description: 'Get fleet-wide or device-level security posture scores with factor breakdowns and prioritized recommendations. Posture is a scored summary of security CONTROLS (AV, firewall, encryption, patch currency) — it does NOT list CVEs or vulnerability findings. For CVEs, vulnerable software, or vulnerability findings use get_vulnerability_report (fleet) or get_device_vulnerabilities (one device).',
+      description: 'Get fleet or device security control scores, factor breakdowns and recommendations (AV, firewall, encryption, patch currency). For CVEs and vulnerability findings use get_vulnerability_report (fleet) or get_device_vulnerabilities (device).',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -479,7 +479,7 @@ export function registerSecurityTools(aiTools: Map<string, AiTool>): void {
     searchHint: 'sensitive data: encrypt, quarantine, secure delete, accept risk, mark false positive or remediated',
     definition: {
       name: 'remediate_sensitive_data',
-      description: 'Queue or apply sensitive-data remediation actions for findings. Supports dry-run and manual status actions.',
+      description: 'Queue or apply sensitive-data remediation actions for findings. Supports dry-run and manual status actions. Actions: encrypt, quarantine, secure_delete, accept_risk, false_positive, mark_remediated.',
       input_schema: {
         type: 'object' as const,
         properties: {

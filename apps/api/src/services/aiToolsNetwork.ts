@@ -826,10 +826,7 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
     definition: {
       name: 'get_network_asset_reachability',
       description:
-        'Report whether a discovered network asset (printer, switch, AP, camera, NAS) is currently reachable, '
-        + 'with the SOURCE of the evidence and how old it is. Always state the source and age when answering — '
-        + '"responding via SNMP 2 minutes ago", never a bare "online". A state of "unverified" means nothing has '
-        + 'checked the device recently; report it as unverified, not as down.',
+        'Report network asset reachability with evidence source and age. Always state both when answering; never report bare "online". Unverified means no recent check, not down.',
       input_schema: {
         type: 'object' as const,
         properties: {

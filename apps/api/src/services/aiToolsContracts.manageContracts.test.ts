@@ -307,9 +307,9 @@ describe('manage_contracts', () => {
 
   it('the manage_contracts description names per_device_group, deviceGroupId and the groupId-condition caveat', () => {
     const schema = getTool().definition.input_schema as {
-      properties: { line: { description: string } };
+      properties: { line: { description: string; properties: { deviceGroupId: { description: string } } } };
     };
-    const desc = schema.properties.line.description;
+    const desc = JSON.stringify(schema.properties.line);
     expect(desc).toContain('per_device_group');
     expect(desc).toContain('deviceGroupId');
     expect(desc).toMatch(/evaluated live/i);
@@ -409,7 +409,7 @@ describe('manage_contracts update_line (#3205 W03)', () => {
   it('the tool description explains the tri-state catalogItemId and the locked lineType', () => {
     const props = getTool().definition.input_schema.properties as Record<string, { description?: string; enum?: string[] }>;
     expect(props.action!.enum).toContain('update_line');
-    const desc = props.patch!.description!;
+    const desc = JSON.stringify(props.patch);
     expect(desc).toContain('lineType');
     expect(desc).toContain('refreshCatalogPrice');
     expect(desc).toMatch(/future billing periods/i);
@@ -418,16 +418,16 @@ describe('manage_contracts update_line (#3205 W03)', () => {
   it('documents the allowance semantics on both the line and the patch descriptions (#3205 W04)', () => {
     const schema = getTool().definition.input_schema as { properties: Record<string, { description?: string }> };
     for (const key of ['line', 'patch']) {
-      const desc = schema.properties[key]!.description!;
+      const desc = JSON.stringify(schema.properties[key]);
       expect(desc).toContain('includedQuantity');
       expect(desc).toContain('overageMode');
       expect(desc).toContain('overageUnitPrice');
       // The fixed-allowance rule is the one thing a model will otherwise get wrong.
       expect(desc).toMatch(/every period even when the live count is lower/i);
     }
-    const lineDesc = schema.properties.line!.description!;
+    const lineDesc = JSON.stringify(schema.properties.line);
     expect(lineDesc).toMatch(/For add_line, includedQuantity and overageMode must be supplied together/i);
-    const patchDesc = schema.properties.patch!.description!;
+    const patchDesc = JSON.stringify(schema.properties.patch);
     expect(patchDesc).toMatch(/For update_line, the rule applies to the merged line/i);
     expect(patchDesc).toMatch(/absent fields are unchanged/i);
     expect(patchDesc).toMatch(/null clears/i);

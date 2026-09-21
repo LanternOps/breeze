@@ -386,7 +386,7 @@ export function registerMonitorTools(aiTools: Map<string, AiTool>): void {
     definition: {
       name: 'manage_monitor_definitions',
       description:
-        'Create, update, delete, enable/disable a monitor definition, or attach/detach it to a configuration policy. A monitor compiles into a MANAGED alert template, alert rule, and automation — those compiled rows must not be edited directly (they refuse writes). On create, ownerScope "partner" in `definition` makes a partner-wide monitor that applies to every org under the partner (requires full partner org access); the default is "organization".',
+        'Manage monitors; never edit compiled managed rows directly. Partner scope applies to every partner org and requires full partner org access; default is organization. Actions: create, update, delete, enable, disable, attach, detach.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -402,9 +402,7 @@ export function registerMonitorTools(aiTools: Map<string, AiTool>): void {
           definition: {
             type: 'object',
             description:
-              'Monitor fields. For create, the full shape is required: name, kind (one of ' +
-              MONITOR_KINDS.join(', ') +
-              '), condition (matching kind), severity (critical|high|medium|low|info), enabled, cooldownMinutes, autoResolve, responses, deliveryMode (none|inherit|channels), deliveryChannelIds, escalationPolicyId, recurrenceThreshold, recurrenceWindowHours, recurrenceActions, pauseResponsesOnEscalation, aiAgentId, and optionally ownerScope ("organization"|"partner") + orgId. For update, any subset of those fields (ownerScope cannot be changed after create).',
+              'Monitor fields: full definition for create, partial for update. ownerScope: organization (default) or partner; immutable after create.',
           },
           configPolicyId: { type: 'string', description: 'Configuration policy UUID to attach to (for attach)' },
           attachmentId: { type: 'string', description: 'Attachment UUID to remove (for detach)' },
