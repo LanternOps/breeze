@@ -130,6 +130,187 @@ export interface SendQuoteResult {
   deliverEmail: DeferredQuoteEmail;
 }
 
+/** What the draft→sent claim froze, for the caller to reuse without re-reading. */
+export interface ClaimQuoteSentResult {
+  quoteNumber: string;
+  issueDate: string;
+  billToName: string | null;
+  billToAddress: unknown;
+  billToTaxId: string | null;
+  sellerSnapshot: unknown;
+  presentationSnapshot: unknown;
+  documentLocale: string;
+  termsAndConditions: string | null;
+  terms: string | null;
+  partnerRow: typeof partners.$inferSelect | undefined;
+  org: { name: string | null; billingContact: unknown; taxId: string | null } | undefined;
+  superseded?: QuoteSupersedeResult;
+}
+
+/**
+ * The draft→sent claim, WITHOUT delivery.
+ *
+ * Everything `sendQuote` does to freeze a quote and bind it to a customer —
+ * allocate the number if a legacy draft lacks one, freeze the bill-to snapshot
+ * from the org's Billing settings, stamp the seller snapshot, presentation and
+ * render locale, set issueDate/sentAt, retire a revision's parent — and NOTHING
+ * that puts a live credential in a customer's hands: no quote_recipients rows,
+ * no accept token, no public-link columns, no email.
+ *
+ * Extracted so the on-behalf accept (spec 2026-09-21 §5) can claim a draft
+ * inline without a second, drifting copy of this logic. `sendQuote` passes the
+ * token identity columns it minted; the on-behalf caller passes none, which is
+ * what makes the resulting `sent` quote honest — `sent` means "frozen and
+ * customer-bound", and the acceptance row's origin tells anyone who needs to
+ * know that the customer never received a link.
+ *
+ * MUST run inside the caller's transaction: the conditional
+ * `WHERE status = 'draft'` predicate is what makes two concurrent claims safe
+ * (the loser matches 0 rows and 409s), and the parent supersede below has to
+ * commit or roll back with it.
+ */
+export async function claimQuoteSent(
+  quote: QuoteRow,
+  opts: {
+    now: Date;
+    /** Accept-token identity columns to stamp atomically with the flip.
+     *  sendQuote passes them; the on-behalf accept passes nothing. */
+    acceptTokenColumns?: Record<string, unknown>;
+    /** Already locked + validated by the caller (sendQuote does this under
+     *  FOR UPDATE before reading content). */
+    parentToSupersede?: { id: string; status: SupersedableStatus } | null;
+    /** Runs after the partner/org reads and BEFORE the conditional claim, so a
+     *  caller can keep a pre-claim statement in its original position within
+     *  its transaction (sendQuote reads the parent's recipients here). */
+    beforeClaim?: (context: { org: { billingContact: unknown } | undefined }) => Promise<void>;
+  },
+): Promise<ClaimQuoteSentResult> {
+  const now = opts.now;
+  // Quotes are numbered at creation now; keep that number on issue. Only legacy
+  // drafts created before number-at-creation still allocate here.
+  let quoteNumber = quote.quoteNumber;
+  if (!quoteNumber) {
+    const year = new Date(quote.issueDate ?? Date.now()).getUTCFullYear();
+    const counter = await allocateQuoteCounter(quote.partnerId, year);
+    quoteNumber = formatQuoteNumber('Q', year, counter);
+  }
+  const issueDate = quote.issueDate ?? now.toISOString().slice(0, 10);
+
+  const [partnerRow] = await db.select().from(partners).where(eq(partners.id, quote.partnerId)).limit(1);
+  // Freeze the customer bill-to snapshot from the org's Billing settings — the
+  // same fields, from the same columns, that the invoice issue path snapshots
+  // (invoiceService.ts). Without this, quotes.bill_to_address stays NULL and the
+  // org's saved billing address never renders on the PDF. A tech's explicit
+  // draft billToName override wins over the org name; taxId/address come
+  // straight from the org. This single fetch also supplies the send path's email
+  // recipient (billingContact), replacing the old post-update read.
+  const [org] = await db
+    .select({
+      name: organizations.name,
+      taxId: organizations.taxId,
+      billingContact: organizations.billingContact,
+      billingAddressLine1: organizations.billingAddressLine1,
+      billingAddressLine2: organizations.billingAddressLine2,
+      billingAddressCity: organizations.billingAddressCity,
+      billingAddressRegion: organizations.billingAddressRegion,
+      billingAddressPostalCode: organizations.billingAddressPostalCode,
+      billingAddressCountry: organizations.billingAddressCountry,
+    })
+    .from(organizations)
+    .where(eq(organizations.id, quote.orgId))
+    .limit(1);
+  if (!org) {
+    // The caller just read this quote in the SAME context, so its org should be
+    // visible too — an unreadable org here (orphaned/deleted row) is anomalous.
+    // The snapshot freezes ONCE, so a blank bill-to is permanent; log it rather
+    // than let the loss be indistinguishable from "org saved no address".
+    console.error(`[quoteLifecycle] org ${quote.orgId} not readable while freezing bill-to for quote ${quote.id} — claiming with an empty bill-to snapshot`);
+  }
+  const billToAddress = buildBillToAddress(org);
+  // Preserve a real tech-entered "Prepared for" override, but fall back to the
+  // org name when it is absent OR blank — updateQuote persists billToName
+  // verbatim, including '', which a bare `?? org.name` would freeze as empty.
+  const billToName = quote.billToName?.trim() ? quote.billToName : (org?.name ?? null);
+  const billToTaxId = quote.billToTaxId ?? org?.taxId ?? null;
+  const sellerSnapshot = quote.sellerSnapshot ?? buildSellerSnapshot(partnerRow);
+  // Stamp the presentation ONCE: never overwrite an existing snapshot (a draft
+  // that already carries one — e.g. cloned from a sent quote — keeps it
+  // verbatim), so a re-read always renders the document the customer was
+  // actually shown, even if the partner's live theme/pageSize columns change
+  // later. Precedence matches resolveQuoteBranding exactly.
+  const presentationSnapshot = quote.presentationSnapshot ?? {
+    theme: resolveThemeId(partnerRow?.documentTheme),
+    pageSize: resolvePageSize(partnerRow?.documentPageSize),
+  };
+  // Render-locale snapshot (#3777): stamped ONCE at first claim from the
+  // partner's language, never restamped (resendQuote does not write it); `??`
+  // keeps a locale the draft already carries.
+  const documentLocale = quote.documentLocale ?? resolvePartnerDocumentLocale(partnerRow);
+  const termsAndConditions = quote.termsAndConditions ?? partnerRow?.billingTermsAndConditions ?? null;
+  const terms = quote.terms ?? partnerRow?.invoiceFooter ?? null;
+
+  if (opts.beforeClaim) await opts.beforeClaim({ org });
+
+  // Conditional on status='draft' so two concurrent claims can't both flip the
+  // quote (the second matches 0 rows and 409s). Counter gaps from the losing
+  // claim are acceptable, per allocateQuoteCounter's contract (C3).
+  const claimed = await db
+    .update(quotes)
+    .set({
+      status: 'sent', quoteNumber, issueDate, sentAt: now, updatedAt: now,
+      ...(opts.acceptTokenColumns ?? {}),
+      // Retire any schedule state atomically with the flip: a scheduled-send
+      // claim, a stale failure marker from an earlier attempt, or a pending
+      // window must not survive onto a sent quote (a leftover send_email_reason
+      // would render a false "no email was delivered" banner).
+      sendScheduledAt: null, sendJobId: null, sendEmailReason: null,
+      billToName,
+      billToAddress,
+      billToTaxId,
+      sellerSnapshot: buildSellerSnapshot(partnerRow),
+      termsAndConditions,
+      terms,
+      presentationSnapshot,
+      documentLocale,
+    })
+    .where(and(eq(quotes.id, quote.id), eq(quotes.status, 'draft')))
+    .returning({ id: quotes.id });
+  if (claimed.length === 0) {
+    throw new QuoteServiceError('Quote was already sent', 409, 'INVALID_STATE');
+  }
+
+  // ---- Revision supersede: retire the parent ------------------------------
+  // The predicate re-asserts the allowed set even under the caller's FOR UPDATE
+  // (belt to the strap). public_link_revoked_at is the DB-authoritative
+  // revocation for the parent's public link — deliberately NO Redis revoke:
+  // Redis cannot join this transaction. GET /:token re-reads the row and refuses
+  // a superseded quote. NOTE: the public asset routes do not yet check status or
+  // publicLinkRevokedAt; closing that gap is W04's asset-closure scope.
+  // Columns left untouched on purpose: declinedAt, declineReason, expiryDate,
+  // viewedAt are the parent's historical record.
+  let superseded: QuoteSupersedeResult | undefined;
+  if (opts.parentToSupersede) {
+    const flipped = await db.update(quotes)
+      .set({ status: 'superseded', publicLinkRevokedAt: now, updatedAt: now })
+      .where(and(
+        eq(quotes.id, opts.parentToSupersede.id),
+        eq(quotes.orgId, quote.orgId),
+        inArray(quotes.status, [...REVISABLE_STATUSES]),
+      ))
+      .returning({ id: quotes.id });
+    if (flipped.length === 0) {
+      throw new QuoteServiceError('The original quote settled while sending the revision', 409, 'PARENT_CONVERTED');
+    }
+    superseded = { parentQuoteId: opts.parentToSupersede.id, previousStatus: opts.parentToSupersede.status };
+  }
+
+  return {
+    quoteNumber, issueDate, billToName, billToAddress, billToTaxId,
+    sellerSnapshot, presentationSnapshot, documentLocale,
+    termsAndConditions, terms, partnerRow, org, superseded,
+  };
+}
+
 /**
  * Issue (if draft) + send: assign number, status→sent, sentAt, mint token.
  * When the quote is a revision, its parent is retired to 'superseded'
@@ -277,75 +458,7 @@ export async function sendQuote(
     }
   }
 
-  // Quotes are numbered at creation now; keep that number on issue. Only legacy
-  // drafts created before number-at-creation still allocate here.
-  let quoteNumber = quote.quoteNumber;
-  if (!quoteNumber) {
-    const year = new Date(quote.issueDate ?? Date.now()).getUTCFullYear();
-    const counter = await allocateQuoteCounter(quote.partnerId, year);
-    quoteNumber = formatQuoteNumber('Q', year, counter);
-  }
-
   const now = new Date();
-  const issueDate = quote.issueDate ?? now.toISOString().slice(0, 10);
-  // Conditional on status='draft' so two concurrent sends can't both flip the
-  // quote (the second matches 0 rows and 409s). Counter gaps from the losing
-  // send are acceptable, per allocateQuoteCounter's contract (C3).
-  const [partnerRow] = await db.select().from(partners).where(eq(partners.id, quote.partnerId)).limit(1);
-  // Freeze the customer bill-to snapshot at send time from the org's Billing
-  // settings — the same fields, from the same columns, that the invoice issue
-  // path snapshots (invoiceService.ts). Without this, quotes.bill_to_address
-  // stays NULL and the org's saved billing address never renders on the PDF. A
-  // tech's explicit draft billToName override wins over the org name; taxId/
-  // address come straight from the org. This single fetch also supplies the
-  // email recipient below (billingContact), replacing the old post-update read.
-  const [org] = await db
-    .select({
-      name: organizations.name,
-      taxId: organizations.taxId,
-      billingContact: organizations.billingContact,
-      billingAddressLine1: organizations.billingAddressLine1,
-      billingAddressLine2: organizations.billingAddressLine2,
-      billingAddressCity: organizations.billingAddressCity,
-      billingAddressRegion: organizations.billingAddressRegion,
-      billingAddressPostalCode: organizations.billingAddressPostalCode,
-      billingAddressCountry: organizations.billingAddressCountry,
-    })
-    .from(organizations)
-    .where(eq(organizations.id, quote.orgId))
-    .limit(1);
-  if (!org) {
-    // getQuote just read this quote in the SAME context, so its org should be
-    // visible too — an unreadable org here (orphaned/deleted row) is anomalous.
-    // The snapshot freezes ONCE at send, so a blank bill-to is permanent; log it
-    // rather than let the loss be indistinguishable from "org saved no address".
-    console.error(`[quoteLifecycle] org ${quote.orgId} not readable while freezing bill-to for quote ${id} — sending with an empty bill-to snapshot`);
-  }
-  const billToAddress = buildBillToAddress(org);
-  // Preserve a real tech-entered "Prepared for" override, but fall back to the org
-  // name when it's absent OR blank — updateQuote persists billToName verbatim,
-  // including '', which a bare `?? org.name` would freeze as an empty name.
-  const billToName = quote.billToName?.trim() ? quote.billToName : (org?.name ?? null);
-  // The addressed recipients are also the authenticated portal identities
-  // allowed to accept/decline this quote. Persist a canonical set at send time;
-  // CC recipients are informational and intentionally do not gain signer power.
-  const billingRecipient = resolveBillingEmail(org?.billingContact);
-  // A revision goes back to whoever received the original, not to the org's
-  // billing contact — the people already in the conversation. Explicitly
-  // org-filtered: this also runs under the send worker's SYSTEM context, where
-  // getQuoteRecipients' unfiltered read would be cross-tenant.
-  const parentRecipients = parentToSupersede
-    ? (await db.select({ email: quoteRecipients.email }).from(quoteRecipients)
-        .where(and(eq(quoteRecipients.quoteId, parentToSupersede.id), eq(quoteRecipients.orgId, quote.orgId)))
-        .orderBy(quoteRecipients.createdAt)).map((r) => r.email)
-    : [];
-  const recipientEmails = Array.from(new Set(
-    (opts.to && opts.to.length > 0 ? opts.to
-      : parentRecipients.length > 0 ? parentRecipients
-      : (billingRecipient ? [billingRecipient] : []))
-      .map((email) => email.trim().toLowerCase())
-      .filter((email) => email.length > 0),
-  ));
   // Mint the public accept token (expiry = quote.expiryDate if future, else
   // +30d) BEFORE the claim so its identity is stamped atomically with the
   // draft→sent flip — a send can never commit without the parts needed to
@@ -357,69 +470,43 @@ export async function sendQuote(
   });
   const acceptUrl = buildPublicQuoteAcceptUrl(token);
 
-  // Stamp the presentation ONCE, at send: never overwrite an existing snapshot
-  // (a draft that already carries one — e.g. cloned from a sent quote — keeps
-  // it verbatim), so a re-read of this same quote always renders the document
-  // the customer was actually shown, even if the partner's live theme/pageSize
-  // columns change later. Precedence matches resolveQuoteBranding exactly.
-  const presentationSnapshot = quote.presentationSnapshot ?? {
-    theme: resolveThemeId(partnerRow?.documentTheme),
-    pageSize: resolvePageSize(partnerRow?.documentPageSize),
+  // The addressed recipients are also the authenticated portal identities
+  // allowed to accept/decline this quote. Persist a canonical set at send time;
+  // CC recipients are informational and intentionally do not gain signer power.
+  // Computed in the claim's beforeClaim hook so the parent-recipients read keeps
+  // its original position — before the draft→sent claim — in this transaction.
+  const delivery: { billingRecipient: string | null; recipientEmails: string[] } = {
+    billingRecipient: null,
+    recipientEmails: [],
   };
-
-  const documentLocale = quote.documentLocale ?? resolvePartnerDocumentLocale(partnerRow);
-  const claimed = await db
-    .update(quotes)
-    .set({
-      status: 'sent', quoteNumber, issueDate, sentAt: now, updatedAt: now,
-      ...acceptTokenIdentityColumns(identity),
-      // Retire any schedule state atomically with the flip: a scheduled-send
-      // claim, a stale failure marker from an earlier attempt, or a pending
-      // window must not survive onto a sent quote (a leftover send_email_reason
-      // would render a false "no email was delivered" banner).
-      sendScheduledAt: null, sendJobId: null, sendEmailReason: null,
-      billToName,
-      billToAddress,
-      billToTaxId: quote.billToTaxId ?? org?.taxId ?? null,
-      sellerSnapshot: buildSellerSnapshot(partnerRow),
-      termsAndConditions: quote.termsAndConditions ?? partnerRow?.billingTermsAndConditions ?? null,
-      terms: quote.terms ?? partnerRow?.invoiceFooter ?? null,
-      presentationSnapshot,
-      // Render-locale snapshot (#3777): stamped ONCE at first send from the
-      // partner's language, never restamped (resendQuote does not write it);
-      // `??` keeps a locale the draft already carries.
-      documentLocale,
-    })
-    .where(and(eq(quotes.id, id), eq(quotes.status, 'draft')))
-    .returning({ id: quotes.id });
-  if (claimed.length === 0) {
-    throw new QuoteServiceError('Quote was already sent', 409, 'INVALID_STATE');
-  }
-
-  // ---- Revision supersede, part 2: retire the parent ----------------------
-  // The predicate re-asserts the allowed set even under the lock (belt to the
-  // FOR UPDATE strap). public_link_revoked_at is the DB-authoritative
-  // revocation for the parent's public link — deliberately NO Redis revoke:
-  // Redis cannot join this transaction. GET /:token re-reads the row and refuses
-  // a superseded quote. NOTE: the public asset routes do not yet check status or
-  // publicLinkRevokedAt; closing that gap is W04's asset-closure scope.
-  // Columns left untouched on purpose: declinedAt, declineReason, expiryDate,
-  // viewedAt are the parent's historical record.
-  let supersededResult: QuoteSupersedeResult | undefined;
-  if (parentToSupersede) {
-    const flipped = await db.update(quotes)
-      .set({ status: 'superseded', publicLinkRevokedAt: now, updatedAt: now })
-      .where(and(
-        eq(quotes.id, parentToSupersede.id),
-        eq(quotes.orgId, quote.orgId),
-        inArray(quotes.status, [...REVISABLE_STATUSES]),
-      ))
-      .returning({ id: quotes.id });
-    if (flipped.length === 0) {
-      throw new QuoteServiceError('The original quote settled while sending the revision', 409, 'PARENT_CONVERTED');
-    }
-    supersededResult = { parentQuoteId: parentToSupersede.id, previousStatus: parentToSupersede.status };
-  }
+  const claim = await claimQuoteSent(quote, {
+    now,
+    acceptTokenColumns: acceptTokenIdentityColumns(identity),
+    parentToSupersede,
+    beforeClaim: async ({ org }) => {
+      const billingRecipient = resolveBillingEmail(org?.billingContact);
+      delivery.billingRecipient = billingRecipient;
+      // A revision goes back to whoever received the original, not to the org's
+      // billing contact — the people already in the conversation. Explicitly
+      // org-filtered: this also runs under the send worker's SYSTEM context,
+      // where getQuoteRecipients' unfiltered read would be cross-tenant.
+      const parentRecipients = parentToSupersede
+        ? (await db.select({ email: quoteRecipients.email }).from(quoteRecipients)
+            .where(and(eq(quoteRecipients.quoteId, parentToSupersede.id), eq(quoteRecipients.orgId, quote.orgId)))
+            .orderBy(quoteRecipients.createdAt)).map((r) => r.email)
+        : [];
+      delivery.recipientEmails = Array.from(new Set(
+        (opts.to && opts.to.length > 0 ? opts.to
+          : parentRecipients.length > 0 ? parentRecipients
+          : (billingRecipient ? [billingRecipient] : []))
+          .map((email) => email.trim().toLowerCase())
+          .filter((email) => email.length > 0),
+      ));
+    },
+  });
+  const { quoteNumber, partnerRow, billToName, billToAddress, billToTaxId, sellerSnapshot, presentationSnapshot, documentLocale } = claim;
+  const supersededResult = claim.superseded;
+  const { billingRecipient, recipientEmails } = delivery;
 
   if (recipientEmails.length > 0) {
     await db.insert(quoteRecipients).values(
@@ -435,14 +522,13 @@ export async function sendQuote(
   // later render use — matching the admin PDF route's overlay
   // (routes/quotes/quotes.ts). Without this the emailed legal contract renders
   // those variables as empty strings and omits "PREPARED FOR" silently.
-  const sellerSnapshot = quote.sellerSnapshot ?? buildSellerSnapshot(partnerRow);
   const frozenQuote: QuoteRow = {
     ...quote,
     status: 'sent',
     quoteNumber,
     billToName,
     billToAddress,
-    billToTaxId: quote.billToTaxId ?? org?.taxId ?? null,
+    billToTaxId,
     sellerSnapshot,
     presentationSnapshot,
     // The just-stamped locale, so the same-request PDF + email render with it.
