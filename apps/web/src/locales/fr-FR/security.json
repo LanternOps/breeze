@@ -604,7 +604,11 @@
     "status2": "Statut",
     "type": "Type",
     "scanHistoryPartiallyUnavailable": "L'historique des analyses de {{failed}} des {{total}} appareils n'a pas pu être chargé — cette liste est incomplète.",
-    "scanHistoryUnavailable": "Impossible de charger l'historique des analyses."
+    "scanHistoryUnavailable": "Impossible de charger l'historique des analyses.",
+    "scanRequestFailed": "Échec de la demande d'analyse",
+    "scansQueuedCount": "{{count}} analyse mise en file d'attente",
+    "scansQueuedCount_one": "{{count}} analyse mise en file d'attente",
+    "scansQueuedCount_other": "{{count}} analyses mises en file d'attente"
   },
   "securityThreatDetail": {
     "analystReview": "Revue des analystes",
@@ -633,7 +637,11 @@
     "threatRemoved": "Menace levée",
     "threatStatus": "Statut de menace",
     "threatWasMovedToQuarantineByPolicy": "La menace a été placée en quarantaine par la politique ou par action de l’opérateur.",
-    "timeline": "Chronologie"
+    "timeline": "Chronologie",
+    "actionFailed": "Échec de l'action",
+    "quarantineSucceeded": "Menace mise en quarantaine",
+    "restoreSucceeded": "Menace restaurée",
+    "removeSucceeded": "Menace supprimée"
   },
   "securityThreatList": {
     "active": "Actives",
@@ -662,7 +670,11 @@
     "threat": "Menace",
     "threats": "Menaces",
     "threatsMatchYourFilters": "{{count}} les menaces correspondent à vos filtres",
-    "type": "Type"
+    "type": "Type",
+    "actionFailed": "Échec de l'action",
+    "actionQueuedCount": "{{count}} menace mise en file d'attente",
+    "actionQueuedCount_one": "{{count}} menace mise en file d'attente",
+    "actionQueuedCount_other": "{{count}} menaces mises en file d'attente"
   },
   "securityTrendsPage": {
     "adminAccounts": "Comptes administratifs",
@@ -2048,5 +2060,11 @@
       "expires": "Expiration",
       "actions": "Actions"
     }
+  },
+  "securityScansPage": {
+    "iocScans": "Analyses IOC",
+    "subtitle": "Analyses de logiciels malveillants et d'IOC basées sur des signatures sur votre parc. Ne remplace pas une protection complète des postes.",
+    "scansTab": "Analyses",
+    "threatsTab": "Menaces"
   }
 }

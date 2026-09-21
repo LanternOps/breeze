@@ -604,7 +604,11 @@
     "startedColumn": "Avviata",
     "status": "Stato: {{status}}",
     "status2": "Stato",
-    "type": "Tipo"
+    "type": "Tipo",
+    "scanRequestFailed": "Richiesta di scansione non riuscita",
+    "scansQueuedCount": "{{count}} scansione in coda",
+    "scansQueuedCount_one": "{{count}} scansione in coda",
+    "scansQueuedCount_other": "{{count}} scansioni in coda"
   },
   "securityThreatDetail": {
     "analystReview": "Revisione analista",
@@ -633,7 +637,11 @@
     "threatRemoved": "Minaccia rimossa",
     "threatStatus": "Stato minaccia",
     "threatWasMovedToQuarantineByPolicy": "La minaccia è stata spostata in quarantena da un criterio o da un operatore.",
-    "timeline": "Timeline"
+    "timeline": "Timeline",
+    "actionFailed": "Azione non riuscita",
+    "quarantineSucceeded": "Minaccia messa in quarantena",
+    "restoreSucceeded": "Minaccia ripristinata",
+    "removeSucceeded": "Minaccia rimossa"
   },
   "securityThreatList": {
     "active": "Attiva",
@@ -662,7 +670,11 @@
     "threat": "Minaccia",
     "threats": "Minacce",
     "threatsMatchYourFilters": "{{count}} minacce corrispondono ai filtri",
-    "type": "Tipo"
+    "type": "Tipo",
+    "actionFailed": "Azione non riuscita",
+    "actionQueuedCount": "{{count}} minaccia in coda",
+    "actionQueuedCount_one": "{{count}} minaccia in coda",
+    "actionQueuedCount_other": "{{count}} minacce in coda"
   },
   "securityTrendsPage": {
     "adminAccounts": "Account amministratori",
@@ -2048,5 +2060,11 @@
       "expires": "Scade",
       "actions": "Azioni"
     }
+  },
+  "securityScansPage": {
+    "iocScans": "Scansioni IOC",
+    "subtitle": "Scansioni di malware e IOC basate su firme sull'intera flotta. Non sostituisce una protezione completa degli endpoint.",
+    "scansTab": "Scansioni",
+    "threatsTab": "Minacce"
   }
 }

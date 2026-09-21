@@ -604,7 +604,11 @@
     "startedColumn": "Iniciado",
     "status": "Status: {{status}}",
     "status2": "Status",
-    "type": "Tipo"
+    "type": "Tipo",
+    "scanRequestFailed": "Falha na solicitação de varredura",
+    "scansQueuedCount": "{{count}} varredura enfileirada",
+    "scansQueuedCount_one": "{{count}} varredura enfileirada",
+    "scansQueuedCount_other": "{{count}} varreduras enfileiradas"
   },
   "securityThreatDetail": {
     "analystReview": "Revisão do analista",
@@ -633,7 +637,11 @@
     "threatRemoved": "Ameaça removida",
     "threatStatus": "Status da ameaça",
     "threatWasMovedToQuarantineByPolicy": "A ameaça foi movida para quarentena por política ou ação do operador.",
-    "timeline": "Linha do tempo"
+    "timeline": "Linha do tempo",
+    "actionFailed": "Falha na ação",
+    "quarantineSucceeded": "Ameaça colocada em quarentena",
+    "restoreSucceeded": "Ameaça restaurada",
+    "removeSucceeded": "Ameaça removida"
   },
   "securityThreatList": {
     "active": "Ativo",
@@ -662,7 +670,11 @@
     "threat": "Ameaça",
     "threats": "Ameaças",
     "threatsMatchYourFilters": "{{count}} ameaças correspondem aos filtros",
-    "type": "Tipo"
+    "type": "Tipo",
+    "actionFailed": "Falha na ação",
+    "actionQueuedCount": "{{count}} ameaça enfileirada",
+    "actionQueuedCount_one": "{{count}} ameaça enfileirada",
+    "actionQueuedCount_other": "{{count}} ameaças enfileiradas"
   },
   "securityTrendsPage": {
     "adminAccounts": "Contas de administrador",
@@ -2048,5 +2060,11 @@
       "expires": "Expira",
       "actions": "Ações"
     }
+  },
+  "securityScansPage": {
+    "iocScans": "Varreduras de IOC",
+    "subtitle": "Varreduras de malware e IOC baseadas em assinatura em toda a sua frota. Não substitui a proteção completa de endpoints.",
+    "scansTab": "Varreduras",
+    "threatsTab": "Ameaças"
   }
 }

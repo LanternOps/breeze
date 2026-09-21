@@ -97,7 +97,8 @@
     "sectionServiceDesk": "Mesa de servicio",
     "serviceManagement": "Gestión de servicios",
     "ticketing": "Tickets",
-    "deliverableTemplates": "Plantillas de entregables"
+    "deliverableTemplates": "Plantillas de entregables",
+    "securityScans": "Escaneos de IOC"
   },
   "documentTitles": {
     "dashboard": "Panel",

@@ -97,7 +97,8 @@
     "sectionServiceDesk": "Servis masası",
     "serviceManagement": "Servis yönetimi",
     "ticketing": "Bilet Sistemi",
-    "deliverableTemplates": "Teslimat Şablonları"
+    "deliverableTemplates": "Teslimat Şablonları",
+    "securityScans": "IOC Taramaları"
   },
   "documentTitles": {
     "dashboard": "Kontrol Paneli",

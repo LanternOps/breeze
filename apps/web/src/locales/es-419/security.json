@@ -604,7 +604,11 @@
     "status2": "Estado",
     "type": "Tipo",
     "scanHistoryPartiallyUnavailable": "No se pudo cargar el historial de escaneos de {{failed}} de {{total}} dispositivos: esta lista está incompleta.",
-    "scanHistoryUnavailable": "No se pudo cargar el historial de escaneos."
+    "scanHistoryUnavailable": "No se pudo cargar el historial de escaneos.",
+    "scanRequestFailed": "La solicitud de escaneo falló",
+    "scansQueuedCount": "{{count}} escaneo en cola",
+    "scansQueuedCount_one": "{{count}} escaneo en cola",
+    "scansQueuedCount_other": "{{count}} escaneos en cola"
   },
   "securityThreatDetail": {
     "analystReview": "Revisión del analista",
@@ -633,7 +637,11 @@
     "threatRemoved": "Amenaza eliminada",
     "threatStatus": "Estado de amenaza",
     "threatWasMovedToQuarantineByPolicy": "La amenaza se movió a cuarentena por política o acción del operador.",
-    "timeline": "Línea de tiempo"
+    "timeline": "Línea de tiempo",
+    "actionFailed": "La acción falló",
+    "quarantineSucceeded": "Amenaza puesta en cuarentena",
+    "restoreSucceeded": "Amenaza restaurada",
+    "removeSucceeded": "Amenaza eliminada"
   },
   "securityThreatList": {
     "active": "Activo",
@@ -662,7 +670,11 @@
     "threat": "Amenaza",
     "threats": "Amenazas",
     "threatsMatchYourFilters": "Las amenazas {{count}} coinciden con sus filtros.",
-    "type": "Tipo"
+    "type": "Tipo",
+    "actionFailed": "La acción falló",
+    "actionQueuedCount": "{{count}} amenaza en cola",
+    "actionQueuedCount_one": "{{count}} amenaza en cola",
+    "actionQueuedCount_other": "{{count}} amenazas en cola"
   },
   "securityTrendsPage": {
     "adminAccounts": "Cuentas de administrador",
@@ -2048,5 +2060,11 @@
       "expires": "Vence",
       "actions": "Acciones"
     }
+  },
+  "securityScansPage": {
+    "iocScans": "Escaneos de IOC",
+    "subtitle": "Barridos de malware e IOC basados en firmas en toda su flota. No sustituye la protección completa de terminales.",
+    "scansTab": "Escaneos",
+    "threatsTab": "Amenazas"
   }
 }
