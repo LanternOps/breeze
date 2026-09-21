@@ -125,8 +125,9 @@ describe('inboundEmailWorker', () => {
 
     await workerModule.handleInboundEmail({ data: { email: makeEmail({ providerMessageId: 'mg-1' }) } } as any);
 
-    // Admit is called with the real Redis client, the resolved checks, and the message id — before the pipeline.
-    expect(admitMock).toHaveBeenCalledWith({}, checks, 'mg-1');
+    // Admit is called with the real Redis client, the resolved checks, and a
+    // per-attempt reservation token (a uuid, NOT the message id) — before the pipeline.
+    expect(admitMock).toHaveBeenCalledWith({}, checks, expect.any(String));
     expect(order).toEqual(['admit', 'process']);
   });
 
@@ -151,7 +152,7 @@ describe('inboundEmailWorker', () => {
     const email = makeEmail({ providerMessageId: 'mg-refund-1' });
     await workerModule.handleInboundEmail({ data: { email } } as any);
 
-    expect(releaseMock).toHaveBeenCalledWith({}, ['k'], 'mg-refund-1');
+    expect(releaseMock).toHaveBeenCalledWith({}, ['k'], expect.any(String));
   });
 
   it('refunds an empty charge set harmlessly when there were no cap windows', async () => {
@@ -163,7 +164,30 @@ describe('inboundEmailWorker', () => {
     await workerModule.handleInboundEmail({ data: { email } } as any);
 
     // releaseInboundCharges is still called, but with an empty key list (a no-op).
-    expect(releaseMock).toHaveBeenCalledWith({}, [], 'mg-none');
+    expect(releaseMock).toHaveBeenCalledWith({}, [], expect.any(String));
+  });
+
+  it('REFUNDS on a rolled-back/failed transaction (finally), even after a create path ran', async () => {
+    // Codex review #8, finding 3: a create path can run (onTicketCreated fires) and
+    // the transaction then fail to commit. The reservation must NOT persist as a
+    // phantom charge — the `finally` refunds it because the commit did not succeed.
+    resolveChecksMock.mockResolvedValue([{ bucket: 'sender' as const, key: 'k', limit: 30 }]);
+    admitMock.mockResolvedValue({ verdict: { throttled: false, bucket: null }, chargedKeys: ['k'] });
+    // Two context calls: (1) resolve the windows — normal; (2) the pipeline — runs
+    // (signalling a creation) then throws as the commit fails.
+    withSystemDbAccessContextMock
+      .mockImplementationOnce(<T>(fn: () => Promise<T>) => fn())
+      .mockImplementationOnce(async (fn: () => Promise<unknown>) => {
+        await fn();
+        throw new Error('commit failed');
+      });
+    processInboundEmailMock.mockImplementation(async (_e: unknown, _g: unknown, deps: any) => {
+      deps?.onTicketCreated?.();
+    });
+
+    await expect(workerModule.handleInboundEmail({ data: { email: makeEmail() } } as any)).rejects.toThrow('commit failed');
+    // created=true but committed=false ⇒ refund.
+    expect(releaseMock).toHaveBeenCalledWith({}, ['k'], expect.any(String));
   });
 
   it('passes an exact M365 mailbox generation to both the throttle resolve and the pipeline', async () => {

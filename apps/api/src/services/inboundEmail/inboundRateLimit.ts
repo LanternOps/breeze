@@ -23,20 +23,29 @@
  *      throttled), with no Redis of its own.
  *   3. SETTLE AFTER the transaction commits: if the message did NOT create a
  *      ticket (throttled, a reply-append, a drop, a dedup, or a quarantine),
- *      `releaseInboundCharges` refunds every window this message charged at
- *      admission. So each window ends up counting REAL creations only — a message
- *      rejected by a broader window leaves NO residual charge in a narrower one.
+ *      `releaseInboundCharges` refunds every window this admission charged. So
+ *      each window ends up counting REAL creations only — a message rejected by a
+ *      broader window leaves NO residual charge in a narrower one.
  *
- * The charge is idempotent per provider-message-id, so an at-least-once
- * redelivery of the SAME message occupies one slot, not N. Admission fails OPEN
- * when Redis is entirely unavailable (a null client ⇒ no charge, not throttled: a
- * Redis blip must not quarantine every inbound ticket; the global BullMQ queue
- * limiter still bounds total throughput and an attacker cannot force Redis
- * offline), but a present-but-erroring Redis fails CLOSED via `rateLimiter`.
- * This module is pure Redis — no DB import — so it holds no connection of its own,
- * and because the worker calls it OUTSIDE the pipeline context the #1105 tripwire
- * inside `rateLimiter` passes (and guards against a future in-context regression).
- * Over-cap mail is quarantined (visible, recoverable), never dropped.
+ * THE ADMISSION MEMBER IS UNIQUE PER DELIVERY ATTEMPT (a fresh token minted by the
+ * worker for each handleInboundEmail run), NOT the provider message id. This is
+ * load-bearing for correctness: the refund removes exactly THIS attempt's member,
+ * so a redelivery of an already-created message (which the pipeline dedups without
+ * creating, then refunds) removes only its own transient slot and CANNOT free the
+ * original ticket's live charge — the shared-member refund hazard that
+ * `rate-limit.ts` warns about. A redelivery therefore transiently occupies a
+ * second slot for the duration of its (dedup-only) pipeline run, then releases it;
+ * the original's charge is untouched.
+ *
+ * Admission fails OPEN when Redis is entirely unavailable (a null client ⇒ no
+ * charge, not throttled: a Redis blip must not quarantine every inbound ticket;
+ * the global BullMQ queue limiter still bounds total throughput and an attacker
+ * cannot force Redis offline), but a present-but-erroring Redis fails CLOSED via
+ * `rateLimiter`. This module is pure Redis — no DB import — so it holds no
+ * connection of its own, and because the worker calls it OUTSIDE the pipeline
+ * context the #1105 tripwire inside `rateLimiter` passes (and guards against a
+ * future in-context regression). Over-cap mail is quarantined (visible,
+ * recoverable), never dropped.
  */
 
 import type { Redis } from 'ioredis';
@@ -141,9 +150,12 @@ export interface InboundAdmission {
  * tightest (sender) → broadest (partner). Each window is charged-and-checked in a
  * single atomic `rateLimiter` step (ZADD then ZCARD in a MULTI), so concurrent
  * workers serialise on Redis and the limit holds exactly — no two can pass the
- * same slot. Stops at the first window that rejects and reports its bucket. The
- * charge is idempotent per `dedupeMember` (provider message id), so a redelivery
- * of the same message re-occupies its one slot rather than consuming another.
+ * same slot. Stops at the first window that rejects and reports its bucket.
+ *
+ * `reservationMember` MUST be unique to this delivery attempt (see the module
+ * header): it is the member added to each window and the exact member
+ * `releaseInboundCharges` later removes, so uniqueness is what makes a refund
+ * remove only THIS attempt's slot and never a prior accepted delivery's.
  *
  * Fails OPEN only when Redis is entirely absent (null client ⇒ nothing charged,
  * not throttled). A present-but-erroring Redis fails CLOSED inside `rateLimiter`
@@ -157,7 +169,7 @@ export interface InboundAdmission {
 export async function admitInboundTicket(
   redis: Redis | null,
   checks: InboundCapCheck[],
-  dedupeMember: string,
+  reservationMember: string,
 ): Promise<InboundAdmission> {
   if (!redis || checks.length === 0) return { verdict: { throttled: false, bucket: null }, chargedKeys: [] };
   const chargedKeys: string[] = [];
@@ -165,7 +177,7 @@ export async function admitInboundTicket(
     // Atomic charge-and-check (rateLimiter uses a MULTI: ZADD then ZCARD). The
     // member is added before the count is read, so this window's own charge is
     // included in the decision and concurrent admissions cannot both pass.
-    const res = await rateLimiter(redis, c.key, c.limit, WINDOW_SECONDS, 1, { dedupeMember });
+    const res = await rateLimiter(redis, c.key, c.limit, WINDOW_SECONDS, 1, { dedupeMember: reservationMember });
     chargedKeys.push(c.key);
     if (!res.allowed) return { verdict: { throttled: true, bucket: c.bucket }, chargedKeys };
   }
@@ -173,24 +185,26 @@ export async function admitInboundTicket(
 }
 
 /**
- * Refund an admission: remove this message's member from each window it charged.
- * The worker calls it when the message did NOT create a ticket (throttled, a
- * reply-append, a drop, a dedup, or a quarantine), so a window counts only real
- * creations and a message rejected by a broader window leaves no residual charge
- * in a narrower one. Idempotent (ZREM of an absent member is a no-op) and
- * best-effort: a failed refund only leaves a slot that expires at the window edge,
- * never blocks a created ticket.
+ * Refund an admission: remove THIS ATTEMPT's reservation member from each window
+ * it charged. The worker calls it when the message did NOT create a (committed)
+ * ticket — throttled, a reply-append, a drop, a dedup, a quarantine, or a rolled
+ * back transaction — so a window counts only real creations and a message rejected
+ * by a broader window leaves no residual charge in a narrower one. Because
+ * `reservationMember` is unique to this attempt, the ZREM can only remove this
+ * attempt's own slot, never a prior accepted delivery's. Idempotent (ZREM of an
+ * absent member is a no-op) and best-effort: a failed refund only leaves a slot
+ * that expires at the window edge, never blocks a created ticket.
  */
 export async function releaseInboundCharges(
   redis: Redis | null,
   chargedKeys: string[],
-  dedupeMember: string,
+  reservationMember: string,
 ): Promise<void> {
   if (!redis || chargedKeys.length === 0) return;
   await Promise.all(
     chargedKeys.map(async (key) => {
       try {
-        await redis.zrem(key, dedupeMember);
+        await redis.zrem(key, reservationMember);
       } catch (err) {
         console.warn('[InboundEmail] flood charge refund failed (skipped)', {
           error: err instanceof Error ? err.message : String(err),

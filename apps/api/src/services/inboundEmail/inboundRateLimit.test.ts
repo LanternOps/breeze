@@ -128,16 +128,6 @@ describe('admitInboundTicket', () => {
     for (const c of checks) expect(r.countInWindow(c.key, 0)).toBe(1);
   });
 
-  it('is idempotent per dedupeMember: a redelivery re-occupies its one slot', async () => {
-    const r = new FakeRedis();
-    const checks = buildInboundCapChecks('p1', 'jane@acme.com', { perSenderPerHour: 1, perDomainPerHour: 200, perPartnerPerHour: 1000 });
-    const a = await admitInboundTicket(asRedis(r), checks, 'same-msg');
-    const b = await admitInboundTicket(asRedis(r), checks, 'same-msg'); // SAME message id
-    expect(a.verdict.throttled).toBe(false);
-    expect(b.verdict.throttled).toBe(false); // not a new slot, so not over the limit of 1
-    expect(r.countInWindow(checks[0]!.key, 0)).toBe(1);
-  });
-
   it('throttles at the tightest full window and stops there', async () => {
     const r = new FakeRedis();
     const checks = buildInboundCapChecks('p1', 'jane@acme.com', { perSenderPerHour: 1, perDomainPerHour: 200, perPartnerPerHour: 1000 });
@@ -196,6 +186,47 @@ describe('exact under concurrency (Codex review #7, finding 1)', () => {
     await r.zremrangebyscore('inbound:tix:partner:p1', '-inf', '+inf');
     const c = await admitInboundTicket(asRedis(r), buildInboundCapChecks('p1', 'jane@acme.com', limits), 'C');
     expect(c.verdict.throttled).toBe(false);
+  });
+});
+
+describe('redelivery cannot free the original charge (Codex review #8, finding 1)', () => {
+  it('a redelivery uses its OWN reservation, so refunding it leaves the original slot intact', async () => {
+    const r = new FakeRedis();
+    // Room to spare so the redelivery is not throttled — it transiently occupies a
+    // second slot, then the worker refunds it (the dedup path creates no ticket).
+    const limits: InboundCapLimits = { perSenderPerHour: 5, perDomainPerHour: 200, perPartnerPerHour: 1000 };
+    const senderKey = 'inbound:tix:sender:p1:jane@acme.com';
+    const checks = () => buildInboundCapChecks('p1', 'jane@acme.com', limits);
+
+    // First delivery of message M: reservation M-attempt-1, creates a ticket → KEEP.
+    const first = await admitInboundTicket(asRedis(r), checks(), 'M-attempt-1');
+    expect(first.verdict.throttled).toBe(false);
+    expect(r.countInWindow(senderKey, 0)).toBe(1);
+
+    // Redelivery of the SAME message M: a DIFFERENT reservation. It transiently
+    // charges a second slot...
+    const redelivery = await admitInboundTicket(asRedis(r), checks(), 'M-attempt-2');
+    expect(redelivery.verdict.throttled).toBe(false);
+    expect(r.countInWindow(senderKey, 0)).toBe(2);
+    // ...then the worker refunds it because the pipeline dedups (no new ticket).
+    await releaseInboundCharges(asRedis(r), redelivery.chargedKeys, 'M-attempt-2');
+
+    // The original delivery's charge is UNTOUCHED — a shared-member refund would
+    // have removed it and freed the cap; here the window stays at exactly 1.
+    expect(r.countInWindow(senderKey, 0)).toBe(1);
+  });
+
+  it('a redelivery throttled at a full window still refunds only its own slot', async () => {
+    const r = new FakeRedis();
+    const limits: InboundCapLimits = { perSenderPerHour: 1, perDomainPerHour: 200, perPartnerPerHour: 1000 };
+    const senderKey = 'inbound:tix:sender:p1:jane@acme.com';
+    const checks = () => buildInboundCapChecks('p1', 'jane@acme.com', limits);
+
+    await admitInboundTicket(asRedis(r), checks(), 'M-attempt-1'); // creates, kept (count 1, limit 1)
+    const redelivery = await admitInboundTicket(asRedis(r), checks(), 'M-attempt-2');
+    expect(redelivery.verdict).toEqual({ throttled: true, bucket: 'sender' });
+    await releaseInboundCharges(asRedis(r), redelivery.chargedKeys, 'M-attempt-2');
+    expect(r.countInWindow(senderKey, 0)).toBe(1); // original survives
   });
 });
 
