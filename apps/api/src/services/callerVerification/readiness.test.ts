@@ -20,4 +20,6 @@ it('exports every fixed cross-wave service entry point', async () => {
   ]) {
     expect(typeof api[name as keyof typeof api], name).toBe('function');
   }
-});
+  // The barrel pulls the whole service graph (db, schema, ticketService); a
+  // cold import on a loaded runner exceeds the default 5s.
+}, 60_000);

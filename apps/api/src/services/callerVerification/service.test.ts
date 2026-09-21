@@ -17,7 +17,8 @@ vi.mock('./destinations', async (original) => ({ ...await original<typeof import
 
 import { makeDbMock } from './testing';
 import { resolveEffectivePolicy } from './policy';
-import { start, view, challengeSecrets, verificationDetails, decisionStatus } from './service';
+import { start, view, challengeSecrets, verificationDetails, decisionStatus, attest, cancel } from './service';
+import { recordEffect } from './effects';
 import type { VerificationRow, CallerVerificationActor } from './types';
 
 const org = '11111111-1111-4111-8111-111111111111';
@@ -26,6 +27,7 @@ const actor: CallerVerificationActor = { userId: user, partnerId: null, scope: '
 let state: ReturnType<typeof makeDbMock>;
 
 beforeEach(() => {
+  vi.mocked(recordEffect).mockClear();
   state = makeDbMock();
   ref.db = state.db;
   vi.stubEnv('CALLER_VERIFICATION_ENABLED', 'true');
@@ -141,4 +143,49 @@ it('only a live pending number choice verifies; timeout never approves', () => {
   expect(decisionStatus('pending', new Date(Date.now() + 60000), { kind: 'undeliverable', reason: 'helper_outdated' }, '42')).toBe('undeliverable');
   expect(decisionStatus('verified', new Date(0), { kind: 'timeout' }, '42')).toBeNull();
   expect(decisionStatus('rejected_by_user', new Date(0), { kind: 'not_me' }, '42')).toBeNull();
+});
+
+const stored = (patch: Record<string, unknown> = {}) => {
+  const now = new Date();
+  return { id: user, orgId: org, contactId: user, targetBindingId: null, requesterBindingId: null, initiatedByUserId: user, method: 'callback_attestation', status: 'pending', createdAt: now, expiresAt: now, decidedAt: null, consumedAt: null, matchValue: '42', decoyValues: ['11', '73'], reverseCode: '1234', ...patch };
+};
+// get(): [row], [contact], [attempts], [incident]
+const getReads = (row: ReturnType<typeof stored>) => [[row], [contact], [{ count: 1 }], []];
+
+it('attest refuses a short note before any read and a non-callback method before locking', async () => {
+  await expect(attest(actor, org, user, 'too short')).rejects.toMatchObject({ code: 'invalid_note' });
+  expect(state.calls).toEqual([]);
+  const sms = stored({ method: 'sms' });
+  state.results.push(...getReads(sms), [sms]);
+  await expect(attest(actor, org, user, 'Called the established number and confirmed the requester.')).rejects.toMatchObject({ code: 'invalid_method' });
+  expect(state.calls.filter((c) => c.name === 'update')).toEqual([]);
+  expect(recordEffect).not.toHaveBeenCalled();
+});
+
+it('attest verifies only through the pending CAS and records the effect once', async () => {
+  const pending = stored();
+  const verified = stored({ status: 'verified', decidedAt: new Date() });
+  state.results.push(...getReads(pending), [pending], [verified], ...getReads(verified));
+  const result = await attest(actor, org, user, 'Called the established number and confirmed the requester.');
+  expect(result.status).toBe('verified');
+  const set = state.calls.find((c) => c.name === 'set')!.args[0] as Record<string, unknown>;
+  expect(set).toMatchObject({ status: 'verified', tier: 1, tierReason: 'attestation', attestationNote: 'Called the established number and confirmed the requester.' });
+  expect(recordEffect).toHaveBeenCalledTimes(1);
+  // Lost CAS (already decided): no effect is recorded, the current row is returned.
+  vi.mocked(recordEffect).mockClear();
+  state.results.push(...getReads(verified), [verified], [], ...getReads(verified));
+  await attest(actor, org, user, 'Called the established number and confirmed the requester.');
+  expect(recordEffect).not.toHaveBeenCalled();
+});
+
+it('cancel only cancels a pending row', async () => {
+  const pending = stored();
+  const cancelled = stored({ status: 'cancelled', decidedAt: new Date() });
+  state.results.push(...getReads(pending), [cancelled], ...getReads(cancelled));
+  expect((await cancel(actor, org, user)).status).toBe('cancelled');
+  expect(recordEffect).toHaveBeenCalledWith(expect.objectContaining({ status: 'cancelled' }), 'cancelled', user);
+  vi.mocked(recordEffect).mockClear();
+  state.results.push(...getReads(cancelled), [], ...getReads(cancelled));
+  expect((await cancel(actor, org, user)).status).toBe('cancelled');
+  expect(recordEffect).not.toHaveBeenCalled();
 });

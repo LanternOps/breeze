@@ -5,6 +5,7 @@ vi.mock('./policy', () => ({ getEffectivePolicy: m.policy }));
 vi.mock('./subjects', () => ({ resolveTargetBinding: m.resolve }));
 vi.mock('./locks', () => ({ withSubjectLocks: (_db: unknown, _ids: unknown, f: () => unknown) => f() }));
 vi.mock('./ports', () => ({ callerVerificationPorts: { mailboxes: m.mailboxes, administrativeEligible: m.eligible } }));
+vi.mock('../sentry', () => ({ captureException: vi.fn() }));
 vi.mock('./destinations', async (original) => ({
   ...await original<typeof import('./destinations')>(),
   currentDestination: m.destination,
@@ -132,4 +133,32 @@ it('invalidated administrative proof refuses before any consume', async () => {
 it('reports a fenced target even when no grant exists', async () => {
   m.results.push([], [{ status: 'rejected_by_user', decidedAt: new Date(), fenceOverrideUntil: null }]);
   await expect(requireCallerVerification(ok)).rejects.toMatchObject({ payload: { reason: 'contact_fenced' } });
+});
+
+it('refuses target_rebound when a formerly bound subject is now unmatched, else the resolver reason', async () => {
+  const { CallerVerificationRequiredError } = await import('./errors');
+  const unmatched = new CallerVerificationRequiredError({ orgId: input.orgId, contactId: null, action: 'reset_password', requiredTier: 2, reason: 'subject_unmatched', latest: null });
+  m.resolve.mockRejectedValue(unmatched);
+  m.results.push([candidate({ status: 'revoked' })]);
+  await expect(requireCallerVerification(ok)).rejects.toMatchObject({ payload: { reason: 'target_rebound', latest: { id: candidate().id } } });
+  m.results.length = 0;
+  m.results.push([]);
+  await expect(requireCallerVerification(ok)).rejects.toMatchObject({ payload: { reason: 'subject_unmatched', latest: null } });
+});
+
+it('check mode returns the grant without consuming it', async () => {
+  const row = candidate();
+  // No trailing [consumed] result: a consume UPDATE would read [] and refuse grant_consumed.
+  m.results.push([row], [], [], [], [row], [], [binding], [{ id: binding.contactId, siteId: null, roles: ['admin'] }]);
+  expect(await requireCallerVerification({ ...ok, mode: 'check' })).toEqual({ verificationId: row.id, tier: 1 });
+});
+
+it('refuses subject_unmatched when the requester binding was revoked and requester_not_authorized for a site manager', async () => {
+  m.results.push([candidate()], [], [], [], [candidate()], [], []);
+  await expect(requireCallerVerification(ok)).rejects.toMatchObject({ payload: { reason: 'subject_unmatched' } });
+  m.results.length = 0;
+  const other = { ...binding, id: '88888888-8888-4888-8888-888888888888' };
+  const cross = candidate({ requesterBindingId: other.id, actionScope: 'disable_user' });
+  m.results.push([cross], [], [], [], [cross], [], [other], [{ id: binding.contactId, siteId: 'site', roles: ['admin'] }]);
+  await expect(requireCallerVerification({ ...ok, action: 'disable_user' })).rejects.toMatchObject({ payload: { reason: 'requester_not_authorized' } });
 });

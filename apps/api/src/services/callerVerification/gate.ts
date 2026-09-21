@@ -22,6 +22,7 @@ import { callerVerifications as v, callerVerificationSubjectBindings as b } from
 import { contacts } from '../../db/schema/contacts';
 import { devices } from '../../db/schema/devices';
 import { callerVerificationEnabled } from '../../config/env';
+import { captureException } from '../sentry';
 import type { CallerVerificationAction, EntraSubject, VerificationRow } from './types';
 import { CallerVerificationRequiredError, type CallerVerificationRefusal } from './errors';
 import { getEffectivePolicy, type EffectiveCallerVerificationPolicy } from './policy';
@@ -125,7 +126,15 @@ export async function requireCallerVerification(input: GateInput): Promise<{ ver
             .filter((a): a is string => !!a)
             .map(destinationHash),
         );
-      } catch {
+      } catch (err) {
+        // Fail closed (every email candidate refuses with
+        // subject_mailboxes_unknown) but never silently: an adapter that is
+        // systemically broken must be distinguishable from a real empty
+        // mailbox list, or every email-tier verification degrades unnoticed.
+        console.error('[callerVerification] mailbox read failed; email candidates will be refused', {
+          orgId: input.orgId, targetOid: input.target.entraOid, error: err instanceof Error ? err.message : String(err),
+        });
+        captureException(err instanceof Error ? err : new Error(String(err)));
         mailboxHashes = null;
       }
     }

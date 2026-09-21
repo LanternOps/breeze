@@ -72,6 +72,11 @@ vi.mock('../services/sentry', () => ({
   captureException: vi.fn(),
 }));
 
+const emitTicketEventMock = vi.hoisted(() => vi.fn());
+vi.mock('../services/ticketEvents', () => ({
+  emitTicketEvent: emitTicketEventMock,
+}));
+
 import { publishOutboxRows } from './ticketOutboxPublisher';
 import { captureException } from '../services/sentry';
 import * as dbModule from '../db';
@@ -149,6 +154,29 @@ describe('ticketOutboxPublisher.publishOutboxRows', () => {
     for (const forbidden of ['subject', 'description', 'resolutionNote', 'content']) {
       expect(payloadArg).not.toHaveProperty(forbidden);
     }
+  });
+
+  // Caller verification (#6354): a system comment carrying verificationId is
+  // additionally emitted to the ticket-events queue post-commit, with a
+  // deterministic eventId; ordinary comments are not.
+  it('emits a caller-verification ticket.commented event only for verification-tagged comments', async () => {
+    executeMock.mockResolvedValueOnce({ rows: [] });
+    executeMock.mockResolvedValueOnce({
+      rows: [
+        claimedRow({ id: 8, event_type: 'ticket.commented', payload: { commentId: 'c-8', isPublic: false, verificationId: 'v-8', event: 'rejected', partnerId: 'p-1' } }),
+        claimedRow({ id: 9, event_type: 'ticket.commented', payload: { commentId: 'c-9', isPublic: true } }),
+      ],
+    });
+    updateMock.mockReturnValue({ set: makeUpdateChain().set });
+
+    await publishOutboxRows();
+
+    expect(emitTicketEventMock).toHaveBeenCalledTimes(1);
+    expect(emitTicketEventMock).toHaveBeenCalledWith({
+      type: 'ticket.commented', ticketId: 'ticket-1', orgId: 'org-1', partnerId: 'p-1', eventId: 'caller-v-8-rejected',
+      payload: { commentId: 'c-8', isPublic: false, verificationId: 'v-8' },
+    });
+    expect(publishEventMock).toHaveBeenCalledTimes(2);
   });
 
   it('status_changed row forwards from/to enum labels only', async () => {
