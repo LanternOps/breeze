@@ -78,12 +78,88 @@ import {
   recordAiOperatorUnknownEffectHandoff,
 } from '../aiOperatorCoordinatorMetrics';
 import { aiOperatorTasksEnabled } from '../../config/env';
+import { aiOperatorTaskTargets } from '../../db/schema/aiOperatorTaskGraph';
+import { appendTaskEvent, type TaskEventActor } from './eventService';
+import { markStepWaiting, openStep, resolveStepKind, settleStep } from './stepService';
 
 /** How long a lease is good for. Spec §11.2's short lease. */
 export const TASK_LEASE_MS = 60_000;
 
 /** Identifies this process in `lease_owner`, for a human reading a stuck row. */
 export const COORDINATOR_OWNER_ID = `coordinator:${process.pid}:${randomUUID().slice(0, 8)}`;
+
+/**
+ * Every task-graph write this module makes is attributed to the coordinator,
+ * never to a user. Spec §7.1: "Database context has no synthetic human user
+ * ID" — and `ai_operator_task_events_actor_chk` enforces the pairing, so this
+ * constant is the only actor shape this file can legally use.
+ */
+const COORDINATOR_ACTOR: TaskEventActor = { kind: 'coordinator' };
+
+/**
+ * The target a step belongs to, or null (Recipe Library wave E2, #6167).
+ *
+ * Read from `ai_operator_task_targets` rather than from the task's inline
+ * `device_id`, because a step's target is a TARGET ROW id — the inline column
+ * is the read projection recipe spec §5.5 keeps, not the identity. Ordinal 0
+ * is the single-target case, which is every task until the fleet waves. A
+ * detached target keeps its row and its id, so a step's identity is stable
+ * across a device move or delete.
+ *
+ * Called only from inside a `writeLeased` transaction (`alsoInTransaction`),
+ * where the bare `db` proxy joins that transaction.
+ */
+async function currentTargetId(orgId: string, taskId: string): Promise<string | null> {
+  const [row] = await db
+    .select({ id: aiOperatorTaskTargets.id })
+    .from(aiOperatorTaskTargets)
+    .where(and(
+      eq(aiOperatorTaskTargets.orgId, orgId),
+      eq(aiOperatorTaskTargets.taskId, taskId),
+      eq(aiOperatorTaskTargets.targetOrdinal, 0),
+    ))
+    .limit(1);
+  return row?.id ?? null;
+}
+
+/**
+ * Record a step change on the task graph: settle the step being LEFT as
+ * `succeeded` and open the step being ENTERED. Both at the task's current
+ * attempt, against the same target. A no-op when the step does not change
+ * (a re-armed wait on the same step is not a transition).
+ *
+ * `succeeded` for the step being left is the coordinator's own statement: it
+ * only ever advances a step forward after that step produced what the next one
+ * needs (a proposal, an approval, a dispatch reference, a finished command).
+ * Every failure path SETTLES the task instead, which records the step's
+ * verdict as `failed` in {@link settle}.
+ */
+async function recordStepChange(args: {
+  task: AiOperatorTaskRow;
+  toStepKey: string;
+  targetId: string | null;
+  checkpoint?: TaskCheckpoint;
+}): Promise<void> {
+  const { task, toStepKey, targetId } = args;
+  if (task.currentStepKey === toStepKey) return;
+  if (task.currentStepKey) {
+    await settleStep(db, {
+      orgId: task.orgId, taskId: task.id, stepKey: task.currentStepKey, targetId,
+      attemptOrdinal: task.attemptOrdinal, state: 'succeeded', actor: COORDINATOR_ACTOR,
+    });
+  }
+  await openStep(db, {
+    orgId: task.orgId,
+    taskId: task.id,
+    stepKey: toStepKey,
+    stepKind: resolveStepKind(task.workflowKey, task.workflowVersion, toStepKey),
+    targetId,
+    attemptOrdinal: task.attemptOrdinal,
+    planRevision: task.revision,
+    ...(args.checkpoint ? { checkpoint: args.checkpoint as unknown as Record<string, unknown> } : {}),
+    actor: COORDINATOR_ACTOR,
+  });
+}
 
 export type LeaseClaim =
   | { won: true; task: AiOperatorTaskRow; leaseEpoch: number }
@@ -184,6 +260,22 @@ async function writeLeased(args: {
   revision: number;
   leaseEpoch: number;
   patch: Partial<typeof aiOperatorTasks.$inferInsert>;
+  /**
+   * Task-graph writes (step rows, events — Recipe Library wave E2) to run in
+   * the SAME transaction as the CAS, and ONLY if the CAS won.
+   *
+   * `withDbAccessContext` already runs its callback in one transaction
+   * (db/index.ts) and the bare `db` proxy joins it, so this needs no
+   * `db.transaction()` — and must not grow one: nesting a transaction inside
+   * that context double-holds a pooled connection, which hangs at concurrency
+   * >= pool size.
+   *
+   * Gated on the CAS because a stale coordinator that lost its lease must not
+   * leave a step row or an event claiming a transition that never committed.
+   * A throw here rolls the CAS back with it: the step row, the event and the
+   * task transition commit together or not at all.
+   */
+  alsoInTransaction?: () => Promise<void>;
 }): Promise<boolean> {
   const committed = await runOutsideDbContext(() =>
     withSystemDbAccessContext(async () => {
@@ -197,7 +289,9 @@ async function writeLeased(args: {
           eq(aiOperatorTasks.leaseEpoch, args.leaseEpoch),
         ))
         .returning({ id: aiOperatorTasks.id });
-      return rows.length === 1;
+      if (rows.length !== 1) return false;
+      if (args.alsoInTransaction) await args.alsoInTransaction();
+      return true;
     }));
 
   // A lost CAS is EXPECTED and self-healing — another coordinator reclaimed
@@ -250,6 +344,22 @@ async function yieldToWait(args: {
       ...(args.stepKey ? { currentStepKey: args.stepKey } : {}),
       ...(args.checkpoint ? { checkpoint: args.checkpoint as unknown as Record<string, unknown> } : {}),
     },
+    alsoInTransaction: async () => {
+      const stepKey = args.stepKey ?? args.task.currentStepKey;
+      if (!stepKey) return; // nothing to attribute the wait to
+      const targetId = await currentTargetId(args.task.orgId, args.task.id);
+      // A wait that also MOVES the task (investigate -> execute on approval,
+      // execute -> observe on dispatch) is a step change first.
+      await recordStepChange({ task: args.task, toStepKey: stepKey, targetId, checkpoint: args.checkpoint });
+      await markStepWaiting(db, {
+        orgId: args.task.orgId, taskId: args.task.id, stepKey, targetId,
+        attemptOrdinal: args.task.attemptOrdinal,
+        dependencyKind: args.dependency?.kind ?? null,
+        dependencyId: args.dependency?.id ?? null,
+        actor: COORDINATOR_ACTOR,
+        detail: `step '${stepKey}' waiting (${args.reason})`,
+      });
+    },
   });
 }
 
@@ -281,6 +391,31 @@ async function settle(args: {
       nextWakeAt: null,
       leaseOwner: null,
       leaseExpiresAt: null,
+    },
+    alsoInTransaction: async () => {
+      const targetId = await currentTargetId(args.task.orgId, args.task.id);
+      if (args.task.currentStepKey) {
+        await settleStep(db, {
+          orgId: args.task.orgId, taskId: args.task.id,
+          stepKey: args.task.currentStepKey, targetId,
+          attemptOrdinal: args.task.attemptOrdinal,
+          // The STEP's verdict, not the task's outcome: `partial` still means
+          // the step that ran produced its result; a handoff or failure means
+          // it did not. `unknown_effect` handoffs land here as `failed` — the
+          // step could not prove its effect, which is what `failed` records.
+          state: args.event === 'complete' || args.event === 'partial' ? 'succeeded' : 'failed',
+          detail: args.detail,
+          // No actor: settleStep would write its own step_settled event, and
+          // the task_settled event below is the one that matters. Two events
+          // for one terminal transition is how a timeline stops being readable.
+        });
+      }
+      await appendTaskEvent(db, {
+        orgId: args.task.orgId, taskId: args.task.id,
+        eventType: 'task_settled', actor: COORDINATOR_ACTOR,
+        stepKey: args.task.currentStepKey, targetId,
+        detail: `${args.event} -> ${args.outcome}: ${args.detail}`,
+      });
     },
   });
 
@@ -346,6 +481,43 @@ async function admitReasoningRun(args: {
       phase: 'investigate',
       checkpoint: checkpoint as unknown as Record<string, unknown>,
     },
+    alsoInTransaction: async () => {
+      const targetId = await currentTargetId(task.orgId, task.id);
+      if (args.bumpPlanRevision) {
+        // A NEW attempt after a failed criterion: the step being left (verify)
+        // did not achieve its criterion, and the plan it belonged to is
+        // superseded. Record both before opening the new attempt's step.
+        if (task.currentStepKey) {
+          await settleStep(db, {
+            orgId: task.orgId, taskId: task.id, stepKey: task.currentStepKey, targetId,
+            attemptOrdinal: task.attemptOrdinal, state: 'failed', actor: COORDINATOR_ACTOR,
+            detail: `criterion not satisfied; admitting attempt ${attemptOrdinal}`,
+          });
+        }
+        await appendTaskEvent(db, {
+          orgId: task.orgId, taskId: task.id,
+          eventType: 'plan_revision_bumped', actor: COORDINATOR_ACTOR,
+          stepKey: args.stepKey, targetId,
+          detail: `plan revision ${task.revision} -> ${nextRevision}, attempt ${attemptOrdinal}`,
+        });
+      }
+      // Idempotent on (task, step, target, attempt): the first attempt's
+      // `investigate` step was already opened at admission (or by the E2
+      // backfill), so this is a refresh, and it writes a step_opened event
+      // only when it genuinely opens a new step or a new attempt.
+      const isNewStep = args.bumpPlanRevision || task.currentStepKey !== args.stepKey;
+      await openStep(db, {
+        orgId: task.orgId,
+        taskId: task.id,
+        stepKey: args.stepKey,
+        stepKind: resolveStepKind(task.workflowKey, task.workflowVersion, args.stepKey),
+        targetId,
+        attemptOrdinal,
+        planRevision: nextRevision,
+        checkpoint: checkpoint as unknown as Record<string, unknown>,
+        ...(isNewStep ? { actor: COORDINATOR_ACTOR } : {}),
+      });
+    },
   });
   if (!stamped) return { admitted: false, detail: 'lost the lease before admitting a run' };
 
@@ -379,7 +551,9 @@ async function admitReasoningRun(args: {
   // own terminal transaction is the real wake, and this only fires if that
   // wake was lost.
   const waited = await yieldToWait({
-    task: { ...task, revision: nextRevision, attemptOrdinal, state: 'running' },
+    // `currentStepKey` is the step just stamped above, so the wait below is
+    // recorded as a wait on THAT step rather than as a second step change.
+    task: { ...task, revision: nextRevision, attemptOrdinal, state: 'running', currentStepKey: args.stepKey },
     leaseEpoch: args.leaseEpoch,
     reason: 'information',
     dependency: { kind: 'run', id: result.run.id },
@@ -960,6 +1134,10 @@ async function writeLeasedStep(
       // holds this, and it is due now.
       leaseExpiresAt: new Date(Date.now() - 1),
     },
+    alsoInTransaction: async () => {
+      const targetId = await currentTargetId(task.orgId, task.id);
+      await recordStepChange({ task, toStepKey: stepKey, targetId, checkpoint });
+    },
   });
 }
 
@@ -1116,3 +1294,9 @@ export async function handleTaskWake(args: {
 
   return advanceTask(claim.task, claim.leaseEpoch);
 }
+
+/** Test seam (Recipe Library wave E2). These are the coordinator's private
+ *  writers, and the test that pins their task-graph writes needs to call them
+ *  directly — the alternative is a test that drives `advanceTask` through a
+ *  fake DB, which would assert the fake and not the wiring. */
+export const __testOnly = { writeLeasedStep, yieldToWait, settle };

@@ -47,6 +47,9 @@ import {
 import { resolveAdmissionRecipe } from './recipes';
 import { aiOperatorServiceRecoveryEnabled, aiOperatorTasksEnabled } from '../../config/env';
 import { admissionFenced } from './taskTransitions';
+import { createTaskTarget } from './targetService';
+import { openStep, resolveStepKind } from './stepService';
+import { appendTaskEvent } from './eventService';
 
 export type AdmitTaskRefusal =
   | 'tasks_disabled'
@@ -262,6 +265,53 @@ export async function admitServiceRecoveryTask(
         .returning({ id: aiOperatorTasks.id });
 
       if (inserted.length > 0) {
+        // Wave E2 (#6167). The target row is the identity; the inline
+        // device_id / target_label columns written above stay as the read
+        // projection recipe spec §5.5 keeps until P3-5. BOTH are written,
+        // deliberately — this wave is additive, and every existing reader of
+        // the inline columns keeps working unchanged.
+        //
+        // Inside the SAME transaction as the task insert (this callback is one
+        // withSystemDbAccessContext transaction and the bare `db` proxy joins
+        // it), and ONLY on this branch: the idempotent-replay branch below did
+        // not create the task, and writing a second target/step/event for a
+        // task another request already admitted is exactly the duplicate the
+        // client idempotency key exists to prevent.
+        const target = await createTaskTarget(db, {
+          orgId: input.orgId,
+          taskId,
+          targetKind: 'device',
+          deviceId: device.id,
+          targetLabel: (device.hostname ?? recipeInput.deviceId).slice(0, 255),
+          targetOrdinal: 0,
+        });
+
+        await openStep(db, {
+          orgId: input.orgId,
+          taskId,
+          stepKey: 'investigate',
+          stepKind: resolveStepKind(recipe.key, recipe.version, 'investigate'),
+          targetId: target.id,
+          attemptOrdinal: 0,
+          planRevision: 1,
+          checkpoint: checkpoint as unknown as Record<string, unknown>,
+        });
+
+        // ONE event for the whole admission, not three. `createTaskTarget` and
+        // `openStep` are called without an `actor` above precisely so they do
+        // not each write their own — an admission is one transition.
+        await appendTaskEvent(db, {
+          orgId: input.orgId,
+          taskId,
+          eventType: 'task_admitted',
+          actor: input.requesterUserId
+            ? { kind: 'user', userId: input.requesterUserId }
+            : { kind: 'system' },
+          stepKey: 'investigate',
+          targetId: target.id,
+          detail: `${recipe.key} v${recipe.version} admitted against device target ${target.id}`,
+        });
+
         return { ok: true as const, taskId, replayed: false };
       }
 
