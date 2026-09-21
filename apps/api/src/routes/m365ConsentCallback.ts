@@ -97,7 +97,7 @@ export function parseM365ConsentCallbackQuery(
   const hasError = params.has('error');
   const successKeys = phase === 'admin_consent'
     ? new Set(['state', 'tenant', 'admin_consent'])
-    : new Set(['state', 'code']);
+    : new Set(['state', 'code', 'session_state']);
   const errorKeys = new Set(['state', 'error', 'error_description']);
 
   if (hasError) {
@@ -110,14 +110,24 @@ export function parseM365ConsentCallbackQuery(
     return { kind: 'provider_error', state };
   }
 
-  if (keys.some((key) => !successKeys.has(key)) || keys.length !== successKeys.size) return null;
+  if (keys.some((key) => !successKeys.has(key))) return null;
   if (phase === 'admin_consent') {
+    if (keys.length !== successKeys.size) return null;
     const tenantId = single(params, 'tenant');
-    if (!tenantId || !GUID.test(tenantId) || single(params, 'admin_consent') !== 'true') return null;
+    // Microsoft's admin-consent endpoint returns `admin_consent=True` in
+    // production (capital T), while some mocks and historical examples use
+    // lowercase `true`. Treat the boolean marker case-insensitively, but keep
+    // rejecting every value other than true.
+    const adminConsent = single(params, 'admin_consent');
+    if (!tenantId || !GUID.test(tenantId) || adminConsent?.toLowerCase() !== 'true') return null;
     return { kind: 'admin_success', state, tenantId };
   }
   const code = single(params, 'code');
   if (!validOpaque(code, 8_192)) return null;
+  // Entra commonly appends session_state to a successful authorization-code
+  // response. It is not used as authority by Breeze, but validate and accept
+  // the bounded opaque value rather than rejecting Microsoft's normal shape.
+  if (params.has('session_state') && !validOpaque(single(params, 'session_state'), 256)) return null;
   return { kind: 'identity_success', state, code };
 }
 

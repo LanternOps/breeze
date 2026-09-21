@@ -83,9 +83,23 @@ describe('M365 consent callback route', () => {
       state: 'raw-state',
       tenantId: '11111111-1111-1111-1111-111111111111',
     });
+    expect(parseM365ConsentCallbackQuery('admin_consent', new URLSearchParams({
+      state: 'raw-state',
+      tenant: '11111111-1111-1111-1111-111111111111',
+      admin_consent: 'True',
+    }))).toEqual({
+      kind: 'admin_success',
+      state: 'raw-state',
+      tenantId: '11111111-1111-1111-1111-111111111111',
+    });
     expect(parseM365ConsentCallbackQuery('identity_verification', new URLSearchParams({
       state: 'identity-state',
       code: 'authorization-code',
+    }))).toEqual({ kind: 'identity_success', state: 'identity-state', code: 'authorization-code' });
+    expect(parseM365ConsentCallbackQuery('identity_verification', new URLSearchParams({
+      state: 'identity-state',
+      code: 'authorization-code',
+      session_state: 'microsoft-session-state',
     }))).toEqual({ kind: 'identity_success', state: 'identity-state', code: 'authorization-code' });
   });
 
@@ -95,7 +109,8 @@ describe('M365 consent callback route', () => {
     ['mixed', 'admin_consent', 'state=a&tenant=11111111-1111-1111-1111-111111111111&admin_consent=true&error=denied'],
     ['missing state', 'identity_verification', 'code=value'],
     ['bad tenant', 'admin_consent', 'state=a&tenant=not-a-guid&admin_consent=true'],
-    ['wrong boolean', 'admin_consent', 'state=a&tenant=11111111-1111-1111-1111-111111111111&admin_consent=True'],
+    ['wrong boolean', 'admin_consent', 'state=a&tenant=11111111-1111-1111-1111-111111111111&admin_consent=yes'],
+    ['empty session state', 'identity_verification', 'state=a&code=value&session_state='],
     ['extra identity field', 'identity_verification', 'state=a&code=value&tenant=11111111-1111-1111-1111-111111111111'],
   ] as const)('rejects %s callback queries', (_name, phase, raw) => {
     expect(parseM365ConsentCallbackQuery(phase, new URLSearchParams(raw))).toBeNull();
