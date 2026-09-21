@@ -4274,7 +4274,8 @@
     "inactive": "Inaktiv",
     "deactivate": "Deaktivieren",
     "activate": "Aktivieren",
-    "slaMinutesMustBeNumbers": "SLA-Minuten müssen Zahlen sein."
+    "slaMinutesMustBeNumbers": "SLA-Minuten müssen Zahlen sein.",
+    "categorySlaOverridesOrgNote": "Dieses SLA hat Vorrang vor jeder organisationsweiten SLA-Überschreibung für Tickets in dieser Kategorie."
   },
   "ticketPrioritiesTab": {
     "prioritiesAndSLAsSaved": "Prioritäten und SLAs gespeichert",
@@ -4785,7 +4786,8 @@
       "description": "Überschreiben Sie die partnerweiten SLA-Standardwerte für diese Organisation. Lassen Sie eine Zelle leer, um den Partnerstandard zu übernehmen.",
       "priority": "Priorität",
       "response": "Antwort (min.)",
-      "resolution": "Auflösung (min.)"
+      "resolution": "Auflösung (min.)",
+      "categoryOverridesNote": "Das SLA der Ticket-Kategorie hat Vorrang vor diesen organisationsweiten Überschreibungen, wenn beide festgelegt sind."
     },
     "billing": {
       "title": "Abrechnungsvorgaben",

@@ -2539,5 +2539,10 @@
     "message": "Ekibiniz için çok faktörlü kimlik doğrulama zorunlu değil. Yalnızca parola ile açılan oturumlar betik çalıştırabilir, cihazları taşıyabilir ve ilkeleri değiştirebilir.",
     "cta": "MFA'yı zorunlu kıl",
     "dismiss": "MFA ilkesi hatırlatmasını bugünlük kapat"
+  },
+  "inheritedField": {
+    "inheritsFrom": "{{source}} değerinden devralır",
+    "noneConfigured": "Yapılandırılmış {{source}} yok",
+    "overriding": "{{source}} değerini geçersiz kılıyor"
   }
 }

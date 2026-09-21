@@ -2539,5 +2539,10 @@
     "message": "L'autenticazione a più fattori non è obbligatoria per il tuo team. Le sessioni con sola password possono eseguire script, spostare dispositivi e modificare i criteri.",
     "cta": "Richiedi MFA",
     "dismiss": "Ignora per oggi il promemoria sui criteri MFA"
+  },
+  "inheritedField": {
+    "inheritsFrom": "Eredita da {{source}}",
+    "noneConfigured": "Nessun {{source}} configurato",
+    "overriding": "Sovrascrive {{source}}"
   }
 }

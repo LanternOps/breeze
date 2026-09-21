@@ -4327,7 +4327,8 @@
     "inactive": "Etkin değil",
     "deactivate": "Devre dışı bırak",
     "activate": "Etkinleştir",
-    "slaMinutesMustBeNumbers": "SLA dakikaları sayı olmalıdır."
+    "slaMinutesMustBeNumbers": "SLA dakikaları sayı olmalıdır.",
+    "categorySlaOverridesOrgNote": "Bu SLA, bu kategorideki biletler için herhangi bir kuruluş düzeyi SLA geçersiz kılmasına göre önceliklidir."
   },
   "ticketPrioritiesTab": {
     "prioritiesAndSLAsSaved": "Öncelikler ve SLA'lar kaydedildi",
@@ -4838,7 +4839,8 @@
       "description": "Bu kuruluş için iş ortağı çapındaki SLA varsayılanlarını geçersiz kılın. İş ortağı varsayılanını devralmak için bir hücreyi boş bırakın.",
       "priority": "Öncelik",
       "response": "Yanıt (dak)",
-      "resolution": "Çözünürlük (dak)"
+      "resolution": "Çözünürlük (dak)",
+      "categoryOverridesNote": "Her ikisi de ayarlandığında, bilet kategorisinin SLA'sı bu kuruluş düzeyindeki geçersiz kılmalara göre önceliklidir."
     },
     "billing": {
       "title": "Faturalandırma varsayılanları",

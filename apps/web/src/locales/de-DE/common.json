@@ -2539,5 +2539,10 @@
     "message": "Für Ihr Team ist keine Multi-Faktor-Authentifizierung erforderlich. Sitzungen nur mit Passwort können Skripte ausführen, Geräte verschieben und Richtlinien ändern.",
     "cta": "MFA erzwingen",
     "dismiss": "Erinnerung an die MFA-Richtlinie für heute schließen"
+  },
+  "inheritedField": {
+    "inheritsFrom": "Erbt von {{source}}",
+    "noneConfigured": "Kein {{source}} konfiguriert",
+    "overriding": "Überschreibt {{source}}"
   }
 }
