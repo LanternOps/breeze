@@ -450,14 +450,27 @@ export async function processInboundEmail(
     // it is non-null here, past the early `if (!partnerId) return`).
     const capPartnerId = partnerId;
     const capExceeded = async (): Promise<boolean> => {
+      // The only throw path here is the #1105 held-context tripwire under
+      // DB_CONTEXT_TRIPWIRE_STRICT: rateLimiter fails CLOSED (no throw) on a Redis
+      // error, and evaluateInboundThrottle fails OPEN on a null client. A strict
+      // deployment must not turn a legitimate ticket creation into a terminal
+      // ingest failure, so a throw fails OPEN — create the ticket, skip the cap for
+      // this message, log it — mirroring the autoresponder's "never poison the work
+      // transaction" rule. Warn-only (the prod default) never reaches the catch.
       const verdict = await evaluateInboundThrottle({
         redis: getRedis(),
         from: n.from,
         partnerId: capPartnerId,
         limits: capLimits,
         dedupeMember: n.providerMessageId,
+      }).catch((err: unknown) => {
+        console.warn('[InboundEmail] inbound flood cap skipped (evaluate threw)', {
+          from: n.from,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        return null;
       });
-      if (!verdict.throttled) return false;
+      if (!verdict || !verdict.throttled) return false;
       await logInbound(n, partnerId, 'quarantined', null, `rate-limited: ${verdict.bucket ?? 'inbound'} cap exceeded`);
       return true;
     };

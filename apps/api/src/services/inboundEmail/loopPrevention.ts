@@ -35,6 +35,14 @@ export function autoresponseSuppressionReason(
   if (inboundDomain && senderDomain === inboundDomain.trim().toLowerCase()) {
     return 'self-domain';
   }
+  // (5) X-Loop present: the sender runs its own loop-guard, i.e. this is
+  //     automated/gatewayed mail. We must not auto-REPLY to it (an auto-reply
+  //     could feed a loop), but it is NOT proof of a loop involving Breeze — we
+  //     never set X-Loop ourselves — so it withholds only the reply, exactly like
+  //     Precedence/system-sender above; the mail still becomes a ticket.
+  if (n.xLoop && n.xLoop.trim() !== '') {
+    return 'x-loop';
+  }
   return null;
 }
 
@@ -51,16 +59,18 @@ export function autoresponseSuppressionReason(
  * a loop"). A genuine request can also arrive via a customer distribution list
  * (`List-Id`). Suppressing on those would silently drop real support mail, so
  * they are NOT ticket-suppression signals here — they only ever gate our own
- * auto-REPLY. Only three unambiguous loop/bounce signals suppress creation:
+ * auto-REPLY. Only two unambiguous loop/bounce signals suppress creation:
  *
  *   - Auto-Submitted: auto-replied — an automatic REPLY to our mail (RFC 3834).
  *     `auto-generated` (a device notification) is explicitly NOT suppressed.
  *   - a null Return-Path (exactly `<>`) — a bounce / non-delivery report.
- *   - X-Loop present — the sender is explicitly guarding against a mail loop.
  *
- * The broader set (Precedence: bulk, system local-parts, self-domain) stays in
- * `autoresponseSuppressionReason`: it only withholds our auto-REPLY, while still
- * letting the mail become a ticket — correct for device/notification senders.
+ * X-Loop is intentionally excluded here (we never set it outbound, so it does
+ * not evidence a Breeze loop) — see the note at the return-path check. The
+ * broader set (Precedence: bulk, system local-parts, self-domain, X-Loop) stays
+ * in `autoresponseSuppressionReason`: it only withholds our auto-REPLY, while
+ * still letting the mail become a ticket — correct for device/notification/
+ * gatewayed senders.
  */
 /**
  * The Auto-Submitted keyword (RFC 3834 §5.1), lowercased, or null. Strips leading
@@ -122,8 +132,15 @@ export function ticketCreationLoopReason(n: NormalizedInboundEmail): string | nu
   // and treating `''` as a bounce risks a false positive on a stripped header.
   if (n.returnPath != null && n.returnPath.trim() === '<>') return 'null-return-path';
 
-  if (n.xLoop && n.xLoop.trim() !== '') return 'x-loop';
-
+  // NB: X-Loop is deliberately NOT a ticket-suppression signal. We never set
+  // X-Loop on our own outbound, so an inbound X-Loop only tells us the SENDER
+  // runs a loop-guard (automated/gatewayed mail) — not that a Breeze loop
+  // exists. Dropping the ticket on it would silently discard legitimate
+  // forwarded/gatewayed support mail, contradicting this function's narrow
+  // "only real loops/bounces" contract. Our own loop-backs are already caught by
+  // ownOutboundReason (X-Breeze-Outbound + own Message-ID) and by
+  // `Auto-Submitted: auto-replied` above. X-Loop instead withholds our
+  // auto-REPLY (autoresponseSuppressionReason), leaving the ticket intact.
   return null;
 }
 

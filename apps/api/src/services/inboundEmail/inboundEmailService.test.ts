@@ -583,6 +583,30 @@ describe('processInboundEmail', () => {
     expect(String(log[0]!.error ?? '')).toContain('rate-limited');
   });
 
+  it('fails OPEN (creates the ticket) when the cap evaluation THROWS (strict #1105 tripwire)', async () => {
+    // Codex review #5, finding 1: under DB_CONTEXT_TRIPWIRE_STRICT the in-context
+    // Redis round-trip throws. A strict deployment must not lose a legitimate
+    // ticket — capExceeded() catches the throw and fails OPEN (create, skip the cap).
+    resolveMock.mockResolvedValue('p-1');
+    state.selectRows['ticket_email_inbound'] = [];
+    state.selectRows['tickets'] = [];
+    state.selectRows['portal_users'] = [{ id: 'pu-1', orgId: 'o-1' }];
+    state.selectRows['organizations'] = [{ id: 'o-1' }];
+    createTicketMock.mockResolvedValue({ id: 't-created', internalNumber: 'T-2026-0011' });
+    evaluateInboundThrottleMock.mockRejectedValueOnce(
+      new Error('rateLimiter(inbound) ran inside a held withDbAccessContext transaction — #1105'),
+    );
+
+    await processInboundEmail(email({ subject: 'strict-mode flood cap' }));
+
+    // The ticket IS created (fail open); the message is NOT quarantined.
+    expect(createTicketMock).toHaveBeenCalledTimes(1);
+    const log = inboundOf();
+    expect(log).toHaveLength(1);
+    expect(log[0]!.parseStatus).not.toBe('quarantined');
+    expect(log[0]!.ticketId).toBe('t-created');
+  });
+
   it('does NOT charge the cap for an unknown-sender DROP message (drop policy preserved)', async () => {
     // Regression guard (Codex review #3): the cap must only meter ticket-CREATING
     // paths. An unknown sender under 'drop' never creates a ticket, so it must not

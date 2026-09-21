@@ -177,10 +177,11 @@ export interface PartnerInboundPolicy {
   /**
    * Per-hour ticket-creation caps (flood protection). `null` ⇒ no partner
    * override, so the caller applies the INBOUND_MAX_* env default; `0` ⇒ the
-   * partner explicitly disabled that window (unlimited). Enforced in the inbound
-   * worker via a Redis sliding window BEFORE the DB transaction (#1105 forbids a
-   * Redis round-trip inside the held context), so these are raw overrides — the
-   * effective value is resolved in services/inboundEmail/inboundRateLimit.ts.
+   * partner explicitly disabled that window (unlimited). Enforced at the
+   * ticket-creation choke point in processInboundEmail via a Redis sliding
+   * window (see services/inboundEmail/inboundRateLimit.ts for the #1105
+   * held-context tolerance and fail-open behavior). These are raw overrides —
+   * the effective value is resolved in inboundRateLimit.ts.
    */
   maxTicketsPerSenderPerHour: number | null;
   maxTicketsPerDomainPerHour: number | null;

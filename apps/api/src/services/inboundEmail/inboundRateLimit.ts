@@ -4,17 +4,24 @@
  * A burst of inbound mail must not be able to mint an unbounded number of
  * tickets (or spend unbounded pipeline work). This applies three per-hour
  * sliding-window caps — per sender address, per sender domain, per partner —
- * BEFORE the ticket-creation transaction runs.
+ * at the ticket-creation choke point.
  *
- * WHY THIS LIVES IN THE WORKER, NOT IN processInboundEmail: the pipeline runs
- * inside one held `withSystemDbAccessContext` transaction, and a `rateLimiter`
- * call is a Redis round-trip that pins the pooled Postgres connection
- * idle-in-transaction for its duration (#1105). The autoresponder tolerates this
- * because it fires only on the fresh-ticket / known-sender subset; a per-MESSAGE
- * check would pin the pool on every inbound email — the exact scale #1105 warns
- * about. So this module is pure Redis (no DB import), runs OUTSIDE any DB
- * context in the worker, and its verdict is passed into the pipeline as a
- * dependency. Over-cap mail is quarantined (visible, recoverable), never dropped.
+ * WHERE THIS RUNS (#1105): the caller (processInboundEmail) invokes
+ * `evaluateInboundThrottle` from inside the pipeline's single held
+ * `withSystemDbAccessContext` transaction, so each `rateLimiter` Redis
+ * round-trip pins the pooled Postgres connection idle-in-transaction for its
+ * duration — the pattern the #1105 tripwire warns about (warn-only by default,
+ * prod-safe). This is the SAME accepted tolerance the autoresponder relies on,
+ * and it is deliberately bounded to REAL ticket creations: the caller invokes it
+ * only at the four create paths, past provider-dedup and the sender-auth gate,
+ * so dropped / duplicate / unauthenticated mail never charges a cap and never
+ * pins the pool. The tightest-first, short-circuiting bucket order means a
+ * charge is usually a single round-trip. The module itself is pure Redis (no DB
+ * import) so it holds no connection of its own. If the strict tripwire
+ * (DB_CONTEXT_TRIPWIRE_STRICT) makes `rateLimiter` throw, the caller catches it
+ * and fails OPEN — a strict deployment logs the skip and still creates the
+ * ticket rather than losing it. Over-cap mail is quarantined (visible,
+ * recoverable), never dropped.
  */
 
 import type { Redis } from 'ioredis';

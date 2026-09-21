@@ -42,6 +42,14 @@ describe('autoresponseSuppressionReason', () => {
     expect(autoresponseSuppressionReason(email({ from: 'acme@tickets.example.com' }), 'tickets.example.com')).toBe('self-domain');
   });
 
+  it('suppresses the auto-reply on X-Loop presence (but still lets the ticket be created)', () => {
+    // X-Loop = the sender runs its own loop-guard; we must not auto-reply, but the
+    // mail still becomes a ticket (review #5, finding 3 — moved out of ticket suppression).
+    expect(autoresponseSuppressionReason(email({ xLoop: 'help@partner.example.com' }), 'tickets.example.com')).toBe('x-loop');
+    expect(autoresponseSuppressionReason(email({ xLoop: '   ' }), 'tickets.example.com')).toBeNull();
+    expect(autoresponseSuppressionReason(email({ xLoop: undefined }), 'tickets.example.com')).toBeNull();
+  });
+
   it('does not suppress when inbound domain is unconfigured', () => {
     expect(autoresponseSuppressionReason(email({ from: 'acme@tickets.example.com' }), undefined)).toBeNull();
   });
@@ -177,8 +185,11 @@ describe('ticketCreationLoopReason', () => {
     expect(ticketCreationLoopReason(email({ returnPath: null }))).toBeNull();
   });
 
-  it('suppresses X-Loop when present', () => {
-    expect(ticketCreationLoopReason(email({ xLoop: 'help@partner.example.com' }))).toBe('x-loop');
+  it('does NOT suppress ticket creation on X-Loop (we never set it outbound, so it is not a Breeze loop)', () => {
+    // X-Loop moved to autoresponse suppression (review #5, finding 3): dropping the
+    // ticket on any inbound X-Loop would discard legitimate forwarded/gatewayed
+    // support mail. It gates only the auto-REPLY now (see autoresponseSuppressionReason).
+    expect(ticketCreationLoopReason(email({ xLoop: 'help@partner.example.com' }))).toBeNull();
     expect(ticketCreationLoopReason(email({ xLoop: '' }))).toBeNull();
   });
 
