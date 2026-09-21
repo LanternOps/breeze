@@ -125,8 +125,10 @@ export function lineBlurb(l: { name: string | null; description: string | null }
 
 /** #6467 — one line naming the worked time whenever it differs from the
  *  billed quantity (§3.5), reusing the SAME locale key as
- *  TicketTimeBilling.tsx's `billedVsWorked` (namespace `tickets`, eagerly
- *  bundled for every locale — see apps/web/src/lib/i18n/index.ts). Sourced
+ *  TicketTimeBilling.tsx's `billedVsWorked` (namespace `tickets`). English is
+ *  bundled eagerly; every non-English locale loads ALL of its namespaces
+ *  together on selection (see apps/web/src/lib/i18n/index.ts), so `tickets`
+ *  is always available once a locale is loaded, same as `common`. Sourced
  *  from `workedMinutes` (structured data), never from `description` — an
  *  edit to the description can't erase this. Returns null when the line
  *  isn't a time_entry line, or the two agree. */

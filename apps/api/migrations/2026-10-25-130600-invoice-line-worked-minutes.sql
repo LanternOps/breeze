@@ -8,10 +8,13 @@
 -- locale at display time (web/portal/PDF), instead of living in prose.
 --
 -- NULL = not a time-entry line (manual/catalog/bundle/part lines never carry
--- a "worked" figure) OR a legacy row materialized before this column existed.
--- Renderers show the note only when worked_minutes IS NOT NULL and differs
--- from the billed quantity — exactly mirroring the old description-suffix
--- condition, just computed from a column that a description edit cannot touch.
+-- a "worked" figure), a legacy row materialized before this column existed,
+-- OR a time_entries row whose own duration_minutes was NULL (a case the old
+-- description suffix rendered as a nonsensical "0.00 h worked" note; the new
+-- renderers correctly show nothing instead — the one intentional behavior
+-- difference from the old suffix, not a bug). Renderers show the note only
+-- when worked_minutes IS NOT NULL and differs from the billed quantity,
+-- computed from a column that a description edit cannot touch.
 --
 -- Idempotent. No inner BEGIN/COMMIT. DDL only — no row is written, so no
 -- cleanup-statement row-count logging applies.

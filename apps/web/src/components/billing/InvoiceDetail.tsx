@@ -414,6 +414,7 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
                 ) : (
                 visibleLines.map((l) => {
                   const tax = showTax ? lineTaxAmount(l.lineTotal, l.taxable, invoice.taxRate) : null;
+                  const workedVsBilledNote = lineWorkedVsBilledNote(l, t);
                   return (
                   <tr
                     key={l.id}
@@ -426,9 +427,9 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
                       </span>
                       {internalView && !l.customerVisible ? t('invoiceDetail.lines.hiddenMarker') : ''}
                       {lineBlurb(l) && <div className="text-xs text-muted-foreground">{lineBlurb(l)}</div>}
-                      {lineWorkedVsBilledNote(l, t) && (
+                      {workedVsBilledNote && (
                         <div className="text-xs text-muted-foreground" data-testid={`invoice-detail-line-worked-vs-billed-${l.id}`}>
-                          {lineWorkedVsBilledNote(l, t)}
+                          {workedVsBilledNote}
                         </div>
                       )}
                       <InvoiceLineDevices invoiceId={invoice.id} line={l} />

@@ -602,12 +602,30 @@ function computeTaxVariance(
 // Payload construction
 // ---------------------------------------------------------------------------
 
+// #6467: the worked-vs-billed disclosure (§3.5) used to reach the accounting
+// push BY ACCIDENT — it was baked into `description`, which this function
+// passes straight through. Now that the disclosure lives in `workedMinutes`
+// (structured data, so an editor edit can no longer erase it), it has to be
+// appended here explicitly or the accounting copy of the invoice would lose
+// the disclosure entirely. Plain English, matching the old baked-in text
+// byte-for-byte (no locale concept for this export) and every other
+// renderer's condition: empty for a non-time-entry line or when the two
+// quantities agree.
+function accountingLineNote(line: { quantity: string; workedMinutes: number | null }): string {
+  if (line.workedMinutes == null) return '';
+  const worked = (line.workedMinutes / 60).toFixed(2);
+  const billed = Number(line.quantity).toFixed(2);
+  if (worked === billed) return '';
+  return ` — ${worked} h worked, ${billed} h billed`;
+}
+
 function buildLinePayload(line: InvoiceLineRow): AccountingInvoiceLinePayload {
+  // Legacy-line fallback mirrors invoiceService/invoicePdf's own
+  // name-then-description title resolution.
+  const title = line.name ?? line.description ?? '';
   return {
     invoiceLineId: line.id,
-    // Legacy-line fallback mirrors invoiceService/invoicePdf's own
-    // name-then-description title resolution.
-    description: line.name ?? line.description ?? '',
+    description: `${title}${accountingLineNote(line)}`,
     quantity: line.quantity,
     unitPrice: line.unitPrice,
     lineTotal: line.lineTotal,

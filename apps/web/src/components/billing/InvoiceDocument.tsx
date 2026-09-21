@@ -22,6 +22,7 @@ function LineRow({ line, currency, taxRate, showTax }: { line: InvoiceLine; curr
   const { t } = useTranslation();
   const child = !!line.parentLineId;
   const tax = showTax ? lineTaxAmount(line.lineTotal, line.taxable, taxRate) : null;
+  const workedVsBilledNote = lineWorkedVsBilledNote(line, t);
   return (
     <tr className="border-b align-top last:border-0">
       <td className={`px-4 py-3 sm:px-5 ${child ? 'pl-8 text-muted-foreground' : 'text-foreground'}`}>
@@ -29,9 +30,9 @@ function LineRow({ line, currency, taxRate, showTax }: { line: InvoiceLine; curr
         {lineBlurb(line) && <p className="mt-0.5 text-xs text-muted-foreground">{lineBlurb(line)}</p>}
         {/* #6467: worked-vs-billed disclosure, sourced from workedMinutes — never
             from `description`, so editing the description can't erase it. */}
-        {lineWorkedVsBilledNote(line, t) && (
+        {workedVsBilledNote && (
           <p className="mt-0.5 text-xs text-muted-foreground" data-testid={`invoice-document-line-worked-vs-billed-${line.id}`}>
-            {lineWorkedVsBilledNote(line, t)}
+            {workedVsBilledNote}
           </p>
         )}
       </td>
