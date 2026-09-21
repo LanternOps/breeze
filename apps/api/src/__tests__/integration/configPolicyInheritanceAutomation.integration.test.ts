@@ -252,14 +252,17 @@ describe('config policy inheritance — automation execution identity (live DB)'
     const runJobs = recordedJobs.filter((j) => j.name === 'execute-config-policy-run');
     expect(runJobs).toHaveLength(2);
 
-    // Distinct job ids — with the pre-#5080 `<automation>:<slot>` key these two
-    // would collide and BullMQ would drop the second child's run entirely.
+    // Distinct BullMQ-safe job ids — with the pre-#5080 `<automation>:<slot>`
+    // key these two would collide and BullMQ would drop the second child's run
+    // entirely. Four-part colon-delimited ids are rejected by BullMQ 5, so the
+    // expanded identity must remain hyphen-delimited.
     const jobIds = runJobs.map((j) => j.opts.jobId);
     expect(new Set(jobIds).size).toBe(2);
     expect(jobIds.sort()).toEqual([
-      `cp-automation-run:${automationId}:${childA}:${SLOT_KEY}`,
-      `cp-automation-run:${automationId}:${childB}:${SLOT_KEY}`,
+      `cp-automation-run-${automationId}-${childA}-${SLOT_KEY}`,
+      `cp-automation-run-${automationId}-${childB}-${SLOT_KEY}`,
     ].sort());
+    expect(jobIds.every((jobId) => !jobId.includes(':'))).toBe(true);
 
     // Each run carries its own assigned policy and only its own org's device.
     const byPolicy = new Map(runJobs.map((j) => [j.data.configPolicyId as string, j.data]));

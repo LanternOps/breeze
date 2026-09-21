@@ -1044,7 +1044,7 @@ async function processTriggerConfigPolicySchedule(
       targetDeviceIds: winners.sort(),
       triggeredBy: `schedule:${data.slotKey}`,
     },
-    `cp-automation-run:${cpAutomation.id}:${assignedPolicyId}:${data.slotKey}`,
+    `cp-automation-run-${cpAutomation.id}-${assignedPolicyId}-${data.slotKey}`,
   );
 
   return { devicesQueued: winners.length };

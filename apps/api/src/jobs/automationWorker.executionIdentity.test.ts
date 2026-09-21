@@ -316,7 +316,8 @@ describe('processTriggerConfigPolicySchedule — ownership clamp keys on the ASS
     const [, payload, opts] = queueAdd.mock.calls[0]!;
     expect((payload as any).targetDeviceIds).toEqual(['dev-1']);
     expect((payload as any).configPolicyId).toBe('child-a');
-    expect(opts!.jobId).toBe('cp-automation-run:cp-auto-1:child-a:202601011000');
+    expect(opts!.jobId).toBe('cp-automation-run-cp-auto-1-child-a-202601011000');
+    expect(opts!.jobId).not.toContain(':');
   });
 
   it('skips a device whose automation resolution comes back empty rather than assuming it wins', async () => {
