@@ -59,6 +59,7 @@ import { sql, type SQL } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { extractRowCount } from '../db/rowCount';
 import { buildRepoint, keyExpr } from './orgMergeExecutors';
+import { moveBindings, resolveBindingMerge } from './callerVerification/merge';
 
 export interface MergeTableOutcome {
   moved: number;
@@ -1505,6 +1506,7 @@ const mergeToolSourceTools: CustomMergeExecutor = async (loser, survivor) => ({
  * them, is the whole executor).
  */
 export const CUSTOM_EXECUTORS: Readonly<Record<string, CustomMergeExecutor>> = {
+  caller_verification_subject_bindings: moveBindings,
   automation_resource_bindings: mergeAutomationResourceBindings,
   tool_sources: mergeToolSources,
   tool_source_tools: mergeToolSourceTools,
@@ -1553,6 +1555,9 @@ export const CUSTOM_EXECUTORS: Readonly<Record<string, CustomMergeExecutor>> = {
  * contract test asserts that.
  */
 export const CUSTOM_RESOLVE_EXECUTORS: Readonly<Record<string, CustomMergeExecutor>> = {
+  // Must run in resolve: both colliding identities are revoked before the
+  // move pass repoints, so the canonical partial unique indexes cannot 23505.
+  caller_verification_subject_bindings: resolveBindingMerge,
   discovered_assets: resolveDiscoveredAssets,
   ticket_drafts: resolveTicketDrafts,
   // Must run in resolve, not move: ai_agents is a PARENT of ai_operator_tasks
