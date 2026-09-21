@@ -207,6 +207,7 @@ export const DEFAULT_PERMISSIONS = [
   { resource: 'quotes', action: 'read', description: 'View quotes and proposals' },
   { resource: 'quotes', action: 'write', description: 'Create/edit/delete draft quotes and proposal blocks' },
   { resource: 'quotes', action: 'send', description: 'Send quotes/proposals and record acceptance' },
+  { resource: 'quotes', action: 'accept', description: 'Record a customer acceptance on their behalf and convert the quote to an invoice' },
 
   // Users
   { resource: 'users', action: 'read', description: 'View users' },
@@ -378,7 +379,7 @@ export const SYSTEM_ROLES: readonly SystemRoleDefinition[] = [
     forceMfa: false,
     permissions: [
       'catalog:read', 'catalog:write', 'catalog:delete',
-      'quotes:read', 'quotes:write', 'quotes:send',
+      'quotes:read', 'quotes:write', 'quotes:send', 'quotes:accept',
       'invoices:read', 'invoices:write', 'invoices:send', 'invoices:export',
       'contracts:read', 'contracts:write', 'contracts:manage',
       'agreements:read', 'agreements:write'
@@ -519,6 +520,10 @@ export const SYSTEM_ROLES: readonly SystemRoleDefinition[] = [
     ]
   }
 ];
+
+// Alias for tests/consumers asserting against "the seeded default roles"
+// without depending on the SYSTEM_ROLES name.
+export const DEFAULT_ROLES = SYSTEM_ROLES;
 
 // System scripts for RMM operations - only action scripts, not info gathering (agent has native collectors)
 const SYSTEM_SCRIPTS = [

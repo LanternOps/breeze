@@ -101,6 +101,12 @@ export const PERMISSION_GRANTS = {
   QUOTES_READ: { resource: 'quotes', action: 'read' },
   QUOTES_WRITE: { resource: 'quotes', action: 'write' },
   QUOTES_SEND: { resource: 'quotes', action: 'send' },
+  // Recording a customer's acceptance on their behalf (2026-09-21 spec §7).
+  // Separate from `send` because it is the money-committing act: it numbers and
+  // issues an invoice, drafts contracts and stages a Pax8 order. It is
+  // back-filled to every role that already holds `send` (no new authority for
+  // anyone), so an MSP that wants acceptance narrower than sending revokes it.
+  QUOTES_ACCEPT: { resource: 'quotes', action: 'accept' },
   QUOTES_FULFILL: { resource: 'quotes', action: 'fulfill' },
 
   // Time entries (ticketing Phase 3)
