@@ -1250,6 +1250,76 @@ describe('WS lifecycle status writes — terminal-status guard (#2230)', () => {
     expect(transitionDeviceOfflineMock).toHaveBeenCalledWith('agent-123', ['online']);
   });
 
+  it('never calls transitionDeviceOffline on disconnect while the device is updating (#6503)', async () => {
+    const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123', partnerId: 'partner-123' };
+
+    const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+    const ws = wsMock();
+
+    vi.mocked(db.update).mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }) } as any);
+    vi.mocked(db.select).mockReturnValue(selectAgentDevice([]) as any);
+    await handlers.onOpen({}, ws as any);
+
+    vi.clearAllMocks();
+    transitionDeviceOfflineMock.mockClear();
+
+    // The pre-existing 'updating' preserve check must still short-circuit
+    // BEFORE transitionDeviceOffline is reached — a WS disconnect mid-update
+    // must not race the offline detector's own timeout-based handling of
+    // stale 'updating' devices.
+    vi.mocked(db.select).mockReturnValue(selectAgentDevice([
+      { id: 'device-123', siteId: 'site-1', status: 'updating', hostname: 'host-1' },
+    ]) as any);
+
+    await handlers.onClose({}, ws as any);
+
+    expect(transitionDeviceOfflineMock).not.toHaveBeenCalled();
+    expect(publishEvent).not.toHaveBeenCalled();
+  });
+
+  it('transitions the device offline via transitionDeviceOffline on a WS error (#6503)', async () => {
+    const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123', partnerId: 'partner-123' };
+
+    const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+    const ws = wsMock();
+
+    vi.mocked(db.update).mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }) } as any);
+    vi.mocked(db.select).mockReturnValue(selectAgentDevice([]) as any);
+    await handlers.onOpen({}, ws as any);
+
+    vi.clearAllMocks();
+    transitionDeviceOfflineMock.mockClear();
+    transitionDeviceOfflineMock.mockResolvedValue({ transitioned: true });
+    vi.mocked(db.select).mockReturnValue(selectAgentDevice([{ status: 'online' }]) as any);
+
+    handlers.onError({}, ws as any);
+    // onError fires the DB-access work fire-and-forget (`void runWithAgentDbAccess(...)`);
+    // flush the microtask queue so its awaited select + transitionDeviceOffline call land.
+    await new Promise((r) => setImmediate(r));
+
+    expect(transitionDeviceOfflineMock).toHaveBeenCalledWith('agent-123', ['online']);
+  });
+
+  it('never calls transitionDeviceOffline on a WS error while the device is updating (#6503)', async () => {
+    const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123', partnerId: 'partner-123' };
+
+    const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+    const ws = wsMock();
+
+    vi.mocked(db.update).mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }) } as any);
+    vi.mocked(db.select).mockReturnValue(selectAgentDevice([]) as any);
+    await handlers.onOpen({}, ws as any);
+
+    vi.clearAllMocks();
+    transitionDeviceOfflineMock.mockClear();
+    vi.mocked(db.select).mockReturnValue(selectAgentDevice([{ status: 'updating' }]) as any);
+
+    handlers.onError({}, ws as any);
+    await new Promise((r) => setImmediate(r));
+
+    expect(transitionDeviceOfflineMock).not.toHaveBeenCalled();
+  });
+
   it('excludes decommissioned/quarantined rows when a WS heartbeat flips a device online', async () => {
     const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123', partnerId: 'partner-123' };
     const { whereMock, setMock } = rigStatusUpdateCapture();

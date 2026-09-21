@@ -481,6 +481,16 @@ export async function processMarkOffline(data: MarkOfflineJobData): Promise<{
  * ambient org-scoped `withDbAccessContext` for the device's own org, and
  * nesting `withSystemDbAccessContext` inside that would silently no-op (see
  * `runWithAgentOrgDbAccess`'s doc comment) rather than genuinely re-scope.
+ *
+ * `fromStatuses` intentionally does NOT default to every non-terminal status
+ * the old `updateDeviceStatus(agentId, 'offline')` used to write over
+ * (`maintenance`, `pending`). This function's whole point is to make the WS
+ * disconnect path produce a REAL offline-transition effect — firing
+ * offline-kind monitor rules — so silently widening it to `maintenance` would
+ * newly alert on a device an operator deliberately parked in maintenance
+ * mode, which is worse than the pre-#6503 status quo. It matches the sweep's
+ * own scope (`processDetectOffline` only ever selects `online`/`updating`)
+ * rather than the old WS-only carve-out.
  */
 export async function transitionDeviceOffline(
   agentId: string,
