@@ -44,6 +44,7 @@ import {
   assertPamDeviceOrgMoveAllowed,
   PamDeviceMoveBlockedError,
 } from '../../services/pamDeviceMoveGuard';
+import { revokeWorkstationGrantsForMove } from '../../services/callerVerification/deviceMove';
 import { pgErrorNode } from '../../utils/pgErrors';
 import { assertDeviceTicketsNotPinnedToDeliverable, revalidateTicketAssignee, TicketServiceError } from '../../services/ticketService';
 
@@ -447,6 +448,23 @@ moveOrgRoutes.post(
               WHERE breeze_device_id = ${deviceId}::uuid
                 AND org_id = ${sourceOrgId}::uuid`,
         );
+
+        // Caller verification (#6354 W01): lock the device row and revoke the
+        // source org's workstation authorization BEFORE the org flip. The
+        // FOR UPDATE here is load-bearing — nothing above locks the device
+        // row, and a concurrent `start` holds a FOR SHARE on it until its
+        // grant INSERT commits, so the hook's snapshot cannot miss an
+        // in-flight grant. Lock order stays orgs → device → subject bindings.
+        const [callerMoveDevice] = await tx
+          .select({ orgId: devices.orgId })
+          .from(devices)
+          .where(eq(devices.id, deviceId))
+          .limit(1)
+          .for('update');
+        if (callerMoveDevice?.orgId !== sourceOrgId) {
+          throw new Error('Device organization changed during move');
+        }
+        await revokeWorkstationGrantsForMove(tx, sourceOrgId, deviceId);
 
         // Flip the device row first so any concurrent agent heartbeat
         // after this point resolves the new org_id.

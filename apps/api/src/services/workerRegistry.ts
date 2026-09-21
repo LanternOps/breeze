@@ -1225,6 +1225,18 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // Caller verification (#6354 W01) — post-commit publisher: rejection
+    // notifications (in-app + email) and W02/W03 challenge delivery/timeouts,
+    // driven off scalar markers on the verification row. 'global': no
+    // agent-socket-local dependency.
+    name: 'callerVerificationPublisher',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/callerVerificationPublisher');
+      return { init: m.initializeCallerVerificationPublisher, shutdown: m.shutdownCallerVerificationPublisher };
+    },
+  },
+  {
     name: 'ticketSlaWorker',
     placement: 'global',
     load: async () => {
