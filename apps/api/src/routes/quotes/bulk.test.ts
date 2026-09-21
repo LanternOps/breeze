@@ -19,10 +19,18 @@ vi.mock('../../middleware/auth', () => ({
 }));
 // runBulkIsolated wraps each item in withDbAccessContext + runOutsideDbContext;
 // stub both as passthroughs so the loop logic runs without a real DB connection.
-vi.mock('../../db', () => ({
-  withDbAccessContext: (_ctx: any, fn: any) => fn(),
-  runOutsideDbContext: (fn: any) => fn(),
-}));
+// Spread the REAL module: mounting quoteRoutes now pulls in the accept-on-behalf
+// route's graph, which reads other `db` exports at import time. Only the two
+// context helpers the bulk loop actually runs are stubbed to passthroughs — the
+// rest are never called here, and importActual opens no connection.
+vi.mock('../../db', async (importActual) => {
+  const actual = await importActual<typeof import('../../db')>();
+  return {
+    ...actual,
+    withDbAccessContext: (_ctx: any, fn: any) => fn(),
+    runOutsideDbContext: (fn: any) => fn(),
+  };
+});
 
 import { quoteRoutes } from './index';
 import { deleteDraftQuote } from '../../services/quoteService';

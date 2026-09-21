@@ -264,6 +264,15 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // item commits — the ambient request transaction it keeps holds no quote lock.
   { method: 'POST', pattern: /^\/api\/v1\/quotes\/[^/]+\/send\/?$/ },
   { method: 'POST', pattern: /^\/api\/v1\/quotes\/[^/]+\/resend\/?$/ },
+  // Accept on behalf (spec 2026-09-21 §4). The handler runs the accept under
+  // runOutsideDbContext(withSystemDbAccessContext(...)) because
+  // partner_invoice_sequences is partner-axis and invisible to an org-scoped
+  // context (#1375), and the whole accept must be ONE transaction.
+  // runOutsideDbContext alone does NOT release the middleware's ambient
+  // transaction, so without this entry the request pins TWO pooled connections
+  // for the length of the accept. The handler opens its own short
+  // withAuthDbAccessContext for the org-scoped lookup instead.
+  { method: 'POST', pattern: /^\/api\/v1\/quotes\/[^/]+\/accept-on-behalf\/?$/ },
   // #3922 review round 2 — revision AUTHORING is the second network-touching
   // route on this surface, and the quieter one. `createRevision` runs
   // `validateBaseUrl` → `assertSafeUrl` on the operator-supplied base URL,

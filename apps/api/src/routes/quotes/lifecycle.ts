@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { z } from 'zod';
 import { zValidator } from '../../lib/validation';
+import { acceptQuoteOnBehalfSchema } from '@breeze/shared';
 import { sendComposerSchema as sendBodySchema, parseComposerBody } from '../../lib/sendComposer';
 import { requireScope, requirePermission, withAuthDbAccessContext, type AuthContext } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
@@ -12,6 +13,11 @@ import { scheduleQuoteSend, cancelQuoteSend } from '../../jobs/quoteSendQueue';
 import { getQuote } from '../../services/quoteService';
 import { writeQuoteImage, readQuoteImage, sniffImageMime, MAX_QUOTE_IMAGE_SIZE_BYTES, fetchRemoteImage, RemoteImageError, QUOTE_IMAGE_WEBP_REJECTED_MESSAGE, type RemoteImageFailureReason } from '../../services/quoteImageStorage';
 import { loadContractBlockRenderData } from '../../services/contractTemplateRender';
+import { runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { acceptQuote, emitAcceptInvoiceIssued, resolveAcceptInvoiceUrl, autoEmailAcceptedInvoice } from '../../services/quoteAcceptService';
+import { notifyQuoteOutcome } from '../../services/quoteOutcomeNotify';
+import { acceptedOnBehalfAuditEvent } from '../../services/quoteAcceptOnBehalfAudit';
+import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
 import { quoteActorFrom, handleServiceError } from './quotes';
 
 export const quoteLifecycleRoutes = new Hono();
@@ -19,6 +25,7 @@ const scopes = requireScope('partner', 'system');
 const readPerm = requirePermission(PERMISSIONS.QUOTES_READ.resource, PERMISSIONS.QUOTES_READ.action);
 const writePerm = requirePermission(PERMISSIONS.QUOTES_WRITE.resource, PERMISSIONS.QUOTES_WRITE.action);
 const sendPerm = requirePermission(PERMISSIONS.QUOTES_SEND.resource, PERMISSIONS.QUOTES_SEND.action);
+const acceptPerm = requirePermission(PERMISSIONS.QUOTES_ACCEPT.resource, PERMISSIONS.QUOTES_ACCEPT.action);
 const idParam = z.object({ id: z.string().guid() });
 const imageParam = z.object({ id: z.string().guid(), imageId: z.string().guid() });
 const contractFileParam = z.object({ id: z.string().guid(), blockId: z.string().guid() });
@@ -99,6 +106,109 @@ quoteLifecycleRoutes.post('/:id/send', scopes, sendPerm, zValidator('param', idP
     } });
   } catch (err) { return handleServiceError(c, err); }
 });
+
+// POST /:id/accept-on-behalf — the tech closed the deal on the phone, by email
+// or on a signed PO, and records the customer's acceptance in-app. Runs the
+// EXACT conversion pipeline a customer click runs (invoice numbered + issued at
+// the quote's frozen totals and tax, recurring lines drafted as contracts, Pax8
+// staged); the only differences are the eligible statuses, the inline draft
+// claim, and the provenance stored on the acceptance row.
+//
+// Gated on quotes:accept, NOT quotes:send: this is the money-committing act,
+// and an MSP may want it narrower than sending. Org access is enforced by the
+// auth scope plus the org-scoped getQuote below, BEFORE the handler enters
+// system context.
+//
+// Registered in SELF_MANAGED_DB_CONTEXT_ROUTES, so the auth middleware opens no
+// ambient transaction: the lookup runs in a short withAuthDbAccessContext and
+// the accept in its own system context. partner_invoice_sequences is
+// partner-axis, invisible to an org-scoped context (#1375), and the whole
+// accept must be ONE transaction — the same reason routes/portal/quotes.ts
+// wraps its accept this way.
+quoteLifecycleRoutes.post('/:id/accept-on-behalf',
+  scopes, acceptPerm,
+  zValidator('param', idParam), zValidator('json', acceptQuoteOnBehalfSchema),
+  async (c) => {
+    const id = c.req.valid('param').id;
+    const body = c.req.valid('json');
+    const auth = c.get('auth') as AuthContext;
+    const actorUserId = auth.user?.id ?? null;
+    try {
+      // Org-access 404 + the pre-accept status, in the request's own scope.
+      // Read the status HERE: acceptQuote mutates the quote row it returns, so
+      // `res.quote.status` is already 'converted' by the time we audit.
+      const { quote, blocks } = await withAuthDbAccessContext(auth, () => getQuote(id, quoteActorFrom(c)));
+      const wasDraft = quote.status === 'draft';
+      // Contract-block render data is pre-fetched OUTSIDE the accept
+      // transaction: loadContractBlockRenderData resolves pinned template
+      // versions under a SYSTEM context (the dual-axis template rows are
+      // invisible to an org scope), and acceptQuote hard-fails if a contract
+      // block is missing from the set.
+      const contractRenderData = await loadContractBlockRenderData(blocks, { includeFileData: true });
+
+      const res = await runOutsideDbContext(() => withSystemDbAccessContext(() => acceptQuote({
+        quoteId: id,
+        signerName: body.signerName,
+        signerEmail: body.signerEmail ?? null,
+        // Never the raw header: getTrustedClientIpOrUndefined applies the
+        // trusted-proxy policy. Clamped to the column width.
+        ipAddress: getTrustedClientIpOrUndefined(c)?.slice(0, 64) ?? null,
+        userAgent: c.req.header('user-agent') ?? null,
+        actorUserId,
+        origin: 'on_behalf',
+        method: body.method,
+        reference: body.reference,
+        contractRenderData,
+      })));
+
+      // Post-commit, outside the DB context — identical to the portal accept.
+      await emitAcceptInvoiceIssued(res, actorUserId);
+      const payUrl = await resolveAcceptInvoiceUrl(res);
+      // Both end in SMTP round trips and must never delay the response; both
+      // swallow their own errors. source 'msp' emits the bus event and sends NO
+      // creator email — the tech who did this already knows.
+      void autoEmailAcceptedInvoice(res);
+      void notifyQuoteOutcome({
+        quoteId: id, outcome: 'accepted', source: 'msp',
+        signerName: body.signerName, origin: 'on_behalf', actorUserId,
+      });
+
+      writeRouteAudit(c, acceptedOnBehalfAuditEvent({
+        quoteId: id,
+        orgId: res.quote.orgId,
+        method: body.method,
+        reference: body.reference,
+        signerName: body.signerName,
+        signerEmail: body.signerEmail ?? null,
+        invoiceId: res.invoiceId,
+        // The number the accept ALLOCATED, not res.quote.quoteNumber — that is
+        // the quote's own number and would name the wrong document.
+        invoiceNumber: res.invoiceNumber,
+        contractIds: res.contractIds,
+        wasDraft,
+      }));
+      // Retiring a revision's parent is a separate, independently-auditable act
+      // — the same rule /send follows.
+      if (res.superseded) {
+        writeRouteAudit(c, supersededAuditEvent({
+          childQuoteId: id,
+          orgId: res.quote.orgId,
+          parentQuoteId: res.superseded.parentQuoteId,
+          previousStatus: res.superseded.previousStatus,
+          revisionNumber: res.quote.revisionNumber,
+          emailed: false,
+        }));
+      }
+
+      return c.json({ data: {
+        quote: res.quote,
+        invoiceId: res.invoiceId,
+        invoiceIssued: res.invoiceIssued,
+        contractIds: res.contractIds,
+        payUrl,
+      } });
+    } catch (err) { return handleServiceError(c, err); }
+  });
 
 // POST /:id/schedule-send — the undo-send window. Validates like a send-open
 // (draft + at least one customer-visible line) then schedules the REAL send as

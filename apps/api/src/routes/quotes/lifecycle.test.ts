@@ -79,12 +79,37 @@ vi.mock('./quotes', () => ({
   handleServiceError: (_c: unknown, err: unknown) => { throw err; },
 }));
 vi.mock('../../services/contractTemplateRender', () => ({ loadContractBlockRenderData: vi.fn() }));
+// accept-on-behalf: the accept pipeline and its post-commit side effects. Every
+// one of them opens a real DB context or an SMTP/Redis round trip.
+vi.mock('../../services/quoteAcceptService', () => ({
+  acceptQuote: vi.fn(async () => ({
+    quote: { id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'converted', quoteNumber: 'Q-2026-0001', revisionNumber: 1 },
+    acceptanceId: 'acc1', invoiceId: 'inv1', invoiceIssued: true, invoiceNumber: 'INV-2026-0007',
+    contractIds: ['c1'], pax8OrderId: null, contractDocumentIds: [], superseded: undefined,
+  })),
+  emitAcceptInvoiceIssued: vi.fn(),
+  resolveAcceptInvoiceUrl: vi.fn(async () => 'https://portal.example/invoice/tok'),
+  autoEmailAcceptedInvoice: vi.fn(),
+}));
+vi.mock('../../services/quoteOutcomeNotify', () => ({ notifyQuoteOutcome: vi.fn() }));
+// The accept runs under runOutsideDbContext(withSystemDbAccessContext(...)); the
+// real helpers open a Postgres transaction. Run the callback inline. Everything
+// else in the db module stays real (nothing else here reads it).
+vi.mock('../../db', async (importActual) => {
+  const actual = await importActual<typeof import('../../db')>();
+  return {
+    ...actual,
+    runOutsideDbContext: vi.fn(<T,>(fn: () => T) => fn()),
+    withSystemDbAccessContext: vi.fn(async <T,>(fn: () => Promise<T>) => fn()),
+  };
+});
 
 import { quoteLifecycleRoutes } from './lifecycle';
 import { getQuote } from '../../services/quoteService';
 import { scheduleQuoteSend, cancelQuoteSend } from '../../jobs/quoteSendQueue';
 import { fetchRemoteImage, writeQuoteImage, sniffImageMime, RemoteImageError, QUOTE_IMAGE_WEBP_REJECTED_MESSAGE } from '../../services/quoteImageStorage';
 import { loadContractBlockRenderData } from '../../services/contractTemplateRender';
+import { isSelfManagedDbContextRoute } from '../../middleware/selfManagedDbContextRoutes';
 
 const QUOTE_ID = '11111111-1111-4111-8111-111111111111';
 const BLOCK_ID = '22222222-2222-4222-8222-222222222222';
@@ -646,5 +671,144 @@ describe('GET /:id/share-link', () => {
     expect(vi.mocked(writeRouteAudit)).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       action: 'quote.share_link_viewed', resourceId: QUOTE_ID, orgId: 'org1',
     }));
+  });
+});
+
+describe('POST /:id/accept-on-behalf', () => {
+  const BODY = {
+    method: 'purchase_order', reference: 'PO 4471',
+    signerName: 'Dana Buyer', signerEmail: 'dana@customer.example',
+  };
+  const jsonReq = (body: unknown) => ({
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getQuote).mockResolvedValue({
+      quote: { id: QUOTE_ID, orgId: 'org1', partnerId: 'p1', status: 'sent', quoteNumber: 'Q-2026-0001' },
+      blocks: [], lines: [],
+    } as never);
+  });
+
+  // D3: accepting is separately revocable from sending. A role that can send
+  // must not silently gain the money-committing action.
+  it('403s a quotes:send holder without quotes:accept', async () => {
+    const res = await appWith('partner', ['quotes:read', 'quotes:write', 'quotes:send'])
+      .request(`/${QUOTE_ID}/accept-on-behalf`, jsonReq(BODY));
+    expect(res.status).toBe(403);
+  });
+
+  it('200s a quotes:accept holder', async () => {
+    const res = await appWith('partner', ['quotes:read', 'quotes:accept'])
+      .request(`/${QUOTE_ID}/accept-on-behalf`, jsonReq(BODY));
+    expect(res.status).toBe(200);
+  });
+
+  it('403s an organization-scoped token even with quotes:accept', async () => {
+    const res = await appWith('organization', ['quotes:accept'])
+      .request(`/${QUOTE_ID}/accept-on-behalf`, jsonReq(BODY));
+    expect(res.status).toBe(403);
+  });
+
+  it('400s a missing reference', async () => {
+    const { reference: _drop, ...rest } = BODY;
+    const res = await appWith('partner', ['quotes:accept']).request(`/${QUOTE_ID}/accept-on-behalf`, jsonReq(rest));
+    expect(res.status).toBe(400);
+  });
+
+  it('400s an unknown method', async () => {
+    const res = await appWith('partner', ['quotes:accept'])
+      .request(`/${QUOTE_ID}/accept-on-behalf`, jsonReq({ ...BODY, method: 'telepathy' }));
+    expect(res.status).toBe(400);
+  });
+
+  it('forwards the origin, the body and the acting user to acceptQuote', async () => {
+    const { acceptQuote } = await import('../../services/quoteAcceptService');
+    await appWith('partner', ['quotes:accept']).request(`/${QUOTE_ID}/accept-on-behalf`, jsonReq(BODY));
+    expect(vi.mocked(acceptQuote)).toHaveBeenCalledWith(expect.objectContaining({
+      quoteId: QUOTE_ID, origin: 'on_behalf',
+      method: 'purchase_order', reference: 'PO 4471',
+      signerName: 'Dana Buyer', signerEmail: 'dana@customer.example',
+      actorUserId: 'u1',
+    }));
+  });
+
+  it('writes the SSOT audit payload', async () => {
+    const { writeRouteAudit } = await import('../../services/auditEvents');
+    await appWith('partner', ['quotes:accept']).request(`/${QUOTE_ID}/accept-on-behalf`, jsonReq(BODY));
+    expect(vi.mocked(writeRouteAudit)).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'quote.accepted_on_behalf',
+      resourceType: 'quote',
+      resourceId: QUOTE_ID,
+      details: expect.objectContaining({ method: 'purchase_order', reference: 'PO 4471', wasDraft: false }),
+    }));
+  });
+
+  // The quote number is NOT the invoice number. The audit row must carry the
+  // number the accept actually allocated, or it names the wrong document.
+  it('audits the issued invoice number, not the quote number', async () => {
+    const { writeRouteAudit } = await import('../../services/auditEvents');
+    await appWith('partner', ['quotes:accept']).request(`/${QUOTE_ID}/accept-on-behalf`, jsonReq(BODY));
+    expect(vi.mocked(writeRouteAudit)).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      details: expect.objectContaining({ invoiceNumber: 'INV-2026-0007' }),
+    }));
+  });
+
+  it('reports wasDraft when the quote was a draft before the accept', async () => {
+    vi.mocked(getQuote).mockResolvedValue({
+      quote: { id: QUOTE_ID, orgId: 'org1', partnerId: 'p1', status: 'draft' }, blocks: [], lines: [],
+    } as never);
+    const { writeRouteAudit } = await import('../../services/auditEvents');
+    await appWith('partner', ['quotes:accept']).request(`/${QUOTE_ID}/accept-on-behalf`, jsonReq(BODY));
+    expect(vi.mocked(writeRouteAudit)).toHaveBeenCalledWith(expect.anything(),
+      expect.objectContaining({ details: expect.objectContaining({ wasDraft: true }) }));
+  });
+
+  // Retiring a revision's parent is its own auditable act — the same rule /send
+  // follows.
+  it('also audits the supersede when the accept retired a parent', async () => {
+    const { acceptQuote } = await import('../../services/quoteAcceptService');
+    vi.mocked(acceptQuote).mockResolvedValueOnce({
+      quote: { id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'converted', quoteNumber: 'Q-2026-0001', revisionNumber: 2 },
+      acceptanceId: 'acc1', invoiceId: 'inv1', invoiceIssued: true, invoiceNumber: 'INV-2026-0007',
+      contractIds: [], pax8OrderId: null, contractDocumentIds: [],
+      superseded: { parentQuoteId: 'parent1', previousStatus: 'sent' },
+    } as never);
+    const { writeRouteAudit } = await import('../../services/auditEvents');
+    await appWith('partner', ['quotes:accept']).request(`/${QUOTE_ID}/accept-on-behalf`, jsonReq(BODY));
+    expect(vi.mocked(writeRouteAudit)).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'quote.superseded', resourceId: 'parent1',
+    }));
+  });
+
+  // §5: 'msp' emits the bus event and sends NO creator email — the actor
+  // already knows, they did it.
+  it('notifies the outcome as msp-sourced, carrying the origin', async () => {
+    const { notifyQuoteOutcome } = await import('../../services/quoteOutcomeNotify');
+    await appWith('partner', ['quotes:accept']).request(`/${QUOTE_ID}/accept-on-behalf`, jsonReq(BODY));
+    expect(vi.mocked(notifyQuoteOutcome)).toHaveBeenCalledWith(expect.objectContaining({
+      quoteId: QUOTE_ID, outcome: 'accepted', source: 'msp',
+      origin: 'on_behalf', actorUserId: 'u1',
+    }));
+  });
+
+  it('answers the portal accept shape', async () => {
+    const res = await appWith('partner', ['quotes:accept']).request(`/${QUOTE_ID}/accept-on-behalf`, jsonReq(BODY));
+    const body = await res.json();
+    expect(body.data).toMatchObject({
+      invoiceId: 'inv1', invoiceIssued: true, contractIds: ['c1'],
+      payUrl: 'https://portal.example/invoice/tok',
+    });
+    expect(body.data.quote.status).toBe('converted');
+  });
+
+  // runOutsideDbContext only re-points the ALS db proxy — the middleware's
+  // outer transaction would still be held across the accept, pinning a second
+  // pooled connection (#1105 class).
+  it('opts out of the ambient request transaction', () => {
+    expect(isSelfManagedDbContextRoute('POST', `/api/v1/quotes/${QUOTE_ID}/accept-on-behalf`)).toBe(true);
   });
 });

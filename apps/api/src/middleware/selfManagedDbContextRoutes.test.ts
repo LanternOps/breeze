@@ -145,6 +145,11 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/quotes/abc-123/resend'],
     ['POST', '/api/v1/quotes/abc-123/resend/'],
     ['post', '/api/v1/quotes/abc-123/resend'], // method is case-insensitive
+    // Accept on behalf (spec 2026-09-21) — the accept runs in its own system
+    // context; the ambient request tx would pin a second pooled connection.
+    ['POST', '/api/v1/quotes/abc-123/accept-on-behalf'],
+    ['POST', '/api/v1/quotes/abc-123/accept-on-behalf/'],
+    ['post', '/api/v1/quotes/abc-123/accept-on-behalf'], // method is case-insensitive
     // Task A9 — the tool test-call route dispatches a real outbound MCP call.
     ['POST', '/api/v1/tool-sources'],
     ['PATCH', '/api/v1/tool-sources/src-1'],
@@ -183,6 +188,7 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/quotes//send', 'empty id segment must not match'],
     ['POST', '/api/v1/quotes/abc-123/send/extra', 'extra path segment must not match'],
     ['GET', '/api/v1/quotes/abc-123/share-link', 'share-link mails nothing and keeps the ambient tx'],
+    ['GET', '/api/v1/quotes/abc-123/accept-on-behalf', 'accept-on-behalf is POST-only'],
     ['GET', '/api/v1/invoices/abc-123/pay-link', 'wrong method (only POST opts out)'],
     ['GET', '/api/v1/portal/invoices/def-456/pay', 'wrong method'],
     ['POST', '/api/v1/invoices/abc-123', 'invoice route without /pay-link'],
