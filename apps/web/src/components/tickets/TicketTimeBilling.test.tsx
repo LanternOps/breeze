@@ -76,7 +76,10 @@ describe('TicketTimeBilling', () => {
       return route(url);
     });
     render(<TicketTimeBilling ticketId="tk-1" />);
+    // The exact bug reported in #6466: inflated hours beside a blank amount,
+    // now paired with an explicit reason instead of no explanation at all.
     expect((await screen.findByTestId('ticket-billing-time-billable')).textContent).toContain('30m');
+    expect(screen.getByTestId('ticket-billing-amount').textContent).toBe('—');
     const indicator = await screen.findByTestId('ticket-billing-missing-rate');
     expect(indicator.textContent).toContain('1');
   });
@@ -85,6 +88,23 @@ describe('TicketTimeBilling', () => {
     render(<TicketTimeBilling ticketId="tk-1" />);
     await screen.findByTestId('ticket-billing-time-billable');
     expect(screen.queryByTestId('ticket-billing-missing-rate')).toBeNull();
+  });
+
+  // Pins the plural form so a future edit to only one of the _one/_other
+  // locale keys (content drift, not a selection bug) shows up as a failure.
+  it('pluralizes the no-rate indicator for more than one entry', async () => {
+    fetchWithAuth.mockImplementation(async (url: string) => {
+      if (url.startsWith('/tickets/tk-1/billing-summary')) {
+        return { ok: true, status: 200, json: async () => ({ data: {
+          time: { totalMinutes: 90, billableMinutes: 30, billableAmounts: [], missingRateCount: 2 },
+          parts: { partsCount: 0, billableTotals: [] },
+        } }) } as Response;
+      }
+      return route(url);
+    });
+    render(<TicketTimeBilling ticketId="tk-1" />);
+    const indicator = await screen.findByTestId('ticket-billing-missing-rate');
+    expect(indicator.textContent).toBe('2 entries have no hourly rate — not counted in the amount above');
   });
 
   it('renders a dash (not $0.00) when a summary carries no money', async () => {
