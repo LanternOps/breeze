@@ -52,6 +52,16 @@ export const RECOVERY_REFUSAL_MESSAGES: Record<NegotiationErrorCode, string> = {
 
 const CAP = BACKUP_SNAPSHOT_FILE_MEMBERSHIP_CAPABILITY;
 
+// The count in the placeholder template is a literal "N" — interpolate the
+// real referenced-file count so an operator/console message doesn't ship a
+// meaningless letter. Prefer the already-known externalCount (an exact,
+// verified count from a previous partial/complete index) over the coarser
+// job-level referencedFiles when both are available.
+function snapshotIndexPendingMessage(input: NegotiationInput): string {
+  const count = input.fileIndex.externalCount ?? input.referencedFiles ?? 0;
+  return RECOVERY_REFUSAL_MESSAGES.snapshot_index_pending.replace('N files', `${count} files`);
+}
+
 function refuse(
   error: NegotiationErrorCode,
   opts: { retryAfterSeconds?: number; details?: Record<string, unknown>; message?: string; enqueueHydration?: boolean } = {},
@@ -91,10 +101,18 @@ export function negotiateRecoveryCapabilities(input: NegotiationInput): Negotiat
   }
 
   if (input.fileIndex.status === 'none' || input.fileIndex.status === 'agent') {
-    return refuse('snapshot_index_pending', { retryAfterSeconds: 30, enqueueHydration: true });
+    return refuse('snapshot_index_pending', {
+      retryAfterSeconds: 30,
+      enqueueHydration: true,
+      message: snapshotIndexPendingMessage(input),
+    });
   }
   if (input.fileIndex.status === 'hydrating') {
-    return refuse('snapshot_index_pending', { retryAfterSeconds: 30, enqueueHydration: false });
+    return refuse('snapshot_index_pending', {
+      retryAfterSeconds: 30,
+      enqueueHydration: false,
+      message: snapshotIndexPendingMessage(input),
+    });
   }
   if (input.fileIndex.status === 'failed') {
     return refuse('snapshot_index_failed', {

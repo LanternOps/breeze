@@ -51,6 +51,24 @@ describe('negotiateRecoveryCapabilities', () => {
     expect(result).toMatchObject({ ok: false, error: 'snapshot_index_pending', enqueueHydration: false });
   });
 
+  it('R3: snapshot_index_pending message interpolates the real referenced-file count, not a literal "N"', () => {
+    const result = negotiateRecoveryCapabilities(base({ referencedFiles: 98411, clientCapabilities: [CAP], fileIndex: { ...noneFileIndex, status: 'agent' } }));
+    expect(result).toMatchObject({ ok: false, error: 'snapshot_index_pending' });
+    const message = (result as { message: string }).message;
+    expect(message).not.toContain('(N files');
+    expect(message).toContain('98411 files reference earlier snapshots');
+  });
+
+  it('R3: prefers externalCount over referencedFiles for the interpolated count when externalCount is already known', () => {
+    const result = negotiateRecoveryCapabilities(base({
+      referencedFiles: 98411,
+      clientCapabilities: [CAP],
+      fileIndex: { ...noneFileIndex, status: 'agent', externalCount: 200 },
+    }));
+    const message = (result as { message: string }).message;
+    expect(message).toContain('200 files reference earlier snapshots');
+  });
+
   it('a retryable failed index re-enqueues and reports snapshot_index_failed', () => {
     const result = negotiateRecoveryCapabilities(base({
       referencedFiles: 5, clientCapabilities: [CAP],

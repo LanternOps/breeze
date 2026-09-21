@@ -7,7 +7,7 @@
 // See docs/superpowers/plans/backup/_w09-part0.md §3 for the full algorithm.
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
-import { and, eq, ne } from 'drizzle-orm';
+import { and, eq, isNull, lt, ne, or } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import {
   backupJobs,
@@ -173,16 +173,48 @@ export async function hydrateSnapshotFileIndex(
         return { status: 'skipped', reason: 'in_progress' } as const;
       }
 
-      // CAS to 'hydrating' — 0 rows means a concurrent caller won the race.
+      // CAS to 'hydrating' — the predicate itself expresses staleness so a
+      // row stuck in 'hydrating' past HYDRATING_STALE_MS can actually be
+      // reclaimed: `ne(status, 'hydrating')` alone can never match a row
+      // whose status IS 'hydrating', no matter how old, which made the
+      // stale-reclaim path dead code. 0 rows means a concurrent (non-stale)
+      // claim won the race.
+      const staleBefore = new Date(now.getTime() - HYDRATING_STALE_MS);
       const [claimed] = await db
         .update(backupSnapshots)
         .set({ fileIndexStatus: 'hydrating', fileIndexHydratedAt: now })
-        .where(and(eq(backupSnapshots.id, snapshotDbId), ne(backupSnapshots.fileIndexStatus, 'hydrating')))
+        .where(
+          and(
+            eq(backupSnapshots.id, snapshotDbId),
+            or(
+              ne(backupSnapshots.fileIndexStatus, 'hydrating'),
+              lt(backupSnapshots.fileIndexHydratedAt, staleBefore),
+              isNull(backupSnapshots.fileIndexHydratedAt),
+            ),
+          ),
+        )
         .returning({ id: backupSnapshots.id });
       if (!claimed) {
         return { status: 'skipped', reason: 'in_progress' } as const;
       }
 
+      try {
+        return await hydrateClaimedSnapshot(snapshotDbId, snapshot, now, deps);
+      } catch (err) {
+        await fail(snapshotDbId, 'provider_error', err instanceof Error ? err.message : String(err));
+        throw err;
+      }
+    }),
+  );
+}
+
+async function hydrateClaimedSnapshot(
+  snapshotDbId: string,
+  snapshot: NonNullable<Awaited<ReturnType<typeof loadSnapshotForHydration>>>,
+  now: Date,
+  deps: HydrationDeps,
+): Promise<HydrationOutcome> {
+  {
       const resolved = await resolveSnapshotProviderConfig(snapshotDbId);
       const providerType = resolved?.providerType ?? null;
       const providerConfig = asRecord(resolved?.providerConfig);
@@ -333,8 +365,7 @@ export async function hydrateSnapshotFileIndex(
         externalCount,
         originSnapshotIds: [...originCounts.keys()],
       };
-    }),
-  );
+  }
 }
 
 export async function readSnapshotFileIndexState(snapshotDbId: string): Promise<{

@@ -1162,11 +1162,16 @@ bmrPublicRoutes.post(
       // snapshot's owning job (backupSnapshotFileIndex.ts loadReferencedFiles),
       // so a separate backupJobs query here would be redundant.
       const indexState = await readSnapshotFileIndexState(snapshot.id);
+      // Use resolvedSnapshot.providerConfig directly — resolveSnapshotProviderConfig
+      // already applies the live-config-first fallback (config row over
+      // snapshot-pinned metadata), same as hydration
+      // (backupSnapshotFileIndex.ts). Reaching through `config?.providerConfig`
+      // here was a second, independent read of the same underlying data that
+      // could silently diverge from the canonical resolution if that
+      // fallback logic ever changes — the two identity gates (creation
+      // preflight vs. hydration) must never be able to disagree.
       const resolvedIdentity = resolvedSnapshot?.providerType
-        ? normalizeStorageIdentity(
-            resolvedSnapshot.providerType,
-            asRecord(config?.providerConfig ?? resolvedSnapshot?.providerConfig)
-          )
+        ? normalizeStorageIdentity(resolvedSnapshot.providerType, asRecord(resolvedSnapshot?.providerConfig))
         : null;
       const negotiation = negotiateRecoveryCapabilities({
         clientCapabilities,

@@ -179,6 +179,36 @@ describe('getAuthenticatedRecoveryDownloadTarget', () => {
     });
   });
 
+  it('rejects a remotePath with a leading slash instead of silently normalizing it into scope', async () => {
+    resolveSnapshotProviderConfigMock.mockResolvedValue({
+      snapshot: { snapshotId: 'snap-ext-001', metadata: {} },
+      providerType: 'local',
+      providerConfig: { path: '/var/backups' },
+    });
+
+    // A leading slash must NOT be stripped before classification — the
+    // shared object-key contract treats `/snapshots/a/x` as invalid (it
+    // does not match the `snapshots/...` grammar), so a client sending one
+    // is out of scope, not silently rewritten into a valid own-prefix key.
+    const result = await getAuthenticatedRecoveryDownloadTarget(
+      {
+        id: 'token-4',
+        orgId: 'org-1',
+        deviceId: 'device-1',
+        snapshotId: 'snapshot-db-4',
+        status: 'authenticated',
+        authenticatedAt: new Date('2099-04-01T00:00:00.000Z'),
+        expiresAt: new Date('2099-04-02T00:00:00.000Z'),
+      } as any,
+      '/snapshots/snap-ext-001/manifest.json'
+    );
+
+    expect(result).toEqual({
+      unavailable: true,
+      reason: 'Requested path is outside the allowed snapshot scope.',
+    });
+  });
+
   // Sentry BREEZE-P: buildS3Client (private to this file) used to pass a
   // stored endpoint straight to the SDK. A scheme-less value throws an
   // opaque `TypeError: Invalid URL` deep inside @smithy/core instead of a
@@ -303,6 +333,26 @@ describe('getAuthenticatedRecoveryDownloadTarget', () => {
         unavailable: true,
         reason: 'Requested path references an object this recovery is not authorized to read.',
       });
+    });
+
+    it('logs the specific internal refusal reason server-side even though the public reason is generic', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      mockCurrentSnapshotLocal();
+      lineageRows.push([{ fileIndexStatus: 'complete' }]);
+      lineageRows.push([]); // no membership row -> internal reason distinct from the public one
+
+      await getAuthenticatedRecoveryDownloadTarget(baseTokenRow as any, 'snapshots/older/files/not-referenced.gz');
+
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('token-ext'),
+        expect.objectContaining({
+          tokenId: 'token-ext',
+          snapshotDbId: 'snapshot-db-current',
+          key: 'snapshots/older/files/not-referenced.gz',
+          reason: 'key is not a member of the snapshot file index',
+        }),
+      );
+      warnSpy.mockRestore();
     });
 
     it('R7 (b): a key under an ANCESTOR manifest object itself (not a content file) is refused unless it is also indexed', async () => {

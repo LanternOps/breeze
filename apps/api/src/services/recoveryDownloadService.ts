@@ -35,15 +35,28 @@ type RecoveryDownloadRow = Pick<
  */
 export async function authorizeExternalReference(
   dbHandle: typeof import('../db').db,
-  args: { snapshotDbId: string; key: string; originSnapshotId: string; orgId: string; deviceId: string; pinnedStorageIdentity: string },
+  args: { tokenId: string; snapshotDbId: string; key: string; originSnapshotId: string; orgId: string; deviceId: string; pinnedStorageIdentity: string },
 ): Promise<{ ok: true; originStoragePrefix: string | null } | { ok: false; reason: string }> {
+  // The four internal refusal reasons below collapse into one identical
+  // public string at the call site (never leak which gate tripped to an
+  // unauthenticated client) — this is the only place an operator can tell
+  // "index not built yet" apart from "poisoned manifest in a shared
+  // bucket" apart from "cross-org key guess".
+  const refuse = (reason: string): { ok: false; reason: string } => {
+    console.warn(
+      `[authorizeExternalReference] refused token ${args.tokenId}:`,
+      { tokenId: args.tokenId, snapshotDbId: args.snapshotDbId, key: args.key, reason },
+    );
+    return { ok: false, reason };
+  };
+
   const [tokenSnapshot] = await dbHandle
     .select({ fileIndexStatus: backupSnapshots.fileIndexStatus })
     .from(backupSnapshots)
     .where(eq(backupSnapshots.id, args.snapshotDbId))
     .limit(1);
   if (!tokenSnapshot || tokenSnapshot.fileIndexStatus !== 'complete') {
-    return { ok: false, reason: 'file index not complete' };
+    return refuse('file index not complete');
   }
 
   const [membership] = await dbHandle
@@ -52,7 +65,7 @@ export async function authorizeExternalReference(
     .where(and(eq(backupSnapshotFiles.snapshotDbId, args.snapshotDbId), eq(backupSnapshotFiles.backupPath, args.key)))
     .limit(1);
   if (!membership) {
-    return { ok: false, reason: 'key is not a member of the snapshot file index' };
+    return refuse('key is not a member of the snapshot file index');
   }
 
   const [origin] = await dbHandle
@@ -66,14 +79,14 @@ export async function authorizeExternalReference(
     .where(and(eq(backupSnapshotOrigins.snapshotDbId, args.snapshotDbId), eq(backupSnapshotOrigins.originSnapshotId, args.originSnapshotId)))
     .limit(1);
   if (!origin) {
-    return { ok: false, reason: 'no verified origin record for this snapshot reference' };
+    return refuse('no verified origin record for this snapshot reference');
   }
   if (
     origin.originOrgId !== args.orgId ||
     origin.originDeviceId !== args.deviceId ||
     origin.originStorageIdentity !== args.pinnedStorageIdentity
   ) {
-    return { ok: false, reason: 'origin identity does not match the recovery token' };
+    return refuse('origin identity does not match the recovery token');
   }
 
   return { ok: true, originStoragePrefix: origin.originStoragePrefix };
@@ -198,7 +211,13 @@ export async function getAuthenticatedRecoveryDownloadTarget(
   }
 
   const ownSnapshotId = resolved.snapshot.snapshotId;
-  const scope = classifyBackupObjectKey(String(remotePath || '').replace(/^\/+/, ''), ownSnapshotId);
+  // No leading-slash stripping: the shared object-key contract
+  // (`agent/internal/backup/bmr/testdata/object-key-vectors.json`) treats a
+  // leading slash as invalid, not as a `snapshots/...`-scoped key to be
+  // silently rewritten into scope. Stripping it here previously let a
+  // `/snapshots/a/x` request from an odd client normalize into a valid own-
+  // prefix key instead of being refused.
+  const scope = classifyBackupObjectKey(String(remotePath || ''), ownSnapshotId);
   if (!scope) {
     return { unavailable: true, reason: 'Requested path is outside the allowed snapshot scope.' } as const;
   }
@@ -212,6 +231,7 @@ export async function getAuthenticatedRecoveryDownloadTarget(
       } as const;
     }
     const authorization = await authorizeExternalReference(db, {
+      tokenId: tokenRow.id,
       snapshotDbId,
       key: scope.key,
       originSnapshotId: scope.originSnapshotId,

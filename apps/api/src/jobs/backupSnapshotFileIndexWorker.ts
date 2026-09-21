@@ -13,6 +13,8 @@ import { getBullMQConnection } from '../services/redis';
 import { withSystemDbAccessContext } from '../db';
 import { hydrateSnapshotFileIndex } from '../services/backupSnapshotFileIndex';
 import { attachWorkerObservability } from './workerObservability';
+import { isReusableState } from '../services/bullmqUtils';
+import { captureException } from '../services/sentry';
 
 const QUEUE_NAME = 'backup-snapshot-file-index';
 const JOB_OPTIONS = {
@@ -43,6 +45,23 @@ export async function enqueueSnapshotFileIndexHydration(
 ): Promise<string> {
   const q = getQueue();
   const jobId = `hydrate:${snapshotDbId}`;
+  // Bare `q.add(name, payload, { jobId })` dedupes on "a record with this id
+  // exists", not "a job with this id is pending" — once a job for this
+  // snapshot has completed or failed, every later add under the same jobId
+  // is silently discarded (add still returns the stale job). Mirror
+  // jobs/recoveryMediaWorker.ts: reuse a genuinely in-flight job, but remove
+  // a completed/failed one and re-add so hydration actually reruns.
+  const existing = await q.getJob(jobId);
+  if (existing) {
+    const state = await existing.getState();
+    if (isReusableState(state)) {
+      return String(existing.id ?? jobId);
+    }
+    await existing.remove().catch((error) => {
+      console.error(`[BackupSnapshotFileIndexWorker] Failed to remove stale job ${jobId} (state '${state}'):`, error);
+    });
+    console.log(`[BackupSnapshotFileIndexWorker] Removed stale ${state} job ${jobId}; re-enqueuing`);
+  }
   const job = await q.add('hydrate', { snapshotDbId, reason }, { jobId, ...JOB_OPTIONS });
   return job.id!;
 }
@@ -54,7 +73,14 @@ async function processHydrationJob(job: Job<HydrationJobData>): Promise<{ status
     // storage identity) will never succeed on retry — completing the job
     // (rather than throwing) stops BullMQ from burning three attempts on a
     // deterministic failure. The snapshot's own file_index_status/_error
-    // columns are the permanent record; nothing here needs a job-level retry.
+    // columns are the permanent record, but a terminal outcome is still an
+    // operator-relevant event: log and report it rather than returning
+    // silently, so a spike in unverifiable manifests is visible.
+    console.error(
+      `[BackupSnapshotFileIndexWorker] Non-retryable hydration failure for snapshot ${job.data.snapshotDbId} (reason: ${job.data.reason}):`,
+      { failure: outcome.failure, reason: outcome.reason },
+    );
+    captureException(new Error(`snapshot file-index hydration terminally failed: ${outcome.failure}: ${outcome.reason}`));
     return { status: 'failed-terminal' };
   }
   if (outcome.status === 'failed' && outcome.retryable) {

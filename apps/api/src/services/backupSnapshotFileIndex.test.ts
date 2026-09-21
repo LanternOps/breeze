@@ -1,6 +1,26 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 
+// Renders the text of the drizzle SQL condition chunks passed to `.where()` so
+// we can assert on the *shape* of the CAS predicate without a real DB —
+// vi.fn mocks don't evaluate SQL, so outcome-only assertions can't catch a
+// staleness predicate that's semantically wrong but still "returns rows"
+// under a dumb mock.
+function sqlText(node: unknown): string {
+  const out: string[] = [];
+  const visit = (n: any) => {
+    if (n && Array.isArray(n.queryChunks)) {
+      for (const c of n.queryChunks) visit(c);
+    } else if (n && Array.isArray(n.value)) {
+      out.push(n.value.join(''));
+    } else if (n && typeof n.name === 'string') {
+      out.push(n.name);
+    }
+  };
+  visit(node);
+  return out.join('');
+}
+
 const ORG_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 const DEVICE_ID = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
 const SNAPSHOT_DB_ID = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
@@ -221,6 +241,72 @@ describe('hydrateSnapshotFileIndex', () => {
     expect((outcome as { manifestSha256: string }).manifestSha256).toBe(createHash('sha256').update(bytes).digest('hex'));
     // 2 batches of file rows (1000 + 500) + 1 final publish transaction.
     expect(transactionMock.mock.calls.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it('reclaims a stale hydrating row (>30min) — the CAS predicate itself expresses staleness', async () => {
+    const now = new Date('2026-09-20T12:00:00Z');
+    const hydratedAt = new Date(now.getTime() - 31 * 60 * 1000);
+    selectMock.mockReturnValueOnce(chainMock([snapshotRow({ fileIndexStatus: 'hydrating', fileIndexHydratedAt: hydratedAt })]));
+    selectMock.mockReturnValueOnce(chainMock([{ referencedFiles: 5 }]));
+    selectMock.mockReturnValueOnce(chainMock([{ id: 'origin-db-id', orgId: ORG_ID, deviceId: DEVICE_ID, storageIdentity: STORAGE_IDENTITY, metadata: {} }]));
+    const deps = {
+      now: () => now,
+      fetchManifestBytes: vi.fn().mockResolvedValue(
+        manifestBytes([{ sourcePath: '/a', backupPath: 'snapshots/snap-older/files/a.gz', size: 10 }]),
+      ),
+    };
+
+    const outcome = await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps });
+
+    // The CAS where() must be an OR — status<>'hydrating' OR hydratedAt stale
+    // OR hydratedAt null — never the bare `ne(status,'hydrating')` that can
+    // never match a row whose status IS 'hydrating', no matter how stale.
+    const casWhereCall = updateMock.mock.results.find((r) => {
+      const chain = r.value as { where: ReturnType<typeof vi.fn> };
+      return chain.where?.mock.calls.some((c) => sqlText(c[0]).includes('or'));
+    });
+    expect(casWhereCall, 'expected a CAS where() call whose predicate is an OR expressing staleness').toBeDefined();
+    const whereArg = (casWhereCall!.value as { where: ReturnType<typeof vi.fn> }).where.mock.calls[0]?.[0];
+    expect(sqlText(whereArg)).toContain('or');
+    expect(sqlText(whereArg)).toContain('file_index_hydrated_at');
+
+    // The claim itself must stamp hydratedAt = now so later staleness is
+    // measured from the claim, not the original stale value.
+    const casSetCall = updateMock.mock.results[0]!.value as { set: ReturnType<typeof vi.fn> };
+    expect(casSetCall.set).toHaveBeenCalledWith(expect.objectContaining({ fileIndexStatus: 'hydrating', fileIndexHydratedAt: now }));
+
+    expect(outcome).toMatchObject({ status: 'complete' });
+  });
+
+  it('still skips in_progress for a FRESH hydrating row (<30min)', async () => {
+    const now = new Date('2026-09-20T12:00:00Z');
+    const hydratedAt = new Date(now.getTime() - 5 * 60 * 1000);
+    selectMock.mockReturnValueOnce(chainMock([snapshotRow({ fileIndexStatus: 'hydrating', fileIndexHydratedAt: hydratedAt })]));
+    selectMock.mockReturnValueOnce(chainMock([{ referencedFiles: 5 }]));
+    const outcome = await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps: { now: () => now, fetchManifestBytes: vi.fn() } });
+    expect(outcome).toEqual({ status: 'skipped', reason: 'in_progress' });
+  });
+
+  it('classifies an unclassified throw after the CAS as provider_error, fails closed, and rethrows to the caller', async () => {
+    selectMock.mockReturnValueOnce(chainMock([snapshotRow()]));
+    selectMock.mockReturnValueOnce(chainMock([{ referencedFiles: 5 }]));
+    selectMock.mockReturnValueOnce(chainMock([{ id: 'origin-db-id', orgId: ORG_ID, deviceId: DEVICE_ID, storageIdentity: STORAGE_IDENTITY, metadata: {} }]));
+    // insert during the file-row batch write throws an unclassified error
+    insertMock.mockImplementationOnce(() => {
+      throw new Error('boom: insert failed');
+    });
+    const deps = {
+      fetchManifestBytes: vi.fn().mockResolvedValue(
+        manifestBytes([{ sourcePath: '/a', backupPath: 'snapshots/snap-older/files/a.gz', size: 10 }]),
+      ),
+    };
+
+    await expect(hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps })).rejects.toThrow(/boom: insert failed/);
+
+    const lastUpdateChain = updateMock.mock.results.at(-1)!.value as { set: ReturnType<typeof vi.fn> };
+    expect(lastUpdateChain.set).toHaveBeenCalledWith(
+      expect.objectContaining({ fileIndexStatus: 'failed', fileIndexError: expect.stringMatching(/^provider_error: /) }),
+    );
   });
 
   it('on any hydration failure sets status failed with the reason, leaving whatever rows already wrote untouched', async () => {

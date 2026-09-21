@@ -464,11 +464,13 @@ bmrRecoveryPublicRoutes.post(
       // and before any recoveryTokens row is minted.
       const indexState = rec.snapshotId ? await readSnapshotFileIndexState(rec.snapshotId) : null;
       const resolvedSnapshot = rec.snapshotId ? await resolveSnapshotProviderConfig(rec.snapshotId) : null;
+      // Same rationale as bmr.ts's authenticate handler: use
+      // resolvedSnapshot.providerConfig directly, not a second independent
+      // read through resolvedSnapshot.config?.providerConfig — the two
+      // identity gates (authenticate vs. exchange) must never be able to
+      // disagree.
       const resolvedIdentity = resolvedSnapshot?.providerType
-        ? normalizeStorageIdentity(
-            resolvedSnapshot.providerType,
-            asRecord(resolvedSnapshot.config?.providerConfig ?? resolvedSnapshot.providerConfig)
-          )
+        ? normalizeStorageIdentity(resolvedSnapshot.providerType, asRecord(resolvedSnapshot.providerConfig))
         : null;
       const negotiation = negotiateRecoveryCapabilities({
         clientCapabilities,

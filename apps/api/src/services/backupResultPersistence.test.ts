@@ -1406,6 +1406,43 @@ describe('backup result persistence', () => {
 
       expect(enqueueSnapshotFileIndexHydrationMock).not.toHaveBeenCalled();
     });
+
+    it('does not throw when the hydration enqueue rejects (e.g. Redis is down) — job/snapshot rows are already committed', async () => {
+      vi.mocked(db.update)
+        .mockReturnValueOnce(
+          chainMock([{ id: 'job-1', orgId: 'org-1', configId: 'config-1', backupType: 'file', backupMode: 'file' }]) as any
+        )
+        .mockReturnValue(chainMock([]) as any);
+      vi.mocked(db.select)
+        .mockReturnValueOnce(chainMock([]) as any)
+        .mockReturnValueOnce(
+          chainMock([{ featureLinkId: null, policyId: null, deviceId: 'device-1' }]) as any
+        );
+      vi.mocked(db.insert).mockReturnValueOnce(
+        chainMock([{ id: 'snapshot-db-1', jobId: 'job-1', snapshotId: 'provider-snap-1' }]) as any
+      );
+      vi.mocked(applyGfsTagsToSnapshot).mockResolvedValue({ daily: true });
+      vi.mocked(resolveGfsConfigForJob).mockResolvedValue(null);
+      vi.mocked(computeExpiresAt).mockReturnValue(null);
+      const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      enqueueSnapshotFileIndexHydrationMock.mockRejectedValueOnce(new Error('ECONNREFUSED redis'));
+
+      await expect(
+        applyBackupCommandResultToJob({
+          jobId: 'job-1',
+          orgId: 'org-1',
+          deviceId: 'device-1',
+          resultStatus: 'completed',
+          result: { snapshotId: 'provider-snap-1', filesBackedUp: 0, referencedFiles: 40 } as any,
+        }),
+      ).resolves.not.toThrow();
+
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        expect.stringContaining('snapshot-db-1'),
+        expect.any(Error),
+      );
+      consoleErrorSpy.mockRestore();
+    });
   });
 
   describe('D18 W01 -- lineage on write + late-result fence', () => {

@@ -1430,7 +1430,18 @@ export async function applyBackupCommandResultToJob(params: {
     // operator creates a recovery. Enqueue is dedupe-keyed by snapshot id
     // (Task 4), so a re-adoption/reconcile re-posting the same result is safe
     // to call again.
-    await enqueueSnapshotFileIndexHydration(snapshot.id, 'result');
+    //
+    // The job/snapshot rows above are already committed by this point, so a
+    // throw here (e.g. Redis unreachable) would make BullMQ retry an
+    // already-terminal backup result — catch only this enqueue and continue.
+    // The creation-time preflight (bareMetalRecoveryService.ts) is the
+    // documented fallback that enqueues hydration again if it's still
+    // missing when a recovery is actually created.
+    try {
+      await enqueueSnapshotFileIndexHydration(snapshot.id, 'result');
+    } catch (err) {
+      console.error(`[backupResultPersistence] Failed to enqueue file-index hydration for snapshot ${snapshot.id}:`, err);
+    }
   }
 
   if (snapshot) {
