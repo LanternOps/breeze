@@ -128,6 +128,7 @@
   },
   "aiToolCallCard": {
     "running": "In esecuzione...",
+    "failed": "Non riuscito",
     "approvedRunning": "Approvato · in esecuzione",
     "approvedFailed": "Approvato · non riuscito",
     "approvedCompleted": "Approvato · completato",
