@@ -25,6 +25,19 @@ type RecoveryConfig struct {
 	// snapshot advertising system state that failed to download it still
 	// reported StateApplied=false with status "completed" (D15/O10).
 	ExpectSystemState bool `json:"expectSystemState,omitempty"`
+
+	// FileIndex is derived from the recovery bootstrap payload (see
+	// session.go, RunRecoveryWithTokenContext), exactly like
+	// ExpectSystemState above — never set directly by a caller. It carries
+	// the server's verified-complete per-file index for this snapshot when
+	// the server granted the snapshot-file-membership-v1 capability and the
+	// snapshot has cross-snapshot references; nil otherwise (self-contained
+	// snapshot, or a server/agent too old to negotiate it).
+	// RunRecoveryContext's scope check (bmr.go, immediately after the
+	// manifest is downloaded and before any target write) passes it to
+	// ApplyManifestScope so a manifest with external references can never be
+	// honoured on an assumption.
+	FileIndex *FileIndexInfo `json:"-"`
 }
 
 type AuthenticatedProviderConfig struct {

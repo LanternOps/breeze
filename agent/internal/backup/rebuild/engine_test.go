@@ -194,6 +194,59 @@ func TestRun_DryRunProducesPlanWithoutWrites(t *testing.T) {
 	}
 }
 
+// admittingMemProvider wraps memProvider (embedded by pointer so its
+// Upload/Download/List/Delete methods are promoted) and adds Admits, so it
+// satisfies both providers.BackupProvider and ObjectAdmission — exercising
+// preflight's belt-to-bmr.ApplyManifestScope's-braces sweep.
+type admittingMemProvider struct {
+	*memProvider
+	admitted map[string]struct{}
+}
+
+func (p *admittingMemProvider) Admits(key string) bool { _, ok := p.admitted[key]; return ok }
+
+// TestRun_PreflightRefusesWhenManifestEntryNotAdmitted proves preflight's
+// ObjectAdmission sweep: a manifest content entry the provider does not
+// admit must refuse before provision — sgdisk/mkfs/mount must never run.
+func TestRun_PreflightRefusesWhenManifestEntryNotAdmitted(t *testing.T) {
+	dir := t.TempDir()
+	sys := newFakeSystem(dir, 100*GiB)
+	lay := testLayout()
+	base := seedSnapshot(t, "snap-1", lay)
+
+	// Admit every content object EXCEPT one, so preflight has exactly one
+	// unadmitted entry to refuse on.
+	admitted := map[string]struct{}{}
+	var withheld string
+	for k := range base.files {
+		if !strings.Contains(k, "/files/") {
+			admitted[k] = struct{}{}
+			continue
+		}
+		if withheld == "" {
+			withheld = k
+			continue
+		}
+		admitted[k] = struct{}{}
+	}
+	if withheld == "" {
+		t.Fatal("seedSnapshot fixture has no content file under /files/ to withhold")
+	}
+	prov := &admittingMemProvider{memProvider: base, admitted: admitted}
+
+	res, err := Run(context.Background(), Options{SnapshotID: "snap-1", Provider: prov, Target: Target{Kind: TargetDisk, Path: "/dev/sdb"}, Identity: IdentityNew, StateDir: dir, StagingRoot: filepath.Join(dir, "mnt"), System: sys})
+	var refusal *RefusalError
+	if !errors.As(err, &refusal) {
+		t.Fatalf("expected *RefusalError, got err=%v res=%+v", err, res)
+	}
+	if res == nil || res.Status != "refused" {
+		t.Fatalf("res = %+v", res)
+	}
+	if sys.has("sgdisk") || sys.has("mkfs") || sys.has("mount") {
+		t.Fatalf("provision must never run once preflight refuses: %s", sys.dump())
+	}
+}
+
 func TestRun_PreflightRefusals(t *testing.T) {
 	tests := []struct {
 		name   string

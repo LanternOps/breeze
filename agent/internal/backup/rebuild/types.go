@@ -199,6 +199,19 @@ type Result struct {
 	StateApplied       bool `json:"stateApplied"`
 }
 
+// ObjectAdmission is implemented by a token-mode recovery provider
+// (bmr.recoveryDownloadProvider) to let preflight refuse a manifest entry
+// the provider would refuse to download anyway — the belt to
+// bmr.ApplyManifestScope's braces (Options.Provider is already confined via
+// WidenScopeFromManifest/RunRecoveryContext's own scope check before
+// preflight runs; this is a second, independent check inside the engine
+// itself so provision can never run ahead of it on any call path). A
+// provider that does not implement it (plain S3/local) is never confined
+// here either — see preflight's type assertion.
+type ObjectAdmission interface {
+	Admits(key string) bool
+}
+
 // RefusalError carries an operator-facing reason; Run maps it to Status
 // "refused" without touching the target.
 type RefusalError struct{ Reason string }

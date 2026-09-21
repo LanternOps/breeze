@@ -88,6 +88,7 @@ func RunRecoveryWithTokenContext(ctx context.Context, cfg RecoveryConfig) (*Reco
 	}
 	if bootstrap.Snapshot != nil {
 		effectiveCfg.ExpectSystemState = SnapshotExpectsSystemState(bootstrap.Snapshot)
+		effectiveCfg.FileIndex = bootstrap.Snapshot.FileIndex
 	}
 
 	runResult, runErr := runRecovery(ctx, effectiveCfg, provider)

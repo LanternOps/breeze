@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -193,6 +194,26 @@ func buildTokenModeOptions(ctx context.Context, server, token string, target reb
 	}
 	opts.Provider = provider
 
+	// Refuse before any target write when the manifest references objects
+	// under an older snapshot's prefix the provider is not authorized (or
+	// not verified) to read. Neither DryRun nor the real Run() has started
+	// yet — callers (execBareMetalRebuild, the CLI's RunE) already turn a
+	// buildTokenModeOptions error into a fail/non-zero result without
+	// calling runTokenModeRebuild.
+	report := func(u bmr.ProgressUpdate) {
+		if err := bmr.PostRecoveryProgress(ctx, server, token, u); err != nil {
+			slog.Warn("recovery progress not recorded", "status", u.Status, "error", err.Error())
+			_, _ = fmt.Fprintf(os.Stderr, "progress %s not recorded: %v\n", u.Status, err)
+		}
+	}
+	if err := bmr.WidenScopeFromManifest(ctx, provider, bs); err != nil {
+		var refusal *bmr.ScopeRefusalError
+		if errors.As(err, &refusal) {
+			report(bmr.ProgressUpdate{Status: "refused", Reason: refusal.Reason})
+		}
+		return opts, nil, err
+	}
+
 	identity := bs.Recovery.Identity
 	if identityOverride != "" {
 		identity = identityOverride
@@ -221,12 +242,6 @@ func buildTokenModeOptions(ctx context.Context, server, token string, target reb
 	// its OS state or the engine refuses at preflight.
 	opts.ExpectSystemState = bmr.SnapshotExpectsSystemState(bs.Snapshot)
 
-	report := func(u bmr.ProgressUpdate) {
-		if err := bmr.PostRecoveryProgress(ctx, server, token, u); err != nil {
-			slog.Warn("recovery progress not recorded", "status", u.Status, "error", err.Error())
-			_, _ = fmt.Fprintf(os.Stderr, "progress %s not recorded: %v\n", u.Status, err)
-		}
-	}
 	return opts, report, nil
 }
 

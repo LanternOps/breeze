@@ -145,6 +145,29 @@ func preflight(ctx context.Context, r *run) error {
 		return err
 	}
 	r.manifest = man
+
+	// Belt to bmr.ApplyManifestScope's braces: if the provider tracks its
+	// own admissible set (token-mode recovery), refuse here — before any
+	// target write — rather than letting an unadmitted entry surface as a
+	// download failure mid-restore.
+	if admitter, ok := r.opts.Provider.(ObjectAdmission); ok {
+		var n int
+		var first string
+		for _, f := range man.Files {
+			if !f.HasContent() {
+				continue
+			}
+			if !admitter.Admits(f.BackupPath) {
+				if first == "" {
+					first = f.BackupPath
+				}
+				n++
+			}
+		}
+		if n > 0 {
+			return &RefusalError{Reason: fmt.Sprintf("%d file(s) reference objects outside the authorized download scope (first: %s); upgrade the Breeze server or choose a self-contained snapshot", n, first)}
+		}
+	}
 	staging, err := os.MkdirTemp("", "breeze-rebuild-state-*")
 	if err != nil {
 		return err

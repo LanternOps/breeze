@@ -121,10 +121,35 @@ func RunRecoveryContext(ctx context.Context, cfg RecoveryConfig, provider provid
 	if checkCancelled() {
 		return result, ctx.Err()
 	}
-	manifest, err := downloadManifest(cfg.SnapshotID, provider)
+	manifest, manifestSHA256, err := downloadManifest(cfg.SnapshotID, provider)
 	if err != nil {
 		result.Error = fmt.Sprintf("failed to download manifest: %s", err.Error())
 		return result, err
+	}
+
+	// Refuse before any target write when this manifest references objects
+	// under an older snapshot's prefix that the provider is not authorized
+	// (or not verified) to read. A no-op for a non-token-mode provider (the
+	// plain local/S3 providers used outside recovery) — see
+	// ApplyManifestScope's first branch.
+	if checkCancelled() {
+		return result, ctx.Err()
+	}
+	paths := make([]string, 0, len(manifest.Files))
+	for _, f := range manifest.Files {
+		if f.BackupPath != "" {
+			paths = append(paths, f.BackupPath)
+		}
+	}
+	if scopeErr := ApplyManifestScope(provider, cfg.SnapshotID, paths, manifestSHA256, cfg.FileIndex); scopeErr != nil {
+		var refusal *ScopeRefusalError
+		if errors.As(scopeErr, &refusal) {
+			result.Status = "refused"
+			result.Error = refusal.Reason
+			return result, nil
+		}
+		result.Error = fmt.Sprintf("failed to verify download scope: %s", scopeErr.Error())
+		return result, scopeErr
 	}
 
 	slog.Info("bmr: manifest downloaded",
@@ -344,31 +369,36 @@ func restoreSourcePath(file manifestFile) string {
 	return file.SourcePath
 }
 
-func downloadManifest(snapshotID string, provider providers.BackupProvider) (*snapshotManifest, error) {
+// downloadManifest returns the parsed manifest and its raw bytes' sha256
+// (hex-encoded) — the hash is needed by the scope check (see scope.go,
+// ApplyManifestScope) to verify the manifest we just read matches the one
+// the server's file index was hydrated from.
+func downloadManifest(snapshotID string, provider providers.BackupProvider) (*snapshotManifest, string, error) {
 	manifestKey := path.Join(snapshotRootDir, snapshotID, snapshotManifestKey)
 
 	tmpFile, err := os.CreateTemp("", "bmr-manifest-*.json")
 	if err != nil {
-		return nil, fmt.Errorf("bmr: create temp file: %w", err)
+		return nil, "", fmt.Errorf("bmr: create temp file: %w", err)
 	}
 	tmpPath := tmpFile.Name()
 	_ = tmpFile.Close()
 	defer os.Remove(tmpPath)
 
 	if err := provider.Download(manifestKey, tmpPath); err != nil {
-		return nil, fmt.Errorf("bmr: download manifest: %w", err)
+		return nil, "", fmt.Errorf("bmr: download manifest: %w", err)
 	}
 
 	data, err := os.ReadFile(tmpPath)
 	if err != nil {
-		return nil, fmt.Errorf("bmr: read manifest: %w", err)
+		return nil, "", fmt.Errorf("bmr: read manifest: %w", err)
 	}
+	sum := sha256.Sum256(data)
 
 	var manifest snapshotManifest
 	if err := json.Unmarshal(data, &manifest); err != nil {
-		return nil, fmt.Errorf("bmr: decode manifest: %w", err)
+		return nil, "", fmt.Errorf("bmr: decode manifest: %w", err)
 	}
-	return &manifest, nil
+	return &manifest, hex.EncodeToString(sum[:]), nil
 }
 
 // systemStateResult carries applySystemState's outcome. It replaced a
