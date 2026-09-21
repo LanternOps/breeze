@@ -59,8 +59,9 @@ async function createConsentSession(input: {
   // uncommitted row, so the FK check failed with 23503 on every Connect click
   // (prod, 2026-09-21). The table carries partner-axis RLS policies, so a
   // partner-scope request may write here directly; `withSystemDbAccessContext`
-  // is a no-op inside an open context and only opens a transaction for the
-  // callback path, which has no request context of its own (`callbackDb`).
+  // is a no-op inside an open context and only opens a transaction on the
+  // unauthenticated callback path (GET /callback), which has no ambient
+  // request context when it creates the identity-verification session.
   return withSystemDbAccessContext(async () => {
     await db.delete(ticketMailboxConsentSessions).where(
       lte(ticketMailboxConsentSessions.expiresAt, sql`now()`),

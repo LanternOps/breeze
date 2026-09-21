@@ -408,6 +408,23 @@ describe('M365 mailbox lifecycle routes', () => {
     },
   );
 
+  it('treats Microsoft\'s admin-consent error shape (error + admin_consent=True) as a provider error, not a malformed callback', async () => {
+    // Observed in production 2026-09-21: a Conditional Access refusal (AADSTS50097)
+    // came back as ?error=invalid_grant&error_description=...&admin_consent=True&state=...
+    // and the route answered 400 "Invalid OAuth callback parameters", leaving the
+    // connection stuck in pending_consent with no recorded failure.
+    const response = await app.request(
+      '/callback?state=admin-state&error=invalid_grant&error_description=AADSTS50097%3a+Device+authentication+is+required&admin_consent=True',
+      { headers: { cookie: `ticket_mailbox_oauth_state=${cookieFor('admin_consent', 'admin-state')}` } },
+    );
+    expect(response.status).toBe(302);
+    expect(mocks.consumeConsentSession).toHaveBeenCalledWith('admin-state', 'admin_consent');
+    expect(mocks.markPendingConsentFailed).toHaveBeenCalledWith(
+      CONNECTION_ID, PARTNER_ID, ATTEMPT_ID, 'Mailbox verification failed',
+    );
+    expect(JSON.stringify(mocks.writeAuditEvent.mock.calls)).not.toContain('AADSTS50097');
+  });
+
   it('treats a consumed callback from an older consent attempt as one audited stale no-op', async () => {
     mocks.markPendingConsentFailed.mockResolvedValue(false);
     const response = await app.request(
