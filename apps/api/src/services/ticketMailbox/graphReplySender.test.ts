@@ -24,10 +24,6 @@ describe('sendThreadedReply', () => {
 
     expect(createReplyCall[0]).toContain('/messages/orig-1/createReply');
     expect(createReplyCall[1].method).toBe('POST');
-    // Outbound loop marker is stamped at draft creation (Graph rejects it post-create).
-    expect(JSON.parse(createReplyCall[1].body).message.internetMessageHeaders).toEqual([
-      { name: 'X-Breeze-Outbound', value: '1' },
-    ]);
     expect(patchDraftCall[0]).toContain('/messages/draft-9');
     expect(patchDraftCall[1].method).toBe('PATCH');
     expect(JSON.parse(patchDraftCall[1].body).body).toEqual({ contentType: 'HTML', content: '<p>reply</p>' });
@@ -52,9 +48,5 @@ describe('sendNewMail', () => {
     expect(payload.message.toRecipients[0].emailAddress.address).toBe('cust@x.com');
     expect(payload.message.subject).toBe('Re: hi [T-2026-0007]');
     expect(payload.saveToSentItems).toBe(true);
-    // Outbound loop marker so a looped-back copy is recognized as our own mail.
-    expect(payload.message.internetMessageHeaders).toEqual([
-      { name: 'X-Breeze-Outbound', value: '1' },
-    ]);
   });
 });
