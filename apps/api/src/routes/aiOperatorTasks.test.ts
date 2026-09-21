@@ -631,6 +631,18 @@ describe('POST /ai/operator/tasks (W08 admission)', () => {
     expect(admitMock).not.toHaveBeenCalled();
   });
 
+  it('rejects an empty recipeKey with 400 before it ever reaches the registry', async () => {
+    const res = await post(body({ recipeKey: '' }));
+    expect(res.status).toBe(400);
+    expect(admitMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a recipeKey over the 128-char workflow_key_len_chk bound with 400', async () => {
+    const res = await post(body({ recipeKey: 'x'.repeat(129) }));
+    expect(res.status).toBe(400);
+    expect(admitMock).not.toHaveBeenCalled();
+  });
+
   it('still rejects a known recipe at an unreleased version with 422, not 400', async () => {
     selectMock.mockReturnValueOnce(selectChain([deviceRow]));
     const res = await post(body({ recipeVersion: 99 }));
