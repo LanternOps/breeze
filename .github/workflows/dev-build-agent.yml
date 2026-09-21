@@ -29,7 +29,7 @@ env:
 jobs:
   resolve:
     name: Resolve immutable source
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, cloudcom]
     outputs:
       source_sha: ${{ steps.resolve.outputs.source_sha }}
       source_label: ${{ steps.resolve.outputs.source_label }}

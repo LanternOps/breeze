@@ -44,7 +44,7 @@ permissions:
 jobs:
   drift-check:
     name: Check main ancestry and root
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, cloudcom]
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7

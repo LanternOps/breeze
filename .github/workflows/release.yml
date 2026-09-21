@@ -32,7 +32,7 @@ permissions:
 jobs:
   build-api:
     name: Build API
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, cloudcom]
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -80,7 +80,7 @@ jobs:
 
   build-web:
     name: Build Web
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, cloudcom]
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -280,7 +280,7 @@ jobs:
   build-recovery-media:
     name: Build recovery media (${{ matrix.arch }})
     needs: [build-agent]
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, cloudcom]
     continue-on-error: ${{ matrix.arch == 'arm64' }}
     strategy:
       fail-fast: false
@@ -1652,7 +1652,7 @@ jobs:
       vars.ENABLE_WINDOWS_SIGNING == 'true'
       && github.ref_type == 'tag'
       && startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, cloudcom]
     permissions:
       contents: read
     outputs:
@@ -1991,7 +1991,7 @@ jobs:
     name: Windows Tauri signing convergence gate
     needs: [resolve-windows-signing-provider, sign-windows-tauri-azure, sign-windows-tauri-sslcom]
     if: ${{ !cancelled() && needs.resolve-windows-signing-provider.result != 'skipped' }}
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, cloudcom]
     permissions:
       contents: read
     # Republished so the release manifest can record which CA vouched for the
@@ -2028,7 +2028,7 @@ jobs:
       && vars.ENABLE_WINDOWS_SIGNING == 'true'
       && github.ref_type == 'tag'
       && startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, cloudcom]
     needs: [sign-windows-tauri]
     steps:
       - name: Checkout
@@ -2094,7 +2094,7 @@ jobs:
 
   merge-viewer-update-manifest:
     name: Generate Viewer Update Manifest
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, cloudcom]
     needs: [build-viewer, build-viewer-macos, package-windows-updater]
     if: >-
       !cancelled()
@@ -2197,7 +2197,7 @@ jobs:
 
   validate-release-lineage:
     name: Validate Release Lineage
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, cloudcom]
     if: >-
       github.ref_type == 'tag'
       && startsWith(github.ref, 'refs/tags/v')
@@ -2231,7 +2231,7 @@ jobs:
 
   release-integrity-gate:
     name: Release Integrity Gate
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, cloudcom]
     needs: [build-windows-unsigned, build-macos-agent, build-macos-installer-app, sign-windows-tauri, build-viewer-macos, build-helper-macos, package-windows-updater, merge-viewer-update-manifest]
     if: ${{ always() && !cancelled() }}
     steps:
@@ -2281,7 +2281,7 @@ jobs:
 
   create-release:
     name: Create Release
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, cloudcom]
     needs: [build-api, build-web, build-agent, build-recovery-media, build-windows-unsigned, build-macos-agent, build-macos-installer-app, sign-windows-tauri, build-viewer, build-helper, build-viewer-macos, build-helper-macos, merge-viewer-update-manifest, package-windows-updater, release-integrity-gate, validate-release-lineage, build-binaries-image, build-docker-api, build-docker-web, build-docker-portal, build-docker-m365-graph-read-executor, build-docker-m365-graph-actions-executor, build-docker-m365-communications-executor]
     if: >-
       github.ref_type == 'tag'
@@ -2887,7 +2887,7 @@ jobs:
 
   build-binaries-image:
     name: Build & Push Binaries Init Image
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, cloudcom]
     needs: [build-agent, build-macos-agent, sign-windows-tauri, build-viewer, build-helper, build-viewer-macos, build-helper-macos]
     if: >-
       github.ref_type == 'tag'
@@ -2997,7 +2997,7 @@ jobs:
 
   build-docker-api:
     name: Build & Push API Docker Image
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, cloudcom]
     needs: [build-api]
     if: >-
       github.ref_type == 'tag'
@@ -3081,7 +3081,7 @@ jobs:
 
   build-docker-m365-graph-read-executor:
     name: Build & Push M365 Graph Read Executor Image
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, cloudcom]
     if: >-
       github.ref_type == 'tag'
       && startsWith(github.ref, 'refs/tags/v')
@@ -3158,7 +3158,7 @@ jobs:
 
   build-docker-m365-graph-actions-executor:
     name: Build & Push M365 Graph Actions Executor Image
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, cloudcom]
     if: >-
       github.ref_type == 'tag'
       && startsWith(github.ref, 'refs/tags/v')
@@ -3235,7 +3235,7 @@ jobs:
 
   build-docker-m365-communications-executor:
     name: Build & Push M365 Communications Executor Image
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, cloudcom]
     if: >-
       github.ref_type == 'tag'
       && startsWith(github.ref, 'refs/tags/v')
@@ -3312,7 +3312,7 @@ jobs:
 
   build-docker-web:
     name: Build & Push Web Docker Image
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, cloudcom]
     needs: [build-web]
     if: >-
       github.ref_type == 'tag'
@@ -3390,7 +3390,7 @@ jobs:
 
   build-docker-portal:
     name: Build & Push Portal Docker Image
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, cloudcom]
     if: >-
       github.ref_type == 'tag'
       && startsWith(github.ref, 'refs/tags/v')
@@ -3453,7 +3453,7 @@ jobs:
 
   promote-signed-release-images:
     name: Promote signed ${{ matrix.image.name }} image
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, cloudcom]
     needs: [create-release]
     if: >-
       github.ref_type == 'tag'

@@ -57,7 +57,7 @@ env:
 jobs:
   resolve:
     name: Resolve release run for ${{ inputs.tag }}
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, cloudcom]
     timeout-minutes: 10
     permissions:
       contents: read
@@ -162,7 +162,7 @@ jobs:
 
   promote:
     name: Promote signed ${{ matrix.image.name }} image
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, cloudcom]
     timeout-minutes: 15
     needs: [resolve]
     permissions:

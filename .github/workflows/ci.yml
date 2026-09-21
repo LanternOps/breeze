@@ -75,7 +75,7 @@ jobs:
   # Contract: .github/scripts/ci-area-gating.test.mjs.
   changes:
     name: Detect Code Changes
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, cloudcom]
     permissions:
       contents: read
       pull-requests: read
@@ -167,7 +167,7 @@ jobs:
   # `docs-automation-retirement.test.mjs` pins the deterministic steps.
   docs-check:
     name: Docs Check
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, cloudcom]
     needs: [changes]
     if: needs.changes.outputs.docs == 'true'
     steps:
@@ -209,7 +209,7 @@ jobs:
 
   lint:
     name: Lint
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, cloudcom]
     needs: [changes]
     if: needs.changes.outputs.code == 'true'
     steps:
@@ -313,7 +313,7 @@ jobs:
 
   typecheck:
     name: Type Check
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, cloudcom]
     needs: [changes]
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
     env:
@@ -357,7 +357,7 @@ jobs:
 
   test-api:
     name: Test API (shard ${{ matrix.shard }}/8)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, cloudcom]
     needs: [changes]
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.api == 'true'
     # ~2470 vitest files, import-time dominated, 26-34 min unsharded. Only the
@@ -498,7 +498,7 @@ jobs:
 
   test-m365-graph-read-executor:
     name: Test M365 Graph Read Executor
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, cloudcom]
     needs: [changes]
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.m365 == 'true'
     steps:
@@ -526,7 +526,7 @@ jobs:
 
   test-m365-graph-actions-executor:
     name: Test M365 Graph Actions Executor
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, cloudcom]
     needs: [changes]
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.m365 == 'true'
     steps:
@@ -554,7 +554,7 @@ jobs:
 
   test-m365-communications-executor:
     name: Test M365 Communications Executor
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, cloudcom]
     needs: [changes]
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.m365 == 'true'
     services:
@@ -603,7 +603,7 @@ jobs:
   # autoMigrate.test.ts cannot see. Cheap (~1 min) and blocking on PRs.
   check-migrations:
     name: Check Migrations
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, cloudcom]
     needs: [changes]
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.api == 'true'
     services:
@@ -678,7 +678,7 @@ jobs:
   # blocking on PRs. See apps/api/scripts/check-migrations-nonsuperuser.ts.
   check-migrations-nonsuperuser:
     name: Check Migrations (non-superuser)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, cloudcom]
     needs: [changes]
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.api == 'true'
     services:
@@ -739,7 +739,7 @@ jobs:
 
   test-web:
     name: Test Web (shard ${{ matrix.shard }}/4)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, cloudcom]
     needs: [changes]
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.web == 'true'
     # ~1030 jsdom vitest files, 17 min unsharded — the longest job on an
@@ -779,7 +779,7 @@ jobs:
   # original gap).
   test-mobile:
     name: Test Mobile
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, cloudcom]
     needs: [changes]
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
     steps:
@@ -813,7 +813,7 @@ jobs:
   # Resolve paths on Linux so unrelated PRs never allocate a macOS runner.
   mobile-native-changes:
     name: Detect Mobile Native Changes
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, cloudcom]
     needs: [changes]
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
     permissions:
@@ -945,7 +945,7 @@ jobs:
 
   test-portal:
     name: Test Portal
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, cloudcom]
     needs: [changes]
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.portal == 'true'
     steps:
@@ -980,7 +980,7 @@ jobs:
   # `turbo run lint` skips it and the repo-wide Lint job does not reach it.
   test-viewer:
     name: Test Viewer
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, cloudcom]
     needs: [changes]
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
     steps:
@@ -1012,7 +1012,7 @@ jobs:
 
   test-office-addin-core:
     name: Test Office Add-in Core
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, cloudcom]
     needs: [changes]
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.addins == 'true'
     steps:
@@ -1043,7 +1043,7 @@ jobs:
 
   test-excel-addin:
     name: Test Excel Add-in
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, cloudcom]
     needs: [changes]
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.addins == 'true'
     steps:
@@ -1071,7 +1071,7 @@ jobs:
 
   test-word-addin:
     name: Test Word Add-in
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, cloudcom]
     needs: [changes]
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.addins == 'true'
     steps:
@@ -1102,7 +1102,7 @@ jobs:
 
   test-powerpoint-addin:
     name: Test PowerPoint Add-in
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, cloudcom]
     needs: [changes]
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.addins == 'true'
     steps:
@@ -1142,7 +1142,7 @@ jobs:
 
   test-outlook-addin:
     name: Test Outlook Add-in
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, cloudcom]
     needs: [changes]
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.addins == 'true'
     steps:
@@ -1173,7 +1173,7 @@ jobs:
 
   security-audit:
     name: Security Audit
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, cloudcom]
     needs: [changes]
     if: needs.changes.outputs.code == 'true'
     steps:
@@ -1268,7 +1268,7 @@ jobs:
 
   build-api:
     name: Build API
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, cloudcom]
     needs: [lint, typecheck, changes]
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.api == 'true'
     steps:
@@ -1313,7 +1313,7 @@ jobs:
 
   build-m365-graph-read-executor:
     name: Build M365 Graph Read Executor
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, cloudcom]
     needs: [lint, typecheck, changes]
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.m365 == 'true'
     steps:
@@ -1347,7 +1347,7 @@ jobs:
 
   build-m365-graph-actions-executor:
     name: Build M365 Graph Actions Executor
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, cloudcom]
     needs: [lint, typecheck, changes]
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.m365 == 'true'
     steps:
@@ -1383,7 +1383,7 @@ jobs:
 
   build-m365-communications-executor:
     name: Build M365 Communications Executor
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, cloudcom]
     needs: [lint, typecheck, changes]
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.m365 == 'true'
     steps:
@@ -1419,7 +1419,7 @@ jobs:
 
   build-web:
     name: Build Web
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, cloudcom]
     needs: [lint, typecheck, changes]
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.web == 'true'
     steps:
@@ -1462,7 +1462,7 @@ jobs:
 
   build-portal:
     name: Build Portal
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, cloudcom]
     needs: [lint, typecheck, changes]
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.portal == 'true'
     steps:
@@ -1620,7 +1620,7 @@ jobs:
   # requireAdministrator — both directions are checked.
   agent-windows-manifest-guard:
     name: Agent Windows manifest guard
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, cloudcom]
     needs: [changes]
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
     steps:
@@ -1656,7 +1656,7 @@ jobs:
 
   test-agent:
     name: Test Agent
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, cloudcom]
     needs: [changes]
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
     steps:
@@ -2021,7 +2021,7 @@ jobs:
     # `go list -deps`. Fail-closed: `agent` is `true` on an empty/unresolvable
     # classification, and on a missing or empty gate list for ANY agent/ path.
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.agent == 'true'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, cloudcom]
     # ~7 min ISO build + up to 40 min QEMU rebuild cycle (see run-qemu.sh).
     timeout-minutes: 60
     steps:
@@ -2120,7 +2120,7 @@ jobs:
   # (incl. ~20 unformatted files) does not block PRs — burn it down separately.
   lint-agent:
     name: Lint Agent (Go)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, cloudcom]
     needs: [changes]
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
     # CGO off (matches test-agent): the agent's only cgo files are the linux
@@ -2415,7 +2415,7 @@ jobs:
   # promote it once its runtime/caching is proven.
   rust-check:
     name: Rust Check (Tauri apps)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, cloudcom]
     needs: [changes]
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.rust == 'true'
     timeout-minutes: 35
@@ -2617,7 +2617,7 @@ jobs:
   # aggregates across the matrix (success only if every shard passed).
   integration-test:
     name: Integration Tests (shard ${{ matrix.shard }}/16)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, cloudcom]
     # Sharded 16 ways (was 8). Deliberately does NOT `needs: [lint, typecheck]`
     # — that dependency added ~8 min of pure wait to the critical path before
     # this job could even start, for no isolation benefit: a lint or
@@ -2873,7 +2873,7 @@ jobs:
   # consumer to rebuild, and fork PRs must not need registry write credentials.
   build-smoke-images:
     name: Build Smoke Image (${{ matrix.image }})
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, cloudcom]
     needs: [changes]
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && (needs.changes.outputs.api == 'true' || needs.changes.outputs.web == 'true' || needs.changes.outputs.portal == 'true')
     continue-on-error: ${{ github.event_name == 'pull_request' }}
@@ -2938,7 +2938,7 @@ jobs:
   # image build + stack boot + endpoint smoke.
   smoke-test:
     name: Smoke Test
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, cloudcom]
     needs: [lint, typecheck, changes, build-smoke-images]
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && (needs.changes.outputs.api == 'true' || needs.changes.outputs.web == 'true' || needs.changes.outputs.portal == 'true')
     continue-on-error: ${{ github.event_name == 'pull_request' }}
@@ -3265,7 +3265,7 @@ jobs:
   # Same policy as smoke-test: non-blocking on PRs, required in the merge queue.
   guided-setup-smoke:
     name: Guided Setup Smoke (self-host installer)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, cloudcom]
     needs: [lint, typecheck, changes, build-smoke-images]
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && (needs.changes.outputs.api == 'true' || needs.changes.outputs.web == 'true' || needs.changes.outputs.portal == 'true')
     continue-on-error: ${{ github.event_name == 'pull_request' }}
@@ -3364,7 +3364,7 @@ jobs:
 
   auth-browser-transition-browser-contract:
     name: Auth Browser Transition (Chromium)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, cloudcom]
     needs: [lint, typecheck, changes]
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
     timeout-minutes: 20
@@ -3495,7 +3495,7 @@ jobs:
   # it runs: ci-success fails on anything but `success` or `skipped`.
   topology-browser-gate:
     name: Topology Production Browser Gate (Chromium)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, cloudcom]
     needs: [changes]
     if: needs.changes.outputs.topology_browser == 'true'
     timeout-minutes: 25
@@ -3571,7 +3571,7 @@ jobs:
   # add a `PORTAL_DEV_E2E_RESULT != "success"` clause to its check script.
   portal-dev-e2e:
     name: Portal Dev E2E (hydration, non-blocking)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, cloudcom]
     needs: [lint, typecheck, changes]
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
     continue-on-error: true
@@ -3772,7 +3772,7 @@ jobs:
     name: Workspace Runtime Smoke
     needs: [changes]
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, cloudcom]
     continue-on-error: ${{ github.event_name == 'pull_request' }}
     timeout-minutes: 20
     steps:
@@ -3811,7 +3811,7 @@ jobs:
   # Summary job that depends on all other jobs for branch protection
   ci-success:
     name: CI Success
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, cloudcom]
     needs: [changes, workspace-runtime, docs-check, lint, typecheck, check-migrations, test-api, test-m365-graph-read-executor, test-m365-graph-actions-executor, test-m365-communications-executor, test-web, test-mobile, mobile-native-changes, build-mobile-ios, test-portal, test-viewer, test-office-addin-core, test-excel-addin, test-word-addin, test-powerpoint-addin, test-outlook-addin, security-audit, build-api, build-m365-graph-read-executor, build-m365-graph-actions-executor, build-m365-communications-executor, build-web, build-portal, build-agent, test-agent, test-agent-windows, recovery-media-e2e, windows-runtime-smoke, integration-test, check-migrations-nonsuperuser, rust-check, build-smoke-images, smoke-test, guided-setup-smoke, auth-browser-transition-browser-contract, topology-browser-gate]
     if: ${{ !cancelled() }}
     steps:
@@ -4062,7 +4062,7 @@ jobs:
   # Cancelled runs are ignored (they say nothing about main's health).
   main-red-alert:
     name: Main Red Alert
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, cloudcom]
     needs: [ci-success]
     # Fires on the emergency lane only (manual dispatch on main after an admin
     # bypass merge). Queue landings were evaluated before they merged.

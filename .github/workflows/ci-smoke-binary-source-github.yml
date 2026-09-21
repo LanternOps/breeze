@@ -37,7 +37,7 @@ permissions:
 jobs:
   smoke:
     name: BINARY_SOURCE=github download path
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, cloudcom]
     timeout-minutes: 10
 
     services:

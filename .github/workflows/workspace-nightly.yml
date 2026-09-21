@@ -28,7 +28,7 @@ env:
 jobs:
   vercel-sandbox-e2e:
     name: Vercel Sandbox e2e
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, cloudcom]
     # Well above the suite's own ceiling: a hung vendor call must fail the job,
     # not hold a runner for six hours.
     timeout-minutes: 30

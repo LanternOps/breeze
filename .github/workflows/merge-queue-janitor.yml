@@ -23,7 +23,7 @@ concurrency:
 jobs:
   cancel-superseded:
     name: Cancel superseded merge-group runs
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, cloudcom]
     timeout-minutes: 5
     steps:
       - name: Cancel merge_group runs whose queue ref is gone
