@@ -722,7 +722,16 @@ func TestRunBrewCleanupStillSwallowsErrors(t *testing.T) {
 func TestRunBrewCleanupBoundedCancelsDescendants(t *testing.T) {
 	dir := t.TempDir()
 	ready := filepath.Join(dir, "ready")
-	if err := os.WriteFile(filepath.Join(dir, "brew"), []byte("#!/bin/sh\n/bin/sh -c 'echo ready > \"$BREW_TEST_READY\"; /bin/sleep 3' &\nwait\n"), 0700); err != nil {
+	// The descendant must already be a member of the process group by the
+	// time cancellation fires, or the SIGKILL sent to -pgid races the
+	// fork of `sleep` and can miss it entirely (observed under -race on a
+	// loaded runner: syscall.Kill(-pgid, SIGKILL) reports success, but the
+	// descendant — already re-parented to pid 1 — keeps sleeping for its
+	// full 3s because it wasn't a process-group member yet when the kill
+	// enumerated membership). `exec` replaces the ready-writing shell with
+	// `sleep` in place instead of forking a new descendant after the ready
+	// marker is written, so no fork can race the signal.
+	if err := os.WriteFile(filepath.Join(dir, "brew"), []byte("#!/bin/sh\n/bin/sh -c 'echo ready > \"$BREW_TEST_READY\"; exec /bin/sleep 3' &\nwait\n"), 0700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir)
@@ -747,7 +756,10 @@ func TestRunBrewCleanupBoundedCancelsDescendants(t *testing.T) {
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected cancellation, got %v", err)
 	}
-	if elapsed := time.Since(started); elapsed > time.Second {
+	// 2s leaves headroom for scheduling jitter under -race on a loaded
+	// runner while still failing hard against the fixture's 3s sleep if
+	// descendants aren't actually reaped promptly.
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
 		t.Fatalf("cleanup retained descendant pipe for %s after cancellation", elapsed)
 	}
 }
