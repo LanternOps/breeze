@@ -521,10 +521,6 @@ export const SYSTEM_ROLES: readonly SystemRoleDefinition[] = [
   }
 ];
 
-// Alias for tests/consumers asserting against "the seeded default roles"
-// without depending on the SYSTEM_ROLES name.
-export const DEFAULT_ROLES = SYSTEM_ROLES;
-
 // System scripts for RMM operations - only action scripts, not info gathering (agent has native collectors)
 const SYSTEM_SCRIPTS = [
   // === WINDOWS SCRIPTS ===

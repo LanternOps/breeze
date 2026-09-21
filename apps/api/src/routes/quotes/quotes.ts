@@ -197,7 +197,10 @@ quoteCrudRoutes.get('/:id', scopes, readPerm, zValidator('param', idParam), asyn
       })
       .from(quoteAcceptances)
       .leftJoin(users, eq(users.id, quoteAcceptances.recordedByUserId))
-      .where(eq(quoteAcceptances.quoteId, id))
+      // Org-scoped as well as quote-scoped, matching the portal read: RLS
+      // already confines this, and the redundant predicate keeps the two reads
+      // of the same table identical rather than relying on the id alone.
+      .where(and(eq(quoteAcceptances.quoteId, id), eq(quoteAcceptances.orgId, detail.quote.orgId)))
       .orderBy(desc(quoteAcceptances.signedAt))
       .limit(1);
     const acceptance = acceptanceRow
