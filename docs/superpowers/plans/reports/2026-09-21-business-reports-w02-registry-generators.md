@@ -9,6 +9,8 @@ blast_radius: high (rewrites the dispatcher and the config schema for all 13 shi
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **Read [`2026-09-21-business-reports-INDEX.md`](2026-09-21-business-reports-INDEX.md) (same directory) first — it holds the global constraints and the canonical cross-wave contract spellings.**
+
 **Goal:** Replace the 13-arm `switch` in `reportGenerationService.ts` with a declarative `REPORT_GENERATORS` registry that owns each type's config schema, supported scopes, required permissions and detail-row cap; then add the three Phase 1 business report types — `ticket_sla_attainment`, `technician_time_billability`, `ar_aging` — as registry entries with real SQL generators, shared summary types, a money-formatting helper and three PDF modules. API + `packages/shared` only: the types exist and generate, but no web template exposes them until W03.
 
 **Architecture:** One PR, internally ordered so each task is independently reviewable: canonical type tuple → scope object → registry (mechanical migration of all 13) → config-schema lookup → shared types + money helper → period resolver → R1 → R2 → R3 → PDF modules → caller wiring. The registry is a plain frozen `Record<ReportType, ReportTypeDef>` keyed by the closed union, so a missing key is a compile error — the same guarantee the `never` default gave. Business generators run partner scope under `runOutsideDbContext(() => withSystemDbAccessContext(...))` with an explicit `partner_id` / org-allowlist predicate in **every** query, because an org-scoped RLS context cannot see partner-axis rows and a partner-wide authority has no org context to open.
@@ -25,7 +27,7 @@ blast_radius: high (rewrites the dispatcher and the config schema for all 13 shi
 | `ReportOwner = { orgId: string; partnerId?: undefined } \| { partnerId: string; orgId?: undefined }` | `siteScope.ts` | the input to `reportScopeFromAuthority` and to the owner-timezone resolver |
 | `reportOwnerOf(row: { orgId: string \| null; partnerId: string \| null }): ReportOwner` (throws unless exactly one is set) | `siteScope.ts` | every caller derives the owner from the `reports` row with this, never by hand |
 | `getReportWithOwnerCheck(reportId, auth)` (old name `getReportWithOrgCheck` kept as a deprecated alias for one wave) | `apps/api/src/routes/reports/helpers.ts` | `runs.ts` / `recipients.ts` already call it after W01; W02 reads `report.partnerId` off the returned row |
-| `assertReportExecutionPreflight(owner: ReportOwner, config, authority, type?)` and its private `assertExecutableAuthority(owner, authority)` — W01 widens both from `orgId: string` to the owner axis (`reportGenerationService.ts:213-260, 284-324`) | `reportGenerationService.ts` | W02 calls it with a `ReportOwner`, never an org id string |
+| `assertReportExecutionPreflight(owner: ReportOwner, config, authority)` and its private `assertExecutableAuthority(owner, authority)` — W01 widens both from `orgId: string` to the owner axis (`reportGenerationService.ts:213-260, 284-324`) | `reportGenerationService.ts` | W02 calls it with a `ReportOwner`, never an org id string |
 | `reports.partner_id` nullable + `reports.org_id` nullable + `reports_one_owner_chk` | `apps/api/migrations/2026-10-26-100100-reports-partner-ownership.sql` | read-only |
 | enum labels `ticket_sla_attainment`, `technician_time_billability`, `ar_aging` | `apps/api/migrations/2026-10-26-100000-report-type-business.sql` | read-only |
 | `resolveRequestPartnerReportAuthority(auth, partnerId, action)`, `resolveLivePartnerReportAuthority(userId, partnerId, action)` | `siteScope.ts` | the routes and the worker already call these after W01 |
@@ -106,7 +108,8 @@ The error classes move to a new `apps/api/src/services/reportErrors.ts` **and ar
 | Path | Responsibility |
 |---|---|
 | `packages/shared/src/reportTypes.ts` | **New.** The canonical `REPORT_TYPES` tuple + `ReportType`. One source for zod, the API union and the web union. |
-| `packages/shared/src/types/businessReports.ts` | **New.** `TicketSlaSummary`, `TechnicianTimeSummary`, `ArAgingSummary` + row types + the three `empty*Summary()` factories. |
+| `packages/shared/src/types/businessReports.ts` | **New.** `TicketSlaSummary`, `TechnicianTimeSummary`, `ArAgingSummary` + row types + the three `empty*Summary()` factories + the period INPUT types `ReportPeriodKind` / `ReportPeriodInput` (W03's options forms import them). |
+| `packages/shared/src/validators/businessReports.ts` (+ `.test.ts`) | **New.** `periodSchema` — the zod half of the period contract. Separate file because `packages/shared` keeps zod schemas in `validators/` and plain types in `types/`; `period.ts` and W03's forms both import from here. |
 | `packages/shared/src/reportPdf/moneyFormat.ts` (+ `.test.ts`) | **New.** `formatMoney`, `formatPercent`, `formatMinutes`. `Intl`-based, no jsPDF import. |
 | `packages/shared/src/reportPdf/ticketSlaPdf.ts`, `technicianTimePdf.ts`, `arAgingPdf.ts` | **New.** One renderer each, `identityAccessPdf.ts`'s exact shape (declared `PdfChrome`, never imports `reportPdf.ts`). |
 | `packages/shared/src/reportPdf/reportPdf.ts` | Three new chain arms (after the `identity_access_review` arm at `:2126-2164`); `BuildOpts.summary` union widens by three. |
@@ -115,7 +118,7 @@ The error classes move to a new `apps/api/src/services/reportErrors.ts` **and ar
 | `apps/api/src/services/reportScope.ts` (+ `.test.ts`) | **New.** `ReportScope`, `organizationScope`, `reportScopeFromAuthority`, `reportOwnerOfScope`. |
 | `apps/api/src/services/reportRegistry.ts` (+ `.test.ts`) | **New.** `ReportTypeDef`, `REPORT_GENERATORS`, `reportTypeDef()`. The registry owns config schema, scopes, permissions, cap, execution kind. |
 | `apps/api/src/services/reportGenerationService.ts` | `dispatchReportGeneration` becomes a lookup; the 13-arm switch is deleted; `zeroSafeReport` gains three arms; errors re-exported from `reportErrors.ts`. |
-| `apps/api/src/services/businessReports/period.ts` (+ `.test.ts`) | **New.** `resolveReportPeriod`, `resolveReportOwnerTimezone`, `workingDaysBetween`. |
+| `apps/api/src/services/businessReports/period.ts` (+ `.test.ts`) | **New.** `resolveReportPeriod`, `resolveReportOwnerTimezone`, `workingDaysBetween`, `ResolvedReportPeriod`. Re-exports `ReportPeriodKind` / `ReportPeriodInput` / `periodSchema` from `@breeze/shared`; does **not** declare them. |
 | `apps/api/src/services/businessReports/ticketSlaReport.ts` (+ `.test.ts`) | **New.** R1. |
 | `apps/api/src/services/businessReports/technicianTimeReport.ts` (+ `.test.ts`) | **New.** R2. |
 | `apps/api/src/services/businessReports/arAgingReport.ts` (+ `.test.ts`) | **New.** R3. |
@@ -1070,7 +1073,7 @@ async function dispatchReportGeneration(
   }
 
   const owner = reportOwnerOfScope(scope);
-  assertReportExecutionPreflight(owner, config, authority, type);
+  assertReportExecutionPreflight(owner, config, authority);
 
   if (
     authority.principalKind === 'portal_user'
@@ -1436,8 +1439,10 @@ Spec §3.4: the one genuinely new renderer capability is money/percent/minute fo
 
 **Files:**
 - Create: `packages/shared/src/types/businessReports.ts`
+- Create: `packages/shared/src/validators/businessReports.ts` (+ `.test.ts`)
 - Create: `packages/shared/src/reportPdf/moneyFormat.ts` (+ `.test.ts`)
 - Modify: `packages/shared/src/types/index.ts` (one `export *` line)
+- Modify: `packages/shared/src/validators/index.ts` (one `export *` line)
 - Modify: `packages/shared/src/reportPdf/index.ts` (export the three money helpers)
 
 **Interfaces produced:**
@@ -1452,6 +1457,14 @@ export type ReportScopeMeta =
   | { kind: 'organization'; orgId: string; orgName: string | null }
   | { kind: 'partner'; partnerId: string; orgCount: number };
 export type DetailRowMeta = { cap: number; stored: number; available: number; truncated: boolean };
+
+/** The period INPUT contract. It lives in `@breeze/shared`, not in
+ *  `apps/api/src/services/businessReports/period.ts`, because W03's three
+ *  options forms build exactly this object and a second hand-kept copy on the
+ *  web side would drift. `period.ts` owns the RESOLUTION (`ResolvedReportPeriod`,
+ *  which carries `Date`s and a timezone) and imports these. */
+export type ReportPeriodKind = 'last_full_month' | 'last_30_days' | 'last_quarter' | 'custom';
+export type ReportPeriodInput = { kind: ReportPeriodKind; start?: string; end?: string };
 
 export type TicketSlaGroupRow = {
   groupKey: string; groupLabel: string;
@@ -1650,7 +1663,25 @@ export function formatMinutes(minutes: number | null | undefined): string {
 }
 ```
 
-- [ ] **Step 4: Write `packages/shared/src/types/businessReports.ts`** with the types listed under **Interfaces produced** above and the three `empty*Summary` factories. Add `export * from './businessReports';` to `packages/shared/src/types/index.ts`, and to `packages/shared/src/reportPdf/index.ts`:
+- [ ] **Step 4: Write `packages/shared/src/types/businessReports.ts`** with the types listed under **Interfaces produced** above and the three `empty*Summary` factories. Write `packages/shared/src/validators/businessReports.ts` with the one zod schema:
+
+```ts
+// packages/shared/src/validators/businessReports.ts
+import { z } from 'zod';
+import type { ReportPeriodInput } from '../types/businessReports';
+
+/** The single definition of a report period input. Consumed by the three API
+ *  config schemas (`apps/api/src/services/businessReports/period.ts` re-exports
+ *  it) and by W03's `ReportPeriodField`. `z.ZodType<ReportPeriodInput>` pins the
+ *  schema and the type together — they cannot drift apart silently. */
+export const periodSchema: z.ZodType<ReportPeriodInput> = z.object({
+  kind: z.enum(['last_full_month', 'last_30_days', 'last_quarter', 'custom']),
+  start: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  end: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+});
+```
+
+Add `export * from './businessReports';` to `packages/shared/src/types/index.ts` and to `packages/shared/src/validators/index.ts`, and to `packages/shared/src/reportPdf/index.ts`:
 
 ```ts
 export { formatMinutes, formatMoney, formatPercent } from './moneyFormat';
@@ -1695,10 +1726,12 @@ describe('empty business summaries', () => {
 - [ ] **Step 6: Run and commit**
 
 ```bash
-cd packages/shared && npx vitest run src/reportPdf/moneyFormat.test.ts src/types/businessReports.test.ts src/browserSafeBarrel.test.ts
+cd packages/shared && npx vitest run src/reportPdf/moneyFormat.test.ts src/types/businessReports.test.ts src/validators/businessReports.test.ts src/browserSafeBarrel.test.ts
 cd .. && pnpm --filter @breeze/shared typecheck
 git add packages/shared/src/types/businessReports.ts packages/shared/src/types/businessReports.test.ts \
-  packages/shared/src/types/index.ts packages/shared/src/reportPdf/moneyFormat.ts \
+  packages/shared/src/types/index.ts packages/shared/src/validators/businessReports.ts \
+  packages/shared/src/validators/businessReports.test.ts packages/shared/src/validators/index.ts \
+  packages/shared/src/reportPdf/moneyFormat.ts \
   packages/shared/src/reportPdf/moneyFormat.test.ts packages/shared/src/reportPdf/index.ts
 git commit -m "feat(shared): business report summary types + Intl money/percent/minutes formatting (#3198 W02)"
 ```
@@ -1711,18 +1744,21 @@ Then return to **Task 3 Step 6** and replace the stubbed `zeroSafeReport` arms w
 
 All three reports evaluate their window in the **report owner's** resolved timezone (org → partner → UTC), not the server's (§3.3 R1 and R3). `resolveOrgTimezone` (`apps/api/src/services/portal/timezone.ts:41`) covers the org axis; the partner axis needs its own two-line lookup over the same `resolveTimezoneFromRows` helper.
 
-**Files:** Create `apps/api/src/services/businessReports/period.ts` + `period.test.ts`.
+**Files:** Create `apps/api/src/services/businessReports/period.ts` + `period.test.ts`. Depends on Task 5's `@breeze/shared` period contract.
 
 **Interfaces produced:**
 ```ts
-export type ReportPeriodKind = 'last_full_month' | 'last_30_days' | 'last_quarter' | 'custom';
-export type ReportPeriodInput = { kind: ReportPeriodKind; start?: string; end?: string };
+// Imported from @breeze/shared (Task 5) and re-exported so the three config
+// schemas and the generators keep one import path. NOT declared here — W03's
+// options forms consume the same two types and the same zod schema.
+export type { ReportPeriodKind, ReportPeriodInput } from '@breeze/shared';
+export { periodSchema } from '@breeze/shared';
+
 export type ResolvedReportPeriod = { start: Date; end: Date; label: string; timeZone: string; kind: ReportPeriodKind };
 /** [start, end) — end is EXCLUSIVE everywhere. */
 export function resolveReportPeriod(input: ReportPeriodInput | undefined, timeZone: string, now: Date): ResolvedReportPeriod;
 export function workingDaysBetween(start: Date, end: Date, timeZone: string): number;
 export async function resolveReportOwnerTimezone(owner: ReportOwner): Promise<string>;
-export const periodSchema: z.ZodType<ReportPeriodInput>;   // re-exported by the three config schemas
 ```
 
 - [ ] **Step 1: Write the failing test**
@@ -1820,11 +1856,10 @@ import { partners } from '../../db/schema';
 import { resolveOrgTimezone, resolveTimezoneFromRows } from '../portal/timezone';
 import type { ReportOwner } from '../siteScope';
 
-export const periodSchema = z.object({
-  kind: z.enum(['last_full_month', 'last_30_days', 'last_quarter', 'custom']),
-  start: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-  end: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-});
+// The period contract lives in @breeze/shared (Task 5) so the web forms and the
+// server schema cannot drift. Re-exported here for the three config schemas.
+export type { ReportPeriodInput, ReportPeriodKind } from '@breeze/shared';
+export { periodSchema } from '@breeze/shared';
 
 /** org -> partner -> UTC for an org owner; partner -> UTC for a partner owner.
  *  Same chain and same helper as the schedule worker's `timezoneFor`. */

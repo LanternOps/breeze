@@ -1,5 +1,6 @@
 ---
 tracking_issue: LanternOps/breeze#3198
+spec: docs/superpowers/specs/reports/2026-08-16-psa-business-reports-spec.md
 ---
 
 # Business Reports (PSA) Implementation Plan — Index
@@ -25,7 +26,7 @@ tracking_issue: LanternOps/breeze#3198
 - **Registry migration is complete or not at all** (W02): all thirteen existing `switch` arms move into `REPORT_GENERATORS` in one PR; per-type config schemas stay loose; `supportedScopes` is checked before the preflight.
 - **Migration naming:** `YYYY-MM-DD-HHMMSS-<slug>.sql`, sorting after the newest shipped file at commit time (`2026-10-26-100000` / `-100100` as written; bump both if `main` has moved past them). Enum labels in their own file. No `BEGIN`/`COMMIT`; no row writes in this feature's migrations.
 - **Tests:** `cd apps/api && npx vitest run <path>` for units; `pnpm test-stack up` then the RLS-coverage (`DB_CONTEXTLESS_WRITE_STRICT=true pnpm --filter=@breeze/api test:rls-coverage`) and integration suites for anything touching tenancy; `pnpm test-stack down` after. Web: `cd apps/web && npx vitest run <path>`. E2E selectors are `data-testid` only.
-- **Type ids are fixed:** `ticket_sla_attainment`, `technician_time_billability`, `ar_aging`. Cross-wave names (`ReportOwner`, `partner_wide`, `ReportScope`, `ReportTypeDef`, `REPORT_GENERATORS`, `REPORT_TYPES`, `moneyFormat`, the three `*Pdf.ts` modules, the three options forms) are spelled identically in every plan; a mismatch is a bug in the plan, not a choice.
+- **Type ids are fixed:** `ticket_sla_attainment`, `technician_time_billability`, `ar_aging`. Cross-wave names (`ReportOwner`, `partner_wide`, `ReportScope`, `ReportTypeDef`, `REPORT_GENERATORS`, `REPORT_TYPES`, `moneyFormat`, the three `*Pdf.ts` modules and their `render<Type>Report` exports, the three options forms) are spelled identically in every plan; a mismatch is a bug in the plan, not a choice.
 
 ## Three waves and tracking
 
@@ -42,7 +43,7 @@ tracking_issue: LanternOps/breeze#3198
 | Wave | New code domains | Existing seams touched |
 | --- | --- | --- |
 | W01 | `migrations/2026-10-26-100000-report-type-business.sql`, `…-100100-reports-partner-ownership.sql`; `services/siteScope.ts` (`partner_wide`, `ReportOwner`, partner authority); `routes/reports/helpers.ts` (`partnerOwnedReportVisibility`, owner-aware helpers) + `partnerOwnedVisibility.scan.test.ts`; `services/reportBranding.ts` (`loadReportBrandingForPartner`); `__tests__/integration/reportsPartnerRls.integration.test.ts`, `reportsPartnerOwned.integration.test.ts` | `db/schema/reports.ts`; `routes/reports/{schemas,core,generate,runs,recipients}.ts`; `jobs/reportScheduleWorker.ts`; `services/reportGenerationService.ts` (preflight owner axis, `UnsupportedReportScopeError`); `rls-coverage.integration.test.ts`, `tenantExportPolicyRegistry.ts`, `orgMergeRegistry.ts`, `tenantCascade.ts`; `siteScope.projections.test.ts` |
-| W02 | `packages/shared/src/reportTypes.ts`; `services/reportScope.ts`, `services/reportRegistry.ts`; `services/businessReports/{period,ticketSlaReport,technicianTimeReport,arAgingReport}.ts`; `packages/shared/src/types/businessReports.ts`; `packages/shared/src/reportPdf/{moneyFormat,ticketSlaPdf,technicianTimePdf,arAgingPdf}.ts` | `services/reportGenerationService.ts` (dispatch → registry), `routes/reports/schemas.ts` (config lookup, `PARTNER_SCOPE_REPORT_TYPES` retired), `routes/reports/{generate,runs}.ts` (`ReportScope`), `packages/shared/src/reportPdf/reportPdf.ts` (three arms, `BuildOpts.summary`), `db/schema/invoices.ts` (`sqlOpenForOverdue` exported), `managedEvidenceRegistry` parity test |
+| W02 | `packages/shared/src/reportTypes.ts`; `packages/shared/src/validators/businessReports.ts` (`periodSchema`); `services/reportScope.ts`, `services/reportRegistry.ts`; `services/businessReports/{period,ticketSlaReport,technicianTimeReport,arAgingReport}.ts`; `packages/shared/src/types/businessReports.ts`; `packages/shared/src/reportPdf/{moneyFormat,ticketSlaPdf,technicianTimePdf,arAgingPdf}.ts` | `services/reportGenerationService.ts` (dispatch → registry), `routes/reports/schemas.ts` (config lookup, `PARTNER_SCOPE_REPORT_TYPES` retired, `PARTNER_ONLY_DELIVERY_REPORT_TYPES` added), `routes/reports/{generate,runs}.ts` (`ReportScope`), `packages/shared/src/reportPdf/reportPdf.ts` (three arms, `BuildOpts.summary`), `db/schema/invoices.ts` (`sqlOpenForOverdue` exported, `sqlOpenAr` + `AR_OPEN_STATUSES` added), `managedEvidenceRegistry` parity test |
 | W03 | `apps/web/src/components/reports/{TicketSlaOptionsForm,TechnicianTimeOptionsForm,ArAgingOptionsForm,ReportPeriodField}.tsx`; `e2e-tests/tests/business-reports.spec.ts`; docs page | `ReportTemplates.tsx`, `ReportBuilder.tsx`, `ReportEditPage.tsx`, `ReportPreview.tsx`, `ReportsList.tsx`, `reportExport.ts`, 8 × `reports.json`, `BillablesExportCard.tsx`, portal `ReportRunList.tsx` (negative test), release-notes data |
 
 Waves are strictly serial: W02's registry edits the same dispatcher and schema files W01 touches, and W03's web types derive from W02's shared tuple. Do not start a wave on a sibling branch; base each on `main` after the previous wave merges.
@@ -67,16 +68,35 @@ function assertReportExecutionPreflight(owner: ReportOwner, config, authority): 
 
 // W02 — apps/api/src/services/reportScope.ts
 type ReportScope = { kind: 'organization'; orgId: string } | { kind: 'partner'; partnerId: string; orgIds: string[] };
+function organizationScope(orgId: string): ReportScope;
+function reportOwnerOfScope(scope: ReportScope): ReportOwner;
 function reportScopeFromAuthority(owner: ReportOwner, authority: ReportGenerationAuthority): Promise<ReportScope>;
+class ReportScopeMismatchError extends Error {}
 // W02 — apps/api/src/services/reportRegistry.ts
-interface ReportTypeDef<C, S> { type; label; configSchema: ZodType<C> /* loose */; supportedScopes; execution: 'user' | 'managed_evidence'; requiredPermissions; detailRowCap; generate(scope, config, authority, evidence?) }
+interface ReportTypeDef<C = unknown> { type; label; configSchema: ZodType<C> /* loose */; supportedScopes; execution: 'user' | 'managed_evidence'; requiredPermissions; detailRowCap; generate(scope, config, authority, evidence?) }
 const REPORT_GENERATORS: Readonly<Record<ReportType, ReportTypeDef>>;
+function reportTypeDef(type: ReportType): ReportTypeDef;
 // W02 — packages/shared/src/reportTypes.ts
-const REPORT_TYPES = [/* 13 existing in enum order */, 'ticket_sla_attainment', 'technician_time_billability', 'ar_aging'] as const;
+const REPORT_TYPES = [/* 14 existing in enum order */, 'ticket_sla_attainment', 'technician_time_billability', 'ar_aging'] as const;
+const BUSINESS_REPORT_TYPES = ['ticket_sla_attainment', 'technician_time_billability', 'ar_aging'] as const;
 // W02 — packages/shared/src/reportPdf/moneyFormat.ts
-function formatMoney(value: string | number, currencyCode: string, locale?: string): string;
-function formatPercent(value: number, digits?: number): string;
-function formatMinutes(minutes: number): string;
+function formatMoney(value: string | number | null | undefined, currencyCode: string, locale?: string): string;
+function formatPercent(ratio: number | null | undefined, digits?: number, locale?: string): string;
+function formatMinutes(minutes: number | null | undefined): string;
+// W02 — packages/shared/src/reportPdf/{ticketSla,technicianTime,arAging}Pdf.ts
+// Shipped convention wins over the brief's render<Type>Pdf shorthand:
+function renderTicketSlaReport(doc, summary: TicketSlaSummary, opts: TicketSlaPdfOpts, chrome: PdfChrome): void;
+function renderTechnicianTimeReport(doc, summary: TechnicianTimeSummary, opts: TechnicianTimePdfOpts, chrome: PdfChrome): void;
+function renderArAgingReport(doc, summary: ArAgingSummary, opts: ArAgingPdfOpts, chrome: PdfChrome): void;
+// W02 — packages/shared/src/types/businessReports.ts
+type ReportPeriodKind = 'last_full_month' | 'last_30_days' | 'last_quarter' | 'custom';
+type ReportPeriodInput = { kind: ReportPeriodKind; start?: string; end?: string };
+// W02 — packages/shared/src/validators/businessReports.ts
+const periodSchema: z.ZodType<ReportPeriodInput>;   // re-exported by services/businessReports/period.ts
+// TicketSlaSummary / TechnicianTimeSummary / ArAgingSummary: see the W02 plan,
+// Task 5 "Interfaces produced" — that block is the canonical field list. Money
+// is always CurrencyAmountRow[]; truncation is DetailRowMeta on `detail`;
+// disclosed approximations are `notes: string[]`.
 ```
 
 ## Follow-ups filed outside this feature (spec §7, §10)

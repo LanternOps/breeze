@@ -9,6 +9,8 @@ blast_radius: high (tenancy/RLS migration on `reports`, execution-authority mode
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **Read [`2026-09-21-business-reports-INDEX.md`](2026-09-21-business-reports-INDEX.md) (same directory) first — it holds the global constraints and the canonical cross-wave contract spellings.**
+
 **Goal:** Let a partner own a report (`reports.partner_id` set, `org_id` NULL) end to end — schema, RLS, execution authority, routes, schedule worker — so that W02's business generators can run at partner scope. No business report ships in this wave; the three new enum labels exist but have no generator, and generating a partner-owned report answers `unsupported_report_scope` until W02 lands.
 
 **Architecture:** `reports` becomes an org-XOR-partner table (spec §3.1, copying the `configuration_policies` migration), but unlike a config table it gets **no** partner-wide SELECT branch for org tokens: partner-owned reports are partner-private aggregates, so org-scope sessions must never see them (spec §2, §3.1a). The execution-authority model in `services/siteScope.ts` gains a fourth **scope kind**, `partner_wide` (spec §3.1a): org-less, partner-keyed, user-principal only, live-reauthorized against `partner_users.org_access = 'all'`. Routes take `ownerScope` on create only; the worker branches on the owner axis before decoding scope.

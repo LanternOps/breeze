@@ -9,6 +9,8 @@ blast_radius: medium (web-only surface over an already-shipped tenancy foundatio
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **Read [`2026-09-21-business-reports-INDEX.md`](2026-09-21-business-reports-INDEX.md) (same directory) first — it holds the global constraints and the canonical cross-wave contract spellings.**
+
 **Goal:** Put W02's three business report types in front of a human — three curated templates in a new "Business" group of the templates gallery, three options forms, the create-only `ownerScope` selector that W01's routes already accept, the summary blocks in the preview, raw-numeric CSV/XLSX export, eight locales, the `apps/docs` reports page, and one Playwright spec that creates a partner-owned AR aging report end to end.
 
 **Architecture:** Nothing here invents a mechanism. The gallery already merges saved reports onto curated cards (`mergeTemplates`); this wave adds a `group` discriminator to `ReportTemplate` and renders two labelled sections over the *same* merged array, so merge semantics are untouched. The three types are **builder-opaque** — `reportTypeSurvivesBuilder` returns false for all three, so `handleUseTemplate` routes them to their own options form and `handleCreateDirect` POSTs the true type, exactly as `identity_access_review` does (`ReportTemplates.tsx:531-535`). The options forms follow `IdentityAccessOptionsForm.tsx`'s four-export shape (`Options` type, `DEFAULT_*`, `*Fields`, `*Form` + `*OptionsFromConfig`) so `ReportEditPage` wires them identically. The one genuinely new affordance is the `ownerScope` selector, gated on the JWT scope claim, and the "All organizations" badge on the list — both copied from the config-policy/software-policy precedent rather than invented.
@@ -52,99 +54,128 @@ export const REPORT_TYPES = [
   'ticket_sla_attainment', 'technician_time_billability', 'ar_aging',
 ] as const;
 export type ReportType = (typeof REPORT_TYPES)[number];
+export const BUSINESS_REPORT_TYPES = [
+  'ticket_sla_attainment', 'technician_time_billability', 'ar_aging',
+] as const;
+export type BusinessReportType = (typeof BUSINESS_REPORT_TYPES)[number];
 
 // packages/shared/src/reportPdf/moneyFormat.ts                          (W02)
-export function formatMoney(value: string | number, currencyCode: string, locale?: string): string;
-export function formatPercent(value: number, digits?: number): string;   // takes a FRACTION (0.87 → "87%")
-export function formatMinutes(minutes: number): string;                  // 5405 → "90h 5m"
+export function formatMoney(value: string | number | null | undefined, currencyCode: string, locale?: string): string;
+export function formatPercent(ratio: number | null | undefined, digits?: number, locale?: string): string;  // takes a FRACTION (0.875 -> "87.5%")
+export function formatMinutes(minutes: number | null | undefined): string;                 // 5405 -> "90h 05m"
 
 // packages/shared/src/types/businessReports.ts                          (W02)
+export type CurrencyAmountRow = { currencyCode: string; amount: string };
+export type ReportPeriodMeta = { kind: string; start: string; end: string; label: string; timeZone: string };
+export type ReportScopeMeta =
+  | { kind: 'organization'; orgId: string; orgName: string | null }
+  | { kind: 'partner'; partnerId: string; orgCount: number };
+export type DetailRowMeta = { cap: number; stored: number; available: number; truncated: boolean };
 export type ReportPeriodKind = 'last_full_month' | 'last_30_days' | 'last_quarter' | 'custom';
-export type ReportPeriodConfig = { kind: ReportPeriodKind; start?: string; end?: string };
-export type ResolvedReportPeriod = { start: string; end: string; label: string };
-export type ReportTruncation = { detailRows: number; cap: number };
+export type ReportPeriodInput = { kind: ReportPeriodKind; start?: string; end?: string };
+
+// packages/shared/src/validators/businessReports.ts                     (W02)
+export const periodSchema: z.ZodType<ReportPeriodInput>;
 
 export type TicketSlaGroupRow = {
-  key: string; label: string;
-  ticketsConsidered: number;
-  responseMet: number; responseTotal: number; responseAttainment: number | null;
-  resolutionMet: number; resolutionTotal: number; resolutionAttainment: number | null;
+  groupKey: string; groupLabel: string;
+  ticketsTotal: number; noSlaTickets: number;
+  responseEligible: number; responseMet: number; responseAttainment: number | null;
+  resolutionEligible: number; resolutionMet: number; resolutionAttainment: number | null;
   breaches: number;
 };
+export type SlaOutcome = 'met' | 'missed' | 'pending' | 'no_target';
+export type TicketSlaDetailRow = {
+  ticketId: string; ticketNumber: string | null; internalNumber: string | null;
+  orgId: string; orgName: string | null; subject: string;
+  priority: string; category: string | null; assignedToName: string | null;
+  createdAt: string; firstResponseAt: string | null; resolvedAt: string | null;
+  responseSlaMinutes: number | null; resolutionSlaMinutes: number | null;
+  slaPausedMinutes: number; responseOutcome: SlaOutcome; resolutionOutcome: SlaOutcome;
+  stampedBreachAt: string | null; stampedBreachReason: string | null;
+};
 export type TicketSlaSummary = {
-  period?: ResolvedReportPeriod;
-  scope?: 'organization' | 'partner';
-  groupBy?: 'organization' | 'priority' | 'technician' | 'category';
-  ticketsConsidered?: number | null;
-  noSlaSet?: number | null;
-  responseAttainment?: number | null;
-  resolutionAttainment?: number | null;
-  breachCount?: number | null;
-  stampedBreachCount?: number | null;
-  recomputedVsStampedDelta?: number | null;
-  worst?: { label: string; attainment: number } | null;
-  groups?: TicketSlaGroupRow[];
-  truncated?: ReportTruncation | null;
-  footnotes?: string[];
+  generatedAt: string; period: ReportPeriodMeta; scope: ReportScopeMeta;
+  groupBy: 'organization' | 'priority' | 'technician' | 'category';
+  overall: Omit<TicketSlaGroupRow, 'groupKey' | 'groupLabel'>;
+  groups: TicketSlaGroupRow[];
+  worstGroupLabel: string | null;
+  stampDiscrepancy: { recomputedBreachNotStamped: number; stampedNotRecomputedBreach: number };
+  detail: DetailRowMeta; notes: string[]; rows: TicketSlaDetailRow[];
 };
 
 export type TechnicianTimeGroupRow = {
-  key: string; label: string;
-  loggedMinutes: number; capacityMinutes: number; utilization: number | null;
+  groupKey: string; groupLabel: string;
+  loggedMinutes: number; capacityMinutes: number | null; utilization: number | null;
   billableMinutes: number; includedMinutes: number; nonBillableMinutes: number;
   billablePercent: number | null;
-  convertedMinutes: number; billingConversion: number | null;
+  billedMinutes: number; billingConversion: number | null;
+  billableValue: CurrencyAmountRow[];
+  averageRate: CurrencyAmountRow[];
 };
-export type BillableValueRow = {
-  currencyCode: string; billableValue: string; billableMinutes: number; averageHourlyRate: string | null;
+export type TechnicianTimeDetailRow = {
+  entryId: string; startedAt: string; userId: string; userName: string | null;
+  orgId: string | null; orgName: string | null; workTypeName: string | null;
+  durationMinutes: number | null; billableMinutes: number | null;
+  coverage: 'billable' | 'included' | 'non_billable';
+  billingStatus: string; isApproved: boolean;
+  hourlyRate: string | null; currencyCode: string | null;
 };
 export type TechnicianTimeSummary = {
-  period?: ResolvedReportPeriod;
-  scope?: 'organization' | 'partner';
-  groupBy?: 'technician' | 'organization' | 'work_type';
-  weeklyCapacityHours?: number; workingDays?: number;
-  techniciansConsidered?: number | null; zeroTimeTechnicians?: number | null;
-  loggedMinutes?: number | null; capacityMinutes?: number | null; utilization?: number | null;
-  billableMinutes?: number | null; includedMinutes?: number | null; nonBillableMinutes?: number | null;
-  billablePercent?: number | null; billingConversion?: number | null;
-  billableValueByCurrency?: BillableValueRow[];
-  coverageFallbackRows?: number | null;
-  groups?: TechnicianTimeGroupRow[];
-  truncated?: ReportTruncation | null;
-  footnotes?: string[];
+  generatedAt: string; period: ReportPeriodMeta; scope: ReportScopeMeta;
+  groupBy: 'technician' | 'organization' | 'work_type';
+  weeklyCapacityHours: number; workingDays: number;
+  overall: Omit<TechnicianTimeGroupRow, 'groupKey' | 'groupLabel'>;
+  groups: TechnicianTimeGroupRow[];
+  zeroTimeTechnicians: number;
+  detail: DetailRowMeta; notes: string[]; rows: TechnicianTimeDetailRow[];
 };
 
-export type ArAgingBucketKey =
-  'current' | 'd1_30' | 'd31_60' | 'd61_90' | 'd90_plus' | 'no_due_date' | 'other_open';
-export type ArAgingBuckets = Record<ArAgingBucketKey, string>;          // numeric STRINGS
-export type ArAgingCurrencyRow = {
-  currencyCode: string; total: string; buckets: ArAgingBuckets; invoiceCount: number;
-};
+export type ArAgingBucket = 'current' | 'd1_30' | 'd31_60' | 'd61_90' | 'd90_plus' | 'no_due_date';
 export type ArAgingGroupRow = {
-  key: string; label: string; currencyCode: string; total: string;
-  buckets: ArAgingBuckets; invoiceCount: number;
+  groupKey: string; groupLabel: string; currencyCode: string;
+  buckets: Record<ArAgingBucket, string>;   // numeric STRINGS
+  openTotal: string; invoiceCount: number;
+};
+export type ArAgingDetailRow = {
+  invoiceId: string; invoiceNumber: string | null; orgId: string; orgName: string | null;
+  currencyCode: string; status: string; issueDate: string | null; dueDate: string | null;
+  total: string; amountPaid: string; balance: string;
+  daysOverdue: number | null; bucket: ArAgingBucket; lastPaymentAt: string | null;
 };
 export type ArAgingSummary = {
-  asOf?: string; timeZone?: string;
-  scope?: 'organization' | 'partner';
-  groupBy?: 'organization' | 'currency';
-  includePaidInPeriod?: boolean;
-  byCurrency?: ArAgingCurrencyRow[];
-  groups?: ArAgingGroupRow[];
-  truncated?: ReportTruncation | null;
-  footnotes?: string[];
+  generatedAt: string; asOf: string; timeZone: string; scope: ReportScopeMeta;
+  groupBy: 'organization' | 'currency';
+  byCurrency: ArAgingGroupRow[];           // one per currency, groupKey = currency
+  groups: ArAgingGroupRow[];               // per groupBy axis, per currency
+  otherOpenBalance: CurrencyAmountRow[];   // balance > 0 in a status the AR-open set excludes
+  detail: DetailRowMeta; notes: string[]; rows: ArAgingDetailRow[];
 };
 ```
 
-Every field is optional because the summary is **persisted** in `report_runs.result` and a legacy snapshot must still render — the rule `packages/shared/src/types/identityAccessReport.ts:1-20` states for `IdentityAccessSummary` and every arm of `ReportPreview.tsx` already honours.
+The period **input** type is `ReportPeriodInput` (not `ReportPeriodInput` — the brief's
+shorthand): W02 puts it and `ReportPeriodKind` in `packages/shared/src/types/businessReports.ts`
+and the matching zod schema in `packages/shared/src/validators/businessReports.ts`, so the
+options forms import exactly what the server validates. `ReportPeriodMeta` is the *resolved*
+window carried on a summary; `ResolvedReportPeriod` (with `Date`s) stays API-side in
+`services/businessReports/period.ts` and W03 never sees it. See Plan amendment 8.
+
+W02 declares these fields **required**, but the summary is **persisted** in
+`report_runs.result` and a legacy or partially-written snapshot must still render.
+Every web arm therefore casts the snapshot to its summary type and guards each field
+it reads (`s.overall?.…`, `Array.isArray(s.byCurrency)`, `s.detail?.truncated`) — the
+same defensive read every arm of `ReportPreview.tsx` already performs, and the rule
+`packages/shared/src/types/identityAccessReport.ts:1-20` states for `IdentityAccessSummary`.
 
 **Config schemas (W02, enforced server-side; the forms must not emit anything outside them):**
 
 | Type | Config |
 |---|---|
-| `ticket_sla_attainment` | `{ period: ReportPeriodConfig; groupBy: 'organization'\|'priority'\|'technician'\|'category'; includeNoSla: boolean }` — `groupBy` defaults `'organization'` at partner scope, `'priority'` at org scope; `includeNoSla` defaults `true` |
-| `technician_time_billability` | `{ period; groupBy: 'technician'\|'organization'\|'work_type'; weeklyCapacityHours: number 1..80 }` — defaults `'technician'`, `40` |
-| `ar_aging` | `{ asOf?: ISO date; groupBy: 'organization'\|'currency'; includePaidInPeriod: boolean }` — defaults: `asOf` absent (run time), `'organization'`, `false` |
+| `ticket_sla_attainment` | `{ period?: ReportPeriodInput; groupBy?: 'organization'\|'priority'\|'technician'\|'category'; includeNoSla?: boolean }` — `groupBy` defaults `'organization'` at partner scope, `'priority'` at org scope (applied in the generator, not the schema); `includeNoSla` defaults `true` |
+| `technician_time_billability` | `{ period?: ReportPeriodInput; groupBy?: 'technician'\|'organization'\|'work_type'; weeklyCapacityHours?: number 1..80 }` — defaults `'technician'`, `40` |
+| `ar_aging` | `{ asOf?: ISO date; groupBy?: 'organization'\|'currency'; includePaidInPeriod?: boolean }` — defaults: `asOf` absent (run time), `'organization'`, `false` |
+
+`ReportPeriodInput = { kind: 'last_full_month' \| 'last_30_days' \| 'last_quarter' \| 'custom'; start?: string; end?: string }` (W02, `services/businessReports/period.ts`). All three schemas are `z.looseObject`.
 
 **From W01 (routes):** `POST /reports` accepts `ownerScope: 'organization' | 'partner'` (default `'organization'`), create-only; the update schema omits it. `GET /reports` rows carry `orgId: string | null` and `partnerId: string | null`. The partner id is **always** derived server-side from `auth.partnerId` — the client never sends one (2026-07-01 design §7.2).
 
@@ -157,7 +188,10 @@ Every field is optional because the summary is **persisted** in `report_runs.res
 3. **There is no run-detail page.** `ReportPreview.tsx` is mounted only by `ReportBuilderPage.tsx:108` (verified by grep across `apps/web/src`). A completed run is opened through `ReportsList.handleDownload` (`ReportsList.tsx:254-...`), which for a PDF fetches the stored snapshot and re-renders it client-side via `exportReport`. So Task 5 does two things: the three preview arms in `ReportPreview.tsx` (ad-hoc generate path), **and** widening the `summary` union in `reportExport.ts` and at the `ReportsList` call site. That second half is the one that actually matters: if the union is not widened, the designed summary is dropped at the call site and `buildReportPdf` silently falls through to the generic row table — the exact silent failure #5784 W03/W04/W06 each had to close by hand.
 4. **Release notes: `CHANGELOG.md` in-repo, plus a drafted entry in the PR body.** The `update-breeze-release-notes` skill (`~/.claude/skills/update-breeze-release-notes/SKILL.md`) writes to `src/content/releases/YYYY-MM-DD-vX-Y-Z.md` in the **marketing website repo** (`/Users/toddhebebrand/breezermm.com website`), which is not this repo's tree, and its own rule is that content comes from merged PRs at release time. W03 therefore writes the in-repo `CHANGELOG.md` `[Unreleased] → Added` entry (committable, Task 10) and includes a ready-to-paste `added:` block in the PR body in the skill's exact schema, so the release cut can lift it verbatim.
 5. **"Business" renders as the first labelled section.** Spec §2: "the default lens for every business report is *all my clients*" and the MSP owner is the primary user. The existing curated order is preserved *within* the general group, so no existing card moves relative to another.
-6. **`ReportPeriodField.tsx` is a shared component, not three copies.** All three config schemas take the same `ReportPeriodConfig`; three hand-rolled pickers would drift. It ships with the SLA form (Task 3) and is imported by the other two.
+6. **`ReportPeriodField.tsx` is a shared component, not three copies.** All three config schemas take the same `ReportPeriodInput`; three hand-rolled pickers would drift. It ships with the SLA form (Task 3) and is imported by the other two.
+8. **The period input type is `ReportPeriodInput`, imported from `@breeze/shared` — this wave declares nothing period-shaped.** The brief's `ReportPeriodInput` is not a real symbol. W02 puts `ReportPeriodKind` / `ReportPeriodInput` in `packages/shared/src/types/businessReports.ts` and `periodSchema` in `packages/shared/src/validators/businessReports.ts` (the repo keeps zod in `validators/`, plain types in `types/`), precisely so the forms and the server schema cannot drift. `ReportPeriodField.tsx` imports both and adds only the UI-side `DEFAULT_REPORT_PERIOD` and `reportPeriodFromConfig`.
+9. **Three summary figures the wave brief named do not exist in W02's types and are not rendered.** (a) `worst: { label, attainment }` is `worstGroupLabel: string | null` in W02 — the label is rendered, the **attainment value is dropped** (the `{{value}}` token is removed from `reports.reportPreview.ticketSla.worst`); recovering it would mean re-deriving it from `groups` in the view, which is generator work. (b) The per-currency **`billableMinutes`** and per-currency **`averageHourlyRate`** on the old `BillableValueRow` are not produced: W02 gives `overall.billableValue: CurrencyAmountRow[]` and a parallel `overall.averageRate: CurrencyAmountRow[]`, so each currency row renders its money and its average rate, and **no per-currency minute figure is rendered**. (c) `techniciansConsidered` and `coverageFallbackRows` have no W02 equivalent and are **not rendered**; `groups.length` and `zeroTimeTechnicians` carry the same reader intent.
+10. **AR "other open balance" is a separate line, not a seventh bucket.** W02's `ArAgingBucket` has six members and `otherOpenBalance: CurrencyAmountRow[]` sits beside `byCurrency`. The preview renders a six-cell bucket grid plus an `ar-aging-other-open-<code>` line, matched to its currency row; the CSV shaper folds it in as an `other_open` column keyed on the same currency.
 7. **The partner-owned recipient refusal is enforced in `ReportBuilder.tsx`, because that is where the contact picker lives** (`ReportBuilder.tsx:814-842` fetch, `:2205-2227` render). `ReportEditPage` passes the loaded report's ownership down; a partner-owned definition skips the contacts fetch entirely and renders the free-text email list with an explanatory note. This mirrors the server, which answers `409 partner_owned_report` on the recipient writer (spec §3.1a).
 
 ---
@@ -660,16 +694,16 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 - Modify: `apps/web/src/components/reports/ReportEditPage.tsx` (three `*Fields` panels + `baseConfig` arms)
 
 **Interfaces:**
-- Consumes: `ReportPeriodConfig`, `ReportPeriodKind` from `@breeze/shared` (W02).
+- Consumes: `ReportPeriodInput`, `ReportPeriodKind` and `periodSchema` from `@breeze/shared` (W02).
 - Produces, per form, the four-export shape `IdentityAccessOptionsForm.tsx` established (`:18-199`):
 ```ts
-export type TicketSlaOptions = { period: ReportPeriodConfig; groupBy: 'organization'|'priority'|'technician'|'category'; includeNoSla: boolean };
+export type TicketSlaOptions = { period: ReportPeriodInput; groupBy: 'organization'|'priority'|'technician'|'category'; includeNoSla: boolean };
 export const DEFAULT_TICKET_SLA_OPTIONS: TicketSlaOptions;
 export function ticketSlaOptionsFromConfig(config: Record<string, unknown>): TicketSlaOptions;
 export function TicketSlaOptionsFields(props: { value: TicketSlaOptions; onChange: (v: TicketSlaOptions) => void }): JSX.Element;
 export function TicketSlaOptionsForm(props: { value; onChange; busy?: boolean; submitLabel: string; onSubmit: () => void; onCancel: () => void }): JSX.Element;
 
-export type TechnicianTimeOptions = { period: ReportPeriodConfig; groupBy: 'technician'|'organization'|'work_type'; weeklyCapacityHours: number };
+export type TechnicianTimeOptions = { period: ReportPeriodInput; groupBy: 'technician'|'organization'|'work_type'; weeklyCapacityHours: number };
 export const DEFAULT_TECHNICIAN_TIME_OPTIONS: TechnicianTimeOptions;
 export function technicianTimeOptionsFromConfig(config: Record<string, unknown>): TechnicianTimeOptions;
 export function TechnicianTimeOptionsFields(props): JSX.Element;
@@ -682,9 +716,9 @@ export function ArAgingOptionsFields(props): JSX.Element;
 export function ArAgingOptionsForm(props): JSX.Element;
 
 // ReportPeriodField.tsx
-export const DEFAULT_REPORT_PERIOD: ReportPeriodConfig;                       // { kind: 'last_full_month' }
-export function reportPeriodFromConfig(raw: unknown): ReportPeriodConfig;
-export function ReportPeriodField(props: { value: ReportPeriodConfig; onChange: (v: ReportPeriodConfig) => void; idPrefix?: string }): JSX.Element;
+export const DEFAULT_REPORT_PERIOD: ReportPeriodInput;                       // { kind: 'last_full_month' }
+export function reportPeriodFromConfig(raw: unknown): ReportPeriodInput;
+export function ReportPeriodField(props: { value: ReportPeriodInput; onChange: (v: ReportPeriodInput) => void; idPrefix?: string }): JSX.Element;
 ```
 - **`toConfig` rule, shared by all three:** the object spread into the create POST is the options object *minus* keys the server schema does not accept. `ArAgingOptions.asOf` is `string | null` in the form but must be **omitted** (not `null`) from the config when unset, because W02's schema types it `asOf?: ISO date` — hence each form exports the fields as a plain object and `ReportTemplates` uses the per-type `toConfig` helper below rather than a blind spread.
 
@@ -747,7 +781,7 @@ Create `apps/web/src/components/reports/ReportPeriodField.tsx`:
 
 ```tsx
 import { useTranslation } from 'react-i18next';
-import type { ReportPeriodConfig, ReportPeriodKind } from '@breeze/shared';
+import type { ReportPeriodInput, ReportPeriodKind } from '@breeze/shared';
 
 /**
  * The reporting period, shared by all three business report types (#3198 W03).
@@ -761,14 +795,14 @@ import type { ReportPeriodConfig, ReportPeriodKind } from '@breeze/shared';
  */
 const PERIOD_KINDS: readonly ReportPeriodKind[] = ['last_full_month', 'last_30_days', 'last_quarter', 'custom'];
 
-export const DEFAULT_REPORT_PERIOD: ReportPeriodConfig = { kind: 'last_full_month' };
+export const DEFAULT_REPORT_PERIOD: ReportPeriodInput = { kind: 'last_full_month' };
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 /** Read a persisted `config.period` back into form state. A custom window
  *  missing either boundary is NOT a valid custom window — the server rejects
  *  it — so it degrades to the default rather than seeding a value that 400s. */
-export function reportPeriodFromConfig(raw: unknown): ReportPeriodConfig {
+export function reportPeriodFromConfig(raw: unknown): ReportPeriodInput {
   if (!raw || typeof raw !== 'object') return DEFAULT_REPORT_PERIOD;
   const period = raw as Record<string, unknown>;
   const kind = period.kind;
@@ -787,8 +821,8 @@ export function ReportPeriodField({
   onChange,
   idPrefix = 'report',
 }: {
-  value: ReportPeriodConfig;
-  onChange: (value: ReportPeriodConfig) => void;
+  value: ReportPeriodInput;
+  onChange: (value: ReportPeriodInput) => void;
   idPrefix?: string;
 }) {
   const { t } = useTranslation('reports');
@@ -1050,7 +1084,7 @@ Expected: FAIL, 3 files — `Failed to resolve import`.
 
 ```tsx
 import { useTranslation } from 'react-i18next';
-import type { ReportPeriodConfig } from '@breeze/shared';
+import type { ReportPeriodInput } from '@breeze/shared';
 import { DEFAULT_REPORT_PERIOD, ReportPeriodField, reportPeriodFromConfig } from './ReportPeriodField';
 
 /**
@@ -1069,7 +1103,7 @@ import { DEFAULT_REPORT_PERIOD, ReportPeriodField, reportPeriodFromConfig } from
 export type TicketSlaGroupBy = 'organization' | 'priority' | 'technician' | 'category';
 
 export type TicketSlaOptions = {
-  period: ReportPeriodConfig;
+  period: ReportPeriodInput;
   groupBy: TicketSlaGroupBy;
   includeNoSla: boolean;
 };
@@ -1191,7 +1225,7 @@ Same four-export shape. The distinctive parts:
 export type TechnicianTimeGroupBy = 'technician' | 'organization' | 'work_type';
 
 export type TechnicianTimeOptions = {
-  period: ReportPeriodConfig;
+  period: ReportPeriodInput;
   groupBy: TechnicianTimeGroupBy;
   weeklyCapacityHours: number;
 };
@@ -1758,7 +1792,7 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: `TicketSlaSummary`, `TechnicianTimeSummary`, `ArAgingSummary`, `formatMoney`, `formatPercent`, `formatMinutes` (W02).
-- Produces: testids `ticket-sla-summary`, `technician-time-summary`, `ar-aging-summary`, `report-summary-truncated`, `report-summary-footnotes`, `ar-aging-currency-row-<code>`.
+- Produces: testids `ticket-sla-summary`, `technician-time-summary`, `ar-aging-summary`, `report-summary-truncated`, `report-summary-footnotes` (renders W02's `summary.notes`), `ar-aging-currency-row-<code>`, `ar-aging-other-open-<code>`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1776,10 +1810,15 @@ describe('ReportPreview — business summaries (#3198 W03)', () => {
     render(<ReportPreview data={{
       ...base, type: 'ticket_sla_attainment',
       data: { rows: [], summary: {
-        ticketsConsidered: 120, noSlaSet: 8, responseAttainment: 0.875,
-        resolutionAttainment: 0.5, breachCount: 15, stampedBreachCount: 9,
-        recomputedVsStampedDelta: 6,
-        footnotes: ['Paused minutes are a lifetime total.'],
+        overall: {
+          ticketsTotal: 120, noSlaTickets: 8,
+          responseEligible: 112, responseMet: 98, responseAttainment: 0.875,
+          resolutionEligible: 112, resolutionMet: 56, resolutionAttainment: 0.5,
+          breaches: 15,
+        },
+        worstGroupLabel: 'Critical',
+        stampDiscrepancy: { recomputedBreachNotStamped: 6, stampedNotRecomputedBreach: 0 },
+        notes: ['Paused minutes are a lifetime total.'],
       } },
     }} />);
     const block = screen.getByTestId('ticket-sla-summary');
@@ -1794,7 +1833,7 @@ describe('ReportPreview — business summaries (#3198 W03)', () => {
   it('renders an unmeasured attainment as not-measured, never as 0%', () => {
     render(<ReportPreview data={{
       ...base, type: 'ticket_sla_attainment',
-      data: { rows: [], summary: { ticketsConsidered: 0, responseAttainment: null, resolutionAttainment: null } },
+      data: { rows: [], summary: { overall: { ticketsTotal: 0, responseAttainment: null, resolutionAttainment: null } } },
     }} />);
     expect(screen.getByTestId('ticket-sla-response-attainment')).not.toHaveTextContent('0%');
     expect(screen.getByTestId('ticket-sla-response-attainment')).toHaveTextContent(/N\/A/i);
@@ -1804,19 +1843,25 @@ describe('ReportPreview — business summaries (#3198 W03)', () => {
     render(<ReportPreview data={{
       ...base, type: 'technician_time_billability',
       data: { rows: [], summary: {
-        techniciansConsidered: 6, zeroTimeTechnicians: 1,
-        loggedMinutes: 5405, capacityMinutes: 9600, utilization: 0.563,
-        billableMinutes: 3000, includedMinutes: 900, nonBillableMinutes: 1505,
-        billablePercent: 0.555, billingConversion: 0.8,
-        billableValueByCurrency: [
-          { currencyCode: 'USD', billableValue: '4500.00', billableMinutes: 1800, averageHourlyRate: '150.00' },
-          { currencyCode: 'EUR', billableValue: '2000.00', billableMinutes: 1200, averageHourlyRate: '100.00' },
-        ],
+        zeroTimeTechnicians: 1,
+        overall: {
+          loggedMinutes: 5405, capacityMinutes: 9600, utilization: 0.563,
+          billableMinutes: 3000, includedMinutes: 900, nonBillableMinutes: 1505,
+          billablePercent: 0.555, billedMinutes: 2400, billingConversion: 0.8,
+          billableValue: [
+            { currencyCode: 'USD', amount: '4500.00' },
+            { currencyCode: 'EUR', amount: '2000.00' },
+          ],
+          averageRate: [
+            { currencyCode: 'USD', amount: '150.00' },
+            { currencyCode: 'EUR', amount: '100.00' },
+          ],
+        },
       } },
     }} />);
     const block = screen.getByTestId('technician-time-summary');
-    expect(within(block).getByTestId('technician-time-logged')).toHaveTextContent('90h 5m');
-    expect(within(block).getByTestId('technician-time-included')).toHaveTextContent('15h 0m');
+    expect(within(block).getByTestId('technician-time-logged')).toHaveTextContent('90h 05m');
+    expect(within(block).getByTestId('technician-time-included')).toHaveTextContent('15h 00m');
     // One row per currency, never one summed headline (Open Decision 4 = A).
     expect(within(block).getByTestId('technician-time-currency-USD')).toHaveTextContent('$4,500.00');
     expect(within(block).getByTestId('technician-time-currency-EUR')).toHaveTextContent('€2,000.00');
@@ -1828,21 +1873,23 @@ describe('ReportPreview — business summaries (#3198 W03)', () => {
       data: { rows: [], summary: {
         asOf: '2026-08-31T23:59:59.000Z',
         byCurrency: [{
-          currencyCode: 'USD', total: '12000.00', invoiceCount: 9,
-          buckets: { current: '5000.00', d1_30: '3000.00', d31_60: '2000.00', d61_90: '1000.00', d90_plus: '500.00', no_due_date: '400.00', other_open: '100.00' },
+          groupKey: 'USD', groupLabel: 'USD', currencyCode: 'USD', openTotal: '12000.00', invoiceCount: 9,
+          buckets: { current: '5000.00', d1_30: '3000.00', d31_60: '2000.00', d61_90: '1000.00', d90_plus: '500.00', no_due_date: '400.00' },
         }],
+        // Not a seventh bucket — a reconciliation line beside them (W02).
+        otherOpenBalance: [{ currencyCode: 'USD', amount: '100.00' }],
       } },
     }} />);
     const row = screen.getByTestId('ar-aging-currency-row-USD');
     expect(within(row).getByTestId('ar-aging-bucket-USD-no_due_date')).toHaveTextContent('$400.00');
     expect(within(row).getByTestId('ar-aging-bucket-USD-current')).toHaveTextContent('$5,000.00');
-    expect(within(row).getByTestId('ar-aging-bucket-USD-other_open')).toHaveTextContent('$100.00');
+    expect(within(row).getByTestId('ar-aging-other-open-USD')).toHaveTextContent('$100.00');
   });
 
   it('shows the truncation notice when detail rows were capped', () => {
     render(<ReportPreview data={{
       ...base, type: 'ar_aging',
-      data: { rows: [], summary: { byCurrency: [], truncated: { detailRows: 5000, cap: 5000 } } },
+      data: { rows: [], summary: { byCurrency: [], detail: { cap: 5000, stored: 5000, available: 9000, truncated: true } } },
     }} />);
     // Aggregates always cover every row; only the stored DETAIL rows are capped
     // (spec §3.2/§4), and the reader has to be told which of the two they are
@@ -1867,7 +1914,7 @@ Expected: FAIL — no `ticket-sla-summary` element.
 
 - [ ] **Step 3: Add the three arms**
 
-In `ReportPreview.tsx`, import `formatMoney, formatPercent, formatMinutes` from `@breeze/shared/reportPdf` and the three summary types from `@breeze/shared`. Add a small shared tail component above the component body:
+In `ReportPreview.tsx`, import `formatMoney, formatPercent, formatMinutes` from `@breeze/shared/reportPdf` and `TicketSlaSummary`, `TechnicianTimeSummary`, `ArAgingSummary`, `CurrencyAmountRow`, `DetailRowMeta` from `@breeze/shared`. Add a small shared tail component above the component body:
 
 ```tsx
 /** The two things every business summary must state on its face: that the
@@ -1876,19 +1923,19 @@ In `ReportPreview.tsx`, import `formatMoney, formatPercent, formatMinutes` from 
  *  uniform capacity, "current assignee"). Rendered verbatim from the snapshot
  *  so the preview and the delivered PDF cannot disagree. */
 const BusinessSummaryTail = ({
-  truncated,
-  footnotes,
+  detail,
+  notes,
 }: {
-  truncated?: { detailRows: number; cap: number } | null;
-  footnotes?: string[];
+  detail?: DetailRowMeta | null;
+  notes?: string[];
 }) => {
   const { t } = useTranslation('reports');
-  const lines = Array.isArray(footnotes) ? footnotes.filter(Boolean) : [];
+  const lines = Array.isArray(notes) ? notes.filter(Boolean) : [];
   return (
     <>
-      {truncated && (
+      {detail?.truncated && (
         <p data-testid="report-summary-truncated" className="rounded-md border border-dashed p-3 text-xs text-muted-foreground">
-          {t('reports.reportPreview.business.truncated', { shown: truncated.detailRows, cap: truncated.cap })}
+          {t('reports.reportPreview.business.truncated', { shown: detail.stored, cap: detail.available })}
         </p>
       )}
       {lines.length > 0 && (
@@ -1910,15 +1957,15 @@ Then three arms, each in the shape the existing arms use (`:301-516`) — an IIF
         const pct = (v: number | null | undefined) => (v === null || v === undefined ? na : formatPercent(v, 1));
         const num = (v: number | null | undefined) => (v === null || v === undefined ? na : String(v));
         const tiles = [
-          { key: 'responseAttainment', testId: 'ticket-sla-response-attainment', value: pct(s.responseAttainment) },
-          { key: 'resolutionAttainment', testId: 'ticket-sla-resolution-attainment', value: pct(s.resolutionAttainment) },
-          { key: 'breachCount', testId: 'ticket-sla-breaches', value: num(s.breachCount) },
-          { key: 'noSlaSet', testId: 'ticket-sla-no-sla', value: num(s.noSlaSet) },
+          { key: 'responseAttainment', testId: 'ticket-sla-response-attainment', value: pct(s.overall?.responseAttainment) },
+          { key: 'resolutionAttainment', testId: 'ticket-sla-resolution-attainment', value: pct(s.overall?.resolutionAttainment) },
+          { key: 'breachCount', testId: 'ticket-sla-breaches', value: num(s.overall?.breaches) },
+          { key: 'noSlaSet', testId: 'ticket-sla-no-sla', value: num(s.overall?.noSlaTickets) },
           // Recomputed attainment finds breaches the periodic sweep never
           // stamped. The gap is PUBLISHED as a count rather than reconciled
           // away, because an unexplained difference from the in-app SLA chips
           // is what makes an owner distrust the whole report (Open Decision 2).
-          { key: 'stampDelta', testId: 'ticket-sla-stamp-delta', value: num(s.recomputedVsStampedDelta) },
+          { key: 'stampDelta', testId: 'ticket-sla-stamp-delta', value: num(s.stampDiscrepancy?.recomputedBreachNotStamped) },
         ];
         return (
           <div className="space-y-4" data-testid="ticket-sla-summary">
@@ -1932,18 +1979,20 @@ Then three arms, each in the shape the existing arms use (`:301-516`) — an IIF
                 </div>
               ))}
             </div>
-            {s.worst && (
+            {s.worstGroupLabel && (
+              // W02 publishes the weakest group's LABEL only; there is no
+              // attainment value beside it (Plan amendment 9a).
               <p className="text-xs text-muted-foreground">
-                {t('reports.reportPreview.ticketSla.worst', { label: s.worst.label, value: formatPercent(s.worst.attainment, 1) })}
+                {t('reports.reportPreview.ticketSla.worst', { label: s.worstGroupLabel })}
               </p>
             )}
-            <BusinessSummaryTail truncated={s.truncated} footnotes={s.footnotes} />
+            <BusinessSummaryTail detail={s.detail} notes={s.notes} />
           </div>
         );
       })()}
 ```
 
-The technician-time arm renders five tiles (`technician-time-logged` = `formatMinutes(loggedMinutes)`, `technician-time-included` = `formatMinutes(includedMinutes)`, utilisation and billable % through `formatPercent`, billing conversion likewise) plus a per-currency list, each row `data-testid={`technician-time-currency-${row.currencyCode}`}` rendering `formatMoney(row.billableValue, row.currencyCode)` and `formatMinutes(row.billableMinutes)`. The AR arm renders one block per `byCurrency` row, `data-testid={`ar-aging-currency-row-${row.currencyCode}`}`, with a seven-cell bucket grid keyed `data-testid={`ar-aging-bucket-${row.currencyCode}-${bucketKey}`}`, values `formatMoney(row.buckets[bucketKey], row.currencyCode)`, in the fixed order `current, d1_30, d31_60, d61_90, d90_plus, no_due_date, other_open`. Both arms end with `<BusinessSummaryTail …/>`.
+The technician-time arm reads everything off `s.overall` and renders five tiles (`technician-time-logged` = `formatMinutes(s.overall.loggedMinutes)`, `technician-time-included` = `formatMinutes(s.overall.includedMinutes)`, utilisation and billable % through `formatPercent`, billing conversion likewise) plus a per-currency list built from `s.overall.billableValue: CurrencyAmountRow[]`, each row `data-testid={`technician-time-currency-${row.currencyCode}`}` rendering `formatMoney(row.amount, row.currencyCode)` and, beside it, the matching `s.overall.averageRate` entry for that currency through `formatMoney`. **No per-currency minute figure is rendered** — W02 does not produce one (Plan amendment 9b). The AR arm renders one block per `byCurrency` row, `data-testid={`ar-aging-currency-row-${row.currencyCode}`}`, with a **six**-cell bucket grid keyed `data-testid={`ar-aging-bucket-${row.currencyCode}-${bucketKey}`}`, values `formatMoney(row.buckets[bucketKey], row.currencyCode)`, in the fixed order `current, d1_30, d31_60, d61_90, d90_plus, no_due_date`, `row.openTotal` as the block total, and — when `s.otherOpenBalance` carries an entry for that currency — one further line `data-testid={`ar-aging-other-open-${row.currencyCode}`}` (Plan amendment 10). Both arms end with `<BusinessSummaryTail …/>`.
 
 Extend the generic-card suppression at `:519`:
 
@@ -2024,13 +2073,17 @@ describe('businessReportExportRows (#3198 W03)', () => {
   it('emits AR aging bucket totals as RAW numeric strings with a currency_code column', () => {
     const out = businessReportExportRows('ar_aging', {
       byCurrency: [{
-        currencyCode: 'USD', total: '12000.00', invoiceCount: 9,
-        buckets: { current: '5000.00', d1_30: '3000.00', d31_60: '2000.00', d61_90: '1000.00', d90_plus: '500.00', no_due_date: '400.00', other_open: '100.00' },
+        groupKey: 'USD', groupLabel: 'USD', currencyCode: 'USD', openTotal: '12000.00', invoiceCount: 9,
+        buckets: { current: '5000.00', d1_30: '3000.00', d31_60: '2000.00', d61_90: '1000.00', d90_plus: '500.00', no_due_date: '400.00' },
       }],
+      otherOpenBalance: [{ currencyCode: 'USD', amount: '100.00' }],
     }, []) as Record<string, unknown>[];
 
+    // `other_open` is a COLUMN here, folded in from `otherOpenBalance` by
+    // currency — it is not one of W02's six buckets.
     expect(out[0]).toMatchObject({
-      currency_code: 'USD', total: '12000.00', current: '5000.00', no_due_date: '400.00', invoice_count: 9,
+      currency_code: 'USD', open_total: '12000.00', current: '5000.00', no_due_date: '400.00',
+      other_open: '100.00', invoice_count: 9,
     });
     // A spreadsheet must be able to SUM this column. "$12,000.00" cannot be
     // summed, cannot be re-imported, and silently changes meaning with locale
@@ -2042,7 +2095,7 @@ describe('businessReportExportRows (#3198 W03)', () => {
 
   it('keeps detail rows and appends currency_code to each, when the summary has one', () => {
     const out = businessReportExportRows('ar_aging',
-      { byCurrency: [{ currencyCode: 'USD', total: '1.00', invoiceCount: 1, buckets: {} }] },
+      { byCurrency: [{ groupKey: 'USD', groupLabel: 'USD', currencyCode: 'USD', openTotal: '1.00', invoiceCount: 1, buckets: {} }] },
       [{ invoice_number: 'INV-1', balance: '250.00', currency_code: 'EUR' }],
     ) as Record<string, unknown>[];
     const detail = out.find((r) => r.invoice_number === 'INV-1');
@@ -2054,11 +2107,19 @@ describe('businessReportExportRows (#3198 W03)', () => {
   it('emits technician time as raw minutes and raw rates, never formatted', () => {
     const out = businessReportExportRows('technician_time_billability', {
       groups: [{
-        key: 'u-1', label: 'Dana', loggedMinutes: 5405, capacityMinutes: 9600, utilization: 0.563,
+        groupKey: 'u-1', groupLabel: 'Dana', loggedMinutes: 5405, capacityMinutes: 9600, utilization: 0.563,
         billableMinutes: 3000, includedMinutes: 900, nonBillableMinutes: 1505,
-        billablePercent: 0.555, convertedMinutes: 2400, billingConversion: 0.8,
+        billablePercent: 0.555, billedMinutes: 2400, billingConversion: 0.8,
+        billableValue: [{ currencyCode: 'USD', amount: '4500.00' }],
+        averageRate: [{ currencyCode: 'USD', amount: '150.00' }],
       }],
-      billableValueByCurrency: [{ currencyCode: 'USD', billableValue: '4500.00', billableMinutes: 1800, averageHourlyRate: '150.00' }],
+      overall: {
+        loggedMinutes: 5405, capacityMinutes: 9600, utilization: 0.563,
+        billableMinutes: 3000, includedMinutes: 900, nonBillableMinutes: 1505,
+        billablePercent: 0.555, billedMinutes: 2400, billingConversion: 0.8,
+        billableValue: [{ currencyCode: 'USD', amount: '4500.00' }],
+        averageRate: [{ currencyCode: 'USD', amount: '150.00' }],
+      },
     }, []) as Record<string, unknown>[];
     expect(out[0]).toMatchObject({ label: 'Dana', logged_minutes: 5405, utilization: 0.563 });
     expect(out.some((r) => r.currency_code === 'USD' && r.billable_value === '4500.00')).toBe(true);
@@ -2069,7 +2130,7 @@ describe('businessReportExportRows (#3198 W03)', () => {
 
   it('emits SLA attainment as fractions, not percent strings', () => {
     const out = businessReportExportRows('ticket_sla_attainment', {
-      groups: [{ key: 'p1', label: 'Critical', ticketsConsidered: 10, responseMet: 9, responseTotal: 10, responseAttainment: 0.9, resolutionMet: 5, resolutionTotal: 10, resolutionAttainment: 0.5, breaches: 1 }],
+      groups: [{ groupKey: 'p1', groupLabel: 'Critical', ticketsTotal: 10, noSlaTickets: 0, responseEligible: 10, responseMet: 9, responseAttainment: 0.9, resolutionEligible: 10, resolutionMet: 5, resolutionAttainment: 0.5, breaches: 1 }],
     }, []) as Record<string, unknown>[];
     expect(out[0]).toMatchObject({ label: 'Critical', response_attainment: 0.9, resolution_attainment: 0.5 });
   });
@@ -2246,7 +2307,7 @@ Then five new top-level blocks under `reports`:
     "breachCount": "Missed targets",
     "noSlaSet": "No SLA set",
     "stampDelta": "Found by recalculation",
-    "worst": "Weakest: {{label}} at {{value}}"
+    "worst": "Weakest: {{label}}"
   },
   "technicianTime": {
     "logged": "Time logged",
@@ -2258,16 +2319,16 @@ Then five new top-level blocks under `reports`:
     "billableValue": "Billable value"
   },
   "arAging": {
-    "total": "Total outstanding",
+    "openTotal": "Total outstanding",
     "invoiceCount": "Open invoices",
+    "otherOpen": "Other open balance",
     "buckets": {
       "current": "Current",
       "d1_30": "1–30 days",
       "d31_60": "31–60 days",
       "d61_90": "61–90 days",
       "d90_plus": "90+ days",
-      "no_due_date": "No due date",
-      "other_open": "Other open balance"
+      "no_due_date": "No due date"
     }
   }
 }
@@ -2287,7 +2348,7 @@ And in `apps/web/src/locales/en/settings.json`, inside `billablesExport`:
 
 - [ ] **Step 3: Translate into the seven other catalogs**
 
-Every key above goes into all seven with a **real translation** — `translationCoverage.test.ts` caps exact-English duplicates per namespace and a wholesale copy blows every cap. Translate the prose; keep interpolation tokens (`{{shown}}`, `{{cap}}`, `{{label}}`, `{{value}}`, `{{asOf}}`) byte-identical, which `localeParity.test.ts` checks explicitly.
+Every key above goes into all seven with a **real translation** — `translationCoverage.test.ts` caps exact-English duplicates per namespace and a wholesale copy blows every cap. Translate the prose; keep interpolation tokens (`{{shown}}`, `{{cap}}`, `{{label}}`, `{{asOf}}`) byte-identical, which `localeParity.test.ts` checks explicitly.
 
 Three values are **intentionally identical** in several catalogs and need their duplicate baselines bumped in `translationCoverage.test.ts` if the run reports it: `"N/A"` (a locale-invariant abbreviation already used by the four existing evidence arms), the bucket labels `"1–30 days"`-style numerals in locales where only the noun changes, and `"Business"` in it-IT. Bump the `reports.json` baseline for the affected locale by the reported count with a one-line comment naming these keys — do not translate `N/A` into something a technician has to decode.
 
