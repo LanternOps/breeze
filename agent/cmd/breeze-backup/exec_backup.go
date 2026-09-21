@@ -81,7 +81,34 @@ type backupRunProviderConfig struct {
 	Endpoint  string `json:"endpoint"`
 	AccessKey string `json:"accessKey"`
 	SecretKey string `json:"secretKey"`
-	Path      string `json:"path"` // local provider destination
+	// AccessKeyID/SecretAccessKey: the AWS-idiomatic spelling the API's own
+	// S3 config validator and connectivity probe have long accepted
+	// (apps/api/src/routes/backup/schemas.ts,
+	// services/backupSnapshotStorage.ts) alongside AccessKey/SecretKey. The
+	// API now canonicalizes to AccessKey/SecretKey at the config write and
+	// dispatch boundaries (#6511), but the agent tolerates both spellings
+	// too — see credentials() below — as a cheap second line of defense so
+	// a config that somehow bypasses that normalization doesn't silently
+	// run every upload with empty credentials.
+	AccessKeyID     string `json:"accessKeyId"`
+	SecretAccessKey string `json:"secretAccessKey"`
+	Path            string `json:"path"` // local provider destination
+}
+
+// credentials resolves the S3 access key / secret key, preferring the
+// canonical accessKey/secretKey spelling and falling back to the
+// AWS-idiomatic accessKeyId/secretAccessKey spelling when the canonical
+// field is empty. See the AccessKeyID/SecretAccessKey field comments (#6511).
+func (c *backupRunProviderConfig) credentials() (accessKey, secretKey string) {
+	accessKey = c.AccessKey
+	if accessKey == "" {
+		accessKey = c.AccessKeyID
+	}
+	secretKey = c.SecretKey
+	if secretKey == "" {
+		secretKey = c.SecretAccessKey
+	}
+	return accessKey, secretKey
 }
 
 // defaultVSS decides whether VSS shadow-copy defaults on for a backup_run,
@@ -190,9 +217,10 @@ func managerFromBackupRunPayload(payload json.RawMessage) (*backup.BackupManager
 	var provider providers.BackupProvider
 	switch p.Provider {
 	case "s3":
+		accessKey, secretKey := p.ProviderConfig.credentials()
 		provider = providers.NewS3ProviderWithEndpoint(
 			p.ProviderConfig.Bucket, p.ProviderConfig.Region, p.ProviderConfig.Endpoint,
-			p.ProviderConfig.AccessKey, p.ProviderConfig.SecretKey, "")
+			accessKey, secretKey, "")
 	case "local":
 		provider = providers.NewLocalProvider(p.ProviderConfig.Path)
 	default:
@@ -288,9 +316,10 @@ func restoreProviderFromPayload(payload json.RawMessage) (providers.BackupProvid
 	}
 	switch p.Provider {
 	case "s3":
+		accessKey, secretKey := p.ProviderConfig.credentials()
 		return providers.NewS3ProviderWithEndpoint(
 			p.ProviderConfig.Bucket, p.ProviderConfig.Region, p.ProviderConfig.Endpoint,
-			p.ProviderConfig.AccessKey, p.ProviderConfig.SecretKey, ""), nil
+			accessKey, secretKey, ""), nil
 	case "local":
 		return providers.NewLocalProvider(p.ProviderConfig.Path), nil
 	default:

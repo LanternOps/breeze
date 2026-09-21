@@ -759,3 +759,99 @@ func TestManagerFromBackupRunPayload_RejectsLeaseWithoutBaseSnapshotID(t *testin
 		t.Fatal("expected a nil manager on rejection")
 	}
 }
+
+// TestBackupRunProviderConfigCredentials_AWSSpellingFallback covers #6511:
+// the API's own S3 config validator and connectivity probe have long
+// accepted the AWS-idiomatic accessKeyId/secretAccessKey spelling
+// (apps/api/src/routes/backup/schemas.ts, services/backupSnapshotStorage.ts)
+// alongside the canonical accessKey/secretKey the agent reads. A config
+// saved under only the AWS spelling validated, persisted, and dispatched —
+// then every upload ran with empty agent-side credentials, falling through
+// to the SDK's default credential chain and stalling on IMDS/DNS. The API
+// now canonicalizes at the write/dispatch boundary, but the agent should
+// tolerate both spellings too as a cheap second line of defense.
+func TestBackupRunProviderConfigCredentials_AWSSpellingFallback(t *testing.T) {
+	tests := []struct {
+		name          string
+		cfg           backupRunProviderConfig
+		wantAccessKey string
+		wantSecretKey string
+	}{
+		{
+			name:          "canonical spelling used directly",
+			cfg:           backupRunProviderConfig{AccessKey: "AK", SecretKey: "SK"},
+			wantAccessKey: "AK",
+			wantSecretKey: "SK",
+		},
+		{
+			name:          "AWS-idiomatic spelling falls back when canonical is empty",
+			cfg:           backupRunProviderConfig{AccessKeyID: "AKID", SecretAccessKey: "SAK"},
+			wantAccessKey: "AKID",
+			wantSecretKey: "SAK",
+		},
+		{
+			name: "canonical spelling wins when both are present",
+			cfg: backupRunProviderConfig{
+				AccessKey: "AK", SecretKey: "SK",
+				AccessKeyID: "AKID", SecretAccessKey: "SAK",
+			},
+			wantAccessKey: "AK",
+			wantSecretKey: "SK",
+		},
+		{
+			name:          "neither spelling present yields empty credentials",
+			cfg:           backupRunProviderConfig{},
+			wantAccessKey: "",
+			wantSecretKey: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotAccessKey, gotSecretKey := tt.cfg.credentials()
+			if gotAccessKey != tt.wantAccessKey {
+				t.Errorf("accessKey = %q, want %q", gotAccessKey, tt.wantAccessKey)
+			}
+			if gotSecretKey != tt.wantSecretKey {
+				t.Errorf("secretKey = %q, want %q", gotSecretKey, tt.wantSecretKey)
+			}
+		})
+	}
+}
+
+// TestManagerFromBackupRunPayload_S3CredentialsAWSSpelling is an end-to-end
+// regression for #6511 through managerFromBackupRunPayload: a payload whose
+// providerConfig carries ONLY accessKeyId/secretAccessKey (no accessKey/
+// secretKey) must still resolve to real, non-empty credentials instead of
+// silently falling back to empty strings (S3Provider keeps its resolved
+// credentials unexported, so this asserts what managerFromBackupRunPayload
+// actually decoded and would have passed to NewS3ProviderWithEndpoint).
+func TestManagerFromBackupRunPayload_S3CredentialsAWSSpelling(t *testing.T) {
+	payload := `{"provider":"s3","providerConfig":{"bucket":"my-bucket","region":"us-east-1","accessKeyId":"AKID","secretAccessKey":"SAK"},"paths":["/data"]}`
+	var p struct {
+		ProviderConfig *backupRunProviderConfig `json:"providerConfig"`
+	}
+	if err := json.Unmarshal([]byte(payload), &p); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	gotAccessKey, gotSecretKey := p.ProviderConfig.credentials()
+	if gotAccessKey != "AKID" || gotSecretKey != "SAK" {
+		t.Fatalf("credentials() = (%q, %q), want (%q, %q)", gotAccessKey, gotSecretKey, "AKID", "SAK")
+	}
+
+	mgr, err := managerFromBackupRunPayload(json.RawMessage(payload))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if mgr == nil {
+		t.Fatal("expected a manager, got nil")
+	}
+	provider := mgr.GetProvider()
+	s3p, ok := provider.(*providers.S3Provider)
+	if !ok {
+		t.Fatalf("provider type = %T, want *providers.S3Provider", provider)
+	}
+	if s3p.Bucket != "my-bucket" {
+		t.Errorf("bucket = %q, want %q", s3p.Bucket, "my-bucket")
+	}
+}

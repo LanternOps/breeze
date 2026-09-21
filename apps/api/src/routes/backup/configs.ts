@@ -23,7 +23,7 @@ import { checkBackupProviderCapabilities, type ProviderCapabilityStatus } from '
 import { PERMISSIONS } from '../../services/permissions';
 import { coerceS3EndpointUrl, deriveS3RegionFromEndpoint } from '@breeze/shared';
 import { resolveScopedOrgId } from './helpers';
-import { configSchema, configUpdateSchema, validateS3Details } from './schemas';
+import { canonicalizeS3CredentialFields, configSchema, configUpdateSchema, validateS3Details } from './schemas';
 
 export const configsRoutes = new Hono();
 
@@ -150,7 +150,12 @@ async function probeLocalConfig(details: Record<string, unknown>): Promise<void>
   await rm(probePath, { force: true });
 }
 
-async function probeS3Config(details: Record<string, unknown>): Promise<void> {
+async function probeS3Config(rawDetails: Record<string, unknown>): Promise<void> {
+  // #6511: tolerate a config stored under the AWS-idiomatic accessKeyId/
+  // secretAccessKey spelling before canonicalization existed (no backfill
+  // migration) — copy first so this never mutates the caller's row object.
+  const details = { ...rawDetails };
+  canonicalizeS3CredentialFields(details);
   const bucket = typeof details.bucket === 'string' ? details.bucket : '';
   const storedRegion = typeof details.region === 'string' ? details.region.trim() : '';
   const accessKeyId = typeof details.accessKey === 'string' ? details.accessKey : '';
@@ -276,6 +281,9 @@ configsRoutes.post(
         // accumulating (Sentry BREEZE-P residual gap).
         delete details.endpoint;
       }
+      // #6511: canonicalize accessKeyId/secretAccessKey to accessKey/secretKey
+      // — see canonicalizeS3CredentialFields for why.
+      canonicalizeS3CredentialFields(details);
     }
     const encryption = payload.encryption ?? false;
     try {
@@ -404,9 +412,31 @@ configsRoutes.patch(
     if (payload.isDefault !== undefined) updateData.isDefault = payload.isDefault;
 
     if (payload.details !== undefined || payload.encryption !== undefined) {
-      const nextProviderConfig = payload.details !== undefined
-        ? preserveSecretFields(payload.details, current.providerConfig)
-        : current.providerConfig;
+      // #6511: canonicalize BOTH sides to accessKey/secretKey before the
+      // secret-preserving merge below. Without this, a payload that renames
+      // credentials from accessKey/secretKey to accessKeyId/secretAccessKey
+      // (or vice versa) would leave preserveSecretFields treating them as
+      // two unrelated fields — it fills the now-omitted old field name back
+      // in from `current`, silently reviving the STALE credential value
+      // alongside the new one, and canonicalizing afterward would then favor
+      // that stale "canonical" field over the real update.
+      let incomingDetails: unknown = payload.details;
+      let priorProviderConfig: unknown = current.providerConfig;
+      if (current.provider === 's3') {
+        if (incomingDetails !== undefined && isRecord(incomingDetails)) {
+          const canonicalizedIncoming: Record<string, unknown> = { ...incomingDetails };
+          canonicalizeS3CredentialFields(canonicalizedIncoming);
+          incomingDetails = canonicalizedIncoming;
+        }
+        if (isRecord(priorProviderConfig)) {
+          const canonicalizedPrior: Record<string, unknown> = { ...priorProviderConfig };
+          canonicalizeS3CredentialFields(canonicalizedPrior);
+          priorProviderConfig = canonicalizedPrior;
+        }
+      }
+      const nextProviderConfig = incomingDetails !== undefined
+        ? preserveSecretFields(incomingDetails, priorProviderConfig)
+        : priorProviderConfig;
       if (payload.details !== undefined && current.provider === 's3' && isRecord(nextProviderConfig)) {
         // NOTE: configUpdateSchema has no superRefine (it cannot — `provider`
         // is not part of an update payload, so the schema can't tell an s3
@@ -428,6 +458,8 @@ configsRoutes.patch(
           // (Sentry BREEZE-P residual gap).
           delete nextProviderConfig.endpoint;
         }
+        // #6511: canonicalize accessKeyId/secretAccessKey to accessKey/secretKey.
+        canonicalizeS3CredentialFields(nextProviderConfig);
       }
       const nextEncryption = payload.encryption ?? current.encryption;
 
