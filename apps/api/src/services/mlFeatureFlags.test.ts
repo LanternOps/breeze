@@ -149,6 +149,24 @@ describe('mlFeatureFlags', () => {
     });
   });
 
+  it('reports the partner-level value as inheritedEnabled so the org UI can show what "inherit" means', () => {
+    const orgOff = resolveMlFeatureFlag('ml.anomalies.enabled', {
+      nodeEnv: 'production',
+      partnerSettings: { ml: { anomalies: { enabled: true } } },
+      orgSettings: { ml: { anomalies: { enabled: false } } },
+    });
+    expect(orgOff).toMatchObject({ enabled: false, inheritedEnabled: true, source: 'org_settings' });
+
+    const inherited = resolveMlFeatureFlag('ml.anomalies.enabled', {
+      nodeEnv: 'production',
+      partnerSettings: { ml: { anomalies: { enabled: true } } },
+    });
+    expect(inherited).toMatchObject({ enabled: true, inheritedEnabled: true, source: 'partner_settings' });
+
+    const bare = resolveMlFeatureFlag('ml.anomalies.enabled', { nodeEnv: 'production' });
+    expect(bare).toMatchObject({ enabled: false, inheritedEnabled: false, source: 'default' });
+  });
+
   it('resolves org overrides through existing org and partner settings columns', async () => {
     mockOrgSettingsRow({
       orgSettings: { mlFeatureFlags: { 'ml.ticket_triage.enabled': true } },

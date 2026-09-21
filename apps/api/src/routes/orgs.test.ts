@@ -1693,6 +1693,52 @@ describe('org routes', () => {
     });
   });
 
+  describe('PATCH /orgs/partners/me — ml feature settings', () => {
+    function mockCurrentPartnerSelect(settings: Record<string, unknown>) {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
+            limit: vi.fn().mockResolvedValue([{ id: 'partner-123', name: 'P', settings }])
+          })
+        })
+      } as any);
+    }
+    function mockUpdateCapture() {
+      let captured: any;
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockImplementation((data: any) => {
+          captured = data;
+          return { where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'partner-123', name: 'P', settings: data.settings }]) }) };
+        })
+      } as any);
+      return () => captured;
+    }
+    function patchMe(body: unknown) {
+      return app.request('/orgs/partners/me', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    }
+
+    it('persists settings.ml.anomalies (the schema must not strip it) and keeps sibling ml keys', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      mockCurrentPartnerSelect({ ml: { rca: { enabled: true } }, security: { requireMfa: true } });
+      const getCaptured = mockUpdateCapture();
+
+      const res = await patchMe({ settings: { ml: { anomalies: { enabled: true, create_alerts: false } } } });
+
+      expect(res.status).toBe(200);
+      expect(getCaptured().settings.ml).toEqual({ rca: { enabled: true }, anomalies: { enabled: true, create_alerts: false } });
+      expect(getCaptured().settings.security).toEqual({ requireMfa: true });
+    });
+
+    it('rejects a non-boolean ml.anomalies.enabled', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      mockCurrentPartnerSelect({});
+      mockUpdateCapture();
+      const res = await patchMe({ settings: { ml: { anomalies: { enabled: 'yes' } } } });
+      expect(res.status).toBe(400);
+    });
+  });
+
   describe('PATCH /orgs/partners/me — emailTemplates', () => {
     function mockCurrentPartnerSelect(settings: Record<string, unknown>) {
       vi.mocked(db.select).mockReturnValue({

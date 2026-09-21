@@ -37,6 +37,12 @@ export interface MlFeatureFlagResolution {
   flag: MlFeatureFlagName;
   enabled: boolean;
   defaultEnabled: boolean;
+  /**
+   * What the org would get with no org-level override: the partner's value
+   * when one is set, otherwise the default. The org settings UI shows this
+   * next to "Inherit" so the choice is never blind (settings rule 4).
+   */
+  inheritedEnabled: boolean;
   source: MlFeatureFlagSource;
 }
 
@@ -137,6 +143,7 @@ export function resolveMlFeatureFlag(
     enabled = partnerOverride;
     source = 'partner_settings';
   }
+  const inheritedEnabled = enabled;
 
   if (orgOverride !== undefined) {
     enabled = orgOverride;
@@ -144,10 +151,10 @@ export function resolveMlFeatureFlag(
   }
 
   if (mlFeatureGloballyDisabled(flag)) {
-    return { flag, enabled: false, defaultEnabled, source: 'global_kill_switch' };
+    return { flag, enabled: false, defaultEnabled, inheritedEnabled, source: 'global_kill_switch' };
   }
 
-  return { flag, enabled, defaultEnabled, source };
+  return { flag, enabled, defaultEnabled, inheritedEnabled, source };
 }
 
 /**
@@ -259,6 +266,7 @@ export async function resolveAllMlFeatureFlagsForOrg(
         flag,
         enabled: false,
         defaultEnabled: defaultMlFeatureFlagValue(flag),
+        inheritedEnabled: false,
         source: 'org_not_found' as const,
       },
   ] as const);

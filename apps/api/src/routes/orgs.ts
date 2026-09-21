@@ -639,6 +639,13 @@ const supportedLocales = SUPPORTED_LOCALES;
  * the web form and the billing-settings schema enforce the identical rule.
  */
 
+export const mlSettingsSchema = z.object({
+  anomalies: z.object({
+    enabled: z.boolean().optional(),
+    create_alerts: z.boolean().optional(),
+  }).optional(),
+});
+
 const partnerSettingsSchema = z.object({
   // Partner tz is the canonical default for every downstream tz field (#1318),
   // so police it as a real IANA zone on write (was previously unvalidated).
@@ -876,6 +883,12 @@ const partnerSettingsSchema = z.object({
   aiApprovals: aiApprovalSettingsSchema.optional(),
   // One-level merge by template id (see PATCH /partners/me). Unknown ids 400.
   emailTemplates: z.partialRecord(z.enum(EMAIL_TEMPLATE_IDS), emailTemplateOverrideSchema).optional(),
+  // ML feature switches, read by services/mlFeatureFlags.ts (nested shape:
+  // `settings.ml.<feature>.<flag>`). Partner value is the default every child
+  // org inherits; an org sets the same key on its own settings to override.
+  // PATCH /partners/me deep-merges `ml` one level, so a card that only carries
+  // `ml.anomalies` must send that COMPLETE object.
+  ml: mlSettingsSchema.optional(),
 });
 
 const updatePartnerSettingsSchema = z.object({
@@ -1030,6 +1043,16 @@ orgRoutes.patch(
     newSettings.topologyFeatureFlags = {
       ...((currentSettings.topologyFeatureFlags as Record<string, unknown> | undefined) ?? {}),
       ...body.settings.topologyFeatureFlags,
+    };
+  }
+
+  // Deep-merge `ml` one level: the AI-features card sends only the feature
+  // block it owns (e.g. `ml.anomalies`), and a future sibling (`ml.rca`) must
+  // not be wiped by it.
+  if (body.settings?.ml) {
+    newSettings.ml = {
+      ...((currentSettings.ml as Record<string, unknown> | undefined) ?? {}),
+      ...body.settings.ml,
     };
   }
 

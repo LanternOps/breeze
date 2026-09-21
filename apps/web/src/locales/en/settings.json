@@ -519,6 +519,19 @@
       "communications": "Communications",
       "branding": "Branding"
     },
+    "aiFeatures": {
+      "anomalies": {
+        "title": "Anomaly detection",
+        "description": "Statistical detection of unusual CPU, memory, disk and network behaviour on managed devices. These are the defaults for every organization; an organization can override them on its own AI tab.",
+        "enabled": "Detect anomalies",
+        "enabledDescription": "Run the anomaly detector every 10 minutes and show findings on each device's Anomalies tab.",
+        "createAlerts": "Create alerts from anomalies",
+        "createAlertsDescription": "Promote confirmed anomalies into alerts so they reach your notification routes."
+      },
+      "inheritanceNote": "Changes apply to every organization that has not set its own override.",
+      "saved": "Saved",
+      "saveFailed": "Could not change this setting"
+    },
     "tabs": {
       "company": {
         "label": "Company",
@@ -568,6 +581,10 @@
       "aiProvider": {
         "label": "AI Provider",
         "description": "Bring your own Anthropic key"
+      },
+      "aiFeatures": {
+        "label": "AI Features",
+        "description": "Anomaly detection defaults"
       },
       "branding": {
         "label": "Branding",
@@ -4654,7 +4671,25 @@
       "externalProcessing": "Allow sandboxed AI analysis",
       "externalProcessingDescription": "Lets AI analysis runs execute code for this organization in an isolated sandbox with no network access, hosted in this organization's region. Off by default.",
       "externalProcessingSaved": "Saved",
-      "externalProcessingSaveFailed": "Could not change this setting"
+      "externalProcessingSaveFailed": "Could not change this setting",
+      "mlFeatures": {
+        "title": "Anomaly detection",
+        "description": "Statistical detection of unusual CPU, memory, disk and network behaviour on this organization's devices. Blank means the partner default applies.",
+        "anomaliesEnabled": "Detect anomalies",
+        "anomaliesEnabledDescription": "Run the anomaly detector every 10 minutes and show findings on each device's Anomalies tab.",
+        "createAlerts": "Create alerts from anomalies",
+        "createAlertsDescription": "Promote confirmed anomalies into alerts so they reach your notification routes.",
+        "inherit": "Inherit",
+        "inheritOn": "Inherit (on, {{from}})",
+        "inheritOff": "Inherit (off, {{from}})",
+        "fromPartner": "partner setting",
+        "fromDefault": "platform default",
+        "on": "On",
+        "off": "Off",
+        "saved": "Saved",
+        "saveFailed": "Could not change this setting",
+        "killSwitch": "Anomaly detection is switched off for the whole platform by the operator. These settings take effect when it is turned back on."
+      }
     },
     "breadcrumbs": {
       "settings": "Settings",

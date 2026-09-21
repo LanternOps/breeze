@@ -5,6 +5,7 @@ import {
   Blocks,
   Building2,
   Globe,
+  Activity,
   Hourglass,
   KeyRound,
   Loader2,
@@ -34,6 +35,7 @@ import PartnerBrandingTab from './PartnerBrandingTab';
 import PartnerAiBudgetsTab from './PartnerAiBudgetsTab';
 import PartnerAiApprovalsTab from './PartnerAiApprovalsTab';
 import PartnerAiProviderTab from './PartnerAiProviderTab';
+import PartnerMlFeaturesCard from './PartnerMlFeaturesCard';
 import PartnerRemoteAccessTab from './PartnerRemoteAccessTab';
 import PartnerSendingDomainTab from './PartnerSendingDomainTab';
 import PartnerCompanyTab from './PartnerCompanyTab';
@@ -69,7 +71,7 @@ import { PARTNER_SETTINGS_SAVED_EVENT } from '../auth/MfaPolicyOffBanner';
 import { fetchSendingDomains } from '@/lib/api/sendingDomains';
 import { isTabVisible } from './sendingDomains/domainView';
 
-type TabKey = 'company' | 'regional' | 'security' | 'notifications' | 'eventLogs' | 'defaults' | 'branding' | 'loginBranding' | 'aiBudgets' | 'aiApprovals' | 'aiProvider' | 'remoteAccess' | 'ticketing' | 'emailTemplates' | 'sendingDomains' | 'modules';
+type TabKey = 'company' | 'regional' | 'security' | 'notifications' | 'eventLogs' | 'defaults' | 'branding' | 'loginBranding' | 'aiBudgets' | 'aiApprovals' | 'aiProvider' | 'aiFeatures' | 'remoteAccess' | 'ticketing' | 'emailTemplates' | 'sendingDomains' | 'modules';
 
 type Partner = {
   id: string;
@@ -135,6 +137,7 @@ const TAB_GROUPS: { label: string; tabs: TabDef[] }[] = [
       // the aiBudgets tab's partner-locks model — see aiApprovalSettings.ts.
       { key: 'aiApprovals', hash: 'ai-approvals', label: 'partnerSettingsPage.tabs.aiApprovals.label', description: 'partnerSettingsPage.tabs.aiApprovals.description', icon: Hourglass },
       { key: 'aiProvider', hash: 'ai-provider', label: 'partnerSettingsPage.tabs.aiProvider.label', description: 'partnerSettingsPage.tabs.aiProvider.description', icon: KeyRound, selfSaving: true },
+      { key: 'aiFeatures', hash: 'ai-features', label: 'partnerSettingsPage.tabs.aiFeatures.label', description: 'partnerSettingsPage.tabs.aiFeatures.description', icon: Activity, selfSaving: true },
     ],
   },
   {
@@ -175,7 +178,7 @@ function getTabFromHash(): TabKey | null {
 // tabs (Ticketing, Email templates, Login Branding, AI Provider, Sender
 // Addresses, Modules) persist independently and are never "dirty" from this
 // page's perspective.
-type SnapshotKey = Exclude<TabKey, 'ticketing' | 'emailTemplates' | 'loginBranding' | 'aiProvider' | 'sendingDomains' | 'modules'>;
+type SnapshotKey = Exclude<TabKey, 'ticketing' | 'emailTemplates' | 'loginBranding' | 'aiProvider' | 'aiFeatures' | 'sendingDomains' | 'modules'>;
 type Snapshot = Record<SnapshotKey, string>;
 
 // Exported for unit-testing without mounting the full component.
@@ -746,6 +749,13 @@ export default function PartnerSettingsPage() {
           {activeTab === 'aiProvider' && (
             <section className="rounded-lg border bg-card p-6 shadow-xs">
               <PartnerAiProviderTab />
+            </section>
+          )}
+
+          {/* AI Features: self-contained card with its own autosave switches. */}
+          {activeTab === 'aiFeatures' && (
+            <section className="rounded-lg border bg-card p-6 shadow-xs">
+              <PartnerMlFeaturesCard value={partner?.settings?.ml} onSaved={() => void fetchPartner()} />
             </section>
           )}
 
