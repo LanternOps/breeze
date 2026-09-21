@@ -44,12 +44,17 @@ vi.mock('../../middleware/requireAgentRole', () => ({
   requireAgentRole: vi.fn((_c: unknown, next: () => Promise<void>) => next()),
 }));
 
+vi.mock('../../services/callerVerification/loginObservation', () => ({
+  observeSessionPrincipal: vi.fn(),
+}));
+
 vi.mock('./helpers', () => ({
   sanitizeTimestamp: vi.fn((value: string | undefined) => (value ? new Date(value) : null)),
 }));
 
 import { db } from '../../db';
 import { sessionsRoutes } from './sessions';
+import { observeSessionPrincipal } from '../../services/callerVerification/loginObservation';
 
 function mockDeviceLookup() {
   vi.mocked(db.select).mockReturnValueOnce({
@@ -96,8 +101,45 @@ describe('PUT /agents/:id/sessions', () => {
     insertedValues = [];
     updatedValues = [];
     app = new Hono();
+    // agentAuth sets this in production; the route refuses a token whose
+    // device/org do not match the URL before trusting any identity evidence.
+    app.use('*', async (c, next) => { c.set('agent', { agentId: AGENT_ID, orgId: 'org-1' }); await next(); });
     app.route('/agents', sessionsRoutes);
     mockTransaction();
+  });
+
+  it('forwards independent login principal from an authenticated session report', async () => {
+    mockDeviceLookup();
+    const principal = { sid: 'S-1-5-21-1', username: 'alex', upn: 'alex@example.com' };
+    const response = await app.request(`/agents/${AGENT_ID}/sessions`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessions: [], events: [{ type: 'login', username: 'alex', sessionType: 'console', principal }] }),
+    });
+    expect(response.status).toBe(200);
+    expect(observeSessionPrincipal).toHaveBeenCalledWith('org-1', 'host-1', 'alex', principal);
+  });
+
+  it('rejects a principal that carries both sid and uid', async () => {
+    mockDeviceLookup();
+    const response = await app.request(`/agents/${AGENT_ID}/sessions`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessions: [{ username: 'alex', sessionType: 'console', principal: { sid: 'S-1-5-21-1', uid: 1, username: 'alex' } }] }),
+    });
+    expect(response.status).toBe(400);
+    expect(observeSessionPrincipal).not.toHaveBeenCalled();
+  });
+
+  it('refuses a token from another org before observation', async () => {
+    const foreign = new Hono();
+    foreign.use('*', async (c, next) => { c.set('agent', { agentId: AGENT_ID, orgId: 'org-2' }); await next(); });
+    foreign.route('/agents', sessionsRoutes);
+    mockDeviceLookup();
+    const response = await foreign.request(`/agents/${AGENT_ID}/sessions`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessions: [] }),
+    });
+    expect(response.status).toBe(403);
+    expect(observeSessionPrincipal).not.toHaveBeenCalled();
+    expect(db.transaction).not.toHaveBeenCalled();
   });
 
   it('stores null idleMinutes when the agent omits it (unknown ≠ 0)', async () => {

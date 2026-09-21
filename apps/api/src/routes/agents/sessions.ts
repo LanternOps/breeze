@@ -8,6 +8,7 @@ import { publishEvent } from '../../services/eventBus';
 import { submitSessionsSchema } from './schemas';
 import { sanitizeTimestamp } from './helpers';
 import { requireAgentRole } from '../../middleware/requireAgentRole';
+import { observeSessionPrincipal } from '../../services/callerVerification/loginObservation';
 
 export const sessionsRoutes = new Hono();
 // Session ingest is the main agent's job; reject watchdog-role tokens.
@@ -39,6 +40,11 @@ sessionsRoutes.put('/:id/sessions', zValidator('json', submitSessionsSchema), as
 
   if (!device) {
     return c.json({ error: 'Device not found' }, 404);
+  }
+  // The authenticated token must be THIS device's, in THIS org, before any
+  // identity evidence in the payload is trusted (caller verification, #6354).
+  if (agent?.agentId !== agentId || agent.orgId !== device.orgId) {
+    return c.json({ error: 'Device not found' }, 403);
   }
 
   const now = new Date();
@@ -142,6 +148,20 @@ sessionsRoutes.put('/:id/sessions', zValidator('json', submitSessionsSchema), as
         .where(eq(deviceSessions.id, stale.id));
     }
   });
+
+  // Caller verification (#6354): independent login telemetry. Runs in the
+  // ambient agent-auth transaction (the nested session transaction above has
+  // released its savepoint, not committed the request). Errors are NOT
+  // swallowed: a failed upload keeps the events queued on the agent for retry,
+  // and the binding helper is idempotent.
+  for (const session of activeSessions) {
+    await observeSessionPrincipal(device.orgId, device.hostname, session.username, session.principal);
+  }
+  for (const event of data.events ?? []) {
+    if (event.type === 'login') {
+      await observeSessionPrincipal(device.orgId, device.hostname, event.username, event.principal);
+    }
+  }
 
   const events = data.events ?? [];
   for (const event of events) {

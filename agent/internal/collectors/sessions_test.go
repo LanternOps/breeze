@@ -91,7 +91,7 @@ func TestRefreshSessionsIdleMinutes(t *testing.T) {
 	c := &SessionCollector{
 		detector: &fakeDetector{sessions: []sessionbroker.DetectedSession{
 			{Username: "alice", Session: "2", State: "active", IdleFor: 23 * time.Minute, IdleKnown: true},
-			{Username: "bob", Session: "3", State: "active"}, // idle unknown
+			{Username: "bob", Session: "3", State: "active"},                                                  // idle unknown
 			{Username: "carol", Session: "4", State: "active", IdleFor: 30 * 24 * time.Hour, IdleKnown: true}, // clamps
 		}},
 		sessions: make(map[string]UserSession),
@@ -146,5 +146,55 @@ func TestUserSessionIdleMinutesJSON(t *testing.T) {
 	}
 	if strings.Contains(string(unknown), "idleMinutes") {
 		t.Fatalf("unknown idle must be omitted from the wire, got %s", unknown)
+	}
+}
+
+// Caller verification (#6354 W01): the OS principal captured at login must
+// survive Collect(), DrainEvents/RequeueEvents (the heartbeat retry path) and
+// the JSON wire encoding, so the API can bind a directory identity to a
+// contact from authenticated telemetry.
+func TestLoginPrincipalSurvivesCollectionAndRetry(t *testing.T) {
+	c := &SessionCollector{sessions: make(map[string]UserSession), principalReader: func(username, session string, uid uint32) *SessionPrincipal {
+		return &SessionPrincipal{SID: "S-1-5-21-1", Username: username, UPN: "alex@example.com"}
+	}}
+	c.applyEvent(sessionbroker.SessionEvent{Type: sessionbroker.SessionLogin, Username: "alex", Session: "2"}, time.Now())
+	rows, err := c.Collect()
+	if err != nil || len(rows) != 1 || rows[0].Principal == nil || rows[0].Principal.UPN != "alex@example.com" {
+		t.Fatalf("rows=%+v err=%v", rows, err)
+	}
+	events := c.DrainEvents(256)
+	if len(events) != 1 || events[0].Principal == nil {
+		t.Fatal("login identity missing")
+	}
+	c.RequeueEvents(events)
+	again := c.DrainEvents(256)
+	if len(again) != 1 || again[0].Principal.SID != "S-1-5-21-1" {
+		t.Fatal("retry lost principal")
+	}
+	encoded, err := json.Marshal(again[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire struct {
+		Principal *SessionPrincipal `json:"principal"`
+	}
+	if err = json.Unmarshal(encoded, &wire); err != nil || wire.Principal == nil || wire.Principal.UPN != "alex@example.com" {
+		t.Fatalf("wire=%s err=%v", encoded, err)
+	}
+}
+
+func TestNonLoginEventsCarryNoPrincipal(t *testing.T) {
+	calls := 0
+	c := &SessionCollector{sessions: make(map[string]UserSession), principalReader: func(username, session string, uid uint32) *SessionPrincipal {
+		calls++
+		return &SessionPrincipal{SID: "S-1-5-21-1", Username: username}
+	}}
+	c.applyEvent(sessionbroker.SessionEvent{Type: sessionbroker.SessionLock, Username: "alex", Session: "2"}, time.Now())
+	if calls != 0 {
+		t.Fatalf("principal read on a non-login event: %d", calls)
+	}
+	events := c.DrainEvents(256)
+	if len(events) != 1 || events[0].Principal != nil {
+		t.Fatalf("events=%+v", events)
 	}
 }

@@ -32,6 +32,22 @@ type UserSession struct {
 	LoginPerformanceSeconds int       `json:"loginPerformanceSeconds,omitempty"`
 	IsActive                bool      `json:"isActive"`
 	LastActivityAt          time.Time `json:"lastActivityAt,omitempty"`
+	// Principal is the authenticated OS identity behind the session, read from
+	// the session token (Windows) or the uid (Unix) — never from a
+	// caller-controlled field. Consumed by caller verification (#6354) to bind
+	// a directory identity to a contact from authenticated telemetry.
+	Principal *SessionPrincipal `json:"principal,omitempty"`
+}
+
+// SessionPrincipal is the OS-level identity evidence for a login. Exactly one
+// of SID (Windows) or UID (Unix) is set. UPN is only populated when the OS
+// can translate the account to a directory user principal name; an
+// email-like username is NOT a UPN and is never synthesized into one.
+type SessionPrincipal struct {
+	SID      string  `json:"sid,omitempty"`
+	UID      *uint32 `json:"uid,omitempty"`
+	Username string  `json:"username"`
+	UPN      string  `json:"upn,omitempty"`
 }
 
 type UserSessionEvent struct {
@@ -41,6 +57,8 @@ type UserSessionEvent struct {
 	SessionID     string    `json:"sessionId,omitempty"`
 	Timestamp     time.Time `json:"timestamp"`
 	ActivityState string    `json:"activityState,omitempty"`
+	// Principal is set on login events only (see UserSession.Principal).
+	Principal *SessionPrincipal `json:"principal,omitempty"`
 }
 
 type SessionCollector struct {
@@ -50,6 +68,17 @@ type SessionCollector struct {
 	sessions map[string]UserSession
 	events   []UserSessionEvent
 	started  bool
+
+	// principalReader is the collector-local injection point for tests. A nil
+	// reader means the production OS reader (principalForSession).
+	principalReader func(username, session string, uid uint32) *SessionPrincipal
+}
+
+func (c *SessionCollector) readPrincipal(username, session string, uid uint32) *SessionPrincipal {
+	if c.principalReader != nil {
+		return c.principalReader(username, session, uid)
+	}
+	return principalForSession(username, session, uid)
 }
 
 func NewSessionCollector() *SessionCollector {
@@ -222,6 +251,31 @@ func (c *SessionCollector) refreshSessions(now time.Time) {
 
 	next := make(map[string]UserSession, len(sessions))
 
+	// Principal reads touch the OS (token lookups); do them before taking the
+	// write lock so a slow lookup never stalls a concurrent Collect(), and
+	// only for sessions that do not already carry one.
+	principals := make(map[string]*SessionPrincipal, len(sessions))
+	c.mu.RLock()
+	for _, detected := range sessions {
+		if strings.TrimSpace(detected.Username) == "" {
+			continue
+		}
+		key := sessionKey(detected.Username, inferSessionType(detected), detected.Session)
+		if existing, ok := c.sessions[key]; ok && existing.Principal != nil {
+			principals[key] = existing.Principal
+		}
+	}
+	c.mu.RUnlock()
+	for _, detected := range sessions {
+		if strings.TrimSpace(detected.Username) == "" {
+			continue
+		}
+		key := sessionKey(detected.Username, inferSessionType(detected), detected.Session)
+		if _, ok := principals[key]; !ok {
+			principals[key] = c.readPrincipal(detected.Username, detected.Session, detected.UID)
+		}
+	}
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -249,6 +303,7 @@ func (c *SessionCollector) refreshSessions(now time.Time) {
 			ActivityState:  mapDetectedState(detected.State),
 			IsActive:       true,
 			LastActivityAt: lastActivityAt,
+			Principal:      principals[key],
 		}
 	}
 
@@ -283,6 +338,13 @@ func (c *SessionCollector) applyEvent(event sessionbroker.SessionEvent, now time
 	sessionType := inferSessionTypeFromEvent(event)
 	key := sessionKey(event.Username, sessionType, event.Session)
 
+	// Login evidence is read before the lock (OS token lookup) and attached
+	// to both the live session and the durable event so it survives retry.
+	var principal *SessionPrincipal
+	if event.Type == sessionbroker.SessionLogin {
+		principal = c.readPrincipal(event.Username, event.Session, event.UID)
+	}
+
 	dropped := 0
 	c.mu.Lock()
 	// Deferred LIFO: the lock is released inside this func before the log runs,
@@ -307,6 +369,7 @@ func (c *SessionCollector) applyEvent(event sessionbroker.SessionEvent, now time
 			ActivityState:  "active",
 			IsActive:       true,
 			LastActivityAt: now,
+			Principal:      principal,
 		}
 	case sessionbroker.SessionLogout:
 		delete(c.sessions, key)
@@ -331,6 +394,7 @@ func (c *SessionCollector) applyEvent(event sessionbroker.SessionEvent, now time
 		SessionID:     event.Session,
 		Timestamp:     now,
 		ActivityState: mapEventState(event.Type),
+		Principal:     principal,
 	})
 
 	dropped = c.trimEventsLocked()
