@@ -112,7 +112,7 @@ describe('ticket mailbox consent sessions', () => {
     });
   });
 
-  it('creates a ten-minute admin-consent session in system context', async () => {
+  it('creates a ten-minute admin-consent session on the caller\'s own transaction (never a second connection)', async () => {
     dbMocks.insertResults.push([row()]);
 
     await expect(createAdminConsentSession({
@@ -130,7 +130,13 @@ describe('ticket mailbox consent sessions', () => {
       expiresAt: new Date('2026-07-11T12:10:00.000Z'),
     })]);
     expect(dbMocks.conflictTargets).toEqual([ticketMailboxConsentSessions.state]);
-    expect(contextMocks.runOutside).toHaveBeenCalledOnce();
+    // POST /tickets/mailbox/connect inserts the pending connection on the
+    // request transaction and then creates this session referencing it via a
+    // composite FK. Escaping to a second pooled connection here made that FK
+    // check blind to the uncommitted connection row → 23503 → 500 on every
+    // Connect click in production (2026-09-21). The session must be written on
+    // whatever transaction is already open.
+    expect(contextMocks.runOutside).not.toHaveBeenCalled();
     expect(contextMocks.withSystem).toHaveBeenCalledOnce();
   });
 

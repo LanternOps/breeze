@@ -52,7 +52,16 @@ async function createConsentSession(input: {
 }): Promise<ConsentSession> {
   const expiresAt = new Date(Date.now() + CONSENT_SESSION_TTL_MS);
 
-  return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+  // Join whatever transaction is already open — do NOT `runOutsideDbContext`.
+  // POST /connect inserts the pending `ticket_mailbox_connections` row on the
+  // request transaction and this row references it through a composite FK
+  // `(connection_id, partner_id)`. A second pooled connection cannot see that
+  // uncommitted row, so the FK check failed with 23503 on every Connect click
+  // (prod, 2026-09-21). The table carries partner-axis RLS policies, so a
+  // partner-scope request may write here directly; `withSystemDbAccessContext`
+  // is a no-op inside an open context and only opens a transaction for the
+  // callback path, which has no request context of its own (`callbackDb`).
+  return withSystemDbAccessContext(async () => {
     await db.delete(ticketMailboxConsentSessions).where(
       lte(ticketMailboxConsentSessions.expiresAt, sql`now()`),
     );
@@ -65,7 +74,7 @@ async function createConsentSession(input: {
       const row = rows[0];
       if (row) return toConsentSession(row);
     }
-  }));
+  });
 }
 
 function signingSecret(): string | null {
