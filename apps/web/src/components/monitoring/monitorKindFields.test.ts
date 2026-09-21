@@ -1,6 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { MONITOR_KINDS, monitorConditionSchemas, type MonitorKind } from '@breeze/shared';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { MONITOR_KIND_FIELDS, defaultConditionFor } from './monitorKindFields';
+import { SELECT_OPTION_NAMESPACE } from './MonitorConditionFields';
 
 /**
  * `.refine()`d schemas (five of the W04 kinds — antivirus, software_presence,
@@ -93,5 +97,38 @@ describe('monitorKindFields (#5289, #5291)', () => {
     it('script omits the free-form parameters field', () => {
       expect(MONITOR_KIND_FIELDS.script.some((f) => f.key === 'parameters')).toBe(false);
     });
+  });
+});
+
+describe('monitorKindFields locale coverage (sweep pass-3 G1-2)', () => {
+  const en = JSON.parse(
+    readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../../locales/en/monitoring.json'), 'utf8'),
+  ) as Record<string, unknown>;
+  const resolve = (dotPath: string): unknown =>
+    dotPath.split('.').reduce<unknown>((cur, seg) => (cur && typeof cur === 'object' ? (cur as Record<string, unknown>)[seg] : undefined), en);
+
+  it('every field labelKey resolves to a string in the en monitoring catalog', () => {
+    const missing: string[] = [];
+    for (const kind of MONITOR_KINDS) {
+      for (const field of MONITOR_KIND_FIELDS[kind as MonitorKind]) {
+        const key = field.labelKey.replace(/^monitoring:/, '');
+        if (typeof resolve(key) !== 'string') missing.push(`${kind}.${field.key} → ${field.labelKey}`);
+      }
+    }
+    expect(missing).toEqual([]);
+  });
+
+  it('every select option has a label in its option namespace', () => {
+    const missing: string[] = [];
+    for (const kind of MONITOR_KINDS) {
+      for (const field of MONITOR_KIND_FIELDS[kind as MonitorKind]) {
+        if (field.kind !== 'select') continue;
+        const ns = SELECT_OPTION_NAMESPACE[`${kind}:${field.key}`] ?? SELECT_OPTION_NAMESPACE[field.key];
+        for (const opt of field.options ?? []) {
+          if (!ns || typeof resolve(`${ns}.${opt}`) !== 'string') missing.push(`${kind}.${field.key}=${opt} (ns=${ns ?? 'none'})`);
+        }
+      }
+    }
+    expect(missing).toEqual([]);
   });
 });

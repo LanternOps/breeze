@@ -55,7 +55,7 @@
       "activity": "Activity"
     },
     "fields": {
-    "match": "Match",
+      "match": "Match",
       "name": "Name",
       "description": "Description",
       "kind": "Kind",
@@ -200,7 +200,8 @@
     "target": "Target",
     "port": "Port",
     "expectStatus": "Expected status code",
-    "pollingIntervalSeconds": "Poll every (seconds)"
+    "pollingIntervalSeconds": "Poll every (seconds)",
+    "match": "Match"
   },
   "operators": {
     "gt": "greater than",
@@ -238,6 +239,10 @@
     "read": "Read",
     "write": "Write",
     "total": "Total"
+  },
+  "compositeMatch": {
+    "all": "All conditions",
+    "any": "Any condition"
   },
   "antivirusChecks": {
     "not_protected": "Not protected",

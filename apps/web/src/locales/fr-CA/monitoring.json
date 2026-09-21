@@ -55,7 +55,7 @@
       "activity": "Activité"
     },
     "fields": {
-    "match": "Correspondance",
+      "match": "Correspondance",
       "name": "Nom",
       "description": "Description",
       "kind": "Type",
@@ -200,7 +200,8 @@
     "target": "Cible",
     "port": "Numéro de port",
     "expectStatus": "Code de statut attendu",
-    "pollingIntervalSeconds": "Interroger toutes les (secondes)"
+    "pollingIntervalSeconds": "Interroger toutes les (secondes)",
+    "match": "Correspondance"
   },
   "operators": {
     "gt": "supérieur à",
@@ -238,6 +239,10 @@
     "read": "Lecture",
     "write": "Écriture",
     "total": "Total"
+  },
+  "compositeMatch": {
+    "all": "Toutes les conditions",
+    "any": "N’importe quelle condition"
   },
   "antivirusChecks": {
     "not_protected": "Non protégé",

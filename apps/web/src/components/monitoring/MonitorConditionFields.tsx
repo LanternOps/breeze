@@ -12,12 +12,13 @@ import { MONITOR_KIND_FIELDS, type KindField } from './monitorKindFields';
  * `backup_continuity.check` both author into a field literally named `check`
  * (#5291), so those two are keyed `${kind}:${key}` and looked up first.
  */
-const SELECT_OPTION_NAMESPACE: Record<string, string> = {
+export const SELECT_OPTION_NAMESPACE: Record<string, string> = {
   category: 'eventCategories',
   level: 'eventLevels',
   resource: 'resources',
   direction: 'directions',
   errorType: 'directions',
+  match: 'compositeMatch',
   presence: 'presences',
   checkType: 'checkTypes',
   'antivirus:check': 'antivirusChecks',

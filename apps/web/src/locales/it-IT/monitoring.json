@@ -55,7 +55,7 @@
       "activity": "Attività"
     },
     "fields": {
-    "match": "Corrispondenza",
+      "match": "Corrispondenza",
       "name": "Nome",
       "description": "Descrizione",
       "kind": "Tipo",
@@ -200,7 +200,8 @@
     "target": "Destinazione",
     "port": "Numero di porta",
     "expectStatus": "Codice di stato previsto",
-    "pollingIntervalSeconds": "Interroga ogni (secondi)"
+    "pollingIntervalSeconds": "Interroga ogni (secondi)",
+    "match": "Corrispondenza"
   },
   "operators": {
     "gt": "maggiore di",
@@ -238,6 +239,10 @@
     "read": "Lettura",
     "write": "Scrittura",
     "total": "Totale"
+  },
+  "compositeMatch": {
+    "all": "Tutte le condizioni",
+    "any": "Qualsiasi condizione"
   },
   "antivirusChecks": {
     "not_protected": "Non protetto",

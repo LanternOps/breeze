@@ -55,7 +55,7 @@
       "activity": "Aktivität"
     },
     "fields": {
-    "match": "Bedingung",
+      "match": "Bedingung",
       "name": "Name",
       "description": "Beschreibung",
       "kind": "Art",
@@ -200,7 +200,8 @@
     "target": "Ziel",
     "port": "Portnummer",
     "expectStatus": "Erwarteter Statuscode",
-    "pollingIntervalSeconds": "Abfrage alle (Sekunden)"
+    "pollingIntervalSeconds": "Abfrage alle (Sekunden)",
+    "match": "Übereinstimmung"
   },
   "operators": {
     "gt": "größer als",
@@ -238,6 +239,10 @@
     "read": "Lesen",
     "write": "Schreiben",
     "total": "Gesamt"
+  },
+  "compositeMatch": {
+    "all": "Alle Bedingungen",
+    "any": "Beliebige Bedingung"
   },
   "antivirusChecks": {
     "not_protected": "Nicht geschützt",

@@ -55,7 +55,7 @@
       "activity": "Actividad"
     },
     "fields": {
-    "match": "Coincidencia",
+      "match": "Coincidencia",
       "name": "Nombre",
       "description": "Descripción",
       "kind": "Tipo",
@@ -200,7 +200,8 @@
     "target": "Destino",
     "port": "Puerto",
     "expectStatus": "Código de estado esperado",
-    "pollingIntervalSeconds": "Consultar cada (segundos)"
+    "pollingIntervalSeconds": "Consultar cada (segundos)",
+    "match": "Coincidencia"
   },
   "operators": {
     "gt": "mayor que",
@@ -238,6 +239,10 @@
     "read": "Lectura",
     "write": "Escritura",
     "total": "Total"
+  },
+  "compositeMatch": {
+    "all": "Todas las condiciones",
+    "any": "Cualquier condición"
   },
   "antivirusChecks": {
     "not_protected": "Sin protección",
