@@ -140,6 +140,37 @@ async function writeTicketOutbox(
 }
 
 /**
+ * Caller verification (#6354): a system comment on the ticket the
+ * verification snapshotted, written in the CALLER's transaction after a
+ * successful status CAS (that CAS is the idempotency boundary — a retry that
+ * loses the CAS never reaches here). Returns silently when the ticket has
+ * since been deleted or moved out of the org: ticket movement must never
+ * block a security rejection. Reuses the private outbox writer so the
+ * notify path stays the single outbound code path.
+ */
+export async function addCallerVerificationSystemComment(input: {
+  orgId: string; ticketId: string; verificationId: string; event: string;
+}): Promise<void> {
+  const [ticket] = await db.select().from(tickets)
+    .where(and(eq(tickets.id, input.ticketId), eq(tickets.orgId, input.orgId))).limit(1);
+  if (!ticket) return;
+  const [comment] = await db.insert(ticketComments).values({
+    ticketId: ticket.id,
+    userId: null,
+    portalUserId: null,
+    authorName: 'Breeze',
+    authorType: 'internal',
+    commentType: 'system',
+    originPrincipalKind: 'system',
+    content: `Caller verification ${input.event} (${input.verificationId})`,
+    isPublic: false,
+  }).returning({ id: ticketComments.id });
+  await writeTicketOutbox(input.orgId, ticket.id, 'ticket.commented', {
+    commentId: comment!.id, isPublic: false, verificationId: input.verificationId, partnerId: ticket.partnerId, event: input.event,
+  });
+}
+
+/**
  * Resolve the partner a ticket belongs to. tickets.partner_id is stamped on
  * every create since Phase 1a but is nullable for legacy rows — fall back to
  * the org's partner for those. A null return means the ticket's partner is

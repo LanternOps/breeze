@@ -7,6 +7,7 @@ import { getBullMQConnection } from '../services/redis';
 import { publishEvent, type EventType } from '../services/eventBus';
 import { captureException } from '../services/sentry';
 import { attachWorkerObservability } from './workerObservability';
+import { emitTicketEvent } from '../services/ticketEvents';
 
 /**
  * Drains the `ticket_outbox` transactional outbox (#3828 wave-6-3 task 2 —
@@ -199,6 +200,18 @@ async function publishClaimedRows(rows: ClaimedOutboxRow[]): Promise<number[]> {
         { ticketId: row.ticket_id, ...(row.payload ?? {}) },
         'ticket-outbox-publisher',
       );
+      // Caller verification (#6354): the outbox row is the durable record;
+      // this post-commit emit is best-effort and never the transaction boundary.
+      if (row.event_type === 'ticket.commented' && typeof row.payload?.verificationId === 'string' && typeof row.payload?.commentId === 'string') {
+        await emitTicketEvent({
+          type: 'ticket.commented',
+          ticketId: row.ticket_id,
+          orgId: row.org_id,
+          partnerId: typeof row.payload.partnerId === 'string' ? row.payload.partnerId : null,
+          eventId: `caller-${row.payload.verificationId}-${String(row.payload.event)}`,
+          payload: { commentId: row.payload.commentId, isPublic: false, verificationId: row.payload.verificationId },
+        });
+      }
       publishedIds.push(row.id);
     } catch (err) {
       console.error(`[TicketOutboxPublisher] Failed to publish outbox row ${row.id}:`, err);
