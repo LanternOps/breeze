@@ -233,7 +233,14 @@ export type OperatorTaskSourceKind = (typeof OPERATOR_TASK_SOURCE_KINDS)[number]
  */
 export const createOperatorTaskSchema = z.object({
   mode: z.literal('live'),
-  recipeKey: z.literal('service_recovery'),
+  /**
+   * The workflow the client is admitting. NOT a literal: the server validates
+   * it against the recipe registry so an unknown key is refused with a 400
+   * that names the supported workflows, which a zod literal mismatch cannot
+   * do. `apps/api` owns the registry; `packages/shared` cannot import it.
+   * The 128 cap mirrors `ai_operator_tasks_workflow_key_len_chk`.
+   */
+  recipeKey: z.string().min(1).max(128),
   /**
    * The recipe version the CLIENT reviewed. Checked against the server's
    * released version and refused (422) on mismatch rather than silently
