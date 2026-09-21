@@ -3,6 +3,7 @@ package bmr
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -559,6 +560,70 @@ func containsAny(list []any, s string) bool {
 		}
 	}
 	return false
+}
+
+// TestAuthenticateRecoverySession_NonJSON409DegradesToUnknownNegotiationError
+// is the regression test for review finding #4: a 409 response whose body
+// is not JSON (or is JSON but has no non-empty "error" field) fell through
+// authenticateRecoverySessionContext's dedicated StatusConflict branch
+// entirely (json.Unmarshal failed or body.Error was empty) into the
+// generic `resp.StatusCode < 200 || >= 300` branch, returning a bare
+// *authenticateStatusError instead of a *RecoveryNegotiationError. A
+// caller that errors.As's for *RecoveryNegotiationError (the recovery
+// console's classification, refreshAfterUnauthorized's terminal-refusal
+// switch) never recognizes it as a negotiation refusal and burns a full
+// reactive-refresh attempt cycle on it. The fix must still surface it as a
+// *RecoveryNegotiationError (Code "unknown") so those callers behave
+// correctly even against a malformed or non-conforming 409.
+func TestAuthenticateRecoverySession_NonJSON409DegradesToUnknownNegotiationError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		_, _ = io.WriteString(w, "<html>upstream proxy error</html>")
+	}))
+	defer server.Close()
+
+	_, err := authenticateRecoverySessionContext(context.Background(), server.URL, "brz_rec_test")
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	var negErr *RecoveryNegotiationError
+	if !errors.As(err, &negErr) {
+		t.Fatalf("expected errors.As to find a *RecoveryNegotiationError, got %T: %v", err, err)
+	}
+	if negErr.Code != "unknown" {
+		t.Fatalf("negErr.Code = %q, want %q", negErr.Code, "unknown")
+	}
+	if !strings.Contains(negErr.Message, "upstream proxy error") {
+		t.Fatalf("negErr.Message = %q, want it to carry the response body", negErr.Message)
+	}
+}
+
+// TestExchangeRecoveryCode_NonJSON409DegradesToUnknownNegotiationError is
+// TestAuthenticateRecoverySession_NonJSON409DegradesToUnknownNegotiationError's
+// counterpart for POST /bmr/recover/exchange — the same fallthrough bug
+// exists in ExchangeRecoveryCode's own StatusConflict branch (review
+// finding #4).
+func TestExchangeRecoveryCode_NonJSON409DegradesToUnknownNegotiationError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		_, _ = io.WriteString(w, "<html>upstream proxy error</html>")
+	}))
+	defer server.Close()
+
+	_, _, err := ExchangeRecoveryCode(context.Background(), server.URL, "some-code")
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	var negErr *RecoveryNegotiationError
+	if !errors.As(err, &negErr) {
+		t.Fatalf("expected errors.As to find a *RecoveryNegotiationError, got %T: %v", err, err)
+	}
+	if negErr.Code != "unknown" {
+		t.Fatalf("negErr.Code = %q, want %q", negErr.Code, "unknown")
+	}
+	if !strings.Contains(negErr.Message, "upstream proxy error") {
+		t.Fatalf("negErr.Message = %q, want it to carry the response body", negErr.Message)
+	}
 }
 
 // writeTestBootstrapEnvelope writes a response body shaped like the server's

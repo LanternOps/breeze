@@ -808,3 +808,35 @@ func TestRecoveryDownloadProvider_ExternalKeyRefusedWithoutMembershipEvenIfListe
 		t.Fatal("Admits() = true, want false: ExtendAdmissible alone must never grant access without membership")
 	}
 }
+
+// TestRecoveryDownloadProvider_AdmitsOwnPrefixKey proves Admits() alone
+// (the predicate the rebuild engine's preflight ObjectAdmission sweep uses,
+// preflight.go ~:153) admits a key under the descriptor's own PathPrefix
+// even when membership was never negotiated and the admissible set is
+// empty — i.e. an entirely self-contained, own-prefix-only manifest must
+// never be refused at preflight. Before the fix, Admits() only consulted
+// the external admissible map and unconditionally returned false without
+// membership, so every own-prefix file failed preflight's sweep (review
+// finding #1).
+func TestRecoveryDownloadProvider_AdmitsOwnPrefixKey(t *testing.T) {
+	p := newRecoveryDownloadProvider(context.Background(), "http://example.invalid", "tok", &AuthenticatedDownloadDescriptor{
+		Type: "breeze_proxy", Method: http.MethodGet, URL: "http://example.invalid/download",
+		PathQueryParam: "path", PathPrefix: "snapshots/gen-2",
+		// No Capabilities — this token never negotiated membership, as is
+		// normal for a self-contained snapshot (R1).
+	})
+	if p.MembershipNegotiated() {
+		t.Fatal("MembershipNegotiated() = true, want false (no capability granted)")
+	}
+	if !p.Admits("snapshots/gen-2/files/a.gz") {
+		t.Fatal("Admits() = false for a key under the descriptor's own PathPrefix, want true")
+	}
+	if !p.Admits("snapshots/gen-2") {
+		t.Fatal("Admits() = false for the bare own-prefix key itself, want true")
+	}
+	// A key under a DIFFERENT prefix, with no membership negotiated, must
+	// still be refused.
+	if p.Admits("snapshots/gen-1/files/a.gz") {
+		t.Fatal("Admits() = true for an external key with no membership negotiated, want false")
+	}
+}

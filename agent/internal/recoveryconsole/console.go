@@ -436,6 +436,14 @@ func (c *Console) promptServer(ci bool, answers Answers) (string, error) {
 const maxCodeAttempts = 3
 
 func (c *Console) promptCodeAndExchange(ctx context.Context, ci bool, answers Answers, server string) (string, *bmr.BootstrapResponse, error) {
+	// pendingWaitElapsed's own doc comment says the 20-minute
+	// snapshot_index_pending budget is scoped to "one promptCodeAndExchange
+	// call" — but it is a Console field, not a local, so without this reset
+	// a Console instance reused for a second call (e.g. after the operator
+	// mistyped a code once) would silently inherit whatever budget the
+	// FIRST call had already spent (review finding #5).
+	c.pendingWaitElapsed = 0
+
 	if ci {
 		token, bs, err := c.exchangeWithNegotiation(ctx, answers.Code, server)
 		if err != nil {

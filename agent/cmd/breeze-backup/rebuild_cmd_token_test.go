@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -347,5 +348,116 @@ func TestBuildTokenModeOptions_ProceedsWithCapabilityAndMatchingSha(t *testing.T
 	}
 	if got := statuses(); len(got) != 0 {
 		t.Fatalf("no refusal should have been posted yet, got %v", got)
+	}
+}
+
+// TestRebuildCommand_TokenModeOwnPrefixManifestPassesPreflight is the
+// regression test for review finding #1: the rebuild engine's preflight
+// ObjectAdmission sweep (preflight.go, calling provider.Admits per content
+// entry) must never refuse a manifest whose entries are ALL under the
+// token's own snapshot prefix — the ordinary, self-contained case, which
+// never negotiates the cross-snapshot membership capability at all. Before
+// the fix, *recoveryDownloadProvider.Admits consulted only the external
+// admissible set and returned false unconditionally without membership, so
+// preflight refused every own-prefix file and every token-mode rebuild of
+// a self-contained snapshot failed before provisioning. This drives the
+// REAL authenticate -> provider -> rebuild.Run(DryRun) path end to end
+// against an httptest server, matching production wiring exactly.
+func TestRebuildCommand_TokenModeOwnPrefixManifestPassesPreflight(t *testing.T) {
+	manifestJSON := []byte(`{"id":"snap-1","files":[` +
+		`{"sourcePath":"/a","backupPath":"snapshots/snap-1/files/a.gz","size":1},` +
+		`{"sourcePath":"/b","backupPath":"snapshots/snap-1/files/b.gz","size":1}` +
+		`]}`)
+	uefiLayout := &layout.Manifest{
+		SchemaVersion: layout.SchemaVersion,
+		Platform:      "linux",
+		BootMode:      layout.BootModeUEFI,
+		Disks: []layout.Disk{{
+			Name: "/dev/sda", TableType: "gpt", SizeBytes: 64 << 30, IsSystem: true,
+			Partitions: []layout.Partition{
+				{Number: 1, Name: "/dev/sda1", TypeGUID: "c12a7328-f81f-11d2-ba4b-00a0c93ec93b", Filesystem: "vfat", MountPoint: "/boot/efi", SizeBytes: 512 << 20, Role: layout.RoleEFI, Encryption: layout.EncryptionNone},
+				{Number: 2, Name: "/dev/sda2", TypeGUID: "0fc63daf-8483-4772-8e79-3d69d8477de4", Filesystem: "ext4", MountPoint: "/", SizeBytes: 40 << 30, Role: layout.RoleRoot, Encryption: layout.EncryptionNone},
+			},
+		}},
+	}
+	layoutJSON, err := json.Marshal(uefiLayout)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var mu sync.Mutex
+	var posted []string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/backup/bmr/recover/authenticate", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		body := fmt.Sprintf(`{
+			"bootstrap": {
+				"version": 1, "minHelperVersion": "0.1.0", "tokenId": "tok-1",
+				"device": {"id": "dev-1", "hostname": "rig-01", "osType": "linux"},
+				"snapshot": {"id": "snap-1", "snapshotId": "snap-1", "size": 2, "fileCount": 2},
+				"restoreType": "bare_metal", "targetConfig": {}, "providerType": "local",
+				"recovery": {"id": "rec-1", "identity": "new", "deviceId": "dev-1", "snapshotId": "snap-1"},
+				"download": {
+					"type": "breeze_proxy", "method": "GET", "url": %q,
+					"pathQueryParam": "path", "tokenHeaderName": "authorization",
+					"tokenHeaderFormat": "Bearer <recovery-token>", "requiresAuthentication": true,
+					"pathPrefix": "snapshots/snap-1", "expiresAt": ""
+				}
+			}
+		}`, "http://"+r.Host+"/download")
+		_, _ = w.Write([]byte(body))
+	})
+	mux.HandleFunc("/download", func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Query().Get("path") {
+		case "snapshots/snap-1/manifest.json":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(manifestJSON)
+			return
+		case "snapshots/snap-1/layout.json":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(layoutJSON)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+	mux.HandleFunc("/api/v1/backup/bmr/recover/progress", func(w http.ResponseWriter, r *http.Request) {
+		var reqBody struct {
+			Status string `json:"status"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&reqBody)
+		mu.Lock()
+		posted = append(posted, reqBody.Status)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"id":"rec-1","status":%q}`, reqBody.Status)
+	})
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	target := rebuild.Target{Kind: rebuild.TargetImage, Path: filepath.Join(t.TempDir(), "out.img")}
+	opts, _, err := buildTokenModeOptions(context.Background(), server.URL, "tok", target, "")
+	if err != nil {
+		t.Fatalf("buildTokenModeOptions: unexpected error: %v", err)
+	}
+	opts.System = noopTestSystem{}
+	opts.DryRun = true
+	opts.Target.ImageSizeBytes = 2 << 30
+	opts.StateDir = t.TempDir()
+
+	res, err := rebuild.Run(context.Background(), opts)
+	if err != nil {
+		var refusal *rebuild.RefusalError
+		if errors.As(err, &refusal) {
+			t.Fatalf("preflight refused an all-own-prefix manifest: %s", refusal.Reason)
+		}
+		t.Fatalf("rebuild.Run: unexpected error: %v", err)
+	}
+	if res == nil || res.PhaseReached != rebuild.PhasePreflight {
+		t.Fatalf("expected DryRun to stop after preflight, got %+v", res)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(posted) != 0 {
+		t.Fatalf("expected no progress posted for a dry-run preflight pass, got %v", posted)
 	}
 }

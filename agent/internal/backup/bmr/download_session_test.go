@@ -767,6 +767,58 @@ func TestDownloadSession_RefreshPreservesAdmissibleSet(t *testing.T) {
 // that a refresh whose fresh descriptor drops
 // snapshot-file-membership-v1 — a downgraded or misconfigured server — is
 // refused rather than silently shrinking the admissible set (Task 9).
+// TestRecoverySessionReauthTerminalNegotiationRefusalIsImmediate is the
+// regression test for review finding #3 (w09-part0.md R5): a terminal 409
+// from /bmr/recover/authenticate — capability_downgrade,
+// storage_identity_drift, snapshot_storage_identity_unknown, or
+// client_capability_required — is a *RecoveryNegotiationError, a distinct
+// type from *authenticateStatusError. Before the fix,
+// refreshAfterUnauthorized's terminal switch only matched
+// *authenticateStatusError, so errors.As(err, &statusErr) was false for a
+// negotiation error and isStatus's cases never matched — the reactive
+// refresh retried it reauthMaxAttempts times with exponential backoff
+// before finally giving up, instead of recognizing on the FIRST response
+// that retrying cannot help. This proves: exactly one authenticate call,
+// the session is marked lost, and the negotiation error/code survives the
+// error chain via errors.As (and, for the capability_downgrade code
+// specifically, errors.Is(err, ErrCapabilityDowngrade) is also true — the
+// server-side and local capability-loss signals are the same condition).
+func TestRecoverySessionReauthTerminalNegotiationRefusalIsImmediate(t *testing.T) {
+	clock := newFakeClock()
+	stopSleeps := withClockSleep(t, clock)
+	defer stopSleeps()
+
+	srv := newSessionFakeServer(t, clock)
+	desc := srv.openSession(clock.Now().Add(-time.Minute)) // already expired: forces the reactive path
+	p := srv.provider(clock, desc)
+	p.membership = true // this token had already negotiated the capability
+
+	srv.setAuthResponses(fakeAuthResponse{status: http.StatusConflict, message: "capability_downgrade"})
+
+	errs := downloadN(t, p, 1)
+	if errs[0] == nil {
+		t.Fatal("expected an error")
+	}
+	if !errors.Is(errs[0], ErrRecoverySessionLost) {
+		t.Fatalf("expected ErrRecoverySessionLost, got %v", errs[0])
+	}
+	if !errors.Is(errs[0], ErrCapabilityDowngrade) {
+		t.Fatalf("expected errors.Is(err, ErrCapabilityDowngrade) = true, got %v", errs[0])
+	}
+	var negErr *RecoveryNegotiationError
+	if !errors.As(errs[0], &negErr) {
+		t.Fatalf("expected errors.As to find a *RecoveryNegotiationError in the chain, got %v", errs[0])
+	}
+	if negErr.Code != "capability_downgrade" {
+		t.Fatalf("negErr.Code = %q, want capability_downgrade", negErr.Code)
+	}
+
+	authCalls, _, _ := srv.counts()
+	if authCalls != 1 {
+		t.Fatalf("authCalls = %d, want exactly 1 (a terminal 409 must not be retried)", authCalls)
+	}
+}
+
 func TestDownloadSession_RefreshWithoutCapabilityReturnsDowngradeError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/recover/authenticate") {

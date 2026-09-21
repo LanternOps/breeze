@@ -781,6 +781,66 @@ func TestConsole_SnapshotIndexPendingAutoRetries(t *testing.T) {
 	}
 }
 
+// TestConsole_PendingWaitBudgetResetsPerPromptCodeAndExchangeCall is the
+// regression test for review finding #5: the doc comment on
+// Console.pendingWaitElapsed (console.go ~:82-85) says the 20-minute
+// snapshot_index_pending wait budget is "across one promptCodeAndExchange
+// call", but pendingWaitElapsed is a Console field that promptCodeAndExchange
+// never reset — so a Console instance reused for a second exchange attempt
+// (e.g. after a code the operator mistyped once, sharing the same *Console)
+// silently inherited whatever budget the FIRST attempt had already burned,
+// making the second attempt's 20-minute budget shorter than documented (or,
+// as here, already exhausted). This drives waitAndRetryPending's actual
+// caller (promptCodeAndExchange -> exchangeWithNegotiation) rather than
+// calling waitAndRetryPending directly, so it proves the reset happens at
+// the documented boundary.
+func TestConsole_PendingWaitBudgetResetsPerPromptCodeAndExchangeCall(t *testing.T) {
+	calls := 0
+	deps := &fakeDeps{
+		exchangeFn: func(ctx context.Context, server, code string) (string, *bmr.BootstrapResponse, error) {
+			calls++
+			if calls < 2 {
+				return "", nil, &bmr.RecoveryNegotiationError{
+					Code:              "snapshot_index_pending",
+					Message:           "Breeze is preparing the file index for this snapshot. Retry in 30 seconds.",
+					RetryAfterSeconds: 0, // zeroed for the test's fast clock -> defaults to 30s
+				}
+			}
+			return "recv-token", &bmr.BootstrapResponse{SnapshotID: "gen-3"}, nil
+		},
+	}
+	io := &fakeIO{}
+	c := &Console{
+		IO:   io,
+		Deps: deps.build("0.111.1"),
+		sleep: func(time.Duration) <-chan time.Time {
+			ch := make(chan time.Time, 1)
+			ch <- time.Now()
+			return ch
+		},
+		// Simulates a Console instance that already burned its entire
+		// 20-minute budget on a PRIOR promptCodeAndExchange call (e.g. the
+		// operator typed a wrong code, retried, and the console reused the
+		// same struct) — the field the doc comment says is scoped to "one
+		// promptCodeAndExchange call".
+		pendingWaitElapsed: 20 * time.Minute,
+	}
+
+	token, bs, err := c.promptCodeAndExchange(context.Background(), true, Answers{Code: "ABCDEFGHJ"}, "https://example.invalid")
+	if err != nil {
+		t.Fatalf("promptCodeAndExchange() error = %v, want nil (the wait budget should have reset for this call)", err)
+	}
+	if token != "recv-token" {
+		t.Fatalf("token = %q, want recv-token", token)
+	}
+	if bs == nil {
+		t.Fatal("bootstrap = nil, want non-nil")
+	}
+	if calls != 2 {
+		t.Fatalf("Exchange calls = %d, want 2 (one pending, one success)", calls)
+	}
+}
+
 func TestConsole_ClientCapabilityRequiredReturnsToCodePromptWithMessage(t *testing.T) {
 	deps := &fakeDeps{
 		exchangeFn: func(ctx context.Context, server, code string) (string, *bmr.BootstrapResponse, error) {

@@ -225,18 +225,99 @@ func (r *Result) FailedFilesLen() int {
 	return len(r.FailedFilesSample)
 }
 
+// Caps mirror the server schema and w09-part0.md's Global Constraint
+// "Bounded reporting" (agent-side caps mirror the server schema): warnings
+// <= 64 entries x 2000 chars, reason/error strings <= 2000 chars. Mirrored
+// independently from bmr's own maxProgress* constants (progress.go) —
+// rebuild cannot import bmr's unexported constants, and bmr cannot import
+// rebuild (rebuild already imports bmr, so the reverse would be a cycle).
+const (
+	maxResultWarnings     = 64
+	maxResultWarningRunes = 2000
+	maxResultReasonRunes  = 2000
+)
+
+func truncateResultRunes(s string, max int) string {
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max])
+}
+
 // CloneWithTrimmedFailedFiles returns a shallow copy of r with
-// FailedFilesSample trimmed to max entries and FailedFilesOmitted
-// increased to account for the newly-trimmed entries. r itself is never
-// mutated. A nil receiver returns nil unchanged (nothing to trim).
+// FailedFilesSample trimmed to max entries (FailedFilesOmitted increased
+// to account for the newly-trimmed entries), Warnings trimmed to
+// maxResultWarnings entries of at most maxResultWarningRunes runes each,
+// and Error/Refusal capped to maxResultReasonRunes runes. r itself is
+// never mutated — trimmed slices/strings are always freshly built, never
+// aliased against r's own backing arrays. A nil receiver returns nil
+// unchanged (nothing to trim).
+//
+// Warnings is uncapped at every call site that populates it (restore.go
+// appends one entry per failed file placement; restore_tree.go forwards
+// that slice into Result.Warnings verbatim) — unlike FailedFilesSample,
+// which restore_tree.go already caps to 50 entries at construction. A
+// mass-failure restore (e.g. 98k files) can therefore carry ~98k
+// Warnings entries, which alone blows the 768 KiB progress body limit
+// even though FailedFilesSample stays small — this method is the only
+// place that bounds it (review finding #2, w09-part0.md R18).
 func (r *Result) CloneWithTrimmedFailedFiles(max int) any {
 	if r == nil {
 		return r
 	}
 	clone := *r
-	clone.FailedFilesOmitted += len(clone.FailedFilesSample) - max
-	clone.FailedFilesSample = append([]string(nil), clone.FailedFilesSample[:max]...)
+
+	if n := len(clone.FailedFilesSample); n > max {
+		clone.FailedFilesOmitted += n - max
+		clone.FailedFilesSample = append([]string(nil), clone.FailedFilesSample[:max]...)
+	}
+
+	warnKeep := len(r.Warnings)
+	if warnKeep > maxResultWarnings {
+		warnKeep = maxResultWarnings
+	}
+	if warnKeep > 0 {
+		warnings := make([]string, warnKeep)
+		for i := 0; i < warnKeep; i++ {
+			warnings[i] = truncateResultRunes(r.Warnings[i], maxResultWarningRunes)
+		}
+		clone.Warnings = warnings
+	} else {
+		clone.Warnings = nil
+	}
+
+	clone.Error = truncateResultRunes(clone.Error, maxResultReasonRunes)
+	clone.Refusal = truncateResultRunes(clone.Refusal, maxResultReasonRunes)
+
 	return &clone
+}
+
+// SummaryFields satisfies bmr's resultSummaryFields seam (bmr/progress.go)
+// so the last-resort progress fallback — used when even the trimmed clone
+// from CloneWithTrimmedFailedFiles doesn't fit under the body limit — can
+// still surface filesFailed/failedFilesOmitted/error/refusal from a typed
+// *Result instead of degrading to a bare {"status","truncated":true} (the
+// map[string]any branch it previously only supported). A nil receiver
+// returns nil (nothing to summarize).
+func (r *Result) SummaryFields() map[string]any {
+	if r == nil {
+		return nil
+	}
+	m := map[string]any{}
+	if r.FilesFailed > 0 {
+		m["filesFailed"] = r.FilesFailed
+	}
+	if r.FailedFilesOmitted > 0 {
+		m["failedFilesOmitted"] = r.FailedFilesOmitted
+	}
+	if r.Error != "" {
+		m["error"] = r.Error
+	}
+	if r.Refusal != "" {
+		m["refusal"] = r.Refusal
+	}
+	return m
 }
 
 // ObjectAdmission is implemented by a token-mode recovery provider

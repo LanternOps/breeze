@@ -295,6 +295,13 @@ func (p *recoveryDownloadProvider) ExtendAdmissible(keys []string) {
 func (p *recoveryDownloadProvider) Admits(key string) bool {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
+	if p.descriptor != nil {
+		normalizedKey := strings.TrimLeft(pathClean(key), "/")
+		normalizedPrefix := strings.Trim(p.descriptor.PathPrefix, "/")
+		if normalizedPrefix != "" && (normalizedKey == normalizedPrefix || strings.HasPrefix(normalizedKey, normalizedPrefix+"/")) {
+			return true
+		}
+	}
 	if !p.membership {
 		return false
 	}
