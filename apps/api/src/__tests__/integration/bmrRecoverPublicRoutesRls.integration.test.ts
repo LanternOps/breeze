@@ -191,15 +191,19 @@ async function seedThreeGenerationChain() {
     orgId: org.id, name: `w09 chain config ${suffix}`, type: 'file', provider: 'local', providerConfig: { path: storageRoot },
   }).returning({ id: backupConfigs.id });
   if (!config) throw new Error('config fixture insert failed');
+  if (!device) throw new Error('device fixture missing');
+  // Narrowed copies: TS does not carry the guards above into the closure.
+  const configId = config.id;
+  const deviceId = device.id;
 
   async function writeSnapshot(label: string, referencedFiles: number, files: Array<{ sourcePath: string; backupPath: string; size: number }>) {
     const snapshotId = `${label}-${suffix}`;
     const [job] = await testDb.insert(backupJobs).values({
-      orgId: org.id, configId: config.id, deviceId: device.id, status: 'completed', referencedFiles, storageIdentity,
+      orgId: org.id, configId: configId, deviceId: deviceId, status: 'completed', referencedFiles, storageIdentity,
     }).returning({ id: backupJobs.id });
     if (!job) throw new Error('job fixture insert failed');
     const [snapshot] = await testDb.insert(backupSnapshots).values({
-      orgId: org.id, jobId: job.id, deviceId: device.id, configId: config.id, snapshotId,
+      orgId: org.id, jobId: job.id, deviceId: deviceId, configId: configId, snapshotId,
       storageIdentity, bareMetalRestorable: true, metadata: {},
     }).returning({ id: backupSnapshots.id });
     if (!snapshot) throw new Error('snapshot fixture insert failed');

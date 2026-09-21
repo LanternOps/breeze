@@ -9,6 +9,7 @@ import { zValidator } from '../../lib/validation';
 import { and, desc, eq, gt, isNull } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
 import {
+  backupSnapshots,
   bareMetalRecoveries,
   devices,
   recoveryTokens,
@@ -264,9 +265,14 @@ bmrRecoveryRoutes.get(
     }
     const query = c.req.valid('query');
 
+    // W09 (#6464): the web panel shows "preparing file index" while the
+    // token snapshot's server-side index is not yet complete, so each
+    // summary carries the snapshot's file_index_status (null once the
+    // snapshot row is gone — the FK is ON DELETE SET NULL).
     const rows = await db
-      .select()
+      .select({ row: bareMetalRecoveries, fileIndexStatus: backupSnapshots.fileIndexStatus })
       .from(bareMetalRecoveries)
+      .leftJoin(backupSnapshots, eq(backupSnapshots.id, bareMetalRecoveries.snapshotId))
       .where(
         and(
           eq(bareMetalRecoveries.orgId, orgId),
@@ -276,7 +282,9 @@ bmrRecoveryRoutes.get(
       .orderBy(desc(bareMetalRecoveries.createdAt))
       .limit(query.limit);
 
-    return c.json({ data: rows.map(toRecoverySummary) });
+    return c.json({
+      data: rows.map(({ row, fileIndexStatus }) => ({ ...toRecoverySummary(row), fileIndexStatus: fileIndexStatus ?? null })),
+    });
   }
 );
 

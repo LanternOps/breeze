@@ -240,6 +240,26 @@ describe('bare-metal recoveries routes', () => {
     publicApp.route('/backup', bmrRecoveryPublicRoutes);
   });
 
+  describe('GET /backup/bmr/recoveries (W09, #6464)', () => {
+    it('exposes the token snapshot file-index status on each summary', async () => {
+      const row = {
+        id: RECOVERY_ID, deviceId: DEVICE_ID, snapshotId: SNAPSHOT_ID, recoveryTokenId: null, identity: 'original',
+        status: 'created', codeExpiresAt: new Date(), codeUsedAt: null, nonceHash: 'x'.repeat(64),
+        target: null, plan: null, result: null, failureReason: null, warnings: null,
+        createdAt: new Date(), updatedAt: new Date(), mediaBootedAt: null, plannedAt: null, restoringAt: null,
+        validatedAt: null, rebootedAt: null, checkedInAt: null, completedAt: null,
+      };
+      selectMock.mockReturnValueOnce(chainMock([{ row, fileIndexStatus: 'hydrating' }]));
+
+      const res = await app.request('/backup/bmr/recoveries', { method: 'GET' });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toHaveLength(1);
+      expect(body.data[0]).toMatchObject({ id: RECOVERY_ID, fileIndexStatus: 'hydrating' });
+    });
+  });
+
   describe('POST /backup/bmr/recoveries', () => {
     it('creates a recovery for a bare-metal-restorable snapshot and returns a formatted one-time code', async () => {
       selectMock
