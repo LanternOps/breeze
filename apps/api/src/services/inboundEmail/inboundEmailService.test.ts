@@ -224,15 +224,13 @@ vi.mock('../ticketEvents', () => ({ emitTicketEvent: emitMock }));
 // that a ticket was created + the inbound row logged.
 const { maybeSendAutoresponseMock } = vi.hoisted(() => ({ maybeSendAutoresponseMock: vi.fn() }));
 vi.mock('./autoresponder', () => ({ maybeSendAutoresponse: maybeSendAutoresponseMock }));
-// The flood cap's Redis sliding-window is exercised in inboundRateLimit.test.ts.
-// Here it is mocked to "not throttled" so the create-path assertions are not
-// coupled to Redis; a dedicated test below flips it to throttled and asserts the
-// quarantine outcome.
-const evaluateInboundThrottleMock = vi.fn().mockResolvedValue({ throttled: false, bucket: null });
-vi.mock('./inboundRateLimit', () => ({
-  evaluateInboundThrottle: (...a: unknown[]) => evaluateInboundThrottleMock(...a),
-  resolveInboundCapLimits: () => ({ perSenderPerHour: 30, perDomainPerHour: 200, perPartnerPerHour: 1000 }),
-}));
+// The flood cap's Redis peek/charge now lives entirely in the worker
+// (jobs/inboundEmailWorker.ts) and inboundRateLimit.ts — processInboundEmail only
+// consults a read-only verdict passed as its 4th argument. So there is no Redis to
+// mock here: a test drives throttling by passing `{ throttled: true, bucket }` and
+// observes creation via the `onTicketCreated` callback. The peek/charge Redis
+// semantics (including no residual charge across buckets) are proven in
+// inboundRateLimit.test.ts, and the worker wiring in inboundEmailWorker.test.ts.
 
 // Task 4: pipeline calls claimMessageLink() to record link rows after a matched
 // append and after a create. Mocked as a collaborator (like resolveOrg/ticketService
@@ -562,20 +560,27 @@ describe('processInboundEmail', () => {
     expect((gatedTicket as { partnerId: string }).partnerId).toBe('p-1');
   });
 
-  it('quarantines (no ticket) when the flood cap is exceeded at the creation choke point', async () => {
+  it('quarantines (no ticket, no charge) when the peeked flood verdict is over-cap', async () => {
     resolveMock.mockResolvedValue('p-1');
     state.selectRows['ticket_email_inbound'] = [];
     state.selectRows['tickets'] = [];
     state.selectRows['portal_users'] = [{ id: 'pu-1', orgId: 'o-1' }];
     state.selectRows['organizations'] = [{ id: 'o-1' }];
     createTicketMock.mockResolvedValue({ id: 't-created', internalNumber: 'T-2026-0010' });
-    // Flip the cap verdict to over-limit for this one message.
-    evaluateInboundThrottleMock.mockResolvedValueOnce({ throttled: true, bucket: 'sender' });
+    const onTicketCreated = vi.fn();
 
-    await processInboundEmail(email({ subject: 'flood' }));
+    // The worker peeked the windows and found one full; it passes the verdict in.
+    await processInboundEmail(
+      email({ subject: 'flood' }),
+      undefined,
+      { onTicketCreated },
+      { throttled: true, bucket: 'sender' },
+    );
 
-    // No ticket is created; the message is quarantined for review (recoverable).
+    // No ticket is created; the message is quarantined for review (recoverable);
+    // and onTicketCreated never fires, so the worker records NO charge.
     expect(createTicketMock).not.toHaveBeenCalled();
+    expect(onTicketCreated).not.toHaveBeenCalled();
     const log = inboundOf();
     expect(log).toHaveLength(1);
     expect(log[0]!.parseStatus).toBe('quarantined');
@@ -583,46 +588,38 @@ describe('processInboundEmail', () => {
     expect(String(log[0]!.error ?? '')).toContain('rate-limited');
   });
 
-  it('fails OPEN (creates the ticket) when the cap evaluation THROWS (strict #1105 tripwire)', async () => {
-    // Codex review #5, finding 1: under DB_CONTEXT_TRIPWIRE_STRICT the in-context
-    // Redis round-trip throws. A strict deployment must not lose a legitimate
-    // ticket — capExceeded() catches the throw and fails OPEN (create, skip the cap).
+  it('signals onTicketCreated on a create path (so the worker charges only real creations)', async () => {
     resolveMock.mockResolvedValue('p-1');
     state.selectRows['ticket_email_inbound'] = [];
     state.selectRows['tickets'] = [];
     state.selectRows['portal_users'] = [{ id: 'pu-1', orgId: 'o-1' }];
     state.selectRows['organizations'] = [{ id: 'o-1' }];
     createTicketMock.mockResolvedValue({ id: 't-created', internalNumber: 'T-2026-0011' });
-    evaluateInboundThrottleMock.mockRejectedValueOnce(
-      new Error('rateLimiter(inbound) ran inside a held withDbAccessContext transaction — #1105'),
-    );
+    const onTicketCreated = vi.fn();
 
-    await processInboundEmail(email({ subject: 'strict-mode flood cap' }));
+    // No throttle verdict passed (⇒ never throttle): a normal create.
+    await processInboundEmail(email({ subject: 'normal' }), undefined, { onTicketCreated });
 
-    // The ticket IS created (fail open); the message is NOT quarantined.
     expect(createTicketMock).toHaveBeenCalledTimes(1);
-    const log = inboundOf();
-    expect(log).toHaveLength(1);
-    expect(log[0]!.parseStatus).not.toBe('quarantined');
-    expect(log[0]!.ticketId).toBe('t-created');
+    expect(onTicketCreated).toHaveBeenCalledTimes(1);
   });
 
-  it('does NOT charge the cap for an unknown-sender DROP message (drop policy preserved)', async () => {
-    // Regression guard (Codex review #3): the cap must only meter ticket-CREATING
-    // paths. An unknown sender under 'drop' never creates a ticket, so it must not
-    // consume the budget — and must stay dropped, not become quarantined.
+  it('does NOT signal onTicketCreated for an unknown-sender DROP (worker charges nothing)', async () => {
+    // Regression guard (Codex review #3): only ticket-CREATING paths may consume a
+    // sender's budget. An unknown sender under 'drop' creates no ticket, so
+    // onTicketCreated must not fire — the worker then records no charge — and the
+    // message stays dropped ('ignored'), not quarantined.
     resolveMock.mockResolvedValue('p-1');
     state.selectRows['ticket_email_inbound'] = [];
     state.selectRows['tickets'] = [];
     state.selectRows['portal_users'] = [];        // no portal user
     resolveOrgMock.mockResolvedValue(null);       // no mapped domain
     loadPolicyMock.mockResolvedValue({ enabled: true, unknownSenderMode: 'drop', defaultTriageOrgId: null, dropUnverifiedSenders: false });
-    evaluateInboundThrottleMock.mockClear();
+    const onTicketCreated = vi.fn();
 
-    await processInboundEmail(email({ from: 'stranger@nowhere.example', subject: 'unmapped' }));
+    await processInboundEmail(email({ from: 'stranger@nowhere.example', subject: 'unmapped' }), undefined, { onTicketCreated });
 
-    // The cap was never consulted, and the message is dropped ('ignored'), not quarantined.
-    expect(evaluateInboundThrottleMock).not.toHaveBeenCalled();
+    expect(onTicketCreated).not.toHaveBeenCalled();
     expect(createTicketMock).not.toHaveBeenCalled();
     const log = inboundOf();
     expect(log).toHaveLength(1);

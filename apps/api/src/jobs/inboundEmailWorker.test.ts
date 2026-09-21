@@ -1,10 +1,22 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { processInboundEmailMock, runOutsideDbContextMock, withSystemDbAccessContextMock } = vi.hoisted(() => {
+const {
+  processInboundEmailMock,
+  resolveChecksMock,
+  peekMock,
+  chargeMock,
+  getRedisMock,
+  runOutsideDbContextMock,
+  withSystemDbAccessContextMock,
+} = vi.hoisted(() => {
   const withSystemDbAccessContextMock = vi.fn(<T>(fn: () => Promise<T>) => fn());
   const runOutsideDbContextMock = vi.fn(<T>(fn: () => T) => fn());
   return {
     processInboundEmailMock: vi.fn().mockResolvedValue(undefined),
+    resolveChecksMock: vi.fn().mockResolvedValue([]),
+    peekMock: vi.fn().mockResolvedValue({ throttled: false, bucket: null }),
+    chargeMock: vi.fn().mockResolvedValue(undefined),
+    getRedisMock: vi.fn(() => ({})),
     withSystemDbAccessContextMock,
     runOutsideDbContextMock
   };
@@ -20,14 +32,19 @@ vi.mock('bullmq', () => {
     Worker: MockWorker
   };
 });
-vi.mock('../services/redis', () => ({ getBullMQConnection: vi.fn(() => ({})) }));
+vi.mock('../services/redis', () => ({ getBullMQConnection: vi.fn(() => ({})), getRedis: getRedisMock }));
 vi.mock('../services/sentry', () => ({ captureException: vi.fn() }));
 vi.mock('../db', () => ({
   withSystemDbAccessContext: withSystemDbAccessContextMock,
   runOutsideDbContext: runOutsideDbContextMock
 }));
 vi.mock('../services/inboundEmail/inboundEmailService', () => ({
-  processInboundEmail: processInboundEmailMock
+  processInboundEmail: processInboundEmailMock,
+  resolveInboundThrottleChecks: resolveChecksMock
+}));
+vi.mock('../services/inboundEmail/inboundRateLimit', () => ({
+  peekInboundThrottle: peekMock,
+  chargeInboundTickets: chargeMock
 }));
 vi.mock('../services/inboundEmailQueue', () => ({
   INBOUND_EMAIL_QUEUE: 'inbound-email'
@@ -54,12 +71,17 @@ describe('inboundEmailWorker', () => {
     withSystemDbAccessContextMock.mockImplementation(<T>(fn: () => Promise<T>) => fn());
     runOutsideDbContextMock.mockImplementation(<T>(fn: () => T) => fn());
     processInboundEmailMock.mockResolvedValue(undefined);
+    resolveChecksMock.mockResolvedValue([]);
+    peekMock.mockResolvedValue({ throttled: false, bucket: null });
+    chargeMock.mockResolvedValue(undefined);
+    getRedisMock.mockReturnValue({});
   });
 
   // TEST 1: drive the REAL exported handleInboundEmail and verify the
   // runOutsideDbContext → withSystemDbAccessContext → processInboundEmail ordering
-  // (the #1105 pool-poison guard).
-  it('real handleInboundEmail: calls runOutsideDbContext before withSystemDbAccessContext before processInboundEmail', async () => {
+  // (the #1105 pool-poison guard). Both the throttle-resolve context and the
+  // pipeline context follow that ordering.
+  it('real handleInboundEmail: each DB context is opened via runOutsideDbContext, and the pipeline runs inside one', async () => {
     const callOrder: string[] = [];
 
     runOutsideDbContextMock.mockImplementation(<T>(fn: () => T): T => {
@@ -75,27 +97,74 @@ describe('inboundEmailWorker', () => {
     });
 
     const email = makeEmail();
-    // Call the REAL exported handler (not the mocks directly)
     await workerModule.handleInboundEmail({ data: { email } } as any);
 
-    // (a) runOutsideDbContext was called
-    expect(runOutsideDbContextMock).toHaveBeenCalledTimes(1);
-    // (b) withSystemDbAccessContext was called INSIDE runOutsideDbContext
-    expect(withSystemDbAccessContextMock).toHaveBeenCalledTimes(1);
-    // (c) processInboundEmail received job.data
-    expect(processInboundEmailMock).toHaveBeenCalledWith(email, undefined);
-    // Ordering assertion: runOutsideDbContext must come before withSystemDbAccessContext
+    // Two DB contexts: (1) resolve the flood windows, (2) run the pipeline. Each is
+    // wrapped in runOutsideDbContext → withSystemDbAccessContext.
+    expect(runOutsideDbContextMock).toHaveBeenCalledTimes(2);
+    expect(withSystemDbAccessContextMock).toHaveBeenCalledTimes(2);
+    // processInboundEmail receives (email, gen, deps, throttleVerdict).
+    expect(processInboundEmailMock).toHaveBeenCalledWith(
+      email,
+      undefined,
+      expect.objectContaining({ onTicketCreated: expect.any(Function) }),
+      { throttled: false, bucket: null },
+    );
+    // Every runOutsideDbContext precedes its withSystemDbAccessContext, which
+    // precedes the pipeline work.
     expect(callOrder.indexOf('runOutsideDbContext')).toBeLessThan(callOrder.indexOf('withSystemDbAccessContext'));
     expect(callOrder.indexOf('withSystemDbAccessContext')).toBeLessThan(callOrder.indexOf('processInboundEmail'));
   });
 
-  it('real handleInboundEmail: resolves without throwing when processInboundEmail succeeds', async () => {
-    const email = makeEmail({ providerMessageId: 'mg-xyz-999' });
-    await expect(workerModule.handleInboundEmail({ data: { email } } as any)).resolves.toBeUndefined();
-    expect(processInboundEmailMock).toHaveBeenCalledWith(email, undefined);
+  it('PEEKS the resolved windows before running the pipeline (Redis outside the held tx)', async () => {
+    const checks = [{ bucket: 'sender' as const, key: 'inbound:tix:sender:p1:jane@acme.com', limit: 30 }];
+    resolveChecksMock.mockResolvedValue(checks);
+    const order: string[] = [];
+    peekMock.mockImplementation(async () => { order.push('peek'); return { throttled: false, bucket: null }; });
+    processInboundEmailMock.mockImplementation(async () => { order.push('process'); });
+
+    await workerModule.handleInboundEmail({ data: { email: makeEmail() } } as any);
+
+    // Peek is called with the real Redis client and the resolved checks, before the pipeline.
+    expect(peekMock).toHaveBeenCalledWith({}, checks);
+    expect(order).toEqual(['peek', 'process']);
   });
 
-  it('passes an exact M365 mailbox generation to the transactional ingestion service', async () => {
+  it('CHARGES the windows after commit ONLY when a ticket was created', async () => {
+    const checks = [{ bucket: 'sender' as const, key: 'inbound:tix:sender:p1:jane@acme.com', limit: 30 }];
+    resolveChecksMock.mockResolvedValue(checks);
+    // The pipeline signals a creation via the onTicketCreated callback.
+    processInboundEmailMock.mockImplementation(async (_e: unknown, _g: unknown, deps: any) => {
+      deps?.onTicketCreated?.();
+    });
+
+    const email = makeEmail({ providerMessageId: 'mg-created-1' });
+    await workerModule.handleInboundEmail({ data: { email } } as any);
+
+    expect(chargeMock).toHaveBeenCalledWith({}, checks, 'mg-created-1');
+  });
+
+  it('does NOT charge when no ticket was created (peek/pipeline made none)', async () => {
+    resolveChecksMock.mockResolvedValue([{ bucket: 'sender' as const, key: 'k', limit: 30 }]);
+    processInboundEmailMock.mockResolvedValue(undefined); // never calls onTicketCreated
+
+    await workerModule.handleInboundEmail({ data: { email: makeEmail() } } as any);
+
+    expect(chargeMock).not.toHaveBeenCalled();
+  });
+
+  it('does NOT charge when there are no cap windows, even if a ticket was created', async () => {
+    resolveChecksMock.mockResolvedValue([]); // caps unlimited / partner unresolved
+    processInboundEmailMock.mockImplementation(async (_e: unknown, _g: unknown, deps: any) => {
+      deps?.onTicketCreated?.();
+    });
+
+    await workerModule.handleInboundEmail({ data: { email: makeEmail() } } as any);
+
+    expect(chargeMock).not.toHaveBeenCalled();
+  });
+
+  it('passes an exact M365 mailbox generation to both the throttle resolve and the pipeline', async () => {
     const email = makeEmail({ providerMessageId: 'graph-1' });
     const mailboxGeneration = {
       connectionId: '44444444-4444-4444-8444-444444444444',
@@ -106,7 +175,13 @@ describe('inboundEmailWorker', () => {
 
     await workerModule.handleInboundEmail({ data: { email, mailboxGeneration } } as any);
 
-    expect(processInboundEmailMock).toHaveBeenCalledWith(email, mailboxGeneration);
+    expect(resolveChecksMock).toHaveBeenCalledWith(email, mailboxGeneration);
+    expect(processInboundEmailMock).toHaveBeenCalledWith(
+      email,
+      mailboxGeneration,
+      expect.objectContaining({ onTicketCreated: expect.any(Function) }),
+      { throttled: false, bucket: null },
+    );
   });
 
   it('continues to consume legacy raw-email jobs queued before the contract rollout', async () => {
@@ -114,7 +189,12 @@ describe('inboundEmailWorker', () => {
 
     await workerModule.handleInboundEmail({ data: email } as any);
 
-    expect(processInboundEmailMock).toHaveBeenCalledWith(email, undefined);
+    expect(processInboundEmailMock).toHaveBeenCalledWith(
+      email,
+      undefined,
+      expect.objectContaining({ onTicketCreated: expect.any(Function) }),
+      { throttled: false, bucket: null },
+    );
   });
 });
 

@@ -20,8 +20,8 @@ import type { M365MailboxGenerationContext } from '../inboundEmailQueue';
 import { TICKET_TOKEN_RE, findTicketInPartner, findClosedTicketInPartner, type SenderResolver } from './threadMatcher';
 import { claimMessageLink, findLinkByMessageId, normalizeMessageId } from '../ticketEmailLinks';
 import { ownOutboundReason, ticketCreationLoopReason } from './loopPrevention';
-import { evaluateInboundThrottle, resolveInboundCapLimits } from './inboundRateLimit';
-import { getRedis } from '../redis';
+import { resolveInboundCapLimits, buildInboundCapChecks } from './inboundRateLimit';
+import type { InboundThrottleVerdict, InboundCapCheck } from './inboundRateLimit';
 
 // Synthetic actor for the inbound pipeline. Only ever written to audit_logs.actor_id
 // (NOT NULL, but no FK to users — same pattern as auditEvents.ANONYMOUS_ACTOR_ID /
@@ -138,12 +138,57 @@ export interface ProcessInboundEmailDependencies {
   afterMailboxGenerationLock?: () => Promise<void>;
   /** Test-only observation point after a subject-token matcher pins the ticket. */
   afterTicketMatchLock?: (ticketId: string) => Promise<void>;
+  /**
+   * Invoked exactly once, synchronously, when this message creates a ticket
+   * (any of the four create paths). The worker uses it to charge the flood
+   * windows AFTER the transaction commits and OUTSIDE the held DB context, so no
+   * Redis runs inside the pipeline (#1105) and only real creations are counted.
+   */
+  onTicketCreated?: () => void;
+}
+
+/**
+ * Resolve the flood-cap windows for a message WITHOUT touching Redis, so the
+ * worker can peek/charge them outside the pipeline's held transaction (#1105).
+ * Mirrors the pipeline's recipient-only partner resolution and honours the
+ * master switch and per-partner overrides. Returns [] (⇒ never throttle, and the
+ * worker skips Redis entirely) when the partner can't be resolved, inbound is
+ * disabled, or every window is unlimited. Must be called inside a DB context;
+ * the caller then closes that context BEFORE peeking Redis.
+ */
+export async function resolveInboundThrottleChecks(
+  n: NormalizedInboundEmail,
+  mailboxGeneration?: M365MailboxGenerationContext,
+): Promise<InboundCapCheck[]> {
+  let partnerId: string | null;
+  if (mailboxGeneration) {
+    // The pipeline fails m365 closed without a generation; for a read-only peek
+    // just decline to throttle rather than resolve a partner a different way.
+    if (n.provider !== 'm365') return [];
+    partnerId = mailboxGeneration.partnerId;
+  } else {
+    partnerId = n.resolvedPartnerId ?? await resolvePartnerByRecipient(n.to);
+  }
+  if (!partnerId) return [];
+  const policy = await loadPartnerInboundPolicy(partnerId);
+  if (!policy.enabled) return [];
+  const limits = resolveInboundCapLimits({
+    maxTicketsPerSenderPerHour: policy.maxTicketsPerSenderPerHour,
+    maxTicketsPerDomainPerHour: policy.maxTicketsPerDomainPerHour,
+    maxTicketsPerPartnerPerHour: policy.maxTicketsPerPartnerPerHour,
+  });
+  return buildInboundCapChecks(partnerId, n.from, limits);
 }
 
 export async function processInboundEmail(
   n: NormalizedInboundEmail,
   mailboxGeneration?: M365MailboxGenerationContext,
   dependencies: ProcessInboundEmailDependencies = {},
+  /**
+   * Read-only flood-cap verdict peeked by the worker before this transaction was
+   * opened (undefined ⇒ no caps apply / not evaluated ⇒ never throttle).
+   */
+  throttle?: InboundThrottleVerdict,
 ): Promise<void> {
   // partnerId is tracked outside the try so the durable-failed log records whatever
   // tenant was resolved before the failure (may be null if resolution itself failed).
@@ -225,15 +270,16 @@ export async function processInboundEmail(
       return;
     }
 
-    // (1e) MAIL LOOP / BOUNCE. Suppress ticket creation for unambiguous loop and
-    // bounce signals — Auto-Submitted: auto-replied, a null Return-Path (`<>`),
-    // X-Loop, X-Auto-Response-Suppress, or List-Id — so an auto-responder war or a
-    // bounce storm cannot manufacture tickets. Deliberately NARROW: a device
-    // notification (`Auto-Submitted: auto-generated`, no-reply@ copier/monitoring)
-    // is NOT suppressed here — those are legitimate tickets. The broader
-    // Precedence/system-sender set still suppresses only the auto-REPLY
-    // (autoresponseSuppressionReason), not the ticket. Logged 'ignored' with the
-    // reason for the audit trail.
+    // (1e) MAIL LOOP / BOUNCE. Suppress ticket creation for the two unambiguous
+    // loop/bounce signals — Auto-Submitted: auto-replied and a null Return-Path
+    // (`<>`) — so an auto-responder war or a bounce storm cannot manufacture
+    // tickets. Deliberately NARROW: a device notification (`Auto-Submitted:
+    // auto-generated`, no-reply@ copier/monitoring) is NOT suppressed here — those
+    // are legitimate tickets. X-Loop, X-Auto-Response-Suppress and List-Id are NOT
+    // creation-suppression signals (we never set X-Loop outbound, so it does not
+    // evidence a Breeze loop); together with Precedence/system-sender they suppress
+    // only the auto-REPLY (autoresponseSuppressionReason), not the ticket. Logged
+    // 'ignored' with the reason for the audit trail.
     const loopReason = ticketCreationLoopReason(n);
     if (loopReason) {
       await logInbound(n, partnerId, 'ignored', null, `loop/bounce suppressed: ${loopReason}`);
@@ -291,18 +337,14 @@ export async function processInboundEmail(
       return;
     }
 
-    // Effective flood caps for this partner (override ?? env default). The caps
-    // are ENFORCED at the ticket-creation choke point (createFromEmail), NOT here:
-    // charging only messages that actually create a ticket means forged/unverified
-    // mail (already quarantined by the R4 sender-auth gate below), duplicates
-    // (caught by provider dedup), and already-claimed messages (the ledger consult)
-    // never consume a sender's budget — closing the denial-of-tickets vector — and
-    // the verdict is recomputed in-tx on every attempt, so a retry cannot lose it.
-    const capLimits = resolveInboundCapLimits({
-      maxTicketsPerSenderPerHour: policy.maxTicketsPerSenderPerHour,
-      maxTicketsPerDomainPerHour: policy.maxTicketsPerDomainPerHour,
-      maxTicketsPerPartnerPerHour: policy.maxTicketsPerPartnerPerHour,
-    });
+    // Flood caps: the effective limits are resolved and PEEKED by the worker
+    // outside this held transaction (see jobs/inboundEmailWorker.ts and
+    // inboundRateLimit.ts); `throttle` is that read-only verdict. Enforcement
+    // happens only at the create paths (capExceeded), and the matching charge is
+    // recorded by the worker after commit — so forged/unverified mail (quarantined
+    // by the R4 gate below), duplicates (provider dedup), already-claimed messages
+    // (the ledger consult) and replies that append to an existing ticket never
+    // consume a sender's budget.
 
     // (2b) CROSS-CHANNEL idempotency — the `ticket_email_links` ledger (spec §4:
     // ONE message-id, ONE canonical association, across BOTH channels).
@@ -429,51 +471,32 @@ export async function processInboundEmail(
       return;
     }
 
-    // FLOOD CAP — charged ONLY on a path that actually creates a ticket. This
+    // FLOOD CAP — enforced ONLY at a path that actually creates a ticket. This
     // helper is invoked at the entry of each create path below (closed
     // continuation, portal user, mapped domain, triage) and NOT on the
-    // unknown-sender drop/quarantine paths, which never mint a ticket — charging
-    // those would let unmapped spam consume a partner's ticket budget and, worse,
-    // would turn a `drop`-policy message into a quarantine once over cap
-    // (a policy bypass). Each message takes exactly one path (they return), so at
-    // most one charge happens; the charge is idempotent per provider-message-id,
-    // so an at-least-once redelivery / transaction retry counts once. It sits
-    // after the R4 sender-auth gate, provider dedup, the claim-ledger consult and
-    // the live-thread append, and — at the mapped-domain site — ahead of contact
+    // unknown-sender drop/quarantine paths, which never mint a ticket. Each
+    // message takes exactly one path (they return), so it runs at most once. It
+    // sits after the R4 sender-auth gate, provider dedup, the claim-ledger consult
+    // and the live-thread append (a reply that appends to an existing ticket is
+    // NEVER throttled), and — at the mapped-domain site — ahead of contact
     // auto-creation, so an over-cap message creates NEITHER a ticket NOR a contact.
-    // Returns true when over cap (caller must quarantine + return). rateLimiter
-    // fails CLOSED on a Redis error (→ quarantine); a fully-absent Redis fails
-    // OPEN in evaluateInboundThrottle. Redis round-trip runs in the held tx
-    // (warn-only #1105, as the autoresponder does) but only for real creations.
-    // Capture partnerId as a const so the closure sees the narrowed `string`
-    // (the outer `let partnerId: string | null` is re-widened inside a closure;
-    // it is non-null here, past the early `if (!partnerId) return`).
-    const capPartnerId = partnerId;
+    //
+    // NO REDIS RUNS HERE (#1105). The pipeline is one held withSystemDbAccessContext
+    // transaction; a Redis round-trip inside it would pin the pooled connection
+    // idle-in-transaction. So the WORKER peeks the flood windows (read-only, ZCOUNT)
+    // BEFORE opening this transaction and passes the verdict in; this helper only
+    // consults that cached verdict. The matching CHARGE is recorded by the worker
+    // AFTER the transaction commits and only when a ticket was created (via the
+    // onTicketCreated callback), so no window is charged for mail that made no
+    // ticket. Returns true when over cap (caller must quarantine + return).
     const capExceeded = async (): Promise<boolean> => {
-      // The only throw path here is the #1105 held-context tripwire under
-      // DB_CONTEXT_TRIPWIRE_STRICT: rateLimiter fails CLOSED (no throw) on a Redis
-      // error, and evaluateInboundThrottle fails OPEN on a null client. A strict
-      // deployment must not turn a legitimate ticket creation into a terminal
-      // ingest failure, so a throw fails OPEN — create the ticket, skip the cap for
-      // this message, log it — mirroring the autoresponder's "never poison the work
-      // transaction" rule. Warn-only (the prod default) never reaches the catch.
-      const verdict = await evaluateInboundThrottle({
-        redis: getRedis(),
-        from: n.from,
-        partnerId: capPartnerId,
-        limits: capLimits,
-        dedupeMember: n.providerMessageId,
-      }).catch((err: unknown) => {
-        console.warn('[InboundEmail] inbound flood cap skipped (evaluate threw)', {
-          from: n.from,
-          error: err instanceof Error ? err.message : String(err),
-        });
-        return null;
-      });
-      if (!verdict || !verdict.throttled) return false;
-      await logInbound(n, partnerId, 'quarantined', null, `rate-limited: ${verdict.bucket ?? 'inbound'} cap exceeded`);
+      if (!throttle?.throttled) return false;
+      await logInbound(n, partnerId, 'quarantined', null, `rate-limited: ${throttle.bucket ?? 'inbound'} cap exceeded`);
       return true;
     };
+    // Signal the worker that this attempt created a ticket, so it charges the
+    // flood windows outside the held transaction. Call it right after logCreated.
+    const markTicketCreated = () => dependencies.onTicketCreated?.();
 
     // No LIVE thread match. A reply to a CLOSED ticket is immutable -> create a NEW
     // linked ticket carrying the original thread key. This lookup is intentionally
@@ -488,6 +511,7 @@ export async function processInboundEmail(
       // linked ticket, it is not a fresh submission (spec §5).
       const t = await createFromEmail(n, partnerId, closedOriginal.orgId, closedOriginal.emailThreadKey, closedOriginal.internalNumber, null, false);
       await logCreated(n, partnerId, t);
+      markTicketCreated();
       return;
     }
 
@@ -510,6 +534,7 @@ export async function processInboundEmail(
         t,
         sender.contactId ? undefined : `requester not linked: portal login ${n.from} has no contact`
       );
+      markTicketCreated();
       return;
     }
 
@@ -537,6 +562,7 @@ export async function processInboundEmail(
       }
       const t = await createFromEmail(n, partnerId, domainMatch.orgId, null, null, requester, autoresponse);
       await logCreated(n, partnerId, t, requesterNote);
+      markTicketCreated();
       return;
     }
 
@@ -561,6 +587,7 @@ export async function processInboundEmail(
       // replying to an address the partner never vetted).
       const t = await createFromEmail(n, partnerId, policy.defaultTriageOrgId, null, null, null, false);
       await logCreated(n, partnerId, t);
+      markTicketCreated();
       return;
     }
 

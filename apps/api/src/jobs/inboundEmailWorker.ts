@@ -25,7 +25,12 @@ import {
   type InboundEmailJobData,
   type InboundEmailQueueJob,
 } from '../services/inboundEmailQueue';
-import { processInboundEmail } from '../services/inboundEmail/inboundEmailService';
+import {
+  processInboundEmail,
+  resolveInboundThrottleChecks,
+} from '../services/inboundEmail/inboundEmailService';
+import { peekInboundThrottle, chargeInboundTickets } from '../services/inboundEmail/inboundRateLimit';
+import { getRedis } from '../services/redis';
 import { inboundQueueMaxPerSec } from '../config/env';
 import { attachWorkerObservability } from './workerObservability';
 
@@ -37,15 +42,42 @@ function unwrapJob(data: InboundEmailQueueJob): InboundEmailJobData {
 
 export async function handleInboundEmail(job: Job<InboundEmailQueueJob>): Promise<void> {
   const { email, mailboxGeneration } = unwrapJob(job.data);
-  // runOutsideDbContext is a synchronous wrapper that asserts no open DB context
-  // exists on the current async-context stack and then runs fn() in a clean scope.
-  // We need to bridge it to our async work by returning the Promise it produces.
-  // The per-partner flood cap is enforced INSIDE processInboundEmail at the
-  // ticket-creation choke point (inboundEmailService/createFromEmail), not here,
-  // so only authenticated, non-duplicate, ticket-creating mail is metered.
-  return dbModule.runOutsideDbContext(() =>
-    dbModule.withSystemDbAccessContext(() => processInboundEmail(email, mailboxGeneration)),
+
+  // FLOOD CAP — all Redis happens OUTSIDE the pipeline's held transaction (#1105).
+  // A Redis round-trip made while withSystemDbAccessContext is held would pin the
+  // pooled Postgres connection idle-in-transaction, so the flow is three phases:
+  //
+  //   1. Resolve the cap windows for this message in a SHORT DB context (reads
+  //      only), which is CLOSED before any Redis touches the wire.
+  //   2. PEEK the windows read-only (ZCOUNT), entirely outside any DB context. A
+  //      peek never mutates, so a message that is peeked but creates no ticket
+  //      charges nothing.
+  //   3. Run the pipeline in its own held transaction; it consults the peeked
+  //      verdict only at its create paths (a reply that appends to an existing
+  //      ticket is never throttled) and touches no Redis. AFTER the transaction
+  //      commits, charge the windows — and ONLY when a ticket was actually created
+  //      (onTicketCreated) — so no window is charged for mail that made no ticket.
+  const checks = await dbModule.runOutsideDbContext(() =>
+    dbModule.withSystemDbAccessContext(() => resolveInboundThrottleChecks(email, mailboxGeneration)),
   );
+  const throttle = await peekInboundThrottle(getRedis(), checks);
+
+  let createdTicket = false;
+  await dbModule.runOutsideDbContext(() =>
+    dbModule.withSystemDbAccessContext(() =>
+      processInboundEmail(email, mailboxGeneration, {
+        onTicketCreated: () => {
+          createdTicket = true;
+        },
+      }, throttle),
+    ),
+  );
+
+  // Reaching here means the pipeline transaction committed (processInboundEmail
+  // swallows its own errors; a commit failure would have thrown and skipped this).
+  if (createdTicket && checks.length > 0) {
+    await chargeInboundTickets(getRedis(), checks, email.providerMessageId);
+  }
 }
 
 export function initializeInboundEmailWorker(): Promise<void> {
