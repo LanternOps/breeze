@@ -42,6 +42,7 @@ import { importDirectoryContact } from '../services/contacts/import';
 import type { CallerVerificationActor } from '../services/callerVerification/types';
 import { getRedis } from '../services/redis';
 import { rateLimiter } from '../services/rate-limit';
+import { createAuditLog } from '../services/auditService';
 
 export const callerVerificationRoutes = new Hono();
 
@@ -197,8 +198,16 @@ for (const owner of ['org', 'partner'] as const) {
       || (next.destinationMinAgeDays === 0 && old.destinationMinAgeDays !== 0)
       || (!old.allowCrossTechnicianUse && next.allowCrossTechnicianUse)
     );
-    await db.execute(sql`INSERT INTO audit_logs(org_id,actor_type,actor_id,action,resource_type,resource_id,result,details)
-      VALUES(${owner === 'org' ? oid(c) : null}::uuid,'user',${a.user.id}::uuid,${weakened ? 'caller_verification.policy_weakened' : 'caller_verification.policy_updated'},'caller_verification',${row!.id}::uuid,'success',${JSON.stringify({ before: before ?? null, after: row })}::jsonb)`);
+    // Partner rows have org_id NULL, which the audit_logs org policy refuses
+    // from a partner-scoped request transaction; the canonical audit writer
+    // persists in its own system-scoped context. A config write does not need
+    // the in-transaction atomicity the verification effects require.
+    await createAuditLog({
+      orgId: owner === 'org' ? oid(c) : null, actorType: 'user', actorId: a.user.id, actorEmail: a.user.email,
+      action: weakened ? 'caller_verification.policy_weakened' : 'caller_verification.policy_updated',
+      resourceType: 'caller_verification', resourceId: row!.id, result: 'success',
+      details: { owner, before: before ?? null, after: row },
+    });
     return c.json({ data: await getPolicyResponse(owner, ownerId(c)) });
   });
 }

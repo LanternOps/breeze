@@ -8,6 +8,7 @@ const read = (name: string) =>
 const TABLES_MIGRATION = '2026-10-26-140000-caller-verification-tables.sql';
 const POLICIES_MIGRATION = '2026-10-26-140100-caller-verification-policies.sql';
 const BACKFILL_MIGRATION = '2026-10-26-140200-caller-verification-destinations-backfill.sql';
+const TICKET_COMMENT_RLS_MIGRATION = '2026-10-26-140300-caller-verification-ticket-comment-rls.sql';
 
 describe('caller verification migration', () => {
   it('uses column-specific nullable references and deferrable ownership', () => {
@@ -30,6 +31,15 @@ describe('caller verification migration', () => {
     const firstStatement = b.replace(/^(\s*--[^\n]*\n)+/, '').trimStart();
     expect(firstStatement.startsWith("SELECT set_config('breeze.scope','system',true);")).toBe(true);
     expect(b).toContain('RAISE WARNING');
+  });
+
+  it('admits only system-shaped ticket notes on org-accessible tickets', () => {
+    const s = read(TICKET_COMMENT_RLS_MIGRATION);
+    expect(s).toContain('FOR INSERT WITH CHECK');
+    for (const predicate of ["user_id IS NULL", "portal_user_id IS NULL", "author_type = 'internal'", "comment_type = 'system'", "origin_principal_kind = 'system'", 'is_public = false', 'public.breeze_has_org_access(t.org_id)']) {
+      expect(s).toContain(predicate);
+    }
+    expect(s).not.toMatch(/FOR (UPDATE|DELETE|ALL)/);
   });
 
   it('exports all four tables without walker-discovered snapshot columns', () => {

@@ -23,6 +23,7 @@ vi.mock('../services/callerVerification/service', () => ({
   get: m.get, start: m.start, cancel: vi.fn(), attest: vi.fn(), listForContact: vi.fn(), methodsForContact: vi.fn(), freshForTicket: vi.fn(),
 }));
 vi.mock('../db', () => ({ db: {} }));
+vi.mock('../services/auditService', () => ({ createAuditLog: vi.fn() }));
 
 import { callerVerificationRoutes } from './callerVerification';
 

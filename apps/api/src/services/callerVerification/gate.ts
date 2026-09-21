@@ -131,7 +131,13 @@ export async function requireCallerVerification(input: GateInput): Promise<{ ver
     }
 
     let reason: CallerVerificationRefusal = 'no_fresh_verification';
-    for (const candidate of initial.rows) {
+    // A same-intent retry must return the grant THIS intent already consumed,
+    // never consume a second one — so those candidates are examined first.
+    const candidates = [
+      ...initial.rows.filter((r) => r.consumedIntentRef === input.intentId),
+      ...initial.rows.filter((r) => r.consumedIntentRef !== input.intentId),
+    ];
+    for (const candidate of candidates) {
       const result = await withSystemDbAccessContext(() => withSubjectLocks(db, [candidate.requesterBindingId, initial.target!.id], async () => {
         // Everything below is re-read under the consume locks.
         const p = await getEffectivePolicy(input.orgId);
