@@ -306,6 +306,11 @@ describe('fullMessageReply: public comment body reaches the requester email; pri
     expect(sendEmailMock).toHaveBeenCalledTimes(1);
     const html = (sendEmailMock.mock.calls[0]![0] as { html: string }).html;
     expect(html).toContain('printer driver has been reinstalled');
+    // The reply body must sit INSIDE the document (before </body>), not after
+    // </html> where mail clients may strip it.
+    const closeBody = html.toLowerCase().lastIndexOf('</body>');
+    expect(closeBody).toBeGreaterThan(-1);
+    expect(html.indexOf('printer driver has been reinstalled')).toBeLessThan(closeBody);
   });
 
   it('does NOT append a private comment even with fullMessageReply on (isPublic guard)', async () => {

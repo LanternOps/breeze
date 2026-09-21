@@ -55,11 +55,13 @@ export function initializeInboundEmailWorker(): Promise<void> {
     {
       connection: getBullMQConnection(),
       concurrency: 5,
-      // Flood protection: cap how many inbound jobs process per second across ALL
-      // senders (INBOUND_QUEUE_MAX_PER_SEC). This bounds total ticket creation so a
-      // burst or spam flood cannot fill Breeze with tickets. BullMQ delays over-rate
-      // jobs rather than dropping them, so nothing is lost; the mail just drains at
-      // a controlled rate.
+      // Flood protection: cap how many inbound jobs PROCESS per second across ALL
+      // senders (INBOUND_QUEUE_MAX_PER_SEC). This is backpressure — it bounds the
+      // RATE of ticket creation, smoothing a burst or spam flood so the worker,
+      // Postgres, and downstream notifications are not overwhelmed. BullMQ delays
+      // over-rate jobs rather than dropping them (nothing is lost), so it does NOT
+      // cap the TOTAL number of tickets a sustained flood eventually creates — it
+      // only slows the rate. A per-sender/volume cap is deferred (see env.ts).
       limiter: { max: inboundQueueMaxPerSec(), duration: 1000 },
     }
   );

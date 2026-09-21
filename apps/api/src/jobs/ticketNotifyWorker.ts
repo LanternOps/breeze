@@ -451,13 +451,19 @@ function appendFullReplyBody(html: string, body: string): string {
     '<div style="margin-top:16px;padding:12px 16px;border-left:3px solid #d1d5db;'
     + 'color:#374151;font-size:14px;line-height:1.5;white-space:normal;">'
     + `${safe}</div>`;
-  return `${html}${block}`;
+  // Splice the block INSIDE the rendered document, immediately before the closing
+  // </body>, so the reply text sits within the email body. Concatenating after
+  // </html> would place it outside the document, where some mail clients strip or
+  // hide trailing content. Fall back to a plain append only if no </body> exists.
+  const idx = html.toLowerCase().lastIndexOf('</body>');
+  if (idx === -1) return `${html}${block}`;
+  return `${html.slice(0, idx)}${block}${html.slice(idx)}`;
 }
 
 /**
  * One-time autoresponse acknowledgement (spec §5). The autoresponder gate
- * (inboundEmail/autoresponder.ts) already applied loop-prevention + the per-sender
- * cap before emitting; here we just compose + send. Custom html comes from
+ * (inboundEmail/autoresponder.ts) already applied loop-prevention before
+ * emitting; here we just compose + send. Custom html comes from
  * settings.emailTemplates.ticket_autoresponse when set; otherwise inbound
  * autoresponseSubject/Body (plain text); otherwise the hardcoded ack. Loop
  * hygiene: stamp Auto-Submitted: auto-replied and set the ticket thread anchor
@@ -647,9 +653,11 @@ export async function handleTicketEvent(event: TicketEvent, jobId?: string): Pro
         // Payload-trust contract: the worker TRUSTS event.payload.isPublic — the
         // EMITTER is the sole authority on visibility. inboundEmailService always
         // emits isPublic:true for an inbound customer comment; an internal note never
-        // emits a public ticket.commented event. The composer is TEMPLATE-ONLY: it
-        // never loads ticket_comments, so the comment's content is structurally
-        // unreachable from any outbound body/subject (see ticketNotifyWorker.leak.test.ts).
+        // emits a public ticket.commented event. The DEFAULT notification is
+        // template-only (no comment content). The one path that loads ticket_comments
+        // is the explicit per-partner fullMessageReply opt-in (see collectRequesterEmail),
+        // gated on isPublic + not-deleted + non-graph and HTML-escaped; every other
+        // outbound body/subject stays content-free (see ticketNotifyWorker.leak.test.ts).
         // Skip requester email for inbound comments — the comment originated FROM the
         // requester's email, so echoing it back would create a mail loop.
         if (event.payload.isPublic && !event.payload.inbound) {
