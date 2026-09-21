@@ -114,8 +114,13 @@ async function buildPolicyPreviewInTx(policyId: string, auth: AuthContext, tx: D
 /**
  * Run pre-transaction reads under the caller's own DB context. The conversion
  * routes are self-managed (D30) so nothing is ambient, and a contextless read
- * is denied by RLS rather than bypassing it. Reuses an ambient context when one
- * exists (a worker or a test that already opened one).
+ * is denied by RLS rather than bypassing it. Deliberately not
+ * `withAuthDbAccessContext` (`middleware/auth.ts`): that canonical helper calls
+ * `runOutsideDbContext` first, which would open a *second* pooled connection
+ * under an ambient context — the #1105 shape this route must avoid. Reuses
+ * rather than nests when a caller (a test) already holds a context — that
+ * branch defers the throw rather than making the call work under an ambient
+ * context; no production worker takes it.
  */
 async function withCallerContext<T>(auth: AuthContext, fn: () => Promise<T>): Promise<T> {
   if (getCurrentDbAccessContext()) return fn();
@@ -127,13 +132,19 @@ export async function previewPolicyConversion(policyId: string, auth: AuthContex
   // is self-managed (D30), so there is no ambient context to inherit — a
   // contextless read is DENIED, not bypassed. Take a short caller-scoped
   // transaction for them and let it close before the isolated one opens.
-  const { ids, sourcesHash } = await withCallerContext(auth, async () => {
+  const ids = await withCallerContext(auth, async () => {
     await authorizePreview(policyId, auth);
-    return { ids: await resolveDeviceIdsForPolicy(policyId, db), sourcesHash: await previewFreshness(policyId, db) };
+    return resolveDeviceIdsForPolicy(policyId, db);
   });
   if (opts?.mode === 'inline' || ids.length <= EQUIVALENCE_JOB_THRESHOLD) {
     return buildPolicyConversionPreview(policyId, { userId: auth.scope === 'system' ? null : auth.user.id, auth });
   }
+  // Only the queued path needs sourcesHash (the job/cache key), and it is not
+  // cheap: previewFreshness does a loadPolicySources per sibling policy on the
+  // axis plus device/org/routing/channel/escalation/policy/assignment reads.
+  // Keep it out of the inline path above, which would otherwise pay for it and
+  // throw it away.
+  const sourcesHash = await withCallerContext(auth, () => previewFreshness(policyId, db));
   const snapshot = snapshotPreviewAccess(auth);
   const scopeHash = previewScopeHash(snapshot);
   const key = previewJobKey(policyId, scopeHash, sourcesHash);
