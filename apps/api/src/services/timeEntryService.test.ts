@@ -2435,6 +2435,19 @@ describe('money readers read COALESCE(billable_minutes, duration_minutes) (#4628
     expect(totalsByCurrency).toEqual([{ currencyCode: 'USD', amount: '0.00' }]);
   });
 
+  // listBillables (unlike partitionTimeEntries, which only ever sees
+  // not_billed rows) sees every billing_status — including rows already
+  // marked BILLED. A billed row that has lost/never had a resolvable rate
+  // still has no amount to report or sum, so it is a gap too, not '0.00'.
+  it('a BILLED entry with no rate is still a missingRate gap, not a $0.00 line', async () => {
+    dbMocks.selectResults.push([billableRow({
+      minutes: 30, billableMinutes: 30, rate: null, billingStatus: 'billed',
+    })], []);
+    const { rows, totalsByCurrency } = await listBillables(FROM, TO);
+    expect(rows[0]).toMatchObject({ quantity: '0.50', amount: null, missingRate: true });
+    expect(totalsByCurrency).toEqual([]);
+  });
+
   it('the timesheet bills the minimum, reporting ACTUAL minutes for totalMinutes and the BILLED quantity for billableMinutes', async () => {
     dbMocks.selectResults.push([{
       id: 'te-1', startedAt: new Date('2026-03-03T09:00:00Z'),

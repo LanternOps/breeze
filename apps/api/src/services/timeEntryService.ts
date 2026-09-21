@@ -1501,10 +1501,15 @@ interface BillableRowBase {
   /** Null when `missingRate` is true — an unresolved rate is reported as an
    *  explicit gap, never a fabricated '0.00' line (#6461). */
   amount: string | null;
-  /** True only for a `not_billed` TIME row with no resolvable hourly rate —
-   *  mirrors invoiceAssembly.isMissingRateGap, the same predicate
-   *  invoiceAssembly.partitionTimeEntries uses to route the identical row to
-   *  its `missingRate` bucket instead of a line. Ticket parts have no gap
+  /** True for a TIME row with no resolvable hourly rate, for ANY billing
+   *  status except `contract`/`no_charge` (those are an intentional zero,
+   *  never a gap) — see invoiceAssembly.isMissingRateGap, the same predicate
+   *  invoiceAssembly.partitionTimeEntries uses to route the identical
+   *  `not_billed` row to its `missingRate` bucket instead of a line. Unlike
+   *  partitionTimeEntries (which only ever sees `not_billed` rows), this
+   *  export sees every billing_status, so a `billed` row can be a gap too:
+   *  no resolvable rate means no amount to report or sum, regardless of
+   *  whether it was previously marked billed. Ticket parts have no gap
    *  concept (`ticket_parts.unit_price` is NOT NULL) and are always false. */
   missingRate: boolean;
   currencyCode: string | null;
@@ -1607,10 +1612,11 @@ export async function listBillables(
     // with no card terms — bill the actual duration.
     const hours = (((r.billableMinutes ?? r.minutes) ?? 0) / 60).toFixed(2);
     const rate = toFinite(r.rate);
-    // A `not_billed` row with no resolvable rate is a genuine assembly gap
-    // (#6461) — the same predicate invoiceAssembly.partitionTimeEntries uses
-    // to route the identical row to `missingRate` instead of a line.
-    // `contract`/`no_charge` rows with a null rate are an intentional zero.
+    // A row with no resolvable rate is a genuine assembly gap (#6461),
+    // regardless of billing_status, EXCEPT `contract`/`no_charge` where a
+    // null rate is an intentional zero — includes `billed` rows: a
+    // previously-billed entry that has since lost its rate (or never had a
+    // resolvable one) still has no amount to report or sum.
     const missingRate = isMissingRateGap(rate, r.billingStatus);
     rows.push({
       kind: 'time',

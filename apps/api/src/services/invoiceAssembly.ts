@@ -3,6 +3,7 @@ import { db } from '../db';
 import { timeEntries, ticketParts } from '../db/schema';
 import { computeLineTotal } from './invoiceMath';
 import type { InvoiceLineSourceType } from './invoiceTypes';
+import type { BillingStatus } from '@breeze/shared';
 
 export interface DraftLineSpec {
   sourceType: InvoiceLineSourceType;
@@ -52,7 +53,7 @@ export const UNKNOWN_CURRENCY_KEY = 'UNKNOWN';
  *  `partitionTimeEntries` below and `timeEntryService.listBillables` (which
  *  sees every billing_status, unlike the `not_billed`-only queries here) call
  *  through this instead of re-deriving the null check. */
-export function isMissingRateGap(rate: string | number | null, billingStatus: string): boolean {
+export function isMissingRateGap(rate: string | number | null, billingStatus: BillingStatus): boolean {
   return rate == null && billingStatus !== 'contract' && billingStatus !== 'no_charge';
 }
 

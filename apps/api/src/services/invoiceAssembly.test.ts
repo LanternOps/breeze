@@ -21,6 +21,14 @@ describe('isMissingRateGap', () => {
     expect(isMissingRateGap('0.00', 'not_billed')).toBe(false);
     expect(isMissingRateGap('50.00', 'billed')).toBe(false);
   });
+
+  // A row already marked `billed` is NOT exempt like contract/no_charge — a
+  // previously-billed entry with no resolvable rate still has no amount to
+  // report, so it is a gap too. Only listBillables can ever see this
+  // combination (partitionTimeEntries' callers pre-filter to not_billed).
+  it('a null rate on a billed row is still a gap', () => {
+    expect(isMissingRateGap(null, 'billed')).toBe(true);
+  });
 });
 
 describe('timeEntryToLineSpec', () => {

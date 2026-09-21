@@ -435,7 +435,10 @@ describe('GET /export/billables.csv', () => {
     const body = await res.text();
     const dataLine = body.split('\n')[1]?.replaceAll('"', '');
     expect(dataLine).toContain(',MISSING_RATE,USD,not_billed,');
-    expect(body).not.toContain(',0.00,USD,');
+    // Every csvRow cell is quoted (see csvExport.escapeCsvCell), so checking
+    // the raw `body` for an unquoted ',0.00,USD,' would never match even
+    // without the fix — assert against the de-quoted `dataLine` instead.
+    expect(dataLine).not.toContain(',0.00,');
   });
 
   it('rejects missing date params with 400', async () => {
