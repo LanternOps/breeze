@@ -120,6 +120,8 @@ vi.mock('../../db/schema', () => ({
     hardwareProfile: 'backup_snapshots.hardware_profile',
     systemStateManifest: 'backup_snapshots.system_state_manifest',
     storageIdentity: 'backup_snapshots.storage_identity',
+    bareMetalRestorable: 'backup_snapshots.bare_metal_restorable',
+    bareMetalReasons: 'backup_snapshots.bare_metal_reasons',
   },
   restoreJobs: {
     id: 'restore_jobs.id',
@@ -479,7 +481,7 @@ describe('bmr routes', () => {
   // enqueued in the background instead of hard-refusing, replacing #6469).
   it('POST /bmr/tokens bare_metal: referenced snapshot with a known storage identity enqueues hydration and succeeds', async () => {
     selectMock.mockReturnValueOnce(chainMock([
-      { id: SNAPSHOT_ID, orgId: ORG_ID, deviceId: DEVICE_ID, referencedFiles: 98411, storageIdentity: 'local::/srv/backups' },
+      { id: SNAPSHOT_ID, orgId: ORG_ID, deviceId: DEVICE_ID, referencedFiles: 98411, storageIdentity: 'local::/srv/backups', bareMetalRestorable: true },
     ]));
     insertMock.mockReturnValueOnce(chainMock([makeTokenSummary({ deviceId: DEVICE_ID })]));
 
@@ -495,7 +497,7 @@ describe('bmr routes', () => {
 
   it('POST /bmr/tokens bare_metal: referenced snapshot with UNKNOWN storage identity is still refused at creation (409 snapshot_storage_identity_unknown)', async () => {
     selectMock.mockReturnValueOnce(chainMock([
-      { id: SNAPSHOT_ID, orgId: ORG_ID, deviceId: DEVICE_ID, referencedFiles: 98411, storageIdentity: null },
+      { id: SNAPSHOT_ID, orgId: ORG_ID, deviceId: DEVICE_ID, referencedFiles: 98411, storageIdentity: null, bareMetalRestorable: true },
     ]));
 
     const res = await app.request('/backup/bmr/tokens', {
@@ -507,6 +509,59 @@ describe('bmr routes', () => {
     expect(res.status).toBe(409);
     expect((await res.json()).error).toBe('snapshot_storage_identity_unknown');
     expect(insertMock).not.toHaveBeenCalled();
+  });
+
+  // #6470: this route mints a bare_metal token WITHOUT going through
+  // createBareMetalRecovery, so it never applied the restorability guard
+  // that createBareMetalRecovery (bareMetalRecoveryService.ts) enforces.
+  it('POST /bmr/tokens bare_metal: snapshot not bare-metal restorable is refused at creation (409 snapshot_not_bare_metal_restorable), no token minted', async () => {
+    selectMock.mockReturnValueOnce(chainMock([
+      {
+        id: SNAPSHOT_ID,
+        orgId: ORG_ID,
+        deviceId: DEVICE_ID,
+        referencedFiles: 0,
+        storageIdentity: 'local::/srv/backups',
+        bareMetalRestorable: false,
+        bareMetalReasons: ['unsupported disk layout: LVM'],
+      },
+    ]));
+
+    const res = await app.request('/backup/bmr/tokens', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({ snapshotId: SNAPSHOT_ID, restoreType: 'bare_metal', expiresInHours: 24 }),
+    });
+
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.error).toBe('snapshot_not_bare_metal_restorable');
+    expect(body.reasons).toEqual(['unsupported disk layout: LVM']);
+    expect(insertMock).not.toHaveBeenCalled();
+  });
+
+  it('POST /bmr/tokens bare_metal: a restorable snapshot still mints a token', async () => {
+    selectMock.mockReturnValueOnce(chainMock([
+      {
+        id: SNAPSHOT_ID,
+        orgId: ORG_ID,
+        deviceId: DEVICE_ID,
+        referencedFiles: 0,
+        storageIdentity: 'local::/srv/backups',
+        bareMetalRestorable: true,
+        bareMetalReasons: null,
+      },
+    ]));
+    insertMock.mockReturnValueOnce(chainMock([makeTokenSummary({ deviceId: DEVICE_ID })]));
+
+    const res = await app.request('/backup/bmr/tokens', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({ snapshotId: SNAPSHOT_ID, restoreType: 'bare_metal', expiresInHours: 24 }),
+    });
+
+    expect(res.status).toBe(201);
+    expect(insertMock).toHaveBeenCalled();
   });
 
   // A file-level token is unaffected: the restore path it drives resolves
@@ -528,7 +583,7 @@ describe('bmr routes', () => {
   });
 
   it('creates a recovery token', async () => {
-    selectMock.mockReturnValueOnce(chainMock([{ id: SNAPSHOT_ID, orgId: ORG_ID, deviceId: DEVICE_ID }]));
+    selectMock.mockReturnValueOnce(chainMock([{ id: SNAPSHOT_ID, orgId: ORG_ID, deviceId: DEVICE_ID, bareMetalRestorable: true }]));
     insertMock.mockReturnValueOnce(chainMock([{
       id: TOKEN_ID,
       orgId: ORG_ID,

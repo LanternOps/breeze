@@ -455,6 +455,8 @@ bmrRoutes.post(
         deviceId: backupSnapshots.deviceId,
         referencedFiles: backupJobs.referencedFiles,
         storageIdentity: backupSnapshots.storageIdentity,
+        bareMetalRestorable: backupSnapshots.bareMetalRestorable,
+        bareMetalReasons: backupSnapshots.bareMetalReasons,
       })
       .from(backupSnapshots)
       .leftJoin(backupJobs, eq(backupJobs.id, backupSnapshots.jobId))
@@ -463,6 +465,20 @@ bmrRoutes.post(
 
     if (!snapshot) {
       return c.json({ error: 'Snapshot not found' }, 404);
+    }
+
+    // #6470: this route mints a token directly, without going through
+    // createBareMetalRecovery, so it never applied the restorability guard
+    // createBareMetalRecovery enforces (bareMetalRecoveryService.ts, the
+    // `bareMetalRestorable !== true` branch). Mirrors that same 409 shape.
+    if (payload.restoreType === 'bare_metal' && snapshot.bareMetalRestorable !== true) {
+      return c.json(
+        {
+          error: 'snapshot_not_bare_metal_restorable',
+          reasons: snapshot.bareMetalReasons ?? ['snapshot was not assessed for bare-metal restore'],
+        },
+        409
+      );
     }
 
     // W09 (#6464): this route mints a token directly, without going through
