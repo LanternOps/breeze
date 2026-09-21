@@ -255,6 +255,34 @@ describe('network_check compiles to a managed network_monitors row (#5291 W04)',
       expectedConfig: { expectedStatus: 200, followRedirects: false },
     },
     {
+      label: 'http_check with followRedirects explicitly false and expectStatus omitted',
+      condition: { checkType: 'http_check', target: 'https://example.com', followRedirects: false, pollingIntervalSeconds: 60, timeoutSeconds: 5, consecutiveFailures: 2 },
+      expectedConfig: { followRedirects: false }, // explicit false wins even with no 3xx expectation in play
+    },
+    {
+      // Lower boundary of the 3xx range: 300 itself must trip the implicit default.
+      label: 'http_check with expectStatus at the 3xx lower boundary (300)',
+      condition: { checkType: 'http_check', target: 'https://example.com', expectStatus: 300, pollingIntervalSeconds: 60, timeoutSeconds: 5, consecutiveFailures: 2 },
+      expectedConfig: { expectedStatus: 300, followRedirects: false },
+    },
+    {
+      // Upper boundary of the 3xx range: 399 itself must trip the implicit default.
+      label: 'http_check with expectStatus at the 3xx upper boundary (399)',
+      condition: { checkType: 'http_check', target: 'https://example.com', expectStatus: 399, pollingIntervalSeconds: 60, timeoutSeconds: 5, consecutiveFailures: 2 },
+      expectedConfig: { expectedStatus: 399, followRedirects: false },
+    },
+    {
+      // Just outside the range on either side: neither should trip the default.
+      label: 'http_check with expectStatus just below the 3xx range (299)',
+      condition: { checkType: 'http_check', target: 'https://example.com', expectStatus: 299, pollingIntervalSeconds: 60, timeoutSeconds: 5, consecutiveFailures: 2 },
+      expectedConfig: { expectedStatus: 299 },
+    },
+    {
+      label: 'http_check with expectStatus just above the 3xx range (400)',
+      condition: { checkType: 'http_check', target: 'https://example.com', expectStatus: 400, pollingIntervalSeconds: 60, timeoutSeconds: 5, consecutiveFailures: 2 },
+      expectedConfig: { expectedStatus: 400 },
+    },
+    {
       label: 'icmp_ping',
       condition: { checkType: 'icmp_ping', target: '10.0.0.2', pollingIntervalSeconds: 60, timeoutSeconds: 5, consecutiveFailures: 2 },
       expectedConfig: {},
@@ -302,6 +330,38 @@ describe('network_check compiles to a managed network_monitors row (#5291 W04)',
     });
     expect(command.payload.expectedStatus).toBe(301);
     expect(command.payload).not.toHaveProperty('expectStatus');
+  });
+
+  /**
+   * #6510: `followRedirects` is the new key this PR introduces, and its
+   * entire purpose is to reach the agent's `GetPayloadBool(payload,
+   * "followRedirects", true)` read — the exact same "does the compiled key
+   * survive the verbatim `buildMonitorCommand` spread" question #6352 was
+   * about, just for a different field. Assert it explicitly rather than
+   * trusting the `expectedStatus` case above to stand in for it.
+   */
+  it('the compiled http_check followRedirects:false key survives buildMonitorCommand into the agent payload', async () => {
+    const { buildMonitorCommand } = await import('../monitorCommands');
+    const row = buildCompiledNetworkMonitor(
+      makeDef({
+        condition: {
+          checkType: 'http_check',
+          target: 'https://example.com',
+          expectStatus: 301,
+          pollingIntervalSeconds: 60,
+          timeoutSeconds: 5,
+          consecutiveFailures: 2,
+        },
+      } as never),
+    );
+    const command = buildMonitorCommand({
+      id: 'nm0000000-0000-4000-8000-000000000001',
+      monitorType: row.monitorType,
+      target: row.target,
+      config: row.config,
+      timeout: row.timeout as number,
+    });
+    expect(command.payload.followRedirects).toBe(false);
   });
 
   it('INSERTS the managed row on a first compile', async () => {
