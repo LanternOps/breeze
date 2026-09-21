@@ -2,7 +2,9 @@ package syscleanup
 
 import (
 	"errors"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // Freed bytes are MEASURED, never estimated (spec §7.1): the sum over affected
@@ -52,6 +54,63 @@ func TestMeasureFreedIgnoresAVolumeMissingFromEitherSample(t *testing.T) {
 	}
 	if len(deltas) != 1 || deltas[0].Mount != "/" {
 		t.Fatalf("deltas = %+v, want only the volume present in both samples", deltas)
+	}
+}
+
+// Issue #6484 (W05 lab BUG-2): btrfs releases freed extents lazily, so a
+// single disk.Usage read taken immediately after the cleaner exits can still
+// see the pre-delete free space and report freedBytes=0 for a run that really
+// deleted 94 MB. settleVolumes must force a filesystem sync and retry until
+// the reading stabilizes (or its attempt budget runs out) instead of trusting
+// the first sample.
+func TestSettleVolumesRetriesUntilTheReadingStabilizes(t *testing.T) {
+	originalUsage, originalSleep, originalSync := usageFreeFn, sleepFn, syncMountFn
+	t.Cleanup(func() { usageFreeFn, sleepFn, syncMountFn = originalUsage, originalSleep, originalSync })
+
+	var syncCalls int32
+	syncMountFn = func(string) { atomic.AddInt32(&syncCalls, 1) }
+	var sleeps int32
+	sleepFn = func(time.Duration) { atomic.AddInt32(&sleeps, 1) }
+
+	var call int32
+	usageFreeFn = func(mount string) (int64, error) {
+		n := atomic.AddInt32(&call, 1)
+		if n == 1 {
+			return 1_000, nil // stale: reads as if nothing was freed
+		}
+		return 1_094_000, nil // settled: the real ~94 MB delta is now visible
+	}
+
+	got := settleVolumes([]string{"/data"})
+	if len(got) != 1 || got[0].FreeBytes != 1_094_000 {
+		t.Fatalf("settleVolumes() = %+v, want the settled 1094000 reading, not the stale first sample", got)
+	}
+	if atomic.LoadInt32(&syncCalls) == 0 {
+		t.Fatal("settleVolumes must force a filesystem sync before sampling, not just resample blind")
+	}
+	if atomic.LoadInt32(&sleeps) == 0 {
+		t.Fatal("settleVolumes must wait between the stale and settled reads")
+	}
+}
+
+// A reading that never changes (ext4/NTFS/APFS update free space immediately)
+// must not pay the full retry budget — settleVolumes stops as soon as two
+// consecutive samples agree.
+func TestSettleVolumesStopsEarlyOnceStable(t *testing.T) {
+	originalUsage, originalSleep, originalSync := usageFreeFn, sleepFn, syncMountFn
+	t.Cleanup(func() { usageFreeFn, sleepFn, syncMountFn = originalUsage, originalSleep, originalSync })
+
+	syncMountFn = func(string) {}
+	var sleeps int32
+	sleepFn = func(time.Duration) { atomic.AddInt32(&sleeps, 1) }
+	usageFreeFn = func(mount string) (int64, error) { return 42, nil }
+
+	got := settleVolumes([]string{"/"})
+	if len(got) != 1 || got[0].FreeBytes != 42 {
+		t.Fatalf("settleVolumes() = %+v, want {/, 42}", got)
+	}
+	if s := atomic.LoadInt32(&sleeps); s > 1 {
+		t.Fatalf("settleVolumes slept %d times for an already-stable reading, want at most 1", s)
 	}
 }
 

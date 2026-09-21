@@ -341,10 +341,16 @@ func Run(ctx context.Context, runID string, actionIDs []string, params Params) R
 	}
 
 	advanceVolumeSample()
-	// The measurement is independent of budgetCtx: two
-	// disk.Usage calls must still happen after a budget expiry, or a run that
-	// timed out would report zero freed bytes for work it really did.
-	after := sampleVolumes(mounts)
+	// The measurement is independent of budgetCtx: disk.Usage calls must
+	// still happen after a budget expiry, or a run that timed out would
+	// report zero freed bytes for work it really did.
+	//
+	// settleVolumes, not a single sampleVolumes call: btrfs (and other
+	// lazy-reclaim filesystems) release freed extents asynchronously, so
+	// reading free space once immediately after the cleaner exits can still
+	// see the pre-delete figure and report freedBytes=0 for a real deletion
+	// (issue #6484).
+	after := settleVolumes(mounts)
 	volumes, freed := measureFreed(before, after)
 
 	return RunResult{RunID: runID, Actions: results, Volumes: volumes, FreedBytes: freed}
