@@ -5,7 +5,12 @@ import type { FeatureLink, FeatureTabProps } from './types';
 
 // useFeatureLink wraps the save/remove API calls; stub it so we can assert the
 // payload the tab submits without hitting the network.
-const saveMock = vi.fn(async () => ({ id: 'link-1' }));
+const saveMock = vi.fn(
+  async (
+    _existingId: string | null,
+    _payload: { featureType: string; featurePolicyId: string | null; inlineSettings: Record<string, unknown> },
+  ) => ({ id: 'link-1' }),
+);
 const removeMock = vi.fn(async () => true);
 
 vi.mock('./useFeatureLink', () => ({

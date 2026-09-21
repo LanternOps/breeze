@@ -128,7 +128,7 @@ export default function SecurityTab({
     const result = await save(existingLink?.id ?? null, {
       featureType: "security",
       featurePolicyId: null, // #5080: inline settings — never stamp the parent CONFIG policy's own id here
-      inlineSettings: settings,
+      inlineSettings: settings as unknown as Record<string, unknown>,
     });
     if (result) onLinkChanged(result, "security");
   };
