@@ -258,6 +258,22 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   ai_operator_operations: { kind: 'leave-for-erasure', note: 'operations hang off a task that stays with the source org (ai_operator_tasks disposition) via a composite (task_id, org_id) FK; they are erased with it' },
   ai_run_artifacts: { kind: 'custom', note: 'SPLIT by anchor, because the two anchors move in opposite directions: run-anchored rows (run_id NOT NULL) stay with the loser shell — their composite (run_id, org_id) FK targets ai_agent_runs, which is leave-for-erasure with a trigger-immutable org_id, so re-pointing one would 23503 even under SET CONSTRAINTS ALL DEFERRED — while session-anchored rows (run_id NULL) ARE re-pointed, because ai_sessions is itself in REPOINT_TABLES and leaving them behind would hide a live session\'s own artifacts from the surviving org (RLS reads ai_run_artifacts.org_id, not the session\'s) and then erase them with the loser shell. The composite FK is MATCH SIMPLE, so the re-pointed rows violate nothing; no unique constraint, so no dedupe. See orgMergeCustomExecutors.ts moveAiRunArtifacts' },
   ai_operator_task_outbox: { kind: 'leave-for-erasure', note: 'coordinator wake rows for a task that stays with the source org; a fenced task has nothing left to wake, and the rows cascade with the task on erasure' },
+  // Recipe Library wave E2 (#6167). All four hang off a task that stays with
+  // the source org (the ai_operator_tasks disposition above) through composite
+  // (task_id, org_id) FKs, so they are erased with it and never repointed.
+  // `leave-for-erasure`, NOT `custom`: the fence they need happens inside
+  // fenceAiOperatorTasks, which already runs in the resolve phase and now
+  // also detaches their device/ticket/contact/connection pointers — a second
+  // custom executor would only duplicate it, and
+  // orgMergeRegistry.integration.test.ts requires every `custom` table to have
+  // its own CUSTOM_EXECUTORS entry.
+  ai_operator_task_targets: { kind: 'leave-for-erasure', note: 'frozen targets of a task that stays with the source org; fenceAiOperatorTasks detaches their device/ticket/contact pointers in the resolve phase, before devices/tickets/contacts repoint, then the rows are erased with the loser shell' },
+  ai_operator_task_target_accounts: { kind: 'leave-for-erasure', note: 'frozen provider identities behind a contact target; the connection pointers are nulled in the resolve phase before m365_connections repoints and google_workspace_connections keeps the survivor, and the immutable external_id is retained as evidence' },
+  ai_operator_task_steps: { kind: 'leave-for-erasure', note: 'step attempts of a task that stays with the source org; erased with it' },
+  // Append-only: breeze_app has no UPDATE on this table at all, so any
+  // repointing policy would 42501 — `leave-for-erasure` is the only legal
+  // kind here, and it is also the correct one.
+  ai_operator_task_events: { kind: 'leave-for-erasure', note: 'append-only task timeline; breeze_app holds no UPDATE grant, and the timeline is source-org evidence — erased with the loser shell under breeze_audit_admin' },
   script_proposals: { kind: 'custom', note: 'non-terminal proposals are fenced to status=expired BEFORE devices repoint (resolve phase), then left for erasure with the loser shell — proposal history is source-org incident history, same rule as ai_operator_tasks and ai_agent_runs' },
   script_proposal_reviews: { kind: 'leave-for-erasure', note: 'append-only review evidence hangs off a proposal that stays with the source org via a composite (proposal_id, org_id) FK; erased with it' },
   ai_alert_verdicts: { kind: 'leave-for-erasure', note: 'verdicts hang off ai_agent_runs (leave-for-erasure) and cascade with them; alert/group FKs cascade too' },

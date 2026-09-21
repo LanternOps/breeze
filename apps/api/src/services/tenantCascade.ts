@@ -305,7 +305,22 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   //     here exactly as it is for the two entries above. Stated only so a
   //     reader knows the RESTRICT edge exists and is load-bearing somewhere.
   'ai_operator_operations',
+  // Recipe Library wave E2 (#6167). All four are Shape 1 with a NOT NULL
+  // org_id, so all four are required here. localeCompare puts '_' ahead of
+  // letters, which is why …_task_target_accounts precedes …_task_targets and
+  // both precede …_tasks. topologicalCascadeOrder()'s runtime pg_constraint
+  // read is what actually orders the DELETEs (children first); the
+  // alphabetical position here is what tenantCascade.test.ts asserts.
+  //
+  // ai_operator_task_events is APPEND-ONLY (REVOKE DELETE from breeze_app plus
+  // an immutability trigger), so it is ALSO in AUDIT_ADMIN_REQUIRED_TABLES
+  // below. Membership here without membership there is a runtime
+  // `permission denied` in the middle of a GDPR erasure.
+  'ai_operator_task_events',
   'ai_operator_task_outbox',
+  'ai_operator_task_steps',
+  'ai_operator_task_target_accounts',
+  'ai_operator_task_targets',
   'ai_operator_tasks',
   // Execution plane W01 (spec §6.1): artifact rows. Child of ai_agent_runs via
   // the composite (run_id, org_id) FK, ON DELETE CASCADE — topologicalCascadeOrder()
@@ -1133,6 +1148,11 @@ const AUDIT_ADMIN_REQUIRED_TABLES: ReadonlySet<string> = new Set<string>([
   // immutability trigger (2026-10-16-100100), so erasure has to run as
   // breeze_audit_admin with breeze.allow_audit_retention=1.
   'script_proposal_reviews',
+  // Append-only AI Operator task timeline: REVOKE UPDATE/DELETE from
+  // breeze_app plus ai_operator_task_events_append_only()
+  // (2026-10-26-160000), so erasure has to run as breeze_audit_admin with
+  // breeze.allow_audit_retention=1.
+  'ai_operator_task_events',
 ]);
 
 interface FkEdge {

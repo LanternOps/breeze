@@ -824,8 +824,9 @@ BEGIN
   -- statement above: COALESCE on the detach stamp so whichever of (this
   -- trigger, moveOrg.ts, deviceDeletion.ts, the merge fence) runs first wins
   -- the reason and the others are no-ops. Nulling device_id here also makes
-  -- the generic loop below a no-op for these rows — though the exclusion in
-  -- breeze_device_child_orgid_tables() is the real guarantee, not this.
+  -- the generic loop below a no-op for these rows — though the table's
+  -- exclusion from the device-child org_id table list (section 8) is the
+  -- real guarantee, not this.
   -- device_id is the target's only pointer (one_pointer_chk), so the detach
   -- stamp is written in the same statement.
   UPDATE public.ai_operator_task_targets

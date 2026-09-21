@@ -654,6 +654,41 @@ moveOrgRoutes.post(
                WHERE device_id = ${deviceId}::uuid`,
         );
 
+        // Recipe library E2 (#6167): the same detach one level down, on BOTH
+        // pointer axes a device move reaches. Normally matches NOTHING —
+        // breeze_cascade_device_org_id() already ran when the devices row
+        // flipped earlier in this transaction and carries identical statements
+        // (migration 2026-10-26-160000 section 9). Kept as a route-local
+        // mirror for the same two reasons the task statement above is: the
+        // detach is visible where the move is read, and the route still
+        // detaches if the trigger is ever dropped. Both copies are convergent
+        // (COALESCE on the stamp), so whichever runs first wins.
+        //
+        // A target's org_id IS its task's immutable org_id, so it never
+        // re-stamps; the pointer is severed and the frozen target_label kept.
+        await tx.execute(
+          sql`UPDATE ai_operator_task_targets
+                 SET device_id = NULL,
+                     detached_at = COALESCE(detached_at, now()),
+                     detached_reason = COALESCE(detached_reason, 'device_moved'),
+                     state = 'detached',
+                     updated_at = now()
+               WHERE device_id = ${deviceId}::uuid`,
+        );
+        // Ticket-axis twin: a ticket bound to this device follows it to the
+        // destination org (the trigger's generic loop), while a target naming
+        // that ticket stays with its source-org task. target.ticket_id is a
+        // PLAIN FK, so a stale pointer would otherwise survive in silence.
+        await tx.execute(
+          sql`UPDATE ai_operator_task_targets
+                 SET ticket_id = NULL,
+                     detached_at = COALESCE(detached_at, now()),
+                     detached_reason = COALESCE(detached_reason, 'scope_invalidated'),
+                     state = 'detached',
+                     updated_at = now()
+               WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${deviceId}::uuid)`,
+        );
+
         // #3205 W07: billing evidence stays in the INVOICE's org — the invoice
         // and its lines do not move. UNLIKE the ai_agent_runs statement above,
         // which normally matches nothing because breeze_cascade_device_org_id()
