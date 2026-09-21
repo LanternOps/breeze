@@ -102,16 +102,6 @@ export interface RateLimiterOptions {
    * request volume there is still bounded by the global per-IP limiter.
    */
   refundOnReject?: boolean;
-  /**
-   * Stable ZSET member for THIS logical event, making the charge idempotent: the
-   * same `dedupeMember` re-`zadd`ed only updates its score, so a retry or a
-   * concurrent duplicate of the same event occupies ONE slot instead of N. Use it
-   * where the "cost" is a distinct real-world event (e.g. one inbound email keyed
-   * by provider-message-id) and at-least-once delivery / transaction retries would
-   * otherwise over-charge a legitimate sender. Ignored unless set; when set, `cost`
-   * is treated as 1 (a single event occupies a single slot).
-   */
-  dedupeMember?: string;
 }
 
 export async function rateLimiter(
@@ -142,16 +132,8 @@ export async function rateLimiter(
   const windowStart = now - windowSeconds * 1000;
   const safeCost = Number.isFinite(cost) ? Math.max(1, Math.floor(cost)) : 1;
   const zaddArgs: Array<string | number> = [];
-  if (options.dedupeMember) {
-    // Idempotent charge: one stable member for this event. A retry / concurrent
-    // duplicate re-`zadd`s the SAME member, which only refreshes its score — the
-    // ZSET cardinality (and thus the count) is unchanged, so the event is charged
-    // exactly once within the window. `cost` is treated as 1 here by design.
-    zaddArgs.push(now, options.dedupeMember);
-  } else {
-    for (let i = 0; i < safeCost; i += 1) {
-      zaddArgs.push(now, `${now}-${i}-${Math.random().toString(36).slice(2, 10)}`);
-    }
+  for (let i = 0; i < safeCost; i += 1) {
+    zaddArgs.push(now, `${now}-${i}-${Math.random().toString(36).slice(2, 10)}`);
   }
 
   try {
@@ -182,13 +164,7 @@ export async function rateLimiter(
     // below reflects the true post-refund state rather than always the
     // pre-refund `count` — see the `remaining` comment (#3984).
     let refunded = false;
-    // `dedupeMember` and `refundOnReject` are mutually exclusive by construction:
-    // the refund removes "the member this call added", but with a stable dedupe
-    // member that member may be a slot an EARLIER accepted call is relying on, so
-    // refunding it would wrongly free another request's charge. dedupe is for
-    // idempotent event-charging, refund is for punitive credential limiters —
-    // never both. Guard here so a future caller cannot combine them by mistake.
-    if (!allowed && options.refundOnReject && !options.dedupeMember) {
+    if (!allowed && options.refundOnReject) {
       // Remove exactly the members this call added. Best-effort: a failure here
       // only means the caller is treated the old (punitive) way, never that a
       // request is wrongly allowed — `allowed` was already decided above.

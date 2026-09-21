@@ -421,12 +421,9 @@ export async function getTicketConfig(partnerId: string) {
     dropUnverifiedSenders: inboundCfg.dropUnverifiedSenders ?? false,
     autoresponseSubject: inboundCfg.autoresponseSubject ?? null,
     autoresponseBody: inboundCfg.autoresponseBody ?? null,
-    // Flood caps + reply-content mode. Emitted (null when unset) so the card can
-    // read them back and PRESERVE them on save — the PATCH route replaces the
-    // inbound sub-object wholesale, so a field the card omits is destroyed.
-    maxTicketsPerSenderPerHour: inboundCfg.maxTicketsPerSenderPerHour ?? null,
-    maxTicketsPerDomainPerHour: inboundCfg.maxTicketsPerDomainPerHour ?? null,
-    maxTicketsPerPartnerPerHour: inboundCfg.maxTicketsPerPartnerPerHour ?? null,
+    // Reply-content mode. Emitted (default false) so the card can read it back and
+    // PRESERVE it on save — the PATCH route replaces the inbound sub-object
+    // wholesale, so a field the card omits is destroyed.
     fullMessageReply: inboundCfg.fullMessageReply ?? false,
     slug,
     inboundLocalPart,

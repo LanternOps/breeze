@@ -224,13 +224,9 @@ vi.mock('../ticketEvents', () => ({ emitTicketEvent: emitMock }));
 // that a ticket was created + the inbound row logged.
 const { maybeSendAutoresponseMock } = vi.hoisted(() => ({ maybeSendAutoresponseMock: vi.fn() }));
 vi.mock('./autoresponder', () => ({ maybeSendAutoresponse: maybeSendAutoresponseMock }));
-// The flood cap's Redis peek/charge now lives entirely in the worker
-// (jobs/inboundEmailWorker.ts) and inboundRateLimit.ts — processInboundEmail only
-// consults a read-only verdict passed as its 4th argument. So there is no Redis to
-// mock here: a test drives throttling by passing `{ throttled: true, bucket }` and
-// observes creation via the `onTicketCreated` callback. The peek/charge Redis
-// semantics (including no residual charge across buckets) are proven in
-// inboundRateLimit.test.ts, and the worker wiring in inboundEmailWorker.test.ts.
+// Flood protection is the global BullMQ per-second queue limiter configured on the
+// worker (INBOUND_QUEUE_MAX_PER_SEC); there is no per-sender Redis cap in the
+// pipeline, so nothing flood-cap-related is mocked here.
 
 // Task 4: pipeline calls claimMessageLink() to record link rows after a matched
 // append and after a create. Mocked as a collaborator (like resolveOrg/ticketService
@@ -560,117 +556,16 @@ describe('processInboundEmail', () => {
     expect((gatedTicket as { partnerId: string }).partnerId).toBe('p-1');
   });
 
-  it('quarantines (no ticket, no charge) when the peeked flood verdict is over-cap', async () => {
-    resolveMock.mockResolvedValue('p-1');
-    state.selectRows['ticket_email_inbound'] = [];
-    state.selectRows['tickets'] = [];
-    state.selectRows['portal_users'] = [{ id: 'pu-1', orgId: 'o-1' }];
-    state.selectRows['organizations'] = [{ id: 'o-1' }];
-    createTicketMock.mockResolvedValue({ id: 't-created', internalNumber: 'T-2026-0010' });
-    const onTicketCreated = vi.fn();
-
-    // The worker peeked the windows and found one full; it passes the verdict in.
-    await processInboundEmail(
-      email({ subject: 'flood' }),
-      undefined,
-      { onTicketCreated },
-      { throttled: true, bucket: 'sender' },
-    );
-
-    // No ticket is created; the message is quarantined for review (recoverable);
-    // and onTicketCreated never fires, so the worker records NO charge.
-    expect(createTicketMock).not.toHaveBeenCalled();
-    expect(onTicketCreated).not.toHaveBeenCalled();
-    const log = inboundOf();
-    expect(log).toHaveLength(1);
-    expect(log[0]!.parseStatus).toBe('quarantined');
-    expect(log[0]!.ticketId).toBeNull();
-    expect(String(log[0]!.error ?? '')).toContain('rate-limited');
-  });
-
-  it('does NOT enforce an over-cap verdict resolved for a DIFFERENT partner (routing changed) — fails open', async () => {
-    // Codex review (option A) F1: the peek verdict is only honoured when it belongs
-    // to the partner the pipeline authoritatively resolves. Here the pipeline resolves
-    // p-1 but the throttle verdict was peeked for p-OTHER (recipient→partner routing
-    // changed between the peek and now), so the stale verdict is NOT applied: the
-    // ticket is created rather than quarantined under the wrong tenant.
-    resolveMock.mockResolvedValue('p-1');
-    state.selectRows['ticket_email_inbound'] = [];
-    state.selectRows['tickets'] = [];
-    state.selectRows['portal_users'] = [{ id: 'pu-1', orgId: 'o-1' }];
-    state.selectRows['organizations'] = [{ id: 'o-1' }];
-    createTicketMock.mockResolvedValue({ id: 't-created', internalNumber: 'T-2026-0012' });
-    const onTicketCreated = vi.fn();
-
-    await processInboundEmail(
-      email({ subject: 'routing changed' }),
-      undefined,
-      { onTicketCreated },
-      { throttled: true, bucket: 'sender' },
-      'p-OTHER', // verdict was resolved for a different partner
-    );
-
-    // Stale verdict ignored: ticket created, not quarantined.
-    expect(createTicketMock).toHaveBeenCalledTimes(1);
-    expect(onTicketCreated).toHaveBeenCalledTimes(1);
-    const log = inboundOf();
-    expect(log[0]!.parseStatus).not.toBe('quarantined');
-  });
-
-  it('DOES enforce an over-cap verdict resolved for the SAME partner the pipeline uses', async () => {
-    resolveMock.mockResolvedValue('p-1');
-    state.selectRows['ticket_email_inbound'] = [];
-    state.selectRows['tickets'] = [];
-    state.selectRows['portal_users'] = [{ id: 'pu-1', orgId: 'o-1' }];
-    state.selectRows['organizations'] = [{ id: 'o-1' }];
-    createTicketMock.mockResolvedValue({ id: 't-created', internalNumber: 'T-2026-0013' });
-    const onTicketCreated = vi.fn();
-
-    await processInboundEmail(
-      email({ subject: 'same partner over cap' }),
-      undefined,
-      { onTicketCreated },
-      { throttled: true, bucket: 'sender' },
-      'p-1', // verdict matches the pipeline's partner
-    );
-
-    expect(createTicketMock).not.toHaveBeenCalled();
-    expect(onTicketCreated).not.toHaveBeenCalled();
-    expect(inboundOf()[0]!.parseStatus).toBe('quarantined');
-  });
-
-  it('signals onTicketCreated on a create path (so the worker charges only real creations)', async () => {
-    resolveMock.mockResolvedValue('p-1');
-    state.selectRows['ticket_email_inbound'] = [];
-    state.selectRows['tickets'] = [];
-    state.selectRows['portal_users'] = [{ id: 'pu-1', orgId: 'o-1' }];
-    state.selectRows['organizations'] = [{ id: 'o-1' }];
-    createTicketMock.mockResolvedValue({ id: 't-created', internalNumber: 'T-2026-0011' });
-    const onTicketCreated = vi.fn();
-
-    // No throttle verdict passed (⇒ never throttle): a normal create.
-    await processInboundEmail(email({ subject: 'normal' }), undefined, { onTicketCreated });
-
-    expect(createTicketMock).toHaveBeenCalledTimes(1);
-    expect(onTicketCreated).toHaveBeenCalledTimes(1);
-  });
-
-  it('does NOT signal onTicketCreated for an unknown-sender DROP (worker charges nothing)', async () => {
-    // Regression guard (Codex review #3): only ticket-CREATING paths may consume a
-    // sender's budget. An unknown sender under 'drop' creates no ticket, so
-    // onTicketCreated must not fire — the worker then records no charge — and the
-    // message stays dropped ('ignored'), not quarantined.
+  it('drops an unknown sender under the drop policy — no ticket, logged ignored', async () => {
     resolveMock.mockResolvedValue('p-1');
     state.selectRows['ticket_email_inbound'] = [];
     state.selectRows['tickets'] = [];
     state.selectRows['portal_users'] = [];        // no portal user
     resolveOrgMock.mockResolvedValue(null);       // no mapped domain
     loadPolicyMock.mockResolvedValue({ enabled: true, unknownSenderMode: 'drop', defaultTriageOrgId: null, dropUnverifiedSenders: false });
-    const onTicketCreated = vi.fn();
 
-    await processInboundEmail(email({ from: 'stranger@nowhere.example', subject: 'unmapped' }), undefined, { onTicketCreated });
+    await processInboundEmail(email({ from: 'stranger@nowhere.example', subject: 'unmapped' }));
 
-    expect(onTicketCreated).not.toHaveBeenCalled();
     expect(createTicketMock).not.toHaveBeenCalled();
     const log = inboundOf();
     expect(log).toHaveLength(1);

@@ -25,13 +25,7 @@ import {
   type InboundEmailJobData,
   type InboundEmailQueueJob,
 } from '../services/inboundEmailQueue';
-import {
-  processInboundEmail,
-  resolveInboundThrottleChecks,
-} from '../services/inboundEmail/inboundEmailService';
-import { peekInboundThrottle, chargeInboundTickets } from '../services/inboundEmail/inboundRateLimit';
-import type { InboundCapCheck } from '../services/inboundEmail/inboundRateLimit';
-import { getRedis } from '../services/redis';
+import { processInboundEmail } from '../services/inboundEmail/inboundEmailService';
 import { inboundQueueMaxPerSec } from '../config/env';
 import { attachWorkerObservability } from './workerObservability';
 
@@ -43,54 +37,13 @@ function unwrapJob(data: InboundEmailQueueJob): InboundEmailJobData {
 
 export async function handleInboundEmail(job: Job<InboundEmailQueueJob>): Promise<void> {
   const { email, mailboxGeneration } = unwrapJob(job.data);
-
-  // FLOOD CAP — the flood cap's OWN Redis runs entirely OUTSIDE the pipeline's held
-  // transaction (#1105). (The autoresponder still makes its own per-sender Redis
-  // call from inside the pipeline; that is a separate, pre-existing accepted
-  // warn-only #1105 tolerance this code does not change.) A Redis round-trip made
-  // while withSystemDbAccessContext is held would pin the pooled Postgres
-  // connection idle-in-transaction, so the flood-cap flow is:
-  //
-  //   1. Resolve the cap windows for this message in a SHORT DB context (reads
-  //      only), which is CLOSED before any Redis touches the wire.
-  //   2. PEEK those windows read-only (ZCOUNT), entirely outside any DB context — a
-  //      best-effort pre-gate. A peek never mutates, so a peeked message that
-  //      creates no ticket charges nothing.
-  //   3. Run the pipeline in its own held transaction; it consults the peeked
-  //      verdict only at its create paths (a reply that appends to an existing
-  //      ticket is never throttled) and makes no flood-cap Redis call. On a real
-  //      creation it hands back, via onTicketCreated, the windows computed from the
-  //      partner + policy it AUTHORITATIVELY resolved in-transaction.
-  //   4. AFTER the transaction commits, charge exactly those authoritative windows.
-  //      Charging the pipeline's windows (not the phase-1 snapshot) keeps the charge
-  //      correct even if partner routing or cap settings changed between the peek
-  //      and the creation; the peek can then be at most one message stale, which is
-  //      the same accepted, self-healing class as the documented overshoot.
-  const plan = await dbModule.runOutsideDbContext(() =>
-    dbModule.withSystemDbAccessContext(() => resolveInboundThrottleChecks(email, mailboxGeneration)),
+  // DB work runs inside runOutsideDbContext → withSystemDbAccessContext to avoid
+  // idle-in-transaction pool poison (#1105). Flood protection is the global
+  // per-second queue limiter configured on the Worker below (INBOUND_QUEUE_MAX_PER_SEC);
+  // there is no per-sender Redis cap in the pipeline.
+  return dbModule.runOutsideDbContext(() =>
+    dbModule.withSystemDbAccessContext(() => processInboundEmail(email, mailboxGeneration)),
   );
-  const throttle = await peekInboundThrottle(getRedis(), plan.checks);
-
-  let chargeChecks: InboundCapCheck[] = [];
-  await dbModule.runOutsideDbContext(() =>
-    dbModule.withSystemDbAccessContext(() =>
-      // Pass the plan's partnerId so the pipeline only ENFORCES the verdict when it
-      // matches the partner it authoritatively resolves (a routing change between
-      // the peek and now must not quarantine under the wrong tenant).
-      processInboundEmail(email, mailboxGeneration, {
-        onTicketCreated: (checks) => {
-          chargeChecks = checks;
-        },
-      }, throttle, plan.partnerId),
-    ),
-  );
-
-  // Reaching here means the pipeline transaction committed (processInboundEmail
-  // swallows its own errors; a commit failure would have thrown and skipped this).
-  // A non-empty chargeChecks means a ticket was created; charge its authoritative windows.
-  if (chargeChecks.length > 0) {
-    await chargeInboundTickets(getRedis(), chargeChecks, email.providerMessageId);
-  }
 }
 
 export function initializeInboundEmailWorker(): Promise<void> {
@@ -102,12 +55,11 @@ export function initializeInboundEmailWorker(): Promise<void> {
     {
       connection: getBullMQConnection(),
       concurrency: 5,
-      // Global backpressure: cap how many inbound jobs process per second across
-      // ALL senders (INBOUND_QUEUE_MAX_PER_SEC). This is the sender-independent
-      // floor under the per-sender/domain/partner caps — a distributed burst that
-      // spreads across many senders (so no single window trips) is still bounded
-      // here. BullMQ delays over-rate jobs rather than dropping them, so nothing
-      // is lost; the mail just drains at a controlled rate.
+      // Flood protection: cap how many inbound jobs process per second across ALL
+      // senders (INBOUND_QUEUE_MAX_PER_SEC). This bounds total ticket creation so a
+      // burst or spam flood cannot fill Breeze with tickets. BullMQ delays over-rate
+      // jobs rather than dropping them, so nothing is lost; the mail just drains at
+      // a controlled rate.
       limiter: { max: inboundQueueMaxPerSec(), duration: 1000 },
     }
   );
