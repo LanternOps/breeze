@@ -68,6 +68,51 @@ describe('DR reconciliation authorization against real PostgreSQL', () => {
     expect(commands).toHaveLength(0);
   });
 
+  // #6457: happy path — when the row is genuinely still non-terminal, the
+  // guarded CAS write must still succeed. The drizzle-mock unit suite stubs
+  // db.update to unconditionally return a row regardless of the WHERE
+  // predicate, so it cannot catch a CAS clause that (say) inverted
+  // notInArray and blocked every write — only a real-Postgres assertion can.
+  runDb('persists the denial when the row is still non-terminal', async () => {
+    const testDb = getTestDb();
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const [plan] = await testDb.insert(drPlans).values({
+      orgId: org.id,
+      name: `DR denial CAS happy-path integration ${crypto.randomUUID()}`,
+    }).returning({ id: drPlans.id });
+    if (!plan) throw new Error('DR plan fixture insert failed');
+
+    const [execution] = await testDb.insert(drExecutions).values({
+      planId: plan.id,
+      orgId: org.id,
+      executionType: 'rehearsal',
+      status: 'pending',
+      authorizationPrincipalKind: 'api_key',
+      authorizationPrincipalId: crypto.randomUUID(),
+      authorizationGrantRevision: 'grant',
+      authorizationState: 'authorized',
+      authorizationCheckedAt: new Date(),
+    }).returning();
+    if (!execution) throw new Error('DR execution fixture insert failed');
+
+    const result = await withSystemDbAccessContext(() => persistDrAuthorizationDenial(
+      execution,
+      'authorization_denied_test',
+      new Date(),
+    ));
+
+    expect(result).toMatchObject({
+      id: execution.id,
+      status: 'failed',
+      authorizationState: 'denied',
+      authorizationDenialCode: 'authorization_denied_test',
+    });
+
+    const [current] = await testDb.select().from(drExecutions).where(eq(drExecutions.id, execution.id));
+    expect(current).toMatchObject({ status: 'failed', authorizationState: 'denied' });
+  });
+
   // #6457: an operator abort landing between the denial check and the write
   // must win — persistDrAuthorizationDenial must not resurrect a row another
   // writer has already made terminal back to 'failed'.
@@ -109,7 +154,7 @@ describe('DR reconciliation authorization against real PostgreSQL', () => {
     ));
 
     // The abort must win: status stays 'aborted', never regressed to 'failed'.
-    expect(result.status).toBe('aborted');
+    expect(result?.status).toBe('aborted');
 
     const [current] = await testDb.select().from(drExecutions).where(eq(drExecutions.id, execution.id));
     expect(current).toMatchObject({ status: 'aborted' });

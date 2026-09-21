@@ -991,14 +991,17 @@ export async function persistDrAuthorizationDenial(
   execution: DrExecutionRecord,
   code: string,
   checkedAt: Date,
-): Promise<DrExecutionRecord> {
+): Promise<DrExecutionRecord | null> {
   const currentResults = asRecord(execution.results);
   const legacyUnknown = execution.authorizationPrincipalKind === 'unknown'
     || execution.authorizationState === 'quarantined_authorization_unknown';
   // Compare-and-swap: only a still-non-terminal row may be moved. Mirrors the
   // write-back guard in reconcileDrExecution (#6322/#6451) — without it, an
   // operator abort landing between the denial check and this write gets
-  // silently overwritten back to 'failed' (#6457).
+  // silently overwritten back to 'failed' (#6457). The guard applies to the
+  // legacyUnknown branch too: even though its SET clause never touches
+  // `status`, a row that races to terminal should not be silently repainted
+  // with quarantine metadata either.
   const [updated] = await db
     .update(drExecutions)
     .set({
@@ -1039,9 +1042,12 @@ export async function persistDrAuthorizationDenial(
     return current;
   }
   // Not an expected outcome — dr_executions rows are not deleted under a live
-  // reconcile. Loud, because it means the row vanished mid-tick.
+  // reconcile. Loud, because it means the row vanished mid-tick. Return null
+  // (matching reconcileDrExecution's identical fallback) rather than the
+  // stale `execution` argument: a caller that reported the stale row's
+  // status as current would mask the anomaly instead of surfacing it.
   console.error(`[drExecutionService] persistDrAuthorizationDenial ${execution.id}: execution row disappeared mid-tick`);
-  return execution;
+  return null;
 }
 
 async function authorizeDrGroup(execution: DrExecutionRecord, group: DrPlanGroupRecord): Promise<Date> {
