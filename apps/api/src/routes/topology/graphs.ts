@@ -7,6 +7,7 @@ import {
   getTopologyHealth, getTopologyReadEtag, evidenceQuerySchema, healthQuerySchema,
 } from '../../services/topology/graph';
 import { requireTopologySiteCapability } from './middleware';
+import { siteScopedQuery } from './query';
 
 export const topologyGraphRoutes = new Hono();
 function read(handler: (c: Context) => Promise<object>, sensitive = false) {
@@ -32,21 +33,7 @@ function parse<T>(schema: { safeParse(value: unknown): { success: true; data: T 
   if (!result.success) throw new GraphReadError('invalid_topology_query', 400, 'Invalid topology query');
   return result.data;
 }
-/**
- * The web client's `fetchWithAuth` appends `?orgId=<ambient org>` to every
- * `/api/v1` request. These routes are site-scoped — the org comes from the
- * site via `requireTopologySiteCapability` — so the key is redundant when it
- * names the site's own org and is dropped before the `.strict()` parse. A
- * DIFFERENT org is still a scope override and stays a 400: the query must
- * never widen or move the tenant the middleware resolved.
- */
-function scopedQuery(c: Context): Record<string, string> {
-  const { orgId, ...query } = c.req.query();
-  if (orgId !== undefined && orgId !== c.get('topologyContext')?.scope?.orgId) {
-    throw new GraphReadError('invalid_topology_query', 400, 'Invalid topology query');
-  }
-  return query;
-}
+const scopedQuery = (c: Context) => siteScopedQuery(c, (message) => new GraphReadError('invalid_topology_query', 400, message));
 const base = '/sites/:siteId';
 const authorized = requireTopologySiteCapability('read');
 topologyGraphRoutes.get(`${base}/graph`, authorized, read((c) => getTopologyGraph(c.get('topologyContext'), parse(graphQuerySchema, scopedQuery(c)))));

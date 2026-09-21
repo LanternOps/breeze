@@ -15,7 +15,7 @@ vi.mock('../../services/topology/configurationObjects', async (original) => ({
 vi.mock('./middleware', () => ({
   requireTopologySiteCapability: () => async (c: any, next: any) => {
     if (mocks.status !== 200) return c.json({ error: 'Denied' }, mocks.status);
-    c.set('topologyContext', { scope: { siteId: c.req.param('siteId') } });
+    c.set('topologyContext', { scope: { siteId: c.req.param('siteId'), orgId: '10000000-0000-4000-8000-000000000001' } });
     await next();
   },
 }));
@@ -79,7 +79,7 @@ describe('targets routes', () => {
   it('GET pages scoped rows', async () => {
     expect((await request('GET', undefined, '?limit=10')).status).toBe(200);
     expect(mocks.list).toHaveBeenCalledWith(
-      { scope: { siteId: id } },
+      { scope: { siteId: id, orgId: '10000000-0000-4000-8000-000000000001' } },
       'targets',
       { limit: 10 },
     );
@@ -99,6 +99,11 @@ describe('targets routes', () => {
       expect(mocks.upsert).toHaveBeenCalled();
     },
   );
+  it('GET tolerates the web client\'s ambient orgId and still refuses a foreign one', async () => {
+    expect((await request('GET', undefined, '?limit=10&orgId=10000000-0000-4000-8000-000000000001')).status).toBe(200);
+    expect(mocks.list).toHaveBeenLastCalledWith({ scope: { siteId: id, orgId: '10000000-0000-4000-8000-000000000001' } }, 'targets', { limit: 10 });
+    expect((await request('GET', undefined, '?limit=10&orgId=10000000-0000-4000-8000-000000000002')).status).toBe(400);
+  });
   it('DELETE requires a revision and preserves service errors', async () => {
     expect((await request('DELETE', { expectedRevision: '1' })).status).toBe(
       200,

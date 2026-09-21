@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { requireTopologySiteCapability } from './middleware';
+import { siteScopedQuery } from './query';
 import { topologyOperation } from './operations';
 import {
   upsertTopologyMonitoringPolicy,
@@ -18,7 +19,7 @@ topologyPolicyRoutes.get(
     listTopologyConfigurationObjects(
       c.get('topologyContext'),
       'policies',
-      topologyConfigurationPageSchema.parse(c.req.query()),
+      topologyConfigurationPageSchema.parse(siteScopedQuery(c)),
     ),
   ),
 );

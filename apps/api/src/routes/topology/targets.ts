@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { requireTopologySiteCapability } from './middleware';
+import { siteScopedQuery } from './query';
 import { topologyOperation } from './operations';
 import {
   upsertTopologyProbeTarget,
@@ -18,7 +19,7 @@ topologyTargetRoutes.get(
     listTopologyConfigurationObjects(
       c.get('topologyContext'),
       'targets',
-      topologyConfigurationPageSchema.parse(c.req.query()),
+      topologyConfigurationPageSchema.parse(siteScopedQuery(c)),
     ),
   ),
 );
