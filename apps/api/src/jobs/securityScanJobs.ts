@@ -191,6 +191,10 @@ export async function processDispatchScan(data: DispatchScanJobData): Promise<{
     { expectedOrgId: scan.orgId },
   );
   if ('error' in queued || !queued.command) {
+    console.warn(
+      `[SecurityScanJobs] scan ${scan.id} dispatch failed for device ${scan.deviceId}: ` +
+        `${'error' in queued ? queued.error : 'no command returned'}`
+    );
     await db.update(securityScans)
       .set({ status: 'failed', completedAt: new Date() })
       .where(eq(securityScans.id, scan.id));
