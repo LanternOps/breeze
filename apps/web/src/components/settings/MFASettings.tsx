@@ -202,8 +202,12 @@ export default function MFASettings({
     ) {
       setShowCodes(true);
       setView('recovery');
+      // Advance the ref only when the codes were actually shown. Advancing it
+      // on every run would record codes that arrived while the guard failed
+      // (panel on another view, method not yet 'passkey') as "seen" and never
+      // render them — the same lockout this effect exists to prevent.
+      recoveryCodesRef.current = recoveryCodes;
     }
-    recoveryCodesRef.current = recoveryCodes;
   }, [recoveryCodes, view, currentMethod]);
 
   const resetDigits = () => {

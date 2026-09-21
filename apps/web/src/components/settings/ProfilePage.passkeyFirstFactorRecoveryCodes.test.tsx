@@ -128,18 +128,36 @@ describe('ProfilePage — first passkey enrollment surfaces its recovery codes (
     // 'passkey' (the case a second passkey add leaves it in, since
     // register/verify returns no codes for it). Test that contract directly.
     const { default: MFASettings } = await import('./MFASettings');
-    render(
-      <MFASettings
-        enabled
-        mfaMethod="passkey"
-        hasPassword
-        recoveryCodes={undefined}
-      />,
+    const { rerender } = render(
+      <MFASettings enabled mfaMethod="passkey" hasPassword recoveryCodes={undefined} />,
     );
-
     expect(await screen.findByText('Multi-factor authentication')).toBeTruthy();
-    for (const code of RECOVERY_CODES) {
-      expect(screen.queryByText(code)).toBeNull();
-    }
+    for (const code of RECOVERY_CODES) expect(screen.queryByText(code)).toBeNull();
+
+    // Codes already present on first render (a remount after they were shown)
+    // must not re-open the panel either — the effect is keyed on a NEW array.
+    rerender(<MFASettings enabled mfaMethod="passkey" hasPassword recoveryCodes={RECOVERY_CODES} />);
+    await waitFor(() => expect(screen.getByText(RECOVERY_CODES[0])).toBeTruthy());
+    // Same identity again: nothing new, panel state untouched (still open).
+    rerender(<MFASettings enabled mfaMethod="passkey" hasPassword recoveryCodes={RECOVERY_CODES} />);
+    expect(screen.getByText(RECOVERY_CODES[0])).toBeTruthy();
+  });
+
+  it('does not swallow codes that arrive before the panel is ready to show them', async () => {
+    // Review of the first fix: the effect updated its "last seen" ref even when
+    // the guard failed, so codes that landed while `currentMethod` (or `view`)
+    // was not yet in the passkey/status state were remembered as shown and
+    // never rendered. The ref must only advance when the panel actually opens.
+    const { default: MFASettings } = await import('./MFASettings');
+    const { rerender } = render(
+      <MFASettings enabled mfaMethod="totp" hasPassword recoveryCodes={undefined} />,
+    );
+    expect(await screen.findByText('Multi-factor authentication')).toBeTruthy();
+    // Codes arrive while the method still reads as totp: guard fails, nothing shown.
+    rerender(<MFASettings enabled mfaMethod="totp" hasPassword recoveryCodes={RECOVERY_CODES} />);
+    expect(screen.queryByText(RECOVERY_CODES[0])).toBeNull();
+    // The method catches up with the same codes: they must show now.
+    rerender(<MFASettings enabled mfaMethod="passkey" hasPassword recoveryCodes={RECOVERY_CODES} />);
+    await waitFor(() => expect(screen.getByText(RECOVERY_CODES[0])).toBeTruthy());
   });
 });
