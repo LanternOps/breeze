@@ -129,12 +129,12 @@ jobs:
             goarch: amd64
             suffix: ''
             cgo: '0'
-            runner: ubuntu-latest
+            runner: cloudcom
           - goos: linux
             goarch: arm64
             suffix: ''
             cgo: '0'
-            runner: ubuntu-latest
+            runner: cloudcom
           - goos: darwin
             goarch: amd64
             suffix: ''
@@ -149,7 +149,7 @@ jobs:
             goarch: amd64
             suffix: '.exe'
             cgo: '0'
-            runner: ubuntu-latest
+            runner: cloudcom
 
     steps:
       - name: Checkout
@@ -1129,14 +1129,16 @@ jobs:
       matrix:
         include:
           - platform: windows-latest
+            runner: windows-latest
             target: x86_64-pc-windows-msvc
             asset_name: breeze-viewer-windows.msi
             asset_glob: 'src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi'
           - platform: ubuntu-22.04
+            runner: cloudcom
             target: x86_64-unknown-linux-gnu
             asset_name: breeze-viewer-linux.AppImage
             asset_glob: 'src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage'
-    runs-on: ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1287,14 +1289,16 @@ jobs:
       matrix:
         include:
           - platform: windows-latest
+            runner: windows-latest
             target: x86_64-pc-windows-msvc
             asset_name: breeze-helper-windows.msi
             asset_glob: 'src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi'
           - platform: ubuntu-22.04
+            runner: cloudcom
             target: x86_64-unknown-linux-gnu
             asset_name: breeze-helper-linux.AppImage
             asset_glob: 'src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage'
-    runs-on: ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7

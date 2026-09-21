@@ -1512,12 +1512,12 @@ jobs:
             goarch: amd64
             suffix: ''
             cgo: '0'
-            runner: ubuntu-latest
+            runner: cloudcom
           - goos: darwin
             goarch: amd64
             suffix: ''
             cgo: '0'
-            runner: ubuntu-latest
+            runner: cloudcom
           - goos: darwin
             goarch: arm64
             suffix: ''
@@ -1527,7 +1527,7 @@ jobs:
             goarch: amd64
             suffix: '.exe'
             cgo: '0'
-            runner: ubuntu-latest
+            runner: cloudcom
 
     steps:
       - name: Checkout
