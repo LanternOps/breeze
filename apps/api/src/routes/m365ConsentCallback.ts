@@ -563,13 +563,32 @@ export function createM365ConsentCallbackRoutes(
     };
 
     const binding = dependencies.verifyBindingCookie(c.req.header('cookie'));
-    if (binding === 'expired') return terminalFailure('consent_expired');
-    if (!binding) return terminalFailure('consent_state_mismatch');
+    if (binding === 'expired') {
+      console.warn('[m365ConsentCallback] browser binding expired', {
+        profile: dependencies.profile,
+        correlationId,
+      });
+      return terminalFailure('consent_expired');
+    }
+    if (!binding) {
+      console.warn('[m365ConsentCallback] browser binding missing or invalid', {
+        profile: dependencies.profile,
+        correlationId,
+        cookieHeaderPresent: Boolean(c.req.header('cookie')),
+      });
+      return terminalFailure('consent_state_mismatch');
+    }
     const parsed = parseM365ConsentCallbackQuery(
       binding.phase,
       new URL(c.req.url).searchParams,
     );
     if (!parsed || !constantTimeTextEqual(parsed.state, binding.rawState)) {
+      console.warn('[m365ConsentCallback] callback query did not match browser binding', {
+        profile: dependencies.profile,
+        phase: binding.phase,
+        correlationId,
+        parsed: Boolean(parsed),
+      });
       return terminalFailure('consent_state_mismatch');
     }
 
