@@ -63,7 +63,9 @@ export default function OrgMlFeaturesCard({
     void loadResolved();
   }, [loadResolved]);
 
-  const killSwitched = Object.values(resolved).some((r) => r?.source === 'global_kill_switch');
+  // Scoped to this card's flags: ML_DISABLED_FLAGS is per flag, so an operator
+  // disabling e.g. RCA must not read as "anomaly detection is off".
+  const killSwitched = Object.values(FLAG_FOR_KEY).some((flag) => resolved[flag]?.source === 'global_kill_switch');
 
   const change = async (key: AnomalyKey, choice: Choice) => {
     if (busy) return;
@@ -98,7 +100,7 @@ export default function OrgMlFeaturesCard({
   const inheritLabel = (key: AnomalyKey) => {
     const r = resolved[FLAG_FOR_KEY[key]];
     if (!r) return t('orgSettingsPage.ai.mlFeatures.inherit');
-    const from = r.source === 'partner_settings' || (r.source === 'org_settings' && r.inheritedEnabled !== r.defaultEnabled)
+    const from = r.inheritedSource === 'partner_settings'
       ? t('orgSettingsPage.ai.mlFeatures.fromPartner')
       : t('orgSettingsPage.ai.mlFeatures.fromDefault');
     return r.inheritedEnabled

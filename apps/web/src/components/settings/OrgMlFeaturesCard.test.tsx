@@ -13,8 +13,8 @@ vi.mock('@/stores/auth', () => ({ fetchWithAuth, handleSessionExpired }));
 
 import OrgMlFeaturesCard from './OrgMlFeaturesCard';
 
-function flagsResponse(overrides: Record<string, Partial<{ enabled: boolean; inheritedEnabled: boolean; source: string }>> = {}) {
-  const base = (flag: string) => ({ flag, enabled: false, defaultEnabled: false, inheritedEnabled: false, source: 'default', ...(overrides[flag] ?? {}) });
+function flagsResponse(overrides: Record<string, Partial<{ enabled: boolean; inheritedEnabled: boolean; inheritedSource: string; source: string }>> = {}) {
+  const base = (flag: string) => ({ flag, enabled: false, defaultEnabled: false, inheritedEnabled: false, inheritedSource: 'default', source: 'default', ...(overrides[flag] ?? {}) });
   return {
     ok: true,
     json: async () => ({
@@ -33,12 +33,12 @@ beforeEach(() => {
 
 describe('OrgMlFeaturesCard', () => {
   it('loads the resolved flags for THIS org and shows the inherited value next to "Inherit"', async () => {
-    fetchWithAuth.mockResolvedValue(flagsResponse({ 'ml.anomalies.enabled': { enabled: true, inheritedEnabled: true, source: 'partner_settings' } }));
+    fetchWithAuth.mockResolvedValue(flagsResponse({ 'ml.anomalies.enabled': { enabled: true, inheritedEnabled: true, inheritedSource: 'partner_settings', source: 'partner_settings' } }));
     const { getByTestId, findByText } = render(<OrgMlFeaturesCard orgId="o1" settings={{}} onSaved={vi.fn()} />);
     await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledWith('/config/ml-feature-flags?orgId=o1'));
     const select = getByTestId('org-ml-anomalies-enabled') as HTMLSelectElement;
     await waitFor(() => expect(select.value).toBe('inherit'));
-    await findByText((text) => text.startsWith('orgSettingsPage.ai.mlFeatures.inheritOn'));
+    await findByText((text) => text.startsWith('orgSettingsPage.ai.mlFeatures.inheritOn') && text.includes('fromPartner'));
   });
 
   it('shows the org override when settings.ml.anomalies.enabled is set', async () => {
@@ -69,6 +69,26 @@ describe('OrgMlFeaturesCard', () => {
     await runAction.mock.calls[1]![0].request();
     const lastBody = JSON.parse(fetchWithAuth.mock.calls.at(-1)![1].body);
     expect(lastBody.settings.ml.anomalies).toEqual({ enabled: true });
+  });
+
+  it('attributes an inherited value to the partner when the resolver says so, even if it equals the default', async () => {
+    fetchWithAuth.mockResolvedValue(flagsResponse({ 'ml.anomalies.enabled': { enabled: true, inheritedEnabled: false, inheritedSource: 'partner_settings', source: 'org_settings' } }));
+    const { findByText } = render(<OrgMlFeaturesCard orgId="o1" settings={{ ml: { anomalies: { enabled: true } } }} onSaved={vi.fn()} />);
+    await findByText((text) => text.startsWith('orgSettingsPage.ai.mlFeatures.inheritOff') && text.includes('fromPartner'));
+  });
+
+  it('ignores a kill switch on an unrelated ML flag', async () => {
+    fetchWithAuth.mockResolvedValue({
+      ok: true,
+      json: async () => ({ mlFeatureFlags: {
+        'ml.rca.enabled': { flag: 'ml.rca.enabled', enabled: false, defaultEnabled: false, inheritedEnabled: false, inheritedSource: 'default', source: 'global_kill_switch' },
+        'ml.anomalies.enabled': { flag: 'ml.anomalies.enabled', enabled: false, defaultEnabled: false, inheritedEnabled: false, inheritedSource: 'default', source: 'default' },
+      } }),
+    });
+    const { getByTestId, queryByTestId } = render(<OrgMlFeaturesCard orgId="o1" settings={{}} onSaved={vi.fn()} />);
+    await waitFor(() => expect(fetchWithAuth).toHaveBeenCalled());
+    expect(queryByTestId('org-ml-kill-switch-notice')).toBeNull();
+    expect((getByTestId('org-ml-anomalies-enabled') as HTMLSelectElement).disabled).toBe(false);
   });
 
   it('renders a platform-disabled notice instead of editable controls under the global kill switch', async () => {

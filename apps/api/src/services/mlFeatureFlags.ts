@@ -43,6 +43,8 @@ export interface MlFeatureFlagResolution {
    * next to "Inherit" so the choice is never blind (settings rule 4).
    */
   inheritedEnabled: boolean;
+  /** Where `inheritedEnabled` comes from. Reported explicitly so the UI never has to guess it from values. */
+  inheritedSource: 'partner_settings' | 'default';
   source: MlFeatureFlagSource;
 }
 
@@ -144,6 +146,7 @@ export function resolveMlFeatureFlag(
     source = 'partner_settings';
   }
   const inheritedEnabled = enabled;
+  const inheritedSource = source as 'partner_settings' | 'default';
 
   if (orgOverride !== undefined) {
     enabled = orgOverride;
@@ -151,10 +154,10 @@ export function resolveMlFeatureFlag(
   }
 
   if (mlFeatureGloballyDisabled(flag)) {
-    return { flag, enabled: false, defaultEnabled, inheritedEnabled, source: 'global_kill_switch' };
+    return { flag, enabled: false, defaultEnabled, inheritedEnabled, inheritedSource, source: 'global_kill_switch' };
   }
 
-  return { flag, enabled, defaultEnabled, inheritedEnabled, source };
+  return { flag, enabled, defaultEnabled, inheritedEnabled, inheritedSource, source };
 }
 
 /**
@@ -220,7 +223,7 @@ export async function resolveMlFeatureFlagForOrg(
   const inputs = await loadMlFlagInputs(orgId);
   if (!inputs) {
     const defaultEnabled = defaultMlFeatureFlagValue(flag);
-    return { flag, enabled: false, defaultEnabled, source: 'org_not_found' };
+    return { flag, enabled: false, defaultEnabled, inheritedEnabled: false, inheritedSource: 'default', source: 'org_not_found' };
   }
 
   return resolveMlFeatureFlag(flag, inputs);
@@ -267,6 +270,7 @@ export async function resolveAllMlFeatureFlagsForOrg(
         enabled: false,
         defaultEnabled: defaultMlFeatureFlagValue(flag),
         inheritedEnabled: false,
+        inheritedSource: 'default' as const,
         source: 'org_not_found' as const,
       },
   ] as const);
