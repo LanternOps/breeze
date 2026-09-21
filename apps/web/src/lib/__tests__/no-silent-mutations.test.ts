@@ -368,6 +368,11 @@ const TARGET_GLOBS = [
   // runAction; a bare fetchWithAuth added for a fourth would silently swallow
   // a restore that never started.
   'src/components/backup/VMRestoreWizard.tsx',
+  // #6263 W01: these three were built but mounted on no page. /security/scans
+  // makes them reachable, so their mutations join the adopted set.
+  'src/components/security/SecurityScanManager.tsx',
+  'src/components/security/ThreatList.tsx',
+  'src/components/security/ThreatDetail.tsx',
 ];
 
 const absoluteFiles: string[] = TARGET_GLOBS.map((rel) => resolve(WEB_ROOT, '..', rel));
@@ -721,7 +726,8 @@ describe('no silent mutations in targeted set', () => {
     // Disk Cleanup v2 W03 adds filesystem/CleanupPanel.tsx: 151 → 152.
     // Disk Cleanup v2 W04 adds filesystem/SystemCleanupPanel.tsx: 152 → 153.
     // Billing profiles W02 adds Rates and the org assignment writer: 153 → 155.
-    expect(absoluteFiles.length).toBe(155);
+    // #6263 W01 adds SecurityScanManager.tsx, ThreatList.tsx, ThreatDetail.tsx: 155 → 158.
+    expect(absoluteFiles.length).toBe(158);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

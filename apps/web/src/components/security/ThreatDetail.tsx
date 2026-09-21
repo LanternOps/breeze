@@ -16,6 +16,8 @@ import { fetchWithAuth } from "@/stores/auth";
 import { formatDateTime as formatUserDateTime } from "@/lib/dateTimeFormat";
 import { friendlyFetchError } from "@/lib/utils";
 import { errorKindOf, throwIfNotOk, type LoadErrorKind } from "@/lib/httpError";
+import { runAction, ActionError } from "@/lib/runAction";
+import { showToast } from "../shared/Toast";
 import AccessDenied from "../shared/AccessDenied";
 type ThreatSeverity = "low" | "medium" | "high" | "critical";
 type ThreatStatus = "active" | "quarantined" | "removed";
@@ -103,19 +105,26 @@ export default function ThreatDetail({
   useEffect(() => {
     fetchThreat();
   }, [fetchThreat]);
-  const runAction = async (action: "quarantine" | "restore" | "remove") => {
+  const threatActionSuccessMessage: Record<"quarantine" | "restore" | "remove", string> = {
+    quarantine: t("securityThreatDetail.quarantineSucceeded"),
+    restore: t("securityThreatDetail.restoreSucceeded"),
+    remove: t("securityThreatDetail.removeSucceeded"),
+  };
+  const performThreatAction = async (action: "quarantine" | "restore" | "remove") => {
     if (!threat) return;
     setActing(true);
     setError(undefined);
     try {
-      const response = await fetchWithAuth(
-        `/security/threats/${threat.id}/${action}`,
-        { method: "POST" },
-      );
-      throwIfNotOk(response);
+      await runAction({
+        request: () =>
+          fetchWithAuth(`/security/threats/${threat.id}/${action}`, { method: "POST" }),
+        errorFallback: t("securityThreatDetail.actionFailed"),
+        successMessage: threatActionSuccessMessage[action],
+      });
       await fetchThreat();
     } catch (err) {
-      setError(friendlyFetchError(err));
+      if (err instanceof ActionError && err.status === 401) return; // let the auth redirect handle it
+      if (!(err instanceof ActionError)) showToast({ message: String(err), type: "error" });
     } finally {
       setActing(false);
     }
@@ -274,7 +283,7 @@ export default function ThreatDetail({
               <button
                 type="button"
                 disabled={acting}
-                onClick={() => runAction("quarantine")}
+                onClick={() => performThreatAction("quarantine")}
                 className="inline-flex items-center gap-2 rounded-md border bg-background px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-60"
               >
                 {acting ? (
@@ -287,7 +296,7 @@ export default function ThreatDetail({
               <button
                 type="button"
                 disabled={acting}
-                onClick={() => runAction("restore")}
+                onClick={() => performThreatAction("restore")}
                 className="inline-flex items-center gap-2 rounded-md border bg-background px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-60"
               >
                 <CheckCircle2 className="h-4 w-4" />
@@ -296,7 +305,7 @@ export default function ThreatDetail({
               <button
                 type="button"
                 disabled={acting}
-                onClick={() => runAction("remove")}
+                onClick={() => performThreatAction("remove")}
                 className="inline-flex items-center gap-2 rounded-md border bg-background px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-60"
               >
                 <Trash2 className="h-4 w-4" />

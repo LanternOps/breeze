@@ -1,17 +1,44 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const fetchWithAuth = vi.fn();
+const { fetchWithAuth, showToastMock } = vi.hoisted(() => ({
+  fetchWithAuth: vi.fn(),
+  showToastMock: vi.fn(),
+}));
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: (...args: unknown[]) => fetchWithAuth(...args),
 }));
+vi.mock('../shared/Toast', () => ({ showToast: showToastMock }));
 
 import ThreatList from './ThreatList';
+
+const fetchWithAuthMock = fetchWithAuth;
 
 function ok(body: unknown) {
   return { ok: true, status: 200, statusText: 'OK', json: async () => body } as Response;
 }
+
+function makeJsonResponse(payload: unknown, ok = true, status = ok ? 200 : 500): Response {
+  return {
+    ok,
+    status,
+    statusText: ok ? 'OK' : 'ERROR',
+    json: async () => payload,
+  } as Response;
+}
+
+const threatFixture = {
+  id: 't1',
+  deviceId: 'dev-1',
+  deviceName: 'Workstation 1',
+  name: 'Emotet',
+  category: 'trojan',
+  severity: 'critical',
+  status: 'active',
+  detectedAt: '2026-06-20T00:00:00Z',
+  filePath: 'C:\\temp\\evil.exe',
+};
 
 type ThreatFixture = {
   id: string;
@@ -42,6 +69,7 @@ function getThreatUrls() {
 
 beforeEach(() => {
   fetchWithAuth.mockReset();
+  showToastMock.mockClear();
 });
 
 describe('ThreatList', () => {
@@ -163,5 +191,39 @@ describe('ThreatList', () => {
     const selects = screen.getAllByRole('combobox');
     const deviceSelect = selects[2];
     expect(deviceSelect).toHaveValue('all');
+  });
+
+  it('toasts when a quarantine action fails', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ data: [threatFixture] }));
+    fetchWithAuthMock.mockResolvedValueOnce(
+      makeJsonResponse({ error: 'device offline' }, false, 409),
+    );
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ data: [threatFixture] }));
+
+    render(<ThreatList />);
+
+    const desktop = within(await screen.findByTestId('responsive-table-desktop'));
+    fireEvent.click(await desktop.findByTestId('threat-row-select-t1'));
+    fireEvent.click(screen.getByTestId('threat-bulk-quarantine'));
+
+    await waitFor(() => expect(showToastMock).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'error' }),
+    ));
+  });
+
+  it('toasts on success', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ data: [threatFixture] }));
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ data: { id: threatFixture.id } }));
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ data: [threatFixture] }));
+
+    render(<ThreatList />);
+
+    const desktop = within(await screen.findByTestId('responsive-table-desktop'));
+    fireEvent.click(await desktop.findByTestId('threat-row-select-t1'));
+    fireEvent.click(screen.getByTestId('threat-bulk-quarantine'));
+
+    await waitFor(() => expect(showToastMock).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'success' }),
+    ));
   });
 });
