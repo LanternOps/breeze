@@ -332,6 +332,42 @@ describe('authMiddleware', () => {
     );
   });
 
+  it('checks the IP allowlist before entering the request database context', async () => {
+    let requestContextActive = false;
+    let handlerSawRequestContext = false;
+    const app = new Hono();
+    app.use(authMiddleware);
+    app.get('/test', (c) => {
+      handlerSawRequestContext = requestContextActive;
+      return c.json({ ok: true });
+    });
+
+    vi.mocked(verifyToken).mockResolvedValue(basePayload);
+    mockUserSelect([activeUser]);
+    vi.mocked(withDbAccessContext).mockImplementationOnce(async (_context, fn) => {
+      requestContextActive = true;
+      try {
+        return await fn();
+      } finally {
+        requestContextActive = false;
+      }
+    });
+    ipGuardMocks.ipAllowlistGuard.mockImplementationOnce(async (_c, next) => {
+      expect(requestContextActive).toBe(false);
+      await next();
+    });
+
+    const res = await app.request('/test', {
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(200);
+    expect(handlerSawRequestContext).toBe(true);
+    expect(ipGuardMocks.ipAllowlistGuard.mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(withDbAccessContext).mock.invocationCallOrder[0]!,
+    );
+  });
+
   it('rejects a blocked signed mobile binding on an ordinary authenticated API path', async () => {
     const app = buildAuthApp();
     const boundPayload = { ...basePayload, mdid: 'blocked-installation-id' };
@@ -375,6 +411,30 @@ describe('authMiddleware', () => {
     expect(res.status).toBe(403);
     const body = await res.json();
     expect(body.code).toBe('ip_not_allowed');
+    expect(vi.mocked(withDbAccessContext)).not.toHaveBeenCalled();
+  });
+
+  it('keeps self-managed handlers outside the request database context', async () => {
+    let handlerCalled = false;
+    const app = new Hono();
+    app.use(authMiddleware);
+    app.post('/api/v1/invoices/:id/pay-link', (c) => {
+      handlerCalled = true;
+      return c.json({ ok: true });
+    });
+
+    vi.mocked(verifyToken).mockResolvedValue(basePayload);
+    mockUserSelect([activeUser]);
+
+    const res = await app.request('/api/v1/invoices/invoice-1/pay-link', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(200);
+    expect(handlerCalled).toBe(true);
+    expect(ipGuardMocks.ipAllowlistGuard).toHaveBeenCalledOnce();
+    expect(vi.mocked(withDbAccessContext)).not.toHaveBeenCalled();
   });
 
   it('uses the live owning partner for an organization token whose authorization partnerId is null', async () => {
