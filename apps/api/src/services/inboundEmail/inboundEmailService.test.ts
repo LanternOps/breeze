@@ -411,6 +411,23 @@ describe('processInboundEmail', () => {
     expect(createTicketMock).not.toHaveBeenCalled();
   });
 
+  it('suppresses a FIRST-delivery loop/bounce (Auto-Submitted: auto-replied): logs ignored, no ticket', async () => {
+    // Exercises the first-delivery suppression BRANCH itself (no dup row, so dedup does
+    // NOT short-circuit): ticketCreationLoopReason fires, logs an 'ignored' audit row
+    // with the reason, and creates no ticket. The dedup-precedes test above only covers
+    // the redelivery/dup path, so without this the suppression branch could be removed
+    // and the suite would stay green.
+    resolveMock.mockResolvedValue('p-1');
+    state.selectRows['ticket_email_inbound'] = []; // first delivery, no dup
+    await processInboundEmail(email({ autoSubmitted: 'auto-replied' }));
+    const rows = inboundOf();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.parseStatus).toBe('ignored');
+    expect(String(rows[0]!.error)).toContain('loop/bounce suppressed');
+    expect(createTicketMock).not.toHaveBeenCalled();
+    expect(state.inserts.filter((i) => i.table === 'ticket_comments')).toHaveLength(0);
+  });
+
   it('appends a public comment + reopens a resolved ticket on a threaded reply', async () => {
     resolveMock.mockResolvedValue('p-1');
     state.selectRows['ticket_email_inbound'] = []; // no dup
