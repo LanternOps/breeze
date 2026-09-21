@@ -114,7 +114,11 @@ export const alertRules = pgTable('alert_rules', {
 
 export const alerts = pgTable('alerts', {
   id: uuid('id').primaryKey().defaultRandom(),
-  ruleId: uuid('rule_id').references(() => alertRules.id),
+  // ON DELETE SET NULL (2026-10-25-130200, #6509): the compiled alert_rules
+  // row for a monitor is cascade-deleted with the monitor, and a historical
+  // alert must survive that even though it already carries its own
+  // title/message/context.
+  ruleId: uuid('rule_id').references(() => alertRules.id, { onDelete: 'set null' }),
   deviceId: uuid('device_id').notNull().references(() => devices.id),
   orgId: uuid('org_id').notNull().references(() => organizations.id),
   configPolicyId: uuid('config_policy_id'),

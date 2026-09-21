@@ -56,7 +56,7 @@ vi.mock('../middleware/auth', () => ({
 // Real error classes (not vi.fn stand-ins): the route's `errorResponse()` does
 // `instanceof` checks against these exact exports, so the mock must supply
 // classes rather than functions for the instanceof branch to fire correctly.
-const { MonitorNotFoundError, MonitorOwnershipError, MonitorValidationError } = vi.hoisted(() => ({
+const { MonitorNotFoundError, MonitorOwnershipError, MonitorValidationError, MonitorHasDependentsError } = vi.hoisted(() => ({
   MonitorNotFoundError: class MonitorNotFoundError extends Error {
     constructor(id: string) {
       super(`Monitor definition ${id} not found`);
@@ -75,12 +75,19 @@ const { MonitorNotFoundError, MonitorOwnershipError, MonitorValidationError } = 
       this.name = 'MonitorValidationError';
     }
   },
+  MonitorHasDependentsError: class MonitorHasDependentsError extends Error {
+    constructor(id: string) {
+      super(`Monitor definition ${id} still has rows referencing it that cannot be cascaded`);
+      this.name = 'MonitorHasDependentsError';
+    }
+  },
 }));
 
 vi.mock('../services/monitors/monitorService', () => ({
   MonitorNotFoundError,
   MonitorOwnershipError,
   MonitorValidationError,
+  MonitorHasDependentsError,
   listMonitorDefinitions: listMonitorDefinitionsMock,
   getMonitorDefinition: getMonitorDefinitionMock,
   createMonitorDefinition: createMonitorDefinitionMock,
@@ -404,6 +411,20 @@ describe('DELETE /monitor-definitions/:id', () => {
     expect(res.status).toBe(204);
     expect(await res.text()).toBe('');
     expect(deleteMonitorDefinitionMock).toHaveBeenCalledWith(MONITOR_ID, expect.anything());
+  });
+
+  // Regression for #6509: a monitor that has ever produced an alert used to
+  // 500 with the raw postgres FK constraint text. The service now maps that
+  // to MonitorHasDependentsError; the route must turn it into a clean 409,
+  // never leak the underlying error to the client.
+  it('maps MonitorHasDependentsError to a clean 409 instead of a raw postgres error', async () => {
+    getMonitorDefinitionMock.mockResolvedValue(monitorRow());
+    deleteMonitorDefinitionMock.mockRejectedValue(new MonitorHasDependentsError(MONITOR_ID));
+
+    const res = await jsonRequest(buildApp(), 'DELETE', `/${MONITOR_ID}`);
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'MONITOR_HAS_DEPENDENTS' });
   });
 });
 

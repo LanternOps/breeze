@@ -13,6 +13,7 @@ import { normalizeAutomationActions } from '../automationRuntime';
 import type { AutomationAction } from '../automationRuntime';
 import { getMonitorKindSpec, MonitorValidationError } from './kinds';
 import { compileMonitorInTx, type CompileOptions, type DbExecutor } from './monitorCompiler';
+import { isPgForeignKeyViolation } from '../../utils/pgErrors';
 import type {
   CreateMonitorDefinitionInput,
   MonitorKind,
@@ -33,6 +34,21 @@ export class MonitorOwnershipError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'MonitorOwnershipError';
+  }
+}
+
+/**
+ * 409 at the route layer (#6509): the delete cascaded into a row some OTHER
+ * table still references with no ON DELETE action. `alerts.rule_id` is fixed
+ * (SET NULL, 2026-10-25-130200) so this should not fire in the ordinary case
+ * any more, but it stays as a belt-and-braces map so any future/residual FK a
+ * monitor's cascade touches surfaces as a clean 409 instead of a raw
+ * postgres constraint-violation message leaking to the client.
+ */
+export class MonitorHasDependentsError extends Error {
+  constructor(id: string) {
+    super(`Monitor definition ${id} still has rows referencing it that cannot be cascaded`);
+    this.name = 'MonitorHasDependentsError';
   }
 }
 
@@ -397,8 +413,14 @@ export async function deleteMonitorDefinition(id: string, auth: AuthContext, exe
   assertCanWrite(auth, { orgId: existing.orgId, partnerId: existing.partnerId });
   // The compiled template/rule/automation rows and every policy attachment go
   // with it through ON DELETE CASCADE; alerts keep their history with
-  // monitor_id set to NULL.
-  await executor.delete(monitorDefinitions).where(eq(monitorDefinitions.id, id));
+  // monitor_id (and rule_id, once the cascade reaches the compiled rule) set
+  // to NULL.
+  try {
+    await executor.delete(monitorDefinitions).where(eq(monitorDefinitions.id, id));
+  } catch (error) {
+    if (isPgForeignKeyViolation(error)) throw new MonitorHasDependentsError(id);
+    throw error;
+  }
 }
 
 /** Count of policy attachments per monitor, for the list view. */
