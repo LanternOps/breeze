@@ -6,10 +6,16 @@ import { fetchWithAuth } from '../../stores/auth';
 import { installAstroClientRouterStandIn, type ClientRouterStandIn } from '../../__tests__/astroClientRouterStandIn';
 
 // Org scope, so the fleet-view gate stays open and the data paths under test run.
+const scopeState = vi.hoisted(() => ({ scope: 'org' as 'org' | 'all', orgId: 'org-1' as string | null }));
 vi.mock('@/hooks/useOrgScope', () => ({
-  useOrgScope: () => ({ ready: true, status: 'resolved', scope: 'org', orgId: 'org-1', org: null, error: null }),
-  getOrgScope: () => ({ ready: true, status: 'resolved', scope: 'org', orgId: 'org-1', org: null, error: null }),
+  useOrgScope: () => (scopeState.scope === 'all'
+    ? { ready: true, status: 'resolved', scope: 'all', orgId: null, org: null, error: null }
+    : { ready: true, status: 'resolved', scope: 'org', orgId: scopeState.orgId, org: null, error: null }),
+  getOrgScope: () => (scopeState.scope === 'all'
+    ? { ready: true, status: 'resolved', scope: 'all', orgId: null, org: null, error: null }
+    : { ready: true, status: 'resolved', scope: 'org', orgId: scopeState.orgId, org: null, error: null }),
 }));
+vi.mock('./BackupHealthOverview', () => ({ default: () => <div data-testid="stub-health-overview" /> }));
 vi.mock('../../stores/auth', () => ({
   registerOrgIdProvider: vi.fn(),
   fetchWithAuth: vi.fn()
@@ -42,6 +48,8 @@ const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500):
 describe('BackupDashboard usage history chart', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    scopeState.scope = 'org';
+    scopeState.orgId = 'org-1';
     window.location.hash = '';
     HTMLDialogElement.prototype.showModal = vi.fn(function showModal(this: HTMLDialogElement) {
       this.setAttribute('open', '');
@@ -444,5 +452,23 @@ describe('BackupDashboard usage history chart', () => {
     await screen.findByText('edge-02');
     expect(screen.getByText('Partial')).toBeTruthy();
     expect(screen.queryByText('Warning')).toBeNull();
+  });
+
+  it('renders the health view alone in all-organizations mode, calling neither org-only endpoint', async () => {
+    scopeState.scope = 'all';
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: {} }));
+    render(<BackupDashboard />);
+    expect(await screen.findByTestId('stub-health-overview')).toBeInTheDocument();
+    const urls = fetchWithAuthMock.mock.calls.map(([u]) => String(u));
+    expect(urls).not.toContain('/backup/dashboard');
+    expect(urls.some((u) => u.startsWith('/backup/usage-history'))).toBe(false);
+  });
+
+  it('renders the health view above the tiles in org mode and still loads the dashboard', async () => {
+    scopeState.scope = 'org';
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: {} }));
+    render(<BackupDashboard />);
+    expect(await screen.findByTestId('stub-health-overview')).toBeInTheDocument();
+    expect(fetchWithAuthMock.mock.calls.map(([u]) => String(u))).toContain('/backup/dashboard');
   });
 });

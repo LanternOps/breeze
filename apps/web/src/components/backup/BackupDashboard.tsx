@@ -2,7 +2,9 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import { CheckCircle2, Database, HardDrive, ShieldAlert } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useHashState } from '@/lib/useHashState';
+import { useOrgScope } from '@/hooks/useOrgScope';
 import { fetchWithAuth } from '../../stores/auth';
+import BackupHealthOverview from './BackupHealthOverview';
 import BackupOverviewContent from './BackupOverviewContent';
 import BackupVerificationOverview from './BackupVerificationOverview';
 import {
@@ -69,6 +71,7 @@ function TabFallback() {
 
 function BackupDashboardInner() {
   const { t } = useTranslation('backup');
+  const orgScope = useOrgScope();
   // SSR-safe hash tab (#2421): starts at the default, adopts the hash post-mount.
   const [activeTab, setActiveTab] = useHashState<BackupTab>('overview', (h) => (isValidTab(h) ? h : undefined));
   const [stats, setStats] = useState<BackupStat[]>([]);
@@ -416,6 +419,7 @@ function BackupDashboardInner() {
           resolveJobStatus={resolveJobStatus}
           resolveProviderPercent={resolveProviderPercent}
           fetchOverview={fetchOverview}
+          healthOrgId={orgScope.scope === 'org' ? orgScope.orgId : null}
         />
       )}
 
@@ -497,6 +501,18 @@ function BackupDashboardInner() {
 // the gate resolves loading/error/empty/fleet before the data component — with
 // all its fetch effects — ever mounts without an org.
 export default function BackupDashboard() {
+  const scope = useOrgScope();
+  // The org gate renders OrgRequiredState for scope 'all' (OrgRequiredGate.tsx:40),
+  // which would hide the very view all-organizations mode exists to show. The
+  // fleet view needs no org — and /backup/dashboard and /backup/usage-history
+  // both 400 without one — so it is resolved before the gate.
+  if (scope.status === 'resolved' && scope.scope === 'all') {
+    return (
+      <div className="space-y-6">
+        <BackupHealthOverview orgId={null} />
+      </div>
+    );
+  }
   return (
     <OrgRequiredGate>
       <BackupDashboardInner />

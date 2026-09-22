@@ -8,6 +8,7 @@ import {
   TrendingUp
 } from 'lucide-react';
 import { cn, widthPercentClass } from '@/lib/utils';
+import BackupHealthOverview from './BackupHealthOverview';
 import BackupJobList from './BackupJobList';
 import {
   type AttentionItem,
@@ -151,6 +152,8 @@ export type BackupOverviewContentProps = {
   resolveJobStatus: (status?: string) => string;
   resolveProviderPercent: (provider: StorageProvider) => number;
   fetchOverview: () => void;
+  /** Org for the unified health view, or null in all-organizations mode. */
+  healthOrgId: string | null;
 };
 
 export default function BackupOverviewContent(props: BackupOverviewContentProps) {
@@ -161,7 +164,7 @@ export default function BackupOverviewContent(props: BackupOverviewContentProps)
     runAllResult, runAllLoading, runAllPreview, runOverdueResult, runOverdueLoading, runAllDialogRef,
     handleRunAllClick, handleRunAllConfirm, handleRunAllCancel, handleRunOverdueClick,
     resolveChangeType, resolveStatIcon, resolveJobStatus, resolveProviderPercent,
-    fetchOverview
+    fetchOverview, healthOrgId
   } = props;
   return (
     <div className="space-y-6">
@@ -200,6 +203,8 @@ export default function BackupOverviewContent(props: BackupOverviewContentProps)
           {error}
         </div>
       )}
+
+      <BackupHealthOverview orgId={healthOrgId} />
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         {stats.length === 0 ? (
