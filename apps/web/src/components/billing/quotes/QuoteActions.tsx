@@ -16,6 +16,7 @@ import { cloneQuote, reviseQuote, deleteQuote, sendQuote, resendQuote, getQuoteS
 import { ConfirmDialog } from '../../shared/ConfirmDialog';
 import { Dialog } from '../../shared/Dialog';
 import AcceptOnBehalfDialog from './AcceptOnBehalfDialog';
+import DeclineOnBehalfDialog from './DeclineOnBehalfDialog';
 import { OrgCombobox, orgComboboxOptions } from '../shared/OrgCombobox';
 import { useShowMargin } from '../billingUi';
 import { useReviseQuote, isRevisable } from './useReviseQuote';
@@ -284,6 +285,7 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
   const [cloning, setCloning] = useState(false);
   const [cloneOpen, setCloneOpen] = useState(false);
   const [acceptOpen, setAcceptOpen] = useState(false);
+  const [declineOpen, setDeclineOpen] = useState(false);
   const [cloneOrgId, setCloneOrgId] = useState(quote.orgId);
   const [cloneTitle, setCloneTitle] = useState('');
   // Header-variant overflow menu (Clone / Delete) so the header cluster stays a
@@ -893,6 +895,11 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
   // not disabled — without the permission, matching the other quote actions.
   const canAcceptOnBehalf = can('quotes', 'accept')
     && (quote.status === 'draft' || quote.status === 'sent' || quote.status === 'viewed');
+  // Recording the customer's decline (#6634) is the same authority, on the
+  // statuses the decline-on-behalf route accepts: a draft was never seen by the
+  // customer, so it is deleted rather than declined.
+  const canDeclineOnBehalf = can('quotes', 'accept')
+    && (quote.status === 'sent' || quote.status === 'viewed');
   const canClone = can('quotes', 'write');
   // Exactly the statuses the server will supersede (SUPERSEDABLE in
   // services/quoteLifecycle.ts). A draft has nothing to replace; accepted and
@@ -905,7 +912,7 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
   const canResend = canShareLink;
 
   // Nothing to show (e.g. a viewer on an issued quote) — render no empty container.
-  if (!canSend && !can('quotes', 'read') && !canClone && !canDelete && !canResend && !canAcceptOnBehalf) return null;
+  if (!canSend && !can('quotes', 'read') && !canClone && !canDelete && !canResend && !canAcceptOnBehalf && !canDeclineOnBehalf) return null;
 
   return (
     <>
@@ -1019,6 +1026,16 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
             className={`${btnBase} border hover:bg-muted disabled:opacity-50`}
           >
             {t('quotes.actions.acceptOnBehalf.button')}
+          </button>
+        )}
+        {canDeclineOnBehalf && (
+          <button
+            type="button"
+            onClick={() => setDeclineOpen(true)}
+            data-testid="quote-decline-on-behalf"
+            className={`${btnBase} border hover:bg-muted disabled:opacity-50`}
+          >
+            {t('quotes.actions.declineOnBehalf.button')}
           </button>
         )}
         {/* Re-send is the primary action on an already-sent quote — the slot the
@@ -1493,6 +1510,14 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
           recipients={recipients}
           autoEmailInvoiceOnAccept={detail.autoEmailInvoiceOnAccept}
           onAccepted={() => { setAcceptOpen(false); refresh(); }}
+        />
+      )}
+      {canDeclineOnBehalf && (
+        <DeclineOnBehalfDialog
+          open={declineOpen}
+          onClose={() => setDeclineOpen(false)}
+          quote={quote}
+          onDeclined={() => { setDeclineOpen(false); refresh(); }}
         />
       )}
       <ConfirmDialog

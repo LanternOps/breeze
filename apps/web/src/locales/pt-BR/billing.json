@@ -1205,6 +1205,18 @@
         "errorContractVariablesUnresolved": "Este contrato ainda precisa de valores para: {{names}}. Feche esta caixa de diálogo, preencha-os abaixo e tente novamente.",
         "errorContractVariablesUnresolvedGeneric": "Este contrato tem variáveis não resolvidas. Feche esta caixa de diálogo, preencha-as abaixo e tente novamente.",
         "errorDepositInvalid": "O depósito não pode ser cobrado como está configurado. Feche esta caixa de diálogo, corrija as configurações de depósito abaixo e tente novamente."
+      },
+      "declineOnBehalf": {
+        "button": "Recusar em nome do cliente",
+        "title": "Registrar a recusa do cliente",
+        "methodLabel": "Como o cliente recusou?",
+        "referenceLabel": "Referência",
+        "referenceHelp": "Onde um revisor encontraria a recusa do cliente: um e-mail e a data, uma anotação de ligação ou um chamado.",
+        "reasonLabel": "Motivo do cliente (opcional)",
+        "consequence": "A proposta será marcada como recusada e não poderá mais ser aceita. Revise-a para enviar uma nova versão ao cliente.",
+        "submit": "Marcar como recusada",
+        "success": "Proposta marcada como recusada.",
+        "error": "Não foi possível registrar a recusa."
       }
     },
     "detail": {

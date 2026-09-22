@@ -203,6 +203,12 @@ There is no undo. The resulting invoice can be voided like any other invoice, bu
 
 The quote detail shows the provenance of an on-behalf acceptance: **"Accepted on behalf of &lt;signer&gt; by &lt;tech&gt; on &lt;date&gt; · &lt;method&gt; · &lt;reference&gt;."** The customer's own portal view shows only **"Accepted on your behalf by &lt;provider&gt; on &lt;date&gt;"** -- the method and reference stay internal. Every on-behalf acceptance also writes a `quote.accepted_on_behalf` [audit log](/features/approval-security/) entry recording the tech, method, reference, signer, and resulting invoice number.
 
+### Declining on Behalf of a Customer
+
+When a customer turns a quote down by phone, email, or letter instead of using the quote page, use **Decline on behalf** on a **sent** or **viewed** quote to record it. The dialog asks how the customer declined (the same list of methods as Accept on behalf), a required **Reference** pointing to where the decline can be found, and an optional reason in the customer's own words. The quote moves to **declined** and can no longer be accepted; **Duplicate & revise** still builds a follow-up proposal from it.
+
+A draft can't be declined on behalf -- the customer never saw it, so delete it instead. Recording a decline requires the same quote **accept** permission as Accept on behalf. No email is sent, and a `quote.declined_on_behalf` [audit log](/features/approval-security/) entry records the tech, method, reference, and reason.
+
 ### Quotes and currency
 
 A quote is priced in the customer organization's billing currency, which it inherits from your partner currency when the organization is created. Retargeting a draft or a clone to an organization that bills in a different currency is refused rather than silently re-pricing the lines -- build the quote in the right organization instead.
@@ -267,7 +273,7 @@ While a quote is still a **draft**, you can move it to a different customer with
 
 ## Permissions
 
-Quote access is governed by role permissions: viewing requires quote read access, creating and editing drafts requires quote write access, and sending requires quote send access. **Accept on behalf** requires the separate quote **accept** permission, which was granted automatically to every role that already held **send** when this action shipped -- revoke it on a role if you want acceptance to be narrower than sending. Financially binding actions are gated accordingly. Assign these through **Settings → Users & Roles**.
+Quote access is governed by role permissions: viewing requires quote read access, creating and editing drafts requires quote write access, and sending requires quote send access. **Accept on behalf** and **Decline on behalf** require the separate quote **accept** permission, which was granted automatically to every role that already held **send** when this action shipped -- revoke it on a role if you want acceptance to be narrower than sending. Financially binding actions are gated accordingly. Assign these through **Settings → Users & Roles**.
 
 ## Related
 

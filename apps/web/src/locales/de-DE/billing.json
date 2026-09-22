@@ -1205,6 +1205,18 @@
         "errorContractVariablesUnresolved": "Für diesen Vertrag fehlen noch Werte für: {{names}}. Schließen Sie diesen Dialog, tragen Sie sie unten ein und versuchen Sie es erneut.",
         "errorContractVariablesUnresolvedGeneric": "Für diesen Vertrag sind noch Variablen ungelöst. Schließen Sie diesen Dialog, tragen Sie sie unten ein und versuchen Sie es erneut.",
         "errorDepositInvalid": "Die Anzahlung kann mit der aktuellen Konfiguration nicht erhoben werden. Schließen Sie diesen Dialog, korrigieren Sie die Anzahlungseinstellungen unten und versuchen Sie es erneut."
+      },
+      "declineOnBehalf": {
+        "button": "Im Auftrag ablehnen",
+        "title": "Ablehnung des Kunden erfassen",
+        "methodLabel": "Wie hat der Kunde abgelehnt?",
+        "referenceLabel": "Referenz",
+        "referenceHelp": "Wo ein Prüfer die Ablehnung des Kunden findet – eine E-Mail mit Datum, eine Gesprächsnotiz oder ein Ticket.",
+        "reasonLabel": "Begründung des Kunden (optional)",
+        "consequence": "Das Angebot wird als abgelehnt markiert und kann nicht mehr angenommen werden. Überarbeiten Sie es, um dem Kunden eine neue Version zu senden.",
+        "submit": "Als abgelehnt markieren",
+        "success": "Angebot als abgelehnt markiert.",
+        "error": "Die Ablehnung konnte nicht erfasst werden."
       }
     },
     "detail": {

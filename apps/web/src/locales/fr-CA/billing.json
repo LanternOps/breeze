@@ -1205,6 +1205,18 @@
         "errorContractVariablesUnresolved": "Ce contrat a encore besoin de valeurs pour : {{names}}. Fermez cette boîte de dialogue, remplissez-les ci-dessous, puis réessayez.",
         "errorContractVariablesUnresolvedGeneric": "Ce contrat contient des variables non résolues. Fermez cette boîte de dialogue, remplissez-les ci-dessous, puis réessayez.",
         "errorDepositInvalid": "L'acompte ne peut pas être perçu tel qu'il est configuré. Fermez cette boîte de dialogue, corrigez les paramètres d'acompte ci-dessous, puis réessayez."
+      },
+      "declineOnBehalf": {
+        "button": "Refuser au nom du client",
+        "title": "Consigner le refus du client",
+        "methodLabel": "Comment a-t-il refusé?",
+        "referenceLabel": "Référence",
+        "referenceHelp": "Où un réviseur trouverait le refus du client : un courriel et sa date, une note d'appel ou un billet.",
+        "reasonLabel": "Sa raison (facultatif)",
+        "consequence": "La proposition sera marquée comme refusée et ne pourra plus être acceptée. Révisez-la pour envoyer une nouvelle version au client.",
+        "submit": "Marquer comme refusée",
+        "success": "Proposition marquée comme refusée.",
+        "error": "Impossible de consigner le refus."
       }
     },
     "detail": {

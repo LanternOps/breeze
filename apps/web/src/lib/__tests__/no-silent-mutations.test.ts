@@ -209,6 +209,9 @@ const TARGET_GLOBS = [
   // because QuoteActions.tsx is already 1551 lines. It issues an invoice — a
   // silent failure here is a tech who believes a deal is closed and is not.
   'src/components/billing/quotes/AcceptOnBehalfDialog.tsx',
+  // Decline on behalf (#6634): a silent failure leaves the quote open while the
+  // tech believes the customer's "no" is on record.
+  'src/components/billing/quotes/DeclineOnBehalfDialog.tsx',
   'src/components/billing/quotes/QuoteDocument.tsx',
   // W03 moved these three into the /agreements area; ContractDocumentsSection
   // was deleted (contract detail now embeds SignedAgreementsPage).
@@ -740,7 +743,8 @@ describe('no silent mutations in targeted set', () => {
     // RecoveryBootstrapTab.tsx: 155 → 157.
     // #6263 W01 adds SecurityScanManager.tsx, ThreatList.tsx, ThreatDetail.tsx: 157 → 160.
     // Accept on behalf adds quotes/AcceptOnBehalfDialog.tsx: 160 → 161.
-    expect(absoluteFiles.length).toBe(161);
+    // Decline on behalf (#6634) adds quotes/DeclineOnBehalfDialog.tsx: 161 → 162.
+    expect(absoluteFiles.length).toBe(162);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

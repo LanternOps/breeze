@@ -1205,6 +1205,18 @@
         "errorContractVariablesUnresolved": "Questo contratto ha ancora bisogno di valori per: {{names}}. Chiudi questa finestra, compilali qui sotto e riprova.",
         "errorContractVariablesUnresolvedGeneric": "Questo contratto ha variabili non risolte. Chiudi questa finestra, compilale qui sotto e riprova.",
         "errorDepositInvalid": "L'acconto non può essere riscosso con la configurazione attuale. Chiudi questa finestra, correggi le impostazioni dell'acconto qui sotto e riprova."
+      },
+      "declineOnBehalf": {
+        "button": "Rifiuta per conto del cliente",
+        "title": "Registra il rifiuto del cliente",
+        "methodLabel": "Come ha rifiutato?",
+        "referenceLabel": "Riferimento",
+        "referenceHelp": "Dove un revisore troverebbe il rifiuto del cliente: un'email con la data, una nota di chiamata o un ticket.",
+        "reasonLabel": "Il suo motivo (facoltativo)",
+        "consequence": "Il preventivo verrà contrassegnato come rifiutato e non potrà più essere accettato. Revisionalo per inviare al cliente una nuova versione.",
+        "submit": "Segna come rifiutato",
+        "success": "Preventivo segnato come rifiutato.",
+        "error": "Impossibile registrare il rifiuto."
       }
     },
     "detail": {

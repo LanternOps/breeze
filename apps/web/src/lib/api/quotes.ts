@@ -20,6 +20,7 @@
 import { fetchWithAuth } from '../../stores/auth';
 import type {
   AcceptQuoteOnBehalfInput,
+  DeclineQuoteOnBehalfInput,
   CreateQuoteInput,
   CreateQuoteOrderInput,
   UpdateQuoteInput,
@@ -386,6 +387,18 @@ export function resendQuote(id: string, opts: SendQuoteOptions = {}): Promise<Re
  *  Callers MUST wrap this in `runAction` — see the module header. */
 export function acceptQuoteOnBehalf(id: string, body: AcceptQuoteOnBehalfInput): Promise<Response> {
   return fetchWithAuth(`/quotes/${id}/accept-on-behalf`, {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify(body),
+  });
+}
+
+/** Record a customer's decline on their behalf (POST
+ *  /quotes/:id/decline-on-behalf, #6634). Gated server-side on quotes:accept;
+ *  only a sent or viewed quote qualifies. Responds with `{ data: <quote> }`.
+ *  Callers MUST wrap this in `runAction` — see the module header. */
+export function declineQuoteOnBehalf(id: string, body: DeclineQuoteOnBehalfInput): Promise<Response> {
+  return fetchWithAuth(`/quotes/${id}/decline-on-behalf`, {
     method: 'POST',
     headers: JSON_HEADERS,
     body: JSON.stringify(body),

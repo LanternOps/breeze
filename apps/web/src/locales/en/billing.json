@@ -1205,6 +1205,18 @@
         "errorContractVariablesUnresolved": "This quote's contract still needs values for: {{names}}. Close this dialog, fill them in below, then try again.",
         "errorContractVariablesUnresolvedGeneric": "This quote's contract has unresolved variables. Close this dialog, fill them in below, then try again.",
         "errorDepositInvalid": "This quote's deposit can't be collected as configured. Close this dialog, fix the deposit settings below, then try again."
+      },
+      "declineOnBehalf": {
+        "button": "Decline on behalf",
+        "title": "Record the customer's decline",
+        "methodLabel": "How did they decline?",
+        "referenceLabel": "Reference",
+        "referenceHelp": "Where a reviewer would find the customer's decline — an email and date, a call note, or a ticket.",
+        "reasonLabel": "Their reason (optional)",
+        "consequence": "The quote will be marked declined and can no longer be accepted. Revise it to send the customer a new version.",
+        "submit": "Mark declined",
+        "success": "Quote marked declined.",
+        "error": "Could not record the decline."
       }
     },
     "detail": {
