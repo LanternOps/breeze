@@ -1,12 +1,28 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 
+// Tracks whether a DB access context (i.e. an open transaction in production)
+// is live, so tests can prove no GitHub fetch runs inside one (#6348): prod's
+// `idle_in_transaction_session_timeout = 1min` kills a transaction held open
+// across the ~37-request tree walk, and the orphaned connection then wedges
+// the next pool caller in active/ClientRead.
+const dbCtx = vi.hoisted(() => ({ depth: 0, labels: [] as Array<string | undefined> }));
+
 vi.mock('../db', () => ({
   db: {
     insert: vi.fn(),
     delete: vi.fn(),
   },
-  withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>, label?: string) => {
+    dbCtx.depth++;
+    dbCtx.labels.push(label);
+    try {
+      return await fn();
+    } finally {
+      dbCtx.depth--;
+    }
+  }),
+  runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
 }));
 
 // Use the REAL Drizzle table (not a stub object) so the ON CONFLICT `set`
@@ -34,7 +50,9 @@ vi.mock('bullmq', () => ({
   Job: vi.fn(),
 }));
 
+import { Worker } from 'bullmq';
 import {
+  createWingetIndexSyncWorker,
   parseWingetTreePaths,
   pickLatestVersion,
   compareWingetVersions,
@@ -42,7 +60,7 @@ import {
   buildTreeUrl,
   WingetRateLimitError,
 } from './wingetIndexSyncWorker';
-import { db } from '../db';
+import { db, withSystemDbAccessContext } from '../db';
 
 // ---------------------------------------------------------------------------
 // parseWingetTreePaths
@@ -586,5 +604,126 @@ describe('runWingetIndexSync — unauthenticated by design', () => {
     // Rows still land, still preserving the stored latest_version.
     expect(upserts.length).toBeGreaterThan(0);
     expect(upserts.every((u) => u.latestVersionSet.includes('latest_version'))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #6348 — no DB context is held open across GitHub fetches
+// ---------------------------------------------------------------------------
+
+describe('runWingetIndexSync — DB context never spans network I/O (#6348)', () => {
+  let fetchDepths: number[];
+  let insertDepths: number[];
+  let deleteDepths: number[];
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.clearAllMocks();
+    dbCtx.depth = 0;
+    dbCtx.labels = [];
+    fetchDepths = [];
+    insertDepths = [];
+    deleteDepths = [];
+    (db as unknown as { insert: unknown }).insert = vi.fn(() => {
+      insertDepths.push(dbCtx.depth);
+      return {
+        values: vi.fn(() => ({ onConflictDoUpdate: vi.fn(async () => undefined) })),
+      };
+    });
+    (db as unknown as { delete: unknown }).delete = vi.fn(() => {
+      deleteDepths.push(dbCtx.depth);
+      return { where: vi.fn(() => ({ returning: vi.fn(async () => [{ id: 'stale' }]) })) };
+    });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  async function runWithTimers<T>(p: Promise<T>): Promise<T> {
+    const settled = p.then(
+      (value) => ({ ok: true as const, value }),
+      (error: unknown) => ({ ok: false as const, error }),
+    );
+    await vi.runAllTimersAsync();
+    const outcome = await settled;
+    if (!outcome.ok) throw outcome.error;
+    return outcome.value;
+  }
+
+  /** Root listing with buckets g + v; bucket g carries `gPackages` packages. */
+  const walkFetch = (gPackages = 1) =>
+    vi.fn(async (url: string) => {
+      fetchDepths.push(dbCtx.depth);
+      if (url.includes('manifests%2Fg')) {
+        return treeResponse({
+          sha: 'g',
+          tree: Array.from({ length: gPackages }, (_, i) => ({
+            path: `Vendor${i}/App/1.0/Vendor${i}.App.yaml`,
+            type: 'blob',
+          })),
+        });
+      }
+      if (url.includes('manifests%2Fv')) {
+        return treeResponse({ sha: 'v', tree: [{ path: 'Vendor/App/1.0/Vendor.App.yaml', type: 'blob' }] });
+      }
+      return treeResponse({ sha: 'root-sha', tree: [{ path: 'g', type: 'tree' }, { path: 'v', type: 'tree' }] });
+    });
+
+  it('runs every GitHub fetch with no DB context open, and every write inside one', async () => {
+    vi.stubGlobal('fetch', walkFetch());
+
+    const summary = await runWithTimers(runWingetIndexSync());
+
+    expect(summary.pruned).toBe(true);
+    expect(fetchDepths).toHaveLength(3);
+    expect(fetchDepths.every((d) => d === 0)).toBe(true);
+    expect(insertDepths.length).toBeGreaterThan(0);
+    expect(insertDepths.every((d) => d === 1)).toBe(true);
+    expect(deleteDepths).toEqual([1]);
+  });
+
+  it('opens one short context per 500-row upsert chunk and a separate one for the prune', async () => {
+    // 1200 packages in g + 1 in v = 1201 complete rows -> 3 chunks.
+    vi.stubGlobal('fetch', walkFetch(1200));
+
+    const summary = await runWithTimers(runWingetIndexSync());
+
+    expect(summary.upserted).toBe(1201);
+    expect(summary.deleted).toBe(1);
+    // 3 upsert chunks + 1 prune, each its own context — never one long one.
+    expect(vi.mocked(withSystemDbAccessContext)).toHaveBeenCalledTimes(4);
+    expect(dbCtx.labels).toEqual([
+      'wingetIndexSync.upsert',
+      'wingetIndexSync.upsert',
+      'wingetIndexSync.upsert',
+      'wingetIndexSync.prune',
+    ]);
+  });
+
+  it('opens no DB context at all when the run is skipped for rate limiting', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => treeResponse({}, { status: 403, headers: { 'x-ratelimit-remaining': '0' } })),
+    );
+
+    const summary = await runWithTimers(runWingetIndexSync());
+
+    expect(summary.skipped).toBe('rate_limited');
+    expect(vi.mocked(withSystemDbAccessContext)).not.toHaveBeenCalled();
+  });
+
+  it('the BullMQ processor does not wrap the walk in a DB context', async () => {
+    vi.stubGlobal('fetch', walkFetch());
+    createWingetIndexSyncWorker();
+    const processor = vi.mocked(Worker).mock.calls.at(-1)![1] as (job: unknown) => Promise<unknown>;
+
+    const summary = (await runWithTimers(processor({ name: 'sync', data: {} }))) as { pruned: boolean };
+
+    expect(summary.pruned).toBe(true);
+    expect(fetchDepths).toHaveLength(3);
+    expect(fetchDepths.every((d) => d === 0)).toBe(true);
+    expect(insertDepths.every((d) => d === 1)).toBe(true);
   });
 });

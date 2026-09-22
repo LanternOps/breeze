@@ -59,10 +59,17 @@ import {
 } from '../services/dbConnectTimeoutStats';
 import { resolveRequestDatabaseConfig } from './requestDatabaseConfig';
 import {
+  WEDGED_BACKEND_PROLOGUE_QUERY_PREFIX,
+  WEDGED_BACKEND_SCANNER_RECLAIM_MIN_AGE_MS,
   getWedgedBackendMinAgeMs,
   getWedgedBackendScanIntervalMs,
+  isWedgedBackendReclaimDisabled,
   isWedgedBackendScanDisabled,
+  isWedgedBackendScannerReclaimDisabled,
+  requestWedgedBackendReclaim,
   scanWedgedBackends,
+  type RequestWedgedBackendReclaimDeps,
+  type WedgedBackendReclaimOutcome,
   type WedgedBackendScanner,
 } from './wedgedBackends';
 
@@ -654,11 +661,35 @@ export function __resetDbPoolHealthMonitorForTests(): void {
 // evidence lives in `pg_stat_activity`, on the server. So the scan runs on its
 // own slower cadence over its own fresh side connection (see db/wedgedBackends.ts).
 //
-// Reported, never acted on: this detector NEVER terminates anything. Killing a
-// backend is the prologue deadline's job, on much stronger evidence (its own
-// budget expired, then two agreeing snapshots). A periodic scan firing
-// `pg_terminate_backend` from a threshold alone is how a monitor becomes an
-// outage.
+// Reclaim (#6348). This detector originally only reported, leaving termination
+// to the prologue deadline. Four occurrences in prod proved that insufficient:
+// the wedged connection was one NO caller was awaiting (its prologue deadline
+// was armed before pool wait/connect, and the reclaim it requested required an
+// `xact_start` older than 15 s that a freshly connected backend never had), so
+// the detector logged the wedge every 5 minutes and nothing ever cleared it.
+//
+// So when the wide scan sees a backend in the prologue shape, the scanner now
+// requests a pass through the SAME `requestWedgedBackendReclaim` path the
+// deadline uses — never a direct `pg_terminate_backend` from this threshold.
+// That keeps every existing safety bound: the narrow server-side predicate
+// (same role + db, client backend, active/ClientRead, breeze prologue
+// `set_config` only), the two-snapshot "has not moved" confirmation, the
+// per-pass cap, single-flight, and the interval floor. When the scanner starts
+// its own pass, the age clock is floored at 5 minutes regardless of the
+// detector's own threshold. If a prologue-deadline pass is already in flight,
+// the scanner joins it instead (single-flight), and that pass keeps its own
+// shorter deadline-derived floor. That is no weaker than before this change,
+// because the deadline path already ran that pass independently. Kill-switch: DB_WEDGED_BACKEND_SCANNER_RECLAIM_DISABLED (and the
+// global DB_WEDGED_BACKEND_RECLAIM_DISABLED).
+
+/**
+ * What the scanner did about reclaim on this pass.
+ *  - `not-needed`: no wedged row had the prologue shape (or the scan failed).
+ *  - `disabled`: a kill-switch is set.
+ *  - `declined`: the reclaimer's interval floor refused the request.
+ *  - `ran`: a pass ran (or an in-flight one was joined); see `reclaim`.
+ */
+export type WedgedBackendScannerReclaimStatus = 'not-needed' | 'disabled' | 'declined' | 'ran';
 
 export interface WedgedBackendObservation {
   /** Backends matching the pathological predicate, or null when the scan failed. */
@@ -672,6 +703,10 @@ export interface WedgedBackendObservation {
   /** Scan failure message, or null. */
   error: string | null;
   at: number;
+  /** Scanner-driven reclaim decision for this pass (#6348). */
+  reclaimStatus: WedgedBackendScannerReclaimStatus;
+  /** Outcome of the reclaim pass when `reclaimStatus === 'ran'`, else null. */
+  reclaim: WedgedBackendReclaimOutcome | null;
 }
 
 let lastWedgedObservation: WedgedBackendObservation | null = null;
@@ -708,6 +743,77 @@ export interface RunWedgedBackendScanDeps {
   minAgeMs?: number;
   now?: number;
   throttleMs?: number;
+  /**
+   * Overrides for the scanner-driven reclaim pass (tests). The reclaim's
+   * snapshots default to `scan` above; `minAgeMs` is not overridable here — it
+   * is always at least {@link WEDGED_BACKEND_SCANNER_RECLAIM_MIN_AGE_MS}.
+   */
+  reclaim?: Omit<RequestWedgedBackendReclaimDeps, 'minAgeMs'>;
+}
+
+/**
+ * Scanner-driven reclaim (#6348). Never throws: `requestWedgedBackendReclaim`
+ * and the pass it runs are both non-throwing, and the outcome is reported, not
+ * raised.
+ */
+async function reclaimFromScan(
+  rows: readonly { query: string }[],
+  detectorMinAgeMs: number,
+  deps: RunWedgedBackendScanDeps,
+): Promise<{ status: WedgedBackendScannerReclaimStatus; outcome: WedgedBackendReclaimOutcome | null }> {
+  // Only spend a side connection when something wedged actually looks like the
+  // prologue. The server-side predicate re-checks this; this is just the gate.
+  if (
+    !rows.some(
+      (row) => typeof row.query === 'string' && row.query.startsWith(WEDGED_BACKEND_PROLOGUE_QUERY_PREFIX),
+    )
+  ) {
+    return { status: 'not-needed', outcome: null };
+  }
+  if (isWedgedBackendScannerReclaimDisabled() || isWedgedBackendReclaimDisabled()) {
+    return { status: 'disabled', outcome: null };
+  }
+
+  const pass = requestWedgedBackendReclaim({
+    scan: deps.scan,
+    ...deps.reclaim,
+    minAgeMs: Math.max(detectorMinAgeMs, WEDGED_BACKEND_SCANNER_RECLAIM_MIN_AGE_MS),
+  });
+  if (pass === null) {
+    console.warn(
+      '[db-wedged-backend] scanner reclaim declined (inside the retry floor); '
+        + 'the next scan will request again.',
+    );
+    return { status: 'declined', outcome: null };
+  }
+
+  const outcome = await pass;
+  if (outcome.error !== null) {
+    console.warn('[db-wedged-backend] scanner reclaim pass failed:', outcome.error);
+    if (
+      claimDbPoolHealthCaptureSlot(
+        'wedged-backend-reclaim-failed',
+        deps.now ?? Date.now(),
+        deps.throttleMs ?? getDbPoolHealthCaptureThrottleMs(),
+      )
+    ) {
+      try {
+        captureMessage('[db-wedged-backend] reclamation pass failed (#6048)', {
+          eventCode: 'db_wedged_backend_reclaim_failed',
+          tags: { db_pool_health_verdict: 'wedged-backend-reclaim-failed' },
+        });
+      } catch (captureErr) {
+        console.error('[db-wedged-backend] failed to report reclaim failure to Sentry:', captureErr);
+      }
+    }
+  } else {
+    console.warn(
+      `[db-wedged-backend] scanner reclamation pass (#6348): scanned=${outcome.scanned} `
+        + `confirmed=${outcome.confirmed} terminated=[${outcome.terminated.join(',')}] `
+        + `cappedAt=${outcome.cappedAt ?? 'none'}`,
+    );
+  }
+  return { status: 'ran', outcome };
 }
 
 /**
@@ -733,6 +839,8 @@ export async function runWedgedBackendScan(
       minAgeMs,
       error: null,
       at: now,
+      reclaimStatus: 'not-needed',
+      reclaim: null,
     };
     lastWedgedObservation = observation;
     lastWedgedScanSuccessAt = now;
@@ -768,6 +876,10 @@ export async function runWedgedBackendScan(
           console.error('[db-wedged-backend] failed to report to Sentry:', captureErr);
         }
       }
+
+      const { status, outcome } = await reclaimFromScan(rows, minAgeMs, deps);
+      observation.reclaimStatus = status;
+      observation.reclaim = outcome;
     }
     return observation;
   } catch (err) {
@@ -779,6 +891,8 @@ export async function runWedgedBackendScan(
       minAgeMs,
       error: err instanceof Error ? err.message : String(err),
       at: now,
+      reclaimStatus: 'not-needed',
+      reclaim: null,
     };
     // Do NOT leave the previous observation standing: a stale count of 0
     // republished on every scrape is an affirmative wrong answer about a

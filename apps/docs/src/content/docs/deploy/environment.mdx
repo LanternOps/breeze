@@ -66,7 +66,8 @@ pointing at a database the api container can actually reach.
 | Variable | Default | Required | Description |
 |---|---|---|---|
 | `DB_ACCESS_CONTEXT_PROLOGUE_TIMEOUT_MS` | `15000` | | Timeout for the connection-setup work Breeze runs at the start of each request's database access (setting the row-level-security context). The request work that follows is never bounded by it. `0` disables the timeout; positive values below `1000` are clamped to `1000`. |
-| `DB_WEDGED_BACKEND_SCAN_DISABLED` | unset (scanning on) | | Set to disable the periodic scan that detects database connections stuck at session start. Detection only — it never terminates anything by itself. |
+| `DB_WEDGED_BACKEND_SCAN_DISABLED` | unset (scanning on) | | Set to disable the periodic scan that detects database connections stuck at session start. When the scan finds a connection stuck on the session-setup statement for at least 5 minutes, it requests a reclamation pass (subject to all the reclamation limits below). |
+| `DB_WEDGED_BACKEND_SCANNER_RECLAIM_DISABLED` | unset (scanner reclaim on) | | Set to make the periodic scan report stuck connections without requesting reclamation. Reclamation after a session-setup timeout still runs unless `DB_WEDGED_BACKEND_RECLAIM_DISABLED` is set. |
 | `DB_WEDGED_BACKEND_SCAN_INTERVAL_MS` | `300000` (5 min) | | How often the wedged-backend scan runs. |
 | `DB_WEDGED_BACKEND_MIN_AGE_MS` | `300000` (5 min) | | How long a backend must have been stuck before the scan reports it. |
 | `DB_WEDGED_BACKEND_RECLAIM_DISABLED` | unset (reclamation on) | | Set to detect wedged backends without terminating them. |
