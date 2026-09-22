@@ -197,6 +197,30 @@ describe('backup retention', () => {
 
     expect(expiresAt?.toISOString()).toBe('2026-05-30T00:00:00.000Z');
   });
+
+  // #5400: retentionDays is a FLOOR, not silently overridden when a shorter
+  // GFS tier also matches. Decision (2026-09-22): computeExpiresAt takes the
+  // maximum of the GFS-tier window and retentionDays.
+  it('uses retentionDays as a floor when it is longer than the matching GFS tier (#5400)', () => {
+    const expiresAt = computeExpiresAt(
+      new Date('2026-03-31T00:00:00.000Z'),
+      { daily: true },
+      { retentionDays: 14, daily: 7 },
+    );
+
+    expect(expiresAt?.toISOString()).toBe('2026-04-14T00:00:00.000Z');
+  });
+
+  it('still lets a longer GFS tier win over a shorter retentionDays (floor, not ceiling)', () => {
+    const expiresAt = computeExpiresAt(
+      new Date('2026-03-31T00:00:00.000Z'),
+      { daily: true, weekly: true },
+      { retentionDays: 3, daily: 7, weekly: 4 },
+    );
+
+    // weekly: 4 * 7 = 28 days > retentionDays floor of 3
+    expect(expiresAt?.toISOString()).toBe('2026-04-28T00:00:00.000Z');
+  });
 });
 
 describe('cleanupExpiredSnapshots -- pins + retirement (D18 W01 section 3.2/3.3/3.7)', () => {

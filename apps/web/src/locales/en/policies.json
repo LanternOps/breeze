@@ -442,6 +442,7 @@
         "maxVersions": "Max Versions",
         "gFSRetention": "GFS Retention",
         "keepLongerRunningRestorePointsForGrandfather": "Keep longer-running restore points for grandfather-father-son retention.",
+        "dailyRetentionBelowFloor": "Daily retention is set to {{gfsDays}} days, shorter than the {{effectiveDays}}-day retention floor. This snapshot's expiry is set to {{effectiveDays}} days, not {{gfsDays}} -- expiry never shortens below the floor. A separate max-versions limit can still remove older snapshots sooner.",
         "daily2": "Daily",
         "weekly2": "Weekly",
         "monthly2": "Monthly",

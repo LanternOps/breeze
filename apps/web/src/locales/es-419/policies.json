@@ -442,6 +442,7 @@
         "maxVersions": "Versiones máximas",
         "gFSRetention": "GFS Retención",
         "keepLongerRunningRestorePointsForGrandfather": "Mantenga puntos de restauración de mayor duración para la retención de abuelo, padre e hijo.",
+        "dailyRetentionBelowFloor": "La retención diaria está configurada en {{gfsDays}} días, menos que el piso de retención de {{effectiveDays}} días. El vencimiento de esta instantánea se fija en {{effectiveDays}} días, no en {{gfsDays}} -- el vencimiento nunca baja del piso. Un límite independiente de versiones máximas aún puede eliminar instantáneas anteriores antes.",
         "daily2": "A diario",
         "weekly2": "Semanalmente",
         "monthly2": "Mensual",
