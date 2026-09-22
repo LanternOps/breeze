@@ -106,6 +106,9 @@ vi.mock("../settings/TdSynnexEcExpressPanel", () => ({
 vi.mock("./StripePaymentsIntegration", () => ({
   default: () => <div data-testid="stub-stripe-payments" />,
 }));
+vi.mock("./BackupProvidersIntegration", () => ({
+  default: () => <div data-testid="stub-backup" />,
+}));
 
 // The Accounting tab hosts the QuickBooks mapping workbench, which owns a
 // NESTED tab hash (#quickbooks-customers / #quickbooks-items) inside the page's
@@ -504,6 +507,20 @@ describe("IntegrationsPage — per-tab documentation link", () => {
     expect(openMock).toHaveBeenLastCalledWith(
       "https://docs.breezermm.com/features/unifi-integration/",
     );
+  });
+
+  it("renders the Backup tab from the #backup deep link", async () => {
+    window.location.hash = "#backup";
+    render(<IntegrationsPage />);
+    expect(await screen.findByTestId("stub-backup")).toBeInTheDocument();
+  });
+
+  it("opens the backup docs page from the Backup tab", async () => {
+    window.location.hash = "#backup";
+    render(<IntegrationsPage />);
+    await screen.findByTestId("stub-backup");
+    fireEvent.click(screen.getByTestId("integrations-docs-link"));
+    expect(openMock).toHaveBeenCalledWith(expect.stringContaining("/features/backup-provider-integrations/"));
   });
 });
 

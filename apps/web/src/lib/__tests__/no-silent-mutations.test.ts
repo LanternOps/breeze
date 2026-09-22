@@ -428,6 +428,13 @@ const TARGET_GLOBS = [
   // Library Recommended strip (#6367 W05c2 Task 13): the feature-link write
   // that attaches built-ins to a policy.
   'src/components/monitoring/RecommendedMonitors.tsx',
+  // Backup provider integration (W03, #6011): these three write partner-level
+  // connector credentials and the customer→org mapping that decides whose
+  // backup data lands in whose tenant. A silent failure here is invisible until
+  // a customer's devices quietly stop appearing.
+  'src/components/integrations/BackupProvidersIntegration.tsx',
+  'src/components/integrations/BackupProviderConnectionCard.tsx',
+  'src/components/integrations/BackupProviderCustomerMapping.tsx',
 ];
 
 const absoluteFiles: string[] = TARGET_GLOBS.map((rel) => resolve(WEB_ROOT, '..', rel));
@@ -798,7 +805,8 @@ describe('no silent mutations in targeted set', () => {
     // #3531 adds ApiKeysPage, QuarantinedDevices, AutomationsPage, PoliciesPage: 174 → 178.
     // #3531 sweep adds BaselineList, RemoteToolsPage, NetworkBaselinesPanel,
     // sensitiveData/PoliciesTab, EnrollmentKeyManager, UsersPage, WebhooksPage: 178 → 185.
-    expect(absoluteFiles.length).toBe(185);
+    // Backup provider integration (W03 #6011) adds three adopters: 185 → 188.
+    expect(absoluteFiles.length).toBe(188);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }
