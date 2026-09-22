@@ -43,9 +43,10 @@ promotion links to `#anomalies/<episodeId>` instead of the bucket id.
 - Treat W01 + W02 deliverables as already merged and **import, never redefine**, their shared
   types from `@breeze/shared` (`packages/shared/src/types/metricAnomalyEpisodes.ts`; pattern:
   `apps/web/src/components/devices/DeviceAiActivitySignal.tsx:5`, `DeviceScriptHistory.tsx:25,28`):
-  W01 `MetricAnomalyStatus`, `MetricAnomalyEpisodeStatus`, `EpisodeCloseReason`,
-  `AttributionDimension`, `AttributionSnapshot`, `EpisodeAttribution`; W02 `MetricAnomalyEpisodeDto`
-  (incl. `rangeMin`/`rangeMax: number | null`, `peakAnomalyId: string | null`),
+  W01 `MetricAnomalyStatus`, `MetricAnomalyEpisodeStatus`, `EpisodeCloseReason` (incl.
+  `detection_off`), `AttributionDimension`, `AttributionSnapshot`, `EpisodeAttribution`; W02
+  `MetricAnomalyEpisodeDto` (incl. `rangeMin`/`rangeMax: number | null`, `peakAnomalyId: string | null`,
+  `deviceLastSeenAt: string | null`),
   `MetricAnomalyEpisodeMemberDto`, `MetricAnomalyEpisodeDetailDto`,
   `MetricAnomalyEpisodeListResponse`, `EpisodeAction`, `EPISODE_DETAIL_MEMBER_LIMIT`.
 - The endpoints are registered on the existing `anomaliesRoutes` (`apps/api/src/routes/devices/anomalies.ts`,
@@ -61,6 +62,12 @@ promotion links to `#anomalies/<episodeId>` instead of the bucket id.
     `{ data: MetricAnomalyEpisodeDto; meta: { alertId: string | null; alertResolved: boolean; labelledMembers: number } }`;
     `409 { error, reason }` when the episode changed underneath (closed, already promoted, not
     snoozed) — `runAction` toasts `error`; the card then asks the panel to refetch.
+    The card sends only `{ action }`: W02's `resolveAlert` default (`true`) applies, so **Resolve and
+    Dismiss on a promoted episode both resolve its linked alert** (second quorum A7). No UI change is
+    needed for that; the existing `JSON.stringify({ action: 'dismiss' })` body assertion in Task 4 pins
+    that the card never overrides the default.
+  - Legacy `GET /devices/:id/anomalies?status=all&limit=100` → `{ data: [...] }` (per-row serializer):
+    read only by the panel's A9 fallback when a `ref` resolves to no episode.
 
 ## Spec deviations / assumptions (flag for review)
 
@@ -78,6 +85,14 @@ promotion links to `#anomalies/<episodeId>` instead of the bucket id.
    `anomalyIdFromHash` in `DeviceDetails.tsx`, and overloading it with a second segment would need a
    parser change outside this plan's stated scope (`DeviceDetails.tsx` mounts, listed as read-only
    context). Reversible, low-risk, noted per CLAUDE.md's "proceed without asking" guidance.
+4. **Second-quorum states (A9).** (a) While any open episode is shown and
+   `document.visibilityState === 'visible'`, the panel re-fetches its list every 60 s without the
+   loading spinner (interval cleared on unmount and when no open episode remains). (b) When a `ref`
+   is set and W02 answers `focusedEpisodeId: null` (a detection older than episode grouping, or never
+   assembled), the panel fetches the legacy per-row list and renders that one row read-only with the
+   note "This detection predates episode grouping". (c) `expired_offline` reads "expired: device not
+   seen since {time}" from W02's `deviceLastSeenAt`; `detection_off` (A5) reads "closed: detection
+   turned off".
 
 ---
 
@@ -1052,7 +1067,7 @@ function baseEpisode(overrides: Partial<MetricAnomalyEpisodeDto> = {}): MetricAn
     resolvedAt: null, resolvedByUserId: null, note: null,
     createdAt: '2026-06-18T22:35:00.000Z', updatedAt: '2026-06-18T23:55:00.000Z',
     durationSeconds: 4800, ongoing: true, promoted: false, snoozed: false,
-    rangeMin: 86_000_000, rangeMax: 153_000_000, peakAnomalyId: 'anomaly-peak',
+    rangeMin: 86_000_000, rangeMax: 153_000_000, peakAnomalyId: 'anomaly-peak', deviceLastSeenAt: null,
     ...overrides,
   } as MetricAnomalyEpisodeDto;
 }
@@ -1126,6 +1141,29 @@ describe('AnomalyEpisodeCard', () => {
     await waitFor(() => expect(onStale).toHaveBeenCalledTimes(1));
     expect(onChanged).not.toHaveBeenCalled();
     expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', message: 'This anomaly has already closed' }));
+  });
+
+  it('an expired_offline chip says when the device was last seen (A9)', async () => {
+    render(
+      <AnomalyEpisodeCard
+        deviceId="dev-1"
+        episode={baseEpisode({ status: 'resolved', closeReason: 'expired_offline', ongoing: false, deviceLastSeenAt: '2026-06-17T09:00:00.000Z' })}
+        onChanged={vi.fn()}
+      />,
+    );
+    const chip = await screen.findByTestId('anomaly-episode-chip-closed');
+    expect(chip.textContent).toMatch(/^expired: device not seen since \S/);
+    expect(chip.textContent).not.toContain('–'); // no window range on an expired chip
+  });
+
+  it('an expired_offline chip without a last-seen time falls back to the plain label', async () => {
+    render(<AnomalyEpisodeCard deviceId="dev-1" episode={baseEpisode({ status: 'resolved', closeReason: 'expired_offline', ongoing: false })} onChanged={vi.fn()} />);
+    expect((await screen.findByTestId('anomaly-episode-chip-closed')).textContent).toBe('expired: device not seen');
+  });
+
+  it('a detection_off close reads "closed: detection turned off" (A5)', async () => {
+    render(<AnomalyEpisodeCard deviceId="dev-1" episode={baseEpisode({ status: 'resolved', closeReason: 'detection_off', ongoing: false })} onChanged={vi.fn()} />);
+    expect((await screen.findByTestId('anomaly-episode-chip-closed')).textContent).toBe('closed: detection turned off');
   });
 
   it('shows Stop snoozing for a dismissed-and-snoozed episode instead of Dismiss/Resolve', async () => {
@@ -1219,6 +1257,7 @@ import { useTranslation } from 'react-i18next';
 import {
   AlertTriangle, CheckCircle, Clock, ExternalLink, RefreshCw, XCircle,
 } from 'lucide-react';
+import type { TFunction } from 'i18next';
 import type { EpisodeAction, MetricAnomalyEpisodeDto } from '@breeze/shared';
 import { ActionError, runAction, handleActionError } from '../../lib/runAction';
 import { fetchWithAuth } from '../../stores/auth';
@@ -1249,12 +1288,25 @@ const CLOSE_REASON_LABEL_KEY: Record<string, string> = {
   cleared: 'deviceAnomaliesPanel.closeReason.cleared',
   expired_offline: 'deviceAnomaliesPanel.closeReason.expiredOffline',
   expired_no_data: 'deviceAnomaliesPanel.closeReason.expiredNoData',
+  detection_off: 'deviceAnomaliesPanel.closeReason.detectionOff',
   user: 'deviceAnomaliesPanel.closeReason.user',
   snoozed: 'deviceAnomaliesPanel.closeReason.snoozed',
 };
 
 function formatWhen(value: string): string {
   return formatDateTime(new Date(value), { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+/** Closed-chip text. Expiry and detection_off stand alone; the rest show the window. */
+function closedChipLabel(episode: MetricAnomalyEpisodeDto, t: TFunction): string {
+  if (episode.closeReason === 'expired_offline' && episode.deviceLastSeenAt) {
+    // A9: W02's deviceLastSeenAt says how long the device has been silent.
+    return t('deviceAnomaliesPanel.closeReason.expiredOfflineSince', { when: formatWhen(episode.deviceLastSeenAt) });
+  }
+  if (episode.closeReason === 'expired_offline' || episode.closeReason === 'expired_no_data' || episode.closeReason === 'detection_off') {
+    return t(CLOSE_REASON_LABEL_KEY[episode.closeReason]!);
+  }
+  return `${formatWhen(episode.firstSeenAt)} – ${formatWhen(episode.lastSeenAt)} · ${t(CLOSE_REASON_LABEL_KEY[episode.closeReason ?? 'user']!)}`;
 }
 
 export default function AnomalyEpisodeCard({
@@ -1328,9 +1380,7 @@ export default function AnomalyEpisodeCard({
           </span>
         ) : (
           <span data-testid="anomaly-episode-chip-closed" className="inline-flex items-center gap-1 rounded-full border bg-muted px-2 py-0.5 text-muted-foreground">
-            {episode.closeReason === 'expired_offline' || episode.closeReason === 'expired_no_data'
-              ? t(CLOSE_REASON_LABEL_KEY[episode.closeReason]!)
-              : `${formatWhen(episode.firstSeenAt)} – ${formatWhen(episode.lastSeenAt)} · ${t(CLOSE_REASON_LABEL_KEY[episode.closeReason ?? 'user']!)}`}
+            {closedChipLabel(episode, t)}
           </span>
         )}
         {episode.recurrenceCount >= 1 && (
@@ -1479,7 +1529,7 @@ EOF
 
 ```typescript
 // apps/web/src/components/devices/DeviceAnomaliesPanel.test.tsx
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import DeviceAnomaliesPanel from './DeviceAnomaliesPanel';
 import { fetchWithAuth } from '../../stores/auth';
@@ -1509,8 +1559,13 @@ function episode(id: string, overrides: Record<string, unknown> = {}) {
     recurrenceCount: 0, attribution: null, linkedAlertId: null, snoozedUntil: null, resolvedAt: null, resolvedByUserId: null,
     note: null, createdAt: '2026-06-18T12:00:00.000Z', updatedAt: '2026-06-18T12:10:00.000Z',
     durationSeconds: 600, ongoing: true, promoted: false, snoozed: false, rangeMin: 90, rangeMax: 96.4,
+    peakAnomalyId: `${id}-peak`, deviceLastSeenAt: null,
     ...overrides,
   };
+}
+
+function setVisibility(state: 'visible' | 'hidden') {
+  Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => state });
 }
 
 describe('DeviceAnomaliesPanel', () => {
@@ -1588,6 +1643,8 @@ describe('DeviceAnomaliesPanel', () => {
     render(<DeviceAnomaliesPanel deviceId="dev-1" focusedAnomalyId="anomaly-77" />);
     expect(await screen.findByTestId('anomaly-episode-episode-9')).toHaveClass('ring-2');
     expect(screen.getByTestId('anomaly-episode-episode-10')).not.toHaveClass('ring-2');
+    // The ref resolved, so the legacy fallback (A9) is never consulted.
+    expect(fetchWithAuthMock).not.toHaveBeenCalledWith(expect.stringContaining('/anomalies?'));
   });
 
   it('an unknown ref rings nothing (focusedEpisodeId null)', async () => {
@@ -1602,6 +1659,92 @@ describe('DeviceAnomaliesPanel', () => {
 
     render(<DeviceAnomaliesPanel deviceId="dev-1" focusedAnomalyId="gone-1" />);
     expect(await screen.findByTestId('anomaly-episode-episode-1')).not.toHaveClass('ring-2');
+    // A9 fallback was tried (legacy list 404s here) and renders nothing.
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledWith('/devices/dev-1/anomalies?status=all&limit=100'));
+    expect(screen.queryByTestId('anomaly-legacy-detection')).toBeNull();
+  });
+
+  it('a ref that resolves to no episode shows the legacy detection read-only, with a note (A9)', async () => {
+    fetchWithAuthMock.mockImplementation((input) => {
+      const url = String(input);
+      if (url === '/config/ml-feature-flags') return Promise.resolve(flagsResponse);
+      if (url === '/devices/dev-1/anomaly-episodes?status=all&limit=100&ref=anomaly-old') {
+        return Promise.resolve(makeJsonResponse({ data: [], focusedEpisodeId: null }));
+      }
+      if (url === '/devices/dev-1/anomalies?status=all&limit=100') {
+        return Promise.resolve(makeJsonResponse({
+          data: [
+            { id: 'anomaly-other', metricName: 'ram_percent', anomalyType: 'spike', status: 'open', windowStart: '2026-06-01T09:00:00.000Z', windowEnd: '2026-06-01T09:05:00.000Z', observedValue: 91, baselineValue: 50 },
+            { id: 'anomaly-old', metricName: 'cpu_percent', anomalyType: 'spike', status: 'promoted', windowStart: '2026-06-01T10:00:00.000Z', windowEnd: '2026-06-01T10:05:00.000Z', observedValue: 97, baselineValue: 40 },
+          ],
+        }));
+      }
+      return Promise.resolve(makeJsonResponse({ error: `unexpected ${url}` }, false, 404));
+    });
+
+    render(<DeviceAnomaliesPanel deviceId="dev-1" focusedAnomalyId="anomaly-old" />);
+
+    const legacy = await screen.findByTestId('anomaly-legacy-detection');
+    expect(legacy.textContent).toContain('This detection predates episode grouping.');
+    expect(legacy.textContent).toContain('97.0%');
+    expect(legacy.textContent).not.toContain('91.0%');
+    expect(within(legacy).queryByRole('button')).toBeNull(); // read-only
+  });
+
+  it('polls every 60 s while an open episode is shown and the tab is visible; stops when hidden and on unmount (A9)', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    setVisibility('visible');
+    const listUrl = '/devices/dev-1/anomaly-episodes?status=open&limit=25';
+    try {
+      fetchWithAuthMock.mockImplementation((input) => {
+        const url = String(input);
+        if (url === '/config/ml-feature-flags') return Promise.resolve(flagsResponse);
+        if (url === listUrl) return Promise.resolve(makeJsonResponse({ data: [episode('episode-1')], focusedEpisodeId: null }));
+        return Promise.resolve(makeJsonResponse({ error: `unexpected ${url}` }, false, 404));
+      });
+      const listCalls = () => fetchWithAuthMock.mock.calls.filter(([url]) => String(url) === listUrl).length;
+
+      const { unmount } = render(<DeviceAnomaliesPanel deviceId="dev-1" />);
+      await screen.findByTestId('anomaly-episode-episode-1');
+      expect(listCalls()).toBe(1);
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+      expect(listCalls()).toBe(2);
+      // Silent refresh: the card never gives way to the loading spinner.
+      expect(screen.getByTestId('anomaly-episode-episode-1')).toBeTruthy();
+
+      setVisibility('hidden');
+      await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+      expect(listCalls()).toBe(2);
+
+      setVisibility('visible');
+      unmount();
+      await act(async () => { await vi.advanceTimersByTimeAsync(120_000); });
+      expect(listCalls()).toBe(2);
+    } finally {
+      setVisibility('visible');
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not poll when no open episode is shown (A9)', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const listUrl = '/devices/dev-1/anomaly-episodes?status=open&limit=25';
+    try {
+      fetchWithAuthMock.mockImplementation((input) => {
+        const url = String(input);
+        if (url === '/config/ml-feature-flags') return Promise.resolve(flagsResponse);
+        if (url === listUrl) return Promise.resolve(makeJsonResponse({ data: [], focusedEpisodeId: null }));
+        if (url === '/devices/dev-1/anomaly-episodes?status=closed&limit=1') return Promise.resolve(makeJsonResponse({ data: [], focusedEpisodeId: null }));
+        return Promise.resolve(makeJsonResponse({ error: `unexpected ${url}` }, false, 404));
+      });
+      render(<DeviceAnomaliesPanel deviceId="dev-1" />);
+      await screen.findByText('No open anomalies');
+      await act(async () => { await vi.advanceTimersByTimeAsync(120_000); });
+      expect(fetchWithAuthMock.mock.calls.filter(([url]) => String(url) === listUrl)).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('compact mode caps at 3 open episodes and fetches limit=3', async () => {
@@ -1672,7 +1815,9 @@ import type { MetricAnomalyEpisodeDto, MetricAnomalyEpisodeListResponse } from '
 import { fetchWithAuth } from '../../stores/auth';
 import { useMlFeatureFlags } from '../../hooks/useMlFeatureFlags';
 import { useTranslation } from 'react-i18next';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 import AnomalyEpisodeCard from './AnomalyEpisodeCard';
+import { formatMetricValue } from './anomalyEpisodeSentence';
 import '../../lib/i18n';
 
 type DeviceAnomaliesPanelProps = {
@@ -1682,6 +1827,19 @@ type DeviceAnomaliesPanelProps = {
 };
 
 type Filter = 'open' | 'closed' | 'all';
+
+/** A9: refresh cadence while an open episode is on screen and the tab is visible. */
+const EPISODE_POLL_MS = 60_000;
+
+/** The fields the A9 fallback reads from the legacy per-row serializer (routes/devices/anomalies.ts). */
+type LegacyAnomalyRow = {
+  id: string;
+  metricName: string;
+  anomalyType: string;
+  windowStart: string;
+  observedValue: number;
+  baselineValue: number | null;
+};
 
 export default function DeviceAnomaliesPanel({
   deviceId, compact = false, focusedAnomalyId,
@@ -1695,28 +1853,57 @@ export default function DeviceAnomaliesPanel({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [hasClosed, setHasClosed] = useState(false);
+  // A9: a `ref` W02 could not resolve to an episode (a detection that predates
+  // episode grouping) is shown read-only from the legacy per-row list.
+  const [legacyRow, setLegacyRow] = useState<LegacyAnomalyRow | null>(null);
   const anomaliesDisabled = mlFlags.isDisabled('ml.anomalies.enabled');
 
   const effectiveFilter: Filter = focusedAnomalyId ? 'all' : filter;
   const limit = focusedAnomalyId ? 100 : compact ? 3 : 25;
 
-  const fetchEpisodes = useCallback(async () => {
-    setLoading(true);
-    setError(undefined);
+  const loadLegacyRow = useCallback(async (anomalyId: string) => {
+    try {
+      const response = await fetchWithAuth(`/devices/${deviceId}/anomalies?status=all&limit=100`);
+      if (!response.ok) {
+        setLegacyRow(null);
+        return;
+      }
+      const json = (await response.json()) as { data?: LegacyAnomalyRow[] };
+      setLegacyRow(Array.isArray(json?.data) ? json.data.find((row) => row.id === anomalyId) ?? null : null);
+    } catch {
+      setLegacyRow(null); // best-effort; the episode list still renders
+    }
+  }, [deviceId]);
+
+  // `silent` (the A9 poll) keeps the current list on screen: no spinner, and a
+  // failed refresh keeps the last good list instead of replacing it with an error.
+  const fetchEpisodes = useCallback(async (options: { silent?: boolean } = {}) => {
+    if (!options.silent) {
+      setLoading(true);
+      setError(undefined);
+    }
     try {
       const params = new URLSearchParams({ status: effectiveFilter, limit: String(limit) });
       if (focusedAnomalyId) params.set('ref', focusedAnomalyId);
       const response = await fetchWithAuth(`/devices/${deviceId}/anomaly-episodes?${params.toString()}`);
       if (!response.ok) throw new Error(t('deviceAnomaliesPanel.failedToLoadMetricAnomalies'));
       const json = (await response.json()) as Partial<MetricAnomalyEpisodeListResponse>;
+      const resolved = typeof json?.focusedEpisodeId === 'string' ? json.focusedEpisodeId : null;
       setEpisodes(Array.isArray(json?.data) ? json.data : []);
-      setFocusedEpisodeId(typeof json?.focusedEpisodeId === 'string' ? json.focusedEpisodeId : null);
+      setFocusedEpisodeId(resolved);
+      if (focusedAnomalyId && resolved === null) {
+        await loadLegacyRow(focusedAnomalyId);
+      } else {
+        setLegacyRow(null);
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('deviceAnomaliesPanel.failedToLoadMetricAnomalies'));
+      if (!options.silent) {
+        setError(err instanceof Error ? err.message : t('deviceAnomaliesPanel.failedToLoadMetricAnomalies'));
+      }
     } finally {
-      setLoading(false);
+      if (!options.silent) setLoading(false);
     }
-  }, [deviceId, effectiveFilter, limit, focusedAnomalyId, t]);
+  }, [deviceId, effectiveFilter, limit, focusedAnomalyId, loadLegacyRow, t]);
 
   const checkHasClosed = useCallback(async () => {
     try {
@@ -1752,6 +1939,18 @@ export default function DeviceAnomaliesPanel({
     () => (compact ? episodes.filter((e) => e.ongoing).slice(0, 3) : episodes),
     [compact, episodes],
   );
+
+  // A9: an ongoing episode changes under the tech's eyes (it extends, clears,
+  // or gets closed by a colleague). Refresh every 60 s while one is shown and
+  // the tab is visible; a hidden tab skips the tick, and unmount clears it.
+  const showsOpenEpisode = visible.some((e) => e.ongoing);
+  useEffect(() => {
+    if (!showsOpenEpisode) return;
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') void fetchEpisodes({ silent: true });
+    }, EPISODE_POLL_MS);
+    return () => window.clearInterval(timer);
+  }, [showsOpenEpisode, fetchEpisodes]);
 
   function handleChanged(updated: MetricAnomalyEpisodeDto) {
     setEpisodes((current) => {
@@ -1832,6 +2031,22 @@ export default function DeviceAnomaliesPanel({
           </div>
         )}
       </div>
+
+      {legacyRow && (
+        // A9: read-only — the web UI offers no per-row actions (spec §8.4).
+        <div data-testid="anomaly-legacy-detection" className="mt-5 rounded-md border border-primary/60 bg-primary/5 p-4 ring-2 ring-primary/20">
+          <p className="text-sm font-medium">
+            {legacyRow.anomalyType.replace(/_/g, ' ')} · <span className="font-mono text-xs">{legacyRow.metricName}</span>
+            {' · '}
+            {formatDateTime(new Date(legacyRow.windowStart), { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+          </p>
+          <p className="mt-1 text-sm tabular-nums">
+            {formatMetricValue(legacyRow.metricName, legacyRow.observedValue)}
+            {legacyRow.baselineValue != null && ` · ${t('deviceAnomaliesPanel.baseline')} ${formatMetricValue(legacyRow.metricName, legacyRow.baselineValue)}`}
+          </p>
+          <p className="mt-2 text-xs text-muted-foreground">{t('deviceAnomaliesPanel.legacyDetectionNote')}</p>
+        </div>
+      )}
 
       {visible.length === 0 ? (
         <div className="mt-5 rounded-md border border-dashed p-6 text-center">
@@ -1944,6 +2159,8 @@ Add this to the `deviceAnomaliesPanel` object in `apps/web/src/locales/en/device
       "cleared": "cleared",
       "expiredOffline": "expired: device not seen",
       "expiredNoData": "expired: no data for this metric",
+      "expiredOfflineSince": "expired: device not seen since {{when}}",
+      "detectionOff": "closed: detection turned off",
       "user": "resolved",
       "snoozed": "snoozed"
     },
@@ -1962,7 +2179,8 @@ Add this to the `deviceAnomaliesPanel` object in `apps/web/src/locales/en/device
       "score": "Score"
     },
     "membersTruncated": "Showing the first {{count}} detections.",
-    "failedToLoadDetections": "Failed to load detections"
+    "failedToLoadDetections": "Failed to load detections",
+    "legacyDetectionNote": "This detection predates episode grouping."
   }
 }
 ```
@@ -1995,6 +2213,8 @@ Merge this into the existing object (do not replace it) — the pre-existing key
       "cleared": "behoben",
       "expiredOffline": "abgelaufen: Gerät nicht gesehen",
       "expiredNoData": "abgelaufen: keine Daten für diese Metrik",
+      "expiredOfflineSince": "abgelaufen: Gerät nicht gesehen seit {{when}}",
+      "detectionOff": "geschlossen: Erkennung deaktiviert",
       "user": "aufgelöst",
       "snoozed": "stummgeschaltet"
     },
@@ -2013,7 +2233,8 @@ Merge this into the existing object (do not replace it) — the pre-existing key
       "score": "Punktzahl"
     },
     "membersTruncated": "Die ersten {{count}} Erkennungen werden angezeigt.",
-    "failedToLoadDetections": "Erkennungen konnten nicht geladen werden"
+    "failedToLoadDetections": "Erkennungen konnten nicht geladen werden",
+    "legacyDetectionNote": "Diese Erkennung stammt aus der Zeit vor der Episodengruppierung."
   }
 }
 
@@ -2040,6 +2261,8 @@ Merge this into the existing object (do not replace it) — the pre-existing key
       "cleared": "resuelta",
       "expiredOffline": "vencida: dispositivo no visto",
       "expiredNoData": "vencida: sin datos para esta métrica",
+      "expiredOfflineSince": "vencida: dispositivo no visto desde {{when}}",
+      "detectionOff": "cerrada: detección desactivada",
       "user": "resuelta",
       "snoozed": "silenciada"
     },
@@ -2058,7 +2281,8 @@ Merge this into the existing object (do not replace it) — the pre-existing key
       "score": "Puntuación"
     },
     "membersTruncated": "Se muestran las primeras {{count}} detecciones.",
-    "failedToLoadDetections": "No se pudieron cargar las detecciones"
+    "failedToLoadDetections": "No se pudieron cargar las detecciones",
+    "legacyDetectionNote": "Esta detección es anterior a la agrupación por episodios."
   }
 }
 
@@ -2085,6 +2309,8 @@ Merge this into the existing object (do not replace it) — the pre-existing key
       "cleared": "résolue",
       "expiredOffline": "expirée : appareil non vu",
       "expiredNoData": "expirée : aucune donnée pour cette métrique",
+      "expiredOfflineSince": "expirée : appareil non vu depuis {{when}}",
+      "detectionOff": "fermée : détection désactivée",
       "user": "résolue",
       "snoozed": "en sourdine"
     },
@@ -2103,7 +2329,8 @@ Merge this into the existing object (do not replace it) — the pre-existing key
       "score": "Score"
     },
     "membersTruncated": "Affichage des {{count}} premières détections.",
-    "failedToLoadDetections": "Impossible de charger les détections"
+    "failedToLoadDetections": "Impossible de charger les détections",
+    "legacyDetectionNote": "Cette détection est antérieure au regroupement par épisodes."
   }
 }
 
@@ -2134,6 +2361,8 @@ Merge this into the existing object (do not replace it) — the pre-existing key
       "cleared": "risolta",
       "expiredOffline": "scaduta: dispositivo non rilevato",
       "expiredNoData": "scaduta: nessun dato per questa metrica",
+      "expiredOfflineSince": "scaduta: dispositivo non rilevato dal {{when}}",
+      "detectionOff": "chiusa: rilevamento disattivato",
       "user": "risolta",
       "snoozed": "silenziata"
     },
@@ -2152,7 +2381,8 @@ Merge this into the existing object (do not replace it) — the pre-existing key
       "score": "Punteggio"
     },
     "membersTruncated": "Visualizzazione dei primi {{count}} rilevamenti.",
-    "failedToLoadDetections": "Impossibile caricare i rilevamenti"
+    "failedToLoadDetections": "Impossibile caricare i rilevamenti",
+    "legacyDetectionNote": "Questo rilevamento è precedente al raggruppamento per episodi."
   }
 }
 
@@ -2179,6 +2409,8 @@ Merge this into the existing object (do not replace it) — the pre-existing key
       "cleared": "resolvida",
       "expiredOffline": "expirada: dispositivo não visto",
       "expiredNoData": "expirada: sem dados para esta métrica",
+      "expiredOfflineSince": "expirada: dispositivo não visto desde {{when}}",
+      "detectionOff": "fechada: detecção desativada",
       "user": "resolvida",
       "snoozed": "silenciada"
     },
@@ -2197,7 +2429,8 @@ Merge this into the existing object (do not replace it) — the pre-existing key
       "score": "Pontuação"
     },
     "membersTruncated": "Exibindo as primeiras {{count}} detecções.",
-    "failedToLoadDetections": "Não foi possível carregar as detecções"
+    "failedToLoadDetections": "Não foi possível carregar as detecções",
+    "legacyDetectionNote": "Esta detecção é anterior ao agrupamento por episódios."
   }
 }
 
@@ -2224,6 +2457,8 @@ Merge this into the existing object (do not replace it) — the pre-existing key
       "cleared": "temizlendi",
       "expiredOffline": "süresi doldu: cihaz görülmedi",
       "expiredNoData": "süresi doldu: bu metrik için veri yok",
+      "expiredOfflineSince": "süresi doldu: cihaz {{when}} tarihinden beri görülmedi",
+      "detectionOff": "kapatıldı: algılama kapatıldı",
       "user": "çözüldü",
       "snoozed": "ertelendi"
     },
@@ -2242,7 +2477,8 @@ Merge this into the existing object (do not replace it) — the pre-existing key
       "score": "Skor"
     },
     "membersTruncated": "İlk {{count}} tespit gösteriliyor.",
-    "failedToLoadDetections": "Tespitler yüklenemedi"
+    "failedToLoadDetections": "Tespitler yüklenemedi",
+    "legacyDetectionNote": "Bu tespit, olay gruplamasından öncesine ait."
   }
 }
 ```
@@ -2362,8 +2598,11 @@ PR body must include:
   but per CLAUDE.md's "Web Mutation Handlers" section, state explicitly: *"All new mutations
   (dismiss/resolve/promote/unsnooze) go through `runAction`; `AnomalyEpisodeCard.tsx` added to
   `no-silent-mutations` `TARGET_GLOBS`."*
-- The three **Spec deviations / assumptions** from the top of this plan (detections = buckets,
-  remediation keyed on `peakAnomalyId`, filter in component state), and a line confirming the
+- The four **Spec deviations / assumptions** from the top of this plan (detections = buckets,
+  remediation keyed on `peakAnomalyId`, filter in component state, the A9 states: 60 s visible-tab
+  poll, legacy read-only fallback for an unresolved `ref`, `expired_offline` since-chip and
+  `detection_off` chip), a line saying Resolve **and** Dismiss on a promoted episode resolve its
+  alert through W02's `resolveAlert` default (A7 — no UI change), and a line confirming the
   envelopes match W02's merged routes (`MetricAnomalyEpisodeListResponse` with `focusedEpisodeId`,
   `{ data: MetricAnomalyEpisodeDetailDto }`, PATCH `{ data, meta }`, 409 `{ error, reason }`).
 - The **Task 5 execution-order note**: Task 4's tests assume Task 6's English copy exists; if tasks
@@ -2384,6 +2623,9 @@ PR body must include:
 - Member table lazy-loaded on first expand — Task 3 + Task 4's `membersOpen` toggle. ✅.
 - Focused ring from `ref` — Task 4 (`focused` prop) + Task 5 (`ep.id === focusedEpisodeId` from W02's list response, so a member-anomaly `ref` rings its episode). ✅.
 - Empty state with "Show recently closed" link — Task 5. ✅.
+- Second quorum A9: 60 s poll while an open episode is visible, legacy read-only row for an
+  unresolved `ref`, "device not seen since" chip — Tasks 4-5 (tests for each); A5 `detection_off`
+  chip — Task 4; A7 needs no UI change (Global Constraints). ✅.
 - Remediation block only when flag on — Task 4 (`remediationEnabled` gate, keyed on `peakAnomalyId`,
   replacing the always-on panel mount). ✅.
 - v1-shadow block only when flag on, no "disabled" placeholder otherwise — Task 4 (renders nothing
