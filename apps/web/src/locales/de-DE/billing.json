@@ -1201,7 +1201,10 @@
         "submit": "Annehmen und Rechnung stellen",
         "success": "Angebot angenommen. Rechnung {{number}} erstellt.",
         "error": "Die Annahme konnte nicht erfasst werden.",
-        "successDraftInvoice": "Angebot angenommen. Rechnung als Entwurf erstellt."
+        "successDraftInvoice": "Angebot angenommen. Rechnung als Entwurf erstellt.",
+        "errorContractVariablesUnresolved": "Für diesen Vertrag fehlen noch Werte für: {{names}}. Schließen Sie diesen Dialog, tragen Sie sie unten ein und versuchen Sie es erneut.",
+        "errorContractVariablesUnresolvedGeneric": "Für diesen Vertrag sind noch Variablen ungelöst. Schließen Sie diesen Dialog, tragen Sie sie unten ein und versuchen Sie es erneut.",
+        "errorDepositInvalid": "Die Anzahlung kann mit der aktuellen Konfiguration nicht erhoben werden. Schließen Sie diesen Dialog, korrigieren Sie die Anzahlungseinstellungen unten und versuchen Sie es erneut."
       }
     },
     "detail": {

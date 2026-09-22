@@ -1201,7 +1201,10 @@
         "submit": "Accepter et émettre la facture",
         "success": "Proposition acceptée. Facture {{number}} émise.",
         "error": "Impossible d'enregistrer l'acceptation.",
-        "successDraftInvoice": "Proposition acceptée. Facture créée en brouillon."
+        "successDraftInvoice": "Proposition acceptée. Facture créée en brouillon.",
+        "errorContractVariablesUnresolved": "Ce contrat a encore besoin de valeurs pour : {{names}}. Fermez cette boîte de dialogue, remplissez-les ci-dessous, puis réessayez.",
+        "errorContractVariablesUnresolvedGeneric": "Ce contrat contient des variables non résolues. Fermez cette boîte de dialogue, remplissez-les ci-dessous, puis réessayez.",
+        "errorDepositInvalid": "L'acompte ne peut pas être perçu tel qu'il est configuré. Fermez cette boîte de dialogue, corrigez les paramètres d'acompte ci-dessous, puis réessayez."
       }
     },
     "detail": {

@@ -420,7 +420,7 @@ export function assertQuoteSendGates(
   blocks: readonly { id: string; content: unknown }[],
   lines: readonly QuoteLineForMath[],
   contractRenderData: readonly ContractBlockRenderData[],
-  action: 'send' | 'accept' = 'send',
+  action: 'send' | 'accept',
 ): void {
   // Contract-variable gate (Task 12): a contract block's declared variables
   // (auto or manual) can be left unresolved — issuing would ship a raw

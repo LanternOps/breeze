@@ -1201,7 +1201,10 @@
         "submit": "Accetta ed emetti fattura",
         "success": "Preventivo accettato. Fattura {{number}} emessa.",
         "error": "Impossibile registrare l'accettazione.",
-        "successDraftInvoice": "Preventivo accettato. Fattura creata in bozza."
+        "successDraftInvoice": "Preventivo accettato. Fattura creata in bozza.",
+        "errorContractVariablesUnresolved": "Questo contratto ha ancora bisogno di valori per: {{names}}. Chiudi questa finestra, compilali qui sotto e riprova.",
+        "errorContractVariablesUnresolvedGeneric": "Questo contratto ha variabili non risolte. Chiudi questa finestra, compilale qui sotto e riprova.",
+        "errorDepositInvalid": "L'acconto non può essere riscosso con la configurazione attuale. Chiudi questa finestra, correggi le impostazioni dell'acconto qui sotto e riprova."
       }
     },
     "detail": {

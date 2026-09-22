@@ -103,7 +103,7 @@ vi.mock('./quoteDeviceSet', async (importOriginal) => {
   return { ...actual, countQuoteDeviceSetLines: vi.fn() };
 });
 
-import { buildPublicQuoteAcceptUrl, portalBase, sendQuote, resendQuote, getQuoteShareLink } from './quoteLifecycle';
+import { buildPublicQuoteAcceptUrl, portalBase, sendQuote, resendQuote, getQuoteShareLink, assertQuoteSendGates } from './quoteLifecycle';
 import { renderQuotePdf } from './quotePdf';
 import { countQuoteDeviceSetLines } from './quoteDeviceSet';
 
@@ -237,6 +237,19 @@ describe('quoteLifecycle portal URL', () => {
     const url = buildPublicQuoteAcceptUrl('a/b?c#d');
     expect(url).toBe('https://example.com/portal/quote/a%2Fb%3Fc%23d');
     expect(new URL(url).pathname).toBe('/portal/quote/a%2Fb%3Fc%23d');
+  });
+});
+
+// #6637: `action` used to default to 'send', which let a caller silently reuse
+// send-flavored gate messages for a non-send flow. Both real callers already
+// pass the verb explicitly (sendQuote → 'send', quoteAcceptService → 'accept'),
+// so this only needs to prove the compiler now refuses an omitted argument —
+// a type-level regression test, not a runtime one.
+describe('assertQuoteSendGates requires an explicit action', () => {
+  it('rejects a call with the action argument omitted (compile-time only)', () => {
+    // @ts-expect-error — action is required now; this line must fail to compile.
+    assertQuoteSendGates({} as never, [], [], []);
+    expect(true).toBe(true);
   });
 });
 

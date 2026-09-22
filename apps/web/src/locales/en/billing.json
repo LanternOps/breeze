@@ -1201,7 +1201,10 @@
         "submit": "Accept and issue invoice",
         "success": "Quote accepted. Invoice {{number}} issued.",
         "error": "Could not record the acceptance.",
-        "successDraftInvoice": "Quote accepted. Invoice created as a draft."
+        "successDraftInvoice": "Quote accepted. Invoice created as a draft.",
+        "errorContractVariablesUnresolved": "This quote's contract still needs values for: {{names}}. Close this dialog, fill them in below, then try again.",
+        "errorContractVariablesUnresolvedGeneric": "This quote's contract has unresolved variables. Close this dialog, fill them in below, then try again.",
+        "errorDepositInvalid": "This quote's deposit can't be collected as configured. Close this dialog, fix the deposit settings below, then try again."
       }
     },
     "detail": {

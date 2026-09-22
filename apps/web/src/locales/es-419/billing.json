@@ -1201,7 +1201,10 @@
         "submit": "Aceptar y emitir factura",
         "success": "Propuesta aceptada. Factura {{number}} emitida.",
         "error": "No se pudo registrar la aceptación.",
-        "successDraftInvoice": "Propuesta aceptada. Factura creada como borrador."
+        "successDraftInvoice": "Propuesta aceptada. Factura creada como borrador.",
+        "errorContractVariablesUnresolved": "Este contrato todavía necesita valores para: {{names}}. Cierra este diálogo, complétalos abajo y vuelve a intentarlo.",
+        "errorContractVariablesUnresolvedGeneric": "Este contrato tiene variables sin resolver. Cierra este diálogo, complétalas abajo y vuelve a intentarlo.",
+        "errorDepositInvalid": "El depósito no se puede cobrar con la configuración actual. Cierra este diálogo, corrige la configuración del depósito abajo y vuelve a intentarlo."
       }
     },
     "detail": {

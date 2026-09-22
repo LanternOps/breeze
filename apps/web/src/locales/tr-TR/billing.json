@@ -1201,7 +1201,10 @@
         "submit": "Kabul et ve fatura oluştur",
         "success": "Teklif kabul edildi. {{number}} numaralı fatura oluşturuldu.",
         "error": "Kabul kaydedilemedi.",
-        "successDraftInvoice": "Teklif kabul edildi. Fatura taslak olarak oluşturuldu."
+        "successDraftInvoice": "Teklif kabul edildi. Fatura taslak olarak oluşturuldu.",
+        "errorContractVariablesUnresolved": "Bu sözleşmede hâlâ şu değerler eksik: {{names}}. Bu iletişim kutusunu kapatın, aşağıda doldurun ve tekrar deneyin.",
+        "errorContractVariablesUnresolvedGeneric": "Bu sözleşmede çözülmemiş değişkenler var. Bu iletişim kutusunu kapatın, aşağıda doldurun ve tekrar deneyin.",
+        "errorDepositInvalid": "Depozito mevcut yapılandırmayla tahsil edilemiyor. Bu iletişim kutusunu kapatın, aşağıdaki depozito ayarlarını düzeltin ve tekrar deneyin."
       }
     },
     "detail": {
