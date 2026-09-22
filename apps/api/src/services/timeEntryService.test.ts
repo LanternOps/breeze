@@ -628,6 +628,7 @@ describe('deleteTicketPart', () => {
       dbMocks.selectResults.push([{
         id: `part-${billingStatus}`, billingStatus, currencyCode: 'USD',
       }]);
+      dbMocks.deleteResult = [{ id: `part-${billingStatus}` }];
 
       await deleteTicketPart(`part-${billingStatus}`, ACTOR);
 
@@ -635,6 +636,19 @@ describe('deleteTicketPart', () => {
       expect(dbMocks.forUpdateCalls).toBe(1);
     },
   );
+
+  // #6589 — same zero-row race class as #6568/#6588, on the delete path.
+  it('rejects with 409 PART_DELETE_LOST when DELETE RETURNING yields no row, instead of reporting success', async () => {
+    dbMocks.selectResults.push([{
+      id: 'part-raced', billingStatus: 'not_billed', currencyCode: 'USD',
+    }]);
+    dbMocks.deleteResult = [];
+
+    await expect(deleteTicketPart('part-raced', ACTOR))
+      .rejects.toMatchObject({ status: 409, code: 'PART_DELETE_LOST' });
+
+    expect(dbMocks.deleteCalls).toBe(1);
+  });
 });
 
 describe('approveTimeEntries', () => {

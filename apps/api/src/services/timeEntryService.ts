@@ -56,7 +56,9 @@ export type TimeEntryServiceErrorCode =
   /** 409 — UPDATE ... RETURNING matched zero rows (entry re-pointed/deleted between the read and the write). */
   | 'ENTRY_UPDATE_LOST'
   /** 409 — UPDATE ... RETURNING matched zero rows (part re-pointed/deleted between the read and the write). */
-  | 'PART_UPDATE_LOST';
+  | 'PART_UPDATE_LOST'
+  /** 409 — DELETE ... RETURNING matched zero rows (part re-pointed between the lock-read and the delete). */
+  | 'PART_DELETE_LOST';
 
 export class TimeEntryServiceError extends Error {
   constructor(
@@ -1234,7 +1236,20 @@ export async function deleteTicketPart(id: string, _actor: TimeEntryActor) {
       'PART_BILLED',
     );
   }
-  await db.delete(ticketParts).where(eq(ticketParts.id, id));
+  const deleted = await db.delete(ticketParts).where(eq(ticketParts.id, id)).returning({ id: ticketParts.id });
+  if (deleted.length === 0) {
+    // The part existed at the top of this call (getPartOr404's FOR UPDATE
+    // re-read) but the DELETE matched zero rows — it was re-pointed out of
+    // this caller's visibility in between (org move, RLS context change).
+    // Reporting `{ deleted: true }` here would tell the caller the row is
+    // gone when it is not. Same race class as updateTicketPart (#6568/#6588),
+    // with its own code so callers can tell the two write paths apart.
+    throw new TimeEntryServiceError(
+      'Part could not be deleted — reload and retry',
+      409,
+      'PART_DELETE_LOST',
+    );
+  }
 }
 
 // ── Queries ──────────────────────────────────────────────────────────────
