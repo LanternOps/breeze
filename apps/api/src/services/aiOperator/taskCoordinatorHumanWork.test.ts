@@ -143,11 +143,13 @@ describe('advanceHumanWork (spec §6.5)', () => {
     // the dependency id once the item exists.
     const waitPatch = dbState.taskPatches.find((p) => p.state === 'waiting')!;
     expect(waitPatch).toMatchObject({
-      state: 'waiting', waitReason: 'information', waitDependencyKind: 'user_answer',
+      state: 'waiting', waitReason: 'information',
+      // Kind and id land TOGETHER in the follow-up (wait_dependency_chk).
+      waitDependencyKind: null, waitDependencyId: null,
       leaseOwner: null, leaseExpiresAt: null,
       nextWakeAt: new Date(NOW.getTime() + 6 * 60 * 60 * 1000),
     });
-    expect(lastPatch()).toMatchObject({ waitDependencyId: 'item-9' });
+    expect(lastPatch()).toMatchObject({ waitDependencyKind: 'user_answer', waitDependencyId: 'item-9' });
   });
 
   it('treats a pre-opened but never-linked row (dependencyId null) as "open it", not as detached', async () => {

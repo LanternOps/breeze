@@ -1332,8 +1332,11 @@ export async function advanceHumanWork(args: {
       patch: {
         state: nextTaskState(task.state as string, 'wait'),
         waitReason: 'information',
-        waitDependencyKind: 'user_answer',
-        // Filled in below once the item exists (same transaction).
+        // BOTH dependency columns are filled in below once the item exists
+        // (same transaction): ai_operator_tasks_wait_dependency_chk requires
+        // kind and id to be null or non-null TOGETHER, so the kind cannot be
+        // written ahead of the id.
+        waitDependencyKind: null,
         waitDependencyId: null,
         nextWakeAt: new Date(now.getTime() + HUMAN_WORK_POLL_WAKE_MS),
         leaseOwner: null,
@@ -1368,7 +1371,7 @@ export async function advanceHumanWork(args: {
         // the CAS above already proved this coordinator holds the lease.
         await db
           .update(aiOperatorTasks)
-          .set({ waitDependencyId: opened.checklistItemId })
+          .set({ waitDependencyKind: 'user_answer', waitDependencyId: opened.checklistItemId })
           .where(and(eq(aiOperatorTasks.id, task.id), eq(aiOperatorTasks.orgId, task.orgId)));
       },
     });
