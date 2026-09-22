@@ -95,6 +95,16 @@ vi.mock('drizzle-orm', () => ({
   }),
 }));
 
+const getProviderCoverageMock = vi.fn(async () => new Map());
+const getFirstPartyCoverageMock = vi.fn(async () => new Map());
+const getProviderAttentionItemsMock = vi.fn((..._args: unknown[]) => Promise.resolve([] as unknown[]));
+
+vi.mock('../../services/backupHealthReadModel', () => ({
+  getProviderCoverageForDevices: (...a: unknown[]) => getProviderCoverageMock(...(a as [])),
+  getFirstPartyCoverageForDevices: (...a: unknown[]) => getFirstPartyCoverageMock(...(a as [])),
+  getProviderAttentionItems: (...a: unknown[]) => getProviderAttentionItemsMock(...(a as [])),
+}));
+
 describe('backup dashboard routes', () => {
   let app: Hono;
 
@@ -603,6 +613,87 @@ describe('backup dashboard routes', () => {
       expect(JSON.stringify(orderTerms[0])).toContain('backup_jobs.started_at');
       expect(orderTerms[1]).toEqual({ op: 'desc', value: 'backup_jobs.created_at' });
       expect(orderTerms[2]).toEqual({ op: 'desc', value: 'backup_jobs.id' });
+    });
+  });
+
+  describe('provider-aware coverage', () => {
+    it('lists an assigned device with no fresh backup under overdueDevices', async () => {
+      resolveAllBackupAssignedDevicesMock.mockResolvedValueOnce([
+        { deviceId: DEVICE_ID, configId: 'config-1', featureLinkId: 'feature-1' },
+      ]);
+      getFirstPartyCoverageMock.mockResolvedValueOnce(
+        new Map([[DEVICE_ID, { covered: false, health: 'critical', status: 'failed', lastSuccessAt: null }]]),
+      );
+      getProviderCoverageMock.mockResolvedValueOnce(new Map());
+
+      const body = await (await app.request('/backup/dashboard')).json();
+
+      expect(body.data.overdueDevices).toEqual([
+        expect.objectContaining({ id: DEVICE_ID, lastBackup: null }),
+      ]);
+    });
+
+    it('drops a device from overdueDevices when a provider backup covers it', async () => {
+      resolveAllBackupAssignedDevicesMock.mockResolvedValueOnce([
+        { deviceId: DEVICE_ID, configId: 'config-1', featureLinkId: 'feature-1' },
+      ]);
+      getFirstPartyCoverageMock.mockResolvedValueOnce(
+        new Map([[DEVICE_ID, { covered: false, health: 'critical', status: 'failed', lastSuccessAt: null }]]),
+      );
+      getProviderCoverageMock.mockResolvedValueOnce(
+        new Map([[DEVICE_ID, { covered: true, health: 'healthy' }]]),
+      );
+
+      const body = await (await app.request('/backup/dashboard')).json();
+
+      expect(body.data.overdueDevices).toEqual([]);
+    });
+
+    it('counts a provider-covered device as protected', async () => {
+      resolveAllBackupAssignedDevicesMock.mockResolvedValueOnce([]);
+      getProviderCoverageMock.mockResolvedValueOnce(
+        new Map([[DEVICE_ID, { covered: true, health: 'healthy' }]]),
+      );
+
+      const body = await (await app.request('/backup/dashboard')).json();
+
+      expect(body.data.coverage.protectedDevices).toBe(1);
+    });
+
+    it('appends critical provider rows to attentionItems with a provider: id', async () => {
+      resolveAllBackupAssignedDevicesMock.mockResolvedValueOnce([]);
+      getProviderAttentionItemsMock.mockResolvedValueOnce([
+        { id: 'provider:row-1', title: 'ACME-SRV02: external backup needs attention', description: 'ACME-SRV02 (Acme North) — failed', severity: 'critical' },
+      ]);
+
+      const body = await (await app.request('/backup/dashboard')).json();
+
+      expect(body.data.attentionItems).toContainEqual(
+        expect.objectContaining({ id: 'provider:row-1', severity: 'critical' }),
+      );
+    });
+
+    it('passes the site-allowed device ids to the provider attention query', async () => {
+      resolveAllBackupAssignedDevicesMock.mockResolvedValueOnce([]);
+      permissionsState = { allowedSiteIds: [SITE_A] };
+      selectMock.mockReturnValueOnce(chainMock([{ id: DEVICE_ID, siteId: SITE_A }]));
+
+      await app.request('/backup/dashboard');
+
+      expect(getProviderAttentionItemsMock.mock.calls[0]![1]).toMatchObject({ allowedDeviceIds: [DEVICE_ID] });
+    });
+
+    it('survives a read-model failure without 500ing the dashboard', async () => {
+      resolveAllBackupAssignedDevicesMock.mockResolvedValueOnce([]);
+      getProviderCoverageMock.mockRejectedValueOnce(new Error('boom'));
+      getProviderAttentionItemsMock.mockRejectedValueOnce(new Error('boom'));
+
+      const res = await app.request('/backup/dashboard');
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      // Degraded, but never an implied all-clear.
+      expect(body.data.attentionError).toBe(true);
     });
   });
 });

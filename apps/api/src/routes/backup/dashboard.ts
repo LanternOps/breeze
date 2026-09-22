@@ -20,6 +20,11 @@ import {
 } from '../../services/backupJobOrdering';
 import { getNextRun, resolveScopedOrgId } from './helpers';
 import { usageHistoryQuerySchema } from './schemas';
+import {
+  getFirstPartyCoverageForDevices,
+  getProviderAttentionItems,
+  getProviderCoverageForDevices,
+} from '../../services/backupHealthReadModel';
 
 export const dashboardRoutes = new Hono();
 
@@ -172,6 +177,43 @@ async function resolveAttentionItems(
     // degraded state so the UI does not render an all-clear it can't vouch for.
     return { items: [], error: true };
   }
+}
+
+/**
+ * "Devices needing backup" — assigned devices with no fresh restore point from
+ * EITHER source.
+ *
+ * Coverage is the OR of the two sources (spec D4): a customer whose servers are
+ * protected by Cove is protected, full stop, and listing them here — under a
+ * button that dispatches a first-party backup job — is exactly the false
+ * negative this integration exists to remove. Both lookups go through the
+ * unified read model so this panel, the overview bars, the portal and the
+ * posture report cannot disagree about the word "covered".
+ */
+const OVERDUE_MAX_ITEMS = 20;
+
+async function resolveOverdueDevices(
+  orgId: string,
+  assignedDeviceIds: string[],
+  nameByDeviceId: ReadonlyMap<string, string>,
+): Promise<Array<{ id: string; name: string; lastBackup: string | null }>> {
+  if (assignedDeviceIds.length === 0) return [];
+  const [firstParty, provider] = await Promise.all([
+    getFirstPartyCoverageForDevices(orgId, assignedDeviceIds),
+    getProviderCoverageForDevices(orgId, assignedDeviceIds),
+  ]);
+  const overdue: Array<{ id: string; name: string; lastBackup: string | null }> = [];
+  for (const deviceId of assignedDeviceIds) {
+    if (firstParty.get(deviceId)?.covered) continue;
+    if (provider.get(deviceId)?.covered) continue;
+    overdue.push({
+      id: deviceId,
+      name: nameByDeviceId.get(deviceId) ?? deviceId.slice(0, 8),
+      lastBackup: firstParty.get(deviceId)?.lastSuccessAt ?? null,
+    });
+    if (overdue.length >= OVERDUE_MAX_ITEMS) break;
+  }
+  return overdue;
 }
 
 dashboardRoutes.get(
@@ -365,7 +407,41 @@ dashboardRoutes.get('/dashboard', requirePermission(PERMISSIONS.ORGS_READ.resour
   const recentJobs = allowedDeviceIds
     ? recentJobsRaw.filter((r) => allowedDeviceIds.includes(r.job.deviceId))
     : recentJobsRaw;
-  const protectedDevices = new Set(assignedDevices.map((a) => a.deviceId));
+
+  const assignedDeviceIds = assignedDevices.map((a) => a.deviceId);
+  const nameByDeviceId = new Map<string, string>(
+    recentJobs.map((r) => [r.job.deviceId, r.deviceName ?? r.deviceHostname ?? r.job.deviceId]),
+  );
+
+  // One try/catch for the whole provider block: a transient failure here must
+  // degrade the panel, not 500 the dashboard — and must SAY it degraded, so the
+  // UI never renders "no devices need backup" it cannot vouch for.
+  let overdueDevices: Array<{ id: string; name: string; lastBackup: string | null }> = [];
+  let providerCoverage = new Map<string, { covered: boolean; health: string }>();
+  let providerAttention: AttentionItem[] = [];
+  let providerError = false;
+  try {
+    [overdueDevices, providerCoverage, providerAttention] = await Promise.all([
+      resolveOverdueDevices(orgId, assignedDeviceIds, nameByDeviceId),
+      getProviderCoverageForDevices(orgId, assignedDeviceIds),
+      noSiteAllowedDevices
+        ? Promise.resolve([] as AttentionItem[])
+        : (getProviderAttentionItems(orgId, {
+            allowedDeviceIds,
+            limit: ATTENTION_MAX_ITEMS,
+          }) as Promise<AttentionItem[]>),
+    ]);
+  } catch (err) {
+    console.error('[BackupDashboard] provider coverage failed:', err instanceof Error ? err.message : err);
+    providerError = true;
+  }
+
+  // A device the vendor protects counts as protected even when no first-party
+  // policy is assigned to it (spec D4).
+  const protectedDevices = new Set(assignedDeviceIds);
+  for (const [deviceId, coverage] of providerCoverage) {
+    if (coverage.covered) protectedDevices.add(deviceId);
+  }
 
   const latestJobs = recentJobs.map((r) => ({
     id: r.job.id,
@@ -409,11 +485,16 @@ dashboardRoutes.get('/dashboard', requirePermission(PERMISSIONS.ORGS_READ.resour
         protectedDevices: protectedDevices.size,
       },
       latestJobs,
-      attentionItems: attention.items,
+      // NEW (D-13): the web has rendered this panel from an absent key since it
+      // was written. Provider-covered devices are excluded — dispatching a
+      // first-party job to a machine Cove already backed up is the false
+      // negative this integration removes.
+      overdueDevices,
+      attentionItems: [...attention.items, ...providerAttention].slice(0, ATTENTION_MAX_ITEMS),
       // Additive, backward-compatible degraded signal: true when the
       // attention-items sub-query failed and the list could not be computed.
       // The UI must treat this as "unknown", not "all clear".
-      attentionError: attention.error,
+      attentionError: attention.error || providerError,
     },
   });
 });
