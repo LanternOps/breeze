@@ -138,7 +138,8 @@ describe('Decline on behalf', () => {
     fireEvent.click(screen.getByTestId('decline-on-behalf-submit'));
     await waitFor(() => expect(runAction).toHaveBeenCalled());
     expect(refresh).not.toHaveBeenCalled();
-    expect(screen.getByTestId('decline-on-behalf-submit')).toBeTruthy();
+    // …and re-armed, so the tech can retry once the problem is fixed.
+    await waitFor(() => expect(screen.getByTestId('decline-on-behalf-submit').hasAttribute('disabled')).toBe(false));
     // runAction already toasted the 409 — no second toast on top of it.
     expect(showToast).not.toHaveBeenCalled();
   });
