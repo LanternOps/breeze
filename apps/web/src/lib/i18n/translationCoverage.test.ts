@@ -30,7 +30,10 @@ const namespaceDuplicateBaselines = {
     // +1 W04a bareMetalRecovery.snapshotLabel — "Snapshot" is the standard
     // retained loanword in pt-BR IT contexts, matching how other backup.json
     // strings already use it unchanged.
-    'backup.json': 53,
+    // +2 (W03 #6011): backupHealth keys that are protected proper nouns or
+    // pt-BR cognates of the English wording — localeParity requires
+    // backupHealth.sourceBreeze to stay byte-identical ("Breeze").
+    'backup.json': 55,
     // +4: contract-template format strings + Portuguese cognate ("v{{number}} ·
     // {{status}}", "v{{number}}", "{{name}} — v{{number}}", "Status")
     // legitimately identical to English.
@@ -87,7 +90,10 @@ const namespaceDuplicateBaselines = {
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
     // +1 W04 (#5654): legacy.columns.script — "Script" is the identical loanword in pt-BR.
     'fleetDesign.json': 2,
-    'integrations.json': 23,
+    // +3 (W03 #6011): integrationsPage.backup ("Backup" is spelled identically
+    // in pt-BR), backupProviders.cove and backupProviders.namePlaceholder are
+    // protected proper nouns pinned byte-identical by localeParity.
+    'integrations.json': 26,
     // #5289 (monitors W02 web): +7 on top of the pre-existing +1 —
     // "Name", "Monitor" (list/policy-tab column + label), "Hardware",
     // "System" (event-log categories), "CPU" (resource select) are identical
@@ -174,7 +180,9 @@ const namespaceDuplicateBaselines = {
     // slash — no wording to translate.
     'approvals.json': 1,
     'auth.json': 14,
-    'backup.json': 30,
+    // +1 (W03 #6011): backupHealth.sourceBreeze is a protected proper noun
+    // pinned byte-identical by localeParity.
+    'backup.json': 31,
     // +3: contract-template format strings ("v{{number}} · {{status}}",
     // "v{{number}}", "{{name}} — v{{number}}") that are legitimately identical
     // to English in es-419.
@@ -232,7 +240,9 @@ const namespaceDuplicateBaselines = {
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
     // +1 W04 (#5654): legacy.columns.script — "Script" is the identical loanword in es-419.
     'fleetDesign.json': 2,
-    'integrations.json': 31,
+    // +2 (W03 #6011): backupProviders.cove and backupProviders.namePlaceholder
+    // are protected proper nouns pinned byte-identical by localeParity.
+    'integrations.json': 33,
     // #5289 (monitors W02 web): +5 on top of the pre-existing +1 —
     // "Monitor" (label), "Hardware" (event-log category), "Error" (event-log
     // level), "CPU" (resource select), "Total" (direction select) are
@@ -310,7 +320,9 @@ const namespaceDuplicateBaselines = {
     // slash — no wording to translate.
     'approvals.json': 1,
     'auth.json': 13,
-    'backup.json': 59,
+    // +3 (W03 #6011): backupHealth.sourceBreeze (protected proper noun) and
+    // backupHealth status/health labels that are identical French cognates.
+    'backup.json': 62,
     // +7: contract-template format strings + French cognates ("v{{number}} ·
     // {{status}}", "v{{number}}", "{{name}} — v{{number}}", "Description",
     // "Versions", "Documents" ×2) that are legitimately identical to English
@@ -376,7 +388,9 @@ const namespaceDuplicateBaselines = {
     // +2 W04 (#5654): legacy.columns.script — "Script" — and legacy.columns.notes —
     // "Notes" — both spell identically in fr-FR.
     'fleetDesign.json': 3,
-    'integrations.json': 38,
+    // +1 (W03 #6011): backupProviders.cove is a protected proper noun pinned
+    // byte-identical by localeParity.
+    'integrations.json': 39,
     // #5289 (monitors W02 web): "Description" (field label), "Occurrences"
     // (event-log count field), "Direction" (bandwidth/disk-I/O field),
     // "Application" (event-log category), "CPU" (resource select), "Total"
@@ -474,7 +488,9 @@ const namespaceDuplicateBaselines = {
     // slash — no wording to translate.
     'approvals.json': 1,
     'auth.json': 13,
-    'backup.json': 60,
+    // +3 (W03 #6011): backupHealth.sourceBreeze (protected proper noun) and
+    // backupHealth status/health labels that are identical French cognates.
+    'backup.json': 63,
     // Contract-template format strings, French cognates, and locale-invariant
     // quote composer fields are intentionally identical to English.
     // +2: liveTotals "Total" is the identical French cognate (already accepted
@@ -534,7 +550,9 @@ const namespaceDuplicateBaselines = {
     // +2 W04 (#5654): legacy.columns.script — "Script" — and legacy.columns.notes —
     // "Notes" — both spell identically in fr-CA.
     'fleetDesign.json': 3,
-    'integrations.json': 40,
+    // +1 (W03 #6011): backupProviders.cove is a protected proper noun pinned
+    // byte-identical by localeParity.
+    'integrations.json': 41,
     // #5289 (monitors W02 web): "Description" (field label), "Occurrences"
     // (event-log count field), "Direction" (bandwidth/disk-I/O field),
     // "Application" (event-log category), "CPU" (resource select), "Total"
@@ -637,7 +655,9 @@ const namespaceDuplicateBaselines = {
     // +1 W04a bareMetalRecovery.snapshotLabel — "Snapshot" is the standard
     // retained loanword in German IT contexts, matching how other backup.json
     // strings already use it unchanged.
-    'backup.json': 64,
+    // +3 (W03 #6011): backupHealth.sourceBreeze (protected proper noun) and
+    // backupHealth status/table labels that are identical German cognates.
+    'backup.json': 67,
     // +6: contract-template format strings + German cognates ("v{{number}} ·
     // {{status}}", "v{{number}}", "{{name}} — v{{number}}", "Name", "Status")
     // that are legitimately identical to English in de-DE.
@@ -707,7 +727,9 @@ const namespaceDuplicateBaselines = {
     'errors.json': 11,
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
     'fleetDesign.json': 1,
-    'integrations.json': 43,
+    // +1 (W03 #6011): backupProviders.cove is a protected proper noun pinned
+    // byte-identical by localeParity.
+    'integrations.json': 44,
     // #5289 (monitors W02 web): +7 on top of the pre-existing +1 —
     // "Name" (list/legacy column + field label), "Monitor" (policy-tab
     // column), "Hardware"/"System" (event-log categories), "CPU" (resource
@@ -791,7 +813,9 @@ const namespaceDuplicateBaselines = {
     // slash — no wording to translate.
     'approvals.json': 1,
     'auth.json': 21,
-    'backup.json': 45,
+    // +1 (W03 #6011): backupHealth.sourceBreeze is a protected proper noun
+    // pinned byte-identical by localeParity.
+    'backup.json': 46,
     // +1: unassigned.qtyPrice "{{qty}} × {{price}}" is two interpolations plus a
     // multiplication sign with no wording to translate.
     // +1: order breakdown — "SKU" is a locale-invariant acronym.
@@ -834,7 +858,11 @@ const namespaceDuplicateBaselines = {
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
     // +1 W04 (#5654): legacy.columns.script — "Script" is the identical loanword in it-IT.
     'fleetDesign.json': 2,
-    'integrations.json': 81,
+    // +4 (W03 #6011): integrationsPage.backup ("Backup" is spelled identically
+    // in it-IT), backupProviders.cove and backupProviders.namePlaceholder are
+    // protected proper nouns, and one more backupProviders label spells
+    // identically to English in it-IT.
+    'integrations.json': 85,
     // #5289 (monitors W02 web): +4 on top of the pre-existing +1 —
     // "Monitor" (policy-tab column), "Info" (severity), "Hardware"
     // (event-log category), "CPU" (resource select) are identical
@@ -902,7 +930,9 @@ const namespaceDuplicateBaselines = {
     // slash — no wording to translate.
     'approvals.json': 1,
     'auth.json': 14,
-    'backup.json': 25,
+    // +1 (W03 #6011): backupHealth.sourceBreeze is a protected proper noun
+    // pinned byte-identical by localeParity.
+    'backup.json': 26,
     // +1: the quote/invoice bulk-result strings ("{{succeeded}} {{verb}}") are
     // pure interpolation with no prose to translate, so they are necessarily
     // identical to English. They arrived from #3501 after tr-TR (#3497) forked,
@@ -939,7 +969,9 @@ const namespaceDuplicateBaselines = {
     'errors.json': 11,
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
     'fleetDesign.json': 1,
-    'integrations.json': 22,
+    // +2 (W03 #6011): backupProviders.cove and backupProviders.namePlaceholder
+    // are protected proper nouns pinned byte-identical by localeParity.
+    'integrations.json': 24,
     // #5289 (monitors W02 web): "CPU" (resource select) is the identical
     // acronym in tr-TR.
     'monitoring.json': 1,
