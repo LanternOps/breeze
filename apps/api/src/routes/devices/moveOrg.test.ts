@@ -1424,7 +1424,25 @@ describe('POST /devices/:id/move-org', () => {
       );
       // Scoped to the SOURCE org, not just the device id.
       expect(intuneDetach).toMatch(/AND org_id =/);
-      expect(statements[8]).toBe('UPDATE devices');
+      // #6008 W01 — the external-backup link detach sits immediately after the
+      // Intune one and before the device UPDATE, for exactly the same reason:
+      // backup_provider_devices_breeze_device_org_fk ((breeze_device_id,
+      // org_id) -> devices(id, org_id)) is DEFERRABLE INITIALLY IMMEDIATE, so
+      // its check fires at the end of the org flip below. There is no
+      // trigger-side mirror — breeze_device_child_orgid_tables() discovers by a
+      // column literally named `device_id` and this one is `breeze_device_id`
+      // — so this statement is the ONLY thing standing between a
+      // Cove-linked device and a 23503 on every cross-org move.
+      const providerDetach = collapseStmt(statements[8]!);
+      expect(providerDetach).toContain(
+        'UPDATE backup_provider_devices SET breeze_device_id = NULL',
+      );
+      // The provenance column is cleared WITH the link (#3952 class): leaving
+      // device_match_source = 'auto_hostname' on a row with no link would make
+      // W02's re-validation treat it as a manual link and never re-match it.
+      expect(providerDetach).toContain('device_match_source = NULL');
+      expect(providerDetach).toMatch(/AND org_id =/);
+      expect(statements[9]).toBe('UPDATE devices');
       expect(pamGuardMock).toHaveBeenCalledWith(expect.anything(), {
         deviceId: DEVICE_ID,
         sourceOrgId: SOURCE_ORG,

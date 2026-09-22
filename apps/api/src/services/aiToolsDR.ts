@@ -480,7 +480,7 @@ export function registerDRTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['devices'],
     definition: {
       name: 'manage_dr_plan',
-      description: 'Create or update disaster recovery plans and plan groups.',
+      description: 'Create or update disaster recovery plans and plan groups. Actions: create_plan, update_plan, add_group, update_group, delete_group.',
       input_schema: {
         type: 'object' as const,
         properties: {

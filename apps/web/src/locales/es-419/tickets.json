@@ -230,7 +230,9 @@
       "logFailedSentence": "No se pudo registrar el tiempo."
     },
     "billedVsWorked": "{{worked}} h trabajadas · {{billed}} h facturadas",
-    "includedMinutes": "{{hours}} h incluidas en el contrato"
+    "includedMinutes": "{{hours}} h incluidas en el contrato",
+    "missingRateCount_one": "1 entrada no tiene tarifa por hora; no está incluida en el monto anterior",
+    "missingRateCount_other": "{{count}} entradas no tienen tarifa por hora; no están incluidas en el monto anterior"
   },
   "inboundReviewQueue": {
     "title": "Cola de revisión",

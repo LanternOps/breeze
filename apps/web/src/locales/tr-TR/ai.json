@@ -128,6 +128,7 @@
   },
   "aiToolCallCard": {
     "running": "Koşuyor...",
+    "failed": "Başarısız",
     "approvedRunning": "Onaylandı · çalışıyor",
     "approvedFailed": "Onaylandı · başarısız",
     "approvedCompleted": "Onaylandı · tamamlandı",

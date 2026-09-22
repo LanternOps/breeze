@@ -186,6 +186,7 @@
       "failedToAssignOrg": "Falha ao atribuir a organização",
       "organizations": "Organizações",
       "thisPartnerLibraryPolicyAppliesOnlyTo": "Esta política da biblioteca do parceiro aplica-se somente às organizações selecionadas.",
+      "filtersApplyOnAssign": "Estes filtros valem na atribuição abaixo. Vazio significa todas as funções e todos os sistemas operacionais. Para alterar os filtros de uma atribuição, desmarque e marque de novo.",
       "allOrganizationsPartnerWide": "Todas as organizações (todo o parceiro)",
       "allOrganizationsPartnerWide2": "Todas as organizações (todo o parceiro)",
       "assigned": "Atribuído",
@@ -846,6 +847,7 @@
         "overridesLabel": "Substituições:",
         "failedToLoadMonitors": "Falha ao carregar os monitores",
         "createMonitor": "Criar monitor",
+        "monitorDeleted": "Monitor excluído",
         "recommended": {
           "title": "Monitores recomendados",
           "body": "O Breeze inclui monitores integrados de CPU, memória, disco e conformidade de patches. Nenhum está anexado a esta política ainda.",

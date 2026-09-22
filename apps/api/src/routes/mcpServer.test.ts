@@ -1518,6 +1518,75 @@ describe('MCP transport integration', () => {
       expect(routeMocks.executeTenantToolDetailed).not.toHaveBeenCalled();
     });
 
+    // #6401: tools/list used to advertise tier-3 tenant descriptors for a key
+    // holding ai:execute even though handleTenantToolCall's isMcpApprovalGate
+    // denies every effective tier 3 unconditionally — an "advertised-but-dead"
+    // tool the caller could never actually invoke. The core registry already
+    // enforces "listed ⇒ callable" via isToolWhollyGatedOverMcp; the tenant
+    // filter must match it.
+    it('tools/list omits a tier-3 tenant tool even for a key holding ai:execute', async () => {
+      delete process.env.IS_HOSTED;
+      setTestApiKey({ scopes: ['ai:read', 'ai:write', 'ai:execute'] });
+      routeMocks.resolveTenantTools.mockResolvedValue([
+        makeTenantToolDescriptor({ qualifiedName: 'hudu__create_asset', tier: 3 }),
+      ]);
+
+      const res = await mcpServerRoutes.request('/message', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_test' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.result.tools.map((t: { name: string }) => t.name)).not.toContain('hudu__create_asset');
+    });
+
+    it('tools/list omits a tier-3 tenant tool even for a key holding ai:execute + ai:execute_admin in production', async () => {
+      delete process.env.IS_HOSTED;
+      process.env.NODE_ENV = 'production';
+      delete process.env.MCP_REQUIRE_EXECUTE_ADMIN;
+      setTestApiKey({ scopes: ['ai:read', 'ai:write', 'ai:execute', 'ai:execute_admin'] });
+      testState.redis = { get: vi.fn(async () => null) };
+      routeMocks.getUserPermissions.mockResolvedValue(WILDCARD_PERMISSIONS);
+      routeMocks.resolveTenantTools.mockResolvedValue([
+        makeTenantToolDescriptor({ qualifiedName: 'hudu__create_asset', tier: 3 }),
+      ]);
+
+      const res = await mcpServerRoutes.request('/message', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_test' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.result.tools.map((t: { name: string }) => t.name)).not.toContain('hudu__create_asset');
+    });
+
+    it('tools/list still includes tenant tier-1 and tier-2 tools for the appropriate scopes (fix is not over-broad)', async () => {
+      delete process.env.IS_HOSTED;
+      setTestApiKey({ scopes: ['ai:read', 'ai:write'] });
+      routeMocks.resolveTenantTools.mockResolvedValue([
+        makeTenantToolDescriptor({ qualifiedName: 'hudu__get_asset', tier: 1 }),
+        makeTenantToolDescriptor({ qualifiedName: 'hudu__update_asset', tier: 2 }),
+        makeTenantToolDescriptor({ qualifiedName: 'hudu__create_asset', tier: 3 }),
+      ]);
+
+      const res = await mcpServerRoutes.request('/message', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_test' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      const names = body.result.tools.map((t: { name: string }) => t.name);
+      expect(names).toContain('hudu__get_asset');
+      expect(names).toContain('hudu__update_asset');
+      expect(names).not.toContain('hudu__create_asset');
+    });
+
     it('denies a tier-3 tenant tool over MCP with MCP_APPROVAL_REQUIRED, same as core', async () => {
       delete process.env.IS_HOSTED;
       // isMcpApprovalRequired denies unconditionally, BEFORE the scope gates —

@@ -316,20 +316,38 @@ describe('GET /ticket-categories', () => {
 describe('POST /ticket-categories', () => {
   beforeEach(() => { vi.clearAllMocks(); dbSelectResult.mockReset(); resetAuth(); });
 
-  it.each(['defaultHourlyRate', 'defaultBillable', 'rateCurrency'])('ignores deprecated %s with a warning', async (field) => {
+  // #6472: retired pricing fields are a 400 naming the replacement, not a
+  // 201 that silently drops them.
+  it.each(['defaultHourlyRate', 'defaultBillable', 'rateCurrency'])('rejects retired %s with 400 and inserts nothing', async (field) => {
     dbInsertReturning.mockResolvedValue([{ id: 'cat-1', name: 'Hardware', partnerId: 'p-1' }]);
     const res = await makeApp().request('/ticket-categories', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name: 'Hardware', [field]: 'ignored' }),
     });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toContain(field);
+    expect(body.error).toContain('billing profile');
+    expect(body).not.toHaveProperty('deprecationWarnings');
+    const { db } = await import('../db');
+    expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+  });
+
+  it('inserts without any retired pricing column in the values or projection', async () => {
+    dbInsertReturning.mockResolvedValue([{ id: 'cat-1', name: 'Hardware', partnerId: 'p-1' }]);
+    const res = await makeApp().request('/ticket-categories', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Hardware' }),
+    });
     expect(res.status).toBe(201);
-    expect((await res.json()).deprecationWarnings).toContain(field);
     const { db } = await import('../db');
     const values = vi.mocked(db.insert).mock.results[0]?.value.values.mock.calls[0]?.[0];
-    expect(values).not.toHaveProperty(field);
     const projection = vi.mocked(db.insert).mock.results[0]?.value.values.mock.results[0]?.value.returning.mock.calls[0]?.[0];
     expect(projection).toHaveProperty('defaultWorkTypeId');
-    expect(projection).not.toHaveProperty(field);
+    for (const field of ['defaultBillable', 'defaultHourlyRate', 'rateCurrency']) {
+      expect(values).not.toHaveProperty(field);
+      expect(projection).not.toHaveProperty(field);
+    }
   });
 
   it('stamps partnerId from auth (never from body)', async () => {
@@ -424,25 +442,42 @@ describe('PATCH /ticket-categories/:id', () => {
     { defaultHourlyRate: null },
     { defaultBillable: false },
     { rateCurrency: 'CAD' },
-  ])('ignores deprecated pricing on PATCH: %j', async (input) => {
+  ])('rejects retired pricing on PATCH with 400 and updates nothing: %j', async (input) => {
+    // #6472: whole-request rejection — a rename riding along with a retired
+    // field is not applied either, so the caller never has to guess what landed.
     dbUpdateReturning.mockResolvedValue([{ id: CAT_ID, name: 'Updated', partnerId: 'p-1' }]);
     const res = await makeApp().request(`/ticket-categories/${CAT_ID}`, {
       method: 'PATCH', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(input),
     });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    const [retired] = Object.keys(input).filter((key) => key !== 'name');
+    expect(body.error).toContain(retired);
+    expect(body.error).toContain('billing profile');
+    expect(body).not.toHaveProperty('deprecationWarnings');
+    const { db } = await import('../db');
+    expect(vi.mocked(db.update)).not.toHaveBeenCalled();
+    expect(vi.mocked(db.select)).not.toHaveBeenCalled();
+  });
+
+  it('updates without any retired pricing column in the set or projection', async () => {
+    dbUpdateReturning.mockResolvedValue([{ id: CAT_ID, name: 'Updated', partnerId: 'p-1' }]);
+    const res = await makeApp().request(`/ticket-categories/${CAT_ID}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Renamed' }),
+    });
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.deprecationWarnings).toEqual(Object.keys(input).filter((key) => key !== 'name'));
     const { db } = await import('../db');
     const setArg = vi.mocked(db.update).mock.results[0]?.value.set.mock.calls[0]?.[0];
+    const projection = vi.mocked(db.update).mock.results[0]?.value.set.mock.results[0]?.value.where.mock.results[0]?.value.returning.mock.calls[0]?.[0];
+    expect(projection).toHaveProperty('defaultWorkTypeId');
     for (const field of ['defaultBillable', 'defaultHourlyRate', 'rateCurrency']) {
       expect(setArg).not.toHaveProperty(field);
       expect(body.data).not.toHaveProperty(field);
+      expect(projection).not.toHaveProperty(field);
     }
-    const projection = vi.mocked(db.update).mock.results[0]?.value.set.mock.results[0]?.value.where.mock.results[0]?.value.returning.mock.calls[0]?.[0];
-    expect(projection).toHaveProperty('defaultWorkTypeId');
-    for (const field of ['defaultBillable', 'defaultHourlyRate', 'rateCurrency']) expect(projection).not.toHaveProperty(field);
-    expect(vi.mocked(db.select)).not.toHaveBeenCalled();
   });
 
   it('does not read or update currency when defaultHourlyRate is omitted', async () => {

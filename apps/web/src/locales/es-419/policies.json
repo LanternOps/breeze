@@ -186,6 +186,7 @@
       "failedToAssignOrg": "No se pudo asignar la organización",
       "organizations": "Organizaciones",
       "thisPartnerLibraryPolicyAppliesOnlyTo": "Esta política de biblioteca asociada se aplica solo a las organizaciones que seleccione.",
+      "filtersApplyOnAssign": "Estos filtros se aplican al asignar abajo. Vacío significa todos los roles y sistemas operativos. Para cambiar los filtros de una asignación, desactívela y vuelva a activarla.",
       "allOrganizationsPartnerWide": "Todas las organizaciones (en todo el socio)",
       "allOrganizationsPartnerWide2": "Todas las organizaciones (en todo el socio)",
       "assigned": "Asignado",
@@ -846,6 +847,7 @@
         "overridesLabel": "Anulaciones:",
         "failedToLoadMonitors": "Error al cargar los monitores",
         "createMonitor": "Crear monitor",
+        "monitorDeleted": "Monitor eliminado",
         "recommended": {
           "title": "Monitores recomendados",
           "body": "Breeze incluye monitores integrados de CPU, memoria, disco y cumplimiento de parches. Ninguno está adjunto a esta política todavía.",

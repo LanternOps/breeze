@@ -3,6 +3,7 @@ package syscleanup
 import (
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/shirou/gopsutil/v3/disk"
 )
@@ -47,16 +48,26 @@ var nonMeasurableFsTypes = []string{
 // warnings aggregate (an empty card reader is enough to populate it), so
 // treating any error as fatal would report zero volumes on a healthy machine —
 // the same trap CollectDisks documents.
+//
+// Bind-mounted filesystems collapse to one representative mount per backing
+// Device (issue #6483): a btrfs host commonly exposes one subvolume per bind
+// mount under the SAME block device — an OrbStack Ubuntu VM observed 228 of
+// them — and every one measures identical free space. Reporting each as a
+// distinct volume both wastes syscalls and can blow past the API's fixed
+// volume-count cap, turning the whole cleanup catalog into a 502. A partition
+// with no Device (some virtual/synthetic mounts) is never deduped against
+// another empty-Device partition, since there is no real identity to key on.
 func fixedVolumes() []string {
 	partitions, err := partitionsFn(false)
 	if err != nil && len(partitions) == 0 {
 		log.Warn("could not enumerate volumes for cleanup measurement", "error", err.Error())
 		return nil
 	}
-	seen := make(map[string]bool, len(partitions))
+	seenMounts := make(map[string]bool, len(partitions))
+	seenDevices := make(map[string]bool, len(partitions))
 	mounts := make([]string, 0, len(partitions))
 	for _, partition := range partitions {
-		if partition.Mountpoint == "" || seen[partition.Mountpoint] {
+		if partition.Mountpoint == "" || seenMounts[partition.Mountpoint] {
 			continue
 		}
 		skip := false
@@ -69,7 +80,13 @@ func fixedVolumes() []string {
 		if skip {
 			continue
 		}
-		seen[partition.Mountpoint] = true
+		if partition.Device != "" {
+			if seenDevices[partition.Device] {
+				continue
+			}
+			seenDevices[partition.Device] = true
+		}
+		seenMounts[partition.Mountpoint] = true
 		mounts = append(mounts, partition.Mountpoint)
 	}
 	sort.Strings(mounts)
@@ -87,6 +104,77 @@ func sampleVolumes(mounts []string) []VolumeFree {
 			continue
 		}
 		out = append(out, VolumeFree{Mount: mount, FreeBytes: free})
+	}
+	return out
+}
+
+// syncMountFn commits mount's pending filesystem transactions. Real
+// implementation (Linux only — syncMount in volumes_linux.go) forces a
+// syncfs(2); everywhere else it is a no-op. Indirected for tests.
+var syncMountFn = syncMount
+
+// settleAttempts and settleInterval bound how long settleVolumes waits for a
+// lazy-reclaim filesystem to catch up before trusting a free-space reading
+// (issue #6484 / W05 lab BUG-2): btrfs releases extents asynchronously on
+// delete, so a single disk.Usage call taken immediately after a cleaner exits
+// can still report the pre-delete free space and make a run that really freed
+// 94 MB read as freedBytes=0. A forced sync plus a short bounded retry — not
+// an unbounded wait — catches the common case without holding up every run on
+// filesystems (ext4, APFS, NTFS) that already update immediately.
+var settleAttempts = 5
+var settleInterval = 300 * time.Millisecond
+
+// sleepFn is time.Sleep, indirected so tests don't pay the real interval.
+var sleepFn = time.Sleep
+
+// settleVolumes samples free space for mounts, forcing a filesystem sync
+// before each attempt and retrying until two consecutive readings agree per
+// mount or the attempt budget is exhausted. It returns the LAST sample taken,
+// which is at least as fresh as a single immediate read and — on a
+// lazy-reclaim filesystem — usually catches the real delta the naive
+// immediate sample misses.
+func settleVolumes(mounts []string) []VolumeFree {
+	if len(mounts) == 0 {
+		return sampleVolumes(mounts)
+	}
+
+	syncMounts(mounts)
+	sample := sampleVolumes(mounts)
+	prev := freeByMount(sample)
+
+	for attempt := 1; attempt < settleAttempts; attempt++ {
+		sleepFn(settleInterval)
+		syncMounts(mounts)
+		next := sampleVolumes(mounts)
+		nextByMount := freeByMount(next)
+		stable := len(nextByMount) == len(prev)
+		if stable {
+			for mount, freeBytes := range nextByMount {
+				if prevBytes, ok := prev[mount]; !ok || prevBytes != freeBytes {
+					stable = false
+					break
+				}
+			}
+		}
+		sample = next
+		prev = nextByMount
+		if stable {
+			break
+		}
+	}
+	return sample
+}
+
+func syncMounts(mounts []string) {
+	for _, mount := range mounts {
+		syncMountFn(mount)
+	}
+}
+
+func freeByMount(samples []VolumeFree) map[string]int64 {
+	out := make(map[string]int64, len(samples))
+	for _, sample := range samples {
+		out[sample.Mount] = sample.FreeBytes
 	}
 	return out
 }

@@ -119,6 +119,31 @@ describe('ticketNotifyWorker M365 Graph fork', () => {
     expect(sendEmailMock).not.toHaveBeenCalled();
   });
 
+  it('does NOT append the comment body on the Graph path even when fullMessageReply is on', async () => {
+    // fullMessageReply is gated on `!graphMailbox`: a connected-M365 reply goes to a
+    // recipient set we have not validated, so the actual comment TEXT must never ride
+    // it. With a mailbox connected the comment is not even loaded - this proves the
+    // guard by making a distinctive comment body available (4th select) and asserting
+    // it never reaches the Graph send. Removing the `!graphMailbox` guard would append
+    // it and fail here.
+    selectMock
+      .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', internalNumber: 'T-1', subject: 'Printer', submitterEmail: 'cust@x.com' }]) // getTicket
+      .mockResolvedValueOnce([{ slug: 'acme', settings: { ticketing: { inbound: { fullMessageReply: true } } } }]) // partner: fullMessageReply ON
+      .mockResolvedValueOnce([{ name: 'Acme Org' }]) // compose: getOrgName
+      .mockResolvedValue([{ content: 'SECRET-GRAPH-COMMENT-BODY', isPublic: true, deletedAt: null }]); // comment (only read if the guard were removed)
+    resolveMailboxMock.mockResolvedValue({ ...MAILBOX, originalMessageId: 'orig-1' });
+
+    await handleTicketEvent({
+      type: 'ticket.commented', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
+      actorUserId: 'u-1', eventId: 'evt-fmr-graph', payload: { commentId: 'c-1', isPublic: true },
+    } as never);
+
+    expect(sendThreadedMock).toHaveBeenCalledTimes(1);
+    const html = (sendThreadedMock.mock.calls[0]! as unknown as unknown[])[2] as string;
+    expect(html).not.toContain('SECRET-GRAPH-COMMENT-BODY');
+    expect(sendEmailMock).not.toHaveBeenCalled();
+  });
+
   it('uses sendNewMail when the mailbox is connected but there is no original message id', async () => {
     selectMock
       .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', internalNumber: 'T-1', subject: 'Printer', submitterEmail: 'cust@x.com' }])

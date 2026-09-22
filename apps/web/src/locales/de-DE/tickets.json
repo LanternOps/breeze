@@ -230,7 +230,9 @@
       "logFailedSentence": "Protokollierung der Zeit fehlgeschlagen."
     },
     "billedVsWorked": "{{worked}} Std. gearbeitet · {{billed}} Std. abgerechnet",
-    "includedMinutes": "{{hours}} Std. im Vertrag enthalten"
+    "includedMinutes": "{{hours}} Std. im Vertrag enthalten",
+    "missingRateCount_one": "1 Eintrag hat keinen Stundensatz – nicht im obigen Betrag enthalten",
+    "missingRateCount_other": "{{count}} Einträge haben keinen Stundensatz – nicht im obigen Betrag enthalten"
   },
   "inboundReviewQueue": {
     "title": "Prüfwarteschlange",

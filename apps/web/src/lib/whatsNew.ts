@@ -18,6 +18,19 @@ export interface WhatsNewEntry {
  */
 export const WHATS_NEW_ENTRIES: WhatsNewEntry[] = [
   {
+    version: '0.115.0',
+    date: '2026-09-21',
+    title: 'Automatic network topology maps, one alert delivery resolver, and disk cleanup that actually frees space',
+    highlights: [
+      'Network devices now assemble themselves into a live topology map from passive agent evidence — no active scanning needed — with shared config templates and on-demand diagnostics from the map.',
+      'Alerting: one delivery resolver replaces the old "send to everything enabled" fallback, with a real Delivery page (Channels, Routing, Escalation policies) and a preview of who actually gets notified.',
+      'Disk Cleanup now deletes for real (space is actually reclaimed), scans any fixed volume, and adds OS-native cleaners — Windows Disk Cleanup/DISM, macOS snapshots/Homebrew, Linux caches/journal.',
+      'Billing Profiles replace scattered legacy rate fields with one Rates screen, including minimums and rounding on billed time; existing rates convert automatically on upgrade.',
+      'Moving a device to another organization now requires an interactive session, and a step-up MFA prompt when two-factor authentication is on.',
+    ],
+    learnMoreUrl: 'https://breezermm.com/release-notes',
+  },
+  {
     version: '0.114.0',
     date: '2026-09-17',
     title: 'Four new evidence report types, honest network device polling, and clearer visibility controls',

@@ -55,7 +55,16 @@ actuateElevationRoutes.use('*', authMiddleware);
 // + agent-side target re-validation (Track 6) are deployed. Same env-flag guard
 // STYLE as devPush.ts, but disabled by default in ALL environments (devPush only
 // gates production; it is on-by-default in dev).
-actuateElevationRoutes.use('*', async (c, next) => {
+//
+// Scoped to the actuate-elevation path ONLY (#6504) — this router is mounted
+// at `/` alongside sibling routers (e.g. homebrewBootstrapRoutes) in
+// routes/devices/index.ts, and Hono attaches a sub-router's `.use('*', …)`
+// middleware to every route mounted after it at the same base path (see the
+// customFieldValuesRoutes comment there). A bare `'*'` here answered every
+// unmatched `/devices/:id/*` request with this 403 instead of a 404, and made
+// POST /devices/:id/homebrew-bootstrap unreachable whenever the flag is unset
+// (the production default).
+actuateElevationRoutes.use('/:id/actuate-elevation', async (c, next) => {
   if (process.env.PAM_ACTUATOR_ENABLED !== 'true') {
     return c.json({ error: 'PAM actuator is disabled' }, 403);
   }

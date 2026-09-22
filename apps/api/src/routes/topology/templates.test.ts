@@ -102,7 +102,7 @@ beforeEach(() => {
   for (const r of routes)
     r.mock().mockResolvedValue({ items: [], nextCursor: null });
   mocks.site.mockImplementation(async (c, next) => {
-    c.set('topologyContext', { scope: { siteId: id } });
+    c.set('topologyContext', { scope: { siteId: id, orgId: id } });
     await next();
   });
   mocks.options.mockResolvedValue({ items: [], nextCursor: null });
@@ -166,9 +166,14 @@ describe('template library HTTP boundary', () => {
     expect(response.status).toBe(200);
     expect(mocks.getPermissions).not.toHaveBeenCalled();
     expect(mocks.options).toHaveBeenCalledWith(
-      { scope: { siteId: id } },
+      { scope: { siteId: id, orgId: id } },
       { limit: 1, cursor: id },
     );
+  });
+  it('tolerates the web client\'s ambient orgId on template-options and still refuses a foreign one', async () => {
+    expect((await app().request(`/topology/sites/${id}/template-options?limit=1&orgId=${id}`)).status).toBe(200);
+    expect(mocks.options).toHaveBeenLastCalledWith({ scope: { siteId: id, orgId: id } }, { limit: 1 });
+    expect((await app().request(`/topology/sites/${id}/template-options?limit=1&orgId=10000000-0000-4000-8000-000000000002`)).status).toBe(400);
   });
   it('does not hide unexpected service failures behind success envelopes', async () => {
     mocks.list.mockRejectedValue(new Error('database offline'));

@@ -4322,7 +4322,8 @@
     "inactive": "Inattiva",
     "deactivate": "Disattiva",
     "activate": "Attiva",
-    "slaMinutesMustBeNumbers": "I minuti SLA devono essere numeri."
+    "slaMinutesMustBeNumbers": "I minuti SLA devono essere numeri.",
+    "categorySlaOverridesOrgNote": "Questo SLA ha la priorità su qualsiasi sostituzione dell'SLA a livello di organizzazione per i ticket in questa categoria."
   },
   "ticketPrioritiesTab": {
     "prioritiesAndSLAsSaved": "Priorità e SLA salvati",
@@ -4833,7 +4834,8 @@
       "description": "Sovrascrivi i valori predefiniti SLA a livello partner per questa organizzazione. Lascia una cella vuota per ereditare il valore predefinito del partner.",
       "priority": "Priorità",
       "response": "Risposta (min)",
-      "resolution": "Risoluzione (min)"
+      "resolution": "Risoluzione (min)",
+      "categoryOverridesNote": "L'SLA della categoria del ticket ha la priorità su queste sostituzioni a livello di organizzazione quando entrambe sono impostate."
     },
     "billing": {
       "title": "Valori predefiniti fatturazione",

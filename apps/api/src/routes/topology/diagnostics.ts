@@ -15,6 +15,7 @@ import {
 } from '../../services/topology/diagnosticRuns';
 import { selectTopologyOrigins } from '../../services/topology/originEligibility';
 import { requireTopologySiteCapability } from './middleware';
+import { siteScopedQuery } from './query';
 import { topologyOperation } from './operations';
 
 export const topologyDiagnosticRoutes = new Hono();
@@ -56,7 +57,7 @@ topologyDiagnosticRoutes.get(
     topologyCollectorsResponseSchema.parse({
       items: await selectTopologyOrigins(
         c.get('topologyContext'),
-        collectorRequest(c.req.query()),
+        collectorRequest(siteScopedQuery(c)),
       ),
       nextCursor: null,
     }),

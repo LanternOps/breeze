@@ -1,5 +1,6 @@
 import { fetchWithAuth, type FetchWithAuthOptions } from '../stores/auth';
 import { fetchAllPages, ListFetchError } from './fetchAllPages';
+import { sortByDisplayName } from './sortByDisplayName';
 
 // Re-exported: most callers of this error import it alongside a fetchAll* helper.
 export { ListFetchError };
@@ -18,6 +19,10 @@ export { ListFetchError };
  *
  * Throws on a non-OK response so callers keep their existing error branch —
  * this never converts a failed load into an empty list.
+ *
+ * The server orders by `created_at, id`, never by name, so the concatenated
+ * result is sorted here by display name (G2-2, #6459) — every `<select>`
+ * caller inherits it instead of re-sorting independently.
  */
 export async function fetchAllSites<T = any>(
   path: string,
@@ -34,5 +39,5 @@ export async function fetchAllSites<T = any>(
   }, { aliasKeys: ['sites'], strictShape: options.strictShape });
   // `fetchAllPages` only answers null when a page body is null, which the
   // fetcher above cannot produce (a non-OK response throws instead).
-  return sites ?? [];
+  return sortByDisplayName((sites ?? []) as Array<T & { name?: string | null }>) as T[];
 }

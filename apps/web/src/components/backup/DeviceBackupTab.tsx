@@ -14,6 +14,7 @@ import { cn } from '@/lib/utils';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
 import { friendlyFetchError } from '../../lib/utils';
+import { useScrollToError } from '../../lib/scrollToError';
 import BackupVerificationTab from './BackupVerificationTab';
 import { formatNumber } from '@/lib/i18n/format';
 import DeviceVaultStatus from './DeviceVaultStatus';
@@ -194,6 +195,7 @@ export default function DeviceBackupTab({ deviceId, deviceStatus, timezone }: De
   const [immutabilityMode, setImmutabilityMode] = useState<'application' | 'provider'>('application');
   const [actionLoading, setActionLoading] = useState(false);
   const [actionError, setActionError] = useState<string>();
+  const errorBannerRef = useScrollToError<HTMLDivElement>(error || actionError);
   const [actionMessage, setActionMessage] = useState<string>();
   const [actionInfo, setActionInfo] = useState<string>();
   const [runningBackup, setRunningBackup] = useState(false);
@@ -418,14 +420,18 @@ export default function DeviceBackupTab({ deviceId, deviceStatus, timezone }: De
 
   return (
     <div className="space-y-6">
-      {error && (
-        <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
-          {error}
-        </div>
-      )}
-      {actionError && (
-        <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
-          {actionError}
+      {(error || actionError) && (
+        <div ref={errorBannerRef} className="space-y-6">
+          {error && (
+            <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
+              {error}
+            </div>
+          )}
+          {actionError && (
+            <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
+              {actionError}
+            </div>
+          )}
         </div>
       )}
       {actionMessage && (

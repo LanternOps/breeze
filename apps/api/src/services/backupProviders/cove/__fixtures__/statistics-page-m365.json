@@ -1,0 +1,9 @@
+{
+  "id": "jsonrpc",
+  "visa": "visa-4",
+  "result": {
+    "result": [
+      { "AccountId": 1101, "PartnerId": 2001, "Flags": [], "Settings": [ { "I1": "acme.onmicrosoft.com" }, { "I8": "Acme Corp" }, { "I14": "5368709120" }, { "I59": "2" }, { "I78": "D19D20D05D23" }, { "D09F00": "5" }, { "D09F06": "0" }, { "D09F07": "4294967296" }, { "D09F09": "1789000000" }, { "D09F15": "1789000000" } ] }
+    ]
+  }
+}

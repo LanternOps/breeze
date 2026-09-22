@@ -13,7 +13,7 @@ The Breeze Helper is a companion application that runs in the end user's desktop
 The Helper is designed for **end users**, not IT administrators. It speaks in simple, non-technical language and uses a filtered subset of AI tools appropriate for the permission level configured by the organization. Destructive operations always require explicit approval before they reach the device.
 
 <Aside>
-  The Helper requires the Breeze agent to be enrolled and connected. It authenticates to the API using its own helper-scoped `brz_`-prefixed token — issued alongside, but distinct from, the agent's own token — and communicates with the agent service over a local IPC socket.
+  The Helper requires the Breeze agent to be enrolled and connected. It authenticates to the API using its own helper-scoped `brz_`-prefixed token — issued alongside, but distinct from, the agent's own token — and communicates with the agent service over a local IPC socket. Each request also re-checks the device credential's lifecycle state (suspended, decommissioned, quarantined, or an inactive tenant), and the Helper's database access is scoped to its own organization only, with no partner-wide access.
 </Aside>
 
 ---

@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import M365CustomerGraphReadCard from "./M365CustomerGraphReadCard";
 import { fetchWithAuth } from "../../stores/auth";
 import { runAction } from "../../lib/runAction";
-import { navigateTo } from "@/lib/navigation";
+import { navigateToMicrosoftLogin } from "@/lib/navigation";
 import { formatDateTime } from "@/lib/dateTimeFormat";
 
 const state = vi.hoisted(() => ({
@@ -81,7 +81,7 @@ vi.mock("../../lib/runAction", () => ({
   handleActionError: vi.fn(),
 }));
 
-vi.mock("@/lib/navigation", () => ({ navigateTo: vi.fn() }));
+vi.mock("@/lib/navigation", () => ({ navigateToMicrosoftLogin: vi.fn() }));
 
 vi.mock("@/lib/dateTimeFormat", () => ({
   formatDateTime: vi.fn((value: string) => `formatted ${value}`),
@@ -90,7 +90,7 @@ vi.mock("@/lib/dateTimeFormat", () => ({
 
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
 const runActionMock = vi.mocked(runAction);
-const navigateToMock = vi.mocked(navigateTo);
+const navigateToMicrosoftLoginMock = vi.mocked(navigateToMicrosoftLogin);
 const formatDateTimeMock = vi.mocked(formatDateTime);
 
 const ORG_A = "11111111-1111-4111-8111-111111111111";
@@ -537,7 +537,7 @@ describe("M365CustomerGraphReadCard", () => {
       `/m365/connections/customer-graph-read/consent?orgId=${ORG_A}`,
       { method: "POST" },
     );
-    expect(navigateToMock).toHaveBeenCalledWith(
+    expect(navigateToMicrosoftLoginMock).toHaveBeenCalledWith(
       "https://login.microsoftonline.com/organizations/v2.0/adminconsent?client_id=server-owned",
     );
   });
@@ -551,7 +551,7 @@ describe("M365CustomerGraphReadCard", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Connect" }));
 
     await waitFor(() => expect(runActionMock).toHaveBeenCalledTimes(1));
-    expect(navigateToMock).not.toHaveBeenCalled();
+    expect(navigateToMicrosoftLoginMock).not.toHaveBeenCalled();
   });
 
   it("retests through runAction, prevents duplicate clicks, and reloads", async () => {
@@ -680,7 +680,7 @@ describe("M365CustomerGraphReadCard", () => {
     expect(orgBConnect).toBeEnabled();
     fireEvent.click(orgBConnect);
     await waitFor(() =>
-      expect(navigateToMock).toHaveBeenCalledWith(
+      expect(navigateToMicrosoftLoginMock).toHaveBeenCalledWith(
         "https://login.microsoftonline.com/organizations/v2.0/adminconsent?client_id=org-b",
       ),
     );
@@ -691,7 +691,7 @@ describe("M365CustomerGraphReadCard", () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(navigateToMock).toHaveBeenCalledTimes(1);
+    expect(navigateToMicrosoftLoginMock).toHaveBeenCalledTimes(1);
     expect(fetchWithAuthMock).toHaveBeenCalledTimes(4);
   });
 
@@ -761,7 +761,7 @@ describe("M365CustomerGraphReadCard", () => {
     expect(fetchWithAuthMock).toHaveBeenCalledTimes(3);
     expect(state.errorMessages).toEqual([]);
     expect(state.successMessages).toEqual([]);
-    expect(navigateToMock).not.toHaveBeenCalled();
+    expect(navigateToMicrosoftLoginMock).not.toHaveBeenCalled();
     expect(orgBAction).toBeEnabled();
     confirm?.mockRestore();
   });
@@ -829,7 +829,7 @@ describe("M365CustomerGraphReadCard", () => {
     expect(fetchWithAuthMock).toHaveBeenCalledTimes(3);
     expect(state.errorMessages).toEqual([]);
     expect(state.successMessages).toEqual([]);
-    expect(navigateToMock).not.toHaveBeenCalled();
+    expect(navigateToMicrosoftLoginMock).not.toHaveBeenCalled();
     expect(orgBAction).toBeEnabled();
     confirm?.mockRestore();
   });
@@ -940,7 +940,7 @@ describe("M365CustomerGraphReadCard", () => {
         `/m365/connections/${CONNECTION_ID}/upgrade-consent?orgId=${ORG_A}`,
         { method: "POST" },
       );
-      await waitFor(() => expect(navigateToMock).toHaveBeenCalledWith(
+      await waitFor(() => expect(navigateToMicrosoftLoginMock).toHaveBeenCalledWith(
         "https://login.microsoftonline.com/common/adminconsent?state=raw",
       ));
     });
@@ -956,7 +956,7 @@ describe("M365CustomerGraphReadCard", () => {
       fireEvent.click(await screen.findByTestId("m365-read-approve-new-permissions"));
 
       await waitFor(() => expect(runActionMock).toHaveBeenCalledTimes(1));
-      expect(navigateToMock).not.toHaveBeenCalled();
+      expect(navigateToMicrosoftLoginMock).not.toHaveBeenCalled();
     });
 
     it("disables the approve button without organizations:write", async () => {

@@ -22,6 +22,7 @@ import {
   deleteMonitorDefinition,
   getMonitorDefinition,
   listMonitorDefinitions,
+  MonitorHasDependentsError,
   MonitorNotFoundError,
   MonitorOwnershipError,
   MonitorValidationError,
@@ -74,11 +75,27 @@ monitorDefinitionRoutes.use('*', authMiddleware);
 const requireAlertRead = requirePermission(PERMISSIONS.ALERTS_READ.resource, PERMISSIONS.ALERTS_READ.action);
 const requireAlertWrite = requirePermission(PERMISSIONS.ALERTS_WRITE.resource, PERMISSIONS.ALERTS_WRITE.action);
 
-function errorResponse(error: unknown): { body: Record<string, unknown>; status: 400 | 403 | 404 } | null {
+function errorResponse(error: unknown): { body: Record<string, unknown>; status: 400 | 403 | 404 | 409 } | null {
   if (error instanceof MonitorOwnershipError) return { body: { error: error.message }, status: 403 };
   if (error instanceof MonitorNotFoundError) return { body: { error: 'Monitor not found' }, status: 404 };
   if (error instanceof MonitorValidationError) {
     return { body: { error: 'INVALID_MONITOR', details: error.message }, status: 400 };
+  }
+  if (error instanceof MonitorHasDependentsError) {
+    // #6509 — a clean, non-leaking 409 in place of the raw postgres FK
+    // constraint-violation text this used to fall through and surface as a 500.
+    // This is expected to be unreachable in the ordinary case (the known
+    // alerts.rule_id cascade is fixed at the DB level, migration
+    // 2026-10-25-130200) — it's a belt-and-braces map for any other/future FK
+    // the cascade hits, so the message stays generic rather than naming the
+    // specific (now-fixed) alerts case.
+    return {
+      body: {
+        error: 'MONITOR_HAS_DEPENDENTS',
+        details: 'This monitor still has rows referencing it that cannot be automatically cleared. Try again or contact support.',
+      },
+      status: 409,
+    };
   }
   return null;
 }

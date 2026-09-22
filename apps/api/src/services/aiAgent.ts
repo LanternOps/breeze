@@ -22,6 +22,7 @@ import {
 } from './aiInputSanitizer';
 import { looksLikeInternalErrorDetail } from './aiToolErrors';
 import { LlmUnavailableError, resolveLlmConfigForOrg } from './llm/llmConfigResolver';
+import { getEffectiveAiBudget } from './effectiveSettings';
 export { BREEZE_FALLBACK_MODEL, resolveDefaultModel } from './aiModel';
 
 // ============================================
@@ -186,6 +187,15 @@ export async function createSession(
   const resolved = await resolveLlmConfigForOrg(orgId);
   if (resolved.source === 'unavailable') throw new LlmUnavailableError();
 
+  // #6473 — without this, every new session fell back to the `ai_sessions`
+  // schema column default (50) regardless of the configured org/partner
+  // maxTurnsPerSession, because nothing at session-creation time ever read
+  // the effective budget. Wrapped in withSystemDbAccessContext to match every
+  // other getEffectiveAiBudget caller (aiCostTracker.ts): it's a NO-OP for the
+  // org-axis `ai_budgets` read (inherits the caller's request-scoped context,
+  // RLS still applies) but is required for the partner-axis `partners` read.
+  const budget = await withSystemDbAccessContext(() => getEffectiveAiBudget(orgId));
+
   const [session] = await db
     .insert(aiSessions)
     .values({
@@ -197,6 +207,7 @@ export async function createSession(
       contextSnapshot: sanitizedPageContext ?? null,
       delegantM365ConnectionId,
       deviceId,
+      maxTurns: budget.maxTurnsPerSession,
       ...(options.approvalMode ? { approvalMode: options.approvalMode } : {}),
       systemPrompt: await buildSystemPrompt(auth, sanitizedPageContext)
     })

@@ -13,6 +13,11 @@ vi.mock('../db', () => ({
     insert: (...args: unknown[]) => insertMock(...args),
     update: (...args: unknown[]) => updateMock(...args),
   },
+  withSystemDbAccessContext: (fn: () => unknown) => fn(),
+}));
+
+vi.mock('./effectiveSettings', () => ({
+  getEffectiveAiBudget: vi.fn().mockResolvedValue({ maxTurnsPerSession: 50 }),
 }));
 
 vi.mock('../db/schema', () => ({

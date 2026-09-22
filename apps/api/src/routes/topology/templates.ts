@@ -14,6 +14,7 @@ import {
   listEligibleTopologyVersions,
 } from '../../services/topology/templateLibrary';
 import { requireTopologySiteCapability } from './middleware';
+import { siteScopedQuery, withoutAmbientOrgId } from './query';
 import { topologyLibraryPermissions, topologyOperation } from './operations';
 const page = z.object({
   cursor: z.uuid().optional(),
@@ -72,7 +73,7 @@ topologyTemplateRoutes.get(
       c.get('auth'),
       c.get('permissions'),
       c.req.param('templateId')!,
-      page.strict().parse(c.req.query()),
+      page.strict().parse(withoutAmbientOrgId(c.req.query())),
     ),
   ),
 );
@@ -111,7 +112,7 @@ topologyTemplateRoutes.get(
   topologyOperation((c) =>
     listEligibleTopologyVersions(
       c.get('topologyContext'),
-      page.strict().parse(c.req.query()),
+      page.strict().parse(siteScopedQuery(c)),
     ),
   ),
 );

@@ -27,7 +27,18 @@ export type McpExemptReason =
    * governance-gated, and a preview must be read by a human before the
    * matching convert call is made.
    */
-  | 'human_only_migration';
+  | 'human_only_migration'
+  /**
+   * Partner-level administration of an EXTERNAL VENDOR CONSOLE connection and
+   * the tenant bookkeeping it requires: storing/rotating the vendor login,
+   * mapping a discovered vendor customer onto a Breeze organization, and
+   * linking a vendor device row to a Breeze device. Deliberately not
+   * agent-reachable — these writes decide which tenant a third party's data
+   * lands under, and the credential routes are MFA- plus
+   * partner-wide-manage-gated. The agent-facing READ surface for backup health
+   * is `GET /backup/health` (#6008 W03), which carries its own tools.
+   */
+  | 'vendor_console_admin';
 
 export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'accessReviews.ts': { gap: '#6141' },
@@ -124,6 +135,11 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'backup/jobs.ts': { tools: ['query_backups', 'trigger_backup'] },
   'backup/mssql.ts': { tools: ['query_mssql_instances', 'get_mssql_backup_status', 'trigger_mssql_backup', 'restore_mssql_database', 'verify_mssql_backup'] },
   'backup/profiles.ts': { tools: ['manage_backup_profiles'] },
+  // #6008 W01 — the external backup-provider (Cove) admin surface; see
+  // `vendor_console_admin` above for why none of it is agent-reachable.
+  'backup/providerCustomers.ts': { exempt: 'vendor_console_admin', note: 'maps a discovered Cove customer onto a Breeze org' },
+  'backup/providerDevices.ts': { exempt: 'vendor_console_admin', note: 'lists provider device rows and links one to a Breeze device' },
+  'backup/providers.ts': { exempt: 'vendor_console_admin', note: 'stores and rotates the Cove console credential' },
   'backup/reconcile.ts': { gap: '#6141' },
   'backup/resilienceAuthorization.ts': { exempt: 'internal_plumbing', note: 'Authorization/helper or router composition module; the textual scanner matches context access, not a standalone endpoint.' },
   'backup/restore.ts': { tools: ['restore_snapshot'] },

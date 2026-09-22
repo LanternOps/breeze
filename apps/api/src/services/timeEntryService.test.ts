@@ -787,7 +787,7 @@ describe('time-entry audit mutation recording', () => {
     });
   });
 
-  it('does not record an update when UPDATE RETURNING yields no mutated row', async () => {
+  it('rejects with 409 ENTRY_UPDATE_LOST when UPDATE RETURNING yields no mutated row, instead of echoing the stale row', async () => {
     const update = actorWithRecorder();
     const existing = {
       id: 'te-raced',
@@ -803,7 +803,8 @@ describe('time-entry audit mutation recording', () => {
     dbMocks.selectResults.push([existing]);
     dbMocks.updateResult = [];
 
-    await updateTimeEntry('te-raced', { description: 'lost race' }, update.actor);
+    await expect(updateTimeEntry('te-raced', { description: 'lost race' }, update.actor))
+      .rejects.toMatchObject({ status: 409, code: 'ENTRY_UPDATE_LOST' });
 
     expect(update.recordAuditMutation).not.toHaveBeenCalled();
   });
@@ -1248,7 +1249,12 @@ describe('query helpers', () => {
       }
     ]);
     const result = await listBillables(new Date('2026-06-01T00:00:00Z'), new Date('2026-06-30T00:00:00Z'));
-    expect(result.rows.map((r) => r.amount)).toEqual(['0.00', '0.00']);
+    // The corrupt time row (`not_billed`, unresolvable rate) is a missingRate
+    // gap, not a fabricated $0.00 line (#6461). The corrupt part row has no
+    // such concept (ticket_parts.unit_price is NOT NULL) and keeps its
+    // defensive '0.00' fallback.
+    expect(result.rows[0]).toMatchObject({ kind: 'time', amount: null, missingRate: true });
+    expect(result.rows[1]).toMatchObject({ kind: 'part', amount: '0.00', missingRate: false });
     expect(result.rows.map((r) => r.amount)).not.toContain('NaN');
     expect(consoleSpy).toHaveBeenCalledTimes(2);
     consoleSpy.mockRestore();
@@ -1547,6 +1553,16 @@ describe('currency snapshots (wave 4 / Task 7)', () => {
     await expect(updateTicketPart('part-1', { quantity: 3 }, ACTOR))
       .rejects.toMatchObject({ code: 'PART_BILLED', status: 409 });
     expect(dbMocks.updateSetArgs).toHaveLength(0);
+  });
+});
+
+describe('updateTicketPart zero-row race (#6568)', () => {
+  it('rejects with 409 PART_UPDATE_LOST when UPDATE RETURNING yields no mutated row, instead of echoing the stale part', async () => {
+    dbMocks.selectResults.push([{ id: 'part-1', billingStatus: 'not_billed', currencyCode: 'USD' }]);
+    dbMocks.updateResult = [];
+
+    await expect(updateTicketPart('part-1', { description: 'lost race' }, ACTOR))
+      .rejects.toMatchObject({ status: 409, code: 'PART_UPDATE_LOST' });
   });
 });
 
@@ -2058,6 +2074,7 @@ describe('billing profile stamps and service override gate', () => {
   });
   it('changing work type re-prices an unbilled entry and clears approval', async () => {
     dbMocks.selectResults.push([entry]);
+    dbMocks.updateResult = [entry];
     await updateTimeEntry('te-1', { workTypeId: 'included' }, tech);
     expect(dbMocks.updateSetArgs[0]).toMatchObject({ workTypeId: 'included', billingProfileId: 'profile-1',
       coverage: 'included', hourlyRate: null, billingStatus: 'contract', isApproved: false, approvedBy: null, approvedAt: null });
@@ -2065,18 +2082,21 @@ describe('billing profile stamps and service override gate', () => {
   it('relink prices the new org card and applies its category default', async () => {
     seedLink('retired', 't-2', 'o-2');
     dbMocks.selectResults.push([entry]);
+    dbMocks.updateResult = [entry];
     await updateTimeEntry('te-1', { ticketId: 't-2' }, tech);
     expect(cardMocks.loadCardsForOrg).toHaveBeenCalledWith('o-2', 'p-1', 'USD');
     expect(dbMocks.updateSetArgs[0]).toMatchObject({ ticketId: 't-2', orgId: 'o-2', hourlyRate: '175.00', workTypeId: 'retired' });
   });
   it('an overridden entry retains its terms on a work type edit', async () => {
     dbMocks.selectResults.push([{ ...entry, billingOverridden: true }]);
+    dbMocks.updateResult = [entry];
     await updateTimeEntry('te-1', { workTypeId: 'included' }, tech);
     expect(dbMocks.updateSetArgs[0]).not.toHaveProperty('hourlyRate');
     expect(dbMocks.updateSetArgs[0]).not.toHaveProperty('coverage');
   });
   it('ordinary edits never load current cards or rewrite stamps', async () => {
     dbMocks.selectResults.push([entry]);
+    dbMocks.updateResult = [entry];
     await updateTimeEntry('te-1', { description: 'Corrected' }, tech);
     expect(cardMocks.loadCardsForOrg).not.toHaveBeenCalled();
     expect(dbMocks.updateSetArgs[0]).not.toHaveProperty('hourlyRate');
@@ -2087,6 +2107,7 @@ describe('billing profile stamps and service override gate', () => {
   });
   it('reset replaces all stamps and clears the override', async () => {
     dbMocks.selectResults.push([{ ...entry, billingOverridden: true }]);
+    dbMocks.updateResult = [entry];
     await updateTimeEntry('te-1', { resetBilling: true }, manager);
     expect(dbMocks.updateSetArgs[0]).toMatchObject({ hourlyRate: '225.00', minimumMinutes: 30,
       roundingIncrementMinutes: 15, billingProfileId: 'profile-1', billingOverridden: false });
@@ -2098,6 +2119,7 @@ describe('billing profile stamps and service override gate', () => {
   });
   it('echoes the existing stamp after a card edit without re-pricing', async () => {
     dbMocks.selectResults.push([entry]);
+    dbMocks.updateResult = [entry];
     await updateTimeEntry('te-1', { hourlyRate: 100 }, tech);
     expect(dbMocks.updateSetArgs[0]).toMatchObject({ hourlyRate: '100.00', billingOverridden: false });
     expect(cardMocks.loadCardsForOrg).not.toHaveBeenCalled();
@@ -2108,6 +2130,7 @@ describe('billing profile stamps and service override gate', () => {
       await createTimeEntry({ ticketId: 't-1', ...span, billingStatus: 'contract' }, manager);
     } else {
       dbMocks.selectResults.push([{ ...entry, minimumMinutes: 30 }]);
+      dbMocks.updateResult = [entry];
       await updateTimeEntry('te-1', { billingStatus: 'contract' }, manager);
     }
     const stamp = mode === 'create' ? dbMocks.insertedValues[0] : dbMocks.updateSetArgs[0];
@@ -2116,6 +2139,7 @@ describe('billing profile stamps and service override gate', () => {
   });
   it('a manager bills formerly included work by marking it out of scope', async () => {
     dbMocks.selectResults.push([{ ...entry, coverage: 'included', hourlyRate: null, billingStatus: 'contract' }]);
+    dbMocks.updateResult = [entry];
     await updateTimeEntry('te-1', { hourlyRate: 300 }, manager);
     expect(dbMocks.updateSetArgs[0]).toMatchObject({ hourlyRate: '300.00', billingStatus: 'not_billed',
       coverage: 'billable', billingOverridden: true });
@@ -2123,6 +2147,7 @@ describe('billing profile stamps and service override gate', () => {
   it.each([null, '50.00', '75.00'])('persists an explicit standalone rate over %s and marks it billable', async hourlyRate => {
     dbMocks.selectResults.push([{ ...entry, orgId: null, ticketId: null, billingProfileId: null,
       coverage: 'non_billable', isBillable: false, hourlyRate }]);
+    dbMocks.updateResult = [entry];
     await updateTimeEntry('te-1', { hourlyRate: 75 }, manager);
     expect(dbMocks.updateSetArgs[0]).toMatchObject({ hourlyRate: '75.00', coverage: 'billable',
       isBillable: true, billingStatus: 'not_billed', billingOverridden: true });
@@ -2310,12 +2335,14 @@ describe('both stop paths land billable_minutes (#4628 W03)', () => {
 
   it('updateTimeEntry recomputes billable_minutes whenever it recomputes durationMinutes', async () => {
     dbMocks.selectResults.push([{ ...entry, endedAt: null, durationMinutes: null }]);
+    dbMocks.updateResult = [entry];
     await updateTimeEntry('te-1', { endedAt: span.endedAt }, tech);
     expect(dbMocks.updateSetArgs[0]).toMatchObject({ durationMinutes: 20, billableMinutes: 60 });
   });
 
   it('updateTimeEntry does NOT touch billable_minutes when neither timestamp nor terms changed', async () => {
     dbMocks.selectResults.push([entry]);
+    dbMocks.updateResult = [entry];
     await updateTimeEntry('te-1', { description: 'typo fix' }, tech);
     expect(dbMocks.updateSetArgs[0]).not.toHaveProperty('billableMinutes');
   });
@@ -2323,12 +2350,14 @@ describe('both stop paths land billable_minutes (#4628 W03)', () => {
   it('updateTimeEntry re-derives billable_minutes when a re-price changes the minimum', async () => {
     // Spec §3.7: an entry is re-priced when its own workTypeId changes.
     dbMocks.selectResults.push([{ ...entry, minimumMinutes: null, roundingIncrementMinutes: null }]);
+    dbMocks.updateResult = [entry];
     await updateTimeEntry('te-1', { workTypeId: 'wt-onsite' }, tech);
     expect(dbMocks.updateSetArgs[0]).toMatchObject({ minimumMinutes: 60, billableMinutes: 60 });
   });
 
   it('a manager raising the minimum re-derives the billed quantity', async () => {
     dbMocks.selectResults.push([entry]);
+    dbMocks.updateResult = [entry];
     await updateTimeEntry('te-1', { minimumMinutes: 90 }, manager);
     expect(dbMocks.updateSetArgs[0]).toMatchObject({ minimumMinutes: 90, billableMinutes: 90 });
   });
@@ -2407,7 +2436,43 @@ describe('money readers read COALESCE(billable_minutes, duration_minutes) (#4628
     expect(totalsByCurrency).toEqual([{ currencyCode: 'USD', amount: '0.00' }]);
   });
 
-  it('the timesheet bills the minimum but reports ACTUAL minutes in day totals', async () => {
+  // #6461: a `not_billed` time entry with no resolvable hourly rate is a genuine
+  // assembly gap — the same row invoiceAssembly.partitionTimeEntries would route
+  // to `missingRate` rather than throw on — and must never render as a real
+  // $0.00 line or feed totalsByCurrency.
+  it('a NOT_BILLED entry with no rate is a missingRate gap, not a $0.00 line', async () => {
+    dbMocks.selectResults.push([billableRow({
+      minutes: 30, billableMinutes: 30, rate: null, billingStatus: 'not_billed',
+    })], []);
+    const { rows, totalsByCurrency } = await listBillables(FROM, TO);
+    expect(rows[0]).toMatchObject({ quantity: '0.50', amount: null, missingRate: true });
+    // A gap contributes no money at all — not even a zero entry under its currency.
+    expect(totalsByCurrency).toEqual([]);
+  });
+
+  it('a NO_CHARGE entry with no rate stays an intentional $0.00 line, not a gap', async () => {
+    dbMocks.selectResults.push([billableRow({
+      minutes: 30, billableMinutes: 30, rate: null, billingStatus: 'no_charge',
+    })], []);
+    const { rows, totalsByCurrency } = await listBillables(FROM, TO);
+    expect(rows[0]).toMatchObject({ quantity: '0.50', amount: '0.00', missingRate: false });
+    expect(totalsByCurrency).toEqual([{ currencyCode: 'USD', amount: '0.00' }]);
+  });
+
+  // listBillables (unlike partitionTimeEntries, which only ever sees
+  // not_billed rows) sees every billing_status — including rows already
+  // marked BILLED. A billed row that has lost/never had a resolvable rate
+  // still has no amount to report or sum, so it is a gap too, not '0.00'.
+  it('a BILLED entry with no rate is still a missingRate gap, not a $0.00 line', async () => {
+    dbMocks.selectResults.push([billableRow({
+      minutes: 30, billableMinutes: 30, rate: null, billingStatus: 'billed',
+    })], []);
+    const { rows, totalsByCurrency } = await listBillables(FROM, TO);
+    expect(rows[0]).toMatchObject({ quantity: '0.50', amount: null, missingRate: true });
+    expect(totalsByCurrency).toEqual([]);
+  });
+
+  it('the timesheet bills the minimum, reporting ACTUAL minutes for totalMinutes and the BILLED quantity for billableMinutes', async () => {
     dbMocks.selectResults.push([{
       id: 'te-1', startedAt: new Date('2026-03-03T09:00:00Z'),
       durationMinutes: 20, billableMinutes: 60,
@@ -2417,8 +2482,9 @@ describe('money readers read COALESCE(billable_minutes, duration_minutes) (#4628
     expect(sheet.totals.billableAmounts).toEqual([{ currencyCode: 'USD', amount: '225.00' }]);
     // Utilization is about time WORKED (§3.5).
     expect(sheet.totals.totalMinutes).toBe(20);
-    expect(sheet.totals.billableMinutes).toBe(20);
     expect(sheet.days[1]!.totalMinutes).toBe(20);
+    // billableMinutes is the BILLED quantity (G2-1 fix) — matches the money loop.
+    expect(sheet.totals.billableMinutes).toBe(60);
   });
 
   it('the timesheet selection carries billable_minutes to the client', async () => {
@@ -2436,5 +2502,28 @@ describe('money readers read COALESCE(billable_minutes, duration_minutes) (#4628
     const sheet = await getTimesheet('u-1', new Date('2026-03-02T00:00:00Z'));
     expect(sheet.totals.billableAmounts).toEqual([]);
     expect(sheet.totals.billableMinutes).toBe(45);
+  });
+
+  it('the day/week billableMinutes aggregate sums the BILLED quantity, not actual duration (G2-1)', async () => {
+    dbMocks.selectResults.push([
+      {
+        id: 'te-1', startedAt: new Date('2026-03-03T09:00:00Z'),
+        durationMinutes: 10, billableMinutes: 30,
+        isBillable: true, hourlyRate: null, currencyCode: 'USD',
+      },
+      {
+        id: 'te-2', startedAt: new Date('2026-03-03T11:00:00Z'),
+        durationMinutes: 40, billableMinutes: 45,
+        isBillable: true, hourlyRate: null, currencyCode: 'USD',
+      },
+    ]);
+    const sheet = await getTimesheet('u-1', new Date('2026-03-02T00:00:00Z'));
+    // Utilization stays on actual minutes worked.
+    expect(sheet.totals.totalMinutes).toBe(50);
+    expect(sheet.days[1]!.totalMinutes).toBe(50);
+    // Billed quantity: 30 + 45 = 75, matching the same COALESCE(billable_minutes,
+    // duration_minutes) rule the money loop already uses — not 10 + 40 = 50.
+    expect(sheet.totals.billableMinutes).toBe(75);
+    expect(sheet.days[1]!.billableMinutes).toBe(75);
   });
 });

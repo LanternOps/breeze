@@ -21,6 +21,7 @@ import { enqueueDiscoveryResults, type DiscoveredHostResult, type DeviceAdjacenc
 import { enqueueBackupResults } from '../jobs/backupWorker';
 import { enqueueSnmpPollResults, type SnmpMetricResult } from '../jobs/snmpWorker';
 import { enqueueMonitorCheckResult, recordMonitorCheckResult, type MonitorCheckResult } from '../jobs/monitorWorker';
+import { transitionDeviceOffline } from '../jobs/offlineDetector';
 import { getRedis, isRedisAvailable } from '../services/redis';
 import { isIP } from 'node:net';
 import { processDeviceIPHistoryUpdate } from '../services/deviceIpHistory';
@@ -49,7 +50,11 @@ import {
   readAgentCertificateAssertion,
   type AgentCertificateAssertion,
 } from '../services/agentCertificateBinding';
-import { getAgentTenantState } from '../services/tenantStatus';
+import {
+  checkDeviceStatus,
+  checkDeviceTenantState,
+  checkDeviceTokenSuspension,
+} from '../middleware/deviceCredentialLifecycle';
 import { createAuditLogAsync } from '../services/auditService';
 import { ANONYMOUS_ACTOR_ID, writeAuditEvent, requestLikeFromSnapshot } from '../services/auditEvents';
 import { redactSecretsFromOutput, redactOptionalSecretText, redactAgentResultErrorFields } from '../services/secretRedaction';
@@ -972,8 +977,9 @@ export async function isAgentDeviceStillAuthorized(
     // can remove/change the row between upgrade and the next frame. The absent
     // hash compatibility branch exists only for direct unit-test handler seams.
     if (!row) return authenticatedTokenHash === undefined;
-    if (row.status === 'decommissioned' || row.status === 'quarantined') return false;
-    if (row.agentTokenSuspendedAt) return false;
+    // Shared predicates — middleware/deviceCredentialLifecycle.ts.
+    if (checkDeviceStatus(row)) return false;
+    if (checkDeviceTokenSuspension(row)) return false;
     if (authenticatedTokenHash !== undefined) {
       const match = matchRoleScopedAgentTokenHash({
         ...row,
@@ -1071,17 +1077,15 @@ export async function validateAgentToken(
     return { ok: false, reason: 're_enrollment_required' };
   }
 
-  if (device.status === 'decommissioned') {
+  // Shared predicates (middleware/deviceCredentialLifecycle.ts). Every denial
+  // collapses to this path's opaque `unauthorized`: a decommissioned or
+  // quarantined device and a token auto-suspended for cross-tenant probing all
+  // fail closed, and the agent's reconnect loop is the intended ops signal.
+  if (checkDeviceStatus(device)) {
     return { ok: false, reason: 'unauthorized' };
   }
 
-  if (device.status === 'quarantined') {
-    return { ok: false, reason: 'unauthorized' };
-  }
-
-  // Task 18: tokens auto-suspended for cross-tenant probing fail closed.
-  // The reconnect loop is the intended ops alarm signal.
-  if (device.agentTokenSuspendedAt) {
+  if (checkDeviceTokenSuspension(device)) {
     return { ok: false, reason: 'unauthorized' };
   }
 
@@ -1115,7 +1119,7 @@ export async function validateAgentToken(
   // device_commands row, so any WS session is a fully-capable control channel
   // that the drain-mode command filtering can't see. The agent falls back to
   // heartbeat polling, which is the actual self_uninstall delivery path.
-  if ((await getAgentTenantState(device.orgId)) !== 'active') {
+  if ((await checkDeviceTenantState(device.orgId, { allowDraining: false })).denied) {
     return { ok: false, reason: 'unauthorized' };
   }
 
@@ -3483,7 +3487,14 @@ onClose: async (_event: unknown, ws: WSContext) => {
                 console.log(`[AgentWs] Preserving 'updating' status for agent ${agentId} on disconnect`);
                 return;
               }
-              await updateDeviceStatus(agentId, 'offline');
+              const { transitioned } = await transitionDeviceOffline(agentId, ['online']);
+              // Only announce the offline event if the device row actually
+              // flipped — transitionDeviceOffline no-ops (transitioned:false)
+              // on a status/last_seen_at race (e.g. a reconnect or a
+              // concurrent write beat us to it), and publishing here anyway
+              // would tell subscribers the device went offline when the DB
+              // still says otherwise.
+              if (!transitioned) return;
               publishEvent('device.offline', agentDb.orgId, {
                 deviceId: current.id,
                 hostname: current.hostname,
@@ -3493,7 +3504,13 @@ onClose: async (_event: unknown, ws: WSContext) => {
               });
             } catch (err) {
               console.error(`[AgentWs] Failed to check status for ${agentId} on disconnect, falling back to offline:`, err);
-              await updateDeviceStatus(agentId, 'offline');
+              captureException(err instanceof Error ? err : new Error(String(err)));
+              const { transitioned } = await transitionDeviceOffline(agentId, ['online']).catch(fallbackErr => {
+                console.error(`[AgentWs] Failed to transition ${agentId} offline on fallback:`, fallbackErr);
+                captureException(fallbackErr instanceof Error ? fallbackErr : new Error(String(fallbackErr)));
+                return { transitioned: false };
+              });
+              if (!transitioned) return;
               publishEvent('device.offline', agentDb.orgId, {
                 deviceId: agentId,
                 hostname: '',
@@ -3544,9 +3561,10 @@ if (activeConnections.get(agentId)?.ws === ws) {
           } catch (err) {
             console.error(`[AgentWs] Failed to check status for ${agentId} on error disconnect, falling back to offline:`, err);
           }
-          await updateDeviceStatus(agentId, 'offline');
+          await transitionDeviceOffline(agentId, ['online']);
         }).catch((err) => {
           console.error(`[AgentWs] Failed to mark agent ${agentId} offline after error:`, err);
+          captureException(err instanceof Error ? err : new Error(String(err)));
         });
       }
     }

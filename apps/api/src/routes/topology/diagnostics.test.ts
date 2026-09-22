@@ -87,6 +87,12 @@ describe('topology diagnostics routes', () => {
     );
   });
 
+  it('tolerates the web client\'s ambient orgId on collectors and still refuses a foreign one', async () => {
+    expect((await request('GET', `/collectors?recipe=gateway_basic&subjectKind=node&subjectId=${nodeId}&graphRevision=4&family=ipv4&orgId=${org}`)).status).toBe(200);
+    expect(mocks.collectors).toHaveBeenCalledTimes(1);
+    expect((await request('GET', `/collectors?recipe=gateway_basic&subjectKind=node&subjectId=${nodeId}&graphRevision=4&family=ipv4&orgId=10000000-0000-4000-8000-000000000002`)).status).toBe(400);
+    expect(mocks.collectors).toHaveBeenCalledTimes(1);
+  });
   it('rejects a collectors query that is missing its subject', async () => {
     const response = await request('GET', '/collectors?recipe=gateway_basic');
     expect(response.status).toBe(400);

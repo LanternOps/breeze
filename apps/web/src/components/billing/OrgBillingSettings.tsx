@@ -8,6 +8,7 @@ import { isValidEmail } from '@/lib/email';
 import { currencyLabel, currencyOptions } from '@/lib/currencies';
 import { useOrgBillingProfile } from './OrgBillingProfile';
 import { pctFromFraction } from './invoiceTypes';
+import InheritedField from '../shared/InheritedField';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
@@ -284,12 +285,6 @@ export default function OrgBillingSettings({ orgId }: Props) {
 
   const inputCls = 'mt-1 w-full rounded-md border bg-background px-3 py-1.5 text-sm';
 
-  // Settings rule 4: blank = inherit, and the field must always show the
-  // inherited VALUE and where it comes from — not just "Partner default".
-  const taxRatePlaceholder = partnerDefaultTaxRate !== null
-    ? t('orgBillingSettings.tax.partnerDefaultWithValue', { pct: pctFromFraction(partnerDefaultTaxRate) })
-    : t('orgBillingSettings.tax.partnerDefault');
-
   const countRow = (code: string, key: string, label: string, value: number) => (
     <div className="flex items-baseline justify-between gap-4 text-sm">
       <span className="text-muted-foreground">{label}</span>
@@ -455,13 +450,19 @@ export default function OrgBillingSettings({ orgId }: Props) {
             <input id="ob-taxid" type="text" maxLength={100} value={taxId} onChange={(e) => setTaxId(e.target.value)} data-testid="org-billing-taxid" className={inputCls} />
           </div>
           <div>
-            <label className="text-sm font-medium" htmlFor="ob-taxrate">{t('orgBillingSettings.tax.taxRate')}</label>
-            <input
-              id="ob-taxrate" type="number" min={0} max={100} step="0.001" value={taxPercent}
-              onChange={(e) => setTaxPercent(e.target.value)} placeholder={taxRatePlaceholder}
+            <InheritedField
+              id="ob-taxrate"
+              label={t('orgBillingSettings.tax.taxRate')}
+              value={taxPercent}
+              onChange={setTaxPercent}
+              inheritedValue={partnerDefaultTaxRate !== null ? pctFromFraction(partnerDefaultTaxRate) : null}
+              inheritedSource={t('orgBillingSettings.tax.partnerDefault')}
               disabled={taxExempt}
+              type="number"
+              min={0}
+              max={100}
+              step="0.001"
               data-testid="org-billing-taxrate"
-              className={`${inputCls} disabled:opacity-50`}
             />
           </div>
         </div>

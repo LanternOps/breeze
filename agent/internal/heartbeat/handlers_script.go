@@ -153,7 +153,7 @@ func handleScriptInner(h *Heartbeat, cmd Command, secretEnv executor.SecretEnv) 
 	}
 	// Validated by handleScript's ParseSecretEnv. Deliberately set AFTER the
 	// parameters block: secrets ride the process environment (buildEnvironment)
-	// and must never reach SubstituteParameters or validateScript, which would
+	// and must never reach RenderParameterReferences or validateScript, which would
 	// write them into the temp script file on the customer's disk.
 	script.SecretEnv = secretEnv
 	if script.Script == "" {

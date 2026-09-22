@@ -25,6 +25,7 @@ import { applyDlp, type DlpRedactionEvent } from './clientAiDlp';
 import { writeAuditEvent, requestLikeFromSnapshot } from './auditEvents';
 import { captureException } from './sentry';
 import { type ClientHost } from './clientAiHosts';
+import { redactSensitiveToolInput } from './aiToolOutput';
 
 const addressSchema = z
   .string()
@@ -601,7 +602,7 @@ async function persistClientToolResult(session: ActiveSession, params: PersistPa
         await db.insert(aiToolExecutions).values({
           sessionId: session.breezeSessionId,
           toolName: params.toolName,
-          toolInput: params.input,
+          toolInput: redactSensitiveToolInput(params.input),
           toolOutput: (params.output ?? null) as Record<string, unknown>,
           status: params.status,
           durationMs: params.durationMs,

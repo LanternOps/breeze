@@ -30,10 +30,11 @@ import { InvoiceServiceError } from './invoiceTypes';
 import type { InvoiceActor } from './invoiceTypes';
 import type { BillToAddress } from './sellerSnapshot';
 import { buildSellerSnapshot, sellerAddressLines, type SellerSnapshot } from './sellerSnapshot';
-import { computeChargeNow, formatMoney } from '@breeze/shared';
+import { computeChargeNow, formatMoney, isSupportedLocale } from '@breeze/shared';
 import { formatMoneyForPdf } from './pdfMoney';
 import { fitFontSize } from './pdfFitText';
 import { resolvePartnerDocumentLocale } from './documentLocale';
+import { tApi } from '../i18n';
 
 type InvoiceRow = typeof invoices.$inferSelect;
 type InvoiceLineRow = typeof invoiceLines.$inferSelect;
@@ -115,6 +116,20 @@ function lineBlurb(l: { name: string | null; description: string | null }): stri
   return l.name ? (l.description ?? '').trim() : '';
 }
 
+/** #6467: worked-vs-billed disclosure (§3.5), rendered from structured data
+ *  (never from `description`, which a customer-visible line's editor can
+ *  freely change) in the document's render locale. Empty when the line isn't
+ *  a time_entry line, or when the worked and billed quantities agree —
+ *  mirroring the old description-suffix condition exactly. */
+function lineNote(l: { quantity: string; workedMinutes: number | null }, locale: string): string {
+  if (l.workedMinutes == null) return '';
+  const worked = (l.workedMinutes / 60).toFixed(2);
+  const billed = Number(l.quantity).toFixed(2);
+  if (worked === billed) return '';
+  const safeLocale = isSupportedLocale(locale) ? locale : 'en';
+  return tApi(safeLocale, 'pdf:invoice.billedVsWorked', { worked, billed });
+}
+
 function addressLines(addr: BillToAddress | null | undefined): string[] {
   if (!addr) return [];
   const cityLine = [addr.city, addr.region, addr.postalCode].filter(Boolean).join(', ');
@@ -170,9 +185,10 @@ export function renderInvoiceHtml(invoice: InvoiceRow, lines: InvoiceLineRow[], 
       const taxCell = showTax
         ? `<td style="padding:6px 8px;font-size:13px;color:#6b7280;text-align:right;white-space:nowrap;">${t === null ? '&mdash;' : escapeHtml(formatMoney(t, currency, locale))}</td>`
         : '';
+      const note = lineNote(l, locale);
       return `
       <tr>
-        <td style="padding:6px 8px;font-size:13px;color:#1f2937;">${escapeHtml(lineTitle(l))}${lineBlurb(l) ? `<div style="font-size:11px;color:#6b7280;margin-top:2px;">${escapeHtml(lineBlurb(l))}</div>` : ''}</td>
+        <td style="padding:6px 8px;font-size:13px;color:#1f2937;">${escapeHtml(lineTitle(l))}${lineBlurb(l) ? `<div style="font-size:11px;color:#6b7280;margin-top:2px;">${escapeHtml(lineBlurb(l))}</div>` : ''}${note ? `<div style="font-size:11px;color:#6b7280;margin-top:2px;">${escapeHtml(note)}</div>` : ''}</td>
         <td style="padding:6px 8px;font-size:13px;color:#1f2937;text-align:right;white-space:nowrap;">${escapeHtml(String(Number(l.quantity)))}</td>
         ${taxCell}
         <td style="padding:6px 8px;font-size:13px;color:#1f2937;text-align:right;white-space:nowrap;">${escapeHtml(formatMoney(l.lineTotal, currency, locale))}</td>
@@ -404,12 +420,18 @@ export function renderInvoicePdfBuffer(
           doc.fillColor('#1f2937').fontSize(10).font('Helvetica');
           const title = lineTitle(l);
           const blurb = lineBlurb(l);
+          const note = lineNote(l, locale);
           const titleHeight = doc.heightOfString(title, { width: colDescW });
           const blurbHeight = blurb ? doc.heightOfString(blurb, { width: colDescW }) + 2 : 0;
-          const descHeight = titleHeight + blurbHeight;
+          const noteHeight = note ? doc.heightOfString(note, { width: colDescW }) + 2 : 0;
+          const descHeight = titleHeight + blurbHeight + noteHeight;
           doc.font('Helvetica-Bold').text(title, left, y, { width: colDescW });
           if (blurb) {
             doc.fillColor('#6b7280').fontSize(8.5).font('Helvetica').text(blurb, left, y + titleHeight + 2, { width: colDescW });
+            doc.fillColor('#1f2937').fontSize(10);
+          }
+          if (note) {
+            doc.fillColor('#6b7280').fontSize(8.5).font('Helvetica').text(note, left, y + titleHeight + blurbHeight + 2, { width: colDescW });
             doc.fillColor('#1f2937').fontSize(10);
           }
           doc.font('Helvetica').text(String(Number(l.quantity)), colQtyX, y, { width: colNumW, align: 'right' });

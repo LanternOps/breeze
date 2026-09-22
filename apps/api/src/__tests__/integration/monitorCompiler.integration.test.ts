@@ -27,17 +27,19 @@ import { db, withDbAccessContext, type DbAccessContext } from '../../db';
 import {
   alertRules,
   alertTemplates,
+  alerts,
   automations,
   configPolicyFeatureLinks,
   configPolicyMonitors,
   configurationPolicies,
+  devices,
   monitorDefinitions,
   scripts,
   type MonitorDefinitionRow,
 } from '../../db/schema';
 import { compileMonitorInTx, verifyCompiled } from '../../services/monitors/monitorCompiler';
 import { createMonitorDefinition } from '../../services/monitors/monitorService';
-import { createOrganization, createPartner, createUser } from './db-utils';
+import { createOrganization, createPartner, createSite, createUser } from './db-utils';
 
 const SYSTEM_CTX: DbAccessContext = {
   scope: 'system',
@@ -267,6 +269,63 @@ describe('monitorCompiler — compile round-trip against real Postgres (#5289)',
       await db.delete(configPolicyFeatureLinks).where(eq(configPolicyFeatureLinks.id, linkId));
       await db.delete(configurationPolicies).where(eq(configurationPolicies.id, policyId));
     });
+  });
+
+  // Regression for #6509: DELETE /monitor-definitions/:id 500ed with the raw
+  // postgres FK error "alerts_rule_id_alert_rules_id_fk" once the monitor had
+  // ever produced an alert. The cascade above (managed_by_monitor_id ON
+  // DELETE CASCADE) deletes the compiled alert_rules row with the monitor;
+  // this proves the fix at the DB level — migration 2026-10-25-130200 made
+  // alerts.rule_id ON DELETE SET NULL, so a real alerts row pointing at that
+  // rule must no longer block the delete, and must survive it with rule_id
+  // cleared rather than being deleted itself (it's historical evidence).
+  it('deleting a monitor with a live alert succeeds and clears the alert rule_id instead of blocking (#6509)', async () => {
+    const f = await fixture();
+    const def = await insertMonitor(f);
+    const firstRefs = await compile(def);
+
+    const site = await createSite({ orgId: f.orgId });
+    const [device] = await withDbAccessContext(SYSTEM_CTX, () =>
+      db.insert(devices).values({
+        orgId: f.orgId,
+        siteId: site!.id,
+        agentId: `agent-6509-${randomUUID()}`,
+        hostname: '6509-host',
+        osType: 'linux',
+        osVersion: '22.04',
+        architecture: 'x64',
+        agentVersion: '1.0.0',
+      }).returning({ id: devices.id }),
+    );
+
+    const [alert] = await withDbAccessContext(SYSTEM_CTX, () =>
+      db.insert(alerts).values({
+        ruleId: firstRefs.alertRuleId,
+        deviceId: device!.id,
+        orgId: f.orgId,
+        severity: 'medium',
+        title: '6509 regression alert',
+      }).returning({ id: alerts.id }),
+    );
+
+    // The delete itself must not throw (this is exactly what 500ed before the fix).
+    await withDbAccessContext(SYSTEM_CTX, () =>
+      db.delete(monitorDefinitions).where(eq(monitorDefinitions.id, def.id)),
+    );
+
+    const [rules, survivingAlert] = await Promise.all([
+      ruleRows(def.id),
+      withDbAccessContext(SYSTEM_CTX, () =>
+        db.select().from(alerts).where(eq(alerts.id, alert!.id)),
+      ),
+    ]);
+    expect(rules).toHaveLength(0);
+    // The alert itself is historical evidence and must survive the cascade —
+    // only its now-defunct rule pointer is cleared.
+    expect(survivingAlert).toHaveLength(1);
+    expect(survivingAlert[0]!.ruleId).toBeNull();
+
+    await withDbAccessContext(SYSTEM_CTX, () => db.delete(alerts).where(eq(alerts.id, alert!.id)));
   });
 });
 

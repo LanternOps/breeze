@@ -145,6 +145,25 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   "backup_jobs": tablePolicy("org_id", {"included":["id","org_id","config_id","policy_id","feature_link_id","device_id","status","type","backup_mode","started_at","completed_at","total_size","transferred_size","file_count","error_count","error_log","snapshot_id","backup_type","last_progress_at","total_files","referenced_size","referenced_files","base_snapshot_id","publish_lease_expires_at","storage_identity","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["mode_targets","vss_metadata"]}),
   "backup_policies": tablePolicy("org_id", {"included":["id","org_id","config_id","name","enabled","legal_hold","legal_hold_reason","bandwidth_limit_mbps","backup_window_start","backup_window_end","priority","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["schedule","retention","targets","gfs_config"]}),
   "backup_profiles": tablePolicy("org_id", {"included":["id","org_id","partner_id","name","description","is_active","created_by","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["selections"]}),
+  // Backup Provider Integration W01 (#6008, spec "Data model" + "Security").
+  //
+  // Customer rows are vendor-side directory data plus the Breeze org they were
+  // mapped to — identifiers, names, a closed-set mapping_source, a count and
+  // timestamps. Nothing matches SUSPICIOUS_NAME_PARTS and nothing is an open
+  // container. The CREDENTIAL lives on backup_provider_connections, which has
+  // no org_id and therefore no entry in this registry at all.
+  "backup_provider_customers": tablePolicy("org_id", {"included":["id","connection_id","partner_id","vendor_customer_id","vendor_customer_name","vendor_parent_id","vendor_level","vendor_external_code","org_id","mapping_source","device_count","last_seen_at","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
+  // Observed daily health for the 28-day bar. Plain scalars only.
+  "backup_provider_device_history": tablePolicy("org_id", {"included":["id","provider_device_id","org_id","day","status","last_success_at","errors_count","observations","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
+  // vendor_raw is jsonb -> excludedOpen by the container rule, even though
+  // nothing in it is a secret TODAY: an open container may embed credentials
+  // or capabilities, and Cove's Settings map is whatever the vendor decides to
+  // return. mac_addresses / data_sources are text[] (udt_name `_text`), which
+  // is NOT an open-container type, and `data_sources` is not the exact name
+  // `data` — so both stay plain `included`. `provider` and
+  // `portal_show_provider_name` contain "provider", not "provision", and
+  // `client_version` is not "client_key": no reviewedIncluded entries needed.
+  "backup_provider_devices": tablePolicy("org_id", {"included":["id","connection_id","partner_id","org_id","customer_id","provider","portal_show_provider_name","vendor_device_id","vendor_device_name","computer_name","os_type","os_version","client_version","mac_addresses","account_type","data_sources","status","vendor_status_code","last_session_at","last_success_at","last_completed_at","selected_bytes","used_bytes","errors_count","breeze_device_id","device_match_source","pending_condition","vendor_created_at","vendor_expires_at","first_seen_at","last_seen_at","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["vendor_raw"]}),
   "backup_sla_configs": tablePolicy("org_id", {"included":["id","org_id","name","rpo_target_minutes","rto_target_minutes","alert_on_breach","is_active","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["target_devices","target_groups"]}),
   "backup_sla_events": tablePolicy("org_id", {"included":["id","org_id","sla_config_id","device_id","event_type","detected_at","resolved_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["details"]}),
   "backup_snapshot_retirements": tablePolicy("org_id", {"included":["id","org_id","config_id","device_id","snapshot_id","storage_identity","backup_type","reason","retired_at","swept_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
@@ -323,7 +342,9 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
                "device_role","site_id","counted_as","created_at"],
     reviewedIncluded: [], excludedSensitive: [], excludedOpen: [],
   }),
-  "invoice_lines": tablePolicy("org_id", {"included":["id","invoice_id","org_id","source_type","source_id","source_contract_id","catalog_item_id","parent_line_id","ticket_id","name","description","quantity","unit_price","cost_basis","revenue_allocation","taxable","customer_visible","line_total","is_unapproved_time","sort_order","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
+  // worked_minutes (#6467): ordinary numeric fact (worked time for the
+  // worked-vs-billed disclosure) — included, same bucket as quantity.
+  "invoice_lines": tablePolicy("org_id", {"included":["id","invoice_id","org_id","source_type","source_id","source_contract_id","catalog_item_id","parent_line_id","ticket_id","name","description","quantity","unit_price","cost_basis","revenue_allocation","taxable","customer_visible","line_total","is_unapproved_time","worked_minutes","sort_order","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   "invoice_payments": tablePolicy("org_id", {"included":["id","invoice_id","org_id","amount","method","reference","received_at","recorded_by","note","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   // SEC-150 revocation columns. All scalars (enum/text/timestamptz/int/uuid) —
   // no open container, so none is forced into excludedOpen.

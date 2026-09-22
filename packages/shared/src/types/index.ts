@@ -10,6 +10,7 @@ export * from './agentHealth';
 export * from './scriptAdmission';
 export * from './softwareInventoryObservation';
 export * from './scriptProposals';
+export * from './backupHealth';
 
 // ============================================
 // Multi-Tenancy Types

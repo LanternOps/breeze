@@ -186,6 +186,7 @@
       "failedToAssignOrg": "Organisation konnte nicht zugewiesen werden",
       "organizations": "Organisationen",
       "thisPartnerLibraryPolicyAppliesOnlyTo": "Diese Partnerbibliotheksrichtlinie gilt nur für die von Ihnen ausgewählten Organisationen.",
+      "filtersApplyOnAssign": "Diese Filter gelten bei der Zuweisung unten. Leer bedeutet jede Rolle und jedes Betriebssystem. Um die Filter einer Zuweisung zu ändern, schalten Sie sie aus und wieder ein.",
       "allOrganizationsPartnerWide": "Alle Organisationen (partnerweit)",
       "allOrganizationsPartnerWide2": "Alle Organisationen (partnerweit)",
       "assigned": "Zugewiesen",
@@ -846,6 +847,7 @@
         "overridesLabel": "Überschreibungen:",
         "failedToLoadMonitors": "Überwachungen konnten nicht geladen werden",
         "createMonitor": "Monitor erstellen",
+        "monitorDeleted": "Monitor gelöscht",
         "recommended": {
           "title": "Empfohlene Monitore",
           "body": "Breeze liefert integrierte Monitore für CPU, Arbeitsspeicher, Datenträger und Patch-Compliance. Keiner ist dieser Richtlinie bisher zugeordnet.",

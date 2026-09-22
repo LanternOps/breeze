@@ -479,6 +479,26 @@ export interface InvoiceLine {
   unitPrice: string;
   lineTotal: string;
   taxable: boolean;
+  /** #6467: worked minutes for a time_entry line — drives the worked-vs-billed
+   *  disclosure note, never rendered from `description`. Null for
+   *  non-time-entry lines and legacy rows predating the column; optional
+   *  because older test fixtures and API responses predate the field. */
+  workedMinutes?: number | null;
+}
+
+/** #6467 — one line naming the worked time whenever it differs from the
+ *  billed quantity (§3.5). Sourced from `workedMinutes` (structured data),
+ *  never from `description` — an edit to the description can't erase it.
+ *  Returns null when the line isn't a time_entry line, or the two agree.
+ *  Portal has no i18n runtime (unlike web/PDF), so — like every other string
+ *  on this page — the note is plain English; that gap is pre-existing and
+ *  portal-wide, not specific to this note. */
+export function lineWorkedVsBilledNote(l: { quantity: string; workedMinutes?: number | null }): string | null {
+  if (l.workedMinutes == null) return null;
+  const worked = (l.workedMinutes / 60).toFixed(2);
+  const billed = Number(l.quantity).toFixed(2);
+  if (worked === billed) return null;
+  return `${worked} h worked · ${billed} h billed`;
 }
 
 export interface InvoiceDetail {

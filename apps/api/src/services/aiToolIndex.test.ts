@@ -54,12 +54,14 @@ describe('renderToolIndexByDomain (A-W02)', () => {
     expect(labelsInOrder).toEqual(expected);
   });
 
-  it('names every chat-callable tool exactly once and nothing else', () => {
+  it('lists every chat-callable tool exactly once and mentions nothing unavailable', () => {
     const mentioned = text.match(/\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/g) ?? [];
     const set = new Set(names);
     const unknown = mentioned.filter((m) => !set.has(m) && !isActionToken(text, m));
     expect(unknown).toEqual([]);
-    for (const n of names) expect(mentioned.filter((token) => token === n).length, n).toBe(1);
+    const listed = text.split('\n').filter((line) => line.startsWith('- **')).join('\n')
+      .match(/\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/g) ?? [];
+    for (const n of names) expect(listed.filter((token) => token === n).length, n).toBe(1);
   });
 
   it('keeps the vulnerability tools findable with CVE vocabulary (#2605 pin moves here)', () => {
@@ -67,6 +69,54 @@ describe('renderToolIndexByDomain (A-W02)', () => {
     expect(text).toContain('get_device_vulnerabilities');
     expect(text).toContain('remediate_vulnerability');
     expect(text).toMatch(/CVE/);
+  });
+
+  it('carries vulnerability disambiguation and the empty-report caveat', () => {
+    expect(DOMAIN_NOTES.patching).toContain('get_security_posture');
+    expect(DOMAIN_NOTES.patching).toContain('manage_patches');
+    expect(DOMAIN_NOTES.patching).toMatch(/no (?:correlated findings|findings are currently correlated)/);
+    expect(DOMAIN_NOTES.patching).toContain('no vulnerabilities');
+    expect(text).toContain(DOMAIN_NOTES.patching);
+  });
+
+  it.each([
+    ['get_vulnerability_report'],
+    ['manage_patches'],
+    ['get_vulnerability_report', 'manage_patches'],
+    ['get_vulnerability_report', 'get_security_posture'],
+  ])('only mentions available tools in restricted indexes: %j', (...subset) => {
+    const restricted = renderToolIndexByDomain(subset);
+    const registered = new Set(getAllRegisteredToolNames());
+    const mentioned = restricted.match(/\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/g) ?? [];
+    expect(mentioned.filter((token) => registered.has(token) && !subset.includes(token))).toEqual([]);
+    expect(restricted).toContain('no vulnerabilities');
+    expect(restricted).toMatch(/no (?:correlated findings|findings are currently correlated)/);
+  });
+
+  it('places named patch prerequisites in the patching domain', () => {
+    expect(DOMAIN_NOTES.patching).toContain('manage_update_rings');
+    expect(DOMAIN_NOTES.patching).toContain('manage_policy_feature_link');
+    expect(DOMAIN_NOTES.patching).toContain('featurePolicyId');
+    expect(DOMAIN_NOTES.patching).toContain('third-party patch sources');
+    expect(DOMAIN_NOTES.security ?? '').not.toContain('update ring');
+  });
+
+  it('filters patch prerequisites when either named tool is absent', () => {
+    const both = renderToolIndexByDomain(['manage_update_rings', 'manage_policy_feature_link']);
+    expect(both).toContain('featurePolicyId');
+    expect(both).toContain('third-party patch sources');
+    const rings = renderToolIndexByDomain(['manage_update_rings']);
+    expect(rings).not.toContain('featurePolicyId');
+    expect(rings).toContain('third-party patch sources');
+    const links = renderToolIndexByDomain(['manage_policy_feature_link', 'manage_patches']);
+    expect(links).not.toContain('featurePolicyId');
+    expect(links).not.toContain('third-party patch sources');
+  });
+
+  it('filters execution lookup guidance when get_script_execution is absent', () => {
+    expect(DOMAIN_NOTES.scripts).toContain('get_script_execution');
+    expect(renderToolIndexByDomain(['get_script_execution'])).toContain('external runs');
+    expect(renderToolIndexByDomain(['run_script'])).not.toContain('external runs');
   });
 
   it('skips names that have no domain instead of throwing', () => {

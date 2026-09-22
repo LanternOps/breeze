@@ -186,6 +186,7 @@
       "failedToAssignOrg": "Kuruluş atanamadı",
       "organizations": "Kuruluşlar",
       "thisPartnerLibraryPolicyAppliesOnlyTo": "Bu ortak kütüphane politikası yalnızca seçtiğiniz kuruluşlar için geçerlidir.",
+      "filtersApplyOnAssign": "Bu filtreler aşağıda atama yaptığınızda geçerli olur. Boş, her rol ve her işletim sistemi anlamına gelir. Bir atamanın filtrelerini değiştirmek için kapatıp yeniden açın.",
       "allOrganizationsPartnerWide": "Tüm kuruluşlar (iş ortağı çapında)",
       "allOrganizationsPartnerWide2": "Tüm kuruluşlar (iş ortağı çapında)",
       "assigned": "Atandı",
@@ -846,6 +847,7 @@
         "overridesLabel": "Geçersiz kılmalar:",
         "failedToLoadMonitors": "İzleyiciler yüklenemedi",
         "createMonitor": "Monitör oluştur",
+        "monitorDeleted": "Monitör silindi",
         "recommended": {
           "title": "Önerilen monitörler",
           "body": "Breeze; CPU, bellek, disk ve yama uyumluluğu için yerleşik monitörler sunar. Bu ilkeye henüz hiçbiri bağlı değil.",

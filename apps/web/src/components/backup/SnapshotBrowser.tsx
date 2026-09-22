@@ -14,6 +14,7 @@ import {
 import { cn, marginLeftPxClass } from '@/lib/utils';
 import { formatDateTime as formatUserDateTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
+import HashLink from '../shared/HashLink';
 import { formatNumber } from '@/lib/i18n/format';
 import { useTranslation } from 'react-i18next';
 import '../../lib/i18n';
@@ -690,13 +691,13 @@ export default function SnapshotBrowser() {
                   Restore tab on this same dashboard, so the pointer is a real
                   link. The wizard is self-fetching, so no selection state is
                   handed across (see the follow-up on #6349). */}
-              <a
-                href="#restore"
+              <HashLink
+                hash="restore"
                 data-testid="snapshot-browser-restore-link"
                 className="text-xs font-medium text-primary underline-offset-2 hover:underline"
               >
                 {t('snapshotBrowser.useTheRestoreWorkflowToRecoverOrExport')}
-              </a>
+              </HashLink>
             </div>
 
             <div className="overflow-x-auto rounded-lg border">

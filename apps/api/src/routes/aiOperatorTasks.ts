@@ -49,10 +49,7 @@ import { authMiddleware, requireMfa, requirePermission, requireScope } from '../
 import { PERMISSIONS } from '../services/permissions';
 import { aiOperatorServiceRecoveryEnabled, aiOperatorTasksEnabled } from '../config/env';
 import { admitServiceRecoveryTask } from '../services/aiOperator/taskService';
-import {
-  SERVICE_RECOVERY_WORKFLOW_KEY,
-  SERVICE_RECOVERY_WORKFLOW_VERSION,
-} from '../services/aiOperator/recipes/serviceRecovery';
+import { RECIPE_KEYS, resolveAdmissionRecipe } from '../services/aiOperator/recipes';
 import { TERMINAL_TASK_STATES } from '../services/aiOperator/taskTransitions';
 import {
   mapOperatorTask,
@@ -232,13 +229,28 @@ aiOperatorTasksRoutes.post(
         code: 'OPERATOR_RECIPE_DISABLED',
       }, 422);
     }
-    if (body.recipeVersion !== SERVICE_RECOVERY_WORKFLOW_VERSION) {
+    // Two different answers to the caller (Recipe Library spec §6.1):
+    //  - an unknown key is a malformed request — no such workflow exists at
+    //    any version, so the response names the ones that do (400);
+    //  - a known key at an unreleased version is a stale client that reviewed
+    //    a workflow this deployment has moved past (422 — spec §12's
+    //    "422 for unsupported workflow/criteria/setup", and the shipped
+    //    behaviour this route already had).
+    const resolution = resolveAdmissionRecipe(body.recipeKey, body.recipeVersion);
+    if (!resolution.ok && resolution.reason === 'unknown_recipe') {
       return c.json({
-        error: `Workflow ${SERVICE_RECOVERY_WORKFLOW_KEY} is at version ${SERVICE_RECOVERY_WORKFLOW_VERSION}; `
-          + `this request reviewed version ${body.recipeVersion}. Reload and review the current workflow.`,
+        error: resolution.detail,
+        code: 'OPERATOR_UNKNOWN_RECIPE',
+        supportedRecipeKeys: [...RECIPE_KEYS],
+      }, 400);
+    }
+    if (!resolution.ok) {
+      return c.json({
+        error: resolution.detail,
         code: 'OPERATOR_RECIPE_VERSION_MISMATCH',
       }, 422);
     }
+    const recipe = resolution.recipe;
 
     // The SERVER picks the agent (spec §5.1 — the request cannot name a
     // principal). Enabled agents visible to this org, org-owned preferred over
@@ -291,6 +303,11 @@ aiOperatorTasksRoutes.post(
     const result = await admitServiceRecoveryTask({
       orgId: body.orgId,
       agentId: agent.id,
+      // The RESOLVED pair. Admission re-resolves it — the two checks are not
+      // redundant: this route is not the only admission caller, and admission
+      // is the layer that writes the row.
+      workflowKey: recipe.key,
+      workflowVersion: recipe.version,
       objective: `Restore the ${body.inputs.serviceName} service on ${device.hostname ?? body.deviceId}`,
       // Provenance, not authority (spec §5.1: origins are explicit and never
       // silently converted). A delegate from alert detail is origin 'alert';
@@ -314,6 +331,13 @@ aiOperatorTasksRoutes.post(
       // setup"), except the two target refusals, which stay non-enumerating.
       if (result.refusal === 'device_not_in_org') {
         return c.json({ error: 'Device not found' }, 404);
+      }
+      if (result.refusal === 'unknown_recipe') {
+        return c.json({
+          error: result.detail,
+          code: 'OPERATOR_UNKNOWN_RECIPE',
+          supportedRecipeKeys: [...RECIPE_KEYS],
+        }, 400);
       }
       return c.json({ error: result.detail, code: result.refusal.toUpperCase() }, 422);
     }

@@ -1208,12 +1208,14 @@ async function handleToolsList(
   try {
     const tenant = await liveResolveTenantTools(auth);
     tenantResult = tenant
-      .filter(
-        (d) =>
-          d.tier <= 1 ||
-          (d.tier === 2 && hasWrite) ||
-          (d.tier === 3 && hasExecute && (!requireExecuteAdmin || hasExecuteAdmin)),
-      )
+      // #6401: tier-3 tenant descriptors are NEVER listed — same
+      // advertised-but-dead invariant as isToolWhollyGatedOverMcp enforces for
+      // the core registry above (listed ⇒ callable). handleTenantToolCall's
+      // isMcpApprovalRequired gate denies every effective tier 3 unconditionally
+      // (this transport has no interactive approval surface), so a listed
+      // tier-3 tool could never actually be called. Revisit when tier-3-over-MCP
+      // support lands (#6158) — do not widen this filter before then.
+      .filter((d) => d.tier <= 1 || (d.tier === 2 && hasWrite))
       .map((d) => ({
         ...buildMcpToolPresentation(d.definition, d.tier, 'integrations', { external: true }),
         name: d.definition.name,

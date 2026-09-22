@@ -527,7 +527,24 @@ describe('invoiceService guards', () => {
       unitPrice: '100',
       taxable: false,
       lineTotal: '100',
+      workedMinutes: null,
     });
+  });
+
+  // #6467: worked/billed disclosure travels as structured data, not prose —
+  // the portal DTO must carry it so the note can render (and survive a
+  // description edit) exactly like the web/PDF renderers.
+  it('serializes workedMinutes through to the customer-safe line', () => {
+    expect(svc.toCustomerInvoiceLine({
+      ticketNumber: null,
+      name: null,
+      description: 'On-site',
+      quantity: '1.00',
+      unitPrice: '225.00',
+      taxable: false,
+      lineTotal: '225.00',
+      workedMinutes: 30,
+    })).toMatchObject({ workedMinutes: 30 });
   });
 
   it('joins tickets and scopes both sides to the invoice org', async () => {
@@ -570,12 +587,13 @@ describe('invoiceService guards', () => {
       isUnapprovedTime: true,
       customerVisible: true,
       sortOrder: 0,
+      workedMinutes: null,
     }]);
 
     const result = await svc.getCustomerInvoice('i1', 'org1');
 
     expect(Object.keys(result.lines[0]!).sort()).toEqual([
-      'description', 'lineTotal', 'name', 'quantity', 'taxable', 'ticketNumber', 'unitPrice',
+      'description', 'lineTotal', 'name', 'quantity', 'taxable', 'ticketNumber', 'unitPrice', 'workedMinutes',
     ]);
     expect(result.lines[0]).toEqual({
       ticketNumber: null,
@@ -586,6 +604,7 @@ describe('invoiceService guards', () => {
       unitPrice: '75.00',
       taxable: true,
       lineTotal: '150.00',
+      workedMinutes: null,
     });
   });
 
@@ -607,6 +626,7 @@ describe('invoiceService guards', () => {
       lineTotal: '1500.00',
       customerVisible: true,
       sortOrder: 0,
+      workedMinutes: null,
     }]);
 
     const result = await svc.getCustomerInvoice('i1', 'org1');
@@ -617,7 +637,7 @@ describe('invoiceService guards', () => {
     });
     // Still no internal columns leaked alongside the new field.
     expect(Object.keys(result.lines[0]!).sort()).toEqual([
-      'description', 'lineTotal', 'name', 'quantity', 'taxable', 'ticketNumber', 'unitPrice',
+      'description', 'lineTotal', 'name', 'quantity', 'taxable', 'ticketNumber', 'unitPrice', 'workedMinutes',
     ]);
   });
 
@@ -1435,7 +1455,7 @@ describe('assembly consumers — currency override + blocked-by-currency groups 
   const spec = (lineTotal: string, sourceId = 'te1'): DraftLineSpec => ({
     sourceType: 'time_entry', sourceId, catalogItemId: null, ticketId: null, description: 'Work',
     quantity: '1.00', unitPrice: lineTotal, costBasis: null, taxable: false, customerVisible: true,
-    lineTotal, isUnapprovedTime: false
+    lineTotal, isUnapprovedTime: false, workedMinutes: null
   });
   const empty = () => ({ included: [], blockedByCurrency: {}, missingRate: [] });
   const gap = (sourceId: string, quantity = '1.50') => ({

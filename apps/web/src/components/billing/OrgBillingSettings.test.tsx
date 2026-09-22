@@ -105,22 +105,24 @@ describe('OrgBillingSettings — billing contact', () => {
 describe('OrgBillingSettings — tax rate inherited-value placeholder', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('shows the partner default percent in the placeholder when the org rate is blank', async () => {
+  it('shows the partner default percent as the placeholder, not the words "Partner default"', async () => {
     fetchMock.mockResolvedValue(orgPayload({ taxRate: null, partnerDefaultTaxRate: '0.075' }));
     render(<OrgBillingSettings orgId="org-1" />);
     await waitFor(() => expect(screen.getByTestId('org-billing-settings')).toBeInTheDocument());
 
     const input = screen.getByTestId('org-billing-taxrate') as HTMLInputElement;
     expect(input.value).toBe('');
-    expect(input.placeholder).toBe('7.5% (partner default)');
+    expect(input.placeholder).toBe('7.5');
+    expect(screen.getByText(/inherits from partner default/i)).toBeInTheDocument();
   });
 
-  it('falls back to the plain "Partner default" placeholder when the partner has no default set', async () => {
+  it('shows a "no partner default configured" note when the partner has no default set', async () => {
     fetchMock.mockResolvedValue(orgPayload({ taxRate: null, partnerDefaultTaxRate: null }));
     render(<OrgBillingSettings orgId="org-1" />);
     await waitFor(() => expect(screen.getByTestId('org-billing-settings')).toBeInTheDocument());
 
-    expect((screen.getByTestId('org-billing-taxrate') as HTMLInputElement).placeholder).toBe('Partner default');
+    expect((screen.getByTestId('org-billing-taxrate') as HTMLInputElement).placeholder).toBe('');
+    expect(screen.getByText(/no partner default configured/i)).toBeInTheDocument();
   });
 });
 

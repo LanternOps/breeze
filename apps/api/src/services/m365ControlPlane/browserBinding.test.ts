@@ -82,7 +82,7 @@ describe('M365 consent browser binding', () => {
     expect(cookie).toContain('; Secure');
     expect(verifyM365ConsentBindingCookie(cookieHeader(cookie), env)).toEqual(binding);
     expect(buildClearM365ConsentBindingCookie(env)).toBe(
-      'breeze_m365_graph_read_consent=; Path=/api/v1/m365/consent/callback; HttpOnly; SameSite=Lax; Secure; Max-Age=0',
+      'breeze_m365_graph_read_consent=; Path=/api/v1/m365/consent/callback; HttpOnly; SameSite=None; Secure; Max-Age=0',
     );
   });
 });

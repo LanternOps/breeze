@@ -4327,7 +4327,8 @@
     "inactive": "Inativo",
     "deactivate": "Desativar",
     "activate": "Ativar",
-    "slaMinutesMustBeNumbers": "Os minutos do SLA devem ser números."
+    "slaMinutesMustBeNumbers": "Os minutos do SLA devem ser números.",
+    "categorySlaOverridesOrgNote": "Este SLA tem prioridade sobre qualquer substituição de SLA em nível de organização para chamados nesta categoria."
   },
   "ticketPrioritiesTab": {
     "prioritiesAndSLAsSaved": "Prioridades e SLAs salvos",
@@ -4838,7 +4839,8 @@
       "description": "Substitua os padrões de SLA para todo o parceiro desta organização. Deixe uma célula em branco para herdar o padrão do parceiro.",
       "priority": "Prioridade",
       "response": "Resposta (min)",
-      "resolution": "Resolução (min)"
+      "resolution": "Resolução (min)",
+      "categoryOverridesNote": "O SLA da categoria do chamado tem prioridade sobre essas substituições em nível de organização quando ambos estão definidos."
     },
     "billing": {
       "title": "Padrões de faturamento",

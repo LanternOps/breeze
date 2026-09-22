@@ -32,6 +32,7 @@ import {
   updateMonitorDefinition,
   deleteMonitorDefinition,
   getMonitorDefinition,
+  MonitorHasDependentsError,
   MonitorOwnershipError,
   MonitorValidationError,
 } from './monitorService';
@@ -451,5 +452,52 @@ describe('conversion executor propagation', () => {
     expect(executor.delete).toHaveBeenCalledTimes(1);
     expect(dbMock.select).not.toHaveBeenCalled();
     expect(dbMock.delete).not.toHaveBeenCalled();
+  });
+});
+
+describe('deleteMonitorDefinition: dependent-row FK violation (#6509)', () => {
+  // Regression for #6509: DELETE 500ed with the raw postgres
+  // "alerts_rule_id_alert_rules_id_fk" constraint text once the monitor had
+  // ever produced an alert. The FK is now ON DELETE SET NULL
+  // (2026-10-25-130200) so this should not fire in the ordinary case, but the
+  // service still owes a clean, typed error for ANY residual FK violation the
+  // cascade hits, instead of letting the raw driver error propagate to the
+  // route (and from there, to the client).
+  it('maps a postgres foreign-key violation to MonitorHasDependentsError', async () => {
+    const row = existingRow();
+    const pgForeignKeyError = Object.assign(
+      new Error(
+        'update or delete on table "alert_rules" violates foreign key constraint '
+        + '"alerts_rule_id_alert_rules_id_fk" on table "alerts"',
+      ),
+      { code: '23503' },
+    );
+    const where = vi.fn(async () => {
+      throw pgForeignKeyError;
+    });
+    const executor = {
+      select: vi.fn(() => ({ from: () => ({ where: () => ({ limit: async () => [row] }) }) })),
+      delete: vi.fn(() => ({ where })),
+    };
+
+    await expect(
+      deleteMonitorDefinition('monitor-1', auth(), executor as never),
+    ).rejects.toBeInstanceOf(MonitorHasDependentsError);
+  });
+
+  it('lets a non-FK error propagate untouched', async () => {
+    const row = existingRow();
+    const otherError = new Error('connection reset');
+    const where = vi.fn(async () => {
+      throw otherError;
+    });
+    const executor = {
+      select: vi.fn(() => ({ from: () => ({ where: () => ({ limit: async () => [row] }) }) })),
+      delete: vi.fn(() => ({ where })),
+    };
+
+    await expect(
+      deleteMonitorDefinition('monitor-1', auth(), executor as never),
+    ).rejects.toBe(otherError);
   });
 });

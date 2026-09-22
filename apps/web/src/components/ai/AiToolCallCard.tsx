@@ -89,6 +89,24 @@ export default function AiToolCallCard({
   // who has to click to discover the platform refused their action is the bug.
   const handoffMessage = isAiToolHandoffOutput(output) ? output.message : undefined;
 
+  // #6500: the same "don't make them click to find out" rule applies to a
+  // PLAIN refusal — a guardrail/RBAC/rate-limit denial, or an immediate
+  // Tier-1 check like "device is not online" — none of which go through the
+  // durable-approval handoff above. Those results are `isError: true` with a
+  // conventional `{ error: string }` payload (every AI tool's error shape in
+  // this codebase), and until now the only outcome shown for them was a red
+  // icon in the collapsed header — no reason unless you expanded. Gated on
+  // `!handoffStatus` so a handoff-failed call keeps using its own message.
+  const plainErrorMessage =
+    !handoffStatus &&
+    isError &&
+    output !== null &&
+    typeof output === "object" &&
+    !Array.isArray(output) &&
+    typeof (output as Record<string, unknown>).error === "string"
+      ? ((output as Record<string, unknown>).error as string)
+      : undefined;
+
   const StatusIcon = isApprovedFailed
     ? () => <XCircle className="h-3.5 w-3.5 text-red-400" />
     : isApprovedExecuting
@@ -132,6 +150,10 @@ export default function AiToolCallCard({
           </span>
         ) : isExecuting ? (
           <span className="text-gray-500">{t("aiToolCallCard.running")}</span>
+        ) : plainErrorMessage ? (
+          <span className="text-red-400" data-testid="ai-tool-failed">
+            {t("aiToolCallCard.failed")}
+          </span>
         ) : null}
       </button>
 
@@ -142,6 +164,16 @@ export default function AiToolCallCard({
           data-testid="ai-tool-approved-failed-reason"
         >
           {handoffMessage}
+        </p>
+      ) : null}
+
+      {/* #6500: same rule for a plain (non-handoff) server refusal. */}
+      {plainErrorMessage ? (
+        <p
+          className="border-t border-red-200 px-3 py-1.5 text-xs text-red-500 dark:border-red-900/50 dark:text-red-400"
+          data-testid="ai-tool-failed-reason"
+        >
+          {plainErrorMessage}
         </p>
       ) : null}
 

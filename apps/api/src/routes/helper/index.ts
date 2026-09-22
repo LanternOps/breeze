@@ -11,7 +11,7 @@ import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
 import { streamSSE } from 'hono/streaming';
 import { eq, and, desc, sql, asc } from 'drizzle-orm';
-import { db } from '../../db';
+import { db, withSystemDbAccessContext } from '../../db';
 import { aiSessions, aiMessages, devices } from '../../db/schema';
 import { streamingSessionManager } from '../../services/streamingSessionManager';
 import { buildHelperSystemPrompt } from '../../services/helperAiAgent';
@@ -31,6 +31,7 @@ import { resolveHelperPermissionLevelForDevice } from '../../services/helperPerm
 import { sanitizeUserMessage } from '../../services/aiInputSanitizer';
 import { storeScreenshot } from '../../services/screenshotStorage';
 import { checkBudget } from '../../services/aiCostTracker';
+import { getEffectiveAiBudget } from '../../services/effectiveSettings';
 import { getRedis, rateLimiter } from '../../services';
 import { createSessionPreToolUse, createSessionPostToolUse, settleBlockedTurnForNewMessage } from '../../services/aiAgentSdk';
 import { helperAuth, type HelperDevice } from '../../middleware/helperAuth';
@@ -223,6 +224,14 @@ helperRoutes.post(
       hasClientTools,
     });
 
+    // #6473 — mirrors createSession in services/aiAgent.ts: without this,
+    // Helper-originated sessions also fell back to the ai_sessions schema
+    // column default (50) instead of the configured org/partner
+    // maxTurnsPerSession. withSystemDbAccessContext matches every other
+    // getEffectiveAiBudget caller (aiCostTracker.ts) — required for the
+    // partner-axis `partners` read.
+    const budget = await withSystemDbAccessContext(() => getEffectiveAiBudget(device.orgId));
+
     const [session] = await db
       .insert(aiSessions)
       .values({
@@ -231,6 +240,7 @@ helperRoutes.post(
         deviceId: device.id,
         model: resolved.model,
         systemPrompt,
+        maxTurns: budget.maxTurnsPerSession,
         contextSnapshot: {
           permissionLevel,
           deviceId: device.id,

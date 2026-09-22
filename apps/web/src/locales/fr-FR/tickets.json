@@ -230,7 +230,9 @@
       "logFailedSentence": "Impossible de noter le temps."
     },
     "billedVsWorked": "{{worked}} h travaillées · {{billed}} h facturées",
-    "includedMinutes": "{{hours}} h incluses au contrat"
+    "includedMinutes": "{{hours}} h incluses au contrat",
+    "missingRateCount_one": "1 entrée n'a pas de taux horaire — non comptée dans le montant ci-dessus",
+    "missingRateCount_other": "{{count}} entrées n'ont pas de taux horaire — non comptées dans le montant ci-dessus"
   },
   "inboundReviewQueue": {
     "title": "File d’attente pour les révisions",

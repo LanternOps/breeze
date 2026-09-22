@@ -617,4 +617,46 @@ describe('POST /ai/operator/tasks (W08 admission)', () => {
     expect(text).toContain('org_id');
     expect(text).toContain('not in');
   });
+
+  // ---- Recipe Library spec §6.1 (wave E1): registry-backed recipeKey ----
+
+  it('rejects an unknown recipeKey with 400 and names the supported workflows', async () => {
+    selectMock.mockReturnValueOnce(selectChain([deviceRow]));
+    const res = await post(body({ recipeKey: 'identity_offboarding' }));
+    expect(res.status).toBe(400);
+    const json = await res.json() as { code: string; supportedRecipeKeys: string[]; error: string };
+    expect(json.code).toBe('OPERATOR_UNKNOWN_RECIPE');
+    expect(json.supportedRecipeKeys).toContain('service_recovery');
+    expect(json.error).toContain('identity_offboarding');
+    expect(admitMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects an empty recipeKey with 400 before it ever reaches the registry', async () => {
+    const res = await post(body({ recipeKey: '' }));
+    expect(res.status).toBe(400);
+    expect(admitMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a recipeKey over the 128-char workflow_key_len_chk bound with 400', async () => {
+    const res = await post(body({ recipeKey: 'x'.repeat(129) }));
+    expect(res.status).toBe(400);
+    expect(admitMock).not.toHaveBeenCalled();
+  });
+
+  it('still rejects a known recipe at an unreleased version with 422, not 400', async () => {
+    selectMock.mockReturnValueOnce(selectChain([deviceRow]));
+    const res = await post(body({ recipeVersion: 99 }));
+    expect(res.status).toBe(422);
+    expect(await res.json()).toMatchObject({ code: 'OPERATOR_RECIPE_VERSION_MISMATCH' });
+    expect(admitMock).not.toHaveBeenCalled();
+  });
+
+  it('passes the resolved workflow key and version through to admission', async () => {
+    happyPathSelects();
+    await post(body());
+    expect(admitMock).toHaveBeenCalledWith(expect.objectContaining({
+      workflowKey: 'service_recovery',
+      workflowVersion: 1,
+    }));
+  });
 });

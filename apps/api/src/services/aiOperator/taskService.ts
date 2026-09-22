@@ -39,18 +39,22 @@ import {
   type ServiceRecoveryInput,
 } from '@breeze/shared';
 import {
-  SERVICE_RECOVERY_BOUNDS,
   SERVICE_RECOVERY_WORKFLOW_KEY,
   SERVICE_RECOVERY_WORKFLOW_VERSION,
   buildServiceRecoveryCriterion,
   parseServiceRecoveryInput,
 } from './recipes/serviceRecovery';
+import { resolveAdmissionRecipe } from './recipes';
 import { aiOperatorServiceRecoveryEnabled, aiOperatorTasksEnabled } from '../../config/env';
 import { admissionFenced } from './taskTransitions';
 
 export type AdmitTaskRefusal =
   | 'tasks_disabled'
   | 'recipe_disabled'
+  /** The workflow key is not in the registry at ANY version — a 400 at the route. */
+  | 'unknown_recipe'
+  /** The key exists but not at the reviewed version — a 422 at the route. */
+  | 'recipe_version_mismatch'
   | 'agent_not_found'
   | 'device_not_in_org'
   | 'invalid_input';
@@ -72,6 +76,16 @@ export interface AdmitServiceRecoveryTaskInput {
   originKind: 'manual' | 'alert' | 'ticket' | 'schedule' | 'anomaly' | 'sweep' | 'chat';
   requesterUserId: string | null;
   recipeInput: unknown;
+  /**
+   * Which recipe to admit. Defaults to the service-recovery pair, because
+   * every current caller admits that one; passing them explicitly is what lets
+   * the route refuse an unknown key with the registry's own message instead of
+   * a zod literal mismatch. The pair is resolved against the registry and the
+   * RESOLVED values are what land on the row — a caller cannot write a key the
+   * coordinator could not later dispatch on.
+   */
+  workflowKey?: string;
+  workflowVersion?: number;
   /** Override for tests; defaults to the recipe's own bound. */
   deadlineMs?: number;
   now?: Date;
@@ -111,6 +125,23 @@ export async function admitServiceRecoveryTask(
       detail: 'AI_OPERATOR_RECIPE_SERVICE_RECOVERY_ENABLED is off',
     };
   }
+
+  // Resolve BEFORE the input parse and before any db work. An unknown workflow
+  // cannot be admitted regardless of what the org contains, and reaching
+  // Postgres to discover that would hold a connection for a request that can
+  // never succeed.
+  const resolution = resolveAdmissionRecipe(
+    input.workflowKey ?? SERVICE_RECOVERY_WORKFLOW_KEY,
+    input.workflowVersion ?? SERVICE_RECOVERY_WORKFLOW_VERSION,
+  );
+  if (!resolution.ok) {
+    return {
+      ok: false,
+      refusal: resolution.reason === 'unknown_recipe' ? 'unknown_recipe' : 'recipe_version_mismatch',
+      detail: resolution.detail,
+    };
+  }
+  const recipe = resolution.recipe;
 
   let recipeInput: ServiceRecoveryInput;
   try {
@@ -174,7 +205,7 @@ export async function admitServiceRecoveryTask(
       }
 
       const taskId = randomUUID();
-      const deadlineMs = input.deadlineMs ?? SERVICE_RECOVERY_BOUNDS.deadlineMs;
+      const deadlineMs = input.deadlineMs ?? recipe.bounds.deadlineMs;
 
       const clientIdempotencyKey = input.clientIdempotencyKey ?? null;
 
@@ -186,8 +217,11 @@ export async function admitServiceRecoveryTask(
         agentId: agent.id,
         agentKind: agent.kind,
         agentName: agent.name,
-        workflowKey: SERVICE_RECOVERY_WORKFLOW_KEY,
-        workflowVersion: SERVICE_RECOVERY_WORKFLOW_VERSION,
+        // The RESOLVED pair, not the requested one: the row must always name a
+        // recipe `getRecipe` can return, or the coordinator's first tick on it
+        // would hand the task off (Operator spec P3-4, version frozen for life).
+        workflowKey: recipe.key,
+        workflowVersion: recipe.version,
         mode: 'live',
         originKind: input.originKind,
         requesterUserId: input.requesterUserId,

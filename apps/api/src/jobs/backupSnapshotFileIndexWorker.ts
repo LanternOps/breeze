@@ -39,12 +39,23 @@ function getQueue(): Queue<HydrationJobData> {
   return queue;
 }
 
+/**
+ * Stable per-snapshot jobId for BullMQ dedupe. No ':' — bullmq 5.x rejects a
+ * custom jobId containing ':' unless it splits into exactly three parts
+ * (legacy repeatable ids), so `hydrate:<uuid>` threw "Custom Id cannot
+ * contain :" on every enqueue: the recovery create route 500'd and the
+ * result-persistence path swallowed it, leaving file_index_status at 'agent'.
+ */
+export function hydrationJobId(snapshotDbId: string): string {
+  return `hydrate-${snapshotDbId}`;
+}
+
 export async function enqueueSnapshotFileIndexHydration(
   snapshotDbId: string,
   reason: HydrationJobData['reason'],
 ): Promise<string> {
   const q = getQueue();
-  const jobId = `hydrate:${snapshotDbId}`;
+  const jobId = hydrationJobId(snapshotDbId);
   // Bare `q.add(name, payload, { jobId })` dedupes on "a record with this id
   // exists", not "a job with this id is pending" — once a job for this
   // snapshot has completed or failed, every later add under the same jobId

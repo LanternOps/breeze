@@ -260,6 +260,9 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   'services/pax8SyncService.ts': 'every /pax8 route passes the global capability middleware in routes/pax8.ts',
   'services/policyEvaluationService.ts': 'partner-policy writes gated at routes/policyManagement/actions.ts; workers are system context',
   'services/scriptClone.ts': 'gated via resolveScriptCloneScope → resolveScriptCreateScope (services/scriptWrite.ts), which calls canManagePartnerWidePolicies before any partner-wide insert',
+  // #6008 W01. The scanner is file-local; both gates are one import away.
+  'routes/backup/providers.ts': 'every connection write calls requireProviderPartnerAdmin (routes/backup/providerAccess.ts), which calls canManagePartnerWidePolicies and returns 403 + PARTNER_WIDE_WRITE_DENIED_MESSAGE',
+  'services/backupProviders/mapping.ts': 'remapCustomer has one caller, PUT /backup/providers/customers/:id/mapping, which passes requireProviderPartnerAdmin (→ canManagePartnerWidePolicies) before it is reached',
   // W01a (#5612). cutScriptVersion's only write to `scripts` is
   // `.set({ version, updatedAt })` on a row it just located by id and locked
   // FOR UPDATE — it never reads or writes org_id/partner_id, so it can neither

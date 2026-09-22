@@ -705,6 +705,66 @@ func TestManagerFromBackupRunPayload_CarriesHelperAgentID(t *testing.T) {
 	}
 }
 
+// TestRestoreProviderFromPayload_S3CredentialsAWSSpelling covers the SECOND
+// call site fixed for #6511 (restore/verify/test-restore, and — via
+// rebuild_cmd.go — bare-metal rebuild). managerFromBackupRunPayload's own
+// AWS-spelling test only proves the backup_run dispatch path; this proves
+// restoreProviderFromPayload independently routes through the same
+// credentials() fallback rather than reading the raw AccessKey/SecretKey
+// fields directly.
+func TestRestoreProviderFromPayload_S3CredentialsAWSSpelling(t *testing.T) {
+	payload := `{"provider":"s3","providerConfig":{"bucket":"my-bucket","region":"us-east-1","accessKeyId":"AKID","secretAccessKey":"SAK"}}`
+	provider, err := restoreProviderFromPayload(json.RawMessage(payload))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	s3p, ok := provider.(*providers.S3Provider)
+	if !ok {
+		t.Fatalf("provider type = %T, want *providers.S3Provider", provider)
+	}
+	if s3p.Bucket != "my-bucket" {
+		t.Errorf("bucket = %q, want %q", s3p.Bucket, "my-bucket")
+	}
+}
+
+// TestManagerFromBackupRunPayload_S3RejectsEmptyCredentials and its restore
+// counterpart below cover the silent-failure-hunter finding on #6511: an S3
+// provider config that resolves to empty credentials under BOTH spellings
+// must be rejected loudly here, rather than constructed and left to fall
+// through to the AWS SDK's default credential chain — the exact "upload
+// stalled" opaque-IMDS/DNS-timeout symptom this issue was filed for.
+func TestManagerFromBackupRunPayload_S3RejectsEmptyCredentials(t *testing.T) {
+	payload := `{"provider":"s3","providerConfig":{"bucket":"my-bucket","region":"us-east-1"},"paths":["/data"]}`
+	mgr, err := managerFromBackupRunPayload(json.RawMessage(payload))
+	if err == nil {
+		t.Fatal("expected an error rejecting an s3 config with no credentials under either spelling")
+	}
+	if mgr != nil {
+		t.Fatal("expected a nil manager on rejection")
+	}
+}
+
+func TestRestoreProviderFromPayload_S3RejectsEmptyCredentials(t *testing.T) {
+	payload := `{"provider":"s3","providerConfig":{"bucket":"my-bucket","region":"us-east-1"}}`
+	provider, err := restoreProviderFromPayload(json.RawMessage(payload))
+	if err == nil {
+		t.Fatal("expected an error rejecting an s3 config with no credentials under either spelling")
+	}
+	if provider != nil {
+		t.Fatal("expected a nil provider on rejection")
+	}
+}
+
+func TestRestoreProviderFromPayload_EmptyPayloadFallsBack(t *testing.T) {
+	provider, err := restoreProviderFromPayload(json.RawMessage(""))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if provider != nil {
+		t.Fatalf("expected nil provider (fallback), got %+v", provider)
+	}
+}
+
 func strPtr(s string) *string { return &s }
 
 // TestManagerFromBackupRunPayload_RejectsServerOwnedModeWithoutLease is the
@@ -757,5 +817,101 @@ func TestManagerFromBackupRunPayload_RejectsLeaseWithoutBaseSnapshotID(t *testin
 	}
 	if mgr != nil {
 		t.Fatal("expected a nil manager on rejection")
+	}
+}
+
+// TestBackupRunProviderConfigCredentials_AWSSpellingFallback covers #6511:
+// the API's own S3 config validator and connectivity probe have long
+// accepted the AWS-idiomatic accessKeyId/secretAccessKey spelling
+// (apps/api/src/routes/backup/schemas.ts, services/backupSnapshotStorage.ts)
+// alongside the canonical accessKey/secretKey the agent reads. A config
+// saved under only the AWS spelling validated, persisted, and dispatched —
+// then every upload ran with empty agent-side credentials, falling through
+// to the SDK's default credential chain and stalling on IMDS/DNS. The API
+// now canonicalizes at the write/dispatch boundary, but the agent should
+// tolerate both spellings too as a cheap second line of defense.
+func TestBackupRunProviderConfigCredentials_AWSSpellingFallback(t *testing.T) {
+	tests := []struct {
+		name          string
+		cfg           backupRunProviderConfig
+		wantAccessKey string
+		wantSecretKey string
+	}{
+		{
+			name:          "canonical spelling used directly",
+			cfg:           backupRunProviderConfig{AccessKey: "AK", SecretKey: "SK"},
+			wantAccessKey: "AK",
+			wantSecretKey: "SK",
+		},
+		{
+			name:          "AWS-idiomatic spelling falls back when canonical is empty",
+			cfg:           backupRunProviderConfig{AccessKeyID: "AKID", SecretAccessKey: "SAK"},
+			wantAccessKey: "AKID",
+			wantSecretKey: "SAK",
+		},
+		{
+			name: "canonical spelling wins when both are present",
+			cfg: backupRunProviderConfig{
+				AccessKey: "AK", SecretKey: "SK",
+				AccessKeyID: "AKID", SecretAccessKey: "SAK",
+			},
+			wantAccessKey: "AK",
+			wantSecretKey: "SK",
+		},
+		{
+			name:          "neither spelling present yields empty credentials",
+			cfg:           backupRunProviderConfig{},
+			wantAccessKey: "",
+			wantSecretKey: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotAccessKey, gotSecretKey := tt.cfg.credentials()
+			if gotAccessKey != tt.wantAccessKey {
+				t.Errorf("accessKey = %q, want %q", gotAccessKey, tt.wantAccessKey)
+			}
+			if gotSecretKey != tt.wantSecretKey {
+				t.Errorf("secretKey = %q, want %q", gotSecretKey, tt.wantSecretKey)
+			}
+		})
+	}
+}
+
+// TestManagerFromBackupRunPayload_S3CredentialsAWSSpelling is an end-to-end
+// regression for #6511 through managerFromBackupRunPayload: a payload whose
+// providerConfig carries ONLY accessKeyId/secretAccessKey (no accessKey/
+// secretKey) must still resolve to real, non-empty credentials instead of
+// silently falling back to empty strings (S3Provider keeps its resolved
+// credentials unexported, so this asserts what managerFromBackupRunPayload
+// actually decoded and would have passed to NewS3ProviderWithEndpoint).
+func TestManagerFromBackupRunPayload_S3CredentialsAWSSpelling(t *testing.T) {
+	payload := `{"provider":"s3","providerConfig":{"bucket":"my-bucket","region":"us-east-1","accessKeyId":"AKID","secretAccessKey":"SAK"},"paths":["/data"]}`
+	var p struct {
+		ProviderConfig *backupRunProviderConfig `json:"providerConfig"`
+	}
+	if err := json.Unmarshal([]byte(payload), &p); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	gotAccessKey, gotSecretKey := p.ProviderConfig.credentials()
+	if gotAccessKey != "AKID" || gotSecretKey != "SAK" {
+		t.Fatalf("credentials() = (%q, %q), want (%q, %q)", gotAccessKey, gotSecretKey, "AKID", "SAK")
+	}
+
+	mgr, err := managerFromBackupRunPayload(json.RawMessage(payload))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if mgr == nil {
+		t.Fatal("expected a manager, got nil")
+	}
+	provider := mgr.GetProvider()
+	s3p, ok := provider.(*providers.S3Provider)
+	if !ok {
+		t.Fatalf("provider type = %T, want *providers.S3Provider", provider)
+	}
+	if s3p.Bucket != "my-bucket" {
+		t.Errorf("bucket = %q, want %q", s3p.Bucket, "my-bucket")
 	}
 }

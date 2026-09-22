@@ -427,6 +427,9 @@ export default function TicketCategoriesPage() {
                         </select>
                       </div>
                       <div>
+                        <p className="mb-2 text-xs text-amber-700" data-testid="ticket-category-sla-direction-note">
+                          {t('ticketCategoriesPage.categorySlaOverridesOrgNote')}
+                        </p>
                         <label className="text-xs font-medium" htmlFor="edit-response-sla">{t('ticketCategoriesPage.responseSLAMinutes')}</label>
                         <input
                           type="number"

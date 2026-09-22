@@ -17,7 +17,7 @@ import { useOrgStore } from "../../stores/orgStore";
 import { getJwtClaims } from "../../lib/authScope";
 import { usePermissions } from "../../lib/permissions";
 import { handleActionError, runAction } from "../../lib/runAction";
-import { navigateTo } from "@/lib/navigation";
+import { navigateToMicrosoftLogin } from "@/lib/navigation";
 import { formatDateTime, formatRelativeTime } from "@/lib/dateTimeFormat";
 import "@/lib/i18n";
 
@@ -513,7 +513,7 @@ export default function M365CustomerGraphReadCard({
           parseSuccess: parseConsentUrl,
           errorFallback: t("m365CustomerGraphRead.actions.consentFailed"),
         });
-        if (isCurrent(target)) navigateTo(url);
+        if (isCurrent(target)) navigateToMicrosoftLogin(url);
       } catch (error) {
         if (isCurrent(target)) {
           handleActionError(error, t("m365CustomerGraphRead.actions.consentFailed"));
@@ -540,7 +540,7 @@ export default function M365CustomerGraphReadCard({
           parseSuccess: parseConsentUrl,
           errorFallback: t("m365CustomerGraphRead.actions.upgradeFailed"),
         });
-        if (isCurrent(target)) navigateTo(url);
+        if (isCurrent(target)) navigateToMicrosoftLogin(url);
       } catch (error) {
         if (isCurrent(target)) {
           handleActionError(error, t("m365CustomerGraphRead.actions.upgradeFailed"));

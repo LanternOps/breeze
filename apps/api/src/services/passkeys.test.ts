@@ -22,6 +22,7 @@ vi.mock('@simplewebauthn/server', () => webauthnMocks);
 import { getRedis } from './redis';
 import {
   PasskeyChallengeError,
+  PasskeyVerificationError,
   authenticationInfoToPasskeyUpdateFields,
   generatePasskeyAuthenticationOptions,
   generatePasskeyRegistrationOptions,
@@ -367,5 +368,66 @@ describe('resolveWebAuthnConfig', () => {
     const config = resolveWebAuthnConfig();
     expect(config.origin).toBe('https://app.example.com');
     expect(config.rpID).toBe('app.example.com');
+  });
+});
+
+describe('#6499 verification rejections never leak the expected origin or RP ID', () => {
+  const LEAKY_REGISTRATION_ERROR = new Error(
+    'Unexpected registration response origin "http://localhost:33032", expected "http://localhost:32902"'
+  );
+  const LEAKY_AUTHENTICATION_ERROR = new Error(
+    'Unexpected authentication response origin "http://localhost:33032", expected "http://localhost:32902"'
+  );
+
+  beforeEach(() => {
+    process.env.WEBAUTHN_ORIGIN = 'http://localhost:32902';
+  });
+
+  it('wraps a registration rejection in PasskeyVerificationError with a generic message', async () => {
+    redisMock.getdel.mockResolvedValue(
+      challengeRecord({ purpose: 'registration', authEpoch: 1, mfaEpoch: 1 })
+    );
+    webauthnMocks.verifyRegistrationResponse.mockRejectedValue(LEAKY_REGISTRATION_ERROR);
+
+    const err = await verifyPasskeyRegistration({
+      userId: 'u1',
+      epochs: { authEpoch: 1, mfaEpoch: 1 },
+      response: {} as never,
+    }).catch((e) => e);
+
+    expect(err).toBeInstanceOf(PasskeyVerificationError);
+    expect(err.message).not.toMatch(/localhost|origin|rp/i);
+    // The detail stays available for server-side logging only.
+    expect(err.detail).toContain('http://localhost:32902');
+    expect(err.cause).toBe(LEAKY_REGISTRATION_ERROR);
+  });
+
+  it('wraps an authentication rejection in PasskeyVerificationError with a generic message', async () => {
+    redisMock.getdel.mockResolvedValue(challengeRecord());
+    webauthnMocks.verifyAuthenticationResponse.mockRejectedValue(LEAKY_AUTHENTICATION_ERROR);
+
+    const err = await verifyPasskeyAuthentication({
+      userId: 'u1',
+      response: {} as never,
+      passkey: fakePasskey,
+    }).catch((e) => e);
+
+    expect(err).toBeInstanceOf(PasskeyVerificationError);
+    expect(err.message).not.toMatch(/localhost|origin|rp/i);
+    expect(err.detail).toContain('http://localhost:32902');
+  });
+
+  it('does not wrap a PasskeyChallengeError raised before verification runs', async () => {
+    redisMock.getdel.mockResolvedValue(null);
+
+    const err = await verifyPasskeyAuthentication({
+      userId: 'u1',
+      response: {} as never,
+      passkey: fakePasskey,
+    }).catch((e) => e);
+
+    expect(err).toBeInstanceOf(PasskeyChallengeError);
+    expect(err).not.toBeInstanceOf(PasskeyVerificationError);
+    expect(webauthnMocks.verifyAuthenticationResponse).not.toHaveBeenCalled();
   });
 });

@@ -113,12 +113,17 @@ test.describe('Partner sending domains', () => {
     });
 
     await test.step('7. Removing it takes the row away', async () => {
-      authedPage.once('dialog', (dialog) => void dialog.accept());
+      // The tab confirms removal with its own modal (`ConfirmDialog`,
+      // confirmTestId="sending-domains-remove-confirm"), not a native
+      // `confirm()`. A `once('dialog')` handler therefore never fires, the
+      // modal stays open, and no DELETE is ever issued — which is exactly how
+      // this step used to time out on every CI run.
+      await page.remove(domainId).click();
       await Promise.all([
         authedPage.waitForResponse(
           (r) => r.request().method() === 'DELETE' && new URL(r.url()).pathname.endsWith(`/${domainId}`),
         ),
-        page.remove(domainId).click(),
+        page.removeConfirm().click(),
       ]);
       await expect(async () => {
         await authedPage.reload();

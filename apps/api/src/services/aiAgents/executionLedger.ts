@@ -33,6 +33,7 @@ import {
 } from '../../db';
 import { aiSessions, aiToolExecutions } from '../../db/schema/ai';
 import { aiAgentRuns } from '../../db/schema/aiAgents';
+import { redactSensitiveToolInput } from '../aiToolOutput';
 
 /**
  * Same skip-if-already-system shape as `runService.inSystemDbContext` /
@@ -137,7 +138,7 @@ export async function startToolExecution(args: StartToolExecutionArgs): Promise<
       .values({
         sessionId: args.sessionId,
         toolName: args.toolName,
-        toolInput: args.toolInput,
+        toolInput: redactSensitiveToolInput(args.toolInput),
         status: 'executing',
       })
       .returning({ id: aiToolExecutions.id });

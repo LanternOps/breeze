@@ -101,6 +101,32 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
 
       const data = await response.json();
 
+      // #6501: a 200 response is not on its own proof this was a device row.
+      // `/devices/:id` shares its path prefix with several STATIC list
+      // routes (e.g. `GET /devices/network`, the network-asset list), and
+      // Hono resolves those ahead of the `/:id` matcher — so a page URL like
+      // `/devices/network` (no further segment; `pages/devices/[id].astro`
+      // captures "network" as id) fetches a `{ data: [...], pagination }`
+      // list envelope instead of a device. Every field the transform below
+      // reads off that envelope is `undefined`, so it silently renders a
+      // "device" made entirely of placeholder defaults ("Unknown" / offline)
+      // — complete with live Wake / Run Script / Connect buttons — for a
+      // device that was never actually fetched. A real device row always
+      // carries its own `id`; treat anything else as not-found.
+      if (typeof data?.id !== "string" || data.id.length === 0) {
+        // Log which shape we actually got: a list envelope (the #6501 route
+        // collision) looks different from a genuinely malformed device row,
+        // and both would otherwise render an identical "Device not found"
+        // with nothing in the console to tell a future regression apart
+        // from an expected reserved-path collision.
+        console.error(
+          `[DeviceDetailPage] GET /devices/${deviceId} returned 200 with no device id`,
+          { looksLikeListEnvelope: Array.isArray(data?.data), keys: data && typeof data === "object" ? Object.keys(data) : typeof data },
+        );
+        useRecentsStore.getState().forgetDevice(deviceId);
+        throw new Error("Device not found");
+      }
+
       // Get latest metrics from recentMetrics array
       const latestMetrics = data.recentMetrics?.[0];
 

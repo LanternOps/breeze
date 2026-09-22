@@ -186,6 +186,7 @@
       "failedToAssignOrg": "Failed to assign org",
       "organizations": "Organizations",
       "thisPartnerLibraryPolicyAppliesOnlyTo": "This partner library policy applies only to the organizations you select.",
+      "filtersApplyOnAssign": "These filters apply when you assign below. Empty means every role and OS. To change filters on an assignment, turn it off and on again.",
       "allOrganizationsPartnerWide": "All organizations (partner-wide)",
       "allOrganizationsPartnerWide2": "All organizations (partner-wide)",
       "assigned": "Assigned",
@@ -846,6 +847,7 @@
         "overridesLabel": "Overrides:",
         "failedToLoadMonitors": "Failed to load monitors",
         "createMonitor": "Create monitor",
+        "monitorDeleted": "Monitor deleted",
         "recommended": {
           "title": "Recommended monitors",
           "body": "Breeze ships built-in CPU, memory, disk and patch-compliance monitors. None are attached to this policy yet.",

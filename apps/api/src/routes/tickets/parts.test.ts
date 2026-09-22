@@ -328,6 +328,39 @@ describe('parts routes', () => {
     expect(body.data.time.billableAmounts[0].amount).toBe('125.00');
   });
 
+  // #6466: billableMinutes counts every billable row (COALESCE minutes, no
+  // rate filter), but billableAmounts only counts rows with a rate — so the
+  // route stamps missingRateCount from a route-local query, independent of
+  // whatever getTicketBillingSummary itself returns.
+  it('GET /:id/billing-summary stamps missingRateCount from rate-less billable entries', async () => {
+    getScopedTicketOr404Mock.mockResolvedValue({ id: TICKET_ID, orgId: 'o-1', deviceId: null });
+    timeServiceMocks.getTicketBillingSummary.mockResolvedValue({
+      time: { totalMinutes: 90, billableMinutes: 30, billableAmounts: [] },
+      parts: { partsCount: 0, billableTotals: [] }
+    });
+    timeServiceMocks.getTicketTimeEntryDefaults.mockResolvedValue(null);
+    dbSelectMock.mockReturnValueOnce([{ n: 2 }]);
+    const res = await ticketsRoutes.request(`/${TICKET_ID}/billing-summary`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.time.billableMinutes).toBe(30);
+    expect(body.data.time.missingRateCount).toBe(2);
+  });
+
+  it('GET /:id/billing-summary defaults missingRateCount to 0 when every billable entry has a rate', async () => {
+    getScopedTicketOr404Mock.mockResolvedValue({ id: TICKET_ID, orgId: 'o-1', deviceId: null });
+    timeServiceMocks.getTicketBillingSummary.mockResolvedValue({
+      time: { totalMinutes: 60, billableMinutes: 60, billableAmounts: [{ currencyCode: 'USD', amount: '125.00' }] },
+      parts: { partsCount: 0, billableTotals: [] }
+    });
+    timeServiceMocks.getTicketTimeEntryDefaults.mockResolvedValue(null);
+    dbSelectMock.mockReturnValueOnce([{ n: 0 }]);
+    const res = await ticketsRoutes.request(`/${TICKET_ID}/billing-summary`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.time.missingRateCount).toBe(0);
+  });
+
   // #5321: the ticket quick-add prefills its rate from here and warns when the
   // resolved default is null — without it a billable entry is logged rate-less
   // and only fails later with ALL_MISSING_RATE 409 on "Create invoice".
@@ -415,6 +448,30 @@ describe('GET /export/billables.csv', () => {
       rowCount: 1,
       byteCount: Buffer.byteLength(body, 'utf8'),
     });
+  });
+
+  // #6461: a missingRate row must render as an explicit gap marker in the CSV,
+  // never as a fabricated $0.00 amount, and must not appear in totalsByCurrency.
+  it('renders a missingRate row as MISSING_RATE, never a $0.00 amount', async () => {
+    timeServiceMocks.listBillables.mockResolvedValue({
+      rows: [{
+        kind: 'time', date: new Date('2026-06-10T10:00:00Z'), orgName: 'Acme',
+        ticketNumber: 'T-2026-0002', description: 'no rate set', technician: 'Tess',
+        quantity: '0.50', rate: null, amount: null, missingRate: true,
+        currencyCode: 'USD',
+        billingStatus: 'not_billed', isApproved: true
+      }],
+      totalsByCurrency: []
+    });
+    const res = await ticketsRoutes.request('/export/billables.csv?from=2026-06-01&to=2026-06-30');
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    const dataLine = body.split('\n')[1]?.replaceAll('"', '');
+    expect(dataLine).toContain(',MISSING_RATE,USD,not_billed,');
+    // Every csvRow cell is quoted (see csvExport.escapeCsvCell), so checking
+    // the raw `body` for an unquoted ',0.00,USD,' would never match even
+    // without the fix — assert against the de-quoted `dataLine` instead.
+    expect(dataLine).not.toContain(',0.00,');
   });
 
   it('rejects missing date params with 400', async () => {

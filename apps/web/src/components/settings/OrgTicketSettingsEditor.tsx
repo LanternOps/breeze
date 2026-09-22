@@ -9,6 +9,7 @@ import { fetchTicketConfig, priorityLabel } from '@/lib/ticketConfigApi';
 import type { TicketConfig } from '@/lib/ticketConfigApi';
 import { priorityConfig } from '../tickets/ticketConfig';
 import type { TicketPriority } from '../tickets/ticketConfig';
+import InheritedField from '../shared/InheritedField';
 
 const PRIORITIES = Object.keys(priorityConfig) as TicketPriority[];
 
@@ -128,14 +129,14 @@ export default function OrgTicketSettingsEditor({ orgId, onDirty, onSave }: OrgT
     }
   }, [settings, saving, slaRows, orgId, onSave, t]);
 
-  // Compute placeholder for a given priority+field:
-  // If partnerConfig has a value, show the number; otherwise show "Partner default"
-  const getPlaceholder = (priority: TicketPriority, field: 'response' | 'resolution'): string => {
-    if (!partnerConfig) return t('orgTicketSettingsEditor.partnerDefault');
-    const pSetting = partnerConfig.priorities[priority];
-    if (!pSetting) return t('orgTicketSettingsEditor.partnerDefault');
+  // The inherited (partner-default) SLA number for a given priority+field, or
+  // null when the partner has no value configured — feeds InheritedField's
+  // inheritedValue prop (rule 4: always show the VALUE, not just the source).
+  const partnerSlaValue = (priority: TicketPriority, field: 'response' | 'resolution'): string | null => {
+    const pSetting = partnerConfig?.priorities[priority];
+    if (!pSetting) return null;
     const val = field === 'response' ? pSetting.responseSlaMinutes : pSetting.resolutionSlaMinutes;
-    return val != null ? String(val) : t('orgTicketSettingsEditor.partnerDefault');
+    return val != null ? String(val) : null;
   };
 
   if (loading) {
@@ -160,6 +161,9 @@ export default function OrgTicketSettingsEditor({ orgId, onDirty, onSave }: OrgT
         <p className="mt-1 text-sm text-muted-foreground">
           {t('orgTicketSettingsEditor.sla.description')}
         </p>
+        <p className="mt-1 text-xs text-amber-700" data-testid="org-ticket-sla-direction-note">
+          {t('orgTicketSettingsEditor.sla.categoryOverridesNote')}
+        </p>
         <div className="mt-4 overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
@@ -176,24 +180,32 @@ export default function OrgTicketSettingsEditor({ orgId, onDirty, onSave }: OrgT
                     {priorityLabel(partnerConfig, p)}
                   </td>
                   <td className="py-1.5 pr-4">
-                    <input
+                    <InheritedField
+                      id={`org-ticket-sla-${p}-response`}
+                      label={`${priorityLabel(partnerConfig, p)} ${t('orgTicketSettingsEditor.sla.response')}`}
+                      hideLabel
+                      value={slaRows[p].responseMinutes}
+                      onChange={(v) => updateSlaRow(p, 'responseMinutes', v)}
+                      inheritedValue={partnerSlaValue(p, 'response')}
+                      inheritedSource={t('orgTicketSettingsEditor.partnerDefault')}
                       type="number"
                       min={1}
-                      value={slaRows[p].responseMinutes}
-                      onChange={(e) => updateSlaRow(p, 'responseMinutes', e.target.value)}
-                      placeholder={getPlaceholder(p, 'response')}
-                      className="w-28 rounded-md border bg-background px-3 py-1.5 text-sm"
+                      inputWidthClassName="w-28"
                       data-testid={`org-ticket-sla-${p}-response`}
                     />
                   </td>
                   <td className="py-1.5">
-                    <input
+                    <InheritedField
+                      id={`org-ticket-sla-${p}-resolution`}
+                      label={`${priorityLabel(partnerConfig, p)} ${t('orgTicketSettingsEditor.sla.resolution')}`}
+                      hideLabel
+                      value={slaRows[p].resolutionMinutes}
+                      onChange={(v) => updateSlaRow(p, 'resolutionMinutes', v)}
+                      inheritedValue={partnerSlaValue(p, 'resolution')}
+                      inheritedSource={t('orgTicketSettingsEditor.partnerDefault')}
                       type="number"
                       min={1}
-                      value={slaRows[p].resolutionMinutes}
-                      onChange={(e) => updateSlaRow(p, 'resolutionMinutes', e.target.value)}
-                      placeholder={getPlaceholder(p, 'resolution')}
-                      className="w-28 rounded-md border bg-background px-3 py-1.5 text-sm"
+                      inputWidthClassName="w-28"
                       data-testid={`org-ticket-sla-${p}-resolution`}
                     />
                   </td>

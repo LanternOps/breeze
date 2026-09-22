@@ -55,7 +55,7 @@
     "@breeze/ext-workspace": "workspace:*",
     "@breeze/extension-sdk": "workspace:*",
     "@breeze/shared": "workspace:*",
-    "@elastic/elasticsearch": "^9.5.0",
+    "@elastic/elasticsearch": "^9.5.1",
     "@fastify/busboy": "^3.2.2",
     "@googleapis/admin": "^36.0.0",
     "@googleapis/calendar": "^19.0.0",

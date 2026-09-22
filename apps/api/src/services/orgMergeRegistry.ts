@@ -663,6 +663,30 @@ const REPOINT_TABLES: readonly string[] = [
   "backup_jobs",
   "backup_policies",
   "backup_profiles",
+  // Backup Provider Integration W01 (#6008). Plain org_id repoints, NOT the
+  // resolve-phase DELETE that m365_intune_devices uses.
+  //
+  // The reason m365 deletes is that its rows are a re-derivable Graph snapshot
+  // whose (breeze_device_id, org_id) FK would be violated at COMMIT if they
+  // were LEFT BEHIND under the dead loser org. Repointing them would also have
+  // worked; deleting was chosen because the next sync rebuilds them. Here the
+  // rows are cheap to move and moving them is strictly better: the customer
+  // mapping, the device link and the 28-day ledger all survive the merge
+  // instead of going blank until the next 30-minute poll.
+  //
+  // Every composite FK among these three (and onto devices and organizations)
+  // is DEFERRABLE INITIALLY IMMEDIATE, so the merge's SET CONSTRAINTS ALL
+  // DEFERRED lets parent and child org_id move in separate statements and the
+  // whole set is consistent at COMMIT. No unique key on any of the three is
+  // org-scoped — (connection_id, vendor_customer_id), (connection_id,
+  // vendor_device_id), (provider_device_id, day) and the partial
+  // breeze_device_id index are all org-independent — so a plain repoint can
+  // never raise 23505 and none of them needs repoint-dedupe. As with
+  // huntress_org_mappings, after a merge the survivor simply holds BOTH orgs'
+  // customer mappings; duplicates are tolerated by design and are silent.
+  "backup_provider_customers",
+  "backup_provider_device_history",
+  "backup_provider_devices",
   "backup_sla_configs",
   "backup_sla_events",
   "backup_snapshot_retirements",

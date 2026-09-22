@@ -4322,7 +4322,8 @@
     "inactive": "Inactif",
     "deactivate": "Désactiver",
     "activate": "Activez",
-    "slaMinutesMustBeNumbers": "Les minutes du SLA doivent être des nombres."
+    "slaMinutesMustBeNumbers": "Les minutes du SLA doivent être des nombres.",
+    "categorySlaOverridesOrgNote": "Ce SLA a préséance sur tout remplacement de SLA au niveau de l'organisation pour les billets de cette catégorie."
   },
   "ticketPrioritiesTab": {
     "prioritiesAndSLAsSaved": "Priorités et SLA sauvés",
@@ -4833,7 +4834,8 @@
       "description": "Annulez les valeurs par défaut SLA à l’échelle du partenaire pour cette organisation. Laissez une cellule vide pour hériter du défaut du partenaire.",
       "priority": "Priorité",
       "response": "Réponse (min)",
-      "resolution": "Résolution (min)"
+      "resolution": "Résolution (min)",
+      "categoryOverridesNote": "Le SLA de la catégorie du billet a préséance sur ces remplacements au niveau de l'organisation lorsque les deux sont définis."
     },
     "billing": {
       "title": "Paramètres de facturation par défaut",

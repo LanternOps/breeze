@@ -1,8 +1,35 @@
 import { describe, it, expect } from 'vitest';
 import {
   timeEntryToLineSpec, ticketPartToLineSpec, partitionByCurrency, partitionTimeEntries, mergeAssembly,
-  UNKNOWN_CURRENCY_KEY, type DraftLineSpec
+  isMissingRateGap, UNKNOWN_CURRENCY_KEY, type DraftLineSpec
 } from './invoiceAssembly';
+
+// #6461: single source of truth for "is this row a gap" shared with
+// timeEntryService.listBillables, which sees every billing_status (unlike
+// the not_billed-only queries that feed partitionTimeEntries above).
+describe('isMissingRateGap', () => {
+  it('a null rate on a not_billed row is a gap', () => {
+    expect(isMissingRateGap(null, 'not_billed')).toBe(true);
+  });
+
+  it('a null rate on a contract or no_charge row is intentional, not a gap', () => {
+    expect(isMissingRateGap(null, 'contract')).toBe(false);
+    expect(isMissingRateGap(null, 'no_charge')).toBe(false);
+  });
+
+  it('a resolved rate is never a gap, regardless of billing status', () => {
+    expect(isMissingRateGap('0.00', 'not_billed')).toBe(false);
+    expect(isMissingRateGap('50.00', 'billed')).toBe(false);
+  });
+
+  // A row already marked `billed` is NOT exempt like contract/no_charge — a
+  // previously-billed entry with no resolvable rate still has no amount to
+  // report, so it is a gap too. Only listBillables can ever see this
+  // combination (partitionTimeEntries' callers pre-filter to not_billed).
+  it('a null rate on a billed row is still a gap', () => {
+    expect(isMissingRateGap(null, 'billed')).toBe(true);
+  });
+});
 
 describe('timeEntryToLineSpec', () => {
   it('converts minutes to hours and computes line total; flags unapproved; non-taxable', () => {
@@ -86,7 +113,7 @@ describe('partitionByCurrency', () => {
   const toSpec = (row: { id: string; currencyCode: string | null }, currency: string): DraftLineSpec => ({
     sourceType: 'time_entry', sourceId: row.id, catalogItemId: null, ticketId: null,
     description: `row ${row.id} in ${currency}`, quantity: '1.00', unitPrice: '1.00', costBasis: null,
-    taxable: false, customerVisible: true, lineTotal: '1.00', isUnapprovedTime: false
+    taxable: false, customerVisible: true, lineTotal: '1.00', isUnapprovedTime: false, workedMinutes: null
   });
 
   it('includes header-currency rows and buckets the rest by their own currency (null → UNKNOWN)', () => {
@@ -172,7 +199,7 @@ describe('mergeAssembly', () => {
   const spec = (id: string): DraftLineSpec => ({
     sourceType: 'part', sourceId: id, catalogItemId: null, ticketId: null, description: id,
     quantity: '1', unitPrice: '1.00', costBasis: null, taxable: true, customerVisible: true,
-    lineTotal: '1.00', isUnapprovedTime: false
+    lineTotal: '1.00', isUnapprovedTime: false, workedMinutes: null
   });
 
   it('concatenates included and merges blocked keys across parts', () => {
@@ -212,20 +239,22 @@ describe('minimums and rounding on invoice lines (#4628 W03)', () => {
     expect(spec.lineTotal).toBe('225.00');
   });
 
-  it('says on the line when the billed quantity differs from the worked time', () => {
+  it('#6467: the description stays clean — the note is structured data, never prose', () => {
     const spec = timeEntryToLineSpec(
       { ...base, description: 'On-site', durationMinutes: 30, billableMinutes: 60, hourlyRate: '225.00' },
       'USD'
     );
-    expect(spec.description).toBe('On-site — 0.50 h worked, 1.00 h billed');
+    expect(spec.description).toBe('On-site');
+    expect(spec.workedMinutes).toBe(30);
   });
 
-  it('adds no note when the billed quantity equals the worked time', () => {
+  it('#6467: workedMinutes is still stamped even when billed equals worked (renderer decides visibility)', () => {
     const spec = timeEntryToLineSpec(
       { ...base, description: 'Remote', durationMinutes: 60, billableMinutes: 60, hourlyRate: '150.00' },
       'USD'
     );
     expect(spec.description).toBe('Remote');
+    expect(spec.workedMinutes).toBe(60);
   });
 
   it('a pre-feature row (NULL billable_minutes) bills exactly as before', () => {
@@ -236,6 +265,7 @@ describe('minimums and rounding on invoice lines (#4628 W03)', () => {
     expect(spec.quantity).toBe('0.50');
     expect(spec.lineTotal).toBe('75.00');
     expect(spec.description).toBe('Remote');
+    expect(spec.workedMinutes).toBe(30);
   });
 
   it('still ONE line per entry — a minimum never adds a second line', () => {
@@ -265,6 +295,15 @@ describe('minimums and rounding on invoice lines (#4628 W03)', () => {
     );
     expect(spec.quantity).toBe('0.75');
     expect(spec.lineTotal).toBe('90.00');
-    expect(spec.description).toBe('Remote — 0.52 h worked, 0.75 h billed');
+    expect(spec.description).toBe('Remote');
+    expect(spec.workedMinutes).toBe(31);
+  });
+
+  it('#6467: a ticket-part line (non-time-entry) never carries workedMinutes', () => {
+    const spec = ticketPartToLineSpec(
+      { id: 'p-1', ticketId: 'tk-1', catalogItemId: null, description: 'Cable', quantity: '2', unitPrice: '10.00', costBasis: null },
+      'USD'
+    );
+    expect(spec.workedMinutes).toBeNull();
   });
 });
