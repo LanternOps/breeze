@@ -712,6 +712,12 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // policy gained the partner branch in the same migration. Functional
   // cross-partner forge proof: psaConnectionsPartnerRls.integration.test.ts.
   'psa_connections',
+  // #3198 W01: reports is org_id XOR partner_id (reports_one_owner_chk,
+  // 2026-10-26-140100). The org_id column means auto-discovery already asserts
+  // the breeze_has_org_access branch; THIS entry is the only thing that asserts
+  // the breeze_has_partner_access branch. Deliberately NOT in
+  // XOR_OWNERSHIP_DUAL_AXIS_TABLES — see the exclusion note there.
+  'reports',
 ]);
 
 // Wave 4 of #4673: the subset of DUAL_AXIS_TENANT_TABLES whose ownership
@@ -737,6 +743,13 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
 // drives the partner-wide SELECT-branch assertions below — so nothing else
 // changes. If access_reviews ever gains a CHECK, this note has no examples
 // left and should be deleted rather than patched.
+//
+// … and `reports` (#3198 W01): org XOR partner by CHECK, but NOT a config
+// table — a partner-owned report is a partner-PRIVATE cross-org aggregate
+// (money, utilisation), and spec §2 forbids org-scope sessions from reading
+// it. The partner-wide SELECT branch this set asserts would grant exactly that
+// read, so reports must never carry one. Its partner branch is proven
+// functionally by reportsPartnerRls.integration.test.ts instead.
 const XOR_OWNERSHIP_DUAL_AXIS_TABLES: ReadonlySet<string> = new Set<string>([
   'caller_verification_policies',
   'topology_config_templates',

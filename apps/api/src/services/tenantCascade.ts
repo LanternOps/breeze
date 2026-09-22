@@ -1059,10 +1059,11 @@ const ASSOCIATED_SYSTEM_SCOPED_TABLES: ReadonlyArray<{
   //     run cleared here or an evidence row deleted there are both fine in
   //     either order.
   //
-  // No partner-axis twin is needed (unlike the SSO/PSA/software entries):
-  // `reports.org_id` is NOT NULL, so every definition — and therefore every
-  // report_runs row — is reached through the per-child-org cascadeDeleteOrg
-  // calls the partner purge already makes.
+  // #3198 W01: reports is org XOR partner. Org-owned definitions (and their
+  // runs, via this pre-clear) are reached by the per-org cascade; PARTNER-
+  // owned definitions are reached only by the partner sweep's automatic
+  // `partner_id` discovery in cascadeDeletePartner, and their runs by the
+  // report_runs.report_id ON DELETE CASCADE that 2026-10-26-140100 added.
   {
     table: 'report_runs',
     clearSql: (orgId) => sql`
