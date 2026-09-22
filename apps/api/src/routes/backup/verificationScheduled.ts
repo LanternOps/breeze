@@ -381,6 +381,20 @@ export async function processBackupVerificationResult(
   details.warnings = agentResult.warnings || [];
   details.cleanedUp = agentResult.cleanedUp;
   details.restorePath = agentResult.restorePath;
+  // #6561: the agent explains an immediate failure (`no files in snapshot`,
+  // `manifest not found: …`) in `error`. Without copying it onto the row, the
+  // history shows `failed` with 0/0 counts and no reason at all — only the
+  // timeout path used to populate `details.reason`. Mirror the timeout shape
+  // so the UI's reason column renders for agent-reported failures too.
+  const agentError = typeof agentResult.error === 'string' ? agentResult.error.trim() : '';
+  if (agentError) {
+    details.reason = agentError;
+    details.source = 'agent.result';
+  } else {
+    // This result is authoritative for the row, so a reason carried over from
+    // an earlier attempt must not outlive it.
+    delete details.reason;
+  }
 
   await persistVerificationToDb(pending);
   recordBackupVerificationResult(pending.verificationType, pending.status);

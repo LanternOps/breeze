@@ -167,6 +167,107 @@ describe('verification timeout handling', () => {
     }
   });
 
+  it('persists the agent error string as the failure reason (#6561)', async () => {
+    const orgId = 'org-result-error';
+    const deviceId = 'dev-result-error';
+    const verificationId = 'verify-result-error';
+    const commandId = '33333333-3333-4333-8333-333333333333';
+    const startedAt = new Date();
+
+    backupVerifications.push({
+      id: verificationId,
+      orgId,
+      deviceId,
+      backupJobId: 'job-result-error',
+      snapshotId: 'snap-result-error',
+      verificationType: 'integrity',
+      status: 'pending',
+      startedAt: startedAt.toISOString(),
+      completedAt: null,
+      restoreTimeSeconds: null,
+      filesVerified: 0,
+      filesFailed: 0,
+      details: { source: 'test', commandId },
+      createdAt: startedAt.toISOString(),
+    });
+    verificationOrgById.set(verificationId, orgId);
+
+    try {
+      await processBackupVerificationResult(commandId, {
+        status: 'completed',
+        stdout: JSON.stringify({
+          snapshotId: 'snap-result-error',
+          status: 'failed',
+          filesVerified: 0,
+          filesFailed: 0,
+          error: 'no files in snapshot',
+        }),
+      });
+
+      expect(persistVerificationToDbMock).toHaveBeenCalledWith(expect.objectContaining({
+        id: verificationId,
+        status: 'failed',
+        details: expect.objectContaining({
+          reason: 'no files in snapshot',
+          source: 'agent.result',
+        }),
+      }));
+    } finally {
+      const index = backupVerifications.findIndex((row) => row.id === verificationId);
+      if (index >= 0) {
+        backupVerifications.splice(index, 1);
+      }
+      verificationOrgById.delete(verificationId);
+    }
+  });
+
+  it('does not leave a stale failure reason on a later passing result (#6561)', async () => {
+    const orgId = 'org-result-pass';
+    const deviceId = 'dev-result-pass';
+    const verificationId = 'verify-result-pass';
+    const commandId = '44444444-4444-4444-8444-444444444444';
+    const startedAt = new Date();
+
+    backupVerifications.push({
+      id: verificationId,
+      orgId,
+      deviceId,
+      backupJobId: 'job-result-pass',
+      snapshotId: 'snap-result-pass',
+      verificationType: 'integrity',
+      status: 'pending',
+      startedAt: startedAt.toISOString(),
+      completedAt: null,
+      restoreTimeSeconds: null,
+      filesVerified: 0,
+      filesFailed: 0,
+      details: { source: 'test', commandId, reason: 'stale reason from an earlier attempt' },
+      createdAt: startedAt.toISOString(),
+    });
+    verificationOrgById.set(verificationId, orgId);
+
+    try {
+      await processBackupVerificationResult(commandId, {
+        status: 'completed',
+        stdout: JSON.stringify({
+          snapshotId: 'snap-result-pass',
+          status: 'passed',
+          filesVerified: 3,
+          filesFailed: 0,
+        }),
+      });
+
+      const persisted = persistVerificationToDbMock.mock.calls.at(-1)?.[0] as { details: Record<string, unknown> };
+      expect(persisted.details.reason).toBeUndefined();
+    } finally {
+      const index = backupVerifications.findIndex((row) => row.id === verificationId);
+      if (index >= 0) {
+        backupVerifications.splice(index, 1);
+      }
+      verificationOrgById.delete(verificationId);
+    }
+  });
+
   it('skips non-UUID orgIds during readiness recompute fallback', async () => {
     const validOrgId = '22222222-2222-4222-8222-222222222222';
     const validDeviceId = 'dev-valid-uuid';
