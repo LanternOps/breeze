@@ -1,4 +1,5 @@
 import { topologyHeartbeat } from '../../services/topology/heartbeat';
+import { loadTopologyFlags, withResolvedTopologyFlags, type TopologyFlags } from '../../services/topology/flags';
 import { Hono } from 'hono';
 import { timingSafeEqual } from 'node:crypto';
 import { bodyLimit } from 'hono/body-limit';
@@ -537,6 +538,26 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
         `withholding version-to-version auto-upgrades (fail closed):`,
       err,
     );
+    captureException(err);
+  }
+
+  // Topology rollout flags are resolved HERE, in their own short system
+  // context, and handed to topology collection below. Resolving them inside
+  // the org block wedged US on 2026-09-22: the IP-history write there takes
+  // the per-org partner-export advisory lock, and the flags' partner-axis read
+  // then escapes to a SECOND pooled connection (readWithPartnerAxisVisibility).
+  // Once the pool filled with same-org heartbeats queued on that lock, the
+  // holder never got its second connection — a pool deadlock broken only by
+  // idle_in_transaction_session_timeout. Same #1105 ordering as the update
+  // policy above. On failure topology is skipped for this beat, never
+  // re-resolved inside the transaction.
+  let topologyFlags: TopologyFlags | null = null;
+  try {
+    topologyFlags = await withSystemDbAccessContext(() =>
+      loadTopologyFlags({ scope: { orgId: agent.orgId, siteId: agent.siteId } }),
+    );
+  } catch (err) {
+    console.error(`[heartbeat] failed to resolve topology flags for ${agentId}; skipping topology collection:`, err);
     captureException(err);
   }
 
@@ -1830,14 +1851,24 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   });
 
   let networkContextReceipt;
-  try {
-    const topology = await db.transaction(() => topologyHeartbeat(device, data));
-    mergedConfigUpdate.networkContext = topology.config;
-    networkContextReceipt = topology.receipt;
-  } catch (error) {
-    console.error('[heartbeat] Topology collection failed:', error);
-    captureException(error);
-    networkContextReceipt = data.networkContextV1 === undefined ? undefined : { accepted: false, reason: 'collection_unavailable', sourceReceipts: [] };
+  const collectionUnavailable = data.networkContextV1 === undefined ? undefined : { accepted: false, reason: 'collection_unavailable', sourceReceipts: [] };
+  if (!topologyFlags) {
+    // Resolution failed before the org block (already reported there).
+    networkContextReceipt = collectionUnavailable;
+  } else {
+    try {
+      const resolvedFlags = topologyFlags;
+      const topology = await withResolvedTopologyFlags(
+        { orgId: agent.orgId, flags: resolvedFlags },
+        () => db.transaction(() => topologyHeartbeat(device, data)),
+      );
+      mergedConfigUpdate.networkContext = topology.config;
+      networkContextReceipt = topology.receipt;
+    } catch (error) {
+      console.error('[heartbeat] Topology collection failed:', error);
+      captureException(error);
+      networkContextReceipt = collectionUnavailable;
+    }
   }
 
   // Main-branch response payload — built inside the org context, but the

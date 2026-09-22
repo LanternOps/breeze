@@ -24,6 +24,7 @@ import {
   getTopologyCapabilities,
   loadTopologyFlags,
   resolveTopologyFlags,
+  withResolvedTopologyFlags,
   type TopologyRequestContextLike,
 } from './flags';
 
@@ -170,14 +171,6 @@ describe('topology rollout flags', () => {
 
   it('uses the call-time deployment kill switch while loading', async () => {
     globallyDisabled.mockReturnValue(true);
-    dbSelect
-      .mockReturnValueOnce(selectResult([{
-        partnerId: '33333333-3333-4333-8333-333333333333',
-        settings: { topologyFeatureFlags: { materialization: true } },
-      }]))
-      .mockReturnValueOnce(selectResult([{
-        settings: { topologyFeatureFlags: { ui: true } },
-      }]));
 
     await expect(loadTopologyFlags(ctx)).resolves.toEqual({
       materialization: false,
@@ -187,6 +180,7 @@ describe('topology rollout flags', () => {
       diagnostics: false,
       ai: false,
     });
+    expect(dbSelect).not.toHaveBeenCalled();
   });
 });
 
@@ -249,5 +243,57 @@ describe('topology capabilities', () => {
     expect(capabilities.interfaceHealth).toEqual({ available: true, reason: null });
     expect(capabilities.diagnostics).toEqual({ available: true, reason: null });
     expect(capabilities.ai).toEqual({ available: true, reason: null });
+  });
+});
+
+// US 2026-09-22 pool deadlock: the heartbeat ran loadTopologyFlags inside its
+// org transaction while holding the per-org partner-export advisory lock, and
+// readWithPartnerAxisVisibility then waited for a SECOND pooled connection.
+// With the pool full of same-org heartbeats queued on that lock, nothing freed.
+describe('pre-resolved topology flags (no nested pool connection)', () => {
+  const enabled = { ...resolveTopologyFlags({}), materialization: true, ui: true };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dbSelect.mockReset();
+    globallyDisabled.mockReturnValue(false);
+  });
+
+  it('serves pre-resolved flags without touching the database', async () => {
+    const flags = await withResolvedTopologyFlags(
+      { orgId: ctx.scope.orgId, flags: enabled },
+      () => loadTopologyFlags(ctx),
+    );
+
+    expect(flags).toEqual(enabled);
+    expect(dbSelect).not.toHaveBeenCalled();
+    expect(partnerRead).not.toHaveBeenCalled();
+  });
+
+  it('fails closed without a DB read when the scope org differs from the resolved org', async () => {
+    const flags = await withResolvedTopologyFlags(
+      { orgId: '33333333-3333-4333-8333-333333333333', flags: enabled },
+      () => loadTopologyFlags(ctx),
+    );
+
+    expect(flags).toEqual(resolveTopologyFlags({}));
+    expect(dbSelect).not.toHaveBeenCalled();
+    expect(partnerRead).not.toHaveBeenCalled();
+  });
+
+  it('returns defaults without any DB read when topology is globally disabled', async () => {
+    globallyDisabled.mockReturnValue(true);
+
+    await expect(loadTopologyFlags(ctx)).resolves.toEqual(resolveTopologyFlags({}));
+    expect(dbSelect).not.toHaveBeenCalled();
+    expect(partnerRead).not.toHaveBeenCalled();
+  });
+
+  it('does not leak pre-resolved flags outside the callback', async () => {
+    await withResolvedTopologyFlags({ orgId: ctx.scope.orgId, flags: enabled }, async () => undefined);
+    dbSelect.mockReturnValueOnce(selectResult([]));
+
+    await expect(loadTopologyFlags(ctx)).resolves.toEqual(resolveTopologyFlags({}));
+    expect(dbSelect).toHaveBeenCalledTimes(1);
   });
 });
