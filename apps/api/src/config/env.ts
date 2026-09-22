@@ -126,8 +126,10 @@ export function remoteDesktopFenceRequired(): boolean {
 }
 
 // Caller verification (anti-vishing, #6354). W01 ships the backend dark:
-// every authenticated caller-verification route returns 404 before auth and
-// the release gate refuses with `feature_disabled` while this is off. The
+// every caller-verification route returns 404 `feature_disabled` to an
+// AUTHENTICATED caller (auth runs first, so an anonymous request still gets
+// 401 — routerAuthGate.contract.test.ts requires that of every mounted route)
+// and the release gate refuses with `feature_disabled` while this is off. The
 // cross-wave contract is deliberately stricter than envFlag(): ONLY the exact
 // string 'true' enables it — '1' / 'yes' / 'on' / 'TRUE' stay off. Read at
 // CALL time so a test can flip it per-case without vi.resetModules().

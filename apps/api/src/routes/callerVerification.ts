@@ -7,7 +7,9 @@
  * bleed onto unrelated APIs mounted beside this one.
  *
  * While `CALLER_VERIFICATION_ENABLED` is not exactly 'true', every route here
- * returns 404 BEFORE authentication — the feature does not exist yet.
+ * returns 404 `feature_disabled` — but only AFTER authentication and scope, so
+ * an anonymous request still gets 401 as the router auth-gate contract
+ * requires. The feature does not exist for anyone who can reach it.
  *
  * Not mounted in W01: the administrative step-up route (W05) and the public
  * `/verify/:token` link route (W03).
@@ -46,7 +48,16 @@ import { createAuditLog } from '../services/auditService';
 
 export const callerVerificationRoutes = new Hono();
 
-const enabled: MiddlewareHandler = async (c, next) => (callerVerificationEnabled() ? next() : c.json({ error: 'Not found' }, 404));
+/**
+ * Readiness gate. Runs AFTER authentication, never before it: the repo's
+ * router auth-gate contract (__tests__/routerAuthGate.contract.test.ts)
+ * requires every mounted route to answer an unauthenticated request with 401,
+ * and that contract wins over hiding the feature from anonymous probes. An
+ * authenticated caller gets 404 `feature_disabled` while the flag is off, so
+ * the feature is still invisible to everyone who can actually reach it.
+ */
+const enabled: MiddlewareHandler = async (c, next) =>
+  (callerVerificationEnabled() ? next() : c.json({ error: 'Not found', code: 'feature_disabled' }, 404));
 const read = requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action);
 const write = requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -56,7 +67,7 @@ const uuidParams: MiddlewareHandler = async (c, next) => {
   }
   return next();
 };
-const base = [enabled, authMiddleware, requireScope('organization', 'partner', 'system'), uuidParams] as const;
+const base = [authMiddleware, requireScope('organization', 'partner', 'system'), enabled, uuidParams] as const;
 
 const actor = (c: Context): CallerVerificationActor => {
   const a = c.get('auth') as AuthContext;

@@ -51,13 +51,20 @@ beforeEach(() => {
 });
 afterEach(() => vi.unstubAllEnvs());
 
-it.each(routes)('%s %s is dark before auth, then auth and permission protected', async (method, url) => {
+it.each(routes)('%s %s authenticates first, then is dark, then permission protected', async (method, url) => {
+  // Auth runs BEFORE the readiness gate: __tests__/routerAuthGate.contract.test.ts
+  // requires every mounted route to answer an unauthenticated request with 401,
+  // flag or no flag. Anonymous probes therefore learn nothing about the flag —
+  // they are refused for the same reason on every route in the app.
   vi.stubEnv('CALLER_VERIFICATION_ENABLED', 'false');
-  expect((await app.request(url, { method })).status).toBe(404);
-  vi.stubEnv('CALLER_VERIFICATION_ENABLED', 'true');
   const auth = m.auth; m.auth = null;
   expect((await app.request(url, { method })).status).toBe(401);
   m.auth = auth;
+  // Authenticated, flag off: 404 with the feature_disabled code.
+  const dark = await app.request(url, { method });
+  expect(dark.status).toBe(404);
+  expect(await dark.json()).toMatchObject({ code: 'feature_disabled' });
+  vi.stubEnv('CALLER_VERIFICATION_ENABLED', 'true');
   if (method === 'GET') m.read = false; else m.write = false;
   expect((await app.request(url, { method })).status).toBe(403);
   if (method !== 'GET') { m.write = true; m.mfa = false; expect((await app.request(url, { method })).status).toBe(403); }
