@@ -156,6 +156,15 @@ func (h winCleanmgrHandler) paths() []string {
 	return h.estimatePaths
 }
 
+// winCleanmgrHandlerBySubID also recognises a RETIRED slug (#6603): selectionFor
+// uses this lookup to decide whether an id belongs to win_cleanmgr at all, and
+// a retired slug must still route there so winCleanmgrAction.Run's retirement
+// branch (below) can answer with `unavailable` and the replacement id.
+// Searching winCleanmgrHandlers alone made a retired id fall through to
+// selectionFor's requested[] map, which matches no Action.ID() and silently
+// dropped it before win_cleanmgr was ever constructed. The returned handler
+// carries only the slug — a retired entry has no keyName, and Run never
+// reaches availableHandlers() for a retired slug (it is intercepted first).
 func winCleanmgrHandlerBySubID(subID string) (winCleanmgrHandler, bool) {
 	slug := strings.TrimPrefix(subID, "win_cleanmgr:")
 	if slug == subID {
@@ -165,6 +174,9 @@ func winCleanmgrHandlerBySubID(subID string) (winCleanmgrHandler, bool) {
 		if handler.slug == slug {
 			return handler, true
 		}
+	}
+	if _, ok := winRetiredCleanmgrHandlers[slug]; ok {
+		return winCleanmgrHandler{slug: slug}, true
 	}
 	return winCleanmgrHandler{}, false
 }
