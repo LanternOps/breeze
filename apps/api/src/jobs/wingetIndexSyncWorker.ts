@@ -81,7 +81,22 @@
  * intent at deploy time is `latest` (resolved on the device by winget itself),
  * so this column is display metadata, not the thing that decides what installs.
  *
- * Structure copied from jobs/cveEnrichmentWorker.ts.
+ * DB CONTEXT DISCIPLINE (#6348). The GitHub walk takes well over a minute (37
+ * requests, 2s apart, up to 30s each), so it MUST run with no DB access context
+ * open. It used to run inside one `withSystemDbAccessContext` for the whole job;
+ * that transaction sat `idle in transaction` across the walk, prod's
+ * `idle_in_transaction_session_timeout = 1min` killed it, and the orphaned
+ * postgres.js connection object — reconnected by the pool for the next caller —
+ * wedged that caller's RLS prologue in `active`/`ClientRead` indefinitely
+ * (4 occurrences across both regions). Now: the walk and parse run outside any
+ * context (`runOutsideDbContext` in the processor), and each 500-row upsert
+ * chunk and the prune open their own short system context. Consequence: an
+ * error part-way through the upserts leaves the earlier chunks committed. That
+ * is harmless — upserts are additive and idempotent, and the prune still only
+ * runs after every chunk succeeded.
+ *
+ * Structure copied from jobs/cveEnrichmentWorker.ts; context split follows the
+ * Huntress/Pax8/DNS restructures (#1703/#1704).
  */
 import { Job, Queue, Worker } from 'bullmq';
 import { ne, sql } from 'drizzle-orm';
@@ -105,9 +120,19 @@ const UPSERT_CHUNK_SIZE = 500;
 
 type WingetIndexSyncJobData = Record<string, never>;
 
-const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
+/**
+ * One SHORT system-scoped DB context — a single upsert chunk or the prune.
+ * Never wrap network I/O in this (#6348; see the header).
+ */
+const runWithSystemDbAccess = async <T>(fn: () => Promise<T>, label: string): Promise<T> => {
   const withSystem = dbModule.withSystemDbAccessContext;
-  return typeof withSystem === 'function' ? withSystem(fn) : fn();
+  return typeof withSystem === 'function' ? withSystem(fn, label) : fn();
+};
+
+/** Guarantees the GitHub walk starts with no inherited DB context. */
+const runOutsideDb = <T>(fn: () => Promise<T>): Promise<T> => {
+  const outside = dbModule.runOutsideDbContext;
+  return typeof outside === 'function' ? outside(fn) : fn();
 };
 
 export class WingetRateLimitError extends Error {
@@ -449,19 +474,25 @@ export async function runWingetIndexSync(): Promise<WingetIndexSyncSummary> {
   ): Promise<void> => {
     for (let i = 0; i < rows.length; i += UPSERT_CHUNK_SIZE) {
       const chunk = rows.slice(i, i + UPSERT_CHUNK_SIZE);
-      await db
-        .insert(wingetPackageIndex)
-        .values(chunk)
-        .onConflictDoUpdate({
-          target: wingetPackageIndex.packageId,
-          set: {
-            vendorSegment: sql`excluded.vendor_segment`,
-            nameSegment: sql`excluded.name_segment`,
-            latestVersion: latestVersionSet,
-            syncedCommitSha: sql`excluded.synced_commit_sha`,
-            updatedAt: sql`excluded.updated_at`,
-          },
-        });
+      // Each chunk is its own short transaction: no context spans the walk
+      // above or the other chunks (#6348).
+      await runWithSystemDbAccess(
+        () =>
+          db
+            .insert(wingetPackageIndex)
+            .values(chunk)
+            .onConflictDoUpdate({
+              target: wingetPackageIndex.packageId,
+              set: {
+                vendorSegment: sql`excluded.vendor_segment`,
+                nameSegment: sql`excluded.name_segment`,
+                latestVersion: latestVersionSet,
+                syncedCommitSha: sql`excluded.synced_commit_sha`,
+                updatedAt: sql`excluded.updated_at`,
+              },
+            }),
+        'wingetIndexSync.upsert',
+      );
       summary.upserted += chunk.length;
     }
   };
@@ -493,10 +524,14 @@ export async function runWingetIndexSync(): Promise<WingetIndexSyncSummary> {
     return summary;
   }
 
-  const deleted = await db
-    .delete(wingetPackageIndex)
-    .where(ne(wingetPackageIndex.syncedCommitSha, treeSha))
-    .returning({ id: wingetPackageIndex.id });
+  const deleted = await runWithSystemDbAccess(
+    () =>
+      db
+        .delete(wingetPackageIndex)
+        .where(ne(wingetPackageIndex.syncedCommitSha, treeSha))
+        .returning({ id: wingetPackageIndex.id }),
+    'wingetIndexSync.prune',
+  );
   summary.deleted = Array.isArray(deleted) ? deleted.length : 0;
   summary.pruned = true;
 
@@ -538,7 +573,9 @@ export function createWingetIndexSyncWorker(): Worker<WingetIndexSyncJobData> {
           skipped: true,
         };
       }
-      return runWithSystemDbAccess(() => runWingetIndexSync());
+      // NOT wrapped in a DB context: the walk is minutes of network I/O, and
+      // `runWingetIndexSync` opens its own short contexts for the writes (#6348).
+      return runOutsideDb(() => runWingetIndexSync());
     },
     {
       connection: getBullMQConnection(),

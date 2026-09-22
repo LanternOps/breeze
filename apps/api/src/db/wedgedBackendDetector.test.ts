@@ -22,7 +22,11 @@ import {
   getWedgedBackendScanFailures,
   runWedgedBackendScan,
 } from './dbPoolHealthMonitor';
-import type { WedgedBackendRow } from './wedgedBackends';
+import {
+  __resetWedgedBackendReclaimForTests,
+  getWedgedBackendReclaimTerminatedTotal,
+  type WedgedBackendRow,
+} from './wedgedBackends';
 
 /** The two rows the incident actually produced, one per region. */
 const INCIDENT_ROWS: WedgedBackendRow[] = [
@@ -46,6 +50,9 @@ const INCIDENT_ROWS: WedgedBackendRow[] = [
 
 describe('runWedgedBackendScan', () => {
   beforeEach(() => {
+    // These cases pin the REPORTING contract; scanner-driven reclaim (#6348)
+    // has its own suite below and would otherwise open a real side connection.
+    vi.stubEnv('DB_WEDGED_BACKEND_SCANNER_RECLAIM_DISABLED', 'true');
     __resetDbPoolHealthMonitorForTests();
     vi.mocked(captureMessage).mockClear();
     vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -54,6 +61,7 @@ describe('runWedgedBackendScan', () => {
   afterEach(() => {
     __resetDbPoolHealthMonitorForTests();
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
   });
 
   it('reports the wedged backends and their oldest age', async () => {
@@ -151,5 +159,250 @@ describe('runWedgedBackendScan', () => {
         },
       }),
     ).resolves.toMatchObject({ count: null });
+  });
+});
+
+/**
+ * #6348 — the 5-minute scanner reclaims, it does not only report.
+ *
+ * Four occurrences across both regions: the detector saw the wedge within
+ * 6–8 minutes, but `breeze_db_wedged_backend_reclaim_terminated_total` stayed
+ * 0 every time, because termination was only ever requested by a prologue
+ * deadline — and a wedge nobody is awaiting never expires one. The scanner's
+ * own confirmed observation must be enough.
+ */
+describe('runWedgedBackendScan — scanner-driven reclaim (#6348)', () => {
+  const PROLOGUE = "select set_config('breeze.scope', $1, true)";
+
+  /**
+   * A fake pg_stat_activity that applies the same filters the real
+   * WEDGED_BACKEND_SELECT_SQL does: age on both clocks, and — for the
+   * reclaimer's `prologueOnly` read — the breeze prologue query shape.
+   */
+  function fakeActivity(rows: WedgedBackendRow[]) {
+    const calls: Array<[number, boolean]> = [];
+    const scan = vi.fn(async (minAgeMs: number, prologueOnly: boolean) => {
+      calls.push([minAgeMs, prologueOnly]);
+      return rows.filter(
+        (row) =>
+          row.ageSeconds * 1000 >= minAgeMs
+          && (!prologueOnly || row.query.startsWith("select set_config('breeze.")),
+      );
+    });
+    return { scan, calls };
+  }
+
+  const wedged = (pid: number, overrides: Partial<WedgedBackendRow> = {}): WedgedBackendRow => ({
+    pid,
+    backendStart: '2026-09-22 16:05:00.200+00',
+    xactStart: '2026-09-22 16:05:00.210+00',
+    queryStart: '2026-09-22 16:05:00.210+00',
+    ageSeconds: 400,
+    query: PROLOGUE,
+    ...overrides,
+  });
+
+  beforeEach(() => {
+    __resetDbPoolHealthMonitorForTests();
+    __resetWedgedBackendReclaimForTests();
+    vi.unstubAllEnvs();
+    vi.mocked(captureMessage).mockClear();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    __resetDbPoolHealthMonitorForTests();
+    __resetWedgedBackendReclaimForTests();
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+  });
+
+  it('terminates a confirmed prologue wedge older than 5 minutes and counts it', async () => {
+    const { scan, calls } = fakeActivity([wedged(4242)]);
+    const terminate = vi.fn(async (pids: number[]) => pids);
+
+    const observation = await runWedgedBackendScan({
+      scan,
+      minAgeMs: 300_000,
+      now: 1_000,
+      throttleMs: 0,
+      reclaim: { terminate, confirmDelayMs: 0 },
+    });
+
+    expect(observation.count).toBe(1);
+    expect(terminate).toHaveBeenCalledWith([4242]);
+    expect(observation.reclaim?.terminated).toEqual([4242]);
+    expect(getWedgedBackendReclaimTerminatedTotal()).toBe(1);
+    // Wide detector read, then the reclaimer's two narrow confirming snapshots.
+    expect(calls).toEqual([
+      [300_000, false],
+      [300_000, true],
+      [300_000, true],
+    ]);
+  });
+
+  it('never terminates a wedged backend whose query is not the breeze set_config prologue', async () => {
+    const { scan } = fakeActivity([
+      wedged(1, { query: 'select * from devices where id = $1' }),
+      wedged(2, { query: "select set_config('lock_timeout', $1, true)" }),
+    ]);
+    const terminate = vi.fn(async (pids: number[]) => pids);
+
+    const observation = await runWedgedBackendScan({
+      scan,
+      minAgeMs: 300_000,
+      now: 1_000,
+      throttleMs: 0,
+      reclaim: { terminate, confirmDelayMs: 0 },
+    });
+
+    // Reported (the detector sees the whole class) ...
+    expect(observation.count).toBe(2);
+    // ... but never signalled.
+    expect(terminate).not.toHaveBeenCalled();
+    expect(getWedgedBackendReclaimTerminatedTotal()).toBe(0);
+  });
+
+  it('never terminates a prologue backend younger than 5 minutes, even if the detector threshold is lower', async () => {
+    // Ops tuned the detector down to 60 s; a 2-minute-old prologue is reported
+    // but must not be signalled — 5 minutes is the floor for scanner reclaim.
+    const { scan, calls } = fakeActivity([wedged(7, { ageSeconds: 120 })]);
+    const terminate = vi.fn(async (pids: number[]) => pids);
+
+    const observation = await runWedgedBackendScan({
+      scan,
+      minAgeMs: 60_000,
+      now: 1_000,
+      throttleMs: 0,
+      reclaim: { terminate, confirmDelayMs: 0 },
+    });
+
+    expect(observation.count).toBe(1);
+    expect(terminate).not.toHaveBeenCalled();
+    const narrowReads = calls.filter(([, prologueOnly]) => prologueOnly);
+    expect(narrowReads.length).toBeGreaterThan(0);
+    expect(narrowReads.every(([age]) => age >= 300_000)).toBe(true);
+  });
+
+  it('does not terminate a backend that moved between the two confirming snapshots', async () => {
+    let reads = 0;
+    const scan = vi.fn(async () => {
+      reads += 1;
+      // Third read = second confirming snapshot: query_start advanced.
+      return [reads === 3 ? wedged(9, { queryStart: '2026-09-22 16:11:00.000+00' }) : wedged(9)];
+    });
+    const terminate = vi.fn(async (pids: number[]) => pids);
+
+    const observation = await runWedgedBackendScan({
+      scan,
+      minAgeMs: 300_000,
+      now: 1_000,
+      throttleMs: 0,
+      reclaim: { terminate, confirmDelayMs: 0 },
+    });
+
+    expect(terminate).not.toHaveBeenCalled();
+    expect(observation.reclaim?.confirmed).toBe(0);
+  });
+
+  it('keeps the per-pass cap', async () => {
+    const { scan } = fakeActivity([1, 2, 3, 4, 5, 6].map((pid) => wedged(pid)));
+    const terminate = vi.fn(async (pids: number[]) => pids);
+
+    const observation = await runWedgedBackendScan({
+      scan,
+      minAgeMs: 300_000,
+      now: 1_000,
+      throttleMs: 0,
+      reclaim: { terminate, confirmDelayMs: 0, maxPerPass: 4 },
+    });
+
+    expect(terminate).toHaveBeenCalledWith([1, 2, 3, 4]);
+    expect(observation.reclaim?.cappedAt).toBe(4);
+  });
+
+  it('keeps the reclaim rate limit across scanner ticks', async () => {
+    const { scan } = fakeActivity([wedged(11)]);
+    const terminate = vi.fn(async (pids: number[]) => pids);
+    let clock = 1_000_000;
+    const reclaim = { terminate, confirmDelayMs: 0, minIntervalMs: 60_000, now: () => clock };
+
+    await runWedgedBackendScan({ scan, minAgeMs: 300_000, now: clock, throttleMs: 0, reclaim });
+    clock += 10_000;
+    const second = await runWedgedBackendScan({ scan, minAgeMs: 300_000, now: clock, throttleMs: 0, reclaim });
+
+    expect(terminate).toHaveBeenCalledTimes(1);
+    expect(second.reclaimStatus).toBe('declined');
+  });
+
+  it('does not reclaim when DB_WEDGED_BACKEND_SCANNER_RECLAIM_DISABLED is set', async () => {
+    vi.stubEnv('DB_WEDGED_BACKEND_SCANNER_RECLAIM_DISABLED', 'true');
+    const { scan, calls } = fakeActivity([wedged(12)]);
+    const terminate = vi.fn(async (pids: number[]) => pids);
+
+    const observation = await runWedgedBackendScan({
+      scan,
+      minAgeMs: 300_000,
+      now: 1_000,
+      throttleMs: 0,
+      reclaim: { terminate, confirmDelayMs: 0 },
+    });
+
+    expect(observation.count).toBe(1);
+    expect(observation.reclaimStatus).toBe('disabled');
+    expect(terminate).not.toHaveBeenCalled();
+    expect(calls).toEqual([[300_000, false]]);
+  });
+
+  it('honours the global DB_WEDGED_BACKEND_RECLAIM_DISABLED kill-switch too', async () => {
+    vi.stubEnv('DB_WEDGED_BACKEND_RECLAIM_DISABLED', 'true');
+    const { scan } = fakeActivity([wedged(13)]);
+    const terminate = vi.fn(async (pids: number[]) => pids);
+
+    const observation = await runWedgedBackendScan({
+      scan,
+      minAgeMs: 300_000,
+      now: 1_000,
+      throttleMs: 0,
+      reclaim: { terminate, confirmDelayMs: 0 },
+    });
+
+    expect(terminate).not.toHaveBeenCalled();
+    expect(observation.reclaimStatus).toBe('disabled');
+  });
+
+  it('opens no reclaim connection when nothing wedged matches the prologue shape', async () => {
+    const { scan, calls } = fakeActivity([wedged(14, { query: 'select 1' })]);
+    const terminate = vi.fn(async (pids: number[]) => pids);
+
+    const observation = await runWedgedBackendScan({
+      scan,
+      minAgeMs: 300_000,
+      now: 1_000,
+      throttleMs: 0,
+      reclaim: { terminate, confirmDelayMs: 0 },
+    });
+
+    expect(calls).toEqual([[300_000, false]]);
+    expect(observation.reclaimStatus).toBe('not-needed');
+  });
+
+  it('a failing reclaim pass never breaks the scan', async () => {
+    const { scan } = fakeActivity([wedged(15)]);
+    const terminate = vi.fn(async (): Promise<number[]> => {
+      throw new Error('too many clients already');
+    });
+
+    const observation = await runWedgedBackendScan({
+      scan,
+      minAgeMs: 300_000,
+      now: 1_000,
+      throttleMs: 0,
+      reclaim: { terminate, confirmDelayMs: 0 },
+    });
+
+    expect(observation.count).toBe(1);
+    expect(observation.reclaim?.error).toBe('too many clients already');
+    expect(observation.reclaimStatus).toBe('ran');
   });
 });

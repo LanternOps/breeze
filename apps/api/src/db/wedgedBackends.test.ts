@@ -48,7 +48,9 @@ describe('WEDGED_BACKEND_SELECT_SQL', () => {
     ['requires the wait to be on the client', "wait_event_type = 'Client'"],
     ['ages out on the transaction', 'xact_start < now() - make_interval'],
     ['ages out on the STATEMENT too', 'query_start < now() - make_interval'],
-    ['can narrow to the prologue only', "query like 'select set_config(%'"],
+    // Narrowed to the breeze RLS prologue GUCs (#6348): a `set_config` of
+    // lock_timeout / statement_timeout is not the prologue and never signalled.
+    ['can narrow to the prologue only', "query like 'select set_config(''breeze.%'"],
   ])('%s', (_name, clause) => {
     expect(WEDGED_BACKEND_SELECT_SQL).toContain(clause);
   });

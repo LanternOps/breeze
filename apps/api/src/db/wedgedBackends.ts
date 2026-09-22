@@ -58,9 +58,13 @@
  *   - `query` matching the prologue's own shape. `active`/`ClientRead` is a
  *     legitimate state for other extended-protocol exchanges (and for
  *     `COPY ... FROM STDIN`, which this codebase does not use), so the
- *     reclaimer refuses to touch anything that is not literally a `set_config`
- *     prologue statement. The DETECTOR does not apply this clause — it reports
- *     the whole class, because a wedge elsewhere is exactly as interesting.
+ *     reclaimer refuses to touch anything that is not literally one of the
+ *     RLS prologue's `select set_config('breeze.…', $1, true)` statements
+ *     (narrowed from any `set_config` in #6348 — app code also issues
+ *     `set_config('lock_timeout' | 'statement_timeout', …)` mid-transaction,
+ *     and those are not the prologue). The DETECTOR does not apply this clause —
+ *     it reports the whole class, because a wedge elsewhere is exactly as
+ *     interesting.
  *   - TWO snapshots. `pg_stat_activity` is a sampled view whose columns can
  *     briefly disagree, and observation is not atomic with signalling. A pid is
  *     only signalled when a second snapshot still shows it with an IDENTICAL
@@ -148,6 +152,32 @@ export function isWedgedBackendScanDisabled(): boolean {
 }
 
 /**
+ * Kill-switch for scanner-driven reclaim (#6348) only: the 5-minute detector
+ * keeps reporting, and the prologue-deadline reclaim keeps working. Default is
+ * reclaim ON. `DB_WEDGED_BACKEND_RECLAIM_DISABLED` still disables BOTH paths.
+ */
+export function isWedgedBackendScannerReclaimDisabled(): boolean {
+  return envFlag('DB_WEDGED_BACKEND_SCANNER_RECLAIM_DISABLED');
+}
+
+/**
+ * Hard floor on the age at which the SCANNER may signal a backend (#6348).
+ * Deliberately a constant, not derived from `DB_WEDGED_BACKEND_MIN_AGE_MS`: an
+ * operator who tunes the detector down to see wedges sooner must not thereby
+ * shorten the clock on `pg_terminate_backend`. A breeze prologue `set_config`
+ * sitting in `active`/`ClientRead` for five minutes is never legitimate.
+ */
+export const WEDGED_BACKEND_SCANNER_RECLAIM_MIN_AGE_MS = 5 * 60_000;
+
+/**
+ * Leading text of every RLS prologue statement (`applyAccessContextGucs`).
+ * Mirrors the `query like` clause of {@link WEDGED_BACKEND_SELECT_SQL}; used
+ * client-side only to decide whether a reclaim pass is worth a connection —
+ * the server-side predicate remains the authority on what gets signalled.
+ */
+export const WEDGED_BACKEND_PROLOGUE_QUERY_PREFIX = "select set_config('breeze.";
+
+/**
  * One `pg_stat_activity` row in the pathological state. Field names match the
  * aliases in {@link WEDGED_BACKEND_SELECT_SQL} so a row can be handed straight
  * through from the driver.
@@ -191,7 +221,7 @@ export const WEDGED_BACKEND_SELECT_SQL = `
      and query_start is not null
      and xact_start < now() - make_interval(secs => $1::float8)
      and query_start < now() - make_interval(secs => $1::float8)
-     and (not $2::boolean or query like 'select set_config(%')
+     and (not $2::boolean or query like 'select set_config(''breeze.%')
    order by xact_start
 `;
 
