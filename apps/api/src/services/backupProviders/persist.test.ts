@@ -285,6 +285,28 @@ describe('persistVendorSnapshot', () => {
     expect(deviceRows![0]).toMatchObject({ orgId: NEW_ORG, provider: 'cove', portalShowProviderName: false });
   });
 
+  it('re-stamps history rows left behind by a device that changed org, scoped to this connection', async () => {
+    const { tx, executed } = makeTx(
+      [[], [{ id: 'c1', vendorCustomerId: 'vc1', orgId: ORG }], []],
+      [[{ id: 'c1', vendorCustomerId: 'vc1' }], [{ id: 'p1', orgId: ORG }]],
+    );
+    await persistVendorSnapshot(tx as never, CONNECTION, {
+      customers: [vendorCustomer()],
+      devices: [vendorDevice()],
+    });
+    // This is the statement that makes the deferred composite FK legal again
+    // at COMMIT (CLAUDE.md, org-merge contract) — it must join on the
+    // device's CURRENT org_id, filter to this connection, and only touch rows
+    // that actually disagree, or a re-mapped customer's ledger keeps pointing
+    // at the OLD org forever.
+    const restamp = executed.find((s) =>
+      s.includes('backup_provider_device_history') && s.includes('UPDATE'));
+    expect(restamp).toBeDefined();
+    expect(restamp).toContain('backup_provider_devices');
+    expect(restamp).toContain(CONNECTION.id);
+    expect(restamp).toContain('org_id');
+  });
+
   it('returns the counters the connection card shows', async () => {
     (matchProviderDevices as unknown as { mockResolvedValue: (v: unknown) => void })
       .mockResolvedValue({ linked: 3, ambiguous: 2 });
