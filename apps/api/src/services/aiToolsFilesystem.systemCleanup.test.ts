@@ -292,6 +292,14 @@ describe('system_cleanup AI tool (spec §9.1, §9.3 items 1-2)', () => {
     const result = JSON.parse(raw);
     expect(result.error).toBe('run_in_progress');
     expect(result.cleanupRunId).toBe('run-other');
+    // #6485 F-4: the model narrated this refusal as "approved and is now
+    // running" because the payload looked like a success (a cleanupRunId and
+    // no unambiguous refusal marker). `refused: true` plus a sentence a model
+    // cannot paraphrase into an approval closes that.
+    expect(result.refused).toBe(true);
+    expect(typeof result.note).toBe('string');
+    expect(result.note).toMatch(/already (in progress|running)/i);
+    expect(result.note).toMatch(/do not start (a |)another/i);
   });
 
   it('refuses a device the caller cannot reach, before any dispatch', async () => {
