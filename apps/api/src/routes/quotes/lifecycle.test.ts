@@ -93,6 +93,7 @@ vi.mock('../../services/quoteAcceptService', () => ({
   autoEmailAcceptedInvoice: vi.fn(),
 }));
 vi.mock('../../services/quoteOutcomeNotify', () => ({ notifyQuoteOutcome: vi.fn() }));
+vi.mock('../../services/quoteOnBehalfNotify', () => ({ notifyCustomerOfOnBehalfAcceptance: vi.fn(async () => ({ sent: false, reason: 'disabled' })) }));
 // The accept runs under runOutsideDbContext(withSystemDbAccessContext(...)); the
 // real helpers open a Postgres transaction. Run the callback inline. Everything
 // else in the db module stays real (nothing else here reads it).
@@ -793,6 +794,18 @@ describe('POST /:id/accept-on-behalf', () => {
     expect(vi.mocked(notifyQuoteOutcome)).toHaveBeenCalledWith(expect.objectContaining({
       quoteId: QUOTE_ID, outcome: 'accepted', source: 'msp',
       origin: 'on_behalf', actorUserId: 'u1',
+    }));
+  });
+
+  // #6635: the optional customer notice fires post-commit from THIS route only
+  // (the portal accept is the customer acting themselves), tagged on_behalf.
+  it('hands the committed accept to the on-behalf customer notifier', async () => {
+    const { notifyCustomerOfOnBehalfAcceptance } = await import('../../services/quoteOnBehalfNotify');
+    await appWith('partner', ['quotes:accept']).request(`/${QUOTE_ID}/accept-on-behalf`, jsonReq(BODY));
+    expect(vi.mocked(notifyCustomerOfOnBehalfAcceptance)).toHaveBeenCalledOnce();
+    expect(vi.mocked(notifyCustomerOfOnBehalfAcceptance)).toHaveBeenCalledWith(expect.objectContaining({
+      origin: 'on_behalf', invoiceIssued: true, invoiceNumber: 'INV-2026-0007',
+      quote: expect.objectContaining({ id: 'q1', quoteNumber: 'Q-2026-0001' }),
     }));
   });
 

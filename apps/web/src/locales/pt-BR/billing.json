@@ -2226,6 +2226,8 @@
       "autoTaxHardwareHelp": "Itens de hardware recém-importados são marcados como tributáveis por padrão.",
       "autoEmailInvoice": "Enviar a fatura por e-mail automaticamente quando um orçamento for aceito",
       "autoEmailInvoiceHelp": "Quando um cliente aceita uma proposta, a fatura emitida é enviada imediatamente por e-mail com um link seguro para ver e pagar — sem login.",
+      "notifyOnBehalfAcceptance": "Avisar o cliente por e-mail quando você registrar um aceite em nome dele",
+      "notifyOnBehalfAcceptanceHelp": "Quando alguém da sua equipe aceita um orçamento por um cliente, o cliente recebe uma nota curta dizendo quem registrou e quando, com o número da fatura se uma tiver sido emitida. Ele pode responder se algo estiver errado. Desativado por padrão.",
       "currencyCode": "Código da moeda",
       "defaultMarkup": "Margem padrão (%)",
       "defaultTaxRate": "Alíquota de imposto padrão (%)",

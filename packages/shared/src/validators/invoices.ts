@@ -116,6 +116,9 @@ export const partnerBillingSettingsSchema = z.object({
   // Auto-email the issued invoice (with its public pay link) when a quote is
   // accepted. Default ON — see partners.auto_email_invoice_on_quote_accept.
   autoEmailInvoiceOnQuoteAccept: z.boolean().optional(),
+  // #6635: email the customer when a tech records an acceptance on their
+  // behalf. Default OFF — see partners.notify_customer_on_behalf_acceptance.
+  notifyCustomerOnBehalfAcceptance: z.boolean().optional(),
   // AI copy style for enrich/polish output; null reverts to the built-in house format.
   catalogAiStyle: z.string().max(2000).nullable().optional(),
   invoiceFooter: z.string().max(5000).nullable().optional(),

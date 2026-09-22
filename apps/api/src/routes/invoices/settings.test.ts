@@ -192,6 +192,14 @@ describe('billing settings routes', () => {
     expect((svc.updatePartnerBillingSettings as any).mock.calls[0]![0]).toMatchObject({ invoiceDeviceAppendix: true });
   });
 
+  it('#6635: PATCH /partner/billing-settings round-trips notifyCustomerOnBehalfAcceptance', async () => {
+    const res = await invoiceSettingsRoutes.request('/partner/billing-settings', jsonBody({
+      currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30, notifyCustomerOnBehalfAcceptance: true,
+    }));
+    expect(res.status).toBe(200);
+    expect((svc.updatePartnerBillingSettings as any).mock.calls[0]![0]).toMatchObject({ notifyCustomerOnBehalfAcceptance: true });
+  });
+
   it('PATCH /partner/billing-settings rejects a bad currency code (→ 400, no service call)', async () => {
     const res = await invoiceSettingsRoutes.request('/partner/billing-settings', jsonBody({
       currencyCode: 'EURO', invoiceNumberPrefix: 'EU', invoiceTermsDays: 14

@@ -45,6 +45,10 @@ export const partners = pgTable('partners', {
   // accepted. Dedicated column, not settings JSONB — the settings cards replace
   // sub-objects wholesale (#3597), and a column keeps gate === read-back.
   autoEmailInvoiceOnQuoteAccept: boolean('auto_email_invoice_on_quote_accept').notNull().default(true),
+  // #6635: email the customer a short notice when a tech records a quote
+  // acceptance ON THEIR BEHALF. DEFAULT OFF — a new outbound customer email
+  // must not start firing on upgrade. Same dedicated-column reasoning as above.
+  notifyCustomerOnBehalfAcceptance: boolean('notify_customer_on_behalf_acceptance').notNull().default(false),
   // P2-6 (#4193). PARTIAL overrides of DEFAULT_IMPACT_WEIGHTS (@breeze/shared);
   // NULL means "defaults". Dedicated column, not a partners.settings
   // sub-object — settings cards replace sub-objects wholesale (#3597) and

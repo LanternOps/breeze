@@ -2226,6 +2226,8 @@
       "autoTaxHardwareHelp": "El hardware recién importado está sujeto a impuestos de forma predeterminada.",
       "autoEmailInvoice": "Enviar la factura por correo automáticamente al aceptar una cotización",
       "autoEmailInvoiceHelp": "Cuando un cliente acepta una propuesta, la factura emitida se envía de inmediato por correo con un enlace seguro para ver y pagar — sin iniciar sesión.",
+      "notifyOnBehalfAcceptance": "Enviar un correo al cliente cuando registres una aceptación en su nombre",
+      "notifyOnBehalfAcceptanceHelp": "Cuando alguien de tu equipo acepta una cotización por un cliente, el cliente recibe una nota breve que indica quién la registró y cuándo, con el número de factura si se emitió una. Puede responder si algo no es correcto. Desactivado de forma predeterminada.",
       "currencyCode": "Código de moneda",
       "defaultMarkup": "Margen predeterminado (%)",
       "defaultTaxRate": "Tasa impositiva predeterminada (%)",

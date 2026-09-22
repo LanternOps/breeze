@@ -679,6 +679,21 @@ describe('invoiceService guards', () => {
     expect(row.autoTaxHardware).toBe(false);
   });
 
+  it('#6635: updatePartnerBillingSettings writes and returns notifyCustomerOnBehalfAcceptance', async () => {
+    queueResult([{ currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30, notifyCustomerOnBehalfAcceptance: true }]);
+    const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: null };
+    const row = await svc.updatePartnerBillingSettings(
+      { currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30, notifyCustomerOnBehalfAcceptance: true },
+      actor,
+    );
+    const setMock = (db as unknown as { set: { mock: { calls: unknown[][] } } }).set;
+    const setArg = setMock.mock.calls.at(-1)![0] as Record<string, unknown>;
+    expect(setArg.notifyCustomerOnBehalfAcceptance).toBe(true);
+    const returning = (db as unknown as { returning: { mock: { calls: unknown[][] } } }).returning;
+    expect(Object.keys(returning.mock.calls.at(-1)![0] as object)).toContain('notifyCustomerOnBehalfAcceptance');
+    expect(row.notifyCustomerOnBehalfAcceptance).toBe(true);
+  });
+
   it('updatePartnerBillingSettings persists a scale-5 tax rate and a 2-decimal markup', async () => {
     queueResult([{ currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30 }]);
     const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: null };

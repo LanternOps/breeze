@@ -2226,6 +2226,8 @@
       "autoTaxHardwareHelp": "Neu importierte Hardware ist standardmäßig steuerpflichtig.",
       "autoEmailInvoice": "Rechnung bei Angebotsannahme automatisch per E-Mail senden",
       "autoEmailInvoiceHelp": "Wenn ein Kunde ein Angebot annimmt, wird die erstellte Rechnung sofort mit einem sicheren Ansichts- und Zahlungslink per E-Mail versendet — ohne Anmeldung.",
+      "notifyOnBehalfAcceptance": "Kunden per E-Mail benachrichtigen, wenn Sie eine Annahme in seinem Namen erfassen",
+      "notifyOnBehalfAcceptanceHelp": "Wenn jemand aus Ihrem Team ein Angebot für einen Kunden annimmt, erhält der Kunde eine kurze Nachricht, wer die Annahme wann erfasst hat — mit der Rechnungsnummer, falls eine erstellt wurde. Ist etwas falsch, kann er darauf antworten. Standardmäßig deaktiviert.",
       "currencyCode": "Währungscode",
       "defaultMarkup": "Standardaufschlag (%)",
       "defaultTaxRate": "Standardsteuersatz (%)",

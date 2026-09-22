@@ -18,7 +18,7 @@ type BillingTab = (typeof BILLING_TABS)[number];
 
 interface PartnerBilling {
   currencyCode: string; defaultTaxRate: string | null; invoiceNumberPrefix: string; invoiceTermsDays: number;
-  autoEmailInvoiceOnQuoteAccept: boolean; invoiceDeviceAppendix: boolean; invoiceFooter: string | null;
+  autoEmailInvoiceOnQuoteAccept: boolean; notifyCustomerOnBehalfAcceptance?: boolean; invoiceDeviceAppendix: boolean; invoiceFooter: string | null;
   documentTheme: 'classic' | 'condensed'; documentPageSize: 'letter' | 'a4';
   billingCompanyName: string | null; billingPhone: string | null; billingWebsite: string | null;
   billingAddressLine1: string | null; billingAddressLine2: string | null; billingAddressCity: string | null;
@@ -38,6 +38,7 @@ export default function PartnerBillingSettingsPage() {
   const [prefix, setPrefix] = useState('INV');
   const [termsDays, setTermsDays] = useState('30');
   const [autoEmailInvoice, setAutoEmailInvoice] = useState(true);
+  const [notifyOnBehalfAcceptance, setNotifyOnBehalfAcceptance] = useState(false);
   const [deviceAppendix, setDeviceAppendix] = useState(false);
   const [footer, setFooter] = useState('');
   const [documentTheme, setDocumentTheme] = useState<'classic' | 'condensed'>('classic');
@@ -66,6 +67,8 @@ export default function PartnerBillingSettingsPage() {
       setPrefix(p.invoiceNumberPrefix ?? 'INV');
       setTermsDays(String(p.invoiceTermsDays ?? 30));
       setAutoEmailInvoice(p.autoEmailInvoiceOnQuoteAccept !== false);
+      // Default OFF (#6635): only an explicit true reads as on.
+      setNotifyOnBehalfAcceptance(p.notifyCustomerOnBehalfAcceptance === true);
       setDeviceAppendix(p.invoiceDeviceAppendix === true);
       setFooter(p.invoiceFooter ?? '');
       setDocumentTheme(p.documentTheme ?? 'classic');
@@ -107,6 +110,7 @@ export default function PartnerBillingSettingsPage() {
             invoiceNumberPrefix: prefix.trim(),
             invoiceTermsDays: Number(termsDays),
             autoEmailInvoiceOnQuoteAccept: autoEmailInvoice,
+            notifyCustomerOnBehalfAcceptance: notifyOnBehalfAcceptance,
             invoiceDeviceAppendix: deviceAppendix,
             invoiceFooter: footer.trim() === '' ? null : footer,
             documentTheme,
@@ -134,7 +138,7 @@ export default function PartnerBillingSettingsPage() {
     } finally {
       setSaving(false);
     }
-  }, [saving, websiteInvalid, currencyCode, taxPercent, prefix, termsDays, autoEmailInvoice, deviceAppendix,
+  }, [saving, websiteInvalid, currencyCode, taxPercent, prefix, termsDays, autoEmailInvoice, notifyOnBehalfAcceptance, deviceAppendix,
       footer, documentTheme, documentPageSize, companyName, phone, website, addr1, addr2, city, region, postal, country, terms, load, t]);
 
   if (loading) return <p className="text-sm text-muted-foreground">{t('partnerBillingSettings.loading')}</p>;
@@ -182,6 +186,7 @@ export default function PartnerBillingSettingsPage() {
       {activeTab === 'documents' && (
         <BillingDocumentsTab
           autoEmailInvoice={autoEmailInvoice} setAutoEmailInvoice={setAutoEmailInvoice}
+          notifyOnBehalfAcceptance={notifyOnBehalfAcceptance} setNotifyOnBehalfAcceptance={setNotifyOnBehalfAcceptance}
           deviceAppendix={deviceAppendix} setDeviceAppendix={setDeviceAppendix}
           footer={footer} setFooter={setFooter}
           documentTheme={documentTheme} setDocumentTheme={setDocumentTheme}

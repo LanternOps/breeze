@@ -4,6 +4,8 @@ import { httpUrlErrorMessage } from '@breeze/shared';
 interface BillingDocumentsTabProps {
   autoEmailInvoice: boolean;
   setAutoEmailInvoice: (v: boolean) => void;
+  notifyOnBehalfAcceptance: boolean;
+  setNotifyOnBehalfAcceptance: (v: boolean) => void;
   deviceAppendix: boolean;
   setDeviceAppendix: (v: boolean) => void;
   footer: string;
@@ -41,7 +43,7 @@ interface BillingDocumentsTabProps {
  * moved to CatalogDefaultsCard.
  */
 export default function BillingDocumentsTab({
-  autoEmailInvoice, setAutoEmailInvoice, deviceAppendix, setDeviceAppendix, footer, setFooter,
+  autoEmailInvoice, setAutoEmailInvoice, notifyOnBehalfAcceptance, setNotifyOnBehalfAcceptance, deviceAppendix, setDeviceAppendix, footer, setFooter,
   documentTheme, setDocumentTheme, documentPageSize, setDocumentPageSize,
   companyName, setCompanyName, phone, setPhone, website, setWebsite, websiteInvalid,
   addr1, setAddr1, addr2, setAddr2, city, setCity, region, setRegion, postal, setPostal,
@@ -65,6 +67,22 @@ export default function BillingDocumentsTab({
           </label>
           <p className="mt-1 text-xs text-muted-foreground">
             {t('partnerBillingSettings.defaults.autoEmailInvoiceHelp')}
+          </p>
+        </div>
+        <div className="mt-4">
+          <label className="flex cursor-pointer items-center gap-2">
+            <input
+              id="pb-notify-on-behalf-acceptance"
+              type="checkbox"
+              checked={notifyOnBehalfAcceptance}
+              onChange={(e) => setNotifyOnBehalfAcceptance(e.target.checked)}
+              data-testid="partner-billing-notify-on-behalf-acceptance"
+              className="h-4 w-4 rounded border"
+            />
+            <span className="text-sm font-medium">{t('partnerBillingSettings.defaults.notifyOnBehalfAcceptance')}</span>
+          </label>
+          <p className="mt-1 text-xs text-muted-foreground">
+            {t('partnerBillingSettings.defaults.notifyOnBehalfAcceptanceHelp')}
           </p>
         </div>
         <div className="mt-4">

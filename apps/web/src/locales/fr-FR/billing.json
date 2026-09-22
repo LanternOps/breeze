@@ -2226,6 +2226,8 @@
       "autoTaxHardwareHelp": "Le nouveau matériel importé est taxable par défaut.",
       "autoEmailInvoice": "Envoyer automatiquement la facture par e-mail à l'acceptation d'un devis",
       "autoEmailInvoiceHelp": "Lorsqu'un client accepte une proposition, la facture émise est envoyée immédiatement par e-mail avec un lien sécurisé pour consulter et payer — sans connexion.",
+      "notifyOnBehalfAcceptance": "Prévenir le client par e-mail lorsque vous enregistrez une acceptation en son nom",
+      "notifyOnBehalfAcceptanceHelp": "Lorsqu'un membre de votre équipe accepte un devis pour un client, celui-ci reçoit un court message indiquant qui l'a enregistrée et quand, avec le numéro de facture si une facture a été émise. Il peut répondre en cas d'erreur. Désactivé par défaut.",
       "currencyCode": "Code devise",
       "defaultMarkup": "Marge par défaut (%)",
       "defaultTaxRate": "Taux de taxe par défaut (%)",

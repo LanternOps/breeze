@@ -2226,6 +2226,8 @@
       "autoTaxHardwareHelp": "Yeni içe aktarılan donanım varsayılan olarak vergiye tabidir.",
       "autoEmailInvoice": "Teklif kabul edildiğinde faturayı otomatik olarak e-postayla gönder",
       "autoEmailInvoiceHelp": "Bir müşteri teklifi kabul ettiğinde, düzenlenen fatura güvenli bir görüntüleme ve ödeme bağlantısıyla hemen e-postayla gönderilir — oturum açma gerekmez.",
+      "notifyOnBehalfAcceptance": "Müşteri adına bir kabul kaydettiğinizde müşteriye e-posta gönder",
+      "notifyOnBehalfAcceptanceHelp": "Ekibinizden biri bir müşteri adına teklifi kabul ettiğinde, müşteri kabulü kimin ve ne zaman kaydettiğini belirten kısa bir not alır; bir fatura düzenlendiyse fatura numarası da eklenir. Yanlışsa yanıtlayabilir. Varsayılan olarak kapalı.",
       "currencyCode": "Para birimi kodu",
       "defaultMarkup": "Varsayılan işaretleme (%)",
       "defaultTaxRate": "Varsayılan vergi oranı (%)",

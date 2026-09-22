@@ -484,6 +484,7 @@ const partnerPublicColumns = () => ({
   invoiceTermsDays: partners.invoiceTermsDays,
   invoiceFooter: partners.invoiceFooter,
   autoEmailInvoiceOnQuoteAccept: partners.autoEmailInvoiceOnQuoteAccept,
+  notifyCustomerOnBehalfAcceptance: partners.notifyCustomerOnBehalfAcceptance,
   documentTheme: partners.documentTheme,
   documentPageSize: partners.documentPageSize,
   billingCompanyName: partners.billingCompanyName,

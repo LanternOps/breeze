@@ -2226,6 +2226,8 @@
       "autoTaxHardwareHelp": "I nuovi hardware importati sono imponibili per impostazione predefinita.",
       "autoEmailInvoice": "Invia automaticamente la fattura via email all'accettazione di un preventivo",
       "autoEmailInvoiceHelp": "Quando un cliente accetta una proposta, la fattura emessa viene inviata subito via email con un link sicuro per visualizzare e pagare — senza accesso.",
+      "notifyOnBehalfAcceptance": "Avvisa il cliente via email quando registri un'accettazione per suo conto",
+      "notifyOnBehalfAcceptanceHelp": "Quando qualcuno del tuo team accetta un preventivo per un cliente, il cliente riceve una breve nota che indica chi l'ha registrata e quando, con il numero di fattura se ne è stata emessa una. Può rispondere se qualcosa non è corretto. Disattivato per impostazione predefinita.",
       "currencyCode": "Codice valuta",
       "defaultMarkup": "Ricarico predefinito (%)",
       "defaultTaxRate": "Aliquota fiscale predefinita (%)",

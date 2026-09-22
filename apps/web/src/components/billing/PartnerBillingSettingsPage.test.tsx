@@ -178,6 +178,26 @@ describe('PartnerBillingSettingsPage', () => {
     });
   });
 
+  it('#6635: the on-behalf acceptance notice toggle loads off by default and round-trips', async () => {
+    fetchMock.mockImplementation(async (_input: string, opts?: RequestInit) => {
+      if (opts?.method === 'PATCH') return json({ data: {} });
+      // Field absent from the payload (older API) must read as OFF, not ON.
+      return json({
+        currencyCode: 'USD', defaultTaxRate: null, invoiceNumberPrefix: 'INV', invoiceTermsDays: 30, invoiceFooter: null,
+      });
+    });
+    renderPage();
+    await gotoDocumentsTab();
+    const box = await screen.findByTestId('partner-billing-notify-on-behalf-acceptance') as HTMLInputElement;
+    expect(box.checked).toBe(false);
+    fireEvent.click(box);
+    fireEvent.click(screen.getByTestId('partner-billing-save'));
+    await waitFor(() => {
+      const patch = fetchMock.mock.calls.find((c) => c[0] === '/partner/billing-settings' && (c[1] as RequestInit)?.method === 'PATCH');
+      expect(JSON.parse((patch![1] as RequestInit).body as string)).toMatchObject({ notifyCustomerOnBehalfAcceptance: true });
+    });
+  });
+
   it('#3205 W07: keeps an enabled appendix default on an unrelated settings save', async () => {
     fetchMock.mockImplementation(async (_input: string, opts?: RequestInit) => {
       if (opts?.method === 'PATCH') return json({ data: {} });

@@ -987,6 +987,7 @@ export async function updatePartnerBillingSettings(
     invoiceTermsDays: number; defaultMarkupPercent?: number | null; autoTaxHardware?: boolean;
     invoiceDeviceAppendix?: boolean;
     autoEmailInvoiceOnQuoteAccept?: boolean;
+    notifyCustomerOnBehalfAcceptance?: boolean;
     catalogAiStyle?: string | null;
     invoiceFooter?: string | null;
     documentTheme?: 'classic' | 'condensed'; documentPageSize?: 'letter' | 'a4';
@@ -1013,6 +1014,7 @@ export async function updatePartnerBillingSettings(
   if (patch.autoTaxHardware !== undefined) set.autoTaxHardware = patch.autoTaxHardware;
   if (patch.invoiceDeviceAppendix !== undefined) set.invoiceDeviceAppendix = patch.invoiceDeviceAppendix;
   if (patch.autoEmailInvoiceOnQuoteAccept !== undefined) set.autoEmailInvoiceOnQuoteAccept = patch.autoEmailInvoiceOnQuoteAccept;
+  if (patch.notifyCustomerOnBehalfAcceptance !== undefined) set.notifyCustomerOnBehalfAcceptance = patch.notifyCustomerOnBehalfAcceptance;
   if (patch.catalogAiStyle !== undefined) set.catalogAiStyle = patch.catalogAiStyle?.trim() || null;
   if (patch.invoiceFooter !== undefined) set.invoiceFooter = patch.invoiceFooter;
   if (patch.documentTheme !== undefined) set.documentTheme = patch.documentTheme;
@@ -1030,6 +1032,7 @@ export async function updatePartnerBillingSettings(
     defaultMarkupPercent: partners.defaultMarkupPercent, autoTaxHardware: partners.autoTaxHardware,
     invoiceDeviceAppendix: partners.invoiceDeviceAppendix,
     autoEmailInvoiceOnQuoteAccept: partners.autoEmailInvoiceOnQuoteAccept,
+    notifyCustomerOnBehalfAcceptance: partners.notifyCustomerOnBehalfAcceptance,
     catalogAiStyle: partners.catalogAiStyle, invoiceFooter: partners.invoiceFooter,
     documentTheme: partners.documentTheme, documentPageSize: partners.documentPageSize,
   });

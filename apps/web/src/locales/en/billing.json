@@ -2226,6 +2226,8 @@
       "autoTaxHardwareHelp": "Newly imported hardware defaults to taxable.",
       "autoEmailInvoice": "Email the invoice automatically when a quote is accepted",
       "autoEmailInvoiceHelp": "When a customer accepts a proposal, the issued invoice is emailed right away with a secure view & pay link — no sign-in needed.",
+      "notifyOnBehalfAcceptance": "Email the customer when you record an acceptance on their behalf",
+      "notifyOnBehalfAcceptanceHelp": "When someone on your team accepts a quote for a customer, the customer gets a short note saying who recorded it and when, with the invoice number if one was issued. They can reply if it's wrong. Off by default.",
       "currencyCode": "Currency code",
       "defaultMarkup": "Default markup (%)",
       "defaultTaxRate": "Default tax rate (%)",

@@ -5826,7 +5826,7 @@ describe('org routes', () => {
         'billingAddressLine1', 'billingAddressLine2', 'billingAddressCity',
         'billingAddressRegion', 'billingAddressPostalCode', 'billingAddressCountry',
         'billingTermsAndConditions', 'defaultMarkupPercent', 'autoTaxHardware',
-        'invoiceDeviceAppendix',
+        'invoiceDeviceAppendix', 'autoEmailInvoiceOnQuoteAccept', 'notifyCustomerOnBehalfAcceptance',
         'catalogAiStyle', 'aiForOfficeEnabled', 'createdAt', 'updatedAt',
       ]) {
         expect(keys).toContain(expected);

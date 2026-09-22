@@ -1,0 +1,16 @@
+-- #6635: optionally tell the customer when their provider records a quote
+-- acceptance on their behalf (accept-on-behalf, PR #6596; spec
+-- 2026-09-21-quote-accept-on-behalf-design.md §12).
+--
+-- Partner-level toggle, DEFAULT OFF: this is a NEW outbound customer email, so
+-- an upgrade must never start sending it unasked. Opt-in from Billing settings
+-- -> Documents, next to auto_email_invoice_on_quote_accept.
+--
+-- A dedicated boolean column (not partners.settings JSONB), for the same reason
+-- as auto_email_invoice_on_quote_accept (2026-08-21-partner-auto-email-invoice):
+-- the settings cards replace sub-objects wholesale (#3597/#3606), and a column
+-- keeps the gate expression and the settings read-back the same.
+--
+-- partners has no org_id (partner-axis), so no tenant export-policy entry.
+-- No rows are written: the column default IS the intended state for everyone.
+ALTER TABLE partners ADD COLUMN IF NOT EXISTS notify_customer_on_behalf_acceptance boolean NOT NULL DEFAULT false;

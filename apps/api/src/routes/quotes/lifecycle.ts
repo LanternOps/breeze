@@ -16,6 +16,7 @@ import { loadContractBlockRenderData } from '../../services/contractTemplateRend
 import { runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { acceptQuote, emitAcceptInvoiceIssued, resolveAcceptInvoiceUrl, autoEmailAcceptedInvoice } from '../../services/quoteAcceptService';
 import { notifyQuoteOutcome } from '../../services/quoteOutcomeNotify';
+import { notifyCustomerOfOnBehalfAcceptance } from '../../services/quoteOnBehalfNotify';
 import { acceptedOnBehalfAuditEvent } from '../../services/quoteAcceptOnBehalfAudit';
 import { declinedOnBehalfAuditEvent } from '../../services/quoteDeclineOnBehalfAudit';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
@@ -206,6 +207,10 @@ quoteLifecycleRoutes.post('/:id/accept-on-behalf',
         quoteId: id, outcome: 'accepted', source: 'msp',
         signerName: body.signerName, origin: 'on_behalf', actorUserId,
       });
+      // #6635: optional customer notice ("your provider recorded your
+      // acceptance"), partner opt-in, default OFF. Same post-commit,
+      // never-delay-the-response, swallows-its-own-errors contract.
+      void notifyCustomerOfOnBehalfAcceptance({ ...res, origin: 'on_behalf' });
 
       return c.json({ data: {
         quote: res.quote,
