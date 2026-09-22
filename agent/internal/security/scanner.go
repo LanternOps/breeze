@@ -145,6 +145,15 @@ func (s *SecurityScanner) ScanWithContext(ctx context.Context, scanType string, 
 	}
 
 	status, statusErr := CollectStatus(s.Config)
+	if statusErr != nil {
+		// A posture probe (e.g. firewall status on a host with no known
+		// firewall tool) failing to resolve is not a scan failure — the same
+		// tolerance handleSecurityCollectStatus already applies. Folding it
+		// into the returned error would discard real threat results the scan
+		// DID find, on hosts as ordinary as a minimal Linux box or a CI
+		// container with no ufw/firewalld/systemctl.
+		log.Warn("scan completed but posture status collection was incomplete", "error", statusErr.Error())
+	}
 	status.ThreatCount = len(threats)
 	status.LastScanAt = time.Now().UTC().Format(time.RFC3339)
 	status.LastScanType = strings.ToLower(scanType)
@@ -156,7 +165,7 @@ func (s *SecurityScanner) ScanWithContext(ctx context.Context, scanType string, 
 		FilesScanned: filesScanned,
 		TimedOut:     timedOut,
 		Partial:      timedOut,
-	}, errors.Join(scanErr, statusErr)
+	}, scanErr
 }
 
 func (s *SecurityScanner) quarantineDir() string {
