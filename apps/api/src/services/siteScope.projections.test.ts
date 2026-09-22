@@ -133,6 +133,21 @@ describe('execution-scope projection contract', () => {
 
     expect(offenders).toEqual([]);
   });
+
+  it('every reports-sourced execution-scope literal naming the org owner also names the partner owner (#3198 W01)', () => {
+    // A report row owns exactly ONE axis (reports_one_owner_chk). A projection
+    // that carries `orgId: reports.orgId` into decodeSiteScope/reportOwnerOf
+    // but drops `partnerId` makes every partner-owned row look ownerless —
+    // reportOwnerOf throws, and the route answers 404 for a report the caller
+    // may legitimately read.
+    const orgOwned = all.filter((entry) => entry.block.includes('orgId: reports.orgId'));
+    expect(orgOwned.length).toBeGreaterThanOrEqual(4);
+    const offenders = orgOwned
+      .filter((entry) => !entry.block.includes('partnerId: reports.partnerId'))
+      .map((entry) => `${entry.file}:${entry.line}`);
+
+    expect(offenders).toEqual([]);
+  });
 });
 
 it('keeps a complete portal-authored run visible to an unrestricted reader', () => {

@@ -860,6 +860,14 @@ function definitionScopePredicate(
         sql`${columns.executionScopeSiteIds} <@ ${uuidArraySql(normalizedSiteIds)}`,
       )!;
     }
+    case 'partner_wide':
+      // #3198 W01. A partner_wide scope has no org to bind, and these
+      // single-scope predicates cannot see the row's partner_id. Falling to
+      // sqlFalse would disguise a wiring bug as "no rows"; callers holding a
+      // partner_wide authority use reportPartnerWideScopeSqlPredicate.
+      throw new Error(
+        'partner_wide scope requires the partner-axis predicate (reportPartnerWideScopeSqlPredicate)',
+      );
     default:
       return sqlFalse();
   }
@@ -915,6 +923,20 @@ export type PartnerWideScopeSqlTarget = {
   rowPartnerId: typeof reports.partnerId;
   partnerId: string;
 };
+
+/**
+ * #3198 W01. The single-row predicate for a PARTNER-OWNED definition or run
+ * read under a live partner_wide authority: the joined/owning report row's
+ * `partner_id` is the caller's partner AND the row's envelope is a complete v1
+ * partner_wide capture by a real user. `columns` is `reports` for a definition
+ * read and `reportRuns` for a run read (the run carries its own envelope).
+ */
+export function reportPartnerWideScopeSqlPredicate(
+  columns: ReportScopeColumns,
+  partnerWide: PartnerWideScopeSqlTarget,
+): SQL<unknown> {
+  return partnerWideRowPredicate(columns, partnerWide);
+}
 
 export function reportDefinitionMultiOrgScopeSqlPredicate(
   rowOrgId: typeof reports.orgId,

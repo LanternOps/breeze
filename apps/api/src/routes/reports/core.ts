@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
-import { and, eq, sql, desc, inArray, type SQL } from 'drizzle-orm';
+import { and, eq, or, sql, desc, inArray, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
 import { reports, reportRuns } from '../../db/schema';
 import {
@@ -12,13 +12,23 @@ import {
 import { writeRouteAudit } from '../../services/auditEvents';
 import { PERMISSIONS } from '../../services/permissions';
 import {
+  canManagePartnerWidePolicies,
+  PARTNER_WIDE_WRITE_DENIED_MESSAGE,
+} from '../../services/partnerWideAccess';
+import {
   getPagination,
+  decodeOwnerKey,
   ensureOrgAccess,
   getReportWithOrgCheck,
   isPortalSelfServiceLocked,
   isSystemManagedReportDefinition,
+  partnerOwnedReportVisibility,
   PORTAL_SELF_SERVICE_REPORT,
   reportDefinitionMetadataProjection,
+  reportOwnerCondition,
+  reportOwnerOfRow,
+  reportOwnerScopePredicate,
+  resolveReportOwnerAuthority,
   tenantAuthorizedReportCondition,
 } from './helpers';
 import {
@@ -28,7 +38,7 @@ import {
   persistedSiteScopeValues,
   reportDefinitionMultiOrgScopeSqlPredicate,
   reportDefinitionScopeSqlPredicate,
-  reportRunScopeSqlPredicate,
+  resolveRequestPartnerReportAuthority,
   resolveRequestReportAuthority,
   resolveRequestReportAuthorityMap,
   unrestrictedReportDefinitionScopeSqlPredicate,
@@ -36,7 +46,12 @@ import {
   type PersistedSiteScopeColumns,
   type ReportAction,
 } from '../../services/siteScope';
-import { listReportsSchema, createReportSchema, updateReportSchema } from './schemas';
+import {
+  listReportsSchema,
+  createReportSchema,
+  PARTNER_SCOPE_REPORT_TYPES,
+  updateReportSchema,
+} from './schemas';
 
 export const coreRoutes = new Hono();
 
@@ -59,13 +74,23 @@ const SYSTEM_MANAGED = 'system_managed' as const;
  * it needs the locked row's org and a second table; callers answer 409.
  */
 const PORTAL_SELF_SERVICE = 'portal_self_service' as const;
+/**
+ * #3198 W01 — `loadLockedDefinition`'s partner-wide refusal: the definition is
+ * partner-owned and the caller may not administer partner-wide state. A 403,
+ * not a 404: a 'selected' partner user's RLS context genuinely sees the row
+ * (partner access is flat membership), so hiding it would be a lie the
+ * database contradicts.
+ */
+const PARTNER_WIDE_DENIED = 'partner_wide_denied' as const;
+/** #3198 W01 — PUT's refusal to re-home a partner-owned definition. */
+const OWNERSHIP_IMMUTABLE = 'ownership_immutable' as const;
 
 type DefinitionListScopeResult =
   | { ok: true; tenantCondition?: SQL<unknown>; definitionScopePredicate: SQL<unknown> }
   | { ok: false; error: string };
 
 function liveScopeOf(
-  result: Awaited<ReturnType<typeof resolveRequestReportAuthority>>,
+  result: Awaited<ReturnType<typeof resolveReportOwnerAuthority>>,
 ): LiveSiteScopeV1 | null {
   if (!result.ok || result.authority.scope.kind === 'legacy_unscoped') {
     return null;
@@ -110,15 +135,27 @@ async function resolveDefinitionListScope(
       const scope = liveScopeOf(result);
       if (scope) scopes.push(scope);
     }
+    const orgCondition = orgIds.length > 0
+      ? inArray(reports.orgId, orgIds)
+      : sql<unknown>`FALSE`;
+    // #3198 W01: partner-owned rows join the list only for a caller who may
+    // administer partner-wide state, and only on an all-orgs listing — an
+    // explicit orgId (handled above) asks for one org and excludes them.
+    const partnerWide = canManagePartnerWidePolicies(auth) && auth.partnerId
+      ? { rowPartnerId: reports.partnerId, partnerId: auth.partnerId }
+      : undefined;
     return {
       ok: true,
-      tenantCondition: orgIds.length > 0
-        ? inArray(reports.orgId, orgIds)
-        : sql<unknown>`FALSE`,
+      tenantCondition: partnerWide
+        ? or(orgCondition, partnerOwnedReportVisibility(auth))!
+        : orgCondition,
       definitionScopePredicate: reportDefinitionMultiOrgScopeSqlPredicate(
         reports.orgId,
         reports,
         scopes,
+        // Spread, not a trailing `undefined`: an org-axis caller's call is
+        // exactly the pre-W01 three-argument call.
+        ...(partnerWide ? [partnerWide] : []),
       ),
     };
   }
@@ -174,17 +211,22 @@ async function loadLockedDefinition(
   if (!metadata) return null;
   if (isSystemManagedReportDefinition(metadata)) return SYSTEM_MANAGED;
 
-  const authorityResult = await resolveRequestReportAuthority(
-    auth,
-    metadata.orgId,
-    action,
-  );
+  const owner = reportOwnerOfRow(metadata);
+  if (!owner) return null;
+  // #3198 W01: every mutation of a partner-owned definition needs the
+  // partner-wide capability, checked before any authority is resolved.
+  if (owner.partnerId !== undefined && !canManagePartnerWidePolicies(auth)) {
+    return PARTNER_WIDE_DENIED;
+  }
+
+  const authorityResult = await resolveReportOwnerAuthority(auth, owner, action);
   if (!authorityResult.ok) return null;
   const currentScope = liveScopeOf(authorityResult);
   if (!currentScope) return null;
 
-  const definitionScopePredicate = reportDefinitionScopeSqlPredicate(
+  const definitionScopePredicate = reportOwnerScopePredicate(
     reports,
+    owner,
     currentScope,
   );
   const [locked] = await tx
@@ -193,7 +235,7 @@ async function loadLockedDefinition(
     .where(
       and(
         eq(reports.id, reportId),
-        eq(reports.orgId, metadata.orgId),
+        reportOwnerCondition(owner),
         definitionScopePredicate,
       ),
     )
@@ -204,12 +246,13 @@ async function loadLockedDefinition(
   try {
     const storedScope = decodeSiteScope(
       locked as PersistedSiteScopeColumns,
-      locked.orgId,
+      decodeOwnerKey(owner),
     );
     if (!isSiteScopeSubset(storedScope, currentScope)) return null;
     return {
       metadata,
       locked,
+      owner,
       storedScope,
       currentScope,
       authority: authorityResult.authority,
@@ -343,22 +386,22 @@ coreRoutes.get(
       return c.json({ error: 'Report not found' }, 404);
     }
 
-    const authorityResult = await resolveRequestReportAuthority(
+    const authorityResult = await resolveReportOwnerAuthority(
       auth,
-      report.orgId,
+      report.owner,
       'read',
     );
     if (!authorityResult.ok || authorityResult.authority.scope.kind === 'legacy_unscoped') {
       return c.json({ error: 'Report not found' }, 404);
     }
-    const runScopePredicate = reportRunScopeSqlPredicate(
+    const runScopePredicate = reportOwnerScopePredicate(
       reportRuns,
+      report.owner,
       authorityResult.authority.scope,
     );
 
-    // Get recent runs for this report
-    const recentRuns = await db
-      .select({
+    const { owner, ...reportRow } = report;
+    const recentRunsProjection = {
         id: reportRuns.id,
         reportId: reportRuns.reportId,
         status: reportRuns.status,
@@ -375,14 +418,27 @@ coreRoutes.get(
         executionScopeFingerprint: reportRuns.executionScopeFingerprint,
         executionScopeCapturedAt: reportRuns.executionScopeCapturedAt,
         executionScopePrincipalKind: reportRuns.executionScopePrincipalKind,
-      })
-      .from(reportRuns)
-      .where(and(eq(reportRuns.reportId, reportId), runScopePredicate))
-      .orderBy(desc(reportRuns.createdAt))
-      .limit(5);
+    };
+    // Get recent runs for this report. A partner-owned definition's run
+    // predicate binds the joined `reports.partner_id` (#3198 W01), so only
+    // that branch joins; the org branch is today's query unchanged.
+    const recentRuns = owner.partnerId !== undefined
+      ? await db
+        .select(recentRunsProjection)
+        .from(reportRuns)
+        .innerJoin(reports, eq(reportRuns.reportId, reports.id))
+        .where(and(eq(reportRuns.reportId, reportId), runScopePredicate))
+        .orderBy(desc(reportRuns.createdAt))
+        .limit(5)
+      : await db
+        .select(recentRunsProjection)
+        .from(reportRuns)
+        .where(and(eq(reportRuns.reportId, reportId), runScopePredicate))
+        .orderBy(desc(reportRuns.createdAt))
+        .limit(5);
 
     return c.json({
-      ...report,
+      ...reportRow,
       recentRuns
     });
   }
@@ -397,6 +453,63 @@ coreRoutes.post(
   async (c) => {
     const auth = c.get('auth');
     const data = c.req.valid('json');
+
+    // #3198 W01 — a partner-owned definition. partner_id is ALWAYS the
+    // caller's own token partner; `data.orgId` and any client-supplied partner
+    // id are never read on this branch.
+    if (data.ownerScope === 'partner') {
+      if (auth.scope !== 'partner' || !auth.partnerId) {
+        return c.json({ error: 'partner_scope_required' }, 403);
+      }
+      if (!canManagePartnerWidePolicies(auth)) {
+        return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+      }
+      if (!PARTNER_SCOPE_REPORT_TYPES.has(data.type)) {
+        return c.json({ error: 'unsupported_report_scope', type: data.type }, 400);
+      }
+      const partnerAuthority = await resolveRequestPartnerReportAuthority(
+        auth,
+        auth.partnerId,
+        'write',
+      );
+      if (!partnerAuthority.ok) {
+        return c.json(
+          { error: 'Report scope is not authorized', reason: partnerAuthority.reason },
+          403,
+        );
+      }
+      const [partnerReport] = await db
+        .insert(reports)
+        .values({
+          orgId: null,
+          partnerId: auth.partnerId,
+          name: data.name,
+          type: data.type,
+          config: data.config,
+          schedule: data.schedule,
+          format: data.format,
+          createdBy: auth.user.id,
+          ...persistedSiteScopeValues(partnerAuthority.authority),
+        })
+        .returning();
+
+      writeRouteAudit(c, {
+        orgId: null,
+        action: 'report.create',
+        resourceType: 'report',
+        resourceId: partnerReport?.id,
+        resourceName: partnerReport?.name,
+        details: {
+          type: partnerReport?.type,
+          schedule: partnerReport?.schedule,
+          format: partnerReport?.format,
+          ownerScope: 'partner',
+          partnerId: auth.partnerId,
+        },
+      });
+
+      return c.json(partnerReport, 201);
+    }
 
     // Determine orgId
     let orgId = data.orgId;
@@ -473,7 +586,10 @@ coreRoutes.put(
   async (c) => {
     const auth = c.get('auth');
     const reportId = c.req.param('id')!;
-    const data = c.req.valid('json');
+    // `orgId` is accepted-and-ignored for an org-owned row (the web builder
+    // sends it on every save) and refused on a partner-owned one below; it is
+    // never an update. `ownerScope` never reaches here (schema: z.never()).
+    const { orgId: bodyOrgId, ownerScope: _ownerScope, ...data } = c.req.valid('json');
 
     if (Object.keys(data).length === 0) {
       return c.json({ error: 'No updates provided' }, 400);
@@ -493,7 +609,14 @@ coreRoutes.put(
         'write',
       );
       if (locked === SYSTEM_MANAGED) return SYSTEM_MANAGED;
+      if (locked === PARTNER_WIDE_DENIED) return PARTNER_WIDE_DENIED;
       if (!locked) return null;
+      // #3198 W01: ownership is immutable. The report_schedule_recipients /
+      // service_deliverables composite FKs are ON UPDATE NO ACTION, so flipping
+      // the axis would 23503 anyway — refuse it as what it is.
+      if (locked.owner.partnerId !== undefined && bodyOrgId !== undefined) {
+        return OWNERSHIP_IMMUTABLE;
+      }
       if (await isPortalSelfServiceLocked(tx, locked.locked)) {
         return PORTAL_SELF_SERVICE;
       }
@@ -510,7 +633,7 @@ coreRoutes.put(
         .where(
           and(
             eq(reports.id, reportId),
-            eq(reports.orgId, locked.locked.orgId),
+            reportOwnerCondition(locked.owner),
             locked.definitionScopePredicate,
           ),
         )
@@ -521,6 +644,12 @@ coreRoutes.put(
 
     if (mutation === SYSTEM_MANAGED) {
       return c.json(SYSTEM_MANAGED_REPORT, 409);
+    }
+    if (mutation === PARTNER_WIDE_DENIED) {
+      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+    }
+    if (mutation === OWNERSHIP_IMMUTABLE) {
+      return c.json({ error: 'report_ownership_immutable' }, 400);
     }
     if (mutation === PORTAL_SELF_SERVICE) {
       return c.json(PORTAL_SELF_SERVICE_REPORT, 409);
@@ -534,7 +663,9 @@ coreRoutes.put(
       resourceType: 'report',
       resourceId: mutation.updated.id,
       resourceName: mutation.updated.name,
-      details: { changedFields: Object.keys(data) }
+      details: mutation.locked.partnerId
+        ? { changedFields: Object.keys(data), partnerId: mutation.locked.partnerId }
+        : { changedFields: Object.keys(data) }
     });
 
     return c.json(mutation.updated);
@@ -558,6 +689,7 @@ coreRoutes.post(
         'write',
       );
       if (locked === SYSTEM_MANAGED) return { kind: 'system_managed' as const };
+      if (locked === PARTNER_WIDE_DENIED) return { kind: 'partner_wide_denied' as const };
       if (!locked) return { kind: 'not_found' as const };
 
       if (
@@ -586,7 +718,7 @@ coreRoutes.post(
         .where(
           and(
             eq(reports.id, reportId),
-            eq(reports.orgId, locked.locked.orgId),
+            reportOwnerCondition(locked.owner),
             locked.definitionScopePredicate,
           ),
         )
@@ -604,6 +736,9 @@ coreRoutes.post(
       // definition into a human-owned one — and the scheduled-report worker's
       // system-principal refusal would stop protecting it.
       return c.json(SYSTEM_MANAGED_REPORT, 409);
+    }
+    if (result.kind === 'partner_wide_denied') {
+      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
     }
     if (result.kind === 'not_found') {
       return c.json(REPORT_NOT_FOUND, 404);
@@ -640,6 +775,7 @@ coreRoutes.delete(
         'delete',
       );
       if (locked === SYSTEM_MANAGED) return SYSTEM_MANAGED;
+      if (locked === PARTNER_WIDE_DENIED) return PARTNER_WIDE_DENIED;
       if (!locked) return null;
 
       if (await isPortalSelfServiceLocked(tx, locked.locked)) {
@@ -655,7 +791,7 @@ coreRoutes.delete(
         .where(
           and(
             eq(reports.id, reportId),
-            eq(reports.orgId, locked.locked.orgId),
+            reportOwnerCondition(locked.owner),
             locked.definitionScopePredicate,
           ),
         )
@@ -677,6 +813,9 @@ coreRoutes.delete(
     if (deleted === SYSTEM_MANAGED) {
       return c.json(SYSTEM_MANAGED_REPORT, 409);
     }
+    if (deleted === PARTNER_WIDE_DENIED) {
+      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+    }
     if (deleted?.kind === PORTAL_SELF_SERVICE) {
       return c.json(PORTAL_SELF_SERVICE_REPORT, 409);
     }
@@ -688,7 +827,8 @@ coreRoutes.delete(
       action: 'report.delete',
       resourceType: 'report',
       resourceId: deleted.report.id,
-      resourceName: deleted.report.name
+      resourceName: deleted.report.name,
+      ...(deleted.report.partnerId ? { details: { partnerId: deleted.report.partnerId } } : {}),
     });
 
     return c.json({ success: true });

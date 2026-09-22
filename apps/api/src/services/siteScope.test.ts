@@ -53,7 +53,9 @@ import {
   reportDefinitionMultiOrgScopeSqlPredicate,
   reportDefinitionScopeSqlPredicate,
   reportOwnerOf,
+  reportPartnerWideScopeSqlPredicate,
   reportRunMultiOrgScopeSqlPredicate,
+  reportRunScopeSqlPredicate,
   resolveLivePartnerReportAuthority,
   resolveLiveReportAuthority,
   resolveRequestPartnerReportAuthority,
@@ -2317,6 +2319,34 @@ describe('partner-wide execution scope (#3198 W01)', () => {
         partnerWideScope(partnerId) as never,
       ]),
     ).toThrow(/organization-axis/);
+  });
+
+  it('refuses a partner_wide scope in the single-scope predicates instead of silently matching nothing', () => {
+    // Task 5a carry-forward 3: a partner_wide scope has no org to bind, and
+    // the single-scope predicates cannot see the row's partner_id. Falling to
+    // sqlFalse would hide a wiring bug as "no rows"; it must be loud.
+    expect(() =>
+      reportDefinitionScopeSqlPredicate(reports, partnerWideScope(partnerId)),
+    ).toThrow(/partner_wide scope requires the partner-axis predicate/);
+    expect(() =>
+      reportRunScopeSqlPredicate(reportRuns, partnerWideScope(partnerId)),
+    ).toThrow(/partner_wide scope requires the partner-axis predicate/);
+  });
+
+  it('reportPartnerWideScopeSqlPredicate pins the row partner AND a complete user partner_wide envelope', () => {
+    const rendered = renderSql(
+      reportPartnerWideScopeSqlPredicate(reportRuns, {
+        rowPartnerId: reports.partnerId, partnerId,
+      }),
+    );
+    expect(rendered.sql).toContain('"reports"."partner_id" = $1');
+    expect(rendered.params[0]).toBe(partnerId);
+    expect(rendered.params).toContain('partner_wide');
+    expect(rendered.params).toContain('user');
+    expect(rendered.sql).toContain('"report_runs"."execution_scope_site_ids" is null');
+    expect(() =>
+      reportPartnerWideScopeSqlPredicate(reports, { rowPartnerId: reports.partnerId, partnerId: '' }),
+    ).toThrow(/partner ID/);
   });
 
   it('grants partner_wide authority to an org_access=all member whose role grants the action', async () => {

@@ -322,6 +322,16 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   // --- partner sending domains (spec 2026-09-17 W02) -----------------------
   'services/emailDomains/domainRelease.ts': 'releaseSendingDomainsForPartner has no caller-facing surface at all: it is invoked only by cascadeDeletePartner and finalizePartnerOffboarding, both of which run in system context on a partner already being destroyed, and it takes the partner id from those functions rather than from any request. It writes exactly two things — an outbox row and provider_domain_id = NULL — and creates no partner-owned configuration, so there is no partner-wide policy decision for canManagePartnerWidePolicies to gate.',
   'services/emailDomains/sendingDomainService.ts': 'the partner-wide gate for every caller-facing sending-domain write lives one layer up, in routes/partnerSendingDomains.ts, which calls canManagePartnerWidePolicies on all six mutating routes; this service takes the partner id from the verified auth context its route passed, never from request input, and its remaining callers are the platform-admin routes (already behind platformAdminMiddleware + requireMfa) and the sending-domains worker, which has no caller at all',
+  // --- reports became dual-axis (org XOR partner) in #3198 W01 --------------
+  // Partner-owned definitions are created/updated/deleted ONLY through
+  // routes/reports/core.ts (and generated through runs.ts), both of which call
+  // canManagePartnerWidePolicies. Every writer below is org-axis by
+  // construction: it sets or matches a concrete, non-null org_id.
+  'routes/reports/recipients.ts': 'recipient writers refuse a partner-owned definition with 409 partner_owned_report before any write; the only reports write (legacy emailRecipients cleanup in /recipients/convert) is keyed on the resolved non-null org_id',
+  'services/aiAgents/narrativeReport.ts': 'system-authored weekly AI narrative: inserts with org_id = run.org_id and updates WHERE org_id = run.org_id — never a partner-owned row, no caller-facing surface',
+  'services/aiAgents/fleetDesignReport.ts': 'system-authored Fleet Design: inserts with org_id = run.org_id and updates WHERE org_id = run.org_id — never a partner-owned row, no caller-facing surface',
+  'services/managedEvidenceDefinitions.ts': 'provisions the org\'s managed evidence definition with a concrete org_id (#5784); never partner-owned',
+  'services/portal/reportsSelfService.ts': 'customer-portal self-service: inserts portal definitions with the portal org_id and updates a definition it loaded by org_id + portal_self_service; partner-owned rows are never portal-visible (spec 3.5)',
   'services/emailDomains/domainSync.ts': 'the sending-domain state machine runs only inside the sending-domains BullMQ worker, under system DB scope, with no caller and no auth context: it takes a domain id from a job payload, advances that ONE row between provider-observed statuses, and creates no partner-owned configuration. Every caller-facing create/update/delete of partner_sending_domains goes through routes/partnerSendingDomains.ts, which carries the canManagePartnerWidePolicies gate',
 };
 

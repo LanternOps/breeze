@@ -202,6 +202,8 @@ function orgWhere(auth: AuthContext, orgIdCol: ReturnType<typeof sql.raw> | any)
 const aiReportDefinitionMetadataProjection = {
   id: reports.id,
   orgId: reports.orgId,
+  // #3198 W01: the other owner axis (siteScope.projections.test.ts).
+  partnerId: reports.partnerId,
   executionScopeVersion: reports.executionScopeVersion,
   executionScopeKind: reports.executionScopeKind,
   executionScopeSiteIds: reports.executionScopeSiteIds,
@@ -215,6 +217,8 @@ const aiReportRunMetadataProjection = {
   id: reportRuns.id,
   reportId: reportRuns.reportId,
   orgId: reports.orgId,
+  // #3198 W01: the other owner axis (siteScope.projections.test.ts).
+  partnerId: reports.partnerId,
   executionScopeVersion: reportRuns.executionScopeVersion,
   executionScopeKind: reportRuns.executionScopeKind,
   executionScopeSiteIds: reportRuns.executionScopeSiteIds,

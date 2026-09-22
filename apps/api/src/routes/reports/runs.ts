@@ -1,24 +1,28 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
-import { and, eq, sql, desc, inArray, type SQL } from 'drizzle-orm';
+import { and, eq, or, sql, desc, inArray, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
 import { reports, reportRuns } from '../../db/schema';
 import { authMiddleware, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { auditSensitiveRead } from '../../services/sensitiveReadAudit';
 import { PERMISSIONS } from '../../services/permissions';
+import { canManagePartnerWidePolicies } from '../../services/partnerWideAccess';
 import {
   assertReportExecutionPreflight,
+  assertReportOwnerScopeSupported,
   generateReport,
   previousBaselineFor,
   StoredArtifactOnlyReportError,
   UnexecutableReportScopeError,
+  UnsupportedReportScopeError,
   type ReportResult,
 } from '../../services/reportGenerationService';
 import { rowsToCsv, rowsToTsv } from '@breeze/shared';
 import {
   getPagination, getReportWithOrgCheck, getReportRunWithOrgCheck, isPortalSelfServiceLocked,
-  isSystemManagedReportDefinition, PORTAL_SELF_SERVICE_REPORT,
+  isSystemManagedReportDefinition, PARTNER_OWNED_REPORT, partnerOwnedReportVisibility,
+  PORTAL_SELF_SERVICE_REPORT,
 } from './helpers';
 import { downloadQuerySchema, listRunsSchema } from './schemas';
 // Execution plane W05 (spec §6.3) — attach an analysis artifact by reference.
@@ -37,6 +41,7 @@ import {
   type LiveSiteScopeV1,
   type PersistedSiteScopeColumns,
   type ReportExecutionAuthority,
+  type ReportOwner,
 } from '../../services/siteScope';
 
 export const runsRoutes = new Hono();
@@ -86,6 +91,25 @@ runsRoutes.post(
       return c.json({ error: 'system_managed_report' }, 409);
     }
 
+    // #3198 W01 — a partner-owned definition reached here only through
+    // getReportWithOrgCheck's partner-wide gate + live partner authority.
+    // No type has a partner-scope generator this wave, so it is refused
+    // before any run row is created.
+    if (report.owner.partnerId !== undefined) {
+      try {
+        assertReportOwnerScopeSupported(report.type, report.owner);
+      } catch (error) {
+        if (error instanceof UnsupportedReportScopeError) {
+          return c.json({ error: 'unsupported_report_scope', type: report.type }, 400);
+        }
+        throw error;
+      }
+      // W02 lands partner-owned generation here; until then the guard above
+      // always throws, and this refusal only keeps the org path below typed.
+      return c.json({ error: 'unsupported_report_scope', type: report.type }, 400);
+    }
+    const orgId = report.owner.orgId;
+
     // #4562 W10 — the canonical customer-portal definition is generated only
     // by the customer, under a `portal_user` authority that is always
     // org-unrestricted. A run created HERE would carry this caller's (possibly
@@ -97,7 +121,7 @@ runsRoutes.post(
 
     const liveResult = await resolveRequestReportAuthority(
       auth,
-      report.orgId,
+      orgId,
       'read',
     );
     if (!liveResult.ok || liveResult.authority.scope.kind === 'legacy_unscoped') {
@@ -108,7 +132,7 @@ runsRoutes.post(
     try {
       const persistedScope = decodeSiteScope(
         report as unknown as PersistedSiteScopeColumns,
-        report.orgId,
+        orgId,
       );
       const effectiveScope = intersectSiteScopes(
         persistedScope,
@@ -134,7 +158,7 @@ runsRoutes.post(
 
     const config = (report.config ?? {}) as Record<string, unknown>;
     try {
-      assertReportExecutionPreflight(report.orgId, config, executionAuthority);
+      assertReportExecutionPreflight({ orgId }, config, executionAuthority);
     } catch (error) {
       if (error instanceof UnexecutableReportScopeError) {
         return c.json({ error: 'Access to report scope denied' }, 403);
@@ -161,7 +185,7 @@ runsRoutes.post(
     }
 
     writeRouteAudit(c, {
-      orgId: report.orgId,
+      orgId,
       action: 'report.generate',
       resourceType: 'report_run',
       resourceId: run.id,
@@ -177,7 +201,7 @@ runsRoutes.post(
     try {
       const result = await generateReport(
         report.type,
-        report.orgId,
+        orgId,
         config,
         executionAuthority,
       );
@@ -215,6 +239,11 @@ runsRoutes.post(
       // Generate, instead of a 500 with "Invalid report type" in the run row.
       if (err instanceof StoredArtifactOnlyReportError) {
         return c.json({ error: 'stored_artifact_only' }, 409);
+      }
+      // #3198 W01 — an org-owned business-type definition before W02 ships
+      // its generator. The run row records the failure; the caller gets 400.
+      if (err instanceof UnsupportedReportScopeError) {
+        return c.json({ error: 'unsupported_report_scope', type: report.type, runId: run.id }, 400);
       }
       return c.json({ message: 'Report generation failed', runId: run.id, status: 'failed' }, 500);
     }
@@ -261,15 +290,26 @@ runsRoutes.get(
           scopes.push(result.authority.scope);
         }
       }
+      const orgCondition = orgIds.length > 0
+        ? inArray(reports.orgId, orgIds)
+        : sql<unknown>`FALSE`;
+      // #3198 W01: partner-owned runs join the list only for a caller who may
+      // administer partner-wide state (same rule as the definition list).
+      const partnerWide = canManagePartnerWidePolicies(auth) && auth.partnerId
+        ? { rowPartnerId: reports.partnerId, partnerId: auth.partnerId }
+        : undefined;
       conditions.push(
-        orgIds.length > 0
-          ? inArray(reports.orgId, orgIds)
-          : sql<unknown>`FALSE`,
+        partnerWide
+          ? or(orgCondition, partnerOwnedReportVisibility(auth))!
+          : orgCondition,
       );
       runScopePredicate = reportRunMultiOrgScopeSqlPredicate(
         reports.orgId,
         reportRuns,
         scopes,
+        // Spread, not a trailing `undefined`: an org-axis caller's call is
+        // exactly the pre-W01 three-argument call.
+        ...(partnerWide ? [partnerWide] : []),
       );
     } else {
       runScopePredicate = unrestrictedReportRunScopeSqlPredicate(reportRuns);
@@ -346,6 +386,7 @@ runsRoutes.get(
         id: reportRuns.id,
         reportId: reportRuns.reportId,
         orgId: reports.orgId,
+        partnerId: reports.partnerId,
         status: reportRuns.status,
         result: reportRuns.result,
         reportType: reports.type,
@@ -363,12 +404,12 @@ runsRoutes.get(
       .innerJoin(reports, eq(reportRuns.reportId, reports.id))
       .where(and(
         eq(reportRuns.id, runId),
-        eq(reports.orgId, access.metadata.orgId),
+        access.ownerCondition,
         access.runScopePredicate,
       ))
       .limit(1);
 
-    if (!row || !runPayloadMatchesAuthority(row, access.authority.scope)) {
+    if (!row || !runPayloadMatchesAuthority(row, access.owner, access.authority.scope)) {
       return c.json({ error: 'Report run not found' }, 404);
     }
     if (row.status !== 'completed') {
@@ -456,6 +497,7 @@ runsRoutes.get(
         id: reportRuns.id,
         reportId: reportRuns.reportId,
         orgId: reports.orgId,
+        partnerId: reports.partnerId,
         status: reportRuns.status,
         startedAt: reportRuns.startedAt,
         completedAt: reportRuns.completedAt,
@@ -478,12 +520,12 @@ runsRoutes.get(
       .innerJoin(reports, eq(reportRuns.reportId, reports.id))
       .where(and(
         eq(reportRuns.id, runId),
-        eq(reports.orgId, access.metadata.orgId),
+        access.ownerCondition,
         access.runScopePredicate,
       ))
       .limit(1);
 
-    if (!run || !runPayloadMatchesAuthority(run, access.authority.scope)) {
+    if (!run || !runPayloadMatchesAuthority(run, access.owner, access.authority.scope)) {
       return c.json({ error: 'Report run not found' }, 404);
     }
 
@@ -532,7 +574,13 @@ runsRoutes.post(
     if (!access) {
       return c.json({ error: 'Report run not found' }, 404);
     }
+    // #3198 W01 — AI run artifacts are org-scoped (`resolveArtifact` keys on
+    // an org), so a partner-owned run has nothing it could attach.
+    if (access.owner.partnerId !== undefined) {
+      return c.json(PARTNER_OWNED_REPORT, 409);
+    }
     const { metadata } = access;
+    const orgId = access.owner.orgId;
 
     // Imported LAZILY: `artifactService` reads `aiRunArtifacts` off the
     // `db/schema` barrel, and this module is in the static graph of the whole
@@ -541,7 +589,7 @@ runsRoutes.post(
     // `vi.mock('../../db/schema')` factories do not declare it. Same reason
     // routes/tickets/attachments.ts and ticketAttachmentStorage defer it.
     const { resolveArtifact } = await import('../../services/artifacts/artifactService');
-    const artifact = await resolveArtifact(handle, { orgId: metadata.orgId });
+    const artifact = await resolveArtifact(handle, { orgId });
     if (!artifact) {
       return c.json(
         { error: 'No such artifact is available to this organization', code: 'ARTIFACT_NOT_FOUND' },
@@ -555,7 +603,7 @@ runsRoutes.post(
       .where(eq(reportRuns.id, metadata.id));
 
     writeRouteAudit(c, {
-      orgId: metadata.orgId,
+      orgId,
       action: 'report_run.artifact.attach',
       resourceType: 'report_run',
       resourceId: metadata.id,
@@ -567,12 +615,16 @@ runsRoutes.post(
 );
 
 function runPayloadMatchesAuthority(
-  row: { orgId: string },
+  row: object,
+  owner: ReportOwner,
   currentScope: LiveSiteScopeV1,
 ): boolean {
   try {
     return isSiteScopeSubset(
-      decodeSiteScope(row as unknown as PersistedSiteScopeColumns, row.orgId),
+      decodeSiteScope(
+        row as unknown as PersistedSiteScopeColumns,
+        owner.partnerId !== undefined ? owner : owner.orgId,
+      ),
       currentScope,
     );
   } catch {

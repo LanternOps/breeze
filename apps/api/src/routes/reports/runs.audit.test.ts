@@ -149,6 +149,10 @@ function runAccess() {
       reportId: '44444444-4444-4444-8444-444444444444',
       orgId: ORG_ID,
     },
+    // #3198 W01: the guard now also returns the run's owner axis and its
+    // `reports` row condition (replacing the route's own org_id equality).
+    owner: { orgId: ORG_ID },
+    ownerCondition: {},
     authority: { scope: { kind: 'unrestricted' } },
     runScopePredicate: {},
   };
