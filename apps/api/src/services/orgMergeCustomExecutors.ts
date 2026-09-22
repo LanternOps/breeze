@@ -388,6 +388,29 @@ const fenceAiOperatorTasks: CustomMergeExecutor = async (loser) => {
      WHERE org_id = ${uuid(loser)}
        AND (m365_connection_id IS NOT NULL OR google_connection_id IS NOT NULL)`);
 
+  // Human-work links (recipe library E3, #6168). Org merge re-points the loser
+  // org's tickets — and therefore its checklist items — at the survivor, while
+  // task and step `org_id` stay on the loser. E2 recorded the same finding for
+  // contacts, and drew the same conclusion: the fence must detach in the
+  // RESOLVE phase, before the move phase re-points anything, or the pointer
+  // spans two orgs for as long as the fenced task exists. The link FK is plain
+  // and single-column (migration 2026-10-26-170100 header note A), so nothing
+  // would raise if this were missing — the statement IS the contract.
+  //
+  // One statement rather than a per-ticket loop through the request-path
+  // helper: a merge can carry thousands of tickets, and the per-row event and
+  // outbox writes are the point of the request path, not of a bulk merge. The
+  // fence above already stops every one of these tasks from advancing, so the
+  // wake the request path would enqueue would be a no-op here anyway. Only
+  // UNSETTLED steps: a settled step's pointer is history and may stay.
+  const humanWorkDetached = await run(sql`
+    UPDATE ai_operator_task_steps
+       SET checklist_item_id = NULL,
+           updated_at = now()
+     WHERE org_id = ${uuid(loser)}
+       AND checklist_item_id IS NOT NULL
+       AND settled_at IS NULL`);
+
   return {
     moved: 0,
     dropped: 0,
@@ -421,6 +444,14 @@ const fenceAiOperatorTasks: CustomMergeExecutor = async (loser) => {
             `ai_operator_task_target_accounts: cleared the provider connection pointer on ${accountsDetached} `
             + 'frozen account(s); the immutable external identifier and principal label are retained as '
             + 'evidence of who the task was about.',
+          ]
+        : []),
+      ...(humanWorkDetached > 0
+        ? [
+            `ai_operator_task_steps: detached ${humanWorkDetached} live human-work step(s) from their ticket `
+            + 'checklist item — the ticket moves to the surviving organization while the task history stays '
+            + 'behind; the checklist item keeps its Operator provenance, and the fenced task will hand off '
+            + 'rather than wait on a row in another organization.',
           ]
         : []),
     ],

@@ -14,6 +14,7 @@ import { emitTicketTriageFeedback } from './mlFeedbackEmitters';
 import { applyIntakeForm, getTicketFormForOrg, TicketFormError } from './ticketFormService';
 import { assertTicketMoveCurrencyCompatible, type MoveCurrencyGuardDetails } from './ticketMoveCurrencyGuard';
 import { TICKET_ORG_DENORMALIZED_TABLES } from './ticketOrgMoveLockOrder';
+import { detachHumanWorkLinksForTicket } from './aiOperator/humanWorkService';
 import { ServiceManagementOffError, assertTicketCreationAllowed } from './serviceManagement';
 import { isEligibleTicketRecipient } from './ticketPush';
 import type { AiDraftOutboxClaim } from './aiTimeEntryProposal';
@@ -2826,6 +2827,34 @@ export async function moveTicketOrg(
       .update(aiAgentRuns)
       .set({ ticketId: null })
       .where(eq(aiAgentRuns.ticketId, ticketId));
+    // AI Operator human-work links (recipe library E3, #6168). The ticket's
+    // checklist items are re-stamped to the destination org by the
+    // TICKET_ORG_DENORMALIZED_TABLES loop below; the Operator step rows that
+    // point at them are NOT — `ai_operator_task_steps.org_id` is its task's
+    // org and is immutable history, exactly like `ai_agent_runs.org_id` one
+    // statement above. So after the move a live human-work step would be
+    // waiting on a checklist item in another tenant, and, because the link FK
+    // is plain and single-column ON DELETE SET NULL (migration
+    // 2026-10-26-170100 header note A), NOTHING would raise: the task would
+    // simply wait until its deadline with no error anywhere.
+    //
+    // DETACH, never re-stamp — E2's rule for task targets, one level down. The
+    // helper also enqueues a `user_answer` wake per affected task, so the
+    // coordinator's authoritative re-read turns this into a classified handoff
+    // instead of a silent stall. It deliberately does NOT settle the task:
+    // that is a leased transition and this transaction holds no lease.
+    //
+    // Placed here, before the tickets UPDATE, to match the lock order the
+    // ai_agent_runs sever establishes on both axes (#4657). Takes `tx`, so a
+    // rolled-back move detaches nothing.
+    const detachedHumanWork = await detachHumanWorkLinksForTicket(tx, {
+      ticketId,
+      reason: `ticket moved to another organization (${targetOrgId})`,
+    });
+    if (detachedHumanWork > 0) {
+      console.warn('[tickets] detached AI Operator human-work links on an org move',
+        `ticketId=${ticketId}`, `count=${detachedHumanWork}`);
+    }
     // Recipe library E2 (#6167) — the ticket-axis twin of the ai_agent_runs
     // statement above, and for the identical reason. An AI Operator target's
     // org_id is its TASK's org_id, which is immutable source-org history, so

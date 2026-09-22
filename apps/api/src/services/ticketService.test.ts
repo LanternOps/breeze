@@ -59,6 +59,14 @@ const { emitMock, emitTriageFeedbackMock, auditMock, allocateMock, guardMock, as
   };
 });
 
+// Recipe library E3: moveTicketOrg detaches AI Operator human-work links in
+// its own transaction. Mocked so the ORDER and the HANDLE can be asserted
+// without pulling the aiOperator tree's db context into this suite.
+const detachHumanWorkLinksMock = vi.hoisted(() => vi.fn(async (..._a: unknown[]) => 0));
+vi.mock('./aiOperator/humanWorkService', () => ({
+  detachHumanWorkLinksForTicket: (...a: unknown[]) => detachHumanWorkLinksMock(...a),
+}));
+
 vi.mock('./ticketEvents', () => ({ emitTicketEvent: emitMock }));
 vi.mock('./ticketPush', async () => {
   const actual = await vi.importActual<typeof import('./ticketPush')>('./ticketPush');
@@ -3703,6 +3711,67 @@ describe('moveTicketOrg', () => {
         ? { actorType: 'ai_agent', actorId: 'agent', initiatedBy: 'ai' }
         : { actorId: 'human' });
     }
+  });
+
+  it('E3: detaches every live Operator human-work link on the moved ticket, BEFORE the org re-stamp', async () => {
+    // Ordering is asserted, not incidental. The detach reads
+    // ticket_checklist_items by ticket_id and compares nothing about org, so it
+    // works either side of the re-stamp — but running it FIRST keeps the lock
+    // order identical to the ai_agent_runs sever it sits beside, and a
+    // divergent lock order between the ticket and device axes is exactly what
+    // #4657 was.
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 't1', orgId: 'oA', partnerId: 'p1', deviceId: null }])
+      .mockResolvedValueOnce([{ currencyCode: 'USD' }])
+      .mockResolvedValueOnce([{ currencyCode: 'USD' }])
+      .mockResolvedValueOnce([
+        { id: 'oA', partnerId: 'p1', name: 'Alpha Corp', currencyCode: 'USD' },
+        { id: 'oB', partnerId: 'p1', name: 'Beta Corp', currencyCode: 'USD' }
+      ]);
+    dbMocks.txUpdateReturning.mockResolvedValue([{ id: 't1', orgId: 'oB', deviceId: null }]);
+    dbMocks.txExecuteMock.mockResolvedValue(undefined);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-sys' }]);
+    detachHumanWorkLinksMock.mockResolvedValueOnce(1);
+
+    await moveTicketOrg('t1', 'oB', { userId: 'admin' });
+
+    expect(detachHumanWorkLinksMock).toHaveBeenCalledTimes(1);
+    expect(detachHumanWorkLinksMock.mock.calls[0]?.[1]).toMatchObject({
+      ticketId: 't1', reason: expect.stringContaining('moved'),
+    });
+    // BEFORE the tickets UPDATE (the tx.update().set(...) that re-stamps org_id)
+    // and BEFORE the ticket_checklist_items re-stamp.
+    const detachOrder = detachHumanWorkLinksMock.mock.invocationCallOrder[0]!;
+    const ticketUpdateIdx = setMock.mock.calls.findIndex(
+      (c) => (c[0] as Record<string, unknown> | undefined)?.orgId === 'oB',
+    );
+    expect(ticketUpdateIdx).toBeGreaterThanOrEqual(0);
+    expect(detachOrder).toBeLessThan(setMock.mock.invocationCallOrder[ticketUpdateIdx]!);
+    expect(detachOrder).toBeLessThan(firstRewriteInvocationOrder());
+  });
+
+  it("E3: passes the mover's own transaction handle, so a rolled-back move detaches nothing", async () => {
+    // A detach committed outside the move's transaction would strand a task on a
+    // move that never happened.
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 't1', orgId: 'oA', partnerId: 'p1', deviceId: null }])
+      .mockResolvedValueOnce([{ currencyCode: 'USD' }])
+      .mockResolvedValueOnce([{ currencyCode: 'USD' }])
+      .mockResolvedValueOnce([
+        { id: 'oA', partnerId: 'p1', name: 'Alpha Corp', currencyCode: 'USD' },
+        { id: 'oB', partnerId: 'p1', name: 'Beta Corp', currencyCode: 'USD' }
+      ]);
+    dbMocks.txUpdateReturning.mockResolvedValue([{ id: 't1', orgId: 'oB', deviceId: null }]);
+    dbMocks.txExecuteMock.mockResolvedValue(undefined);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-sys' }]);
+
+    await moveTicketOrg('t1', 'oB', { userId: 'admin' });
+
+    const handle = detachHumanWorkLinksMock.mock.calls[0]?.[0] as { execute?: unknown; update?: unknown };
+    // The tx stub is the object whose `execute` is the tx execute spy — not the
+    // bare `db` mock, which has no `execute` at all.
+    expect(typeof handle.execute).toBe('function');
+    expect(typeof handle.update).toBe('function');
   });
 
   it('#4596/#5783: defers the three ticket/org composite FKs BY NAME as the first statement', async () => {
