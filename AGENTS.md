@@ -341,7 +341,9 @@ ssh root@<host> "cd /opt/breeze && \
   cp .env .env.bak-pre-<new-version> && \
   sed -i 's/^BREEZE_VERSION=.*/BREEZE_VERSION=<new-version>/' .env && \
   docker compose pull api web portal && \
-  docker compose up -d binaries-init api web portal"
+  docker compose up -d binaries-init api web portal && \
+  docker image prune -af --filter 'until=168h' && \
+  docker builder prune -af"
 ```
 
 Then verify health with `curl -sf https://<host-or-domain>/health` (200 = healthy).

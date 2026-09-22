@@ -446,10 +446,14 @@ ssh root@<droplet> "cd /opt/breeze && \
   cp .env .env.bak-pre-<new-version> && \
   sed -i 's/^BREEZE_VERSION=.*/BREEZE_VERSION=<new-version>/' .env && \
   docker compose pull api web portal && \
-  docker compose up -d binaries-init api web portal"
+  docker compose up -d binaries-init api web portal && \
+  docker image prune -af --filter 'until=168h' && \
+  docker builder prune -af"
 ```
 
 Then `curl -sf https://<region>.2breeze.app/health` to verify (200 = healthy).
+
+**The two prune lines are part of the deploy, not optional cleanup.** Every release pulls a fresh set of images and nothing removes the previous ones. On 2026-09-22 stale images held 18 GB on US and 20 GB on EU (about 75% of all image storage), and the US root disk had already hit 100% twice (09-04, 09-06). `prune -a` only removes images no container references, running or stopped, so the locally built `breeze-billing:local` survives. The `until=168h` filter keeps last week's images so a rollback to the previous `BREEZE_VERSION` needs no re-pull.
 
 **The service list is hand-maintained and WILL go stale — always assert version parity after deploying.** The line names services explicitly (not a bare `docker compose pull && up -d`) because `billing` builds from a local `breeze-billing:local` image with no registry to pull from, and a bare `up -d` would needlessly bounce `caddy`/`redis`/`tunnel`. The cost is that adding a new first-party service silently breaks the rollout: `portal` was added in v0.94.0, never made it into the deploy line, and sat on `0.94.0` through five releases while `/health` reported `0.98.1` — a portal fix from v0.97.0 was invisible in production for 11 days (2026-07-20). Watchtower is not a backstop: it runs `WATCHTOWER_LABEL_ENABLE=true` and no service carries the label, so it updates nothing.
 

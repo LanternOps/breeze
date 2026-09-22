@@ -312,12 +312,15 @@ ssh root@<droplet> "cd /opt/breeze && \
   cp .env .env.bak-pre-$NEW && \
   sed -i 's/^BREEZE_VERSION=.*/BREEZE_VERSION=0.X.Y/' .env && \
   docker compose pull api web portal && \
-  docker compose up -d binaries-init api web portal"
+  docker compose up -d binaries-init api web portal && \
+  docker image prune -af --filter 'until=168h' && \
+  docker builder prune -af"
 # then verify:
 curl -sf https://<region>.2breeze.app/health     # 200 = healthy; check "version" in the JSON
 # and confirm migrations applied cleanly:
 ssh root@<droplet> "docker logs breeze-api 2>&1 | grep -aE 'auto-migrate' | tail -5"
 # expect "[auto-migrate] Applied N migration(s)" and the unprivileged app-user line
+# the two prune lines keep stale release images from filling the root disk (US hit 100% twice in Sept 2026)
 ```
 
 **Then assert version parity across EVERY first-party container — `/health` does NOT cover this.**
