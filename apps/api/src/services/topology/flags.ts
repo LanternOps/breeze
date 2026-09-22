@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { eq } from 'drizzle-orm';
 
 import { topologyGloballyDisabled } from '../../config/env';
@@ -102,14 +103,55 @@ export function resolveTopologyFlags({
   };
 }
 
+export interface ResolvedTopologyFlags {
+  orgId: string;
+  flags: TopologyFlags;
+}
+
+const resolvedTopologyFlags = new AsyncLocalStorage<ResolvedTopologyFlags>();
+
+/**
+ * Serve `loadTopologyFlags` from flags the caller already resolved, for the
+ * duration of `fn`. Use it when topology code runs inside a transaction that
+ * holds locks other requests queue on: the partner-axis read below escapes to
+ * a SECOND pooled connection (`readWithPartnerAxisVisibility`), and postgres-js
+ * has no acquire timeout. The agent heartbeat ran this inside its org
+ * transaction while holding the per-org partner-export advisory lock; once the
+ * pool filled with same-org heartbeats queued on that lock, the holder could
+ * never get its second connection and US wedged (2026-09-22). Resolve the flags
+ * in a short system context BEFORE opening the transaction, then wrap.
+ *
+ * A lookup for any other org fails closed (all flags off) rather than falling
+ * back to a nested read, so a device moved mid-request never reopens the hole.
+ */
+export function withResolvedTopologyFlags<T>(
+  resolved: ResolvedTopologyFlags,
+  fn: () => Promise<T>,
+): Promise<T> {
+  return resolvedTopologyFlags.run(
+    { orgId: resolved.orgId, flags: { ...resolved.flags } },
+    fn,
+  );
+}
+
 /**
  * Load flag inputs without widening the caller's org visibility. The org row
  * is resolved under request RLS first; only its stored partner id is used for
- * the partner-axis read.
+ * the partner-axis read. See `withResolvedTopologyFlags` before calling this
+ * from inside a lock-holding transaction.
  */
 export async function loadTopologyFlags(
   ctx: TopologyRequestContextLike,
 ): Promise<TopologyFlags> {
+  if (topologyGloballyDisabled()) return resolveTopologyFlags({ globallyDisabled: true });
+
+  const resolved = resolvedTopologyFlags.getStore();
+  if (resolved) {
+    return resolved.orgId === ctx.scope.orgId
+      ? { ...resolved.flags }
+      : resolveTopologyFlags({ globallyDisabled: true });
+  }
+
   const [org] = await db
     .select({
       partnerId: organizations.partnerId,

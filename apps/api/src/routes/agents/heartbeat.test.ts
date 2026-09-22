@@ -251,6 +251,15 @@ vi.mock('../../services/agentEditionAutoMigrate', () => ({
   shouldConsiderEditionMigration: vi.fn(() => true),
 }));
 
+const { loadTopologyFlagsMock, withResolvedTopologyFlagsMock } = vi.hoisted(() => ({
+  loadTopologyFlagsMock: vi.fn(),
+  withResolvedTopologyFlagsMock: vi.fn(),
+}));
+vi.mock('../../services/topology/flags', () => ({
+  loadTopologyFlags: (...args: unknown[]) => loadTopologyFlagsMock(...args),
+  withResolvedTopologyFlags: (...args: unknown[]) => withResolvedTopologyFlagsMock(...args),
+}));
+
 vi.mock('../../services/sentry', () => ({
   captureException: vi.fn(),
 }));
@@ -514,6 +523,64 @@ describe('POST /agents/:id/heartbeat — reachability ownership', () => {
     expect(orgCtx!.currentPartnerId).toBe('partner-1');
     // Read-only axis only — the write-capable partner AXIS stays empty.
     expect(orgCtx!.accessiblePartnerIds).toEqual([]);
+  });
+
+  // US 2026-09-22 pool deadlock: topology collection used to resolve its flags
+  // INSIDE the org transaction, after the IP-history write took the per-org
+  // partner-export advisory lock; the partner-axis read then waited on a
+  // second pooled connection that never came. The flags must be resolved in a
+  // short system context BEFORE the org transaction opens and handed to the
+  // topology call, so nothing inside the transaction reaches for the pool.
+  it('resolves topology flags in a system context before the org transaction and hands them to topology collection', async () => {
+    const flags = { materialization: true, ui: false, physical: false, interfaceHealth: false, diagnostics: false, ai: false };
+    loadTopologyFlagsMock.mockImplementation(async () => {
+      callOrder.push('topologyFlags:loaded');
+      return flags;
+    });
+    withResolvedTopologyFlagsMock.mockImplementation(async (_resolved: unknown, fn: () => Promise<unknown>) => {
+      callOrder.push('topologyFlags:wrapped');
+      return fn();
+    });
+    callOrder.length = 0;
+    selectMock.mockReturnValueOnce(selectChainResolving([pendingDevice]));
+    selectMock.mockReturnValue(selectChainResolving([]));
+    updateMock.mockReturnValue({ set: vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) })) });
+    insertMock.mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
+
+    const response = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+
+    expect(response.status).toBe(200);
+    expect(loadTopologyFlagsMock).toHaveBeenCalledTimes(1);
+    expect(loadTopologyFlagsMock).toHaveBeenCalledWith({ scope: { orgId: 'org-1', siteId: 'site-1' } });
+    const loaded = callOrder.indexOf('topologyFlags:loaded');
+    const opened = callOrder.indexOf('dbContext:opened');
+    expect(loaded).toBeGreaterThan(-1);
+    expect(loaded).toBeLessThan(opened);
+    expect(callOrder.lastIndexOf('systemCtx:enter', loaded)).toBeGreaterThan(-1);
+    expect(callOrder.indexOf('systemCtx:exit', loaded)).toBeLessThan(opened);
+    expect(withResolvedTopologyFlagsMock).toHaveBeenCalledWith({ orgId: 'org-1', flags }, expect.any(Function));
+  });
+
+  it('skips topology collection without a nested flag read when the pre-transaction resolution fails', async () => {
+    loadTopologyFlagsMock.mockRejectedValueOnce(new Error('pool busy'));
+    selectMock.mockReturnValueOnce(selectChainResolving([pendingDevice]));
+    selectMock.mockReturnValue(selectChainResolving([]));
+    updateMock.mockReturnValue({ set: vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) })) });
+    insertMock.mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
+
+    const response = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+
+    expect(response.status).toBe(200);
+    expect(loadTopologyFlagsMock).toHaveBeenCalledTimes(1);
+    expect(withResolvedTopologyFlagsMock).not.toHaveBeenCalled();
   });
 
   it('an authenticated main-agent heartbeat promotes pending to online and advances lastSeenAt', async () => {
@@ -3406,9 +3473,9 @@ describe('POST /agents/:id/heartbeat — uacInterceptionEnabled delivery', () =>
   // those already-delivered commands for no benefit, since every field this
   // block produces is re-resolved on the next heartbeat anyway. This test
   // pins the fail-safe: only the shared policy-config context is made to
-  // reject (targeted by call order — it is the 4th of 5 withSystemDbAccessContext
-  // calls per heartbeat: #2123 update-policy, policy-probe, onedrive, THIS
-  // ONE, then helper-settings), and the response must still be 200 with all
+  // reject (targeted by call order — it is the 5th of 6 withSystemDbAccessContext
+  // calls per heartbeat: #2123 update-policy, topology flags, policy-probe,
+  // onedrive, THIS ONE, then helper-settings), and the response must still be 200 with all
   // four policy config keys omitted and uacInterceptionEnabled defaulted to
   // false, with the failure reported to Sentry.
   it('returns 200 and omits all four policy config keys when the shared policy-config system context itself fails', async () => {
@@ -3416,6 +3483,7 @@ describe('POST /agents/:id/heartbeat — uacInterceptionEnabled delivery', () =>
 
     withSystemDbAccessContextMock
       .mockImplementationOnce(systemDbAccessContextPassthrough) // #2123 update-policy lookup
+      .mockImplementationOnce(systemDbAccessContextPassthrough) // topology flags (before the org block)
       .mockImplementationOnce(systemDbAccessContextPassthrough) // policy-probe config
       .mockImplementationOnce(systemDbAccessContextPassthrough) // onedrive settings
       .mockImplementationOnce(async () => {
