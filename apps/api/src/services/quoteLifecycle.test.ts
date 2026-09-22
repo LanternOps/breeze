@@ -247,8 +247,14 @@ describe('quoteLifecycle portal URL', () => {
 // a type-level regression test, not a runtime one.
 describe('assertQuoteSendGates requires an explicit action', () => {
   it('rejects a call with the action argument omitted (compile-time only)', () => {
-    // @ts-expect-error — action is required now; this line must fail to compile.
-    assertQuoteSendGates({} as never, [], [], []);
+    // Dead code, same pattern as userSession.types.test.ts / schemas.test.ts:
+    // this branch never runs, it exists solely for tsc to typecheck (which it
+    // still does on unreachable code) — so there is nothing here for a future
+    // change to `assertQuoteSendGates`'s body to break for unrelated reasons.
+    if (false) {
+      // @ts-expect-error — action is required now; this line must fail to compile.
+      assertQuoteSendGates({} as never, [], [], []);
+    }
     expect(true).toBe(true);
   });
 });

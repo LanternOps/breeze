@@ -21,7 +21,16 @@ const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
  *  known-variable list gathered from the template being attached, because
  *  that call site has one to hand), this dialog has no such list — the
  *  message IS the only source of the names — so it parses the suffix
- *  directly instead of duplicating that filtering approach for no reason. */
+ *  directly instead of duplicating that filtering approach for no reason.
+ *
+ *  This depends on the RAW server message reaching the `friendly` hook below
+ *  unmangled. `runAction` overwrites `message` with an `errors:<CODE>` i18n
+ *  translation BEFORE calling `friendly()`, whenever such a key exists — so
+ *  if `errors:CONTRACT_VARIABLES_UNRESOLVED` is ever added to a locale (e.g.
+ *  for some other caller of that code), this parser would silently stop
+ *  finding the marker and fall back to the generic copy, losing the
+ *  variable-name list with no error anywhere. Don't add that key without
+ *  updating this parser too. */
 function unresolvedVariableNamesFromMessage(message: string): string[] {
   const marker = 'Contract variables unresolved: ';
   const idx = message.indexOf(marker);
