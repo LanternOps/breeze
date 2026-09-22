@@ -28,6 +28,12 @@ describe('network page visibility gate (#6640)', () => {
     expect(pageSource).toContain('redirectToPortalHomeAfterDisabled(Astro)');
   });
 
+  it('never redirects on dataStatus: no_data — that state renders the empty state, not a bounce', () => {
+    // NetworkOverview.tsx handles 'no_data' as an in-page empty state. A future
+    // edit could easily conflate the two given how similar the names read.
+    expect(pageSource).not.toContain("dataStatus === 'no_data'");
+  });
+
   it('never redirects a disabled page onto another gated page', () => {
     expect(pageSource).not.toMatch(
       /redirectToPortalHomeAfterDisabled[\s\S]{0,80}Astro\.redirect\(withBase\('\/(devices|tickets|assets|security|backups|reports|service|documents)/
