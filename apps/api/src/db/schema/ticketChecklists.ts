@@ -14,10 +14,20 @@ import { organizations, partners } from './orgs';
 import { users } from './users';
 import { tickets } from './portal';
 
+/**
+ * Label order mirrors the shipped type's ordinals exactly, and is APPEND-ONLY:
+ * 'manual'/'deliverable'/'checklist_template' from
+ * 2026-10-16-190000-ticket-checklist-items.sql, then 'operator_task' from
+ * 2026-10-26-170000-ticket-checklist-operator-task-source.sql. Single-sourced
+ * in spirit from `CHECKLIST_ITEM_SOURCES` (@breeze/shared) — the two are pinned
+ * together by packages/shared/src/validators/ticketChecklists.test.ts, by
+ * db/schema/aiOperatorHumanWork.test.ts and by `pnpm db:check-drift`.
+ */
 export const ticketChecklistItemSourceEnum = pgEnum('ticket_checklist_item_source', [
   'manual',
   'deliverable',
   'checklist_template',
+  'operator_task',
 ]);
 
 /**
@@ -49,6 +59,15 @@ export const ticketChecklistItems = pgTable('ticket_checklist_items', {
   doneByUserId: uuid('done_by_user_id').references(() => users.id, { onDelete: 'set null' }),
   source: ticketChecklistItemSourceEnum('source').notNull().default('manual'),
   sourceTemplateItemId: uuid('source_template_item_id'),
+  /**
+   * The `ai_operator_task_steps` row that created this item, for
+   * `source = 'operator_task'` (recipe spec §5.3). Provenance, NOT a
+   * reference — see `sourceTemplateItemId` above for the shape and migration
+   * 2026-10-26-170100's header note B for why this one's case is stronger:
+   * after a ticket org-move the step and the item legitimately live in
+   * different orgs.
+   */
+  operatorStepId: uuid('operator_step_id'),
   /** NULL for sweep-created rows — the sweep actor's nil UUID is not a users row. */
   createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
