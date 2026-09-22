@@ -122,6 +122,23 @@ describe('GET /invoices/public/:token', () => {
     expect(markViewedMock).toHaveBeenCalledWith(INV_ID, ORG_ID);
   });
 
+  // #5856: the route selects ticketId/ticketSubject for grouping, but the wire
+  // DTO is the customer projection — ticket number + category only.
+  it('carries ticket number and category but never ticketId or subject', async () => {
+    resolveMock.mockResolvedValue(invoice());
+    dbResults.push(PARTNER_ROW, BRAND_ROW, [{
+      ticketId: 'tk-internal-uuid', ticketNumber: 'T-9', ticketSubject: 'Internal subject', ticketCategory: 'Hardware',
+      name: 'Repair', description: 'Replaced rollers', quantity: '1.00', unitPrice: '90.00',
+      taxable: true, lineTotal: '90.00', workedMinutes: null,
+    }]);
+    const res = await app().request(`/invoices/public/${TOKEN}`);
+    expect(res.status).toBe(200);
+    const { data } = await res.json();
+    expect(data.lines[0]).toMatchObject({ ticketNumber: 'T-9', ticketCategory: 'Hardware', name: 'Repair' });
+    expect(data.lines[0]).not.toHaveProperty('ticketId');
+    expect(data.lines[0]).not.toHaveProperty('ticketSubject');
+  });
+
   it('renders the calm no-amounts state for a void invoice', async () => {
     resolveMock.mockResolvedValue(invoice({ status: 'void', replacedByInvoiceId: 'r1' }));
     dbResults.push(PARTNER_ROW, BRAND_ROW);

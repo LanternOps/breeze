@@ -1702,6 +1702,26 @@ describe('getInvoice — Stripe account currency exposure (#3777)', () => {
     });
   });
 
+  // #5856: the staff detail view joins tickets for the grouping header — the
+  // join must stay org-scoped and skip soft-deleted tickets, same as the
+  // customer projection.
+  it('scopes the ticket join to the invoice org and passes ticket fields through', async () => {
+    queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD' }]);
+    queueResult([{ id: 'l1', ticketId: 't1', ticketNumber: 'T-7', ticketSubject: 'Printer down', ticketCategory: 'Hardware' }]);
+    queueResult([]);
+    queueResult([]);
+    queueResult([]);
+    const out = await svc.getInvoice('i1', actor);
+    expect(out.lines[0]).toMatchObject({ ticketNumber: 'T-7', ticketSubject: 'Printer down', ticketCategory: 'Hardware', deviceCount: 0 });
+    const ticketJoinCall = (db as unknown as { leftJoin: Mock }).leftJoin.mock.calls.find((call) =>
+      new PgDialect().sqlToQuery(call[1] as SQL).sql.includes('"invoice_lines"."ticket_id" = "tickets"."id"'))!;
+    expect(ticketJoinCall).toBeDefined();
+    const compiled = new PgDialect().sqlToQuery(ticketJoinCall[1] as SQL);
+    expect(compiled.sql).toContain('"tickets"."org_id" =');
+    expect(compiled.sql).toContain('"tickets"."deleted_at" is null');
+    expect(compiled.params).toContain('org1');
+  });
+
   it('no warning when the account settles in the document currency', async () => {
     queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', currencyCode: 'EUR' }]);
     queueResult([]);

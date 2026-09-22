@@ -448,6 +448,27 @@ describe('Invoice ticket grouping and line labeling (#3319)', () => {
     expect(matches).toHaveLength(2);
   });
 
+  it('spans the tax column in the ticket header when tax is shown', () => {
+    const lines = [makeLine({ ticketId: 't-1', ticketNumber: '1042', name: 'Repair' } as never)];
+    const taxed = renderInvoiceHtml(makeInvoice({ taxRate: '0.0825', taxTotal: '8.25' }), lines, branding);
+    expect(taxed).toMatch(/<td colspan="4"[^>]*>Ticket #1042/);
+    const untaxed = renderInvoiceHtml(makeInvoice({ taxRate: '0', taxTotal: '0' }), lines, branding);
+    expect(untaxed).toMatch(/<td colspan="3"[^>]*>Ticket #1042/);
+  });
+
+  it('keeps first-seen group order when ticket lines interleave', () => {
+    const lines = [
+      makeLine({ ticketId: 't-1', ticketNumber: 'A-1', name: 'first-a' } as never),
+      makeLine({ ticketId: null, name: 'loose' }),
+      makeLine({ ticketId: 't-1', ticketNumber: 'A-1', name: 'second-a' } as never),
+      makeLine({ ticketId: 't-2', ticketNumber: 'B-2', name: 'only-b' } as never),
+    ];
+    const html = renderInvoiceHtml(makeInvoice(), lines, branding);
+    const order = ['Ticket #A-1', 'first-a', 'second-a', 'loose', 'Ticket #B-2', 'only-b'].map((s) => html.indexOf(s));
+    expect(order.every((i) => i >= 0)).toBe(true);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+  });
+
   it('renders English "Category:" label in PDFKit buffer', async () => {
     const lines = [
       makeLine({
