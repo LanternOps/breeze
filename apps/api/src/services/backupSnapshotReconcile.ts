@@ -270,11 +270,21 @@ const reconcileManifestSchema = z
             // Stable pre-VSS path (D12): must survive re-adoption or the
             // index falls back to the shadow-copy device path.
             originalPath: z.string().min(1).optional(),
-            backupPath: z.string().min(1),
+            // Empty ONLY on a content-less entry — see the refine below and
+            // backupSnapshotFileIndex.ts's twin (D-W09-1, #6491): every
+            // dir/symlink entry a real agent writes carries backupPath "",
+            // so a blanket .min(1) made every real Linux manifest
+            // 'manifest-unreadable' and un-adoptable.
+            backupPath: z.string(),
+            kind: z.string().optional(),
             size: z.number().nonnegative().optional(),
             modTime: z.string().optional(),
           })
           .passthrough()
+          .refine((f) => f.backupPath.length > 0 || f.kind === 'symlink' || f.kind === 'dir', {
+            message: 'backupPath must be non-empty on a content entry (kind "" / omitted)',
+            path: ['backupPath'],
+          })
       )
       .optional(),
   })
@@ -596,10 +606,12 @@ export function manifestToCommandResult(params: {
   // have reported. Same rule as the agent's isReferenceEntry
   // (agent/internal/backup/incremental.go): an entry whose object lives
   // outside this snapshot's own `snapshots/<id>/` prefix was satisfied by
-  // referencing an older snapshot, not uploaded this run. The reconcile
-  // schema already requires a non-empty backupPath, so the agent's
-  // content-less guard has nothing to exclude here. Without this, every
-  // adopted incremental would finalize as "uploaded the whole corpus".
+  // referencing an older snapshot, not uploaded this run. Content-less
+  // entries (dir/symlink, backupPath "") are skipped exactly as the agent's
+  // isReferenceEntry skips them — "" never starts with ownPrefix, so
+  // without the guard every directory would count as a reference. Without
+  // the loop at all, every adopted incremental would finalize as "uploaded
+  // the whole corpus".
   //
   // Reported the way the agent reports it (`omitempty`): a run with no
   // references OMITS both fields, so persistence leaves referenced_size NULL
@@ -611,6 +623,7 @@ export function manifestToCommandResult(params: {
   let referencedFiles = 0;
   let referencedBytes = 0;
   for (const file of files) {
+    if (!file.backupPath) continue;
     if (!file.backupPath.startsWith(ownPrefix)) {
       referencedFiles += 1;
       referencedBytes += file.size ?? 0;

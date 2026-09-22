@@ -11,7 +11,10 @@ import (
 // docs/superpowers/plans/backup/_w09-part0.md §1 and
 // testdata/object-key-vectors.json, which pins both sides to identical
 // behavior.
-var objectKeyPattern = regexp.MustCompile(`^snapshots/([A-Za-z0-9][A-Za-z0-9._-]{0,254})/(.+)$`)
+// (?s) makes `.` match \n as well, so the two engines agree on every byte
+// except NUL: RE2's `.` already matched \r and U+2028/U+2029 that JS's `.`
+// does not, and the TS side now uses the dotAll flag for the same reason.
+var objectKeyPattern = regexp.MustCompile(`(?s)^snapshots/([A-Za-z0-9][A-Za-z0-9._-]{0,254})/(.+)$`)
 
 // ParsedObjectKey is the decomposition of a valid backup object key into
 // its owning snapshot id and the remainder of the path.

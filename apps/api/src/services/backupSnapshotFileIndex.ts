@@ -90,8 +90,11 @@ const hydrationManifestSchema = z
             // agent/internal/backup/snapshot.go SnapshotFile.Kind: "" (or
             // omitted — the tag is omitempty) for a regular file whose
             // bytes live at backupPath; "symlink" / "dir" for an entry
-            // that uploads nothing and so carries backupPath "".
-            kind: z.enum(['', 'symlink', 'dir']).optional(),
+            // that uploads nothing and so carries backupPath "". A plain
+            // string, not an enum: a newer agent adding a kind must not
+            // fail the whole manifest closed here — the refine below only
+            // lets the two known content-less kinds omit their object.
+            kind: z.string().optional(),
             size: z.number().nonnegative().optional(),
             modTime: z.string().optional(),
           })
@@ -111,6 +114,26 @@ const hydrationManifestSchema = z
       .optional(),
   })
   .passthrough();
+
+// A ZodError's message is the JSON dump of EVERY issue, indexed by array
+// position (`files[41233].backupPath`). On a 100k-entry manifest that is a
+// multi-megabyte string a tech cannot map back to a file. Report the first
+// issue with the offending entry's sourcePath plus the total count instead.
+function summarizeManifestIssues(error: z.ZodError, json: unknown): string {
+  const issues = error.issues;
+  const first = issues[0];
+  if (!first) return 'manifest failed schema validation';
+  const where = first.path.map(String).join('.');
+  let entry = '';
+  if (first.path[0] === 'files' && typeof first.path[1] === 'number') {
+    const files = (json as { files?: unknown[] } | null)?.files;
+    const row = Array.isArray(files) ? files[first.path[1]] : undefined;
+    const sourcePath = row && typeof row === 'object' ? (row as { sourcePath?: unknown }).sourcePath : undefined;
+    if (typeof sourcePath === 'string') entry = ` (entry sourcePath ${JSON.stringify(sourcePath)})`;
+  }
+  const more = issues.length > 1 ? `; ${issues.length - 1} more issue(s)` : '';
+  return `${where || 'manifest'}: ${first.message}${entry}${more}`;
+}
 
 function defaultDeps(): HydrationDeps {
   return {
@@ -265,7 +288,11 @@ async function hydrateClaimedSnapshot(
       let parsed: z.infer<typeof hydrationManifestSchema>;
       try {
         const json = JSON.parse(Buffer.from(bytes).toString('utf8'));
-        parsed = hydrationManifestSchema.parse(json);
+        const result = hydrationManifestSchema.safeParse(json);
+        if (!result.success) {
+          return fail(snapshotDbId, 'manifest_invalid', summarizeManifestIssues(result.error, json));
+        }
+        parsed = result.data;
         if (parsed.id !== snapshot.snapshotId) {
           throw new Error(`manifest id ${parsed.id} does not match snapshot ${snapshot.snapshotId}`);
         }

@@ -202,16 +202,31 @@ describe('hydrateSnapshotFileIndex', () => {
     for (const f of contentless) expect(insertedKeys.has('')).toBe(false);
   });
 
-  it('still fails manifest_invalid when a CONTENT entry (no kind) has an empty backupPath — the relaxation is by kind, not blanket', async () => {
+  it('still fails manifest_invalid when a CONTENT entry (no kind) has an empty backupPath — the relaxation is by kind, not blanket — and the reason names the entry, not a zod dump', async () => {
+    selectMock.mockReturnValueOnce(chainMock([snapshotRow()]));
+    selectMock.mockReturnValueOnce(chainMock([{ referencedFiles: 5 }]));
+    const entries = Array.from({ length: 3000 }, (_, i) => ({ sourcePath: `/bad${i}`, backupPath: '' }));
+    const deps = { fetchManifestBytes: vi.fn().mockResolvedValue(manifestBytes(entries)) };
+    const outcome = await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps });
+    expect(outcome).toMatchObject({ status: 'failed', failure: 'manifest_invalid', retryable: false });
+    const reason = (outcome as { reason: string }).reason;
+    // First offending entry named by sourcePath, total count reported, and
+    // NOT the multi-megabyte ZodError JSON for 3,000 issues.
+    expect(reason).toContain('"/bad0"');
+    expect(reason).toContain('2999 more issue(s)');
+    expect(reason.length).toBeLessThan(400);
+  });
+
+  it('admits an UNKNOWN kind from a newer agent as long as a content entry names its object (forward compatible, fails closed only on missing object)', async () => {
     selectMock.mockReturnValueOnce(chainMock([snapshotRow()]));
     selectMock.mockReturnValueOnce(chainMock([{ referencedFiles: 5 }]));
     const deps = {
       fetchManifestBytes: vi.fn().mockResolvedValue(
-        manifestBytes([{ sourcePath: '/a', backupPath: '' }]),
+        manifestBytes([{ sourcePath: '/a', backupPath: 'snapshots/snap-current/files/a.gz', kind: 'hardlink' } as never]),
       ),
     };
     const outcome = await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps });
-    expect(outcome).toMatchObject({ status: 'failed', failure: 'manifest_invalid', retryable: false });
+    expect(outcome).toMatchObject({ status: 'complete', entryCount: 1 });
   });
 
   it('verifies an origin against a LIVE row on the same device/identity (provenance: live)', async () => {

@@ -41,10 +41,13 @@ const (
 	// `context deadline exceeded`, which carries no HTTP status and so was
 	// classified permanent after a single attempt. Transport errors follow
 	// the same exponential schedule as 429/503 but are attempt-bounded, not
-	// time-bounded, so a persistently unreachable object costs seconds per
-	// file rather than the full 5-minute status budget (the consecutive-
-	// failure breaker in bmr.go then stops the run). A failure that is the
-	// PARENT context being cancelled is never retried — see
+	// time-bounded: the backoff itself costs 1+2+4 s per file, and each
+	// attempt is additionally bounded by whatever the transport takes to
+	// fail — instant for a refused connection, the dial timeout for a
+	// black-holed host, and up to noAuthRedirectClient.Timeout (30 min) for
+	// a server that accepts the connection and never finishes. The
+	// consecutive-failure breaker in bmr.go still stops the run. A failure
+	// that is the PARENT context being cancelled is never retried — see
 	// downloadWithRetry.
 	downloadTransportMaxAttempts = 4
 
@@ -530,9 +533,12 @@ func (p *recoveryDownloadProvider) downloadWithRetry(remotePath, localPath strin
 			return err
 		}
 
-		if !retried {
+		// Status retries log once per file (a 429 storm would otherwise
+		// flood the log); transport retries are few and each one is a
+		// distinct symptom of a flaky path, so log every attempt.
+		if !retried || transportErr != nil {
 			slog.Warn("bmr: download failed, retrying with backoff",
-				"path", remotePath, "reason", why, "wait", wait)
+				"path", remotePath, "attempt", attempts, "reason", why, "wait", wait)
 			retried = true
 		}
 
@@ -646,6 +652,10 @@ func (p *recoveryDownloadProvider) downloadOnce(remotePath, localPath string) er
 		// two distinguishably, so ask the body: the same failure that broke
 		// the copy is still there on a follow-up read, while a healthy body
 		// means the write side failed.
+		// Either way the destination holds a truncated object: remove it so a
+		// final failure never leaves a half-written file at the restore
+		// target for restore.go/bmr.go to count as present.
+		_ = os.Remove(localPath)
 		if _, probe := resp.Body.Read(make([]byte, 1)); probe != nil && probe != io.EOF {
 			return &downloadTransportError{stage: "body read", cause: copyErr}
 		}

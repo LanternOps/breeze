@@ -72,5 +72,7 @@ grep -q 'transport fault injected (connection dropped mid-body)' "$target" \
   || fail "run-qemu.sh does not assert that the fake server injected the transport fault"
 grep -q 'fault_requests:-0}" -lt 2' "$target" \
   || fail "run-qemu.sh does not assert the faulted object was requested at least twice (transport retry, D-W09-3)"
+grep -q '"\$failed_files" != "0"' "$target" \
+  || fail "run-qemu.sh does not assert failedFiles == 0 from the validated result — a retried-then-lost file would still pass"
 
 echo "run-qemu_test: PASS — boot 1 passes -no-reboot; progress contract is the exact 5-phase sequence; D-W09-2/3 fault + retry assertions present"

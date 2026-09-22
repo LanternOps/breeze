@@ -254,20 +254,29 @@ func (s *Server) computeFileIndex() (sha string, externalCount int, err error) {
 	return hex.EncodeToString(sum[:]), externalCount, nil
 }
 
+type fileIndexInfo struct {
+	sha           string
+	externalCount int
+}
+
 // fileIndexRefusal mirrors negotiateRecoveryCapabilities' 409
 // snapshot_index_failed: when references exist, the membership capability
-// was requested, and the manifest fails the hydration gate, the real
+// would be GRANTED, and the manifest fails the hydration gate, the real
 // server refuses the session rather than handing out a fileIndex it could
-// not build. Returns false when there is nothing to refuse.
-func (s *Server) fileIndexRefusal(clientCapabilities []string) (string, bool) {
-	if len(s.cfg.ReferencedSnapshotIDs) == 0 || !bmr.HasCapability(clientCapabilities, bmr.CapabilitySnapshotFileMembershipV1) {
-		return "", false
+// not build. On success it returns the computed index for bootstrapFor, so
+// the manifest is read and validated exactly once per request. code is ""
+// when there is nothing to refuse.
+func (s *Server) fileIndexRefusal(clientCapabilities []string) (fi *fileIndexInfo, code string) {
+	granted := intersectCapabilities(clientCapabilities, s.cfg.Capabilities)
+	if len(s.cfg.ReferencedSnapshotIDs) == 0 || !bmr.HasCapability(granted, bmr.CapabilitySnapshotFileMembershipV1) {
+		return nil, ""
 	}
-	if _, _, err := s.computeFileIndex(); err != nil {
+	sha, externalCount, err := s.computeFileIndex()
+	if err != nil {
 		log.Printf("fakeserver: refusing session, manifest fails the hydration gate: %v", err)
-		return "snapshot_index_failed", true
+		return nil, "snapshot_index_failed"
 	}
-	return "", false
+	return &fileIndexInfo{sha: sha, externalCount: externalCount}, ""
 }
 
 // intersectCapabilities returns the capability strings present in both
@@ -283,7 +292,11 @@ func intersectCapabilities(client, granted []string) []string {
 	return out
 }
 
-func (s *Server) bootstrapFor(tokenID string, clientCapabilities []string) bootstrapPayload {
+// bootstrapFor builds the bootstrap payload. fileIndex is the result of
+// computeFileIndex when references exist and membership was granted — the
+// handler computes it ONCE (fileIndexRefusal) and passes it in, so the
+// payload can never silently omit a fileIndex the gate already accepted.
+func (s *Server) bootstrapFor(tokenID string, clientCapabilities []string, fileIndex *fileIndexInfo) bootstrapPayload {
 	recovery := map[string]any{
 		"id":         s.cfg.RecoveryID,
 		"identity":   s.cfg.Identity,
@@ -312,17 +325,12 @@ func (s *Server) bootstrapFor(tokenID string, clientCapabilities []string) boots
 		"size":       0,
 		"fileCount":  0,
 	}
-	if len(s.cfg.ReferencedSnapshotIDs) > 0 && bmr.HasCapability(granted, bmr.CapabilitySnapshotFileMembershipV1) {
-		sha, externalCount, err := s.computeFileIndex()
-		if err == nil {
-			snapshot["fileIndex"] = map[string]any{
-				"status":            "complete",
-				"manifestSha256":    sha,
-				"externalCount":     externalCount,
-				"originSnapshotIds": s.cfg.ReferencedSnapshotIDs,
-			}
-		} else {
-			log.Printf("fakeserver: computeFileIndex: %v", err)
+	if len(s.cfg.ReferencedSnapshotIDs) > 0 && bmr.HasCapability(granted, bmr.CapabilitySnapshotFileMembershipV1) && fileIndex != nil {
+		snapshot["fileIndex"] = map[string]any{
+			"status":            "complete",
+			"manifestSha256":    fileIndex.sha,
+			"externalCount":     fileIndex.externalCount,
+			"originSnapshotIds": s.cfg.ReferencedSnapshotIDs,
 		}
 	}
 
@@ -380,7 +388,8 @@ func (s *Server) handleExchange(w http.ResponseWriter, r *http.Request) {
 	// Also before the code is consumed: the real server's
 	// negotiateRecoveryCapabilities refuses snapshot_index_failed at the
 	// same point when the manifest could not be hydrated.
-	if code, refuse := s.fileIndexRefusal(body.Capabilities); refuse {
+	fileIndex, code := s.fileIndexRefusal(body.Capabilities)
+	if code != "" {
 		writeError(w, http.StatusConflict, code)
 		return
 	}
@@ -398,7 +407,7 @@ func (s *Server) handleExchange(w http.ResponseWriter, r *http.Request) {
 	// `bootstrap` that carries download/recovery. The e2e previously sent the
 	// inner object directly, which hid the console's envelope-decoding bug
 	// until the first run against a real API.
-	inner := s.bootstrapFor("e2e-token-1", body.Capabilities)
+	inner := s.bootstrapFor("e2e-token-1", body.Capabilities, fileIndex)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"token": token,
 		"bootstrap": map[string]any{
@@ -449,11 +458,12 @@ func (s *Server) handleAuthenticate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "client_capability_required")
 		return
 	}
-	if code, refuse := s.fileIndexRefusal(body.Capabilities); refuse {
+	fileIndex, code := s.fileIndexRefusal(body.Capabilities)
+	if code != "" {
 		writeError(w, http.StatusConflict, code)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"bootstrap": s.bootstrapFor("e2e-token-1", body.Capabilities)})
+	writeJSON(w, http.StatusOK, map[string]any{"bootstrap": s.bootstrapFor("e2e-token-1", body.Capabilities, fileIndex)})
 }
 
 type progressRecord struct {
@@ -471,15 +481,27 @@ func (s *Server) handleProgress(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Token  string `json:"token"`
-		Status string `json:"status"`
-		Reason string `json:"reason,omitempty"`
+		Token    string          `json:"token"`
+		Status   string          `json:"status"`
+		Reason   string          `json:"reason,omitempty"`
+		Result   json.RawMessage `json:"result,omitempty"`
+		Warnings []string        `json:"warnings,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_body")
 		return
 	}
 	s.appendProgress(progressRecord{Status: body.Status})
+	if body.Status == "validated" {
+		// The console posts the full bmr.RecoveryResult (failedFiles,
+		// filesRestored, warnings) alongside `validated`; persist it next
+		// to the progress log so run-qemu.sh can assert a CLEAN rebuild
+		// (failedFiles == 0) — a per-file failure that stays under the
+		// consecutive-failure breaker still reaches `validated`, so the
+		// phase list alone cannot tell "retried and succeeded" from
+		// "retried and still lost the file".
+		s.writeValidatedResult(body.Result, body.Warnings)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": body.Status})
 }
 
@@ -656,6 +678,27 @@ func (s *Server) manifestKeys() map[string]struct{} {
 // appendProgress appends one status to ProgressLogPath as a JSON array,
 // read-modify-write under the server's own mutex (call volume here is a
 // handful of calls across one recovery — no concurrency concern).
+// ValidatedResultPath is where the `validated` progress post's result is
+// persisted: ProgressLogPath with a `.validated.json` suffix.
+func (s *Server) ValidatedResultPath() string {
+	return strings.TrimSuffix(s.cfg.ProgressLogPath, ".json") + ".validated.json"
+}
+
+func (s *Server) writeValidatedResult(result json.RawMessage, warnings []string) {
+	payload := map[string]any{"warnings": warnings}
+	if len(result) > 0 {
+		payload["result"] = result
+	}
+	data, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		log.Printf("fakeserver: marshal validated result: %v", err)
+		return
+	}
+	if err := os.WriteFile(s.ValidatedResultPath(), data, 0o644); err != nil {
+		log.Printf("fakeserver: write validated result: %v", err)
+	}
+}
+
 func (s *Server) appendProgress(rec progressRecord) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

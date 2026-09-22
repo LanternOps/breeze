@@ -265,7 +265,20 @@ if [ "${fault_requests:-0}" -lt 2 ]; then
   echo "run-qemu: FAIL — backslash-keyed object was requested $fault_requests time(s); want >= 2 (transport failure must be retried, D-W09-3)" >&2
   exit 1
 fi
-echo "run-qemu: PASS — backslash-keyed systemd unit admitted (D-W09-2) and re-requested after the injected transport fault ($fault_requests requests, D-W09-3)"
+# ...and the retry must have SUCCEEDED: a per-file failure under the
+# consecutive-failure breaker still reaches `validated`, so also read the
+# result the console posted with that phase and require zero failed files.
+validated_result="${progress_log%.json}.validated.json"
+if [ ! -f "$validated_result" ]; then
+  echo "run-qemu: FAIL — fake server did not persist the validated result ($validated_result missing)" >&2
+  exit 1
+fi
+failed_files="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(int((d.get("result") or {}).get("failedFiles", -1)))' "$validated_result")"
+if [ "$failed_files" != "0" ]; then
+  echo "run-qemu: FAIL — validated result reports failedFiles=$failed_files (want 0): $(cat "$validated_result")" >&2
+  exit 1
+fi
+echo "run-qemu: PASS — backslash-keyed systemd unit admitted (D-W09-2), re-requested after the injected transport fault ($fault_requests requests) and the rebuild validated with failedFiles=0 (D-W09-3)"
 
 # Post-check (R7/R8 over the wire): with the probe token, a referenced
 # external key (an unchanged e2e-1 file that e2e-3's manifest names) must

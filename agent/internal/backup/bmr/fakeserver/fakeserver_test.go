@@ -480,6 +480,50 @@ func TestFakeServer_TransportFaultOnceDropsFirstMatchingDownload(t *testing.T) {
 	}
 }
 
+// TestFakeServer_PersistsValidatedResult: the `validated` progress post
+// carries the console's RecoveryResult; the fake persists it next to the
+// progress log so run-qemu.sh can require failedFiles == 0 (a retried-then-
+// lost file still reaches `validated`, so the phase list alone is blind).
+func TestFakeServer_PersistsValidatedResult(t *testing.T) {
+	store := t.TempDir()
+	writeManifest(t, store, "gen-3", [][2]string{{"/a", "snapshots/gen-3/files/a.gz"}})
+	progress := filepath.Join(t.TempDir(), "progress.json")
+	srv := New(Config{Code: "ABC", SnapshotID: "gen-3", StoreDir: store, ProgressLogPath: progress})
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	resp := postJSON(t, ts.URL+"/api/v1/backup/bmr/recover/progress", map[string]any{
+		"token": "x", "status": "validated",
+		"result":   map[string]any{"status": "completed", "filesRestored": 41, "failedFiles": 0},
+		"warnings": []string{"no image size given"},
+	})
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("progress status = %d", resp.StatusCode)
+	}
+	want := strings.TrimSuffix(progress, ".json") + ".validated.json"
+	if srv.ValidatedResultPath() != want {
+		t.Fatalf("ValidatedResultPath = %q, want %q", srv.ValidatedResultPath(), want)
+	}
+	data, err := os.ReadFile(want)
+	if err != nil {
+		t.Fatalf("validated result not persisted: %v", err)
+	}
+	var got struct {
+		Result struct {
+			FailedFiles   int `json:"failedFiles"`
+			FilesRestored int `json:"filesRestored"`
+		} `json:"result"`
+		Warnings []string `json:"warnings"`
+	}
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v (%s)", err, data)
+	}
+	if got.Result.FailedFiles != 0 || got.Result.FilesRestored != 41 || len(got.Warnings) != 1 {
+		t.Fatalf("persisted = %+v, want the posted result and warnings", got)
+	}
+}
+
 func TestProbeToken_IsPreRegisteredForDownloads(t *testing.T) {
 	store := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(store, "snapshots", "e2e-1", "files"), 0o755); err != nil {

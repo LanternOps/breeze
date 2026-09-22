@@ -586,6 +586,109 @@ func TestRecoveryDownloadProviderRetriesTransportFailure(t *testing.T) {
 	}
 }
 
+// TestRecoveryDownloadProviderRetriesTransportFailureOnRedirectHop covers the
+// third transport site — the redirect hop in followDownloadRedirects, which
+// is the one a production BMR actually exercises (the API answers 302 with
+// a presigned storage URL; the KIT failure was on exactly that presigned
+// GET). The API stub redirects to a storage stub whose FIRST request is
+// dropped before any response; the second must succeed and the redirect
+// must be followed again with no auth header.
+func TestRecoveryDownloadProviderRetriesTransportFailureOnRedirectHop(t *testing.T) {
+	recorded := withFakeRetrySleep(t)
+
+	const body = "presigned-object-body"
+	var storageAttempts int32
+	storage := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "" {
+			t.Errorf("recovery token forwarded to the storage redirect target")
+		}
+		if atomic.AddInt32(&storageAttempts, 1) == 1 {
+			hj, ok := w.(http.Hijacker)
+			if !ok {
+				t.Fatal("test server does not support hijacking")
+			}
+			conn, _, err := hj.Hijack()
+			if err != nil {
+				t.Fatalf("hijack: %v", err)
+			}
+			_ = conn.Close()
+			return
+		}
+		_, _ = io.WriteString(w, body)
+	}))
+	defer storage.Close()
+
+	var apiAttempts int32
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&apiAttempts, 1)
+		http.Redirect(w, r, storage.URL+"/obj?X-Amz-Signature=sig", http.StatusFound)
+	}))
+	defer api.Close()
+
+	provider := newRecoveryDownloadProvider(context.Background(), api.URL, "brz_rec_test", &AuthenticatedDownloadDescriptor{
+		URL:               api.URL + "/download",
+		TokenHeaderName:   "authorization",
+		TokenHeaderFormat: "Bearer <recovery-token>",
+		PathQueryParam:    "path",
+		PathPrefix:        "snapshots/provider-snapshot-1",
+	})
+
+	dest := filepath.Join(t.TempDir(), "f.bin")
+	if err := provider.Download("snapshots/provider-snapshot-1/f.bin", dest); err != nil {
+		t.Fatalf("Download: %v (a transport failure on the redirect hop must be retried)", err)
+	}
+	if got := atomic.LoadInt32(&apiAttempts); got != 2 {
+		t.Fatalf("api attempts = %d, want 2 (the whole download, redirect included, is retried)", got)
+	}
+	if got := atomic.LoadInt32(&storageAttempts); got != 2 {
+		t.Fatalf("storage attempts = %d, want 2 (dropped, then served)", got)
+	}
+	if len(*recorded) != 1 {
+		t.Fatalf("recorded sleeps = %v, want exactly one backoff step", *recorded)
+	}
+	got, err := os.ReadFile(dest)
+	if err != nil || string(got) != body {
+		t.Fatalf("dest = %q err %v, want the full presigned body", got, err)
+	}
+}
+
+// TestRecoveryDownloadProviderTransportFailureRemovesPartialFile pins the
+// cleanup: a final transport failure must not leave a half-written object
+// at the restore target for the caller to count as present.
+func TestRecoveryDownloadProviderTransportFailureRemovesPartialFile(t *testing.T) {
+	withFakeRetrySleep(t)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "100")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "partial")
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		hj, _ := w.(http.Hijacker)
+		conn, _, err := hj.Hijack()
+		if err != nil {
+			t.Fatalf("hijack: %v", err)
+		}
+		_ = conn.Close()
+	}))
+	defer server.Close()
+
+	provider := newRecoveryDownloadProvider(context.Background(), server.URL, "brz_rec_test", &AuthenticatedDownloadDescriptor{
+		URL:            server.URL + "/download",
+		PathQueryParam: "path",
+		PathPrefix:     "snapshots/provider-snapshot-1",
+	})
+
+	dest := filepath.Join(t.TempDir(), "f.bin")
+	if err := provider.Download("snapshots/provider-snapshot-1/f.bin", dest); err == nil {
+		t.Fatal("expected the download to fail after transport retries are exhausted")
+	}
+	if _, err := os.Stat(dest); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("partial destination file still exists after a final transport failure (stat err = %v)", err)
+	}
+}
+
 // TestRecoveryDownloadProviderTransportRetriesAreBounded proves a
 // persistently unreachable object does not turn every file into a
 // 5-minute stall: transport failures get downloadTransportMaxAttempts

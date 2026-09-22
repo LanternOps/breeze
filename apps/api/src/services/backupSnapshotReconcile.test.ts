@@ -1179,6 +1179,30 @@ describe('manifestToCommandResult originalPath (D12 reconcile path)', () => {
     expect(result.referencedBytes).toBeUndefined();
   });
 
+  it('parses a REAL agent manifest (D-W09-1 twin of the hydration fix, #6491): dir/symlink entries with backupPath "" are admitted and NOT counted as references', async () => {
+    const { manifestToCommandResult } = await import('./backupSnapshotReconcile');
+    const { readFileSync } = await import('node:fs');
+    const path = await import('node:path');
+    const fixture = readFileSync(path.resolve(__dirname, '../../../../agent/internal/backup/bmr/testdata/real-manifest-shape.json'), 'utf8');
+    const manifest = JSON.parse(fixture) as { id: string; files: Array<{ backupPath: string; size?: number }> };
+    const contentless = manifest.files.filter((f) => f.backupPath === '');
+    const external = manifest.files.filter((f) => f.backupPath && !f.backupPath.startsWith(`snapshots/${manifest.id}/`));
+    expect(contentless.length).toBeGreaterThan(0);
+    // Pre-fix: the blanket .min(1) threw here and adoption skipped the snapshot as manifest-unreadable.
+    const result = manifestToCommandResult({ snapshotId: manifest.id, manifestText: fixture, matchedBy: 'job-snapshot-id' });
+    expect(result.referencedFiles).toBe(external.length);
+    expect(result.referencedBytes).toBe(external.reduce((n, f) => n + (f.size ?? 0), 0));
+  });
+
+  it('still rejects a CONTENT entry (no kind) with an empty backupPath', async () => {
+    const { manifestToCommandResult } = await import('./backupSnapshotReconcile');
+    expect(() => manifestToCommandResult({
+      snapshotId: 'snap-1',
+      manifestText: JSON.stringify({ id: 'snap-1', files: [{ sourcePath: '/a', backupPath: '' }] }),
+      matchedBy: 'job-snapshot-id',
+    })).toThrow();
+  });
+
   it('forwards baseSnapshotId and formatVersion (D18 W01)', async () => {
     const { manifestToCommandResult } = await import('./backupSnapshotReconcile');
     const result = manifestToCommandResult({
