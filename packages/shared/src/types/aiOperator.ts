@@ -313,6 +313,16 @@ export const AI_OPERATOR_TASK_EVENT_TYPES = [
   'operation_settled',
   'verification_recorded',
   'plan_revision_bumped',
+  /**
+   * A human cleared the tick on an `operator_task` checklist item AFTER the
+   * step that created it had already settled (recipe spec §6.5: "Un-checking
+   * an item after the task advanced writes an event and does not rewind").
+   *
+   * Its own value rather than a reused `step_settled`: this table is APPEND-ONLY
+   * evidence, and recording a settle that did not happen is a false entry in
+   * the record a technician reads to understand what the Operator did.
+   */
+  'human_work_unticked',
   'task_settled',
 ] as const;
 export type AiOperatorTaskEventType = (typeof AI_OPERATOR_TASK_EVENT_TYPES)[number];

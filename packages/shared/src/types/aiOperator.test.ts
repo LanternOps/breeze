@@ -47,7 +47,7 @@ describe('AI Operator task-graph value lists (recipe spec §5.1/§5.2/§5.3)', (
     expect(new Set(AI_OPERATOR_TASK_EVENT_TYPES).size).toBe(AI_OPERATOR_TASK_EVENT_TYPES.length);
     for (const required of [
       'task_admitted', 'lease_claimed', 'step_opened', 'step_settled',
-      'wait_entered', 'target_attached', 'target_detached', 'task_settled',
+      'wait_entered', 'target_attached', 'target_detached', 'human_work_unticked', 'task_settled',
     ]) {
       expect(AI_OPERATOR_TASK_EVENT_TYPES).toContain(required);
     }

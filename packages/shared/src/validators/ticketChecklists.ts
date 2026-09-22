@@ -16,7 +16,21 @@ import { optionalQueryBoolean } from './queryParams';
  * interleave into a half-order.
  */
 
-export const CHECKLIST_ITEM_SOURCES = ['manual', 'deliverable', 'checklist_template'] as const;
+/**
+ * `ticket_checklist_items.source`. APPEND-ONLY: these are Postgres enum labels
+ * with ordinals, added by migration, and a shipped label can never be removed.
+ *
+ * `operator_task` (Recipe Library spec §5.3, wave E3) marks a step an AI
+ * Operator `human_work` step created and is waiting on. The Operator CREATES
+ * such rows and never completes them — completion stays a human attestation
+ * (§6.5), enforced by `apps/api/src/services/aiOperator/humanWorkPurity.test.ts`.
+ */
+export const CHECKLIST_ITEM_SOURCES = [
+  'manual',
+  'deliverable',
+  'checklist_template',
+  'operator_task',
+] as const;
 export const checklistItemSourceSchema = z.enum(CHECKLIST_ITEM_SOURCES);
 
 const label = z.string().min(1).max(500);
