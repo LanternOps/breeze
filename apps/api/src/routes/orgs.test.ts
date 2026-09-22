@@ -194,6 +194,11 @@ vi.mock('../db', () => ({
     delete: vi.fn(() => ({
       where: vi.fn(() => Promise.resolve())
     })),
+    // Raw SQL. A site created WITH a contact mirrors it into `contacts`, and
+    // every contact email/mobile writer records caller-verification
+    // destination provenance (#6354), which takes a per-contact advisory lock
+    // through `db.execute` before it reads.
+    execute: vi.fn(() => Promise.resolve([])),
     // transaction: invoke the callback with a tx proxy that mirrors the db mock
     transaction: vi.fn(async (fn: (tx: any) => any) => {
       const tx = {

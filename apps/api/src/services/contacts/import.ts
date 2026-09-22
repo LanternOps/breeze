@@ -48,7 +48,6 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { m365Connections } from '../../db/schema/m365';
 import { callerVerificationSubjectBindings } from '../../db/schema/callerVerification';
 import { withAuthDbAccessContext, type AuthContext } from '../../middleware/auth';
-import { executeM365ReadAction } from '../m365ControlPlane/readActionService';
 import { attestBinding, upsertDirectorySyncBinding } from '../callerVerification/subjects';
 import { reachableContact } from '../callerVerification/access';
 import type { BindingRow, CallerVerificationActor } from '../callerVerification/types';
@@ -1002,6 +1001,14 @@ export async function importDirectoryContact(
     return c;
   });
 
+  // Loaded lazily, and that is load-bearing: readActionService's static import
+  // closure reaches services/aiTools.ts -> aiToolsAgentLogs -> commandQueue ->
+  // routes/agentWs.ts (the closure workerRegistry.ts documents for
+  // m365SyncWorker). This module is imported by routes/orgContacts.ts and so by
+  // routes/orgs.ts, so a STATIC import would drag the entire AI tool registry
+  // and the agent WebSocket router into every organizations route's module
+  // graph — for one Graph read on the manual-binding path only.
+  const { executeM365ReadAction } = await import('../m365ControlPlane/readActionService');
   const result = await executeM365ReadAction(auth, { type: 'm365.user.get', userIdOrUpn: input.directoryObjectId }, input.orgId);
   if (!result.ok) throw new Error(result.message);
   if (result.kind !== 'resource') throw new Error('Expected a directory user');
