@@ -20,7 +20,12 @@
   "source": {
     "manual": "Manual",
     "deliverable": "Entrega",
-    "checklist_template": "Modelo"
+    "checklist_template": "Modelo",
+    "operator_task": "Etapa do Operador"
+  },
+  "operator": {
+    "viewTask": "Ver tarefa",
+    "badgeTitle": "Criado por uma tarefa do Operador de IA. Marque quando concluir e a tarefa continua."
   },
   "editDoneWarning": "Editar uma etapa concluída apaga quem a concluiu e quando.",
   "resolveConfirm": {
@@ -34,7 +39,8 @@
     "loadFailed": "Falha ao carregar o checklist.",
     "saveFailed": "Falha ao salvar a etapa do checklist.",
     "reorderFailed": "Falha ao reordenar o checklist.",
-    "tickRequiresUser": "Marcar uma etapa exige uma sessão de usuário autenticada."
+    "tickRequiresUser": "Marcar uma etapa exige uma sessão de usuário autenticada.",
+    "operatorStepWaiting": "Uma tarefa do Operador ainda depende desta etapa, então ela não pode ser excluída. Marque quando concluir, ou pare a tarefa antes."
   },
   "templates": {
     "title": "Modelos de checklist",

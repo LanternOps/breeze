@@ -6,6 +6,7 @@ vi.mock('../../stores/auth', () => ({ fetchWithAuth: (...a: unknown[]) => fetchW
 vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
 
 import TicketChecklistCard from './TicketChecklistCard';
+import { showToast } from '../shared/Toast';
 
 type Item = ReturnType<typeof item>;
 
@@ -20,6 +21,7 @@ function item(over: Record<string, unknown> = {}): {
   doneByUserId: string | null;
   source: string;
   sourceTemplateItemId: string | null;
+  operatorTaskId: string | null;
   createdAt: string;
 } {
   return {
@@ -33,6 +35,7 @@ function item(over: Record<string, unknown> = {}): {
     doneByUserId: null,
     source: 'manual',
     sourceTemplateItemId: null,
+    operatorTaskId: null,
     createdAt: '2026-09-01T00:00:00.000Z',
     ...over,
   };
@@ -370,5 +373,80 @@ describe('TicketChecklistCard', () => {
     render(<TicketChecklistCard ticketId="tk-1" mode="compact" />);
     await screen.findByTestId('ticket-checklist-item-i-1');
     expect(screen.queryByTestId('ticket-checklist-apply-template')).toBeNull();
+  });
+});
+
+describe('operator_task items (recipe spec §6.5)', () => {
+  it('renders the Operator badge and a link to the task', async () => {
+    const server = fakeServer([
+      item({ id: 'it-op', label: 'Collect the laptop', source: 'operator_task', operatorTaskId: 'task-9' }),
+    ]);
+    fetchWithAuth.mockImplementation(server);
+    render(<TicketChecklistCard ticketId="tk-1" />);
+    expect(await screen.findByTestId('ticket-checklist-operator-badge-it-op')).toBeInTheDocument();
+    const link = screen.getByTestId('ticket-checklist-operator-link-it-op');
+    // The UI route, not the API path: /operator/tasks/:id (the href
+    // DelegateToOperatorButton.tsx:115 already navigates to).
+    expect(link).toHaveAttribute('href', '/operator/tasks/task-9');
+  });
+
+  it('renders the badge WITHOUT a link when the task is not resolvable', async () => {
+    // operatorTaskId is null when the step lives in another org — a ticket that
+    // has been moved between orgs. The badge still explains where the step came
+    // from; the link would point into another tenant.
+    const server = fakeServer([
+      item({ id: 'it-moved', source: 'operator_task', operatorTaskId: null }),
+    ]);
+    fetchWithAuth.mockImplementation(server);
+    render(<TicketChecklistCard ticketId="tk-1" />);
+    expect(await screen.findByTestId('ticket-checklist-operator-badge-it-moved')).toBeInTheDocument();
+    expect(screen.queryByTestId('ticket-checklist-operator-link-it-moved')).toBeNull();
+  });
+
+  it('shows no badge on a manual item', async () => {
+    const server = fakeServer([item({ id: 'it-man', source: 'manual' })]);
+    fetchWithAuth.mockImplementation(server);
+    render(<TicketChecklistCard ticketId="tk-1" />);
+    await screen.findByTestId('ticket-checklist-item-it-man');
+    expect(screen.queryByTestId('ticket-checklist-operator-badge-it-man')).toBeNull();
+  });
+
+  it('still lets a human tick an operator_task item — the Operator waits on exactly this', async () => {
+    // Guarding against an over-eager "it belongs to a robot, make it read-only".
+    // The tick is the ONLY way a human_work step ever completes.
+    const server = fakeServer([item({ id: 'it-op', source: 'operator_task', operatorTaskId: 'task-9' })]);
+    fetchWithAuth.mockImplementation(server);
+    render(<TicketChecklistCard ticketId="tk-1" />);
+    const toggle = await screen.findByTestId('ticket-checklist-toggle-it-op');
+    expect(toggle).not.toBeDisabled();
+  });
+
+  it('surfaces the 409 refusal when deleting an item a task is waiting on', async () => {
+    // runClientAction + the FRIENDLY code map. A silent no-op here would look
+    // to the technician exactly like a successful delete.
+    const items = [item({ id: 'it-op', source: 'operator_task', operatorTaskId: 'task-9' })];
+    fetchWithAuth.mockImplementation(async (url: string, init?: RequestInit) => {
+      const method = init?.method ?? 'GET';
+      if (url === checklistUrl() && method === 'GET') {
+        return jsonRes({ items, done: 0, total: items.length });
+      }
+      if (url.startsWith('/tickets/checklist/') && method === 'DELETE') {
+        return {
+          ok: false,
+          status: 409,
+          json: async () => ({ error: 'An Operator task is waiting on this step.', code: 'CHECKLIST_OPERATOR_STEP_WAITING' }),
+        } as Response;
+      }
+      return jsonRes({});
+    });
+    render(<TicketChecklistCard ticketId="tk-1" />);
+    fireEvent.click(await screen.findByTestId('ticket-checklist-delete-it-op'));
+    await waitFor(() => {
+      expect(showToast).toHaveBeenCalledWith(
+        expect.objectContaining({ message: 'An Operator task is still waiting on this step, so it can\'t be deleted. Tick it when the work is done, or stop the task first.' }),
+      );
+    });
+    // The item must still be present — the delete was refused, not silently dropped.
+    expect(screen.getByTestId('ticket-checklist-item-it-op')).toBeInTheDocument();
   });
 });

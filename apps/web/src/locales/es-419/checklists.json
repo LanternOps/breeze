@@ -20,7 +20,12 @@
   "source": {
     "manual": "Manual",
     "deliverable": "Entregable",
-    "checklist_template": "Plantilla"
+    "checklist_template": "Plantilla",
+    "operator_task": "Paso del Operador"
+  },
+  "operator": {
+    "viewTask": "Ver tarea",
+    "badgeTitle": "Creado por una tarea del Operador de IA. Márcalo cuando termines y la tarea continuará."
   },
   "editDoneWarning": "Editar un paso completado borra quién lo completó y cuándo.",
   "resolveConfirm": {
@@ -34,7 +39,8 @@
     "loadFailed": "No se pudo cargar la lista de verificación.",
     "saveFailed": "No se pudo guardar el paso de la lista de verificación.",
     "reorderFailed": "No se pudo reordenar la lista de verificación.",
-    "tickRequiresUser": "Marcar un paso requiere una sesión de usuario con inicio de sesión."
+    "tickRequiresUser": "Marcar un paso requiere una sesión de usuario con inicio de sesión.",
+    "operatorStepWaiting": "Una tarea del Operador sigue esperando este paso, así que no se puede eliminar. Márcalo cuando termines o detén la tarea primero."
   },
   "templates": {
     "title": "Plantillas de lista de verificación",

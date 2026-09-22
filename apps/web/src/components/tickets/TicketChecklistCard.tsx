@@ -37,6 +37,7 @@ interface Props {
 
 const FRIENDLY: Record<string, string> = {
   CHECKLIST_TICK_REQUIRES_USER: 'errors.tickRequiresUser',
+  CHECKLIST_OPERATOR_STEP_WAITING: 'errors.operatorStepWaiting',
 };
 
 export default function TicketChecklistCard({ ticketId, mode = 'full', onCountsChange }: Props) {
@@ -219,6 +220,7 @@ export default function TicketChecklistCard({ ticketId, mode = 'full', onCountsC
     try {
       await runClientAction(() => deleteChecklistItem(fetchWithAuth, id), {
         errorFallback: t('errors.saveFailed'),
+        friendly,
       });
       setItems((prev) => prev.filter((i) => i.id !== id));
       if (editingId === id) cancelEdit();
@@ -394,6 +396,24 @@ export default function TicketChecklistCard({ ticketId, mode = 'full', onCountsC
                       <span className={item.done ? 'text-muted-foreground line-through' : undefined}>
                         {item.label}
                       </span>
+                      {item.source === 'operator_task' && (
+                        <span
+                          data-testid={`ticket-checklist-operator-badge-${item.id}`}
+                          className="ml-2 inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium bg-indigo-50 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300"
+                          title={t('operator.badgeTitle')}
+                        >
+                          {t('source.operator_task')}
+                          {item.operatorTaskId && (
+                            <a
+                              data-testid={`ticket-checklist-operator-link-${item.id}`}
+                              href={`/operator/tasks/${item.operatorTaskId}`}
+                              className="underline underline-offset-2"
+                            >
+                              {t('operator.viewTask')}
+                            </a>
+                          )}
+                        </span>
+                      )}
                       {item.detail && (
                         <p className="text-muted-foreground">{item.detail}</p>
                       )}

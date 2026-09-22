@@ -31,6 +31,15 @@ export interface ChecklistItem {
   doneByUserId: string | null;
   source: ChecklistItemSource;
   sourceTemplateItemId: string | null;
+  /**
+   * The AI Operator task behind a `source: 'operator_task'` item.
+   *
+   * Null when the server could not resolve the step in this item's org — which
+   * is what a ticket moved between orgs looks like. The badge renders either
+   * way; only the link is conditional, because a link built from a null id
+   * would navigate to `/operator/tasks/null`.
+   */
+  operatorTaskId: string | null;
   createdAt: string;
 }
 

@@ -415,4 +415,41 @@ describe('OccurrenceDrawer checklist progress (#5808 W03)', () => {
     await screen.findByTestId('ticket-checklist-error');
     expect(showToast).not.toHaveBeenCalled();
   });
+
+  it('renders the Operator badge inside the compact card too (the second mount site)', async () => {
+    // TicketWorkbench stubs TicketChecklistCard, so this drawer is the only
+    // host suite that proves the badge actually reaches a mounted page.
+    const occ: Occurrence = { ...occurrence, ticketId: 'tk-1', checklist: { done: 0, total: 1 } };
+    const fetcher = vi.fn(async () => jsonResp(200, { data: [occ] }));
+    checklistFetchMock.mockImplementation(async (path: string) => {
+      if (String(path).endsWith('/checklist')) {
+        return jsonResp(200, {
+          data: {
+            items: [
+              {
+                id: 'ci-op',
+                ticketId: 'tk-1',
+                label: 'Operator step',
+                detail: null,
+                position: 0,
+                done: false,
+                doneAt: null,
+                doneByUserId: null,
+                source: 'operator_task',
+                operatorTaskId: 'task-9',
+                sourceTemplateItemId: null,
+                createdAt: '2026-09-01T00:00:00Z',
+              },
+            ],
+            done: 0,
+            total: 1,
+          },
+        });
+      }
+      return jsonResp(200, { data: [] });
+    });
+    render(<OccurrenceDrawer fetcher={fetcher} orgId="org-1" deliverable={deliverable} onClose={vi.fn()} />);
+    fireEvent.click(await screen.findByTestId('occurrence-checklist-expand-oc-1'));
+    expect(await screen.findByTestId('ticket-checklist-operator-badge-ci-op')).toBeInTheDocument();
+  });
 });

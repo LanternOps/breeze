@@ -20,7 +20,12 @@
   "source": {
     "manual": "Manual",
     "deliverable": "Deliverable",
-    "checklist_template": "Template"
+    "checklist_template": "Template",
+    "operator_task": "Operator step"
+  },
+  "operator": {
+    "viewTask": "View task",
+    "badgeTitle": "Created by an AI Operator task. Tick it when the work is done and the task continues."
   },
   "editDoneWarning": "Editing a completed step clears who completed it and when.",
   "resolveConfirm": {
@@ -34,7 +39,8 @@
     "loadFailed": "Failed to load the checklist.",
     "saveFailed": "Failed to save the checklist step.",
     "reorderFailed": "Failed to reorder the checklist.",
-    "tickRequiresUser": "Ticking a step requires a signed-in user session."
+    "tickRequiresUser": "Ticking a step requires a signed-in user session.",
+    "operatorStepWaiting": "An Operator task is still waiting on this step, so it can't be deleted. Tick it when the work is done, or stop the task first."
   },
   "templates": {
     "title": "Checklist templates",

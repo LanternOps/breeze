@@ -20,7 +20,12 @@
   "source": {
     "manual": "Manuale",
     "deliverable": "Deliverable",
-    "checklist_template": "Modello"
+    "checklist_template": "Modello",
+    "operator_task": "Passaggio Operatore"
+  },
+  "operator": {
+    "viewTask": "Apri attività",
+    "badgeTitle": "Creato da un'attività dell'Operatore IA. Spunta quando hai finito e l'attività riprende."
   },
   "editDoneWarning": "Modificare un passaggio completato cancella chi lo ha completato e quando.",
   "resolveConfirm": {
@@ -34,7 +39,8 @@
     "loadFailed": "Impossibile caricare la checklist.",
     "saveFailed": "Impossibile salvare il passaggio della checklist.",
     "reorderFailed": "Impossibile riordinare la checklist.",
-    "tickRequiresUser": "Spuntare un passaggio richiede una sessione utente autenticata."
+    "tickRequiresUser": "Spuntare un passaggio richiede una sessione utente autenticata.",
+    "operatorStepWaiting": "Un'attività dell'Operatore sta ancora aspettando questo passaggio, quindi non può essere eliminato. Spuntalo quando hai finito, oppure ferma prima l'attività."
   },
   "templates": {
     "title": "Modelli di checklist",
