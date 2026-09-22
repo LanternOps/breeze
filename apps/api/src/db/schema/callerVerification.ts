@@ -11,7 +11,7 @@
  *
  * SQL is authoritative for `DEFERRABLE INITIALLY IMMEDIATE` and the
  * column-specific `ON DELETE SET NULL (col)` clauses (migration
- * 2026-10-26-140000); Drizzle cannot express either, so the FK declarations
+ * 2026-10-26-170000); Drizzle cannot express either, so the FK declarations
  * below mirror columns/targets only. Never add single-column FKs in place of
  * the composites — ownership (contact_id, org_id) is part of every reference.
  *

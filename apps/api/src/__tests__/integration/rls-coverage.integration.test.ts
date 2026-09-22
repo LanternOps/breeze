@@ -386,7 +386,7 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
 const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // caller_verification_policies (#6354 W01): org XOR partner via
   // caller_verification_policies_one_owner_chk; SELECT-only partner-wide branch
-  // cv_policy_partner_select ships in 2026-10-26-140100. Functional forge
+  // cv_policy_partner_select ships in 2026-10-26-170100. Functional forge
   // proof: callerVerification.integration.test.ts.
   'caller_verification_policies',
   'topology_config_templates',

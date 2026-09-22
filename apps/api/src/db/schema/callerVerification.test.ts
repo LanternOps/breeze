@@ -5,10 +5,10 @@ import * as cv from './callerVerification';
 
 const read = (name: string) =>
   readFileSync(new URL(`../../../migrations/${name}`, import.meta.url), 'utf8');
-const TABLES_MIGRATION = '2026-10-26-140000-caller-verification-tables.sql';
-const POLICIES_MIGRATION = '2026-10-26-140100-caller-verification-policies.sql';
-const BACKFILL_MIGRATION = '2026-10-26-140200-caller-verification-destinations-backfill.sql';
-const TICKET_COMMENT_RLS_MIGRATION = '2026-10-26-140300-caller-verification-ticket-comment-rls.sql';
+const TABLES_MIGRATION = '2026-10-26-170000-caller-verification-tables.sql';
+const POLICIES_MIGRATION = '2026-10-26-170100-caller-verification-policies.sql';
+const BACKFILL_MIGRATION = '2026-10-26-170200-caller-verification-destinations-backfill.sql';
+const TICKET_COMMENT_RLS_MIGRATION = '2026-10-26-170300-caller-verification-ticket-comment-rls.sql';
 
 describe('caller verification migration', () => {
   it('uses column-specific nullable references and deferrable ownership', () => {

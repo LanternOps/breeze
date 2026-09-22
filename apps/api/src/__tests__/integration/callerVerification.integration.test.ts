@@ -142,7 +142,7 @@ it('system context cannot forge composite ownership, including same-org other co
 it('replaying the backfill preserves existing epochs and never supplies attestation', async () => {
   const historical = new Date('2026-01-01T00:00:00Z');
   await sys(() => db.update(contacts).set({ email: 'legacy@example.com', mobile: '+15551234567', updatedAt: historical }).where(eq(contacts.id, ca2)));
-  const body = readFileSync(new URL('../../../migrations/2026-10-26-140200-caller-verification-destinations-backfill.sql', import.meta.url), 'utf8');
+  const body = readFileSync(new URL('../../../migrations/2026-10-26-170200-caller-verification-destinations-backfill.sql', import.meta.url), 'utf8');
   const block = body.slice(body.indexOf('DO $$'));
   await sys(() => db.execute(sql.raw(block)));
   const first = await sys(() => db.select().from(d).where(eq(d.contactId, ca2)));
