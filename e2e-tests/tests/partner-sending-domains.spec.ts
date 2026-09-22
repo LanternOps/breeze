@@ -72,8 +72,8 @@ test.describe('Partner sending domains', () => {
     });
 
     await test.step('3. The DNS records appear', async () => {
-      await expect(page.records()).toBeVisible({ timeout: 30_000 });
-      await page.recordCopy(0).click();
+      await expect(page.records(domainId)).toBeVisible({ timeout: 30_000 });
+      await page.recordCopy(domainId, 0).click();
     });
 
     await test.step('4. Check now drives it to verified', async () => {
@@ -153,12 +153,14 @@ test.describe('Partner sending domains', () => {
     await expect(page.retry(domainId)).toBeVisible();
     await expect(page.remove(domainId)).toBeVisible();
 
-    authedPage.once('dialog', (dialog) => void dialog.accept());
+    // Same modal as step 7 of the flow above: no native dialog ever fires, so
+    // the DELETE only goes out once the app's own confirm button is clicked.
+    await page.remove(domainId).click();
     await Promise.all([
       authedPage.waitForResponse(
         (r) => r.request().method() === 'DELETE' && new URL(r.url()).pathname.endsWith(`/${domainId}`),
       ),
-      page.remove(domainId).click(),
+      page.removeConfirm().click(),
     ]);
   });
 
