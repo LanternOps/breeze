@@ -34,7 +34,7 @@ vi.mock('../../db', () => ({
 // discoveredAssetTypeEnum: networkBaseline.ts (transitive import of the portal
 // route graph) reads its .enumValues at module load, so the full-module mock
 // must provide it or the suite fails to load.
-vi.mock('../../db/schema', () => ({ discoveredAssetTypeEnum: { enumValues: [] }, organizations: { id: 'id', partnerId: 'partnerId' }, portalUsers: { id: 'id', orgId: 'orgId', email: 'email', name: 'name', passwordHash: 'passwordHash', authMethod: 'authMethod', authEpoch: 'authEpoch', receiveNotifications: 'receiveNotifications', status: 'status' }, portalBranding: { orgId: 'orgId', enablePasswordReset: 'enablePasswordReset' } }));
+vi.mock('../../db/schema', () => ({ discoveredAssetTypeEnum: { enumValues: [] }, organizations: { id: 'id', partnerId: 'partnerId' }, partners: { id: 'id', name: 'name' }, portalUsers: { id: 'id', orgId: 'orgId', email: 'email', name: 'name', passwordHash: 'passwordHash', authMethod: 'authMethod', authEpoch: 'authEpoch', receiveNotifications: 'receiveNotifications', status: 'status' }, portalBranding: { orgId: 'orgId', enablePasswordReset: 'enablePasswordReset' } }));
 vi.mock('../../services/email', () => ({ getEmailService: () => ({ sendPasswordReset: sendPasswordResetSpy }) }));
 
 import { authRoutes } from './auth';

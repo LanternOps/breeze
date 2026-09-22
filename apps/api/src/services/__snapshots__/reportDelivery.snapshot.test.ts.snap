@@ -46,6 +46,7 @@ exports[`report email rendering is pinned before the reportDelivery extraction (
   </body>
 </html>",
   "partnerId": "55555555-5555-4555-8555-555555555555",
+  "partnerName": "Olive MSP",
   "purpose": "report.delivery",
   "subject": "Scheduled report ready: Nightly inventory",
   "text": "Your scheduled report "Nightly inventory" has been generated with 2 records.
@@ -103,6 +104,7 @@ exports[`report email rendering is pinned before the reportDelivery extraction (
   </body>
 </html>",
   "partnerId": "55555555-5555-4555-8555-555555555555",
+  "partnerName": "Olive MSP",
   "purpose": "report.delivery",
   "subject": "Scheduled report ready: Nightly inventory",
   "text": "Your scheduled report "Nightly inventory" has been generated with 2 records.
@@ -200,6 +202,7 @@ exports[`report email rendering is pinned before the reportDelivery extraction (
   </body>
 </html>",
   "partnerId": "55555555-5555-4555-8555-555555555555",
+  "partnerName": "Olive MSP",
   "purpose": "report.delivery",
   "subject": "Scheduled report ready: Nightly inventory",
   "text": "Your scheduled report "Nightly inventory" has been generated with 60000 records.
@@ -250,6 +253,7 @@ exports[`report email rendering is pinned before the reportDelivery extraction (
   </body>
 </html>",
   "partnerId": "55555555-5555-4555-8555-555555555555",
+  "partnerName": "Olive MSP",
   "purpose": "report.delivery",
   "subject": "Scheduled report ready: Nightly inventory",
   "text": "Your scheduled report "Nightly inventory" has been generated with 2 records.
@@ -305,6 +309,7 @@ exports[`report email rendering is pinned before the reportDelivery extraction (
   </body>
 </html>",
   "partnerId": "55555555-5555-4555-8555-555555555555",
+  "partnerName": "Olive MSP",
   "purpose": "report.delivery",
   "subject": "Scheduled report ready: Nightly inventory",
   "text": "Your scheduled report "Nightly inventory" has been generated with 2 records.

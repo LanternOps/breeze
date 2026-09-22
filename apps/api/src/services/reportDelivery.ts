@@ -165,6 +165,7 @@ export async function emailReportRun(opts: {
     // theirs. `null` still resolves to the platform sender (§8.1).
     purpose: 'report.delivery',
     partnerId: opts.partnerId,
+    partnerName: opts.partnerId ? opts.branding.name ?? null : null,
     subject: `Scheduled report ready: ${opts.reportName}`,
     html: renderLayout({
       title: 'Scheduled report',

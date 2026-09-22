@@ -1,7 +1,7 @@
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import InvoiceSendComposer from './InvoiceSendComposer';
+import InvoiceSendComposer, { invoiceEmailSubjectPreview } from './InvoiceSendComposer';
 import { fetchWithAuth } from '../../stores/auth';
 
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
@@ -19,6 +19,28 @@ beforeEach(() => {
   vi.mocked(fetchWithAuth).mockResolvedValue({
     ok: true, json: vi.fn().mockResolvedValue({ billingContact: { email: 'billing@example.test' } }),
   } as unknown as Response);
+});
+
+describe('invoiceEmailSubjectPreview', () => {
+  it('fills the saved subject with this invoice', () => {
+    expect(invoiceEmailSubjectPreview({
+      templateSubject: 'Please pay {{invoice_number}} from {{partner_name}}',
+      invoiceNumber: 'INV-2026-0002',
+      partnerName: 'CloudWise',
+      total: 'CA$90.00',
+      dueDate: 'Oct 17, 2026',
+    })).toBe('Please pay INV-2026-0002 from CloudWise');
+  });
+
+  it('uses the built-in subject when nothing is saved', () => {
+    expect(invoiceEmailSubjectPreview({
+      templateSubject: null,
+      invoiceNumber: 'INV-0007',
+      partnerName: 'Acme MSP',
+      total: '$100.00',
+      dueDate: 'Jun 30, 2026',
+    })).toBe('Invoice INV-0007 from Acme MSP');
+  });
 });
 
 describe('InvoiceSendComposer device appendix (#3205 W07)', () => {

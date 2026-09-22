@@ -777,7 +777,7 @@ async function deliverQuoteEmail(
       signature: partnerRow?.emailSignature ?? undefined,
       custom: partnerEmailCustomFromSettings(partnerRow?.settings, 'quote_send'),
     });
-    // MSP-branded envelope: display name "<Partner> via Breeze" on the
+    // MSP-branded envelope: display name is the company name on the
     // platform's own from-address (SPF/DKIM stays aligned — we never spoof
     // the MSP's domain), and replies go to the MSP's billing email so a
     // customer's "quick question" reply reaches the seller, not a no-reply box.
@@ -786,7 +786,7 @@ async function deliverQuoteEmail(
       to: recipients,
       cc: opts.cc && opts.cc.length > 0 ? opts.cc : undefined,
       // MSP-branded envelope: the registry's `partner_display_name` fallback
-      // renders "<Partner> via Breeze" on the platform's own from-address
+      // renders the company name on the platform's own from-address
       // (SPF/DKIM stays aligned — we never spoof the MSP's domain) until the
       // partner has a verified sending domain. Both values come from rows this
       // function already holds, never from request input (spec §8.1).

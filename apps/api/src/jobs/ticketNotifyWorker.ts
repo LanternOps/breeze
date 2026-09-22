@@ -87,7 +87,7 @@ interface EmailPayloadBase {
  */
 type EmailPayloadSender =
   | { purpose: 'ticket.staff_notification' }
-  | { purpose: 'ticket.customer_notification'; partnerId: string | null };
+  | { purpose: 'ticket.customer_notification'; partnerId: string | null; partnerName: string | null };
 
 type EmailPayload = EmailPayloadBase & EmailPayloadSender;
 
@@ -174,7 +174,7 @@ function asPartnerEmailCustom(raw: unknown): PartnerEmailCustom | null {
 async function composeLaidOutRequesterMail(
   ticket: TicketRow,
   id: 'ticket_comment_notification' | 'ticket_resolved',
-): Promise<{ html: string; subject: string; replyTo: string | undefined; fullMessageReply: boolean }> {
+): Promise<{ html: string; subject: string; replyTo: string | undefined; fullMessageReply: boolean; partnerName: string | null }> {
   let href = '';
   let hasPortalUser = false;
   try {
@@ -214,6 +214,7 @@ async function composeLaidOutRequesterMail(
     subject: rendered.subject,
     replyTo: partner.replyTo,
     fullMessageReply: partner.inbound?.fullMessageReply === true,
+    partnerName: partner.name.trim() || null,
   };
 }
 
@@ -362,7 +363,8 @@ async function collectRequesterEmail(
       html: composed.html,
       graphMailbox,
       purpose: 'ticket.customer_notification',
-      partnerId: ticket.partnerId ?? null
+      partnerId: ticket.partnerId ?? null,
+      partnerName: composed.partnerName,
     }];
   }
 
@@ -440,7 +442,8 @@ async function collectRequesterEmail(
     headers,
     graphMailbox,
     purpose: 'ticket.customer_notification',
-    partnerId: ticket.partnerId ?? null
+    partnerId: ticket.partnerId ?? null,
+    partnerName: composed.partnerName,
   }];
 }
 
@@ -524,6 +527,7 @@ async function collectAutoresponse(
     graphMailbox,
     purpose: 'ticket.customer_notification',
     partnerId: ticket.partnerId ?? null,
+    partnerName: partner.name.trim() || null,
   }];
 }
 
@@ -774,7 +778,8 @@ export async function handleTicketEvent(event: TicketEvent, jobId?: string): Pro
           replyTo: payload.replyTo,
           headers: payload.headers,
           purpose: 'ticket.customer_notification',
-          partnerId: payload.partnerId
+          partnerId: payload.partnerId,
+          partnerName: payload.partnerName,
         });
         return;
       }

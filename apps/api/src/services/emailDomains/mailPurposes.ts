@@ -30,11 +30,11 @@ export type MailPurposePolicy =
       lane: 'partner';
       stream: PartnerMailStream;
       /**
-       * The From used when no partner identity applies — which in W01 is
-       * ALWAYS. It preserves what each send site does TODAY:
+       * The From used when no partner sending identity applies.
        *   'default'              → the bare EMAIL_FROM.
-       *   'partner_display_name' → `"<Partner> via Breeze" <EMAIL_FROM address>`.
-       * Only quote.sent and invoice.sent, the two sites that do this now.
+       *   'partner_display_name' → `"<Partner name>" <EMAIL_FROM address>`.
+       * Every customer purpose uses the company name. Staff and security mail
+       * stays on the platform lane and is not listed here.
        */
       fallbackFrom: 'default' | 'partner_display_name';
     };
@@ -70,12 +70,12 @@ export const MAIL_PURPOSES = {
   'ticket.staff_notification': { lane: 'platform' },
 
   // ---- partner lane -------------------------------------------------------
-  'ticket.customer_notification': { lane: 'partner', stream: 'support', fallbackFrom: 'default' },
-  'portal.invite': { lane: 'partner', stream: 'support', fallbackFrom: 'default' },
-  'portal.password_reset': { lane: 'partner', stream: 'support', fallbackFrom: 'default' },
+  'ticket.customer_notification': { lane: 'partner', stream: 'support', fallbackFrom: 'partner_display_name' },
+  'portal.invite': { lane: 'partner', stream: 'support', fallbackFrom: 'partner_display_name' },
+  'portal.password_reset': { lane: 'partner', stream: 'support', fallbackFrom: 'partner_display_name' },
   'quote.sent': { lane: 'partner', stream: 'billing', fallbackFrom: 'partner_display_name' },
   'invoice.sent': { lane: 'partner', stream: 'billing', fallbackFrom: 'partner_display_name' },
-  'report.delivery': { lane: 'partner', stream: 'general', fallbackFrom: 'default' },
+  'report.delivery': { lane: 'partner', stream: 'general', fallbackFrom: 'partner_display_name' },
 } as const satisfies Record<string, MailPurposePolicy>;
 
 export type MailPurpose = keyof typeof MAIL_PURPOSES;

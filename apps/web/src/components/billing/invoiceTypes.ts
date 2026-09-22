@@ -45,6 +45,8 @@ export interface InvoiceSummary {
   siteId: string | null;
   status: InvoiceStatus;
   currencyCode: string;
+  /** Stamped when the invoice is issued. The email uses this for money glyphs. */
+  documentLocale?: string | null;
   issueDate: string | null;
   dueDate: string | null;
   sentAt: string | null;
