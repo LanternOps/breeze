@@ -78,8 +78,11 @@ describe('deleteDeviceGroup (real DB) #3205 W02', () => {
     expect(logs).toHaveLength(0);
   });
 
-  runDb('deletes a group targeted by config policy assignments and cleans up the assignment (#5855)', async () => {
+  runDb('deletes a group targeted by config policy assignments and cleans up the assignment, leaving other groups\' assignments untouched (#5855)', async () => {
     const f = await seed();
+    const [otherGroup] = await withSystemDbAccessContext(() =>
+      db.insert(deviceGroups).values({ orgId: f.orgId, name: 'Other', type: 'static' }).returning()
+    );
     const [policy] = await withSystemDbAccessContext(() =>
       db.insert(configurationPolicies).values({
         orgId: f.orgId,
@@ -87,12 +90,10 @@ describe('deleteDeviceGroup (real DB) #3205 W02', () => {
       }).returning({ id: configurationPolicies.id })
     );
     await withSystemDbAccessContext(() =>
-      db.insert(configPolicyAssignments).values({
-        configPolicyId: policy!.id,
-        level: 'device_group',
-        targetId: f.group.id,
-        priority: 0,
-      })
+      db.insert(configPolicyAssignments).values([
+        { configPolicyId: policy!.id, level: 'device_group', targetId: f.group.id, priority: 0 },
+        { configPolicyId: policy!.id, level: 'device_group', targetId: otherGroup!.id, priority: 0 },
+      ])
     );
 
     const res = await withSystemDbAccessContext(() => deleteDeviceGroup(f.group.id, f.orgId));
@@ -103,6 +104,12 @@ describe('deleteDeviceGroup (real DB) #3205 W02', () => {
       db.select().from(configPolicyAssignments).where(eq(configPolicyAssignments.targetId, f.group.id))
     );
     expect(assignments).toHaveLength(0);
+    // The delete's WHERE clause must scope by targetId, not just level='device_group' —
+    // a sibling group's assignment must survive.
+    const otherAssignments = await withSystemDbAccessContext(() =>
+      db.select().from(configPolicyAssignments).where(eq(configPolicyAssignments.targetId, otherGroup!.id))
+    );
+    expect(otherAssignments).toHaveLength(1);
   });
 
   runDb('refuses a group with children, and NOT_FOUND for a group in another org', async () => {
