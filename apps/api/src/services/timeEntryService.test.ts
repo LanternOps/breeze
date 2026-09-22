@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { inspect } from 'node:util';
 import { db } from '../db';
 import { createTimeEntrySchema, startTimerSchema, updateTimeEntrySchema } from '@breeze/shared';
@@ -17,6 +17,9 @@ const { dbMocks, emitMock, workTypeMocks, cardMocks } = vi.hoisted(() => {
     insertResultsQueue: [] as unknown[][],
     insertErrors: [] as unknown[],
     updateResult: [] as unknown[],
+    // Per-call update rejections (shifted before updateResult is resolved) —
+    // lets a test make one UPDATE ... RETURNING raise a postgres error.
+    updateErrors: [] as unknown[],
     insertedValues: [] as Record<string, unknown>[],
     updateSetArgs: [] as Record<string, unknown>[],
     whereArgs: [] as unknown[],
@@ -110,7 +113,11 @@ vi.mock('../db', () => ({
     update: vi.fn(() => ({
       set: vi.fn((vals: Record<string, unknown>) => {
         dbMocks.updateSetArgs.push(vals);
-        return { where: vi.fn(() => ({ returning: vi.fn(() => Promise.resolve(dbMocks.updateResult)) })) };
+        return { where: vi.fn(() => ({ returning: vi.fn(() => {
+          const err = dbMocks.updateErrors.shift();
+          if (err) return Promise.reject(err);
+          return Promise.resolve(dbMocks.updateResult);
+        }) })) };
       })
     })),
     delete: vi.fn(() => ({
@@ -206,6 +213,7 @@ beforeEach(() => {
   dbMocks.insertedValues.length = 0;
   dbMocks.updateSetArgs.length = 0;
   dbMocks.insertErrors.length = 0;
+  dbMocks.updateErrors.length = 0;
   dbMocks.insertResultsQueue.length = 0;
   dbMocks.whereArgs.length = 0;
   dbMocks.insertResult = [];
@@ -2591,5 +2599,92 @@ describe('money readers read COALESCE(billable_minutes, duration_minutes) (#4628
     // duration_minutes) rule the money loop already uses — not 10 + 40 = 50.
     expect(sheet.totals.billableMinutes).toBe(75);
     expect(sheet.days[1]!.billableMinutes).toBe(75);
+  });
+});
+
+describe('billable_minutes CHECK drift is a typed refusal, not an opaque 500 (#6463)', () => {
+  const span = { startedAt: new Date('2026-03-03T09:00:00Z'), endedAt: new Date('2026-03-03T09:20:00Z') };
+  const tech = { ...ACTOR, manageBilling: false };
+  const card = { id: 'profile-1', currencyCode: 'USD', baseCoverage: 'billable', baseHourlyRate: '225.00',
+    baseMinimumMinutes: 60, roundingIncrementMinutes: 15, rules: [] };
+  const entry = { id: 'te-1', partnerId: 'p-1', orgId: 'o-1', ticketId: 't-1', userId: ACTOR.userId,
+    startedAt: span.startedAt, endedAt: null, durationMinutes: null, isApproved: false,
+    currencyCode: 'USD', workTypeId: null, billingProfileId: 'profile-1', coverage: 'billable',
+    isBillable: true, hourlyRate: '225.00', minimumMinutes: 60, roundingIncrementMinutes: 15,
+    billingStatus: 'not_billed', billingOverridden: false };
+
+  /** The shape postgres.js raises for a CHECK violation. */
+  const checkViolation = (constraint: string) => Object.assign(
+    new Error(`new row for relation "time_entries" violates check constraint "${constraint}"`),
+    { code: '23514', constraint_name: constraint },
+  );
+  const DRIFT = 'time_entries_billable_minutes_chk';
+
+  const seedLink = (ticketId = 't-1', orgId = 'o-1') => {
+    dbMocks.selectResults.push(
+      [{ id: ticketId, partnerId: 'p-1', orgId, categoryId: 'cat-1' }],
+      [{ partnerId: 'p-1', currencyCode: 'USD' }],
+      [{ defaultWorkTypeId: null, defaultWorkTypeIsActive: false }],
+      [{ currencyCode: 'USD' }], [{ id: ticketId, orgId }],
+    );
+  };
+
+  let errorSpy: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    cardMocks.loadCardsForOrg.mockResolvedValue({ assignedCard: card, partnerDefaultCard: null });
+    errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+  afterEach(() => { errorSpy.mockRestore(); });
+
+  it('createTimeEntry maps the drift to BILLABLE_MINUTES_DRIFT instead of leaking the raw 23514', async () => {
+    seedLink();
+    dbMocks.insertErrors.push(checkViolation(DRIFT));
+    await expect(createTimeEntry({ ticketId: 't-1', ...span }, tech))
+      .rejects.toMatchObject({ code: 'BILLABLE_MINUTES_DRIFT', status: 422 });
+  });
+
+  it('logs the entry context so the drift is diagnosable, not a bare postgres error in Sentry', async () => {
+    seedLink();
+    dbMocks.insertErrors.push(checkViolation(DRIFT));
+    await expect(createTimeEntry({ ticketId: 't-1', ...span }, tech)).rejects.toThrow();
+    expect(errorSpy).toHaveBeenCalled();
+    const logged = JSON.stringify(errorSpy.mock.calls);
+    expect(logged).toContain('BILLABLE_MINUTES_DRIFT');
+    // The three inputs the two representations disagree about.
+    expect(logged).toContain('durationMinutes');
+    expect(logged).toContain('minimumMinutes');
+    expect(logged).toContain('roundingIncrementMinutes');
+  });
+
+  it("stopTimer's CAS surfaces the drift with a message saying the stop was not recorded", async () => {
+    dbMocks.updateErrors.push(checkViolation(DRIFT));
+    await expect(stopTimer({}, tech)).rejects.toMatchObject({
+      code: 'BILLABLE_MINUTES_DRIFT',
+      status: 422,
+      message: expect.stringContaining('not'),
+    });
+  });
+
+  it('updateTimeEntry (mobile stop replay) surfaces the drift the same way', async () => {
+    dbMocks.selectResults.push([entry]);
+    dbMocks.updateErrors.push(checkViolation(DRIFT));
+    await expect(updateTimeEntry('te-1', { endedAt: span.endedAt }, tech))
+      .rejects.toMatchObject({ code: 'BILLABLE_MINUTES_DRIFT', status: 422 });
+  });
+
+  it('a 23514 on a DIFFERENT constraint is left alone — only the billable-minutes check is claimed', async () => {
+    dbMocks.selectResults.push([entry]);
+    dbMocks.updateErrors.push(checkViolation('time_entries_currency_required_when_org_chk'));
+    await expect(updateTimeEntry('te-1', { endedAt: span.endedAt }, tech))
+      .rejects.toMatchObject({ code: '23514', constraint_name: 'time_entries_currency_required_when_org_chk' });
+  });
+
+  it('the refusal is a 4xx so a mobile replay parks it instead of retrying a deterministic failure forever', async () => {
+    // apps/mobile/src/services/timeEntryQueue.ts PERMANENT_STATUSES = {400,404,409,422}.
+    // A 500 here would be read as transient and wedge every write queued behind it.
+    dbMocks.selectResults.push([entry]);
+    dbMocks.updateErrors.push(checkViolation(DRIFT));
+    const err = await updateTimeEntry('te-1', { endedAt: span.endedAt }, tech).catch((e) => e);
+    expect([400, 404, 409, 422]).toContain(err.status);
   });
 });

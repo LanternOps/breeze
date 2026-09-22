@@ -6,7 +6,8 @@ import { emitTimeEntryEvent } from './timeEntryEvents';
 import { loadCardsForOrg } from './billingProfileService';
 import { resolveBillingRule, type BillingRule } from './billingRuleResolver';
 import { getActiveWorkType } from './workTypeService';
-import { computeBillableMinutes, billableMinutesSql } from './billableMinutes';
+import { computeBillableMinutes, billableMinutesSql, BILLABLE_MINUTES_CHECK_NAME } from './billableMinutes';
+import { pgErrorCode, pgErrorConstraint } from '../utils/pgErrors';
 import { readOrgStampingDefaults } from './orgCurrencyCore';
 import { isMissingRateGap } from './invoiceAssembly';
 import { CURRENCY_CODES, isZeroDecimal, isRepresentableInCurrency, minorUnitExponent, roundToCurrency, multiplyToCurrency, toMinorUnits, fromMinorUnits } from '@breeze/shared';
@@ -59,6 +60,15 @@ export type TimeEntryServiceErrorCode =
   | 'PART_UPDATE_LOST'
   /** 409 — DELETE ... RETURNING matched zero rows (part re-pointed between the lock-read and the delete). */
   | 'PART_DELETE_LOST';
+  /**
+   * 422 — `time_entries_billable_minutes_chk` rejected the write (#6463): the
+   * TypeScript `computeBillableMinutes()` and the SQL `billableMinutesSql()`
+   * disagree about this row's billed quantity. A server-side defect, not the
+   * caller's payload — but it is deterministic for the offending row, so it is
+   * reported as a verdict rather than a retryable fault (see
+   * {@link refuseBillableMinutesDrift}).
+   */
+  | 'BILLABLE_MINUTES_DRIFT';
 
 export class TimeEntryServiceError extends Error {
   constructor(
@@ -68,6 +78,64 @@ export class TimeEntryServiceError extends Error {
   ) {
     super(message);
     this.name = 'TimeEntryServiceError';
+  }
+}
+
+/**
+ * #6463 — the missing half of the #4628 W03 contract.
+ *
+ * W03's premise is that a disagreement between `computeBillableMinutes()` (TS)
+ * and `billableMinutesSql()` (SQL) becomes a `23514` on
+ * `time_entries_billable_minutes_chk` rather than a wrong invoice. That was
+ * honoured at the database and nowhere above it: `handleServiceError` rethrows
+ * anything that is not a `TimeEntryServiceError`, so the violation escaped as a
+ * bare postgres error — no log, no code, and nothing telling the technician
+ * their stop did not land while the timer kept running.
+ *
+ * Wraps a statement that writes `billable_minutes` and converts ONLY that
+ * constraint's 23514 into a typed refusal. Every other error (including a
+ * 23514 from a different CHECK on the same table) propagates untouched.
+ *
+ * Status is 422, deliberately, and not the 500 this class of defect would
+ * usually earn. The drift is deterministic for the offending row, and
+ * `apps/mobile/src/services/timeEntryQueue.ts` parks only
+ * `PERMANENT_STATUSES = {400, 404, 409, 422}` in needs-attention — a 5xx is
+ * read as transient and retried forever, wedging every write queued behind it
+ * and losing far more billable work than the one row. 422 surfaces the reason
+ * to the technician and stops the replay loop; the `console.error` below is
+ * what pages us.
+ *
+ * The CHECK is IMMEDIATE (see the 2026-10-24-210000 migration), so the error is
+ * raised by the offending statement itself rather than substituted at COMMIT.
+ */
+async function refuseBillableMinutesDrift<T>(
+  context: {
+    op: 'createTimeEntry' | 'stopRunningEntry' | 'updateTimeEntry';
+    entryId: string | null;
+    durationMinutes: number | 'computed-in-sql' | null;
+    minimumMinutes: number | null;
+    roundingIncrementMinutes: number | null;
+  },
+  write: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await write();
+  } catch (err) {
+    if (pgErrorCode(err) !== '23514' || pgErrorConstraint(err) !== BILLABLE_MINUTES_CHECK_NAME) throw err;
+    console.error('[timeEntryService] BILLABLE_MINUTES_DRIFT', {
+      constraint: BILLABLE_MINUTES_CHECK_NAME,
+      op: context.op,
+      entryId: context.entryId,
+      durationMinutes: context.durationMinutes,
+      minimumMinutes: context.minimumMinutes,
+      roundingIncrementMinutes: context.roundingIncrementMinutes,
+    });
+    throw new TimeEntryServiceError(
+      'The billed-minutes calculation disagrees with the database, so this time entry was not recorded. '
+      + 'Your work is not saved — report this to support.',
+      422,
+      'BILLABLE_MINUTES_DRIFT',
+    );
   }
 }
 
@@ -586,7 +654,13 @@ export async function createTimeEntry(
   const stamp = applyBillingInput(billing, input, actor);
   assertRepresentable(stamp.hourlyRate, currencyCode);
 
-  const rows = await db
+  const rows = await refuseBillableMinutesDrift({
+    op: 'createTimeEntry',
+    entryId: null,
+    durationMinutes: computeDurationMinutes(input.startedAt, input.endedAt),
+    minimumMinutes: stamp.minimumMinutes ?? null,
+    roundingIncrementMinutes: stamp.roundingIncrementMinutes ?? null,
+  }, () => db
     .insert(timeEntries)
     .values({
       partnerId,
@@ -611,7 +685,7 @@ export async function createTimeEntry(
       // W06 (#3900): server-stamped provenance; no public schema accepts it.
       source: provenance.source
     })
-    .returning();
+    .returning());
   const entry = rows[0]!;
   recordAuditMutation(actor, 'time_entry.created', entry);
 
@@ -683,7 +757,15 @@ async function stopRunningEntry(
   // rewrites the terms must hand billableMinutesSql the NEW ones — SET reads
   // the old row, the CHECK validates the new one.
   const durationExpr = sql`FLOOR(EXTRACT(EPOCH FROM (${now.toISOString()}::timestamp - ${timeEntries.startedAt})) / 60)::int`;
-  const rows = await db
+  const rows = await refuseBillableMinutesDrift({
+    op: 'stopRunningEntry',
+    entryId: entryId ?? null,
+    // Computed by the statement itself (see durationExpr above), so the service
+    // never holds the value the CHECK disagreed about.
+    durationMinutes: 'computed-in-sql',
+    minimumMinutes: billingOverride?.minimumMinutes ?? null,
+    roundingIncrementMinutes: billingOverride?.roundingIncrementMinutes ?? null,
+  }, () => db
     .update(timeEntries)
     .set({
       endedAt: now,
@@ -701,7 +783,7 @@ async function stopRunningEntry(
     })
     .where(and(eq(timeEntries.userId, actor.userId), isNull(timeEntries.endedAt),
       entryId ? eq(timeEntries.id, entryId) : undefined))
-    .returning();
+    .returning());
   return rows[0] ?? null;
 }
 
@@ -1003,7 +1085,14 @@ export async function updateTimeEntry(id: string, input: UpdateTimeEntryInput, a
   set.approvedBy = null;
   set.approvedAt = null;
 
-  const rows = await db.update(timeEntries).set(set).where(eq(timeEntries.id, id)).returning();
+  const rows = await refuseBillableMinutesDrift({
+    op: 'updateTimeEntry',
+    entryId: id,
+    durationMinutes: (set.durationMinutes as number | undefined) ?? entry.durationMinutes ?? null,
+    minimumMinutes: (set.minimumMinutes as number | null | undefined) ?? entry.minimumMinutes ?? null,
+    roundingIncrementMinutes:
+      (set.roundingIncrementMinutes as number | null | undefined) ?? entry.roundingIncrementMinutes ?? null,
+  }, () => db.update(timeEntries).set(set).where(eq(timeEntries.id, id)).returning());
   const mutated = rows[0];
   if (!mutated) {
     // The row existed at the top of this call (getEntryOr404) but the UPDATE
