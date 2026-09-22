@@ -3,7 +3,7 @@ import { inspect } from 'node:util';
 import { db } from '../db';
 import { createTimeEntrySchema, startTimerSchema, updateTimeEntrySchema } from '@breeze/shared';
 
-const { dbMocks, emitMock, workTypeMocks, cardMocks } = vi.hoisted(() => {
+const { dbMocks, emitMock, workTypeMocks, cardMocks, sentryMocks } = vi.hoisted(() => {
   const dbMocks = {
     // queue of results for successive db.select()...where()/limit() terminals
     selectResults: [] as unknown[][],
@@ -35,12 +35,18 @@ const { dbMocks, emitMock, workTypeMocks, cardMocks } = vi.hoisted(() => {
       async (id: string) => ({ id, partnerId: 'p-1', name: 'Remote', isActive: true }),
     ),
   };
-  return { dbMocks, emitMock: vi.fn(), workTypeMocks, cardMocks: { loadCardsForOrg: vi.fn() } };
+  return { dbMocks, emitMock: vi.fn(), workTypeMocks, cardMocks: { loadCardsForOrg: vi.fn() },
+    sentryMocks: { captureException: vi.fn() } };
 });
 
 vi.mock('./billingProfileService', () => ({ loadCardsForOrg: cardMocks.loadCardsForOrg }));
 
 vi.mock('./timeEntryEvents', () => ({ emitTimeEntryEvent: emitMock }));
+
+// #6463: the drift guard REPORTS through captureException (handleServiceError
+// answers the request, so app.onError never sees the error). Mocked so the
+// report is assertable; the real one is a no-op without a DSN.
+vi.mock('./sentry', () => ({ captureException: sentryMocks.captureException }));
 
 // Work-type existence is a PRE-WRITE gate (see getActiveWorkType): validating
 // it through the real service would consume the shared db-mock select queue and
@@ -2614,10 +2620,12 @@ describe('billable_minutes CHECK drift is a typed refusal, not an opaque 500 (#6
     billingStatus: 'not_billed', billingOverridden: false };
 
   /** The shape postgres.js raises for a CHECK violation. */
-  const checkViolation = (constraint: string) => Object.assign(
+  /** The most recent error `checkViolation` handed the db mock. */
+  let thrown: Error;
+  const checkViolation = (constraint: string) => (thrown = Object.assign(
     new Error(`new row for relation "time_entries" violates check constraint "${constraint}"`),
     { code: '23514', constraint_name: constraint },
-  );
+  ));
   const DRIFT = 'time_entries_billable_minutes_chk';
 
   const seedLink = (ticketId = 't-1', orgId = 'o-1') => {
@@ -2633,6 +2641,7 @@ describe('billable_minutes CHECK drift is a typed refusal, not an opaque 500 (#6
   beforeEach(() => {
     cardMocks.loadCardsForOrg.mockResolvedValue({ assignedCard: card, partnerDefaultCard: null });
     errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    sentryMocks.captureException.mockClear();
   });
   afterEach(() => { errorSpy.mockRestore(); });
 
@@ -2654,6 +2663,45 @@ describe('billable_minutes CHECK drift is a typed refusal, not an opaque 500 (#6
     expect(logged).toContain('durationMinutes');
     expect(logged).toContain('minimumMinutes');
     expect(logged).toContain('roundingIncrementMinutes');
+    // Tenant + actor identity: the first triage question on a multi-tenant drift.
+    expect(logged).toContain(tech.userId);
+    // The ORIGINAL error travels with the log — postgres's own message for a
+    // CHECK on a computed expression is the most useful fact available.
+    expect(errorSpy.mock.calls[0]).toContain(thrown);
+  });
+
+  it('REPORTS the drift to Sentry — handleServiceError answers the request, so app.onError never sees it', async () => {
+    // Sentry.init installs no captureConsoleIntegration (services/sentry.ts),
+    // and handleServiceError returns c.json(...) instead of rethrowing. Without
+    // this call a real TS/SQL drift pages nobody.
+    seedLink();
+    dbMocks.insertErrors.push(checkViolation(DRIFT));
+    await expect(createTimeEntry({ ticketId: 't-1', ...span }, tech)).rejects.toThrow();
+    expect(sentryMocks.captureException).toHaveBeenCalledTimes(1);
+    const [reported, , tags] = sentryMocks.captureException.mock.calls[0]!;
+    expect(reported).toBe(thrown);
+    expect(tags).toMatchObject({
+      service: 'timeEntryService',
+      code: 'BILLABLE_MINUTES_DRIFT',
+      op: 'createTimeEntry',
+      userId: tech.userId,
+    });
+  });
+
+  it('does NOT report a 23514 from a different constraint to Sentry', async () => {
+    dbMocks.selectResults.push([entry]);
+    dbMocks.updateErrors.push(checkViolation('time_entries_currency_required_when_org_chk'));
+    await expect(updateTimeEntry('te-1', { endedAt: span.endedAt }, tech)).rejects.toThrow();
+    expect(sentryMocks.captureException).not.toHaveBeenCalled();
+  });
+
+  it('tells an updateTimeEntry caller the ENTRY survived — only this edit was refused', async () => {
+    // create/stop lose the whole entry; an edit of an already-persisted row does
+    // not, and a technician reads the message literally during an escalation.
+    dbMocks.selectResults.push([entry]);
+    dbMocks.updateErrors.push(checkViolation(DRIFT));
+    const err = await updateTimeEntry('te-1', { endedAt: span.endedAt }, tech).catch((e) => e);
+    expect(err.message).toContain('entry itself is unchanged');
   });
 
   it("stopTimer's CAS surfaces the drift with a message saying the stop was not recorded", async () => {
@@ -2685,6 +2733,7 @@ describe('billable_minutes CHECK drift is a typed refusal, not an opaque 500 (#6
     dbMocks.selectResults.push([entry]);
     dbMocks.updateErrors.push(checkViolation(DRIFT));
     const err = await updateTimeEntry('te-1', { endedAt: span.endedAt }, tech).catch((e) => e);
+    expect(err.status).toBe(422);
     expect([400, 404, 409, 422]).toContain(err.status);
   });
 });
