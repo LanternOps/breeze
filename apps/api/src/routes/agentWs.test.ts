@@ -5479,3 +5479,52 @@ describe('cleanup supplemental command results', () => {
     } finally { handler.mockRestore(); }
   });
 });
+
+// #6607: `markOnline` was the only DB call in onOpen without a try/catch. A
+// Postgres stall (DbAccessContextPrologueTimeoutError) therefore rejected
+// onOpen itself — the WS adapter drops that promise, so it surfaced as a
+// process-level unhandled rejection while the socket stayed open, the device
+// stayed 'offline', and NONE of the post-open side effects (device.online
+// publish, welcome frame, ping loop) ever ran.
+describe('#6607 — onOpen survives a markOnline DB failure', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(withDbAccessContext).mockImplementation((async (_ctx: any, fn: any) => fn()) as never);
+  });
+
+  afterEach(() => {
+    disconnectAgent('agent-6607');
+    vi.mocked(withDbAccessContext).mockImplementation((async (_ctx: any, fn: any) => fn()) as never);
+  });
+
+  it('resolves, keeps the socket registered, and still runs the post-open side effects', async () => {
+    const markOnlineFailure = new Error(
+      'RLS GUC prologue for withDbAccessContext(agentWs.onOpen.markOnline) did not complete within 15000ms',
+    );
+    vi.mocked(withDbAccessContext).mockImplementation((async (ctx: any, fn: any) => {
+      if (ctx?.label === 'agentWs.onOpen.markOnline') throw markOnlineFailure;
+      return fn();
+    }) as never);
+    vi.mocked(db.update).mockReturnValue(updateResult() as never);
+    vi.mocked(db.select).mockReturnValue(selectAgentDevice([]) as never);
+
+    const handlers = createAgentWsHandlers('agent-6607', {
+      deviceId: 'device-6607', orgId: 'org-6607', partnerId: 'partner-6607',
+    });
+    const ws = wsMock();
+
+    // The bug: this rejected instead of resolving.
+    await expect(handlers.onOpen({}, ws as never)).resolves.toBeUndefined();
+
+    // The socket is live and usable: registered, welcomed, not closed.
+    expect(isAgentConnected('agent-6607')).toBe(true);
+    expect(ws.close).not.toHaveBeenCalled();
+    const welcome = vi.mocked(ws.send).mock.calls
+      .map(call => JSON.parse(call[0] as string))
+      .find(frame => frame.type === 'connected');
+    expect(welcome).toBeDefined();
+
+    // The failure is reported, not swallowed.
+    expect(captureException).toHaveBeenCalledWith(markOnlineFailure);
+  });
+});

@@ -2576,9 +2576,26 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
       // HTTP heartbeat claim (the agent heartbeats immediately on startup)
       // and executeCommand's direct per-command push while the socket is
       // live.
-      await runWithAgentDbAccess('agentWs.onOpen.markOnline', async () => {
-        await updateDeviceStatus(agentId, 'online');
-      });
+      //
+      // #6607: this MUST NOT be allowed to reject. It is the first DB call in
+      // onOpen, and the WS adapter drops the promise onOpen returns — an
+      // unguarded rejection (observed: a `DbAccessContextPrologueTimeoutError`
+      // during a 21-second Postgres stall) escaped as a process-level
+      // unhandled rejection AND skipped every side effect below: the device
+      // stayed 'offline' in the DB, no device.online event was published, and
+      // the agent never got a welcome frame or the ping loop on a socket that
+      // was nonetheless open and serving messages. Log, report, and continue:
+      // the HTTP heartbeat marks the device online within seconds, so this is
+      // self-healing, and the stall is the DB's problem — not the agent's, so
+      // the socket stays up.
+      try {
+        await runWithAgentDbAccess('agentWs.onOpen.markOnline', async () => {
+          await updateDeviceStatus(agentId, 'online');
+        });
+      } catch (err) {
+        console.error(`[AgentWs] agentWs.onOpen.markOnline failed for agent ${agentId}; heartbeat will correct status:`, err);
+        captureException(err instanceof Error ? err : new Error(String(err)));
+      }
 
       // Publish device.online event for real-time UI updates
       if (agentDb) {
