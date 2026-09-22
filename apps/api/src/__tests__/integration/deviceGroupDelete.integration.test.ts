@@ -83,7 +83,6 @@ describe('deleteDeviceGroup (real DB) #3205 W02', () => {
     const [policy] = await withSystemDbAccessContext(() =>
       db.insert(configurationPolicies).values({
         orgId: f.orgId,
-        partnerId: f.partnerId,
         name: `Policy ${Math.random().toString(36).slice(2, 8)}`,
       }).returning({ id: configurationPolicies.id })
     );
