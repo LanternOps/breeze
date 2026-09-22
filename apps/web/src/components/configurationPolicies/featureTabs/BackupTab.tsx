@@ -1228,6 +1228,17 @@ export default function BackupTab({
   const retentionInfo = retentionPresets.find(
     (p) => p.value === settings.retentionPreset,
   );
+  // #5400: retentionDays is a floor -- computeExpiresAt (apps/api) takes the
+  // max of retentionDays and the matching GFS tier window, so a keepDaily
+  // shorter than the configured retention never shortens the snapshot's
+  // actual lifetime. Surface that here so the operator isn't surprised by
+  // which number wins.
+  const effectiveRetentionDays =
+    settings.retentionPreset === "custom"
+      ? settings.retentionDays
+      : (retentionInfo?.days ?? settings.retentionDays);
+  const gfsDailyBelowRetentionFloor =
+    settings.gfsDailyRetention < effectiveRetentionDays;
   const selectedConfigSupportsProvider =
     supportsProviderImmutability(selectedConfig);
   const invalidSavedProviderMode =
@@ -2283,6 +2294,17 @@ export default function BackupTab({
                       </select>
                     </div>
                   </div>
+                  {gfsDailyBelowRetentionFloor && (
+                    <div className="mt-3 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-800">
+                      {i18n.t(
+                        "policies:configurationPolicies.featureTabs.backupTab.dailyRetentionBelowFloor",
+                        {
+                          gfsDays: settings.gfsDailyRetention,
+                          effectiveDays: effectiveRetentionDays,
+                        },
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 <div>

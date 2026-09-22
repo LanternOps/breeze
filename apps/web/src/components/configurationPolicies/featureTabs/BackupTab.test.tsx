@@ -139,6 +139,48 @@ describe('BackupTab', () => {
     expect(providerOption.disabled).toBe(true);
   });
 
+  it('warns when GFS daily retention is shorter than the configured retention floor (#5400)', async () => {
+    render(
+      <BackupTab
+        policyId="policy-1"
+        existingLink={baseLink}
+        linkedPolicyId={null}
+        onLinkChanged={vi.fn()}
+      />
+    );
+
+    await screen.findByText(/Primary S3/i);
+    fireEvent.click(screen.getByRole('button', { name: /Advanced retention & timing/i }));
+
+    // baseLink: keepDaily: 7, preset 'standard' -> 30-day floor. 7 < 30, so
+    // the effective retention is 30 days, not 7 -- warn instead of silently
+    // shortening snapshot lifetime.
+    await screen.findByText(/7 days.*30-day retention floor/i);
+    screen.getByText(/kept for 30 days/i);
+  });
+
+  it('does not warn when GFS daily retention already meets the retention floor', async () => {
+    render(
+      <BackupTab
+        policyId="policy-1"
+        existingLink={{
+          ...baseLink,
+          inlineSettings: {
+            ...baseLink.inlineSettings,
+            retention: { ...baseLink.inlineSettings.retention, keepDaily: 30 },
+          },
+        }}
+        linkedPolicyId={null}
+        onLinkChanged={vi.fn()}
+      />
+    );
+
+    await screen.findByText(/Primary S3/i);
+    fireEvent.click(screen.getByRole('button', { name: /Advanced retention & timing/i }));
+
+    expect(screen.queryByText(/retention floor/i)).not.toBeInTheDocument();
+  });
+
   it('enables provider immutability after a successful capability retest', async () => {
     render(
       <BackupTab

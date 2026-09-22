@@ -631,8 +631,13 @@ export function computeExpiresAt(
     maxDays = Math.max(maxDays, gfsConfig.yearly * 365);
   }
 
-  if (maxDays === 0 && gfsConfig.retentionDays) {
-    maxDays = gfsConfig.retentionDays;
+  // #5400: retentionDays is a FLOOR, not a fallback used only when no GFS
+  // tier matched. A shorter matching GFS tier (e.g. keepDaily: 7) must never
+  // shorten the configured retentionDays (e.g. 14) -- take the maximum of
+  // the two windows. Decision (2026-09-22): GFS may keep a snapshot LONGER
+  // than retentionDays, never shorter.
+  if (gfsConfig.retentionDays) {
+    maxDays = Math.max(maxDays, gfsConfig.retentionDays);
   }
 
   if (maxDays === 0) return null;

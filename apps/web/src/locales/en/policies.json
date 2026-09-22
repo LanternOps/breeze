@@ -442,6 +442,7 @@
         "maxVersions": "Max Versions",
         "gFSRetention": "GFS Retention",
         "keepLongerRunningRestorePointsForGrandfather": "Keep longer-running restore points for grandfather-father-son retention.",
+        "dailyRetentionBelowFloor": "Daily retention is set to {{gfsDays}} days, shorter than the {{effectiveDays}}-day retention floor. Snapshots will still be kept for {{effectiveDays}} days -- retention never shortens below the floor.",
         "daily2": "Daily",
         "weekly2": "Weekly",
         "monthly2": "Monthly",

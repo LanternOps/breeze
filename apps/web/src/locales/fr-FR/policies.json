@@ -442,6 +442,7 @@
         "maxVersions": "Nombre maximal de versions",
         "gFSRetention": "Rétention GFS",
         "keepLongerRunningRestorePointsForGrandfather": "Conservez des points de restauration plus longs pour la rétention grand-père-fils.",
+        "dailyRetentionBelowFloor": "La rétention quotidienne est définie sur {{gfsDays}} jours, ce qui est inférieur au plancher de rétention de {{effectiveDays}} jours. Les instantanés seront tout de même conservés pendant {{effectiveDays}} jours -- la rétention ne descend jamais sous le plancher.",
         "daily2": "Quotidien",
         "weekly2": "Hebdomadaire",
         "monthly2": "Mensuelle",

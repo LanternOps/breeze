@@ -442,6 +442,7 @@
         "maxVersions": "Max-Versionen",
         "gFSRetention": "GFS-Aufbewahrung",
         "keepLongerRunningRestorePointsForGrandfather": "Wiederherstellungspunkte für die Großvater-Vater-Sohn-Aufbewahrung länger aufbewahren.",
+        "dailyRetentionBelowFloor": "Die tägliche Aufbewahrung ist auf {{gfsDays}} Tage eingestellt, kürzer als die Aufbewahrungsuntergrenze von {{effectiveDays}} Tagen. Snapshots werden weiterhin {{effectiveDays}} Tage aufbewahrt -- die Aufbewahrung unterschreitet nie die Untergrenze.",
         "daily2": "Täglich",
         "weekly2": "Wöchentlich",
         "monthly2": "Monatlich",

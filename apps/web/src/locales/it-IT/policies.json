@@ -442,6 +442,7 @@
         "maxVersions": "Versioni massime",
         "gFSRetention": "Conservazione GFS",
         "keepLongerRunningRestorePointsForGrandfather": "Mantieni punti di ripristino a lungo termine per la conservazione nonno-padre-figlio.",
+        "dailyRetentionBelowFloor": "La conservazione giornaliera è impostata su {{gfsDays}} giorni, inferiore al limite minimo di conservazione di {{effectiveDays}} giorni. Gli snapshot verranno comunque conservati per {{effectiveDays}} giorni -- la conservazione non scende mai sotto il minimo.",
         "daily2": "Giornaliero",
         "weekly2": "Settimanale",
         "monthly2": "Mensile",
