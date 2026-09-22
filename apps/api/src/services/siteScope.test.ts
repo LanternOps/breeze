@@ -45,13 +45,18 @@ import {
   intersectSiteScopes,
   isSiteScopeSubset,
   normalizeSiteIds,
+  partnerWideScope,
   portalUserReportAuthority,
   persistedSiteScopeValues,
   persistedSystemSiteScopeValues,
   systemReportAuthority,
   reportDefinitionMultiOrgScopeSqlPredicate,
   reportDefinitionScopeSqlPredicate,
+  reportOwnerOf,
+  reportRunMultiOrgScopeSqlPredicate,
+  resolveLivePartnerReportAuthority,
   resolveLiveReportAuthority,
+  resolveRequestPartnerReportAuthority,
   resolveRequestReportAuthority,
   resolveRequestReportAuthorityMap,
   siteScopeFingerprint,
@@ -2067,5 +2072,392 @@ describe('live report authority resolution', () => {
       ok: false,
       reason: 'permission_removed',
     });
+  });
+});
+
+describe('partner-wide execution scope (#3198 W01)', () => {
+  const partnerId = '11111111-1111-4111-8111-111111111111';
+  const orgId = '22222222-2222-4222-8222-222222222222';
+  const userId = '33333333-3333-4333-8333-333333333333';
+  const PARTNER_ROLE = '88888888-8888-4888-8888-888888888888';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    liveDbState.rows.length = 0;
+    liveDbState.projections.length = 0;
+    liveDbState.fromTables.length = 0;
+    liveDbState.whereConditions.length = 0;
+  });
+
+  function queueRows(...rows: Array<unknown[] | Error>) {
+    liveDbState.rows.push(...rows);
+  }
+
+  function partnerUser(overrides: Record<string, unknown> = {}) {
+    return {
+      id: userId,
+      status: 'active',
+      isPlatformAdmin: false,
+      partnerId,
+      ...overrides,
+    };
+  }
+
+  function partnerReportsGrant(action: ReportAction = 'read') {
+    return {
+      resource: 'reports',
+      action,
+      roleScope: 'partner',
+      roleIsSystem: false,
+      roleOrgId: null,
+      rolePartnerId: partnerId,
+    };
+  }
+
+  function partnerAuth(overrides: Record<string, unknown> = {}) {
+    return {
+      user: {
+        id: userId,
+        email: 'partner.admin@example.com',
+        name: 'Partner Admin',
+        isPlatformAdmin: false,
+      },
+      token: {},
+      partnerId,
+      orgId: null,
+      scope: 'partner',
+      partnerOrgAccess: 'all',
+      accessibleOrgIds: [orgId],
+      orgCondition: vi.fn(),
+      canAccessOrg: () => true,
+      ...overrides,
+    } as any;
+  }
+
+  it('fingerprints partner_wide over {version, kind, partnerId} only', () => {
+    const a = siteScopeFingerprint({ version: 1, kind: 'partner_wide', partnerId });
+    const b = siteScopeFingerprint(partnerWideScope(partnerId));
+    expect(a).toBe(b);
+    expect(a).toMatch(/^[a-f0-9]{64}$/);
+    expect(a).not.toBe(siteScopeFingerprint({ version: 1, kind: 'unrestricted', orgId: partnerId }));
+    // The partner id is the only variable input.
+    expect(a).not.toBe(siteScopeFingerprint(partnerWideScope(orgId)));
+  });
+
+  it('intersects partner_wide only with itself, same partner', () => {
+    const pw = partnerWideScope(partnerId);
+    expect(intersectSiteScopes(pw, pw)).toEqual(pw);
+    expect(intersectSiteScopes(pw, partnerWideScope(orgId))).toBeNull();
+    expect(intersectSiteScopes(pw, { version: 1, kind: 'unrestricted', orgId })).toBeNull();
+    expect(intersectSiteScopes({ version: 1, kind: 'unrestricted', orgId }, pw)).toBeNull();
+    expect(intersectSiteScopes(pw, { version: 1, kind: 'restricted', orgId, siteIds: [SITE_A] })).toBeNull();
+    expect(intersectSiteScopes(pw, { version: 1, kind: 'legacy_unscoped', orgId })).toBeNull();
+    expect(isSiteScopeSubset(pw, pw)).toBe(true);
+    expect(isSiteScopeSubset(pw, partnerWideScope(orgId))).toBe(false);
+    expect(isSiteScopeSubset(pw, { version: 1, kind: 'unrestricted', orgId })).toBe(false);
+    expect(isSiteScopeSubset({ version: 1, kind: 'unrestricted', orgId }, pw)).toBe(false);
+  });
+
+  it('round-trips a partner_wide user authority through the persisted columns', () => {
+    const scope = partnerWideScope(partnerId);
+    const authority = {
+      principalKind: 'user' as const,
+      scope,
+      principalUserId: userId,
+      capturedAt: new Date('2026-09-21T00:00:00Z'),
+      fingerprint: siteScopeFingerprint(scope),
+    };
+    const row = persistedSiteScopeValues(authority);
+    expect(row).toMatchObject({
+      executionScopeVersion: 1,
+      executionScopeKind: 'partner_wide',
+      executionScopeSiteIds: null,
+      executionScopeUserId: userId,
+      executionScopePrincipalKind: 'user',
+    });
+    expect(row.executionScopeFingerprint).toBe(siteScopeFingerprint(scope));
+    expect(decodeSiteScope(row, { partnerId })).toEqual(scope);
+  });
+
+  it('refuses a partner_wide row decoded under an org owner, and vice versa', () => {
+    const scope = partnerWideScope(partnerId);
+    const row = persistedSiteScopeValues({
+      principalKind: 'user', scope, principalUserId: userId,
+      capturedAt: new Date(), fingerprint: siteScopeFingerprint(scope),
+    });
+    expect(() => decodeSiteScope(row, { orgId })).toThrow(/owner/);
+    expect(() => decodeSiteScope(row, orgId)).toThrow(/owner/);
+    const orgScope: SiteScopeV1 = { version: 1, kind: 'unrestricted', orgId };
+    const orgRow = persistedSiteScopeValues({
+      principalKind: 'user', scope: orgScope, principalUserId: userId,
+      capturedAt: new Date(), fingerprint: siteScopeFingerprint(orgScope),
+    });
+    expect(() => decodeSiteScope(orgRow, { partnerId })).toThrow(/owner/);
+    // The same row still decodes under its own axis.
+    expect(decodeSiteScope(orgRow, { orgId })).toEqual(orgScope);
+  });
+
+  it('refuses a partner-owned report whose execution scope columns are all NULL', () => {
+    const emptyRow: PersistedSiteScopeColumns = {
+      executionScopeVersion: null,
+      executionScopeKind: null,
+      executionScopeSiteIds: null,
+      executionScopeUserId: null,
+      executionScopeFingerprint: null,
+      executionScopeCapturedAt: null,
+      executionScopePrincipalKind: null,
+    };
+    expect(() => decodeSiteScope(emptyRow, { partnerId }))
+      .toThrow(/partner-owned report has no persisted execution scope/);
+    // An org-owned row with the same shape is still legacy_unscoped.
+    expect(decodeSiteScope(emptyRow, orgId)).toEqual({
+      version: 1,
+      kind: 'legacy_unscoped',
+      orgId,
+    });
+  });
+
+  it('refuses a partner_wide row that carries site ids or no acting user', () => {
+    const scope = partnerWideScope(partnerId);
+    const row = persistedSiteScopeValues({
+      principalKind: 'user', scope, principalUserId: userId,
+      capturedAt: CAPTURED_AT, fingerprint: siteScopeFingerprint(scope),
+    });
+    expect(() => decodeSiteScope({ ...row, executionScopeSiteIds: [SITE_A] }, { partnerId }))
+      .toThrow(/partial or invalid persisted partner_wide site scope/);
+    expect(() => decodeSiteScope({ ...row, executionScopeUserId: null }, { partnerId }))
+      .toThrow(/partial or invalid persisted partner_wide site scope/);
+    expect(() =>
+      decodeSiteScope(
+        { ...row, executionScopeUserId: null, executionScopePrincipalKind: 'system' },
+        { partnerId },
+      ),
+    ).toThrow(/invalid persisted non-user site scope kind/);
+    expect(() =>
+      decodeSiteScope({ ...row, executionScopeFingerprint: siteScopeFingerprint(unrestricted()) }, { partnerId }),
+    ).toThrow(/invalid persisted site scope fingerprint/);
+  });
+
+  it('never lets a portal or system principal carry partner_wide', () => {
+    expect(() => portalUserReportAuthority(partnerId)).not.toThrow(); // org-keyed helper still fine
+    expect(() =>
+      persistedSiteScopeValues({
+        principalKind: 'portal_user',
+        scope: partnerWideScope(partnerId) as never,
+        capturedAt: new Date(),
+        fingerprint: siteScopeFingerprint(partnerWideScope(partnerId)),
+      }),
+    ).toThrow(/portal-user execution scope kind/);
+    expect(() =>
+      persistedSystemSiteScopeValues({
+        principalKind: 'system',
+        scope: partnerWideScope(partnerId) as never,
+        capturedAt: new Date(),
+        fingerprint: siteScopeFingerprint(partnerWideScope(partnerId)),
+      } as unknown as SystemReportExecutionAuthority),
+    ).toThrow(/system execution scope kind/);
+  });
+
+  it('reportOwnerOf demands exactly one axis', () => {
+    expect(reportOwnerOf({ orgId, partnerId: null })).toEqual({ orgId });
+    expect(reportOwnerOf({ orgId: null, partnerId })).toEqual({ partnerId });
+    expect(() => reportOwnerOf({ orgId, partnerId })).toThrow(/exactly one/);
+    expect(() => reportOwnerOf({ orgId: null, partnerId: null })).toThrow(/exactly one/);
+    expect(() => reportOwnerOf({ orgId: '', partnerId: null })).toThrow(/exactly one/);
+  });
+
+  it('multi-org predicates append the partner-wide branch only when asked', () => {
+    const without = reportDefinitionMultiOrgScopeSqlPredicate(reports.orgId, reports, []);
+    const withBranch = reportDefinitionMultiOrgScopeSqlPredicate(reports.orgId, reports, [], {
+      rowPartnerId: reports.partnerId, partnerId,
+    });
+    const renderedWithout = renderSql(without);
+    const renderedWith = renderSql(withBranch);
+    expect(renderedWithout.sql).not.toContain('partner_id');
+    expect(renderedWithout.params).toEqual([]);
+    expect(renderedWith.sql).toContain('partner_id');
+    // The kind and the partner are BOUND, never inlined.
+    expect(renderedWith.sql).not.toContain(partnerId);
+    expect(renderedWith.params).toContain('partner_wide');
+    expect(renderedWith.params).toContain(partnerId);
+    // A complete v1 envelope authored by a real user, exactly like the org arms.
+    expect(renderedWith.params).toContain('user');
+    expect(renderedWith.sql.toLowerCase()).toContain('execution_scope_site_ids" is null');
+  });
+
+  it('keeps the org branches byte-identical when a partner branch is added', () => {
+    const orgOnly = renderSql(
+      reportDefinitionMultiOrgScopeSqlPredicate(reports.orgId, reports, [unrestricted(ORG_A)]),
+    );
+    const both = renderSql(
+      reportDefinitionMultiOrgScopeSqlPredicate(reports.orgId, reports, [unrestricted(ORG_A)], {
+        rowPartnerId: reports.partnerId, partnerId,
+      }),
+    );
+    // The org arm is carried through verbatim; only a new OR branch is appended.
+    expect(both.sql).toContain(orgOnly.sql.replace(/^\(|\)$/g, ''));
+    expect(both.params.slice(0, orgOnly.params.length)).toEqual(orgOnly.params);
+    expect(both.params.length).toBeGreaterThan(orgOnly.params.length);
+  });
+
+  it('adds the same partner-wide branch to the report-run predicate', () => {
+    const rendered = renderSql(
+      reportRunMultiOrgScopeSqlPredicate(reports.orgId, reportRuns, [], {
+        rowPartnerId: reports.partnerId, partnerId,
+      }),
+    );
+    expect(rendered.sql).toContain('partner_id');
+    expect(rendered.params).toContain('partner_wide');
+    expect(rendered.params).toContain(partnerId);
+  });
+
+  it('refuses a partner_wide scope smuggled into the org-axis scope list', () => {
+    expect(() =>
+      reportDefinitionMultiOrgScopeSqlPredicate(reports.orgId, reports, [
+        partnerWideScope(partnerId) as never,
+      ]),
+    ).toThrow(/organization-axis/);
+  });
+
+  it('grants partner_wide authority to an org_access=all member whose role grants the action', async () => {
+    queueRows(
+      [partnerUser()],
+      [{ roleId: PARTNER_ROLE, orgAccess: 'all' }],
+      [partnerReportsGrant('read')],
+    );
+
+    const result = await resolveLivePartnerReportAuthority(userId, partnerId, 'read');
+
+    expect(result).toMatchObject({
+      ok: true,
+      authority: {
+        principalKind: 'user',
+        scope: partnerWideScope(partnerId),
+        principalUserId: userId,
+      },
+    });
+    if (result.ok) {
+      expect(result.authority.fingerprint).toBe(
+        siteScopeFingerprint(partnerWideScope(partnerId)),
+      );
+    }
+  });
+
+  it.each([
+    { name: 'selected org access', orgAccess: 'selected', reason: 'partner_access_not_all' },
+    { name: 'no org access', orgAccess: 'none', reason: 'partner_access_not_all' },
+  ])('refuses a partner-wide authority for $name', async ({ orgAccess, reason }) => {
+    queueRows(
+      [partnerUser()],
+      [{ roleId: PARTNER_ROLE, orgAccess }],
+      [partnerReportsGrant('read')],
+    );
+
+    await expect(resolveLivePartnerReportAuthority(userId, partnerId, 'read'))
+      .resolves.toEqual({ ok: false, reason });
+    // The role lookup is never reached: access is refused on the membership.
+    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(2);
+  });
+
+  it('refuses a user who belongs to a different partner', async () => {
+    queueRows([partnerUser({ partnerId: orgId })]);
+
+    await expect(resolveLivePartnerReportAuthority(userId, partnerId, 'read'))
+      .resolves.toEqual({ ok: false, reason: 'partner_inaccessible' });
+  });
+
+  it('refuses an inactive user, a missing membership, and a duplicate membership', async () => {
+    queueRows([partnerUser({ status: 'suspended' })]);
+    await expect(resolveLivePartnerReportAuthority(userId, partnerId, 'read'))
+      .resolves.toEqual({ ok: false, reason: 'user_inactive' });
+
+    queueRows([partnerUser()], []);
+    await expect(resolveLivePartnerReportAuthority(userId, partnerId, 'read'))
+      .resolves.toEqual({ ok: false, reason: 'membership_removed' });
+
+    queueRows(
+      [partnerUser()],
+      [
+        { roleId: PARTNER_ROLE, orgAccess: 'all' },
+        { roleId: PARTNER_ROLE, orgAccess: 'all' },
+      ],
+    );
+    await expect(resolveLivePartnerReportAuthority(userId, partnerId, 'read'))
+      .resolves.toEqual({ ok: false, reason: 'unverifiable_scope' });
+  });
+
+  it('refuses when the partner role does not grant the requested action', async () => {
+    queueRows(
+      [partnerUser()],
+      [{ roleId: PARTNER_ROLE, orgAccess: 'all' }],
+      [partnerReportsGrant('read')],
+    );
+
+    await expect(resolveLivePartnerReportAuthority(userId, partnerId, 'export'))
+      .resolves.toEqual({ ok: false, reason: 'permission_removed' });
+  });
+
+  it('grants a platform admin partner_wide authority without a membership', async () => {
+    queueRows([partnerUser({ isPlatformAdmin: true, partnerId: orgId })]);
+
+    await expect(resolveLivePartnerReportAuthority(userId, partnerId, 'delete'))
+      .resolves.toMatchObject({ ok: true, authority: { scope: partnerWideScope(partnerId) } });
+    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(1);
+  });
+
+  it('treats a database failure as unverifiable rather than authority', async () => {
+    queueRows(new Error('connection reset'));
+
+    await expect(resolveLivePartnerReportAuthority(userId, partnerId, 'read'))
+      .resolves.toEqual({ ok: false, reason: 'unverifiable_scope' });
+  });
+
+  it('re-reads the membership on the request path instead of trusting the token', async () => {
+    queueRows(
+      [partnerUser()],
+      [{ roleId: PARTNER_ROLE, orgAccess: 'selected' }],
+    );
+
+    // Token says 'all'; the live row says 'selected' and wins.
+    await expect(
+      resolveRequestPartnerReportAuthority(partnerAuth(), partnerId, 'read'),
+    ).resolves.toEqual({ ok: false, reason: 'partner_access_not_all' });
+    expect(vi.mocked(db.select)).toHaveBeenCalled();
+  });
+
+  it('refuses non-partner request scopes and foreign partners without touching the database', async () => {
+    await expect(
+      resolveRequestPartnerReportAuthority(
+        partnerAuth({ scope: 'organization', partnerOrgAccess: undefined }),
+        partnerId,
+        'read',
+      ),
+    ).resolves.toEqual({ ok: false, reason: 'partner_inaccessible' });
+
+    await expect(
+      resolveRequestPartnerReportAuthority(partnerAuth({ partnerId: orgId }), partnerId, 'read'),
+    ).resolves.toEqual({ ok: false, reason: 'partner_inaccessible' });
+
+    await expect(
+      resolveRequestPartnerReportAuthority(
+        partnerAuth({ partnerOrgAccess: 'selected' }),
+        partnerId,
+        'read',
+      ),
+    ).resolves.toEqual({ ok: false, reason: 'partner_access_not_all' });
+
+    expect(vi.mocked(db.select)).not.toHaveBeenCalled();
+  });
+
+  it('lets a system-scope request resolve platform authority', async () => {
+    queueRows([partnerUser({ isPlatformAdmin: true })]);
+
+    await expect(
+      resolveRequestPartnerReportAuthority(
+        partnerAuth({ scope: 'system', partnerId: null, partnerOrgAccess: undefined }),
+        partnerId,
+        'read',
+      ),
+    ).resolves.toMatchObject({ ok: true, authority: { scope: partnerWideScope(partnerId) } });
   });
 });
