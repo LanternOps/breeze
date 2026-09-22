@@ -51,6 +51,7 @@ vi.mock('../../services/quoteLifecycle', () => ({
   })),
   getQuoteShareLink: vi.fn(async () => ({ acceptUrl: 'http://x/quote/t', origin: 'reproduced', reissued: false, recipients: ['ap@customer.example'], orgId: 'org1' })),
   getQuoteRecipients: vi.fn(async () => []),
+  declineQuoteByActor: vi.fn(async () => ({ id: '11111111-1111-4111-8111-111111111111', orgId: 'org1', status: 'declined' })),
 }));
 // The two new routes audit-log; the writer is fire-and-forget and DB-backed.
 vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: vi.fn() }));
@@ -930,5 +931,102 @@ describe('POST /:id/accept-on-behalf — error path uses the real handleServiceE
     const res = await app.request(`/${QUOTE_ID}/accept-on-behalf`, jsonReq(BODY));
     expect(res.status).toBe(409);
     expect((await res.json()).code).toBe('QUOTE_NOT_ACCEPTABLE');
+  });
+});
+
+describe('POST /:id/decline-on-behalf (#6634)', () => {
+  const BODY = { method: 'email', reference: 'Email from J. Doe 2026-09-20', reason: 'Went with another vendor' };
+  const jsonReq = (body: unknown) => ({
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getQuote).mockResolvedValue({
+      quote: { id: QUOTE_ID, orgId: 'org1', partnerId: 'p1', status: 'sent' },
+      blocks: [], lines: [],
+    } as never);
+  });
+
+  // Recording the customer's response is the same authority as recording their
+  // acceptance: quotes:accept, not quotes:send.
+  it('403s a quotes:send holder without quotes:accept', async () => {
+    const res = await appWith('partner', ['quotes:read', 'quotes:write', 'quotes:send'])
+      .request(`/${QUOTE_ID}/decline-on-behalf`, jsonReq(BODY));
+    expect(res.status).toBe(403);
+  });
+
+  it('200s a quotes:accept holder', async () => {
+    const res = await appWith('partner', ['quotes:read', 'quotes:accept'])
+      .request(`/${QUOTE_ID}/decline-on-behalf`, jsonReq(BODY));
+    expect(res.status).toBe(200);
+    expect((await res.json()).data.status).toBe('declined');
+  });
+
+  it('403s an organization-scoped token even with quotes:accept', async () => {
+    const res = await appWith('organization', ['quotes:accept'])
+      .request(`/${QUOTE_ID}/decline-on-behalf`, jsonReq(BODY));
+    expect(res.status).toBe(403);
+  });
+
+  it('400s a missing reference', async () => {
+    const { reference: _drop, ...rest } = BODY;
+    const res = await appWith('partner', ['quotes:accept']).request(`/${QUOTE_ID}/decline-on-behalf`, jsonReq(rest));
+    expect(res.status).toBe(400);
+  });
+
+  it.each(['viewed', 'sent'])('declines a %s quote as msp-sourced, forwarding the reason', async (status) => {
+    vi.mocked(getQuote).mockResolvedValue({
+      quote: { id: QUOTE_ID, orgId: 'org1', partnerId: 'p1', status }, blocks: [], lines: [],
+    } as never);
+    const { declineQuoteByActor } = await import('../../services/quoteLifecycle');
+    await appWith('partner', ['quotes:accept']).request(`/${QUOTE_ID}/decline-on-behalf`, jsonReq(BODY));
+    expect(vi.mocked(declineQuoteByActor)).toHaveBeenCalledWith(
+      QUOTE_ID, 'Went with another vendor', expect.objectContaining({ userId: 'u1' }), 'msp',
+    );
+  });
+
+  it('passes an absent reason through as undefined', async () => {
+    const { declineQuoteByActor } = await import('../../services/quoteLifecycle');
+    const { reason: _drop, ...rest } = BODY;
+    await appWith('partner', ['quotes:accept']).request(`/${QUOTE_ID}/decline-on-behalf`, jsonReq(rest));
+    expect(vi.mocked(declineQuoteByActor)).toHaveBeenCalledWith(QUOTE_ID, undefined, expect.anything(), 'msp');
+  });
+
+  // A draft the customer never saw is deleted, not declined; a settled quote
+  // has no customer response left to record.
+  it.each(['draft', 'accepted', 'declined', 'expired', 'converted', 'superseded'])(
+    '409s a %s quote without declining it', async (status) => {
+      vi.mocked(getQuote).mockResolvedValue({
+        quote: { id: QUOTE_ID, orgId: 'org1', partnerId: 'p1', status }, blocks: [], lines: [],
+      } as never);
+      const { declineQuoteByActor } = await import('../../services/quoteLifecycle');
+      const { writeRouteAudit } = await import('../../services/auditEvents');
+      const res = await appWith('partner', ['quotes:accept']).request(`/${QUOTE_ID}/decline-on-behalf`, jsonReq(BODY));
+      expect(res.status).toBe(409);
+      expect((await res.json()).code).toBe('QUOTE_NOT_DECLINABLE');
+      expect(vi.mocked(declineQuoteByActor)).not.toHaveBeenCalled();
+      expect(vi.mocked(writeRouteAudit)).not.toHaveBeenCalled();
+    },
+  );
+
+  it('writes the SSOT audit payload with the evidence', async () => {
+    const { writeRouteAudit } = await import('../../services/auditEvents');
+    await appWith('partner', ['quotes:accept']).request(`/${QUOTE_ID}/decline-on-behalf`, jsonReq(BODY));
+    expect(vi.mocked(writeRouteAudit)).toHaveBeenCalledWith(expect.anything(), {
+      orgId: 'org1',
+      action: 'quote.declined_on_behalf',
+      resourceType: 'quote',
+      resourceId: QUOTE_ID,
+      result: 'success',
+      details: { method: 'email', reference: 'Email from J. Doe 2026-09-20', reason: 'Went with another vendor' },
+    });
+  });
+
+  // No partner-axis write: the decline runs under the ordinary request context.
+  it('stays under the ambient request transaction', () => {
+    expect(isSelfManagedDbContextRoute('POST', `/api/v1/quotes/${QUOTE_ID}/decline-on-behalf`)).toBe(false);
   });
 });

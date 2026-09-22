@@ -456,6 +456,19 @@ export const declineQuoteSchema = z.object({
   reason: z.string().max(5000).optional(),
 });
 
+/** Body for POST /quotes/:id/decline-on-behalf (#6634) — the tech records a
+ *  decline the customer gave by phone, email or letter.
+ *
+ *  Same method list and the same evidence rule as accept-on-behalf: `reference`
+ *  is required, because a decline recorded with nothing behind it is a claim.
+ *  `reason` is the customer's own words and carries the customer decline's
+ *  limit — it lands in the same `decline_reason` column. */
+export const declineQuoteOnBehalfSchema = z.object({
+  method: z.enum(QUOTE_ACCEPT_ON_BEHALF_METHODS),
+  reference: z.string().trim().min(1).max(500),
+  reason: z.string().trim().max(5000).optional(),
+});
+
 export const listQuotesQuerySchema = z.object({
   orgId: z.string().guid().optional(),
   status: quoteStatusSchema.optional(),
@@ -513,6 +526,7 @@ export type AcceptQuoteInput = z.infer<typeof acceptQuoteSchema>;
 export type AcceptQuoteOnBehalfInput = z.infer<typeof acceptQuoteOnBehalfSchema>;
 export type QuoteAcceptOnBehalfMethod = (typeof QUOTE_ACCEPT_ON_BEHALF_METHODS)[number];
 export type DeclineQuoteInput = z.infer<typeof declineQuoteSchema>;
+export type DeclineQuoteOnBehalfInput = z.infer<typeof declineQuoteOnBehalfSchema>;
 export type CreateQuoteOrderInput = z.infer<typeof createQuoteOrderSchema>;
 export type UpdateQuoteOrderInput = z.infer<typeof updateQuoteOrderSchema>;
 export type UpdateQuoteOrderLineInput = z.infer<typeof updateQuoteOrderLineSchema>;

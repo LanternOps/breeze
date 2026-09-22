@@ -2,11 +2,11 @@ import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { z } from 'zod';
 import { zValidator } from '../../lib/validation';
-import { acceptQuoteOnBehalfSchema } from '@breeze/shared';
+import { acceptQuoteOnBehalfSchema, declineQuoteOnBehalfSchema } from '@breeze/shared';
 import { sendComposerSchema as sendBodySchema, parseComposerBody } from '../../lib/sendComposer';
 import { requireScope, requirePermission, withAuthDbAccessContext, type AuthContext } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
-import { sendQuote, resendQuote, getQuoteShareLink } from '../../services/quoteLifecycle';
+import { sendQuote, resendQuote, getQuoteShareLink, declineQuoteByActor } from '../../services/quoteLifecycle';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { supersededAuditEvent } from '../../services/quoteSupersedeAudit';
 import { scheduleQuoteSend, cancelQuoteSend } from '../../jobs/quoteSendQueue';
@@ -17,6 +17,7 @@ import { runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { acceptQuote, emitAcceptInvoiceIssued, resolveAcceptInvoiceUrl, autoEmailAcceptedInvoice } from '../../services/quoteAcceptService';
 import { notifyQuoteOutcome } from '../../services/quoteOutcomeNotify';
 import { acceptedOnBehalfAuditEvent } from '../../services/quoteAcceptOnBehalfAudit';
+import { declinedOnBehalfAuditEvent } from '../../services/quoteDeclineOnBehalfAudit';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
 import { quoteActorFrom, handleServiceError } from './quotes';
 
@@ -220,6 +221,57 @@ quoteLifecycleRoutes.post('/:id/accept-on-behalf',
         contractIds: res.contractIds,
         payUrl,
       } });
+    } catch (err) { return handleServiceError(c, err); }
+  });
+
+// POST /:id/decline-on-behalf (#6634) — the customer said no by phone, email or
+// letter, and the tech records it in-app. The decline twin of accept-on-behalf,
+// minus the pipeline: the quote moves to `declined` via the SAME service the
+// portal, the public link and the AI tool use (declineQuoteByActor), which owns
+// the CAS status write and the 410 on an expired quote.
+//
+// Gated on quotes:accept, like accept-on-behalf: recording the customer's
+// response is one authority, whichever way they answered. Only `sent` and
+// `viewed` qualify — a draft the customer never saw is deleted, not declined,
+// and every other status is already settled — and the route says so with its
+// own code before the service is reached, so no audit row is written for a
+// refusal.
+//
+// NOT in SELF_MANAGED_DB_CONTEXT_ROUTES: the decline writes only the org-scoped
+// `quotes` row, which the request's own RLS context can reach, so the ambient
+// request transaction is the right one.
+//
+// Attribution is 'msp': the outcome bus event fires and the quote creator gets
+// NO email (the tech who recorded it already knows). The evidence — method,
+// reference, reason — lives in the `quote.declined_on_behalf` audit row; the
+// quote row has no provenance columns for a decline.
+quoteLifecycleRoutes.post('/:id/decline-on-behalf',
+  scopes, acceptPerm,
+  zValidator('param', idParam), zValidator('json', declineQuoteOnBehalfSchema),
+  async (c) => {
+    const id = c.req.valid('param').id;
+    const body = c.req.valid('json');
+    const reason = body.reason || undefined;
+    try {
+      const actor = quoteActorFrom(c);
+      const { quote } = await getQuote(id, actor); // org-access 404
+      if (quote.status !== 'sent' && quote.status !== 'viewed') {
+        return c.json({
+          error: quote.status === 'draft'
+            ? 'This quote was never sent, so there is no customer decline to record — delete the draft instead'
+            : `Only a sent or viewed quote can be declined on the customer's behalf (this one is ${quote.status})`,
+          code: 'QUOTE_NOT_DECLINABLE',
+        }, 409);
+      }
+      const updated = await declineQuoteByActor(id, reason, actor, 'msp');
+      writeRouteAudit(c, declinedOnBehalfAuditEvent({
+        quoteId: id,
+        orgId: updated.orgId,
+        method: body.method,
+        reference: body.reference,
+        reason,
+      }));
+      return c.json({ data: updated });
     } catch (err) { return handleServiceError(c, err); }
   });
 
