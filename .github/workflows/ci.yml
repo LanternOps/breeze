@@ -3680,6 +3680,22 @@ jobs:
           # Redundant with wt-stack's .env.stack, which is passed last, but this
           # job spells such keys out by convention.
           EMAIL_DOMAINS_PROVIDER=fake
+          # #6447 — every context in a Playwright run replays the ONE
+          # storageState globalSetup mints, so the whole run shares a single
+          # refresh-token family, and apps/web (an Astro MPA) spends one
+          # POST /auth/refresh per full-page navigation. The per-family budget
+          # is 60/60s, which four parallel workers exhaust in seconds: the API
+          # 429s and the app masks itself with "Too many requests —
+          # reconnecting", which is what reddened this job on every PR. The
+          # global per-IP limiter has the same problem in reverse — all traffic
+          # arrives through Caddy, so the run is one client. E2E_MODE stands
+          # both limiters down; config/validate.ts refuses it in production, and
+          # the auth-transition test barrier it also unlocks needs NODE_ENV=test
+          # plus a 32-char secret, which this stack has neither of. The sibling
+          # auth-browser-transition job sets it the same way. Redundant with
+          # wt-stack's .env.stack, which is passed last, but this job spells
+          # such keys out by convention.
+          E2E_MODE=true
           # Image refs — the base docker-compose.yml requires all of these via
           # `${VAR:?}` before profile filtering, even though the dev override
           # builds api/web/portal from this checkout and stubs binaries-init.

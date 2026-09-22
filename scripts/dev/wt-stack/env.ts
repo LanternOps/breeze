@@ -50,6 +50,37 @@ const DEV_ENV: Record<string, string> = {
   // .env, and docker-compose.yml's x-api-env anchor (added in W02) is what
   // carries it into the api and worker containers.
   EMAIL_DOMAINS_PROVIDER: 'fake',
+  // #6447 — this stack exists to be driven by Playwright, and a Playwright run
+  // is structurally indistinguishable from the runaway clients the API's rate
+  // limiters exist to stop:
+  //
+  //  - `globalSetup` mints ONE storageState, so every context in the run —
+  //    across all workers — replays the same refresh cookie and therefore
+  //    shares a single refresh-token FAMILY. `POST /auth/refresh` is budgeted
+  //    per family (60/60s, `getRefreshRateLimit()`), and `apps/web` is an Astro
+  //    MPA that spends one refresh on EVERY full-page navigation. Four workers
+  //    navigating concurrently blow 60 navigations a minute in seconds; the API
+  //    429s, and the web app masks itself with "Too many requests —
+  //    reconnecting. Retrying in 32s…" (AuthThrottledMask) or, once the access
+  //    token is gone, bounces to "Your session expired". That is exactly how
+  //    the portal-dev-e2e CI job went red on every PR the day a fourth,
+  //    navigation-heavy spec joined its list.
+  //  - Every request reaches the API through Caddy, so the global per-IP
+  //    limiter (300/min, `middleware/globalRateLimit.ts`) sees the whole run as
+  //    ONE client. Per-IP budgeting is meaningless on a single-tenant dev stack
+  //    and only meters the suite against itself.
+  //
+  // `E2E_MODE` is the API's own switch for both (`config/validate.ts` refuses
+  // it in production, and the auth-transition test barrier it also unlocks
+  // additionally requires NODE_ENV=test plus a 32-char secret, neither of which
+  // this stack has — so the only effect here is that the limiters step aside).
+  // The sibling auth-browser-transition CI job already sets it; pinning it in
+  // the stack itself fixes local `wt-stack test` runs the same way.
+  //
+  // `e2e-tests/test-helpers.ts`'s `clearRefreshState` remains as a belt-and-
+  // braces reset for a stack brought up without this, but it only fires between
+  // tests and so cannot refill the budget inside one long-running test.
+  E2E_MODE: 'true',
   // Caddy/postgres/redis images are digest-pinned in base compose; reuse the
   // values already present in the developer's root .env via compose interpolation.
 };

@@ -31,6 +31,18 @@ describe('writeEnvStack', () => {
     const env = readFileSync(writeEnvStack(dir), 'utf8');
     expect(env).toContain('MFA_FORCE_FOR_PARTNER_ADMIN=false');
   });
+
+  // #6447 — every Playwright context in a run is built from the ONE
+  // storageState globalSetup mints, so they all share a single refresh-token
+  // FAMILY, and `apps/web` spends one `POST /auth/refresh` per full-page
+  // navigation. The family budget is 60/60s, which parallel workers exhaust in
+  // seconds; the API then 429s and the app masks itself with "Too many
+  // requests — reconnecting". E2E_MODE is the API's own switch for exactly
+  // this, so the dev stack must pin it on.
+  it('disables the rate limiters that a parallel Playwright run trips', () => {
+    const env = readFileSync(writeEnvStack(dir), 'utf8');
+    expect(env).toContain('E2E_MODE=true');
+  });
 });
 
 // #5266 — `wt-stack test` reads REDIS_PASSWORD this way to hand it to
