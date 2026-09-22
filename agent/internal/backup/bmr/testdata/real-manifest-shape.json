@@ -1,0 +1,110 @@
+{
+  "_comment": "Regression fixture built from the shape of a REAL agent manifest (KIT lab, Ubuntu 24.04, incremental snapshot-20260921T192625Z-2e609375 referencing base snapshot-20260921T184722Z-3f770c73; PR #6491 lab report). Every trait that broke hydration on 94d07c466 is present: content-less dir/symlink entries carry backupPath \"\" (D-W09-1), systemd unit filenames carry a literal backslash (system-systemd\\x2dcryptsetup.slice, D-W09-2), and dpkg info files carry a colon. Consumed by apps/api/src/services/backupSnapshotFileIndex.test.ts, agent/internal/backup/bmr/objectkey_test.go and agent/internal/backup/bmr/fakeserver/fakeserver_test.go. Expected split: 4 external content entries (base snapshot), 2 own-prefix content entries, 4 content-less entries.",
+  "id": "snapshot-20260921T192625Z-2e609375",
+  "timestamp": "2026-09-21T19:26:25.142Z",
+  "size": 14338224,
+  "formatVersion": 3,
+  "baseSnapshotId": "snapshot-20260921T184722Z-3f770c73",
+  "backupIdentity": "lab-ubuntu-src",
+  "files": [
+    {
+      "sourcePath": "/bin",
+      "backupPath": "",
+      "size": 0,
+      "modTime": "2024-04-22T13:08:11Z",
+      "kind": "symlink",
+      "linkTarget": "usr/bin",
+      "modeBits": 511,
+      "owner": { "uid": 0, "gid": 0 }
+    },
+    {
+      "sourcePath": "/etc",
+      "backupPath": "",
+      "size": 0,
+      "modTime": "2026-09-21T18:41:02Z",
+      "kind": "dir",
+      "modeBits": 493,
+      "owner": { "uid": 0, "gid": 0 }
+    },
+    {
+      "sourcePath": "/proc",
+      "backupPath": "",
+      "size": 0,
+      "modTime": "2026-09-21T18:40:55Z",
+      "kind": "dir",
+      "modeBits": 365,
+      "owner": { "uid": 0, "gid": 0 },
+      "placeholder": true
+    },
+    {
+      "sourcePath": "/etc/systemd/system/multi-user.target.wants/ssh.service",
+      "backupPath": "",
+      "size": 0,
+      "modTime": "2024-04-22T13:10:41Z",
+      "kind": "symlink",
+      "linkTarget": "/usr/lib/systemd/system/ssh.service",
+      "modeBits": 511,
+      "owner": { "uid": 0, "gid": 0 }
+    },
+    {
+      "sourcePath": "/etc/hostname",
+      "backupPath": "snapshots/snapshot-20260921T184722Z-3f770c73/files/path_0/etc/hostname.gz",
+      "size": 15,
+      "modTime": "2026-09-21T18:41:02Z",
+      "checksum": "9c6a4d2b8f3e1c7a5d0b2e4f6a8c1d3e5f7a9b1c3d5e7f9a1b3c5d7e9f1a3b5c",
+      "mode": 420,
+      "modeBits": 420,
+      "owner": { "uid": 0, "gid": 0 }
+    },
+    {
+      "sourcePath": "/usr/lib/systemd/system/system-systemd\\x2dcryptsetup.slice",
+      "backupPath": "snapshots/snapshot-20260921T184722Z-3f770c73/files/path_0/usr/lib/systemd/system/system-systemd\\x2dcryptsetup.slice.gz",
+      "size": 375,
+      "modTime": "2024-04-05T12:06:44Z",
+      "checksum": "1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f809",
+      "mode": 420,
+      "modeBits": 420,
+      "owner": { "uid": 0, "gid": 0 }
+    },
+    {
+      "sourcePath": "/usr/lib/systemd/system/system-systemd\\x2dveritysetup.slice",
+      "backupPath": "snapshots/snapshot-20260921T184722Z-3f770c73/files/path_0/usr/lib/systemd/system/system-systemd\\x2dveritysetup.slice.gz",
+      "size": 372,
+      "modTime": "2024-04-05T12:06:44Z",
+      "checksum": "2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a",
+      "mode": 420,
+      "modeBits": 420,
+      "owner": { "uid": 0, "gid": 0 }
+    },
+    {
+      "sourcePath": "/var/lib/dpkg/info/libncurses6:amd64.triggers",
+      "backupPath": "snapshots/snapshot-20260921T184722Z-3f770c73/files/path_0/var/lib/dpkg/info/libncurses6:amd64.triggers.gz",
+      "size": 42,
+      "modTime": "2024-04-22T13:08:20Z",
+      "checksum": "3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b",
+      "mode": 420,
+      "modeBits": 420,
+      "owner": { "uid": 0, "gid": 0 }
+    },
+    {
+      "sourcePath": "/opt/w09-mutation/marker.txt",
+      "backupPath": "snapshots/snapshot-20260921T192625Z-2e609375/files/path_0/opt/w09-mutation/marker.txt.gz",
+      "size": 27,
+      "modTime": "2026-09-21T19:26:16Z",
+      "checksum": "4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c",
+      "mode": 420,
+      "modeBits": 420,
+      "owner": { "uid": 0, "gid": 0 }
+    },
+    {
+      "sourcePath": "/opt/w09-mutation/blob-5m.bin",
+      "backupPath": "snapshots/snapshot-20260921T192625Z-2e609375/files/path_0/opt/w09-mutation/blob-5m.bin.gz",
+      "size": 5242880,
+      "modTime": "2026-09-21T19:26:16Z",
+      "checksum": "5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d",
+      "mode": 420,
+      "modeBits": 420,
+      "owner": { "uid": 0, "gid": 0 }
+    }
+  ]
+}

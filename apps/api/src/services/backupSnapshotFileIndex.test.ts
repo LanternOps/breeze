@@ -167,6 +167,41 @@ describe('hydrateSnapshotFileIndex', () => {
     expect((outcome as { reason: string }).reason).toContain('snapshots/snap-current/../x');
   });
 
+  it('hydrates a REAL agent manifest (D-W09-1 + D-W09-2): empty backupPath on dir/symlink entries is skipped, a backslash in a systemd unit key is admitted', async () => {
+    const bytes = readFileSync(REAL_MANIFEST_FIXTURE);
+    const manifest = JSON.parse(bytes.toString('utf8')) as { files: Array<{ backupPath: string; kind?: string }> };
+    const contentless = manifest.files.filter((f) => f.backupPath === '');
+    const external = manifest.files.filter((f) => f.backupPath.startsWith(`snapshots/${REAL_MANIFEST_BASE_ID}/`));
+    const own = manifest.files.filter((f) => f.backupPath.startsWith(`snapshots/${REAL_MANIFEST_ID}/`));
+    // The fixture must actually carry the traits that broke hydration on the KIT rig.
+    expect(contentless.length).toBeGreaterThan(0);
+    expect(contentless.every((f) => f.kind === 'dir' || f.kind === 'symlink')).toBe(true);
+    expect(external.some((f) => f.backupPath.includes('\\x2d'))).toBe(true);
+    expect(external.some((f) => f.backupPath.includes(':'))).toBe(true);
+
+    selectMock
+      .mockReturnValueOnce(chainMock([snapshotRow({ snapshotId: REAL_MANIFEST_ID })]))
+      .mockReturnValueOnce(chainMock([{ referencedFiles: external.length }]))
+      .mockReturnValueOnce(chainMock([{ id: 'origin-db-id', orgId: ORG_ID, deviceId: DEVICE_ID, storageIdentity: STORAGE_IDENTITY, metadata: {} }]));
+    const deps = { fetchManifestBytes: vi.fn().mockResolvedValue(new Uint8Array(bytes)) };
+
+    const outcome = await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps });
+
+    expect(outcome).toMatchObject({
+      status: 'complete',
+      entryCount: external.length + own.length,
+      externalCount: external.length,
+      originSnapshotIds: [REAL_MANIFEST_BASE_ID],
+    });
+    // Every content entry — backslash and colon keys included — is written verbatim as a file row.
+    const insertedRows = insertMock.mock.results
+      .map((r) => r.value)
+      .flatMap((chain) => (chain?.values?.mock?.calls ?? []).flatMap((c: unknown[]) => c[0] as Array<{ backupPath: string }>));
+    const insertedKeys = new Set(insertedRows.map((r) => r.backupPath));
+    for (const f of [...external, ...own]) expect(insertedKeys.has(f.backupPath)).toBe(true);
+    for (const f of contentless) expect(insertedKeys.has('')).toBe(false);
+  });
+
   it('still fails manifest_invalid when a CONTENT entry (no kind) has an empty backupPath — the relaxation is by kind, not blanket', async () => {
     selectMock.mockReturnValueOnce(chainMock([snapshotRow()]));
     selectMock.mockReturnValueOnce(chainMock([{ referencedFiles: 5 }]));

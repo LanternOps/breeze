@@ -23,8 +23,19 @@ type ParsedObjectKey struct {
 // ParseObjectKey validates key against the shared object-key contract and,
 // if valid, returns its decomposition. Pure string operations only — no
 // filepath.Clean, no case folding, no decoding.
+//
+// '/' is the ONLY separator. A backslash is an ordinary filename byte
+// inside a rest segment (D-W09-2, #6491 KIT lab: every systemd Linux host
+// ships `system-systemd\x2dcryptsetup.slice`, and backup.go writes the name
+// into the key verbatim — filepath.ToSlash is a no-op on Linux, and a
+// Windows name can never contain one). The snapshot-id character class
+// still excludes it and a key using backslash AS a separator never matches
+// `^snapshots/`. Stored objects already carry the literal byte and are
+// compared verbatim on both sides, so admitting it verbatim is the only
+// backward-compatible reading; never split on it and never use
+// filepath.Clean here (on Windows it would turn the byte into a separator).
 func ParseObjectKey(key string) (ParsedObjectKey, bool) {
-	if strings.Contains(key, "\x00") || strings.Contains(key, "\\") {
+	if strings.Contains(key, "\x00") {
 		return ParsedObjectKey{}, false
 	}
 	m := objectKeyPattern.FindStringSubmatch(key)

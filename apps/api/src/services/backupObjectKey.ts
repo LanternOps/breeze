@@ -9,9 +9,19 @@
 //   - key matches ^snapshots/([A-Za-z0-9][A-Za-z0-9._-]{0,254})/(.+)$
 //   - group 2 (rest) is non-empty
 //   - no NUL byte anywhere in the key
-//   - no backslash anywhere in the key (POSIX-style keys only)
+//   - '/' is the ONLY separator. A backslash is an ordinary filename byte
+//     inside a rest segment (D-W09-2, #6491 KIT lab: every systemd Linux
+//     host ships `system-systemd\x2dcryptsetup.slice`; the agent writes the
+//     name into the key verbatim because filepath.ToSlash is a no-op on
+//     Linux, and a Windows name can never contain one). The snapshot-id
+//     segment's character class still excludes it, and a key that uses
+//     backslash AS a separator never matches `^snapshots/`. Stored objects
+//     already carry the literal byte and are compared verbatim on both
+//     sides, so this is the only backward-compatible reading — encoding it
+//     would re-point every existing key.
 //   - no path segment (split on '/') equal to '' (double slash), '.', or '..'
-//     ANYWHERE in the key, not just in rest
+//     ANYWHERE in the key, not just in rest. `..\x` is one literal segment,
+//     not a traversal.
 //   - rest must not end in '/'
 //   - the key is served/compared VERBATIM: no percent-decoding, no case
 //     folding, no trimming of a trailing .gz (a writer may legitimately
@@ -26,7 +36,7 @@ const KEY_PATTERN = /^snapshots\/([A-Za-z0-9][A-Za-z0-9._-]{0,254})\/(.+)$/;
 
 export function parseBackupObjectKey(key: string): ParsedBackupObjectKey | null {
   if (typeof key !== 'string' || key.length === 0) return null;
-  if (key.includes('\0') || key.includes('\\')) return null;
+  if (key.includes('\0')) return null;
 
   const match = KEY_PATTERN.exec(key);
   if (!match) return null;

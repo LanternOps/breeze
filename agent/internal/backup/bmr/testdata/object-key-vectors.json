@@ -19,7 +19,12 @@
   { "key": "snapshots/./files/x", "valid": false, "note": "a . as the snapshot id segment is invalid" },
   { "key": "snapshots/../files/x", "valid": false, "note": "a .. as the snapshot id segment is invalid" },
   { "key": "snapshots/a/files/x\u0000.gz", "valid": false, "note": "an embedded NUL byte anywhere in the key is invalid" },
-  { "key": "snapshots/a/files\\x.gz", "valid": false, "note": "a backslash anywhere in the key is invalid — keys are POSIX-style only" },
+  { "key": "snapshots/a/files\\x.gz", "valid": true, "snapshotId": "a", "rest": "files\\x.gz", "note": "D-W09-2: a backslash is a LITERAL filename byte inside a rest segment, never a separator — only / splits segments (Linux ToSlash is a no-op, Windows names cannot contain one). Stored keys already carry it verbatim, so admitting it verbatim is the only backward-compatible reading" },
+  { "key": "snapshots/base-1/files/path_0/usr/lib/systemd/system/system-systemd\\x2dcryptsetup.slice.gz", "valid": true, "snapshotId": "base-1", "rest": "files/path_0/usr/lib/systemd/system/system-systemd\\x2dcryptsetup.slice.gz", "note": "D-W09-2: real systemd unit name on every systemd Linux host (KIT lab, #6491) — rejecting it failed the whole snapshot closed with manifest_key_invalid" },
+  { "key": "snapshots/base-1/files/path_0/var/lib/dpkg/info/libncurses6:amd64.triggers.gz", "valid": true, "snapshotId": "base-1", "rest": "files/path_0/var/lib/dpkg/info/libncurses6:amd64.triggers.gz", "note": "a colon in a rest segment is legal (dpkg multiarch info files)" },
+  { "key": "snapshots/a/files/..\\x", "valid": true, "snapshotId": "a", "rest": "files/..\\x", "note": "..\\x is a single literal segment (a legal Linux filename), NOT a .. traversal — the backslash does not split it. Pinned deliberately so neither side ever starts treating backslash as a separator" },
+  { "key": "snapshots\\a\\files\\x.gz", "valid": false, "note": "backslash used AS a separator never matches the ^snapshots/ root — Windows-style keys are still invalid" },
+  { "key": "snapshots/a\\b/files/x.gz", "valid": false, "note": "a backslash inside the snapshot-id segment is invalid — the id character class is [A-Za-z0-9._-]" },
   { "key": "", "valid": false, "note": "empty key is invalid" },
   { "key": "snapshots/a/files/x/", "valid": false, "note": "rest ending in a trailing slash is invalid" }
 ]

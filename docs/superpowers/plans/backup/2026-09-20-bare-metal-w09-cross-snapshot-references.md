@@ -109,7 +109,7 @@ Public 409 body: `{ "error": "<code>", "message": "<human sentence>", "retryAfte
 
 **Agent behaviour.** Send `capabilities: [membership]` on every authenticate/exchange. After the manifest is downloaded (and before ANY target write), compute `external = content entries whose key's snapshot segment ≠ own id`. If `len(external) > 0` and `membership ∉ download.capabilities` → refuse (`*bmr.ScopeRefusalError`, posted as progress `refused` with reason `This backup references N file(s) stored with earlier snapshots and the server did not grant cross-snapshot downloads. Upgrade the Breeze server or choose a self-contained (full) snapshot.`). If granted: verify `sha256(manifest bytes) == snapshot.fileIndex.manifestSha256` (mismatch → refuse: `The server's file index does not match this snapshot's manifest; create the recovery again.`), then widen the provider's admissible set with the exact external keys. Session refresh (`authenticateAndSwap`) keeps the admissible set and refuses (`ErrCapabilityDowngrade`) if the fresh descriptor drops the capability. The rebuild engine's preflight independently refuses when any content entry is not admitted by the provider (`ObjectAdmission` interface, Task 10) — the belt to the braces.
 
-**Object-key contract** (`parseBackupObjectKey` / `bmr.ParseObjectKey`): valid iff `key` matches `^snapshots/([A-Za-z0-9][A-Za-z0-9._-]{0,254})/(.+)$` with `$2` non-empty, no `\0`, no `\\`, no segment equal to `` (double slash), `.` or `..`, and `$2` not ending in `/`. Returns `{snapshotId, rest}`; the key itself is served verbatim (identity, no rewriting). `classify(key, ownId)` → `own` when `snapshotId === ownId` (exact, case-sensitive) else `external`. Vectors file (Task 1) pins ≥ 20 cases incl. `x.gz.gz`, mixed case ids, `%2e%2e` literal (valid — no decoding), `snapshots/a/../b/manifest.json` (invalid), `snapshots//a/x` (invalid), `snapshots/a/` (invalid), `/snapshots/a/x` (invalid), `snapshots/a/files/dir with space/f.gz` (valid).
+**Object-key contract** (`parseBackupObjectKey` / `bmr.ParseObjectKey`): valid iff `key` matches `^snapshots/([A-Za-z0-9][A-Za-z0-9._-]{0,254})/(.+)$` with `$2` non-empty, no `\0`, no segment (split on `/` ONLY) equal to `` (double slash), `.` or `..`, and `$2` not ending in `/`. **Amended 2026-09-21 (D-W09-2, #6491 KIT lab):** a backslash is a legal literal byte inside a `$2` segment — every systemd Linux host ships `system-systemd\x2dcryptsetup.slice` and the agent writes the name into the key verbatim — so the original "no `\\` anywhere" rule failed every real Linux snapshot closed with `manifest_key_invalid`. It is still excluded from the snapshot-id segment by its character class, and a key using `\\` as a separator never matches `^snapshots/`. Both parsers admit it verbatim (stored keys already carry the byte; encoding would re-point them). Returns `{snapshotId, rest}`; the key itself is served verbatim (identity, no rewriting). `classify(key, ownId)` → `own` when `snapshotId === ownId` (exact, case-sensitive) else `external`. Vectors file (Task 1) pins ≥ 20 cases incl. `x.gz.gz`, mixed case ids, `%2e%2e` literal (valid — no decoding), `snapshots/a/../b/manifest.json` (invalid), `snapshots//a/x` (invalid), `snapshots/a/` (invalid), `/snapshots/a/x` (invalid), `snapshots/a/files/dir with space/f.gz` (valid).
 
 ## 2. Data model (Task 2)
 
@@ -229,7 +229,7 @@ export function hasMembershipCapability(list: readonly string[] | null | undefin
   { "key": "snapshots/./files/x", "valid": false, "note": "a . as the snapshot id segment is invalid" },
   { "key": "snapshots/../files/x", "valid": false, "note": "a .. as the snapshot id segment is invalid" },
   { "key": "snapshots/a/files/x\u0000.gz", "valid": false, "note": "an embedded NUL byte anywhere in the key is invalid" },
-  { "key": "snapshots/a/files\\x.gz", "valid": false, "note": "a backslash anywhere in the key is invalid — keys are POSIX-style only" },
+  { "key": "snapshots/a/files\\x.gz", "valid": true, "snapshotId": "a", "rest": "files\\x.gz", "note": "D-W09-2 amendment: a backslash is a literal filename byte inside a rest segment — see the current vectors file for the full set" },
   { "key": "", "valid": false, "note": "empty key is invalid" },
   { "key": "snapshots/a/files/x/", "valid": false, "note": "rest ending in a trailing slash is invalid" }
 ]
@@ -345,7 +345,7 @@ Expected: `Error: Cannot find module './backupObjectKey'` (the module does not e
 //   - key matches ^snapshots/([A-Za-z0-9][A-Za-z0-9._-]{0,254})/(.+)$
 //   - group 2 (rest) is non-empty
 //   - no NUL byte anywhere in the key
-//   - no backslash anywhere in the key (POSIX-style keys only)
+//   - '/' is the only separator; a backslash is a literal filename byte inside a rest segment (D-W09-2 amendment)
 //   - no path segment (split on '/') equal to '' (double slash), '.', or '..'
 //     ANYWHERE in the key, not just in rest
 //   - rest must not end in '/'
