@@ -339,12 +339,18 @@ func TestRunProcessIdleLeavesUnmeasurableTreesAlone(t *testing.T) {
 	limits := idleLimits{sample: 10 * time.Millisecond, minRun: 10 * time.Millisecond, idleAfter: 50 * time.Millisecond, noise: time.Millisecond}
 
 	unmeasurable := newCPUTree(false)
+	start := time.Now()
 	res := runProcessWithTreeIdle(context.Background(), 300*time.Millisecond, limits, unmeasurable, sh, "-c", "sleep 20; true")
 	if res.IdleStopped {
 		t.Fatal("a tree whose CPU cannot be measured must not be idle-stopped")
 	}
 	if !res.TimedOut {
 		t.Fatal("with the watchdog disabled the run must still hit its cap")
+	}
+	// The cap must end the whole TREE: the forked sleep would otherwise hold
+	// the pipes for its full 20 s after the leader is gone.
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Fatalf("the deadline took %s to end the run; the process tree was not terminated at the cap", elapsed)
 	}
 }
 
@@ -402,6 +408,7 @@ func TestRunProcessIdleKeepsAGenuineDrainErrorAlongsideIdleStopped(t *testing.T)
 	tree := newCPUTree(true)
 	tree.drainErr = errors.New("query cleaner job accounting: the handle is invalid")
 
+	start := time.Now()
 	res := runProcessWithTreeIdle(context.Background(), 30*time.Second,
 		idleLimits{sample: 10 * time.Millisecond, minRun: 20 * time.Millisecond, idleAfter: 30 * time.Millisecond, noise: 250 * time.Millisecond},
 		tree, sh, "-c", "sleep 25; true")
@@ -411,5 +418,8 @@ func TestRunProcessIdleKeepsAGenuineDrainErrorAlongsideIdleStopped(t *testing.T)
 	}
 	if res.Err == nil || !strings.Contains(res.Err.Error(), "handle is invalid") {
 		t.Fatalf("Err = %v, want the drain failure preserved for the caller to report", res.Err)
+	}
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Fatalf("the idle watchdog took %s to fire; the tree was not terminated", elapsed)
 	}
 }
