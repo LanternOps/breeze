@@ -5490,10 +5490,10 @@ describe('#6607 — onOpen survives a markOnline DB failure', () => {
   beforeEach(() => {
     vi.resetAllMocks();
     vi.mocked(withDbAccessContext).mockImplementation((async (_ctx: any, fn: any) => fn()) as never);
+    vi.mocked(publishEvent).mockResolvedValue('event-id');
   });
 
   afterEach(() => {
-    disconnectAgent('agent-6607');
     vi.mocked(withDbAccessContext).mockImplementation((async (_ctx: any, fn: any) => fn()) as never);
   });
 
@@ -5506,25 +5506,47 @@ describe('#6607 — onOpen survives a markOnline DB failure', () => {
       return fn();
     }) as never);
     vi.mocked(db.update).mockReturnValue(updateResult() as never);
-    vi.mocked(db.select).mockReturnValue(selectAgentDevice([]) as never);
+    // A real device row, so the device.online publish below is actually
+    // reachable — an empty row set would skip that block and make the
+    // "side effects still run" claim vacuous.
+    vi.mocked(db.select).mockReturnValue(selectAgentDevice([{
+      id: 'device-6607', siteId: 'site-6607', hostname: 'host-6607',
+      agentVersion: '0.115.0', isEphemeral: false,
+    }]) as never);
 
     const handlers = createAgentWsHandlers('agent-6607', {
       deviceId: 'device-6607', orgId: 'org-6607', partnerId: 'partner-6607',
     });
     const ws = wsMock();
 
-    // The bug: this rejected instead of resolving.
-    await expect(handlers.onOpen({}, ws as never)).resolves.toBeUndefined();
+    try {
+      // The bug: this rejected instead of resolving.
+      await expect(handlers.onOpen({}, ws as never)).resolves.toBeUndefined();
 
-    // The socket is live and usable: registered, welcomed, not closed.
-    expect(isAgentConnected('agent-6607')).toBe(true);
-    expect(ws.close).not.toHaveBeenCalled();
-    const welcome = vi.mocked(ws.send).mock.calls
-      .map(call => JSON.parse(call[0] as string))
-      .find(frame => frame.type === 'connected');
-    expect(welcome).toBeDefined();
+      // The socket is live and usable: registered, welcomed, not closed.
+      expect(isAgentConnected('agent-6607')).toBe(true);
+      expect(ws.close).not.toHaveBeenCalled();
+      const welcome = vi.mocked(ws.send).mock.calls
+        .map(call => JSON.parse(call[0] as string))
+        .find(frame => frame.type === 'connected');
+      expect(welcome).toBeDefined();
 
-    // The failure is reported, not swallowed.
-    expect(captureException).toHaveBeenCalledWith(markOnlineFailure);
+      // The side effects that the escaping rejection used to skip still run.
+      expect(publishEvent).toHaveBeenCalledWith(
+        'device.online',
+        'org-6607',
+        expect.objectContaining({ deviceId: 'device-6607', status: 'online' }),
+        'agent-ws',
+        expect.objectContaining({ siteId: 'site-6607' }),
+      );
+
+      // The failure is reported, not swallowed.
+      expect(captureException).toHaveBeenCalledWith(markOnlineFailure);
+    } finally {
+      // onClose (not disconnectAgent) is what actually evicts the connection
+      // and clears this socket's ping interval — leaving either behind leaks
+      // a live timer and a stale activeConnections entry into later suites.
+      await handlers.onClose({} as never, ws as never);
+    }
   });
 });
