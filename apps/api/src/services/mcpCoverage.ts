@@ -54,7 +54,18 @@ export type McpExemptReason =
    * record carries challenge and destination provenance material that is
    * classified `excludedSensitive` in the tenant export policy.
    */
-  | 'human_only_verification';
+  | 'human_only_verification'
+  /**
+   * Evidence of a customer's agreement attached to an MSP-recorded ("accept on
+   * behalf") quote acceptance (#6633) — a signed PDF, PO scan, or email export
+   * a dispute reviewer relies on. Accepting on behalf is itself human-only (the
+   * spec gives it no AI tool: it commits the customer to an invoice and
+   * contracts), and an agent that could attach or replace the supporting file
+   * could fabricate the proof behind a money-committing record. Download is
+   * excluded with it: the file is internal, never shown to the customer, and
+   * is read by a human reviewer from the quote page.
+   */
+  | 'human_only_legal_evidence';
 
 export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'accessReviews.ts': { gap: '#6141' },
@@ -378,6 +389,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'portal/service.ts': { exempt: 'portal' },
   'portal/tickets.ts': { exempt: 'portal' },
   'psa.ts': { tools: ['query_psa_status'] },
+  'quotes/acceptanceEvidence.ts': { exempt: 'human_only_legal_evidence', note: 'Upload/download of the evidence file behind an on-behalf quote acceptance (#6633); the acceptance itself has no AI tool by design.' },
   'quotes/bulk.ts': { gap: '#6141' },
   'quotes/lifecycle.ts': { tools: ['manage_quotes'] },
   'quotes/quotes.ts': { tools: ['list_quotes', 'get_quote', 'manage_quotes'] },
