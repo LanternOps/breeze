@@ -35,6 +35,7 @@ export type BodyLimitRule =
   | 'agent-ingest'
   | 'ticket-attachment'
   | 'org-document'
+  | 'quote-acceptance-evidence'
   // Route-level limits TIGHTER than the global default, so `bodyLimitForPath`
   // never returns them — the route's own gate is the one that answers. They
   // share this namespace so all body-limit 413s group on one tag.
@@ -145,6 +146,17 @@ export function bodyLimitForPath(path: string): BodyLimitPolicy {
       rule: 'image-upload',
       maxSize: 5 * 1024 * 1024 + 64 * 1024,
       error: 'Image too large (max 5 MB)',
+    };
+  }
+  // Evidence file on an accept-on-behalf acceptance (#6633): one multipart PDF/
+  // PNG/JPEG, capped at 10 MiB by the route and quoteAcceptanceEvidence.ts.
+  // Same #3482-class reason and 64 KiB slack as the carve-outs above; the GET
+  // sibling and the JSON accept route stay at the default.
+  if (path.match(/^\/api\/v1\/quotes\/[^/]+\/acceptance\/evidence$/)) {
+    return {
+      rule: 'quote-acceptance-evidence',
+      maxSize: 10 * 1024 * 1024 + 64 * 1024,
+      error: 'Evidence file too large (max 10 MB)',
     };
   }
   if (path === '/api/v1/users/me/avatar') {

@@ -280,6 +280,11 @@ const ROUTE_LEVEL_BODY_LIMITS: Record<
     globalMaxSize: 10 * MB + 64 * KB,
     note: 'carved out — 10MB template document',
   },
+  'quotes/acceptanceEvidence.ts': {
+    paths: ['/api/v1/quotes/quote-1/acceptance/evidence'],
+    globalMaxSize: 10 * MB + 64 * KB,
+    note: 'carved out — 10MB accept-on-behalf evidence file (#6633)',
+  },
   'quotes/lifecycle.ts': {
     paths: ['/api/v1/quotes/quote-1/images'],
     globalMaxSize: 5 * MB + 64 * KB,
@@ -438,5 +443,22 @@ describe('org document upload carve-out (service deliverables W03)', () => {
     expect(bodyLimitForPath(`/api/v1/orgs/${ORG}/documents/${DOC}/content`).rule).toBe('default');
     expect(bodyLimitForPath(`/api/v1/orgs/${ORG}/deliverables/occurrences/${DOC}/evidence`).rule).toBe('default');
     expect(bodyLimitForPath(`/api/v1/orgs/${ORG}/deliverables/occurrences/${DOC}/deliver`).rule).toBe('default');
+  });
+});
+
+describe('quote acceptance evidence carve-out (#6633)', () => {
+  const Q = '11111111-2222-4333-8444-555555555555';
+
+  it('gives the evidence upload 10 MiB + 64 KiB of headroom', () => {
+    expect(bodyLimitForPath(`/api/v1/quotes/${Q}/acceptance/evidence`)).toEqual({
+      rule: 'quote-acceptance-evidence',
+      maxSize: 10 * 1024 * 1024 + 64 * 1024,
+      error: 'Evidence file too large (max 10 MB)',
+    });
+  });
+
+  it('does NOT widen the quote JSON routes', () => {
+    expect(bodyLimitForPath(`/api/v1/quotes/${Q}/accept-on-behalf`).rule).toBe('default');
+    expect(bodyLimitForPath(`/api/v1/quotes/${Q}/acceptance`).rule).toBe('default');
   });
 });
