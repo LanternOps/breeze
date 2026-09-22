@@ -23,7 +23,7 @@ export const LABOUR_PRICING_REPLACEMENT = {
 export type LabourPricingReplacement = keyof typeof LABOUR_PRICING_REPLACEMENT;
 
 export function retiredLabourPricingMessage(field: RetiredLabourPricingField, replacement: LabourPricingReplacement): string {
-  return `${field} was retired in v0.115: ${LABOUR_PRICING_REPLACEMENT[replacement]}`;
+  return `${field} was retired in v0.116: ${LABOUR_PRICING_REPLACEMENT[replacement]}`;
 }
 
 /**

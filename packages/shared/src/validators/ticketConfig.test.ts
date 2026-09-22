@@ -163,6 +163,12 @@ describe('orgTicketSettingsSchema', () => {
     expect(issue?.message).toContain(field);
     expect(issue?.message).toContain('billing profile');
   });
+  it('names the release that first rejects the field (v0.116; v0.115 still ignored it)', () => {
+    const result = orgTicketSettingsSchema.safeParse({ defaultHourlyRate: 150 });
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(result.error.issues[0]?.message).toMatch(/^defaultHourlyRate was retired in v0\.116: /);
+  });
   it('rejects the whole request when a retired field accompanies a valid SLA override', () => {
     const slaOverrides = { normal: { resolutionMinutes: 480 } };
     expect(orgTicketSettingsSchema.safeParse({ slaOverrides, defaultHourlyRate: 10 }).success).toBe(false);

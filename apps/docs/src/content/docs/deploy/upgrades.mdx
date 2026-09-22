@@ -108,14 +108,14 @@ Before upgrading a proxy-fronted deployment to **v0.103.0 or later**, verify tha
 
 ## Version-specific notes
 
-### v0.115.0 — billing profiles replace per-organization labour rates
+### v0.116.0 — retired labour-pricing fields are rejected
 
 **Breaking API change: `defaultHourlyRate`, `defaultBillable` and `rateCurrency`
-are rejected.** Labour pricing moved from per-organization ticket settings and
+are rejected.** In v0.115.0 labour pricing moved from per-organization ticket settings and
 per-category defaults to partner-level **billing profiles** (rate cards) with
 per-work-type rows. The conversion migration builds the profiles from your
 existing rates and assigns one to every organization, so nothing needs
-re-entering. From this release `PATCH /organizations/:id/ticket-settings`,
+re-entering. From v0.116.0 `PATCH /organizations/:id/ticket-settings`,
 `POST /ticket-categories` and `PATCH /ticket-categories/:id` return **400** when
 the request carries any of the three retired fields, and the whole request is
 rejected — a rename sent alongside a retired field does not land either. The
@@ -134,9 +134,24 @@ Breeze's own web, mobile and add-in clients never send them.
   deprecation policy: LanternOps/breeze#6472.
 </Aside>
 
-The six underlying database columns are still present in this release; the
+The six underlying database columns are still present in v0.116.0; the
 release that drops them will carry its own rollback note. **Back up your
 database before upgrading** all the same.
+
+### v0.115.0 — billing profiles replace per-organization labour rates
+
+**Labour pricing moved to billing profiles, and the old fields are silently
+ignored in this release.** The conversion migration builds partner-level billing
+profiles from your existing organization and category rates and assigns one to
+every organization; nothing needs re-entering. However, v0.115.0 still *accepts*
+`defaultHourlyRate`, `defaultBillable` and `rateCurrency` on
+`PATCH /organizations/:id/ticket-settings`, `POST /ticket-categories` and
+`PATCH /ticket-categories/:id`, returns **200**, and **discards the value**.
+The only signal is a `deprecationWarnings` array in the response body. An
+integration that changes a rate through these fields on v0.115.0 keeps billing
+at the old rate. Move rate changes to billing profiles
+(`PUT /organizations/:id/billing-profile`, or **Settings → Billing → Rates**)
+before or during this upgrade. v0.116.0 turns these writes into a 400 (above).
 
 ### v0.114.0 — evidence reports, network device page, account board
 
