@@ -30,13 +30,24 @@ func trimEOL(s string) string { return strings.TrimRight(s, "\r\n") }
 
 func runOne(t *testing.T, scriptType, script string, params map[string]string) *ScriptResult {
 	t.Helper()
+	return runOneTimeout(t, scriptType, script, params, 20)
+}
+
+// runOneTimeout is runOne with an explicit per-run timeout in seconds. This
+// is the executor's OWN per-execution timeout (ScriptExecution.Timeout), not
+// the Go test timeout — some interpreters (pwsh, in particular) can take much
+// longer than 20s to start cold on a loaded CI runner, so a caller that needs
+// headroom beyond the default passes a longer one here instead of raising it
+// for every scriptType (issue #6599).
+func runOneTimeout(t *testing.T, scriptType, script string, params map[string]string, timeoutSeconds int) *ScriptResult {
+	t.Helper()
 	e := newTestExecutor()
 	result, err := e.Execute(ScriptExecution{
 		ID:         "pos-" + t.Name(),
 		ScriptType: scriptType,
 		Script:     script,
 		Parameters: params,
-		Timeout:    20,
+		Timeout:    timeoutSeconds,
 	})
 	if err != nil {
 		t.Fatalf("execute failed: %v (stderr: %s)", err, result.Stderr)
@@ -186,10 +197,24 @@ func TestExecuteBashParameterValuesSurviveIntact(t *testing.T) {
 	}
 }
 
+// powerShellColdStartTimeout gives pwsh room for a cold process start on a
+// loaded CI runner. The production default (executor.DefaultTimeout, 300s)
+// is untouched — this only widens the per-run budget THIS test asks the
+// executor for, via ScriptExecution.Timeout.
+const powerShellColdStartTimeout = 60
+
 func TestExecutePowerShellParameterValuesSurviveIntact(t *testing.T) {
 	if _, err := exec.LookPath("pwsh"); err != nil {
 		t.Skip("pwsh not available")
 	}
+	// Warm pwsh once before the table below. The first invocation of a
+	// cold pwsh process can alone take longer than the executor's default
+	// 20s per-run test timeout on a loaded runner (issue #6599); its
+	// result is discarded, and only the timed warm-up itself gets the
+	// extra headroom, so a genuinely hung pwsh still fails loudly instead
+	// of stalling the whole test.
+	runOneTimeout(t, ScriptTypePowerShell, `Write-Output 'warmup'`, nil, powerShellColdStartTimeout)
+
 	value := "he said \"hi\" $x `tick` 100%"
 	tests := []struct {
 		name   string
@@ -218,7 +243,7 @@ func TestExecutePowerShellParameterValuesSurviveIntact(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := runOne(t, ScriptTypePowerShell, tt.script, tt.params)
+			result := runOneTimeout(t, ScriptTypePowerShell, tt.script, tt.params, powerShellColdStartTimeout)
 			if got := trimEOL(result.Stdout); got != tt.want {
 				t.Fatalf("stdout %q, want %q", got, tt.want)
 			}
