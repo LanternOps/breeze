@@ -39,11 +39,14 @@ describe('AI Operator task-graph Drizzle schema (recipe spec §5.1-§5.3)', () =
     ]);
   });
 
-  it('ai_operator_task_steps carries step_kind and no checklist column (that is wave E3)', () => {
+  it('ai_operator_task_steps carries step_kind, and (since wave E3) the checklist link', () => {
     expect(getTableName(aiOperatorTaskSteps)).toBe('ai_operator_task_steps');
     const cols = names(aiOperatorTaskSteps);
     expect(cols).toContain('step_kind');
-    expect(cols).not.toContain('checklist_item_id');
+    // E2 pinned the ABSENCE of this column; E3 (#6168) adds it. Its shape —
+    // plain single-column FK, no composite — is asserted in
+    // aiOperatorHumanWork.test.ts beside this file.
+    expect(cols).toContain('checklist_item_id');
   });
 
   it('ai_operator_task_events has NO jsonb column and NO update timestamp', () => {
