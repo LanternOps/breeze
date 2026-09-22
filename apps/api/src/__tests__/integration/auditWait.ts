@@ -16,15 +16,19 @@
  * this helper is that poll, shared (issue #6555).
  *
  * Deliberately count-based and caller-driven: each suite keeps its own database
- * handle (`getTestDb()`, a fixture's `adminDb`, or a `withSystemDbAccessContext`
- * wrapper) and its own column selection, so the existing assertions — which pin
- * the exact actions, org ids and details — stay untouched and keep producing
- * their own failure messages.
+ * handle (`getTestDb()`, a fixture's `adminDb`, or a system-scoped
+ * `withDbAccessContext` wrapper) and its own column selection, so the existing
+ * assertions — which pin the exact actions, org ids and details — stay
+ * untouched and keep producing their own failure messages.
  */
 
 /**
- * Poll `read` until it returns exactly `expectedCount` rows, or the deadline
- * passes.
+ * Poll `read` until it returns **at least** `expectedCount` rows, or the
+ * deadline passes.
+ *
+ * `>=`, not `===`, on purpose: an over-count is a real regression, and the
+ * caller's own exact-length assertion is what should report it. Blocking here
+ * would instead burn the whole timeout and report nothing useful.
  *
  * Returns the last rows read **without asserting**: on a real regression the
  * caller's own `expect` reports the mismatch with its own message. This only
