@@ -258,23 +258,36 @@ func TestIdleTrackerIgnoresSubNoiseCPUJitter(t *testing.T) {
 
 // cpuTree reports a caller-supplied CPU reading so the watchdog is exercised
 // without a Windows job object.
+//
+// Containment (prepare + kill) is delegated to the REAL platform tree rather
+// than faked: the fixtures run `sh -c "sleep N; true"`, where the shell forks
+// `sleep` as a child. Killing only the leader leaves that child holding the
+// stdout/stderr pipes, so cmd.Wait blocks until it exits on its own — on the
+// Linux CI runner that made the idle-stop test wait the full 25 s and fail
+// its "did not wait for the cap" bound, while macOS's exec-optimising sh hid
+// it locally.
 type cpuTree struct {
 	drainingTestTree
+	real   processTree
 	cpu    time.Duration
 	ok     bool
 	killed chan struct{}
 }
 
+func newCPUTree(ok bool) *cpuTree {
+	return &cpuTree{real: newProcessTree(), ok: ok, killed: make(chan struct{})}
+}
+
 func (t *cpuTree) cpuTime() (time.Duration, bool) { return t.cpu, t.ok }
+func (t *cpuTree) prepare(cmd *exec.Cmd)          { t.real.prepare(cmd) }
+func (t *cpuTree) release()                       { t.drainingTestTree.release(); t.real.release() }
 func (t *cpuTree) kill(cmd *exec.Cmd) {
 	select {
 	case <-t.killed:
 	default:
 		close(t.killed)
 	}
-	if cmd != nil && cmd.Process != nil {
-		_ = cmd.Process.Kill()
-	}
+	t.real.kill(cmd)
 }
 
 func TestRunProcessIdleStopsAWedgedTreeWithoutCallingItATimeout(t *testing.T) {
@@ -285,11 +298,11 @@ func TestRunProcessIdleStopsAWedgedTreeWithoutCallingItATimeout(t *testing.T) {
 	if !ok {
 		t.Skip("/bin/sh not present")
 	}
-	tree := &cpuTree{ok: true, killed: make(chan struct{})}
+	tree := newCPUTree(true)
 	start := time.Now()
 	res := runProcessWithTreeIdle(context.Background(), 30*time.Second,
 		idleLimits{sample: 10 * time.Millisecond, minRun: 20 * time.Millisecond, idleAfter: 30 * time.Millisecond, noise: 250 * time.Millisecond},
-		tree, sh, "-c", "sleep 25")
+		tree, sh, "-c", "sleep 25; true")
 
 	if !res.IdleStopped {
 		t.Fatalf("IdleStopped = false; a tree that stopped using CPU must be reported as idle-stopped: %+v", res)
@@ -325,8 +338,8 @@ func TestRunProcessIdleLeavesUnmeasurableTreesAlone(t *testing.T) {
 	}
 	limits := idleLimits{sample: 10 * time.Millisecond, minRun: 10 * time.Millisecond, idleAfter: 50 * time.Millisecond, noise: time.Millisecond}
 
-	unmeasurable := &cpuTree{ok: false, killed: make(chan struct{})}
-	res := runProcessWithTreeIdle(context.Background(), 300*time.Millisecond, limits, unmeasurable, sh, "-c", "sleep 20")
+	unmeasurable := newCPUTree(false)
+	res := runProcessWithTreeIdle(context.Background(), 300*time.Millisecond, limits, unmeasurable, sh, "-c", "sleep 20; true")
 	if res.IdleStopped {
 		t.Fatal("a tree whose CPU cannot be measured must not be idle-stopped")
 	}
@@ -386,12 +399,12 @@ func TestRunProcessIdleKeepsAGenuineDrainErrorAlongsideIdleStopped(t *testing.T)
 	if !ok {
 		t.Skip("/bin/sh not present")
 	}
-	tree := &cpuTree{ok: true, killed: make(chan struct{})}
+	tree := newCPUTree(true)
 	tree.drainErr = errors.New("query cleaner job accounting: the handle is invalid")
 
 	res := runProcessWithTreeIdle(context.Background(), 30*time.Second,
 		idleLimits{sample: 10 * time.Millisecond, minRun: 20 * time.Millisecond, idleAfter: 30 * time.Millisecond, noise: 250 * time.Millisecond},
-		tree, sh, "-c", "sleep 25")
+		tree, sh, "-c", "sleep 25; true")
 
 	if !res.IdleStopped {
 		t.Fatalf("IdleStopped = false, want true: %+v", res)
