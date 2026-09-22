@@ -1063,7 +1063,7 @@ const ASSOCIATED_SYSTEM_SCOPED_TABLES: ReadonlyArray<{
   // runs, via this pre-clear) are reached by the per-org cascade; PARTNER-
   // owned definitions are reached only by the partner sweep's automatic
   // `partner_id` discovery in cascadeDeletePartner, and their runs by the
-  // report_runs.report_id ON DELETE CASCADE that 2026-10-26-140100 added.
+  // report_runs.report_id ON DELETE CASCADE that 2026-10-27-130100 added.
   {
     table: 'report_runs',
     clearSql: (orgId) => sql`

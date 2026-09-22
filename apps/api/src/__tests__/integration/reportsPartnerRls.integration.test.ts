@@ -1,7 +1,7 @@
 /**
  * reports RLS — dual-axis (org OR partner) enforcement (#3198 W01).
  *
- * Migration under test: 2026-10-26-140100-reports-partner-ownership.sql.
+ * Migration under test: 2026-10-27-130100-reports-partner-ownership.sql.
  *
  * A report is owned by EITHER an org (org_id set, partner_id NULL) OR a partner
  * (partner_id set, org_id NULL — a cross-org business aggregate). The policy is:
@@ -122,7 +122,7 @@ async function insertPartnerReport(partnerId: string, userId: string, name = 'Pa
   return row;
 }
 
-describe('reports RLS — partner ownership (2026-10-26-140100)', () => {
+describe('reports RLS — partner ownership (2026-10-27-130100)', () => {
   it('a partner inserts and reads back its own partner-owned report; another partner sees nothing', async () => {
     const p1 = await createPartner();
     const p2 = await createPartner();

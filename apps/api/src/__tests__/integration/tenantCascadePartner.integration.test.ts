@@ -201,7 +201,7 @@ describe('cascadeDeletePartner — end-to-end', () => {
     expect(await countById('partners', 'id', control.partnerId)).toBe(1);
   });
 
-  // #3198 W01: reports became org XOR partner (2026-10-26-140100). reports.partner_id
+  // #3198 W01: reports became org XOR partner (2026-10-27-130100). reports.partner_id
   // has NO ON DELETE action, so a partner-owned definition is reached ONLY by the
   // dynamic partner_id sweep; its runs go via report_runs.report_id ON DELETE
   // CASCADE and their deliveries via report_run_deliveries' existing cascade.

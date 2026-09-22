@@ -1363,7 +1363,7 @@ const mergeOrganizationUsers: CustomMergeExecutor = async (loser, survivor) => {
 // aborts the merge.
 //
 // `report_runs.report_id` is ON DELETE CASCADE since migration
-// 2026-10-26-140100 (it was a NOT NULL / NO ACTION FK before that), so a
+// 2026-10-27-130100 (it was a NOT NULL / NO ACTION FK before that), so a
 // dedupe DELETE would silently cascade the loser's runs rather than raise
 // 23503 — and the runs are the customer's generated report artifacts, so
 // dropping them is not on the table. The survivor's definition for the same

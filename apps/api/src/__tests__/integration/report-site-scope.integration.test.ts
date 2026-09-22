@@ -121,7 +121,7 @@ const MIGRATION_FILE = '2026-08-06-a-report-site-scope.sql';
 // happens to run after this one sees the pre-P2-3 shape. Every successor that
 // redefines a constraint owned by MIGRATION_FILE belongs in this list, newest
 // last; each is idempotent, so re-applying is a no-op beyond the restore.
-// 2026-10-26-140100 (#3198 W01) redefines both shape CHECKs again, adding the
+// 2026-10-27-130100 (#3198 W01) redefines both shape CHECKs again, adding the
 // partner_wide arm; without it here, every partner-owned report insert later
 // in the shard dies 23514 (reportsPartnerRls, reportsPartnerOwned,
 // tenantCascadePartner).
@@ -135,7 +135,7 @@ const MIGRATION_FILE = '2026-08-06-a-report-site-scope.sql';
 const SUCCESSOR_MIGRATION_FILES = [
   '2026-09-24-b-ai-agents-org-narrative.sql',
   '2026-10-16-182700-ai-agents-patch-profile.sql',
-  '2026-10-26-140100-reports-partner-ownership.sql',
+  '2026-10-27-130100-reports-partner-ownership.sql',
 ] as const;
 
 // Second-order hazard, and the reason `restoreSuccessorMigrations` does more

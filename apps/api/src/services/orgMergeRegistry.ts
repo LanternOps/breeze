@@ -570,7 +570,7 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   //   playbook_definitions <- playbook_executions.playbook_id (NO ACTION, NOT NULL)
   //   pam_signer_groups    <- pam_rules.match_signer_group_id (ON DELETE RESTRICT)
   //   reports              <- report_runs.report_id           (ON DELETE CASCADE since
-  //                           2026-10-26-140100, #3198 W01 — a delete would
+  //                           2026-10-27-130100, #3198 W01 — a delete would
   //                           silently drop runs instead of raising 23503)
   //   incidents            <- incident_actions.incident_id,
   //                           incident_evidence.incident_id   (2x NO ACTION, NOT NULL)
@@ -596,7 +596,7 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // whole merge aborts. `repoint-dedupe` cannot fix it either: its DELETE of
   // the loser's duplicate definition would take that definition's
   // report_runs with it — `report_runs.report_id` is ON DELETE CASCADE since
-  // 2026-10-26-140100 (#3198 W01; it was NO ACTION before and raised 23503),
+  // 2026-10-27-130100 (#3198 W01; it was NO ACTION before and raised 23503),
   // and report_run_deliveries / service_deliverable_evidence cascade from
   // the runs in turn — so run history would be lost SILENTLY. The custom
   // executor re-homes report_runs (and recipients) onto the survivor's

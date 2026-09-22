@@ -132,7 +132,7 @@ export const reports = pgTable('reports', {
 
 export const reportRuns = pgTable('report_runs', {
   id: uuid('id').primaryKey().defaultRandom(),
-  // #3198 W01: ON DELETE CASCADE since migration 2026-10-26-140100.
+  // #3198 W01: ON DELETE CASCADE since migration 2026-10-27-130100.
   reportId: uuid('report_id').notNull().references(() => reports.id, { onDelete: 'cascade' }),
   status: reportRunStatusEnum('status').notNull().default('pending'),
   startedAt: timestamp('started_at'),
