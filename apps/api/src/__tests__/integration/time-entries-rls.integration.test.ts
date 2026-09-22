@@ -22,6 +22,7 @@ import { Hono } from 'hono';
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
 import {
+  auditLogs,
   billingProfiles,
   timeEntries,
   ticketParts,
@@ -50,6 +51,7 @@ import { getTestDb } from './setup';
 import { createAccessToken } from '../../services/jwt';
 import { moveOrgRoutes } from '../../routes/devices/moveOrg';
 import { withMoveOrgStepUpGrant } from './moveOrgStepUpFixture';
+import { awaitAuditRows } from './auditWait';
 
 // Partner/org ids seeded by this file, for afterAll cleanup.
 const seededPartnerIds: string[] = [];
@@ -631,10 +633,16 @@ describe('moveOrg org_id rewrite — real driver (spec §6)', () => {
     expect(res.status, `move-org failed: ${JSON.stringify(body)}`).toBe(200);
     expect(body.success).toBe(true);
 
-    // writeRouteAudit is fire-and-forget (void return). Give the floating
-    // promise a moment to land so audit_logs rows exist before afterAll
-    // tries to clean them via the session_replication_role=replica DELETE.
-    await new Promise((resolve) => setTimeout(resolve, 200));
+    // writeRouteAudit is fire-and-forget (void return). Wait for both rows to
+    // land — rather than racing them behind a fixed sleep (#6555) — so
+    // audit_logs rows exist before afterAll tries to clean them via the
+    // session_replication_role=replica DELETE.
+    const moveAudits = await awaitAuditRows(() => adminDb
+      .select({ action: auditLogs.action })
+      .from(auditLogs)
+      .where(eq(auditLogs.resourceId, deviceA.id)), 2);
+    expect(moveAudits.map((a: { action: string }) => a.action).sort())
+      .toEqual(['device.move_org.source', 'device.move_org.target']);
 
     // ── Assert post-move org_id rewrites ────────────────────────────────
 

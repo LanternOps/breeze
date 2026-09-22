@@ -46,6 +46,7 @@ import { getTestDb } from './setup';
 import { createAccessToken } from '../../services/jwt';
 import { moveOrgRoutes } from '../../routes/devices/moveOrg';
 import { withMoveOrgStepUpGrant } from './moveOrgStepUpFixture';
+import { awaitAuditRows } from './auditWait';
 
 function uid(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -322,12 +323,12 @@ describe('POST /devices/:id/move-org — alert-axis children (#4867)', () => {
     const res = await f.move();
     expect(res.status).toBe(200);
 
-    // writeRouteAudit is fire-and-forget — let it land.
-    await new Promise((resolve) => setTimeout(resolve, 300));
-    const audits = await f.adminDb
+    // writeRouteAudit is fire-and-forget — wait for both rows rather than
+    // racing them behind a fixed sleep (#6555).
+    const audits = await awaitAuditRows(() => f.adminDb
       .select({ action: auditLogs.action, orgId: auditLogs.orgId, details: auditLogs.details })
       .from(auditLogs)
-      .where(eq(auditLogs.resourceId, f.deviceMoved.id));
+      .where(eq(auditLogs.resourceId, f.deviceMoved.id)), 2);
     expect(audits.map((a: { action: string }) => a.action).sort())
       .toEqual(['device.move_org.source', 'device.move_org.target']);
     expect(audits.map((a: { orgId: string }) => a.orgId).sort())
