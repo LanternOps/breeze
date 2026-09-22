@@ -106,6 +106,8 @@ export const updatePortalSettingsSchema = z.object({
   enableDocuments: z.boolean().optional(),
   // Portal Hardware Lifecycle (#5719): fail closed, required alongside enableReports.
   enableLifecycle: z.boolean().optional(),
+  // Customer Portal Network Visibility (#5861): fail closed by default.
+  enableNetworkVisibility: z.boolean().optional(),
   supportEmail: z.string().email().max(255).nullable().optional(),
   supportPhone: z.string().max(50).nullable().optional(),
   welcomeMessage: z.string().max(2000).nullable().optional(),

@@ -1,0 +1,7 @@
+{
+  "id": "jsonrpc",
+  "error": {
+    "code": -32000,
+    "message": "Authentication failed: invalid username or password"
+  }
+}

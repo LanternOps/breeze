@@ -1325,6 +1325,10 @@
         "enableLifecycle": {
           "label": "Ciclo de vida del hardware",
           "description": "Muestra el plan de reemplazo actualizado de los equipos de tu cliente."
+        },
+        "enableNetworkVisibility": {
+          "label": "Visibilidad de red",
+          "description": "Muestra en el portal del cliente el estado de la red y los activos detectados en modo de solo lectura."
         }
       }
     },
@@ -4274,7 +4278,8 @@
     "inactive": "Inactivo",
     "deactivate": "Desactivar",
     "activate": "Activar",
-    "slaMinutesMustBeNumbers": "Los minutos del SLA deben ser números."
+    "slaMinutesMustBeNumbers": "Los minutos del SLA deben ser números.",
+    "categorySlaOverridesOrgNote": "Este SLA tiene prioridad sobre cualquier anulación de SLA a nivel de organización para tickets en esta categoría."
   },
   "ticketPrioritiesTab": {
     "prioritiesAndSLAsSaved": "Prioridades y SLA guardados",
@@ -4785,7 +4790,8 @@
       "description": "Anule los valores predeterminados de SLA en todo el socio para esta organización. Deje una celda en blanco para heredar el valor predeterminado del socio.",
       "priority": "Prioridad",
       "response": "Respuesta (min)",
-      "resolution": "Resolución (mín.)"
+      "resolution": "Resolución (mín.)",
+      "categoryOverridesNote": "El SLA de la categoría del ticket tiene prioridad sobre estas anulaciones a nivel de organización cuando ambos están configurados."
     },
     "billing": {
       "title": "Valores predeterminados de facturación",

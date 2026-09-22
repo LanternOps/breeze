@@ -46,6 +46,12 @@ const INTENTIONALLY_NO_ORG_ID: ReadonlySet<string> = new Set([
   // devices.org_id UPDATE. See the CORE_DEVICE_ORG_DENORMALIZED_TABLES
   // comment block in core.ts.
   'ai_operator_tasks',
+  // Recipe library E2 (#6167): same rule one level down. A target's org_id IS
+  // its task's immutable org_id and anchors ai_operator_task_targets_task_org_fk,
+  // so a re-stamp would 23503 while the task stayed behind. moveOrg.ts and
+  // breeze_cascade_device_org_id() detach device_id (stamping 'device_moved')
+  // instead, and the table is excluded from breeze_device_child_orgid_tables().
+  'ai_operator_task_targets',
   'offline_transition_effects', // immutable historical source route; see core.ts
   // Has org_id, but it is intentionally NOT re-stamped on move: exposure
   // history stays with the org the unattended action ran in (same
@@ -566,6 +572,14 @@ describe('TICKET_ORG_DENORMALIZED_TABLES completeness (#5783)', () => {
     // (`ticketId: null`) instead — the run belongs to the org that ran it and
     // is `leave-for-erasure` in the merge registry.
     'ai_agent_runs',
+    // ai_operator_task_targets (recipe library E2, #6167) carries ticket_id +
+    // org_id but is EXEMPT from TICKET_ORG_DENORMALIZED_TABLES /
+    // CUSTOM_ORG_REWRITE_TABLES: its org_id is its task's immutable org_id, so
+    // re-stamping it on a ticket move would 23503 against
+    // ai_operator_task_targets_task_org_fk. moveTicketOrg detaches ticket_id
+    // instead (services/ticketService.ts). It also has a device_id column,
+    // which CUSTOM_ORG_REWRITE_TABLES explicitly excludes.
+    'ai_operator_task_targets',
     // device_vulnerabilities (#4645): org_id is the DEVICE's org and a device
     // never moves as a side effect of a ticket move, so moveTicketOrg detaches
     // the remediation-ticket pointer rather than re-stamping the finding.

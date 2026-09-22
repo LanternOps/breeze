@@ -6,12 +6,13 @@
  * session lifecycle and SSE streaming.
  */
 
-import { db } from '../db';
+import { db, withSystemDbAccessContext } from '../db';
 import { aiSessions, aiMessages } from '../db/schema';
 import { eq, and } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { ScriptBuilderContext } from '@breeze/shared/types/ai';
 import { buildScriptBuilderSystemPrompt } from './scriptBuilderPrompt';
+import { getEffectiveAiBudget } from './effectiveSettings';
 
 /**
  * Create a script builder session in the database.
@@ -26,6 +27,12 @@ export async function createScriptBuilderSession(
 
   const systemPrompt = buildScriptBuilderSystemPrompt(options.context);
 
+  // #6473 — script builder sessions run through the same runPreFlightChecks
+  // turnCount >= maxTurns enforcement as regular chat sessions (aiAgentSdk.ts),
+  // so without this they also fell back to the ai_sessions schema default
+  // (50) instead of the configured org/partner maxTurnsPerSession.
+  const budget = await withSystemDbAccessContext(() => getEffectiveAiBudget(orgId));
+
   const [session] = await db
     .insert(aiSessions)
     .values({
@@ -36,6 +43,7 @@ export async function createScriptBuilderSession(
       contextSnapshot: options.context ?? null,
       systemPrompt,
       type: 'script_builder',
+      maxTurns: budget.maxTurnsPerSession,
     })
     .returning();
 

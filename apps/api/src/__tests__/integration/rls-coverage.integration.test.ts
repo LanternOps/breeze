@@ -176,6 +176,15 @@ const ORG_AXIS_POLICY_EXCLUDED_TABLES: ReadonlySet<string> = new Set<string>([
   // here keeps that generic check honest; PARENT_FK_JOIN_POLICY_TABLES is the
   // real assertion for this table's policy shape.
   'ticket_form_org_links',
+  // backup_provider_customers (#6008 W01): partner-axis (Shape 3) carrying a
+  // denormalized NULLABLE org_id — the MAPPING TARGET, not the tenancy axis.
+  // An unmapped customer has org_id NULL and must stay visible to the partner
+  // admin who has to map it, so breeze_has_org_access(org_id) is the wrong
+  // predicate here. Identical treatment to huntress_org_mappings /
+  // s1_org_mappings. Its sibling backup_provider_devices IS direct-org_id
+  // (Shape 1) and is deliberately NOT excluded — it is auto-discovered and
+  // must carry breeze_has_org_access(org_id) on all four commands.
+  'backup_provider_customers',
 ]);
 
 // Tables whose own `id` column is the tenant identifier (no `org_id`).
@@ -330,6 +339,21 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   // for cascadeDeletePartner's dynamic partner_id sweep.
   // Functional cross-partner forge proof: orgMergeEventsRls.integration.test.ts.
   ['org_merge_events', 'partner_id'],
+  // Backup Provider Integration (#6008 W01): the MSP registers one external
+  // backup vendor connection (Cove) and maps its discovered customers to
+  // Breeze orgs. Both tables are partner-axis (Shape 3), four per-command
+  // breeze_has_partner_access policies each, the customers table additionally
+  // re-checking its parent connection's partner_id in INSERT/UPDATE WITH
+  // CHECK. backup_provider_customers is ALSO in
+  // ORG_AXIS_POLICY_EXCLUDED_TABLES (dual-list trap — it has an org_id column
+  // that is not its tenancy axis). backup_provider_devices and
+  // backup_provider_device_history carry a NOT NULL org_id and are ordinary
+  // Shape 1 tables, auto-discovered — not listed here, and their denormalized
+  // partner_id is deliberately NOT a second RLS read branch.
+  // Functional cross-partner forge proof:
+  // backupProviderRls.integration.test.ts.
+  ['backup_provider_connections', 'partner_id'],
+  ['backup_provider_customers', 'partner_id'],
   // partner_sending_domains / partner_sender_identities (spec 2026-09-17,
   // partner sending domains W02): the MSP's custom outbound From domain and
   // one sender identity per (partner, mail stream). Partner-axis (Shape 3),

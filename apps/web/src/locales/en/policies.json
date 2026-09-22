@@ -847,6 +847,7 @@
         "overridesLabel": "Overrides:",
         "failedToLoadMonitors": "Failed to load monitors",
         "createMonitor": "Create monitor",
+        "monitorDeleted": "Monitor deleted",
         "recommended": {
           "title": "Recommended monitors",
           "body": "Breeze ships built-in CPU, memory, disk and patch-compliance monitors. None are attached to this policy yet.",

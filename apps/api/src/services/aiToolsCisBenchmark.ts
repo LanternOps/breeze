@@ -357,7 +357,7 @@ registerTool({
   deviceArgs: ['deviceId'],
   definition: {
     name: 'apply_cis_remediation',
-    description: 'Queue approved CIS remediation actions for one device and one or more failed checks.',
+    description: 'Queue approved CIS remediation actions for one device and one or more failed checks. Actions: apply, rollback.',
     input_schema: {
       type: 'object' as const,
       properties: {

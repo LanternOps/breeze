@@ -295,3 +295,27 @@ export interface EnrichedPortalDevice {
   lastBackupAt: string | null;
   warrantyEndsAt: string | null;
 }
+
+/**
+ * Customer-safe Network Visibility overview (#5861).
+ *
+ * `no_data` and `not_enabled` deliberately carry null metrics so unavailable
+ * information can never be confused with a measured zero.
+ */
+export type NetworkOverviewDto =
+  | {
+      dataStatus: 'ok';
+      totalAssets: number;
+      onlineAssets: number;
+      offlineAssets: number;
+      snmpDevicesPolling: number;
+      monitorsDown: number;
+    }
+  | {
+      dataStatus: 'no_data' | 'not_enabled';
+      totalAssets: null;
+      onlineAssets: null;
+      offlineAssets: null;
+      snmpDevicesPolling: null;
+      monitorsDown: null;
+    };

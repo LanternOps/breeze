@@ -181,6 +181,33 @@ describe('W04 coverage condition schemas (#5291)', () => {
     expect(monitorConditionSchemas.network_check.safeParse({ checkType: 'tcp_port', target: '10.0.0.1' }).success).toBe(false);
   });
 
+  // #6510: followRedirects is an optional http_check override — the compiler
+  // (not this schema) is what applies the smart default for a 3xx expectStatus.
+  it('network_check: http_check accepts an explicit followRedirects boolean', () => {
+    expect(
+      monitorConditionSchemas.network_check.safeParse({
+        checkType: 'http_check',
+        target: 'https://example.com',
+        expectStatus: 301,
+        followRedirects: false,
+      }).success,
+    ).toBe(true);
+    expect(
+      monitorConditionSchemas.network_check.safeParse({
+        checkType: 'http_check',
+        target: 'https://example.com',
+        followRedirects: true,
+      }).success,
+    ).toBe(true);
+    expect(
+      monitorConditionSchemas.network_check.safeParse({
+        checkType: 'http_check',
+        target: 'https://example.com',
+        followRedirects: 'false',
+      }).success,
+    ).toBe(false);
+  });
+
   it('a definition whose condition does not match its kind is rejected', () => {
     const result = createMonitorDefinitionSchema.safeParse({
       name: 'AV stale',

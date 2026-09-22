@@ -118,6 +118,24 @@ describe('makeClientToolHandler — readonly write-mode gate', () => {
 });
 
 describe('makeClientToolHandler — success path', () => {
+  it('redacts sensitive tool input before writing the execution ledger', async () => {
+    const { session } = makeSession();
+    requestToolMock.mockResolvedValue({ status: 'success', output: { cells: [['ok']] } });
+    const handler = makeClientToolHandler('excel', 'read_range', () => session);
+
+    await handler({
+      address: 'A1',
+      providerConfig: { accessKey: 'synthetic-access', secretKey: 'synthetic-secret' },
+    } as never);
+
+    expect(executionsValuesMock).toHaveBeenCalledWith(expect.objectContaining({
+      toolInput: {
+        address: 'A1',
+        providerConfig: { accessKey: '[REDACTED]', secretKey: '[REDACTED]' },
+      },
+    }));
+  });
+
   it('round-trips through the bridge with the FIFO toolUseId, persists redacted output, audits, publishes tool_completed', async () => {
     const { session, publish } = makeSession({ queue: ['toolu_real'] });
     requestToolMock.mockResolvedValue({ status: 'success', output: { address: 'A1:B1', cells: [['v1', 'v2']] } });

@@ -319,6 +319,17 @@ describe('TicketCategoriesPage', () => {
 
     });
 
+    it('states that this category SLA overrides an org-level SLA override', async () => {
+      mockGetCategories([CAT_CHILD]);
+      render(<TicketCategoriesPage />);
+      await screen.findByTestId(`ticket-category-edit-${CAT_CHILD.id}`);
+
+      fireEvent.click(screen.getByTestId(`ticket-category-edit-${CAT_CHILD.id}`));
+
+      expect(screen.getByTestId('ticket-category-sla-direction-note')).toBeInTheDocument();
+      expect(screen.getByTestId('ticket-category-edit-response-sla')).toBeInTheDocument();
+    });
+
     it('closes edit panel on cancel without saving', async () => {
       mockGetCategories([CAT_PARENT]);
       render(<TicketCategoriesPage />);

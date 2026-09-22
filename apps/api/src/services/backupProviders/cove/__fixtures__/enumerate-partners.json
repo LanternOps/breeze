@@ -1,0 +1,12 @@
+{
+  "id": "jsonrpc",
+  "visa": "visa-2",
+  "result": {
+    "result": [
+      { "Id": 1000, "Name": "OliveTech", "Level": "Distributor", "ParentId": 0, "ExternalCode": "", "State": "InProduction" },
+      { "Id": 2001, "Name": "Acme Corp", "Level": "EndCustomer", "ParentId": 1000, "ExternalCode": "3f1d9b2a-0c44-4a1e-9d31-2b6a5f0c7e88", "State": "InProduction" },
+      { "Id": 2002, "Name": "Beta Industries", "Level": "EndCustomer", "ParentId": 1000, "ExternalCode": null, "State": "InProduction" },
+      { "Id": 2003, "Name": "Gamma Holdings", "Level": "Reseller", "ParentId": 1000, "ExternalCode": "GAMMA-01", "State": "InTrial" }
+    ]
+  }
+}

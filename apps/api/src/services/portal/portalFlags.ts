@@ -16,7 +16,8 @@ export const PORTAL_VISIBILITY_FLAG_KEYS = [
   'enableSupportUsage',
   'enableService',
   'enableDocuments',
-  'enableLifecycle'
+  'enableLifecycle',
+  'enableNetworkVisibility'
 ] as const;
 
 export type PortalVisibilityFlag = typeof PORTAL_VISIBILITY_FLAG_KEYS[number];

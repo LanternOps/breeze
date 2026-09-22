@@ -142,6 +142,10 @@ export const invoiceLines = pgTable('invoice_lines', {
   customerVisible: boolean('customer_visible').notNull().default(true),
   lineTotal: numeric('line_total', { precision: 12, scale: 2 }).notNull().default('0'),
   isUnapprovedTime: boolean('is_unapproved_time').notNull().default(false),
+  // #6467: actual time worked for a time_entry-sourced line, for the
+  // worked-vs-billed disclosure note only — never for money. NULL for
+  // non-time-entry lines and for legacy rows predating this column.
+  workedMinutes: integer('worked_minutes'),
   sortOrder: integer('sort_order').notNull().default(0),
   createdAt: timestamp('created_at').defaultNow().notNull()
 }, (t) => [

@@ -317,6 +317,15 @@ export default function MonitorsTab({
           <ul className="space-y-2">
             {items.map((it) => {
               const monitor = catalogById.get(it.monitorId);
+              // #6493: an item can outlive the monitor it points at — the
+              // monitor was deleted (its config_policy_monitors row went with
+              // it via ON DELETE CASCADE, but a stale copy can still surface
+              // here from a link saved before that delete). Once the catalog
+              // fetch has actually finished (not still loading, not errored),
+              // a missing catalog entry means the monitor is gone, not that
+              // the catalog hasn't loaded yet — render that explicitly rather
+              // than falling back to a bare, meaningless UUID.
+              const isDeleted = !monitor && !catalogLoading && !catalogError;
               const overrideValue =
                 typeof it.overrides?.value === "number" ||
                 typeof it.overrides?.value === "string"
@@ -326,13 +335,22 @@ export default function MonitorsTab({
                 <li
                   key={it.monitorId}
                   data-testid={`monitors-tab-item-${it.monitorId}`}
-                  className="rounded-md border bg-background px-4 py-3"
+                  className={`rounded-md border bg-background px-4 py-3 ${isDeleted ? "border-destructive/40" : ""}`}
                 >
                   <div className="flex items-center justify-between gap-3">
                     <div className="min-w-0">
-                      <p className="truncate text-sm font-medium">
-                        {monitor?.name ?? it.monitorId}
-                      </p>
+                      {isDeleted ? (
+                        <p
+                          className="truncate text-sm font-medium text-destructive"
+                          data-testid={`monitors-tab-item-deleted-${it.monitorId}`}
+                        >
+                          {i18n.t(
+                            "policies:configurationPolicies.featureTabs.monitorsTab.monitorDeleted",
+                          )}
+                        </p>
+                      ) : (
+                        <p className="truncate text-sm font-medium">{monitor?.name}</p>
+                      )}
                       <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                         {monitor?.kind && <span>{monitor.kind}</span>}
                         {monitor?.severity && (

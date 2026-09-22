@@ -44,13 +44,17 @@ import {
   issueInvoice,
   recordPayment,
   voidPayment,
-  voidInvoice
+  voidInvoice,
+  lockContractLineMaterializationSource
 } from './invoiceService';
 import { createInvoicePayLink } from './invoiceCheckout';
 import { InvoiceServiceError, type InvoiceActor } from './invoiceTypes';
+import { actorCan } from './contractTypes';
+import { resolveContractActorFromAuth } from './contractActor';
+import { PERMISSIONS } from './permissions';
 import { db } from '../db';
 import type { DeviceSnapshotRow } from './contractQuantities';
-import { computeContractEstimate, getContract, lockContractRow, materializeContractLineOntoInvoice } from './contractService';
+import { computeContractEstimate, getContract, materializeContractLineOntoInvoice } from './contractService';
 import { toCents } from './invoiceMath';
 import { missingParamsJson, zodErrorToJson } from './aiToolValidation';
 
@@ -160,9 +164,7 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
     definition: {
       name: 'list_invoices',
       description:
-        'List invoices for the orgs the caller can access, newest first. Optionally filter by org or status. ' +
-        'Each invoice includes depositDue and, when a deposit is configured, a derived depositPaid boolean. Read-only.' +
-        ' Every document carries a 3-letter currencyCode and all of its amounts (subtotal, tax, total, balance, line totals) are in that currency. NEVER add amounts from documents with different currencyCode values — group by currencyCode first and report one total per currency.',
+        "List accessible invoices newest first, with depositDue and depositPaid when configured. All amounts use each invoice currencyCode; never sum across currencies; group by currencyCode for totals.",
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -207,9 +209,7 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
     definition: {
       name: 'get_invoice',
       description:
-        'Get the full accounting view of one invoice (header plus all lines) by id. Includes depositDue and, ' +
-        'when a deposit is configured, a derived depositPaid boolean. Read-only.' +
-        ' Every document carries a 3-letter currencyCode and all of its amounts (subtotal, tax, total, balance, line totals) are in that currency. NEVER add amounts from documents with different currencyCode values — group by currencyCode first and report one total per currency.',
+        "Get an invoice header and all lines, including depositDue and depositPaid when configured. All amounts use its currencyCode; never sum across currencies; group by currencyCode for totals.",
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -240,25 +240,13 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
     definition: {
       name: 'manage_invoices',
       description:
-        'Create and manage invoices for orgs the caller can access: build drafts, add/edit/remove lines, ' +
-        'issue (finalize), void, record or void payments, and create a Stripe pay link. Issue/void/payment ' +
-        'actions finalize financial state and require approval. Assembly responses carry `blockedByCurrency` ' +
-        'listing unbilled work in other currencies — assemble a separate draft with `currencyCode` set; never ' +
-        'sum across currencies.' +
-        ' Money inputs (line unitPrice, payment amount) are in the invoice\'s currencyCode. create_pay_link may return a `warning` (code CURRENCY_DIFFERS_FROM_STRIPE_ACCOUNT) when the invoice currency differs from the partner\'s Stripe account currency — relay it to the user; it does not block the link.' +
-        ' Catalog/bundle lines are priced from the ' +
-        'catalog price book in the INVOICE\'s currency — never converted: add_catalog_line fails with ' +
-        'NO_PRICE_FOR_CURRENCY (409) when the item has no price in that currency, add_bundle_line with ' +
-        'NO_PRICE_FOR_CURRENCY (bundle headline missing) or PRICE_BOOK_INCOMPLETE (409, a component is ' +
-        'missing a price). Use add_manual_line instead, or fill the price book. add_contract_line returns ' +
-        '{ line, pricedFrom, overages }; pricedFrom "contract_snapshot" on a catalog line means the price book had a ' +
-        'gap and the contract line\'s stamped price was billed. overages reports bill/flag allowance overages and ' +
-        'the bill-mode sibling invoiceLineId.',
+        "Invoices; issue/void/payments need approval. Never sum currencies. Actions:create_draft,add_manual_line,add_catalog_line,add_bundle_line,add_contract_line,update_line,remove_line,update_header,delete_draft,assemble_from_org,assemble_from_ticket,issue,void,record_payment,void_payment,create_pay_link.",
       input_schema: {
         type: 'object' as const,
         properties: {
           action: {
             type: 'string',
+            description: 'Relay create_pay_link warning CURRENCY_DIFFERS_FROM_STRIPE_ACCOUNT to the user; it does not block the link.',
             enum: [
               'create_draft', 'add_manual_line', 'add_catalog_line', 'add_bundle_line', 'add_contract_line',
               'update_line', 'remove_line', 'update_header', 'delete_draft',
@@ -283,7 +271,7 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
           reissue: { type: 'boolean' },
           from: { type: 'string', description: 'ISO date (assemble_from_org)' },
           to: { type: 'string', description: 'ISO date (assemble_from_org)' },
-          currencyCode: { type: 'string', description: 'Header currency override for assemble_from_org / assemble_from_ticket (ISO 4217). Defaults to the org currency; set it to assemble a separate draft for work snapshotted in another currency' },
+          currencyCode: { type: 'string', description: "ISO-4217 header currency for assemble_from_org / assemble_from_ticket; default org currency. Money inputs use invoice currencyCode." },
           line: { type: 'object', description: 'Manual line fields for add_manual_line' },
           patch: { type: 'object', description: 'Line or header patch fields' },
           payment: { type: 'object', description: 'Payment fields (amount in the invoice\'s currencyCode, method, ...)' },
@@ -352,20 +340,42 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
           case 'add_bundle_line':
             return JSON.stringify(await addBundleLine(String(input.invoiceId), String(input.bundleId), Number(input.quantity), actor));
           case 'add_contract_line': {
-            const contractActor = {
-              userId: auth.user.id,
-              partnerId: actor.partnerId,
-              accessibleOrgIds: actor.accessibleOrgIds,
-              // The read leg of add_contract_line went through an ungated actor,
-              // bolting an org-wide contract/line read onto a site-checked write.
-              allowedSiteIds: actor.allowedSiteIds,
-            };
+            // Contracts are a partner/system-owned billing surface. A selected-
+            // site closure cannot safely project an org-wide contract quantity
+            // or its device evidence, so fail closed before any source or
+            // destination read. The canonical guardrail separately requires
+            // both invoices:write and contracts:read for this exact action.
+            if (auth.scope !== 'partner' && auth.scope !== 'system') {
+              return JSON.stringify({
+                error: 'Adding a contract line requires a partner-scoped session',
+                code: 'PARTNER_SCOPE_REQUIRED',
+              });
+            }
+            if (auth.allowedSiteIds !== undefined) {
+              return JSON.stringify({
+                error: 'Adding a contract line requires unrestricted organization visibility',
+                code: 'FULL_PARTNER_SCOPE_REQUIRED',
+              });
+            }
+            // Resolve the caller's REAL contract permissions. `ContractActor`
+            // is fail-closed BY CONSTRUCTION (contractTypes.ts): a hard-coded
+            // `permissions` set forges the evidence the contract service relies
+            // on and converts that design into fail-open. The guardrail's
+            // TOOL_ACTION_EXTRA_PERMISSIONS gate still applies on top of this.
+            const contractActor = await resolveContractActorFromAuth(auth);
+            if (!actorCan(contractActor, PERMISSIONS.CONTRACTS_READ)) {
+              return JSON.stringify({
+                error: 'Adding a contract line requires the contracts:read permission',
+                code: 'CONTRACTS_READ_REQUIRED',
+              });
+            }
             const contractId = String(input.contractId);
             const contractLineId = String(input.contractLineId);
             // The tool executes inside the request's ambient DB transaction.
-            // Hold the producer lock before re-reading both the line and its
-            // resolved quantity so an allowance edit cannot race materialization.
-            await lockContractRow(db, contractId);
+            // Lock destination then source in the canonical invoice -> contract
+            // order. Both locks remain held through quantity resolution,
+            // evidence capture and materialization.
+            await lockContractLineMaterializationSource(String(input.invoiceId), contractId, actor);
             const { contract, lines } = await getContract(contractId, contractActor);
             const line = lines.find((candidate) => candidate.id === contractLineId);
             if (!line) return JSON.stringify({ error: 'Contract line not found for this contract' });

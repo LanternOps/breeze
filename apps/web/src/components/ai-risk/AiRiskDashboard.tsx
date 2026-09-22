@@ -12,6 +12,7 @@ import {
   AlertTriangle,
 } from "lucide-react";
 import { fetchWithAuth } from "../../stores/auth";
+import AccessDenied from "../shared/AccessDenied";
 import { TierOverviewMatrix } from "./TierOverviewMatrix";
 import { ToolExecutionAnalytics } from "./ToolExecutionAnalytics";
 import { ApprovalHistoryFeed } from "./ApprovalHistoryFeed";
@@ -128,6 +129,10 @@ export default function AiRiskDashboard() {
   const [execData, setExecData] = useState<ToolExecData | null>(null);
   const [securityEvents, setSecurityEvents] = useState<SecurityEvent[]>([]);
   const [scriptMetrics, setScriptMetrics] = useState<ScriptProposalsMetrics | null>(null);
+  // #6498 (G4-7): every admin read below requires organizations:read. A 403 is
+  // a permission answer, not a transient failure, so it gets its own state
+  // instead of empty tables plus a "data may be incomplete" retry banner.
+  const [accessDenied, setAccessDenied] = useState(false);
   const needsData = activeTab !== "guardrails" && activeTab !== "rate-limits";
   const fetchData = useCallback(async () => {
     try {
@@ -139,6 +144,30 @@ export default function AiRiskDashboard() {
         fetchWithAuth(`/ai/admin/security-events?since=${since}&limit=100`),
         fetchWithAuth(`/ai/admin/script-proposals-metrics?since=${since}`),
       ]);
+      // All three reads carry the same organizations:read gate, so a 403 on any
+      // of them is the permission answer for the whole dashboard. Only claim
+      // that when NOTHING ELSE failed, though: a 403 here next to a 500 or a
+      // rejected fetch there would otherwise render "you lack permission" over
+      // a real server/network fault and send whoever debugs it to RBAC.
+      const results = [execResult, secResult, scriptResult];
+      for (const r of results) {
+        if (r.status === "rejected") console.error("[ai-risk] admin read failed", r.reason);
+      }
+      const failures = results.filter((r) => r.status !== "fulfilled" || !r.value.ok);
+      const forbidden =
+        failures.length > 0 &&
+        failures.every((r) => r.status === "fulfilled" && r.value.status === 403);
+      if (forbidden) {
+        setAccessDenied(true);
+        setExecData(null);
+        setSecurityEvents([]);
+        setScriptMetrics(null);
+        return;
+      }
+      // A mixed outcome (some 403, some 5xx/rejected) falls through to the
+      // ordinary error handling below, which surfaces a load failure rather
+      // than a permission claim.
+      setAccessDenied(false);
       if (execResult.status === "fulfilled" && execResult.value.ok) {
         setExecData(await execResult.value.json());
       } else {
@@ -266,37 +295,47 @@ export default function AiRiskDashboard() {
       </div>
 
       {/* Error state */}
-      {error && needsData && (
+      {error && needsData && !accessDenied && (
         <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-700">
           {error}
         </div>
       )}
 
-      {/* Tab content */}
+      {/* Tab content. The guardrails and rate-limit tabs are static reference
+          data and stay available to anyone who can open the page; only the
+          tabs backed by the 403'd admin reads are replaced. */}
       {activeTab === "guardrails" && <TierOverviewMatrix />}
-
-      {activeTab === "analytics" && (
-        <ToolExecutionAnalytics data={execData} loading={loading} />
-      )}
-
-      {activeTab === "approvals" && (
-        <ApprovalHistoryFeed
-          executions={execData?.executions ?? []}
-          loading={loading}
-        />
-      )}
 
       {activeTab === "rate-limits" && <RateLimitStatus />}
 
-      {activeTab === "denials" && (
-        <RejectionDenialLog
-          executions={execData?.executions ?? []}
-          securityEvents={securityEvents}
-          loading={loading}
-        />
+      {needsData && accessDenied && (
+        <AccessDenied testId="ai-risk-access-denied" />
       )}
 
-      {activeTab === "proposals" && <ScriptProposalsPanel data={scriptMetrics} loading={loading} />}
+      {!accessDenied && (
+        <>
+          {activeTab === "analytics" && (
+            <ToolExecutionAnalytics data={execData} loading={loading} />
+          )}
+
+          {activeTab === "approvals" && (
+            <ApprovalHistoryFeed
+              executions={execData?.executions ?? []}
+              loading={loading}
+            />
+          )}
+
+          {activeTab === "denials" && (
+            <RejectionDenialLog
+              executions={execData?.executions ?? []}
+              securityEvents={securityEvents}
+              loading={loading}
+            />
+          )}
+
+          {activeTab === "proposals" && <ScriptProposalsPanel data={scriptMetrics} loading={loading} />}
+        </>
+      )}
     </div>
   );
 }

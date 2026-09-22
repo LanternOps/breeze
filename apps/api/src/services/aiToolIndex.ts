@@ -8,11 +8,12 @@ export interface ToolIndexEntry { name: string; domain: AiToolDomain; searchHint
 /**
  * One short note per domain, rendered under that domain's line. This is the
  * ONE place disambiguation prose lives (spec A-W03: "keep disambiguation once,
- * in the generated index"). ≤ 400 chars each; no tool names the domain does
- * not contain.
+ * in the generated index"). ≤ 400 chars each. Keep sentences self-contained: rendering omits any
+ * sentence that names a tool absent from the rendered subset.
  */
 export const DOMAIN_NOTES: Readonly<Partial<Record<AiToolDomain, string>>> = {
-  patching: 'CVE/vulnerability questions use the vulnerability tools; security posture returns control scores, not CVEs; patch management returns the patch/KB inventory, not a vulnerability answer.',
+  patching: 'CVEs need vulnerability tools; get_security_posture scores controls, manage_patches lists KBs. Empty reports: no correlated findings, not no vulnerabilities (coverage incomplete). Create manage_update_rings; link featurePolicyId via manage_policy_feature_link for schedules/auto-approval. manage_update_rings third-party auto-approval needs third-party patch sources. Approve patches before install.',
+  scripts: 'For compacted command output (stdoutTruncation/_chat), page or narrow filters instead of repeating the call. File listings have no paging: narrow the path. get_script_execution covers external runs (such as editor Test Run or execution history) and expired run waits; a timeout alone does not justify changing a script.',
 };
 
 const MAX_INLINE_ACTIONS = 8;
@@ -36,6 +37,7 @@ export function listToolIndex(names: Iterable<string>): ToolIndexEntry[] {
 
 export function renderToolIndexByDomain(names: Iterable<string>): string {
   const entries = listToolIndex(names);
+  const available = new Set(entries.map((entry) => entry.name));
   const lines = ['## Available Tools by Domain'];
   for (const domain of AI_TOOL_DOMAINS) {
     const inDomain = entries.filter((e) => e.domain === domain);
@@ -46,7 +48,12 @@ export function renderToolIndexByDomain(names: Iterable<string>): string {
         ? `${e.name} (${e.actions.join('/')})`
         : `${e.name} (${e.actions.length} actions)`);
     lines.push(`- **${AI_TOOL_DOMAIN_LABELS[domain]}**: ${rendered.join(', ')}`);
-    const note = DOMAIN_NOTES[domain];
+    const note = DOMAIN_NOTES[domain]?.split(/(?<=[.!?])\s+/)
+      .filter((sentence) => {
+        const tokens = sentence.match(/\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/g) ?? [];
+        return tokens.every((token) => !aiTools.has(token) || available.has(token));
+      })
+      .join(' ');
     if (note) lines.push(`  Note: ${note}`);
   }
   return lines.join('\n');

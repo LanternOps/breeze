@@ -191,6 +191,16 @@ export default defineConfig({
       // Real-DB suites owned by vitest.integration.config.ts (#3778).
       'src/services/invoiceService.issue.integration.test.ts',
       'src/services/invoicePdf.integration.test.ts',
+      // #5861 Customer Portal Network Visibility: real-Postgres proof of org
+      // isolation and partner-wide monitor result scoping. Imports
+      // `__tests__/integration/setup` (real postgres pool + autoMigrate) and
+      // lives in src/services/portal/ outside the
+      // `src/__tests__/integration/**` glob, so the no-DB unit runner would
+      // fail it on connect (its `REDIS_CLIENT_BASE_OPTIONS` import from
+      // `../../services/redis` also hits this runner's auto-mock, which does
+      // not export it). Belongs to vitest.integration.config.ts (already in
+      // its include list).
+      'src/services/portal/networkVisibilityReadModel.integration.test.ts',
       // Canary for issue #4046: asserts the process observes a non-UTC
       // offset. It must ONLY run under the pinned non-UTC pass
       // (vitest.config.tz.ts, TZ=America/Denver), where it belongs — it is

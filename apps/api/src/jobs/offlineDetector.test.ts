@@ -39,7 +39,7 @@ vi.mock('bullmq', () => ({
 }));
 
 vi.mock('../db', () => ({
-  db: { update: vi.fn() },
+  db: { update: vi.fn(), select: vi.fn() },
 
   runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
@@ -80,6 +80,7 @@ import {
   resolveOfflineWorkerConcurrency,
   scheduleOfflineJobs,
   shutdownOfflineDetector,
+  transitionDeviceOffline,
   triggerOfflineDetection,
 } from './offlineDetector';
 
@@ -111,6 +112,55 @@ describe('processMarkOffline timestamp precision', () => {
       expect(persistOfflineTransition).toHaveBeenCalledWith(device, transitionId, observedLastSeenAt);
     },
   );
+});
+
+describe('transitionDeviceOffline (#6503 — WS close/error handlers)', () => {
+  afterEach(() => {
+    vi.mocked(persistOfflineTransition).mockClear();
+  });
+
+  it('persists an offline transition effect for an online device, mirroring processMarkOffline', async () => {
+    const agentId = 'agent-6503';
+    const deviceId = '00000000-0000-4000-8000-000000000002';
+    const orgId = '10000000-0000-4000-8000-000000000002';
+    const lastSeenAt = new Date('2026-09-16T10:00:00.000Z');
+    const device = {
+      id: deviceId, orgId, status: 'online', lastSeenAt,
+      hostname: 'host-1', siteId: null, isEphemeral: false,
+    };
+    const observedLastSeenAt = lastSeenAt.toISOString();
+    const expectedTransitionId = offlineTransitionId(orgId, deviceId, observedLastSeenAt);
+
+    const selectLimit = vi.fn(async () => [device]);
+    vi.mocked(db.select).mockReturnValue({
+      from: () => ({ where: () => ({ limit: selectLimit }) }),
+    } as never);
+
+    const updateWhere = vi.fn(() => ({ returning: vi.fn(async () => [device]) }));
+    vi.mocked(db.update).mockReturnValue({ set: () => ({ where: updateWhere }) } as never);
+
+    await expect(transitionDeviceOffline(agentId, ['online'])).resolves.toEqual({ transitioned: true });
+
+    // The bug (#6503): the old WS close/error handlers wrote status='offline'
+    // directly via a bare update and NEVER called persistOfflineTransition, so
+    // no offline_transition_effects row (and therefore no monitor-rule
+    // evaluation via expandOfflineAlertPlan) was ever produced for an agent
+    // that closed its WebSocket. This assertion is what would have failed
+    // against that old code path.
+    expect(persistOfflineTransition).toHaveBeenCalledWith(device, expectedTransitionId, observedLastSeenAt);
+  });
+
+  it('does not transition or persist anything when the device is not in an allowed source status', async () => {
+    const selectLimit = vi.fn(async () => []);
+    vi.mocked(db.select).mockReturnValue({
+      from: () => ({ where: () => ({ limit: selectLimit }) }),
+    } as never);
+    const updateCallsBefore = vi.mocked(db.update).mock.calls.length;
+
+    await expect(transitionDeviceOffline('agent-not-online', ['online'])).resolves.toEqual({ transitioned: false });
+    expect(persistOfflineTransition).not.toHaveBeenCalled();
+    expect(vi.mocked(db.update).mock.calls.length).toBe(updateCallsBefore);
+  });
 });
 
 describe('triggerOfflineDetection', () => {

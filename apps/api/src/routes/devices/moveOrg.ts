@@ -449,6 +449,41 @@ moveOrgRoutes.post(
                 AND org_id = ${sourceOrgId}::uuid`,
         );
 
+        // #6008 W01 (Backup Provider Integration, spec "Data model" D11) —
+        // backup_provider_devices links a Breeze device to its external backup
+        // vendor record via the composite FK (breeze_device_id, org_id) ->
+        // devices(id, org_id). Once the device leaves the org that link is not
+        // merely stale but unrepresentable, so null it. The ROW survives: it is
+        // the SOURCE org's provider inventory, its org_id comes from the
+        // CUSTOMER MAPPING (not from this device), and the 28-day health ledger
+        // hanging off it is evidence nobody should lose because a device moved.
+        // The next provider sync re-links the device in the NEW org if that
+        // org's customer mapping covers it.
+        //
+        // device_match_source is cleared WITH the link: a row carrying
+        // 'auto_hostname' with no breeze_device_id would read as an unmatched
+        // auto link, but leaving 'manual' behind would make W02's matcher skip
+        // the row forever (manual links are never re-matched).
+        //
+        // Placement is load-bearing, exactly as for manual_assets and
+        // m365_intune_devices above: the FK is DEFERRABLE INITIALLY IMMEDIATE,
+        // so its check fires at the end of the `UPDATE devices SET org_id`
+        // statement immediately below, and there is no trigger-side mirror —
+        // breeze_device_child_orgid_tables() requires a column literally named
+        // `device_id` and this one is `breeze_device_id`. This statement is the
+        // only detach on any path.
+        //
+        // Scoped to the SOURCE org as well as the device. An org MERGE never
+        // reaches this route: it re-points backup_provider_devices wholesale
+        // (services/orgMergeRegistry.ts REPOINT_TABLES) under SET CONSTRAINTS
+        // ALL DEFERRED, keeping the link valid inside the survivor org.
+        await tx.execute(
+          sql`UPDATE backup_provider_devices
+              SET breeze_device_id = NULL, device_match_source = NULL
+              WHERE breeze_device_id = ${deviceId}::uuid
+                AND org_id = ${sourceOrgId}::uuid`,
+        );
+
         // Caller verification (#6354 W01): lock the device row and revoke the
         // source org's workstation authorization BEFORE the org flip. The
         // FOR UPDATE here is load-bearing — nothing above locks the device
@@ -635,6 +670,41 @@ moveOrgRoutes.post(
                      state = CASE WHEN state IN ('queued', 'running', 'waiting', 'paused') THEN 'stopping' ELSE state END,
                      updated_at = now()
                WHERE device_id = ${deviceId}::uuid`,
+        );
+
+        // Recipe library E2 (#6167): the same detach one level down, on BOTH
+        // pointer axes a device move reaches. Normally matches NOTHING —
+        // breeze_cascade_device_org_id() already ran when the devices row
+        // flipped earlier in this transaction and carries identical statements
+        // (migration 2026-10-26-160000 section 9). Kept as a route-local
+        // mirror for the same two reasons the task statement above is: the
+        // detach is visible where the move is read, and the route still
+        // detaches if the trigger is ever dropped. Both copies are convergent
+        // (COALESCE on the stamp), so whichever runs first wins.
+        //
+        // A target's org_id IS its task's immutable org_id, so it never
+        // re-stamps; the pointer is severed and the frozen target_label kept.
+        await tx.execute(
+          sql`UPDATE ai_operator_task_targets
+                 SET device_id = NULL,
+                     detached_at = COALESCE(detached_at, now()),
+                     detached_reason = COALESCE(detached_reason, 'device_moved'),
+                     state = 'detached',
+                     updated_at = now()
+               WHERE device_id = ${deviceId}::uuid`,
+        );
+        // Ticket-axis twin: a ticket bound to this device follows it to the
+        // destination org (the trigger's generic loop), while a target naming
+        // that ticket stays with its source-org task. target.ticket_id is a
+        // PLAIN FK, so a stale pointer would otherwise survive in silence.
+        await tx.execute(
+          sql`UPDATE ai_operator_task_targets
+                 SET ticket_id = NULL,
+                     detached_at = COALESCE(detached_at, now()),
+                     detached_reason = COALESCE(detached_reason, 'scope_invalidated'),
+                     state = 'detached',
+                     updated_at = now()
+               WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${deviceId}::uuid)`,
         );
 
         // #3205 W07: billing evidence stays in the INVOICE's org — the invoice

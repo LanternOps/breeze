@@ -230,7 +230,9 @@
       "logFailedSentence": "Impossibile registrare il tempo."
     },
     "billedVsWorked": "{{worked}} h lavorate · {{billed}} h fatturate",
-    "includedMinutes": "{{hours}} h incluse nel contratto"
+    "includedMinutes": "{{hours}} h incluse nel contratto",
+    "missingRateCount_one": "1 voce non ha una tariffa oraria — non conteggiata nell'importo sopra",
+    "missingRateCount_other": "{{count}} voci non hanno una tariffa oraria — non conteggiate nell'importo sopra"
   },
   "inboundReviewQueue": {
     "title": "Coda di revisione",

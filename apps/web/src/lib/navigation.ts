@@ -17,6 +17,34 @@ interface NavigateOptions {
  */
 export type NavigationMode = 'soft' | 'hard';
 
+const MICROSOFT_LOGIN_ORIGIN = 'https://login.microsoftonline.com';
+
+/**
+ * Performs the full-page hand-off to Microsoft's login service.
+ *
+ * `navigateTo` intentionally accepts only same-origin paths, so external
+ * identity-provider redirects must use this narrower, origin-pinned helper.
+ */
+export function navigateToMicrosoftLogin(url: string): void {
+  if (typeof window === 'undefined') return;
+
+  let target: URL;
+  try {
+    target = new URL(url);
+  } catch {
+    throw new Error('Invalid Microsoft login URL');
+  }
+  if (
+    target.origin !== MICROSOFT_LOGIN_ORIGIN
+    || target.username
+    || target.password
+  ) {
+    throw new Error('Invalid Microsoft login URL');
+  }
+
+  window.location.assign(target.toString());
+}
+
 export async function navigateTo(path: string, options: NavigateOptions = {}): Promise<NavigationMode> {
   if (typeof window === 'undefined') {
     return 'hard';

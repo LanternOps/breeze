@@ -337,7 +337,7 @@ export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
     searchHint: 'fleet CPU, RAM and disk trends, per-device averages, peaks and ranked resource usage',
     definition: {
       name: 'analyze_fleet_metrics',
-      description: 'Aggregate a metric (CPU/RAM/disk percent) across the fleet from pre-computed rollups: per-device avg / peak-p95 / max over a time window, ranked by peak p95 descending, plus a fleet-wide summary. The fleet summary\'s p95 (p95ApproxAvgOfDevicePeaks) is an approximation — the average of each device\'s peak per-bucket p95, not a true recomputed fleet-wide percentile. Read-only.',
+      description: "Return fleet CPU/RAM/disk rollup averages, peak-p95 and maxima, ranked by device peak p95. Fleet p95ApproxAvgOfDevicePeaks is an approximation averaging device peak bucket p95s, not a true fleet percentile. Read-only.",
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -915,7 +915,7 @@ export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceId'],
     definition: {
       name: 'manage_startup_items',
-      description: 'Disable or enable startup items on a device. Device must be online. Item must exist in the most recent boot performance record. Requires user approval. Use analyze_boot_performance first to identify high-impact items.',
+      description: 'Disable or enable startup items on a device. Device must be online. Item must exist in the most recent boot performance record. Requires user approval. Use analyze_boot_performance first to identify high-impact items. Actions: disable, enable.',
       input_schema: {
         type: 'object' as const,
         properties: {

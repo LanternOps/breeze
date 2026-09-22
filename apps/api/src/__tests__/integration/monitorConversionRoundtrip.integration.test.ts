@@ -5,6 +5,8 @@ import { eq } from 'drizzle-orm';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
 import { configurationPolicies, configPolicyAssignments, configPolicyFeatureLinks, devices } from '../../db/schema';
 import { resolveDeviceIdsForPolicy } from '../../services/monitors/conversion/legacyBaseline';
+import { previewPolicyConversion } from '../../services/monitors/conversion';
+import { createSystemAuthContext } from '../../services/featureConfigResolver';
 import { createOrganization, createPartner, createSite } from './db-utils';
 
 // Task 18 supplies the shared conversionFixture; this scope-only fixture keeps
@@ -31,7 +33,7 @@ async function inheritedScopeFixture() {
       configPolicyId: policy!.id, level: 'organization', targetId: org.id,
       roleFilter: ['server'], osFilter: ['windows'],
     });
-    return { context, orgId: org.id, policyId: policy!.id, deviceId: device!.id };
+    return { context, partnerId: partner.id, orgId: org.id, policyId: policy!.id, deviceId: device!.id };
   });
 }
 
@@ -44,4 +46,29 @@ it('checks a parent with no direct assignment through its assigned inheriting ch
       .where(eq(configPolicyAssignments.configPolicyId, f.policyId));
     expect(await resolveDeviceIdsForPolicy(f.policyId, db)).toContain(f.deviceId);
   });
+});
+
+/**
+ * The conversion entry points are SELF-MANAGED routes (D30, #6416): the request
+ * middleware opens no context for them, so everything they read before their
+ * own isolated transaction runs with NO ambient context — and a contextless
+ * read is DENIED by RLS, not bypassed. Without a caller-scoped context around
+ * those pre-reads, `authorizePreview` finds nothing and every preview answers
+ * `policy_not_found`, which is what shipped in #6416.
+ */
+it('previews from a caller that holds no ambient DB context (self-managed route)', async () => {
+  const f = await inheritedScopeFixture();
+  const auth = { ...createSystemAuthContext(), scope: 'organization' as const,
+    orgId: f.orgId, accessibleOrgIds: [f.orgId], partnerId: f.partnerId,
+    canAccessOrg: (id: string) => id === f.orgId };
+
+  const preview = await previewPolicyConversion(f.policyId, auth, { mode: 'inline' });
+  if ('status' in preview) throw new Error(`Unexpected preview status: ${preview.status}`);
+  expect(preview.policyId ?? f.policyId).toBe(f.policyId);
+
+  // Control, the other half of D30: holding a context is what the self-managed
+  // listing exists to prevent, so the same call from inside one is refused
+  // rather than quietly taking a second pooled connection.
+  await expect(withDbAccessContext(f.context, () => previewPolicyConversion(f.policyId, auth, { mode: 'inline' })))
+    .rejects.toThrow(/SELF_MANAGED_DB_CONTEXT_ROUTES/);
 });

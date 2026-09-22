@@ -33,6 +33,7 @@ const SETTINGS = {
   enableService: false,
   enableDocuments: false,
   enableLifecycle: false,
+  enableNetworkVisibility: false,
   supportEmail: 'help@msp.example',
   supportPhone: null,
   welcomeMessage: 'Welcome!',
@@ -127,6 +128,7 @@ describe('OrgPortalSettingsEditor', () => {
       'enableService',
       'enableDocuments',
       'enableLifecycle',
+      'enableNetworkVisibility',
     ]) {
       expect((screen.getByTestId(
         `org-portal-toggle-${key}`,
@@ -167,6 +169,7 @@ describe('OrgPortalSettingsEditor', () => {
       enableService: true,
       enableDocuments: true,
       enableLifecycle: true,
+      enableNetworkVisibility: true,
     });
   });
 

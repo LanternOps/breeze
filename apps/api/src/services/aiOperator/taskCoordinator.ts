@@ -37,6 +37,16 @@
  * SUPERSEDED epoch dispatched are accepted under their original identity
  * (spec §6.3) — this module never rejects a result for carrying an old epoch,
  * only new ADMISSIONS are epoch-fenced.
+ *
+ * RECIPE RESOLUTION (Recipe Library spec §6.1). Every bound, prompt version,
+ * step table and permitted-next-step table this file reads comes from the
+ * RecipeDefinition resolved from the task's own frozen `(workflow_key,
+ * workflow_version)`, never from an imported constant. What a step DOES is
+ * still this file's job — spec §6.1's step-kind table assigns execution to the
+ * coordinator and data to the recipe — so the per-recipe advancer table below
+ * lives here and not in `recipes/`. A task whose pair the registry cannot
+ * resolve HANDS OFF; it never throws, because a throw would leave its wake job
+ * retrying against a row that can never advance.
  */
 
 import { and, eq, or, sql } from 'drizzle-orm';
@@ -53,12 +63,9 @@ import { aiAgentRuns } from '../../db/schema/aiAgents';
 import { actionIntents } from '../../db/schema/actionIntents';
 import { createAndEnqueueAgentRun } from '../aiAgents/runService';
 import { taskCheckpointSchema, type TaskCheckpoint } from '@breeze/shared';
-import {
-  SERVICE_RECOVERY_BOUNDS,
-  SERVICE_RECOVERY_PROMPT_VERSION,
-  taskRunDedupeKey,
-  validateNextStep,
-} from './recipes/serviceRecovery';
+import { SERVICE_RECOVERY_WORKFLOW_KEY, taskRunDedupeKey } from './recipes/serviceRecovery';
+import { getRecipe, validateRecipeNextStep } from './recipes';
+import type { RecipeDefinition } from './recipes/types';
 import { parseTaskCheckpointResult } from './taskService';
 import { evaluateCriterion } from './verification';
 import {
@@ -71,12 +78,88 @@ import {
   recordAiOperatorUnknownEffectHandoff,
 } from '../aiOperatorCoordinatorMetrics';
 import { aiOperatorTasksEnabled } from '../../config/env';
+import { aiOperatorTaskTargets } from '../../db/schema/aiOperatorTaskGraph';
+import { appendTaskEvent, type TaskEventActor } from './eventService';
+import { markStepWaiting, openStep, resolveStepKind, settleStep } from './stepService';
 
 /** How long a lease is good for. Spec §11.2's short lease. */
 export const TASK_LEASE_MS = 60_000;
 
 /** Identifies this process in `lease_owner`, for a human reading a stuck row. */
 export const COORDINATOR_OWNER_ID = `coordinator:${process.pid}:${randomUUID().slice(0, 8)}`;
+
+/**
+ * Every task-graph write this module makes is attributed to the coordinator,
+ * never to a user. Spec §7.1: "Database context has no synthetic human user
+ * ID" — and `ai_operator_task_events_actor_chk` enforces the pairing, so this
+ * constant is the only actor shape this file can legally use.
+ */
+const COORDINATOR_ACTOR: TaskEventActor = { kind: 'coordinator' };
+
+/**
+ * The target a step belongs to, or null (Recipe Library wave E2, #6167).
+ *
+ * Read from `ai_operator_task_targets` rather than from the task's inline
+ * `device_id`, because a step's target is a TARGET ROW id — the inline column
+ * is the read projection recipe spec §5.5 keeps, not the identity. Ordinal 0
+ * is the single-target case, which is every task until the fleet waves. A
+ * detached target keeps its row and its id, so a step's identity is stable
+ * across a device move or delete.
+ *
+ * Called only from inside a `writeLeased` transaction (`alsoInTransaction`),
+ * where the bare `db` proxy joins that transaction.
+ */
+async function currentTargetId(orgId: string, taskId: string): Promise<string | null> {
+  const [row] = await db
+    .select({ id: aiOperatorTaskTargets.id })
+    .from(aiOperatorTaskTargets)
+    .where(and(
+      eq(aiOperatorTaskTargets.orgId, orgId),
+      eq(aiOperatorTaskTargets.taskId, taskId),
+      eq(aiOperatorTaskTargets.targetOrdinal, 0),
+    ))
+    .limit(1);
+  return row?.id ?? null;
+}
+
+/**
+ * Record a step change on the task graph: settle the step being LEFT as
+ * `succeeded` and open the step being ENTERED. Both at the task's current
+ * attempt, against the same target. A no-op when the step does not change
+ * (a re-armed wait on the same step is not a transition).
+ *
+ * `succeeded` for the step being left is the coordinator's own statement: it
+ * only ever advances a step forward after that step produced what the next one
+ * needs (a proposal, an approval, a dispatch reference, a finished command).
+ * Every failure path SETTLES the task instead, which records the step's
+ * verdict as `failed` in {@link settle}.
+ */
+async function recordStepChange(args: {
+  task: AiOperatorTaskRow;
+  toStepKey: string;
+  targetId: string | null;
+  checkpoint?: TaskCheckpoint;
+}): Promise<void> {
+  const { task, toStepKey, targetId } = args;
+  if (task.currentStepKey === toStepKey) return;
+  if (task.currentStepKey) {
+    await settleStep(db, {
+      orgId: task.orgId, taskId: task.id, stepKey: task.currentStepKey, targetId,
+      attemptOrdinal: task.attemptOrdinal, state: 'succeeded', actor: COORDINATOR_ACTOR,
+    });
+  }
+  await openStep(db, {
+    orgId: task.orgId,
+    taskId: task.id,
+    stepKey: toStepKey,
+    stepKind: resolveStepKind(task.workflowKey, task.workflowVersion, toStepKey),
+    targetId,
+    attemptOrdinal: task.attemptOrdinal,
+    planRevision: task.revision,
+    ...(args.checkpoint ? { checkpoint: args.checkpoint as unknown as Record<string, unknown> } : {}),
+    actor: COORDINATOR_ACTOR,
+  });
+}
 
 export type LeaseClaim =
   | { won: true; task: AiOperatorTaskRow; leaseEpoch: number }
@@ -177,6 +260,22 @@ async function writeLeased(args: {
   revision: number;
   leaseEpoch: number;
   patch: Partial<typeof aiOperatorTasks.$inferInsert>;
+  /**
+   * Task-graph writes (step rows, events — Recipe Library wave E2) to run in
+   * the SAME transaction as the CAS, and ONLY if the CAS won.
+   *
+   * `withDbAccessContext` already runs its callback in one transaction
+   * (db/index.ts) and the bare `db` proxy joins it, so this needs no
+   * `db.transaction()` — and must not grow one: nesting a transaction inside
+   * that context double-holds a pooled connection, which hangs at concurrency
+   * >= pool size.
+   *
+   * Gated on the CAS because a stale coordinator that lost its lease must not
+   * leave a step row or an event claiming a transition that never committed.
+   * A throw here rolls the CAS back with it: the step row, the event and the
+   * task transition commit together or not at all.
+   */
+  alsoInTransaction?: () => Promise<void>;
 }): Promise<boolean> {
   const committed = await runOutsideDbContext(() =>
     withSystemDbAccessContext(async () => {
@@ -190,7 +289,9 @@ async function writeLeased(args: {
           eq(aiOperatorTasks.leaseEpoch, args.leaseEpoch),
         ))
         .returning({ id: aiOperatorTasks.id });
-      return rows.length === 1;
+      if (rows.length !== 1) return false;
+      if (args.alsoInTransaction) await args.alsoInTransaction();
+      return true;
     }));
 
   // A lost CAS is EXPECTED and self-healing — another coordinator reclaimed
@@ -243,6 +344,22 @@ async function yieldToWait(args: {
       ...(args.stepKey ? { currentStepKey: args.stepKey } : {}),
       ...(args.checkpoint ? { checkpoint: args.checkpoint as unknown as Record<string, unknown> } : {}),
     },
+    alsoInTransaction: async () => {
+      const stepKey = args.stepKey ?? args.task.currentStepKey;
+      if (!stepKey) return; // nothing to attribute the wait to
+      const targetId = await currentTargetId(args.task.orgId, args.task.id);
+      // A wait that also MOVES the task (investigate -> execute on approval,
+      // execute -> observe on dispatch) is a step change first.
+      await recordStepChange({ task: args.task, toStepKey: stepKey, targetId, checkpoint: args.checkpoint });
+      await markStepWaiting(db, {
+        orgId: args.task.orgId, taskId: args.task.id, stepKey, targetId,
+        attemptOrdinal: args.task.attemptOrdinal,
+        dependencyKind: args.dependency?.kind ?? null,
+        dependencyId: args.dependency?.id ?? null,
+        actor: COORDINATOR_ACTOR,
+        detail: `step '${stepKey}' waiting (${args.reason})`,
+      });
+    },
   });
 }
 
@@ -275,6 +392,31 @@ async function settle(args: {
       leaseOwner: null,
       leaseExpiresAt: null,
     },
+    alsoInTransaction: async () => {
+      const targetId = await currentTargetId(args.task.orgId, args.task.id);
+      if (args.task.currentStepKey) {
+        await settleStep(db, {
+          orgId: args.task.orgId, taskId: args.task.id,
+          stepKey: args.task.currentStepKey, targetId,
+          attemptOrdinal: args.task.attemptOrdinal,
+          // The STEP's verdict, not the task's outcome: `partial` still means
+          // the step that ran produced its result; a handoff or failure means
+          // it did not. `unknown_effect` handoffs land here as `failed` — the
+          // step could not prove its effect, which is what `failed` records.
+          state: args.event === 'complete' || args.event === 'partial' ? 'succeeded' : 'failed',
+          detail: args.detail,
+          // No actor: settleStep would write its own step_settled event, and
+          // the task_settled event below is the one that matters. Two events
+          // for one terminal transition is how a timeline stops being readable.
+        });
+      }
+      await appendTaskEvent(db, {
+        orgId: args.task.orgId, taskId: args.task.id,
+        eventType: 'task_settled', actor: COORDINATOR_ACTOR,
+        stepKey: args.task.currentStepKey, targetId,
+        detail: `${args.event} -> ${args.outcome}: ${args.detail}`,
+      });
+    },
   });
 
   // AFTER the write, never before. `ai_operator_unknown_effect_handoffs_total`
@@ -305,6 +447,7 @@ async function admitReasoningRun(args: {
   checkpoint: TaskCheckpoint;
   stepKey: string;
   bumpPlanRevision: boolean;
+  recipe: RecipeDefinition<never>;
 }): Promise<{ admitted: boolean; detail: string }> {
   const { task, checkpoint } = args;
 
@@ -313,10 +456,10 @@ async function admitReasoningRun(args: {
   }
 
   const attemptOrdinal = args.bumpPlanRevision ? task.attemptOrdinal + 1 : task.attemptOrdinal;
-  if (attemptOrdinal >= SERVICE_RECOVERY_BOUNDS.maxReasoningRuns) {
+  if (attemptOrdinal >= args.recipe.bounds.maxReasoningRuns) {
     return {
       admitted: false,
-      detail: `reasoning-run limit reached (${SERVICE_RECOVERY_BOUNDS.maxReasoningRuns})`,
+      detail: `reasoning-run limit reached (${args.recipe.bounds.maxReasoningRuns})`,
     };
   }
 
@@ -338,6 +481,43 @@ async function admitReasoningRun(args: {
       phase: 'investigate',
       checkpoint: checkpoint as unknown as Record<string, unknown>,
     },
+    alsoInTransaction: async () => {
+      const targetId = await currentTargetId(task.orgId, task.id);
+      if (args.bumpPlanRevision) {
+        // A NEW attempt after a failed criterion: the step being left (verify)
+        // did not achieve its criterion, and the plan it belonged to is
+        // superseded. Record both before opening the new attempt's step.
+        if (task.currentStepKey) {
+          await settleStep(db, {
+            orgId: task.orgId, taskId: task.id, stepKey: task.currentStepKey, targetId,
+            attemptOrdinal: task.attemptOrdinal, state: 'failed', actor: COORDINATOR_ACTOR,
+            detail: `criterion not satisfied; admitting attempt ${attemptOrdinal}`,
+          });
+        }
+        await appendTaskEvent(db, {
+          orgId: task.orgId, taskId: task.id,
+          eventType: 'plan_revision_bumped', actor: COORDINATOR_ACTOR,
+          stepKey: args.stepKey, targetId,
+          detail: `plan revision ${task.revision} -> ${nextRevision}, attempt ${attemptOrdinal}`,
+        });
+      }
+      // Idempotent on (task, step, target, attempt): the first attempt's
+      // `investigate` step was already opened at admission (or by the E2
+      // backfill), so this is a refresh, and it writes a step_opened event
+      // only when it genuinely opens a new step or a new attempt.
+      const isNewStep = args.bumpPlanRevision || task.currentStepKey !== args.stepKey;
+      await openStep(db, {
+        orgId: task.orgId,
+        taskId: task.id,
+        stepKey: args.stepKey,
+        stepKind: resolveStepKind(task.workflowKey, task.workflowVersion, args.stepKey),
+        targetId,
+        attemptOrdinal,
+        planRevision: nextRevision,
+        checkpoint: checkpoint as unknown as Record<string, unknown>,
+        ...(isNewStep ? { actor: COORDINATOR_ACTOR } : {}),
+      });
+    },
   });
   if (!stamped) return { admitted: false, detail: 'lost the lease before admitting a run' };
 
@@ -357,7 +537,7 @@ async function admitReasoningRun(args: {
       taskStepKey: args.stepKey,
       attemptOrdinal,
       agentId: task.agentId,
-      promptVersion: SERVICE_RECOVERY_PROMPT_VERSION,
+      promptVersion: args.recipe.promptVersion,
     },
   });
 
@@ -371,7 +551,9 @@ async function admitReasoningRun(args: {
   // own terminal transaction is the real wake, and this only fires if that
   // wake was lost.
   const waited = await yieldToWait({
-    task: { ...task, revision: nextRevision, attemptOrdinal, state: 'running' },
+    // `currentStepKey` is the step just stamped above, so the wait below is
+    // recorded as a wait on THAT step rather than as a second step change.
+    task: { ...task, revision: nextRevision, attemptOrdinal, state: 'running', currentStepKey: args.stepKey },
     leaseEpoch: args.leaseEpoch,
     reason: 'information',
     dependency: { kind: 'run', id: result.run.id },
@@ -391,6 +573,56 @@ async function admitReasoningRun(args: {
  * either yields to a wait, settles, or releases the lease — none of them can
  * return holding it.
  */
+
+/**
+ * Resolve the RecipeDefinition for a task's FROZEN pair.
+ *
+ * Pure, exported, and never throwing: the two failure modes (a key this build
+ * does not ship, and a version this build has moved past) are both a task that
+ * can never advance, and the only correct answer to that is a classified
+ * handoff with a readable reason.
+ */
+export function resolveTaskRecipe(
+  task: { workflowKey: string; workflowVersion: number },
+): { ok: true; recipe: RecipeDefinition<never> } | { ok: false; detail: string } {
+  const recipe = getRecipe(task.workflowKey, task.workflowVersion);
+  if (!recipe) {
+    return {
+      ok: false,
+      detail: `this build does not ship workflow '${task.workflowKey}' at version ${task.workflowVersion}`,
+    };
+  }
+  return { ok: true, recipe };
+}
+
+/** How the coordinator advances ONE step of ONE recipe. */
+type StepAdvancer = (args: {
+  task: AiOperatorTaskRow;
+  leaseEpoch: number;
+  checkpoint: TaskCheckpoint;
+  recipe: RecipeDefinition<never>;
+  now: Date;
+}) => Promise<string>;
+
+/**
+ * Step execution, per recipe. Spec §6.1: "Step execution by kind is
+ * coordinator code, not recipe code" — so this table is here, next to the
+ * functions it points at, rather than on the RecipeDefinition. A recipe that
+ * carried its own executors could reach I/O, which is exactly what
+ * `recipes/purity.test.ts` forbids.
+ *
+ * A recipe with no entry here, or a step with no entry in its table, settles
+ * the task rather than guessing.
+ */
+const RECIPE_ADVANCERS: Readonly<Record<string, Readonly<Record<string, StepAdvancer>>>> = {
+  [SERVICE_RECOVERY_WORKFLOW_KEY]: {
+    investigate: (a) => advanceInvestigate(a.task, a.leaseEpoch, a.checkpoint, a.recipe),
+    execute: (a) => advanceExecute(a.task, a.leaseEpoch, a.checkpoint, a.recipe),
+    observe: (a) => advanceObserve(a.task, a.leaseEpoch, a.checkpoint, a.recipe, a.now),
+    verify: (a) => advanceVerify(a.task, a.leaseEpoch, a.checkpoint, a.recipe),
+  },
+};
+
 export async function advanceTask(task: AiOperatorTaskRow, leaseEpoch: number): Promise<string> {
   const parsedCheckpoint = parseTaskCheckpointResult(task.checkpoint);
   if (!parsedCheckpoint.ok) {
@@ -430,24 +662,37 @@ export async function advanceTask(task: AiOperatorTaskRow, leaseEpoch: number): 
     return 'failed: deadline';
   }
 
-  const stepKey = task.currentStepKey ?? 'investigate';
-
-  switch (stepKey) {
-    case 'investigate':
-      return advanceInvestigate(task, leaseEpoch, checkpoint);
-    case 'execute':
-      return advanceExecute(task, leaseEpoch, checkpoint);
-    case 'observe':
-      return advanceObserve(task, leaseEpoch, checkpoint, now);
-    case 'verify':
-      return advanceVerify(task, leaseEpoch, checkpoint);
-    default:
-      await settle({
-        task, leaseEpoch, event: 'fail', outcome: 'unresolved',
-        detail: `unknown step '${stepKey}'`, checkpoint,
-      });
-      return `failed: unknown step ${stepKey}`;
+  // Resolve the recipe BEFORE dispatching a step. A task frozen against a
+  // recipe this build no longer ships cannot be advanced by anything here, and
+  // handing it off is the only answer that leaves a technician a reason to
+  // read (Operator spec §7.3: a stopped task says what it did and did not do).
+  const resolved = resolveTaskRecipe({
+    workflowKey: task.workflowKey,
+    workflowVersion: task.workflowVersion,
+  });
+  if (!resolved.ok) {
+    await settle({
+      task, leaseEpoch, event: 'hand_off', outcome: 'unresolved',
+      detail: resolved.detail, checkpoint,
+      handoffSummary:
+        `Operator cannot continue this task: ${resolved.detail}. `
+        + 'Nothing was changed. Start a new task with a currently supported workflow.',
+    });
+    return `handed off: ${resolved.detail}`;
   }
+  const recipe = resolved.recipe;
+
+  const stepKey = task.currentStepKey ?? 'investigate';
+  const advance = RECIPE_ADVANCERS[recipe.key]?.[stepKey];
+  if (!advance) {
+    await settle({
+      task, leaseEpoch, event: 'fail', outcome: 'unresolved',
+      detail: `unknown step '${stepKey}'`, checkpoint,
+    });
+    return `failed: unknown step ${stepKey}`;
+  }
+
+  return advance({ task, leaseEpoch, checkpoint, recipe, now });
 }
 
 /**
@@ -458,13 +703,14 @@ async function advanceInvestigate(
   task: AiOperatorTaskRow,
   leaseEpoch: number,
   checkpoint: TaskCheckpoint,
+  recipe: RecipeDefinition<never>,
 ): Promise<string> {
   const run = await readLatestTaskRun(task.orgId, task.id, 'investigate');
 
   // Nothing admitted yet, or the previous attempt is still live.
   if (!run) {
     const admitted = await admitReasoningRun({
-      task, leaseEpoch, checkpoint, stepKey: 'investigate', bumpPlanRevision: false,
+      task, leaseEpoch, checkpoint, stepKey: 'investigate', bumpPlanRevision: false, recipe,
     });
     if (admitted.admitted) return admitted.detail;
     await settle({
@@ -558,11 +804,16 @@ async function advanceInvestigate(
     return 'waiting: question for a human';
   }
 
-  // A proposed step. The recipe — not the model — decides if it is reachable.
-  const validated = validateNextStep(
-    'investigate',
+  // The RECIPE — not the model, and not a hardcoded step name — decides if the
+  // proposal is reachable. The current step comes from the row rather than the
+  // literal `'investigate'`: this function is registered as the advancer for
+  // that step today, but a recipe whose reason step is called something else
+  // would otherwise be validated against a step it does not have.
+  const validated = validateRecipeNextStep(
+    recipe,
+    task.currentStepKey ?? 'investigate',
     { key: proposal.nextStep.key, inputs: proposal.nextStep.inputs },
-    checkpoint.recipeInput,
+    checkpoint.recipeInput as never,
   );
   if (!validated.ok) {
     await settle({
@@ -596,6 +847,7 @@ async function advanceExecute(
   task: AiOperatorTaskRow,
   leaseEpoch: number,
   checkpoint: TaskCheckpoint,
+  recipe: RecipeDefinition<never>,
 ): Promise<string> {
   const operation = await readLatestOperation(task.orgId, task.id);
   if (!operation) {
@@ -647,7 +899,7 @@ async function advanceExecute(
     await yieldToWait({
       task, leaseEpoch, reason: 'execution',
       dependency: { kind: 'device_command', id: operation.executionRefId },
-      wakeAfterMs: SERVICE_RECOVERY_BOUNDS.observeWakeAfterMs,
+      wakeAfterMs: recipe.bounds.observeWakeAfterMs,
       stepKey: 'observe',
       checkpoint: next,
     });
@@ -679,6 +931,7 @@ async function advanceObserve(
   task: AiOperatorTaskRow,
   leaseEpoch: number,
   checkpoint: TaskCheckpoint,
+  recipe: RecipeDefinition<never>,
   now: Date,
 ): Promise<string> {
   const operation = await readLatestOperation(task.orgId, task.id);
@@ -719,12 +972,12 @@ async function advanceObserve(
     // Either outcome moves to verification. A `failed` restart is NOT the
     // task's verdict — the service may have been brought up by something else,
     // and only the independent read decides (C10).
-    await writeLeasedStep(task, leaseEpoch, 'verify', 'verify', checkpoint);
+    await writeLeasedStep(task, leaseEpoch, 'verify', recipe, checkpoint);
     return `observed: command ${classified.outcome}`;
   }
 
   const ageMs = now.getTime() - read.evidence.createdAt.getTime();
-  if (ageMs > SERVICE_RECOVERY_BOUNDS.unknownEffectHorizonMs) {
+  if (ageMs > recipe.bounds.unknownEffectHorizonMs) {
     // Past the horizon and still not settled. Spec §6.5: "an effect with lost
     // acknowledgement, timeout, or unknown result requires authoritative
     // reconciliation; if its absence cannot be proved and the provider lacks
@@ -756,6 +1009,7 @@ async function advanceVerify(
   task: AiOperatorTaskRow,
   leaseEpoch: number,
   checkpoint: TaskCheckpoint,
+  recipe: RecipeDefinition<never>,
 ): Promise<string> {
   const operation = await readLatestOperation(task.orgId, task.id);
 
@@ -796,7 +1050,7 @@ async function advanceVerify(
     await yieldToWait({
       task, leaseEpoch, reason: 'verification_window',
       dependency: { kind: 'verification', id: task.id },
-      wakeAfterMs: SERVICE_RECOVERY_BOUNDS.verificationWakeAfterMs,
+      wakeAfterMs: recipe.bounds.verificationWakeAfterMs,
       checkpoint: next,
     });
     return 'waiting: verification window';
@@ -807,9 +1061,9 @@ async function advanceVerify(
     // "admit new run from checkpoint (attempt_ordinal + 1)". The mutation-
     // attempt cap is checked separately from the reasoning-run cap: a second
     // reasoning attempt that is only allowed to investigate is still useful.
-    if (checkpoint.mutationAttempts < SERVICE_RECOVERY_BOUNDS.maxMutationAttempts) {
+    if (checkpoint.mutationAttempts < recipe.bounds.maxMutationAttempts) {
       const admitted = await admitReasoningRun({
-        task, leaseEpoch, checkpoint: next, stepKey: 'investigate', bumpPlanRevision: true,
+        task, leaseEpoch, checkpoint: next, stepKey: 'investigate', bumpPlanRevision: true, recipe,
       });
       if (admitted.admitted) return `verification failed; ${admitted.detail}`;
       await settle({
@@ -847,9 +1101,13 @@ async function writeLeasedStep(
   task: AiOperatorTaskRow,
   leaseEpoch: number,
   stepKey: string,
-  phase: 'investigate' | 'plan' | 'execute' | 'verify' | 'document',
+  recipe: RecipeDefinition<never>,
   checkpoint: TaskCheckpoint,
 ): Promise<void> {
+  // The phase comes from the recipe's own step table. Passing it separately at
+  // the call site is how a step and its phase drift apart, and `phase` is what
+  // the task page renders.
+  const phase = recipe.steps[stepKey]?.phase ?? 'investigate';
   await writeLeased({
     orgId: task.orgId,
     taskId: task.id,
@@ -875,6 +1133,10 @@ async function writeLeasedStep(
       // anywhere. Leaving an expired lease says exactly what is true: nobody
       // holds this, and it is due now.
       leaseExpiresAt: new Date(Date.now() - 1),
+    },
+    alsoInTransaction: async () => {
+      const targetId = await currentTargetId(task.orgId, task.id);
+      await recordStepChange({ task, toStepKey: stepKey, targetId, checkpoint });
     },
   });
 }
@@ -1032,3 +1294,9 @@ export async function handleTaskWake(args: {
 
   return advanceTask(claim.task, claim.leaseEpoch);
 }
+
+/** Test seam (Recipe Library wave E2). These are the coordinator's private
+ *  writers, and the test that pins their task-graph writes needs to call them
+ *  directly — the alternative is a test that drives `advanceTask` through a
+ *  fake DB, which would assert the fake and not the wiring. */
+export const __testOnly = { writeLeasedStep, yieldToWait, settle, admitReasoningRun };

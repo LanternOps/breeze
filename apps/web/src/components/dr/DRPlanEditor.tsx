@@ -8,6 +8,9 @@ import {
 } from 'lucide-react';
 import { Dialog } from '../shared/Dialog';
 import { fetchWithAuth } from '../../stores/auth';
+import { useScrollToError } from '../../lib/scrollToError';
+import { runAction } from '../../lib/runAction';
+import { showToast } from '../shared/Toast';
 import DRPlanGroupCard, {
   DEFAULT_REBUILD_OUTPUT_DIR,
   DEFAULT_REBUILD_WAIT_TIMEOUT_MINUTES,
@@ -153,6 +156,7 @@ export default function DRPlanEditor({
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string>();
+  const errorRef = useScrollToError<HTMLDivElement>(error);
 
   const isEdit = !!planId;
 
@@ -315,26 +319,25 @@ export default function DRPlanEditor({
       };
 
       if (activePlanId) {
-        const response = await fetchWithAuth(`/dr/plans/${activePlanId}`, {
-          method: 'PATCH',
-          body: JSON.stringify(planBody),
+        await runAction({
+          request: () =>
+            fetchWithAuth(`/dr/plans/${activePlanId}`, {
+              method: 'PATCH',
+              body: JSON.stringify(planBody),
+            }),
+          errorFallback: 'Failed to update plan',
         });
-        if (!response.ok) {
-          const payload = await response.json().catch(() => null);
-          throw new Error(payload?.error ?? 'Failed to update plan');
-        }
         wroteSomething = true;
       } else {
-        const response = await fetchWithAuth('/dr/plans', {
-          method: 'POST',
-          body: JSON.stringify(planBody),
+        const payload = await runAction<{ data?: { id?: string }; id?: string }>({
+          request: () =>
+            fetchWithAuth('/dr/plans', {
+              method: 'POST',
+              body: JSON.stringify(planBody),
+            }),
+          errorFallback: 'Failed to create plan',
         });
-        if (!response.ok) {
-          const payload = await response.json().catch(() => null);
-          throw new Error(payload?.error ?? 'Failed to create plan');
-        }
-        const payload = await response.json();
-        activePlanId = payload?.data?.id ?? payload?.id;
+        activePlanId = payload?.data?.id ?? payload?.id ?? null;
         wroteSomething = true;
       }
 
@@ -362,27 +365,26 @@ export default function DRPlanEditor({
         };
 
         if (group.id) {
-          const response = await fetchWithAuth(`/dr/plans/${activePlanId}/groups/${group.id}`, {
-            method: 'PATCH',
-            body: JSON.stringify(body),
+          await runAction({
+            request: () =>
+              fetchWithAuth(`/dr/plans/${activePlanId}/groups/${group.id}`, {
+                method: 'PATCH',
+                body: JSON.stringify(body),
+              }),
+            errorFallback: `Failed to update group "${group.name}"`,
           });
-          if (!response.ok) {
-            const payload = await response.json().catch(() => null);
-            throw new Error(payload?.error ?? `Failed to update group "${group.name}"`);
-          }
           wroteSomething = true;
           persistedIds.set(group.localId, group.id);
         } else {
-          const response = await fetchWithAuth(`/dr/plans/${activePlanId}/groups`, {
-            method: 'POST',
-            body: JSON.stringify(body),
+          const payload = await runAction<{ data?: { id?: string }; id?: string }>({
+            request: () =>
+              fetchWithAuth(`/dr/plans/${activePlanId}/groups`, {
+                method: 'POST',
+                body: JSON.stringify(body),
+              }),
+            errorFallback: `Failed to create group "${group.name}"`,
           });
-          if (!response.ok) {
-            const payload = await response.json().catch(() => null);
-            throw new Error(payload?.error ?? `Failed to create group "${group.name}"`);
-          }
           wroteSomething = true;
-          const payload = await response.json();
           const createdId = payload?.data?.id ?? payload?.id;
           if (createdId) persistedIds.set(group.localId, createdId);
         }
@@ -396,13 +398,13 @@ export default function DRPlanEditor({
       // and be surprised by the next. Settle them all and report every failure.
       const removalResults = await Promise.allSettled(
         removedGroups.map(async (group) => {
-          const response = await fetchWithAuth(`/dr/plans/${activePlanId}/groups/${group.id}`, {
-            method: 'DELETE',
+          await runAction({
+            request: () =>
+              fetchWithAuth(`/dr/plans/${activePlanId}/groups/${group.id}`, {
+                method: 'DELETE',
+              }),
+            errorFallback: `Failed to remove group "${group.name}"`,
           });
-          if (!response.ok) {
-            const payload = await response.json().catch(() => null);
-            throw new Error(payload?.error ?? `Failed to remove group "${group.name}"`);
-          }
           wroteSomething = true;
         })
       );
@@ -413,6 +415,10 @@ export default function DRPlanEditor({
       );
       if (removalFailures.length > 0) throw new Error(removalFailures.join(' '));
 
+      showToast({
+        type: 'success',
+        message: isEdit ? 'Recovery plan saved.' : 'Recovery plan created.',
+      });
       onSaved();
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to save plan';
@@ -465,7 +471,10 @@ export default function DRPlanEditor({
 
       <div className="space-y-6 overflow-y-auto p-6">
         {error && (
-          <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          <div
+            ref={errorRef}
+            className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+          >
             {error}
           </div>
         )}

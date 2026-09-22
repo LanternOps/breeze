@@ -174,6 +174,46 @@ describe('renderInvoiceHtml', () => {
     expect(html).not.toContain('<script>alert(1)</script>');
     expect(html).toContain('&lt;script&gt;');
   });
+
+  // #6467: the worked-vs-billed disclosure is rendered from workedMinutes
+  // (structured data), never baked into `description` — so it survives
+  // regardless of what the description says, and localizes off the same
+  // document_locale the rest of the invoice's money glyphs already honour.
+  it('shows the worked-vs-billed note in English for a time_entry line, from workedMinutes not description', () => {
+    const html = renderInvoiceHtml(
+      makeInvoice(),
+      [makeLine({ sourceType: 'time_entry', description: 'On-site', quantity: '1.00', workedMinutes: 30 })],
+      branding,
+    );
+    expect(html).toContain('0.50 h worked · 1.00 h billed');
+  });
+
+  it('shows no note when workedMinutes equals the billed quantity', () => {
+    const html = renderInvoiceHtml(
+      makeInvoice(),
+      [makeLine({ sourceType: 'time_entry', description: 'Remote', quantity: '1.00', workedMinutes: 60 })],
+      branding,
+    );
+    expect(html).not.toContain('h worked');
+  });
+
+  it('shows no note for a non-time-entry line (workedMinutes null)', () => {
+    const html = renderInvoiceHtml(
+      makeInvoice(),
+      [makeLine({ sourceType: 'manual', description: 'Widget', workedMinutes: null })],
+      branding,
+    );
+    expect(html).not.toContain('h worked');
+  });
+
+  it('localizes the note off the stamped document locale (pt-BR)', () => {
+    const html = renderInvoiceHtml(
+      makeInvoice({ documentLocale: 'pt-BR' }),
+      [makeLine({ sourceType: 'time_entry', description: 'On-site', quantity: '1.00', workedMinutes: 30 })],
+      branding,
+    );
+    expect(html).toContain('0.50 h trabalhadas · 1.00 h faturadas');
+  });
 });
 
 describe('renderInvoicePdfBuffer', () => {

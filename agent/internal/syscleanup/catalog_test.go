@@ -76,9 +76,16 @@ func withActions(t *testing.T, actions []Action) {
 func withVolumes(t *testing.T, before, after []VolumeFree) {
 	t.Helper()
 	originalMounts, originalUsage, originalAdvance := fixedVolumesFn, usageFreeFn, advanceVolumeSample
+	originalSync, originalSleep := syncMountFn, sleepFn
 	t.Cleanup(func() {
 		fixedVolumesFn, usageFreeFn, advanceVolumeSample = originalMounts, originalUsage, originalAdvance
+		syncMountFn, sleepFn = originalSync, originalSleep
 	})
+	// settleVolumes' sync + retry is exercised directly in volumes_test.go;
+	// here it would just add real syscalls and sleeps to every Run test for
+	// no assertion value, since the "after" fixture is already stable.
+	syncMountFn = func(string) {}
+	sleepFn = func(time.Duration) {}
 
 	mounts := make([]string, 0, len(before))
 	for _, volume := range before {

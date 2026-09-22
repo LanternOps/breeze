@@ -33,6 +33,21 @@ vi.mock('../db', () => ({
   withDbAccessContext: vi.fn((_ctx: any, fn: any) => fn())
 }));
 
+// #6503: the WS close/error handlers delegate the actual offline transition +
+// transition-effects persistence to offlineDetector.ts's transitionDeviceOffline
+// (which itself opens a BullMQ queue / hits offlineEffectsStore internals this
+// file's mocks don't cover). Mocked at the module boundary like the other
+// external-service collaborators below (redis, presence, ...) so every onClose
+// test in this file exercises the WIRING (which args agentWs.ts passes) without
+// depending on offlineDetector's own internals, which are covered directly by
+// jobs/offlineDetector.test.ts.
+const { transitionDeviceOfflineMock } = vi.hoisted(() => ({
+  transitionDeviceOfflineMock: vi.fn(async () => ({ transitioned: true })),
+}));
+vi.mock('../jobs/offlineDetector', () => ({
+  transitionDeviceOffline: transitionDeviceOfflineMock,
+}));
+
 vi.mock('../db/schema', () => ({
   snmpDevices: { id: 'snmpDevices.id', orgId: 'snmpDevices.orgId' },
   // #4673 W02 — validateAgentToken innerJoins organizations to resolve the
@@ -1214,18 +1229,95 @@ describe('WS lifecycle status writes — terminal-status guard (#2230)', () => {
 
     vi.clearAllMocks();
     vi.mocked(publishEvent).mockResolvedValue('event-id');
-    const { whereMock, setMock } = rigStatusUpdateCapture();
-    // onClose status pre-check select — return a live row so the offline write runs.
+    transitionDeviceOfflineMock.mockClear();
+    transitionDeviceOfflineMock.mockResolvedValue({ transitioned: true });
+
+    // #6503: the offline write no longer goes through updateDeviceStatus's
+    // bare notInArray(TERMINAL) update — it delegates to
+    // transitionDeviceOffline (offlineDetector.ts), which persists the
+    // durable offline-transition effect the sweep-driven mark-offline path
+    // produces and applies its own inArray(status, ['online']) guard (a
+    // strictly narrower condition that still excludes decommissioned/
+    // quarantined rows, since neither is 'online' — covered directly by
+    // jobs/offlineDetector.test.ts). This test pins the WIRING: onClose must
+    // call it with ['online'] only, never widening to preserve 'updating'.
     vi.mocked(db.select).mockReturnValue(selectAgentDevice([
       { id: 'device-123', siteId: 'site-1', status: 'online', hostname: 'host-1' },
     ]) as any);
 
     await handlers.onClose({}, ws as any);
 
-    expect(setMock).toHaveBeenCalledWith(expect.objectContaining({ status: 'offline' }));
-    expect(whereMock).toHaveBeenCalledWith(
-      and(eq(devices.agentId, 'agent-123'), TERMINAL_GUARD)
-    );
+    expect(transitionDeviceOfflineMock).toHaveBeenCalledWith('agent-123', ['online']);
+  });
+
+  it('never calls transitionDeviceOffline on disconnect while the device is updating (#6503)', async () => {
+    const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123', partnerId: 'partner-123' };
+
+    const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+    const ws = wsMock();
+
+    vi.mocked(db.update).mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }) } as any);
+    vi.mocked(db.select).mockReturnValue(selectAgentDevice([]) as any);
+    await handlers.onOpen({}, ws as any);
+
+    vi.clearAllMocks();
+    transitionDeviceOfflineMock.mockClear();
+
+    // The pre-existing 'updating' preserve check must still short-circuit
+    // BEFORE transitionDeviceOffline is reached — a WS disconnect mid-update
+    // must not race the offline detector's own timeout-based handling of
+    // stale 'updating' devices.
+    vi.mocked(db.select).mockReturnValue(selectAgentDevice([
+      { id: 'device-123', siteId: 'site-1', status: 'updating', hostname: 'host-1' },
+    ]) as any);
+
+    await handlers.onClose({}, ws as any);
+
+    expect(transitionDeviceOfflineMock).not.toHaveBeenCalled();
+    expect(publishEvent).not.toHaveBeenCalled();
+  });
+
+  it('transitions the device offline via transitionDeviceOffline on a WS error (#6503)', async () => {
+    const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123', partnerId: 'partner-123' };
+
+    const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+    const ws = wsMock();
+
+    vi.mocked(db.update).mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }) } as any);
+    vi.mocked(db.select).mockReturnValue(selectAgentDevice([]) as any);
+    await handlers.onOpen({}, ws as any);
+
+    vi.clearAllMocks();
+    transitionDeviceOfflineMock.mockClear();
+    transitionDeviceOfflineMock.mockResolvedValue({ transitioned: true });
+    vi.mocked(db.select).mockReturnValue(selectAgentDevice([{ status: 'online' }]) as any);
+
+    handlers.onError({}, ws as any);
+    // onError fires the DB-access work fire-and-forget (`void runWithAgentDbAccess(...)`);
+    // flush the microtask queue so its awaited select + transitionDeviceOffline call land.
+    await new Promise((r) => setImmediate(r));
+
+    expect(transitionDeviceOfflineMock).toHaveBeenCalledWith('agent-123', ['online']);
+  });
+
+  it('never calls transitionDeviceOffline on a WS error while the device is updating (#6503)', async () => {
+    const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123', partnerId: 'partner-123' };
+
+    const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+    const ws = wsMock();
+
+    vi.mocked(db.update).mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }) } as any);
+    vi.mocked(db.select).mockReturnValue(selectAgentDevice([]) as any);
+    await handlers.onOpen({}, ws as any);
+
+    vi.clearAllMocks();
+    transitionDeviceOfflineMock.mockClear();
+    vi.mocked(db.select).mockReturnValue(selectAgentDevice([{ status: 'updating' }]) as any);
+
+    handlers.onError({}, ws as any);
+    await new Promise((r) => setImmediate(r));
+
+    expect(transitionDeviceOfflineMock).not.toHaveBeenCalled();
   });
 
   it('excludes decommissioned/quarantined rows when a WS heartbeat flips a device online', async () => {

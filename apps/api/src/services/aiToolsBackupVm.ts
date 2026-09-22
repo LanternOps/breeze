@@ -74,9 +74,7 @@ export function registerBackupVmTools(aiTools: Map<string, AiTool>): void {
     definition: {
       name: 'restore_as_vm',
       description:
-        'Restore a backup snapshot as a virtual machine. engine "hyperv" (default) creates a Hyper-V VM on a Windows target device. ' +
-        'engine "rebuild" rebuilds a Linux whole-machine snapshot (one with a disk layout manifest) into a VHDX file on a Linux rebuild host; ' +
-        'the image always gets a NEW machine identity and must be attached to a Hyper-V VM manually.',
+        'Restore a snapshot as a VM. hyperv (default) creates a Hyper-V VM on Windows; rebuild turns a Linux whole-machine snapshot with a disk layout manifest into VHDX on Linux. Rebuilt images always get a NEW machine identity and require manual attachment to Hyper-V.',
       input_schema: {
         type: 'object' as const,
         properties: {

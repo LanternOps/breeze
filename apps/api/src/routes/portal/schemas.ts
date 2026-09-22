@@ -43,6 +43,14 @@ export type PortalAuthContext = {
   token: string;
   authMethod: 'bearer' | 'cookie';
   /**
+   * Owning partner resolved by portalAuthMiddleware after the active-org gate.
+   * Self-managed portal routes may use it as currentPartnerId for SELECT-only
+   * partner-wide RLS branches. It does not grant partner-axis write access.
+   *
+   * Optional for legacy/test contexts and auth-gate-exempt teardown paths.
+   */
+  partnerId?: string | null;
+  /**
    * Org -> partner -> UTC timezone chain, resolved once by
    * `portalAuthMiddleware` (`services/portal/timezone.ts`). Read models must
    * never resolve this themselves — they consume `auth.timezone`.

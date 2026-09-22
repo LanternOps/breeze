@@ -1,7 +1,7 @@
 import { withBase } from '@/lib/basePath';
 import { useEffect, useState } from 'react';
 import { ArrowLeft, AlertCircle, Download, CreditCard } from 'lucide-react';
-import { type BrandingConfig, type InvoiceDetail, type InvoiceStatus, buildPortalApiUrl, portalApi } from '@/lib/api';
+import { type BrandingConfig, type InvoiceDetail, type InvoiceStatus, buildPortalApiUrl, portalApi, lineWorkedVsBilledNote } from '@/lib/api';
 import { money, shortDate } from '@/lib/format';
 import { STATUS_LABELS, statusTone } from '@/lib/invoiceStatus';
 import { computeChargeNow } from '@/lib/invoiceDeposit';
@@ -323,11 +323,16 @@ export function InvoiceDetailView({ detail, error, statusCode }: InvoiceDetailVi
                   // label the same line identically.
                   const title = (l.name ?? l.description ?? '').trim() || '—';
                   const blurb = l.name ? (l.description ?? '').trim() : '';
+                  // #6467: worked-vs-billed disclosure (§3.5), sourced from
+                  // structured data — never from `description`, which an
+                  // editor edit can't touch, so the disclosure can't be erased.
+                  const note = lineWorkedVsBilledNote(l);
                   return (
                   <tr key={`${title}-${index}`} className="border-b align-top last:border-0">
                     <td className="px-4 py-3 text-foreground sm:px-5">
                       {title}
                       {blurb && <div className="mt-0.5 text-xs text-muted-foreground">{blurb}</div>}
+                      {note && <div className="mt-0.5 text-xs text-muted-foreground" data-testid={`invoice-line-worked-vs-billed-${index}`}>{note}</div>}
                       {l.ticketNumber && (
                         <div
                           className="mt-0.5 text-xs text-muted-foreground"

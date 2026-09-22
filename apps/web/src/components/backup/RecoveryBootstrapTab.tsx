@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { cn, formatBytes } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
+import { runAction } from '../../lib/runAction';
 import { formatTime } from './backupDashboardHelpers';
 import BareMetalRecoveryPanel from './BareMetalRecoveryPanel';
 import { useTranslation } from 'react-i18next';
@@ -736,22 +737,22 @@ export default function RecoveryBootstrapTab() {
 
     try {
       setCreating(true);
-      const response = await fetchWithAuth('/backup/bmr/tokens', {
-        method: 'POST',
-        body: JSON.stringify({
-          snapshotId: createSnapshotId,
-          restoreType: createRestoreType,
-          targetConfig: parsedTargetConfig,
-          expiresInHours,
-        }),
+      const data = await runAction({
+        request: () =>
+          fetchWithAuth('/backup/bmr/tokens', {
+            method: 'POST',
+            body: JSON.stringify({
+              snapshotId: createSnapshotId,
+              restoreType: createRestoreType,
+              targetConfig: parsedTargetConfig,
+              expiresInHours,
+            }),
+          }),
+        errorFallback: t('recoveryBootstrapTab.failedToCreateRecoveryToken'),
+        successMessage: 'Recovery token created.',
       });
 
-      if (!response.ok) {
-        const body = await response.json().catch(() => null);
-        throw new Error(body?.error ?? t('recoveryBootstrapTab.failedToCreateRecoveryToken'));
-      }
-
-      const payload = normalizeApiResponse(await response.json());
+      const payload = normalizeApiResponse(data);
       const createdToken = toTokenRecord(payload, {
         restoreType: createRestoreType,
         snapshotId: createSnapshotId,
@@ -827,6 +828,8 @@ export default function RecoveryBootstrapTab() {
       try {
         setPreviewingTokenId(tokenId);
         setError(undefined);
+        // runaction-exempt: inline-feedback handler. Failures land in the
+        // `error` banner and success in `tokenMessage` below (see catch/finally).
         const response = await fetchWithAuth('/backup/bmr/recover/authenticate', {
           method: 'POST',
           body: JSON.stringify({ token: token.token }),
@@ -871,6 +874,8 @@ export default function RecoveryBootstrapTab() {
       try {
         setRefreshingTokenId(tokenId);
         setError(undefined);
+        // runaction-exempt: inline-feedback handler. Failures land in the
+        // `error` banner and success in `tokenMessage` below.
         const response = await fetchWithAuth(`/backup/bmr/tokens/${encodeURIComponent(tokenId)}`, {
           method: 'DELETE',
         });
@@ -913,6 +918,8 @@ export default function RecoveryBootstrapTab() {
     try {
       setCreatingMedia(true);
       setError(undefined);
+      // runaction-exempt: inline-feedback handler. Failures land in the
+      // `error` banner and success in `tokenMessage` below.
       const response = await fetchWithAuth('/backup/bmr/media', {
         method: 'POST',
         body: JSON.stringify({
