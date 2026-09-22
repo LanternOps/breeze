@@ -850,6 +850,29 @@ describe('POST /:id/accept-on-behalf', () => {
       action: 'quote.accepted_on_behalf', resourceId: QUOTE_ID,
     }));
   });
+
+  // Same regression, narrower: the supersede audit is a SEPARATE writeRouteAudit
+  // call gated on res.superseded, and a re-ordering that only slips this one
+  // back below the side effects would pass the test above.
+  it('also writes the supersede audit when a post-commit side effect throws', async () => {
+    const { acceptQuote, emitAcceptInvoiceIssued } = await import('../../services/quoteAcceptService');
+    vi.mocked(acceptQuote).mockResolvedValueOnce({
+      quote: { id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'converted', quoteNumber: 'Q-2026-0001', revisionNumber: 2 },
+      acceptanceId: 'acc1', invoiceId: 'inv1', invoiceIssued: true, invoiceNumber: 'INV-2026-0007',
+      contractIds: [], pax8OrderId: null, contractDocumentIds: [],
+      superseded: { parentQuoteId: 'parent1', previousStatus: 'sent' },
+    } as never);
+    vi.mocked(emitAcceptInvoiceIssued).mockRejectedValueOnce(new Error('smtp down'));
+    const { writeRouteAudit } = await import('../../services/auditEvents');
+    const res = await appWith('partner', ['quotes:accept']).request(`/${QUOTE_ID}/accept-on-behalf`, jsonReq(BODY));
+    expect(res.status).toBe(500);
+    expect(vi.mocked(writeRouteAudit)).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'quote.accepted_on_behalf', resourceId: QUOTE_ID,
+    }));
+    expect(vi.mocked(writeRouteAudit)).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'quote.superseded', resourceId: 'parent1',
+    }));
+  });
 });
 
 // #6638: the route suite mocks `handleServiceError` (./quotes) to rethrow, so
