@@ -21,6 +21,11 @@ import '@/lib/i18n';
 import { formatBytes, formatDateTime } from './filesystemTabUtils';
 
 const PAGE_LIMIT = 20;
+// #6485 F-6: a run started elsewhere (the AI lane, another tech's tab) never
+// bumps this component's own refreshToken, so without a periodic re-walk the
+// history stayed stale until a full page reload. 20s balances "shows up
+// promptly" against re-fetching a list a tech may be staring at.
+const AUTO_REFRESH_INTERVAL_MS = 20_000;
 
 export type CleanupRunListItem = {
   id: string;
@@ -97,6 +102,16 @@ export default function CleanupRunHistory({ deviceId, refreshToken }: Props) {
       controllerRef.current?.abort();
     };
   }, [loadPage, refreshToken]);
+
+  // Independent of refreshToken: this re-walk must fire even when nothing on
+  // THIS tab changed, which is exactly the case (a run started elsewhere)
+  // #6485 F-6 is about. Re-walking the first page — not appending — matches
+  // the same "the honest refresh is to re-walk from the top" reasoning the
+  // refreshToken restart above already uses.
+  useEffect(() => {
+    const timer = setInterval(() => { void loadPage(null, false); }, AUTO_REFRESH_INTERVAL_MS);
+    return () => clearInterval(timer);
+  }, [loadPage]);
 
   return (
     <div className="rounded-lg border bg-card p-6 shadow-xs" data-testid="cleanup-run-history">

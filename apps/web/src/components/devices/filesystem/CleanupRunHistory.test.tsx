@@ -30,6 +30,42 @@ const run = (id: string, over: Record<string, unknown> = {}) => ({
 describe('CleanupRunHistory', () => {
   beforeEach(() => vi.clearAllMocks());
 
+  // #6485 F-6: the list only re-walked on its own refreshToken bump (a local
+  // scan/run/refresh click), so a system run started elsewhere (the AI lane,
+  // another tech's tab) was invisible until a full page reload.
+  it('re-walks the first page on an interval, without a refreshToken bump', async () => {
+    vi.useFakeTimers();
+    try {
+      fetchMock.mockResolvedValue(json({ success: true, data: { runs: [run('r1')], nextCursor: null } }));
+      render(<CleanupRunHistory deviceId="dev-1" refreshToken={0} />);
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+      fetchMock.mockResolvedValue(json({ success: true, data: { runs: [run('r-elsewhere')], nextCursor: null } }));
+      await vi.advanceTimersByTimeAsync(30_000);
+
+      expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(2);
+      expect(screen.getByTestId('cleanup-run-r-elsewhere')).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('stops polling after unmount', async () => {
+    vi.useFakeTimers();
+    try {
+      fetchMock.mockResolvedValue(json({ success: true, data: { runs: [run('r1')], nextCursor: null } }));
+      const { unmount } = render(<CleanupRunHistory deviceId="dev-1" refreshToken={0} />);
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+      unmount();
+      const callsAtUnmount = fetchMock.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(fetchMock.mock.calls.length).toBe(callsAtUnmount);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('renders the first page and asks for the default limit', async () => {
     fetchMock.mockResolvedValue(json({ success: true, data: { runs: [run('r1')], nextCursor: null } }));
 
