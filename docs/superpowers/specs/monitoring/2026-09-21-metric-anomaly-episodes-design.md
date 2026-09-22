@@ -5,9 +5,9 @@ anomalies tab on KIT, US prod).
 Advisor quorum: Fable position formed; Codex unavailable (usage limit until 2026-09-26), so the
 independent review was a fresh-context Opus agent with repo access. Ten questions put, ten verdicts
 returned; eight amendments adopted, two positions held on the evidence. See "Quorum record" (§20).
-Tracking: not yet registered — register via `feature-lifecycle` when the plans are written.
+Tracking: LanternOps/breeze#6650 (waves #6651 W01, #6652 W02, #6653 W03, #6654 W04).
 Plan: `docs/superpowers/plans/monitoring/2026-09-21-metric-anomaly-episodes.md` (index, one plan per
-wave) — to be written after this spec is approved.
+wave).
 Prior decisions this builds on: `docs/runbooks/ml-operations.md` (v0 rule: ML may create rows and
 suggestions but never executes remediation without a human), the ML feature-flag model
 (`apps/api/src/services/mlFeatureFlags.ts`, boolean flags, org > partner > default), PR #6538 (the

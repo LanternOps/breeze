@@ -1,5 +1,5 @@
 ---
-tracking_issue: (to be set by register_feature)
+tracking_issue: LanternOps/breeze#6650
 ---
 # Metric Anomaly Episodes — Plan Index
 
@@ -13,10 +13,10 @@ status, never this index.
 
 | Wave | Plan | Depends on |
 |---|---|---|
-| W01 | [API core: schema, migration, assembly, auto-resolve, attribution, anti-contamination, registrations](2026-09-21-metric-anomaly-episodes-w01-api-core.md) | — |
-| W02 | [API surface: episode routes, actions + snooze, promotion, alert auto-resolve, per-member feedback, dispatch per episode](2026-09-21-metric-anomaly-episodes-w02-api-surface.md) | W01 merged |
-| W03 | [Evaluation: `anomaly_episode` feedback source, episode block in evaluation, `cleared` excluded from label rates, runbook](2026-09-21-metric-anomaly-episodes-w03-evaluation.md) | W02 merged |
-| W04 | [Web: device panel rewrite, sentence cards, filters, alert deep link, i18n](2026-09-21-metric-anomaly-episodes-w04-web.md) | W02 merged (W03 optional) |
+| W01 (#6651) | [API core: schema, migration, assembly, auto-resolve, attribution, anti-contamination, registrations](2026-09-21-metric-anomaly-episodes-w01-api-core.md) | — |
+| W02 (#6652) | [API surface: episode routes, actions + snooze, promotion, alert auto-resolve, per-member feedback, dispatch per episode](2026-09-21-metric-anomaly-episodes-w02-api-surface.md) | W01 merged |
+| W03 (#6653) | [Evaluation: `anomaly_episode` feedback source, episode block in evaluation, `cleared` excluded from label rates, runbook](2026-09-21-metric-anomaly-episodes-w03-evaluation.md) | W02 merged |
+| W04 (#6654) | [Web: device panel rewrite, sentence cards, filters, alert deep link, i18n](2026-09-21-metric-anomaly-episodes-w04-web.md) | W02 merged (W03 optional) |
 
 ## Cross-wave interface contract
 
