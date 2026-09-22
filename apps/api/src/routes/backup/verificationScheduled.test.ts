@@ -221,6 +221,64 @@ describe('verification timeout handling', () => {
     }
   });
 
+  it('derives a count-only reason when the agent reports no error (#6561)', async () => {
+    const cases = [
+      {
+        id: 'verify-derived-failed',
+        commandId: '55555555-5555-4555-8555-555555555555',
+        result: { status: 'failed', filesVerified: 0, filesFailed: 4 },
+        expected: '4 file(s) failed verification',
+      },
+      {
+        id: 'verify-derived-partial',
+        commandId: '66666666-6666-4666-8666-666666666666',
+        result: { status: 'partial', filesVerified: 6, filesFailed: 0, filesIncomplete: 2 },
+        expected: '2 file(s) never uploaded during the backup run and are absent from this snapshot',
+      },
+    ];
+
+    for (const testCase of cases) {
+      const orgId = `org-${testCase.id}`;
+      const startedAt = new Date();
+      backupVerifications.push({
+        id: testCase.id,
+        orgId,
+        deviceId: `dev-${testCase.id}`,
+        backupJobId: `job-${testCase.id}`,
+        snapshotId: `snap-${testCase.id}`,
+        verificationType: 'integrity',
+        status: 'pending',
+        startedAt: startedAt.toISOString(),
+        completedAt: null,
+        restoreTimeSeconds: null,
+        filesVerified: 0,
+        filesFailed: 0,
+        details: { source: 'test', commandId: testCase.commandId },
+        createdAt: startedAt.toISOString(),
+      });
+      verificationOrgById.set(testCase.id, orgId);
+
+      try {
+        await processBackupVerificationResult(testCase.commandId, {
+          status: 'completed',
+          stdout: JSON.stringify({ snapshotId: `snap-${testCase.id}`, ...testCase.result }),
+        });
+
+        expect(persistVerificationToDbMock).toHaveBeenCalledWith(expect.objectContaining({
+          id: testCase.id,
+          details: expect.objectContaining({
+            reason: testCase.expected,
+            source: 'agent.result',
+          }),
+        }));
+      } finally {
+        const index = backupVerifications.findIndex((row) => row.id === testCase.id);
+        if (index >= 0) backupVerifications.splice(index, 1);
+        verificationOrgById.delete(testCase.id);
+      }
+    }
+  });
+
   it('does not leave a stale failure reason on a later passing result (#6561)', async () => {
     const orgId = 'org-result-pass';
     const deviceId = 'dev-result-pass';
@@ -257,8 +315,9 @@ describe('verification timeout handling', () => {
         }),
       });
 
-      const persisted = persistVerificationToDbMock.mock.calls.at(-1)?.[0] as { details: Record<string, unknown> };
-      expect(persisted.details.reason).toBeUndefined();
+      const lastCall = persistVerificationToDbMock.mock.calls.at(-1) as unknown[] | undefined;
+      const persisted = lastCall?.[0] as { details: Record<string, unknown> } | undefined;
+      expect(persisted?.details.reason).toBeUndefined();
     } finally {
       const index = backupVerifications.findIndex((row) => row.id === verificationId);
       if (index >= 0) {

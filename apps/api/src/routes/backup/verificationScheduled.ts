@@ -307,6 +307,26 @@ async function collectDevicesToRecompute(orgId?: string, allowedSiteIds?: readon
  * Process an async backup verification result from the agent.
  * Called from agentWs.ts when a backup_verify or backup_test_restore command completes.
  */
+/**
+ * Build a human-readable reason for a non-passing verification the agent did
+ * not explain itself (#6561). Counts only, never file paths.
+ */
+function deriveVerificationReason(params: {
+  status: BackupVerificationStatus;
+  filesFailed: number;
+  filesIncomplete: number;
+}): string | null {
+  const { status, filesFailed, filesIncomplete } = params;
+  if (status === 'passed') return null;
+  if (filesFailed > 0) {
+    return `${filesFailed} file(s) failed verification`;
+  }
+  if (filesIncomplete > 0) {
+    return `${filesIncomplete} file(s) never uploaded during the backup run and are absent from this snapshot`;
+  }
+  return null;
+}
+
 export async function processBackupVerificationResult(
   commandId: string,
   commandResult: { status: string; stdout?: string; error?: string }
@@ -387,8 +407,19 @@ export async function processBackupVerificationResult(
   // timeout path used to populate `details.reason`. Mirror the timeout shape
   // so the UI's reason column renders for agent-reported failures too.
   const agentError = typeof agentResult.error === 'string' ? agentResult.error.trim() : '';
-  if (agentError) {
-    details.reason = agentError;
+  // The agent only fills `error` on the early-return paths (missing manifest,
+  // empty snapshot). Its "every file failed" and "some files failed" branches
+  // set a non-passing status and nothing else, so derive a count-only reason
+  // for those rather than leaving the row unexplained again. Counts only —
+  // failed/missing file NAMES are deliberately withheld from list consumers
+  // (see toVerificationListItem).
+  const reason = agentError || deriveVerificationReason({
+    status: agentStatus,
+    filesFailed: pending.filesFailed,
+    filesIncomplete: details.filesIncomplete as number,
+  });
+  if (reason) {
+    details.reason = reason;
     details.source = 'agent.result';
   } else {
     // This result is authoritative for the row, so a reason carried over from
