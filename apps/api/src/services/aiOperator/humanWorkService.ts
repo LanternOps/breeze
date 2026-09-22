@@ -560,13 +560,21 @@ export interface OverdueHumanWorkRow {
  *    same run would silently return the FIRST comment. A reminder is not a
  *    per-run artifact.
  *
- * `reminded_at` is stamped for every row this pass touches, BEFORE the
- * side-effects, so a notification that throws cannot turn into a reminder loop
- * — an unsent reminder is a smaller failure than a ticket nobody reads.
+ * ONE TRANSACTION FOR THE WHOLE PASS. `withSystemDbAccessContext` runs its
+ * callback inside a single Postgres transaction, so the stamps, comments and
+ * notifications for every row in the batch commit or roll back TOGETHER: a
+ * throw on row N undoes rows 1..N-1 as well, and the next tick retries the
+ * whole batch cleanly. There is no per-row isolation, and none is needed.
  *
- * Runs under one system context for the whole scan: `createNotification`
- * requires `runOutsideDbContext(() => withSystemDbAccessContext(...))`, and the
- * inner helper is a passthrough under an ambient context, so the wrapper here
+ * Within that transaction, `reminded_at` is stamped by a GUARDED update
+ * (`WHERE reminded_at IS NULL`) before the side-effects. That guard is what
+ * makes two API pods ticking concurrently safe: both may SELECT the same
+ * overdue row, but the second pod's UPDATE waits on the row lock, sees the
+ * stamp once the first commits, matches nothing, and skips the comment.
+ *
+ * The system context is also what `createNotification` requires
+ * (`runOutsideDbContext(() => withSystemDbAccessContext(...))`); the inner
+ * helper is a passthrough under an ambient context, so the wrapper here
  * covers every call and must not be repeated per row.
  */
 export async function sendHumanWorkReminders(now: Date = new Date()): Promise<number> {

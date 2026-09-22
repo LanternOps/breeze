@@ -486,6 +486,32 @@ describe('AI Operator human-work + wait steps against real Postgres (E3, #6168)'
     expect(after?.remindedAt).not.toBeNull();
   });
 
+  // (10b) Two reconciler pods ticking at once: the guarded stamp serialises
+  // them, so exactly ONE comment and ONE notification land.
+  runDb('two CONCURRENT reminder passes over the same overdue step post exactly one reminder', async () => {
+    const org = await seedOrg();
+    const taskId = await seedTask(org, { currentStepKey: 'confirm_identity', requesterUserId: org.userId });
+    const { step } = await openHumanWork(org, taskId);
+    await withSystemDbAccessContext(() => db.update(aiOperatorTaskSteps)
+      .set({ remindAfterAt: new Date(Date.now() - 60_000) })
+      .where(eq(aiOperatorTaskSteps.id, step.id)));
+
+    const counts = await Promise.all([sendHumanWorkReminders(), sendHumanWorkReminders()]);
+    // Each pass reports the rows it SELECTED; only one of them actually wrote.
+    expect(counts.reduce((a, b) => a + b, 0)).toBeGreaterThanOrEqual(1);
+
+    const [target] = await withSystemDbAccessContext(() =>
+      db.select().from(aiOperatorTaskTargets)
+        .where(and(eq(aiOperatorTaskTargets.taskId, taskId), eq(aiOperatorTaskTargets.targetKind, 'ticket'))));
+    const comments = await withSystemDbAccessContext(() =>
+      db.select().from(ticketComments)
+        .where(and(eq(ticketComments.ticketId, target!.ticketId!), eq(ticketComments.commentType, 'internal'))));
+    expect(comments).toHaveLength(1);
+    const notes = await withSystemDbAccessContext(() =>
+      db.select().from(userNotifications).where(eq(userNotifications.userId, org.userId)));
+    expect(notes).toHaveLength(1);
+  });
+
   // (11) Deadline on human work HANDS OFF.
   runDb('a task whose deadline passes while waiting on a person hands off with a summary — it does not fail', async () => {
     const org = await seedOrg();
