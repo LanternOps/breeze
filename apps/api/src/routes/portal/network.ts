@@ -37,7 +37,7 @@ function portalOrgContext(
 
 function cached(
   c: Parameters<typeof applyPortalCacheHeaders>[0],
-  payload: NetworkOverviewDto,
+  payload: NetworkOverviewDto | NetworkAssetsDto,
 ) {
   applyPortalCacheHeaders(c, {
     scope: 'private',
