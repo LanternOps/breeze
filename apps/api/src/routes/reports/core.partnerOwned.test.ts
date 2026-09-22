@@ -155,7 +155,7 @@ import {
   resolveRequestPartnerReportAuthority,
   siteScopeFingerprint,
 } from '../../services/siteScope';
-import { generateReport } from '../../services/reportGenerationService';
+import { generateReport, UnsupportedReportScopeError } from '../../services/reportGenerationService';
 import { PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../../services/partnerWideAccess';
 import { writeRouteAudit } from '../../services/auditEvents';
 
@@ -518,6 +518,29 @@ describe('POST /reports/:id/generate on a partner-owned definition', () => {
 
     expect(res.status).toBe(404);
     expect(state.inserts).toHaveLength(0);
+  });
+});
+
+describe('POST /reports/:id/generate on an org-owned business-type definition', () => {
+  it('400s unsupported_report_scope and records the stable code (not err.message) on the failed run', async () => {
+    state.auth = orgAuth();
+    const orgDefinition = partnerDefinition({
+      orgId: ORG_ID,
+      partnerId: null,
+      executionScopeKind: 'unrestricted',
+      executionScopeFingerprint: siteScopeFingerprint({ version: 1, kind: 'unrestricted', orgId: ORG_ID }),
+    });
+    state.rows = [orgDefinition, orgDefinition, orgDefinition, orgDefinition];
+    vi.mocked(generateReport).mockRejectedValueOnce(new UnsupportedReportScopeError('ar_aging', 'organization'));
+
+    const res = await app().request(`/reports/${REPORT_ID}/generate`, { method: 'POST' });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'unsupported_report_scope', type: 'ar_aging', runId: REPORT_ID });
+    expect(state.updates.at(-1)?.set).toEqual(expect.objectContaining({
+      status: 'failed',
+      errorMessage: 'unsupported_report_scope',
+    }));
   });
 });
 

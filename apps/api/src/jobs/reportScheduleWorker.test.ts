@@ -760,6 +760,13 @@ describe('processRunScheduledReport', () => {
       ORG_ID,
       'read',
     );
+    // #3198 W01 — the org owner axis is threaded into decode and preflight.
+    expect(decodeSiteScopeMock).toHaveBeenCalledWith(expect.anything(), { orgId: ORG_ID });
+    expect(reportExecutionPreflightMock).toHaveBeenCalledWith(
+      { orgId: ORG_ID },
+      report.config,
+      expect.anything(),
+    );
     expect(generateReportMock).toHaveBeenCalledWith(
       'device_inventory',
       ORG_ID,
@@ -1615,7 +1622,7 @@ describe('partner-owned scheduled definitions (#3198 W01)', () => {
     );
   });
 
-  it('records unsupported_report_scope when generateReport throws UnsupportedReportScopeError for a partner-owned definition', async () => {
+  it('records unsupported_report_scope for a partner-owned definition WITHOUT calling generateReport', async () => {
     selectMock.mockReturnValueOnce(selectChain([partnerReport]));
     insertMock.mockReturnValueOnce(insertChain([{ id: RUN_ID }]));
     const updates = [updateChain(), updateChain()];

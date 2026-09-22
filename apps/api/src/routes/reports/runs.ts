@@ -234,7 +234,10 @@ runsRoutes.post(
         .set({
           status: 'failed',
           completedAt: new Date(),
-          errorMessage: err instanceof Error ? err.message : 'Failed to generate report'
+          // #3198 W01 — same stable reason the schedule worker records.
+          errorMessage: err instanceof UnsupportedReportScopeError
+            ? 'unsupported_report_scope'
+            : err instanceof Error ? err.message : 'Failed to generate report'
         })
         .where(eq(reportRuns.id, run.id));
       // P2-3 (#4190) — belt to the braces of the `isSystemManagedReportDefinition`

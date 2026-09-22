@@ -1039,13 +1039,14 @@ const ASSOCIATED_SYSTEM_SCOPED_TABLES: ReadonlyArray<{
   },
   // report_runs has NO org_id column of its own — its tenancy is its parent
   // definition's — so neither the org cascade list nor the partner-axis sweep
-  // reaches it, yet `report_runs_report_id_reports_id_fk` is declared without
-  // an explicit ON DELETE (verified in pg_constraint: confdeltype 'a' =
-  // NO ACTION). The main loop's `DELETE FROM reports WHERE org_id = ...`
-  // therefore aborts with 23503 for ANY org that has ever generated a report
-  // — a PRE-EXISTING latent GDPR erasure bug (found by P2-3's own
-  // narrative-artifact fixture, #4190, but not caused by it: an ordinary
-  // scheduled report has produced these rows since the feature shipped).
+  // reaches it directly. `report_runs_report_id_reports_id_fk` was originally
+  // declared without an explicit ON DELETE (NO ACTION), so the main loop's
+  // `DELETE FROM reports WHERE org_id = ...` aborted with 23503 for ANY org
+  // that had ever generated a report — a latent GDPR erasure bug found by
+  // P2-3's narrative-artifact fixture (#4190), which this pre-clear fixed.
+  // Since 2026-10-27-130100 (#3198 W01) the FK is ON DELETE CASCADE, so the
+  // reports delete would now take its runs with it; this pre-clear is kept as
+  // an explicit, order-deterministic clear and is harmless either way.
   //
   // Safe to clear first: two FKs point INTO report_runs and neither can raise
   // 23503 here —

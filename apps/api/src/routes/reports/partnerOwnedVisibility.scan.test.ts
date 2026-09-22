@@ -44,7 +44,7 @@ const ORG_ONLY_ALLOWLIST: ReadonlyMap<string, string> = new Map([
   ['src/routes/fleetDesign.ts', 'lists type ai_fleet_design (system-authored, org-owned) under auth.orgCondition(reports.org_id)'],
   ['src/routes/aiAgents.ts', 'AI-agent run artifacts: `reports.org_id = run.org_id` AND auth.orgCondition(reports.org_id) — agent runs are org-scoped'],
   ['src/services/reportNarrativeDelivery.ts', 'delivers the org-owned AI narrative run by id in system context; report_run_deliveries rows exist only for narrative runs'],
-  ['src/services/aiToolsFleet.ts', 'AI fleet/report tools are org-axis: every tenant predicate is reports.org_id (orgWhere / inArray(org_ids)), and the system-scope by-id path refuses a partner-owned row (#3198 W01 Task 5b owner guard)'],
+  ['src/services/aiToolsFleet.ts', 'AI fleet/report tools are org-axis: every tenant predicate is reports.org_id (orgWhere / inArray(org_ids)), and by-id reads go through aiReportDefinitionAccess / aiReportRunAccess, which refuse a partner-owned row via requireOrgOwnedReportRow (#3198 W01 Task 5b owner guard)'],
   ['src/jobs/reportScheduleWorker.ts', 'system DB context, reads by id, re-asserts live partner authority per row before generating (#3198 W01 Task 6)'],
   ['src/jobs/reportRunDeliveryReconciler.ts', 'system reconciler maps narrative delivery runs to their org by id; partner-owned runs have no deliveries (#3198 W01 Task 6)'],
 ]);
