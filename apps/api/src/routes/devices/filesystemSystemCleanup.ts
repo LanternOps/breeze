@@ -19,7 +19,7 @@ import { and, eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { zValidator } from '../../lib/validation';
 import { db } from '../../db';
-import { deviceCommands } from '../../db/schema';
+import { deviceCommands, deviceFilesystemCleanupRuns } from '../../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, withAuthDbAccessContext } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import { CommandTypes } from '../../services/commandTypes';
@@ -29,6 +29,7 @@ import { systemCleanupRunBodySchema } from '@breeze/shared/validators';
 import {
   AGENT_UPDATE_REQUIRED_ERROR,
   MIN_AGENT_VERSION_SYSTEM_CLEANUP,
+  failSystemCleanupRunAndCancelCommand,
   isUnknownCommandTypeError,
   parseAgentJson,
   queueSystemCleanupList,
@@ -240,5 +241,76 @@ filesystemSystemCleanupRoutes.get(
         requestedAt: run.requestedAt,
       },
     });
+  },
+);
+
+// --- POST /:id/filesystem/system-cleanup/run/:cleanupRunId/cancel ----------
+
+/**
+ * Operator cancel for a system run (#6485 F-5).
+ *
+ * `POST /devices/:id/commands/:commandId/cancel` (the generic command cancel,
+ * `routes/devices/commands.ts`) CASes on the COMMAND's status being
+ * `pending`, so it 409s "Command is not pending" the instant the agent claims
+ * it — which for a native cleaner (cleanmgr's session-0 hang can run 60 min,
+ * spec §7.2) is almost immediately. Before this route, a hung run could only
+ * be ended by waiting out its stored `deadlineAt` (up to 70 min, the lazy
+ * poll timeout in `resolveSystemCleanupRunStatus`).
+ *
+ * This CASes on the RUN row instead, and reuses
+ * `failSystemCleanupRunAndCancelCommand` — the SAME atomic
+ * fail-the-run-then-cancel-the-command transaction the lazy timeout uses —
+ * so a run can be ended from here whether its command is still `pending` or
+ * already `sent`/in flight on the device, and there remains exactly one
+ * implementation of "this run is over" (spec §13 #6/#13).
+ */
+filesystemSystemCleanupRoutes.post(
+  '/:id/filesystem/system-cleanup/run/:cleanupRunId/cancel',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
+  zValidator('param', runPollParamSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { id: deviceId, cleanupRunId } = c.req.valid('param');
+
+    const device = await withAuthDbAccessContext(auth, () => getDeviceWithOrgAndSiteCheck(c, deviceId, auth));
+    if (device === SITE_ACCESS_DENIED) return c.json({ success: false, error: 'Access to this site denied' }, 403);
+    if (!device) return c.json({ success: false, error: 'Device not found' }, 404);
+
+    const [run] = await db
+      .select()
+      .from(deviceFilesystemCleanupRuns)
+      .where(and(
+        eq(deviceFilesystemCleanupRuns.id, cleanupRunId),
+        eq(deviceFilesystemCleanupRuns.deviceId, deviceId),
+        eq(deviceFilesystemCleanupRuns.orgId, device.orgId),
+        eq(deviceFilesystemCleanupRuns.kind, 'system'),
+      ))
+      .limit(1);
+    if (!run) return c.json({ success: false, error: 'Cleanup run not found' }, 404);
+    if (run.status !== 'running') {
+      return c.json({ success: false, error: 'not_running', status: run.status }, 409);
+    }
+
+    const finalised = await failSystemCleanupRunAndCancelCommand({
+      runId: cleanupRunId, deviceId, orgId: device.orgId, error: 'cancelled_by_operator',
+    });
+    // Lost the CAS: a real result (or another cancel) landed between the read
+    // above and here. Report the same 409 rather than a false "cancelled".
+    if (!finalised) {
+      return c.json({ success: false, error: 'not_running', status: 'failed' }, 409);
+    }
+
+    writeRouteAudit(c, {
+      orgId: device.orgId,
+      action: 'device.filesystem.system_cleanup.cancel',
+      resourceType: 'device',
+      resourceId: deviceId,
+      resourceName: device.hostname,
+      details: { cleanupRunId, commandId: run.commandId },
+      result: 'success',
+    });
+
+    return c.json({ success: true, data: { cleanupRunId, status: 'failed' } });
   },
 );
