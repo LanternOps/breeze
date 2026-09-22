@@ -54,4 +54,23 @@ esac
 grep -q "^expected='\[\"media_booted\",\"planned\",\"restoring\",\"validated\",\"rebooted\"\]'$" "$target" \
   || fail "the expected progress sequence in $target is not the exact 5-phase contract [\"media_booted\",\"planned\",\"restoring\",\"validated\",\"rebooted\"] — loosening it is not an acceptable fix for a flake"
 
-echo "run-qemu_test: PASS — boot 1 passes -no-reboot; progress contract is the exact 5-phase sequence"
+# D-W09-2 / D-W09-3 (#6491 KIT lab): the fake server must be started with
+# the one-shot transport fault pointed at the backslash-keyed systemd unit,
+# and the run must assert BOTH that the fault fired and that the object was
+# re-requested — otherwise the e2e cannot see a client that refuses a
+# backslash key or one that treats a transport error as permanent (which is
+# exactly why the QEMU proof passed while the KIT rig failed).
+fakeserver_invocation="$(extract_invocation '^"[$]fakeserver_bin" ')"
+[ -n "$fakeserver_invocation" ] || fail "could not find the fakeserver invocation in $target"
+case "$fakeserver_invocation" in
+  *'--fault-transport-once "$fault_key_substring"'*) ;;
+  *) fail "the fake server is not started with --fault-transport-once \"\$fault_key_substring\" — the D-W09-3 transport-retry proof would never fire" ;;
+esac
+grep -q "^fault_key_substring='system-systemd\\\\x2dcryptsetup.slice'$" "$target" \
+  || fail "fault_key_substring must be the literal backslash systemd unit name (D-W09-2 seed trait)"
+grep -q 'transport fault injected (connection dropped mid-body)' "$target" \
+  || fail "run-qemu.sh does not assert that the fake server injected the transport fault"
+grep -q 'fault_requests:-0}" -lt 2' "$target" \
+  || fail "run-qemu.sh does not assert the faulted object was requested at least twice (transport retry, D-W09-3)"
+
+echo "run-qemu_test: PASS — boot 1 passes -no-reboot; progress contract is the exact 5-phase sequence; D-W09-2/3 fault + retry assertions present"

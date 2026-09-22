@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -73,6 +74,18 @@ type Config struct {
 	// handleAuthenticate/handleExchange require the membership capability
 	// from the client (409 client_capability_required otherwise).
 	ReferencedSnapshotIDs []string
+	// FaultTransportOnceKey, when non-empty, makes the FIRST /recover/download
+	// whose key contains this substring fail at the TRANSPORT layer: the
+	// response starts as a 200 with Content-Length, a partial body is sent,
+	// and the connection is dropped — so the client sees an unexpected EOF
+	// / reset with no HTTP status to branch on. Every later request for the
+	// same key is served normally. This is the e2e stand-in for D-W09-3
+	// (#6491 KIT lab: one presigned GET timed out at the transport 97,296
+	// files into a 4-hour rebuild and the file was recorded failed without
+	// a retry). run-qemu.sh points it at a referenced external key and
+	// asserts the key was requested at least twice and the run still
+	// validated. Fake server only — never mirrored by the real API.
+	FaultTransportOnceKey string
 }
 
 // Server is the fake recovery server. Create with New, then serve its
@@ -84,6 +97,17 @@ type Server struct {
 
 	manifestOnce sync.Once
 	manifestSet  map[string]struct{} // backupPath set of the token snapshot's manifest
+
+	faultMu    sync.Mutex
+	faultFired bool
+}
+
+// TransportFaultFired reports whether the one-shot transport fault
+// (Config.FaultTransportOnceKey) has already been injected.
+func (s *Server) TransportFaultFired() bool {
+	s.faultMu.Lock()
+	defer s.faultMu.Unlock()
+	return s.faultFired
 }
 
 // New builds a Server for cfg. Panics on an unusable config (test-only code
@@ -166,10 +190,46 @@ func (s *Server) newToken() string {
 	return "e2e_tok_" + hex.EncodeToString(buf)
 }
 
+// manifestEntry is the subset of backup.SnapshotFile the fake needs. Kind
+// is "" (or omitted) for a regular file whose bytes live at BackupPath and
+// "symlink"/"dir" for a content-less entry that legitimately carries
+// BackupPath "" — see agent/internal/backup/snapshot.go.
+type manifestEntry struct {
+	SourcePath string `json:"sourcePath"`
+	BackupPath string `json:"backupPath"`
+	Kind       string `json:"kind"`
+}
+
+// validateManifest applies the SAME gate the real server's hydration does
+// (apps/api/src/services/backupSnapshotFileIndex.ts): a content entry
+// (kind "") must name its object — backupPath "" there is manifest_invalid
+// — and every non-empty backupPath must pass the shared object-key contract
+// (bmr.ParseObjectKey) or the whole manifest is manifest_key_invalid. A
+// dir/symlink entry with backupPath "" is fine (D-W09-1). Failing closed
+// here is what lets the QEMU e2e catch a manifest the real server would
+// refuse (the KIT rig's real manifest failed both checks on 94d07c466 and
+// the e2e passed because its fake accepted anything).
+func validateManifest(files []manifestEntry) error {
+	for _, f := range files {
+		if f.BackupPath == "" {
+			if f.Kind == "dir" || f.Kind == "symlink" {
+				continue
+			}
+			return fmt.Errorf("manifest_invalid: content entry %q has an empty backupPath", f.SourcePath)
+		}
+		if _, ok := bmr.ParseObjectKey(f.BackupPath); !ok {
+			return fmt.Errorf("manifest_key_invalid: unparseable backupPath %q", f.BackupPath)
+		}
+	}
+	return nil
+}
+
 // computeFileIndex reads the seeded manifest.json for s.cfg.SnapshotID and
 // returns its sha256 (hex) plus a count of file entries whose backupPath
 // points outside this snapshot's own prefix (the fake server's stand-in
-// for the real server's hydrated fileIndex.externalCount).
+// for the real server's hydrated fileIndex.externalCount). It fails when
+// the manifest would not pass the real server's hydration gate — see
+// validateManifest.
 func (s *Server) computeFileIndex() (sha string, externalCount int, err error) {
 	data, err := os.ReadFile(filepath.Join(s.cfg.StoreDir, "snapshots", s.cfg.SnapshotID, "manifest.json"))
 	if err != nil {
@@ -177,11 +237,12 @@ func (s *Server) computeFileIndex() (sha string, externalCount int, err error) {
 	}
 	sum := sha256.Sum256(data)
 	var m struct {
-		Files []struct {
-			BackupPath string `json:"backupPath"`
-		} `json:"files"`
+		Files []manifestEntry `json:"files"`
 	}
 	if err := json.Unmarshal(data, &m); err != nil {
+		return "", 0, err
+	}
+	if err := validateManifest(m.Files); err != nil {
 		return "", 0, err
 	}
 	own := "snapshots/" + s.cfg.SnapshotID + "/"
@@ -191,6 +252,22 @@ func (s *Server) computeFileIndex() (sha string, externalCount int, err error) {
 		}
 	}
 	return hex.EncodeToString(sum[:]), externalCount, nil
+}
+
+// fileIndexRefusal mirrors negotiateRecoveryCapabilities' 409
+// snapshot_index_failed: when references exist, the membership capability
+// was requested, and the manifest fails the hydration gate, the real
+// server refuses the session rather than handing out a fileIndex it could
+// not build. Returns false when there is nothing to refuse.
+func (s *Server) fileIndexRefusal(clientCapabilities []string) (string, bool) {
+	if len(s.cfg.ReferencedSnapshotIDs) == 0 || !bmr.HasCapability(clientCapabilities, bmr.CapabilitySnapshotFileMembershipV1) {
+		return "", false
+	}
+	if _, _, err := s.computeFileIndex(); err != nil {
+		log.Printf("fakeserver: refusing session, manifest fails the hydration gate: %v", err)
+		return "snapshot_index_failed", true
+	}
+	return "", false
 }
 
 // intersectCapabilities returns the capability strings present in both
@@ -300,6 +377,13 @@ func (s *Server) handleExchange(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "client_capability_required")
 		return
 	}
+	// Also before the code is consumed: the real server's
+	// negotiateRecoveryCapabilities refuses snapshot_index_failed at the
+	// same point when the manifest could not be hydrated.
+	if code, refuse := s.fileIndexRefusal(body.Capabilities); refuse {
+		writeError(w, http.StatusConflict, code)
+		return
+	}
 
 	token := s.newToken()
 	s.mu.Lock()
@@ -363,6 +447,10 @@ func (s *Server) handleAuthenticate(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(s.cfg.ReferencedSnapshotIDs) > 0 && !bmr.HasCapability(body.Capabilities, bmr.CapabilitySnapshotFileMembershipV1) {
 		writeError(w, http.StatusConflict, "client_capability_required")
+		return
+	}
+	if code, refuse := s.fileIndexRefusal(body.Capabilities); refuse {
+		writeError(w, http.StatusConflict, code)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"bootstrap": s.bootstrapFor("e2e-token-1", body.Capabilities)})
@@ -451,9 +539,62 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { _ = f.Close() }()
 	w.Header().Set("Content-Type", "application/octet-stream")
+	if s.shouldInjectTransportFault(key) {
+		s.injectTransportFault(w, f, key)
+		return
+	}
 	if _, err := io.Copy(w, f); err != nil {
 		log.Printf("fakeserver: download %s: copy failed: %v", key, err)
 	}
+}
+
+// shouldInjectTransportFault claims the one-shot fault for key when it
+// matches Config.FaultTransportOnceKey and nothing has claimed it yet.
+func (s *Server) shouldInjectTransportFault(key string) bool {
+	if s.cfg.FaultTransportOnceKey == "" || !strings.Contains(key, s.cfg.FaultTransportOnceKey) {
+		return false
+	}
+	s.faultMu.Lock()
+	defer s.faultMu.Unlock()
+	if s.faultFired {
+		return false
+	}
+	s.faultFired = true
+	return true
+}
+
+// injectTransportFault announces the full object (200 + Content-Length),
+// writes at most half of it, flushes, then hijacks and closes the TCP
+// connection so the client's body read fails with an unexpected EOF /
+// connection reset — a transport-class failure with no HTTP status. If the
+// ResponseWriter cannot be hijacked the fault is logged as NOT injected and
+// the object is served normally, so the e2e's log assertion fails loudly
+// rather than the run silently passing without the fault.
+func (s *Server) injectTransportFault(w http.ResponseWriter, f *os.File, key string) {
+	info, err := f.Stat()
+	if err != nil {
+		log.Printf("fakeserver: transport fault: stat %s: %v", key, err)
+		return
+	}
+	hj, ok := w.(http.Hijacker)
+	if !ok {
+		log.Printf("fakeserver: transport fault NOT injected (ResponseWriter is not hijackable): %s", key)
+		_, _ = io.Copy(w, f)
+		return
+	}
+	w.Header().Set("Content-Length", strconv.FormatInt(info.Size(), 10))
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.CopyN(w, f, info.Size()/2)
+	if fl, ok := w.(http.Flusher); ok {
+		fl.Flush()
+	}
+	conn, _, err := hj.Hijack()
+	if err != nil {
+		log.Printf("fakeserver: transport fault: hijack %s: %v", key, err)
+		return
+	}
+	_ = conn.Close()
+	log.Printf("fakeserver: transport fault injected (connection dropped mid-body): %s", key)
 }
 
 // externalKeyReferenced reports whether key belongs to one of the seeded
@@ -491,12 +632,16 @@ func (s *Server) manifestKeys() map[string]struct{} {
 			return
 		}
 		var m struct {
-			Files []struct {
-				BackupPath string `json:"backupPath"`
-			} `json:"files"`
+			Files []manifestEntry `json:"files"`
 		}
 		if err := json.Unmarshal(data, &m); err != nil {
 			log.Printf("fakeserver: manifest for membership check invalid: %v", err)
+			return
+		}
+		if err := validateManifest(m.Files); err != nil {
+			// Same gate as computeFileIndex: a manifest the real server
+			// would refuse to hydrate must not widen anything.
+			log.Printf("fakeserver: manifest for membership check fails the hydration gate: %v", err)
 			return
 		}
 		for _, f := range m.Files {

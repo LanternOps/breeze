@@ -141,6 +141,13 @@ fakeserver_log="$out_dir/fakeserver.log"
 # its manifest does not list, so nothing in the guest would touch
 # not-referenced.gz.
 probe_token="e2e-probe-$(date +%s)"
+# D-W09-2 + D-W09-3 in one object: the systemd unit seed-snapshot.sh re-keyed
+# to the real agent's key shape carries a literal backslash in its key
+# (e2e-3 references it from e2e-1), and the fake server drops the
+# connection mid-body on the guest's FIRST request for it. The rebuild only
+# completes if the client (a) admits the backslash key and (b) retries the
+# transport failure; asserted after boot 1 below.
+fault_key_substring='system-systemd\x2dcryptsetup.slice'
 "$fakeserver_bin" \
   --addr "$fake_addr" \
   --code "$recovery_code" \
@@ -151,6 +158,7 @@ probe_token="e2e-probe-$(date +%s)"
   --capabilities snapshot-file-membership-v1 \
   --referenced-snapshot-ids e2e-1,e2e-2 \
   --probe-token "$probe_token" \
+  --fault-transport-once "$fault_key_substring" \
   > "$fakeserver_log" 2>&1 &
 fakeserver_pid=$!
 
@@ -238,6 +246,26 @@ if [ "$actual" != "$expected" ]; then
   exit 1
 fi
 echo "run-qemu: PASS — progress phases match: $actual"
+
+# Post-check (D-W09-2 / D-W09-3): the backslash-keyed systemd unit must have
+# been (1) requested by the guest — proving the client admitted a key with a
+# literal backslash instead of refusing the manifest (ExternalObjectKeys
+# `bad`) — (2) faulted exactly once by the fake server, and (3) requested
+# AGAIN afterwards, proving the transport failure was retried rather than
+# recorded as a failed file. The URL-encoded form (%5C) is what the fake's
+# request log carries.
+fault_key_encoded='system-systemd%5Cx2dcryptsetup.slice'
+if ! grep -q "transport fault injected (connection dropped mid-body)" "$fakeserver_log" 2>/dev/null; then
+  echo "run-qemu: FAIL — the fake server never injected the transport fault on $fault_key_substring (was the key ever requested? does the seed still carry it?)" >&2
+  grep -ic "$fault_key_encoded" "$fakeserver_log" >&2 || true
+  exit 1
+fi
+fault_requests="$(grep -ic "GET .*$fault_key_encoded" "$fakeserver_log" || true)"
+if [ "${fault_requests:-0}" -lt 2 ]; then
+  echo "run-qemu: FAIL — backslash-keyed object was requested $fault_requests time(s); want >= 2 (transport failure must be retried, D-W09-3)" >&2
+  exit 1
+fi
+echo "run-qemu: PASS — backslash-keyed systemd unit admitted (D-W09-2) and re-requested after the injected transport fault ($fault_requests requests, D-W09-3)"
 
 # Post-check (R7/R8 over the wire): with the probe token, a referenced
 # external key (an unchanged e2e-1 file that e2e-3's manifest names) must

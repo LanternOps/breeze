@@ -25,6 +25,7 @@ func main() {
 	capabilitiesFlag := flag.String("capabilities", "", "comma-separated capability strings this fake server grants (e.g. snapshot-file-membership-v1)")
 	probeToken := flag.String("probe-token", "", "pre-registered download token for out-of-band scope probes (e2e only)")
 	referencedFlag := flag.String("referenced-snapshot-ids", "", "comma-separated origin snapshot ids this fake server's manifest references")
+	faultTransportOnce := flag.String("fault-transport-once", "", "drop the connection mid-body on the FIRST download whose key contains this substring (D-W09-3 e2e fault; see fakeserver.Config.FaultTransportOnceKey)")
 	flag.Parse()
 
 	if *code == "" || *snapshotID == "" || *storeDir == "" || *progressLog == "" {
@@ -50,6 +51,7 @@ func main() {
 		Capabilities:          capabilities,
 		ReferencedSnapshotIDs: referenced,
 		ProbeToken:            *probeToken,
+		FaultTransportOnceKey: *faultTransportOnce,
 	})
 
 	log.Printf("breeze-recovery-fakeserver: listening on %s (snapshot=%s store=%s)", *addr, *snapshotID, *storeDir)

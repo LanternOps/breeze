@@ -5452,6 +5452,15 @@ EOF
 
 ### Task 14: Whole-wave verification, lab proof, follow-ups, PR 2
 
+> **Lab recipe correction (2026-09-21, #6491 KIT run):** the REAL `GET /api/v1/backup/bmr/recover/download` route takes the recovery token **only** as `Authorization: Bearer <token>` or `X-Recovery-Token: <token>`. The `?token=` query form returns **400** `Recovery token query parameter is disabled` unless the server is started with `BMR_RECOVERY_ADVERTISE_QUERY_TOKEN=1` (legacy clients only; `recoveryBootstrap.ts` advertises `tokenHeaderName: authorization` by default). Every `?token=` in this plan refers to the **fake server** (`agent/internal/backup/bmr/fakeserver`, Task 12), which deliberately keeps the query form so `run-qemu.sh` can probe it from the host with `curl`. Lab probes against a real stack must use the header:
+>
+> ```bash
+> curl -s -o /dev/null -w '%{http_code}' --get "$API/api/v1/backup/bmr/recover/download" \
+>   -H "X-Recovery-Token: $TOKEN" --data-urlencode "path=$KEY"
+> ```
+>
+> **Defects the KIT run found on `94d07c466` (fixed on the PR; see the D-W09-1/2/3 commits):** the hydration schema rejected `backupPath: ""` on dir/symlink entries; the object-key contract rejected the literal backslash in systemd's `system-systemd\x2dcryptsetup.slice`; a transport-class download failure was never retried. All three were invisible to the QEMU e2e because its fixture keys are content hashes and its fake server accepted any manifest — the fake now applies the real hydration gate, `seed-snapshot.sh` re-keys the systemd unit to the real key shape, and `run-qemu.sh` injects a one-shot transport fault on that key and asserts the retry.
+
 - [ ] **Step 1: Suites**
 
 ```bash

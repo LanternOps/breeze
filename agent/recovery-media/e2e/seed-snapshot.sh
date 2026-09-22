@@ -34,6 +34,25 @@ mmdebstrap \
 
 echo "e2e-restored-src" > "$seed_root/etc/hostname"
 
+# D-W09-2 (#6491 KIT lab): every systemd Linux host ships unit files whose
+# names carry a literal backslash (`system-systemd\x2dcryptsetup.slice`), and
+# the real agent writes that name into the object key verbatim. bookworm's
+# systemd already installs this file; write it explicitly so the seed never
+# silently loses the trait if the package layout changes, and so its bytes
+# are known for the run-qemu.sh post-check.
+systemd_unit_dir="$seed_root/usr/lib/systemd/system"
+mkdir -p "$systemd_unit_dir"
+cat > "$systemd_unit_dir/system-systemd\\x2dcryptsetup.slice" <<'UNIT'
+#  SPDX-License-Identifier: LGPL-2.1-or-later
+#
+#  This file is part of systemd.
+[Unit]
+Description=Cryptsetup Units Slice
+Documentation=man:systemd.special(7)
+DefaultDependencies=no
+Before=cryptsetup.target
+UNIT
+
 cat > "$seed_root/etc/fstab" <<'FSTAB'
 # Written by agent/recovery-media/e2e/seed-snapshot.sh for the QEMU e2e
 # proof. The rebuild engine generates fresh filesystem UUIDs at mkfs time
@@ -65,6 +84,36 @@ echo "seed-snapshot: walking seed root into $store_dir/snapshots/$snapshot_id"
   --out "$store_dir" \
   --snapshot-id "$snapshot_id" \
   --exclude proc --exclude sys --exclude dev --exclude run --exclude tmp
+
+# snapshot-dir keys every object by sha256(sourcePath), so a filename never
+# reaches a key and the QEMU e2e could not see D-W09-2 (a backslash inside a
+# key). Re-key the systemd unit written above to the REAL agent's key shape
+# — snapshots/<id>/files/path_0/<source path> (backup.go: path.Join(prefix,
+# "files", filepath.ToSlash(rootLabel/rel))) — so a literal backslash sits
+# in an object key that e2e-2 and e2e-3 then reference from e2e-1 verbatim.
+# No .gz suffix: the seeded store is raw (see snapshot_dir_cmd.go's doc).
+python3 - "$store_dir" "$snapshot_id" <<'PYEOF'
+import json, os, shutil, sys
+
+store, snap = sys.argv[1], sys.argv[2]
+manifest_path = f"{store}/snapshots/{snap}/manifest.json"
+with open(manifest_path) as f:
+    m = json.load(f)
+unit = "/usr/lib/systemd/system/system-systemd\\x2dcryptsetup.slice"
+for entry in m["files"]:
+    if entry.get("sourcePath") == unit and entry.get("backupPath"):
+        old_key = entry["backupPath"]
+        new_key = f"snapshots/{snap}/files/path_0" + unit
+        os.makedirs(os.path.dirname(f"{store}/{new_key}"), exist_ok=True)
+        shutil.move(f"{store}/{old_key}", f"{store}/{new_key}")
+        entry["backupPath"] = new_key
+        break
+else:
+    raise SystemExit(f"expected {unit!r} as a content entry in the {snap} manifest (D-W09-2 seed trait)")
+with open(manifest_path, "w") as f:
+    json.dump(m, f, indent=2)
+print(f"seed-snapshot: re-keyed {unit} to {new_key}")
+PYEOF
 
 # Synthetic single-disk UEFI layout matching target.img's geometry
 # (8 GiB, created by run-qemu.sh). FSUUID is deliberately empty on both
