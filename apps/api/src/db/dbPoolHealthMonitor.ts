@@ -674,9 +674,12 @@ export function __resetDbPoolHealthMonitorForTests(): void {
 // That keeps every existing safety bound: the narrow server-side predicate
 // (same role + db, client backend, active/ClientRead, breeze prologue
 // `set_config` only), the two-snapshot "has not moved" confirmation, the
-// per-pass cap, single-flight, and the interval floor. The age clock for a
-// scanner-driven pass is floored at 5 minutes regardless of the detector's own
-// threshold. Kill-switch: DB_WEDGED_BACKEND_SCANNER_RECLAIM_DISABLED (and the
+// per-pass cap, single-flight, and the interval floor. When the scanner starts
+// its own pass, the age clock is floored at 5 minutes regardless of the
+// detector's own threshold. If a prologue-deadline pass is already in flight,
+// the scanner joins it instead (single-flight), and that pass keeps its own
+// shorter deadline-derived floor. That is no weaker than before this change,
+// because the deadline path already ran that pass independently. Kill-switch: DB_WEDGED_BACKEND_SCANNER_RECLAIM_DISABLED (and the
 // global DB_WEDGED_BACKEND_RECLAIM_DISABLED).
 
 /**

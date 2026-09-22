@@ -38,7 +38,7 @@ const hasDatabase = Boolean(process.env.DATABASE_URL || process.env.DATABASE_URL
 const describeIf = hasDatabase ? describe : describe.skip;
 
 describeIf('#6048 wedged-backend predicate (live database)', () => {
-  async function scan(minAgeSeconds: number): Promise<WedgedBackendRow[]> {
+  async function scan(minAgeSeconds: number, prologueOnly = false): Promise<WedgedBackendRow[]> {
     const { url } = resolveRequestDatabaseConfig();
     const sql = postgres(url, {
       max: 1,
@@ -47,7 +47,7 @@ describeIf('#6048 wedged-backend predicate (live database)', () => {
       connection: { application_name: 'breeze-wedged-backend-predicate-test' },
     });
     try {
-      const rows = await sql.unsafe(WEDGED_BACKEND_SELECT_SQL, [minAgeSeconds, false]);
+      const rows = await sql.unsafe(WEDGED_BACKEND_SELECT_SQL, [minAgeSeconds, prologueOnly]);
       return rows as unknown as WedgedBackendRow[];
     } finally {
       await sql.end({ timeout: 0 });
@@ -66,6 +66,21 @@ describeIf('#6048 wedged-backend predicate (live database)', () => {
       // connection held, exactly the shape the reclaimer must never touch.
       const rows = await scan(0);
       expect(rows.filter((row) => row.query.includes('set_config'))).toEqual([]);
+    }, 'wedgedBackendPredicateTest');
+  });
+
+  // #6348: the reclaimer's narrowed `query like 'select set_config(''breeze.%'`
+  // clause is a hand-escaped literal in a raw string. The scanner now drives
+  // termination through it every 5 minutes, so a quoting mistake must fail
+  // here, not in prod during a reclaim.
+  it('parses and executes the reclaimer (prologue-only) predicate', async () => {
+    await expect(scan(0, true)).resolves.toBeInstanceOf(Array);
+  });
+
+  it('prologue-only predicate does not match a healthy open transaction either', async () => {
+    await withSystemDbAccessContext(async () => {
+      const rows = await scan(0, true);
+      expect(rows).toEqual([]);
     }, 'wedgedBackendPredicateTest');
   });
 });

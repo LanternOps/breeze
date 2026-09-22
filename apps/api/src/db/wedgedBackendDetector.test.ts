@@ -25,6 +25,7 @@ import {
 import {
   __resetWedgedBackendReclaimForTests,
   getWedgedBackendReclaimTerminatedTotal,
+  requestWedgedBackendReclaim,
   type WedgedBackendRow,
 } from './wedgedBackends';
 
@@ -385,6 +386,36 @@ describe('runWedgedBackendScan — scanner-driven reclaim (#6348)', () => {
 
     expect(calls).toEqual([[300_000, false]]);
     expect(observation.reclaimStatus).toBe('not-needed');
+  });
+
+  it('joins a prologue-deadline pass already in flight instead of starting a second one', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const terminate = vi.fn(async (pids: number[]) => {
+      await gate;
+      return pids;
+    });
+    const { scan } = fakeActivity([wedged(21)]);
+    // The deadline path's pass, started first and still running.
+    const deadlinePass = requestWedgedBackendReclaim({ scan, terminate, confirmDelayMs: 0, minAgeMs: 15_000 });
+    expect(deadlinePass).not.toBeNull();
+
+    const scanPromise = runWedgedBackendScan({
+      scan,
+      minAgeMs: 300_000,
+      now: 1_000,
+      throttleMs: 0,
+      reclaim: { terminate, confirmDelayMs: 0 },
+    });
+    release();
+    const [observation, deadlineOutcome] = await Promise.all([scanPromise, deadlinePass]);
+
+    expect(terminate).toHaveBeenCalledTimes(1);
+    expect(observation.reclaimStatus).toBe('ran');
+    expect(observation.reclaim).toBe(deadlineOutcome);
+    expect(getWedgedBackendReclaimTerminatedTotal()).toBe(1);
   });
 
   it('a failing reclaim pass never breaks the scan', async () => {
