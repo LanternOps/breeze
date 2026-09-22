@@ -137,8 +137,16 @@ func TestSendHeartbeatWatchdogDoesNotFireOnFastPath(t *testing.T) {
 	h := &Heartbeat{
 		sendHeartbeatFn: func() {
 			// Return only once the watchdog goroutine has confirmably
-			// started racing `done` against the timer.
-			<-watchdogRunning
+			// started racing `done` against the timer. Bounded by an
+			// absolute ceiling so a regression that stops the watchdog
+			// goroutine from starting fails the test loudly instead of
+			// hanging it forever (this runs synchronously on the test's
+			// own goroutine, so nothing else guards it).
+			select {
+			case <-watchdogRunning:
+			case <-time.After(5 * time.Second):
+				t.Fatal("watchdog goroutine did not start")
+			}
 		},
 	}
 
