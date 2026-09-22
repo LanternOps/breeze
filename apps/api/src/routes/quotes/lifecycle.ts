@@ -161,18 +161,12 @@ quoteLifecycleRoutes.post('/:id/accept-on-behalf',
         contractRenderData,
       })));
 
-      // Post-commit, outside the DB context — identical to the portal accept.
-      await emitAcceptInvoiceIssued(res, actorUserId);
-      const payUrl = await resolveAcceptInvoiceUrl(res);
-      // Both end in SMTP round trips and must never delay the response; both
-      // swallow their own errors. source 'msp' emits the bus event and sends NO
-      // creator email — the tech who did this already knows.
-      void autoEmailAcceptedInvoice(res);
-      void notifyQuoteOutcome({
-        quoteId: id, outcome: 'accepted', source: 'msp',
-        signerName: body.signerName, origin: 'on_behalf', actorUserId,
-      });
-
+      // #6638: audit FIRST, immediately after the accept transaction commits —
+      // this feature's whole point is the audit record, so it must land even if
+      // a later post-commit side effect throws. Both helpers below are
+      // documented as non-throwing today (internal try/catch, return null on
+      // error), but a future regression in either must not silently drop the
+      // acceptance's own audit trail.
       writeRouteAudit(c, acceptedOnBehalfAuditEvent({
         quoteId: id,
         orgId: res.quote.orgId,
@@ -199,6 +193,18 @@ quoteLifecycleRoutes.post('/:id/accept-on-behalf',
           emailed: false,
         }));
       }
+
+      // Post-commit, outside the DB context — identical to the portal accept.
+      await emitAcceptInvoiceIssued(res, actorUserId);
+      const payUrl = await resolveAcceptInvoiceUrl(res);
+      // Both end in SMTP round trips and must never delay the response; both
+      // swallow their own errors. source 'msp' emits the bus event and sends NO
+      // creator email — the tech who did this already knows.
+      void autoEmailAcceptedInvoice(res);
+      void notifyQuoteOutcome({
+        quoteId: id, outcome: 'accepted', source: 'msp',
+        signerName: body.signerName, origin: 'on_behalf', actorUserId,
+      });
 
       return c.json({ data: {
         quote: res.quote,

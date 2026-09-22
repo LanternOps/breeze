@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 
 // Route-level RBAC test for POST /:id/send. The previously-vacuous
@@ -834,5 +834,78 @@ describe('POST /:id/accept-on-behalf', () => {
   // pooled connection (#1105 class).
   it('opts out of the ambient request transaction', () => {
     expect(isSelfManagedDbContextRoute('POST', `/api/v1/quotes/${QUOTE_ID}/accept-on-behalf`)).toBe(true);
+  });
+
+  // #6638: the audit row is this feature's whole point. It must land even if a
+  // post-commit side effect (invoice-issued event, pay-URL resolution) throws —
+  // both are documented as non-throwing today, but a future regression in
+  // either must not silently drop the acceptance's own audit trail.
+  it('writes the audit row even when a post-commit side effect throws', async () => {
+    const { emitAcceptInvoiceIssued } = await import('../../services/quoteAcceptService');
+    vi.mocked(emitAcceptInvoiceIssued).mockRejectedValueOnce(new Error('smtp down'));
+    const { writeRouteAudit } = await import('../../services/auditEvents');
+    const res = await appWith('partner', ['quotes:accept']).request(`/${QUOTE_ID}/accept-on-behalf`, jsonReq(BODY));
+    expect(res.status).toBe(500);
+    expect(vi.mocked(writeRouteAudit)).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'quote.accepted_on_behalf', resourceId: QUOTE_ID,
+    }));
+  });
+});
+
+// #6638: the route suite mocks `handleServiceError` (./quotes) to rethrow, so
+// none of the tests above exercise what a real QuoteServiceError from getQuote
+// maps to — a regression here would silently turn every service-typed error
+// into an uncaught 500. These tests swap in the REAL handleServiceError via
+// vi.doMock + vi.resetModules (last block in the file, so later tests can't be
+// affected by the module-registry reset).
+describe('POST /:id/accept-on-behalf — error path uses the real handleServiceError (#6638)', () => {
+  const QUOTE_ID = '11111111-1111-4111-8111-111111111111';
+  const BODY = {
+    method: 'purchase_order', reference: 'PO 4471',
+    signerName: 'Dana Buyer', signerEmail: 'dana@customer.example',
+  };
+  const jsonReq = (body: unknown) => ({
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+
+  afterEach(() => {
+    vi.doUnmock('./quotes');
+  });
+
+  // Builds the app AND returns the fresh (post-reset) module instances the
+  // caller must configure — importing them separately would resolve the PRE-
+  // reset instances, which the freshly-reloaded route module no longer shares.
+  async function buildAppWithRealErrorHandling(scope: 'partner' | 'organization' | 'system', perms: string[]) {
+    vi.resetModules();
+    permState.perms = perms;
+    vi.doMock('./quotes', async (importActual) => {
+      const actual = await importActual<typeof import('./quotes')>();
+      return { ...actual, quoteActorFrom: () => ({ userId: 'u1', partnerId: 'p1', accessibleOrgIds: null }) };
+    });
+    const { quoteLifecycleRoutes: routes } = await import('./lifecycle');
+    const { getQuote } = await import('../../services/quoteService');
+    const { QuoteServiceError } = await import('../../services/quoteTypes');
+    const a = new Hono();
+    a.use('*', async (c, next) => { c.set('auth', { user: { id: 'u1' }, partnerId: 'p1', orgId: null, scope } as never); await next(); });
+    a.route('/', routes);
+    return { app: a, getQuote, QuoteServiceError };
+  }
+
+  it('maps a 404 QuoteServiceError from getQuote to 404, not 500', async () => {
+    const { app, getQuote, QuoteServiceError } = await buildAppWithRealErrorHandling('partner', ['quotes:accept']);
+    vi.mocked(getQuote).mockRejectedValueOnce(new QuoteServiceError('Quote not found', 404, 'QUOTE_NOT_FOUND'));
+    const res = await app.request(`/${QUOTE_ID}/accept-on-behalf`, jsonReq(BODY));
+    expect(res.status).toBe(404);
+    expect((await res.json()).code).toBe('QUOTE_NOT_FOUND');
+  });
+
+  it('maps a 409 QUOTE_NOT_ACCEPTABLE QuoteServiceError from getQuote to 409, not 500', async () => {
+    const { app, getQuote, QuoteServiceError } = await buildAppWithRealErrorHandling('partner', ['quotes:accept']);
+    vi.mocked(getQuote).mockRejectedValueOnce(new QuoteServiceError('Quote is not in an acceptable state', 409, 'QUOTE_NOT_ACCEPTABLE'));
+    const res = await app.request(`/${QUOTE_ID}/accept-on-behalf`, jsonReq(BODY));
+    expect(res.status).toBe(409);
+    expect((await res.json()).code).toBe('QUOTE_NOT_ACCEPTABLE');
   });
 });
