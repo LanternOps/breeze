@@ -12,10 +12,10 @@ import { describe, expect, it, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
 
-const executeMock = vi.fn(async () => ({ rowCount: 0 }));
+const executeMock = vi.fn(async (_statement: unknown) => ({ rowCount: 0 }));
 
 vi.mock('../db', () => ({
-  db: { execute: (...args: unknown[]) => executeMock(...(args as [])) },
+  db: { execute: (statement: unknown) => executeMock(statement) },
 }));
 
 import { CUSTOM_RESOLVE_EXECUTORS } from './orgMergeCustomExecutors';
