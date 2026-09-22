@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import BackupProviderCustomerMapping, { type BackupProviderCustomer } from "./BackupProviderCustomerMapping";
 import { fetchWithAuth } from "../../stores/auth";
+import { showToast } from "../shared/Toast";
 
 vi.mock("../../stores/auth", () => ({ fetchWithAuth: vi.fn() }));
 vi.mock("../shared/Toast", () => ({ showToast: vi.fn() }));
@@ -12,6 +13,7 @@ vi.mock("../../stores/orgStore", () => ({
 }));
 
 const fetchMock = vi.mocked(fetchWithAuth);
+const toastMock = vi.mocked(showToast);
 const res = (payload: unknown, ok = true): Response =>
   ({ ok, status: ok ? 200 : 500, statusText: "OK", json: vi.fn().mockResolvedValue(payload) }) as unknown as Response;
 
@@ -52,6 +54,16 @@ describe("BackupProviderCustomerMapping", () => {
     render(<BackupProviderCustomerMapping connectionId="conn-1" customers={[customer()]} onChanged={onChanged} />);
     fireEvent.change(screen.getByTestId("backup-mapping-select-cust-1"), { target: { value: "" } });
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("toasts and does not call onChanged when the mapping PUT fails", async () => {
+    fetchMock.mockResolvedValue(res({ error: "org not found" }, false));
+    render(<BackupProviderCustomerMapping connectionId="conn-1" customers={[customer()]} onChanged={onChanged} />);
+    fireEvent.change(screen.getByTestId("backup-mapping-select-cust-1"), { target: { value: "org-2" } });
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    expect(toastMock).toHaveBeenCalledWith(expect.objectContaining({ type: "error" }));
+    expect(onChanged).not.toHaveBeenCalled();
   });
 
   it.each([["auto_name"], ["auto_external_code"]])("shows the Auto badge for %s mappings", (mappingSource) => {

@@ -44,7 +44,12 @@ export default function BackupProvidersIntegration() {
       const grids = await Promise.all(
         rows.map(async (row) => {
           const res = await fetchWithAuth(`/backup/providers/connections/${row.id}/customers`);
-          if (!res.ok) return [row.id, [] as BackupProviderCustomer[]] as const;
+          // Do not map a failed fetch to an empty array here: an empty grid reads
+          // as "nothing to map" to BackupProviderCustomerMapping, which is a false
+          // all-clear indistinguishable from a genuinely fully-mapped connection.
+          // Throwing routes the failure through the outer catch below, which sets
+          // loadError and surfaces the banner instead of a silently-empty grid.
+          if (!res.ok) throw new Error(`${res.status}`);
           const body = await res.json();
           return [row.id, Array.isArray(body?.data) ? body.data : []] as const;
         }),

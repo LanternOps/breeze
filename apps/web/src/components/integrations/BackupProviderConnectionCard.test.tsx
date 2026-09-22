@@ -154,4 +154,31 @@ describe("BackupProviderConnectionCard", () => {
     fireEvent.click(screen.getByTestId("backup-connection-delete"));
     expect(fetchMock).not.toHaveBeenCalled();
   });
+
+  it("toasts and does not call onChanged when the sync request fails", async () => {
+    fetchMock.mockResolvedValue(res({ error: "queue unavailable" }, false, 500));
+    render(<BackupProviderConnectionCard connection={connection()} onChanged={onChanged} onTestResult={onTestResult} />);
+    fireEvent.click(screen.getByTestId("backup-connection-sync"));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    expect(toastMock).toHaveBeenCalledWith(expect.objectContaining({ type: "error" }));
+    expect(onChanged).not.toHaveBeenCalled();
+  });
+
+  it("toasts and does not call onChanged when the save request fails", async () => {
+    fetchMock.mockResolvedValue(res({ error: "validation failed" }, false, 500));
+    render(<BackupProviderConnectionCard connection={connection()} onChanged={onChanged} onTestResult={onTestResult} />);
+    fireEvent.click(screen.getByTestId("backup-connection-save"));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    expect(toastMock).toHaveBeenCalledWith(expect.objectContaining({ type: "error" }));
+    expect(onChanged).not.toHaveBeenCalled();
+  });
+
+  it("toasts and does not call onChanged when the delete request fails", async () => {
+    fetchMock.mockResolvedValue(res({ error: "in use" }, false, 500));
+    render(<BackupProviderConnectionCard connection={connection()} onChanged={onChanged} onTestResult={onTestResult} />);
+    fireEvent.click(screen.getByTestId("backup-connection-delete"));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    expect(toastMock).toHaveBeenCalledWith(expect.objectContaining({ type: "error" }));
+    expect(onChanged).not.toHaveBeenCalled();
+  });
 });

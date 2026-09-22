@@ -127,4 +127,19 @@ describe("BackupProvidersIntegration", () => {
     expect(await screen.findByTestId("backup-providers-error")).toBeInTheDocument();
     expect(screen.queryByTestId("backup-providers-empty")).toBeNull();
   });
+
+  it("surfaces a load failure when a per-connection customer fetch fails, instead of a silently-empty mapping grid", async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init as RequestInit | undefined)?.method ?? "GET";
+      if (url === "/backup/providers/connections" && method === "GET") return res({ data: [conn] });
+      if (url.endsWith("/customers")) return res({ error: "boom" }, false, 500);
+      return res({ success: true });
+    });
+    render(<BackupProvidersIntegration />);
+    expect(await screen.findByTestId("backup-providers-error")).toBeInTheDocument();
+    // The connection itself still renders (it loaded fine) — only the mapping
+    // grid data is missing — but it must never look like "nothing to map".
+    expect(screen.queryByTestId("backup-mapping-row-cust-1")).toBeNull();
+  });
 });

@@ -4,11 +4,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import ExternalBackupCard from './ExternalBackupCard';
 import { fetchWithAuth } from '../../stores/auth';
+import { showToast } from '../shared/Toast';
 
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
 vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
 
 const fetchMock = vi.mocked(fetchWithAuth);
+const toastMock = vi.mocked(showToast);
 const res = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>
   ({ ok, status, statusText: 'OK', json: vi.fn().mockResolvedValue(payload) }) as unknown as Response;
 
@@ -84,6 +86,21 @@ describe('ExternalBackupCard', () => {
     render(<ExternalBackupCard deviceId="device-1" />);
     fireEvent.click(await screen.findByTestId('external-backup-unlink'));
     expect(fetchMock).toHaveBeenCalledTimes(1); // the initial GET only
+  });
+
+  it('toasts and does not call onUnlinked when the unlink PUT fails', async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      const method = (init as RequestInit | undefined)?.method ?? 'GET';
+      if (method === 'PUT') return res({ error: 'link busy' }, false, 500);
+      return res({ data: [providerRow()] });
+    });
+    const onUnlinked = vi.fn();
+    render(<ExternalBackupCard deviceId="device-1" onUnlinked={onUnlinked} />);
+    fireEvent.click(await screen.findByTestId('external-backup-unlink'));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/backup/providers/devices/row-1/link', expect.objectContaining({ method: 'PUT' })));
+    expect(toastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+    expect(onUnlinked).not.toHaveBeenCalled();
   });
 
   it('surfaces a load failure instead of silently rendering nothing', async () => {
