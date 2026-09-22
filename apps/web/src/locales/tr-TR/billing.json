@@ -2008,6 +2008,8 @@
       "unitPrice": "Birim fiyatı"
     },
     "terms": "Şartlar ve Koşullar",
+    "ticketHeader": "Talep No. {{number}}",
+    "ticketWork": "Talep çalışması",
     "totals": {
       "amountDue": "Ödenecek tutar",
       "paid": "Ücretli",

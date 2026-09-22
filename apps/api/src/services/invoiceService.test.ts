@@ -521,6 +521,7 @@ describe('invoiceService guards', () => {
       lineTotal: '100',
     })).toEqual({
       ticketNumber: 'T-100',
+      ticketCategory: null,
       name: 'Support',
       description: 'Printer repair',
       quantity: '1',
@@ -553,12 +554,17 @@ describe('invoiceService guards', () => {
     }]);
     queueResult([]);
     await svc.getCustomerInvoice('invoice-1', 'org1');
-    const join = (db as unknown as { leftJoin: Mock }).leftJoin.mock.calls.at(-1)![1];
-    const compiledJoin = new PgDialect().sqlToQuery(join as SQL);
+    const ticketJoinCall = (db as unknown as { leftJoin: Mock }).leftJoin.mock.calls.find((call) => {
+      const q = new PgDialect().sqlToQuery(call[1] as SQL);
+      return q.sql.includes('"tickets"."id" = "invoice_lines"."ticket_id"');
+    })!;
+    expect(ticketJoinCall).toBeDefined();
+    const compiledJoin = new PgDialect().sqlToQuery(ticketJoinCall[1] as SQL);
     expect(compiledJoin.sql).toContain(
       '"tickets"."id" = "invoice_lines"."ticket_id"',
     );
     expect(compiledJoin.sql).toContain('"tickets"."org_id" =');
+    expect(compiledJoin.sql).toContain('"tickets"."deleted_at" is null');
     expect(compiledJoin.params).toContain('org1');
 
     const where = (db as unknown as { where: Mock }).where.mock.calls.at(-1)![0];
@@ -593,10 +599,11 @@ describe('invoiceService guards', () => {
     const result = await svc.getCustomerInvoice('i1', 'org1');
 
     expect(Object.keys(result.lines[0]!).sort()).toEqual([
-      'description', 'lineTotal', 'name', 'quantity', 'taxable', 'ticketNumber', 'unitPrice', 'workedMinutes',
+      'description', 'lineTotal', 'name', 'quantity', 'taxable', 'ticketCategory', 'ticketNumber', 'unitPrice', 'workedMinutes',
     ]);
     expect(result.lines[0]).toEqual({
       ticketNumber: null,
+      ticketCategory: null,
       // Legacy line (source row carries no `name`): description stays the title.
       name: null,
       description: 'Customer-facing work',
@@ -637,7 +644,7 @@ describe('invoiceService guards', () => {
     });
     // Still no internal columns leaked alongside the new field.
     expect(Object.keys(result.lines[0]!).sort()).toEqual([
-      'description', 'lineTotal', 'name', 'quantity', 'taxable', 'ticketNumber', 'unitPrice', 'workedMinutes',
+      'description', 'lineTotal', 'name', 'quantity', 'taxable', 'ticketCategory', 'ticketNumber', 'unitPrice', 'workedMinutes',
     ]);
   });
 

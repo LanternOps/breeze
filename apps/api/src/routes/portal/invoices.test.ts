@@ -221,7 +221,7 @@ describe('portal invoices routes', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(Object.keys(body.lines[0]).sort()).toEqual([
-      'description', 'lineTotal', 'name', 'quantity', 'taxable', 'ticketNumber', 'unitPrice', 'workedMinutes',
+      'description', 'lineTotal', 'name', 'quantity', 'taxable', 'ticketCategory', 'ticketNumber', 'unitPrice', 'workedMinutes',
     ]);
     expect(body.lines[0]).not.toHaveProperty('sourceType');
     expect(body.lines[0]).not.toHaveProperty('sourceId');

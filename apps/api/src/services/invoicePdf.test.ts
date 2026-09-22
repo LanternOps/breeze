@@ -377,7 +377,92 @@ describe('buildInvoiceEmailAmounts (deposit-vs-balance split for the email)', ()
     const a = buildInvoiceEmailAmounts({ ...base, depositDue: '300.00', amountPaid: '900.00', balance: '100.00' });
     expect(a.amountDueNow).toBe('$100.00'); // never advertises more than is owed
   });
-})
+});
+
+describe('Invoice ticket grouping and line labeling (#3319)', () => {
+  it('renders lines without ticketId directly without ticket headers', () => {
+    const lines = [
+      makeLine({ name: 'Monthly Managed Services', description: 'Includes 24/7 monitoring', ticketId: null }),
+    ];
+    const html = renderInvoiceHtml(makeInvoice(), lines, branding);
+    expect(html).toContain('Monthly Managed Services');
+    expect(html).toContain('Includes 24/7 monitoring');
+    expect(html).not.toContain('Ticket #');
+    expect(html).not.toContain('Ticket work');
+  });
+
+  it('renders ticket header and follows #3319 title/blurb rules for ticket lines', () => {
+    const lines = [
+      makeLine({
+        ticketId: 't-1',
+        ticketNumber: '1042',
+        ticketSubject: 'Printer down',
+        ticketCategory: 'Hardware',
+        name: 'Diagnostic & Repair',
+        description: 'Replaced feed rollers',
+      } as never),
+    ];
+    const html = renderInvoiceHtml(makeInvoice(), lines, branding);
+    expect(html).toContain('Ticket #1042: Printer down');
+    expect(html).toContain('Hardware');
+    // #3319: name is the title, description is the blurb
+    expect(html).toContain('Diagnostic &amp; Repair');
+    expect(html).toContain('Replaced feed rollers');
+  });
+
+  it('uses description as title with no blurb for ticket lines with name=null', () => {
+    const lines = [
+      makeLine({
+        ticketId: 't-1',
+        ticketNumber: '1042',
+        name: null,
+        description: 'Labor on workstation',
+      } as never),
+    ];
+    const html = renderInvoiceHtml(makeInvoice(), lines, branding);
+    expect(html).toContain('Labor on workstation');
+  });
+
+  it('does not merge two number-less tickets into one group', () => {
+    const lines = [
+      makeLine({
+        ticketId: 't-1',
+        ticketNumber: null,
+        ticketSubject: 'Network glitch',
+        ticketCategory: 'Network',
+        name: 'Router reboot',
+      } as never),
+      makeLine({
+        ticketId: 't-2',
+        ticketNumber: null,
+        ticketSubject: 'Email issue',
+        ticketCategory: 'Software',
+        name: 'Password reset',
+      } as never),
+    ];
+    const html = renderInvoiceHtml(makeInvoice(), lines, branding);
+    expect(html).toContain('Network glitch');
+    expect(html).toContain('Email issue');
+    // Two distinct headers with 'Ticket work'
+    const matches = html.match(/Ticket work/g);
+    expect(matches).toHaveLength(2);
+  });
+
+  it('renders English "Category:" label in PDFKit buffer', async () => {
+    const lines = [
+      makeLine({
+        ticketId: 't-1',
+        ticketNumber: '1042',
+        ticketCategory: 'Networking',
+        name: 'Configure Switch',
+      } as never),
+    ];
+    const pdf = await renderInvoicePdfBuffer(makeInvoice(), lines, branding);
+    const textFragments = extractPositionedPdfText(pdf).map((f) => f.text);
+    expect(textFragments.some((t) => t.includes('Category: Networking'))).toBe(true);
+    expect(textFragments.some((t) => t.includes('Categorie:'))).toBe(false);
+  });
+});
 
 // Settings consolidation W02-API (M11, audit finding 22): the ONE footer/terms
 // resolver, shared by the render path (loadInvoiceForRender) and the issue-time

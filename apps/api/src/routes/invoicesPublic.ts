@@ -1,10 +1,10 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '../lib/validation';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql, isNull } from 'drizzle-orm';
 import { computeChargeNow } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { invoices, invoiceLines, invoiceStripePayments } from '../db/schema';
+import { invoices, invoiceLines, invoiceStripePayments, tickets, ticketCategories } from '../db/schema';
 import { partners } from '../db/schema/orgs';
 import { portalBranding } from '../db/schema/portal';
 import { resolveInvoiceByLinkToken, getOrMintInvoiceLink, buildPublicInvoiceUrl } from '../services/invoiceLinkToken';
@@ -126,11 +126,24 @@ invoicesPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) =
     }
 
     const rows = await db.select({
-      name: invoiceLines.name, description: invoiceLines.description,
-      quantity: invoiceLines.quantity, unitPrice: invoiceLines.unitPrice,
-      taxable: invoiceLines.taxable, lineTotal: invoiceLines.lineTotal,
+      ticketId: invoiceLines.ticketId,
+      ticketNumber: sql<string | null>`COALESCE(${tickets.ticketNumber}, ${tickets.internalNumber})`,
+      ticketSubject: tickets.subject,
+      ticketCategory: sql<string | null>`COALESCE(${ticketCategories.name}, ${tickets.category})`,
+      name: invoiceLines.name,
+      description: invoiceLines.description,
+      quantity: invoiceLines.quantity,
+      unitPrice: invoiceLines.unitPrice,
+      taxable: invoiceLines.taxable,
+      lineTotal: invoiceLines.lineTotal,
       workedMinutes: invoiceLines.workedMinutes,
     }).from(invoiceLines)
+      .leftJoin(tickets, and(
+        eq(invoiceLines.ticketId, tickets.id),
+        eq(tickets.orgId, inv.orgId),
+        isNull(tickets.deletedAt),
+      ))
+      .leftJoin(ticketCategories, eq(tickets.categoryId, ticketCategories.id))
       .where(and(eq(invoiceLines.invoiceId, inv.id), eq(invoiceLines.customerVisible, true)))
       .orderBy(invoiceLines.sortOrder);
 

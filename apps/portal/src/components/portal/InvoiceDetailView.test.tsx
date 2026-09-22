@@ -98,6 +98,25 @@ describe('InvoiceDetailView line labels (#3319)', () => {
     );
     expect(screen.queryByTestId('invoice-line-ticket-1')).toBeNull();
   });
+
+  it('groups lines under ticket headers with category badge', () => {
+    renderDetail([
+      line({ ticketNumber: '1042', ticketCategory: 'Hardware', name: 'Work 1' }),
+      line({ ticketNumber: '1043', ticketCategory: 'Networking', name: 'Work 2' }),
+    ]);
+    expect(screen.getAllByText(/Ticket #1042/).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText(/Ticket #1043/).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText('Hardware')).toBeTruthy();
+    expect(screen.getByText('Networking')).toBeTruthy();
+  });
+
+  it('does not render ticket header for lines without ticketNumber', () => {
+    renderDetail([
+      line({ ticketNumber: null, name: 'Standard Subscription' }),
+    ]);
+    expect(screen.queryByText(/Ticket #/)).toBeNull();
+    expect(screen.getByText('Standard Subscription')).toBeTruthy();
+  });
 });
 
 // #6467: the worked-vs-billed disclosure is sourced from workedMinutes

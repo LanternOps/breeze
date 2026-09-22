@@ -1,10 +1,10 @@
 import { randomUUID } from 'node:crypto';
-import { and, or, eq, desc, lt, inArray, sql, count } from 'drizzle-orm';
+import { and, or, eq, desc, lt, inArray, sql, count, getTableColumns, isNull } from 'drizzle-orm';
 import { assertInTransaction, db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { requestLikeFromSnapshot, writeAuditEvent } from './auditEvents';
 import {
   invoices, invoiceLines, invoiceLineDevices, invoicePayments, invoiceStripePayments, organizations, partners,
-  catalogBundleComponents, catalogItems, contracts, contractLines, timeEntries, ticketParts, tickets,
+  catalogBundleComponents, catalogItems, contracts, contractLines, timeEntries, ticketParts, tickets, ticketCategories,
   accountingEntityMappings, accountingConnections, portalBranding
 } from '../db/schema';
 import { getConnection } from './stripeConnectService';
@@ -729,7 +729,21 @@ async function getInvoiceAccountingSync(invoiceId: string, partnerId: string): P
 
 export async function getInvoice(invoiceId: string, actor: InvoiceActor) {
   const inv = await getOwnedInvoiceOr404(invoiceId); requireInvoiceAccess(actor, inv);
-  const lines = await db.select().from(invoiceLines).where(eq(invoiceLines.invoiceId, invoiceId)).orderBy(invoiceLines.sortOrder);
+  const rawLines = await db.select({
+    ...getTableColumns(invoiceLines),
+    ticketNumber: sql<string | null>`COALESCE(${tickets.ticketNumber}, ${tickets.internalNumber})`,
+    ticketSubject: tickets.subject,
+    ticketCategory: sql<string | null>`COALESCE(${ticketCategories.name}, ${tickets.category})`,
+  }).from(invoiceLines)
+    .leftJoin(tickets, and(
+      eq(invoiceLines.ticketId, tickets.id),
+      eq(tickets.orgId, inv.orgId),
+      isNull(tickets.deletedAt),
+    ))
+    .leftJoin(ticketCategories, eq(tickets.categoryId, ticketCategories.id))
+    .where(eq(invoiceLines.invoiceId, invoiceId))
+    .orderBy(invoiceLines.sortOrder);
+
   // #3205 W07 ruling 3: one grouped aggregate per invoice DETAIL view. Keep it
   // out of listInvoices and the customer projection.
   const evidenceCounts = await db
@@ -738,7 +752,7 @@ export async function getInvoice(invoiceId: string, actor: InvoiceActor) {
     .where(eq(invoiceLineDevices.invoiceId, invoiceId))
     .groupBy(invoiceLineDevices.invoiceLineId);
   const deviceCountByLine = new Map(evidenceCounts.map((row) => [row.lineId, Number(row.n)]));
-  const linesWithDeviceCount = lines.map((line) => ({
+  const linesWithDeviceCount = rawLines.map((line) => ({
     ...line,
     deviceCount: deviceCountByLine.get(line.id) ?? 0,
   }));
@@ -826,6 +840,7 @@ export async function getInvoice(invoiceId: string, actor: InvoiceActor) {
 
 export type CustomerInvoiceLine = {
   ticketNumber: string | null;
+  ticketCategory?: string | null;
   /**
    * Line title, mirroring invoice_lines.name (#3319). NULL for legacy lines
    * created before the name/description split, where `description` holds the
@@ -868,7 +883,10 @@ export type CustomerInvoiceHeader = Pick<InvoiceRow,
 >;
 
 type CustomerInvoiceLineSource = {
+  ticketId?: string | null;
   ticketNumber?: string | null;
+  ticketSubject?: string | null;
+  ticketCategory?: string | null;
   name?: string | null;
   description?: string | null;
   quantity: string;
@@ -882,6 +900,7 @@ type CustomerInvoiceLineSource = {
 export function toCustomerInvoiceLine(line: CustomerInvoiceLineSource): CustomerInvoiceLine {
   return {
     ticketNumber: line.ticketNumber ?? null,
+    ticketCategory: line.ticketCategory ?? null,
     // Carry BOTH fields (#3319). This previously collapsed to
     // `description ?? name`, which is the INVERSE of the fallback every other
     // renderer uses, so a line with both set showed the customer only the
@@ -927,7 +946,10 @@ export async function getCustomerInvoice(
   // App-layer org guard (defense-in-depth over RLS). 404, not 403 — don't leak existence to the portal.
   if (orgId !== undefined && inv.orgId !== orgId) throw new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND');
   const rows = await db.select({
-    ticketNumber: tickets.ticketNumber,
+    ticketId: invoiceLines.ticketId,
+    ticketNumber: sql<string | null>`COALESCE(${tickets.ticketNumber}, ${tickets.internalNumber})`,
+    ticketSubject: tickets.subject,
+    ticketCategory: sql<string | null>`COALESCE(${ticketCategories.name}, ${tickets.category})`,
     name: invoiceLines.name,
     description: invoiceLines.description,
     quantity: invoiceLines.quantity,
@@ -938,7 +960,9 @@ export async function getCustomerInvoice(
   }).from(invoiceLines).leftJoin(tickets, and(
     eq(tickets.id, invoiceLines.ticketId),
     eq(tickets.orgId, inv.orgId),
-  )).where(and(
+    isNull(tickets.deletedAt),
+  )).leftJoin(ticketCategories, eq(tickets.categoryId, ticketCategories.id))
+  .where(and(
     eq(invoiceLines.invoiceId, invoiceId),
     eq(invoiceLines.orgId, inv.orgId),
     eq(invoiceLines.customerVisible, true),

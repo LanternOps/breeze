@@ -2008,6 +2008,8 @@
       "unitPrice": "Precio unitario"
     },
     "terms": "Términos y condiciones",
+    "ticketHeader": "Ticket n.º {{number}}",
+    "ticketWork": "Trabajo de ticket",
     "totals": {
       "amountDue": "Monto adeudado",
       "paid": "Pagado",
