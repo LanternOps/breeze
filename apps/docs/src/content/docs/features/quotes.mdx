@@ -190,6 +190,7 @@ The dialog asks for:
 - **Reference** -- required. This is where a reviewer would go to find the customer's agreement (for example, "PO 4471" or a link to the email thread). Because there's no click-through consent trail for an on-behalf acceptance, the reference is what stands in for it if the acceptance is ever disputed.
 - **Signer name** -- who agreed to the quote.
 - **Signer email** -- optional.
+- **Evidence file** -- optional. The signed document or purchase order itself, as a PDF, PNG, or JPEG up to 10 MB. It is uploaded right after the acceptance is recorded; if the upload fails the acceptance still stands and you can attach the file from the quote page.
 
 Accepting on behalf does exactly what a customer clicking Accept does: the quote moves to **converted**, an invoice is issued and numbered immediately at the quote's frozen totals and tax, and any recurring lines become draft contracts (see [What Happens on Acceptance](#what-happens-on-acceptance) above). If your **"email the invoice on quote accept"** setting (**Settings → Billing**) is on, the invoice is emailed to the customer just as it would be for a normal acceptance.
 
@@ -202,6 +203,8 @@ Accepting on behalf does exactly what a customer clicking Accept does: the quote
 There is no undo. The resulting invoice can be voided like any other invoice, but the contracts it created and any Pax8 order it staged are not unwound by voiding the invoice.
 
 The quote detail shows the provenance of an on-behalf acceptance: **"Accepted on behalf of &lt;signer&gt; by &lt;tech&gt; on &lt;date&gt; · &lt;method&gt; · &lt;reference&gt;."** The customer's own portal view shows only **"Accepted on your behalf by &lt;provider&gt; on &lt;date&gt;"** -- the method and reference stay internal. Every on-behalf acceptance also writes a `quote.accepted_on_behalf` [audit log](/features/approval-security/) entry recording the tech, method, reference, signer, and resulting invoice number.
+
+Next to that provenance line, **Download evidence** fetches the attached file, and **Attach evidence** (or **Replace evidence**) adds or swaps it -- this works on a converted quote without reopening it. Attaching requires the same `quotes:accept` permission as recording the acceptance; one file is kept per acceptance, and every attach or replace writes a `quote.acceptance_evidence_attached` audit entry with the file's name, type, size, and SHA-256 digest. Evidence files are never shown in the customer portal or on the public quote link, and they are deleted with the organization's other files when the organization is erased.
 
 ### Declining on Behalf of a Customer
 
