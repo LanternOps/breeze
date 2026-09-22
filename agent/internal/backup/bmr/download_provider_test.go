@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -516,6 +517,167 @@ func TestRecoveryDownloadProviderGivesUpAfterFiveMinuteRetryBudget(t *testing.T)
 		if d > 30*time.Second {
 			t.Fatalf("recorded sleep [%d] = %v, want capped at 30s", i, d)
 		}
+	}
+}
+
+// TestRecoveryDownloadProviderRetriesTransportFailure is D-W09-3's core
+// proof (#6491 KIT lab): a 4 h 01 m, 107,636-file rebuild died on ONE file
+// whose presigned GET failed with `context deadline exceeded` — a
+// transport-class error with no HTTP status, which the retry loop treated
+// as permanent because it only retried a downloadStatusError of 429/502/
+// 503/504. A transport failure (reset, EOF, per-request timeout) must be
+// retried on the same backoff schedule. The fault here is a connection
+// closed mid-body: the response is 200 with Content-Length announced, then
+// the server hijacks and drops the socket, so the client sees io.Copy fail
+// with an unexpected EOF — no status to branch on, exactly the class the
+// old loop discarded. Attempt 1 fails at the transport, attempt 2 must
+// succeed and the destination must hold the full body.
+func TestRecoveryDownloadProviderRetriesTransportFailure(t *testing.T) {
+	recorded := withFakeRetrySleep(t)
+
+	const body = "the-whole-object-body"
+	var attempts int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&attempts, 1) == 1 {
+			// Announce a full body, send half, then drop the connection.
+			w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, body[:5])
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+			hj, ok := w.(http.Hijacker)
+			if !ok {
+				t.Fatal("test server does not support hijacking")
+			}
+			conn, _, err := hj.Hijack()
+			if err != nil {
+				t.Fatalf("hijack: %v", err)
+			}
+			_ = conn.Close()
+			return
+		}
+		_, _ = io.WriteString(w, body)
+	}))
+	defer server.Close()
+
+	provider := newRecoveryDownloadProvider(context.Background(), server.URL, "brz_rec_test", &AuthenticatedDownloadDescriptor{
+		URL:            server.URL + "/download",
+		PathQueryParam: "path",
+		PathPrefix:     "snapshots/provider-snapshot-1",
+	})
+
+	dest := filepath.Join(t.TempDir(), "f.bin")
+	if err := provider.Download("snapshots/provider-snapshot-1/f.bin", dest); err != nil {
+		t.Fatalf("Download: %v (a transport failure must be retried, not treated as permanent)", err)
+	}
+	if got := atomic.LoadInt32(&attempts); got != 2 {
+		t.Fatalf("attempts = %d, want 2 (transport failure, then success)", got)
+	}
+	if len(*recorded) != 1 || (*recorded)[0] != downloadRetryInitialDelay {
+		t.Fatalf("recorded sleeps = %v, want exactly one %v backoff step", *recorded, downloadRetryInitialDelay)
+	}
+	got, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatalf("read dest: %v", err)
+	}
+	if string(got) != body {
+		t.Fatalf("dest = %q, want the full body %q from the retried attempt", got, body)
+	}
+}
+
+// TestRecoveryDownloadProviderTransportRetriesAreBounded proves a
+// persistently unreachable object does not turn every file into a
+// 5-minute stall: transport failures get downloadTransportMaxAttempts
+// attempts total, then the error surfaces (still wrapping the transport
+// cause) so restore's per-file failure accounting and consecutive-failure
+// breaker (bmr.go) see it.
+func TestRecoveryDownloadProviderTransportRetriesAreBounded(t *testing.T) {
+	recorded := withFakeRetrySleep(t)
+
+	var attempts int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&attempts, 1)
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			t.Fatal("test server does not support hijacking")
+		}
+		conn, _, err := hj.Hijack()
+		if err != nil {
+			t.Fatalf("hijack: %v", err)
+		}
+		_ = conn.Close() // no response at all: the client sees EOF
+	}))
+	defer server.Close()
+
+	provider := newRecoveryDownloadProvider(context.Background(), server.URL, "brz_rec_test", &AuthenticatedDownloadDescriptor{
+		URL:            server.URL + "/download",
+		PathQueryParam: "path",
+		PathPrefix:     "snapshots/provider-snapshot-1",
+	})
+
+	dest := filepath.Join(t.TempDir(), "f.bin")
+	err := provider.Download("snapshots/provider-snapshot-1/f.bin", dest)
+	if err == nil {
+		t.Fatal("expected an error once transport retries are exhausted")
+	}
+	var transportErr *downloadTransportError
+	if !errors.As(err, &transportErr) {
+		t.Fatalf("error = %v, want it to wrap *downloadTransportError so callers can tell transport from status failures", err)
+	}
+	if got := atomic.LoadInt32(&attempts); got != downloadTransportMaxAttempts {
+		t.Fatalf("attempts = %d, want exactly downloadTransportMaxAttempts (%d)", got, downloadTransportMaxAttempts)
+	}
+	if len(*recorded) != downloadTransportMaxAttempts-1 {
+		t.Fatalf("recorded sleeps = %v, want %d backoff steps between %d attempts", *recorded, downloadTransportMaxAttempts-1, downloadTransportMaxAttempts)
+	}
+}
+
+// TestRecoveryDownloadProviderDoesNotRetryTransportFailureAfterParentCancel
+// pins the boundary D-W09-3 must not cross: a transport error that is
+// really the PARENT recovery context being cancelled (the operator aborted,
+// the run-level deadline fired) must stop immediately — never a backoff,
+// never a second request — because every subsequent attempt would fail the
+// same way and the caller is trying to stop. The server blocks until the
+// test cancels the context mid-request, so the transport error IS the
+// cancellation.
+func TestRecoveryDownloadProviderDoesNotRetryTransportFailureAfterParentCancel(t *testing.T) {
+	recorded := withFakeRetrySleep(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var attempts int32
+	started := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&attempts, 1)
+		started <- struct{}{}
+		<-r.Context().Done() // hold the request open until the client goes away
+	}))
+	defer server.Close()
+
+	provider := newRecoveryDownloadProvider(ctx, server.URL, "brz_rec_test", &AuthenticatedDownloadDescriptor{
+		URL:            server.URL + "/download",
+		PathQueryParam: "path",
+		PathPrefix:     "snapshots/provider-snapshot-1",
+	})
+
+	go func() {
+		<-started
+		cancel()
+	}()
+
+	dest := filepath.Join(t.TempDir(), "f.bin")
+	err := provider.Download("snapshots/provider-snapshot-1/f.bin", dest)
+	if err == nil {
+		t.Fatal("expected an error when the parent context is cancelled mid-request")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want it to wrap context.Canceled", err)
+	}
+	if got := atomic.LoadInt32(&attempts); got != 1 {
+		t.Fatalf("attempts = %d, want exactly 1 — a cancelled parent context must never be retried", got)
+	}
+	if len(*recorded) != 0 {
+		t.Fatalf("recorded sleeps = %v, want none — no backoff after a parent cancel", *recorded)
 	}
 }
 
