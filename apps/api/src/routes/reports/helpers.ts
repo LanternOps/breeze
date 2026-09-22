@@ -14,6 +14,7 @@ import {
   resolveRequestReportAuthority,
   type LiveReportAuthorityResult,
   type LiveSiteScopeV1,
+  type PartnerWideScopeSqlTarget,
   type PersistedSiteScopeColumns,
   type ReportAction,
   type ReportExecutionAuthority,
@@ -95,6 +96,21 @@ export function partnerOwnedReportVisibility(
   return canManagePartnerWidePolicies(auth) && auth.partnerId
     ? eq(reports.partnerId, auth.partnerId)
     : sql<unknown>`FALSE`;
+}
+
+/**
+ * #3198 W01. The partner axis of a multi-org list predicate
+ * (`report{Definition,Run}MultiOrgScopeSqlPredicate`'s `partnerWide` arg), or
+ * undefined for every caller who may not administer partner-wide state. Lives
+ * here, next to `partnerOwnedReportVisibility`, so a raw `reports.partnerId`
+ * predicate never appears in a route file (the scan test polices that).
+ */
+export function partnerWideListTarget(
+  auth: Pick<AuthContext, 'scope' | 'partnerId' | 'partnerOrgAccess'>,
+): PartnerWideScopeSqlTarget | undefined {
+  return canManagePartnerWidePolicies(auth) && auth.partnerId
+    ? { rowPartnerId: reports.partnerId, partnerId: auth.partnerId }
+    : undefined;
 }
 
 /**

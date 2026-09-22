@@ -97,7 +97,7 @@ vi.mock('../../db', () => {
       state.updates.push(entry);
       return chain;
     });
-    chain.returning = vi.fn(async () => [{ id: REPORT_ID, name: 'x', ...entry.set }]);
+    chain.returning = vi.fn(async () => [{ id: REPORT_ID, orgId: null, partnerId: PARTNER_ID, name: 'x', ...entry.set }]);
     return chain;
   });
 
@@ -365,7 +365,19 @@ describe('PUT /reports/:id on a partner-owned definition', () => {
     expect(state.updates).toHaveLength(0);
   });
 
-  it('403s a selected-access partner user even though RLS would show the row', async () => {
+  it('production path: a selected-access partner user gets 404 — the metadata read excludes partner-owned rows', async () => {
+    state.auth = partnerAuth('selected');
+    state.rows = [null];
+    const res = await app().request(`/reports/${REPORT_ID}`, {
+      method: 'PUT', headers: JSON_HEADERS, body: JSON.stringify({ name: 'Renamed' }),
+    });
+
+    expect(res.status).toBe(404);
+    expect(params(state.wheres[0])).not.toContain(PARTNER_ID);
+    expect(state.updates).toHaveLength(0);
+  });
+
+  it('defense in depth: 403s a selected-access partner user if the metadata read ever returned the row', async () => {
     state.auth = partnerAuth('selected');
     state.rows = [partnerDefinition()];
     const res = await app().request(`/reports/${REPORT_ID}`, {
@@ -406,7 +418,7 @@ describe('PUT /reports/:id on a partner-owned definition', () => {
 });
 
 describe('DELETE /reports/:id on a partner-owned definition', () => {
-  it('403s a selected-access partner user', async () => {
+  it('defense in depth: 403s a selected-access partner user if the metadata read ever returned the row', async () => {
     state.auth = partnerAuth('selected');
     state.rows = [partnerDefinition()];
     const res = await app().request(`/reports/${REPORT_ID}`, { method: 'DELETE' });
@@ -658,5 +670,54 @@ describe('recipients of a partner-owned definition', () => {
     const res = await app().request(`/reports/${REPORT_ID}/recipients`);
 
     expect(res.status).toBe(404);
+  });
+});
+
+describe('GET /reports/templates never lists partner-owned definitions (#3198 W01)', () => {
+  it('omits the partner branch even for a full-access partner admin', async () => {
+    state.rows = [{ count: 0 }, null];
+    const res = await app().request('/reports/templates');
+
+    expect(res.status).toBe(200);
+    const where = dialect.sqlToQuery(state.wheres[0] as SQL);
+    expect(where.params).not.toContain(PARTNER_ID);
+    expect(where.params).not.toContain('partner_wide');
+    expect(where.sql).not.toContain('partner_id');
+    expect(where.params).toContain(ORG_ID);
+  });
+
+  it('the ordinary list still includes it for the same caller (positive control)', async () => {
+    state.rows = [{ count: 0 }, null];
+    await app().request('/reports');
+    expect(params(state.wheres[0])).toContain(PARTNER_ID);
+  });
+});
+
+describe('audit records for partner-owned rows carry the partner id (#3198 W01)', () => {
+  it('run download audit includes details.partnerId', async () => {
+    const { auditSensitiveRead } = await import('../../services/sensitiveReadAudit');
+    const run = {
+      ...partnerDefinition(), id: RUN_ID, reportId: REPORT_ID, status: 'completed',
+      result: { rows: [{ a: 1 }] }, reportType: 'ar_aging', reportName: 'AR aging', reportFormat: 'csv',
+    };
+    state.rows = [run, run];
+    const res = await app().request(`/reports/runs/${RUN_ID}/download`);
+
+    expect(res.status).toBe(200);
+    expect(vi.mocked(auditSensitiveRead).mock.calls[0]?.[1]).toMatchObject({
+      action: 'report.run.download', orgId: null, partnerId: PARTNER_ID,
+    });
+  });
+
+  it('reauthorize audit includes details.partnerId', async () => {
+    state.rows = [partnerDefinition(), partnerDefinition()];
+    const res = await app().request(`/reports/${REPORT_ID}/reauthorize`, { method: 'POST' });
+
+    expect(res.status).toBe(200);
+    expect(vi.mocked(writeRouteAudit).mock.calls.at(-1)?.[1]).toMatchObject({
+      orgId: null,
+      action: 'report.reauthorize',
+      details: { partnerId: PARTNER_ID },
+    });
   });
 });

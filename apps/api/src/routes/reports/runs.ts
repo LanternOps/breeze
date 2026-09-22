@@ -22,6 +22,7 @@ import { rowsToCsv, rowsToTsv } from '@breeze/shared';
 import {
   getPagination, getReportWithOrgCheck, getReportRunWithOrgCheck, isPortalSelfServiceLocked,
   isSystemManagedReportDefinition, PARTNER_OWNED_REPORT, partnerOwnedReportVisibility,
+  partnerWideListTarget,
   PORTAL_SELF_SERVICE_REPORT,
 } from './helpers';
 import { downloadQuerySchema, listRunsSchema } from './schemas';
@@ -96,6 +97,11 @@ runsRoutes.post(
     // No type has a partner-scope generator this wave, so it is refused
     // before any run row is created.
     if (report.owner.partnerId !== undefined) {
+      // Defense in depth: getReportWithOrgCheck already returns null for a
+      // partner-owned row unless the caller may administer partner-wide state.
+      if (!canManagePartnerWidePolicies(auth)) {
+        return c.json({ error: 'Report not found' }, 404);
+      }
       try {
         assertReportOwnerScopeSupported(report.type, report.owner);
       } catch (error) {
@@ -295,9 +301,7 @@ runsRoutes.get(
         : sql<unknown>`FALSE`;
       // #3198 W01: partner-owned runs join the list only for a caller who may
       // administer partner-wide state (same rule as the definition list).
-      const partnerWide = canManagePartnerWidePolicies(auth) && auth.partnerId
-        ? { rowPartnerId: reports.partnerId, partnerId: auth.partnerId }
-        : undefined;
+      const partnerWide = partnerWideListTarget(auth);
       conditions.push(
         partnerWide
           ? or(orgCondition, partnerOwnedReportVisibility(auth))!
@@ -433,6 +437,7 @@ runsRoutes.get(
       auditSensitiveRead(c, {
         action: 'report.run.download',
         orgId: row.orgId,
+        ...(row.partnerId ? { partnerId: row.partnerId } : {}),
         resourceType: 'report_run',
         resourceId: runId,
         format,
@@ -453,6 +458,7 @@ runsRoutes.get(
       auditSensitiveRead(c, {
         action: 'report.run.download',
         orgId: row.orgId,
+        ...(row.partnerId ? { partnerId: row.partnerId } : {}),
         resourceType: 'report_run',
         resourceId: runId,
         format,
@@ -468,6 +474,7 @@ runsRoutes.get(
     auditSensitiveRead(c, {
       action: 'report.run.download',
       orgId: row.orgId,
+      ...(row.partnerId ? { partnerId: row.partnerId } : {}),
       resourceType: 'report_run',
       resourceId: runId,
       format,

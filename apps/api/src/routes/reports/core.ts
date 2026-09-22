@@ -23,6 +23,7 @@ import {
   isPortalSelfServiceLocked,
   isSystemManagedReportDefinition,
   partnerOwnedReportVisibility,
+  partnerWideListTarget,
   PORTAL_SELF_SERVICE_REPORT,
   reportDefinitionMetadataProjection,
   reportOwnerCondition,
@@ -75,11 +76,13 @@ const SYSTEM_MANAGED = 'system_managed' as const;
  */
 const PORTAL_SELF_SERVICE = 'portal_self_service' as const;
 /**
- * #3198 W01 — `loadLockedDefinition`'s partner-wide refusal: the definition is
- * partner-owned and the caller may not administer partner-wide state. A 403,
- * not a 404: a 'selected' partner user's RLS context genuinely sees the row
- * (partner access is flat membership), so hiding it would be a lie the
- * database contradicts.
+ * #3198 W01 — `loadLockedDefinition`'s partner-wide refusal, DEFENSE IN DEPTH.
+ * Unreachable in production today: `tenantAuthorizedReportCondition` already
+ * drops partner-owned rows for every caller who fails
+ * `canManagePartnerWidePolicies` (org tokens, 'selected' partner users), so
+ * those callers get the ordinary 404 from the metadata read. This check only
+ * fires if that predicate regresses — and then it refuses with 403 instead of
+ * letting the mutation reach the partner authority resolver.
  */
 const PARTNER_WIDE_DENIED = 'partner_wide_denied' as const;
 /** #3198 W01 — PUT's refusal to re-home a partner-owned definition. */
@@ -100,7 +103,13 @@ function liveScopeOf(
 
 async function resolveDefinitionListScope(
   auth: AuthContext,
-  explicitOrgId?: string,
+  explicitOrgId: string | undefined,
+  // #3198 W01: /templates passes false. The web merges templates into its
+  // org-report builder, and cloning a partner-owned business definition would
+  // mint a broken org-owned one, so that listing is org-owned only — without
+  // the partner branch no NULL-org row can match `inArray(reports.org_id, …)`
+  // or any org-axis scope branch.
+  options: { includePartnerOwned: boolean },
 ): Promise<DefinitionListScopeResult> {
   const exactOrgId = auth.scope === 'organization'
     ? auth.orgId
@@ -141,8 +150,8 @@ async function resolveDefinitionListScope(
     // #3198 W01: partner-owned rows join the list only for a caller who may
     // administer partner-wide state, and only on an all-orgs listing — an
     // explicit orgId (handled above) asks for one org and excludes them.
-    const partnerWide = canManagePartnerWidePolicies(auth) && auth.partnerId
-      ? { rowPartnerId: reports.partnerId, partnerId: auth.partnerId }
+    const partnerWide = options.includePartnerOwned
+      ? partnerWideListTarget(auth)
       : undefined;
     return {
       ok: true,
@@ -213,8 +222,9 @@ async function loadLockedDefinition(
 
   const owner = reportOwnerOfRow(metadata);
   if (!owner) return null;
-  // #3198 W01: every mutation of a partner-owned definition needs the
-  // partner-wide capability, checked before any authority is resolved.
+  // #3198 W01, defense in depth (see PARTNER_WIDE_DENIED): the metadata read
+  // above already excludes partner-owned rows for callers without the
+  // partner-wide capability; re-assert it before any authority is resolved.
   if (owner.partnerId !== undefined && !canManagePartnerWidePolicies(auth)) {
     return PARTNER_WIDE_DENIED;
   }
@@ -273,7 +283,9 @@ coreRoutes.get(
     const auth = c.get('auth');
     const query = c.req.valid('query');
     const { page, limit, offset } = getPagination(query);
-    const scopeResult = await resolveDefinitionListScope(auth, query.orgId);
+    const scopeResult = await resolveDefinitionListScope(auth, query.orgId, {
+      includePartnerOwned: true,
+    });
     if (!scopeResult.ok) {
       return c.json({ error: scopeResult.error }, 403);
     }
@@ -332,7 +344,9 @@ coreRoutes.get(
     const auth = c.get('auth');
     const query = c.req.valid('query');
     const { page, limit, offset } = getPagination(query);
-    const scopeResult = await resolveDefinitionListScope(auth, query.orgId);
+    const scopeResult = await resolveDefinitionListScope(auth, query.orgId, {
+      includePartnerOwned: false,
+    });
     if (!scopeResult.ok) {
       return c.json({ error: scopeResult.error }, 403);
     }
@@ -753,6 +767,7 @@ coreRoutes.post(
       resourceType: 'report',
       resourceId: result.updated.id,
       resourceName: result.updated.name,
+      ...(result.updated.partnerId ? { details: { partnerId: result.updated.partnerId } } : {}),
     });
     return c.json(result.updated);
   },
