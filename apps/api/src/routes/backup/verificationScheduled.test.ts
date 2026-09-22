@@ -235,6 +235,12 @@ describe('verification timeout handling', () => {
         result: { status: 'partial', filesVerified: 6, filesFailed: 0, filesIncomplete: 2 },
         expected: '2 file(s) never uploaded during the backup run and are absent from this snapshot',
       },
+      {
+        id: 'verify-derived-both',
+        commandId: '77777777-7777-4777-8777-777777777777',
+        result: { status: 'partial', filesVerified: 5, filesFailed: 1, filesIncomplete: 3 },
+        expected: '1 file(s) failed verification; 3 file(s) never uploaded during the backup run and are absent from this snapshot',
+      },
     ];
 
     for (const testCase of cases) {

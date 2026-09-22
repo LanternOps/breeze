@@ -318,13 +318,16 @@ function deriveVerificationReason(params: {
 }): string | null {
   const { status, filesFailed, filesIncomplete } = params;
   if (status === 'passed') return null;
+  // Both counters can be non-zero at once (some stored objects failed AND the
+  // backup run never uploaded others), so report both rather than the first.
+  const parts: string[] = [];
   if (filesFailed > 0) {
-    return `${filesFailed} file(s) failed verification`;
+    parts.push(`${filesFailed} file(s) failed verification`);
   }
   if (filesIncomplete > 0) {
-    return `${filesIncomplete} file(s) never uploaded during the backup run and are absent from this snapshot`;
+    parts.push(`${filesIncomplete} file(s) never uploaded during the backup run and are absent from this snapshot`);
   }
-  return null;
+  return parts.length > 0 ? parts.join('; ') : null;
 }
 
 export async function processBackupVerificationResult(
@@ -397,7 +400,8 @@ export async function processBackupVerificationResult(
   // that failed verification) is legitimately 0 while the restore point is
   // incomplete — persist the count and the agent's warnings so the reason is
   // visible instead of only the downgraded status.
-  details.filesIncomplete = (agentResult.filesIncomplete as number) ?? 0;
+  const filesIncomplete = (agentResult.filesIncomplete as number) ?? 0;
+  details.filesIncomplete = filesIncomplete;
   details.warnings = agentResult.warnings || [];
   details.cleanedUp = agentResult.cleanedUp;
   details.restorePath = agentResult.restorePath;
@@ -416,7 +420,7 @@ export async function processBackupVerificationResult(
   const reason = agentError || deriveVerificationReason({
     status: agentStatus,
     filesFailed: pending.filesFailed,
-    filesIncomplete: details.filesIncomplete as number,
+    filesIncomplete,
   });
   if (reason) {
     details.reason = reason;
