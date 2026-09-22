@@ -19,14 +19,16 @@ import { terminalPayloadErasureSet } from './sensitiveCommandPayload';
 import type { AiOriginRef } from '@breeze/shared';
 
 /**
- * The agent release that introduced system_cleanup_list / system_cleanup_run.
+ * The oldest agent release allowed to run system_cleanup_list / system_cleanup_run.
  *
- * Newest tag on the branch this wave was planned from is v0.114.0 (verified
- * 2026-09-19), so W04 ships in the next minor. If a release lands before this
- * merges, bump it here in the same PR — the pin in systemCleanup.test.ts is
- * its only other mention.
+ * The commands first shipped in 0.115.0, but that agent's cleanmgr hangs in
+ * session 0 until the 60-minute cap kills it (#6482) and it misreports btrfs
+ * and many-volume hosts (#6483, #6484). The W06 fixes ship in 0.116.0, so the
+ * gate sits there: a lagging 0.115.x agent is told to update instead of
+ * burning an hour per Windows Update Cleanup run. The pin in
+ * systemCleanup.test.ts and the docs page repeat this value.
  */
-export const MIN_AGENT_VERSION_SYSTEM_CLEANUP = '0.115.0';
+export const MIN_AGENT_VERSION_SYSTEM_CLEANUP = '0.116.0';
 
 /** Machine token both system-cleanup routes answer a stale agent with. */
 export const AGENT_UPDATE_REQUIRED_ERROR = 'agent_update_required';
@@ -43,9 +45,9 @@ export const UNKNOWN_COMMAND_TYPE_PREFIX = 'unknown command type:';
  * 'dev' through as "equal to the minimum" — and `devices.agent_version` is
  * `varchar(50) NOT NULL`, so '' is a real value.
  *
- * Only the CORE is compared (spec §5.3's "core semver"): `0.115.0-rc1` is the
- * lab build W05 runs the acceptance gate on, and a prerelease-aware comparison
- * would rank it below `0.115.0` and gate the gate out.
+ * Only the CORE is compared (spec §5.3's "core semver"): `0.116.0-rc1` is the
+ * lab build the acceptance gate runs on, and a prerelease-aware comparison
+ * would rank it below `0.116.0` and gate the gate out.
  */
 export function agentSupportsSystemCleanup(agentVersion: string | null | undefined): boolean {
   if (typeof agentVersion !== 'string') return false;

@@ -525,7 +525,7 @@ A run is single-use: once it has left `previewed` it cannot be executed again (`
 ### Agent version requirements
 
 - **Permanent file cleanup** requires an agent at **`0.115.0`** (`MIN_AGENT_VERSION_CLEANUP_GUARD`) or newer. Execute sends `permanent: true` with `cleanupGuard: true`; an older agent has no guard and would perform an unguarded recursive permanent delete, so both the route and the AI tool **refuse** an older agent with `409 agent_update_required` before anything is dispatched. The body carries `minAgentVersion` and the device's current `agentVersion`; the panel renders the required version in its error.
-- **OS-native cleaners** require **`0.115.0`** (`MIN_AGENT_VERSION_SYSTEM_CLEANUP`) or newer and answer `409 agent_update_required` below it. The gate compares the core version only, so a release candidate of the gate release counts. As a defence in depth, an agent that reports a new-enough version but answers `unknown command type:` resolves to the same 409 on poll.
+- **OS-native cleaners** require **`0.116.0`** (`MIN_AGENT_VERSION_SYSTEM_CLEANUP`) or newer and answer `409 agent_update_required` below it. They first shipped in `0.115.0`, but that agent's Disk Cleanup (`cleanmgr`) run hangs until the 60-minute cap kills it, so `0.115.x` agents are refused until they update. The gate compares the core version only, so a release candidate of the gate release counts. As a defence in depth, an agent that reports a new-enough version but answers `unknown command type:` resolves to the same 409 on poll.
 
 Both gates fail **closed**: an empty or unparseable `agent_version` is treated as too old.
 

@@ -90,7 +90,7 @@ const DEVICE_ID = '22222222-2222-4222-8222-222222222222';
 const COMMAND_ID = '33333333-3333-4333-8333-333333333333';
 const RUN_ID = '44444444-4444-4444-8444-444444444444';
 
-const modernDevice = { id: DEVICE_ID, orgId: 'org-1', hostname: 'LAB-1', agentVersion: '0.115.0' };
+const modernDevice = { id: DEVICE_ID, orgId: 'org-1', hostname: 'LAB-1', agentVersion: '0.116.0' };
 
 function app() {
   const instance = new Hono();
@@ -385,7 +385,7 @@ describe('system-cleanup access and poll failures', () => {
       .mockReturnValueOnce(selectReturning([{ result: { error: 'unknown command type: system_cleanup_run' } }]));
     const res = await app().request(`/devices/${DEVICE_ID}/filesystem/system-cleanup/run/${RUN_ID}`);
     expect(res.status).toBe(409);
-    await expect(res.json()).resolves.toMatchObject({ error: 'agent_update_required', minAgentVersion: '0.115.0' });
+    await expect(res.json()).resolves.toMatchObject({ error: 'agent_update_required', minAgentVersion: '0.116.0' });
   });
   it('returns update-required from the persisted run error', async () => {
     selectMock.mockReturnValue(selectReturning([{ id: RUN_ID, status: 'failed', error: 'unknown command type: system_cleanup_run' }]));

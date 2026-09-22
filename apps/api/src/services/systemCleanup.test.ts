@@ -43,21 +43,23 @@ import {
 } from './systemCleanup';
 
 describe('agentSupportsSystemCleanup (spec §5.3)', () => {
-  // Plan amendment 11: the newest tag on this branch is v0.114.0, so W04 ships
-  // in 0.115.0. Bump this in the same PR if a release lands first.
-  it('pins the minimum version W04 ships in', () => {
-    expect(MIN_AGENT_VERSION_SYSTEM_CLEANUP).toBe('0.115.0');
+  // W04 first shipped in 0.115.0, but that agent's cleanmgr hangs in session 0
+  // (#6482) and misreports btrfs/volume results (#6483, #6484). The W06 fixes
+  // ship in 0.116.0, so 0.115.x agents are refused rather than left to burn a
+  // 60-minute cap on every Windows Update Cleanup run.
+  it('pins the minimum to the release carrying the W06 fixes', () => {
+    expect(MIN_AGENT_VERSION_SYSTEM_CLEANUP).toBe('0.116.0');
     expect(AGENT_UPDATE_REQUIRED_ERROR).toBe('agent_update_required');
   });
 
   it('accepts the minimum and anything above it', () => {
-    for (const version of ['0.115.0', '0.115.1', '0.116.0', '1.0.0', 'v0.115.0']) {
+    for (const version of ['0.116.0', '0.116.1', '0.117.0', '1.0.0', 'v0.116.0']) {
       expect(agentSupportsSystemCleanup(version)).toBe(true);
     }
   });
 
   it('rejects anything below it', () => {
-    for (const version of ['0.114.0', '0.113.9', '0.99.0', '0.114.99']) {
+    for (const version of ['0.115.0', '0.115.9', '0.114.0', '0.99.0', 'v0.115.0']) {
       expect(agentSupportsSystemCleanup(version)).toBe(false);
     }
   });
@@ -75,8 +77,9 @@ describe('agentSupportsSystemCleanup (spec §5.3)', () => {
   // lab build W05 runs the acceptance gate on. Gating it out would make the
   // gate untestable.
   it('compares the core only, so an rc of the shipping version passes', () => {
-    expect(agentSupportsSystemCleanup('0.115.0-rc1')).toBe(true);
-    expect(agentSupportsSystemCleanup('0.114.0-rc1')).toBe(false);
+    expect(agentSupportsSystemCleanup('0.116.0-rc1')).toBe(true);
+    expect(agentSupportsSystemCleanup('0.116.0-w06lab')).toBe(true);
+    expect(agentSupportsSystemCleanup('0.115.0-lab')).toBe(false);
   });
 });
 
@@ -224,16 +227,16 @@ describe('parseAgentJson', () => {
 
 describe('systemCleanupAgentGate', () => {
   it('allows supported agents', () => {
-    expect(systemCleanupAgentGate({ agentVersion: '0.115.0-rc1' })).toEqual({ ok: true });
+    expect(systemCleanupAgentGate({ agentVersion: '0.116.0-rc1' })).toEqual({ ok: true });
   });
 
   it('returns the shared 409 response for old or unparseable agents', () => {
-    for (const agentVersion of ['0.114.0', '', 'dev', null]) {
+    for (const agentVersion of ['0.115.0', '0.114.0', '', 'dev', null]) {
       expect(systemCleanupAgentGate({ agentVersion })).toEqual({
         ok: false,
         status: 409,
         error: 'agent_update_required',
-        minAgentVersion: '0.115.0',
+        minAgentVersion: '0.116.0',
       });
     }
   });
@@ -264,7 +267,7 @@ const SEAM_ORG_ID = '11111111-1111-4111-8111-111111111111';
 const SEAM_RUN_ID = '44444444-4444-4444-8444-444444444444';
 const SEAM_COMMAND_ID = '33333333-3333-4333-8333-333333333333';
 const seamArgs = {
-  device: { id: SEAM_DEVICE_ID, orgId: SEAM_ORG_ID, agentVersion: '0.115.0', status: 'online' },
+  device: { id: SEAM_DEVICE_ID, orgId: SEAM_ORG_ID, agentVersion: '0.116.0', status: 'online' },
   requestedBy: '55555555-5555-4555-8555-555555555555',
   actionIds: ['linux_pkg_cache_clean'],
 };

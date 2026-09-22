@@ -138,7 +138,7 @@ describe('system_cleanup AI tool (spec §9.1, §9.3 items 1-2)', () => {
     serviceState.statusResult = { ok: false, status: 404, error: 'run_not_found' };
     dbMockState.userRows = [{ id: 'user-1' }];
     dbMockState.deviceRows = [
-      { id: DEVICE_ID, orgId: ORG_ID, siteId: null, hostname: 'lab-1', status: 'online', osType: 'linux', agentVersion: '0.115.0' },
+      { id: DEVICE_ID, orgId: ORG_ID, siteId: null, hostname: 'lab-1', status: 'online', osType: 'linux', agentVersion: '0.116.0' },
     ];
   });
 
@@ -164,7 +164,7 @@ describe('system_cleanup AI tool (spec §9.1, §9.3 items 1-2)', () => {
     expect(result.catalog).toEqual({ catalogVersion: 1, actions: [], volumesBefore: [] });
     expect(serviceState.listArgs).toHaveLength(1);
     expect(serviceState.listArgs[0]).toMatchObject({
-      device: { id: DEVICE_ID, orgId: ORG_ID, agentVersion: '0.115.0', status: 'online' },
+      device: { id: DEVICE_ID, orgId: ORG_ID, agentVersion: '0.116.0', status: 'online' },
       requestedBy: 'user-1',
       aiOrigin: { kind: 'ai_assistant', sessionId: 'sess-1' },
     });
@@ -273,13 +273,13 @@ describe('system_cleanup AI tool (spec §9.1, §9.3 items 1-2)', () => {
 
   it('surfaces the 409 agent gate verbatim instead of dispatching', async () => {
     serviceState.listResult = {
-      ok: false, status: 409, error: 'agent_update_required', minAgentVersion: '0.115.0',
+      ok: false, status: 409, error: 'agent_update_required', minAgentVersion: '0.116.0',
     };
     const raw = await getTool('system_cleanup').handler({ deviceId: DEVICE_ID, action: 'list' }, makeAuth());
     const result = JSON.parse(raw);
 
     expect(result.error).toBe('agent_update_required');
-    expect(result.minAgentVersion).toBe('0.115.0');
+    expect(result.minAgentVersion).toBe('0.116.0');
     expect(serviceState.awaitArgs).toHaveLength(0);
   });
 
@@ -403,10 +403,10 @@ describe('system_cleanup AI tool (spec §9.1, §9.3 items 1-2)', () => {
   });
 
   describe('F5 — every agent_update_required answer carries minAgentVersion', () => {
-    const expected = { error: 'agent_update_required', minAgentVersion: '0.115.0' };
+    const expected = { error: 'agent_update_required', minAgentVersion: '0.116.0' };
 
     it('from the list gate', async () => {
-      serviceState.listResult = { ok: false, status: 409, error: 'agent_update_required', minAgentVersion: '0.115.0' };
+      serviceState.listResult = { ok: false, status: 409, error: 'agent_update_required', minAgentVersion: '0.116.0' };
       const raw = await getTool('system_cleanup').handler({ deviceId: DEVICE_ID, action: 'list' }, makeAuth());
       expect(JSON.parse(raw)).toEqual(expected);
     });
@@ -418,7 +418,7 @@ describe('system_cleanup AI tool (spec §9.1, §9.3 items 1-2)', () => {
     });
 
     it('from the run gate', async () => {
-      serviceState.runResult = { ok: false, status: 409, error: 'agent_update_required', minAgentVersion: '0.115.0' };
+      serviceState.runResult = { ok: false, status: 409, error: 'agent_update_required', minAgentVersion: '0.116.0' };
       const raw = await getTool('system_cleanup').handler(
         { deviceId: DEVICE_ID, action: 'run', actionIds: ['linux_pkg_cache_clean'] },
         makeAuth(),
@@ -428,7 +428,7 @@ describe('system_cleanup AI tool (spec §9.1, §9.3 items 1-2)', () => {
     });
 
     it('from status (unknown command type on the run or its command)', async () => {
-      serviceState.statusResult = { ok: false, status: 409, error: 'agent_update_required', minAgentVersion: '0.115.0' };
+      serviceState.statusResult = { ok: false, status: 409, error: 'agent_update_required', minAgentVersion: '0.116.0' };
       const raw = await getTool('system_cleanup').handler({ deviceId: DEVICE_ID, action: 'status', cleanupRunId: RUN_ID }, makeAuth());
       expect(JSON.parse(raw)).toEqual(expected);
     });
