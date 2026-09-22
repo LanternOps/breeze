@@ -85,32 +85,14 @@ func runBlockedHeartbeat(t *testing.T, buf *syncBuffer) {
 
 // TestSendHeartbeatWatchdogFiresWhenBlocked verifies that a sendHeartbeat
 // impl that blocks longer than heartbeatWatchdogTimeout causes the watchdog
-// to log a stack dump.
+// to log a stack dump. Uses runBlockedHeartbeat, which polls for the fire
+// mark instead of racing a fixed wall-clock sleep against the watchdog
+// goroutine's own (unbounded, under a loaded runner) scheduling delay —
+// the root cause of this test's flakes in CI (#6645).
 func TestSendHeartbeatWatchdogFiresWhenBlocked(t *testing.T) {
 	buf := watchdogTestHarness(t, 50*time.Millisecond)
 
-	release := make(chan struct{})
-	started := make(chan struct{})
-	var once sync.Once
-
-	h := &Heartbeat{
-		sendHeartbeatFn: func() {
-			once.Do(func() { close(started) })
-			<-release
-		},
-	}
-
-	done := make(chan struct{})
-	go func() {
-		h.sendHeartbeatWithWatchdog()
-		close(done)
-	}()
-
-	<-started
-	// Wait well past the 50ms watchdog timeout so the goroutine-dump warn fires.
-	time.Sleep(150 * time.Millisecond)
-	close(release)
-	<-done
+	runBlockedHeartbeat(t, buf)
 
 	output := buf.String()
 	if !strings.Contains(output, "heartbeat send exceeded watchdog timeout") {
@@ -123,19 +105,50 @@ func TestSendHeartbeatWatchdogFiresWhenBlocked(t *testing.T) {
 
 // TestSendHeartbeatWatchdogDoesNotFireOnFastPath verifies that a
 // sendHeartbeat that returns quickly does NOT trip the watchdog warning.
+//
+// This used to hold sendHeartbeatFn open until a fixed sleep past the
+// timeout, then check the log — but the sleep bounded "the watchdog
+// goroutine started and would have had a chance to fire", and goroutine
+// *scheduling* delay under a loaded runner is unbounded, so a generous
+// multiple of the timeout still wasn't safe (#6645: 2 of the CI flakes on
+// 2026-09-22 were exactly this).
+//
+// Instead this synchronizes on the watchdog goroutine's own start/finish
+// hooks: sendHeartbeatFn blocks until the watchdog goroutine has
+// verifiably reached its `select` (heartbeatWatchdogStartHook), which is
+// also the instant `time.After(timeout)` gets created — so no timeout
+// budget is spent waiting for the goroutine to be scheduled. `done` closes
+// microseconds later, so the watchdog's select observes `done` ready and
+// takes that branch regardless of how loaded the runner is. The test then
+// waits (bounded only by a generous absolute ceiling, not the production
+// timeout) for heartbeatWatchdogFinishHook to confirm the goroutine has
+// actually finished before inspecting the log.
 func TestSendHeartbeatWatchdogDoesNotFireOnFastPath(t *testing.T) {
 	buf := watchdogTestHarness(t, 100*time.Millisecond)
 
+	watchdogRunning := make(chan struct{})
+	restoreStart := setHeartbeatWatchdogStartHook(func() { close(watchdogRunning) })
+	t.Cleanup(restoreStart)
+
+	watchdogFinished := make(chan struct{})
+	restoreFinish := setHeartbeatWatchdogFinishHook(func() { close(watchdogFinished) })
+	t.Cleanup(restoreFinish)
+
 	h := &Heartbeat{
 		sendHeartbeatFn: func() {
-			// Return immediately.
+			// Return only once the watchdog goroutine has confirmably
+			// started racing `done` against the timer.
+			<-watchdogRunning
 		},
 	}
 
 	h.sendHeartbeatWithWatchdog()
 
-	// Give any late-firing watchdog goroutine a chance to warn (it should NOT).
-	time.Sleep(250 * time.Millisecond)
+	select {
+	case <-watchdogFinished:
+	case <-time.After(5 * time.Second):
+		t.Fatal("watchdog goroutine did not finish")
+	}
 
 	if strings.Contains(buf.String(), "heartbeat send exceeded watchdog timeout") {
 		t.Fatalf("watchdog should not fire on fast path, got:\n%s", buf.String())

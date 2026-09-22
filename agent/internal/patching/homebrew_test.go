@@ -564,6 +564,28 @@ func TestScheduleCleanupConcurrentCallsAreRaceFree(t *testing.T) {
 	}
 }
 
+// waitForCalls polls counter (via atomic.LoadInt32) until it reaches want,
+// returning the observed value. Unlike a fixed sleep, this doesn't race the
+// debounce timer's own goroutine-scheduling delay against a wall-clock
+// guess: on a loaded runner, time.AfterFunc firing can itself be delayed
+// well past the debounce duration, so a fixed "debounce + margin" sleep can
+// read the counter before the timer has actually fired (#6645). Polling
+// waits as long as necessary, bounded only by a generous absolute ceiling
+// that exists to fail fast on a genuine regression rather than hang.
+func waitForCalls(t *testing.T, counter *int32, want int32) int32 {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if got := atomic.LoadInt32(counter); got >= want {
+			return got
+		}
+		if time.Now().After(deadline) {
+			return atomic.LoadInt32(counter)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
 // TestScheduleCleanupRunsAgainForANewBatch verifies coalescing doesn't
 // swallow a *second*, later batch — cleanup must still fire once per batch,
 // not "once ever".
@@ -574,14 +596,12 @@ func TestScheduleCleanupRunsAgainForANewBatch(t *testing.T) {
 	h.cleanupDebounce = 15 * time.Millisecond
 
 	h.scheduleCleanup()
-	time.Sleep(50 * time.Millisecond)
-	if got := atomic.LoadInt32(&calls); got != 1 {
+	if got := waitForCalls(t, &calls, 1); got != 1 {
 		t.Fatalf("expected 1 call after first batch settled, got %d", got)
 	}
 
 	h.scheduleCleanup()
-	time.Sleep(50 * time.Millisecond)
-	if got := atomic.LoadInt32(&calls); got != 2 {
+	if got := waitForCalls(t, &calls, 2); got != 2 {
 		t.Fatalf("expected 2 calls after a second batch settled, got %d", got)
 	}
 }

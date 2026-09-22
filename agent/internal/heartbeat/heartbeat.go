@@ -4042,6 +4042,45 @@ func resetHeartbeatWatchdogDumpState() {
 	heartbeatWatchdogSuppressedDumps.Store(0)
 }
 
+// heartbeatWatchdogStartHook and heartbeatWatchdogFinishHook, when non-nil,
+// are invoked by the watchdog goroutine immediately before it enters its
+// `select` and immediately after that select resolves, respectively. They
+// are synchronization points for tests that need to know precisely when the
+// watchdog goroutine has been scheduled and started racing `done` against
+// the timer, and when it has finished — instead of inferring either from a
+// wall-clock sleep (#6645: under a loaded CI runner, the watchdog goroutine
+// itself can be starved of scheduling for longer than a test's fixed sleep,
+// making sleep-based "surely it's running/done by now" assumptions flaky).
+// Both are nil in production and never allocate/branch in the hot path
+// beyond a single atomic load.
+var (
+	heartbeatWatchdogStartHook  atomic.Pointer[func()]
+	heartbeatWatchdogFinishHook atomic.Pointer[func()]
+)
+
+// setHeartbeatWatchdogStartHook installs a start hook and returns a restore
+// func that puts back whatever was previously installed. Intended for tests.
+func setHeartbeatWatchdogStartHook(fn func()) (restore func()) {
+	var p *func()
+	if fn != nil {
+		p = &fn
+	}
+	prev := heartbeatWatchdogStartHook.Swap(p)
+	return func() { heartbeatWatchdogStartHook.Store(prev) }
+}
+
+// setHeartbeatWatchdogFinishHook installs a finish hook and returns a
+// restore func that puts back whatever was previously installed. Intended
+// for tests.
+func setHeartbeatWatchdogFinishHook(fn func()) (restore func()) {
+	var p *func()
+	if fn != nil {
+		p = &fn
+	}
+	prev := heartbeatWatchdogFinishHook.Swap(p)
+	return func() { heartbeatWatchdogFinishHook.Store(prev) }
+}
+
 // heartbeatWatchdogTryAcquireDump reports whether a goroutine dump may be
 // emitted now, atomically claiming the slot if so. Safe for concurrent
 // watchdog goroutines (overlapping invocations race for one slot).
@@ -4304,6 +4343,12 @@ func (h *Heartbeat) sendHeartbeatWithWatchdog() {
 	defer close(done)
 
 	go func() {
+		if hook := heartbeatWatchdogStartHook.Load(); hook != nil {
+			(*hook)()
+		}
+		if hook := heartbeatWatchdogFinishHook.Load(); hook != nil {
+			defer (*hook)()
+		}
 		// The select fires at most once per invocation, so sync.Once is
 		// unnecessary — a plain select is sufficient.
 		select {
