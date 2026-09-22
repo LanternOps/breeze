@@ -23,8 +23,8 @@ import (
 // reversible transform. #6263 W01 / spec D6.
 
 const (
-	quarantinePayloadExt     = ".bqz"
-	quarantineManifestExt    = ".bqz.json"
+	quarantinePayloadExt      = ".bqz"
+	quarantineManifestExt     = ".bqz.json"
 	quarantineManifestVersion = 1
 )
 
@@ -119,7 +119,9 @@ func QuarantineThreat(threat Threat, quarantineDir string) (string, error) {
 
 	sha, err := quarantineEncodeFile(threat.Path, dest)
 	if err != nil {
-		os.Remove(dest) // best-effort cleanup of a partial payload
+		if rmErr := os.Remove(dest); rmErr != nil && !os.IsNotExist(rmErr) {
+			log.Warn("failed to clean up partial quarantine payload", "path", dest, "error", rmErr.Error())
+		}
 		return "", fmt.Errorf("failed to quarantine threat: %w", err)
 	}
 
@@ -134,13 +136,17 @@ func QuarantineThreat(threat Threat, quarantineDir string) (string, error) {
 	}
 	manifestBytes, err := json.Marshal(manifest)
 	if err != nil {
-		os.Remove(dest)
+		if rmErr := os.Remove(dest); rmErr != nil && !os.IsNotExist(rmErr) {
+			log.Warn("failed to clean up quarantine payload after manifest encode error", "path", dest, "error", rmErr.Error())
+		}
 		return "", fmt.Errorf("failed to encode quarantine manifest: %w", err)
 	}
 	// Write the payload first, then the manifest: a crash after this point
 	// leaves a decodable payload, never a manifest pointing at nothing.
 	if err := os.WriteFile(dest+".json", manifestBytes, 0o600); err != nil {
-		os.Remove(dest)
+		if rmErr := os.Remove(dest); rmErr != nil && !os.IsNotExist(rmErr) {
+			log.Warn("failed to clean up quarantine payload after manifest write error", "path", dest, "error", rmErr.Error())
+		}
 		return "", fmt.Errorf("failed to write quarantine manifest: %w", err)
 	}
 
@@ -156,7 +162,11 @@ func quarantineEncodeFile(srcPath, destPath string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer src.Close()
+	defer func() {
+		if closeErr := src.Close(); closeErr != nil {
+			log.Warn("failed to close quarantine source file", "path", srcPath, "error", closeErr.Error())
+		}
+	}()
 
 	info, err := src.Stat()
 	if err != nil {
@@ -167,7 +177,11 @@ func quarantineEncodeFile(srcPath, destPath string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer dst.Close()
+	defer func() {
+		if closeErr := dst.Close(); closeErr != nil {
+			log.Warn("failed to close quarantine destination file", "path", destPath, "error", closeErr.Error())
+		}
+	}()
 
 	sha, err := encodeStream(dst, src)
 	if err != nil {
@@ -252,7 +266,11 @@ func restoreManifestEntry(cleanSource, cleanTarget string, manifest QuarantineMa
 	if err != nil {
 		return fmt.Errorf("failed to open quarantine payload: %w", err)
 	}
-	defer src.Close()
+	defer func() {
+		if closeErr := src.Close(); closeErr != nil {
+			log.Warn("failed to close quarantine payload during restore", "path", cleanSource, "error", closeErr.Error())
+		}
+	}()
 
 	tmp := cleanTarget + ".restoring"
 	dst, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
@@ -260,24 +278,30 @@ func restoreManifestEntry(cleanSource, cleanTarget string, manifest QuarantineMa
 		return fmt.Errorf("failed to open restore target: %w", err)
 	}
 
+	removeTmp := func() {
+		if rmErr := os.Remove(tmp); rmErr != nil && !os.IsNotExist(rmErr) {
+			log.Warn("failed to clean up restore temp file", "path", tmp, "error", rmErr.Error())
+		}
+	}
+
 	sha, err := decodeStream(dst, src)
 	closeErr := dst.Close()
 	if err != nil {
-		os.Remove(tmp)
+		removeTmp()
 		return fmt.Errorf("failed to decode quarantine payload: %w", err)
 	}
 	if closeErr != nil {
-		os.Remove(tmp)
+		removeTmp()
 		return fmt.Errorf("failed to finalize restore target: %w", closeErr)
 	}
 
 	if manifest.SHA256 != "" && sha != manifest.SHA256 {
-		os.Remove(tmp)
+		removeTmp()
 		return fmt.Errorf("restored file digest %s does not match manifest digest %s", sha, manifest.SHA256)
 	}
 
 	if err := os.Rename(tmp, cleanTarget); err != nil {
-		os.Remove(tmp)
+		removeTmp()
 		return fmt.Errorf("failed to finalize restored file: %w", err)
 	}
 	return nil

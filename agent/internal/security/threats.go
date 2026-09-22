@@ -387,7 +387,11 @@ func readFileSample(path string, maxReadBytes int64) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			log.Warn("failed to close scanned file", "path", path, "error", closeErr.Error())
+		}
+	}()
 
 	if maxReadBytes <= 0 {
 		maxReadBytes = 1024 * 1024
@@ -402,7 +406,11 @@ func copyFile(src string, dest string) error {
 	if err != nil {
 		return err
 	}
-	defer in.Close()
+	defer func() {
+		if closeErr := in.Close(); closeErr != nil {
+			log.Warn("failed to close copyFile source", "path", src, "error", closeErr.Error())
+		}
+	}()
 
 	info, err := in.Stat()
 	if err != nil {
@@ -413,7 +421,11 @@ func copyFile(src string, dest string) error {
 	if err != nil {
 		return err
 	}
-	defer out.Close()
+	defer func() {
+		if closeErr := out.Close(); closeErr != nil {
+			log.Warn("failed to close copyFile destination", "path", dest, "error", closeErr.Error())
+		}
+	}()
 
 	if _, err := io.Copy(out, in); err != nil {
 		return err
