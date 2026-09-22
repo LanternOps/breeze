@@ -1,8 +1,8 @@
 package heartbeat
 
 import (
+	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -44,25 +44,34 @@ func handleSecurityScan(h *Heartbeat, cmd Command) tools.CommandResult {
 	scanRecordID := tools.GetPayloadString(cmd.Payload, "scanRecordId", "")
 	paths := tools.GetPayloadStringSlice(cmd.Payload, "paths")
 
-	var (
-		scanResult security.ScanResult
-		err        error
-	)
-	switch scanType {
-	case "quick":
-		scanResult, err = h.securityScanner.QuickScan()
-	case "full":
-		scanResult, err = h.securityScanner.FullScan()
-	case "custom":
-		if len(paths) == 0 {
-			err = fmt.Errorf("custom scan requires one or more paths")
-		} else {
-			scanResult, err = h.securityScanner.CustomScan(paths)
-		}
-	default:
-		err = fmt.Errorf("unsupported scanType: %s", scanType)
+	// #6263 W01 — settings resolved from the device's effective security
+	// config policy and delivered per scan in the command payload. Every key
+	// is optional on the wire: an agent from before this wave, or a scan
+	// dispatched with no policy behind it, sees none of these and the
+	// scanner's zero values (agent defaults) apply.
+	exclusions := tools.GetPayloadStringSlice(cmd.Payload, "exclusions")
+	maxFileSizeMb := tools.GetPayloadInt(cmd.Payload, "maxFileSizeMb", 0)
+	timeoutMinutes := tools.GetPayloadInt(cmd.Payload, "timeoutMinutes", 0)
+	autoQuarantine := tools.GetPayloadBool(cmd.Payload, "autoQuarantine", false)
+
+	if scanType != "quick" && scanType != "full" && scanType != "custom" {
+		return tools.NewErrorResult(fmt.Errorf("unsupported scanType: %s", scanType), time.Since(start).Milliseconds())
+	}
+	if scanType == "custom" && len(paths) == 0 {
+		return tools.NewErrorResult(fmt.Errorf("custom scan requires one or more paths"), time.Since(start).Milliseconds())
 	}
 
+	scanner := *h.securityScanner // shallow copy: per-scan settings never mutate the shared scanner
+	scanner.Exclusions = exclusions
+	scanner.AutoQuarantine = autoQuarantine
+	if maxFileSizeMb > 0 {
+		scanner.MaxFileSize = int64(maxFileSizeMb) << 20
+	}
+	if timeoutMinutes > 0 {
+		scanner.Timeout = time.Duration(timeoutMinutes) * time.Minute
+	}
+
+	outcome, err := scanner.ScanWithContext(context.Background(), scanType, paths)
 	if err != nil {
 		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
 	}
@@ -76,10 +85,13 @@ func handleSecurityScan(h *Heartbeat, cmd Command) tools.CommandResult {
 	return tools.NewSuccessResult(map[string]any{
 		"scanRecordId": scanRecordID,
 		"scanType":     scanType,
-		"durationMs":   scanResult.Duration.Milliseconds(),
-		"threatsFound": len(scanResult.Threats),
-		"threats":      scanResult.Threats,
-		"status":       scanResult.Status,
+		"durationMs":   outcome.Duration.Milliseconds(),
+		"threatsFound": len(outcome.Threats),
+		"threats":      outcome.Threats,
+		"status":       outcome.Status,
+		"filesScanned": outcome.FilesScanned,
+		"timedOut":     outcome.TimedOut,
+		"partial":      outcome.Partial,
 	}, time.Since(start).Milliseconds())
 }
 
@@ -182,10 +194,7 @@ func handleSecurityThreatRestore(_ *Heartbeat, cmd Command) tools.CommandResult 
 		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
 	}
 
-	if err := os.MkdirAll(filepath.Dir(cleanOriginal), 0755); err != nil {
-		return tools.NewErrorResult(fmt.Errorf("failed to create restore directory: %w", err), time.Since(start).Milliseconds())
-	}
-	if err := os.Rename(cleanSource, cleanOriginal); err != nil {
+	if _, err := security.RestoreQuarantined(cleanSource, cleanOriginal); err != nil {
 		return tools.NewErrorResult(fmt.Errorf("failed to restore file: %w", err), time.Since(start).Milliseconds())
 	}
 	return tools.NewSuccessResult(map[string]any{

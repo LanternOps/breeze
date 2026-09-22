@@ -21,6 +21,11 @@ import '@/lib/i18n';
 import { formatBytes, formatDateTime } from './filesystemTabUtils';
 
 const PAGE_LIMIT = 20;
+// #6485 F-6: a run started elsewhere (the AI lane, another tech's tab) never
+// bumps this component's own refreshToken, so without a periodic re-walk the
+// history stayed stale until a full page reload. 20s balances "shows up
+// promptly" against re-fetching a list a tech may be staring at.
+const AUTO_REFRESH_INTERVAL_MS = 20_000;
 
 export type CleanupRunListItem = {
   id: string;
@@ -56,12 +61,20 @@ export default function CleanupRunHistory({ deviceId, refreshToken }: Props) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const controllerRef = useRef<AbortController | null>(null);
+  // Set once an operator pages past the first screen (#6485 F-6 review
+  // finding). The background auto-refresh re-walks from the top, and doing
+  // that unconditionally would silently truncate a 60+-row paginated view
+  // back to page 1 every 20s — indistinguishable from "nothing changed".
+  // Cleared by the refreshToken restart below, which already intentionally
+  // re-walks from the top for a different reason.
+  const pagedRef = useRef(false);
 
   const loadPage = useCallback(
     async (cursor: string | null, append: boolean) => {
       controllerRef.current?.abort();
       const controller = new AbortController();
       controllerRef.current = controller;
+      if (append) pagedRef.current = true;
 
       setLoading(true);
       setError(null);
@@ -92,11 +105,26 @@ export default function CleanupRunHistory({ deviceId, refreshToken }: Props) {
   );
 
   useEffect(() => {
+    pagedRef.current = false;
     void loadPage(null, false);
     return () => {
       controllerRef.current?.abort();
     };
   }, [loadPage, refreshToken]);
+
+  // Independent of refreshToken: this re-walk must fire even when nothing on
+  // THIS tab changed, which is exactly the case (a run started elsewhere)
+  // #6485 F-6 is about. Re-walking the first page — not appending — matches
+  // the same "the honest refresh is to re-walk from the top" reasoning the
+  // refreshToken restart above already uses. Skipped once the operator has
+  // paged past page 1 (pagedRef) so it never silently truncates their view.
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (pagedRef.current) return;
+      void loadPage(null, false);
+    }, AUTO_REFRESH_INTERVAL_MS);
+    return () => clearInterval(timer);
+  }, [loadPage]);
 
   return (
     <div className="rounded-lg border bg-card p-6 shadow-xs" data-testid="cleanup-run-history">

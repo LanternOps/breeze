@@ -16,6 +16,7 @@ import {
   findContactScope,
   listContacts,
   updateContact,
+  type ContactActor,
 } from '../services/contacts/crud';
 import { getPagination } from '../utils/pagination';
 import { commitContactImport, previewContactImport } from '../services/contacts/import';
@@ -107,7 +108,7 @@ async function resolveAccessibleOrg(c: any): Promise<{ id: string } | Response> 
  * allowlist confines a caller WITHIN an org rather than narrowing their org
  * reach, and an org-level contact belongs to the org, not to any site.
  */
-function canReachContactSite(auth: AuthContext, siteId: string | null | undefined): boolean {
+export function canReachContactSite(auth: AuthContext, siteId: string | null | undefined): boolean {
   if (siteId === null || siteId === undefined) return true;
   return auth.canAccessSite?.(siteId) ?? true;
 }
@@ -163,8 +164,9 @@ function resolveImportContext(
   };
 }
 
-function actorFrom(c: any): { userId: string | null } {
-  return { userId: (c.get('auth') as AuthContext).user?.id ?? null };
+function actorFrom(c: any): ContactActor {
+  // A technician typed it: human-sourced destination provenance (#6354).
+  return { userId: (c.get('auth') as AuthContext).user?.id ?? null, destinationSource: 'technician' };
 }
 
 /** A service refusal is the caller's fault, so it is a 400 rather than a 500. */

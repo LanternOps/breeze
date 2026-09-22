@@ -43,11 +43,18 @@
  * the hidden contact, which is the thing the confinement exists to prevent.
  */
 
-import { and, eq, inArray, isNull } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { m365Connections } from '../../db/schema/m365';
+import { callerVerificationSubjectBindings } from '../../db/schema/callerVerification';
+import { withAuthDbAccessContext, type AuthContext } from '../../middleware/auth';
+import { attestBinding, upsertDirectorySyncBinding } from '../callerVerification/subjects';
+import { reachableContact } from '../callerVerification/access';
+import type { BindingRow, CallerVerificationActor } from '../callerVerification/types';
 import { contacts, contactExternalLinks } from '../../db/schema/contacts';
 import { organizations, sites } from '../../db/schema/orgs';
 import { isPgUniqueViolation, pgErrorCode, pgErrorNode, retryOnTransientLockError } from '../../utils/pgErrors';
+import { recordDestinationChangeWithExecutor } from '../callerVerification/destinations';
 import {
   ContactValidationError,
   normalizeContactEmail,
@@ -861,6 +868,9 @@ async function createImportedContact(
     }).returning({ id: contacts.id });
 
     const contactId = (created as { id: string }).id;
+    for (const kind of ['email', 'mobile'] as const) {
+      await recordDestinationChangeWithExecutor(db, { orgId, contactId, kind, value: r[kind], source: 'import', userId: null });
+    }
     const createdLink = await attachLink(r, orgId, contactId, actor);
     return {
       contactId,
@@ -895,7 +905,7 @@ async function applyMatchedContact(
   // acknowledgement left to persist.
   const alreadyLinked = resolution.annotation === 'link-match';
   return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
-    const updated = await updateContact(db, matched.id, orgId, patch, { userId: actor.userId });
+    const updated = await updateContact(db, matched.id, orgId, patch, { userId: actor.userId, destinationSource: 'import' });
     // Only reachable if the contact was deleted between the snapshot and now.
     if (!updated) throw new Error('Matched contact no longer exists');
 
@@ -938,4 +948,101 @@ async function attachLink(
     createdBy: actor.userId,
   });
   return true;
+}
+
+// ---------------------------------------------------------------------------
+// Caller verification (#6354 W01): trusted directory import.
+// ---------------------------------------------------------------------------
+
+const DIRECTORY_READY_STATUSES = ['active', 'degraded'];
+
+export function callerVerificationActorFromAuth(auth: AuthContext): CallerVerificationActor {
+  return {
+    userId: auth.user.id,
+    partnerId: auth.partnerId,
+    scope: auth.scope === 'organization' ? 'organization' : 'partner',
+    accessibleOrgIds: auth.accessibleOrgIds,
+    allowedSiteIds: auth.allowedSiteIds ?? null,
+    displayName: auth.user.name ?? auth.user.email,
+  };
+}
+
+/**
+ * Bind a contact to a directory identity using a SERVER-SIDE Graph read as
+ * the evidence. The uploaded CSV/API `commitContactImport` path never calls
+ * this: an external id in a spreadsheet is a label, not proof.
+ *
+ * Three short DB phases bracket the Graph call so no request transaction is
+ * held across it (self-managed route, #1105):
+ *   1. reach + connection/tenant check;
+ *   2. Graph `m365.user.get` (no DB context);
+ *   3. re-check tenant under a share lock, then claim the binding.
+ *
+ * `directory_sync` mode also refreshes the contact's email from the directory
+ * (import provenance). `technician_attested` stamps an attestation and does
+ * NOT touch the contact's destination. A returned row with `revokedAt` set
+ * means the claim collided; the caller reports 409 without discarding the
+ * committed revocations.
+ */
+export async function importDirectoryContact(
+  auth: AuthContext,
+  input: { orgId: string; contactId: string; directoryObjectId: string; expectedTenantId: string },
+  mode: 'directory_sync' | 'technician_attested' = 'directory_sync',
+): Promise<BindingRow> {
+  const actor = callerVerificationActorFromAuth(auth);
+  const connection = await withAuthDbAccessContext(auth, async () => {
+    await reachableContact(actor, input.orgId, input.contactId);
+    const [c] = await db.select().from(m365Connections)
+      .where(and(eq(m365Connections.orgId, input.orgId), eq(m365Connections.profile, 'customer-graph-read')))
+      .limit(1);
+    if (!c?.tenantId || c.tenantId !== input.expectedTenantId || !DIRECTORY_READY_STATUSES.includes(c.status)) {
+      throw new Error('Directory connection or tenant is not ready');
+    }
+    return c;
+  });
+
+  // Loaded lazily, and that is load-bearing: readActionService's static import
+  // closure reaches services/aiTools.ts -> aiToolsAgentLogs -> commandQueue ->
+  // routes/agentWs.ts (the closure workerRegistry.ts documents for
+  // m365SyncWorker). This module is imported by routes/orgContacts.ts and so by
+  // routes/orgs.ts, so a STATIC import would drag the entire AI tool registry
+  // and the agent WebSocket router into every organizations route's module
+  // graph — for one Graph read on the manual-binding path only.
+  const { executeM365ReadAction } = await import('../m365ControlPlane/readActionService');
+  const result = await executeM365ReadAction(auth, { type: 'm365.user.get', userIdOrUpn: input.directoryObjectId }, input.orgId);
+  if (!result.ok) throw new Error(result.message);
+  if (result.kind !== 'resource') throw new Error('Expected a directory user');
+  const user = result.resource as { id: string; userPrincipalName?: string; mail?: string; displayName?: string };
+  if (typeof user.id !== 'string' || user.id.toLowerCase() !== input.directoryObjectId.toLowerCase()) {
+    throw new Error('Directory object mismatch');
+  }
+
+  return withAuthDbAccessContext(auth, async () => {
+    const [current] = await db.select().from(m365Connections).where(eq(m365Connections.id, connection.id)).limit(1).for('share');
+    if (!current || current.tenantId !== connection.tenantId || !DIRECTORY_READY_STATUSES.includes(current.status)) {
+      throw new Error('Directory tenant changed');
+    }
+    await reachableContact(actor, input.orgId, input.contactId);
+    const claim = {
+      orgId: input.orgId, contactId: input.contactId, entraTenantId: connection.tenantId!, entraOid: user.id,
+      upn: user.userPrincipalName ?? null,
+    };
+    if (mode === 'technician_attested') return attestBinding(actor, claim);
+    // Identity namespace lock BEFORE the contact lock updateContact takes.
+    await db.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`caller-identity:${input.orgId}`}))`);
+    const directoryEmail = user.mail ?? user.userPrincipalName;
+    if (directoryEmail) {
+      await updateContact(db, input.contactId, input.orgId, { email: directoryEmail }, { userId: auth.user.id, destinationSource: 'import' });
+    }
+    await upsertDirectorySyncBinding(claim);
+    const rows = await db.select().from(callerVerificationSubjectBindings)
+      .where(and(
+        eq(callerVerificationSubjectBindings.orgId, input.orgId),
+        eq(callerVerificationSubjectBindings.contactId, input.contactId),
+        eq(callerVerificationSubjectBindings.entraOid, user.id),
+      ))
+      .orderBy(desc(callerVerificationSubjectBindings.createdAt))
+      .limit(1);
+    return rows[0]!;
+  });
 }

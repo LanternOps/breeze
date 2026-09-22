@@ -53,6 +53,7 @@ import {
   type ReconcilerScanSet,
 } from '../aiOperatorCoordinatorMetrics';
 import { parseTaskCheckpoint } from './taskService';
+import { sendHumanWorkReminders } from './humanWorkService';
 
 /**
  * A NOTE ON EVERY `${...}` BELOW THAT CARRIES A TIMESTAMP.
@@ -104,6 +105,8 @@ export interface ReconcilerPassResult {
   waitingPastWake: number;
   runningPastLease: number;
   terminalUnsettled: number;
+  /** Set 5 (recipe library E3): overdue human-work steps reminded this pass. */
+  humanWorkReminders: number;
 }
 
 /**
@@ -119,12 +122,23 @@ export async function runReconcilerPass(now: Date = new Date()): Promise<Reconci
     waitingPastWake: 0,
     runningPastLease: 0,
     terminalUnsettled: 0,
+    humanWorkReminders: 0,
   };
 
   result.queuedPastWake = await advanceScanSet('queued_past_wake', await selectQueuedPastWake(now));
   result.waitingPastWake = await advanceScanSet('waiting_past_wake', await selectWaitingPastWake(now));
   result.runningPastLease = await advanceScanSet('running_past_lease', await selectRunningPastLease(now));
   result.terminalUnsettled = await settleTerminalUnsettled(now);
+
+  // SET 5 — human-work steps past their reminder clock (recipe library E3).
+  //
+  // Here rather than in a queue of its own: it is a 15 s sweep over a partial
+  // index (`ai_operator_task_steps_human_work_remind_idx`) that is empty
+  // almost always, and the tick is already the thing that owns "notice what the
+  // event path did not". It runs LAST so a slow reminder (a ticket insert and a
+  // notification per row) can never delay the four recovery scans, which are
+  // what keep tasks moving at all.
+  result.humanWorkReminders = await sendHumanWorkReminders(now);
 
   await publishCensus(now);
   return result;

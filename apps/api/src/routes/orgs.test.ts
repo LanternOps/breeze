@@ -194,6 +194,11 @@ vi.mock('../db', () => ({
     delete: vi.fn(() => ({
       where: vi.fn(() => Promise.resolve())
     })),
+    // Raw SQL. A site created WITH a contact mirrors it into `contacts`, and
+    // every contact email/mobile writer records caller-verification
+    // destination provenance (#6354), which takes a per-contact advisory lock
+    // through `db.execute` before it reads.
+    execute: vi.fn(() => Promise.resolve([])),
     // transaction: invoke the callback with a tx proxy that mirrors the db mock
     transaction: vi.fn(async (fn: (tx: any) => any) => {
       const tx = {
@@ -1958,6 +1963,81 @@ describe('org routes', () => {
       mockCurrentPartnerSelect({});
       const res = await patchMe({ settings: { timeTracking: { sessionSuggestions: { enabledd: true } } } });
       expect(res.status).toBe(400);
+    });
+  });
+
+  describe('PATCH /orgs/partners/me — topologyFeatureFlags', () => {
+    // Local copies of the helpers above (plain functions, safe to duplicate —
+    // same pattern the timeTracking describe uses).
+    function mockCurrentPartnerSelect(settings: Record<string, unknown>) {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
+            limit: vi.fn().mockResolvedValue([{ id: 'partner-123', name: 'P', settings }])
+          })
+        })
+      } as any);
+    }
+
+    function mockUpdateCapture() {
+      let captured: any;
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockImplementation((data: any) => {
+          captured = data;
+          return {
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{ id: 'partner-123', name: 'P', settings: data.settings }])
+            })
+          };
+        })
+      } as any);
+      return () => captured;
+    }
+
+    function patchMe(body: unknown) {
+      return app.request('/orgs/partners/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    }
+
+    it('accepts settings.topologyFeatureFlags and deep-merges one level so sibling flags survive', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      mockCurrentPartnerSelect({ topologyFeatureFlags: { materialization: true, physical: false } });
+      const getCaptured = mockUpdateCapture();
+
+      const res = await patchMe({ settings: { topologyFeatureFlags: { ui: true } } });
+
+      expect(res.status).toBe(200);
+      expect(getCaptured().settings.topologyFeatureFlags).toEqual({
+        materialization: true,
+        physical: false,
+        ui: true,
+      });
+    });
+
+    it('rejects an unknown flag name with 400 so a typo is never silently stored', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      mockCurrentPartnerSelect({});
+      const getCaptured = mockUpdateCapture();
+
+      const res = await patchMe({ settings: { topologyFeatureFlags: { uii: true } } });
+
+      expect(res.status).toBe(400);
+      expect(getCaptured()).toBeUndefined();
+    });
+
+    it('rejects a non-boolean flag value with 400', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      mockCurrentPartnerSelect({});
+      const getCaptured = mockUpdateCapture();
+
+      const res = await patchMe({ settings: { topologyFeatureFlags: { ui: 'yes' } } });
+
+      expect(res.status).toBe(400);
+      expect(getCaptured()).toBeUndefined();
     });
   });
 

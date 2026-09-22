@@ -54,6 +54,7 @@ import {
   type MergeTableOutcome,
 } from './orgMergeCustomExecutors';
 import { getOrgMergePolicies, type OrgMergePolicy } from './orgMergeRegistry';
+import { captureLoserContacts, finishBindingMerge } from './callerVerification/merge';
 import { applyTicketChildLockOrder } from './ticketOrgMoveLockOrder';
 import { topologicalCascadeOrder } from './tenantCascade';
 import { envInt } from '../utils/envInt';
@@ -1081,6 +1082,10 @@ export async function executeOrgMerge(input: ExecuteOrgMergeInput): Promise<OrgM
           SELECT id FROM tickets WHERE org_id = ${uuid(loser.id)} AND assigned_to IS NOT NULL
         `) as unknown as Array<{ id: string }>;
 
+        // Caller verification (#6354): snapshot loser contacts before `contacts`
+        // repoints so the post-pass grant revocation can still find them.
+        const callerContactIds = await captureLoserContacts(loser.id);
+
         const policies = getOrgMergePolicies();
         // topologicalCascadeOrder is children-before-parents (erasure order);
         // reversed it is parents-first, with `organizations` (loser-shell,
@@ -1117,6 +1122,8 @@ export async function executeOrgMerge(input: ExecuteOrgMergeInput): Promise<OrgM
             }
           }
         }
+
+        await finishBindingMerge(callerContactIds, survivor.id);
 
         const fixups = await self.runPostPassFixups(loser.id, survivor.id, input.partnerId);
         if (fixups.moved > 0 || fixups.dropped > 0) {

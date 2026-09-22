@@ -38,7 +38,23 @@ export type McpExemptReason =
    * partner-wide-manage-gated. The agent-facing READ surface for backup health
    * is `GET /backup/health` (#6008 W03), which carries its own tools.
    */
-  | 'vendor_console_admin';
+  | 'vendor_console_admin'
+  /**
+   * Caller verification (#6354) — the anti-vishing control itself. Starting,
+   * attesting, cancelling or overriding a verification, binding a canonical
+   * identity to a contact, and editing the policy floors are all decisions
+   * about WHETHER A CALLER IS WHO THEY CLAIM TO BE. An agent-reachable tool
+   * here would be the vishing vector the feature exists to close: a
+   * prompt-injected or socially-engineered agent could attest a caller's
+   * identity, bind an attacker's phone number as canonical, or lower the
+   * policy floor, and every downstream control would then read as satisfied.
+   * Every write on this router is `organizations:write` + `requireMfa()`
+   * precisely so a HUMAN with a second factor is the only actor that can
+   * decide one. The read side is deliberately excluded too: the verification
+   * record carries challenge and destination provenance material that is
+   * classified `excludedSensitive` in the tenant export policy.
+   */
+  | 'human_only_verification';
 
 export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'accessReviews.ts': { gap: '#6141' },
@@ -156,6 +172,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'c2c/items.ts': { tools: ['search_c2c_items', 'restore_c2c_items'] },
   'c2c/jobs.ts': { tools: ['query_c2c_jobs', 'trigger_c2c_sync'] },
   'c2c/m365Auth.ts': { gap: '#6141' },
+  'callerVerification.ts': { exempt: 'human_only_verification' },
   'catalog/bundles.ts': { tools: ['manage_catalog'] },
   'catalog/catalog.ts': { tools: ['search_catalog', 'get_catalog_item', 'manage_catalog'] },
   'catalog/distributors.ts': { tools: ['lookup_distributor_product'] },
@@ -353,6 +370,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'portal/featureFlags.ts': { exempt: 'portal' },
   'portal/helpers.ts': { exempt: 'portal' },
   'portal/invoices.ts': { exempt: 'portal' },
+  'portal/network.ts': { exempt: 'portal' },
   'portal/profile.ts': { exempt: 'portal' },
   'portal/quotes.ts': { exempt: 'portal' },
   'portal/reports.ts': { exempt: 'portal' },

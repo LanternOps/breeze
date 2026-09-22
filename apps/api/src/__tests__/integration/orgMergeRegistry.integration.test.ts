@@ -223,6 +223,10 @@ const ORG_ID_BLOCKING_TRIGGERS: Readonly<Record<string, string>> = {
   // retention-GUC-only bypass as the audit tables. Table is leave-for-erasure.
   'script_proposal_reviews.script_proposal_reviews_block_update':
     'unconditional append-only RAISE (55000) on UPDATE',
+  // Append-only AI Operator task timeline (recipe library E2,
+  // 2026-10-26-160000): unconditional RAISE (55000) on UPDATE, same
+  // retention-GUC-only bypass. Table is leave-for-erasure.
+  'ai_operator_task_events.ai_operator_task_events_block_update': 'unconditional append-only RAISE',
 };
 
 /**
@@ -244,6 +248,11 @@ const CUSTOM_EXECUTORS_THAT_NEVER_WRITE_ORG_ID: Readonly<Record<string, string>>
 
 /** BENIGN = fires on the repoint but does not obstruct it. Reason per entry. */
 const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
+  // Recipe library E2 (2026-10-26-160000): fires only on UPDATE OF
+  // device_id/ticket_id/contact_id and only stamps detached_at/_reason/state
+  // when the last pointer goes null. Never reads or writes org_id; the table is
+  // leave-for-erasure anyway.
+  'ai_operator_task_targets.ai_operator_task_targets_stamp_detach': 'stamps a detach when the last pointer is nulled; never touches org_id',
   // These detach only on DELETE or an actual site change. Org-only repoints
   // retain bindings; topology's ambient merge hooks fence and rekey them.
   'devices.breeze_topology_source_lifecycle': 'same-site org-only updates retain source snapshots; merge prepare/finalize fences authority',

@@ -101,6 +101,28 @@ type jobBasicAccountingInformation struct {
 	TotalTerminatedProcesses  uint32
 }
 
+func (t *windowsProcessTree) accounting() (jobBasicAccountingInformation, error) {
+	var info jobBasicAccountingInformation
+	err := windows.QueryInformationJobObject(t.handle, windows.JobObjectBasicAccountingInformation,
+		uintptr(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info)), nil)
+	return info, err
+}
+
+// cpuTime is the session-0 idle watchdog's only input (#6482): the job object
+// already totals user + kernel time across every process in the tree, in
+// 100-nanosecond units, which is exactly the "is anything still working?"
+// signal cleanmgr's wedged hidden UI does not provide.
+func (t *windowsProcessTree) cpuTime() (time.Duration, bool) {
+	if t.handle == 0 {
+		return 0, false
+	}
+	info, err := t.accounting()
+	if err != nil {
+		return 0, false
+	}
+	return time.Duration(info.TotalUserTime+info.TotalKernelTime) * 100 * time.Nanosecond, true
+}
+
 func (t *windowsProcessTree) drain(ctx context.Context) error {
 	if t.handle == 0 {
 		return nil
@@ -112,9 +134,8 @@ func (t *windowsProcessTree) drain(ctx context.Context) error {
 			t.kill(nil)
 			return err
 		}
-		var info jobBasicAccountingInformation
-		if err := windows.QueryInformationJobObject(t.handle, windows.JobObjectBasicAccountingInformation,
-			uintptr(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info)), nil); err != nil {
+		info, err := t.accounting()
+		if err != nil {
 			t.kill(nil)
 			return fmt.Errorf("query cleaner job accounting: %w", err)
 		}

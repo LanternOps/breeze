@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
 vi.mock('../../db', () => ({ db: {} }));
+vi.mock('../callerVerification/destinations', () => ({ recordDestinationChangeWithExecutor: vi.fn().mockResolvedValue(undefined) }));
 
 import {
   readContactBlob,
@@ -30,7 +31,10 @@ function makeExec(existingRows: Array<Record<string, unknown>> = []) {
       }),
     }),
     insert: () => ({
-      values: async (v: Record<string, unknown>) => { calls.inserts.push(v); },
+      values: (v: Record<string, unknown>) => {
+        calls.inserts.push(v);
+        return { returning: async () => [{ id: 'c-new' }] };
+      },
     }),
     update: () => ({
       set: (v: Record<string, unknown>) => ({

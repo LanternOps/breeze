@@ -67,6 +67,11 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // when the route shipped, so the portal request tx was pinned across Stripe
   // (#3777 review F2).
   { method: 'POST', pattern: /^\/api\/v1\/portal\/quotes\/[^/]+\/pay\/?$/ },
+  // #6175 Network Visibility overview. Portal auth has already resolved the
+  // owning partner, so the handler opens one org-scoped context with
+  // currentPartnerId populated for SELECT-only partner-wide network_monitors
+  // access. No outer portal request transaction is held.
+  { method: 'GET', pattern: /^\/api\/v1\/portal\/network\/overview\/?$/ },
   // Stripe key verification — savePartnerStripeKey calls accounts.retrieve.
   { method: 'POST', pattern: /^\/api\/v1\/partner\/stripe-connect\/key\/?$/ },
   // Stripe cache lazy refresh — getPartnerStripeAccountSnapshot may call accounts.retrieve.
@@ -344,6 +349,14 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   { method: 'POST', pattern: /^\/api\/v1\/backup\/providers\/connections\/?$/ },
   { method: 'PATCH', pattern: /^\/api\/v1\/backup\/providers\/connections\/[^/]+\/?$/ },
   { method: 'POST', pattern: /^\/api\/v1\/backup\/providers\/connections\/[^/]+\/test\/?$/ },
+  // Caller verification (#6354 W01): the three Graph-backed operations
+  // (directory picker search, authoritative sync, manual binding) each open
+  // short `withAuthDbAccessContext` phases around a Microsoft Graph read, so
+  // no request transaction is held across the outbound call. Ordinary
+  // verification reads/writes keep the ambient transaction.
+  { method: 'GET', pattern: /^\/api\/v1\/orgs\/[^/]+\/caller-verification-directory-users\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/orgs\/[^/]+\/caller-verification-directory-sync\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/orgs\/[^/]+\/contacts\/[^/]+\/caller-verification-bindings\/?$/ },
 ];
 
 /**

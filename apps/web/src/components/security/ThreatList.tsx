@@ -12,6 +12,8 @@ import { cn, friendlyFetchError } from "@/lib/utils";
 import { errorKindOf, throwIfNotOk, type LoadErrorKind } from "@/lib/httpError";
 import { fetchWithAuth } from "@/stores/auth";
 import { formatDateTime } from "@/lib/dateTimeFormat";
+import { runAction, ActionError } from "@/lib/runAction";
+import { showToast } from "../shared/Toast";
 import AccessDenied from "../shared/AccessDenied";
 import {
   ResponsiveTable,
@@ -133,20 +135,38 @@ export default function ThreatList({ timezone }: ThreatListProps) {
     else next.delete(id);
     setSelectedIds(next);
   };
+  // Sequential runAction per id (rather than Promise.all + one throw) so each
+  // failure surfaces its own toast instead of one call silently masking the
+  // rest, and a single aggregate success toast fires once at the end instead
+  // of N toasts for an N-device bulk action.
   const handleBulkAction = async (action: "quarantine" | "remove") => {
     if (selectedIds.size === 0) return;
     setActing(true);
     setError(undefined);
+    const ids = Array.from(selectedIds);
+    let succeeded = 0;
     try {
-      const requests = Array.from(selectedIds).map((id) =>
-        fetchWithAuth(`/security/threats/${id}/${action}`, { method: "POST" }),
-      );
-      const responses = await Promise.all(requests);
-      const failed = responses.find((response) => !response.ok);
-      if (failed) throwIfNotOk(failed);
+      for (const id of ids) {
+        try {
+          await runAction({
+            request: () =>
+              fetchWithAuth(`/security/threats/${id}/${action}`, { method: "POST" }),
+            errorFallback: t("securityThreatList.actionFailed"),
+          });
+          succeeded += 1;
+        } catch (err) {
+          if (err instanceof ActionError && err.status === 401) return; // let the auth redirect handle it
+          // Non-401 ActionErrors were already toasted by runAction; keep going
+          // so one failing device doesn't block the rest of the batch.
+        }
+      }
+      if (succeeded > 0) {
+        showToast({
+          message: t("securityThreatList.actionQueuedCount", { count: succeeded }),
+          type: "success",
+        });
+      }
       await fetchThreats();
-    } catch (err) {
-      setError(friendlyFetchError(err));
     } finally {
       setActing(false);
     }
@@ -169,6 +189,7 @@ export default function ThreatList({ timezone }: ThreatListProps) {
   const renderSelectCheckbox = (threat: Threat) => (
     <input
       type="checkbox"
+      data-testid={`threat-row-select-${threat.id}`}
       checked={selectedIds.has(threat.id)}
       onChange={(event) => handleSelectOne(threat.id, event.target.checked)}
       className="h-4 w-4 rounded border-border"
@@ -298,6 +319,7 @@ export default function ThreatList({ timezone }: ThreatListProps) {
           </span>
           <button
             type="button"
+            data-testid="threat-bulk-quarantine"
             onClick={() => handleBulkAction("quarantine")}
             disabled={acting}
             className="flex items-center gap-2 rounded-md border bg-background px-3 py-1.5 text-sm font-medium hover:bg-muted disabled:opacity-60"
@@ -311,6 +333,7 @@ export default function ThreatList({ timezone }: ThreatListProps) {
           </button>
           <button
             type="button"
+            data-testid="threat-bulk-remove"
             onClick={() => handleBulkAction("remove")}
             disabled={acting}
             className="flex items-center gap-2 rounded-md border bg-background px-3 py-1.5 text-sm font-medium hover:bg-muted disabled:opacity-60"

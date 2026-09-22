@@ -167,6 +167,172 @@ describe('verification timeout handling', () => {
     }
   });
 
+  it('persists the agent error string as the failure reason (#6561)', async () => {
+    const orgId = 'org-result-error';
+    const deviceId = 'dev-result-error';
+    const verificationId = 'verify-result-error';
+    const commandId = '33333333-3333-4333-8333-333333333333';
+    const startedAt = new Date();
+
+    backupVerifications.push({
+      id: verificationId,
+      orgId,
+      deviceId,
+      backupJobId: 'job-result-error',
+      snapshotId: 'snap-result-error',
+      verificationType: 'integrity',
+      status: 'pending',
+      startedAt: startedAt.toISOString(),
+      completedAt: null,
+      restoreTimeSeconds: null,
+      filesVerified: 0,
+      filesFailed: 0,
+      details: { source: 'test', commandId },
+      createdAt: startedAt.toISOString(),
+    });
+    verificationOrgById.set(verificationId, orgId);
+
+    try {
+      await processBackupVerificationResult(commandId, {
+        status: 'completed',
+        stdout: JSON.stringify({
+          snapshotId: 'snap-result-error',
+          status: 'failed',
+          filesVerified: 0,
+          filesFailed: 0,
+          error: 'no files in snapshot',
+        }),
+      });
+
+      expect(persistVerificationToDbMock).toHaveBeenCalledWith(expect.objectContaining({
+        id: verificationId,
+        status: 'failed',
+        details: expect.objectContaining({
+          reason: 'no files in snapshot',
+          source: 'agent.result',
+        }),
+      }));
+    } finally {
+      const index = backupVerifications.findIndex((row) => row.id === verificationId);
+      if (index >= 0) {
+        backupVerifications.splice(index, 1);
+      }
+      verificationOrgById.delete(verificationId);
+    }
+  });
+
+  it('derives a count-only reason when the agent reports no error (#6561)', async () => {
+    const cases = [
+      {
+        id: 'verify-derived-failed',
+        commandId: '55555555-5555-4555-8555-555555555555',
+        result: { status: 'failed', filesVerified: 0, filesFailed: 4 },
+        expected: '4 file(s) failed verification',
+      },
+      {
+        id: 'verify-derived-partial',
+        commandId: '66666666-6666-4666-8666-666666666666',
+        result: { status: 'partial', filesVerified: 6, filesFailed: 0, filesIncomplete: 2 },
+        expected: '2 file(s) never uploaded during the backup run and are absent from this snapshot',
+      },
+      {
+        id: 'verify-derived-both',
+        commandId: '77777777-7777-4777-8777-777777777777',
+        result: { status: 'partial', filesVerified: 5, filesFailed: 1, filesIncomplete: 3 },
+        expected: '1 file(s) failed verification; 3 file(s) never uploaded during the backup run and are absent from this snapshot',
+      },
+    ];
+
+    for (const testCase of cases) {
+      const orgId = `org-${testCase.id}`;
+      const startedAt = new Date();
+      backupVerifications.push({
+        id: testCase.id,
+        orgId,
+        deviceId: `dev-${testCase.id}`,
+        backupJobId: `job-${testCase.id}`,
+        snapshotId: `snap-${testCase.id}`,
+        verificationType: 'integrity',
+        status: 'pending',
+        startedAt: startedAt.toISOString(),
+        completedAt: null,
+        restoreTimeSeconds: null,
+        filesVerified: 0,
+        filesFailed: 0,
+        details: { source: 'test', commandId: testCase.commandId },
+        createdAt: startedAt.toISOString(),
+      });
+      verificationOrgById.set(testCase.id, orgId);
+
+      try {
+        await processBackupVerificationResult(testCase.commandId, {
+          status: 'completed',
+          stdout: JSON.stringify({ snapshotId: `snap-${testCase.id}`, ...testCase.result }),
+        });
+
+        expect(persistVerificationToDbMock).toHaveBeenCalledWith(expect.objectContaining({
+          id: testCase.id,
+          details: expect.objectContaining({
+            reason: testCase.expected,
+            source: 'agent.result',
+          }),
+        }));
+      } finally {
+        const index = backupVerifications.findIndex((row) => row.id === testCase.id);
+        if (index >= 0) backupVerifications.splice(index, 1);
+        verificationOrgById.delete(testCase.id);
+      }
+    }
+  });
+
+  it('does not leave a stale failure reason on a later passing result (#6561)', async () => {
+    const orgId = 'org-result-pass';
+    const deviceId = 'dev-result-pass';
+    const verificationId = 'verify-result-pass';
+    const commandId = '44444444-4444-4444-8444-444444444444';
+    const startedAt = new Date();
+
+    backupVerifications.push({
+      id: verificationId,
+      orgId,
+      deviceId,
+      backupJobId: 'job-result-pass',
+      snapshotId: 'snap-result-pass',
+      verificationType: 'integrity',
+      status: 'pending',
+      startedAt: startedAt.toISOString(),
+      completedAt: null,
+      restoreTimeSeconds: null,
+      filesVerified: 0,
+      filesFailed: 0,
+      details: { source: 'test', commandId, reason: 'stale reason from an earlier attempt' },
+      createdAt: startedAt.toISOString(),
+    });
+    verificationOrgById.set(verificationId, orgId);
+
+    try {
+      await processBackupVerificationResult(commandId, {
+        status: 'completed',
+        stdout: JSON.stringify({
+          snapshotId: 'snap-result-pass',
+          status: 'passed',
+          filesVerified: 3,
+          filesFailed: 0,
+        }),
+      });
+
+      const lastCall = persistVerificationToDbMock.mock.calls.at(-1) as unknown[] | undefined;
+      const persisted = lastCall?.[0] as { details: Record<string, unknown> } | undefined;
+      expect(persisted?.details.reason).toBeUndefined();
+    } finally {
+      const index = backupVerifications.findIndex((row) => row.id === verificationId);
+      if (index >= 0) {
+        backupVerifications.splice(index, 1);
+      }
+      verificationOrgById.delete(verificationId);
+    }
+  });
+
   it('skips non-UUID orgIds during readiness recompute fallback', async () => {
     const validOrgId = '22222222-2222-4222-8222-222222222222';
     const validDeviceId = 'dev-valid-uuid';

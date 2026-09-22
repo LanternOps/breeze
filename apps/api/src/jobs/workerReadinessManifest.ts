@@ -133,6 +133,7 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('dnsSyncWorker'),
   consumers('s1SyncWorker'),
   consumers('huntressSyncWorker'),
+  consumers('backupProviderSyncWorker'),
   // The Worker is constructed unconditionally and attached unconditionally;
   // M365_TENANT_SYNC_ENABLED gates the TICK registration and the processor
   // body, not the construction. A flag-gated construction would need its own
@@ -148,6 +149,7 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('backupWorker'),
   consumers('backupSnapshotFileIndexWorker'),
   consumers('sensitiveDataWorker'),
+  consumers('securityScanWorker'),
   consumers('peripheralJobs', ['peripheralAnomalyWorker', 'peripheralPolicyDistributionWorker']),
   consumers('browserSecurityWorker', ['browserSecurityEvalWorker']),
   consumers('c2cBackupWorker'),
@@ -179,6 +181,9 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('quoteExpiryReaper'),
   consumers('suppressionExpiryReaper'),
   consumers('ticketNotifyWorker'),
+  // Caller verification (#6354 W01) — post-commit effects publisher; one
+  // consumer named for its initializer, Redis-required like its neighbours.
+  consumers('callerVerificationPublisher'),
   consumers('ticketSlaWorker'),
   consumers('inboundEmailWorker'),
   consumers('ticketMailboxPollWorker'),

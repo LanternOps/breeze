@@ -789,7 +789,16 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
       if (!started.ok) {
         if (started.error === 'agent_update_required') return JSON.stringify(systemCleanupAgentUpdateRequired());
         if (started.status === 409 && started.error === 'run_in_progress') {
-          return JSON.stringify({ error: 'run_in_progress', cleanupRunId: started.cleanupRunId });
+          // #6485 F-4: a bare `{error, cleanupRunId}` reads like a success
+          // payload (there IS a run id), and the model narrated an R8 lab run
+          // as "approved and is now running". `refused: true` plus a sentence
+          // that says what to do instead removes the ambiguity.
+          return JSON.stringify({
+            error: 'run_in_progress',
+            refused: true,
+            cleanupRunId: started.cleanupRunId,
+            note: 'This run was refused: another system cleanup run is already in progress on this device. Do not start another run. Poll action "status" with the existing cleanupRunId instead.',
+          });
         }
         return JSON.stringify({ error: started.error });
       }

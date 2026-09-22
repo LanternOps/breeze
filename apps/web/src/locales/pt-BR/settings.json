@@ -577,7 +577,7 @@
       },
       "modules": {
         "label": "Módulos",
-        "description": "Central de serviços e faturamento ativados/desativados"
+        "description": "Central de serviços, faturamento e topologia ativados/desativados"
       }
     },
     "saved": "Configurações do parceiro salvas",
@@ -605,6 +605,18 @@
       "offLabel": "Desativado — somente RMM",
       "offDescription": "Oculta as seções Central de serviços e Faturamento e as abas Chamados e Faturamento do registro do cliente. Os chamados existentes continuam visíveis; novos não podem ser criados.",
       "externalNote": "Este parceiro usa um PSA externo. Ainda não é possível alterar isso aqui.",
+      "topologyTitle": "Topologia de rede",
+      "topologyBeta": "Versão beta",
+      "topologyDescription": "Cria um mapa ao vivo da rede de cada local a partir de dados do agente e SNMP e adiciona uma aba Topologia aos dispositivos. Desativado por padrão durante a beta.",
+      "topologyOnLabel": "Ativar topologia de rede",
+      "topologyPhysicalLabel": "Topologia física",
+      "topologyPhysicalDescription": "Mostrar os links de portas de switch e cabeamento entre dispositivos, não apenas os vizinhos lógicos.",
+      "topologyInterfaceHealthLabel": "Integridade das interfaces",
+      "topologyInterfaceHealthDescription": "Consultar o status e os erros das interfaces via SNMP e colorir os links conforme sua integridade.",
+      "topologyDiagnosticsLabel": "Diagnósticos",
+      "topologyDiagnosticsDescription": "Executar verificações de caminho e alcance a partir do mapa para explicar por que um dispositivo está inacessível.",
+      "topologyAiLabel": "Insights de IA",
+      "topologyAiDescription": "Permitir que a Breeze AI resuma o mapa e sinalize mudanças incomuns na topologia de um local.",
       "saved": "Módulos atualizados",
       "saveFailed": "Falha ao atualizar os módulos"
     }
@@ -1325,6 +1337,10 @@
         "enableLifecycle": {
           "label": "Ciclo de vida do hardware",
           "description": "Mostra o plano de substituição atualizado dos equipamentos do seu cliente."
+        },
+        "enableNetworkVisibility": {
+          "label": "Visibilidade de rede",
+          "description": "Exibe no portal do cliente a integridade da rede e os ativos descobertos em modo somente leitura."
         }
       }
     },

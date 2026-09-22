@@ -761,9 +761,18 @@ describe('toVerificationListItem', () => {
     ).toEqual({ simulated: true });
   });
 
-  it('drops reason for non-failed rows and non-string reasons', () => {
+  it('drops reason for passed rows and non-string reasons', () => {
     expect(toVerificationListItem({ ...base, status: 'passed', details: { reason: 'nope' } }).details).toBeNull();
     expect(toVerificationListItem({ ...base, details: { reason: { a: 1 } } }).details).toBeNull();
+  });
+
+  it('exposes the reason for partial rows too (#6561)', () => {
+    const out = toVerificationListItem({
+      ...base,
+      status: 'partial',
+      details: { reason: '2 file(s) failed verification', failedFiles: ['/secret/path'] },
+    });
+    expect(out.details).toEqual({ reason: '2 file(s) failed verification' });
   });
 
   it('keeps the simulated marker alongside the reason', () => {

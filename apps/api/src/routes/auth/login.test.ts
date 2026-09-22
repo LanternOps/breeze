@@ -260,7 +260,7 @@ vi.mock('./helpers', async (importOriginal) => ({
     accessToken: tokens.accessToken,
     expiresInSeconds: tokens.expiresInSeconds,
   })),
-  genericAuthError: vi.fn(() => ({ error: 'Invalid email or password' })),
+  genericAuthError: vi.fn(() => ({ error: 'Invalid email or password', code: 'INVALID_CREDENTIALS' })),
   isTokenRevokedForUser: vi.fn(async () => false),
   revokeCurrentRefreshTokenJti: vi.fn(async () => undefined),
   resolveCurrentUserTokenContext: vi.fn(async () => ({
@@ -2070,6 +2070,7 @@ describe('POST /login — SR2-23: a locked account is publicly indistinguishable
     expect(locked.status).toBe(401);
     expect(locked.status).toBe(unknown.status);
     expect(lockedBody).toEqual(unknownBody);
+    expect(Object.keys(lockedBody).sort()).toEqual(['code', 'error']);
     // Headers too — a Retry-After (or any 429-shaped header) re-leaks existence
     // even if the status code is equalized.
     expect(lockedHeaders).toEqual(unknownHeaders);

@@ -341,7 +341,7 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
       });
     }
     await floorPromise;
-    return c.json({ ...genericAuthError(), code: ERROR_CODES.INVALID_CREDENTIALS }, 401);
+    return c.json(genericAuthError(), 401);
   }
 
   // Task 10: per-account lockout check. Runs AFTER the user lookup so
@@ -396,7 +396,7 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
     // account re-bumping on every attempt would let an attacker hold a victim
     // locked out indefinitely, turning the control into a DoS amplifier.
     await floorPromise;
-    return c.json({ ...genericAuthError(), code: ERROR_CODES.INVALID_CREDENTIALS }, 401);
+    return c.json(genericAuthError(), 401);
   }
 
   if (!validPassword) {
@@ -417,7 +417,7 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
       details: { method: 'password' }
     });
     await floorPromise;
-    return c.json({ ...genericAuthError(), code: ERROR_CODES.INVALID_CREDENTIALS }, 401);
+    return c.json(genericAuthError(), 401);
   }
 
   // Check account status. Avoid response-content differentiation here: a
@@ -440,7 +440,7 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
       details: { accountStatus: user.status, method: 'password' }
     });
     await floorPromise;
-    return c.json({ ...genericAuthError(), code: ERROR_CODES.INVALID_CREDENTIALS }, 401);
+    return c.json(genericAuthError(), 401);
   }
 
   // Look up user's partner/org context
@@ -468,7 +468,7 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
       details: { method: 'password' }
     });
     await floorPromise;
-    return c.json({ ...genericAuthError(), code: ERROR_CODES.INVALID_CREDENTIALS }, 401);
+    return c.json(genericAuthError(), 401);
   }
 
   // Partner IP allowlist: block before issuing tokens so the login form shows
@@ -486,7 +486,7 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
     console.error('[auth] IP allowlist check failed during login:', err);
     captureException(err, c);
     await floorPromise;
-    return c.json({ ...genericAuthError(), code: ERROR_CODES.INVALID_CREDENTIALS }, 401);
+    return c.json(genericAuthError(), 401);
   }
   if (isBlocked(ipDecision)) {
     void auditUserLoginFailure(c, {
@@ -537,7 +537,7 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
     const pendingEpochs = await getUserEpochs(user.id);
     if (!pendingEpochs) {
       await floorPromise;
-      return c.json({ ...genericAuthError(), code: ERROR_CODES.INVALID_CREDENTIALS }, 401);
+      return c.json(genericAuthError(), 401);
     }
     const pendingPolicy = await getEffectiveMfaPolicy({
       scope: context.scope, userId: user.id, orgId: context.orgId, partnerId: context.partnerId,
@@ -552,7 +552,7 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
     if (!allowedMethods.totp && !allowedMethods.sms && !allowedMethods.passkey && !recoveryAvailable) {
       await cancelAuthIssuance(capability).catch(() => undefined);
       await floorPromise;
-      return c.json({ ...genericAuthError(), code: ERROR_CODES.INVALID_CREDENTIALS }, 401);
+      return c.json(genericAuthError(), 401);
     }
     // #6177: the pending MFA record lives only in Redis, and the top-of-handler
     // Redis check can be stale by now (DB lookup + password compare sit in

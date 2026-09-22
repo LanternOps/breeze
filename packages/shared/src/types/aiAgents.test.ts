@@ -10,17 +10,29 @@ import {
   type AlertVerdictSuggestedAction,
 } from './aiAgents';
 
-describe('AI_AGENT_POLICY_SNAPSHOT_VERSION (v14, #5870 designWallClockSeconds)', () => {
-  it('is the literal 14', () => {
-    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(14);
+describe('AI_AGENT_POLICY_SNAPSHOT_VERSION (v15, AI Operator task-wide budgets — recipe library E2)', () => {
+  it('is the literal 15', () => {
+    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(15);
   });
 
-  it('AiAgentPolicySnapshot.schemaVersion type-accepts every historical version 1-14', () => {
+  it('AiAgentPolicySnapshot.schemaVersion type-accepts every historical version 1-15', () => {
     // Type-level assertion: this only compiles if `schemaVersion` is widened
-    // to `1 | … | 14`. If a future bump forgets to widen the union, `tsc`
+    // to `1 | … | 15`. If a future bump forgets to widen the union, `tsc`
     // fails this assignment, not a runtime check.
-    const versions: Array<AiAgentPolicySnapshot['schemaVersion']> = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14];
-    expect(versions).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
+    const versions: Array<AiAgentPolicySnapshot['schemaVersion']> =
+      [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+    expect(versions).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+  });
+});
+
+describe('AI_AGENT_LIMIT_DEFAULTS (AI Operator task-wide budgets, v15 — Operator spec §7.2)', () => {
+  it('carries spec §7.2 proposed defaults verbatim', () => {
+    expect(AI_AGENT_LIMIT_DEFAULTS.taskMaxReasoningRuns).toBe(4);
+    expect(AI_AGENT_LIMIT_DEFAULTS.taskMaxMutationAttemptsPerTarget).toBe(3);
+    expect(AI_AGENT_LIMIT_DEFAULTS.taskMaxBudgetCents).toBe(200);
+    expect(AI_AGENT_LIMIT_DEFAULTS.taskDeadlineHours).toBe(72);
+    expect(AI_AGENT_LIMIT_DEFAULTS.taskMaxActiveTargets).toBe(1);
+    expect(AI_AGENT_LIMIT_DEFAULTS.taskMaxPendingPerOrg).toBe(100);
   });
 });
 

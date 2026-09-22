@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Server,
@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { fetchWithAuth } from "../../stores/auth";
 import { runAction, ActionError, handleActionError } from "@/lib/runAction";
+import { scrollErrorIntoView } from "@/lib/scrollToError";
 import { i18n } from "@/lib/i18n";
 import {
   ToggleRow,
@@ -306,6 +307,10 @@ function SourceSection({
   );
 }
 
+// DOM order of the fields validate() can flag — used to scroll to whichever
+// invalid field appears first in the panel (#6494).
+const FIELD_ERROR_ORDER = ["name", "sources", "filePaths"] as const;
+
 // ── Main component ─────────────────────────────────────────────────────────────
 export default function BackupProfilesTab() {
   useTranslation("backup");
@@ -322,6 +327,7 @@ export default function BackupProfilesTab() {
     selections: emptySelections(),
   });
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  const fieldErrorRefs = useRef<Record<string, HTMLElement | null>>({});
   const [saving, setSaving] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<BackupProfile | null>(null);
   const [deleteBlockedBy, setDeleteBlockedBy] = useState<
@@ -406,6 +412,12 @@ export default function BackupProfilesTab() {
       errors.filePaths = i18n.t("backup:profiles.needPaths");
     }
     setFieldErrors(errors);
+    // Bring the first invalid field into view — without this, submitting an
+    // invalid form whose error renders above the fold reads as a no-op (#6494).
+    const firstInvalidField = FIELD_ERROR_ORDER.find((field) => errors[field]);
+    if (firstInvalidField) {
+      scrollErrorIntoView(fieldErrorRefs.current[firstInvalidField]);
+    }
     return Object.keys(errors).length === 0;
   };
 
@@ -718,7 +730,7 @@ export default function BackupProfilesTab() {
       </div>
 
       <div className="space-y-4">
-        <div>
+        <div ref={(el) => { fieldErrorRefs.current.name = el; }}>
           <label className="text-xs font-medium text-muted-foreground">
             {i18n.t("backup:profiles.nameLabel")}
           </label>
@@ -800,7 +812,7 @@ export default function BackupProfilesTab() {
       </div>
 
       <div className="space-y-3">
-        <div>
+        <div ref={(el) => { fieldErrorRefs.current.sources = el; }}>
           <h3 className="text-sm font-semibold">
             {i18n.t("backup:profiles.sourcesTitle")}
           </h3>
@@ -816,7 +828,7 @@ export default function BackupProfilesTab() {
           enabled={draft.selections.file.enabled}
           onToggle={(v) => updateSelections("file", { enabled: v })}
         >
-          <div>
+          <div ref={(el) => { fieldErrorRefs.current.filePaths = el; }}>
             <label className="text-xs font-medium text-muted-foreground">
               {i18n.t("backup:profiles.pathsLabel")}
             </label>

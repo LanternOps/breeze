@@ -136,7 +136,24 @@
   },
   "chooseSite": "Choose a site",
   "chooseSiteExplanation": "Select one authorized site to keep its network and diagnostics separate.",
-  "disabled": "The new topology view is not enabled for this site.",
   "reloadConfiguration": "Discard draft and reload current configuration",
-  "applyToSites": "Apply selected versions to authorized sites"
+  "applyToSites": "Apply selected versions to authorized sites",
+  "emptyState": {
+    "off": {
+      "title": "Network Topology is off",
+      "body": "Breeze can build a live map of this site's network from agent and SNMP data.",
+      "partnerNextStep": "A partner admin can turn it on in Settings \u2192 Modules.",
+      "orgNextStep": "Ask your MSP to enable it.",
+      "openModules": "Open Modules settings"
+    },
+    "preparing": {
+      "title": "Building the topology map",
+      "body": "Breeze is collecting network data for this site. This usually completes within a few minutes of enabling the feature."
+    },
+    "unavailable": {
+      "title": "Topology unavailable",
+      "body": "The topology view cannot be shown for this site right now. Try again later or contact support if it persists.",
+      "details": "Technical details"
+    }
+  }
 }

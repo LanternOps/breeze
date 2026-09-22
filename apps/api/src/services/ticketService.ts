@@ -14,6 +14,7 @@ import { emitTicketTriageFeedback } from './mlFeedbackEmitters';
 import { applyIntakeForm, getTicketFormForOrg, TicketFormError } from './ticketFormService';
 import { assertTicketMoveCurrencyCompatible, type MoveCurrencyGuardDetails } from './ticketMoveCurrencyGuard';
 import { TICKET_ORG_DENORMALIZED_TABLES } from './ticketOrgMoveLockOrder';
+import { detachHumanWorkLinksForTicket } from './aiOperator/humanWorkService';
 import { ServiceManagementOffError, assertTicketCreationAllowed } from './serviceManagement';
 import { isEligibleTicketRecipient } from './ticketPush';
 import type { AiDraftOutboxClaim } from './aiTimeEntryProposal';
@@ -137,6 +138,46 @@ async function writeTicketOutbox(
   payload: Record<string, unknown> = {}
 ): Promise<void> {
   await db.insert(ticketOutbox).values({ orgId, ticketId, eventType, payload });
+}
+
+/**
+ * Caller verification (#6354): a system comment on the ticket the
+ * verification snapshotted, written in the CALLER's transaction after a
+ * successful status CAS (that CAS is the idempotency boundary — a retry that
+ * loses the CAS never reaches here). Returns silently when the ticket has
+ * since been deleted or moved out of the org: ticket movement must never
+ * block a security rejection. Reuses the private outbox writer so the
+ * notify path stays the single outbound code path.
+ */
+export async function addCallerVerificationSystemComment(input: {
+  orgId: string; ticketId: string; verificationId: string; event: string;
+}): Promise<void> {
+  const [ticket] = await db.select().from(tickets)
+    .where(and(eq(tickets.id, input.ticketId), eq(tickets.orgId, input.orgId))).limit(1);
+  if (!ticket) {
+    // Deleted, moved out of the org, or invisible in this RLS context. The
+    // decision itself is never lost — audit_logs carries it
+    // (services/callerVerification/effects.ts) — but a silently dropped note
+    // would be invisible to anyone reading the ticket, so say so.
+    console.warn(
+      `[caller-verification] ticket ${input.ticketId} not reachable in org ${input.orgId}; skipping system note for verification ${input.verificationId}`,
+    );
+    return;
+  }
+  const [comment] = await db.insert(ticketComments).values({
+    ticketId: ticket.id,
+    userId: null,
+    portalUserId: null,
+    authorName: 'Breeze',
+    authorType: 'internal',
+    commentType: 'system',
+    originPrincipalKind: 'system',
+    content: `Caller verification ${input.event} (${input.verificationId})`,
+    isPublic: false,
+  }).returning({ id: ticketComments.id });
+  await writeTicketOutbox(input.orgId, ticket.id, 'ticket.commented', {
+    commentId: comment!.id, isPublic: false, verificationId: input.verificationId, partnerId: ticket.partnerId, event: input.event,
+  });
 }
 
 /**
@@ -2691,7 +2732,8 @@ export async function moveTicketOrg(
     );
     // Lock order (global, #3778): organizations FOR SHARE (BOTH orgs, ascending
     // UUID so two concurrent moves between the same pair cannot deadlock) →
-    // action_intents → ticket_drafts → ai_agent_runs → tickets → ticket_comments
+    // action_intents → ticket_drafts → ai_agent_runs → ai_operator_task_targets
+    // → tickets → ticket_comments
     // → the TICKET_ORG_DENORMALIZED_TABLES loop (time_entries, ticket_parts,
     // ticket_alert_links, ticket_outbox, ticket_attachments, ticket_email_links).
     //
@@ -2825,6 +2867,60 @@ export async function moveTicketOrg(
       .update(aiAgentRuns)
       .set({ ticketId: null })
       .where(eq(aiAgentRuns.ticketId, ticketId));
+    // AI Operator human-work links (recipe library E3, #6168). The ticket's
+    // checklist items are re-stamped to the destination org by the
+    // TICKET_ORG_DENORMALIZED_TABLES loop below; the Operator step rows that
+    // point at them are NOT — `ai_operator_task_steps.org_id` is its task's
+    // org and is immutable history, exactly like `ai_agent_runs.org_id` one
+    // statement above. So after the move a live human-work step would be
+    // waiting on a checklist item in another tenant, and, because the link FK
+    // is plain and single-column ON DELETE SET NULL (migration
+    // 2026-10-26-170100 header note A), NOTHING would raise: the task would
+    // simply wait until its deadline with no error anywhere.
+    //
+    // DETACH, never re-stamp — E2's rule for task targets, one level down. The
+    // helper also enqueues a `user_answer` wake per affected task, so the
+    // coordinator's authoritative re-read turns this into a classified handoff
+    // instead of a silent stall. It deliberately does NOT settle the task:
+    // that is a leased transition and this transaction holds no lease.
+    //
+    // Placed here, before the tickets UPDATE, to match the lock order the
+    // ai_agent_runs sever establishes on both axes (#4657). Takes `tx`, so a
+    // rolled-back move detaches nothing.
+    const detachedHumanWork = await detachHumanWorkLinksForTicket(tx, {
+      ticketId,
+      reason: `ticket moved to another organization (${targetOrgId})`,
+    });
+    if (detachedHumanWork > 0) {
+      console.warn('[tickets] detached AI Operator human-work links on an org move',
+        `ticketId=${ticketId}`, `count=${detachedHumanWork}`);
+    }
+    // Recipe library E2 (#6167) — the ticket-axis twin of the ai_agent_runs
+    // statement above, and for the identical reason. An AI Operator target's
+    // org_id is its TASK's org_id, which is immutable source-org history, so
+    // the target does NOT travel with the ticket. Leaving the pointer would
+    // give the source org a ticket id that now belongs to another tenant.
+    //
+    // ai_operator_task_targets.ticket_id is a PLAIN single-column FK to
+    // tickets(id) ON DELETE SET NULL (migration 2026-10-26-160000 header note
+    // A), NOT a composite (ticket_id, org_id) tenant FK, so — exactly like
+    // ai_agent_runs.ticket_id — the UPDATE below would complete happily and
+    // the stale pointer would survive in silence. The detach stamp is written
+    // in the same statement because ai_operator_task_targets_one_pointer_chk
+    // requires it once the only pointer is null.
+    //
+    // Ordering: after ai_agent_runs and before the tickets UPDATE, matching
+    // breeze_cascade_device_org_id(), which severs targets after runs and
+    // before its generic loop re-stamps `tickets` — same lock-order reason as
+    // the statement above.
+    await tx.execute(sql`
+      UPDATE ai_operator_task_targets
+         SET ticket_id = NULL,
+             detached_at = COALESCE(detached_at, now()),
+             detached_reason = COALESCE(detached_reason, 'scope_invalidated'),
+             state = 'detached',
+             updated_at = now()
+       WHERE ticket_id = ${ticketId}`);
     // device_vulnerabilities.ticket_id (#4645): the finding's remediation
     // ticket link, the ticket-axis twin of #4642's ai_agent_runs detach just
     // above and the reverse of moveOrg.ts's own device_vulnerabilities

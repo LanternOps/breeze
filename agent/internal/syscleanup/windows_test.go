@@ -15,8 +15,10 @@ import (
 // user, DownloadsFolder deletes user data, ESD breaks Reset this PC, and
 // Language Pack uninstalls installed languages.
 func TestCleanmgrHandlerAllowlistIsExactlyTheSpecSet(t *testing.T) {
+	// `update_cleanup` was in this list until #6482: it deadlocks in session 0
+	// before freeing anything, and win_dism_component_cleanup is the supported
+	// non-interactive equivalent. It lives in winRetiredCleanmgrHandlers now.
 	want := map[string]string{
-		"update_cleanup":                               "Update Cleanup",
 		"delivery_optimization_files":                  "Delivery Optimization Files",
 		"device_driver_packages":                       "Device Driver Packages",
 		"previous_installations":                       "Previous Installations",
@@ -52,10 +54,14 @@ func TestCleanmgrHandlerAllowlistIsExactlyTheSpecSet(t *testing.T) {
 			t.Fatalf("slug %q has no fallback friendly label", handler.slug)
 		}
 	}
-	// Every sub-id in the shared catalogue resolves to exactly one handler.
+	// Every sub-id in the shared catalogue resolves to exactly one offered
+	// handler, or to a retired one carrying a reason.
 	for _, subID := range winCleanmgrSubIDs {
-		if _, ok := winCleanmgrHandlerBySubID(subID); !ok {
-			t.Fatalf("catalogue sub-id %q has no handler", subID)
+		if _, ok := winCleanmgrHandlerBySubID(subID); ok {
+			continue
+		}
+		if _, retired := winRetiredCleanmgrHandlers[strings.TrimPrefix(subID, "win_cleanmgr:")]; !retired {
+			t.Fatalf("catalogue sub-id %q has neither a handler nor a retirement reason", subID)
 		}
 	}
 }
@@ -83,9 +89,6 @@ func TestCleanmgrHandlerRiskFlags(t *testing.T) {
 	byslug := map[string]winCleanmgrHandler{}
 	for _, handler := range winCleanmgrHandlers {
 		byslug[handler.slug] = handler
-	}
-	if !containsFold(byslug["update_cleanup"].riskFlags, RiskMayRequireReboot) {
-		t.Error("Update Cleanup must carry may_require_reboot — the space is released after restart")
 	}
 	if !containsFold(byslug["device_driver_packages"].riskFlags, RiskRemovesDriverRollback) {
 		t.Error("Device Driver Packages must carry removes_driver_rollback")
@@ -283,17 +286,30 @@ func TestDeliveryOptimizationAndTemporaryFilesEstimatePaths(t *testing.T) {
 
 func withFakeVolumeCaches(t *testing.T, present []string, failOn string) map[string]uint32 {
 	t.Helper()
+	return withFakeVolumeCachesResult(t, present, failOn, ProcResult{})
+}
+
+// withFakeVolumeCachesResult additionally dictates what the faked cleanmgr
+// invocation reports back, so the session-0 outcomes (#6482) are testable off
+// Windows.
+func withFakeVolumeCachesResult(t *testing.T, present []string, failOn string, proc ProcResult) map[string]uint32 {
+	t.Helper()
 	written := map[string]uint32{}
 	originalPresent, originalSet := presentVolumeCaches, setStateFlags
-	originalResolve, originalRun := resolveWindowsBinary, runWindowsProcess
-	t.Cleanup(func() { resolveWindowsBinary, runWindowsProcess = originalResolve, originalRun })
+	originalResolve, originalRun := resolveWindowsBinary, runWindowsProcessIdle
+	t.Cleanup(func() { resolveWindowsBinary, runWindowsProcessIdle = originalResolve, originalRun })
 	resolveWindowsBinary = func(candidates ...string) (string, bool) { return candidates[0], true }
-	runWindowsProcess = func(_ context.Context, timeout time.Duration, binary string, args ...string) ProcResult {
+	runWindowsProcessIdle = func(_ context.Context, timeout time.Duration, limits idleLimits, binary string, args ...string) ProcResult {
 		if timeout != cleanmgrTimeout || binary != systemRoot()+cleanmgrBinaryRelative || strings.Join(args, " ") != "/sagerun:5555" {
 			t.Fatalf("unexpected cleaner invocation: %s %v (%s)", binary, args, timeout)
 		}
+		// The watchdog is the whole point: a cleanmgr launched without it
+		// wedges for the full hour under the SYSTEM service.
+		if !limits.enabled() {
+			t.Fatal("cleanmgr must be launched with the session-0 idle watchdog armed")
+		}
 		written["__cleanmgr_started__"] = 1
-		return ProcResult{}
+		return proc
 	}
 	t.Cleanup(func() { presentVolumeCaches, setStateFlags = originalPresent, originalSet })
 
@@ -405,5 +421,238 @@ func TestCleanmgrSubActionsExposeHandlerRiskFlags(t *testing.T) {
 				t.Errorf("%s missing %s", sub.ID, flag)
 			}
 		}
+	}
+}
+
+// --- #6482: session-0 outcomes ---------------------------------------------
+
+// The W05 lab's BUG-3: the parent action reported `timed_out` while every
+// sub-action underneath it still claimed `completed`. A tech reading the run
+// history saw "Windows Update cleanup: completed" for a handler that provably
+// never ran.
+func TestCleanmgrTimedOutRunDoesNotClaimItsHandlersCompleted(t *testing.T) {
+	withFakeVolumeCachesResult(t, []string{"Setup Log Files", "Temporary Files"}, "",
+		ProcResult{TimedOut: true, Err: errors.New("cleanmgr.exe timed out after 1h0m0s and its process tree was terminated")})
+
+	got := winCleanmgrAction{selectedSlugs: []string{"setup_log_files", "temporary_files"}}.Run(context.Background(), Params{})
+
+	if got.Status != StatusTimedOut {
+		t.Fatalf("status = %q, want timed_out", got.Status)
+	}
+	if len(got.SubActions) != 2 {
+		t.Fatalf("SubActions = %+v, want one per selected handler", got.SubActions)
+	}
+	for _, sub := range got.SubActions {
+		if sub.Status == StatusCompleted {
+			t.Errorf("%s reports completed inside a %s run; nothing proved that handler finished", sub.ID, got.Status)
+		}
+		if sub.Status != StatusTimedOut {
+			t.Errorf("%s reports %q, want the parent's timed_out", sub.ID, sub.Status)
+		}
+	}
+}
+
+func TestCleanmgrFailedRunDoesNotClaimItsHandlersCompleted(t *testing.T) {
+	withFakeVolumeCachesResult(t, []string{"Setup Log Files"}, "",
+		ProcResult{Err: errors.New("exec failed")})
+
+	got := winCleanmgrAction{selectedSlugs: []string{"setup_log_files"}}.Run(context.Background(), Params{})
+	if got.Status != StatusFailed {
+		t.Fatalf("status = %q, want failed", got.Status)
+	}
+	if got.SubActions[0].Status != StatusFailed {
+		t.Fatalf("sub-action status = %q, want failed", got.SubActions[0].Status)
+	}
+}
+
+// The fix's payoff: a tree that stopped using CPU and was terminated by the
+// watchdog is a COMPLETED cleanup, not an hour-long timeout — cleanmgr does
+// its work and then wedges its invisible session-0 progress UI.
+func TestCleanmgrIdleStoppedRunCompletesAndSaysWhy(t *testing.T) {
+	// Err is nil: the runner leaves it free for a GENUINE failure, so an idle
+	// stop on its own is not one.
+	withFakeVolumeCachesResult(t, []string{"Setup Log Files"}, "", ProcResult{IdleStopped: true})
+
+	got := winCleanmgrAction{selectedSlugs: []string{"setup_log_files"}}.Run(context.Background(), Params{})
+
+	if got.Status != StatusCompleted {
+		t.Fatalf("status = %q, want completed — the handlers ran; only cleanmgr's UI wedged", got.Status)
+	}
+	if got.SubActions[0].Status != StatusCompleted {
+		t.Fatalf("sub-action status = %q, want completed", got.SubActions[0].Status)
+	}
+	if got.Error != "" {
+		t.Fatalf("Error = %q, want empty on a completed action", got.Error)
+	}
+	if !strings.Contains(got.OutputTail, "never exits under the SYSTEM service") {
+		t.Fatalf("outputTail = %q, want it to explain why the tree had to be terminated", got.OutputTail)
+	}
+}
+
+// Windows Update cleanup is the one handler that deadlocks BEFORE doing any
+// work under the SYSTEM service (3/3 lab runs wedged inside
+// DismGetUsedSpaceInternal with nothing freed). It is no longer offered; the
+// supported non-interactive equivalent is win_dism_component_cleanup, which
+// completed in 7.6 s on the same rig.
+func TestCleanmgrNoLongerOffersUpdateCleanup(t *testing.T) {
+	withFakeVolumeCaches(t, []string{"Update Cleanup", "Setup Log Files"}, "")
+
+	for _, sub := range (winCleanmgrAction{}).SubActions() {
+		if sub.ID == "win_cleanmgr:update_cleanup" {
+			t.Fatal("update_cleanup is still offered in the catalogue; it cannot complete in session 0")
+		}
+	}
+	for _, handler := range winCleanmgrHandlers {
+		if handler.slug == "update_cleanup" {
+			t.Fatal("update_cleanup is still in the offered handler list")
+		}
+	}
+	// The id stays in the shared catalogue so an older selection is still a
+	// recognised token rather than a validation error.
+	if !IsKnownActionID("win_cleanmgr:update_cleanup") {
+		t.Fatal("win_cleanmgr:update_cleanup must remain a KNOWN id for wire compatibility")
+	}
+}
+
+func TestCleanmgrRefusesARetiredHandlerAndNamesTheReplacement(t *testing.T) {
+	written := withFakeVolumeCaches(t, []string{"Update Cleanup", "Setup Log Files"}, "")
+
+	got := winCleanmgrAction{selectedSlugs: []string{"update_cleanup"}}.Run(context.Background(), Params{})
+
+	if got.Status != StatusUnavailable {
+		t.Fatalf("status = %q, want unavailable", got.Status)
+	}
+	if _, ran := written["__cleanmgr_started__"]; ran {
+		t.Fatal("cleanmgr must not be started for a retired-only selection — it would wedge for the cap")
+	}
+	if len(got.SubActions) != 1 || got.SubActions[0].Status != StatusUnavailable {
+		t.Fatalf("SubActions = %+v, want the retired handler marked unavailable", got.SubActions)
+	}
+	if !strings.Contains(got.Error, "win_dism_component_cleanup") {
+		t.Fatalf("error = %q, want it to name the replacement action", got.Error)
+	}
+}
+
+// A mixed selection still runs the handlers that work; only the retired one is
+// reported unavailable.
+func TestCleanmgrRunsTheLiveHandlersAlongsideARetiredOne(t *testing.T) {
+	written := withFakeVolumeCaches(t, []string{"Update Cleanup", "Setup Log Files"}, "")
+
+	got := winCleanmgrAction{selectedSlugs: []string{"update_cleanup", "setup_log_files"}}.Run(context.Background(), Params{})
+
+	if got.Status != StatusCompleted {
+		t.Fatalf("status = %q, want completed", got.Status)
+	}
+	if written["__cleanmgr_started__"] != 1 {
+		t.Fatal("cleanmgr must still run for the live part of the selection")
+	}
+	if written["Update Cleanup"] != 0 {
+		t.Fatalf("the retired handler was flagged %d; it must be zeroed like any unselected one", written["Update Cleanup"])
+	}
+	byID := map[string]string{}
+	for _, sub := range got.SubActions {
+		byID[sub.ID] = sub.Status
+	}
+	if byID["win_cleanmgr:update_cleanup"] != StatusUnavailable {
+		t.Errorf("update_cleanup = %q, want unavailable", byID["win_cleanmgr:update_cleanup"])
+	}
+	if byID["win_cleanmgr:setup_log_files"] != StatusCompleted {
+		t.Errorf("setup_log_files = %q, want completed", byID["win_cleanmgr:setup_log_files"])
+	}
+}
+
+// A retired sub-action keeps its own status whatever the run as a whole did:
+// it was never attempted, so it cannot inherit timed_out.
+func TestCleanmgrRetiredSubActionSurvivesATimedOutParent(t *testing.T) {
+	withFakeVolumeCachesResult(t, []string{"Update Cleanup", "Setup Log Files"}, "",
+		ProcResult{TimedOut: true, Err: errors.New("cleanmgr.exe timed out after 1h0m0s and its process tree was terminated")})
+
+	got := winCleanmgrAction{selectedSlugs: []string{"update_cleanup", "setup_log_files"}}.Run(context.Background(), Params{})
+
+	byID := map[string]string{}
+	for _, sub := range got.SubActions {
+		byID[sub.ID] = sub.Status
+	}
+	if byID["win_cleanmgr:update_cleanup"] != StatusUnavailable {
+		t.Errorf("update_cleanup = %q, want unavailable even under a timed_out parent", byID["win_cleanmgr:update_cleanup"])
+	}
+	if byID["win_cleanmgr:setup_log_files"] != StatusTimedOut {
+		t.Errorf("setup_log_files = %q, want timed_out", byID["win_cleanmgr:setup_log_files"])
+	}
+}
+
+// An idle stop is reported as `completed`, so a genuine teardown failure
+// underneath one must NOT be absorbed into that success.
+func TestCleanmgrIdleStoppedRunWithATeardownFailureIsNotReportedCompleted(t *testing.T) {
+	withFakeVolumeCachesResult(t, []string{"Setup Log Files"}, "",
+		ProcResult{IdleStopped: true, Err: errors.New("query cleaner job accounting: the handle is invalid")})
+
+	got := winCleanmgrAction{selectedSlugs: []string{"setup_log_files"}}.Run(context.Background(), Params{})
+
+	if got.Status != StatusFailed {
+		t.Fatalf("status = %q, want failed — the tree went idle but its teardown failed", got.Status)
+	}
+	if !strings.Contains(got.Error, "handle is invalid") {
+		t.Fatalf("error = %q, want the underlying teardown failure", got.Error)
+	}
+	if got.SubActions[0].Status != StatusFailed {
+		t.Fatalf("sub-action status = %q, want failed", got.SubActions[0].Status)
+	}
+}
+
+// The idle note is the only text telling a tech that a `completed` action was
+// force-terminated. capOutput keeps the TAIL, so folding the notes in with a
+// chatty cleanmgr's own output would push them off the front unnoticed.
+func TestCleanmgrNotesSurviveAVerboseCleanmgr(t *testing.T) {
+	withFakeVolumeCachesResult(t, []string{"Setup Log Files"}, "",
+		ProcResult{IdleStopped: true, Stdout: strings.Repeat("progress\n", maxOutputBytes)})
+
+	got := winCleanmgrAction{selectedSlugs: []string{"setup_log_files"}}.Run(context.Background(), Params{})
+
+	if !strings.Contains(got.OutputTail, "never exits under the SYSTEM service") {
+		t.Fatal("the idle note was truncated away by the cleaner's own output")
+	}
+	if !strings.Contains(got.OutputTail, "StateFlags5555") {
+		t.Fatal("the profile summary was truncated away by the cleaner's own output")
+	}
+}
+
+// The profile write aborts before cleanmgr starts; the result must still say
+// what was selected and why the retired handler was refused.
+func TestCleanmgrProfileWriteFailureStillReportsItsSubActions(t *testing.T) {
+	withFakeVolumeCaches(t, []string{"Setup Log Files", "Contoso Disk Helper"}, "Contoso Disk Helper")
+
+	got := winCleanmgrAction{selectedSlugs: []string{"update_cleanup", "setup_log_files"}}.Run(context.Background(), Params{})
+
+	if got.Status != StatusFailed {
+		t.Fatalf("status = %q, want failed", got.Status)
+	}
+	byID := map[string]string{}
+	for _, sub := range got.SubActions {
+		byID[sub.ID] = sub.Status
+	}
+	if byID["win_cleanmgr:setup_log_files"] != StatusFailed {
+		t.Errorf("setup_log_files = %q, want failed", byID["win_cleanmgr:setup_log_files"])
+	}
+	if byID["win_cleanmgr:update_cleanup"] != StatusUnavailable {
+		t.Errorf("update_cleanup = %q, want unavailable", byID["win_cleanmgr:update_cleanup"])
+	}
+	if !strings.Contains(got.OutputTail, "win_dism_component_cleanup") {
+		t.Error("the retirement reason vanished on the abort path")
+	}
+}
+
+// The retired set is a deliberate, reviewed exception list, not a bucket:
+// anything added here stops being offered to techs.
+func TestRetiredCleanmgrHandlersAreExactlyUpdateCleanup(t *testing.T) {
+	if len(winRetiredCleanmgrHandlers) != 1 {
+		t.Fatalf("winRetiredCleanmgrHandlers = %v, want exactly update_cleanup", winRetiredCleanmgrHandlers)
+	}
+	reason, ok := winRetiredCleanmgrHandlers["update_cleanup"]
+	if !ok {
+		t.Fatal("update_cleanup must be the retired handler")
+	}
+	if !strings.Contains(reason, "win_dism_component_cleanup") {
+		t.Fatalf("reason = %q, want it to name the replacement action", reason)
 	}
 }

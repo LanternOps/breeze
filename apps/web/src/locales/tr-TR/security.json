@@ -604,7 +604,11 @@
     "startedColumn": "Başlatıldı",
     "status": "Durum: {{status}}",
     "status2": "Durum",
-    "type": "Tür"
+    "type": "Tür",
+    "scanRequestFailed": "Tarama isteği başarısız oldu",
+    "scansQueuedCount": "{{count}} tarama sıraya alındı",
+    "scansQueuedCount_one": "{{count}} tarama sıraya alındı",
+    "scansQueuedCount_other": "{{count}} tarama sıraya alındı"
   },
   "securityThreatDetail": {
     "analystReview": "Analist incelemesi",
@@ -633,7 +637,11 @@
     "threatRemoved": "Tehdit kaldırıldı",
     "threatStatus": "Tehdit durumu",
     "threatWasMovedToQuarantineByPolicy": "Tehdit, politika veya operatör eylemi nedeniyle karantinaya taşındı.",
-    "timeline": "Zaman Çizelgesi"
+    "timeline": "Zaman Çizelgesi",
+    "actionFailed": "İşlem başarısız oldu",
+    "quarantineSucceeded": "Tehdit karantinaya alındı",
+    "restoreSucceeded": "Tehdit geri yüklendi",
+    "removeSucceeded": "Tehdit kaldırıldı"
   },
   "securityThreatList": {
     "active": "Aktif",
@@ -662,7 +670,11 @@
     "threat": "Tehdit",
     "threats": "Tehditler",
     "threatsMatchYourFilters": "{{count}} tehditler filtrelerinizle eşleşiyor",
-    "type": "Tür"
+    "type": "Tür",
+    "actionFailed": "İşlem başarısız oldu",
+    "actionQueuedCount": "{{count}} tehdit sıraya alındı",
+    "actionQueuedCount_one": "{{count}} tehdit sıraya alındı",
+    "actionQueuedCount_other": "{{count}} tehdit sıraya alındı"
   },
   "securityTrendsPage": {
     "adminAccounts": "Yönetici Hesapları",
@@ -2048,5 +2060,11 @@
       "expires": "Süresi doluyor",
       "actions": "Eylemler"
     }
+  },
+  "securityScansPage": {
+    "iocScans": "IOC Taramaları",
+    "subtitle": "Filonuz genelinde imza tabanlı kötü amaçlı yazılım ve IOC taramaları. Tam uç nokta korumasının yerini tutmaz.",
+    "scansTab": "Taramalar",
+    "threatsTab": "Tehditler"
   }
 }

@@ -20,7 +20,12 @@
   "source": {
     "manual": "Manuel",
     "deliverable": "Çıktı",
-    "checklist_template": "Şablon"
+    "checklist_template": "Şablon",
+    "operator_task": "Operatör adımı"
+  },
+  "operator": {
+    "viewTask": "Görevi aç",
+    "badgeTitle": "Bir yapay zekâ Operatör görevi oluşturdu. İş bitince işaretleyin, görev kendiliğinden devam eder."
   },
   "editDoneWarning": "Tamamlanmış bir adımı düzenlemek, kimin ve ne zaman tamamladığını siler.",
   "resolveConfirm": {
@@ -34,7 +39,8 @@
     "loadFailed": "Kontrol listesi yüklenemedi.",
     "saveFailed": "Kontrol listesi adımı kaydedilemedi.",
     "reorderFailed": "Kontrol listesi yeniden sıralanamadı.",
-    "tickRequiresUser": "Bir adımı işaretlemek, oturum açmış bir kullanıcı oturumu gerektirir."
+    "tickRequiresUser": "Bir adımı işaretlemek, oturum açmış bir kullanıcı oturumu gerektirir.",
+    "operatorStepWaiting": "Bir Operatör görevi hâlâ bu adımı bekliyor, bu yüzden silinemez. İş bitince işaretleyin ya da önce görevi durdurun."
   },
   "templates": {
     "title": "Kontrol listesi şablonları",

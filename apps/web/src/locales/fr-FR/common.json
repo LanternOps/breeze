@@ -97,7 +97,8 @@
     "sectionServiceDesk": "Centre de services",
     "serviceManagement": "Gestion des services",
     "ticketing": "Tickets",
-    "deliverableTemplates": "Modèles de livrables"
+    "deliverableTemplates": "Modèles de livrables",
+    "securityScans": "Analyses IOC"
   },
   "documentTitles": {
     "dashboard": "Tableau de bord",

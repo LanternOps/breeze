@@ -604,7 +604,11 @@
     "status2": "Status",
     "type": "Typ",
     "scanHistoryPartiallyUnavailable": "Der Scanverlauf für {{failed}} von {{total}} Geräten konnte nicht geladen werden – diese Liste ist unvollständig.",
-    "scanHistoryUnavailable": "Der Scanverlauf konnte nicht geladen werden."
+    "scanHistoryUnavailable": "Der Scanverlauf konnte nicht geladen werden.",
+    "scanRequestFailed": "Scan-Anfrage fehlgeschlagen",
+    "scansQueuedCount": "{{count}} Scan in Warteschlange",
+    "scansQueuedCount_one": "{{count}} Scan in Warteschlange",
+    "scansQueuedCount_other": "{{count}} Scans in Warteschlange"
   },
   "securityThreatDetail": {
     "analystReview": "Analystenbewertung",
@@ -633,7 +637,11 @@
     "threatRemoved": "Bedrohung entfernt",
     "threatStatus": "Bedrohungsstatus",
     "threatWasMovedToQuarantineByPolicy": "Die Bedrohung wurde durch eine Richtlinie oder eine Aktion des Bedieners in die Quarantäne verschoben.",
-    "timeline": "Zeitleiste"
+    "timeline": "Zeitleiste",
+    "actionFailed": "Aktion fehlgeschlagen",
+    "quarantineSucceeded": "Bedrohung unter Quarantäne gestellt",
+    "restoreSucceeded": "Bedrohung wiederhergestellt",
+    "removeSucceeded": "Bedrohung entfernt"
   },
   "securityThreatList": {
     "active": "Aktiv",
@@ -662,7 +670,11 @@
     "threat": "Bedrohung",
     "threats": "Bedrohungen",
     "threatsMatchYourFilters": "{{count}} Bedrohungen entsprechen Ihren Filtern",
-    "type": "Typ"
+    "type": "Typ",
+    "actionFailed": "Aktion fehlgeschlagen",
+    "actionQueuedCount": "{{count}} Bedrohung in Warteschlange",
+    "actionQueuedCount_one": "{{count}} Bedrohung in Warteschlange",
+    "actionQueuedCount_other": "{{count}} Bedrohungen in Warteschlange"
   },
   "securityTrendsPage": {
     "adminAccounts": "Admin-Konten",
@@ -2048,5 +2060,11 @@
       "expires": "Läuft ab",
       "actions": "Aktionen"
     }
+  },
+  "securityScansPage": {
+    "iocScans": "IOC-Scans",
+    "subtitle": "Signaturbasierte Malware- und IOC-Sweeps in Ihrer Flotte. Kein Ersatz für umfassenden Endpunktschutz.",
+    "scansTab": "Scans",
+    "threatsTab": "Bedrohungen"
   }
 }

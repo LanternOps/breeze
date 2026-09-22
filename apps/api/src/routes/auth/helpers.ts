@@ -1,5 +1,5 @@
 import type { Context } from 'hono';
-import type { AuditResult } from '@breeze/shared';
+import { ERROR_CODES, type AuditResult } from '@breeze/shared';
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import * as dbModule from '../../db';
 import { users, partnerUsers, organizationUsers, organizations, userPasskeys } from '../../db/schema';
@@ -1460,7 +1460,7 @@ export function inviteUserRedisKey(userId: string): string {
 // ============================================
 
 export function genericAuthError() {
-  return { error: 'Invalid email or password' };
+  return { error: 'Invalid email or password', code: ERROR_CODES.INVALID_CREDENTIALS };
 }
 
 export function registrationDisabledResponse(c: Context): Response {

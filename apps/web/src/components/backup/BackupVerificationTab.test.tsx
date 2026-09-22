@@ -109,6 +109,36 @@ describe('BackupVerificationTab', () => {
     expect(await screen.findByText('sessionbroker: command timed out')).toBeTruthy();
   });
 
+  it('shows the reason on a partial verification (#6561)', async () => {
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/backup/verifications')) {
+        return makeJsonResponse({
+          data: [
+            {
+              ...mockVerifications[0],
+              id: 'v-partial',
+              status: 'partial',
+              filesVerified: 2,
+              filesFailed: 1,
+              details: {
+                reason: 'manifest not found: snapshot snap-1',
+              },
+            },
+          ],
+        });
+      }
+      if (url.includes('/backup/recovery-readiness')) {
+        return makeJsonResponse(mockReadiness);
+      }
+      return makeJsonResponse({});
+    });
+
+    render(<BackupVerificationTab deviceId={deviceId} />);
+
+    expect(await screen.findByText('manifest not found: snapshot snap-1')).toBeTruthy();
+  });
+
   it('shows loading state initially', () => {
     render(<BackupVerificationTab deviceId={deviceId} />);
     expect(screen.getByText('Loading verification data...')).toBeTruthy();

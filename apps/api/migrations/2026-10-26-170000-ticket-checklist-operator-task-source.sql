@@ -1,0 +1,24 @@
+-- apps/api/migrations/2026-10-26-170000-ticket-checklist-operator-task-source.sql
+--
+-- Recipe Library wave E3, spec §5.3: `ticket_checklist_items.source` gains a
+-- fourth value. An `operator_task` row is a step an AI Operator `human_work`
+-- step created on the task's ticket and is waiting on.
+--
+-- ENUM ADD ONLY, IN ITS OWN FILE, AND THAT IS THE WHOLE POINT OF THE FILE.
+-- A label added by ALTER TYPE cannot be USED until the transaction that added
+-- it commits, and autoMigrate wraps each file in exactly one transaction
+-- (src/db/autoMigrate.ts). The next migration
+-- (2026-10-26-170100-ai-operator-human-work-links.sql) is the first file that
+-- may reference the label, and it sorts strictly after this one.
+--
+-- NO `-- @no-transaction` DIRECTIVE. ALTER TYPE ... ADD VALUE has been legal
+-- inside a transaction block since PostgreSQL 12; only USING the new label in
+-- the same transaction is forbidden, and this file uses nothing. The directive
+-- exists for CREATE INDEX CONCURRENTLY. Precedent for this exact shape:
+-- 2026-10-17-110700-report-type-identity-access-review.sql and
+-- 2026-10-14-100100-discovered-assets-manual-source.sql.
+--
+-- No rows are written, so no `breeze.scope` election is required and this file
+-- must NOT be added to migrationRlsScope.test.ts's frozen baseline. Idempotent.
+
+ALTER TYPE public.ticket_checklist_item_source ADD VALUE IF NOT EXISTS 'operator_task';

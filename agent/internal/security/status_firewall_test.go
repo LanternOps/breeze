@@ -94,7 +94,7 @@ func TestInterpretFirewallState_BusErrorDoesNotMatchNotRunning(t *testing.T) {
 	// should bridge to a confident answer.
 	for _, busError := range []string{
 		"Failed to connect to bus: No such file or directory",
-		"NotRunning",   // case mismatch
+		"NotRunning", // case mismatch
 		"not running yet",
 		"not running\nWarning: irrelevant",
 	} {

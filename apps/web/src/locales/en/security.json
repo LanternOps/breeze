@@ -604,7 +604,11 @@
     "startedColumn": "Started",
     "status": "Status: {{status}}",
     "status2": "Status",
-    "type": "Type"
+    "type": "Type",
+    "scanRequestFailed": "Scan request failed",
+    "scansQueuedCount": "{{count}} scan queued",
+    "scansQueuedCount_one": "{{count}} scan queued",
+    "scansQueuedCount_other": "{{count}} scans queued"
   },
   "securityThreatDetail": {
     "analystReview": "Analyst review",
@@ -633,7 +637,11 @@
     "threatRemoved": "Threat removed",
     "threatStatus": "Threat status",
     "threatWasMovedToQuarantineByPolicy": "Threat was moved to quarantine by policy or operator action.",
-    "timeline": "Timeline"
+    "timeline": "Timeline",
+    "actionFailed": "Action failed",
+    "quarantineSucceeded": "Threat quarantined",
+    "restoreSucceeded": "Threat restored",
+    "removeSucceeded": "Threat removed"
   },
   "securityThreatList": {
     "active": "Active",
@@ -662,7 +670,11 @@
     "threat": "Threat",
     "threats": "Threats",
     "threatsMatchYourFilters": "{{count}} threats match your filters",
-    "type": "Type"
+    "type": "Type",
+    "actionFailed": "Action failed",
+    "actionQueuedCount": "{{count}} threat queued",
+    "actionQueuedCount_one": "{{count}} threat queued",
+    "actionQueuedCount_other": "{{count}} threats queued"
   },
   "securityTrendsPage": {
     "adminAccounts": "Admin Accounts",
@@ -2048,5 +2060,11 @@
       "expires": "Expires",
       "actions": "Actions"
     }
+  },
+  "securityScansPage": {
+    "iocScans": "IOC Scans",
+    "subtitle": "Signature-based malware and IOC sweeps across your fleet. Not a replacement for full endpoint protection.",
+    "scansTab": "Scans",
+    "threatsTab": "Threats"
   }
 }

@@ -85,6 +85,7 @@ import { registerOrgPortalUsersRoutes } from './orgPortalUsers';
 import { registerOrgTicketSettingsRoutes } from './orgTicketSettings';
 import { registerOrgBillingProfileRoutes } from './orgBillingProfile';
 import { registerOrgAuditRetentionSettingsRoutes } from './orgAuditRetentionSettings';
+import { TOPOLOGY_FLAG_KEYS } from '../services/topology/flags';
 
 /**
  * Fold the legacy `security.allowedMfaMethods` input alias into the canonical
@@ -841,6 +842,18 @@ const partnerSettingsSchema = z.object({
   // boundary enforces; its `.strict()`/`.passthrough()` rationale lives there.
   timeTracking: timeTrackingSessionSuggestionsSchema.optional(),
 
+  // Network Topology feature flags (read by services/topology/flags.ts). Keys
+  // come from TOPOLOGY_FLAG_KEYS so the write boundary and the reader can never
+  // drift; `.strict()` rejects a misspelled flag instead of storing it silently.
+  // Deep-merged one level in the PATCH handler so a save that carries only
+  // `{ ui: true }` keeps the other stored flags.
+  topologyFeatureFlags: z.object(
+    Object.fromEntries(TOPOLOGY_FLAG_KEYS.map((key) => [key, z.boolean().optional()])) as Record<
+      (typeof TOPOLOGY_FLAG_KEYS)[number],
+      z.ZodOptional<z.ZodBoolean>
+    >,
+  ).strict().optional(),
+
   // PATCH /partners/me deep-merges `ticketing` one level (see the handler), so a
   // future sibling like `ticketing.outbound` survives — but the `inbound` sub-object
   // is replaced wholesale, so the card must send the COMPLETE ticketing.inbound
@@ -997,6 +1010,16 @@ orgRoutes.patch(
     newSettings.timeTracking = {
       ...((currentSettings.timeTracking as Record<string, unknown> | undefined) ?? {}),
       ...body.settings.timeTracking,
+    };
+  }
+
+  // Deep-merge `topologyFeatureFlags` one level for the same reason: the flags
+  // are independent booleans toggled one at a time from the UI, and a save that
+  // carries only `{ ui: true }` must not wipe the other stored flags.
+  if (body.settings?.topologyFeatureFlags) {
+    newSettings.topologyFeatureFlags = {
+      ...((currentSettings.topologyFeatureFlags as Record<string, unknown> | undefined) ?? {}),
+      ...body.settings.topologyFeatureFlags,
     };
   }
 

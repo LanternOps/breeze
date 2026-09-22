@@ -20,7 +20,12 @@
   "source": {
     "manual": "Manuell",
     "deliverable": "Leistung",
-    "checklist_template": "Vorlage"
+    "checklist_template": "Vorlage",
+    "operator_task": "Operator-Schritt"
+  },
+  "operator": {
+    "viewTask": "Aufgabe ansehen",
+    "badgeTitle": "Von einer KI-Operator-Aufgabe erstellt. Abhaken, wenn die Arbeit erledigt ist – die Aufgabe läuft dann weiter."
   },
   "editDoneWarning": "Das Bearbeiten eines erledigten Schritts löscht, wer ihn wann erledigt hat.",
   "resolveConfirm": {
@@ -34,7 +39,8 @@
     "loadFailed": "Checkliste konnte nicht geladen werden.",
     "saveFailed": "Checklisten-Schritt konnte nicht gespeichert werden.",
     "reorderFailed": "Checkliste konnte nicht neu angeordnet werden.",
-    "tickRequiresUser": "Zum Abhaken eines Schritts ist eine angemeldete Benutzersitzung erforderlich."
+    "tickRequiresUser": "Zum Abhaken eines Schritts ist eine angemeldete Benutzersitzung erforderlich.",
+    "operatorStepWaiting": "Eine Operator-Aufgabe wartet noch auf diesen Schritt – er kann nicht gelöscht werden. Haken Sie ihn ab, wenn die Arbeit erledigt ist, oder stoppen Sie zuerst die Aufgabe."
   },
   "templates": {
     "title": "Checklisten-Vorlagen",

@@ -131,7 +131,7 @@ export async function resolveEmailRequester(
     // roles: [] — an emailing customer has demonstrated nothing except that
     // they email. 'portal' is claimed by the invite path, which is where
     // someone deliberately grants portal access.
-    const created = await createContact(db, { orgId, email: normalized, name, roles: [] }, { userId: null });
+    const created = await createContact(db, { orgId, email: normalized, name, roles: [] }, { userId: null, destinationSource: 'inbound_email' });
     return { kind: 'contact', contactId: created.id };
   }
   return found;

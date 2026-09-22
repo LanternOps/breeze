@@ -20,7 +20,12 @@
   "source": {
     "manual": "Manuelle",
     "deliverable": "Livrable",
-    "checklist_template": "Modèle"
+    "checklist_template": "Modèle",
+    "operator_task": "Étape de l'Opérateur"
+  },
+  "operator": {
+    "viewTask": "Voir la tâche",
+    "badgeTitle": "Créée par une tâche de l'Opérateur IA. Cochez-la une fois le travail fait et la tâche se poursuivra."
   },
   "editDoneWarning": "Modifier une étape terminée efface qui l'a terminée et quand.",
   "resolveConfirm": {
@@ -34,7 +39,8 @@
     "loadFailed": "Impossible de charger la liste de vérification.",
     "saveFailed": "Impossible d'enregistrer l'étape de la liste de vérification.",
     "reorderFailed": "Impossible de réordonner la liste de vérification.",
-    "tickRequiresUser": "Cocher une étape exige une session utilisateur connectée."
+    "tickRequiresUser": "Cocher une étape exige une session utilisateur connectée.",
+    "operatorStepWaiting": "Une tâche de l'Opérateur attend encore cette étape : impossible de la supprimer. Cochez-la une fois le travail fait, ou arrêtez d'abord la tâche."
   },
   "templates": {
     "title": "Modèles de liste de vérification",

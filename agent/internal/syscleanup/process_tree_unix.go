@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os/exec"
 	"syscall"
+	"time"
 )
 
 // unixProcessTree puts the cleaner in its own process group. A descendant that
@@ -41,3 +42,9 @@ func (unixProcessTree) kill(cmd *exec.Cmd) {
 func (unixProcessTree) release() {}
 
 func (unixProcessTree) drain(context.Context) error { return nil }
+
+// No process group accounting is needed here: the session-0 idle watchdog
+// exists for cleanmgr, which is Windows-only, and every POSIX cleaner in the
+// catalogue exits on its own. Reporting "cannot measure" keeps the watchdog
+// off rather than having it guess from an unmeasured zero (#6482).
+func (unixProcessTree) cpuTime() (time.Duration, bool) { return 0, false }

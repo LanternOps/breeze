@@ -16,6 +16,7 @@ import {
 } from './db-utils';
 import { replayMigration } from './replayMigration';
 import { getTestDb } from './setup';
+import { awaitAuditRows } from './auditWait';
 
 type PamObservedState =
   | 'pending_dispatch'
@@ -458,8 +459,9 @@ describe('PAM device organization-move database guard', () => {
     });
     expect(await routeSnapshot(fixture)).toEqual(before);
 
-    await new Promise<void>((resolve) => setTimeout(resolve, 200));
-    const audits = await getTestDb().execute<{
+    // writeRouteAudit is fire-and-forget — wait for the failure row rather
+    // than racing it behind a fixed sleep (#6555).
+    const audits = await awaitAuditRows(() => getTestDb().execute<{
       orgId: string;
       action: string;
       details: Record<string, unknown>;
@@ -469,7 +471,7 @@ describe('PAM device organization-move database guard', () => {
       WHERE resource_id = ${fixture.deviceId}
         AND action LIKE 'device.move_org.%'
       ORDER BY action
-    `);
+    `), 1);
     expect(audits).toEqual([{
       orgId: fixture.sourceOrgId,
       action: 'device.move_org.failed',

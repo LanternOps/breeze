@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -96,6 +97,77 @@ func resolveBinary(candidates ...string) (string, bool) {
 	return "", false
 }
 
+// --- session-0 idle watchdog (#6482) ---------------------------------------
+//
+// cleanmgr.exe /sagerun under the SYSTEM service runs its handlers and then
+// never exits: it renders a progress UI onto session 0's invisible desktop and
+// waits for a dismissal that can never arrive. The W05 lab reproduced this
+// 3 times out of 3 — the tree sat at ~0.2 s of CPU for the entire 60-minute
+// cap, with the file work already done. Waiting for that cap turns every Disk
+// Cleanup run into an hour and reports `timed_out` for work that finished in
+// seconds.
+//
+// The distinguishing signal is the process TREE's CPU accounting: a cleaner
+// that is still deleting files keeps accruing kernel time, a wedged one does
+// not move at all. idleTracker is the pure decision half, so the rule is
+// exercised by `go test ./internal/syscleanup/...` on the Linux CI runner,
+// where the Windows job-object plumbing cannot run.
+
+// idleLimits configures the watchdog. A zero value disables it, which is the
+// default for every cleaner except cleanmgr.
+type idleLimits struct {
+	// sample is how often the tree's CPU total is read.
+	sample time.Duration
+	// minRun is the grace period before idleness may be declared at all, so a
+	// cleaner that is slow to get going is never cut off at the start.
+	minRun time.Duration
+	// idleAfter is how long the CPU total must stay flat before the tree is
+	// declared wedged.
+	idleAfter time.Duration
+	// noise is the CPU growth across a window that still counts as flat.
+	// Sampling jitter is not work.
+	noise time.Duration
+}
+
+func (l idleLimits) enabled() bool { return l.sample > 0 && l.idleAfter > 0 }
+
+type idleTracker struct {
+	minRun    time.Duration
+	idleAfter time.Duration
+	noise     time.Duration
+
+	started   time.Time
+	lastCPU   time.Duration
+	lastMoved time.Time
+	primed    bool
+}
+
+func newIdleTracker(now time.Time, minRun, idleAfter, noise time.Duration) *idleTracker {
+	return &idleTracker{minRun: minRun, idleAfter: idleAfter, noise: noise, started: now, lastMoved: now}
+}
+
+// observe records one CPU reading and reports whether the tree has now been
+// flat for long enough to be declared wedged.
+//
+// A reading that does not exceed the last one by more than `noise` is flat; a
+// DECREASE (which a job object should never report) is treated as flat too
+// rather than as fresh work, so one bogus sample cannot hold a wedged tree
+// open for the full hour.
+func (t *idleTracker) observe(now time.Time, cpu time.Duration) bool {
+	if !t.primed {
+		t.primed, t.lastCPU, t.lastMoved = true, cpu, now
+		return false
+	}
+	if cpu-t.lastCPU > t.noise {
+		t.lastCPU, t.lastMoved = cpu, now
+		return false
+	}
+	if now.Sub(t.started) < t.minRun {
+		return false
+	}
+	return now.Sub(t.lastMoved) >= t.idleAfter
+}
+
 // ProcResult is one process invocation's outcome.
 type ProcResult struct {
 	Path     string
@@ -105,7 +177,12 @@ type ProcResult struct {
 	ExitCode int
 	Duration time.Duration
 	TimedOut bool
-	Err      error
+	// IdleStopped is set when the watchdog above ended the run because the
+	// process tree stopped consuming CPU and never exited. Distinct from
+	// TimedOut: the cap was never reached, and for cleanmgr the handlers have
+	// already done their work by the time the tree goes flat.
+	IdleStopped bool
+	Err         error
 }
 
 // lockedBuffer collects a stream safely across the copy goroutines os/exec
@@ -134,10 +211,20 @@ func (b *lockedBuffer) Bytes() []byte {
 // non-absolute path outright — the last line of defence behind the closed
 // catalogue and the server-side id validation.
 func runProcess(ctx context.Context, timeout time.Duration, path string, args ...string) ProcResult {
-	return runProcessWithTree(ctx, timeout, newProcessTree(), path, args...)
+	return runProcessWithTreeIdle(ctx, timeout, idleLimits{}, newProcessTree(), path, args...)
+}
+
+// runProcessIdle is runProcess with the session-0 idle watchdog armed. Only
+// cleanmgr uses it: every other cleaner in the catalogue exits on its own.
+func runProcessIdle(ctx context.Context, timeout time.Duration, limits idleLimits, path string, args ...string) ProcResult {
+	return runProcessWithTreeIdle(ctx, timeout, limits, newProcessTree(), path, args...)
 }
 
 func runProcessWithTree(ctx context.Context, timeout time.Duration, tree processTree, path string, args ...string) ProcResult {
+	return runProcessWithTreeIdle(ctx, timeout, idleLimits{}, tree, path, args...)
+}
+
+func runProcessWithTreeIdle(ctx context.Context, timeout time.Duration, limits idleLimits, tree processTree, path string, args ...string) ProcResult {
 	defer tree.release()
 	started := time.Now()
 	result := ProcResult{Path: path, Args: args}
@@ -181,6 +268,55 @@ func runProcessWithTree(ctx context.Context, timeout time.Duration, tree process
 	}
 	tree.adopt(cmd)
 	close(adopted)
+
+	// The watchdog runs alongside Wait: in the wedged case the LEADER is the
+	// process that never exits, so nothing downstream of Wait would ever get a
+	// turn to notice.
+	var idleStopped atomic.Bool
+	if limits.enabled() {
+		stopWatch := make(chan struct{})
+		watchDone := make(chan struct{})
+		go func() {
+			defer close(watchDone)
+			tracker := newIdleTracker(time.Now(), limits.minRun, limits.idleAfter, limits.noise)
+			ticker := time.NewTicker(limits.sample)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-stopWatch:
+					return
+				case now := <-ticker.C:
+					cpu, ok := tree.cpuTime()
+					if !ok {
+						// This platform (or a host where the job object could
+						// not be created) cannot measure tree CPU. Disable the
+						// watchdog rather than guess — the cap still applies.
+						//
+						// Logged because it is the difference between a run
+						// that ends in minutes and one that holds the device
+						// for the full cap, and the constructor's own warnings
+						// do not fire when the measurement fails MID-run.
+						log.Warn("cleaner idle watchdog disabled: process tree CPU is not measurable; the run can only end at its timeout",
+							"binary", filepath.Base(path), "timeout", timeout.String())
+						return
+					}
+					if tracker.observe(now, cpu) {
+						idleStopped.Store(true)
+						tree.kill(cmd)
+						if cmd.Process != nil {
+							_ = cmd.Process.Kill()
+						}
+						return
+					}
+				}
+			}
+		}()
+		defer func() {
+			close(stopWatch)
+			<-watchDone
+		}()
+	}
+
 	waitErr := cmd.Wait()
 	drainErr := tree.drain(runCtx)
 
@@ -209,10 +345,20 @@ func runProcessWithTree(ctx context.Context, timeout time.Duration, tree process
 		result.ExitCode = 1
 	}
 
-	if runCtx.Err() == context.DeadlineExceeded || errors.Is(drainErr, context.DeadlineExceeded) {
+	switch {
+	case runCtx.Err() == context.DeadlineExceeded || errors.Is(drainErr, context.DeadlineExceeded):
 		result.TimedOut = true
 		result.Err = fmt.Errorf("%s timed out after %s and its process tree was terminated",
 			filepath.Base(path), timeout)
+	case idleStopped.Load():
+		result.IdleStopped = true
+		// Err is deliberately NOT overwritten here. Being idle-stopped is not
+		// itself an error — it is how a session-0 cleanmgr ends — but the
+		// teardown around it still can be (a failed job-accounting query comes
+		// back as drainErr above). Writing a synthetic message over it would
+		// bury the only evidence that teardown went wrong, and the caller
+		// would then have an IdleStopped result it reports as `completed`
+		// with a genuine failure invisible underneath it.
 	}
 	return result
 }

@@ -348,7 +348,7 @@ export default function BackupVerificationTab({
                           <span className="ml-1 inline-flex items-center rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground border border-border">
                             {t('backupVerificationTab.simulated')} </span>
                         )}
-                        {v.status === 'failed' && reason && (
+                        {(v.status === 'failed' || v.status === 'partial') && reason && (
                           <p className="mt-1 max-w-md text-xs text-muted-foreground">
                             {reason}
                           </p>

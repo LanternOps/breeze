@@ -168,7 +168,8 @@
     "agreementTemplateDetail": "Anlaşma şablonu",
     "agreementTemplateNew": "Yeni anlaşma şablonu",
     "signedAgreements": "İmzalı anlaşmalar",
-    "settingsTicketing": "Bilet Ayarları"
+    "settingsTicketing": "Bilet Ayarları",
+    "securityScans": "IOC Taramaları"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Uzaktan İzleme ve Yönetim",

@@ -849,6 +849,18 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // Backup provider integration W02 (#6008 / #6010). 'global': its runtime
+    // import closure reaches alertService + eventBus but no socket-local
+    // dispatch — the same shape as monitorWorker and warrantyWorker, both
+    // 'global'. Verified mechanically by workerEntrypointClosure.contract.test.ts.
+    name: 'backupProviderSyncWorker',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/backupProviderSync');
+      return { init: m.initializeBackupProviderSyncJob, shutdown: m.shutdownBackupProviderSyncJob };
+    },
+  },
+  {
     // socket-owner, not global: its runtime import closure reaches
     // routes/agentWs.ts — jobs/m365SyncWorker.ts -> services/m365Sync/run.ts
     // -> services/m365ControlPlane/readActionService.ts ->
@@ -933,6 +945,18 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     load: async () => {
       const m = await import('../jobs/sensitiveDataJobs');
       return { init: m.initializeSensitiveDataWorkers, shutdown: m.shutdownSensitiveDataWorkers };
+    },
+  },
+  {
+    // #6263 W01. socket-owner, not global: the dispatch path imports
+    // services/commandQueue, whose closure reaches routes/agentWs.ts — the same
+    // reason sensitiveDataWorker above is socket-owner. Verified by
+    // workerEntrypointClosure.contract.test.ts, not by guessing.
+    name: 'securityScanWorker',
+    placement: 'socket-owner',
+    load: async () => {
+      const m = await import('../jobs/securityScanJobs');
+      return { init: m.initializeSecurityScanWorkers, shutdown: m.shutdownSecurityScanWorkers };
     },
   },
   {
@@ -1222,6 +1246,18 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     load: async () => {
       const m = await import('../jobs/ticketOutboxPublisher');
       return { init: m.initializeTicketOutboxPublisher, shutdown: m.shutdownTicketOutboxPublisher };
+    },
+  },
+  {
+    // Caller verification (#6354 W01) — post-commit publisher: rejection
+    // notifications (in-app + email) and W02/W03 challenge delivery/timeouts,
+    // driven off scalar markers on the verification row. 'global': no
+    // agent-socket-local dependency.
+    name: 'callerVerificationPublisher',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/callerVerificationPublisher');
+      return { init: m.initializeCallerVerificationPublisher, shutdown: m.shutdownCallerVerificationPublisher };
     },
   },
   {

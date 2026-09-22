@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import type { IntervalHistogram } from 'node:perf_hooks';
+import type { monitorEventLoopDelay } from 'node:perf_hooks';
+
+type IntervalHistogram = ReturnType<typeof monitorEventLoopDelay>;
 import {
   EventLoopLagMonitor,
   bucketEventLoopLag,

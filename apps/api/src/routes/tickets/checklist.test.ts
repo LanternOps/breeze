@@ -90,7 +90,7 @@ vi.mock('../../db/schema', () => ({
   ticketChecklistItems: {
     id: 'id', orgId: 'orgId', ticketId: 'ticketId', label: 'label', detail: 'detail',
     position: 'position', doneAt: 'doneAt', doneByUserId: 'doneByUserId', source: 'source',
-    sourceTemplateItemId: 'sourceTemplateItemId', createdBy: 'createdBy',
+    sourceTemplateItemId: 'sourceTemplateItemId', operatorStepId: 'operatorStepId', createdBy: 'createdBy',
     createdAt: 'createdAt', updatedAt: 'updatedAt',
   },
 }));
@@ -120,6 +120,7 @@ vi.mock('../../services/sensitiveReadAudit', () => ({
 
 import { ticketsRoutes } from './index';
 import { ChecklistServiceError } from '../../services/ticketChecklistService';
+import { HumanWorkStepWaitingError } from '../../services/aiOperator/humanWorkService';
 
 const TICKET_ID = '3f2f1d8e-1111-4222-8333-444455556666';
 const ITEM_ID = 'aaaabbbb-cccc-dddd-eeee-ffff00001111';
@@ -307,6 +308,15 @@ describe('checklist routes', () => {
     const res = await ticketsRoutes.request(`/checklist/${ITEM_ID}`, { method: 'DELETE' });
     expect(res.status).toBe(404);
     expect(checklistMocks.deleteChecklistItem).not.toHaveBeenCalled();
+  });
+
+  it('DELETE maps the Operator refusal to a 409 CHECKLIST_OPERATOR_STEP_WAITING (E3)', async () => {
+    checklistMocks.getChecklistItemOr404.mockResolvedValue({ id: ITEM_ID, ticketId: TICKET_ID });
+    getScopedTicketOr404Mock.mockResolvedValue({ id: TICKET_ID, orgId: 'o-1' });
+    checklistMocks.deleteChecklistItem.mockRejectedValue(new HumanWorkStepWaitingError('waiting on it'));
+    const res = await ticketsRoutes.request(`/checklist/${ITEM_ID}`, { method: 'DELETE' });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'waiting on it', code: 'CHECKLIST_OPERATOR_STEP_WAITING' });
   });
 
   it('DELETE removes an in-scope item', async () => {

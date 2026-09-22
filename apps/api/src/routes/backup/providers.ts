@@ -69,6 +69,7 @@ async function loadCredentials(id: string, partnerId: string) {
       provider: backupProviderConnections.provider,
       baseUrl: backupProviderConnections.baseUrl,
       credentialsEncrypted: backupProviderConnections.credentialsEncrypted,
+      isActive: backupProviderConnections.isActive,
     })
     .from(backupProviderConnections)
     .where(and(eq(backupProviderConnections.id, id), eq(backupProviderConnections.partnerId, partnerId)))
@@ -318,6 +319,15 @@ connectionRoutes.patch(
     }
 
     if (!updated) return c.json({ error: 'Backup provider connection not found' }, 404);
+
+    // A deactivated connection is skipped by processSyncAll, so nothing would
+    // ever clear its alerts again — the inbox would keep showing failures for a
+    // provider the MSP turned off. Same treatment as DELETE (spec, Sync job).
+    // Only on the true -> false transition, so a rename or a re-activation does
+    // not silently close a technician's open alerts.
+    if (body.isActive === false && existing.isActive === true) {
+      await resolveProviderAlertsForConnection(id);
+    }
 
     writeRouteAudit(c, {
       orgId: null,

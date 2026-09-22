@@ -136,7 +136,24 @@
   },
   "chooseSite": "Elegir un sitio",
   "chooseSiteExplanation": "Seleccione un sitio autorizado para mantener su red y diagnósticos separados.",
-  "disabled": "La nueva vista de topología no está habilitada para este sitio.",
   "reloadConfiguration": "Descartar borrador y volver a cargar la configuración actual",
-  "applyToSites": "Aplicar las versiones seleccionadas a los sitios autorizados"
+  "applyToSites": "Aplicar las versiones seleccionadas a los sitios autorizados",
+  "emptyState": {
+    "off": {
+      "title": "La topología de red está desactivada",
+      "body": "Breeze puede crear un mapa en vivo de la red de este sitio a partir de datos de agentes y SNMP.",
+      "partnerNextStep": "Un administrador del partner puede activarla en Configuración \u2192 Módulos.",
+      "orgNextStep": "Pídale a su MSP que la active.",
+      "openModules": "Abrir configuración de módulos"
+    },
+    "preparing": {
+      "title": "Creando el mapa de topología",
+      "body": "Breeze está recopilando datos de red de este sitio. Normalmente termina pocos minutos después de activar la función."
+    },
+    "unavailable": {
+      "title": "Topología no disponible",
+      "body": "La vista de topología no se puede mostrar para este sitio en este momento. Inténtelo más tarde o contacte a soporte si el problema persiste.",
+      "details": "Detalles técnicos"
+    }
+  }
 }

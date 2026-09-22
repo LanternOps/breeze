@@ -915,3 +915,5 @@ export * from './topologyCollection';
 export * from './topologyConfiguration';
 
 export * from './topologyDiagnostics';
+
+export * from './securityScan';

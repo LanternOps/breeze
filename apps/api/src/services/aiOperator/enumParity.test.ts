@@ -30,6 +30,13 @@ import {
   AI_OPERATOR_TASK_PHASES as SHARED_TASK_PHASES,
   AI_OPERATOR_TASK_STATES as SHARED_TASK_STATES,
   AI_OPERATOR_WAIT_REASONS as SHARED_WAIT_REASONS,
+  AI_OPERATOR_ACCOUNT_PROVIDERS as SHARED_ACCOUNT_PROVIDERS,
+  AI_OPERATOR_EVENT_ACTOR_KINDS as SHARED_EVENT_ACTOR_KINDS,
+  AI_OPERATOR_STEP_KINDS as SHARED_STEP_KINDS,
+  AI_OPERATOR_STEP_STATES as SHARED_STEP_STATES,
+  AI_OPERATOR_TARGET_KINDS as SHARED_TARGET_KINDS,
+  AI_OPERATOR_TARGET_STATES as SHARED_TARGET_STATES,
+  AI_OPERATOR_TASK_EVENT_TYPES as SHARED_TASK_EVENT_TYPES,
 } from '@breeze/shared';
 import {
   AI_OPERATOR_EXECUTION_REF_KINDS as SCHEMA_EXECUTION_REF_KINDS,
@@ -39,6 +46,19 @@ import {
   AI_OPERATOR_TASK_STATES as SCHEMA_TASK_STATES,
   AI_OPERATOR_WAIT_REASONS as SCHEMA_WAIT_REASONS,
 } from '../../db/schema/aiOperatorTasks';
+import {
+  AI_OPERATOR_ACCOUNT_PROVIDERS as SCHEMA_ACCOUNT_PROVIDERS,
+  AI_OPERATOR_EVENT_ACTOR_KINDS as SCHEMA_EVENT_ACTOR_KINDS,
+  AI_OPERATOR_STEP_KINDS as SCHEMA_STEP_KINDS,
+  AI_OPERATOR_STEP_STATES as SCHEMA_STEP_STATES,
+  AI_OPERATOR_TARGET_KINDS as SCHEMA_TARGET_KINDS,
+  AI_OPERATOR_TARGET_STATES as SCHEMA_TARGET_STATES,
+  AI_OPERATOR_TASK_EVENT_TYPES as SCHEMA_TASK_EVENT_TYPES,
+} from '../../db/schema/aiOperatorTaskGraph';
+import {
+  STEP_KINDS as RECIPE_STEP_KINDS,
+  TARGET_KINDS as RECIPE_TARGET_KINDS,
+} from './recipes/types';
 
 describe('AI Operator enum parity — shared package vs. db schema', () => {
   it('AI_OPERATOR_TASK_STATES matches byte-for-byte', () => {
@@ -63,6 +83,58 @@ describe('AI Operator enum parity — shared package vs. db schema', () => {
 
   it('AI_OPERATOR_EXECUTION_REF_KINDS matches byte-for-byte', () => {
     expect([...SHARED_EXECUTION_REF_KINDS]).toEqual([...SCHEMA_EXECUTION_REF_KINDS]);
+  });
+
+  // Wave E2 task-graph lists (recipe spec §5.1-§5.3).
+  it('AI_OPERATOR_TARGET_KINDS matches byte-for-byte', () => {
+    expect([...SHARED_TARGET_KINDS]).toEqual([...SCHEMA_TARGET_KINDS]);
+  });
+
+  it('AI_OPERATOR_TARGET_STATES matches byte-for-byte', () => {
+    expect([...SHARED_TARGET_STATES]).toEqual([...SCHEMA_TARGET_STATES]);
+  });
+
+  it('AI_OPERATOR_STEP_KINDS matches byte-for-byte', () => {
+    expect([...SHARED_STEP_KINDS]).toEqual([...SCHEMA_STEP_KINDS]);
+  });
+
+  it('AI_OPERATOR_STEP_STATES matches byte-for-byte', () => {
+    expect([...SHARED_STEP_STATES]).toEqual([...SCHEMA_STEP_STATES]);
+  });
+
+  it('AI_OPERATOR_ACCOUNT_PROVIDERS matches byte-for-byte', () => {
+    expect([...SHARED_ACCOUNT_PROVIDERS]).toEqual([...SCHEMA_ACCOUNT_PROVIDERS]);
+  });
+
+  it('AI_OPERATOR_TASK_EVENT_TYPES matches byte-for-byte', () => {
+    expect([...SHARED_TASK_EVENT_TYPES]).toEqual([...SCHEMA_TASK_EVENT_TYPES]);
+  });
+
+  it('the event-type list ends with human_work_unticked then task_settled, in all three copies', () => {
+    // The third copy is the CHECK constraint in
+    // migrations/2026-10-26-170100-ai-operator-human-work-links.sql section 3;
+    // aiOperatorHumanWorkStep.integration.test.ts proves that one against the
+    // live database. Here we pin the two TypeScript copies to each other.
+    expect([...SCHEMA_TASK_EVENT_TYPES]).toEqual([...SHARED_TASK_EVENT_TYPES]);
+    expect(SHARED_TASK_EVENT_TYPES).toContain('human_work_unticked');
+    expect(SHARED_TASK_EVENT_TYPES.at(-2)).toBe('human_work_unticked');
+    expect(SHARED_TASK_EVENT_TYPES.at(-1)).toBe('task_settled');
+  });
+
+  it('AI_OPERATOR_EVENT_ACTOR_KINDS matches byte-for-byte', () => {
+    expect([...SHARED_EVENT_ACTOR_KINDS]).toEqual([...SCHEMA_EVENT_ACTOR_KINDS]);
+  });
+
+  // THREE copies of the target/step kinds, not two: E1's recipe registry has
+  // its own TARGET_KINDS/STEP_KINDS (recipe spec §6.1), and a recipe that
+  // declares a kind the CHECK constraint does not permit fails at INSERT
+  // time, in production, on a real task. Pin them with the other two.
+  it('the recipe registry TARGET_KINDS matches the DB/wire target kinds', () => {
+    expect([...RECIPE_TARGET_KINDS]).toEqual([...SCHEMA_TARGET_KINDS]);
+  });
+
+  it('the recipe registry STEP_KINDS matches the DB/wire step kinds', () => {
+    expect([...RECIPE_STEP_KINDS]).toEqual([...SCHEMA_STEP_KINDS]);
   });
 });
 

@@ -2,6 +2,7 @@ import { and, eq, isNull, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { contacts } from '../../db/schema/contacts';
 import { organizations, sites } from '../../db/schema/orgs';
+import { recordDestinationChangeWithExecutor } from '../callerVerification/destinations';
 
 /**
  * Dual-write bridge between the `contacts` table and the legacy
@@ -144,16 +145,22 @@ async function applyToContactRow(
       .update(contacts)
       .set({ ...next, updatedAt: new Date() })
       .where(eq(contacts.id, existing.id));
+    await recordDestinationChangeWithExecutor(exec, {
+      orgId, contactId: existing.id, kind: 'email', value: next.email, source: 'technician', userId: actorId ?? null,
+    });
     return;
   }
 
-  await exec.insert(contacts).values({
+  const [created] = await exec.insert(contacts).values({
     orgId,
     siteId,
     ...next,
     roles: defaultRoles,
     isPrimary: true,
     createdBy: actorId ?? null,
+  }).returning({ id: contacts.id });
+  await recordDestinationChangeWithExecutor(exec, {
+    orgId, contactId: created!.id, kind: 'email', value: next.email, source: 'technician', userId: actorId ?? null,
   });
 }
 

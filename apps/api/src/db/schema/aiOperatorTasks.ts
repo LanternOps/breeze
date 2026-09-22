@@ -208,6 +208,32 @@ export const aiOperatorTasks = pgTable(
     // concurrent clicks.
     clientIdempotencyKey: text('client_idempotency_key'),
 
+    // Wave E2 (recipe spec §5.5). NULLABLE and DELIBERATELY WITHOUT A FOREIGN
+    // KEY: `ai_operator_workflows` (Operator spec §11's dual-owner config
+    // table) is a later wave, so there is nothing to reference yet. This is
+    // the one place in the Operator schema where a bare uuid is acceptable,
+    // and only because it is never dereferenced by any code in this wave —
+    // the moment a reader resolves it, the FK ships with that reader.
+    workflowConfigId: uuid('workflow_config_id'),
+
+    // Wave E2. The per-task monotonic allocator behind
+    // `ai_operator_task_events.transition_seq`.
+    //
+    // WHY A COUNTER COLUMN AND NOT `MAX(transition_seq) + 1`: the events table
+    // is append-only with a unique `(task_id, transition_seq)`, so two writers
+    // racing a MAX+1 read would collide on 23505 — and a 23505 raised inside
+    // the request transaction ABORTS it, turning an ordinary concurrent event
+    // into a 500 (the pattern that shipped as a bug before; a SAVEPOINT retry
+    // is the only alternative and is strictly more machinery). `UPDATE
+    // ai_operator_tasks SET event_seq = event_seq + 1 … RETURNING event_seq`
+    // instead takes the task's own row lock, which serialises every event
+    // writer for that task with no retry loop and no conflict at all.
+    //
+    // NOT a second CAS counter: `writeLeased` guards on `revision` and
+    // `lease_epoch` and never reads this column, so bumping it can never make
+    // an approved plan undispatchable (taskCoordinator.ts invariant 3).
+    eventSeq: bigint('event_seq', { mode: 'number' }).notNull().default(0),
+
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   },

@@ -577,7 +577,7 @@
       },
       "modules": {
         "label": "Modules",
-        "description": "Service desk & billing on/off"
+        "description": "Service desk, billing and topology on/off"
       }
     },
     "saved": "Partner settings saved",
@@ -605,6 +605,18 @@
       "offLabel": "Off — RMM only",
       "offDescription": "Hides the Service Desk and Billing sections and the customer record’s Tickets and Billing tabs. Existing tickets stay readable; no new ones can be created.",
       "externalNote": "This partner runs an external PSA. Changing that is not available here yet.",
+      "topologyTitle": "Network Topology",
+      "topologyBeta": "Beta",
+      "topologyDescription": "Builds a live map of each site's network from agent and SNMP data and adds a Topology tab to devices. Off by default while in beta.",
+      "topologyOnLabel": "Enable network topology",
+      "topologyPhysicalLabel": "Physical topology",
+      "topologyPhysicalDescription": "Show switch-port and cabling links between devices, not just logical neighbours.",
+      "topologyInterfaceHealthLabel": "Interface health",
+      "topologyInterfaceHealthDescription": "Poll interface status and errors over SNMP and colour links by their health.",
+      "topologyDiagnosticsLabel": "Diagnostics",
+      "topologyDiagnosticsDescription": "Run path and reachability checks from the map to explain why a device is unreachable.",
+      "topologyAiLabel": "AI insights",
+      "topologyAiDescription": "Let Breeze AI summarise the map and flag unusual changes in a site's topology.",
       "saved": "Modules updated",
       "saveFailed": "Failed to update modules"
     }
@@ -1325,6 +1337,10 @@
         "enableLifecycle": {
           "label": "Hardware lifecycle",
           "description": "Show the live replacement plan for your customer's machines."
+        },
+        "enableNetworkVisibility": {
+          "label": "Network visibility",
+          "description": "Show read-only network health and discovered assets in the customer portal."
         }
       }
     },

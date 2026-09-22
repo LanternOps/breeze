@@ -192,7 +192,12 @@ function parseCallbackIntent(phase: CallbackPhase, query: CallbackQuery): Callba
 
   if (phase === 'admin_consent') {
     if (hasNonEmptyError) {
-      return !hasCode && !hasTenant && !hasAdminConsent ? { kind: 'provider_error' } : null;
+      // Microsoft's admin-consent endpoint echoes `admin_consent=True` on its
+      // ERROR redirect too (seen 2026-09-21: `?error=invalid_grant&
+      // error_description=AADSTS50097…&admin_consent=True&state=…`), so that
+      // flag must not make a genuine provider error read as malformed. A code
+      // or tenant alongside an error is still ambiguous and rejected.
+      return !hasCode && !hasTenant ? { kind: 'provider_error' } : null;
     }
     if (
       !hasCode

@@ -25,8 +25,12 @@ export class PartnerSendingDomainsPage extends BasePage {
   addInput = () => this.page.getByTestId('sending-domains-add-input');
   addSubmit = () => this.page.getByTestId('sending-domains-add-submit');
   recommendation = () => this.page.getByTestId('sending-domains-recommendation');
-  records = () => this.page.getByTestId('sending-domains-records');
-  recordCopy = (index: number) => this.page.getByTestId(`sending-domain-record-${index}-copy`);
+  // Both render INSIDE a domain row, and a partner can hold several rows at
+  // once (a retried attempt or an earlier test leaves its row behind), so the
+  // bare testid is ambiguous under strict mode — scope through the row.
+  records = (id: string) => this.domainRow(id).getByTestId('sending-domains-records');
+  recordCopy = (id: string, index: number) =>
+    this.domainRow(id).getByTestId(`sending-domain-record-${index}-copy`);
 
   lockedCard = () => this.page.getByTestId('sending-domains-locked');
   lockedReason = () => this.page.getByTestId('sending-domains-locked-reason');

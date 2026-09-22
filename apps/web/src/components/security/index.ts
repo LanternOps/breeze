@@ -10,6 +10,7 @@ export { default as SecurityDashboard } from './SecurityDashboard';
 export { default as SecurityPageHeader } from './SecurityPageHeader';
 export { default as SecurityPolicyEditor } from './SecurityPolicyEditor';
 export { default as SecurityScanManager } from './SecurityScanManager';
+export { default as SecurityScansPage } from './SecurityScansPage';
 export { default as SecurityStatCard } from './SecurityStatCard';
 export { default as ThreatDetail } from './ThreatDetail';
 export { default as ThreatList } from './ThreatList';

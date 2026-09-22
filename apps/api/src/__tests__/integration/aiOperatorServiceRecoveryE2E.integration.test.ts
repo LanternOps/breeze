@@ -57,10 +57,15 @@ import {
   aiAgentRuns,
   aiAgents,
   aiOperatorOperations,
+  aiOperatorTaskEvents,
   aiOperatorTaskOutbox,
+  aiOperatorTaskSteps,
+  aiOperatorTaskTargets,
   aiOperatorTasks,
   devices,
 } from '../../db/schema';
+import { createTaskTarget } from '../../services/aiOperator/targetService';
+import { openStep } from '../../services/aiOperator/stepService';
 import type { AuthContext } from '../../middleware/auth';
 import { buildAgentAuthContext } from '../../services/aiAgents/agentAuthContext';
 import { createActionIntent, transitionIntent } from '../../services/actionIntents/intentService';
@@ -381,6 +386,74 @@ describe('Service recovery end to end — acceptance scenario 3', () => {
     // The independent read actually happened — a pass credited without it
     // would be C10's exact failure.
     expect(verifyServiceRunningForTask).toHaveBeenCalled();
+  });
+
+  // Recipe library E2 (#6167): the coordinator's task-graph writes, against
+  // real Postgres, through every step of a real run. The unit test
+  // (taskCoordinatorGraph.test.ts) pins the call shapes; this pins that the
+  // rows actually commit, with a stable identity, in the CAS transaction.
+  runDb('E2: every step transition leaves a settled step row and a contiguous event timeline', async () => {
+    const t = await seedTenant();
+    const alertId = await seedAlert(t);
+    const task = await admitTask(t, alertId);
+    // Seed the graph the way admitServiceRecoveryTask does (admitTask above
+    // inserts the task row directly, pre-E2 style).
+    const target = await withSystemDbAccessContext(async () => {
+      const created = await createTaskTarget(db, {
+        orgId: t.orgId, taskId: task.id, targetKind: 'device', deviceId: t.deviceId,
+        targetLabel: 'e2e-host', targetOrdinal: 0,
+      });
+      await openStep(db, {
+        orgId: t.orgId, taskId: task.id, stepKey: 'investigate', stepKind: 'reason',
+        targetId: created.id, attemptOrdinal: 0, planRevision: 1,
+      });
+      return created;
+    });
+    const runId = await insertTaskRun(t, task.id);
+
+    const { intent, commandId } = await driveToResult(t, task, runId, 'completed');
+    await seedFixWatch(t, intent.id, runId, alertId, 'held_qualified');
+    verifyServiceRunningForTask.mockResolvedValue({ verification: 'passed' });
+    await handleTaskWake({ orgId: t.orgId, taskId: task.id, sourceKind: 'intent', sourceId: intent.id });
+    await handleTaskWake({ orgId: t.orgId, taskId: task.id, sourceKind: 'execution', sourceId: commandId });
+    await handleTaskWake({ orgId: t.orgId, taskId: task.id, sourceKind: 'verification', sourceId: task.id });
+
+    const final = await readTask(task.id);
+    expect(final!.state).toBe('completed');
+
+    const steps = await withSystemDbAccessContext(() =>
+      db.select().from(aiOperatorTaskSteps).where(eq(aiOperatorTaskSteps.taskId, task.id)));
+    const byKey = Object.fromEntries(steps.map((s) => [s.stepKey, s]));
+    // One row per step, no duplicates from re-armed waits or reclaims.
+    expect(steps.map((s) => s.stepKey).sort()).toEqual(['execute', 'investigate', 'observe', 'verify']);
+    for (const key of ['investigate', 'execute', 'observe', 'verify']) {
+      expect(byKey[key], key).toMatchObject({
+        state: 'succeeded', targetId: target.id, attemptOrdinal: 0, orgId: t.orgId,
+      });
+      expect(byKey[key]!.settledAt, key).toBeInstanceOf(Date);
+    }
+    expect(byKey.execute!.stepKind).toBe('effect');
+    expect(byKey.observe!.stepKind).toBe('probe');
+    // A settled step's dependency is discharged.
+    expect(byKey.execute!.dependencyKind).toBeNull();
+
+    const events = await withSystemDbAccessContext(() =>
+      db.select().from(aiOperatorTaskEvents).where(eq(aiOperatorTaskEvents.taskId, task.id)));
+    const seqs = events.map((e) => e.transitionSeq).sort((a, b) => a - b);
+    // Contiguous 1..N, and the task's allocator agrees with the last one.
+    expect(seqs).toEqual(Array.from({ length: seqs.length }, (_, i) => i + 1));
+    expect(final!.eventSeq).toBe(seqs.length);
+    const types = [...events].sort((a, b) => a.transitionSeq - b.transitionSeq).map((e) => e.eventType);
+    expect(types).toContain('step_opened');
+    expect(types).toContain('wait_entered');
+    expect(types[types.length - 1]).toBe('task_settled');
+    expect(events.every((e) => e.actorKind === 'coordinator' && e.actorUserId === null)).toBe(true);
+
+    // The inline projection is untouched and the target row is still live.
+    const [targetRow] = await withSystemDbAccessContext(() =>
+      db.select().from(aiOperatorTaskTargets).where(eq(aiOperatorTaskTargets.id, target.id)));
+    expect(targetRow!.deviceId).toBe(t.deviceId);
+    expect(final!.deviceId).toBe(t.deviceId);
   });
 
   runDb('a continuation run re-proposing the same restart attaches, never duplicates', async () => {

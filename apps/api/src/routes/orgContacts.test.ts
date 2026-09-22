@@ -421,7 +421,7 @@ describe('POST /organizations/:id/contacts', () => {
     expect(crudMocks.createContact.mock.calls[0]![1]).toMatchObject({
       orgId: ORG, name: 'Jane Ops', email: 'jane@acme.example', isPrimary: true,
     });
-    expect(crudMocks.createContact.mock.calls[0]![2]).toEqual({ userId: 'u-1' });
+    expect(crudMocks.createContact.mock.calls[0]![2]).toEqual({ userId: 'u-1', destinationSource: 'technician' });
     expect(auditSpy).toHaveBeenCalledTimes(1);
     expect(auditSpy.mock.calls[0]![1]).toMatchObject({
       orgId: ORG, action: 'contact.create', resourceType: 'contact', resourceId: CONTACT,
@@ -663,7 +663,7 @@ describe('POST /contacts/import', () => {
     expect(importMocks.commitContactImport.mock.calls[0]![1]).toEqual({
       partnerId: PARTNER, accessibleOrgIds: [ORG], allowedSiteIds: null,
     });
-    expect(importMocks.commitContactImport.mock.calls[0]![2]).toEqual({ userId: 'u-1' });
+    expect(importMocks.commitContactImport.mock.calls[0]![2]).toEqual({ userId: 'u-1', destinationSource: 'technician' });
   });
 
   it.each([

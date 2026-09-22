@@ -44,6 +44,7 @@ import {
   assertPamDeviceOrgMoveAllowed,
   PamDeviceMoveBlockedError,
 } from '../../services/pamDeviceMoveGuard';
+import { revokeWorkstationGrantsForMove } from '../../services/callerVerification/deviceMove';
 import { pgErrorNode } from '../../utils/pgErrors';
 import { assertDeviceTicketsNotPinnedToDeliverable, revalidateTicketAssignee, TicketServiceError } from '../../services/ticketService';
 
@@ -483,6 +484,23 @@ moveOrgRoutes.post(
                 AND org_id = ${sourceOrgId}::uuid`,
         );
 
+        // Caller verification (#6354 W01): lock the device row and revoke the
+        // source org's workstation authorization BEFORE the org flip. The
+        // FOR UPDATE here is load-bearing — nothing above locks the device
+        // row, and a concurrent `start` holds a FOR SHARE on it until its
+        // grant INSERT commits, so the hook's snapshot cannot miss an
+        // in-flight grant. Lock order stays orgs → device → subject bindings.
+        const [callerMoveDevice] = await tx
+          .select({ orgId: devices.orgId })
+          .from(devices)
+          .where(eq(devices.id, deviceId))
+          .limit(1)
+          .for('update');
+        if (callerMoveDevice?.orgId !== sourceOrgId) {
+          throw new Error('Device organization changed during move');
+        }
+        await revokeWorkstationGrantsForMove(tx, sourceOrgId, deviceId);
+
         // Flip the device row first so any concurrent agent heartbeat
         // after this point resolves the new org_id.
         const [row] = await tx
@@ -652,6 +670,41 @@ moveOrgRoutes.post(
                      state = CASE WHEN state IN ('queued', 'running', 'waiting', 'paused') THEN 'stopping' ELSE state END,
                      updated_at = now()
                WHERE device_id = ${deviceId}::uuid`,
+        );
+
+        // Recipe library E2 (#6167): the same detach one level down, on BOTH
+        // pointer axes a device move reaches. Normally matches NOTHING —
+        // breeze_cascade_device_org_id() already ran when the devices row
+        // flipped earlier in this transaction and carries identical statements
+        // (migration 2026-10-26-160000 section 9). Kept as a route-local
+        // mirror for the same two reasons the task statement above is: the
+        // detach is visible where the move is read, and the route still
+        // detaches if the trigger is ever dropped. Both copies are convergent
+        // (COALESCE on the stamp), so whichever runs first wins.
+        //
+        // A target's org_id IS its task's immutable org_id, so it never
+        // re-stamps; the pointer is severed and the frozen target_label kept.
+        await tx.execute(
+          sql`UPDATE ai_operator_task_targets
+                 SET device_id = NULL,
+                     detached_at = COALESCE(detached_at, now()),
+                     detached_reason = COALESCE(detached_reason, 'device_moved'),
+                     state = 'detached',
+                     updated_at = now()
+               WHERE device_id = ${deviceId}::uuid`,
+        );
+        // Ticket-axis twin: a ticket bound to this device follows it to the
+        // destination org (the trigger's generic loop), while a target naming
+        // that ticket stays with its source-org task. target.ticket_id is a
+        // PLAIN FK, so a stale pointer would otherwise survive in silence.
+        await tx.execute(
+          sql`UPDATE ai_operator_task_targets
+                 SET ticket_id = NULL,
+                     detached_at = COALESCE(detached_at, now()),
+                     detached_reason = COALESCE(detached_reason, 'scope_invalidated'),
+                     state = 'detached',
+                     updated_at = now()
+               WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${deviceId}::uuid)`,
         );
 
         // #3205 W07: billing evidence stays in the INVOICE's org — the invoice

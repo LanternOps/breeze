@@ -4,6 +4,7 @@ import type {
   BackupOverviewDto,
   DashboardDto,
   EnrichedPortalDevice,
+  NetworkOverviewDto,
   PortalRunDto,
   SecurityDeviceRow,
   SecurityOverviewDto,
@@ -46,4 +47,19 @@ describe('portal visibility DTOs', () => {
     const status: TileStatus = 'no_data';
     expect(status).toBe('no_data');
   });
+
+  it('keeps network overview availability discriminated', () => {
+    expectTypeOf<NetworkOverviewDto['dataStatus']>().toEqualTypeOf<
+      'ok' | 'no_data' | 'not_enabled'
+    >();
+
+    expectTypeOf<
+      Extract<NetworkOverviewDto, { dataStatus: 'ok' }>['totalAssets']
+    >().toEqualTypeOf<number>();
+
+    expectTypeOf<
+      Exclude<NetworkOverviewDto, { dataStatus: 'ok' }>['totalAssets']
+    >().toEqualTypeOf<null>();
+  });
+
 });

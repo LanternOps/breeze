@@ -35,7 +35,7 @@ import PartnerAiProviderTab from './PartnerAiProviderTab';
 import PartnerRemoteAccessTab from './PartnerRemoteAccessTab';
 import PartnerSendingDomainTab from './PartnerSendingDomainTab';
 import PartnerCompanyTab from './PartnerCompanyTab';
-import PartnerModulesCard from './PartnerModulesCard';
+import PartnerModulesCard, { type TopologyFeatureFlags } from './PartnerModulesCard';
 import type { ServiceManagementMode } from '@/stores/orgStore';
 import PartnerRegionalTab, { DEFAULT_BUSINESS_HOURS } from './PartnerRegionalTab';
 import LoginBrandingCard from './LoginBrandingCard';
@@ -78,7 +78,9 @@ type Partner = {
   timezone?: string;
   // Plain-text signature appended to outbound customer emails (quote sends).
   emailSignature?: string | null;
-  settings: PartnerSettings;
+  // `topologyFeatureFlags` is not on the shared PartnerSettings type yet; the
+  // card owns its shape, so the intersection stays local to this page.
+  settings: PartnerSettings & { topologyFeatureFlags?: TopologyFeatureFlags };
   // #5075 W04 — which service-desk/billing module this partner runs.
   // `undefined` on every render before the partner fetch resolves, and also on
   // an API too old to send it. The card treats both the same way: display
@@ -658,7 +660,10 @@ export default function PartnerSettingsPage() {
           {/* Modules Tab (M7) — the service management on/off switch gets its
               own home instead of living inside Company. */}
           {activeTab === 'modules' && (
-            <PartnerModulesCard serviceManagementMode={partner?.serviceManagementMode} />
+            <PartnerModulesCard
+              serviceManagementMode={partner?.serviceManagementMode}
+              topologyFeatureFlags={partner?.settings?.topologyFeatureFlags}
+            />
           )}
 
           {/* Regional Tab */}

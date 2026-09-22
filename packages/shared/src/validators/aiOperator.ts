@@ -202,6 +202,22 @@ export const taskCheckpointSchema = z.object({
   lastOperationKey: z.string().max(200).nullable().default(null),
   /** The fix watch opened for the alert half of the criterion, if any. */
   fixWatchId: z.string().uuid().nullable().default(null),
+  /**
+   * When a `wait` step may resume (recipe spec §6.1's `wait` row, §6.3's
+   * `wait_cutoff`). ISO-8601. Written by the step that transitions INTO the
+   * wait, read by the coordinator's generic `advanceWait`.
+   */
+  waitUntil: z.string().datetime().optional(),
+  /**
+   * The step key the coordinator moves to when the current `wait` or
+   * `human_work` step settles.
+   *
+   * NOT derivable from `permittedNextSteps`: that map says what the MODEL may
+   * propose, and a human-work or timed wait has no model output at all. The
+   * recipe's spine owns the successor, so the step that enters the wait states
+   * it. Absent is a recipe bug and is refused loudly, never guessed.
+   */
+  resumeStepKey: z.string().min(1).max(128).optional(),
 }).strict();
 export type TaskCheckpoint = z.infer<typeof taskCheckpointSchema>;
 

@@ -408,6 +408,32 @@ export const sensitiveDataQueueJobDataSchema = z.union([
   }).strict(),
 ]);
 
+/**
+ * #6263 W01. `origin` distinguishes a tech pressing "Scan now" from the 60 s
+ * policy tick; only the scheduler variant carries the occurrence it was created
+ * for, which is what makes a duplicate tick a no-op.
+ */
+export const securityScanQueueJobDataSchema = z.union([
+  z.object({
+    type: z.literal('dispatch-scan'),
+    scanId: z.string().uuid(),
+    origin: z.literal('manual'),
+  }).strict(),
+  z.object({
+    type: z.literal('dispatch-scan'),
+    scanId: z.string().uuid(),
+    origin: z.literal('policy_scheduler'),
+    configPolicyId: z.string().uuid(),
+    occurrenceIso: z.string().min(1),
+  }).strict(),
+  z.object({
+    type: z.literal('schedule-policies'),
+    scanAt: z.string().min(1),
+  }).strict(),
+]);
+
+export type SecurityScanQueueJobData = z.infer<typeof securityScanQueueJobDataSchema>;
+
 export const drExecutionQueueJobDataSchema = z.object({
   type: z.literal('reconcile-execution'),
   executionId: z.string().min(1),

@@ -31,6 +31,7 @@ describe('GET /config', () => {
 
   beforeEach(() => {
     vi.stubEnv('BREEZE_AI_AGENTS_SWEEP_ACT_ENABLED', undefined);
+    vi.stubEnv('CALLER_VERIFICATION_ENABLED', 'false');
     delete process.env.BREEZE_BILLING_URL;
     delete process.env.ENABLE_REGISTRATION;
     mocks.authRef.current = {
@@ -77,14 +78,21 @@ describe('GET /config', () => {
   it('returns both flags false when BREEZE_BILLING_URL unset', async () => {
     const { status, body } = await request();
     expect(status).toBe(200);
-    expect(body.features).toEqual({ billing: false, support: false, aiOperatorTasks: false, toolSources: false, aiAgentsSweepAct: false });
+    expect(body.features).toEqual({ billing: false, support: false, aiOperatorTasks: false, toolSources: false, aiAgentsSweepAct: false, callerVerification: false });
   });
 
   it('returns both flags true when BREEZE_BILLING_URL is set', async () => {
     process.env.BREEZE_BILLING_URL = 'http://localhost:4000';
     const { status, body } = await request();
     expect(status).toBe(200);
-    expect(body.features).toEqual({ billing: true, support: true, aiOperatorTasks: false, toolSources: false, aiAgentsSweepAct: false });
+    expect(body.features).toEqual({ billing: true, support: true, aiOperatorTasks: false, toolSources: false, aiAgentsSweepAct: false, callerVerification: false });
+  });
+
+  it.each(['true', 'false', '', 'garbage'])('returns caller verification readiness for %s', async (value) => {
+    vi.stubEnv('CALLER_VERIFICATION_ENABLED', value);
+    const { status, body } = await request();
+    expect(status).toBe(200);
+    expect(body.features.callerVerification).toBe(value === 'true');
   });
 
   it('features.aiOperatorTasks is false when neither AI Operator env var is set', async () => {

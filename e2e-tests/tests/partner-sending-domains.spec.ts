@@ -1,7 +1,7 @@
 import type { BrowserContext, Page } from '@playwright/test';
 import { test, expect } from '../fixtures';
 import { clearRefreshState } from '../test-helpers';
-import { STORAGE_STATE } from '../global-setup';
+import { persistStorageState } from '../auth-state';
 import { PartnerSendingDomainsPage } from '../pages/PartnerSendingDomainsPage';
 
 /**
@@ -26,7 +26,10 @@ import { PartnerSendingDomainsPage } from '../pages/PartnerSendingDomainsPage';
  * ai-script-proposals.spec.ts and multi-currency.spec.ts). Within one context
  * the cookie jar follows every rotation.
  */
-test.describe.configure({ mode: 'serial' });
+// The first test is a seven-step flow with three reloads and two 60 s
+// `toPass` polls; it cannot fit Playwright's default 30 s per-test budget
+// (it timed out on every CI run once the auth failures were out of the way).
+test.describe.configure({ mode: 'serial', timeout: 180_000 });
 test.beforeEach(clearRefreshState);
 
 function uniqueDomain(suffix: string): string {
@@ -37,11 +40,12 @@ test.describe('Partner sending domains', () => {
   let ctx: BrowserContext;
   let authedPage: Page;
 
-  test.beforeAll(async ({ browser }) => {
-    ctx = await browser.newContext({ storageState: STORAGE_STATE });
+  test.beforeAll(async ({ browser, workerStorageState }) => {
+    ctx = await browser.newContext({ storageState: workerStorageState });
     authedPage = await ctx.newPage();
   });
-  test.afterAll(async () => {
+  test.afterAll(async ({ workerStorageState }) => {
+    if (ctx) await persistStorageState(ctx, workerStorageState);
     await ctx?.close();
   });
 
@@ -53,7 +57,13 @@ test.describe('Partner sending domains', () => {
     await test.step('1. The tab is offered and opens on its own hash', async () => {
       await page.goto();
       await expect(page.navTab()).toBeVisible();
-      await expect(page.recommendation()).toBeVisible();
+      // The recommendation renders only while the partner has NO domains. A
+      // retry after a mid-flow failure (or a re-run against a live stack)
+      // inherits the previous attempt's row, so accept either the empty-state
+      // banner or an existing row as proof the tab loaded its data.
+      await expect(
+        page.recommendation().or(authedPage.getByTestId(/^sending-domain-row-/)).first(),
+      ).toBeVisible();
     });
 
     await test.step('2. Adding the domain creates a row', async () => {
@@ -62,8 +72,8 @@ test.describe('Partner sending domains', () => {
     });
 
     await test.step('3. The DNS records appear', async () => {
-      await expect(page.records()).toBeVisible({ timeout: 30_000 });
-      await page.recordCopy(0).click();
+      await expect(page.records(domainId)).toBeVisible({ timeout: 30_000 });
+      await page.recordCopy(domainId, 0).click();
     });
 
     await test.step('4. Check now drives it to verified', async () => {
@@ -143,12 +153,14 @@ test.describe('Partner sending domains', () => {
     await expect(page.retry(domainId)).toBeVisible();
     await expect(page.remove(domainId)).toBeVisible();
 
-    authedPage.once('dialog', (dialog) => void dialog.accept());
+    // Same modal as step 7 of the flow above: no native dialog ever fires, so
+    // the DELETE only goes out once the app's own confirm button is clicked.
+    await page.remove(domainId).click();
     await Promise.all([
       authedPage.waitForResponse(
         (r) => r.request().method() === 'DELETE' && new URL(r.url()).pathname.endsWith(`/${domainId}`),
       ),
-      page.remove(domainId).click(),
+      page.removeConfirm().click(),
     ]);
   });
 

@@ -263,11 +263,13 @@ const MAX_LIST_FAILURE_REASON_LENGTH = 200;
 export function toVerificationListItem(row: BackupVerification): BackupVerification {
   // Verification details are agent-controlled and can contain restore paths,
   // failed-file names, command identifiers, and raw result internals. List
-  // consumers only get the simulated-evidence marker plus, for failed rows, a
-  // whitespace-normalized, length-capped `reason` string (never other keys).
+  // consumers only get the simulated-evidence marker plus, for rows that did
+  // not pass, a whitespace-normalized, length-capped `reason` string (never
+  // other keys). `partial` is included because a downgraded result is just as
+  // unexplained without it (#6561).
   const details: Record<string, unknown> = {};
   if (row.details?.simulated === true) details.simulated = true;
-  if (row.status === 'failed' && typeof row.details?.reason === 'string') {
+  if ((row.status === 'failed' || row.status === 'partial') && typeof row.details?.reason === 'string') {
     const reason = row.details.reason.replace(/\s+/g, ' ').trim().slice(0, MAX_LIST_FAILURE_REASON_LENGTH);
     if (reason) details.reason = reason;
   }

@@ -5,3 +5,4 @@
  */
 export * from './setup';
 export * from './db-utils';
+export * from './auditWait';

@@ -97,7 +97,8 @@
     "sectionServiceDesk": "Service desk",
     "serviceManagement": "Gestione servizi",
     "ticketing": "Ticket",
-    "deliverableTemplates": "Modelli di consegna"
+    "deliverableTemplates": "Modelli di consegna",
+    "securityScans": "Scansioni IOC"
   },
   "documentTitles": {
     "dashboard": "Dashboard",

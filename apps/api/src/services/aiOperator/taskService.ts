@@ -47,6 +47,11 @@ import {
 import { resolveAdmissionRecipe } from './recipes';
 import { aiOperatorServiceRecoveryEnabled, aiOperatorTasksEnabled } from '../../config/env';
 import { admissionFenced } from './taskTransitions';
+import { createTaskTarget } from './targetService';
+import { openStep, resolveStepKind } from './stepService';
+import { appendTaskEvent } from './eventService';
+import { resolveTaskDeadlineMs } from './taskDeadline';
+import { resolveEffectiveAgentSystem } from '../aiAgents/effectivePolicy';
 
 export type AdmitTaskRefusal =
   | 'tasks_disabled'
@@ -205,7 +210,26 @@ export async function admitServiceRecoveryTask(
       }
 
       const taskId = randomUUID();
-      const deadlineMs = input.deadlineMs ?? recipe.bounds.deadlineMs;
+
+      // v15 task-wide budget `taskDeadlineHours` (recipe library E2, #6167):
+      // the recipe bound and any caller-requested deadline are both capped by
+      // the EFFECTIVE agent policy's ceiling. We are already inside a system
+      // context, so resolveEffectiveAgentSystem reads straight through on
+      // this connection. The effective agent must be the one being pinned;
+      // if the org has since replaced it, the pinned agent's first run
+      // admission refuses with ownership_mismatch anyway, and the default
+      // ceiling applies here rather than a stranger's policy.
+      const effectiveAgent = await resolveEffectiveAgentSystem(input.orgId, agent.kind as never);
+      const deadlineMs = resolveTaskDeadlineMs({
+        requestedMs: input.deadlineMs,
+        recipeDeadlineMs: recipe.bounds.deadlineMs,
+        policyLimits: effectiveAgent && effectiveAgent.agentId === agent.id
+          ? effectiveAgent.effective.limits
+          : null,
+        // ±10% jitter (spec §11.2) so a burst of tasks admitted together does
+        // not create an expiry wave 24 hours later.
+        jitter: () => 0.9 + Math.random() * 0.2,
+      });
 
       const clientIdempotencyKey = input.clientIdempotencyKey ?? null;
 
@@ -235,9 +259,8 @@ export async function admitServiceRecoveryTask(
         attemptOrdinal: 0,
         currentStepKey: 'investigate',
         checkpoint: checkpoint as unknown as Record<string, unknown>,
-        // ±10% jitter (spec §11.2) so a burst of tasks admitted together does
-        // not create an expiry wave 24 hours later.
-        deadlineAt: new Date(now.getTime() + Math.round(deadlineMs * (0.9 + Math.random() * 0.2))),
+        // Already jittered and capped by resolveTaskDeadlineMs above.
+        deadlineAt: new Date(now.getTime() + deadlineMs),
         // Due immediately. The coordinator's `queued_past_wake` scan is what
         // picks it up — admission does NOT enqueue a wake job, because a queued
         // task has no authoritative source row to re-derive a wake FROM, which
@@ -262,6 +285,53 @@ export async function admitServiceRecoveryTask(
         .returning({ id: aiOperatorTasks.id });
 
       if (inserted.length > 0) {
+        // Wave E2 (#6167). The target row is the identity; the inline
+        // device_id / target_label columns written above stay as the read
+        // projection recipe spec §5.5 keeps until P3-5. BOTH are written,
+        // deliberately — this wave is additive, and every existing reader of
+        // the inline columns keeps working unchanged.
+        //
+        // Inside the SAME transaction as the task insert (this callback is one
+        // withSystemDbAccessContext transaction and the bare `db` proxy joins
+        // it), and ONLY on this branch: the idempotent-replay branch below did
+        // not create the task, and writing a second target/step/event for a
+        // task another request already admitted is exactly the duplicate the
+        // client idempotency key exists to prevent.
+        const target = await createTaskTarget(db, {
+          orgId: input.orgId,
+          taskId,
+          targetKind: 'device',
+          deviceId: device.id,
+          targetLabel: (device.hostname ?? recipeInput.deviceId).slice(0, 255),
+          targetOrdinal: 0,
+        });
+
+        await openStep(db, {
+          orgId: input.orgId,
+          taskId,
+          stepKey: 'investigate',
+          stepKind: resolveStepKind(recipe.key, recipe.version, 'investigate'),
+          targetId: target.id,
+          attemptOrdinal: 0,
+          planRevision: 1,
+          checkpoint: checkpoint as unknown as Record<string, unknown>,
+        });
+
+        // ONE event for the whole admission, not three. `createTaskTarget` and
+        // `openStep` are called without an `actor` above precisely so they do
+        // not each write their own — an admission is one transition.
+        await appendTaskEvent(db, {
+          orgId: input.orgId,
+          taskId,
+          eventType: 'task_admitted',
+          actor: input.requesterUserId
+            ? { kind: 'user', userId: input.requesterUserId }
+            : { kind: 'system' },
+          stepKey: 'investigate',
+          targetId: target.id,
+          detail: `${recipe.key} v${recipe.version} admitted against device target ${target.id}`,
+        });
+
         return { ok: true as const, taskId, replayed: false };
       }
 

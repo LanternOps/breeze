@@ -23,6 +23,9 @@ var (
 	readDOCachePolicy    = readDOCachePolicyImpl
 	resolveWindowsBinary = resolveBinary
 	runWindowsProcess    = runProcess
+	// cleanmgr gets the idle-watchdog entry point (#6482); every other Windows
+	// cleaner exits on its own and uses the plain one.
+	runWindowsProcessIdle = runProcessIdle
 )
 
 const (
@@ -38,6 +41,30 @@ const (
 	dismCleanupTimeout   = 90 * time.Minute
 	windowsEstimateLimit = 3 * time.Minute
 )
+
+// cleanmgrIdleLimits ends a wedged session-0 Disk Cleanup long before the
+// 60-minute cap (#6482).
+//
+// The numbers are deliberately loose. cleanmgr's handlers are file deletions,
+// which accrue kernel time continuously while they run, so a tree that has not
+// moved the job object's CPU total by a quarter of a second in five straight
+// minutes is not working — it is sitting on the invisible session-0 desktop
+// waiting for a dismissal that will never come. The one-minute grace period
+// covers a slow start (the handler enumeration on a large WinSxS), and the
+// 60-minute cap stays as the backstop for a host where the job object could
+// not be created and the watchdog is therefore off.
+var cleanmgrIdleLimits = idleLimits{
+	sample:    15 * time.Second,
+	minRun:    time.Minute,
+	idleAfter: 5 * time.Minute,
+	noise:     250 * time.Millisecond,
+}
+
+// cleanmgrIdleNote is what the tech reads in outputTail when the watchdog
+// ended the run. It must say what happened without implying a failure: the
+// handlers did their work, cleanmgr merely never exits.
+const cleanmgrIdleNote = "Disk Cleanup finished its handlers but never exits under the SYSTEM service " +
+	"(it waits on a progress window that session 0 cannot show); its process tree was terminated once it stopped using CPU."
 
 // winCleanmgrHandler is one allowlisted cleanmgr handler.
 //
@@ -66,8 +93,6 @@ type winCleanmgrHandler struct {
 // account they operate on the SYSTEM profile, and the file engine already
 // covers user bins) — are absent by construction and asserted absent by test.
 var winCleanmgrHandlers = []winCleanmgrHandler{
-	{slug: "update_cleanup", keyName: "Update Cleanup", label: "Windows Update cleanup",
-		riskFlags: []string{RiskMayRequireReboot}},
 	{slug: "delivery_optimization_files", keyName: "Delivery Optimization Files", label: "Delivery Optimization files",
 		estimatePathsFn: func() []string { return []string{deliveryOptimizationCachePath(readDOCachePolicy())} }},
 	{slug: "device_driver_packages", keyName: "Device Driver Packages", label: "Device driver packages",
@@ -104,6 +129,23 @@ var winCleanmgrHandlers = []winCleanmgrHandler{
 	{slug: "content_indexer_cleaner", keyName: "Content Indexer Cleaner", label: "Search index fragments"},
 }
 
+// winRetiredCleanmgrHandlers are allowlist slugs Breeze no longer OFFERS, kept
+// as recognised ids so an older saved selection is answered with a reason
+// rather than a validation error (#6482).
+//
+// `update_cleanup` is the one entry. Under the SYSTEM service its handler
+// deadlocks inside DismGetUsedSpaceInternal — the size query it makes BEFORE
+// deleting anything — so unlike every other handler it wedges without doing
+// any work at all: three of three W05 lab runs freed nothing and had to be
+// killed. `win_dism_component_cleanup` (DISM /StartComponentCleanup) is the
+// supported non-interactive form of the same component-store cleanup and
+// completed in 7.6 s on the same rig, so nothing is lost by retiring it.
+var winRetiredCleanmgrHandlers = map[string]string{
+	"update_cleanup": "Windows Update cleanup cannot run under the SYSTEM service: cleanmgr's " +
+		"Update Cleanup handler deadlocks in session 0 before it frees anything. " +
+		"Use the win_dism_component_cleanup action, which performs the same component-store cleanup.",
+}
+
 // paths returns the directories whose size stands in for this handler, static
 // and runtime-resolved alike. Empty means "opaque" — the handler reports
 // estimateKnown:false rather than a number it cannot stand behind.
@@ -114,6 +156,15 @@ func (h winCleanmgrHandler) paths() []string {
 	return h.estimatePaths
 }
 
+// winCleanmgrHandlerBySubID also recognises a RETIRED slug (#6603): selectionFor
+// uses this lookup to decide whether an id belongs to win_cleanmgr at all, and
+// a retired slug must still route there so winCleanmgrAction.Run's retirement
+// branch (below) can answer with `unavailable` and the replacement id.
+// Searching winCleanmgrHandlers alone made a retired id fall through to
+// selectionFor's requested[] map, which matches no Action.ID() and silently
+// dropped it before win_cleanmgr was ever constructed. The returned handler
+// carries only the slug — a retired entry has no keyName, and Run never
+// reaches availableHandlers() for a retired slug (it is intercepted first).
 func winCleanmgrHandlerBySubID(subID string) (winCleanmgrHandler, bool) {
 	slug := strings.TrimPrefix(subID, "win_cleanmgr:")
 	if slug == subID {
@@ -123,6 +174,9 @@ func winCleanmgrHandlerBySubID(subID string) (winCleanmgrHandler, bool) {
 		if handler.slug == slug {
 			return handler, true
 		}
+	}
+	if _, ok := winRetiredCleanmgrHandlers[slug]; ok {
+		return winCleanmgrHandler{slug: slug}, true
 	}
 	return winCleanmgrHandler{}, false
 }
@@ -263,7 +317,7 @@ func (winCleanmgrAction) Available(context.Context) (bool, string) {
 }
 
 // Estimate is the sum of the known handler directories; handlers with no known
-// directory (Update Cleanup above all) contribute nothing, so the total is a
+// directory (Temporary Files above all) contribute nothing, so the total is a
 // lower bound on an upper bound and is presented as "up to".
 func (a winCleanmgrAction) Estimate(context.Context) (int64, bool, string) {
 	var total int64
@@ -363,13 +417,22 @@ func (a winCleanmgrAction) SubActions() []SubActionInfo {
 // as LABELS, not as authenticity — the allowlist is a list of things Breeze
 // offers, not proof that a key of that name is the Microsoft handler.
 //
-// Session-0 caveat (spec §7.2): under the SYSTEM account cleanmgr renders a
-// hidden progress UI and is documented to return before its work finishes or
-// to hang outright. The runner therefore waits on the whole process tree (the
-// job object in process_tree_windows.go), treats the exit code as
-// INFORMATIONAL ONLY, and reports timed_out with partial status at the 60
-// minute cap. The acceptance criterion for this action is the W05 lab run
-// (Task 17), not a unit test — nothing here can prove session-0 behaviour.
+// Session-0 caveat (spec §7.2, measured in W05 and fixed in #6482): under the
+// SYSTEM account cleanmgr renders a progress UI onto session 0's invisible
+// desktop and never exits — 3 of 3 lab runs sat at ~0.2 s of CPU for the whole
+// 60-minute cap with the file work already done. The runner therefore waits on
+// the whole process tree (the job object in process_tree_windows.go), treats
+// the exit code as INFORMATIONAL ONLY, and arms the idle watchdog
+// (cleanmgrIdleLimits): once the tree's CPU total has been flat for five
+// minutes it is terminated and the run reports `completed` with
+// cleanmgrIdleNote, because a cleanmgr that has stopped working has finished
+// its handlers. The 60-minute cap stays as the backstop for hosts where the
+// job object could not be created, and that path still reports timed_out.
+//
+// Whatever the outcome, cleanmgr reports NOTHING per handler, so every
+// sub-action carries the parent's status rather than a `completed` nobody
+// verified (W05 BUG-3). The acceptance criterion for this action is the lab
+// run, not a unit test — nothing here can prove session-0 behaviour.
 //
 // The process-wide maintenance lock is held by the RUN (catalog.go), not
 // acquired here: two runs rewriting this one shared profile is exactly the
@@ -381,8 +444,25 @@ func (a winCleanmgrAction) Run(ctx context.Context, _ Params) ActionResult {
 		return ActionResult{ID: a.ID(), Status: StatusUnavailable, ExitCode: 1, Error: "cleanmgr.exe not present"}
 	}
 
+	// A retired handler is answered before anything is written: it is not just
+	// "not selected", it is a handler that would wedge the whole run (#6482).
+	retired := make([]SubActionRun, 0, len(a.selectedSlugs))
+	retiredReasons := make([]string, 0, len(a.selectedSlugs))
+	for _, slug := range a.selectedSlugs {
+		if reason, ok := winRetiredCleanmgrHandlers[slug]; ok {
+			retired = append(retired, SubActionRun{ID: "win_cleanmgr:" + slug, Status: StatusUnavailable})
+			retiredReasons = append(retiredReasons, reason)
+		}
+	}
+
 	selected := a.availableHandlers()
 	if len(selected) == 0 {
+		if len(retired) > 0 {
+			return ActionResult{ID: a.ID(), Status: StatusUnavailable, ExitCode: 1,
+				SubActions: retired,
+				DurationMs: time.Since(started).Milliseconds(),
+				Error:      strings.Join(retiredReasons, " ")}
+		}
 		return ActionResult{ID: a.ID(), Status: StatusUnavailable, ExitCode: 1,
 			Error: "none of the selected Disk Cleanup handlers are registered on this build"}
 	}
@@ -391,9 +471,22 @@ func (a winCleanmgrAction) Run(ctx context.Context, _ Params) ActionResult {
 		selectedSet[handler.keyName] = true
 	}
 
+	// subActions stamps every selected handler with the run's outcome and
+	// carries the retired ones through unchanged. Used on the abort paths too:
+	// a result that names no sub-action loses both the BUG-3 honesty rule and
+	// the retirement reason the caller asked about.
+	subActions := func(status string) []SubActionRun {
+		out := make([]SubActionRun, 0, len(selected)+len(retired))
+		for _, handler := range selected {
+			out = append(out, SubActionRun{ID: "win_cleanmgr:" + handler.slug, Status: status})
+		}
+		return append(out, retired...)
+	}
+
 	present, err := presentVolumeCaches()
 	if err != nil {
 		return ActionResult{ID: a.ID(), Status: StatusFailed, ExitCode: 1,
+			SubActions: subActions(StatusFailed),
 			DurationMs: time.Since(started).Milliseconds(),
 			Error:      fmt.Sprintf("could not enumerate the Disk Cleanup handlers: %v", err)}
 	}
@@ -412,8 +505,10 @@ func (a winCleanmgrAction) Run(ctx context.Context, _ Params) ActionResult {
 			return ActionResult{
 				ID:         a.ID(),
 				Status:     StatusFailed,
+				SubActions: subActions(StatusFailed),
 				ExitCode:   1,
 				DurationMs: time.Since(started).Milliseconds(),
+				OutputTail: strings.Join(retiredReasons, "\n"),
 				Error: fmt.Sprintf(
 					"could not set %s on %q (%v); aborted before running cleanmgr so no unintended handler could execute",
 					stateFlagsValue, keyName, err),
@@ -424,32 +519,51 @@ func (a winCleanmgrAction) Run(ctx context.Context, _ Params) ActionResult {
 		}
 	}
 
-	subResults := make([]SubActionRun, 0, len(selected))
-	for _, handler := range selected {
-		subResults = append(subResults, SubActionRun{ID: "win_cleanmgr:" + handler.slug, Status: StatusCompleted})
-	}
 	notes := []string{fmt.Sprintf("profile %s: %d handler(s) enabled, %d zeroed", stateFlagsValue, len(selected), zeroed)}
+	notes = append(notes, retiredReasons...)
 
-	proc := runWindowsProcess(ctx, cleanmgrTimeout, binary, cleanmgrArgs()...)
-	result := ActionResult{
-		ID:         a.ID(),
-		SubActions: subResults,
-		ExitCode:   proc.ExitCode,
-		DurationMs: time.Since(started).Milliseconds(),
-		OutputTail: capOutput([]byte(strings.Join(append(notes, proc.Stdout, proc.Stderr), "\n"))),
-	}
+	proc := runWindowsProcessIdle(ctx, cleanmgrTimeout, cleanmgrIdleLimits, binary, cleanmgrArgs()...)
+
+	// The parent's outcome decides what the sub-actions may claim. Reporting
+	// `completed` handlers under a `timed_out` parent is the W05 lab's BUG-3:
+	// cleanmgr gives no per-handler result, so the only honest sub-status is
+	// the one the run as a whole earned.
+	status := StatusCompleted
+	var runErr string
 	switch {
 	case proc.TimedOut:
-		result.Status = StatusTimedOut
-		result.Error = proc.Err.Error()
+		status, runErr = StatusTimedOut, proc.Err.Error()
 	case proc.Err != nil:
-		result.Status = StatusFailed
-		result.Error = proc.Err.Error()
+		// Checked BEFORE IdleStopped on purpose: the runner leaves Err set for
+		// a genuine teardown failure even on an idle-stopped run, and an
+		// unqualified `completed` would bury it.
+		status, runErr = StatusFailed, proc.Err.Error()
+		if proc.IdleStopped {
+			notes = append(notes, cleanmgrIdleNote)
+		}
+	case proc.IdleStopped:
+		// NOT a timeout and not a failure: the tree stopped doing work, which
+		// for cleanmgr means the selected handlers are done and only its
+		// unreachable progress window is left (#6482).
+		notes = append(notes, cleanmgrIdleNote)
 	default:
 		// Exit code is informational only — see the session-0 caveat above.
-		result.Status = StatusCompleted
 	}
-	return result
+
+	return ActionResult{
+		ID:         a.ID(),
+		SubActions: subActions(status),
+		Status:     status,
+		Error:      runErr,
+		ExitCode:   proc.ExitCode,
+		DurationMs: time.Since(started).Milliseconds(),
+		// The notes are capped SEPARATELY from the process's own output and
+		// prepended afterwards. capOutput keeps the tail, so folding them into
+		// one string lets a chatty cleanmgr push the notes — including the
+		// only explanation of why a force-terminated tree is reported as
+		// completed — off the front with no trace.
+		OutputTail: strings.Join(append(notes, capOutput([]byte(proc.Stdout+"\n"+proc.Stderr))), "\n"),
+	}
 }
 
 // ---------------------------------------------------------------------------

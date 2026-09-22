@@ -97,7 +97,8 @@
     "sectionServiceDesk": "Central de serviços",
     "serviceManagement": "Gestão de serviços",
     "ticketing": "Tickets",
-    "deliverableTemplates": "Modelos de entregáveis"
+    "deliverableTemplates": "Modelos de entregáveis",
+    "securityScans": "Varreduras de IOC"
   },
   "documentTitles": {
     "dashboard": "Painel",

@@ -26,6 +26,14 @@ services:
       dockerfile: docker/Dockerfile.api.dev
     ports:
       - '3001:3001'
+    # #6485 F-7: the base compose's 64 MB /tmp tmpfs (docker-compose.yml) is
+    # sized for the production image, which never runs `dev-push`. A dev-push
+    # of a Windows binary (~34 MB) plus the tsx build cache blew straight
+    # through it with ENOSPC during the W05 lab run. dev-push is gated to
+    # non-production (routes/devPush.ts), so widen it only here, not in the
+    # base file every other compose mode shares.
+    tmpfs:
+      - /tmp:size=512m,mode=1777
     volumes:
       # Mount source code for hot-reloading
       - ./apps/api/src:/app/apps/api/src:cached

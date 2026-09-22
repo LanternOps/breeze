@@ -32,6 +32,7 @@ import { getTestDb } from './setup';
 import { createAccessToken } from '../../services/jwt';
 import { moveOrgRoutes } from '../../routes/devices/moveOrg';
 import { withMoveOrgStepUpGrant } from './moveOrgStepUpFixture';
+import { awaitAuditRows } from './auditWait';
 
 function uid(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -148,6 +149,10 @@ describe('POST /devices/:id/move-org — ticket currency guard (#3776)', () => {
     expect(after.part?.currencyCode).toBe('USD');
 
     // A policy block is not a failure: no device.move_org.* audit rows at all.
+    // This one keeps a fixed delay on purpose: `awaitAuditRows` cannot wait for
+    // an *absence* (a zero-row expectation is satisfied immediately). A slow
+    // fire-and-forget write would make this pass spuriously, never fail
+    // flakily, so the fixed wait is the safe direction here (#6555).
     await new Promise((resolve) => setTimeout(resolve, 200));
     const audits = await f.adminDb
       .select({ action: auditLogs.action })
@@ -171,12 +176,12 @@ describe('POST /devices/:id/move-org — ticket currency guard (#3776)', () => {
     expect(after.part?.currencyCode).toBe('USD'); // snapshot never restamped
     expect(after.part?.unitPrice).toBe('120.00');
 
-    // writeRouteAudit is fire-and-forget — let it land.
-    await new Promise((resolve) => setTimeout(resolve, 200));
-    const audits = await f.adminDb
+    // writeRouteAudit is fire-and-forget — wait for both rows rather than
+    // racing them behind a fixed sleep (#6555).
+    const audits = await awaitAuditRows<{ action: string; orgId: string; details: unknown }>(() => f.adminDb
       .select({ action: auditLogs.action, orgId: auditLogs.orgId, details: auditLogs.details })
       .from(auditLogs)
-      .where(eq(auditLogs.resourceId, f.device.id));
+      .where(eq(auditLogs.resourceId, f.device.id)), 2);
     const actions = audits.map((a: { action: string }) => a.action).sort();
     expect(actions).toEqual(['device.move_org.source', 'device.move_org.target']);
     for (const a of audits) {

@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -29,6 +29,70 @@ const run = (id: string, over: Record<string, unknown> = {}) => ({
 
 describe('CleanupRunHistory', () => {
   beforeEach(() => vi.clearAllMocks());
+
+  // #6485 F-6: the list only re-walked on its own refreshToken bump (a local
+  // scan/run/refresh click), so a system run started elsewhere (the AI lane,
+  // another tech's tab) was invisible until a full page reload.
+  it('re-walks the first page on an interval, without a refreshToken bump', async () => {
+    vi.useFakeTimers();
+    try {
+      fetchMock.mockResolvedValue(json({ success: true, data: { runs: [run('r1')], nextCursor: null } }));
+      render(<CleanupRunHistory deviceId="dev-1" refreshToken={0} />);
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+      fetchMock.mockResolvedValue(json({ success: true, data: { runs: [run('r-elsewhere')], nextCursor: null } }));
+      await vi.advanceTimersByTimeAsync(30_000);
+
+      expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(2);
+      expect(screen.getByTestId('cleanup-run-r-elsewhere')).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not clobber a paginated view with the background poll', async () => {
+    // #6485 F-6 review finding: the naive interval called loadPage(null,
+    // false) unconditionally, so a tech who clicked "Load more" (60+ rows)
+    // had their view silently truncated back to page 1 on the next tick.
+    vi.useFakeTimers();
+    try {
+      fetchMock
+        .mockResolvedValueOnce(json({ success: true, data: { runs: [run('r1')], nextCursor: 'c1' } }))
+        .mockResolvedValueOnce(json({ success: true, data: { runs: [run('r2')], nextCursor: null } }));
+      render(<CleanupRunHistory deviceId="dev-1" refreshToken={0} />);
+      await vi.waitFor(() => expect(screen.getByTestId('cleanup-run-r1')).toBeInTheDocument());
+
+      fireEvent.click(screen.getByTestId('cleanup-run-history-more'));
+      await vi.waitFor(() => expect(screen.getByTestId('cleanup-run-r2')).toBeInTheDocument());
+      const callsBeforeTick = fetchMock.mock.calls.length;
+
+      await vi.advanceTimersByTimeAsync(30_000);
+
+      // The background tick must not have re-walked from the top: both
+      // previously-loaded rows are still on screen, and no extra fetch fired.
+      expect(screen.getByTestId('cleanup-run-r1')).toBeInTheDocument();
+      expect(screen.getByTestId('cleanup-run-r2')).toBeInTheDocument();
+      expect(fetchMock.mock.calls.length).toBe(callsBeforeTick);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('stops polling after unmount', async () => {
+    vi.useFakeTimers();
+    try {
+      fetchMock.mockResolvedValue(json({ success: true, data: { runs: [run('r1')], nextCursor: null } }));
+      const { unmount } = render(<CleanupRunHistory deviceId="dev-1" refreshToken={0} />);
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+      unmount();
+      const callsAtUnmount = fetchMock.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(fetchMock.mock.calls.length).toBe(callsAtUnmount);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 
   it('renders the first page and asks for the default limit', async () => {
     fetchMock.mockResolvedValue(json({ success: true, data: { runs: [run('r1')], nextCursor: null } }));

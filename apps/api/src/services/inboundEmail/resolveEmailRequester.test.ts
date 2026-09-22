@@ -118,7 +118,7 @@ describe('resolveEmailRequester', () => {
     const [, input, actor] = createContactMock.mock.calls[0]!;
     expect(input).toMatchObject({ orgId: ORG, email: 'new@acme.test', name: 'New Person', roles: [] });
     // A system-context create: there is no acting user on the inbound path.
-    expect(actor).toEqual({ userId: null });
+    expect(actor).toEqual({ userId: null, destinationSource: 'inbound_email' });
     // Every statement this path issues is against `contacts` (plus the
     // advisory lock). The old assertion here only said "no statement mentions
     // portal_users", which the mocked schema would satisfy even if the code

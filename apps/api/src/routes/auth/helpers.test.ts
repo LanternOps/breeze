@@ -22,11 +22,13 @@ import {
   validateStrictCookieCsrfRequest,
   _resetAuthCookieWarnStateForTests,
   type PendingMfaRecord,
+  genericAuthError,
 } from './helpers';
 import type { AuthorizedUserSession } from '../../services/userSession';
 import type { RequestLike } from '../../services/auditEvents';
 import type { Context } from 'hono';
 
+import { ERROR_CODES } from '@breeze/shared';
 // Mirrors the canonical shim in services/clientIp.test.ts.
 function makeContext(headers: Record<string, string | undefined>, remoteAddress?: string): RequestLike {
   const normalized: Record<string, string> = {};
@@ -967,5 +969,18 @@ describe('auth cookie transport warnings (#1618 diagnostics)', () => {
     process.env.NODE_ENV = 'development';
     expect(isRequestConnectionSecure(makeCookieContext({}).c)).toBe(false);
     expect(warnSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('genericAuthError', () => {
+  it('returns the generic prose with INVALID_CREDENTIALS so every caller (login, sso) emits the code', () => {
+    expect(genericAuthError()).toEqual({
+      error: 'Invalid email or password',
+      code: ERROR_CODES.INVALID_CREDENTIALS,
+    });
+  });
+
+  it('exposes no discriminator field beyond error and code', () => {
+    expect(Object.keys(genericAuthError()).sort()).toEqual(['code', 'error']);
   });
 });

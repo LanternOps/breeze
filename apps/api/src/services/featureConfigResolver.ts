@@ -22,7 +22,7 @@ import {
   softwarePolicies,
 } from '../db/schema';
 import { and, eq, ne, sql, inArray, asc, SQL, or, isNull } from 'drizzle-orm';
-import { resolveEffectiveTimezone, canonicalizeTimezone } from '@breeze/shared';
+import { resolveEffectiveTimezone, canonicalizeTimezone, parseSecurityScanSettings, type SecurityScanSettings } from '@breeze/shared';
 import {
   MAINTENANCE_DATETIME_TIME_PATTERN,
   MAINTENANCE_EXPLICIT_UTC_OFFSET_PATTERN,
@@ -1093,6 +1093,58 @@ export async function resolveSoftwarePolicyForDevice(
  * 4. For each device, verify this software policy is the "winning" one
  *    (closest wins — if a device has a closer assignment linking to a different policy, exclude it)
  */
+/**
+ * Resolve the candidate device IDs for one config-policy assignment row, by
+ * level. Extracted from {@link resolveDeviceIdsForSoftwarePolicy}'s switch so
+ * {@link resolveAllSecurityScanScheduledDevices} (#6263 W01) doesn't need a
+ * third copy of it. Assignment fan-outs skip ephemeral Quick Support devices
+ * (and the hidden 'quick_support' org that holds them) — a transient support
+ * session is never a policy target. Explicit `device`-level targets are left
+ * as-is.
+ */
+async function resolveAssignmentDeviceIds(level: string, targetId: string): Promise<string[]> {
+  switch (level) {
+    case 'device': {
+      return [targetId];
+    }
+    case 'device_group': {
+      const rows = await db
+        .select({ deviceId: deviceGroupMemberships.deviceId })
+        .from(deviceGroupMemberships)
+        .where(eq(deviceGroupMemberships.groupId, targetId));
+      return rows.map((r) => r.deviceId);
+    }
+    case 'site': {
+      const rows = await db
+        .select({ id: devices.id })
+        .from(devices)
+        .where(and(eq(devices.siteId, targetId), eq(devices.isEphemeral, false)));
+      return rows.map((r) => r.id);
+    }
+    case 'organization': {
+      const rows = await db
+        .select({ id: devices.id })
+        .from(devices)
+        .where(and(eq(devices.orgId, targetId), eq(devices.isEphemeral, false)));
+      return rows.map((r) => r.id);
+    }
+    case 'partner': {
+      const orgs = await db
+        .select({ id: organizations.id })
+        .from(organizations)
+        .where(and(eq(organizations.partnerId, targetId), ne(organizations.type, 'quick_support')));
+      if (orgs.length === 0) return [];
+      const rows = await db
+        .select({ id: devices.id })
+        .from(devices)
+        .where(and(inArray(devices.orgId, orgs.map((o) => o.id)), eq(devices.isEphemeral, false)));
+      return rows.map((r) => r.id);
+    }
+    default:
+      return [];
+  }
+}
+
 export async function resolveDeviceIdsForSoftwarePolicy(
   softwarePolicyId: string
 ): Promise<string[]> {
@@ -1135,60 +1187,7 @@ export async function resolveDeviceIdsForSoftwarePolicy(
   const candidateDeviceIds = new Set<string>();
 
   for (const assignment of assignments) {
-    let assignedDeviceIds: string[];
-
-    switch (assignment.level) {
-      case 'device': {
-        assignedDeviceIds = [assignment.targetId];
-        break;
-      }
-      case 'device_group': {
-        const rows = await db
-          .select({ deviceId: deviceGroupMemberships.deviceId })
-          .from(deviceGroupMemberships)
-          .where(eq(deviceGroupMemberships.groupId, assignment.targetId));
-        assignedDeviceIds = rows.map((r) => r.deviceId);
-        break;
-      }
-      // Assignment fan-outs skip ephemeral Quick Support devices (and the hidden
-      // 'quick_support' org that holds them) — a transient support session is
-      // never a policy target. Explicit `device`-level targets are left as-is.
-      case 'site': {
-        const rows = await db
-          .select({ id: devices.id })
-          .from(devices)
-          .where(and(eq(devices.siteId, assignment.targetId), eq(devices.isEphemeral, false)));
-        assignedDeviceIds = rows.map((r) => r.id);
-        break;
-      }
-      case 'organization': {
-        const rows = await db
-          .select({ id: devices.id })
-          .from(devices)
-          .where(and(eq(devices.orgId, assignment.targetId), eq(devices.isEphemeral, false)));
-        assignedDeviceIds = rows.map((r) => r.id);
-        break;
-      }
-      case 'partner': {
-        const orgs = await db
-          .select({ id: organizations.id })
-          .from(organizations)
-          .where(and(eq(organizations.partnerId, assignment.targetId), ne(organizations.type, 'quick_support')));
-        if (orgs.length === 0) {
-          assignedDeviceIds = [];
-        } else {
-          const rows = await db
-            .select({ id: devices.id })
-            .from(devices)
-            .where(and(inArray(devices.orgId, orgs.map((o) => o.id)), eq(devices.isEphemeral, false)));
-          assignedDeviceIds = rows.map((r) => r.id);
-        }
-        break;
-      }
-      default:
-        assignedDeviceIds = [];
-    }
-
+    const assignedDeviceIds = await resolveAssignmentDeviceIds(assignment.level, assignment.targetId);
     for (const id of assignedDeviceIds) {
       candidateDeviceIds.add(id);
     }
@@ -2372,4 +2371,202 @@ export async function checkDeviceMaintenanceWindow(deviceId: string, now?: Date)
     return { active: false, suppressAlerts: false, suppressPatching: false, suppressAutomations: false, suppressScripts: false, rebootIfPending: false, windowEndsAt: null };
   }
   return isInMaintenanceWindow(settings, now);
+}
+
+// ============================================
+// Security IOC scan settings (#6263 W01)
+// ============================================
+
+/**
+ * The winning `security` feature link's inline settings for a device, or null
+ * when no active config policy in the device's hierarchy carries one.
+ *
+ * `null` is NOT "use the defaults" — a device nobody configured must not be
+ * scanned on a default schedule. The scheduler treats null as "skip".
+ *
+ * Shape copied from {@link resolveVulnerabilityEnabledForDevice}: closest level
+ * wins, then assignment priority, then age. Runs in the CALLER'S OWN RLS
+ * context; it is self-tenanted by the device's own hierarchy.
+ */
+export async function resolveSecurityScanSettingsForDevice(
+  deviceId: string,
+): Promise<SecurityScanSettings | null> {
+  const hierarchy = await loadDeviceHierarchy(deviceId);
+  if (!hierarchy) return null;
+
+  const targetConditions = buildTargetConditions(hierarchy);
+  const roleOsConditions = buildRoleOsFilterConditions(hierarchy);
+
+  const rows = await db
+    .select({
+      inlineSettings: configPolicyEffectiveFeatureLinks.inlineSettings,
+      assignmentLevel: configPolicyAssignments.level,
+      assignmentPriority: configPolicyAssignments.priority,
+      assignmentCreatedAt: configPolicyAssignments.createdAt,
+    })
+    .from(configPolicyAssignments)
+    .innerJoin(
+      configurationPolicies,
+      and(
+        eq(configPolicyAssignments.configPolicyId, configurationPolicies.id),
+        eq(configurationPolicies.status, 'active'),
+        policyOwnershipCondition(hierarchy),
+      ),
+    )
+    .innerJoin(
+      configPolicyEffectiveFeatureLinks,
+      and(
+        eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id),
+        eq(configPolicyEffectiveFeatureLinks.featureType, 'security'),
+      ),
+    )
+    .where(and(sql`(${sql.join(targetConditions, sql` OR `)})`, ...roleOsConditions))
+    .orderBy(
+      configPolicyAssignments.level,
+      configPolicyAssignments.priority,
+      configPolicyAssignments.createdAt,
+    );
+
+  if (rows.length === 0) return null;
+  return parseSecurityScanSettings(sortByHierarchy(rows)[0]!.inlineSettings);
+}
+
+/**
+ * Module-private: identical join to {@link resolveSecurityScanSettingsForDevice}
+ * but returns the winning config policy's id (or null), for the fan-out
+ * verification step in {@link resolveAllSecurityScanScheduledDevices}.
+ */
+async function resolveSecurityScanConfigPolicyIdForDevice(deviceId: string): Promise<string | null> {
+  const hierarchy = await loadDeviceHierarchy(deviceId);
+  if (!hierarchy) return null;
+
+  const targetConditions = buildTargetConditions(hierarchy);
+  const roleOsConditions = buildRoleOsFilterConditions(hierarchy);
+
+  const rows = await db
+    .select({
+      configPolicyId: configPolicyEffectiveFeatureLinks.configPolicyId,
+      assignmentLevel: configPolicyAssignments.level,
+      assignmentPriority: configPolicyAssignments.priority,
+      assignmentCreatedAt: configPolicyAssignments.createdAt,
+    })
+    .from(configPolicyAssignments)
+    .innerJoin(
+      configurationPolicies,
+      and(
+        eq(configPolicyAssignments.configPolicyId, configurationPolicies.id),
+        eq(configurationPolicies.status, 'active'),
+        policyOwnershipCondition(hierarchy),
+      ),
+    )
+    .innerJoin(
+      configPolicyEffectiveFeatureLinks,
+      and(
+        eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id),
+        eq(configPolicyEffectiveFeatureLinks.featureType, 'security'),
+      ),
+    )
+    .where(and(sql`(${sql.join(targetConditions, sql` OR `)})`, ...roleOsConditions))
+    .orderBy(
+      configPolicyAssignments.level,
+      configPolicyAssignments.priority,
+      configPolicyAssignments.createdAt,
+    );
+
+  if (rows.length === 0) return null;
+  return sortByHierarchy(rows)[0]!.configPolicyId;
+}
+
+export interface SecurityScanSchedulable {
+  configPolicyId: string;
+  /** The POLICY's org — NULL for a partner-wide policy. Never a device's org. */
+  orgId: string | null;
+  partnerId: string | null;
+  settings: SecurityScanSettings;
+  deviceIds: string[];
+}
+
+/**
+ * Every device whose WINNING `security` link has `scheduledScans: true`,
+ * grouped by the config policy that won.
+ *
+ * Mirrors {@link resolveAllVulnerabilityEnabledDevices}: gather candidates from
+ * every active policy carrying a `security` link, then verify per device that
+ * the winner is this policy — so a device- or group-level policy with
+ * `scheduledScans:false` suppresses a broader org-wide opt-in.
+ *
+ * Partner-wide policies (`org_id NULL`) reach devices only through their
+ * assignments, which is why the fan-out below never filters on the policy's own
+ * org. Run inside `withSystemDbAccessContext` — config-policy tables are RLS-scoped.
+ */
+export async function resolveAllSecurityScanScheduledDevices(): Promise<SecurityScanSchedulable[]> {
+  const links = await db
+    .select({
+      configPolicyId: configPolicyEffectiveFeatureLinks.configPolicyId,
+      inlineSettings: configPolicyEffectiveFeatureLinks.inlineSettings,
+      orgId: configurationPolicies.orgId,
+      partnerId: configurationPolicies.partnerId,
+    })
+    .from(configPolicyEffectiveFeatureLinks)
+    .innerJoin(
+      configurationPolicies,
+      and(
+        eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id),
+        eq(configurationPolicies.status, 'active'),
+      ),
+    )
+    .where(eq(configPolicyEffectiveFeatureLinks.featureType, 'security'));
+
+  const scheduled = links
+    .map((l) => ({ ...l, settings: parseSecurityScanSettings(l.inlineSettings) }))
+    .filter((l) => l.settings.scheduledScans);
+  if (scheduled.length === 0) return [];
+
+  const assignments = await db
+    .select({
+      configPolicyId: configPolicyAssignments.configPolicyId,
+      level: configPolicyAssignments.level,
+      targetId: configPolicyAssignments.targetId,
+    })
+    .from(configPolicyAssignments)
+    .where(inArray(configPolicyAssignments.configPolicyId, scheduled.map((l) => l.configPolicyId)));
+  if (assignments.length === 0) return [];
+
+  // Candidate devices per policy.
+  const candidatesByPolicy = new Map<string, Set<string>>();
+  for (const assignment of assignments) {
+    const ids = await resolveAssignmentDeviceIds(assignment.level, assignment.targetId);
+    const set = candidatesByPolicy.get(assignment.configPolicyId) ?? new Set<string>();
+    for (const id of ids) set.add(id);
+    candidatesByPolicy.set(assignment.configPolicyId, set);
+  }
+
+  // Verify the winner per candidate device, batched like the software resolver.
+  const out: SecurityScanSchedulable[] = [];
+  for (const link of scheduled) {
+    const candidates = Array.from(candidatesByPolicy.get(link.configPolicyId) ?? []);
+    const verified: string[] = [];
+    const BATCH_SIZE = 50;
+    for (let i = 0; i < candidates.length; i += BATCH_SIZE) {
+      const batch = candidates.slice(i, i + BATCH_SIZE);
+      const results = await Promise.all(
+        batch.map(async (deviceId) => ({
+          deviceId,
+          winner: await resolveSecurityScanConfigPolicyIdForDevice(deviceId),
+        })),
+      );
+      for (const { deviceId, winner } of results) {
+        if (winner === link.configPolicyId) verified.push(deviceId);
+      }
+    }
+    if (verified.length === 0) continue;
+    out.push({
+      configPolicyId: link.configPolicyId,
+      orgId: link.orgId,
+      partnerId: link.partnerId,
+      settings: link.settings,
+      deviceIds: verified,
+    });
+  }
+  return out;
 }

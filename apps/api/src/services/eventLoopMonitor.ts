@@ -31,7 +31,15 @@
  * separate work.
  */
 
-import { monitorEventLoopDelay, type IntervalHistogram } from 'node:perf_hooks';
+import { monitorEventLoopDelay } from 'node:perf_hooks';
+
+/**
+ * The histogram type returned by `perf_hooks.monitorEventLoopDelay()`.
+ * Derived via `ReturnType` because `@types/node` has renamed this exported
+ * interface across versions (was `IntervalHistogram`); tying to the function's
+ * actual return type keeps this resilient to future renames.
+ */
+type IntervalHistogram = ReturnType<typeof monitorEventLoopDelay>;
 
 const NS_PER_MS = 1e6;
 

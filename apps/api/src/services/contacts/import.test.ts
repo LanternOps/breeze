@@ -10,6 +10,8 @@ const { selectMock, insertMock, updateMock, systemContextCalls } = vi.hoisted(()
   systemContextCalls: { count: 0 },
 }));
 
+vi.mock('../callerVerification/destinations', () => ({ recordDestinationChangeWithExecutor: vi.fn().mockResolvedValue(undefined) }));
+vi.mock('../callerVerification/subjects', () => ({ upsertDirectorySyncBinding: vi.fn(), attestBinding: vi.fn(), bindingsForContact: vi.fn() }));
 vi.mock('../../db', () => ({
   db: { select: selectMock, insert: insertMock, update: updateMock },
   runOutsideDbContext: (fn: () => unknown) => fn(),
@@ -24,6 +26,8 @@ vi.mock('../../db', () => ({
 }));
 
 import { commitContactImport, previewContactImport } from './import';
+import { recordDestinationChangeWithExecutor } from '../callerVerification/destinations';
+import { upsertDirectorySyncBinding } from '../callerVerification/subjects';
 import { MAX_IMPORT_ROWS } from './types';
 import type { CommitContactRowInput, ContactImportRow } from './types';
 import { contacts, contactExternalLinks } from '../../db/schema/contacts';
@@ -509,6 +513,22 @@ describe('commitContactImport', () => {
       orgId: ORG, system: 'datto_rmm', externalId: 'CT-9', createdBy: ACTOR.userId,
     });
     expect(summary.errors).toEqual([]);
+    // Caller-verification provenance (#6354): an import is never human-sourced.
+    expect(recordDestinationChangeWithExecutor).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ orgId: ORG, kind: 'email', value: 'jane@acme.example', source: 'import' }),
+    );
+  });
+
+  it('CSV/API Entra labels are never directory evidence', async () => {
+    stubState();
+    const summary = await commitContactImport([
+      { organizationId: ORG, name: 'Uploaded', email: 'upload@example.com', externalSystem: 'entra', externalId: '33333333-3333-4333-8333-333333333333' },
+    ], CTX, ACTOR);
+    expect(summary.imported).toHaveLength(1);
+    expect(summary.errors).toEqual([]);
+    // Positive control above (a contact was created); no binding may come from an upload.
+    expect(upsertDirectorySyncBinding).not.toHaveBeenCalled();
   });
 
   it('round-trips an emailless, phone-only contact', async () => {

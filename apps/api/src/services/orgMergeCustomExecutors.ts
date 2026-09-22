@@ -59,6 +59,7 @@ import { sql, type SQL } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { extractRowCount } from '../db/rowCount';
 import { buildRepoint, keyExpr } from './orgMergeExecutors';
+import { moveBindings, resolveBindingMerge } from './callerVerification/merge';
 
 export interface MergeTableOutcome {
   moved: number;
@@ -348,6 +349,69 @@ const fenceAiOperatorTasks: CustomMergeExecutor = async (loser) => {
      WHERE org_id = ${uuid(loser)}
        AND device_id IS NOT NULL`);
 
+  // Recipe library E2 (#6167). THREE target pointers to sever, all in the
+  // RESOLVE phase and all for the same reason the task's device detach above
+  // is here: the move phase repoints `devices`, `tickets` and `contacts` to the
+  // survivor while these targets stay with the loser. For contact_id that is
+  // not merely untidy — ai_operator_task_targets_contact_org_fk is a COMPOSITE
+  // (contact_id, org_id) FK, so a contact repointed to the survivor leaves the
+  // pair unresolvable and the merge aborts at COMMIT with 23503.
+  //
+  // Deliberately NOT restricted to live tasks: a terminal task's target is
+  // leaving the tenant too, and its evidence should say so. Stamping
+  // 'org_merged' here first also means the device-move trigger's
+  // COALESCE(detached_reason, 'device_moved') preserves the REAL reason when
+  // `devices` repoints later in the move phase. All three pointers and the
+  // stamp go in ONE statement: ai_operator_task_targets_one_pointer_chk
+  // requires the stamp the moment the last pointer is null.
+  const targetsDetached = await run(sql`
+    UPDATE ai_operator_task_targets
+       SET device_id = NULL,
+           ticket_id = NULL,
+           contact_id = NULL,
+           detached_at = COALESCE(detached_at, now()),
+           detached_reason = COALESCE(detached_reason, 'org_merged'),
+           state = 'detached',
+           updated_at = now()
+     WHERE org_id = ${uuid(loser)}
+       AND (device_id IS NOT NULL OR ticket_id IS NOT NULL OR contact_id IS NOT NULL)`);
+
+  // The frozen provider identity survives — external_id and principal_label are
+  // the evidence of WHO the task was about — but the connection pointers must
+  // go: m365_connections repoint-dedupes to the survivor and
+  // google_workspace_connections keeps the survivor's row, and both FKs here
+  // are composite (connection_id, org_id).
+  const accountsDetached = await run(sql`
+    UPDATE ai_operator_task_target_accounts
+       SET m365_connection_id = NULL,
+           google_connection_id = NULL,
+           updated_at = now()
+     WHERE org_id = ${uuid(loser)}
+       AND (m365_connection_id IS NOT NULL OR google_connection_id IS NOT NULL)`);
+
+  // Human-work links (recipe library E3, #6168). Org merge re-points the loser
+  // org's tickets — and therefore its checklist items — at the survivor, while
+  // task and step `org_id` stay on the loser. E2 recorded the same finding for
+  // contacts, and drew the same conclusion: the fence must detach in the
+  // RESOLVE phase, before the move phase re-points anything, or the pointer
+  // spans two orgs for as long as the fenced task exists. The link FK is plain
+  // and single-column (migration 2026-10-26-170100 header note A), so nothing
+  // would raise if this were missing — the statement IS the contract.
+  //
+  // One statement rather than a per-ticket loop through the request-path
+  // helper: a merge can carry thousands of tickets, and the per-row event and
+  // outbox writes are the point of the request path, not of a bulk merge. The
+  // fence above already stops every one of these tasks from advancing, so the
+  // wake the request path would enqueue would be a no-op here anyway. Only
+  // UNSETTLED steps: a settled step's pointer is history and may stay.
+  const humanWorkDetached = await run(sql`
+    UPDATE ai_operator_task_steps
+       SET checklist_item_id = NULL,
+           updated_at = now()
+     WHERE org_id = ${uuid(loser)}
+       AND checklist_item_id IS NOT NULL
+       AND settled_at IS NULL`);
+
   return {
     moved: 0,
     dropped: 0,
@@ -367,6 +431,28 @@ const fenceAiOperatorTasks: CustomMergeExecutor = async (loser) => {
             `ai_operator_tasks: detached ${detached} AI Operator task(s) from their target device — the `
             + 'devices move to the surviving organization while the task history stays behind, so the '
             + 'task keeps its frozen target label as evidence but no longer points at the device.',
+          ]
+        : []),
+      ...(targetsDetached > 0
+        ? [
+            `ai_operator_task_targets: detached ${targetsDetached} AI Operator task target(s) from their device, `
+            + 'ticket or contact — those records move to the surviving organization while the task history '
+            + 'stays behind, so each target keeps its frozen label as evidence but no longer points at a live record.',
+          ]
+        : []),
+      ...(accountsDetached > 0
+        ? [
+            `ai_operator_task_target_accounts: cleared the provider connection pointer on ${accountsDetached} `
+            + 'frozen account(s); the immutable external identifier and principal label are retained as '
+            + 'evidence of who the task was about.',
+          ]
+        : []),
+      ...(humanWorkDetached > 0
+        ? [
+            `ai_operator_task_steps: detached ${humanWorkDetached} live human-work step(s) from their ticket `
+            + 'checklist item — the ticket moves to the surviving organization while the task history stays '
+            + 'behind; the checklist item keeps its Operator provenance, and the fenced task will hand off '
+            + 'rather than wait on a row in another organization.',
           ]
         : []),
     ],
@@ -1505,6 +1591,7 @@ const mergeToolSourceTools: CustomMergeExecutor = async (loser, survivor) => ({
  * them, is the whole executor).
  */
 export const CUSTOM_EXECUTORS: Readonly<Record<string, CustomMergeExecutor>> = {
+  caller_verification_subject_bindings: moveBindings,
   automation_resource_bindings: mergeAutomationResourceBindings,
   tool_sources: mergeToolSources,
   tool_source_tools: mergeToolSourceTools,
@@ -1553,6 +1640,9 @@ export const CUSTOM_EXECUTORS: Readonly<Record<string, CustomMergeExecutor>> = {
  * contract test asserts that.
  */
 export const CUSTOM_RESOLVE_EXECUTORS: Readonly<Record<string, CustomMergeExecutor>> = {
+  // Must run in resolve: both colliding identities are revoked before the
+  // move pass repoints, so the canonical partial unique indexes cannot 23505.
+  caller_verification_subject_bindings: resolveBindingMerge,
   discovered_assets: resolveDiscoveredAssets,
   ticket_drafts: resolveTicketDrafts,
   // Must run in resolve, not move: ai_agents is a PARENT of ai_operator_tasks

@@ -13,6 +13,8 @@ import { fetchWithAuth } from "@/stores/auth";
 import { formatDateTime } from "@/lib/dateTimeFormat";
 import { friendlyFetchError } from "@/lib/utils";
 import { errorKindOf, throwIfNotOk, type LoadErrorKind } from "@/lib/httpError";
+import { runAction } from "@/lib/runAction";
+import { showToast } from "../shared/Toast";
 import AccessDenied from "../shared/AccessDenied";
 import ProgressBar, {
   ProgressItemList,
@@ -218,24 +220,26 @@ export default function SecurityScanManager() {
           ? { paths: [customPath.trim()] }
           : {}),
       };
+      // Aggregate handler with inline per-device feedback (the progress list
+      // below shows each device's outcome): each request still goes through
+      // runAction so a failure isn't silently swallowed, but the summary
+      // banner (allScanRequestsFailed / someScanRequestsFailed) and the
+      // per-device ProgressItemList remain the primary feedback surface — a
+      // single aggregate success toast fires once rather than once per device.
       await Promise.all(
         selectedDevices.map(async (device) => {
           try {
-            const result = await fetchWithAuth(
-              `/security/scan/${device.deviceId}`,
-              {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(body),
-              },
-            );
-            if (!result.ok) {
-              failedCount++;
-              itemMap.set(device.deviceId, "failed");
-            } else {
-              completedCount++;
-              itemMap.set(device.deviceId, "success");
-            }
+            await runAction({
+              request: () =>
+                fetchWithAuth(`/security/scan/${device.deviceId}`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify(body),
+                }),
+              errorFallback: t("securitySecurityScanManager.scanRequestFailed"),
+            });
+            completedCount++;
+            itemMap.set(device.deviceId, "success");
           } catch {
             failedCount++;
             itemMap.set(device.deviceId, "failed");
@@ -248,6 +252,14 @@ export default function SecurityScanManager() {
           });
         }),
       );
+      if (completedCount > 0) {
+        showToast({
+          message: t("securitySecurityScanManager.scansQueuedCount", {
+            count: completedCount,
+          }),
+          type: "success",
+        });
+      }
       if (failedCount > 0 && completedCount === 0) {
         setError(
           t("securitySecurityScanManager.allScanRequestsFailed", {

@@ -23,6 +23,9 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/portal/quotes/def-456/pay'],
     ['POST', '/api/v1/portal/quotes/def-456/pay/'],
     ['post', '/api/v1/portal/quotes/def-456/pay'], // method is case-insensitive
+    ['GET', '/api/v1/portal/network/overview'],
+    ['GET', '/api/v1/portal/network/overview/'],
+    ['get', '/api/v1/portal/network/overview'], // method is case-insensitive
     ['POST', '/api/v1/partner/stripe-connect/key'],
     ['POST', '/api/v1/partner/stripe-connect/key/'],
     ['GET', '/api/v1/partner/stripe-connect'],
@@ -201,6 +204,9 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/portal/quotes/def-456/accept', 'accept/decline are DB-only and keep the ambient org tx'],
     ['POST', '/api/v1/portal/quotes/def-456/decline', 'accept/decline are DB-only and keep the ambient org tx'],
     ['POST', '/api/v1/portal/quotes//pay', 'empty id segment must not match'],
+    ['POST', '/api/v1/portal/network/overview', 'network overview is GET-only'],
+    ['GET', '/api/v1/portal/network', 'only the overview endpoint is self-managed'],
+    ['GET', '/api/v1/portal/network/overview/extra', 'extra path segment must not match'],
     ['POST', '/api/v1/portal/quotes/def-456/pay/confirm', 'deeper portal quote path must not match'],
     ['POST', '/api/v1/invoices', 'collection route'],
     ['DELETE', '/api/v1/partner/stripe-connect', 'disconnect is DB-only and keeps the ambient transaction'],
@@ -378,3 +384,18 @@ describe('isSelfManagedDbContextRoute', () => {
     // And the file engine's routes are untouched.
     expect(isSelfManagedDbContextRoute('POST', '/api/v1/devices/22222222-2222-4222-8222-222222222222/filesystem/scan')).toBe(false);
   });
+
+// Caller verification (#6354 W01): only the three Graph-backed operations own
+// their DB context; every other verification route keeps the ambient tx.
+it.each([['GET', 'caller-verification-directory-users'], ['POST', 'caller-verification-directory-sync']])('self-manages %s %s', (method, path) => {
+  expect(isSelfManagedDbContextRoute(method, `/api/v1/orgs/o/${path}`)).toBe(true);
+  expect(isSelfManagedDbContextRoute(method === 'GET' ? 'POST' : 'GET', `/api/v1/orgs/o/${path}`)).toBe(false);
+});
+
+it('self-manages the Graph binding POST but not ordinary verification writes', () => {
+  const path = '/api/v1/orgs/o/contacts/c/caller-verification-bindings';
+  expect(isSelfManagedDbContextRoute('POST', path)).toBe(true);
+  expect(isSelfManagedDbContextRoute('DELETE', `${path}/b`)).toBe(false);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/orgs/o/caller-verifications')).toBe(false);
+  expect(isSelfManagedDbContextRoute('PUT', '/api/v1/orgs/o/caller-verification-policy')).toBe(false);
+});

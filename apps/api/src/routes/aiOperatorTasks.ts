@@ -44,7 +44,17 @@ import {
 } from '@breeze/shared';
 import { zValidator } from '../lib/validation';
 import { db } from '../db';
-import { aiAgents, aiAgentRuns, aiOperatorOperations, aiOperatorTasks, devices } from '../db/schema';
+import {
+  aiAgents,
+  aiAgentRuns,
+  aiOperatorOperations,
+  aiOperatorTaskEvents,
+  aiOperatorTaskSteps,
+  aiOperatorTaskTargetAccounts,
+  aiOperatorTaskTargets,
+  aiOperatorTasks,
+  devices,
+} from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { PERMISSIONS } from '../services/permissions';
 import { aiOperatorServiceRecoveryEnabled, aiOperatorTasksEnabled } from '../config/env';
@@ -54,8 +64,12 @@ import { TERMINAL_TASK_STATES } from '../services/aiOperator/taskTransitions';
 import {
   mapOperatorTask,
   mapOperatorTaskListItem,
+  type OperatorEventRowInput,
   type OperatorOperationRowInput,
   type OperatorRunLinkRowInput,
+  type OperatorStepRowInput,
+  type OperatorTargetAccountRowInput,
+  type OperatorTargetRowInput,
   type OperatorTaskRowInput,
 } from '../services/aiOperator/taskReadService';
 import {
@@ -452,7 +466,7 @@ aiOperatorTasksRoutes.get('/tasks/:id', scopes, requireAiRead, async (c) => {
     .limit(1);
   if (!task) return c.json({ error: 'Task not found' }, 404);
 
-  const [operationRows, runRows] = await Promise.all([
+  const [operationRows, runRows, targetRows, accountRows, stepRows, eventRows] = await Promise.all([
     db
       .select({
         operationKey: aiOperatorOperations.operationKey,
@@ -498,12 +512,94 @@ aiOperatorTasksRoutes.get('/tasks/:id', scopes, requireAiRead, async (c) => {
       ))
       .orderBy(desc(aiAgentRuns.queuedAt))
       .limit(500),
+    // Wave E2 (#6167): the task graph. Every read repeats task_id AND org_id
+    // beside RLS (same defence-in-depth posture as the two above) and carries
+    // the same 500-row cap. Each projection NAMES its columns: a bare
+    // `select()` would pull a step's `checkpoint` jsonb into the handler,
+    // where only the mapper would stand between it and the response.
+    db
+      .select({
+        id: aiOperatorTaskTargets.id,
+        targetKind: aiOperatorTaskTargets.targetKind,
+        deviceId: aiOperatorTaskTargets.deviceId,
+        ticketId: aiOperatorTaskTargets.ticketId,
+        contactId: aiOperatorTaskTargets.contactId,
+        targetLabel: aiOperatorTaskTargets.targetLabel,
+        targetOrdinal: aiOperatorTaskTargets.targetOrdinal,
+        state: aiOperatorTaskTargets.state,
+        detachedAt: aiOperatorTaskTargets.detachedAt,
+        detachedReason: aiOperatorTaskTargets.detachedReason,
+      })
+      .from(aiOperatorTaskTargets)
+      .where(and(eq(aiOperatorTaskTargets.taskId, task.id), eq(aiOperatorTaskTargets.orgId, task.orgId)))
+      .orderBy(aiOperatorTaskTargets.targetOrdinal)
+      .limit(500),
+    db
+      .select({
+        targetId: aiOperatorTaskTargetAccounts.targetId,
+        provider: aiOperatorTaskTargetAccounts.provider,
+        m365ConnectionId: aiOperatorTaskTargetAccounts.m365ConnectionId,
+        googleConnectionId: aiOperatorTaskTargetAccounts.googleConnectionId,
+        externalId: aiOperatorTaskTargetAccounts.externalId,
+        principalLabel: aiOperatorTaskTargetAccounts.principalLabel,
+      })
+      .from(aiOperatorTaskTargetAccounts)
+      .where(and(
+        eq(aiOperatorTaskTargetAccounts.taskId, task.id),
+        eq(aiOperatorTaskTargetAccounts.orgId, task.orgId),
+      ))
+      .limit(500),
+    db
+      .select({
+        id: aiOperatorTaskSteps.id,
+        stepKey: aiOperatorTaskSteps.stepKey,
+        stepKind: aiOperatorTaskSteps.stepKind,
+        targetId: aiOperatorTaskSteps.targetId,
+        attemptOrdinal: aiOperatorTaskSteps.attemptOrdinal,
+        state: aiOperatorTaskSteps.state,
+        planRevision: aiOperatorTaskSteps.planRevision,
+        expectedCriterion: aiOperatorTaskSteps.expectedCriterion,
+        dependencyKind: aiOperatorTaskSteps.dependencyKind,
+        dependencyId: aiOperatorTaskSteps.dependencyId,
+        detail: aiOperatorTaskSteps.detail,
+        startedAt: aiOperatorTaskSteps.startedAt,
+        settledAt: aiOperatorTaskSteps.settledAt,
+        // NOT checkpoint — see the comment above.
+      })
+      .from(aiOperatorTaskSteps)
+      .where(and(eq(aiOperatorTaskSteps.taskId, task.id), eq(aiOperatorTaskSteps.orgId, task.orgId)))
+      .orderBy(aiOperatorTaskSteps.attemptOrdinal, aiOperatorTaskSteps.startedAt)
+      .limit(500),
+    db
+      .select({
+        id: aiOperatorTaskEvents.id,
+        transitionSeq: aiOperatorTaskEvents.transitionSeq,
+        eventType: aiOperatorTaskEvents.eventType,
+        actorKind: aiOperatorTaskEvents.actorKind,
+        actorUserId: aiOperatorTaskEvents.actorUserId,
+        stepKey: aiOperatorTaskEvents.stepKey,
+        targetId: aiOperatorTaskEvents.targetId,
+        detail: aiOperatorTaskEvents.detail,
+        createdAt: aiOperatorTaskEvents.createdAt,
+      })
+      .from(aiOperatorTaskEvents)
+      .where(and(eq(aiOperatorTaskEvents.taskId, task.id), eq(aiOperatorTaskEvents.orgId, task.orgId)))
+      // Newest first in SQL, re-sorted ascending by the mapper: the LIMIT has
+      // to keep the MOST RECENT 500 events of a long-running task, not the
+      // oldest 500 — a 14-day identity task can exceed 500 events, and
+      // showing only its first ones would hide what it is doing now.
+      .orderBy(desc(aiOperatorTaskEvents.transitionSeq))
+      .limit(500),
   ]);
 
   const dto: AiOperatorTaskDto = mapOperatorTask(
     task as OperatorTaskRowInput,
     operationRows as OperatorOperationRowInput[],
     runRows as OperatorRunLinkRowInput[],
+    targetRows as OperatorTargetRowInput[],
+    accountRows as OperatorTargetAccountRowInput[],
+    stepRows as OperatorStepRowInput[],
+    eventRows as OperatorEventRowInput[],
   );
   return c.json({ data: dto });
 });

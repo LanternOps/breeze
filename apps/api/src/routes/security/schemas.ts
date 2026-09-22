@@ -154,7 +154,9 @@ export const scanRequestSchema = z.object({
 export const listScansQuerySchema = z.object({
   page: z.string().optional(),
   limit: z.string().optional(),
-  status: z.enum(['queued', 'running', 'completed', 'failed']).optional(),
+  // 'timed_out' (#6263 W01): a scan that hit its policy deadline. Threats found
+  // before the deadline are still ingested, so it is an outcome, not a failure.
+  status: z.enum(['queued', 'running', 'completed', 'failed', 'timed_out']).optional(),
   scanType: z.enum(['quick', 'full', 'custom']).optional(),
   startDate: z.string().optional(),
   endDate: z.string().optional()

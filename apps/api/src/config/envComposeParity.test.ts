@@ -382,3 +382,37 @@ describe('parseDocumentedVars — what counts as a documented variable (#3239)',
     expect(parseDocumentedVars(optionalKnobsOnly)).toEqual(['A_KNOB', 'B_KNOB', 'C_KNOB']);
   });
 });
+
+/**
+ * E2E_MODE plumbing (#6447).
+ *
+ * Deliberately NOT documented in `.env.example` — it is a dev/CI-only flag that
+ * stands down the rate limiters (and lengthens token TTLs), never an operator
+ * knob, and `validate.ts` hard-refuses it under NODE_ENV production. That
+ * exemption is exactly why the parity suite above cannot see it: it only walks
+ * vars documented in `.env.example`.
+ *
+ * It still has to REACH the container, and the dev stack now depends on that.
+ * `scripts/dev/wt-stack/env.ts` pins `E2E_MODE=true` into `.env.stack` because
+ * every Playwright context replays one storageState — hence one refresh-token
+ * family — and `apps/web` spends one `POST /auth/refresh` per navigation, which
+ * blows the 60/60s per-family budget and 429s the run. If an edit to the
+ * `x-api-env` anchor ever drops the `E2E_MODE` line, that pin becomes a silent
+ * no-op and `portal-dev-e2e` starts intermittently reddening again with nothing
+ * pointing back at the missing mapping. Pin the one axis that can regress.
+ */
+describe('E2E_MODE env plumbing (#6447)', () => {
+  const ROOT_COMPOSE = readFileSync(path.join(REPO_ROOT, 'docker-compose.yml'), 'utf8');
+
+  it('is declared in the validate.ts schema', () => {
+    expect(ENV_SCHEMA_KEYS).toContain('E2E_MODE');
+  });
+
+  it('reaches the api container in docker-compose.yml', () => {
+    expect(isReferencedInCompose('E2E_MODE', ROOT_COMPOSE)).toBe(true);
+  });
+
+  it('stays out of .env.example — it is not a self-host operator knob', () => {
+    expect(documentedEnvExampleVars('.env.example')).not.toContain('E2E_MODE');
+  });
+});

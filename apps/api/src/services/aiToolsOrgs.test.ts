@@ -613,7 +613,7 @@ describe('manage_organizations add_contact', () => {
         orgId: ORG_1, siteId: undefined, name: 'Pat Lee', email: 'pat@customer.example',
         phone: undefined, mobile: undefined, title: 'Office Manager', roles: ['billing'], isPrimary: false,
       },
-      { userId: PARTNER_USER_ID }
+      { userId: PARTNER_USER_ID, destinationSource: 'ai_tool' }
     );
     // Reaches the customer PII write through createContact, never a bare insert.
     expect(mockDb.insert).not.toHaveBeenCalled();
@@ -649,7 +649,7 @@ describe('manage_organizations add_contact', () => {
         orgId: ORG_1, siteId: SITE_1, name: 'Site Contact', email: undefined,
         phone: '555-0100', mobile: '555-0199', title: 'Manager', roles: ['site'], isPrimary: true,
       },
-      { userId: PARTNER_USER_ID }
+      { userId: PARTNER_USER_ID, destinationSource: 'ai_tool' }
     );
   });
 
@@ -707,7 +707,7 @@ describe('manage_organizations add_contact', () => {
     );
     expect(ok.contact.orgId).toBe(ORG_1);
     expect(mockCreateContact).toHaveBeenCalledWith(
-      db, expect.objectContaining({ orgId: ORG_1 }), { userId: ORG_USER_ID }
+      db, expect.objectContaining({ orgId: ORG_1 }), { userId: ORG_USER_ID, destinationSource: 'ai_tool' }
     );
 
     const denied = JSON.parse(
@@ -764,7 +764,7 @@ describe('manage_organizations add_contact', () => {
     expect(mockCreateContact).toHaveBeenCalledWith(
       db,
       expect.objectContaining({ orgId: ORG_1, name: undefined, email: 'nameless@customer.example' }),
-      { userId: PARTNER_USER_ID }
+      { userId: PARTNER_USER_ID, destinationSource: 'ai_tool' }
     );
   });
 

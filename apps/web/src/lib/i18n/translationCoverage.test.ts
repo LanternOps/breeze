@@ -727,7 +727,9 @@ const namespaceDuplicateBaselines = {
     // +1 #5288: automationsPage.tabs.webhooks — "Webhooks" is the same word
     // in de-DE.
     'scripts.json': 56,
-    'security.json': 166,
+    // +1 #6263 W01: securityScansPage.scansTab — "Scans" is the standard
+    // German loanword in this locale, same root cause as "Status" above.
+    'security.json': 167,
     // +1: bulkOrgImport.preview.status — "Status" is the German word too.
     // +1: aiAgentsPage.fields.name — "Name" is the German word too.
     // +1: pre-existing 1-duplicate baseline drift from before wave 6.1 Task 4

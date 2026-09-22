@@ -534,7 +534,7 @@ async function handleAddContact(
         roles,
         isPrimary: input.isPrimary === true,
       },
-      { userId: auth.user.id }
+      { userId: auth.user.id, destinationSource: 'ai_tool' }
     );
   } catch (err) {
     // A ContactValidationError is the caller's fault (bad role, site not in

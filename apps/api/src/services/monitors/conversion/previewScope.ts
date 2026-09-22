@@ -2,7 +2,7 @@ import { and, inArray, isNull, or } from 'drizzle-orm';
 import type { PgColumn } from 'drizzle-orm/pg-core';
 import { getCurrentDbAccessContext, type DbAccessContext } from '../../../db';
 import { configPolicyAssignments, configPolicyFeatureLinks, configurationPolicies, devices, escalationPolicies, monitorDefinitions, notificationChannels, notificationRoutingRules, organizations } from '../../../db/schema';
-import { dbAccessContextFromAuth, type AuthContext } from '../../../middleware/auth';
+import { buildOrgAccessClosures, dbAccessContextFromAuth, siteAccessCheck, type AuthContext } from '../../../middleware/auth';
 import { getConfigPolicy } from '../../configurationPolicy';
 import { canManagePartnerWidePolicies } from '../../partnerWideAccess';
 import { canMutateOrgWideGovernance } from '../../siteCeilingAccess';
@@ -24,13 +24,21 @@ export function snapshotPreviewAccess(auth: AuthContext): PreviewAccessSnapshot 
   return JSON.parse(JSON.stringify({ auth: data, dbContext })) as PreviewAccessSnapshot;
 }
 
+/**
+ * Rebuild a usable AuthContext from a queued snapshot. The access closures are
+ * dropped at the JSON boundary, so they are rebuilt from the auth module's
+ * single source of truth (#6445) rather than re-implemented here — a hand-rolled
+ * copy silently drifts from the request path (`authMiddleware`) the moment
+ * either axis changes, and this runs on a background path where that divergence
+ * would be invisible.
+ */
 export function restorePreviewAuth(snapshot: PreviewAccessSnapshot): AuthContext {
   const a = structuredClone(snapshot.auth);
-  return { ...a, token: null,
-    canAccessOrg: (id) => a.scope === 'system' || (a.accessibleOrgIds ?? []).includes(id),
-    canAccessSite: (id) => a.allowedSiteIds === undefined || (!!id && (a.allowedSiteIds ?? []).includes(id)),
-    orgCondition: (column) => a.scope === 'system' ? undefined : inArray(column, a.accessibleOrgIds ?? []),
-  };
+  // `accessibleOrgIds` is passed straight through: `null` (system scope) means
+  // unrestricted and `[]` means no accessible orgs, and the two must not be
+  // conflated by a `??` default.
+  const { orgCondition, canAccessOrg } = buildOrgAccessClosures(a.accessibleOrgIds);
+  return { ...a, token: null, canAccessOrg, orgCondition, canAccessSite: siteAccessCheck(a.allowedSiteIds) };
 }
 
 export const previewScopeHash = (snapshot: PreviewAccessSnapshot): string => sha(canonical(snapshot));

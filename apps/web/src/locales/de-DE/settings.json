@@ -577,7 +577,7 @@
       },
       "modules": {
         "label": "Module",
-        "description": "Service Desk & Abrechnung ein/aus"
+        "description": "Service Desk, Abrechnung und Topologie ein/aus"
       }
     },
     "saved": "Partnereinstellungen gespeichert",
@@ -605,6 +605,18 @@
       "offLabel": "Aus – nur RMM",
       "offDescription": "Blendet die Bereiche Service-Desk und Abrechnung sowie die Registerkarten Tickets und Abrechnung im Kundendatensatz aus. Vorhandene Tickets bleiben lesbar; neue können nicht erstellt werden.",
       "externalNote": "Dieser Partner nutzt ein externes PSA. Eine Änderung ist hier noch nicht möglich.",
+      "topologyTitle": "Netzwerktopologie",
+      "topologyBeta": "Beta-Version",
+      "topologyDescription": "Erstellt aus Agent- und SNMP-Daten eine Live-Karte des Netzwerks jedes Standorts und fügt Geräten einen Topologie-Tab hinzu. Während der Beta standardmäßig deaktiviert.",
+      "topologyOnLabel": "Netzwerktopologie aktivieren",
+      "topologyPhysicalLabel": "Physische Topologie",
+      "topologyPhysicalDescription": "Switch-Port- und Verkabelungsverbindungen zwischen Geräten anzeigen, nicht nur logische Nachbarn.",
+      "topologyInterfaceHealthLabel": "Schnittstellenzustand",
+      "topologyInterfaceHealthDescription": "Schnittstellenstatus und Fehler per SNMP abfragen und Verbindungen nach ihrem Zustand einfärben.",
+      "topologyDiagnosticsLabel": "Diagnose",
+      "topologyDiagnosticsDescription": "Pfad- und Erreichbarkeitsprüfungen aus der Karte heraus ausführen, um zu erklären, warum ein Gerät nicht erreichbar ist.",
+      "topologyAiLabel": "KI-Einblicke",
+      "topologyAiDescription": "Breeze AI die Karte zusammenfassen und ungewöhnliche Änderungen in der Topologie eines Standorts markieren lassen.",
       "saved": "Module aktualisiert",
       "saveFailed": "Module konnten nicht aktualisiert werden"
     }
@@ -1325,6 +1337,10 @@
         "enableLifecycle": {
           "label": "Hardware-Lebenszyklus",
           "description": "Zeigt den aktuellen Austauschplan für die Geräte Ihres Kunden."
+        },
+        "enableNetworkVisibility": {
+          "label": "Netzwerksichtbarkeit",
+          "description": "Zeigt im Kundenportal den Netzwerkzustand und erkannte Assets schreibgeschützt an."
         }
       }
     },
