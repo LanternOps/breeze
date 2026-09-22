@@ -228,12 +228,20 @@ quoteCrudRoutes.get('/:id', scopes, readPerm, zValidator('param', idParam), asyn
     // stripe already use above — same sanctioned pattern, no extra permission gate,
     // since it's the quote's own tenant data and this route is already partner-/
     // system-scoped only (quoteCrudRoutes' `scopes`). Column default is `true`,
-    // matched here when the row can't be read.
-    const [partnerAutoEmailRow] = await db
-      .select({ autoEmailInvoiceOnQuoteAccept: partners.autoEmailInvoiceOnQuoteAccept })
-      .from(partners)
-      .where(eq(partners.id, detail.quote.partnerId))
-      .limit(1);
+    // matched here when the row can't be read. Wrapped like the getConnection
+    // call above: this is a display-only preview field for one dialog, so a
+    // transient failure here must degrade the preview, not fail the whole
+    // quote-detail load.
+    let partnerAutoEmailRow: { autoEmailInvoiceOnQuoteAccept: boolean } | undefined;
+    try {
+      [partnerAutoEmailRow] = await db
+        .select({ autoEmailInvoiceOnQuoteAccept: partners.autoEmailInvoiceOnQuoteAccept })
+        .from(partners)
+        .where(eq(partners.id, detail.quote.partnerId))
+        .limit(1);
+    } catch (err) {
+      console.error('GET /quotes/:id: partner auto-email lookup failed', { quoteId: id, partnerId: detail.quote.partnerId, err });
+    }
     const autoEmailInvoiceOnAccept = partnerAutoEmailRow?.autoEmailInvoiceOnQuoteAccept ?? true;
     return c.json({ data: {
       ...detail, quote: quoteForClient, blocks: blocksForEditor, branding, presentation, recipients,

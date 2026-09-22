@@ -73,17 +73,35 @@ vi.mock('../../services/quotePdf', () => ({
 // a caller awaits last — recipients ends in `orderBy`, branding ends in
 // `limit`, and the acceptance read is `leftJoin().where().orderBy().limit()`.
 // Default: empty rows.
-const dbRows = vi.hoisted(() => ({ next: [] as any[][], i: 0 }));
+const dbRows = vi.hoisted(() => ({
+  next: [] as any[][],
+  i: 0,
+  // Every `.where(...)` arg seen this test, in call order — lets a test prove
+  // WHICH row a select filtered on (e.g. the quote's own partnerId vs. the
+  // caller's ambient one, #6636) without needing the passthrough queue above
+  // to actually respect the filter.
+  whereCalls: [] as unknown[],
+  // When set to a queue index, that specific `.then()` resolution rejects
+  // instead of resolving — simulates one query throwing/failing (#6636
+  // review: the partner-flag select must degrade gracefully, not 500 the
+  // whole quote-detail load). `null` = never reject.
+  rejectAt: null as number | null,
+}));
 vi.mock('../../db', () => {
   const builder = () => {
     const chain: any = {
       from: () => chain,
       leftJoin: () => chain,
-      where: () => chain,
+      where: (arg: unknown) => { dbRows.whereCalls.push(arg); return chain; },
       orderBy: () => chain,
       limit: () => chain,
-      then: (resolve: (v: unknown) => unknown, reject?: (e: unknown) => unknown) =>
-        Promise.resolve(dbRows.next[dbRows.i++] ?? []).then(resolve, reject),
+      then: (resolve: (v: unknown) => unknown, reject?: (e: unknown) => unknown) => {
+        const idx = dbRows.i++;
+        if (dbRows.rejectAt === idx) {
+          return Promise.reject(new Error('db unavailable')).then(resolve, reject);
+        }
+        return Promise.resolve(dbRows.next[idx] ?? []).then(resolve, reject);
+      },
     };
     return chain;
   };
@@ -105,6 +123,8 @@ vi.mock('../../middleware/auth', () => ({
   requirePermission: () => async (c: any, next: any) => gate.permGate(c, next)
 }));
 
+import { eq } from 'drizzle-orm';
+import { partners } from '../../db/schema/orgs';
 import { quoteRoutes } from './index';
 import * as svc from '../../services/quoteService';
 import { QuoteServiceError } from '../../services/quoteTypes';
@@ -129,6 +149,8 @@ describe('quote crud + lines routes', () => {
     // Reset the db row queue (branding selects) consumed per request.
     dbRows.next = [];
     dbRows.i = 0;
+    dbRows.whereCalls = [];
+    dbRows.rejectAt = null;
     vi.mocked(getConnection).mockResolvedValue(null);
   });
 
@@ -785,7 +807,7 @@ describe('quote crud + lines routes', () => {
       expect(body.data.autoEmailInvoiceOnAccept).toBe(false);
     });
 
-    it('defaults to true when the partner row is unreadable (matches the column default)', async () => {
+    it('defaults to true when no partner row is found (matches the column default)', async () => {
       (svc.getQuote as any).mockResolvedValue({ quote: { id: QUOTE_ID, orgId: ORG_ID, partnerId: 'p1' }, blocks: [], lines: [] });
       // No preset rows at all → every select (including the new one) falls
       // through to the default empty array.
@@ -793,6 +815,40 @@ describe('quote crud + lines routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.data.autoEmailInvoiceOnAccept).toBe(true);
+    });
+
+    // Review finding: the select is wrapped so a transient failure degrades
+    // the (display-only) preview instead of 500ing the whole quote-detail load.
+    it('defaults to true (and still 200s) when the select throws', async () => {
+      (svc.getQuote as any).mockResolvedValue({ quote: { id: QUOTE_ID, orgId: ORG_ID, partnerId: 'p1' }, blocks: [], lines: [] });
+      const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      // The partner-flag select is the 5th db call the handler makes (index 4:
+      // branding partner, branding portal, recipients, acceptance, then this
+      // one) — reject only that one, not the earlier selects.
+      dbRows.next = [[], [], [], []];
+      dbRows.rejectAt = 4;
+      const res = await app().request(`/${QUOTE_ID}`, { method: 'GET' });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.autoEmailInvoiceOnAccept).toBe(true);
+      expect(spy).toHaveBeenCalled();
+      spy.mockRestore();
+    });
+
+    // Review finding: prove the select filters on the QUOTE's own partnerId,
+    // not the caller's ambient one — the auth mock above fixes the caller at
+    // partnerId 'p1', so a quote belonging to a DIFFERENT partner (e.g. a
+    // system-scope caller viewing another partner's quote) must still filter
+    // on the quote's partnerId. A regression that swapped in `auth.partnerId`
+    // would filter on 'p1' here and this assertion would fail.
+    it("filters the select on the quote's own partnerId, not the caller's", async () => {
+      (svc.getQuote as any).mockResolvedValue({ quote: { id: QUOTE_ID, orgId: ORG_ID, partnerId: 'other-partner' }, blocks: [], lines: [] });
+      dbRows.next = [[], [], [], [], [{ autoEmailInvoiceOnQuoteAccept: true }]];
+      const res = await app().request(`/${QUOTE_ID}`, { method: 'GET' });
+      expect(res.status).toBe(200);
+      expect(dbRows.whereCalls).toContainEqual(eq(partners.id, 'other-partner'));
+      // And explicitly NOT filtered on the caller's own ambient partnerId.
+      expect(dbRows.whereCalls).not.toContainEqual(eq(partners.id, 'p1'));
     });
   });
 });
