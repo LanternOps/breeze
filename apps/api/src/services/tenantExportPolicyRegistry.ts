@@ -524,7 +524,17 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   // match, no credential material — so they are ordinary customer data the
   // tenant is entitled to export. `reference` is free text the tech typed
   // about the customer's own agreement; it belongs to the tenant.
-  "quote_acceptances": tablePolicy("org_id", {"included":["id","quote_id","org_id","signer_name","signer_email","signed_at","ip_address","user_agent","quote_sha256","render_locale","origin","method","reference","recorded_by_user_id","created_at"],"reviewedIncluded":["hash_version"],"excludedSensitive":["acceptance_token_jti"],"excludedOpen":[]}),
+  // quote_acceptances evidence_* (#6633): the optional PO scan / signed PDF on
+  // an on-behalf acceptance, stored through services/blobStorage.ts.
+  // evidence_data is bytea -> excludedOpen by the open-container rule.
+  // evidence_storage_key is an internal locator, NOT a credential: an opaque
+  // `quote-acceptance-evidence/<uuid>` path with no tenant identifier that
+  // grants nothing without the platform's own bucket credentials — same
+  // `included` bucket as ticket_attachments.storage_key and
+  // org_documents.storage_key. evidence_sha256 is a content digest, signed off
+  // in reviewedIncluded exactly like org_documents.sha256. The rest is
+  // ordinary metadata (filename, sniffed type, size, uploader, timestamp).
+  "quote_acceptances": tablePolicy("org_id", {"included":["id","quote_id","org_id","signer_name","signer_email","signed_at","ip_address","user_agent","quote_sha256","render_locale","origin","method","reference","recorded_by_user_id","created_at","evidence_storage_backend","evidence_storage_key","evidence_filename","evidence_content_type","evidence_size_bytes","evidence_uploaded_at","evidence_uploaded_by_user_id"],"reviewedIncluded":["hash_version","evidence_sha256"],"excludedSensitive":["acceptance_token_jti"],"excludedOpen":["evidence_data"]}),
   "quote_blocks": tablePolicy("org_id", {"included":["id","quote_id","org_id","block_type","sort_order","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["content"]}),
   "quote_images": tablePolicy("org_id", {"included":["id","quote_id","org_id","mime","byte_size","sha256","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["image_data"]}),
   "quote_lines": tablePolicy("org_id", {"included":["id","quote_id","block_id","org_id","source_type","catalog_item_id","parent_line_id","name","description","quantity","unit_price","taxable","customer_visible","line_total","recurrence","term_months","billing_frequency","unit_cost","deposit_eligible","item_type","sku","part_number","procurement_source","vendor_sku","manufacturer","image_id","sort_order","contract_line_type","device_roles","device_group_id","device_group_name","site_id","site_name","included_quantity","overage_mode","overage_unit_price","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),

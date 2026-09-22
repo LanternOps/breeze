@@ -12,7 +12,7 @@
 // accept path called resolveAutoVariables without a locale, i.e. the 'en'
 // fallback — acceptanceRenderLocale encodes exactly that.
 
-import { eq } from 'drizzle-orm';
+import { eq, getTableColumns } from 'drizzle-orm';
 import { db } from '../db';
 import { quotes, quoteBlocks, quoteLines, quoteAcceptances } from '../db/schema/quotes';
 import { loadContractBlockRenderData } from './contractTemplateRender';
@@ -44,7 +44,10 @@ export interface AcceptanceHashVerification {
  * outside any org-scoped transaction (same contract as the accept route).
  */
 export async function verifyQuoteAcceptanceHash(acceptanceId: string): Promise<AcceptanceHashVerification> {
-  const [acceptance] = await db.select().from(quoteAcceptances).where(eq(quoteAcceptances.id, acceptanceId)).limit(1);
+  // Every column except the inline evidence bytes (#6633, up to 10 MB) — the
+  // hash check never needs them.
+  const { evidenceData: _evidenceData, ...acceptanceColumns } = getTableColumns(quoteAcceptances);
+  const [acceptance] = await db.select(acceptanceColumns).from(quoteAcceptances).where(eq(quoteAcceptances.id, acceptanceId)).limit(1);
   if (!acceptance) throw new QuoteServiceError('Acceptance not found', 404, 'QUOTE_NOT_FOUND');
   const hashVersion = acceptance.hashVersion ?? 1;
   if (hashVersion !== 1 && hashVersion !== 2) {

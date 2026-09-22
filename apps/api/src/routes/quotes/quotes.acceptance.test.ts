@@ -55,7 +55,7 @@ const isDescOrderBy = (arg: unknown): boolean => {
     return Array.isArray(value) && value.some((v) => typeof v === 'string' && v.includes('desc'));
   });
 };
-const dbRows = vi.hoisted(() => ({ next: [] as any[][], i: 0 }));
+const dbRows = vi.hoisted(() => ({ next: [] as any[][], i: 0, selects: [] as Array<Record<string, unknown> | undefined> }));
 vi.mock('../../db', () => {
   const builder = () => {
     let descending = false;
@@ -75,7 +75,7 @@ vi.mock('../../db', () => {
     };
     return chain;
   };
-  return { db: { select: () => builder() } };
+  return { db: { select: (cols?: Record<string, unknown>) => { dbRows.selects.push(cols); return builder(); } } };
 });
 
 const gate = vi.hoisted(() => ({ permGate: async (_c: any, next: any) => next() }));
@@ -103,6 +103,7 @@ describe('GET /:id acceptance record', () => {
     gate.permGate = async (_c: any, next: any) => next();
     dbRows.next = [];
     dbRows.i = 0;
+    dbRows.selects = [];
     vi.mocked(getConnection).mockResolvedValue(null);
     (svc.getQuote as any).mockResolvedValue({ quote: { id: QUOTE_ID }, blocks: [], lines: [] });
   });
@@ -188,5 +189,42 @@ describe('GET /:id acceptance record', () => {
     const res = await app().request(`/${QUOTE_ID}`, { method: 'GET' });
     const body = await res.json();
     expect(body.data.acceptance.id).toBe(ACCEPTANCE_ID);
+  });
+
+  // #6633 — the evidence file's METADATA rides on the acceptance; the bytes and
+  // the storage locator never do.
+  it('exposes evidence metadata (never the storage key or bytes) for an on-behalf acceptance', async () => {
+    dbRows.next = [[], [], [], [{
+      id: ACCEPTANCE_ID, signerName: 'Dana Buyer', signerEmail: 'dana@example.test',
+      signedAt: '2026-09-20T00:00:00.000Z', origin: 'on_behalf', method: 'purchase_order', reference: 'PO 4471',
+      recordedByUserId: 'tech-1', recordedByName: 'Sam Tech',
+      evidenceStorageBackend: 's3', evidenceStorageKey: 'quote-acceptance-evidence/k1',
+      evidenceFilename: 'PO-4471.pdf', evidenceContentType: 'application/pdf', evidenceSizeBytes: 2048,
+      evidenceSha256: 'ab'.repeat(32), evidenceUploadedAt: new Date('2026-09-21T10:00:00.000Z'),
+    }]];
+    const res = await app().request(`/${QUOTE_ID}`, { method: 'GET' });
+    const body = await res.json();
+    expect(body.data.acceptance.evidence).toEqual({
+      filename: 'PO-4471.pdf', contentType: 'application/pdf', sizeBytes: 2048,
+      uploadedAt: '2026-09-21T10:00:00.000Z',
+    });
+    expect(JSON.stringify(body)).not.toContain('quote-acceptance-evidence/k1');
+    // The acceptance read must not drag the inline bytes up.
+    const acceptanceSelect = dbRows.selects.find((cols) => cols && 'recordedByName' in cols);
+    expect(acceptanceSelect).toBeDefined();
+    expect(acceptanceSelect).not.toHaveProperty('evidenceData');
+  });
+
+  it('returns evidence: null for an acceptance without a file', async () => {
+    dbRows.next = [[], [], [], [{
+      id: ACCEPTANCE_ID, signerName: 'Dana Buyer', signerEmail: null,
+      signedAt: '2026-09-20T00:00:00.000Z', origin: 'on_behalf', method: 'verbal', reference: 'call',
+      recordedByUserId: 'tech-1', recordedByName: 'Sam Tech',
+      evidenceStorageBackend: null, evidenceStorageKey: null, evidenceFilename: null,
+      evidenceContentType: null, evidenceSizeBytes: null, evidenceSha256: null, evidenceUploadedAt: null,
+    }]];
+    const res = await app().request(`/${QUOTE_ID}`, { method: 'GET' });
+    const body = await res.json();
+    expect(body.data.acceptance.evidence).toBeNull();
   });
 });

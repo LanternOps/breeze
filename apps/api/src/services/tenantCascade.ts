@@ -1169,7 +1169,18 @@ interface FkEdge {
  * Tables whose rows are the only index to an S3 object key. The erasure
  * pre-clear reads them ONE AT A TIME (see the 1a. block in cascadeDeleteOrg).
  */
-const OBJECT_PRECLEAR_TABLES = ['ticket_attachments', 'org_documents'] as const;
+/**
+ * Every tenant table whose rows are the ONLY index to blob-store objects
+ * (services/blobStorage.ts). Each entry names the row's key and backend
+ * columns: most byte tables use plain `storage_key`/`storage_backend`, while
+ * `quote_acceptances` carries its optional on-behalf evidence file (#6633) in
+ * `evidence_*` columns beside the acceptance record itself.
+ */
+const OBJECT_PRECLEAR_TABLES: ReadonlyArray<{ table: string; keyColumn: string; backendColumn: string }> = [
+  { table: 'ticket_attachments', keyColumn: 'storage_key', backendColumn: 'storage_backend' },
+  { table: 'org_documents', keyColumn: 'storage_key', backendColumn: 'storage_backend' },
+  { table: 'quote_acceptances', keyColumn: 'evidence_storage_key', backendColumn: 'evidence_storage_backend' },
+];
 
 /**
  * Read foreign-key edges from pg_catalog and return a topological order
@@ -1338,15 +1349,15 @@ export async function cascadeDeleteOrg(
   //     soft-deleted org_documents row has already had its object removed and
   //     its storage_key cleared, so the NOT NULL excludes it.
   const objectKeys: string[] = [];
-  for (const table of OBJECT_PRECLEAR_TABLES) {
+  for (const { table, keyColumn, backendColumn } of OBJECT_PRECLEAR_TABLES) {
     try {
       const keys = await dbModule.withSystemDbAccessContext(async () => {
         const result = await dbModule.db.execute(sql`
-          SELECT storage_key
+          SELECT ${sql.raw(keyColumn)} AS storage_key
           FROM ${sql.raw(`"${table}"`)}
           WHERE org_id = ${orgId}::uuid
-            AND storage_backend = 's3'
-            AND storage_key IS NOT NULL
+            AND ${sql.raw(backendColumn)} = 's3'
+            AND ${sql.raw(keyColumn)} IS NOT NULL
         `);
         const rows = (result as unknown as { rows?: Array<{ storage_key: string }> }).rows
           ?? (result as unknown as Array<{ storage_key: string }>);

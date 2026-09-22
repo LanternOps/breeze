@@ -269,6 +269,21 @@ export const quoteAcceptances = pgTable('quote_acceptances', {
   // The tech who recorded it. NULL on customer rows, and NULL again on an
   // on-behalf row whose recorder was later deleted (ON DELETE SET NULL).
   recordedByUserId: uuid('recorded_by_user_id').references(() => users.id, { onDelete: 'set null' }),
+  // Evidence file for an on-behalf acceptance (#6633): the PO scan / signed
+  // PDF. One per acceptance; re-upload replaces it. Bytes go through
+  // services/blobStorage.ts — backend chosen once at upload, 's3' → key only,
+  // 'db' → inline bytea only. CHECKs in 2026-10-27-110000 enforce the shape and
+  // origin = 'on_behalf'. NEVER select evidenceData in a list/detail read —
+  // use QUOTE_ACCEPTANCE_EVIDENCE_META in services/quoteAcceptanceEvidence.ts.
+  evidenceStorageBackend: text('evidence_storage_backend').$type<'s3' | 'db'>(),
+  evidenceStorageKey: text('evidence_storage_key'),
+  evidenceData: bytea('evidence_data'),
+  evidenceFilename: text('evidence_filename'),
+  evidenceContentType: varchar('evidence_content_type', { length: 64 }),
+  evidenceSizeBytes: integer('evidence_size_bytes'),
+  evidenceSha256: char('evidence_sha256', { length: 64 }),
+  evidenceUploadedAt: timestamp('evidence_uploaded_at', { withTimezone: true }),
+  evidenceUploadedByUserId: uuid('evidence_uploaded_by_user_id').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at').defaultNow().notNull()
 }, (t) => [
   index('quote_acceptances_quote_idx').on(t.quoteId),

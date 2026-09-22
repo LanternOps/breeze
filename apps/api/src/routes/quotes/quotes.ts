@@ -37,6 +37,7 @@ import {
 import { ContractTemplateServiceError } from '../../services/contractTemplateService';
 import { PdfMergeError } from '../../services/pdfMerge';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { QUOTE_ACCEPTANCE_EVIDENCE_META, toAcceptanceEvidenceMeta } from '../../services/quoteAcceptanceEvidence';
 
 export const quoteCrudRoutes = new Hono();
 const scopes = requireScope('partner', 'system');
@@ -195,6 +196,8 @@ quoteCrudRoutes.get('/:id', scopes, readPerm, zValidator('param', idParam), asyn
         reference: quoteAcceptances.reference,
         recordedByUserId: quoteAcceptances.recordedByUserId,
         recordedByName: users.name,
+        // Evidence METADATA only (#6633) — never evidenceData.
+        ...QUOTE_ACCEPTANCE_EVIDENCE_META,
       })
       .from(quoteAcceptances)
       .leftJoin(users, eq(users.id, quoteAcceptances.recordedByUserId))
@@ -216,6 +219,8 @@ quoteCrudRoutes.get('/:id', scopes, readPerm, zValidator('param', idParam), asyn
           recordedBy: acceptanceRow.recordedByUserId
             ? { id: acceptanceRow.recordedByUserId, name: acceptanceRow.recordedByName ?? null }
             : null,
+          // Filename/type/size/time only; the storage key stays server-side.
+          evidence: toAcceptanceEvidenceMeta(acceptanceRow),
         }
       : null;
     // The QUOTE's partner's auto-email-invoice setting (#6636). AcceptOnBehalfDialog

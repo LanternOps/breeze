@@ -36,7 +36,10 @@ function sqlToText(q: unknown): string {
         }
         return '';
       })
-      .join(' ');
+      .join(' ')
+      // sql.raw() identifiers are separate chunks, so the join above leaves
+      // runs of whitespace; collapse them so assertions read like the SQL.
+      .replace(/\s+/g, ' ');
   }
   return String(q);
 }
@@ -62,7 +65,7 @@ vi.mock('../db', () => ({
       // It must NOT consume a queued rowCount response, or every existing
       // `executeResponses` fixture silently shifts by one and the row-count
       // assertions below start measuring the wrong statements.
-      if (text.includes('SELECT storage_key')) {
+      if (text.includes('AS storage_key')) {
         return Promise.resolve(mockState.attachmentKeyRows);
       }
       // Execution plane W01: the artifact blob pre-clear is a SELECT too, and
@@ -389,7 +392,7 @@ describe('cascadeDeleteOrg', () => {
       // W08 #3902: the attachment object pre-clear SELECT runs before the
       // associated-table loop; excluded from the index so `associatedCount + 1`
       // still names the FIRST ordered cascade-table DELETE.
-      if (text.includes('SELECT storage_key')) {
+      if (text.includes('AS storage_key')) {
         return Promise.resolve([]);
       }
       callIdx += 1;
@@ -462,7 +465,7 @@ describe('cascadeDeleteOrg attachment object pre-clear (W08 #3902)', () => {
         return Promise.resolve(mockState.fkEdges);
       }
       mockState.executedSql.push(text);
-      if (text.includes('SELECT storage_key')) return Promise.resolve(rows);
+      if (text.includes('AS storage_key')) return Promise.resolve(rows);
       return Promise.resolve({ rowCount: 0 });
     }) as any);
   }
@@ -475,13 +478,11 @@ describe('cascadeDeleteOrg attachment object pre-clear (W08 #3902)', () => {
       if (text.includes('pg_constraint') || text.includes('contype')) {
         return Promise.resolve(mockState.fkEdges);
       }
-      if (text.includes('SELECT storage_key')) {
+      if (text.includes('AS storage_key')) {
         order.push('select-keys');
-        return Promise.resolve(
-          text.includes('org_documents')
-            ? [{ storage_key: 'org-documents/d1' }]
-            : [{ storage_key: 'ticket-attachments/a1' }],
-        );
+        if (text.includes('org_documents')) return Promise.resolve([{ storage_key: 'org-documents/d1' }]);
+        if (text.includes('ticket_attachments')) return Promise.resolve([{ storage_key: 'ticket-attachments/a1' }]);
+        return Promise.resolve([]);
       }
       if (/^\s*delete/i.test(text)) order.push(`delete:${text.slice(0, 60)}`);
       return Promise.resolve({ rowCount: 0 });
@@ -503,7 +504,7 @@ describe('cascadeDeleteOrg attachment object pre-clear (W08 #3902)', () => {
   it('scopes the key read to this org and to s3-backed rows only, for every byte table', async () => {
     rigKeys([]);
     await cascadeDeleteOrg(ORG, BY);
-    const keyQueries = mockState.executedSql.filter((t) => t.includes('SELECT storage_key'));
+    const keyQueries = mockState.executedSql.filter((t) => t.includes('AS storage_key'));
     // W03: one read PER byte table, not a UNION. A union means a missing table
     // blinds the read for the other one too (a 42P01 on either is tolerated),
     // which would skip the object pre-clear for a table that does exist.
@@ -513,6 +514,34 @@ describe('cascadeDeleteOrg attachment object pre-clear (W08 #3902)', () => {
       expect(q).toContain('org_id');
       expect(q).toContain("storage_backend = 's3'");
     }
+  });
+
+  it('pre-clears on-behalf acceptance EVIDENCE objects (#6633) from their own key/backend columns', async () => {
+    const keyQueries: string[] = [];
+    vi.mocked(db.execute).mockImplementation(((q: unknown) => {
+      const text = sqlToText(q);
+      if (text.includes('pg_constraint') || text.includes('contype')) {
+        return Promise.resolve(mockState.fkEdges);
+      }
+      if (text.includes('AS storage_key')) {
+        keyQueries.push(text);
+        return Promise.resolve(
+          text.includes('quote_acceptances')
+            ? [{ storage_key: 'quote-acceptance-evidence/e1' }]
+            : [],
+        );
+      }
+      return Promise.resolve({ rowCount: 0 });
+    }) as any);
+
+    await cascadeDeleteOrg(ORG, BY);
+
+    const evidenceRead = keyQueries.find((q) => q.includes('quote_acceptances'));
+    expect(evidenceRead).toBeDefined();
+    expect(evidenceRead).toContain('evidence_storage_key');
+    expect(evidenceRead).toContain("evidence_storage_backend = 's3'");
+    expect(evidenceRead).toContain('org_id');
+    expect(deleteObjectKeysMock).toHaveBeenCalledWith(['quote-acceptance-evidence/e1']);
   });
 
   it('an absent org_documents table does NOT blind the ticket-attachment pre-clear', async () => {
@@ -525,9 +554,10 @@ describe('cascadeDeleteOrg attachment object pre-clear (W08 #3902)', () => {
       if (text.includes('pg_constraint') || text.includes('contype')) {
         return Promise.resolve(mockState.fkEdges);
       }
-      if (text.includes('SELECT storage_key')) {
+      if (text.includes('AS storage_key')) {
         if (text.includes('org_documents')) return Promise.reject(undefinedTable);
-        return Promise.resolve([{ storage_key: 'ticket-attachments/a1' }]);
+        if (text.includes('ticket_attachments')) return Promise.resolve([{ storage_key: 'ticket-attachments/a1' }]);
+        return Promise.resolve([]);
       }
       return Promise.resolve({ rowCount: 0 });
     }) as any);
@@ -550,7 +580,7 @@ describe('cascadeDeleteOrg attachment object pre-clear (W08 #3902)', () => {
       if (text.includes('pg_constraint') || text.includes('contype')) {
         return Promise.resolve(mockState.fkEdges);
       }
-      if (text.includes('SELECT storage_key')) {
+      if (text.includes('AS storage_key')) {
         return Promise.resolve([{ storage_key: 'ticket-attachments/a1' }]);
       }
       if (/^\s*delete/i.test(text)) deletes.push(text);
@@ -600,7 +630,7 @@ describe('software package object lifecycle pre-clear', () => {
       const text = sqlToText(q);
       mockState.executedSql.push(text);
       if (text.includes('pg_constraint') || text.includes('contype')) return Promise.resolve([]);
-      if (text.includes('SELECT storage_key')) return Promise.resolve([]);
+      if (text.includes('AS storage_key')) return Promise.resolve([]);
       if (text.includes('SELECT v.s3_key')) {
         order.push('lock-keys');
         return Promise.resolve(mockState.softwareKeyRows);
@@ -732,7 +762,7 @@ describe('cascadeDeleteOrg — artifact blob pre-clear (execution-plane W01, spe
       if (text.includes('pg_constraint') || text.includes('contype')) {
         return Promise.resolve(mockState.fkEdges);
       }
-      if (text.includes('SELECT storage_key')) return Promise.resolve(mockState.attachmentKeyRows);
+      if (text.includes('AS storage_key')) return Promise.resolve(mockState.attachmentKeyRows);
       if (text.includes('SELECT blob_key')) {
         if (mockState.artifactKeyError) return Promise.reject(mockState.artifactKeyError);
         return Promise.resolve(mockState.artifactKeyRows);

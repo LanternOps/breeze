@@ -97,6 +97,19 @@ describe('verifyQuoteAcceptanceHash version dispatch (#3205 W05)', () => {
     expect(await verifyQuoteAcceptanceHash('a1')).toMatchObject({ matches: true, hashVersion: 1 });
   });
 
+  // #6633: quote_acceptances now carries up to 10 MB of inline evidence bytes
+  // (evidence_data). Hash verification never needs them.
+  it('does not read the inline evidence bytes of the acceptance row', async () => {
+    const { db } = await import('../db');
+    const stored = computeQuoteSha256(quote as never, [], [descriptorLine] as never, [], 1);
+    queueVerification(1, stored, descriptorLine);
+    await verifyQuoteAcceptanceHash('a1');
+    const firstSelect = vi.mocked(db.select as unknown as (cols?: Record<string, unknown>) => unknown).mock.calls[0]?.[0];
+    expect(firstSelect).toBeDefined();
+    expect(firstSelect).toHaveProperty('quoteSha256');
+    expect(firstSelect).not.toHaveProperty('evidenceData');
+  });
+
   it('keeps a v2 descriptor acceptance clean before and after its group id is deleted', async () => {
     const stored = computeQuoteSha256(quote as never, [], [descriptorLine] as never, [], 2);
     queueVerification(2, stored, descriptorLine);
