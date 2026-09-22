@@ -154,9 +154,43 @@ describe('BackupTab', () => {
 
     // baseLink: keepDaily: 7, preset 'standard' -> 30-day floor. 7 < 30, so
     // the effective retention is 30 days, not 7 -- warn instead of silently
-    // shortening snapshot lifetime.
+    // shortening snapshot expiry.
     await screen.findByText(/7 days.*30-day retention floor/i);
-    screen.getByText(/kept for 30 days/i);
+    screen.getByText(/expiry is set to 30 days, not 7/i);
+  });
+
+  it('warns using the custom retentionDays value, not the preset days, on the custom preset path (#5400)', async () => {
+    render(
+      <BackupTab
+        policyId="policy-1"
+        existingLink={{
+          ...baseLink,
+          inlineSettings: {
+            ...baseLink.inlineSettings,
+            retention: {
+              ...baseLink.inlineSettings.retention,
+              preset: 'custom',
+              retentionDays: 20,
+              keepDaily: 10,
+            },
+          },
+        }}
+        linkedPolicyId={null}
+        onLinkChanged={vi.fn()}
+      />
+    );
+
+    await screen.findByText(/Primary S3/i);
+    // keepDaily: 10 differs from the default (7), so hasAdvancedValues
+    // auto-opens the disclosure -- only click it if still collapsed.
+    const advancedToggle = screen.getByRole('button', { name: /Advanced retention & timing/i });
+    if (advancedToggle.getAttribute('aria-expanded') === 'false') {
+      fireEvent.click(advancedToggle);
+    }
+
+    // custom preset -> effectiveRetentionDays reads settings.retentionDays
+    // (20) directly, not a preset's fixed days value.
+    await screen.findByText(/10 days.*20-day retention floor/i);
   });
 
   it('does not warn when GFS daily retention already meets the retention floor', async () => {

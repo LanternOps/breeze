@@ -442,7 +442,7 @@
         "maxVersions": "Máximo de versões",
         "gFSRetention": "Retenção GFS",
         "keepLongerRunningRestorePointsForGrandfather": "Mantenha pontos de restauração de longo prazo para a retenção avô-pai-filho.",
-        "dailyRetentionBelowFloor": "A retenção diária está definida em {{gfsDays}} dias, menor que o piso de retenção de {{effectiveDays}} dias. Os snapshots ainda serão mantidos por {{effectiveDays}} dias -- a retenção nunca fica abaixo do piso.",
+        "dailyRetentionBelowFloor": "A retenção diária está definida em {{gfsDays}} dias, menor que o piso de retenção de {{effectiveDays}} dias. O vencimento deste snapshot é definido em {{effectiveDays}} dias, não {{gfsDays}} -- o vencimento nunca fica abaixo do piso. Um limite separado de número máximo de versões ainda pode remover snapshots antigos antes disso.",
         "daily2": "Diário",
         "weekly2": "Semanal",
         "monthly2": "Mensal",
