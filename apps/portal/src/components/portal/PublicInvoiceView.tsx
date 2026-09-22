@@ -2,6 +2,7 @@ import { Fragment, useEffect, useState } from 'react';
 import { CreditCard, Download } from 'lucide-react';
 import { withBase } from '@/lib/basePath';
 import { portalApi, buildPortalApiUrl, type PublicInvoiceDetail, lineWorkedVsBilledNote } from '@/lib/api';
+import { groupInvoiceLinesByTicket } from '@/lib/invoiceLineGroups';
 import { STATUS_LABELS, statusTone } from '@/lib/invoiceStatus';
 import { DocumentPaper, DocumentHeader, DocumentTerms, type DocSeller } from './documentShell';
 import { money } from '@/lib/money';
@@ -261,25 +262,7 @@ export function PublicInvoiceView({ token, initial = null, error }: PublicInvoic
                 </tr>
               </thead>
               <tbody>
-                {(() => {
-                  const list: { key: string; ticketNumber: string | null; ticketCategory?: string | null; lines: typeof lines }[] = [];
-                  const map = new Map<string, typeof list[0]>();
-                  for (const l of lines) {
-                    const key = l.ticketNumber ? `num_${l.ticketNumber}` : '__none__';
-                    let g = map.get(key);
-                    if (!g) {
-                      g = {
-                        key,
-                        ticketNumber: l.ticketNumber ?? null,
-                        ticketCategory: l.ticketCategory ?? null,
-                        lines: []
-                      };
-                      map.set(key, g);
-                      list.push(g);
-                    }
-                    g.lines.push(l);
-                  }
-                  return list.map((group) => (
+                {groupInvoiceLinesByTicket(lines).map((group) => (
                     <Fragment key={group.key}>
                       {group.ticketNumber && (
                         <tr className="border-b bg-muted/30">
@@ -320,8 +303,7 @@ export function PublicInvoiceView({ token, initial = null, error }: PublicInvoic
                         );
                       })}
                     </Fragment>
-                  ));
-                })()}
+                ))}
               </tbody>
             </table>
           </div>
