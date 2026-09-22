@@ -1,5 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+
+// A REAL agent manifest shape (KIT lab, PR #6491): content-less dir/symlink
+// entries with backupPath "", systemd unit names with a literal backslash,
+// dpkg info files with a colon. Shared with the Go side (objectkey_test.go,
+// fakeserver_test.go) so the API and the agent are pinned to the same bytes.
+const REAL_MANIFEST_FIXTURE = path.resolve(__dirname, '../../../../agent/internal/backup/bmr/testdata/real-manifest-shape.json');
+const REAL_MANIFEST_ID = 'snapshot-20260921T192625Z-2e609375';
+const REAL_MANIFEST_BASE_ID = 'snapshot-20260921T184722Z-3f770c73';
 
 // Renders the text of the drizzle SQL condition chunks passed to `.where()` so
 // we can assert on the *shape* of the CAS predicate without a real DB —
@@ -155,6 +165,18 @@ describe('hydrateSnapshotFileIndex', () => {
     const outcome = await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps });
     expect(outcome).toMatchObject({ status: 'failed', failure: 'manifest_key_invalid', retryable: false });
     expect((outcome as { reason: string }).reason).toContain('snapshots/snap-current/../x');
+  });
+
+  it('still fails manifest_invalid when a CONTENT entry (no kind) has an empty backupPath — the relaxation is by kind, not blanket', async () => {
+    selectMock.mockReturnValueOnce(chainMock([snapshotRow()]));
+    selectMock.mockReturnValueOnce(chainMock([{ referencedFiles: 5 }]));
+    const deps = {
+      fetchManifestBytes: vi.fn().mockResolvedValue(
+        manifestBytes([{ sourcePath: '/a', backupPath: '' }]),
+      ),
+    };
+    const outcome = await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps });
+    expect(outcome).toMatchObject({ status: 'failed', failure: 'manifest_invalid', retryable: false });
   });
 
   it('verifies an origin against a LIVE row on the same device/identity (provenance: live)', async () => {

@@ -85,11 +85,28 @@ const hydrationManifestSchema = z
           .object({
             sourcePath: z.string().min(1),
             originalPath: z.string().min(1).optional(),
-            backupPath: z.string().min(1),
+            // Empty ONLY on a content-less entry — see the refine below.
+            backupPath: z.string(),
+            // agent/internal/backup/snapshot.go SnapshotFile.Kind: "" (or
+            // omitted — the tag is omitempty) for a regular file whose
+            // bytes live at backupPath; "symlink" / "dir" for an entry
+            // that uploads nothing and so carries backupPath "".
+            kind: z.enum(['', 'symlink', 'dir']).optional(),
             size: z.number().nonnegative().optional(),
             modTime: z.string().optional(),
           })
-          .passthrough(),
+          .passthrough()
+          // D-W09-1 (#6491 KIT lab): a real manifest carries backupPath ""
+          // on every dir/symlink entry (8,220 of 107,636 on a stock Ubuntu
+          // 24.04 host), so a blanket .min(1) rejected every real agent
+          // manifest with manifest_invalid. Tighten by kind instead: a
+          // CONTENT entry (no kind) must still name its object — dropping
+          // the check for files would let a corrupt manifest hydrate a
+          // file with no key and only fail at restore time.
+          .refine((f) => f.backupPath.length > 0 || f.kind === 'symlink' || f.kind === 'dir', {
+            message: 'backupPath must be non-empty on a content entry (kind "" / omitted)',
+            path: ['backupPath'],
+          }),
       )
       .optional(),
   })
@@ -262,6 +279,8 @@ async function hydrateClaimedSnapshot(
       const fileRows: Array<{ snapshotDbId: string; sourcePath: string; backupPath: string; size: number | null; modifiedAt: Date | null }> = [];
 
       for (const file of files) {
+        // Content-less entries (dir/symlink) upload nothing — the schema
+        // above guarantees an empty backupPath only ever appears on one.
         if (!file.backupPath) continue;
         const parsedKey = parseBackupObjectKey(file.backupPath);
         if (!parsedKey) {
