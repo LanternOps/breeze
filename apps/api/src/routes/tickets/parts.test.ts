@@ -286,6 +286,21 @@ describe('parts routes', () => {
     expect(timeServiceMocks.deleteTicketPart).toHaveBeenCalled();
   });
 
+  // #6589 — the service now refuses a zero-row delete; the route must surface
+  // that as a 409 rather than its usual `{ deleted: true }`.
+  it('DELETE /parts/:id surfaces a lost-delete race as 409 PART_DELETE_LOST', async () => {
+    dbSelectMock.mockReturnValueOnce([{ id: PART_ID, ticketId: TICKET_ID }]);
+    getScopedTicketOr404Mock.mockResolvedValue({ id: TICKET_ID, orgId: 'o-1', deviceId: null });
+    timeServiceMocks.deleteTicketPart.mockRejectedValue(
+      new TimeEntryServiceError('Part could not be deleted — reload and retry', 409, 'PART_DELETE_LOST')
+    );
+
+    const res = await ticketsRoutes.request(`/parts/${PART_ID}`, { method: 'DELETE' });
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: 'PART_DELETE_LOST' });
+  });
+
   it('GET /:id/time-entries 404s for out-of-scope ticket', async () => {
     getScopedTicketOr404Mock.mockResolvedValue(null);
     const res = await ticketsRoutes.request(`/${TICKET_ID}/time-entries`);
