@@ -179,6 +179,9 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('quoteExpiryReaper'),
   consumers('suppressionExpiryReaper'),
   consumers('ticketNotifyWorker'),
+  // Caller verification (#6354 W01) — post-commit effects publisher; one
+  // consumer named for its initializer, Redis-required like its neighbours.
+  consumers('callerVerificationPublisher'),
   consumers('ticketSlaWorker'),
   consumers('inboundEmailWorker'),
   consumers('ticketMailboxPollWorker'),
