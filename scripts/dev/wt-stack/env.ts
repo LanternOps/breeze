@@ -70,10 +70,26 @@ const DEV_ENV: Record<string, string> = {
   //    ONE client. Per-IP budgeting is meaningless on a single-tenant dev stack
   //    and only meters the suite against itself.
   //
-  // `E2E_MODE` is the API's own switch for both (`config/validate.ts` refuses
-  // it in production, and the auth-transition test barrier it also unlocks
-  // additionally requires NODE_ENV=test plus a 32-char secret, neither of which
-  // this stack has — so the only effect here is that the limiters step aside).
+  // `E2E_MODE` is the API's own switch for both. Its blast radius is WIDER than
+  // those two limiters, and all of it is intended here — grep the flag before
+  // assuming this list is complete:
+  //
+  //  - `middleware/globalRateLimit.ts` — global per-IP limiter off.
+  //  - `routes/auth/login.ts` — BOTH the per-family refresh limiter and the
+  //    per-IP/per-email login limiter off.
+  //  - `services/jwt.ts` — access token 15m → 24h, refresh 7d → 30d, viewer
+  //    2h → 24h. Welcome here: a longer access token is fewer refreshes, which
+  //    is the pressure this whole block is about.
+  //  - `routes/auth/helpers.ts` — the 350 ms auth-response timing floor off,
+  //    so pre-auth endpoints answer at full speed.
+  //
+  // What it does NOT unlock here is the auth-transition test barrier
+  // (`routes/auth/authTransitionTestBarrier.ts`): that additionally requires
+  // NODE_ENV=test plus a 32-char secret, and this stack runs NODE_ENV
+  // development (docker-compose.override.yml.dev / .worktree) with no such
+  // secret. `config/validate.ts` refuses the flag outright under NODE_ENV
+  // production, so a stack carrying it structurally cannot be a production one.
+  //
   // The sibling auth-browser-transition CI job already sets it; pinning it in
   // the stack itself fixes local `wt-stack test` runs the same way.
   //

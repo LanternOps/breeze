@@ -6,7 +6,11 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /**
- * Clear the per-user refresh-token rate limiter and revoked-JTI set in Redis.
+ * Clear the refresh-token rate limiter and revoked-JTI set in Redis.
+ *
+ * (The limiter is keyed per FAMILY, not per user — it moved off the user axis
+ * in #3696 because one wedged tab was starving the same person's other
+ * devices. The paragraph below depends on that distinction.)
  *
  * Why: every test context starts from the same shared `storageState` produced
  * by `globalSetup`. When a test triggers `/auth/refresh`, the API rotates the
