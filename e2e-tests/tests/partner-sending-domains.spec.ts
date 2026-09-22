@@ -26,7 +26,10 @@ import { PartnerSendingDomainsPage } from '../pages/PartnerSendingDomainsPage';
  * ai-script-proposals.spec.ts and multi-currency.spec.ts). Within one context
  * the cookie jar follows every rotation.
  */
-test.describe.configure({ mode: 'serial' });
+// The first test is a seven-step flow with three reloads and two 60 s
+// `toPass` polls; it cannot fit Playwright's default 30 s per-test budget
+// (it timed out on every CI run once the auth failures were out of the way).
+test.describe.configure({ mode: 'serial', timeout: 180_000 });
 test.beforeEach(clearRefreshState);
 
 function uniqueDomain(suffix: string): string {
@@ -54,7 +57,13 @@ test.describe('Partner sending domains', () => {
     await test.step('1. The tab is offered and opens on its own hash', async () => {
       await page.goto();
       await expect(page.navTab()).toBeVisible();
-      await expect(page.recommendation()).toBeVisible();
+      // The recommendation renders only while the partner has NO domains. A
+      // retry after a mid-flow failure (or a re-run against a live stack)
+      // inherits the previous attempt's row, so accept either the empty-state
+      // banner or an existing row as proof the tab loaded its data.
+      await expect(
+        page.recommendation().or(authedPage.getByTestId(/^sending-domain-row-/)).first(),
+      ).toBeVisible();
     });
 
     await test.step('2. Adding the domain creates a row', async () => {
