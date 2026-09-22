@@ -713,9 +713,11 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // cross-partner forge proof: psaConnectionsPartnerRls.integration.test.ts.
   'psa_connections',
   // #3198 W01: reports is org_id XOR partner_id (reports_one_owner_chk,
-  // 2026-10-26-140100). The org_id column means auto-discovery already asserts
-  // the breeze_has_org_access branch; THIS entry is the only thing that asserts
-  // the breeze_has_partner_access branch. Deliberately NOT in
+  // 2026-10-26-140100). This entry registers reports for the FORCE-RLS and
+  // four-command dual-axis coverage checks — either helper satisfies those, so
+  // it does NOT prove the breeze_has_partner_access branch (an org-only policy
+  // would still pass). The partner branch is proven only by
+  // reportsPartnerRls.integration.test.ts. Deliberately NOT in
   // XOR_OWNERSHIP_DUAL_AXIS_TABLES — see the exclusion note there.
   'reports',
 ]);

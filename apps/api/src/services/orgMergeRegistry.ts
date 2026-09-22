@@ -569,7 +569,9 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   //   plugin_installations <- plugin_logs.installation_id     (NO ACTION, NOT NULL)
   //   playbook_definitions <- playbook_executions.playbook_id (NO ACTION, NOT NULL)
   //   pam_signer_groups    <- pam_rules.match_signer_group_id (ON DELETE RESTRICT)
-  //   reports              <- report_runs.report_id           (NO ACTION, NOT NULL)
+  //   reports              <- report_runs.report_id           (ON DELETE CASCADE since
+  //                           2026-10-26-140100, #3198 W01 — a delete would
+  //                           silently drop runs instead of raising 23503)
   //   incidents            <- incident_actions.incident_id,
   //                           incident_evidence.incident_id   (2x NO ACTION, NOT NULL)
   //
@@ -591,10 +593,15 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // WHERE source_ai_agent_schedule_id IS NOT NULL`. A PARTNER-WIDE narrative
   // schedule mints one definition per org, so merging two orgs under the same
   // partner repoints both onto `(survivor, same schedule)` -> 23505, and the
-  // whole merge aborts. `repoint-dedupe` cannot fix it either: its DELETE hits
-  // `report_runs.report_id` (NO ACTION, NOT NULL, non-deferrable — verified
-  // against pg_constraint) and raises 23503 instead. Same shape as
-  // plugin_installations/plugin_logs, so the same remedy.
+  // whole merge aborts. `repoint-dedupe` cannot fix it either: its DELETE of
+  // the loser's duplicate definition would take that definition's
+  // report_runs with it — `report_runs.report_id` is ON DELETE CASCADE since
+  // 2026-10-26-140100 (#3198 W01; it was NO ACTION before and raised 23503),
+  // and report_run_deliveries / service_deliverable_evidence cascade from
+  // the runs in turn — so run history would be lost SILENTLY. The custom
+  // executor re-homes report_runs (and recipients) onto the survivor's
+  // definition BEFORE deleting the duplicate, so nothing cascades. Same shape
+  // as plugin_installations/plugin_logs, so the same remedy.
   //
   // Narrative definitions dedupe by non-NULL source_ai_agent_schedule_id.
   // Portal self-service definitions have a second pass keyed by type and

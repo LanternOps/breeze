@@ -426,6 +426,64 @@ describe('reports RLS — partner ownership (2026-10-26-140100)', () => {
     ).rejects.toMatchObject({ cause: { code: '42501' } });
   });
 
+  it('a partner UPDATEs its own partner-owned run and DELETEs its delivery under partner context; another partner\'s UPDATE matches 0 rows', async () => {
+    const p1 = await createPartner();
+    const p2 = await createPartner();
+    const u1 = await seedPartnerUser(p1.id, 'dml');
+    const row = await insertPartnerReport(p1.id, u1.id);
+
+    const [run] = await withDbAccessContext(partnerContext(p1.id, []), () =>
+      db
+        .insert(reportRuns)
+        .values({ reportId: row.id, status: 'running', requestedByKind: 'user', requestedByUserId: u1.id })
+        .returning(),
+    );
+    const [delivery] = await withDbAccessContext(partnerContext(p1.id, []), () =>
+      db
+        .insert(reportRunDeliveries)
+        .values({ reportRunId: run!.id, recipientUserId: u1.id, channel: 'email' })
+        .returning(),
+    );
+
+    // Cross-partner UPDATE first: RLS USING hides the row, so 0 rows and no change.
+    const foreignUpdate = await withDbAccessContext(partnerContext(p2.id, []), () =>
+      db
+        .update(reportRuns)
+        .set({ status: 'completed' })
+        .where(eq(reportRuns.id, run!.id))
+        .returning({ id: reportRuns.id }),
+    );
+    expect(foreignUpdate).toHaveLength(0);
+
+    const ownUpdate = await withDbAccessContext(partnerContext(p1.id, []), () =>
+      db
+        .update(reportRuns)
+        .set({ status: 'failed' })
+        .where(eq(reportRuns.id, run!.id))
+        .returning({ id: reportRuns.id, status: reportRuns.status }),
+    );
+    expect(ownUpdate).toEqual([{ id: run!.id, status: 'failed' }]);
+
+    const ownDelete = await withDbAccessContext(partnerContext(p1.id, []), () =>
+      db
+        .delete(reportRunDeliveries)
+        .where(eq(reportRunDeliveries.id, delivery!.id))
+        .returning({ id: reportRunDeliveries.id }),
+    );
+    expect(ownDelete).toEqual([{ id: delivery!.id }]);
+
+    const after = await withDbAccessContext(SYSTEM, async () => ({
+      run: await db.select({ status: reportRuns.status }).from(reportRuns).where(eq(reportRuns.id, run!.id)),
+      deliveries: await db
+        .select({ id: reportRunDeliveries.id })
+        .from(reportRunDeliveries)
+        .where(eq(reportRunDeliveries.id, delivery!.id)),
+    }));
+    // 'failed' (p1's write), never 'completed' (p2's attempted write).
+    expect(after.run).toEqual([{ status: 'failed' }]);
+    expect(after.deliveries).toHaveLength(0);
+  });
+
   it('deleting a partner-owned report cascades its runs and their deliveries', async () => {
     const p1 = await createPartner();
     const u1 = await seedPartnerUser(p1.id, 'cascade');
