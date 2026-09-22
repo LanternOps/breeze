@@ -18,6 +18,7 @@ import { contacts } from './contacts';
 import { m365Connections } from './m365';
 import { googleWorkspaceConnections } from './google';
 import { aiOperatorTasks } from './aiOperatorTasks';
+import { ticketChecklistItems } from './ticketChecklists';
 
 // AI Operator Recipe Library wave E2 — the task object graph.
 // Migration: apps/api/migrations/2026-10-26-160000-ai-operator-task-graph.sql —
@@ -64,7 +65,8 @@ export const AI_OPERATOR_TASK_EVENT_TYPES = [
   'task_admitted', 'lease_claimed', 'step_opened', 'step_settled',
   'wait_entered', 'wait_resolved', 'target_attached', 'target_detached',
   'target_account_frozen', 'operation_reserved', 'operation_settled',
-  'verification_recorded', 'plan_revision_bumped', 'task_settled',
+  'verification_recorded', 'plan_revision_bumped', 'human_work_unticked',
+  'task_settled',
 ] as const;
 export type AiOperatorTaskEventType = (typeof AI_OPERATOR_TASK_EVENT_TYPES)[number];
 
@@ -231,6 +233,21 @@ export const aiOperatorTaskSteps = pgTable(
     checkpoint: jsonb('checkpoint').$type<Record<string, unknown>>().notNull().default({}),
     detail: text('detail'),
 
+    /**
+     * THE owning pointer of the human-work link (Recipe Library wave E3, spec
+     * §5.3; migration 2026-10-26-170100 header note A). Plain single-column FK
+     * `ON DELETE SET NULL` — never composite on org, because the item's org_id
+     * is re-stamped by both org movers while this row's is immutable task
+     * history. NULL on a detached link, which is how the coordinator knows to
+     * hand off instead of waiting on a row in another tenant. Only a
+     * `human_work` step may carry one (`…_checklist_kind_chk`).
+     */
+    checklistItemId: uuid('checklist_item_id')
+      .references(() => ticketChecklistItems.id, { onDelete: 'set null' }),
+    /** Recipe spec §6.5 reminders. Two columns, not one: see header note C. */
+    remindAfterAt: timestamp('remind_after_at', { withTimezone: true }),
+    remindedAt: timestamp('reminded_at', { withTimezone: true }),
+
     startedAt: timestamp('started_at', { withTimezone: true }),
     settledAt: timestamp('settled_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
@@ -247,6 +264,11 @@ export const aiOperatorTaskSteps = pgTable(
       .where(sql`target_id IS NULL`),
     taskStateIdx: index('ai_operator_task_steps_task_state_idx')
       .on(table.orgId, table.taskId, table.state),
+    checklistItemIdx: index('ai_operator_task_steps_checklist_item_idx')
+      .on(table.checklistItemId).where(sql`checklist_item_id IS NOT NULL`),
+    humanWorkRemindIdx: index('ai_operator_task_steps_human_work_remind_idx')
+      .on(table.remindAfterAt)
+      .where(sql`step_kind = 'human_work' AND state = 'waiting' AND reminded_at IS NULL`),
 
     taskOrgFk: foreignKey({
       columns: [table.taskId, table.orgId],

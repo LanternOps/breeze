@@ -110,6 +110,17 @@ describe('AI Operator enum parity — shared package vs. db schema', () => {
     expect([...SHARED_TASK_EVENT_TYPES]).toEqual([...SCHEMA_TASK_EVENT_TYPES]);
   });
 
+  it('the event-type list ends with human_work_unticked then task_settled, in all three copies', () => {
+    // The third copy is the CHECK constraint in
+    // migrations/2026-10-26-170100-ai-operator-human-work-links.sql section 3;
+    // aiOperatorHumanWorkStep.integration.test.ts proves that one against the
+    // live database. Here we pin the two TypeScript copies to each other.
+    expect([...SCHEMA_TASK_EVENT_TYPES]).toEqual([...SHARED_TASK_EVENT_TYPES]);
+    expect(SHARED_TASK_EVENT_TYPES).toContain('human_work_unticked');
+    expect(SHARED_TASK_EVENT_TYPES.at(-2)).toBe('human_work_unticked');
+    expect(SHARED_TASK_EVENT_TYPES.at(-1)).toBe('task_settled');
+  });
+
   it('AI_OPERATOR_EVENT_ACTOR_KINDS matches byte-for-byte', () => {
     expect([...SHARED_EVENT_ACTOR_KINDS]).toEqual([...SCHEMA_EVENT_ACTOR_KINDS]);
   });
