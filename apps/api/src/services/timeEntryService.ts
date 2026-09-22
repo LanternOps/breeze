@@ -963,16 +963,21 @@ export async function updateTimeEntry(id: string, input: UpdateTimeEntryInput, a
   // just stopRunningEntry — is a real stop path. Placed after the re-price and
   // override blocks so a re-price and a duration change in one PATCH both feed
   // the same recompute.
+  // #6465: gate on a VALUE change, not key presence. applyBillingInput returns a
+  // full stamp, so `editable` re-writes minimumMinutes on every billing-ish PATCH
+  // — including a rate-only edit. Keying off presence restamped billable_minutes
+  // on legacy rows whose quantity was deliberately NULL, silently moving the
+  // invoice quantity when the technician only corrected a rate.
+  const nextMinimum = set.minimumMinutes !== undefined
+    ? (set.minimumMinutes as number | null) : entry.minimumMinutes;
+  const nextIncrement = set.roundingIncrementMinutes !== undefined
+    ? (set.roundingIncrementMinutes as number | null) : entry.roundingIncrementMinutes;
   if (
     set.durationMinutes !== undefined ||
-    set.minimumMinutes !== undefined ||
-    set.roundingIncrementMinutes !== undefined
+    nextMinimum !== entry.minimumMinutes ||
+    nextIncrement !== entry.roundingIncrementMinutes
   ) {
     const nextDuration = (set.durationMinutes as number | undefined) ?? entry.durationMinutes;
-    const nextMinimum = set.minimumMinutes !== undefined
-      ? (set.minimumMinutes as number | null) : entry.minimumMinutes;
-    const nextIncrement = set.roundingIncrementMinutes !== undefined
-      ? (set.roundingIncrementMinutes as number | null) : entry.roundingIncrementMinutes;
     set.billableMinutes = computeBillableMinutes({
       durationMinutes: nextDuration ?? null,
       minimumMinutes: nextMinimum ?? null,

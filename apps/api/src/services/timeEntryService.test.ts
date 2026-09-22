@@ -2362,6 +2362,34 @@ describe('both stop paths land billable_minutes (#4628 W03)', () => {
     expect(dbMocks.updateSetArgs[0]).toMatchObject({ minimumMinutes: 90, billableMinutes: 90 });
   });
 
+  it('editing ONLY the hourly rate leaves a legacy entry\'s billed quantity alone (#6465)', async () => {
+    // Pre-feature row: 3 minutes worked, W02 back-stamped the card's rounding
+    // increment, billable_minutes NULL by design. A rate correction must not
+    // restamp the invoice quantity 0.05h -> 0.25h behind the technician's back.
+    dbMocks.selectResults.push([{
+      ...entry, durationMinutes: 3, minimumMinutes: null, billableMinutes: null,
+    }]);
+    dbMocks.updateResult = [entry];
+    await updateTimeEntry('te-1', { hourlyRate: 250 }, manager);
+    expect(dbMocks.updateSetArgs[0]).toHaveProperty('hourlyRate', '250.00');
+    expect(dbMocks.updateSetArgs[0]).not.toHaveProperty('billableMinutes');
+  });
+
+  it('re-sending the SAME minimum is not a term change, so the billed quantity stays put (#6465)', async () => {
+    dbMocks.selectResults.push([{ ...entry, durationMinutes: 3, billableMinutes: null }]);
+    dbMocks.updateResult = [entry];
+    await updateTimeEntry('te-1', { minimumMinutes: entry.minimumMinutes, hourlyRate: 250 }, manager);
+    expect(dbMocks.updateSetArgs[0]).not.toHaveProperty('billableMinutes');
+  });
+
+  it('clearing the minimum via isBillable:false still re-derives the billed quantity (#6465)', async () => {
+    dbMocks.selectResults.push([{ ...entry, durationMinutes: 3 }]);
+    dbMocks.updateResult = [entry];
+    await updateTimeEntry('te-1', { isBillable: false }, manager);
+    // 60-minute minimum gone, but the 15-minute increment still rounds 3 up.
+    expect(dbMocks.updateSetArgs[0]).toMatchObject({ minimumMinutes: null, billableMinutes: 15 });
+  });
+
   it('a billed entry cannot be re-timed, so its billed quantity can never move', async () => {
     dbMocks.selectResults.push([{ ...entry, billingStatus: 'billed' }]);
     await expect(updateTimeEntry('te-1', { endedAt: new Date('2026-03-03T10:20:00Z') }, manager))
