@@ -15,7 +15,7 @@ import {
   varchar,
 } from 'drizzle-orm/pg-core';
 import { contacts } from './contacts';
-import { organizations } from './orgs';
+import { organizations, partners } from './orgs';
 import { portalUsers } from './portal';
 import { users } from './users';
 
@@ -52,7 +52,11 @@ export const reportTypeEnum = pgEnum('report_type', [
   'threat_detection_review',
   'endpoint_management_review',
   'vulnerability_management',
-  'identity_access_review'
+  'identity_access_review',
+  // #3198 W01: business report types (generators land in W02).
+  'ticket_sla_attainment',
+  'technician_time_billability',
+  'ar_aging',
 ]);
 
 export const reportScheduleEnum = pgEnum('report_schedule', [
@@ -73,7 +77,11 @@ export const reportRunStatusEnum = pgEnum('report_run_status', [
 
 export const reports = pgTable('reports', {
   id: uuid('id').primaryKey().defaultRandom(),
-  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  // #3198 W01: org XOR partner ownership (reports_one_owner_chk). A partner-
+  // owned definition (partner_id set, org_id NULL) is a cross-org aggregate
+  // legible only to partner-scope callers with org_access = 'all'.
+  orgId: uuid('org_id').references(() => organizations.id),
+  partnerId: uuid('partner_id').references(() => partners.id),
   name: varchar('name', { length: 255 }).notNull(),
   type: reportTypeEnum('type').notNull(),
   config: jsonb('config').notNull().default({}),
@@ -110,6 +118,7 @@ export const reports = pgTable('reports', {
 }, (table) => ({
   reportsIdOrgIdUniq: uniqueIndex('reports_id_org_id_uniq')
     .on(table.id, table.orgId),
+  reportsPartnerIdIdx: index('reports_partner_id_idx').on(table.partnerId),
   reportsPortalSelfServiceOrgTypeUniq: uniqueIndex(
     'reports_portal_self_service_org_type_uniq',
   ).on(table.orgId, table.type)
