@@ -17,7 +17,7 @@ import {
   lineWorkedVsBilledNote,
   computeInvoiceProfit,
 } from './invoiceTypes';
-import { toCents, fromCents, roundToCurrency } from '@breeze/shared';
+import { toCents, roundToCurrency } from '@breeze/shared';
 import CatalogItemPicker from '../catalog/CatalogItemPicker';
 import PolishButton from '../catalog/PolishButton';
 import { listCatalog, type CatalogItem } from '../../lib/api/catalog';
@@ -138,13 +138,21 @@ export default function InvoiceEditor({ detail, onChanged, onPendingEditsChange,
       if (l.taxable) taxableCents += c;
     }
     const rate = invoice.taxRate ? Number(invoice.taxRate) : 0;
+    // Tax rounds half-up at the classic cent boundary FIRST (rounding the
+    // major-unit float instead loses ties to FP noise), then the CURRENCY
+    // decides each figure's final boundary — and the total is built from the
+    // already-rounded subtotal + tax, exactly as computeInvoiceTotals does.
+    // `fromCents` alone is 2-decimal-only, so on a zero-decimal currency (JPY)
+    // it double-rounded the total a whole yen away from the next GET (#6441).
     const taxCents = Math.floor(taxableCents * rate + 0.5);
+    const subtotal = roundToCurrency(subtotalCents / 100, currency);
+    const taxTotal = roundToCurrency(taxCents / 100, currency);
     return {
-      subtotal: fromCents(subtotalCents),
-      taxTotal: fromCents(taxCents),
-      total: fromCents(subtotalCents + taxCents),
+      subtotal,
+      taxTotal,
+      total: roundToCurrency(Number(subtotal) + Number(taxTotal), currency),
     };
-  }, [pendingDeletedLineIds, flushedDeletedLineIds, lines, invoice.taxRate]);
+  }, [pendingDeletedLineIds, flushedDeletedLineIds, lines, invoice.taxRate, currency]);
   const railSubtotal = optimisticTotals?.subtotal ?? invoice.subtotal;
   const railTax = optimisticTotals?.taxTotal ?? invoice.taxTotal;
   const railTotal = optimisticTotals?.total ?? invoice.total;

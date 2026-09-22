@@ -177,6 +177,38 @@ describe('InvoiceEditor', () => {
     expect(screen.queryByTestId('invoice-tax-rate-hint')).not.toBeInTheDocument();
   });
 
+  it('previews a line deletion at the CURRENCY\'s minor unit, not always at cents (#6441)', async () => {
+    // The delete preview must reproduce computeInvoiceTotals (services/invoiceMath.ts)
+    // for the same inputs: each figure rounded at the currency's minor unit, and the
+    // total built from the ROUNDED subtotal + tax. JPY is zero-decimal, so a
+    // 2-decimal-only toCents/fromCents preview double-rounds the total one yen low.
+    // `line_total` is numeric(_,2) whatever the currency, so a sub-yen lineTotal is
+    // representable and the editor must not assume its inputs are already whole yen.
+    const doomed = { ...manualLine, id: 'doomed', taxable: true, lineTotal: '1000.00' };
+    const taxed = { ...manualLine, id: 'taxed', taxable: true, lineTotal: '100.00' };
+    const subYen = { ...manualLine, id: 'subyen', taxable: false, lineTotal: '0.50' };
+    render(
+      <InvoiceEditor
+        detail={draft([doomed, taxed, subYen], {
+          currencyCode: 'JPY', taxRate: '0.10500',
+          subtotal: '1100.50', taxTotal: '116.00', total: '1216.00',
+        })}
+        onChanged={vi.fn()}
+      />,
+    );
+    await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('invoice-line-remove-doomed'));
+
+    // Remaining: ¥100.00 taxable + ¥0.50 untaxed. Server recompute →
+    // subtotal ¥101, tax ROUND(¥10.50) = ¥11, total ¥101 + ¥11 = ¥112.
+    await waitFor(() => expect(screen.getByTestId('invoice-subtotal')).toHaveTextContent('¥101'));
+    expect(screen.getByTestId('invoice-tax')).toHaveTextContent('¥11');
+    // The cents-only path sums 10050¢ + 1050¢ = ¥110.50 and renders ¥111 — one yen
+    // short of what the very next GET returns.
+    expect(screen.getByTestId('invoice-total')).toHaveTextContent('¥112');
+  });
+
   it('adds a manual line and triggers a reload (onChanged)', async () => {
     const onChanged = vi.fn();
     fetchMock.mockImplementation(async (input: string, opts?: RequestInit) => {
