@@ -125,13 +125,13 @@ export async function notifyCustomerOfOnBehalfAcceptance(res: {
         invoiceNumber: res.invoiceIssued ? res.invoiceNumber : null,
         signature: partner.emailSignature,
       });
-      // Same partner-branded billing envelope as the quote send: the MSP's
+      // Own purpose, same partner-branded billing envelope as the quote send: the MSP's
       // verified sending domain when it has one, else "<Partner> via Breeze";
       // replies land in the MSP's billing inbox — which is the point of
       // "reply to this email".
       await emailService.sendEmail({
         to,
-        purpose: 'quote.sent',
+        purpose: 'quote.acceptance_recorded',
         partnerId: res.quote.partnerId,
         partnerName: partner.name ?? null,
         replyTo: partner.billingEmail?.trim() || undefined,

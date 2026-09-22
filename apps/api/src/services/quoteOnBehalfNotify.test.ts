@@ -78,7 +78,7 @@ describe('notifyCustomerOfOnBehalfAcceptance (#6635)', () => {
     const msg = sendEmail.mock.calls[0]![0];
     expect(msg).toMatchObject({
       to: ['pat@customer.example', 'ops@customer.example'],
-      purpose: 'quote.sent',
+      purpose: 'quote.acceptance_recorded',
       partnerId: 'p1',
       partnerName: 'Acme MSP',
       replyTo: 'billing@acme.example',
@@ -91,6 +91,24 @@ describe('notifyCustomerOfOnBehalfAcceptance (#6635)', () => {
       expect(body).toContain('INV-0042');
       expect(body).toContain('If this is wrong, reply to this email.');
     }
+  });
+
+  it('does not send when the partner row cannot be resolved', async () => {
+    queueResult([]);
+    const out = await notifyCustomerOfOnBehalfAcceptance(res());
+    expect(out).toEqual({ sent: false, reason: 'disabled' });
+    expect(sendEmail).not.toHaveBeenCalled();
+  });
+
+  it('omits the invoice line when the accept issued no invoice, and carries the signature', async () => {
+    queueResult([PARTNER_ON]);
+    queueResult([{ email: 'pat@customer.example' }]);
+    await notifyCustomerOfOnBehalfAcceptance(res({ invoiceIssued: false, invoiceNumber: 'INV-0042' }));
+    const msg = sendEmail.mock.calls[0]![0];
+    expect(msg.text).not.toContain('INV-0042');
+    expect(msg.html).not.toContain('INV-0042');
+    expect(msg.text).toContain('The Acme team');
+    expect(msg.html).toContain('The Acme team');
   });
 
   it('falls back to the org billing contact when the quote has no recipients', async () => {

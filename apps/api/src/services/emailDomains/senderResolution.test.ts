@@ -88,15 +88,17 @@ describe('fromWithDisplayName (moved verbatim off EmailService, spec §0.3)', ()
 });
 
 describe('platformFallbackFrom (spec §8.3)', () => {
-  it('returns the bare default for every purpose except quote.sent and invoice.sent', () => {
+  it('returns the bare default for every purpose except the branded quote/invoice ones', () => {
     for (const purpose of ALL_PURPOSES) {
-      if (purpose === 'quote.sent' || purpose === 'invoice.sent') continue;
+      if (purpose === 'quote.sent' || purpose === 'invoice.sent' || purpose === 'quote.acceptance_recorded') continue;
       expect(platformFallbackFrom(purpose, DEFAULT_FROM, 'Acme MSP')).toBe(DEFAULT_FROM);
     }
   });
 
   it('brands quote.sent and invoice.sent with "<Partner> via Breeze"', () => {
     expect(platformFallbackFrom('quote.sent', DEFAULT_FROM, 'Acme MSP'))
+      .toBe('"Acme MSP via Breeze" <no-reply@2breeze.app>');
+    expect(platformFallbackFrom('quote.acceptance_recorded' as never, DEFAULT_FROM, 'Acme MSP'))
       .toBe('"Acme MSP via Breeze" <no-reply@2breeze.app>');
     expect(platformFallbackFrom('invoice.sent', DEFAULT_FROM, 'Acme MSP'))
       .toBe('"Acme MSP via Breeze" <no-reply@2breeze.app>');

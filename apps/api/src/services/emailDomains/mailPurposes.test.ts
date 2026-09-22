@@ -61,6 +61,7 @@ describe('MAIL_PURPOSES registry (spec §8.1, §8.2)', () => {
       'portal.invite': { lane: 'partner', stream: 'support', fallbackFrom: 'default' },
       'portal.password_reset': { lane: 'partner', stream: 'support', fallbackFrom: 'default' },
       'quote.sent': { lane: 'partner', stream: 'billing', fallbackFrom: 'partner_display_name' },
+      'quote.acceptance_recorded': { lane: 'partner', stream: 'billing', fallbackFrom: 'partner_display_name' },
       'invoice.sent': { lane: 'partner', stream: 'billing', fallbackFrom: 'partner_display_name' },
       'report.delivery': { lane: 'partner', stream: 'general', fallbackFrom: 'default' },
     });
@@ -69,12 +70,14 @@ describe('MAIL_PURPOSES registry (spec §8.1, §8.2)', () => {
   // Spec §8.3: the display-name From is what quote and invoice sends produce
   // TODAY, and nothing else. Extending it to more purposes is a separate
   // product change, so it must not happen by accident in a later wave.
-  it('uses the partner_display_name fallback only for quote.sent and invoice.sent', () => {
+  // #6635 added quote.acceptance_recorded deliberately: the customer notice
+  // on an on-behalf acceptance must arrive in the same envelope as the quote.
+  it('uses the partner_display_name fallback only for the quote/invoice customer documents', () => {
     const branded = ALL_PURPOSES.filter((p) => {
       const policy = mailPurposePolicy(p);
       return policy.lane === 'partner' && policy.fallbackFrom === 'partner_display_name';
     });
-    expect(branded.sort()).toEqual(['invoice.sent', 'quote.sent']);
+    expect(branded.sort()).toEqual(['invoice.sent', 'quote.acceptance_recorded', 'quote.sent']);
   });
 
   // Index amendment 5: the test send bypasses sendEmail entirely, so its
