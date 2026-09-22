@@ -637,7 +637,7 @@ describe('moveOrg org_id rewrite — real driver (spec §6)', () => {
     // land — rather than racing them behind a fixed sleep (#6555) — so
     // audit_logs rows exist before afterAll tries to clean them via the
     // session_replication_role=replica DELETE.
-    const moveAudits = await awaitAuditRows(() => adminDb
+    const moveAudits = await awaitAuditRows<{ action: string }>(() => adminDb
       .select({ action: auditLogs.action })
       .from(auditLogs)
       .where(eq(auditLogs.resourceId, deviceA.id)), 2);

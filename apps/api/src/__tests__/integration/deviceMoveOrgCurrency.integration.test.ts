@@ -178,7 +178,7 @@ describe('POST /devices/:id/move-org — ticket currency guard (#3776)', () => {
 
     // writeRouteAudit is fire-and-forget — wait for both rows rather than
     // racing them behind a fixed sleep (#6555).
-    const audits = await awaitAuditRows(() => f.adminDb
+    const audits = await awaitAuditRows<{ action: string; orgId: string; details: unknown }>(() => f.adminDb
       .select({ action: auditLogs.action, orgId: auditLogs.orgId, details: auditLogs.details })
       .from(auditLogs)
       .where(eq(auditLogs.resourceId, f.device.id)), 2);
