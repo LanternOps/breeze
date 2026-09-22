@@ -65,7 +65,7 @@ import { createAndEnqueueAgentRun } from '../aiAgents/runService';
 import { taskCheckpointSchema, type TaskCheckpoint } from '@breeze/shared';
 import { SERVICE_RECOVERY_WORKFLOW_KEY, taskRunDedupeKey } from './recipes/serviceRecovery';
 import { getRecipe, validateRecipeNextStep } from './recipes';
-import type { RecipeDefinition } from './recipes/types';
+import type { RecipeDefinition, StepKind } from './recipes/types';
 import { parseTaskCheckpointResult } from './taskService';
 import { evaluateCriterion } from './verification';
 import {
@@ -81,6 +81,12 @@ import { aiOperatorTasksEnabled } from '../../config/env';
 import { aiOperatorTaskTargets } from '../../db/schema/aiOperatorTaskGraph';
 import { appendTaskEvent, type TaskEventActor } from './eventService';
 import { markStepWaiting, openStep, resolveStepKind, settleStep } from './stepService';
+import {
+  HUMAN_WORK_POLL_WAKE_MS,
+  ensureTaskTicket,
+  openHumanWorkStep,
+  readHumanWorkStep,
+} from './humanWorkService';
 
 /** How long a lease is good for. Spec §11.2's short lease. */
 export const TASK_LEASE_MS = 60_000;
@@ -95,6 +101,17 @@ export const COORDINATOR_OWNER_ID = `coordinator:${process.pid}:${randomUUID().s
  * constant is the only actor shape this file can legally use.
  */
 const COORDINATOR_ACTOR: TaskEventActor = { kind: 'coordinator' };
+
+/**
+ * How long a human-work step waits before it is reported overdue (recipe spec
+ * §6.5, wave E3). 24 hours: long enough not to nag a technician who picked the
+ * ticket up this afternoon, short enough that a fortnight-long identity task
+ * does not sit on one uncollected laptop for a week in silence.
+ */
+const HUMAN_WORK_REMIND_AFTER_MS = 24 * 60 * 60 * 1000;
+
+/** Never yield into the past. Guards against API-pod/Postgres clock skew (E3). */
+const MIN_WAIT_WAKE_MS = 1000;
 
 /**
  * The target a step belongs to, or null (Recipe Library wave E2, #6167).
@@ -623,6 +640,26 @@ const RECIPE_ADVANCERS: Readonly<Record<string, Readonly<Record<string, StepAdva
   },
 };
 
+/**
+ * Step kinds whose execution is IDENTICAL for every recipe (Recipe Library
+ * wave E3, spec §6.1's step-kind table).
+ *
+ * E1's `RECIPE_ADVANCERS` is keyed `[recipeKey][stepKey]` because `reason`,
+ * `effect`, `probe` and `document` genuinely differ per recipe — what to admit,
+ * what to dispatch, what to probe. `human_work` and `wait` do not: "put the
+ * work on the ticket and wait for a person" and "sleep until a timestamp" have
+ * exactly one correct implementation, and a per-recipe copy of either would be
+ * paste that eventually diverges about what counts as evidence.
+ *
+ * Consulted ONLY after the per-recipe table misses, so a recipe that genuinely
+ * needs to override one still can — and `service_recovery`, which declares
+ * neither kind, dispatches through exactly the path E1 gave it.
+ */
+const KIND_ADVANCERS: Readonly<Partial<Record<StepKind, StepAdvancer>>> = {
+  human_work: (a) => advanceHumanWork(a),
+  wait: (a) => advanceWait(a),
+};
+
 export async function advanceTask(task: AiOperatorTaskRow, leaseEpoch: number): Promise<string> {
   const parsedCheckpoint = parseTaskCheckpointResult(task.checkpoint);
   if (!parsedCheckpoint.ok) {
@@ -655,6 +692,28 @@ export async function advanceTask(task: AiOperatorTaskRow, leaseEpoch: number): 
       });
       return 'handed off: deadline with in-flight effect';
     }
+    // Recipe spec §6.5 (wave E3): "past the task deadline the task hands off,
+    // it does not fail." Scoped to human_work ON PURPOSE. The generic branch
+    // below is shipped behaviour that aiOperatorCoordinator.integration.test.ts
+    // pins for service_recovery, and a task that ran out of time waiting on a
+    // MODEL is a different story from one that ran out of time waiting on a
+    // PERSON: the second has real, half-finished work on a real ticket, and
+    // the technician needs the remaining items named, not an `unresolved`
+    // failure.
+    const deadlineStepKind = task.currentStepKey
+      ? getRecipe(task.workflowKey, task.workflowVersion)?.steps[task.currentStepKey]?.kind
+      : undefined;
+    if (deadlineStepKind === 'human_work') {
+      await settle({
+        task, leaseEpoch, event: 'hand_off', outcome: 'unresolved', checkpoint,
+        detail: `task deadline passed while waiting on a person for step '${task.currentStepKey}'`,
+        handoffSummary:
+          `The deadline passed while this task was waiting for someone to complete '${task.currentStepKey}' `
+          + 'on its ticket. The remaining checklist steps are still on the ticket and are still the work. '
+          + 'Nothing was undone.',
+      });
+      return 'handed off: deadline on human work';
+    }
     await settle({
       task, leaseEpoch, event: 'fail', outcome: 'unresolved',
       detail: 'task deadline passed', checkpoint,
@@ -683,7 +742,9 @@ export async function advanceTask(task: AiOperatorTaskRow, leaseEpoch: number): 
   const recipe = resolved.recipe;
 
   const stepKey = task.currentStepKey ?? 'investigate';
-  const advance = RECIPE_ADVANCERS[recipe.key]?.[stepKey];
+  const advance =
+    RECIPE_ADVANCERS[recipe.key]?.[stepKey]
+    ?? KIND_ADVANCERS[recipe.steps[stepKey]?.kind as StepKind];
   if (!advance) {
     await settle({
       task, leaseEpoch, event: 'fail', outcome: 'unresolved',
@@ -1139,6 +1200,290 @@ async function writeLeasedStep(
       await recordStepChange({ task, toStepKey: stepKey, targetId, checkpoint });
     },
   });
+}
+
+// ---------------------------------------------------------------------------
+// Generic step kinds (Recipe Library wave E3, spec §6.1's step-kind table).
+//
+// These two are EXPORTED, unlike every other advancer in this file, for one
+// reason: no recipe in this build declares a `human_work` or `wait` step, so
+// the only way to exercise them against real Postgres is for the integration
+// suite to call them directly with a locally-built RecipeDefinition fixture. An
+// un-exercisable branch is an unshipped branch.
+// ---------------------------------------------------------------------------
+
+/**
+ * Settle the CURRENT step with a stated verdict and move to the next one, in
+ * one lease-CAS transaction.
+ *
+ * `writeLeasedStep` above settles the step it leaves through
+ * `recordStepChange`, which records `succeeded` with NO detail — right for the
+ * model-driven steps, whose evidence is the run or the operation row. A
+ * human-work or timed-wait step has no such row: its evidence IS the detail
+ * ("completed by user X at T", "scheduled time T reached"), so this variant
+ * records it, plus the `wait_resolved` event, before opening the successor.
+ */
+async function settleStepAndMove(args: {
+  task: AiOperatorTaskRow;
+  leaseEpoch: number;
+  recipe: RecipeDefinition<never>;
+  checkpoint: TaskCheckpoint;
+  toStepKey: string;
+  settledDetail: string;
+  resolvedDetail: string;
+}): Promise<boolean> {
+  const { task, leaseEpoch, recipe, checkpoint, toStepKey } = args;
+  const phase = recipe.steps[toStepKey]?.phase ?? 'investigate';
+  return writeLeased({
+    orgId: task.orgId,
+    taskId: task.id,
+    revision: task.revision,
+    leaseEpoch,
+    patch: {
+      currentStepKey: toStepKey,
+      phase,
+      checkpoint: checkpoint as unknown as Record<string, unknown>,
+      waitReason: null,
+      waitDependencyKind: null,
+      waitDependencyId: null,
+      nextWakeAt: new Date(),
+      leaseOwner: null,
+      // Expired, not null — see writeLeasedStep for why this is load-bearing.
+      leaseExpiresAt: new Date(Date.now() - 1),
+    },
+    alsoInTransaction: async () => {
+      const targetId = await currentTargetId(task.orgId, task.id);
+      if (task.currentStepKey) {
+        await settleStep(db, {
+          orgId: task.orgId, taskId: task.id, stepKey: task.currentStepKey, targetId,
+          attemptOrdinal: task.attemptOrdinal, state: 'succeeded',
+          detail: args.settledDetail, actor: COORDINATOR_ACTOR,
+        });
+        await appendTaskEvent(db, {
+          orgId: task.orgId, taskId: task.id,
+          eventType: 'wait_resolved', actor: COORDINATOR_ACTOR,
+          stepKey: task.currentStepKey, targetId,
+          detail: args.resolvedDetail,
+        });
+      }
+      await openStep(db, {
+        orgId: task.orgId,
+        taskId: task.id,
+        stepKey: toStepKey,
+        stepKind: resolveStepKind(task.workflowKey, task.workflowVersion, toStepKey),
+        targetId,
+        attemptOrdinal: task.attemptOrdinal,
+        planRevision: task.revision,
+        checkpoint: checkpoint as unknown as Record<string, unknown>,
+        actor: COORDINATOR_ACTOR,
+      });
+    },
+  });
+}
+
+/**
+ * The checklist label for a human-work step. Recipes declare no label for a
+ * step in this build (StepDefinition is kind + phase), so the key is rendered
+ * as words — "collect_hardware" → "Collect hardware". Honest and readable; a
+ * recipe-authored label is a later wave's optional field, not a guess here.
+ */
+function humanWorkLabel(stepKey: string): string {
+  const words = stepKey.replace(/[_-]+/g, ' ').trim();
+  return words ? words.charAt(0).toUpperCase() + words.slice(1) : stepKey;
+}
+
+/**
+ * `human_work` — create or attach a checklist item and wait for a person.
+ *
+ * ONE implementation for every recipe, which is why it is dispatched by KIND
+ * rather than per recipe: "put the work on the ticket and wait for a human to
+ * tick it" has no per-recipe variation, and a copy per recipe would eventually
+ * disagree about what counts as evidence.
+ *
+ * THE EVIDENCE IS THE ROW, NOT THE WAKE. Every decision below re-reads
+ * `ai_operator_task_steps` joined to `ticket_checklist_items` within the TASK's
+ * org (invariant 2). That org predicate is what turns a ticket org-move into a
+ * clean handoff instead of a task waiting forever on a row in another tenant.
+ */
+export async function advanceHumanWork(args: {
+  task: AiOperatorTaskRow;
+  leaseEpoch: number;
+  checkpoint: TaskCheckpoint;
+  recipe: RecipeDefinition<never>;
+  now: Date;
+}): Promise<string> {
+  const { task, leaseEpoch, checkpoint, recipe, now } = args;
+  const stepKey = task.currentStepKey ?? '';
+
+  const existing = await readHumanWorkStep(task.orgId, task.id, stepKey, task.attemptOrdinal);
+
+  // Not linked yet: either no row at all, or the row the step change opened
+  // (`recordStepChange` → `openStep`, state running, no dependency). Open the
+  // ticket, the item, the link and the wait — under the lease CAS, so a stale
+  // coordinator cannot leave an item nobody's task is waiting on.
+  if (!existing || existing.dependencyId === null) {
+    let checklistItemId: string | null = null;
+    let ticketId: string | null = null;
+    const committed = await writeLeased({
+      orgId: task.orgId,
+      taskId: task.id,
+      revision: task.revision,
+      leaseEpoch,
+      patch: {
+        state: nextTaskState(task.state as string, 'wait'),
+        waitReason: 'information',
+        waitDependencyKind: 'user_answer',
+        // Filled in below once the item exists (same transaction).
+        waitDependencyId: null,
+        nextWakeAt: new Date(now.getTime() + HUMAN_WORK_POLL_WAKE_MS),
+        leaseOwner: null,
+        leaseExpiresAt: null,
+        currentStepKey: stepKey,
+        checkpoint: checkpoint as unknown as Record<string, unknown>,
+      },
+      alsoInTransaction: async () => {
+        const taskRef = {
+          id: task.id, orgId: task.orgId, objective: task.objective,
+          revision: task.revision, attemptOrdinal: task.attemptOrdinal,
+        };
+        // The ticket first, so a task that had NO target gets its ticket target
+        // at ordinal 0 BEFORE the step's target is resolved — otherwise the
+        // step would carry a null target and the settle path (which resolves
+        // ordinal 0) would miss it.
+        await ensureTaskTicket(db, taskRef);
+        const targetId = await currentTargetId(task.orgId, task.id);
+        const opened = await openHumanWorkStep(db, {
+          task: taskRef,
+          stepKey,
+          targetId,
+          label: humanWorkLabel(stepKey),
+          detail: null,
+          remindAfterMs: HUMAN_WORK_REMIND_AFTER_MS,
+          emitOpenEvent: existing === null,
+          now,
+        });
+        checklistItemId = opened.checklistItemId;
+        ticketId = opened.ticketId;
+        // The dependency is the ITEM id, known only now. Same transaction, and
+        // the CAS above already proved this coordinator holds the lease.
+        await db
+          .update(aiOperatorTasks)
+          .set({ waitDependencyId: opened.checklistItemId })
+          .where(and(eq(aiOperatorTasks.id, task.id), eq(aiOperatorTasks.orgId, task.orgId)));
+      },
+    });
+    if (!committed) return `lost lease: human work '${stepKey}' not opened`;
+    return `waiting: human work '${stepKey}' (item ${checklistItemId}) on ticket ${ticketId}`;
+  }
+
+  // The link is gone (the pointer was nulled by a ticket org-move, an org
+  // merge, or an erased item) or the item is no longer readable in THIS org
+  // (the pointer survived but the org-constrained join missed — a moved
+  // ticket). The dependency can never resolve, so waiting is not an option and
+  // guessing that the work happened is not either.
+  if (!existing.checklistItemId || existing.itemLabel === null) {
+    await settle({
+      task, leaseEpoch, event: 'hand_off', outcome: 'unresolved', checkpoint,
+      detail: `the checklist item for human-work step '${stepKey}' is no longer reachable from this task`,
+      handoffSummary:
+        'The ticket step this task was waiting on is no longer part of this organization '
+        + '(it was moved or removed). Nothing further was changed. Confirm the remaining work by hand.',
+    });
+    return `handed off: human work '${stepKey}' detached`;
+  }
+
+  // Still waiting. RE-ARM the polling fallback rather than returning: the lease
+  // was claimed to get here, and leaving it held would make the waiting-age
+  // metric lie and block every other coordinator for the length of the wait.
+  if (!existing.itemDoneAt) {
+    await yieldToWait({
+      task, leaseEpoch, reason: 'information',
+      dependency: { kind: 'user_answer', id: existing.checklistItemId },
+      wakeAfterMs: HUMAN_WORK_POLL_WAKE_MS, stepKey, checkpoint, now,
+    });
+    return `waiting: human work '${stepKey}' not yet ticked`;
+  }
+
+  // Done. The evidence is the completing user and the timestamp — never
+  // model-graded free text (spec §6.5).
+  const resumeStepKey = checkpoint.resumeStepKey;
+  if (!resumeStepKey || !recipe.steps[resumeStepKey]) {
+    await settle({
+      task, leaseEpoch, event: 'fail', outcome: 'unresolved', checkpoint,
+      detail: resumeStepKey
+        ? `human-work step '${stepKey}' names a resume step '${resumeStepKey}' that ${recipe.key} does not declare`
+        : `human-work step '${stepKey}' completed but the recipe recorded no resume step`,
+    });
+    return `failed: human work '${stepKey}' has no usable resume step`;
+  }
+
+  const completedBy = existing.itemDoneByUserId ?? 'unknown';
+  await settleStepAndMove({
+    task, leaseEpoch, recipe, checkpoint, toStepKey: resumeStepKey,
+    settledDetail: `completed by user ${completedBy} at ${existing.itemDoneAt.toISOString()}`,
+    resolvedDetail: `human work '${stepKey}' ticked by user ${completedBy}`,
+  });
+  return `advanced: human work '${stepKey}' done, resuming at '${resumeStepKey}'`;
+}
+
+/**
+ * `wait` — sleep until a wall-clock time, then continue.
+ *
+ * The whole implementation is `next_wake_at = waitUntil` plus the poller that
+ * already exists (`ai_operator_tasks_wake_idx`, the reconciler's set 2). There
+ * is deliberately no timer, no job delay and no in-process sleep: a maintenance
+ * window can be days away, and the one property that matters is that a worker
+ * restart loses nothing.
+ */
+export async function advanceWait(args: {
+  task: AiOperatorTaskRow;
+  leaseEpoch: number;
+  checkpoint: TaskCheckpoint;
+  recipe: RecipeDefinition<never>;
+  now: Date;
+}): Promise<string> {
+  const { task, leaseEpoch, checkpoint, recipe, now } = args;
+  const stepKey = task.currentStepKey ?? '';
+
+  const until = checkpoint.waitUntil ? new Date(checkpoint.waitUntil) : null;
+  if (!until || Number.isNaN(until.getTime())) {
+    await settle({
+      task, leaseEpoch, event: 'fail', outcome: 'unresolved', checkpoint,
+      detail: `wait step '${stepKey}' has no usable scheduled time`,
+    });
+    return `failed: wait '${stepKey}' has no scheduled time`;
+  }
+
+  const resumeStepKey = checkpoint.resumeStepKey;
+  if (!resumeStepKey || !recipe.steps[resumeStepKey]) {
+    await settle({
+      task, leaseEpoch, event: 'fail', outcome: 'unresolved', checkpoint,
+      detail: `wait step '${stepKey}' records no resume step this recipe declares`,
+    });
+    return `failed: wait '${stepKey}' has no usable resume step`;
+  }
+
+  // ALREADY PAST is the ordinary case, not an error: a lost wake, a slow queue,
+  // or a window that opened while the task was waiting on something else. Move
+  // on immediately rather than treating a stale timestamp as a fault.
+  if (until.getTime() <= now.getTime()) {
+    await settleStepAndMove({
+      task, leaseEpoch, recipe, checkpoint, toStepKey: resumeStepKey,
+      settledDetail: `scheduled time ${until.toISOString()} reached`,
+      resolvedDetail: `wait '${stepKey}' window open at ${until.toISOString()}`,
+    });
+    return `advanced: wait '${stepKey}' window open, resuming at '${resumeStepKey}'`;
+  }
+
+  // CLAMPED. `yieldToWait` computes `next_wake_at` as `now + wakeAfterMs` from
+  // the coordinator's own clock, so a `waitUntil` skewed against Postgres could
+  // otherwise produce a wake that is already due and re-enter in a tight loop.
+  const wakeAfterMs = Math.max(MIN_WAIT_WAKE_MS, until.getTime() - now.getTime());
+  await yieldToWait({
+    task, leaseEpoch, reason: 'maintenance_window',
+    dependency: null, wakeAfterMs, stepKey, checkpoint, now,
+  });
+  return `waiting: '${stepKey}' until ${until.toISOString()}`;
 }
 
 // ---------------------------------------------------------------------------

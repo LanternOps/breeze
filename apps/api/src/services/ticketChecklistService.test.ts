@@ -44,9 +44,9 @@ vi.mock('../db', () => {
 });
 
 const humanWork = vi.hoisted(() => ({
-  onChecklistItemDone: vi.fn(async () => 'enqueued' as const),
-  onChecklistItemUnticked: vi.fn(async () => 'recorded' as const),
-  assertChecklistItemDeletable: vi.fn(async () => {}),
+  onChecklistItemDone: vi.fn(async (..._a: unknown[]) => 'enqueued' as const),
+  onChecklistItemUnticked: vi.fn(async (..._a: unknown[]) => 'recorded' as const),
+  assertChecklistItemDeletable: vi.fn(async (..._a: unknown[]) => {}),
   order: [] as string[],
 }));
 

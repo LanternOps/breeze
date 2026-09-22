@@ -8,8 +8,9 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const calls: Record<string, unknown[]> = {
-  openStep: [], markStepWaiting: [], appendTaskEvent: [], createTicket: [], createTaskTarget: [], enqueue: [],
+const calls = {
+  openStep: [] as unknown[], markStepWaiting: [] as unknown[], appendTaskEvent: [] as unknown[],
+  createTicket: [] as unknown[], createTaskTarget: [] as unknown[], enqueue: [] as unknown[],
 };
 
 vi.mock('../../db', () => ({
@@ -46,7 +47,7 @@ import {
 } from './humanWorkService';
 
 beforeEach(() => {
-  for (const k of Object.keys(calls)) calls[k] = [];
+  for (const k of Object.keys(calls) as Array<keyof typeof calls>) calls[k] = [];
 });
 
 describe('humanWorkService constants (recipe spec §6.5)', () => {

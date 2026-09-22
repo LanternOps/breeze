@@ -190,6 +190,14 @@ export interface OpenHumanWorkStepInput {
   detail?: string | null;
   /** How long until the step is overdue. Null means never remind. */
   remindAfterMs?: number | null;
+  /**
+   * False when the coordinator's step change already opened this step row
+   * (`recordStepChange` → `openStep` with an actor) and wrote its
+   * `step_opened` event; the upsert here is then a refresh, and a second
+   * `step_opened` on the timeline would claim an opening that did not happen.
+   * Defaults to true for callers that open the step from nothing.
+   */
+  emitOpenEvent?: boolean;
   now?: Date;
 }
 
@@ -262,7 +270,7 @@ export async function openHumanWorkStep(
     attemptOrdinal: input.task.attemptOrdinal,
     planRevision: input.task.revision,
     expectedCriterion: label.slice(0, 2000),
-    actor: { kind: 'coordinator' },
+    ...(input.emitOpenEvent === false ? {} : { actor: { kind: 'coordinator' as const } }),
   });
 
   // The step owns the link (migration header note A).
@@ -302,6 +310,13 @@ export async function openHumanWorkStep(
 export interface HumanWorkStepView {
   stepId: string;
   state: string;
+  /**
+   * The wait dependency the step was armed with — the item id at link time.
+   * Distinguishes a row that was NEVER linked (`dependencyId` null: the step
+   * change opened it and the human-work writer has not run yet) from one
+   * whose link was DETACHED (`dependencyId` set, `checklistItemId` null).
+   */
+  dependencyId: string | null;
   checklistItemId: string | null;
   itemDoneAt: Date | null;
   itemDoneByUserId: string | null;
@@ -334,6 +349,7 @@ export async function readHumanWorkStep(
         .select({
           stepId: aiOperatorTaskSteps.id,
           state: aiOperatorTaskSteps.state,
+          dependencyId: aiOperatorTaskSteps.dependencyId,
           checklistItemId: aiOperatorTaskSteps.checklistItemId,
           itemDoneAt: ticketChecklistItems.doneAt,
           itemDoneByUserId: ticketChecklistItems.doneByUserId,
