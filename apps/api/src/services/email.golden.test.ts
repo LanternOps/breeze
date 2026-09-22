@@ -74,6 +74,8 @@ const GOLDEN: Array<{ name: string; params: SendEmailParams; expectedFrom: strin
   { name: 'report.delivery', params: { ...MESSAGE, purpose: 'report.delivery', partnerId: null }, expectedFrom: DEFAULT_FROM },
   { name: 'quote.sent (partner named)', params: { ...MESSAGE, purpose: 'quote.sent', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
   { name: 'quote.sent (no partner name)', params: { ...MESSAGE, purpose: 'quote.sent', partnerId: PARTNER_ID, partnerName: null }, expectedFrom: DEFAULT_FROM },
+  { name: 'quote.acceptance_recorded (partner named)', params: { ...MESSAGE, purpose: 'quote.acceptance_recorded', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
+  { name: 'quote.acceptance_recorded (no partner name)', params: { ...MESSAGE, purpose: 'quote.acceptance_recorded', partnerId: PARTNER_ID, partnerName: null }, expectedFrom: DEFAULT_FROM },
   { name: 'invoice.sent (partner named)', params: { ...MESSAGE, purpose: 'invoice.sent', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
   { name: 'invoice.sent (no partner name)', params: { ...MESSAGE, purpose: 'invoice.sent', partnerId: PARTNER_ID, partnerName: null }, expectedFrom: DEFAULT_FROM },
 ];
