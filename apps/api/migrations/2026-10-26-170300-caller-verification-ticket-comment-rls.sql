@@ -17,7 +17,16 @@
 -- predicates keep the branch from admitting any human- or agent-attributed
 -- comment. #1016/#1026 bound-param safety: tickets.org_id is NOT NULL and the
 -- tickets SELECT policy is a flat breeze_has_org_access(org_id), so the EXISTS
--- join is safe under postgres.js bound parameters. UPDATE/DELETE stay closed.
+-- join is safe under postgres.js bound parameters.
+--
+-- This migration does NOT widen UPDATE or DELETE. It says nothing about them,
+-- and comment edit/delete remains governed by breeze_ticket_parent_update /
+-- breeze_ticket_parent_delete (2026-06-21-ticket-comment-edit.sql), which gate
+-- on parent-ticket org access alone and carry no user_id predicate — so a
+-- system note is no more, and no less, tamper-evident at the DB layer than
+-- every other status-change comment. The durable record of a verification
+-- decision is the audit_logs row written beside it
+-- (services/callerVerification/effects.ts), not this comment.
 --
 -- Fully idempotent — safe to re-run.
 

@@ -153,7 +153,16 @@ export async function addCallerVerificationSystemComment(input: {
 }): Promise<void> {
   const [ticket] = await db.select().from(tickets)
     .where(and(eq(tickets.id, input.ticketId), eq(tickets.orgId, input.orgId))).limit(1);
-  if (!ticket) return;
+  if (!ticket) {
+    // Deleted, moved out of the org, or invisible in this RLS context. The
+    // decision itself is never lost — audit_logs carries it
+    // (services/callerVerification/effects.ts) — but a silently dropped note
+    // would be invisible to anyone reading the ticket, so say so.
+    console.warn(
+      `[caller-verification] ticket ${input.ticketId} not reachable in org ${input.orgId}; skipping system note for verification ${input.verificationId}`,
+    );
+    return;
+  }
   const [comment] = await db.insert(ticketComments).values({
     ticketId: ticket.id,
     userId: null,
