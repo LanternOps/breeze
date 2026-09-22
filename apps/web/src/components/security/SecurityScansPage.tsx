@@ -1,32 +1,26 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import "@/lib/i18n";
+import { useHashTab } from "@/lib/useHashState";
 import SecurityPageHeader from "./SecurityPageHeader";
 import SecurityScanManager from "./SecurityScanManager";
 import ThreatList from "./ThreatList";
 
 type ScansTab = "scans" | "threats";
 
-function tabFromHash(hash: string): ScansTab {
-  return hash.replace(/^#/, "") === "threats" ? "threats" : "scans";
-}
+const SCANS_TABS: readonly ScansTab[] = ["scans", "threats"];
 
 export default function SecurityScansPage() {
   const { t } = useTranslation("security");
-  const [tab, setTab] = useState<ScansTab>(() =>
-    tabFromHash(typeof window !== "undefined" ? window.location.hash : ""),
+  const [tab, setTab] = useHashTab<ScansTab>(SCANS_TABS, "scans");
+
+  const switchTab = useCallback(
+    (next: ScansTab) => {
+      window.location.hash = next;
+      setTab(next);
+    },
+    [setTab],
   );
-
-  useEffect(() => {
-    const onHashChange = () => setTab(tabFromHash(window.location.hash));
-    window.addEventListener("hashchange", onHashChange);
-    return () => window.removeEventListener("hashchange", onHashChange);
-  }, []);
-
-  const switchTab = useCallback((next: ScansTab) => {
-    window.location.hash = next;
-    setTab(next);
-  }, []);
 
   return (
     <div className="space-y-6">
