@@ -1204,7 +1204,12 @@
         "successDraftInvoice": "Quote accepted. Invoice created as a draft.",
         "errorContractVariablesUnresolved": "This quote's contract still needs values for: {{names}}. Close this dialog, fill them in below, then try again.",
         "errorContractVariablesUnresolvedGeneric": "This quote's contract has unresolved variables. Close this dialog, fill them in below, then try again.",
-        "errorDepositInvalid": "This quote's deposit can't be collected as configured. Close this dialog, fix the deposit settings below, then try again."
+        "errorDepositInvalid": "This quote's deposit can't be collected as configured. Close this dialog, fix the deposit settings below, then try again.",
+        "evidenceLabel": "Evidence file (optional)",
+        "evidenceHelp": "PDF, PNG or JPEG, up to 10 MB — e.g. the signed PO or document.",
+        "evidenceTooLarge": "This file is larger than 10 MB. Choose a smaller file.",
+        "evidenceAttached": "Evidence attached.",
+        "evidenceError": "The acceptance was recorded, but the evidence file could not be attached. Attach it from the quote page."
       },
       "declineOnBehalf": {
         "button": "Decline on behalf",
@@ -1344,7 +1349,17 @@
         "untitled": "a newer version"
       },
       "acceptedOnBehalf": "Accepted on behalf of {{signer}} by {{recorder}} on {{date}} · {{method}} · {{reference}}",
-      "deletedUser": "a deleted user"
+      "deletedUser": "a deleted user",
+      "evidence": {
+        "download": "Download evidence",
+        "downloadTitle": "Download {{filename}}",
+        "attach": "Attach evidence",
+        "replace": "Replace evidence",
+        "attached": "Evidence attached.",
+        "attachError": "Could not attach the evidence file.",
+        "downloadError": "Could not download the evidence file.",
+        "tooLarge": "This file is larger than 10 MB. Choose a smaller file."
+      }
     },
     "currency": {
       "actions": {

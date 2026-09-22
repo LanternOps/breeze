@@ -1204,7 +1204,12 @@
         "successDraftInvoice": "Teklif kabul edildi. Fatura taslak olarak oluşturuldu.",
         "errorContractVariablesUnresolved": "Bu sözleşmede hâlâ şu değerler eksik: {{names}}. Bu iletişim kutusunu kapatın, aşağıda doldurun ve tekrar deneyin.",
         "errorContractVariablesUnresolvedGeneric": "Bu sözleşmede çözülmemiş değişkenler var. Bu iletişim kutusunu kapatın, aşağıda doldurun ve tekrar deneyin.",
-        "errorDepositInvalid": "Depozito mevcut yapılandırmayla tahsil edilemiyor. Bu iletişim kutusunu kapatın, aşağıdaki depozito ayarlarını düzeltin ve tekrar deneyin."
+        "errorDepositInvalid": "Depozito mevcut yapılandırmayla tahsil edilemiyor. Bu iletişim kutusunu kapatın, aşağıdaki depozito ayarlarını düzeltin ve tekrar deneyin.",
+        "evidenceLabel": "Kanıt dosyası (isteğe bağlı)",
+        "evidenceHelp": "PDF, PNG veya JPEG, 10 MB'a kadar — örneğin imzalı sipariş formu veya belge.",
+        "evidenceTooLarge": "Bu dosya 10 MB'tan büyük. Daha küçük bir dosya seçin.",
+        "evidenceAttached": "Kanıt eklendi.",
+        "evidenceError": "Kabul kaydedildi, ancak kanıt dosyası eklenemedi. Teklif sayfasından ekleyin."
       },
       "declineOnBehalf": {
         "button": "Müşteri adına reddet",
@@ -1344,7 +1349,17 @@
         "untitled": "daha yeni bir sürüm"
       },
       "acceptedOnBehalf": "{{signer}} adına {{recorder}} tarafından {{date}} tarihinde kabul edildi · {{method}} · {{reference}}",
-      "deletedUser": "silinmiş bir kullanıcı"
+      "deletedUser": "silinmiş bir kullanıcı",
+      "evidence": {
+        "download": "Kanıtı indir",
+        "downloadTitle": "{{filename}} dosyasını indir",
+        "attach": "Kanıt ekle",
+        "replace": "Kanıtı değiştir",
+        "attached": "Kanıt eklendi.",
+        "attachError": "Kanıt dosyası eklenemedi.",
+        "downloadError": "Kanıt dosyası indirilemedi.",
+        "tooLarge": "Bu dosya 10 MB'tan büyük. Daha küçük bir dosya seçin."
+      }
     },
     "currency": {
       "actions": {

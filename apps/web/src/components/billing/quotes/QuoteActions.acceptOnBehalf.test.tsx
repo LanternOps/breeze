@@ -16,6 +16,9 @@ const api = vi.hoisted(() => ({
   acceptQuoteOnBehalf: vi.fn(async () => ({
     data: { quote: { id: 'q-1', quoteNumber: 'Q-2026-0001' }, invoiceId: 'inv-1', invoiceIssued: true, contractIds: [], payUrl: null },
   })),
+  uploadQuoteAcceptanceEvidence: vi.fn(async () => ({
+    data: { acceptanceId: 'a-1', evidence: { filename: 'po.pdf', contentType: 'application/pdf', sizeBytes: 100, uploadedAt: '2026-09-21T00:00:00Z' } },
+  })),
 }));
 vi.mock('../../../lib/runAction', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../lib/runAction')>();
@@ -42,6 +45,8 @@ vi.mock('../../../lib/api/quotes', () => ({
   deleteQuote: vi.fn(),
   quotePdfUrl: vi.fn().mockReturnValue('/quotes/q-1/pdf'),
   acceptQuoteOnBehalf: (...args: unknown[]) => api.acceptQuoteOnBehalf(...(args as [])),
+  uploadQuoteAcceptanceEvidence: (...args: unknown[]) => api.uploadQuoteAcceptanceEvidence(...(args as [])),
+  QUOTE_ACCEPTANCE_EVIDENCE_MAX_BYTES: 10 * 1024 * 1024,
 }));
 
 function sent(
@@ -77,7 +82,15 @@ beforeEach(() => {
   api.acceptQuoteOnBehalf.mockResolvedValue({
     data: { quote: { id: 'q-1', quoteNumber: 'Q-2026-0001' }, invoiceId: 'inv-1', invoiceIssued: true, contractIds: [], payUrl: null },
   });
+  api.uploadQuoteAcceptanceEvidence.mockResolvedValue({
+    data: { acceptanceId: 'a-1', evidence: { filename: 'po.pdf', contentType: 'application/pdf', sizeBytes: 100, uploadedAt: '2026-09-21T00:00:00Z' } },
+  });
 });
+
+function pdfFile(name = 'po.pdf', size = 100): File {
+  const file = new File(['x'.repeat(size)], name, { type: 'application/pdf' });
+  return file;
+}
 
 describe('Accept on behalf', () => {
   // Hidden, not disabled, when the permission is missing — matching every other
@@ -280,5 +293,69 @@ describe('Accept on behalf', () => {
     expect(screen.getByTestId('accept-on-behalf-submit')).toBeTruthy();
     // runAction already toasted the 409 — no second toast on top of it.
     expect(showToast).not.toHaveBeenCalled();
+  });
+
+  // #6633 — the optional evidence file.
+  describe('evidence file', () => {
+    it('does not upload anything when no file was chosen', async () => {
+      const refresh = vi.fn();
+      render(<QuoteActions detail={sent()} variant="header" onChanged={refresh} />);
+      fireEvent.click(screen.getByTestId('quote-accept-on-behalf'));
+      fireEvent.change(screen.getByTestId('accept-on-behalf-reference'), { target: { value: 'PO 4471' } });
+      fireEvent.click(screen.getByTestId('accept-on-behalf-submit'));
+      await waitFor(() => expect(api.acceptQuoteOnBehalf).toHaveBeenCalled());
+      await waitFor(() => expect(refresh).toHaveBeenCalled());
+      expect(api.uploadQuoteAcceptanceEvidence).not.toHaveBeenCalled();
+    });
+
+    it('uploads the chosen file after a successful accept, then calls onAccepted', async () => {
+      const refresh = vi.fn();
+      render(<QuoteActions detail={sent()} variant="header" onChanged={refresh} />);
+      fireEvent.click(screen.getByTestId('quote-accept-on-behalf'));
+      fireEvent.change(screen.getByTestId('accept-on-behalf-reference'), { target: { value: 'PO 4471' } });
+      const file = pdfFile();
+      fireEvent.change(screen.getByTestId('accept-on-behalf-evidence'), { target: { files: [file] } });
+      fireEvent.click(screen.getByTestId('accept-on-behalf-submit'));
+      await waitFor(() => expect(api.acceptQuoteOnBehalf).toHaveBeenCalled());
+      await waitFor(() => expect(api.uploadQuoteAcceptanceEvidence).toHaveBeenCalledWith('q-1', file));
+      await waitFor(() => expect(refresh).toHaveBeenCalled());
+    });
+
+    it('still calls onAccepted when the upload fails, and toasts the failure', async () => {
+      const refresh = vi.fn();
+      const { ActionError } = await import('../../../lib/runAction');
+      api.uploadQuoteAcceptanceEvidence.mockRejectedValueOnce(new ActionError('nope', 500));
+      render(<QuoteActions detail={sent()} variant="header" onChanged={refresh} />);
+      fireEvent.click(screen.getByTestId('quote-accept-on-behalf'));
+      fireEvent.change(screen.getByTestId('accept-on-behalf-reference'), { target: { value: 'PO 4471' } });
+      fireEvent.change(screen.getByTestId('accept-on-behalf-evidence'), { target: { files: [pdfFile()] } });
+      fireEvent.click(screen.getByTestId('accept-on-behalf-submit'));
+      await waitFor(() => expect(api.uploadQuoteAcceptanceEvidence).toHaveBeenCalled());
+      await waitFor(() => expect(refresh).toHaveBeenCalled());
+    });
+
+    it('never uploads when the accept itself fails', async () => {
+      const refresh = vi.fn();
+      const { ActionError } = await import('../../../lib/runAction');
+      runAction.mockRejectedValueOnce(new ActionError('nope', 409, 'QUOTE_NOT_ACCEPTABLE'));
+      render(<QuoteActions detail={sent()} variant="header" onChanged={refresh} />);
+      fireEvent.click(screen.getByTestId('quote-accept-on-behalf'));
+      fireEvent.change(screen.getByTestId('accept-on-behalf-reference'), { target: { value: 'PO 4471' } });
+      fireEvent.change(screen.getByTestId('accept-on-behalf-evidence'), { target: { files: [pdfFile()] } });
+      fireEvent.click(screen.getByTestId('accept-on-behalf-submit'));
+      await waitFor(() => expect(runAction).toHaveBeenCalled());
+      expect(api.uploadQuoteAcceptanceEvidence).not.toHaveBeenCalled();
+      expect(refresh).not.toHaveBeenCalled();
+    });
+
+    it('shows an inline error and disables submit for a file over 10 MB', () => {
+      render(<QuoteActions detail={sent()} variant="header" onChanged={vi.fn()} />);
+      fireEvent.click(screen.getByTestId('quote-accept-on-behalf'));
+      fireEvent.change(screen.getByTestId('accept-on-behalf-reference'), { target: { value: 'PO 4471' } });
+      const bigFile = pdfFile('big.pdf', 11 * 1024 * 1024);
+      fireEvent.change(screen.getByTestId('accept-on-behalf-evidence'), { target: { files: [bigFile] } });
+      expect(screen.getByTestId('accept-on-behalf-evidence-error')).toBeTruthy();
+      expect(screen.getByTestId('accept-on-behalf-submit').hasAttribute('disabled')).toBe(true);
+    });
   });
 });

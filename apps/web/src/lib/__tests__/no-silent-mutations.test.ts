@@ -212,6 +212,9 @@ const TARGET_GLOBS = [
   // Decline on behalf (#6634): a silent failure leaves the quote open while the
   // tech believes the customer's "no" is on record.
   'src/components/billing/quotes/DeclineOnBehalfDialog.tsx',
+  // Evidence attach/replace for an on-behalf acceptance (#6633): its own
+  // upload mutation, guarded from birth alongside its sibling dialog.
+  'src/components/billing/quotes/AcceptanceEvidenceControl.tsx',
   'src/components/billing/quotes/QuoteDocument.tsx',
   // W03 moved these three into the /agreements area; ContractDocumentsSection
   // was deleted (contract detail now embeds SignedAgreementsPage).
@@ -744,7 +747,8 @@ describe('no silent mutations in targeted set', () => {
     // #6263 W01 adds SecurityScanManager.tsx, ThreatList.tsx, ThreatDetail.tsx: 157 → 160.
     // Accept on behalf adds quotes/AcceptOnBehalfDialog.tsx: 160 → 161.
     // Decline on behalf (#6634) adds quotes/DeclineOnBehalfDialog.tsx: 161 → 162.
-    expect(absoluteFiles.length).toBe(162);
+    // Accept-on-behalf evidence (#6633) adds quotes/AcceptanceEvidenceControl.tsx: 162 → 163.
+    expect(absoluteFiles.length).toBe(163);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

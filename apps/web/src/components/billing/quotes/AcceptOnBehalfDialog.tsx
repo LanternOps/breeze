@@ -5,7 +5,7 @@ import { QUOTE_ACCEPT_ON_BEHALF_METHODS, type QuoteAcceptOnBehalfMethod } from '
 import { navigateTo } from '@/lib/navigation';
 import { runAction, ActionError } from '../../../lib/runAction';
 import { showToast } from '../../shared/Toast';
-import { acceptQuoteOnBehalf } from '../../../lib/api/quotes';
+import { acceptQuoteOnBehalf, uploadQuoteAcceptanceEvidence, QUOTE_ACCEPTANCE_EVIDENCE_MAX_BYTES } from '../../../lib/api/quotes';
 import { Dialog } from '../../shared/Dialog';
 import { type Quote, type QuoteLine, formatMoney } from './quoteTypes';
 
@@ -80,6 +80,11 @@ export default function AcceptOnBehalfDialog({ open, onClose, quote, lines, reci
   const [signerName, setSignerName] = useState('');
   const [signerEmail, setSignerEmail] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  // #6633 — optional file attached alongside the acceptance (e.g. the signed
+  // PO or document). Uploaded in a second step AFTER the accept succeeds, so
+  // an upload failure never blocks or undoes the acceptance itself.
+  const [evidenceFile, setEvidenceFile] = useState<File | null>(null);
+  const [evidenceError, setEvidenceError] = useState<string | null>(null);
   // Whether accepting will email the invoice to the customer, from the quote
   // detail response's own partner-flag field (#6636) — never fetched here.
   // Strict `=== true`: `undefined` (older payload/fixture, field not loaded)
@@ -96,12 +101,25 @@ export default function AcceptOnBehalfDialog({ open, onClose, quote, lines, reci
     setSignerName(quote.billToName ?? '');
     setSignerEmail(recipients[0] ?? '');
     setSubmitting(false);
+    setEvidenceFile(null);
+    setEvidenceError(null);
   }, [open, quote.billToName, recipients]);
 
   const currency = quote.currencyCode ?? 'USD';
   const invoiceAmount = formatMoney(quote.dueOnAcceptanceTotal ?? quote.oneTimeTotal, currency);
   const hasRecurring = lines.some((l) => l.recurrence !== 'one_time');
-  const ready = reference.trim().length > 0 && signerName.trim().length > 0;
+  const ready = reference.trim().length > 0 && signerName.trim().length > 0 && !evidenceError;
+
+  const onEvidenceChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0] ?? null;
+    if (file && file.size > QUOTE_ACCEPTANCE_EVIDENCE_MAX_BYTES) {
+      setEvidenceFile(null);
+      setEvidenceError(t('quotes.actions.acceptOnBehalf.evidenceTooLarge'));
+      return;
+    }
+    setEvidenceFile(file);
+    setEvidenceError(null);
+  }, [t]);
 
   const submit = useCallback(async () => {
     if (submitting || !ready) return;
@@ -145,6 +163,22 @@ export default function AcceptOnBehalfDialog({ open, onClose, quote, lines, reci
           : t('quotes.actions.acceptOnBehalf.successDraftInvoice')),
         onUnauthorized: UNAUTHORIZED,
       });
+      // The accept succeeded — an evidence upload failure past this point must
+      // never undo it or block the caller's reload. Best-effort, own toast.
+      if (evidenceFile) {
+        try {
+          await runAction({
+            request: () => uploadQuoteAcceptanceEvidence(quote.id, evidenceFile),
+            errorFallback: t('quotes.actions.acceptOnBehalf.evidenceError'),
+            successMessage: t('quotes.actions.acceptOnBehalf.evidenceAttached'),
+            onUnauthorized: UNAUTHORIZED,
+          });
+        } catch (err) {
+          if (!(err instanceof ActionError)) {
+            showToast({ type: 'error', message: t('quotes.actions.acceptOnBehalf.evidenceError') });
+          }
+        }
+      }
       onAccepted();
     } catch (err) {
       if (err instanceof ActionError && err.status === 401) return; // auth redirect handles it
@@ -152,7 +186,7 @@ export default function AcceptOnBehalfDialog({ open, onClose, quote, lines, reci
     } finally {
       setSubmitting(false);
     }
-  }, [submitting, ready, quote.id, method, reference, signerName, signerEmail, onAccepted, t]);
+  }, [submitting, ready, quote.id, method, reference, signerName, signerEmail, evidenceFile, onAccepted, t]);
 
   return (
     <Dialog
@@ -235,6 +269,29 @@ export default function AcceptOnBehalfDialog({ open, onClose, quote, lines, reci
             data-testid="accept-on-behalf-signer-email"
             className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60"
           />
+        </label>
+
+        <label className="block">
+          <span className="mb-1 block text-sm font-medium text-foreground">
+            {t('quotes.actions.acceptOnBehalf.evidenceLabel')}
+          </span>
+          <input
+            type="file"
+            accept="application/pdf,image/png,image/jpeg,.pdf,.png,.jpg,.jpeg"
+            onChange={onEvidenceChange}
+            disabled={submitting}
+            data-testid="accept-on-behalf-evidence"
+            aria-describedby="accept-on-behalf-evidence-help"
+            className="block w-full text-sm text-foreground file:mr-3 file:rounded-md file:border file:bg-background file:px-3 file:py-1.5 file:text-sm file:font-medium disabled:opacity-60"
+          />
+          <span id="accept-on-behalf-evidence-help" className="mt-1 block text-xs text-muted-foreground">
+            {t('quotes.actions.acceptOnBehalf.evidenceHelp')}
+          </span>
+          {evidenceError && (
+            <span className="mt-1 block text-xs text-destructive" data-testid="accept-on-behalf-evidence-error">
+              {evidenceError}
+            </span>
+          )}
         </label>
       </div>
 

@@ -86,4 +86,44 @@ describe('QuoteDetail — acceptance provenance', () => {
     render(<QuoteDetail detail={converted()} />);
     expect(screen.queryByTestId('quote-acceptance-provenance')).toBeNull();
   });
+
+  // #6633 — the evidence file attached to an on-behalf acceptance.
+  describe('acceptance evidence', () => {
+    const EVIDENCE = { filename: 'po.pdf', contentType: 'application/pdf', sizeBytes: 100, uploadedAt: '2026-09-21T00:00:00Z' };
+
+    it('renders the download control for an on-behalf acceptance with evidence', () => {
+      render(<QuoteDetail detail={converted({ acceptance: {
+        id: 'a1', signerName: 'Dana Buyer', signerEmail: null, signedAt: '2026-09-21T12:00:00Z',
+        origin: 'on_behalf', method: 'purchase_order', reference: 'PO 4471',
+        recordedBy: { id: 'tech-1', name: 'Sam Tech' }, evidence: EVIDENCE,
+      } })} />);
+      expect(screen.getByTestId('quote-acceptance-evidence-download')).toBeTruthy();
+    });
+
+    it('renders no evidence control for a customer acceptance', () => {
+      render(<QuoteDetail detail={converted({ acceptance: {
+        id: 'a1', signerName: 'Dana Buyer', signerEmail: null, signedAt: '2026-09-21T12:00:00Z',
+        origin: 'customer', method: 'typed-signature', reference: null, recordedBy: null, evidence: null,
+      } })} />);
+      expect(screen.queryByTestId('quote-acceptance-evidence-download')).toBeNull();
+      expect(screen.queryByTestId('quote-acceptance-evidence-attach')).toBeNull();
+    });
+
+    it('hides the attach control without quotes:accept', () => {
+      render(<QuoteDetail detail={converted({ acceptance: {
+        id: 'a1', signerName: 'Dana Buyer', signerEmail: null, signedAt: '2026-09-21T12:00:00Z',
+        origin: 'on_behalf', method: 'verbal', reference: 'call notes', recordedBy: null, evidence: null,
+      } })} />);
+      expect(screen.queryByTestId('quote-acceptance-evidence-attach')).toBeNull();
+    });
+
+    it('shows the attach control with quotes:accept', () => {
+      state.permissions = [{ resource: 'quotes', action: 'read' }, { resource: 'quotes', action: 'accept' }];
+      render(<QuoteDetail detail={converted({ acceptance: {
+        id: 'a1', signerName: 'Dana Buyer', signerEmail: null, signedAt: '2026-09-21T12:00:00Z',
+        origin: 'on_behalf', method: 'verbal', reference: 'call notes', recordedBy: null, evidence: null,
+      } })} />);
+      expect(screen.getByTestId('quote-acceptance-evidence-attach')).toBeTruthy();
+    });
+  });
 });

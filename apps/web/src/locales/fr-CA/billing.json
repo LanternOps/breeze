@@ -1204,7 +1204,12 @@
         "successDraftInvoice": "Proposition acceptée. Facture créée en brouillon.",
         "errorContractVariablesUnresolved": "Ce contrat a encore besoin de valeurs pour : {{names}}. Fermez cette boîte de dialogue, remplissez-les ci-dessous, puis réessayez.",
         "errorContractVariablesUnresolvedGeneric": "Ce contrat contient des variables non résolues. Fermez cette boîte de dialogue, remplissez-les ci-dessous, puis réessayez.",
-        "errorDepositInvalid": "L'acompte ne peut pas être perçu tel qu'il est configuré. Fermez cette boîte de dialogue, corrigez les paramètres d'acompte ci-dessous, puis réessayez."
+        "errorDepositInvalid": "L'acompte ne peut pas être perçu tel qu'il est configuré. Fermez cette boîte de dialogue, corrigez les paramètres d'acompte ci-dessous, puis réessayez.",
+        "evidenceLabel": "Fichier justificatif (facultatif)",
+        "evidenceHelp": "PDF, PNG ou JPEG, jusqu'à 10 Mo — par exemple le bon de commande signé ou le document.",
+        "evidenceTooLarge": "Ce fichier dépasse 10 Mo. Choisissez un fichier plus petit.",
+        "evidenceAttached": "Justificatif joint.",
+        "evidenceError": "L'acceptation a été enregistrée, mais le fichier justificatif n'a pas pu être joint. Joignez-le depuis la page de la proposition."
       },
       "declineOnBehalf": {
         "button": "Refuser au nom du client",
@@ -1344,7 +1349,17 @@
         "untitled": "une version plus récente"
       },
       "acceptedOnBehalf": "Accepté au nom de {{signer}} par {{recorder}} le {{date}} · {{method}} · {{reference}}",
-      "deletedUser": "un utilisateur supprimé"
+      "deletedUser": "un utilisateur supprimé",
+      "evidence": {
+        "download": "Télécharger le justificatif",
+        "downloadTitle": "Télécharger {{filename}}",
+        "attach": "Joindre un justificatif",
+        "replace": "Remplacer le justificatif",
+        "attached": "Justificatif joint.",
+        "attachError": "Impossible de joindre le fichier justificatif.",
+        "downloadError": "Impossible de télécharger le fichier justificatif.",
+        "tooLarge": "Ce fichier dépasse 10 Mo. Choisissez un fichier plus petit."
+      }
     },
     "currency": {
       "actions": {

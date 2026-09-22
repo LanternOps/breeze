@@ -1204,7 +1204,12 @@
         "successDraftInvoice": "Angebot angenommen. Rechnung als Entwurf erstellt.",
         "errorContractVariablesUnresolved": "Für diesen Vertrag fehlen noch Werte für: {{names}}. Schließen Sie diesen Dialog, tragen Sie sie unten ein und versuchen Sie es erneut.",
         "errorContractVariablesUnresolvedGeneric": "Für diesen Vertrag sind noch Variablen ungelöst. Schließen Sie diesen Dialog, tragen Sie sie unten ein und versuchen Sie es erneut.",
-        "errorDepositInvalid": "Die Anzahlung kann mit der aktuellen Konfiguration nicht erhoben werden. Schließen Sie diesen Dialog, korrigieren Sie die Anzahlungseinstellungen unten und versuchen Sie es erneut."
+        "errorDepositInvalid": "Die Anzahlung kann mit der aktuellen Konfiguration nicht erhoben werden. Schließen Sie diesen Dialog, korrigieren Sie die Anzahlungseinstellungen unten und versuchen Sie es erneut.",
+        "evidenceLabel": "Nachweisdatei (optional)",
+        "evidenceHelp": "PDF, PNG oder JPEG, bis zu 10 MB — z. B. die unterschriebene Bestellung oder das Dokument.",
+        "evidenceTooLarge": "Diese Datei ist größer als 10 MB. Wählen Sie eine kleinere Datei.",
+        "evidenceAttached": "Nachweis angehängt.",
+        "evidenceError": "Die Annahme wurde erfasst, aber die Nachweisdatei konnte nicht angehängt werden. Hängen Sie sie von der Angebotsseite aus an."
       },
       "declineOnBehalf": {
         "button": "Im Auftrag ablehnen",
@@ -1344,7 +1349,17 @@
         "untitled": "eine neuere Version"
       },
       "acceptedOnBehalf": "Im Namen von {{signer}} angenommen durch {{recorder}} am {{date}} · {{method}} · {{reference}}",
-      "deletedUser": "ein gelöschter Benutzer"
+      "deletedUser": "ein gelöschter Benutzer",
+      "evidence": {
+        "download": "Nachweis herunterladen",
+        "downloadTitle": "{{filename}} herunterladen",
+        "attach": "Nachweis anhängen",
+        "replace": "Nachweis ersetzen",
+        "attached": "Nachweis angehängt.",
+        "attachError": "Die Nachweisdatei konnte nicht angehängt werden.",
+        "downloadError": "Die Nachweisdatei konnte nicht heruntergeladen werden.",
+        "tooLarge": "Diese Datei ist größer als 10 MB. Wählen Sie eine kleinere Datei."
+      }
     },
     "currency": {
       "actions": {

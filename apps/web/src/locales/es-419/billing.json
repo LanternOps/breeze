@@ -1204,7 +1204,12 @@
         "successDraftInvoice": "Propuesta aceptada. Factura creada como borrador.",
         "errorContractVariablesUnresolved": "Este contrato todavía necesita valores para: {{names}}. Cierra este diálogo, complétalos abajo y vuelve a intentarlo.",
         "errorContractVariablesUnresolvedGeneric": "Este contrato tiene variables sin resolver. Cierra este diálogo, complétalas abajo y vuelve a intentarlo.",
-        "errorDepositInvalid": "El depósito no se puede cobrar con la configuración actual. Cierra este diálogo, corrige la configuración del depósito abajo y vuelve a intentarlo."
+        "errorDepositInvalid": "El depósito no se puede cobrar con la configuración actual. Cierra este diálogo, corrige la configuración del depósito abajo y vuelve a intentarlo.",
+        "evidenceLabel": "Archivo de evidencia (opcional)",
+        "evidenceHelp": "PDF, PNG o JPEG, hasta 10 MB — por ejemplo, la orden de compra firmada o el documento.",
+        "evidenceTooLarge": "Este archivo supera los 10 MB. Elige un archivo más pequeño.",
+        "evidenceAttached": "Evidencia adjuntada.",
+        "evidenceError": "La aceptación quedó registrada, pero no se pudo adjuntar el archivo de evidencia. Adjúntalo desde la página de la propuesta."
       },
       "declineOnBehalf": {
         "button": "Rechazar en nombre del cliente",
@@ -1344,7 +1349,17 @@
         "untitled": "una versión más reciente"
       },
       "acceptedOnBehalf": "Aceptado en nombre de {{signer}} por {{recorder}} el {{date}} · {{method}} · {{reference}}",
-      "deletedUser": "un usuario eliminado"
+      "deletedUser": "un usuario eliminado",
+      "evidence": {
+        "download": "Descargar evidencia",
+        "downloadTitle": "Descargar {{filename}}",
+        "attach": "Adjuntar evidencia",
+        "replace": "Reemplazar evidencia",
+        "attached": "Evidencia adjuntada.",
+        "attachError": "No se pudo adjuntar el archivo de evidencia.",
+        "downloadError": "No se pudo descargar el archivo de evidencia.",
+        "tooLarge": "Este archivo supera los 10 MB. Elige un archivo más pequeño."
+      }
     },
     "currency": {
       "actions": {

@@ -9,6 +9,7 @@ import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError, ActionError } from '../../../lib/runAction';
 import { useAuthedImage } from './useQuoteImage';
 import QuoteActions, { QuoteSendOutcomeBanners } from './QuoteActions';
+import AcceptanceEvidenceControl from './AcceptanceEvidenceControl';
 import QuoteOrderBreakdown, { orderableLines } from './QuoteOrderBreakdown';
 import { RecurringBillingNote, MarginPanel, MarginToggle, useShowMargin } from '../billingUi';
 import ChangeCurrencyDialog, { type CurrencyChangeMode } from '../ChangeCurrencyDialog';
@@ -296,6 +297,14 @@ export default function QuoteDetail({ detail, onChanged, actionsInHeader }: Prop
                   reference: detail.acceptance.reference ?? '',
                 })}
               </p>
+            )}
+            {detail.acceptance?.origin === 'on_behalf' && (
+              <AcceptanceEvidenceControl
+                quoteId={quote.id}
+                evidence={detail.acceptance.evidence ?? null}
+                canAttach={can('quotes', 'accept')}
+                onChanged={onChanged}
+              />
             )}
             {/* Who the quote actually went to. Recorded at send but previously
                 invisible to the tech who sent it. Rendered only when we have

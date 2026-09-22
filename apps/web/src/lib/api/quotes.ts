@@ -441,3 +441,35 @@ export function addQuoteImageFromUrl(id: string, url: string): Promise<Response>
 export function quoteImageUrl(id: string, imageId: string): string {
   return `/api/v1/quotes/${id}/images/${imageId}`;
 }
+
+// ---- accept-on-behalf evidence (#6633) -------------------------------------
+
+/** Max evidence file size the API accepts, mirrored here so the web layer can
+ *  reject an oversized pick before ever sending it. */
+export const QUOTE_ACCEPTANCE_EVIDENCE_MAX_BYTES = 10 * 1024 * 1024;
+
+/** MIME types the API accepts for an acceptance-evidence upload. */
+export const QUOTE_ACCEPTANCE_EVIDENCE_ALLOWED_TYPES = ['application/pdf', 'image/png', 'image/jpeg'];
+
+/** Attach (or replace) the evidence file behind an on-behalf acceptance
+ *  (POST /quotes/:id/acceptance/evidence). Multipart FormData — `fetchWithAuth`
+ *  deliberately does NOT set a JSON Content-Type for FormData so the browser
+ *  appends the multipart boundary itself (see `uploadQuoteImage` above). Only
+ *  works when the quote's latest acceptance has origin `on_behalf`; a prior
+ *  file is replaced, not appended to. Gated server-side on quotes:accept.
+ *  Responds with `{ data: { acceptanceId, evidence: { filename, contentType,
+ *  sizeBytes, uploadedAt } } }`. Callers MUST wrap this in `runAction`. */
+export function uploadQuoteAcceptanceEvidence(id: string, file: File): Promise<Response> {
+  const form = new FormData();
+  form.append('file', file);
+  return fetchWithAuth(`/quotes/${id}/acceptance/evidence`, { method: 'POST', body: form });
+}
+
+/** Download an on-behalf acceptance's evidence file (GET
+ *  /quotes/:id/acceptance/evidence). The route streams the file back as an
+ *  attachment. Gated server-side on quotes:read. This is a read, not a
+ *  mutation — callers should NOT wrap it in `runAction`; turn the response
+ *  into a blob and drive a temporary `<a download>` instead. */
+export function downloadQuoteAcceptanceEvidence(id: string): Promise<Response> {
+  return fetchWithAuth(`/quotes/${id}/acceptance/evidence`);
+}
