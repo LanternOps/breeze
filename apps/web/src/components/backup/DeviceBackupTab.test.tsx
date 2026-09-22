@@ -20,6 +20,14 @@ vi.mock('../shared/AlphaBadge', () => ({
   default: () => <span>Alpha</span>,
 }));
 
+let externalPresent = true;
+vi.mock('./ExternalBackupCard', () => ({
+  default: ({ onPresenceChange }: { onPresenceChange?: (p: boolean) => void }) => {
+    onPresenceChange?.(externalPresent);
+    return externalPresent ? <div data-testid="stub-external-backup" /> : null;
+  },
+}));
+
 const fetchMock = vi.mocked(fetchWithAuth);
 
 const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>
@@ -33,6 +41,7 @@ const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500):
 describe('DeviceBackupTab', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    externalPresent = true;
 
     fetchMock.mockImplementation(async (input, init) => {
       const url = String(input);
@@ -600,5 +609,22 @@ describe('DeviceBackupTab', () => {
       await screen.findByText('Job History');
       expect(screen.queryByTestId('backup-last-job-diagnostic')).toBeNull();
     });
+  });
+
+  it('renders the external backup card above the first-party sections', async () => {
+    externalPresent = true;
+    render(<DeviceBackupTab deviceId="device-1" />);
+    expect(await screen.findByTestId('stub-external-backup')).toBeInTheDocument();
+  });
+
+  it('points at third-party connections from the empty state when neither source has anything', async () => {
+    externalPresent = false;
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/backup/status/device-1') return makeJsonResponse({ data: { protected: false } });
+      return makeJsonResponse({ data: [] });
+    });
+    render(<DeviceBackupTab deviceId="device-1" />);
+    expect(await screen.findByTestId('device-backup-empty-external-hint')).toBeInTheDocument();
   });
 });

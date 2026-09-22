@@ -435,6 +435,10 @@ const TARGET_GLOBS = [
   'src/components/integrations/BackupProvidersIntegration.tsx',
   'src/components/integrations/BackupProviderConnectionCard.tsx',
   'src/components/integrations/BackupProviderCustomerMapping.tsx',
+  // Device-tab external backup (W03, #6011): Unlink detaches a provider row
+  // from a Breeze device; a silent failure leaves the tech believing the link
+  // is gone while alerts keep firing against it.
+  'src/components/backup/ExternalBackupCard.tsx',
 ];
 
 const absoluteFiles: string[] = TARGET_GLOBS.map((rel) => resolve(WEB_ROOT, '..', rel));
@@ -806,7 +810,8 @@ describe('no silent mutations in targeted set', () => {
     // #3531 sweep adds BaselineList, RemoteToolsPage, NetworkBaselinesPanel,
     // sensitiveData/PoliciesTab, EnrollmentKeyManager, UsersPage, WebhooksPage: 178 → 185.
     // Backup provider integration (W03 #6011) adds three adopters: 185 → 188.
-    expect(absoluteFiles.length).toBe(188);
+    // 188 -> 189: ExternalBackupCard.tsx (W03 Task 12, #6011) added to TARGET_GLOBS.
+    expect(absoluteFiles.length).toBe(189);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }
