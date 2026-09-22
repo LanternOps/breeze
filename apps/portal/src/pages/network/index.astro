@@ -1,0 +1,38 @@
+---
+import PortalLayout from '../../layouts/PortalLayout.astro';
+import { NetworkOverview } from '../../components/portal/NetworkOverview';
+import { ErrorNotice } from '../../components/portal/ui';
+import { portalApi } from '../../lib/api';
+import { buildServerApiConfig } from '../../lib/server';
+import { redirectToLoginAfter401 } from '../../lib/session';
+import { redirectToPortalHomeAfterDisabled } from '../../lib/visibilityGate';
+
+const config = buildServerApiConfig(Astro.request);
+const response = await portalApi.getNetworkOverview(config);
+
+if (response.statusCode === 401) {
+  return redirectToLoginAfter401(Astro);
+}
+
+// GET /portal/network/overview always answers 200 — a disabled
+// "Network visibility" flag comes back as dataStatus: 'not_enabled' in the
+// body, not a 403, so isPortalPageDisabled (which only understands the API's
+// 403 gate codes) cannot catch it. Check the DTO directly instead.
+if (response.data?.dataStatus === 'not_enabled') {
+  return redirectToPortalHomeAfterDisabled(Astro);
+}
+---
+
+<PortalLayout title="Network">
+  {
+    response.data ? (
+      <NetworkOverview overview={response.data} />
+    ) : (
+      <div data-testid="portal-network-error">
+        {/* The transport error is ours to read, not the customer's: they can
+            act on "ask your IT team", never on a connection string. */}
+        <ErrorNotice>We couldn't load your network data just now. Your IT team can help.</ErrorNotice>
+      </div>
+    )
+  }
+</PortalLayout>
