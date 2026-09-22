@@ -77,9 +77,13 @@ it('fingerprints routing, escalation steps, competitor payloads and full row dat
 // #6445 — the restored AuthContext must delegate to the auth module's single
 // source of truth, not re-implement it. Compare against the canonical closures
 // directly so any future divergence in either axis fails here.
-it.each([undefined, [], ['s'], ['s', 't']] as Array<string[] | undefined>)('restores the site axis exactly as siteAccessCheck: %j', (allowedSiteIds) => {
-  const restored = restorePreviewAuth(snapshotPreviewAccess({ ...auth, allowedSiteIds }));
-  const canonicalCheck = siteAccessCheck(allowedSiteIds);
+// `null` is in the matrix deliberately: every other allowlist shape behaves
+// identically under the old hand-rolled closure, so without it this parity
+// check would pass against the very implementation it is meant to retire.
+it.each([undefined, null, [], ['s'], ['s', 't']] as Array<string[] | null | undefined>)('restores the site axis exactly as siteAccessCheck: %j', (allowedSiteIds) => {
+  const snapshot = snapshotPreviewAccess({ ...auth, allowedSiteIds: allowedSiteIds ?? undefined });
+  const restored = restorePreviewAuth({ ...snapshot, auth: { ...snapshot.auth, allowedSiteIds: allowedSiteIds as string[] | undefined } });
+  const canonicalCheck = siteAccessCheck(allowedSiteIds as string[] | undefined);
   for (const siteId of ['s', 't', 'other', null, undefined]) {
     expect(restored.canAccessSite!(siteId)).toBe(canonicalCheck(siteId));
   }
@@ -95,11 +99,28 @@ it.each([null, [], ['o'], ['o', 'b']] as Array<string[] | null>)('restores the o
   }
 });
 
-it('denies every row for an empty org allowlist instead of emitting an unbounded IN ()', () => {
-  const restored = restorePreviewAuth(snapshotPreviewAccess({ ...auth, accessibleOrgIds: [] }));
-  const query = render(restored.orgCondition(devices.orgId));
-  expect(query?.params).toEqual(['00000000-0000-0000-0000-000000000000']);
-  expect(restored.canAccessOrg('o')).toBe(false);
+// The parity checks above would both pass if the canonical closures themselves
+// regressed, so pin the restored context's actual behaviour to literals too.
+it('emits the canonical org filter and access decision for every allowlist shape', () => {
+  const restore = (accessibleOrgIds: string[] | null, scope: AuthContext['scope'] = 'organization') =>
+    restorePreviewAuth(snapshotPreviewAccess({ ...auth, scope, accessibleOrgIds }));
+
+  // System scope: no filter at all, and every org is accessible.
+  const system = restore(null, 'system');
+  expect(system.orgCondition(devices.orgId)).toBeUndefined();
+  expect(system.canAccessOrg('any-org')).toBe(true);
+
+  // Empty allowlist: the impossible-condition sentinel, not a bare `false`
+  // literal — same deny-all effect, but the shape the request path produces.
+  const empty = restore([]);
+  expect(render(empty.orgCondition(devices.orgId))?.params).toEqual(['00000000-0000-0000-0000-000000000000']);
+  expect(empty.canAccessOrg('o')).toBe(false);
+
+  // Single org collapses to equality; multiple orgs use an IN list.
+  expect(render(restore(['o']).orgCondition(devices.orgId))).toMatchObject({ sql: expect.stringContaining('='), params: ['o'] });
+  const many = restore(['o', 'b']);
+  expect(render(many.orgCondition(devices.orgId))).toMatchObject({ sql: expect.stringContaining(' in '), params: ['o', 'b'] });
+  expect([many.canAccessOrg('o'), many.canAccessOrg('b'), many.canAccessOrg('other')]).toEqual([true, true, false]);
 });
 
 it('treats a null site allowlist as unrestricted, matching the request path', () => {
