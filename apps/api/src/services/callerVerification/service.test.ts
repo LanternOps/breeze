@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 const ref = vi.hoisted(() => ({ db: null as any, policy: vi.fn(), bindings: vi.fn() }));
 vi.mock('../../db', () => ({
   db: new Proxy({}, { get: (_, key) => ref.db[key] }),

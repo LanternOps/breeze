@@ -10,7 +10,6 @@ import { vi } from 'vitest';
 export function makeDbMock() {
   const results: unknown[][] = [];
   const calls: Array<{ name: string; args: unknown[] }> = [];
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const chain: any = {};
   for (const name of ['select', 'from', 'where', 'limit', 'orderBy', 'for', 'insert', 'values', 'update', 'set', 'returning', 'onConflictDoNothing', 'delete']) {
     chain[name] = (...args: unknown[]) => { calls.push({ name, args }); return chain; };

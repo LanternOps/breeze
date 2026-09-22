@@ -6,7 +6,6 @@ vi.mock('../../db', () => ({
   db: {
     select: () => {
       let rows: unknown[] | undefined;
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const q: any = {
         from: () => q, where: () => q, limit: () => q, for: () => q,
         then: (resolve: (v: unknown) => unknown) => { rows ??= m.queue.shift() ?? []; return Promise.resolve(rows).then(resolve); },

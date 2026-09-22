@@ -12,7 +12,6 @@ vi.mock('./destinations', async (original) => ({
   isEstablished: () => true,
 }));
 vi.mock('../../db', () => {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const chain: any = {};
   for (const name of ['select', 'from', 'where', 'orderBy', 'limit', 'update', 'set', 'returning']) chain[name] = () => chain;
   chain.then = (f: (v: unknown) => unknown) => Promise.resolve(m.results.shift() ?? []).then(f);

@@ -1,16 +1,11 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 const m = vi.hoisted(() => ({ auth: null as any, read: true, write: true, mfa: true, get: vi.fn(), start: vi.fn(), directoryUsers: vi.fn(), syncDirectory: vi.fn() }));
 vi.mock('../middleware/auth', () => ({
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   authMiddleware: async (c: any, n: any) => { if (!m.auth) return c.json({ error: 'unauthorized' }, 401); c.set('auth', m.auth); return n(); },
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   requireScope: (...s: string[]) => async (c: any, n: any) => (s.includes(c.get('auth').scope) ? n() : c.json({}, 403)),
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   requirePermission: (_r: string, a: string) => async (c: any, n: any) => ((a === 'write' && !m.write) || (a === 'read' && !m.read) ? c.json({}, 403) : n()),
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   requireMfa: () => async (c: any, n: any) => (m.mfa ? n() : c.json({}, 403)),
   withAuthDbAccessContext: (_a: unknown, f: () => unknown) => f(),
 }));
