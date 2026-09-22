@@ -58,7 +58,9 @@ export default function AcceptanceEvidenceControl({ quoteId, evidence, canAttach
       document.body.appendChild(a);
       a.click();
       a.remove();
-      URL.revokeObjectURL(url);
+      // Deferred: revoking synchronously after click() can cancel the
+      // download before the browser has started reading the blob.
+      setTimeout(() => URL.revokeObjectURL(url), 0);
     } catch {
       showToast({ type: 'error', message: t('quotes.detail.evidence.downloadError') });
     } finally {
