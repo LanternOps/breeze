@@ -174,6 +174,7 @@ vi.mock('../../db', () => {
 
 import {
   FleetDesignPersistConflictError,
+  loadFleetDesignReport,
   persistFleetDesignReport,
   projectFleetDesign,
   type FleetDesignPersistInput,
@@ -537,5 +538,47 @@ describe('projectFleetDesign', () => {
   it('defaults evidenceTruncated to false when there is no artifact yet', () => {
     const dto = projectFleetDesign({ reportRunId: null }, { fleetDesign: outcome() }, null);
     expect(dto!.evidenceTruncated).toBe(false);
+  });
+});
+
+describe('loadFleetDesignReport', () => {
+  const PARTNER_ID = '00000000-0000-4000-8000-0000000000c1';
+
+  it('refuses a partner-owned row (#3198 W01) instead of coercing orgId: null into a string', async () => {
+    state.selectQueue.push([{
+      reportRunId: REPORT_RUN_ID,
+      reportId: REPORT_ID,
+      orgId: null,
+      partnerId: PARTNER_ID,
+      summary: outcome(),
+      generatedAt: outcome().generatedAt,
+    }]);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const result = await loadFleetDesignReport(REPORT_RUN_ID, () => undefined);
+
+    expect(result).toBeNull();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('refusing partner-owned report row'));
+  });
+
+  it('returns the artifact for an org-owned row', async () => {
+    state.selectQueue.push([{
+      reportRunId: REPORT_RUN_ID,
+      reportId: REPORT_ID,
+      orgId: ORG_ID,
+      partnerId: null,
+      summary: outcome(),
+      generatedAt: outcome().generatedAt,
+    }]);
+
+    const result = await loadFleetDesignReport(REPORT_RUN_ID, () => undefined);
+
+    expect(result).toEqual({
+      reportRunId: REPORT_RUN_ID,
+      reportId: REPORT_ID,
+      orgId: ORG_ID,
+      summary: outcome(),
+      generatedAt: outcome().generatedAt,
+    });
   });
 });

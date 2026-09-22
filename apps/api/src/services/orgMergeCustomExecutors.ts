@@ -1362,13 +1362,15 @@ const mergeOrganizationUsers: CustomMergeExecutor = async (loser, survivor) => {
 // Fleet Design definition per org. A plain repoint collides on 23505 and
 // aborts the merge.
 //
-// `report_runs.report_id` is NOT NULL with a NO ACTION FK (verified against
-// pg_constraint), so a dedupe DELETE would raise 23503 instead — and even if it
-// did not, the runs are the customer's generated report artifacts, so dropping
-// them is not on the table. The survivor's definition for the same schedule is
-// the same weekly narrative under a different id, so the loser's run history
-// simply continues there. `ai_agent_runs.report_run_id` keeps pointing at the
-// same (untouched) report_runs rows, so run traces stay linked.
+// `report_runs.report_id` is ON DELETE CASCADE since migration
+// 2026-10-26-140100 (it was a NOT NULL / NO ACTION FK before that), so a
+// dedupe DELETE would silently cascade the loser's runs rather than raise
+// 23503 — and the runs are the customer's generated report artifacts, so
+// dropping them is not on the table. The survivor's definition for the same
+// schedule is the same weekly narrative under a different id, so the loser's
+// run history simply continues there. `ai_agent_runs.report_run_id` keeps
+// pointing at the same (untouched) report_runs rows, so run traces stay
+// linked.
 //
 // The narrative key deliberately carries no keyWhere: `keyMatch` compares with a plain
 // `=`, which is NULL-blind, so ordinary reports (NULL
