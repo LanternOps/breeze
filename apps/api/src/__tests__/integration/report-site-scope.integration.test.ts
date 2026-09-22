@@ -42,7 +42,7 @@ import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { and, eq, sql } from 'drizzle-orm';
-import { AI_AGENT_RUN_PROFILES } from '@breeze/shared';
+import { AI_AGENT_RUN_PROFILES, AI_AGENT_SCHEDULE_KINDS } from '@breeze/shared';
 
 import { getAppDb, getTestDb } from './setup';
 import {
@@ -125,8 +125,16 @@ const MIGRATION_FILE = '2026-08-06-a-report-site-scope.sql';
 // partner_wide arm; without it here, every partner-owned report insert later
 // in the shard dies 23514 (reportsPartnerRls, reportsPartnerOwned,
 // tenantCascadePartner).
+// 2026-09-24-b also re-adds ai_agent_schedules_kind_chk / _kind_kinds_chk as
+// ('sweep','narrative'), dropping the 'design' and 'patch' kinds; the newest
+// owner of both is 2026-10-16-182700, whose only other statement
+// (ai_agent_runs_profile_chk) LEAKED_CONSTRAINT_RESTORES re-asserts anyway.
+// Without it every later design/patch-schedule suite in the shard died 23514
+// (aiAgentSchedulesPartnerRls, aiAgentFleetDesign, aiAgentPatchLane,
+// fleetDesignDrift).
 const SUCCESSOR_MIGRATION_FILES = [
   '2026-09-24-b-ai-agents-org-narrative.sql',
+  '2026-10-16-182700-ai-agents-patch-profile.sql',
   '2026-10-26-140100-reports-partner-ownership.sql',
 ] as const;
 
@@ -2660,6 +2668,18 @@ describe('Wave P2-3 · a system-authored report carries no acting user', () => {
     for (const row of rows) {
       expect(row.definition, row.conname).toContain("'partner_wide'");
     }
+  });
+
+  runDb('the successor replay leaves ai_agent_schedules_kind_chk on the CURRENT kind set', async () => {
+    const rows = await rawRows<{ definition: string }>(sql`
+      SELECT pg_get_constraintdef(oid) AS definition
+        FROM pg_constraint
+       WHERE conrelid = 'ai_agent_schedules'::regclass
+         AND conname = 'ai_agent_schedules_kind_chk'
+    `);
+    expect(rows).toHaveLength(1);
+    const allowed = [...rows[0]!.definition.matchAll(/'([^']+)'::text/g)].map((m) => m[1]!);
+    expect([...new Set(allowed)].sort()).toEqual([...AI_AGENT_SCHEDULE_KINDS].sort());
   });
 
   runDb('the successor replay leaves both principal CHECKs admitting portal_user', async () => {
