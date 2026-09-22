@@ -58,3 +58,27 @@ export async function resolveOrgTimezone(
     row?.partnerSettings,
   );
 }
+
+/**
+ * #3198 W01: the timezone for a PARTNER-owned artifact (no org axis). Same
+ * partner half of the chain as `resolveOrgTimezone`, falling back to UTC.
+ * Callers own their DB access scope, exactly as above.
+ */
+export async function resolvePartnerTimezone(
+  partnerId: string,
+): Promise<string> {
+  const [row] = await db
+    .select({
+      partnerTimezone: partners.timezone,
+      partnerSettings: partners.settings,
+    })
+    .from(partners)
+    .where(eq(partners.id, partnerId))
+    .limit(1);
+
+  return resolveTimezoneFromRows(
+    null,
+    row?.partnerTimezone ?? null,
+    row?.partnerSettings,
+  );
+}

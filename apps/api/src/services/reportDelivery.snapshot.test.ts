@@ -50,6 +50,8 @@ vi.mock('../db/schema', () => ({
 
 const generateReportMock = vi.fn();
 vi.mock('../services/reportGenerationService', () => ({
+  // #3198 W01: the worker's failure path tests `instanceof` on it; never thrown here.
+  UnsupportedReportScopeError: class UnsupportedReportScopeError extends Error {},
   generateReport: (...args: unknown[]) => generateReportMock(...(args as [])),
   assertReportExecutionPreflight: vi.fn(),
   previousBaselineFor: vi.fn(async () => undefined),
@@ -58,7 +60,9 @@ vi.mock('../services/reportGenerationService', () => ({
 const ORG_ID = '22222222-2222-2222-2222-222222222222';
 const PARTNER_ID = '55555555-5555-4555-8555-555555555555';
 const USER_ID = '44444444-4444-4444-8444-444444444444';
-vi.mock('../services/siteScope', () => ({
+vi.mock('../services/siteScope', async (importOriginal) => ({
+  // #3198 W01: the worker derives the owner axis with the real helper.
+  reportOwnerOf: (await importOriginal<typeof import('../services/siteScope')>()).reportOwnerOf,
   resolveLiveReportAuthority: vi.fn(async () => ({
     ok: true,
     authority: {

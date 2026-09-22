@@ -15,6 +15,8 @@ type Row = {
 const fake = vi.hoisted(() => ({
   rows: [] as Row[],
   runOrgs: new Map<string, string>(),
+  // #3198 W01 — runs whose report is PARTNER-owned (org_id NULL).
+  runPartners: new Map<string, string>(),
 }));
 
 vi.mock('bullmq', () => ({
@@ -34,7 +36,10 @@ vi.mock('../db', () => {
         where: vi.fn(() => b),
         limit: vi.fn(() => b),
         then: (resolve: (v: unknown) => unknown, reject: (e: unknown) => unknown) =>
-          Promise.resolve().then(() => [...fake.runOrgs.entries()].map(([reportRunId, orgId]) => ({ reportRunId, orgId })))
+          Promise.resolve().then(() => [
+            ...[...fake.runOrgs.entries()].map(([reportRunId, orgId]) => ({ reportRunId, orgId, partnerId: null })),
+            ...[...fake.runPartners.entries()].map(([reportRunId, partnerId]) => ({ reportRunId, orgId: null, partnerId })),
+          ])
             .then(resolve, reject),
       };
       return b;
@@ -95,6 +100,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   fake.rows = [];
   fake.runOrgs = new Map([[RUN_A, ORG_A], [RUN_B, ORG_B]]);
+  fake.runPartners = new Map();
   vi.spyOn(console, 'warn').mockImplementation(() => {});
   vi.spyOn(console, 'info').mockImplementation(() => {});
 });
@@ -209,5 +215,30 @@ describe('reconcileReportRunDeliveries (#4248 W03)', () => {
     expect(deliverNarrativeEmails).toHaveBeenCalledTimes(2);
     expect(out.resent).toBe(1);
     expect(error).toHaveBeenCalled();
+  });
+
+  it('never hands a PARTNER-owned run to the org-keyed narrative delivery; reports it and keeps sweeping (#3198 W01)', async () => {
+    const RUN_P = '00000000-0000-4000-8000-0000000000b3';
+    const PARTNER = '00000000-0000-4000-8000-0000000000c1';
+    fake.runPartners = new Map([[RUN_P, PARTNER]]);
+    seedDelivery({ state: 'pending', reportRunId: RUN_P });
+    seedDelivery({ state: 'pending', reportRunId: RUN_A });
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { captureException } = await import('../services/sentry');
+
+    const out = await reconcileReportRunDeliveries();
+
+    expect(deliverNarrativeEmails).toHaveBeenCalledTimes(1);
+    expect(deliverNarrativeEmails).toHaveBeenCalledWith(RUN_A, { orgId: ORG_A });
+    expect(out.resent).toBe(1);
+    // Not the benign "vanished" path: an unsupported owner is surfaced.
+    expect(vi.mocked(console.warn).mock.calls.flat().join(' ')).not.toMatch(/vanished/i);
+    expect(error).toHaveBeenCalledWith(
+      expect.stringMatching(/partner-owned/i),
+      expect.objectContaining({ reportRunId: RUN_P, partnerId: PARTNER }),
+    );
+    expect(vi.mocked(captureException)).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringMatching(/partner-owned/i) }),
+    );
   });
 });
