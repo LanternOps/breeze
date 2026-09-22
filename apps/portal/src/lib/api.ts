@@ -7,7 +7,7 @@ import { navigateTo } from './navigation';
 // Invoice-domain enum SSOT lives in @breeze/shared (billing-enums.ts). Imported
 // into local scope for the InvoiceSummary/InvoiceDetail types below and re-exported
 // (type-only, erased at build) so '@/lib/api' consumers are unaffected.
-import type { BackupDevicesDto, BackupOverviewDto, DashboardDto, DocumentPageSize, DocumentThemeId, EnrichedPortalDevice, InvoiceStatus, PublicQuoteCoverPage, PublicQuoteHeader, QuotePresentation, SecurityDevicesDto, SecurityOverviewDto, SlaDto, SupportUsageDto, TicketFormField } from '@breeze/shared';
+import type { BackupDevicesDto, BackupOverviewDto, DashboardDto, DocumentPageSize, DocumentThemeId, EnrichedPortalDevice, InvoiceStatus, NetworkOverviewDto, PublicQuoteCoverPage, PublicQuoteHeader, QuotePresentation, SecurityDevicesDto, SecurityOverviewDto, SlaDto, SupportUsageDto, TicketFormField } from '@breeze/shared';
 import type { HardwareLifecycleSummary, PortalRunDto, PortalRunsDto } from '@breeze/shared';
 import type { PortalDocumentsDto, PortalOccurrencesDto, PortalServiceOverviewDto } from '@breeze/shared';
 
@@ -1234,6 +1234,12 @@ export const portalApi = {
       })}`,
       config
     ),
+
+  // #6640 — network visibility overview
+  getNetworkOverview: (
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<NetworkOverviewDto>> =>
+    apiGet<NetworkOverviewDto>('/portal/network/overview', config),
 
   // ---------------------------------------------------------------------------
   // W08 — support usage

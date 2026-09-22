@@ -43,6 +43,7 @@ export function buildPortalNavItems(
     | 'enableSupportUsage'
     | 'enableService'
     | 'enableDocuments'
+    | 'enableNetworkVisibility'
   >
 ): PortalNavItem[] {
   return [
@@ -77,6 +78,11 @@ export function buildPortalNavItems(
       : null,
     branding.enableAssetCheckout === true
       ? { href: '/assets', label: 'Equipment' }
+      : null,
+    // #6640: another new fail-closed surface, appended after the existing
+    // block for the same reason as Service/Documents above.
+    branding.enableNetworkVisibility === true
+      ? { href: '/network', label: 'Network' }
       : null,
     { href: '/profile', label: 'Profile' }
   ].filter((item): item is PortalNavItem => item !== null);

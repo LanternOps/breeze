@@ -89,6 +89,38 @@ describe('buildPortalNavItems — full flag set (#4562)', () => {
   });
 });
 
+describe('buildPortalNavItems — Network (/network) gating (#6640)', () => {
+  it('hides Network when the flag is absent (fails closed, unlike Tickets)', () => {
+    expect(buildPortalNavItems({}).map((i) => i.href)).not.toContain('/network');
+  });
+
+  it('hides Network when the flag is explicitly false', () => {
+    expect(
+      buildPortalNavItems({ enableNetworkVisibility: false }).map((i) => i.href)
+    ).not.toContain('/network');
+  });
+
+  it('hides Network when the flag is undefined', () => {
+    expect(
+      buildPortalNavItems({ enableNetworkVisibility: undefined }).map((i) => i.href)
+    ).not.toContain('/network');
+  });
+
+  it('shows Network only when the flag is explicitly true, appended after the existing fail-closed block', () => {
+    const items = buildPortalNavItems({ enableAssetCheckout: true, enableNetworkVisibility: true });
+    expect(items.map((i) => i.href)).toEqual([
+      '/quotes',
+      '/invoices',
+      '/tickets',
+      '/devices',
+      '/assets',
+      '/network',
+      '/profile',
+    ]);
+    expect(items.find((i) => i.href === '/network')).toEqual({ href: '/network', label: 'Network' });
+  });
+});
+
 describe('buildPortalNavItems — Equipment (/assets) gating', () => {
   it('shows Equipment only when asset checkout is enabled', () => {
     expect(
