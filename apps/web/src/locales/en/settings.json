@@ -1325,6 +1325,10 @@
         "enableLifecycle": {
           "label": "Hardware lifecycle",
           "description": "Show the live replacement plan for your customer's machines."
+        },
+        "enableNetworkVisibility": {
+          "label": "Network visibility",
+          "description": "Show read-only network health and discovered assets in the customer portal."
         }
       }
     },
@@ -4327,7 +4331,8 @@
     "inactive": "Inactive",
     "deactivate": "Deactivate",
     "activate": "Activate",
-    "slaMinutesMustBeNumbers": "SLA minutes must be numbers."
+    "slaMinutesMustBeNumbers": "SLA minutes must be numbers.",
+    "categorySlaOverridesOrgNote": "This SLA takes priority over any org-level SLA override for tickets in this category."
   },
   "ticketPrioritiesTab": {
     "prioritiesAndSLAsSaved": "Priorities and SLAs saved",
@@ -4833,7 +4838,8 @@
       "description": "Override the partner-wide SLA defaults for this organization. Leave a cell blank to inherit the partner default.",
       "priority": "Priority",
       "response": "Response (min)",
-      "resolution": "Resolution (min)"
+      "resolution": "Resolution (min)",
+      "categoryOverridesNote": "A ticket's category SLA takes priority over these org-level overrides when both are set."
     },
     "billing": {
       "title": "Billing defaults",

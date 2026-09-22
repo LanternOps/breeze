@@ -1270,8 +1270,13 @@ async function deleteNormalizedRows(
 
 /**
  * Assemble inlineSettings from normalized per-feature table rows.
- * Returns the reconstructed settings object, or null if the feature type
- * has no normalized table or no rows exist.
+ * Returns the reconstructed settings object, or null if the feature type has
+ * no normalized table. Most normalized-table feature types also return null
+ * when no rows exist, so the caller falls back to the link's JSONB mirror —
+ * `monitors` is the one exception (#6493): it always returns its assembled
+ * result, even when empty, since config_policy_monitors is the sole source
+ * of truth for attachments and a monitor-delete cascade can legitimately
+ * empty it out from under a link without the mirror ever being told.
  */
 async function assembleInlineSettings(
   featureType: ConfigFeatureType,
@@ -1539,7 +1544,19 @@ async function assembleInlineSettings(
       const inheritance = monitorsInheritanceSchema.catch('cumulative').parse(
         (link?.inlineSettings as { inheritance?: unknown } | null)?.inheritance,
       );
-      if (rows.length === 0 && inheritance === 'cumulative') return null;
+      // Deliberately never falls back to `link.inlineSettings` here, even when
+      // `rows` is empty: config_policy_monitors is the sole source of truth for
+      // attachments (see addFeatureLink's "runtime must read normalized
+      // settings" comment), and every write path (decompose/deleteNormalizedRows)
+      // keeps it in sync. The one path that does NOT go through this service is
+      // monitor_id's ON DELETE CASCADE (monitorDefinitions.ts) firing when a
+      // monitor itself is deleted — that legitimately empties `rows` out from
+      // under a feature link without ever touching the link's stale JSONB
+      // mirror. Returning null here previously made listFeatureLinks fall back
+      // to that mirror, which still named the deleted monitor by id — the
+      // policy Monitors tab then rendered a bare-UUID row for a monitor that no
+      // longer existed (#6493). Always returning the assembled (possibly empty)
+      // result keeps the tab's item list truthful to what's actually attached.
       return {
         items: rows.map((r) => ({
           monitorId: r.monitorId,

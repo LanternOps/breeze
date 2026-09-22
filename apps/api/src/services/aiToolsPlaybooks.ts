@@ -121,7 +121,7 @@ registerTool({
   deviceArgs: ['deviceId'],
   definition: {
     name: 'execute_playbook',
-    description: 'Create a self-healing playbook execution record for a device. This creates the audit trail; execute steps manually and update status as you progress.',
+    description: 'Create a self-healing playbook execution record for a device. Requires user approval. This creates the audit trail; execute steps manually and update status as you progress.',
     input_schema: {
       type: 'object' as const,
       properties: {

@@ -19,6 +19,7 @@ import { portalBackupRoutes } from './backups';
 import { portalReportRoutes } from './reports';
 import { portalServiceRoutes } from './service';
 import { portalDocumentRoutes } from './documents';
+import { portalNetworkRoutes } from './network';
 
 export const portalRoutes = new Hono();
 
@@ -64,6 +65,9 @@ portalRoutes.use('/reports/lifecycle/*', createPortalFeatureGateStrict('enableLi
 // Service deliverables W04 — both new surfaces fail closed the same way.
 portalRoutes.use('/service/*', portalAuthMiddleware);
 portalRoutes.use('/service/*', createPortalFeatureGateStrict('enableService'));
+// Network Visibility has its own fail-closed availability response:
+// disabled or missing settings return dataStatus: 'not_enabled'.
+portalRoutes.use('/network/*', portalAuthMiddleware);
 portalRoutes.use('/documents/*', portalAuthMiddleware);
 portalRoutes.use('/documents/*', async (c, next) =>
   isDocumentContentPath(c) ? documentBytesGate(c, next) : documentsLibraryGate(c, next));
@@ -105,3 +109,4 @@ portalRoutes.route('/', portalBackupRoutes);
 portalRoutes.route('/', portalReportRoutes);
 portalRoutes.route('/', portalServiceRoutes);
 portalRoutes.route('/', portalDocumentRoutes);
+portalRoutes.route('/', portalNetworkRoutes);

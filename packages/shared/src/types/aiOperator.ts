@@ -225,8 +225,168 @@ export interface AiOperatorTaskListItemDto {
 }
 
 /** The full task detail DTO — the list-item fields plus safely-projected
- *  `operations`/`runs` (that's what the detail route joins). */
+ *  `operations`/`runs`, and (wave E2) `targets`/`steps`/`events`.
+ *
+ *  ADDITIVE ONLY. `AI_OPERATOR_TASK_DTO_SCHEMA_VERSION` stays 1: every field
+ *  the pre-E2 client reads is still present with the same shape, including
+ *  the inline `target` projection, which recipe spec §5.5 keeps until P3-5
+ *  removes the inline columns. A client that ignores the three new arrays
+ *  behaves exactly as before. */
 export interface AiOperatorTaskDto extends AiOperatorTaskListItemDto {
   operations: AiOperatorTaskOperationDto[];
   runs: AiOperatorTaskRunLinkDto[];
+  targets: AiOperatorTaskTargetRowDto[];
+  steps: AiOperatorTaskStepDto[];
+  events: AiOperatorTaskEventDto[];
+}
+
+// ---------------------------------------------------------------------------
+// Task graph — wave E2 (recipe spec §5.1, §5.2, §5.3).
+//
+// Same hand-duplication caveat as the six unions at the top of this file:
+// `packages/shared` cannot import `apps/api/src/db/schema`, so each list below
+// is mirrored by an identically-named export in
+// `apps/api/src/db/schema/aiOperatorTaskGraph.ts` and pinned byte-for-byte by
+// `apps/api/src/services/aiOperator/enumParity.test.ts`. If you change one,
+// that test fails until you change the other.
+// ---------------------------------------------------------------------------
+
+/** `ai_operator_task_targets.target_kind`. The DB/wire spelling of E1's
+ *  recipe-facing `TargetKind` (`services/aiOperator/recipes/types.ts`);
+ *  enumParity.test.ts asserts the two are equal. */
+export const AI_OPERATOR_TARGET_KINDS = ['device', 'ticket', 'contact'] as const;
+export type AiOperatorTargetKind = (typeof AI_OPERATOR_TARGET_KINDS)[number];
+
+/**
+ * `ai_operator_task_targets.state`.
+ *
+ * `detached` is a STATE, not merely a stamp: a detached target has lost its
+ * pointer and can never be acted on again, and the coordinator must be able
+ * to see that with one column read rather than by inferring it from a null
+ * pointer (which is also what an unresolved onboarding target looks like
+ * before its account exists).
+ */
+export const AI_OPERATOR_TARGET_STATES = [
+  'pending', 'active', 'succeeded', 'failed', 'skipped', 'detached',
+] as const;
+export type AiOperatorTargetState = (typeof AI_OPERATOR_TARGET_STATES)[number];
+
+/** `ai_operator_task_steps.step_kind` — recipe spec §5.3 / §6.1's execution
+ *  table. `human_work` has no writer until wave E3; the value ships now so
+ *  E3 needs no CHECK-constraint churn (same pattern as `mode = 'trial'`). */
+export const AI_OPERATOR_STEP_KINDS = [
+  'reason', 'effect', 'probe', 'wait', 'human_work', 'document',
+] as const;
+export type AiOperatorStepKind = (typeof AI_OPERATOR_STEP_KINDS)[number];
+
+/** `ai_operator_task_steps.state`. `waiting` mirrors the task's own typed
+ *  wait: a step that yielded is not the same as a step that has not started. */
+export const AI_OPERATOR_STEP_STATES = [
+  'pending', 'running', 'waiting', 'succeeded', 'failed', 'skipped',
+] as const;
+export type AiOperatorStepState = (typeof AI_OPERATOR_STEP_STATES)[number];
+
+/** `ai_operator_task_target_accounts.provider` (recipe spec §5.2). */
+export const AI_OPERATOR_ACCOUNT_PROVIDERS = ['m365', 'google'] as const;
+export type AiOperatorAccountProvider = (typeof AI_OPERATOR_ACCOUNT_PROVIDERS)[number];
+
+/**
+ * `ai_operator_task_events.event_type`.
+ *
+ * Named for what HAPPENED, matching `TASK_TRANSITION_EVENTS`'
+ * (`services/aiOperator/taskTransitions.ts`) own convention. Deliberately NOT
+ * the same list: a transition event is "what may move the task", an event row
+ * is "what was recorded", and several rows here (`operation_*`,
+ * `verification_recorded`) correspond to no state change at all.
+ */
+export const AI_OPERATOR_TASK_EVENT_TYPES = [
+  'task_admitted',
+  'lease_claimed',
+  'step_opened',
+  'step_settled',
+  'wait_entered',
+  'wait_resolved',
+  'target_attached',
+  'target_detached',
+  'target_account_frozen',
+  'operation_reserved',
+  'operation_settled',
+  'verification_recorded',
+  'plan_revision_bumped',
+  'task_settled',
+] as const;
+export type AiOperatorTaskEventType = (typeof AI_OPERATOR_TASK_EVENT_TYPES)[number];
+
+/**
+ * `ai_operator_task_events.actor_kind`.
+ *
+ * `coordinator` and `reconciler` are distinct on purpose: "the reconciler
+ * settled this" and "the coordinator settled this" are different operational
+ * stories, and conflating them is how a polling fallback masquerades as the
+ * event path. Spec §7.1: database context has no synthetic human user id, so
+ * a machine actor NEVER carries an `actorUserId`.
+ */
+export const AI_OPERATOR_EVENT_ACTOR_KINDS = [
+  'coordinator', 'reconciler', 'user', 'agent', 'system',
+] as const;
+export type AiOperatorEventActorKind = (typeof AI_OPERATOR_EVENT_ACTOR_KINDS)[number];
+
+/** One frozen provider account behind a `contact` target (recipe spec §5.2).
+ *  `externalId` is the immutable Entra object id / Google user id, never the
+ *  UPN — a rename mid-task cannot retarget an effect. */
+export interface AiOperatorTaskTargetAccountDto {
+  provider: AiOperatorAccountProvider;
+  /** The m365_connections / google_workspace_connections row, or null once the
+   *  connection has been removed or the org merged away. */
+  connectionId: string | null;
+  externalId: string;
+  principalLabel: string;
+}
+
+/** One `ai_operator_task_targets` row, safely projected. */
+export interface AiOperatorTaskTargetRowDto {
+  id: string;
+  targetKind: AiOperatorTargetKind;
+  deviceId: string | null;
+  ticketId: string | null;
+  contactId: string | null;
+  /** The label frozen at admission — survives detach, which is the point. */
+  label: string;
+  ordinal: number;
+  state: AiOperatorTargetState;
+  detachedAt: string | null;
+  detachedReason: AiOperatorTargetDetachReason | null;
+  accounts: AiOperatorTaskTargetAccountDto[];
+}
+
+/** One `ai_operator_task_steps` row, safely projected. NEVER carries the
+ *  step's `checkpoint` jsonb (`excludedOpen`), same rule as
+ *  `AiOperatorTaskOperationDto` and `result`. */
+export interface AiOperatorTaskStepDto {
+  id: string;
+  stepKey: string;
+  stepKind: AiOperatorStepKind;
+  targetId: string | null;
+  attemptOrdinal: number;
+  state: AiOperatorStepState;
+  planRevision: number | null;
+  expectedCriterion: string | null;
+  dependency: AiOperatorWaitDependencyDto | null;
+  detail: string | null;
+  startedAt: string | null;
+  settledAt: string | null;
+}
+
+/** One `ai_operator_task_events` row, safely projected. `detail` is the
+ *  BOUNDED text column, not a container — there is no jsonb on this table. */
+export interface AiOperatorTaskEventDto {
+  id: string;
+  transitionSeq: number;
+  eventType: AiOperatorTaskEventType;
+  actorKind: AiOperatorEventActorKind;
+  actorUserId: string | null;
+  stepKey: string | null;
+  targetId: string | null;
+  detail: string | null;
+  createdAt: string;
 }

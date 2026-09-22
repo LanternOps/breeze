@@ -14,6 +14,7 @@ import {
   type InvoiceLine,
   formatMoney,
   lineTitle,
+  lineWorkedVsBilledNote,
   computeInvoiceProfit,
 } from './invoiceTypes';
 import { toCents, fromCents, roundToCurrency } from '@breeze/shared';
@@ -996,6 +997,10 @@ function LineRow({
   // Deliberately the PERSISTED name, not the live draft — an accessible name
   // that changes on every keystroke is itself SR churn.
   const rowLabelItem = (line.name ?? '').trim() || (line.description ?? '').trim() || t('invoiceEditor.fields.untitledLine');
+  // #6467: worked-vs-billed disclosure, read-only here — it is structured
+  // data (`workedMinutes`), not part of the description below, so editing
+  // that text can never erase it.
+  const workedVsBilledNote = lineWorkedVsBilledNote(line, t);
   const [name, setName] = useState(line.name ?? '');
   const [desc, setDesc] = useState(line.description ?? '');
   const [qty, setQty] = useState(line.quantity);
@@ -1206,6 +1211,11 @@ function LineRow({
             className={`min-h-8 w-full resize-y overflow-hidden rounded-md border bg-background px-2 py-1 text-sm text-muted-foreground transition-colors focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${fieldRing(descDirty, saved)}`}
           />
           <UnsavedFieldHint id={unsavedHintId('invoice-line', line.id, 'desc')} show={descDirty} />
+          {workedVsBilledNote && (
+            <p className="mt-1 text-xs text-muted-foreground" data-testid={`invoice-line-worked-vs-billed-${line.id}`}>
+              {workedVsBilledNote}
+            </p>
+          )}
         </td>
       </tr>
       {children.map((ch) => (

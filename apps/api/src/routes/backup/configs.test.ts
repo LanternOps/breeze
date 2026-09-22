@@ -669,6 +669,136 @@ describe('backup config routes', () => {
     }));
   });
 
+  // #6511: the API's S3 config validator has long accepted the AWS-idiomatic
+  // accessKeyId/secretAccessKey spelling, but the agent (agent/cmd/breeze-
+  // backup/exec_backup.go) reads only accessKey/secretKey. A config saved
+  // under just the AWS spelling validated and persisted, then every upload
+  // ran with empty agent-side credentials. Canonicalize at the write
+  // boundary so whichever spelling was submitted ends up stored under the
+  // name the agent actually reads.
+  it('canonicalizes accessKeyId/secretAccessKey to accessKey/secretKey on create', async () => {
+    insertMock.mockReturnValueOnce(chainMock([makeConfig()]));
+
+    const res = await app.request('/backup/configs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({
+        name: 'AWS-spelled backups',
+        provider: 's3',
+        details: {
+          bucket: 'backups',
+          region: 'us-east-1',
+          accessKeyId: 'AKID',
+          secretAccessKey: 'SAK',
+        },
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    const insertValues = insertMock.mock.results[0]?.value?.values;
+    expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({
+      providerConfig: expect.objectContaining({ accessKey: 'AKID', secretKey: 'SAK' }),
+    }));
+    const persistedConfig = insertValues.mock.calls[0]?.[0]?.providerConfig;
+    expect(persistedConfig.accessKeyId).toBeUndefined();
+    expect(persistedConfig.secretAccessKey).toBeUndefined();
+  });
+
+  it('canonicalizes accessKeyId/secretAccessKey to accessKey/secretKey on update', async () => {
+    selectMock.mockReturnValueOnce(chainMock([makeConfig()]));
+    updateMock.mockReturnValueOnce(chainMock([makeConfig()]));
+
+    const res = await app.request(`/backup/configs/${CONFIG_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({
+        details: {
+          bucket: 'backups',
+          region: 'us-east-1',
+          accessKeyId: 'AKID2',
+          secretAccessKey: 'SAK2',
+        },
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const updateSet = updateMock.mock.results[0]?.value?.set;
+    expect(updateSet).toHaveBeenCalledWith(expect.objectContaining({
+      providerConfig: expect.objectContaining({ accessKey: 'AKID2', secretKey: 'SAK2' }),
+    }));
+    const persistedConfig = updateSet.mock.calls[0]?.[0]?.providerConfig;
+    expect(persistedConfig.accessKeyId).toBeUndefined();
+    expect(persistedConfig.secretAccessKey).toBeUndefined();
+  });
+
+  // Review finding on this PR: a legacy config stored under ONLY
+  // accessKeyId/secretAccessKey (no accessKey/secretKey, no backfill
+  // migration) predates this fix and predates the web UI recognizing that
+  // spelling in its redacted GET response — so an edit to an unrelated
+  // field (e.g. bucket) submits a blank `accessKey: ''` the UI has no way
+  // to know is meaningless. The real secret MUST survive that PATCH under
+  // its original field name (matching pre-fix behavior) and end up
+  // migrated to the canonical name in what gets persisted — never silently
+  // wiped to an empty string, which would be unrecoverable.
+  it('does not wipe a legacy accessKeyId/secretAccessKey secret when a PATCH sends a blank canonical field', async () => {
+    selectMock.mockReturnValueOnce(chainMock([makeConfig({
+      providerConfig: {
+        bucket: 'backups',
+        region: 'us-east-1',
+        accessKeyId: 'REAL_LEGACY_ACCESS_KEY',
+        secretAccessKey: 'REAL_LEGACY_SECRET_KEY',
+      },
+    })]));
+    updateMock.mockReturnValueOnce(chainMock([makeConfig()]));
+
+    const res = await app.request(`/backup/configs/${CONFIG_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({
+        // Mirrors what a form unaware of the legacy field names would send:
+        // bucket/region carried through, credentials blank (not the masked
+        // "********" sentinel, since the UI never detected a stored secret).
+        details: { bucket: 'archive-renamed', region: 'us-east-1', accessKey: '', secretKey: '' },
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const updateSet = updateMock.mock.results[0]?.value?.set;
+    const persistedConfig = updateSet.mock.calls[0]?.[0]?.providerConfig;
+    expect(persistedConfig.accessKey).toBe('REAL_LEGACY_ACCESS_KEY');
+    expect(persistedConfig.secretKey).toBe('REAL_LEGACY_SECRET_KEY');
+    expect(persistedConfig.bucket).toBe('archive-renamed');
+  });
+
+  // The connectivity-test probe must tolerate a config that was already
+  // stored under the AWS spelling BEFORE this fix shipped (no backfill
+  // migration) — it reads directly off the stored row, not through the
+  // create/update canonicalization path.
+  it('test-connection succeeds for a config stored with only accessKeyId/secretAccessKey', async () => {
+    selectMock.mockReturnValueOnce(chainMock([makeConfig({
+      providerConfig: {
+        bucket: 'backups',
+        region: 'us-east-1',
+        accessKeyId: 'AKID',
+        secretAccessKey: 'SAK',
+      },
+    })]));
+    updateMock.mockReturnValueOnce(chainMock([makeConfig()]));
+    s3SendMock.mockResolvedValue({});
+    checkBackupProviderCapabilitiesMock.mockResolvedValue({
+      objectLock: { supported: true, error: null },
+    });
+
+    const res = await app.request(`/backup/configs/${CONFIG_ID}/test`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.status).toBe('success');
+  });
+
   it('rejects S3 config updates that drop the region without a derivable endpoint', async () => {
     selectMock.mockReturnValueOnce(chainMock([makeConfig()]));
 

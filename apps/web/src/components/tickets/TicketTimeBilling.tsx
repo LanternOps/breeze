@@ -25,6 +25,10 @@ interface BillingSummary {
     /** #4628 §3.5 contract-covered time; absent on an API predating W03. */
     includedMinutes?: number;
     billableAmounts: CurrencyAmount[];
+    /** #6466: count of billable entries with no hourly rate — those minutes are
+     *  counted in `billableMinutes` (the minimum/rounding SQL doesn't filter on
+     *  rate) but excluded from `billableAmounts`. Absent on an older API. */
+    missingRateCount?: number;
   };
   parts: { partsCount: number; billableTotals: CurrencyAmount[] };
   defaults?: (BillingOutcomeStamp & { workTypeId?: string | null }) | null;
@@ -243,6 +247,15 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
           {(summary.time.includedMinutes ?? 0) > 0 && (
             <div className="flex justify-end text-xs text-muted-foreground" data-testid="ticket-billing-included">
               {t('ticketTimeBilling.includedMinutes', { hours: ((summary.time.includedMinutes ?? 0) / 60).toFixed(2) })}
+            </div>
+          )}
+          {/* #6466: billableMinutes above already includes rate-less entries
+              (the minimum/rounding SQL doesn't filter on rate), so the amount
+              row below can be blank for a nonzero billable-hours figure. Name
+              the gap here instead of leaving it unexplained. */}
+          {(summary.time.missingRateCount ?? 0) > 0 && (
+            <div className="flex justify-end text-xs text-muted-foreground" data-testid="ticket-billing-missing-rate">
+              {t('ticketTimeBilling.missingRateCount', { count: summary.time.missingRateCount })}
             </div>
           )}
           <div className="flex justify-between text-xs">

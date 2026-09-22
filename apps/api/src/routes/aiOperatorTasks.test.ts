@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
@@ -235,6 +235,17 @@ describe('GET /ai/operator/tasks (org-wide keyset list)', () => {
 });
 
 describe('GET /ai/operator/tasks/:id (detail)', () => {
+  // Wave E2 (#6167): the detail route runs four more graph reads (targets,
+  // accounts, steps, events) after operations/runs. Tests that only script the
+  // first few selects get an empty result for the rest, instead of an
+  // undefined chain that would 500 the route.
+  beforeEach(() => {
+    selectMock.mockImplementation(() => selectChain([]));
+  });
+  afterEach(() => {
+    selectMock.mockReset();
+  });
+
   it('is gated on ai_agents:read', async () => {
     hasPermMock.mockReturnValue(false);
     const res = await buildApp().request(`/ai/operator/tasks/${TASK_ID}`);
@@ -290,6 +301,65 @@ describe('GET /ai/operator/tasks/:id (detail)', () => {
     expect(body.data.operations[0]).toMatchObject({ operationKey: 'restart-service:0', resultState: 'succeeded' });
     expect(body.data.runs).toHaveLength(1);
     expect(body.data.runs[0]).toMatchObject({ id: 'run-1', status: 'completed' });
+  });
+
+  it('wave E2: returns targets (with nested accounts), steps and events, scoped by task AND org', async () => {
+    const predicates: unknown[] = [];
+    const capture = (p: unknown) => { predicates.push(p); };
+    selectMock
+      .mockReturnValueOnce(selectChain([taskRow()]))
+      .mockReturnValueOnce(selectChain([]))
+      .mockReturnValueOnce(selectChain([]))
+      .mockReturnValueOnce(selectChain([{
+        id: 'target-1', targetKind: 'device', deviceId: DEVICE_ID, ticketId: null, contactId: null,
+        targetLabel: 'WKS-042', targetOrdinal: 0, state: 'active', detachedAt: null, detachedReason: null,
+      }], capture))
+      .mockReturnValueOnce(selectChain([{
+        targetId: 'target-1', provider: 'm365', m365ConnectionId: 'conn-1', googleConnectionId: null,
+        externalId: 'aaaa-bbbb', principalLabel: 'dana@acme.example',
+      }], capture))
+      .mockReturnValueOnce(selectChain([{
+        id: 'step-1', stepKey: 'investigate', stepKind: 'reason', targetId: 'target-1',
+        attemptOrdinal: 0, state: 'running', planRevision: 1, expectedCriterion: null,
+        dependencyKind: 'run', dependencyId: 'run-1', detail: null,
+        startedAt: new Date('2026-09-01T00:00:00.000Z'), settledAt: null,
+      }], capture))
+      .mockReturnValueOnce(selectChain([
+        {
+          id: 'event-2', transitionSeq: 2, eventType: 'wait_entered', actorKind: 'coordinator',
+          actorUserId: null, stepKey: 'investigate', targetId: 'target-1', detail: 'waiting',
+          createdAt: new Date('2026-09-01T00:00:02.000Z'),
+        },
+        {
+          id: 'event-1', transitionSeq: 1, eventType: 'task_admitted', actorKind: 'user',
+          actorUserId: USER_ID, stepKey: 'investigate', targetId: 'target-1', detail: 'admitted',
+          createdAt: new Date('2026-09-01T00:00:01.000Z'),
+        },
+      ], capture));
+
+    const res = await buildApp().request(`/ai/operator/tasks/${TASK_ID}`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.targets).toEqual([expect.objectContaining({
+      id: 'target-1', targetKind: 'device', deviceId: DEVICE_ID, label: 'WKS-042', ordinal: 0,
+      accounts: [{ provider: 'm365', connectionId: 'conn-1', externalId: 'aaaa-bbbb', principalLabel: 'dana@acme.example' }],
+    })]);
+    expect(body.data.steps).toEqual([expect.objectContaining({
+      id: 'step-1', stepKey: 'investigate', stepKind: 'reason', dependency: { kind: 'run', id: 'run-1' },
+    })]);
+    // The SQL reads newest-first (so the LIMIT keeps the most recent events);
+    // the DTO reads forwards.
+    expect(body.data.events.map((e: { transitionSeq: number }) => e.transitionSeq)).toEqual([1, 2]);
+    // The inline projection is untouched (recipe spec §5.5).
+    expect(body.data.target).toMatchObject({ deviceId: DEVICE_ID });
+    expect(body.data.schemaVersion).toBe(1);
+    // Every graph read repeats task_id AND org_id beside RLS.
+    expect(predicates).toHaveLength(4);
+    for (const p of predicates) {
+      const rendered = sqlText(p);
+      expect(rendered).toContain('"task_id"');
+      expect(rendered).toContain('"org_id"');
+    }
   });
 
   it('never leaks a tripwire key (checkpoint/result/etc.) on the detail DTO', async () => {
@@ -616,5 +686,47 @@ describe('POST /ai/operator/tasks (W08 admission)', () => {
     const text = sqlText(capturedPredicate).toLowerCase();
     expect(text).toContain('org_id');
     expect(text).toContain('not in');
+  });
+
+  // ---- Recipe Library spec §6.1 (wave E1): registry-backed recipeKey ----
+
+  it('rejects an unknown recipeKey with 400 and names the supported workflows', async () => {
+    selectMock.mockReturnValueOnce(selectChain([deviceRow]));
+    const res = await post(body({ recipeKey: 'identity_offboarding' }));
+    expect(res.status).toBe(400);
+    const json = await res.json() as { code: string; supportedRecipeKeys: string[]; error: string };
+    expect(json.code).toBe('OPERATOR_UNKNOWN_RECIPE');
+    expect(json.supportedRecipeKeys).toContain('service_recovery');
+    expect(json.error).toContain('identity_offboarding');
+    expect(admitMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects an empty recipeKey with 400 before it ever reaches the registry', async () => {
+    const res = await post(body({ recipeKey: '' }));
+    expect(res.status).toBe(400);
+    expect(admitMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a recipeKey over the 128-char workflow_key_len_chk bound with 400', async () => {
+    const res = await post(body({ recipeKey: 'x'.repeat(129) }));
+    expect(res.status).toBe(400);
+    expect(admitMock).not.toHaveBeenCalled();
+  });
+
+  it('still rejects a known recipe at an unreleased version with 422, not 400', async () => {
+    selectMock.mockReturnValueOnce(selectChain([deviceRow]));
+    const res = await post(body({ recipeVersion: 99 }));
+    expect(res.status).toBe(422);
+    expect(await res.json()).toMatchObject({ code: 'OPERATOR_RECIPE_VERSION_MISMATCH' });
+    expect(admitMock).not.toHaveBeenCalled();
+  });
+
+  it('passes the resolved workflow key and version through to admission', async () => {
+    happyPathSelects();
+    await post(body());
+    expect(admitMock).toHaveBeenCalledWith(expect.objectContaining({
+      workflowKey: 'service_recovery',
+      workflowVersion: 1,
+    }));
   });
 });

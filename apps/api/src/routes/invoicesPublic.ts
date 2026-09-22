@@ -129,6 +129,7 @@ invoicesPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) =
       name: invoiceLines.name, description: invoiceLines.description,
       quantity: invoiceLines.quantity, unitPrice: invoiceLines.unitPrice,
       taxable: invoiceLines.taxable, lineTotal: invoiceLines.lineTotal,
+      workedMinutes: invoiceLines.workedMinutes,
     }).from(invoiceLines)
       .where(and(eq(invoiceLines.invoiceId, inv.id), eq(invoiceLines.customerVisible, true)))
       .orderBy(invoiceLines.sortOrder);

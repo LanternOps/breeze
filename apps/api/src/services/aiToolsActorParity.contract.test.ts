@@ -226,6 +226,11 @@ const ACTORS_WITHOUT_SITE_AXIS: Readonly<Record<string, string>> = {
   // `catalog_items` / prices / org overrides are partner- and org-owned; no
   // site column anywhere in the catalog schema.
   CatalogActor: 'catalog is partner/org-owned — no site_id in the schema',
+  // #6008 W01. backup_provider_customers is partner-axis with a mapped
+  // org_id; neither it nor backup_provider_devices carries a site column
+  // (the device link points at devices.id, whose own site scope is
+  // enforced on that table, not here).
+  RemapCustomerActor: 'backup provider customers are partner/org-owned — no site_id in the schema',
   // Spend attribution only (`userId`/`orgId`/`partnerId`), never a read filter.
   EnrichmentActor: 'AI-spend attribution struct, not an authorization actor',
   // `service_deliverables` and their evidence are org-keyed; no site column.
@@ -243,6 +248,11 @@ const ACTORS_WITHOUT_SITE_AXIS: Readonly<Record<string, string>> = {
   // scope is enforced on the ticket query.
   TimeEntryActor: 'time entries are ticket-keyed — no site_id',
   SuggestionActor: 'extends TimeEntryActor — same reason',
+  // Recipe library E2 (#6167). Not an authorization actor at all: it is the
+  // `actor_kind` (+ user id for a human) recorded on an append-only AI
+  // Operator task event. Every writer runs under the coordinator's system
+  // context or inside task admission, never as a scoped caller.
+  TaskEventActor: 'event attribution stamp on ai_operator_task_events — no allowlist of any axis, written under system context',
   // Pure `{ userId }` provenance stamps: who performed the write, recorded on
   // the row. They carry no allowlist of any axis — not even the org one — so
   // their services take the scope from the caller's DB context / route gate,

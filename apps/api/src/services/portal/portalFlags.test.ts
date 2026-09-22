@@ -18,7 +18,7 @@ import {
 } from './portalFlags';
 
 describe('PORTAL_VISIBILITY_FLAG_KEYS', () => {
-  it('lists exactly the eight visibility flags', () => {
+  it('lists exactly the nine visibility flags', () => {
     expect(PORTAL_VISIBILITY_FLAG_KEYS).toEqual([
       'enableDashboard',
       'enableSecurity',
@@ -27,7 +27,8 @@ describe('PORTAL_VISIBILITY_FLAG_KEYS', () => {
       'enableSupportUsage',
       'enableService',
       'enableDocuments',
-      'enableLifecycle'
+      'enableLifecycle',
+      'enableNetworkVisibility'
     ]);
   });
 });
@@ -42,6 +43,7 @@ describe('onPortalFlagsChanged', () => {
     enableService: false,
     enableDocuments: false,
     enableLifecycle: false,
+    enableNetworkVisibility: false,
   };
 
   beforeEach(() => {

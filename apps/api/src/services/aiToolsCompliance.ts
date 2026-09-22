@@ -186,7 +186,7 @@ registerTool({
   searchHint: 'software allowlist, blocklist and audit policies: create, update, disable, list, get',
   definition: {
     name: 'manage_software_policy',
-    description: 'Create, update, disable (soft-delete), list, or fetch software policies (allowlist/blocklist/audit).',
+    description: 'Create, update, disable (soft-delete), list, or fetch software policies (allowlist/blocklist/audit). Actions: create, update, delete, list, get.',
     input_schema: {
       type: 'object' as const,
       properties: {
@@ -217,7 +217,7 @@ registerTool({
         priority: { type: 'number', description: 'Policy priority (0-100)' },
         enforceMode: { type: 'boolean', description: 'Auto-remediate violations' },
         isActive: { type: 'boolean', description: 'Enable/disable policy' },
-        remediationOptions: { type: 'object', description: 'Remediation behavior options: { autoUninstall?: boolean, notifyUser?: boolean, gracePeriod?: number, cooldownMinutes?: number, maintenanceWindowOnly?: boolean }. autoInstall is NOT settable here — arming software installation requires a human operator with devices.execute and MFA.' },
+        remediationOptions: { type: 'object', description: "Options: autoUninstall, notifyUser, gracePeriod, cooldownMinutes, maintenanceWindowOnly. autoInstall is forbidden here; arming installs needs a human with MFA." },
         limit: { type: 'number', description: 'List limit (default 50)' },
       },
       required: ['action'],

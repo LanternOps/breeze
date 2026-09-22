@@ -210,6 +210,10 @@ describe('portal invoices routes', () => {
         costBasis: '10.00', revenueAllocation: { labor: '25.00' }, isUnapprovedTime: true,
         name: 'Support retainer',
         description: 'Support', quantity: '1.00', unitPrice: '25.00', taxable: true, lineTotal: '25.00',
+        // #6467: worked-vs-billed disclosure — structured data, deliberately
+        // IN the safe keyset (ordinary numeric fact, like quantity), unlike
+        // sourceType/sourceId/costBasis/revenueAllocation/isUnapprovedTime above.
+        workedMinutes: 30,
       }],
     });
 
@@ -217,7 +221,7 @@ describe('portal invoices routes', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(Object.keys(body.lines[0]).sort()).toEqual([
-      'description', 'lineTotal', 'name', 'quantity', 'taxable', 'ticketNumber', 'unitPrice',
+      'description', 'lineTotal', 'name', 'quantity', 'taxable', 'ticketNumber', 'unitPrice', 'workedMinutes',
     ]);
     expect(body.lines[0]).not.toHaveProperty('sourceType');
     expect(body.lines[0]).not.toHaveProperty('sourceId');
@@ -225,6 +229,8 @@ describe('portal invoices routes', () => {
     // the assertion the stubbed serializer used to make vacuous.
     expect(body.lines[0].name).toBe('Support retainer');
     expect(body.lines[0].description).toBe('Support');
+    // #6467: workedMinutes itself survives the route boundary too.
+    expect(body.lines[0].workedMinutes).toBe(30);
   });
 
   it('GET /invoices/:id resolves branding from the OUT-OF-HEADER partnerId', async () => {

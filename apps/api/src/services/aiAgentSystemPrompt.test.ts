@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest';
+import { renderToolIndexByDomain } from './aiToolIndex';
+import { listChatSurfaceToolNames } from './aiAgentSdkTools';
 import { AI_SYSTEM_PROMPT_BASE, AI_SYSTEM_PROMPT_TAIL, BREEZE_AI_GUARDRAILS_CORE } from './aiAgentSystemPrompt';
 
 describe('BREEZE_AI_GUARDRAILS_CORE', () => {
@@ -19,22 +21,22 @@ describe('BREEZE_AI_GUARDRAILS_CORE', () => {
 // tool choice improved (that needs a manual chat check).
 describe('AI_SYSTEM_PROMPT_TAIL vulnerability tool routing (#2605)', () => {
   it('spells out CVE vocabulary so the domain is findable', () => {
-    expect(AI_SYSTEM_PROMPT_TAIL).toMatch(/CVE/);
-    expect(AI_SYSTEM_PROMPT_TAIL).toMatch(/vulnerabilit/i);
+    expect(renderToolIndexByDomain(listChatSurfaceToolNames())).toMatch(/CVE/);
+    expect(renderToolIndexByDomain(listChatSurfaceToolNames())).toMatch(/vulnerabilit/i);
   });
 
-  it('disambiguates vulnerabilities from posture scores and patch inventory', () => {
-    expect(AI_SYSTEM_PROMPT_TAIL).toMatch(/get_security_posture returns \*\*control scores\*\*/);
-    expect(AI_SYSTEM_PROMPT_TAIL).toMatch(/manage_patches returns the \*\*patch\/KB inventory/);
+  it('does not duplicate index disambiguation in the tail', () => {
+    expect(AI_SYSTEM_PROMPT_TAIL).not.toMatch(/get_security_posture returns (?:\*\*)?control scores/);
+    expect(AI_SYSTEM_PROMPT_TAIL).not.toMatch(/manage_patches returns the (?:\*\*)?patch\/KB inventory/);
   });
 
   // Correlation coverage is incomplete (e.g. #2291 — no Windows OS-level CVE
   // correlation), so an empty report must not be reported as "no
   // vulnerabilities". Without this the "THE tool"/"ONLY tools" framing above
   // turns a coverage gap into a confident all-clear.
-  it('forbids reading an empty vulnerability report as an all-clear', () => {
-    expect(AI_SYSTEM_PROMPT_TAIL).toMatch(/never state that a device or the fleet has no vulnerabilities/);
-    expect(AI_SYSTEM_PROMPT_TAIL).toMatch(/no findings are currently correlated/);
+  it('does not duplicate the index empty-report caveat in the tail', () => {
+    expect(AI_SYSTEM_PROMPT_TAIL).not.toMatch(/never state that a device or the fleet has no vulnerabilities/);
+    expect(AI_SYSTEM_PROMPT_TAIL).not.toMatch(/no findings are currently correlated/);
   });
 });
 

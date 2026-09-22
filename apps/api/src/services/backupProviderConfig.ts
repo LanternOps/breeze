@@ -16,6 +16,25 @@ import { and, eq } from 'drizzle-orm';
 import { db } from '../db';
 import { backupConfigs } from '../db/schema';
 import { resolveBackupStorageEncryptionPlan } from './backupEncryption';
+import { canonicalizeS3CredentialFields } from '../routes/backup/schemas';
+
+/**
+ * #6511: a config stored under the AWS-idiomatic accessKeyId/
+ * secretAccessKey spelling (accepted by this API's own S3 config validator
+ * before that write path was canonicalized, and by any config that predates
+ * this fix — no backfill migration) must still dispatch to the agent under
+ * the canonical accessKey/secretKey spelling it reads. Copies first so
+ * canonicalization never mutates the caller's already-fetched row object.
+ */
+function withCanonicalS3Credentials(
+  provider: string,
+  providerConfig: Record<string, unknown>
+): Record<string, unknown> {
+  if (provider !== 's3') return providerConfig;
+  const copy = { ...providerConfig };
+  canonicalizeS3CredentialFields(copy);
+  return copy;
+}
 
 export type BackupProviderConfig = {
   provider: string;
@@ -75,9 +94,10 @@ export async function resolveBackupProviderConfig(
 
   if (!config) return null;
 
+  const providerConfig = (config.providerConfig as Record<string, unknown> | null) ?? {};
   return {
     provider: config.provider,
-    providerConfig: (config.providerConfig as Record<string, unknown> | null) ?? {},
+    providerConfig: withCanonicalS3Credentials(config.provider, providerConfig),
   };
 }
 
@@ -118,7 +138,8 @@ export function buildBackupWriteCommandDestination(config: {
   providerConfig: unknown;
   encryption: boolean | null | undefined;
 }): BackupWriteDestinationResult {
-  const providerConfig = (config.providerConfig as Record<string, unknown> | null) ?? {};
+  const rawProviderConfig = (config.providerConfig as Record<string, unknown> | null) ?? {};
+  const providerConfig = withCanonicalS3Credentials(config.provider, rawProviderConfig);
   const encryptionPlan = resolveBackupStorageEncryptionPlan({
     encryption: config.encryption,
     provider: config.provider,

@@ -216,7 +216,10 @@ describe('startToolExecution / completeToolExecution round-trip', () => {
     const id = await startToolExecution({
       sessionId: SESSION_ID,
       toolName: 'get_device_details',
-      toolInput: { deviceId: DEVICE_ID },
+      toolInput: {
+        deviceId: DEVICE_ID,
+        providerConfig: { accessKey: 'synthetic-access', secretKey: 'synthetic-secret' },
+      },
     });
     expect(id).toBe(EXECUTION_ID);
 
@@ -224,7 +227,10 @@ describe('startToolExecution / completeToolExecution round-trip', () => {
     expect(insertedValues).toMatchObject({
       sessionId: SESSION_ID,
       toolName: 'get_device_details',
-      toolInput: { deviceId: DEVICE_ID },
+      toolInput: {
+        deviceId: DEVICE_ID,
+        providerConfig: { accessKey: '[REDACTED]', secretKey: '[REDACTED]' },
+      },
       status: 'executing',
     });
     // Output is never written at start.

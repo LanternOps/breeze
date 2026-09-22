@@ -39,6 +39,7 @@ export {
   type ExclusionPatternProblem,
 } from './backupExclusionGlob';
 export * from './hardwareLifecycle';
+export * from './backupHealth';
 export * from './identityAccess';
 export * from './threatDetection';
 export * from './endpointManagement';

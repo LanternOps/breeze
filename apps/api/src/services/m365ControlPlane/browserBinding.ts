@@ -33,7 +33,15 @@ function signingKey(source: Environment): string | null {
 }
 
 function securitySuffix(source: Environment): string {
-  return `; SameSite=Lax${source.NODE_ENV === 'production' ? '; Secure' : ''}`;
+  // Microsoft owns the page immediately before the consent callback.  Although
+  // a top-level GET normally qualifies for SameSite=Lax, the admin-consent
+  // journey can contain a POST/reprocess redirect before that GET.  Chromium
+  // may therefore withhold a Lax cookie for the callback, leaving Breeze with
+  // a valid database session but no browser binding.  Production is HTTPS-only,
+  // so explicitly permit this one path-scoped cookie on the cross-site return.
+  return source.NODE_ENV === 'production'
+    ? '; SameSite=None; Secure'
+    : '; SameSite=Lax';
 }
 
 function validBinding(value: unknown): value is SignedBinding {

@@ -2540,5 +2540,11 @@
     "message": "La autenticación multifactor no es obligatoria para su equipo. Las sesiones solo con contraseña pueden ejecutar scripts, mover dispositivos y cambiar políticas.",
     "cta": "Exigir MFA",
     "dismiss": "Descartar el recordatorio de la política de MFA por hoy"
+  },
+  "inheritedField": {
+    "inheritsFrom": "Hereda de {{source}}",
+    "noneConfigured": "No hay {{source}} configurado",
+    "overriding": "Anula {{source}}",
+    "overridingWithValue": "Anula {{source}} ({{value}})"
   }
 }

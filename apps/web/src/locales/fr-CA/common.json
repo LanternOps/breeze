@@ -2540,5 +2540,11 @@
     "message": "L'authentification multifacteur n'est pas exigée pour votre équipe. Les sessions avec mot de passe seulement peuvent exécuter des scripts, déplacer des appareils et modifier des politiques.",
     "cta": "Exiger l'AMF",
     "dismiss": "Masquer le rappel de politique AMF pour aujourd'hui"
+  },
+  "inheritedField": {
+    "inheritsFrom": "Hérite de {{source}}",
+    "noneConfigured": "Aucun {{source}} configuré",
+    "overriding": "Remplace {{source}}",
+    "overridingWithValue": "Remplace {{source}} ({{value}})"
   }
 }

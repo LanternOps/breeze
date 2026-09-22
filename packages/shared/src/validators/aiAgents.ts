@@ -115,6 +115,18 @@ const limitsFields = z.object({
   // which is the `act_mode` flag's job, not a limit's.
   maxUnattendedDevicesPerSweep: z.number().int().min(1).max(50),
   sweepPromoteThreshold: z.number().int().min(1).max(200),
+  // AI Operator task-wide budgets (v15, recipe library E2) — see
+  // AiAgentLimits.taskMaxReasoningRuns's docstring. Bounds are generous
+  // relative to the defaults because the identity recipes are deliberately
+  // longer-horizon than service recovery (14 days vs 24 hours). No
+  // 0-disables value on any of them: a zero budget is "never admit", which is
+  // the recipe flag's job, not a limit's.
+  taskMaxReasoningRuns: z.number().int().min(1).max(20),
+  taskMaxMutationAttemptsPerTarget: z.number().int().min(1).max(10),
+  taskMaxBudgetCents: z.number().int().min(1).max(100000),
+  taskDeadlineHours: z.number().int().min(1).max(720),
+  taskMaxActiveTargets: z.number().int().min(1).max(100),
+  taskMaxPendingPerOrg: z.number().int().min(1).max(1000),
 });
 export const aiAgentLimitsPatchSchema = limitsFields.partial();
 export const aiAgentLimitsSchema = aiAgentLimitsPatchSchema.transform((v) => ({

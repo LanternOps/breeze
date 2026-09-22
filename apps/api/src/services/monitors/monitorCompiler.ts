@@ -226,6 +226,7 @@ export function buildCompiledNetworkMonitor(
     target: string;
     port?: number;
     expectStatus?: number;
+    followRedirects?: boolean;
     pollingIntervalSeconds: number;
     timeoutSeconds: number;
   };
@@ -246,6 +247,15 @@ export function buildCompiledNetworkMonitor(
     config: {
       ...(c.port != null ? { port: c.port } : {}),
       ...(c.expectStatus != null ? { expectedStatus: c.expectStatus } : {}),
+      // #6510: the agent follows redirects by default (`handlers_monitor.go`),
+      // so an http_check that EXPECTS a 3xx status can never go healthy unless
+      // the check stops at that hop — the final hop's status is what gets
+      // compared otherwise. Only write the key when it disagrees with the
+      // agent's own default (true), i.e. an explicit `false`, or an implicit
+      // `false` from a 3xx expectation the caller didn't override.
+      ...((c.followRedirects ?? !(c.expectStatus != null && c.expectStatus >= 300 && c.expectStatus < 400))
+        ? {}
+        : { followRedirects: false }),
     },
     pollingInterval: c.pollingIntervalSeconds,
     timeout: c.timeoutSeconds,

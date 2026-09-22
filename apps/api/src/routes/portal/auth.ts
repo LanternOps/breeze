@@ -353,7 +353,13 @@ export async function portalAuthMiddleware(c: Context, next: Next) {
     setPortalSessionCookies(c, token);
   }
 
-  c.set('portalAuth', { user, token, authMethod, timezone: timezone ?? 'UTC' });
+  c.set('portalAuth', {
+    user,
+    token,
+    authMethod,
+    partnerId: activeOrg.partnerId,
+    timezone: timezone ?? 'UTC',
+  });
 
   // #1448 — a small set of routes (the Stripe pay route) opt OUT of the auto
   // request-transaction so a slow outbound HTTP call (Checkout sessions.create)
@@ -384,9 +390,9 @@ export async function portalAuthMiddleware(c: Context, next: Next) {
       accessibleOrgIds: [user.orgId],
       accessiblePartnerIds: [],
       userId: null,
-      // Portal end-users don't browse the MSP script catalog; partnerId is
-      // not readily in scope here. null disables the partner-wide read
-      // branch (safe).
+      // Generic portal routes intentionally do not receive the partner-wide
+      // SELECT branch. Self-managed routes that explicitly need it (for
+      // example Network Visibility) opt in with the validated owning partner.
       currentPartnerId: null,
     },
     () => next()

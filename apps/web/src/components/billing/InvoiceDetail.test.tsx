@@ -31,11 +31,13 @@ const lines: InvoiceDetailData['lines'] = [
     id: 'l1', invoiceId: 'inv-1', sourceType: 'catalog', parentLineId: null, catalogItemId: 'c1',
     name: null, description: 'Widget', quantity: '1.00', unitPrice: '120.00', costBasis: '80.00', revenueAllocation: '120.00',
     taxable: true, customerVisible: true, lineTotal: '120.00', isUnapprovedTime: false, sortOrder: 0, deviceCount: 0,
+    workedMinutes: null,
   },
   {
     id: 'l2', invoiceId: 'inv-1', sourceType: 'bundle', parentLineId: 'l1', catalogItemId: 'c2',
     name: null, description: 'Hidden component', quantity: '1.00', unitPrice: '0.00', costBasis: '10.00', revenueAllocation: null,
     taxable: false, customerVisible: false, lineTotal: '0.00', isUnapprovedTime: false, sortOrder: 0, deviceCount: 0,
+    workedMinutes: null,
   },
 ];
 
@@ -99,6 +101,39 @@ describe('InvoiceDetail', () => {
     // The preference persists under the SAME key the quote surfaces use, so
     // "hide cost & margin" holds across the whole billing area.
     expect(localStorage.getItem('breeze:quote-editor-show-margin')).toBe('1');
+  });
+
+  // #6467: the note is structured data (`workedMinutes`), not baked into
+  // `description` — so it survives regardless of what the description says,
+  // and renders localised via the shared `common:ticketTimeBilling.billedVsWorked` key.
+  it('shows the worked-vs-billed note for a time_entry line whose worked minutes differ from billed', async () => {
+    const withNote: InvoiceDetailData = {
+      ...issued,
+      lines: [{
+        id: 'l3', invoiceId: 'inv-1', sourceType: 'time_entry', parentLineId: null, catalogItemId: null,
+        name: null, description: 'On-site', quantity: '1.00', unitPrice: '225.00', costBasis: null, revenueAllocation: null,
+        taxable: false, customerVisible: true, lineTotal: '225.00', isUnapprovedTime: false, sortOrder: 0, deviceCount: 0,
+        workedMinutes: 30,
+      }],
+    };
+    render(<InvoiceDetail detail={withNote} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('invoice-detail')).toBeInTheDocument());
+    expect(screen.getByTestId('invoice-detail-line-worked-vs-billed-l3')).toHaveTextContent('0.50 h worked · 1.00 h billed');
+  });
+
+  it('shows no worked-vs-billed note when worked minutes equal the billed quantity', async () => {
+    const noNote: InvoiceDetailData = {
+      ...issued,
+      lines: [{
+        id: 'l4', invoiceId: 'inv-1', sourceType: 'time_entry', parentLineId: null, catalogItemId: null,
+        name: null, description: 'Remote', quantity: '1.00', unitPrice: '150.00', costBasis: null, revenueAllocation: null,
+        taxable: false, customerVisible: true, lineTotal: '150.00', isUnapprovedTime: false, sortOrder: 0, deviceCount: 0,
+        workedMinutes: 60,
+      }],
+    };
+    render(<InvoiceDetail detail={noNote} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('invoice-detail')).toBeInTheDocument());
+    expect(screen.queryByTestId('invoice-detail-line-worked-vs-billed-l4')).not.toBeInTheDocument();
   });
 
   it('renders the internal margin summary (billed-only, one-time, excludes tax)', async () => {

@@ -230,7 +230,9 @@
       "logFailedSentence": "Failed to log time."
     },
     "billedVsWorked": "{{worked}} h worked · {{billed}} h billed",
-    "includedMinutes": "{{hours}} h included in contract"
+    "includedMinutes": "{{hours}} h included in contract",
+    "missingRateCount_one": "1 entry has no hourly rate — not counted in the amount above",
+    "missingRateCount_other": "{{count}} entries have no hourly rate — not counted in the amount above"
   },
   "inboundReviewQueue": {
     "title": "Review queue",

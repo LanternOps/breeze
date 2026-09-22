@@ -202,7 +202,7 @@ export function registerMonitoringTools(aiTools: Map<string, AiTool>): void {
     searchHint: 'network monitors: get check history, create, update, delete',
     definition: {
       name: 'manage_monitors',
-      description: 'Get monitor details with recent check history, or create/update/delete monitors.',
+      description: 'Get monitor details with recent check history, or create/update/delete monitors. Actions: get, create, update, delete.',
       input_schema: {
         type: 'object' as const,
         properties: {

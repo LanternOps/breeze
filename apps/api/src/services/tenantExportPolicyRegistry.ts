@@ -97,10 +97,14 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   // export therefore lives in a bounded text column here (objective,
   // outcome_detail, handoff_summary, target_label) and is `included`.
   "ai_operator_operations": tablePolicy("org_id", {"included":["id","org_id","task_id","task_step_key","operation_key","attempt_ordinal","intent_id","originating_run_id","argument_digest","execution_ref_kind","execution_ref_id","plan_revision","claimed_lease_epoch","dispatch_state","dispatch_detail","result_state","dispatched_at","cancel_requested_at","result_at","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["result"]}),
+  "ai_operator_task_events": tablePolicy("org_id", {"included":["id","org_id","task_id","transition_seq","event_type","actor_kind","actor_user_id","step_key","target_id","detail","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   "ai_operator_task_outbox": tablePolicy("org_id", {"included":["id","org_id","task_id","source_kind","source_id","transition_seq","due_at","published_at","attempts","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
+  "ai_operator_task_steps": tablePolicy("org_id", {"included":["id","org_id","task_id","step_key","step_kind","target_id","attempt_ordinal","state","plan_revision","expected_criterion","dependency_kind","dependency_id","detail","started_at","settled_at","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["checkpoint"]}),
+  "ai_operator_task_target_accounts": tablePolicy("org_id", {"included":["id","org_id","task_id","target_id","provider","m365_connection_id","google_connection_id","external_id","principal_label","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
+  "ai_operator_task_targets": tablePolicy("org_id", {"included":["id","org_id","task_id","target_kind","device_id","ticket_id","contact_id","target_label","target_ordinal","state","detached_at","detached_reason","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   // lease_owner is a coordinator instance label, not credential material, but
   // it does not trip SUSPICIOUS_NAME_PARTS either — plain `included`.
-  "ai_operator_tasks": tablePolicy("org_id", {"included":["id","org_id","agent_id","agent_kind","agent_name","workflow_key","workflow_version","mode","origin_kind","requester_user_id","objective","device_id","target_label","target_detached_at","target_detached_reason","state","phase","wait_reason","wait_dependency_kind","wait_dependency_id","revision","lease_epoch","lease_owner","lease_expires_at","attempt_ordinal","current_step_key","deadline_at","next_wake_at","outcome","outcome_detail","handoff_summary","accounting_root_task_id","successor_of_task_id","client_idempotency_key","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["checkpoint"]}),
+  "ai_operator_tasks": tablePolicy("org_id", {"included":["id","org_id","agent_id","agent_kind","agent_name","workflow_key","workflow_version","mode","origin_kind","requester_user_id","objective","device_id","target_label","target_detached_at","target_detached_reason","state","phase","wait_reason","wait_dependency_kind","wait_dependency_id","revision","lease_epoch","lease_owner","lease_expires_at","attempt_ordinal","current_step_key","deadline_at","next_wake_at","outcome","outcome_detail","handoff_summary","accounting_root_task_id","successor_of_task_id","client_idempotency_key","workflow_config_id","event_seq","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["checkpoint"]}),
   // blob_key is an opaque `<region>/<yyyy>/<mm>/<uuid>` locator, useless without
   // the bucket credentials — same precedent as ai_screenshots.storage_key and
   // ticket_attachments.storage_key below, both `included`. artifactService.ts's
@@ -145,6 +149,25 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   "backup_jobs": tablePolicy("org_id", {"included":["id","org_id","config_id","policy_id","feature_link_id","device_id","status","type","backup_mode","started_at","completed_at","total_size","transferred_size","file_count","error_count","error_log","snapshot_id","backup_type","last_progress_at","total_files","referenced_size","referenced_files","base_snapshot_id","publish_lease_expires_at","storage_identity","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["mode_targets","vss_metadata"]}),
   "backup_policies": tablePolicy("org_id", {"included":["id","org_id","config_id","name","enabled","legal_hold","legal_hold_reason","bandwidth_limit_mbps","backup_window_start","backup_window_end","priority","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["schedule","retention","targets","gfs_config"]}),
   "backup_profiles": tablePolicy("org_id", {"included":["id","org_id","partner_id","name","description","is_active","created_by","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["selections"]}),
+  // Backup Provider Integration W01 (#6008, spec "Data model" + "Security").
+  //
+  // Customer rows are vendor-side directory data plus the Breeze org they were
+  // mapped to — identifiers, names, a closed-set mapping_source, a count and
+  // timestamps. Nothing matches SUSPICIOUS_NAME_PARTS and nothing is an open
+  // container. The CREDENTIAL lives on backup_provider_connections, which has
+  // no org_id and therefore no entry in this registry at all.
+  "backup_provider_customers": tablePolicy("org_id", {"included":["id","connection_id","partner_id","vendor_customer_id","vendor_customer_name","vendor_parent_id","vendor_level","vendor_external_code","org_id","mapping_source","device_count","last_seen_at","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
+  // Observed daily health for the 28-day bar. Plain scalars only.
+  "backup_provider_device_history": tablePolicy("org_id", {"included":["id","provider_device_id","org_id","day","status","last_success_at","errors_count","observations","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
+  // vendor_raw is jsonb -> excludedOpen by the container rule, even though
+  // nothing in it is a secret TODAY: an open container may embed credentials
+  // or capabilities, and Cove's Settings map is whatever the vendor decides to
+  // return. mac_addresses / data_sources are text[] (udt_name `_text`), which
+  // is NOT an open-container type, and `data_sources` is not the exact name
+  // `data` — so both stay plain `included`. `provider` and
+  // `portal_show_provider_name` contain "provider", not "provision", and
+  // `client_version` is not "client_key": no reviewedIncluded entries needed.
+  "backup_provider_devices": tablePolicy("org_id", {"included":["id","connection_id","partner_id","org_id","customer_id","provider","portal_show_provider_name","vendor_device_id","vendor_device_name","computer_name","os_type","os_version","client_version","mac_addresses","account_type","data_sources","status","vendor_status_code","last_session_at","last_success_at","last_completed_at","selected_bytes","used_bytes","errors_count","breeze_device_id","device_match_source","pending_condition","vendor_created_at","vendor_expires_at","first_seen_at","last_seen_at","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["vendor_raw"]}),
   "backup_sla_configs": tablePolicy("org_id", {"included":["id","org_id","name","rpo_target_minutes","rto_target_minutes","alert_on_breach","is_active","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["target_devices","target_groups"]}),
   "backup_sla_events": tablePolicy("org_id", {"included":["id","org_id","sla_config_id","device_id","event_type","detected_at","resolved_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["details"]}),
   "backup_snapshot_retirements": tablePolicy("org_id", {"included":["id","org_id","config_id","device_id","snapshot_id","storage_identity","backup_type","reason","retired_at","swept_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
@@ -323,7 +346,9 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
                "device_role","site_id","counted_as","created_at"],
     reviewedIncluded: [], excludedSensitive: [], excludedOpen: [],
   }),
-  "invoice_lines": tablePolicy("org_id", {"included":["id","invoice_id","org_id","source_type","source_id","source_contract_id","catalog_item_id","parent_line_id","ticket_id","name","description","quantity","unit_price","cost_basis","revenue_allocation","taxable","customer_visible","line_total","is_unapproved_time","sort_order","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
+  // worked_minutes (#6467): ordinary numeric fact (worked time for the
+  // worked-vs-billed disclosure) — included, same bucket as quantity.
+  "invoice_lines": tablePolicy("org_id", {"included":["id","invoice_id","org_id","source_type","source_id","source_contract_id","catalog_item_id","parent_line_id","ticket_id","name","description","quantity","unit_price","cost_basis","revenue_allocation","taxable","customer_visible","line_total","is_unapproved_time","worked_minutes","sort_order","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   "invoice_payments": tablePolicy("org_id", {"included":["id","invoice_id","org_id","amount","method","reference","received_at","recorded_by","note","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   // SEC-150 revocation columns. All scalars (enum/text/timestamptz/int/uuid) —
   // no open container, so none is forced into excludedOpen.
@@ -469,7 +494,7 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   "plugin_installations": tablePolicy("org_id", {"included":["id","org_id","catalog_id","version","status","enabled","sandbox_enabled","installed_at","installed_by","last_active_at","error_message","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["config","permissions","resource_limits"]}),
   "plugin_instances": tablePolicy("org_id", {"included":["id","plugin_id","org_id","enabled","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["config"]}),
   "plugins": tablePolicy("org_id", {"included":["id","org_id","name","slug","version","description","author","homepage","manifest_url","entry_point","status","is_system","installed_at","updated_at","error_message","last_active_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["permissions","hooks","settings"]}),
-  "portal_branding": tablePolicy("org_id", {"included":["id","org_id","logo_url","favicon_url","primary_color","secondary_color","accent_color","chrome_accent","custom_domain","domain_verified","welcome_message","support_email","support_phone","footer_text","custom_css","enable_tickets","enable_asset_checkout","enable_devices","enable_self_service","created_at","updated_at","enable_dashboard","enable_security","enable_backups","enable_reports","enable_support_usage","enable_service","enable_documents","enable_lifecycle"],"reviewedIncluded":["enable_password_reset"],"excludedSensitive":[],"excludedOpen":[]}),
+  "portal_branding": tablePolicy("org_id", {"included":["id","org_id","logo_url","favicon_url","primary_color","secondary_color","accent_color","chrome_accent","custom_domain","domain_verified","welcome_message","support_email","support_phone","footer_text","custom_css","enable_tickets","enable_asset_checkout","enable_devices","enable_self_service","created_at","updated_at","enable_dashboard","enable_security","enable_backups","enable_reports","enable_support_usage","enable_service","enable_documents","enable_lifecycle","enable_network_visibility"],"reviewedIncluded":["enable_password_reset"],"excludedSensitive":[],"excludedOpen":[]}),
   // auth_epoch is server-side bearer-session revocation state, not portable
   // customer content. Exporting it would disclose credential/status transition
   // history and invite consumers to treat an internal generation as restorable

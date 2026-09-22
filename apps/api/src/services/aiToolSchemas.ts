@@ -1505,8 +1505,8 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   }),
 
   manage_policy_feature_link: z.object({
-    action: z.enum(['add', 'update', 'remove', 'list']),
-    configPolicyId: uuid,
+    action: z.enum(['add', 'update', 'remove', 'list', 'describe']),
+    configPolicyId: uuid.optional(),
     featureLinkId: uuid.optional(),
     // Derived from the canonical list, never hand-copied: this enum had drifted
     // four values behind `configFeatureTypeEnum` and behind the enum the tool's
@@ -1516,6 +1516,9 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     featureType: z.enum(CONFIG_FEATURE_TYPES).optional(),
     featurePolicyId: uuid.optional().nullable(),
     inlineSettings: z.record(z.string(), z.unknown()).optional().nullable(),
+  }).superRefine((input, ctx) => {
+    const field = input.action === 'describe' ? 'featureType' : 'configPolicyId';
+    if (!input[field]) ctx.addIssue({ code: z.ZodIssueCode.custom, path: [field], message: `${field} is required for ${input.action}` });
   }),
 
   // Monitor definition tools (#5289 Task 8). `definition` is deep-validated by

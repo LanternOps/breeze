@@ -100,6 +100,28 @@ describe('InvoiceDetailView line labels (#3319)', () => {
   });
 });
 
+// #6467: the worked-vs-billed disclosure is sourced from workedMinutes
+// (structured data), never baked into `description` — so an edit to the
+// description elsewhere can never erase it here.
+describe('InvoiceDetailView worked-vs-billed note (#6467)', () => {
+  it('shows the note for a time_entry line whose worked minutes differ from billed', () => {
+    renderDetail([line({ description: 'On-site', quantity: '1.00', workedMinutes: 30 })]);
+    expect(screen.getByTestId('invoice-line-worked-vs-billed-0')).toHaveTextContent(
+      '0.50 h worked · 1.00 h billed',
+    );
+  });
+
+  it('shows no note when worked minutes equal the billed quantity', () => {
+    renderDetail([line({ description: 'Remote', quantity: '1.00', workedMinutes: 60 })]);
+    expect(screen.queryByTestId('invoice-line-worked-vs-billed-0')).toBeNull();
+  });
+
+  it('shows no note for a non-time-entry line (workedMinutes absent)', () => {
+    renderDetail([line({ description: 'Widget', quantity: '2.00' })]);
+    expect(screen.queryByTestId('invoice-line-worked-vs-billed-0')).toBeNull();
+  });
+});
+
 describe('InvoiceDetailView — payment unavailable', () => {
   it('tells the customer what to do next when online payment is switched off (409)', async () => {
     const { portalApi } = await import('@/lib/api');

@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
 import { requireScope, requirePermission, type AuthContext } from '../../middleware/auth';
-import { PERMISSIONS, hasPermission, type UserPermissions } from '../../services/permissions';
+import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import {
   createContractSchema, updateContractSchema, listContractsQuerySchema, changeContractCurrencySchema
 } from '@breeze/shared';
@@ -11,6 +11,7 @@ import {
   computeContractEstimate, changeContractCurrency
 } from '../../services/contractService';
 import { ContractServiceError, type ContractActor } from '../../services/contractTypes';
+import { contractActorPermissionEvidence } from '../../services/contractActor';
 
 export const contractCrudRoutes = new Hono();
 const scopes = requireScope('partner', 'system');
@@ -27,24 +28,14 @@ const idParam = z.object({ id: z.string().guid() });
  * system/background callers pass no permissions and can never reach the
  * ACTIVE-contract restamp).
  */
-const CONTRACT_ACTOR_PERMISSIONS = [
-  PERMISSIONS.CONTRACTS_READ, PERMISSIONS.CONTRACTS_WRITE, PERMISSIONS.CONTRACTS_MANAGE,
-] as const;
-
 export function contractActorFrom(c: { get: (k: string) => unknown }): ContractActor {
   const auth = c.get('auth') as AuthContext;
   const userPerms = c.get('permissions') as UserPermissions | undefined;
-  const granted = new Set<string>();
-  if (userPerms) {
-    for (const p of CONTRACT_ACTOR_PERMISSIONS) {
-      if (hasPermission(userPerms, p.resource, p.action)) granted.add(`${p.resource}:${p.action}`);
-    }
-  }
   return {
     userId: auth.user.id,
     partnerId: auth.partnerId ?? null,
     accessibleOrgIds: auth.accessibleOrgIds,
-    permissions: granted,
+    permissions: contractActorPermissionEvidence(userPerms),
     // Site axis (app-layer only — RLS does not defend it). Same leak over HTTP as
     // through the AI door: without this a site-restricted technician reaches every
     // contract in the org. See contractLineSiteDenied in contractService.ts.

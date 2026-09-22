@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { CreditCard, Download } from 'lucide-react';
 import { withBase } from '@/lib/basePath';
-import { portalApi, buildPortalApiUrl, type PublicInvoiceDetail } from '@/lib/api';
+import { portalApi, buildPortalApiUrl, type PublicInvoiceDetail, lineWorkedVsBilledNote } from '@/lib/api';
 import { STATUS_LABELS, statusTone } from '@/lib/invoiceStatus';
 import { DocumentPaper, DocumentHeader, DocumentTerms, type DocSeller } from './documentShell';
 import { money } from '@/lib/money';
@@ -265,11 +265,16 @@ export function PublicInvoiceView({ token, initial = null, error }: PublicInvoic
                   const tax = showTax ? lineTax(l.lineTotal, l.taxable, taxRate) : null;
                   const title = (l.name ?? l.description ?? '').trim() || '—';
                   const blurb = l.name ? (l.description ?? '').trim() : '';
+                  // #6467: worked-vs-billed disclosure (§3.5), sourced from
+                  // structured data — never from `description`, so a
+                  // description edit can't erase it.
+                  const note = lineWorkedVsBilledNote(l);
                   return (
                     <tr key={`${title}-${index}`} className="border-b align-top last:border-0">
                       <td className="px-4 py-3 text-foreground sm:px-5">
                         {title}
                         {blurb && <div className="mt-0.5 text-xs text-muted-foreground">{blurb}</div>}
+                        {note && <div className="mt-0.5 text-xs text-muted-foreground" data-testid={`invoice-line-worked-vs-billed-${index}`}>{note}</div>}
                       </td>
                       <td className="whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground">{l.quantity}</td>
                       <td className="whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground">{money(l.unitPrice, currency)}</td>

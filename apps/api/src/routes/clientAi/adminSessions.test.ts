@@ -1,11 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 
-const { dbSelectMock, dbUpdateMock, writeRouteAuditMock, orgConditionMock } = vi.hoisted(() => ({
+const { dbSelectMock, dbUpdateMock, writeRouteAuditMock, orgConditionMock, authState } = vi.hoisted(() => ({
   dbSelectMock: vi.fn(),
   dbUpdateMock: vi.fn(),
   writeRouteAuditMock: vi.fn(),
   orgConditionMock: vi.fn(() => ({ __scope: 'caller-orgs' })),
+  authState: { permissions: [{ resource: '*', action: '*' }] as Array<{ resource: string; action: string }> },
 }));
 
 vi.mock('../../middleware/auth', () => ({
@@ -18,11 +19,19 @@ vi.mock('../../middleware/auth', () => ({
       accessibleOrgIds: ['0c0c0c0c-1111-4222-8333-444455556666'],
       canAccessOrg: (id: string) => id === '0c0c0c0c-1111-4222-8333-444455556666',
       orgCondition: orgConditionMock,
+      permissions: authState.permissions,
       user: { id: 'ce11ce11-1111-4222-8333-444455556666', email: 'msp@example.com' },
     });
     return next();
   }),
-  requirePermission: vi.fn(() => (c: any, next: any) => next()),
+  requirePermission: vi.fn((resource: string, action: string) => (c: any, next: any) => {
+    const allowed = c.get('auth').permissions.some(
+      (permission: { resource: string; action: string }) =>
+        (permission.resource === resource || permission.resource === '*')
+        && (permission.action === action || permission.action === '*'),
+    );
+    return allowed ? next() : c.json({ error: 'Forbidden' }, 403);
+  }),
   requireMfa: vi.fn(() => (c: any, next: any) => next()),
 }));
 
@@ -84,12 +93,22 @@ const AUTHED = { Authorization: 'Bearer token', 'Content-Type': 'application/jso
 
 beforeEach(() => {
   vi.clearAllMocks();
+  authState.permissions = [{ resource: '*', action: '*' }];
   dbUpdateMock.mockImplementation(() => ({
     set: vi.fn(() => ({ where: vi.fn(() => Promise.resolve()) })),
   }));
 });
 
 describe('GET /client-ai/admin/sessions', () => {
+  it('denies organizations:read before validation and database access', async () => {
+    authState.permissions = [{ resource: 'organizations', action: 'read' }];
+    const res = await buildApp().request('/client-ai/admin/sessions?from=not-a-date', {
+      headers: AUTHED,
+    });
+    expect(res.status).toBe(403);
+    expect(dbSelectMock).not.toHaveBeenCalled();
+  });
+
   it('returns rows + pagination (query 1 = rows, query 2 = count)', async () => {
     let call = 0;
     dbSelectMock.mockImplementation(() => {
@@ -142,6 +161,15 @@ describe('GET /client-ai/admin/sessions', () => {
 });
 
 describe('GET /client-ai/admin/sessions/:id', () => {
+  it('denies organizations:read before database access', async () => {
+    authState.permissions = [{ resource: 'organizations', action: 'read' }];
+    const res = await buildApp().request(`/client-ai/admin/sessions/${SESSION_ID}`, {
+      headers: AUTHED,
+    });
+    expect(res.status).toBe(403);
+    expect(dbSelectMock).not.toHaveBeenCalled();
+  });
+
   it('returns transcript with redaction counts and tool trail', async () => {
     let call = 0;
     dbSelectMock.mockImplementation(() => {
@@ -164,7 +192,7 @@ describe('GET /client-ai/admin/sessions/:id', () => {
         {
           id: 't1',
           toolName: 'write_range',
-          toolInput: { range: 'B2:B4' },
+          toolInput: { range: 'B2:B4', providerConfig: { secretKey: 'synthetic-secret' } },
           status: 'completed',
           approvedBy: null,
           approvedAt: new Date(),
@@ -183,6 +211,48 @@ describe('GET /client-ai/admin/sessions/:id', () => {
     expect(body.session.id).toBe(SESSION_ID);
     expect(body.messages[0].redactionCounts).toEqual({ creditCard: 2, ssn: 1 });
     expect(body.toolExecutions[0].toolName).toBe('write_range');
+    expect(body.toolExecutions[0].toolInput.providerConfig.secretKey).toBe('[REDACTED]');
+  });
+
+  it('redacts secrets in persisted toolOutput, not only toolInput', async () => {
+    let call = 0;
+    dbSelectMock.mockImplementation(() => {
+      call++;
+      if (call === 1) return chain([SESSION_ROW]);
+      if (call === 2)
+        return chain([
+          {
+            id: 'm1',
+            role: 'assistant',
+            content: 'done',
+            contentBlocks: null,
+            toolName: 'read_config',
+            toolInput: { path: 'app.conf' },
+            // Tool RESULTS carry credentials just as readily as tool
+            // arguments — service configs, connection strings, env dumps.
+            toolOutput: {
+              service: 'backup',
+              providerConfig: { secretKey: 'synthetic-output-secret' },
+              connectionString: 'postgres://u:synthetic-pw@host/db',
+            },
+            createdAt: new Date(),
+          },
+        ]);
+      return chain([]);
+    });
+
+    const res = await buildApp().request(`/client-ai/admin/sessions/${SESSION_ID}`, {
+      headers: AUTHED,
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.messages[0].toolOutput.providerConfig.secretKey).toBe('[REDACTED]');
+    expect(body.messages[0].toolOutput.connectionString).toBe('[REDACTED]');
+    // Non-secret fields survive, so the transcript stays useful.
+    expect(body.messages[0].toolOutput.service).toBe('backup');
+    expect(JSON.stringify(body)).not.toContain('synthetic-output-secret');
+    expect(JSON.stringify(body)).not.toContain('synthetic-pw');
   });
 
   it('404s when the session does not exist / is not excel_client', async () => {

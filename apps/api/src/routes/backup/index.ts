@@ -17,6 +17,7 @@ import { mssqlRoutes } from './mssql';
 import { hypervRoutes } from './hyperv';
 import { slaRoutes } from './sla';
 import { vaultRoutes } from './vault';
+import { backupProviderRoutes } from './providers';
 
 export const backupRoutes = new Hono();
 
@@ -47,3 +48,6 @@ backupRoutes.route('/vss', vssRoutes);
 backupRoutes.route('/encryption', encryptionRoutes);
 backupRoutes.route('/sla', slaRoutes);
 backupRoutes.route('/vault', vaultRoutes);
+// #6008 W01 — /backup/providers/*. Mounted at '/' because the sub-router
+// carries its own '/providers' prefix, like configsRoutes and dashboardRoutes.
+backupRoutes.route('/', backupProviderRoutes);

@@ -345,7 +345,7 @@ export function registerVaultTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceId'],
     definition: {
       name: 'configure_vault',
-      description: 'Create or update a local vault configuration.',
+      description: 'Create or update a local vault configuration. Actions: create, update.',
       input_schema: {
         type: 'object' as const,
         properties: {

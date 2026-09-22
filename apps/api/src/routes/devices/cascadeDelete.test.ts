@@ -262,6 +262,35 @@ describe('device hard-delete table coverage contract', () => {
     expect(DEVICE_DETACH_DEVICE_ID_TABLES).not.toContain('m365_intune_devices');
     expect(DEVICE_LINKED_DEVICE_ID_TABLES).not.toContain('m365_intune_devices');
   });
+
+  it('backup_provider_devices needs no device-cascade entry — its link column is breeze_device_id', () => {
+    // #6008 W01. Identical reasoning to the m365_intune_devices case above:
+    // the two membership contracts discover tables by COLUMN NAME (`device_id`
+    // at :151, `linked_device_id` at :200), not by FK target.
+    // backup_provider_devices LINKS rather than belongs — its org_id comes from
+    // the CUSTOMER MAPPING, not from the Breeze device — and its
+    // (breeze_device_id, org_id) -> devices(id, org_id) FK is
+    // ON DELETE SET NULL (breeze_device_id), so the database clears the link on
+    // a device hard-delete and no list entry is required.
+    //
+    // Renaming the column to device_id would silently enrol the table in the
+    // generic `DELETE ... WHERE device_id = ...` cascade (destroying a
+    // customer's whole provider backup history when one device is deleted) AND
+    // in breeze_device_child_orgid_tables()'s `SET org_id` re-stamp loop
+    // (re-homing a provider row to an org its customer is NOT mapped to, which
+    // the (customer_id, org_id) composite FK would then reject). This test is
+    // what stops that rename.
+    const table = allSchemaTables().find((t) => getTableName(t) === 'backup_provider_devices');
+    expect(table, 'backup_provider_devices missing from the Drizzle schema barrel').toBeDefined();
+    const names = getTableColumns(table!).map((col) => col.name);
+    expect(names).toContain('breeze_device_id');
+    expect(names).not.toContain('device_id');
+    expect(names).not.toContain('linked_device_id');
+
+    expect(DEVICE_CASCADE_DELETE_TABLES).not.toContain('backup_provider_devices');
+    expect(DEVICE_DETACH_DEVICE_ID_TABLES).not.toContain('backup_provider_devices');
+    expect(DEVICE_LINKED_DEVICE_ID_TABLES).not.toContain('backup_provider_devices');
+  });
 });
 
 // ---------------------------------------------------------------------------

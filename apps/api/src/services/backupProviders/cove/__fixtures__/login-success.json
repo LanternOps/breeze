@@ -1,0 +1,12 @@
+{
+  "id": "jsonrpc",
+  "visa": "visa-after-login",
+  "result": {
+    "result": {
+      "Id": 4242,
+      "PartnerId": 1000,
+      "PartnerName": "OliveTech",
+      "Flags": ["Login"]
+    }
+  }
+}

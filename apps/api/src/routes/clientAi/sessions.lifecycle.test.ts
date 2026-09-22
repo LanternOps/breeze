@@ -59,6 +59,10 @@ vi.mock('../../middleware/clientAiAuth', () => ({
 vi.mock('../../db', () => ({
   db: { select: dbSelectMock, insert: dbInsertMock, update: dbUpdateMock },
   withDbAccessContext: vi.fn((_ctx: unknown, fn: () => unknown) => fn()),
+  withSystemDbAccessContext: vi.fn((fn: () => unknown) => fn()),
+}));
+vi.mock('../../services/effectiveSettings', () => ({
+  getEffectiveAiBudget: vi.fn().mockResolvedValue({ maxTurnsPerSession: 50 }),
 }));
 vi.mock('../../services/clientAiSessions', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../services/clientAiSessions')>()),
@@ -172,6 +176,19 @@ describe('POST /client-ai/sessions (create)', () => {
     dbInsertMock.mockImplementation(() => ({ values: valuesSpy }));
     await buildApp().request('/client-ai/sessions', { method: 'POST', headers: AUTHED });
     expect(valuesSpy).toHaveBeenCalledWith(expect.objectContaining({ model: 'claude-haiku-4-5-20251001' }));
+  });
+
+  // #6473 — a client session must also inherit the configured
+  // maxTurnsPerSession, not silently fall back to the ai_sessions schema
+  // column default of 50.
+  it('sets maxTurns from the effective org/partner budget, not the schema default', async () => {
+    const { getEffectiveAiBudget } = await import('../../services/effectiveSettings');
+    vi.mocked(getEffectiveAiBudget).mockResolvedValueOnce({ maxTurnsPerSession: 100 } as never);
+    const valuesSpy = vi.fn(() => ({ returning: vi.fn(() => Promise.resolve([{ id: SESSION_ID }])) }));
+    dbInsertMock.mockImplementation(() => ({ values: valuesSpy }));
+    await buildApp().request('/client-ai/sessions', { method: 'POST', headers: AUTHED });
+    expect(getEffectiveAiBudget).toHaveBeenCalledWith(ORG_ID);
+    expect(valuesSpy).toHaveBeenCalledWith(expect.objectContaining({ maxTurns: 100 }));
   });
 
   it('appends the read-only addendum to the stored system prompt under writeMode readonly', async () => {

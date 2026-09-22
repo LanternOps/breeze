@@ -720,7 +720,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
     searchHint: 'software deployments: list, get, device status, create, start, pause, resume, cancel',
     definition: {
       name: 'manage_deployments',
-      description: 'Manage staged software deployments: list, get details, view per-device status, create, start, pause, resume, or cancel deployments.',
+      description: 'Manage staged software deployments: list, get details, view per-device status, create, start, pause, resume, or cancel deployments. Actions: list, get, device_status, create, start, pause, resume, cancel.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -1069,18 +1069,18 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceIds', 'deviceId'],
     definition: {
       name: 'manage_patches',
-      description: 'Manage patches: list patches present on the org\'s devices (optionally scoped to a single device via deviceId, which also returns per-device install status), check compliance, trigger scans, approve/decline/defer patches, bulk approve, install on targets, or rollback. Required fields per action: install requires BOTH patchIds and deviceIds; scan requires deviceIds; bulk_approve requires patchIds; approve/decline/defer require patchId OR patchName; rollback requires BOTH patchId and deviceIds; list/compliance require none. approve/decline/defer accept an optional ringId to scope the action to one update ring (omit for the partner-wide blanket); decline also accepts allRings to revoke the approval in every update ring at once, not just the current scope — use this to fully unapprove a patch a device might otherwise still install under a different ring. To configure patch schedules and auto-approval policies, use manage_policy_feature_link with featureType "patch".',
+      description: 'CVEs: get_vulnerability_report. Install requires BOTH patchIds and deviceIds. Approvals default partner-wide. Schedules/auto-approval: manage_policy_feature_link featureType "patch". Actions: list, compliance, scan, approve, decline, defer, bulk_approve, install, rollback.',
       input_schema: {
         type: 'object' as const,
         properties: {
-          action: { type: 'string', enum: ['list', 'compliance', 'scan', 'approve', 'decline', 'defer', 'bulk_approve', 'install', 'rollback'], description: 'The action to perform. Required inputs: install needs patchIds AND deviceIds; scan needs deviceIds; bulk_approve needs patchIds; approve/decline/defer need patchId or patchName; rollback needs patchId AND deviceIds. To configure patch policies/auto-approval, use manage_policy_feature_link with featureType "patch".' },
+          action: { type: 'string', enum: ['list', 'compliance', 'scan', 'approve', 'decline', 'defer', 'bulk_approve', 'install', 'rollback'], description: "Install needs patchIds AND deviceIds; scan: deviceIds; bulk_approve: patchIds; approve/decline/defer: patchId or patchName; rollback: patchId+deviceIds." },
           patchId: { type: 'string', description: 'Patch UUID. Required for approve/decline/defer/rollback unless patchName is given (rollback always needs the UUID).' },
-          patchName: { type: 'string', description: 'Patch title or KB/external ID to look up when the UUID is unknown (for approve/decline/defer only). Matched against patches present on this org\'s fleet; an ambiguous match returns the candidates instead of guessing.' },
+          patchName: { type: 'string', description: "Patch title or KB/external ID on this org's fleet (approve/decline/defer). Ambiguous matches return candidates." },
           patchIds: { type: 'array', items: { type: 'string' }, description: 'Patch UUIDs. Required for bulk_approve and install.' },
           deviceIds: { type: 'array', items: { type: 'string' }, description: 'Device UUIDs. Required for scan, install, and rollback.' },
           deviceId: { type: 'string', description: 'Single device UUID to scope the patch list to one device (for list); returns per-device install status' },
-          ringId: { type: 'string', description: 'Update ring UUID to scope approve/decline/defer to one ring (for approve/decline/defer only; omit for the partner-wide blanket). Cannot be combined with allRings.' },
-          allRings: { type: 'boolean', description: 'Decline only: revoke this patch\'s approval in every update ring for the partner, not just the current/blanket scope — use to fully unapprove a patch that was approved in more than one ring. Cannot be combined with ringId.' },
+          ringId: { type: 'string', description: 'Update ring UUID for approve/decline/defer. Omit for partner-wide approval; mutually exclusive with allRings.' },
+          allRings: { type: 'boolean', description: "Decline only: revoke approval in every update ring for the partner. Mutually exclusive with ringId." },
           source: { type: 'string', enum: ['microsoft', 'apple', 'linux', 'third_party', 'custom'], description: 'Filter by source' },
           severity: { type: 'string', enum: ['critical', 'important', 'moderate', 'low', 'unknown'], description: 'Filter by severity' },
           status: { type: 'string', enum: ['pending', 'approved', 'rejected', 'deferred'], description: 'Filter by approval status' },
@@ -1585,7 +1585,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceIds'],
     definition: {
       name: 'manage_groups',
-      description: 'Manage device groups: list groups, get details with members, preview dynamic filter results, view membership audit log, create/update/delete groups, add/remove devices.',
+      description: 'Manage device groups: list groups, get details with members, preview dynamic filter results, view membership audit log, create/update/delete groups, add/remove devices. Actions: list, get, preview, membership_log, create, update, delete, add_devices, remove_devices.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -1918,7 +1918,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceIds'],
     definition: {
       name: 'manage_maintenance_windows',
-      description: 'Query maintenance windows (read-only): list windows, get details with occurrences, check what is in maintenance right now. To create or modify maintenance windows, use manage_policy_feature_link with featureType "maintenance".',
+      description: 'Read maintenance windows and occurrences. Actions: list, get, active_now, create (disabled), update (disabled), delete (disabled). For writes, use manage_policy_feature_link with featureType "maintenance".',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -2531,7 +2531,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
     searchHint: 'alert rules: list templates, list rules, get rule, test rule, list channels, alert summary',
     definition: {
       name: 'manage_alert_rules',
-      description: 'Query alert rules, templates, and notification channels (read-only). Alert rules are managed through configuration policies — use manage_policy_feature_link with featureType "alert_rule" to create or modify alert rules. This tool is for querying only: list_templates to discover available templates, list_rules/get_rule to inspect existing rules, test_rule to check rule state, list_channels for notification channels, alert_summary for overview. Actions: list_templates, list_rules, get_rule, test_rule, list_channels, alert_summary.',
+      description: 'Read alert rules, templates and channels. Actions: list_templates, list_rules, get_rule, test_rule, list_channels, alert_summary, create_rule (disabled), update_rule (disabled), delete_rule (disabled). For writes, use manage_policy_feature_link with featureType "alert_rule".',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -3263,7 +3263,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
     searchHint: 'service and process monitoring watches: list',
     definition: {
       name: 'manage_service_monitors',
-      description: 'Query service and process monitoring watches (read-only). To add or remove monitoring watches, use manage_policy_feature_link with featureType "monitoring" and action "update" to configure watches on a configuration policy.',
+      description: 'Query service and process monitoring watches. Actions: list, add (disabled), remove (disabled). For writes, use manage_policy_feature_link with featureType "monitoring" and action "update".',
       input_schema: {
         type: 'object' as const,
         properties: {

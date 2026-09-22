@@ -39,18 +39,27 @@ import {
   type ServiceRecoveryInput,
 } from '@breeze/shared';
 import {
-  SERVICE_RECOVERY_BOUNDS,
   SERVICE_RECOVERY_WORKFLOW_KEY,
   SERVICE_RECOVERY_WORKFLOW_VERSION,
   buildServiceRecoveryCriterion,
   parseServiceRecoveryInput,
 } from './recipes/serviceRecovery';
+import { resolveAdmissionRecipe } from './recipes';
 import { aiOperatorServiceRecoveryEnabled, aiOperatorTasksEnabled } from '../../config/env';
 import { admissionFenced } from './taskTransitions';
+import { createTaskTarget } from './targetService';
+import { openStep, resolveStepKind } from './stepService';
+import { appendTaskEvent } from './eventService';
+import { resolveTaskDeadlineMs } from './taskDeadline';
+import { resolveEffectiveAgentSystem } from '../aiAgents/effectivePolicy';
 
 export type AdmitTaskRefusal =
   | 'tasks_disabled'
   | 'recipe_disabled'
+  /** The workflow key is not in the registry at ANY version — a 400 at the route. */
+  | 'unknown_recipe'
+  /** The key exists but not at the reviewed version — a 422 at the route. */
+  | 'recipe_version_mismatch'
   | 'agent_not_found'
   | 'device_not_in_org'
   | 'invalid_input';
@@ -72,6 +81,16 @@ export interface AdmitServiceRecoveryTaskInput {
   originKind: 'manual' | 'alert' | 'ticket' | 'schedule' | 'anomaly' | 'sweep' | 'chat';
   requesterUserId: string | null;
   recipeInput: unknown;
+  /**
+   * Which recipe to admit. Defaults to the service-recovery pair, because
+   * every current caller admits that one; passing them explicitly is what lets
+   * the route refuse an unknown key with the registry's own message instead of
+   * a zod literal mismatch. The pair is resolved against the registry and the
+   * RESOLVED values are what land on the row — a caller cannot write a key the
+   * coordinator could not later dispatch on.
+   */
+  workflowKey?: string;
+  workflowVersion?: number;
   /** Override for tests; defaults to the recipe's own bound. */
   deadlineMs?: number;
   now?: Date;
@@ -111,6 +130,23 @@ export async function admitServiceRecoveryTask(
       detail: 'AI_OPERATOR_RECIPE_SERVICE_RECOVERY_ENABLED is off',
     };
   }
+
+  // Resolve BEFORE the input parse and before any db work. An unknown workflow
+  // cannot be admitted regardless of what the org contains, and reaching
+  // Postgres to discover that would hold a connection for a request that can
+  // never succeed.
+  const resolution = resolveAdmissionRecipe(
+    input.workflowKey ?? SERVICE_RECOVERY_WORKFLOW_KEY,
+    input.workflowVersion ?? SERVICE_RECOVERY_WORKFLOW_VERSION,
+  );
+  if (!resolution.ok) {
+    return {
+      ok: false,
+      refusal: resolution.reason === 'unknown_recipe' ? 'unknown_recipe' : 'recipe_version_mismatch',
+      detail: resolution.detail,
+    };
+  }
+  const recipe = resolution.recipe;
 
   let recipeInput: ServiceRecoveryInput;
   try {
@@ -174,7 +210,26 @@ export async function admitServiceRecoveryTask(
       }
 
       const taskId = randomUUID();
-      const deadlineMs = input.deadlineMs ?? SERVICE_RECOVERY_BOUNDS.deadlineMs;
+
+      // v15 task-wide budget `taskDeadlineHours` (recipe library E2, #6167):
+      // the recipe bound and any caller-requested deadline are both capped by
+      // the EFFECTIVE agent policy's ceiling. We are already inside a system
+      // context, so resolveEffectiveAgentSystem reads straight through on
+      // this connection. The effective agent must be the one being pinned;
+      // if the org has since replaced it, the pinned agent's first run
+      // admission refuses with ownership_mismatch anyway, and the default
+      // ceiling applies here rather than a stranger's policy.
+      const effectiveAgent = await resolveEffectiveAgentSystem(input.orgId, agent.kind as never);
+      const deadlineMs = resolveTaskDeadlineMs({
+        requestedMs: input.deadlineMs,
+        recipeDeadlineMs: recipe.bounds.deadlineMs,
+        policyLimits: effectiveAgent && effectiveAgent.agentId === agent.id
+          ? effectiveAgent.effective.limits
+          : null,
+        // ±10% jitter (spec §11.2) so a burst of tasks admitted together does
+        // not create an expiry wave 24 hours later.
+        jitter: () => 0.9 + Math.random() * 0.2,
+      });
 
       const clientIdempotencyKey = input.clientIdempotencyKey ?? null;
 
@@ -186,8 +241,11 @@ export async function admitServiceRecoveryTask(
         agentId: agent.id,
         agentKind: agent.kind,
         agentName: agent.name,
-        workflowKey: SERVICE_RECOVERY_WORKFLOW_KEY,
-        workflowVersion: SERVICE_RECOVERY_WORKFLOW_VERSION,
+        // The RESOLVED pair, not the requested one: the row must always name a
+        // recipe `getRecipe` can return, or the coordinator's first tick on it
+        // would hand the task off (Operator spec P3-4, version frozen for life).
+        workflowKey: recipe.key,
+        workflowVersion: recipe.version,
         mode: 'live',
         originKind: input.originKind,
         requesterUserId: input.requesterUserId,
@@ -201,9 +259,8 @@ export async function admitServiceRecoveryTask(
         attemptOrdinal: 0,
         currentStepKey: 'investigate',
         checkpoint: checkpoint as unknown as Record<string, unknown>,
-        // ±10% jitter (spec §11.2) so a burst of tasks admitted together does
-        // not create an expiry wave 24 hours later.
-        deadlineAt: new Date(now.getTime() + Math.round(deadlineMs * (0.9 + Math.random() * 0.2))),
+        // Already jittered and capped by resolveTaskDeadlineMs above.
+        deadlineAt: new Date(now.getTime() + deadlineMs),
         // Due immediately. The coordinator's `queued_past_wake` scan is what
         // picks it up — admission does NOT enqueue a wake job, because a queued
         // task has no authoritative source row to re-derive a wake FROM, which
@@ -228,6 +285,53 @@ export async function admitServiceRecoveryTask(
         .returning({ id: aiOperatorTasks.id });
 
       if (inserted.length > 0) {
+        // Wave E2 (#6167). The target row is the identity; the inline
+        // device_id / target_label columns written above stay as the read
+        // projection recipe spec §5.5 keeps until P3-5. BOTH are written,
+        // deliberately — this wave is additive, and every existing reader of
+        // the inline columns keeps working unchanged.
+        //
+        // Inside the SAME transaction as the task insert (this callback is one
+        // withSystemDbAccessContext transaction and the bare `db` proxy joins
+        // it), and ONLY on this branch: the idempotent-replay branch below did
+        // not create the task, and writing a second target/step/event for a
+        // task another request already admitted is exactly the duplicate the
+        // client idempotency key exists to prevent.
+        const target = await createTaskTarget(db, {
+          orgId: input.orgId,
+          taskId,
+          targetKind: 'device',
+          deviceId: device.id,
+          targetLabel: (device.hostname ?? recipeInput.deviceId).slice(0, 255),
+          targetOrdinal: 0,
+        });
+
+        await openStep(db, {
+          orgId: input.orgId,
+          taskId,
+          stepKey: 'investigate',
+          stepKind: resolveStepKind(recipe.key, recipe.version, 'investigate'),
+          targetId: target.id,
+          attemptOrdinal: 0,
+          planRevision: 1,
+          checkpoint: checkpoint as unknown as Record<string, unknown>,
+        });
+
+        // ONE event for the whole admission, not three. `createTaskTarget` and
+        // `openStep` are called without an `actor` above precisely so they do
+        // not each write their own — an admission is one transition.
+        await appendTaskEvent(db, {
+          orgId: input.orgId,
+          taskId,
+          eventType: 'task_admitted',
+          actor: input.requesterUserId
+            ? { kind: 'user', userId: input.requesterUserId }
+            : { kind: 'system' },
+          stepKey: 'investigate',
+          targetId: target.id,
+          detail: `${recipe.key} v${recipe.version} admitted against device target ${target.id}`,
+        });
+
         return { ok: true as const, taskId, replayed: false };
       }
 

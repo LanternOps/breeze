@@ -1,0 +1,9 @@
+{
+  "id": "jsonrpc",
+  "visa": "visa-5",
+  "result": {
+    "result": [
+      { "AccountId": 1201, "PartnerId": 2001, "Flags": [], "Settings": [ { "I1": "NEW-LAPTOP" }, { "I18": "new-laptop" }, { "I32": "1" }, { "I59": "1" }, { "I78": "D01" } ] }
+    ]
+  }
+}

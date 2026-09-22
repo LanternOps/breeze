@@ -3737,11 +3737,15 @@ describe('moveTicketOrg', () => {
     // SET CONSTRAINTS statement twice, or interposes an extra unnamed raw
     // statement, is visible here — executedTableNames() only counts
     // statements with a table identifier chunk and would not catch either.
-    // 1 SET CONSTRAINTS + 7 child-table rewrites (time_entries, ticket_parts,
+    // 1 SET CONSTRAINTS + 1 ai_operator_task_targets ticket detach (#6167,
+    // recipe library E2) + 7 child-table rewrites (time_entries, ticket_parts,
     // ticket_alert_links, ticket_outbox, ticket_attachments, ticket_email_links,
     // ticket_checklist_items — same 7 tables as the 'moves ticket to a
     // same-partner org' test below).
-    expect(texts).toHaveLength(8);
+    expect(texts).toHaveLength(9);
+    // The Operator target detach severs the plain ticket_id FK and stamps the
+    // detach in the same statement (one_pointer_chk).
+    expect(texts.filter((t) => /UPDATE ai_operator_task_targets\s+SET ticket_id = NULL/.test(t))).toHaveLength(1);
     expect(texts.filter((t) => t === 'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk DEFERRED')).toHaveLength(1);
   });
 

@@ -175,6 +175,11 @@ const leafConditionSchemas = {
       target: z.string().min(1).max(500),
       port: z.number().int().min(1).max(65535).optional(), // tcp_port
       expectStatus: z.number().int().min(100).max(599).optional(), // http_check
+      // http_check only. Left unset, the compiler picks a default: false when
+      // `expectStatus` is itself a 3xx (following the redirect would evaluate
+      // the FINAL hop's status instead of the one being asserted, #6510), true
+      // otherwise (matches the agent's own default).
+      followRedirects: z.boolean().optional(),
       pollingIntervalSeconds: z.number().int().min(30).max(3600).default(60),
       timeoutSeconds: z.number().int().min(1).max(120).default(5),
       consecutiveFailures: z.number().int().min(1).max(100).default(2),

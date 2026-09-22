@@ -287,6 +287,20 @@ export async function deleteDeviceCascade(
            updated_at = now()
      WHERE device_id = ${deviceId}`);
 
+  // Recipe library E2 (#6167), same rule as the task statement above: a
+  // target whose device is gone must RECORD that, or a detached target is
+  // indistinguishable from a target whose pointer was never resolved. Runs
+  // BEFORE the DEVICE_DETACH_DEVICE_ID_TABLES loop so the loop's generic
+  // device_id = NULL is a no-op for these rows rather than the first writer.
+  await tx.execute(sql`
+    UPDATE ai_operator_task_targets
+       SET device_id = NULL,
+           detached_at = COALESCE(detached_at, now()),
+           detached_reason = COALESCE(detached_reason, 'device_deleted'),
+           state = 'detached',
+           updated_at = now()
+     WHERE device_id = ${deviceId}`);
+
   for (const detachTable of DEVICE_DETACH_DEVICE_ID_TABLES) {
     await tx.execute(sql`UPDATE ${sql.identifier(detachTable)} SET device_id = NULL WHERE device_id = ${deviceId}`);
   }

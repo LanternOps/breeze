@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { and, or, eq, desc, lt, inArray, sql, count } from 'drizzle-orm';
-import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { assertInTransaction, db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { requestLikeFromSnapshot, writeAuditEvent } from './auditEvents';
 import {
   invoices, invoiceLines, invoiceLineDevices, invoicePayments, invoiceStripePayments, organizations, partners,
@@ -125,6 +125,39 @@ async function lockDraftInvoice(tx: DbExecutor, invoiceId: string) {
   if (!rows[0]) throw new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND');
   assertDraft(rows[0]);
   return rows[0];
+}
+
+/**
+ * Invoice-first lock anchor for the interactive contract-line producer.
+ * The caller continues with the contract lock in the same ambient transaction,
+ * matching addContractLine's canonical invoice -> contract order. Exporting the
+ * narrow authorized wrapper keeps lockDraftInvoice itself private.
+ */
+async function lockContractLineDestinationAndSource(
+  tx: DbExecutor,
+  invoiceId: string,
+  contractId: string,
+  actor: InvoiceActor,
+) {
+  const inv = await lockDraftInvoice(tx, invoiceId);
+  requireInvoiceAccess(actor, inv);
+  const [contractRow] = await tx.select({
+    id: contracts.id, orgId: contracts.orgId, currencyCode: contracts.currencyCode,
+  }).from(contracts).where(eq(contracts.id, contractId)).limit(1).for('update');
+  if (!contractRow) throw new InvoiceServiceError('Contract not found', 404, 'INVALID_STATE');
+  if (contractRow.orgId !== inv.orgId) {
+    throw new InvoiceServiceError('Contract line is not available for this invoice', 404, 'INVALID_STATE');
+  }
+  return { invoice: inv, contract: contractRow };
+}
+
+export async function lockContractLineMaterializationSource(
+  invoiceId: string,
+  contractId: string,
+  actor: InvoiceActor,
+) {
+  assertInTransaction('lockContractLineMaterializationSource');
+  return lockContractLineDestinationAndSource(db, invoiceId, contractId, actor);
 }
 
 export async function createManualInvoice(input: { orgId: string; siteId?: string; notes?: string; termsAndConditions?: string; currencyCode?: string }, actor: InvoiceActor) {
@@ -382,8 +415,6 @@ export async function addContractLine(
   actor: InvoiceActor
 ): Promise<{ line: typeof invoiceLines.$inferSelect; pricedFrom: ContractLinePricedFrom }> {
   return db.transaction(async (tx) => {
-    const inv = await lockDraftInvoice(tx, invoiceId); requireInvoiceAccess(actor, inv);
-
     // Wave 6 (#3778): the contract id is not optional at the service layer.
     if (!input.contractId) {
       throw new InvoiceServiceError('contractId is required for a contract-sourced line', 500, 'INVALID_STATE');
@@ -394,13 +425,9 @@ export async function addContractLine(
     // `invoice -> contract` order. Without it, a concurrent ACTIVE-contract
     // restamp could commit between this read and this insert, leaving an
     // old-currency line on a live draft that eligibility never saw.
-    const [contractRow] = await tx.select({
-      id: contracts.id, orgId: contracts.orgId, currencyCode: contracts.currencyCode,
-    }).from(contracts).where(eq(contracts.id, input.contractId)).limit(1).for('update');
-    if (!contractRow) throw new InvoiceServiceError('Contract not found', 404, 'INVALID_STATE');
-    if (contractRow.orgId !== inv.orgId) {
-      throw new InvoiceServiceError('Contract belongs to a different organization', 400, 'INVALID_STATE');
-    }
+    const { invoice: inv, contract: contractRow } = await lockContractLineDestinationAndSource(
+      tx, invoiceId, input.contractId, actor,
+    );
 
     // B2 guard (spec §5): a contract-sourced line may only land on an invoice in
     // the SAME currency as its contract — no conversion, no silent restamp. This
@@ -812,6 +839,10 @@ export type CustomerInvoiceLine = {
   unitPrice: string;
   taxable: boolean;
   lineTotal: string;
+  /** #6467: worked minutes for a time_entry line — the portal renders the
+   *  worked-vs-billed note from this, never from `description`. Null for
+   *  non-time-entry lines and legacy rows predating the column. */
+  workedMinutes: number | null;
 };
 
 type InvoiceRow = typeof invoices.$inferSelect;
@@ -844,6 +875,7 @@ type CustomerInvoiceLineSource = {
   unitPrice: string;
   taxable: boolean;
   lineTotal: string;
+  workedMinutes?: number | null;
 };
 
 /** Explicit serialization boundary: never spread an invoice_lines row here. */
@@ -860,6 +892,7 @@ export function toCustomerInvoiceLine(line: CustomerInvoiceLineSource): Customer
     unitPrice: line.unitPrice,
     taxable: line.taxable,
     lineTotal: line.lineTotal,
+    workedMinutes: line.workedMinutes ?? null,
   };
 }
 
@@ -901,6 +934,7 @@ export async function getCustomerInvoice(
     unitPrice: invoiceLines.unitPrice,
     taxable: invoiceLines.taxable,
     lineTotal: invoiceLines.lineTotal,
+    workedMinutes: invoiceLines.workedMinutes,
   }).from(invoiceLines).leftJoin(tickets, and(
     eq(tickets.id, invoiceLines.ticketId),
     eq(tickets.orgId, inv.orgId),
@@ -1150,7 +1184,7 @@ async function materializeLines(invoiceId: string, orgId: string, specs: DraftLi
     invoiceId, orgId, sourceType: s.sourceType, sourceId: s.sourceId, catalogItemId: s.catalogItemId,
     parentLineId: null, ticketId: s.ticketId, description: s.description, quantity: s.quantity,
     unitPrice: s.unitPrice, costBasis: s.costBasis, taxable: s.taxable, customerVisible: s.customerVisible,
-    lineTotal: s.lineTotal, isUnapprovedTime: s.isUnapprovedTime, sortOrder: sort++
+    lineTotal: s.lineTotal, isUnapprovedTime: s.isUnapprovedTime, workedMinutes: s.workedMinutes, sortOrder: sort++
   })));
 }
 
@@ -2204,7 +2238,7 @@ export async function voidInvoice(invoiceId: string, reason: string, opts: { rei
       sourceContractId: l.sourceContractId,
       parentLineId, ticketId: l.ticketId, name: l.name, description: l.description, quantity: l.quantity, unitPrice: l.unitPrice,
       costBasis: l.costBasis, revenueAllocation: l.revenueAllocation, taxable: l.taxable, customerVisible: l.customerVisible,
-      lineTotal: l.lineTotal, isUnapprovedTime: l.isUnapprovedTime, sortOrder: l.sortOrder
+      lineTotal: l.lineTotal, isUnapprovedTime: l.isUnapprovedTime, workedMinutes: l.workedMinutes, sortOrder: l.sortOrder
     });
     // Mint every new line id UP FRONT — parents AND children — so the map is
     // complete and order-independent before a single row is written.

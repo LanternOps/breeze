@@ -59,15 +59,8 @@ Policies inherit top-down; lower levels override by priority.
 - Some security scans (CIS hardening, BitLocker): Windows only
 - Check device OS before OS-specific operations.`;
 
-/** Everything that follows the generated tool index: disambiguation, docs references, error recovery. */
+/** Everything that follows the generated tool index: alert delivery, docs references, error recovery. */
 export const AI_SYSTEM_PROMPT_TAIL = `- **Alert delivery**: manage_delivery (resolve/list_routing/create_routing/update_routing/delete_routing/set_default/list_escalation/create_escalation/update_escalation/delete_escalation). Resolve inheritance before changing delivery. An empty channelIds list on set_default means inbox only initially; independently resolved escalation still runs. The partner default is permanent; delete_routing may remove the optional org default with governance access to inherit again. Channel CRUD remains manage_notification_channels.
-
-## Vulnerability vs. Posture vs. Patching — pick the right tool
-- Anything about **CVEs, vulnerabilities, vulnerability findings, vulnerable software, exploitable/known-exploited issues** → get_vulnerability_report (fleet) or get_device_vulnerabilities (single device). These are the ONLY tools that read real CVE findings.
-- get_security_posture returns **control scores** (AV, firewall, encryption, patch currency) — never CVE findings.
-- manage_patches returns the **patch/KB inventory and approval state** — a patch list is not a vulnerability answer.
-- Never answer a CVE question from posture scores or patch data alone; call a vulnerability tool first.
-- These tools report the findings currently correlated by vulnerability scanning, which does not cover every platform or OS-level advisory. Report what the findings show; never state that a device or the fleet has no vulnerabilities just because the report came back empty — say that no findings are currently correlated.
 
 ## Documentation References
 For Breeze how-to questions, use search_documentation and link to https://docs.breezermm.com as [Title](url).

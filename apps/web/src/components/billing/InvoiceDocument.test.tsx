@@ -59,6 +59,26 @@ describe('InvoiceDocument — customer-facing, no internal cost', () => {
   });
 });
 
+// #6467: the disclosure is structured data (workedMinutes), not baked into
+// `description`, so it survives regardless of what the description says.
+describe('InvoiceDocument — worked-vs-billed note (#6467)', () => {
+  it('shows the note for a time_entry line whose worked minutes differ from billed', () => {
+    const withNote: InvoiceDetailData = {
+      ...detail,
+      lines: [{
+        id: 'l3', invoiceId: 'inv-1', sourceType: 'time_entry', parentLineId: null, catalogItemId: null,
+        name: null, description: 'On-site', quantity: '1.00', unitPrice: '225.00', costBasis: null, revenueAllocation: null,
+        taxable: false, customerVisible: true, lineTotal: '225.00', isUnapprovedTime: false, sortOrder: 0, deviceCount: 0,
+        workedMinutes: 30,
+      }],
+    };
+    render(<InvoiceDocument detail={withNote} customerName="Acme Industries" />);
+    expect(screen.getByTestId('invoice-document-line-worked-vs-billed-l3')).toHaveTextContent(
+      '0.50 h worked · 1.00 h billed',
+    );
+  });
+});
+
 describe('InvoiceDocument — partner branding letterhead', () => {
   const branded: InvoiceDetailData = {
     ...detail,

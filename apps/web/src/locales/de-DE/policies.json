@@ -847,6 +847,7 @@
         "overridesLabel": "Überschreibungen:",
         "failedToLoadMonitors": "Überwachungen konnten nicht geladen werden",
         "createMonitor": "Monitor erstellen",
+        "monitorDeleted": "Monitor gelöscht",
         "recommended": {
           "title": "Empfohlene Monitore",
           "body": "Breeze liefert integrierte Monitore für CPU, Arbeitsspeicher, Datenträger und Patch-Compliance. Keiner ist dieser Richtlinie bisher zugeordnet.",

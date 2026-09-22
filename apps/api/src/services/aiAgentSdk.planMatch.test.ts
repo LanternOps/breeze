@@ -59,6 +59,14 @@ vi.mock('./aiGuardrails', () => ({
   checkToolRateLimit: vi.fn(),
 }));
 
+vi.mock('./aiSessionLiveAuthority', () => ({
+  resolveLiveSessionToolAuthority: vi.fn(async (session: any) => ({
+    ok: true,
+    auth: session.auth,
+    toolAuth: session.toolAuth ?? session.auth,
+  })),
+}));
+
 vi.mock('./auditEvents', () => ({
   writeAuditEvent: vi.fn(),
   requestLikeFromSnapshot: vi.fn(),

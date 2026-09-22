@@ -145,7 +145,7 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceId'],
     definition: {
       name: 'query_backups',
-      description: 'List backup configurations, jobs, and storage status for the organization.',
+      description: 'List backup configurations, jobs, and storage status for the organization. Actions: list_configs, list_jobs, list_policies.',
       input_schema: {
         type: 'object' as const,
         properties: {

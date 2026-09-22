@@ -222,7 +222,7 @@ export default function InboundEmailCard() {
 
   return (
     <div className="max-w-3xl space-y-6" data-testid="inbound-email-card">
-      <section className="rounded-lg border p-4">
+      <section className="rounded-lg border p-4" data-testid="inbound-toggles-section">
         <h2 className="mb-1 text-sm font-semibold">{t('inboundEmail.title')}</h2>
         <p className="mb-3 text-xs text-muted-foreground">
           {t('inboundEmail.description')}
@@ -238,70 +238,6 @@ export default function InboundEmailCard() {
           />
           {t('inboundEmail.enable')}
         </label>
-
-        <div className="mt-3">
-          <label className="text-xs font-medium">{t('inboundEmail.address')}</label>
-          {cfg.domainConfigured ? (
-            <div className="mt-0.5 flex items-center gap-2">
-              <input
-                value={localPartDraft}
-                onChange={(e) => setLocalPartDraft(e.target.value)}
-                className="w-40 rounded-md border px-2.5 py-1.5 text-sm"
-                data-testid="inbound-localpart"
-                aria-label={t('inboundEmail.localPart')}
-              />
-              <span className="text-sm text-muted-foreground">@{cfg.address.split('@')[1] ?? ''}</span>
-              <button
-                type="button"
-                onClick={saveLocalPart}
-                disabled={saving || localPartDraft === (cfg.inboundLocalPart ?? cfg.address.split('@')[0])}
-                className="rounded-md border px-2.5 py-1.5 text-sm"
-                data-testid="inbound-localpart-save"
-              >
-                {t('common:actions.save')}
-              </button>
-              <button
-                type="button"
-                onClick={copyAddress}
-                className="rounded-md border px-2.5 py-1.5 text-sm"
-                data-testid="inbound-address-copy"
-              >
-                {t('common:actions.copy')}
-              </button>
-            </div>
-          ) : (cfg.connectedMailboxCount ?? 0) > 0 ? (
-            // Only the NATIVE address is missing — mail is still arriving via the
-            // connected M365 mailbox(es) listed in the card below, which need no
-            // inbound domain. Rendering the amber "not configured" error here told
-            // M365-only operators their working setup was broken (#3598).
-            <p className="mt-0.5 text-xs text-muted-foreground" data-testid="inbound-address-via-mailbox">
-              {t('inboundEmail.addressViaMailbox')}
-            </p>
-          ) : (
-            <p className="mt-0.5 text-xs text-amber-600" data-testid="inbound-address-unconfigured">
-              {cfg.isHosted === false ? (
-                <Trans
-                  i18nKey="inboundEmail.domainNotConfiguredSelfHosted"
-                  t={t}
-                  components={{
-                    var: <code className="rounded bg-muted px-1 py-0.5 font-mono" />,
-                    docs: (
-                      <a
-                        href={INBOUND_DOCS_URL}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="underline"
-                        data-testid="inbound-address-unconfigured-docs"
-                      />
-                    ),
-                  }}
-                />
-              ) : (
-                t('inboundEmail.domainNotConfigured')
-              )}
-            </p>
-          )}
-        </div>
 
         <div className="mt-3">
           <label className="text-xs font-medium" htmlFor="inbound-triage-org">
@@ -422,6 +358,70 @@ export default function InboundEmailCard() {
             {t('inboundEmail.editEmailTemplatesLink')}
           </button>
         </p>
+      </section>
+
+      <section className="rounded-lg border p-4" data-testid="inbound-address-section">
+        <h2 className="mb-1 text-sm font-semibold">{t('inboundEmail.address')}</h2>
+        {cfg.domainConfigured ? (
+          <div className="mt-0.5 flex items-center gap-2">
+            <input
+              value={localPartDraft}
+              onChange={(e) => setLocalPartDraft(e.target.value)}
+              className="w-40 rounded-md border px-2.5 py-1.5 text-sm"
+              data-testid="inbound-localpart"
+              aria-label={t('inboundEmail.localPart')}
+            />
+            <span className="text-sm text-muted-foreground">@{cfg.address.split('@')[1] ?? ''}</span>
+            <button
+              type="button"
+              onClick={saveLocalPart}
+              disabled={saving || localPartDraft === (cfg.inboundLocalPart ?? cfg.address.split('@')[0])}
+              className="rounded-md border px-2.5 py-1.5 text-sm"
+              data-testid="inbound-localpart-save"
+            >
+              {t('common:actions.save')}
+            </button>
+            <button
+              type="button"
+              onClick={copyAddress}
+              className="rounded-md border px-2.5 py-1.5 text-sm"
+              data-testid="inbound-address-copy"
+            >
+              {t('common:actions.copy')}
+            </button>
+          </div>
+        ) : (cfg.connectedMailboxCount ?? 0) > 0 ? (
+          // Only the NATIVE address is missing — mail is still arriving via the
+          // connected M365 mailbox(es) listed in the card below, which need no
+          // inbound domain. Rendering the amber "not configured" error here told
+          // M365-only operators their working setup was broken (#3598).
+          <p className="mt-0.5 text-xs text-muted-foreground" data-testid="inbound-address-via-mailbox">
+            {t('inboundEmail.addressViaMailbox')}
+          </p>
+        ) : (
+          <p className="mt-0.5 text-xs text-amber-600" data-testid="inbound-address-unconfigured">
+            {cfg.isHosted === false ? (
+              <Trans
+                i18nKey="inboundEmail.domainNotConfiguredSelfHosted"
+                t={t}
+                components={{
+                  var: <code className="rounded bg-muted px-1 py-0.5 font-mono" />,
+                  docs: (
+                    <a
+                      href={INBOUND_DOCS_URL}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="underline"
+                      data-testid="inbound-address-unconfigured-docs"
+                    />
+                  ),
+                }}
+              />
+            ) : (
+              t('inboundEmail.domainNotConfigured')
+            )}
+          </p>
+        )}
       </section>
 
       <CustomerDomainsCard />

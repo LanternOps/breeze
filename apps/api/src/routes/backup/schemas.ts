@@ -72,6 +72,35 @@ export function validateS3Details(details: Record<string, unknown>): {
   return { error: null, region, endpoint: normalizedEndpoint };
 }
 
+/**
+ * Canonicalizes S3 credential field names to accessKey/secretKey — the ONLY
+ * spelling the Go agent reads (agent/cmd/breeze-backup/exec_backup.go). This
+ * API's own S3 config validator/connectivity probe (buildS3StorageClient in
+ * services/backupSnapshotStorage.ts) has long accepted the AWS-idiomatic
+ * accessKeyId/secretAccessKey spelling too, so a config saved under only
+ * that spelling validated, persisted, and dispatched — then every upload on
+ * the agent ran with empty credentials, falling through to the SDK's
+ * default credential chain and stalling on IMDS/DNS (#6511).
+ *
+ * Mutates `details` in place (matching the region/endpoint normalization
+ * this file already does at the same call sites) so whichever spelling was
+ * submitted ends up stored under the canonical name. Canonical values win
+ * when both spellings are present. A no-op when neither alt field exists.
+ */
+export function canonicalizeS3CredentialFields(details: Record<string, unknown>): void {
+  const accessKey =
+    (typeof details.accessKey === 'string' && details.accessKey) ||
+    (typeof details.accessKeyId === 'string' ? details.accessKeyId : undefined);
+  const secretKey =
+    (typeof details.secretKey === 'string' && details.secretKey) ||
+    (typeof details.secretAccessKey === 'string' ? details.secretAccessKey : undefined);
+
+  if (accessKey !== undefined) details.accessKey = accessKey;
+  if (secretKey !== undefined) details.secretKey = secretKey;
+  delete details.accessKeyId;
+  delete details.secretAccessKey;
+}
+
 export const configSchema = z.object({
   name: z.string().min(1),
   provider: z.enum(['s3', 'local']),

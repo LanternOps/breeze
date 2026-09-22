@@ -17,6 +17,15 @@ import type { IntentReleaseRevalidation } from './actionIntents/revalidateReleas
 import { APPROVED_EXECUTING_MESSAGE, APPROVED_EXECUTING_STATUS } from './aiToolHandoff';
 import { setActionIntentMetricsRecorder } from './actionIntents/metrics';
 
+const mockResolveLiveSessionToolAuthority = vi.fn(async (session: any): Promise<any> => ({
+  ok: true,
+  auth: session.auth,
+  toolAuth: session.toolAuth ?? session.auth,
+}));
+vi.mock('./aiSessionLiveAuthority', () => ({
+  resolveLiveSessionToolAuthority: (...args: unknown[]) => (mockResolveLiveSessionToolAuthority as any)(...args),
+}));
+
 // ============================================
 // Mocks
 // ============================================
@@ -1823,6 +1832,32 @@ describe('createSessionPreToolUse', () => {
       expect(mockTransitionIntent).not.toHaveBeenCalled();
     });
 
+    it('fails closed when the requester loses the underlying tool authority while awaiting self-approval', async () => {
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true, tier: 2, requiresApproval: true, description: 'Take screenshot',
+      } as any);
+      mockInsertReturning({ id: 'exec-live-deny' });
+      vi.mocked(waitForApproval).mockResolvedValue(true);
+      mockResolveLiveSessionToolAuthority.mockResolvedValueOnce({
+        ok: false,
+        reason: 'Insufficient permissions: requires devices.control',
+      });
+      const mockSet = vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) }));
+      vi.mocked(db.update).mockReturnValue({ set: mockSet } as any);
+      const session = makeActiveSession({ approvalMode: 'per_step', auditSnapshot: {} });
+
+      const result = await createSessionPreToolUse(session)('take_screenshot', { deviceId: 'd-1' });
+
+      expect(result).toEqual({ allowed: false, error: 'Authorization changed while awaiting approval; the action was not executed.' });
+      expect(mockResolveLiveSessionToolAuthority).toHaveBeenCalledTimes(1);
+      expect(mockSet).toHaveBeenCalledWith(expect.objectContaining({ status: 'rejected' }));
+      expect(mockSet).not.toHaveBeenCalledWith(expect.objectContaining({ status: 'executing' }));
+      expect(mockWriteAuditEvent).toHaveBeenCalledWith(undefined, expect.objectContaining({
+        action: 'ai.security.tool_authority_changed',
+        result: 'failure',
+      }));
+    });
+
     it('returns allowed:false without creating an action intent when rejected or timed out', async () => {
       vi.mocked(checkGuardrails).mockReturnValue({
         allowed: true,
@@ -1864,6 +1899,109 @@ describe('createSessionPreToolUse', () => {
 
       expect(mockTransitionIntent).not.toHaveBeenCalled();
     });
+  });
+
+  it('fails closed and aborts an approved plan before a Tier-2 step can use stale site authority', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue({
+      allowed: true, tier: 2, requiresApproval: true, description: 'Take screenshot',
+    } as any);
+    mockResolveLiveSessionToolAuthority.mockResolvedValueOnce({
+      ok: false,
+      reason: 'Site authority changed',
+    });
+    const session = makeActiveSession({
+      approvalMode: 'action_plan',
+      auditSnapshot: {},
+      activePlanId: 'plan-live-deny',
+      approvedPlanSteps: new Map([[0, { toolName: 'take_screenshot', input: { deviceId: 'd-1' } }]]),
+    });
+
+    const result = await createSessionPreToolUse(session)('take_screenshot', { deviceId: 'd-1' });
+
+    expect(result).toEqual({ allowed: false, error: 'Authorization changed after plan approval; the action was not executed.' });
+    expect(session.activePlanId).toBeNull();
+    expect(session.eventBus.publish).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'plan_complete', status: 'aborted',
+    }));
+    expect(session.eventBus.publish).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'plan_step_start' }));
+    expect(mockWriteAuditEvent).toHaveBeenCalledWith(undefined, expect.objectContaining({
+      action: 'ai.security.tool_authority_changed',
+      result: 'failure',
+    }));
+  });
+
+  it('revalidates live authority at the auto-approve release point and fails closed', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue({
+      allowed: true, tier: 2, requiresApproval: false, description: 'Take screenshot',
+    } as any);
+    mockResolveLiveSessionToolAuthority.mockResolvedValueOnce({
+      ok: false,
+      reason: 'User is no longer active',
+    });
+    const session = makeActiveSession({ approvalMode: 'auto_approve', auditSnapshot: {} });
+
+    const result = await createSessionPreToolUse(session)('take_screenshot', { deviceId: 'd-1' });
+
+    // Release point #1: auto_approve / readOnlyAutoExec. This branch has no
+    // approval prompt at all, so without revalidation a revoked user's queued
+    // Tier-2 tool would execute on the session's start-time snapshot.
+    expect(result).toEqual({
+      allowed: false,
+      error: 'Authorization changed before execution; the action was not executed.',
+    });
+    expect(mockResolveLiveSessionToolAuthority).toHaveBeenCalledTimes(1);
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(mockWriteAuditEvent).toHaveBeenCalledWith(undefined, expect.objectContaining({
+      action: 'ai.security.tool_authority_changed',
+      result: 'failure',
+    }));
+  });
+
+  it('fails closed when the live authority revalidation itself throws', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue({
+      allowed: true, tier: 2, requiresApproval: false, description: 'Take screenshot',
+    } as any);
+    mockResolveLiveSessionToolAuthority.mockRejectedValueOnce(new Error('db unreachable'));
+    const session = makeActiveSession({ approvalMode: 'auto_approve', auditSnapshot: {} });
+
+    const result = await createSessionPreToolUse(session)('take_screenshot', { deviceId: 'd-1' });
+
+    // A revalidation that cannot complete must DENY, never fall through to the
+    // stale snapshot — a database blip would otherwise reopen the whole window.
+    expect(result).toEqual({
+      allowed: false,
+      error: 'Authorization changed before execution; the action was not executed.',
+    });
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(mockWriteAuditEvent).toHaveBeenCalledWith(undefined, expect.objectContaining({
+      action: 'ai.security.tool_authority_changed',
+      result: 'failure',
+      errorMessage: 'Live authority revalidation failed',
+    }));
+  });
+
+  it('updates the session authority in place when live revalidation succeeds', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue({
+      allowed: true, tier: 2, requiresApproval: false, description: 'Take screenshot',
+    } as any);
+    const freshAuth = { ...makeAuth({ scope: 'organization' }), token: { roleId: 'role-fresh' } } as any;
+    const freshToolAuth = { ...freshAuth, accessibleOrgIds: ['org-1'] } as any;
+    mockResolveLiveSessionToolAuthority.mockResolvedValueOnce({
+      ok: true, auth: freshAuth, toolAuth: freshToolAuth,
+    });
+    mockInsertReturning({ id: 'exec-live-ok' });
+    const session = makeActiveSession({ approvalMode: 'auto_approve', auditSnapshot: {} });
+
+    const result = await createSessionPreToolUse(session)('take_screenshot', { deviceId: 'd-1' });
+
+    expect(result).toEqual({ allowed: true });
+    // The refreshed authority must REPLACE the snapshot, or the tool still
+    // runs on stale reach even though revalidation passed.
+    expect(session.auth).toBe(freshAuth);
+    expect(session.toolAuth).toBe(freshToolAuth);
+    expect(mockWriteAuditEvent).not.toHaveBeenCalledWith(undefined, expect.objectContaining({
+      action: 'ai.security.tool_authority_changed',
+    }));
   });
 
   it('blocks tools outside the session allowlist before approval handling', async () => {
@@ -2406,12 +2544,31 @@ describe('createSessionPostToolUse', () => {
     }), false, 12);
 
     // Two inserts fire (aiMessages then aiToolExecutions); the execution row is
-    // the one carrying toolInput.
+    // the one carrying redacted toolInput.
     const execInsert = values.mock.calls
       .map((c) => c[0])
       .find((v) => v && typeof v === 'object' && 'toolInput' in v);
     expect(execInsert).toBeDefined();
     expect((execInsert as any).delegantToolCallId).toBe('tc-123');
+  });
+
+  it('redacts sensitive input before inserting a tier-1 execution row', async () => {
+    const session = makeActiveSession();
+    const values = mockInsertValues();
+    const callback = createSessionPostToolUse(session);
+
+    await callback('query_devices', {
+      deviceId: 'device-1',
+      providerConfig: { accessKey: 'synthetic-access', secretKey: 'synthetic-secret' },
+    }, JSON.stringify({ status: 'completed' }), false, 12);
+
+    const execInsert = values.mock.calls
+      .map((c) => c[0])
+      .find((v) => v && typeof v === 'object' && 'toolInput' in v);
+    expect(execInsert.toolInput).toMatchObject({
+      deviceId: 'device-1',
+      providerConfig: { accessKey: '[REDACTED]', secretKey: '[REDACTED]' },
+    });
   });
 
   it('omits delegantToolCallId for non-M365 tool output (no key present)', async () => {

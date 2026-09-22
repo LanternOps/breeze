@@ -348,6 +348,46 @@ const fenceAiOperatorTasks: CustomMergeExecutor = async (loser) => {
      WHERE org_id = ${uuid(loser)}
        AND device_id IS NOT NULL`);
 
+  // Recipe library E2 (#6167). THREE target pointers to sever, all in the
+  // RESOLVE phase and all for the same reason the task's device detach above
+  // is here: the move phase repoints `devices`, `tickets` and `contacts` to the
+  // survivor while these targets stay with the loser. For contact_id that is
+  // not merely untidy — ai_operator_task_targets_contact_org_fk is a COMPOSITE
+  // (contact_id, org_id) FK, so a contact repointed to the survivor leaves the
+  // pair unresolvable and the merge aborts at COMMIT with 23503.
+  //
+  // Deliberately NOT restricted to live tasks: a terminal task's target is
+  // leaving the tenant too, and its evidence should say so. Stamping
+  // 'org_merged' here first also means the device-move trigger's
+  // COALESCE(detached_reason, 'device_moved') preserves the REAL reason when
+  // `devices` repoints later in the move phase. All three pointers and the
+  // stamp go in ONE statement: ai_operator_task_targets_one_pointer_chk
+  // requires the stamp the moment the last pointer is null.
+  const targetsDetached = await run(sql`
+    UPDATE ai_operator_task_targets
+       SET device_id = NULL,
+           ticket_id = NULL,
+           contact_id = NULL,
+           detached_at = COALESCE(detached_at, now()),
+           detached_reason = COALESCE(detached_reason, 'org_merged'),
+           state = 'detached',
+           updated_at = now()
+     WHERE org_id = ${uuid(loser)}
+       AND (device_id IS NOT NULL OR ticket_id IS NOT NULL OR contact_id IS NOT NULL)`);
+
+  // The frozen provider identity survives — external_id and principal_label are
+  // the evidence of WHO the task was about — but the connection pointers must
+  // go: m365_connections repoint-dedupes to the survivor and
+  // google_workspace_connections keeps the survivor's row, and both FKs here
+  // are composite (connection_id, org_id).
+  const accountsDetached = await run(sql`
+    UPDATE ai_operator_task_target_accounts
+       SET m365_connection_id = NULL,
+           google_connection_id = NULL,
+           updated_at = now()
+     WHERE org_id = ${uuid(loser)}
+       AND (m365_connection_id IS NOT NULL OR google_connection_id IS NOT NULL)`);
+
   return {
     moved: 0,
     dropped: 0,
@@ -367,6 +407,20 @@ const fenceAiOperatorTasks: CustomMergeExecutor = async (loser) => {
             `ai_operator_tasks: detached ${detached} AI Operator task(s) from their target device — the `
             + 'devices move to the surviving organization while the task history stays behind, so the '
             + 'task keeps its frozen target label as evidence but no longer points at the device.',
+          ]
+        : []),
+      ...(targetsDetached > 0
+        ? [
+            `ai_operator_task_targets: detached ${targetsDetached} AI Operator task target(s) from their device, `
+            + 'ticket or contact — those records move to the surviving organization while the task history '
+            + 'stays behind, so each target keeps its frozen label as evidence but no longer points at a live record.',
+          ]
+        : []),
+      ...(accountsDetached > 0
+        ? [
+            `ai_operator_task_target_accounts: cleared the provider connection pointer on ${accountsDetached} `
+            + 'frozen account(s); the immutable external identifier and principal label are retained as '
+            + 'evidence of who the task was about.',
           ]
         : []),
     ],

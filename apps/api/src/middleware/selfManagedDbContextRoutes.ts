@@ -67,6 +67,11 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // when the route shipped, so the portal request tx was pinned across Stripe
   // (#3777 review F2).
   { method: 'POST', pattern: /^\/api\/v1\/portal\/quotes\/[^/]+\/pay\/?$/ },
+  // #6175 Network Visibility overview. Portal auth has already resolved the
+  // owning partner, so the handler opens one org-scoped context with
+  // currentPartnerId populated for SELECT-only partner-wide network_monitors
+  // access. No outer portal request transaction is held.
+  { method: 'GET', pattern: /^\/api\/v1\/portal\/network\/overview\/?$/ },
   // Stripe key verification — savePartnerStripeKey calls accounts.retrieve.
   { method: 'POST', pattern: /^\/api\/v1\/partner\/stripe-connect\/key\/?$/ },
   // Stripe cache lazy refresh — getPartnerStripeAccountSnapshot may call accounts.retrieve.
@@ -321,6 +326,20 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // uncommitted.
   { method: 'PUT', pattern: /^\/api\/v1\/monitoring\/assets\/[^/]+\/snmp\/?$/ },
   { method: 'PATCH', pattern: /^\/api\/v1\/monitoring\/assets\/[^/]+\/snmp\/?$/ },
+  // #6008 W01 — the three backup-provider routes that make a REAL Cove
+  // JSON-RPC call inside the handler (Login + EnumeratePartners, 30s timeout,
+  // against an OPERATOR-SUPPLIED host). Held inside the request transaction
+  // that pins a pooled connection idle-in-transaction for the whole round trip
+  // (#1105), and `safeFetch`'s own `assertOutsideHeldDbContext` tripwire throws
+  // in CI when it happens. Each handler wraps its reads and writes in short
+  // `withAuthDbAccessContext` blocks with the network call between them.
+  //
+  // `/connections/:id/sync` and DELETE `/connections/:id` are deliberately
+  // ABSENT: neither makes an outbound call (sync only enqueues), so both keep
+  // the ambient transaction — the same call as `push-bulk` above.
+  { method: 'POST', pattern: /^\/api\/v1\/backup\/providers\/connections\/?$/ },
+  { method: 'PATCH', pattern: /^\/api\/v1\/backup\/providers\/connections\/[^/]+\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/backup\/providers\/connections\/[^/]+\/test\/?$/ },
 ];
 
 /**

@@ -49,6 +49,7 @@ export const TOOL_ACTION_INPUT_KEYS: Record<string, string> = {
 // tierConfig.ts parity guard, issue #2686). Not part of the runtime API —
 // resolution always goes through checkGuardrails().
 export const TIER2_ACTIONS: Record<string, string[]> = {
+  manage_policy_feature_link: ['describe'],
   manage_alerts: ['acknowledge', 'resolve', 'suppress'],
   manage_tickets: [
     'create',
@@ -159,6 +160,7 @@ export const TIER2_ACTIONS: Record<string, string[]> = {
 // entry does not belong here; leaving a read out only costs one lightweight
 // prompt.
 export const TIER2_READONLY_ACTIONS: Record<string, string[]> = {
+  manage_policy_feature_link: ['describe'],
   execute_command: ['event_logs_list', 'file_list', 'list_processes'],
   file_operations: ['list'],
   manage_services: ['list'],
@@ -1123,6 +1125,7 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   get_effective_configuration: { resource: 'devices', action: 'read' },
   preview_configuration_change: { resource: 'devices', action: 'read' },
   manage_policy_feature_link: {
+    describe: { resource: 'devices', action: 'read' },
     list: { resource: 'devices', action: 'read' },
     add: { resource: 'devices', action: 'write' },
     update: { resource: 'devices', action: 'write' },
@@ -1567,6 +1570,12 @@ export const TOOL_ACTION_EXTRA_PERMISSIONS: Record<
     // rewrites tenant ownership of the ticket and every child row, so the
     // organizations grant is the real authority being exercised.
     move_org: [{ resource: 'organizations', action: 'write' }],
+  },
+  manage_invoices: {
+    // SEC-145 — materializing a contract line reads the contract, so the
+    // caller needs contracts:read on top of invoices:write. Per-action so
+    // unrelated invoice edits are not raised to contract-read authority.
+    add_contract_line: [{ resource: 'contracts', action: 'read' }],
   },
 };
 
@@ -2564,6 +2573,22 @@ export async function checkToolPermission(
   // extra permission; denials keep the same first-failure ordering as the
   // old per-requirement loop.
   return checkPermissionRequirements(auth, resolution.requirements);
+}
+
+/** Check a tool against an already-fresh permission resolution. */
+export function checkToolPermissionForResolvedUser(
+  toolName: string,
+  input: Record<string, unknown>,
+  userPerms: import('./permissions').UserPermissions,
+): string | null {
+  const resolution = resolveToolPermissionRequirements(toolName, input);
+  if (!resolution.ok) return resolution.denial;
+  for (const requirement of resolution.requirements) {
+    if (!hasPermission(userPerms, requirement.resource, requirement.action)) {
+      return `Insufficient permissions: requires ${requirement.resource}.${requirement.action}`;
+    }
+  }
+  return null;
 }
 
 /**

@@ -2540,5 +2540,11 @@
     "message": "A autenticação multifator não é obrigatória para a sua equipe. Sessões apenas com senha podem executar scripts, mover dispositivos e alterar políticas.",
     "cta": "Exigir MFA",
     "dismiss": "Dispensar o lembrete da política de MFA por hoje"
+  },
+  "inheritedField": {
+    "inheritsFrom": "Herda de {{source}}",
+    "noneConfigured": "Nenhum {{source}} configurado",
+    "overriding": "Substitui {{source}}",
+    "overridingWithValue": "Substitui {{source}} ({{value}})"
   }
 }

@@ -1,0 +1,7 @@
+{
+  "id": "jsonrpc",
+  "error": {
+    "code": -32001,
+    "message": "Visa expired"
+  }
+}

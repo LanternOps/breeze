@@ -185,8 +185,17 @@ export const DEVICE_LINK_DEPENDENT_COLUMNS: Readonly<Record<string, readonly str
 // beyond the generic device_id = NULL this list drives: deviceDeletion.ts
 // ('device_deleted') and moveOrg.ts ('device_moved'); both also fence any live
 // task, because a task whose target has vanished must not keep executing.
+// ai_operator_task_targets (recipe library E2, #6167) detaches for the same
+// reason one level down: a target is the frozen record of WHAT a task was
+// pointed at, and its target_label must outlive the device. Three callers stamp
+// more than the generic device_id = NULL this list drives — deviceDeletion.ts
+// ('device_deleted'), moveOrg.ts ('device_moved') and the merge fence
+// ('org_merged') — and all three also set state = 'detached'. The generic
+// device_id = NULL is itself safe: the table's BEFORE UPDATE trigger
+// ai_operator_task_targets_stamp_detach stamps the detach in the same row
+// write, which one_pointer_chk requires.
 export const DEVICE_DETACH_DEVICE_ID_TABLES = [
-  'abuse_endpoint_fingerprints', 'ai_agent_runs', 'ai_operator_tasks', 'invoice_line_devices', 'support_sessions', 'tickets',
+  'abuse_endpoint_fingerprints', 'ai_agent_runs', 'ai_operator_task_targets', 'ai_operator_tasks', 'invoice_line_devices', 'support_sessions', 'tickets',
 ] as const;
 
 /**
@@ -215,11 +224,18 @@ export const DEVICE_DETACH_DEVICE_ID_TABLES = [
  *
  * ai_operator_tasks is deliberately ABSENT for the same reason (#5205 W03,
  * #5208): AI Operator task history stays in the org that delegated the work.
- * `org_id` is the task's immutable tenant and anchors four composite
+ * `org_id` is the task's immutable tenant and anchors seven composite
  * (x, org_id) FKs, so a restamp here would 23503 the moment the task has an
- * operation, an outbox wake, a linked run or a linked intent. moveOrg detaches instead —
+ * operation, an outbox wake, a target, a step, an event, a linked run or a
+ * linked intent. moveOrg detaches instead —
  * device_id = NULL plus target_detached_at/reason and a fence of any live
  * task. It is listed in INTENTIONALLY_NO_ORG_ID in moveOrg.coverage.test.ts.
+ *
+ * ai_operator_task_targets is deliberately ABSENT for exactly the same reason
+ * (recipe library E2, #6167): a target's org_id IS its task's org_id and
+ * anchors ai_operator_task_targets_task_org_fk, so a re-stamp here would 23503
+ * while the task stayed behind. moveOrg detaches instead. It is listed in
+ * INTENTIONALLY_NO_ORG_ID in moveOrg.coverage.test.ts.
  *
  * ai_unattended_exposure is deliberately ABSENT too (wave 5a, #3827): it has
  * an org_id column but is cascade-deleted, not moved. (a) Exposure history

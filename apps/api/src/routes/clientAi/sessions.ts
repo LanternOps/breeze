@@ -19,7 +19,7 @@ import { streamSSE } from 'hono/streaming';
 import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
 import { and, asc, count, desc, eq, inArray } from 'drizzle-orm';
-import { db, withDbAccessContext } from '../../db';
+import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { aiMessages, aiSessions } from '../../db/schema';
 import {
   clientAiAuthMiddleware,
@@ -33,6 +33,7 @@ import { settleBlockedTurnForNewMessage } from '../../services/aiAgentSdk';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { captureException } from '../../services/sentry';
 import { checkBillingCredits } from '../../services/aiCostTracker';
+import { getEffectiveAiBudget } from '../../services/effectiveSettings';
 import {
   isAiBudgetLockTimeout,
   releaseUnusedAiBudgetReservation,
@@ -299,6 +300,14 @@ clientAiSessionRoutes.post('/', async (c) => {
   const model = policy.allowedModels[0] ?? resolved.model;
   const systemPrompt = buildClientSystemPrompt(host, policy.writeMode);
 
+  // #6473 — mirrors createSession in services/aiAgent.ts: without this, every
+  // client (Office add-in) session also fell back to the `ai_sessions` schema
+  // column default (50) instead of the configured org/partner
+  // maxTurnsPerSession. withSystemDbAccessContext matches every other
+  // getEffectiveAiBudget caller (aiCostTracker.ts) — required for the
+  // partner-axis `partners` read.
+  const budget = await withSystemDbAccessContext(() => getEffectiveAiBudget(auth.orgId));
+
   const [session] = await db
     .insert(aiSessions)
     .values({
@@ -308,6 +317,7 @@ clientAiSessionRoutes.post('/', async (c) => {
       type: clientSessionType(host),
       model,
       billingSource: resolved.source === 'partner' ? 'partner_key' : 'platform',
+      maxTurns: budget.maxTurnsPerSession,
       systemPrompt,
       workbookName: workbookName ?? null,
     })

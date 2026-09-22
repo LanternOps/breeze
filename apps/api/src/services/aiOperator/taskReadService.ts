@@ -38,6 +38,17 @@ import {
   type AiOperatorWaitDependencyDto,
   type AiOperatorWaitDependencyKind,
   type AiOperatorWaitReason,
+  type AiOperatorAccountProvider,
+  type AiOperatorEventActorKind,
+  type AiOperatorStepKind,
+  type AiOperatorStepState,
+  type AiOperatorTargetKind,
+  type AiOperatorTargetState,
+  type AiOperatorTaskEventDto,
+  type AiOperatorTaskEventType,
+  type AiOperatorTaskStepDto,
+  type AiOperatorTaskTargetAccountDto,
+  type AiOperatorTaskTargetRowDto,
 } from '@breeze/shared';
 
 /**
@@ -245,18 +256,162 @@ export function mapOperatorTaskListItem(row: OperatorTaskRowInput): AiOperatorTa
   return mapOperatorTaskListItem_(row);
 }
 
+export interface OperatorTargetRowInput {
+  id: string;
+  targetKind: AiOperatorTargetKind;
+  deviceId: string | null;
+  ticketId: string | null;
+  contactId: string | null;
+  targetLabel: string;
+  targetOrdinal: number;
+  state: AiOperatorTargetState;
+  detachedAt: Date | null;
+  detachedReason: AiOperatorTargetDetachReason | null;
+}
+
+export interface OperatorTargetAccountRowInput {
+  targetId: string;
+  provider: AiOperatorAccountProvider;
+  m365ConnectionId: string | null;
+  googleConnectionId: string | null;
+  externalId: string;
+  principalLabel: string;
+}
+
+/** NOTE what is absent: `checkpoint`. There is no field for it, so no mapper
+ *  can put it on the wire even by accident — the same structural guarantee
+ *  this file's header claims for `ai_operator_tasks.checkpoint`. */
+export interface OperatorStepRowInput {
+  id: string;
+  stepKey: string;
+  stepKind: AiOperatorStepKind;
+  targetId: string | null;
+  attemptOrdinal: number;
+  state: AiOperatorStepState;
+  planRevision: number | null;
+  expectedCriterion: string | null;
+  dependencyKind: AiOperatorWaitDependencyKind | null;
+  dependencyId: string | null;
+  detail: string | null;
+  startedAt: Date | null;
+  settledAt: Date | null;
+}
+
+export interface OperatorEventRowInput {
+  id: string;
+  transitionSeq: number;
+  eventType: AiOperatorTaskEventType;
+  actorKind: AiOperatorEventActorKind;
+  actorUserId: string | null;
+  stepKey: string | null;
+  targetId: string | null;
+  detail: string | null;
+  createdAt: Date;
+}
+
+/** Named-field mapper. Collapses the two provider connection columns into one
+ *  `connectionId`: which table it came from is already said by `provider`, and
+ *  a client that had to check both would inevitably check only one. */
+export function mapOperatorTargetAccount(
+  row: OperatorTargetAccountRowInput,
+): AiOperatorTaskTargetAccountDto {
+  return {
+    provider: row.provider,
+    connectionId: row.provider === 'm365' ? row.m365ConnectionId : row.googleConnectionId,
+    externalId: row.externalId,
+    principalLabel: row.principalLabel,
+  };
+}
+
+export function mapOperatorTarget(
+  row: OperatorTargetRowInput,
+  accounts: OperatorTargetAccountRowInput[],
+): AiOperatorTaskTargetRowDto {
+  return {
+    id: row.id,
+    targetKind: row.targetKind,
+    deviceId: row.deviceId,
+    ticketId: row.ticketId,
+    contactId: row.contactId,
+    label: row.targetLabel,
+    ordinal: row.targetOrdinal,
+    state: row.state,
+    detachedAt: row.detachedAt ? row.detachedAt.toISOString() : null,
+    detachedReason: row.detachedReason,
+    accounts: accounts
+      .filter((a) => a.targetId === row.id)
+      .map(mapOperatorTargetAccount),
+  };
+}
+
+export function mapOperatorStep(row: OperatorStepRowInput): AiOperatorTaskStepDto {
+  return {
+    id: row.id,
+    stepKey: row.stepKey,
+    stepKind: row.stepKind,
+    targetId: row.targetId,
+    attemptOrdinal: row.attemptOrdinal,
+    state: row.state,
+    planRevision: row.planRevision,
+    expectedCriterion: row.expectedCriterion,
+    dependency: row.dependencyKind && row.dependencyId
+      ? { kind: row.dependencyKind, id: row.dependencyId }
+      : null,
+    detail: row.detail,
+    startedAt: row.startedAt ? row.startedAt.toISOString() : null,
+    settledAt: row.settledAt ? row.settledAt.toISOString() : null,
+  };
+}
+
+export function mapOperatorEvent(row: OperatorEventRowInput): AiOperatorTaskEventDto {
+  return {
+    id: row.id,
+    transitionSeq: row.transitionSeq,
+    eventType: row.eventType,
+    actorKind: row.actorKind,
+    actorUserId: row.actorUserId,
+    stepKey: row.stepKey,
+    targetId: row.targetId,
+    detail: row.detail,
+    createdAt: row.createdAt.toISOString(),
+  };
+}
+
 /**
- * The full task detail DTO: the shared list fields plus safely-projected
- * `operations`/`runs`.
+ * The full task detail DTO. ADDITIVE: every pre-E2 field, including the inline
+ * `target` projection (recipe spec §5.5), is produced exactly as before, so
+ * `AI_OPERATOR_TASK_DTO_SCHEMA_VERSION` stays 1 and a client that ignores the
+ * three new arrays is unaffected.
  */
 export function mapOperatorTask(
   row: OperatorTaskRowInput,
   operations: OperatorOperationRowInput[],
   runs: OperatorRunLinkRowInput[],
+  targets: OperatorTargetRowInput[] = [],
+  targetAccounts: OperatorTargetAccountRowInput[] = [],
+  steps: OperatorStepRowInput[] = [],
+  events: OperatorEventRowInput[] = [],
 ): AiOperatorTaskDto {
   return {
     ...mapOperatorTaskListItem_(row),
     operations: operations.map(mapOperatorOperation),
     runs: runs.map(mapOperatorRunLink),
+    targets: [...targets]
+      .sort((a, b) => a.targetOrdinal - b.targetOrdinal)
+      .map((t) => mapOperatorTarget(t, targetAccounts)),
+    // Attempt-major, then by when the step opened, so a retried task reads as
+    // attempt 0's steps then attempt 1's — in execution order, not alphabetical.
+    steps: [...steps]
+      .sort((a, b) =>
+        a.attemptOrdinal - b.attemptOrdinal
+        || (a.startedAt?.getTime() ?? 0) - (b.startedAt?.getTime() ?? 0)
+        || a.stepKey.localeCompare(b.stepKey))
+      .map(mapOperatorStep),
+    // Ascending transition_seq: the timeline reads forwards. The route's own
+    // ORDER BY says the same thing; sorting here too means a caller that hands
+    // in rows from anywhere still gets a coherent timeline.
+    events: [...events]
+      .sort((a, b) => a.transitionSeq - b.transitionSeq)
+      .map(mapOperatorEvent),
   };
 }

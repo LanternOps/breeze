@@ -847,6 +847,7 @@
         "overridesLabel": "Substituições:",
         "failedToLoadMonitors": "Falha ao carregar os monitores",
         "createMonitor": "Criar monitor",
+        "monitorDeleted": "Monitor excluído",
         "recommended": {
           "title": "Monitores recomendados",
           "body": "O Breeze inclui monitores integrados de CPU, memória, disco e conformidade de patches. Nenhum está anexado a esta política ainda.",
