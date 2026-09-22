@@ -273,12 +273,20 @@ if [ ! -f "$validated_result" ]; then
   echo "run-qemu: FAIL — fake server did not persist the validated result ($validated_result missing)" >&2
   exit 1
 fi
-failed_files="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(int((d.get("result") or {}).get("failedFiles", -1)))' "$validated_result")"
-if [ "$failed_files" != "0" ]; then
-  echo "run-qemu: FAIL — validated result reports failedFiles=$failed_files (want 0): $(cat "$validated_result")" >&2
+# The counter is rebuild.Result.filesFailed (rebuild/types.go). It is NOT
+# `failedFiles` — that is bmr.RecoveryResult's list of paths on a different
+# payload, and reading it here made a clean rebuild report "-1" (#6491).
+# read-failed-files.py refuses any body it cannot read an exact
+# non-negative count out of, so a missing counter can never pass as one.
+if ! failed_files="$(python3 "$script_dir/read-failed-files.py" "$validated_result")"; then
+  echo "run-qemu: FAIL — could not read the failed-file count from the validated result: $(cat "$validated_result")" >&2
   exit 1
 fi
-echo "run-qemu: PASS — backslash-keyed systemd unit admitted (D-W09-2), re-requested after the injected transport fault ($fault_requests requests) and the rebuild validated with failedFiles=0 (D-W09-3)"
+if [ "$failed_files" != "0" ]; then
+  echo "run-qemu: FAIL — validated result reports filesFailed=$failed_files (want 0): $(cat "$validated_result")" >&2
+  exit 1
+fi
+echo "run-qemu: PASS — backslash-keyed systemd unit admitted (D-W09-2), re-requested after the injected transport fault ($fault_requests requests) and the rebuild validated with filesFailed=0 (D-W09-3)"
 
 # Post-check (R7/R8 over the wire): with the probe token, a referenced
 # external key (an unchanged e2e-1 file that e2e-3's manifest names) must

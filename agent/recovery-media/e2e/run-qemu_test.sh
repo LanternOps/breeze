@@ -73,6 +73,54 @@ grep -q 'transport fault injected (connection dropped mid-body)' "$target" \
 grep -q 'fault_requests:-0}" -lt 2' "$target" \
   || fail "run-qemu.sh does not assert the faulted object was requested at least twice (transport retry, D-W09-3)"
 grep -q '"\$failed_files" != "0"' "$target" \
-  || fail "run-qemu.sh does not assert failedFiles == 0 from the validated result — a retried-then-lost file would still pass"
+  || fail "run-qemu.sh does not assert the failed-file count is 0 from the validated result — a retried-then-lost file would still pass"
 
-echo "run-qemu_test: PASS — boot 1 passes -no-reboot; progress contract is the exact 5-phase sequence; D-W09-2/3 fault + retry assertions present"
+# --- Behavioural: the validated-result reader (#6491 QEMU red) ------------
+#
+# The D-W09 review round asserted `result.failedFiles == 0`, but the rebuild
+# engine's wire field is `filesFailed` (rebuild.Result, rebuild/types.go) —
+# the two names belong to different payloads (bmr.RecoveryResult is the one
+# that carries `failedFiles`). Reading the wrong key while defaulting a
+# MISSING key to -1 turned a clean rebuild into `failedFiles=-1 (want 0)`.
+# The reader is now its own script so it can be exercised against real
+# payload shapes, and a count it cannot establish is a distinct, loud
+# failure — never a sentinel that reads like a file count.
+reader="$script_dir/read-failed-files.py"
+test -x "$reader" || fail "read-failed-files.py missing or not executable — run-qemu.sh's result assertion is untestable"
+
+reader_tmp="$(mktemp -d)"
+trap 'rm -rf "$reader_tmp"' EXIT
+
+expect_reader_ok() { # <name> <json> <want-count>
+  local got
+  printf '%s' "$2" > "$reader_tmp/r.json"
+  if ! got="$(python3 "$reader" "$reader_tmp/r.json" 2>"$reader_tmp/err")"; then
+    fail "reader rejected $1: $(cat "$reader_tmp/err")"
+  fi
+  [ "$got" = "$3" ] || fail "reader read $1 as '$got', want '$3'"
+}
+expect_reader_fails() { # <name> <json>
+  printf '%s' "$2" > "$reader_tmp/r.json"
+  if python3 "$reader" "$reader_tmp/r.json" >/dev/null 2>&1; then
+    fail "reader accepted $1 — a count it cannot establish must be a hard failure, not a sentinel"
+  fi
+}
+
+# The real shape the console posts (abridged from CI run 35675175188).
+expect_reader_ok "a clean rebuild result" \
+  '{"result":{"snapshotId":"e2e-3","status":"completed","filesRestored":16325,"filesFailed":0},"warnings":[]}' 0
+expect_reader_ok "a partial rebuild result" \
+  '{"result":{"status":"partial","filesRestored":10,"filesFailed":3}}' 3
+# A result that never reports the count at all must not read as a number.
+expect_reader_fails "a result with no filesFailed key" '{"result":{"status":"completed","filesRestored":10}}'
+expect_reader_fails "a body with no result object" '{"warnings":[]}'
+expect_reader_fails "a non-integer count" '{"result":{"filesFailed":"0"}}'
+expect_reader_fails "a boolean count" '{"result":{"filesFailed":true}}'
+expect_reader_fails "a negative count" '{"result":{"filesFailed":-1}}'
+# The old, wrong key alone must never satisfy the assertion.
+expect_reader_fails "only the bmr-shaped failedFiles key" '{"result":{"failedFiles":[]}}'
+
+grep -q 'read-failed-files.py' "$target" \
+  || fail "run-qemu.sh does not use read-failed-files.py to read the validated result"
+
+echo "run-qemu_test: PASS — boot 1 passes -no-reboot; progress contract is the exact 5-phase sequence; D-W09-2/3 fault + retry assertions present; the validated-result reader reads filesFailed and refuses a count it cannot establish"
