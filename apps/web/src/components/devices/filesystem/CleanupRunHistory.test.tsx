@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -45,6 +45,34 @@ describe('CleanupRunHistory', () => {
 
       expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(2);
       expect(screen.getByTestId('cleanup-run-r-elsewhere')).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not clobber a paginated view with the background poll', async () => {
+    // #6485 F-6 review finding: the naive interval called loadPage(null,
+    // false) unconditionally, so a tech who clicked "Load more" (60+ rows)
+    // had their view silently truncated back to page 1 on the next tick.
+    vi.useFakeTimers();
+    try {
+      fetchMock
+        .mockResolvedValueOnce(json({ success: true, data: { runs: [run('r1')], nextCursor: 'c1' } }))
+        .mockResolvedValueOnce(json({ success: true, data: { runs: [run('r2')], nextCursor: null } }));
+      render(<CleanupRunHistory deviceId="dev-1" refreshToken={0} />);
+      await vi.waitFor(() => expect(screen.getByTestId('cleanup-run-r1')).toBeInTheDocument());
+
+      fireEvent.click(screen.getByTestId('cleanup-run-history-more'));
+      await vi.waitFor(() => expect(screen.getByTestId('cleanup-run-r2')).toBeInTheDocument());
+      const callsBeforeTick = fetchMock.mock.calls.length;
+
+      await vi.advanceTimersByTimeAsync(30_000);
+
+      // The background tick must not have re-walked from the top: both
+      // previously-loaded rows are still on screen, and no extra fetch fired.
+      expect(screen.getByTestId('cleanup-run-r1')).toBeInTheDocument();
+      expect(screen.getByTestId('cleanup-run-r2')).toBeInTheDocument();
+      expect(fetchMock.mock.calls.length).toBe(callsBeforeTick);
     } finally {
       vi.useRealTimers();
     }

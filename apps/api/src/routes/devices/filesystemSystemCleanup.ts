@@ -268,6 +268,10 @@ filesystemSystemCleanupRoutes.post(
   '/:id/filesystem/system-cleanup/run/:cleanupRunId/cancel',
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
+  // Same MFA bar as the two mutating POSTs above it in this file (list, run):
+  // ending an in-flight native cleaner is the same "start/stop an OS-level
+  // action" mutation class, not a read.
+  requireMfa(),
   zValidator('param', runPollParamSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -295,10 +299,22 @@ filesystemSystemCleanupRoutes.post(
     const finalised = await failSystemCleanupRunAndCancelCommand({
       runId: cleanupRunId, deviceId, orgId: device.orgId, error: 'cancelled_by_operator',
     });
-    // Lost the CAS: a real result (or another cancel) landed between the read
-    // above and here. Report the same 409 rather than a false "cancelled".
     if (!finalised) {
-      return c.json({ success: false, error: 'not_running', status: 'failed' }, 409);
+      // Lost the CAS: a real result (or another cancel) landed between the
+      // read above and here. Re-read rather than assume `failed` — the race
+      // winner could just as well be a completed `executed` run, and telling
+      // the operator a successful run "failed" is its own false report.
+      const [current] = await db
+        .select({ status: deviceFilesystemCleanupRuns.status })
+        .from(deviceFilesystemCleanupRuns)
+        .where(and(
+          eq(deviceFilesystemCleanupRuns.id, cleanupRunId),
+          eq(deviceFilesystemCleanupRuns.deviceId, deviceId),
+          eq(deviceFilesystemCleanupRuns.orgId, device.orgId),
+          eq(deviceFilesystemCleanupRuns.kind, 'system'),
+        ))
+        .limit(1);
+      return c.json({ success: false, error: 'not_running', status: current?.status ?? 'failed' }, 409);
     }
 
     writeRouteAudit(c, {

@@ -439,12 +439,17 @@ describe('POST /devices/:id/filesystem/system-cleanup/run/:cleanupRunId/cancel',
     expect(updateMock).not.toHaveBeenCalled();
   });
 
-  it('409s when a real result won the CAS race against the cancel', async () => {
-    selectMock.mockReturnValue(selectReturning([{ id: RUN_ID, deviceId: DEVICE_ID, orgId: 'org-1', kind: 'system', status: 'running', commandId: COMMAND_ID }]));
+  it('409s when a real result won the CAS race against the cancel, reporting what actually happened', async () => {
+    // The race winner is a genuine `executed` result, not a failure — the
+    // handler must re-read rather than assume `failed`, or a successful run
+    // gets misreported to the operator as having failed.
+    selectMock
+      .mockReturnValueOnce(selectReturning([{ id: RUN_ID, deviceId: DEVICE_ID, orgId: 'org-1', kind: 'system', status: 'running', commandId: COMMAND_ID }]))
+      .mockReturnValueOnce(selectReturning([{ status: 'executed' }]));
     updateReturning([]); // the CAS `WHERE status = 'running'` matched nothing — a result landed first
     const res = await app().request(`/devices/${DEVICE_ID}/filesystem/system-cleanup/run/${RUN_ID}/cancel`, { method: 'POST' });
     expect(res.status).toBe(409);
-    await expect(res.json()).resolves.toMatchObject({ success: false, error: 'not_running' });
+    await expect(res.json()).resolves.toMatchObject({ success: false, error: 'not_running', status: 'executed' });
   });
 
   it('denies an inaccessible organization before touching the run row', async () => {
@@ -452,5 +457,22 @@ describe('POST /devices/:id/filesystem/system-cleanup/run/:cleanupRunId/cancel',
     const res = await app().request(`/devices/${DEVICE_ID}/filesystem/system-cleanup/run/${RUN_ID}/cancel`, { method: 'POST' });
     expect(res.status).toBe(404);
     expect(selectMock).not.toHaveBeenCalled();
+  });
+
+  it('denies an excluded site', async () => {
+    getDeviceWithOrgAndSiteCheckMock.mockResolvedValue(Symbol.for('site-access-denied'));
+    const res = await app().request(`/devices/${DEVICE_ID}/filesystem/system-cleanup/run/${RUN_ID}/cancel`, { method: 'POST' });
+    expect(res.status).toBe(403);
+    expect(selectMock).not.toHaveBeenCalled();
+  });
+
+  it('404s a file-kind run — the query filters kind = system, not just id + device', async () => {
+    // The real WHERE clause includes eq(deviceFilesystemCleanupRuns.kind,
+    // 'system'), so a file-kind run with this id never matches; simulated
+    // here the same way the GET run-status suite simulates it, by returning
+    // no row.
+    selectMock.mockReturnValue(selectReturning([]));
+    const res = await app().request(`/devices/${DEVICE_ID}/filesystem/system-cleanup/run/${RUN_ID}/cancel`, { method: 'POST' });
+    expect(res.status).toBe(404);
   });
 });
