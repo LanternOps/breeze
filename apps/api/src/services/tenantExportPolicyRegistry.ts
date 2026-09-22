@@ -99,7 +99,7 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   "ai_operator_operations": tablePolicy("org_id", {"included":["id","org_id","task_id","task_step_key","operation_key","attempt_ordinal","intent_id","originating_run_id","argument_digest","execution_ref_kind","execution_ref_id","plan_revision","claimed_lease_epoch","dispatch_state","dispatch_detail","result_state","dispatched_at","cancel_requested_at","result_at","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["result"]}),
   "ai_operator_task_events": tablePolicy("org_id", {"included":["id","org_id","task_id","transition_seq","event_type","actor_kind","actor_user_id","step_key","target_id","detail","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   "ai_operator_task_outbox": tablePolicy("org_id", {"included":["id","org_id","task_id","source_kind","source_id","transition_seq","due_at","published_at","attempts","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
-  "ai_operator_task_steps": tablePolicy("org_id", {"included":["id","org_id","task_id","step_key","step_kind","target_id","attempt_ordinal","state","plan_revision","expected_criterion","dependency_kind","dependency_id","detail","started_at","settled_at","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["checkpoint"]}),
+  "ai_operator_task_steps": tablePolicy("org_id", {"included":["id","org_id","task_id","step_key","step_kind","target_id","attempt_ordinal","state","plan_revision","expected_criterion","dependency_kind","dependency_id","detail","checklist_item_id","remind_after_at","reminded_at","started_at","settled_at","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["checkpoint"]}),
   "ai_operator_task_target_accounts": tablePolicy("org_id", {"included":["id","org_id","task_id","target_id","provider","m365_connection_id","google_connection_id","external_id","principal_label","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   "ai_operator_task_targets": tablePolicy("org_id", {"included":["id","org_id","task_id","target_kind","device_id","ticket_id","contact_id","target_label","target_ordinal","state","detached_at","detached_reason","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   // lease_owner is a coordinator instance label, not credential material, but
@@ -656,7 +656,11 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   // dropped the steps a technician performed would be an incomplete GDPR
   // export. No json/jsonb/bytea column, so excludedOpen is empty, and no column
   // name matches SUSPICIOUS_NAME_PARTS, so reviewedIncluded is empty.
-  "ticket_checklist_items": tablePolicy("org_id", {"included":["id","org_id","ticket_id","label","detail","position","done_at","done_by_user_id","source","source_template_item_id","created_by","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
+  // operator_step_id (recipe library E3): provenance uuid naming the
+  // ai_operator_task_steps row that created an `operator_task` item. A tenant
+  // identifier, not a container and not a secret — `included`, same bucket as
+  // source_template_item_id beside it.
+  "ticket_checklist_items": tablePolicy("org_id", {"included":["id","org_id","ticket_id","label","detail","position","done_at","done_by_user_id","source","source_template_item_id","operator_step_id","created_by","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   // ticket_checklist_template_items / ticket_checklist_templates (spec #5783
   // §4.2, §4.3): the MSP's reusable procedure steps. Neither table has a
   // json/jsonb/bytea column, so nothing lands in excludedOpen. `instructions`
