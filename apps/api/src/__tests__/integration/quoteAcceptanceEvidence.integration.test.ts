@@ -103,6 +103,27 @@ describe('quote acceptance evidence — real Postgres', () => {
     expect(Buffer.from(replaced.evidenceData!).equals(PNG)).toBe(true);
   });
 
+  runDb('two CONCURRENT uploads serialise on the row lock: exactly one sees the other as replaced', async () => {
+    const { org, tech, ctx, quoteId, acceptanceId } = await acceptedOnBehalf();
+    // Separate transactions racing on the same acceptance row. With the
+    // FOR UPDATE, the second reads the first's committed evidence and reports
+    // replaced=true; without it both read the empty row and both say false.
+    const results = await Promise.all([
+      withDbAccessContext(ctx, () => attachAcceptanceEvidence({
+        quoteId, orgId: org.id, actorUserId: tech.id, file: { buffer: PDF, filename: 'one.pdf' },
+      })),
+      withDbAccessContext(ctx, () => attachAcceptanceEvidence({
+        quoteId, orgId: org.id, actorUserId: tech.id, file: { buffer: PNG, filename: 'two.png' },
+      })),
+    ]);
+    expect(results.map((r) => r.replaced).sort()).toEqual([false, true]);
+    // The row holds whichever committed last — consistently, bytes and metadata together.
+    const winner = results.find((r) => r.replaced)!;
+    const row = await rowOf(acceptanceId);
+    expect(row.evidenceFilename).toBe(winner.evidence.filename);
+    expect(Buffer.from(row.evidenceData!).equals(winner.evidence.filename === 'one.pdf' ? PDF : PNG)).toBe(true);
+  });
+
   runDb('another org cannot see the acceptance to attach to or read from (RLS)', async () => {
     const a = await acceptedOnBehalf();
     const b = await acceptedOnBehalf();

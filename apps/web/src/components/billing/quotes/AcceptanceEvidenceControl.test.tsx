@@ -108,4 +108,19 @@ describe('AcceptanceEvidenceControl', () => {
     expect(api.uploadQuoteAcceptanceEvidence).not.toHaveBeenCalled();
     expect(onChanged).not.toHaveBeenCalled();
   });
+
+  it('re-enables attach and does NOT call onChanged when the server rejects the upload', async () => {
+    const { ActionError } = await import('../../../lib/runAction');
+    // runAction rejects with ActionError on a 4xx (e.g. 409 ACCEPTANCE_NOT_ON_BEHALF)
+    // after toasting it itself.
+    runAction.mockImplementationOnce(async () => { throw new ActionError('Not on behalf', 409); });
+    const onChanged = vi.fn();
+    render(<AcceptanceEvidenceControl quoteId="q-1" evidence={null} canAttach onChanged={onChanged} />);
+    const input = screen.getByTestId('quote-acceptance-evidence-input') as HTMLInputElement;
+    fireEvent.change(input, { target: { files: [pdfFile()] } });
+    await waitFor(() => expect(runAction).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect((screen.getByTestId('quote-acceptance-evidence-attach') as HTMLButtonElement).disabled).toBe(false));
+    expect(onChanged).not.toHaveBeenCalled();
+  });
 });
+
