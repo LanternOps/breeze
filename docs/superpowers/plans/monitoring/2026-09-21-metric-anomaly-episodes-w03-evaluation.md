@@ -8,8 +8,8 @@ the new `cleared` member status from human-label rate denominators while still s
 own count, and document all of it in the ML operations runbook.
 
 **Architecture:** One additive migration (CHECK constraint only, no data written), one additive
-shared-validator change, one new best-effort feedback emitter wired into W02's episode action
-service, and additive-only changes to the existing evaluation route and its response shape. No new
+shared-validator change, one new feedback emitter (throwing, inside the action transaction — W02's
+D-7 rule) wired into W02's episode action service, and additive-only changes to the existing evaluation route and its response shape. No new
 tables, no new routes, no RLS shape change (the touched tables already have RLS).
 
 **Tech Stack:** Hono route (`apps/api/src/routes/analytics.ts`), Drizzle (raw `sql` templates for
@@ -47,15 +47,23 @@ verdict").
 3. **Route file line numbers.** The task description cited `apps/api/src/routes/analytics.ts:1150-1300`;
    the evaluation handler in the current tree is `analytics.ts:1090-1334` (route registration at
    1090, handler body 1095-1333). Tasks below cite the current, verified line numbers.
+4. **Episode-level row is written like the member rows, and counted apart from them.** §8.3 is
+   silent on write semantics. The row is written by W02's throwing `emitMlFeedbackEvents` inside the
+   episode action's transaction (W02 deviation D-7), not best-effort — a lost label rolls the action
+   back. It is not added to W02's `feedbackInserted` and not to the evaluation's `feedback` block
+   (which counts `sourceType = 'anomaly'` only), so `feedback.total` still moves by the member count.
 
 ## Global Constraints
 
 - Migration must sort after the newest file on `origin/main` (`git ls-tree --name-only origin/main
   apps/api/migrations/ | sort | tail -1`) — verified at doc-write time (2026-09-22) as
   `2026-10-26-170300-caller-verification-ticket-comment-rls.sql`; `2026-10-27-110000-…` (this plan's
-  placeholder, matching the spec §14/§17 W03 slot) sorts after it. **Re-verify at execution time**,
-  since W01/W02 land first and may add later-dated files — if so, rename to sort after whatever is
-  newest then, per `CLAUDE.md` → Schema Migration Workflow.
+  placeholder, matching the spec §14/§17 W03 slot) sorts after it and after W01's placeholder
+  `2026-10-27-100000-metric-anomaly-episodes.sql`. **Re-verify against `origin/main` at execution
+  time** (`git fetch origin main && git ls-tree --name-only origin/main apps/api/migrations/ | grep
+  '\.sql$' | sort | tail -1`): W01 may have been renamed past its placeholder and other work lands
+  daily — rename this file to sort after whatever is newest then, per `CLAUDE.md` → Schema Migration
+  Workflow. The pre-push guard (`check-migration-naming.sh --against-ref origin/main`) re-checks.
 - Migration is idempotent (`DROP CONSTRAINT IF EXISTS` then re-`ADD CONSTRAINT`), has no inner
   `BEGIN`/`COMMIT`, and writes no rows (no `set_config('breeze.scope', 'system')` needed — do not
   touch `migrationRlsScope.test.ts`'s frozen baseline).
@@ -64,9 +72,10 @@ verdict").
   mirrored anywhere outside `apps/api/src/routes/analytics.ts` (verified: no such type in
   `apps/web/src/lib/api/contracts.ts` or `packages/shared/src/validators/contracts.ts` — grepped, zero
   hits), so there is no second contract file to update.
-- This wave depends on W02 (`services/metricAnomalyEpisodeActions.ts` — `applyEpisodeAction`, the
-  `EpisodeAction` type, and the `cleared` member status already landing on `metric_anomalies.status`)
-  being merged to `main` first, per the index's dependency table. Branch from `main` after W02 merges,
+- This wave depends on W01 (the `cleared` member status on `metric_anomalies.status`, `METRIC_ANOMALY_STATUSES`,
+  the `metric_anomaly_episodes` table) and W02 (`services/metricAnomalyEpisodeActions.ts` —
+  `applyEpisodeAction`, the `EpisodeAction` type, `emitMlFeedbackEvents`, the integration fixtures in
+  `__tests__/integration/metricAnomalyEpisodeFixtures.ts`) being merged to `main` first, per the index's dependency table. Branch from `main` after W02 merges,
   not from this worktree's current `spec/metric-anomaly-episodes` HEAD.
 - Rigor: this wave is additive CRUD/analytics plumbing (no new tenancy shape, no new table, one CHECK
   constraint) — implement, typecheck, run the affected unit + integration tests per
@@ -77,11 +86,12 @@ verdict").
 
 ## Cross-wave names this plan adds
 
-(Extends the index's interface contract table — add these two rows there in this wave's PR.)
+(Already in the index's interface contract table since plan reconciliation — verify them in this wave's PR.)
 
 | Name | Where | Shape |
 |---|---|---|
-| `emitAnomalyEpisodeFeedback` | `apps/api/src/services/mlFeedbackEmitters.ts` | `(options: { orgId: string; episodeId: string; eventType: 'anomaly_episode.dismissed' \| 'anomaly_episode.resolved'; outcome: 'dismissed' \| 'resolved'; actorUserId?: string \| null; metadata?: Record<string, unknown>; occurredAt?: Date }) => Promise<void>` |
+| `emitAnomalyEpisodeFeedback` | `apps/api/src/services/mlFeedbackEmitters.ts` | `(options: { orgId: string; episodeId: string; eventType: 'anomaly_episode.dismissed' \| 'anomaly_episode.resolved'; outcome: 'dismissed' \| 'resolved'; actorUserId?: string \| null; occurredAt: Date; metadata?: Record<string, unknown> }) => Promise<number>` — throwing writer (W02 `emitMlFeedbackEvents`), called inside W02's `resolveEpisode`/`dismissEpisode` transaction |
+| `'anomaly_episode.dismissed'`, `'anomaly_episode.resolved'` | `ML_FEEDBACK_EVENT_TYPES` (same file) | the only two episode-level event types |
 | `'anomaly_episode'` | `ML_FEEDBACK_SOURCE_TYPES` (`packages/shared/src/validators/mlFeedback.ts`) | new source type |
 
 ---
@@ -297,69 +307,81 @@ EOF
 ### Task 3: `emitAnomalyEpisodeFeedback` emitter
 
 **Files:**
-- Modify: `apps/api/src/services/mlFeedbackEmitters.ts` (append after `emitAnomalyFeedback`,
-  currently ending around line 78)
+- Modify: `apps/api/src/services/mlFeedbackEmitters.ts` (append after W02's
+  `emitAnomalyEpisodeMemberFeedback`)
 - Test: `apps/api/src/services/mlFeedbackEmitters.test.ts`
 
 **Interfaces:**
-- Consumes: `emitFeedbackBestEffort` (private helper, same file, already defined — catches and logs
-  instead of throwing, matching every other emitter in this file except
-  `emitDeviceReliabilityFeedback`/`emitUserRiskFeedback` which call `emitMlFeedbackEvent` directly;
-  this emitter follows the best-effort pattern like `emitAnomalyFeedback` does, since a feedback-row
-  failure must never block the episode action response), `actorUserIdOrNull` (private helper, same
-  file).
-- Produces: `emitAnomalyEpisodeFeedback` — used by Task 4.
+- Consumes: W02's `emitMlFeedbackEvents(inputs, database?) → Promise<{ inserted: number }>`
+  (`services/mlFeedback.ts` — the **throwing** batch writer; W02 already imports it into
+  `mlFeedbackEmitters.ts` and already mocks it in `mlFeedbackEmitters.test.ts`), `actorUserIdOrNull`
+  (private helper, same file).
+- Produces: `emitAnomalyEpisodeFeedback(options) → Promise<number>` (rows inserted, 0 on a dedupe
+  replay) — used by Task 4.
+
+**Write semantics follow W02's D-7, not the best-effort emitters.** The episode-level row is a
+human label exactly like the per-member rows W02 writes beside it, and it is written from the same
+place (W02's `applyEpisodeAction`, inside the request transaction). So it uses the same throwing
+writer: if the row cannot be written the whole action rolls back with a 500, never a silently
+missing label. It does **not** use `emitFeedbackBestEffort`.
 
 - [ ] **Step 1: Write the failing test**
 
-Add to `apps/api/src/services/mlFeedbackEmitters.test.ts`, inside `describe('payload shape per
-emitter', ...)`, and add `emitAnomalyEpisodeFeedback` to the existing import block at the top:
+Add to `apps/api/src/services/mlFeedbackEmitters.test.ts` (add `emitAnomalyEpisodeFeedback` to
+the existing import from `./mlFeedbackEmitters`; `emitMlFeedbackEvents` is the hoisted mock W02
+added next to `emitMlFeedbackEvent`):
 
 ```ts
-    it('emitAnomalyEpisodeFeedback maps to the anomaly_episode source type with an episode dedupeKey', async () => {
-      await emitAnomalyEpisodeFeedback({
-        orgId: 'org-1',
-        episodeId: 'episode-1',
-        eventType: 'anomaly_episode.dismissed',
-        outcome: 'dismissed',
-        actorUserId: VALID_UUID,
-        metadata: { episodeId: 'episode-1' },
-      });
-      expect(lastPayload()).toMatchObject({
-        orgId: 'org-1',
-        sourceType: 'anomaly_episode',
-        sourceId: 'episode-1',
-        eventType: 'anomaly_episode.dismissed',
-        dedupeKey: 'episode:episode-1',
-        outcome: 'dismissed',
-        actorUserId: VALID_UUID,
-        metadata: { episodeId: 'episode-1' },
-      });
-      expect(lastPayload().occurredAt).toBeInstanceOf(Date);
+describe('emitAnomalyEpisodeFeedback (W03)', () => {
+  const EPISODE = '99999999-9999-4999-8999-999999999999';
+  const lastBatch = () => emitMlFeedbackEvents.mock.calls.at(-1)![0] as Array<Record<string, any>>;
+
+  beforeEach(() => {
+    emitMlFeedbackEvents.mockReset();
+    emitMlFeedbackEvents.mockResolvedValue({ inserted: 1 });
+  });
+
+  it('writes one anomaly_episode row keyed by the episode, with the episode dedupeKey', async () => {
+    const inserted = await emitAnomalyEpisodeFeedback({
+      orgId: 'org-1',
+      episodeId: EPISODE,
+      eventType: 'anomaly_episode.dismissed',
+      outcome: 'dismissed',
+      actorUserId: VALID_UUID,
+      occurredAt: new Date('2026-09-22T00:00:00.000Z'),
+      metadata: { memberCount: 17 },
     });
 
-    it('emitAnomalyEpisodeFeedback normalizes a non-uuid actor to null', async () => {
-      await emitAnomalyEpisodeFeedback({
-        orgId: 'org-1',
-        episodeId: 'episode-2',
-        eventType: 'anomaly_episode.resolved',
-        outcome: 'resolved',
-        actorUserId: 'system',
-      });
-      expect(lastPayload().actorUserId).toBeNull();
+    expect(inserted).toBe(1);
+    expect(lastBatch()).toHaveLength(1);
+    expect(lastBatch()[0]).toMatchObject({
+      orgId: 'org-1',
+      sourceType: 'anomaly_episode',
+      sourceId: EPISODE,
+      eventType: 'anomaly_episode.dismissed',
+      dedupeKey: `episode:${EPISODE}`,
+      outcome: 'dismissed',
+      actorUserId: VALID_UUID,
+      metadata: { memberCount: 17, episodeId: EPISODE },
     });
+  });
 
-    it('emitAnomalyEpisodeFeedback swallows a write failure (best-effort)', async () => {
-      emitMlFeedbackEvent.mockRejectedValueOnce(new Error('db down'));
-      await expect(
-        emitAnomalyEpisodeFeedback({
-          orgId: 'org-1',
-          episodeId: 'episode-3',
-          eventType: 'anomaly_episode.resolved',
-          outcome: 'resolved',
-        }),
-      ).resolves.toBeUndefined();
+  it('normalizes a non-uuid actor to null', async () => {
+    await emitAnomalyEpisodeFeedback({
+      orgId: 'org-1', episodeId: EPISODE, eventType: 'anomaly_episode.resolved', outcome: 'resolved',
+      actorUserId: 'system', occurredAt: new Date(),
     });
+    expect(lastBatch()[0]!.actorUserId).toBeNull();
+  });
+
+  it('propagates a write failure (W02 D-7: labels are never best-effort)', async () => {
+    emitMlFeedbackEvents.mockRejectedValue(new Error('db down'));
+    await expect(emitAnomalyEpisodeFeedback({
+      orgId: 'org-1', episodeId: EPISODE, eventType: 'anomaly_episode.resolved', outcome: 'resolved',
+      occurredAt: new Date(),
+    })).rejects.toThrow('db down');
+  });
+});
 ```
 
 - [ ] **Step 2: Run and verify it fails**
@@ -371,30 +393,37 @@ Expected: FAIL — `emitAnomalyEpisodeFeedback` is not exported.
 
 - [ ] **Step 3: Implement**
 
-Append to `apps/api/src/services/mlFeedbackEmitters.ts`, after `emitAnomalyFeedback`:
+Append to `apps/api/src/services/mlFeedbackEmitters.ts`, after `emitAnomalyEpisodeMemberFeedback`:
 
 ```ts
+/**
+ * W03 (spec §8.3): the ONE episode-level label row per human resolve/dismiss,
+ * beside W02's per-member `anomaly` rows. Same write rule as those (W02 D-7):
+ * throwing writer, called inside the episode action's request transaction, so
+ * a lost label rolls the action back. Only resolve/dismiss emit it — promote
+ * and unsnooze never close an episode.
+ */
 export async function emitAnomalyEpisodeFeedback(options: {
   orgId: string;
   episodeId: string;
   eventType: 'anomaly_episode.dismissed' | 'anomaly_episode.resolved';
   outcome: 'dismissed' | 'resolved';
   actorUserId?: string | null;
-  dedupeKey?: string | null;
-  occurredAt?: Date;
+  occurredAt: Date;
   metadata?: Record<string, unknown>;
-}): Promise<void> {
-  await emitFeedbackBestEffort({
+}): Promise<number> {
+  const { inserted } = await emitMlFeedbackEvents([{
     orgId: options.orgId,
-    sourceType: 'anomaly_episode',
+    sourceType: 'anomaly_episode' as const,
     sourceId: options.episodeId,
     eventType: options.eventType,
-    dedupeKey: options.dedupeKey ?? `episode:${options.episodeId}`,
+    dedupeKey: `episode:${options.episodeId}`,
     outcome: options.outcome,
     actorUserId: actorUserIdOrNull(options.actorUserId),
-    metadata: options.metadata ?? {},
-    occurredAt: options.occurredAt ?? new Date(),
-  }, options.eventType);
+    metadata: { ...(options.metadata ?? {}), episodeId: options.episodeId },
+    occurredAt: options.occurredAt,
+  }]);
+  return inserted;
 }
 ```
 
@@ -403,22 +432,19 @@ export async function emitAnomalyEpisodeFeedback(options: {
 ```bash
 cd apps/api && npx vitest run src/services/mlFeedbackEmitters.test.ts
 ```
-Expected: PASS.
+Expected: PASS (W02's suites in this file included).
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add apps/api/src/services/mlFeedbackEmitters.ts apps/api/src/services/mlFeedbackEmitters.test.ts
-git commit -m "$(cat <<'EOF'
+git commit -m "$(cat <<'MSG'
 feat(ml-feedback): add emitAnomalyEpisodeFeedback emitter
 
 One episode-level ml_feedback_events row per human resolve/dismiss,
-defaulting dedupeKey to episode:<id> like the per-member rows W02
-already emits. Best-effort — a write failure never blocks the action
-response.
-
-Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
-EOF
+dedupeKey episode:<id> like W02's per-member rows. Throwing writer, same
+rule as the member rows (W02 D-7): a lost label rolls the action back.
+MSG
 )"
 ```
 
@@ -427,155 +453,165 @@ EOF
 ### Task 4: Wire the emitter into `applyEpisodeAction`
 
 **Files:**
-- Modify: `apps/api/src/services/metricAnomalyEpisodeActions.ts` (W02 output — does not exist in this
-  worktree yet; branch from `main` after W02 merges before starting this task)
-- Test: `apps/api/src/services/metricAnomalyEpisodeActions.test.ts` (W02's test file — extend it, do
-  not create a new one)
+- Modify: `apps/api/src/services/metricAnomalyEpisodeActions.ts` (W02 — `resolveEpisode` and
+  `dismissEpisode`; branch from `main` after W02 merges)
+- Modify: `apps/api/src/services/metricAnomalyEpisodeActions.test.ts` (W02's unit file — mock
+  export only)
+- Test: `apps/api/src/__tests__/integration/metricAnomalyEpisodeActions.integration.test.ts` (W02's
+  integration file — append a `describe`)
 
 **Interfaces:**
-- Consumes: `applyEpisodeAction(...)` (W02, `services/metricAnomalyEpisodeActions.ts` — per the
-  index's interface contract table), `emitAnomalyEpisodeFeedback` (Task 3), `EpisodeAction` type
-  (W02, `'resolve' | 'dismiss' | 'promote' | 'unsnooze'`).
-- Produces: nothing new for later tasks — this is a leaf wiring change.
+- Consumes (W02, exact names): `applyEpisodeAction(input: ApplyEpisodeActionInput):
+  Promise<ApplyEpisodeActionResult>` where `ApplyEpisodeActionInput = { orgId; deviceId; episodeId;
+  action; note?; resolveAlert?; actorUserId: string; now? }`; its private helpers
+  `resolveEpisode(episode, input, now)` / `dismissEpisode(episode, input, now)`, each of which
+  computes `members` (the rows `cascadeOpenMembers` moved) and `feedbackInserted` via
+  `labelMembers(...)`, all on the ambient request transaction after `lockEpisode`'s `FOR UPDATE`.
+  W02 integration fixtures `seedTenant`, `insertEpisodeDevice`, `seedEpisode` and that file's local
+  `act(...)` / `episodeFeedback(...)` helpers. `emitAnomalyEpisodeFeedback` (Task 3).
+- Produces: nothing new for later tasks.
 
-Per spec §8.1/§8.3: `resolve` and `dismiss` are the only two actions that close an episode
-(`promote` keeps it open per D6; `unsnooze` only clears `snoozed_until`). §8.3 states W02 already
-emits one `ml_feedback_events` row **per cascaded member** (existing `sourceType: 'anomaly'`) for
-those two actions; this task adds exactly one **additional** row at the episode level, in the same
-code path, after the per-member emission.
+Per spec §8.1/§8.3: `resolve` and `dismiss` are the only actions that close an episode (`promote`
+keeps it open per D6; `unsnooze` only clears `snoozed_until`). W02 already writes one `anomaly` row
+per cascaded member for them; this task adds exactly one `anomaly_episode` row **in the same
+transaction**, right after `labelMembers`. `ApplyEpisodeActionResult.feedbackInserted` keeps W02's
+meaning (member rows only) so W02's assertions (`feedbackInserted: 17`, `labelledMembers`) are
+unchanged; the evaluation endpoint's `feedback` block counts `sourceType = 'anomaly'` only
+(`routes/analytics.ts:1192`), so its `feedback.total` still moves by the member count.
 
-- [ ] **Step 1: Read the current implementation and locate the per-member emission**
+- [ ] **Step 1: Write the failing integration test**
 
-```bash
-grep -n "emitAnomalyFeedback\|EpisodeAction\|case 'resolve'\|case 'dismiss'" apps/api/src/services/metricAnomalyEpisodeActions.ts
-```
-Find the branch(es) handling `action === 'resolve'` and `action === 'dismiss'` — per §8.1's table,
-each sets episode `status`, `close_reason: 'user'`, `resolved_at`/`resolved_by_user_id`, cascades
-open members to the new status, and (per §8.3) calls `emitAnomalyFeedback` once per cascaded member.
-The insertion point for this task is immediately after that per-member emission loop, still inside
-the same action branch (so it only fires when the DB transaction that changed episode status actually
-committed — do not move it outside a `withDbAccessContext`/transaction boundary if one wraps the
-mutation).
-
-- [ ] **Step 2: Write the failing test**
-
-Add to `apps/api/src/services/metricAnomalyEpisodeActions.test.ts` (mock `emitAnomalyEpisodeFeedback`
-alongside however the existing suite already mocks `emitAnomalyFeedback` — follow that file's
-existing mock setup for `../services/mlFeedbackEmitters`, adding `emitAnomalyEpisodeFeedback` to the
-mocked exports):
+Append to `apps/api/src/__tests__/integration/metricAnomalyEpisodeActions.integration.test.ts`:
 
 ```ts
-  it('emits exactly one anomaly_episode.dismissed feedback row on dismiss, in addition to per-member rows', async () => {
-    // Arrange: an open episode with 2 open members (use this suite's existing
-    // fixture/mock helpers for an open episode + 2 open metric_anomalies rows).
-    await applyEpisodeAction({
-      episodeId: EPISODE_ID,
-      orgId: ORG_ID,
-      action: 'dismiss',
-      actorUserId: USER_ID,
-    });
+describe('episode-level feedback row (W03, spec §8.3)', () => {
+  async function episodeLevelFeedback(episodeId: string) {
+    return getTestDb().select().from(mlFeedbackEvents).where(and(
+      eq(mlFeedbackEvents.sourceType, 'anomaly_episode'),
+      eq(mlFeedbackEvents.sourceId, episodeId),
+    ));
+  }
 
-    expect(emitAnomalyEpisodeFeedback).toHaveBeenCalledTimes(1);
-    expect(emitAnomalyEpisodeFeedback).toHaveBeenCalledWith(
-      expect.objectContaining({
-        orgId: ORG_ID,
-        episodeId: EPISODE_ID,
-        eventType: 'anomaly_episode.dismissed',
-        outcome: 'dismissed',
-        actorUserId: USER_ID,
-      }),
-    );
+  it.each([
+    ['dismiss', 'anomaly_episode.dismissed', 'dismissed'],
+    ['resolve', 'anomaly_episode.resolved', 'resolved'],
+  ] as const)('%s writes exactly one %s row beside the per-member rows', async (action, eventType, outcome) => {
+    const { org, site, user } = await seedTenant();
+    const deviceId = await insertEpisodeDevice(org.id, site.id);
+    const ep = await seedEpisode({ orgId: org.id, deviceId, memberCount: 3, start: new Date(Date.now() - 2 * HOUR) });
+
+    const result = await act({ orgId: org.id, deviceId, episodeId: ep.episodeId, action, actorUserId: user.id });
+
+    expect(result).toMatchObject({ status: 'ok', feedbackInserted: 3 });
+    const rows = await episodeLevelFeedback(ep.episodeId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ eventType, outcome, actorUserId: user.id, dedupeKey: `episode:${ep.episodeId}` });
+    expect((rows[0]!.metadata as Record<string, unknown>).memberCount).toBe(3);
+    expect(await episodeFeedback(ep.episodeId)).toHaveLength(3); // per-member `anomaly` rows unchanged
   });
 
-  it('emits exactly one anomaly_episode.resolved feedback row on resolve', async () => {
-    await applyEpisodeAction({
-      episodeId: EPISODE_ID,
-      orgId: ORG_ID,
-      action: 'resolve',
-      actorUserId: USER_ID,
+  it('promote and unsnooze write no episode-level row', async () => {
+    const { org, site, user } = await seedTenant();
+    const deviceId = await insertEpisodeDevice(org.id, site.id);
+    const open = await seedEpisode({ orgId: org.id, deviceId, memberCount: 2, start: new Date(Date.now() - HOUR) });
+    const snoozed = await seedEpisode({
+      orgId: org.id, deviceId, memberCount: 1, start: new Date(Date.now() - 6 * HOUR), status: 'dismissed',
+      closeReason: 'user', snoozedUntil: new Date(Date.now() + DAY), memberStatus: 'dismissed',
+      metricName: 'cpu_percent', metricFamily: 'cpu',
     });
 
-    expect(emitAnomalyEpisodeFeedback).toHaveBeenCalledTimes(1);
-    expect(emitAnomalyEpisodeFeedback).toHaveBeenCalledWith(
-      expect.objectContaining({ eventType: 'anomaly_episode.resolved', outcome: 'resolved' }),
-    );
+    await act({ orgId: org.id, deviceId, episodeId: open.episodeId, action: 'promote', actorUserId: user.id });
+    await act({ orgId: org.id, deviceId, episodeId: snoozed.episodeId, action: 'unsnooze', actorUserId: user.id });
+
+    expect(await episodeLevelFeedback(open.episodeId)).toHaveLength(0);
+    expect(await episodeLevelFeedback(snoozed.episodeId)).toHaveLength(0);
   });
+});
+```
 
-  it('does not emit an episode-level feedback row on promote or unsnooze', async () => {
-    await applyEpisodeAction({ episodeId: EPISODE_ID, orgId: ORG_ID, action: 'promote', actorUserId: USER_ID });
-    await applyEpisodeAction({ episodeId: EPISODE_ID, orgId: ORG_ID, action: 'unsnooze', actorUserId: USER_ID });
+(`and`, `eq`, `mlFeedbackEvents`, `getTestDb`, `HOUR`, `DAY`, `act`, `episodeFeedback` and the
+fixtures are already imported/defined at the top of W02's file.)
 
-    expect(emitAnomalyEpisodeFeedback).not.toHaveBeenCalled();
+- [ ] **Step 2: Run and verify it fails**
+
+```bash
+pnpm test-stack up
+pnpm --filter @breeze/api test:integration src/__tests__/integration/metricAnomalyEpisodeActions.integration.test.ts
+```
+Expected: FAIL — `episodeLevelFeedback` returns `[]` for dismiss/resolve (expected length 1). The
+promote/unsnooze case passes already; note that in the PR so the reviewer is not surprised by one
+green test in a red step.
+
+- [ ] **Step 3: Implement**
+
+In `apps/api/src/services/metricAnomalyEpisodeActions.ts`, change the emitter import to
+`import { emitAlertStateFeedback, emitAnomalyEpisodeFeedback, emitAnomalyEpisodeMemberFeedback } from './mlFeedbackEmitters';`.
+
+In `resolveEpisode`, directly after
+`const feedbackInserted = await labelMembers(episode, 'resolved', members, input, now);`:
+
+```ts
+  // W03 (spec §8.3): one episode-level label, same transaction, same throwing
+  // writer as the member rows (W02 D-7).
+  await emitAnomalyEpisodeFeedback({
+    orgId: episode.orgId,
+    episodeId: episode.id,
+    eventType: 'anomaly_episode.resolved',
+    outcome: 'resolved',
+    actorUserId: input.actorUserId,
+    occurredAt: now,
+    metadata: { route: 'devices.anomalyEpisodes.action', note: input.note, memberCount: members.length },
   });
 ```
 
-Adjust the exact `applyEpisodeAction` call shape (parameter names, whether `orgId` is inferred from
-the loaded episode instead of passed in, etc.) to match whatever signature W02 actually shipped —
-the test's *behavioral* assertions (call count, `eventType`, `outcome`) are what this task must
-satisfy; the call shape is illustrative of the option-bag pattern the rest of this file already uses.
+In `dismissEpisode`, directly after
+`const feedbackInserted = await labelMembers(episode, 'dismissed', members, input, now);`:
 
-- [ ] **Step 3: Run and verify it fails**
+```ts
+  await emitAnomalyEpisodeFeedback({
+    orgId: episode.orgId,
+    episodeId: episode.id,
+    eventType: 'anomaly_episode.dismissed',
+    outcome: 'dismissed',
+    actorUserId: input.actorUserId,
+    occurredAt: now,
+    metadata: { route: 'devices.anomalyEpisodes.action', note: input.note, memberCount: members.length },
+  });
+```
+
+`promoteEpisode` and `unsnoozeEpisode` get no call. Do not add the new row to `feedbackInserted`.
+
+In `apps/api/src/services/metricAnomalyEpisodeActions.test.ts`, extend W02's emitter mock so the
+module still resolves every export:
+
+```ts
+vi.mock('./mlFeedbackEmitters', () => ({
+  emitAlertStateFeedback: vi.fn(),
+  emitAnomalyEpisodeMemberFeedback: vi.fn(),
+  emitAnomalyEpisodeFeedback: vi.fn(),
+}));
+```
+
+- [ ] **Step 4: Run and verify it passes**
 
 ```bash
 cd apps/api && npx vitest run src/services/metricAnomalyEpisodeActions.test.ts
+pnpm --filter @breeze/api test:integration src/__tests__/integration/metricAnomalyEpisodeActions.integration.test.ts src/__tests__/integration/metricAnomalyEpisodeRoutes.integration.test.ts
 ```
-Expected: FAIL — `emitAnomalyEpisodeFeedback` never called (0 calls vs. expected 1).
+Expected: PASS, including every W02 test in both files (member counts, `feedback.total` +17 in
+`metricAnomalyEpisodeRoutes`, which counts `anomaly` rows only).
 
-- [ ] **Step 4: Implement**
-
-In the `resolve` branch, after the existing per-member `emitAnomalyFeedback` loop:
-
-```ts
-      await emitAnomalyEpisodeFeedback({
-        orgId: episode.orgId,
-        episodeId: episode.id,
-        eventType: 'anomaly_episode.resolved',
-        outcome: 'resolved',
-        actorUserId: actorUserId,
-        metadata: { episodeId: episode.id, memberCount: cascadedMemberIds.length },
-      });
-```
-
-In the `dismiss` branch, after its per-member `emitAnomalyFeedback` loop:
-
-```ts
-      await emitAnomalyEpisodeFeedback({
-        orgId: episode.orgId,
-        episodeId: episode.id,
-        eventType: 'anomaly_episode.dismissed',
-        outcome: 'dismissed',
-        actorUserId: actorUserId,
-        metadata: { episodeId: episode.id, memberCount: cascadedMemberIds.length },
-      });
-```
-
-Use whatever local variable names the actual `resolve`/`dismiss` branches already use for the loaded
-episode row and the actor id — `episode`, `actorUserId`, `cascadedMemberIds` above are placeholders
-for those actual bindings, not new names to introduce. Add `emitAnomalyEpisodeFeedback` to this
-file's import from `./mlFeedbackEmitters`. The `promote` and `unsnooze` branches get no new call.
-
-- [ ] **Step 5: Run and verify it passes**
+- [ ] **Step 5: Commit**
 
 ```bash
-cd apps/api && npx vitest run src/services/metricAnomalyEpisodeActions.test.ts
-```
-Expected: PASS, including every pre-existing test in the file (the per-member emission and status
-transitions are unchanged).
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add apps/api/src/services/metricAnomalyEpisodeActions.ts apps/api/src/services/metricAnomalyEpisodeActions.test.ts
-git commit -m "$(cat <<'EOF'
+git add apps/api/src/services/metricAnomalyEpisodeActions.ts apps/api/src/services/metricAnomalyEpisodeActions.test.ts apps/api/src/__tests__/integration/metricAnomalyEpisodeActions.integration.test.ts
+git commit -m "$(cat <<'MSG'
 feat(anomaly-episodes): emit episode-level feedback on resolve/dismiss
 
 One anomaly_episode.{resolved,dismissed} row per human episode action,
-alongside the existing per-member anomaly.* rows, so W03's evaluation
-endpoint can report an episode-level human-labelled share without
-re-deriving it from member rows.
-
-Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
-EOF
+inside the action transaction beside the per-member anomaly.* rows.
+Promote and unsnooze emit none.
+MSG
 )"
 ```
 
@@ -988,7 +1024,7 @@ Member `metric_anomalies` rows cascade to the episode's new status **only while 
 promoted member keeps its `promoted` status regardless of what the episode does next. Auto-resolve
 (`cleared`) sets open members to a `cleared` status that is distinct from a human `resolved`.
 
-### Constants (env-overridable; all in `apps/api/src/services/metricAnomalyEpisodes.ts`)
+### Constants (defined in `apps/api/src/services/metricAnomalyEpisodeKeys.ts`, re-exported from `metricAnomalyEpisodes.ts`; override with env `METRIC_ANOMALY_EPISODE_<NAME>`, e.g. `METRIC_ANOMALY_EPISODE_GAP_MINUTES`, positive integers only)
 
 | Constant | Default | Meaning |
 | --- | --- | --- |
@@ -1009,8 +1045,15 @@ promoted member keeps its `promoted` status regardless of what the episode does 
 | `user` | a human clicked Resolve or Dismiss | yes |
 | `snoozed` | a new episode opened for a key a human dismissed within the last `EPISODE_SNOOZE_DAYS`; created already-dismissed | no (the label was on the *original* dismiss, not this successor) |
 
+Assembly can close an episode too: when a new burst for the same (device, key) starts more than
+`EPISODE_GAP_MINUTES` after an open episode ended, the old one is superseded and closed — `cleared`
+if every member metric had ≥ `EPISODE_CLEAN_BUCKETS` clean buckets in between, else
+`expired_no_data`. Backfill history older than the current episode is created already closed with
+the same rule. Both flow to the same close handler as auto-resolve (linked alert auto-resolved).
+
 Auto-resolve runs **even when `ml.anomalies.enabled` is off** — turning off detection must not
-freeze open episodes forever.
+freeze open episodes forever. The 10-minute `scan-orgs` job also picks up orgs that have no live
+device left but still own an open episode, so those close too.
 
 ### Snooze
 
@@ -1077,15 +1120,15 @@ EOF
 ### Task 7: Integration tests, contract suites, and final verification
 
 **Files:**
-- Modify: `apps/api/src/__tests__/integration/analyticsAnomalyEvaluation.integration.test.ts` (create
-  if W01/W02 did not already create an episodes-adjacent integration file under this name — check
-  first: `ls apps/api/src/__tests__/integration/ | grep -i anomal`)
+- Create: `apps/api/src/__tests__/integration/metricAnomalyEpisodeEvaluation.integration.test.ts`
 
 **Interfaces:**
-- Consumes: everything from Tasks 1-5, plus W01's `assembleMetricAnomalyEpisodes`,
-  `resolveMetricAnomalyEpisodes` (test fixtures use these to build real episode rows against real
-  Postgres, matching how W01's own integration suite seeds episodes — follow that file's setup
-  helpers rather than hand-inserting rows, to stay consistent with the fixture shape W01 established).
+- Consumes (exact names): W02 fixtures `insertEpisodeDevice`, `seedEpisode`, `insertCleanRollups`
+  (`__tests__/integration/metricAnomalyEpisodeFixtures.ts`), W02's `anomaliesRoutes` episode
+  endpoints (`routes/devices/anomalies.ts`), `analyticsRoutes` (`routes/analytics.ts`),
+  `createIntegrationTestClient` (`__tests__/integration/db-utils.ts`, the same harness W02's
+  `metricAnomalyEpisodeRoutes.integration.test.ts` uses), W01's
+  `resolveMetricAnomalyEpisodes(orgId, now?)` (runs inside a system DB context).
 - Produces: nothing further downstream.
 
 - [ ] **Step 1: Write the failing integration test**
@@ -1094,80 +1137,113 @@ EOF
 pnpm test-stack up
 ```
 
-Add a test (new file, or append to the file found above) asserting the two behaviors named in the
-task brief:
+`apps/api/src/__tests__/integration/metricAnomalyEpisodeEvaluation.integration.test.ts`:
 
 ```ts
-import { describe, expect, it, beforeEach } from 'vitest';
-import { randomUUID } from 'node:crypto';
-import { db } from '../../db';
-import { metricAnomalies, metricAnomalyEpisodes, mlFeedbackEvents } from '../../db/schema';
+import './setup';
+
+import { describe, expect, it, vi } from 'vitest';
+import { Hono } from 'hono';
+import { and, eq } from 'drizzle-orm';
+
+const { publishEventMock } = vi.hoisted(() => ({
+  publishEventMock: vi.fn<(...args: unknown[]) => Promise<string>>(async () => 'test-event-id'),
+}));
+vi.mock('../../services/eventBus', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/eventBus')>();
+  return { ...actual, publishEvent: publishEventMock };
+});
+
 import { withSystemDbAccessContext } from '../../db';
-// Import W01/W02 helpers as they actually landed — adjust these two imports to
-// match: assembleMetricAnomalyEpisodes + a fixture builder for an open episode
-// with N open members, and applyEpisodeAction from W02.
-import { applyEpisodeAction } from '../../services/metricAnomalyEpisodeActions';
+import { mlFeedbackEvents } from '../../db/schema';
+import { analyticsRoutes } from '../../routes/analytics';
+import { anomaliesRoutes } from '../../routes/devices/anomalies';
+import { resolveMetricAnomalyEpisodes } from '../../services/metricAnomalyEpisodes';
+import { createIntegrationTestClient } from './db-utils';
+import { insertCleanRollups, insertEpisodeDevice, seedEpisode } from './metricAnomalyEpisodeFixtures';
+import { getTestDb } from './setup';
 
-describe('anomaly episode evaluation — feedback and cleared semantics (integration)', () => {
-  it('feedback.total moves by member count + 1 on an episode dismiss, and v1-shadow overlap still counts per-member rows', async () => {
-    // Arrange: seed one open episode with 17 open metric_anomalies members
-    // (mirrors spec §16's "17 consecutive anomalous buckets" integration case),
-    // using the same seed helper W01's own integration suite uses.
-    const { orgId, episodeId, memberIds } = await seedOpenEpisodeWithMembers(17);
+const HOUR = 3_600_000;
+const BUCKET_MS = 300_000;
 
-    const before = await countFeedbackRows(orgId);
+function buildApp(): Hono {
+  const app = new Hono();
+  app.route('/api/v1/devices', anomaliesRoutes);
+  app.route('/api/v1/analytics', analyticsRoutes);
+  return app;
+}
 
-    await withSystemDbAccessContext(async () =>
-      applyEpisodeAction({ episodeId, orgId, action: 'dismiss', actorUserId: null }),
-    );
+type Client = Awaited<ReturnType<typeof createIntegrationTestClient>>;
 
-    const after = await countFeedbackRows(orgId);
-    expect(after - before).toBe(17 + 1); // 17 per-member `anomaly` rows + 1 `anomaly_episode` row
+async function evaluation(client: Client) {
+  const res = await client.get('/api/v1/analytics/anomalies/evaluation?range=7d');
+  expect(res.status).toBe(200);
+  return res.json();
+}
 
-    const episodeRow = await countFeedbackRows(orgId, 'anomaly_episode');
-    expect(episodeRow).toBe(1);
+describe('anomaly episode evaluation (W03)', () => {
+  it('an episode dismiss adds 17 per-member rows to feedback.total and exactly one anomaly_episode row', async () => {
+    const client = await createIntegrationTestClient(buildApp());
+    const orgId = client.env.organization.id;
+    const deviceId = await insertEpisodeDevice(orgId, client.env.site.id);
+    const ep = await seedEpisode({ orgId, deviceId, memberCount: 17, start: new Date(Date.now() - 2 * HOUR) });
 
-    const memberRows = await countFeedbackRows(orgId, 'anomaly');
-    expect(memberRows).toBe(17);
+    const before = await evaluation(client);
+    const res = await client.patch(`/api/v1/devices/${deviceId}/anomaly-episodes/${ep.episodeId}`, { action: 'dismiss' });
+    expect(res.status).toBe(200);
+    const after = await evaluation(client);
+
+    // The evaluation's `feedback` block counts sourceType 'anomaly' only, so the
+    // per-member rows (and the v1-shadow overlap, which joins the same rows)
+    // move by 17 and the episode-level row does not leak into it.
+    expect(after.feedback.total - before.feedback.total).toBe(17);
+    expect(after.feedback.dismissed - before.feedback.dismissed).toBe(17);
+    expect(after.episodes.byCloseReason.user - before.episodes.byCloseReason.user).toBe(1);
+    expect(after.episodes.byStatus.dismissed - before.episodes.byStatus.dismissed).toBe(1);
+
+    const episodeRows = await getTestDb().select().from(mlFeedbackEvents).where(and(
+      eq(mlFeedbackEvents.sourceType, 'anomaly_episode'),
+      eq(mlFeedbackEvents.sourceId, ep.episodeId),
+    ));
+    expect(episodeRows).toHaveLength(1);
+    expect(episodeRows[0]!.eventType).toBe('anomaly_episode.dismissed');
   });
 
-  it('cleared members do not raise dismissRate in the evaluation response', async () => {
-    const { orgId, episodeId } = await seedOpenEpisodeWithMembers(6);
-    // Auto-resolve the episode (6 clean rollup buckets on every member metric,
-    // per spec §7) using W01's resolveMetricAnomalyEpisodes, or seed the closed
-    // state directly if W01's integration fixtures expose that shortcut.
-    await resolveMetricAnomalyEpisodes(orgId);
+  it('auto-resolved (cleared) members leave the human-label denominator and never raise dismissRate', async () => {
+    const client = await createIntegrationTestClient(buildApp());
+    const orgId = client.env.organization.id;
+    const deviceId = await insertEpisodeDevice(orgId, client.env.site.id);
+    const start = new Date(Math.floor((Date.now() - 3 * HOUR) / BUCKET_MS) * BUCKET_MS);
+    const ep = await seedEpisode({ orgId, deviceId, memberCount: 6, start });
+    // seedEpisode sets last_seen_at = start + memberCount buckets; 6 clean buckets after it clear the episode (spec §7).
+    await insertCleanRollups({ orgId, deviceId, metricName: 'disk_write_bps', from: new Date(start.getTime() + 6 * BUCKET_MS), count: 6 });
 
-    const clearedCount = await db
-      .select({ count: sql<number>`count(*)` })
-      .from(metricAnomalies)
-      .where(and(eq(metricAnomalies.orgId, orgId), eq(metricAnomalies.status, 'cleared')));
-    expect(Number(clearedCount[0]?.count)).toBe(6);
+    const before = await evaluation(client);
+    expect(before.total).toBe(6);
+    expect(before.status.open).toBe(6);
 
-    const res = await fetch(`${apiBaseUrl}/analytics/anomalies/evaluation?orgId=${orgId}&range=30d`, {
-      headers: { Authorization: await systemAuthHeader() },
-    });
-    const body = await res.json();
-    expect(body.status.cleared).toBe(6);
-    expect(body.rates.dismissRate).toBe(0); // no dismisses happened; cleared did not leak in
-    expect(body.total).toBe(0); // cleared excluded from the human-label denominator entirely
+    const closed = await withSystemDbAccessContext(() => resolveMetricAnomalyEpisodes(orgId));
+    expect(closed.map((c) => c.episodeId)).toEqual([ep.episodeId]);
+
+    const after = await evaluation(client);
+    expect(after.status.cleared).toBe(6);
+    expect(after.total).toBe(0); // cleared is excluded from `total`, the human-label denominator
+    expect(after.rates.dismissRate).toBe(0);
+    expect(after.episodes.byCloseReason.cleared).toBe(1);
+    expect(after.episodes.humanLabelledShare).toBe(0);
   });
 });
 ```
 
-The `seedOpenEpisodeWithMembers`, `countFeedbackRows`, `apiBaseUrl`, `systemAuthHeader` helpers are
-illustrative of the fixture shape — use this suite's or W01/W02's actual integration test-harness
-helpers (`apps/api/src/__tests__/integration/testHarness.ts` or equivalent, grep for how existing
-`*.integration.test.ts` files seed org/device/auth) rather than reinventing them.
-
-- [ ] **Step 2: Run and verify it fails, then implement any harness gaps, then verify it passes**
+- [ ] **Step 2: Run it (end-to-end proof + control)**
 
 ```bash
-DATABASE_URL="$(cat apps/api/.env.test | grep DATABASE_URL | cut -d= -f2-)" \
-  cd apps/api && npx vitest run --config vitest.integration.config.ts src/__tests__/integration/analyticsAnomalyEvaluation.integration.test.ts
+pnpm --filter @breeze/api test:integration src/__tests__/integration/metricAnomalyEpisodeEvaluation.integration.test.ts
 ```
-Expected: fails first (missing helpers / assertions against pre-Task-5 shape), passes once Tasks 1-5
-are all in place and any harness helper gaps are filled.
+Expected: PASS (2 tests). Tasks 4-5 already implemented the behaviour, so this is an end-to-end
+proof, not red-first (same as W02 Task 10). Run this control and record it in the PR: temporarily
+delete the `emitAnomalyEpisodeFeedback` call in `dismissEpisode`, re-run, and watch the first test
+fail on `episodeRows` length 0; restore it and confirm green.
 
 - [ ] **Step 3: Run the full contract suite sweep required for tenancy/cascade-adjacent changes**
 
@@ -1202,7 +1278,7 @@ pnpm test-stack down
 - [ ] **Step 6: Commit the integration test**
 
 ```bash
-git add apps/api/src/__tests__/integration/analyticsAnomalyEvaluation.integration.test.ts
+git add apps/api/src/__tests__/integration/metricAnomalyEpisodeEvaluation.integration.test.ts
 git commit -m "$(cat <<'EOF'
 test(anomaly-episodes): integration proof for episode feedback + cleared exclusion
 
@@ -1249,11 +1325,10 @@ Open the PR against `main` (after W02 has merged) with:
   block ..., `cleared` excluded ..., runbook section"): all four covered by Tasks 1-2, 5, 5, 6
   respectively.
 
-**2. Placeholder scan.** Every step has real code except Task 4 and Task 7, where the target file
-(`metricAnomalyEpisodeActions.ts`, W02) and harness helpers (W01/W02 integration fixtures) don't exist
-in this worktree yet — those steps say explicitly what to grep for and give the exact call/assertion
-shape to add, rather than "wire it up appropriately." That is a real constraint of writing a
-downstream wave's plan before its dependencies land, not a placeholder.
+**2. Placeholder scan.** Every step has real code. Tasks 4 and 7 target W02 code
+(`metricAnomalyEpisodeActions.ts` `resolveEpisode`/`dismissEpisode`, `metricAnomalyEpisodeFixtures.ts`)
+by its planned names, reconciled against the W02 plan on 2026-09-22; if W02 merged under different
+names, follow the index's contract table.
 
 **3. Type consistency.** `emitAnomalyEpisodeFeedback` (Task 3) signature matches its two call sites in
 Task 4 (`eventType`/`outcome` pairs: `dismissed`/`dismissed`, `resolved`/`resolved`). `episodes`

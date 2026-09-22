@@ -564,3 +564,24 @@ fresh context, repo access, ten questions, adversarial brief.
 | Q8 performance | DISAGREE | adopted: own stages after `incidents`; partial unique index; 24 h scan bound; skip counter |
 | Q9 CLAUDE.md | 3 findings | adopted: export-policy amendment for the new columns; migration named against `origin/main`; no `CONCURRENTLY` |
 | Q10 cuts / missing | mixed | adopted: drop `recurrence_of` FK (count only); one dispatch per episode (D11); dismiss = snooze (D8); close reason shown in UI. **Held:** keep `peak_metric_name`/`peak_baseline_value` (the card sentence needs them without a second query); keep the "Recently closed" filter (the owner asked for history explicitly) |
+
+## 21. Plan-time amendments
+
+Accepted when the four wave plans were reconciled (2026-09-22); the per-wave list is in the plan
+index under "Accepted deviations from the spec". Assembly can close episodes itself: a new burst more
+than `EPISODE_GAP_MINUTES` after an open episode supersedes and closes it (`cleared` with enough
+clean buckets in between, else `expired_no_data`), and `assembleMetricAnomalyEpisodes` returns those
+closes so they reach the same close handler as auto-resolve. A snoozed successor is itself extended
+by later buckets instead of spawning one dismissed episode per tick, and `bucket_count` counts
+distinct buckets. The close handler (linked-alert auto-resolve) runs once per detection run, after
+the stage transactions commit and outside any DB context. The incident publisher gates on a sibling
+already published or dispatched, allows one incident per episode per claim, and holds unlinked
+incidents for a 15-minute grace window so assembly can link them. The episode routes live on the
+existing `anomaliesRoutes` (`routes/devices/anomalies.ts`), not a new module. Per-member feedback
+rows are written inside the action transaction by a throwing writer, so a lost label rolls the
+action back; the episode-level `anomaly_episode` row (W03) follows the same rule and is emitted only
+for resolve and dismiss (`anomaly_episode.resolved|dismissed`). The web panel keeps its Open /
+Recently closed / All filter in component state, not the URL hash. The `scan-orgs` fan-out also
+includes orgs that still own an open episode, so an org whose devices were all decommissioned still
+gets `episode-resolve`. The episode DTO adds `peakAnomalyId` so remediation suggestions key on a real
+anomaly id.

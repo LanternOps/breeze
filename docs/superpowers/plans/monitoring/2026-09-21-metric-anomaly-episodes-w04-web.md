@@ -40,28 +40,38 @@ promotion links to `#anomalies/<episodeId>` instead of the bucket id.
 - Copy lives under `deviceAnomaliesPanel.*` in `devices.json`, matching the existing panel's keys.
 - `formatEpisodeSentence(episode, t) → { headline: string; attributionLine: string }` (plain
   strings, no markdown) is the exact signature fixed by the cross-wave contract — do not change it.
-- Treat W02's deliverables as already merged: `MetricAnomalyEpisodeDto`, `EpisodeAction`,
-  `MetricAnomalyEpisodeStatus`, `EpisodeCloseReason`, `EpisodeAttribution`, `AttributionSnapshot`
-  live in `packages/shared/src/types/metricAnomalyEpisodes.ts` and are imported via
-  `import type { ... } from '@breeze/shared'` (confirmed pattern: `apps/web/src/components/devices/DeviceAiActivitySignal.tsx:5`,
-  `DeviceScriptHistory.tsx:25,28`). `anomalyEpisodesRoutes` exposes `GET
-  /devices/:id/anomaly-episodes`, `GET /devices/:id/anomaly-episodes/:episodeId`, `PATCH
-  /devices/:id/anomaly-episodes/:episodeId`.
+- Treat W01 + W02 deliverables as already merged and **import, never redefine**, their shared
+  types from `@breeze/shared` (`packages/shared/src/types/metricAnomalyEpisodes.ts`; pattern:
+  `apps/web/src/components/devices/DeviceAiActivitySignal.tsx:5`, `DeviceScriptHistory.tsx:25,28`):
+  W01 `MetricAnomalyStatus`, `MetricAnomalyEpisodeStatus`, `EpisodeCloseReason`,
+  `AttributionDimension`, `AttributionSnapshot`, `EpisodeAttribution`; W02 `MetricAnomalyEpisodeDto`
+  (incl. `rangeMin`/`rangeMax: number | null`, `peakAnomalyId: string | null`),
+  `MetricAnomalyEpisodeMemberDto`, `MetricAnomalyEpisodeDetailDto`,
+  `MetricAnomalyEpisodeListResponse`, `EpisodeAction`, `EPISODE_DETAIL_MEMBER_LIMIT`.
+- The endpoints are registered on the existing `anomaliesRoutes` (`apps/api/src/routes/devices/anomalies.ts`,
+  W02 deviation D-3 — there is no `anomalyEpisodesRoutes`). Exact envelopes (W02 Task 6):
+  - `GET /devices/:id/anomaly-episodes?status=open|closed|all&limit=1..100&ref=<uuid>` →
+    `MetricAnomalyEpisodeListResponse` = `{ data: MetricAnomalyEpisodeDto[]; focusedEpisodeId: string | null }`.
+    `focusedEpisodeId` is the episode `ref` resolved to (always `data[0]` when non-null) — `ref` may be
+    an episode id **or** a member anomaly id (legacy alert deep links), so the focus ring keys on
+    `focusedEpisodeId`, never on `ref` itself.
+  - `GET /devices/:id/anomaly-episodes/:episodeId` → `{ data: MetricAnomalyEpisodeDetailDto }`
+    (DTO + `members` ≤ 200 by `window_start` + `membersTruncated`).
+  - `PATCH /devices/:id/anomaly-episodes/:episodeId` `{ action, note?, resolveAlert? }` →
+    `{ data: MetricAnomalyEpisodeDto; meta: { alertId: string | null; alertResolved: boolean; labelledMembers: number } }`;
+    `409 { error, reason }` when the episode changed underneath (closed, already promoted, not
+    snoozed) — `runAction` toasts `error`; the card then asks the panel to refetch.
 
 ## Spec deviations / assumptions (flag for review)
 
-1. **Detail-endpoint envelope is not pinned by the interface contract.** The contract table says
-   only "episode + `members[]`" (spec §12). Following the existing list envelope
-   (`{ data: MetricAnomaly[] }`, `DeviceAnomaliesPanel.tsx:200` today) this plan assumes `GET
-   /devices/:id/anomaly-episodes/:episodeId` returns `{ data: MetricAnomalyEpisodeDto; members:
-   AnomalyEpisodeMember[] }`. If W02 ships a different envelope, Task 3's fetch and its test fixture
-   are the only places to change.
-2. **Member row shape is not in the cross-wave contract.** This plan defines a local
-   `AnomalyEpisodeMember` type (Task 3) shaped like the current `MetricAnomaly` type
-   (`DeviceAnomaliesPanel.tsx:24-39`) plus `episodeId` and `'cleared'` in the status union, since the
-   spec's testing section (§16) describes the member table as "(window, observed, baseline, score)" —
-   the same fields the legacy per-bucket type already has. If W02's actual member DTO differs,
-   update the type in Task 3 only.
+1. **"N detections" = `bucketCount` = distinct anomalous 5-minute buckets** (W01 deviation 4), not
+   member rows. The cpu/ram process pairs write two member rows per bucket, so the expanded member
+   table can hold more rows than the chip's number; the table therefore shows a Metric column. The
+   spec's example ("17 detections") is unchanged.
+2. **Remediation keys on the peak member, not the episode.** Spec §13 item 4 renders remediation
+   suggestions inside an open card; `RemediationSuggestionsPanel` is keyed `sourceType: 'anomaly'` +
+   a `metric_anomalies.id`. The card passes W02's `peakAnomalyId` (W02 deviation D-9) and renders
+   nothing when it is null.
 3. **Filter selection (Open/Recently closed/All) is local `useState`, not `window.location.hash`.**
    CLAUDE.md's hash-state rule is aimed at state that should survive a reload/share; the hash
    position after `#anomalies/` is already reserved for the focused episode id by
@@ -106,12 +116,13 @@ promotion links to `#anomalies/<episodeId>` instead of the bucket id.
   - `formatDuration(seconds: number, t: TFunction): string`
   - `familyLabel(metricFamily: string, t: TFunction): string`
   - `ordinal(n: number): string` (1 → '1st', 2 → '2nd', 3 → '3rd', 4 → '4th', 11 → '11th', ...)
-  - `type EpisodeSentenceInput` — the subset of `MetricAnomalyEpisodeDto` the formatter needs:
-    `{ anomalyType: string; metricFamily: string; peakMetricName: string; rangeMin: number;
-    rangeMax: number; peakValue: number; peakBaselineValue: number | null; durationSeconds: number;
-    attribution: { opened?: AttributionSnapshotLike; peak?: AttributionSnapshotLike } | null }`, where
-    `AttributionSnapshotLike = { dimension: 'cpu' | 'ramMb' | 'diskBps' | 'netBps'; processes:
-    Array<{ name: string; pid: number; value: number }> }`.
+  - `type EpisodeSentenceInput` — `Pick<MetricAnomalyEpisodeDto, 'anomalyType' | 'metricFamily' |
+    'peakMetricName' | 'rangeMin' | 'rangeMax' | 'peakValue' | 'peakBaselineValue' |
+    'durationSeconds'> & { attribution: { opened?: AttributionSnapshotLike; peak?: AttributionSnapshotLike } | null }`,
+    where `AttributionSnapshotLike = Pick<AttributionSnapshot, 'dimension' | 'processes'>` (W01's
+    shared type minus `sampledAt`, so a full `MetricAnomalyEpisodeDto` is assignable and test
+    fixtures stay short). `rangeMin`/`rangeMax` are `number | null` (W02 DTO); the formatter falls
+    back to `peakValue` when either is null.
   - Later tasks (2-5) import all of the above from this file.
 
 - [ ] **Step 1: Write the failing tests**
@@ -359,6 +370,21 @@ describe('formatEpisodeSentence', () => {
     expect(attributionLine).toBe('Process detail not available for this metric.');
   });
 
+  it('null range (W02 found no member of the peak metric) prints the peak value alone', () => {
+    const { headline } = formatEpisodeSentence({
+      anomalyType: 'spike',
+      metricFamily: 'cpu',
+      peakMetricName: 'cpu_percent',
+      rangeMin: null,
+      rangeMax: null,
+      peakValue: 96.4,
+      peakBaselineValue: 42.2,
+      durationSeconds: 5 * 60,
+      attribution: null,
+    }, t);
+    expect(headline).toBe('CPU has been 96.4% for 5 m, normally 42.2%.');
+  });
+
   it('an unmapped family falls back to its raw name, title-cased', () => {
     const { headline } = formatEpisodeSentence({
       anomalyType: 'spike',
@@ -386,24 +412,24 @@ Expected: FAIL — `Cannot find module './anomalyEpisodeSentence'`.
 ```typescript
 // apps/web/src/components/devices/anomalyEpisodeSentence.ts
 import type { TFunction } from 'i18next';
+import type { AttributionDimension, AttributionSnapshot, MetricAnomalyEpisodeDto } from '@breeze/shared';
 import { formatNumber, formatPercent } from '@/lib/i18n/format';
 
-export type AttributionDimension = 'cpu' | 'ramMb' | 'diskBps' | 'netBps';
+/** W01's snapshot minus `sampledAt` — the formatter never reads the time. */
+export type AttributionSnapshotLike = Pick<AttributionSnapshot, 'dimension' | 'processes'>;
 
-export type AttributionSnapshotLike = {
-  dimension: AttributionDimension;
-  processes: Array<{ name: string; pid: number; value: number }>;
-};
-
-export type EpisodeSentenceInput = {
-  anomalyType: string;
-  metricFamily: string;
-  peakMetricName: string;
-  rangeMin: number;
-  rangeMax: number;
-  peakValue: number;
-  peakBaselineValue: number | null;
-  durationSeconds: number;
+/** The subset of W02's DTO the formatter reads; a full MetricAnomalyEpisodeDto is assignable. */
+export type EpisodeSentenceInput = Pick<
+  MetricAnomalyEpisodeDto,
+  | 'anomalyType'
+  | 'metricFamily'
+  | 'peakMetricName'
+  | 'rangeMin'
+  | 'rangeMax'
+  | 'peakValue'
+  | 'peakBaselineValue'
+  | 'durationSeconds'
+> & {
   attribution: { opened?: AttributionSnapshotLike; peak?: AttributionSnapshotLike } | null;
 };
 
@@ -500,6 +526,9 @@ export function formatEpisodeSentence(
 ): { headline: string; attributionLine: string } {
   const metric = familyLabel(episode.metricFamily, t);
   const duration = formatDuration(episode.durationSeconds, t);
+  // W02 returns null when no member of the peak metric was found; one value then.
+  const rangeMin = episode.rangeMin ?? episode.peakValue;
+  const rangeMax = episode.rangeMax ?? episode.peakValue;
   const baseline = episode.peakBaselineValue == null
     ? t('deviceAnomaliesPanel.text')
     : formatMetricValue(episode.peakMetricName, episode.peakBaselineValue);
@@ -520,7 +549,7 @@ export function formatEpisodeSentence(
   } else if (episode.anomalyType === 'drop') {
     headline = t('deviceAnomaliesPanel.sentence.drop', {
       metric,
-      value: formatRange(episode.peakMetricName, episode.rangeMin, episode.rangeMax),
+      value: formatRange(episode.peakMetricName, rangeMin, rangeMax),
       duration,
       baseline,
       defaultValue: '{{metric}} dropped to {{value}} for {{duration}}, normally {{baseline}}.',
@@ -528,8 +557,8 @@ export function formatEpisodeSentence(
   } else if (episode.anomalyType === 'memory_growth' || episode.anomalyType === 'disk_growth') {
     headline = t('deviceAnomaliesPanel.sentence.growth', {
       metric,
-      from: formatMetricValue(episode.peakMetricName, episode.rangeMin),
-      to: formatMetricValue(episode.peakMetricName, episode.rangeMax),
+      from: formatMetricValue(episode.peakMetricName, rangeMin),
+      to: formatMetricValue(episode.peakMetricName, rangeMax),
       duration,
       defaultValue: '{{metric}} grew from {{from}} to {{to}} over {{duration}}.',
     });
@@ -537,7 +566,7 @@ export function formatEpisodeSentence(
     // spike / network_egress / process_runaway on a non-pair family.
     headline = t('deviceAnomaliesPanel.sentence.spike', {
       metric,
-      range: formatRange(episode.peakMetricName, episode.rangeMin, episode.rangeMax),
+      range: formatRange(episode.peakMetricName, rangeMin, rangeMax),
       duration,
       baseline,
       defaultValue: '{{metric}} has been {{range}} for {{duration}}, normally {{baseline}}.',
@@ -796,10 +825,13 @@ EOF
 
 **Interfaces:**
 - Consumes: `formatMetricValue` from `./anomalyEpisodeSentence` (Task 1); `fetchWithAuth` from
-  `../../stores/auth`; `formatDateTime` from `@/lib/dateTimeFormat`.
+  `../../stores/auth`; `formatDateTime` from `@/lib/dateTimeFormat`; W02's
+  `MetricAnomalyEpisodeDetailDto` / `MetricAnomalyEpisodeMemberDto` (`@breeze/shared`, type-only).
+  No local member type — the row type is W02's `MetricAnomalyEpisodeMemberDto` (`id, metricName,
+  anomalyType, status: MetricAnomalyStatus, windowStart, windowEnd, observedValue, baselineValue,
+  baselineMax, score, confidence, linkedAlertId`).
 - Produces:
-  - `type AnomalyEpisodeMember = { id: string; metricType: string; metricName: string; anomalyType: string; status: 'open' | 'dismissed' | 'promoted' | 'resolved' | 'cleared'; windowStart: string; windowEnd: string; observedValue: number; baselineValue: number | null; score: number; confidence: number }` — exported for Task 4/5 to reuse.
-  - `export default function AnomalyEpisodeMembers({ deviceId, episodeId }: { deviceId: string; episodeId: string })` — fetches `GET /devices/:deviceId/anomaly-episodes/:episodeId` on mount and renders the `members` table. Read-only: no actions here (spec §12: legacy per-row PATCH stays server-side for alert deep links, but "the web UI stops offering per-row actions").
+  - `export default function AnomalyEpisodeMembers({ deviceId, episodeId }: { deviceId: string; episodeId: string })` — fetches `GET /devices/:deviceId/anomaly-episodes/:episodeId` on mount, reads `json.data.members` / `json.data.membersTruncated` (envelope `{ data: MetricAnomalyEpisodeDetailDto }`), and renders the member table (window, metric, observed, baseline, score) plus a "showing the first N" note when truncated. Read-only: no actions here (spec §12: legacy per-row PATCH stays server-side for alert deep links, but "the web UI stops offering per-row actions").
 
 - [ ] **Step 1: Write the failing test**
 
@@ -819,16 +851,15 @@ const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500):
 describe('AnomalyEpisodeMembers', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('fetches and renders member rows on mount', async () => {
+  const member = {
+    id: 'anomaly-1', metricName: 'cpu_percent', anomalyType: 'spike', status: 'cleared',
+    windowStart: '2026-06-18T12:00:00.000Z', windowEnd: '2026-06-18T12:05:00.000Z',
+    observedValue: 96.4, baselineValue: 42.2, baselineMax: 60, score: 8.1, confidence: 0.91, linkedAlertId: null,
+  };
+
+  it('fetches the W02 detail envelope and renders member rows on mount', async () => {
     fetchWithAuthMock.mockResolvedValue(makeJsonResponse({
-      data: { id: 'episode-1' },
-      members: [
-        {
-          id: 'anomaly-1', metricType: 'system', metricName: 'cpu_percent', anomalyType: 'spike',
-          status: 'cleared', windowStart: '2026-06-18T12:00:00.000Z', windowEnd: '2026-06-18T12:05:00.000Z',
-          observedValue: 96.4, baselineValue: 42.2, score: 8.1, confidence: 0.91,
-        },
-      ],
+      data: { id: 'episode-1', members: [member], membersTruncated: false },
     }));
 
     render(<AnomalyEpisodeMembers deviceId="dev-1" episodeId="episode-1" />);
@@ -837,6 +868,17 @@ describe('AnomalyEpisodeMembers', () => {
     expect(await screen.findByTestId('anomaly-episode-member-anomaly-1')).toBeTruthy();
     expect(screen.getByText('96.4%')).toBeTruthy();
     expect(screen.getByText('42.2%')).toBeTruthy();
+    expect(screen.queryByTestId('anomaly-episode-members-truncated')).toBeNull();
+  });
+
+  it('says so when W02 truncated the member list at 200', async () => {
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({
+      data: { id: 'episode-1', members: [member], membersTruncated: true },
+    }));
+
+    render(<AnomalyEpisodeMembers deviceId="dev-1" episodeId="episode-1" />);
+
+    expect(await screen.findByTestId('anomaly-episode-members-truncated')).toBeTruthy();
   });
 
   it('renders an error state on a failed fetch', async () => {
@@ -860,30 +902,18 @@ Expected: FAIL — module not found.
 // apps/web/src/components/devices/AnomalyEpisodeMembers.tsx
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import type { MetricAnomalyEpisodeDetailDto, MetricAnomalyEpisodeMemberDto } from '@breeze/shared';
 import { fetchWithAuth } from '../../stores/auth';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { formatMetricValue } from './anomalyEpisodeSentence';
 import '../../lib/i18n';
 
-export type AnomalyEpisodeMember = {
-  id: string;
-  metricType: string;
-  metricName: string;
-  anomalyType: string;
-  status: 'open' | 'dismissed' | 'promoted' | 'resolved' | 'cleared';
-  windowStart: string;
-  windowEnd: string;
-  observedValue: number;
-  baselineValue: number | null;
-  score: number;
-  confidence: number;
-};
-
 type AnomalyEpisodeMembersProps = { deviceId: string; episodeId: string };
 
 export default function AnomalyEpisodeMembers({ deviceId, episodeId }: AnomalyEpisodeMembersProps) {
   const { t } = useTranslation('devices');
-  const [members, setMembers] = useState<AnomalyEpisodeMember[] | null>(null);
+  const [members, setMembers] = useState<MetricAnomalyEpisodeMemberDto[] | null>(null);
+  const [truncated, setTruncated] = useState(false);
   const [error, setError] = useState<string>();
 
   useEffect(() => {
@@ -892,8 +922,11 @@ export default function AnomalyEpisodeMembers({ deviceId, episodeId }: AnomalyEp
       try {
         const response = await fetchWithAuth(`/devices/${deviceId}/anomaly-episodes/${episodeId}`);
         if (!response.ok) throw new Error('failed');
-        const json = await response.json();
-        if (!cancelled) setMembers(Array.isArray(json?.members) ? json.members : []);
+        // W02 envelope: { data: MetricAnomalyEpisodeDetailDto } (members ≤ 200, window_start asc).
+        const json = (await response.json()) as { data?: Partial<MetricAnomalyEpisodeDetailDto> };
+        if (cancelled) return;
+        setMembers(Array.isArray(json?.data?.members) ? json.data.members : []);
+        setTruncated(json?.data?.membersTruncated === true);
       } catch {
         if (!cancelled) setError(t('deviceAnomaliesPanel.failedToLoadDetections'));
       }
@@ -919,6 +952,7 @@ export default function AnomalyEpisodeMembers({ deviceId, episodeId }: AnomalyEp
         <thead className="bg-muted/50 text-xs text-muted-foreground">
           <tr>
             <th className="px-3 py-2 text-left font-medium">{t('deviceAnomaliesPanel.membersColumns.window')}</th>
+            <th className="px-3 py-2 text-left font-medium">{t('deviceAnomaliesPanel.membersColumns.metric')}</th>
             <th className="px-3 py-2 text-left font-medium">{t('deviceAnomaliesPanel.observed')}</th>
             <th className="px-3 py-2 text-left font-medium">{t('deviceAnomaliesPanel.baseline')}</th>
             <th className="px-3 py-2 text-left font-medium">{t('deviceAnomaliesPanel.membersColumns.score')}</th>
@@ -930,6 +964,7 @@ export default function AnomalyEpisodeMembers({ deviceId, episodeId }: AnomalyEp
               <td className="px-3 py-2 tabular-nums">
                 {formatDateTime(new Date(member.windowStart), { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
               </td>
+              <td className="px-3 py-2 font-mono text-xs">{member.metricName}</td>
               <td className="px-3 py-2 font-medium tabular-nums">
                 {formatMetricValue(member.metricName, member.observedValue)}
               </td>
@@ -941,6 +976,11 @@ export default function AnomalyEpisodeMembers({ deviceId, episodeId }: AnomalyEp
           ))}
         </tbody>
       </table>
+      {truncated && (
+        <p data-testid="anomaly-episode-members-truncated" className="border-t px-3 py-2 text-xs text-muted-foreground">
+          {t('deviceAnomaliesPanel.membersTruncated', { count: members.length })}
+        </p>
+      )}
     </div>
   );
 }
@@ -978,7 +1018,7 @@ EOF
   (`../../hooks/useMlFeatureFlags`); `RemediationSuggestionsPanel`
   (`../remediation/RemediationSuggestionsPanel`); `formatDateTime` (`@/lib/dateTimeFormat`);
   `MetricAnomalyEpisodeDto`, `EpisodeAction` from `@breeze/shared`.
-- Produces: `export default function AnomalyEpisodeCard({ deviceId, episode, focused, compact, onChanged }: AnomalyEpisodeCardProps)` where `onChanged: (updated: MetricAnomalyEpisodeDto) => void` fires after a successful action so the container (Task 5) can splice the list, and `AnomalyEpisodeCardProps` is exported for Task 5's typing.
+- Produces: `export default function AnomalyEpisodeCard({ deviceId, episode, focused, compact, onChanged, onStale }: AnomalyEpisodeCardProps)` where `onChanged: (updated: MetricAnomalyEpisodeDto) => void` fires with the PATCH response's `data` after a successful action so the container (Task 5) can splice the list, `onStale?: () => void` fires on a W02 `409 { error, reason }` (the episode closed, was promoted, or stopped snoozing underneath — `runAction` already toasted `error`) so the container refetches, and `AnomalyEpisodeCardProps` is exported for Task 5's typing.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1012,10 +1052,12 @@ function baseEpisode(overrides: Partial<MetricAnomalyEpisodeDto> = {}): MetricAn
     resolvedAt: null, resolvedByUserId: null, note: null,
     createdAt: '2026-06-18T22:35:00.000Z', updatedAt: '2026-06-18T23:55:00.000Z',
     durationSeconds: 4800, ongoing: true, promoted: false, snoozed: false,
-    rangeMin: 86_000_000, rangeMax: 153_000_000,
+    rangeMin: 86_000_000, rangeMax: 153_000_000, peakAnomalyId: 'anomaly-peak',
     ...overrides,
   } as MetricAnomalyEpisodeDto;
 }
+
+const patchMeta = { alertId: null, alertResolved: false, labelledMembers: 17 };
 
 const flags = (remediationEnabled = false, shadowEnabled = false) => ({
   mlFeatureFlags: {
@@ -1054,7 +1096,7 @@ describe('AnomalyEpisodeCard', () => {
       if (url === '/config/ml-feature-flags') return Promise.resolve(makeJsonResponse(flags()));
       if (url === '/devices/dev-1/anomaly-episodes/episode-1' && init?.method === 'PATCH') {
         expect(init.body).toBe(JSON.stringify({ action: 'dismiss' }));
-        return Promise.resolve(makeJsonResponse({ data: baseEpisode({ status: 'dismissed', closeReason: 'user', ongoing: false }) }));
+        return Promise.resolve(makeJsonResponse({ data: baseEpisode({ status: 'dismissed', closeReason: 'user', ongoing: false }), meta: patchMeta }));
       }
       return Promise.resolve(makeJsonResponse({ error: `unexpected ${url}` }, false, 404));
     });
@@ -1064,6 +1106,26 @@ describe('AnomalyEpisodeCard', () => {
 
     await waitFor(() => expect(onChanged).toHaveBeenCalledWith(expect.objectContaining({ status: 'dismissed' })));
     expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+  });
+
+  it('a 409 { error, reason } asks the panel to refetch and does not report an update', async () => {
+    const onChanged = vi.fn();
+    const onStale = vi.fn();
+    fetchWithAuthMock.mockImplementation((input, init) => {
+      const url = String(input);
+      if (url === '/config/ml-feature-flags') return Promise.resolve(makeJsonResponse(flags()));
+      if (url === '/devices/dev-1/anomaly-episodes/episode-1' && init?.method === 'PATCH') {
+        return Promise.resolve(makeJsonResponse({ error: 'This anomaly has already closed', reason: 'episode_closed' }, false, 409));
+      }
+      return Promise.resolve(makeJsonResponse({ error: `unexpected ${url}` }, false, 404));
+    });
+
+    render(<AnomalyEpisodeCard deviceId="dev-1" episode={baseEpisode()} onChanged={onChanged} onStale={onStale} />);
+    fireEvent.click(await screen.findByRole('button', { name: /^resolve$/i }));
+
+    await waitFor(() => expect(onStale).toHaveBeenCalledTimes(1));
+    expect(onChanged).not.toHaveBeenCalled();
+    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', message: 'This anomaly has already closed' }));
   });
 
   it('shows Stop snoozing for a dismissed-and-snoozed episode instead of Dismiss/Resolve', async () => {
@@ -1106,6 +1168,8 @@ describe('AnomalyEpisodeCard', () => {
     });
     rerender(<AnomalyEpisodeCard deviceId="dev-1" episode={baseEpisode()} onChanged={vi.fn()} />);
     expect(await screen.findByText('Remediation suggestions')).toBeTruthy();
+    // Keyed on the peak MEMBER (sourceType 'anomaly'), never the episode id.
+    expect(fetchWithAuthMock).toHaveBeenCalledWith(expect.stringContaining('sourceId=anomaly-peak'));
   });
 
   it('toggles the member table on the detections chip', async () => {
@@ -1114,12 +1178,16 @@ describe('AnomalyEpisodeCard', () => {
       if (url === '/config/ml-feature-flags') return Promise.resolve(makeJsonResponse(flags()));
       if (url === '/devices/dev-1/anomaly-episodes/episode-1') {
         return Promise.resolve(makeJsonResponse({
-          data: baseEpisode(),
-          members: [{
-            id: 'm-1', metricType: 'system', metricName: 'disk_write_bps', anomalyType: 'spike', status: 'cleared',
-            windowStart: '2026-06-18T22:35:00.000Z', windowEnd: '2026-06-18T22:40:00.000Z',
-            observedValue: 86_000_000, baselineValue: 6_000_000, score: 8.1, confidence: 0.9,
-          }],
+          data: {
+            ...baseEpisode(),
+            members: [{
+              id: 'm-1', metricName: 'disk_write_bps', anomalyType: 'spike', status: 'cleared',
+              windowStart: '2026-06-18T22:35:00.000Z', windowEnd: '2026-06-18T22:40:00.000Z',
+              observedValue: 86_000_000, baselineValue: 6_000_000, baselineMax: 11_000_000,
+              score: 8.1, confidence: 0.9, linkedAlertId: null,
+            }],
+            membersTruncated: false,
+          },
         }));
       }
       return Promise.resolve(makeJsonResponse({ error: `unexpected ${url}` }, false, 404));
@@ -1152,7 +1220,7 @@ import {
   AlertTriangle, CheckCircle, Clock, ExternalLink, RefreshCw, XCircle,
 } from 'lucide-react';
 import type { EpisodeAction, MetricAnomalyEpisodeDto } from '@breeze/shared';
-import { runAction, handleActionError } from '../../lib/runAction';
+import { ActionError, runAction, handleActionError } from '../../lib/runAction';
 import { fetchWithAuth } from '../../stores/auth';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { useMlFeatureFlags } from '../../hooks/useMlFeatureFlags';
@@ -1167,6 +1235,14 @@ export type AnomalyEpisodeCardProps = {
   focused?: boolean;
   compact?: boolean;
   onChanged: (updated: MetricAnomalyEpisodeDto) => void;
+  /** W02 answered 409 { error, reason }: the episode changed underneath; refetch. */
+  onStale?: () => void;
+};
+
+/** W02 PATCH envelope (routes/devices/anomalies.ts). */
+type EpisodeActionResponse = {
+  data: MetricAnomalyEpisodeDto;
+  meta: { alertId: string | null; alertResolved: boolean; labelledMembers: number };
 };
 
 const CLOSE_REASON_LABEL_KEY: Record<string, string> = {
@@ -1182,7 +1258,7 @@ function formatWhen(value: string): string {
 }
 
 export default function AnomalyEpisodeCard({
-  deviceId, episode, focused = false, compact = false, onChanged,
+  deviceId, episode, focused = false, compact = false, onChanged, onStale,
 }: AnomalyEpisodeCardProps) {
   const { t } = useTranslation('devices');
   const mlFlags = useMlFeatureFlags();
@@ -1196,7 +1272,7 @@ export default function AnomalyEpisodeCard({
   async function applyAction(action: EpisodeAction) {
     setUpdating(true);
     try {
-      const result = await runAction<{ data: MetricAnomalyEpisodeDto }>({
+      const result = await runAction<EpisodeActionResponse>({
         request: () => fetchWithAuth(`/devices/${deviceId}/anomaly-episodes/${episode.id}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
@@ -1211,6 +1287,13 @@ export default function AnomalyEpisodeCard({
       });
       onChanged(result.data);
     } catch (err) {
+      // 409 { error, reason } (episode_closed | already_promoted | not_snoozed |
+      // no_promotable_member | promotion_disabled): runAction already toasted
+      // W02's message; the card's copy of the episode is stale, so refetch.
+      if (err instanceof ActionError && err.status === 409) {
+        onStale?.();
+        return;
+      }
       handleActionError(err, t('deviceAnomaliesPanel.couldNotUpdateEpisode'));
     } finally {
       setUpdating(false);
@@ -1267,8 +1350,12 @@ export default function AnomalyEpisodeCard({
           </a>
         )}
         {!compact && (
+          // bucketCount = distinct anomalous 5-minute buckets (W01 deviation 4) —
+          // one "detection" per bucket; the member table may list two rows per
+          // bucket for the cpu/ram process pairs.
           <button
             type="button"
+            data-testid="anomaly-episode-chip-detections"
             onClick={() => setMembersOpen((v) => !v)}
             className="rounded-full border px-2 py-0.5 text-muted-foreground hover:bg-muted"
           >
@@ -1310,8 +1397,10 @@ export default function AnomalyEpisodeCard({
 
       {membersOpen && <AnomalyEpisodeMembers deviceId={deviceId} episodeId={episode.id} />}
 
-      {!compact && episode.status === 'open' && remediationEnabled && (
-        <RemediationSuggestionsPanel sourceType="anomaly" sourceId={episode.id} deviceId={deviceId} />
+      {!compact && episode.status === 'open' && remediationEnabled && episode.peakAnomalyId && (
+        // Suggestions are keyed by a metric_anomalies id (sourceType 'anomaly'),
+        // never an episode id — W02's peakAnomalyId (D-9).
+        <RemediationSuggestionsPanel sourceType="anomaly" sourceId={episode.peakAnomalyId} deviceId={deviceId} />
       )}
       {!compact && shadowEnabled && (
         <div className="mt-3 text-xs text-muted-foreground">{t('deviceAnomaliesPanel.v1ShadowPerEpisodeNote')}</div>
@@ -1379,9 +1468,12 @@ EOF
 - Produces: same public props as today —
   `export default function DeviceAnomaliesPanel({ deviceId, compact, focusedAnomalyId }:
   DeviceAnomaliesPanelProps)` — **unchanged signature**, so `DeviceDetails.tsx` (both mount sites,
-  `:875` and `:899`ish per the earlier read) needs no edit. `focusedAnomalyId` is passed through to
-  the list fetch as the `ref` query param (spec §12: `ref` matches either an episode id or a member
-  anomaly id and forces `status=all`).
+  `:875` and `:899`ish per the earlier read) needs no edit. `focusedAnomalyId` (whatever id the
+  `#anomalies/<id>` hash carries — an episode id from new alerts, a member anomaly id from alerts
+  promoted before W02) is passed through to the list fetch as the `ref` query param (spec §12: `ref`
+  matches either kind and forces `status=all`). The focus ring goes on the card whose id equals the
+  response's `focusedEpisodeId` (W02 `MetricAnomalyEpisodeListResponse`), never on `ref` directly —
+  a member anomaly id never equals an episode id.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1432,7 +1524,7 @@ describe('DeviceAnomaliesPanel', () => {
       const url = String(input);
       if (url === '/config/ml-feature-flags') return Promise.resolve(flagsResponse);
       if (url === '/devices/dev-1/anomaly-episodes?status=open&limit=25') {
-        return Promise.resolve(makeJsonResponse({ data: [episode('episode-1')] }));
+        return Promise.resolve(makeJsonResponse({ data: [episode('episode-1')], focusedEpisodeId: null }));
       }
       return Promise.resolve(makeJsonResponse({ error: `unexpected ${url}` }, false, 404));
     });
@@ -1447,9 +1539,10 @@ describe('DeviceAnomaliesPanel', () => {
     fetchWithAuthMock.mockImplementation((input) => {
       const url = String(input);
       if (url === '/config/ml-feature-flags') return Promise.resolve(flagsResponse);
-      if (url === '/devices/dev-1/anomaly-episodes?status=open&limit=25') return Promise.resolve(makeJsonResponse({ data: [] }));
+      if (url === '/devices/dev-1/anomaly-episodes?status=open&limit=25') return Promise.resolve(makeJsonResponse({ data: [], focusedEpisodeId: null }));
+      if (url === '/devices/dev-1/anomaly-episodes?status=closed&limit=1') return Promise.resolve(makeJsonResponse({ data: [], focusedEpisodeId: null }));
       if (url === '/devices/dev-1/anomaly-episodes?status=closed&limit=25') {
-        return Promise.resolve(makeJsonResponse({ data: [episode('episode-2', { status: 'resolved', closeReason: 'cleared', ongoing: false })] }));
+        return Promise.resolve(makeJsonResponse({ data: [episode('episode-2', { status: 'resolved', closeReason: 'cleared', ongoing: false })], focusedEpisodeId: null }));
       }
       return Promise.resolve(makeJsonResponse({ error: `unexpected ${url}` }, false, 404));
     });
@@ -1464,8 +1557,9 @@ describe('DeviceAnomaliesPanel', () => {
     fetchWithAuthMock.mockImplementation((input) => {
       const url = String(input);
       if (url === '/config/ml-feature-flags') return Promise.resolve(flagsResponse);
-      if (url === '/devices/dev-1/anomaly-episodes?status=open&limit=25') return Promise.resolve(makeJsonResponse({ data: [] }));
-      if (url === '/devices/dev-1/anomaly-episodes?status=all&limit=1') return Promise.resolve(makeJsonResponse({ data: [episode('episode-3', { status: 'resolved', ongoing: false })] }));
+      if (url === '/devices/dev-1/anomaly-episodes?status=open&limit=25') return Promise.resolve(makeJsonResponse({ data: [], focusedEpisodeId: null }));
+      // "Recently closed" = W02's status=closed (resolved/dismissed in the last 7 days).
+      if (url === '/devices/dev-1/anomaly-episodes?status=closed&limit=1') return Promise.resolve(makeJsonResponse({ data: [episode('episode-3', { status: 'resolved', closeReason: 'cleared', ongoing: false })], focusedEpisodeId: null }));
       return Promise.resolve(makeJsonResponse({ error: `unexpected ${url}` }, false, 404));
     });
 
@@ -1473,19 +1567,41 @@ describe('DeviceAnomaliesPanel', () => {
     expect(await screen.findByRole('button', { name: /show recently closed/i })).toBeTruthy();
   });
 
-  it('passes focusedAnomalyId through as ref and forces status=all', async () => {
+  it('passes focusedAnomalyId through as ref (status=all) and rings the episode W02 resolved it to', async () => {
+    // A legacy alert deep link carries a MEMBER anomaly id; W02 resolves it to
+    // its episode and returns that as focusedEpisodeId (always data[0]).
     fetchWithAuthMock.mockImplementation((input) => {
       const url = String(input);
       if (url === '/config/ml-feature-flags') return Promise.resolve(flagsResponse);
-      if (url === '/devices/dev-1/anomaly-episodes?status=all&limit=100&ref=episode-9') {
-        return Promise.resolve(makeJsonResponse({ data: [episode('episode-9', { status: 'promoted', promoted: true, linkedAlertId: 'alert-1', ongoing: false })] }));
+      if (url === '/devices/dev-1/anomaly-episodes?status=all&limit=100&ref=anomaly-77') {
+        return Promise.resolve(makeJsonResponse({
+          data: [
+            episode('episode-9', { promoted: true, linkedAlertId: 'alert-1' }),
+            episode('episode-10'),
+          ],
+          focusedEpisodeId: 'episode-9',
+        }));
       }
       return Promise.resolve(makeJsonResponse({ error: `unexpected ${url}` }, false, 404));
     });
 
-    render(<DeviceAnomaliesPanel deviceId="dev-1" focusedAnomalyId="episode-9" />);
-    const card = await screen.findByTestId('anomaly-episode-episode-9');
-    expect(card).toHaveClass('ring-2');
+    render(<DeviceAnomaliesPanel deviceId="dev-1" focusedAnomalyId="anomaly-77" />);
+    expect(await screen.findByTestId('anomaly-episode-episode-9')).toHaveClass('ring-2');
+    expect(screen.getByTestId('anomaly-episode-episode-10')).not.toHaveClass('ring-2');
+  });
+
+  it('an unknown ref rings nothing (focusedEpisodeId null)', async () => {
+    fetchWithAuthMock.mockImplementation((input) => {
+      const url = String(input);
+      if (url === '/config/ml-feature-flags') return Promise.resolve(flagsResponse);
+      if (url === '/devices/dev-1/anomaly-episodes?status=all&limit=100&ref=gone-1') {
+        return Promise.resolve(makeJsonResponse({ data: [episode('episode-1')], focusedEpisodeId: null }));
+      }
+      return Promise.resolve(makeJsonResponse({ error: `unexpected ${url}` }, false, 404));
+    });
+
+    render(<DeviceAnomaliesPanel deviceId="dev-1" focusedAnomalyId="gone-1" />);
+    expect(await screen.findByTestId('anomaly-episode-episode-1')).not.toHaveClass('ring-2');
   });
 
   it('compact mode caps at 3 open episodes and fetches limit=3', async () => {
@@ -1493,7 +1609,7 @@ describe('DeviceAnomaliesPanel', () => {
       const url = String(input);
       if (url === '/config/ml-feature-flags') return Promise.resolve(flagsResponse);
       if (url === '/devices/dev-1/anomaly-episodes?status=open&limit=3') {
-        return Promise.resolve(makeJsonResponse({ data: [episode('e1'), episode('e2'), episode('e3'), episode('e4')] }));
+        return Promise.resolve(makeJsonResponse({ data: [episode('e1'), episode('e2'), episode('e3'), episode('e4')], focusedEpisodeId: null }));
       }
       return Promise.resolve(makeJsonResponse({ error: `unexpected ${url}` }, false, 404));
     });
@@ -1523,9 +1639,13 @@ describe('DeviceAnomaliesPanel', () => {
     fetchWithAuthMock.mockImplementation((input, init) => {
       const url = String(input);
       if (url === '/config/ml-feature-flags') return Promise.resolve(flagsResponse);
-      if (url === '/devices/dev-1/anomaly-episodes?status=open&limit=25') return Promise.resolve(makeJsonResponse({ data: [episode('episode-1')] }));
+      if (url === '/devices/dev-1/anomaly-episodes?status=open&limit=25') return Promise.resolve(makeJsonResponse({ data: [episode('episode-1')], focusedEpisodeId: null }));
+      if (url === '/devices/dev-1/anomaly-episodes?status=closed&limit=1') return Promise.resolve(makeJsonResponse({ data: [], focusedEpisodeId: null }));
       if (url === '/devices/dev-1/anomaly-episodes/episode-1' && init?.method === 'PATCH') {
-        return Promise.resolve(makeJsonResponse({ data: episode('episode-1', { status: 'resolved', closeReason: 'user', ongoing: false }) }));
+        return Promise.resolve(makeJsonResponse({
+          data: episode('episode-1', { status: 'resolved', closeReason: 'user', ongoing: false }),
+          meta: { alertId: null, alertResolved: false, labelledMembers: 2 },
+        }));
       }
       return Promise.resolve(makeJsonResponse({ error: `unexpected ${url}` }, false, 404));
     });
@@ -1548,7 +1668,7 @@ Expected: FAIL — old component/tests still reference `/anomalies` and per-row 
 // apps/web/src/components/devices/DeviceAnomaliesPanel.tsx
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { RefreshCw, TrendingUp } from 'lucide-react';
-import type { MetricAnomalyEpisodeDto } from '@breeze/shared';
+import type { MetricAnomalyEpisodeDto, MetricAnomalyEpisodeListResponse } from '@breeze/shared';
 import { fetchWithAuth } from '../../stores/auth';
 import { useMlFeatureFlags } from '../../hooks/useMlFeatureFlags';
 import { useTranslation } from 'react-i18next';
@@ -1570,6 +1690,8 @@ export default function DeviceAnomaliesPanel({
   const mlFlags = useMlFeatureFlags();
   const [filter, setFilter] = useState<Filter>('open');
   const [episodes, setEpisodes] = useState<MetricAnomalyEpisodeDto[]>([]);
+  // W02 resolves `ref` (episode id OR member anomaly id) to the episode to ring.
+  const [focusedEpisodeId, setFocusedEpisodeId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [hasClosed, setHasClosed] = useState(false);
@@ -1586,8 +1708,9 @@ export default function DeviceAnomaliesPanel({
       if (focusedAnomalyId) params.set('ref', focusedAnomalyId);
       const response = await fetchWithAuth(`/devices/${deviceId}/anomaly-episodes?${params.toString()}`);
       if (!response.ok) throw new Error(t('deviceAnomaliesPanel.failedToLoadMetricAnomalies'));
-      const json = await response.json();
+      const json = (await response.json()) as Partial<MetricAnomalyEpisodeListResponse>;
       setEpisodes(Array.isArray(json?.data) ? json.data : []);
+      setFocusedEpisodeId(typeof json?.focusedEpisodeId === 'string' ? json.focusedEpisodeId : null);
     } catch (err) {
       setError(err instanceof Error ? err.message : t('deviceAnomaliesPanel.failedToLoadMetricAnomalies'));
     } finally {
@@ -1597,11 +1720,13 @@ export default function DeviceAnomaliesPanel({
 
   const checkHasClosed = useCallback(async () => {
     try {
-      const response = await fetchWithAuth(`/devices/${deviceId}/anomaly-episodes?status=all&limit=1`);
+      // Same predicate the "Recently closed" pill uses (W02 status=closed:
+      // resolved/dismissed within the last 7 days), so the link never leads to
+      // an empty list.
+      const response = await fetchWithAuth(`/devices/${deviceId}/anomaly-episodes?status=closed&limit=1`);
       if (!response.ok) return;
-      const json = await response.json();
-      const rows: MetricAnomalyEpisodeDto[] = Array.isArray(json?.data) ? json.data : [];
-      setHasClosed(rows.some((row) => !row.ongoing));
+      const json = (await response.json()) as Partial<MetricAnomalyEpisodeListResponse>;
+      setHasClosed(Array.isArray(json?.data) && json.data.length > 0);
     } catch {
       // Best-effort; the "show recently closed" link simply stays hidden.
     }
@@ -1726,8 +1851,9 @@ export default function DeviceAnomaliesPanel({
               deviceId={deviceId}
               episode={ep}
               compact={compact}
-              focused={ep.id === focusedAnomalyId}
+              focused={focusedEpisodeId !== null && ep.id === focusedEpisodeId}
               onChanged={handleChanged}
+              onStale={() => void fetchEpisodes()}
             />
           ))}
         </div>
@@ -1832,8 +1958,10 @@ Add this to the `deviceAnomaliesPanel` object in `apps/web/src/locales/en/device
     },
     "membersColumns": {
       "window": "Window",
+      "metric": "Metric",
       "score": "Score"
     },
+    "membersTruncated": "Showing the first {{count}} detections.",
     "failedToLoadDetections": "Failed to load detections"
   }
 }
@@ -1881,8 +2009,10 @@ Merge this into the existing object (do not replace it) — the pre-existing key
     },
     "membersColumns": {
       "window": "Zeitfenster",
+      "metric": "Metrik",
       "score": "Punktzahl"
     },
+    "membersTruncated": "Die ersten {{count}} Erkennungen werden angezeigt.",
     "failedToLoadDetections": "Erkennungen konnten nicht geladen werden"
   }
 }
@@ -1924,8 +2054,10 @@ Merge this into the existing object (do not replace it) — the pre-existing key
     },
     "membersColumns": {
       "window": "Ventana",
+      "metric": "Métrica",
       "score": "Puntuación"
     },
+    "membersTruncated": "Se muestran las primeras {{count}} detecciones.",
     "failedToLoadDetections": "No se pudieron cargar las detecciones"
   }
 }
@@ -1967,8 +2099,10 @@ Merge this into the existing object (do not replace it) — the pre-existing key
     },
     "membersColumns": {
       "window": "Fenêtre",
+      "metric": "Métrique",
       "score": "Score"
     },
+    "membersTruncated": "Affichage des {{count}} premières détections.",
     "failedToLoadDetections": "Impossible de charger les détections"
   }
 }
@@ -2014,8 +2148,10 @@ Merge this into the existing object (do not replace it) — the pre-existing key
     },
     "membersColumns": {
       "window": "Finestra",
+      "metric": "Metrica",
       "score": "Punteggio"
     },
+    "membersTruncated": "Visualizzazione dei primi {{count}} rilevamenti.",
     "failedToLoadDetections": "Impossibile caricare i rilevamenti"
   }
 }
@@ -2057,8 +2193,10 @@ Merge this into the existing object (do not replace it) — the pre-existing key
     },
     "membersColumns": {
       "window": "Janela",
+      "metric": "Métrica",
       "score": "Pontuação"
     },
+    "membersTruncated": "Exibindo as primeiras {{count}} detecções.",
     "failedToLoadDetections": "Não foi possível carregar as detecções"
   }
 }
@@ -2100,8 +2238,10 @@ Merge this into the existing object (do not replace it) — the pre-existing key
     },
     "membersColumns": {
       "window": "Pencere",
+      "metric": "Metrik",
       "score": "Skor"
     },
+    "membersTruncated": "İlk {{count}} tespit gösteriliyor.",
     "failedToLoadDetections": "Tespitler yüklenemedi"
   }
 }
@@ -2222,8 +2362,10 @@ PR body must include:
   but per CLAUDE.md's "Web Mutation Handlers" section, state explicitly: *"All new mutations
   (dismiss/resolve/promote/unsnooze) go through `runAction`; `AnomalyEpisodeCard.tsx` added to
   `no-silent-mutations` `TARGET_GLOBS`."*
-- The two **Spec deviations / assumptions** from the top of this plan (detail-endpoint envelope,
-  member DTO shape) so a reviewer checks them against the actual W02 implementation.
+- The three **Spec deviations / assumptions** from the top of this plan (detections = buckets,
+  remediation keyed on `peakAnomalyId`, filter in component state), and a line confirming the
+  envelopes match W02's merged routes (`MetricAnomalyEpisodeListResponse` with `focusedEpisodeId`,
+  `{ data: MetricAnomalyEpisodeDetailDto }`, PATCH `{ data, meta }`, 409 `{ error, reason }`).
 - The **Task 5 execution-order note**: Task 4's tests assume Task 6's English copy exists; if tasks
   ran out of order, re-run Task 4's suite after Task 6.
 - Dead i18n keys left in `en/devices.json` (and other locales) from the old per-row panel, flagged
@@ -2240,10 +2382,10 @@ PR body must include:
 - Chips: ongoing/closed+reason/recurrence/snoozed/alert link/detections toggle — Task 4. ✅.
 - Actions Dismiss-for-7-days/Resolve/Promote-or-Open-alert/Stop-snoozing via `runAction` — Task 4. ✅.
 - Member table lazy-loaded on first expand — Task 3 + Task 4's `membersOpen` toggle. ✅.
-- Focused ring from `ref` — Task 4 (`focused` prop) + Task 5 (`ep.id === focusedAnomalyId`). ✅.
+- Focused ring from `ref` — Task 4 (`focused` prop) + Task 5 (`ep.id === focusedEpisodeId` from W02's list response, so a member-anomaly `ref` rings its episode). ✅.
 - Empty state with "Show recently closed" link — Task 5. ✅.
-- Remediation block only when flag on — Task 4 (`remediationEnabled` gate, replacing the always-on
-  panel mount). ✅.
+- Remediation block only when flag on — Task 4 (`remediationEnabled` gate, keyed on `peakAnomalyId`,
+  replacing the always-on panel mount). ✅.
 - v1-shadow block only when flag on, no "disabled" placeholder otherwise — Task 4 (renders nothing
   when `shadowEnabled` is false, no placeholder branch at all, unlike the removed
   `anomaly-v1-shadow-disabled` block). ✅.
@@ -2263,8 +2405,9 @@ from a placeholder.
 
 **3. Type consistency:** `formatEpisodeSentence(episode, t) → { headline, attributionLine }` is
 identical across Task 1's implementation, Task 1's export list, and Task 4's call site.
-`AnomalyEpisodeMember` is defined once (Task 3) and imported by name (not redefined) wherever
-referenced. `AnomalyEpisodeCardProps.onChanged` matches Task 5's `handleChanged` signature exactly
+No wave-local copy of a W01/W02 type exists: members are W02's `MetricAnomalyEpisodeMemberDto`,
+the sentence input is a `Pick` of `MetricAnomalyEpisodeDto`, attribution uses W01's `AttributionSnapshot`
+/ `AttributionDimension`, and all envelopes are W02's (reconciled 2026-09-22). `AnomalyEpisodeCardProps.onChanged` matches Task 5's `handleChanged` signature exactly
 (`(updated: MetricAnomalyEpisodeDto) => void`). `EpisodeAction` values used in Task 4
 (`'dismiss'|'resolve'|'promote'|'unsnooze'`) match the cross-wave contract's `EpisodeAction` type
 verbatim.

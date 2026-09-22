@@ -18,19 +18,21 @@
 |---|---|---|---|
 | D-1 | §11: the publisher skips an incident "when another incident with the same `episode_id` already has `agent_run_id IS NOT NULL`" | `agent_run_id` is stamped **after** publish by the subscriber, on the event bus, and only when admission succeeds (`apps/api/src/services/aiAgents/metricAnomalySubscriber.ts:50`, `:132-140`, `:196-212`). One claim pass takes up to 200 rows (`apps/api/src/jobs/metricAnomalyIncidentPublisher.ts:47`), so three incidents of one episode claimed together would all publish. | Suppress when a sibling with the same `episode_id` has `agent_run_id IS NOT NULL` **or** was already published (`dispatched_at IS NOT NULL AND suppressed_by_episode = false`), **and** allow only the earliest-`window_start` incident per episode inside one claim batch (`row_number() OVER (PARTITION BY episode_id …) > 1`). |
 | D-2 | §11: "Incidents with `episode_id IS NULL` … dispatch as today" | The `incidents` stage commits in its own transaction before the `episodes` stage starts (`apps/api/src/services/metricAnomalies.ts:1205-1222`, one `runDetectionStage` transaction per stage at `:196-214`), and the publisher polls every 5 s (`metricAnomalyIncidentPublisher.ts:46`). A new incident is visible, unlinked, for the whole time between those two commits, so most new incidents would be published before assembly links them. | The claim CTE skips an unlinked incident until it is `EPISODE_INCIDENT_LINK_GRACE_MINUTES` (15) old. Assembly links incidents seconds after they are created, so this only delays incidents that genuinely never get an episode (lookback misses, a timed-out `episodes` stage). |
-| D-3 | §12 / index contract: routes live in a new module `routes/devices/anomalyEpisodes.ts` exported as `anomalyEpisodesRoutes` | Every route module needs an `MCP_COVERAGE` entry (`apps/api/src/__tests__/mcp-coverage.test.ts:195-197`). New `gap` entries are refused because the gap list only shrinks (`:1-6`, `FROZEN_GAPS`), and none of the `McpExemptReason` values (`apps/api/src/services/mcpCoverage.ts:12-40`) describes an operator-facing device read/write surface. The per-row anomaly routes already hold the `devices/anomalies.ts` gap (`mcp-coverage.test.ts:67`, frozen under #6141). | Register the three episode endpoints on the existing `anomaliesRoutes` in `routes/devices/anomalies.ts`. They are part of the same resource family and the same #6141 gap. The handlers are thin; all logic lives in the new services. Replace the index row `anomalyEpisodesRoutes` (see Task 11). |
+| D-3 | §12 / index contract: routes live in a new module `routes/devices/anomalyEpisodes.ts` exported as `anomalyEpisodesRoutes` | Every route module needs an `MCP_COVERAGE` entry (`apps/api/src/__tests__/mcp-coverage.test.ts:195-197`). New `gap` entries are refused because the gap list only shrinks (`:1-6`, `FROZEN_GAPS`), and none of the `McpExemptReason` values (`apps/api/src/services/mcpCoverage.ts:12-40`) describes an operator-facing device read/write surface. The per-row anomaly routes already hold the `devices/anomalies.ts` gap (`mcp-coverage.test.ts:67`, frozen under #6141). | Register the three episode endpoints on the existing `anomaliesRoutes` in `routes/devices/anomalies.ts`. They are part of the same resource family and the same #6141 gap. The handlers are thin; all logic lives in the new services. The index row `anomalyEpisodesRoutes` was replaced at plan reconciliation. |
 | D-4 | §8.1: `unsnooze` sets `snoozed_until = NULL` "on this episode" | §6 (W01): a new episode is snoozed when **the most recent dismissed episode** for the key has `snoozed_until > now()`, and snoozed successors copy `snoozed_until`. So clearing only an older episode would leave the snooze in force on its successor. | `unsnooze` clears `snoozed_until` on every `dismissed` episode for the same `(device_id, episode_key)` whose `snoozed_until > now()`. |
 | D-5 | §8.1: `promote` runs `promoteMetricAnomalyToAlert` "on the peak member" | `promoteMetricAnomalyToAlert` sets `status = 'promoted'` on the row it is given whatever its current status (`apps/api/src/services/metricAnomalyPromotion.ts:258-266`). It also promotes same-window siblings before our cascade runs (`:284-299`), so those siblings would not be in the cascade's `RETURNING`. | Peak = highest-`score` member whose status is `open` or `promoted`; a member a human already dismissed or resolved through the per-row route is never overwritten. Feedback goes to `open-before ∪ cascaded`, filtered to rows that are `promoted` afterwards. |
-| D-6 | §12 / index: `rangeMin`/`rangeMax` = min/max member `observedValue` | The ram and cpu families hold both `_sum` and `_max` members (§4.2). One range over both would mix "one process" values with "all top processes" values in one sentence. | Range is taken over members whose `metric_name = peak_metric_name`. Update the index row (Task 11). |
+| D-6 | §12 / index: `rangeMin`/`rangeMax` = min/max member `observedValue` | The ram and cpu families hold both `_sum` and `_max` members (§4.2). One range over both would mix "one process" values with "all top processes" values in one sentence. | Range is taken over members whose `metric_name = peak_metric_name`. The index row says so. |
 | D-7 | §8.3 is silent on write semantics | `emitAnomalyFeedback` is best-effort: it swallows and logs errors (`apps/api/src/services/mlFeedbackEmitters.ts:10-16`, `:64-83`). §18 lists "evaluation labels silently vanish" as a risk. | Episode actions write their member feedback rows through a new batch writer that **throws**, inside the request transaction. If the labels cannot be written, the action rolls back with a 500. |
-| D-8 | Index contract: W01 declares `setEpisodeCloseHandler` but does not say when it is invoked | `resolveAlert` publishes on the event bus and reads rule/cooldown tables (`apps/api/src/services/alertService.ts:715-830`). Running it inside the `episode-resolve` stage transaction keeps the org advisory lock and a pooled connection held during Redis round trips. A SQL error inside that transaction would also poison it and roll back the episode closes. | Task 7 checks W01's call site and requires the handler to run **after** the stage transaction commits, outside any DB context. The handler is crash-safe either way: it re-derives its work from the database (auto-closed episodes in the last 24 h whose linked alert is still `active`) instead of trusting the in-memory list. |
+| D-8 | Spec §7 puts the alert resolve inside auto-resolve | `resolveAlert` publishes on the event bus and reads rule/cooldown tables (`apps/api/src/services/alertService.ts:715-830`). Running it inside the `episode-resolve` stage transaction keeps the org advisory lock and a pooled connection held during Redis round trips. A SQL error inside that transaction would also poison it and roll back the episode closes. | The handler runs **after** the stage transactions commit, outside any DB context. W01 already guarantees this: `detectMetricAnomaliesRange` collects the closes of every completed `episodes` and `episode-resolve` stage and calls `notifyEpisodesClosed(orgId, closed)` once after the stage loop (W01 Task 9); `processDetectOrgRange` holds no DB context. Task 7 Step 1 only verifies it. The handler is crash-safe either way: it re-derives its work from the database (auto-closed episodes in the last 24 h whose linked alert is still `active`) instead of trusting the in-memory list. |
+| D-9 | §12 serialization lists `durationSeconds`, `ongoing`, `promoted`, `snoozed` (+ `rangeMin`/`rangeMax` in the index) | Remediation suggestions are keyed `sourceType: 'anomaly'` + `metric_anomalies.id` (`apps/web/src/components/remediation/RemediationSuggestionsPanel.tsx:33-34`, `:133`); an episode id finds nothing and `generate` would reference a non-anomaly id. | The DTO adds `peakAnomalyId` (highest-score member, W01's peak rule) so W04's card can mount the remediation block on a real anomaly id. Added at plan reconciliation. |
 
 ---
 
 ## Global Constraints
 
 - W01 must be merged to `main` first; this wave branches from `origin/main` after that. Branch: `feature/<parent#>-metric-anomaly-episodes/wave-<W02 sub-issue#>`; PR body carries `Closes #<W02 sub-issue#>`.
-- Use the index's cross-wave names exactly: `metricAnomalyEpisodes`, `metricAnomalies.episodeId`, `metricAnomalyIncidents.episodeId`, `metricAnomalyIncidents.suppressedByEpisode`, `EPISODE_SNOOZE_DAYS`, `assembleMetricAnomalyEpisodes(range)`, `resolveMetricAnomalyEpisodes(orgId, now?)`, `EpisodeCloseResult`, `setEpisodeCloseHandler(fn)`, `MetricAnomalyStatus`, `MetricAnomalyEpisodeStatus`, `EpisodeCloseReason`, `EpisodeAttribution`, `MetricAnomalyEpisodeDto`, `EpisodeAction`, `applyEpisodeAction`.
+- Use the index's cross-wave names exactly: `metricAnomalyEpisodes`, `MetricAnomalyEpisodeRow` (W01, `db/schema/metricAnomalyEpisodes.ts`), `metricAnomalies.episodeId`, `metricAnomalyIncidents.episodeId`, `metricAnomalyIncidents.suppressedByEpisode`, `EPISODE_SNOOZE_DAYS`, `assembleMetricAnomalyEpisodes(range) → Promise<EpisodeCloseResult[]>`, `resolveMetricAnomalyEpisodes(orgId, now?)`, `EpisodeCloseResult`, `EpisodeCloseHandler`, `setEpisodeCloseHandler(fn | null)`, `notifyEpisodesClosed`, `MetricAnomalyStatus` / `METRIC_ANOMALY_STATUSES`, `MetricAnomalyEpisodeStatus`, `EpisodeCloseReason`, `EpisodeAttribution`, `MetricAnomalyEpisodeDto`, `EpisodeAction`, `applyEpisodeAction`.
+- **Do not redefine W01's shared types.** `packages/shared/src/types/metricAnomalyEpisodes.ts` (and its test file) exist after W01; W02 appends to both and re-declares nothing W01 exports.
 - **No migration, no new table, no new column.** W01 owns all schema, registrations and export-policy entries. If a step here seems to need DDL, stop: it is a W01 gap.
 - **`alerts.episode_id` is not ours.** That column is the *monitor breach* episode (#5290; `apps/api/src/db/schema/alerts.ts:144-146`, written by `createAlert`/`createSourcedAlert` in `alertService.ts:170,250,380`). The anomaly episode id goes **only** into `alerts.context.episodeId` (JSON). Never set the column.
 - Cascades touch member rows **only `WHERE status = 'open'`** (spec §8.2).
@@ -52,7 +54,7 @@
 | File | Status | Responsibility |
 |---|---|---|
 | `packages/shared/src/types/metricAnomalyEpisodes.ts` | modify (W01 creates) | + `EPISODE_ACTIONS`, `EpisodeAction`, `EPISODE_LIST_STATUSES`, `EpisodeListStatus`, `EPISODE_DETAIL_MEMBER_LIMIT`, `MetricAnomalyEpisodeDto`, `MetricAnomalyEpisodeMemberDto`, `MetricAnomalyEpisodeDetailDto`, `MetricAnomalyEpisodeListResponse` |
-| `packages/shared/src/types/metricAnomalyEpisodes.test.ts` | create or append | constants + DTO type shape |
+| `packages/shared/src/types/metricAnomalyEpisodes.test.ts` | append (W01 creates) | constants + DTO type shape |
 | `apps/api/src/services/metricAnomalyEpisodeQueries.ts` | create | serializer, `listDeviceEpisodes`, `getDeviceEpisodeDto`, `getDeviceEpisodeDetail` |
 | `apps/api/src/services/metricAnomalyEpisodeQueries.test.ts` | create | serializer unit tests |
 | `apps/api/src/services/mlFeedback.ts` | modify | + `emitMlFeedbackEvents` (batch, throwing) |
@@ -65,7 +67,7 @@
 | `apps/api/src/services/metricAnomalyEpisodeAlerts.ts` | create | close handler + registration |
 | `apps/api/src/services/metricAnomalyEpisodeAlerts.test.ts` | create | handler unit tests |
 | `apps/api/src/jobs/metricAnomalies.ts` | modify | register the handler at worker init |
-| `apps/api/src/services/metricAnomalyEpisodeIncidents.ts` | create | `linkMetricAnomalyIncidentsToEpisodes`, `assembleEpisodesAndLinkIncidents` |
+| `apps/api/src/services/metricAnomalyEpisodeIncidents.ts` | create | `linkMetricAnomalyIncidentsToEpisodes`, `assembleEpisodesAndLinkIncidents` (returns W01's supersede closes) |
 | `apps/api/src/services/metricAnomalyEpisodeIncidents.test.ts` | create | wrapper-order unit test |
 | `apps/api/src/services/metricAnomalies.ts` | modify | `episodes` stage calls the wrapper |
 | `apps/api/src/jobs/metricAnomalyIncidentPublisher.ts` | modify | amended claim CTE, grace constant, `suppressed` count |
@@ -83,7 +85,7 @@
 
 **Files:**
 - Modify: `packages/shared/src/types/metricAnomalyEpisodes.ts`
-- Test: `packages/shared/src/types/metricAnomalyEpisodes.test.ts` (create, or append if W01 created it)
+- Test: `packages/shared/src/types/metricAnomalyEpisodes.test.ts` (W01 created it; append)
 
 **Interfaces:**
 - Consumes (W01): `MetricAnomalyStatus`, `MetricAnomalyEpisodeStatus`, `EpisodeCloseReason`, `EpisodeAttribution` from the same file.
@@ -100,19 +102,22 @@ git fetch origin main
 git checkout -b feature/<parent#>-metric-anomaly-episodes/wave-<W02#> origin/main
 rg -n "export const metricAnomalyEpisodes" apps/api/src/db/schema/metricAnomalyEpisodes.ts
 rg -n "episodeId|suppressedByEpisode" apps/api/src/db/schema/metricAnomalyIncidents.ts apps/api/src/db/schema/analytics.ts
-rg -n "export (const|function|async function|type|interface) (EPISODE_SNOOZE_DAYS|assembleMetricAnomalyEpisodes|resolveMetricAnomalyEpisodes|setEpisodeCloseHandler|EpisodeCloseResult)" apps/api/src/services/metricAnomalyEpisodes.ts
-rg -n "MetricAnomalyStatus|MetricAnomalyEpisodeStatus|EpisodeCloseReason|EpisodeAttribution" packages/shared/src/types/metricAnomalyEpisodes.ts
+rg -n "export (const|function|async function|type|interface) (assembleMetricAnomalyEpisodes|resolveMetricAnomalyEpisodes|setEpisodeCloseHandler|notifyEpisodesClosed|EpisodeCloseResult|EpisodeCloseHandler)" apps/api/src/services/metricAnomalyEpisodes.ts
+rg -n "export const EPISODE_SNOOZE_DAYS" apps/api/src/services/metricAnomalyEpisodeKeys.ts
+rg -n "Promise<EpisodeCloseResult\[\]>" apps/api/src/services/metricAnomalyEpisodes.ts
+rg -n "METRIC_ANOMALY_STATUSES|MetricAnomalyEpisodeStatus|EpisodeCloseReason|EpisodeAttribution" packages/shared/src/types/metricAnomalyEpisodes.ts
 rg -n "metricAnomalyEpisodes" packages/shared/src/types/index.ts
-rg -n "'cleared'" apps/api/src/routes/devices/anomalies.ts
+rg -n "notifyEpisodesClosed" apps/api/src/services/metricAnomalies.ts
+rg -n "METRIC_ANOMALY_STATUSES" apps/api/src/routes/devices/anomalies.ts
 ```
 
-Expected: every `rg` prints at least one hit. If any of the first five prints nothing, stop: W01 has not merged, or it merged under different names. Reconcile against the index before continuing. The last command decides one step in Task 6: if it prints nothing, W01 left the legacy enum alone and Task 6 Step 3b adds `cleared`.
+Expected: every `rg` prints at least one hit (`EPISODE_SNOOZE_DAYS` lives in the leaf `metricAnomalyEpisodeKeys.ts` and is re-exported from `metricAnomalyEpisodes.ts` by `export *`). If any of the first seven prints nothing, stop: W01 has not merged, or it merged under different names. Reconcile against the index before continuing. The last command confirms W01 Task 1 already put `cleared` in the legacy list enum (`z.enum([...METRIC_ANOMALY_STATUSES, 'all'])`); only if it prints nothing does Task 6 Step 3b apply.
 
 Also run `get_feature_status` for the parent issue, then `start_wave` for the W02 sub-issue (feature-lifecycle skill).
 
 - [ ] **Step 2: Write the failing test**
 
-Append to (or create) `packages/shared/src/types/metricAnomalyEpisodes.test.ts`:
+Append to `packages/shared/src/types/metricAnomalyEpisodes.test.ts` (W01 created it). **Merge** the imports below into the file's existing `vitest` and `./metricAnomalyEpisodes` import statements (add `expectTypeOf` to the first) rather than adding second import statements for the same modules — a second `import { describe, … } from 'vitest'` is a duplicate-binding error:
 
 ```ts
 import { describe, expect, expectTypeOf, it } from 'vitest';
@@ -148,6 +153,7 @@ describe('metric anomaly episode API contract (W02)', () => {
     expectTypeOf<MetricAnomalyEpisodeDto['rangeMin']>().toEqualTypeOf<number | null>();
     expectTypeOf<MetricAnomalyEpisodeDto['rangeMax']>().toEqualTypeOf<number | null>();
     expectTypeOf<MetricAnomalyEpisodeDto['firstSeenAt']>().toEqualTypeOf<string>();
+    expectTypeOf<MetricAnomalyEpisodeDto['peakAnomalyId']>().toEqualTypeOf<string | null>();
     expectTypeOf<MetricAnomalyEpisodeDetailDto['membersTruncated']>().toEqualTypeOf<boolean>();
     expectTypeOf<MetricAnomalyEpisodeListResponse['focusedEpisodeId']>().toEqualTypeOf<string | null>();
   });
@@ -215,6 +221,12 @@ export interface MetricAnomalyEpisodeDto {
   snoozed: boolean;
   rangeMin: number | null;
   rangeMax: number | null;
+  /**
+   * Highest-score member (score DESC, window_start ASC — W01's peak rule).
+   * The web card keys remediation suggestions on it (`sourceType: 'anomaly'`,
+   * which is keyed by metric_anomalies.id, never an episode id).
+   */
+  peakAnomalyId: string | null;
 }
 
 export interface MetricAnomalyEpisodeMemberDto {
@@ -272,9 +284,9 @@ git commit -m "feat(shared): metric anomaly episode API DTOs and action constant
 **Interfaces:**
 - Consumes: Task 1 DTO types; W01 `metricAnomalyEpisodes`, `metricAnomalies.episodeId`.
 - Produces:
-  - `type MetricAnomalyEpisodeRow = typeof metricAnomalyEpisodes.$inferSelect`
+  - re-export of W01's `type MetricAnomalyEpisodeRow` (from `db/schema`; not redefined)
   - `EPISODE_CLOSED_WINDOW_DAYS = 7`
-  - `serializeMetricAnomalyEpisode(row: MetricAnomalyEpisodeRow, range: { min: number; max: number } | null | undefined, now: Date): MetricAnomalyEpisodeDto`
+  - `serializeMetricAnomalyEpisode(row: MetricAnomalyEpisodeRow, range: { min: number; max: number; peakAnomalyId?: string | null } | null | undefined, now: Date): MetricAnomalyEpisodeDto`
   - `serializeMetricAnomalyEpisodeMember(row: typeof metricAnomalies.$inferSelect): MetricAnomalyEpisodeMemberDto`
   - `listDeviceEpisodes(input: { orgId: string; deviceId: string; status: EpisodeListStatus; limit: number; ref?: string; now?: Date }): Promise<MetricAnomalyEpisodeListResponse>`
   - `getDeviceEpisodeDto(input: { orgId: string; deviceId: string; episodeId: string; now?: Date }): Promise<MetricAnomalyEpisodeDto | null>`
@@ -359,6 +371,12 @@ describe('serializeMetricAnomalyEpisode', () => {
     const dto = serializeMetricAnomalyEpisode(row(), undefined, NOW);
     expect(dto.rangeMin).toBeNull();
     expect(dto.rangeMax).toBeNull();
+    expect(dto.peakAnomalyId).toBeNull();
+  });
+
+  it('carries the peak member id for remediation lookups', () => {
+    const dto = serializeMetricAnomalyEpisode(row(), { min: 1, max: 2, peakAnomalyId: '33333333-3333-4333-8333-333333333333' }, NOW);
+    expect(dto.peakAnomalyId).toBe('33333333-3333-4333-8333-333333333333');
   });
 
   it('marks a dismissed episode with a future snooze as snoozed and not ongoing', () => {
@@ -669,7 +687,7 @@ describe('metric anomaly episode queries (W02)', () => {
 
     expect(result.focusedEpisodeId).toBeNull();
     expect(result.data.map((e) => e.id)).toEqual([newer.episodeId, older.episodeId]);
-    expect(result.data[0]).toMatchObject({ ongoing: true, bucketCount: 2, rangeMin: 84, rangeMax: 88 });
+    expect(result.data[0]).toMatchObject({ ongoing: true, bucketCount: 2, rangeMin: 84, rangeMax: 88, peakAnomalyId: newer.peakMemberId });
   });
 
   it('closed filter returns resolved/dismissed episodes closed in the last 7 days only', async () => {
@@ -779,7 +797,7 @@ import {
 } from '@breeze/shared';
 
 import { db } from '../db';
-import { metricAnomalies, metricAnomalyEpisodes } from '../db/schema';
+import { metricAnomalies, metricAnomalyEpisodes, type MetricAnomalyEpisodeRow } from '../db/schema';
 
 /**
  * Read side of the episode API (spec §12). Runs on the ambient request
@@ -788,9 +806,11 @@ import { metricAnomalies, metricAnomalyEpisodes } from '../db/schema';
  * belonging to another device can never be returned.
  */
 
-export type MetricAnomalyEpisodeRow = typeof metricAnomalyEpisodes.$inferSelect;
+// W01 owns the row type (db/schema/metricAnomalyEpisodes.ts); re-exported so
+// tests can import it from here without a second definition.
+export type { MetricAnomalyEpisodeRow };
 type MetricAnomalyRow = typeof metricAnomalies.$inferSelect;
-type PeakRange = { min: number; max: number };
+type PeakRange = { min: number; max: number; peakAnomalyId?: string | null };
 
 export const EPISODE_CLOSED_WINDOW_DAYS = 7;
 const DAY_MS = 86_400_000;
@@ -838,6 +858,7 @@ export function serializeMetricAnomalyEpisode(
     snoozed: row.snoozedUntil != null && row.snoozedUntil.getTime() > now.getTime(),
     rangeMin: range ? range.min : null,
     rangeMax: range ? range.max : null,
+    peakAnomalyId: range?.peakAnomalyId ?? null,
   };
 }
 
@@ -891,6 +912,21 @@ async function loadPeakMetricRanges(orgId: string, rows: MetricAnomalyEpisodeRow
     .groupBy(metricAnomalies.episodeId);
   for (const r of result) {
     if (r.episodeId) ranges.set(r.episodeId, { min: Number(r.min), max: Number(r.max) });
+  }
+
+  // Peak member id (W01's peak rule: score DESC, window_start ASC) for the
+  // web card's remediation lookup, which is keyed by metric_anomalies.id.
+  const peaks = await db
+    .selectDistinctOn([metricAnomalies.episodeId], { episodeId: metricAnomalies.episodeId, id: metricAnomalies.id })
+    .from(metricAnomalies)
+    .where(and(
+      eq(metricAnomalies.orgId, orgId),
+      inArray(metricAnomalies.episodeId, rows.map((r) => r.id)),
+    ))
+    .orderBy(metricAnomalies.episodeId, desc(metricAnomalies.score), asc(metricAnomalies.windowStart));
+  for (const p of peaks) {
+    const range = p.episodeId ? ranges.get(p.episodeId) : undefined;
+    if (range) range.peakAnomalyId = p.id;
   }
   return ranges;
 }
@@ -1015,7 +1051,7 @@ export async function getDeviceEpisodeDetail(input: {
 cd apps/api && npx vitest run src/services/metricAnomalyEpisodeQueries.test.ts
 pnpm --filter @breeze/api test:integration src/__tests__/integration/metricAnomalyEpisodeQueries.integration.test.ts
 ```
-Expected: PASS (6 unit tests, 7 integration tests).
+Expected: PASS (8 unit tests, 7 integration tests).
 
 - [ ] **Step 7: Commit**
 
@@ -2229,10 +2265,10 @@ Expected: FAIL. The episode paths return 404, because no handler exists.
 
 - [ ] **Step 3: Implement the endpoints**
 
-In `apps/api/src/routes/devices/anomalies.ts`, add the imports:
+In `apps/api/src/routes/devices/anomalies.ts`, extend W01's existing `import { METRIC_ANOMALY_STATUSES } from '@breeze/shared';` line (one import per module) and add the rest:
 
 ```ts
-import { EPISODE_ACTIONS, EPISODE_LIST_STATUSES } from '@breeze/shared';
+import { EPISODE_ACTIONS, EPISODE_LIST_STATUSES, METRIC_ANOMALY_STATUSES } from '@breeze/shared';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { applyEpisodeAction } from '../../services/metricAnomalyEpisodeActions';
 import {
@@ -2387,13 +2423,7 @@ anomaliesRoutes.patch(
 );
 ```
 
-- [ ] **Step 3b: Only if Task 1 Step 1's `rg -n "'cleared'"` printed nothing**, change `anomaliesQuerySchema.status` in the same file to:
-
-```ts
-  status: z.enum(['open', 'dismissed', 'promoted', 'resolved', 'cleared', 'all']).optional().default('open'),
-```
-
-Also add this case to `anomalies.test.ts`: `GET /devices/<id>/anomalies?status=cleared` returns 200 and the select was called. The per-row PATCH enum stays `dismissed | promoted | resolved`. `cleared` is machine-only.
+- [ ] **Step 3b: Legacy `cleared` (W01 owns it — normally a no-op).** W01 Task 1 Steps 5-7 already changed `anomaliesQuerySchema.status` to `z.enum([...METRIC_ANOMALY_STATUSES, 'all'])` and added the `accepts status=cleared on the legacy list route` test to `anomalies.test.ts`. Only if Task 1 Step 1's last `rg -n "METRIC_ANOMALY_STATUSES" apps/api/src/routes/devices/anomalies.ts` printed nothing, apply exactly W01 Task 1 Steps 5-7 here (same code, same test). The per-row PATCH enum stays `dismissed | promoted | resolved`: `cleared` is machine-only.
 
 - [ ] **Step 4: Keep the existing per-row test isolated from the new imports**
 
@@ -2434,10 +2464,9 @@ git commit -m "feat(api): device anomaly episode routes — list/detail/PATCH ac
 - Create: `apps/api/src/__tests__/integration/metricAnomalyEpisodeAlerts.integration.test.ts`
 - Modify: `apps/api/src/jobs/metricAnomalies.ts:246` (`initializeMetricAnomaliesWorker`)
 - Modify: `apps/api/src/jobs/metricAnomalies.test.ts`
-- Possibly modify: `apps/api/src/services/metricAnomalies.ts` (W01's handler call site; see Step 1)
 
 **Interfaces:**
-- Consumes: W01 `setEpisodeCloseHandler(fn: (orgId: string, closed: EpisodeCloseResult[]) => Promise<void>)`, `EpisodeCloseResult`; `resolveAlert` (`alertService.ts:715`).
+- Consumes: W01 `setEpisodeCloseHandler(fn: EpisodeCloseHandler | null)` where `EpisodeCloseHandler = (orgId: string, closed: EpisodeCloseResult[]) => Promise<void>`, invoked by W01's `notifyEpisodesClosed` (which already catches, logs and Sentry-captures a handler error); `EpisodeCloseResult`; `resolveAlert` (`alertService.ts:715`).
 - Produces:
   - `AUTO_CLOSE_REASONS = ['cleared', 'expired_offline', 'expired_no_data'] as const`
   - `EPISODE_ALERT_CATCHUP_HOURS = 24`
@@ -2446,30 +2475,31 @@ git commit -m "feat(api): device anomaly episode routes — list/detail/PATCH ac
   - `handleEpisodesClosed(orgId: string, closed: EpisodeCloseResult[]): Promise<void>`. Never throws; logs and captures instead.
   - `registerEpisodeCloseAlertHandler(): void`
 
-**DB-context decision.** The handler opens its work with `withSystemDbAccessContext` and never calls `runOutsideDbContext`. Called outside any context, it opens one short system transaction for itself. Called inside one, it joins, which means no second pooled connection is ever taken (CLAUDE.md #1105/#2417). The correct call site is **after** the `episode-resolve` stage transaction commits, because of the reasons in spec deviation D-8. Step 1 enforces that. The handler does not trust the list it is given. It re-selects "auto-closed in the last 24 h, linked alert still `active`, `requires_human = false`". A crash between the episode close and the alert resolve is therefore repaired on the next close in that org, and a second invocation is a no-op because `resolveAlert` is a CAS.
+**DB-context decision.** The handler opens its work with `withSystemDbAccessContext` and never calls `runOutsideDbContext`. Called outside any context, it opens one short system transaction for itself. Called inside one, it joins, which means no second pooled connection is ever taken (CLAUDE.md #1105/#2417). The correct call site is **after** the stage transactions commit, because of the reasons in spec deviation D-8. W01 already calls it there; Step 1 verifies that. The handler does not trust the list it is given. It re-selects "auto-closed in the last 24 h, linked alert still `active`, `requires_human = false`". A crash between the episode close and the alert resolve is therefore repaired on the next close in that org, and a second invocation is a no-op because `resolveAlert` is a CAS.
 
-- [ ] **Step 1: Check W01's invocation site**
+- [ ] **Step 1: Verify W01's invocation site (no code change expected)**
 
 ```bash
-rg -n "setEpisodeCloseHandler|episodeCloseHandler|onEpisodesClosed" apps/api/src/services/metricAnomalyEpisodes.ts apps/api/src/services/metricAnomalies.ts
+rg -n "notifyEpisodesClosed|pending.closed|closed.push" apps/api/src/services/metricAnomalies.ts
+rg -n "export async function notifyEpisodesClosed|export function setEpisodeCloseHandler" apps/api/src/services/metricAnomalyEpisodes.ts
 ```
 
-Read every hit. The registered handler must be invoked **after** `runDetectionStage('episode-resolve', …)` has returned, i.e. after its transaction committed and outside `withSystemDbAccessContext`, and only when that stage's outcome is `'completed'`. If W01 invokes it inside the stage closure, move the call. The target shape in `detectMetricAnomaliesRange` (use W01's actual invoker name for `invokeEpisodeCloseHandler`):
+Read every hit. W01 Task 9 ships this shape in `detectMetricAnomaliesRange`, and it is what this task relies on:
 
 ```ts
-    let closed: EpisodeCloseResult[] = [];
-    const resolveStage = await runDetectionStage('episode-resolve', options.orgId, async () => {
-      closed = await resolveMetricAnomalyEpisodes(options.orgId);
-    });
-    stages.push(resolveStage);
-    if (resolveStage.outcome === 'completed') {
-      // After commit, outside any DB context (W02 plan D-8): the handler
-      // resolves alerts and publishes on the event bus.
-      await invokeEpisodeCloseHandler(options.orgId, closed);
-    }
+  for (const [stage, run] of orderedStages) {
+    pending.closed = [];
+    const result = await runDetectionStage(stage, options.orgId, run);
+    stages.push(result);
+    if (result.outcome === 'completed') closed.push(...pending.closed);
+    …
+  }
+  … // optional v1-shadow stage
+  // After every stage transaction has committed, outside any DB context.
+  await notifyEpisodesClosed(options.orgId, closed);
 ```
 
-Moving the call is a change inside W01's function, so W01's unit test for that ordering must still pass. Run `cd apps/api && npx vitest run src/services/metricAnomalies.test.ts` after the move.
+Check three things: (1) `closed` collects from BOTH the `episodes` stage (supersedes — Task 8 keeps that value flowing through the wrapper) and the `episode-resolve` stage; (2) only `completed` stages contribute (a timed-out or locked stage rolled back); (3) `notifyEpisodesClosed` is called once, after the loop, not inside a stage closure, and `processDetectOrgRange` (`jobs/metricAnomalies.ts`) holds no DB context. If W01 merged a different shape, restore this one inside W01's function and re-run `cd apps/api && npx vitest run src/services/metricAnomalies.test.ts` (W01's `hands every auto-closed episode to the close handler once, after the stages` test pins it).
 
 - [ ] **Step 2: Write the failing unit test**
 
@@ -2743,11 +2773,11 @@ Expected: PASS.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add apps/api/src/services/metricAnomalyEpisodeAlerts.ts apps/api/src/services/metricAnomalyEpisodeAlerts.test.ts apps/api/src/jobs/metricAnomalies.ts apps/api/src/jobs/metricAnomalies.test.ts apps/api/src/__tests__/integration/metricAnomalyEpisodeAlerts.integration.test.ts apps/api/src/services/metricAnomalies.ts
+git add apps/api/src/services/metricAnomalyEpisodeAlerts.ts apps/api/src/services/metricAnomalyEpisodeAlerts.test.ts apps/api/src/jobs/metricAnomalies.ts apps/api/src/jobs/metricAnomalies.test.ts apps/api/src/__tests__/integration/metricAnomalyEpisodeAlerts.integration.test.ts
 git commit -m "feat(api): auto-resolve a promoted anomaly alert when its episode clears or expires (W02)"
 ```
 
-(Drop `services/metricAnomalies.ts` from the `git add` if Step 1 needed no move.)
+(Add `services/metricAnomalies.ts` only if Step 1 had to restore W01's call-site shape.)
 
 ---
 
@@ -2763,10 +2793,10 @@ git commit -m "feat(api): auto-resolve a promoted anomaly alert when its episode
 - Create: `apps/api/src/__tests__/integration/metricAnomalyEpisodeIncidents.integration.test.ts` (Task 9 appends to it)
 
 **Interfaces:**
-- Consumes: W01 `assembleMetricAnomalyEpisodes(range: MetricAnomalyRange): Promise<void>`.
+- Consumes: W01 `assembleMetricAnomalyEpisodes(range: MetricAnomalyRange): Promise<EpisodeCloseResult[]>` (the open episodes it superseded and closed, W01 deviation 8), `EpisodeCloseResult`.
 - Produces:
   - `linkMetricAnomalyIncidentsToEpisodes(orgId: string): Promise<number>`. Sets `metric_anomaly_incidents.episode_id` for incidents still `dispatched_at IS NULL`, choosing the episode of the member with the highest `score`, and returns the number of rows changed.
-  - `assembleEpisodesAndLinkIncidents(range: MetricAnomalyRange): Promise<void>`. Runs assembly, then the link.
+  - `assembleEpisodesAndLinkIncidents(range: MetricAnomalyRange): Promise<EpisodeCloseResult[]>`. Runs assembly, then the link, and **returns assembly's supersede closes unchanged** so W01's stage loop still hands them to `notifyEpisodesClosed` — a promoted episode that is superseded must reach the Task 7 alert handler exactly like one that auto-resolves.
 
 - [ ] **Step 1: Write the failing unit tests**
 
@@ -2783,21 +2813,23 @@ vi.mock('./metricAnomalyEpisodes', () => ({ assembleMetricAnomalyEpisodes: assem
 import { assembleEpisodesAndLinkIncidents } from './metricAnomalyEpisodeIncidents';
 
 const range = { orgId: '11111111-1111-4111-8111-111111111111', from: new Date('2026-09-21T00:00:00Z'), to: new Date('2026-09-21T01:00:00Z') };
+const superseded = [{ episodeId: 'ep-1', deviceId: 'dev-1', linkedAlertId: 'alert-1', closeReason: 'cleared' as const }];
 
 describe('assembleEpisodesAndLinkIncidents', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     executeMock.mockResolvedValue([]);
-    assembleMock.mockResolvedValue(undefined);
+    assembleMock.mockResolvedValue([]);
   });
 
-  it('assembles first, then links incidents for the same org', async () => {
+  it('assembles first, then links incidents for the same org, and returns the supersede closes', async () => {
     const order: string[] = [];
-    assembleMock.mockImplementation(async () => { order.push('assemble'); });
+    assembleMock.mockImplementation(async () => { order.push('assemble'); return superseded; });
     executeMock.mockImplementation(async () => { order.push('link'); return []; });
 
-    await assembleEpisodesAndLinkIncidents(range);
+    const closed = await assembleEpisodesAndLinkIncidents(range);
 
+    expect(closed).toEqual(superseded);
     expect(order).toEqual(['assemble', 'link']);
     expect(assembleMock).toHaveBeenCalledWith(range);
     const linkSql = JSON.stringify(executeMock.mock.calls[0]);
@@ -2815,32 +2847,41 @@ describe('assembleEpisodesAndLinkIncidents', () => {
 });
 ```
 
-In `apps/api/src/services/metricAnomalies.test.ts`, add `assembleEpisodesAndLinkIncidentsMock: vi.fn()` to the existing `vi.hoisted` block and add:
+In `apps/api/src/services/metricAnomalies.test.ts`, W01 already hoists `assembleMock` and mocks `./metricAnomalyEpisodes` with `assembleMetricAnomalyEpisodes: assembleMock` (W01 Task 9 Step 1). The stage now calls the wrapper instead, so point the wrapper's mock at **the same `assembleMock`** — every W01 episode-stage assertion (`runs assembly after incidents, with the normalised range`, the backfill cases, `hands every auto-closed episode to the close handler once, after the stages` with `assembleMock.mockResolvedValue([superseded])`, the timeout counter) then keeps testing "the `episodes` stage entry" without edits:
 
 ```ts
 vi.mock('./metricAnomalyEpisodeIncidents', () => ({
-  assembleEpisodesAndLinkIncidents: assembleEpisodesAndLinkIncidentsMock,
+  // The `episodes` stage entry (W02 §11). Reuses W01's assembleMock so W01's
+  // stage-loop assertions keep meaning "what the episodes stage ran/returned".
+  assembleEpisodesAndLinkIncidents: assembleMock,
 }));
 ```
 
-Then add inside `describe('metric anomalies service', …)`:
+and, in W01's existing `vi.mock('./metricAnomalyEpisodes', …)` factory, replace `assembleMetricAnomalyEpisodes: assembleMock,` with
 
 ```ts
-  it('the episodes stage runs assembly + incident linking as one stage (W02 §11)', async () => {
-    assembleEpisodesAndLinkIncidentsMock.mockResolvedValue(undefined);
-    const orgId = '11111111-1111-1111-1111-111111111111';
-    const result = await detectMetricAnomaliesRange({
-      orgId,
-      from: new Date('2026-06-18T12:00:00.000Z'),
-      to: new Date('2026-06-18T12:30:00.000Z'),
-    });
-    expect(assembleEpisodesAndLinkIncidentsMock).toHaveBeenCalledTimes(1);
-    expect(assembleEpisodesAndLinkIncidentsMock).toHaveBeenCalledWith(expect.objectContaining({ orgId }));
-    expect(result.stages.find((s) => s.stage === 'episodes')?.outcome).toBe('completed');
-  });
+  // The stage must go through the W02 wrapper; calling assembly directly
+  // would skip the incident link.
+  assembleMetricAnomalyEpisodes: vi.fn(async () => {
+    throw new Error('episodes stage must call assembleEpisodesAndLinkIncidents (W02)');
+  }),
 ```
 
-If W01's version of that test file mocks `./metricAnomalyEpisodes` and asserts that `assembleMetricAnomalyEpisodes` is called by the stage loop, retarget that assertion to `assembleEpisodesAndLinkIncidentsMock`. The stage now calls the wrapper.
+That makes the red real: until the stage entry changes, every `episodes` stage in this file throws instead of reaching `assembleMock`.
+
+Then add inside `describe('episode stages (metric anomaly episodes W01)', …)`:
+
+```ts
+  it('the episodes stage runs the assemble+link wrapper once and forwards its closes (W02 §11)', async () => {
+    const superseded = { episodeId: 'ep-9', deviceId: 'dev-9', linkedAlertId: 'alert-9', closeReason: 'expired_no_data' as const };
+    assembleMock.mockResolvedValue([superseded]);
+    const result = await detectMetricAnomaliesRange({ orgId, ...range });
+    expect(assembleMock).toHaveBeenCalledTimes(1);
+    expect(assembleMock).toHaveBeenCalledWith(expect.objectContaining({ orgId }));
+    expect(result.stages.find((s) => s.stage === 'episodes')?.outcome).toBe('completed');
+    expect(notifyMock).toHaveBeenCalledWith(orgId, [superseded]);
+  });
+```
 
 - [ ] **Step 2: Write the failing integration test (link semantics)**
 
@@ -2927,7 +2968,7 @@ Expected: FAIL. The module is missing, and the stage never calls the wrapper.
 import { sql } from 'drizzle-orm';
 
 import { db } from '../db';
-import { assembleMetricAnomalyEpisodes } from './metricAnomalyEpisodes';
+import { assembleMetricAnomalyEpisodes, type EpisodeCloseResult } from './metricAnomalyEpisodes';
 import type { MetricAnomalyRange } from './metricAnomalies';
 
 /**
@@ -2972,20 +3013,37 @@ export async function linkMetricAnomalyIncidentsToEpisodes(orgId: string): Promi
   return extractRows<{ id: string }>(result).length;
 }
 
-export async function assembleEpisodesAndLinkIncidents(range: MetricAnomalyRange): Promise<void> {
-  await assembleMetricAnomalyEpisodes(range);
+/**
+ * The `episodes` stage entry. Returns assembly's supersede closes unchanged:
+ * W01's stage loop hands them to notifyEpisodesClosed after commit, so a
+ * superseded PROMOTED episode reaches the alert handler (Task 7).
+ */
+export async function assembleEpisodesAndLinkIncidents(range: MetricAnomalyRange): Promise<EpisodeCloseResult[]> {
+  const superseded = await assembleMetricAnomalyEpisodes(range);
   await linkMetricAnomalyIncidentsToEpisodes(range.orgId);
+  return superseded;
 }
 ```
 
-In `apps/api/src/services/metricAnomalies.ts`, import `assembleEpisodesAndLinkIncidents` from `./metricAnomalyEpisodeIncidents` and change W01's stage entry from `['episodes', () => assembleMetricAnomalyEpisodes(range)]` to:
+In `apps/api/src/services/metricAnomalies.ts`, import `assembleEpisodesAndLinkIncidents` from `./metricAnomalyEpisodeIncidents` and change W01's stage entry from
 
 ```ts
-    // W02 §11: link incidents to their episodes in the SAME stage transaction.
-    ['episodes', () => assembleEpisodesAndLinkIncidents(range)],
+      ['episodes', async () => {
+        pending.closed = await assembleMetricAnomalyEpisodes(range);
+      }],
 ```
 
-Remove the now-unused `assembleMetricAnomalyEpisodes` import from that file if nothing else uses it.
+to
+
+```ts
+      // W02 §11: link incidents to their episodes in the SAME stage
+      // transaction; the supersede closes still flow to notifyEpisodesClosed.
+      ['episodes', async () => {
+        pending.closed = await assembleEpisodesAndLinkIncidents(range);
+      }],
+```
+
+Remove `assembleMetricAnomalyEpisodes` from that file's `./metricAnomalyEpisodes` import (keep `notifyEpisodesClosed`, `resolveMetricAnomalyEpisodes`, `type EpisodeCloseResult`). There is no import cycle: `metricAnomalyEpisodeIncidents.ts` imports only a type from `./metricAnomalies`.
 
 - [ ] **Step 5: Run and watch them pass**
 
@@ -3439,21 +3497,7 @@ git commit -m "test(api): HTTP proofs for anomaly episodes — evaluation labels
 **Files:**
 - Modify: `docs/superpowers/plans/monitoring/2026-09-21-metric-anomaly-episodes.md` (contract table)
 
-- [ ] **Step 1: Update the cross-wave contract table** in the index (same PR). Replace the `anomalyEpisodesRoutes` row and the `applyEpisodeAction(...)` row, amend the `MetricAnomalyEpisodeDto` row, and add rows:
-
-| Name | Where | Defined in | Shape |
-|---|---|---|---|
-| episode routes | registered on the existing `anomaliesRoutes` in `apps/api/src/routes/devices/anomalies.ts` (MCP_COVERAGE gap #6141, see W02 D-3) | W02 | `GET /:id/anomaly-episodes?status&limit&ref → MetricAnomalyEpisodeListResponse`; `GET /:id/anomaly-episodes/:episodeId → { data: MetricAnomalyEpisodeDetailDto }`; `PATCH /:id/anomaly-episodes/:episodeId {action, note?, resolveAlert?} → { data: MetricAnomalyEpisodeDto, meta: { alertId, alertResolved, labelledMembers } }`, 409 `{ error, reason }` |
-| `MetricAnomalyEpisodeDto` | `packages/shared/src/types/metricAnomalyEpisodes.ts` | W02 | as before; `rangeMin`/`rangeMax` = min/max `observedValue` over members whose `metric_name = peakMetricName` |
-| `MetricAnomalyEpisodeMemberDto`, `MetricAnomalyEpisodeDetailDto`, `MetricAnomalyEpisodeListResponse` | same file | W02 | member: `id, metricName, anomalyType, status, windowStart, windowEnd, observedValue, baselineValue, baselineMax, score, confidence, linkedAlertId`; detail: DTO + `members[] (≤200, window_start asc)` + `membersTruncated`; list: `{ data, focusedEpisodeId }` |
-| `EPISODE_ACTIONS`, `EPISODE_LIST_STATUSES`, `EPISODE_DETAIL_MEMBER_LIMIT` | same file | W02 | `['resolve','dismiss','promote','unsnooze']`, `['open','closed','all']`, `200` |
-| `applyEpisodeAction(input)` | `apps/api/src/services/metricAnomalyEpisodeActions.ts` | W02 | `ApplyEpisodeActionInput → { status: 'not_found' } \| { status: 'conflict'; reason; message } \| { status: 'ok'; episodeId; action; alertId; alertResolved; labelledMemberIds; feedbackInserted }` |
-| `listDeviceEpisodes`, `getDeviceEpisodeDto`, `getDeviceEpisodeDetail` | `apps/api/src/services/metricAnomalyEpisodeQueries.ts` | W02 | read side of §12 |
-| `emitAnomalyEpisodeMemberFeedback`, `emitMlFeedbackEvents` | `services/mlFeedbackEmitters.ts`, `services/mlFeedback.ts` | W02 | per-member `anomaly` rows, `dedupeKey 'episode:<id>'`, throwing. W03 adds the `anomaly_episode` row beside these |
-| `registerEpisodeCloseAlertHandler`, `resolveAlertsForAutoClosedEpisodes` | `apps/api/src/services/metricAnomalyEpisodeAlerts.ts` | W02 | handler wired at `initializeMetricAnomaliesWorker`; invoked by W01 after the `episode-resolve` stage commits |
-| `assembleEpisodesAndLinkIncidents`, `linkMetricAnomalyIncidentsToEpisodes` | `apps/api/src/services/metricAnomalyEpisodeIncidents.ts` | W02 | the `episodes` stage entry |
-| `EPISODE_INCIDENT_LINK_GRACE_MINUTES`, `PublishIncidentsResult.suppressed` | `apps/api/src/jobs/metricAnomalyIncidentPublisher.ts` | W02 | `15`; claim suppresses all but one incident per episode |
-| `PromoteMetricAnomalyToAlertOptions.episodeId` | `apps/api/src/services/metricAnomalyPromotion.ts` | W02 | → `alerts.context.episodeId` only, never `alerts.episode_id` |
+- [ ] **Step 1: Check the cross-wave contract table** in the index. The W02 rows (episode routes on `anomaliesRoutes`, the four DTOs incl. `peakAnomalyId`, `EPISODE_ACTIONS` / `EPISODE_LIST_STATUSES` / `EPISODE_DETAIL_MEMBER_LIMIT`, `applyEpisodeAction`, the read service, the feedback writers, the alert handler, `assembleEpisodesAndLinkIncidents`, the publisher constants, `PromoteMetricAnomalyToAlertOptions.episodeId`) were written into the index during plan reconciliation (2026-09-22). Compare each row with what this branch actually exports; if the code had to diverge, edit that row in this PR and say so in the PR body. W03 and W04 build against those rows.
 
 - [ ] **Step 2: Typecheck**
 
@@ -3506,14 +3550,14 @@ Expected: 7 files, all green. W02 adds no table or column, so the tenancy contra
 
 ```bash
 git add docs/superpowers/plans/monitoring/2026-09-21-metric-anomaly-episodes.md
-git commit -m "docs(plans): metric anomaly episodes — W02 contract rows"
+git commit -m "docs(plans): metric anomaly episodes — W02 contract rows (only if Step 1 changed any)"
 git push -u origin HEAD
 gh pr create --title "feat(api): metric anomaly episodes W02 — routes, actions, alert auto-resolve, dispatch per episode" --body-file <body.md>
 ```
 
 PR body (`body.md`) must contain:
 - `Closes #<W02 sub-issue#>`, and a link to the spec and to this plan.
-- **Spec deviations D-1…D-8** from the top of this plan, one line each with the file:line evidence.
+- **Spec deviations D-1…D-9** from the top of this plan, one line each with the file:line evidence.
 - **No schema change.** No migration, no new table or column, no cascade or export-policy change (all W01).
 - **`alerts.episode_id` untouched.** The anomaly episode id lives only in `alerts.context.episodeId`, because the column is the monitor breach episode (#5290).
 - **Label integrity.** The member feedback writer throws inside the request transaction, so an action whose labels cannot be written returns 500 and rolls back. The Task 10 negative control run is recorded.

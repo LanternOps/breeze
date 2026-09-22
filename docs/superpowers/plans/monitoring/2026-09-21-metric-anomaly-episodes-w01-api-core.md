@@ -20,9 +20,9 @@
 | 4 | §4.1 `bucket_count` = "members attached". | `bucket_count = count(DISTINCT window_start)` of members. | §16 wants the ram pair merged *and* `bucket_count = 17`; the pair writes two rows per bucket. |
 | 5 | §4.1 widths: `metric_family varchar(40)`, `episode_key varchar(120)`, `peak_metric_name varchar(80)`. | `metric_family varchar(120)`, `episode_key varchar(200)`, `peak_metric_name varchar(120)`. | The unknown-name fallback sets `metric_family = metric_name`, and `metric_anomalies.metric_name` is `varchar(120)` (`apps/api/src/db/schema/analytics.ts:70`). |
 | 6 | §10: exclude buckets of any open-episode member row. | Growth rows (`memory_growth`, `disk_growth`) are not used for exclusion. | A growth row's `window_start` is the start of a 6-bucket trend window, not an anomalous bucket (`apps/api/src/services/metricAnomalies.ts:527`, `:603`). |
-| 7 | §16: "linked alert resolved" on auto-resolve. | W01 returns `linkedAlertId` in `EpisodeCloseResult` and calls the close handler; the default handler is a no-op. W02 wires `resolveAlert` (the index already assigns it to W02). | Index contract row `onEpisodesClosed hook`. |
+| 7 | §16: "linked alert resolved" on auto-resolve. | W01 returns `linkedAlertId` in `EpisodeCloseResult` and calls the close handler; the default handler is a no-op. W02 wires `resolveAlert` (the index already assigns it to W02). | Index contract rows `EpisodeCloseHandler` / `setEpisodeCloseHandler` / `notifyEpisodesClosed`. |
 | 8 | Contract: `assembleMetricAnomalyEpisodes(range) → Promise<void>`. | Returns `Promise<EpisodeCloseResult[]>` (the episodes it superseded), so a promoted episode that is superseded also reaches the close handler. Callers that ignore the value are unaffected. | Deviation 1. **Amend the index row.** |
-| 9 | §7: "the scan job therefore calls the resolve stage outside the flag gate". | No scan change is needed: `scan-orgs` already enqueues every org that has a non-decommissioned, non-ephemeral device, whatever its flag (`apps/api/src/jobs/metricAnomalies.ts:122-128`); the flag is read inside `detectMetricAnomaliesRange` (`apps/api/src/services/metricAnomalies.ts:1195-1197`). The plan moves that early return so only detection + assembly are gated. | Verified by reading both files. Gap: an org whose devices are *all* decommissioned is not scanned, so its open episodes wait for retention. Listed under open questions. |
+| 9 | §7: "the scan job therefore calls the resolve stage outside the flag gate". | The flag gate needs no scan change: `scan-orgs` already enqueues every org that has a non-decommissioned, non-ephemeral device, whatever its flag (`apps/api/src/jobs/metricAnomalies.ts:122-128`); the flag is read inside `detectMetricAnomaliesRange` (`apps/api/src/services/metricAnomalies.ts:1195-1197`). The plan moves that early return so only detection + assembly are gated. **One scan change is needed:** `findAnomalyOrgRows` also selects orgs that have an `open` episode (Task 9 Step 6b), so an org whose devices were all decommissioned still gets `episode-resolve`. | Verified by reading both files. Without Step 6b such an org's open episodes would never close and would wait for retention. |
 | 10 | §6/§7: new stages "sit last". | Order is `baseline, growth-trend, process-runaway, incidents, episodes, episode-resolve`, then the optional `v1-shadow` as today. | `v1-shadow` is a separate flag-gated step after the loop (`metricAnomalies.ts:1227-1237`) and is not part of dispatch. |
 | 11 | §7 flag-off result shape not specified. | Flag off: `{ statements: 0, skipped: true, skippedReason: 'ml-disabled', stages: [<episode-resolve result>], episodesClosed }`. `statements`/`skipped` keep meaning "detection"; `MetricAnomalyResult` gains `episodesClosed: number`. | The CLI (`apps/api/scripts/metric-anomaly-backfill.ts`) keys its message on `skippedReason`. |
 | 12 | §6 closed-at-assembly `resolved_at = now()`. | Kept for snoozed successors. Episodes created already closed (historical) get `resolved_at = start of the next island` (the moment the evidence closed them), so a months-old backfill does not show up under "Recently closed". | Deviation 1. |
@@ -68,7 +68,7 @@
 | `apps/api/src/services/metricAnomalyEpisodePlanner.ts` (+ `.test.ts`) | create | Pure island planner |
 | `apps/api/src/services/metricAnomalyEpisodes.ts` (+ `.test.ts`) | create | Assembly + resolve SQL, attribution, close handler |
 | `apps/api/src/services/metricAnomalies.ts` (+ `.test.ts`) | modify | Stages, trigger, flag gate, anti-contamination, fallback |
-| `apps/api/src/jobs/metricAnomalies.ts` (+ `.test.ts`) | modify | `trigger` in job data |
+| `apps/api/src/jobs/metricAnomalies.ts` (+ `.test.ts`) | modify | `trigger` in job data; `scan-orgs` also selects orgs with an open episode |
 | `apps/api/scripts/metric-anomaly-backfill.ts` | modify | passes `trigger: 'backfill'` |
 | `apps/api/src/__tests__/integration/metricAnomalyEpisodes.integration.test.ts` | create | §16 W01 integration proofs |
 | `apps/api/src/__tests__/integration/metricAnomalies.integration.test.ts` | modify | Stage lists grow from 4 to 6 |
@@ -3343,7 +3343,7 @@ git commit -m "feat(anomalies): auto-resolve metric anomaly episodes on observed
 **Files:**
 - Modify: `apps/api/src/services/metricAnomalies.ts` (imports, `METRIC_ANOMALY_STAGES` `:44-51`, `MetricAnomalyRange` `:84-88`, `MetricAnomalyResult` `:90-111`, `detectMetricAnomaliesRange` `:1190-1253`)
 - Modify: `apps/api/src/services/metricAnomalies.test.ts`
-- Modify: `apps/api/src/jobs/metricAnomalies.ts` (`DetectOrgRangeJobData` `:54-60`, `processScanOrgs` `:155-161`, `processDetectOrgRange` `:189-195`, `enqueueDetectOrgRange` `:280-339`, `enqueueMetricAnomalyBackfill` `:341-353`)
+- Modify: `apps/api/src/jobs/metricAnomalies.ts` (`DetectOrgRangeJobData` `:54-60`, `findAnomalyOrgRows` `:122-128`, `processScanOrgs` `:155-161`, `processDetectOrgRange` `:189-195`, `enqueueDetectOrgRange` `:280-339`, `enqueueMetricAnomalyBackfill` `:341-353`)
 - Modify: `apps/api/src/jobs/metricAnomalies.test.ts`
 - Modify: `apps/api/scripts/metric-anomaly-backfill.ts:25-29`
 - Modify: `apps/api/src/__tests__/integration/metricAnomalies.integration.test.ts` (three stage-list assertions)
@@ -3356,6 +3356,8 @@ git commit -m "feat(anomalies): auto-resolve metric anomaly episodes on observed
   - `METRIC_ANOMALY_STAGES = ['baseline', 'growth-trend', 'process-runaway', 'incidents', 'episodes', 'episode-resolve', 'v1-shadow']`
   - `MetricAnomalyResult.episodesClosed: number`
   - Job data `DetectOrgRangeJobData.trigger?: MetricAnomalyTrigger`
+  - `scan-orgs` fan-out = orgs with a live (non-decommissioned, non-ephemeral) device ∪ orgs with an `open` episode
+  - Close-handler call site: `notifyEpisodesClosed(orgId, closed)` runs ONCE per run, after the stage loop and the v1-shadow step, with the closes of every COMPLETED `episodes` and `episode-resolve` stage. `processDetectOrgRange` holds no DB context (#5283), so the handler runs after both stage transactions committed and outside any DB context — the requirement W02 (its D-8) depends on. A handler error is logged + sent to Sentry inside `notifyEpisodesClosed` and never fails the run.
 
 - [ ] **Step 1: Update the orchestration unit tests (red)**
 
@@ -3667,7 +3669,8 @@ export async function detectMetricAnomaliesRange(options: MetricAnomalyRange): P
   }
   // D4: turning detection off must not freeze open episodes, so resolve sits
   // outside the flag gate. scan-orgs already enqueues flag-off orgs
-  // (jobs/metricAnomalies.ts findAnomalyOrgRows has no flag filter).
+  // (jobs/metricAnomalies.ts findAnomalyOrgRows has no flag filter) and, since
+  // W01, every org that still owns an open episode.
   if (trigger === 'scan') {
     orderedStages.push(['episode-resolve', async () => {
       pending.closed = await resolveMetricAnomalyEpisodes(options.orgId, new Date());
@@ -3704,7 +3707,10 @@ export async function detectMetricAnomaliesRange(options: MetricAnomalyRange): P
     if (shadow.outcome === 'locked') lockContended = true;
   }
 
-  // After every stage transaction has committed, outside any DB context.
+  // After every stage transaction has committed, outside any DB context
+  // (processDetectOrgRange opens none, #5283). `closed` holds the supersedes
+  // from `episodes` AND the auto-closes from `episode-resolve`, so a promoted
+  // episode that is superseded reaches W02's alert handler too. Never throws.
   await notifyEpisodesClosed(options.orgId, closed);
 
   if (!detectionEnabled) {
@@ -3865,6 +3871,80 @@ In `apps/api/scripts/metric-anomaly-backfill.ts` change the call to:
 
 Run: `cd apps/api && npx vitest run src/jobs/metricAnomalies.test.ts src/services/metricAnomalies.test.ts`
 Expected: PASS.
+
+- [ ] **Step 6b: Scan orgs that still have open episodes (red, then green)**
+
+`findAnomalyOrgRows` (`apps/api/src/jobs/metricAnomalies.ts:122-128`) selects only orgs with a non-decommissioned, non-ephemeral device. An org whose devices were all decommissioned after an episode opened would never be scanned again, so `episode-resolve` would never close its episodes (they would sit `open` until retention). Add the orgs that own an `open` episode to the fan-out.
+
+In `apps/api/src/jobs/metricAnomalies.test.ts` change the schema mock to
+
+```ts
+vi.mock('../db/schema', () => ({
+  devices: {},
+  metricAnomalyEpisodes: {},
+}));
+```
+
+and add inside `describe('metric anomalies queue helpers', …)`:
+
+```ts
+  it('also scans orgs that only have open episodes, so episode-resolve can close them (D4)', async () => {
+    groupByMock
+      .mockResolvedValueOnce([{ orgId: 'org-1' }]) // orgs with a live device
+      .mockResolvedValueOnce([{ orgId: 'org-1' }, { orgId: 'org-no-devices' }]); // orgs with an open episode
+    await initializeMetricAnomaliesWorker();
+
+    await workerProcessorMock({ data: { type: 'scan-orgs', lookbackMinutes: 15 } });
+
+    expect(selectMock).toHaveBeenCalledTimes(2);
+    expect(detectAddCalls().map(([, data]) => data.orgId)).toEqual(['org-1', 'org-no-devices']);
+    expect(detectAddCalls().every(([, data]) => data.trigger === 'scan')).toBe(true);
+  });
+```
+
+Run: `cd apps/api && npx vitest run src/jobs/metricAnomalies.test.ts`
+Expected: FAIL — `selectMock` called once and only `org-1` enqueued.
+
+In `apps/api/src/jobs/metricAnomalies.ts` change the schema import to `import { devices, metricAnomalyEpisodes } from '../db/schema';` and replace `findAnomalyOrgRows`:
+
+```ts
+// Quick Support exclusion: ephemeral devices (`devices.is_ephemeral`) live in
+// the hidden per-partner 'quick_support' org and are a stranger's personal
+// machine borrowed for one ~20-minute session. That org stays inside
+// technicians' accessibleOrgIds for RLS reasons, so this fleet-wide sweep is NOT
+// filtered for us; excluding the devices also drops the hidden org out of the
+// fan-out entirely (it holds nothing but ephemeral devices).
+//
+// Metric anomaly episodes W01 (spec D4): orgs that still own an OPEN episode
+// are scanned too, even with no live device, so `episode-resolve` can close
+// those episodes (it runs whatever ml.anomalies.enabled says). Detection for
+// such an org finds no rollups and writes nothing. Both reads run in the one
+// system context processScanOrgs opens.
+async function findAnomalyOrgRows(): Promise<Array<{ orgId: string }>> {
+  const deviceOrgs = await db
+    .select({ orgId: devices.orgId })
+    .from(devices)
+    .where(sql`${devices.status} <> 'decommissioned' AND ${devices.isEphemeral} = false`)
+    .groupBy(devices.orgId);
+  const openEpisodeOrgs = await db
+    .select({ orgId: metricAnomalyEpisodes.orgId })
+    .from(metricAnomalyEpisodes)
+    .where(sql`${metricAnomalyEpisodes.status} = 'open'`)
+    .groupBy(metricAnomalyEpisodes.orgId);
+
+  const seen = new Set<string>();
+  const rows: Array<{ orgId: string }> = [];
+  for (const row of [...deviceOrgs, ...openEpisodeOrgs]) {
+    if (seen.has(row.orgId)) continue;
+    seen.add(row.orgId);
+    rows.push({ orgId: row.orgId });
+  }
+  return rows;
+}
+```
+
+Run: `cd apps/api && npx vitest run src/jobs/metricAnomalies.test.ts`
+Expected: PASS, including the pre-existing `does not hold system DB context while scan fan-out enqueues BullMQ jobs` (both reads sit inside the one `withSystemDbAccessContext`, so its call order is unchanged) and `accounts each org separately across a multi-org fan-out` (both reads return the same two orgs; the dedupe keeps two enqueues).
 
 - [ ] **Step 7: Update the existing integration stage lists and add the flag-off proof (red)**
 
@@ -4721,7 +4801,7 @@ PR body must include:
 - **Three grouping grains.** `metric_anomalies` = one row per bucket per metric (evidence); `metric_anomaly_incidents` = the AI dispatch outbox, one per bucket per anomaly type, grain unchanged; `metric_anomaly_episodes` = the lifecycle a tech sees. Incident counts and episode counts differ by design.
 - **Attribution is `excludedOpen`.** Process snapshots are visible in the UI but absent from the GDPR/tenant export (jsonb rule).
 - Tenancy: shape 1; cascade, device, merge (`repoint`), export (new table + `metric_anomalies.episode_id`, `metric_anomaly_incidents.episode_id` / `suppressed_by_episode`), retention registrations; the `breeze_app` forge output from Step 7.
-- Behaviour: `episode-resolve` runs with `ml.anomalies.enabled` off and never on a backfill; the legacy route accepts `status=cleared`; alert auto-resolve for promoted episodes lands in W02 (W01 only hands `linkedAlertId` to a no-op handler).
+- Behaviour: `episode-resolve` runs with `ml.anomalies.enabled` off and never on a backfill; `scan-orgs` also fans out to orgs that still own an open episode; the legacy route accepts `status=cleared`; alert auto-resolve for promoted episodes lands in W02 (W01 only hands `linkedAlertId` to a no-op handler).
 - The spec-deviation table from the top of this plan.
 - New metrics: `metric_anomaly_episode_stage_skipped_total{stage}`, `metric_anomaly_baseline_fallback_total{detector}`.
 - Every command of Steps 2-7 with its result.
@@ -4730,7 +4810,9 @@ Stacked-branch rule: this PR targets `main`; if it is ever re-based onto a sibli
 
 ---
 
-## Contract amendments for the plan index (land in this PR)
+## Contract amendments for the plan index
+
+Already applied to the index's contract table during plan reconciliation (2026-09-22); listed here so the W01 reviewer can check the code against them.
 
 | Name | Where | Defined in | Shape |
 |---|---|---|---|
@@ -4744,12 +4826,12 @@ Stacked-branch rule: this PR targets `main`; if it is ever re-based onto a sibli
 ## Open questions for the owner
 
 1. **Close reason for superseded and historical episodes** (deviation 1): `cleared` with ≥ 6 clean buckets per metric before the next island, else `expired_no_data`. Acceptable, or should they get a distinct reason (a new CHECK value such as `superseded`)?
-2. **Orgs with only decommissioned devices** are not scanned (`findAnomalyOrgRows`), so their open episodes never auto-resolve and wait for retention. Add "orgs with an open episode" to `scan-orgs` in W02?
-3. **`bucket_count` counts distinct buckets** (deviation 4). W04's "17 detections" chip should read as buckets, not rows.
-4. **Snoozed successors extend** (deviation 3) rather than one dismissed episode per tick.
+2. ~~Orgs with only decommissioned devices are not scanned~~ — **resolved in this wave**: Task 9 Step 6b adds orgs with an `open` episode to the `scan-orgs` fan-out.
+3. **`bucket_count` counts distinct buckets** (deviation 4). W04's "N detections" chip reads `bucketCount` (one detection = one anomalous 5-minute bucket); its member table can hold two rows per bucket for the cpu/ram pairs. Accepted at reconciliation.
+4. **Snoozed successors extend** (deviation 3) rather than one dismissed episode per tick. Accepted at reconciliation.
 
 ## Self-review (run by the plan author)
 
-1. **Spec coverage (W01 rows of §17 and §14/§16):** migration items 1-6 → Task 2; Drizzle schema → Task 2; shared types → Task 1; `episodeKeyFor` + constants → Task 5; assembly stage incl. snooze successor → Tasks 6-7, 9; attribution LATERAL → Task 7; auto-resolve (flag-independent, skipped on backfill) → Tasks 8-9; close-handler hook → Task 8; `cleared` status in CHECK + legacy route enum → Tasks 1-2; anti-contamination + fallback + counter → Task 10; skip counter → Tasks 5, 9; every §14 registration → Task 3 (+ retention Task 4); §16 integration proofs: 17-bucket + ram pair (Task 7), 31-min split + recurrence (Task 7), cleared/5-bucket/expired_no_data/expired_offline (Task 8), resolve with flag off (Task 9), snooze successor (Task 7), hour-5 + fallback (Task 10), backfill lower bound (Task 7); contract suites → Task 11. Not in W01 by design: episode routes, promotion via episode, feedback rows, publisher gate (W02); evaluation (W03); web (W04).
+1. **Spec coverage (W01 rows of §17 and §14/§16):** migration items 1-6 → Task 2; Drizzle schema → Task 2; shared types → Task 1; `episodeKeyFor` + constants → Task 5; assembly stage incl. snooze successor → Tasks 6-7, 9; attribution LATERAL → Task 7; auto-resolve (flag-independent, skipped on backfill) → Tasks 8-9; orgs with open episodes still scanned → Task 9 Step 6b; close-handler hook → Task 8; `cleared` status in CHECK + legacy route enum → Tasks 1-2; anti-contamination + fallback + counter → Task 10; skip counter → Tasks 5, 9; every §14 registration → Task 3 (+ retention Task 4); §16 integration proofs: 17-bucket + ram pair (Task 7), 31-min split + recurrence (Task 7), cleared/5-bucket/expired_no_data/expired_offline (Task 8), resolve with flag off (Task 9), snooze successor (Task 7), hour-5 + fallback (Task 10), backfill lower bound (Task 7); contract suites → Task 11. Not in W01 by design: episode routes, promotion via episode, feedback rows, publisher gate (W02); evaluation (W03); web (W04).
 2. **Placeholder scan:** every code step carries the code; the only deferred behaviour (alert resolve) is an explicit W02 contract item.
 3. **Type consistency:** `EpisodeCloseResult`, `MetricAnomalyTrigger`, `PlannedAttach.attributionDimension`, `memberStatusFor`, `recordBaselineFallback('baseline' | 'process-runaway', n)`, `recordEpisodeStageSkipped('episodes' | 'episode-resolve')` and `episodesClosed` are spelled the same in every task that uses them.
