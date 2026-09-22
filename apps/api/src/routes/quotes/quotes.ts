@@ -22,6 +22,7 @@ import { QuoteServiceError, type QuoteActor } from '../../services/quoteTypes';
 import { db } from '../../db';
 import { quoteImages, quoteAcceptances } from '../../db/schema/quotes';
 import { users } from '../../db/schema/users';
+import { partners } from '../../db/schema/orgs';
 import { readCatalogItemImage } from '../../services/catalogImageStorage';
 import { safeContentDispositionFilename } from '../../utils/httpHeaders';
 import { resolveQuoteBranding } from '../../services/quoteBranding';
@@ -217,10 +218,28 @@ quoteCrudRoutes.get('/:id', scopes, readPerm, zValidator('param', idParam), asyn
             : null,
         }
       : null;
+    // The QUOTE's partner's auto-email-invoice setting (#6636). AcceptOnBehalfDialog
+    // needs this to preview whether accepting will email the invoice, but it used
+    // to fetch it from GET /orgs/partners/me — requireScope('partner') + requireOrgRead
+    // — which 403s for a caller whose role has quotes:read but not orgs:read, so
+    // the line silently never rendered for that whole class of session. Read it
+    // directly here instead, scoped to the QUOTE's own partnerId (never the
+    // caller's own partner context) under the same ambient db context branding/
+    // stripe already use above — same sanctioned pattern, no extra permission gate,
+    // since it's the quote's own tenant data and this route is already partner-/
+    // system-scoped only (quoteCrudRoutes' `scopes`). Column default is `true`,
+    // matched here when the row can't be read.
+    const [partnerAutoEmailRow] = await db
+      .select({ autoEmailInvoiceOnQuoteAccept: partners.autoEmailInvoiceOnQuoteAccept })
+      .from(partners)
+      .where(eq(partners.id, detail.quote.partnerId))
+      .limit(1);
+    const autoEmailInvoiceOnAccept = partnerAutoEmailRow?.autoEmailInvoiceOnQuoteAccept ?? true;
     return c.json({ data: {
       ...detail, quote: quoteForClient, blocks: blocksForEditor, branding, presentation, recipients,
       acceptance,
       stripeConnected, stripeAccountCurrency, currencyWarning,
+      autoEmailInvoiceOnAccept,
     } });
   } catch (err) { return handleServiceError(c, err); }
 });

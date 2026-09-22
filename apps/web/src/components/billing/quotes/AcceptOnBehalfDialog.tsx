@@ -5,7 +5,6 @@ import { QUOTE_ACCEPT_ON_BEHALF_METHODS, type QuoteAcceptOnBehalfMethod } from '
 import { navigateTo } from '@/lib/navigation';
 import { runAction, ActionError } from '../../../lib/runAction';
 import { showToast } from '../../shared/Toast';
-import { fetchWithAuth } from '../../../stores/auth';
 import { acceptQuoteOnBehalf } from '../../../lib/api/quotes';
 import { Dialog } from '../../shared/Dialog';
 import { type Quote, type QuoteLine, formatMoney } from './quoteTypes';
@@ -20,6 +19,13 @@ interface Props {
   /** Addresses the quote was sent to, oldest first. Used ONLY to prefill the
    *  optional email field — never to invent a signer name. */
   recipients: string[];
+  /** Whether the quote's PARTNER auto-emails the invoice on acceptance — read
+   *  server-side for the quote's own partner as part of the quote detail
+   *  response (#6636), never fetched here. `undefined` = unknown (older
+   *  payload, or the field wasn't loaded), which renders no promise at all —
+   *  the honest answer while we don't know. Matches the server's own
+   *  `!== false` default: only `false` suppresses the line. */
+  autoEmailInvoiceOnAccept?: boolean;
   /** Called after a successful accept, so the workspace can reload and switch
    *  to the converted view. Never called on failure. */
   onAccepted: () => void;
@@ -38,7 +44,7 @@ interface Props {
  *
  *  Its own file: QuoteActions.tsx is already 1551 lines, and this surface has a
  *  fetch, a form and five conditional consequences of its own. */
-export default function AcceptOnBehalfDialog({ open, onClose, quote, lines, recipients, onAccepted }: Props) {
+export default function AcceptOnBehalfDialog({ open, onClose, quote, lines, recipients, autoEmailInvoiceOnAccept, onAccepted }: Props) {
   const { t } = useTranslation('billing');
   const [method, setMethod] = useState<QuoteAcceptOnBehalfMethod>('verbal');
   const [reference, setReference] = useState('');
@@ -48,10 +54,12 @@ export default function AcceptOnBehalfDialog({ open, onClose, quote, lines, reci
   const [signerName, setSignerName] = useState('');
   const [signerEmail, setSignerEmail] = useState('');
   const [submitting, setSubmitting] = useState(false);
-  // Whether accepting will email the invoice to the customer. `null` = not
-  // known yet (the lookup is in flight or failed), which renders no promise at
-  // all — the honest answer while we don't know.
-  const [autoEmail, setAutoEmail] = useState<boolean | null>(null);
+  // Whether accepting will email the invoice to the customer, from the quote
+  // detail response's own partner-flag field (#6636) — never fetched here.
+  // Strict `=== true`: `undefined` (older payload/fixture, field not loaded)
+  // renders no promise at all — the honest answer while we don't know — same
+  // as `false` (auto-email genuinely off). Only an explicit `true` renders it.
+  const autoEmail = autoEmailInvoiceOnAccept === true;
 
   // Reset to the quote's own values each time the dialog opens, so a cancelled
   // attempt doesn't leave last time's reference sitting in the field.
@@ -62,31 +70,7 @@ export default function AcceptOnBehalfDialog({ open, onClose, quote, lines, reci
     setSignerName(quote.billToName ?? '');
     setSignerEmail(recipients[0] ?? '');
     setSubmitting(false);
-    // Back to "not known yet" — a reopen must not show last time's email
-    // promise for the moments before the refetch lands.
-    setAutoEmail(null);
   }, [open, quote.billToName, recipients]);
-
-  // The partner's auto-email setting, read on open from the same endpoint the
-  // partner billing settings page uses. Treated as ON unless the response says
-  // `false`, matching the server's own `!== false` default.
-  useEffect(() => {
-    if (!open) return;
-    let cancelled = false;
-    void (async () => {
-      try {
-        const res = await fetchWithAuth('/orgs/partners/me');
-        if (!res.ok) return;
-        const p = (await res.json()) as { autoEmailInvoiceOnQuoteAccept?: boolean };
-        if (!cancelled) setAutoEmail(p.autoEmailInvoiceOnQuoteAccept !== false);
-      } catch {
-        // Display-only: a failed lookup must not block recording the
-        // acceptance. We simply promise nothing about the email.
-        if (!cancelled) setAutoEmail(null);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [open]);
 
   const currency = quote.currencyCode ?? 'USD';
   const invoiceAmount = formatMoney(quote.dueOnAcceptanceTotal ?? quote.oneTimeTotal, currency);

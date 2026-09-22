@@ -760,4 +760,39 @@ describe('quote crud + lines routes', () => {
       expect(body.data.currencyWarning).toBeNull();
     });
   });
+
+  // #6636: AcceptOnBehalfDialog needs the quote's PARTNER's auto-email flag to
+  // preview whether accepting will email the invoice. The dialog used to fetch
+  // it from GET /orgs/partners/me — requireScope('partner') + requireOrgRead —
+  // which an org-scoped-permission tech (quotes:read but no orgs:read) 403s on,
+  // so the line silently never rendered for that whole class of session. The
+  // flag is read here instead, for the QUOTE's own partner (never the caller's),
+  // under the same ambient db context the branding/stripe reads already use —
+  // no extra permission gate, since it's the quote's own tenant data.
+  describe('GET /:id — autoEmailInvoiceOnAccept (#6636)', () => {
+    it('returns the flag from the quote\'s partner row', async () => {
+      (svc.getQuote as any).mockResolvedValue({ quote: { id: QUOTE_ID, orgId: ORG_ID, partnerId: 'p1' }, blocks: [], lines: [] });
+      dbRows.next = [
+        [], // branding: partner row (unused fields, default empty)
+        [], // branding: portal_branding row
+        [], // recipients
+        [], // acceptance
+        [{ autoEmailInvoiceOnQuoteAccept: false }], // this route's own partner-flag select
+      ];
+      const res = await app().request(`/${QUOTE_ID}`, { method: 'GET' });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.autoEmailInvoiceOnAccept).toBe(false);
+    });
+
+    it('defaults to true when the partner row is unreadable (matches the column default)', async () => {
+      (svc.getQuote as any).mockResolvedValue({ quote: { id: QUOTE_ID, orgId: ORG_ID, partnerId: 'p1' }, blocks: [], lines: [] });
+      // No preset rows at all → every select (including the new one) falls
+      // through to the default empty array.
+      const res = await app().request(`/${QUOTE_ID}`, { method: 'GET' });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.autoEmailInvoiceOnAccept).toBe(true);
+    });
+  });
 });

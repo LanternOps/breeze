@@ -383,6 +383,13 @@ export interface QuoteDetail {
    *  the cached account currency. null = nothing to say (matches, or not
    *  connected). */
   currencyWarning?: StripeCurrencyWarning | null;
+  /** Whether the quote's PARTNER auto-emails the invoice on acceptance —
+   *  read for the quote's own partner, never the caller's (#6636). Used only
+   *  to preview the accept-on-behalf consequence; the server always emails
+   *  or not per the partner's live setting regardless of this preview.
+   *  Optional: older payloads/fixtures omit it, which reads as "unknown"
+   *  (AcceptOnBehalfDialog shows no email promise). */
+  autoEmailInvoiceOnAccept?: boolean;
 }
 
 export const STATUS_LABELS: Record<QuoteStatus, string> = {

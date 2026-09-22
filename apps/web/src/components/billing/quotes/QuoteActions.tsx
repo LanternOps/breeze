@@ -1483,7 +1483,7 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
         </div>
       </Dialog>
       {/* Mounted only when the action is offered, so a viewer without
-          quotes:accept never carries the dialog's partner-settings fetch. */}
+          quotes:accept never renders it. */}
       {canAcceptOnBehalf && (
         <AcceptOnBehalfDialog
           open={acceptOpen}
@@ -1491,6 +1491,7 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
           quote={quote}
           lines={lines}
           recipients={recipients}
+          autoEmailInvoiceOnAccept={detail.autoEmailInvoiceOnAccept}
           onAccepted={() => { setAcceptOpen(false); refresh(); }}
         />
       )}

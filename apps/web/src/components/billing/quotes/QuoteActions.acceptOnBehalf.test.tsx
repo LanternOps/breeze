@@ -28,9 +28,7 @@ vi.mock('../../../lib/permissions', () => ({
 vi.mock('../../../stores/orgStore', () => ({ useOrgStore: (sel: (s: { organizations: unknown[] }) => unknown) => sel({ organizations: [] }) }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 vi.mock('../../../stores/auth', () => ({
-  // The partner billing settings read the dialog does on open — `/orgs/partners/me`.
-  fetchWithAuth: vi.fn(async () =>
-    ({ ok: true, status: 200, json: async () => ({ autoEmailInvoiceOnQuoteAccept: true }) }) as unknown as Response),
+  fetchWithAuth: vi.fn(),
   useAuthStore: { getState: () => ({ tokens: null }) },
 }));
 vi.mock('../../../lib/api/quotes', () => ({
@@ -177,16 +175,31 @@ describe('Accept on behalf', () => {
   });
 
   // The partner can have auto-email off; promising the customer an email that
-  // never arrives is worse than saying nothing.
-  it('promises the customer email only when the partner has auto-email on', async () => {
+  // never arrives is worse than saying nothing. The flag comes from the quote
+  // detail response's own `autoEmailInvoiceOnAccept` field (#6636) — read for
+  // the QUOTE's partner server-side — never from a client-side fetch, so the
+  // line renders correctly for a caller whose role can't reach the partner
+  // settings endpoint.
+  it('promises the customer email only when the quote detail says auto-email is on', () => {
+    render(<QuoteActions detail={sent({}, { autoEmailInvoiceOnAccept: true })} variant="header" onChanged={vi.fn()} />);
+    fireEvent.click(screen.getByTestId('quote-accept-on-behalf'));
+    expect(screen.getByTestId('accept-on-behalf-consequence-email')).toBeTruthy();
+  });
+
+  it('shows no email promise when the quote detail says auto-email is off', () => {
+    render(<QuoteActions detail={sent({}, { autoEmailInvoiceOnAccept: false })} variant="header" onChanged={vi.fn()} />);
+    fireEvent.click(screen.getByTestId('quote-accept-on-behalf'));
+    expect(screen.queryByTestId('accept-on-behalf-consequence-email')).toBeNull();
+  });
+
+  // Unknown (field omitted — an older payload/fixture) must read the same as
+  // "off": no false promise, never fetched client-side to find out.
+  it('shows no email promise when the quote detail omits the flag, and never fetches partner settings to find out', async () => {
     const { fetchWithAuth } = await import('../../../stores/auth');
-    (fetchWithAuth as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(
-      { ok: true, status: 200, json: async () => ({ autoEmailInvoiceOnQuoteAccept: false }) } as unknown as Response,
-    );
     render(<QuoteActions detail={sent()} variant="header" onChanged={vi.fn()} />);
     fireEvent.click(screen.getByTestId('quote-accept-on-behalf'));
-    await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledWith('/orgs/partners/me'));
-    await waitFor(() => expect(screen.queryByTestId('accept-on-behalf-consequence-email')).toBeNull());
+    expect(screen.queryByTestId('accept-on-behalf-consequence-email')).toBeNull();
+    expect(fetchWithAuth).not.toHaveBeenCalled();
   });
 
   // The toast names a document the tech will go looking for. Reading the
