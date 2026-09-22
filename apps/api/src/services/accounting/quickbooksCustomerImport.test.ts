@@ -8,6 +8,7 @@ const {
   insertMock,
   updateMock,
   deleteMock,
+  executeMock,
   getConnectionMock,
   getValidAccessTokenMock,
   listRemoteCustomersMock,
@@ -22,6 +23,7 @@ const {
     insertMock: vi.fn(),
     updateMock: vi.fn(),
     deleteMock: vi.fn(),
+    executeMock: vi.fn(),
     getConnectionMock: vi.fn(),
     getValidAccessTokenMock: vi.fn(),
     listRemoteCustomersMock: vi.fn(),
@@ -30,7 +32,11 @@ const {
   };
 });
 vi.mock('../../db', () => ({
-  db: { select: selectMock, insert: insertMock, update: updateMock, delete: deleteMock },
+  // The org/site contact mirror now records caller-verification destination
+  // provenance (#6354) via recordDestinationChangeWithExecutor, which takes a
+  // per-contact advisory lock through `exec.execute(sql\`SELECT
+  // pg_advisory_xact_lock(...)\`)` before its select/insert/update calls.
+  db: { select: selectMock, insert: insertMock, update: updateMock, delete: deleteMock, execute: executeMock },
   runOutsideDbContext: (fn: () => unknown) => fn(),
   withSystemDbAccessContext: (fn: () => unknown) => fn(),
 }));
@@ -149,6 +155,7 @@ beforeEach(() => {
   // `{name,email,phone}` object, so a customer with all three blank reaches
   // this path (and clears the legacy jsonb blob to `{}` just the same).
   deleteMock.mockImplementation(() => ({ where: () => Promise.resolve([]) }));
+  executeMock.mockResolvedValue([]);
   getConnectionMock.mockResolvedValue(connectedConn());
   getValidAccessTokenMock.mockResolvedValue('fresh-token');
 });
@@ -229,11 +236,13 @@ describe('importQuickbooksCustomers', () => {
     const summary = await importQuickbooksCustomers({ partnerId: 'p1', customerIds: ['1'], actor: { userId: 'u1' } });
 
     // Ids are the mock's insert counter. This customer HAS contact data, so the
-    // compat mirror inserts a contacts row between the org and the link —
-    // org(1), contact(2), link(3), site(4) — which is why the site is row-4
-    // rather than row-3. Pure sequencing artifact; the contract asserted here is
-    // that the summary reports the ids of the rows actually created.
-    expect(summary.imported).toEqual([{ customerId: '1', displayName: 'Acme Co', organizationId: 'row-1', siteId: 'row-4' }]);
+    // compat mirror inserts a contacts row between the org and the link, and
+    // that contact write now also records caller-verification destination
+    // provenance (#6354) with its own insert — org(1), contact(2),
+    // destination(3), link(4), site(5) — which is why the site is row-5
+    // rather than row-3/4. Pure sequencing artifact; the contract asserted
+    // here is that the summary reports the ids of the rows actually created.
+    expect(summary.imported).toEqual([{ customerId: '1', displayName: 'Acme Co', organizationId: 'row-1', siteId: 'row-5' }]);
     expect(summary.skipped).toEqual([]);
     expect(summary.errors).toEqual([]);
 

@@ -395,7 +395,12 @@ describe('POST /organizations', () => {
 
 describe('POST /sites', () => {
   function primeSuccess() {
-    insertResults = [[siteRow]];
+    // Two inserts now, in order: the site row, then the contacts mirror's
+    // insert (`applyToContactRow` reads back `created!.id` from `.returning()`
+    // to record caller-verification destination provenance, #6354) — priming
+    // only the site row leaves that second insert's `.returning()` empty and
+    // `created` undefined.
+    insertResults = [[siteRow], [{ id: 'contact-1' }]];
     // Two reads now, in order: the contacts mirror's existing-primary lookup
     // (none — the site was just created), then the partner-export stamp
     // re-read. Priming only the stamp would feed its row to the mirror, which
