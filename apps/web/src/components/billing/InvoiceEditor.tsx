@@ -125,8 +125,12 @@ export default function InvoiceEditor({ detail, onChanged, onPendingEditsChange,
   // lineTotal over customer-visible lines — bundle children persist
   // lineTotal '0.00', so recomputing qty×price here would double-count them —
   // then tax = taxable basis × the invoice's committed rate, one
-  // round-half-up at the cent boundary. Same inputs, same rounding: the
-  // optimistic figures can never settle different from the next GET.
+  // round-half-up at the cent boundary — and then each of subtotal/tax/total
+  // is rounded at the CURRENCY's minor unit (`roundToCurrency`), the total
+  // built from the already-rounded subtotal + tax. That last step is not
+  // decoration: dropping back to a 2-decimal-only `fromCents` is exactly the
+  // zero-decimal bug of #6441. Same inputs, same rounding: the optimistic
+  // figures can never settle different from the next GET.
   const optimisticTotals = useMemo(() => {
     if (pendingDeletedLineIds.size === 0 && flushedDeletedLineIds.size === 0) return null;
     let subtotalCents = 0;
@@ -142,8 +146,9 @@ export default function InvoiceEditor({ detail, onChanged, onPendingEditsChange,
     // major-unit float instead loses ties to FP noise), then the CURRENCY
     // decides each figure's final boundary — and the total is built from the
     // already-rounded subtotal + tax, exactly as computeInvoiceTotals does.
-    // `fromCents` alone is 2-decimal-only, so on a zero-decimal currency (JPY)
-    // it double-rounded the total a whole yen away from the next GET (#6441).
+    // `fromCents` alone never rounds at the currency's minor unit at all, so on
+    // a zero-decimal currency (JPY) it summed unrounded cents and landed the
+    // total a whole yen away from the next GET (#6441).
     const taxCents = Math.floor(taxableCents * rate + 0.5);
     const subtotal = roundToCurrency(subtotalCents / 100, currency);
     const taxTotal = roundToCurrency(taxCents / 100, currency);
