@@ -5,13 +5,16 @@ import { devices, organizations, configurationPolicies, escalationPolicies, noti
 import type { PolicySources } from './loadSources';
 import type { DbExecutor } from './legacyBaseline';
 const mocks = vi.hoisted(() => ({ context: vi.fn(), policy: vi.fn(), sources: vi.fn(), devices: vi.fn(), fromAuth: vi.fn() }));
-vi.mock('../../../middleware/auth', () => ({ dbAccessContextFromAuth: mocks.fromAuth }));
+vi.mock('../../../middleware/auth', async (importOriginal) => ({ ...(await importOriginal<typeof import('../../../middleware/auth')>()), dbAccessContextFromAuth: mocks.fromAuth }));
 vi.mock('../../../db', () => ({ getCurrentDbAccessContext: mocks.context }));
 vi.mock('../../configurationPolicy', () => ({ getConfigPolicy: mocks.policy }));
 vi.mock('./loadSources', () => ({ loadPolicySources: mocks.sources }));
 vi.mock('./convert', () => ({ ConversionError: class extends Error { constructor(readonly code: string, message: string) { super(message); } } }));
 vi.mock('./legacyBaseline', () => ({ resolveDeviceIdsForPolicy: mocks.devices }));
 import { authorizePreview, previewFreshness, previewScopeHash, restorePreviewAuth, snapshotPreviewAccess } from './previewScope';
+import { buildOrgAccessClosures, siteAccessCheck } from '../../../middleware/auth';
+import { PgDialect } from 'drizzle-orm/pg-core';
+const render = (condition: ReturnType<AuthContext['orgCondition']>) => condition ? new PgDialect().sqlToQuery(condition) : undefined;
 const context: DbAccessContext = { scope: 'organization', orgId: 'o', accessibleOrgIds: ['o'], accessiblePartnerIds: [], currentPartnerId: 'p', userId: 'u' };
 const auth: AuthContext = { principal: { kind: 'user_session' }, user: { id: 'u', email: 'u@example.com', name: 'User', isPlatformAdmin: false }, token: null, partnerId: 'p', orgId: 'o', scope: 'organization', accessibleOrgIds: ['o'], canAccessOrg: (id) => id === 'o', orgCondition: () => undefined };
 const sources = (id: string): PolicySources => ({ policy: { id, name: id, orgId: 'o', partnerId: null, parentPolicyId: null }, links: { alertRule: null, monitoring: null, monitoringSettingsId: null, monitors: null }, inlineRules: [], watches: [], policyAutomations: [], standaloneAutomations: [], openAlertsBySource: new Map(), parentUnconverted: false });
@@ -69,4 +72,40 @@ it('fingerprints routing, escalation steps, competitor payloads and full row dat
   mocks.sources.mockImplementation(async (id: string) => ({ ...sources(id), inlineRules: id === 'competitor' ? [{ id: 'rule', severity: 'critical' }] : [] }));
   expect(await previewFreshness('policy', executor)).not.toBe(initial);
   expect(mocks.sources).toHaveBeenCalledWith('competitor', executor);
+});
+
+// #6445 — the restored AuthContext must delegate to the auth module's single
+// source of truth, not re-implement it. Compare against the canonical closures
+// directly so any future divergence in either axis fails here.
+it.each([undefined, [], ['s'], ['s', 't']] as Array<string[] | undefined>)('restores the site axis exactly as siteAccessCheck: %j', (allowedSiteIds) => {
+  const restored = restorePreviewAuth(snapshotPreviewAccess({ ...auth, allowedSiteIds }));
+  const canonicalCheck = siteAccessCheck(allowedSiteIds);
+  for (const siteId of ['s', 't', 'other', null, undefined]) {
+    expect(restored.canAccessSite!(siteId)).toBe(canonicalCheck(siteId));
+  }
+});
+
+it.each([null, [], ['o'], ['o', 'b']] as Array<string[] | null>)('restores the org axis exactly as buildOrgAccessClosures: %j', (accessibleOrgIds) => {
+  const scope = accessibleOrgIds === null ? 'system' as const : auth.scope;
+  const restored = restorePreviewAuth(snapshotPreviewAccess({ ...auth, scope, accessibleOrgIds }));
+  const canonicalClosures = buildOrgAccessClosures(accessibleOrgIds);
+  expect(render(restored.orgCondition(devices.orgId))).toEqual(render(canonicalClosures.orgCondition(devices.orgId)));
+  for (const orgId of ['o', 'b', 'other']) {
+    expect(restored.canAccessOrg(orgId)).toBe(canonicalClosures.canAccessOrg(orgId));
+  }
+});
+
+it('denies every row for an empty org allowlist instead of emitting an unbounded IN ()', () => {
+  const restored = restorePreviewAuth(snapshotPreviewAccess({ ...auth, accessibleOrgIds: [] }));
+  const query = render(restored.orgCondition(devices.orgId));
+  expect(query?.params).toEqual(['00000000-0000-0000-0000-000000000000']);
+  expect(restored.canAccessOrg('o')).toBe(false);
+});
+
+it('treats a null site allowlist as unrestricted, matching the request path', () => {
+  // A restored snapshot whose allowedSiteIds arrived as null (not undefined)
+  // must stay allow-all rather than flipping to deny-all.
+  const snapshot = snapshotPreviewAccess(auth);
+  const restored = restorePreviewAuth({ ...snapshot, auth: { ...snapshot.auth, allowedSiteIds: null as unknown as undefined } });
+  expect(restored.canAccessSite!('s')).toBe(true);
 });
