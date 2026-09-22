@@ -1,5 +1,5 @@
 import { test, expect } from '../fixtures';
-import { STORAGE_STATE } from '../global-setup';
+import { persistStorageState } from '../auth-state';
 import { ScriptProposalsPage } from '../pages/ScriptProposalsPage';
 import type { BrowserContext, Page } from '@playwright/test';
 import { execFileSync } from 'node:child_process';
@@ -96,12 +96,13 @@ test.describe('AI script proposals', () => {
   // the card's own proposal fetch can each take several seconds.
   test.setTimeout(120_000);
 
-  test.beforeAll(async ({ browser }) => {
+  test.beforeAll(async ({ browser, workerStorageState }) => {
     seed = seedProposals();
-    ctx = await browser.newContext({ storageState: STORAGE_STATE });
+    ctx = await browser.newContext({ storageState: workerStorageState });
     authedPage = await ctx.newPage();
   });
-  test.afterAll(async () => {
+  test.afterAll(async ({ workerStorageState }) => {
+    if (ctx) await persistStorageState(ctx, workerStorageState);
     await ctx?.close();
   });
 

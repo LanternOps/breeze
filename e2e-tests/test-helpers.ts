@@ -40,35 +40,58 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  * `breeze-wt-*` project), and a long-running serial spec eventually 401s
  * once the shared token's JTI gets revoked by an untracked refresh.
  */
+function redisCliArgs(): { args: string[]; cwd: string } {
+  // The descriptor is written to the REPO ROOT, not e2e-tests/ — resolving it
+  // here (as playwright.config.ts already does with '..') is what makes the
+  // wt-stack branch below actually fire. Without the '..' the file is never
+  // found, `project` stays undefined, and every worktree run silently falls
+  // back to the non-existent `breeze-redis` container this doc warns about.
+  const stackFile = process.env.E2E_STACK_FILE ?? path.resolve(__dirname, '..', '.breeze-stack.json');
+  const stackRaw = existsSync(stackFile) ? readFileSync(stackFile, 'utf8') : null;
+  const project = stackRaw ? (JSON.parse(stackRaw) as { project?: string }).project : undefined;
+  const repoRoot = path.resolve(__dirname, '..');
+  const composeBase = project
+    ? ['compose', '-p', project, '--env-file', '.env', '--env-file', '.env.stack',
+       '-f', 'docker-compose.yml', '-f', 'docker-compose.override.yml.dev', '-f', 'docker-compose.override.yml.worktree']
+    : null;
+
+  const args = composeBase ? [...composeBase, 'exec', '-T', 'redis', 'redis-cli'] : ['exec', 'breeze-redis', 'redis-cli'];
+  if (process.env.REDIS_PASSWORD) {
+    args.push('-a', process.env.REDIS_PASSWORD, '--no-auth-warning');
+  }
+  return { args, cwd: repoRoot };
+}
+
+function deleteRedisKeys(patterns: string[]): void {
+  const { args, cwd } = redisCliArgs();
+  const script = patterns
+    .map((p, i) => `local k${i}=redis.call('KEYS','${p}'); for _,v in ipairs(k${i}) do redis.call('DEL',v) end;`)
+    .join(' ');
+  execFileSync('docker', [...args, 'EVAL', `${script} return 0`, '0'], { cwd, stdio: 'ignore' });
+}
+
 export function clearRefreshState() {
   try {
-    // The descriptor is written to the REPO ROOT, not e2e-tests/ — resolving it
-    // here (as playwright.config.ts already does with '..') is what makes the
-    // wt-stack branch below actually fire. Without the '..' the file is never
-    // found, `project` stays undefined, and every worktree run silently falls
-    // back to the non-existent `breeze-redis` container this doc warns about.
-    const stackFile = process.env.E2E_STACK_FILE ?? path.resolve(__dirname, '..', '.breeze-stack.json');
-    const stackRaw = existsSync(stackFile) ? readFileSync(stackFile, 'utf8') : null;
-    const project = stackRaw ? (JSON.parse(stackRaw) as { project?: string }).project : undefined;
-    const repoRoot = path.resolve(__dirname, '..');
-    const composeBase = project
-      ? ['compose', '-p', project, '--env-file', '.env', '--env-file', '.env.stack',
-         '-f', 'docker-compose.yml', '-f', 'docker-compose.override.yml.dev', '-f', 'docker-compose.override.yml.worktree']
-      : null;
-
-    const args = composeBase ? [...composeBase, 'exec', '-T', 'redis', 'redis-cli'] : ['exec', 'breeze-redis', 'redis-cli'];
-    if (process.env.REDIS_PASSWORD) {
-      args.push('-a', process.env.REDIS_PASSWORD, '--no-auth-warning');
-    }
-    args.push(
-      'EVAL',
-      "local k=redis.call('KEYS','refresh:*'); for _,v in ipairs(k) do redis.call('DEL',v) end; local r=redis.call('KEYS','token:refresh:revoked:*'); for _,v in ipairs(r) do redis.call('DEL',v) end; return #k+#r",
-      '0'
-    );
-    execFileSync('docker', args, { cwd: repoRoot, stdio: 'ignore' });
+    deleteRedisKeys(['refresh:*', 'token:refresh:revoked:*']);
   } catch (err) {
     // Non-fatal — if redis is unreachable, the test will surface a clearer
     // 401 / login-redirect error.
     console.warn('[test-helpers] clearRefreshState failed (is redis running?):', err);
+  }
+}
+
+/**
+ * Clear the per-IP and per-(IP, email) login limiters. Every Playwright
+ * worker logs in for itself (fixtures.ts), and Playwright starts a NEW worker
+ * after each test failure, so a run with retries can exceed the 10-per-5-min
+ * per-IP budget — all traffic reaches the API through Caddy as one client.
+ * `E2E_MODE=true` on the stack stands the limiter down entirely; this is the
+ * belt to that brace.
+ */
+export function clearLoginRateLimit() {
+  try {
+    deleteRedisKeys(['login:*']);
+  } catch {
+    // Non-fatal — the login itself will surface a clearer error.
   }
 }

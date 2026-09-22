@@ -1,5 +1,5 @@
 import { test, expect } from '../fixtures';
-import { STORAGE_STATE } from '../global-setup';
+import { persistStorageState } from '../auth-state';
 import { ScriptAuthoringPage } from '../pages/ScriptAuthoringPage';
 import { ScriptProposalsPage } from '../pages/ScriptProposalsPage';
 import type { BrowserContext, Page } from '@playwright/test';
@@ -92,12 +92,13 @@ test.describe('AI script authoring — unattended lane', () => {
   let authedPage: Page;
   test.setTimeout(120_000);
 
-  test.beforeAll(async ({ browser }) => {
+  test.beforeAll(async ({ browser, workerStorageState }) => {
     seed = seedLane();
-    ctx = await browser.newContext({ storageState: STORAGE_STATE });
+    ctx = await browser.newContext({ storageState: workerStorageState });
     authedPage = await ctx.newPage();
   });
-  test.afterAll(async () => {
+  test.afterAll(async ({ workerStorageState }) => {
+    if (ctx) await persistStorageState(ctx, workerStorageState);
     await ctx?.close();
   });
 

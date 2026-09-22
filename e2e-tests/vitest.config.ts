@@ -7,6 +7,6 @@ export default defineConfig({
   test: {
     // explicit: vitest 5 flips the default to true; flip per package in a follow-up
     clearMocks: false,
-    include: ['live-signup/**/*.test.ts'],
+    include: ['live-signup/**/*.test.ts', '*.test.ts'],
   },
 });

@@ -1,7 +1,7 @@
 import type { BrowserContext, Page } from '@playwright/test';
 import { test, expect } from '../fixtures';
 import { clearRefreshState } from '../test-helpers';
-import { STORAGE_STATE } from '../global-setup';
+import { persistStorageState } from '../auth-state';
 import { PartnerSendingDomainsPage } from '../pages/PartnerSendingDomainsPage';
 
 /**
@@ -37,11 +37,12 @@ test.describe('Partner sending domains', () => {
   let ctx: BrowserContext;
   let authedPage: Page;
 
-  test.beforeAll(async ({ browser }) => {
-    ctx = await browser.newContext({ storageState: STORAGE_STATE });
+  test.beforeAll(async ({ browser, workerStorageState }) => {
+    ctx = await browser.newContext({ storageState: workerStorageState });
     authedPage = await ctx.newPage();
   });
-  test.afterAll(async () => {
+  test.afterAll(async ({ workerStorageState }) => {
+    if (ctx) await persistStorageState(ctx, workerStorageState);
     await ctx?.close();
   });
 

@@ -1,18 +1,46 @@
 import { test as base, expect, type Page } from '@playwright/test';
-import { STORAGE_STATE } from './global-setup';
+import { loginAndSaveState, persistStorageState, workerStoragePath } from './auth-state';
+import { clearLoginRateLimit } from './test-helpers';
 
 type Fixtures = {
   authedPage: Page;
   cleanPage: Page;
 };
 
-export const test = base.extend<Fixtures>({
-  // Loads the shared storageState produced by globalSetup. Each test gets a
-  // fresh BrowserContext, but no fresh login — that happens once per run.
-  authedPage: async ({ browser }, use) => {
-    const ctx = await browser.newContext({ storageState: STORAGE_STATE });
+type WorkerFixtures = {
+  /**
+   * Path of this worker's storageState file. Logged in once per worker, so
+   * every worker owns its own refresh-token family (see auth-state.ts for why
+   * one shared family cannot survive parallel workers). Available in
+   * `beforeAll` for specs that hold one context for the whole file — pair it
+   * with `persistStorageState` in `afterAll`.
+   */
+  workerStorageState: string;
+};
+
+export const test = base.extend<Fixtures, WorkerFixtures>({
+  workerStorageState: [
+    async ({ browser }, use, workerInfo) => {
+      const statePath = workerStoragePath(workerInfo.parallelIndex);
+      const baseURL =
+        (workerInfo.project.use.baseURL as string | undefined) ??
+        process.env.E2E_BASE_URL ??
+        'http://localhost:4321';
+      clearLoginRateLimit();
+      await loginAndSaveState(browser, baseURL, statePath);
+      await use(statePath);
+    },
+    { scope: 'worker' },
+  ],
+
+  // Fresh BrowserContext seeded from this worker's storageState. The cookies
+  // are written back on teardown so the next test on the worker continues
+  // from the latest refresh rotation rather than replaying a stale one.
+  authedPage: async ({ browser, workerStorageState }, use) => {
+    const ctx = await browser.newContext({ storageState: workerStorageState });
     const page = await ctx.newPage();
     await use(page);
+    await persistStorageState(ctx, workerStorageState);
     await ctx.close();
   },
 
