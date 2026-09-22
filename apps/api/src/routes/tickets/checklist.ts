@@ -10,6 +10,7 @@ import {
   applyChecklistTemplateSchema,
 } from '@breeze/shared';
 import { applyChecklistTemplateToTicket } from '../../services/ticketChecklistTemplateService';
+import { HumanWorkStepWaitingError } from '../../services/aiOperator/humanWorkService';
 import {
   templateActorFrom,
   handleChecklistTemplateError,
@@ -45,6 +46,13 @@ function handleServiceError(c: { json: (b: unknown, s: number) => Response }, er
       { error: err.message, code: err.code, ...(err.details ? { details: err.details } : {}) },
       err.status,
     );
+  }
+  // The Operator's own refusal (E3). Rendered here rather than converted into a
+  // ChecklistServiceError inside humanWorkService, because that would make the
+  // aiOperator tree import the ticket service's error class and close the
+  // module cycle this wave deliberately keeps open in one direction.
+  if (err instanceof HumanWorkStepWaitingError) {
+    return c.json({ error: err.message, code: err.code }, err.status);
   }
   throw err;
 }

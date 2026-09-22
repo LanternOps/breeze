@@ -1,6 +1,12 @@
 import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { ticketChecklistItems, type TicketChecklistItemRow } from '../db/schema';
+import { aiOperatorTaskSteps } from '../db/schema/aiOperatorTaskGraph';
+import {
+  assertChecklistItemDeletable,
+  onChecklistItemDone,
+  onChecklistItemUnticked,
+} from './aiOperator/humanWorkService';
 import type {
   ChecklistItemCreateInput,
   ChecklistItemPatchInput,
@@ -40,6 +46,18 @@ export interface ChecklistItemView {
   doneByUserId: string | null;
   source: ChecklistItemSource;
   sourceTemplateItemId: string | null;
+  /**
+   * The AI Operator task behind an `operator_task` item, for the ticket page's
+   * "Operator step" badge (recipe spec §6.5, wave E3).
+   *
+   * NULL when there is no step, or when the step is in a DIFFERENT org — which
+   * is what a ticket that has been moved between orgs looks like. The join in
+   * `listChecklist` is constrained on org, so the badge degrades to a plain
+   * label rather than rendering a link into another tenant. Single-item
+   * responses (create/patch) always report null: the link is read from the
+   * list, not from a mutation's echo.
+   */
+  operatorTaskId: string | null;
   createdAt: string;
 }
 
@@ -54,7 +72,7 @@ const toIso = (value: Date | string | null | undefined): string | null => {
   return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
 };
 
-function toView(row: TicketChecklistItemRow): ChecklistItemView {
+function toView(row: TicketChecklistItemRow, operatorTaskId: string | null = null): ChecklistItemView {
   return {
     id: row.id,
     ticketId: row.ticketId,
@@ -69,6 +87,7 @@ function toView(row: TicketChecklistItemRow): ChecklistItemView {
     doneByUserId: row.doneByUserId,
     source: row.source,
     sourceTemplateItemId: row.sourceTemplateItemId,
+    operatorTaskId,
     createdAt: toIso(row.createdAt) ?? new Date(0).toISOString(),
   };
 }
@@ -95,12 +114,25 @@ export async function listChecklist(
   ticketId: string,
   exec: DbExecutor = db,
 ): Promise<ChecklistSummary> {
+  // LEFT JOIN, and the org predicate is LOAD-BEARING, not tidiness: the step
+  // and the item legitimately end up in different orgs after a ticket org-move
+  // (the item's org_id is re-stamped, the step's is immutable task history), and
+  // the ticket page must not then render a link into the other tenant. The
+  // `operator_step_id` column is provenance and is NEVER joined for
+  // authorization — this join only decides whether to show a link.
   const rows = (await exec
-    .select()
+    .select({
+      item: ticketChecklistItems,
+      operatorTaskId: aiOperatorTaskSteps.taskId,
+    })
     .from(ticketChecklistItems)
+    .leftJoin(aiOperatorTaskSteps, and(
+      eq(aiOperatorTaskSteps.id, ticketChecklistItems.operatorStepId),
+      eq(aiOperatorTaskSteps.orgId, ticketChecklistItems.orgId),
+    ))
     .where(eq(ticketChecklistItems.ticketId, ticketId))
-    .orderBy(...checklistOrder())) as TicketChecklistItemRow[];
-  const items = rows.map(toView);
+    .orderBy(...checklistOrder())) as Array<{ item: TicketChecklistItemRow; operatorTaskId: string | null }>;
+  const items = rows.map((r) => toView(r.item, r.operatorTaskId));
   return { items, done: items.filter((i) => i.done).length, total: items.length };
 }
 
@@ -169,6 +201,20 @@ export async function patchChecklistItem(
       .set({ doneAt: now, doneByUserId: actor.userId, updatedAt: now })
       .where(and(eq(ticketChecklistItems.id, itemId), isNull(ticketChecklistItems.doneAt)))
       .returning()) as TicketChecklistItemRow[];
+    // THE WAKE (recipe library E3), and only when THIS call is the one that
+    // ticked it. `updated[0]` is non-empty exactly when the guarded UPDATE won
+    // the first-writer race. A no-op re-tick must NOT wake the task: the
+    // transition it would announce did not happen now, and the coordinator
+    // would burn a lease claim re-deriving a step it has already settled.
+    //
+    // `db`, not a new transaction: the request is already one transaction
+    // (db/index.ts withDbAccessContext), so the outbox row and the done_at
+    // stamp commit together. That atomicity is the whole contract — a wake
+    // written after the commit can be lost by a crash, leaving a ticked item
+    // and a task that waits until its deadline.
+    if (updated[0] && existing.source === 'operator_task') {
+      await onChecklistItemDone(db, itemId);
+    }
     // Zero rows means it was already done. Re-read so the response is identical
     // either way — ticking twice is a no-op, not a 409.
     return toView(updated[0] ?? (await getChecklistItemOr404(itemId)));
@@ -204,6 +250,18 @@ export async function patchChecklistItem(
     .where(eq(ticketChecklistItems.id, itemId))
     .returning()) as TicketChecklistItemRow[];
   if (!row) throw notFound();
+
+  // RULE 4 (E3) — an untick on an Operator step is RECORDED, never rewound.
+  // Spec §6.5. The task may already have dispatched effects against real
+  // customer systems on the strength of that tick; "undo" is not available and
+  // pretending otherwise would be worse than the stale record. The event row is
+  // how a technician later sees that the attestation was withdrawn.
+  //
+  // Reached by both the explicit `done: false` branch and RULE 3's text-edit
+  // clearing, because both end with the item unticked.
+  if (existing.source === 'operator_task' && existing.doneAt !== null && row.doneAt === null) {
+    await onChecklistItemUnticked(db, itemId);
+  }
   return toView(row);
 }
 
@@ -252,6 +310,13 @@ export async function reorderChecklist(
 }
 
 export async function deleteChecklistItem(itemId: string): Promise<void> {
+  // BEFORE the delete, and it has to be (recipe library E3):
+  // `ai_operator_task_steps.checklist_item_id` is ON DELETE SET NULL, so the
+  // database would happily accept this and leave a live task waiting on a
+  // dependency that no longer exists — a stuck task with no error anywhere.
+  // There is nothing for Postgres to raise here; this guard IS the constraint.
+  await assertChecklistItemDeletable(itemId, db);
+
   const deleted = (await db
     .delete(ticketChecklistItems)
     .where(eq(ticketChecklistItems.id, itemId))
