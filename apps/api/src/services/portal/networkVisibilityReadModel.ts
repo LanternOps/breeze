@@ -1,13 +1,15 @@
-import type { NetworkOverviewDto } from '@breeze/shared';
+import type { NetworkOverviewDto, NetworkAssetsDto, NetworkAssetRowDto } from '@breeze/shared';
 import { and, desc, eq, gte } from 'drizzle-orm';
 import { db } from '../../db';
 import {
   discoveredAssets,
   networkMonitorResults,
   networkMonitors,
+  sites,
 } from '../../db/schema';
 import { MIN_NETWORK_CHECK_FRESHNESS_MS } from '../assetReachability';
 import { loadReachability } from '../assetReachabilityLoader';
+import { nicVendorFromMac, resolveAssetIdentity } from '../assetIdentity';
 
 // `createMonitorSchema` accepts polling intervals up to 86,400 seconds.
 // The SQL query uses twice that maximum as its absolute lookback so it never
@@ -133,5 +135,98 @@ export async function networkOverview(
 
       return now.getTime() - row.timestamp.getTime() <= freshnessMs;
     }).length,
+  };
+}
+
+export interface NetworkAssetsFilter {
+  siteId?: string;
+  assetType?: string;
+  status?: 'online' | 'offline';
+  page?: number;
+  limit?: number;
+}
+
+
+export async function networkAssets(
+  orgId: string,
+  filter: NetworkAssetsFilter = {},
+  now: Date = new Date(),
+): Promise<NetworkAssetsDto> {
+  const page = Math.max(1, filter.page ?? 1);
+  const limit = Math.min(500, Math.max(1, filter.limit ?? 50));
+
+  const conditions = [eq(discoveredAssets.orgId, orgId)];
+  if (filter.siteId) conditions.push(eq(discoveredAssets.siteId, filter.siteId));
+  if (filter.assetType) conditions.push(eq(discoveredAssets.assetType, filter.assetType as typeof discoveredAssets.assetType.enumValues[number]));
+
+  const rows = await db
+    .select({
+      id: discoveredAssets.id,
+      hostname: discoveredAssets.hostname,
+      ipAddress: discoveredAssets.ipAddress,
+      macAddress: discoveredAssets.macAddress,
+      assetType: discoveredAssets.assetType,
+      lastSeenAt: discoveredAssets.lastSeenAt,
+      firstSeenAt: discoveredAssets.firstSeenAt,
+      manufacturer: discoveredAssets.manufacturer,
+      model: discoveredAssets.model,
+      snmpData: discoveredAssets.snmpData,
+      siteName: sites.name,
+    })
+    .from(discoveredAssets)
+    .innerJoin(sites, eq(discoveredAssets.siteId, sites.id))
+    .where(and(...conditions));
+
+  if (rows.length === 0) {
+    return { dataStatus: 'no_data', data: [], pagination: { page, limit, total: 0 } };
+  }
+
+  const reachabilityByAsset = await loadReachability(rows.map((r) => r.id), now);
+
+  const withOnlineState = rows.map((row) => {
+    const reachability = reachabilityByAsset.get(row.id);
+    const onlineState: NetworkAssetRowDto['onlineState'] =
+      reachability?.state === 'responding'
+        ? 'online'
+        : reachability?.state === 'not_responding'
+          ? 'offline'
+          : null;
+
+    const snmpData = (row.snmpData ?? null) as Record<string, unknown> | null;
+    const identity = resolveAssetIdentity({
+      sysObjectId: (snmpData?.sysObjectId as string | undefined) ?? null,
+      sysDescr: (snmpData?.sysDescr as string | undefined) ?? null,
+      snmpData,
+      macVendor: nicVendorFromMac(row.macAddress),
+      current: { manufacturer: row.manufacturer, model: row.model },
+    });
+
+    return {
+      id: row.id,
+      hostname: row.hostname,
+      ipAddress: row.ipAddress,
+      macAddress: row.macAddress,
+      assetType: row.assetType,
+      onlineState,
+      lastSeenAt: row.lastSeenAt?.toISOString() ?? null,
+      firstSeenAt: row.firstSeenAt.toISOString(),
+      manufacturer: identity.manufacturer,
+      model: identity.model,
+      siteName: row.siteName,
+    } satisfies NetworkAssetRowDto;
+  });
+
+  const filtered = filter.status
+    ? withOnlineState.filter((row) => row.onlineState === filter.status)
+    : withOnlineState;
+
+  const total = filtered.length;
+  const offset = (page - 1) * limit;
+  const pageData = filtered.slice(offset, offset + limit);
+
+  return {
+    dataStatus: 'ok',
+    data: pageData,
+    pagination: { page, limit, total },
   };
 }

@@ -13,7 +13,7 @@ import {
   createSite,
 } from '../../__tests__/integration/db-utils';
 import { getTestDb } from '../../__tests__/integration/setup';
-import { networkOverview } from './networkVisibilityReadModel';
+import { networkAssets, networkOverview } from './networkVisibilityReadModel';
 
 const NOW = new Date('2026-09-17T12:00:00.000Z');
 
@@ -321,5 +321,242 @@ describe('networkVisibilityReadModel (#5861)', () => {
     );
 
     expect(overview).toEqual(NO_DATA);
+  });
+});
+
+describe('networkAssets (#5861, PR 2)', () => {
+  it('lists assets with resolved identity, site name, and derived online state, isolated per org', async () => {
+    const testDb = getTestDb();
+
+    const partner = await createPartner();
+    const orgA = await createOrganization({ partnerId: partner.id });
+    const orgB = await createOrganization({ partnerId: partner.id });
+
+    const siteA = await createSite({ orgId: orgA.id, name: 'HQ Rio' });
+    const siteB = await createSite({ orgId: orgB.id, name: 'HQ SP' });
+
+    const [assetAOnline, assetAOffline] = await testDb
+      .insert(discoveredAssets)
+      .values([
+        {
+          orgId: orgA.id,
+          siteId: siteA.id,
+          ipAddress: '10.30.1.10',
+          hostname: 'core-switch-01',
+          macAddress: 'AA:BB:CC:00:00:01',
+          assetType: 'switch',
+          source: 'manual',
+          isOnline: true,
+          statusObservedAt: new Date('2026-09-17T11:59:00.000Z'),
+          statusSource: 'scan',
+          lastSeenAt: new Date('2026-09-17T11:59:00.000Z'),
+          firstSeenAt: new Date('2026-09-01T09:00:00.000Z'),
+          snmpData: { sysDescr: 'Cisco IOS Software, C2960 Software' },
+        },
+        {
+          orgId: orgA.id,
+          siteId: siteA.id,
+          ipAddress: '10.30.1.11',
+          hostname: 'edge-router-01',
+          macAddress: 'AA:BB:CC:00:00:02',
+          assetType: 'router',
+          source: 'manual',
+          isOnline: false,
+          statusObservedAt: new Date('2026-09-17T11:59:00.000Z'),
+          statusSource: 'scan',
+          lastSeenAt: new Date('2026-09-17T11:00:00.000Z'),
+          firstSeenAt: new Date('2026-09-02T09:00:00.000Z'),
+        },
+      ])
+      .returning();
+
+    await testDb.insert(discoveredAssets).values({
+      orgId: orgB.id,
+      siteId: siteB.id,
+      ipAddress: '10.40.1.10',
+      hostname: 'b-core-01',
+      assetType: 'switch',
+      source: 'manual',
+      isOnline: true,
+      statusObservedAt: new Date('2026-09-17T11:59:00.000Z'),
+      statusSource: 'scan',
+      lastSeenAt: new Date('2026-09-17T11:59:00.000Z'),
+      firstSeenAt: new Date('2026-09-03T09:00:00.000Z'),
+    });
+
+    const resultA = await withDbAccessContext(
+      orgContext(orgA.id, partner.id),
+      () => networkAssets(orgA.id, {}, NOW),
+    );
+
+    expect(resultA.dataStatus).toBe('ok');
+    if (resultA.dataStatus !== 'ok') throw new Error('expected ok');
+
+    expect(resultA.pagination).toEqual({ page: 1, limit: 50, total: 2 });
+    expect(resultA.data).toHaveLength(2);
+
+    const online = resultA.data.find((row) => row.hostname === 'core-switch-01');
+    expect(online).toMatchObject({
+      onlineState: 'online',
+      siteName: 'HQ Rio',
+      manufacturer: 'Cisco',
+    });
+
+    const offline = resultA.data.find((row) => row.hostname === 'edge-router-01');
+    expect(offline).toMatchObject({
+      onlineState: 'offline',
+      siteName: 'HQ Rio',
+    });
+
+    // Cross-org isolation: orgA's context reading orgB's id gets no_data, not orgB's rows.
+    const crossOrg = await withDbAccessContext(
+      orgContext(orgA.id, partner.id),
+      () => networkAssets(orgB.id, {}, NOW),
+    );
+    expect(crossOrg.dataStatus).toBe('no_data');
+    expect(crossOrg.data).toEqual([]);
+  });
+
+  it('filters by siteId, assetType, and status independently', async () => {
+    const testDb = getTestDb();
+
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const siteA = await createSite({ orgId: org.id, name: 'Site A' });
+    const siteB = await createSite({ orgId: org.id, name: 'Site B' });
+
+    await testDb.insert(discoveredAssets).values([
+      {
+        orgId: org.id,
+        siteId: siteA.id,
+        ipAddress: '10.50.1.10',
+        hostname: 'a-switch-online',
+        assetType: 'switch',
+        source: 'manual',
+        isOnline: true,
+        statusObservedAt: new Date('2026-09-17T11:59:00.000Z'),
+        statusSource: 'scan',
+        lastSeenAt: new Date('2026-09-17T11:59:00.000Z'),
+      },
+      {
+        orgId: org.id,
+        siteId: siteA.id,
+        ipAddress: '10.50.1.11',
+        hostname: 'a-router-offline',
+        assetType: 'router',
+        source: 'manual',
+        isOnline: false,
+        statusObservedAt: new Date('2026-09-17T11:59:00.000Z'),
+        statusSource: 'scan',
+        lastSeenAt: new Date('2026-09-17T11:00:00.000Z'),
+      },
+      {
+        orgId: org.id,
+        siteId: siteB.id,
+        ipAddress: '10.50.1.12',
+        hostname: 'b-switch-online',
+        assetType: 'switch',
+        source: 'manual',
+        isOnline: true,
+        statusObservedAt: new Date('2026-09-17T11:59:00.000Z'),
+        statusSource: 'scan',
+        lastSeenAt: new Date('2026-09-17T11:59:00.000Z'),
+      },
+    ]);
+
+    const bySite = await withDbAccessContext(
+      orgContext(org.id, partner.id),
+      () => networkAssets(org.id, { siteId: siteA.id }, NOW),
+    );
+    expect(bySite.dataStatus).toBe('ok');
+    if (bySite.dataStatus === 'ok') {
+      expect(bySite.data).toHaveLength(2);
+      expect(bySite.data.every((row) => row.siteName === 'Site A')).toBe(true);
+    }
+
+    const byType = await withDbAccessContext(
+      orgContext(org.id, partner.id),
+      () => networkAssets(org.id, { assetType: 'switch' }, NOW),
+    );
+    expect(byType.dataStatus).toBe('ok');
+    if (byType.dataStatus === 'ok') {
+      expect(byType.data).toHaveLength(2);
+      expect(byType.data.every((row) => row.assetType === 'switch')).toBe(true);
+    }
+
+    const byStatus = await withDbAccessContext(
+      orgContext(org.id, partner.id),
+      () => networkAssets(org.id, { status: 'offline' }, NOW),
+    );
+    expect(byStatus.dataStatus).toBe('ok');
+    if (byStatus.dataStatus === 'ok') {
+      expect(byStatus.data).toHaveLength(1);
+      expect(byStatus.data[0]?.hostname).toBe('a-router-offline');
+    }
+  });
+
+  it('paginates results and reports the requested page/limit even when empty', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const site = await createSite({ orgId: org.id });
+    const testDb = getTestDb();
+
+    await testDb.insert(discoveredAssets).values(
+      Array.from({ length: 5 }, (_, i) => ({
+        orgId: org.id,
+        siteId: site.id,
+        ipAddress: `10.60.1.${i + 1}`,
+        hostname: `asset-${i + 1}`,
+        assetType: 'switch' as const,
+        source: 'manual' as const,
+        isOnline: true,
+        statusObservedAt: new Date('2026-09-17T11:59:00.000Z'),
+        statusSource: 'scan' as const,
+        lastSeenAt: new Date('2026-09-17T11:59:00.000Z'),
+      })),
+    );
+
+    const page1 = await withDbAccessContext(
+      orgContext(org.id, partner.id),
+      () => networkAssets(org.id, { page: 1, limit: 2 }, NOW),
+    );
+    expect(page1.dataStatus).toBe('ok');
+    if (page1.dataStatus === 'ok') {
+      expect(page1.data).toHaveLength(2);
+      expect(page1.pagination).toEqual({ page: 1, limit: 2, total: 5 });
+    }
+
+    const page3 = await withDbAccessContext(
+      orgContext(org.id, partner.id),
+      () => networkAssets(org.id, { page: 3, limit: 2 }, NOW),
+    );
+    expect(page3.dataStatus).toBe('ok');
+    if (page3.dataStatus === 'ok') {
+      expect(page3.data).toHaveLength(1);
+      expect(page3.pagination).toEqual({ page: 3, limit: 2, total: 5 });
+    }
+
+    // Page far beyond the data still reports the requested page/limit and
+    // dataStatus 'ok' - this is a legitimate empty result, not unavailable data.
+    const pageBeyond = await withDbAccessContext(
+      orgContext(org.id, partner.id),
+      () => networkAssets(org.id, { page: 99, limit: 2 }, NOW),
+    );
+    expect(pageBeyond.dataStatus).toBe('ok');
+    expect(pageBeyond.pagination).toEqual({ page: 99, limit: 2, total: 5 });
+  });
+
+  it('returns no_data with the requested page/limit for an org with no assets', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+
+    const result = await withDbAccessContext(
+      orgContext(org.id, partner.id),
+      () => networkAssets(org.id, { page: 2, limit: 10 }, NOW),
+    );
+
+    expect(result.dataStatus).toBe('no_data');
+    expect(result.data).toEqual([]);
+    expect(result.pagination).toEqual({ page: 2, limit: 10, total: 0 });
   });
 });

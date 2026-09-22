@@ -319,3 +319,37 @@ export type NetworkOverviewDto =
       snmpDevicesPolling: null;
       monitorsDown: null;
     };
+
+export interface NetworkAssetRowDto {
+  id: string;
+  hostname: string | null;
+  ipAddress: string | null;
+  macAddress: string | null;
+  assetType: string;
+  /** null = unverified; never conflated with offline. */
+  onlineState: 'online' | 'offline' | null;
+  lastSeenAt: string | null;
+  firstSeenAt: string;
+  manufacturer: string | null;
+  model: string | null;
+  siteName: string;
+}
+
+/**
+ * Customer-safe Network Visibility per-asset list (#5861, PR 2).
+ *
+ * `no_data` and `not_enabled` carry an empty list, never a partial or
+ * synthetic one, mirroring the `not_enabled`/`no_data`/`ok` contract from
+ * NetworkOverviewDto.
+ */
+export type NetworkAssetsDto =
+  | {
+      dataStatus: 'ok';
+      data: NetworkAssetRowDto[];
+      pagination: PaginationDto;
+    }
+  | {
+      dataStatus: 'no_data' | 'not_enabled';
+      data: [];
+      pagination: PaginationDto;
+    };

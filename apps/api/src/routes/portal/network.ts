@@ -1,9 +1,9 @@
-import type { NetworkOverviewDto } from '@breeze/shared';
+import type { NetworkOverviewDto, NetworkAssetsDto } from '@breeze/shared';
 import { eq } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
 import { portalBranding } from '../../db/schema';
-import { networkOverview } from '../../services/portal/networkVisibilityReadModel';
+import { networkAssets, networkOverview } from '../../services/portal/networkVisibilityReadModel';
 import {
   applyPortalCacheHeaders,
   buildWeakEtag,
@@ -102,6 +102,57 @@ portalNetworkRoutes.get('/network/overview', async (c) => {
       }
 
       return cached(c, await networkOverview(orgId));
+    },
+  );
+});
+
+const NOT_ENABLED_ASSETS: NetworkAssetsDto = {
+  dataStatus: 'not_enabled',
+  data: [],
+  pagination: { page: 1, limit: 0, total: 0 },
+};
+
+portalNetworkRoutes.get('/network/assets', async (c) => {
+  const auth = c.get('portalAuth');
+
+  if (!auth) {
+    return c.json({ error: 'Authentication required' }, 401);
+  }
+
+  const orgId = auth.user.orgId;
+  const partnerId = auth.partnerId;
+
+  if (!partnerId) {
+    return c.json({ error: 'Organization is not available' }, 403);
+  }
+
+  const query = c.req.query();
+  const status = query.status === 'online' || query.status === 'offline' ? query.status : undefined;
+
+  return withDbAccessContext(
+    portalOrgContext(orgId, partnerId),
+    async () => {
+      const [settings] = await db
+        .select({
+          enableNetworkVisibility: portalBranding.enableNetworkVisibility,
+        })
+        .from(portalBranding)
+        .where(eq(portalBranding.orgId, orgId))
+        .limit(1);
+
+      if (settings?.enableNetworkVisibility !== true) {
+        return cached(c, NOT_ENABLED_ASSETS);
+      }
+
+      const result = await networkAssets(orgId, {
+        siteId: query.siteId,
+        assetType: query.assetType,
+        status,
+        page: query.page ? Number.parseInt(query.page, 10) : undefined,
+        limit: query.limit ? Number.parseInt(query.limit, 10) : undefined,
+      });
+
+      return cached(c, result);
     },
   );
 });
