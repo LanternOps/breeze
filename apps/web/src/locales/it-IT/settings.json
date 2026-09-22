@@ -519,6 +519,19 @@
       "communications": "Comunicazioni",
       "branding": "Branding"
     },
+    "aiFeatures": {
+      "anomalies": {
+        "title": "Rilevamento delle anomalie",
+        "description": "Rilevamento statistico di comportamenti anomali di CPU, memoria, disco e rete sui dispositivi gestiti. Questi sono i valori predefiniti per ogni organizzazione; un'organizzazione può sovrascriverli nella propria scheda IA.",
+        "enabled": "Rileva anomalie",
+        "enabledDescription": "Esegue il rilevatore di anomalie ogni 10 minuti e mostra i risultati nella scheda Anomalie di ogni dispositivo.",
+        "createAlerts": "Crea avvisi dalle anomalie",
+        "createAlertsDescription": "Converte le anomalie confermate in avvisi in modo che raggiungano i tuoi percorsi di notifica."
+      },
+      "inheritanceNote": "Le modifiche si applicano a ogni organizzazione che non ha impostato una propria sovrascrittura.",
+      "saved": "Salvato",
+      "saveFailed": "Impossibile modificare questa impostazione"
+    },
     "tabs": {
       "company": {
         "label": "Azienda",
@@ -568,6 +581,10 @@
       "aiProvider": {
         "label": "Provider IA",
         "description": "Usa la tua chiave Anthropic"
+      },
+      "aiFeatures": {
+        "label": "Funzionalità IA",
+        "description": "Valori predefiniti per il rilevamento delle anomalie"
       },
       "branding": {
         "label": "Branding",
@@ -4654,7 +4671,25 @@
       "externalProcessing": "Consenti analisi IA in sandbox",
       "externalProcessingDescription": "Consente alle esecuzioni di analisi IA di eseguire codice per questa organizzazione in una sandbox isolata senza accesso alla rete, ospitata nella regione di questa organizzazione. Disattivato per impostazione predefinita.",
       "externalProcessingSaved": "Salvato",
-      "externalProcessingSaveFailed": "Impossibile modificare questa impostazione"
+      "externalProcessingSaveFailed": "Impossibile modificare questa impostazione",
+      "mlFeatures": {
+        "title": "Rilevamento delle anomalie",
+        "description": "Rilevamento statistico di comportamenti anomali di CPU, memoria, disco e rete sui dispositivi di questa organizzazione. Se vuoto, si applica il valore predefinito del partner.",
+        "anomaliesEnabled": "Rileva anomalie",
+        "anomaliesEnabledDescription": "Esegue il rilevatore di anomalie ogni 10 minuti e mostra i risultati nella scheda Anomalie di ogni dispositivo.",
+        "createAlerts": "Crea avvisi dalle anomalie",
+        "createAlertsDescription": "Converte le anomalie confermate in avvisi in modo che raggiungano i tuoi percorsi di notifica.",
+        "inherit": "Eredita",
+        "inheritOn": "Eredita (attivo, {{from}})",
+        "inheritOff": "Eredita (disattivato, {{from}})",
+        "fromPartner": "impostazione del partner",
+        "fromDefault": "valore predefinito della piattaforma",
+        "on": "Attivo",
+        "off": "Disattivato",
+        "saved": "Salvato",
+        "saveFailed": "Impossibile modificare questa impostazione",
+        "killSwitch": "Il rilevamento delle anomalie è disattivato per l'intera piattaforma dall'operatore. Queste impostazioni avranno effetto quando verrà riattivato."
+      }
     },
     "breadcrumbs": {
       "settings": "Impostazioni",

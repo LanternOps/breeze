@@ -519,6 +519,19 @@
       "communications": "Comunicaciones",
       "branding": "Marca"
     },
+    "aiFeatures": {
+      "anomalies": {
+        "title": "Detección de anomalías",
+        "description": "Detección estadística de comportamiento inusual de CPU, memoria, disco y red en los dispositivos administrados. Estos son los valores predeterminados para todas las organizaciones; una organización puede anularlos en su propia pestaña de IA.",
+        "enabled": "Detectar anomalías",
+        "enabledDescription": "Ejecuta el detector de anomalías cada 10 minutos y muestra los hallazgos en la pestaña Anomalías de cada dispositivo.",
+        "createAlerts": "Crear alertas a partir de anomalías",
+        "createAlertsDescription": "Convierte las anomalías confirmadas en alertas para que lleguen a tus rutas de notificación."
+      },
+      "inheritanceNote": "Los cambios se aplican a toda organización que no haya definido su propia anulación.",
+      "saved": "Guardado",
+      "saveFailed": "No se pudo cambiar esta configuración"
+    },
     "tabs": {
       "company": {
         "label": "Compañía",
@@ -568,6 +581,10 @@
       "aiProvider": {
         "label": "Proveedor de IA",
         "description": "Usa tu propia clave de Anthropic"
+      },
+      "aiFeatures": {
+        "label": "Funciones de IA",
+        "description": "Valores predeterminados de detección de anomalías"
       },
       "branding": {
         "label": "Marca",
@@ -4606,7 +4623,25 @@
       "externalProcessing": "Permitir análisis de IA en entorno aislado",
       "externalProcessingDescription": "Permite que las ejecuciones de análisis de IA ejecuten código para esta organización en un entorno aislado sin acceso a la red, alojado en la región de esta organización. Desactivado de forma predeterminada.",
       "externalProcessingSaved": "Guardado",
-      "externalProcessingSaveFailed": "No se pudo cambiar esta configuración"
+      "externalProcessingSaveFailed": "No se pudo cambiar esta configuración",
+      "mlFeatures": {
+        "title": "Detección de anomalías",
+        "description": "Detección estadística de comportamiento inusual de CPU, memoria, disco y red en los dispositivos de esta organización. Si se deja en blanco, se aplica el valor predeterminado del partner.",
+        "anomaliesEnabled": "Detectar anomalías",
+        "anomaliesEnabledDescription": "Ejecuta el detector de anomalías cada 10 minutos y muestra los hallazgos en la pestaña Anomalías de cada dispositivo.",
+        "createAlerts": "Crear alertas a partir de anomalías",
+        "createAlertsDescription": "Convierte las anomalías confirmadas en alertas para que lleguen a tus rutas de notificación.",
+        "inherit": "Heredar",
+        "inheritOn": "Heredar (activado, {{from}})",
+        "inheritOff": "Heredar (desactivado, {{from}})",
+        "fromPartner": "configuración del partner",
+        "fromDefault": "valor predeterminado de la plataforma",
+        "on": "Activado",
+        "off": "Desactivado",
+        "saved": "Guardado",
+        "saveFailed": "No se pudo cambiar esta configuración",
+        "killSwitch": "El operador desactivó la detección de anomalías para toda la plataforma. Esta configuración tendrá efecto cuando se vuelva a activar."
+      }
     },
     "breadcrumbs": {
       "settings": "Configuración",

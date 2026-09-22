@@ -519,6 +519,19 @@
       "communications": "İletişim",
       "branding": "Markalama"
     },
+    "aiFeatures": {
+      "anomalies": {
+        "title": "Anomali tespiti",
+        "description": "Yönetilen cihazlarda olağan dışı CPU, bellek, disk ve ağ davranışının istatistiksel tespiti. Bunlar her kuruluş için varsayılan değerlerdir; bir kuruluş bunları kendi Yapay Zeka sekmesinde geçersiz kılabilir.",
+        "enabled": "Anomalileri tespit et",
+        "enabledDescription": "Anomali dedektörünü her 10 dakikada bir çalıştırır ve bulguları her cihazın Anomaliler sekmesinde gösterir.",
+        "createAlerts": "Anomalilerden uyarı oluştur",
+        "createAlertsDescription": "Onaylanan anomalileri, bildirim rotalarınıza ulaşmaları için uyarılara dönüştürür."
+      },
+      "inheritanceNote": "Değişiklikler, kendi geçersiz kılmasını ayarlamamış her kuruluş için geçerlidir.",
+      "saved": "Kaydedildi",
+      "saveFailed": "Bu ayar değiştirilemedi"
+    },
     "tabs": {
       "company": {
         "label": "Şirket",
@@ -568,6 +581,10 @@
       "aiProvider": {
         "label": "Yapay Zeka Sağlayıcısı",
         "description": "Kendi Anthropic anahtarınızı kullanın"
+      },
+      "aiFeatures": {
+        "label": "Yapay Zeka Özellikleri",
+        "description": "Anomali tespiti varsayılanları"
       },
       "branding": {
         "label": "Markalama",
@@ -4659,7 +4676,25 @@
       "externalProcessing": "Korumalı alanda yapay zeka analizine izin ver",
       "externalProcessingDescription": "Yapay zeka analiz çalıştırmalarının bu kuruluş için kodu, ağ erişimi olmayan ve bu kuruluşun bölgesinde barındırılan izole bir korumalı alanda çalıştırmasına olanak tanır. Varsayılan olarak kapalıdır.",
       "externalProcessingSaved": "Kaydedildi",
-      "externalProcessingSaveFailed": "Bu ayar değiştirilemedi"
+      "externalProcessingSaveFailed": "Bu ayar değiştirilemedi",
+      "mlFeatures": {
+        "title": "Anomali tespiti",
+        "description": "Bu kuruluşun cihazlarında olağan dışı CPU, bellek, disk ve ağ davranışının istatistiksel tespiti. Boş bırakılırsa iş ortağı varsayılanı uygulanır.",
+        "anomaliesEnabled": "Anomalileri tespit et",
+        "anomaliesEnabledDescription": "Anomali dedektörünü her 10 dakikada bir çalıştırır ve bulguları her cihazın Anomaliler sekmesinde gösterir.",
+        "createAlerts": "Anomalilerden uyarı oluştur",
+        "createAlertsDescription": "Onaylanan anomalileri, bildirim rotalarınıza ulaşmaları için uyarılara dönüştürür.",
+        "inherit": "Devral",
+        "inheritOn": "Devral (açık, {{from}})",
+        "inheritOff": "Devral (kapalı, {{from}})",
+        "fromPartner": "iş ortağı ayarı",
+        "fromDefault": "platform varsayılanı",
+        "on": "Açık",
+        "off": "Kapalı",
+        "saved": "Kaydedildi",
+        "saveFailed": "Bu ayar değiştirilemedi",
+        "killSwitch": "Anomali tespiti, operatör tarafından tüm platform için kapatıldı. Bu ayarlar yeniden açıldığında geçerli olacaktır."
+      }
     },
     "breadcrumbs": {
       "settings": "Ayarlar",

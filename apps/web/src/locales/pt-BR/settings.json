@@ -519,6 +519,19 @@
       "communications": "Comunicações",
       "branding": "Identidade visual"
     },
+    "aiFeatures": {
+      "anomalies": {
+        "title": "Detecção de anomalias",
+        "description": "Detecção estatística de comportamento incomum de CPU, memória, disco e rede em dispositivos gerenciados. Esses são os padrões para todas as organizações; uma organização pode substituí-los em sua própria aba de IA.",
+        "enabled": "Detectar anomalias",
+        "enabledDescription": "Executa o detector de anomalias a cada 10 minutos e exibe os resultados na aba Anomalias de cada dispositivo.",
+        "createAlerts": "Criar alertas a partir de anomalias",
+        "createAlertsDescription": "Converte anomalias confirmadas em alertas para que cheguem às suas rotas de notificação."
+      },
+      "inheritanceNote": "As alterações se aplicam a todas as organizações que não definiram sua própria substituição.",
+      "saved": "Salvo",
+      "saveFailed": "Não foi possível alterar esta configuração"
+    },
     "tabs": {
       "company": {
         "label": "Empresa",
@@ -568,6 +581,10 @@
       "aiProvider": {
         "label": "Provedor de IA",
         "description": "Use sua própria chave Anthropic"
+      },
+      "aiFeatures": {
+        "label": "Recursos de IA",
+        "description": "Padrões de detecção de anomalias"
       },
       "branding": {
         "label": "Identidade visual",
@@ -4659,7 +4676,25 @@
       "externalProcessing": "Permitir análise de IA em sandbox",
       "externalProcessingDescription": "Permite que execuções de análise de IA rodem código para esta organização em uma sandbox isolada, sem acesso à rede, hospedada na região desta organização. Desativado por padrão.",
       "externalProcessingSaved": "Salvo",
-      "externalProcessingSaveFailed": "Não foi possível alterar esta configuração"
+      "externalProcessingSaveFailed": "Não foi possível alterar esta configuração",
+      "mlFeatures": {
+        "title": "Detecção de anomalias",
+        "description": "Detecção estatística de comportamento incomum de CPU, memória, disco e rede nos dispositivos desta organização. Deixe em branco para aplicar o padrão do parceiro.",
+        "anomaliesEnabled": "Detectar anomalias",
+        "anomaliesEnabledDescription": "Executa o detector de anomalias a cada 10 minutos e exibe os resultados na aba Anomalias de cada dispositivo.",
+        "createAlerts": "Criar alertas a partir de anomalias",
+        "createAlertsDescription": "Converte anomalias confirmadas em alertas para que cheguem às suas rotas de notificação.",
+        "inherit": "Herdar",
+        "inheritOn": "Herdar (ativado, {{from}})",
+        "inheritOff": "Herdar (desativado, {{from}})",
+        "fromPartner": "configuração do parceiro",
+        "fromDefault": "padrão da plataforma",
+        "on": "Ativado",
+        "off": "Desativado",
+        "saved": "Salvo",
+        "saveFailed": "Não foi possível alterar esta configuração",
+        "killSwitch": "A detecção de anomalias está desativada para toda a plataforma pelo operador. Essas configurações terão efeito quando ela for reativada."
+      }
     },
     "breadcrumbs": {
       "settings": "Configurações",
