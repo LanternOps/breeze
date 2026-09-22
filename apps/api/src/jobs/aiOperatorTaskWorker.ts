@@ -71,7 +71,8 @@ export async function processAiOperatorCoordinatorJob(
     const pass = await runReconcilerPass();
     return {
       handled: `tick: queued=${pass.queuedPastWake} waiting=${pass.waitingPastWake} `
-        + `lease=${pass.runningPastLease} unsettled=${pass.terminalUnsettled}`,
+        + `lease=${pass.runningPastLease} unsettled=${pass.terminalUnsettled} `
+        + `reminders=${pass.humanWorkReminders}`,
     };
   }
 
