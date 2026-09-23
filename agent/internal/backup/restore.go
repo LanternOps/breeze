@@ -12,6 +12,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/breeze-rmm/agent/internal/backup/providers"
@@ -133,6 +134,15 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 			result.Warnings = append(result.Warnings, "no files matched the selected paths")
 		}
 		return result, nil
+	}
+	// NTFS security descriptors (W06a): Windows only — see restore_sd.go.
+	// The restore privilege scope (SeRestore/SeTakeOwnership/SeSecurity) is
+	// held for this run only and released when it returns.
+	secDescs, secWarnings := newRestoreSecurity(snapshot.SecurityDescriptors, append(append(append([]SnapshotFile(nil), contentFiles...), links...), dirs...), restoreAppliesSecurityDescriptors)
+	result.Warnings = append(result.Warnings, secWarnings...)
+	if secDescs.active() {
+		release := enableRestoreSDPrivileges()
+		defer release()
 	}
 	applyOwnership := restoreCanApplyOwnership()
 	ownershipWarned := false
@@ -301,6 +311,13 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 		for _, warning := range installWarnings {
 			result.Warnings = append(result.Warnings, fmt.Sprintf("restored %s with reduced fidelity: %v", displayPath, warning))
 		}
+		// Security descriptor right after the content is in place. A failed
+		// apply is a fidelity warning, never a failed file (R39).
+		if sd := secDescs.forEntry(file); sd != nil {
+			if secErr := restoreApplySecurity(targetPath, sd); secErr != nil {
+				result.Warnings = append(result.Warnings, fmt.Sprintf("restored %s with reduced fidelity: could not reapply security descriptor: %v", displayPath, secErr))
+			}
+		}
 		if !applyOwnership && (file.Owner != nil || file.ModeBits&uint32(os.ModeSetuid|os.ModeSetgid|os.ModeSticky) != 0) {
 			warnOwnership()
 		}
@@ -324,6 +341,16 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 	// Pass 2: symlinks (parents exist now, from the file pass above). Pass
 	// 3: directories last so their modes/owners are applied after every
 	// child (file or symlink) has been written under them.
+	//
+	// Directory security descriptors are collected here and applied in a
+	// post-pass after this loop: a restrictive DACL applied as each
+	// directory is created could deny the restore the access it still needs
+	// for later entries beneath it. Symlinks/junctions never take one.
+	type dirSD struct {
+		path, display string
+		sd            []byte
+	}
+	var dirSecurity []dirSD
 	for _, entry := range append(links, dirs...) {
 		if checkCancelled() {
 			return result, nil
@@ -379,15 +406,19 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 				}
 				entryErr = securefs.InstallDir(targetBase, relativeEntry, mode, entry.ModeBits != 0, entryOwner(entry, applyOwnership), entry.ModTime)
 				if entryErr == nil {
-					// The walker records a Windows directory entry only when
-					// the directory is empty, but when it does, a Hidden or
+					// The walker records a Windows directory entry when the
+					// directory is empty, and for EVERY directory when
+					// security-descriptor capture is on (W06a). A Hidden or
 					// System folder must come back Hidden/System rather than
-					// plain (#5407, review finding). Applied last and
-					// best-effort: losing a directory attribute is a fidelity
-					// warning, never a failed restore.
+					// plain (#5407, review finding). Applied best-effort:
+					// losing a directory attribute is a fidelity warning,
+					// never a failed restore.
 					if attrErr := applyWinAttrs(filepath.Join(targetBase, relativeEntry), entry.WinAttrs); attrErr != nil {
 						result.Warnings = append(result.Warnings,
 							fmt.Sprintf("recreated %s with reduced fidelity: could not reapply windows attributes: %v", displayPath, attrErr))
+					}
+					if sd := secDescs.forEntry(entry); sd != nil {
+						dirSecurity = append(dirSecurity, dirSD{path: filepath.Join(targetBase, relativeEntry), display: displayPath, sd: sd})
 					}
 				}
 			}
@@ -405,6 +436,19 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 		}
 		result.FilesRestored++
 	}
+
+	// Directory security descriptors, now that every file, symlink and
+	// directory is in place. Deepest first, so a parent's DACL can never
+	// stand between the restore and a child it has yet to update.
+	sort.SliceStable(dirSecurity, func(i, j int) bool {
+		return strings.Count(dirSecurity[i].path, string(filepath.Separator)) > strings.Count(dirSecurity[j].path, string(filepath.Separator))
+	})
+	for _, ds := range dirSecurity {
+		if secErr := restoreApplySecurity(ds.path, ds.sd); secErr != nil {
+			result.Warnings = append(result.Warnings, fmt.Sprintf("recreated %s with reduced fidelity: could not reapply security descriptor: %v", ds.display, secErr))
+		}
+	}
+	result.Warnings = append(result.Warnings, secDescs.finish()...)
 
 	if checkCancelled() {
 		return result, nil

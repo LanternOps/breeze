@@ -3,6 +3,7 @@
 package backup
 
 import (
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"strings"
@@ -170,6 +171,150 @@ func TestSDPrivilegeScopesRelease(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// restoredPathForTest maps a manifest SourcePath to where
+// RestoreFromSnapshot places it under target.
+func restoredPathForTest(t *testing.T, target, sourcePath string) string {
+	t.Helper()
+	rel, err := restoreRelativePath(sourcePath)
+	if err != nil {
+		t.Fatalf("restoreRelativePath(%q): %v", sourcePath, err)
+	}
+	return filepath.Join(target, rel)
+}
+
+// TestRestore_AppliesSecurityDescriptor is the real end-to-end path (R38):
+// the source is seeded with an explicit protected DACL, captured, carried in
+// a hand-built manifest as SDIndex 1, and restored through
+// RestoreFromSnapshotContext. The restored file's O/G/D SDDL must equal the
+// source's AND differ from a control file restored from the same manifest
+// with SDIndex 0 — so a no-op apply is caught. The control also raises the
+// one aggregate "no security descriptor recorded" warning.
+func TestRestore_AppliesSecurityDescriptor(t *testing.T) {
+	src := filepath.Join(t.TempDir(), "probe.txt")
+	if err := os.WriteFile(src, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	setFileSDDLForTest(t, src, "D:PAI(A;;FA;;;BA)(A;;FA;;;SY)(A;;FR;;;S-1-5-11)")
+	sd, err := fileSecurity(src)
+	if err != nil {
+		t.Fatalf("fileSecurity: %v", err)
+	}
+	want := sdBytesToSDDLForTest(t, sd)
+	if !strings.Contains(want, "D:PAI(A;;FA;;;BA)") {
+		t.Fatalf("source seed did not take: captured SDDL %q", want)
+	}
+
+	provider, snapshotID := setupRestoreTestSnapshotWithSD(t,
+		[]sdTestFile{
+			{name: "probe.txt", content: "x", sourcePath: `C:\probe.txt`, sdIndex: 1},
+			{name: "control.txt", content: "y", sourcePath: `C:\control.txt`},
+		},
+		[]string{base64.StdEncoding.EncodeToString(sd)},
+	)
+	target := t.TempDir()
+
+	result, err := RestoreFromSnapshot(provider, RestoreConfig{SnapshotID: snapshotID, TargetPath: target}, nil)
+	if err != nil {
+		t.Fatalf("RestoreFromSnapshot: %v", err)
+	}
+	if result.FilesRestored != 2 || result.FilesFailed != 0 {
+		t.Fatalf("result = %+v, want 2 restored, 0 failed", result)
+	}
+	restoredSD, err := fileSecurity(restoredPathForTest(t, target, `C:\probe.txt`))
+	if err != nil {
+		t.Fatalf("fileSecurity(restored): %v", err)
+	}
+	controlSD, err := fileSecurity(restoredPathForTest(t, target, `C:\control.txt`))
+	if err != nil {
+		t.Fatalf("fileSecurity(control): %v", err)
+	}
+	if got := sdBytesToSDDLForTest(t, restoredSD); got != want {
+		t.Errorf("restored SDDL mismatch:\n want %q\n  got %q", want, got)
+	}
+	if control := sdBytesToSDDLForTest(t, controlSD); control == want {
+		t.Errorf("control (SDIndex 0) SDDL %q equals the source's — the assertion cannot discriminate", control)
+	}
+	agg := 0
+	for _, w := range result.Warnings {
+		if strings.HasPrefix(w, "1 entries had no security descriptor recorded") {
+			agg++
+		}
+	}
+	if agg != 1 {
+		t.Errorf("warnings = %v, want exactly one aggregate no-descriptor warning", result.Warnings)
+	}
+}
+
+// TestRestore_AppliesDirectorySecurityDescriptor proves the directory
+// post-pass on the real path: a directory entry's captured protected DACL
+// lands on the recreated directory, and the file beneath it is still
+// restored (the DACL went on after it was placed).
+func TestRestore_AppliesDirectorySecurityDescriptor(t *testing.T) {
+	srcDir := filepath.Join(t.TempDir(), "dirsd")
+	if err := os.Mkdir(srcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	setFileSDDLForTest(t, srcDir, "D:PAI(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)(A;OICI;FR;;;S-1-5-11)")
+	sd, err := fileSecurity(srcDir)
+	if err != nil {
+		t.Fatalf("fileSecurity(dir): %v", err)
+	}
+	want := sdBytesToSDDLForTest(t, sd)
+
+	provider, snapshotID := setupRestoreTestSnapshotWithSDEntries(t,
+		[]sdTestFile{{name: "child.txt", content: "c", sourcePath: `C:\dirsd\child.txt`}},
+		[]SnapshotFile{{SourcePath: `C:\dirsd`, Kind: KindDir, SDIndex: 1}},
+		[]string{base64.StdEncoding.EncodeToString(sd)},
+	)
+	target := t.TempDir()
+	result, err := RestoreFromSnapshot(provider, RestoreConfig{SnapshotID: snapshotID, TargetPath: target}, nil)
+	if err != nil {
+		t.Fatalf("RestoreFromSnapshot: %v", err)
+	}
+	if result.FilesRestored != 2 || result.FilesFailed != 0 {
+		t.Fatalf("result = %+v, want 2 restored, 0 failed", result)
+	}
+	if b, err := os.ReadFile(restoredPathForTest(t, target, `C:\dirsd\child.txt`)); err != nil || string(b) != "c" {
+		t.Fatalf("child not restored: %q, %v", b, err)
+	}
+	dirSD, err := fileSecurity(restoredPathForTest(t, target, `C:\dirsd`))
+	if err != nil {
+		t.Fatalf("fileSecurity(restored dir): %v", err)
+	}
+	if got := sdBytesToSDDLForTest(t, dirSD); got != want {
+		t.Errorf("restored dir SDDL mismatch:\n want %q\n  got %q", want, got)
+	}
+}
+
+// TestRestore_SecurityDescriptorApplyFailureIsWarningNotFailure proves R39:
+// an invalid SD (applySecurity rejects it) degrades the restored file to a
+// warning, and the file still counts as restored — a corrupt security
+// descriptor must never turn a successful content restore into a failure.
+func TestRestore_SecurityDescriptorApplyFailureIsWarningNotFailure(t *testing.T) {
+	provider, snapshotID := setupRestoreTestSnapshotWithSD(t,
+		[]sdTestFile{{name: "probe.txt", content: "x", sourcePath: `C:\probe.txt`, sdIndex: 1}},
+		[]string{base64.StdEncoding.EncodeToString([]byte{0x01, 0x02, 0x03})}, // not a valid SECURITY_DESCRIPTOR
+	)
+	target := t.TempDir()
+
+	result, err := RestoreFromSnapshot(provider, RestoreConfig{SnapshotID: snapshotID, TargetPath: target}, nil)
+	if err != nil {
+		t.Fatalf("RestoreFromSnapshot: %v", err)
+	}
+	if result.FilesRestored != 1 || result.FilesFailed != 0 {
+		t.Fatalf("result = %+v, want 1 restored, 0 failed (SD apply failure is a warning)", result)
+	}
+	found := false
+	for _, w := range result.Warnings {
+		if strings.Contains(w, "could not reapply security descriptor") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("warnings = %v, want a 'could not reapply security descriptor' entry", result.Warnings)
 	}
 }
 
