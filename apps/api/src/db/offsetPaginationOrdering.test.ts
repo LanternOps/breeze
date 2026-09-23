@@ -59,6 +59,21 @@ const ALLOWED_WITHOUT_LITERAL_ID: ReadonlyArray<{
   reason: string;
 }> = [
   {
+    file: 'services/aiAgents/agentService.ts',
+    orderByContains: 'limited.offset(opts.offset)',
+    reason: 'A-W05: listAgents applies optional limit/offset in later statements; the base query orders by desc(aiAgents.createdAt), desc(aiAgents.id)',
+  },
+  {
+    file: 'services/aiToolsIntegrations.ts',
+    orderByContains: 'baseQuery.limit(limit + 1).offset(offset)',
+    reason: 'A-W05: query_psa_status pages baseQuery, which orders by desc(psaConnections.createdAt), desc(psaConnections.id) in the preceding statement',
+  },
+  {
+    file: 'services/aiToolsCisBenchmark.ts',
+    orderByContains: 'desc(rankedResults.resultId)',
+    reason: 'A-W05: rankedResults is a subquery; its resultId column is cis_baseline_results.id, the unique base key',
+  },
+  {
     file: 'routes/patches/list.ts',
     orderByContains: 'orderByClause',
     reason: 'orderByClause always ends in asc/desc(patches.id) — see the #3157 comment there',
