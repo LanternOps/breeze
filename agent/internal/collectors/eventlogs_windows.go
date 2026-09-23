@@ -194,11 +194,15 @@ func (c *EventLogCollector) collectPowerEvents(since time.Time) ([]EventLogEntry
 
 	// Query specific power-related Event IDs from the System log
 	// 41=unexpected shutdown, 1074=planned shutdown, 6005=boot, 6006=clean shutdown, 6008=unexpected shutdown, 6009=OS info at boot
+	ids := make([]string, 0, len(windowsPowerEventIDs))
+	for _, id := range windowsPowerEventIDs {
+		ids = append(ids, strconv.Itoa(id))
+	}
 	psCmd := fmt.Sprintf(
-		`Get-WinEvent -FilterHashtable @{LogName='System'; Id=41,1074,6005,6006,6008,6009; StartTime='%s'} -MaxEvents 50 -ErrorAction SilentlyContinue | `+
+		`Get-WinEvent -FilterHashtable @{LogName='System'; Id=%s; StartTime='%s'} -MaxEvents 50 -ErrorAction SilentlyContinue | `+
 			`Select-Object RecordId, LogName, Level, LevelDisplayName, @{N='TimeCreated';E={$_.TimeCreated.ToString('o')}}, ProviderName, Id, Message | `+
 			`ConvertTo-Json -Depth 2 -Compress`,
-		sinceStr,
+		strings.Join(ids, ","), sinceStr,
 	)
 
 	output, err := runCollectorOutput(collectorLongCommandTimeout, "powershell", "-NoProfile", "-NonInteractive", "-Command", utf8PowerShellCommand(psCmd))

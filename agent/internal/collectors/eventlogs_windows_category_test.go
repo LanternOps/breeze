@@ -67,6 +67,12 @@ func TestSystemLogCategoryFor(t *testing.T) {
 		{"both enabled keeps hardware", []string{"hardware", "system"}, "Ntfs", 55, "hardware", true},
 		{"both enabled keeps system", []string{"hardware", "system"}, "Schannel", 36887, "system", true},
 		{"neither enabled", []string{"security", "application"}, "disk", 7, "hardware", false},
+		{"nil categories", nil, "disk", 7, "hardware", false},
+		// Power IDs are owned by collectPowerEvents (which runs whenever
+		// "system" is enabled); the error query must not emit them again.
+		{"kernel-power 41 left to power collector", []string{"system"}, "Microsoft-Windows-Kernel-Power", 41, "system", false},
+		{"eventlog 6008 left to power collector", []string{"hardware", "system"}, "EventLog", 6008, "system", false},
+		{"non-power system id still kept", []string{"system"}, "Microsoft-Windows-Kernel-Power", 42, "system", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
