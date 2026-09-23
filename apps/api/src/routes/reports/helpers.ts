@@ -8,6 +8,7 @@ import {
   decodeSiteScope,
   isSiteScopeSubset,
   reportDefinitionScopeSqlPredicate,
+  reportAnyPartnerWideScopeSqlPredicate,
   reportPartnerWideScopeSqlPredicate,
   reportRunScopeSqlPredicate,
   resolveRequestPartnerReportAuthority,
@@ -110,6 +111,23 @@ export function partnerWideListTarget(
 ): PartnerWideScopeSqlTarget | undefined {
   return canManagePartnerWidePolicies(auth) && auth.partnerId
     ? { rowPartnerId: reports.partnerId, partnerId: auth.partnerId }
+    : undefined;
+}
+
+/**
+ * #3198 W02 (addendum B7, ruling P9). The SYSTEM-scope (platform admin) list
+ * arm for partner-owned rows: any partner's row with a well-formed
+ * partner_wide envelope on `columns` (`reports` for the definition list,
+ * `reportRuns` for the run list; the owner is always `reports.partner_id`).
+ * Undefined for every non-system caller. Lives here so the raw
+ * `reports.partnerId` predicate stays out of route files (scan test).
+ */
+export function systemPartnerWideListArm(
+  auth: Pick<AuthContext, 'scope'>,
+  columns: typeof reports | typeof reportRuns,
+): SQL<unknown> | undefined {
+  return auth.scope === 'system'
+    ? reportAnyPartnerWideScopeSqlPredicate(columns, reports.partnerId)
     : undefined;
 }
 

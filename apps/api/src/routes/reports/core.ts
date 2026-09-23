@@ -28,6 +28,7 @@ import {
   isSystemManagedReportDefinition,
   partnerOwnedReportVisibility,
   partnerWideListTarget,
+  systemPartnerWideListArm,
   PORTAL_SELF_SERVICE_REPORT,
   reportDefinitionMetadataProjection,
   reportOwnerCondition,
@@ -178,10 +179,18 @@ async function resolveDefinitionListScope(
     };
   }
 
+  // System scope (platform admin). #3198 W02 (addendum B7, ruling P9): the
+  // all-orgs listing also carries partner-owned rows with a well-formed
+  // partner_wide envelope; /templates (includePartnerOwned false) stays
+  // org-owned only.
+  const systemPartnerArm = options.includePartnerOwned
+    ? systemPartnerWideListArm(auth, reports)
+    : undefined;
   return {
     ok: true,
-    definitionScopePredicate:
-      unrestrictedReportDefinitionScopeSqlPredicate(reports),
+    definitionScopePredicate: systemPartnerArm
+      ? or(unrestrictedReportDefinitionScopeSqlPredicate(reports), systemPartnerArm)!
+      : unrestrictedReportDefinitionScopeSqlPredicate(reports),
   };
 }
 

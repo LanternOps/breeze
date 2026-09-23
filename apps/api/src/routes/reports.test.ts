@@ -34,6 +34,7 @@ const siteScopeState = vi.hoisted(() => {
     exactRunPredicate: { op: 'runScope', mode: 'exact' },
     compositeRunPredicate: { op: 'runScope', mode: 'composite' },
     systemRunPredicate: { op: 'runScope', mode: 'system' },
+    systemPartnerWidePredicate: { op: 'partnerWideScope', mode: 'system' },
     result: {
       ok: true,
       authority: {
@@ -63,6 +64,7 @@ vi.mock('../services/siteScope', () => ({
   reportRunScopeSqlPredicate: vi.fn(() => siteScopeState.exactRunPredicate),
   reportRunMultiOrgScopeSqlPredicate: vi.fn(() => siteScopeState.compositeRunPredicate),
   unrestrictedReportRunScopeSqlPredicate: vi.fn(() => siteScopeState.systemRunPredicate),
+  reportAnyPartnerWideScopeSqlPredicate: vi.fn(() => siteScopeState.systemPartnerWidePredicate),
   siteScopeFingerprint: vi.fn((scope: any) =>
     scope.kind === 'restricted' ? 'a'.repeat(64) : 'f'.repeat(64)
   ),

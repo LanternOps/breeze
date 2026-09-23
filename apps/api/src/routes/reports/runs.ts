@@ -28,6 +28,7 @@ import {
   getPagination, getReportWithOrgCheck, getReportRunWithOrgCheck, isPortalSelfServiceLocked,
   isSystemManagedReportDefinition, PARTNER_OWNED_REPORT, partnerOwnedReportVisibility,
   partnerWideListTarget,
+  systemPartnerWideListArm,
   PORTAL_SELF_SERVICE_REPORT,
 } from './helpers';
 import { downloadQuerySchema, listRunsSchema } from './schemas';
@@ -335,7 +336,13 @@ runsRoutes.get(
         ...(partnerWide ? [partnerWide] : []),
       );
     } else {
-      runScopePredicate = unrestrictedReportRunScopeSqlPredicate(reportRuns);
+      // System scope. #3198 W02 (addendum B7, ruling P9): partner-owned runs
+      // with a well-formed partner_wide envelope list too (the run carries its
+      // own envelope; the owner is the joined report's partner_id).
+      const systemPartnerArm = systemPartnerWideListArm(auth, reportRuns);
+      runScopePredicate = systemPartnerArm
+        ? or(unrestrictedReportRunScopeSqlPredicate(reportRuns), systemPartnerArm)!
+        : unrestrictedReportRunScopeSqlPredicate(reportRuns);
     }
 
     conditions.push(runScopePredicate);

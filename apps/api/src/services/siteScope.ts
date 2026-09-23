@@ -978,6 +978,28 @@ export function reportPartnerWideScopeSqlPredicate(
   return partnerWideRowPredicate(columns, partnerWide);
 }
 
+/**
+ * #3198 W02 (addendum B7, ruling P9). The SYSTEM-scope list arm for
+ * partner-owned rows: a row owned by ANY partner (`partner_id IS NOT NULL`)
+ * whose envelope is a complete v1 partner_wide capture by a real user. Only
+ * the platform-admin list call sites (routes/reports core.ts GET / and runs.ts
+ * GET /runs) OR this onto `unrestricted*ScopeSqlPredicate`; it is deliberately
+ * NOT part of `unrestrictedDefinitionPredicate`, which is also the org
+ * single-scope 'unrestricted' arm and must never match partner-owned rows.
+ */
+export function reportAnyPartnerWideScopeSqlPredicate(
+  columns: ReportScopeColumns,
+  rowPartnerId: typeof reports.partnerId,
+): SQL<unknown> {
+  return and(
+    isNotNull(rowPartnerId),
+    completeVersionOneBase(columns),
+    eq(columns.executionScopeKind, 'partner_wide'),
+    isNull(columns.executionScopeSiteIds),
+    eq(columns.executionScopePrincipalKind, 'user'),
+  )!;
+}
+
 export function reportDefinitionMultiOrgScopeSqlPredicate(
   rowOrgId: typeof reports.orgId,
   columns: ReportScopeColumns,

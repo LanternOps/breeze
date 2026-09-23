@@ -36,6 +36,7 @@ import {
   reportScheduleRecipients,
   reports,
   rolePermissions,
+  users,
 } from '../../db/schema';
 import { findDueReports, processRunScheduledReport } from '../../jobs/reportScheduleWorker';
 import { reportRoutes } from '../../routes/reports';
@@ -391,6 +392,41 @@ describe('partner-owned report definitions through the real routes (#3198 W01/W0
     expect(adminDelete.status).toBe(200);
     expect(await adminDelete.json()).toEqual({ success: true });
     expect(await readDefinition(created.id)).toBeUndefined();
+  });
+
+  runDb('a platform admin (system token) lists partner-owned definitions and their runs (#3198 W02, addendum B7)', async () => {
+    const fixture = await seedFixture();
+    const app = buildApp();
+    const created = await createPartnerDefinition(app, fixture, `System-visible AR ${randomUUID()}`);
+    const generated = await call(app, fixture.adminToken, 'POST', `/reports/${created.id}/generate`);
+    expect(generated.status).toBe(200);
+    const { runId } = (await generated.json()) as { runId: string };
+
+    await withSystemDbAccessContext(() => getTestDb()
+      .update(users).set({ isPlatformAdmin: true }).where(eq(users.id, fixture.admin.id)));
+    const systemToken = await createAccessToken({
+      sub: fixture.admin.id,
+      email: fixture.admin.email,
+      roleId: fixture.partnerRole.id,
+      orgId: null,
+      partnerId: fixture.partner.id,
+      scope: 'system',
+      mfa: true,
+      aep: 1,
+      mep: 1,
+      sid: randomUUID(),
+    });
+
+    // Newest-updated first, so the just-created row is on the first page.
+    const list = await call(app, systemToken, 'GET', '/reports?limit=100');
+    expect(list.status, await list.clone().text()).toBe(200);
+    const listed = ((await list.json()) as { data: Array<{ id: string }> }).data.map((r) => r.id);
+    expect(listed).toContain(created.id);
+
+    const runs = await call(app, systemToken, 'GET', `/reports/runs?reportId=${created.id}&limit=100`);
+    expect(runs.status, await runs.clone().text()).toBe(200);
+    const runIds = ((await runs.json()) as { data: Array<{ id: string }> }).data.map((r) => r.id);
+    expect(runIds).toEqual([runId]);
   });
 
   runDb('POST /reports/:id/generate on the partner-owned definition generates over the live partner org list (#3198 W02)', async () => {

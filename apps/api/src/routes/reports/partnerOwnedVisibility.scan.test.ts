@@ -69,6 +69,9 @@ const MUST_CALL_HELPER: ReadonlyArray<{ file: string; fn: string }> = [
  *  - reportOwnerCondition / reportOwnerScopePredicate: applied only to an owner
  *    that already passed resolveReportOwnerAuthority (canManage + live
  *    partner authority), ANDed after that gate.
+ *  - systemPartnerWideListArm (#3198 W02, addendum B7): undefined unless
+ *    auth.scope === 'system' (platform admin, who already sees every org);
+ *    ORed onto the system list's unrestricted predicate only.
  *  - reportScheduleWorker completeExecutableScopePredicate / findDueReports
  *    (#3198 W01 Task 6): a SYSTEM-context due scan, not a caller-visibility
  *    predicate — `partner_id IS NOT NULL` admits a partner_wide row to the
@@ -82,6 +85,7 @@ const PARTNER_ID_PREDICATE_SITES: ReadonlyMap<string, ReadonlySet<string>> = new
     'partnerWideListTarget',
     'reportOwnerCondition',
     'reportOwnerScopePredicate',
+    'systemPartnerWideListArm',
   ])],
   ['src/jobs/reportScheduleWorker.ts', new Set([
     'completeExecutableScopePredicate',

@@ -672,6 +672,57 @@ describe('GET /reports list for partner scope', () => {
   });
 });
 
+// #3198 W02 (addendum B7, ruling P9): a system-scope (platform admin) list
+// also sees partner-owned rows, but only with a well-formed partner_wide
+// envelope on a row that actually has a partner owner.
+function systemAuth() {
+  return {
+    user: { id: USER_ID, email: 'admin@example.com' },
+    scope: 'system',
+    orgId: null,
+    partnerId: null,
+    accessibleOrgIds: null,
+    canAccessOrg: () => true,
+  };
+}
+
+function sqlText(where: unknown): string {
+  return dialect.sqlToQuery(where as SQL).sql;
+}
+
+describe('system-scope lists include partner-owned rows (B7)', () => {
+  it('GET /reports adds a partner_wide arm bound to a non-null partner_id', async () => {
+    state.auth = systemAuth();
+    state.rows = [{ count: 0 }, null];
+    const res = await app().request('/reports');
+
+    expect(res.status).toBe(200);
+    expect(params(state.wheres[0])).toContain('partner_wide');
+    expect(params(state.wheres[0])).toContain('unrestricted');
+    expect(sqlText(state.wheres[0])).toContain('"reports"."partner_id" is not null');
+  });
+
+  it('GET /reports/templates stays org-owned only for a system caller', async () => {
+    state.auth = systemAuth();
+    state.rows = [{ count: 0 }, null];
+    const res = await app().request('/reports/templates');
+
+    expect(res.status).toBe(200);
+    expect(params(state.wheres[0])).not.toContain('partner_wide');
+  });
+
+  it('GET /reports/runs adds the partner_wide arm on the run envelope', async () => {
+    state.auth = systemAuth();
+    state.rows = [{ count: 0 }, null];
+    const res = await app().request('/reports/runs');
+
+    expect(res.status).toBe(200);
+    expect(params(state.wheres[0])).toContain('partner_wide');
+    expect(sqlText(state.wheres[0])).toContain('"reports"."partner_id" is not null');
+    expect(sqlText(state.wheres[0])).toContain('"report_runs"."execution_scope_kind"');
+  });
+});
+
 describe('GET /reports/:id on a partner-owned definition', () => {
   it('404s a selected-access partner user', async () => {
     state.auth = partnerAuth('selected');
