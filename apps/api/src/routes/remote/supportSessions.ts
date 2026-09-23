@@ -1,7 +1,8 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { and, desc, eq, inArray } from 'drizzle-orm';
-import { createSupportSessionSchema, formatSupportCode } from '@breeze/shared';
+import { createSupportSessionSchema, formatSupportCode, ERROR_CODES } from '@breeze/shared';
+import { jsonError } from '../../lib/jsonError';
 import { db } from '../../db';
 import { devices, remoteSessions, supportSessions } from '../../db/schema';
 import { getOrCreateQuickSupportOrg } from '../../services/quickSupportOrg';
@@ -61,12 +62,12 @@ supportSessionRoutes.post(
     // carries a partnerId but never passes breeze_has_partner_access, so it
     // must not be able to mint sessions it could not then read back.
     if (auth.scope !== 'partner' && auth.scope !== 'system') {
-      return c.json({ error: 'Quick Support requires partner scope' }, 403);
+      return jsonError(c, 403, ERROR_CODES.ACCESS_DENIED, 'Quick Support requires partner scope');
     }
     if (!auth.partnerId) {
       // System tokens may carry no partner context — there is no org to
       // provision into, and provisioning would otherwise throw.
-      return c.json({ error: 'Quick Support requires a partner context' }, 403);
+      return jsonError(c, 403, ERROR_CODES.ACCESS_DENIED, 'Quick Support requires a partner context');
     }
 
     const data = c.req.valid('json');
@@ -78,7 +79,7 @@ supportSessionRoutes.post(
       && auth.accessibleOrgIds !== null
       && !auth.accessibleOrgIds.includes(data.attributedOrgId)
     ) {
-      return c.json({ error: 'Attributed organization not accessible' }, 403);
+      return jsonError(c, 403, ERROR_CODES.ACCESS_DENIED, 'Attributed organization not accessible');
     }
 
     const { orgId } = await getOrCreateQuickSupportOrg(auth.partnerId);
@@ -208,9 +209,9 @@ supportSessionRoutes.post('/support-sessions/:id/end', async (c) => {
     .where(eq(supportSessions.id, id))
     .limit(1) as SupportSessionRow[];
 
-  if (!session) return c.json({ error: 'Support session not found' }, 404);
+  if (!session) return jsonError(c, 404, ERROR_CODES.NOT_FOUND, 'Support session not found');
   if (session.status === 'ended' || session.status === 'expired') {
-    return c.json({ error: 'Support session already ended' }, 409);
+    return jsonError(c, 409, ERROR_CODES.CONFLICT, 'Support session already ended');
   }
 
   const result = await endSupportSession(id, 'tech');
@@ -241,7 +242,7 @@ supportSessionRoutes.get('/support-sessions/:id', async (c) => {
     .where(eq(supportSessions.id, c.req.param('id')))
     .limit(1) as SupportSessionRow[];
 
-  if (!session) return c.json({ error: 'Support session not found' }, 404);
+  if (!session) return jsonError(c, 404, ERROR_CODES.NOT_FOUND, 'Support session not found');
 
   if (!isProbeable(session)) return c.json(toView(session, false, false));
 

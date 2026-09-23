@@ -8,5 +8,7 @@
   "MFA_REQUIRED": "Autenticação multifator é necessária",
   "INVALID_CREDENTIALS": "Credenciais inválidas",
   "EXPIRED": "Expirado",
+  "AGENT_EXECUTION_FAILED": "Não foi possível acessar o agente do dispositivo",
+  "DEVICE_UNREACHABLE": "O agente não está conectado no momento",
   "tool_source_unavailable": "A fonte desta ferramenta está indisponível no momento"
 }

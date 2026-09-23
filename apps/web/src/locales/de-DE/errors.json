@@ -8,5 +8,7 @@
   "MFA_REQUIRED": "Multi-factor authentication is required",
   "INVALID_CREDENTIALS": "Invalid credentials",
   "EXPIRED": "Expired",
+  "AGENT_EXECUTION_FAILED": "Unable to reach the device's agent",
+  "DEVICE_UNREACHABLE": "Agent is not currently connected",
   "tool_source_unavailable": "Die Quelle dieses Tools ist derzeit nicht verfügbar"
 }
