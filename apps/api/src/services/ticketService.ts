@@ -1251,7 +1251,15 @@ export async function changeTicketStatus(
       orgId: ticket.orgId,
       ticketId,
       eventType: 'ticket.resolved',
-      dedupeKey: ticketTriageDedupeKey('status', fromStatus, toStatus),
+      // #6697 review: `ticketTriageDedupeKey('status', fromStatus, toStatus)`
+      // alone would collide across repeat resolve/reopen/resolve cycles on the
+      // SAME ticket (identical fromStatus/toStatus each time), and the
+      // ON CONFLICT target is (orgId, sourceType, sourceId, eventType,
+      // dedupeKey) — a collision silently drops the second, genuine
+      // resolution signal via onConflictDoNothing. Folding `now` in makes
+      // each transition's key unique while still deduping true retries of
+      // the SAME transaction (same `now`, captured once above).
+      dedupeKey: ticketTriageDedupeKey('status', fromStatus, `${toStatus}@${now.toISOString()}`),
       outcome: 'resolved',
       actorUserId: actor.userId,
       metadata: ticketTriageFeedbackMetadata(actor, {
@@ -1265,7 +1273,7 @@ export async function changeTicketStatus(
       orgId: ticket.orgId,
       ticketId,
       eventType: 'ticket.reopened',
-      dedupeKey: ticketTriageDedupeKey('status', fromStatus, toStatus),
+      dedupeKey: ticketTriageDedupeKey('status', fromStatus, `${toStatus}@${now.toISOString()}`),
       outcome: 'reopened',
       actorUserId: actor.userId,
       metadata: ticketTriageFeedbackMetadata(actor, {
