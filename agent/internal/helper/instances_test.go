@@ -16,6 +16,9 @@ type fakeHelperProcs struct {
 	procs   []helperInstance
 	listErr error
 	stopped []int
+	// lingerAfterStop keeps a terminated PID in list() output, the way a
+	// process still tearing down stays in a fresh process snapshot.
+	lingerAfterStop bool
 }
 
 func (f *fakeHelperProcs) list(string) ([]helperInstance, error) {
@@ -28,7 +31,9 @@ func (f *fakeHelperProcs) list(string) ([]helperInstance, error) {
 func (f *fakeHelperProcs) stop(pid int, _ string) (bool, error) {
 	for i, p := range f.procs {
 		if p.PID == pid {
-			f.procs = append(f.procs[:i], f.procs[i+1:]...)
+			if !f.lingerAfterStop {
+				f.procs = append(f.procs[:i], f.procs[i+1:]...)
+			}
 			f.stopped = append(f.stopped, pid)
 			return true, nil
 		}
@@ -229,7 +234,9 @@ func TestEnsureStoppedSessionStopsUntrackedInstances(t *testing.T) {
 }
 
 func TestEnsureStoppedSessionDoesNotStopTrackedPIDTwice(t *testing.T) {
-	f := &fakeHelperProcs{procs: []helperInstance{inst(100, "1", 30)}}
+	// The tracked PID is still in the next snapshot (teardown in progress), so
+	// only the stopped-set keeps the session sweep from terminating it again.
+	f := &fakeHelperProcs{procs: []helperInstance{inst(100, "1", 30)}, lingerAfterStop: true}
 	mgr, _ := newSweepManager(t, f)
 	calls := 0
 	mgr.stopIfOursFunc = func(pid int, bin string) (bool, error) { calls++; return f.stop(pid, bin) }
@@ -241,6 +248,23 @@ func TestEnsureStoppedSessionDoesNotStopTrackedPIDTwice(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Fatalf("stopIfOurs called %d times, want 1", calls)
+	}
+}
+
+// Enumeration failure degrades to the pre-#6251 PID-only stop: tracked PIDs
+// are still stopped and the call does not fail the caller.
+func TestEnsureStoppedSessionDegradesToTrackedPIDsOnEnumerationError(t *testing.T) {
+	f := &fakeHelperProcs{procs: []helperInstance{inst(100, "1", 30), inst(200, "1", 20)}}
+	mgr, _ := newSweepManager(t, f)
+	f.listErr = errors.New("snapshot failed")
+	state := newSessionState("1", mgr.baseDir)
+	state.spawnedPID = 100
+
+	if err := mgr.ensureStoppedSession(state); err != nil {
+		t.Fatalf("enumeration failure must not fail the stop: %v", err)
+	}
+	if got, want := f.stoppedSorted(), []int{100}; !equalInts(got, want) {
+		t.Fatalf("stopped %v, want %v (tracked only)", got, want)
 	}
 }
 

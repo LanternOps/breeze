@@ -173,8 +173,12 @@ func stopByPIDIfOurs(pid int, binaryPath string) (bool, error) {
 }
 
 // stopExitWait bounds how long stopByPIDIfOurs waits for a terminated helper
-// to finish exiting.
-const stopExitWait = 2000 // milliseconds
+// to finish exiting. Callers stop helpers one after another while holding
+// Manager.mu on the heartbeat goroutine, so this stays short: a normal
+// TerminateProcess finishes well inside it, and the cost only adds up for a
+// process wedged in teardown. If a respawn still races the old mutex, the new
+// instance exits and the session watcher respawns on its next tick.
+const stopExitWait = 250 // milliseconds
 
 func spawnWithConfig(binaryPath, sessionKey, configPath string) (int, error) {
 	sessionNum, err := strconv.ParseUint(sessionKey, 10, 32)
