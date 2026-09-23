@@ -18,6 +18,19 @@ export interface WhatsNewEntry {
  */
 export const WHATS_NEW_ENTRIES: WhatsNewEntry[] = [
   {
+    version: '0.116.0',
+    date: '2026-09-23',
+    title: 'Accept quotes on a customer\'s behalf, IOC threat scanning, and invoices grouped by ticket',
+    highlights: [
+      'Record a customer\'s phone or paper acceptance on a quote: "Accept on behalf" issues the invoice straight away, with the method, signer and an optional evidence file on the record — and "Decline on behalf" for the other answer.',
+      'Security ▸ IOC Scans: schedule scans from the policy Security tab, review threats across devices, and quarantine or restore them from one page.',
+      'Invoice lines can now be grouped by ticket and category on the PDF, the portal and the web invoice, and billable time without an hourly rate is flagged instead of silently inflating hours.',
+      'Network topology is now a partner module you switch on from Settings ▸ Partner ▸ Modules, and the customer portal gets a Network overview page.',
+      'Disk Cleanup: Windows Update Cleanup no longer hangs under the agent service, and space freed on btrfs hosts is reported correctly (needs agent 0.116.0).',
+    ],
+    learnMoreUrl: 'https://breezermm.com/release-notes',
+  },
+  {
     version: '0.115.0',
     date: '2026-09-21',
     title: 'Automatic network topology maps, one alert delivery resolver, and disk cleanup that actually frees space',
