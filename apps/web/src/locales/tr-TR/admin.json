@@ -559,6 +559,63 @@
         "flip": "Acil durdurma anahtarı güncellenemedi",
         "mfaRequired": "Yapay zeka acil durdurma anahtarını değiştirmek çok faktörlü kimlik doğrulama gerektirir. Profil güvenlik ayarlarınızda MFA'yı etkinleştirin ve tekrar deneyin."
       }
+    },
+    "systemPage": {
+      "title": "Sistem",
+      "description": "Platform yöneticileri için tüm dağıtımın durumu. Bu sayfa salt okunurdur.",
+      "tabs": {
+        "label": "Sistem bölümleri",
+        "connections": "Bağlantılar",
+        "deprecations": "Kullanımdan kaldırmalar"
+      },
+      "connections": {
+        "enabledMeaning": "Etkin, yapılandırılmış anlamına gelir. Breeze, yanıt verip vermediğini kontrol etmek için hizmete bağlanmaz.",
+        "footnote": "Yalnızca API kapsayıcısının ortamını gösterir. Web, portal ve worker kapsayıcıları dahil değildir.",
+        "meta": "Çalışan sürüm {{version}} · {{mode}}",
+        "deployMode": {
+          "hosted": "Barındırılan",
+          "self_host": "Kendi sunucusunda"
+        },
+        "refresh": "Yenile",
+        "loading": "Bağlantı durumu yükleniyor…",
+        "errors": {
+          "load": "Bağlantı durumu yüklenemedi."
+        },
+        "platformAdmin": {
+          "title": "Platform yöneticisi erişimi gerekli",
+          "description": "Bağlantı durumu tüm dağıtımı kapsar; bu nedenle yalnızca platform yöneticileri görüntüleyebilir."
+        },
+        "summaryLabel": "Bağlantı özeti",
+        "problemsOnly": "Yalnızca sorunları göster",
+        "noProblems": "Sorun bulunamadı. Her bağlantı etkin veya devre dışı.",
+        "empty": "Kayıtlı bağlantı yok.",
+        "status": {
+          "enabled": "Etkin",
+          "disabled": "Devre dışı",
+          "misconfigured": "Yanlış yapılandırılmış",
+          "required_missing": "Gerekli, eksik"
+        },
+        "var": {
+          "set": "ayarlı",
+          "notSet": "ayarlı değil",
+          "secret": "Gizli değer, asla gösterilmez"
+        },
+        "docs": "Belgeleri okuyun",
+        "groups": {
+          "core": "Temel hizmetler",
+          "email": "E-posta",
+          "storage-backups": "Depolama ve yedeklemeler",
+          "ai": "Yapay Zeka",
+          "billing": "Faturalama",
+          "microsoft-365": "Microsoft 365",
+          "identity-sso": "Kimlik ve TOA",
+          "remote-access": "Uzaktan erişim",
+          "agent-releases": "Ajan sürümleri",
+          "observability": "Gözlemlenebilirlik",
+          "security-abuse": "Güvenlik ve kötüye kullanım",
+          "integrations": "Entegrasyonlar"
+        }
+      }
     }
   },
   "audit": {

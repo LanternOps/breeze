@@ -14,6 +14,7 @@
     "adminConnectedApps": "Aplicativos conectados (admin)",
     "adminLlmProviderCatalog": "Catálogo de provedores de LLM",
     "adminQuarantined": "Dispositivos em quarentena",
+    "adminSystem": "Sistema",
     "adminThirdPartyCatalog": "Catálogo de terceiros",
     "adminTrustAct": "Ação de confiança do parceiro",
     "adminTrustQueue": "Fila de confiança do parceiro",
@@ -169,8 +170,7 @@
     "agreementTemplateNew": "Novo modelo de acordo",
     "signedAgreements": "Acordos assinados",
     "settingsTicketing": "Configurações de tickets",
-    "securityScans": "Varreduras de IOC",
-    "settingsSystemDeprecations": "Descontinuações"
+    "securityScans": "Varreduras de IOC"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Monitoramento e Gerenciamento Remoto",

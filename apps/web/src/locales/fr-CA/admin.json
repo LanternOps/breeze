@@ -559,6 +559,63 @@
         "flip": "Échec de la mise à jour du coupe-circuit",
         "mfaRequired": "Le basculement du coupe-circuit IA nécessite l'authentification multifacteur. Activez la MFA dans les paramètres de sécurité de votre profil, puis réessayez."
       }
+    },
+    "systemPage": {
+      "title": "Système",
+      "description": "État de l'ensemble du déploiement pour les administrateurs de plateforme. Cette page est en lecture seule.",
+      "tabs": {
+        "label": "Sections du système",
+        "connections": "Connexions",
+        "deprecations": "Dépréciations"
+      },
+      "connections": {
+        "enabledMeaning": "Activé signifie configuré. Breeze ne contacte pas le service pour vérifier qu'il répond.",
+        "footnote": "Affiche uniquement l'environnement du conteneur de l'API. Les conteneurs web, portail et worker ne sont pas inclus.",
+        "meta": "Version en cours {{version}} · {{mode}}",
+        "deployMode": {
+          "hosted": "Hébergé",
+          "self_host": "Auto-hébergé"
+        },
+        "refresh": "Actualiser",
+        "loading": "Chargement de l'état des connexions…",
+        "errors": {
+          "load": "Impossible de charger l'état des connexions."
+        },
+        "platformAdmin": {
+          "title": "Accès administrateur de plateforme requis",
+          "description": "L'état des connexions couvre l'ensemble du déploiement ; seuls les administrateurs de plateforme peuvent le consulter."
+        },
+        "summaryLabel": "Résumé des connexions",
+        "problemsOnly": "Afficher uniquement les problèmes",
+        "noProblems": "Aucun problème détecté. Chaque connexion est activée ou désactivée.",
+        "empty": "Aucune connexion enregistrée.",
+        "status": {
+          "enabled": "Activé",
+          "disabled": "Désactivé",
+          "misconfigured": "Mal configuré",
+          "required_missing": "Requis, manquant"
+        },
+        "var": {
+          "set": "défini",
+          "notSet": "non défini",
+          "secret": "Valeur secrète, jamais affichée"
+        },
+        "docs": "Consulter la documentation",
+        "groups": {
+          "core": "Services essentiels",
+          "email": "Courriel",
+          "storage-backups": "Stockage et sauvegardes",
+          "ai": "IA",
+          "billing": "Facturation",
+          "microsoft-365": "Microsoft 365",
+          "identity-sso": "Identité et SSO",
+          "remote-access": "Accès à distance",
+          "agent-releases": "Versions de l'agent",
+          "observability": "Observabilité",
+          "security-abuse": "Sécurité et abus",
+          "integrations": "Intégrations"
+        }
+      }
     }
   },
   "audit": {

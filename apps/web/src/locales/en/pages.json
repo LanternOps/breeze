@@ -14,6 +14,7 @@
     "adminConnectedApps": "Connected apps (admin)",
     "adminLlmProviderCatalog": "LLM Provider Catalog",
     "adminQuarantined": "Quarantined Devices",
+    "adminSystem": "System",
     "adminThirdPartyCatalog": "Third-Party Catalog",
     "adminTrustAct": "Partner trust action",
     "adminTrustQueue": "Partner Trust Queue",
@@ -169,8 +170,7 @@
     "agreementTemplateNew": "New agreement template",
     "signedAgreements": "Signed agreements",
     "settingsTicketing": "Ticketing Settings",
-    "securityScans": "IOC Scans",
-    "settingsSystemDeprecations": "Deprecations"
+    "securityScans": "IOC Scans"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Remote Monitoring and Management",

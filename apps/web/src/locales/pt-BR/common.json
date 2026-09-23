@@ -99,7 +99,7 @@
     "ticketing": "Tickets",
     "deliverableTemplates": "Modelos de entregáveis",
     "securityScans": "Varreduras de IOC",
-    "systemDeprecations": "Descontinuações"
+    "system": "Sistema"
   },
   "documentTitles": {
     "dashboard": "Painel",

@@ -1,8 +1,4 @@
 ---
-import DashboardLayout from '../../../layouts/DashboardLayout.astro';
-import SystemDeprecationsPage from '../../../components/settings/SystemDeprecationsPage';
+// Moved to the System page's Deprecations tab (system page W02, D7).
+return Astro.redirect('/admin/system?tab=deprecations', 301);
 ---
-
-<DashboardLayout titleKey="titles.settingsSystemDeprecations">
-  <SystemDeprecationsPage client:load />
-</DashboardLayout>

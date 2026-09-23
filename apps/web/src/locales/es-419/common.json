@@ -99,7 +99,7 @@
     "ticketing": "Tickets",
     "deliverableTemplates": "Plantillas de entregables",
     "securityScans": "Escaneos de IOC",
-    "systemDeprecations": "Obsolescencias"
+    "system": "Sistema"
   },
   "documentTitles": {
     "dashboard": "Panel",

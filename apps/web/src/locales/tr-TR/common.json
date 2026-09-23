@@ -99,7 +99,7 @@
     "ticketing": "Bilet Sistemi",
     "deliverableTemplates": "Teslimat Şablonları",
     "securityScans": "IOC Taramaları",
-    "systemDeprecations": "Kullanımdan kaldırmalar"
+    "system": "Sistem"
   },
   "documentTitles": {
     "dashboard": "Kontrol Paneli",

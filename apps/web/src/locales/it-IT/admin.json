@@ -559,6 +559,63 @@
         "flip": "Impossibile aggiornare l'interruttore di emergenza",
         "mfaRequired": "Attivare l'interruttore di emergenza IA richiede l'autenticazione a più fattori. Abilita l'MFA nelle impostazioni di sicurezza del tuo profilo, quindi riprova."
       }
+    },
+    "systemPage": {
+      "title": "Sistema",
+      "description": "Stato dell'intera installazione per gli amministratori di piattaforma. Questa pagina è di sola lettura.",
+      "tabs": {
+        "label": "Sezioni di sistema",
+        "connections": "Connessioni",
+        "deprecations": "Deprecazioni"
+      },
+      "connections": {
+        "enabledMeaning": "Abilitato significa configurato. Breeze non contatta il servizio per verificare che risponda.",
+        "footnote": "Mostra solo l'ambiente del container dell'API. I container web, portale e worker non sono inclusi.",
+        "meta": "Versione in esecuzione {{version}} · {{mode}}",
+        "deployMode": {
+          "hosted": "Ospitato",
+          "self_host": "Ospitato in proprio"
+        },
+        "refresh": "Aggiorna",
+        "loading": "Caricamento dello stato delle connessioni…",
+        "errors": {
+          "load": "Impossibile caricare lo stato delle connessioni."
+        },
+        "platformAdmin": {
+          "title": "È richiesto l'accesso come amministratore di piattaforma",
+          "description": "Lo stato delle connessioni riguarda l'intera installazione, quindi solo gli amministratori di piattaforma possono visualizzarlo."
+        },
+        "summaryLabel": "Riepilogo delle connessioni",
+        "problemsOnly": "Mostra solo i problemi",
+        "noProblems": "Nessun problema trovato. Ogni connessione è abilitata o disabilitata.",
+        "empty": "Nessuna connessione registrata.",
+        "status": {
+          "enabled": "Abilitato",
+          "disabled": "Disabilitato",
+          "misconfigured": "Configurato in modo errato",
+          "required_missing": "Obbligatorio, mancante"
+        },
+        "var": {
+          "set": "impostato",
+          "notSet": "non impostato",
+          "secret": "Valore segreto, mai mostrato"
+        },
+        "docs": "Leggi la documentazione",
+        "groups": {
+          "core": "Servizi principali",
+          "email": "Posta elettronica",
+          "storage-backups": "Archiviazione e backup",
+          "ai": "IA",
+          "billing": "Fatturazione",
+          "microsoft-365": "Microsoft 365",
+          "identity-sso": "Identità e SSO",
+          "remote-access": "Accesso remoto",
+          "agent-releases": "Versioni dell'agente",
+          "observability": "Osservabilità",
+          "security-abuse": "Sicurezza e abusi",
+          "integrations": "Integrazioni"
+        }
+      }
     }
   },
   "audit": {

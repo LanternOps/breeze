@@ -99,7 +99,7 @@
     "ticketing": "Billetterie",
     "deliverableTemplates": "Modèles de livrables",
     "securityScans": "Balayages IOC",
-    "systemDeprecations": "Dépréciations"
+    "system": "Système"
   },
   "documentTitles": {
     "dashboard": "Tableau de bord",

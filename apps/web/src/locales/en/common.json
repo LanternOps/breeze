@@ -99,7 +99,7 @@
     "ticketing": "Ticketing",
     "deliverableTemplates": "Deliverable Templates",
     "securityScans": "IOC Scans",
-    "systemDeprecations": "Deprecations"
+    "system": "System"
   },
   "documentTitles": {
     "dashboard": "Dashboard",
