@@ -200,7 +200,18 @@
     },
     "title": "Descubrimiento de red",
     "toasts": {
-      "scanQueued": "Exploración de descubrimiento en cola para \"{{name}}\""
+      "scanQueued": "Exploración de descubrimiento en cola para \"{{name}}\"",
+      "profileCreated": "Perfil de descubrimiento \"{{name}}\" creado",
+      "profileUpdated": "Perfil de descubrimiento \"{{name}}\" actualizado",
+      "profileMoved": "Perfil movido a {{site}}.",
+      "assetsMoved_one": "{{count}} dispositivo de red movido",
+      "assetsMoved_other": "{{count}} dispositivos de red movidos",
+      "agentLinksRemoved_one": "{{count}} vínculo de agente eliminado",
+      "agentLinksRemoved_other": "{{count}} vínculos de agente eliminados",
+      "monitorsReattached_one": "{{count}} monitor reconectado",
+      "monitorsReattached_other": "{{count}} monitores reconectados",
+      "topologyPoliciesDisabled_one": "{{count}} política de topología desactivada",
+      "topologyPoliciesDisabled_other": "{{count}} políticas de topología desactivadas"
     },
     "days": {
       "monday": "Lunes",
@@ -295,6 +306,12 @@
       "arp": "ARP barrido",
       "snmp": "Sonda SNMP",
       "portScan": "TCP Escaneo de puertos"
+    },
+    "siteMove": {
+      "notice": "A partir de ahora este perfil escaneará desde el nuevo sitio. Los dispositivos que ya descubrió permanecen en el sitio actual a menos que los muevas.",
+      "moveAssets_one": "Mover también el {{count}} dispositivo de red que descubrió este perfil al nuevo sitio",
+      "moveAssets_other": "Mover también los {{count}} dispositivos de red que descubrió este perfil al nuevo sitio",
+      "moveAssetsUnknown": "Mover también los dispositivos de red que descubrió este perfil al nuevo sitio"
     }
   },
   "discoveryProfileList": {
