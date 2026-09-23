@@ -322,7 +322,10 @@
         "security_compliance_posture": "Postura de Seguranca e Conformidade",
         "software_inventory": "Inventario de Software",
         "threat_detection_review": "Revisão de detecção de ameaças",
-        "endpoint_management_review": "Revisão de gerenciamento de endpoints"
+        "endpoint_management_review": "Revisão de gerenciamento de endpoints",
+        "ticket_sla_attainment": "Cumprimento de SLA de chamados",
+        "technician_time_billability": "Tempo e faturabilidade do técnico",
+        "ar_aging": "Envelhecimento de contas a receber"
       },
       "threatDetection": {
         "agents": "Endpoints com agente de detecção",
@@ -419,7 +422,10 @@
         "security_compliance_posture": "Postura de Seguranca e Conformidade",
         "software_inventory": "Inventario de Software",
         "threat_detection_review": "Revisão de detecção de ameaças",
-        "endpoint_management_review": "Revisão de gerenciamento de endpoints"
+        "endpoint_management_review": "Revisão de gerenciamento de endpoints",
+        "ticket_sla_attainment": "Cumprimento de SLA de chamados",
+        "technician_time_billability": "Tempo e faturabilidade do técnico",
+        "ar_aging": "Envelhecimento de contas a receber"
       },
       "runsTable": {
         "actions": "Acoes",
@@ -934,7 +940,10 @@
         "security_compliance_posture": "Postura de Seguranca e Conformidade",
         "software_inventory": "Inventario de Software",
         "threat_detection_review": "Revisão de detecção de ameaças",
-        "endpoint_management_review": "Revisão de gerenciamento de endpoints"
+        "endpoint_management_review": "Revisão de gerenciamento de endpoints",
+        "ticket_sla_attainment": "Cumprimento de SLA de chamados",
+        "technician_time_billability": "Tempo e faturabilidade do técnico",
+        "ar_aging": "Envelhecimento de contas a receber"
       },
       "schedules": {
         "daily": "Diario",
@@ -988,11 +997,28 @@
         "endpoint_management_review": {
           "description": "Evidência do Microsoft Intune: cobertura de inscrição, detalhamento de conformidade com tendência de 30 dias, inscrições desatualizadas e licenças, informando a atualidade de cada sincronização.",
           "name": "Revisão de gerenciamento de endpoints do Intune"
+        },
+        "ticket_sla_attainment": {
+          "name": "Cumprimento de SLA de chamados",
+          "description": "Cumprimento de resposta e resolução do período, recalculado a partir dos registros de horário do chamado em vez de lido nos marcadores de violação — assim, um chamado respondido com atraso, mas eventualmente respondido, ainda conta como não cumprido. Agrupado por organização, prioridade, técnico ou categoria."
+        },
+        "technician_time_billability": {
+          "name": "Tempo e faturabilidade do técnico",
+          "description": "Tempo registrado em relação a uma capacidade semanal presumida, a divisão entre faturável / incluído / não faturável, e quanto do tempo faturável foi de fato aprovado e faturado. Técnicos sem tempo registrado no período aparecem com zero em vez de serem omitidos."
+        },
+        "ar_aging": {
+          "name": "Envelhecimento de contas a receber",
+          "description": "Saldos de faturas em aberto agrupados em corrente / 1–30 / 31–60 / 61–90 / mais de 90 dias vencidos, um conjunto de totais por moeda sem conversão. Faturas sem data de vencimento recebem seu próprio grupo, nunca \"corrente\"."
         }
       },
       "title": "Modelos de Relatório",
       "useTemplate": "Usar modelo",
-      "useTemplateTitle": "Usar {{name}}"
+      "useTemplateTitle": "Usar {{name}}",
+      "groups": {
+        "business": "Negócio",
+        "general": "Geral",
+        "businessDescription": "Números internos do MSP — cumprimento de SLA, faturabilidade dos técnicos e contas a receber — apenas para a equipe."
+      }
     },
     "threatDetectionOptions": {
       "cancel": "Cancelar",

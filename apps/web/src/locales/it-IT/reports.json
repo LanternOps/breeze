@@ -322,7 +322,10 @@
         "security_compliance_posture": "Stato sicurezza e conformità",
         "software_inventory": "Inventario software",
         "threat_detection_review": "Revisione del rilevamento delle minacce",
-        "endpoint_management_review": "Revisione della gestione degli endpoint"
+        "endpoint_management_review": "Revisione della gestione degli endpoint",
+        "ticket_sla_attainment": "Rispetto degli SLA dei ticket",
+        "technician_time_billability": "Tempo e fatturabilità dei tecnici",
+        "ar_aging": "Analisi anzianità crediti (AR aging)"
       },
       "threatDetection": {
         "agents": "Endpoint con agente di rilevamento",
@@ -419,7 +422,10 @@
         "security_compliance_posture": "Stato sicurezza e conformità",
         "software_inventory": "Inventario software",
         "threat_detection_review": "Revisione del rilevamento delle minacce",
-        "endpoint_management_review": "Revisione della gestione degli endpoint"
+        "endpoint_management_review": "Revisione della gestione degli endpoint",
+        "ticket_sla_attainment": "Rispetto degli SLA dei ticket",
+        "technician_time_billability": "Tempo e fatturabilità dei tecnici",
+        "ar_aging": "Analisi anzianità crediti (AR aging)"
       },
       "runsTable": {
         "actions": "Azioni",
@@ -934,7 +940,10 @@
         "security_compliance_posture": "Stato sicurezza e conformità",
         "software_inventory": "Inventario software",
         "threat_detection_review": "Revisione del rilevamento delle minacce",
-        "endpoint_management_review": "Revisione della gestione degli endpoint"
+        "endpoint_management_review": "Revisione della gestione degli endpoint",
+        "ticket_sla_attainment": "Rispetto degli SLA dei ticket",
+        "technician_time_billability": "Tempo e fatturabilità dei tecnici",
+        "ar_aging": "Analisi anzianità crediti (AR aging)"
       },
       "schedules": {
         "daily": "Giornaliero",
@@ -988,11 +997,28 @@
         "endpoint_management_review": {
           "description": "Evidenze da Microsoft Intune: copertura delle registrazioni, ripartizione della conformità con andamento a 30 giorni, registrazioni obsolete e postazioni di licenza, con indicazione della freschezza di ogni sincronizzazione.",
           "name": "Revisione della gestione degli endpoint Intune"
+        },
+        "ticket_sla_attainment": {
+          "name": "Rispetto degli SLA dei ticket",
+          "description": "Rispetto dei tempi di risposta e risoluzione per il periodo, ricalcolato dai timestamp del ticket anziché letto dai marcatori di violazione — quindi un ticket a cui si è risposto in ritardo, ma a cui si è comunque risposto, conta ancora come mancato. Raggruppato per organizzazione, priorità, tecnico o categoria."
+        },
+        "technician_time_billability": {
+          "name": "Tempo e fatturabilità dei tecnici",
+          "description": "Ore registrate rispetto a una capacità settimanale presunta, la suddivisione fatturabile / incluso / non fatturabile, e quanta parte del tempo fatturabile è stata effettivamente approvata e fatturata. I tecnici senza ore registrate nel periodo compaiono a zero anziché essere omessi."
+        },
+        "ar_aging": {
+          "name": "Analisi anzianità crediti (AR aging)",
+          "description": "Saldi delle fatture non pagate suddivisi in corrente / 1–30 / 31–60 / 61–90 / oltre 90 giorni di ritardo, un insieme di totali per valuta senza conversione. Le fatture senza data di scadenza ricevono una propria fascia, mai «corrente»."
         }
       },
       "title": "Template report",
       "useTemplate": "Usa template",
-      "useTemplateTitle": "Usa {{name}}"
+      "useTemplateTitle": "Usa {{name}}",
+      "groups": {
+        "business": "Attività",
+        "general": "Generale",
+        "businessDescription": "Numeri interni dell’MSP — rispetto degli SLA, fatturabilità dei tecnici e crediti scaduti — riservati al personale."
+      }
     },
     "threatDetectionOptions": {
       "cancel": "Annulla",

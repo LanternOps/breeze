@@ -322,7 +322,10 @@
         "security_compliance_posture": "Güvenlik ve Uyumluluk Duruşu",
         "software_inventory": "Yazılım Envanteri",
         "threat_detection_review": "Tehdit Tespiti İncelemesi",
-        "endpoint_management_review": "Uç Nokta Yönetimi İncelemesi"
+        "endpoint_management_review": "Uç Nokta Yönetimi İncelemesi",
+        "ticket_sla_attainment": "Bilet SLA Başarımı",
+        "technician_time_billability": "Teknisyen Zamanı ve Faturalandırılabilirlik",
+        "ar_aging": "Alacak Yaşlanırması (AR Aging)"
       },
       "threatDetection": {
         "agents": "Tespit aracısı olan uç noktalar",
@@ -419,7 +422,10 @@
         "security_compliance_posture": "Güvenlik ve Uyumluluk Duruşu",
         "software_inventory": "Yazılım Envanteri",
         "threat_detection_review": "Tehdit Tespiti İncelemesi",
-        "endpoint_management_review": "Uç Nokta Yönetimi İncelemesi"
+        "endpoint_management_review": "Uç Nokta Yönetimi İncelemesi",
+        "ticket_sla_attainment": "Bilet SLA Başarımı",
+        "technician_time_billability": "Teknisyen Zamanı ve Faturalandırılabilirlik",
+        "ar_aging": "Alacak Yaşlanırması (AR Aging)"
       },
       "runsTable": {
         "actions": "Eylemler",
@@ -934,7 +940,10 @@
         "security_compliance_posture": "Güvenlik ve Uyumluluk Duruşu",
         "software_inventory": "Yazılım Envanteri",
         "threat_detection_review": "Tehdit Tespiti İncelemesi",
-        "endpoint_management_review": "Uç Nokta Yönetimi İncelemesi"
+        "endpoint_management_review": "Uç Nokta Yönetimi İncelemesi",
+        "ticket_sla_attainment": "Bilet SLA Başarımı",
+        "technician_time_billability": "Teknisyen Zamanı ve Faturalandırılabilirlik",
+        "ar_aging": "Alacak Yaşlanırması (AR Aging)"
       },
       "schedules": {
         "daily": "Günlük",
@@ -988,11 +997,28 @@
         "endpoint_management_review": {
           "description": "Microsoft Intune kanıtı: kayıt kapsamı, 30 günlük eğilimle uyumluluk dağılımı, eskimiş kayıtlar ve lisans koltukları; her eşitlemenin güncelliği belirtilir.",
           "name": "Intune Uç Nokta Yönetimi İncelemesi"
+        },
+        "ticket_sla_attainment": {
+          "name": "Bilet SLA Başarımı",
+          "description": "Dönem için yanıt ve çözüm başarımı, ihlal damgalarından okunmak yerine bilet zaman damgalarından yeniden hesaplanır — böylece geç ama sonunda yanıtlanan bir bilet yine de kaçırılmış sayılır. Kuruma, önceliğe, teknisyene veya kategoriye göre gruplandırılır."
+        },
+        "technician_time_billability": {
+          "name": "Teknisyen Zamanı ve Faturalandırılabilirlik",
+          "description": "Varsayılan haftalık kapasiteye karşı kaydedilen zaman, faturalandırılabilir / dahil / faturalandırılamaz ayrımı ve faturalandırılabilir zamanın ne kadarının fiilen onaylandığı ve faturalandırıldığı. Dönemde kaydı olmayan teknisyenler atılmak yerine sıfır olarak listelenir."
+        },
+        "ar_aging": {
+          "name": "Alacak Yaşlanırması (AR Aging)",
+          "description": "Ödenmemiş fatura bakiyeleri güncel / 1–30 / 31–60 / 61–90 / 90+ gün gecikmiş olarak gruplandırılır, para birimi başına dönüşüm yapılmadan tek bir toplam kullanılır. Vade tarihi olmayan faturalar kendi grubunu alır, asla “güncel” sayılmaz."
         }
       },
       "title": "Rapor Şablonları",
       "useTemplate": "Şablonu kullan",
-      "useTemplateTitle": "{{name}} kullanın"
+      "useTemplateTitle": "{{name}} kullanın",
+      "groups": {
+        "business": "İş",
+        "general": "Genel",
+        "businessDescription": "Yalnızca personel için MSP içi rakamlar — SLA başarımı, teknisyen faturalandırılabilirliği ve alacak yaşlanırması."
+      }
     },
     "threatDetectionOptions": {
       "cancel": "İptal",

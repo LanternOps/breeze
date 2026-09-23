@@ -322,7 +322,10 @@
         "security_compliance_posture": "Sicherheits- und Compliance-Status",
         "software_inventory": "Software-Inventar",
         "threat_detection_review": "Überprüfung der Bedrohungserkennung",
-        "endpoint_management_review": "Endpunktverwaltungs-Bericht"
+        "endpoint_management_review": "Endpunktverwaltungs-Bericht",
+        "ticket_sla_attainment": "Ticket-SLA-Erfüllung",
+        "technician_time_billability": "Techniker-Zeit & Abrechenbarkeit",
+        "ar_aging": "Offene Forderungen (Fälligkeitsanalyse)"
       },
       "threatDetection": {
         "agents": "Endgeräte mit Erkennungsagent",
@@ -419,7 +422,10 @@
         "security_compliance_posture": "Sicherheits- und Compliance-Status",
         "software_inventory": "Software-Inventar",
         "threat_detection_review": "Überprüfung der Bedrohungserkennung",
-        "endpoint_management_review": "Endpunktverwaltungs-Bericht"
+        "endpoint_management_review": "Endpunktverwaltungs-Bericht",
+        "ticket_sla_attainment": "Ticket-SLA-Erfüllung",
+        "technician_time_billability": "Techniker-Zeit & Abrechenbarkeit",
+        "ar_aging": "Offene Forderungen (Fälligkeitsanalyse)"
       },
       "runsTable": {
         "actions": "Aktionen",
@@ -934,7 +940,10 @@
         "security_compliance_posture": "Sicherheits- und Compliance-Status",
         "software_inventory": "Software-Inventar",
         "threat_detection_review": "Überprüfung der Bedrohungserkennung",
-        "endpoint_management_review": "Endpunktverwaltungs-Bericht"
+        "endpoint_management_review": "Endpunktverwaltungs-Bericht",
+        "ticket_sla_attainment": "Ticket-SLA-Erfüllung",
+        "technician_time_billability": "Techniker-Zeit & Abrechenbarkeit",
+        "ar_aging": "Offene Forderungen (Fälligkeitsanalyse)"
       },
       "schedules": {
         "daily": "Täglich",
@@ -988,11 +997,28 @@
         "endpoint_management_review": {
           "description": "Nachweis aus Microsoft Intune: Registrierungsabdeckung, Compliance-Aufschlüsselung mit 30-Tage-Verlauf, veraltete Registrierungen und Lizenzplätze — jeweils mit Angabe der Aktualität der Synchronisierung.",
           "name": "Intune-Endpunktverwaltungs-Bericht"
+        },
+        "ticket_sla_attainment": {
+          "name": "Ticket-SLA-Erfüllung",
+          "description": "Antwort- und Lösungserfüllung für den Zeitraum, neu berechnet aus den Ticket-Zeitstempeln statt aus den Verletzungsmarkierungen abgelesen — ein spät, aber letztlich beantwortetes Ticket zählt also weiterhin als verfehlt. Gruppiert nach Organisation, Priorität, Techniker oder Kategorie."
+        },
+        "technician_time_billability": {
+          "name": "Techniker-Zeit & Abrechenbarkeit",
+          "description": "Erfasste Zeit gegen eine angenommene wöchentliche Kapazität, die Aufteilung abrechenbar / inklusive / nicht abrechenbar sowie der Anteil der abrechenbaren Zeit, der tatsächlich freigegeben und abgerechnet wurde. Techniker ohne Zeiterfassung im Zeitraum werden mit null aufgeführt statt weggelassen."
+        },
+        "ar_aging": {
+          "name": "Offene Forderungen (Fälligkeitsanalyse)",
+          "description": "Unbezahlte Rechnungssalden gruppiert nach aktuell / 1–30 / 31–60 / 61–90 / über 90 Tage überfällig, jeweils eine Summe pro Währung ohne Umrechnung. Rechnungen ohne Fälligkeitsdatum erhalten eine eigene Gruppe, niemals „aktuell“."
         }
       },
       "title": "Berichtsvorlagen",
       "useTemplate": "Vorlage verwenden",
-      "useTemplateTitle": "Vorlage {{name}} verwenden"
+      "useTemplateTitle": "Vorlage {{name}} verwenden",
+      "groups": {
+        "business": "Geschäftlich",
+        "general": "Allgemein",
+        "businessDescription": "Interne MSP-Kennzahlen — SLA-Erfüllung, Techniker-Abrechenbarkeit und offene Forderungen — nur für Mitarbeitende."
+      }
     },
     "threatDetectionOptions": {
       "cancel": "Abbrechen",

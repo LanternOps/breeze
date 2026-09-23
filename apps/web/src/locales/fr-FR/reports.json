@@ -322,7 +322,10 @@
         "security_compliance_posture": "Posture de sécurité et de conformité",
         "software_inventory": "Inventaire logiciel",
         "threat_detection_review": "Revue de détection des menaces",
-        "endpoint_management_review": "Revue de gestion des terminaux"
+        "endpoint_management_review": "Revue de gestion des terminaux",
+        "ticket_sla_attainment": "Respect des SLA des tickets",
+        "technician_time_billability": "Temps et facturabilité des techniciens",
+        "ar_aging": "Balance âgée des comptes clients"
       },
       "threatDetection": {
         "agents": "Postes dotés d’un agent de détection",
@@ -419,7 +422,10 @@
         "security_compliance_posture": "Posture de sécurité et de conformité",
         "software_inventory": "Inventaire logiciel",
         "threat_detection_review": "Revue de détection des menaces",
-        "endpoint_management_review": "Revue de gestion des terminaux"
+        "endpoint_management_review": "Revue de gestion des terminaux",
+        "ticket_sla_attainment": "Respect des SLA des tickets",
+        "technician_time_billability": "Temps et facturabilité des techniciens",
+        "ar_aging": "Balance âgée des comptes clients"
       },
       "runsTable": {
         "actions": "Actions",
@@ -934,7 +940,10 @@
         "security_compliance_posture": "Posture de sécurité et de conformité",
         "software_inventory": "Inventaire logiciel",
         "threat_detection_review": "Revue de détection des menaces",
-        "endpoint_management_review": "Revue de gestion des terminaux"
+        "endpoint_management_review": "Revue de gestion des terminaux",
+        "ticket_sla_attainment": "Respect des SLA des tickets",
+        "technician_time_billability": "Temps et facturabilité des techniciens",
+        "ar_aging": "Balance âgée des comptes clients"
       },
       "schedules": {
         "daily": "Quotidien",
@@ -988,11 +997,28 @@
         "endpoint_management_review": {
           "description": "Preuve issue de Microsoft Intune : couverture des inscriptions, répartition de la conformité avec une tendance sur 30 jours, inscriptions obsolètes et sièges de licence, avec la fraîcheur de chaque synchronisation.",
           "name": "Revue de gestion des terminaux Intune"
+        },
+        "ticket_sla_attainment": {
+          "name": "Respect des SLA des tickets",
+          "description": "Taux de respect de la réponse et de la résolution sur la période, recalculé à partir des horodatages du ticket plutôt que lu sur les marqueurs de manquement — un ticket répondu en retard mais finalement répondu compte donc toujours comme manqué. Regroupé par organisation, priorité, technicien ou catégorie."
+        },
+        "technician_time_billability": {
+          "name": "Temps et facturabilité des techniciens",
+          "description": "Temps enregistré par rapport à une capacité hebdomadaire présumée, la répartition facturable / inclus / non facturable, et la part du temps facturable réellement approuvée et facturée. Les techniciens sans temps enregistré sur la période apparaissent à zéro plutôt que d'être omis."
+        },
+        "ar_aging": {
+          "name": "Balance âgée des comptes clients",
+          "description": "Soldes de factures impayées répartis en courant / 1–30 / 31–60 / 61–90 / plus de 90 jours de retard, un jeu de totaux par devise sans conversion. Les factures sans date d'échéance reçoivent leur propre catégorie, jamais « courant »."
         }
       },
       "title": "Modèles de rapports",
       "useTemplate": "Utiliser le modèle",
-      "useTemplateTitle": "Utilisez {{name}}"
+      "useTemplateTitle": "Utilisez {{name}}",
+      "groups": {
+        "business": "Activité",
+        "general": "Général",
+        "businessDescription": "Chiffres internes du prestataire MSP — respect des SLA, facturabilité des techniciens et comptes clients — réservés au personnel."
+      }
     },
     "threatDetectionOptions": {
       "cancel": "Annuler",
