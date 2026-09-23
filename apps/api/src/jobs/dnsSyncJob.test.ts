@@ -10,6 +10,7 @@ describe('normalizeThreatCategory (issue #6693 — "ad" matched before "adult")'
     ['Advertisements', 'adware'],
     ['Adware', 'adware'],
     ['Ads', 'adware'],
+    ['NotAdware', 'unknown'],
     ['Phishing', 'phishing'],
     ['Malware', 'malware'],
     ['Botnet', 'botnet'],
