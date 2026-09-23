@@ -1,4 +1,5 @@
 mod ipc;
+mod single_instance;
 mod workspace_open;
 
 use crate::ipc::token::HelperToken;
@@ -1068,6 +1069,17 @@ fn build_tray_menu(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // One helper per login session (#6251). Taken before any UI, tray or IPC
+    // work so a duplicate exits without ever showing a second tray icon or
+    // connecting to the agent. The guard lives until the process exits.
+    let _instance_guard = match single_instance::acquire() {
+        single_instance::Acquire::Acquired(guard) => guard,
+        single_instance::Acquire::AlreadyRunning => {
+            eprintln!("[helper] another Breeze Helper is already running in this session; exiting");
+            return;
+        }
+    };
+
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_window_state::Builder::default().build())

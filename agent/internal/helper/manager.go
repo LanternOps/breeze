@@ -386,6 +386,7 @@ func (m *Manager) Apply(settings *Settings) {
 			if err := m.ensureRunningSession(state); err != nil {
 				log.Error("failed to start breeze assist", "session", si.Key, "error", err.Error())
 			} else {
+				m.reapDuplicateHelpersLocked(state)
 				m.startSessionWatcher(state)
 			}
 			continue
@@ -629,6 +630,7 @@ func (m *Manager) ensureStoppedSession(state *sessionState) error {
 	// Kill by spawned PID (authoritative) and status-file PID if different.
 	// stopIfOursFunc verifies helper identity on the same handle it terminates
 	// with, so PID reuse can't redirect the kill (#2531).
+	stopped := make(map[int]bool, 2)
 	for _, pid := range []int{state.spawnedPID, state.pid} {
 		if pid <= 0 {
 			continue
@@ -636,6 +638,23 @@ func (m *Manager) ensureStoppedSession(state *sessionState) error {
 		if _, err := m.stopIfOursFunc(pid, m.binaryPath); err != nil {
 			return err
 		}
+		stopped[pid] = true
+	}
+	// Then every helper still running in the session, whoever started it
+	// (#6251). The tracked PIDs above are frequently unknown: a helper launched
+	// through the user-role helper reports PID 0, a fresh agent process
+	// remembers nothing it spawned before a restart, and an older helper may
+	// write its status file somewhere this agent does not read. Stopping by PID
+	// alone then silently stops nothing, leaving the old instance running
+	// beside the one respawned next.
+	for _, inst := range m.helperInstancesInSession(state.key) {
+		if stopped[inst.PID] {
+			continue
+		}
+		if _, err := m.stopIfOursFunc(inst.PID, m.binaryPath); err != nil {
+			return err
+		}
+		stopped[inst.PID] = true
 	}
 	state.spawnedPID = 0
 	return nil
