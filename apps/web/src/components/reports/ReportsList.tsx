@@ -17,6 +17,9 @@ import {
 import { cn } from '@/lib/utils';
 import { runAction, ActionError } from '@/lib/runAction';
 import { fetchWithAuth } from '../../stores/auth';
+import { useOrgStore } from '../../stores/orgStore';
+import { useJwtClaims } from '@/lib/authScope';
+import { ScopeBadge } from '../shared/ScopeBadge';
 import { exportReport, downloadBlob, getBrowserTimezone, type PostureSummary } from './reportExport';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import {
@@ -125,6 +128,15 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
   const [generatingIds, setGeneratingIds] = useState<Set<string>>(new Set());
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'reports' | 'runs'>('reports');
+  const { currentOrgId } = useOrgStore();
+  const jwtClaims = useJwtClaims();
+  // `GET /reports` carries the ambient `?orgId=` of the focused org (kept on
+  // purpose: dropping it would list every org's reports under one org), and
+  // the API lists partner-owned reports only without it. So a partner-scope
+  // user with an org focused is told where the all-organizations reports are
+  // rather than silently not seeing them. Fails closed while unresolved.
+  const showPartnerWideHint =
+    jwtClaims.status === 'resolved' && jwtClaims.claims.scope === 'partner' && !!currentOrgId;
 
   const fetchReports = useCallback(async () => {
     try {
@@ -435,6 +447,11 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
 
       {activeTab === 'reports' && (
         <>
+          {showPartnerWideHint && (
+            <p data-testid="reports-partner-wide-hint" className="text-sm text-muted-foreground">
+              {t('reports.reportsList.partnerWideHint')}
+            </p>
+          )}
           {reports.length === 0 ? (
             <div className="rounded-lg border border-dashed p-12 text-center">
               <FileText className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
@@ -477,7 +494,7 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
                 </thead>
                 <tbody className="divide-y">
                   {reports.map(report => (
-                    <tr key={report.id} className="hover:bg-muted/30">
+                    <tr key={report.id} data-testid={`report-row-${report.id}`} className="hover:bg-muted/30">
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-2">
                           <FileText className="h-4 w-4 text-muted-foreground" />
@@ -488,6 +505,14 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
                               className="rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary"
                             >
                               {t('reports.reportsList.visibleInPortal')}
+                            </span>
+                          )}
+                          {report.partnerId && !report.orgId && (
+                            // Partner-owned: covers all of the partner's
+                            // organizations (#3198). ScopeBadge keeps its own
+                            // fixed testid, so the per-row one lives here.
+                            <span data-testid={`report-scope-badge-${report.id}`} className="shrink-0">
+                              <ScopeBadge orgId={null} partnerId={report.partnerId} isSystem={false} />
                             </span>
                           )}
                         </div>

@@ -461,7 +461,8 @@
       "templates": "Plantillas",
       "title": "Informes",
       "tryAgain": "Intentar otra vez",
-      "unknownReport": "Informe desconocido"
+      "unknownReport": "Informe desconocido",
+      "partnerWideHint": "Los informes que abarcan todas las organizaciones aparecen en la vista Todas las organizaciones."
     },
     "reportBuilder": {
       "actions": {
@@ -806,7 +807,10 @@
         "updateFailed": "No se pudieron actualizar los destinatarios del informe",
         "convertFailed": "No se pudo convertir esta dirección de correo electrónico",
         "mfaRequired": "La conversión de un destinatario requiere autenticación multifactor. Activa MFA en tu perfil y vuelve a intentarlo.",
-        "loadFailed": "No se pudieron cargar los destinatarios del informe"
+        "loadFailed": "No se pudieron cargar los destinatarios del informe",
+        "businessEmailOnly": "Los informes de negocio se envían solo a las direcciones de correo electrónico de abajo. No se pueden agregar contactos de la organización.",
+        "partnerOwnedEmailOnly": "Este informe abarca todas las organizaciones, por lo que se envía solo a las direcciones de correo electrónico de abajo. No se pueden agregar contactos de la organización.",
+        "emailAddresses": "Direcciones de correo electrónico"
       },
       "previewTable": {
         "selectFields": "Seleccione campos para completar la tabla de vista previa."
@@ -1111,6 +1115,13 @@
       "includePaidInPeriodHelp": "Agrega una nota con las facturas pagadas por completo desde el primer día del mes de referencia hasta la fecha de referencia. Nunca cambia los tramos de antigüedad.",
       "cancel": "Cancelar",
       "createReport": "Crear informe"
+    },
+    "ownerScope": {
+      "legend": "El informe abarca",
+      "allOrganizations": "Todas las organizaciones",
+      "allOrganizationsHint": "Abarca todas las organizaciones activas y de prueba, determinadas en cada ejecución. Las organizaciones excluidas se indican en las notas del informe. Requiere acceso a todas las organizaciones.",
+      "singleOrganization": "Una organización",
+      "singleOrganizationHint": "La organización seleccionada en el selector de organizaciones."
     }
   }
 }

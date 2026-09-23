@@ -461,7 +461,8 @@
       "templates": "Templates",
       "title": "Reports",
       "tryAgain": "Try again",
-      "unknownReport": "Unknown Report"
+      "unknownReport": "Unknown Report",
+      "partnerWideHint": "Reports that cover all organizations appear on the All organizations view."
     },
     "reportBuilder": {
       "actions": {
@@ -806,7 +807,10 @@
         "updateFailed": "Could not update the report recipients",
         "convertFailed": "Could not convert this email address",
         "mfaRequired": "Converting a recipient requires multi-factor authentication. Enable MFA in your profile and try again.",
-        "loadFailed": "Could not load the report recipients"
+        "loadFailed": "Could not load the report recipients",
+        "businessEmailOnly": "Business reports are delivered only to the email addresses below. Organization contacts can't be added.",
+        "partnerOwnedEmailOnly": "This report covers all organizations, so it is delivered only to the email addresses below. Organization contacts can't be added.",
+        "emailAddresses": "Email addresses"
       },
       "previewTable": {
         "selectFields": "Select fields to populate the preview table."
@@ -1111,6 +1115,13 @@
       "includePaidInPeriodHelp": "Adds a note listing invoices fully paid from the first of the as-of month through the as-of date. It never changes the aging buckets.",
       "cancel": "Cancel",
       "createReport": "Create report"
+    },
+    "ownerScope": {
+      "legend": "Report covers",
+      "allOrganizations": "All organizations",
+      "allOrganizationsHint": "Covers every active and trial organization, resolved at each run. Excluded organizations are listed in the report's notes. Requires access to all organizations.",
+      "singleOrganization": "One organization",
+      "singleOrganizationHint": "The organization selected in the organization switcher."
     }
   }
 }

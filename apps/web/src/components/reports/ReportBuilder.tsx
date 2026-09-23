@@ -792,6 +792,14 @@ export default function ReportBuilder({
   const [emailRecipients, setEmailRecipients] = useState<string[]>(defaultValues?.emailRecipients ?? []);
   const [contacts, setContacts] = useState<ContactOption[]>([]);
   const [selectedContactIds, setSelectedContactIds] = useState<Set<string>>(new Set());
+  // Contact recipients are refused by the API for every business report type
+  // (409 `report_type_partner_only_delivery`, org-owned included) and for any
+  // partner-owned report (409 `partner_owned_report`: contact recipients hang
+  // off an org-only composite FK). A picker that can only 409 is a silent
+  // failure, so both skip the contacts fetch and deliver through the
+  // free-text email list alone, which the worker already sends to.
+  const businessType = isBusinessReportType(defaultValues?.type);
+  const contactRecipientsRefused = businessType || partnerOwned;
   const [saveTemplate, setSaveTemplate] = useState(defaultValues?.saveTemplate ?? false);
   const [templateName, setTemplateName] = useState(defaultValues?.templateName ?? '');
   const [emailInput, setEmailInput] = useState('');
@@ -838,7 +846,7 @@ export default function ReportBuilder({
   }, [defaultValues]);
 
   useEffect(() => {
-    if (!currentOrgId || !reportId || schedule === 'one_time') return;
+    if (!currentOrgId || !reportId || schedule === 'one_time' || contactRecipientsRefused) return;
 
     void Promise.all([
       fetchWithAuth(`/orgs/organizations/${currentOrgId}/contacts`),
@@ -866,7 +874,7 @@ export default function ReportBuilder({
     }).catch(() => {
       setError(t('reports.reportBuilder.recipients.loadFailed'));
     });
-  }, [currentOrgId, reportId, schedule, t]);
+  }, [currentOrgId, reportId, schedule, contactRecipientsRefused, t]);
 
   const fieldDefinitions = fieldDefinitionsByType[builderType];
   const dataSourceFields = dataSourceFieldsByType[builderType];
@@ -2238,6 +2246,14 @@ export default function ReportBuilder({
                 <p className="text-xs font-medium text-muted-foreground">{t('reports.reportBuilder.emailDistributionList')}</p>
               </div>
               <div className="space-y-3">
+                {contactRecipientsRefused ? (
+                  <p data-testid="report-partner-recipients-note" className="text-xs text-muted-foreground">
+                    {businessType
+                      ? t('reports.reportBuilder.recipients.businessEmailOnly')
+                      : t('reports.reportBuilder.recipients.partnerOwnedEmailOnly')}
+                  </p>
+                ) : (
+                <>
                 <p className="text-xs font-medium text-muted-foreground">
                   {t('reports.reportBuilder.recipients.contacts')}
                 </p>
@@ -2264,17 +2280,21 @@ export default function ReportBuilder({
                     </label>
                   ))}
                 </div>
+                </>
+                )}
 
                 {emailRecipients.length > 0 && (
                   <div>
                     <p className="text-xs font-medium text-muted-foreground">
-                      {t('reports.reportBuilder.recipients.legacy')}
+                      {contactRecipientsRefused
+                        ? t('reports.reportBuilder.recipients.emailAddresses')
+                        : t('reports.reportBuilder.recipients.legacy')}
                     </p>
                     {emailRecipients.map(email => (
                       <div key={email} className="flex items-center justify-between gap-3 py-2">
                         <span className="text-sm">{email}</span>
                         <div className="flex items-center gap-2">
-                          {reportId && (
+                          {reportId && !contactRecipientsRefused && (
                             <button
                               type="button"
                               data-testid={`report-recipient-convert-${email}`}

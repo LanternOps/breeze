@@ -471,3 +471,81 @@ describe('ReportBuilder recipients', () => {
     });
   });
 });
+
+describe('ReportBuilder contact recipients refusal (#3198 W03, ruling W5)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useOrgStore.setState({ currentOrgId: 'org-1' });
+    fetchWithAuthMock.mockImplementation(async url => {
+      if (url.includes('/contacts')) {
+        return makeJsonResponse({ data: [{ id: 'contact-1', name: 'Alex', email: 'alex@example.test' }] });
+      }
+      if (url.endsWith('/reports/report-1/recipients')) return makeJsonResponse({ data: [] });
+      return makeJsonResponse({ data: { rows: [] } });
+    });
+  });
+
+  const contactsFetched = () =>
+    fetchWithAuthMock.mock.calls.some(([url]) => String(url).includes('/contacts') || String(url).endsWith('/recipients'));
+
+  it('skips the contact fetch and explains email-only delivery for a business report type', async () => {
+    render(
+      <ReportBuilder
+        mode="edit"
+        reportId="report-1"
+        defaultValues={{ type: 'ar_aging', schedule: 'monthly', emailRecipients: ['cfo@example.test'] }}
+      />
+    );
+
+    const note = await screen.findByTestId('report-partner-recipients-note');
+    expect(note).toHaveTextContent('Business reports are delivered only to the email addresses below');
+    expect(contactsFetched()).toBe(false);
+    expect(screen.queryByTestId('report-recipient-contact-contact-1')).toBeNull();
+    // The contact convert action would 409 too; the free-text list stays.
+    expect(screen.queryByTestId('report-recipient-convert-cfo@example.test')).toBeNull();
+    expect(screen.getByText('cfo@example.test')).toBeInTheDocument();
+  });
+
+  it('skips the contact fetch and explains email-only delivery for a partner-owned report', async () => {
+    render(
+      <ReportBuilder
+        mode="edit"
+        reportId="report-1"
+        partnerOwned
+        defaultValues={{ type: 'executive_summary', schedule: 'monthly' }}
+      />
+    );
+
+    const note = await screen.findByTestId('report-partner-recipients-note');
+    expect(note).toHaveTextContent(/covers all organizations/);
+    expect(note).not.toHaveTextContent('Business reports');
+    expect(contactsFetched()).toBe(false);
+  });
+
+  it('still adds free-text email recipients when contacts are refused', async () => {
+    render(
+      <ReportBuilder
+        mode="edit"
+        reportId="report-1"
+        defaultValues={{ type: 'ticket_sla_attainment', schedule: 'monthly' }}
+      />
+    );
+    await screen.findByTestId('report-partner-recipients-note');
+    await userEvent.type(screen.getByPlaceholderText(/@/), 'ops@example.test');
+    await userEvent.click(screen.getByRole('button', { name: /add recipient/i }));
+    expect(await screen.findByText('ops@example.test')).toBeInTheDocument();
+  });
+
+  it('still fetches contacts for an org-owned non-business report', async () => {
+    render(
+      <ReportBuilder
+        mode="edit"
+        reportId="report-1"
+        defaultValues={{ type: 'executive_summary', schedule: 'monthly' }}
+      />
+    );
+    expect(await screen.findByTestId('report-recipient-contact-contact-1')).toBeInTheDocument();
+    expect(contactsFetched()).toBe(true);
+    expect(screen.queryByTestId('report-partner-recipients-note')).toBeNull();
+  });
+});

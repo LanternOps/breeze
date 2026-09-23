@@ -461,7 +461,8 @@
       "templates": "Şablonlar",
       "title": "Raporlar",
       "tryAgain": "Tekrar deneyin",
-      "unknownReport": "Bilinmeyen Rapor"
+      "unknownReport": "Bilinmeyen Rapor",
+      "partnerWideHint": "Tüm kuruluşları kapsayan raporlar Tüm kuruluşlar görünümünde yer alır."
     },
     "reportBuilder": {
       "actions": {
@@ -806,7 +807,10 @@
         "updateFailed": "Rapor alıcıları güncellenemedi",
         "convertFailed": "Bu e-posta adresi dönüştürülemedi",
         "mfaRequired": "Bir alıcıyı dönüştürmek için çok faktörlü kimlik doğrulama gerekir. Profilinizde MFA'yı etkinleştirin ve tekrar deneyin.",
-        "loadFailed": "Rapor alıcıları yüklenemedi"
+        "loadFailed": "Rapor alıcıları yüklenemedi",
+        "businessEmailOnly": "İş raporları yalnızca aşağıdaki e-posta adreslerine gönderilir. Kuruluş kişileri eklenemez.",
+        "partnerOwnedEmailOnly": "Bu rapor tüm kuruluşları kapsadığından yalnızca aşağıdaki e-posta adreslerine gönderilir. Kuruluş kişileri eklenemez.",
+        "emailAddresses": "E-posta adresleri"
       },
       "previewTable": {
         "selectFields": "Önizleme tablosunun doldurulacağı alanları seçin."
@@ -1111,6 +1115,13 @@
       "includePaidInPeriodHelp": "Referans ayının ilk gününden referans tarihine kadar tamamen ödenen faturaları listeleyen bir not ekler. Yaşlandırma dilimlerini asla değiştirmez.",
       "cancel": "İptal",
       "createReport": "Rapor oluştur"
+    },
+    "ownerScope": {
+      "legend": "Raporun kapsamı",
+      "allOrganizations": "Tüm kuruluşlar",
+      "allOrganizationsHint": "Her çalıştırmada belirlenen tüm aktif ve deneme sürümündeki kuruluşları kapsar. Hariç tutulan kuruluşlar raporun notlarında listelenir. Tüm kuruluşlara erişim gerektirir.",
+      "singleOrganization": "Tek bir kuruluş",
+      "singleOrganizationHint": "Kuruluş seçicide seçili olan kuruluş."
     }
   }
 }

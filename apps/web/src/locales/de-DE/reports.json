@@ -461,7 +461,8 @@
       "templates": "Vorlagen",
       "title": "Berichte",
       "tryAgain": "Versuchen Sie es erneut",
-      "unknownReport": "Unbekannter Bericht"
+      "unknownReport": "Unbekannter Bericht",
+      "partnerWideHint": "Berichte, die alle Organisationen umfassen, erscheinen in der Ansicht „Alle Organisationen“."
     },
     "reportBuilder": {
       "actions": {
@@ -806,7 +807,10 @@
         "updateFailed": "Die Berichtsempfänger konnten nicht aktualisiert werden",
         "convertFailed": "Diese E-Mail-Adresse konnte nicht umgewandelt werden",
         "mfaRequired": "Das Umwandeln eines Empfängers erfordert Multi-Faktor-Authentifizierung. Aktivieren Sie MFA in Ihrem Profil und versuchen Sie es erneut.",
-        "loadFailed": "Die Berichtsempfänger konnten nicht geladen werden"
+        "loadFailed": "Die Berichtsempfänger konnten nicht geladen werden",
+        "businessEmailOnly": "Geschäftsberichte werden nur an die unten stehenden E-Mail-Adressen zugestellt. Organisationskontakte können nicht hinzugefügt werden.",
+        "partnerOwnedEmailOnly": "Dieser Bericht umfasst alle Organisationen und wird daher nur an die unten stehenden E-Mail-Adressen zugestellt. Organisationskontakte können nicht hinzugefügt werden.",
+        "emailAddresses": "E-Mail-Adressen"
       },
       "previewTable": {
         "selectFields": "Wählen Sie Felder aus, um die Vorschautabelle zu füllen."
@@ -1111,6 +1115,13 @@
       "includePaidInPeriodHelp": "Fügt einen Hinweis mit den Rechnungen hinzu, die vom Monatsersten bis zum Stichtag vollständig bezahlt wurden. Die Altersklassen ändern sich dadurch nie.",
       "cancel": "Abbrechen",
       "createReport": "Bericht erstellen"
+    },
+    "ownerScope": {
+      "legend": "Bericht umfasst",
+      "allOrganizations": "Alle Organisationen",
+      "allOrganizationsHint": "Umfasst alle aktiven Organisationen und Organisationen in der Testphase, bei jedem Lauf neu ermittelt. Ausgeschlossene Organisationen werden in den Hinweisen des Berichts aufgeführt. Erfordert Zugriff auf alle Organisationen.",
+      "singleOrganization": "Eine Organisation",
+      "singleOrganizationHint": "Die im Organisationswechsler ausgewählte Organisation."
     }
   }
 }

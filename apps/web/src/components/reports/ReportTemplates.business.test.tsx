@@ -4,7 +4,9 @@ import userEvent from '@testing-library/user-event';
 
 const fetchWithAuth = vi.fn();
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: (...a: unknown[]) => fetchWithAuth(...a) }));
-vi.mock('../../stores/orgStore', () => ({ useOrgStore: () => ({ currentOrgId: 'org-1' }) }));
+// Mutable so individual tests can exercise the All-organizations view (null).
+let currentOrgId: string | null = 'org-1';
+vi.mock('../../stores/orgStore', () => ({ useOrgStore: () => ({ currentOrgId }) }));
 const navigateTo = vi.fn();
 vi.mock('@/lib/navigation', () => ({ navigateTo: (...a: unknown[]) => navigateTo(...a) }));
 vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
@@ -47,6 +49,7 @@ describe('ReportTemplates — Business group (#3198 W03)', () => {
     vi.clearAllMocks();
     claimsState = { status: 'resolved', claims: { scope: 'partner', orgId: null, partnerId: 'p-1' } };
     grantedPermissions = new Set(['tickets:read', 'time_entries:read', 'invoices:read']);
+    currentOrgId = 'org-1';
   });
 
   it('renders the three business templates inside a labelled Business section for a partner-scope user with every permission', async () => {
@@ -189,5 +192,125 @@ describe('ReportTemplates — Business group (#3198 W03)', () => {
     await user.click(screen.getByRole('button', { name: 'Cancel' }));
     await user.click(await screen.findByTestId('report-template-use-ticket_sla_attainment'));
     expect(await screen.findByTestId('ticket-sla-group-by')).toHaveValue('');
+  });
+
+  // ── ownerScope (Task 4 / ruling W5) ──────────────────────────────────────
+
+  it('posts ownerScope partner and NO orgId anywhere when All organizations is chosen', async () => {
+    mockTemplatesFetch(() => Promise.resolve({ ok: true, json: () => Promise.resolve({ data: { id: 'rep-6' } }) }));
+    render(<ReportTemplates />);
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByTestId('report-template-use-ar_aging'));
+    // org-1 is focused, so the selector opens on the organization option.
+    expect(screen.getByTestId('report-owner-scope-org')).toBeChecked();
+    await user.click(screen.getByTestId('report-owner-scope-partner'));
+    await user.click(screen.getByTestId('ar-aging-create-report'));
+
+    await waitFor(() => expect(postBody()).toBeDefined());
+    // The partner id is derived server-side from auth.partnerId; an orgId
+    // beside ownerScope:'partner' is a 400 (orgId: z.never()).
+    expect(postBody()).toEqual({
+      name: 'AR aging',
+      type: 'ar_aging',
+      schedule: 'monthly',
+      format: 'pdf',
+      ownerScope: 'partner',
+      config: { groupBy: 'organization', includePaidInPeriod: false },
+    });
+  });
+
+  it('defaults to All organizations on the All-organizations view and posts no orgId', async () => {
+    currentOrgId = null;
+    mockTemplatesFetch(() => Promise.resolve({ ok: true, json: () => Promise.resolve({ data: { id: 'rep-7' } }) }));
+    render(<ReportTemplates />);
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByTestId('report-template-use-technician_time_billability'));
+    expect(screen.getByTestId('report-owner-scope-partner')).toBeChecked();
+    await user.click(screen.getByTestId('technician-time-create-report'));
+
+    await waitFor(() => expect(postBody()).toBeDefined());
+    expect(postBody()).toEqual({
+      name: expect.any(String),
+      type: 'technician_time_billability',
+      schedule: expect.any(String),
+      format: expect.any(String),
+      ownerScope: 'partner',
+      config: { period: { kind: 'last_full_month' }, groupBy: 'technician', weeklyCapacityHours: 40 },
+    });
+    expect(postBody()).not.toHaveProperty('orgId');
+    expect(postBody()).not.toHaveProperty('partnerId');
+  });
+
+  it('posts ownerScope organization with the focused orgId when the organization option is kept', async () => {
+    mockTemplatesFetch(() => Promise.resolve({ ok: true, json: () => Promise.resolve({ data: { id: 'rep-8' } }) }));
+    render(<ReportTemplates />);
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByTestId('report-template-use-ticket_sla_attainment'));
+    await user.click(await screen.findByTestId('ticket-sla-create-report'));
+
+    await waitFor(() => expect(postBody()).toBeDefined());
+    expect(postBody()).toEqual({
+      name: expect.any(String),
+      type: 'ticket_sla_attainment',
+      schedule: expect.any(String),
+      format: expect.any(String),
+      ownerScope: 'organization',
+      orgId: 'org-1',
+      config: { period: { kind: 'last_full_month' }, includeNoSla: true },
+    });
+  });
+
+  it('switching back to the organization option restores the focused orgId', async () => {
+    mockTemplatesFetch(() => Promise.resolve({ ok: true, json: () => Promise.resolve({ data: { id: 'rep-9' } }) }));
+    render(<ReportTemplates />);
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByTestId('report-template-use-ar_aging'));
+    await user.click(screen.getByTestId('report-owner-scope-partner'));
+    await user.click(screen.getByTestId('report-owner-scope-org'));
+    await user.click(screen.getByTestId('ar-aging-create-report'));
+
+    await waitFor(() => expect(postBody()).toBeDefined());
+    expect(postBody()).toMatchObject({ ownerScope: 'organization', orgId: 'org-1' });
+  });
+
+  it('keeps the non-business create body unchanged: no ownerScope, no owner-scope selector', async () => {
+    mockTemplatesFetch(() => Promise.resolve({ ok: true, json: () => Promise.resolve({ data: { id: 'rep-10' } }) }));
+    render(<ReportTemplates />);
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByTestId('report-template-use-security_compliance_posture'));
+    expect(screen.queryByTestId('report-owner-scope')).toBeNull();
+    await user.click(screen.getByRole('button', { name: /create report/i }));
+
+    await waitFor(() => expect(postBody()).toBeDefined());
+    expect(postBody()).not.toHaveProperty('ownerScope');
+    expect(postBody()).toMatchObject({ type: 'security_compliance_posture', orgId: 'org-1' });
+  });
+
+  it('files a renamed saved business report under Business by its type', async () => {
+    fetchWithAuth.mockImplementation((url: string) => {
+      if (url === '/reports/templates') {
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              data: [{ id: 'saved-ar-1', name: 'Receivables for the board', type: 'ar_aging', config: {} }],
+            }),
+        });
+      }
+      return Promise.resolve({ ok: false, json: () => Promise.resolve({}) });
+    });
+    render(<ReportTemplates />);
+
+    const business = await screen.findByTestId('report-template-group-business');
+    await waitFor(() =>
+      expect(within(business).getByTestId('report-template-card-saved-ar-1')).toBeInTheDocument(),
+    );
+    const general = screen.getByTestId('report-template-group-general');
+    expect(within(general).queryByTestId('report-template-card-saved-ar-1')).toBeNull();
   });
 });

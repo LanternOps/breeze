@@ -461,7 +461,8 @@
       "templates": "Template",
       "title": "Report",
       "tryAgain": "Riprova",
-      "unknownReport": "Report sconosciuto"
+      "unknownReport": "Report sconosciuto",
+      "partnerWideHint": "I report che coprono tutte le organizzazioni compaiono nella vista Tutte le organizzazioni."
     },
     "reportBuilder": {
       "actions": {
@@ -806,7 +807,10 @@
         "updateFailed": "Impossibile aggiornare i destinatari del report",
         "convertFailed": "Impossibile convertire questo indirizzo email",
         "mfaRequired": "La conversione di un destinatario richiede l’autenticazione a più fattori. Abilita l’MFA nel tuo profilo e riprova.",
-        "loadFailed": "Impossibile caricare i destinatari del report"
+        "loadFailed": "Impossibile caricare i destinatari del report",
+        "businessEmailOnly": "I report aziendali vengono inviati solo agli indirizzi email indicati sotto. Non è possibile aggiungere contatti dell'organizzazione.",
+        "partnerOwnedEmailOnly": "Questo report copre tutte le organizzazioni, quindi viene inviato solo agli indirizzi email indicati sotto. Non è possibile aggiungere contatti dell'organizzazione.",
+        "emailAddresses": "Indirizzi email"
       },
       "previewTable": {
         "selectFields": "Seleziona campi per popolare la tabella di anteprima."
@@ -1111,6 +1115,13 @@
       "includePaidInPeriodHelp": "Aggiunge una nota con le fatture pagate interamente dal primo giorno del mese di riferimento fino alla data di riferimento. Non modifica mai le fasce di anzianità.",
       "cancel": "Annulla",
       "createReport": "Crea report"
+    },
+    "ownerScope": {
+      "legend": "Il report copre",
+      "allOrganizations": "Tutte le organizzazioni",
+      "allOrganizationsHint": "Copre tutte le organizzazioni attive e in prova, determinate a ogni esecuzione. Le organizzazioni escluse sono elencate nelle note del report. Richiede l'accesso a tutte le organizzazioni.",
+      "singleOrganization": "Una sola organizzazione",
+      "singleOrganizationHint": "L'organizzazione selezionata nel selettore delle organizzazioni."
     }
   }
 }

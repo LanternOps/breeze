@@ -1,0 +1,82 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+
+const claims = vi.hoisted(() => ({
+  value: { status: 'resolved', claims: { scope: 'partner', orgId: null, partnerId: 'p-1' } } as unknown,
+}));
+vi.mock('@/lib/authScope', () => ({ useJwtClaims: () => claims.value }));
+const org = vi.hoisted(() => ({ currentOrgId: null as string | null }));
+vi.mock('../../stores/orgStore', () => ({ useOrgStore: () => ({ currentOrgId: org.currentOrgId }) }));
+
+import { ReportOwnerScopeField, useDefaultReportOwnerScope } from './ReportOwnerScopeField';
+
+function Harness() {
+  const { canChoose, defaultScope } = useDefaultReportOwnerScope();
+  return <div data-testid="harness" data-can-choose={String(canChoose)} data-default={defaultScope} />;
+}
+
+describe('report owner scope (#3198 W03)', () => {
+  beforeEach(() => {
+    claims.value = { status: 'resolved', claims: { scope: 'partner', orgId: null, partnerId: 'p-1' } };
+    org.currentOrgId = null;
+  });
+
+  it('offers the choice to a partner-scope token and defaults to all organizations on the All-orgs view', () => {
+    render(<Harness />);
+    expect(screen.getByTestId('harness').dataset.canChoose).toBe('true');
+    expect(screen.getByTestId('harness').dataset.default).toBe('partner');
+  });
+
+  it('defaults to the focused organization when one is selected', () => {
+    org.currentOrgId = 'org-1';
+    render(<Harness />);
+    expect(screen.getByTestId('harness').dataset.canChoose).toBe('true');
+    expect(screen.getByTestId('harness').dataset.default).toBe('organization');
+  });
+
+  it('never offers the choice to an organization-scope token', () => {
+    // An org token carries a partnerId but never passes breeze_has_partner_access.
+    claims.value = { status: 'resolved', claims: { scope: 'organization', orgId: 'org-1', partnerId: 'p-1' } };
+    render(<Harness />);
+    expect(screen.getByTestId('harness').dataset.canChoose).toBe('false');
+    expect(screen.getByTestId('harness').dataset.default).toBe('organization');
+  });
+
+  it('fails closed while the token is still unresolved', () => {
+    // Cold load: the access token is not in the store yet. "Unknown" must not
+    // read as "partner" (#4010 is exactly that conflation).
+    claims.value = { status: 'unresolved' };
+    render(<Harness />);
+    expect(screen.getByTestId('harness').dataset.canChoose).toBe('false');
+    expect(screen.getByTestId('harness').dataset.default).toBe('organization');
+  });
+
+  it('reports the chosen scope', async () => {
+    const onChange = vi.fn();
+    render(<ReportOwnerScopeField value="organization" onChange={onChange} />);
+    expect(screen.getByTestId('report-owner-scope-org')).toBeChecked();
+    await userEvent.setup().click(screen.getByTestId('report-owner-scope-partner'));
+    expect(onChange).toHaveBeenLastCalledWith('partner');
+  });
+
+  it('discloses the all-organizations coverage rules and the access requirement', () => {
+    render(<ReportOwnerScopeField value="partner" onChange={() => {}} />);
+    const hint = screen.getByTestId('report-owner-scope-partner-hint');
+    expect(hint).toHaveTextContent(/every active and trial organization/i);
+    expect(hint).toHaveTextContent(/listed in the report's notes/i);
+    expect(hint).toHaveTextContent(/access to all organizations/i);
+  });
+
+  it('renders nothing at all for an organization-scope token', () => {
+    claims.value = { status: 'resolved', claims: { scope: 'organization', orgId: 'org-1', partnerId: 'p-1' } };
+    const { container } = render(<ReportOwnerScopeField value="organization" onChange={() => {}} />);
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it('renders nothing while the token is unresolved', () => {
+    claims.value = { status: 'unresolved' };
+    const { container } = render(<ReportOwnerScopeField value="organization" onChange={() => {}} />);
+    expect(container).toBeEmptyDOMElement();
+  });
+});

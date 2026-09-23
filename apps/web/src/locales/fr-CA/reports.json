@@ -461,7 +461,8 @@
       "templates": "Modèles",
       "title": "Rapports",
       "tryAgain": "Réessayer",
-      "unknownReport": "Rapport inconnu"
+      "unknownReport": "Rapport inconnu",
+      "partnerWideHint": "Les rapports couvrant toutes les organisations apparaissent dans la vue Toutes les organisations."
     },
     "reportBuilder": {
       "actions": {
@@ -806,7 +807,10 @@
         "updateFailed": "Impossible de mettre à jour les destinataires du rapport",
         "convertFailed": "Impossible de convertir cette adresse courriel",
         "mfaRequired": "La conversion d’un destinataire exige l’authentification multifacteur. Activez la MFA dans votre profil, puis réessayez.",
-        "loadFailed": "Impossible de charger les destinataires du rapport"
+        "loadFailed": "Impossible de charger les destinataires du rapport",
+        "businessEmailOnly": "Les rapports d'affaires sont envoyés uniquement aux adresses courriel ci-dessous. Les contacts de l'organisation ne peuvent pas être ajoutés.",
+        "partnerOwnedEmailOnly": "Ce rapport couvre toutes les organisations, il est donc envoyé uniquement aux adresses courriel ci-dessous. Les contacts de l'organisation ne peuvent pas être ajoutés.",
+        "emailAddresses": "Adresses courriel"
       },
       "previewTable": {
         "selectFields": "Sélectionnez les champs pour remplir la table d’aperçu."
@@ -1111,6 +1115,13 @@
       "includePaidInPeriodHelp": "Ajoute une note listant les factures entièrement payées entre le premier jour du mois de référence et la date de référence. Elle ne modifie jamais les tranches d'ancienneté.",
       "cancel": "Annuler",
       "createReport": "Créer le rapport"
+    },
+    "ownerScope": {
+      "legend": "Portée du rapport",
+      "allOrganizations": "Toutes les organisations",
+      "allOrganizationsHint": "Couvre toutes les organisations actives et en essai, déterminées à chaque exécution. Les organisations exclues sont indiquées dans les notes du rapport. Nécessite l'accès à toutes les organisations.",
+      "singleOrganization": "Une organisation",
+      "singleOrganizationHint": "L'organisation sélectionnée dans le sélecteur d'organisation."
     }
   }
 }

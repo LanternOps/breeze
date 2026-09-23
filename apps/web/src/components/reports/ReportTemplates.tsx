@@ -19,6 +19,7 @@ import {
 import { cn } from '@/lib/utils';
 import ReportBuilder, { reportTypeSurvivesBuilder, type ReportBuilderFormValues } from './ReportBuilder';
 import { PostureReportOptionsForm } from './PostureReportOptionsForm';
+import { ReportOwnerScopeField, useDefaultReportOwnerScope, type ReportOwnerScope } from './ReportOwnerScopeField';
 import {
   DEFAULT_HARDWARE_LIFECYCLE_OPTIONS,
   HardwareLifecycleOptionsForm,
@@ -432,9 +433,11 @@ const normalizeTemplate = (item: TemplateApiItem, fallback?: ReportTemplate): Re
       iconBg: 'bg-slate-500/15',
       iconColor: 'text-slate-600'
     },
-    // A saved report that matched a curated card sits in that card's section;
-    // an unmatched one is a user's own report and belongs in General.
-    group: fallback?.group ?? 'general',
+    // The section follows the report TYPE: a business report the user renamed
+    // (so it matches no curated card by id or name) is still a business report
+    // and must not drift into General. Otherwise a saved report that matched a
+    // curated card sits in that card's section; an unmatched one is General.
+    group: isBusinessReportType(resolvedType) ? 'business' : (fallback?.group ?? 'general'),
     previewImage
   };
 };
@@ -549,6 +552,10 @@ export default function ReportTemplates() {
   const [ticketSlaOptions, setTicketSlaOptions] = useState<TicketSlaOptions>(DEFAULT_TICKET_SLA_OPTIONS);
   const [technicianTimeOptions, setTechnicianTimeOptions] = useState<TechnicianTimeOptions>(DEFAULT_TECHNICIAN_TIME_OPTIONS);
   const [arAgingOptions, setArAgingOptions] = useState<ArAgingOptions>(DEFAULT_AR_AGING_OPTIONS);
+  // Create-only ownership for the business modal. The selector renders only
+  // for a resolved partner-scope token; everyone else creates org-owned.
+  const { defaultScope: defaultOwnerScope } = useDefaultReportOwnerScope();
+  const [ownerScope, setOwnerScope] = useState<ReportOwnerScope>('organization');
   const [builderOpen, setBuilderOpen] = useState(false);
   const [creatingId, setCreatingId] = useState<string | null>(null);
 
@@ -584,8 +591,13 @@ export default function ReportTemplates() {
   // Reports whose type the freeform builder would downgrade are saved directly
   // with their true type instead of being routed through it.
   const handleCreateDirect = useCallback(
-    async (template: ReportTemplate, postureConfig: Record<string, unknown> = {}) => {
+    async (
+      template: ReportTemplate,
+      postureConfig: Record<string, unknown> = {},
+      owner: ReportOwnerScope = 'organization',
+    ) => {
       setCreatingId(template.id);
+      const isBusiness = isBusinessReportType(template.defaults.type);
       try {
         await runAction({
           request: () =>
@@ -596,14 +608,25 @@ export default function ReportTemplates() {
                 type: template.defaults.type,
                 schedule: template.defaults.schedule ?? 'one_time',
                 format: template.defaults.format ?? 'pdf',
-                ...(currentOrgId ? { orgId: currentOrgId } : {}),
+                // Ownership. A business create states it explicitly: `ownerScope`
+                // is the only ownership input — the partner id is derived
+                // server-side from auth.partnerId, and a partner-owned report
+                // has no orgId by construction (the API's partner arm is
+                // `orgId: z.never()`, so an orgId beside it is a 400). Every
+                // other type keeps its original org-owned body.
+                ...(isBusiness && owner === 'partner'
+                  ? { ownerScope: 'partner' as const }
+                  : {
+                      ...(isBusiness ? { ownerScope: 'organization' as const } : {}),
+                      ...(currentOrgId ? { orgId: currentOrgId } : {})
+                    }),
                 // Business report config schemas (#3198) REFUSE a dateRange
                 // (and filters/sites/orgId/orgIds/siteIds/deviceIds) that
                 // "selects something" — the server 400s. Those types have no
                 // ad-hoc selection at all, so the config is exactly what the
                 // type's options form mapped (`*ConfigFromOptions`), never a
                 // dateRange.
-                config: isBusinessReportType(template.defaults.type)
+                config: isBusiness
                   ? { ...postureConfig }
                   : {
                       dateRange: template.defaults.dateRange ?? { preset: 'last_30_days' },
@@ -668,6 +691,7 @@ export default function ReportTemplates() {
         setTicketSlaOptions(DEFAULT_TICKET_SLA_OPTIONS);
         setTechnicianTimeOptions(DEFAULT_TECHNICIAN_TIME_OPTIONS);
         setArAgingOptions(DEFAULT_AR_AGING_OPTIONS);
+        setOwnerScope(defaultOwnerScope);
         setBusinessTemplate(template);
         return;
       }
@@ -677,7 +701,7 @@ export default function ReportTemplates() {
       }
       handleOpenBuilder(template);
     },
-    [handleCreateDirect, handleOpenBuilder]
+    [defaultOwnerScope, handleCreateDirect, handleOpenBuilder]
   );
 
   const renderBusinessOptionsForm = (template: ReportTemplate) => {
@@ -694,7 +718,7 @@ export default function ReportTemplates() {
             onChange={setTicketSlaOptions}
             submitLabel={t('reports.ticketSlaOptions.createReport')}
             onSubmit={() => {
-              void handleCreateDirect(template, ticketSlaConfigFromOptions(ticketSlaOptions));
+              void handleCreateDirect(template, ticketSlaConfigFromOptions(ticketSlaOptions), ownerScope);
             }}
           />
         );
@@ -706,7 +730,7 @@ export default function ReportTemplates() {
             onChange={setTechnicianTimeOptions}
             submitLabel={t('reports.technicianTimeOptions.createReport')}
             onSubmit={() => {
-              void handleCreateDirect(template, technicianTimeConfigFromOptions(technicianTimeOptions));
+              void handleCreateDirect(template, technicianTimeConfigFromOptions(technicianTimeOptions), ownerScope);
             }}
           />
         );
@@ -718,7 +742,7 @@ export default function ReportTemplates() {
             onChange={setArAgingOptions}
             submitLabel={t('reports.arAgingOptions.createReport')}
             onSubmit={() => {
-              void handleCreateDirect(template, arAgingConfigFromOptions(arAgingOptions));
+              void handleCreateDirect(template, arAgingConfigFromOptions(arAgingOptions), ownerScope);
             }}
           />
         );
@@ -1064,7 +1088,10 @@ export default function ReportTemplates() {
                 three business types, so it belongs here in the shared shell,
                 above the type-specific form, and its value joins the POST
                 body in handleCreateDirect beside `config`. */}
-            <div className="mt-5 space-y-4">{renderBusinessOptionsForm(businessTemplate)}</div>
+            <div className="mt-5 space-y-4">
+              <ReportOwnerScopeField value={ownerScope} onChange={setOwnerScope} />
+              {renderBusinessOptionsForm(businessTemplate)}
+            </div>
           </div>
         </div>
       )}

@@ -1,0 +1,82 @@
+import { useTranslation } from 'react-i18next';
+import { useJwtClaims } from '@/lib/authScope';
+import { useOrgStore } from '../../stores/orgStore';
+
+export type ReportOwnerScope = 'organization' | 'partner';
+
+/**
+ * Who owns a new report: one organization, or the partner (every active and
+ * trial organization of the MSP, resolved live at each run — #3198 W01's
+ * `partner_wide` scope).
+ *
+ * Gated on the JWT **scope claim**, never on `useOrgStore().partners.length`:
+ * an organization token carries a partnerId it can never use
+ * (`breeze_has_partner_access` is false for it, and the partner-owned create
+ * branch sits behind `auth.scope === 'partner'`). `useJwtClaims` rather than
+ * `getJwtClaims` because the access token is absent on every cold load and the
+ * one-shot read would freeze that empty answer for the life of the mount
+ * (`lib/authScope.ts`). Unresolved fails CLOSED: unknown is not partner.
+ *
+ * Create-only. Ownership is immutable after create (the API answers 400
+ * `report_ownership_immutable`), so there is no edit-page counterpart.
+ */
+export function useDefaultReportOwnerScope(): { canChoose: boolean; defaultScope: ReportOwnerScope } {
+  const state = useJwtClaims();
+  const { currentOrgId } = useOrgStore();
+  const canChoose = state.status === 'resolved' && state.claims.scope === 'partner' && !!state.claims.partnerId;
+  // All organizations when the user is on the All-organizations view; the
+  // focused organization otherwise.
+  return { canChoose, defaultScope: canChoose && !currentOrgId ? 'partner' : 'organization' };
+}
+
+export function ReportOwnerScopeField({
+  value,
+  onChange,
+}: {
+  value: ReportOwnerScope;
+  onChange: (value: ReportOwnerScope) => void;
+}) {
+  const { t } = useTranslation('reports');
+  const { canChoose } = useDefaultReportOwnerScope();
+  if (!canChoose) return null;
+
+  return (
+    <fieldset className="space-y-3 rounded-md border p-4" data-testid="report-owner-scope">
+      <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">
+        {t('reports.ownerScope.legend')}
+      </legend>
+      <label className="flex items-start gap-2 text-sm">
+        <input
+          type="radio"
+          name="report-owner-scope"
+          className="mt-1"
+          data-testid="report-owner-scope-partner"
+          checked={value === 'partner'}
+          onChange={() => onChange('partner')}
+        />
+        <span>
+          <span className="font-medium">{t('reports.ownerScope.allOrganizations')}</span>
+          <span data-testid="report-owner-scope-partner-hint" className="block text-xs text-muted-foreground">
+            {t('reports.ownerScope.allOrganizationsHint')}
+          </span>
+        </span>
+      </label>
+      <label className="flex items-start gap-2 text-sm">
+        <input
+          type="radio"
+          name="report-owner-scope"
+          className="mt-1"
+          data-testid="report-owner-scope-org"
+          checked={value === 'organization'}
+          onChange={() => onChange('organization')}
+        />
+        <span>
+          <span className="font-medium">{t('reports.ownerScope.singleOrganization')}</span>
+          <span className="block text-xs text-muted-foreground">
+            {t('reports.ownerScope.singleOrganizationHint')}
+          </span>
+        </span>
+      </label>
+    </fieldset>
+  );
+}
