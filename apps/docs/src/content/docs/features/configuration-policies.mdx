@@ -72,12 +72,10 @@ A policy can bundle multiple feature types:
 | Feature | What it controls |
 |---|---|
 | **Patch Management** | Auto-approval, schedule, reboot policy |
-| **Alert Rules** | CPU/RAM/disk thresholds, offline detection, event log alerts -- conditions, severity, cooldown, notification templates |
 | **Maintenance Windows** | Recurrence, duration, alert/patch/automation suppression |
 | **Compliance Rules** | Desired-state rules, enforcement level, remediation script |
 | **Backup** | Schedule and retention |
 | **Security** | Security policy settings |
-| **Monitoring** | Agent-side service & process watches, check interval, auto-restart |
 | **Monitors** | Attaches [monitors](/features/monitors/) -- objects that bundle a condition, severity, delivery, and response actions -- to this policy's scope |
 | **Automation** | Event triggers, cron schedules, bulk actions |
 | **Privileged Access** | Windows UAC elevation prompt capture for [privileged access management](/features/pam/) |
@@ -94,25 +92,20 @@ A policy can bundle multiple feature types:
 
 Each feature can be configured in one of two modes:
 
-- **Linked** — points to an existing policy object by ID (e.g., an existing alert rule). Changes to the linked object propagate automatically. Not available for `monitoring` — use inline instead.
+- **Linked** — points to an existing policy object by ID (e.g., an existing update ring). Changes to the linked object propagate automatically. Not available for `monitoring` — use inline instead.
 - **Inline** — settings are stored directly in the policy. Useful for simple configurations that don't need to be shared. Required for `monitoring`, `backup`, and `security` feature types.
 
-## Alerts vs. Monitoring
+## Monitors and alerting
 
-**Alert Rules** and **Monitoring** are two different feature types that often get confused because both can raise an alert:
+Author conditions and responses in [Monitors](/features/monitors/). A policy's
+**Monitors** tab attaches definitions, controls inheritance and the agent check
+interval, and previews pending legacy conversion. New conditions have one home.
+The legacy Alerts and Service & Process Monitoring tabs remain during W05c for
+conversion compatibility; do not create new conditions there.
 
-- **Alert Rules** are **server-evaluated**. They watch CPU/RAM/disk usage against a threshold, detect when a device goes offline, or fire on Windows Event Log / macOS unified log / Linux journal entries. Breeze collects device metrics automatically -- Alert Rules need no prerequisite Monitoring feature, or any other feature, to work.
-- **Monitoring** is **agent-side**. It watches specific Windows services or processes you name (e.g. `Spooler`, `sshd`, `node`), reports whether each one is running, and can automatically restart one that stops. It does not evaluate metric thresholds or event logs itself.
-
-A single policy can carry both a Monitoring feature and an Alert Rules feature at the same time -- for example, watching the `Spooler` service with auto-restart while also alerting on disk usage above 90%. See [Creating Alert Rules](/features/alerts/#creating-alert-rules) and [Service & Process Monitoring](/features/service-monitoring/) for how to configure each.
-
-Don't confuse either of these with the separate **Monitors** feature (a third, similarly-named thing): a [monitor](/features/monitors/) is a single authored object -- condition, severity, delivery, and response actions together -- that compiles into an Alert Rule and an Automation for you, rather than requiring you to wire the two together by hand.
-
-If the same kind of threshold is set on Alert Rules feature links at different levels of the policy hierarchy (e.g. a disk-space rule on both the organization and one of its sites), the **most specific (closest) level to the device wins** -- the same closest-wins rule that governs every other policy setting, described above.
-
-<Aside type="note">
-  Metric alert rules and event log alerts used to be configured as part of the Monitoring feature. During the 2026-07-30 alerts/monitoring consolidation, any such rules on existing policies were automatically moved to that policy's Alert Rules feature -- no rules were lost, but they're edited on the **Alert Rules** tab now rather than **Monitoring**.
-</Aside>
+Select **Add to inherited monitors** for cumulative deployment, or review
+**Replace inherited monitors** when preserving converted inline-rule behavior.
+Broad reactive automation belongs to **Jobs → Alert workflows**.
 
 ## Enforcement modes
 
@@ -157,27 +150,13 @@ Open the policy detail editor and click the tab for the feature you want to conf
 
 Patch Management is available on partner-wide (all organizations) policies — an [update ring](/features/update-rings/) can be linked directly, and the policy patches devices across every organization you manage. Behind the scenes, deployments are still tracked per organization: creating a deployment job from a partner-wide policy produces one job per organization with matching devices, so each customer's patch history and compliance reporting stay separate even though the schedule and approval rules are defined once.
 
-### Alert Rules
+### Monitors
 
-Add one or more alert conditions. Each condition requires:
-
-- **Metric** — what to measure (e.g., `cpu_percent`, `disk_percent`)
-- **Operator** — comparison (`gt`, `lt`, `eq`)
-- **Value** — the threshold
-- **Severity** — `critical`, `high`, `medium`, `low`, or `info`
-- **Cooldown minutes** — minimum time between repeated alerts for the same device
-- **Auto-resolve** — automatically resolve the alert when the condition clears
-
-Optionally link a title and message template to control notification formatting.
-
-Each rule can also carry its own delivery settings, independent of any organization-wide default:
-
-- **Notification channels** (`notificationChannelIds`) — specific channels to notify. If left unset, delivery falls back to notification routing rules, then the organization's default channels.
-- **Escalation policy** (`escalationPolicyId`) — an [escalation policy](/features/alerts/#escalation-policies) to attach, so an alert from this rule that goes unacknowledged notifies progressively broader audiences over time.
-
-<Aside type="note">
-  These two fields exist on both a config-policy Alert Rule and a standalone alert rule. Before this option existed, a config-policy alert rule had no way to attach an escalation policy and always fell back to the organization's default notification channels.
-</Aside>
+Open **Monitors**, attach an existing definition or create one, then save the
+policy. Configure the condition, responses and Notify settings on that monitor.
+Use [Delivery](/features/notifications/) for shared notification routing.
+During conversion, review **Needs conversion** before confirming; resolve every
+blocked or unconvertible row deliberately.
 
 ### Maintenance Windows
 
@@ -392,7 +371,7 @@ When creating a policy, set `ownerScope` to `organization` (the default) or `par
 
 To create a policy that inherits from a baseline, pass `parentPolicyId` in the create request body — see [Baseline policies](#baseline-policies-inheritance) above for which parents a given ownership scope may reference. An invalid, cross-tenant, or already-nested parent is rejected with `400 { "error": "INVALID_PARENT_POLICY" }` — a single error for every rejection reason, so the response can't be used to probe which policy IDs exist.
 
-When calling the features endpoints, the `featureType` value must be one of: `patch`, `alert_rule`, `backup`, `security`, `monitoring`, `monitors`, `maintenance`, `compliance`, `automation`, `event_log`, `software_policy`, `sensitive_data`, `peripheral_control`, `warranty`, `helper`, `remote_access`, `pam`, `onedrive_helper`, `vulnerability`, `device_lifecycle`. `monitors` (plural) is the [Monitors](/features/monitors/) feature -- distinct from `monitoring` (singular), which is the agent-side service/process watch feature.
+When calling the features endpoints, the `featureType` value must be one of: `patch`, `alert_rule`, `backup`, `security`, `monitoring`, `monitors`, `maintenance`, `compliance`, `automation`, `event_log`, `software_policy`, `sensitive_data`, `peripheral_control`, `warranty`, `helper`, `remote_access`, `pam`, `onedrive_helper`, `vulnerability`, `device_lifecycle`. `monitors` is the authoring/deployment feature. `alert_rule` and `monitoring` remain accepted only for transitional compatibility during W05c; use the conversion panel for their existing rows.
 
 ## Troubleshooting
 

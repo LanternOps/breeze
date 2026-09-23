@@ -106,7 +106,7 @@ Syncro's script library is PowerShell, batch, and shell — bodies port directly
 | Script variables (`$variableName`) | Script [parameters](/features/scripts/) |
 | `Rmm-Alert` (raise an alert from a script) | `exitCodeSeverityMapping` on the script |
 | `Set-Asset-Field` | [Custom field](/features/custom-fields/) writes via the API |
-| `Create-Syncro-Ticket` | Alert rule bound to [Breeze ticketing](/features/ticketing/) or a [PSA integration](/features/psa-integrations/) |
+| `Create-Syncro-Ticket` | Connect [Breeze ticketing](/features/ticketing/) or a [PSA integration](/features/psa-integrations/) and configure its supported alert integration |
 | Policy-attached scripts | [Automations](/features/automations/) |
 
 The Syncro-specific cmdlets (`Rmm-Alert`, `Set-Asset-Field`, `Create-Syncro-Ticket`, `Log-Activity`) are injected into the runtime and will fail on any other platform, so every script that uses one needs that line replaced. Grep your library for `Syncro` before you start — it tells you exactly how much rewriting there is.
@@ -121,7 +121,7 @@ Syncro's **Policies** bundle monitoring thresholds, patching, and scheduled scri
 
 | Syncro policy section | Breeze |
 |---|---|
-| Monitoring / thresholds | [Monitors](/features/service-monitoring/) + [alert rules](/features/alerts/) |
+| Monitoring / thresholds | [Monitors](/features/monitors/) with [Delivery](/features/notifications/) |
 | Patching | [Patch policies](/features/patch-management/) + [update rings](/features/update-rings/) |
 | Scheduled scripts | [Automations](/features/automations/) |
 | Applied per customer | Define **partner-wide** instead — one definition covers every organization |
