@@ -136,7 +136,16 @@ function resolveLastFullMonth(timeZone: string, now: Date): ResolvedReportPeriod
 function resolveLast30Days(timeZone: string, now: Date): ResolvedReportPeriod {
   const { year, month, day } = partsInZone(now, timeZone);
   const end = zonedMidnightUtc(year, month, day, timeZone);
-  const start = new Date(end.getTime() - 30 * 24 * 60 * 60 * 1000);
+  // 30 ZONED calendar days back, not 30 × 24h: across a DST change a fixed
+  // subtraction lands an hour off local midnight. Date.UTC normalizes the
+  // day underflow into the previous month(s) on the calendar only.
+  const startDay = new Date(Date.UTC(year, month - 1, day - 30));
+  const start = zonedMidnightUtc(
+    startDay.getUTCFullYear(),
+    startDay.getUTCMonth() + 1,
+    startDay.getUTCDate(),
+    timeZone,
+  );
   return { start, end, label: 'Last 30 days', timeZone, kind: 'last_30_days' };
 }
 

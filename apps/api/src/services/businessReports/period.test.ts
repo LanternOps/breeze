@@ -50,6 +50,19 @@ describe('resolveReportPeriod', () => {
     expect(p.label).toBe('Last 30 days');
   });
 
+  it('last_30_days steps 30 ZONED days across a DST change — both ends at local midnight', () => {
+    // America/Chicago leaves CDT (UTC-5) for CST (UTC-6) on 2026-11-01.
+    const p = resolveReportPeriod({ kind: 'last_30_days' }, 'America/Chicago', new Date('2026-11-15T18:00:00Z'));
+    expect(p.end.toISOString()).toBe('2026-11-15T06:00:00.000Z'); // Nov 15 00:00 CST
+    expect(p.start.toISOString()).toBe('2026-10-16T05:00:00.000Z'); // Oct 16 00:00 CDT, not 01:00
+  });
+
+  it('last_30_days across the spring-forward change (2026-03-08) also lands on local midnight', () => {
+    const p = resolveReportPeriod({ kind: 'last_30_days' }, 'America/Chicago', new Date('2026-03-20T18:00:00Z'));
+    expect(p.end.toISOString()).toBe('2026-03-20T05:00:00.000Z'); // Mar 20 00:00 CDT
+    expect(p.start.toISOString()).toBe('2026-02-18T06:00:00.000Z'); // Feb 18 00:00 CST
+  });
+
   it('last_quarter is the previous CALENDAR quarter', () => {
     const p = resolveReportPeriod({ kind: 'last_quarter' }, 'UTC', NOW);
     expect(p.start.toISOString()).toBe('2026-04-01T00:00:00.000Z');
