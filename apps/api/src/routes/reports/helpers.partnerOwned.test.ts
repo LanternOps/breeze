@@ -62,8 +62,10 @@ import {
   getReportRunWithOwnerCheck,
   getReportWithOwnerCheck,
   partnerOwnedReportVisibility,
+  systemPartnerWideListArm,
   tenantAuthorizedReportCondition,
 } from './helpers';
+import { reportRuns, reports } from '../../db/schema';
 import {
   partnerWideScope,
   resolveRequestPartnerReportAuthority,
@@ -241,5 +243,22 @@ describe('partnerOwnedReportVisibility (#3198 W01 spec 3.1a)', () => {
     const org = compiled(tenantAuthorizedReportCondition(REPORT_ID, orgAuth()));
     expect(org.params).not.toContain(PARTNER_ID);
     expect(org.sql).not.toContain('partner_id');
+  });
+});
+
+describe('systemPartnerWideListArm (#3198 W02, addendum B7)', () => {
+  it.each(['partner', 'organization'] as const)('returns undefined for a %s token', (scope) => {
+    expect(systemPartnerWideListArm({ scope }, reports)).toBeUndefined();
+    expect(systemPartnerWideListArm({ scope }, reportRuns)).toBeUndefined();
+  });
+
+  it('returns the any-partner partner_wide predicate for a system token', () => {
+    for (const columns of [reports, reportRuns]) {
+      const arm = systemPartnerWideListArm({ scope: 'system' }, columns);
+      expect(arm).toBeDefined();
+      const { sql, params } = compiled(arm);
+      expect(sql).toMatch(/partner_id/);
+      expect(params).toContain('partner_wide');
+    }
   });
 });
