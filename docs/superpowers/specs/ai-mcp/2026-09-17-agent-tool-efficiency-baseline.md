@@ -114,7 +114,7 @@ Full miss tables for both runs are in the workflow run artifacts (`tool-eval-rep
 
 ## 4. Hot/cold (90 days, EU + US)
 
-**Measured 2026-09-23.** The operator ran the SQL from `toolUsageReportSqlText(90)` in `apps/api/src/services/aiToolUsageReport.ts` (the A-W05 version from PR #6738), a superset of `sql/2026-09-17-ai-tool-usage-90d.sql` that adds the delivered-size columns. It ran read-only (`SET TRANSACTION READ ONLY` plus a `breeze.scope=system` election) against both managed production databases. Ranking follows the `hotForShaping` rule: chat and Helper rows only, scored `executions × delivered_bytes_p50` and summed across regions.
+**Measured 2026-09-23.** The operator ran the SQL from `toolUsageReportSqlText(90)` in `apps/api/src/services/aiToolUsageReport.ts`, a superset of `sql/2026-09-17-ai-tool-usage-90d.sql` that adds the delivered-size columns. It ran read-only (`SET TRANSACTION READ ONLY` plus a `breeze.scope=system` election) against both managed production databases. Ranking follows the `hotForShaping` rule: chat and Helper rows only, scored `executions × delivered_bytes_p50` and summed across regions.
 
 **Volume is low, so treat this ranking as a rough signal.** There were 1,069 tool executions in 90 days:
 
