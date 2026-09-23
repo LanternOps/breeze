@@ -21,10 +21,16 @@
  *
  * Smoke-sized run (a minute, a handful of producers, 5s cadence):
  *   ... --duration-hours 0.02 --sites 2 --agents 3 --cadence-seconds 5
+ *
+ * Checkpointing: the output file is rewritten (atomically) after bootstrap and
+ * after every round with `status: "running"`, so a run that dies at hour 13
+ * still leaves 13 hours of evidence. A signal, uncaught exception or failed
+ * main() rewrites it with `status: "aborted"` and the reason; only a run that
+ * reaches its deadline writes `status: "completed"`.
  */
 import '../../apps/api/src/__tests__/integration/loadEnv';
 
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdirSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, resolve as resolvePath } from 'node:path';
 import { sql } from 'drizzle-orm';
 import { TOPOLOGY_FIXTURE_SEED, topologyIngestFixture } from '../../packages/shared/src/testing/topologyFleet';
@@ -89,6 +95,17 @@ const scoped = <T>(orgId: string, fn: () => Promise<T>) => withDbAccessContext(o
 const address = (siteIndex: number, agentIndex: number) => `198.18.${siteIndex % 256}.${(agentIndex % 240) + 10}`;
 const gateway = (siteIndex: number) => `198.18.${siteIndex % 256}.1`;
 const sleep = (ms: number) => new Promise((done) => { setTimeout(done, ms); });
+
+/** Synchronous so it also works from signal / uncaughtException handlers. */
+function writeArtifact(output: string, report: unknown): void {
+  mkdirSync(dirname(output), { recursive: true });
+  const temp = `${output}.tmp`;
+  writeFileSync(temp, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
+  renameSync(temp, output);
+}
+/** Set once the soak has something to record; called on any abnormal exit. */
+let recordAbort: ((reason: string) => void) | null = null;
+
 function percentile(values: number[], fraction: number): number {
   if (!values.length) return 0;
   const sorted = [...values].sort((a, b) => a - b);
@@ -165,6 +182,7 @@ function buildUnchanged(producer: SoakProducer, cadenceSeconds: number) {
 async function main(): Promise<void> {
   const options = parseArgs(process.argv.slice(2));
   assertDisposableTarget();
+  const output = resolvePath(process.cwd(), options.output);
 
   const spec = topologyIngestFixture(options.fixture, options.seed,
     { siteCount: options.sites, agentsPerSite: options.agents });
@@ -227,12 +245,39 @@ async function main(): Promise<void> {
   let unchangedRunInserts = 0;
   let unchangedObservationInserts = 0;
   let round = 0;
+  let current = bootstrap;
+  const snapshot = (status: 'running' | 'completed' | 'aborted', abortReason?: string) => ({
+    status, ...(abortReason ? { abortReason } : {}),
+    fixture: options.fixture, seed: options.seed, startedAt: startedAt.toISOString(),
+    finishedAt: status === 'running' ? null : new Date().toISOString(),
+    lastCheckpointAt: new Date().toISOString(),
+    elapsedHours: Number(((Date.now() - startedAt.getTime()) / 3_600_000).toFixed(3)),
+    requestedDurationHours: options.durationHours,
+    scale: { sites: spec.siteCount, agentsPerSite: spec.agentsPerSite, producers: producers.length,
+      cadenceSeconds: options.cadenceSeconds, roundSeconds: options.roundSeconds,
+      changePeriod: options.changePeriod ?? Math.round(1 / spec.changedFraction), rounds: round },
+    counters: { ...counters },
+    latencyMs: { samples: latencies.length, p50: percentile(latencies, 0.5), p95: percentile(latencies, 0.95),
+      p99: percentile(latencies, 0.99), max: latencies.length ? Math.max(...latencies) : 0 },
+    invariants: {
+      unchangedRunInserts, unchangedObservationInserts,
+      // Mid-run this is "accepted but not yet published" as of the last
+      // checkpoint; only the completed value is the lost-transition verdict.
+      lostAcceptedTransitions: current.unmaterialized,
+      bootstrapRuns: bootstrap.runs, finalRuns: current.runs, finalObservations: current.observations,
+    },
+  });
+  // Abort path records the LAST CHECKPOINTED counts — it must not touch the
+  // database, which is often the thing that just went away.
+  recordAbort = (reason) => writeArtifact(output, snapshot('aborted', reason));
+  writeArtifact(output, snapshot('running'));
+
   while (Date.now() < deadline) {
     round += 1;
     const roundStart = Date.now();
     const pendingSites = new Set<string>();
     const changeStarts = new Map<string, number[]>();
-    const before = await runCount();
+    const before = current;
     let changedThisRound = 0;
 
     for (const producer of producers) {
@@ -262,31 +307,19 @@ async function main(): Promise<void> {
       const finished = Date.now();
       for (const at of changeStarts.get(siteId) ?? []) latencies.push(finished - at);
     }
+    current = await runCount();
+    writeArtifact(output, snapshot('running'));
 
     const elapsed = Date.now() - roundStart;
     const wait = Math.min(options.roundSeconds * 1000 - elapsed, Math.max(deadline - Date.now(), 0));
     if (wait > 0) await sleep(wait);
   }
 
-  const final = await runCount();
-  const report = {
-    fixture: options.fixture, seed: options.seed, startedAt: startedAt.toISOString(),
-    finishedAt: new Date().toISOString(), requestedDurationHours: options.durationHours,
-    scale: { sites: spec.siteCount, agentsPerSite: spec.agentsPerSite, producers: producers.length,
-      cadenceSeconds: options.cadenceSeconds, roundSeconds: options.roundSeconds,
-      changePeriod: options.changePeriod ?? Math.round(1 / spec.changedFraction), rounds: round },
-    counters,
-    latencyMs: { samples: latencies.length, p50: percentile(latencies, 0.5), p95: percentile(latencies, 0.95),
-      p99: percentile(latencies, 0.99), max: latencies.length ? Math.max(...latencies) : 0 },
-    invariants: {
-      unchangedRunInserts, unchangedObservationInserts,
-      lostAcceptedTransitions: final.unmaterialized,
-      bootstrapRuns: bootstrap.runs, finalRuns: final.runs, finalObservations: final.observations,
-    },
-  };
-  const output = resolvePath(process.cwd(), options.output);
-  await mkdir(dirname(output), { recursive: true });
-  await writeFile(output, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
+  current = await runCount();
+  const final = current;
+  const report = snapshot('completed');
+  recordAbort = null;
+  writeArtifact(output, report);
   console.log(`[topology-soak] wrote ${output}`);
   console.log(JSON.stringify(report.counters), JSON.stringify(report.latencyMs), JSON.stringify(report.invariants));
   const failures = [
@@ -300,8 +333,29 @@ async function main(): Promise<void> {
   }
 }
 
+// AggregateError (e.g. ECONNREFUSED from a dual-stack connect) has an empty message.
+const describe = (error: unknown) => error instanceof Error
+  ? error.message || (error as { code?: string }).code || error.name
+  : String(error);
+function abort(reason: string): void {
+  if (!recordAbort) return;
+  try { recordAbort(reason); console.error(`[topology-soak] aborted (${reason}); partial artifact written`); }
+  catch (error) { console.error('[topology-soak] could not write the aborted artifact', error); }
+  recordAbort = null;
+}
+for (const [signal, code] of [['SIGINT', 130], ['SIGTERM', 143], ['SIGHUP', 129]] as const) {
+  process.on(signal, () => { abort(signal); process.exit(code); });
+}
+// The postgres driver can throw from a socket callback when the server
+// disappears, which never reaches main()'s rejection handler.
+process.on('uncaughtException', (error) => { console.error(error); abort(`uncaughtException: ${describe(error)}`); process.exit(1); });
+process.on('unhandledRejection', (error) => {
+  console.error(error); abort(`unhandledRejection: ${describe(error)}`); process.exit(1);
+});
+
 main().then(async () => { await closeDb(); }, async (error) => {
   console.error(error);
+  abort(describe(error));
   process.exitCode = 1;
   await closeDb().catch(() => {});
 });
