@@ -1031,6 +1031,13 @@
       ]
     },
     {
+      "pattern": "apps/api/src/routes/invoicesPublic.ts",
+      "docs": [
+        "features/invoices.mdx",
+        "features/portal.mdx"
+      ]
+    },
+    {
       "pattern": "apps/api/src/db/schema/invoices.ts",
       "docs": [
         "features/invoices.mdx",
@@ -1812,6 +1819,30 @@
     },
     {
       "pattern": "apps/api/src/routes/security/**",
+      "docs": [
+        "features/security.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/security/SecurityScansPage.tsx",
+      "docs": [
+        "features/security.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/security/SecurityScanManager.tsx",
+      "docs": [
+        "features/security.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/security/ThreatList.tsx",
+      "docs": [
+        "features/security.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/security/ThreatDetail.tsx",
       "docs": [
         "features/security.mdx"
       ]

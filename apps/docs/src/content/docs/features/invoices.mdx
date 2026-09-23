@@ -60,6 +60,14 @@ Line items can come from several sources: catalog items, bundles, tracked time e
   If your catalog is empty, the editor links straight to **Product Catalog** so you can add the items you sell.
 </Aside>
 
+### Line grouping by ticket and category
+
+Wherever an invoice is rendered -- the web editor and document view, the generated PDF, the authenticated customer portal, and the public invoice link -- line items are grouped under the ticket they came from, then by category within that ticket (Labour, Materials, Recurring, and so on), instead of a flat list. This makes it clear to the customer which charges belong to which piece of work. Lines with no ticket are grouped together at the top.
+
+<Aside type="caution" title="Known gap">
+  The customer portal's **logged-in** invoice view groups lines by ticket but does not yet show the ticket's category label next to the group heading. The web editor/document view, the generated PDF, and the public (non-portal) invoice link all show the category label correctly. This is tracked for a follow-up fix.
+</Aside>
+
 ## Issuing and Sending
 
 **Issuing** an invoice finalizes it: it assigns the next sequential invoice number (using your partner prefix and the current year), sets the issue and due dates, and generates the PDF. **Sending** emails the invoice to the customer.

@@ -97,6 +97,17 @@ The agent normalizes detected AV products to one of the following provider ident
 
 ---
 
+## The IOC Scans Page
+
+**Security → IOC Scans** (`/security/scans`) is the console for running on-demand scans and working detected threats without leaving the browser. It has two tabs:
+
+- **Scans** — pick one or more devices (single- or multi-select), choose a scan type (Quick, Full, or Custom with an explicit path), and start the scan. Submission progress is shown per device as each request queues. Below that, **Active Scans** shows what's currently queued or running, and **Scan History** lists the most recent completed and failed runs with their result and duration.
+- **Threats** — a filterable list of detected threats (by status, severity, device) across the fleet. Selecting a threat opens its detail view, where you can **Quarantine**, **Restore**, or permanently remove it; the bulk-action toolbar on the list lets you quarantine or remove several threats at once. Restoring a quarantined threat moves it back to allowed without re-scanning.
+
+<Aside type="note">
+  Before v0.116.0, quarantine and restore were reachable only through the API (see [Threat Actions](#threat-actions) below) — a quarantined threat had no UI path to restore it. The Threats tab closes that gap.
+</Aside>
+
 ## Threat Detection
 
 ### Threat Types and Severity

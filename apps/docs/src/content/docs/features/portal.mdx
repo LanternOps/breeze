@@ -44,6 +44,7 @@ The service-insight sections — Dashboard, Security, Backups, Reports, support 
 |--------|---------|------------------------|
 | **Dashboard** | Off | A service-health summary when they sign in |
 | **Devices** | Off (v0.114.0+) | The devices page — see [Devices](#devices) below |
+| **Network** | Off (v0.116.0+) | The network overview page — see [Network](#network) below |
 | **Security** | Off | Security posture, protection, threats, and vulnerabilities |
 | **Backups** | Off | Backup coverage, verification, restore tests, and readiness |
 | **Reports** | Off | The ability to generate and download approved reports |
@@ -185,6 +186,14 @@ The device list shows what the customer's own devices are doing, in plain langua
 **Export CSV** downloads the same list for a customer who wants it in a spreadsheet — for an insurance questionnaire, an asset register, or their own auditor.
 
 The device list is controlled by its own **Devices** visibility toggle (v0.114.0+), off by default and included in **Enable all visibility**. Organizations that already had **Self-service** turned on before this change kept portal access to their device list — Self-service still grants it as an alternate path, so you don't need to also turn on Devices for those customers unless you've since turned Self-service off.
+
+---
+
+## Network
+
+With **Network** visibility on, the customer sees a summary of their discovered network assets: total assets, how many are verified online or offline, how many SNMP devices are being polled, and how many monitors are currently down. Online and offline counts don't have to add up to the total — an asset whose reachability hasn't been verified yet counts in neither figure. If discovery hasn't found any assets for the organization yet, the page says so instead of showing an empty table.
+
+This toggle is separate from the [Network Topology](/features/discovery/#site-map) partner module — it surfaces discovery/monitoring data, not the topology map itself.
 
 ---
 
