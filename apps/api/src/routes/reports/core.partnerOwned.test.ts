@@ -184,7 +184,12 @@ import {
   resolveRequestPartnerReportAuthority,
   siteScopeFingerprint,
 } from '../../services/siteScope';
-import { generateReport, UnsupportedReportScopeError } from '../../services/reportGenerationService';
+import {
+  generateReport,
+  UnexecutableReportScopeError,
+  UnsupportedReportScopeError,
+} from '../../services/reportGenerationService';
+import { ReportScopeMismatchError, reportScopeFromAuthority } from '../../services/reportScope';
 import { PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../../services/partnerWideAccess';
 import { writeRouteAudit } from '../../services/auditEvents';
 
@@ -882,8 +887,33 @@ describe('POST /reports/:id/generate on a partner-owned definition', () => {
     const res = await app().request(`/reports/${REPORT_ID}/generate`, { method: 'POST' });
 
     expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Access to report scope denied' });
     expect(state.inserts).toHaveLength(0);
     expect(generateReport).not.toHaveBeenCalled();
+  });
+
+  it('403s with the runId when generation throws UnexecutableReportScopeError after the run row exists', async () => {
+    state.rows = [partnerDefinition(), partnerDefinition()];
+    vi.mocked(generateReport).mockRejectedValueOnce(new UnexecutableReportScopeError());
+    const res = await app().request(`/reports/${REPORT_ID}/generate`, { method: 'POST' });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Access to report scope denied', runId: REPORT_ID });
+    expect(state.inserts).toHaveLength(1);
+    expect(state.updates.at(-1)?.set).toEqual(expect.objectContaining({ status: 'failed' }));
+  });
+
+  it('maps a ReportScopeMismatchError (subclass, ruling P11) from the live org-list resolve to the same 403', async () => {
+    state.rows = [partnerDefinition(), partnerDefinition()];
+    vi.mocked(reportScopeFromAuthority).mockRejectedValueOnce(
+      new ReportScopeMismatchError('ambient context cannot see partner'),
+    );
+    const res = await app().request(`/reports/${REPORT_ID}/generate`, { method: 'POST' });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Access to report scope denied', runId: REPORT_ID });
+    expect(generateReport).not.toHaveBeenCalled();
+    expect(state.updates.at(-1)?.set).toEqual(expect.objectContaining({ status: 'failed' }));
   });
 
   it('an org-only type stored under the partner axis still records the stable unsupported_report_scope code', async () => {
