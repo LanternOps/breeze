@@ -6,7 +6,7 @@ sidebar:
   label: "TLS & Reverse Proxy"
 ---
 
-import { Tabs, TabItem, Aside } from '@astrojs/starlight/components';
+import { Tabs, TabItem, Aside, Steps } from '@astrojs/starlight/components';
 
 ## Caddy (Default)
 
@@ -58,6 +58,65 @@ docker compose exec caddy cat /data/caddy/pki/authorities/local/root.crt
 ```
 
 Leave the variable empty for any internet-reachable deployment. You do not need it for `localhost` or a bare IP address, which Caddy already self-signs.
+
+### Trusting the internal CA on agents
+
+Browsers are not the only clients that must trust a self-issued certificate. The Breeze agent, the Windows install one-liner and the MSI all verify the server certificate against the operating system's trust store, exactly like a browser. Until the endpoint trusts your internal root, every install fails before the agent enrolls:
+
+| Install path | What you see |
+|---|---|
+| Windows MSI | *"There is a problem with this Windows Installer package. A program run as part of the setup did not finish as expected."* The agent's own message, which names the certificate problem, is in `C:\ProgramData\Breeze\logs\enroll-last-error.txt` and in the Windows Application event log (source `BreezeAgent`) |
+| Windows PowerShell one-liner | `Breeze: this machine rejected the TLS certificate of … (… UntrustedRoot)`. The text in parentheses is the reason Windows gave: `UntrustedRoot` means the CA is not trusted, while `RemoteCertificateNameMismatch` means the server URL does not match a name on the certificate. Older copies of the one-liner show `Could not establish trust relationship for the SSL/TLS secure channel` instead |
+| macOS / Linux one-liner | `curl: (60) SSL certificate problem: self-signed certificate` or `unable to get local issuer certificate` |
+| `breeze-agent enroll` | `Enrollment failed: the TLS certificate presented by … is not trusted by this machine` |
+
+The fix is to trust the CA on each endpoint, not to turn verification off. Breeze has no option to skip certificate verification, and none is planned. An agent that accepts any certificate would hand its enrollment secret and device token to anyone who can intercept the connection.
+
+<Steps>
+1. Export the root certificate from the server. Trust the root, not the site certificate: Caddy renews the site certificate and its intermediate often, but the root stays the same.
+
+   ```bash
+   docker compose exec caddy cat /data/caddy/pki/authorities/local/root.crt > breeze-root.crt
+   ```
+
+   The same file covers a bare IP address or `localhost`, which Caddy also signs from its internal CA. If you front Breeze with your own proxy and a certificate from your organization's CA, use that CA's root instead.
+
+2. Install it into the **machine** trust store on every endpoint, before you run the installer. The agent runs as `SYSTEM` or `root`, so a per-user store does not work.
+
+   <Tabs>
+     <TabItem label="Windows">
+       ```powershell
+       # Elevated PowerShell
+       Import-Certificate -FilePath .\breeze-root.crt -CertStoreLocation Cert:\LocalMachine\Root
+       ```
+       To reach a whole fleet, deploy the certificate with Group Policy (**Computer Configuration → Policies → Windows Settings → Security Settings → Public Key Policies → Trusted Root Certification Authorities**) or an Intune trusted-certificate profile.
+     </TabItem>
+     <TabItem label="macOS">
+       ```bash
+       sudo security add-trusted-cert -d -r trustRoot \
+         -k /Library/Keychains/System.keychain breeze-root.crt
+       ```
+       For managed Macs, push the certificate in an MDM configuration profile.
+     </TabItem>
+     <TabItem label="Linux">
+       ```bash
+       # Debian / Ubuntu
+       sudo cp breeze-root.crt /usr/local/share/ca-certificates/breeze-root.crt
+       sudo update-ca-certificates
+
+       # RHEL / Fedora / Rocky / Alma
+       sudo cp breeze-root.crt /etc/pki/ca-trust/source/anchors/breeze-root.crt
+       sudo update-ca-trust
+       ```
+     </TabItem>
+   </Tabs>
+
+3. Run the installer again.
+</Steps>
+
+<Aside type="caution" title="Keep the Caddy data volume">
+  Caddy generates its internal root once and stores it in its data volume. If that volume is deleted, Caddy creates a new root on the next start, and every enrolled agent loses its connection until you distribute the new root. Back up the volume with the rest of the deployment. A publicly trusted certificate (Let's Encrypt, or a commercial CA with a DNS challenge for internal names) avoids this step completely.
+</Aside>
 
 ### WebSocket Proxying
 

@@ -232,6 +232,13 @@ func classifyEnrollError(err error, serverURL string) (enrollErrCategory, string
 		}
 	}
 
+	// A server certificate the machine does not trust is a network-layer
+	// failure too (same category and exit code), but "check firewall, DNS"
+	// is the wrong advice for it — name the certificate fix instead (#4979).
+	if friendly, ok := certVerificationHint(err, serverURL); ok {
+		return catNetwork, friendly
+	}
+
 	// Network-layer errors come through as *url.Error wrapping dial/DNS/TLS/timeout.
 	var urlErr *url.Error
 	if errors.As(err, &urlErr) {

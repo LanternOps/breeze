@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -52,6 +53,8 @@ func TestRunBootstrapNeverDisclosesTokenToNonAllowlistedHost(t *testing.T) {
 	cfgFile, quietEnroll = cfgPath, true
 	bootstrapInstallData = `C:\dl\breeze-agent.msi|TESTTOKEN1|` + srv.URL
 
+	lastErr, eventMsg := stubBootstrapFailureSinks(t)
+
 	var exitCode atomic.Int32
 	exitCode.Store(-1)
 	origExit := osExit
@@ -65,6 +68,11 @@ func TestRunBootstrapNeverDisclosesTokenToNonAllowlistedHost(t *testing.T) {
 	}
 	if c := exitCode.Load(); c != 1 {
 		t.Errorf("hosted bootstrap against a non-allowlisted host: osExit = %d, want 1 (hard refuse)", c)
+	}
+	// The MSI never captures stderr, so the refusal must reach the durable
+	// sinks an admin can find after the rollback (#4979).
+	if !strings.HasPrefix(*lastErr, "Bootstrap failed: ") || *eventMsg != *lastErr {
+		t.Errorf("refusal not recorded in durable sinks: enroll-last-error=%q eventlog=%q", *lastErr, *eventMsg)
 	}
 }
 
@@ -100,6 +108,7 @@ func TestRunBootstrapSelfHostStillReachesTheServer(t *testing.T) {
 	bootstrapInstallData = `C:\dl\breeze-agent.msi|TESTTOKEN1|` + srv.URL
 
 	origExit := osExit
+	stubBootstrapFailureSinks(t)
 	osExit = func(code int) {} // redeem will fail against the 403; swallow the exit
 	t.Cleanup(func() { osExit = origExit })
 
