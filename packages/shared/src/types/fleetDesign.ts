@@ -1,3 +1,4 @@
+import type { CreateMonitorDefinitionInput, MonitorKind } from '../validators/monitors';
 import type { DeviceFunctionKey } from '../validators/deviceFunctions';
 
 export const FLEET_DESIGN_SCHEMA_VERSION = 1 as const;
@@ -50,15 +51,24 @@ export interface FleetDesignWatch {
   rationale: string;
   itemRef?: string;
 }
+/**
+ * A monitor-definition proposal (W05c2, #6371). Reports generated before W05c2
+ * stored `conditions`/`sourceTemplateId` instead of `kind`/`condition`; those
+ * remain readable (display fields are unchanged) but apply refuses them — see
+ * `legacySelectedMonitorRefs`.
+ */
 export interface FleetDesignRule {
   name: string;
+  kind: MonitorKind;
+  condition: Record<string, unknown>;
   severity: 'critical' | 'high' | 'medium' | 'low' | 'info';
-  conditions: unknown[];          // alertRuleConditionSchema items; typed loosely here, validated in the validator
   cooldownMinutes: number;
+  responses: CreateMonitorDefinitionInput['responses'];
+  deliveryMode: CreateMonitorDefinitionInput['deliveryMode'];
+  deliveryChannelIds: string[];
   rationale: string;
   action: 'none' | { kind: 'playbook'; ref: string } | { kind: 'script'; ref: string };
   paging: 'none' | 'business_hours' | 'always';
-  sourceTemplateId?: string;
   itemRef?: string;
 }
 export interface FleetDesignMonitoringEntry { functionKey: string; watches: FleetDesignWatch[]; alertRules: FleetDesignRule[] }

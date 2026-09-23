@@ -167,3 +167,18 @@ describe('unavailable evidence', () => {
     expect(screen.queryByTestId('fleet-design-section-approvedDesign-not-measured')).not.toBeInTheDocument();
   });
 });
+
+describe('monitor-shaped rule proposals (W05c2 Task 15)', () => {
+  it('keeps the approval identity of a monitor-shaped rule proposal', () => {
+    const outcome = structuredClone(OUTCOME);
+    outcome.sections.monitoring[0]!.alertRules = [{
+      name: 'CPU monitor', kind: 'cpu', condition: { operator: 'gt', value: 80 },
+      severity: 'high', cooldownMinutes: 5, responses: [], deliveryMode: 'inherit', deliveryChannelIds: [],
+      rationale: 'Protect interactive sessions', action: 'none', paging: 'none',
+      itemRef: 'monitoring:shared_workstation:rule:0',
+    }];
+    render(<Harness outcome={outcome} />);
+    expect(screen.getByText('CPU monitor')).toBeInTheDocument();
+    expect(screen.getByText('Protect interactive sessions')).toBeInTheDocument();
+  });
+});

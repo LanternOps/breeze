@@ -322,7 +322,11 @@ export function toRuleItem(r: FleetDesignRule, createdScriptId?: string) {
   return {
     name: r.name,
     severity: r.severity,
-    conditions: r.conditions,
+    kind: r.kind,
+    condition: r.condition,
+    responses: r.responses,
+    deliveryMode: r.deliveryMode,
+    deliveryChannelIds: r.deliveryChannelIds,
     cooldownMinutes: r.cooldownMinutes,
     rationale: createdScriptId ? withScriptCreated(rationale, createdScriptId) : rationale,
   };
