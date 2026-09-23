@@ -49,6 +49,42 @@ describe('mlFeedbackEventSchema', () => {
     expect(parsed.eventType).toBe('anomaly.promoted');
   });
 
+  it('accepts anomaly_episode dismissed feedback events', () => {
+    const parsed = mlFeedbackEventSchema.parse({
+      ...validEvent,
+      sourceType: 'anomaly_episode',
+      sourceId: '00000000-0000-4000-8000-000000000099',
+      eventType: 'anomaly_episode.dismissed',
+      outcome: 'dismissed',
+      dedupeKey: 'episode:00000000-0000-4000-8000-000000000099',
+    });
+    expect(parsed.sourceType).toBe('anomaly_episode');
+    expect(parsed.eventType).toBe('anomaly_episode.dismissed');
+  });
+
+  it('accepts anomaly_episode resolved feedback events', () => {
+    const parsed = mlFeedbackEventSchema.parse({
+      ...validEvent,
+      sourceType: 'anomaly_episode',
+      sourceId: '00000000-0000-4000-8000-000000000099',
+      eventType: 'anomaly_episode.resolved',
+      outcome: 'resolved',
+      dedupeKey: 'episode:00000000-0000-4000-8000-000000000099',
+    });
+    expect(parsed.outcome).toBe('resolved');
+  });
+
+  it('rejects anomaly_episode.promoted (episodes never emit a promote-level feedback row)', () => {
+    expect(() =>
+      mlFeedbackEventSchema.parse({
+        ...validEvent,
+        sourceType: 'anomaly_episode',
+        eventType: 'anomaly_episode.promoted',
+        outcome: 'promoted',
+      }),
+    ).toThrow();
+  });
+
   it('accepts explicit ticket triage rejection feedback', () => {
     const parsed = mlFeedbackEventSchema.parse({
       ...validEvent,

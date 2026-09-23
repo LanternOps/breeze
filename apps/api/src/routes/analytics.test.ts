@@ -204,6 +204,17 @@ vi.mock('../db/schema', () => ({
     eventType: 'mlFeedbackEvents.eventType',
     occurredAt: 'mlFeedbackEvents.occurredAt'
   },
+  metricAnomalyEpisodes: {
+    id: 'metricAnomalyEpisodes.id',
+    orgId: 'metricAnomalyEpisodes.orgId',
+    deviceId: 'metricAnomalyEpisodes.deviceId',
+    status: 'metricAnomalyEpisodes.status',
+    closeReason: 'metricAnomalyEpisodes.closeReason',
+    firstSeenAt: 'metricAnomalyEpisodes.firstSeenAt',
+    resolvedAt: 'metricAnomalyEpisodes.resolvedAt',
+    recurrenceCount: 'metricAnomalyEpisodes.recurrenceCount',
+    linkedAlertId: 'metricAnomalyEpisodes.linkedAlertId'
+  },
   devices: {
     id: 'devices.id',
     orgId: 'devices.orgId',
@@ -502,17 +513,42 @@ describe('analytics routes', () => {
   });
 
   describe('GET /analytics/anomalies/evaluation', () => {
+    // This file's `drizzle-orm` mock (top of file) makes `sql` a plain tag
+    // function returning `{ strings, values }` (the raw template pieces), not a
+    // real drizzle SQL/queryChunks object. Interleave them back into one string.
+    // Mocked schema columns are plain strings (e.g. 'metricAnomalyEpisodes.closeReason'),
+    // so this asserts the semantic SQL text (which columns, which operators),
+    // not exact DB identifier spelling.
+    function sqlText(fragment: unknown): string {
+      const { strings, values } = (fragment ?? {}) as { strings?: string[]; values?: unknown[] };
+      if (!strings) return '';
+      let out = strings[0] ?? '';
+      (values ?? []).forEach((value, i) => {
+        out += String(value) + (strings[i + 1] ?? '');
+      });
+      return out;
+    }
+
     it('returns anomaly status rates and lifecycle feedback counts', async () => {
       mockSelectOnce([
         { status: 'open', count: 4 },
         { status: 'dismissed', count: 3 },
         { status: 'promoted', count: 2 },
         { status: 'resolved', count: 1 },
+        { status: 'cleared', count: 5 },
       ]);
       mockSelectOnce([
         { eventType: 'anomaly.dismissed', count: 2 },
         { eventType: 'anomaly.promoted', count: 1 },
         { eventType: 'anomaly.resolved', count: 1 },
+      ]);
+      mockSelectOnce([
+        { status: 'open', closeReason: null, count: 3 },
+        { status: 'resolved', closeReason: 'cleared', count: 2 },
+        { status: 'dismissed', closeReason: 'user', count: 1 },
+      ]);
+      mockSelectOnce([
+        { total: 6, recurring: 2, labelEligibleClosed: 3, humanLabelled: 1, medianDurationSeconds: 900 },
       ]);
 
       const res = await app.request('/analytics/anomalies/evaluation?range=30d', {
@@ -522,17 +558,52 @@ describe('analytics routes', () => {
 
       expect(res.status).toBe(200);
       const body = await res.json();
+      // cleared is excluded from the human-label denominator (total) and rates,
+      // but still reported as its own count.
       expect(body.total).toBe(10);
-      expect(body.status).toEqual({ open: 4, dismissed: 3, promoted: 2, resolved: 1 });
+      expect(body.status).toEqual({ open: 4, dismissed: 3, promoted: 2, resolved: 1, cleared: 5 });
       expect(body.rates).toEqual({ dismissRate: 0.3, promoteRate: 0.2, resolveRate: 0.1 });
       expect(body.feedback).toEqual({ total: 4, dismissed: 2, promoted: 1, resolved: 1 });
       expect(body.window.range).toBe('30d');
       expect(body.orgId).toBe(ORG_ID);
+      expect(body.episodes).toEqual({
+        total: 6,
+        byStatus: { open: 3, resolved: 2, dismissed: 1 },
+        byCloseReason: { cleared: 2, expired_offline: 0, expired_no_data: 0, detection_off: 0, user: 1, snoozed: 0 },
+        medianDurationSeconds: 900,
+        recurrenceShare: 2 / 6,
+        humanLabelledShare: 1 / 3,
+      });
+    });
+
+    it('humanLabelledShare counts promoted episodes and excludes snoozed successors (second quorum A8)', async () => {
+      mockSelectOnce([]);
+      mockSelectOnce([]);
+      mockSelectOnce([]);
+      mockSelectOnce([{ total: 0, recurring: 0, labelEligibleClosed: 0, humanLabelled: 0, medianDurationSeconds: null }]);
+
+      await app.request('/analytics/anomalies/evaluation?range=7d', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      const agg = vi.mocked(db.select).mock.calls[3]![0] as Record<string, unknown>;
+      expect(sqlText(agg.labelEligibleClosed)).toContain(
+        "status <> 'open' and metricAnomalyEpisodes.closeReason is distinct from 'snoozed'",
+      );
+      expect(sqlText(agg.humanLabelled)).toContain(
+        "(metricAnomalyEpisodes.closeReason = 'user' or metricAnomalyEpisodes.linkedAlertId is not null)",
+      );
+      expect(sqlText(agg.humanLabelled)).toContain(
+        "metricAnomalyEpisodes.closeReason is distinct from 'snoozed'",
+      );
     });
 
     it('returns zero rates when no anomalies match', async () => {
       mockSelectOnce([]);
       mockSelectOnce([]);
+      mockSelectOnce([]);
+      mockSelectOnce([{ total: 0, recurring: 0, labelEligibleClosed: 0, humanLabelled: 0, medianDurationSeconds: null }]);
 
       const res = await app.request('/analytics/anomalies/evaluation?range=7d', {
         method: 'GET',
@@ -544,6 +615,14 @@ describe('analytics routes', () => {
       expect(body.total).toBe(0);
       expect(body.rates).toEqual({ dismissRate: 0, promoteRate: 0, resolveRate: 0 });
       expect(body.feedback.total).toBe(0);
+      expect(body.episodes).toEqual({
+        total: 0,
+        byStatus: { open: 0, resolved: 0, dismissed: 0 },
+        byCloseReason: { cleared: 0, expired_offline: 0, expired_no_data: 0, detection_off: 0, user: 0, snoozed: 0 },
+        medianDurationSeconds: null,
+        recurrenceShare: 0,
+        humanLabelledShare: 0,
+      });
     });
 
     it('includes v1 shadow comparison only when requested', async () => {
@@ -554,6 +633,8 @@ describe('analytics routes', () => {
       mockSelectOnce([
         { eventType: 'anomaly.dismissed', count: 1 },
       ]);
+      mockSelectOnce([]); // episode group rows
+      mockSelectOnce([{ total: 0, recurring: 0, labelEligibleClosed: 0, humanLabelled: 0, medianDurationSeconds: null }]); // episode agg
       mockSelectOnce([{ totalCandidates: 6 }]);
       mockSelectOnce([{ overlapWithV0: 3 }]);
       mockSelectOnce([
@@ -579,7 +660,7 @@ describe('analytics routes', () => {
       });
       expect(body.v1Shadow.rates.overlapRate).toBe(0.5);
       expect(body.v1Shadow.rates.v0OnlyRate).toBe(0.4);
-      expect(vi.mocked(db.select)).toHaveBeenCalledTimes(5);
+      expect(vi.mocked(db.select)).toHaveBeenCalledTimes(7);
     });
 
     it('omits v1 shadow and issues no candidate queries by default', async () => {
@@ -590,6 +671,8 @@ describe('analytics routes', () => {
       mockSelectOnce([
         { eventType: 'anomaly.dismissed', count: 1 },
       ]);
+      mockSelectOnce([]); // episode group rows
+      mockSelectOnce([{ total: 0, recurring: 0, labelEligibleClosed: 0, humanLabelled: 0, medianDurationSeconds: null }]); // episode agg
 
       const res = await app.request('/analytics/anomalies/evaluation?range=30d', {
         method: 'GET',
@@ -600,8 +683,8 @@ describe('analytics routes', () => {
       const body = await res.json();
       expect(body.total).toBe(5);
       expect(body.v1Shadow).toBeUndefined();
-      // Only the status + feedback selects run — the 3 candidate queries must stay dark.
-      expect(vi.mocked(db.select)).toHaveBeenCalledTimes(2);
+      // Only the status + feedback + episode selects run — the 3 candidate queries must stay dark.
+      expect(vi.mocked(db.select)).toHaveBeenCalledTimes(4);
     });
 
     it('reports an all-zero v1 shadow block when there are no candidates', async () => {
@@ -609,6 +692,8 @@ describe('analytics routes', () => {
         { status: 'open', count: 2 },
       ]);
       mockSelectOnce([]);
+      mockSelectOnce([]); // episode group rows
+      mockSelectOnce([{ total: 0, recurring: 0, labelEligibleClosed: 0, humanLabelled: 0, medianDurationSeconds: null }]); // episode agg
       mockSelectOnce([{ totalCandidates: 0 }]);
       mockSelectOnce([{ overlapWithV0: 0 }]);
       mockSelectOnce([]);
@@ -1123,6 +1208,8 @@ describe('analytics routes', () => {
         mockSelectOnce([
           { eventType: 'anomaly.dismissed', count: 1 },
         ]); // feedback counts
+        mockSelectOnce([]); // episode group rows
+        mockSelectOnce([{ total: 0, recurring: 0, labelEligibleClosed: 0, humanLabelled: 0, medianDurationSeconds: null }]); // episode agg
 
         const res = await app.request('/analytics/anomalies/evaluation?range=90d', {
           method: 'GET',
@@ -1135,7 +1222,7 @@ describe('analytics routes', () => {
         expect(body.status.dismissed).toBe(1);
         expect(body.rates.dismissRate).toBe(0.5);
         expect(body.feedback.dismissed).toBe(1);
-        expect(vi.mocked(db.select)).toHaveBeenCalledTimes(3);
+        expect(vi.mocked(db.select)).toHaveBeenCalledTimes(5);
       });
 
       it('short-circuits anomaly evaluation when a site-restricted caller has no in-scope devices', async () => {
@@ -1150,7 +1237,15 @@ describe('analytics routes', () => {
         expect(res.status).toBe(200);
         const body = await res.json();
         expect(body.total).toBe(0);
-        expect(body.status).toEqual({ open: 0, dismissed: 0, promoted: 0, resolved: 0 });
+        expect(body.status).toEqual({ open: 0, dismissed: 0, promoted: 0, resolved: 0, cleared: 0 });
+        expect(body.episodes).toEqual({
+          total: 0,
+          byStatus: { open: 0, resolved: 0, dismissed: 0 },
+          byCloseReason: { cleared: 0, expired_offline: 0, expired_no_data: 0, detection_off: 0, user: 0, snoozed: 0 },
+          medianDurationSeconds: null,
+          recurrenceShare: 0,
+          humanLabelledShare: 0,
+        });
         expect(vi.mocked(db.select)).toHaveBeenCalledTimes(1);
       });
     });

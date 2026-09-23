@@ -84,6 +84,44 @@ export async function emitAnomalyFeedback(options: {
   }, options.eventType);
 }
 
+/**
+ * W03 (spec §8.3): the ONE episode-level label row per human resolve/dismiss,
+ * beside the per-member `anomaly` rows emitted by `emitAnomalyFeedback`. Not
+ * best-effort: the label is written from inside the episode action's request
+ * transaction (wired by a later wave), so a lost label must roll the action
+ * back rather than fail silently. Only resolve/dismiss emit it — promote and
+ * unsnooze never close an episode.
+ *
+ * Deviation from the original plan: the plan called for the batch throwing
+ * writer `emitMlFeedbackEvents` from a parallel, not-yet-merged wave. This
+ * uses the existing singular throwing writer `emitMlFeedbackEvent` instead
+ * (same non-best-effort semantics as `emitDeviceReliabilityFeedback` /
+ * `emitUserRiskFeedback` below). No caller wires this in yet — see the PR
+ * description.
+ */
+export async function emitAnomalyEpisodeFeedback(options: {
+  orgId: string;
+  episodeId: string;
+  eventType: 'anomaly_episode.dismissed' | 'anomaly_episode.resolved';
+  outcome: 'dismissed' | 'resolved';
+  actorUserId?: string | null;
+  occurredAt: Date;
+  metadata?: Record<string, unknown>;
+}): Promise<number> {
+  const result = await emitMlFeedbackEvent({
+    orgId: options.orgId,
+    sourceType: 'anomaly_episode',
+    sourceId: options.episodeId,
+    eventType: options.eventType,
+    dedupeKey: `episode:${options.episodeId}`,
+    outcome: options.outcome,
+    actorUserId: actorUserIdOrNull(options.actorUserId),
+    metadata: { ...(options.metadata ?? {}), episodeId: options.episodeId },
+    occurredAt: options.occurredAt,
+  });
+  return result.inserted ? 1 : 0;
+}
+
 export async function emitRcaFeedback(options: {
   orgId: string;
   rcaId: string;
