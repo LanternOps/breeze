@@ -753,4 +753,31 @@ describe('episode stages (metric anomaly episodes W01)', () => {
     expect(recordStageSkippedMock).toHaveBeenCalledTimes(1);
     expect(recordStageSkippedMock).toHaveBeenCalledWith('episodes');
   });
+
+  it('a timed-out episode-resolve is counted and its closes never reach the handler', async () => {
+    const superseded = { episodeId: 'ep-1', deviceId: 'dev-1', linkedAlertId: null, closeReason: 'cleared' as const };
+    assembleMock.mockResolvedValue([superseded]);
+    resolveMock.mockRejectedValue(pgError('57014'));
+
+    const result = await detectMetricAnomaliesRange({ orgId, ...range });
+
+    expect(result.stages.at(-1)).toMatchObject({ stage: 'episode-resolve', outcome: 'timeout' });
+    expect(recordStageSkippedMock).toHaveBeenCalledTimes(1);
+    expect(recordStageSkippedMock).toHaveBeenCalledWith('episode-resolve');
+    // Only the committed `episodes` stage's supersede is handed on.
+    expect(notifyMock).toHaveBeenCalledWith(orgId, [superseded]);
+    expect(result.episodesClosed).toBe(1);
+  });
+
+  it('a timed-out episodes stage drops its supersedes (the stage rolled back)', async () => {
+    // The stage's statement times out, so its transaction rolls back and
+    // nothing it planned to close may be reported.
+    assembleMock.mockRejectedValue(pgError('57014'));
+    resolveMock.mockResolvedValue([]);
+
+    const result = await detectMetricAnomaliesRange({ orgId, ...range });
+
+    expect(notifyMock).toHaveBeenCalledWith(orgId, []);
+    expect(result.episodesClosed).toBe(0);
+  });
 });

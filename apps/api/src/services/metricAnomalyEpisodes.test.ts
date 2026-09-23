@@ -9,6 +9,7 @@ vi.mock('../db', () => ({ db: { execute: executeMock } }));
 vi.mock('./sentry', () => ({ captureException: captureExceptionMock }));
 
 import {
+  applyEpisodeAssemblyPlan,
   closeEpisodesForDisabledDetection,
   notifyEpisodesClosed,
   resolveMetricAnomalyEpisodes,
@@ -114,5 +115,46 @@ describe('closeEpisodesForDisabledDetection (A5)', () => {
     expect(text).toContain("e.status = 'open'");
     expect(text).toContain("ma.status = 'open'");
     expect(text).not.toContain('metric_rollups');
+  });
+});
+
+describe('silent-failure guards (PR #6708 review)', () => {
+  beforeEach(() => {
+    executeMock.mockReset();
+  });
+
+  it('logs when a close row is dropped for an unrecognised close_reason', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    executeMock.mockResolvedValue([
+      { episodeId: 'ep-1', deviceId: 'dev-1', linkedAlertId: null, closeReason: 'cleared' },
+      { episodeId: 'ep-2', deviceId: 'dev-2', linkedAlertId: null, closeReason: 'some_new_reason' },
+    ]);
+
+    const result = await closeEpisodesForDisabledDetection(ORG, new Date('2026-09-22T12:00:00.000Z'));
+
+    expect(result.map((row) => row.episodeId)).toEqual(['ep-1']);
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('dropped 1 unrecognised close row'));
+    errorSpy.mockRestore();
+  });
+
+  it('warns when a planned episode insert hits ON CONFLICT DO NOTHING', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    executeMock.mockResolvedValue([]); // the INSERT … RETURNING returns no row
+    const at = new Date('2026-09-22T11:00:00.000Z');
+
+    await applyEpisodeAssemblyPlan(ORG, {
+      anchorAttaches: [],
+      supersedes: [],
+      creates: [{
+        id: 'new-1', deviceId: 'dev-1', episodeKey: 'device_metrics:spike:cpu', sourceTable: 'device_metrics',
+        anomalyType: 'spike', metricFamily: 'cpu', attributionDimension: 'cpu', metricNames: ['cpu_percent'],
+        firstSeenAt: at, lastSeenAt: at, bucketCount: 1, peakValue: 95, peakMetricName: 'cpu_percent',
+        peakBaselineValue: 40, peakScore: 5, peakAt: at, disposition: 'open', snoozedUntil: null, cleanUntil: null,
+        priorInBatch: 0, memberIds: ['a-1'],
+      }],
+    }, new Date('2026-09-22T12:00:00.000Z'));
+
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('1 planned episode(s) hit an existing open episode'));
+    warnSpy.mockRestore();
   });
 });

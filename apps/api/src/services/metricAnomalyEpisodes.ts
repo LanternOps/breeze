@@ -62,7 +62,8 @@ function resultRows<T>(result: unknown): T[] {
 }
 
 function toCloseResults(result: unknown): EpisodeCloseResult[] {
-  return resultRows<{ episodeId?: unknown; deviceId?: unknown; linkedAlertId?: unknown; closeReason?: unknown }>(result)
+  const rows = resultRows<{ episodeId?: unknown; deviceId?: unknown; linkedAlertId?: unknown; closeReason?: unknown }>(result);
+  const mapped = rows
     .filter((row) => typeof row.episodeId === 'string'
       && typeof row.deviceId === 'string'
       && typeof row.closeReason === 'string'
@@ -73,6 +74,16 @@ function toCloseResults(result: unknown): EpisodeCloseResult[] {
       linkedAlertId: typeof row.linkedAlertId === 'string' ? row.linkedAlertId : null,
       closeReason: row.closeReason as EpisodeAutoCloseReason,
     }));
+  if (mapped.length < rows.length) {
+    // The episodes ARE closed in Postgres; only the hand-off to the close
+    // handler (W02 alert auto-resolve) would be lost. Make that visible, e.g.
+    // a new close_reason added to the SQL but not to AUTO_CLOSE_REASONS.
+    console.error(
+      `[MetricAnomalyEpisodes] dropped ${rows.length - mapped.length} unrecognised close row(s) — `
+        + 'those episodes closed but will not reach the close handler',
+    );
+  }
+  return mapped;
 }
 
 /**
@@ -380,7 +391,7 @@ async function insertPlannedEpisodes(orgId: string, creates: readonly PlannedEpi
   // does not take the lock. DO NOTHING leaves those rows unassigned (the
   // member UPDATE requires the episode to exist) for the next tick — never a
   // 23505 out of the stage.
-  await db.execute(sql`
+  const result = await db.execute(sql`
     INSERT INTO metric_anomaly_episodes (
       id, org_id, device_id, episode_key, source_table, anomaly_type, metric_family, metric_names,
       status, close_reason, first_seen_at, last_seen_at, bucket_count,
@@ -449,7 +460,18 @@ async function insertPlannedEpisodes(orgId: string, creates: readonly PlannedEpi
       snoozed_until timestamp
     )
     ON CONFLICT (device_id, episode_key) WHERE status = 'open' DO NOTHING
+    RETURNING id::text AS "id"
   `);
+  const inserted = resultRows<{ id: string }>(result).length;
+  if (inserted < creates.length) {
+    // Should be impossible under the org advisory lock (see above); if it
+    // recurs, some writer is creating open episodes without the lock and those
+    // rows will be re-planned (and skipped) every tick.
+    console.warn(
+      `[MetricAnomalyEpisodes] org=${orgId} ${creates.length - inserted} planned episode(s) hit an existing open `
+        + 'episode (ON CONFLICT DO NOTHING); their rows stay unassigned until the next tick',
+    );
+  }
 }
 
 async function writeAttribution(

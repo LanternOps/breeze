@@ -121,6 +121,17 @@ describe('planEpisodeAssembly (spec §5, §6)', () => {
     expect(result.creates[0]!.memberIds).toHaveLength(6);
   });
 
+  it('keeps two devices with the same episode key and timing in separate episodes', () => {
+    const other = 'dddddddd-0000-4000-8000-000000000002';
+    const mine = row(0);
+    const theirs = row(0, { deviceId: other });
+    const result = plan([mine, theirs], [anchor(0, 15)]);
+    // The anchor belongs to DEVICE only: the other device's row must not attach to it.
+    expect(result.anchorAttaches.map((a) => a.anomalyId)).toEqual([mine.id]);
+    expect(result.creates).toHaveLength(1);
+    expect(result.creates[0]).toMatchObject({ deviceId: other, memberIds: [theirs.id], disposition: 'open' });
+  });
+
   it('keeps network_egress from the device series and the process series apart', () => {
     const result = plan([
       row(0, { anomalyType: 'network_egress', metricName: 'bandwidth_out_bps' }),

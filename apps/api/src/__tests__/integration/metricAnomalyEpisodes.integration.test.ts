@@ -345,6 +345,27 @@ describe('metric anomaly episode assembly (spec §6, §9)', () => {
     expect(closed).toEqual([{ episodeId: first!.id, deviceId: device, linkedAlertId: null, closeReason: 'cleared' }]);
   });
 
+  it('a superseded promoted episode hands its linked alert and keeps the promoted member label', async () => {
+    const device = await insertDevice(orgId, siteId);
+    const start = at(now, -180);
+    const members: string[] = [];
+    for (const minute of [0, 5, 10]) members.push(await insertAnomaly({ orgId, deviceId: device, windowStart: at(start, minute) }));
+    await assemble(orgId);
+    const [first] = await episodesFor(orgId, device);
+    const promotion = await withSystemDbAccessContext(() =>
+      promoteMetricAnomalyToAlert({ orgId, deviceId: device, anomalyId: members[0]!, requireCreateAlertsFlag: false }),
+    );
+    if (promotion.status !== 'promoted') throw new Error('expected promotion');
+    await getTestDb().update(metricAnomalyEpisodes).set({ linkedAlertId: promotion.alertId }).where(eq(metricAnomalyEpisodes.id, first!.id));
+
+    await insertAnomaly({ orgId, deviceId: device, windowStart: at(start, 46) });
+    const closed = await assemble(orgId);
+
+    expect(closed).toEqual([{ episodeId: first!.id, deviceId: device, linkedAlertId: promotion.alertId, closeReason: 'expired_no_data' }]);
+    expect((await anomalyById(members[0]!)).status).toBe('promoted');
+    expect((await anomalyById(members[1]!)).status).toBe('cleared');
+  });
+
   it('keeps a bucket exactly 30 minutes after the burst in the same episode', async () => {
     const device = await insertDevice(orgId, siteId);
     const start = at(now, -180);
@@ -696,6 +717,27 @@ describe('metric anomaly episode auto-resolve (spec §7)', () => {
 
     // Once the range end passes last_seen_at + gap + 5 min, it clears.
     expect((await resolveAt(at(T0, 40), at(T0, 35))).map((row) => row.episodeId)).toEqual([episodeId]);
+  });
+
+  it('resolve and detection_off only ever touch the org they were called for', async () => {
+    const device = await insertDevice(orgId, siteId);
+    const { episodeId } = await seedOpenEpisode(device);
+    await insertRollups({ orgId, deviceId: device, metricName: 'cpu_percent', starts: bucketsFrom(T0, 6), value: () => 20 });
+
+    const otherPartner = await createPartner();
+    const otherOrg = (await createOrganization({ partnerId: otherPartner.id, name: 'Other Resolve Org' })).id;
+    const otherSite = (await createSite({ orgId: otherOrg, name: 'Other Site' })).id;
+    const otherDevice = await insertDevice(otherOrg, otherSite);
+    const otherEpisode = await insertEpisode({ orgId: otherOrg, deviceId: otherDevice, firstSeenAt: at(T0, -15), lastSeenAt: T0 });
+    const otherMember = await insertAnomaly({ orgId: otherOrg, deviceId: otherDevice, windowStart: at(T0, -5), episodeId: otherEpisode });
+    await insertRollups({ orgId: otherOrg, deviceId: otherDevice, metricName: 'cpu_percent', starts: bucketsFrom(T0, 6), value: () => 20 });
+
+    expect((await resolveAt(at(T0, 40))).map((row) => row.episodeId)).toEqual([episodeId]);
+    expect((await episodeById(otherEpisode)).status).toBe('open');
+
+    await withSystemDbAccessContext(() => closeEpisodesForDisabledDetection(orgId, at(T0, 40)));
+    expect((await episodeById(otherEpisode)).status).toBe('open');
+    expect((await anomalyById(otherMember)).status).toBe('open');
   });
 
   it('flag off: closeEpisodesForDisabledDetection closes as detection_off even with clean rollups (A5)', async () => {
