@@ -85,6 +85,8 @@ async function readReachableCatalogItem(
     .where(
       and(
         eq(softwareCatalog.id, catalogId),
+        // An archived package (#4980) is unreachable, exactly like a deleted one.
+        isNull(softwareCatalog.deletedAt),
         or(
           eq(softwareCatalog.orgId, deviceOrgId),
           and(

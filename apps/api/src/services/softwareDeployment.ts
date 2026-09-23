@@ -1,4 +1,4 @@
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { findVariableTokens, isSoftwareFileType, variableToken } from '@breeze/shared';
 import { db } from '../db';
 import {
@@ -1044,7 +1044,8 @@ export async function createSoftwareDeployment(
       integrationProvider: softwareCatalog.integrationProvider,
     })
     .from(softwareCatalog)
-    .where(eq(softwareCatalog.id, catalogId));
+    // Archived packages (#4980) take no new deployments.
+    .where(and(eq(softwareCatalog.id, catalogId), isNull(softwareCatalog.deletedAt)));
 
   if (!catalogItem) {
     throw new Error(

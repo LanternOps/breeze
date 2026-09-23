@@ -35,7 +35,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
-import { and, eq, gte, sql } from 'drizzle-orm';
+import { and, eq, gte, isNull, sql } from 'drizzle-orm';
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream, createWriteStream } from 'node:fs';
 import { mkdir, stat, truncate, unlink } from 'node:fs/promises';
@@ -209,7 +209,7 @@ softwareUploadRoutes.post(
 
     const { id: catalogId } = c.req.valid('param');
     const [catalogItem] = await db.select().from(softwareCatalog)
-      .where(eq(softwareCatalog.id, catalogId));
+      .where(and(eq(softwareCatalog.id, catalogId), isNull(softwareCatalog.deletedAt)));
     if (!catalogItem) return c.json({ error: 'Catalog item not found' }, 404);
     // Same narrowing rule as the software.ts catalog reads: an org-owned item
     // must belong to the org this request resolves to. The contextOrg check
@@ -606,7 +606,11 @@ softwareUploadRoutes.post(
       }
 
       const [catalogItem] = await db.select().from(softwareCatalog)
-        .where(and(eq(softwareCatalog.id, catalogId), eq(softwareCatalog.orgId, orgId)));
+        .where(and(
+          eq(softwareCatalog.id, catalogId),
+          eq(softwareCatalog.orgId, orgId),
+          isNull(softwareCatalog.deletedAt),
+        ));
       if (!catalogItem) return c.json({ error: 'Catalog item not found' }, 404);
       if (!await lockSoftwareCatalogForVersionInsert(catalogId)) {
         return c.json({ error: 'Catalog item not found' }, 404);

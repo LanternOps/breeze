@@ -1,13 +1,15 @@
 /**
- * Software-catalog delete vs. deployment FK (#1407).
+ * Software-catalog delete vs. deployment FK (#1407, #4980).
  *
- * software_deployments.software_version_id references software_versions with
- * the default ON DELETE RESTRICT, so deleting a catalog item whose version is
- * still referenced by a deployment used to throw an unhandled 500 (FK
- * violation). Drives the real DELETE /software/catalog/:id route against the
- * real docker postgres as breeze_app and proves it now returns a clean 409
- * (and preserves the row) when a deployment still references the version, and
- * still deletes (200) when nothing references it.
+ * software_deployments.software_version_id / install_method_id reference the
+ * catalog's children with ON DELETE NO ACTION, so a hard delete of a package
+ * that was ever deployed cannot succeed (#1407 turned the resulting 500 into a
+ * 409). There is no route that removes deployment history, so that 409 left
+ * any once-deployed package permanently undeletable (#4980). Drives the real
+ * DELETE /software/catalog/:id route against the real docker postgres as
+ * breeze_app and proves a referenced package is now ARCHIVED (soft-deleted:
+ * deleted_at stamped, rows + uploaded objects preserved for the history that
+ * references them) while an unreferenced package is still hard-deleted.
  */
 import './setup';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -130,6 +132,19 @@ async function seedInstallMethod(catalogId: string) {
   return method;
 }
 
+async function expectArchived(catalogId: string, versionId: string) {
+  const [row] = await getTestDb()
+    .select({ id: softwareCatalog.id, deletedAt: softwareCatalog.deletedAt })
+    .from(softwareCatalog)
+    .where(eq(softwareCatalog.id, catalogId));
+  // Archived, not removed: the deployment history still points at it.
+  expect(row).toBeDefined();
+  expect(row!.deletedAt).toBeInstanceOf(Date);
+  expect(await getTestDb().select({ id: softwareVersions.id })
+    .from(softwareVersions).where(eq(softwareVersions.id, versionId)))
+    .toHaveLength(1);
+}
+
 async function expectStillBlocked<T>(promise: Promise<T>) {
   expect(await Promise.race([
     promise.then(() => 'settled' as const, () => 'settled' as const),
@@ -149,7 +164,7 @@ afterEach(() => {
 });
 
 describe('DELETE /software/catalog/:id vs deployment FK (#1407)', () => {
-  it('returns 409 (not 500) and preserves the item when a version is still deployed', async () => {
+  it('archives (200, not 409/500) a package whose version is still deployed, preserving history', async () => {
     const partner = await createPartner();
     const org = await createOrganization({ partnerId: partner.id });
     activeOrgId = org.id;
@@ -172,20 +187,31 @@ describe('DELETE /software/catalog/:id vs deployment FK (#1407)', () => {
       headers: { Authorization: 'Bearer token' },
     });
 
-    expect(res.status).toBe(409);
-    const body = await res.json();
-    expect(body.error).toMatch(/deployment/i);
-
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ success: true, id: catalog.id, archived: true });
     // The catalog item (and its version) must survive — history preserved.
-    const [stillThere] = await getTestDb()
-      .select({ id: softwareCatalog.id })
-      .from(softwareCatalog)
-      .where(eq(softwareCatalog.id, catalog.id))
-      .limit(1);
-    expect(stillThere).toBeDefined();
+    await expectArchived(catalog.id, version.id);
+    expect(deleteObjectsMock).not.toHaveBeenCalled();
+
+    // Gone from every forward-looking read: list, detail, and a second delete.
+    const list = await app.request(`/software/catalog?orgId=${org.id}`, {
+      headers: { Authorization: 'Bearer token' },
+    });
+    expect(list.status).toBe(200);
+    const listed = (await list.json()) as { data: Array<{ id: string }> };
+    expect(listed.data.map((item) => item.id)).not.toContain(catalog.id);
+    const detail = await app.request(`/software/catalog/${catalog.id}?orgId=${org.id}`, {
+      headers: { Authorization: 'Bearer token' },
+    });
+    expect(detail.status).toBe(404);
+    const again = await app.request(`/software/catalog/${catalog.id}?orgId=${org.id}`, {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer token' },
+    });
+    expect(again.status).toBe(404);
   });
 
-  it('returns 409 before storage deletion when an install-method deployment references the catalog', async () => {
+  it('archives without storage deletion when an install-method deployment references the catalog', async () => {
     const partner = await createPartner();
     const org = await createOrganization({ partnerId: partner.id });
     activeOrgId = org.id;
@@ -200,14 +226,12 @@ describe('DELETE /software/catalog/:id vs deployment FK (#1407)', () => {
       `/software/catalog/${catalog.id}?orgId=${org.id}`,
       { method: 'DELETE', headers: { Authorization: 'Bearer token' } },
     );
-    expect(res.status).toBe(409);
+    expect(res.status).toBe(200);
     expect(deleteObjectsMock).not.toHaveBeenCalled();
-    expect(await getTestDb().select({ id: softwareVersions.id })
-      .from(softwareVersions).where(eq(softwareVersions.id, version.id)))
-      .toHaveLength(1);
+    await expectArchived(catalog.id, version.id);
   });
 
-  it('returns 409 before storage deletion when software inventory references the catalog', async () => {
+  it('archives without storage deletion when software inventory references the catalog', async () => {
     const partner = await createPartner();
     const org = await createOrganization({ partnerId: partner.id });
     const site = await createSite({ orgId: org.id });
@@ -237,11 +261,9 @@ describe('DELETE /software/catalog/:id vs deployment FK (#1407)', () => {
       `/software/catalog/${catalog.id}?orgId=${org.id}`,
       { method: 'DELETE', headers: { Authorization: 'Bearer token' } },
     );
-    expect(res.status).toBe(409);
+    expect(res.status).toBe(200);
     expect(deleteObjectsMock).not.toHaveBeenCalled();
-    expect(await getTestDb().select({ id: softwareVersions.id })
-      .from(softwareVersions).where(eq(softwareVersions.id, version.id)))
-      .toHaveLength(1);
+    await expectArchived(catalog.id, version.id);
   });
 
   it('deletes (200) when no deployment references the versions', async () => {
@@ -347,7 +369,7 @@ describe('DELETE /software/catalog/:id vs deployment FK (#1407)', () => {
     expect(error.code ?? error.cause?.code).toBe('23503');
   });
 
-  it('deployment-wins: waits for the referencing transaction, then returns 409 without deleting the object', async () => {
+  it('deployment-wins: waits for the referencing transaction, then archives without deleting the object', async () => {
     const partner = await createPartner();
     const org = await createOrganization({ partnerId: partner.id });
     activeOrgId = org.id;
@@ -375,11 +397,9 @@ describe('DELETE /software/catalog/:id vs deployment FK (#1407)', () => {
 
     releaseReference();
     await deploymentTransaction;
-    expect((await deleting).status).toBe(409);
+    expect((await deleting).status).toBe(200);
     expect(deleteObjectsMock).not.toHaveBeenCalled();
-    const [stillThere] = await getTestDb().select({ id: softwareVersions.id })
-      .from(softwareVersions).where(eq(softwareVersions.id, version.id));
-    expect(stillThere).toBeDefined();
+    await expectArchived(catalog.id, version.id);
   });
 
   it('delete-wins: fences a later deployment until the version and object are gone', async () => {
@@ -419,7 +439,7 @@ describe('DELETE /software/catalog/:id vs deployment FK (#1407)', () => {
     expect(deleteObjectsMock).toHaveBeenCalledWith(['software/test/delete-wins.msi']);
   });
 
-  it('method deployment-wins: waits, then returns 409 without deleting the object', async () => {
+  it('method deployment-wins: waits, then archives without deleting the object', async () => {
     const partner = await createPartner();
     const org = await createOrganization({ partnerId: partner.id });
     activeOrgId = org.id;
@@ -447,8 +467,9 @@ describe('DELETE /software/catalog/:id vs deployment FK (#1407)', () => {
     await expectStillBlocked(deleting);
     releaseReference();
     await deploymentTransaction;
-    expect((await deleting).status).toBe(409);
+    expect((await deleting).status).toBe(200);
     expect(deleteObjectsMock).not.toHaveBeenCalled();
+    await expectArchived(catalog.id, version.id);
   });
 
   it('method delete-wins: fences a later deployment until the method is gone', async () => {
