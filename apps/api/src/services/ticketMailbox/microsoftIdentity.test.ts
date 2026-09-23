@@ -7,6 +7,7 @@ import {
   buildMicrosoftAuthorizationUrl,
   exchangeMicrosoftAuthorizationCode,
   hasMailboxConsentAdminRole,
+  checkMailboxConsentAdminRoleViaGraph,
   verifyMicrosoftAdminIdToken,
 } from './microsoftIdentity';
 
@@ -98,7 +99,7 @@ describe('buildMicrosoftAuthorizationUrl', () => {
       redirect_uri: 'https://app.example.com/api/v1/tickets/mailbox/callback',
       response_type: 'code',
       response_mode: 'query',
-      scope: 'openid profile',
+      scope: 'openid profile Directory.Read.All',
       state: 'state-value',
       nonce: NONCE,
       code_challenge: 'challenge-value',
@@ -136,6 +137,7 @@ describe('exchangeMicrosoftAuthorizationCode', () => {
 
     await expect(exchangeMicrosoftAuthorizationCode(input, { fetch: fetchImpl })).resolves.toEqual({
       idToken: 'id-token',
+      accessToken: null,
     });
 
     const [url, init] = fetchImpl.mock.calls[0]!;
@@ -172,6 +174,21 @@ describe('exchangeMicrosoftAuthorizationCode', () => {
     expect((error as Error).message).not.toContain('sensitive provider detail');
   });
 
+  it('logs the token endpoint HTTP status on a failed exchange', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await expect(exchangeMicrosoftAuthorizationCode({
+        tenantHint: TENANT, clientId: CLIENT_ID, clientSecret: 'secret',
+        redirectUri: 'https://app.example.com/cb', code: 'code', codeVerifier: 'verifier',
+      }, { fetch: vi.fn<TestFetch>(async () => new Response('{"error":"invalid_grant"}', { status: 400 })) }))
+        .rejects.toThrow('Microsoft identity verification failed');
+      expect(warn).toHaveBeenCalledWith('[ticketMailbox] Microsoft identity check failed', { check: 'token_exchange_http', status: 400 });
+      expect(JSON.stringify(warn.mock.calls)).not.toContain('invalid_grant');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('rejects a successful response without an id_token', async () => {
     const fetchImpl = vi.fn<TestFetch>(async () => new Response(JSON.stringify({ access_token: 'not-used' }), {
       status: 200,
@@ -179,6 +196,18 @@ describe('exchangeMicrosoftAuthorizationCode', () => {
 
     await expect(exchangeMicrosoftAuthorizationCode(input, { fetch: fetchImpl }))
       .rejects.toThrow('Microsoft identity verification failed');
+  });
+
+  it('extracts the delegated access_token alongside the id_token when present', async () => {
+    const fetchImpl = vi.fn<TestFetch>(async () => new Response(JSON.stringify({
+      id_token: 'id-token',
+      access_token: 'delegated-access-token',
+    }), { status: 200 }));
+
+    await expect(exchangeMicrosoftAuthorizationCode(input, { fetch: fetchImpl })).resolves.toEqual({
+      idToken: 'id-token',
+      accessToken: 'delegated-access-token',
+    });
   });
 });
 
@@ -224,6 +253,18 @@ describe('verifyMicrosoftAdminIdToken', () => {
       .rejects.toThrow('Microsoft identity verification failed');
   });
 
+  it('logs which ID token check failed server-side without token contents', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const token = await mintToken();
+      await expect(verify(token, { nonce: 'other-nonce' })).rejects.toThrow('Microsoft identity verification failed');
+      expect(warn).toHaveBeenCalledWith('[ticketMailbox] Microsoft identity check failed', { check: 'nonce' });
+      expect(JSON.stringify(warn.mock.calls)).not.toContain(token);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('rejects a token from another tenant with a stable mismatch error', async () => {
     await expect(verify(await mintToken({}, { tenant: OTHER_TENANT })))
       .rejects.toThrow('Microsoft tenant mismatch');
@@ -239,19 +280,132 @@ describe('verifyMicrosoftAdminIdToken', () => {
       .rejects.toThrow('Microsoft identity verification failed');
   });
 
-  it('rejects missing administrator roles', async () => {
+  // verifyMicrosoftAdminIdToken no longer rejects on missing/unaccepted wids.
+  // Some tenants never populate wids in the ID token even with
+  // optionalClaims.idToken correctly configured — reproduced against a
+  // from-scratch app registration and confirmed with Microsoft's own jwt.ms
+  // token inspector. The admin-role decision now happens one level up
+  // (hasMailboxConsentAdminRole / checkMailboxConsentAdminRoleViaGraph), so
+  // this function's job is only to hand back whatever wids it found, valid
+  // or empty, and let the caller decide.
+  it('resolves with an empty wids array when the claim is missing, deferring the role decision to the caller', async () => {
     await expect(verify(await mintToken({ wids: undefined })))
-      .rejects.toThrow('Microsoft identity verification failed');
+      .resolves.toMatchObject({ wids: [] });
   });
 
-  it('rejects malformed administrator roles', async () => {
+  it('resolves with an empty wids array when the claim is malformed', async () => {
     await expect(verify(await mintToken({ wids: GLOBAL_ADMIN_ROLE_ID })))
-      .rejects.toThrow('Microsoft identity verification failed');
+      .resolves.toMatchObject({ wids: [] });
   });
 
-  it('rejects unknown administrator roles', async () => {
+  it('resolves with the presented wids even when none are accepted admin roles', async () => {
     await expect(verify(await mintToken({
       wids: ['9b895d92-2cd3-44c7-9d02-a6ac2d5ea5c3'],
-    }))).rejects.toThrow('Microsoft identity verification failed');
+    }))).resolves.toMatchObject({ wids: ['9b895d92-2cd3-44c7-9d02-a6ac2d5ea5c3'] });
+  });
+});
+
+describe('checkMailboxConsentAdminRoleViaGraph', () => {
+  const EXPECTED = { tid: TENANT, oid: OBJECT_ID };
+  const ME_URL = 'https://graph.microsoft.com/v1.0/me?$select=id';
+  const ORG_URL = 'https://graph.microsoft.com/v1.0/organization?$select=id';
+  const ROLES_URL = 'https://graph.microsoft.com/v1.0/me/transitiveMemberOf/microsoft.graph.directoryRole?$select=roleTemplateId';
+
+  function graphFetch(routes: Record<string, () => Response>) {
+    return vi.fn<TestFetch>(async (input, init) => {
+      expect((init?.headers as Record<string, string>).authorization).toBe('Bearer delegated-token');
+      expect(init?.redirect).toBe('error');
+      const route = routes[input.toString()];
+      if (!route) throw new Error(`unexpected Graph request ${input.toString()}`);
+      return route();
+    });
+  }
+  const json = (body: unknown, status = 200) => () => new Response(JSON.stringify(body), { status });
+  const boundRoutes = (roles: unknown) => ({
+    [ME_URL]: json({ id: OBJECT_ID.toUpperCase() }),
+    [ORG_URL]: json({ value: [{ id: TENANT }] }),
+    [ROLES_URL]: json(roles),
+  });
+
+  it('fails closed without a delegated access token and makes no Graph request', async () => {
+    const fetchImpl = vi.fn<TestFetch>();
+    await expect(checkMailboxConsentAdminRoleViaGraph(null, EXPECTED, { fetch: fetchImpl }))
+      .resolves.toEqual({ ok: false, reason: 'no_access_token' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('accepts a Global Administrator bound to the ID token principal and tenant', async () => {
+    const fetchImpl = graphFetch(boundRoutes({ value: [{ roleTemplateId: GLOBAL_ADMIN_ROLE_ID }] }));
+    await expect(checkMailboxConsentAdminRoleViaGraph('delegated-token', EXPECTED, { fetch: fetchImpl }))
+      .resolves.toEqual({ ok: true });
+  });
+
+  it('accepts a Privileged Role Administrator found on a later page', async () => {
+    const next = 'https://graph.microsoft.com/v1.0/me/transitiveMemberOf/microsoft.graph.directoryRole?$skiptoken=abc';
+    const fetchImpl = graphFetch({
+      ...boundRoutes({ value: [{ roleTemplateId: 'x' }], '@odata.nextLink': next }),
+      [next]: json({ value: [{ roleTemplateId: PRIVILEGED_ROLE_ADMIN_ROLE_ID }] }),
+    });
+    await expect(checkMailboxConsentAdminRoleViaGraph('delegated-token', EXPECTED, { fetch: fetchImpl }))
+      .resolves.toEqual({ ok: true });
+  });
+
+  it('reports a truncated role scan distinctly from a genuine non-admin', async () => {
+    const page = (n: number) => `https://graph.microsoft.com/v1.0/roles?page=${n}`;
+    const routes: Record<string, () => Response> = boundRoutes({ value: [], '@odata.nextLink': page(1) });
+    for (let n = 1; n <= 5; n += 1) routes[page(n)] = json({ value: [], '@odata.nextLink': page(n + 1) });
+    await expect(checkMailboxConsentAdminRoleViaGraph('delegated-token', EXPECTED, { fetch: graphFetch(routes) }))
+      .resolves.toEqual({ ok: false, reason: 'role_page_limit' });
+  });
+
+  it('never follows a nextLink off the Graph origin', async () => {
+    const fetchImpl = graphFetch(boundRoutes({
+      value: [], '@odata.nextLink': 'https://evil.example.com/v1.0/roles',
+    }));
+    await expect(checkMailboxConsentAdminRoleViaGraph('delegated-token', EXPECTED, { fetch: fetchImpl }))
+      .resolves.toEqual({ ok: false, reason: 'graph_malformed_response' });
+  });
+
+  it('rejects an admin role when the token principal differs from the ID token oid', async () => {
+    const fetchImpl = graphFetch({
+      ...boundRoutes({ value: [{ roleTemplateId: GLOBAL_ADMIN_ROLE_ID }] }),
+      [ME_URL]: json({ id: 'ffffffff-1234-4234-8234-123456789abc' }),
+    });
+    await expect(checkMailboxConsentAdminRoleViaGraph('delegated-token', EXPECTED, { fetch: fetchImpl }))
+      .resolves.toEqual({ ok: false, reason: 'principal_mismatch' });
+    expect(fetchImpl.mock.calls.map(([u]) => u.toString())).not.toContain(ROLES_URL);
+  });
+
+  it('rejects an admin role when the token tenant differs from the ID token tid', async () => {
+    const fetchImpl = graphFetch({
+      ...boundRoutes({ value: [{ roleTemplateId: GLOBAL_ADMIN_ROLE_ID }] }),
+      [ORG_URL]: json({ value: [{ id: OTHER_TENANT }] }),
+    });
+    await expect(checkMailboxConsentAdminRoleViaGraph('delegated-token', EXPECTED, { fetch: fetchImpl }))
+      .resolves.toEqual({ ok: false, reason: 'tenant_mismatch' });
+    expect(fetchImpl.mock.calls.map(([u]) => u.toString())).not.toContain(ROLES_URL);
+  });
+
+  it('rejects a signed-in user with no accepted directory role', async () => {
+    const fetchImpl = graphFetch(boundRoutes({ value: [{ roleTemplateId: '9b895d92-2cd3-44c7-9d02-a6ac2d5ea5c3' }] }));
+    await expect(checkMailboxConsentAdminRoleViaGraph('delegated-token', EXPECTED, { fetch: fetchImpl }))
+      .resolves.toEqual({ ok: false, reason: 'no_accepted_role' });
+  });
+
+  it('reports a non-2xx Graph response (e.g. missing Directory.Read.All consent) with its status, without throwing', async () => {
+    const fetchImpl = graphFetch({
+      ...boundRoutes({ value: [] }),
+      [ROLES_URL]: json({ error: { code: 'Authorization_RequestDenied' } }, 403),
+    });
+    await expect(checkMailboxConsentAdminRoleViaGraph('delegated-token', EXPECTED, { fetch: fetchImpl }))
+      .resolves.toEqual({ ok: false, reason: 'graph_http_error', status: 403 });
+  });
+
+  it('reports a network failure without throwing', async () => {
+    const fetchImpl = vi.fn<TestFetch>(async () => {
+      throw new Error('network unreachable');
+    });
+    await expect(checkMailboxConsentAdminRoleViaGraph('delegated-token', EXPECTED, { fetch: fetchImpl }))
+      .resolves.toEqual({ ok: false, reason: 'graph_request_failed' });
   });
 });
