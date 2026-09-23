@@ -16,7 +16,8 @@ export type WebhookAuth = {
 
 export type WebhookHeader = {
   key: string;
-  value: string;
+  // GET /webhooks returns every header value as a redaction marker object.
+  value: unknown;
 };
 
 export type Webhook = {
@@ -33,6 +34,8 @@ export type Webhook = {
   secret?: string;
   bearerToken?: string;
   auth?: WebhookAuth;
+  // Set by GET /webhooks in place of the secret itself, which is never returned.
+  hasSecret?: boolean;
   headers?: WebhookHeader[];
   payloadTemplate?: string;
 };

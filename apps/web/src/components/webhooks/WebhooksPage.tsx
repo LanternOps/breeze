@@ -6,6 +6,7 @@ import WebhookDeliveryHistory, { type WebhookDelivery } from './WebhookDeliveryH
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { extractApiError } from '@/lib/apiError';
+import { formSecretValue, MASKED_SECRET } from '@/lib/redactedSecret';
 import { Trans, useTranslation } from 'react-i18next';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
 // an island that hydrates before whichever other island happens to pull i18n in
@@ -224,14 +225,22 @@ export default function WebhooksPage() {
 
   const transformWebhookToForm = (webhook: Webhook): Partial<WebhookFormValues> => {
     const authType = webhook.auth?.type ?? (webhook.bearerToken ? 'bearer' : 'hmac');
+    // The API never returns the stored secret, only `hasSecret`, and returns
+    // each header value as a redaction marker. Pre-fill the masked string the
+    // API reads as "keep what is stored"; a blank secret would fail HMAC
+    // validation and block every edit until it was re-typed (#4983).
+    const storedSecret = webhook.auth?.secret ?? webhook.secret;
     return {
       name: webhook.name,
       url: webhook.url,
       authType,
-      secret: webhook.auth?.secret ?? webhook.secret ?? '',
+      secret: storedSecret ?? (webhook.hasSecret ? MASKED_SECRET : ''),
       bearerToken: webhook.auth?.token ?? webhook.bearerToken ?? '',
       events: webhook.events ?? [],
-      headers: webhook.headers ?? [],
+      headers: (webhook.headers ?? []).map(header => ({
+        key: header.key,
+        value: formSecretValue(header.value),
+      })),
       enabled: getWebhookEnabled(webhook),
       payloadTemplate: webhook.payloadTemplate ?? ''
     };

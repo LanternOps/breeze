@@ -35,4 +35,23 @@ describe('webhookOriginChangeWouldRetainAuthorization', () => {
       isMasked,
     )).toBe(false);
   });
+
+  // #4983: the edit form sends the masked URL back when the operator did not
+  // touch it. The merge keeps the stored URL, so the origin has not changed and
+  // the stored (masked) authorization and headers may stay.
+  it('treats a masked url as the stored destination, not an origin change', () => {
+    expect(webhookOriginChangeWouldRetainAuthorization(
+      { url: 'https://receiver.example/hook', authPassword: 'stored-pass', headers: { 'X-Api-Key': 'stored-key' } },
+      { url: '********', authPassword: '********', headers: { 'X-Api-Key': '********' } },
+      isMasked,
+    )).toBe(false);
+  });
+
+  it('still fails closed on a masked url when no destination is stored', () => {
+    expect(webhookOriginChangeWouldRetainAuthorization(
+      { authToken: 'stored-token' },
+      { url: '********', authToken: '********' },
+      isMasked,
+    )).toBe(true);
+  });
 });

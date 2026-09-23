@@ -34,6 +34,12 @@ export function webhookOriginChangeWouldRetainAuthorization(
 ): boolean {
   if (!isRecord(existing) || !isRecord(patch)) return false;
   if (typeof patch.url !== 'string') return false;
+  // A masked url is the edit form sending back the value it was shown. The
+  // config merge (encryptNotificationChannelConfig) replaces it with the stored
+  // url, so the destination is unchanged (#4983). Without this, new URL() on
+  // the mask throws and every untouched save reads as an origin change. With no
+  // stored url there is nothing to keep, so that case still fails closed below.
+  if (isMaskedSecret(patch.url) && typeof existing.url === 'string') return false;
 
   // A schemaless/legacy channel can contain authorization material without a
   // valid stored destination. Supplying its first usable URL establishes a new
