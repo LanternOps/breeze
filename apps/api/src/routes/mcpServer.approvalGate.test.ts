@@ -682,11 +682,22 @@ describe('MCP_ALLOW_UNATTENDED_TIER3 operator opt-in', () => {
       expect(mocks.executeTool).toHaveBeenCalledTimes(1);
     });
 
-    it('executes the sub-Tier-3 extra (collect_evidence) for an ai:write caller', async () => {
-      await callTool('collect_evidence', {
+    it('treats the approval extra (collect_evidence) as Tier 3: denied and unlisted without ai:execute', async () => {
+      const res = await callTool('collect_evidence', {
         incidentId: 'inc-1', deviceId: 'dev-1', evidenceTypes: ['screenshot'],
       }, ['ai:read', 'ai:write']);
+      expect((await res.json()).error.message).toContain('requires ai:execute scope');
+      expect(mocks.executeTool).not.toHaveBeenCalled();
+      const names = (await (await listTools()).json()).result.tools.map((t: any) => t.name);
+      expect(names).not.toContain('collect_evidence');
+    });
+
+    it('executes the approval extra (collect_evidence) through the Tier 3 ledger for an ai:execute caller', async () => {
+      await callTool('collect_evidence', {
+        incidentId: 'inc-1', deviceId: 'dev-1', evidenceTypes: ['screenshot'],
+      });
       expect(mocks.executeTool).toHaveBeenCalledTimes(1);
+      expect(mocks.ledgerBegin).toHaveBeenCalledTimes(1);
     });
 
     it('still requires ai:execute for Tier 3 — the scope gate is not bypassed', async () => {

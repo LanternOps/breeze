@@ -1028,6 +1028,11 @@ function isMcpApprovalRequired(toolName: string, effectiveTier: number): boolean
   return effectiveTier === 3 || MCP_APPROVAL_REQUIRED_EXTRA_TOOLS[toolName] === true;
 }
 
+/** Tier floor MCP applies on top of the registry tier (3 for approval extras). */
+function mcpTierFloor(toolName: string): number {
+  return MCP_APPROVAL_REQUIRED_EXTRA_TOOLS[toolName] === true ? 3 : 0;
+}
+
 /**
  * True when EVERY possible invocation of this tool resolves to a gated tier —
  * i.e. it can never be successfully called over MCP, so `tools/list` should
@@ -1179,8 +1184,9 @@ async function handleToolsList(
     // exactly the advertised-but-dead pattern this payoff eliminates.
     if (isToolWhollyGatedOverMcp(tool.name, tool.input_schema, getToolTier)) return false;
 
-    const tier = getToolTier(tool.name);
-    if (tier === undefined) return false;
+    const registryTier = getToolTier(tool.name);
+    if (registryTier === undefined) return false;
+    const tier = Math.max(registryTier, mcpTierFloor(tool.name));
 
     // Tier 1 (read-only) = ai:read is enough
     if (tier <= 1) return true;
@@ -1413,7 +1419,12 @@ async function handleToolsCall(
     console.error('[MCP] Guardrail check returned a non-finite tier for tool:', toolName, guardrailCheck.tier);
     return jsonRpcError(id, -32000, 'Unable to evaluate tool guardrails');
   }
-  const tier = Math.max(baseTier, guardrailCheck.tier);
+  // MCP_APPROVAL_REQUIRED_EXTRA_TOOLS are Tier 3 over MCP (their registered
+  // tier understates unattended risk). Flooring them here means that under the
+  // MCP_ALLOW_UNATTENDED_TIER3 opt-in they still need ai:execute,
+  // ai:execute_admin (production), the production allowlist and the Tier 3
+  // ledger lifecycle, exactly like any other Tier 3 call.
+  const tier = Math.max(baseTier, guardrailCheck.tier, mcpTierFloor(toolName));
 
   // MCP interactive-approval-only gate (see the block comment above
   // MCP_APPROVAL_REQUIRED_EXTRA_TOOLS). Deliberately checked BEFORE the scope
