@@ -28,6 +28,7 @@ import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { resolveSiteAllowedDeviceIds, runFrozenDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from './siteCeilingAccess';
+import { resolveWritableToolOrgId } from './aiToolWriteOrg';
 
 type SlaHandler = (input: Record<string, unknown>, auth: AuthContext) => Promise<string>;
 
@@ -424,6 +425,10 @@ export function registerSLABackupTools(aiTools: Map<string, AiTool>): void {
           },
           alertOnBreach: { type: 'boolean', description: 'Whether to alert when a breach is detected' },
           isActive: { type: 'boolean', description: 'Whether the SLA config is active' },
+          orgId: {
+            type: 'string',
+            description: 'Organization UUID that will own the new SLA config (create only). Required unless you can access exactly one organization.',
+          },
         },
         required: ['action'],
       },
@@ -442,8 +447,9 @@ export function registerSLABackupTools(aiTools: Map<string, AiTool>): void {
       }
 
       if (action === 'create') {
-        const orgId = getOrgId(auth);
-        if (!orgId) return JSON.stringify({ error: 'Organization context required' });
+        const resolvedSlaOrg = resolveWritableToolOrgId(auth, typeof input.orgId === 'string' && input.orgId ? input.orgId : undefined);
+        if (!resolvedSlaOrg.orgId) return JSON.stringify({ error: resolvedSlaOrg.error ?? 'Organization context required' });
+        const orgId = resolvedSlaOrg.orgId;
         if (typeof input.name !== 'string' || input.name.trim().length === 0) {
           return JSON.stringify({ error: 'name is required for create' });
         }

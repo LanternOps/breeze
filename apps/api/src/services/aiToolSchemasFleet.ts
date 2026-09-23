@@ -22,6 +22,7 @@ export const fleetToolInputSchemas: Record<string, z.ZodType> = {
     rolloutConfig: z.record(z.string(), z.unknown()).optional(),
     schedule: z.record(z.string(), z.unknown()).optional(),
     limit: z.number().int().min(1).max(100).optional(),
+    orgId: uuid.optional(),
   }).refine(
     (d) => {
       const needsId = ['get', 'device_status', 'start', 'pause', 'resume', 'cancel'];
@@ -58,6 +59,7 @@ export const fleetToolInputSchemas: Record<string, z.ZodType> = {
     rebootPolicy: z.enum(['if_required', 'always', 'never']).optional(),
     sources: z.array(z.enum(['os', 'third_party', 'custom'])).optional(),
     ...pageZodShape(25, 100),
+    orgId: uuid.optional(),
   }).refine(
     (d) => {
       // rollback keeps a hard patchId requirement (it also needs deviceIds, a
@@ -100,6 +102,7 @@ export const fleetToolInputSchemas: Record<string, z.ZodType> = {
     filterConditions: z.record(z.string(), z.unknown()).optional(),
     deviceIds: z.array(uuid).max(100).optional(),
     limit: z.number().int().min(1).max(200).optional(),
+    orgId: uuid.optional(),
   }).refine(
     (d) => {
       const needsId = ['get', 'membership_log', 'update', 'delete', 'add_devices', 'remove_devices'];
@@ -202,6 +205,7 @@ export const fleetToolInputSchemas: Record<string, z.ZodType> = {
     schedule: z.enum(['one_time', 'daily', 'weekly', 'monthly']).optional(),
     format: z.enum(['csv', 'pdf', 'excel']).optional(),
     limit: z.number().int().min(1).max(100).optional(),
+    orgId: uuid.optional(),
   }).refine(
     (d) => {
       const needsId = ['update', 'delete', 'history'];

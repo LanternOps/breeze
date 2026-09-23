@@ -23,6 +23,7 @@ import {
   runFrozenDeviceIds,
   SITE_SCOPE_EMPTY_NOTE,
 } from './aiToolsSiteScope';
+import { resolveWritableToolOrgId } from './aiToolWriteOrg';
 
 type MonitoringHandler = (input: Record<string, unknown>, auth: AuthContext) => Promise<string>;
 
@@ -217,13 +218,16 @@ export function registerMonitoringTools(aiTools: Map<string, AiTool>): void {
           config: { type: 'object', description: 'Monitor-specific configuration (for create/update)' },
           isActive: { type: 'boolean', description: 'Enable or disable the monitor (for create/update)' },
           limit: { type: 'number', description: 'Max recent check results for get (default 50, max 100)' },
+          orgId: {
+            type: 'string',
+            description: 'Organization UUID that will own the new monitor (create only). Required unless you can access exactly one organization.',
+          },
         },
         required: ['action'],
       },
     },
     handler: safeHandler('manage_monitors', async (input, auth) => {
       const action = input.action as string;
-      const orgId = getOrgId(auth);
 
       /**
        * Site-axis check for a loaded monitor (app-layer; RLS does NOT enforce
@@ -308,7 +312,9 @@ export function registerMonitoringTools(aiTools: Map<string, AiTool>): void {
       }
 
       if (action === 'create') {
-        if (!orgId) return JSON.stringify({ error: 'Organization context required' });
+        const resolvedMonitorOrg = resolveWritableToolOrgId(auth, typeof input.orgId === 'string' && input.orgId ? input.orgId : undefined);
+        if (!resolvedMonitorOrg.orgId) return JSON.stringify({ error: resolvedMonitorOrg.error ?? 'Organization context required' });
+        const orgId = resolvedMonitorOrg.orgId;
         if (!input.name) return JSON.stringify({ error: 'name is required' });
         if (!input.monitorType) return JSON.stringify({ error: 'monitorType is required' });
         if (!input.target) return JSON.stringify({ error: 'target is required' });

@@ -345,3 +345,49 @@ describe('aiToolsDR handlers', () => {
     expect(parsed).toEqual({ error: 'Operation failed. Check server logs for details.' });
   });
 });
+
+describe('manage_dr_plan:create_plan write-org resolution (#6667)', () => {
+  let toolMap: Map<string, AiTool>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setDefaultDbMocks();
+    toolMap = buildToolMap();
+  });
+
+  // A partner tech reachable to TWO orgs with no anchored auth.orgId — the
+  // shape that silently picked accessibleOrgIds[0] before the fix.
+  function multiOrgAuth(): AuthContext {
+    return {
+      user: { id: 'user-1', email: 'test@example.com', name: 'Test User' },
+      token: {} as any,
+      partnerId: 'partner-1',
+      orgId: null,
+      scope: 'partner',
+      principal: { kind: 'user_session' },
+      accessibleOrgIds: [ORG_ID, 'org-2'],
+      canAccessOrg: (orgId: string) => orgId === ORG_ID || orgId === 'org-2',
+      orgCondition: vi.fn(() => undefined),
+    } as any;
+  }
+
+  const CREATE_INPUT = { action: 'create_plan', name: 'Primary DR Plan', rpoTargetMinutes: 15, rtoTargetMinutes: 60 };
+
+  it('refuses with the ambiguous-org error and inserts nothing when orgId is omitted', async () => {
+    const result = JSON.parse(await toolMap.get('manage_dr_plan')!.handler(CREATE_INPUT, multiOrgAuth()));
+    expect(result.error).toBe('orgId is required: you have access to multiple organizations');
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it('uses the explicit accessible orgId for the insert', async () => {
+    mockInsertSequence([[{ id: PLAN_ID, orgId: 'org-2', name: 'Primary DR Plan' }]]);
+
+    const result = JSON.parse(await toolMap.get('manage_dr_plan')!.handler(
+      { ...CREATE_INPUT, orgId: 'org-2' },
+      multiOrgAuth(),
+    ));
+
+    expect(result.success).toBe(true);
+    expect(result.plan.orgId).toBe('org-2');
+  });
+});

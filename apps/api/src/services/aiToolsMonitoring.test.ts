@@ -414,6 +414,48 @@ describe('manage_monitors — site-axis enforcement', () => {
     });
   });
 
+  // ─── create action — write-org resolution (#6667) ────────────────────────
+
+  describe('action: create — write-org resolution (#6667)', () => {
+    // A partner tech reachable to TWO orgs with no anchored auth.orgId — the
+    // shape that silently picked accessibleOrgIds[0] before the fix.
+    function makeMultiOrgAuth(): AuthContext {
+      return {
+        principal: { kind: 'user_session' },
+        user: { id: 'user-1', email: 'u@example.com', name: 'U', isPlatformAdmin: false },
+        token: {} as any,
+        partnerId: 'partner-1',
+        orgId: null,
+        scope: 'partner',
+        accessibleOrgIds: ['org-1', 'org-2'],
+        orgCondition: () => undefined,
+        canAccessOrg: (id: string) => id === 'org-1' || id === 'org-2',
+      } as AuthContext;
+    }
+
+    const CREATE = {
+      action: 'create',
+      name: 'db-probe',
+      monitorType: 'tcp_port',
+      target: '10.0.0.5:5432',
+    };
+
+    it('refuses with the ambiguous-org error and inserts nothing when orgId is omitted', async () => {
+      const out = JSON.parse(await handle({ ...CREATE }, makeMultiOrgAuth()));
+      expect(out.error).toBe('orgId is required: you have access to multiple organizations');
+      expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+    });
+
+    it('uses the explicit accessible orgId for the insert', async () => {
+      const insertValues = vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'new-mon', name: 'db-probe' }]) });
+      vi.mocked(db.insert).mockReturnValue({ values: insertValues } as any);
+
+      const out = JSON.parse(await handle({ ...CREATE, orgId: 'org-2' }, makeMultiOrgAuth()));
+      expect(out.success).toBe(true);
+      expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({ orgId: 'org-2' }));
+    });
+  });
+
   // ─── unrestricted caller invariant ───────────────────────────────────────
 
   describe('unrestricted caller bypass', () => {

@@ -23,6 +23,7 @@ import {
   filterReadableDrExecutions,
   filterReadableDrPlans,
 } from './drReadAuthorization';
+import { resolveWritableToolOrgId } from './aiToolWriteOrg';
 
 /**
  * Deny a group mutation whose STORED membership reaches outside the caller's
@@ -512,6 +513,10 @@ export function registerDRTools(aiTools: Map<string, AiTool>): void {
             description: 'Restore configuration blob for the DR group',
           },
           estimatedDurationMinutes: { type: 'number', description: 'Estimated duration for the group in minutes' },
+          orgId: {
+            type: 'string',
+            description: 'Organization UUID that will own the new DR plan (create_plan only). Required unless you can access exactly one organization.',
+          },
         },
         required: ['action'],
       },
@@ -520,8 +525,9 @@ export function registerDRTools(aiTools: Map<string, AiTool>): void {
       const action = input.action as string;
 
       if (action === 'create_plan') {
-        const orgId = getOrgId(auth);
-        if (!orgId) return JSON.stringify({ error: 'Organization context required' });
+        const resolvedOrg = resolveWritableToolOrgId(auth, typeof input.orgId === 'string' && input.orgId ? input.orgId : undefined);
+        if (!resolvedOrg.orgId) return JSON.stringify({ error: resolvedOrg.error ?? 'Organization context required' });
+        const orgId = resolvedOrg.orgId;
         if (typeof input.name !== 'string' || input.name.trim().length === 0) {
           return JSON.stringify({ error: 'name is required for create_plan' });
         }

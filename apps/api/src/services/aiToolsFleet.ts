@@ -126,6 +126,7 @@ import {
 } from './siteScope';
 import { upsertPatchApproval, resolvePartnerIdForOrg, declineAllRingApprovals } from '../routes/patches/helpers';
 import { sanitizeThrownToolError } from './aiToolErrors';
+import { resolveWritableToolOrgId } from './aiToolWriteOrg';
 import { listFleetFindings } from './fleetFindings/query';
 import {
   AI_TRIAGE_SYSTEM_MANAGED_ERROR_CODE,
@@ -723,13 +724,16 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           rolloutConfig: { type: 'object', description: 'Rollout configuration: batch size, failure threshold (for create)' },
           schedule: { type: 'object', description: 'Schedule configuration (for create)' },
           limit: { type: 'number', description: 'Max results (default 25, max 100)' },
+          orgId: {
+            type: 'string',
+            description: 'Organization UUID that will own the new deployment (create only). Required unless you can access exactly one organization.',
+          },
         },
         required: ['action'],
       },
     },
     handler: safeHandler('manage_deployments', async (input, auth, context) => {
       const action = input.action as string;
-      const orgId = getOrgId(auth);
 
       // Deployments have no siteId column — gate site-restricted callers via
       // their member devices (mirrors routes/deployments.ts:760-766). Control
@@ -895,7 +899,9 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         if (approverReleaseMismatch(auth, context)) {
           return JSON.stringify({ error: 'approver_auth_mismatch', action });
         }
-        if (!orgId) return JSON.stringify({ error: 'Organization context required' });
+        const resolvedOrg = resolveWritableToolOrgId(auth, typeof input.orgId === 'string' && input.orgId ? input.orgId : undefined);
+        if (!resolvedOrg.orgId) return JSON.stringify({ error: resolvedOrg.error ?? 'Organization context required' });
+        const orgId = resolvedOrg.orgId;
         const [dep] = await db.insert(deployments).values({
           orgId,
           name: input.name as string,
@@ -1085,6 +1091,10 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           rebootPolicy: { type: 'string', enum: ['if_required', 'always', 'never'], description: 'Reboot policy after patching (for setup_auto_approval, default: if_required)' },
           sources: { type: 'array', items: { type: 'string', enum: ['os', 'third_party', 'custom'] }, description: 'Patch sources to include (for setup_auto_approval, default: ["os"])' },
           ...pageParamSchema(25, 100),
+          orgId: {
+            type: 'string',
+            description: 'Organization UUID that owns the target devices (install only). Required unless you can access exactly one organization.',
+          },
         },
         required: ['action'],
       },
@@ -1392,7 +1402,9 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({ error: 'approver_auth_mismatch', action });
         }
         if (!Array.isArray(input.patchIds) || !Array.isArray(input.deviceIds)) return JSON.stringify({ error: 'patchIds and deviceIds are required' });
-        if (!orgId) return JSON.stringify({ error: 'Organization context required' });
+        const resolvedInstallOrg = resolveWritableToolOrgId(auth, typeof input.orgId === 'string' && input.orgId ? input.orgId : undefined);
+        if (!resolvedInstallOrg.orgId) return JSON.stringify({ error: resolvedInstallOrg.error ?? 'Organization context required' });
+        const installOrgId = resolvedInstallOrg.orgId;
 
         // Validate devices belong to this org AND the caller's site scope. Site
         // is an app-layer axis (RLS does NOT enforce it), so a site-restricted
@@ -1400,7 +1412,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         const ownedDevices = await db.select({ id: devices.id, siteId: devices.siteId })
           .from(devices)
           .where(and(
-            eq(devices.orgId, orgId),
+            eq(devices.orgId, installOrgId),
             inArray(devices.id, input.deviceIds as string[]),
           ));
         const ownedIds = new Set(
@@ -1412,7 +1424,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         }
 
         const [job] = await db.insert(patchJobs).values({
-          orgId,
+          orgId: installOrgId,
           name: `AI-initiated patch install - ${new Date().toISOString()}`,
           patches: { patchIds: input.patchIds },
           targets: { deviceIds: input.deviceIds },
@@ -1688,6 +1700,10 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           filterConditions: { type: 'object', description: 'Dynamic filter conditions (for create/update/preview)' },
           deviceIds: { type: 'array', items: { type: 'string' }, description: 'Device UUIDs (for add_devices/remove_devices)' },
           limit: { type: 'number', description: 'Max results (default 25, max 200)' },
+          orgId: {
+            type: 'string',
+            description: 'Organization UUID that will own the new group (create only). Required unless you can access exactly one organization.',
+          },
         },
         required: ['action'],
       },
@@ -1843,7 +1859,9 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
       }
 
       if (action === 'create') {
-        if (!orgId) return JSON.stringify({ error: 'Organization context required' });
+        const resolvedGroupOrg = resolveWritableToolOrgId(auth, typeof input.orgId === 'string' && input.orgId ? input.orgId : undefined);
+        if (!resolvedGroupOrg.orgId) return JSON.stringify({ error: resolvedGroupOrg.error ?? 'Organization context required' });
+        const groupOrgId = resolvedGroupOrg.orgId;
         // Site axis (app-layer only; RLS does NOT enforce it): a site-restricted
         // caller may only create a group scoped to a site they can access. A
         // null/omitted siteId (org-wide group) fails closed for restricted callers.
@@ -1851,7 +1869,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({ error: 'Access denied: cannot create a group in a site outside your access' });
         }
         const [group] = await db.insert(deviceGroups).values({
-          orgId,
+          orgId: groupOrgId,
           name: input.name as string,
           type: (input.type as 'static' | 'dynamic') ?? 'static',
           siteId: (input.siteId as string) ?? null,
@@ -2862,6 +2880,10 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           schedule: { type: 'string', enum: ['one_time', 'daily', 'weekly', 'monthly'], description: 'Schedule (for create/update)' },
           format: { type: 'string', enum: ['csv', 'pdf', 'excel'], description: 'Output format (for create/update)' },
           limit: { type: 'number', description: 'Max results (default 25, max 100)' },
+          orgId: {
+            type: 'string',
+            description: 'Organization UUID that will own the new report definition (create only). Required unless you can access exactly one organization.',
+          },
         },
         required: ['action'],
       },
@@ -3174,8 +3196,10 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
       }
 
       if (action === 'create') {
-        if (!orgId) return JSON.stringify({ error: 'Organization context required' });
-        const authority = await aiLiveReportAuthority(auth, orgId, 'write');
+        const resolvedReportOrg = resolveWritableToolOrgId(auth, typeof input.orgId === 'string' && input.orgId ? input.orgId : undefined);
+        if (!resolvedReportOrg.orgId) return JSON.stringify({ error: resolvedReportOrg.error ?? 'Organization context required' });
+        const reportOrgId = resolvedReportOrg.orgId;
+        const authority = await aiLiveReportAuthority(auth, reportOrgId, 'write');
         if (
           !authority
           || (authority.scope.kind === 'restricted' && authority.scope.siteIds.length === 0)
@@ -3183,7 +3207,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({ error: 'Access to report scope denied' });
         }
         const [report] = await db.insert(reports).values({
-          orgId,
+          orgId: reportOrgId,
           name: input.name as string,
           type: input.reportType as 'device_inventory' | 'software_inventory' | 'alert_summary' | 'compliance' | 'performance' | 'executive_summary',
           config: (input.config as Record<string, unknown>) ?? {},

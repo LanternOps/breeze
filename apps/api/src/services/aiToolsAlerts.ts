@@ -33,6 +33,7 @@ import {
 import { webhookOriginChangeWouldRetainAuthorization } from './credentialOriginBinding';
 import { validateNotificationChannelConfig } from '../routes/alerts/helpers';
 import { sanitizeThrownToolError } from './aiToolErrors';
+import { resolveWritableToolOrgId } from './aiToolWriteOrg';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -512,6 +513,10 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
             type: 'boolean',
             description: 'Whether channel is active (default: true)',
           },
+          orgId: {
+            type: 'string',
+            description: 'Organization UUID that will own the new channel (create only). Required unless you can access exactly one organization.',
+          },
           limit: {
             type: 'number',
             description: 'Max results (default 25, max 50)',
@@ -603,8 +608,9 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
       }
 
       if (action === 'create') {
-        const orgId = auth.orgId ?? auth.accessibleOrgIds?.[0];
-        if (!orgId) return JSON.stringify({ error: 'Organization context required' });
+        const resolvedOrg = resolveWritableToolOrgId(auth, typeof input.orgId === 'string' && input.orgId ? input.orgId : undefined);
+        if (!resolvedOrg.orgId) return JSON.stringify({ error: resolvedOrg.error ?? 'Organization context required' });
+        const orgId = resolvedOrg.orgId;
         if (!input.name) return JSON.stringify({ error: 'name is required' });
         if (!input.type) return JSON.stringify({ error: 'type is required (email, slack, teams, webhook, pagerduty, sms)' });
         if (!input.config) return JSON.stringify({ error: 'config is required (channel-specific settings)' });
