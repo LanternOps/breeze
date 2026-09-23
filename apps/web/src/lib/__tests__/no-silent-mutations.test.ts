@@ -409,6 +409,11 @@ const TARGET_GLOBS = [
   // a tech believing a workflow's severity/kind restriction is live when the
   // save never landed.
   'src/components/automations/AutomationEditPage.tsx',
+  // Device Monitoring tab (#6367 W05c2 Task 10): the escalation reset POST.
+  'src/components/devices/DeviceMonitoringTab.tsx',
+  // Library Recommended strip (#6367 W05c2 Task 13): the feature-link write
+  // that attaches built-ins to a policy.
+  'src/components/monitoring/RecommendedMonitors.tsx',
 ];
 
 const absoluteFiles: string[] = TARGET_GLOBS.map((rel) => resolve(WEB_ROOT, '..', rel));
@@ -775,7 +780,8 @@ describe('no silent mutations in targeted set', () => {
     // Persistent conversion history adds ConversionLedger (Undo): 169 → 170.
     // LegacyRulesTable (per-rule convert) joins the guard: 170 → 171.
     // Alert workflows typed filter (W05c2 Task 9) adds automations/AutomationEditPage.tsx: 171 → 172.
-    expect(absoluteFiles.length).toBe(172);
+    // W05c2 Tasks 10 + 13 add devices/DeviceMonitoringTab.tsx and monitoring/RecommendedMonitors.tsx: 172 → 174.
+    expect(absoluteFiles.length).toBe(174);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }
