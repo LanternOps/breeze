@@ -506,7 +506,11 @@ describe('technician_time_billability — real Postgres (#3198 W02 Task 8)', () 
     expect(s.notes.join(' ')).toMatch(/ticket-linked time only/);
   });
 
-  runDb('org scope under an ORG-token context: time entries are partner-internal → empty, disclosed, no error (P7)', async () => {
+  // Since ruling F1 no route or worker path runs a business type under an
+  // org-token context (org-scope callers are refused; the worker runs in
+  // system context). Kept as the RLS backstop: were one to get here, the
+  // partner-axis time_entries policy still returns nothing, without an error.
+  runDb('org scope under an ORG-token context: time entries are partner-internal → empty, no error (RLS backstop; P7, superseded in routes by F1)', async () => {
     const f = await seedBusinessFixture();
     await seedTimeFixture(f);
 
@@ -519,7 +523,8 @@ describe('technician_time_billability — real Postgres (#3198 W02 Task 8)', () 
     expect(s.overall.loggedMinutes).toBe(0);
     expect(s.groups).toEqual([]);
     expect(s.rows).toEqual([]);
-    expect(s.notes.join(' ')).toMatch(/partner-internal/);
+    // The org-token disclosure note was removed with ruling F1.
+    expect(s.notes.join(' ')).not.toMatch(/sign-in/i);
   });
 });
 

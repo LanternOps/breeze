@@ -43,6 +43,7 @@ import { reportRoutes } from '../../routes/reports';
 import { authMiddleware } from '../../middleware/auth';
 import { createAccessToken } from '../../services/jwt';
 import { PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../../services/partnerWideAccess';
+import { siteScopeFingerprint } from '../../services/siteScope';
 import { generateReport } from '../../services/reportGenerationService';
 import {
   assignUserToOrganization,
@@ -148,6 +149,7 @@ async function seedFixture() {
   return {
     partner,
     partnerRole,
+    orgRole,
     orgA,
     orgB,
     admin,
@@ -765,5 +767,175 @@ describe('partner-owned report definitions through the real routes (#3198 W01/W0
     const demotedToken = await partnerToken(fixture.admin, fixture.partnerRole.id, fixture.partner.id);
     const demotedGet = await call(app, demotedToken, 'GET', `/reports/runs/${refusal.id}`);
     expect(demotedGet.status).toBe(404);
+  });
+});
+
+/**
+ * #3198 W02, ruling F1 — business report types (registry audience
+ * 'msp_staff') are internal to the MSP. Against real Postgres (breeze_app,
+ * forced RLS), through the production auth middleware and routes: an ORG-scope
+ * token holding reports:* never lists, reads, downloads, edits or generates an
+ * org-owned business definition or run that a partner user made in its own
+ * org, while the partner user (positive control) and the org token's legacy
+ * types are unaffected. And the schedule worker re-checks an org-owned
+ * business report on the partner axis only, so a customer user's org role —
+ * however it is configured — cannot run one.
+ */
+describe('business report types are MSP-staff-only (#3198 W02, ruling F1)', () => {
+  beforeEach(() => {
+    generateReportSpy.mockClear();
+  });
+
+  runDb('an org token cannot list, get or download an org-owned ar_aging run a partner user made; the partner user can', async () => {
+    const fixture = await seedFixture();
+    const app = buildApp();
+
+    // The partner admin makes an org-owned ar_aging definition in orgA and runs it.
+    const arDef = await call(app, fixture.adminToken, 'POST', '/reports', {
+      name: 'orgA AR aging', type: 'ar_aging', orgId: fixture.orgA.id, schedule: 'monthly', format: 'csv',
+    });
+    expect(arDef.status, await arDef.clone().text()).toBe(201);
+    const arDefId = ((await arDef.json()) as { id: string }).id;
+    const arGen = await call(app, fixture.adminToken, 'POST', `/reports/${arDefId}/generate`);
+    expect(arGen.status, await arGen.clone().text()).toBe(200);
+    const arRunId = ((await arGen.json()) as { runId: string }).runId;
+
+    // Positive control on the SAME org token: an org-owned device_inventory
+    // definition + run in orgA stay visible.
+    const invDef = await call(app, fixture.adminToken, 'POST', '/reports', {
+      name: 'orgA inventory', type: 'device_inventory', orgId: fixture.orgA.id,
+    });
+    expect(invDef.status).toBe(201);
+    const invDefId = ((await invDef.json()) as { id: string }).id;
+    const invGen = await call(app, fixture.adminToken, 'POST', `/reports/${invDefId}/generate`);
+    expect(invGen.status, await invGen.clone().text()).toBe(200);
+    const invRunId = ((await invGen.json()) as { runId: string }).runId;
+
+    const idsOf = async (res: Response) => ((await res.json()) as { data: Array<{ id: string }> }).data.map((r) => r.id);
+
+    // --- org token: hidden everywhere, as an ordinary 404 ---
+    const list = await call(app, fixture.orgToken, 'GET', '/reports?limit=100');
+    expect(list.status).toBe(200);
+    const listIds = await idsOf(list);
+    expect(listIds).toContain(invDefId);
+    expect(listIds).not.toContain(arDefId);
+
+    const byType = await call(app, fixture.orgToken, 'GET', '/reports?type=ar_aging&limit=100');
+    expect(byType.status).toBe(200);
+    expect(await idsOf(byType)).toEqual([]);
+
+    const get = await call(app, fixture.orgToken, 'GET', `/reports/${arDefId}`);
+    expect(get.status).toBe(404);
+
+    const runs = await call(app, fixture.orgToken, 'GET', '/reports/runs?limit=100');
+    expect(runs.status).toBe(200);
+    const runIds = await idsOf(runs);
+    expect(runIds).toContain(invRunId);
+    expect(runIds).not.toContain(arRunId);
+
+    const runGet = await call(app, fixture.orgToken, 'GET', `/reports/runs/${arRunId}`);
+    expect(runGet.status).toBe(404);
+    expect(await runGet.json()).toEqual({ error: 'Report run not found' });
+
+    const download = await call(app, fixture.orgToken, 'GET', `/reports/runs/${arRunId}/download?format=json`);
+    expect(download.status).toBe(404);
+    expect(await download.json()).toEqual({ error: 'Report run not found' });
+
+    const invRunGet = await call(app, fixture.orgToken, 'GET', `/reports/runs/${invRunId}`);
+    expect(invRunGet.status).toBe(200);
+
+    // Mutations and generation by id: the row does not exist for them.
+    const put = await call(app, fixture.orgToken, 'PUT', `/reports/${arDefId}`, {
+      config: { emailRecipients: ['customer@example.com'] },
+    });
+    expect(put.status).toBe(404);
+    const regen = await call(app, fixture.orgToken, 'POST', `/reports/${arDefId}/generate`);
+    expect(regen.status).toBe(404);
+    expect(await runsFor(arDefId)).toHaveLength(1);
+
+    // Create and ad-hoc generate of a business type: 403.
+    const create = await call(app, fixture.orgToken, 'POST', '/reports', {
+      name: 'customer AR', type: 'ar_aging', schedule: 'monthly',
+    });
+    expect(create.status).toBe(403);
+    expect(await create.json()).toEqual({ error: 'Insufficient permissions' });
+    const adhoc = await call(app, fixture.orgToken, 'POST', '/reports/generate', { type: 'ticket_sla_attainment' });
+    expect(adhoc.status).toBe(403);
+    expect(await adhoc.json()).toEqual({ error: 'Insufficient permissions' });
+
+    // --- partner admin: the positive control on the same run ---
+    const adminRunGet = await call(app, fixture.adminToken, 'GET', `/reports/runs/${arRunId}`);
+    expect(adminRunGet.status).toBe(200);
+    expect(await adminRunGet.json()).toMatchObject({ id: arRunId, reportId: arDefId, status: 'completed' });
+    const adminDownload = await call(app, fixture.adminToken, 'GET', `/reports/runs/${arRunId}/download?format=json`);
+    expect(adminDownload.status, await adminDownload.clone().text()).toBe(200);
+    expect(await adminDownload.json()).toMatchObject({ type: 'ar_aging', format: 'json' });
+    const adminList = await call(app, fixture.adminToken, 'GET', `/reports/runs?reportId=${arDefId}&limit=100`);
+    expect(await idsOf(adminList)).toEqual([arRunId]);
+  });
+
+  runDb('the worker denies an org-owned technician_time_billability report whose execution user holds the permissions only through an org role', async () => {
+    // I1: an org role holding time_entries:read + tickets:read (the 2026-06-12-a
+    // migration grants time_entries:read to every tickets:read role). The row
+    // is inserted directly, as a pre-F1 create would have left it.
+    const fixture = await seedFixture();
+    await grantRolePermissions(fixture.orgRole.id, [
+      { resource: 'time_entries', action: 'read' },
+      { resource: 'tickets', action: 'read' },
+    ]);
+    const scope = { version: 1 as const, kind: 'unrestricted' as const, orgId: fixture.orgA.id };
+    const [row] = await getTestDb()
+      .insert(reports)
+      .values({
+        orgId: fixture.orgA.id,
+        name: 'customer-made time report',
+        type: 'technician_time_billability',
+        config: { emailRecipients: ['customer@example.com'] },
+        schedule: 'monthly',
+        format: 'csv',
+        createdBy: fixture.orgUser.id,
+        executionScopeVersion: 1,
+        executionScopeKind: 'unrestricted',
+        executionScopeSiteIds: null,
+        executionScopeUserId: fixture.orgUser.id,
+        executionScopeFingerprint: siteScopeFingerprint(scope),
+        executionScopeCapturedAt: new Date(),
+        executionScopePrincipalKind: 'user',
+      })
+      .returning({ id: reports.id });
+
+    await expect(
+      withSystemDbAccessContext(() =>
+        processRunScheduledReport(
+          { type: 'run-scheduled-report', reportId: row!.id, occurrenceKey: 202609010900 },
+          { finalAttempt: true },
+        ),
+      ),
+    ).resolves.toBeUndefined();
+    expect(await runsFor(row!.id)).toEqual([expect.objectContaining({
+      status: 'failed',
+      errorMessage: 'scope_permission_missing',
+      requestedByKind: 'user',
+      requestedByUserId: fixture.orgUser.id,
+    })]);
+    expect(generateReportSpy).not.toHaveBeenCalled();
+  });
+
+  runDb('positive control: the same org-owned business report runs when its execution user is a covering partner user', async () => {
+    const fixture = await seedFixture();
+    const app = buildApp();
+    const created = await call(app, fixture.adminToken, 'POST', '/reports', {
+      name: 'orgA AR aging', type: 'ar_aging', orgId: fixture.orgA.id, schedule: 'monthly', format: 'csv',
+    });
+    expect(created.status).toBe(201);
+    const id = ((await created.json()) as { id: string }).id;
+    await withSystemDbAccessContext(() =>
+      processRunScheduledReport(
+        { type: 'run-scheduled-report', reportId: id, occurrenceKey: 202609010900 },
+        { finalAttempt: true },
+      ),
+    );
+    expect(await runsFor(id)).toEqual([expect.objectContaining({ status: 'completed', executionScopeUserId: fixture.admin.id })]);
+    expect(generateReportSpy).toHaveBeenCalledTimes(1);
   });
 });
