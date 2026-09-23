@@ -139,6 +139,15 @@ describe('SystemDeprecationsPage', () => {
     await screen.findByTestId('deprecations-history-missing');
   });
 
+  it('shows the manifest-error alert when the image manifest could not be read', async () => {
+    fetchWithAuth.mockResolvedValue(
+      jsonRes({ data: report({ manifestError: 'breaking-changes.json failed validation: entries.0.id', entries: [] }) }),
+    );
+    render(<SystemDeprecationsPage />);
+    const alert = await screen.findByTestId('deprecations-manifest-error');
+    expect(alert.textContent).toContain('failed validation');
+  });
+
   it('shows a platform-admin-required panel on a 403', async () => {
     fetchWithAuth.mockResolvedValue(jsonRes({ error: 'platform admin access required' }, 403));
     render(<SystemDeprecationsPage />);

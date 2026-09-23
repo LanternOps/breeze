@@ -176,6 +176,20 @@ describe('readDeploymentStateWith (query-injected reader)', () => {
     expect(result.ledger.status).toBe('missing');
   });
 
+  it("surfaces the database's own message, not Drizzle's \"Failed query\" wrapper", async () => {
+    const wrapped = Object.assign(new Error('Failed query: SELECT version, first_seen_at FROM breeze_version_history'), {
+      cause: new Error('permission denied for table breeze_version_history'),
+    });
+    const query: PreflightQuery = vi.fn(async (text: string) => {
+      if (/to_regclass/.test(text)) return [{ present: true }] as never;
+      throw wrapped;
+    });
+    const result = await readDeploymentStateWith(query, '0.116.0');
+    expect(result.history.status === 'missing' && result.history.reason).toBe(
+      'could not read breeze_version_history: permission denied for table breeze_version_history',
+    );
+  });
+
   it('reports a missing history table as missing history', async () => {
     const query: PreflightQuery = vi.fn(async () => [{ present: false }] as never);
     const result = await readDeploymentStateWith(query, '0.116.0');
