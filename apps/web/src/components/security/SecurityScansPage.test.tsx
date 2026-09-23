@@ -77,17 +77,38 @@ describe('SecurityScansPage', () => {
     expect(screen.queryByTestId('security-threat-detail')).toBeNull();
   });
 
-  it('opens a threat row via the keyboard (Enter)', async () => {
+  it('opens a threat from the keyboard via a real button in the name cell, keeping the row a table row', async () => {
     window.location.hash = '#threats';
     fetchWithAuth.mockResolvedValue(makeJsonResponse({ data: [quarantinedThreat] }));
 
     render(<SecurityScansPage />);
 
     const row = await screen.findByTestId('threat-row-t1');
-    row.focus();
-    fireEvent.keyDown(row, { key: 'Enter' });
+    // The row must keep its implicit table-row role for screen readers.
+    expect(row.getAttribute('role')).toBeNull();
+    expect(row.getAttribute('tabindex')).toBeNull();
+
+    // Table and card layouts both render in jsdom; [0] is the table copy.
+    const open = screen.getAllByTestId('threat-open-t1')[0];
+    expect(open.tagName).toBe('BUTTON');
+    fireEvent.click(open);
 
     expect(await screen.findByTestId('security-threat-detail')).toBeTruthy();
+  });
+
+  it('Space on the row checkbox selects the row and does not open the detail', async () => {
+    window.location.hash = '#threats';
+    fetchWithAuth.mockResolvedValue(makeJsonResponse({ data: [quarantinedThreat] }));
+
+    render(<SecurityScansPage />);
+
+    const checkbox = (await screen.findAllByTestId('threat-row-select-t1'))[0];
+    checkbox.focus();
+    fireEvent.keyDown(checkbox, { key: ' ' });
+    fireEvent.click(checkbox);
+
+    expect((checkbox as HTMLInputElement).checked).toBe(true);
+    expect(screen.queryByTestId('security-threat-detail')).toBeNull();
   });
 
   it('uses no prohibited positioning language', () => {
