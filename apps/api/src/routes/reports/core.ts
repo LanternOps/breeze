@@ -557,6 +557,9 @@ coreRoutes.post(
         auth.partnerId,
         'write',
       );
+      if (!partnerAuthority.ok && partnerAuthority.reason === 'tenant_inactive') {
+        return c.json(REPORT_TENANT_INACTIVE, 403);
+      }
       if (!partnerAuthority.ok) {
         return c.json(
           { error: 'Report scope is not authorized', reason: partnerAuthority.reason },

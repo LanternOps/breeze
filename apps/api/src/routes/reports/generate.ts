@@ -82,6 +82,9 @@ generateRoutes.post(
       );
       // Condition 1: the caller's LIVE partner authority refuses (demoted,
       // selected org access, ...) — core.ts create's body (ruling T11a).
+      if (!partnerResult.ok && partnerResult.reason === 'tenant_inactive') {
+        return c.json(REPORT_TENANT_INACTIVE, 403);
+      }
       if (!partnerResult.ok) {
         return c.json(
           { error: 'Report scope is not authorized', reason: partnerResult.reason },

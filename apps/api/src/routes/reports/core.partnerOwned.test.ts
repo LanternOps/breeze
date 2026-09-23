@@ -406,6 +406,15 @@ describe('POST /reports ownerScope=partner (#3198 W01)', () => {
     expect(state.inserts).toHaveLength(0);
   });
 
+  it('403s with the shared tenant_inactive body when the partner is out of service (#6699)', async () => {
+    state.partnerAuthority = { ok: false, reason: 'tenant_inactive' };
+    const res = await app().request('/reports', { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify(body) });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Report owner is not active', reason: 'tenant_inactive' });
+    expect(state.inserts).toHaveLength(0);
+  });
+
   // #3198 W02 (ruling P8): reports:write is not enough to schedule AR by email.
   it('403s Insufficient permissions for ar_aging without invoices:read — both owner arms, no insert', async () => {
     state.permissions = { permissions: NO_INVOICES_PERMISSIONS };
