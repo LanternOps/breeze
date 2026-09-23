@@ -1001,6 +1001,7 @@ func fail(msg string) backupipc.BackupCommandResult {
 // simply omitted — a marshalling problem must never escalate into losing the
 // failure reason itself.
 func marshalBackupRunResult(job *backup.BackupJob, err error) backupipc.BackupCommandResult {
+	job = withoutSecurityDescriptorTable(job)
 	if err == nil {
 		return marshalResult(job, nil)
 	}

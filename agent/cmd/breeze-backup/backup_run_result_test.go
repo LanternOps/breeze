@@ -124,3 +124,42 @@ func TestMarshalBackupRunResultSuccessIsUnchanged(t *testing.T) {
 		t.Errorf("success body lost its counters: %s", result.Stdout)
 	}
 }
+
+// TestMarshalBackupRunResultOmitsSecurityDescriptorTable (W06a I2): the
+// snapshot's NTFS security-descriptor table belongs in the manifest
+// (snapshots/<id>/manifest.json, which restore reads) and nowhere else. It
+// can be large on a whole-machine run and the server discards it, so the
+// backup_run result — success AND failure — must not carry the key, while the
+// job's own Snapshot (the manifest source) keeps it untouched.
+func TestMarshalBackupRunResultOmitsSecurityDescriptorTable(t *testing.T) {
+	for _, runErr := range []error{nil, errors.New("partial upload failure")} {
+		snap := &backup.Snapshot{
+			ID:                  "snap-sd",
+			Files:               []backup.SnapshotFile{{SourcePath: "C:/a.txt", SDIndex: 1}},
+			SecurityDescriptors: []string{"AQAEgBQAAAAkAAAAAAAAADAAAAA="},
+		}
+		job := &backup.BackupJob{ID: "job-sd", Status: "completed", Snapshot: snap}
+
+		result := marshalBackupRunResult(job, runErr)
+
+		var decoded struct {
+			Snapshot map[string]json.RawMessage `json:"snapshot"`
+		}
+		if err := json.Unmarshal([]byte(result.Stdout), &decoded); err != nil {
+			t.Fatalf("err=%v: body must parse, got %q: %v", runErr, result.Stdout, err)
+		}
+		if string(decoded.Snapshot["id"]) != `"snap-sd"` {
+			t.Fatalf("err=%v: snapshot identity lost: %s", runErr, result.Stdout)
+		}
+		if _, has := decoded.Snapshot["securityDescriptors"]; has {
+			t.Errorf("err=%v: result snapshot still carries securityDescriptors: %s", runErr, result.Stdout)
+		}
+		manifest, err := json.Marshal(job.Snapshot)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(manifest), `"securityDescriptors":["AQAEgBQAAAAkAAAAAAAAADAAAAA="]`) {
+			t.Errorf("err=%v: manifest lost its securityDescriptors table: %s", runErr, manifest)
+		}
+	}
+}
