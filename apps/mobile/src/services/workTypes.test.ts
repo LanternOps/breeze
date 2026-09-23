@@ -68,9 +68,18 @@ describe('fetchWorkTypes (#4628 W04)', () => {
     expect(shouldReportWorkTypeLoadFailure({ statusCode: 401 })).toBe(false);
     // Offline is the normal case for a field technician.
     expect(shouldReportWorkTypeLoadFailure(new TypeError('Network request failed'))).toBe(false);
+    const timeout = new Error('timed out');
+    timeout.name = 'FetchTimeoutError';
+    expect(shouldReportWorkTypeLoadFailure(timeout)).toBe(false);
+    // The session changed under the request — sign-out, not a bug.
+    expect(shouldReportWorkTypeLoadFailure({ code: 'session_superseded' })).toBe(false);
     // A server error or a contract drift is a bug somebody should see.
     expect(shouldReportWorkTypeLoadFailure({ statusCode: 500 })).toBe(true);
     expect(shouldReportWorkTypeLoadFailure(new WorkTypeListMalformedError())).toBe(true);
+    // A 200 with a truncated/HTML body makes coreRequest's JSON.parse throw a
+    // bare SyntaxError: an unknown shape is reported, never swallowed.
+    expect(shouldReportWorkTypeLoadFailure(new SyntaxError('Unexpected token <'))).toBe(true);
+    expect(shouldReportWorkTypeLoadFailure(new Error('something else'))).toBe(true);
   });
 
   it('returns an empty list when the partner has no work types', async () => {

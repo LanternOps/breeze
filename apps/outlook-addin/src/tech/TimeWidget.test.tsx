@@ -4,6 +4,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { TimeWidget } from './TimeWidget';
 import * as api from './api';
 import { TechApiError } from './api';
+import { ApiError, AuthBlockedError } from '@breeze/office-addin-core';
 import type { AddinTicketSummary } from './api';
 
 afterEach(() => {
@@ -465,6 +466,28 @@ describe('TimeWidget work-type picker (#4628 W04)', () => {
     await waitFor(() => expect(logSpy).toHaveBeenCalledTimes(1));
     expect(logSpy.mock.calls[0][0]).not.toHaveProperty('workTypeId');
     expect(props.onBanner).not.toHaveBeenCalledWith(expect.stringContaining('work type'));
+  });
+
+  it('logs an unexpected work-types failure for support, but stays silent on 403 and on a session ending', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const cases: Array<[unknown, boolean]> = [
+      [new TechApiError(500, 'http_500'), true],
+      [new Error('work types response malformed'), true],
+      [new TechApiError(403, 'Forbidden'), false],
+      [new ApiError(401, 'unauthorized'), false],
+      [new AuthBlockedError('relink_required', 'binding_missing'), false],
+    ];
+    for (const [err, logged] of cases) {
+      errSpy.mockClear();
+      vi.spyOn(api, 'fetchRunningTimer').mockResolvedValue({ running: null });
+      const wtSpy = vi.spyOn(api, 'fetchWorkTypes').mockRejectedValue(err);
+      render(<TimeWidget {...baseProps()} />);
+      await waitFor(() => expect(wtSpy).toHaveBeenCalled());
+      await waitFor(() => expect(screen.getByTestId('time-idle')).toBeTruthy());
+      const workTypeLogs = errSpy.mock.calls.filter((c) => String(c[0]).includes('work type'));
+      expect(workTypeLogs.length > 0).toBe(logged);
+      cleanup();
+    }
   });
 
   it('a partner with no work types gets no select at all', async () => {

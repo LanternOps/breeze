@@ -241,9 +241,19 @@ export interface WorkTypesResponse {
  * (#4628 W04). Active types of the technician's partner, id + name only.
  */
 export async function fetchWorkTypes(fetchImpl?: FetchLike): Promise<WorkTypesResponse> {
-  return (await expectOk(
-    await apiFetch('/office-addin/time/work-types', {}, fetchImpl),
-  )) as WorkTypesResponse;
+  const body = await expectOk(await apiFetch('/office-addin/time/work-types', {}, fetchImpl));
+  const workTypes = (body as { workTypes?: unknown } | null)?.workTypes;
+  // Validated, not cast: the widget renders this list directly, and an
+  // undefined here would crash it instead of hiding the picker.
+  if (
+    !Array.isArray(workTypes) ||
+    !workTypes.every(
+      (w) => w && typeof w === 'object' && typeof w.id === 'string' && typeof w.name === 'string',
+    )
+  ) {
+    throw new Error('office-addin work types response malformed');
+  }
+  return { workTypes: workTypes as AddinWorkType[] };
 }
 
 export interface StartTimerRequest {

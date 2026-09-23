@@ -32,6 +32,7 @@
  * id + display number, same reasoning `LinkEmailAction` used.
  */
 import { useCallback, useEffect, useState } from 'react';
+import { ApiError, AuthBlockedError } from '@breeze/office-addin-core';
 import {
   fetchRunningTimer,
   fetchWorkTypes,
@@ -90,14 +91,17 @@ export function TimeWidget({ linkedTicket, suggestedDurationMinutes, onBanner }:
         if (!cancelled) setWorkTypes(res.workTypes);
       })
       .catch((err: unknown) => {
-        // Fail soft and quietly: the picker disappears and time is still
-        // logged at the category default. A 403 (no billing_profiles:read) is
-        // an expected role shape; anything else is logged for support.
+        // Fail soft: the picker disappears and time is still logged at the
+        // category default. A 403 (no billing_profiles:read) and a session
+        // ending (apiFetch's 401 ApiError / AuthBlockedError — the shell
+        // handles those) are expected; anything else is logged for support.
         if (cancelled) return;
         setWorkTypes([]);
-        if (!(err instanceof TechApiError && err.status === 403)) {
-          console.error('[TimeWidget] work type list failed to load', err);
-        }
+        const expected =
+          (err instanceof TechApiError && err.status === 403) ||
+          (err instanceof ApiError && err.status === 401) ||
+          err instanceof AuthBlockedError;
+        if (!expected) console.error('[TimeWidget] work type list failed to load', err);
       });
     return () => {
       cancelled = true;

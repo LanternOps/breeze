@@ -45,6 +45,7 @@ import {
   type WorkType,
 } from '../../services/workTypes';
 import { WorkTypePicker } from '../../components/WorkTypePicker';
+import { shouldShowWorkTypePicker } from '../../components/workTypePickerOptions';
 import {
   addTicketComment,
   allowedQuickStatuses,
@@ -71,7 +72,7 @@ import { navigateToTicket } from '../../navigation/navigationRef';
 import { AttachmentChip } from '../../components/AttachmentChip';
 import { useToast } from '../../components/toast/ToastHost';
 import { relativeTime } from '../../lib/relativeTime';
-import { reportInternalError } from '../../lib/errorReporting';
+import { reportInternalError, safeReportInternalError } from '../../lib/errorReporting';
 
 import {
   isVisibleActivityEntry,
@@ -594,7 +595,7 @@ export function TicketDetailScreen() {
       .catch((err: unknown) => {
         if (cancelled) return;
         setWorkTypes([]);
-        if (shouldReportWorkTypeLoadFailure(err)) reportInternalError(err, 'ticket-work-types-load');
+        if (shouldReportWorkTypeLoadFailure(err)) safeReportInternalError(err, 'ticket-work-types-load');
       });
     return () => {
       cancelled = true;
@@ -616,7 +617,8 @@ export function TicketDetailScreen() {
           isConnected: () => connected,
           stamp: stampNow,
         },
-        workTypeId === undefined ? {} : { workTypeId }
+        // startForTicket owns the tri-state: undefined is omitted from the start.
+        { workTypeId }
       );
       if (!mounted.current) return;
       // One decision table, shared with the TimerBar — see timerOutcomeEffects.ts.
@@ -849,7 +851,7 @@ export function TicketDetailScreen() {
           </Text>
         ) : (
           <>
-            {running && running.ticketId === ticketId ? null : (
+            {!shouldShowWorkTypePicker(running, ticketId) ? null : (
               // Priced at START (§3.7), so the choice only matters before the
               // tap; a running timer's work type is edited from the web.
               <WorkTypePicker

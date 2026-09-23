@@ -37,19 +37,25 @@ export class WorkTypeListMalformedError extends Error {
 }
 
 /**
- * Whether a failed load is a bug worth reporting. A 401/403 (a role without
- * `billing_profiles:read`, or a session ending) and a transport failure (a
- * technician in a basement) are expected states: the picker stays hidden and
- * the timer still starts. A 5xx or a malformed body is not.
+ * Whether a failed load is a bug worth reporting. Expected states, where the
+ * picker just stays hidden and the timer still starts:
+ *   - 401/403 — a role without `billing_profiles:read`, or a session ending;
+ *   - `session_superseded` — the account changed under the request;
+ *   - a transport failure — RN fetch rejects with a `TypeError`, a timeout
+ *     with `FetchTimeoutError` (a technician in a basement).
+ * Everything else is reported — a 5xx, a malformed body, and any error shape
+ * nobody anticipated (e.g. the bare `SyntaxError` coreRequest's `JSON.parse`
+ * throws on a truncated 200). Unknown is reported, never swallowed.
  */
 export function shouldReportWorkTypeLoadFailure(error: unknown): boolean {
   if (error instanceof WorkTypeListMalformedError) return true;
-  const statusCode =
-    typeof error === 'object' && error !== null
-      ? (error as { statusCode?: unknown }).statusCode
-      : undefined;
-  if (typeof statusCode !== 'number') return false;
-  return statusCode !== 401 && statusCode !== 403;
+  if (error instanceof TypeError) return false;
+  if (typeof error !== 'object' || error === null) return true;
+  const e = error as { statusCode?: unknown; code?: unknown; name?: unknown };
+  if (e.name === 'FetchTimeoutError') return false;
+  if (e.code === 'session_superseded') return false;
+  if (e.statusCode === 401 || e.statusCode === 403) return false;
+  return true;
 }
 
 function isWorkType(value: unknown): value is WorkType {

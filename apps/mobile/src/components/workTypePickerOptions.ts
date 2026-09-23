@@ -29,3 +29,15 @@ export function isWorkTypeOptionSelected(
 ): boolean {
   return option.value === value;
 }
+
+/**
+ * The picker only matters before a START (timers are priced at start, §3.7),
+ * so it is hidden while this ticket's own timer runs. A timer running on
+ * ANOTHER ticket still shows it: starting here stops that one and prices this.
+ */
+export function shouldShowWorkTypePicker(
+  running: { ticketId: string | null } | null,
+  ticketId: string
+): boolean {
+  return !(running && running.ticketId === ticketId);
+}
