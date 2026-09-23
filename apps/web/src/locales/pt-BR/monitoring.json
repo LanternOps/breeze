@@ -470,6 +470,21 @@
       "empty": "Nenhum histórico de conversão.",
       "system": "Sistema",
       "deadline": "Desfazer fica indisponível após W05d remover o avaliador de origem."
+    },
+    "errorCodes": {
+      "preview_stale": "A política mudou desde esta pré-visualização. Gere uma nova pré-visualização antes de converter.",
+      "preview_failed": "Não foi possível gerar a pré-visualização. Tente novamente mais tarde.",
+      "equivalence_delta": "Os monitores convertidos não se comportariam como as regras legadas em todos os dispositivos. Revise a pré-visualização antes de converter.",
+      "CONVERSION_PREREQUISITE_MISSING": "Uma atualização necessária da plataforma ainda não foi implantada, então a conversão não é possível.",
+      "blocked": "Esta conversão está bloqueada. Converta primeiro a política principal e tente novamente.",
+      "already_converted": "Estas regras já foram convertidas. Atualize para ver o estado atual.",
+      "partner_wide_denied": "É necessário acesso completo de parceiro para converter políticas de todo o parceiro.",
+      "policy_not_found": "A política não foi encontrada. Ela pode ter sido excluída.",
+      "source_not_found": "A regra legada não foi encontrada. Ela pode já ter sido convertida ou excluída.",
+      "conversion_not_found": "Essa conversão não foi encontrada.",
+      "conversion_revert_unavailable": "Esta conversão não pode mais ser desfeita.",
+      "invalid_reason": "Esse motivo de desativação não é válido.",
+      "unknown": "A conversão falhou. Tente novamente."
     }
   }
 }

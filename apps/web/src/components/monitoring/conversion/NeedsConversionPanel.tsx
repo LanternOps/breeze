@@ -4,6 +4,7 @@ import { fetchWithAuth } from '../../../stores/auth';
 import { ActionError, runAction } from '@/lib/runAction';
 import { showToast } from '../../shared/Toast';
 import {
+  conversionFriendly,
   conversionPaths, convertBody, fetchPolicyPreview, readConvertResult, readRetireResult, retireBody,
   type ConversionPreviewItem, type ConvertResult, type PolicyConversionPreview, type PreviewProgress,
 } from './conversionApi';
@@ -72,7 +73,7 @@ export default function NeedsConversionPanel({ policyId, hasLegacyRows, onChange
           body: JSON.stringify(convertBody(preview.previewHash)),
         }),
         parseSuccess: readConvertResult,
-        errorFallback: t('monitoring:conversion.errors.convert'),
+        friendly: conversionFriendly, errorFallback: t('monitoring:conversion.errors.convert'),
       });
       showToast({
         type: 'success',
@@ -96,7 +97,7 @@ export default function NeedsConversionPanel({ policyId, hasLegacyRows, onChange
           body: JSON.stringify(retireBody(item.sourceTable, item.sourceId, item.reason?.startsWith('unconvertible:') ? item.reason as `unconvertible:${string}` : 'operator')),
         }),
         parseSuccess: readRetireResult,
-        errorFallback: t('monitoring:conversion.errors.retire'),
+        friendly: conversionFriendly, errorFallback: t('monitoring:conversion.errors.retire'),
         successMessage: t('monitoring:conversion.retired', { name: item.name }),
       });
       onChanged();

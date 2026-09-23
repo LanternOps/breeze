@@ -470,6 +470,21 @@
       "empty": "Dönüştürme geçmişi yok.",
       "system": "Sistem",
       "deadline": "W05d kaynak değerlendiriciyi kaldırdıktan sonra geri alma kullanılamaz."
+    },
+    "errorCodes": {
+      "preview_stale": "İlke bu önizlemeden sonra değişti. Dönüştürmeden önce yeniden önizleyin.",
+      "preview_failed": "Önizleme oluşturulamadı. Daha sonra yeniden deneyin.",
+      "equivalence_delta": "Dönüştürülen izleyiciler her cihazda eski kurallar gibi davranmayacak. Dönüştürmeden önce önizlemeyi inceleyin.",
+      "CONVERSION_PREREQUISITE_MISSING": "Gerekli bir platform güncellemesi henüz dağıtılmadığı için dönüştürme yapılamıyor.",
+      "blocked": "Bu dönüştürme engellendi. Önce üst ilkeyi dönüştürün, ardından yeniden deneyin.",
+      "already_converted": "Bu kurallar zaten dönüştürüldü. Güncel durumu görmek için yenileyin.",
+      "partner_wide_denied": "İş ortağı genelindeki ilkeleri dönüştürmek için tam iş ortağı erişimi gerekir.",
+      "policy_not_found": "İlke bulunamadı. Silinmiş olabilir.",
+      "source_not_found": "Eski kural bulunamadı. Zaten dönüştürülmüş veya silinmiş olabilir.",
+      "conversion_not_found": "Bu dönüştürme bulunamadı.",
+      "conversion_revert_unavailable": "Bu dönüştürme artık geri alınamaz.",
+      "invalid_reason": "Bu kullanımdan kaldırma nedeni geçerli değil.",
+      "unknown": "Dönüştürme başarısız oldu. Yeniden deneyin."
     }
   }
 }

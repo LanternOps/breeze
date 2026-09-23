@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../../stores/auth';
 import { ActionError, runAction } from '@/lib/runAction';
 import { showToast } from '../../shared/Toast';
-import { conversionPaths, fetchLedgerPage, type ConversionLedgerEntry } from './conversionApi';
+import { conversionFriendly, conversionPaths, fetchLedgerPage, type ConversionLedgerEntry } from './conversionApi';
 export default function ConversionLedger({ orgId, policyId, revision = 0, onChanged }: {
   orgId?: string; policyId?: string; revision?: number; onChanged?: () => void;
 }) {
@@ -31,7 +31,7 @@ export default function ConversionLedger({ orgId, policyId, revision = 0, onChan
     setBusy(true);
     try {
       await runAction({ request: () => fetchWithAuth(conversionPaths.revert(row.id), { method: 'POST' }),
-        errorFallback: t('monitoring:conversion.errors.revert'), successMessage: t('monitoring:conversion.undone', { count: 1 }) });
+        friendly: conversionFriendly, errorFallback: t('monitoring:conversion.errors.revert'), successMessage: t('monitoring:conversion.undone', { count: 1 }) });
       onChanged?.();
     } catch (err) {
       if (err instanceof ActionError && err.status === 401) return;

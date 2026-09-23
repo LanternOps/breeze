@@ -1,9 +1,10 @@
+import '@/lib/i18n';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
 import { fetchWithAuth } from '../../../stores/auth';
 import {
-  conversionPaths, convertBody, fetchPendingCounts, fetchPolicyPreview,
+  conversionErrorMessage, conversionFriendly, conversionPaths, convertBody, fetchPendingCounts, fetchPolicyPreview,
   readConvertResult, readPartnerConvertResult, retireBody,
 } from './conversionApi';
 
@@ -40,7 +41,7 @@ describe('conversionApi (W05c1 contract)', () => {
     fetchMock.mockResolvedValueOnce(json({ data: { status: 'running', progress: { checked: 0, total: 700 } } }, 202))
       .mockResolvedValueOnce(json({ error: 'preview_failed' }, 500));
     try {
-      const result = expect(fetchPolicyPreview('p1')).rejects.toThrow('preview_failed');
+      const result = expect(fetchPolicyPreview('p1')).rejects.toThrow(/preview could not be produced/i);
       await vi.advanceTimersByTimeAsync(1000);
       await result;
       await vi.advanceTimersByTimeAsync(5000);
@@ -100,6 +101,28 @@ describe('conversionApi (W05c1 contract)', () => {
   it('fetchPolicyPreview throws the API message on a non-2xx', async () => {
     fetchMock.mockResolvedValue(json({ error: 'PREREQUISITE_MISSING', message: 'offline fix not deployed' }, 409));
     await expect(fetchPolicyPreview('p1')).rejects.toThrow(/offline fix not deployed/);
+  });
+
+  // #6644 review finding 3: conversion routes answer { error: <machine token>,
+  // message } with no `code`, so without a mapper the toast reads "preview_stale".
+  it('maps conversion error tokens to readable text and never returns the raw token', () => {
+    const stale = conversionErrorMessage({ error: 'preview_stale', message: 'Preview inputs changed' });
+    expect(stale).toMatch(/preview again/i);
+    expect(stale).not.toContain('preview_stale');
+    expect(conversionErrorMessage({ error: 'CONVERSION_PREREQUISITE_MISSING', missing: ['x'] })).not.toContain('CONVERSION_PREREQUISITE_MISSING');
+    // Unknown token with server prose: the prose wins.
+    expect(conversionErrorMessage({ error: 'SOMETHING_NEW', message: 'offline fix not deployed' })).toBe('offline fix not deployed');
+    // Plain prose in `error` (not a conversion token) is left to runAction.
+    expect(conversionErrorMessage({ error: 'Organization access denied' })).toBeUndefined();
+    expect(conversionFriendly('conversion_revert_unavailable', 'conversion_revert_unavailable', { error: 'conversion_revert_unavailable' }))
+      .toMatch(/can no longer be undone/i);
+  });
+
+  it('fetchPolicyPreview surfaces the mapped text, not the token, when the preview fails', async () => {
+    fetchMock.mockResolvedValue(json({ error: 'preview_failed' }, 500));
+    const error = await fetchPolicyPreview('p1').catch((e: Error) => e);
+    expect((error as Error).message).not.toContain('preview_failed');
+    expect((error as Error).message).toMatch(/preview could not be produced/i);
   });
 
   it('fetchPendingCounts returns { policies, rows }', async () => {

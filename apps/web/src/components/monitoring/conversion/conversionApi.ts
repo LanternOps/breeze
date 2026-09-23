@@ -1,5 +1,6 @@
 import { fetchWithAuth } from '../../../stores/auth';
 import { extractApiError } from '@/lib/apiError';
+import { i18n } from '@/lib/i18n';
 
 // Mirrors of apps/api/src/services/monitors/conversion/ (W05c1). Do not widen
 // them here — a field the API does not send is a lie the panel will render.
@@ -64,13 +65,41 @@ function unwrap<T>(body: unknown): T {
   return (body && typeof body === 'object' && 'data' in (body as object) ? (body as { data: T }).data : body) as T;
 }
 
+/**
+ * Machine tokens the conversion routes put in `error` (ConversionError codes,
+ * the prerequisite 409 and the failed background preview). They carry no
+ * `code`, so runAction's `errors:<code>` lookup never sees them.
+ */
+export const CONVERSION_ERROR_CODES = [
+  'preview_stale', 'preview_failed', 'equivalence_delta', 'CONVERSION_PREREQUISITE_MISSING', 'blocked',
+  'already_converted', 'partner_wide_denied', 'policy_not_found', 'source_not_found',
+  'conversion_not_found', 'conversion_revert_unavailable', 'invalid_reason',
+] as const;
+const TOKEN_SHAPE = /^[A-Za-z]+(?:_[A-Za-z0-9]+)+$/;
+
+/**
+ * The one place a conversion error body becomes user-facing text: a known
+ * token maps to its translated sentence; otherwise the server's readable
+ * `message`; otherwise, for an unknown machine token, a generic sentence.
+ * Returns undefined when `error` is already prose, so the caller keeps it.
+ */
+export function conversionErrorMessage(body: unknown): string | undefined {
+  if (!body || typeof body !== 'object') return undefined;
+  const { error, message } = body as { error?: unknown; message?: unknown };
+  if (typeof error === 'string' && (CONVERSION_ERROR_CODES as readonly string[]).includes(error)) {
+    return i18n.t(/* i18n-dynamic */ `monitoring:conversion.errorCodes.${error}`);
+  }
+  if (typeof message === 'string' && message.trim()) return message;
+  if (typeof error === 'string' && TOKEN_SHAPE.test(error)) return i18n.t('monitoring:conversion.errorCodes.unknown');
+  return undefined;
+}
+/** `friendly` hook for runAction on every conversion mutation. */
+export const conversionFriendly = (_code: string, _message: string, body?: unknown): string | undefined =>
+  conversionErrorMessage(body);
+
 async function readJson<T>(response: Response, fallback: string): Promise<T> {
   const body = await response.json().catch(() => null);
-  if (!response.ok) {
-    // Conversion errors include a readable message alongside their machine code.
-    const message = body && typeof body === 'object' && 'message' in body ? body.message : undefined;
-    throw new Error(typeof message === 'string' && message.trim() ? message : extractApiError(body, fallback));
-  }
+  if (!response.ok) throw new Error(conversionErrorMessage(body) ?? extractApiError(body, fallback));
   return unwrap<T>(body);
 }
 

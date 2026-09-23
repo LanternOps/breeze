@@ -470,6 +470,21 @@
       "empty": "No conversion history.",
       "system": "System",
       "deadline": "Undo is unavailable after W05d removes the source runtime."
+    },
+    "errorCodes": {
+      "preview_stale": "The policy changed since this preview. Preview again before converting.",
+      "preview_failed": "The preview could not be produced. Try again later.",
+      "equivalence_delta": "The converted monitors would not behave like the legacy rules on every device. Review the preview before converting.",
+      "CONVERSION_PREREQUISITE_MISSING": "A required platform update has not been deployed yet, so this cannot be converted.",
+      "blocked": "This conversion is blocked. Convert the parent policy first, then try again.",
+      "already_converted": "These rules were already converted. Refresh to see the current state.",
+      "partner_wide_denied": "Full partner access is required to convert partner-wide policies.",
+      "policy_not_found": "The policy was not found. It may have been deleted.",
+      "source_not_found": "The legacy rule was not found. It may already be converted or deleted.",
+      "conversion_not_found": "That conversion was not found.",
+      "conversion_revert_unavailable": "This conversion can no longer be undone.",
+      "invalid_reason": "That retirement reason is not valid.",
+      "unknown": "The conversion failed. Try again."
     }
   }
 }

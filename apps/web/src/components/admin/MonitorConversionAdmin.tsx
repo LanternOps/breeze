@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { fetchWithAuth } from '../../stores/auth';
 import { ActionError, runAction } from '@/lib/runAction';
 import { showToast } from '../shared/Toast';
-import { readPartnerPreview, readPartnerConvertResult, type PartnerConversionPreview } from '../monitoring/conversion/conversionApi';
+import { conversionFriendly, readPartnerPreview, readPartnerConvertResult, type PartnerConversionPreview } from '../monitoring/conversion/conversionApi';
 type Row = { partnerId: string; partnerName: string; pendingRows: number; pendingPolicies: number };
 export default function MonitorConversionAdmin() {
   const [rows, setRows] = useState<Row[]>([]);
@@ -26,13 +26,13 @@ export default function MonitorConversionAdmin() {
         setPreview(null);
         setPreview(await runAction({
           request: () => fetchWithAuth(`/admin/monitor-conversion/partners/${partnerId}/preview`, { method: 'POST' }),
-          errorFallback: 'Preview failed', parseSuccess: readPartnerPreview,
+          friendly: conversionFriendly, errorFallback: 'Preview failed', parseSuccess: readPartnerPreview,
         }));
       } else {
         const result = await runAction({
           request: () => fetchWithAuth(`/admin/monitor-conversion/partners/${partnerId}/convert`, {
             method: 'POST', body: JSON.stringify({ previewHash: preview!.previewHash }),
-          }), errorFallback: 'Conversion failed', parseSuccess: readPartnerConvertResult,
+          }), friendly: conversionFriendly, errorFallback: 'Conversion failed', parseSuccess: readPartnerConvertResult,
           successMessage: 'Conversion complete',
         });
         setResults((old) => ({ ...old, [partnerId]: `Converted ${result.converted} · ${result.unconvertible} unconvertible` }));

@@ -470,6 +470,21 @@
       "empty": "Kein Konvertierungsverlauf.",
       "system": "Automatisches System",
       "deadline": "Rückgängig ist nach Entfernung der Quelllaufzeit durch W05d nicht verfügbar."
+    },
+    "errorCodes": {
+      "preview_stale": "Die Richtlinie wurde seit dieser Vorschau geändert. Erstellen Sie vor der Konvertierung erneut eine Vorschau.",
+      "preview_failed": "Die Vorschau konnte nicht erstellt werden. Versuchen Sie es später erneut.",
+      "equivalence_delta": "Die konvertierten Monitore würden sich nicht auf jedem Gerät wie die Legacy-Regeln verhalten. Prüfen Sie die Vorschau vor der Konvertierung.",
+      "CONVERSION_PREREQUISITE_MISSING": "Ein erforderliches Plattform-Update wurde noch nicht bereitgestellt, daher ist keine Konvertierung möglich.",
+      "blocked": "Diese Konvertierung ist blockiert. Konvertieren Sie zuerst die übergeordnete Richtlinie und versuchen Sie es dann erneut.",
+      "already_converted": "Diese Regeln wurden bereits konvertiert. Aktualisieren Sie, um den aktuellen Stand zu sehen.",
+      "partner_wide_denied": "Zum Konvertieren partnerweiter Richtlinien ist voller Partnerzugriff erforderlich.",
+      "policy_not_found": "Die Richtlinie wurde nicht gefunden. Möglicherweise wurde sie gelöscht.",
+      "source_not_found": "Die Legacy-Regel wurde nicht gefunden. Möglicherweise wurde sie bereits konvertiert oder gelöscht.",
+      "conversion_not_found": "Diese Konvertierung wurde nicht gefunden.",
+      "conversion_revert_unavailable": "Diese Konvertierung kann nicht mehr rückgängig gemacht werden.",
+      "invalid_reason": "Dieser Stilllegungsgrund ist ungültig.",
+      "unknown": "Die Konvertierung ist fehlgeschlagen. Versuchen Sie es erneut."
     }
   }
 }

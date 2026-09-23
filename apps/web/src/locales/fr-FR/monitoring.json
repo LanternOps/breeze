@@ -470,6 +470,21 @@
       "empty": "Aucun historique de conversion.",
       "system": "Système",
       "deadline": "L'annulation est indisponible après la suppression du moteur source par W05d."
+    },
+    "errorCodes": {
+      "preview_stale": "La stratégie a changé depuis cet aperçu. Générez un nouvel aperçu avant de convertir.",
+      "preview_failed": "L'aperçu n'a pas pu être généré. Réessayez plus tard.",
+      "equivalence_delta": "Les moniteurs convertis ne se comporteraient pas comme les règles héritées sur tous les appareils. Vérifiez l'aperçu avant de convertir.",
+      "CONVERSION_PREREQUISITE_MISSING": "Une mise à jour requise de la plateforme n'a pas encore été déployée ; la conversion est donc impossible.",
+      "blocked": "Cette conversion est bloquée. Convertissez d'abord la stratégie parente, puis réessayez.",
+      "already_converted": "Ces règles ont déjà été converties. Actualisez pour voir l'état actuel.",
+      "partner_wide_denied": "Un accès partenaire complet est requis pour convertir les stratégies à l'échelle du partenaire.",
+      "policy_not_found": "La stratégie est introuvable. Elle a peut-être été supprimée.",
+      "source_not_found": "La règle héritée est introuvable. Elle a peut-être déjà été convertie ou supprimée.",
+      "conversion_not_found": "Cette conversion est introuvable.",
+      "conversion_revert_unavailable": "Cette conversion ne peut plus être annulée.",
+      "invalid_reason": "Ce motif de retrait n'est pas valide.",
+      "unknown": "La conversion a échoué. Réessayez."
     }
   }
 }

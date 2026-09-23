@@ -470,6 +470,21 @@
       "empty": "Nessuna conversione precedente.",
       "system": "Sistema",
       "deadline": "Annullamento non disponibile dopo la rimozione del motore di origine in W05d."
+    },
+    "errorCodes": {
+      "preview_stale": "Il criterio è cambiato dopo questa anteprima. Genera una nuova anteprima prima di convertire.",
+      "preview_failed": "Impossibile generare l'anteprima. Riprova più tardi.",
+      "equivalence_delta": "I monitor convertiti non si comporterebbero come le regole legacy su tutti i dispositivi. Controlla l'anteprima prima di convertire.",
+      "CONVERSION_PREREQUISITE_MISSING": "Un aggiornamento necessario della piattaforma non è ancora stato distribuito, quindi la conversione non è possibile.",
+      "blocked": "Questa conversione è bloccata. Converti prima il criterio padre, poi riprova.",
+      "already_converted": "Queste regole sono già state convertite. Aggiorna per vedere lo stato attuale.",
+      "partner_wide_denied": "Per convertire i criteri a livello di partner è necessario l'accesso completo al partner.",
+      "policy_not_found": "Criterio non trovato. Potrebbe essere stato eliminato.",
+      "source_not_found": "Regola legacy non trovata. Potrebbe essere già stata convertita o eliminata.",
+      "conversion_not_found": "Conversione non trovata.",
+      "conversion_revert_unavailable": "Questa conversione non può più essere annullata.",
+      "invalid_reason": "Il motivo di ritiro non è valido.",
+      "unknown": "Conversione non riuscita. Riprova."
     }
   }
 }

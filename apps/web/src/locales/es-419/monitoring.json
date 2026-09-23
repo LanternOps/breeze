@@ -470,6 +470,21 @@
       "empty": "No hay historial de conversión.",
       "system": "Sistema",
       "deadline": "Deshacer no está disponible cuando W05d elimina el evaluador de origen."
+    },
+    "errorCodes": {
+      "preview_stale": "La política cambió desde esta vista previa. Genera otra vista previa antes de convertir.",
+      "preview_failed": "No se pudo generar la vista previa. Inténtalo más tarde.",
+      "equivalence_delta": "Los monitores convertidos no se comportarían como las reglas heredadas en todos los dispositivos. Revisa la vista previa antes de convertir.",
+      "CONVERSION_PREREQUISITE_MISSING": "Aún no se implementó una actualización necesaria de la plataforma, así que no se puede convertir.",
+      "blocked": "Esta conversión está bloqueada. Convierte primero la política principal y vuelve a intentarlo.",
+      "already_converted": "Estas reglas ya se convirtieron. Actualiza para ver el estado actual.",
+      "partner_wide_denied": "Se requiere acceso completo de partner para convertir políticas de todo el partner.",
+      "policy_not_found": "No se encontró la política. Es posible que se haya eliminado.",
+      "source_not_found": "No se encontró la regla heredada. Es posible que ya se haya convertido o eliminado.",
+      "conversion_not_found": "No se encontró esa conversión.",
+      "conversion_revert_unavailable": "Esta conversión ya no se puede deshacer.",
+      "invalid_reason": "Ese motivo de retiro no es válido.",
+      "unknown": "La conversión falló. Vuelve a intentarlo."
     }
   }
 }

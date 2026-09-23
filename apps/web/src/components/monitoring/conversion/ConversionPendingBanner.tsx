@@ -4,7 +4,7 @@ import { fetchWithAuth, useAuthStore } from '../../../stores/auth';
 import { useJwtClaims } from '@/lib/authScope';
 import { ActionError, runAction } from '@/lib/runAction';
 import { showToast } from '../../shared/Toast';
-import { conversionPaths, fetchPendingCounts, readPartnerConvertResult, readPartnerPreview, type PartnerConversionPreview, type PartnerConvertResult, type PendingCounts } from './conversionApi';
+import { conversionFriendly, conversionPaths, fetchPendingCounts, readPartnerConvertResult, readPartnerPreview, type PartnerConversionPreview, type PartnerConvertResult, type PendingCounts } from './conversionApi';
 
 export interface ConversionPendingBannerProps {
   orgId: string | null;
@@ -34,7 +34,7 @@ export default function ConversionPendingBanner({ orgId, onReview, onConverted }
     try {
       const result = await runAction<PartnerConversionPreview>({
         request: () => fetchWithAuth(conversionPaths.partnerPreview(), { method: 'POST' }),
-        parseSuccess: readPartnerPreview, errorFallback: t('monitoring:conversion.errors.preview'),
+        parseSuccess: readPartnerPreview, friendly: conversionFriendly, errorFallback: t('monitoring:conversion.errors.preview'),
       });
       setPartnerPreview(result); setConfirming(true);
     } catch (err) {
@@ -49,7 +49,7 @@ export default function ConversionPendingBanner({ orgId, onReview, onConverted }
       const result = await runAction<PartnerConvertResult>({
         request: () => fetchWithAuth(conversionPaths.partnerConvertAll(), { method: 'POST', body: JSON.stringify({ previewHash: partnerPreview.previewHash }) }),
         parseSuccess: readPartnerConvertResult,
-        errorFallback: t('monitoring:conversion.banner.errors.convertAll'),
+        friendly: conversionFriendly, errorFallback: t('monitoring:conversion.banner.errors.convertAll'),
       });
       showToast({ type: 'success', message: t('monitoring:conversion.banner.convertedAll', result) });
       setConfirming(false);

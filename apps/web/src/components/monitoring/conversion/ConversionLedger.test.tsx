@@ -51,7 +51,8 @@ it('refreshes lifecycle state after a 409 and never reports successful Undo', as
   await waitFor(() => expect(request).toHaveBeenCalledTimes(3));
   await waitFor(() => expect(screen.queryByText('Loading…')).not.toBeInTheDocument());
   expect(screen.getByTestId('ledger-undo-c1')).toBeDisabled();
-  expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', message: 'conversion_revert_unavailable' }));
+  expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', message: expect.stringMatching(/can no longer be undone/i) }));
+  expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ message: 'conversion_revert_unavailable' }));
   expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
   expect(changed).not.toHaveBeenCalled();
 });
