@@ -8,6 +8,7 @@ import {
   EPISODE_ASSEMBLY_LOOKBACK_HOURS,
   EPISODE_BUCKET_SECONDS,
   EPISODE_CLEAN_BUCKETS,
+  EPISODE_EXPIRE_HOURS,
   EPISODE_GAP_MINUTES,
   EPISODE_RECURRENCE_DAYS,
 } from './metricAnomalyEpisodeKeys';
@@ -22,6 +23,7 @@ import {
   type PlannedSupersede,
   type UnassignedAnomalyRow,
 } from './metricAnomalyEpisodePlanner';
+import { captureException } from './sentry';
 
 /**
  * Metric anomaly episodes — assembly (`episodes` stage) and auto-resolve
@@ -635,4 +637,169 @@ export async function assembleMetricAnomalyEpisodes(range: MetricAnomalyRange): 
   if (inputs.rows.length === 0) return [];
   const plan = planEpisodeAssembly({ ...inputs, gapMinutes: EPISODE_GAP_MINUTES });
   return applyEpisodeAssemblyPlan(range.orgId, plan, now);
+}
+
+export type EpisodeCloseHandler = (orgId: string, closed: EpisodeCloseResult[]) => Promise<void>;
+
+const noopCloseHandler: EpisodeCloseHandler = async () => {};
+let closeHandler: EpisodeCloseHandler = noopCloseHandler;
+
+/**
+ * Register what happens after episodes close automatically (auto-resolve,
+ * supersede). W01 ships the no-op; W02 registers alert auto-resolve for
+ * promoted episodes (`linkedAlertId`). Called OUTSIDE any DB context, after
+ * the stage transactions commit — the handler opens its own. Pass null to
+ * restore the no-op.
+ */
+export function setEpisodeCloseHandler(fn: EpisodeCloseHandler | null): void {
+  closeHandler = fn ?? noopCloseHandler;
+}
+
+export async function notifyEpisodesClosed(orgId: string, closed: EpisodeCloseResult[]): Promise<void> {
+  if (closed.length === 0) return;
+  try {
+    await closeHandler(orgId, closed);
+  } catch (error) {
+    // The episodes are already closed and committed; a handler fault must not
+    // turn a completed detection run into a failed job that re-runs detection.
+    console.error(`[MetricAnomalyEpisodes] org=${orgId} close handler failed for ${closed.length} episode(s):`, error);
+    captureException(error, undefined, { org_id: orgId, subsystem: 'metric_anomaly_episodes' });
+  }
+}
+
+/**
+ * `episode-resolve` stage (spec §7), detection ON. For every OPEN episode of
+ * the org whose boundary bucket has had its detection pass (A4:
+ * last_seen_at + EPISODE_GAP_MINUTES + 5 min <= rangeTo, the run's `to` — a
+ * bucket starting at last_seen_at + gap would still attach, so it must have
+ * been evaluated before "no new bucket" means anything):
+ *  - cleared          every member metric has >= EPISODE_CLEAN_BUCKETS clean
+ *                     5-minute rollups (sample_count > 0) since last_seen_at;
+ *  - expired_offline  not cleared, last_seen_at older than EPISODE_EXPIRE_HOURS,
+ *                     and the device itself has not been seen for that long;
+ *  - expired_no_data  same, but the device is checking in (the series stopped).
+ * Closing sets status 'resolved', resolved_at = now, resolved_by_user_id NULL,
+ * and moves members still 'open' to 'cleared' (a promoted member keeps its
+ * label). Runs only with ml.anomalies.enabled ON (flag off ->
+ * closeEpisodesForDisabledDetection); never for a backfill. Expiry stays
+ * now-relative.
+ */
+export async function resolveMetricAnomalyEpisodes(
+  orgId: string,
+  rangeTo: Date,
+  now: Date = new Date(),
+): Promise<EpisodeCloseResult[]> {
+  const nowIso = now.toISOString();
+  const rangeToIso = rangeTo.toISOString();
+  const cleanBuckets = minCleanBucketsSql(orgId, {
+    deviceId: 'e.device_id',
+    sourceTable: 'e.source_table',
+    metricNames: 'e.metric_names',
+    from: 'e.last_seen_at',
+    until: null,
+  });
+  const result = await db.execute(sql`
+    WITH candidates AS (
+      SELECT
+        e.id,
+        e.last_seen_at,
+        d.last_seen_at AS device_last_seen_at,
+        ${cleanBuckets} AS min_clean
+      FROM metric_anomaly_episodes e
+      JOIN devices d ON d.id = e.device_id
+      WHERE e.org_id = ${orgId}
+        AND e.status = 'open'
+        -- A4: the bucket at last_seen_at + gap (the last one that could still
+        -- attach) must lie inside a completed detection range.
+        AND e.last_seen_at + (${EPISODE_GAP_MINUTES} * interval '1 minute') + interval '5 minutes' <= ${rangeToIso}::timestamp
+    ),
+    decided AS (
+      SELECT
+        c.id,
+        CASE
+          WHEN c.min_clean >= ${EPISODE_CLEAN_BUCKETS} THEN 'cleared'
+          WHEN c.last_seen_at < ${nowIso}::timestamp - (${EPISODE_EXPIRE_HOURS} * interval '1 hour') THEN
+            CASE
+              WHEN c.device_last_seen_at IS NULL
+                OR c.device_last_seen_at < ${nowIso}::timestamp - (${EPISODE_EXPIRE_HOURS} * interval '1 hour')
+                THEN 'expired_offline'
+              ELSE 'expired_no_data'
+            END
+          ELSE NULL
+        END AS close_reason
+      FROM candidates c
+    ),
+    closed AS (
+      UPDATE metric_anomaly_episodes e
+      SET status = 'resolved',
+          close_reason = d.close_reason,
+          resolved_at = ${nowIso}::timestamp,
+          updated_at = ${nowIso}::timestamp
+      FROM decided d
+      WHERE e.id = d.id
+        AND d.close_reason IS NOT NULL
+        AND e.status = 'open'
+      RETURNING e.id, e.device_id, e.linked_alert_id, e.close_reason
+    ),
+    cleared_members AS (
+      UPDATE metric_anomalies ma
+      SET status = 'cleared',
+          resolved_at = ${nowIso}::timestamp,
+          updated_at = ${nowIso}::timestamp
+      FROM closed c
+      WHERE ma.episode_id = c.id
+        AND ma.org_id = ${orgId}
+        AND ma.status = 'open'
+      RETURNING ma.id
+    )
+    SELECT
+      c.id::text AS "episodeId",
+      c.device_id::text AS "deviceId",
+      c.linked_alert_id::text AS "linkedAlertId",
+      c.close_reason AS "closeReason"
+    FROM closed c
+  `);
+  return toCloseResults(result);
+}
+
+/**
+ * `episode-resolve` stage with ml.anomalies.enabled OFF (second quorum A5).
+ * No detector evaluated the org's rollups, so rollups that look clean prove
+ * nothing and must not produce a `cleared` close. Every OPEN episode closes
+ * `resolved` / `detection_off`; members still `open` -> `cleared` (a promoted
+ * member keeps its label); no feedback rows (not a human label). Already
+ * closed episodes (incl. snoozed successors) are untouched.
+ */
+export async function closeEpisodesForDisabledDetection(orgId: string, now: Date = new Date()): Promise<EpisodeCloseResult[]> {
+  const nowIso = now.toISOString();
+  const result = await db.execute(sql`
+    WITH closed AS (
+      UPDATE metric_anomaly_episodes e
+      SET status = 'resolved',
+          close_reason = 'detection_off',
+          resolved_at = ${nowIso}::timestamp,
+          updated_at = ${nowIso}::timestamp
+      WHERE e.org_id = ${orgId}
+        AND e.status = 'open'
+      RETURNING e.id, e.device_id, e.linked_alert_id, e.close_reason
+    ),
+    cleared_members AS (
+      UPDATE metric_anomalies ma
+      SET status = 'cleared',
+          resolved_at = ${nowIso}::timestamp,
+          updated_at = ${nowIso}::timestamp
+      FROM closed c
+      WHERE ma.episode_id = c.id
+        AND ma.org_id = ${orgId}
+        AND ma.status = 'open'
+      RETURNING ma.id
+    )
+    SELECT
+      c.id::text AS "episodeId",
+      c.device_id::text AS "deviceId",
+      c.linked_alert_id::text AS "linkedAlertId",
+      c.close_reason AS "closeReason"
+    FROM closed c
+  `);
+  return toCloseResults(result);
 }

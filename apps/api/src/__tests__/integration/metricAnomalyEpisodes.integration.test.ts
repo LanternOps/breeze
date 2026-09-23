@@ -16,9 +16,12 @@ import {
 import {
   applyEpisodeAssemblyPlan,
   assembleMetricAnomalyEpisodes,
+  closeEpisodesForDisabledDetection,
   EPISODE_GAP_MINUTES,
   loadEpisodeAssemblyInputs,
+  resolveMetricAnomalyEpisodes,
 } from '../../services/metricAnomalyEpisodes';
+import { promoteMetricAnomalyToAlert } from '../../services/metricAnomalyPromotion';
 import { planEpisodeAssembly } from '../../services/metricAnomalyEpisodePlanner';
 import { createOrganization, createPartner, createSite } from './db-utils';
 import { getTestDb } from './setup';
@@ -554,5 +557,162 @@ describe('metric anomaly episode assembly (spec §6, §9)', () => {
     expect(quiet!.attribution).toBeNull();
     const [count] = await episodesFor(orgId, countDevice);
     expect(count!.attribution).toBeNull(); // process_count has no attribution dimension
+  });
+});
+
+describe('metric anomaly episode auto-resolve (spec §7)', () => {
+  const T0 = new Date('2026-09-01T12:00:00.000Z'); // episode last_seen_at in every case
+  let orgId: string;
+  let siteId: string;
+
+  beforeEach(async () => {
+    const partner = await createPartner();
+    orgId = (await createOrganization({ partnerId: partner.id, name: 'Resolve Org' })).id;
+    await enableAnomalies(orgId);
+    siteId = (await createSite({ orgId, name: 'Resolve Site' })).id;
+  });
+
+  async function seedOpenEpisode(
+    deviceId: string,
+    options: { metricNames?: string[]; sourceTable?: 'device_metrics' | 'device_process_samples'; episodeKey?: string } = {},
+  ): Promise<{ episodeId: string; memberIds: string[] }> {
+    const metricNames = options.metricNames ?? ['cpu_percent'];
+    const sourceTable = options.sourceTable ?? 'device_metrics';
+    const episodeId = await insertEpisode({
+      orgId, deviceId, firstSeenAt: at(T0, -15), lastSeenAt: T0, metricNames, sourceTable,
+      episodeKey: options.episodeKey ?? 'device_metrics:spike:cpu',
+      anomalyType: sourceTable === 'device_metrics' ? 'spike' : 'process_runaway',
+    });
+    const memberIds: string[] = [];
+    for (const minute of [-15, -10, -5]) {
+      memberIds.push(await insertAnomaly({
+        orgId, deviceId, windowStart: at(T0, minute), episodeId, sourceTable, metricName: metricNames[0],
+        anomalyType: sourceTable === 'device_metrics' ? 'spike' : 'process_runaway',
+      }));
+    }
+    return { episodeId, memberIds };
+  }
+
+  // `to` = the detection run's range end (A4); a scan's `to` is the current
+  // bucket boundary, so it defaults to `now`.
+  function resolveAt(now: Date, to: Date = now) {
+    return withSystemDbAccessContext(() => resolveMetricAnomalyEpisodes(orgId, to, now));
+  }
+
+  async function episodeById(id: string) {
+    const [row] = await getTestDb().select().from(metricAnomalyEpisodes).where(eq(metricAnomalyEpisodes.id, id));
+    return row!;
+  }
+
+  it('clears after 6 clean buckets: members cleared, a promoted member untouched, linked alert handed back', async () => {
+    const device = await insertDevice(orgId, siteId);
+    const { episodeId, memberIds } = await seedOpenEpisode(device);
+    const promotion = await withSystemDbAccessContext(() =>
+      promoteMetricAnomalyToAlert({ orgId, deviceId: device, anomalyId: memberIds[0]!, requireCreateAlertsFlag: false }),
+    );
+    if (promotion.status !== 'promoted') throw new Error('expected promotion');
+    await getTestDb().update(metricAnomalyEpisodes).set({ linkedAlertId: promotion.alertId }).where(eq(metricAnomalyEpisodes.id, episodeId));
+    await insertRollups({ orgId, deviceId: device, metricName: 'cpu_percent', starts: bucketsFrom(T0, 6), value: () => 20 });
+
+    const closed = await resolveAt(at(T0, 40));
+
+    expect(closed).toEqual([{ episodeId, deviceId: device, linkedAlertId: promotion.alertId, closeReason: 'cleared' }]);
+    const episode = await episodeById(episodeId);
+    expect(episode).toMatchObject({ status: 'resolved', closeReason: 'cleared', resolvedByUserId: null });
+    expect(episode.resolvedAt!.toISOString()).toBe(at(T0, 40).toISOString());
+    expect((await anomalyById(memberIds[0]!)).status).toBe('promoted');
+    expect((await anomalyById(memberIds[1]!)).status).toBe('cleared');
+    expect((await anomalyById(memberIds[2]!)).status).toBe('cleared');
+  });
+
+  it('stays open with only 5 clean buckets', async () => {
+    const device = await insertDevice(orgId, siteId);
+    const { episodeId } = await seedOpenEpisode(device);
+    await insertRollups({ orgId, deviceId: device, metricName: 'cpu_percent', starts: bucketsFrom(T0, 5), value: () => 20 });
+
+    expect(await resolveAt(at(T0, 40))).toEqual([]);
+    expect((await episodeById(episodeId)).status).toBe('open');
+  });
+
+  it('requires clean data on EVERY member metric', async () => {
+    const device = await insertDevice(orgId, siteId);
+    const { episodeId } = await seedOpenEpisode(device, {
+      sourceTable: 'device_process_samples',
+      metricNames: ['top_process_ram_mb_max', 'top_process_ram_mb_sum'],
+      episodeKey: 'device_process_samples:process_runaway:process_ram',
+    });
+    const rollup = (metricName: string, count: number) => insertRollups({
+      orgId, deviceId: device, sourceTable: 'device_process_samples', metricType: 'process', metricName,
+      starts: bucketsFrom(T0, count), value: () => 500,
+    });
+    await rollup('top_process_ram_mb_max', 6);
+    await rollup('top_process_ram_mb_sum', 2);
+    expect(await resolveAt(at(T0, 40))).toEqual([]);
+
+    await getTestDb().delete(metricRollups).where(eq(metricRollups.deviceId, device));
+    await rollup('top_process_ram_mb_max', 6);
+    await rollup('top_process_ram_mb_sum', 6);
+    expect((await resolveAt(at(T0, 40))).map((row) => row.episodeId)).toEqual([episodeId]);
+  });
+
+  it('expires as expired_no_data after 24 h when the device reports but the series is absent', async () => {
+    const now = at(T0, 25 * 60);
+    const device = await insertDevice(orgId, siteId, at(now, -5));
+    const { episodeId } = await seedOpenEpisode(device);
+
+    expect(await resolveAt(now)).toEqual([{ episodeId, deviceId: device, linkedAlertId: null, closeReason: 'expired_no_data' }]);
+  });
+
+  it('expires as expired_offline after 24 h when the device itself went quiet', async () => {
+    const device = await insertDevice(orgId, siteId, T0);
+    const { episodeId } = await seedOpenEpisode(device);
+
+    expect(await resolveAt(at(T0, 25 * 60))).toEqual([{ episodeId, deviceId: device, linkedAlertId: null, closeReason: 'expired_offline' }]);
+  });
+
+  it('leaves an episode alone while it is still inside the gap', async () => {
+    const device = await insertDevice(orgId, siteId);
+    const { episodeId } = await seedOpenEpisode(device);
+    await insertRollups({ orgId, deviceId: device, metricName: 'cpu_percent', starts: bucketsFrom(T0, 6), value: () => 20 });
+
+    expect(await resolveAt(at(T0, 20))).toEqual([]);
+    expect((await episodeById(episodeId)).status).toBe('open');
+  });
+
+  it('waits until the boundary bucket has had its detection pass, whatever the wall clock says (A4)', async () => {
+    const device = await insertDevice(orgId, siteId);
+    const { episodeId } = await seedOpenEpisode(device);
+    await insertRollups({ orgId, deviceId: device, metricName: 'cpu_percent', starts: bucketsFrom(T0, 6), value: () => 20 });
+
+    // now = T0+40 (a now-relative check would clear), but detection only
+    // covered buckets before T0+30: the bucket at last_seen_at + gap (T0+30)
+    // has not been evaluated yet and could still attach.
+    expect(await resolveAt(at(T0, 40), at(T0, 30))).toEqual([]);
+    expect((await episodeById(episodeId)).status).toBe('open');
+
+    // Once the range end passes last_seen_at + gap + 5 min, it clears.
+    expect((await resolveAt(at(T0, 40), at(T0, 35))).map((row) => row.episodeId)).toEqual([episodeId]);
+  });
+
+  it('flag off: closeEpisodesForDisabledDetection closes as detection_off even with clean rollups (A5)', async () => {
+    const device = await insertDevice(orgId, siteId);
+    const { episodeId, memberIds } = await seedOpenEpisode(device);
+    await getTestDb().update(metricAnomalies).set({ status: 'promoted' }).where(eq(metricAnomalies.id, memberIds[0]!));
+    await insertRollups({ orgId, deviceId: device, metricName: 'cpu_percent', starts: bucketsFrom(T0, 6), value: () => 20 });
+    const snoozed = await insertEpisode({
+      orgId, deviceId: device, firstSeenAt: at(T0, -120), lastSeenAt: at(T0, -115), episodeKey: 'device_metrics:spike:ram',
+      metricFamily: 'ram', metricNames: ['ram_percent'], status: 'dismissed', closeReason: 'snoozed',
+      snoozedUntil: at(T0, 7 * 24 * 60), resolvedAt: at(T0, -115),
+    });
+
+    const closed = await withSystemDbAccessContext(() => closeEpisodesForDisabledDetection(orgId, at(T0, 40)));
+
+    expect(closed).toEqual([{ episodeId, deviceId: device, linkedAlertId: null, closeReason: 'detection_off' }]);
+    expect(await episodeById(episodeId)).toMatchObject({ status: 'resolved', closeReason: 'detection_off', resolvedByUserId: null });
+    expect((await anomalyById(memberIds[0]!)).status).toBe('promoted');
+    expect((await anomalyById(memberIds[1]!)).status).toBe('cleared');
+    expect(await episodeById(snoozed)).toMatchObject({ status: 'dismissed', closeReason: 'snoozed' });
+    const feedback = await getTestDb().select().from(mlFeedbackEvents).where(eq(mlFeedbackEvents.orgId, orgId));
+    expect(feedback).toHaveLength(0);
   });
 });
