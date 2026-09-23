@@ -195,9 +195,9 @@ func TestRestoreSecurity_NoTableNoWarnings(t *testing.T) {
 
 // TestRestoreSecurity_MissingAndTruncated covers rulings 3 and 4: SDIndex 0
 // in a manifest that HAS a table is counted into ONE aggregate warning; an
-// index past the table's end raises ONE truncation warning and is then
-// treated as SDIndex 0; a symlink never takes a descriptor and is never
-// counted.
+// index past the table's end raises ONE truncation warning, takes no
+// descriptor, and is NOT counted again in the aggregate; a symlink never
+// takes a descriptor and is never counted.
 func TestRestoreSecurity_MissingAndTruncated(t *testing.T) {
 	entries := []SnapshotFile{
 		{SourcePath: "/has", SDIndex: 2},
@@ -234,8 +234,10 @@ func TestRestoreSecurity_MissingAndTruncated(t *testing.T) {
 	if len(fin) != 1 {
 		t.Fatalf("finish() = %v, want exactly one aggregate warning", fin)
 	}
-	if !strings.HasPrefix(fin[0], "4 entries had no security descriptor recorded; they were restored with ACLs inherited from the restore target") {
-		t.Errorf("aggregate warning = %q, want 4 entries (2 zero + 2 truncated; symlinks excluded)", fin[0])
+	// The 2 out-of-range entries are counted ONCE, in the truncation warning
+	// above — never again in the missing-SD aggregate.
+	if !strings.HasPrefix(fin[0], "2 entries had no security descriptor recorded; they were restored with ACLs inherited from the restore target") {
+		t.Errorf("aggregate warning = %q, want 2 entries (the SDIndex-0 ones; truncated entries and symlinks excluded)", fin[0])
 	}
 }
 

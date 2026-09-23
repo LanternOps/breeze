@@ -67,7 +67,8 @@ type restoreSecurity struct {
 // newRestoreSecurity decodes the table when enabled (Windows) and checks its
 // integrity against the entries about to be restored: any SDIndex past the
 // table's end raises ONE truncation warning, and those entries are then
-// treated as SDIndex 0. Disabled, it returns an inert value and no warnings.
+// restored without a descriptor (counted only there, never in finish's
+// aggregate). Disabled, it returns an inert value and no warnings.
 func newRestoreSecurity(encoded []string, entries []SnapshotFile, enabled bool) (*restoreSecurity, []string) {
 	if !enabled {
 		return &restoreSecurity{}, nil
@@ -98,18 +99,21 @@ func (rs *restoreSecurity) active() bool { return rs.hasTable }
 
 // forEntry returns the descriptor to apply to a just-restored entry, or nil.
 // Symlinks/junctions never take one (applying a DACL through the link
-// would land on its target). A file or directory with SDIndex 0 — or an
-// out-of-range index, already reported as truncation — in a manifest that
-// HAS a table is counted for finish's aggregate warning. A corrupt slot
-// returns nil without counting: decodeSecurityDescriptors already warned.
+// would land on its target). A file or directory with SDIndex 0 in a
+// manifest that HAS a table is counted for finish's aggregate warning. An
+// out-of-range index (already reported as truncation) and a corrupt slot
+// (decodeSecurityDescriptors already warned) return nil without counting, so
+// no entry is reported twice.
 func (rs *restoreSecurity) forEntry(e SnapshotFile) []byte {
 	if !rs.hasTable || e.Kind == KindSymlink {
 		return nil
 	}
-	if e.SDIndex <= 0 || e.SDIndex > len(rs.table) {
+	if e.SDIndex <= 0 {
 		rs.missing++
 		return nil
 	}
+	// Past the table's end: already counted once, in newRestoreSecurity's
+	// truncation warning — not counted again here. sdBytesAt returns nil.
 	return sdBytesAt(rs.table, e.SDIndex)
 }
 
