@@ -92,17 +92,23 @@ export function buildInstallCommands(opts: InstallCommandOptions): InstallComman
     `[Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12`;
   // A self-hosted server on a self-signed or private-CA certificate the
   // machine does not trust fails the download with PowerShell's raw
-  // "underlying connection was closed" error (#4979). Translate only a
-  // certificate failure into the actual fix -- trust the CA; verification is
-  // never skipped -- and rethrow every other error untouched. Matching the
-  // full exception text covers PS 5.1 (WebException, "Could not establish
-  // trust relationship") and PS 7 (inner AuthenticationException, "remote
-  // certificate is invalid").
+  // "underlying connection was closed" error (#4979). Translate only a server
+  // certificate rejection into the actual fix -- verification is never
+  // skipped -- and rethrow every other error untouched. The match is narrow on
+  // purpose: PS 5.1 reports "Could not establish trust relationship for the
+  // SSL/TLS secure channel", and both PS 5.1 and PS 7 carry an inner
+  // AuthenticationException "The remote certificate is invalid ...". Bare
+  // "certificate" / "trust relationship" would also catch unrelated errors
+  // (client-certificate selection, the Windows domain-trust failure). The
+  // innermost message (UntrustedRoot, RemoteCertificateNameMismatch, ...) is
+  // kept, because the cause may be a name mismatch or expiry, not the CA.
   const winDownload =
     `try{Invoke-WebRequest -Uri "${apiUrl}/api/v1/agents/download/windows/amd64" -OutFile $exe}` +
-    `catch{if("$($_.Exception)" -match 'certificate|trust relationship')` +
-    `{throw "Breeze: this machine rejected the TLS certificate of ${apiUrl}. If the server uses a self-signed or private-CA certificate, ` +
-    `import its root CA into Cert:\\LocalMachine\\Root and retry - see https://docs.breezermm.com/deploy/tls/#trusting-the-internal-ca-on-agents"}; throw}`;
+    `catch{if("$($_.Exception)" -match 'remote certificate is invalid|establish trust relationship for the SSL/TLS')` +
+    `{throw "Breeze: this machine rejected the TLS certificate of ${apiUrl} ($($_.Exception.GetBaseException().Message)). ` +
+    `If the server uses a self-signed or private-CA certificate, import its root CA into Cert:\\LocalMachine\\Root; ` +
+    `otherwise check that the certificate matches the server name and has not expired. ` +
+    `See https://docs.breezermm.com/deploy/tls/#trusting-the-internal-ca-on-agents"}; throw}`;
   const windows =
     `$ErrorActionPreference='Stop'; ` +
     `${winOsFloorCheck}; ` +

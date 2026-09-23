@@ -66,7 +66,7 @@ Browsers are not the only clients that must trust a self-issued certificate. The
 | Install path | What you see |
 |---|---|
 | Windows MSI | *"There is a problem with this Windows Installer package. A program run as part of the setup did not finish as expected."* The agent's own message, which names the certificate problem, is in `C:\ProgramData\Breeze\logs\enroll-last-error.txt` and in the Windows Application event log (source `BreezeAgent`) |
-| Windows PowerShell one-liner | `Breeze: this machine rejected the TLS certificate of …`. Older copies of the one-liner show `Could not establish trust relationship for the SSL/TLS secure channel` instead |
+| Windows PowerShell one-liner | `Breeze: this machine rejected the TLS certificate of … (… UntrustedRoot)`. The text in parentheses is the reason Windows gave: `UntrustedRoot` means the CA is not trusted, while `RemoteCertificateNameMismatch` means the server URL does not match a name on the certificate. Older copies of the one-liner show `Could not establish trust relationship for the SSL/TLS secure channel` instead |
 | macOS / Linux one-liner | `curl: (60) SSL certificate problem: self-signed certificate` or `unable to get local issuer certificate` |
 | `breeze-agent enroll` | `Enrollment failed: the TLS certificate presented by … is not trusted by this machine` |
 

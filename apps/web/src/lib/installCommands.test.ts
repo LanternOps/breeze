@@ -87,7 +87,14 @@ describe('buildInstallCommands', () => {
       const tryIdx = windows.indexOf('try{Invoke-WebRequest');
       expect(tryIdx).toBeGreaterThan(-1);
       const catchBlock = windows.slice(windows.indexOf('catch{', tryIdx));
-      expect(catchBlock.startsWith(`catch{if("$($_.Exception)" -match 'certificate|trust relationship'){throw "Breeze: `)).toBe(true);
+      // Narrow match only: bare "certificate" / "trust relationship" would
+      // mislabel client-certificate and domain-trust failures.
+      expect(catchBlock.startsWith(
+        `catch{if("$($_.Exception)" -match 'remote certificate is invalid|establish trust relationship for the SSL/TLS'){throw "Breeze: `
+      )).toBe(true);
+      // The real cause (UntrustedRoot / NameMismatch / expiry) is kept, not overwritten.
+      expect(catchBlock).toContain('$($_.Exception.GetBaseException().Message)');
+      expect(catchBlock).toContain('matches the server name and has not expired');
       expect(catchBlock).toContain('Cert:\\LocalMachine\\Root');
       expect(catchBlock).toContain('https://rmm.example.com');
       expect(catchBlock).toContain('https://docs.breezermm.com/deploy/tls/#trusting-the-internal-ca-on-agents');

@@ -170,6 +170,18 @@ func cancelBootstrapIfRefundable(cat enrollErrCategory, server, childKey string,
 		"refunded", res.Refunded, "reason", res.Reason)
 }
 
+// reportBootstrapFailure records a hard bootstrap failure in every sink an
+// admin can reach. The MSI's BootstrapEnroll is a plain EXE custom action:
+// Windows Installer shows only "a program run as part of the setup did not
+// finish as expected" and never captures this process's stderr, so stderr
+// alone left the cause invisible (#4979). enroll-last-error.txt and the
+// Windows Event Log survive the rollback.
+func reportBootstrapFailure(line string) {
+	fmt.Fprintln(os.Stderr, line)
+	writeLastErrorFile(line)
+	eventLogError("BreezeAgent", line)
+}
+
 // runBootstrap resolves enrollment inputs, redeems the token, and enrolls.
 // Soft-exits 0 when there is genuinely no token (manual install with no token
 // and no properties), so the install completes with an unenrolled agent that
@@ -210,7 +222,7 @@ func runBootstrap() {
 
 	if err := gateBootstrapServer(server); err != nil {
 		bsLog.Error("bootstrap refused: control-plane host not allowed", "error", err.Error())
-		fmt.Fprintf(os.Stderr, "Bootstrap failed: %v\n", err)
+		reportBootstrapFailure(fmt.Sprintf("Bootstrap failed: %v", err))
 		osExit(1) // hard — roll back the install; token NOT sent to this host
 		return
 	}
@@ -219,26 +231,20 @@ func runBootstrap() {
 	res, err := redeemBootstrapToken(server, token)
 	if err != nil {
 		bsLog.Error("bootstrap token redemption failed", "error", err.Error())
-		// The MSI's BootstrapEnroll is a plain EXE custom action: Windows
-		// Installer shows only "a program run as part of the setup did not
-		// finish as expected" and never captures this process's stderr. Record
-		// the failure where an admin can find it (enroll-last-error.txt, the
-		// Windows Event Log) and, for an untrusted server certificate, name
-		// the actual fix instead of the raw x509 error (#4979).
+		// For an untrusted server certificate, name the actual fix instead of
+		// only the raw x509 error (#4979).
 		line := fmt.Sprintf("Bootstrap failed: %v", err)
 		if hint, ok := certVerificationHint(err, server); ok {
 			line = fmt.Sprintf("Bootstrap failed: %s (%v)", hint, err)
 		}
-		fmt.Fprintln(os.Stderr, line)
-		writeLastErrorFile(line)
-		eventLogError("BreezeAgent", line)
+		reportBootstrapFailure(line)
 		osExit(1) // hard — roll back the install (osExit: test seam, enroll_error.go)
 		return    // under a noop osExit test seam, don't fall through to a nil res
 	}
 
 	if err := gateRedeemResponse(*res); err != nil {
 		bsLog.Error("bootstrap refused: redeem response host not allowed", "error", err.Error())
-		fmt.Fprintf(os.Stderr, "Bootstrap failed: %v\n", err)
+		reportBootstrapFailure(fmt.Sprintf("Bootstrap failed: %v", err))
 		osExit(1) // hard — roll back; do not adopt a non-allowlisted redirect
 		return
 	}

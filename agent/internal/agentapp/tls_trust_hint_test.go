@@ -115,11 +115,7 @@ func TestRunBootstrap_UntrustedCertificate_RecordsHintInDurableSinks(t *testing.
 	cfgFile, quietEnroll = filepath.Join(dir, "agent.yaml"), true
 	bootstrapInstallData = `C:\dl\breeze-agent.msi|TESTTOKEN1|` + srv.URL
 
-	var lastErr, eventMsg string
-	origWrite, origEvent := writeLastErrorFile, eventLogError
-	writeLastErrorFile = func(line string) { lastErr = line }
-	eventLogError = func(_, message string) { eventMsg = message }
-	t.Cleanup(func() { writeLastErrorFile, eventLogError = origWrite, origEvent })
+	lastErr, eventMsg := stubBootstrapFailureSinks(t)
 
 	exitCode := -1
 	origExit := osExit
@@ -131,9 +127,21 @@ func TestRunBootstrap_UntrustedCertificate_RecordsHintInDurableSinks(t *testing.
 	if exitCode != 1 {
 		t.Errorf("exit code = %d, want 1 (hard fail so the MSI rolls back)", exitCode)
 	}
-	for name, got := range map[string]string{"enroll-last-error.txt": lastErr, "event log": eventMsg} {
+	for name, got := range map[string]string{"enroll-last-error.txt": *lastErr, "event log": *eventMsg} {
 		if !strings.Contains(got, "not trusted by this machine") {
 			t.Errorf("%s = %q, want the untrusted-certificate hint", name, got)
 		}
 	}
+}
+
+// stubBootstrapFailureSinks captures reportBootstrapFailure's durable sinks so
+// tests neither write the real enroll-last-error.txt nor the Windows Event Log.
+func stubBootstrapFailureSinks(t *testing.T) (lastErr, eventMsg *string) {
+	t.Helper()
+	var le, em string
+	origWrite, origEvent := writeLastErrorFile, eventLogError
+	writeLastErrorFile = func(line string) { le = line }
+	eventLogError = func(_, message string) { em = message }
+	t.Cleanup(func() { writeLastErrorFile, eventLogError = origWrite, origEvent })
+	return &le, &em
 }
