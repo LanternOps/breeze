@@ -9,10 +9,17 @@ import {
   type ConnectionsReportEntry,
   type ConnectionsReportVar,
   type EnvSnapshot,
+  type StatusResult,
 } from './types';
 
 /** `scheme://user:pass@host` — URL userinfo (spec invariant 2, value-shape guard). */
 const URL_USERINFO = /:\/\/[^/?#\s]*@/;
+/**
+ * Scheme-less userinfo: `user:pass@host` or `user@host:port`. S3 endpoints
+ * accept this form (coerceS3EndpointUrl in @breeze/shared prefixes https://).
+ * An email address (`a@b.c`) has no ':' or '/' and still displays.
+ */
+const SCHEMELESS_USERINFO = /^[^\s/@]*:[^\s/@]*@|^[^\s/@]+@[^\s/@]+[:/]/;
 /** `scheme://host/path?query` — gateways and DSNs carry keys in the query (cf. CSP_REPORT_URI). */
 const URL_QUERY = /^[a-z][a-z0-9+.-]*:\/\/[^?#\s]*\?/i;
 /** Service-account JSON or PEM key material pasted into a non-secret var. */
@@ -26,7 +33,8 @@ export function displayableValue(raw: string | undefined): string | undefined {
   if (typeof raw !== 'string') return undefined;
   const value = raw.trim();
   if (value.length === 0) return undefined;
-  if (URL_USERINFO.test(value) || URL_QUERY.test(value) || KEY_MATERIAL.test(value)) return undefined;
+  if (URL_USERINFO.test(value) || SCHEMELESS_USERINFO.test(value)) return undefined;
+  if (URL_QUERY.test(value) || KEY_MATERIAL.test(value)) return undefined;
   return value;
 }
 
@@ -37,8 +45,22 @@ function reportVar(env: EnvSnapshot, v: ConnectionEntry['vars'][number]): Connec
   return value === undefined ? { name: v.name, secret: false, set } : { name: v.name, secret: false, set, value };
 }
 
+/**
+ * One entry's status. A throwing status function marks only that entry
+ * misconfigured instead of 500ing the whole page. The error is deliberately
+ * not logged or forwarded: its message may carry an env value.
+ */
+function safeStatus(env: EnvSnapshot, entry: ConnectionEntry): StatusResult {
+  try {
+    return entry.status(env);
+  } catch {
+    console.warn(`[connections] status check for entry ${entry.id} threw; reported as misconfigured`);
+    return { status: 'misconfigured', reason: 'The status check for this entry failed' };
+  }
+}
+
 function reportEntry(env: EnvSnapshot, entry: ConnectionEntry): ConnectionsReportEntry {
-  const { status, reason } = entry.status(env);
+  const { status, reason } = safeStatus(env, entry);
   return {
     id: entry.id,
     label: entry.label,

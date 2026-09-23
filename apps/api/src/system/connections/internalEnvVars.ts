@@ -227,7 +227,6 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   // MACOS_*
   MACOS_INSTALLER_ALLOW_LEGACY_GET_BOOTSTRAP: 'legacy compatibility toggle',
   // MAILGUN_*
-  MAILGUN_TIMEOUT_MS: 'timing knob',
   // MANAGED_*
   MANAGED_SOFTWARE_POLICY_MODE: 'enforcement mode',
   // MAX_*
@@ -392,7 +391,6 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   SIGNUP_EXTRA_CONSUMER_EMAIL_DOMAINS: 'signup policy list',
   SIGNUP_REQUIRE_BUSINESS_EMAIL: 'signup policy flag',
   // SMTP_*
-  SMTP_TIMEOUT_MS: 'timing knob',
   // SNMP_*
   SNMP_METRICS_RETENTION_BATCH_SIZE: 'retention sweep batch knob',
   SNMP_METRICS_RETENTION_DAYS: 'data retention window',

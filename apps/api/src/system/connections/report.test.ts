@@ -4,9 +4,10 @@
  * serialized report the canary scans).
  */
 import { randomUUID } from 'node:crypto';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { CONNECTION_REGISTRY } from './registry';
 import { buildConnectionsReport, displayableValue } from './report';
+import { defineEntry } from './statusHelpers';
 import { CONNECTION_GROUPS, type ConnectionsReport } from './types';
 
 const secretVars = CONNECTION_REGISTRY.flatMap((e) => e.vars).filter((v) => v.secret !== false).map((v) => v.name);
@@ -135,6 +136,18 @@ describe('invariant 2: value-shape guard', () => {
     expectNoCanary(JSON.stringify(report), canaries);
   });
 
+  it('refuses scheme-less userinfo (S3 endpoints are coerced to https:// by coerceS3EndpointUrl)', () => {
+    const canary = canaryFor('SCHEMELESS');
+    expect(displayableValue(`AKIAEXAMPLE:${canary}@minio.local:9000`)).toBeUndefined();
+    expect(displayableValue(`AKIAEXAMPLE@minio.local:9000`)).toBeUndefined();
+    const report = buildConnectionsReport({ S3_ENDPOINT: `AKIAEXAMPLE:${canary}@minio.local:9000` });
+    expectNoCanary(JSON.stringify(report), [canary]);
+    // Plain hosts, host:port and email addresses still display.
+    expect(displayableValue('minio.local:9000')).toBe('minio.local:9000');
+    expect(displayableValue('noreply@example.test')).toBe('noreply@example.test');
+    expect(displayableValue('Breeze Support <support@example.test>')).toBe('Breeze Support <support@example.test>');
+  });
+
   it('refuses a non-secret URL value that carries a query string (keys ride in queries)', () => {
     const canary = canaryFor('QUERY');
     expect(displayableValue(`https://gateway.example.test/v1?key=${canary}`)).toBeUndefined();
@@ -154,5 +167,40 @@ describe('invariant 2: value-shape guard', () => {
       [...secretVars, ...publicVars].map((name, i) => [name, ['%%%', '://@', '\u0000', 'postgres://a,b@', ' '][i % 5]!]),
     );
     expect(() => buildConnectionsReport(env)).not.toThrow();
+  });
+});
+
+describe('a throwing status function', () => {
+  it('marks only that entry misconfigured and never forwards the error text', () => {
+    const canary = canaryFor('THROWN');
+    const throwing = defineEntry({
+      id: 'throws',
+      group: 'integrations',
+      label: 'Throws',
+      vars: [{ name: 'THROWS_TOKEN' }],
+      status: {
+        kind: 'custom',
+        fn: () => {
+          throw new Error(`boom ${canary}`);
+        },
+      },
+    });
+    const fine = defineEntry({
+      id: 'fine',
+      group: 'integrations',
+      label: 'Fine',
+      vars: [{ name: 'FINE_TOKEN', required: true }],
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const report = buildConnectionsReport({ FINE_TOKEN: 'x' }, [throwing, fine]);
+      const entries = report.groups.flatMap((g) => g.entries);
+      expect(entries.find((e) => e.id === 'throws')).toMatchObject({ status: 'misconfigured' });
+      expect(entries.find((e) => e.id === 'fine')).toMatchObject({ status: 'enabled' });
+      expectNoCanary(JSON.stringify(report), [canary]);
+      expectNoCanary(JSON.stringify(warn.mock.calls), [canary]);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

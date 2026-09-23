@@ -142,6 +142,59 @@ function smtpAuthMismatch(env: EnvSnapshot): boolean {
 
 const SMTP_AUTH_REASON = 'SMTP_USER and SMTP_PASS must both be set or both be omitted';
 
+/** Trimmed value, or undefined when blank — the shape of email.ts getEnvString. */
+function trimmedValue(env: EnvSnapshot, name: string): string | undefined {
+  const raw = env[name]?.trim();
+  return raw ? raw : undefined;
+}
+
+/** services/email.ts parseSmtpPort: integer 1-65535 (parseInt semantics). */
+function smtpPortInvalid(env: EnvSnapshot): boolean {
+  const raw = trimmedValue(env, 'SMTP_PORT');
+  if (!raw) return false;
+  const parsed = Number.parseInt(raw, 10);
+  return !Number.isInteger(parsed) || parsed < 1 || parsed > 65535;
+}
+
+/** services/email.ts parseSmtpSecure: one of true/1/yes/on/false/0/no/off. */
+function smtpSecureInvalid(env: EnvSnapshot): boolean {
+  const raw = trimmedValue(env, 'SMTP_SECURE');
+  if (!raw) return false;
+  return !['true', '1', 'yes', 'on', 'false', '0', 'no', 'off'].includes(raw.toLowerCase());
+}
+
+/** services/email.ts parseTransportTimeoutMs: canonical integer 1000-600000. */
+function transportTimeoutInvalid(env: EnvSnapshot, name: string): boolean {
+  const raw = trimmedValue(env, name);
+  if (!raw) return false;
+  const parsed = Number.parseInt(raw, 10);
+  return !Number.isInteger(parsed) || String(parsed) !== raw || parsed < 1000 || parsed > 600_000;
+}
+
+/**
+ * The value checks resolveSmtpConfig / resolveMailgunConfig run after the
+ * presence checks. Any failure throws, and getEmailService then caches "email
+ * is not configured" for the process — so a typo here is a dead mailer.
+ * Reasons name the var, never the value (invariant 4).
+ */
+function transportValueProblem(provider: EmailProvider, env: EnvSnapshot): StatusResult | null {
+  if (provider === 'smtp') {
+    if (smtpAuthMismatch(env)) return { status: 'misconfigured', reason: SMTP_AUTH_REASON };
+    if (smtpPortInvalid(env)) {
+      return { status: 'misconfigured', reason: 'SMTP_PORT must be an integer between 1 and 65535' };
+    }
+    if (smtpSecureInvalid(env)) {
+      return { status: 'misconfigured', reason: 'SMTP_SECURE must be a boolean (true/false, 1/0, yes/no, on/off)' };
+    }
+    if (transportTimeoutInvalid(env, 'SMTP_TIMEOUT_MS')) {
+      return { status: 'misconfigured', reason: 'SMTP_TIMEOUT_MS must be an integer between 1000 and 600000 milliseconds' };
+    }
+  } else if (provider === 'mailgun' && transportTimeoutInvalid(env, 'MAILGUN_TIMEOUT_MS')) {
+    return { status: 'misconfigured', reason: 'MAILGUN_TIMEOUT_MS must be an integer between 1000 and 600000 milliseconds' };
+  }
+  return null;
+}
+
 function isOrAre(names: readonly string[]): string {
   return names.length === 1 ? 'is' : 'are';
 }
@@ -160,13 +213,16 @@ export function emailStatus(env: EnvSnapshot): StatusResult {
         reason: `EMAIL_PROVIDER selects ${selection} but ${listNames(missing)} ${isOrAre(missing)} missing`,
       };
     }
-    if (selection === 'smtp' && smtpAuthMismatch(env)) return { status: 'misconfigured', reason: SMTP_AUTH_REASON };
+    const problem = transportValueProblem(selection, env);
+    if (problem) return problem;
     return { status: 'enabled', reason: `Provider: ${selection}` };
   }
 
   for (const provider of AUTO_DETECT_ORDER) {
     if (missingForProvider(provider, env).length === 0) {
-      if (provider === 'smtp' && smtpAuthMismatch(env)) return { status: 'misconfigured', reason: SMTP_AUTH_REASON };
+      // The resolver commits to the first complete provider; a bad value there throws, it does not fall through.
+      const problem = transportValueProblem(provider, env);
+      if (problem) return problem;
       return { status: 'enabled', reason: `Provider: ${provider} (auto-detected)` };
     }
   }

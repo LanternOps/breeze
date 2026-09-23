@@ -143,6 +143,42 @@ describe('emailStatus (mirrors services/email.ts resolveEmailProviderConfig)', (
   it('only the compose defaults (EMAIL_PROVIDER=auto, EMAIL_FROM) => required_missing', () => {
     expect(emailStatus({ EMAIL_PROVIDER: 'auto', EMAIL_FROM: 'noreply@breeze.local' }).status).toBe('required_missing');
   });
+
+  // services/email.ts parseSmtpPort / parseSmtpSecure / parseTransportTimeoutMs throw on
+  // malformed values, and getEmailService caches "email is not configured" for the process.
+  const smtpEnv = { SMTP_HOST: 'smtp.example.com', EMAIL_FROM: 'a@b.c' };
+  it.each([
+    ['SMTP_PORT', '999999'],
+    ['SMTP_PORT', 'abc'],
+    ['SMTP_SECURE', 'yesplz'],
+    ['SMTP_TIMEOUT_MS', '30s'],
+    ['SMTP_TIMEOUT_MS', '500'],
+  ])('SMTP with malformed %s=%j => misconfigured naming the var, never the value', (name, raw) => {
+    for (const selection of [{}, { EMAIL_PROVIDER: 'smtp' }]) {
+      const result = emailStatus({ ...smtpEnv, ...selection, [name]: raw });
+      expect(result.status).toBe('misconfigured');
+      expect(result.reason).toContain(name);
+      expect(result.reason).not.toContain(raw);
+    }
+  });
+
+  it('SMTP with valid SMTP_PORT, SMTP_SECURE and SMTP_TIMEOUT_MS => enabled', () => {
+    expect(
+      emailStatus({ ...smtpEnv, SMTP_PORT: '465', SMTP_SECURE: 'TRUE', SMTP_TIMEOUT_MS: '30000' }).status,
+    ).toBe('enabled');
+  });
+
+  it('Mailgun with malformed MAILGUN_TIMEOUT_MS => misconfigured; SMTP knobs do not affect Mailgun', () => {
+    const mailgun = { MAILGUN_API_KEY: 'k', MAILGUN_DOMAIN: 'mg.example.com', EMAIL_FROM: 'a@b.c' };
+    const bad = emailStatus({ ...mailgun, MAILGUN_TIMEOUT_MS: '2m' });
+    expect(bad.status).toBe('misconfigured');
+    expect(bad.reason).toContain('MAILGUN_TIMEOUT_MS');
+    expect(emailStatus({ ...mailgun, SMTP_PORT: 'abc' }).status).toBe('enabled');
+  });
+
+  it('Resend ignores the SMTP and Mailgun transport knobs', () => {
+    expect(emailStatus({ RESEND_API_KEY: 're_x', EMAIL_FROM: 'a@b.c', SMTP_TIMEOUT_MS: '30s' }).status).toBe('enabled');
+  });
 });
 
 describe('non-core custom statuses', () => {
