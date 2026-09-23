@@ -170,7 +170,7 @@ function normalizeAction(action: unknown): DnsAction {
   return 'allowed';
 }
 
-function normalizeThreatCategory(value: unknown): DnsThreatCategory | null {
+export function normalizeThreatCategory(value: unknown): DnsThreatCategory | null {
   if (typeof value !== 'string' || !value.trim()) return null;
 
   const normalized = value.trim().toLowerCase().replace(/\s+/g, '_').replace(/-/g, '_');
@@ -184,8 +184,10 @@ function normalizeThreatCategory(value: unknown): DnsThreatCategory | null {
   if (normalized.includes('ransom')) return 'ransomware';
   if (normalized.includes('crypto')) return 'cryptomining';
   if (normalized.includes('spam')) return 'spam';
-  if (normalized.includes('ad')) return 'adware';
   if (normalized.includes('adult')) return 'adult_content';
+  if (normalized.split('_').some((token) => token === 'adware' || token === 'ads' || token === 'ad' || token.startsWith('advert'))) {
+    return 'adware';
+  }
   if (normalized.includes('gambl')) return 'gambling';
   if (normalized.includes('social')) return 'social_media';
   if (normalized.includes('stream')) return 'streaming';
