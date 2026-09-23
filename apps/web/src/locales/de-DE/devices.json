@@ -350,7 +350,49 @@
     "confidence": "Vertrauen",
     "dismiss": "Schließen",
     "resolve": "Lösen",
-    "promote": "Fördern"
+    "promote": "Fördern",
+    "filterOpen": "Offen",
+    "filterRecentlyClosed": "Kürzlich geschlossen",
+    "filterAll": "Alle",
+    "showRecentlyClosed": "Kürzlich geschlossene anzeigen",
+    "couldNotUpdateEpisode": "Anomalie konnte nicht aktualisiert werden",
+    "episodeDismissed": "7 Tage lang verworfen",
+    "episodeResolved": "Anomalie behoben",
+    "episodePromoted": "Anomalie zu Alarm hochgestuft",
+    "snoozeStopped": "Stummschaltung beendet",
+    "dismissFor7Days": "7 Tage verwerfen",
+    "promoteToAlert": "Zu Alarm hochstufen",
+    "stopSnoozing": "Stummschaltung beenden",
+    "ongoingSince": "Andauernd seit {{when}}",
+    "recurrenceNth": "{{nth}} Mal in 7 Tagen",
+    "dismissedSnoozedUntil": "Verworfen · stummgeschaltet bis {{when}}",
+    "detectionsCount": "{{count}} Erkennungen",
+    "closeReason": {
+      "cleared": "behoben",
+      "expiredOffline": "abgelaufen: Gerät nicht gesehen",
+      "expiredNoData": "abgelaufen: keine Daten für diese Metrik",
+      "expiredOfflineSince": "abgelaufen: Gerät nicht gesehen seit {{when}}",
+      "detectionOff": "geschlossen: Erkennung deaktiviert",
+      "user": "aufgelöst",
+      "snoozed": "stummgeschaltet"
+    },
+    "processDetailNotAvailable": "Prozessdetails für diese Metrik nicht verfügbar.",
+    "topByAtPeak": "Top nach {{dimension}} beim Höchstwert: {{list}}",
+    "sentence": {
+      "spike": "{{metric}} lag {{duration}} lang bei {{range}}, normal {{baseline}}.",
+      "processMax": "Ein Prozess erreichte {{value}}, normal {{baseline}}.",
+      "processSum": "Die Top-Prozesse zusammen nutzten {{value}}, normal {{baseline}}.",
+      "drop": "{{metric}} fiel {{duration}} lang auf {{value}}, normal {{baseline}}.",
+      "growth": "{{metric}} stieg über {{duration}} von {{from}} auf {{to}}."
+    },
+    "membersColumns": {
+      "window": "Zeitfenster",
+      "metric": "Metrik",
+      "score": "Punktzahl"
+    },
+    "membersTruncated": "Die ersten {{count}} Erkennungen werden angezeigt.",
+    "failedToLoadDetections": "Erkennungen konnten nicht geladen werden",
+    "legacyDetectionNote": "Diese Erkennung stammt aus der Zeit vor der Episodengruppierung."
   },
   "deviceBillingCard": {
     "title": "Abrechnung",

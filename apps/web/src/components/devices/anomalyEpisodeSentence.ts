@@ -161,24 +161,29 @@ export function formatEpisodeSentence(
   const rangeMin = episode.rangeMin ?? episode.peakValue;
   const rangeMax = episode.rangeMax ?? episode.peakValue;
   const baseline = episode.peakBaselineValue == null
-    ? t('deviceAnomaliesPanel.text')
+    ? t('devices:deviceAnomaliesPanel.text')
     : formatMetricValue(episode.peakMetricName, episode.peakBaselineValue);
 
+  // Explicit `devices:` namespace prefixes throughout: this module takes `t`
+  // as a parameter rather than calling `useTranslation('devices')` itself, so
+  // the repo's static key-usage scanner (keyUsage.test.ts) can't infer the
+  // namespace from the call site and defaults to `common` — the same pattern
+  // used by `useSiteCrud.ts`'s `t('settings:...')` calls.
   let headline: string;
   if (PROCESS_PAIR_FAMILIES.has(episode.metricFamily) && episode.peakMetricName.endsWith('_max')) {
-    headline = t('deviceAnomaliesPanel.sentence.processMax', {
+    headline = t('devices:deviceAnomaliesPanel.sentence.processMax', {
       value: formatMetricValue(episode.peakMetricName, episode.peakValue),
       baseline,
       defaultValue: 'One process reached {{value}}, normally {{baseline}}.',
     });
   } else if (PROCESS_PAIR_FAMILIES.has(episode.metricFamily) && episode.peakMetricName.endsWith('_sum')) {
-    headline = t('deviceAnomaliesPanel.sentence.processSum', {
+    headline = t('devices:deviceAnomaliesPanel.sentence.processSum', {
       value: formatMetricValue(episode.peakMetricName, episode.peakValue),
       baseline,
       defaultValue: 'Top processes together used {{value}}, normally {{baseline}}.',
     });
   } else if (episode.anomalyType === 'drop') {
-    headline = t('deviceAnomaliesPanel.sentence.drop', {
+    headline = t('devices:deviceAnomaliesPanel.sentence.drop', {
       metric,
       value: formatRange(episode.peakMetricName, rangeMin, rangeMax),
       duration,
@@ -186,7 +191,7 @@ export function formatEpisodeSentence(
       defaultValue: '{{metric}} dropped to {{value}} for {{duration}}, normally {{baseline}}.',
     });
   } else if (episode.anomalyType === 'memory_growth' || episode.anomalyType === 'disk_growth') {
-    headline = t('deviceAnomaliesPanel.sentence.growth', {
+    headline = t('devices:deviceAnomaliesPanel.sentence.growth', {
       metric,
       from: formatMetricValue(episode.peakMetricName, rangeMin),
       to: formatMetricValue(episode.peakMetricName, rangeMax),
@@ -195,7 +200,7 @@ export function formatEpisodeSentence(
     });
   } else {
     // spike / network_egress / process_runaway on a non-pair family.
-    headline = t('deviceAnomaliesPanel.sentence.spike', {
+    headline = t('devices:deviceAnomaliesPanel.sentence.spike', {
       metric,
       range: formatRange(episode.peakMetricName, rangeMin, rangeMax),
       duration,
@@ -207,7 +212,7 @@ export function formatEpisodeSentence(
   const snapshot = episode.attribution?.peak ?? episode.attribution?.opened ?? null;
   let attributionLine: string;
   if (!snapshot || snapshot.processes.length === 0) {
-    attributionLine = t('deviceAnomaliesPanel.processDetailNotAvailable', {
+    attributionLine = t('devices:deviceAnomaliesPanel.processDetailNotAvailable', {
       defaultValue: 'Process detail not available for this metric.',
     });
   } else {
@@ -215,7 +220,7 @@ export function formatEpisodeSentence(
     const list = snapshot.processes
       .map((p) => `${p.name} ${formatAttributionValue(snapshot.dimension, p.value)}`)
       .join(' · ');
-    attributionLine = t('deviceAnomaliesPanel.topByAtPeak', {
+    attributionLine = t('devices:deviceAnomaliesPanel.topByAtPeak', {
       dimension: dimensionLabel,
       list,
       defaultValue: 'Top by {{dimension}} at peak: {{list}}',
