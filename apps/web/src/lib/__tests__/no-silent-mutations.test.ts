@@ -38,6 +38,8 @@ const TARGET_GLOBS = [
   'src/components/monitoring/conversion/ConversionPendingBanner.tsx',
   'src/components/admin/MonitorConversionAdmin.tsx',
   'src/components/configurationPolicies/featureTabs/useFeatureLink.ts',
+  // Per-rule legacy convert (POST /monitor-definitions/convert-from-rule).
+  'src/components/monitoring/LegacyRulesTable.tsx',
   // Disk Cleanup v2 W01: scan and cleanup-preview failures must surface.
   'src/components/devices/DeviceFilesystemTab.tsx',
   // Disk Cleanup v2 W03: cleanup-execute moved into this panel.
@@ -766,7 +768,8 @@ describe('no silent mutations in targeted set', () => {
     // Alerting W05c2 adopts the shared feature-link mutation hook: 165 → 166.
     // W05c2 adds NeedsConversionPanel, ConversionPendingBanner, MonitorConversionAdmin: 166 → 169.
     // Persistent conversion history adds ConversionLedger (Undo): 169 → 170.
-    expect(absoluteFiles.length).toBe(170);
+    // LegacyRulesTable (per-rule convert) joins the guard: 170 → 171.
+    expect(absoluteFiles.length).toBe(171);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }
