@@ -1048,7 +1048,7 @@ describe('runs of a partner-owned definition', () => {
     const res = await app().request(`/reports/runs/${RUN_ID}`);
 
     expect(res.status).toBe(200);
-    expect(resolveRequestPartnerReportAuthority).toHaveBeenCalledWith(state.auth, PARTNER_ID, 'read');
+    expect(resolveRequestPartnerReportAuthority).toHaveBeenCalledWith(state.auth, PARTNER_ID, 'read_history');
     const detailWhere = params(state.wheres.at(-1));
     expect(detailWhere).toContain(PARTNER_ID);
     expect(detailWhere).toContain('partner_wide');

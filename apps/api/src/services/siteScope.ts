@@ -74,6 +74,28 @@ export function partnerWideScope(
 }
 export type ReportAction = 'read' | 'write' | 'export' | 'delete';
 
+/**
+ * The action a live report-authority resolver is asked for. Every
+ * `ReportAction` checks the matching `reports:<action>` grant. `read_history`
+ * (#6699 decision B) checks `reports:read` too, and is the ONLY action an
+ * out-of-service owner (partner not 'active', org not active/trial, either
+ * soft-deleted) still passes: it is for read-only views of existing
+ * definitions and run history/metadata. Anything that generates, schedules,
+ * delivers, downloads/exports or mutates must use a `ReportAction` — plain
+ * 'read' included — and is refused with `tenant_inactive`. Fail-closed: a new
+ * caller that passes 'read' is contained unless it opts into history.
+ */
+export type ReportAuthorityAction = ReportAction | 'read_history';
+
+function reportPermissionAction(action: ReportAuthorityAction): ReportAction {
+  return action === 'read_history' ? 'read' : action;
+}
+
+/** #6699 decision B - see `ReportAuthorityAction`. */
+function actionAdmitsInactiveTenant(action: ReportAuthorityAction): boolean {
+  return action === 'read_history';
+}
+
 export type ReportPrincipalKind = 'user' | 'system' | 'portal_user';
 
 export interface PersistedSiteScopeColumns {
@@ -1179,7 +1201,7 @@ function liveAuthority(
 
 async function roleGrantsReportAction(
   roleId: string,
-  action: ReportAction,
+  requestedAction: ReportAuthorityAction,
   expectedRole:
     | {
         scope: 'organization';
@@ -1191,6 +1213,7 @@ async function roleGrantsReportAction(
         partnerId: string;
       },
 ): Promise<boolean> {
+  const action = reportPermissionAction(requestedAction);
   const rows = await db
     .select({
       resource: permissions.resource,
@@ -1256,7 +1279,7 @@ function partnerMembershipAdmitsOrg(
 async function resolveExactReportAuthorityInSystemContext(
   userId: string,
   orgId: string,
-  action: ReportAction,
+  action: ReportAuthorityAction,
   allowPlatformAuthority: boolean,
 ): Promise<LiveReportAuthorityResult> {
   const [user] = await db
@@ -1282,7 +1305,10 @@ async function resolveExactReportAuthorityInSystemContext(
   if (!organization) {
     return denied('organization_inaccessible');
   }
-  if (!orgTenantIsOperational(organization)) {
+  if (
+    !orgTenantIsOperational(organization)
+    && !actionAdmitsInactiveTenant(action)
+  ) {
     return denied('tenant_inactive');
   }
 
@@ -1402,7 +1428,7 @@ function reportAuthorityLookupFailed(
 async function resolveExactReportAuthority(
   userId: string,
   orgId: string,
-  action: ReportAction,
+  action: ReportAuthorityAction,
   allowPlatformAuthority: boolean,
 ): Promise<LiveReportAuthorityResult> {
   try {
@@ -1425,7 +1451,7 @@ async function resolveExactReportAuthority(
 export async function resolveLiveReportAuthority(
   userId: string,
   orgId: string,
-  action: ReportAction,
+  action: ReportAuthorityAction,
 ): Promise<LiveReportAuthorityResult> {
   return resolveExactReportAuthority(userId, orgId, action, true);
 }
@@ -1446,7 +1472,7 @@ function requestAuthAdmitsOrg(auth: AuthContext, orgId: string): boolean {
 export async function resolveRequestReportAuthority(
   auth: AuthContext,
   orgId: string,
-  action: ReportAction,
+  action: ReportAuthorityAction,
 ): Promise<LiveReportAuthorityResult> {
   if (!requestAuthAdmitsOrg(auth, orgId)) {
     return denied('organization_inaccessible');
@@ -1470,7 +1496,7 @@ export async function resolveRequestReportAuthority(
 export async function resolveLivePartnerReportAuthority(
   userId: string,
   partnerId: string,
-  action: ReportAction,
+  action: ReportAuthorityAction,
 ): Promise<LiveReportAuthorityResult> {
   return resolveExactPartnerReportAuthority(userId, partnerId, action, true);
 }
@@ -1483,7 +1509,7 @@ export async function resolveLivePartnerReportAuthority(
 export async function resolveRequestPartnerReportAuthority(
   auth: AuthContext,
   partnerId: string,
-  action: ReportAction,
+  action: ReportAuthorityAction,
 ): Promise<LiveReportAuthorityResult> {
   if (auth.scope === 'system') {
     return resolveExactPartnerReportAuthority(
@@ -1512,7 +1538,7 @@ export async function resolveRequestPartnerReportAuthority(
 async function resolveExactPartnerReportAuthority(
   userId: string,
   partnerId: string,
-  action: ReportAction,
+  action: ReportAuthorityAction,
   allowPlatformAuthority: boolean,
 ): Promise<LiveReportAuthorityResult> {
   try {
@@ -1535,7 +1561,7 @@ async function resolveExactPartnerReportAuthority(
 async function resolveExactPartnerReportAuthorityInSystemContext(
   userId: string,
   partnerId: string,
-  action: ReportAction,
+  action: ReportAuthorityAction,
   allowPlatformAuthority: boolean,
 ): Promise<LiveReportAuthorityResult> {
   const [user] = await db
@@ -1570,7 +1596,7 @@ async function resolveExactPartnerReportAuthorityInSystemContext(
   if (!partner) {
     return denied('partner_inaccessible');
   }
-  if (!partnerIsOperational(partner)) {
+  if (!partnerIsOperational(partner) && !actionAdmitsInactiveTenant(action)) {
     return denied('tenant_inactive');
   }
 
@@ -1849,9 +1875,11 @@ function batchRoleGrantsReportAction(
 async function resolveRequestReportAuthorityMapInSystemContext(
   auth: AuthContext,
   accessibleOrgIds: readonly string[],
-  action: ReportAction,
+  requestedAction: ReportAuthorityAction,
   result: Map<string, LiveReportAuthorityResult>,
 ): Promise<void> {
+  const action = reportPermissionAction(requestedAction);
+  const admitsInactiveTenant = actionAdmitsInactiveTenant(requestedAction);
   const [user] = await db
     .select({
       id: users.id,
@@ -1889,7 +1917,7 @@ async function resolveRequestReportAuthorityMapInSystemContext(
         orgId,
         !organization
           ? denied('organization_inaccessible')
-          : !orgTenantIsOperational(organization)
+          : !orgTenantIsOperational(organization) && !admitsInactiveTenant
             ? denied('tenant_inactive')
             : liveAuthority(
                 { version: 1, kind: 'unrestricted', orgId },
@@ -1901,11 +1929,13 @@ async function resolveRequestReportAuthorityMapInSystemContext(
     return;
   }
 
-  // Out-of-service tenants are refused in the loop below; leaving them out
-  // here keeps their memberships and roles from being read at all.
+  // Out-of-service tenants are refused in the loop below (unless the action
+  // is read_history); leaving them out here keeps their memberships and roles
+  // from being read at all.
   const existingOrgIds = accessibleOrgIds.filter((orgId) => {
     const organization = organizationsById.get(orgId);
-    return organization !== undefined && orgTenantIsOperational(organization);
+    return organization !== undefined
+      && (admitsInactiveTenant || orgTenantIsOperational(organization));
   });
   const organizationMembershipRows = existingOrgIds.length === 0
     ? []
@@ -2050,7 +2080,7 @@ async function resolveRequestReportAuthorityMapInSystemContext(
       result.set(orgId, denied('organization_inaccessible'));
       continue;
     }
-    if (!orgTenantIsOperational(organization)) {
+    if (!orgTenantIsOperational(organization) && !admitsInactiveTenant) {
       result.set(orgId, denied('tenant_inactive'));
       continue;
     }
@@ -2146,7 +2176,7 @@ async function resolveRequestReportAuthorityMapInSystemContext(
 export async function resolveRequestReportAuthorityMap(
   auth: AuthContext,
   orgIds: readonly string[],
-  action: ReportAction,
+  action: ReportAuthorityAction,
 ): Promise<ReadonlyMap<string, LiveReportAuthorityResult>> {
   const requestedOrgIds = normalizeSiteIds(orgIds);
   const result = new Map<string, LiveReportAuthorityResult>();

@@ -35,6 +35,7 @@ import {
   partnerWideListTarget,
   systemPartnerWideListArm,
   PORTAL_SELF_SERVICE_REPORT,
+  REPORT_TENANT_INACTIVE,
   reportDefinitionMetadataProjection,
   reportOwnerCondition,
   reportOwnerOfRow,
@@ -146,7 +147,8 @@ async function resolveDefinitionListScope(
   }
 
   if (exactOrgId) {
-    const result = await resolveRequestReportAuthority(auth, exactOrgId, 'read');
+    // #6699 decision B: listing definitions is read-only history.
+    const result = await resolveRequestReportAuthority(auth, exactOrgId, 'read_history');
     const scope = liveScopeOf(result);
     if (!scope) {
       return { ok: false, error: 'Access to this organization denied' };
@@ -169,7 +171,7 @@ async function resolveDefinitionListScope(
     const authorityMap = await resolveRequestReportAuthorityMap(
       auth,
       orgIds,
-      'read',
+      'read_history',
     );
     const scopes: LiveSiteScopeV1[] = [];
     for (const result of authorityMap.values()) {
@@ -447,10 +449,13 @@ coreRoutes.get(
       return c.notFound();
     }
 
+    // #6699 decision B: the definition and its recent runs are read-only
+    // history, still shown when the owner is out of service.
     const report = await getReportWithOrgCheck(
       reportId,
       auth,
       c.get('permissions') as UserPermissions | undefined,
+      'read_history',
     );
     if (!report) {
       return c.json({ error: 'Report not found' }, 404);
@@ -459,7 +464,7 @@ coreRoutes.get(
     const authorityResult = await resolveReportOwnerAuthority(
       auth,
       report.owner,
-      'read',
+      'read_history',
     );
     if (!authorityResult.ok || authorityResult.authority.scope.kind === 'legacy_unscoped') {
       return c.json({ error: 'Report not found' }, 404);
@@ -630,7 +635,9 @@ coreRoutes.post(
       'write',
     );
     if (!authorityResult.ok) {
-      return c.json({ error: 'Report scope is not authorized' }, 403);
+      return authorityResult.reason === 'tenant_inactive'
+        ? c.json(REPORT_TENANT_INACTIVE, 403)
+        : c.json({ error: 'Report scope is not authorized' }, 403);
     }
     const currentScope = liveScopeOf(authorityResult);
     if (!currentScope) {

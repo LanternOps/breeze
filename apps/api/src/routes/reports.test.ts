@@ -1016,7 +1016,7 @@ describe('report definition scope enforcement', () => {
       expect(resolveRequestReportAuthority).toHaveBeenCalledWith(
         authState.auth,
         ORG_ID,
-        'read'
+        'read_history'
       );
       expect(reportDefinitionScopeSqlPredicate).toHaveBeenCalledTimes(1);
       expect(captured).toHaveLength(2);
@@ -1106,7 +1106,7 @@ describe('report definition scope enforcement', () => {
     expect(resolveRequestReportAuthorityMap).toHaveBeenCalledWith(
       authState.auth,
       [ORG_ID, orgB],
-      'read'
+      'read_history'
     );
     expect(reportDefinitionMultiOrgScopeSqlPredicate).toHaveBeenCalledTimes(1);
     expect(captured.every((condition) =>
@@ -1336,7 +1336,7 @@ describe('report definition scope enforcement', () => {
     expect(resolveRequestReportAuthority).toHaveBeenCalledWith(
       authState.auth,
       ORG_ID,
-      'read'
+      'read_history'
     );
   });
 
@@ -1380,7 +1380,7 @@ describe('report definition scope enforcement', () => {
   });
 
   it.each([
-    { method: 'GET', suffix: '', body: undefined, action: 'read' },
+    { method: 'GET', suffix: '', body: undefined, action: 'read_history' },
     { method: 'PUT', suffix: '', body: { name: 'Nope' }, action: 'write' },
     { method: 'DELETE', suffix: '', body: undefined, action: 'delete' },
     { method: 'POST', suffix: '/reauthorize', body: undefined, action: 'write' }
@@ -2836,7 +2836,7 @@ describe('report run immutable scope enforcement', () => {
     expect(resolveRequestReportAuthority).toHaveBeenCalledWith(
       expect.anything(),
       ORG_A,
-      'read',
+      'read_history',
     );
     expect(db.insert).not.toHaveBeenCalled();
     expect(generateReport).not.toHaveBeenCalled();
@@ -3071,7 +3071,7 @@ describe('report run immutable scope enforcement', () => {
   it.each([
     {
       route: (id: string) => `/reports/runs/${id}`,
-      action: 'read',
+      action: 'read_history',
     },
     {
       route: (id: string) => `/reports/runs/${id}/download?format=json`,
@@ -3205,7 +3205,7 @@ describe('report run immutable scope enforcement', () => {
       expect(resolveRequestReportAuthority).toHaveBeenCalledWith(
         expect.anything(),
         ORG_B,
-        'read',
+        'read_history',
       );
       expect(resolveRequestReportAuthorityMap).not.toHaveBeenCalled();
     },

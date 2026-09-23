@@ -30,7 +30,7 @@ import {
   resolveRequestReportAuthority,
   type ReportExecutionAuthority,
 } from '../../services/siteScope';
-import { ensureOrgAccess } from './helpers';
+import { ensureOrgAccess, REPORT_TENANT_INACTIVE } from './helpers';
 import { generateReportSchema } from './schemas';
 
 export const generateRoutes = new Hono();
@@ -143,7 +143,9 @@ generateRoutes.post(
         'read',
       );
       if (!authorityResult.ok) {
-        return c.json({ error: 'Device not found or access denied' }, 403);
+        return authorityResult.reason === 'tenant_inactive'
+          ? c.json(REPORT_TENANT_INACTIVE, 403)
+          : c.json({ error: 'Device not found or access denied' }, 403);
       }
       authority = authorityResult.authority;
       scope = organizationScope(orgId!);
