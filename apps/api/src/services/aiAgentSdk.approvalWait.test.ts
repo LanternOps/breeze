@@ -296,6 +296,55 @@ describe('shared approval-wait budget (#3089)', () => {
   });
 });
 
+describe('configurable interactive approval timeout (#6475)', () => {
+  const THIRTY_MIN = 30 * 60_000;
+
+  it('tier-3: the wait, the intent expiry and the SSE card all use the session budget, not a fixed 5 min', async () => {
+    tier3Guardrail('supervised');
+    mockInsertReturning({ id: 'exec-cfg-3' });
+    mockUpdateChain();
+    mockCreateActionIntent.mockResolvedValue(makeIntentSnapshot());
+    mockWaitForIntentDecision.mockResolvedValue('rejected');
+    const session = makeActiveSession({ approvalWaitBudgetMs: THIRTY_MIN });
+    const before = Date.now();
+
+    await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' });
+
+    expect(mockWaitForIntentDecision).toHaveBeenCalledWith('intent-1', THIRTY_MIN, expect.any(AbortSignal));
+    expect(session.approvalWaitDeadline).toBeGreaterThanOrEqual(before + THIRTY_MIN);
+    expect(mockCreateActionIntent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ source: 'chat', chatApprovalWindowMs: THIRTY_MIN }),
+    );
+    expect(session.eventBus.publish).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'approval_required', approvalWindowMs: THIRTY_MIN }),
+    );
+  });
+
+  it('tier-2 legacy bridge: the wait and the card deadline use the session budget', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue({
+      allowed: true,
+      tier: 2,
+      requiresApproval: true,
+      description: 'Take screenshot',
+    } as any);
+    mockInsertReturning({ id: 'exec-cfg-2' });
+    mockUpdateChain();
+    vi.mocked(waitForApproval).mockResolvedValue(false);
+    const session = makeActiveSession({ approvalWaitBudgetMs: THIRTY_MIN });
+    const before = Date.now();
+
+    await createSessionPreToolUse(session)('take_screenshot', { deviceId: 'd-1' });
+
+    expect(waitForApproval).toHaveBeenCalledWith('exec-cfg-2', THIRTY_MIN, expect.any(AbortSignal));
+    const event = vi.mocked(session.eventBus.publish).mock.calls
+      .map(([e]: [any]) => e)
+      .find((e: any) => e.type === 'approval_required');
+    expect(event.approvalWindowMs).toBe(THIRTY_MIN);
+    expect(new Date(event.approvalExpiresAt).getTime()).toBeGreaterThanOrEqual(before + THIRTY_MIN - 1000);
+  });
+});
+
 // ============================================
 // Tier-3 approval scope propagation (2026-08-05 tier3-supervised-four-eyes)
 // ============================================

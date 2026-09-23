@@ -46,6 +46,7 @@ import { getLlmEgressProxy } from './llm/llmEgressProxy';
 import { recordLlmEgressEvent } from './llm/llmEgressRecorder';
 import { markAiBudgetReservationIndeterminate } from './aiBudgetReservations';
 import { getEffectiveAiBudget } from './effectiveSettings';
+import { DEFAULT_APPROVAL_WAIT_BUDGET_MS, loadApprovalWaitBudgetMs } from './aiApprovalTimeout';
 import { resolveTenantTools, type TenantToolDescriptor } from './toolSources/resolver';
 import { buildTenantSdkTools, tenantMcpToolNames } from './toolSources/sdkBridge';
 
@@ -75,6 +76,17 @@ const EVENT_RING_BUFFER_SIZE = 100;
  * 10 min clears that with headroom while still bounding a wedge.
  */
 export const PROCESSING_STALL_TIMEOUT_MS = 10 * 60 * 1000;
+
+/**
+ * Stall window for a session whose approval-wait budget is configurable
+ * (#6475). The 10-minute floor above was sized for a 5-minute wait + a 120s
+ * tool; a longer configured wait keeps the same 5 minutes of headroom past
+ * the budget, so a turn legitimately blocked on a 60-minute approval is not
+ * evicted as wedged.
+ */
+export function processingStallTimeoutMsFor(approvalWaitBudgetMs: number): number {
+  return Math.max(PROCESSING_STALL_TIMEOUT_MS, approvalWaitBudgetMs + 5 * 60 * 1000);
+}
 
 /** Throttle for the all-in-flight capacity alarm, so it cannot flood Sentry. */
 const CAPACITY_ALARM_THROTTLE_MS = 5 * 60 * 1000;
@@ -125,6 +137,16 @@ function bucketSessionOvershoot(size: number): string {
  * of this comment — do not assume the overlap is handled until it lands.
  */
 const SDK_TURN_TIMEOUT_MS = 6 * 60 * 1000;
+
+/**
+ * Per-turn timeout for a session (#6475): the cycle's approval-wait budget
+ * plus the same 60s of headroom SDK_TURN_TIMEOUT_MS has always had over the
+ * 5-minute default budget, so the model can still conclude the turn after
+ * the wait gives up. Never below SDK_TURN_TIMEOUT_MS.
+ */
+export function turnTimeoutMsFor(approvalWaitBudgetMs: number): number {
+  return Math.max(SDK_TURN_TIMEOUT_MS, approvalWaitBudgetMs + 60 * 1000);
+}
 const MCP_PREFIX = 'mcp__breeze__';
 // Use the directly-imported runOutsideDbContext (see commandQueue.ts for explanation).
 const runOutsideDbContextSafe = runOutsideDbContext;
@@ -574,6 +596,16 @@ export interface ActiveSession {
   pendingApprovalWaits: number;
   /** Approval mode for this session (effective: partner override -> org row -> per_step) */
   approvalMode: AiApprovalMode;
+  /**
+   * Per-assistant-cycle approval-wait budget in ms (#6475): the org's
+   * interactive AI approval timeout (org override -> partner default -> 5 min,
+   * range 5-60 min; services/aiApprovalTimeout.ts). Resolved at session
+   * creation and refreshed between turns, like `approvalMode`. The turn
+   * timeout and the stall window are derived from it (turnTimeoutMsFor /
+   * processingStallTimeoutMsFor) so a long configured wait is never cut off
+   * by a fixed 6-minute ceiling.
+   */
+  approvalWaitBudgetMs: number;
   /** Optional MCP allowlist for restricted sessions such as helper chat. */
   allowedTools?: string[];
   /** True when admin has paused auto-approve — falls back to per_step */
@@ -868,13 +900,19 @@ export class StreamingSessionManager {
         // session to `processing` while this lookup is outstanding, and the
         // assignment must not land behind a turn that already started.
         if (reusable.state !== 'processing') {
-          const refreshedApprovalMode = await loadApprovalMode(dbSession.orgId);
+          // Same for the approval timeout (#6475): a settings change applies
+          // from the next message, never to a turn already in flight.
+          const [refreshedApprovalMode, refreshedWaitBudgetMs] = await Promise.all([
+            loadApprovalMode(dbSession.orgId),
+            loadApprovalWaitBudgetMs(dbSession.orgId),
+          ]);
           // Re-read through the map rather than the narrowed `reusable` alias:
           // a concurrent request may have started a turn — or evicted the
           // session entirely — while this lookup was outstanding.
           const stateAfterLookup = this.sessions.get(breezeSessionId)?.state;
           if (stateAfterLookup && stateAfterLookup !== 'processing') {
             reusable.approvalMode = refreshedApprovalMode;
+            reusable.approvalWaitBudgetMs = refreshedWaitBudgetMs;
           }
         }
         reusable.lastActivityAt = Date.now();
@@ -891,7 +929,10 @@ export class StreamingSessionManager {
       inputController.setSdkSessionId(dbSession.sdkSessionId);
     }
 
-    const approvalMode = await loadApprovalMode(dbSession.orgId);
+    const [approvalMode, approvalWaitBudgetMs] = await Promise.all([
+      loadApprovalMode(dbSession.orgId),
+      loadApprovalWaitBudgetMs(dbSession.orgId),
+    ]);
 
     const catalogEndpoint = catalogEndpointOf(resolved);
 
@@ -981,6 +1022,7 @@ export class StreamingSessionManager {
       approvalWaitAbort: null,
       pendingApprovalWaits: 0,
       approvalMode,
+      approvalWaitBudgetMs,
       allowedTools,
       isPaused: false,
       activePlanId: null,
@@ -1291,8 +1333,9 @@ export class StreamingSessionManager {
     this.clearTurnTimeout(session);
     // New assistant cycle: reset the shared approval-wait budget (#3089) at
     // the same point this turn timeout resets, preserving the invariant that
-    // a cycle's approval waits (<= 5 min total) always leave headroom for the
-    // model to emit its closing message before the 6-min timeout fires.
+    // a cycle's approval waits (<= the session's approvalWaitBudgetMs total,
+    // 5 min by default) always leave headroom for the model to emit its
+    // closing message before the turn timeout (budget + 60s) fires.
     // Guarded: never reset while a wait is actually in flight (waits only run
     // in the tool phase, between assistant messages) — EXCEPT when the
     // deadline is already exhausted, where an in-flight wait is settling
@@ -1318,7 +1361,7 @@ export class StreamingSessionManager {
         session.eventBus.publish({ type: 'done' });
         session.state = 'idle';
       }
-    }, SDK_TURN_TIMEOUT_MS);
+    }, turnTimeoutMsFor(session.approvalWaitBudgetMs ?? DEFAULT_APPROVAL_WAIT_BUDGET_MS));
   }
 
   /** Clear the per-turn timeout (called when 'result' arrives) */
@@ -1963,7 +2006,8 @@ export class StreamingSessionManager {
   private isTurnInFlight(session: ActiveSession, now: number): boolean {
     return (
       session.state === 'processing'
-      && now - session.lastActivityAt <= PROCESSING_STALL_TIMEOUT_MS
+      && now - session.lastActivityAt
+        <= processingStallTimeoutMsFor(session.approvalWaitBudgetMs ?? DEFAULT_APPROVAL_WAIT_BUDGET_MS)
     );
   }
 
