@@ -68,8 +68,11 @@ const ORG_SCOPE_UTILIZATION_NOTE =
 
 /** Item 3 (#3198 W02 fix round): billable time that cannot be valued. */
 function unpricedNote(minutes: number, entries: number): string {
-  return `${minutes} billable minutes across ${entries} entr${entries === 1 ? 'y' : 'ies'} have no hourly rate or currency, `
-    + 'so they are counted in billable minutes but excluded from billable value and average rate.';
+  // Billed QUANTITY (billable_minutes, falling back to duration) — the same
+  // minutes billable value would have priced, not the duration-based
+  // "billable minutes" column.
+  return `${minutes} billed minutes across ${entries} entr${entries === 1 ? 'y' : 'ies'} of billable time have no hourly rate or currency, `
+    + 'so they are excluded from billable value and average rate.';
 }
 
 function capacityNote(weeklyCapacityHours: number, workingDays: number): string {

@@ -391,7 +391,7 @@ describe('generateTechnicianTimeBillabilityReport', () => {
     expect(calls[2]!.sql).toMatch(/unpriced_billable_minutes/);
     expect(calls[2]!.sql).toMatch(/hourly_rate IS NULL OR e\.currency_code IS NULL/);
     expect(s.unpricedBillable).toEqual({ minutes: 95, entries: 3 });
-    expect(s.notes.join(' ')).toMatch(/95 billable minutes across 3 entries have no hourly rate or currency/);
+    expect(s.notes.join(' ')).toMatch(/95 billed minutes across 3 entries of billable time have no hourly rate or currency/);
   });
 
   it('no unpriced note when every billable entry is priced', async () => {

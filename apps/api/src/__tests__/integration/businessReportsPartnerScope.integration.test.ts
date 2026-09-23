@@ -558,7 +558,7 @@ describe('technician_time_billability — real Postgres (#3198 W02 Task 8)', () 
     // Billable % and minutes use DURATION: 7 + 7 + 30.
     expect(s.overall.billableMinutes).toBe(44);
     expect(s.unpricedBillable).toEqual({ minutes: 30, entries: 1 });
-    expect(s.notes.join(' ')).toMatch(/30 billable minutes across 1 entry have no hourly rate or currency/);
+    expect(s.notes.join(' ')).toMatch(/30 billed minutes across 1 entry of billable time have no hourly rate or currency/);
   });
 
   runDb('PARITY: a partner-scope RLS request context and the system context produce identical reports', async () => {

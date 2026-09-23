@@ -127,7 +127,7 @@ describe('buildReportPdf: technician_time_billability', () => {
     };
     const text = extractText(buildReportPdf([], { ...opts, summary: s }));
     expect(text).not.toMatch(/No billable value recorded/);
-    expect(text).toMatch(/95 billable minutes/);
+    expect(text).toMatch(/95 billed minutes/);
   });
 
   it('still says "no billable value" when there is genuinely none', () => {

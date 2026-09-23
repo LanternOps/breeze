@@ -202,7 +202,7 @@ export function renderTechnicianTimeReport(
     y = drawProse(
       doc,
       chrome,
-      `${unpriced.minutes} billable minutes (${unpriced.entries} entr${unpriced.entries === 1 ? 'y' : 'ies'}) have no hourly rate or currency and are not valued below.`,
+      `${unpriced.minutes} billed minutes of billable time (${unpriced.entries} entr${unpriced.entries === 1 ? 'y' : 'ies'}) have no hourly rate or currency and are not valued below.`,
       y + 1, 9, C.warning,
     );
   }
