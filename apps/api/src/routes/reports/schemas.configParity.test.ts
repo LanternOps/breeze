@@ -1,10 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { REPORT_TYPES } from '@breeze/shared';
-import { reportConfigSchema } from './schemas';
+import { parseStoredReportConfig } from './schemas';
+
+/** Persistence parse for `type`, throwing like `.parse` so the cases read as before. */
+function parseFor(type: string | undefined, config: Record<string, unknown>): Record<string, unknown> {
+  const result = parseStoredReportConfig(type, config);
+  if (!result.success) throw result.error;
+  return result.data;
+}
 
 /**
- * The shape `reportConfigSchema` had BEFORE the registry split: one loose
+ * The shape the persistence config schema had BEFORE the registry split: one loose
  * object over every declared key. Frozen here as a test-only fixture so the
  * discriminated lookup can be compared against what actually shipped.
  */
@@ -69,7 +76,7 @@ const FIXTURES: Record<string, Record<string, unknown>> = {
   ar_aging: { groupBy: 'organization', includePaidInPeriod: false },
 };
 
-describe('reportConfigSchema — discriminated lookup keeps the loose contract', () => {
+describe('parseStoredReportConfig — per-type lookup keeps the loose contract', () => {
   it('has a fixture for every report type', () => {
     expect(Object.keys(FIXTURES).sort()).toEqual([...REPORT_TYPES].sort());
   });
@@ -78,7 +85,7 @@ describe('reportConfigSchema — discriminated lookup keeps the loose contract',
     it(`${type}: parses, and drops no key the old loose schema kept`, () => {
       const fixture = FIXTURES[type]!;
       const before = LEGACY_LOOSE.parse(fixture);
-      const after = reportConfigSchema.parse({ ...fixture, type });
+      const after = parseFor(type, fixture);
       for (const key of Object.keys(before)) {
         expect(after, `${type}.${key} was dropped`).toHaveProperty(key);
         expect(after[key as keyof typeof after]).toEqual(before[key as keyof typeof before]);
@@ -86,26 +93,26 @@ describe('reportConfigSchema — discriminated lookup keeps the loose contract',
     });
 
     it(`${type}: keeps undeclared builder metadata`, () => {
-      const after = reportConfigSchema.parse({ ...FIXTURES[type]!, ...BUILDER_METADATA, type });
+      const after = parseFor(type, { ...FIXTURES[type]!, ...BUILDER_METADATA });
       for (const key of Object.keys(BUILDER_METADATA)) expect(after).toHaveProperty(key);
     });
   }
 
-  it('a config with no `type` discriminator still parses (legacy rows and PATCHes)', () => {
-    const after = reportConfigSchema.parse({ ...BUILDER_METADATA, columns: ['hostname'] });
+  it('no type (legacy rows, the type-agnostic PUT body parse) falls back to the legacy schema', () => {
+    const after = parseFor(undefined, { ...BUILDER_METADATA, columns: ['hostname'] });
     expect(after).toHaveProperty('builderType');
     expect(after).toHaveProperty('columns');
   });
 
   it('applies the OWNING type\'s validation — a bad posture windowDays is rejected on posture', () => {
-    expect(() => reportConfigSchema.parse({ type: 'security_compliance_posture', windowDays: 9999 })).toThrow();
+    expect(() => parseFor('security_compliance_posture', { windowDays: 9999 })).toThrow();
   });
 
   it('DELIBERATE LOOSENING: a foreign key is passed through, not validated, on another type', () => {
     // Before the split this threw (one spread object validated every key).
     // Now it is an undeclared passthrough key. Recorded so nobody "fixes" it
     // into a strict schema and silently deletes builder metadata.
-    const after = reportConfigSchema.parse({ type: 'device_inventory', windowDays: 9999 });
+    const after = parseFor('device_inventory', { windowDays: 9999 });
     expect(after).toMatchObject({ windowDays: 9999 });
   });
 });

@@ -129,8 +129,13 @@ export function parseStoredReportConfig(
 ): ConfigParseResult {
   const parsed = configSchemaFor(type).safeParse(config);
   if (!parsed.success) return { success: false, error: parsed.error };
+  // `type` is never a config field: the row's own `type` column is the only
+  // type (#3198 W02 Task 13). A client-sent `config.type` is dropped rather
+  // than persisted, so no stored config can later masquerade as a selector.
   const data = Object.fromEntries(
-    Object.entries(parsed.data).filter(([key]) => Object.prototype.hasOwnProperty.call(config, key)),
+    Object.entries(parsed.data).filter(
+      ([key]) => key !== 'type' && Object.prototype.hasOwnProperty.call(config, key),
+    ),
   );
   return { success: true, data };
 }
@@ -140,37 +145,6 @@ function forwardIssues(ctx: z.RefinementCtx, error: z.ZodError, prefix: Property
     ctx.addIssue({ ...issue, path: [...prefix, ...issue.path] } as Parameters<z.RefinementCtx['addIssue']>[0]);
   }
 }
-
-/**
- * Per-type config validation for persistence (#3198 spec §6). `type` is a
- * DISCRIMINATOR read from the config object itself and passed through, not a
- * config field.
- *
- * NOT a z.discriminatedUnion: that would require `type` on every config
- * object, and a PATCH body or a legacy stored row may not carry one. This is a
- * manual lookup with the legacy shared schema as the fallback, proven against
- * the old single loose object for every type by schemas.configParity.test.ts.
- * The create/update/generate schemas below do not use it — create and generate
- * discriminate on their sibling `type`, and PUT on the stored row's type — so
- * a `type` key a client smuggles into `config` never selects a schema there.
- *
- * EVERY branch is loose. A strict branch would silently strip the builder's
- * presentation metadata on the next PUT, which replaces `config` wholesale.
- * The cost is deliberate: a key declared only by ANOTHER type (e.g.
- * `windowDays` on device_inventory) passes through unvalidated instead of
- * being range-checked as it was when every type's keys were spread into one
- * object.
- */
-export const reportConfigSchema: z.ZodType<Record<string, unknown>> = z
-  .looseObject({ type: z.string().optional() })
-  .transform((value, ctx) => {
-    const result = parseStoredReportConfig(value.type, value);
-    if (!result.success) {
-      forwardIssues(ctx, result.error, []);
-      return z.NEVER;
-    }
-    return result.data;
-  });
 
 /** The update body has no `type`, so the schema layer checks only the shared
  *  builder keys; the route re-parses against the stored row's type. */

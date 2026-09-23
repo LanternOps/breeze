@@ -610,6 +610,45 @@ describe('POST /reports validates config against body.type (#3198 W02, ruling P1
     expect(res.status).toBe(201);
     expect(state.inserts[0]!.values.config).toEqual({ topN: 9999 });
   });
+
+  it('never persists a client-sent `config.type` (the row\'s own `type` column is the only type)', async () => {
+    const res = await app().request('/reports', {
+      method: 'POST', headers: JSON_HEADERS,
+      body: JSON.stringify({ name: 'Inventory', type: 'device_inventory', config: { type: 'ar_aging', columns: ['hostname'] } }),
+    });
+
+    expect(res.status).toBe(201);
+    expect(state.inserts[0]!.values.config).toEqual({ columns: ['hostname'] });
+    expect(state.inserts[0]!.values.type).toBe('device_inventory');
+  });
+});
+
+describe('PUT /reports/:id config hygiene (#3198 W02 Task 13)', () => {
+  it('never persists a client-sent `config.type` on PUT', async () => {
+    state.rows = [partnerDefinition(), partnerDefinition()];
+    const res = await app().request(`/reports/${REPORT_ID}`, {
+      method: 'PUT', headers: JSON_HEADERS,
+      body: JSON.stringify({ config: { type: 'device_inventory', groupBy: 'currency' } }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(state.updates[0]!.set.config).toEqual({ groupBy: 'currency' });
+  });
+
+  it('400s a PUT on a partner-owned ar_aging row whose config the stored type rejects, updating nothing', async () => {
+    state.rows = [partnerDefinition(), partnerDefinition()];
+    const res = await app().request(`/reports/${REPORT_ID}`, {
+      method: 'PUT', headers: JSON_HEADERS,
+      body: JSON.stringify({ config: { groupBy: 'technician', asOf: '2026-02-30' } }),
+    });
+
+    expect(res.status).toBe(400);
+    const fieldErrors = (await res.json() as { details: { fieldErrors: Record<string, unknown> } }).details.fieldErrors;
+    expect(fieldErrors).toHaveProperty(['config.groupBy']);
+    expect(fieldErrors).toHaveProperty(['config.asOf']);
+    expect(resolveRequestPartnerReportAuthority).toHaveBeenCalledWith(state.auth, PARTNER_ID, 'write');
+    expect(state.updates).toHaveLength(0);
+  });
 });
 
 describe('DELETE /reports/:id on a partner-owned definition', () => {
