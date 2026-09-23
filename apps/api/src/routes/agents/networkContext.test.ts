@@ -118,6 +118,13 @@ vi.mock('../../services/topology/heartbeat', () => ({
   topologyHeartbeat: topologyHeartbeatMock,
 }));
 
+// Flags are resolved before the org block (US 2026-09-22 pool deadlock) —
+// enable materialization so these tests still reach topology collection.
+vi.mock('../../services/topology/flags', () => ({
+  loadTopologyFlags: vi.fn(async () => ({ materialization: true, ui: false, physical: false, interfaceHealth: false, diagnostics: false, ai: false })),
+  withResolvedTopologyFlags: vi.fn(async (_resolved: unknown, fn: () => Promise<unknown>) => fn()),
+}));
+
 const { agentRoutes } = await import('./index');
 
 function buildApp(): Hono {

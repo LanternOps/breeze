@@ -204,6 +204,13 @@ vi.mock('../services/eventBus', () => ({
   EventType: {}
 }));
 
+// Topology flags are resolved before the heartbeat's org block (US 2026-09-22
+// pool deadlock); keep that read off the positional select mocks below.
+vi.mock('../services/topology/flags', () => ({
+  loadTopologyFlags: vi.fn(async () => ({ materialization: false, ui: false, physical: false, interfaceHealth: false, diagnostics: false, ai: false })),
+  withResolvedTopologyFlags: vi.fn(async (_resolved: unknown, fn: () => Promise<unknown>) => fn()),
+}));
+
 vi.mock('../services/sentry', () => ({
   captureException: vi.fn(),
 }));
