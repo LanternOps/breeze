@@ -84,6 +84,20 @@ describe('memory blob storage (the test double every other suite injects)', () =
     expect(store.objects.size).toBe(0);
   });
 
+  it('openRange returns exactly the inclusive byte slice requested', async () => {
+    const store = createMemoryBlobStorage();
+    const body = Buffer.from('the quick brown fox');
+    const put = await store.put({ region: 'us', contentType: 'text/plain', body, maxBytes: 1024 });
+    expect(await drain(await store.openRange(put.key, 4, 8))).toEqual(Buffer.from('quick'));
+    // end === length-1 reaches exactly the last byte.
+    expect(await drain(await store.openRange(put.key, 16, 19))).toEqual(Buffer.from('fox'));
+  });
+
+  it('openRange raises BlobNotFoundError for an unknown key', async () => {
+    const store = createMemoryBlobStorage();
+    await expect(store.openRange('us/2026/10/missing', 0, 9)).rejects.toBeInstanceOf(BlobNotFoundError);
+  });
+
   it('throws BlobNotFoundError for an unknown key and delete is idempotent', async () => {
     const store = createMemoryBlobStorage();
     await expect(store.openStream('us/2026/10/missing')).rejects.toBeInstanceOf(BlobNotFoundError);
@@ -168,6 +182,19 @@ describe('S3 blob storage: streaming multipart put', () => {
           case 'PutObjectCommand':
             objects.set(command.input.Key as string, toBuffer(command.input.Body));
             return { ETag: '"single"' };
+          case 'GetObjectCommand': {
+            const stored = objects.get(command.input.Key as string);
+            if (!stored) {
+              throw Object.assign(new Error('NoSuchKey'), {
+                name: 'NoSuchKey',
+                $metadata: { httpStatusCode: 404 },
+              });
+            }
+            const range = command.input.Range as string | undefined;
+            const match = range ? /^bytes=(\d+)-(\d+)$/.exec(range) : null;
+            const body = match ? stored.subarray(Number(match[1]), Number(match[2]) + 1) : stored;
+            return { Body: Readable.from([body]) };
+          }
           default:
             return {};
         }
@@ -278,6 +305,35 @@ describe('S3 blob storage: streaming multipart put', () => {
       if (prev === undefined) delete process.env.ARTIFACT_S3_SSE;
       else process.env.ARTIFACT_S3_SSE = prev;
     }
+  });
+
+  it('openRange sends an inclusive byte Range header and returns exactly that slice', async () => {
+    const fake = makeFakeS3();
+    const store = createS3BlobStorage({ clientFor: () => fake.client });
+    const stored = Buffer.from('the quick brown fox');
+    fake.objects.set('us/2026/09/abc', stored);
+
+    const stream = await withBucket(() => store.openRange('us/2026/09/abc', 4, 8));
+    expect((await drain(stream)).toString('utf8')).toBe('quick');
+    const get = fake.commands.find((c) => c.name === 'GetObjectCommand')!;
+    expect(get.input.Range).toBe('bytes=4-8');
+    expect(get.input.Key).toBe('us/2026/09/abc');
+  });
+
+  it('openRange raises BlobNotFoundError for a missing key, never a transport fault', async () => {
+    const fake = makeFakeS3();
+    const store = createS3BlobStorage({ clientFor: () => fake.client });
+    await expect(
+      withBucket(() => store.openRange('us/2026/09/missing', 0, 9)),
+    ).rejects.toBeInstanceOf(BlobNotFoundError);
+  });
+
+  it('openRange maps a provider transport fault to BlobStorageUnavailableError', async () => {
+    const fake = makeFakeS3('GetObjectCommand');
+    const store = createS3BlobStorage({ clientFor: () => fake.client });
+    await expect(
+      withBucket(() => store.openRange('us/2026/09/abc', 0, 9)),
+    ).rejects.toBeInstanceOf(BlobStorageUnavailableError);
   });
 
   it('ABORTS the multipart upload mid-stream at maxBytes and leaves no object', async () => {
