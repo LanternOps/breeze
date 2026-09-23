@@ -262,6 +262,7 @@ func TestHelperRoleAvailable(t *testing.T) {
 		{Session: "2", Username: "", State: "connected", Type: "console"},     // logged-off console (Winlogon)
 		{Session: "4", Username: "", State: "active", Type: "console"},        // active but no user token source
 		{Session: "5", Username: "carol", State: "disconnected", Type: "rdp"}, // user present, not at the screen
+		{Session: "6", Username: "", UsernameUnknown: true, State: "active", Type: "rdp"},
 	}}
 	m := newHelperLifecycleManager(nil, det, nil, nil)
 
@@ -277,6 +278,8 @@ func TestHelperRoleAvailable(t *testing.T) {
 		{"logged-off console still hosts a system helper", HelperKey{2, ipc.HelperRoleSystem}, true, nil},
 		{"active session with no username cannot host a user helper", HelperKey{4, ipc.HelperRoleUser}, false, nil},
 		{"disconnected session cannot host a user helper", HelperKey{5, ipc.HelperRoleUser}, false, nil},
+		{"failed username query is unknown, not empty", HelperKey{6, ipc.HelperRoleUser}, false, ErrSessionUsernameUnknown},
+		{"failed username query does not block the system role", HelperKey{6, ipc.HelperRoleSystem}, true, nil},
 		{"missing session reports not found", HelperKey{99, ipc.HelperRoleUser}, false, ErrLeaseSessionNotFound},
 		{"non-lifecycle role is refused", HelperKey{3, ipc.HelperRoleAssist}, false, ErrLeaseRoleNotSpawnable},
 	}
@@ -298,4 +301,27 @@ func TestHelperRoleAvailable(t *testing.T) {
 			t.Fatalf("err = %v, want ErrLeaseSessionNotFound", err)
 		}
 	})
+}
+
+// A user helper already connected for the key wins over a snapshot that says
+// the session has no user: a lagging detector must never suppress the
+// consent prompt for a signed-in user (#6812).
+func TestHelperRoleAvailableConnectedHelperWinsOverSnapshot(t *testing.T) {
+	b := New("role-available-"+t.Name(), nil)
+	t.Cleanup(func() { b.Close() })
+	det := &stubLeaseDetector{sessions: []DetectedSession{
+		{Session: "2", Username: "", State: "connected", Type: "console"},
+	}}
+	m := newHelperLifecycleManager(b, det, nil, nil)
+	key := HelperKey{WindowsSessionID: 2, Role: ipc.HelperRoleUser}
+
+	if ok, err := m.HelperRoleAvailable(key); err != nil || ok {
+		t.Fatalf("before connect: available=%v err=%v, want false/nil", ok, err)
+	}
+	b.mu.Lock()
+	b.helperByKey[key] = &Session{WinSessionID: "2", HelperRole: ipc.HelperRoleUser}
+	b.mu.Unlock()
+	if ok, err := m.HelperRoleAvailable(key); err != nil || !ok {
+		t.Fatalf("with a connected helper: available=%v err=%v, want true/nil", ok, err)
+	}
 }

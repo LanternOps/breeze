@@ -37,6 +37,12 @@ type DetectedSession struct {
 	State    string `json:"state,omitempty"` // "active", "online", "closing"
 	Type     string `json:"type,omitempty"`  // "console", "rdp", "services"
 
+	// UsernameUnknown is set when the platform could not read the session's
+	// username (a failed WTS query on Windows). An empty Username then means
+	// "could not tell", not "nobody is signed in", and callers that gate
+	// behavior on a signed-in user must not treat it as the latter.
+	UsernameUnknown bool `json:"-"`
+
 	// IdleFor is how long the session has gone without user input. Only
 	// meaningful when IdleKnown is true; platforms that cannot measure input
 	// idle (or fail to) leave IdleKnown false.
