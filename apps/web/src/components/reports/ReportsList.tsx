@@ -16,7 +16,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { runAction, ActionError } from '@/lib/runAction';
-import { fetchWithAuth } from '../../stores/auth';
+import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { useJwtClaims } from '@/lib/authScope';
 import { ScopeBadge } from '../shared/ScopeBadge';
@@ -118,9 +118,12 @@ function scheduleConfigOf(config: Record<string, unknown> | undefined): Schedule
 }
 
 // GET /reports caps `limit` at 100 (apps/api/src/utils/pagination.ts). The
-// page cap bounds the all-organizations merge at 2,000 rows.
+// page cap bounds the partner-owned merge at 2,000 partner-owned reports;
+// past it the page says the list is incomplete.
 const PARTNER_WIDE_PAGE_LIMIT = 100;
 const PARTNER_WIDE_PAGE_CAP = 20;
+
+type PartnerWideFetch = { rows: Report[]; complete: boolean };
 
 function recipientCountOf(config: Record<string, unknown> | undefined): number {
   const raw = config?.emailRecipients;
@@ -139,50 +142,64 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
   const [activeTab, setActiveTab] = useState<'reports' | 'runs'>('reports');
   const { currentOrgId } = useOrgStore();
   const jwtClaims = useJwtClaims();
+  // Absent = a session persisted before the field existed; treated as capable
+  // like every other partner-wide surface (the server gates regardless).
+  const canManagePartnerWide = useAuthStore((s) => s.user?.canManagePartnerWide) !== false;
   // `GET /reports` carries the ambient `?orgId=` of the focused org (kept on
   // purpose: dropping it would list every org's reports under one org), and
   // the API lists partner-owned reports only without it. A partner-owned
   // report covers the focused org too, so for a partner-scope user with an org
-  // focused the all-organizations listing is fetched as well and ONLY its
-  // partner-owned rows are merged in. This is also the only way a single-org
-  // partner (who never gets an All organizations option) sees them. The server
-  // stays the gate: it returns partner-owned rows only to callers who may
-  // administer partner-wide state. Fails closed while the token is unresolved.
+  // focused the partner-owned reports are fetched as well
+  // (`?ownerScope=partner`, a server-side filter) and merged in. This is also
+  // the only way a single-org partner (who never gets an All organizations
+  // option) sees them. Only users who may administer partner-wide state can
+  // see partner-owned rows at all (the server answers an empty list to anyone
+  // else), so nobody else fetches. Fails closed while the token is unresolved.
   const mergePartnerWide =
-    jwtClaims.status === 'resolved' && jwtClaims.claims.scope === 'partner' && !!currentOrgId;
+    jwtClaims.status === 'resolved' &&
+    jwtClaims.claims.scope === 'partner' &&
+    canManagePartnerWide &&
+    !!currentOrgId;
+  const [partnerWideIncomplete, setPartnerWideIncomplete] = useState(false);
 
-  const fetchPartnerWideReports = useCallback(async (): Promise<Report[]> => {
-    // The listing is paginated (updatedAt desc), so page through it: a
-    // partner-owned row past page 1 would otherwise vanish from the org view.
-    const rows: Report[] = [];
+  const fetchPartnerWideReports = useCallback(async (): Promise<PartnerWideFetch> => {
+    // Paginated (updatedAt desc), so page through it. Rows can shift between
+    // pages while paging, so dedupe by id. A page without `pagination.total`
+    // keeps paging while pages come back full.
+    const byId = new Map<string, Report>();
     try {
       for (let page = 1; page <= PARTNER_WIDE_PAGE_CAP; page++) {
         const response = await fetchWithAuth(
-          `/reports?limit=${PARTNER_WIDE_PAGE_LIMIT}&page=${page}`,
+          `/reports?ownerScope=partner&limit=${PARTNER_WIDE_PAGE_LIMIT}&page=${page}`,
           { skipOrgIdInjection: true },
         );
         if (!response.ok) {
           console.warn('Failed to fetch partner-wide reports:', response.status);
-          break;
+          return { rows: [...byId.values()], complete: false };
         }
         const data = await response.json();
-        const pageRows = (data.data ?? []) as Report[];
-        rows.push(...pageRows);
-        const total = Number(data.pagination?.total ?? 0);
-        if (pageRows.length === 0 || rows.length >= total) break;
-        if (page === PARTNER_WIDE_PAGE_CAP) {
-          console.warn('Partner-wide reports listing hit the page cap; later rows are not shown:', {
-            pages: PARTNER_WIDE_PAGE_CAP,
-            fetched: rows.length,
-            total,
-          });
+        const pageRows: Report[] = Array.isArray(data?.data) ? data.data : [];
+        // The server filters to partner-owned rows; re-check so an org-owned
+        // row can never be merged into another org's view.
+        for (const row of pageRows) {
+          if (row.partnerId && !row.orgId && !byId.has(row.id)) byId.set(row.id, row);
+        }
+        const total = typeof data?.pagination?.total === 'number' ? data.pagination.total : undefined;
+        if (pageRows.length < PARTNER_WIDE_PAGE_LIMIT) return { rows: [...byId.values()], complete: true };
+        if (total !== undefined && page * PARTNER_WIDE_PAGE_LIMIT >= total) {
+          return { rows: [...byId.values()], complete: true };
         }
       }
+      console.warn('Partner-wide reports listing hit the page cap; later rows are not shown:', {
+        pages: PARTNER_WIDE_PAGE_CAP,
+        fetched: byId.size,
+      });
+      return { rows: [...byId.values()], complete: false };
     } catch (err) {
       // The org's own list still renders; partner-wide rows are an addition.
       console.warn('Failed to fetch partner-wide reports:', err);
+      return { rows: [...byId.values()], complete: false };
     }
-    return rows.filter((r) => !!r.partnerId && !r.orgId);
   }, []);
 
   // Each list fetch takes a sequence number; only the newest may write state,
@@ -196,7 +213,9 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
       setError(undefined);
       const [response, partnerWide] = await Promise.all([
         fetchWithAuth('/reports'),
-        mergePartnerWide ? fetchPartnerWideReports() : Promise.resolve([] as Report[]),
+        mergePartnerWide
+          ? fetchPartnerWideReports()
+          : Promise.resolve<PartnerWideFetch>({ rows: [], complete: true }),
       ]);
       if (!response.ok) {
         throw new Error(t('reports.reportsList.errors.fetchReports'));
@@ -205,7 +224,8 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
       if (!isCurrent()) return;
       const own: Report[] = data.data ?? [];
       const seen = new Set(own.map((r) => r.id));
-      setReports([...own, ...partnerWide.filter((r) => !seen.has(r.id))]);
+      setReports([...own, ...partnerWide.rows.filter((r) => !seen.has(r.id))]);
+      setPartnerWideIncomplete(!partnerWide.complete);
     } catch (err) {
       if (!isCurrent()) return;
       setError(err instanceof Error ? err.message : t('reports.reportsList.errors.generic'));
@@ -520,6 +540,15 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
 
       {activeTab === 'reports' && (
         <>
+          {partnerWideIncomplete && (
+            <p
+              data-testid="reports-partner-wide-incomplete"
+              role="status"
+              className="rounded-md border border-warning/40 bg-warning/10 px-4 py-2 text-sm"
+            >
+              {t('reports.reportsList.partnerWideIncomplete')}
+            </p>
+          )}
           {reports.length === 0 ? (
             <div className="rounded-lg border border-dashed p-12 text-center">
               <FileText className="h-12 w-12 text-muted-foreground mx-auto mb-4" />

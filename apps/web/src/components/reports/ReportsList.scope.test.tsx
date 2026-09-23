@@ -2,7 +2,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, within } from '@testing-library/react';
 
 const fetchWithAuth = vi.fn();
-vi.mock('../../stores/auth', () => ({ fetchWithAuth: (...a: unknown[]) => fetchWithAuth(...a) }));
+const authUser = vi.hoisted(() => ({ canManagePartnerWide: undefined as boolean | undefined }));
+vi.mock('../../stores/auth', () => ({
+  fetchWithAuth: (...a: unknown[]) => fetchWithAuth(...a),
+  useAuthStore: (selector: (s: { user: { canManagePartnerWide?: boolean } }) => unknown) =>
+    selector({ user: { canManagePartnerWide: authUser.canManagePartnerWide } }),
+}));
 
 vi.mock('./reportExport', () => ({
   exportReport: vi.fn(),
@@ -46,6 +51,7 @@ describe('ReportsList ownership (#3198 W03)', () => {
     vi.clearAllMocks();
     claims.value = { status: 'resolved', claims: { scope: 'partner', orgId: null, partnerId: 'p-1' } };
     org.currentOrgId = null;
+    authUser.canManagePartnerWide = undefined;
   });
 
   it('tags every row and badges only the partner-owned (all-organizations) one', async () => {
@@ -74,9 +80,9 @@ describe('ReportsList ownership (#3198 W03)', () => {
     const otherOrgOwned = { ...base, id: 'rep-x', name: 'Other org AR', orgId: 'org-2', partnerId: null };
     fetchWithAuth.mockImplementation((url: string, opts?: { skipOrgIdInjection?: boolean }) => {
       if (url.startsWith('/reports?') && opts?.skipOrgIdInjection) {
-        // The all-organizations listing: partner rows, a duplicate of the focused
-        // org's row, and another org's row — only the partner row may be merged.
-        return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: [partnerOwned, orgOwned, otherOrgOwned] }) });
+        // The server-filtered partner-owned listing. A misbehaving response that
+        // also carried org-owned rows must still merge only the partner row.
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: [partnerOwned, orgOwned, otherOrgOwned], pagination: { page: 1, limit: 100, total: 3 } }) });
       }
       if (url === '/reports') return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: [orgOwned] }) });
       if (url.startsWith('/reports/runs?')) return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: [] }) });
@@ -89,6 +95,13 @@ describe('ReportsList ownership (#3198 W03)', () => {
     // Deduped: the focused org's row renders once; another org's row never leaks in.
     expect(screen.getAllByTestId('report-row-rep-o')).toHaveLength(1);
     expect(screen.queryByTestId('report-row-rep-x')).toBeNull();
+    // It asks the server for partner-owned rows only, never every org's reports.
+    const wide = fetchWithAuth.mock.calls.filter(([, o]) => (o as { skipOrgIdInjection?: boolean } | undefined)?.skipOrgIdInjection);
+    expect(wide).toHaveLength(1);
+    const q = new URLSearchParams(String(wide[0]![0]).split('?')[1]);
+    expect(q.get('ownerScope')).toBe('partner');
+    expect(q.get('page')).toBe('1');
+    expect(q.get('limit')).toBe('100');
   });
 
   it('still renders the org list when the partner-wide fetch fails', async () => {
@@ -137,8 +150,9 @@ describe('ReportsList ownership (#3198 W03)', () => {
       if (url.startsWith('/reports?') && opts?.skipOrgIdInjection) {
         wideUrls.push(url);
         const page = Number(new URLSearchParams(url.split('?')[1]).get('page'));
-        const data = page === 1 ? [partnerOwned] : page === 2 ? [partnerOwned2] : [];
-        return Promise.resolve({ ok: true, json: () => Promise.resolve({ data, pagination: { page, limit: 100, total: 2 } }) });
+        const fullPage = [partnerOwned, ...Array.from({ length: 99 }, (_, i) => ({ ...partnerOwned, id: `rep-p-${i}` }))];
+        const data = page === 1 ? fullPage : page === 2 ? [partnerOwned2] : [];
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ data, pagination: { page, limit: 100, total: 101 } }) });
       }
       if (url === '/reports') return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: [orgOwned] }) });
       if (url.startsWith('/reports/runs?')) return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: [] }) });
@@ -152,7 +166,7 @@ describe('ReportsList ownership (#3198 W03)', () => {
     expect(wideUrls.every((u) => new URLSearchParams(u.split('?')[1]).get('limit') === '100')).toBe(true);
   });
 
-  it('stops paging the all-organizations listing at the page cap and warns', async () => {
+  it('stops paging at the page cap and says so on the page', async () => {
     org.currentOrgId = 'org-1';
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     let wideCalls = 0;
@@ -160,8 +174,8 @@ describe('ReportsList ownership (#3198 W03)', () => {
       if (url.startsWith('/reports?') && opts?.skipOrgIdInjection) {
         wideCalls += 1;
         const page = Number(new URLSearchParams(url.split('?')[1]).get('page'));
-        const row = { ...partnerOwned, id: `rep-p-${page}` };
-        return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: [row], pagination: { page, limit: 100, total: 100000 } }) });
+        const data = Array.from({ length: 100 }, (_, i) => ({ ...partnerOwned, id: `rep-p-${page}-${i}` }));
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ data, pagination: { page, limit: 100, total: 100000 } }) });
       }
       if (url === '/reports') return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: [orgOwned] }) });
       if (url.startsWith('/reports/runs?')) return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: [] }) });
@@ -169,11 +183,137 @@ describe('ReportsList ownership (#3198 W03)', () => {
     });
     render(<ReportsList />);
 
-    expect(await screen.findByTestId('report-row-rep-p-20')).toBeInTheDocument();
+    // 2,000 rows render: generous timeouts so a loaded CI box does not flake.
+    expect(await screen.findByTestId('reports-partner-wide-incomplete', {}, { timeout: 15000 })).toBeInTheDocument();
     expect(wideCalls).toBe(20);
-    expect(screen.queryByTestId('report-row-rep-p-21')).toBeNull();
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('page cap'), expect.anything());
+    expect(screen.getByTestId('report-row-rep-p-20-99')).toBeInTheDocument();
     warn.mockRestore();
+  }, 30000);
+
+  it('keeps paging a full page when the response has no pagination.total, and stops on a short page', async () => {
+    org.currentOrgId = 'org-1';
+    const wideUrls: string[] = [];
+    fetchWithAuth.mockImplementation((url: string, opts?: { skipOrgIdInjection?: boolean }) => {
+      if (url.startsWith('/reports?') && opts?.skipOrgIdInjection) {
+        wideUrls.push(url);
+        const page = Number(new URLSearchParams(url.split('?')[1]).get('page'));
+        const data = page === 1
+          ? Array.from({ length: 100 }, (_, i) => ({ ...partnerOwned, id: `rep-p-${i}` }))
+          : [{ ...partnerOwned, id: 'rep-p-last' }];
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ data }) });
+      }
+      if (url === '/reports') return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: [orgOwned] }) });
+      if (url.startsWith('/reports/runs?')) return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: [] }) });
+      return Promise.resolve({ ok: false, json: () => Promise.resolve({}) });
+    });
+    render(<ReportsList />);
+
+    expect(await screen.findByTestId('report-row-rep-p-last')).toBeInTheDocument();
+    expect(wideUrls).toHaveLength(2);
+    expect(screen.queryByTestId('reports-partner-wide-incomplete')).toBeNull();
+  });
+
+  it('shows what it has, and says the list is incomplete, when a later page fails', async () => {
+    org.currentOrgId = 'org-1';
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    fetchWithAuth.mockImplementation((url: string, opts?: { skipOrgIdInjection?: boolean }) => {
+      if (url.startsWith('/reports?') && opts?.skipOrgIdInjection) {
+        const page = Number(new URLSearchParams(url.split('?')[1]).get('page'));
+        if (page === 2) return Promise.resolve({ ok: false, status: 500, json: () => Promise.resolve({}) });
+        const data = Array.from({ length: 100 }, (_, i) => ({ ...partnerOwned, id: `rep-p-${i}` }));
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ data, pagination: { page, limit: 100, total: 150 } }) });
+      }
+      if (url === '/reports') return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: [orgOwned] }) });
+      if (url.startsWith('/reports/runs?')) return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: [] }) });
+      return Promise.resolve({ ok: false, json: () => Promise.resolve({}) });
+    });
+    render(<ReportsList />);
+
+    expect(await screen.findByTestId('report-row-rep-p-99')).toBeInTheDocument();
+    expect(screen.getByTestId('report-row-rep-o')).toBeInTheDocument();
+    expect(await screen.findByTestId('reports-partner-wide-incomplete')).toBeInTheDocument();
+    warn.mockRestore();
+  });
+
+  it('says the list is incomplete when the partner-wide fetch throws', async () => {
+    org.currentOrgId = 'org-1';
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    fetchWithAuth.mockImplementation((url: string, opts?: { skipOrgIdInjection?: boolean }) => {
+      if (url.startsWith('/reports?') && opts?.skipOrgIdInjection) return Promise.reject(new Error('boom'));
+      if (url === '/reports') return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: [orgOwned] }) });
+      if (url.startsWith('/reports/runs?')) return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: [] }) });
+      return Promise.resolve({ ok: false, json: () => Promise.resolve({}) });
+    });
+    render(<ReportsList />);
+    expect(await screen.findByTestId('report-row-rep-o')).toBeInTheDocument();
+    expect(await screen.findByTestId('reports-partner-wide-incomplete')).toBeInTheDocument();
+    warn.mockRestore();
+  });
+
+  it('renders a partner-owned row once when paging returns it twice (rows shifted between pages)', async () => {
+    org.currentOrgId = 'org-1';
+    fetchWithAuth.mockImplementation((url: string, opts?: { skipOrgIdInjection?: boolean }) => {
+      if (url.startsWith('/reports?') && opts?.skipOrgIdInjection) {
+        const page = Number(new URLSearchParams(url.split('?')[1]).get('page'));
+        const data = page === 1
+          ? [partnerOwned, ...Array.from({ length: 99 }, (_, i) => ({ ...partnerOwned, id: `rep-p-${i}` }))]
+          : [partnerOwned];
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ data, pagination: { page, limit: 100, total: 101 } }) });
+      }
+      if (url === '/reports') return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: [orgOwned] }) });
+      if (url.startsWith('/reports/runs?')) return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: [] }) });
+      return Promise.resolve({ ok: false, json: () => Promise.resolve({}) });
+    });
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    render(<ReportsList />);
+
+    await screen.findByTestId('report-row-rep-p-98');
+    expect(screen.getAllByTestId('report-row-rep-p')).toHaveLength(1);
+    // No duplicate-key warning from React.
+    expect(errors.mock.calls.some((c) => String(c[0]).includes('same key'))).toBe(false);
+    errors.mockRestore();
+  });
+
+  it('does no partner-wide fetch for a partner user without partner-wide access (orgAccess "selected")', async () => {
+    org.currentOrgId = 'org-1';
+    authUser.canManagePartnerWide = false;
+    mockList([orgOwned]);
+    render(<ReportsList />);
+    await screen.findByTestId('report-row-rep-o');
+    const wide = fetchWithAuth.mock.calls.filter(([, o]) => (o as { skipOrgIdInjection?: boolean } | undefined)?.skipOrgIdInjection);
+    expect(wide).toHaveLength(0);
+  });
+
+  it('switching from a focused org to All organizations refetches once, unmerged, with no stale rows', async () => {
+    org.currentOrgId = 'org-1';
+    const otherOrgOwned = { ...base, id: 'rep-x', name: 'Other org AR', orgId: 'org-2', partnerId: null };
+    fetchWithAuth.mockImplementation((url: string, opts?: { skipOrgIdInjection?: boolean }) => {
+      if (url.startsWith('/reports?') && opts?.skipOrgIdInjection) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: [partnerOwned], pagination: { page: 1, limit: 100, total: 1 } }) });
+      }
+      if (url === '/reports') {
+        // The ambient org injection lives in fetchWithAuth; model it with the store.
+        const rows = org.currentOrgId ? [orgOwned] : [partnerOwned, orgOwned, otherOrgOwned];
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: rows }) });
+      }
+      if (url.startsWith('/reports/runs?')) return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: [] }) });
+      return Promise.resolve({ ok: false, json: () => Promise.resolve({}) });
+    });
+    const { rerender } = render(<ReportsList />);
+    expect(await screen.findByTestId('report-row-rep-p')).toBeInTheDocument();
+    expect(screen.queryByTestId('report-row-rep-x')).toBeNull();
+
+    fetchWithAuth.mockClear();
+    org.currentOrgId = null;
+    rerender(<ReportsList />);
+
+    expect(await screen.findByTestId('report-row-rep-x')).toBeInTheDocument();
+    expect(screen.getAllByTestId('report-row-rep-p')).toHaveLength(1);
+    expect(screen.getAllByTestId('report-row-rep-o')).toHaveLength(1);
+    expect(screen.getAllByTestId(/^report-row-/)).toHaveLength(3);
+    expect(fetchWithAuth.mock.calls.filter(([url]) => url === '/reports')).toHaveLength(1);
+    const wide = fetchWithAuth.mock.calls.filter(([, o]) => (o as { skipOrgIdInjection?: boolean } | undefined)?.skipOrgIdInjection);
+    expect(wide).toHaveLength(0);
   });
 
   it('ignores a stale unmerged list response that lands after the merged one', async () => {
