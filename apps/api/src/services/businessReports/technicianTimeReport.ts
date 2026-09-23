@@ -63,9 +63,6 @@ const ORG_SCOPE_NOTE =
  *  technician's WHOLE capacity, so the figure is a share, not utilization. */
 const ORG_SCOPE_UTILIZATION_NOTE =
   'Utilization at organization scope is the share of each technician\'s capacity spent on this organization, not their overall utilization.';
-/** Ruling P7. */
-const ORG_TOKEN_NOTE =
-  'Time entries are partner-internal records: an organization-scoped sign-in cannot read them, so when this report runs under one it shows no time at all. Run it from the partner to see this organization\'s time.';
 
 function capacityNote(weeklyCapacityHours: number, workingDays: number): string {
   return `Utilization assumes a uniform ${weeklyCapacityHours}h week prorated over ${workingDays} working days; PTO, part-time schedules and public holidays are not modelled.`;
@@ -384,7 +381,7 @@ export async function generateTechnicianTimeBillabilityReport(
       // real time. sqlUuidArray renders the empty list as ARRAY[]::uuid[].
       if (scope.orgIds.length === 0) notes.unshift(PARTNER_NO_ORGS_NOTE);
     } else {
-      notes.push(ORG_SCOPE_NOTE, ORG_SCOPE_UTILIZATION_NOTE, ORG_TOKEN_NOTE);
+      notes.push(ORG_SCOPE_NOTE, ORG_SCOPE_UTILIZATION_NOTE);
     }
 
     const cte = baseCte(scope, period);

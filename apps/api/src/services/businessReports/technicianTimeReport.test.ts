@@ -272,13 +272,16 @@ describe('generateTechnicianTimeBillabilityReport', () => {
     expect(s.scope).toEqual({ kind: 'organization', orgId: ORG_A, orgName: 'Acme' });
   });
 
-  it('org scope notes carry the spec label and the org-token disclosure (P7)', async () => {
+  // Ruling F1 supersedes P7's disclosure: an org-scope sign-in can no longer
+  // create, generate or read this type, so the "org token sees no time" note
+  // described a path that no longer exists (and was false on the worker path).
+  it('org scope notes carry the spec label and no org-token disclosure (ruling F1)', async () => {
     queueExecute([], [], OVERALL, [], []);
     const s = summaryOf(await generateTechnicianTimeBillabilityReport(orgScope, { period: AUGUST }, orgAuthority));
     expect(s.notes).toContain(
       'Organization-scoped: ticket-linked time only. Time entries with no organization are not included, and technicians who logged none of this organization\'s time do not appear.',
     );
-    expect(s.notes.join(' ')).toMatch(/partner-internal.*organization-scoped sign-in/i);
+    expect(s.notes.join(' ')).not.toMatch(/sign-in/i);
     expect(s.notes).not.toContain(PARTNER_ORG_LIST_NOTE);
   });
 
