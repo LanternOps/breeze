@@ -1291,6 +1291,144 @@ describe('user-owned release attribution (#6200)', () => {
   });
 });
 
+// #6665: an AI chat had no way to see a scheduled patch job that removed an
+// app on a device, so it wrongly told a tech "not initiated by Breeze at
+// all". device_history closes that read gap.
+describe('manage_patches:device_history (#6665)', () => {
+  const toolMap = new Map<string, AiTool>();
+  registerFleetTools(toolMap);
+  const tool = toolMap.get('manage_patches')!;
+
+  const deviceId = 'dddddddd-dddd-dddd-dddd-dddddddddddd';
+  const otherOrgAuth = {
+    user: { id: 'u1', email: 'test@test.com', name: 'Test' },
+    orgId: 'org-1',
+    partnerId: 'partner-1',
+    scope: 'organization',
+    accessibleOrgIds: ['org-1'],
+    canAccessOrg: (id: string) => id === 'org-1',
+    orgCondition: () => undefined,
+  } as any;
+
+  afterEach(() => {
+    vi.mocked(db.select).mockClear();
+  });
+
+  function mockDeviceLookup(rows: Array<{ id: string; siteId: string | null }>) {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue(rows),
+        }),
+      }),
+    } as never);
+  }
+
+  function mockHistoryQuery(rows: Array<Record<string, unknown>>) {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        innerJoin: vi.fn().mockReturnValue({
+          leftJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue(rows),
+              }),
+            }),
+          }),
+        }),
+      }),
+    } as never);
+  }
+
+  it('requires a deviceId', async () => {
+    const result = JSON.parse(await tool.handler({ action: 'device_history' }, otherOrgAuth));
+    expect(result.error).toMatch(/deviceId is required/i);
+  });
+
+  it('denies a device the caller cannot access (cross-org)', async () => {
+    mockDeviceLookup([]); // no device row found scoped to this org
+    const result = JSON.parse(await tool.handler({ action: 'device_history', deviceId }, otherOrgAuth));
+    expect(result.error).toMatch(/not found or access denied/i);
+  });
+
+  it('returns per-device patch job history, distinguishing scheduled from user-initiated jobs', async () => {
+    mockDeviceLookup([{ id: deviceId, siteId: null }]);
+    mockHistoryQuery([
+      {
+        jobId: 'job-scheduled',
+        jobName: 'Scheduled Patch Job - Default Workstation Policy',
+        createdBy: null, // scheduled dispatch: no user
+        scheduledAt: new Date('2026-09-22T02:00:00.000Z'),
+        jobStartedAt: new Date('2026-09-22T02:00:05.000Z'),
+        jobCompletedAt: new Date('2026-09-22T02:05:00.000Z'),
+        patchTitle: 'DYMO Connect',
+        patchSource: 'third_party',
+        patchExternalId: 'DYMO.DYMOConnect',
+        resultStatus: 'failed',
+        exitCode: 1,
+        errorMessage: 'winget install failed (exit 1)',
+        resultStartedAt: new Date('2026-09-22T02:01:00.000Z'),
+        resultCompletedAt: new Date('2026-09-22T02:02:00.000Z'),
+      },
+      {
+        jobId: 'job-user',
+        jobName: 'AI-initiated patch install - 2026-09-20T00:00:00.000Z',
+        createdBy: 'user-1', // AI/human-initiated install: a real user id
+        scheduledAt: new Date('2026-09-20T00:00:00.000Z'),
+        jobStartedAt: new Date('2026-09-20T00:00:05.000Z'),
+        jobCompletedAt: new Date('2026-09-20T00:05:00.000Z'),
+        patchTitle: 'Some Other Patch',
+        patchSource: 'microsoft',
+        patchExternalId: 'KB123456',
+        resultStatus: 'completed',
+        exitCode: 0,
+        errorMessage: null,
+        resultStartedAt: new Date('2026-09-20T00:01:00.000Z'),
+        resultCompletedAt: new Date('2026-09-20T00:02:00.000Z'),
+      },
+    ]);
+
+    const result = JSON.parse(await tool.handler({ action: 'device_history', deviceId }, otherOrgAuth));
+
+    expect(result.deviceId).toBe(deviceId);
+    expect(result.showing).toBe(2);
+    expect(result.history).toHaveLength(2);
+    expect(result.history[0]).toMatchObject({ jobId: 'job-scheduled', initiator: 'scheduled', patchTitle: 'DYMO Connect', resultStatus: 'failed' });
+    expect(result.history[1]).toMatchObject({ jobId: 'job-user', initiator: 'user', patchTitle: 'Some Other Patch', resultStatus: 'completed' });
+    // Never echoes the raw `output` column.
+    expect(result.history[0].output).toBeUndefined();
+    expect(result.history[1].output).toBeUndefined();
+  });
+
+  it('truncates a long errorMessage rather than returning it in full', async () => {
+    mockDeviceLookup([{ id: deviceId, siteId: null }]);
+    const longMessage = 'x'.repeat(500);
+    mockHistoryQuery([
+      {
+        jobId: 'job-1',
+        jobName: 'Scheduled Patch Job',
+        createdBy: null,
+        scheduledAt: new Date(),
+        jobStartedAt: null,
+        jobCompletedAt: null,
+        patchTitle: 'Some Patch',
+        patchSource: 'third_party',
+        patchExternalId: 'ext-1',
+        resultStatus: 'failed',
+        exitCode: 1,
+        errorMessage: longMessage,
+        resultStartedAt: null,
+        resultCompletedAt: null,
+      },
+    ]);
+
+    const result = JSON.parse(await tool.handler({ action: 'device_history', deviceId }, otherOrgAuth));
+
+    expect(result.history[0].errorMessage.length).toBeLessThan(longMessage.length);
+    expect(result.history[0].errorMessage).toMatch(/truncated/);
+  });
+});
+
 describe('tier-2 fleet writes refuse an ai_agent principal (#6206)', () => {
   const toolMap = new Map<string, AiTool>();
   registerFleetTools(toolMap);
