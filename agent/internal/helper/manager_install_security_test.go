@@ -166,3 +166,103 @@ func TestApplyEnabledInstallUsesPendingVersion(t *testing.T) {
 		t.Fatalf("installPackage called %d times, want >= 1", rec.called)
 	}
 }
+
+// #6252: msiexec exiting 0 is not proof the helper was replaced (same
+// ProductCode reinstall, MajorUpgrade misconfiguration, file replacement
+// deferred to reboot). When the on-disk version is readable after install and
+// is NOT the target, the install must be reported as a failure.
+func TestDownloadAndInstallFailsWhenOnDiskVersionUnchanged(t *testing.T) {
+	tmpDir := t.TempDir()
+	rec := withInstallRecorder(t)
+	mgr := newInstallTestManager(t, tmpDir)
+	verifiedPkg := filepath.Join(tmpDir, "verified"+packageExtension())
+	if err := os.WriteFile(verifiedPkg, []byte("VERIFIED"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	mgr.downloadFunc = func(string) (string, error) { return verifiedPkg, nil }
+	mgr.binaryVersionFunc = func(string) (string, error) { return "0.108.0", nil }
+
+	err := mgr.downloadAndInstall("0.114.0")
+	if err == nil {
+		t.Fatal("expected downloadAndInstall to fail when the on-disk version did not change")
+	}
+	if !errors.Is(err, errHelperInstallNotApplied) {
+		t.Fatalf("error = %v, want errHelperInstallNotApplied", err)
+	}
+	if rec.called != 1 {
+		t.Fatalf("installPackage called %d times, want 1", rec.called)
+	}
+}
+
+func TestDownloadAndInstallSucceedsWhenOnDiskVersionMatches(t *testing.T) {
+	tmpDir := t.TempDir()
+	withInstallRecorder(t)
+	mgr := newInstallTestManager(t, tmpDir)
+	verifiedPkg := filepath.Join(tmpDir, "verified"+packageExtension())
+	if err := os.WriteFile(verifiedPkg, []byte("VERIFIED"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	mgr.downloadFunc = func(string) (string, error) { return verifiedPkg, nil }
+	mgr.binaryVersionFunc = func(string) (string, error) { return "0.114.0", nil }
+
+	if err := mgr.downloadAndInstall("0.114.0"); err != nil {
+		t.Fatalf("downloadAndInstall: %v", err)
+	}
+}
+
+// Where the platform cannot read a binary version (Linux) or the read fails,
+// verification cannot run; the install result stands as before rather than
+// turning every install into a failure.
+func TestDownloadAndInstallSkipsVerificationWhenVersionUnreadable(t *testing.T) {
+	tmpDir := t.TempDir()
+	withInstallRecorder(t)
+	mgr := newInstallTestManager(t, tmpDir)
+	verifiedPkg := filepath.Join(tmpDir, "verified"+packageExtension())
+	if err := os.WriteFile(verifiedPkg, []byte("VERIFIED"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	mgr.downloadFunc = func(string) (string, error) { return verifiedPkg, nil }
+	for _, readErr := range []error{errBinaryVersionUnsupported, errors.New("no version resource")} {
+		mgr.binaryVersionFunc = func(string) (string, error) { return "", readErr }
+		if err := mgr.downloadAndInstall("0.114.0"); err != nil {
+			t.Fatalf("downloadAndInstall with unreadable version (%v): %v", readErr, err)
+		}
+	}
+}
+
+// A no-op install must count toward the update-failure budget so the agent
+// stops re-running msiexec every heartbeat and abandons the version after the
+// retry cap, instead of logging "helper updated successfully" and looping.
+func TestApplyPendingUpdateCountsUnappliedInstallAsFailure(t *testing.T) {
+	tmpDir := t.TempDir()
+	withInstallRecorder(t)
+	mgr := newInstallTestManager(t, tmpDir)
+	mgr.binaryPath = filepath.Join(tmpDir, "breeze-helper")
+	if err := os.WriteFile(mgr.binaryPath, []byte("old"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	verifiedPkg := filepath.Join(tmpDir, "verified"+packageExtension())
+	mgr.downloadFunc = func(string) (string, error) {
+		if err := os.WriteFile(verifiedPkg, []byte("VERIFIED"), 0600); err != nil {
+			return "", err
+		}
+		return verifiedPkg, nil
+	}
+	mgr.binaryVersionFunc = func(string) (string, error) { return "0.108.0", nil }
+
+	mgr.CheckUpdate("0.114.0")
+	mgr.mu.Lock()
+	for i := 0; i < 3; i++ {
+		mgr.applyPendingUpdate()
+	}
+	if mgr.updateFailures != 3 {
+		mgr.mu.Unlock()
+		t.Fatalf("updateFailures = %d after 3 unapplied installs, want 3", mgr.updateFailures)
+	}
+	mgr.applyPendingUpdate() // hits the cap
+	abandoned, pending := mgr.abandonedVersion, mgr.pendingHelperVersion
+	mgr.mu.Unlock()
+	if abandoned != "0.114.0" || pending != "" {
+		t.Fatalf("abandoned=%q pending=%q, want abandoned 0.114.0 and no pending", abandoned, pending)
+	}
+}

@@ -2,6 +2,7 @@ package helper
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -163,7 +164,13 @@ type Manager struct {
 	// that enforces signed-manifest + SHA-256 verification and control-plane
 	// origin. Tests inject a stub. It is NEVER the old unverified fetch.
 	downloadFunc func(version string) (string, error)
-	agentVersion string
+	// binaryVersionFunc reads the version stamped into the installed helper
+	// binary (Windows file version resource, macOS Info.plist). It is the
+	// authoritative "installed version" and is independent of whether any
+	// helper process is running or has written a status file (#6252). Nil, or
+	// errBinaryVersionUnsupported, means the platform cannot read it.
+	binaryVersionFunc func(path string) (string, error)
+	agentVersion      string
 	// manifestKeys and requireManifestSigningKeyID are PROVIDERS, not values:
 	// both underlying config fields are mutable at runtime and the verified
 	// downloader must re-read them on every download. See WithManifestKeys.
@@ -194,6 +201,7 @@ func New(ctx context.Context, serverURL func() string, authToken *secmem.SecureS
 		sessions:          make(map[string]*sessionState),
 		isOurProcessFunc:  isOurProcess,
 		stopIfOursFunc:    stopByPIDIfOurs,
+		binaryVersionFunc: readBinaryVersion,
 	}
 	for _, opt := range opts {
 		opt(m)
@@ -703,8 +711,33 @@ func (m *Manager) downloadAndInstall(version string) error {
 		return fmt.Errorf("install helper package: %w", err)
 	}
 
+	// The package manager's exit code is not proof the binary was replaced
+	// (#6252: msiexec exit 0 left breeze-helper.exe on the old version through
+	// six releases). Where the on-disk version is readable, it must now be the
+	// target; a mismatch is a failed install so the caller rolls back, counts
+	// it toward the retry cap, and stops claiming success.
+	onDisk, err := m.readBinaryVersion()
+	switch {
+	case err != nil:
+		if !errors.Is(err, errBinaryVersionUnsupported) {
+			log.Warn("helper installed but on-disk version could not be read; install result unverified",
+				"path", m.binaryPath, "targetVersion", version, "error", err.Error())
+		}
+	case !helperVersionsMatch(onDisk, version):
+		return fmt.Errorf("%w: on-disk version %q, target %q (msiexec may have skipped the upgrade or deferred file replacement until reboot)",
+			errHelperInstallNotApplied, onDisk, version)
+	}
+
 	log.Info("helper installed", "path", m.binaryPath, "version", version)
 	return nil
+}
+
+// readBinaryVersion reads the installed helper binary's stamped version.
+func (m *Manager) readBinaryVersion() (string, error) {
+	if m.binaryVersionFunc == nil {
+		return "", errBinaryVersionUnsupported
+	}
+	return m.binaryVersionFunc(m.binaryPath)
 }
 
 // CheckUpdate stores a pending Helper version upgrade.
@@ -726,7 +759,9 @@ func (m *Manager) CheckUpdate(targetVersion string) {
 	}
 }
 
-// InstalledVersion returns the first readable per-session helper version.
+// InstalledVersion returns the installed helper version: the version stamped
+// into the on-disk binary where the platform can read it, otherwise the first
+// readable per-session helper status version.
 func (m *Manager) InstalledVersion() string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -734,6 +769,20 @@ func (m *Manager) InstalledVersion() string {
 }
 
 func (m *Manager) installedVersionLocked() string {
+	// The on-disk binary is authoritative (#6252). The status files below are
+	// written by a RUNNING helper, so they are empty whenever no helper has run
+	// in a tracked session yet — a new Windows session id after logoff/logon,
+	// a WTS blip that dropped the session, a crash-looping helper — and they
+	// lag the binary after an install until the old process restarts. An
+	// empty version made the heartbeat downgrade guard refuse every update as
+	// invalid_current, and made helperSupportsConfigFlag spawn the helper
+	// without --config, so it wrote its status to the legacy root file this
+	// function ignores once sessions/ exists: the version could never recover.
+	if v, err := m.readBinaryVersion(); err == nil && strings.TrimSpace(v) != "" {
+		return strings.TrimSpace(v)
+	} else if err != nil && !errors.Is(err, errBinaryVersionUnsupported) && m.isInstalled() {
+		log.Debug("helper binary version unreadable, falling back to session status", "path", m.binaryPath, "error", err.Error())
+	}
 	for _, state := range m.sessions {
 		status, err := ReadStatus(state.configPath)
 		if err != nil {
@@ -764,7 +813,7 @@ func (m *Manager) applyPendingUpdate() {
 		return
 	}
 
-	if installed := m.installedVersionLocked(); installed == m.pendingHelperVersion {
+	if installed := m.installedVersionLocked(); installed == m.pendingHelperVersion || helperVersionsMatch(installed, m.pendingHelperVersion) {
 		log.Info("helper already at target version, clearing pending update", "version", installed)
 		m.pendingHelperVersion = ""
 		m.updateFailures = 0
