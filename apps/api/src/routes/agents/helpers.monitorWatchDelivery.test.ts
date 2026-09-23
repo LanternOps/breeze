@@ -355,10 +355,43 @@ describe('buildMonitoringConfigUpdate — monitor-derived watches (#5291 W04)', 
 
     const out = await buildMonitoringConfigUpdate(DEVICE_ID);
 
-    expect(out).toBeNull();
+    // Contributes nothing — and with no policy either, that is the explicit
+    // "nothing applies" clear, not an omitted update (#2949).
+    expect(out).toEqual({ check_interval_seconds: 60, watches: [] });
   });
 
-  it('returns null only when BOTH sources are empty and no policy resolved', async () => {
+  it('sends an explicit EMPTY config when no policy resolves and no monitor applies — the deleted/unassigned/deactivated policy case (#2949)', async () => {
+    // Before: this returned null, heartbeat.ts omitted monitoring_settings,
+    // and the agent (absent key = "no change") kept the watches of a policy
+    // that no longer exists — forever.
+    dbMock._resetQueue([...policyQueue({ resolved: false })]);
+
+    expect(await buildMonitoringConfigUpdate(DEVICE_ID)).toEqual({
+      check_interval_seconds: 60,
+      watches: [],
+    });
+  });
+
+  it('does not cache the "nothing applies" clear, so a newly assigned policy still activates on the next heartbeat', async () => {
+    dbMock._resetQueue([...policyQueue({ resolved: false })]);
+
+    await buildMonitoringConfigUpdate(DEVICE_ID);
+
+    expect(redisMock.set).not.toHaveBeenCalled();
+  });
+
+  it('omits the update (null) when the POLICY side cannot find the device — a vanished device is never read as "no policy applies" (#5677)', async () => {
+    // Device lookup misses on the policy side. Even if the monitor side still
+    // answers "resolved, nothing", the policy answer is unknown this cycle, so
+    // no clear signal may be sent.
+    dbMock._resetQueue([[]]);
+
+    expect(await buildMonitoringConfigUpdate(DEVICE_ID)).toBeNull();
+    expect(redisMock.set).not.toHaveBeenCalled();
+  });
+
+  it('omits the update (null) when the monitor side reports device_missing and no policy resolved', async () => {
+    resolveMonitorsMock.mockResolvedValue({ kind: 'device_missing' });
     dbMock._resetQueue([...policyQueue({ resolved: false })]);
 
     expect(await buildMonitoringConfigUpdate(DEVICE_ID)).toBeNull();

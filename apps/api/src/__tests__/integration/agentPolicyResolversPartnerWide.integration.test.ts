@@ -486,7 +486,9 @@ describe('agent-facing config-policy resolvers honour partner-wide policies (#29
       // No policy of Q's own partner matched -> defaults across the board,
       // NOT partner P1's values (555 / 999 / true / true).
       expect(eventLogQ.max_events_per_cycle).toBe(EVENT_LOG_DEFAULTS.maxEventsPerCycle);
-      expect(monitoringQ).toBeNull();
+      // "Nothing applies" is now the explicit #2949 clear, not null — still
+      // proves P1's policy (999 / TestService) did not leak.
+      expect(monitoringQ).toEqual({ check_interval_seconds: 60, watches: [] });
       expect(pamQ.uacInterceptionEnabled).toBe(PAM_DEFAULTS.uacInterceptionEnabled);
       expect(patchQ.exclusiveWindowsUpdate).toBe(false);
     });
@@ -592,7 +594,8 @@ describe('agent-facing config-policy resolvers honour partner-wide policies (#29
       const blind = await withDbAccessContext(partnerWideBlindContext(org!.id), () =>
         buildMonitoringConfigUpdate(device.id),
       );
-      expect(blind).toBeNull();
+      // Invisible → resolves as "nothing applies" (the #2949 empty clear).
+      expect(blind).toEqual({ check_interval_seconds: 60, watches: [] });
 
       await purgeCaches(device.id);
       const sighted = await withDbAccessContext(orgContext(org!.id, partner.id), () =>
@@ -717,6 +720,81 @@ describe('agent-facing config-policy resolvers honour partner-wide policies (#29
           .where(eq(configurationPolicies.id, policyId)),
       );
       expect(row?.name).not.toBe('hijacked');
+    });
+  });
+  describe('a monitoring policy that stops applying CLEARS the agent\'s watches (#2949 / #3493)', () => {
+    // The agent treats an absent `monitoring_settings` key as "no change", so
+    // when nothing resolves the server must send an explicit empty watch set
+    // or the last delivered watches keep running forever. Real Postgres + RLS
+    // under the agent's own org context: the "before" half proves the policy
+    // genuinely resolved, so the "after" empty set is the clear, not a blind
+    // read that never saw the policy in the first place.
+    async function seedAssignedOrgPolicy() {
+      const partner = await createPartner();
+      const org = await createOrganization({ partnerId: partner.id });
+      const site = await createSite({ orgId: org!.id });
+      const device = await seedDevice(org!.id, site!.id);
+      const policyId = await seedMonitoringPolicy({ orgId: org!.id, partnerId: null }, 321);
+      await assign(policyId, 'organization', org!.id);
+      await purgeCaches(device.id);
+
+      const before = await withDbAccessContext(orgContext(org!.id, partner.id), () =>
+        buildMonitoringConfigUpdate(device.id),
+      );
+      expect(before).toEqual({
+        check_interval_seconds: 321,
+        watches: [expect.objectContaining({ watch_type: 'service', name: 'TestService' })],
+      });
+      // The before-read cached the resolved set for 120s. Purge it, as a
+      // real deletion would otherwise be seen after the TTL.
+      await purgeCaches(device.id);
+      return { partner, org: org!, device, policyId };
+    }
+
+    it('deleted policy → explicit empty watch set', async () => {
+      const { partner, org, device, policyId } = await seedAssignedOrgPolicy();
+      await withDbAccessContext(SYSTEM_CTX, () =>
+        db.delete(configurationPolicies).where(eq(configurationPolicies.id, policyId)),
+      );
+
+      const after = await withDbAccessContext(orgContext(org.id, partner.id), () =>
+        buildMonitoringConfigUpdate(device.id),
+      );
+      expect(after).toEqual({ check_interval_seconds: 60, watches: [] });
+    });
+
+    it('unassigned policy → explicit empty watch set', async () => {
+      const { partner, org, device, policyId } = await seedAssignedOrgPolicy();
+      await withDbAccessContext(SYSTEM_CTX, () =>
+        db.delete(configPolicyAssignments).where(eq(configPolicyAssignments.configPolicyId, policyId)),
+      );
+
+      const after = await withDbAccessContext(orgContext(org.id, partner.id), () =>
+        buildMonitoringConfigUpdate(device.id),
+      );
+      expect(after).toEqual({ check_interval_seconds: 60, watches: [] });
+    });
+
+    it('deactivated policy → explicit empty watch set', async () => {
+      const { partner, org, device, policyId } = await seedAssignedOrgPolicy();
+      await withDbAccessContext(SYSTEM_CTX, () =>
+        db.update(configurationPolicies).set({ status: 'inactive' }).where(eq(configurationPolicies.id, policyId)),
+      );
+
+      const after = await withDbAccessContext(orgContext(org.id, partner.id), () =>
+        buildMonitoringConfigUpdate(device.id),
+      );
+      expect(after).toEqual({ check_interval_seconds: 60, watches: [] });
+    });
+
+    it('a device that no longer exists still omits the update (null), never the clear (#5677)', async () => {
+      const { partner, org, device } = await seedAssignedOrgPolicy();
+      await withDbAccessContext(SYSTEM_CTX, () => db.delete(devices).where(eq(devices.id, device.id)));
+
+      const after = await withDbAccessContext(orgContext(org.id, partner.id), () =>
+        buildMonitoringConfigUpdate(device.id),
+      );
+      expect(after).toBeNull();
     });
   });
 });
