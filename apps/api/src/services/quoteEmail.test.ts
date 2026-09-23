@@ -88,6 +88,7 @@ describe('buildQuoteTemplate', () => {
       quoteTitle: 'Office Network Refresh', customerName: 'Contoso & Co',
     });
     expect(t.subject).toBe('Office Network Refresh — proposal from Acme MSP');
+    expect(t.html).toMatch(/<h1[^>]*>Office Network Refresh<\/h1>/);
     expect(t.html).toContain('<strong>Office Network Refresh</strong> (proposal Q-2026-0001)');
     expect(t.html).toContain('work with Contoso &amp; Co.');
     expect(t.text).toContain('Office Network Refresh (proposal Q-2026-0001)');
@@ -100,11 +101,30 @@ describe('buildQuoteTemplate', () => {
       quoteTitle: '  ', customerName: '',
     });
     expect(t.subject).toBe('Proposal Q-1 from Acme');
-    expect(t.html).toContain('Proposal Q-1');
+    expect(t.html).toMatch(/<h1[^>]*>Proposal Q-1<\/h1>/);
     expect(t.html).toContain('proposal <strong>Q-1</strong>');
     expect(t.html).toContain('work with you.');
     expect(t.html).not.toContain('<strong></strong>');
     expect(t.text).toContain('work with you.');
+  });
+
+  it('escapes a markup title exactly once in heading and body', () => {
+    const t = buildQuoteTemplate({
+      quoteNumber: 'Q-1', partnerName: 'Acme', total: '$1', acceptUrl: 'https://x.example/q/t',
+      quoteTitle: '<b>R&D</b> Refresh',
+    });
+    expect(t.html).toMatch(/<h1[^>]*>&lt;b&gt;R&amp;D&lt;\/b&gt; Refresh<\/h1>/);
+    expect(t.html).not.toContain('<b>R&D');
+    expect(t.html).not.toContain('&amp;amp;');
+  });
+
+  it('keeps a multi-line title on one subject line', () => {
+    const t = buildQuoteTemplate({
+      quoteNumber: 'Q-1', partnerName: 'Acme', total: '$1', acceptUrl: 'https://x.example/q/t',
+      quoteTitle: 'Line1\nLine2',
+    });
+    expect(t.subject).not.toMatch(/[\r\n]/);
+    expect(t.subject).toBe('Line1 Line2 — proposal from Acme');
   });
 
   it('exposes quote_title and org_name to custom templates', () => {

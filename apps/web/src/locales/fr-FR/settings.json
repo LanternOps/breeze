@@ -879,6 +879,7 @@
       "email_only_hint": "Indication e-mail uniquement",
       "resolution_note": "Note de résolution",
       "quote_number": "Numéro de devis",
+      "quote_title": "Titre de la proposition",
       "total": "Total",
       "expiry_date": "Date d'expiration",
       "accept_url": "URL d'acceptation",

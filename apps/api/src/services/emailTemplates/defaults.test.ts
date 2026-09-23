@@ -21,6 +21,10 @@ describe('email template defaults', () => {
     }
   });
 
+  it('falls back to a number-only quote heading when the title is blank', () => {
+    expect(defaultHeading('quote_send', { quote_title: '  ' })).toBe('Proposal {{quote_number}}');
+  });
+
   it('falls back to a generic portal heading when org name is empty', () => {
     expect(defaultHeading('portal_invite', { org_name: '' })).toBe('Join your support portal');
   });

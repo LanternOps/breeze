@@ -879,6 +879,7 @@
       "email_only_hint": "Aviso solo por correo",
       "resolution_note": "Nota de resolución",
       "quote_number": "Número de cotización",
+      "quote_title": "Título de la propuesta",
       "total": "Total",
       "expiry_date": "Fecha de vencimiento",
       "accept_url": "URL de aceptación",

@@ -879,6 +879,7 @@
       "email_only_hint": "Avviso solo e-mail",
       "resolution_note": "Nota di risoluzione",
       "quote_number": "Numero preventivo",
+      "quote_title": "Titolo della proposta",
       "total": "Totale",
       "expiry_date": "Data di scadenza",
       "accept_url": "URL di accettazione",

@@ -879,6 +879,7 @@
       "email_only_hint": "Aviso só por e-mail",
       "resolution_note": "Nota de resolução",
       "quote_number": "Número da proposta",
+      "quote_title": "Título da proposta",
       "total": "Total",
       "expiry_date": "Data de validade",
       "accept_url": "URL de aceitação",

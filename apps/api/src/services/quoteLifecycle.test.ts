@@ -503,9 +503,9 @@ describe('sendQuote email delivery status', () => {
   const lineRow = { quantity: '1', unitPrice: '100.00', taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false, lineTotal: '100.00' };
 
   /** getQuote (quote/blocks/lines/pax8/billTo-org) + partnerRow + org + claim. */
-  function queueThroughClaim(org: Record<string, unknown>, partner: Record<string, unknown> = {}) {
+  function queueThroughClaim(org: Record<string, unknown>, partner: Record<string, unknown> = {}, quote: Record<string, unknown> = {}) {
     queueResult([{ id: 'q1' }]); // sendQuote: child row lock
-    queueResult([quoteRow]);
+    queueResult([{ ...quoteRow, ...quote }]);
     queueResult([]); // blocks
     queueResult([{ line: lineRow, deviceGroup: null, site: null }]); // lines
     queueResult([]); // no staged Pax8 order
@@ -750,6 +750,25 @@ describe('sendQuote email delivery status', () => {
     const sent = sendEmailMock.mock.calls[0]![0] as { subject: string; html: string };
     expect(sent.subject).toBe('Your workstation refresh');
     expect(sent.html).toContain('Todd @ Acme MSP');
+  });
+
+  it('addresses the email with the quote title and the send-frozen bill-to name', async () => {
+    // billToName is NULL on the draft row: the customer name only exists on the
+    // frozen snapshot, so this proves the email reads frozen values, not the draft.
+    queueThroughClaim(
+      { name: 'Customer Co', taxId: null, billingContact: { email: 'billing@customer.example' } },
+      {},
+      { title: 'Office Network Refresh' },
+    );
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent' }]);
+    queueResult([]); // portalBranding
+
+    await (await sendQuote('q1', actor)).deliverEmail();
+
+    const sent = sendEmailMock.mock.calls[0]![0] as { subject: string; html: string; text: string };
+    expect(sent.subject).toBe('Office Network Refresh — proposal from Acme MSP');
+    expect(sent.html).toContain('work with Customer Co.');
+    expect(sent.text).toContain('Office Network Refresh (proposal Q-2026-0001)');
   });
 
   it('omits reply-to when the partner has no billing email', async () => {

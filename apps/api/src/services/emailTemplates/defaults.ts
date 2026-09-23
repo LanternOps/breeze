@@ -106,9 +106,11 @@ export function defaultSubject(
   const subjectTemplate = id === 'quote_send' && !vars.quote_title?.trim()
     ? 'Proposal {{quote_number}} from {{partner_name}}'
     : emailTemplateFieldDefaults(id).subject;
+  // Same newline strip as the custom-subject path: free-text vars (a quote
+  // title) must not carry a line break into a header value.
   return tidyDefaultCopy(renderTemplate(subjectTemplate, {
     ...vars,
     ticket_number: ticketNumber,
     ticket_subject: ticketSubject,
-  } as TicketTemplateVars));
+  } as TicketTemplateVars).replace(/[\r\n]+/g, ' '));
 }
