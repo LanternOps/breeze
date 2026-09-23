@@ -254,8 +254,8 @@ export async function loadDriftLiveState(orgId: string, approved: ApprovedDesign
   // W05c2 (#6371): Fleet Design now applies watches and rules as monitor
   // attachments. Classify each attached definition by the LEDGER item kind
   // that created it (a service definition can come from a rule proposal);
-  // attachments no design item created compare as rules, as manually added
-  // legacy rules always did.
+  // an attachment no design item created is classified by its definition
+  // kind — service/process as a watch, anything else as a rule.
   const monitorRows = policyIds.length === 0 ? [] : [...await db.execute<LiveMonitorRow>(sql`
     SELECT fl.config_policy_id AS policy_id, md.name, md.kind::text AS kind, md.condition,
            md.severity::text AS severity, md.cooldown_minutes,
@@ -272,7 +272,10 @@ export async function loadDriftLiveState(orgId: string, approved: ApprovedDesign
       ) origin ON true
   `)];
   for (const monitor of monitorRows) {
-    if (monitor.item_kind === 'watch') {
+    const isWatch = monitor.item_kind
+      ? monitor.item_kind === 'watch'
+      : monitor.kind === 'service' || monitor.kind === 'process';
+    if (isWatch) {
       const condition = (monitor.condition ?? {}) as Record<string, unknown>;
       watches.push({
         policy_id: monitor.policy_id,

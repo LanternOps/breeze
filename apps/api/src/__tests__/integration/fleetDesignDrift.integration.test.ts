@@ -295,7 +295,7 @@ async function disableWatchByHand(policyId: string, watchName: string): Promise<
 /** Adds an item to the design's own policy by hand after apply: a legacy watch
  *  on a new `monitoring` link (still writable during W05c), or a monitor
  *  attached through the policy's `monitors` link that no design item created. */
-async function addItemByHand(f: { dbCtxA: DbAccessContext; authA: AuthContext }, policyId: string, kind: 'watch' | 'rule', name: string): Promise<void> {
+async function addItemByHand(f: { dbCtxA: DbAccessContext; authA: AuthContext }, policyId: string, kind: 'watch' | 'rule' | 'service_monitor', name: string): Promise<void> {
   await withDbAccessContext(f.dbCtxA, async () => {
     if (kind === 'watch') {
       await addFeatureLink(policyId, 'monitoring', null, {
@@ -304,9 +304,10 @@ async function addItemByHand(f: { dbCtxA: DbAccessContext; authA: AuthContext },
       });
       return;
     }
-    await db.transaction((tx) => attachFleetMonitors(policyId, [{ itemRef: 'hand', definition: {
-      name, kind: 'cpu', condition: { operator: 'gt', value: 95 }, severity: 'low',
-    } }], f.authA, tx));
+    const definition = kind === 'service_monitor'
+      ? { name, kind: 'service', condition: { serviceName: name }, severity: 'low' }
+      : { name, kind: 'cpu', condition: { operator: 'gt', value: 95 }, severity: 'low' };
+    await db.transaction((tx) => attachFleetMonitors(policyId, [{ itemRef: 'hand', definition }], f.authA, tx));
   });
 }
 
@@ -395,13 +396,15 @@ describe('Fleet Design drift against live Postgres (Fleet Designer W05, #5655)',
 
     await addItemByHand(f, policyId, 'watch', 'HandAddedWatch');
     await addItemByHand(f, policyId, 'rule', 'Hand-added rule');
+    await addItemByHand(f, policyId, 'service_monitor', 'HandAttachedSvc');
 
     const evidence = await withSystemDbAccessContext(() => loadDesignEvidence(f.envA.orgId, {}));
     const drift = computeDrift(evidence.approvedDesign!, evidence.driftLive!);
 
     // Both arrive through loadDriftLiveState's own watch/rule JOINs — the
     // part of the loader the fixture-driven unit tests cannot exercise.
-    expect(drift.extra.map((e) => `${e.kind}:${e.name}`).sort()).toEqual(['rule:Hand-added rule', 'watch:HandAddedWatch']);
+    // A hand-attached service monitor with no design provenance is a watch.
+    expect(drift.extra.map((e) => `${e.kind}:${e.name}`).sort()).toEqual(['rule:Hand-added rule', 'watch:HandAddedWatch', 'watch:HandAttachedSvc']);
     // Both devices are still in the function group, so the count is real.
     expect(drift.extra.every((e) => e.deviceCount === 2)).toBe(true);
     expect(drift.missing).toEqual([]);

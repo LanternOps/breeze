@@ -202,6 +202,9 @@ async function rollbackPolicy(ctx: RollbackCtx, row: FleetDesignLedgerRow): Prom
   const current = canonical(snapshotLinks(await listFeatureLinks(policyId)));
   const expected = row.createdRefs?.linksSnapshot;
   if (!expected || JSON.stringify(current) !== JSON.stringify(canonical(expected))) throw new RollbackRefused('modified_since_apply');
+  // Rollback archives and unassigns the policy but never deletes the monitor
+  // definitions it created (like scripts, they stay for history and reuse);
+  // with the policy archived they no longer reach any device.
   // W05c2: the monitor definitions this policy's apply created must also be
   // exactly as apply left them (author fields only). An edited or deleted
   // definition means a technician owns it now — refuse, never undo their work.
