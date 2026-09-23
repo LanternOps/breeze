@@ -6,7 +6,7 @@ import { alerts, metricAnomalies, metricAnomalyEpisodes } from '../db/schema';
 import { resolveAlert } from './alertService';
 import { EPISODE_SNOOZE_DAYS } from './metricAnomalyEpisodes';
 import { promoteMetricAnomalyToAlert } from './metricAnomalyPromotion';
-import { emitAlertStateFeedback, emitAnomalyEpisodeMemberFeedback } from './mlFeedbackEmitters';
+import { emitAlertStateFeedback, emitAnomalyEpisodeFeedback, emitAnomalyEpisodeMemberFeedback } from './mlFeedbackEmitters';
 
 /**
  * Human actions on a metric anomaly episode (spec §8). Runs on the AMBIENT
@@ -182,6 +182,17 @@ async function resolveEpisode(episode: EpisodeRow, input: ApplyEpisodeActionInpu
     .where(episodeWhere(episode));
   const members = await cascadeOpenMembers(episode, 'resolved', now);
   const feedbackInserted = await labelMembers(episode, 'resolved', members, input, now);
+  // W03 (spec §8.3): one episode-level label, same transaction, same throwing
+  // writer as the member rows (W02 D-7).
+  await emitAnomalyEpisodeFeedback({
+    orgId: episode.orgId,
+    episodeId: episode.id,
+    eventType: 'anomaly_episode.resolved',
+    outcome: 'resolved',
+    actorUserId: input.actorUserId,
+    occurredAt: now,
+    metadata: { route: 'devices.anomalyEpisodes.action', note: input.note, memberCount: members.length },
+  });
   const alertResolved = await resolveLinkedAlert(episode, input, now, DEFAULT_EPISODE_RESOLVE_NOTE);
   return ok(episode, input, { alertId: episode.linkedAlertId ?? null, alertResolved, members, feedbackInserted });
 }
@@ -229,6 +240,17 @@ async function dismissEpisode(episode: EpisodeRow, input: ApplyEpisodeActionInpu
     .where(episodeWhere(episode));
   const members = await cascadeOpenMembers(episode, 'dismissed', now);
   const feedbackInserted = await labelMembers(episode, 'dismissed', members, input, now);
+  // W03 (spec §8.3): one episode-level label, same transaction, same throwing
+  // writer as the member rows (W02 D-7).
+  await emitAnomalyEpisodeFeedback({
+    orgId: episode.orgId,
+    episodeId: episode.id,
+    eventType: 'anomaly_episode.dismissed',
+    outcome: 'dismissed',
+    actorUserId: input.actorUserId,
+    occurredAt: now,
+    metadata: { route: 'devices.anomalyEpisodes.action', note: input.note, memberCount: members.length },
+  });
   // A7: dismissing a promoted episode resolves its alert by default, exactly
   // like resolve — a tech who silences the signal is done with it; pass
   // resolveAlert: false to keep the alert for the alert workflow.
