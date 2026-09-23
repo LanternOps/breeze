@@ -14,6 +14,7 @@ import type { FleetDesignBeforeImage, FleetDesignCreatedRefs, FleetDesignLedgerI
 import { db } from '../../db';
 import { deviceGroups, fleetDesignAppliedItems, reportRuns, reports } from '../../db/schema';
 import { FLEET_DESIGN_REPORT_TYPE } from '../aiAgents/fleetDesignReport';
+import { reportOwnerOf } from '../siteScope';
 
 type LedgerExecutor = Pick<typeof db, 'select' | 'insert' | 'update'>;
 
@@ -157,6 +158,7 @@ export async function lockReportRun(
       reportRunId: reportRuns.id,
       reportId: reports.id,
       orgId: reports.orgId,
+      partnerId: reports.partnerId,
       summary: sql<FleetDesignReportSummary | null>`${reportRuns.result}->'summary'`,
     })
     .from(reportRuns)
@@ -169,10 +171,19 @@ export async function lockReportRun(
     .limit(1)
     .for('update', { of: reportRuns });
   if (!row) return null;
+
+  // Fleet Design reports are always org-owned; refuse a partner-owned row
+  // rather than coerce `orgId: null` into a string.
+  const owner = reportOwnerOf(row);
+  if (owner.orgId === undefined) {
+    console.warn(`[fleetDesign/ledger] refusing partner-owned report row for run ${reportRunId}`);
+    return null;
+  }
+
   return {
     reportRunId: row.reportRunId,
     reportId: row.reportId,
-    orgId: row.orgId,
+    orgId: owner.orgId,
     summary: row.summary ?? null,
     outcome: row.summary?.fleetDesign?.outcome ?? null,
   };

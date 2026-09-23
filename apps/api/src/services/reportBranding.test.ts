@@ -28,7 +28,7 @@ vi.mock('../db/schema', () => ({
   },
 }));
 
-import { loadReportBrandingForOrg, pngAspectFromDataUrl } from './reportBranding';
+import { loadReportBrandingForOrg, loadReportBrandingForPartner, pngAspectFromDataUrl } from './reportBranding';
 
 const ORG_ID = '22222222-2222-2222-2222-222222222222';
 const PARTNER_ID = '33333333-3333-3333-3333-333333333333';
@@ -137,5 +137,39 @@ describe('loadReportBrandingForOrg', () => {
     await loadReportBrandingForOrg(ORG_ID);
     expect(readWithPartnerAxisVisibilityMock).toHaveBeenCalledTimes(1);
     expect(selectMock).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('loadReportBrandingForPartner (#3198 W01)', () => {
+  it('reads ONLY the partner row, through readWithPartnerAxisVisibility, and maps it like the org path', async () => {
+    const partnerChain = selectChain([{
+      partnerName: 'Olive MSP',
+      partnerSettings: {
+        branding: { logoUrl: png(1, 2), primaryColor: '#7a1d18', secondaryColor: 'orange' },
+        contact: { name: ' Dana Ops ', email: ' dana@olive.example ' },
+      },
+    }]);
+    selectMock.mockReturnValueOnce(partnerChain);
+
+    const branding = await loadReportBrandingForPartner(PARTNER_ID);
+
+    expect(branding).toEqual({
+      name: 'Olive MSP',
+      logoDataUrl: png(1, 2),
+      logoAspect: 0.5,
+      primaryColor: '#7a1d18',
+      accentColor: null,
+      contactEmail: 'dana@olive.example',
+      contactName: 'Dana Ops',
+    });
+    // No organizations hop: the partner id comes from the proven owner.
+    expect(selectMock).toHaveBeenCalledTimes(1);
+    expect(readWithPartnerAxisVisibilityMock).toHaveBeenCalledTimes(1);
+    expect(partnerChain.where).toHaveBeenCalledTimes(1);
+  });
+
+  it('missing partner row: all-null branding', async () => {
+    selectMock.mockReturnValueOnce(selectChain([]));
+    expect(await loadReportBrandingForPartner(PARTNER_ID)).toEqual({ name: null, logoDataUrl: null, logoAspect: null });
   });
 });

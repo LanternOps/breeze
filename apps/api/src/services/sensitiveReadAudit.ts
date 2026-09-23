@@ -8,6 +8,8 @@ type SensitiveReadAuditInput = {
     | 'billing.billables.download'
     | 'report.run.download';
   orgId: string | null;
+  /** #3198 W01: the owning partner of a partner-owned resource (orgId null). */
+  partnerId?: string | null;
   resourceType:
     | 'device_file'
     | 'contract_document'
@@ -33,6 +35,7 @@ export function auditSensitiveRead(
         format: input.format,
         rowCount: input.rowCount,
         byteCount: input.byteCount,
+        ...(input.partnerId ? { partnerId: input.partnerId } : {}),
       },
     });
   } catch (err) {

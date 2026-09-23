@@ -331,7 +331,6 @@ export const ORG_CASCADE_FK_PRE_CLEARED: ReadonlyArray<OrgCascadeFkRef> = Object
       + 'guarantee the schema does not enforce.',
   },
   { childTable: 'psa_ticket_mappings', constraint: 'psa_ticket_mappings_connection_id_psa_connections_id_fk', parentTable: 'psa_connections', reason: 'pre-cleared', allColumnsNullable: false },
-  { childTable: 'report_runs', constraint: 'report_runs_report_id_reports_id_fk', parentTable: 'reports', reason: 'pre-cleared', allColumnsNullable: false },
   { childTable: 'deployment_results', constraint: 'deployment_results_deployment_id_software_deployments_id_fk', parentTable: 'software_deployments', reason: 'pre-cleared', allColumnsNullable: false },
   { childTable: 'software_deployments', constraint: 'software_deployments_install_method_id_fkey', parentTable: 'software_install_methods', reason: 'pre-cleared', allColumnsNullable: true },
   { childTable: 'sso_sessions', constraint: 'sso_sessions_provider_id_sso_providers_id_fk', parentTable: 'sso_providers', reason: 'pre-cleared', allColumnsNullable: false },

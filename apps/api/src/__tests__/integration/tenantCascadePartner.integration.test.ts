@@ -26,6 +26,11 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { getTestDb } from './setup';
 import { cascadeDeletePartner } from '../../services/tenantCascade';
+import {
+  partnerWideScope,
+  persistedSiteScopeValues,
+  siteScopeFingerprint,
+} from '../../services/siteScope';
 
 // Mirrors PERFORMED_BY in routes/internal/synthetic.ts — audit_logs.actor_id is
 // a uuid column, so the synthetic actor is the nil-uuid sentinel.
@@ -194,6 +199,87 @@ describe('cascadeDeletePartner — end-to-end', () => {
     expect(await countById('partners', 'id', purge.partnerId)).toBe(0);
     expect(await countById('psa_connections', 'id', conn!.id)).toBe(0);
     expect(await countById('partners', 'id', control.partnerId)).toBe(1);
+  });
+
+  // #3198 W01: reports became org XOR partner (2026-10-27-130100). reports.partner_id
+  // has NO ON DELETE action, so a partner-owned definition is reached ONLY by the
+  // dynamic partner_id sweep; its runs go via report_runs.report_id ON DELETE
+  // CASCADE and their deliveries via report_run_deliveries' existing cascade.
+  // cascadeDeletePartner runs cascadeDeleteOrg for every child org first, so
+  // org-owned reports under the purged partner's orgs are purged too.
+  it('partner purge removes partner-owned report definitions + runs + deliveries AND org-owned reports of its child orgs, leaving another partner\'s reports intact (#3198 W01)', async () => {
+    async function seedReports(seed: PartnerSeed) {
+      const testDb = getTestDb();
+      const scope = partnerWideScope(seed.partnerId);
+      const cols = persistedSiteScopeValues({
+        principalKind: 'user',
+        scope,
+        principalUserId: seed.userId,
+        capturedAt: new Date(),
+        fingerprint: siteScopeFingerprint(scope),
+      });
+      const [partnerReport] = (await testDb.execute(sql`
+        INSERT INTO reports (
+          partner_id, org_id, name, type, created_by,
+          execution_scope_version, execution_scope_kind, execution_scope_site_ids,
+          execution_scope_user_id, execution_scope_fingerprint,
+          execution_scope_captured_at, execution_scope_principal_kind
+        ) VALUES (
+          ${seed.partnerId}, NULL, 'Partner AR aging', 'ar_aging', ${seed.userId},
+          ${cols.executionScopeVersion}, ${cols.executionScopeKind}, NULL,
+          ${cols.executionScopeUserId}, ${cols.executionScopeFingerprint},
+          ${cols.executionScopeCapturedAt!.toISOString()}::timestamptz, ${cols.executionScopePrincipalKind}
+        ) RETURNING id
+      `)) as unknown as Array<{ id: string }>;
+      const [partnerRun] = (await testDb.execute(sql`
+        INSERT INTO report_runs (report_id, status, requested_by_kind, requested_by_user_id)
+        VALUES (${partnerReport!.id}, 'completed', 'user', ${seed.userId})
+        RETURNING id
+      `)) as unknown as Array<{ id: string }>;
+      await testDb.execute(sql`
+        INSERT INTO report_run_deliveries (report_run_id, recipient_user_id, channel)
+        VALUES (${partnerRun!.id}, ${seed.userId}, 'email')
+      `);
+      const [orgReport] = (await testDb.execute(sql`
+        INSERT INTO reports (org_id, partner_id, name, type, created_by)
+        VALUES (${seed.orgId}, NULL, 'Org inventory', 'device_inventory', ${seed.userId})
+        RETURNING id
+      `)) as unknown as Array<{ id: string }>;
+      const [orgRun] = (await testDb.execute(sql`
+        INSERT INTO report_runs (report_id, status) VALUES (${orgReport!.id}, 'completed')
+        RETURNING id
+      `)) as unknown as Array<{ id: string }>;
+      return {
+        partnerReportId: partnerReport!.id,
+        partnerRunId: partnerRun!.id,
+        orgReportId: orgReport!.id,
+        orgRunId: orgRun!.id,
+      };
+    }
+    const purged = await seedReports(purge);
+    const kept = await seedReports(control);
+    // Precondition: the seed really landed (otherwise every "0" below is vacuous).
+    expect(await countById('reports', 'partner_id', purge.partnerId)).toBe(1);
+    expect(await countById('reports', 'org_id', purge.orgId)).toBe(1);
+    expect(await countById('report_run_deliveries', 'report_run_id', purged.partnerRunId)).toBe(1);
+
+    // Must not abort with 23503 on the no-ON-DELETE reports.partner_id FK.
+    const stats = await cascadeDeletePartner(purge.partnerId, SENTINEL);
+
+    expect(stats.tablesDeleted.partners).toBe(1);
+    expect(stats.tablesDeleted.reports ?? 0).toBeGreaterThanOrEqual(1);
+    expect(await countById('reports', 'id', purged.partnerReportId)).toBe(0);
+    expect(await countById('report_runs', 'id', purged.partnerRunId)).toBe(0);
+    expect(await countById('report_run_deliveries', 'report_run_id', purged.partnerRunId)).toBe(0);
+    expect(await countById('reports', 'id', purged.orgReportId)).toBe(0);
+    expect(await countById('report_runs', 'id', purged.orgRunId)).toBe(0);
+
+    // The other partner's partner-owned AND org-owned reports are untouched.
+    expect(await countById('reports', 'id', kept.partnerReportId)).toBe(1);
+    expect(await countById('report_runs', 'id', kept.partnerRunId)).toBe(1);
+    expect(await countById('report_run_deliveries', 'report_run_id', kept.partnerRunId)).toBe(1);
+    expect(await countById('reports', 'id', kept.orgReportId)).toBe(1);
+    expect(await countById('report_runs', 'id', kept.orgRunId)).toBe(1);
   });
 
   it('writes purge_started and purged audit rows with org_id = NULL', async () => {

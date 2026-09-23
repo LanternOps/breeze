@@ -196,6 +196,17 @@ describe('lockReportRun', () => {
     const result = await lockReportRun(RUN, () => undefined);
     expect(result).toEqual({ reportRunId: RUN, reportId: 'report-1', orgId: ORG, summary: null, outcome: null });
   });
+
+  it('#3198 W01: refuses a partner-owned row instead of coercing orgId: null into a string', async () => {
+    const PARTNER = '44444444-4444-4444-8444-444444444444';
+    seed([[{ reportRunId: RUN, reportId: 'report-1', orgId: null, partnerId: PARTNER, summary: null }]]);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const result = await lockReportRun(RUN, () => undefined);
+
+    expect(result).toBeNull();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('refusing partner-owned report row'));
+  });
 });
 
 describe('toLedgerItem', () => {

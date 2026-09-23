@@ -205,7 +205,7 @@ vi.mock('../routes/patches/helpers', () => ({
 
 import { policyAccessCondition } from './configurationPolicy';
 import { db } from '../db';
-import { registerFleetTools } from './aiToolsFleet';
+import { registerFleetTools, requireOrgOwnedReportRow } from './aiToolsFleet';
 import type { AiTool } from './aiTools';
 import { upsertPatchApproval, declineAllRingApprovals } from '../routes/patches/helpers';
 import { listFleetFindings } from './fleetFindings/query';
@@ -1446,5 +1446,27 @@ describe('tier-2 fleet writes refuse an ai_agent principal (#6206)', () => {
     ));
     expect(result.error).toMatch(/Acting user not found/);
     expect(result.error).not.toMatch(/template, device, policy/);
+  });
+});
+
+describe('requireOrgOwnedReportRow (#3198 W01)', () => {
+  it('refuses a partner-owned row (orgId null, partnerId set) instead of coercing null into a string', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const result = requireOrgOwnedReportRow(
+      { orgId: null, partnerId: 'partner-1' },
+      'test-context',
+    );
+
+    expect(result).toBeNull();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('refusing partner-owned report row in test-context'));
+  });
+
+  it('passes through an org-owned row unchanged', () => {
+    const row = { orgId: 'org-1', partnerId: null, name: 'Weekly inventory' };
+
+    const result = requireOrgOwnedReportRow(row, 'test-context');
+
+    expect(result).toEqual(row);
   });
 });

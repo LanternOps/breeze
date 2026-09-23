@@ -48,6 +48,7 @@ import {
   assertReportExecutionPreflight,
   generateReport,
   previousBaselineFor,
+  UnsupportedReportScopeError,
   type ReportResult,
 } from '../services/reportGenerationService';
 import { emailReportFailure, emailReportRun } from '../services/reportDelivery';
@@ -58,9 +59,13 @@ import {
   type ScheduleCadence,
   type ScheduleConfig,
 } from '@breeze/shared';
-import { loadReportBrandingForOrg } from '../services/reportBranding';
+import {
+  loadReportBrandingForOrg,
+  loadReportBrandingForPartner,
+} from '../services/reportBranding';
 import {
   resolveOrgTimezone,
+  resolvePartnerTimezone,
   resolveTimezoneFromRows,
 } from '../services/portal/timezone';
 import { captureException } from '../services/sentry';
@@ -70,10 +75,14 @@ import {
   decodeSiteScope,
   intersectSiteScopes,
   persistedSiteScopeValues,
+  reportOwnerOf,
+  resolveLivePartnerReportAuthority,
   resolveLiveReportAuthority,
   siteScopeFingerprint,
+  type LiveReportAuthorityResult,
   type PersistedSiteScopeColumns,
   type ReportExecutionAuthority,
+  type ReportOwner,
 } from '../services/siteScope';
 
 // Re-exported so the occurrence-math tests colocated with this worker keep
@@ -182,6 +191,41 @@ function scheduleConfigOf(config: Record<string, unknown>): ScheduleConfig {
  */
 export const WORKER_EXCLUDED_REPORT_TYPES = ['ai_org_narrative', 'ai_fleet_design'] as const;
 
+/**
+ * A definition this worker can reauthorize and run: a complete v1 envelope
+ * with an acting user, whose kind agrees with the row's owner axis. The
+ * per-kind disjunction carries the owner guard (#3198 W01, spec §3.1a): org
+ * kinds need `org_id`, `partner_wide` needs `partner_id`; the acting-user,
+ * fingerprint and capture-time requirements stay top-level conjuncts so no
+ * kind can escape them. Exported for its compiled-SQL test.
+ */
+export function completeExecutableScopePredicate() {
+  return and(
+    eq(reports.executionScopeVersion, 1),
+    inArray(reports.executionScopeKind, ['unrestricted', 'restricted', 'partner_wide']),
+    isNotNull(reports.executionScopeUserId),
+    isNotNull(reports.executionScopeFingerprint),
+    isNotNull(reports.executionScopeCapturedAt),
+    or(
+      and(
+        eq(reports.executionScopeKind, 'unrestricted'),
+        isNull(reports.executionScopeSiteIds),
+        isNotNull(reports.orgId),
+      ),
+      and(
+        eq(reports.executionScopeKind, 'restricted'),
+        isNotNull(reports.executionScopeSiteIds),
+        isNotNull(reports.orgId),
+      ),
+      and(
+        eq(reports.executionScopeKind, 'partner_wide'),
+        isNull(reports.executionScopeSiteIds),
+        isNotNull(reports.partnerId),
+      ),
+    ),
+  )!;
+}
+
 export async function findDueReports(
   now: Date,
 ): Promise<Array<{ id: string; occurrenceKey: number; lastGeneratedAt: Date | null }>> {
@@ -190,23 +234,12 @@ export async function findDueReports(
     ne(reports.schedule, 'one_time'),
     notInArray(reports.type, [...WORKER_EXCLUDED_REPORT_TYPES]),
   )!;
-  const completeExecutableScope = and(
-    eq(reports.executionScopeVersion, 1),
-    inArray(reports.executionScopeKind, ['unrestricted', 'restricted']),
-    isNotNull(reports.executionScopeUserId),
-    isNotNull(reports.executionScopeFingerprint),
-    isNotNull(reports.executionScopeCapturedAt),
-    or(
-      and(
-        eq(reports.executionScopeKind, 'unrestricted'),
-        isNull(reports.executionScopeSiteIds),
-      ),
-      and(
-        eq(reports.executionScopeKind, 'restricted'),
-        isNotNull(reports.executionScopeSiteIds),
-      ),
-    ),
-  )!;
+  const completeExecutableScope = completeExecutableScopePredicate();
+  // Timezone chain: org -> partner -> UTC. A partner-owned row (#3198 W01) has
+  // no org, so the org join is OUTER, and the partner joined is the row's own
+  // partner, else its org's partner. Exactly one of the two is set
+  // (reports_one_owner_chk), so the coalesce never has to choose; for an
+  // org-owned row it reduces to the previous `organizations.partner_id` join.
   const rows = await db
     .select({
       id: reports.id,
@@ -218,8 +251,11 @@ export async function findDueReports(
       partnerSettings: partners.settings,
     })
     .from(reports)
-    .innerJoin(organizations, eq(reports.orgId, organizations.id))
-    .leftJoin(partners, eq(organizations.partnerId, partners.id))
+    .leftJoin(organizations, eq(reports.orgId, organizations.id))
+    .leftJoin(
+      partners,
+      eq(partners.id, sql`coalesce(${reports.partnerId}, ${organizations.partnerId})`),
+    )
     .where(and(pollable, completeExecutableScope));
 
   const [skipped] = await db
@@ -298,10 +334,12 @@ function validEmail(value: unknown): value is string {
 
 export async function resolveScheduledReportRecipients(args: {
   reportId: string;
-  orgId: string;
+  /** NULL for a partner-owned definition (#3198 W01): contact recipients are
+   *  org-scoped rows, so only `config.emailRecipients` applies (spec §3.1a). */
+  orgId: string | null;
   config: Record<string, unknown>;
 }): Promise<string[]> {
-  const contactRows = await db
+  const contactRows = args.orgId === null ? [] : await db
     .select({
       contactId: contacts.id,
       email: contacts.email,
@@ -386,6 +424,43 @@ function trendLineOf(result: ReportResult): string | null {
   return null;
 }
 
+/**
+ * The owner-dependent half of email delivery: which zone the email renders
+ * in, whose branding it carries, and which partner lane sends it. An org
+ * owner keeps the org -> partner chain and its org's partner lane; a partner
+ * owner (#3198 W01) uses its own partner row for all three — there is no org
+ * to read. Exported for the owner-axis tests.
+ */
+export async function resolveScheduledDeliveryContext(owner: ReportOwner): Promise<{
+  timeZone: string;
+  branding: Awaited<ReturnType<typeof loadReportBrandingForOrg>>;
+  partnerId: string | null;
+}> {
+  const unbranded = (err: unknown) => {
+    console.error('[ReportScheduleWorker] Branding load failed; sending unbranded:', err);
+    return { name: null, logoDataUrl: null, logoAspect: null };
+  };
+
+  if (owner.partnerId !== undefined) {
+    const timeZone = await resolvePartnerTimezone(owner.partnerId);
+    const branding = await loadReportBrandingForPartner(owner.partnerId).catch(unbranded);
+    return { timeZone, branding, partnerId: owner.partnerId };
+  }
+
+  const timeZone = await resolveOrgTimezone(owner.orgId);
+  const branding = await loadReportBrandingForOrg(owner.orgId).catch(unbranded);
+  // The scheduled report IS a customer deliverable — partner lane, `general`
+  // stream (spec §8.2). Every job in this worker runs inside
+  // runWithSystemDbAccess, so this is a plain system-context read of an org
+  // row the job already owns.
+  const [orgRow] = await db
+    .select({ partnerId: organizations.partnerId })
+    .from(organizations)
+    .where(eq(organizations.id, owner.orgId))
+    .limit(1);
+  return { timeZone, branding, partnerId: orgRow?.partnerId ?? null };
+}
+
 export async function processRunScheduledReport(
   data: RunScheduledReportJobData,
   opts: { finalAttempt?: boolean; occurrenceClaimed?: boolean } = {},
@@ -465,11 +540,22 @@ export async function processRunScheduledReport(
     return;
   }
 
+  // #3198 W01 — the owner axis decides the decode, the live resolver, the
+  // preflight, generation and delivery below. A row with neither (or both)
+  // axes is corrupt, not runnable.
+  let owner: ReportOwner;
+  try {
+    owner = reportOwnerOf(report);
+  } catch {
+    await deny('scope_unverifiable');
+    return;
+  }
+
   let persistedScope;
   try {
     persistedScope = decodeSiteScope(
       report as unknown as PersistedSiteScopeColumns,
-      report.orgId,
+      owner,
     );
   } catch {
     await deny('scope_unverifiable');
@@ -485,13 +571,19 @@ export async function processRunScheduledReport(
     return;
   }
 
-  let liveResult;
+  let liveResult: LiveReportAuthorityResult;
   try {
-    liveResult = await resolveLiveReportAuthority(
-      report.executionScopeUserId,
-      report.orgId,
-      'read',
-    );
+    liveResult = owner.partnerId !== undefined
+      ? await resolveLivePartnerReportAuthority(
+          report.executionScopeUserId,
+          owner.partnerId,
+          'read',
+        )
+      : await resolveLiveReportAuthority(
+          report.executionScopeUserId,
+          owner.orgId,
+          'read',
+        );
   } catch {
     await deny('scope_unverifiable');
     return;
@@ -527,7 +619,7 @@ export async function processRunScheduledReport(
   };
 
   try {
-    assertReportExecutionPreflight(report.orgId, config, executionAuthority);
+    assertReportExecutionPreflight(owner, config, executionAuthority);
   } catch {
     await deny('scope_config_outside_authority');
     return;
@@ -560,13 +652,20 @@ export async function processRunScheduledReport(
   }
 
   try {
+    // #3198 W01: no report type has a partner-scope generator yet, and the
+    // public `generateReport` is org-only — a partner-owned definition is
+    // refused here, before it could reach it (W02 replaces this with a
+    // registry-driven ReportScope dispatch).
+    if (owner.partnerId !== undefined) {
+      throw new UnsupportedReportScopeError(report.type, 'partner');
+    }
     const previous = await previousBaselineFor(
       report.id,
       executionAuthority.fingerprint,
     );
     const result = await generateReport(
       report.type,
-      report.orgId,
+      owner.orgId,
       config,
       executionAuthority,
     );
@@ -586,7 +685,7 @@ export async function processRunScheduledReport(
 
     const recipients = await resolveScheduledReportRecipients({
       reportId: report.id,
-      orgId: report.orgId,
+      orgId: owner.orgId ?? null,
       config,
     });
     if (recipients.length > 0) {
@@ -596,21 +695,7 @@ export async function processRunScheduledReport(
         // transient failure in either lookup can't sink a no-recipient run's
         // occurrence-keyed job (a failed job blocks re-enqueue of that
         // occurrence, and by this point the run row is already stored).
-        const timeZone = await resolveOrgTimezone(report.orgId);
-        const branding = await loadReportBrandingForOrg(report.orgId).catch((err) => {
-          console.error('[ReportScheduleWorker] Branding load failed; sending unbranded:', err);
-          return { name: null, logoDataUrl: null, logoAspect: null };
-        });
-
-        // The scheduled report IS a customer deliverable — partner lane,
-        // `general` stream (spec §8.2). Every job in this worker runs inside
-        // runWithSystemDbAccess, so this is a plain system-context read of an
-        // org row the job already owns.
-        const [orgRow] = await db
-          .select({ partnerId: organizations.partnerId })
-          .from(organizations)
-          .where(eq(organizations.id, report.orgId))
-          .limit(1);
+        const delivery = await resolveScheduledDeliveryContext(owner);
 
         await emailReportRun({
           reportName: report.name,
@@ -621,9 +706,9 @@ export async function processRunScheduledReport(
           summary: result.summary,
           previous: result.previous,
           trendLine: trendLineOf(result),
-          timezone: timeZone,
-          branding,
-          partnerId: orgRow?.partnerId ?? null,
+          timezone: delivery.timeZone,
+          branding: delivery.branding,
+          partnerId: delivery.partnerId,
         });
       } catch (err) {
         // Delivery failure must not fail the (already stored) run.
@@ -631,21 +716,36 @@ export async function processRunScheduledReport(
       }
     }
   } catch (err) {
+    // #3198 W01: a definition whose owner axis its type cannot run under is a
+    // deterministic refusal, not a transient failure. It records the stable
+    // reason and RESOLVES: a retry could only write the same failed row again,
+    // and recipients are not told a report "failed" that cannot be produced.
+    const unsupportedScope = err instanceof UnsupportedReportScopeError;
     await db
       .update(reportRuns)
       .set({
         status: 'failed',
         completedAt: new Date(),
-        errorMessage: err instanceof Error ? err.message : 'Failed to generate report',
+        errorMessage: unsupportedScope
+          ? 'unsupported_report_scope'
+          : err instanceof Error ? err.message : 'Failed to generate report',
       })
       .where(eq(reportRuns.id, run.id));
+    if (unsupportedScope) {
+      console.warn('[ReportScheduleWorker] Report type cannot run under its owner scope', {
+        reportId: report.id,
+        type: report.type,
+        scope: err.scope,
+      });
+      return;
+    }
 
     // Only once the job is out of retries: an earlier attempt may still succeed,
     // and this occurrence will not be re-enqueued after the last one fails.
     if (opts.finalAttempt) {
       const recipients = await resolveScheduledReportRecipients({
         reportId: report.id,
-        orgId: report.orgId,
+        orgId: owner.orgId ?? null,
         config,
       });
       if (recipients.length > 0) {

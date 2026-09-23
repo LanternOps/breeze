@@ -159,6 +159,8 @@ beforeEach(() => {
   updateWheres.length = 0;
   getReportRunMock.mockResolvedValue({
     metadata: { id: RUN_ID, reportId: '44444444-4444-4444-8444-444444444444', orgId: ORG_ID },
+    // #3198 W01: the guard now also returns the run's owner axis.
+    owner: { orgId: ORG_ID },
     authority: { scope: { kind: 'unrestricted' } },
   });
   resolveArtifactMock.mockResolvedValue({

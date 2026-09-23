@@ -195,6 +195,12 @@ export async function generateAutoEvidenceForOccurrence(args: AutoEvidenceOccurr
   const [definition] = await db.select().from(reports)
     .where(and(eq(reports.id, args.reportId), eq(reports.orgId, args.orgId))).limit(1);
   if (!definition) return recordRefusal('definition_not_found');
+  // #3198 W01: the WHERE above already pins this row to `reports.orgId =
+  // args.orgId` (a non-null `string`), so use `args.orgId` below instead of
+  // `definition.orgId`, which Drizzle still types `string | null` on the
+  // nullable column. This module only ever handles org-owned deliverable
+  // evidence definitions — a partner-owned row (`orgId: null`) can never
+  // satisfy that WHERE clause and so never reaches here.
 
   const config = (definition.config ?? {}) as Record<string, unknown>;
 
@@ -286,10 +292,10 @@ export async function generateAutoEvidenceForOccurrence(args: AutoEvidenceOccurr
       generatedAt: new Date().toISOString(),
       deliverableId: args.deliverableId,
     };
-    const authority = systemReportAuthorityFor(definition.orgId);
+    const authority = systemReportAuthorityFor(args.orgId);
     return runGenerator(
       persistedSystemSiteScopeValues(authority),
-      () => generateManagedEvidenceReport(definition.type as ManagedEvidenceType, definition.orgId, config, evidence),
+      () => generateManagedEvidenceReport(definition.type as ManagedEvidenceType, args.orgId, config, evidence),
     );
   }
 
@@ -300,11 +306,11 @@ export async function generateAutoEvidenceForOccurrence(args: AutoEvidenceOccurr
   if (!definition.executionScopeUserId) return recordRefusal('scope_unverifiable');
 
   let persistedScope;
-  try { persistedScope = decodeSiteScope(definition as unknown as PersistedSiteScopeColumns, definition.orgId); }
+  try { persistedScope = decodeSiteScope(definition as unknown as PersistedSiteScopeColumns, args.orgId); }
   catch { return recordRefusal('scope_unverifiable'); }
   if (persistedScope.kind === 'legacy_unscoped') return recordRefusal('scope_unverifiable');
 
-  const live = await resolveLiveReportAuthority(definition.executionScopeUserId, definition.orgId, 'read')
+  const live = await resolveLiveReportAuthority(definition.executionScopeUserId, args.orgId, 'read')
     .catch(() => ({ ok: false as const, reason: 'unverifiable_scope' as const }));
   if (!live.ok || live.authority.scope.kind === 'legacy_unscoped') return recordRefusal('scope_unverifiable');
 
@@ -318,11 +324,11 @@ export async function generateAutoEvidenceForOccurrence(args: AutoEvidenceOccurr
     principalUserId: live.authority.principalUserId, capturedAt: live.authority.capturedAt,
     fingerprint: siteScopeFingerprint(effectiveScope),
   };
-  try { assertReportExecutionPreflight(definition.orgId, config, authority, definition.type); }
+  try { assertReportExecutionPreflight(args.orgId, config, authority, definition.type); }
   catch { return recordRefusal('scope_unverifiable'); }
 
   return runGenerator(
     persistedSiteScopeValues(authority),
-    () => generateReport(definition.type, definition.orgId, config, authority),
+    () => generateReport(definition.type, args.orgId, config, authority),
   );
 }

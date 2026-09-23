@@ -100,6 +100,7 @@ import {
   persistedSiteScopeValues,
   reportDefinitionMultiOrgScopeSqlPredicate,
   reportDefinitionScopeSqlPredicate,
+  reportOwnerOf,
   reportRunScopeSqlPredicate,
   resolveRequestReportAuthority,
   resolveRequestReportAuthorityMap,
@@ -202,6 +203,8 @@ function orgWhere(auth: AuthContext, orgIdCol: ReturnType<typeof sql.raw> | any)
 const aiReportDefinitionMetadataProjection = {
   id: reports.id,
   orgId: reports.orgId,
+  // #3198 W01: the other owner axis (siteScope.projections.test.ts).
+  partnerId: reports.partnerId,
   executionScopeVersion: reports.executionScopeVersion,
   executionScopeKind: reports.executionScopeKind,
   executionScopeSiteIds: reports.executionScopeSiteIds,
@@ -215,6 +218,8 @@ const aiReportRunMetadataProjection = {
   id: reportRuns.id,
   reportId: reportRuns.reportId,
   orgId: reports.orgId,
+  // #3198 W01: the other owner axis (siteScope.projections.test.ts).
+  partnerId: reports.partnerId,
   executionScopeVersion: reportRuns.executionScopeVersion,
   executionScopeKind: reportRuns.executionScopeKind,
   executionScopeSiteIds: reportRuns.executionScopeSiteIds,
@@ -238,6 +243,27 @@ export async function aiLiveReportAuthority(
   };
 }
 
+/**
+ * #3198 W01. Fleet/AI report tools operate only on org-owned reports — every
+ * caller here is org-scoped (an `orgId` tool input), and none of them know
+ * how to render a partner-wide report. A partner-owned row (`orgId: null`)
+ * must never reach the callers below, so refuse it explicitly rather than
+ * let a bare cast smuggle `null` through as a string. Callers already treat
+ * a `null` return as "not found or access denied" for the same id, so this
+ * folds into that existing fail-closed path instead of throwing.
+ */
+export function requireOrgOwnedReportRow<T extends { orgId: string | null; partnerId: string | null }>(
+  row: T,
+  where: string,
+): (T & { orgId: string }) | null {
+  const owner = reportOwnerOf(row);
+  if (owner.orgId === undefined) {
+    console.warn(`[aiToolsFleet] refusing partner-owned report row in ${where}`);
+    return null;
+  }
+  return row as T & { orgId: string };
+}
+
 async function aiReportDefinitionAccess(
   auth: AuthContext,
   reportId: string,
@@ -246,11 +272,13 @@ async function aiReportDefinitionAccess(
   const metadataConditions: SQL[] = [eq(reports.id, reportId)];
   const tenantCondition = orgWhere(auth, reports.orgId);
   if (tenantCondition) metadataConditions.push(tenantCondition);
-  const [metadata] = await db
+  const [metadataRow] = await db
     .select(aiReportDefinitionMetadataProjection)
     .from(reports)
     .where(and(...metadataConditions))
     .limit(1);
+  if (!metadataRow) return null;
+  const metadata = requireOrgOwnedReportRow(metadataRow, 'aiReportDefinitionAccess metadata');
   if (!metadata) return null;
 
   const authority = await aiLiveReportAuthority(auth, metadata.orgId, action);
@@ -266,7 +294,7 @@ async function aiReportDefinitionAccess(
   }
 
   const predicate = reportDefinitionScopeSqlPredicate(reports, authority.scope);
-  const [report] = await db
+  const [reportRow] = await db
     .select()
     .from(reports)
     .where(and(
@@ -275,6 +303,8 @@ async function aiReportDefinitionAccess(
       predicate,
     ))
     .limit(1);
+  if (!reportRow) return null;
+  const report = requireOrgOwnedReportRow(reportRow, 'aiReportDefinitionAccess report');
   if (!report) return null;
 
   try {
@@ -297,12 +327,14 @@ async function aiReportRunAccess(
   const metadataConditions: SQL[] = [eq(reportRuns.id, runId)];
   const tenantCondition = orgWhere(auth, reports.orgId);
   if (tenantCondition) metadataConditions.push(tenantCondition);
-  const [metadata] = await db
+  const [metadataRow] = await db
     .select(aiReportRunMetadataProjection)
     .from(reportRuns)
     .innerJoin(reports, eq(reportRuns.reportId, reports.id))
     .where(and(...metadataConditions))
     .limit(1);
+  if (!metadataRow) return null;
+  const metadata = requireOrgOwnedReportRow(metadataRow, 'aiReportRunAccess metadata');
   if (!metadata) return null;
 
   const authority = await aiLiveReportAuthority(auth, metadata.orgId, action);
@@ -3218,9 +3250,14 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
         if (!run) return JSON.stringify({ error: 'Report run not found' });
         try {
+          // `run.reportOrgId` is `reports.orgId` selected fresh, so Drizzle
+          // still types it nullable — but the WHERE above already pins this
+          // query to `eq(reports.orgId, access.metadata.orgId)`, a value
+          // `requireOrgOwnedReportRow` already proved non-null, so use that
+          // instead of re-widening back to `string | null`.
           const storedScope = decodeSiteScope(
             run as unknown as PersistedSiteScopeColumns,
-            run.reportOrgId,
+            access.metadata.orgId,
           );
           if (!isSiteScopeSubset(storedScope, access.authority.scope)) {
             return JSON.stringify({ error: 'Report run not found' });

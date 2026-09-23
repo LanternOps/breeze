@@ -45,6 +45,39 @@ function systemManagedRefusal(report: { type?: string | null }) {
     : null;
 }
 
+/**
+ * #3198 W01 — schedule recipients are ORG contacts (`report_schedule_recipients`
+ * carries a composite `(report_id, org_id) → reports(id, org_id)` FK and a
+ * contacts FK on the same org), so a partner-owned definition cannot hold one.
+ * Refused on every writer with 409 `partner_owned_report`; the GET stays
+ * readable and answers an empty list.
+ */
+function writeRefusal(report: { type?: string | null; partnerId?: string | null }) {
+  return systemManagedRefusal(report) ?? partnerOwnedRefusal(report);
+}
+
+/** Same body as helpers' PARTNER_OWNED_REPORT; kept local so this module's
+ *  only helpers dependency stays the owner-aware definition loader. */
+const PARTNER_OWNED_REPORT = { error: 'partner_owned_report' } as const;
+
+function partnerOwnedRefusal(report: { partnerId?: string | null }) {
+  return report.partnerId ? PARTNER_OWNED_REPORT : null;
+}
+
+/**
+ * Loads the definition through the owner-aware gate and narrows it to an
+ * org-owned one. A partner-owned row (#3198 W01) has `org_id NULL`, so it
+ * comes back with `orgId: null` and every writer refuses it.
+ */
+async function loadOrgOwnedDefinition(reportId: string, auth: Parameters<typeof getReportWithOrgCheck>[1]) {
+  const report = await getReportWithOrgCheck(reportId, auth);
+  if (!report) return { report: null, orgId: null, partnerOwned: false } as const;
+  if (report.partnerId || !report.orgId) {
+    return { report, orgId: null, partnerOwned: true } as const;
+  }
+  return { report, orgId: report.orgId, partnerOwned: false } as const;
+}
+
 recipientsRoutes.use('*', authMiddleware);
 
 const read = requirePermission(
@@ -61,11 +94,12 @@ recipientsRoutes.get(
   requireScope('organization', 'partner', 'system'),
   read,
   async (c) => {
-    const report = await getReportWithOrgCheck(
+    const { report, orgId } = await loadOrgOwnedDefinition(
       c.req.param('id')!,
       c.get('auth'),
     );
     if (!report) return c.json({ error: 'Report not found' }, 404);
+    if (!orgId) return c.json({ data: [] });
 
     const rows = await db.select({
       id: reportScheduleRecipients.id,
@@ -82,7 +116,7 @@ recipientsRoutes.get(
       )
       .where(and(
         eq(reportScheduleRecipients.reportId, report.id),
-        eq(reportScheduleRecipients.orgId, report.orgId),
+        eq(reportScheduleRecipients.orgId, orgId),
       ))
       .orderBy(asc(contacts.name), asc(contacts.email));
 
@@ -96,27 +130,27 @@ recipientsRoutes.post(
   write,
   zValidator('json', addReportRecipientSchema),
   async (c) => {
-    const report = await getReportWithOrgCheck(
+    const { report, orgId } = await loadOrgOwnedDefinition(
       c.req.param('id')!,
       c.get('auth'),
     );
     if (!report) return c.json({ error: 'Report not found' }, 404);
-    const refusal = systemManagedRefusal(report);
-    if (refusal) return c.json(refusal, 409);
+    const refusal = writeRefusal(report);
+    if (refusal || !orgId) return c.json(refusal ?? PARTNER_OWNED_REPORT, 409);
 
     const { contactId } = c.req.valid('json');
     const [contact] = await db.select({ id: contacts.id })
       .from(contacts)
       .where(and(
         eq(contacts.id, contactId),
-        eq(contacts.orgId, report.orgId),
+        eq(contacts.orgId, orgId),
       ))
       .limit(1);
     if (!contact) return c.json({ error: 'Contact not found' }, 404);
 
     const [recipient] = await db.insert(reportScheduleRecipients).values({
       reportId: report.id,
-      orgId: report.orgId,
+      orgId,
       contactId,
     }).onConflictDoNothing().returning();
 
@@ -129,16 +163,17 @@ recipientsRoutes.delete(
   requireScope('organization', 'partner', 'system'),
   write,
   async (c) => {
-    const report = await getReportWithOrgCheck(
+    const { report, orgId, partnerOwned } = await loadOrgOwnedDefinition(
       c.req.param('id')!,
       c.get('auth'),
     );
     if (!report) return c.json({ error: 'Report not found' }, 404);
+    if (partnerOwned || !orgId) return c.json(PARTNER_OWNED_REPORT, 409);
 
     const rows = await db.delete(reportScheduleRecipients)
       .where(and(
         eq(reportScheduleRecipients.reportId, report.id),
-        eq(reportScheduleRecipients.orgId, report.orgId),
+        eq(reportScheduleRecipients.orgId, orgId),
         eq(
           reportScheduleRecipients.contactId,
           c.req.param('contactId')!,
@@ -160,13 +195,13 @@ recipientsRoutes.post(
   requireMfa(),
   zValidator('json', convertReportRecipientSchema),
   async (c) => {
-    const report = await getReportWithOrgCheck(
+    const { report, orgId } = await loadOrgOwnedDefinition(
       c.req.param('id')!,
       c.get('auth'),
     );
     if (!report) return c.json({ error: 'Report not found' }, 404);
-    const refusal = systemManagedRefusal(report);
-    if (refusal) return c.json(refusal, 409);
+    const refusal = writeRefusal(report);
+    if (refusal || !orgId) return c.json(refusal ?? PARTNER_OWNED_REPORT, 409);
 
     const input = c.req.valid('json');
     const email = input.email.trim().toLowerCase();
@@ -176,7 +211,7 @@ recipientsRoutes.post(
         .from(reports)
         .where(and(
           eq(reports.id, report.id),
-          eq(reports.orgId, report.orgId),
+          eq(reports.orgId, orgId),
         ))
         .limit(1)
         .for('update');
@@ -188,7 +223,7 @@ recipientsRoutes.post(
         email: contacts.email,
       }).from(contacts)
         .where(and(
-          eq(contacts.orgId, report.orgId),
+          eq(contacts.orgId, orgId),
           sql`lower(${contacts.email}) = ${email}`,
         ))
         .limit(1);
@@ -196,7 +231,7 @@ recipientsRoutes.post(
       let createdContact = null;
       if (!contact) {
         createdContact = await createContact(tx, {
-          orgId: report.orgId,
+          orgId,
           name: input.name ?? null,
           email,
         }, { userId: c.get('auth').user.id });
@@ -209,7 +244,7 @@ recipientsRoutes.post(
 
       await tx.insert(reportScheduleRecipients).values({
         reportId: report.id,
-        orgId: report.orgId,
+        orgId,
         contactId: contact!.id,
       }).onConflictDoNothing();
 
@@ -231,7 +266,7 @@ recipientsRoutes.post(
         updatedAt: new Date(),
       }).where(and(
         eq(reports.id, report.id),
-        eq(reports.orgId, report.orgId),
+        eq(reports.orgId, orgId),
       ));
 
       return { contact: contact!, createdContact };
@@ -242,7 +277,7 @@ recipientsRoutes.post(
     if (result.createdContact) {
       const createEvent = contactCreateAuditEvent(result.createdContact);
       writeContactAudit(c, {
-        orgId: report.orgId,
+        orgId,
         action: createEvent.action,
         contactId: createEvent.resourceId,
         contactName: createEvent.resourceName,

@@ -6,9 +6,14 @@ import {
   generateReport,
   StoredArtifactOnlyReportError,
   UnexecutableReportScopeError,
+  UnsupportedReportScopeError,
   type ReportResult,
 } from '../../services/reportGenerationService';
 import { PERMISSIONS } from '../../services/permissions';
+import {
+  canManagePartnerWidePolicies,
+  PARTNER_WIDE_WRITE_DENIED_MESSAGE,
+} from '../../services/partnerWideAccess';
 import { resolveRequestReportAuthority } from '../../services/siteScope';
 import { ensureOrgAccess } from './helpers';
 import { generateReportSchema } from './schemas';
@@ -26,6 +31,19 @@ generateRoutes.post(
   async (c) => {
     const auth = c.get('auth');
     const data = c.req.valid('json');
+
+    // #3198 W01 — a partner-wide ad-hoc aggregate. Same three gates as a
+    // partner-owned create, then refused: no report type has a partner-scope
+    // generator this wave (W02 registers them).
+    if (data.ownerScope === 'partner') {
+      if (auth.scope !== 'partner' || !auth.partnerId) {
+        return c.json({ error: 'partner_scope_required' }, 403);
+      }
+      if (!canManagePartnerWidePolicies(auth)) {
+        return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+      }
+      return c.json({ error: 'unsupported_report_scope', type: data.type }, 400);
+    }
 
     // Determine orgId
     let orgId = data.orgId;
@@ -81,6 +99,11 @@ generateRoutes.post(
       // surfaces as a 409 the first time it is asked for, not a 500.
       if (error instanceof StoredArtifactOnlyReportError) {
         return c.json({ error: 'stored_artifact_only' }, 409);
+      }
+      // #3198 W01 — a business type generated at org scope before W02 ships
+      // its generator.
+      if (error instanceof UnsupportedReportScopeError) {
+        return c.json({ error: 'unsupported_report_scope', type: data.type }, 400);
       }
       throw error;
     }

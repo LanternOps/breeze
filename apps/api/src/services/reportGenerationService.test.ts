@@ -21,6 +21,8 @@ import {
   generateDeviceInventoryReport,
   generateReport,
   StoredArtifactOnlyReportError,
+  UnexecutableReportScopeError,
+  UnsupportedReportScopeError,
   type ReportType,
 } from './reportGenerationService';
 import { reportTypeEnum } from '../db/schema/reports';
@@ -59,6 +61,15 @@ const SITE_SCOPED_REPORT_TYPES: readonly ReportType[] = REPORT_TYPES
  *  only ever read back — there is no query that could reproduce it. Fleet
  *  Designer W01 (#5651) added the second, same shape. */
 const STORED_ARTIFACT_ONLY_TYPES: readonly ReportType[] = ['ai_org_narrative', 'ai_fleet_design'];
+/** #3198 W01. Business report types that exist as enum labels only: W02
+ *  registers their generators. Until then every generation entry point
+ *  refuses them with `UnsupportedReportScopeError`. */
+const GENERATOR_LESS_BUSINESS_TYPES: readonly ReportType[] = [
+  'ticket_sla_attainment',
+  'technician_time_billability',
+  'ar_aging',
+];
+const PARTNER_ID = '44444444-4444-4444-8444-444444444444';
 
 const capturedWhere: SQL[] = [];
 
@@ -368,7 +379,7 @@ describe('stored-artifact-only report types (P2-3)', () => {
     // Drift guard: `reportGenerationService.ts` keeps its own union rather than
     // deriving from the pgEnum, and a value added to one and not the other is
     // a `never`-check failure at a call site far from either file.
-    expect([...REPORT_TYPES, ...STORED_ARTIFACT_ONLY_TYPES].sort())
+    expect([...REPORT_TYPES, ...STORED_ARTIFACT_ONLY_TYPES, ...GENERATOR_LESS_BUSINESS_TYPES].sort())
       .toEqual([...reportTypeEnum.enumValues].sort());
   });
 });
@@ -411,5 +422,84 @@ describe('managed evidence system execution path (#5784 OD-5 = B)', () => {
     const result = await generateReport('device_inventory', ORG_ID, {}, authority('restricted', []));
     expect(result.rowCount).toBe(0);
     expect(db.select).not.toHaveBeenCalled();
+  });
+});
+
+describe('generator-less business report types (#3198 W01)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedWhere.length = 0;
+    vi.mocked(db.select).mockReturnValue(selectChain([]));
+  });
+
+  it.each(GENERATOR_LESS_BUSINESS_TYPES)(
+    '%s is refused by the dispatch switch with UnsupportedReportScopeError before any query',
+    async (type) => {
+      const error = await generateReport(type, ORG_ID, {}, authority('unrestricted'))
+        .catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(UnsupportedReportScopeError);
+      expect((error as Error).message).toBe(`${type} cannot run at organization scope`);
+      expect(db.select).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(GENERATOR_LESS_BUSINESS_TYPES)(
+    '%s is refused by the zero-safe branch too',
+    async (type) => {
+      await expect(
+        generateReport(type, ORG_ID, {}, authority('restricted', [])),
+      ).rejects.toBeInstanceOf(UnsupportedReportScopeError);
+      expect(db.select).not.toHaveBeenCalled();
+    },
+  );
+});
+
+describe('assertReportExecutionPreflight owner axis (#3198 W01)', () => {
+  function partnerWideAuthority(partnerId = PARTNER_ID) {
+    return {
+      principalKind: 'user' as const,
+      scope: { version: 1 as const, kind: 'partner_wide' as const, partnerId },
+      principalUserId: USER_ID,
+      capturedAt: new Date('2026-09-21T12:00:00.000Z'),
+      fingerprint: 'e'.repeat(64),
+    };
+  }
+
+  it('accepts a partner_wide user authority for the owning partner', () => {
+    expect(() => assertReportExecutionPreflight(
+      { partnerId: PARTNER_ID }, {}, partnerWideAuthority(), 'ar_aging',
+    )).not.toThrow();
+  });
+
+  it('refuses a partner_wide authority for another partner', () => {
+    expect(() => assertReportExecutionPreflight(
+      { partnerId: PARTNER_ID }, {}, partnerWideAuthority('55555555-5555-4555-8555-555555555555'),
+    )).toThrow(UnexecutableReportScopeError);
+  });
+
+  it('refuses an org authority on a partner-owned report', () => {
+    expect(() => assertReportExecutionPreflight(
+      { partnerId: PARTNER_ID }, {}, authority('unrestricted'),
+    )).toThrow(/partner authority mismatch/);
+  });
+
+  it('refuses a partner_wide authority on an org-owned report', () => {
+    expect(() => assertReportExecutionPreflight(
+      { orgId: ORG_ID }, {}, partnerWideAuthority(),
+    )).toThrow(/organization mismatch/);
+    expect(() => assertReportExecutionPreflight(
+      ORG_ID, {}, partnerWideAuthority(),
+    )).toThrow(/organization mismatch/);
+  });
+
+  it('keeps the org-owned path byte-for-byte: { orgId } and a bare org id behave the same', () => {
+    expect(() => assertReportExecutionPreflight({ orgId: ORG_ID }, {}, authority('unrestricted'))).not.toThrow();
+    expect(() => assertReportExecutionPreflight({ orgId: OTHER_ORG_ID }, {}, authority('unrestricted')))
+      .toThrow(/organization mismatch/);
+  });
+
+  it('keeps the portal-user report-type gate (4th parameter)', () => {
+    expect(() => assertReportExecutionPreflight({ orgId: ORG_ID }, {}, portalAuthority(), 'device_inventory'))
+      .toThrow(/Portal-user authority cannot generate report type device_inventory/);
   });
 });

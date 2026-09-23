@@ -57,7 +57,7 @@ import {
 import { aiAgentRuns } from '../../db/schema/aiAgents';
 import { reportRuns, reports } from '../../db/schema/reports';
 import type { DesignEvidence } from './designEvidence';
-import { persistedSystemSiteScopeValues, systemReportAuthority } from '../siteScope';
+import { persistedSystemSiteScopeValues, reportOwnerOf, systemReportAuthority } from '../siteScope';
 
 /** The definition name every Fleet Design shares. Not model-authored: it is
  *  chrome, exactly like the narrative's `NARRATIVE_REPORT_NAME`. */
@@ -375,6 +375,7 @@ export async function loadFleetDesignReport(
       reportRunId: reportRuns.id,
       reportId: reports.id,
       orgId: reports.orgId,
+      partnerId: reports.partnerId,
       summary: sql<FleetDesignReportSummary>`${reportRuns.result}->'summary'`,
       generatedAt: sql<string | null>`${reportRuns.result}->'summary'->'fleetDesign'->>'generatedAt'`,
     })
@@ -386,6 +387,17 @@ export async function loadFleetDesignReport(
       orgCondition(reports.orgId),
     ))
     .limit(1);
+  if (!row) return null;
 
-  return row ?? null;
+  // Fleet Design reports are always org-owned; a partner-owned row would mean
+  // `reports_one_owner_chk`/the type-enum contract broke elsewhere. Refuse
+  // rather than coerce `orgId: null` into a string.
+  const owner = reportOwnerOf(row);
+  if (owner.orgId === undefined) {
+    console.warn(`[fleetDesignReport] refusing partner-owned report row for run ${reportRunId}`);
+    return null;
+  }
+
+  const { partnerId: _partnerId, ...rest } = row;
+  return { ...rest, orgId: owner.orgId };
 }
