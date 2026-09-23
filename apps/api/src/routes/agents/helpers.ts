@@ -2391,6 +2391,11 @@ async function resolvePolicyMonitoringSettings(deviceId: string): Promise<Policy
     .from(organizations)
     .where(eq(organizations.id, device.orgId))
     .limit(1);
+  // An org miss (deleted mid-race) would drop the partner-level target and
+  // the partner-wide ownership branch below, so a device whose only policy
+  // is partner-wide would resolve as `no_policy` and be sent the #2949 clear.
+  // The hierarchy is unknown this cycle — same answer as a device miss.
+  if (!org) return { kind: 'device_missing' };
 
   // 3. Load device group memberships
   const groupRows = await db

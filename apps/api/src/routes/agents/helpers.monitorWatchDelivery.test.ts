@@ -390,6 +390,13 @@ describe('buildMonitoringConfigUpdate — monitor-derived watches (#5291 W04)', 
     expect(redisMock.set).not.toHaveBeenCalled();
   });
 
+  it('omits the update (null) when the device\'s ORG row cannot be read — partner-level targeting would silently drop and a partner-wide policy would read as "nothing applies"', async () => {
+    // devices row present, organizations row missing (org deleted mid-race).
+    dbMock._resetQueue([[{ orgId: 'org-1', siteId: 'site-1' }], []]);
+
+    expect(await buildMonitoringConfigUpdate(DEVICE_ID)).toBeNull();
+  });
+
   it('omits the update (null) when the monitor side reports device_missing and no policy resolved', async () => {
     resolveMonitorsMock.mockResolvedValue({ kind: 'device_missing' });
     dbMock._resetQueue([...policyQueue({ resolved: false })]);
