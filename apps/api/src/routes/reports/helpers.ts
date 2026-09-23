@@ -239,7 +239,7 @@ export function reportOwnerScopePredicate(
 
 /**
  * The by-id definition loader. `permissions` is REQUIRED (ruling P8b): the
- * caller's resolved permission set (`c.get('permissions')`), so a row whose
+ * caller's resolved permission set (the route's `permissions` context value, set by requirePermission), so a row whose
  * type needs a read permission the caller lacks answers null (→ 404), exactly
  * like a row outside the caller's tenancy.
  */

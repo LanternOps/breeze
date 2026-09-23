@@ -649,11 +649,19 @@ describe('partner preflight refuses org/site selectors in config (#3198 W02, add
       {},
       { asOf: '2026-08-31', groupBy: 'currency', includePaidInPeriod: true, filters: {} },
       { sites: [], filters: { siteIds: [], deviceIds: [] }, orgIds: [] },
-      { filters: { status: ['open'], severity: ['high'] } },
     ]) {
       expect(() => assertReportExecutionPreflight(owner, config, partnerWideAuthority(), 'ar_aging'))
         .not.toThrow();
     }
+  });
+
+  // Fix round item 6: a business type refuses EVERY legacy selector that
+  // selects something (its own schema), not only the org/site/device
+  // denylist — a status/severity filter the generator would ignore is refused.
+  it('refuses a non-empty legacy filter on a business type through its own config schema', () => {
+    expect(() => assertReportExecutionPreflight(
+      owner, { filters: { status: ['open'], severity: ['high'] } }, partnerWideAuthority(), 'ar_aging',
+    )).toThrow(UnexecutableReportScopeError);
   });
 
   // #3198 W02 (ruling T3e). Loose schemas pass any undeclared key, so the
