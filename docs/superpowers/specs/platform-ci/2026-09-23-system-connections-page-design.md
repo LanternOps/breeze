@@ -8,9 +8,10 @@ Operators have no usable place to see which integrations a deployment has
 configured. (Prior art: `GET /system/config-status`, `apps/api/src/routes/system.ts:33`,
 returns a handful of env booleans to partner-scope users with `ORGS_READ`, but
 has no consumer anywhere in the repo — see D9.) The answer lives in `.env`
-(and compose files), spread over ~440 distinct `process.env.*` names plus ~64
-more read only through helpers such as `envFlag(name)` in `apps/api/src`, only ~154 of which
-pass through the validated `envSchema` (`apps/api/src/config/validate.ts`).
+(and compose files): `apps/api/src` reads ~440 distinct names via
+`process.env.*` plus ~64 more only through helpers such as `envFlag(name)`,
+and only ~154 of them pass through the validated `envSchema`
+(`apps/api/src/config/validate.ts`).
 A read-only "System" page gives platform admins a setup summary: what is
 available, what is enabled, what is half-configured, and the non-secret
 settings that explain why.
@@ -21,7 +22,7 @@ settings that explain why.
 |---|---|
 | D1 | **Read-only.** The page shows status and non-secret values. Nothing is editable. |
 | D2 | **Secrets are never shown** — not masked, not last-4. A secret var renders only as `set` / `not set`. |
-| D3 | **Curated registry** (approach A), not derived from `envSchema` (only ~154 of ~434 vars are in it) and not a thin `/health` view. |
+| D3 | **Curated registry** (approach A), not derived from `envSchema` (only ~154 of ~500 env names are in it) and not a thin `/health` view. |
 | D4 | **Config only, no live probes.** "Enabled" means configured, not "the remote service answered". Live probes are a possible follow-up for a few entries. |
 | D5 | **API container's environment only.** web / portal / worker env is out of scope; the page says so. |
 | D6 | **Platform admins only.** Deployment-wide data. Reuses `platformAdminMiddleware` via `adminRoutes`; no new permission. |
