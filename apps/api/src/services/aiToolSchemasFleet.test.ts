@@ -364,6 +364,17 @@ describe('generate_report schema', () => {
   it('rejects invalid format', () => {
     expect(parse('generate_report', { action: 'create', name: 'Test', reportType: 'compliance', format: 'docx' }).success).toBe(false);
   });
+
+  // #3198 W02 regression pin: the org-axis AI tool cannot create or run a
+  // business report by type (they are msp_staff, partner-capable and gated
+  // on extra read permissions the tool's ad-hoc path never checks).
+  it.each(['ticket_sla_attainment', 'technician_time_billability', 'ar_aging'])(
+    'rejects business type %s for create and generate',
+    (reportType) => {
+      expect(parse('generate_report', { action: 'create', name: 'Biz', reportType }).success).toBe(false);
+      expect(parse('generate_report', { action: 'generate', reportType }).success).toBe(false);
+    },
+  );
 });
 
 // ─── manage_patches: setup_auto_approval ────────────────────────────────
