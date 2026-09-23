@@ -1260,6 +1260,58 @@ describe('changeTicketStatus — ML triage feedback on resolve/reopen (#6697)', 
 
     expect(emitTriageFeedbackMock).not.toHaveBeenCalled();
   });
+
+  it('does NOT re-emit ticket.resolved when relabeling an already-resolved ticket to closed', async () => {
+    dbMocks.selectResult.mockResolvedValue([
+      { id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'resolved', resolvedAt: new Date('2026-09-22T11:00:00.000Z'), createdAt: new Date('2026-09-22T10:00:00.000Z') }
+    ]);
+    dbMocks.updateReturning.mockResolvedValue([{ id: 't-1', status: 'closed' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    await changeTicketStatus('t-1', { status: 'closed' }, {}, actor);
+
+    expect(emitTriageFeedbackMock).not.toHaveBeenCalled();
+  });
+
+  it('emits ticket.reopened exactly once when a closed ticket returns to open', async () => {
+    dbMocks.selectResult.mockResolvedValue([
+      { id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'closed', resolvedAt: new Date('2026-09-22T10:30:00.000Z'), createdAt: new Date('2026-09-22T09:00:00.000Z') }
+    ]);
+    dbMocks.updateReturning.mockResolvedValue([{ id: 't-1', status: 'open' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    await changeTicketStatus('t-1', { status: 'open' }, {}, actor);
+
+    const reopenedCalls = emitTriageFeedbackMock.mock.calls.filter(
+      (c) => (c[0] as { eventType?: string }).eventType === 'ticket.reopened'
+    );
+    expect(reopenedCalls).toHaveLength(1);
+    expect(reopenedCalls[0]![0]).toMatchObject({
+      eventType: 'ticket.reopened',
+      outcome: 'reopened',
+      metadata: expect.objectContaining({ fromStatus: 'closed', toStatus: 'open' }),
+    });
+  });
+
+  it('emits ticket.resolved exactly once when resolving directly from pending', async () => {
+    dbMocks.selectResult.mockResolvedValue([
+      { id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'pending', resolvedAt: null, createdAt: new Date('2026-09-22T08:00:00.000Z') }
+    ]);
+    dbMocks.updateReturning.mockResolvedValue([{ id: 't-1', status: 'resolved' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    await changeTicketStatus('t-1', { status: 'resolved' }, { resolutionNote: 'Fixed' }, actor);
+
+    const resolvedCalls = emitTriageFeedbackMock.mock.calls.filter(
+      (c) => (c[0] as { eventType?: string }).eventType === 'ticket.resolved'
+    );
+    expect(resolvedCalls).toHaveLength(1);
+    expect(resolvedCalls[0]![0]).toMatchObject({
+      eventType: 'ticket.resolved',
+      outcome: 'resolved',
+      metadata: expect.objectContaining({ fromStatus: 'pending', toStatus: 'resolved' }),
+    });
+  });
 });
 
 describe('changeTicketStatus — aiDraftId (P2-4, #4191, Task A10)', () => {
