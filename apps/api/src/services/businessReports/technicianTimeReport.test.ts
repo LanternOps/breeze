@@ -282,6 +282,22 @@ describe('generateTechnicianTimeBillabilityReport', () => {
     expect(s.notes).not.toContain(PARTNER_ORG_LIST_NOTE);
   });
 
+  it('org scope discloses that utilization is the share of each technician\'s capacity spent on this organization', async () => {
+    queueExecute([], [], OVERALL, [], []);
+    const s = summaryOf(await generateTechnicianTimeBillabilityReport(orgScope, { period: AUGUST }, orgAuthority));
+    expect(s.notes).toContain(
+      'Utilization at organization scope is the share of each technician\'s capacity spent on this organization, not their overall utilization.',
+    );
+  });
+
+  it('partner roster note: users with time who are disabled or lack time-entry access still appear and add capacity', async () => {
+    queueExecute(TECH_ROWS, [], OVERALL, [], []);
+    const s = summaryOf(await generateTechnicianTimeBillabilityReport(partnerScope(), { period: AUGUST }, partnerAuthority));
+    expect(s.notes.join(' ')).toMatch(
+      /disabled or without time-entry access.*included.*add their capacity/i,
+    );
+  });
+
   it('prints the capacity and billing-conversion notes, and the org-list note at partner scope', async () => {
     queueExecute(TECH_ROWS, [], OVERALL, [], []);
     const s = summaryOf(await generateTechnicianTimeBillabilityReport(partnerScope(), { period: AUGUST }, partnerAuthority));

@@ -53,12 +53,16 @@ const BILLING_CONVERSION_NOTE =
 const COVERAGE_NOTE =
   'Billable, included and non-billable minutes follow each entry\'s coverage; entries recorded before billing profiles fall back to their billable flag. Running timers are not counted.';
 const PARTNER_ROSTER_NOTE =
-  'Technicians are the partner\'s active staff whose role can read time entries, plus anyone else who logged time in the period; technicians who logged nothing appear at 0%. Time entries with no organization (internal work) are included.';
+  'Technicians are the partner\'s active staff whose role can read time entries, plus anyone else who logged time in the period; technicians who logged nothing appear at 0%. Users who logged time but are disabled or without time-entry access are included too, and add their capacity to the totals. Time entries with no organization (internal work) are included.';
 const PARTNER_NO_ORGS_NOTE =
   'This partner has no active or trial organizations, so only time entries with no organization are included.';
 /** Spec §3.3 R2: the label an org-scoped instance must carry. */
 const ORG_SCOPE_NOTE =
   'Organization-scoped: ticket-linked time only. Time entries with no organization are not included, and technicians who logged none of this organization\'s time do not appear.';
+/** #3198 W02 Task 13: the org-scope utilization denominator is still each
+ *  technician's WHOLE capacity, so the figure is a share, not utilization. */
+const ORG_SCOPE_UTILIZATION_NOTE =
+  'Utilization at organization scope is the share of each technician\'s capacity spent on this organization, not their overall utilization.';
 /** Ruling P7. */
 const ORG_TOKEN_NOTE =
   'Time entries are partner-internal records: an organization-scoped sign-in cannot read them, so when this report runs under one it shows no time at all. Run it from the partner to see this organization\'s time.';
@@ -380,7 +384,7 @@ export async function generateTechnicianTimeBillabilityReport(
       // real time. sqlUuidArray renders the empty list as ARRAY[]::uuid[].
       if (scope.orgIds.length === 0) notes.unshift(PARTNER_NO_ORGS_NOTE);
     } else {
-      notes.push(ORG_SCOPE_NOTE, ORG_TOKEN_NOTE);
+      notes.push(ORG_SCOPE_NOTE, ORG_SCOPE_UTILIZATION_NOTE, ORG_TOKEN_NOTE);
     }
 
     const cte = baseCte(scope, period);

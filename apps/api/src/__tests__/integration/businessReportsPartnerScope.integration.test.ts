@@ -436,6 +436,45 @@ describe('technician_time_billability — real Postgres (#3198 W02 Task 8)', () 
     });
   });
 
+  runDb('a disabled user and a user without time-entry access WHO LOGGED TIME appear on the technician axis, and every axis reconciles (#3198 W02 Task 13)', async () => {
+    const f = await seedBusinessFixture();
+    const t = await seedTimeFixture(f);
+    // Gone Tech is disabled; Report Viewer's role grants only reports:read.
+    await seedTimeEntry(f.partner.id, { userId: t.disabled.id, orgId: f.orgA.id, startedAt: '2026-08-13T09:00:00Z',
+      minutes: 40, coverage: 'billable' });
+    await seedTimeEntry(f.partner.id, { userId: t.viewer.id, orgId: null, startedAt: '2026-08-14T09:00:00Z',
+      minutes: 20, coverage: 'non_billable', workTypeId: t.workTypeId });
+    const authority = await livePartnerAuthority(f);
+    const scope = await livePartnerScope(f, authority);
+    const run = async (groupBy: 'technician' | 'organization' | 'work_type') =>
+      (await generateReport('technician_time_billability', scope, { period: AUGUST, groupBy }, authority))
+        .summary as TechnicianTimeSummary;
+    const sum = (s: TechnicianTimeSummary, key: 'loggedMinutes' | 'billableMinutes' | 'nonBillableMinutes') =>
+      s.groups.reduce((acc, g) => acc + g[key], 0);
+
+    const byTech = await run('technician');
+    expect(byTech.groups.map((g) => g.groupKey).sort())
+      .toEqual([f.user.id, t.idle.id, t.disabled.id, t.viewer.id].sort());
+    expect(byTech.groups.find((g) => g.groupKey === t.disabled.id)).toMatchObject({ loggedMinutes: 40, capacityMinutes: 10_080 });
+    expect(byTech.groups.find((g) => g.groupKey === t.viewer.id)).toMatchObject({ loggedMinutes: 20, capacityMinutes: 10_080 });
+    // Both add capacity (PARTNER_ROSTER_NOTE); the idle tech is still the only zero-time technician.
+    expect(byTech.overall).toMatchObject({ loggedMinutes: 315, capacityMinutes: 4 * 10_080 });
+    expect(byTech.zeroTimeTechnicians).toBe(1);
+    expect(byTech.notes.join(' ')).toMatch(/disabled or without time-entry access/);
+
+    const byOrg = await run('organization');
+    const byType = await run('work_type');
+    for (const [name, s] of [['technician', byTech], ['organization', byOrg], ['work_type', byType]] as const) {
+      expect(s.overall.loggedMinutes, name).toBe(315);
+      expect(sum(s, 'loggedMinutes'), name).toBe(315);
+      expect(sum(s, 'billableMinutes'), name).toBe(s.overall.billableMinutes);
+      expect(sum(s, 'nonBillableMinutes'), name).toBe(s.overall.nonBillableMinutes);
+    }
+    expect(Object.fromEntries(byOrg.groups.map((g) => [g.groupLabel, g.loggedMinutes]))).toEqual({
+      Acme: 160, Globex: 75, 'No organization': 80,
+    });
+  });
+
   runDb('PARITY: a partner-scope RLS request context and the system context produce identical reports', async () => {
     const f = await seedBusinessFixture();
     await seedTimeFixture(f);
