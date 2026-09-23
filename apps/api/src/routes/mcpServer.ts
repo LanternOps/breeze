@@ -96,6 +96,21 @@ function shouldRequireExecuteAdminInProd(): boolean {
   return process.env.NODE_ENV === 'production' && envFlag('MCP_REQUIRE_EXECUTE_ADMIN', true);
 }
 
+/**
+ * Operator opt-in (default OFF): lift the MCP interactive-approval gate so
+ * Tier 3 tools/actions (and MCP_APPROVAL_REQUIRED_EXTRA_TOOLS) are listed and
+ * callable over MCP without a human approval step. For self-hosted operators
+ * who deliberately run a trusted, unattended agent against their own
+ * instance. It ONLY removes the approval-only deny; every other Tier 3 gate
+ * still applies unchanged: ai:execute, ai:execute_admin in production
+ * (MCP_REQUIRE_EXECUTE_ADMIN), MCP_EXECUTE_TOOL_ALLOWLIST in production,
+ * product RBAC, per-tool rate limits, the execution ledger and the audit log.
+ * Read per call so the gate cannot be latched on by module load order.
+ */
+function isUnattendedTier3AllowedOverMcp(): boolean {
+  return envFlag('MCP_ALLOW_UNATTENDED_TIER3', false);
+}
+
 const MCP_MESSAGE_MAX_BODY_BYTES = envInt('MCP_MESSAGE_MAX_BODY_BYTES', 64 * 1024);
 
 function setWwwAuthenticate(c: Context) {
@@ -1009,6 +1024,7 @@ const BOOTSTRAP_TOOL_TIER = 3;
  * explicit sub-Tier-3 extra.
  */
 function isMcpApprovalRequired(toolName: string, effectiveTier: number): boolean {
+  if (isUnattendedTier3AllowedOverMcp()) return false;
   return effectiveTier === 3 || MCP_APPROVAL_REQUIRED_EXTRA_TOOLS[toolName] === true;
 }
 
@@ -1033,6 +1049,9 @@ function isToolWhollyGatedOverMcp(
   inputSchema: unknown,
   getTier: (name: string) => number | undefined,
 ): boolean {
+  // Operator opt-in: nothing is approval-gated, so nothing is wholly gated.
+  // The tier/scope filter in handleToolsList still decides visibility.
+  if (isUnattendedTier3AllowedOverMcp()) return false;
   if (MCP_APPROVAL_REQUIRED_EXTRA_TOOLS[toolName] === true) return true;
 
   const baseTier = getTier(toolName);
@@ -1064,6 +1083,7 @@ function extractActionEnum(inputSchema: unknown): string[] | null {
  * actions at all.
  */
 function gatedActionsForTool(toolName: string, inputSchema: unknown): string[] {
+  if (isUnattendedTier3AllowedOverMcp()) return [];
   const actionEnum = extractActionEnum(inputSchema);
   if (!actionEnum) return [];
   const tier3Actions = new Set(TIER3_ACTIONS[toolName] ?? []);
@@ -1197,7 +1217,10 @@ async function handleToolsList(
   // them: they are NEVER advertised over MCP while this transport has no
   // interactive approval surface. Deliberately not a filtered loop — a loop
   // that can never push reads as if some bootstrap tool might be listed.
-  // `handleToolsCall` denies them with MCP_APPROVAL_REQUIRED to match.
+  // `handleToolsCall` denies them with MCP_APPROVAL_REQUIRED to match. Under
+  // the MCP_ALLOW_UNATTENDED_TIER3 opt-in they become callable by name
+  // (dispatchBootstrapAuthTool keeps its execute/execute_admin/allowlist/RBAC
+  // gates) but stay unlisted: they are onboarding-only tools.
 
   // Tenant (BYO MCP) tools — Task A10. Same scope formula as the core
   // registry above (tier 1 = ai:read; tier 2 = ai:write; tier 3 = ai:execute
@@ -1215,7 +1238,14 @@ async function handleToolsList(
       // (this transport has no interactive approval surface), so a listed
       // tier-3 tool could never actually be called. Revisit when tier-3-over-MCP
       // support lands (#6158) — do not widen this filter before then.
-      .filter((d) => d.tier <= 1 || (d.tier === 2 && hasWrite))
+      .filter((d) => d.tier <= 1
+        || (d.tier === 2 && hasWrite)
+        // Operator opt-in only (MCP_ALLOW_UNATTENDED_TIER3): tier-3 tenant
+        // tools become callable, so list them under the same scope formula
+        // handleTenantToolCall enforces.
+        || (d.tier >= 3 && isUnattendedTier3AllowedOverMcp()
+          && hasExecute && (!requireExecuteAdmin || hasExecuteAdmin)
+          && (process.env.NODE_ENV !== 'production' || isExecuteToolAllowedInProd(d.definition.name))))
       .map((d) => ({
         ...buildMcpToolPresentation(d.definition, d.tier, 'integrations', { external: true }),
         name: d.definition.name,
@@ -1659,6 +1689,12 @@ async function handleTenantToolCall(
   }
   if (tier === 2 && !hasWrite) {
     return jsonRpcError(id, -32603, `Tool "${toolName}" requires ai:write scope`);
+  }
+  // Same production allowlist as core Tier 3. Only reachable when the
+  // operator opted in via MCP_ALLOW_UNATTENDED_TIER3 (otherwise the approval
+  // gate above already denied every tier-3 tenant call).
+  if (tier >= 3 && process.env.NODE_ENV === 'production' && !isExecuteToolAllowedInProd(toolName)) {
+    return jsonRpcError(id, -32603, `Tool "${toolName}" is not in MCP_EXECUTE_TOOL_ALLOWLIST for production`);
   }
 
   // RBAC permission check

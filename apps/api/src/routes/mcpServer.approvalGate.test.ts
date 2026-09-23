@@ -618,3 +618,83 @@ describe('MCP interactive-approval-only gate (all Tier 3, tier-driven)', () => {
     });
   });
 });
+
+// Operator opt-in MCP_ALLOW_UNATTENDED_TIER3 (default OFF). It removes ONLY
+// the approval-only deny; the scope gates, RBAC, ledger and audit still run.
+describe('MCP_ALLOW_UNATTENDED_TIER3 operator opt-in', () => {
+  beforeEach(() => {
+    vi.unstubAllEnvs();
+    mocks.getToolDefinitions.mockReturnValue([
+      { name: 'execute_command', description: 'Execute a system command.', input_schema: {} },
+      { name: 'registry_operations', description: 'Read or modify the registry.', input_schema: REGISTRY_OPERATIONS_SCHEMA },
+      { name: 'collect_evidence', description: 'Collect forensic evidence.', input_schema: {} },
+    ]);
+    mocks.getToolTier.mockImplementation((name: string) => {
+      if (name === 'execute_command') return 3;
+      if (name === 'registry_operations') return 1;
+      if (name === 'collect_evidence') return 2;
+      return undefined;
+    });
+  });
+
+  it.each([undefined, '', 'false', '0', 'no'])('stays gated when the flag is %s', async (value) => {
+    if (value !== undefined) vi.stubEnv('MCP_ALLOW_UNATTENDED_TIER3', value);
+    const res = await callTool('execute_command', { deviceId: 'dev-1', commandType: 'list_processes' });
+    const payload = JSON.parse((await res.json()).result.content[0].text);
+    expect(payload.code).toBe('MCP_APPROVAL_REQUIRED');
+    expect(mocks.executeTool).not.toHaveBeenCalled();
+    const names = (await (await listTools()).json()).result.tools.map((t: any) => t.name);
+    expect(names).not.toContain('execute_command');
+    expect(names).not.toContain('collect_evidence');
+    vi.unstubAllEnvs();
+  });
+
+  describe('when enabled', () => {
+    beforeEach(() => { vi.stubEnv('MCP_ALLOW_UNATTENDED_TIER3', 'true'); });
+
+    it('lists Tier 3 tools for an ai:execute caller, with no "not available over MCP" note', async () => {
+      const tools = (await (await listTools()).json()).result.tools;
+      const names = tools.map((t: any) => t.name);
+      expect(names).toEqual(expect.arrayContaining(['execute_command', 'registry_operations', 'collect_evidence']));
+      const registry = tools.find((t: any) => t.name === 'registry_operations');
+      expect(registry.description).not.toContain('not available over MCP');
+    });
+
+    it('still hides Tier 3 tools from a caller without ai:execute', async () => {
+      testState.scopes = ['ai:read', 'ai:write'];
+      const names = (await (await listTools()).json()).result.tools.map((t: any) => t.name);
+      expect(names).not.toContain('execute_command');
+    });
+
+    it('executes a flat Tier 3 tool through the ledger and audit', async () => {
+      const res = await callTool('execute_command', { deviceId: 'dev-1', commandType: 'list_processes' });
+      const body = await res.json();
+      expect(body.result.isError).toBeFalsy();
+      expect(mocks.executeTool).toHaveBeenCalledTimes(1);
+      expect(mocks.ledgerBegin).toHaveBeenCalledTimes(1);
+      expect(mocks.ledgerComplete).toHaveBeenCalledTimes(1);
+    });
+
+    it('executes a Tier-3-escalated multiplexer action (registry set_value)', async () => {
+      await callTool('registry_operations', {
+        action: 'set_value', deviceId: 'dev-1', keyPath: 'HKLM\\Software\\Foo', valueName: 'Bar', valueData: '1',
+      });
+      expect(mocks.executeTool).toHaveBeenCalledTimes(1);
+    });
+
+    it('executes the sub-Tier-3 extra (collect_evidence) for an ai:write caller', async () => {
+      await callTool('collect_evidence', {
+        incidentId: 'inc-1', deviceId: 'dev-1', evidenceTypes: ['screenshot'],
+      }, ['ai:read', 'ai:write']);
+      expect(mocks.executeTool).toHaveBeenCalledTimes(1);
+    });
+
+    it('still requires ai:execute for Tier 3 — the scope gate is not bypassed', async () => {
+      const res = await callTool('execute_command', { deviceId: 'dev-1', commandType: 'list_processes' }, ['ai:read', 'ai:write']);
+      const body = await res.json();
+      expect(body.error.message).toContain('requires ai:execute scope');
+      expect(mocks.executeTool).not.toHaveBeenCalled();
+      expect(mocks.ledgerBegin).not.toHaveBeenCalled();
+    });
+  });
+});
