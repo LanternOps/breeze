@@ -29,7 +29,7 @@ settings that explain why.
 | D7 | **Home:** `/admin/system` with tabs **Connections** and **Deprecations**; nav entry "System" in the Administration section. PR #6744 merges as-is first; W02 moves its page into the Deprecations tab and redirects `/settings/system/deprecations`. |
 | D8 | **Default-deny secrecy.** Every registry var is `secret: true` unless explicitly marked `secret: false`. |
 | D9 | **One home.** W01 deletes `GET /system/config-status` (`routes/system.ts:33-80`, zero consumers, weaker partner-scope gate) and its tests, so there is one env-status truth. |
-| D10 | **Status mirrors the resolvers, not raw `process.env`.** `core` entries (database, Redis, email) implement a custom `status()` that follows the real resolution: `resolveRedisUrl` (`services/redis.ts` — `REDIS_URL` or `REDIS_HOST`/`REDIS_PORT`/`REDIS_PASSWORD[_FILE]`), the `DATABASE_URL_APP` derivation (`config/validate.ts:1012-1020`), and email provider auto-detect. |
+| D10 | **Status mirrors the resolvers, not raw `process.env`.** `core` entries (database, Redis, email) implement a custom `status()` that follows the real resolution: `resolveRedisUrl` (`services/redis.ts` — `REDIS_URL` or `REDIS_HOST`/`REDIS_PORT`/`REDIS_PASSWORD[_FILE]`), the `DATABASE_URL_APP` derivation (`resolveRequestDatabaseConfig`, `db/requestDatabaseConfig.ts:113-140`), and email provider auto-detect. |
 | D11 | **`*_FILE` indirection.** A var counts as `set` if either `X` or `X_FILE` is set. The builder never opens the file. |
 
 ## Components
@@ -166,7 +166,7 @@ No DB access, so it cannot hang or fail on DB state. Only GET; other methods
 5. **Status truthfulness (one per core entry).** e.g. compose-style env
    (`REDIS_HOST` + `REDIS_PASSWORD_FILE`, no `REDIS_URL`) ⇒ Redis `enabled`;
    `DATABASE_URL` + `POSTGRES_PASSWORD`, no `DATABASE_URL_APP` ⇒ database
-   `enabled`; `RESEND_API_KEY` only ⇒ email `enabled` (provider `resend`).
+   `enabled`; `RESEND_API_KEY` + `EMAIL_FROM` (compose default) ⇒ email `enabled`, reason names provider `resend`; bare `RESEND_API_KEY` ⇒ `misconfigured` (matches the real resolver — amended during W01 planning).
 6. **Access.** No session → 401; partner admin → 403; org user → 403; platform
    admin → 200; POST/PUT/PATCH/DELETE → 404.
 
