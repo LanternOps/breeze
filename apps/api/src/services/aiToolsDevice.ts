@@ -22,7 +22,7 @@ import {
   sites,
   customFieldDefinitions,
 } from '../db/schema';
-import { eq, and, desc, sql, inArray, SQL } from 'drizzle-orm';
+import { eq, and, asc, desc, sql, inArray, SQL } from 'drizzle-orm';
 import { escapeLike } from '../utils/sql';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
@@ -100,7 +100,7 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
     alwaysLoad: true,
     definition: {
       name: 'query_devices',
-      description: 'Search and filter devices in the organization. Returns a summary list of matching devices including hostname, OS, status, IP, and last seen time.',
+      description: 'Search and filter devices in the organization. Returns a summary list of matching devices including hostname, OS, status, IP, and last seen time, sorted by hostname for stable pagination.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -173,7 +173,12 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
         .from(devices)
         .leftJoin(sites, eq(devices.siteId, sites.id))
         .where(conditions.length > 0 ? and(...conditions) : undefined)
-        .orderBy(desc(devices.lastSeenAt))
+        // Fix 2: `desc(lastSeenAt)` alone has no tiebreaker, so agent
+        // heartbeat churn between page requests can shift a device across
+        // the offset boundary — an offset page then skips or duplicates
+        // rows. `(hostname, id)` is stable and unique, so offset pagination
+        // is deterministic across calls.
+        .orderBy(asc(devices.hostname), asc(devices.id))
         .limit(limit)
         .offset(offset);
 

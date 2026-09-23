@@ -9,6 +9,7 @@ import { expectDefaultPageFits, fixtureRow } from './aiToolOutputBudget.testkit'
 const dbMock = vi.hoisted(() => {
   let rows: unknown[] = [];
   let total = 0;
+  let lastOrderByArgs: unknown[] = [];
   const select = vi.fn((cols?: Record<string, unknown>) => {
     if (cols && typeof cols === 'object' && 'count' in cols) {
       return { from: () => ({ where: () => Promise.resolve([{ count: total }]) }) };
@@ -17,14 +18,17 @@ const dbMock = vi.hoisted(() => {
       from: () => ({
         leftJoin: () => ({
           where: () => ({
-            orderBy: () => ({
-              // Slice by the real limit/offset the handler requested, so a
-              // fixture set larger than the page still exercises hasMore/
-              // nextCursor honestly instead of always returning everything.
-              limit: (n: number) => ({
-                offset: (o: number) => Promise.resolve(rows.slice(o, o + n)),
-              }),
-            }),
+            orderBy: (...args: unknown[]) => {
+              lastOrderByArgs = args;
+              return {
+                // Slice by the real limit/offset the handler requested, so a
+                // fixture set larger than the page still exercises hasMore/
+                // nextCursor honestly instead of always returning everything.
+                limit: (n: number) => ({
+                  offset: (o: number) => Promise.resolve(rows.slice(o, o + n)),
+                }),
+              };
+            },
           }),
         }),
       }),
@@ -34,6 +38,7 @@ const dbMock = vi.hoisted(() => {
     select,
     setRows: (r: unknown[]) => { rows = r; },
     setTotal: (t: number) => { total = t; },
+    getLastOrderByArgs: () => lastOrderByArgs,
   };
 });
 vi.mock('../db', () => ({
@@ -77,6 +82,16 @@ describe('query_devices output shape (A-W05)', () => {
     expect(out.offset).toBe(0);
     expect(out.total).toBe(25);
     expectDefaultPageFits('query_devices', raw);
+  });
+
+  it('orders by a stable, unique key so offset pagination cannot skip or duplicate rows under heartbeat churn', async () => {
+    dbMock.setRows([]);
+    dbMock.setTotal(0);
+    await tool.handler({}, auth());
+    // Fix 2: `lastSeenAt` alone is not a tiebreaker-safe sort key — a device
+    // heartbeat between page requests can shift rows across the offset
+    // boundary. Ordering by (hostname, id) is stable and unique.
+    expect(dbMock.getLastOrderByArgs().length).toBe(2);
   });
 
   it('refuses a cursor minted for different filters', async () => {
