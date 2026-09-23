@@ -31,12 +31,14 @@ Every report has a `type` that determines which data is queried and how the outp
 | `vulnerability_management` | Findings-level vulnerability detail: open vulnerabilities, accepted/mitigated exceptions, remediation ranking, and vulnerabilities that are actively exploited in the wild or have a high exploit probability | open/accepted/mitigated counts, remediation ranking, known-exploited and high-probability findings |
 | `endpoint_management_review` | Device enrollment and compliance inventory pulled from Microsoft Intune, plus license-seat usage and a compliance-trend chart | enrollment/compliance counts, license seat usage, daily compliance trend |
 | `threat_detection_review` | A record of threat detections for the period, with resolution status and the vendor's recommendation text | detection count, resolution status, recommendation text |
-| `ticket_sla_attainment` | Business report: response and resolution SLA attainment for tickets created in the period, for one organization or partner-wide (see [Business Reports](#business-reports)) | tickets, response/resolution attainment %, breaches, per-group breakdown |
-| `technician_time_billability` | Business report: logged time against capacity, billable vs. included vs. non-billable split, and how much billable time has been billed | logged hours, utilization %, billable %, billing conversion, billable value per currency |
-| `ar_aging` | Business report: open invoice balances aged into buckets as of a date, per currency | current, 1-30, 31-60, 61-90, 90+ days overdue, no due date, open total |
+| `ticket_sla_attainment` | Response and resolution SLA attainment for a period, recalculated from each ticket's own timestamps rather than read off the stored breach flags, grouped by organization, priority, technician or category (see [Business Reports](#business-reports)) | response/resolution attainment %, missed targets, tickets with no SLA target |
+| `technician_time_billability` | Logged time against an assumed weekly capacity, the billable / included / non-billable split, and how much billable time has been approved and billed — billable value reported per currency (see [Business Reports](#business-reports)) | utilization %, billable %, billing conversion %, logged/billable/non-billable minutes, billable value per currency |
+| `ar_aging` | Unpaid invoice balances bucketed current / 1–30 / 31–60 / 61–90 / 90+ days past due, one set of totals per currency (see [Business Reports](#business-reports)) | outstanding balance per bucket, open invoice count, no-due-date balance, other open balance |
 
 <Aside type="note">
-The four evidence-review report types above are built from previously synced data only — they never make a live call to the source integration while generating, so a scheduled run never depends on a third party being up. If a required source (Microsoft 365 sync, a vulnerability feed, or the Huntress integration) has never completed a sync, the affected figures render as **not measured** rather than zero, and the report states the sync gap explicitly. `identity_access_review` and `endpoint_management_review` require an M365 tenant sync connected (`endpoint_management_review` additionally needs Intune enrolled); `vulnerability_management` requires a connected vulnerability scan/feed source; `threat_detection_review` requires a connected and synced Huntress integration. These four report types are not available for customer self-service in the portal.
+The four evidence-review report types — `identity_access_review`, `vulnerability_management`, `endpoint_management_review` and `threat_detection_review` — are built from previously synced data only — they never make a live call to the source integration while generating, so a scheduled run never depends on a third party being up. If a required source (Microsoft 365 sync, a vulnerability feed, or the Huntress integration) has never completed a sync, the affected figures render as **not measured** rather than zero, and the report states the sync gap explicitly. `identity_access_review` and `endpoint_management_review` require an M365 tenant sync connected (`endpoint_management_review` additionally needs Intune enrolled); `vulnerability_management` requires a connected vulnerability scan/feed source; `threat_detection_review` requires a connected and synced Huntress integration. These four report types are not available for customer self-service in the portal.
+
+The three business report types below read only Breeze's own ticket, time and invoice data and depend on no integration.
 </Aside>
 
 ---
@@ -273,31 +275,49 @@ The **Executive Summary** report (`executive_summary`) is built for handing to a
 
 ## Business Reports
 
-Three report types cover the business side of running an MSP rather than the fleet: **Ticket SLA attainment** (`ticket_sla_attainment`), **Technician time & billability** (`technician_time_billability`), and **AR aging** (`ar_aging`). They run either for one organization or **partner-wide** across all of your customers, on demand or on a schedule, and download as a designed PDF or as CSV.
+Three report types cover the PSA side of the business — service performance, technician time, and money owed. Unlike the report types above, they are **internal**: they are for MSP staff only (organization-scope users, and API or MCP keys, never see them, even when they hold the underlying permission), they never appear in a customer's portal, and generating one requires the type's own permission on top of `reports:read`/`reports:write` -- `tickets:read` for ticket SLA attainment, `time_entries:read` **and** `tickets:read` for technician time & billability, and `invoices:read` for AR aging.
 
-These reports hold margin, utilization, receivables, and SLA figures, so they are **internal to your MSP**:
+### Ownership: one organization, or all of them
 
-- Organization-scoped users -- customer users and organization API or MCP keys -- can never create, run, or see them. They are not available in the customer portal and cannot be attached to a service deliverable as evidence.
-- On top of the usual `reports` permissions, each type needs read access to the data it summarizes: **Ticket SLA attainment** needs `tickets:read`, **Technician time & billability** needs `time_entries:read` and `tickets:read`, and **AR aging** needs `invoices:read`. A user without them doesn't see these reports or their runs at all.
-- Creating or running a **partner-wide** report requires a partner-scoped user with access to **all** organizations. Partner-wide figures cover your active and trial customer organizations; suspended, archived, and deleted organizations are left out, and the report says so.
+A business report can be owned by a single organization or by the partner. A **partner-owned** report covers every organization the MSP manages, resolved live at each run against the partner's **active and trial** organizations -- suspended, archived and deleted organizations (and the internal quick-support organization) are excluded, and are listed in the report's own notes when they are. Ownership is chosen when the report is created and cannot be changed afterwards; create a second report if you need both views.
 
-<Aside type="caution" title="API only in this release">
-  The report builder does not offer these three types yet -- create and generate them through the API as shown below. Business reports created this way appear in the reports list, but editing one from the list is not supported yet; change it with `PUT /reports/:id`.
-</Aside>
+Creating or running a partner-owned report requires a partner-scope login with access to **all** organizations. A user restricted to selected organizations is refused: aggregating customers they cannot open individually would be an escalation, not a convenience. Business reports -- org-owned or partner-owned -- deliver to email addresses entered on the report itself; they cannot be delivered to a customer contact.
 
-### What each report shows
+### Ticket SLA attainment (`ticket_sla_attainment`)
 
-| Report | Covers | Notes |
-|--------|--------|-------|
-| Ticket SLA attainment | Tickets created in the period: how many met their response and resolution targets, breaches, and a per-group breakdown with the worst-performing group called out | Attainment is recalculated from each ticket's timestamps and SLA targets, so a ticket that was answered late is counted as a miss even if it was never flagged as breached while open. When that recalculation disagrees with the breach flags on tickets, the report prints the count of disagreements. Tickets with no SLA target are reported separately and never counted as met. |
-| Technician time & billability | Time entries started in the period: logged hours against each technician's capacity (utilization), the billable / included / non-billable split, billing conversion (billed ÷ billable), billable value, and average rate | Capacity is a uniform weekly figure (40 hours by default) prorated over working days. Money is shown per currency and never summed across currencies. Billable time with no rate or currency is counted and disclosed rather than silently dropped. At organization scope, only that organization's ticket-linked time is included, and utilization is the share of each technician's capacity spent on that organization. |
-| AR aging | Invoices that are sent, partially paid, or overdue, aged by days past their due date as of a date: **Current**, **1-30**, **31-60**, **61-90**, **90+**, and **No due date** | Totals are per currency. Any open balance on an invoice in another status (draft, paid, or void) is listed on a separate **Other open balance** line so the buckets reconcile to total receivables. Balances are each invoice's current balance -- choosing an earlier as-of date moves the aging reference date only, it does not reconstruct historical balances. |
+Measures the share of support tickets created in the period that met their response and resolution targets. Attainment is **recalculated** from each ticket's own timestamps and recorded paused minutes against its own targets, rather than read off the stored breach flags. Only support work is measured -- planned work is excluded. Tickets with no target set are never counted as met or missed; they are reported as their own figure.
 
-Every summary figure is computed over the full data set. The run stores up to **5,000 detail rows**; when there are more, the report says how many were left out. A ratio with nothing to measure (for example, no tickets with a response target) prints **N/A**, never 0%. A user whose access is limited to specific sites gets an explanatory note instead of figures, because tickets, time entries, and invoices are not tied to sites.
+Grouping is by organization, priority, technician or category; left unset, it defaults to organization for a partner-owned report and priority for an org-owned one. Two limits are disclosed on the report itself:
 
-### Options
+- **Paused time is a lifetime total** -- a ticket paused after its first reply has that pause counted against the response clock too, which slightly flatters response attainment.
+- **The technician axis is the ticket's current assignee** -- reassignment history isn't tracked.
 
-Business reports select their data by **period** and **owner** (one organization, or partner-wide) -- never by the date range, site, device, or organization filters the other report types use. Sending any of those filters returns `400`.
+### Technician time & billability (`technician_time_billability`)
+
+Measures logged time against capacity, and how much of it converts to revenue.
+
+- **Utilization** is logged minutes ÷ capacity minutes. Capacity is a report setting -- an assumed weekly-hours figure (1–80, default 40) -- prorated over the working days in the period. This assumes uniform capacity: PTO and part-time schedules aren't modeled, so an individual technician's figure can mislead even when the team figure is sound. At organization scope the denominator is still each technician's whole capacity, so the figure is a *share* of their capacity spent on that organization, not their overall utilization.
+- **Billable share** is billable minutes ÷ logged minutes, split three ways -- billable, included in plan, and non-billable.
+- **Billing conversion** is approved-and-billed minutes ÷ billable minutes. It is deliberately not called "realization" -- there is no fee-schedule baseline to compute financial realization against.
+
+Technicians with no time in the period are listed at 0% rather than omitted -- dropping them would inflate the team average. Billable value is reported **once per currency**, never summed across currencies; billable minutes with no hourly rate or currency are called out and excluded from that total. An organization-scoped report covers ticket-linked time only -- time logged with no organization has no organization to be scoped to.
+
+### AR aging (`ar_aging`)
+
+Buckets unpaid invoice balances by how far past due they are: current, 1–30, 31–60, 61–90 and 90+ days, plus two reconciliation buckets:
+
+- **No due date** -- an open balance on an invoice with no due date is aged into its own bucket, never silently into "current".
+- **Other open balance** -- an invoice carrying a balance in an unexpected status appears here rather than vanishing, so buckets plus this figure always reconcile to total AR.
+
+Aging is measured as of the moment the report runs, in the report owner's resolved timezone, unless an explicit as-of date is set. **The as-of date moves only the aging reference date -- it does not reconstruct historical balances or undo payments recorded after it.** An optional note can also list invoices that were fully paid month-to-date as of that date; it's informational and never moves a bucket. Totals are reported **once per currency, with no conversion** -- there is deliberately no combined figure, because an FX-converted headline would be wrong the day after it was produced.
+
+### What gets stored, and what gets capped
+
+Every total is computed in SQL over **all** matching rows. The stored detail rows -- the per-ticket, per-technician or per-invoice lines behind the totals -- are capped at 5,000 per run; a truncated detail list never implies a truncated total. A downloaded PDF shows up to 500 detail rows; CSV and Excel downloads of a stored run carry the full (capped) set as raw numeric values -- balances and rates as plain decimals, durations as minutes, percentages as fractions -- each money row tagged with a currency-code column, so a spreadsheet can total them directly. A ratio with nothing to measure (for example, no tickets with a response target) prints **N/A**, never 0%. A user whose access is limited to specific sites gets an explanatory note instead of figures, because tickets, time entries, and invoices are not tied to sites.
+
+### API options
+
+The web options forms set the same keys. Business reports select their data by **period** and **owner** (one organization, or partner-wide) -- never by the date range, site, device, or organization filters the other report types use. Sending any of those filters returns `400`.
 
 | Option | Applies to | Values | Default |
 |--------|-----------|--------|---------|
@@ -312,7 +332,7 @@ Business reports select their data by **period** and **owner** (one organization
 
 Periods and "today" are resolved in the report owner's time zone -- the organization's, then the partner's, then UTC. If the configured time zone isn't recognized, the report runs in UTC and says so.
 
-### Creating a partner-wide report
+### Creating a partner-wide report through the API
 
 Pass `"ownerScope": "partner"` and omit `orgId`. The report belongs to your partner, not to any one organization; `ownerScope` is set at creation and can't be changed later.
 
