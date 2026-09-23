@@ -21,21 +21,25 @@ func (c *EventLogCollector) Collect() ([]EventLogEntry, error) {
 	categories, minLevel, maxEvents := c.readConfig()
 
 	type catCollector struct {
-		category string
-		fn       func(since time.Time) ([]EventLogEntry, error)
+		enabled bool
+		fn      func(since time.Time) ([]EventLogEntry, error)
 	}
 
 	all := []catCollector{
-		{"security", c.collectSecurityEvents},
-		{"hardware", c.collectSystemErrors},
-		{"application", c.collectApplicationCrashes},
-		{"system", c.collectPowerEvents},
+		{categoryEnabled(categories, "security"), c.collectSecurityEvents},
+		// System-log errors are split into "hardware" and "system" per entry,
+		// so the query runs when either is enabled (issue #6694).
+		{systemLogQueryEnabled(categories), func(since time.Time) ([]EventLogEntry, error) {
+			return c.collectSystemErrors(since, categories)
+		}},
+		{categoryEnabled(categories, "application"), c.collectApplicationCrashes},
+		{categoryEnabled(categories, "system"), c.collectPowerEvents},
 	}
 
 	// Filter to only enabled categories
 	var active []catCollector
 	for _, cc := range all {
-		if categoryEnabled(categories, cc.category) {
+		if cc.enabled {
 			active = append(active, cc)
 		}
 	}
@@ -117,8 +121,11 @@ func (c *EventLogCollector) collectSecurityEvents(since time.Time) ([]EventLogEn
 	return results, nil
 }
 
-// collectSystemErrors gathers disk errors, driver failures, WHEA errors from System log
-func (c *EventLogCollector) collectSystemErrors(since time.Time) ([]EventLogEntry, error) {
+// collectSystemErrors gathers error/critical entries from the System log and
+// labels each "hardware" (disk, NTFS, storage controller, WHEA, thermal) or
+// "system" via classifySystemLogEntry, keeping only entries whose derived
+// category is enabled in categories.
+func (c *EventLogCollector) collectSystemErrors(since time.Time, categories []string) ([]EventLogEntry, error) {
 	events, err := c.queryWinEvents("System", 2, since)
 	if err != nil {
 		return nil, err
@@ -126,10 +133,14 @@ func (c *EventLogCollector) collectSystemErrors(since time.Time) ([]EventLogEntr
 
 	var results []EventLogEntry
 	for _, e := range events {
+		category, keep := systemLogCategoryFor(categories, e.ProviderName, e.Id)
+		if !keep {
+			continue
+		}
 		results = append(results, EventLogEntry{
 			Timestamp: truncateCollectorString(e.TimeCreated),
 			Level:     mapWinLevel(e.Level),
-			Category:  "system",
+			Category:  category,
 			Source:    truncateCollectorString(e.ProviderName),
 			EventID:   truncateCollectorString(fmt.Sprintf("%d:%d", e.Id, e.RecordId)),
 			Message:   truncateString(e.Message, 500),
@@ -183,11 +194,15 @@ func (c *EventLogCollector) collectPowerEvents(since time.Time) ([]EventLogEntry
 
 	// Query specific power-related Event IDs from the System log
 	// 41=unexpected shutdown, 1074=planned shutdown, 6005=boot, 6006=clean shutdown, 6008=unexpected shutdown, 6009=OS info at boot
+	ids := make([]string, 0, len(windowsPowerEventIDs))
+	for _, id := range windowsPowerEventIDs {
+		ids = append(ids, strconv.Itoa(id))
+	}
 	psCmd := fmt.Sprintf(
-		`Get-WinEvent -FilterHashtable @{LogName='System'; Id=41,1074,6005,6006,6008,6009; StartTime='%s'} -MaxEvents 50 -ErrorAction SilentlyContinue | `+
+		`Get-WinEvent -FilterHashtable @{LogName='System'; Id=%s; StartTime='%s'} -MaxEvents 50 -ErrorAction SilentlyContinue | `+
 			`Select-Object RecordId, LogName, Level, LevelDisplayName, @{N='TimeCreated';E={$_.TimeCreated.ToString('o')}}, ProviderName, Id, Message | `+
 			`ConvertTo-Json -Depth 2 -Compress`,
-		sinceStr,
+		strings.Join(ids, ","), sinceStr,
 	)
 
 	output, err := runCollectorOutput(collectorLongCommandTimeout, "powershell", "-NoProfile", "-NonInteractive", "-Command", utf8PowerShellCommand(psCmd))
