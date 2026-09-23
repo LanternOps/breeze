@@ -2065,6 +2065,7 @@
     "iocScans": "Scansioni IOC",
     "subtitle": "Scansioni di malware e IOC basate su firme sull'intera flotta. Non sostituisce una protezione completa degli endpoint.",
     "scansTab": "Scansioni",
-    "threatsTab": "Minacce"
+    "threatsTab": "Minacce",
+    "backToThreats": "Torna alle minacce"
   }
 }

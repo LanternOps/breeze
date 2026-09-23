@@ -2065,6 +2065,7 @@
     "iocScans": "IOC Taramaları",
     "subtitle": "Filonuz genelinde imza tabanlı kötü amaçlı yazılım ve IOC taramaları. Tam uç nokta korumasının yerini tutmaz.",
     "scansTab": "Taramalar",
-    "threatsTab": "Tehditler"
+    "threatsTab": "Tehditler",
+    "backToThreats": "Tehditlere geri dön"
   }
 }
