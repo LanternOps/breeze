@@ -2,9 +2,12 @@
 
 Status: **draft for owner review** (Todd asked for the spec 2026-09-21 after reviewing the
 anomalies tab on KIT, US prod).
-Advisor quorum: Fable position formed; Codex unavailable (usage limit until 2026-09-26), so the
-independent review was a fresh-context Opus agent with repo access. Ten questions put, ten verdicts
-returned; eight amendments adopted, two positions held on the evidence. See "Quorum record" (§20).
+Advisor quorum: two reviews. (1) Design quorum — Fable position formed; Codex unavailable (usage
+limit until 2026-09-26), so the independent review was a fresh-context Opus agent with repo access.
+Ten questions put, ten verdicts returned; eight amendments adopted, two positions held on the
+evidence. See "Quorum record" (§20). (2) Second quorum on the reconciled plans (Fable,
+2026-09-22) — ten questions, amendments A1–A12 adopted after the orchestrator verified the key
+claims. See §22.
 Tracking: LanternOps/breeze#6650 (waves #6651 W01, #6652 W02, #6653 W03, #6654 W04).
 Plan: `docs/superpowers/plans/monitoring/2026-09-21-metric-anomaly-episodes.md` (index, one plan per
 wave).
@@ -62,15 +65,15 @@ episode lifecycle is wrong; it is scoped to be self-clearing and has a fallback.
 |---|---|
 | D1 | New table `metric_anomaly_episodes`: one row per contiguous run of anomalous buckets for a (device, episode key). `metric_anomalies` rows stay as the per-bucket evidence and gain a nullable `episode_id`. |
 | D2 | Episode key = `source_table : anomaly_type : metric_family`. The only families that collapse several metric names are the process cpu and ram `_sum`/`_max` pairs. |
-| D3 | **Extend while ongoing; never reopen.** A gap of ≤ 30 min between anomalous buckets extends the episode. After 30 min of clean data the episode closes. New activity after a close opens a **new** episode carrying `recurrence_count` = number of episodes with the same key closed in the previous 7 days. |
-| D4 | Assembly and auto-resolve are two new detector stages, each its own transaction and advisory-lock acquisition, placed **after** the incidents stage. Auto-resolve runs even when `ml.anomalies.enabled` is off. |
+| D3 | **Extend while ongoing; never reopen.** A gap of ≤ 30 min between anomalous buckets extends the episode. After 30 min of clean data the episode closes. New activity after a close opens a **new** episode carrying `recurrence_count` = number of episodes with the same key that closed in the 7 days before its first bucket (episode-relative, so a replay counts correctly). |
+| D4 | Assembly and auto-resolve are two new detector stages, each its own transaction and advisory-lock acquisition. Assembly runs after the three detectors and **before** the incidents stage (so each incident is created with its episode); auto-resolve runs last. The resolve stage runs even when `ml.anomalies.enabled` is off — then it closes every open episode as `detection_off`, because rollups nobody evaluated prove nothing. |
 | D5 | Auto-resolve requires **observed clean data**: ≥ 6 rollup buckets with samples for every metric in the episode after its last anomalous bucket. With no clean data for 24 h the episode expires, labelled `expired_offline` (device not seen) or `expired_no_data` (device reporting, series absent). |
 | D6 | Episode status is `open / resolved / dismissed` plus a `close_reason`. Promotion is a link (`linked_alert_id`), not a status; a promoted episode keeps extending and, when it clears, resolves its alert. |
 | D7 | Human actions cascade to member rows **only where the member is still `open`**, and emit one `ml_feedback_events` row per member (existing `sourceType: 'anomaly'`) so `/analytics/anomalies/evaluation` and the v1-shadow overlap keep their labels. Auto-resolve sets members to a new `cleared` status that the evaluation excludes from human-label rates. |
 | D8 | **Dismiss = dismiss and snooze this signal on this device for 7 days.** A new episode for a snoozed key is created already-dismissed (`close_reason = 'snoozed'`), so it is auditable but silent. "Stop snoozing" is the only extra action. |
 | D9 | Attribution: at episode open and whenever the peak grows, snapshot the top 3 processes for the family's dimension from the nearest `device_process_samples` row (set-based, one LATERAL per stage run). Disk/net dimensions may legitimately be empty; the UI says so. |
 | D10 | Baseline anti-contamination: the baseline aggregate excludes buckets that belong to a **currently open** episode of the same key. If that leaves fewer than `MIN_BASELINE_BUCKETS` (12), fall back to the unfiltered baseline and count it. |
-| D11 | AI-agent dispatch: `metric_anomaly_incidents` keeps its per-bucket grain (schema and unique key unchanged) but gains `episode_id`; the publisher dispatches at most one incident per episode and marks the rest suppressed. |
+| D11 | AI-agent dispatch: `metric_anomaly_incidents` keeps its per-bucket grain (schema and unique key unchanged) but gains `episode_id`, written when the incident is created; the publisher dispatches at most one incident per episode and marks the rest suppressed. |
 | D12 | The web panel shows open episodes as sentence cards with an expandable list of member buckets, a "Recently closed" filter for the last 7 days, and hides the v1-shadow and remediation-suggestion blocks when their flags are off. Legacy per-row endpoints stay for alert deep links; the UI no longer offers per-row actions. |
 
 ## 3. Scope and non-goals
@@ -98,7 +101,7 @@ remediation-suggestion quality, removing `metric_anomaly_incidents`.
 | `metric_family` | varchar(40) NOT NULL | see 4.2 |
 | `metric_names` | text[] NOT NULL | distinct member metric names, sorted |
 | `status` | varchar(20) NOT NULL DEFAULT 'open' | CHECK `open \| resolved \| dismissed` |
-| `close_reason` | varchar(30) | NULL while open; CHECK `cleared \| expired_offline \| expired_no_data \| user \| snoozed` |
+| `close_reason` | varchar(30) | NULL while open; CHECK `cleared \| expired_offline \| expired_no_data \| detection_off \| user \| snoozed` (`detection_off` = closed because `ml.anomalies.enabled` was turned off, §7) |
 | `first_seen_at` | timestamp NOT NULL | `min(window_start)` of members |
 | `last_seen_at` | timestamp NOT NULL | `max(window_end)` of members |
 | `bucket_count` | integer NOT NULL | members attached |
@@ -107,7 +110,7 @@ remediation-suggestion quality, removing `metric_anomaly_incidents`.
 | `peak_baseline_value` | double precision | baseline of that member |
 | `peak_score` | double precision NOT NULL | |
 | `peak_at` | timestamp NOT NULL | `window_start` of that member |
-| `recurrence_count` | integer NOT NULL DEFAULT 0 | episodes with the same (device, key) closed in the prior 7 days at open time; denormalised, no FK |
+| `recurrence_count` | integer NOT NULL DEFAULT 0 | episodes with the same (device, key) whose `resolved_at` falls in the 7 days up to this episode's `first_seen_at`; denormalised, no FK |
 | `attribution` | jsonb | §9; NULL when no process sample within ±5 min |
 | `linked_alert_id` | uuid FK alerts ON DELETE SET NULL | promotion link |
 | `snoozed_until` | timestamp | set by a user dismiss; copied onto snoozed successors |
@@ -208,10 +211,11 @@ anomaly, so "back inside baseline" would close episodes on still-broken devices.
 
 ## 6. Assembly stage (D4)
 
-A new stage `episodes` in `detectMetricAnomaliesRange`, after `incidents`, its own
-`withSystemDbAccessContext` transaction and its own `pg_try_advisory_xact_lock` acquisition. The
-stage loop already `break`s when a stage finds the lock held, so the two new stages sit last to
-avoid starving the dispatch outbox.
+A new stage `episodes` in `detectMetricAnomaliesRange`, after the three detectors and **before**
+`incidents`, its own `withSystemDbAccessContext` transaction and its own
+`pg_try_advisory_xact_lock` acquisition. Running first means `upsertMetricAnomalyIncidents` finds
+every fresh row already assigned and writes the incident's `episode_id` at insert (§11). Stage order:
+`baseline, growth-trend, process-runaway, episodes, incidents, episode-resolve`.
 
 Input: `metric_anomalies` rows for the org with `episode_id IS NULL AND status = 'open' AND
 window_start >= now() − EPISODE_ASSEMBLY_LOOKBACK_HOURS`, ordered by `(device_id, window_start)`.
@@ -226,28 +230,47 @@ For each row, compute `episode_key`. Then, in one set-based statement per org:
    (min/max), `bucket_count`, `metric_names` (∪), and the peak fields when `row.score >
    peak_score`.
 2. **Otherwise open** a new episode. `recurrence_count` = count of episodes with the same
-   `(device_id, episode_key)` whose `resolved_at ≥ now() − EPISODE_RECURRENCE_DAYS`. If the most
-   recent dismissed episode for that key has `snoozed_until > now()`, the new episode is created
+   `(device_id, episode_key)` whose `resolved_at ∈ [first_seen_at − EPISODE_RECURRENCE_DAYS,
+   first_seen_at]` — relative to the new episode, not to `now()`. (The upper bound is inclusive
+   because an episode closed by assembly is stamped `resolved_at` = its successor's start.) If the
+   most recent dismissed episode for that key has `snoozed_until > now()`, the new episode is created
    with `status = 'dismissed'`, `close_reason = 'snoozed'`, `resolved_at = now()`, the same
    `snoozed_until`, and its members are set to `dismissed` (§8.3). Insert uses `ON CONFLICT` on the
    partial unique index; on conflict, re-run the attach.
 3. Set `episode_id` on the member rows.
 
-Backfill jobs (explicit `from`/`to`) run assembly (the predicates are episode-relative, so replay is
-safe) but **skip auto-resolve** (it is `now()`-relative). `recurrence_count` may be wrong for
-episodes created by an out-of-order replay; this is documented and accepted.
+Only the newest island of a key can become a snoozed successor; an older island in the same batch
+(a backfill orphan, an earlier burst) is created as closed history even while a snooze is live.
+
+**Concurrency with a human action.** The planner reads without locks, and a user can dismiss or
+unsnooze an episode between that read and the writes. The writes therefore lock the anchor
+episodes `FOR UPDATE` and only attach to, or recompute, an existing episode that is still `open` or
+a live snoozed successor (`status = 'dismissed' AND close_reason = 'snoozed' AND snoozed_until >
+now`). Rows planned onto an episode that fails the check stay unassigned and become a snoozed
+successor or a new episode on the next tick; a dismissed episode never gains open members.
+
+Backfill jobs (explicit `from`/`to`) run assembly (the predicates, including `recurrence_count`, are
+episode-relative, so replay is safe) but **skip auto-resolve** (it is `now()`-relative).
 
 First deployment: rows older than the lookback that are still `open` are never assembled. The new
 panel does not show them; they age out with retention. No migration-time backfill of `episode_id`.
 
 ## 7. Auto-resolve stage (D5)
 
-Stage `episode-resolve`, after `episodes`. It runs from the scan job **regardless of
-`ml.anomalies.enabled`** — turning detection off must not freeze open episodes. The scan job
-therefore calls the resolve stage outside the flag gate (the flag gate stays around the three
-detectors, incidents and assembly).
+Stage `episode-resolve`, last. It runs from the scan job **regardless of `ml.anomalies.enabled`** —
+turning detection off must not freeze open episodes. The scan job therefore calls the resolve stage
+outside the flag gate (the flag gate stays around the three detectors, assembly and incidents).
 
-For every `open` episode of the org with `last_seen_at < now() − EPISODE_GAP_MINUTES`:
+**Detection off.** With the flag off no detector evaluates the rollups, so rollups that look clean
+prove nothing. The stage then closes every `open` episode of the org with `status = 'resolved'`,
+`close_reason = 'detection_off'`, `resolved_at = now()`, members still `open` → `cleared`, no
+feedback rows, and **no** linked-alert resolve (nothing observed the device recover). The panel
+shows "closed: detection turned off".
+
+**Detection on.** For every `open` episode of the org with `last_seen_at + EPISODE_GAP_MINUTES + 5
+min ≤ to`, where `to` is the detection run's range end — a bucket starting at `last_seen_at + gap`
+would still attach, so it must have had its detection pass before "no new bucket" means anything
+(`now()` is not enough when detection lags):
 
 - `clean(metric)` = number of `metric_rollups` rows with `source_table = episode.source_table`,
   `device_id`, `metric_name = metric`, `bucket_seconds = 300`, `bucket_start ≥
@@ -255,7 +278,7 @@ For every `open` episode of the org with `last_seen_at < now() − EPISODE_GAP_M
   attached and moved `last_seen_at`, so every such rollup row is clean by construction.)
 - **Resolve** with `close_reason = 'cleared'` when `min over metric_names of clean(metric) ≥
   EPISODE_CLEAN_BUCKETS`.
-- **Expire** when not cleared and `last_seen_at < now() − EPISODE_EXPIRE_HOURS`:
+- **Expire** (still `now()`-relative) when not cleared and `last_seen_at < now() − EPISODE_EXPIRE_HOURS`:
   `expired_offline` if `devices.last_seen_at IS NULL OR devices.last_seen_at < now() −
   EPISODE_EXPIRE_HOURS`, else `expired_no_data` (the device is checking in but this series stopped —
   process sampling disabled, agent downgrade, metric removed).
@@ -263,7 +286,7 @@ For every `open` episode of the org with `last_seen_at < now() − EPISODE_GAP_M
   `WHERE status = 'open'` to `cleared` (D7). Members that were promoted stay `promoted`.
 - If `linked_alert_id` is set and the alert is `active` and not `requiresHuman`, call
   `resolveAlert(alertId, 'Auto-resolved: anomaly episode cleared')` (or `... expired`). Today
-  `checkAutoResolve` returns false for every `ruleId: null` alert (`alertService.ts:436-443`), so
+  `checkAutoResolve` returns false for every `ruleId: null` alert (`alertService.ts:455-457`), so
   promoted anomaly alerts never close; this is the only auto-resolve path they get.
 
 Both new stages are whole-org sweeps under the same 90 s `statement_timeout` as the detectors. A
@@ -275,12 +298,13 @@ timeout is a logged skip today; the two new stages additionally increment a coun
 ### 8.1 Actions
 
 `PATCH /devices/:deviceId/anomaly-episodes/:episodeId` with `{ action, note?, resolveAlert? }`
-(`resolveAlert` defaults to `true` and only matters for `resolve` on a promoted episode, §8.2):
+(`resolveAlert` defaults to `true` and only matters for `resolve` or `dismiss` on a promoted episode,
+§8.2):
 
 | action | precondition | effect |
 |---|---|---|
 | `resolve` | status open | status resolved, close_reason user, resolved_at/by; members open → resolved; linked alert resolved when `resolveAlert` is true |
-| `dismiss` | status open | status dismissed, close_reason user, `snoozed_until = now() + EPISODE_SNOOZE_DAYS`; members open → dismissed |
+| `dismiss` | status open | status dismissed, close_reason user, `snoozed_until = now() + EPISODE_SNOOZE_DAYS`; members open → dismissed; linked alert resolved when `resolveAlert` is true (note `Resolved: anomaly episode dismissed` unless the user wrote one) |
 | `promote` | status open, no linked alert | `promoteMetricAnomalyToAlert` on the peak member (its sibling collapse still applies), `linked_alert_id` set, members open → promoted; the alert's `context` gains `episodeId`; episode stays open |
 | `unsnooze` | status dismissed and `snoozed_until > now()` | `snoozed_until = NULL` on this episode; no status change |
 
@@ -290,9 +314,10 @@ existing per-row route apply.
 ### 8.2 Cascade rule
 
 Cascades touch member rows **only `WHERE status = 'open'`**. A member already `promoted` keeps that
-label whatever the episode does; a human `resolve` over a promoted episode is therefore
-"episode resolved, alert stays for the alert workflow" only when the caller passes
-`resolveAlert: false`; the default resolves the linked alert with the user's note.
+label whatever the episode does; a human `resolve` **or `dismiss`** over a promoted episode is
+therefore "episode closed, alert stays for the alert workflow" only when the caller passes
+`resolveAlert: false`; the default resolves the linked alert with the user's note. (A tech who
+silences a signal is done with it; keeping its alert open by default would leave an orphan.)
 
 ### 8.3 Feedback events
 
@@ -307,7 +332,7 @@ needs the `ml_feedback_events_source_type_check` constraint re-created and
 `ML_FEEDBACK_SOURCE_TYPES` in `packages/shared/src/validators/mlFeedback.ts` extended; both land in
 the evaluation wave (W03), and until then the route emits member rows only.
 
-Automatic closes (`cleared`, `expired_*`) and snoozed successors emit **no** feedback rows: they are
+Automatic closes (`cleared`, `expired_*`, `detection_off`) and snoozed successors emit **no** feedback rows: they are
 not human labels. `cleared` is excluded from the human-label denominators in the evaluation
 endpoint in W03; before W03 it appears as its own status bucket, which the endpoint already tolerates
 (`GROUP BY status`).
@@ -351,6 +376,11 @@ whose `episode_id` points at an episode with `status = 'open'`. Buckets of close
 the baseline, so a device that legitimately steps up (more RAM in use forever) re-baselines within
 24 h of its episode closing.
 
+Dismissing an episode lets the baseline absorb the behaviour: snoozed successors are dismissed, so
+their buckets are not excluded from the baseline, and the key usually stops firing even after the
+snooze ends. There is no permanent suppression; "mute until changed" for recurring scheduled-task
+anomalies is a follow-up (§19).
+
 Fallback: when the filtered baseline has fewer than `MIN_BASELINE_BUCKETS` (12) rows, use the
 unfiltered baseline for that device+metric and increment
 `metric_anomaly_baseline_fallback_total`. Without the fallback a long burst would remove most of
@@ -367,18 +397,21 @@ produces an anomalous bucket at hour 5, and the assembled episode spans the full
 
 ## 11. AI-agent dispatch per episode (D11)
 
-`upsertMetricAnomalyIncidents` keeps its grouping. After assembly, a second statement sets
-`metric_anomaly_incidents.episode_id` for incidents still `dispatched_at IS NULL`, choosing, among
-the incident's member anomalies (same device, anomaly_type, bucket_seconds, window_start), the
-episode of the member with the highest `score`.
+`upsertMetricAnomalyIncidents` keeps its grouping. Because the `episodes` stage runs first (§6), it
+writes `metric_anomaly_incidents.episode_id` when it creates the incident: among the incident's
+member anomalies (same device, anomaly_type, bucket_seconds, window_start), the episode of the
+member with the highest `score` — `(array_agg(ma.episode_id ORDER BY ma.score DESC NULLS
+LAST))[1]`. On conflict it keeps a known link, `episode_id = COALESCE(EXCLUDED.episode_id,
+metric_anomaly_incidents.episode_id)`, so a later tick fills a link a timed-out `episodes` stage left
+NULL and never unlinks one. There is no separate link statement and no publisher grace window.
 
 The publisher's claim CTE adds: skip an incident when another incident with the same `episode_id`
 already has `agent_run_id IS NOT NULL`; the skipped row is marked `dispatched_at = now()`,
 `dispatch_attempts = dispatch_attempts + 1`, `suppressed_by_episode = true` (new boolean column,
 default false), and is never published. Retention already prunes dispatched rows after 14 days, so a
 still-open episode older than 14 days gets one fresh dispatch — acceptable. Incidents with
-`episode_id IS NULL` (created before assembly ran, or for rows outside the lookback) dispatch as
-today.
+`episode_id IS NULL` (the `episodes` stage timed out that tick, or rows outside the lookback)
+dispatch as today.
 
 ## 12. API surface
 
@@ -390,8 +423,10 @@ today.
 | GET/PATCH | `/devices/:id/anomalies…` | unchanged, plus `cleared` in the enum |
 
 Episode serialization: every column of §4.1 in camelCase plus `durationSeconds` (`last_seen_at −
-first_seen_at`), `ongoing` (`status === 'open'`), `promoted` (`linked_alert_id !== null`), and
-`snoozed` (`snoozed_until > now`).
+first_seen_at`), `ongoing` (`status === 'open'`), `promoted` (`linked_alert_id !== null`),
+`snoozed` (`snoozed_until > now`), `rangeMin`/`rangeMax` and `peakAnomalyId` (§21), and
+`deviceLastSeenAt` (the device's `last_seen_at`, joined from `devices`, for the `expired_offline`
+chip).
 
 Alerts created by promotion carry `context.episodeId`; `alertMlContext.ts` links to
 `#anomalies/<episodeId>` when present and falls back to `#anomalies/<anomalyId>`. The panel passes
@@ -411,8 +446,9 @@ whichever id it gets as `ref`.
      The range is `min..max` of member observed values; a single bucket prints one value.
    - Line 2: "Top by RAM at peak: chrome.exe 1.9 GB · MsMpEng.exe 0.4 GB · Teams.exe 0.3 GB" or
      "Process detail not available for this metric."
-   - Line 3, chips: `Ongoing since 22:35` / `22:35 – 23:55 · cleared` / `expired: device not seen since …` /
-     `expired: no data for this metric` / `Dismissed · snoozed until 28 Sep` ; `3rd time in 7 days` when
+   - Line 3, chips: `Ongoing since 22:35` / `22:35 – 23:55 · cleared` / `expired: device not seen since …`
+     (from `deviceLastSeenAt`) / `expired: no data for this metric` / `closed: detection turned off` /
+     `Dismissed · snoozed until 28 Sep` ; `3rd time in 7 days` when
      `recurrence_count ≥ 1`; `Alert` link when promoted; `17 detections` toggle.
    - Actions (open only): **Dismiss for 7 days** · **Resolve** · **Promote to alert** (or **Open alert**).
      Dismissed-and-snoozed cards show **Stop snoozing**.
@@ -421,6 +457,13 @@ whichever id it gets as `ref`.
    - Focused episode (from `ref`) gets the existing ring highlight.
 3. Empty states: "No open anomalies — recent metrics are within baseline." with a "Show recently
    closed" link when any exist.
+   - Freshness: while any open episode is shown and the tab is visible (`document.visibilityState`),
+     the list re-fetches every 60 s without a loading flash; the timer stops when the tab is hidden,
+     when no open episode is shown, and on unmount.
+   - Unresolved `ref`: when a deep link's `ref` resolves to no episode (`focusedEpisodeId: null` — a
+     detection older than episode grouping), the panel fetches the legacy `GET
+     /devices/:id/anomalies?status=all` list and shows that one row read-only with "This detection
+     predates episode grouping".
 4. Remediation suggestions render **inside** an open card only when `ml.remediation_suggestions.enabled`
    is on; otherwise nothing (today it renders a disabled button).
 5. The v1-shadow comparison renders only when `ml.anomalies.v1_shadow.enabled` is on; otherwise
@@ -433,8 +476,8 @@ All mutations go through `runAction`. Copy lives in `apps/web/src/locales/en/dev
 
 ## 14. Data changes and tenancy contract
 
-Migration `apps/api/migrations/2026-10-27-100000-metric-anomaly-episodes.sql` (must sort after the
-newest file on `origin/main`, currently `2026-10-26-160100-…`; re-check at push time — the pre-push
+Migration `apps/api/migrations/2026-10-28-100000-metric-anomaly-episodes.sql` (must sort after the
+newest file on `origin/main`, currently `2026-10-27-120000-partner-notify-on-behalf-acceptance.sql` (checked 2026-09-22); re-check at push time — the pre-push
 guard does). Idempotent throughout. Contents:
 
 1. `CREATE TABLE IF NOT EXISTS metric_anomaly_episodes …` with the CHECKs of §4.1.
@@ -450,7 +493,7 @@ guard does). Idempotent throughout. Contents:
    test's baseline must not be touched. Inline `CREATE INDEX` (no `CONCURRENTLY`): `metric_anomalies`
    holds tens of thousands of rows per busy partner, not millions.
 
-Tenancy shape: **1** (direct `org_id`, auto-discovered by `rls-coverage`). Registrations, all in W01:
+Tenancy shape: **1** (direct `org_id`, auto-discovered by `rls-coverage`). Registrations, all in W01 (PR W01a):
 
 | Registry | Entry |
 |---|---|
@@ -497,14 +540,23 @@ Integration (`vitest.integration.config.ts`, Integration Tests job, real Postgre
 - Auto-resolve: 6 clean rollup buckets on every member metric → `cleared`, members `cleared`,
   promoted member untouched, linked alert resolved; 5 clean buckets → still open; series absent
   with device reporting → `expired_no_data` at 24 h; device `last_seen_at` stale → `expired_offline`.
-- Auto-resolve runs with `ml.anomalies.enabled = false`.
+- With `ml.anomalies.enabled = false` the resolve stage still runs and closes open episodes as
+  `detection_off` even when clean rollups exist; with it on, eligibility waits for the range end to
+  pass `last_seen_at + gap + 5 min`.
+- A user dismiss that commits between the planner read and the attach wins: the dismissed episode
+  gains no open members, and the rows become a snoozed successor next tick.
+- `recurrence_count` of a replayed burst counts only episodes that closed before its first bucket.
+- An incident is created already carrying its episode's id.
 - Snooze: dismiss, then a new anomalous bucket 10 minutes later → successor created dismissed/snoozed,
   members dismissed, no feedback rows.
 - Anti-contamination: 6-hour synthetic burst still detected at hour 5; fallback counter increments
   when the filtered baseline is short.
 - Feedback: an episode dismiss over 17 members yields 17 joinable `anomaly` rows and the evaluation
   endpoint's `feedback.total` moves by 17.
-- Publisher: 3 incidents on one episode → one published, two `suppressed_by_episode`.
+- Publisher: 3 incidents on one episode → one published, two `suppressed_by_episode`; an unlinked
+  incident dispatches at once.
+- Dismiss (like resolve) of a promoted episode resolves its linked alert unless `resolveAlert:
+  false`; a `detection_off` close never does.
 - Contract suites: `tenantCascade`, `tenant-export-policy`, `tenantExportErasureRoundtrip`,
   `orgMergeRegistry`, `rls-coverage`, `cascadeDelete`, `moveOrg.coverage`, `autoMigrate`.
 
@@ -512,8 +564,8 @@ Integration (`vitest.integration.config.ts`, Integration Tests job, real Postgre
 
 | Wave | Content | Depends on |
 |---|---|---|
-| W01 API core | migration, Drizzle schema, `episodeKeyFor`, assembly stage, auto-resolve stage (flag-independent), attribution LATERAL, anti-contamination + fallback, `cleared` status, all registrations of §14, retention, integration proofs | — |
-| W02 API surface | episode routes (list/detail/PATCH), promotion via episode + `context.episodeId`, alert auto-resolve on clear/expire, snooze/unsnooze, incident `episode_id` + publisher gate, per-member feedback rows, `cleared` in legacy enums | W01 |
+| W01 API core (three PRs, one wave issue) | **W01a**: migration, Drizzle schema, shared types, `cleared` status, all registrations of §14, retention, `episodeKeyFor` + constants. **W01b**: assembly stage, auto-resolve stage (flag-independent, `detection_off`), attribution LATERAL, incident `episode_id` at insert, integration proofs. **W01c**: anti-contamination + fallback | — (W01b and W01c each depend on W01a only) |
+| W02 API surface | episode routes (list/detail/PATCH), promotion via episode + `context.episodeId`, alert auto-resolve on clear/expire, snooze/unsnooze, publisher gate, per-member feedback rows, `cleared` in legacy enums | W01a + W01b |
 | W03 Evaluation | `anomaly_episode` feedback source type (CHECK migration + shared union), episode-level block in `/analytics/anomalies/evaluation`, `cleared` excluded from human-label rates, runbook section | W02 |
 | W04 Web | panel rewrite, i18n, `alertMlContext` episode link, hide flag-off blocks, compact mode, tests | W02 (W03 optional) |
 
@@ -524,15 +576,16 @@ to it alone.
 
 | Risk | Mitigation |
 |---|---|
-| Disabling the flag strands open episodes | Auto-resolve runs outside the flag gate (D4); integration test proves it |
-| Backfill replay corrupts episodes | Lower bound on attach; auto-resolve skipped for explicit-window jobs; recurrence inaccuracy documented |
+| Disabling the flag strands open episodes | The resolve stage runs outside the flag gate (D4) and closes them as `detection_off`, never as a fake `cleared`; integration test proves it |
+| Backfill replay corrupts episodes | Lower bound on attach; auto-resolve skipped for explicit-window jobs; `recurrence_count` episode-relative |
+| A human dismiss races the assembly tick | Anchors locked `FOR UPDATE`; attach/recompute only on a still-open or live-snoozed episode; integration test |
 | Anti-contamination silences detection on long bursts | Fallback to unfiltered baseline under 12 buckets; hour-5 proof |
 | Evaluation labels silently vanish | Per-member feedback rows with `dedupeKey episode:<id>`; test asserts `feedback.total` moves |
 | `cleared` misread as a human verdict | Excluded from human-label rates in W03; before W03 it is its own bucket, never merged into `resolved` |
 | Whole-org sweeps time out at fleet scale | Set-based statements, the indexes of §4.1, 24 h lookback bound, skip counter |
 | New column on `metric_anomalies` / `metric_anomaly_incidents` reds Integration Tests | Export-policy entries amended in W01 (the "fires on a new column" rule) |
 | Three grouping grains confuse readers | Schema header + runbook state that incidents are the dispatch outbox and episodes the lifecycle |
-| Migration name sorts behind `origin/main` | Named `2026-10-27-…`; pre-push guard re-checks |
+| Migration name sorts behind `origin/main` | Named `2026-10-28-…`; pre-push guard re-checks |
 
 ## 19. Follow-ups (not in this spec)
 
@@ -544,6 +597,8 @@ to it alone.
 - Per-device-class floors (server vs workstation), or promotion of the v1 seasonal model.
 - Remediation-suggestion quality (keyword match today) and its settings toggle.
 - "View in metrics" deep link from a card into the Performance chart at the episode's window.
+- Permanent suppression ("mute until changed") for recurring scheduled-task anomalies: a dismiss
+  only snoozes for 7 days, and a scheduled task that still fires afterwards needs another dismiss.
 
 ## 20. Quorum record
 
@@ -575,8 +630,9 @@ closes so they reach the same close handler as auto-resolve. A snoozed successor
 by later buckets instead of spawning one dismissed episode per tick, and `bucket_count` counts
 distinct buckets. The close handler (linked-alert auto-resolve) runs once per detection run, after
 the stage transactions commit and outside any DB context. The incident publisher gates on a sibling
-already published or dispatched, allows one incident per episode per claim, and holds unlinked
-incidents for a 15-minute grace window so assembly can link them. The episode routes live on the
+already published or dispatched and allows one incident per episode per claim. (A publisher grace
+window for unlinked incidents, added at reconciliation, was withdrawn by the second quorum: incidents
+are now created already linked, §11.) The episode routes live on the
 existing `anomaliesRoutes` (`routes/devices/anomalies.ts`), not a new module. Per-member feedback
 rows are written inside the action transaction by a throwing writer, so a lost label rolls the
 action back; the episode-level `anomaly_episode` row (W03) follows the same rule and is emitted only
@@ -585,3 +641,27 @@ Recently closed / All filter in component state, not the URL hash. The `scan-org
 includes orgs that still own an open episode, so an org whose devices were all decommissioned still
 gets `episode-resolve`. The episode DTO adds `peakAnomalyId` so remediation suggestions key on a real
 anomaly id.
+
+## 22. Second quorum (Fable, 2026-09-22)
+
+A second fresh-context review (Fable, repo access, adversarial brief, ten questions) was run against
+the reconciled plans. The orchestrator re-verified its key claims against code before adopting
+(the attach step had no episode-status guard; `origin/main`'s newest migration already sorted after
+both placeholder names). Every amendment below is applied to this spec, the plan index and the four
+wave plans.
+
+| Q | Topic | Verdict | Resolution |
+|---|---|---|---|
+| Q1 | Product shape and close boundary | AGREE model, AMEND boundary | A4: resolve eligibility bounded by the run's detection end (`last_seen_at + gap + 5 min ≤ to`) so the boundary bucket is evaluated before close; expiry stays now-relative (§7). A12: "mute until changed" follow-up for recurring scheduled tasks (§19) |
+| Q2 | W01 assembly correctness | AMEND | A1: attach/recompute only onto an episode still `open` or a live snoozed successor, live anchors locked `FOR UPDATE`; race integration test (§6). A2: `recurrence_count` episode-relative (§6). A3: non-head backfill island under a live snooze is `historical`. Overlapping ticks, backfill vs scan, late and out-of-order buckets: AGREE, safe under the per-org lock |
+| Q3 | W01 auto-resolve | AMEND | A5: with detection off, open episodes close as `detection_off` (new close reason; no feedback; no alert resolve), never `cleared` (§7). Clean predicate, offline/no-data split, flag-independent resolve, scan-orgs ∪ open-episode orgs: AGREE |
+| Q4 | Anti-contamination + fallback | AGREE | Cannot silence detection (worst case = today) and cannot hold an episode open beyond ~24.5 h. A12: "dismiss lets the baseline absorb the behaviour" documented (§10, runbook) |
+| Q5 | Tenancy / migration | AGREE, two traps | A10: migrations renamed `2026-10-28-100000-…` / `2026-10-28-110000-…` (hardcoded test path fixed); execution-time re-check kept. Stale `alertService.ts` line reference fixed to `:455-457` |
+| Q6 | W02 publisher, feedback, close handler, routes | AMEND publisher | A6: `episodes` runs before `incidents`; incidents carry `episode_id` at insert (`COALESCE` on conflict); link statement, wrapper and 15-minute grace deleted (§11). D-7 throwing per-member writer, D-8 post-commit handler, D-3 routes on `anomaliesRoutes`: AGREE |
+| Q7 | W03 evaluation | AGREE | `cleared` (and other automatic closes) excluded from human-label rates; note that open member rows stay in the member-level denominator. New `anomaly_episode.*` event types kept |
+| Q8 | W04 states | AMEND | A9: 60 s visible-tab poll; read-only legacy fallback when `ref` matches no episode; `deviceLastSeenAt` on the DTO for the offline chip (§12, §13) |
+| Q9 | Owner decisions | (a) AMEND (b) drop (c) AMEND | (a) A7: dismissing a promoted episode resolves its alert by default (§8.1, §8.2). (b) grace removed by A6. (c) A8: `humanLabelledShare` counts `user` closes and promotions, excludes `snoozed` from the denominator |
+| Q10 | Wave split | AMEND | A11: W01 split into three PRs under #6651 — W01a schema/migration/registrations, W01b assembly/resolve/wiring, W01c anti-contamination (§17) |
+
+Plan-time decision beyond the review: a `detection_off` close never auto-resolves a linked alert
+(detection did not observe recovery); the alert stays for the alert workflow.
