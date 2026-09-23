@@ -2623,6 +2623,69 @@ describe('resolveLiveReportTypePermissions', () => {
     await expect(resolveLiveReportTypePermissions(userId, { orgId }, INVOICES_READ)).resolves.toBe(true);
   });
 
+  // #3198 W02 ruling F1: an msp_staff type on an ORG owner resolves the
+  // partner-axis membership only — the org membership is never consulted.
+  describe('partnerAxisOnly (org-owned msp_staff types)', () => {
+    const partnerMembership = (overrides: Record<string, unknown> = {}) => ({
+      roleId: PARTNER_ROLE, orgAccess: 'all', orgIds: null, ...overrides,
+    });
+
+    it('refuses a user who reaches the org only through an org membership', async () => {
+      queueRows([user({ partnerId: null })], [{ id: orgId, partnerId }]);
+      await expect(resolveLiveReportTypePermissions(
+        userId, { orgId }, INVOICES_READ, { partnerAxisOnly: true },
+      )).resolves.toBe(false);
+      // The org-membership table is never read: an org role cannot satisfy it.
+      expect(liveDbState.projections).toHaveLength(2);
+    });
+
+    it('refuses a partner user with no partner membership row even if an org role would grant', async () => {
+      queueRows([user()], [{ id: orgId, partnerId }], []);
+      await expect(resolveLiveReportTypePermissions(
+        userId, { orgId }, INVOICES_READ, { partnerAxisOnly: true },
+      )).resolves.toBe(false);
+    });
+
+    it('grants through a partner membership that covers the org and whose role holds the permission', async () => {
+      queueRows([user()], [{ id: orgId, partnerId }], [partnerMembership()], [grant('invoices', 'read')]);
+      await expect(resolveLiveReportTypePermissions(
+        userId, { orgId }, INVOICES_READ, { partnerAxisOnly: true },
+      )).resolves.toBe(true);
+    });
+
+    it('grants a selected-access partner user whose org list includes the org', async () => {
+      queueRows(
+        [user()], [{ id: orgId, partnerId }],
+        [partnerMembership({ orgAccess: 'selected', orgIds: [orgId] })], [grant('invoices', 'read')],
+      );
+      await expect(resolveLiveReportTypePermissions(
+        userId, { orgId }, INVOICES_READ, { partnerAxisOnly: true },
+      )).resolves.toBe(true);
+    });
+
+    it('refuses a partner membership whose org access does not cover the org', async () => {
+      queueRows(
+        [user()], [{ id: orgId, partnerId }],
+        [partnerMembership({ orgAccess: 'selected', orgIds: [] })], [grant('invoices', 'read')],
+      );
+      await expect(resolveLiveReportTypePermissions(
+        userId, { orgId }, INVOICES_READ, { partnerAxisOnly: true },
+      )).resolves.toBe(false);
+
+      queueRows([user()], [{ id: orgId, partnerId }], [partnerMembership({ orgAccess: 'none' })]);
+      await expect(resolveLiveReportTypePermissions(
+        userId, { orgId }, INVOICES_READ, { partnerAxisOnly: true },
+      )).resolves.toBe(false);
+    });
+
+    it('still rejects on a database failure (the worker maps it to scope_unverifiable)', async () => {
+      queueRows([user()], new Error('connection reset'));
+      await expect(resolveLiveReportTypePermissions(
+        userId, { orgId }, INVOICES_READ, { partnerAxisOnly: true },
+      )).rejects.toThrow('connection reset');
+    });
+  });
+
   it('rejects on a database failure (could-not-check is not "not granted"; the worker decides)', async () => {
     queueRows(new Error('connection reset'));
     await expect(resolveLiveReportTypePermissions(userId, { partnerId }, INVOICES_READ)).rejects.toThrow('connection reset');

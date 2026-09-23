@@ -666,14 +666,20 @@ export async function processRunScheduledReport(
   // pre-#3198 type, which lists no extra permissions.
   // An unknown stored type (reportTypeDef throws) and a re-check that could
   // not run (DB failure) are "could not verify", not a permission loss.
+  // Ruling F1: an msp_staff (business) type is internal to the MSP, so the
+  // re-check resolves the PARTNER axis only — an execution user who reaches an
+  // org-owned report through an org membership alone (a customer user) is
+  // denied scope_permission_missing.
   let typePermissionsGranted: boolean;
   try {
-    const requiredPermissions = reportTypeDef(report.type).requiredPermissions;
+    const typeDef = reportTypeDef(report.type);
+    const requiredPermissions = typeDef.requiredPermissions;
     typePermissionsGranted = requiredPermissions.length === 0
       || await resolveLiveReportTypePermissions(
         liveResult.authority.principalUserId,
         owner,
         requiredPermissions,
+        { partnerAxisOnly: typeDef.audience === 'msp_staff' },
       );
   } catch (err) {
     reportScopeFailure('live_permissions', err);

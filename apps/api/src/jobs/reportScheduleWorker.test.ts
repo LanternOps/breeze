@@ -766,6 +766,30 @@ describe('processRunScheduledReport', () => {
     executionScopeCapturedAt: new Date('2026-07-24T12:00:00.000Z'),
   };
 
+  // #3198 W02 ruling F1: an org-owned msp_staff (business) report is re-checked
+  // on the PARTNER axis only — an execution user who reaches the org through
+  // an org membership alone (a customer user) is denied.
+  it('re-checks an org-owned ar_aging report on the partner axis only, and denies scope_permission_missing', async () => {
+    selectMock.mockReturnValueOnce(selectChain([{ ...report, type: 'ar_aging', config: { schedule: { time: '09:00' } } }]));
+    resolveLiveReportTypePermissionsMock.mockResolvedValueOnce(false);
+    const failedInsert = insertChain([{ id: RUN_ID }]);
+    insertMock.mockReturnValueOnce(failedInsert);
+
+    await processRunScheduledReport({ type: 'run-scheduled-report', reportId: REPORT_ID, occurrenceKey: 202607010900 });
+
+    expect(resolveLiveReportTypePermissionsMock).toHaveBeenCalledWith(
+      report.executionScopeUserId,
+      { orgId: ORG_ID },
+      [{ resource: 'invoices', action: 'read' }],
+      { partnerAxisOnly: true },
+    );
+    expect(failedInsert.values).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'failed', errorMessage: 'scope_permission_missing' }),
+    );
+    expect(generateReportMock).not.toHaveBeenCalled();
+    expect(sendEmailMock).not.toHaveBeenCalled();
+  });
+
   it('stores a completed run, stamps lastGeneratedAt, and emails valid recipients with a CSV', async () => {
     selectMock.mockReturnValueOnce(selectChain([report]));
     selectMock.mockReturnValueOnce(selectChain([])); // scheduled contact recipients
@@ -1660,7 +1684,7 @@ describe('partner-owned scheduled definitions (#3198 W01/W02)', () => {
     await expect(run()).resolves.toBeUndefined();
 
     expect(resolveLiveReportTypePermissionsMock).toHaveBeenCalledWith(
-      USER_ID, { partnerId: PARTNER_ID }, [{ resource: 'invoices', action: 'read' }],
+      USER_ID, { partnerId: PARTNER_ID }, [{ resource: 'invoices', action: 'read' }], { partnerAxisOnly: true },
     );
     expect(reportScopeFromAuthorityMock).toHaveBeenCalledWith(
       { partnerId: PARTNER_ID },
@@ -1796,9 +1820,9 @@ describe('partner-owned scheduled definitions (#3198 W01/W02)', () => {
     await expect(run()).resolves.toBeUndefined();
 
     expect(generateReportMock).toHaveBeenCalledWith('ar_aging', { kind: 'organization', orgId: ORG_ID }, expect.any(Object), expect.any(Object));
-    // An org owner re-checks through the org axis.
+    // An org owner of an msp_staff type re-checks on the partner axis only (ruling F1).
     expect(resolveLiveReportTypePermissionsMock).toHaveBeenCalledWith(
-      USER_ID, { orgId: ORG_ID }, [{ resource: 'invoices', action: 'read' }],
+      USER_ID, { orgId: ORG_ID }, [{ resource: 'invoices', action: 'read' }], { partnerAxisOnly: true },
     );
     expect(updates[1]!.set).toHaveBeenCalledWith(
       expect.objectContaining({ status: 'failed', errorMessage: 'unsupported_report_scope' }),

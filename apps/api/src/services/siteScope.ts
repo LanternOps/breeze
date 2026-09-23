@@ -1592,6 +1592,7 @@ async function resolveLiveReportTypePermissionsInSystemContext(
   userId: string,
   owner: ReportOwner,
   required: readonly { resource: string; action: string }[],
+  partnerAxisOnly: boolean,
 ): Promise<boolean> {
   const [user] = await db
     .select({
@@ -1632,6 +1633,31 @@ async function resolveLiveReportTypePermissionsInSystemContext(
     .limit(1);
   if (!organization) return false;
 
+  // #3198 W02 ruling F1: an msp_staff type on an org owner is re-checked on
+  // the PARTNER axis only. The org membership is never consulted — an org role
+  // (a customer user) cannot satisfy it however it is configured — and the
+  // partner membership must itself cover this org (the live authority above
+  // may have authorized through an org membership, which proves nothing
+  // about partner coverage).
+  if (partnerAxisOnly) {
+    if (user.partnerId !== organization.partnerId) return false;
+    const memberships = await db
+      .select({
+        roleId: partnerUsers.roleId,
+        orgAccess: partnerUsers.orgAccess,
+        orgIds: partnerUsers.orgIds,
+      })
+      .from(partnerUsers)
+      .where(and(eq(partnerUsers.userId, user.id), eq(partnerUsers.partnerId, organization.partnerId)))
+      .limit(2);
+    const membership = memberships.length === 1 ? memberships[0]! : null;
+    if (!membership?.roleId || !partnerMembershipAdmitsOrg(membership, owner.orgId)) return false;
+    return roleGrantsAllPermissions(membership.roleId, required, {
+      scope: 'partner',
+      partnerId: organization.partnerId,
+    });
+  }
+
   // Org membership takes precedence over the partner membership — the same
   // axis `resolveExactReportAuthorityInSystemContext` authorizes through.
   const orgMemberships = await db
@@ -1666,16 +1692,27 @@ async function resolveLiveReportTypePermissionsInSystemContext(
  * not check" is not a permission loss, so the caller (the schedule worker)
  * reports it and records 'scope_unverifiable' rather than
  * 'scope_permission_missing'.
+ *
+ * `partnerAxisOnly` (ruling F1, set for registry audience 'msp_staff'): an
+ * org owner resolves ONLY a partner membership of the org's partner that
+ * covers the org (org_access 'all', or 'selected' listing it); an org
+ * membership never grants. A partner owner is partner-axis already.
  */
 export async function resolveLiveReportTypePermissions(
   userId: string,
   owner: ReportOwner,
   required: readonly { resource: string; action: string }[],
+  options: { partnerAxisOnly?: boolean } = {},
 ): Promise<boolean> {
   if (required.length === 0) return true;
   return runOutsideDbContext(() =>
     withSystemDbAccessContext(() =>
-      resolveLiveReportTypePermissionsInSystemContext(userId, owner, required),
+      resolveLiveReportTypePermissionsInSystemContext(
+        userId,
+        owner,
+        required,
+        options.partnerAxisOnly === true,
+      ),
     ),
   );
 }
