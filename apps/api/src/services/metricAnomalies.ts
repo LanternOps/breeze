@@ -5,6 +5,14 @@ import { tightenLockTimeout, tightenStatementTimeout } from '../db/lockTimeout';
 import { pgErrorCode } from '../utils/pgErrors';
 import { captureMessage } from './sentry';
 import { shouldProduceMlOutput, type MlFeatureFlagName } from './mlFeatureFlags';
+import {
+  assembleMetricAnomalyEpisodes,
+  closeEpisodesForDisabledDetection,
+  notifyEpisodesClosed,
+  resolveMetricAnomalyEpisodes,
+  type EpisodeCloseResult,
+} from './metricAnomalyEpisodes';
+import { recordEpisodeStageSkipped } from './metricAnomalyEpisodeMetrics';
 
 export const METRIC_ANOMALY_VERSION = 'metric-anomalies-v1';
 export const METRIC_ANOMALY_V1_SHADOW_VERSION = 'metric-anomaly-v1-seasonal-robust';
@@ -40,12 +48,24 @@ export const METRIC_ANOMALY_STATEMENT_TIMEOUT_MS = 90_000;
  * whole run used to share one, so a second run's `ON CONFLICT` upsert waited on
  * the first run's *transactionid* for the duration of all four statements
  * instead of just the one it actually conflicted with.
+ *
+ * `episodes` (assembly) runs BEFORE `incidents` (second quorum A6), so
+ * upsertMetricAnomalyIncidents writes each incident's episode_id at insert —
+ * the publisher never sees an unlinked incident that assembly was about to
+ * link. `episode-resolve` runs last; the loop stops at the first `locked`
+ * stage, and a skipped `episodes` stage only means this tick's incidents are
+ * born unlinked (a later tick's upsert fills episode_id via COALESCE).
+ * `episode-resolve` is the only stage that runs with ml.anomalies.enabled off
+ * (then it closes every open episode as `detection_off`, A5), and it never
+ * runs for a backfill.
  */
 export const METRIC_ANOMALY_STAGES = [
   'baseline',
   'growth-trend',
   'process-runaway',
+  'episodes',
   'incidents',
+  'episode-resolve',
   'v1-shadow',
 ] as const;
 export type MetricAnomalyStage = (typeof METRIC_ANOMALY_STAGES)[number];
@@ -81,10 +101,19 @@ const MIN_BASELINE_BUCKETS = 12;
 const MIN_SEASONAL_BASELINE_BUCKETS = 8;
 const MIN_TREND_BUCKETS = 6;
 
+/**
+ * `scan` (default) — the 10-minute cron. `backfill` — an explicit historical
+ * window (enqueueMetricAnomalyBackfill, the CLI). A backfill still assembles
+ * episodes (attach predicates are episode-relative, so replay is safe) but
+ * skips `episode-resolve`, which is now()-relative.
+ */
+export type MetricAnomalyTrigger = 'scan' | 'backfill';
+
 export interface MetricAnomalyRange {
   orgId: string;
   from: Date;
   to: Date;
+  trigger?: MetricAnomalyTrigger;
 }
 
 export interface MetricAnomalyResult {
@@ -108,6 +137,13 @@ export interface MetricAnomalyResult {
    * `stages` array — that partial coverage is only legible here.
    */
   stages: MetricAnomalyStageResult[];
+  /**
+   * Episodes closed automatically this run (supersede + auto-resolve, or
+   * detection_off with the flag off), already handed to the close handler.
+   * `statements` / `skipped` describe detection, assembly and incidents only;
+   * `episode-resolve` is reported here and in `stages`.
+   */
+  episodesClosed: number;
 }
 
 /**
@@ -305,11 +341,14 @@ function anomalyUpsertAssignments(): SQL {
  * first-detected timestamp across every subsequent pass.
  */
 function incidentUpsertAssignments(): SQL {
+  // episode_id (metric anomaly episodes W01, A6): a re-upsert fills a link a
+  // tick with a skipped `episodes` stage left NULL, and never unlinks one.
   return sql`
     last_seen_at = EXCLUDED.last_seen_at,
     peak_score = GREATEST(metric_anomaly_incidents.peak_score, EXCLUDED.peak_score),
     row_count = EXCLUDED.row_count,
-    metric_names = EXCLUDED.metric_names
+    metric_names = EXCLUDED.metric_names,
+    episode_id = COALESCE(EXCLUDED.episode_id, metric_anomaly_incidents.episode_id)
   `;
 }
 
@@ -845,6 +884,10 @@ async function detectProcessSampleRunaways(options: MetricAnomalyRange): Promise
  * `dispatch_attempts` / `agent_run_id` never appear in this statement at
  * all — not in the INSERT column list, not in SELECT, not in the ON
  * CONFLICT SET list. That is the re-publish guard.
+ *
+ * `episode_id` is the episode of the highest-score member (the `episodes`
+ * stage runs first, A6); the publisher (W02) dispatches at most one incident
+ * per episode.
  */
 async function upsertMetricAnomalyIncidents(options: MetricAnomalyRange): Promise<void> {
   const { from } = normalizeRange(options.from, options.to);
@@ -861,7 +904,8 @@ async function upsertMetricAnomalyIncidents(options: MetricAnomalyRange): Promis
       last_seen_at,
       peak_score,
       row_count,
-      metric_names
+      metric_names,
+      episode_id
     )
     SELECT
       ma.org_id,
@@ -873,7 +917,10 @@ async function upsertMetricAnomalyIncidents(options: MetricAnomalyRange): Promis
       (max(ma.detected_at) AT TIME ZONE 'UTC'),
       max(ma.score),
       count(*)::integer,
-      array_agg(DISTINCT ma.metric_name ORDER BY ma.metric_name)
+      array_agg(DISTINCT ma.metric_name ORDER BY ma.metric_name),
+      -- A6: the episode of the incident's highest-score member. The 'episodes'
+      -- stage ran first in this detection run, so members are already assigned.
+      (array_agg(ma.episode_id ORDER BY ma.score DESC NULLS LAST))[1]
     FROM metric_anomalies ma
     WHERE ma.org_id = ${options.orgId}
       AND ma.status = 'open'
@@ -1187,34 +1234,66 @@ function deriveSkipReason(stages: MetricAnomalyStageResult[]): MetricAnomalySkip
   return stages.some((stage) => stage.outcome === 'timeout') ? 'timeout' : 'locked';
 }
 
+function isEpisodeStage(stage: MetricAnomalyStage): stage is 'episodes' | 'episode-resolve' {
+  return stage === 'episodes' || stage === 'episode-resolve';
+}
+
 export async function detectMetricAnomaliesRange(options: MetricAnomalyRange): Promise<MetricAnomalyResult> {
   const { from, to } = normalizeRange(options.from, options.to);
-  const range: MetricAnomalyRange = { orgId: options.orgId, from, to };
+  const trigger: MetricAnomalyTrigger = options.trigger ?? 'scan';
+  const range: MetricAnomalyRange = { orgId: options.orgId, from, to, trigger };
   const base = { orgId: options.orgId, from: from.toISOString(), to: to.toISOString() };
 
-  if (!(await readMlFlag(options.orgId, 'ml.anomalies.enabled'))) {
-    return { ...base, statements: 0, skipped: true, skippedReason: 'ml-disabled', stages: [] };
-  }
+  const detectionEnabled = await readMlFlag(options.orgId, 'ml.anomalies.enabled');
 
-  // Task 2 (#3828): `incidents` collapses the rows the three detectors above it
-  // just touched into their canonical incident row. It is listed LAST and runs
-  // even when an earlier stage was skipped — it reads `metric_anomalies`, so it
-  // still has this tick's committed rows plus anything a previous tick left
-  // unmaterialised, and skipping it would strand those anomalies with no
-  // incident to dispatch.
-  const orderedStages: ReadonlyArray<readonly [MetricAnomalyStage, () => Promise<void>]> = [
-    ['baseline', () => detectBaselineDeviations(range)],
-    ['growth-trend', () => detectGrowthTrends(range)],
-    ['process-runaway', () => detectProcessSampleRunaways(range)],
-    ['incidents', () => upsertMetricAnomalyIncidents(range)],
-  ];
+  // Episodes a stage closed are kept only once that stage has COMMITTED; a
+  // timed-out or locked stage rolled back, so its closes never happened.
+  const pending: { closed: EpisodeCloseResult[] } = { closed: [] };
+  const closed: EpisodeCloseResult[] = [];
+
+  // `episodes` assembles the rows the three detectors above it just touched
+  // (plus anything a previous tick left unassigned); it runs even when an
+  // earlier stage was skipped, because it reads committed metric_anomalies.
+  // Task 2 (#3828): `incidents` then collapses the same rows into their
+  // canonical incident row, now carrying the episode_id assembly just set
+  // (A6). It also runs when an earlier stage was skipped — skipping it would
+  // strand those anomalies with no incident to dispatch.
+  const orderedStages: Array<readonly [MetricAnomalyStage, () => Promise<void>]> = [];
+  if (detectionEnabled) {
+    orderedStages.push(
+      ['baseline', () => detectBaselineDeviations(range)],
+      ['growth-trend', () => detectGrowthTrends(range)],
+      ['process-runaway', () => detectProcessSampleRunaways(range)],
+      ['episodes', async () => {
+        pending.closed = await assembleMetricAnomalyEpisodes(range);
+      }],
+      ['incidents', () => upsertMetricAnomalyIncidents(range)],
+    );
+  }
+  // D4: turning detection off must not freeze open episodes, so the resolve
+  // stage sits outside the flag gate. scan-orgs already enqueues flag-off orgs
+  // (jobs/metricAnomalies.ts findAnomalyOrgRows has no flag filter) and, since
+  // W01, every org that still owns an open episode. A5: with detection off no
+  // detector evaluated the rollups, so they cannot prove "cleared" — every
+  // open episode closes as detection_off instead. A4: with detection on,
+  // eligibility is bounded by this run's range end, expiry by the clock.
+  if (trigger === 'scan') {
+    orderedStages.push(['episode-resolve', async () => {
+      pending.closed = detectionEnabled
+        ? await resolveMetricAnomalyEpisodes(options.orgId, to, new Date())
+        : await closeEpisodesForDisabledDetection(options.orgId, new Date());
+    }]);
+  }
 
   const stages: MetricAnomalyStageResult[] = [];
   let lockContended = false;
 
   for (const [stage, run] of orderedStages) {
+    pending.closed = [];
     const result = await runDetectionStage(stage, options.orgId, run);
     stages.push(result);
+    if (result.outcome === 'completed') closed.push(...pending.closed);
+    if (result.outcome === 'timeout' && isEpisodeStage(stage)) recordEpisodeStageSkipped(stage);
     // Stop on `locked` — every later stage takes the SAME org key, so they
     // would all fail to acquire too and the round trips would be pure waste.
     // A `timeout` is per-statement, so the remaining stages still get a turn.
@@ -1226,7 +1305,7 @@ export async function detectMetricAnomaliesRange(options: MetricAnomalyRange): P
 
   let v1ShadowStatements = 0;
   let v1ShadowSkipped = true;
-  if (!lockContended && (await readMlFlag(options.orgId, 'ml.anomalies.v1_shadow.enabled'))) {
+  if (detectionEnabled && !lockContended && (await readMlFlag(options.orgId, 'ml.anomalies.v1_shadow.enabled'))) {
     const shadow = await runDetectionStage('v1-shadow', options.orgId, () =>
       detectSeasonalRobustCandidates(range),
     );
@@ -1236,8 +1315,26 @@ export async function detectMetricAnomaliesRange(options: MetricAnomalyRange): P
     if (shadow.outcome === 'locked') lockContended = true;
   }
 
+  // After every stage transaction has committed, outside any DB context
+  // (processDetectOrgRange opens none, #5283). `closed` holds the supersedes
+  // from `episodes` (returned by assembleMetricAnomalyEpisodes itself) AND the
+  // closes from `episode-resolve`, so a promoted episode that is superseded
+  // reaches W02's alert handler too. Never throws.
+  await notifyEpisodesClosed(options.orgId, closed);
+
+  if (!detectionEnabled) {
+    return {
+      ...base,
+      statements: 0,
+      skipped: true,
+      skippedReason: 'ml-disabled',
+      stages,
+      episodesClosed: closed.length,
+    };
+  }
+
   const statements = stages.filter(
-    (stage) => stage.stage !== 'v1-shadow' && stage.outcome === 'completed',
+    (stage) => stage.stage !== 'v1-shadow' && stage.stage !== 'episode-resolve' && stage.outcome === 'completed',
   ).length;
   const skipped = statements === 0 && v1ShadowStatements === 0;
 
@@ -1249,5 +1346,6 @@ export async function detectMetricAnomaliesRange(options: MetricAnomalyRange): P
     skipped,
     ...(skipped ? { skippedReason: deriveSkipReason(stages) } : {}),
     stages,
+    episodesClosed: closed.length,
   };
 }

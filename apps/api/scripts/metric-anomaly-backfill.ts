@@ -26,6 +26,8 @@ async function main(): Promise<void> {
     orgId: options.orgId,
     from: options.from,
     to: options.to,
+    // Explicit historical window: assemble episodes, never auto-resolve them.
+    trigger: 'backfill',
   });
 
   // A skip is no longer synonymous with "flag off" (#5283) — it also covers a

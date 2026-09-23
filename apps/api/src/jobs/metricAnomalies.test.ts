@@ -68,6 +68,7 @@ vi.mock('../db', () => ({
 
 vi.mock('../db/schema', () => ({
   devices: {},
+  metricAnomalyEpisodes: {},
 }));
 
 vi.mock('../services/metricAnomalies', () => ({
@@ -85,6 +86,7 @@ import {
   initializeMetricAnomaliesWorker,
   shutdownMetricAnomaliesWorker,
 } from './metricAnomalies';
+import { detectMetricAnomaliesRange } from '../services/metricAnomalies';
 
 /** The `detect-org-range` enqueues, excluding the `scan-orgs` repeatable. */
 function detectAddCalls(): Array<[string, Record<string, unknown>, Record<string, unknown>]> {
@@ -242,6 +244,51 @@ describe('metric anomalies queue helpers', () => {
   // #5283: the scheduled fan-out kept the detection WINDOW in its job id, so
   // BullMQ's dedup never matched and every 10-minute tick stacked a fresh job
   // for an org whose previous run was still holding a transaction open.
+  it('marks backfill enqueues trigger=backfill and scheduled fan-out trigger=scan', async () => {
+    await enqueueMetricAnomalyBackfill({
+      orgId: 'org-1',
+      from: new Date('2026-06-18T11:00:00.000Z'),
+      to: new Date('2026-06-18T12:00:00.000Z'),
+    });
+    expect(detectAddCalls()[0]?.[1]).toMatchObject({ trigger: 'backfill' });
+
+    addMock.mockClear();
+    await initializeMetricAnomaliesWorker();
+    await workerProcessorMock({ data: { type: 'scan-orgs', lookbackMinutes: 15 } });
+    expect(detectAddCalls()[0]?.[1]).toMatchObject({ trigger: 'scan' });
+  });
+
+  it('passes the job trigger to detection, treating pre-W01 jobs without one as scan', async () => {
+    vi.mocked(detectMetricAnomaliesRange).mockClear();
+    await initializeMetricAnomaliesWorker();
+    const job = {
+      type: 'detect-org-range',
+      orgId: 'org-1',
+      from: '2026-06-18T11:45:00.000Z',
+      to: '2026-06-18T12:00:00.000Z',
+      queuedAt: '2026-06-18T12:00:00.000Z',
+    };
+
+    await workerProcessorMock({ data: { ...job, trigger: 'backfill' } });
+    expect(detectMetricAnomaliesRange).toHaveBeenLastCalledWith(expect.objectContaining({ orgId: 'org-1', trigger: 'backfill' }));
+
+    await workerProcessorMock({ data: job });
+    expect(detectMetricAnomaliesRange).toHaveBeenLastCalledWith(expect.objectContaining({ trigger: 'scan' }));
+  });
+
+  it('also scans orgs that only have open episodes, so episode-resolve can close them (D4)', async () => {
+    groupByMock
+      .mockResolvedValueOnce([{ orgId: 'org-1' }]) // orgs with a live device
+      .mockResolvedValueOnce([{ orgId: 'org-1' }, { orgId: 'org-no-devices' }]); // orgs with an open episode
+    await initializeMetricAnomaliesWorker();
+
+    await workerProcessorMock({ data: { type: 'scan-orgs', lookbackMinutes: 15 } });
+
+    expect(selectMock).toHaveBeenCalledTimes(2);
+    expect(detectAddCalls().map(([, data]) => data.orgId)).toEqual(['org-1', 'org-no-devices']);
+    expect(detectAddCalls().every(([, data]) => data.trigger === 'scan')).toBe(true);
+  });
+
   describe('scheduled overlap guard (#5283)', () => {
     it('uses a window-free per-org job id so consecutive ticks collapse instead of stacking', async () => {
       await initializeMetricAnomaliesWorker();

@@ -1,6 +1,6 @@
 import './setup';
 
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { and, asc, eq } from 'drizzle-orm';
 
 import { withSystemDbAccessContext } from '../../db';
@@ -9,6 +9,7 @@ import {
   devices,
   metricAnomalies,
   metricAnomalyEpisodes,
+  metricAnomalyIncidents,
   metricRollups,
   mlFeedbackEvents,
   organizations,
@@ -20,7 +21,10 @@ import {
   EPISODE_GAP_MINUTES,
   loadEpisodeAssemblyInputs,
   resolveMetricAnomalyEpisodes,
+  setEpisodeCloseHandler,
+  type EpisodeCloseResult,
 } from '../../services/metricAnomalyEpisodes';
+import { detectMetricAnomaliesRange } from '../../services/metricAnomalies';
 import { promoteMetricAnomalyToAlert } from '../../services/metricAnomalyPromotion';
 import { planEpisodeAssembly } from '../../services/metricAnomalyEpisodePlanner';
 import { createOrganization, createPartner, createSite } from './db-utils';
@@ -714,5 +718,97 @@ describe('metric anomaly episode auto-resolve (spec §7)', () => {
     expect(await episodeById(snoozed)).toMatchObject({ status: 'dismissed', closeReason: 'snoozed' });
     const feedback = await getTestDb().select().from(mlFeedbackEvents).where(eq(mlFeedbackEvents.orgId, orgId));
     expect(feedback).toHaveLength(0);
+  });
+});
+
+describe('episode stages inside detectMetricAnomaliesRange (spec §6, §7, D4)', () => {
+  let orgId: string;
+  let siteId: string;
+  let now: Date;
+  const handled: Array<{ orgId: string; closed: EpisodeCloseResult[] }> = [];
+
+  beforeEach(async () => {
+    const partner = await createPartner();
+    orgId = (await createOrganization({ partnerId: partner.id, name: 'Stage Org' })).id;
+    siteId = (await createSite({ orgId, name: 'Stage Site' })).id;
+    now = floorToBucket(new Date());
+    handled.length = 0;
+    setEpisodeCloseHandler(async (closedOrgId, closed) => {
+      handled.push({ orgId: closedOrgId, closed });
+    });
+  });
+
+  afterEach(() => {
+    setEpisodeCloseHandler(null);
+  });
+
+  async function seedClearableEpisode(deviceId: string): Promise<string> {
+    const lastSeenAt = at(now, -60);
+    const episodeId = await insertEpisode({ orgId, deviceId, firstSeenAt: at(lastSeenAt, -5), lastSeenAt });
+    await insertAnomaly({ orgId, deviceId, windowStart: at(lastSeenAt, -5), episodeId });
+    await insertRollups({ orgId, deviceId, metricName: 'cpu_percent', starts: bucketsFrom(lastSeenAt, 6), value: () => 20 });
+    return episodeId;
+  }
+
+  it('flag off: the resolve stage still runs and closes open episodes as detection_off, never cleared (D4, A5)', async () => {
+    // No enableAnomalies(): the flag defaults off. The episode has 6 clean
+    // rollups, but no detector evaluated them, so they must not read as `cleared`.
+    const device = await insertDevice(orgId, siteId);
+    const episodeId = await seedClearableEpisode(device);
+
+    const result = await detectMetricAnomaliesRange({ orgId, from: at(now, -15), to: now });
+
+    expect(result).toMatchObject({ skipped: true, skippedReason: 'ml-disabled', statements: 0, episodesClosed: 1 });
+    expect(result.stages.map((stage) => `${stage.stage}:${stage.outcome}`)).toEqual(['episode-resolve:completed']);
+    const [episode] = await episodesFor(orgId, device);
+    expect(episode).toMatchObject({ id: episodeId, status: 'resolved', closeReason: 'detection_off' });
+    expect(handled).toEqual([{ orgId, closed: [{ episodeId, deviceId: device, linkedAlertId: null, closeReason: 'detection_off' }] }]);
+    const feedback = await getTestDb().select().from(mlFeedbackEvents).where(eq(mlFeedbackEvents.orgId, orgId));
+    expect(feedback).toHaveLength(0);
+  });
+
+  it('flag on: the same episode clears through the resolve stage (A4 bound = range end)', async () => {
+    await enableAnomalies(orgId);
+    const device = await insertDevice(orgId, siteId);
+    const episodeId = await seedClearableEpisode(device);
+
+    const result = await detectMetricAnomaliesRange({ orgId, from: at(now, -15), to: now });
+
+    expect(result.stages.map((stage) => stage.stage)).toEqual([
+      'baseline', 'growth-trend', 'process-runaway', 'episodes', 'incidents', 'episode-resolve',
+    ]);
+    const [episode] = await episodesFor(orgId, device);
+    expect(episode).toMatchObject({ id: episodeId, status: 'resolved', closeReason: 'cleared' });
+  });
+
+  it('an incident is created already linked to its episode (A6: episodes runs before incidents)', async () => {
+    await enableAnomalies(orgId);
+    const device = await insertDevice(orgId, siteId);
+    const ram = await insertAnomaly({ orgId, deviceId: device, windowStart: at(now, -10), metricName: 'ram_percent', metricType: 'memory', score: 9 });
+    await insertAnomaly({ orgId, deviceId: device, windowStart: at(now, -10), metricName: 'cpu_percent', score: 3 });
+
+    await detectMetricAnomaliesRange({ orgId, from: at(now, -15), to: now });
+
+    const ramEpisodeId = (await anomalyById(ram)).episodeId;
+    expect(ramEpisodeId).not.toBeNull();
+    const incidents = await getTestDb().select().from(metricAnomalyIncidents).where(eq(metricAnomalyIncidents.deviceId, device));
+    expect(incidents).toHaveLength(1); // one per (device, anomaly_type, bucket)
+    expect(incidents[0]!.episodeId).toBe(ramEpisodeId); // highest-score member's episode
+  });
+
+  it('a backfill assembles but never auto-resolves', async () => {
+    await enableAnomalies(orgId);
+    const device = await insertDevice(orgId, siteId);
+    const episodeId = await seedClearableEpisode(device);
+    const fresh = await insertAnomaly({ orgId, deviceId: device, windowStart: at(now, -10), metricName: 'ram_percent', metricType: 'memory' });
+
+    const result = await detectMetricAnomaliesRange({ orgId, from: at(now, -15), to: now, trigger: 'backfill' });
+
+    expect(result.stages.map((stage) => stage.stage)).not.toContain('episode-resolve');
+    expect(result.stages.map((stage) => stage.stage)).toContain('episodes');
+    const episodes = await episodesFor(orgId, device);
+    expect(episodes.find((episode) => episode.id === episodeId)).toMatchObject({ status: 'open' });
+    expect((await anomalyById(fresh)).episodeId).not.toBeNull();
+    expect(handled).toEqual([]);
   });
 });
