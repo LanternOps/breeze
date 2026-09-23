@@ -13,7 +13,7 @@ import {
   requirePermission,
   requireScope,
 } from '../../middleware/auth';
-import { PERMISSIONS } from '../../services/permissions';
+import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import { createContact } from '../../services/contacts/crud';
 import {
   contactCreateAuditEvent,
@@ -85,8 +85,13 @@ function partnerOwnedRefusal(report: { partnerId?: string | null }) {
  * org-owned one. A partner-owned row (#3198 W01) has `org_id NULL`, so it
  * comes back with `orgId: null` and every writer refuses it.
  */
-async function loadOrgOwnedDefinition(reportId: string, auth: Parameters<typeof getReportWithOrgCheck>[1]) {
-  const report = await getReportWithOrgCheck(reportId, auth);
+async function loadOrgOwnedDefinition(
+  reportId: string,
+  auth: Parameters<typeof getReportWithOrgCheck>[1],
+  // Ruling P8b: a type whose read permissions the caller lacks is hidden (404).
+  permissions: Parameters<typeof getReportWithOrgCheck>[2],
+) {
+  const report = await getReportWithOrgCheck(reportId, auth, permissions);
   if (!report) return { report: null, orgId: null, partnerOwned: false } as const;
   if (report.partnerId || !report.orgId) {
     return { report, orgId: null, partnerOwned: true } as const;
@@ -113,6 +118,7 @@ recipientsRoutes.get(
     const { report, orgId } = await loadOrgOwnedDefinition(
       c.req.param('id')!,
       c.get('auth'),
+      c.get('permissions') as UserPermissions | undefined,
     );
     if (!report) return c.json({ error: 'Report not found' }, 404);
     if (!orgId) return c.json({ data: [] });
@@ -149,6 +155,7 @@ recipientsRoutes.post(
     const { report, orgId } = await loadOrgOwnedDefinition(
       c.req.param('id')!,
       c.get('auth'),
+      c.get('permissions') as UserPermissions | undefined,
     );
     if (!report) return c.json({ error: 'Report not found' }, 404);
     const refusal = writeRefusal(report);
@@ -182,6 +189,7 @@ recipientsRoutes.delete(
     const { report, orgId, partnerOwned } = await loadOrgOwnedDefinition(
       c.req.param('id')!,
       c.get('auth'),
+      c.get('permissions') as UserPermissions | undefined,
     );
     if (!report) return c.json({ error: 'Report not found' }, 404);
     if (partnerOwned || !orgId) return c.json(PARTNER_OWNED_REPORT, 409);
@@ -214,6 +222,7 @@ recipientsRoutes.post(
     const { report, orgId } = await loadOrgOwnedDefinition(
       c.req.param('id')!,
       c.get('auth'),
+      c.get('permissions') as UserPermissions | undefined,
     );
     if (!report) return c.json({ error: 'Report not found' }, 404);
     const refusal = writeRefusal(report);

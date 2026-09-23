@@ -22,6 +22,7 @@ import {
   missingReportTypePermission,
   reportAudienceCondition,
   reportTypeHiddenFromCaller,
+  reportTypePermissionCondition,
   REPORT_TYPE_PERMISSION_DENIED,
 } from '../../services/reportTypePermissions';
 import type { UserPermissions } from '../../services/permissions';
@@ -85,8 +86,11 @@ runsRoutes.post(
   async (c) => {
     const auth = c.get('auth');
     const reportId = c.req.param('id')!;
+    const permissions = c.get('permissions') as UserPermissions | undefined;
 
-    const report = await getReportWithOrgCheck(reportId, auth);
+    // Ruling P8b: a type whose read permissions the caller lacks is hidden by
+    // the loader, so generate-by-id on it answers 404 (not the 403 below).
+    const report = await getReportWithOrgCheck(reportId, auth, permissions);
     if (!report) {
       return c.json({ error: 'Report not found' }, 404);
     }
@@ -103,8 +107,9 @@ runsRoutes.post(
 
     // #3198 W02 (spec §2, ruling P8): a business type also needs the
     // underlying read permissions its registry entry lists — before any
-    // authority lookup or run row.
-    if (missingReportTypePermission(report.type, c.get('permissions') as UserPermissions | undefined)) {
+    // authority lookup or run row. Defense in depth since ruling P8b (the
+    // loader above already hid the row).
+    if (missingReportTypePermission(report.type, permissions)) {
       return c.json(REPORT_TYPE_PERMISSION_DENIED, 403);
     }
     // Ruling F1, defense in depth: getReportWithOrgCheck already hides an
@@ -296,6 +301,13 @@ runsRoutes.get(
 
     const conditions: SQL<unknown>[] = [];
     let runScopePredicate: SQL<unknown>;
+    // Ruling P8b: every scope loses the types whose underlying read
+    // permissions the caller lacks.
+    const typePermission = reportTypePermissionCondition(
+      c.get('permissions') as UserPermissions | undefined,
+      reports.type,
+    );
+    if (typePermission) conditions.push(typePermission);
 
     if (auth.scope === 'organization') {
       if (!auth.orgId) {
@@ -416,7 +428,12 @@ runsRoutes.get(
     const runId = c.req.param('id')!;
     const { format: requestedFormat } = c.req.valid('query');
 
-    const access = await getReportRunWithOrgCheck(runId, auth, 'export');
+    const access = await getReportRunWithOrgCheck(
+      runId,
+      auth,
+      'export',
+      c.get('permissions') as UserPermissions | undefined,
+    );
     if (!access) {
       return c.json({ error: 'Report run not found' }, 404);
     }
@@ -530,7 +547,12 @@ runsRoutes.get(
     const auth = c.get('auth');
     const runId = c.req.param('id')!;
 
-    const access = await getReportRunWithOrgCheck(runId, auth, 'read');
+    const access = await getReportRunWithOrgCheck(
+      runId,
+      auth,
+      'read',
+      c.get('permissions') as UserPermissions | undefined,
+    );
     if (!access) {
       return c.json({ error: 'Report run not found' }, 404);
     }
@@ -613,7 +635,12 @@ runsRoutes.post(
     const runId = c.req.param('id')!;
     const { handle } = c.req.valid('json');
 
-    const access = await getReportRunWithOrgCheck(runId, auth, 'write');
+    const access = await getReportRunWithOrgCheck(
+      runId,
+      auth,
+      'write',
+      c.get('permissions') as UserPermissions | undefined,
+    );
     if (!access) {
       return c.json({ error: 'Report run not found' }, 404);
     }

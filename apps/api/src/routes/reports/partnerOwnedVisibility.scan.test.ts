@@ -162,6 +162,18 @@ const MUST_CALL_AUDIENCE: ReadonlyArray<{ file: string; fn: string }> = [
 ];
 const AUDIENCE_CALL = /(?<!function\s)\breportAudienceCondition\(/;
 
+/**
+ * Ruling P8b (#3198 W02 fix round): the per-type permission gate extends to
+ * reads on EVERY scope. Every scope that applies the F1 audience exclusion is,
+ * by construction, a report reader building its own tenant predicate — so it
+ * must also apply the per-type permission filter: the SQL twin
+ * `reportTypePermissionCondition`, or the by-id belt
+ * `reportTypeHiddenByPermission` (the AI tool's lazy
+ * `aiReportTypeHiddenByPermission` wraps it). Together with the mechanical
+ * MUST_CALL_AUDIENCE rule, a new reader that forgets it goes red.
+ */
+const TYPE_PERMISSION_CALL = /(?<!function\s)\b(?:reportTypePermissionCondition|reportTypeHiddenByPermission|aiReportTypeHiddenByPermission)\(/;
+
 const ORG_PIN = 'a partner-owned row has org_id NULL and cannot match an org_id equality';
 
 /**
@@ -891,6 +903,28 @@ describe('partner-owned report visibility is mechanical (#3198 W01, per-site sin
     }
     expect(callers).toBeGreaterThanOrEqual(4);
     expect(unlisted).toEqual([]);
+  });
+
+  it('every scope applying reportAudienceCondition also applies the per-type permission filter (ruling P8b)', () => {
+    const offenders: string[] = [];
+    let callers = 0;
+    for (const file of files) {
+      const source = code(file);
+      const scopes = namedScopes(source);
+      const re = new RegExp(AUDIENCE_CALL.source, 'g');
+      for (let m = re.exec(source); m; m = re.exec(source)) {
+        callers += 1;
+        const scope = innermostScope(scopes, m.index);
+        const body = scope ? source.slice(scope.start, scope.end + 1) : source;
+        if (!TYPE_PERMISSION_CALL.test(body)) {
+          offenders.push(`${rel(file)}#${scope?.name ?? 'module scope'} applies reportAudienceCondition without reportTypePermissionCondition / reportTypeHiddenByPermission`);
+        }
+      }
+    }
+    // helpers.ts (2), core.ts resolveDefinitionListScope, runs.ts GET /runs,
+    // aiToolsFleet.ts (3): a drop means the scan stopped seeing them.
+    expect(callers).toBeGreaterThanOrEqual(7);
+    expect(offenders).toEqual([]);
   });
 
   it('a raw reports.partnerId predicate appears only inside the gated helper functions', () => {

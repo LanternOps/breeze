@@ -241,7 +241,8 @@ describe('generate_report by reportId applies the per-type permission gate (ruli
     });
     selectReturning(definition('ar_aging'));
     const r = JSON.parse(await handlerFor('generate_report')({ action: 'generate', reportId: 'rep1' }, partnerAuth()));
-    expect(r.error).toBe('Insufficient permissions');
+    // Ruling P8b: the definition is now HIDDEN (not found), not refused.
+    expect(r.error).toBe('Report not found or access denied');
     expect(mockDb.insert).not.toHaveBeenCalled();
     expect(permissionsMock.getUserPermissions).toHaveBeenCalledWith(
       'u1', expect.objectContaining({ partnerId: PARTNER_ID, scope: 'partner' }),
@@ -252,7 +253,7 @@ describe('generate_report by reportId applies the per-type permission gate (ruli
     permissionsMock.getUserPermissions.mockResolvedValue(null);
     selectReturning(definition('ar_aging'));
     const r = JSON.parse(await handlerFor('generate_report')({ action: 'generate', reportId: 'rep1' }, partnerAuth()));
-    expect(r.error).toBe('Insufficient permissions');
+    expect(r.error).toBe('Report not found or access denied');
     expect(mockDb.insert).not.toHaveBeenCalled();
   });
 
@@ -269,6 +270,74 @@ describe('generate_report by reportId applies the per-type permission gate (ruli
   it('a pre-#3198 type resolves no permission set (no extra query)', async () => {
     selectReturning(definition('device_inventory'));
     await handlerFor('generate_report')({ action: 'generate', reportId: 'rep1' }, partnerAuth());
+    expect(permissionsMock.getUserPermissions).not.toHaveBeenCalled();
+  });
+});
+
+/** Every type bound in any `reports.type NOT IN (…)` arm of `where`. */
+function notInTypes(where: unknown): string[] {
+  const { sql: text, params: bound } = new PgDialect().sqlToQuery(where as SQL);
+  const out: string[] = [];
+  for (const arm of text.matchAll(/"reports"\."type" not in \(([^)]*)\)/g)) {
+    for (const p of arm[1]!.split(',')) out.push(String(bound[Number(p.trim().slice(1)) - 1]));
+  }
+  return out;
+}
+
+/**
+ * Ruling P8b (#3198 W02 fix round): the per-type permission gate extends to
+ * READS. A partner caller holding reports:* but not invoices:read never sees
+ * an ar_aging definition or run through the AI tool — the list excludes the
+ * type, by-id actions answer "not found" — while legacy types are untouched.
+ */
+describe('ruling P8b: generate_report hides a type whose read permission the caller lacks', () => {
+  const NO_INVOICES = {
+    permissions: [
+      { resource: 'reports', action: '*' },
+      { resource: 'tickets', action: 'read' },
+      { resource: 'time_entries', action: 'read' },
+    ],
+  };
+  beforeEach(() => {
+    permissionsMock.getUserPermissions.mockResolvedValue(NO_INVOICES);
+  });
+
+  it('list: excludes ar_aging only; nothing excluded for a caller holding invoices:read', async () => {
+    selectReturning(null);
+    await handlerFor('generate_report')({ action: 'list' }, partnerAuth());
+    expect(notInTypes(wheres[0])).toEqual(['ar_aging']);
+    wheres.length = 0;
+    permissionsMock.getUserPermissions.mockResolvedValue({ permissions: [{ resource: '*', action: '*' }] });
+    await handlerFor('generate_report')({ action: 'list' }, partnerAuth());
+    expect(notInTypes(wheres[0])).toEqual([]);
+  });
+
+  it.each(['history', 'update', 'delete'])('%s by reportId: an ar_aging definition is not found', async (action) => {
+    selectReturning(definition('ar_aging'));
+    const r = JSON.parse(await handlerFor('generate_report')({ action, reportId: 'rep1', name: 'x' }, partnerAuth()));
+    expect(r.error).toBe('Report not found or access denied');
+    expect(mockDb.update).not.toHaveBeenCalled();
+    expect(deleteSpy).not.toHaveBeenCalled();
+  });
+
+  it('download: an ar_aging run is not found', async () => {
+    selectReturning(run('ar_aging'));
+    const r = JSON.parse(await handlerFor('generate_report')({ action: 'download', reportRunId: 'run1' }, partnerAuth()));
+    expect(r.error).toBe('Report run not found');
+  });
+
+  it('positive control: holding invoices:read, history serves the ar_aging definition', async () => {
+    permissionsMock.getUserPermissions.mockResolvedValue({ permissions: [{ resource: '*', action: '*' }] });
+    selectReturning(definition('ar_aging'));
+    const r = JSON.parse(await handlerFor('generate_report')({ action: 'history', reportId: 'rep1' }, partnerAuth()));
+    expect(r.error).toBeUndefined();
+    expect(r.reportId).toBe('rep1');
+  });
+
+  it('positive control: a legacy type is served without invoices:read, with no permission lookup', async () => {
+    selectReturning(definition('device_inventory'));
+    const r = JSON.parse(await handlerFor('generate_report')({ action: 'history', reportId: 'rep1' }, partnerAuth()));
+    expect(r.reportId).toBe('rep1');
     expect(permissionsMock.getUserPermissions).not.toHaveBeenCalled();
   });
 });

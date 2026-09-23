@@ -528,3 +528,120 @@ describe('partner and system callers get no audience predicate', () => {
     expect(res.status).toBe(200);
   });
 });
+
+/** Every type bound in any `reports.type NOT IN (…)` arm of `where`. */
+function notInTypes(where: unknown): string[] {
+  const { sql: text, params: bound } = dialect.sqlToQuery(where as SQL);
+  const out: string[] = [];
+  for (const arm of text.matchAll(/"reports"\."type" not in \(([^)]*)\)/g)) {
+    for (const p of arm[1]!.split(',')) out.push(String(bound[Number(p.trim().slice(1)) - 1]));
+  }
+  return out;
+}
+
+/**
+ * Ruling P8b (#3198 W02 fix round) — the per-type permission gate (P8)
+ * extends to READS, on every scope. A partner user holding reports:* but not
+ * invoices:read never sees an ar_aging definition or run: by-id reads and
+ * by-id writes answer 404 (the row is hidden, not refused — same as F1's
+ * org-scope reads), and both lists exclude the type. The mocked db returns the
+ * queued row regardless of WHERE, so each case asserts BOTH the SQL filter
+ * and the loader's belt-level refusal.
+ */
+describe('ruling P8b: a caller lacking a business type\'s read permission never sees it', () => {
+  beforeEach(() => {
+    state.auth = partnerAuth('selected');
+    state.permissions = { permissions: NO_INVOICES_PERMISSIONS };
+  });
+
+  it('GET /reports/:id → 404; the metadata read excludes ar_aging only', async () => {
+    state.rows = [orgDefinition('ar_aging'), orgDefinition('ar_aging'), null];
+    const res = await app().request(`/reports/${REPORT_ID}`);
+    expect(notInTypes(state.wheres[0])).toEqual(['ar_aging']);
+    expect(res.status).toBe(404);
+  });
+
+  it('GET /reports/:id/recipients → 404', async () => {
+    state.rows = [orgDefinition('ar_aging'), orgDefinition('ar_aging')];
+    const res = await app().request(`/reports/${REPORT_ID}/recipients`);
+    expect(notInTypes(state.wheres[0])).toEqual(['ar_aging']);
+    expect(res.status).toBe(404);
+  });
+
+  it.each(['', '/download'])('GET /reports/runs/:id%s → 404', async (suffix) => {
+    state.rows = [orgRun('ar_aging'), orgRun('ar_aging')];
+    const res = await app().request(`/reports/runs/${RUN_ID}${suffix}`);
+    expect(notInTypes(state.wheres[0])).toEqual(['ar_aging']);
+    expect(res.status).toBe(404);
+  });
+
+  it('DELETE /reports/:id → 404, nothing deleted', async () => {
+    state.rows = [orgDefinition('ar_aging'), orgDefinition('ar_aging')];
+    const res = await app().request(`/reports/${REPORT_ID}`, { method: 'DELETE' });
+    expect(notInTypes(state.wheres[0])).toEqual(['ar_aging']);
+    expect(res.status).toBe(404);
+    expect(state.deletes).toHaveLength(0);
+  });
+
+  it('PUT /reports/:id → 404 (hidden, not 403), no update', async () => {
+    state.rows = [orgDefinition('ar_aging'), orgDefinition('ar_aging')];
+    const res = await app().request(`/reports/${REPORT_ID}`, {
+      method: 'PUT', headers: JSON_HEADERS, body: JSON.stringify({ name: 'renamed' }),
+    });
+    expect(res.status).toBe(404);
+    expect(state.updates).toHaveLength(0);
+  });
+
+  it('POST /reports/:id/generate → 404, no run row', async () => {
+    state.rows = [orgDefinition('ar_aging'), orgDefinition('ar_aging')];
+    const res = await app().request(`/reports/${REPORT_ID}/generate`, { method: 'POST' });
+    expect(res.status).toBe(404);
+    expect(state.inserts).toHaveLength(0);
+    expect(generateReport).not.toHaveBeenCalled();
+  });
+
+  it.each(['/reports', '/reports/templates', '/reports/runs'])('GET %s excludes ar_aging only', async (path) => {
+    state.rows = [{ count: 0 }, null];
+    const res = await app().request(path);
+    expect(res.status).toBe(200);
+    expect(notInTypes(state.wheres[0])).toEqual(['ar_aging']);
+  });
+
+  it('partner (all) and system callers are filtered too', async () => {
+    for (const auth of [partnerAuth('all'), { ...partnerAuth('all'), scope: 'system', partnerId: null }]) {
+      state.auth = auth;
+      state.wheres = [];
+      state.rows = [{ count: 0 }, null];
+      await app().request('/reports');
+      expect(notInTypes(state.wheres[0])).toEqual(['ar_aging']);
+      state.wheres = [];
+      state.rows = [{ count: 0 }, null];
+      await app().request('/reports/runs');
+      expect(notInTypes(state.wheres[0])).toEqual(['ar_aging']);
+    }
+  });
+
+  it('positive control: holding invoices:read, the same definition and run are served, lists unfiltered', async () => {
+    state.permissions = { permissions: ALL_PERMISSIONS };
+    state.rows = [orgDefinition('ar_aging'), orgDefinition('ar_aging'), null];
+    expect((await app().request(`/reports/${REPORT_ID}`)).status).toBe(200);
+    state.rows = [orgRun('ar_aging'), orgRun('ar_aging')];
+    expect((await app().request(`/reports/runs/${RUN_ID}`)).status).toBe(200);
+    state.wheres = [];
+    state.rows = [{ count: 0 }, null];
+    await app().request('/reports');
+    expect(notInTypes(state.wheres[0])).toEqual([]);
+  });
+
+  it('positive control: a legacy type is served without invoices:read', async () => {
+    state.rows = [orgDefinition('device_inventory'), orgDefinition('device_inventory'), null];
+    expect((await app().request(`/reports/${REPORT_ID}`)).status).toBe(200);
+    state.rows = [orgRun('device_inventory'), orgRun('device_inventory')];
+    expect((await app().request(`/reports/runs/${RUN_ID}`)).status).toBe(200);
+  });
+
+  it('SLA types stay visible to a caller holding tickets + time_entries read', async () => {
+    state.rows = [orgRun('technician_time_billability'), orgRun('technician_time_billability')];
+    expect((await app().request(`/reports/runs/${RUN_ID}`)).status).toBe(200);
+  });
+});

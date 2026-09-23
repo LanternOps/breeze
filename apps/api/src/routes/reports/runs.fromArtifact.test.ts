@@ -39,7 +39,11 @@ vi.mock('../../middleware/auth', () => ({
     await next();
   },
   requireScope: () => async (_c: unknown, next: () => Promise<void>) => next(),
-  requirePermission: () => async (_c: unknown, next: () => Promise<void>) => next(),
+  // The real requirePermission populates `permissions` (auth.ts:919).
+  requirePermission: () => async (c: any, next: () => Promise<void>) => {
+    c.set('permissions', { permissions: [{ resource: '*', action: '*' }] });
+    await next();
+  },
 }));
 
 vi.mock('../../db', () => ({
@@ -198,7 +202,11 @@ describe('POST /reports/runs/:id/attachments/from-artifact (spec §6.3)', () => 
     // The org axis AND the run's persisted site scope both live in that helper.
     // An ad-hoc join here would have reproduced the first and dropped the second.
     await attach();
-    expect(getReportRunMock).toHaveBeenCalledWith(RUN_ID, expect.anything(), 'write');
+    // Ruling P8b: the caller's resolved permissions ride along, so the guard
+    // hides a type whose read permissions the caller lacks.
+    expect(getReportRunMock).toHaveBeenCalledWith(
+      RUN_ID, expect.anything(), 'write', { permissions: [{ resource: '*', action: '*' }] },
+    );
   });
 
   it('404s a run the caller cannot reach, without touching the artifact service', async () => {

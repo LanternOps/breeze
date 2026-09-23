@@ -14,8 +14,11 @@ import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import {
   missingReportTypePermission,
   reportAudienceCondition,
+  reportTypeHiddenByPermission,
   reportTypeHiddenFromCaller,
+  reportTypePermissionCondition,
   REPORT_TYPE_PERMISSION_DENIED,
+  type GrantedReportPermissions,
 } from '../../services/reportTypePermissions';
 import {
   canManagePartnerWidePolicies,
@@ -129,7 +132,11 @@ async function resolveDefinitionListScope(
   // the partner branch no NULL-org row can match `inArray(reports.org_id, …)`
   // or any org-axis scope branch.
   options: { includePartnerOwned: boolean },
+  // Ruling P8b: the caller's resolved permissions — a type whose underlying
+  // read permissions it lacks is excluded from every listing, on every scope.
+  permissions: GrantedReportPermissions,
 ): Promise<DefinitionListScopeResult> {
+  const typePermission = reportTypePermissionCondition(permissions, reports.type);
   const exactOrgId = auth.scope === 'organization'
     ? auth.orgId
     : explicitOrgId;
@@ -148,7 +155,11 @@ async function resolveDefinitionListScope(
       ok: true,
       // Ruling F1: an org-scope caller never lists an msp_staff type (a
       // partner caller's explicit orgId gets no audience predicate).
-      tenantCondition: and(eq(reports.orgId, exactOrgId), reportAudienceCondition(auth, reports.type))!,
+      tenantCondition: and(
+        eq(reports.orgId, exactOrgId),
+        reportAudienceCondition(auth, reports.type),
+        typePermission,
+      )!,
       definitionScopePredicate: reportDefinitionScopeSqlPredicate(reports, scope),
     };
   }
@@ -176,9 +187,12 @@ async function resolveDefinitionListScope(
       : undefined;
     return {
       ok: true,
-      tenantCondition: partnerWide
-        ? or(orgCondition, partnerOwnedReportVisibility(auth))!
-        : orgCondition,
+      tenantCondition: and(
+        partnerWide
+          ? or(orgCondition, partnerOwnedReportVisibility(auth))!
+          : orgCondition,
+        typePermission,
+      )!,
       definitionScopePredicate: reportDefinitionMultiOrgScopeSqlPredicate(
         reports.orgId,
         reports,
@@ -199,6 +213,7 @@ async function resolveDefinitionListScope(
     : undefined;
   return {
     ok: true,
+    tenantCondition: typePermission,
     definitionScopePredicate: systemPartnerArm
       ? or(unrestrictedReportDefinitionScopeSqlPredicate(reports), systemPartnerArm)!
       : unrestrictedReportDefinitionScopeSqlPredicate(reports),
@@ -240,13 +255,20 @@ async function loadLockedDefinition(
   reportId: string,
   auth: AuthContext,
   action: Exclude<ReportAction, 'read' | 'export'>,
+  // Ruling P8b: a type whose read permissions the caller lacks is HIDDEN here
+  // (null → 404), as it is from every read — so PUT/reauthorize/DELETE on
+  // such a row answer 404, not 403 (same posture as F1's hidden rows).
+  permissions: GrantedReportPermissions,
 ) {
   const [metadata] = await tx
     .select(reportDefinitionMetadataProjection)
     .from(reports)
-    .where(tenantAuthorizedReportCondition(reportId, auth))
+    .where(tenantAuthorizedReportCondition(reportId, auth, permissions))
     .limit(1);
   if (!metadata) return null;
+  // Ruling P8b, defense in depth: the tenant condition above already
+  // excludes the type.
+  if (reportTypeHiddenByPermission(metadata.type, permissions)) return null;
   if (reportTypeHiddenFromCaller(metadata.type, auth)) return AUDIENCE_DENIED;
   if (isSystemManagedReportDefinition(metadata)) return SYSTEM_MANAGED;
 
@@ -315,7 +337,7 @@ coreRoutes.get(
     const { page, limit, offset } = getPagination(query);
     const scopeResult = await resolveDefinitionListScope(auth, query.orgId, {
       includePartnerOwned: true,
-    });
+    }, c.get('permissions') as UserPermissions | undefined);
     if (!scopeResult.ok) {
       return c.json({ error: scopeResult.error }, 403);
     }
@@ -376,7 +398,7 @@ coreRoutes.get(
     const { page, limit, offset } = getPagination(query);
     const scopeResult = await resolveDefinitionListScope(auth, query.orgId, {
       includePartnerOwned: false,
-    });
+    }, c.get('permissions') as UserPermissions | undefined);
     if (!scopeResult.ok) {
       return c.json({ error: scopeResult.error }, 403);
     }
@@ -425,7 +447,11 @@ coreRoutes.get(
       return c.notFound();
     }
 
-    const report = await getReportWithOrgCheck(reportId, auth);
+    const report = await getReportWithOrgCheck(
+      reportId,
+      auth,
+      c.get('permissions') as UserPermissions | undefined,
+    );
     if (!report) {
       return c.json({ error: 'Report not found' }, 404);
     }
@@ -669,6 +695,7 @@ coreRoutes.put(
         reportId,
         auth,
         'write',
+        permissions,
       );
       if (locked === SYSTEM_MANAGED) return SYSTEM_MANAGED;
       if (locked === PARTNER_WIDE_DENIED) return PARTNER_WIDE_DENIED;
@@ -684,6 +711,8 @@ coreRoutes.put(
       // `emailRecipients` — needs the STORED type's underlying read
       // permissions, exactly as creating it did. After the row is authorized,
       // so the 403 never discloses a definition the caller cannot see.
+      // Defense in depth since ruling P8b: loadLockedDefinition already HIDES
+      // such a row (404).
       if (missingReportTypePermission(locked.locked.type, permissions)) {
         return TYPE_PERMISSION_DENIED;
       }
@@ -779,6 +808,7 @@ coreRoutes.post(
         reportId,
         auth,
         'write',
+        permissions,
       );
       if (locked === SYSTEM_MANAGED) return { kind: 'system_managed' as const };
       if (locked === PARTNER_WIDE_DENIED) return { kind: 'partner_wide_denied' as const };
@@ -787,7 +817,8 @@ coreRoutes.post(
       // #3198 W02 (rulings P8, T11b). Reauthorize re-stamps the CALLER as the
       // execution user, so it needs the stored type's underlying read
       // permissions exactly as PUT does. After the row is authorized, so the
-      // 403 never discloses a definition the caller cannot see.
+      // 403 never discloses a definition the caller cannot see. Defense in
+      // depth since ruling P8b: loadLockedDefinition already hides it (404).
       if (missingReportTypePermission(locked.locked.type, permissions)) {
         return { kind: 'type_permission_denied' as const };
       }
@@ -877,6 +908,7 @@ coreRoutes.delete(
         reportId,
         auth,
         'delete',
+        c.get('permissions') as UserPermissions | undefined,
       );
       if (locked === SYSTEM_MANAGED) return SYSTEM_MANAGED;
       if (locked === PARTNER_WIDE_DENIED) return PARTNER_WIDE_DENIED;

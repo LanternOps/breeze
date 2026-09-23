@@ -495,7 +495,9 @@ describe('PUT /reports/:id on a partner-owned definition', () => {
 
   // #3198 W02 (ruling P8): a PUT can redirect `config.emailRecipients`, so a
   // caller who could not create the report cannot edit it either.
-  it('403s Insufficient permissions on an ar_aging row without invoices:read, before any write', async () => {
+  // Ruling P8b: the type is HIDDEN from a caller without invoices:read, so the
+  // by-id write answers 404 (was P8's 403 before reads were gated too).
+  it('404s an ar_aging row without invoices:read (hidden, ruling P8b), before any write', async () => {
     state.permissions = { permissions: NO_INVOICES_PERMISSIONS };
     state.rows = [partnerDefinition(), partnerDefinition()];
     const res = await app().request(`/reports/${REPORT_ID}`, {
@@ -503,8 +505,8 @@ describe('PUT /reports/:id on a partner-owned definition', () => {
       body: JSON.stringify({ config: { emailRecipients: ['me@example.com'] } }),
     });
 
-    expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: 'Insufficient permissions' });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Report not found' });
     expect(state.updates).toHaveLength(0);
   });
 
@@ -609,13 +611,13 @@ describe('PUT /reports/:id validates config against the stored row\'s type', () 
 // user, so it needs the type's underlying read permissions exactly as PUT does
 // (P8); otherwise a reports:write-only user could take over an AR schedule.
 describe('POST /reports/:id/reauthorize applies the per-type permission gate', () => {
-  it('403s Insufficient permissions on an ar_aging row without invoices:read, updating nothing', async () => {
+  it('404s an ar_aging row without invoices:read (hidden, ruling P8b), updating nothing', async () => {
     state.permissions = { permissions: NO_INVOICES_PERMISSIONS };
     state.rows = [partnerDefinition(), partnerDefinition()];
     const res = await app().request(`/reports/${REPORT_ID}/reauthorize`, { method: 'POST' });
 
-    expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: 'Insufficient permissions' });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Report not found' });
     expect(state.updates).toHaveLength(0);
     expect(writeRouteAudit).not.toHaveBeenCalled();
   });
@@ -873,13 +875,13 @@ describe('POST /reports/:id/generate on a partner-owned definition', () => {
     expect(vi.mocked(generateReport).mock.calls[0]?.[1]).toMatchObject({ kind: 'partner', partnerId: PARTNER_ID });
   });
 
-  it('403s Insufficient permissions without invoices:read, before any run row', async () => {
+  it('404s without invoices:read (hidden, ruling P8b), before any run row', async () => {
     state.permissions = { permissions: NO_INVOICES_PERMISSIONS };
     state.rows = [partnerDefinition(), partnerDefinition()];
     const res = await app().request(`/reports/${REPORT_ID}/generate`, { method: 'POST' });
 
-    expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: 'Insufficient permissions' });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Report not found' });
     expect(state.inserts).toHaveLength(0);
     expect(generateReport).not.toHaveBeenCalled();
   });

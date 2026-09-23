@@ -5,7 +5,9 @@ import { BUSINESS_REPORT_TYPES, REPORT_TYPES } from '@breeze/shared';
 import { reports } from '../db/schema';
 import {
   reportAudienceCondition,
+  reportTypeHiddenByPermission,
   reportTypeHiddenFromCaller,
+  reportTypePermissionCondition,
 } from './reportTypePermissions';
 
 const dialect = new PgDialect();
@@ -46,5 +48,48 @@ describe('reportAudienceCondition', () => {
   it('adds no predicate for partner or system scope', () => {
     expect(reportAudienceCondition({ scope: 'partner' }, reports.type)).toBeUndefined();
     expect(reportAudienceCondition({ scope: 'system' }, reports.type)).toBeUndefined();
+  });
+});
+
+/**
+ * Ruling P8b (#3198 W02 fix round): the per-type permission gate extends to
+ * READS. A caller who lacks a business type's underlying read permission
+ * (e.g. invoices:read for ar_aging) never sees that type's definitions or
+ * runs — list-excluded and 404 by id — on every scope. Pre-#3198 types list
+ * no extra permissions and are never hidden.
+ */
+describe('reportTypeHiddenByPermission / reportTypePermissionCondition (ruling P8b)', () => {
+  const noInvoices = {
+    permissions: [
+      { resource: 'reports', action: '*' },
+      { resource: 'tickets', action: 'read' },
+      { resource: 'time_entries', action: 'read' },
+    ],
+  };
+  const all = { permissions: [{ resource: '*', action: '*' }] };
+
+  it('hides exactly the types whose required permissions are missing', () => {
+    expect(REPORT_TYPES.filter((t) => reportTypeHiddenByPermission(t, noInvoices))).toEqual(['ar_aging']);
+    expect(REPORT_TYPES.filter((t) => reportTypeHiddenByPermission(t, all))).toEqual([]);
+  });
+
+  it('an unresolved permission set hides every business type and no legacy type', () => {
+    for (const granted of [null, undefined, { permissions: [] }]) {
+      const hidden = REPORT_TYPES.filter((t) => reportTypeHiddenByPermission(t, granted));
+      expect([...hidden].sort()).toEqual([...BUSINESS_REPORT_TYPES].sort());
+    }
+  });
+
+  it('an unknown type is not hidden and never throws', () => {
+    expect(reportTypeHiddenByPermission('not_a_type', null)).toBe(false);
+  });
+
+  it('the SQL twin excludes exactly the missing types, and adds nothing when none are missing', () => {
+    const condition = reportTypePermissionCondition(noInvoices, reports.type);
+    expect(condition).toBeDefined();
+    const { sql, params } = dialect.sqlToQuery(condition as SQL);
+    expect(sql).toMatch(/"reports"\."type" not in \(/);
+    expect(params).toEqual(['ar_aging']);
+    expect(reportTypePermissionCondition(all, reports.type)).toBeUndefined();
   });
 });

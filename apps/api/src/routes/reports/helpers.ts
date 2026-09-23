@@ -6,7 +6,10 @@ import type { AuthContext } from '../../middleware/auth';
 import { canManagePartnerWidePolicies } from '../../services/partnerWideAccess';
 import {
   reportAudienceCondition,
+  reportTypeHiddenByPermission,
   reportTypeHiddenFromCaller,
+  reportTypePermissionCondition,
+  type GrantedReportPermissions,
 } from '../../services/reportTypePermissions';
 import {
   decodeSiteScope,
@@ -234,11 +237,18 @@ export function reportOwnerScopePredicate(
     : reportRunScopeSqlPredicate(reportRuns, scope);
 }
 
+/**
+ * The by-id definition loader. `permissions` is REQUIRED (ruling P8b): the
+ * caller's resolved permission set (`c.get('permissions')`), so a row whose
+ * type needs a read permission the caller lacks answers null (→ 404), exactly
+ * like a row outside the caller's tenancy.
+ */
 export async function getReportWithOwnerCheck(
   reportId: string,
   auth: AuthContext,
+  permissions: GrantedReportPermissions,
 ) {
-  const metadataCondition = tenantAuthorizedReportCondition(reportId, auth);
+  const metadataCondition = tenantAuthorizedReportCondition(reportId, auth, permissions);
   const [metadata] = await db
     .select(reportDefinitionMetadataProjection)
     .from(reports)
@@ -251,6 +261,9 @@ export async function getReportWithOwnerCheck(
   // Ruling F1, defense in depth: the tenant condition above already excludes
   // msp_staff types for an org-scope caller.
   if (reportTypeHiddenFromCaller(metadata.type, auth)) return null;
+  // Ruling P8b, defense in depth: likewise for a type whose underlying read
+  // permissions the caller lacks.
+  if (reportTypeHiddenByPermission(metadata.type, permissions)) return null;
 
   const owner = reportOwnerOfRow(metadata);
   if (!owner) return null;
@@ -351,11 +364,20 @@ export function isSystemManagedReportDefinition(
     || (row.type !== null && isManagedEvidenceType(row.type) && row.portalSelfService === true);
 }
 
+/**
+ * The by-id `reports` tenant condition. Ruling P8b: on EVERY scope it also
+ * excludes the types whose underlying read permissions `permissions` lacks
+ * (`reportTypePermissionCondition`; no predicate when it holds them all).
+ */
 export function tenantAuthorizedReportCondition(
   reportId: string,
   auth: Pick<AuthContext, 'scope' | 'orgId' | 'accessibleOrgIds' | 'partnerId' | 'partnerOrgAccess'>,
+  permissions: GrantedReportPermissions,
 ): SQL<unknown> {
-  const idCondition = eq(reports.id, reportId);
+  const idCondition = and(
+    eq(reports.id, reportId),
+    reportTypePermissionCondition(permissions, reports.type),
+  )!;
 
   // Organization scope never gains a partner_id predicate (#3198 W01): its
   // `org_id = auth.orgId` filter is one no partner-owned row can satisfy.
@@ -388,33 +410,41 @@ export function tenantAuthorizedReportCondition(
  */
 export function tenantAuthorizedRunCondition(
   auth: Pick<AuthContext, 'scope' | 'orgId' | 'accessibleOrgIds' | 'partnerId' | 'partnerOrgAccess'>,
+  permissions: GrantedReportPermissions,
 ): SQL<unknown> | undefined | null {
+  // Ruling P8b: every scope loses the types whose read permissions it lacks.
+  const typePermission = reportTypePermissionCondition(permissions, reports.type);
   if (auth.scope === 'organization') {
     // Ruling F1: an org-scope caller never sees a run of an msp_staff type.
     return auth.orgId
-      ? and(eq(reports.orgId, auth.orgId), reportAudienceCondition(auth, reports.type))!
+      ? and(eq(reports.orgId, auth.orgId), reportAudienceCondition(auth, reports.type), typePermission)!
       : null;
   }
   if (auth.scope === 'partner') {
     const orgIds = auth.accessibleOrgIds ?? [];
     if (!canManagePartnerWidePolicies(auth)) {
-      return orgIds.length > 0 ? inArray(reports.orgId, orgIds) : null;
+      return orgIds.length > 0 ? and(inArray(reports.orgId, orgIds), typePermission)! : null;
     }
     const orgCondition = orgIds.length > 0
       ? inArray(reports.orgId, orgIds)
       : sql<unknown>`FALSE`;
-    return or(orgCondition, partnerOwnedReportVisibility(auth))!;
+    return and(or(orgCondition, partnerOwnedReportVisibility(auth)), typePermission)!;
   }
-  return undefined;
+  return typePermission;
 }
 
+/**
+ * The by-id run loader. `permissions` is REQUIRED (ruling P8b) — see
+ * `getReportWithOwnerCheck`.
+ */
 export async function getReportRunWithOwnerCheck(
   runId: string,
   auth: AuthContext,
   action: ReportAction,
+  permissions: GrantedReportPermissions,
 ) {
   const tenantConditions: SQL<unknown>[] = [eq(reportRuns.id, runId)];
-  const tenantCondition = tenantAuthorizedRunCondition(auth);
+  const tenantCondition = tenantAuthorizedRunCondition(auth, permissions);
   if (tenantCondition === null) return null;
   if (tenantCondition) tenantConditions.push(tenantCondition);
 
@@ -426,8 +456,9 @@ export async function getReportRunWithOwnerCheck(
     .limit(1);
 
   if (!metadata) return null;
-  // Ruling F1, defense in depth (see getReportWithOwnerCheck).
+  // Ruling F1 / P8b, defense in depth (see getReportWithOwnerCheck).
   if (reportTypeHiddenFromCaller(metadata.type, auth)) return null;
+  if (reportTypeHiddenByPermission(metadata.type, permissions)) return null;
 
   const owner = reportOwnerOfRow(metadata);
   if (!owner) return null;

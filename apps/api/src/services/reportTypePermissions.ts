@@ -1,7 +1,12 @@
 import { notInArray, type AnyColumn, type SQL } from 'drizzle-orm';
 import type { ReportType } from '@breeze/shared';
 import { permissionGrantMatches } from './permissionMatching';
-import { isMspStaffReportType, MSP_STAFF_REPORT_TYPES, reportTypeDef } from './reportRegistry';
+import {
+  isMspStaffReportType,
+  MSP_STAFF_REPORT_TYPES,
+  REPORT_GENERATORS,
+  reportTypeDef,
+} from './reportRegistry';
 // Type-only: `./permissions` imports `db`; this module stays pool-free so the
 // report route suites that stub the permissions module wholesale still load it.
 import type { Permission } from './permissions';
@@ -19,9 +24,13 @@ import type { Permission } from './permissions';
  * Wildcards match through `permissionGrantMatches`, never plain equality
  * (#2874: the seeded Partner Admin holds a single `*|*` grant).
  */
+/** A caller's resolved permission set (`c.get('permissions')` on a route,
+ *  `getUserPermissions(...)` elsewhere). null/undefined = nothing resolved. */
+export type GrantedReportPermissions = { permissions: readonly Permission[] } | null | undefined;
+
 export function missingReportTypePermission(
   type: ReportType,
-  granted: { permissions: readonly Permission[] } | null | undefined,
+  granted: GrantedReportPermissions,
 ): Permission | null {
   for (const required of reportTypeDef(type).requiredPermissions) {
     const held = granted?.permissions.some((grant) =>
@@ -70,4 +79,61 @@ export function reportAudienceCondition(
   return auth.scope === 'organization'
     ? notInArray(typeColumn, [...MSP_STAFF_REPORT_TYPES])
     : undefined;
+}
+
+/** The types that list extra read permissions (the business types). Derived
+ *  from the registry so there is no second list to keep in step. */
+const PERMISSION_GATED_REPORT_TYPES: readonly ReportType[] = Object.freeze(
+  Object.values(REPORT_GENERATORS)
+    .filter((d) => d.requiredPermissions.length > 0)
+    .map((d) => d.type),
+);
+
+/**
+ * #3198 W02, ruling P8b. The per-type permission gate (ruling P8) extends to
+ * READS: a caller who lacks a type's underlying read permissions never sees
+ * that type's definitions or runs, on ANY scope — by-id reads answer as if
+ * the row did not exist (404), lists exclude it. The types `granted` does not
+ * cover; empty when it covers them all.
+ */
+export function reportTypesMissingPermission(granted: GrantedReportPermissions): ReportType[] {
+  return PERMISSION_GATED_REPORT_TYPES.filter(
+    (type) => missingReportTypePermission(type, granted) !== null,
+  );
+}
+
+/**
+ * Ruling P8b, the row-level belt: is this stored type hidden from a caller
+ * holding `granted`? Takes a plain string (a `reports.type` value); an unknown
+ * type is not hidden here (same reasoning as `reportTypeHiddenFromCaller`).
+ * Never throws.
+ */
+/** Ruling P8b: does this stored type list extra read permissions at all?
+ *  Lets a caller skip resolving a permission set for every legacy type. */
+export function reportTypeRequiresPermissions(type: string): boolean {
+  return (PERMISSION_GATED_REPORT_TYPES as readonly string[]).includes(type);
+}
+
+export function reportTypeHiddenByPermission(
+  type: string,
+  granted: GrantedReportPermissions,
+): boolean {
+  if (!reportTypeRequiresPermissions(type)) return false;
+  return missingReportTypePermission(type as ReportType, granted) !== null;
+}
+
+/**
+ * Ruling P8b, the SQL twin of `reportTypeHiddenByPermission` (as
+ * `reportAudienceCondition` is of `reportTypeHiddenFromCaller`):
+ * `<typeColumn> NOT IN (<types the caller lacks permission for>)`, or
+ * undefined (no predicate; `and()` drops it) when the caller holds them all.
+ * partnerOwnedVisibility.scan.test.ts requires every scope that applies
+ * `reportAudienceCondition` to apply this too.
+ */
+export function reportTypePermissionCondition(
+  granted: GrantedReportPermissions,
+  typeColumn: AnyColumn,
+): SQL<unknown> | undefined {
+  const missing = reportTypesMissingPermission(granted);
+  return missing.length > 0 ? notInArray(typeColumn, missing) : undefined;
 }

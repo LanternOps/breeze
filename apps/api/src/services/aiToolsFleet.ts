@@ -79,7 +79,10 @@ import { getUserPermissions, type UserPermissions } from './permissions';
 import {
   missingReportTypePermission,
   reportAudienceCondition,
+  reportTypeHiddenByPermission,
   reportTypeHiddenFromCaller,
+  reportTypePermissionCondition,
+  reportTypeRequiresPermissions,
 } from './reportTypePermissions';
 import { reportTypeDef } from './reportRegistry';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from './partnerWideAccess';
@@ -211,6 +214,8 @@ const aiReportDefinitionMetadataProjection = {
   orgId: reports.orgId,
   // #3198 W01: the other owner axis (siteScope.projections.test.ts).
   partnerId: reports.partnerId,
+  // #3198 W02 ruling P8b: the permission belt reads the definition's type.
+  type: reports.type,
   executionScopeVersion: reports.executionScopeVersion,
   executionScopeKind: reports.executionScopeKind,
   executionScopeSiteIds: reports.executionScopeSiteIds,
@@ -274,6 +279,26 @@ export function requireOrgOwnedReportRow<T extends { orgId: string | null; partn
   return row as T & { orgId: string };
 }
 
+/** The AI caller's LIVE permission set — what `requirePermission` would
+ *  resolve for the same token on an HTTP route. */
+function aiCallerPermissions(auth: AuthContext): Promise<UserPermissions | null> {
+  return getUserPermissions(auth.user.id, {
+    partnerId: auth.partnerId || undefined,
+    orgId: auth.orgId || undefined,
+    scope: auth.scope,
+  });
+}
+
+/**
+ * #3198 W02, ruling P8b: a stored type whose underlying read permissions the
+ * caller lacks is hidden from every AI report read, exactly as from the HTTP
+ * routes. Only a type that lists extra permissions pays the permission lookup.
+ */
+async function aiReportTypeHiddenByPermission(auth: AuthContext, type: string): Promise<boolean> {
+  if (!reportTypeRequiresPermissions(type)) return false;
+  return reportTypeHiddenByPermission(type, await aiCallerPermissions(auth));
+}
+
 async function aiReportDefinitionAccess(
   auth: AuthContext,
   reportId: string,
@@ -293,6 +318,8 @@ async function aiReportDefinitionAccess(
   if (!metadataRow) return null;
   const metadata = requireOrgOwnedReportRow(metadataRow, 'aiReportDefinitionAccess metadata');
   if (!metadata) return null;
+  // Ruling P8b: hidden (not found) when the caller lacks the type's read permissions.
+  if (await aiReportTypeHiddenByPermission(auth, metadata.type)) return null;
 
   const authority = await aiLiveReportAuthority(auth, metadata.orgId, action);
   if (!authority) return null;
@@ -356,6 +383,8 @@ async function aiReportRunAccess(
   if (!metadata) return null;
   // Ruling F1, defense in depth (the metadata read already excludes it).
   if (reportTypeHiddenFromCaller(metadata.type, auth)) return null;
+  // Ruling P8b: hidden (not found) when the caller lacks the type's read permissions.
+  if (await aiReportTypeHiddenByPermission(auth, metadata.type)) return null;
 
   const authority = await aiLiveReportAuthority(auth, metadata.orgId, action);
   if (!authority) return null;
@@ -2858,6 +2887,13 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
       if (action === 'list') {
         const conditions: SQL[] = [];
         let definitionPredicate: SQL;
+        // #3198 W02 ruling P8b: never list a type whose underlying read
+        // permissions the caller lacks, on any scope.
+        const typePermission = reportTypePermissionCondition(
+          await aiCallerPermissions(auth),
+          reports.type,
+        );
+        if (typePermission) conditions.push(typePermission);
         if (auth.scope === 'organization') {
           if (!auth.orgId) return JSON.stringify({ error: 'Organization context required' });
           const authority = await aiLiveReportAuthority(auth, auth.orgId, 'read');
@@ -2937,13 +2973,11 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           // permissions, from the caller's LIVE permission set, before any run
           // row — the HTTP generate route's gate. Only a type that lists extra
           // permissions pays the lookup. (Org-scope callers never get here with
-          // an msp_staff type: aiReportDefinitionAccess hid it.)
+          // an msp_staff type, and since ruling P8b nobody gets here without
+          // the type's permissions: aiReportDefinitionAccess hid it. Kept as
+          // defense in depth.)
           if (reportTypeDef(reportDef.type).requiredPermissions.length > 0) {
-            const permissions = await getUserPermissions(auth.user.id, {
-              partnerId: auth.partnerId || undefined,
-              orgId: auth.orgId || undefined,
-              scope: auth.scope,
-            });
+            const permissions = await aiCallerPermissions(auth);
             if (
               reportTypeHiddenFromCaller(reportDef.type, auth)
               || missingReportTypePermission(reportDef.type, permissions)
