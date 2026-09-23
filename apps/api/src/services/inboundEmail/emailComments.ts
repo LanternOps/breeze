@@ -8,6 +8,12 @@ export interface EmailCommentInput {
   senderPortalUserId?: string | null;
   authorName: string; // stored portal-user name preferred over spoofable display name — caller resolves
   content: string;
+  /**
+   * Default true. False only for a comment written in the same pipeline step
+   * that already emitted `ticket.created` (the carrier comment for a new
+   * ticket's email attachments, #6688) — a second event would re-notify.
+   */
+  emitEvent?: boolean;
 }
 
 // Shared email-authored comment semantics. Inserted directly (NOT via addTicketComment,
@@ -19,7 +25,7 @@ export interface EmailCommentInput {
 // by breeze_ticket_parent_portal_insert). Email-sourced comments are ALWAYS public
 // (spec §4: email can never create an internal note).
 export async function insertEmailAuthoredComment(input: EmailCommentInput): Promise<{ commentId: string }> {
-  const { ticketId, orgId, senderPortalUserId, authorName, content } = input;
+  const { ticketId, orgId, senderPortalUserId, authorName, content, emitEvent = true } = input;
 
   const inserted = await db.insert(ticketComments).values({
     ticketId,
@@ -35,6 +41,7 @@ export async function insertEmailAuthoredComment(input: EmailCommentInput): Prom
   }).returning();
   const comment = inserted[0];
   if (!comment) throw new Error('failed to insert inbound comment');
+  if (!emitEvent) return { commentId: comment.id };
 
   // inbound:true -> the notify worker's ticket.commented branch skips the requester
   // echo when event.payload.inbound is set (its guard is `isPublic && !inbound`), so the

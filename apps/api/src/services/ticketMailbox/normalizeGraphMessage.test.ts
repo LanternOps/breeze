@@ -35,6 +35,13 @@ describe('normalizeGraphMessage', () => {
     expect(n.html).toBe('<p>help</p>');
   });
 
+  it('carries Graph hasAttachments through so the inbound worker knows to fetch them (#6688)', () => {
+    expect(normalizeGraphMessage({ ...msg, hasAttachments: true }, 'p', 'support@a.com').hasAttachments).toBe(true);
+    expect(normalizeGraphMessage({ ...msg, hasAttachments: false }, 'p', 'support@a.com').hasAttachments).toBe(false);
+    // Metadata only across the queue: no bytes are ever put into the BullMQ payload.
+    expect(normalizeGraphMessage({ ...msg, hasAttachments: true }, 'p', 'support@a.com').attachments).toEqual([]);
+  });
+
   it('preserves CC participants in the inbound audit metadata', () => {
     const ccRecipients = [{ emailAddress: { address: 'colleague@x.com' } }];
     expect(normalizeGraphMessage({ ...msg, ccRecipients }, 'partner-9', 'support@a.com').raw.ccRecipients).toEqual(ccRecipients);

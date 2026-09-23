@@ -88,8 +88,11 @@ export function normalizeGraphMessage(
     returnPath: header(msg.internetMessageHeaders, 'Return-Path'),
     xLoop: header(msg.internetMessageHeaders, 'X-Loop'),
     senderAuth: buildSenderAuth(trustedAuthResults(msg.internetMessageHeaders, mailboxDomain)),
-    // Phase-1 parity: attachment bodies deferred; metadata not fetched yet.
+    // Metadata only across the queue — attachment bytes never go into Redis. The
+    // inbound worker fetches them from Graph before processing when this is set
+    // (services/ticketMailbox/fetchInboundAttachments.ts, #6688).
     attachments: [],
+    hasAttachments: msg.hasAttachments === true,
     raw: {
       ccRecipients: msg.ccRecipients ?? [],
       graphConversationId: msg.conversationId,
