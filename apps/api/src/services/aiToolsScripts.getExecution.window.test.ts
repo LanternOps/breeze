@@ -47,7 +47,7 @@ describe('get_script_execution stdout/stderr window (A-W05 5c)', () => {
     expect(props.stdoutMaxChars!.description).toBe('Max stdout chars to return (default 5000, max 5000)');
 
     const { toolInputSchemas } = await import('./aiToolSchemas');
-    const zodShape = (toolInputSchemas.get_script_execution as { shape: Record<string, unknown> }).shape;
+    const zodShape = (toolInputSchemas.get_script_execution as unknown as { shape: Record<string, unknown> }).shape;
     expect((zodShape.stdoutMaxChars as { safeParse: (v: number) => { success: boolean } }).safeParse(5001).success).toBe(false);
     expect((zodShape.stdoutMaxChars as { safeParse: (v: number) => { success: boolean } }).safeParse(5000).success).toBe(true);
 
