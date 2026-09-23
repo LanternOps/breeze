@@ -1050,6 +1050,67 @@
       "adminDetail": "Include administrator sign-in detail",
       "adminDetailHelp": "Lists each interactive sign-in by an account holding an admin role, including the address it came from. This is the section an auditor reads first.",
       "coverageNote": "The report covers interactive sign-ins only and prints the window it actually covers. Microsoft keeps sign-in logs for about 30 days and requires an Entra ID P1 or P2 licence to release them, so the first report after enabling collection is partial and says so."
+    },
+    "reportPeriod": {
+      "label": "Reporting period",
+      "kinds": {
+        "last_full_month": "Last full month",
+        "last_30_days": "Last 30 days",
+        "last_quarter": "Last full quarter",
+        "custom": "Custom dates"
+      },
+      "start": "Start date",
+      "end": "End date (inclusive)",
+      "help": "Preset periods are worked out each time the report runs, so a monthly schedule always covers the month that just ended.",
+      "errors": {
+        "missing": "Choose both a start date and an end date.",
+        "invalid": "Both dates must be real calendar dates.",
+        "order": "The start date must not be after the end date."
+      }
+    },
+    "ticketSlaOptions": {
+      "approximationNote": "Attainment is recomputed from ticket timestamps rather than read from breach flags, so a ticket answered late still counts as a miss. Paused time is stored as a lifetime total, so pauses after the first response slightly flatter response attainment.",
+      "groupBy": "Group by",
+      "groupByAutomatic": "Automatic: by organization for all organizations, by priority for one organization",
+      "groupByValues": {
+        "organization": "Organization",
+        "priority": "Priority",
+        "technician": "Technician (current assignee)",
+        "category": "Category"
+      },
+      "technicianNote": "Tickets are grouped by their current assignee. Reassignment history is not tracked, so this is not necessarily the technician who responded.",
+      "includeNoSla": "List tickets without an SLA target",
+      "includeNoSlaHelp": "Tickets with no SLA target are always counted separately and never affect attainment. This only controls whether they appear in the detail rows.",
+      "cancel": "Cancel",
+      "createReport": "Create report"
+    },
+    "technicianTimeOptions": {
+      "groupBy": "Group by",
+      "groupByValues": {
+        "technician": "Technician",
+        "organization": "Organization",
+        "work_type": "Work type"
+      },
+      "orgAxisNote": "Time entries not linked to an organization appear in their own \"No organization\" row. A report owned by a single organization only sees time logged against its tickets.",
+      "capacityHours": "Weekly capacity per technician (hours)",
+      "capacityHoursHelp": "Utilization assumes uniform capacity for every technician, prorated over working days. PTO and part-time schedules are not modelled.",
+      "cancel": "Cancel",
+      "createReport": "Create report"
+    },
+    "arAgingOptions": {
+      "asOf": "Age balances as of",
+      "asOfHelp": "Leave empty to age against the day the report runs. A date moves only the aging reference date: balances are current, so it does not reconstruct past balances or undo payments recorded after that date.",
+      "asOfInvalid": "Enter a real calendar date, or leave the field empty.",
+      "groupBy": "Group by",
+      "groupByValues": {
+        "organization": "Organization",
+        "currency": "Currency"
+      },
+      "currencyNote": "Each currency gets its own totals. Amounts are not converted between currencies.",
+      "includePaidInPeriod": "List invoices paid month to date",
+      "includePaidInPeriodHelp": "Adds a note listing invoices fully paid from the first of the as-of month through the as-of date. It never changes the aging buckets.",
+      "cancel": "Cancel",
+      "createReport": "Create report"
     }
   }
 }

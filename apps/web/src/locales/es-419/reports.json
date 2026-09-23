@@ -1050,6 +1050,67 @@
       "adminDetail": "Incluir el detalle de inicios de sesión de administradores",
       "adminDetailHelp": "Lista cada inicio de sesión interactivo de una cuenta con rol de administrador, incluida la dirección de origen. Es la sección que un auditor lee primero.",
       "coverageNote": "El informe cubre únicamente inicios de sesión interactivos e imprime la ventana que realmente cubre. Microsoft conserva los registros de inicio de sesión unos 30 días y exige una licencia Entra ID P1 o P2 para entregarlos, por lo que el primer informe tras activar la recolección es parcial y lo declara."
+    },
+    "reportPeriod": {
+      "label": "Período del informe",
+      "kinds": {
+        "last_full_month": "Último mes completo",
+        "last_30_days": "Últimos 30 días",
+        "last_quarter": "Último trimestre completo",
+        "custom": "Fechas personalizadas"
+      },
+      "start": "Fecha de inicio",
+      "end": "Fecha de fin (incluida)",
+      "help": "Los períodos predefinidos se calculan cada vez que se ejecuta el informe, así que una programación mensual siempre cubre el mes que acaba de terminar.",
+      "errors": {
+        "missing": "Elige una fecha de inicio y una fecha de fin.",
+        "invalid": "Ambas fechas deben ser fechas reales del calendario.",
+        "order": "La fecha de inicio no puede ser posterior a la fecha de fin."
+      }
+    },
+    "ticketSlaOptions": {
+      "approximationNote": "El cumplimiento se recalcula a partir de las marcas de tiempo del ticket en lugar de leer los indicadores de incumplimiento, por lo que un ticket respondido tarde sigue contando como incumplido. El tiempo en pausa se guarda como un total acumulado, así que las pausas posteriores a la primera respuesta mejoran levemente el cumplimiento de respuesta.",
+      "groupBy": "Agrupar por",
+      "groupByAutomatic": "Automático: por organización para todas las organizaciones, por prioridad para una sola organización",
+      "groupByValues": {
+        "organization": "Organización",
+        "priority": "Prioridad",
+        "technician": "Técnico (asignado actual)",
+        "category": "Categoría"
+      },
+      "technicianNote": "Los tickets se agrupan por su asignado actual. El historial de reasignaciones no se registra, así que no es necesariamente el técnico que respondió.",
+      "includeNoSla": "Listar tickets sin objetivo de SLA",
+      "includeNoSlaHelp": "Los tickets sin objetivo de SLA siempre se cuentan por separado y nunca afectan el cumplimiento. Esta opción solo controla si aparecen en las filas de detalle.",
+      "cancel": "Cancelar",
+      "createReport": "Crear informe"
+    },
+    "technicianTimeOptions": {
+      "groupBy": "Agrupar por",
+      "groupByValues": {
+        "technician": "Técnico",
+        "organization": "Organización",
+        "work_type": "Tipo de trabajo"
+      },
+      "orgAxisNote": "Las entradas de tiempo sin organización aparecen en su propia fila \"Sin organización\". Un informe que pertenece a una sola organización solo ve el tiempo registrado en sus tickets.",
+      "capacityHours": "Capacidad semanal por técnico (horas)",
+      "capacityHoursHelp": "La utilización supone la misma capacidad para cada técnico, prorrateada por días hábiles. No se modelan vacaciones ni jornadas a tiempo parcial.",
+      "cancel": "Cancelar",
+      "createReport": "Crear informe"
+    },
+    "arAgingOptions": {
+      "asOf": "Antigüedad de saldos al",
+      "asOfHelp": "Déjalo vacío para calcular la antigüedad al día en que se ejecuta el informe. Una fecha solo mueve la fecha de referencia: los saldos son los actuales, así que no reconstruye saldos pasados ni deshace pagos registrados después de esa fecha.",
+      "asOfInvalid": "Ingresa una fecha real del calendario o deja el campo vacío.",
+      "groupBy": "Agrupar por",
+      "groupByValues": {
+        "organization": "Organización",
+        "currency": "Moneda"
+      },
+      "currencyNote": "Cada moneda tiene sus propios totales. Los montos no se convierten entre monedas.",
+      "includePaidInPeriod": "Listar facturas pagadas en lo que va del mes",
+      "includePaidInPeriodHelp": "Agrega una nota con las facturas pagadas por completo desde el primer día del mes de referencia hasta la fecha de referencia. Nunca cambia los tramos de antigüedad.",
+      "cancel": "Cancelar",
+      "createReport": "Crear informe"
     }
   }
 }

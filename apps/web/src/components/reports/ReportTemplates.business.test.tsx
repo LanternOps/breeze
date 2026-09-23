@@ -102,32 +102,92 @@ describe('ReportTemplates — Business group (#3198 W03)', () => {
     expect(screen.queryByTestId('report-template-group-business')).toBeNull();
   });
 
-  it('creates the AR aging report directly with an empty config and no dateRange', async () => {
+  const REFUSED_CONFIG_KEYS = ['dateRange', 'filters', 'sites', 'orgId', 'orgIds', 'siteIds', 'deviceIds'];
+  const expectNoRefusedKeys = (config: Record<string, unknown>) => {
+    for (const key of REFUSED_CONFIG_KEYS) expect(config, key).not.toHaveProperty(key);
+  };
+
+  it('opens the AR aging options modal instead of creating directly, and cancel creates nothing', async () => {
     mockTemplatesFetch(() => Promise.resolve({ ok: true, json: () => Promise.resolve({ data: { id: 'rep-1' } }) }));
     render(<ReportTemplates />);
+    const user = userEvent.setup();
 
-    await userEvent.setup().click(await screen.findByTestId('report-template-use-ar_aging'));
+    await user.click(await screen.findByTestId('report-template-use-ar_aging'));
+    expect(await screen.findByTestId('business-report-options-modal')).toBeInTheDocument();
+    expect(screen.getByTestId('ar-aging-as-of')).toBeInTheDocument();
+    expect(postBody()).toBeUndefined();
 
-    await waitFor(() => expect(postBody()).toBeDefined());
-    expect(postBody()).toMatchObject({ type: 'ar_aging', orgId: 'org-1' });
-    expect(postBody().config).toEqual({});
-    expect(postBody().config.dateRange).toBeUndefined();
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByTestId('business-report-options-modal')).toBeNull();
+    expect(postBody()).toBeUndefined();
   });
 
-  it('creates the SLA attainment and technician time reports directly with no dateRange either', async () => {
+  it('creates the AR aging report with the form config: asOf omitted when unset, no refused selector keys', async () => {
+    mockTemplatesFetch(() => Promise.resolve({ ok: true, json: () => Promise.resolve({ data: { id: 'rep-1' } }) }));
+    render(<ReportTemplates />);
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByTestId('report-template-use-ar_aging'));
+    await user.selectOptions(await screen.findByTestId('ar-aging-group-by'), 'currency');
+    await user.click(screen.getByTestId('ar-aging-create-report'));
+
+    await waitFor(() => expect(postBody()).toBeDefined());
+    expect(postBody()).toMatchObject({ type: 'ar_aging', schedule: 'monthly', format: 'pdf', orgId: 'org-1' });
+    expect(postBody().config).toEqual({ groupBy: 'currency', includePaidInPeriod: false });
+    expectNoRefusedKeys(postBody().config);
+  });
+
+  it('creates the SLA report with groupBy OMITTED for Automatic, and sends an explicit axis when chosen', async () => {
     mockTemplatesFetch(() => Promise.resolve({ ok: true, json: () => Promise.resolve({ data: { id: 'rep-2' } }) }));
     render(<ReportTemplates />);
+    const user = userEvent.setup();
 
-    await userEvent.setup().click(await screen.findByTestId('report-template-use-ticket_sla_attainment'));
+    await user.click(await screen.findByTestId('report-template-use-ticket_sla_attainment'));
+    await user.click(await screen.findByTestId('ticket-sla-create-report'));
     await waitFor(() => expect(postBody()).toBeDefined());
     expect(postBody()).toMatchObject({ type: 'ticket_sla_attainment' });
-    expect(postBody().config.dateRange).toBeUndefined();
+    expect(postBody().config).toEqual({ period: { kind: 'last_full_month' }, includeNoSla: true });
+    expectNoRefusedKeys(postBody().config);
 
     fetchWithAuth.mockClear();
     mockTemplatesFetch(() => Promise.resolve({ ok: true, json: () => Promise.resolve({ data: { id: 'rep-3' } }) }));
-    await userEvent.setup().click(await screen.findByTestId('report-template-use-technician_time_billability'));
+    await user.click(await screen.findByTestId('report-template-use-ticket_sla_attainment'));
+    await user.selectOptions(await screen.findByTestId('ticket-sla-group-by'), 'technician');
+    await user.click(screen.getByTestId('ticket-sla-create-report'));
+    await waitFor(() => expect(postBody()).toBeDefined());
+    expect(postBody().config).toEqual({
+      period: { kind: 'last_full_month' },
+      groupBy: 'technician',
+      includeNoSla: true,
+    });
+  });
+
+  it('creates the technician time report with period, axis and capacity, and nothing else', async () => {
+    mockTemplatesFetch(() => Promise.resolve({ ok: true, json: () => Promise.resolve({ data: { id: 'rep-4' } }) }));
+    render(<ReportTemplates />);
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByTestId('report-template-use-technician_time_billability'));
+    await user.click(await screen.findByTestId('technician-time-create-report'));
     await waitFor(() => expect(postBody()).toBeDefined());
     expect(postBody()).toMatchObject({ type: 'technician_time_billability' });
-    expect(postBody().config.dateRange).toBeUndefined();
+    expect(postBody().config).toEqual({
+      period: { kind: 'last_full_month' },
+      groupBy: 'technician',
+      weeklyCapacityHours: 40,
+    });
+    expectNoRefusedKeys(postBody().config);
+  });
+
+  it('re-opens a business modal with fresh defaults rather than the last submission', async () => {
+    mockTemplatesFetch(() => Promise.resolve({ ok: true, json: () => Promise.resolve({ data: { id: 'rep-5' } }) }));
+    render(<ReportTemplates />);
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByTestId('report-template-use-ticket_sla_attainment'));
+    await user.selectOptions(await screen.findByTestId('ticket-sla-group-by'), 'category');
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    await user.click(await screen.findByTestId('report-template-use-ticket_sla_attainment'));
+    expect(await screen.findByTestId('ticket-sla-group-by')).toHaveValue('');
   });
 });

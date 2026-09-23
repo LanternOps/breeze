@@ -1050,6 +1050,67 @@
       "adminDetail": "Inclure le détail des ouvertures de session d’administrateur",
       "adminDetailHelp": "Liste chaque ouverture de session interactive d’un compte doté d’un rôle d’administrateur, y compris l’adresse d’origine. C’est la section qu’un vérificateur lit en premier.",
       "coverageNote": "Le rapport ne couvre que les ouvertures de session interactives et imprime la fenêtre qu’il couvre réellement. Microsoft conserve les journaux environ 30 jours et exige une licence Entra ID P1 ou P2 pour les livrer : le premier rapport après l’activation de la collecte est donc partiel et le dit."
+    },
+    "reportPeriod": {
+      "label": "Période du rapport",
+      "kinds": {
+        "last_full_month": "Dernier mois complet",
+        "last_30_days": "30 derniers jours",
+        "last_quarter": "Dernier trimestre complet",
+        "custom": "Dates personnalisées"
+      },
+      "start": "Date de début",
+      "end": "Date de fin (incluse)",
+      "help": "Les périodes prédéfinies sont recalculées à chaque exécution du rapport; une planification mensuelle couvre donc toujours le mois qui vient de se terminer.",
+      "errors": {
+        "missing": "Choisissez à la fois une date de début et une date de fin.",
+        "invalid": "Les deux dates doivent être des dates réelles du calendrier.",
+        "order": "La date de début ne doit pas être postérieure à la date de fin."
+      }
+    },
+    "ticketSlaOptions": {
+      "approximationNote": "Le respect est recalculé à partir des horodatages des tickets plutôt que lu dans les indicateurs de dépassement : un ticket traité en retard compte donc toujours comme un manquement. Le temps en pause est stocké en cumul sur toute la vie du ticket, si bien que les pauses après la première réponse flattent légèrement le respect du délai de réponse.",
+      "groupBy": "Regrouper par",
+      "groupByAutomatic": "Automatique : par organisation pour toutes les organisations, par priorité pour une seule organisation",
+      "groupByValues": {
+        "organization": "Organisation",
+        "priority": "Priorité",
+        "technician": "Technicien (assigné actuel)",
+        "category": "Catégorie"
+      },
+      "technicianNote": "Les tickets sont regroupés par leur assigné actuel. L'historique des réassignations n'est pas conservé : ce n'est donc pas forcément le technicien qui a répondu.",
+      "includeNoSla": "Lister les tickets sans objectif de SLA",
+      "includeNoSlaHelp": "Les tickets sans objectif de SLA sont toujours comptés à part et n'influencent jamais le respect. Cette option détermine seulement s'ils figurent dans les lignes de détail.",
+      "cancel": "Annuler",
+      "createReport": "Créer le rapport"
+    },
+    "technicianTimeOptions": {
+      "groupBy": "Regrouper par",
+      "groupByValues": {
+        "technician": "Technicien",
+        "organization": "Organisation",
+        "work_type": "Type de travail"
+      },
+      "orgAxisNote": "Les saisies de temps sans organisation apparaissent sur leur propre ligne « Aucune organisation ». Un rapport appartenant à une seule organisation ne voit que le temps saisi sur ses tickets.",
+      "capacityHours": "Capacité hebdomadaire par technicien (heures)",
+      "capacityHoursHelp": "Le taux d'utilisation suppose une capacité identique pour chaque technicien, proratisée sur les jours ouvrés. Les congés et le temps partiel ne sont pas modélisés.",
+      "cancel": "Annuler",
+      "createReport": "Créer le rapport"
+    },
+    "arAgingOptions": {
+      "asOf": "Ancienneté des soldes au",
+      "asOfHelp": "Laissez vide pour calculer l'ancienneté au jour d'exécution du rapport. Une date déplace uniquement la date de référence : les soldes restent les soldes actuels, elle ne reconstitue donc pas les soldes passés et n'annule pas les paiements enregistrés après cette date.",
+      "asOfInvalid": "Saisissez une date réelle du calendrier ou laissez le champ vide.",
+      "groupBy": "Regrouper par",
+      "groupByValues": {
+        "organization": "Organisation",
+        "currency": "Devise"
+      },
+      "currencyNote": "Chaque devise a ses propres totaux. Les montants ne sont pas convertis d'une devise à l'autre.",
+      "includePaidInPeriod": "Lister les factures payées depuis le début du mois en cours",
+      "includePaidInPeriodHelp": "Ajoute une note listant les factures entièrement payées entre le premier jour du mois de référence et la date de référence. Elle ne modifie jamais les tranches d'ancienneté.",
+      "cancel": "Annuler",
+      "createReport": "Créer le rapport"
     }
   }
 }

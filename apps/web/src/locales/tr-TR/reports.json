@@ -1050,6 +1050,67 @@
       "adminDetail": "Yönetici oturum açma ayrıntısını dahil et",
       "adminDetailHelp": "Yönetici rolü taşıyan bir hesabın her etkileşimli oturum açmasını, geldiği adres dahil listeler. Denetçinin ilk okuduğu bölüm budur.",
       "coverageNote": "Rapor yalnızca etkileşimli oturum açmaları kapsar ve gerçekte kapsadığı aralığı yazar. Microsoft oturum açma günlüklerini yaklaşık 30 gün saklar ve bunları vermek için Entra ID P1 veya P2 lisansı ister; bu nedenle toplama açıldıktan sonraki ilk rapor eksiktir ve bunu açıkça belirtir."
+    },
+    "reportPeriod": {
+      "label": "Rapor dönemi",
+      "kinds": {
+        "last_full_month": "Son tam ay",
+        "last_30_days": "Son 30 gün",
+        "last_quarter": "Son tam çeyrek",
+        "custom": "Özel tarihler"
+      },
+      "start": "Başlangıç tarihi",
+      "end": "Bitiş tarihi (dahil)",
+      "help": "Hazır dönemler rapor her çalıştığında yeniden hesaplanır; bu nedenle aylık bir zamanlama her zaman yeni biten ayı kapsar.",
+      "errors": {
+        "missing": "Hem başlangıç hem de bitiş tarihi seçin.",
+        "invalid": "Her iki tarih de gerçek takvim tarihleri olmalıdır.",
+        "order": "Başlangıç tarihi bitiş tarihinden sonra olamaz."
+      }
+    },
+    "ticketSlaOptions": {
+      "approximationNote": "Uyum, ihlal işaretlerinden okunmak yerine talep zaman damgalarından yeniden hesaplanır; bu nedenle geç yanıtlanan bir talep yine ihlal sayılır. Duraklatma süresi toplam olarak saklanır, bu yüzden ilk yanıttan sonraki duraklamalar yanıt uyumunu biraz olduğundan iyi gösterir.",
+      "groupBy": "Gruplama ölçütü",
+      "groupByAutomatic": "Otomatik: tüm kuruluşlar için kuruluşa, tek bir kuruluş için önceliğe göre",
+      "groupByValues": {
+        "organization": "Kuruluş",
+        "priority": "Öncelik",
+        "technician": "Teknisyen (mevcut atanan)",
+        "category": "Kategori"
+      },
+      "technicianNote": "Talepler mevcut atanan kişiye göre gruplanır. Yeniden atama geçmişi tutulmaz; bu nedenle yanıt veren teknisyen olmayabilir.",
+      "includeNoSla": "SLA hedefi olmayan talepleri listele",
+      "includeNoSlaHelp": "SLA hedefi olmayan talepler her zaman ayrı sayılır ve uyumu asla etkilemez. Bu seçenek yalnızca ayrıntı satırlarında görünüp görünmeyeceklerini belirler.",
+      "cancel": "İptal",
+      "createReport": "Rapor oluştur"
+    },
+    "technicianTimeOptions": {
+      "groupBy": "Gruplama ölçütü",
+      "groupByValues": {
+        "technician": "Teknisyen",
+        "organization": "Kuruluş",
+        "work_type": "İş türü"
+      },
+      "orgAxisNote": "Bir kuruluşa bağlı olmayan zaman kayıtları kendi \"Kuruluş yok\" satırında görünür. Tek bir kuruluşa ait rapor yalnızca o kuruluşun taleplerine girilen süreyi görür.",
+      "capacityHours": "Teknisyen başına haftalık kapasite (saat)",
+      "capacityHoursHelp": "Kullanım oranı her teknisyen için aynı kapasiteyi varsayar ve iş günlerine orantılar. İzinler ve yarı zamanlı çalışma hesaba katılmaz.",
+      "cancel": "İptal",
+      "createReport": "Rapor oluştur"
+    },
+    "arAgingOptions": {
+      "asOf": "Bakiyelerin yaşlandırma tarihi",
+      "asOfHelp": "Raporun çalıştığı güne göre yaşlandırmak için boş bırakın. Bir tarih yalnızca yaşlandırma referans tarihini değiştirir: bakiyeler güncel bakiyelerdir, bu nedenle geçmiş bakiyeleri yeniden oluşturmaz ve o tarihten sonra kaydedilen ödemeleri geri almaz.",
+      "asOfInvalid": "Gerçek bir takvim tarihi girin veya alanı boş bırakın.",
+      "groupBy": "Gruplama ölçütü",
+      "groupByValues": {
+        "organization": "Kuruluş",
+        "currency": "Para birimi"
+      },
+      "currencyNote": "Her para biriminin kendi toplamları vardır. Tutarlar para birimleri arasında dönüştürülmez.",
+      "includePaidInPeriod": "Ay başından bu yana ödenen faturaları listele",
+      "includePaidInPeriodHelp": "Referans ayının ilk gününden referans tarihine kadar tamamen ödenen faturaları listeleyen bir not ekler. Yaşlandırma dilimlerini asla değiştirmez.",
+      "cancel": "İptal",
+      "createReport": "Rapor oluştur"
     }
   }
 }

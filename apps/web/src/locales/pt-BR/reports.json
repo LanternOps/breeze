@@ -1050,6 +1050,67 @@
       "adminDetail": "Incluir o detalhamento de logins de administradores",
       "adminDetailHelp": "Lista cada login interativo de uma conta com papel de administrador, incluindo o endereço de origem. É a seção que um auditor lê primeiro.",
       "coverageNote": "O relatório cobre apenas logins interativos e imprime a janela que realmente cobre. A Microsoft mantém os registros de login por cerca de 30 dias e exige uma licença Entra ID P1 ou P2 para liberá-los, de modo que o primeiro relatório após ativar a coleta é parcial e diz isso."
+    },
+    "reportPeriod": {
+      "label": "Período do relatório",
+      "kinds": {
+        "last_full_month": "Último mês completo",
+        "last_30_days": "Últimos 30 dias",
+        "last_quarter": "Último trimestre completo",
+        "custom": "Datas personalizadas"
+      },
+      "start": "Data de início",
+      "end": "Data de término (inclusiva)",
+      "help": "Os períodos predefinidos são recalculados a cada execução do relatório, então um agendamento mensal sempre cobre o mês que acabou de terminar.",
+      "errors": {
+        "missing": "Escolha uma data de início e uma data de término.",
+        "invalid": "As duas datas precisam ser datas reais do calendário.",
+        "order": "A data de início não pode ser posterior à data de término."
+      }
+    },
+    "ticketSlaOptions": {
+      "approximationNote": "O cumprimento é recalculado a partir dos registros de data e hora do ticket, e não lido das marcações de violação, então um ticket respondido com atraso continua contando como falha. O tempo em pausa é armazenado como um total acumulado, então pausas após a primeira resposta melhoram levemente o cumprimento de resposta.",
+      "groupBy": "Agrupar por",
+      "groupByAutomatic": "Automático: por organização para todas as organizações, por prioridade para uma única organização",
+      "groupByValues": {
+        "organization": "Organização",
+        "priority": "Prioridade",
+        "technician": "Técnico (responsável atual)",
+        "category": "Categoria"
+      },
+      "technicianNote": "Os tickets são agrupados pelo responsável atual. O histórico de reatribuições não é registrado, então não é necessariamente o técnico que respondeu.",
+      "includeNoSla": "Listar tickets sem meta de SLA",
+      "includeNoSlaHelp": "Tickets sem meta de SLA são sempre contados à parte e nunca afetam o cumprimento. Esta opção só controla se eles aparecem nas linhas de detalhe.",
+      "cancel": "Cancelar",
+      "createReport": "Criar relatório"
+    },
+    "technicianTimeOptions": {
+      "groupBy": "Agrupar por",
+      "groupByValues": {
+        "technician": "Técnico",
+        "organization": "Organização",
+        "work_type": "Tipo de trabalho"
+      },
+      "orgAxisNote": "Lançamentos de horas sem organização aparecem em uma linha própria \"Sem organização\". Um relatório de uma única organização só vê as horas lançadas nos tickets dela.",
+      "capacityHours": "Capacidade semanal por técnico (horas)",
+      "capacityHoursHelp": "A utilização considera a mesma capacidade para todos os técnicos, proporcional aos dias úteis. Férias e meio período não são considerados.",
+      "cancel": "Cancelar",
+      "createReport": "Criar relatório"
+    },
+    "arAgingOptions": {
+      "asOf": "Idade dos saldos em",
+      "asOfHelp": "Deixe em branco para calcular a idade no dia em que o relatório é executado. Uma data move apenas a data de referência: os saldos são os atuais, então ela não reconstrói saldos passados nem desfaz pagamentos registrados depois dessa data.",
+      "asOfInvalid": "Informe uma data real do calendário ou deixe o campo em branco.",
+      "groupBy": "Agrupar por",
+      "groupByValues": {
+        "organization": "Organização",
+        "currency": "Moeda"
+      },
+      "currencyNote": "Cada moeda tem seus próprios totais. Os valores não são convertidos entre moedas.",
+      "includePaidInPeriod": "Listar faturas pagas no mês até a data",
+      "includePaidInPeriodHelp": "Adiciona uma nota com as faturas pagas integralmente do primeiro dia do mês de referência até a data de referência. Nunca altera as faixas de idade.",
+      "cancel": "Cancelar",
+      "createReport": "Criar relatório"
     }
   }
 }

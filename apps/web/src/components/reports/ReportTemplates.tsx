@@ -44,6 +44,24 @@ import {
   IdentityAccessOptionsForm,
   type IdentityAccessOptions,
 } from './IdentityAccessOptionsForm';
+import {
+  DEFAULT_TICKET_SLA_OPTIONS,
+  TicketSlaOptionsForm,
+  ticketSlaConfigFromOptions,
+  type TicketSlaOptions,
+} from './TicketSlaOptionsForm';
+import {
+  DEFAULT_TECHNICIAN_TIME_OPTIONS,
+  TechnicianTimeOptionsForm,
+  technicianTimeConfigFromOptions,
+  type TechnicianTimeOptions,
+} from './TechnicianTimeOptionsForm';
+import {
+  DEFAULT_AR_AGING_OPTIONS,
+  ArAgingOptionsForm,
+  arAgingConfigFromOptions,
+  type ArAgingOptions,
+} from './ArAgingOptionsForm';
 import type { ReportFormat, ReportSchedule } from './ReportsList';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
@@ -525,6 +543,12 @@ export default function ReportTemplates() {
   const [vulnerabilityOptions, setVulnerabilityOptions] = useState<VulnerabilityManagementOptions>(DEFAULT_VULNERABILITY_MANAGEMENT_OPTIONS);
   const [identityTemplate, setIdentityTemplate] = useState<ReportTemplate | null>(null);
   const [identityOptions, setIdentityOptions] = useState<IdentityAccessOptions>(DEFAULT_IDENTITY_ACCESS_OPTIONS);
+  // One options modal for the three business report types (#3198 W03); the
+  // template's type picks which form it renders.
+  const [businessTemplate, setBusinessTemplate] = useState<ReportTemplate | null>(null);
+  const [ticketSlaOptions, setTicketSlaOptions] = useState<TicketSlaOptions>(DEFAULT_TICKET_SLA_OPTIONS);
+  const [technicianTimeOptions, setTechnicianTimeOptions] = useState<TechnicianTimeOptions>(DEFAULT_TECHNICIAN_TIME_OPTIONS);
+  const [arAgingOptions, setArAgingOptions] = useState<ArAgingOptions>(DEFAULT_AR_AGING_OPTIONS);
   const [builderOpen, setBuilderOpen] = useState(false);
   const [creatingId, setCreatingId] = useState<string | null>(null);
 
@@ -576,9 +600,9 @@ export default function ReportTemplates() {
                 // Business report config schemas (#3198) REFUSE a dateRange
                 // (and filters/sites/orgId/orgIds/siteIds/deviceIds) that
                 // "selects something" — the server 400s. Those types have no
-                // ad-hoc selection at all, so the config is whatever the
-                // template's own options form contributed (empty for now;
-                // Task B wires the real options forms), never a dateRange.
+                // ad-hoc selection at all, so the config is exactly what the
+                // type's options form mapped (`*ConfigFromOptions`), never a
+                // dateRange.
                 config: isBusinessReportType(template.defaults.type)
                   ? { ...postureConfig }
                   : {
@@ -639,6 +663,14 @@ export default function ReportTemplates() {
         setIdentityTemplate(template);
         return;
       }
+      if (isBusinessReportType(type)) {
+        // Fresh defaults on every open — never the last submission's values.
+        setTicketSlaOptions(DEFAULT_TICKET_SLA_OPTIONS);
+        setTechnicianTimeOptions(DEFAULT_TECHNICIAN_TIME_OPTIONS);
+        setArAgingOptions(DEFAULT_AR_AGING_OPTIONS);
+        setBusinessTemplate(template);
+        return;
+      }
       if (type && !reportTypeSurvivesBuilder(type)) {
         void handleCreateDirect(template);
         return;
@@ -647,6 +679,53 @@ export default function ReportTemplates() {
     },
     [handleCreateDirect, handleOpenBuilder]
   );
+
+  const renderBusinessOptionsForm = (template: ReportTemplate) => {
+    const shared = {
+      busy: creatingId === template.id,
+      onCancel: () => setBusinessTemplate(null),
+    };
+    switch (template.defaults.type) {
+      case 'ticket_sla_attainment':
+        return (
+          <TicketSlaOptionsForm
+            {...shared}
+            value={ticketSlaOptions}
+            onChange={setTicketSlaOptions}
+            submitLabel={t('reports.ticketSlaOptions.createReport')}
+            onSubmit={() => {
+              void handleCreateDirect(template, ticketSlaConfigFromOptions(ticketSlaOptions));
+            }}
+          />
+        );
+      case 'technician_time_billability':
+        return (
+          <TechnicianTimeOptionsForm
+            {...shared}
+            value={technicianTimeOptions}
+            onChange={setTechnicianTimeOptions}
+            submitLabel={t('reports.technicianTimeOptions.createReport')}
+            onSubmit={() => {
+              void handleCreateDirect(template, technicianTimeConfigFromOptions(technicianTimeOptions));
+            }}
+          />
+        );
+      case 'ar_aging':
+        return (
+          <ArAgingOptionsForm
+            {...shared}
+            value={arAgingOptions}
+            onChange={setArAgingOptions}
+            submitLabel={t('reports.arAgingOptions.createReport')}
+            onSubmit={() => {
+              void handleCreateDirect(template, arAgingConfigFromOptions(arAgingOptions));
+            }}
+          />
+        );
+      default:
+        return null;
+    }
+  };
 
   const handleCloseBuilder = useCallback(() => {
     setBuilderOpen(false);
@@ -966,6 +1045,26 @@ export default function ReportTemplates() {
                 }}
               />
             </div>
+          </div>
+        </div>
+      )}
+
+      {businessTemplate && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div
+            data-testid="business-report-options-modal"
+            className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-lg border bg-card p-6 shadow-lg"
+          >
+            <h2 className="text-lg font-semibold">
+              {t('reports.reportTemplates.useTemplateTitle', {
+                name: getTemplateDisplayName(businessTemplate),
+              })}
+            </h2>
+            {/* Ownership (the create-only ownerScope selector) is common to all
+                three business types, so it belongs here in the shared shell,
+                above the type-specific form, and its value joins the POST
+                body in handleCreateDirect beside `config`. */}
+            <div className="mt-5 space-y-4">{renderBusinessOptionsForm(businessTemplate)}</div>
           </div>
         </div>
       )}
