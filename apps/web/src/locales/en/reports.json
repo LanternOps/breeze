@@ -461,7 +461,8 @@
       "templates": "Templates",
       "title": "Reports",
       "tryAgain": "Try again",
-      "unknownReport": "Unknown Report"
+      "unknownReport": "Unknown Report",
+      "partnerWideIncomplete": "Some reports that cover all organizations could not be loaded, so this list may be incomplete. Switch to All organizations to see every report."
     },
     "reportBuilder": {
       "actions": {
@@ -1123,7 +1124,8 @@
       "allOrganizationsHint": "Covers every active and trial organization, resolved at each run. Excluded organizations are listed in the report's notes. Requires access to all organizations.",
       "singleOrganization": "One organization",
       "singleOrganizationHint": "The organization selected in the organization switcher.",
-      "singleOrganizationDisabledHint": "Pick an organization in the organization switcher to create an organization-scoped report."
+      "singleOrganizationDisabledHint": "Pick an organization in the organization switcher to create an organization-scoped report.",
+      "needsOrganizationHint": "Pick an organization in the organization switcher to create this report. Reports for all organizations require access to all organizations."
     }
   }
 }

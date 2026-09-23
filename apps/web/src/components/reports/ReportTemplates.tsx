@@ -49,18 +49,21 @@ import {
   DEFAULT_TICKET_SLA_OPTIONS,
   TicketSlaOptionsForm,
   ticketSlaConfigFromOptions,
+  ticketSlaOptionsFromConfig,
   type TicketSlaOptions,
 } from './TicketSlaOptionsForm';
 import {
   DEFAULT_TECHNICIAN_TIME_OPTIONS,
   TechnicianTimeOptionsForm,
   technicianTimeConfigFromOptions,
+  technicianTimeOptionsFromConfig,
   type TechnicianTimeOptions,
 } from './TechnicianTimeOptionsForm';
 import {
   DEFAULT_AR_AGING_OPTIONS,
   ArAgingOptionsForm,
   arAgingConfigFromOptions,
+  arAgingOptionsFromConfig,
   type ArAgingOptions,
 } from './ArAgingOptionsForm';
 import type { ReportFormat, ReportSchedule } from './ReportsList';
@@ -99,9 +102,10 @@ type ReportTemplate = {
   tone: TemplateTone;
   group: TemplateGroup;
   previewImage?: string;
-  /** A saved report's stored business config (#3198): the period / as-of it
-   *  will actually run with, which the Default range tile reports. */
-  savedBusinessConfig?: { period?: { kind?: unknown }; asOf?: unknown };
+  /** A saved report's stored business config (#3198): the options it will
+   *  actually run with. The Default range tile reports its period / as-of, and
+   *  the options modal opens seeded with it. */
+  savedBusinessConfig?: Record<string, unknown>;
 };
 
 type TemplateApiItem = Partial<ReportTemplate> & {
@@ -445,7 +449,7 @@ const normalizeTemplate = (item: TemplateApiItem, fallback?: ReportTemplate): Re
     group: isBusinessReportType(resolvedType) ? 'business' : (fallback?.group ?? 'general'),
     previewImage,
     ...(isBusinessReportType(resolvedType) && item.config
-      ? { savedBusinessConfig: { period: item.config.period, asOf: item.config.asOf } }
+      ? { savedBusinessConfig: { ...item.config } }
       : {})
   };
 };
@@ -511,13 +515,14 @@ const TemplatePreviewImage = ({ template, alt }: { template: ReportTemplate; alt
 function businessDefaultRange(template: ReportTemplate, t: (key: string) => string): string | null {
   const type = template.defaults.type;
   const saved = template.savedBusinessConfig;
+  const periodKind = (saved?.period as { kind?: unknown } | undefined)?.kind;
   if (type === 'ar_aging') {
     return typeof saved?.asOf === 'string' && saved.asOf
       ? saved.asOf
       : t('reports.reportTemplates.spec.asOfRunDate');
   }
   if (type === 'ticket_sla_attainment' || type === 'technician_time_billability') {
-    switch (saved?.period?.kind) {
+    switch (periodKind) {
       case 'last_full_month': return t('reports.reportPeriod.kinds.last_full_month');
       case 'last_30_days': return t('reports.reportPeriod.kinds.last_30_days');
       case 'last_quarter': return t('reports.reportPeriod.kinds.last_quarter');
@@ -590,7 +595,11 @@ export default function ReportTemplates() {
   const [arAgingOptions, setArAgingOptions] = useState<ArAgingOptions>(DEFAULT_AR_AGING_OPTIONS);
   // Create-only ownership for the business modal. The selector renders only
   // for a resolved partner-scope token; everyone else creates org-owned.
-  const { canChoose: canChooseOwnerScope, defaultScope: defaultOwnerScope } = useDefaultReportOwnerScope();
+  const {
+    canChoose: canChooseOwnerScope,
+    defaultScope: defaultOwnerScope,
+    needsOrganization: ownerNeedsOrganization,
+  } = useDefaultReportOwnerScope();
   const [ownerScope, setOwnerScope] = useState<ReportOwnerScope>('organization');
   // A token can go from partner-scope to org-scope mid-session (e.g. a
   // refresh while the modal is open) without the `ownerScope` state — set
@@ -729,10 +738,13 @@ export default function ReportTemplates() {
         return;
       }
       if (isBusinessReportType(type)) {
-        // Fresh defaults on every open — never the last submission's values.
-        setTicketSlaOptions(DEFAULT_TICKET_SLA_OPTIONS);
-        setTechnicianTimeOptions(DEFAULT_TECHNICIAN_TIME_OPTIONS);
-        setArAgingOptions(DEFAULT_AR_AGING_OPTIONS);
+        // Seeded on every open — never the last submission's values: a saved
+        // report opens with the options it stored (the ones its card's Default
+        // range tile describes), a curated card with the form defaults.
+        const saved = template.savedBusinessConfig;
+        setTicketSlaOptions(saved ? ticketSlaOptionsFromConfig(saved) : DEFAULT_TICKET_SLA_OPTIONS);
+        setTechnicianTimeOptions(saved ? technicianTimeOptionsFromConfig(saved) : DEFAULT_TECHNICIAN_TIME_OPTIONS);
+        setArAgingOptions(saved ? arAgingOptionsFromConfig(saved) : DEFAULT_AR_AGING_OPTIONS);
         setOwnerScope(defaultOwnerScope);
         setBusinessTemplate(template);
         return;
@@ -1138,7 +1150,23 @@ export default function ReportTemplates() {
                 body in handleCreateDirect beside `config`. */}
             <div className="mt-5 space-y-4">
               <ReportOwnerScopeField value={ownerScope} onChange={setOwnerScope} />
-              {renderBusinessOptionsForm(businessTemplate)}
+              {/* A user who may only create single-organization reports, with
+                  no organization focused: nothing could own the report, so the
+                  field shows a pick-an-organization hint and there is no form
+                  to submit — only a way out. */}
+              {ownerNeedsOrganization ? (
+                <div className="flex justify-end">
+                  <button
+                    type="button"
+                    className="rounded-md border px-4 py-2 text-sm"
+                    onClick={() => setBusinessTemplate(null)}
+                  >
+                    {t('common:actions.cancel')}
+                  </button>
+                </div>
+              ) : (
+                renderBusinessOptionsForm(businessTemplate)
+              )}
             </div>
           </div>
         </div>

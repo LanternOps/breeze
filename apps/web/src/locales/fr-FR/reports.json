@@ -461,7 +461,8 @@
       "templates": "Modèles",
       "title": "Rapports",
       "tryAgain": "Réessayer",
-      "unknownReport": "Rapport inconnu"
+      "unknownReport": "Rapport inconnu",
+      "partnerWideIncomplete": "Certains rapports couvrant toutes les organisations n'ont pas pu être chargés ; cette liste est donc peut-être incomplète. Passez à Toutes les organisations pour voir tous les rapports."
     },
     "reportBuilder": {
       "actions": {
@@ -1123,7 +1124,8 @@
       "allOrganizationsHint": "Couvre toutes les organisations actives et en essai, déterminées à chaque exécution. Les organisations exclues sont indiquées dans les notes du rapport. Nécessite l'accès à toutes les organisations.",
       "singleOrganization": "Une organisation",
       "singleOrganizationHint": "L'organisation sélectionnée dans le sélecteur d'organisation.",
-      "singleOrganizationDisabledHint": "Sélectionnez une organisation dans le sélecteur d'organisation pour créer un rapport à l'échelle d'une organisation."
+      "singleOrganizationDisabledHint": "Sélectionnez une organisation dans le sélecteur d'organisation pour créer un rapport à l'échelle d'une organisation.",
+      "needsOrganizationHint": "Sélectionnez une organisation dans le sélecteur d'organisation pour créer ce rapport. Les rapports couvrant toutes les organisations nécessitent l'accès à toutes les organisations."
     }
   }
 }

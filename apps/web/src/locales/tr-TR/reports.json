@@ -461,7 +461,8 @@
       "templates": "Şablonlar",
       "title": "Raporlar",
       "tryAgain": "Tekrar deneyin",
-      "unknownReport": "Bilinmeyen Rapor"
+      "unknownReport": "Bilinmeyen Rapor",
+      "partnerWideIncomplete": "Tüm kuruluşları kapsayan bazı raporlar yüklenemedi, bu nedenle bu liste eksik olabilir. Tüm raporları görmek için Tüm kuruluşlar görünümüne geçin."
     },
     "reportBuilder": {
       "actions": {
@@ -1123,7 +1124,8 @@
       "allOrganizationsHint": "Her çalıştırmada belirlenen tüm aktif ve deneme sürümündeki kuruluşları kapsar. Hariç tutulan kuruluşlar raporun notlarında listelenir. Tüm kuruluşlara erişim gerektirir.",
       "singleOrganization": "Tek bir kuruluş",
       "singleOrganizationHint": "Kuruluş seçicide seçili olan kuruluş.",
-      "singleOrganizationDisabledHint": "Kuruluş kapsamlı bir rapor oluşturmak için kuruluş seçicide bir kuruluş seçin."
+      "singleOrganizationDisabledHint": "Kuruluş kapsamlı bir rapor oluşturmak için kuruluş seçicide bir kuruluş seçin.",
+      "needsOrganizationHint": "Bu raporu oluşturmak için kuruluş seçicide bir kuruluş seçin. Tüm kuruluşları kapsayan raporlar, tüm kuruluşlara erişim gerektirir."
     }
   }
 }

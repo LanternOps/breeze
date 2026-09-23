@@ -461,7 +461,8 @@
       "templates": "Plantillas",
       "title": "Informes",
       "tryAgain": "Intentar otra vez",
-      "unknownReport": "Informe desconocido"
+      "unknownReport": "Informe desconocido",
+      "partnerWideIncomplete": "No se pudieron cargar algunos informes que abarcan todas las organizaciones, por lo que esta lista puede estar incompleta. Cambia a Todas las organizaciones para ver todos los informes."
     },
     "reportBuilder": {
       "actions": {
@@ -1123,7 +1124,8 @@
       "allOrganizationsHint": "Abarca todas las organizaciones activas y de prueba, determinadas en cada ejecución. Las organizaciones excluidas se indican en las notas del informe. Requiere acceso a todas las organizaciones.",
       "singleOrganization": "Una organización",
       "singleOrganizationHint": "La organización seleccionada en el selector de organizaciones.",
-      "singleOrganizationDisabledHint": "Selecciona una organización en el selector de organizaciones para crear un informe con ámbito de organización."
+      "singleOrganizationDisabledHint": "Selecciona una organización en el selector de organizaciones para crear un informe con ámbito de organización.",
+      "needsOrganizationHint": "Selecciona una organización en el selector de organizaciones para crear este informe. Los informes de todas las organizaciones requieren acceso a todas las organizaciones."
     }
   }
 }

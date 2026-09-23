@@ -3,7 +3,13 @@ import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 const fetchWithAuth = vi.fn();
-vi.mock('../../stores/auth', () => ({ fetchWithAuth: (...a: unknown[]) => fetchWithAuth(...a) }));
+// Mutable: undefined/true = partnerOrgAccess 'all'; false = 'selected'.
+let canManagePartnerWide: boolean | undefined;
+vi.mock('../../stores/auth', () => ({
+  fetchWithAuth: (...a: unknown[]) => fetchWithAuth(...a),
+  useAuthStore: (selector: (s: { user: { canManagePartnerWide?: boolean } }) => unknown) =>
+    selector({ user: { canManagePartnerWide } }),
+}));
 // Mutable so individual tests can exercise the All-organizations view (null).
 let currentOrgId: string | null = 'org-1';
 vi.mock('../../stores/orgStore', () => ({ useOrgStore: () => ({ currentOrgId }) }));
@@ -50,6 +56,7 @@ describe('ReportTemplates — Business group (#3198 W03)', () => {
     claimsState = { status: 'resolved', claims: { scope: 'partner', orgId: null, partnerId: 'p-1' } };
     grantedPermissions = new Set(['tickets:read', 'time_entries:read', 'invoices:read']);
     currentOrgId = 'org-1';
+    canManagePartnerWide = undefined;
   });
 
   it('renders the three business templates inside a labelled Business section for a partner-scope user with every permission', async () => {
@@ -398,5 +405,89 @@ describe('ReportTemplates — Business group (#3198 W03)', () => {
     expect(within(await card('saved-ar-run')).getByText('As of run date')).toBeInTheDocument();
     // A curated (unsaved) business card keeps the schema defaults.
     expect(within(await card('ticket_sla_attainment')).getByText('Last full month')).toBeInTheDocument();
+  });
+
+  // ── Fix round: selected-access partner users (no partner-wide access) ──
+
+  it('a selected-access partner user gets no All-organizations choice and creates for the focused organization', async () => {
+    canManagePartnerWide = false;
+    mockTemplatesFetch(() => Promise.resolve({ ok: true, json: () => Promise.resolve({ data: { id: 'rep-s1' } }) }));
+    render(<ReportTemplates />);
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByTestId('report-template-use-ar_aging'));
+    expect(screen.queryByTestId('report-owner-scope')).toBeNull();
+    expect(screen.queryByTestId('report-owner-scope-partner')).toBeNull();
+    await user.click(screen.getByTestId('ar-aging-create-report'));
+
+    await waitFor(() => expect(postBody()).toBeDefined());
+    expect(postBody()).toEqual({
+      name: 'AR aging',
+      type: 'ar_aging',
+      schedule: 'monthly',
+      format: 'pdf',
+      ownerScope: 'organization',
+      orgId: 'org-1',
+      config: { groupBy: 'organization', includePaidInPeriod: false },
+    });
+  });
+
+  it('a selected-access partner user on the All-organizations view is told to pick an organization, with no form to submit', async () => {
+    canManagePartnerWide = false;
+    currentOrgId = null;
+    mockTemplatesFetch(() => Promise.resolve({ ok: true, json: () => Promise.resolve({ data: { id: 'rep-s2' } }) }));
+    render(<ReportTemplates />);
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByTestId('report-template-use-technician_time_billability'));
+    const modal = await screen.findByTestId('business-report-options-modal');
+    expect(within(modal).getByTestId('report-owner-scope-needs-org')).toBeInTheDocument();
+    expect(within(modal).queryByTestId('technician-time-create-report')).toBeNull();
+    expect(within(modal).queryByTestId('report-owner-scope-partner')).toBeNull();
+
+    await user.click(within(modal).getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByTestId('business-report-options-modal')).toBeNull();
+    expect(postBody()).toBeUndefined();
+  });
+
+  // ── Fix round: a saved business template opens with ITS options ─────────
+
+  it.each([
+    {
+      type: 'ticket_sla_attainment',
+      submit: 'ticket-sla-create-report',
+      config: { period: { kind: 'last_quarter' }, groupBy: 'category', includeNoSla: false },
+    },
+    {
+      type: 'technician_time_billability',
+      submit: 'technician-time-create-report',
+      config: { period: { kind: 'custom', start: '2026-07-01', end: '2026-07-31' }, groupBy: 'work_type', weeklyCapacityHours: 32.5 },
+    },
+    {
+      type: 'ar_aging',
+      submit: 'ar-aging-create-report',
+      config: { asOf: '2026-08-31', groupBy: 'currency', includePaidInPeriod: true },
+    },
+  ])('seeds the $type options form from the saved report\'s stored config', async ({ type, submit, config }) => {
+    fetchWithAuth.mockImplementation((url: string, init?: { method?: string }) => {
+      if (url === '/reports/templates') {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ data: [{ id: `saved-${type}`, name: `Saved ${type}`, type, config }] }),
+        });
+      }
+      if (url === '/reports' && init?.method === 'POST') {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: { id: 'rep-saved' } }) });
+      }
+      return Promise.resolve({ ok: false, json: () => Promise.resolve({}) });
+    });
+    render(<ReportTemplates />);
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByTestId(`report-template-use-saved-${type}`));
+    await user.click(await screen.findByTestId(submit));
+
+    await waitFor(() => expect(postBody()).toBeDefined());
+    expect(postBody().config).toEqual(config);
   });
 });

@@ -461,7 +461,8 @@
       "templates": "Vorlagen",
       "title": "Berichte",
       "tryAgain": "Versuchen Sie es erneut",
-      "unknownReport": "Unbekannter Bericht"
+      "unknownReport": "Unbekannter Bericht",
+      "partnerWideIncomplete": "Einige Berichte, die alle Organisationen umfassen, konnten nicht geladen werden. Diese Liste ist daher möglicherweise unvollständig. Wechseln Sie zu „Alle Organisationen“, um alle Berichte zu sehen."
     },
     "reportBuilder": {
       "actions": {
@@ -1123,7 +1124,8 @@
       "allOrganizationsHint": "Umfasst alle aktiven Organisationen und Organisationen in der Testphase, bei jedem Lauf neu ermittelt. Ausgeschlossene Organisationen werden in den Hinweisen des Berichts aufgeführt. Erfordert Zugriff auf alle Organisationen.",
       "singleOrganization": "Eine Organisation",
       "singleOrganizationHint": "Die im Organisationswechsler ausgewählte Organisation.",
-      "singleOrganizationDisabledHint": "Wählen Sie eine Organisation im Organisationswechsler aus, um einen organisationsbezogenen Bericht zu erstellen."
+      "singleOrganizationDisabledHint": "Wählen Sie eine Organisation im Organisationswechsler aus, um einen organisationsbezogenen Bericht zu erstellen.",
+      "needsOrganizationHint": "Wählen Sie im Organisationswechsler eine Organisation aus, um diesen Bericht zu erstellen. Berichte für alle Organisationen erfordern Zugriff auf alle Organisationen."
     }
   }
 }

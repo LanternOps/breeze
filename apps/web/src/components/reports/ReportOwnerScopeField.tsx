@@ -1,6 +1,7 @@
 import { useTranslation } from 'react-i18next';
 import { useJwtClaims } from '@/lib/authScope';
 import { useOrgStore } from '../../stores/orgStore';
+import { useAuthStore } from '../../stores/auth';
 
 export type ReportOwnerScope = 'organization' | 'partner';
 
@@ -17,16 +18,36 @@ export type ReportOwnerScope = 'organization' | 'partner';
  * one-shot read would freeze that empty answer for the life of the mount
  * (`lib/authScope.ts`). Unresolved fails CLOSED: unknown is not partner.
  *
+ * Also gated on `user.canManagePartnerWide` — the client-side counterpart of
+ * the server's `canManagePartnerWidePolicies` (partnerOrgAccess 'all'), which
+ * the partner-owned create requires. A 'selected'-access partner user is never
+ * offered "All organizations" (it could only 403); with no organization
+ * focused they are told to pick one instead (`needsOrganization`). Absent
+ * (a session persisted before the field existed) reads as capable, like every
+ * other partner-wide surface; the server still gates every write.
+ *
  * Create-only. Ownership is immutable after create (the API answers 400
  * `report_ownership_immutable`), so there is no edit-page counterpart.
  */
-export function useDefaultReportOwnerScope(): { canChoose: boolean; defaultScope: ReportOwnerScope } {
+export function useDefaultReportOwnerScope(): {
+  canChoose: boolean;
+  defaultScope: ReportOwnerScope;
+  needsOrganization: boolean;
+} {
   const state = useJwtClaims();
   const { currentOrgId } = useOrgStore();
-  const canChoose = state.status === 'resolved' && state.claims.scope === 'partner' && !!state.claims.partnerId;
-  // All organizations when the user is on the All-organizations view; the
-  // focused organization otherwise.
-  return { canChoose, defaultScope: canChoose && !currentOrgId ? 'partner' : 'organization' };
+  const canManagePartnerWide = useAuthStore((s) => s.user?.canManagePartnerWide) !== false;
+  const isPartnerToken = state.status === 'resolved' && state.claims.scope === 'partner' && !!state.claims.partnerId;
+  const canChoose = isPartnerToken && canManagePartnerWide;
+  return {
+    canChoose,
+    // All organizations when the user is on the All-organizations view; the
+    // focused organization otherwise.
+    defaultScope: canChoose && !currentOrgId ? 'partner' : 'organization',
+    // A partner user who may only create single-organization reports, on the
+    // All-organizations view: there is no organization to own the report.
+    needsOrganization: isPartnerToken && !canManagePartnerWide && !currentOrgId,
+  };
 }
 
 export function ReportOwnerScopeField({
@@ -37,8 +58,15 @@ export function ReportOwnerScopeField({
   onChange: (value: ReportOwnerScope) => void;
 }) {
   const { t } = useTranslation('reports');
-  const { canChoose } = useDefaultReportOwnerScope();
+  const { canChoose, needsOrganization } = useDefaultReportOwnerScope();
   const { currentOrgId } = useOrgStore();
+  if (needsOrganization) {
+    return (
+      <p data-testid="report-owner-scope-needs-org" role="status" className="rounded-md border p-4 text-sm text-muted-foreground">
+        {t('reports.ownerScope.needsOrganizationHint')}
+      </p>
+    );
+  }
   if (!canChoose) return null;
   // A single-organization report needs an organization to own it. With no
   // org focused (the All-organizations view), disable rather than let the

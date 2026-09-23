@@ -461,7 +461,8 @@
       "templates": "Template",
       "title": "Report",
       "tryAgain": "Riprova",
-      "unknownReport": "Report sconosciuto"
+      "unknownReport": "Report sconosciuto",
+      "partnerWideIncomplete": "Non è stato possibile caricare alcuni report che coprono tutte le organizzazioni, quindi questo elenco potrebbe essere incompleto. Passa a Tutte le organizzazioni per vedere tutti i report."
     },
     "reportBuilder": {
       "actions": {
@@ -1123,7 +1124,8 @@
       "allOrganizationsHint": "Copre tutte le organizzazioni attive e in prova, determinate a ogni esecuzione. Le organizzazioni escluse sono elencate nelle note del report. Richiede l'accesso a tutte le organizzazioni.",
       "singleOrganization": "Una sola organizzazione",
       "singleOrganizationHint": "L'organizzazione selezionata nel selettore delle organizzazioni.",
-      "singleOrganizationDisabledHint": "Seleziona un'organizzazione nel selettore delle organizzazioni per creare un report a livello di organizzazione."
+      "singleOrganizationDisabledHint": "Seleziona un'organizzazione nel selettore delle organizzazioni per creare un report a livello di organizzazione.",
+      "needsOrganizationHint": "Seleziona un'organizzazione nel selettore delle organizzazioni per creare questo report. I report su tutte le organizzazioni richiedono l'accesso a tutte le organizzazioni."
     }
   }
 }
