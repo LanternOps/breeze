@@ -58,6 +58,8 @@ import {
   hashSql,
   hasNoTransactionDirective,
   extractDefinedFunctionNames,
+  extractTouchedConstraintNames,
+  selectReplayFollowers,
   splitSqlStatements,
   CHECKSUM_RECONCILIATIONS,
   planMigrations,
@@ -360,6 +362,111 @@ CREATE OR REPLACE FUNCTION public.dup() RETURNS void AS $$ BEGIN END; $$ LANGUAG
     it('is case-insensitive on the CREATE/FUNCTION keywords themselves', () => {
       expect(extractDefinedFunctionNames('create or replace function public.lower_kw() returns void as $$ begin end; $$ language plpgsql;'))
         .toEqual(['public.lower_kw']);
+    });
+  });
+
+  describe('extractTouchedConstraintNames (#6700 / #6701)', () => {
+    it('returns an empty array for a file that touches no constraint', () => {
+      expect(extractTouchedConstraintNames('ALTER TABLE devices ADD COLUMN IF NOT EXISTS foo text;')).toEqual([]);
+    });
+
+    it('extracts DROP ... IF EXISTS and ADD of the same CHECK (the pam-actuation-lifecycle shape)', () => {
+      const sql = `
+ALTER TABLE intent_outbox DROP CONSTRAINT IF EXISTS intent_outbox_event_type_check;
+ALTER TABLE intent_outbox ADD CONSTRAINT intent_outbox_event_type_check CHECK (event_type IN ('a'));
+`;
+      expect(extractTouchedConstraintNames(sql)).toEqual(['intent_outbox_event_type_check']);
+    });
+
+    it('extracts ALTER CONSTRAINT ... [NOT] DEFERRABLE and VALIDATE CONSTRAINT', () => {
+      const sql = `
+ALTER TABLE public.devices ALTER CONSTRAINT devices_site_org_fk NOT DEFERRABLE;
+ALTER TABLE public.sites ALTER CONSTRAINT sites_org_fk DEFERRABLE INITIALLY IMMEDIATE;
+ALTER TABLE public.tickets VALIDATE CONSTRAINT tickets_org_fk;
+`;
+      expect(extractTouchedConstraintNames(sql)).toEqual(['devices_site_org_fk', 'sites_org_fk', 'tickets_org_fk']);
+    });
+
+    it('extracts both sides of RENAME CONSTRAINT', () => {
+      expect(extractTouchedConstraintNames('ALTER TABLE t RENAME CONSTRAINT old_chk TO new_chk;'))
+        .toEqual(['new_chk', 'old_chk']);
+    });
+
+    it('extracts names from a DO-block EXECUTE string literal and strips double quotes', () => {
+      const sql = `
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'foo_chk') THEN
+    EXECUTE 'ALTER TABLE foo ADD CONSTRAINT "Foo_Chk" CHECK (x > 0)';
+  END IF;
+END $$;
+`;
+      expect(extractTouchedConstraintNames(sql)).toEqual(['foo_chk']);
+    });
+
+    it('ignores constraint mentions in line comments and SET CONSTRAINTS', () => {
+      const sql = [
+        '-- ALTER TABLE devices DROP CONSTRAINT should_not_count;',
+        'SET CONSTRAINTS ALL DEFERRED;',
+        'SET CONSTRAINTS devices_site_org_fk DEFERRED;',
+      ].join('\n');
+      expect(extractTouchedConstraintNames(sql)).toEqual([]);
+    });
+
+    it('ignores an inline CONSTRAINT clause in CREATE TABLE (replaying CREATE TABLE IF NOT EXISTS never rewrites it)', () => {
+      const sql = 'CREATE TABLE IF NOT EXISTS t (id uuid, CONSTRAINT t_pk PRIMARY KEY (id));';
+      expect(extractTouchedConstraintNames(sql)).toEqual([]);
+    });
+  });
+
+  describe('selectReplayFollowers (#6700 / #6701)', () => {
+    const file = (name: string, content: string) => ({ name, content });
+
+    it('selects nothing when the base file defines no function and touches no constraint', () => {
+      expect(selectReplayFollowers('ALTER TABLE t ADD COLUMN IF NOT EXISTS x int;', [
+        file('b.sql', 'CREATE OR REPLACE FUNCTION public.f() RETURNS void AS $$ BEGIN END; $$ LANGUAGE plpgsql;'),
+      ])).toEqual([]);
+    });
+
+    it('selects a later file that widens a CHECK the base file narrows (#6700)', () => {
+      const base = `
+ALTER TABLE intent_outbox DROP CONSTRAINT IF EXISTS intent_outbox_event_type_check;
+ALTER TABLE intent_outbox ADD CONSTRAINT intent_outbox_event_type_check CHECK (event_type IN ('a'));
+`;
+      expect(selectReplayFollowers(base, [
+        file('b-unrelated.sql', 'ALTER TABLE t ADD CONSTRAINT other_chk CHECK (true);'),
+        file('c-widen.sql', `
+ALTER TABLE intent_outbox DROP CONSTRAINT IF EXISTS intent_outbox_event_type_check;
+ALTER TABLE intent_outbox ADD CONSTRAINT intent_outbox_event_type_check CHECK (event_type IN ('a','b'));
+`),
+      ])).toEqual(['c-widen.sql']);
+    });
+
+    it('still selects later redefiners of a function the base file defines', () => {
+      const base = 'CREATE OR REPLACE FUNCTION public.f() RETURNS void AS $$ BEGIN END; $$ LANGUAGE plpgsql;';
+      expect(selectReplayFollowers(base, [
+        file('b.sql', 'CREATE OR REPLACE FUNCTION public.f() RETURNS int AS $$ SELECT 1 $$ LANGUAGE sql;'),
+      ])).toEqual(['b.sql']);
+    });
+
+    it('closes transitively across the two name kinds, in filename order', () => {
+      // base touches chk_a; b re-touches chk_a AND defines g; c redefines g
+      // (never mentioned by base); d re-touches chk_b, which c introduced.
+      const base = 'ALTER TABLE t ADD CONSTRAINT chk_a CHECK (true);';
+      expect(selectReplayFollowers(base, [
+        file('b.sql', `ALTER TABLE t DROP CONSTRAINT IF EXISTS chk_a;
+CREATE OR REPLACE FUNCTION public.g() RETURNS void AS $$ BEGIN END; $$ LANGUAGE plpgsql;`),
+        file('c.sql', `CREATE OR REPLACE FUNCTION public.g() RETURNS void AS $$ BEGIN END; $$ LANGUAGE plpgsql;
+ALTER TABLE t2 ADD CONSTRAINT chk_b CHECK (true);`),
+        file('d.sql', 'ALTER TABLE t2 VALIDATE CONSTRAINT chk_b;'),
+        file('e.sql', 'ALTER TABLE t3 ADD CONSTRAINT chk_c CHECK (true);'),
+      ])).toEqual(['b.sql', 'c.sql', 'd.sql']);
+    });
+
+    it('does not cross-match a function name against a constraint name', () => {
+      const base = 'ALTER TABLE t ADD CONSTRAINT same_name CHECK (true);';
+      expect(selectReplayFollowers(base, [
+        file('b.sql', 'CREATE OR REPLACE FUNCTION same_name() RETURNS void AS $$ BEGIN END; $$ LANGUAGE plpgsql;'),
+      ])).toEqual([]);
     });
   });
 
