@@ -454,11 +454,22 @@ describe('generator-less business report types (#3198 W01)', () => {
   );
 
   it.each(GENERATOR_LESS_BUSINESS_TYPES)(
-    '%s is refused by the zero-safe branch too',
+    // #3198 W02 (P1b): tickets, time entries and invoices carry no site axis, so
+    // a site-restricted authority queried NOTHING. Unlike the dispatch-switch
+    // refusal above, the zero-safe branch does NOT throw — it hands back an
+    // empty-but-shaped summary carrying the site-restricted note, the same
+    // "not measured, not zero" contract as every other zero-safe business arm.
+    '%s zero-safe branch returns an empty-but-shaped summary carrying the site-restricted note, NOT a throw',
     async (type) => {
-      await expect(
-        generateReport(type, organizationScope(ORG_ID), {}, authority('restricted', [])),
-      ).rejects.toBeInstanceOf(UnsupportedReportScopeError);
+      const result = await generateReport(type, organizationScope(ORG_ID), {}, authority('restricted', []));
+      expect(result.rowCount).toBe(0);
+      expect(result.rows).toEqual([]);
+      expect(result.summary).toBeDefined();
+      expect((result.summary as { notes: string[] }).notes).toEqual([
+        'This report ran under a site-restricted authority. Tickets, time entries and '
+        + 'invoices have no site dimension, so nothing was queried — the figures below '
+        + 'are not measured, and they are not zero.',
+      ]);
       expect(db.select).not.toHaveBeenCalled();
     },
   );

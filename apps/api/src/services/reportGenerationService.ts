@@ -20,6 +20,11 @@ import {
   emptyEndpointManagementSummary,
 } from '@breeze/shared';
 import {
+  emptyArAgingSummary,
+  emptyTechnicianTimeSummary,
+  emptyTicketSlaSummary,
+} from '@breeze/shared';
+import {
   systemReportAuthorityFor,
   type OrgReportExecutionAuthority,
   type OrgReportGenerationAuthority,
@@ -147,6 +152,15 @@ function filtersFor(config: Record<string, unknown>): Record<string, unknown> {
 function emptyRowsReport() {
   return { rows: [], rowCount: 0 };
 }
+
+// #3198 W02. Tickets, time entries and invoices carry no site axis, so a
+// site-restricted authority queried NOTHING. Each empty*Summary() prints
+// that sentence on the artifact rather than a reassuring zero — a zero here
+// would read as "you had no overdue invoices", which is a lie.
+const SITE_RESTRICTED_NOTE =
+  'This report ran under a site-restricted authority. Tickets, time entries and '
+  + 'invoices have no site dimension, so nothing was queried — the figures below '
+  + 'are not measured, and they are not zero.';
 
 /**
  * Push the authority's allowed-site predicate onto `conditions`, returning true
@@ -1056,12 +1070,16 @@ function zeroSafeReport(type: ReportType, orgId: string): ReportResult {
     // Fleet Designer W01 (#5651) — refused HERE too, same reason as above.
     case 'ai_fleet_design':
       throw new StoredArtifactOnlyReportError(type);
-    // #3198 W01 — refused here too: an empty shape would read as "nothing to
-    // report" for a type that has no generator at all.
+    // #3198 W02. Tickets, time entries and invoices carry no site axis, so a
+    // site-restricted authority queried NOTHING. Each empty*Summary() prints
+    // that sentence on the artifact rather than a reassuring zero — a zero here
+    // would read as "you had no overdue invoices", which is a lie.
     case 'ticket_sla_attainment':
+      return { rows: [], rowCount: 0, summary: emptyTicketSlaSummary(SITE_RESTRICTED_NOTE) as unknown as Record<string, unknown> };
     case 'technician_time_billability':
+      return { rows: [], rowCount: 0, summary: emptyTechnicianTimeSummary(SITE_RESTRICTED_NOTE) as unknown as Record<string, unknown> };
     case 'ar_aging':
-      throw new UnsupportedReportScopeError(type, 'organization');
+      return { rows: [], rowCount: 0, summary: emptyArAgingSummary(SITE_RESTRICTED_NOTE) as unknown as Record<string, unknown> };
     default: {
       const exhaustive: never = type;
       throw new Error(`Invalid report type: ${String(exhaustive)}`);

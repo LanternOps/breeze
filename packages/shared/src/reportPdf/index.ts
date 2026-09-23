@@ -8,3 +8,4 @@ export { renderVulnerabilityManagementReport } from './vulnerabilityManagementPd
 export type { VulnerabilityManagementPdfOpts } from './vulnerabilityManagementPdf';
 export { renderIdentityAccessReport } from './identityAccessPdf';
 export type { IdentityAccessPdfOpts } from './identityAccessPdf';
+export { formatMinutes, formatMoney, formatPercent } from './moneyFormat';
