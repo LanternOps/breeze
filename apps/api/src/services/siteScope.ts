@@ -1662,7 +1662,10 @@ async function resolveLiveReportTypePermissionsInSystemContext(
  * re-check — without it, a creator demoted off invoices:read would keep
  * receiving AR aging by email.
  *
- * Fails closed: a database failure answers false (the worker records a deny).
+ * `false` means "not granted". A database failure REJECTS instead: "could
+ * not check" is not a permission loss, so the caller (the schedule worker)
+ * reports it and records 'scope_unverifiable' rather than
+ * 'scope_permission_missing'.
  */
 export async function resolveLiveReportTypePermissions(
   userId: string,
@@ -1670,20 +1673,11 @@ export async function resolveLiveReportTypePermissions(
   required: readonly { resource: string; action: string }[],
 ): Promise<boolean> {
   if (required.length === 0) return true;
-  try {
-    return await runOutsideDbContext(() =>
-      withSystemDbAccessContext(() =>
-        resolveLiveReportTypePermissionsInSystemContext(userId, owner, required),
-      ),
-    );
-  } catch (error) {
-    console.error('[siteScope] report type permission re-check failed', {
-      userId,
-      owner,
-      error: error instanceof Error ? error.message : String(error),
-    });
-    return false;
-  }
+  return runOutsideDbContext(() =>
+    withSystemDbAccessContext(() =>
+      resolveLiveReportTypePermissionsInSystemContext(userId, owner, required),
+    ),
+  );
 }
 
 type BatchOrganization = {

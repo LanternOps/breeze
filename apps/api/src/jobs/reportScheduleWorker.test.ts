@@ -1719,6 +1719,53 @@ describe('partner-owned scheduled definitions (#3198 W01/W02)', () => {
     expect(sendEmailMock).not.toHaveBeenCalled();
   });
 
+  it('denies scope_permission_missing without Sentry for a real "not granted" answer', async () => {
+    selectMock.mockReturnValueOnce(selectChain([partnerReport]));
+    resolveLiveReportTypePermissionsMock.mockResolvedValueOnce(false);
+    insertMock.mockReturnValueOnce(insertChain([{ id: RUN_ID }]));
+    captureExceptionMock.mockClear();
+
+    await run();
+
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+  });
+
+  it('denies scope_unverifiable (not scope_permission_missing) and reports to Sentry when the permission re-check cannot run', async () => {
+    selectMock.mockReturnValueOnce(selectChain([partnerReport]));
+    const dbDown = new Error('connection reset');
+    resolveLiveReportTypePermissionsMock.mockRejectedValueOnce(dbDown);
+    const failedInsert = insertChain([{ id: RUN_ID }]);
+    insertMock.mockReturnValueOnce(failedInsert);
+    captureExceptionMock.mockClear();
+
+    await expect(run()).resolves.toBeUndefined();
+
+    expect(insertMock).toHaveBeenCalledTimes(1);
+    expect(failedInsert.values).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'failed', errorMessage: 'scope_unverifiable' }),
+    );
+    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+    expect(captureExceptionMock).toHaveBeenCalledWith(dbDown);
+    expect(generateReportMock).not.toHaveBeenCalled();
+    expect(sendEmailMock).not.toHaveBeenCalled();
+  });
+
+  it('denies scope_unverifiable (does not throw out of the job) for a stored report type the registry does not know', async () => {
+    selectMock.mockReturnValueOnce(selectChain([{ ...partnerReport, type: 'not_a_real_type' }]));
+    const failedInsert = insertChain([{ id: RUN_ID }]);
+    insertMock.mockReturnValueOnce(failedInsert);
+    captureExceptionMock.mockClear();
+
+    await expect(run()).resolves.toBeUndefined();
+
+    expect(failedInsert.values).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'failed', errorMessage: 'scope_unverifiable' }),
+    );
+    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+    expect(resolveLiveReportTypePermissionsMock).not.toHaveBeenCalled();
+    expect(generateReportMock).not.toHaveBeenCalled();
+  });
+
   it('denies scope_config_outside_authority (not a failed run) when the preflight refuses the config', async () => {
     selectMock.mockReturnValueOnce(selectChain([partnerReport]));
     reportExecutionPreflightMock.mockImplementationOnce(() => {

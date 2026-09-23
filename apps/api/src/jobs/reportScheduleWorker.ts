@@ -618,15 +618,23 @@ export async function processRunScheduledReport(
   // permission set; without this re-check a creator demoted off invoices:read
   // would keep receiving AR aging by email. Skipped (no query) for every
   // pre-#3198 type, which lists no extra permissions.
-  const requiredPermissions = reportTypeDef(report.type).requiredPermissions;
-  if (
-    requiredPermissions.length > 0
-    && !(await resolveLiveReportTypePermissions(
-      liveResult.authority.principalUserId,
-      owner,
-      requiredPermissions,
-    ))
-  ) {
+  // An unknown stored type (reportTypeDef throws) and a re-check that could
+  // not run (DB failure) are "could not verify", not a permission loss.
+  let typePermissionsGranted: boolean;
+  try {
+    const requiredPermissions = reportTypeDef(report.type).requiredPermissions;
+    typePermissionsGranted = requiredPermissions.length === 0
+      || await resolveLiveReportTypePermissions(
+        liveResult.authority.principalUserId,
+        owner,
+        requiredPermissions,
+      );
+  } catch (err) {
+    reportScopeFailure('live_permissions', err);
+    await deny('scope_unverifiable');
+    return;
+  }
+  if (!typePermissionsGranted) {
     await deny('scope_permission_missing');
     return;
   }

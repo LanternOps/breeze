@@ -2623,9 +2623,9 @@ describe('resolveLiveReportTypePermissions', () => {
     await expect(resolveLiveReportTypePermissions(userId, { orgId }, INVOICES_READ)).resolves.toBe(true);
   });
 
-  it('treats a database failure as NOT granted', async () => {
+  it('rejects on a database failure (could-not-check is not "not granted"; the worker decides)', async () => {
     queueRows(new Error('connection reset'));
-    await expect(resolveLiveReportTypePermissions(userId, { partnerId }, INVOICES_READ)).resolves.toBe(false);
+    await expect(resolveLiveReportTypePermissions(userId, { partnerId }, INVOICES_READ)).rejects.toThrow('connection reset');
   });
 });
 
