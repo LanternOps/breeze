@@ -12,6 +12,7 @@ import { devices } from '../db/schema';
 import { eq, and, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import { validateToolInput } from './aiToolSchemas';
+import { setToolPaginationHintResolver } from './aiToolOutput';
 import type { CaptureScope } from './artifacts/toolResultCapture';
 import { captureContextFrom, captureLargeToolResult } from './artifacts/toolResultCapture';
 import { captureException } from './sentry';
@@ -352,6 +353,16 @@ registerVulnerabilityTools(aiTools);
 registerWorkspaceTools(aiTools);
 registerM365Tools(aiTools);
 registerExportTools(aiTools);
+
+// A-W05 (D12): the compactor's truncation guidance follows the tool's real
+// paging shape. Covers extension-contributed tools too — they live in the
+// contribution registry, not this map.
+setToolPaginationHintResolver((name) => {
+  const core = aiTools.get(name)?.definition.input_schema as { properties?: Record<string, unknown> } | undefined;
+  const ext = core ? undefined : (resolveExtensionTool(name, extensionContributionRegistry)?.definition.input_schema as { properties?: Record<string, unknown> } | undefined);
+  const props = (core ?? ext)?.properties ?? {};
+  return 'cursor' in props ? 'cursor' : 'limit' in props ? 'limit' : 'none';
+});
 
 // ============================================
 // Exports
